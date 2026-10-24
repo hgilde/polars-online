@@ -160,6 +160,36 @@ fn a_formula_target_is_the_column_form_fed_back_under_the_embargo() {
     }
 }
 
+/// An embargo six times the window holds rows long after their windows
+/// resolved them: a long resolved prefix ahead of the unresolved rows, the
+/// one the release takes from the front and the resolution passes over
+/// (task 270, M-3, where each row once rescanned it and shifted the rest).
+/// The same rows released in the same order: the column form fed back,
+/// prediction for prediction, at every chunking, and across a save.
+#[test]
+fn a_long_embargo_releases_its_resolved_rows_in_order() {
+    let df = stream(900, 11);
+    let embargo = Some(60.0);
+    let reference = run(&plain(embargo), &with_column(&df, &native(embargo)), 1);
+    let want = column(&reference, "pred_fwd");
+    assert!(want.iter().filter(|p| p.is_some()).count() > 400);
+    for chunks in [1, 7, 600] {
+        let got = run(&native(embargo), &df, chunks);
+        assert_eq!(column(&got, "pred_fwd"), want, "{chunks} chunks");
+        assert_eq!(
+            column(&got, "learned_clock"),
+            column(&reference, "learned_clock"),
+            "{chunks} chunks"
+        );
+    }
+    let mut bank = Bank::new(vec![native(embargo)]).unwrap();
+    let mut got = feed(&mut bank, &df.slice(0, 450), 3);
+    let mut bank = Bank::load_bytes(&bank.save_bytes().unwrap(), None).unwrap();
+    got.vstack_mut(&feed(&mut bank, &df.slice(450, 450), 5))
+        .unwrap();
+    assert_eq!(column(&got, "pred_fwd"), want, "resumed");
+}
+
 /// `fit_predict` refuses an embargo below the longest forward window, none
 /// included, before any row is fed; `fit` -- the call told it keeps the
 /// state alone -- takes both, and predicts new rows as the embargoed fit

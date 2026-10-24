@@ -14,6 +14,8 @@
 //!   out-of-sample residual stream should look like noise, and does not when a
 //!   feature is missing or the decay is too slow.
 
+use std::collections::VecDeque;
+
 use serde::{Deserialize, Serialize};
 
 /// Buckets per octave of [`EwQuantile`]: a bucket spans a ratio of at most
@@ -462,8 +464,11 @@ impl EwQuantile {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EwAutoCorr {
     lag: usize,
-    /// Recent values, most recent last; length `lag + 1` once warm.
-    buf: Vec<f64>,
+    /// Recent values, most recent last; length `lag + 1` once warm. A
+    /// deque, as the oldest leaves at each value: a `Vec` shifted all `lag`
+    /// down by one, O(lag) a row (docs/PLAN.md task 270, E-2). Written as
+    /// the sequence a `Vec` is, so no state's bytes move.
+    buf: VecDeque<f64>,
     w: f64,
     mean: f64,
     /// EW second moments of (x_t, x_{t-lag}) around their shared mean.
@@ -490,7 +495,7 @@ impl EwAutoCorr {
         crate::ewlagcov::check_lag_ceiling("EwAutoCorr: lag", lag)?;
         Ok(Self {
             lag,
-            buf: Vec::with_capacity(lag + 1),
+            buf: VecDeque::with_capacity(lag + 1),
             w: 0.0,
             mean: 0.0,
             var: 0.0,
@@ -540,10 +545,10 @@ impl EwAutoCorr {
             self.age(lam);
             return;
         }
-        self.buf.push(x);
-        if self.buf.len() > self.lag + 1 {
-            self.buf.remove(0);
+        if self.buf.len() > self.lag {
+            self.buf.pop_front();
         }
+        self.buf.push_back(x);
 
         let w_new = lam * self.w + 1.0;
         let (a, b) = (lam * self.w / w_new, 1.0 / w_new);
@@ -1096,6 +1101,24 @@ mod tests {
         assert_eq!(nan, once);
     }
 
+    /// The buffer is the last `lag + 1` values in order however often it
+    /// has turned over, a value pushed at the back as the oldest leaves the
+    /// front (task 270, E-2: a `Vec` shifted all of them at each value), and
+    /// it is written as the plain sequence of them.
+    #[test]
+    fn the_lag_buffer_is_the_last_values_in_order() {
+        let mut ac = EwAutoCorr::new(3).unwrap();
+        for i in 0..11 {
+            ac.update(f64::from(i), 0.9);
+        }
+        assert_eq!(ac.buf, vec![7.0, 8.0, 9.0, 10.0]);
+        let bytes = rmp_serde::to_vec(&ac.buf).unwrap();
+        assert_eq!(
+            bytes,
+            rmp_serde::to_vec(&vec![7.0, 8.0, 9.0, 10.0]).unwrap()
+        );
+    }
+
     #[test]
     fn autocorr_of_a_constant_series_is_none() {
         // Every pair exists, but a constant has no variance to divide by.
@@ -1116,7 +1139,7 @@ mod tests {
         let fresh = EwAutoCorr::new(2).unwrap();
         assert!(full.same_shape(&fresh) && fresh.same_shape(&full));
         let mut over = full.clone();
-        over.buf.push(5.0);
+        over.buf.push_back(5.0);
         assert!(
             !over.same_shape(&fresh),
             "a buffer lag 2 cannot have filled"

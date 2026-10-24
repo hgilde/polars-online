@@ -733,6 +733,44 @@ fn put<const W: bool>(out: &mut [f64], j: usize, a: Acc) {
     a.write(&mut out[j * sum_w::<W>()..], W);
 }
 
+/// The fold of `back`'s rows `from..=upto`, oldest first, as a mean's cut
+/// sums them ([`Queue::sum_after_op`]), with the rows' `seq`s at both ends:
+/// `back` only grows between its turnovers, and a row's `seq` is never
+/// reused, so the two say the fold is still of the rows it was made from.
+#[derive(Debug, Clone, Copy)]
+struct Tail {
+    from: usize,
+    from_seq: u64,
+    upto: usize,
+    upto_seq: u64,
+    acc: Acc,
+    at: f64,
+}
+
+/// What a queue remembers between reads to keep a read O(1) amortized
+/// (docs/PLAN.md task 270, M-2): per operator, the fold of `back`'s rows
+/// past the operator's cut, extended by the rows pushed since rather than
+/// summed again, and a `seq` below which no row the queue holds carries the
+/// operator's value, so the search for its oldest valued row starts there.
+/// Neither changes a bit: the fold is the same `then`s in the same order,
+/// and the search finds the same row. Never written to a state and never
+/// compared: a queue read back from a file starts without one and rebuilds
+/// it on its first read, as a queue does on its first window.
+#[derive(Debug, Clone, Default)]
+struct Memo {
+    tails: Vec<Option<Tail>>,
+    /// Per operator: every row the queue holds with a lower `seq` carries
+    /// no value of it. Rows leave oldest first and join with higher `seq`s,
+    /// so it stays true until it is moved.
+    valued_from: Vec<u64>,
+}
+
+impl PartialEq for Memo {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
 /// The two-stack queue. `front` holds the older rows, the oldest on top,
 /// each beside the sums from itself through the newest row in `front`;
 /// `back` holds the newer rows in order, each beside the sums from the
@@ -756,6 +794,8 @@ struct Queue {
     /// Stride `sum_w() * n`; empty until the first row.
     total: Vec<f64>,
     total_at: f64,
+    #[serde(skip)]
+    memo: Memo,
 }
 
 impl Queue {
@@ -768,6 +808,7 @@ impl Queue {
             back: Stack::new(n, wide),
             total: Vec::new(),
             total_at: 0.0,
+            memo: Memo::default(),
         }
     }
 
@@ -969,10 +1010,21 @@ impl Queue {
     }
 
     /// The window's sums for operator `j` less its `p + 1` oldest rows.
-    /// Where those reach into `back`, whose sums are prefixes, the rest is
-    /// summed row by row: rare, as the rows before an operator's oldest
-    /// valued one carry nothing of it.
-    fn sum_after_op<const W: bool>(&self, k: &KernelDef, p: usize, j: usize) -> Option<(Acc, f64)> {
+    /// Where those reach into `back`, whose sums are prefixes anchored at
+    /// its oldest row, the rest is `back`'s rows past them folded oldest
+    /// first. That is every row of a stream's first window, before anything
+    /// has left it and turned `back` over: a mean cuts its first row's held
+    /// interval at the window's edge on each of them. The fold is kept
+    /// between reads and extended by the rows pushed since ([`Memo`]), so a
+    /// read is O(1) amortized, not O(rows in `back`); its `then`s are the
+    /// ones summing the rows afresh takes, in the same order, so its bits
+    /// are too (docs/PLAN.md task 270, M-2).
+    fn sum_after_op<const W: bool>(
+        &mut self,
+        k: &KernelDef,
+        p: usize,
+        j: usize,
+    ) -> Option<(Acc, f64)> {
         let var = W && self.var[j];
         let n = self.front.len();
         if p + 1 < n {
@@ -984,33 +1036,99 @@ impl Queue {
             });
         }
         let from = p + 1 - n;
-        let mut sum: Option<(Acc, f64)> = None;
-        for i in from..self.back.len() {
-            let own = (self.back.own::<W>(i, j), self.back.tau[i]);
-            sum = Some(match sum {
-                None => own,
-                Some((a, a_at)) => then(k, a, a_at, own.0, own.1, var),
-            });
+        let len = self.back.len();
+        if from >= len {
+            return None;
         }
-        sum
+        let back = &self.back;
+        if self.memo.tails.len() != self.n {
+            self.memo.tails = vec![None; self.n];
+        }
+        let kept = self.memo.tails[j].filter(|t| {
+            t.from == from
+                && t.upto < len
+                && back.seq[from] == t.from_seq
+                && back.seq[t.upto] == t.upto_seq
+        });
+        let (mut acc, mut at, next) = match kept {
+            Some(t) => (t.acc, t.at, t.upto + 1),
+            None => (back.own::<W>(from, j), back.tau[from], from + 1),
+        };
+        for i in next..len {
+            (acc, at) = then(k, acc, at, back.own::<W>(i, j), back.tau[i], var);
+        }
+        self.memo.tails[j] = Some(Tail {
+            from,
+            from_seq: back.seq[from],
+            upto: len - 1,
+            upto_seq: back.seq[len - 1],
+            acc,
+            at,
+        });
+        Some((acc, at))
     }
 
-    /// The first row from the oldest that `pred` takes, as its position
-    /// from the oldest, the stack it is in and its index there.
-    fn find_oldest(&self, pred: impl Fn(&Stack, usize) -> bool) -> Option<(usize, &Stack, usize)> {
+    /// The first row from the oldest that `pred` takes for operator `j`, as
+    /// its position from the oldest, whether it is in `front`, and its index
+    /// there. A queue is read by one predicate, its kernel's, so the search
+    /// starts from the oldest row it has not already passed over ([`Memo`]):
+    /// O(1) amortized where an operator's input is null for a long run,
+    /// which a search from the oldest row each read paid for with every row
+    /// of the run (docs/PLAN.md task 270, M-2).
+    fn find_oldest(
+        &mut self,
+        j: usize,
+        pred: impl Fn(&Stack, usize) -> bool,
+    ) -> Option<(usize, bool, usize)> {
+        if self.memo.valued_from.len() != self.n {
+            self.memo.valued_from = vec![0; self.n];
+        }
+        let from = self.memo.valued_from[j];
         let n = self.front.len();
-        for p in 0..n {
-            let i = n - 1 - p;
-            if pred(&self.front, i) {
-                return Some((p, &self.front, i));
+        // Positions from the oldest: `front`'s top down, then `back` up, in
+        // ascending `seq`; the first at or past `from`.
+        let start = if n > 0 && self.front.seq[n - 1] >= from
+            || n == 0 && self.back.seq.first().is_some_and(|&s| s >= from)
+        {
+            0
+        } else {
+            let in_front = self.front.seq.partition_point(|&s| s >= from);
+            if in_front > 0 {
+                n - in_front
+            } else {
+                n + self.back.seq.partition_point(|&s| s < from)
+            }
+        };
+        let total = n + self.back.len();
+        for p in start..total {
+            let found = if p < n {
+                let i = n - 1 - p;
+                pred(&self.front, i).then_some((p, true, i))
+            } else {
+                pred(&self.back, p - n).then_some((p, false, p - n))
+            };
+            if let Some((_, in_front, i)) = found {
+                let st = if in_front { &self.front } else { &self.back };
+                self.memo.valued_from[j] = st.seq[i];
+                return found;
             }
         }
-        for i in 0..self.back.len() {
-            if pred(&self.back, i) {
-                return Some((n + i, &self.back, i));
-            }
+        // Nothing valued: the next search starts past the newest row.
+        let newest = self
+            .back
+            .seq
+            .last()
+            .or_else(|| self.front.seq.first())
+            .copied();
+        if let Some(s) = newest {
+            self.memo.valued_from[j] = s + 1;
         }
         None
+    }
+
+    /// The stack [`Queue::find_oldest`]'s `in_front` names.
+    fn stack(&self, in_front: bool) -> &Stack {
+        if in_front { &self.front } else { &self.back }
     }
 
     fn clear(&mut self) {
@@ -2478,9 +2596,12 @@ fn read_backward<const W: bool>(
         // is its own.
         let cut = match (k.window_size, op.stat.weighs_held()) {
             (Some(_), true) => q
-                .find_oldest(|st, i| !st.x::<W>(i, j).is_nan())
-                .filter(|&(_, st, i)| st.start::<W>(i, j) < edge)
-                .map(|(p, st, i)| (p, st.start::<W>(i, j), st.end[i], st.x::<W>(i, j))),
+                .find_oldest(j, |st, i| !st.x::<W>(i, j).is_nan())
+                .map(|(p, in_front, i)| {
+                    let st = q.stack(in_front);
+                    (p, st.start::<W>(i, j), st.end[i], st.x::<W>(i, j))
+                })
+                .filter(|&(_, start, _, _)| start < edge),
             _ => None,
         };
         let a = match cut {
@@ -2650,7 +2771,7 @@ fn close<const W: bool>(
         match op.stat {
             Stat::Mean => {
                 first_own = q
-                    .find_oldest(|st, i| st.own::<W>(i, j).n > 0.0)
+                    .find_oldest(j, |st, i| st.own::<W>(i, j).n > 0.0)
                     .map(|(p, _, _)| p);
                 let base = match first_own {
                     None => None,
@@ -2738,6 +2859,10 @@ mod tests {
     use online_core::{OnClockReset, SessionGap};
 
     use super::*;
+
+    /// [`long_windows_keep_their_bits`]'s digest, computed on the code
+    /// before task 270 (M-2).
+    const LONG_WINDOWS_DIGEST: u64 = 0x8b76_0af8_32d7_e069;
 
     #[derive(Debug, Clone)]
     struct Row {
@@ -4936,5 +5061,248 @@ mod tests {
             );
             assert_matches_brute(&kernels, &ops, c, &rows, seed);
         }
+    }
+
+    /// Long windows over a stream of `n` rows at steps of 0.5, 1 and 1.5
+    /// (exact in binary), two groups, a long null run in each input, and a
+    /// new session two thirds of the way, so each group fills its first
+    /// window twice: the rows on which a mean's cut reached into `back` and
+    /// was summed row by row (task 270, M-2).
+    fn long_window_stream(n: usize) -> Vec<Row> {
+        let mut rng = Lcg(270);
+        let (mut t, mut rows) = (0.0f64, Vec::with_capacity(n));
+        for i in 0..n {
+            t += [0.5, 1.0, 1.5][rng.below(3)];
+            let session = u64::from(i >= 2 * n / 3);
+            let value = |rng: &mut Lcg, null: bool| {
+                if null || rng.below(9) == 0 {
+                    f64::NAN
+                } else {
+                    rng.next() * 10.0 - 3.0
+                }
+            };
+            let v0 = value(&mut rng, (n / 5..n / 5 + 300).contains(&i));
+            let v1 = value(&mut rng, i < 150 || (n / 2..n / 2 + 500).contains(&i));
+            rows.push(Row {
+                group: Some(format!("g{}", rng.below(2))),
+                clock: Some(ClockValue::F64(t)),
+                session: Some(session),
+                values: vec![v0, v1],
+                accept: rng.below(10) != 0,
+            });
+        }
+        rows
+    }
+
+    /// Kernels of `window` units, wide enough to hold several hundred rows,
+    /// at the half-life given: a mean, a variance and a standard deviation
+    /// on every backward edge, a mean and a sum on every forward one.
+    fn long_kernels(window: f64, half_life: f64) -> (Vec<KernelDef>, Vec<OpDef>) {
+        let (mut kernels, mut ops) = (Vec::new(), Vec::new());
+        for direction in [Direction::Backward, Direction::Forward] {
+            for closed in [Closed::Right, Closed::Left, Closed::Both, Closed::Neither] {
+                let ki = kernels.len();
+                kernels.push(KernelDef {
+                    direction,
+                    half_life,
+                    window_size: Some(window),
+                    window_ns: Some(ns_of(window)),
+                    closed,
+                });
+                let stats: &[(Stat, u32, bool)] = if direction == Direction::Backward {
+                    &[
+                        (Stat::Mean, 1, false),
+                        (Stat::Var, 2, false),
+                        (Stat::Std, 3, true),
+                        (Stat::Mean, 40, false),
+                    ]
+                } else {
+                    &[(Stat::Mean, 1, false), (Stat::Sum, 1, false)]
+                };
+                for &(stat, min_samples, bias) in stats {
+                    ops.push(OpDef {
+                        kernel: ki,
+                        stat,
+                        input: ops.len() % 2,
+                        min_samples,
+                        partial: Partial::Keep,
+                        bias,
+                    });
+                }
+            }
+        }
+        (kernels, ops)
+    }
+
+    /// FNV-1a over every output's bits and every drop flag, in order.
+    fn digest(t: &Table) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut eat = |x: u64| {
+            for b in x.to_le_bytes() {
+                h ^= u64::from(b);
+                h = h.wrapping_mul(0x0100_0000_01b3);
+            }
+        };
+        for col in &t.values {
+            for v in col {
+                eat(v.to_bits());
+            }
+        }
+        for &d in &t.drop {
+            eat(u64::from(d));
+        }
+        h
+    }
+
+    /// The window operators' every output over long windows, at no decay
+    /// (no libm on the path, so the bits are every platform's), held to the
+    /// digest the code before task 270 (M-2) gave on this stream: the fold
+    /// kept between reads and the search that starts past the rows it has
+    /// passed over move no bit, at any chunking and across a save. Also the
+    /// brute force, so the digest is of right numbers.
+    #[test]
+    fn long_windows_keep_their_bits() {
+        let rows = long_window_stream(3_000);
+        let (kernels, ops) = long_kernels(400.0, f64::INFINITY);
+        let c = cfg(8.0, Some(SessionGap::Gap(2.0)), None);
+        let want = brute(&kernels, &ops, c, &rows).unwrap();
+        let one = run(&kernels, &ops, c, &rows, 1).unwrap();
+        one.close_to(&want, 1e-9).unwrap();
+        // Rows valued on each output: the null runs leave none empty.
+        for (o, col) in one.values.iter().enumerate() {
+            assert!(col.iter().any(|v| !v.is_nan()), "output {o} never valued");
+        }
+        assert_eq!(digest(&one), LONG_WINDOWS_DIGEST, "{:#x}", digest(&one));
+        for every in [7, 600, usize::MAX] {
+            let t = run(&kernels, &ops, c, &rows, every).unwrap();
+            assert!(t.same_bits(&one), "every {every}");
+        }
+        for at in [1, 777, 2_100] {
+            let mut core = Windows::new(kernels.clone(), ops.clone(), c).unwrap();
+            core.set_grouped(true);
+            let (mut t, mut next) = (Table::default(), 0);
+            for r in &rows[..at] {
+                push(&mut core, r).unwrap();
+            }
+            t.append(core.drain(), &mut next);
+            let bytes = rmp_serde::to_vec_named(&core).unwrap();
+            let mut core: Windows = rmp_serde::from_slice(&bytes).unwrap();
+            for r in &rows[at..] {
+                push(&mut core, r).unwrap();
+            }
+            t.append(core.finish(), &mut next);
+            assert!(t.same_bits(&one), "resumed at {at}");
+        }
+    }
+
+    /// The search and the fold as the code before task 270 (M-2) ran them:
+    /// from the oldest row each read, and `back`'s rows past the cut summed
+    /// afresh.
+    fn oldest_by_scan(
+        q: &Queue,
+        pred: impl Fn(&Stack, usize) -> bool,
+    ) -> Option<(usize, bool, usize)> {
+        let n = q.front.len();
+        (0..n)
+            .map(|p| (p, true, n - 1 - p))
+            .chain((0..q.back.len()).map(|i| (n + i, false, i)))
+            .find(|&(_, f, i)| pred(q.stack(f), i))
+    }
+
+    fn sum_after_by_rows<const W: bool>(
+        q: &Queue,
+        k: &KernelDef,
+        p: usize,
+        j: usize,
+    ) -> Option<(Acc, f64)> {
+        let var = W && q.var[j];
+        let n = q.front.len();
+        if p + 1 < n {
+            let mut q = q.clone();
+            return q.sum_after_op::<W>(k, p, j);
+        }
+        let mut sum: Option<(Acc, f64)> = None;
+        for i in p + 1 - n..q.back.len() {
+            let own = (q.back.own::<W>(i, j), q.back.tau[i]);
+            sum = Some(match sum {
+                None => own,
+                Some((a, a_at)) => then(k, a, a_at, own.0, own.1, var),
+            });
+        }
+        sum
+    }
+
+    /// What a kernel's read takes for a valued row: a backward one a held
+    /// value, a forward one a value of the row's own.
+    fn valued(st: &Stack, i: usize, j: usize, fwd: bool) -> bool {
+        match (st.wide, fwd) {
+            (true, true) => st.own::<true>(i, j).n > 0.0,
+            (true, false) => !st.x::<true>(i, j).is_nan(),
+            (false, true) => st.own::<false>(i, j).n > 0.0,
+            (false, false) => !st.x::<false>(i, j).is_nan(),
+        }
+    }
+
+    fn same_acc(a: Option<(Acc, f64)>, b: Option<(Acc, f64)>) -> bool {
+        let bits = |x: Option<(Acc, f64)>| {
+            x.map(|(a, at)| [a.s, a.w, a.n, a.lo, a.q, a.e, at].map(f64::to_bits))
+        };
+        bits(a) == bits(b)
+    }
+
+    /// After every row of a stream through long windows at a finite
+    /// half-life (where `then` discounts), in every queue, for every
+    /// operator: the search kept between reads finds the row a scan from
+    /// the oldest finds, and the fold kept between reads is the bits of
+    /// the rows summed afresh, at the cut a read takes and at a position
+    /// drawn at random besides (task 270, M-2).
+    #[test]
+    fn the_kept_fold_and_search_are_the_row_by_row_ones() {
+        let rows = long_window_stream(2_000);
+        let (kernels, ops) = long_kernels(300.0, 30.0);
+        let c = cfg(8.0, Some(SessionGap::Gap(2.0)), None);
+        let mut core = Windows::new(kernels.clone(), ops, c).unwrap();
+        core.set_grouped(true);
+        let (mut rng, mut checked, mut into_back) = (Lcg(7), 0usize, 0usize);
+        for r in &rows {
+            push(&mut core, r).unwrap();
+            for g in &mut core.groups {
+                for (ki, q) in g.queues.iter_mut().enumerate() {
+                    let k = &kernels[ki];
+                    for j in 0..q.n {
+                        let fwd = k.direction == Direction::Forward;
+                        let pred = |st: &Stack, i: usize| valued(st, i, j, fwd);
+                        let want = oldest_by_scan(q, pred);
+                        assert_eq!(q.find_oldest(j, pred), want);
+                        let len = q.len();
+                        let mut ps: Vec<usize> = want.map(|(p, _, _)| p).into_iter().collect();
+                        if len > 0 && rng.below(17) == 0 {
+                            ps.push(rng.below(len));
+                        }
+                        for p in ps {
+                            into_back += usize::from(p + 1 >= q.front.len() && p + 1 < len);
+                            let (a, b) = if q.wide() {
+                                (
+                                    sum_after_by_rows::<true>(q, k, p, j),
+                                    q.sum_after_op::<true>(k, p, j),
+                                )
+                            } else {
+                                (
+                                    sum_after_by_rows::<false>(q, k, p, j),
+                                    q.sum_after_op::<false>(k, p, j),
+                                )
+                            };
+                            assert!(same_acc(a, b), "p {p}: {a:?} against {b:?}");
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        // The cut reached into `back` on most reads: the path this holds.
+        assert!(
+            into_back > checked / 4,
+            "{into_back} of {checked} into back"
+        );
     }
 }

@@ -25,9 +25,9 @@ use std::hint::black_box;
 use gungraun::prelude::*;
 use gungraun::{Callgrind, EntryPoint};
 use online_bench::{
-    BankRun, ClockRun, ModelRun, bank_setup, clock_setup, model_setup,
+    BankRun, ClockRun, ModelRun, WindowsCase, bank_setup, clock_setup, model_setup,
     polars_online_budget_bank_rows, polars_online_budget_clock_rows,
-    polars_online_budget_model_rows,
+    polars_online_budget_model_rows, polars_online_budget_windows_rows, windows_setup,
 };
 
 /// Count from `entry` on, with each pool held to one thread.
@@ -67,6 +67,8 @@ fn counted_from(entry: &str) -> LibraryBenchmarkConfig {
 #[bench::audit_continuous(args = ("audit_continuous"), setup = model_setup)]
 #[bench::bocpd_full(args = ("bocpd_full"), setup = model_setup)]
 #[bench::ew_cov_lags(args = ("ew_cov_lags"), setup = model_setup)]
+#[bench::corrchange_monitor_w2500(args = ("corrchange_monitor_w2500"), setup = model_setup)]
+#[bench::corrchange_window_w100(args = ("corrchange_window_w100"), setup = model_setup)]
 fn model(mut run: ModelRun) -> ModelRun {
     black_box(polars_online_budget_model_rows(black_box(&mut run)));
     run
@@ -88,6 +90,7 @@ fn clock(mut run: ClockRun) -> ClockRun {
 #[bench::bank_ewridge_k5(args = ("bank_ewridge_k5"), setup = bank_setup)]
 #[bench::bank_seqtest_groups(args = ("bank_seqtest_groups"), setup = bank_setup)]
 #[bench::bank_ewridge_k5_groups(args = ("bank_ewridge_k5_groups"), setup = bank_setup)]
+#[bench::formula_target_held1k(args = ("formula_target_held1k"), setup = bank_setup)]
 #[bench::bank_ew_cov_wide_t1(args = ("bank_ew_cov_wide_t1"), setup = bank_setup)]
 fn bank(mut run: BankRun) -> BankRun {
     let pool = online_polars::pool().expect("the bank's pool, built by the setup");
@@ -95,6 +98,14 @@ fn bank(mut run: BankRun) -> BankRun {
     run
 }
 
-library_benchmark_group!(name = hot_paths, benchmarks = [model, clock, bank]);
+#[library_benchmark(config = counted_from("polars_online_budget_windows_rows"))]
+#[bench::window_ewm_mean_w10k(args = ("window_ewm_mean_w10k"), setup = windows_setup)]
+#[bench::window_ewm_sum_w10k(args = ("window_ewm_sum_w10k"), setup = windows_setup)]
+fn windows(mut run: WindowsCase) -> WindowsCase {
+    black_box(polars_online_budget_windows_rows(black_box(&mut run)));
+    run
+}
+
+library_benchmark_group!(name = hot_paths, benchmarks = [model, clock, bank, windows]);
 
 main!(library_benchmark_groups = hot_paths);
