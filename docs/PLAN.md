@@ -16149,3 +16149,63 @@ model), with ulp comparisons in Python (`np.testing.assert_array_max_ulp`).
       shipped outputs move and by how much, and the bounds it would let
       shrink; adding it is a new statically linked dependency (rule 12), so
       the measurement goes to the user for a decision.
+      *Decided 2026-10-24*: the user accepted Intel SDE's licence (the Intel
+      Simplified Software License: free for any use, no modification or
+      reverse engineering) for the weekly `cpu-paths.yml`, fetched through
+      `petarpetrovt/setup-sde` pinned at `6d2773bc` (MIT; the commit NumPy's
+      `linux_simd.yml` uses), with the kit's SHA-256 checked against
+      Intel's. (a) and (b) merged locally.
+      *Built 2026-10-24* (not yet pushed): (c) Python merged (six derived
+      bounds; two defects fixed in (c2): the readiness projection read
+      rounding noise as a ceiling, `merge_sums`' one-seed claim); (c) Rust
+      merged (5 bounds derived, 8 streams moved off libm; perturbation
+      sweeps of every Rust test at ±1..±65,536 ulp, `scratchpad/t273/`);
+      two library defects it found (a window's subtraction against the
+      per-row decay factor, a subnormal variance past the target guard) in
+      (w). (d) measured, for the user: the `libm` crate (0.2.16, already
+      linked through faer, so no new linking) gives the same bits
+      everywhere; `exp2` as accurate as Apple's (0.502 ulp), the rest
+      correctly rounded 90-97% (Apple 99.5-99.98%); `powf` 3.5-4.5×
+      slower, `exp`/`exp2` 1.4×; budget cases +2% geometric mean, eight at
+      +6-10%; 102 of 1,299 probe fields move, at most 1.7e-11 relative.
+      Worker's recommendation: no swap now; if platform-identical decay is
+      wanted, `exp2` alone first (the half-life decay factor). The 126
+      Python replay tests that hold the wheel to the bit through
+      `math.exp2` would need their streams moved under any swap.
+- [ ] 274. **Linear-algebra oracle bounds derived** -- from task 273's Rust
+      audit: with every tolerance literal scaled by 1e-5, 30 of the 42
+      `crate::oracle` comparisons still pass, so a small-width kernel 100×
+      past its rounding would pass a 1e-9 tolerance, and the weekly SDE
+      legs could run exactly such a kernel. Add an `oracle::forward_bound`
+      helper (γ_n·κ, as `trisolve_tests.rs`' `forward_bound` does) and hold
+      each comparison to it, with the measured headroom in a comment.
+- [x] 275. **A window's boundary factor from the product of the per-row
+      factors** -- from task 273 (w)'s finding 1; the user, 2026-10-24,
+      chose option A. Under a half-life the live moments decay by each
+      row's `factor(d_i)` and the window subtracts a snapshot scaled by one
+      `factor(Σd_i)`; with a per-row factor e ulps off (a platform `exp2`
+      unlike Apple's) they part by about d·e ulps, and a held target over a
+      199- or 500-row window read a variance near 1e-15 instead of 0 (140
+      of 490 perturbed cases). Fix by representation: `Snapshots` keeps a
+      running product of the per-row factors (with a power-of-two exponent
+      beside it, so it never underflows), each ring entry the product at
+      its snapshot, and the boundary factor is their ratio; rounding then
+      random-walks (√d·ε) instead of drifting. Every windowed model
+      (ewclass, ewridge, ewcov, lasso with a second product for its
+      selection decay, marginal). A layout change inside the unreleased
+      schema 63: fixtures regenerated, 1.2.0's loader seeds each entry's
+      product so the first read after loading is unchanged. Built on a
+      branch with its measured memory and speed cost, which go to the user
+      before it merges (CLAUDE.md, Budgets).
+      *Done 2026-10-24*: a ring entry 48 → 96 bytes in memory, +12 bytes a
+      saved snapshot per decay (23 for `lasso`), states +42 to +75 bytes, a
+      bank +378; speed within noise (windowed cases 0.98-1.06, budget cases
+      0.992 geometric mean); 19 of 1,299 probe fields move, all windowed, at
+      most 3.3e-13 relative; all 490 perturbed held-target cases read 0
+      (main: 140 nonzero). *Decided by the user*: "Merge, accept the
+      relaxation" -- a windowed state from 1.2.0 (schemas 61, 62) loads and
+      its first read is exact, but once a snapshot taken after the load is
+      the window's edge it continues within the golden tolerance (1e-12),
+      not to the bit, since the old state never recorded the per-row
+      factors; unwindowed states stay exact. Recorded in rule 5
+      (CLAUDE.md) and the `previous!` docs of both fixture files.
