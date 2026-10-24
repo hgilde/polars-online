@@ -316,6 +316,18 @@ returns.
   loads and its first read is the one it saved; once a snapshot taken
   after the load is the window's edge it continues within 1e-12, not to
   the bit, since such a state never recorded the per-row factors.
+- The memory budget for `marginal`'s Huber bins (`bin_huber_delta`) holds
+  every target's scale sketch to what it counts (task 272). The sketch could
+  allocate 11,168 bytes per target where the budget counted 8,488, its
+  buckets growing by doubling past the 1,025 its band spans; and while half
+  or more of a target's weight was on deviations of exactly 0 it kept no
+  band at all, so deviations of `1e-300` and `1e300` spanned 127,563
+  buckets, about a megabyte. A bounded sketch now allocates exactly the
+  buckets it spans, and a median of 0 keeps the band reaching up from the
+  smallest value, the bucket the median steps to when it leaves 0; the
+  budget counts the 8,384 bytes a sketch takes at its most. The same bound
+  holds for `huber`'s and `sgd`'s MAD scales in every state. No output
+  changes.
 
 ### Performance
 
