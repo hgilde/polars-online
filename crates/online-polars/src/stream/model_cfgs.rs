@@ -1,6 +1,7 @@
 //! The configurations of the models a spec does not build field by field:
 //! `audit`, `bocpd`, `corrchange`, `hmm`, `rcov` and `deco`, each read from
-//! its spec, and `deco`'s block names (moved out of `stream.rs` under the
+//! its spec, and `deco`'s block names; and the models `huber`, `quantile`
+//! and `sgd` build from their specs (moved out of `stream.rs` under the
 //! 250 KB cap a source file is held to).
 
 #[allow(unused_imports)]
@@ -486,4 +487,168 @@ pub fn deco_block_names(spec: &Spec) -> Vec<String> {
         } => named.iter().map(|(n, _)| n.clone()).collect(),
         _ => Vec::new(),
     }
+}
+
+/// A `huber` spec's model: `ewridge`'s sums per target, each row at its Huber weight.
+pub fn huber_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
+    let ModelKind::Huber {
+        huber_delta,
+        huber_scale,
+        huber_scale_half_life,
+        ridge,
+        standardize,
+        solve_every,
+        max_rows_between_solves,
+    } = &spec.model
+    else {
+        return Err("not a huber spec".into());
+    };
+    let cfg = RobustCfg {
+        n_features: spec.k(),
+        n_targets: spec.m(),
+        fit_intercept: spec.fit_intercept,
+        decay,
+        // The 95%-efficiency constant (Huber 1981; statsmodels'
+        // `HuberT`, scikit-learn's 1.35): task 195, U3.
+        loss: RobustLoss::Huber {
+            delta: huber_delta.map_or(1.345, |n| n.0),
+        },
+        ridge: ridge.unwrap_or(1e-6),
+        standardize: *standardize,
+        min_weight: spec.min_periods_or_default(),
+        solve_every: solve_every
+            .as_ref()
+            .map_or_else(|| spec.solve_every_default(decay), Span::value),
+        max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
+        solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
+        quantile_eps: 1e-3,
+        huber_scale: huber_scale_of(huber_scale.as_deref()),
+        huber_scale_decay: huber_scale_half_life
+            .as_ref()
+            .map(|h| Decay::Halflife(h.value())),
+    };
+    let mut m = Robust::new(cfg)?;
+    // Each target's own threshold, for its own first solve (S9b).
+    m.set_target_min_weight(spec.min_periods_per_target())?;
+    Ok(AnyModel::Robust(Box::new(m)))
+}
+
+/// A `quantile` spec's model.
+pub fn quantile_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
+    let ModelKind::Quantile {
+        quantile,
+        ridge,
+        standardize,
+        solve_every,
+        max_rows_between_solves,
+        quantile_eps,
+    } = &spec.model
+    else {
+        return Err("not a quantile spec".into());
+    };
+    let cfg = RobustCfg {
+        n_features: spec.k(),
+        n_targets: spec.m(),
+        fit_intercept: spec.fit_intercept,
+        decay,
+        loss: RobustLoss::Quantile { tau: *quantile },
+        ridge: ridge.unwrap_or(1e-6),
+        standardize: *standardize,
+        min_weight: spec.min_periods_or_default(),
+        solve_every: solve_every
+            .as_ref()
+            .map_or_else(|| spec.solve_every_default(decay), Span::value),
+        max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
+        solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
+        quantile_eps: quantile_eps.unwrap_or(0.2),
+        // The band is drawn in the EW root mean square, on the
+        // model's clock (task 271 leaves the quantile fit as it was).
+        huber_scale: HuberScale::Rms,
+        huber_scale_decay: None,
+    };
+    let mut m = Robust::new(cfg)?;
+    // Each target's own threshold, for its own first solve (S9b).
+    m.set_target_min_weight(spec.min_periods_per_target())?;
+    Ok(AnyModel::Robust(Box::new(m)))
+}
+
+/// An `sgd` spec's model, its loss and schedule read from their words.
+pub fn sgd_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
+    let ModelKind::Sgd {
+        loss,
+        huber_delta,
+        huber_scale,
+        huber_scale_half_life,
+        quantile,
+        eps,
+        learning_rate,
+        schedule,
+        power,
+        l2,
+        clip_gradient,
+        standardize,
+        coef_min,
+        coef_max,
+        strict_binary,
+        coef_sum,
+    } = &spec.model
+    else {
+        return Err("not a sgd spec".into());
+    };
+    let loss = match loss.as_deref().unwrap_or("squared") {
+        "squared" => SgdLoss::Squared,
+        // In units of the target's residual std, `huber`'s constant
+        // under `huber`'s name (task 195, U1 and U3).
+        "huber" => SgdLoss::Huber {
+            delta: huber_delta.map_or(1.345, |n| n.0),
+        },
+        "quantile" => SgdLoss::Quantile {
+            tau: quantile.ok_or("sgd: loss \"quantile\" needs a `quantile` level")?,
+        },
+        // 1% of the target's own spread (task 203), kept by task
+        // 207's sweep, which measured it against the residual's
+        // spread capped by the target's.
+        "epsilon_insensitive" => SgdLoss::EpsilonInsensitive {
+            eps: eps.unwrap_or(0.01),
+        },
+        "poisson" => SgdLoss::Poisson,
+        "logistic" => SgdLoss::Logistic,
+        other => return Err(format!("unknown sgd loss {other:?}")),
+    };
+    let sched = match schedule.as_deref().unwrap_or("constant") {
+        "constant" => LearningRate::Constant,
+        "inv_scaling" => LearningRate::InvScaling {
+            power: power.unwrap_or(0.5),
+        },
+        "adagrad" => LearningRate::AdaGrad,
+        other => return Err(format!("unknown sgd schedule {other:?}")),
+    };
+    let cfg = SgdCfg {
+        n_features: spec.k(),
+        n_targets: spec.m(),
+        fit_intercept: spec.fit_intercept,
+        decay,
+        loss,
+        learning_rate: learning_rate.unwrap_or(0.01),
+        schedule: sched,
+        l2: l2.unwrap_or(0.0),
+        min_weight: spec.min_periods_or_default(),
+        // Finite by default: see SgdCfg::clip_gradient.
+        clip_gradient: clip_gradient.map_or(1e3, |n| n.0),
+        standardize: *standardize,
+        constraint: constraint(spec.k(), coef_min, coef_max, *coef_sum),
+        strict_binary: *strict_binary,
+        // `huber`'s scale under the Huber loss; every other loss
+        // reads none, and the spec refuses one beside it.
+        huber_scale: if matches!(loss, SgdLoss::Huber { .. }) {
+            huber_scale_of(huber_scale.as_deref())
+        } else {
+            HuberScale::Rms
+        },
+        huber_scale_decay: huber_scale_half_life
+            .as_ref()
+            .filter(|_| matches!(loss, SgdLoss::Huber { .. }))
+            .map(|h| Decay::Halflife(h.value())),
+    };
+    Ok(AnyModel::Sgd(Box::new(Sgd::new(cfg)?)))
 }
