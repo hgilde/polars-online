@@ -121,6 +121,11 @@ dev = [
     # Mahalanobis distance. The floors are the versions measured.
     "pandas>=3.0.5",
     "scipy>=1.18.1",
+    # scripts/cpu_paths.py's `check` (cpu-paths.yml): which kernels each
+    # loaded OpenBLAS runs, NumPy's copy and SciPy's, so a leg that pins
+    # OPENBLAS_CORETYPE shows it took effect. BSD-3-Clause; the floor is
+    # the version measured.
+    "threadpoolctl>=3.7.0",
     "ruff>=0.14",
     # The package is typed (py.typed, the pyo3 stub, PEP 692 kwargs); mypy in
     # the gate is what keeps that true. Pure Python, seconds to run.
@@ -227,6 +232,7 @@ markers = [
     "soak: long-running stability tests (millions of rows)",
     "extended: the extended tier, which runs before every push, in CI and before a release, and which the essentials gate leaves out (`scripts/gate.sh`; `scripts/gate.sh --extended` runs it). Every use says why: `pytest.mark.extended(reason=\"...\")`, a second or more, the network, a document's experiments, memory or threads, or a grid (docs/TESTING.md, \"Two tiers\"; tests/test_tiers.py)",
     "serial: tests that measure the process's memory, which other work on the machine moves; `scripts/gate.sh` runs the rest in several processes (pytest-xdist) and these afterwards in one, alone (docs/TESTING.md, \"Iterating\")",
+    "oracle: tests that hold this library's numbers to another computation whose last bits follow the CPU's paths -- scipy, statsmodels, scikit-learn, numpy.linalg (OpenBLAS) or the NumPy references in tests/reference*.py; tests/conftest.py marks every test in a module that imports one (tests/oracle_marks.py), and `cpu-paths.yml` runs `-m 'oracle and not soak'` under OPENBLAS_CORETYPE and NPY_DISABLE_CPU_FEATURES (docs/TESTING.md, \"The machines and the CPU paths\")",
     "pins: tests that can only pass on the versions this repo pins -- assertions about the pins themselves, docs that record the version they were generated with, and another library's current behaviour measured on its locked version (polars' multi-key sort, a pyarrow cast bug, duckdb's refusal); the canary unpins on purpose and runs `-m 'not soak and not pins'`",
 ]
 [tool.ruff]

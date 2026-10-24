@@ -426,13 +426,32 @@ def _unneeded(name: str) -> dict[str, object]:
     return drop
 
 
+def _figures(value: object) -> object:
+    """A float to 12 significant figures, in lists too.
+
+    A default derived through the platform's math library -- a window's
+    half-life through `exp` and `ln`, a calibration `lam` through `powf` --
+    takes that library's last bits: on macOS a window of 100 resolves the
+    stream's half-lives to 29.99914583364482, and the same build with every
+    `exp`, `exp2`, `ln` and `powf` moved by 2 ulp to 29.9991458336451 (task
+    273), which a full repr pinned as a changed default. A moved default
+    moves its leading figures, and the twelfth turns over under a 2-ulp
+    change only within 1e-15 of a rounding boundary."""
+    if isinstance(value, float):
+        return float(f"{value:.12g}")
+    if isinstance(value, list):
+        return [_figures(v) for v in value]
+    return value
+
+
 def _flatten(prefix: str, value: object, into: dict[str, str]) -> None:
-    """One `path = value` per leaf, objects walked, everything else as JSON."""
+    """One `path = value` per leaf, objects walked, everything else as JSON,
+    floats to 12 significant figures (:func:`_figures`)."""
     if isinstance(value, dict) and value:
         for key, inner in value.items():
             _flatten(f"{prefix}.{key}", inner, into)
     else:
-        into[prefix] = json.dumps(value)
+        into[prefix] = json.dumps(_figures(value))
 
 
 def resolved_lines(spec: dict) -> dict[str, str]:

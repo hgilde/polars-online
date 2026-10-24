@@ -516,7 +516,21 @@ class TestTheQuantileFitsDefinition:
         Z, _, kinds, _, _ = self.rows(x, y, pred, 0.5, 500.0)
         nudged = [t for t in range(len(y)) if kinds[t] == "nudge"]
         worst = max((abs(coef[t] @ Z[t] - pred[t]) / abs(y[t] - pred[t]), t) for t in nudged)
-        assert worst[0] <= 1.0, f"row {worst[1]} moved {worst[0]:.2f} times its residual"
+        # Bound (task 273): where the bound binds, at the glitch rows, the
+        # step moves the row by exactly its residual, so the ratio is 1 in
+        # exact arithmetic and the computed one is 1 plus the solve's
+        # rounding: a few 2^-52 times the band system's condition number,
+        # (1 + rho) / (1 - rho) for two unit features correlated at rho
+        # (1,999 at 0.999). Measured on macOS (Apple's libm): 1 - 1.7e-13 at
+        # row 1000. With every exp, exp2, ln and powf the wheel calls moved
+        # by 1 or 2 ulp (a scratch build): 1 + 1.4e-13 at +1 ulp, so a
+        # bound of exactly 1 failed on a libm one ulp off. `4 * 2^-52 *
+        # cond` is 1 + 1.8e-12 at 0.999 and 1 + 8.9e-16 at 0; the defect
+        # this pins moved the row 9.2 times its residual.
+        cond = (1.0 + rho) / (1.0 - rho)
+        assert worst[0] <= 1.0 + 4 * 2.0**-52 * cond, (
+            f"row {worst[1]} moved {worst[0]!r} times its residual"
+        )
         assert set(glitch) & set(nudged), "no glitch row was nudged"
 
 

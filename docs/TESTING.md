@@ -831,11 +831,11 @@ own schedule:
 |---|---|---|
 | each commit while a task is in progress | `./scripts/gate.sh` | `cargo fmt`, `clippy -D warnings`, the Rust tests' essentials (under cargo-nextest where it is installed), `uv lock --check`, `ruff`, `mypy`, the extension's build, `pytest`'s essentials in parallel, and Sphinx with `-W` |
 | before every push, always | `./scripts/gate.sh --extended` | the same checks with every test |
-| every push to `main` and pull request | `ci.yml` | the suite on Linux at Python 3.12, 3.13 and 3.14, and on macOS and Windows at 3.12 and 3.14; on Linux, the format, lint, type and documentation checks (`cargo fmt`, `clippy`, `ruff`, `mypy` and Sphinx); the release comparison's outputs against the newest release's, bit for bit, as a report; the Python coverage, as a report |
+| every push to `main` and pull request | `ci.yml` | the suite on Linux at Python 3.12, 3.13 and 3.14, on macOS at 3.12 and 3.14, and on two Windows builds, Server 2025 and Server 2022, at 3.12 and 3.14, each leg first printing the machine it ran on ([The machines and the CPU paths](#the-machines-and-the-cpu-paths)); on Linux, the format, lint, type and documentation checks (`cargo fmt`, `clippy`, `ruff`, `mypy` and Sphinx); the release comparison's outputs against the newest release's, bit for bit, as a report; the Python coverage, as a report |
 | every push to `main` and pull request | `mutants.yml` | mutation testing of the lines the change touched in `online-core` and `online-polars/src/span.rs`, in a shard for every thirty mutants the change lists, with one report. The report fails on a mutant no test catches, unless `scripts/mutants_equivalent.toml` lists it |
 | every push to `main` but a docs-only one | `benchmark.yml` | throughput, into the job summary and an artifact, never gating |
 | every release | `release.yml` | the whole of `ci.yml`; a state written on macOS and continued on Windows and Linux; the suite on the newest Polars the range admits, on the floor of the range and on the newest NumPy, all blocking; the suite on the next Polars major and on NumPy's next release candidate, both advisory |
-| weekly | `ci.yml`, `polars-canary.yml`, `leakcheck.yml`, `benchmark.yml`, `mutants.yml`, `msrv.yml`, `advisories.yml` | the suite again; the suite on the newest py-polars, release candidates included, and on NumPy's next release candidate; the leak check across the boundary with Polars, on Linux and macOS, its control included, and the soak tests; throughput; mutation testing of all of `online-core`, as a report; `cargo check` of the workspace on the Rust its `rust-version` declares; both lock files against OSV's published advisories (`scripts/advisories.py`), failing on a vulnerability in a crate the wheel or the command line links and reporting the rest |
+| weekly | `ci.yml`, `polars-canary.yml`, `leakcheck.yml`, `benchmark.yml`, `mutants.yml`, `msrv.yml`, `advisories.yml`, `cpu-paths.yml` | the suite again; the suite on the newest py-polars, release candidates included, and on NumPy's next release candidate; the leak check across the boundary with Polars, on Linux and macOS, its control included, and the soak tests; throughput; mutation testing of all of `online-core`, as a report; `cargo check` of the workspace on the Rust its `rust-version` declares; both lock files against OSV's published advisories (`scripts/advisories.py`), failing on a vulnerability in a crate the wheel or the command line links and reporting the rest; on Windows, the numeric tests down each CPU path in turn, under Intel SDE and with OpenBLAS's and NumPy's paths pinned ([The machines and the CPU paths](#the-machines-and-the-cpu-paths)) |
 | monthly | `polars-canary.yml` | the suite on the floor of the Polars range, the version `pyproject.toml` declares |
 
 The canary and the release's Polars and NumPy legs leave out the tests
@@ -846,6 +846,110 @@ generate or download their own data (hard rule 1). Downloads are cached
 under `.cache/`, and a test that needs one skips offline: the public
 intraday data (`tests/data.py::public_intraday`), the released wheels, and
 the day of quotes and trades.
+
+### The machines and the CPU paths
+
+Two things a CI leg does not choose decide the last bits of a numeric test.
+
+- **The math library.** On Windows, `exp`, `ln`, `exp2`, `powf` and
+  `exp_m1` come from `ucrtbase.dll`, for Rust, CPython and NumPy alike. That
+  DLL is part of the operating system and changes with the Windows build;
+  glibc and Apple's library are fixed per runner image. A Rust bound
+  measured at 0.9 of its limit on glibc and Apple's `exp` came out at 1.7 on
+  Windows Server 2025.
+- **The CPU.** A runner label is a pool of machines: `windows-latest` has
+  handed out AMD EPYC 7763s without AVX-512 and Intel Xeons with it, each
+  with its own L3. faer's product kernels on x86-64 (`private-gemm-x86`),
+  OpenBLAS and NumPy each choose their code from the CPU's instruction sets
+  when they start, and the product kernels choose their blocking from its
+  cache sizes too. `private-gemm-x86` 0.1.20 gave wrong products at widths
+  that depended on the L3, so only the runners with that L3 failed.
+
+So CI does three things about them.
+
+| what | where | what it buys |
+|---|---|---|
+| two Windows builds | `ci.yml` runs every Windows leg on `windows-latest` (Server 2025) and `windows-2022` (Server 2022), at both Pythons | two `ucrtbase.dll`s for each bound to hold against |
+| the machine, first | every job that can run on Windows, and every leg of `ci.yml`'s test job, starts with `.github/actions/machine-report` | the CPU model, its L2 and L3, whether it has AVX2, AVX-512F and FMA, the logical cores, the OS build and its math library (`ucrtbase.dll`'s file version, glibc's version), in the log and the job summary, so a failure names its machine |
+| the CPU paths, forced | `cpu-paths.yml`, weekly and by hand, on `windows-latest` | each path in turn, instead of the ones the pool happens to hand out |
+
+`cpu-paths.yml` has two jobs. Every leg first shows that the path it asked
+for is the one in effect, and fails if not. Without that check, a green run
+could be the runner's own path passing under another name.
+
+**online-core under Intel SDE.** Intel's Software Development Emulator runs
+a program as if on another chip: it answers the CPUID instruction as that
+chip would and executes, or refuses, the instructions that chip has. Each
+leg runs online-core's unit tests in every module whose tests run faer's
+products and factorizations or compare against `crate::oracle`, the list in
+the job's `SDE_TESTS`. `tests/test_cpu_paths.py` fails when a module that
+does either is missing from it. The tests are a release build with the
+debug build's assertions and overflow checks on, so the tests that expect an
+assertion still pass. Natively the 910 tests took 6.1 seconds on an Apple
+M4 Pro at a load of 30 on its 14 cores; SDE runs code 10 to 100 times
+slower, slowest where it emulates AVX-512 on a host without it.
+
+| leg | what the tests see |
+|---|---|
+| Sandy Bridge (`-snb`) | AVX without AVX2 or FMA, so the product kernels fall back from `private-gemm-x86` to the `gemm` crate; a 6 MiB L3 |
+| Haswell (`-hsw`) | AVX2 and FMA; a 6 MiB L3 |
+| Ice Lake server (`-icx`) | AVX-512; a 38.5 MiB L3 |
+| Sapphire Rapids (`-spr`) | AVX-512; a 105 MiB L3 |
+| Haswell with a 2 MiB L3 | the Haswell CPUID with its L3 resized (`-cpuid_in`), the size at which `private-gemm-x86` 0.1.20 failed the order-1,500 solve test |
+| Ice Lake server with a 2 MiB L3 | the same, with AVX-512 |
+
+The proof is `scripts/cpu_probe.rs`, a one-file Rust program built in the
+job. It prints what `is_x86_feature_detected!` says of SSE3, AVX, AVX2, FMA
+and AVX-512F, and the cache sizes CPUID's leaf 4 reports, which is what
+`private-gemm-x86` reads on Windows. `scripts/cpu_paths.py probe` runs it
+on the host, then under SDE, and fails unless SDE's run reports the leg's
+`expect`. SDE runs with `-update_cpuid_from_host 0`, so the cache sizes are
+the definition file's, not the host's. The test run then counts its tests:
+it lists them on the host, runs them under SDE, and fails unless every
+listed test passed. A filter that matched nothing would otherwise pass.
+
+SDE is free of charge for any use under the Intel Simplified Software
+License, which allows it to be redistributed unmodified. The workflow takes
+it through the `petarpetrovt/setup-sde` action, pinned to a commit, which
+fetches Intel's kit from the action's own release. The job then checks the
+tarball against the SHA-256 on Intel's download page, so what runs is
+Intel's kit. The action's README says that using it means agreeing to SDE's
+licence, which the kit carries.
+
+**The oracle tests with OpenBLAS's and NumPy's paths pinned.** The tests
+marked `oracle` hold this library's numbers to another computation, and that
+computation's last bits follow the CPU too: scipy, statsmodels,
+scikit-learn, `numpy.linalg` (OpenBLAS) and the NumPy references in
+`tests/reference*.py`. `tests/conftest.py` gives the mark to every test in a
+module that imports one of those or calls `numpy.linalg`
+(`tests/oracle_marks.py`), so the mark cannot fall behind the tests. It
+leaves out a test that runs the command line, which compares the binary with
+the bank rather than with an oracle. Each leg runs
+`pytest -m "oracle and not soak"` with two variables set:
+
+| leg | `OPENBLAS_CORETYPE` | NumPy's loops |
+|---|---|---|
+| Prescott | SSE3 kernels | the baseline, X86_V2 (SSE4.2) |
+| SandyBridge | AVX kernels | the baseline |
+| Haswell | AVX2 and FMA kernels | up to X86_V3 (AVX2, FMA) |
+
+`OPENBLAS_CORETYPE` picks the kernels in NumPy's copy of OpenBLAS and in
+SciPy's. `NPY_DISABLE_CPU_FEATURES` takes NumPy's dispatch targets away.
+NumPy 2.5 dispatches X86_V3, X86_V4, AVX512_ICL and AVX512_SPR above its
+X86_V2 baseline. It refuses to disable a baseline feature, with an error,
+and only warns of a name it does not dispatch, so `scripts/cpu_paths.py`
+reads the wheel's own dispatch list and disables every target above the
+leg's. `scripts/cpu_paths.py check` then fails unless threadpoolctl reports
+the named core in both copies of OpenBLAS and NumPy reports each disabled
+target off, with that warning made an error.
+
+No leg forces AVX-512 kernels. OpenBLAS runs a forced core type without
+checking the CPU (`force_coretype` in its `driver/others/dynamic.c`), so
+SkylakeX on one of the pool's AMD machines would stop at an illegal
+instruction. Running these tests under SDE instead would make that leg
+independent of the machine; it has not been tried. Until then the pool's
+Intel machines run those kernels in `ci.yml`, and the machine report says
+when.
 
 ### What the README's guarantees are held to
 

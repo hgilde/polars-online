@@ -183,7 +183,25 @@ def test_the_linear_dynamics_targets_the_ew_level():
 
 
 def dense_loglik(r, rho, blocks):
-    """`-0.5 * (n ln 2pi + ln det R + r'R^-1 r)` on the dense matrix."""
+    """`-0.5 * (n ln 2pi + ln det R + r'R^-1 r)` on the dense matrix, and how
+    far rounding can move it.
+
+    The bound (task 273): LAPACK's `slogdet` and `solve` are backward
+    stable, so each of `ln det R` and `r'R^-1 r` carries a few `n 2^-53`
+    times the condition number `cond(R)` of its own size; the model's
+    factorization (Woodbury under blocks) does the same; and `r` and `rho`
+    carry the decay factors' rounding, the platform's `exp2` on one side
+    and Python's `pow` in `standardised` on the other. So
+    `|got - want| <= 64 * 2^-53 * cond(R) * (n ln 2pi + |ln det R| +
+    |r'R^-1 r|) / 2`. Measured (one block of 4 and the 3 + 2 blocks, every
+    row): at most 2.6 and 1.4 times `2^-53 cond(R)` of that scale on macOS,
+    9.2 and 6.3 with every `exp`, `exp2`, `ln` and `powf` the wheel calls
+    moved by 1 or 2 ulp (a scratch build), where `cond(R)` is at most 6.4.
+    The 1e-8 and 1e-9 relative bounds this replaced allowed a millionfold
+    of that; and with the libm moved, one row of the blocked stream whose
+    matrix is singular to rounding (smallest eigenvalue 1.5e-16) came out
+    positive definite to `slogdet`, and was compared: 0.88 apart, relative,
+    which the condition number of 2e16 says is no density at all."""
     n = len(r)
     of = {i: bi for bi, b in enumerate(blocks) for i in b}
     k = len(blocks)
@@ -200,7 +218,9 @@ def dense_loglik(r, rho, blocks):
                 m[i, j] = rho[of[i]] if of[i] == of[j] else pairs[(of[i], of[j])]
     sign, logdet = np.linalg.slogdet(m)
     assert sign > 0
-    return -0.5 * (n * np.log(2 * np.pi) + logdet + r @ np.linalg.solve(m, r))
+    q = r @ np.linalg.solve(m, r)
+    scale = 0.5 * (n * np.log(2 * np.pi) + abs(logdet) + abs(q))
+    return -0.5 * (n * np.log(2 * np.pi) + logdet + q), 64 * 2.0**-53 * np.linalg.cond(m) * scale
 
 
 def test_loglik_is_the_dense_gaussian_density():
@@ -214,8 +234,8 @@ def test_loglik_is_the_dense_gaussian_density():
     for i in range(len(rho)):
         if not (np.isfinite(rho[i]) and np.isfinite(r[i]).all()):
             continue
-        want = dense_loglik(r[i], [rho[i]], [[0, 1, 2, 3]])
-        assert got[i] == pytest.approx(want, rel=1e-9)
+        want, bound = dense_loglik(r[i], [rho[i]], [[0, 1, 2, 3]])
+        assert abs(got[i] - want) <= bound, (i, got[i], want, bound)
         checked += 1
     assert checked > 700
 
@@ -243,10 +263,10 @@ def test_the_blocked_loglik_is_the_dense_gaussian_density():
         # model clamps for the density and `slogdet` would refuse, so those
         # rows are skipped rather than compared to nothing.
         try:
-            want = dense_loglik(r[i], rho[i], [[0, 1, 2], [3, 4]])
+            want, bound = dense_loglik(r[i], rho[i], [[0, 1, 2], [3, 4]])
         except AssertionError:
             continue
-        assert got[i] == pytest.approx(want, rel=1e-8)
+        assert abs(got[i] - want) <= bound, (i, got[i], want, bound)
         checked += 1
     assert checked > 500
 
