@@ -203,14 +203,17 @@ fn the_exact_cases_are_refused_as_the_whole_step_refused_them() {
         assert_eq!((r.row, r.back_int), (2, Some(i128::from(back))));
     }
 
-    // A float clock's NaN row is no step back; the row after it is
-    // measured from the NaN, and is none either.
+    // A float clock's NaN row is no number of clock units, refused as the
+    // whole step refuses it (task 270, review round 9 F-1), the clock
+    // left where the row before it left it; the bank refuses the value by
+    // row before either runs.
     let nan = ClockCol::F64(vec![5.0, f64::NAN, 4.0, 3.0]);
     assert!(both(&s, &error, &nan, None, &[0, 1, 2, 3], 0));
     let r = s
         .check_clock(&error, Some(&nan), None, &[0, 1, 2, 3], 0)
         .unwrap_err();
-    assert_eq!((r.row, r.raw), (3, -1.0));
+    assert_eq!(r.row, 1);
+    assert!(r.raw.is_nan(), "{}", r.raw);
 
     // A step back across a session change is no refusal under any policy.
     let across = ClockCol::F64(vec![5.0, 4.0]);
