@@ -102,6 +102,15 @@ def _sgd_on(loss: str):
     return lambda b, kw: b == "sgd" and kw.get("loss") == loss
 
 
+def _kalman_unsized(b: str, kw: dict) -> bool:
+    """`kalman` standardized with no `obs_var` and a lowered `min_weight`:
+    rows past `min_weight` before a target's prior is sized (review round 9,
+    B-1, the path 1.2.0 predicted 0.0 on)."""
+    return (
+        b == "kalman" and kw.get("standardize") is True and "obs_var" not in kw
+    ) and "min_weight" in kw
+
+
 #: The paths the release comparison must reach, each by the keyword that
 #: takes it (review round 9, J-2: the workload ran 135 of the 346 field names
 #: the fullest workload writes, and none of these). A spec of the workload
@@ -121,6 +130,7 @@ PATHS = {
     "share_p": lambda b, kw: kw.get("share_p") is True,
     "kalman q and obs_var": lambda b, kw: "q" in kw and "obs_var" in kw,
     "kalman standardized": lambda b, kw: b == "kalman" and kw.get("standardize") is True,
+    "kalman's prior sized past min_weight": _kalman_unsized,
     "drift_action reset": lambda b, kw: kw.get("drift_action") == "reset",
     "max_rows_between_solves": lambda b, kw: "max_rows_between_solves" in kw,
     "max_rows_between_coefs": lambda b, kw: "max_rows_between_coefs" in kw,
@@ -164,3 +174,22 @@ def test_the_workload_reaches_every_field_name_and_every_named_path():
         if not any(reached(b, kw) for _, b, kw, _ in probe.WORKLOAD)
     ]
     assert not missed, missed
+
+
+def test_the_kalman_unsized_prior_path_is_reached_not_only_named():
+    """A spec matching `PATHS`' entry for `kalman`'s unsized prior must reach
+    it on the probe's stream: at least one row withheld as
+    `below_warm_rows`, the rows past `min_weight` before the prior is sized
+    (review 9's R4 §6: `kalman_standardized` reported none, so the release
+    comparison never compared that path's rows)."""
+    import polars_online as po
+
+    specs = [(n, b, kw) for n, b, kw, _ in probe.WORKLOAD if _kalman_unsized(b, kw)]
+    assert specs
+    df = probe.stream()
+    for name, builder, kw in specs:
+        out = po.ModelBank([probe.build(builder, name, kw)]).fit_predict(df).unnest(name)
+        warm = out.filter(pl.col("withheld_reason") == "below_warm_rows")
+        assert warm.height >= 1, (name, out["withheld_reason"].value_counts().to_dicts())
+        # Nothing is predicted there: null, not the 0.0 of an unsized prior.
+        assert warm["pred_y"].is_null().all(), warm
