@@ -180,6 +180,68 @@ class TestTheMatrixDefaultsToCheap:
                 )
 
 
+class TestWindowsIsTwoImagesAndEveryJobNamesItsMachine:
+    """On Windows `exp`, `log` and `pow` come from `ucrtbase.dll`, part of the
+    OS, so each Windows build has its own last bits; and a runner label is a
+    pool of CPUs, AVX-512 or not and any L3. Task 273 (a): the test matrix
+    runs Server 2022 beside the newest wherever it runs Windows, and every
+    job that can land on Windows prints its machine first, so a failure
+    names it (docs/TESTING.md, "The machines and the CPU paths")."""
+
+    REPORT = "./.github/actions/machine-report"
+
+    def test_windows_2022_runs_wherever_windows_latest_does(self):
+        expr = " ".join(str(CI["jobs"]["test"]["strategy"]["matrix"]["os"]).split())
+        clauses = [c for c in expr.split("||") if "windows" in c]
+        assert len(clauses) == 3, clauses
+        for clause in clauses:
+            assert '"windows-latest", "windows-2022"' in clause, clause
+
+    @staticmethod
+    def _can_run_on_windows(spec: dict) -> bool:
+        return "windows" in json.dumps({k: spec.get(k) for k in ("runs-on", "strategy")})
+
+    def test_every_job_that_can_run_on_windows_reports_its_machine_first(self):
+        found = []
+        for name, job, spec, steps in _every_step():
+            if not self._can_run_on_windows(spec):
+                continue
+            found.append(f"{name}:{job}")
+            uses = [str(s.get("uses", "")) for s in steps]
+            assert uses[0].startswith("actions/checkout@"), (name, job, uses[:2])
+            assert uses[1] == self.REPORT, (name, job, uses[:2])
+            assert "if" not in steps[1], (name, job)
+        assert sorted(found) == [
+            "ci.yml:test",
+            "cpu-paths.yml:oracles",
+            "cpu-paths.yml:sde",
+            "release.yml:build",
+            "release.yml:read-state",
+        ], found
+
+    def test_the_report_covers_every_os_and_never_fails_a_job(self):
+        action = yaml.safe_load(REPORT_ACTION.read_text(encoding="utf-8"))
+        assert action["runs"]["using"] == "composite"
+        steps = action["runs"]["steps"]
+        assert [s["if"] for s in steps] == ["runner.os == 'Windows'", "runner.os != 'Windows'"]
+        assert all(s.get("continue-on-error") is True for s in steps)
+        windows = steps[0]["run"]
+        for needed in (
+            "Win32_Processor",
+            "L2CacheSize",
+            "L3CacheSize",
+            "Avx2]::IsSupported",
+            "Avx512F]::IsSupported",
+            "Fma]::IsSupported",
+            "ProcessorCount",
+            "Win32_OperatingSystem",
+            "ucrtbase.dll",
+            "GITHUB_STEP_SUMMARY",
+        ):
+            assert needed in windows, needed
+        assert "GITHUB_STEP_SUMMARY" in steps[1]["run"]
+
+
 class TestStepOrderingThatHasAlreadyBrokenCI:
     """Two ordering bugs cost real runs; both are invisible to YAML linting."""
 
@@ -809,6 +871,7 @@ class TestTheRustTestsLinkNoPython:
 
 PREP = "./.github/actions/linux-build-prep"
 PREP_ACTION = WORKFLOWS[0].parents[1] / "actions/linux-build-prep/action.yml"
+REPORT_ACTION = WORKFLOWS[0].parents[1] / "actions/machine-report/action.yml"
 
 
 def _every_step():
@@ -889,7 +952,7 @@ class TestActionsArePinnedToCommits:
     13 sites, release.yml's wheel build among them (task 160, CI1). Read from
     the text, since YAML drops the comment that names the version."""
 
-    FILES = [*WORKFLOWS, PREP_ACTION]
+    FILES = [*WORKFLOWS, PREP_ACTION, REPORT_ACTION]
     USES = re.compile(r"^\s*(?:-\s*)?uses:\s*(\S+?)@(\S+)(.*)$")
 
     def _external(self):
