@@ -4497,7 +4497,8 @@ def marginal(
             m'     = m + (omega / Omega') * (y - m)
 
         Its fixed point is the Huber M-location of the bin's decayed sample,
-        and one row moves it by at most ``c * w / Omega``. ``sigma_t`` is the
+        and one row moves it by at most ``c * w / Omega'``, that is
+        ``c * w / (lam * Omega + omega)``. ``sigma_t`` is the
         target's robust scale, read before the row: the exponentially
         weighted median of ``|y - m_t|`` over 0.6745, ``m_t`` the target's own
         location by the same recursion. It is one per target, not per

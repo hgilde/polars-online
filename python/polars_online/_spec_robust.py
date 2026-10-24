@@ -184,7 +184,11 @@ def huber(
         set of sums per set. So a smaller set's fit is the weighted least
         squares fit at the weights the largest set's residuals chose, not a
         Huber fit of its own. The residual scale ``s`` is the largest set's
-        too.
+        too. The largest set is the fit of a ``huber`` on its features alone,
+        to the bit, when it is every feature or when both take the same
+        ``min_weight``. The default ``min_weight`` counts every feature of
+        the spec, so a largest set short of them predicts later, and the two
+        fits part until the decay forgets the first rows.
     ``ridge_scale``
         What the ridge is scaled against, as for :func:`ewridge`: ``"mean"``
         (the default), a fixed penalty on the mean-form sums whose pull is
@@ -203,9 +207,10 @@ def huber(
         row's cut reads it: after the row's decay and before the row's own
         residual enters it, so the field is causal by construction and can
         serve as a weight or as the scale of a robust score of the
-        residuals. Null until the target has an ``s`` above 0. Under an
-        ``embargo`` it is read where the row is scored, as ``pred_<t>`` is.
-        Default ``False``.
+        residuals. Null until the target has an ``s`` above 0, and on a row
+        the model does not read because a feature is null or not usable.
+        Under an ``embargo`` it is read where the row is scored, as
+        ``pred_<t>`` is. Default ``False``.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the

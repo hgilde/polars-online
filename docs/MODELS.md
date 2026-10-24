@@ -759,8 +759,15 @@ so a row's Huber weight is one number per target. It is read from the
 residual of the largest set, the one with the most features, the first of
 them where two tie, and so is the scale `σ`. Weighting each set by its own
 residual would need a set of sums per set. So the largest set is the Huber
-fit of its features, the same to the bit as a `huber` on those features
-alone. A smaller set is the weighted least-squares fit of its features at
+fit of its features. It is the same to the bit as a `huber` on those
+features alone when it is every feature, or when both are given the same
+`min_weight`. The default `min_weight` counts a coefficient for every
+feature of the spec, so a largest set short of them starts predicting later
+than the `huber` on its features alone. Its first Huber weights and its
+scale then differ, and the two fits part until the decay forgets those
+rows: on a stream with a noise of 0.4 and outliers of 40, at
+`half_life=300`, by up to 0.17 in the first 30 rows and 1e-4 after 1,200.
+A smaller set is the weighted least-squares fit of its features at
 the weights the largest set's residuals chose, which is not a Huber fit of
 its own. `quantile` takes no `feature_sets`: its rows outside the band step
 the fit through one system per target.
@@ -778,8 +785,10 @@ cut is drawn in.** It is read after the row's decay and before the row's
 own residual enters the scale, so a wild value cannot widen its own scale:
 the field is causal by construction. Use it as a row weight downstream, or
 as the scale of a robust loss on the residuals. It is one field per target,
-the largest set's under `feature_sets`, and null until the target has a
-`σ` above 0.
+the largest set's under `feature_sets`. It is null until the target has a
+`σ` above 0, and on a row the model does not read because a feature is
+null or not usable (NaN, ±inf or beyond 1e100), as `lasso`'s
+`lam_selected` is.
 
 **The scale `σ` is the part of Huber's estimator that makes it robust.**
 The cut is `δσ`, so a scale that the outliers inflate moves the cut out of
@@ -1867,7 +1876,8 @@ row's distance from the bin's location `m`:
 
 The location is the mean over the weights `ω`, so its fixed point is the
 Huber M-location of the bin's rows, and one row moves it by at most
-`c·w/Ω`. A row far from the bin still counts, at weight `c/|e|` of a row.
+`c·w/Ω' = c·w/(λΩ + ω)`, which under decay is up to `1/λ` times `c·w/Ω`.
+A row far from the bin still counts, at weight `c/|e|` of a row.
 
 | quantity | under `"huber"` |
 |---|---|
@@ -1928,11 +1938,18 @@ streams, in units of the target's scale:
 The gap is the pass's: the first rows are weighed against a location and a
 scale still settling. On 2,000 rows, 125 to a bin, it was 0.013 at 1% and
 0.37 at 5%, the largest from a spike on a stream's second row. A spike among a target's first two rows, before it has a scale,
-counts in full, and leaves the bins it lands in as a mean's start does. The
-location steps over `Ω`, the weight its rows count for, rather than `W`:
-over `W`, a bin whose first row was a spike moves back at most `c·w/W` a row
-and stayed 15 to 19 scales off after 20,000 rows; over `Ω` it is back within
-a few dozen rows. A bin keeps a fifth more state, 40 bytes a cell in place of
+counts in full, and leaves the bins it lands in as a mean's start does.
+Later, a bin's first row is winsorized at `m_t ± c`, so it starts at most
+`c` off. The location steps over `Ω`, the weight its rows count for,
+rather than `W`, the weight they carry. From a spike `E₀` off at full
+weight `Ω₀`, while each row is clipped the error decays as
+`E(n) = E₀·exp(−c·n/(Ω₀E₀))`, so it is within one scale `σ` after about
+`(Ω₀E₀/c)·ln(E₀/σ)` rows. Simulated with no decay, unit weights and `σ`
+fixed, a spike of 10, 30 or 100 scales was within one scale after 27, 101
+or 381 rows. Over `W` a row moves the location back at most `c·w/W`, so
+`n` rows recover at most `c·ln n`, 13 scales in 20,000 rows: in the same
+simulation the spike of 30 scales was still 17 scales off after 20,000
+rows, and the one of 100 still 87. A bin keeps a fifth more state, 40 bytes a cell in place of
 32, and each target up to 9 KB for its scale. Measured at 16 bins, a row
 took 0.75 to 0.9 times the mean's throughput at 100 and 10,000 features
 and one and ten targets, and the saved state was a fifth to a third larger.
