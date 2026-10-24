@@ -941,7 +941,32 @@ impl ClockState {
         session: Option<u64>,
         accept: bool,
     ) -> ClockAdvance {
-        self.step(cfg, Some(caps), clock, session, accept, false)
+        if let Some(adv) = self.step_forward(cfg, Some(caps), clock, session, accept, false) {
+            return adv;
+        }
+        self.step_any_stamped(cfg, caps, clock, session, accept)
+    }
+
+    /// [`Self::advance_stamped`]'s rows that the float clock's short cut
+    /// declines: a temporal clock's step forward through its own short cut
+    /// ([`Self::ns_forward`]), any other row through [`Self::step_any`].
+    /// Out of line: inlined beside the float clock's short cut, the general
+    /// step's registers were saved and restored on every row the short cut
+    /// takes (task 270: 117 instructions a float clock's row on aarch64,
+    /// 96 with this out of line).
+    #[inline(never)]
+    fn step_any_stamped(
+        &mut self,
+        cfg: &ClockCfg,
+        caps: &ExactCaps,
+        clock: Option<ClockValue>,
+        session: Option<u64>,
+        accept: bool,
+    ) -> ClockAdvance {
+        if let Some(adv) = self.ns_forward(cfg, caps, clock, session, accept) {
+            return adv;
+        }
+        self.step_any(cfg, Some(caps), clock, session, accept, false)
     }
 
     /// [`Self::advance`] for a row that is scored and not learned from: a
@@ -974,18 +999,21 @@ impl ClockState {
         session: Option<u64>,
     ) -> Option<(f64, Option<Disorder>)> {
         // As the step: refused, and the previous clock and session kept.
-        if let Some(bad) = not_a_step(clock, self.prev_clock) {
+        let raw = match (clock, self.prev_clock) {
+            (Some(c), Some(p)) => Some(c.delta(p)),
+            _ => None,
+        };
+        if let Some(bad) = not_a_step(clock, raw) {
             return Some((bad, None));
         }
         let prev = std::mem::replace(&mut self.prev_clock, clock);
         let prev_session = std::mem::replace(&mut self.prev_session, session);
-        let (Some(c), Some(p)) = (clock, prev) else {
+        let (Some(raw), Some(c), Some(p)) = (raw, clock, prev) else {
             return None;
         };
         if matches!((session, prev_session), (Some(s), Some(q)) if s != q) {
             return None;
         }
-        let raw = c.delta(p);
         // As the step reads it: a NaN step is no step back.
         #[allow(clippy::neg_cmp_op_on_partial_ord)]
         if !(raw < 0.0) {
@@ -1013,7 +1041,7 @@ impl ClockState {
         self.step_any(cfg, caps, clock, session, accept, scoring)
     }
 
-    /// The row almost every stamped row is -- a float clock's step forward
+    /// The row almost every stamped row of a float clock is -- a step forward
     /// within its session, learned, past the stream's first -- taken as
     /// [`Self::step_any`] takes it, with the same expressions in the same
     /// order, and none of the integer, temporal, session or refusal
@@ -1044,7 +1072,11 @@ impl ClockState {
         let raw = c - p;
         // A step forward, finite (not a NaN, nor past the largest double,
         // which `step_any` refuses), as `step_any`'s within-session arm.
-        if !(0.0..f64::INFINITY).contains(&raw) {
+        // An infinite step is at least any cap, so only a step at the cap or
+        // past it is asked whether it is one: `(0.0..INFINITY).contains`
+        // became eleven instructions of bit tests on every row (task 270).
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
+        if !(raw >= 0.0) || (raw >= cfg.gap_cap && raw == f64::INFINITY) {
             return None;
         }
         let ex = self.exact.as_mut()?;
@@ -1084,6 +1116,79 @@ impl ClockState {
         })
     }
 
+    /// [`Self::step_forward`] for a temporal clock, on a stamped row: a step
+    /// forward within its session, learned, past the stream's first, taken
+    /// as [`Self::step_any`] takes it -- the step in integer nanoseconds,
+    /// never refused (an integer step is always a finite number of
+    /// seconds); `Exact::step`'s temporal arm for it, its own elapsed time,
+    /// at most the cap on the stamped clock, the skipped rows' steps folded
+    /// in under the cap; and the accepted row's arm -- with the same
+    /// expressions in the same order. `None` for any other row. Task 270:
+    /// a temporal clock's row was 275 instructions on aarch64 through the
+    /// general step, 179 through this. Tests hold the two to the same
+    /// advance and the same state, to the bit.
+    #[inline]
+    fn ns_forward(
+        &mut self,
+        cfg: &ClockCfg,
+        caps: &ExactCaps,
+        clock: Option<ClockValue>,
+        session: Option<u64>,
+        accept: bool,
+    ) -> Option<ClockAdvance> {
+        let (Some(ClockValue::Ns(c)), Some(ClockValue::Ns(p)), true) =
+            (clock, self.prev_clock, accept)
+        else {
+            return None;
+        };
+        if matches!((session, self.prev_session), (Some(s), Some(q)) if s != q)
+            || !self.pending_int.is_zero()
+        {
+            return None;
+        }
+        let r = i128::from(c) - i128::from(p);
+        if r < 0 {
+            return None;
+        }
+        let ex = self.exact.as_mut()?;
+        let raw = seconds_of_ns(r);
+        let capped = raw > cfg.gap_cap;
+        let d = raw.min(cfg.gap_cap);
+        ex.rows = ex.rows.saturating_add(1);
+        let cap = caps
+            .gap_cap_ns
+            .map(i128::from)
+            .or_else(|| ns_of_seconds(cfg.gap_cap));
+        let capped_ns = |v: i128| cap.map_or(v, |c| v.min(c));
+        ex.elapsed_ns = ex.elapsed_ns.saturating_add(r);
+        let total_ns = ex.skipped_ns.saturating_add(capped_ns(r));
+        ex.skipped_ns = 0;
+        ex.ns = ex.ns.saturating_add(capped_ns(total_ns));
+        let stamp = Stamp::Ns(ex.ns);
+        let elapsed_stamp = Stamp::Ns(ex.elapsed_ns);
+        self.prev_clock = Some(ClockValue::Ns(c));
+        self.prev_session = session;
+        self.started = true;
+        let total = self.pending + d;
+        let (d_clock, over) = (total.min(cfg.gap_cap), total > cfg.gap_cap);
+        self.pending = 0.0;
+        self.pending_int = Ticks::ZERO;
+        let elapsed = self.skipped_elapsed + raw;
+        self.skipped_elapsed = 0.0;
+        Some(ClockAdvance {
+            d_clock,
+            reset: false,
+            accepted: true,
+            backwards: None,
+            disorder: None,
+            session_changed: false,
+            capped: capped || over,
+            elapsed,
+            stamp: Some(stamp),
+            elapsed_stamp: Some(elapsed_stamp),
+        })
+    }
+
     /// Any row: the general step [`Self::step_forward`] is a short cut of.
     fn step_any(
         &mut self,
@@ -1102,7 +1207,18 @@ impl ClockState {
         // last, on the next, and its removed time stayed NaN in every later
         // stamp (review round 9, F-1; docs/PLAN.md task 270). The bank
         // refuses both first, by row and by chunk.
-        if let Some(bad) = not_a_step(clock, self.prev_clock) {
+        let raw = match (clock, self.prev_clock) {
+            (Some(c), Some(p)) => Some(c.delta(p)),
+            (Some(_), None) => None, // first row of the stream
+            (None, _) => {
+                if self.started {
+                    Some(1.0)
+                } else {
+                    None
+                }
+            }
+        };
+        if let Some(bad) = not_a_step(clock, raw) {
             return ClockAdvance {
                 d_clock: 0.0,
                 reset: false,
@@ -1116,17 +1232,6 @@ impl ClockState {
                 elapsed_stamp: None,
             };
         }
-        let raw = match (clock, self.prev_clock) {
-            (Some(c), Some(p)) => Some(c.delta(p)),
-            (Some(_), None) => None, // first row of the stream
-            (None, _) => {
-                if self.started {
-                    Some(1.0)
-                } else {
-                    None
-                }
-            }
-        };
         let session_changed = match (session, self.prev_session) {
             (Some(s), Some(p)) => s != p,
             _ => false,
@@ -1334,20 +1439,21 @@ impl ClockState {
 /// The row's clock value or its step from the previous row's, where either
 /// is no finite number of clock units -- a float value that is NaN or
 /// infinite (the value itself on a stream's first row), or two finite ones
-/// whose difference is past the largest double -- else `None`. Only a float
-/// clock can give one: an integer or temporal clock's steps are taken in
-/// integers and always finite.
+/// whose difference is past the largest double -- else `None`. `raw` is the
+/// step the caller has taken, `clock.delta(prev)`, or `None` on a stream's
+/// first row; a row-count clock (`clock = None`) is never refused. Only a
+/// float clock can give one: an integer or temporal clock's steps are taken
+/// in integers and always finite. The step is taken once a row, for the
+/// refusal and the arms both: taken again here it cost a temporal clock's
+/// row 63 instructions on aarch64, 338 where 275 had been (task 270).
 #[inline]
-fn not_a_step(clock: Option<ClockValue>, prev: Option<ClockValue>) -> Option<f64> {
-    let c = clock?;
-    let raw = match prev {
-        Some(p) => c.delta(p),
-        None => match c {
-            ClockValue::F64(v) => v,
-            _ => return None,
-        },
+fn not_a_step(clock: Option<ClockValue>, raw: Option<f64>) -> Option<f64> {
+    let bad = match (clock?, raw) {
+        (_, Some(raw)) => raw,
+        (ClockValue::F64(v), None) => v,
+        (_, None) => return None,
     };
-    (!raw.is_finite()).then_some(raw)
+    (!bad.is_finite()).then_some(bad)
 }
 
 /// What a learned step back within a session does under the policy: a
@@ -3285,6 +3391,50 @@ mod finite_steps {
             let _ = taken;
         }
 
+        /// The temporal clock's short cut ([`ClockState::ns_forward`]) gives
+        /// the advance and the state the general step does, to the bit, over
+        /// steps forward and back of any size out to an `i64`'s two ends
+        /// (the stamps' saturating sums included), sessions, skipped rows,
+        /// caps given in nanoseconds or read from the seconds, and both
+        /// policies (task 270).
+        #[test]
+        fn the_temporal_short_cut_is_the_general_step(
+            (cfg, _) in cfg(),
+            start in prop_oneof![
+                Just(1_704_067_200_000_000_000i64),
+                any::<i64>(),
+                Just(i64::MIN),
+                Just(i64::MAX),
+            ],
+            rows in prop::collection::vec(
+                (
+                    prop_oneof![0i64..3_000_000_000, Just(0i64), 0i64..1_000, any::<i64>()],
+                    0u64..3,
+                    any::<bool>(),
+                    prop_oneof![3 => Just(true), 1 => Just(false)],
+                ),
+                1..60,
+            ),
+            sessions in any::<bool>(),
+            gap_cap_ns in prop_oneof![Just(None), (0i64..10_000_000_000_000).prop_map(Some)],
+            session_gap_ns in prop_oneof![Just(None), (0i64..10_000_000_000_000).prop_map(Some)],
+        ) {
+            let caps = ExactCaps { gap_cap_ns, session_gap_ns };
+            let mut fast = ClockState::new();
+            let mut general = ClockState::new();
+            let mut t = start;
+            for (step, session, back, accept) in rows {
+                let step = step.saturating_abs();
+                t = if back { t.saturating_sub(step) } else { t.saturating_add(step) };
+                let c = Some(ClockValue::Ns(t));
+                let s = sessions.then_some(session);
+                let a = fast.advance_stamped(&cfg, &caps, c, s, accept);
+                let b = general.step_any(&cfg, Some(&caps), c, s, accept, false);
+                prop_assert_eq!(format!("{a:?}"), format!("{b:?}"));
+                prop_assert_eq!(format!("{fast:?}"), format!("{general:?}"));
+            }
+        }
+
         /// [`ClockState::refusal`], which moves only the previous clock and
         /// session, refuses exactly the rows [`ClockState::advance`] does,
         /// with the same step and the same numbers, over float, integer and
@@ -3438,6 +3588,70 @@ mod task_250_paths {
             }
         }
         assert!(any_taken > 5_000, "{any_taken}");
+    }
+
+    /// A temporal clock, from 2024 and a decade later: every row that steps
+    /// forward within its session, learned, past the first, takes its
+    /// short cut ([`ClockState::ns_forward`]) -- counted from the inputs,
+    /// not from the code -- under caps given in nanoseconds and caps read
+    /// from the seconds, and every row's advance and the state after it are
+    /// the general step's (task 270). A stream whose rows were not stamped
+    /// has no exact clock yet, and its next row goes the general way.
+    #[test]
+    fn a_temporal_clock_takes_its_short_cut_to_the_bit() {
+        let mut any_taken = 0;
+        for (k, cfg) in cfgs().iter().enumerate() {
+            let given = ExactCaps {
+                gap_cap_ns: ns_of_seconds(cfg.gap_cap).map(|ns| ns as i64),
+                session_gap_ns: match cfg.session_gap {
+                    Some(SessionGap::Gap(g)) => ns_of_seconds(g).map(|ns| ns as i64),
+                    _ => None,
+                },
+            };
+            for caps in [ExactCaps::default(), given] {
+                for start in [T0_NS, T0_NS + DECADE_NS] {
+                    let mut fast = ClockState::new();
+                    let mut general = ClockState::new();
+                    let (mut t, mut prev): (i64, Option<(i64, u64)>) = (start, None);
+                    let (mut taken, mut eligible) = (0, 0);
+                    for (step, session, accept) in rows(400, 0x9e37_79b9 + k as u64) {
+                        t += (step * 1e9).round() as i64;
+                        let c = Some(ClockValue::Ns(t));
+                        eligible += usize::from(
+                            accept && prev.is_some_and(|(p, q)| q == session && t >= p),
+                        );
+                        taken += usize::from(
+                            fast.clone()
+                                .ns_forward(cfg, &caps, c, Some(session), accept)
+                                .is_some(),
+                        );
+                        prev = Some((t, session));
+                        let a = fast.advance_stamped(cfg, &caps, c, Some(session), accept);
+                        let b = general.step_any(cfg, Some(&caps), c, Some(session), accept, false);
+                        assert!(same(&a, &b), "{a:?}\n{b:?}\nunder {cfg:?}");
+                        assert!(same(&fast, &general), "{fast:?}\n{general:?}");
+                    }
+                    assert_eq!(taken, eligible, "under {cfg:?}");
+                    any_taken += taken;
+                }
+            }
+        }
+        assert!(any_taken > 10_000, "{any_taken}");
+        let cfg = ClockCfg::default();
+        let caps = ExactCaps::default();
+        let mut unstamped = ClockState::new();
+        unstamped.advance(&cfg, Some(ClockValue::Ns(T0_NS)), None, true);
+        let next = Some(ClockValue::Ns(T0_NS + 1));
+        assert!(
+            unstamped
+                .clone()
+                .ns_forward(&cfg, &caps, next, None, true)
+                .is_none()
+        );
+        let mut general = unstamped.clone();
+        let a = unstamped.advance_stamped(&cfg, &caps, next, None, true);
+        let b = general.step_any(&cfg, Some(&caps), next, None, true, false);
+        assert!(same(&a, &b) && same(&unstamped, &general), "{a:?}\n{b:?}");
     }
 
     /// A step past the largest double is `+inf`: the short cut declines
@@ -3620,11 +3834,12 @@ mod task_250_paths {
         }
     }
 
-    /// A temporal clock never takes the short cut: its steps and stamps
-    /// stay in integer nanoseconds, exact at a decade's age, where a
-    /// double of seconds resolves about 60 ns -- each row the general
-    /// step's, to the bit. A step back of one nanosecond there is refused
-    /// by [`ClockState::refusal`] with [`ClockState::advance`]'s numbers.
+    /// A temporal clock never takes the float clock's short cut, and takes
+    /// its own (task 270): its steps and stamps stay in integer
+    /// nanoseconds, exact at a decade's age, where a double of seconds
+    /// resolves about 60 ns -- each row the general step's, to the bit. A
+    /// step back of one nanosecond there is refused by
+    /// [`ClockState::refusal`] with [`ClockState::advance`]'s numbers.
     #[test]
     fn a_temporal_clock_at_a_decades_age_stays_on_the_exact_step() {
         let caps = ExactCaps::default();
@@ -3642,6 +3857,12 @@ mod task_250_paths {
                 fast.clone()
                     .step_forward(&cfg, Some(&caps), c, None, true, false)
                     .is_none()
+            );
+            assert_eq!(
+                fast.clone()
+                    .ns_forward(&cfg, &caps, c, None, true)
+                    .is_some(),
+                i > 0
             );
             let a = fast.advance_stamped(&cfg, &caps, c, None, true);
             let b = general.step_any(&cfg, Some(&caps), c, None, true, false);
