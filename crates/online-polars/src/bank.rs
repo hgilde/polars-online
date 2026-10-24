@@ -760,8 +760,10 @@ impl Spares {
     /// Keep a run's buffers for a later run, where they fit; free them
     /// otherwise.
     fn give(&mut self, out: Box<ChunkOut>) {
-        let bytes = out.heap_bytes();
-        if bytes <= SPARE_ONE && self.bytes + bytes <= SPARE_BYTES {
+        let Some(bytes) = out.heap_bytes_within(SPARE_ONE) else {
+            return;
+        };
+        if self.bytes + bytes <= SPARE_BYTES {
             self.bytes += bytes;
             self.outs.push((out, bytes));
         }

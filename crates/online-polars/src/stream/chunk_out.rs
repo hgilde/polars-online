@@ -3,6 +3,7 @@
 //! (task 270, G-1).
 
 use super::*;
+use std::mem::size_of;
 
 /// Flat output buffers for one (stream, chunk) task (docs/PERFORMANCE.md P1).
 ///
@@ -250,16 +251,25 @@ impl ChunkOut {
     /// The bytes these buffers hold, the struct itself included: what a
     /// bank keeps when it keeps them for a later run ([`Self::renew`]).
     pub fn heap_bytes(&self) -> usize {
-        use std::mem::size_of;
-        fn cap<T>(v: &Vec<T>) -> usize {
-            v.capacity() * size_of::<T>()
+        self.flat_bytes() + self.list_bytes()
+    }
+
+    /// The bytes these buffers hold, if they are at most `limit`. The flat
+    /// buffers are summed first, from their headers alone, so a long run,
+    /// whose flat buffers pass a small `limit` by themselves, is answered
+    /// without walking its `coef`-like lists, one `Option` per model and row
+    /// each (task 270, R2-1).
+    pub fn heap_bytes_within(&self, limit: usize) -> Option<usize> {
+        let flat = self.flat_bytes();
+        if flat > limit {
+            return None;
         }
-        fn lists(v: &Vec<Vec<Option<Vec<f64>>>>) -> usize {
-            cap(v)
-                + v.iter()
-                    .map(|inner| cap(inner) + inner.iter().flatten().map(cap).sum::<usize>())
-                    .sum::<usize>()
-        }
+        Some(flat + self.list_bytes()).filter(|&bytes| bytes <= limit)
+    }
+
+    /// The bytes held by the struct and its flat buffers: every buffer but
+    /// the `coef`-like lists, read from the headers alone.
+    fn flat_bytes(&self) -> usize {
         size_of::<Self>()
             + cap(&self.rows)
             + cap(&self.processed)
@@ -284,18 +294,29 @@ impl ChunkOut {
             .sum::<usize>()
             + cap(&self.drift)
             + cap(&self.reason)
-            + [
-                &self.coef,
-                &self.support_coef,
-                &self.se_coef,
-                &self.se_coef_hc0,
-                &self.se_coef_hac,
-            ]
-            .into_iter()
-            .map(lists)
-            .sum::<usize>()
             + cap(&self.scored_clock)
             + cap(&self.learned_clock)
+    }
+
+    /// The bytes held by the `coef`-like lists: each list's header and
+    /// every vector it holds.
+    fn list_bytes(&self) -> usize {
+        fn lists(v: &Vec<Vec<Option<Vec<f64>>>>) -> usize {
+            cap(v)
+                + v.iter()
+                    .map(|inner| cap(inner) + inner.iter().flatten().map(cap).sum::<usize>())
+                    .sum::<usize>()
+        }
+        [
+            &self.coef,
+            &self.support_coef,
+            &self.se_coef,
+            &self.se_coef_hc0,
+            &self.se_coef_hac,
+        ]
+        .into_iter()
+        .map(lists)
+        .sum::<usize>()
     }
 
     /// How many rows one learning run covers (docs/PERFORMANCE.md §13).
@@ -365,4 +386,9 @@ impl ChunkOut {
         );
         (last - first + 1 == self.rows.len()).then_some(first)
     }
+}
+
+/// The bytes a vector's buffer holds: its capacity, not its length.
+fn cap<T>(v: &Vec<T>) -> usize {
+    v.capacity() * size_of::<T>()
 }
