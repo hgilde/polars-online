@@ -2876,6 +2876,15 @@ def sgd(
         The scale ``s`` and its own memory, as for :func:`huber`: ``"mad"``
         (the default) or ``"rms"``, and a half-life defaulting to the spec's
         ``half_life``. ``loss = "huber"`` only; refused beside another loss.
+        The gradient is clipped at ``huber_delta * s``, so under ``"mad"`` a
+        change of level many times the noise is followed at most
+        ``learning_rate * huber_delta * s`` a row until the median has
+        crossed. With a fit half-life of 500 rows and a +20 shift, the mean
+        absolute error 200-400 rows after it was 17.33 under ``"mad"`` at
+        the fit's memory, 2.45 under ``"rms"``, 2.99 with
+        ``huber_scale_half_life = 100`` and 1.41 with 20. On a stream whose
+        level can change, give it about a fifth of ``half_life``, or
+        shorter.
     ``quantile``
         The level for ``loss = "quantile"``, in ``(0, 1)``; required for it.
     ``eps``

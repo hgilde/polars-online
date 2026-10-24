@@ -985,6 +985,29 @@ under the default `"mad"`. Inside the tube the gradient is zero. A tube drawn in
 the residuals' spread on a target at 1,000 with a spread of 2 was about 100
 wide and held every row, and without decay it never narrowed.
 
+**Under the default `"mad"`, `sgd`'s Huber loss follows a change of level
+far more slowly than under `"rms"`.** Its gradient is clipped at
+`delta·s`, so while `s` is the noise's scale the intercept moves at most
+`learning_rate·delta·s` a row, and a shift many times the noise waits
+until the median itself has crossed to the new level. For `huber` the
+median cost 19.5 against 15.1 under `"rms"` in the table above; for `sgd`
+it costs seven times as much. On
+`huber`'s stream above (a fit half-life of 500 rows, a shift of +20 at row
+10,000, no outliers), the mean absolute error after the shift, and the
+rows until 200 in a row average under 1.0:
+
+| `sgd` | rows 0-200 after the shift | rows 200-400 | rows to settle |
+|---|---|---|---|
+| `loss="squared"` | 8.67 | 1.17 | 418 |
+| `loss="huber"`, `"rms"` | 13.55 | 2.45 | 493 |
+| `loss="huber"`, `"mad"`, the scale's half-life the fit's 500 rows | 19.26 | 17.33 | 885 |
+| `loss="huber"`, `"mad"`, `huber_scale_half_life=100` | 15.81 | 2.99 | 510 |
+| `loss="huber"`, `"mad"`, `huber_scale_half_life=20` | 10.34 | 1.41 | 440 |
+
+Seeds 2 and 3 agree to within 0.06. **On a stream whose level can change,
+give `huber_scale_half_life` about a fifth of `half_life`, or shorter.** A
+shorter memory widens the cut sooner in a long burst of outliers too.
+
 **The tube's default, 0.01, keeps errors under 1% of the target's own
 spread from moving the fit.** In units of the noise the tube is
 `eps/√(1 − R²)` wide, `R²` the fit's: 0.067 noise standard deviations at
