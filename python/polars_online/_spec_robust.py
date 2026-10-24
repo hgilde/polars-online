@@ -118,6 +118,18 @@ def huber(
     teaches nothing, so a band that early residuals widen does: a fit from
     zero coefficients has the target's whole level for its first residuals.
 
+    A label that arrives late is weighed when it is learned. Under an
+    ``embargo``, or with a target that is a window expression looking ahead,
+    a row is scored where it arrives and learned once its label is known,
+    the held rows in the order they arrived. Its Huber weight is read then,
+    from its residual against the fit at that moment: the fit of every row
+    before it and of none after it, which is the fit it would be weighed by
+    without the delay. So the delay moves the predictions, which come from
+    an older fit, and leaves the fit, the weights and the scale as they are
+    without it: ``coef`` under an embargo of ``E`` rows is the undelayed
+    run's ``coef`` of ``E`` rows earlier, to the bit. The weight is out of
+    sample either way, since the row's own label is in neither fit.
+
     Until a target has an ``s`` above 0, no row is down-weighted. That is
     before its first residual, or while every residual so far is exactly zero
     (under ``"mad"``, while half the weight is on such residuals), and there is

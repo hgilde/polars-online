@@ -733,6 +733,19 @@ quantile:  one Newton step on the check loss, smoothed by a uniform kernel of ha
 The weights are per target, so `huber` and `quantile` keep one set of
 sums per target, where `ewridge` shares one set across targets.
 
+**A label that arrives late is weighed when it is learned.** Under an
+`embargo`, or with a target that is a window expression looking ahead, a
+row is scored where it arrives and learned once its label is known, the
+held rows in the order they arrived. Its weight is read then, from its
+residual against the fit at that moment: the fit of every row before it
+and of none after it, which is the fit it would be weighed by without the
+delay. So the delay moves the predictions, which come from an older fit,
+and leaves the fit, the weights and the scale as they are without it.
+`coef` under an embargo of `E` rows is the undelayed run's `coef` of `E`
+rows earlier, to the bit. The weight is out of sample either way, since
+the row's own label is in neither fit. `huber_scale_<t>` is read where the
+row is scored, as `pred_<t>` is.
+
 **`huber`'s `feature_sets=` fits subsets of the features from the same
 sums, as `ewridge`'s do, and weighs each row by the largest set's
 residual.** A set's fields are `pred_<t>__<set>` and `resid_<t>__<set>`.

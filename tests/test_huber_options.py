@@ -320,3 +320,66 @@ class TestEmittedScale:
     def test_it_is_refused_on_quantile(self):
         with pytest.raises(TypeError):
             po.spec.quantile("m", quantile=0.5, emit_huber_scale=True, **COMMON)  # type: ignore[call-arg]
+
+
+class TestDelayedLabels:
+    """Under ``embargo`` a row is scored where it arrives and learned once
+    its label matures, the held rows in arrival order
+    (``crates/online-polars/src/stream/label_delay.rs``), each stepping the
+    model as an undelayed row would (``Robust::step``). Its Huber weight is
+    therefore read when it is learned, from the fit of every row before it
+    and of none after it, which is the fit an undelayed run weighs it by,
+    not from the prediction made at its own row. Pinned by the fit: the
+    delayed run's ``coef`` at row ``r`` is the undelayed run's at ``r - E``,
+    to the bit, on a stream whose cut binds and whose delayed predictions
+    differ from the undelayed ones; were a row weighed by the prediction
+    made where it was scored, the two fits would part."""
+
+    E = 25
+
+    def _runs(self):
+        df = _frame().drop("t")
+        c = dict(COMMON, clock=None, gap_cap=None)
+        c = {k: v for k, v in c.items() if v is not None}
+        spec = dict(feature_sets=SETS, emit_huber_scale=True, **c)
+        plain = po.ModelBank([po.spec.huber("m", **spec)]).fit_predict(df)
+        held = po.ModelBank([po.spec.huber("m", embargo=self.E, **spec)]).fit_predict(df)
+        return df, plain, held
+
+    def test_the_fit_is_the_undelayed_fit_a_delay_behind(self):
+        df, plain, held = self._runs()
+        a = plain["m"].struct.field("coef").to_list()
+        b = held["m"].struct.field("coef").to_list()
+        compared = 0
+        for r in range(self.E, df.height):
+            if b[r] is not None and a[r - self.E] is not None:
+                assert b[r] == a[r - self.E], r
+                compared += 1
+        assert compared > 1000
+        # The two runs score from different fits, so a weight read from the
+        # scored prediction would differ, and the cut binds.
+        p, q = _field(plain, "pred_y0__all"), _field(held, "pred_y0__all")
+        both = np.isfinite(p) & np.isfinite(q)
+        assert (np.abs(p[both] - q[both]) > 1e-6).mean() > 0.9
+        r = np.abs(df["y0"].to_numpy() - p)
+        assert (r > 1.345 * _field(plain, "huber_scale_y0")).sum() > 30
+
+    def test_the_weight_is_out_of_sample_for_its_row(self):
+        """The fit a held row is weighed by holds no row at or after it: the
+        delayed run's prediction at a row is the undelayed fit a delay
+        behind, applied to the row's features."""
+        df, plain, held = self._runs()
+        coef = plain["m"].struct.field("coef").to_list()
+        x = df.select(FEATURES).to_numpy()
+        q = _field(held, "pred_y0__all")
+        compared = 0
+        for r in range(self.E, df.height):
+            c = coef[r - self.E]
+            if c is None or not np.isfinite(q[r]):
+                continue
+            # Slots are target-major then set: y0's "all" set is the second.
+            k = len(FEATURES) + 1
+            beta = np.asarray(c[k : 2 * k])
+            assert abs(q[r] - (beta[0] + x[r] @ beta[1:])) < 1e-9 * (1 + abs(q[r])), r
+            compared += 1
+        assert compared > 1000
