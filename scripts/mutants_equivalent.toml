@@ -2368,3 +2368,43 @@ mutation = "replace > with >="
 line_has = "if self.end() > hi {"
 why = """at `end == hi`, `keep` is the buckets' length: the arm drains nothing \
 and adds `+0.0` to the last bucket, which changes no weight"""
+
+# Task 272 (m2): a median at 0 keeps the band from the lowest bucket, and a
+# sketch wider than one level's band folds on its next value.
+
+[[equivalent]]
+file = "crates/online-core/src/stats.rs"
+function = "EwQuantile::add"
+mutation = "replace < with <="
+line_has = "&& (k < self.lo || k > self.end() || self.wider_than_one_band())"
+why = """the two part only at a value in the first bucket of a sketch no wider \
+than one level's band, `len <= 2·64·band + 1`. Its arms then add to at most \
+`len − 1 − (high − low) <= 2·64·band`, a level at the zero bucket counting at \
+the first bucket, so `kept` returns the buckets' own extent: `fold_to` moves \
+nothing and the clamp leaves the value where it is"""
+
+[[equivalent]]
+file = "crates/online-core/src/stats.rs"
+function = "EwQuantile::add"
+mutation = "replace > with >="
+line_has = "&& (k < self.lo || k > self.end() || self.wider_than_one_band())"
+why = """as `replace < with <=` here, at a value in the last bucket: a sketch \
+no wider than one level's band fits it, and `kept` returns its own extent"""
+
+[[equivalent]]
+file = "crates/online-core/src/stats.rs"
+function = "EwQuantile::wider_than_one_band"
+mutation = "replace EwQuantile::wider_than_one_band -> bool with true"
+line_has = "self.band"
+why = """`add` then reads the band at every value. A value inside a sketch \
+that fits its band gets the sketch's own extent back from `kept` (as \
+`add`'s `replace < with <=`), so nothing folds; every other case `add` reads \
+the band for anyway"""
+
+[[equivalent]]
+file = "crates/online-core/src/stats.rs"
+function = "EwQuantile::wider_than_one_band"
+mutation = "replace > with >="
+line_has = ".is_some_and(|b| self.buckets.len() > Self::one_level_buckets(b))"
+why = """at exactly one level's band, `len = 2·64·band + 1`, the sketch fits \
+its band, and `kept` returns its own extent: nothing folds"""

@@ -2810,6 +2810,26 @@ mod tests {
             }
         }
 
+        /// The bound holds while the median of a target's deviations is 0
+        /// too: ten rows at exactly the target's location, then one a hair
+        /// off it and one far off. With half the weight on deviations of
+        /// exactly 0 the sketch kept no band, and those two spanned 127,563
+        /// buckets, a megabyte where the budget counted 8 KB (docs/PLAN.md
+        /// task 272 (m2)).
+        #[test]
+        fn the_scales_bound_holds_while_the_median_deviation_is_zero() {
+            let mut h = MarginalBins::new_with(1, 1, vec![vec![0.0]], HUBER).unwrap();
+            for y in std::iter::repeat_n(0.0, 10).chain([1e-300, 1e300]) {
+                h.update_row(&[-1.0], &[Some(y)], 1.0);
+                let sc = h.scales.as_ref().unwrap();
+                let bytes = 3 * std::mem::size_of::<f64>() + sc.mad[0].bytes();
+                assert!(bytes <= SCALES_BYTES_PER_TARGET, "{y}: {bytes} bytes");
+            }
+            let sc = h.scales.as_ref().unwrap();
+            assert_eq!(sc.mad[0].get(0), Some(0.0), "the median deviation is 0");
+            assert_eq!(sc.judge(0).cut, f64::INFINITY, "so there is no cut");
+        }
+
         /// The cut is inclusive: a bin's first row exactly the cut from the
         /// target's location is inside it, so it seeds the bin at its own
         /// value, at its full weight, as the location's `ψ(e) = e` for
