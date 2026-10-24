@@ -22,7 +22,12 @@
 #
 # The scope is made as root (`sudo systemd-run --scope`, the runners allow
 # it), and the command runs as the calling user again (`setpriv`), with the
-# caller's PATH and HOME, since sudo resets both. Its exit status is written
+# caller's whole environment: sudo resets it, and `sudo -E`, which kept it,
+# is ignored by ubuntu-26.04's sudo-rs ("preserving the entire environment
+# is not supported"). There the mutants ran without the workflow's
+# CARGO_INCREMENTAL=0 and without any TMPDIR it set. So the environment
+# goes through a file, NUL-separated (`env -0`), which the command's side
+# exports again before it runs. Its exit status is written
 # to a file from inside the scope and returned here, whatever systemd-run
 # itself returns. Linux with systemd and cgroup v2 only: GitHub's Ubuntu
 # runners.
@@ -36,7 +41,21 @@ max="$1"
 shift 2
 
 if [ -n "${MEMORY_SCOPE_STATUS:-}" ]; then
-    # Inside the scope, as the calling user: run, and leave the status.
+    # Inside the scope, as the calling user: the caller's environment back,
+    # then run, and leave the status. A name bash will not take (readonly,
+    # or not an identifier) is passed over.
+    if [ -n "${MEMORY_SCOPE_ENV:-}" ]; then
+        while IFS= read -r -d '' _scope_kv; do
+            _scope_name="${_scope_kv%%=*}"
+            case "$_scope_name" in
+                MEMORY_SCOPE_* | BASH* | SHELLOPTS | UID | EUID | PPID) continue ;;
+            esac
+            [[ "$_scope_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+            export "$_scope_kv" 2>/dev/null || true
+        done < "$MEMORY_SCOPE_ENV"
+        rm -f "$MEMORY_SCOPE_ENV"
+        unset MEMORY_SCOPE_ENV _scope_kv _scope_name
+    fi
     "$@"
     status=$?
     echo "$status" > "$MEMORY_SCOPE_STATUS"
@@ -45,12 +64,16 @@ fi
 
 status_file="$(mktemp)"
 rm -f "$status_file"
-sudo -E systemd-run --scope --quiet \
+env_file="$(mktemp)"
+env -0 > "$env_file"
+sudo systemd-run --scope --quiet \
     -p MemoryMax="$max" -p MemorySwapMax=0 -p OOMPolicy=continue \
     -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --init-groups \
     env PATH="$PATH" HOME="$HOME" MEMORY_SCOPE_STATUS="$status_file" \
+    MEMORY_SCOPE_ENV="$env_file" \
     bash "$0" "$max" -- "$@"
 launched=$?
+rm -f "$env_file"
 if [ ! -s "$status_file" ]; then
     echo "::error::memory_scope.sh: the command never finished inside the scope (systemd-run exited $launched)" >&2
     exit 1

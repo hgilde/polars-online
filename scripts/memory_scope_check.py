@@ -7,18 +7,24 @@ the job.
     python3 scripts/memory_scope_check.py 13G
 
 Standard library only. Exits non-zero, saying why, if the runaway was not
-killed, was killed long before the cap, or took its parent with it.
+killed, was killed long before the cap, or took its parent with it, or if
+the caller's environment did not reach the command in the scope (sudo-rs,
+on ubuntu-26.04, ignores `sudo -E`).
 """
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve()
 CHUNK_MIB = 64
+#: Set here, read inside the scope: the caller's environment got through.
+SENTINEL = "MEMORY_SCOPE_CHECK_SENTINEL"
+SENTINEL_VALUE = "reached the scope = yes"
 
 #: The runaway: allocate 64 MiB at a time, write a byte to every page so
 #: the memory is resident rather than reserved, and say how far it got.
@@ -54,7 +60,16 @@ def inside() -> None:
     code = child.wait()
     mine = bytearray(CHUNK_MIB << 20)
     mine[::4096] = b"\x01" * len(range(0, len(mine), 4096))
-    print(json.dumps({"runaway_exit": code, "reached_mib": reached, "survivor": len(mine)}))
+    print(
+        json.dumps(
+            {
+                "runaway_exit": code,
+                "reached_mib": reached,
+                "survivor": len(mine),
+                "env": os.environ.get(SENTINEL),
+            }
+        )
+    )
 
 
 def main(cap: str) -> int:
@@ -64,6 +79,7 @@ def main(cap: str) -> int:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        env={**os.environ, SENTINEL: SENTINEL_VALUE},
     )
     print(r.stdout, r.stderr, sep="\n")
     if r.returncode != 0:
@@ -79,6 +95,9 @@ def main(cap: str) -> int:
         problems.append(f"the runaway reached {got['reached_mib']} MiB against a cap of {cap}")
     if got["survivor"] != CHUNK_MIB << 20:
         problems.append("the command that started the runaway did not go on")
+    if got.get("env") != SENTINEL_VALUE:
+        seen = got.get("env")
+        problems.append(f"the caller's environment did not reach the scope ({SENTINEL}={seen!r})")
     for p in problems:
         print(f"::error::{p}")
     if not problems:
