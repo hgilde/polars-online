@@ -26,6 +26,7 @@ def huber(
     standardize: bool = False,
     solve_every: float | Duration | None = None,
     max_rows_between_solves: int | None = None,
+    feature_sets: dict[str, list[str]] | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Huber regression: :func:`ewridge` with the rows that miss by far
@@ -157,6 +158,19 @@ def huber(
         least 0), correlation-form solving, and the solve schedule. ``ridge``
         is on the mean-form Gram, in the features' squared units, and
         dimensionless under ``standardize``, which solves in correlation form.
+    ``feature_sets``
+        Named subsets of ``features``, each a fit of its own from the same
+        sums, reported as ``pred_<t>__<set>``, as :func:`ewridge`'s are. The
+        full set is fitted only when it is one of them, and a single set is
+        no grid: its fields take no suffix. **A row's Huber weight comes from
+        the largest set's residual**, the set with the most features, the
+        first of them where two tie. The sets share the target's sums, and a
+        sum holds each row at one weight, so the weight is one number per
+        row and target. Weighting each set by its own residual would need a
+        set of sums per set. So a smaller set's fit is the weighted least
+        squares fit at the weights the largest set's residuals chose, not a
+        Huber fit of its own. The residual scale ``s`` is the largest set's
+        too.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the
@@ -173,19 +187,21 @@ def huber(
     <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#huber>`_):
 
     ``pred_<t>``, ``resid_<t>``
-        Per target: the prediction, and ``y - pred`` where the target is not null.
+        Per target: the prediction, and ``y - pred`` where the target is not
+        null; one pair per set under ``feature_sets``, ``pred_<t>__<set>``.
     ``weight_sum``
         The accumulated weight before the row, as everywhere.
     ``settled_frac``, ``withheld_reason``
         How far the decay window had filled before the row, and which gate
         withheld the row's predictions, null where none did, as everywhere.
     ``coef``
-        Per target, the intercept then one entry per feature (:func:`coef_index`).
+        Per target, the intercept then one entry per feature (:func:`coef_index`);
+        per target and set under ``feature_sets``, 0 for a feature outside the set.
     ``support_coef``
         On ``coef``'s rows, each coefficient's data share, laid out like
         ``coef``: how much of the fit after the row the data, as the loss
         weighs the rows, determined rather than the ridge
-        (:mod:`polars_online.spec`).
+        (:mod:`polars_online.spec`); null for a feature outside the set.
 
     plus the fields of the diagnostics switched on, as :mod:`polars_online.spec`
     describes them.
@@ -214,6 +230,11 @@ def huber(
         "standardize": standardize,
         "solve_every": solve_every,
         "max_rows_between_solves": max_rows_between_solves,
+        # `{}` is written as `[]`, which the Rust side refuses by name, as
+        # `ewridge`'s is.
+        "feature_sets": (
+            [[k, list(v)] for k, v in feature_sets.items()] if feature_sets is not None else None
+        ),
     }
     # Written only when given: the Rust spec skips them when absent.
     skipped = _SKIPPED_WHEN_ABSENT["huber"]

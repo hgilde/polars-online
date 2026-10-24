@@ -733,6 +733,20 @@ quantile:  one Newton step on the check loss, smoothed by a uniform kernel of ha
 The weights are per target, so `huber` and `quantile` keep one set of
 sums per target, where `ewridge` shares one set across targets.
 
+**`huber`'s `feature_sets=` fits subsets of the features from the same
+sums, as `ewridge`'s do, and weighs each row by the largest set's
+residual.** A set's fields are `pred_<t>__<set>` and `resid_<t>__<set>`.
+The sets share the target's sums, and a sum holds each row at one weight,
+so a row's Huber weight is one number per target. It is read from the
+residual of the largest set, the one with the most features, the first of
+them where two tie, and so is the scale `σ`. Weighting each set by its own
+residual would need a set of sums per set. So the largest set is the Huber
+fit of its features, the same to the bit as a `huber` on those features
+alone. A smaller set is the weighted least-squares fit of its features at
+the weights the largest set's residuals chose, which is not a Huber fit of
+its own. `quantile` takes no `feature_sets`: its rows outside the band step
+the fit through one system per target.
+
 **The scale `σ` is the part of Huber's estimator that makes it robust.**
 The cut is `δσ`, so a scale that the outliers inflate moves the cut out of
 their way. `huber_scale=` chooses between two scales:

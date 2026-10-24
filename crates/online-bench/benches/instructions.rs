@@ -45,6 +45,7 @@ fn counted_from(entry: &str) -> LibraryBenchmarkConfig {
 #[bench::ewridge_k20(args = ("ewridge_k20"), setup = model_setup)]
 #[bench::ewridge_gram_t10(args = ("ewridge_gram_t10"), setup = model_setup)]
 #[bench::huber_k20(args = ("huber_k20"), setup = model_setup)]
+#[bench::huber_k20_sets(args = ("huber_k20_sets"), setup = model_setup)]
 #[bench::sgd(args = ("sgd"), setup = model_setup)]
 #[bench::sgd_huber(args = ("sgd_huber"), setup = model_setup)]
 #[bench::pa(args = ("pa"), setup = model_setup)]

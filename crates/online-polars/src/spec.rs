@@ -686,6 +686,13 @@ pub enum ModelKind {
         solve_every: Option<Span>,
         #[serde(default)]
         max_rows_between_solves: Option<u32>,
+        /// Named subsets of `features`, each a fit of its own from the
+        /// target's sums, as `EwRidge`'s are; a row's Huber weight is read
+        /// from the largest set's residual (docs/PLAN.md task 272 (a)).
+        /// Skipped when absent, so a spec written before it serializes as
+        /// it did.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        feature_sets: Option<Vec<(String, Vec<String>)>>,
     },
     /// Quantile regression at level `quantile` (docs/PLAN.md §4.5).
     Quantile {
@@ -4870,6 +4877,7 @@ impl Spec {
                 huber_scale_half_life,
                 ridge,
                 solve_every,
+                feature_sets,
                 ..
             } => {
                 if let Some(d) = huber_delta.filter(|d| !positive(d.0)) {
@@ -4885,6 +4893,7 @@ impl Spec {
                 )?;
                 check_ridge(&self.name, *ridge)?;
                 check_solve_every(&self.name, solve_every.as_ref())?;
+                check_feature_sets(&self.name, &self.features, feature_sets.as_deref())?;
             }
             ModelKind::Quantile {
                 quantile,
@@ -5163,56 +5172,61 @@ impl Spec {
                         ));
                     }
                 }
-                if let Some(fs) = feature_sets {
-                    // `[]` is every feature, one set, to the model, and no
-                    // slot at all to the field names, which rendered none for
-                    // a model emitting one per ridge (review 2026-09-12, V23).
-                    if fs.is_empty() {
-                        return Err(format!(
-                            "spec {:?}: feature_sets names no set; leave it out to fit every \
-                             feature",
-                            self.name
-                        ));
-                    }
-                    let mut names = std::collections::HashSet::new();
-                    for (name, cols) in fs {
-                        // A name twice renders two slots under one field name,
-                        // which only the bank's tripwire caught (S7).
-                        if !names.insert(name.as_str()) {
-                            return Err(format!(
-                                "spec {:?}: feature_sets names {name:?} more than once",
-                                self.name
-                            ));
-                        }
-                        if cols.is_empty() {
-                            return Err(format!(
-                                "spec {:?}: feature set {name:?} is empty",
-                                self.name
-                            ));
-                        }
-                        let mut seen = std::collections::HashSet::new();
-                        for c in cols {
-                            if !self.features.contains(c) {
-                                return Err(format!(
-                                    "spec {:?}: feature set {name:?} references unknown feature {c:?}",
-                                    self.name
-                                ));
-                            }
-                            // A column twice split its coefficient across two
-                            // identical slots, without a word (S7).
-                            if !seen.insert(c.as_str()) {
-                                return Err(format!(
-                                    "spec {:?}: feature set {name:?} lists {c:?} more than once",
-                                    self.name
-                                ));
-                            }
-                        }
-                    }
-                }
+                check_feature_sets(&self.name, &self.features, feature_sets.as_deref())?;
             }
         }
         Ok(())
     }
+}
+
+/// `feature_sets`' entries, `ewridge`'s and `huber`'s alike: at least one
+/// set, each named once, none empty, each naming columns of `features`,
+/// each once.
+fn check_feature_sets(
+    spec: &str,
+    features: &[String],
+    feature_sets: Option<&[(String, Vec<String>)]>,
+) -> Result<(), String> {
+    let Some(fs) = feature_sets else {
+        return Ok(());
+    };
+    // `[]` is every feature, one set, to the model, and no slot at all to
+    // the field names, which rendered none for a model emitting one per
+    // ridge (review 2026-09-12, V23).
+    if fs.is_empty() {
+        return Err(format!(
+            "spec {spec:?}: feature_sets names no set; leave it out to fit every feature"
+        ));
+    }
+    let mut names = std::collections::HashSet::new();
+    for (name, cols) in fs {
+        // A name twice renders two slots under one field name, which only
+        // the bank's tripwire caught (S7).
+        if !names.insert(name.as_str()) {
+            return Err(format!(
+                "spec {spec:?}: feature_sets names {name:?} more than once"
+            ));
+        }
+        if cols.is_empty() {
+            return Err(format!("spec {spec:?}: feature set {name:?} is empty"));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for c in cols {
+            if !features.contains(c) {
+                return Err(format!(
+                    "spec {spec:?}: feature set {name:?} references unknown feature {c:?}"
+                ));
+            }
+            // A column twice split its coefficient across two identical
+            // slots, without a word (S7).
+            if !seen.insert(c.as_str()) {
+                return Err(format!(
+                    "spec {spec:?}: feature set {name:?} lists {c:?} more than once"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -243,6 +243,7 @@
     standardize = False
     solve_every = None
     max_rows_between_solves = None
+    feature_sets = None
     common
   kalman:
     name
@@ -638,6 +639,7 @@
     stream.tails_half_life = 50.0
   huber(features=['x0'], half_life=50.0, targets=['y']):
     model.decay.Halflife = 50.0
+    model.feature_sets = []
     model.fit_intercept = true
     model.huber_scale = "mad"
     model.huber_scale_decay = null
@@ -797,6 +799,7 @@
     stream.tails_half_life = 50.0
   quantile(features=['x0'], half_life=50.0, quantile=0.5, targets=['y']):
     model.decay.Halflife = 50.0
+    model.feature_sets = []
     model.fit_intercept = true
     model.huber_scale = "rms"
     model.huber_scale_decay = null
@@ -2484,7 +2487,7 @@
     ftrl: alpha, beta, l1, l2, loss, strict_binary
     hmm: covariance_type, covs, exog_tvtp, init, learn, means, n_components, precision_prior, seed, transition, transition_prior, tvtp_coef, warm_rows
     holt: trend, trend_half_life
-    huber: huber_delta, huber_scale, huber_scale_half_life, max_rows_between_solves, ridge, solve_every, standardize
+    huber: feature_sets, huber_delta, huber_scale, huber_scale_half_life, max_rows_between_solves, ridge, solve_every, standardize
     kalman: coef_half_life, obs_var, p0, q, revert_half_life, share_p, standardize
     kmeans: dead_frac, init, n_clusters, scale_floor, seed, split_merge, split_merge_every_rows, standardize, update_every_rows, warm_rows
     lasso: closed, l1_ratio, max_iter, max_rows_between_snapshots, max_rows_between_solves, penalties, select_half_life, snapshot_every, solve_every, target_gaps, tol, window_budget, window_size

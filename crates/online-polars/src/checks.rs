@@ -120,6 +120,18 @@ impl CheckCfg {
                     })
                     .collect()
             }
+            // One combo per set, a single ridge (task 272 (a)).
+            ModelKind::Huber {
+                feature_sets: Some(sets),
+                ..
+            } => sets
+                .iter()
+                .map(|(_, cols)| {
+                    cols.iter()
+                        .filter_map(|c| spec.features.iter().position(|f| f == c))
+                        .collect()
+                })
+                .collect(),
             _ => vec![all; crate::stream::combos(spec).len()],
         };
         let mut cfg = Self {

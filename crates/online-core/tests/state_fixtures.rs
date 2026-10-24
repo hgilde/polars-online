@@ -496,13 +496,16 @@ fn held(v: &rmpv::Value) -> usize {
 /// scale's two forms (63, task 271): `huber_mad` and `sgd_huber_mad` keep
 /// a sketch of `|e|` per target, `huber_mad` its own scale memory, and each
 /// cfg names its scale, `"mad"` there and `"rms"` in `huber` and
-/// `sgd_huber`; each MAD sketch names its band (task 271 (b)).
+/// `sgd_huber`; each MAD sketch names its band (task 271 (b)). `huber`'s
+/// feature sets (63, task 272 (a)): `huber_sets` names them in its cfg and
+/// holds a fit per target and set.
 #[test]
 fn every_layout_a_schema_moved_is_written_by_a_fixture() {
     if regenerating() {
         return;
     }
-    const FORMS: [(&str, &[&str]); 32] = [
+    const FORMS: [(&str, &[&str]); 33] = [
+        ("huber_sets", &["model", "Robust", "cfg", "feature_sets"]),
         ("huber_mad", &["model", "Robust", "mad"]),
         (
             "huber_mad",

@@ -1226,6 +1226,24 @@ pub fn combos(spec: &Spec) -> Vec<Combo> {
             }
             out
         }
+        // One combo per feature set, labelled by its name where there are
+        // two or more, as `ewridge`'s single ridge has them.
+        ModelKind::Huber {
+            feature_sets: Some(sets),
+            ..
+        } => sets
+            .iter()
+            .map(|(name, _)| Combo {
+                label: if sets.len() == 1 {
+                    String::new()
+                } else {
+                    format!("__{name}")
+                },
+                ridge: None,
+                feature_set: Some(name.clone()),
+                lambda: None,
+            })
+            .collect(),
         ModelKind::Rls { .. }
         | ModelKind::Kalman { .. }
         | ModelKind::Huber { .. }

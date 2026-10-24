@@ -245,7 +245,7 @@ def _got(v: Any) -> str:
 _SKIPPED_WHEN_ABSENT: dict[str, frozenset[str]] = {
     "holt": frozenset({"trend"}),
     "ewridge": frozenset({"gram_threads"}),
-    "huber": frozenset({"huber_scale", "huber_scale_half_life"}),
+    "huber": frozenset({"huber_scale", "huber_scale_half_life", "feature_sets"}),
     "sgd": frozenset({"huber_scale", "huber_scale_half_life"}),
     "ew_cov": frozenset({"gram_threads"}),
     "marginal": frozenset(

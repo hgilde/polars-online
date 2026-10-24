@@ -499,6 +499,7 @@ pub fn huber_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         standardize,
         solve_every,
         max_rows_between_solves,
+        feature_sets: _,
     } = &spec.model
     else {
         return Err("not a huber spec".into());
@@ -526,11 +527,34 @@ pub fn huber_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         huber_scale_decay: huber_scale_half_life
             .as_ref()
             .map(|h| Decay::Halflife(h.value())),
+        feature_sets: huber_feature_sets(spec),
     };
     let mut m = Robust::new(cfg)?;
     // Each target's own threshold, for its own first solve (S9b).
     m.set_target_min_weight(spec.min_periods_per_target())?;
     Ok(AnyModel::Robust(Box::new(m)))
+}
+
+/// A `huber` spec's feature sets as the model takes them: each set's
+/// columns as positions in the spec's features, which `Spec::validate` has
+/// held to name them; none without sets.
+fn huber_feature_sets(spec: &Spec) -> Vec<(String, Vec<usize>)> {
+    let ModelKind::Huber {
+        feature_sets: Some(sets),
+        ..
+    } = &spec.model
+    else {
+        return Vec::new();
+    };
+    sets.iter()
+        .map(|(name, cols)| {
+            let idx = cols
+                .iter()
+                .filter_map(|c| spec.features.iter().position(|f| f == c))
+                .collect();
+            (name.clone(), idx)
+        })
+        .collect()
 }
 
 /// A `quantile` spec's model.
@@ -565,6 +589,7 @@ pub fn quantile_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         // model's clock (task 271 leaves the quantile fit as it was).
         huber_scale: HuberScale::Rms,
         huber_scale_decay: None,
+        feature_sets: Vec::new(),
     };
     let mut m = Robust::new(cfg)?;
     // Each target's own threshold, for its own first solve (S9b).

@@ -310,6 +310,7 @@ fn robust_cfg(loss: RobustLoss) -> RobustCfg {
         quantile_eps: 1e-3,
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
+        feature_sets: Vec::new(),
     }
 }
 
@@ -632,6 +633,23 @@ pub fn all() -> Vec<Case> {
             Robust::new(RobustCfg {
                 huber_scale: online_core::HuberScale::Mad,
                 huber_scale_decay: Some(Decay::Halflife(8.0)),
+                ..robust_cfg(RobustLoss::Huber { delta: 1.5 })
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            40
+        ),
+        // Feature sets from each target's one set of sums, the rows weighed
+        // by the largest set's residual (schema 63, docs/PLAN.md task 272
+        // (a)).
+        case!(
+            "huber_sets",
+            "Robust",
+            Robust,
+            Robust::new(RobustCfg {
+                huber_scale: online_core::HuberScale::Mad,
+                feature_sets: vec![("one".into(), vec![1]), ("all".into(), (0..K).collect())],
                 ..robust_cfg(RobustLoss::Huber { delta: 1.5 })
             })
             .unwrap(),
