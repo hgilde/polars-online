@@ -57,7 +57,16 @@ def huber(
     by its weight, whatever its size, so the outliers cannot widen the cut that
     is meant to catch them: the scale holds until half the weight is outliers.
     The median is read from a quantile sketch per target, within 0.78% of the
-    exact weighted median. With ``huber_scale = "rms"`` it is the EW root mean
+    exact weighted median. The sketch's buckets span at most 16 octaves around
+    the median, a factor of 65,536, and a residual beyond them is folded into
+    the outermost bucket on its side, its weight kept: at most about 9 KB of state per target,
+    whatever the residuals, and 15 to 20 ns per target per row. Nothing is
+    folded while the residuals span less, and the median reads what an
+    unbounded sketch would unless it later moves past a bucket a residual was
+    folded into, at least a factor of 256 from where it stood then: as when a
+    fit's first residuals, at the target's level, are more than 65,536 times
+    the noise's, and the median reads too high until the later residuals
+    outweigh them. With ``huber_scale = "rms"`` it is the EW root mean
     square of the residuals about 0, in which every row counts at full weight:
     one wild row sets it, and a fit's first residuals, the target's whole level
     while the intercept is still near 0, widen it for as long as the decay

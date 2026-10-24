@@ -1801,42 +1801,6 @@ impl PartialEq for Factors {
     }
 }
 
-impl EwRidge {
-    /// [`OnlineModel::predict`], into the caller's buffer: what `step`
-    /// reports, read before the row (task 270, M-4).
-    fn predict_into(&self, x: &[f64], d_clock: f64, out: &mut Step) {
-        debug_assert_eq!(x.len(), self.cfg.n_features);
-        if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
-            *out = refused;
-            return;
-        }
-        let (m, nc) = (self.cfg.n_targets, self.cfg.n_combos());
-        // The gate and the per-target test read the window's weights, so a
-        // target with nothing in the window reports nothing (C2) -- the
-        // weights alone, not the O(k²) view, which is the solve's and was
-        // built here every row for these two numbers (review 2026-09-12, P1).
-        let weights = self.window_weights();
-        let (n_eff, wj) = match weights.as_ref() {
-            Some((w, wj)) => (*w, wj.as_slice()),
-            None => (self.acc.cross.w, self.acc.wj.as_slice()),
-        };
-        out.pred.clear();
-        out.pred.resize(m * nc, f64::NAN);
-        let pred = &mut out.pred;
-        if let (true, Some(beta)) = (n_eff >= self.cfg.min_weight, &self.beta) {
-            for j in 0..m {
-                if wj[j] > 0.0 {
-                    for c in 0..nc {
-                        pred[j * nc + c] = dot_aug(&beta[j * nc + c], x, self.cfg.fit_intercept);
-                    }
-                }
-            }
-        }
-        out.n_eff = n_eff;
-        out.extra = None;
-    }
-}
-
 impl OnlineModel for EwRidge {
     fn set_solve_share(&mut self, share: Option<f64>) {
         self.cfg.solve_share = share;
@@ -2046,20 +2010,6 @@ impl OnlineModel for EwRidge {
     }
 
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
-        let mut out = Step::default();
-        self.step_into(x, y, d_clock, weight, &mut out);
-        out
-    }
-
-    /// The step, into the caller's buffer (task 270, M-4).
-    fn step_into(
-        &mut self,
-        x: &[f64],
-        y: &[Option<f64>],
-        d_clock: f64,
-        weight: f64,
-        out: &mut Step,
-    ) {
         debug_assert_eq!(x.len(), self.cfg.n_features);
         debug_assert_eq!(y.len(), self.cfg.n_targets);
         // A value that is not usable, by the rule every model keeps
@@ -2070,8 +2020,7 @@ impl OnlineModel for EwRidge {
         // weight 0, where the row itself at weight 0 would be held as it is:
         // the block closes on the same row, and merges to the same moments.
         if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
-            *out = refused;
-            return;
+            return refused;
         }
         let m = self.cfg.n_targets;
         let nc = self.cfg.n_combos();
@@ -2080,7 +2029,7 @@ impl OnlineModel for EwRidge {
         self.z(x);
 
         // ---- predict (state before this row's update) ----
-        self.predict_into(x, d_clock, out);
+        let out = self.predict(x, d_clock);
         let pred = &out.pred;
 
         // ---- update ----
@@ -2142,7 +2091,7 @@ impl OnlineModel for EwRidge {
         // them, and the fit read until the next solve moved (docs/PLAN.md
         // task 214).
         if weight <= 0.0 {
-            return;
+            return out;
         }
         // A weight here is usable, finite and `>= 0` (`OnlineModel::step`;
         // `refused_step` steps a row whose weight is not as a row of 0).
@@ -2165,12 +2114,39 @@ impl OnlineModel for EwRidge {
         if due {
             self.solve();
         }
+        out
     }
 
     fn predict(&self, x: &[f64], d_clock: f64) -> Step {
-        let mut out = Step::default();
-        self.predict_into(x, d_clock, &mut out);
-        out
+        debug_assert_eq!(x.len(), self.cfg.n_features);
+        if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
+            return refused;
+        }
+        let (m, nc) = (self.cfg.n_targets, self.cfg.n_combos());
+        // The gate and the per-target test read the window's weights, so a
+        // target with nothing in the window reports nothing (C2) -- the
+        // weights alone, not the O(k²) view, which is the solve's and was
+        // built here every row for these two numbers (review 2026-09-12, P1).
+        let weights = self.window_weights();
+        let (n_eff, wj) = match weights.as_ref() {
+            Some((w, wj)) => (*w, wj.as_slice()),
+            None => (self.acc.cross.w, self.acc.wj.as_slice()),
+        };
+        let mut pred = vec![f64::NAN; m * nc];
+        if let (true, Some(beta)) = (n_eff >= self.cfg.min_weight, &self.beta) {
+            for j in 0..m {
+                if wj[j] > 0.0 {
+                    for c in 0..nc {
+                        pred[j * nc + c] = dot_aug(&beta[j * nc + c], x, self.cfg.fit_intercept);
+                    }
+                }
+            }
+        }
+        Step {
+            pred,
+            n_eff,
+            extra: None,
+        }
     }
 
     fn state(&self) -> State {

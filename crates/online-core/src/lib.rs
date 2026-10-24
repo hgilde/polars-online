@@ -173,14 +173,16 @@ pub use rcov::{
     psi1, psi2,
 };
 pub use rls::{Rls, RlsCfg};
-pub use robust::{HuberScale, NORMAL_Q3, Robust, RobustCfg, RobustLoss};
+pub use robust::{HuberScale, MAD_BAND_OCTAVES, NORMAL_Q3, Robust, RobustCfg, RobustLoss};
 pub use runs::Runs;
 pub use sandwich::Sandwich;
 pub use seqtest::{SLOTS as SEQTEST_SLOTS, SeqTest, SeqTestCfg};
 pub use sgd::{LearningRate, Sgd, SgdCfg, SgdLoss};
 pub use solve::{SpdFactor, quad_forms_logdet, solve_spd};
 pub use specification::Specification;
-pub use stats::{EW_QUANTILE_ALPHA, EwAutoCorr, EwQuantile, HitTest, SlotMetrics};
+pub use stats::{
+    EW_QUANTILE_ALPHA, EwAutoCorr, EwQuantile, HitTest, MAX_BAND_OCTAVES, SlotMetrics,
+};
 pub use tails::Tails;
 pub use warmup::{WARMUP_ROWS, Warmup};
 pub use window::{
@@ -683,7 +685,9 @@ pub use window::{
 ///   the EW median of `|e|` over `Φ⁻¹(3/4)`, or `"rms"`, the EW root mean
 ///   square, the one scale there was), aged on `huber_scale_decay` (`None`:
 ///   the model's decay). Under the MAD each target keeps an `EwQuantile` of
-///   `|e|` at 0.5 (`mad`, empty under the RMS). A state of 62 has neither
+///   `|e|` at 0.5 (`mad`, empty under the RMS), bounded to 8 octaves either
+///   side of the median (its `band`, task 271 (b); a sketch without the
+///   field, saved before it, loads unbounded and goes on as it was). A state of 62 has neither
 ///   field and was fitted under the RMS, so the loader is the fields'
 ///   defaults: `huber_scale` defaults to `"rms"` on load
 ///   (`HuberScale::of_a_state_before_63`), where a spec's default is

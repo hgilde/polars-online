@@ -5,9 +5,8 @@ use thiserror::Error;
 
 use crate::{MIN_SCHEMA_VERSION, SCHEMA_VERSION};
 
-/// Output of one [`OnlineModel::step`]. The default is empty, a buffer for
-/// [`OnlineModel::step_into`] to fill.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// Output of one [`OnlineModel::step`].
+#[derive(Debug, Clone, PartialEq)]
 pub struct Step {
     /// Per output slot (targets, or targets x grid combos); NaN when not ready.
     pub pred: Vec<f64>,
@@ -556,30 +555,6 @@ fn refuse_reading_with<M: OnlineModel>(m: &M, x: &[f64], y: &[Option<f64>], d_cl
 /// ```
 pub trait OnlineModel: Sized {
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step;
-
-    /// [`Self::step`], its [`Step`] written into `out` in place of a new
-    /// one: every slot of `pred` (resized to the row's slot count), `n_eff`
-    /// and `extra`, whatever `out` held before. A caller that keeps one
-    /// `Step` across rows -- the bank does, one per model instance -- reuses
-    /// its `pred` buffer, where `step` allocates a new one a row: a heap
-    /// allocation, which is a large share of the cheapest models' row. The
-    /// numbers
-    /// and the state are `step`'s to the bit, which `tests/model_contract.rs`
-    /// holds for every model on a buffer left with another row's values.
-    ///
-    /// The default goes through `step`, and allocates as it does; a model
-    /// whose step is cheap enough for the allocation to matter overrides it
-    /// and writes `step` as this into a new `Step`.
-    fn step_into(
-        &mut self,
-        x: &[f64],
-        y: &[Option<f64>],
-        d_clock: f64,
-        weight: f64,
-        out: &mut Step,
-    ) {
-        *out = self.step(x, y, d_clock, weight);
-    }
     /// The [`Step`] that [`Self::step`] would return for this row, without
     /// the update: the same `pred`, the same `n_eff`, the same `extra`, and
     /// the state untouched. `d_clock` is the clock elapsed since the last
