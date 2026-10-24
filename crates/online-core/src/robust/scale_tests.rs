@@ -452,3 +452,42 @@ fn a_state_without_huber_scale_loads_as_the_rms() {
         );
     }
 }
+
+/// A MAD scale is the median of `|e|` over `Φ⁻¹(3/4)`, and there is none
+/// while half the weight or more is on residuals of exactly 0: the median
+/// is 0 there, and a cut of 0 would clip every row (docs/PLAN.md task 272
+/// (m)).
+#[test]
+fn no_mad_scale_while_half_the_residuals_are_exactly_zero() {
+    let mut q = EwQuantile::bounded(&[0.5], MAD_BAND_OCTAVES).unwrap();
+    assert_eq!(mad_scale(&q), None, "no residual yet");
+    q.add(0.0, 3.0);
+    q.add(1.0, 1.0);
+    assert_eq!(q.get(0), Some(0.0));
+    assert_eq!(mad_scale(&q), None, "three quarters of the weight at 0");
+    q.add(1.0, 2.0);
+    assert_eq!(mad_scale(&q), None, "half the weight at 0");
+    q.add(1.0, 1.0);
+    let s = mad_scale(&q).expect("more than half the weight above 0");
+    let want = 1.0 / NORMAL_Q3;
+    assert!(
+        (s - want).abs() <= crate::EW_QUANTILE_ALPHA * want,
+        "{s} {want}"
+    );
+    // A median past the largest double's share is no scale either.
+    let mut wild = EwQuantile::bounded(&[0.5], MAD_BAND_OCTAVES).unwrap();
+    wild.add(f64::MAX, 1.0);
+    assert!(wild.get(0).unwrap() / NORMAL_Q3 > f64::MAX);
+    assert_eq!(mad_scale(&wild), None);
+}
+
+/// The word each scale is spelled with is the one a saved configuration
+/// carries for it.
+#[test]
+fn a_scales_word_is_its_saved_name() {
+    for s in [HuberScale::Mad, HuberScale::Rms] {
+        let saved = serde_json::to_string(&s).unwrap();
+        assert_eq!(format!("\"{}\"", s.word()), saved);
+    }
+    assert_eq!(HuberScale::Mad.word(), "mad");
+}

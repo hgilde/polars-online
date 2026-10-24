@@ -496,3 +496,105 @@ fn the_emitted_scale_is_refused_on_a_quantile_fit() {
     .unwrap_err();
     assert!(e.contains("emit_huber_scale is for huber"), "{e}");
 }
+
+/// Under the sum scale one feature set is a fit on its columns alone: at
+/// `huber_delta = inf`, solved on every row, the set `[1]` of three
+/// features is `rls` on the second feature, with the intercept, per
+/// target; the columns outside the set have a coefficient of 0
+/// (docs/PLAN.md task 272 (m)).
+#[test]
+fn a_feature_set_under_the_sum_scale_is_rls_on_its_columns() {
+    let (k, hl, ridge) = (3usize, 40.0, 0.7);
+    let mut hub = Robust::new(RobustCfg {
+        loss: RobustLoss::Huber {
+            delta: f64::INFINITY,
+        },
+        decay: Decay::Halflife(hl),
+        ridge,
+        ridge_scale: true,
+        min_weight: 0.0,
+        feature_sets: vec![("second".into(), vec![1])],
+        ..huber(k, 2)
+    })
+    .unwrap();
+    let mut rls: Vec<crate::Rls> = (0..2)
+        .map(|_| {
+            crate::Rls::new(crate::RlsCfg {
+                n_features: 1,
+                n_targets: 1,
+                fit_intercept: true,
+                decay: Decay::Halflife(hl),
+                delta: ridge,
+                coef_prior: None,
+                min_weight: 0.0,
+            })
+            .unwrap()
+        })
+        .collect();
+    let mut s = 41u64;
+    let (mut worst, mut compared) = (0.0f64, 0);
+    for i in 0..300 {
+        let x: Vec<f64> = (0..k).map(|_| lcg(&mut s)).collect();
+        let y0 = 1.5 * x[0] - x[1] + 0.3 + 0.05 * lcg(&mut s);
+        let y1 = (i % 7 != 3).then(|| 4.0 + 0.2 * x[2] - 3.0 * x[1] + 0.01 * lcg(&mut s));
+        let d = if i == 0 { 0.0 } else { 0.5 + lcg(&mut s).abs() };
+        let w = 0.5 + lcg(&mut s).abs();
+        let y = [Some(y0), y1];
+        let h = hub.step(&x, &y, d, w);
+        for j in 0..2 {
+            let r = rls[j].step(&[x[1]], &[y[j]], d, w);
+            if i > 8 && h.pred[j].is_finite() {
+                compared += 1;
+                worst = worst.max((h.pred[j] - r.pred[0]).abs());
+            }
+        }
+    }
+    assert!(compared > 500, "{compared}");
+    assert!(worst < 1e-9, "the set against rls on its column: {worst:e}");
+    for beta in hub.coefficients().unwrap() {
+        assert_eq!((beta[1], beta[3]), (0.0, 0.0), "{beta:?}");
+        assert!(beta[0] != 0.0 && beta[2] != 0.0, "{beta:?}");
+    }
+}
+
+/// A column that holds no data -- a feature that is 0 on every row -- has
+/// none of the data's support: its share `1 − λ (A⁻¹)_jj` is 0, since with
+/// no penalty its row of the sum-scale system is the jitter `ε` alone,
+/// `(A⁻¹)_jj = 1/ε` and `λ = ε`. The system is singular without that
+/// jitter, so every solve takes a rung of the ladder, and each is counted
+/// in `solve_failures` (docs/PLAN.md task 272 (m)).
+#[test]
+fn a_column_with_no_data_has_no_share_under_the_sum_scale() {
+    let mut m = Robust::new(RobustCfg {
+        loss: RobustLoss::Huber {
+            delta: f64::INFINITY,
+        },
+        ridge: 0.0,
+        ridge_scale: true,
+        min_weight: 0.0,
+        ..huber(2, 1)
+    })
+    .unwrap();
+    let mut s = 13u64;
+    let mut solved = 0;
+    for i in 0..60 {
+        let x = [lcg(&mut s), 0.0];
+        let before = m.solve_failures;
+        m.step(
+            &x,
+            &[Some(2.0 - x[0] + 0.01 * lcg(&mut s))],
+            f64::from(u8::from(i > 0)),
+            1.0,
+        );
+        if m.coefficients().is_some() {
+            solved += 1;
+            assert_eq!(m.solve_failures, before + 1, "row {i}: one rung a solve");
+        }
+    }
+    assert!(solved > 50, "{solved}");
+    let shares = m.support_coef().unwrap();
+    let share = &shares[0];
+    assert!(share[0].is_nan(), "the intercept's is no share");
+    assert!(share[1] > 0.99 && share[1] <= 1.0, "{share:?}");
+    assert!(share[2] < 1e-9, "the empty column: {share:?}");
+}
