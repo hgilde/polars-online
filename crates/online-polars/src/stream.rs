@@ -1,6 +1,8 @@
 //! One (spec, group) stream: clock state + model instances (one per half-life
 //! grid entry), row-by-row processing with the docs/PLAN.md §3 null policy.
 
+use std::collections::VecDeque;
+
 use online_core::{
     Bocpd, BocpdCfg, BocpdEmission, ChangeNorm, ClockState, Conformal, Constraint, CorrChange,
     CorrChangeCfg, CorrChangeKind, Covariance, Decay, Deco, DecoCfg, DecoDynamics, Disorder,
@@ -1873,9 +1875,10 @@ pub struct Persisted {
     pub notified: Vec<Notified>,
     /// Rows accepted but not yet learned from (`embargo`, E47). Skipped
     /// when empty, so a spec without a delay writes the same bytes it always
-    /// did.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub pending: Vec<PendingRow>,
+    /// did. A deque, released from the front (task 270, M-3); written as
+    /// the sequence a `Vec` is.
+    #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
+    pub pending: VecDeque<PendingRow>,
     /// The break skipped rows raised since the last accepted row, waiting
     /// for the next one (docs/PLAN.md task 153). Skipped when there is none.
     #[serde(default, skip_serializing_if = "HeldBreak::is_none")]
@@ -3001,7 +3004,7 @@ impl Stream {
                     Vec::new()
                 },
                 notified: vec![Notified::default(); instances],
-                pending: Vec::new(),
+                pending: VecDeque::new(),
                 held_break: HeldBreak::default(),
                 last_learned: None,
                 fed: 0,

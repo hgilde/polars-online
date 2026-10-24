@@ -123,7 +123,7 @@ impl Stream {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn apply_label_delay(
         embargo: Option<Embargo>,
-        pending: &mut Vec<PendingRow>,
+        pending: &mut VecDeque<PendingRow>,
         held_break: &mut HeldBreak,
         plans: &mut Vec<RowPlan>,
         // Each plan's place on the elapsed clock, by its `ri`: every plan
@@ -140,6 +140,11 @@ impl Stream {
         }
         let mut released: Vec<PendingRow> = Vec::new();
         let mut out: Vec<RowPlan> = Vec::with_capacity(plans.len());
+        // The resolved rows are a prefix of the buffer (below): its length,
+        // found by bisection once a chunk and kept as rows resolve, leave
+        // and join, where a pass over it and a `Vec` shifted at each release
+        // cost O(rows held) a row (task 270, M-3).
+        let mut resolved = pending.partition_point(|r| r.resolved);
         // One template for every replayed row: only `pending` and the
         // break's events differ, and a replay never emits, never wants
         // coefficients and never counts as a row of the frame. A drift it
@@ -175,6 +180,7 @@ impl Stream {
                 // the state is no longer about this stream. The rows waiting
                 // to teach that state go with it.
                 pending.clear();
+                resolved = 0;
                 *held_break = HeldBreak::default();
             }
             // The break's events run when its row is learned, not here.
@@ -197,13 +203,14 @@ impl Stream {
             {
                 let f = formulas.expect("checked");
                 let now = f.seqs[plan.i];
-                for row in pending.iter_mut().skip_while(|r| r.resolved) {
+                for row in pending.range_mut(resolved..) {
                     match res.find(row.seq) {
                         Some((at, ys)) if at <= now => {
                             for (&slot, &y) in f.slots.iter().zip(ys) {
                                 row.ys[slot] = Some(y).filter(|v| usable(*v));
                             }
                             row.resolved = true;
+                            resolved += 1;
                         }
                         _ => break,
                     }
@@ -222,11 +229,10 @@ impl Stream {
             if !plan.reset {
                 // With no embargo a formula row waits for its window alone.
                 let now = elapsed[plan.ri];
-                let ready = pending
-                    .iter()
-                    .take_while(|r| r.resolved && embargo.is_none_or(|e| e.passed(now, r.arrived)))
-                    .count();
-                for row in pending.drain(..ready) {
+                while let Some(row) = pending.pop_front_if(|r| {
+                    r.resolved && embargo.is_none_or(|e| e.passed(now, r.arrived))
+                }) {
+                    resolved = resolved.saturating_sub(1);
                     released.push(row);
                     out.push(replay(
                         released.len() - 1,
@@ -239,7 +245,8 @@ impl Stream {
             // buffered with the delta it arrived with, its place on the
             // elapsed clock and the break before it.
             let i = plan.i;
-            pending.push(PendingRow {
+            resolved += usize::from(formulas.is_none());
+            pending.push_back(PendingRow {
                 arrived: elapsed[plan.ri],
                 d_clock: plan.d_clock,
                 stamp: plan.stamp,
