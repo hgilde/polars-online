@@ -123,12 +123,15 @@ impl SeqTest {
         (((np - nn) / n1).max(0.0), ((nn - np) / n1).max(0.0))
     }
 
-    fn outputs(&self) -> Vec<f64> {
+    /// The row's slots, into `pred`, whatever it held.
+    fn outputs_into(&self, pred: &mut Vec<f64>) {
         let m = self.cfg.n_targets;
+        pred.clear();
         if self.w_sum < self.cfg.min_weight {
-            return vec![f64::NAN; SLOTS * m];
+            pred.resize(SLOTS * m, f64::NAN);
+            return;
         }
-        let mut pred = Vec::with_capacity(SLOTS * m);
+        pred.reserve(SLOTS * m);
         for j in 0..m {
             pred.extend_from_slice(&[
                 self.log_e_pos[j],
@@ -137,19 +140,36 @@ impl SeqTest {
                 self.n_neg[j],
             ]);
         }
-        pred
     }
 }
 
 impl OnlineModel for SeqTest {
-    fn step(&mut self, _x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+        let mut out = Step::default();
+        self.step_into(x, y, d_clock, weight, &mut out);
+        out
+    }
+
+    /// The step, into the caller's buffer (task 270, M-4).
+    fn step_into(
+        &mut self,
+        _x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        out: &mut Step,
+    ) {
         // A target or a weight that is not usable, by the rule every model
         // keeps (`OnlineModel`): an infinite target is no sign, and an
         // infinite weight no count. The test reads no features.
         if let Some(refused) = crate::model::refused_step(self, &[], y, d_clock, weight) {
-            return refused;
+            *out = refused;
+            return;
         }
-        let out = self.predict(_x, d_clock);
+        // `predict`'s answer, read before the row.
+        self.outputs_into(&mut out.pred);
+        out.n_eff = self.w_sum;
+        out.extra = None;
         if weight > 0.0 {
             for (j, yj) in y.iter().enumerate().take(self.cfg.n_targets) {
                 let Some(yj) = *yj else { continue };
@@ -173,12 +193,13 @@ impl OnlineModel for SeqTest {
             }
             self.w_sum += weight;
         }
-        out
     }
 
     fn predict(&self, _x: &[f64], _d_clock: f64) -> Step {
+        let mut pred = Vec::new();
+        self.outputs_into(&mut pred);
         Step {
-            pred: self.outputs(),
+            pred,
             n_eff: self.w_sum,
             extra: None,
         }
