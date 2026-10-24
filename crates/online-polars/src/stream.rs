@@ -1968,22 +1968,6 @@ pub fn settled_frac(decay: Decay, t: f64) -> f64 {
     }
 }
 
-/// The weight a stream settles at, read from where it stands: `weight`, the
-/// accumulated weight before the next row (`weight_sum`'s meaning), less what
-/// is left of the first row's, over the settled fraction:
-///
-/// ```text
-/// weight_sum_settled = (W − w₁·(1 − s)) / s,    s = settled_frac
-/// ```
-///
-/// On a regular stream -- rows `d` apart, each of weight `w` -- `W` after
-/// `n` rows is `w·(1 − λⁿ)/(1 − λ)` and `s` is `1 − λⁿ⁻¹` (the first row
-/// brings no clock), so this is `w/(1 − λ)`, the ceiling `1/(1 − λ^d)` in
-/// rows (docs/WARMUP-AND-CONVERGENCE.md §5.1), exactly, from the second
-/// row; on the first `s` is 0 and there is none (NaN). `w₁` is the first
-/// row's weight, which on such a stream is every row's: the stream keeps no
-/// first weight, so a caller hands the weight a row has there (docs/PLAN.md
-/// task 198, D8).
 /// A projected weight as a notice prints it: four decimals in the range a
 /// reader reads at a glance, four significant figures outside it, so a
 /// ceiling of 3e-7 is not "0.0000" and one of 1e90 is not ninety digits.
@@ -2002,11 +1986,60 @@ fn projected_figure(weight: f64) -> Option<String> {
     })
 }
 
-pub fn settled_weight(weight: f64, first: f64, settled: f64) -> f64 {
-    if settled > 0.0 && settled.is_finite() {
-        (weight - first * (1.0 - settled)) / settled
+/// The weight a stream settles at, read from where it stands: `weight`, the
+/// accumulated weight before the next row (`weight_sum`'s meaning), less what
+/// is left of the first row's, over the settled fraction:
+///
+/// ```text
+/// weight_sum_settled = (W − w₁·(1 − s)) / s,    s = settled_frac
+/// ```
+///
+/// On a regular stream -- rows `d` apart, each of weight `w` -- `W` after
+/// `n` rows is `w·(1 − λⁿ)/(1 − λ)` and `s` is `1 − λⁿ⁻¹` (the first row
+/// brings no clock), so this is `w/(1 − λ)`, the ceiling `1/(1 − λ^d)` in
+/// rows (docs/WARMUP-AND-CONVERGENCE.md §5.1), exactly, from the second
+/// row; on the first `s` is 0 and there is none (NaN). `w₁` is the first
+/// row's weight, which on such a stream is every row's: the stream keeps no
+/// first weight, so a caller hands the weight a row has there (docs/PLAN.md
+/// task 198, D8).
+///
+/// Where `W − w₁(1 − s)` is 0 the stream has kept nothing but its first
+/// row's weight -- a target present on that row alone -- and the computed
+/// difference is the two terms' rounding, whose sign is the platform's
+/// libm's: +5.7e-17 with `exp2` 1 ulp high, at or below 0 on Apple's, and a
+/// positive one read as a ceiling of 5.7e-17 (task 273). So a difference
+/// within that rounding is exactly 0. With `u = 2^-53`, `n = steps` the
+/// decay steps `W` has been carried through (at least 1) and each libm
+/// result within 2 ulp:
+///
+/// - `W`: each step multiplies by a factor within `2u` of its own and rounds
+///   the product and the sum, `4u` of `W` a step, so at most `4u·n·W`. The
+///   row weight `w₁` a caller hands is a mean of up to `n` weights, within
+///   `u·n·w₁`.
+/// - `1 − s`: `s = 1 − e` rounds once, by at most `u` since `s <= 1`, and
+///   `e = 2^(−t/h)` carries `2u·e` from `exp2` and `ln 2·u·(t/h)·e <= 0.37u`
+///   from the rounding of `t/h` (`x·2^−x <= 1/(e ln 2)`); `1 − s` is then
+///   exact where `s >= 1/2` and rounds by `u` below. Within `4.4u` of the
+///   exact `e` in all, absolutely: when `s` is near 1, a part of `1 − s` many
+///   times `u` (`2.7e-15` of it at 98% settled). `λ^t` from `powf` is bounded
+///   the same way.
+/// - The product `w₁·(1 − s)` and the difference round by `u` of their
+///   operands.
+///
+/// That is at most `(4n + 2)·u·W + (n + 6.4)·u·w₁ <= 8u·n·(W + w₁)`. A real
+/// ceiling `C` comes in far above it: on a regular stream the difference is
+/// `s·C` and `W + w₁ <= C + 2w₁ <= 3C`, so the band takes it only where `s
+/// <= 24u·n`, which needs rows closer than `2^-47` of a half-life.
+pub fn settled_weight(weight: f64, first: f64, settled: f64, steps: f64) -> f64 {
+    if !(settled > 0.0 && settled.is_finite()) {
+        return f64::NAN;
+    }
+    let rest = weight - first * (1.0 - settled);
+    let noise = 8.0 * (f64::EPSILON / 2.0) * steps.max(1.0) * (weight.abs() + first.abs());
+    if rest.abs() <= noise {
+        0.0
     } else {
-        f64::NAN
+        rest / settled
     }
 }
 
@@ -2074,6 +2107,9 @@ struct Unmet {
     settled: f64,
     weight: f64,
     row_weight: f64,
+    /// The decay steps `weight` has been carried through, at most
+    /// ([`settled_weight`]).
+    steps: f64,
 }
 
 impl Unmet {
@@ -2091,7 +2127,8 @@ impl Unmet {
             let s = self.settled;
             1.0 + (self.worst * self.worst - 1.0) * s / (2.0 - s) >= self.max * self.max
         } else {
-            settled_weight(self.weight, self.row_weight, self.settled) < solve_floor(spec)
+            settled_weight(self.weight, self.row_weight, self.settled, self.steps)
+                < solve_floor(spec)
         }
     }
 }
@@ -2148,7 +2185,7 @@ fn half_life_figure(spec: &Spec, decay: Decay, at: &Unmet) -> String {
     let need = if at.worst.is_finite() {
         h * (at.worst * at.worst - 1.0) / (max * max - 1.0) * s / (2.0 - s)
     } else {
-        let d = h * -(1.0 - w / settled_weight(at.weight, w, s)).log2();
+        let d = h * -(1.0 - w / settled_weight(at.weight, w, s, at.steps)).log2();
         let k = (spec.k() + usize::from(spec.fit_intercept)) as f64;
         let n = k / (max * max - 1.0);
         let floor = d / -(1.0 - w / solve_floor(spec)).log2();
@@ -2271,7 +2308,12 @@ impl Stream {
             _ => f64::NAN,
         };
         let weight_sum_settled = match model {
-            Some(m) if !windowed => settled_weight(m.n_eff(), row_weight, learned),
+            Some(m) if !windowed => settled_weight(
+                m.n_eff(),
+                row_weight,
+                learned,
+                self.persisted.rows_seen as f64,
+            ),
             _ => f64::NAN,
         };
         let mut infl = Vec::new();
@@ -3396,6 +3438,7 @@ impl Stream {
         }
 
         self.persisted.clock = clock_state;
+        let rows_before = self.persisted.rows_seen;
         self.persisted.rows_seen = rows_seen;
         self.persisted.fed = fed;
         self.persisted.coef_cadence = coef_cadence;
@@ -3530,6 +3573,7 @@ impl Stream {
             diag,
             out,
             n_rows,
+            rows_before,
         );
         if coupled && insts.len() > 1 {
             for pi in 0..plans.len() {
@@ -3823,6 +3867,7 @@ impl Stream {
             diag,
             out,
             n_rows,
+            self.persisted.rows_seen,
         );
         if insts.len() > 1 {
             use rayon::prelude::*;
@@ -3918,6 +3963,7 @@ fn build_instances<'a>(
     diag: Diagnostics<'a>,
     out: &'a mut ChunkOut,
     n_rows: usize,
+    rows_before: u64,
 ) -> Vec<Instance<'a>> {
     let n = decays.len();
     let block = out.n_slots * n_rows;
@@ -3977,6 +4023,7 @@ fn build_instances<'a>(
         .map(|model| {
             let decay = *decays.next().expect("one per instance");
             Instance {
+                steps: rows_before,
                 spec,
                 shards: marginal_shards(spec, model.get()),
                 model,
@@ -4161,6 +4208,10 @@ pub struct Scratch {
 
 /// One model instance's state and its disjoint slice of the chunk output.
 struct Instance<'a> {
+    /// The stream's accepted rows so far, this chunk's included up to the
+    /// row being read: what [`settled_weight`] bounds a weight's rounding
+    /// by (task 273). The global count, so no chunking moves it.
+    steps: u64,
     /// For rebuilding this instance on a reset: the spec is the only
     /// description of a pristine model, and `decay` says which of its
     /// instances this is.
@@ -4381,6 +4432,12 @@ fn run_instance(
         if !plan.accept {
             continue;
         }
+        // The stream's accepted rows up to this one, which bounds the decay
+        // steps any weight here has been carried through; a row replayed
+        // out of the `embargo` buffer was counted where it arrived.
+        if plan.direct() {
+            inst.steps = inst.steps.saturating_add(1);
+        }
         let (i, ri, w) = (plan.i, plan.ri, plan.w);
         let (emit, learn) = (plan.emit, plan.learn);
         let sc = &mut *inst.scratch;
@@ -4540,7 +4597,7 @@ fn run_instance(
                 && inst.notified.floor_withheld_for(tj, below, judged, now) >= half
                 && unmet_floor.is_none()
             {
-                let ceiling = settled_weight(weight, w, learned);
+                let ceiling = settled_weight(weight, w, learned, inst.steps as f64);
                 if ceiling < min_weight[tj] {
                     unmet_floor = Some((tj, ceiling, weight));
                 }
@@ -4654,6 +4711,7 @@ fn run_instance(
                     settled: learned,
                     weight: step.n_eff,
                     row_weight: w,
+                    steps: inst.steps as f64,
                 })
                 .filter(|u| u.stays_shut(inst.spec));
         if let Some(unmet) = unmet {
@@ -4677,10 +4735,15 @@ fn run_instance(
             } else {
                 // Infinite: the model has not solved, its weight short of the
                 // floor its first solve needs, which no ratio can loosen.
-                let tops = projected_figure(settled_weight(step.n_eff, w, learned)).map_or_else(
-                    || "the rows so far are too uneven to project the weight it settles at".into(),
-                    |f| format!("at the row rate seen so far its weight tops out near {f}"),
-                );
+                let tops =
+                    projected_figure(settled_weight(step.n_eff, w, learned, inst.steps as f64))
+                        .map_or_else(
+                            || {
+                                "the rows so far are too uneven to project the weight it settles at"
+                                    .into()
+                            },
+                            |f| format!("at the row rate seen so far its weight tops out near {f}"),
+                        );
                 format!(
                     "max_error_inflation = {max_infl:.3} has not been met on any row for a \
                      half-life since the stream settled (it is {:.0}% settled): {tops}, below \
@@ -5133,7 +5196,8 @@ mod clock_check_tests;
 
 #[cfg(test)]
 mod projected_figure_tests {
-    use super::projected_figure;
+    use super::{projected_figure, settled_frac, settled_weight};
+    use online_core::Decay;
 
     /// A notice gives a projected weight only when it is a positive, finite
     /// number, in four decimals in the everyday range and four significant
@@ -5158,5 +5222,73 @@ mod projected_figure_tests {
         assert_eq!(projected_figure(1e90).as_deref(), Some("1.0000e90"));
         assert_eq!(projected_figure(999_999.0).as_deref(), Some("999999.0000"));
         assert_eq!(projected_figure(1e6).as_deref(), Some("1.0000e6"));
+    }
+
+    /// `x` moved by `k` ulp: a libm that rounds the other way, or a step
+    /// further off.
+    fn nudged(x: f64, k: i64) -> f64 {
+        f64::from_bits((x.to_bits() as i64 + k) as u64)
+    }
+
+    /// Task 273: a target present on the first row alone, at half-life 5,
+    /// read 28 rows on. Its weight is that row's, decayed: `W = λ²⁸` by 28
+    /// multiplies, and `1 − s` is the same `2^(−28/5)` from one `exp2`, so
+    /// `W − w₁(1 − s)` is 0 and the computed one is their roundings. With
+    /// the wheel's `exp2` 1 ulp high it came out +5.7e-17, and the notice
+    /// advised lowering `min_weight` below "5.6858e-17"; on macOS's libm it
+    /// came out at or below 0, and the notice gave no figure. Within its
+    /// rounding the difference is 0 on every libm, here moved by up to 2
+    /// ulp either way.
+    #[test]
+    fn a_difference_within_its_rounding_projects_no_ceiling() {
+        for k in [-2, -1, 0, 1, 2] {
+            let lam = nudged((-1.0f64 / 5.0).exp2(), k);
+            let mut weight = 1.0;
+            for _ in 0..28 {
+                weight *= lam;
+            }
+            let settled = 1.0 - nudged((-28.0f64 / 5.0).exp2(), k);
+            let ceiling = settled_weight(weight, 1.0, settled, 29.0);
+            assert_eq!(
+                ceiling,
+                0.0,
+                "k = {k}: {weight:e} against {:e}",
+                1.0 - settled
+            );
+            assert_eq!(projected_figure(ceiling), None, "k = {k}");
+        }
+        // The same by literals, no libm: `W` one ulp above `1 − s`.
+        let settled = 0.98;
+        let weight = nudged(1.0 - settled, 1);
+        assert_eq!(settled_weight(weight, 1.0, settled, 1.0), 0.0);
+    }
+
+    /// The rounding band does not swallow a real ceiling, however small: a
+    /// regular stream of rows weighing 1e-9, one clock unit apart at
+    /// half-life 5, tops out at `w/(1 − 2^(−1/5)) = 7.725e-9`, which the
+    /// projection reads from the second row on (the doc above).
+    #[test]
+    fn a_small_real_ceiling_keeps_its_figure() {
+        let (w1, h) = (1e-9, 5.0);
+        let lam = (-1.0f64 / h).exp2();
+        let want = w1 / (1.0 - lam);
+        let mut weight = 0.0;
+        for n in 1..=60 {
+            weight = lam * weight + w1;
+            if n < 2 {
+                continue;
+            }
+            let settled = settled_frac(Decay::Halflife(h), (n - 1) as f64);
+            let ceiling = settled_weight(weight, w1, settled, n as f64);
+            assert!(
+                (ceiling - want).abs() <= 1e-12 * want,
+                "row {n}: {ceiling:e}"
+            );
+            assert_eq!(
+                projected_figure(ceiling).as_deref(),
+                Some("7.7250e-9"),
+                "row {n}"
+            );
+        }
     }
 }

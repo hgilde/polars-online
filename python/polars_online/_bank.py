@@ -1253,8 +1253,13 @@ class ModelBank:
             On a regular stream -- rows ``d`` apart, of one weight --
             it is the ceiling ``1 / (1 - 2 ** (-d / half_life))`` times that
             weight exactly, from the second row on. It says, before the stream
-            gets there, whether a ``min_weight`` can be met. Null after a
-            single row, with no decay, and under ``window_size``.
+            gets there, whether a ``min_weight`` can be met. Exactly 0 where
+            ``W - w1 * (1 - s)`` is within its own rounding: a stream whose
+            weight is still its first row's alone, which then reads a few
+            1e-16 above or below 0 by the platform's math library. The
+            rounding allowed is ``8 * 2**-53`` times the rows read times
+            ``W + w1``. Null after a single row, with no decay, and under
+            ``window_size``.
         ``support_coef_min``, ``support_coef_min_feature``, ``n_coef``
             The smallest coefficient's data share, the feature it belongs to,
             and the coefficients per target, likewise.

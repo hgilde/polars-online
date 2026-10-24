@@ -227,13 +227,55 @@ class TestTheShape:
             po.eval.sums(out, "x0")
 
 
+def merge_rounding(parts: list[dict], whole: dict, a: str, b: str) -> float:
+    """How far ``merge_sums`` can put the co-moment of ``a`` with ``b``
+    (``m2_a`` where they are one) from the exact one, relative to it, given
+    ``parts``' exact statistics as the doubles it is handed (task 273).
+
+    With ``u = 2^-53``, ``N`` parts, ``Δ_g`` a part's mean less the pooled
+    one and ``T_g = m2_g + w_g Δa_g Δb_g`` the terms summed:
+
+    - each part's statistics arrive rounded: ``u`` of ``m2_g``, and ``u`` of
+      a mean, which moves ``w_g Δa_g Δb_g`` by ``u w_g (|Δa_g| |mean_b_g| +
+      |Δb_g| |mean_a_g|)``: at a level many spreads above zero, most of it;
+    - the pooled mean is a sum of ``N`` products, within ``(N + 1) u`` of
+      ``Σ w_g |mean_g| / w``; it enters only at second order, since ``Σ w_g
+      Δ_g`` is 0;
+    - each term rounds by at most five ``u`` of itself (two differences, two
+      products and the sum), and a sum of ``N`` terms in any order by at
+      most ``(N - 1) u Σ |T_g|``.
+
+    So ``(N + 6) u Σ |T_g| + u Σ w_g (|Δa_g| |mean_b_g| + |Δb_g| |mean_a_g|)``
+    and the second-order terms, over the exact co-moment. Measured on eight
+    random streams: at most 0.43 of it for 2 chunks, where the means'
+    rounding is most of both, and 0.021 for 1,000, where the summation
+    order's allowance is."""
+    u = 2.0**-53
+    n = len(parts)
+    w = sum(float(p["n"]) for p in parts)
+    mean_a, mean_b = float(whole["mean_" + a]), float(whole["mean_" + b])
+    key = "m2_" + a if a == b else "cov"
+    level_a = sum(float(p["n"]) * abs(float(p["mean_" + a])) for p in parts)
+    level_b = sum(float(p["n"]) * abs(float(p["mean_" + b])) for p in parts)
+    terms = means = 0.0
+    for p in parts:
+        wg = float(p["n"])
+        da, db = float(p["mean_" + a]) - mean_a, float(p["mean_" + b]) - mean_b
+        terms += abs(float(p[key])) + wg * abs(da * db)
+        means += wg * (abs(da) * abs(float(p["mean_" + b])) + abs(db) * abs(float(p["mean_" + a])))
+    pooled_a, pooled_b = (n + 1) * u * level_a / w, (n + 1) * u * level_b / w
+    second = w * pooled_a * pooled_b + u * (pooled_a * level_b + pooled_b * level_a)
+    return ((n + 6) * u * terms + u * means + second) / abs(float(whole[key]))
+
+
 @pytest.mark.extended(reason="rational arithmetic over 100,000 rows, 2 s at a load of 10")
 def test_merge_sums_rounds_as_its_docstring_measures():
     """Task 239: ``merge_sums``' docstring said merging a thousand chunks
     loses no more than merging two, unmeasured. Against the exact sums in
-    rational arithmetic, at a level of 1e4 standard deviations: 2 chunks and
-    1,000 each merge within 3e-15 of the exact ``m2_y``, ``m2_pred`` and
-    ``cov``, relative to each."""
+    rational arithmetic, at a level of 1e4 standard deviations, 2 chunks and
+    1,000 each merge within :func:`merge_rounding` of the exact ``m2_y``,
+    ``m2_pred`` and ``cov``. Task 273: this held one stream's worst, 2.7e-15,
+    to 3e-15, which one of seven other streams passed (the worst: 8.1e-15)."""
     from fractions import Fraction
 
     n, level = 100_000, 1e4
@@ -257,20 +299,19 @@ def test_merge_sums_rounds_as_its_docstring_measures():
         }
 
     whole = exact(0, n)
-    worst = {}
     for chunks in (2, 1000):
         edges = np.linspace(0, n, chunks + 1).astype(int)
+        parts = [exact(int(lo), int(hi)) for lo, hi in zip(edges[:-1], edges[1:], strict=True)]
         frames = []
-        for lo, hi in zip(edges[:-1], edges[1:], strict=True):
-            e = exact(int(lo), int(hi))
+        for e in parts:
             row = {"slot": "pred_y", "target": "y", "n": e["n"], "w": float(e["n"])}
             row |= {k: float(e[k]) for k in ("mean_y", "mean_pred", "m2_y", "m2_pred", "cov")}
             row |= {"sse": 0.0, "hits": 0.0, "signed": 0.0}
             frames.append(pl.DataFrame([row]).select("slot", "target", *po.eval.SUM_FIELDS))
         got = po.eval.merge_sums(*frames).row(0, named=True)
-        worst[chunks] = max(
-            float(abs(Fraction(got[k]) - whole[k]) / whole[k]) for k in ("m2_y", "m2_pred", "cov")
-        )
-    assert max(worst.values()) < 3e-15, worst
+        for key, a, b in (("m2_y", "y", "y"), ("m2_pred", "pred", "pred"), ("cov", "y", "pred")):
+            err = float(abs(Fraction(got[key]) - whole[key]) / abs(whole[key]))
+            bound = merge_rounding(parts, whole, a, b)
+            assert err <= bound, (chunks, key, err, bound)
     doc = " ".join((po.eval.merge_sums.__doc__ or "").split())
-    assert "2 chunks and 1,000 each merged within 3e-15" in doc
+    assert "2 chunks merged within 6e-15" in doc and "1,000 chunks within 9e-15" in doc
