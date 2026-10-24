@@ -54,10 +54,18 @@ returns.
   4.050 / 6.975 and statsmodels' converged `RLM` with the MAD scale 2.008 /
   2.039 / 2.124. On MODELS.md's example the slope is 2.02 (it was 2.18;
   truth 2). On the release probe 376 of 384 `huber` predictions move, by
-  at most 0.21, with a median relative move of 0.9%. **`huber_scale="rms"`
+  at most 0.21, with a median relative move of 0.9%, and 378 of 384
+  `sgd(loss="huber")` predictions, by at most 0.055, with a median
+  relative move of 5.1%. **`huber_scale="rms"`
   restores 1.2.0's numbers to the bit**, and a state saved by 1.0 to 1.2
   loads as `"rms"`, the scale it was fitted under, and continues to the
-  bit. `quantile` is unchanged. This changes a default in a minor release,
+  bit. `quantile` is unchanged. After a level shift the robust scale holds
+  the fit back until its median has crossed, which costs `sgd` more than
+  `huber`: with a fit half-life of 500 rows and a +20 shift, `sgd`'s mean
+  absolute error over rows 200-400 after the shift is 17.3 under the new
+  default against 2.45 under `"rms"` (`huber`: 19.5 against 15.1);
+  `huber_scale_half_life` at a fifth of `half_life` brings `sgd` to 3.0.
+  This changes a default in a minor release,
   by the maintainer's decision, against the policy's row for a changed
   default; the way back is the one setting above.
 - **The command line refuses a URL in any path** (input, output,
@@ -75,11 +83,13 @@ returns.
   refused at a smaller block.
 - `ew_cov` with both `partial_corr` and `mahal` reads `mahal` from the
   precision `partial_corr` already computed; on that path `mahal` moves
-  within rounding, at most 1e-15 relative in the tests (task 270).
+  within rounding, about 1e-15 relative (1.03e-15 on the test stream,
+  which holds it to 4e-15) (task 270).
 - `corrchange`'s `monitor` statistic is computed from one pass of running
   sums per pair instead of two passes per prefix; it moves in its last
-  bits, by at most 5e-15 relative in the tests and on the release probe (1
-  ulp on one row), with no flag or change date different (task 270).
+  bits, by about 1e-13 relative over 60,000-row streams (5.3e-14 at a
+  level of 1e4) and 5e-15 on the 400-row release probe (1 ulp on one
+  row), with no flag or change date different (task 270).
 - Dependencies: rustls 0.23.46, rustls-webpki 0.103.16 and tokio 1.54.1,
   which fix published advisories; the dev group's pillow 13.0.0 and the
   docs group's certifi 2026.10.23 (task 270).
@@ -135,7 +145,11 @@ returns.
   a wide eager `predict` peaks at the width of its input (164 MiB at 1,000
   features × 20,000 rows, 23 MiB in 2,000-row chunks); the README's install
   size is 1.2.0's (24-30 MB download, 70-98 MB installed); the windows
-  state is version 9 (task 270).
+  state is version 9; the release policy records `huber_scale`'s default
+  moving in a minor release, with the reason and the way back; the MAD
+  scale costs 14-17 ns per target per row in `huber` and 20-32 in
+  `sgd(loss="huber")`; IPC writes a struct at about the cost of flat
+  columns; the suite's test counts are 2026-10-24's (task 270).
 
 ### Performance
 
@@ -150,7 +164,9 @@ returns.
 - **Paths whose cost grew with the rows they held now cost the same each
   row** (task 270), every value the same to the bit unless stated: a
   windowed `ewm_mean`, `ewm_var` or `ewm_std` during a stream's first
-  window and after each restart (at a window of 100,000 rows the mean
+  window and after each restart, and on a sparse input, whose reads
+  scanned the null rows between its values (one value in 5,000: 1,264 →
+  184 ns a row) (at a window of 100,000 rows the mean
   39,317 → 172 ns a row, the variance 73,954 → 182); a target that is a
   window expression, or any `embargo` (10,000 rows held: 21,526 → 523 ns a
   row, the same rows learned in the same order and the same saved bytes);
@@ -173,6 +189,10 @@ returns.
   the system allocator the binary ran 1.23-1.25× slower a row on one
   `ewridge` stream, 1.89-1.93× slower with 1,000 one-row groups a chunk and
   1.77-1.80× slower at 10,000 groups.
+- A bank decides whether to keep a finished run's output buffers for the
+  next chunk from its flat buffers' sizes alone, without walking every
+  row's coefficient lists: 99.5 µs a 100,000-row run before, 2 ns now
+  (task 270).
 - `audit`'s distinct-value counters are a hash table, so a column of mostly
   new values costs the same at any `distinct_cap`: 75 / 214 / 3,183 ns a
   row became 59 / 52 / 58 at caps 256 / 4,096 / 65,536; a saved state's
@@ -185,8 +205,10 @@ returns.
   exponentially weighted quantile sketch (the Huber scale,
   `resid_quantiles`, `ew_cov`'s `mahal_quantiles`) updates a level's
   weight without a data-dependent branch: 10-12 → 7-9.5 ns a row for the
-  sketch, answers bit-identical. The MAD scale costs about 12.5-15 ns per
-  target per row over `"rms"`.
+  sketch, answers bit-identical. The MAD scale costs about 14-32 ns per
+  target per row over `"rms"` (17 for `huber` and 32 for
+  `sgd(loss="huber")` at 20 features and 10 targets, where `sgd`'s row
+  is cheap enough for that to be 52% of it).
 - `kmeans` searches for a learned row's nearest centre once instead of
   twice (163 → 124 ns a row at 8 centres and 4 features, 629 → 409 at 20
   and 20); `marginal` skips the pair work on a row of weight 0 (5,167 →
@@ -194,7 +216,7 @@ returns.
   longer builds a string per row (10.8 → 12.3 M rows/s); `po.eval`'s scores
   carry only the columns they read (peak 2.0 → 0.7 GiB on a 290 MiB frame
   with 43 columns and 8 slots); fewer allocations per row in `ew_cov` with
-  lags (5 → 2), `deco` (19 → 14), `hmm` (29 → 26), `lasso` (6 → 2) and the
+  lags (5 → 0 through the bank's kept step), `deco` (19 → 14), `hmm` (29 → 26), `lasso` (6 → 2) and the
   feature-health and specification diagnostics (1.86 → 0) (task 270).
 - `po.gbdt.lightgbm_dataset`'s streamed route hands LightGBM each batch's
   labels and weights with its rows rather than holding the whole dataset's

@@ -176,8 +176,17 @@ so a change shows at the commit that made it.
 Measured when it was written, on 2026-09-24: this build against 0.10.0 and
 against 0.9.1, all 291 fields identical. Against 0.8.0, 112 fields differ,
 all from 0.9.0's declared readiness gates, which is the evidence it can
-fail. On 2026-10-23, with the workload widened to 68 specs, this build
-against 1.2.0: 1,273 fields identical.
+fail. On 2026-10-23, with the workload widened to 68 specs, the build of
+that day against 1.2.0: 1,273 fields identical. The next release's build
+differs from 1.2.0 where its CHANGELOG declares a change, and nowhere else:
+in every field the fits of `huber` and `sgd(loss="huber")` feed, whose
+scale's default moved; in the last bits of `ew_cov`'s `mahal` beside
+`partial_corr` and of `corrchange`'s monitor statistic; in `break_wald`,
+null on a few early rows where 1.2.0 read a number from a variance that
+could not yet be of full rank; and in `kalman`'s rows before a target's
+prior is sized, withheld where 1.2.0 predicted 0.0, and the fit after
+them. The specs that set `huber_scale` are not comparable, since 1.2.0
+refuses the keyword.
 
 #### A released build's state files
 
@@ -1045,6 +1054,25 @@ silently:
 | a stable name renamed | minor: the old name is refused, naming the new one | minor: the old name is forwarded to the new one with a `PolarsOnlineDeprecationWarning` (a spec parameter by the table, anything else by a forwarding of its own, below), and removed at the next major |
 | a default or a meaning changed, or a stable name removed | minor, with a CHANGELOG entry saying what moved and by how much | major, with the same entry |
 | a change to an unstable part | minor | minor, with a CHANGELOG entry |
+
+**One default has changed in a minor release, against the table's row for
+a changed default.** In the release after 1.2.0, `huber_scale` moved from
+`"rms"` to `"mad"`, by the maintainer's decision. It is the scale `huber`
+and `sgd(loss="huber")` draw their cut in, and the CHANGELOG declares the
+move with its size. The old default defeated the loss it served. Huber's
+loss caps a row's pull at `huber_delta` times the scale, so the scale is
+what makes the fit robust. A root mean square has a breakdown point of 0:
+one wild row sets it, and wild rows widen the cut meant to catch them.
+Without decay, a fit's first residuals also widen it for good, since they
+are the target's whole level while the intercept is near 0. The cut then
+stops binding and the fit is least squares. A median absolute deviation
+moves by a wild row's weight, whatever the size of its miss. Measured on
+one-sided wild rows, it held a converged fit's slope near the truth with a
+fifth of the rows wild, and one pass within 0.13 of it at an eighth. The
+slopes measured under each scale are in
+[MODELS.md](MODELS.md#huber--quantile--robust-regression).
+`huber_scale="rms"` is the way back: it restores the earlier numbers to the
+bit, and a state saved under the old default loads under it.
 
 **From 1.0, a rename is a deprecation, not a refusal.**
 `polars_online.PolarsOnlineDeprecationWarning`, a `DeprecationWarning`,

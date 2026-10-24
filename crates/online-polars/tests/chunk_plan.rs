@@ -902,3 +902,36 @@ fn run_buffers_kept_between_chunks_change_nothing() {
     assert_eq!(refilled, chunks - 1);
     assert!(chunks >= 20, "{chunks} chunks");
 }
+
+/// A run's buffers are kept for a later chunk only while they are small
+/// (task 270, R2-1): a bank whose every run is long keeps none, and the
+/// test for that reads the flat buffers' headers and stops there, without
+/// walking the `coef`-like lists of a long run; a bank of one-row runs
+/// keeps them. Fifty groups of 2,000 rows in one 100,000-row chunk, then
+/// forty groups of one row each.
+#[test]
+fn long_runs_are_not_kept_and_one_row_runs_are() {
+    fn frame(n_groups: usize, per: usize) -> DataFrame {
+        let n = n_groups * per;
+        let g: Vec<i32> = (0..n).map(|i| (i / per) as i32).collect();
+        let t: Vec<f64> = (0..n).map(|i| (i % per) as f64).collect();
+        let x0: Vec<f64> = (0..n).map(|i| ((i * 7) % 13) as f64 / 13.0).collect();
+        let x1: Vec<f64> = (0..n).map(|i| ((i * 5) % 11) as f64 / 11.0).collect();
+        let y: Vec<f64> = x0.iter().zip(&x1).map(|(a, b)| 2.0 * a - b).collect();
+        df! {
+            "g" => g, "t" => t, "x0" => x0, "x1" => x1, "y" => y,
+            "w" => vec![1.0; n], "sess" => vec!["s"; n],
+        }
+        .unwrap()
+    }
+    let specs = vec![spec("plain", Some("g"), "60.0", r#""session_gap": 10.0,"#)];
+    let long = frame(50, 2_000);
+    assert_eq!(long.height(), 100_000);
+    let mut bank = Bank::new(specs.clone()).unwrap();
+    let out = bank.fit_predict(&long).unwrap();
+    assert_eq!(out[0].len(), 100_000);
+    assert_eq!(bank.spare_runs(), 0, "a 2,000-row run's buffers were kept");
+    let mut bank = Bank::new(specs).unwrap();
+    bank.fit_predict(&frame(40, 1)).unwrap();
+    assert!(bank.spare_runs() > 0, "no one-row run's buffers were kept");
+}

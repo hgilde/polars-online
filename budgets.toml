@@ -1167,23 +1167,24 @@ darwin = { budget = 104.1407, release = 104.5782 }
 linux = { budget = 123.1016, release = 123.8672 }
 windows = { budget = 80.129, release = 79.3321 }
 
-# Added with the review of 2026-10-23 (task 270 (e)): darwin's numbers are
-# placeholders from a local M4 Pro (load 9-22, the best of three runs' upper
-# reading), to be replaced by CI's floor-leg readings; linux and windows have
-# none until then. `streaming_5m` replaces `streaming_bounded`, a million rows
-# that a whole read passed: five million, the allocator's pages given back
-# at once, and a whole read the test's negative control.
+# Added with the review of 2026-10-23 (task 270 (e)), unmeasured on every
+# platform: `scripts/budgets.py apply` sets each from CI's floor-leg
+# readings (the rss-<platform>.json the memory test writes there). Placeholders
+# from a local M4 Pro (184.4, 164.3, 171.4 and 22.6 MiB at a load of 9-22)
+# were removed (task 270 (j), R4-3): CI's macOS runner reads 10-20% under
+# that machine, so a placeholder failed "tighten" on the first CI run. The
+# history rule still holds each key to its last number, so a CI reading
+# above a removed placeholder is a raise and needs its [[raised]] entry.
+# `streaming_5m` replaces `streaming_bounded`, a million rows that a whole
+# read passed: five million, the allocator's pages given back at once, and a
+# whole read the test's negative control.
 [rss.streaming_5m]
-darwin = { budget = 184.4219 }
 
 [rss.predict_wide]
-darwin = { budget = 164.2657 }
 
 [rss.ewridge_window]
-darwin = { budget = 171.4375 }
 
 [rss.bocpd_runs]
-darwin = { budget = 22.5625 }
 
 # --- raises and sign-offs -------------------------------------------------------
 [[raised]]

@@ -5,12 +5,15 @@ suite and wants the evidence: what each part proves, what it has found, and
 where it is thin. Its emphasis is on edge cases, and on comparing behaviour
 against reference implementations, including [river](https://riverml.xyz).
 
-**The suite has 2,207 Rust tests and 6,262 pytest cases, counted on
-2026-10-11.** `cargo test --workspace --exclude online-py -- --list` and
-`pytest --collect-only` did the counting. Each model is held to a reference
-it cannot share a bug with. The bank is held to the invariants it promises:
-the same numbers whether a stream arrives in one chunk or many, runs on one
-thread or eight, or is saved and resumed part-way. The suite runs on three
+**The suite has 2,575 Rust tests and 7,072 pytest cases, counted on
+2026-10-24.** The Rust count is the lines ending in `: test` that
+`cargo test --workspace --exclude online-py -- --list` prints, the
+extended tests and the doctests included; the pytest count is what
+`pytest --collect-only -q` reports collected, the soak tests aside. Each
+model is held to a reference it cannot share a bug with. The bank is held
+to the invariants it promises: the same numbers whether a stream arrives in
+one chunk or many, runs on one thread or eight, or is saved and resumed
+part-way. The suite runs on three
 operating systems at every push to `main` and every pull request
 ([Where the suite runs](#where-the-suite-runs)). The coverage figures are
 from 2026-09-27 ([Measured coverage](#measured-coverage)).
@@ -22,6 +25,7 @@ from 2026-09-27 ([Measured coverage](#measured-coverage)).
 | 2026-09-25 | 976 | 3,265 cases |
 | 2026-10-03 | 1,215 | 3,840 cases |
 | 2026-10-11 | 2,207 | 6,262 cases |
+| 2026-10-24 | 2,575 | 7,072 cases |
 
 The 2 opt-in soak tests are outside every count. They run with
 `pytest -m soak`, and the weekly leak-check workflow runs them. The counts

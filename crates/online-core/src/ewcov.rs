@@ -3179,7 +3179,10 @@ mod tests {
     /// `mahal` beside `partial_corr` is read from the precision matrix the
     /// partial correlations factorized, where it used to factorize the same
     /// matrix again (task 270, A-2): the distance agrees with the one solved
-    /// against the row to 1e-12 relative on every row, and with the
+    /// against the row to 4e-15 relative on every row (its largest move is
+    /// 1.03e-15 on this stream on aarch64, the figure the CHANGELOG quotes;
+    /// the bound leaves twice that again for x86-64's product kernel, which
+    /// rounds the factorization's products in another order), and with the
     /// definition by the oracle's LU, on a stream with a level, correlated
     /// columns, gaps and rows of weight 0, on the unbiased scale and `bias`.
     #[test]
@@ -3220,7 +3223,7 @@ mod tests {
                     continue;
                 }
                 let rel = (ma - mb).abs() / ma.abs().max(f64::MIN_POSITIVE);
-                assert!(rel <= 1e-12, "row {i}: {ma} against {mb} ({rel:e})");
+                assert!(rel <= 4e-15, "row {i}: {ma} against {mb} ({rel:e})");
                 largest = largest.max(rel);
                 read += 1;
             }

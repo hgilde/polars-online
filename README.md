@@ -253,7 +253,7 @@ These hold for every spec, however a bank is run:
 | **one `weight_sum`** | `weight_sum` means the same in every model, so one `min_weight` means the same for every spec in a bank ([Warm-up](#warm-up)) |
 | **a clock policy** | a spec with a clock caps each step at `gap_cap`, and applies `session_gap` at a session boundary. A step back the model would learn from is refused, naming the row, unless `restart_after_step_back` makes it a restart ([Sessions, gaps and steps back](#sessions-gaps-and-steps-back)) |
 | **named mistakes** | every keyword is checked against its type when the spec is built, and a missing column is reported, with the spec that wanted it and the role it had there, before the bank learns any row |
-| **tested** | 2,207 Rust tests and 6,262 Python cases (counted on 2026-10-11), held to independent libraries such as scikit-learn, statsmodels and river and to adversarial streams, run on macOS, Windows and Linux at every push ([Testing](#testing)) |
+| **tested** | 2,575 Rust tests and 7,072 Python cases (counted on 2026-10-24), held to independent libraries such as scikit-learn, statsmodels and river and to adversarial streams, run on macOS, Windows and Linux at every push ([Testing](#testing)) |
 
 ### Install
 
@@ -3867,10 +3867,14 @@ for the window targets):
 | a model whose target is a window expression, which the bank resolves itself: the native form | 9.37 s | 1.09 GB |
 | the window written by `with_windows(..., like=spec)` and fed back as a plain target: the column form | 5.87 s | 1.23 GB |
 
-**An operator whose input is null on most rows runs slower, because each
-read scans the rows between its values.** On 300k rows, one value in 5,000
-takes 0.24 s, against 0.04 s with a value on every row
-([PERFORMANCE §35](docs/PERFORMANCE.md#35-two-costs-named-and-left-unchanged-2026-10-03)).
+**An operator whose input is null on most rows costs about what a dense
+one does.** Every row joins its kernel's queue, valued or not. A mean's read
+looks for the operator's oldest valued row from where its last search
+stopped, not from the oldest row, so it passes each null row once rather
+than on every read. On 300k rows with a window of 2,000 rows, one value in
+5,000 takes 184 ns a row backward and 195 ahead, where through 1.2.0 a
+search from the oldest row took 1,264 and 1,734
+([PERFORMANCE §35](docs/PERFORMANCE.md#35-two-costs-named-one-since-removed-2026-10-03)).
 
 **To have operators share one queue, give them the same direction, back or
 ahead, and the same `half_life`, `window_size` and `closed`.** Sixteen
@@ -4304,8 +4308,8 @@ values at ±1e8, zero weights and tiny groups:
 | zero weights and one `weight_sum` | every model held to the same `weight_sum` recursion (`crates/online-core/tests/model_contract.rs`) |
 | each model's numbers | a reference written from its update equations, and another library wherever one computes the same quantity, such as statsmodels, scipy and [river](https://riverml.xyz) |
 
-The suite has 2,207 Rust tests and 6,262 pytest cases, counted on
-2026-10-11. It runs on Linux at Python 3.12, 3.13 and 3.14, and on macOS
+The suite has 2,575 Rust tests and 7,072 pytest cases, counted on
+2026-10-24. It runs on Linux at Python 3.12, 3.13 and 3.14, and on macOS
 and Windows at 3.12 and 3.14, at every push to `main` and every pull
 request. [docs/TESTING.md](docs/TESTING.md) is the ledger of what each part
 proves: every reference and its agreement, every invariant, and [where the

@@ -57,7 +57,7 @@ each reads as of its date, with the names of its day.
 | [32. Windowed means against the `rolling` recipe](#32-windowed-means-against-the-rolling-recipe-2026-09-30) | you compare a windowed mean with Polars' `rolling` window, in time and in memory | |
 | [33. Window operators](#33-window-operators-2026-10-03) | you run `with_windows`: what an operator costs, what sharing a kernel saves, and the engine against §32's | |
 | [34. A window expression as a target](#34-a-window-expression-as-a-target-2026-10-03) | a spec's target is a window expression: the native form against the column form | |
-| [35. Two costs named and left unchanged](#35-two-costs-named-and-left-unchanged-2026-10-03) | a windowed mean on a sparse input, or a formula target over many groups | |
+| [35. Two costs named, one since removed](#35-two-costs-named-one-since-removed-2026-10-03) | a windowed mean on a sparse input, a cost since removed, or a formula target over many groups, still paid | |
 | [36. The window core's edges from raw clocks](#36-the-window-cores-edges-from-raw-clocks-2026-10-03) | you want what deciding a window's edge from the raw clocks cost | |
 
 ## Reading this document
@@ -5455,23 +5455,35 @@ memory.
   materialises the target column, and holds a row's formula columns only
   until its window closes (1.09 against 1.23 GB at 16M rows).
 
-### 35. Two costs named and left unchanged (2026-10-03)
+### 35. Two costs named, one since removed (2026-10-03)
 
 *Provenance: added in `cd1e8a0`, with the figures of the reviewer who
 named them.
 Platform and load not recorded.*
 
 Both are recorded here so a later measurement starts from a number; neither
-moves the §33 or §34 figures, which have dense inputs and one group.
+moves the §33 or §34 figures, which have dense inputs and one group. The
+first has since been removed.
 
-- **A windowed mean on a sparse input walks the queue per read**. Every row joins a kernel's queue, and a mean's read looks for the
-  operator's oldest valued row from the queue's head. So an operator whose
-  input is null on most rows scans the rows between its values on every
-  read: O(n · window) in the limit, where a dense input is O(n). The reviewer measured 300k
-  rows with a window of about 2 000 rows: 0.04 s with every row valued,
-  0.06 s at one value in 50, 0.24 s at one in 5 000. The remedy the design
-  named -- a row enters an operator's queue only when it carries a value --
-  would make the read O(1) and is not built.
+- **A windowed mean on a sparse input walked the queue per read, and no
+  longer does** (removed 2026-10-24). Every row joins a kernel's queue, and
+  a mean's read looks for the operator's oldest valued row. That search
+  began at the queue's oldest row, so an operator whose input is null on
+  most rows scanned the rows between its values on every read: O(n ·
+  window) in the limit, where a dense input is O(n). The reviewer measured
+  300k rows with a window of about 2 000 rows: 0.04 s with every row
+  valued, 0.06 s at one value in 50, 0.24 s at one in 5 000. The remedy the
+  design named, a row entering an operator's queue only when it carries a
+  value, is not built. The cost was removed another way: each operator
+  keeps the position of the oldest valued row its last search found, and
+  the next search starts there, since the rows before it are either gone
+  or were passed over already. A null row is then passed once, not on
+  every read, and the search is O(1) amortized. Measured with the same
+  stream, 300k rows, a window of 2,000 rows, the best of two runs at a
+  load of 3.3 on an Apple M4 Pro, in ns a row backward and ahead: at one
+  value in 5,000, 1,264 and 1,734 before, 184 and 195 after; at one in 50,
+  313 and 258 before, 194 and 205 after; with every row valued, 186 and 175
+  before, 174 and 180 after. The outputs are identical to the bit.
 - **A spec with a formula target runs one Polars plan per group per chunk**.
   The element-wise inputs are evaluated per group's
   sub-frame, though they are group-independent, and the formulas over each
