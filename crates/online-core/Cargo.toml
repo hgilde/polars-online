@@ -24,7 +24,9 @@ unsafe_code = "forbid"
 faer.workspace = true
 # Not used by name: faer's `std` feature less `private-gemm-x86` (the
 # workspace Cargo.toml, task 258). All four are faer's own dependencies,
-# already linked; nothing new is linked (CLAUDE.md rule 12).
+# already linked; nothing new is linked (CLAUDE.md rule 12). A test names
+# `libm` for a stream that is the same bits on every platform (task 273,
+# `gramfit/lars_tie_tests.rs`); the library calls none of it.
 faer-traits.workspace = true
 pulp.workspace = true
 nano-gemm.workspace = true

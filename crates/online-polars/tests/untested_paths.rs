@@ -878,7 +878,10 @@ fn the_averaged_forecast_at_a_best_error_of_zero_is_the_exact_slots() {
 
 /// The averaged forecast where one slot fits exactly and the other does
 /// not: the exact slot's error is 0, the limit of the ratio is the argmin,
-/// and the forecast is the exact slot's prediction alone.
+/// and the forecast is the exact slot's prediction alone. Under a literal
+/// `lam` at unit steps: that the exact slot's error comes out 0 at all is a
+/// rounding, and under `half_life` it was one of Apple's `exp2` (a libm 1
+/// ulp off left errors of 4e-16 on every row; docs/PLAN.md task 273).
 #[test]
 fn the_averaged_forecast_at_one_exact_slot_is_that_slots() {
     let n = 40;
@@ -889,7 +892,7 @@ fn the_averaged_forecast_at_one_exact_slot_is_that_slots() {
     df.put(Series::new("y".into(), y)).unwrap();
     let s = spec(
         r#"{"name": "m", "model": {"type": "ewridge", "ridge": [0.0, 1.0]},
-            "targets": ["y"], "features": ["x0"], "half_life": 10.0, "fit_intercept": false,
+            "targets": ["y"], "features": ["x0"], "lam": 0.933, "fit_intercept": false,
             "emit_averaged": true, "emit_sigma": true}"#,
     );
     let out = Bank::new(vec![s]).unwrap().fit_predict(&df).unwrap();

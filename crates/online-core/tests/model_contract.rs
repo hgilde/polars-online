@@ -4708,12 +4708,26 @@ mod generated {
                     } else {
                         &[]
                     };
-                    for (u, v) in kept.iter().zip(inside) {
-                        assert!(
-                            (u - v).abs() <= 1e-9 * u.abs().max(v.abs()).max(1.0),
-                            "{case}: row 8, {:?} where the rows inside the window fit {inside:?}",
-                            at[0]
-                        );
+                    // Normwise, over each fit's intercept and slopes
+                    // (docs/PLAN.md task 273): the window's system is near
+                    // singular (two rows of weight `1e100` and one of 0.01),
+                    // so a forward error is a share of the vector's size,
+                    // and an entry 1e-14 of it (`lasso`'s second slope, 2e36
+                    // beside 2e50) carries no digit. Entrywise it kept its
+                    // sign with Apple's `exp2`, and flipped with it moved by
+                    // 1 ulp. Measured normwise: `ewridge` 4.6e-11 at every
+                    // level and `lasso` 1.4e-13, the same with `exp2` moved
+                    // by up to 4 ulps.
+                    let fits = kept.chunks(K + 1).zip(inside.chunks(K + 1));
+                    for (slot, (us, vs)) in fits.enumerate() {
+                        let size = us.iter().chain(vs).fold(1.0f64, |a, x| a.max(x.abs()));
+                        for (u, v) in us.iter().zip(vs) {
+                            assert!(
+                                (u - v).abs() <= 1e-9 * size,
+                                "{case}: row 8, fit {slot}, {:?} where the rows inside the window fit {inside:?}",
+                                at[0]
+                            );
+                        }
                     }
                     for (row, (c, c0)) in at.iter().zip(at0).enumerate().skip(1) {
                         assert!(
