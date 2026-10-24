@@ -1,0 +1,244 @@
+name: CPU paths
+
+# The product kernels, OpenBLAS and NumPy each choose their code at run time
+# from the CPU they find: its instruction sets (AVX2, AVX-512) and, for the
+# product kernels' blocking, its cache sizes. A GitHub runner label is a pool
+# of machines -- an AMD EPYC without AVX-512 one day, an Intel Xeon with it
+# the next, any L3 -- so CI's Windows legs sample those paths, and a path no
+# runner happens to draw is never tested: faer's x86 kernel gave wrong
+# products at widths that depended on the L3 size, and only the runners with
+# that L3 found it. This workflow takes the paths in turn instead, weekly and
+# by hand, on Windows, whose math library is the one the tests know least:
+#
+#   sde      online-core's numeric tests (the modules that run faer's
+#            products and factorizations or compare against `crate::oracle`)
+#            under Intel's Software Development Emulator, posing as a chip
+#            without AVX2, one with AVX2, two with AVX-512, and two with a
+#            2 MiB L3, the size at which the kernel's old tiling bug showed.
+#   oracles  the Python tests that compare against another library's
+#            computation (`-m oracle`, marked by tests/conftest.py) with
+#            OpenBLAS's kernels pinned by OPENBLAS_CORETYPE and NumPy's loops
+#            capped by NPY_DISABLE_CPU_FEATURES.
+#
+# Each leg first shows that the path it asked for is the one in effect --
+# scripts/cpu_probe.rs under SDE, scripts/cpu_paths.py's `check` for the
+# libraries -- and fails if not, so a green run cannot be the runner's own
+# path passing under another name. docs/TESTING.md, "The machines and the
+# CPU paths", has the reasoning; tests/test_ci_cost_policy.py holds this file
+# to it.
+on:
+  schedule:
+    - cron: "11 8 * * 6" # Saturdays, 08:11 UTC
+  workflow_dispatch:
+
+# Least privilege: no token scope by default, granted per job.
+permissions: {}
+
+concurrency:
+  group: cpu-paths-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
+  UV_PYTHON: "3.12"
+
+jobs:
+  sde:
+    name: online-core under SDE (${{ matrix.leg }})
+    runs-on: windows-latest
+    # The tests took 6.1 s natively in this build on an Apple M4 Pro at a
+    # load of 30 on its 14 cores, best of five (910 of online-core's 1,745
+    # unit tests, 2026-10-24); SDE runs code 10 to 100 times slower,
+    # slowest where it emulates AVX-512 on a host without it. The release
+    # build of online-core's tests took 4.5 minutes there, and a runner has
+    # four cores.
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # `sde`: SDE's chip knob. `cpuid` and `l3_kib`: a chip's CPUID
+        # definition file from the kit with its L3 resized, for `-cpuid_in`
+        # (which replaces the chip knob). `expect`: what scripts/cpu_probe.rs
+        # must report under SDE, the cache sizes those of the kit's files.
+        include:
+          - leg: Sandy Bridge, AVX without AVX2 or FMA
+            sde: -snb
+            expect: avx=true avx2=false fma=false avx512f=false l3_kib=6144
+          - leg: Haswell, AVX2 and FMA
+            sde: -hsw
+            expect: avx2=true fma=true avx512f=false l3_kib=6144
+          - leg: Ice Lake server, AVX-512
+            sde: -icx
+            expect: avx2=true avx512f=true l3_kib=39424
+          - leg: Sapphire Rapids, AVX-512 and a 105 MiB L3
+            sde: -spr
+            expect: avx2=true avx512f=true l3_kib=107520
+          - leg: Haswell with a 2 MiB L3
+            cpuid: hsw
+            l3_kib: 2048
+            expect: avx2=true fma=true avx512f=false l3_kib=2048
+          - leg: Ice Lake server with a 2 MiB L3
+            cpuid: icl-server
+            l3_kib: 2048
+            expect: avx2=true avx512f=true l3_kib=2048
+    env:
+      # Every module of online-core whose tests run faer's products or
+      # factorizations or compare against `crate::oracle`, as libtest
+      # filters. tests/test_ci_cost_policy.py fails when a module that does
+      # either is missing here.
+      SDE_TESTS: >-
+        bocpd:: breaks:: calibration:: deco:: ewclass:: ewcov:: ewridge::
+        gaps:: gramfit:: hmm:: kalman:: lasso:: oracle:: pieces:: rcov::
+        rls:: robust:: sandwich:: solve:: specification::
+      # A release build, ten or more times faster than the debug build CI
+      # tests, which matters under an emulator; with the debug build's
+      # assertions and overflow checks, so the tests that expect one to
+      # fire still pass. The product kernels are the same code either way.
+      CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS: "true"
+      CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS: "true"
+      # Intel's SHA-256 for this kit, from its download page
+      # (intel.com/content/www/us/en/download/684897), checked below
+      # against the tarball setup-sde fetched: what runs is Intel's kit.
+      SDE_VERSION: 10.13.1
+      SDE_SHA256: 74E626EDE09B0BAA5011FC9E51B58627EA92C3FC0BAE5FD7DB34B490F335F651
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: the machine this job ran on
+        uses: ./.github/actions/machine-report
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      # As in ci.yml: real-time scanning inspects every file a cargo build
+      # writes. Best-effort; never fail the job over it.
+      - name: exclude the build from Defender (Windows)
+        continue-on-error: true
+        run: |
+          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE","$env:USERPROFILE\.cargo","$env:USERPROFILE\.rustup"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          cache-on-failure: true
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      # Intel SDE is free of charge "for any type of use" under the Intel
+      # Simplified Software License, which permits redistributing it
+      # unmodified; setup-sde fetches Intel's kit from its own release, and
+      # its README says that using it is agreeing to that licence, which the
+      # kit carries (Licenses/). NumPy's own SIMD workflow uses the same
+      # action at the same commit.
+      - name: Intel SDE
+        uses: petarpetrovt/setup-sde@6d2773bc0ef3005fd52e0ae0bb91782321793aec # v6.0
+        with:
+          environmentVariableName: SDE_PATH
+          sdeVersion: ${{ env.SDE_VERSION }}
+      - name: the kit is Intel's
+        run: |
+          $hash = (Get-FileHash .output\sde-temp-file.tar.bz2 -Algorithm SHA256).Hash
+          if ($hash -ne $env:SDE_SHA256) { throw "SDE kit SHA-256 $hash is not Intel's $env:SDE_SHA256" }
+          "SDE $env:SDE_VERSION, SHA-256 $hash, at $env:SDE_PATH"
+
+      - name: build online-core's tests
+        shell: bash
+        run: |
+          cargo build --release --locked -p online-core --tests --message-format=json > cargo.json
+          echo "TESTS_EXE=$(uv run --no-project python scripts/cpu_paths.py lib-tests < cargo.json)" >> "$GITHUB_ENV"
+          rustc -O --edition 2024 scripts/cpu_probe.rs -o cpu_probe.exe
+
+      - name: the chip SDE poses as
+        shell: bash
+        env:
+          SDE_KNOB: ${{ matrix.sde }}
+          CPUID: ${{ matrix.cpuid }}
+          L3_KIB: ${{ matrix.l3_kib }}
+          EXPECT: ${{ matrix.expect }}
+        run: |
+          if [ -n "$CPUID" ]; then
+            def=$(uv run --no-project python scripts/cpu_paths.py sde-cpuid "$SDE_PATH" "$CPUID" \
+              --l3-kib "$L3_KIB" --out cpuid.def)
+            args="-cpuid_in $def"
+          else
+            args="$SDE_KNOB"
+          fi
+          echo "SDE_ARGS=$args" >> "$GITHUB_ENV"
+          # Unquoted on purpose: one word a key.
+          # shellcheck disable=SC2086
+          uv run --no-project python scripts/cpu_paths.py probe ./cpu_probe.exe \
+            --sde "$SDE_PATH/sde.exe" --sde-args="$args" --expect $EXPECT
+
+      # From the package's directory, as `cargo test` runs a test binary.
+      # Two threads, as ci.yml's Windows legs: each thread that multiplies
+      # keeps a packing buffer of twice the L3 the CPU reports.
+      - name: the tests under SDE
+        shell: bash
+        working-directory: crates/online-core
+        run: |
+          uv run --no-project python ../../scripts/cpu_paths.py sde-tests "$TESTS_EXE" \
+            --sde "$SDE_PATH/sde.exe" --sde-args="$SDE_ARGS" --filters "$SDE_TESTS"
+
+  oracles:
+    name: oracle tests (OpenBLAS ${{ matrix.openblas }}, NumPy ${{ matrix.numpy }})
+    runs-on: windows-latest
+    # As ci.yml's Windows legs: uv sync about 18 minutes, the extension's
+    # build about as long; the tests took 2.6 minutes on an Apple M4 Pro.
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # OPENBLAS_CORETYPE names the kernels OpenBLAS runs, in NumPy's copy
+        # and SciPy's; `keep` names the NumPy dispatch targets left on, every
+        # other one disabled (NumPy 2.5 dispatches X86_V3, X86_V4,
+        # AVX512_ICL and AVX512_SPR above its X86_V2 baseline, which it
+        # refuses to disable). Each of these runs on any machine in the
+        # pool, all of which have AVX2. No leg forces AVX-512 kernels:
+        # OpenBLAS runs a forced core type without checking the CPU, so
+        # SkylakeX on one of the pool's AMD machines would stop at an
+        # illegal instruction; the pool's Intel machines run those kernels
+        # in ci.yml, and its machine report says when.
+        include:
+          - openblas: Prescott
+            numpy: baseline
+            keep: ""
+          - openblas: SandyBridge
+            numpy: baseline
+            keep: ""
+          - openblas: Haswell
+            numpy: X86_V3
+            keep: X86_V3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: the machine this job ran on
+        uses: ./.github/actions/machine-report
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - name: exclude the build from Defender (Windows)
+        continue-on-error: true
+        run: |
+          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE","$env:USERPROFILE\.cargo","$env:USERPROFILE\.rustup"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          cache-on-failure: true
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: build the extension
+        run: uv run maturin develop --release -m crates/online-py/Cargo.toml
+
+      # Set for every later step, and only those: the build above ran on
+      # the libraries' own choices.
+      - name: the paths this leg forces
+        shell: bash
+        env:
+          OPENBLAS: ${{ matrix.openblas }}
+          KEEP: ${{ matrix.keep }}
+        run: |
+          # Unquoted on purpose: one word a target.
+          # shellcheck disable=SC2086
+          uv run python scripts/cpu_paths.py numpy-env --openblas "$OPENBLAS" --keep $KEEP | tee -a "$GITHUB_ENV"
+      - name: they took effect
+        run: uv run python scripts/cpu_paths.py check
+      # `not soak`: a command line's -m replaces pyproject's.
+      - name: pytest
+        run: uv run pytest -m "oracle and not soak"

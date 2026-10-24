@@ -1,0 +1,111 @@
+# Which machine a job ran on, in its log and its summary, so that a failure
+# names its machine (docs/TESTING.md, "The machines and the CPU paths").
+#
+# A runner label is a pool: `windows-latest` has handed out AMD EPYC 7763s
+# without AVX-512 and Intel Xeons with it, each with its own L3, and nothing
+# in a log said which. The product kernels pick their code from the CPU's
+# instruction sets and their blocking from its caches, and on Windows `exp`,
+# `log` and `pow` come from `ucrtbase.dll`, which changes with the Windows
+# build, so each of those is printed. On Linux the math library is glibc's,
+# and on macOS the system's, versioned with the OS.
+#
+# Where it goes: right after checkout (a local action needs the checkout),
+# before anything else, so even a job that fails in its first build step
+# says where it ran. Never fails the job: every line is best-effort.
+# tests/test_ci_cost_policy.py holds every job that can run on Windows to
+# calling it there.
+name: the machine this job ran on
+description: >-
+  Prints the CPU model, its L2 and L3 sizes, whether AVX2, AVX-512F and FMA
+  are present, the logical core count, the OS build and its math library,
+  to the log and the job summary.
+runs:
+  using: composite
+  steps:
+    # CPU features are not in WMI: .NET's hardware intrinsics say what the
+    # CPU and the OS together let a program use (AVX-512 needs the OS to
+    # save its registers), which is what a program sees. pwsh on the
+    # runners is .NET 8 or later, where `Avx512F` exists; .NET reports it
+    # with F, BW, CD, DQ and VL together, as every AVX-512 server chip has.
+    - name: the machine (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      continue-on-error: true
+      run: |
+        # Every error terminating, so `Ask` turns any one into "unknown".
+        $ErrorActionPreference = 'Stop'
+        function Ask([scriptblock] $f) { try { & $f } catch { "unknown" } }
+        $procs = @(Ask { Get-CimInstance Win32_Processor })
+        $cpu = Ask { ($procs | ForEach-Object { $_.Name.Trim() } | Select-Object -Unique) -join '; ' }
+        $l2 = Ask { ($procs | ForEach-Object { $_.L2CacheSize }) -join ', ' }
+        $l3 = Ask { ($procs | ForEach-Object { $_.L3CacheSize }) -join ', ' }
+        $avx2 = Ask { [System.Runtime.Intrinsics.X86.Avx2]::IsSupported }
+        $avx512f = Ask { [System.Runtime.Intrinsics.X86.Avx512F]::IsSupported }
+        $fma = Ask { [System.Runtime.Intrinsics.X86.Fma]::IsSupported }
+        $os = Ask { Get-CimInstance Win32_OperatingSystem }
+        $ubr = Ask { (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').UBR }
+        $ucrt = Ask {
+          $v = (Get-Item "$env:SystemRoot\System32\ucrtbase.dll").VersionInfo
+          '{0}.{1}.{2}.{3}' -f $v.FileMajorPart, $v.FileMinorPart, $v.FileBuildPart, $v.FilePrivatePart
+        }
+        $lines = @(
+          "runner image: $env:ImageOS $env:ImageVersion",
+          "cpu: $cpu ($($procs.Count) socket(s))",
+          "cache: L2 $l2 KiB, L3 $l3 KiB, a socket",
+          "x86 features: avx2=$avx2 avx512f=$avx512f fma=$fma",
+          "logical cores: $([Environment]::ProcessorCount)",
+          "os: $($os.Caption) $($os.Version).$ubr",
+          "math library: ucrtbase.dll $ucrt"
+        )
+        $lines | ForEach-Object { Write-Output $_ }
+        if ($env:GITHUB_STEP_SUMMARY) {
+          $block = @('### The machine', '', '```') + $lines + @('```', '')
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $block -Encoding utf8
+        }
+
+    - name: the machine (Linux, macOS)
+      if: runner.os != 'Windows'
+      shell: bash
+      continue-on-error: true
+      run: |
+        has() { grep -qw "$1" <<< "$2" && echo true || echo false; }
+        if [ "$RUNNER_OS" = "Linux" ]; then
+          info=$(lscpu 2>/dev/null || true)
+          field() { sed -n "s/^$1:[[:space:]]*//p" <<< "$info" | head -1; }
+          cpu=$(field 'Model name')
+          cache="L2 $(field 'L2 cache'), L3 $(field 'L3 cache')"
+          flags=$(grep -m1 '^flags' /proc/cpuinfo || true)
+          features="avx2=$(has avx2 "$flags") avx512f=$(has avx512f "$flags") fma=$(has fma "$flags")"
+          cores=$(nproc)
+          # shellcheck disable=SC1091
+          os="$(. /etc/os-release && echo "$PRETTY_NAME"), kernel $(uname -r)"
+          libm="glibc $(ldd --version 2>/dev/null | head -1 | awk '{print $NF}')"
+        else
+          cpu=$(sysctl -n machdep.cpu.brand_string 2>/dev/null)
+          l2=$(sysctl -n hw.perflevel0.l2cachesize 2>/dev/null || sysctl -n hw.l2cachesize 2>/dev/null)
+          l3=$(sysctl -n hw.l3cachesize 2>/dev/null || true)
+          l3=${l3:-none}
+          cache="L2 $l2 bytes, L3 ${l3}"
+          if [ "$(uname -m)" = "x86_64" ]; then
+            flags="$(sysctl -n machdep.cpu.features machdep.cpu.leaf7_features 2>/dev/null)"
+            features="avx2=$(has AVX2 "$flags") avx512f=$(has AVX512F "$flags") fma=$(has FMA "$flags")"
+          else
+            features="none: $(uname -m)"
+          fi
+          cores=$(sysctl -n hw.logicalcpu)
+          os="macOS $(sw_vers -productVersion) ($(sw_vers -buildVersion))"
+          libm="the system's, with the OS"
+        fi
+        lines=(
+          "runner image: ${ImageOS:-} ${ImageVersion:-}"
+          "cpu: $cpu"
+          "cache: $cache"
+          "x86 features: $features"
+          "logical cores: $cores"
+          "os: $os"
+          "math library: $libm"
+        )
+        printf '%s\n' "${lines[@]}"
+        if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+          { printf '### The machine\n\n```\n'; printf '%s\n' "${lines[@]}"; printf '```\n\n'; } >> "$GITHUB_STEP_SUMMARY"
+        fi
