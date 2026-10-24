@@ -64,7 +64,7 @@ step 5).
 | 9. release | dispatch `release.yml` on `main` with `publish` on (`gh workflow run release.yml --ref main -f publish=true`); never push a tag by hand. No rehearsal first: this run does everything a rehearsal does before it asks for approval, and a failure there leaves nothing to undo -- dispatch again ([Rehearse before tagging](#rehearse-before-tagging)). Push no change to `.github/workflows` until the tag exists: the tag job's token may not create a ref whose workflow files differ from `main`'s, so on 1.0.1 (2026-10-13) a workflow change pushed while the run waited for approval left the upload done and the tag refused, and the tag and the GitHub release were made by hand from the run's own notes and files |
 | 10. approve | the `publish to PyPI` job, in the `Pypi` environment, once every job is green ([The release gate](#the-release-gate)); the tag and the GitHub release follow the upload |
 | 11. verify | install from PyPI into a clean venv outside the repository, and check `po.__file__`, the three versions the package reports (`po.__version__`, `po.native_version()` and `po.schema_version()`) and a fit |
-| 12. record | the release's own measurements become the numbers the next release's drift is read from: download the release run's `budgets-instructions-<sha>` artifact and each OS's floor-Python `budgets-memory-…` artifact, run `python scripts/budgets.py apply measured.json memory.json rss-*.json --release X.Y.Z`, and commit `budgets.toml` to `main` |
+| 12. record | the release's own measurements become the numbers the next release's drift is read from: download the release run's `budgets-instructions-<sha>` artifact and each OS's floor-Python `budgets-memory-…` artifact, run `python scripts/budgets.py apply measured.json memory.json rss-*.json --release X.Y.Z`, and commit `budgets.toml` to `main`. The README's install *size* row is refreshed in the same commit, from the wheels on PyPI: each file's size, and the sum of its members' unpacked sizes. A test holds the row to one of the two newest releases |
 
 ### The release gate
 
@@ -146,10 +146,21 @@ for bit.** A test with a tolerance lets a small numeric change through,
 and a change to the numbers a model returns makes a release a minor.
 `uv run python scripts/compare_release.py` installs the newest release
 from PyPI into a cached venv under `.cache/release-compare/`. It runs the
-workload in `scripts/release_probe.py` under both builds: 30 specs, every
-model among them, over 400 rows with groups, sessions, gaps, nulls and
-zero weights. It then compares every output field, and the frame
-`closed_groups` drains, bit by bit. It prints each field that differs,
+workload in `scripts/release_probe.py` under both builds, over 400 rows
+with groups, sessions, gaps, nulls and zero weights. Its specs hold
+every model, every output a regression can emit (every field name the
+memory budgets' fullest workload writes) and the settings that take a path
+of their own: a temporal clock with duration parameters, the blocked Gram
+on two threads, feature sets, a coefficient prior, `kalman`'s shared `P`,
+reversion and given noise, every `sgd` loss, `ftrl`'s squared loss, `pa`'s
+modes, the windows of `lasso`, `marginal` and `ew_class`, a formula
+target, a drift reset, the solve and coefficient cadences, and a restart
+on a step back. `tests/test_release_compare.py` holds the workload to
+those field names and those paths. It then compares each spec's output
+fields, and the frame `closed_groups` drains, bit by bit. What it does not
+run is outside the comparison: the window operators (`po.ewm_mean` and the
+rest, `with_windows`), `po.gram`, `po.gbdt`, `refresh_time`, a bank's
+`threads=`, and every combination of settings beyond the ones named. It prints each field that differs,
 with the first row where it does, and exits 1. Each run reports which
 package it imported, so the comparison cannot compare a build with itself.
 A spec the old release refuses is listed as not comparable, not as a
@@ -165,7 +176,8 @@ so a change shows at the commit that made it.
 Measured when it was written, on 2026-09-24: this build against 0.10.0 and
 against 0.9.1, all 291 fields identical. Against 0.8.0, 112 fields differ,
 all from 0.9.0's declared readiness gates, which is the evidence it can
-fail.
+fail. On 2026-10-23, with the workload widened to 68 specs, this build
+against 1.2.0: 1,273 fields identical.
 
 #### A released build's state files
 
@@ -179,7 +191,7 @@ and goes on.** This build's bank reads the schemas from
 
 `tests/test_released_state.py` holds each release it lists to that. It
 installs the release into the comparison's cache, and runs
-`scripts/release_probe.py --states` under it: the workload's 30 specs,
+`scripts/release_probe.py --states` under it: each spec of the workload,
 fitted on the first half of the stream and saved. This build must then
 refuse each 0.x file by its version, naming "refit it from its input". It runs
 in the suite, and is skipped offline, since it downloads the releases (hard
@@ -195,7 +207,11 @@ the rule for a 1.x release's files says.
 as this build's own**, as decided on 2026-10-06. The same test holds a 1.x
 release's files to that. This build loads each with its own spec, and fits
 the second half beside a bank of its own that fitted both halves. Every
-float, the closed groups, the coefficients and `marginal`'s table agree.
+float, the closed groups, the coefficients and `marginal`'s table agree to
+the bit. The one exception is a spec whose numbers a CHANGELOG entry moved
+since that release, which the test names with the entry: a blocked
+`ewridge` from 1.0.0 or 1.0.1, whose target sums 1.1.0 took in another
+order, goes on 5.2e-16 from this build's own.
 It ran on the states this build writes itself until 1.0.0 was released, so
 the check had run before the first release that must honour it. 1.0.0 joined
 `RELEASES` on its release day, 2026-10-12: its files, installed from PyPI,
@@ -977,8 +993,8 @@ The rest of the policy lives here, and CONTRIBUTING carries none of it.
 | **not stable** | anything underscore-prefixed, apart from `po.stream.embargo`'s `_online_role` and `_online_role_weight`: a user passes the second to a spec's `weight` and filters on the first, so both are stable; the Rust crates, which the going-public item [R3](#r3--rust-crates-not-published) decided not to publish; and the exact numeric output, which depends on the polars version and the platform, within the 1e-12 tolerance `test_golden_pipeline.py` pins |
 
 **Each part is unstable for a reason that a 1.0 promise would make
-costly.** The window run's state reached version 7 in nine rounds of one
-week. The formula tree is read from `expr.meta.serialize`, whose form
+costly.** The window run's state reached version 9 in nine days
+(2026-09-30 to 2026-10-08). The formula tree is read from `expr.meta.serialize`, whose form
 Polars calls unstable across its versions. The Arrow export's input side
 still arrives as a Polars frame, and its import is unbuilt.
 `po.sim` and `po.corr` stand beside the bank: neither reads its outputs,
@@ -1300,7 +1316,7 @@ co-moments on `ew_cov`. In API terms:
 |---|---|
 | **`SCHEMA_VERSION` 5** | `state_schema5.rs` froze it: a bank with an undrained closed row, an `ew_cov` with a partly filled lag ring, and one of each new model mid-stream. `state_schema4.rs` still loaded, continued to the bit and re-saved as 5, which was hard rule 5 discharged. Both fixtures have since gone, and the schema has moved on many times since: `po.schema_version()` gives today's ([What the API actually is](#what-the-api-actually-is)) |
 | **every new output field name** | pinned by `tests/api_surface.txt`, which then gained a `[helper modules]` section, and by `tests/test_golden_pipeline.py`, which fixes the numbers of a twenty-five-spec bank at three rows |
-| **three new defaults, each with its reason: one measured, one a cost, one a published rule** | `bocpd`'s `robust_beta = 0.1` (measured: above ~0.2 nothing is ever detected), `bocpd`'s `emission = "diag"`, and `rcov`'s automatic bandwidth. `bocpd`'s robust weighting passes the test of a 20-σ row, which restarts the plain run and does not move the robust one, and it trades detection for robustness above about 0.2. Its diagonal emission takes `O(runs·d)` work a row, against the full pair's `O(runs·d²)`. `rcov`'s bandwidth follows the published rule of Barndorff-Nielsen, Hansen, Lunde and Shephard (2011), `H = ⌈c* ξ̂^{4/5} n^{3/5}⌉`, from a dense and a sparse realised variance. Changing one of them is a breaking change, by [the policy](#the-policy) |
+| **three new defaults, each with its reason: one measured, one a cost, one a published rule** | `bocpd`'s `robust_beta = 0.1` (measured: above ~0.2 nothing is ever detected), `bocpd`'s `emission = "diag"`, and `rcov`'s automatic bandwidth. `bocpd`'s robust weighting passes the test of a 20-σ row, which restarts the plain run and does not move the robust one, and it trades detection for robustness above about 0.2. Its diagonal emission takes `O(runs·d)` work a row, against the full pair's `O(runs·d³)`, which factors each run's scale every row. `rcov`'s bandwidth follows the published rule of Barndorff-Nielsen, Hansen, Lunde and Shephard (2011), `H = ⌈c* ξ̂^{4/5} n^{3/5}⌉`, from a dense and a sparse realised variance. Changing one of them is a breaking change, by [the policy](#the-policy) |
 | **no new Polars interface** | two of the three streaming paths of the time still carried no guarantee (CLAUDE.md rule 13): `ModelBank` and the IO plugin. The batch added no polars API dependency beyond `LazyFrame.collect_batches`, which is already the floor |
 | **the closed-group frame's *column* names** | pinned since 2026-09-24 (`spec`, `group`, `session`, `rcov`, `rcov_bandwidth_used`, …). They are as much API as an output field is, and until then only `test_closed_groups.py` read them by name. `tests/api_surface.txt` now records them in order, as `[closed_groups columns]`: the shared columns, and each kind's full list, with `ew_cov`'s PCA block and `marginal`'s lag and bin blocks switched on |
 
