@@ -128,7 +128,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
-use crate::sgd::{scales_of, standardize_row, standardized, unscaled};
+use crate::sgd::{scaler_decay, scales_of, standardize_row, standardized, unscaled};
 use crate::solve::dot_aug;
 use crate::spread::TargetSpread;
 use crate::{Constraint, Decay, EwDiag, Warmup};
@@ -608,7 +608,7 @@ impl OnlineModel for Pa {
             }
         }
         if let Some(sc) = &mut self.scaler {
-            sc.update(&self.rawbuf, lam, weight);
+            sc.update(&self.rawbuf, scaler_decay(sc, lam, weight), weight);
         }
         // Project after the scaler moved, as `sgd` does: the bounds live in
         // the caller's units, and in standardized coordinates they move with

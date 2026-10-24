@@ -188,7 +188,9 @@ pub enum SgdLoss {
 #[serde(rename_all = "snake_case")]
 pub enum LearningRate {
     Constant,
-    /// `lr / (1 + n_eff)^power`.
+    /// `lr / (1 + lam·n_eff)^power`: the weight before the row decayed to
+    /// it, `lam` the row's decay, so a zero-weight row in between moves
+    /// nothing (hard rule 9).
     InvScaling {
         power: f64,
     },
@@ -982,6 +984,28 @@ fn slopes_usable(
     }
 }
 
+/// The decay the scaler's history takes into a row of weight `w`: `lam`, or
+/// 0 where that history's share of the weight after the row, `lam·W /
+/// (lam·W + w)`, is below the smallest normal double -- forgotten there, as
+/// a decay that underflows to 0 forgets it from 1075 half-lives on, by the
+/// rule `lasso`'s and `ewridge`'s Grams keep ([`crate::gaps::decay_into`]).
+/// A zero-weight row 1074 half-lives on left the scaler a weight of a few
+/// subnormal ulps beside its old moments; the next row's variance came out
+/// that small times the row's squared deviation, its scale near `1e-161`,
+/// and the constrained and mapped steps, which divide by it, made every
+/// coefficient NaN for good (docs/PLAN.md task 270 (h)). The edge is the
+/// smallest normal double because below it the history's terms in the
+/// moments, `a·c` and `a·b·d²` with `a` its share, are themselves subnormal,
+/// carrying fewer bits than a double has and nothing of the history but a
+/// spread the row never had. `standardized`, `standardize_row` and both
+/// models' updates read it, `w` 1 for the row admitted at unit weight, so
+/// what `standardized` reads is still to the bit what the update at unit
+/// weight leaves.
+#[inline]
+pub(crate) fn scaler_decay(sc: &EwDiag, lam: f64, w: f64) -> f64 {
+    crate::gaps::decay_into(lam, sc.n_eff(), w)
+}
+
 /// `x` standardized against the moments of `sc` with the row itself
 /// admitted at unit weight after a decay of `lam` ([`EwDiag::including`];
 /// `SgdCfg::standardize` says why the row is in): feature `i` sits in
@@ -996,7 +1020,7 @@ pub(crate) fn standardized<'a>(
     x: &'a [f64],
     lam: f64,
 ) -> impl Iterator<Item = f64> + 'a {
-    let inc = sc.including(lam);
+    let inc = sc.including(scaler_decay(sc, lam, 1.0));
     x.iter().enumerate().map(move |(i, &xi)| {
         let (mean, v, dev) = inc.moments(off + i, xi);
         if off == 0 {
@@ -1034,7 +1058,7 @@ pub(crate) fn standardize_row(
     mean: &mut [f64],
     scale: &mut [f64],
 ) {
-    let inc = sc.including(lam);
+    let inc = sc.including(scaler_decay(sc, lam, 1.0));
     for (i, &xi) in x.iter().enumerate() {
         let (m, v, dev) = inc.moments(off + i, xi);
         if off == 0 {
@@ -1205,11 +1229,17 @@ impl OnlineModel for Sgd {
         }
         // The rate every slot shares this row, or `None` under AdaGrad,
         // whose rate is per slot. `inv_scaling`'s power is one `powf` a
-        // row, not one a slot.
+        // row, not one a slot. It reads the weight decayed to this row,
+        // `lam·W`, as AdaGrad's sums are decayed above: the weight before
+        // the decay, `n_eff`, made a zero-weight row in between move the
+        // next row's rate, since `lam(b)·lam(a)·W = lam(a + b)·W` but the
+        // row after a skipped one read `lam(a)·W` where the stream without
+        // it read `W` -- up to 1.6e-2 relative at half-life 1 (hard rule 9;
+        // docs/PLAN.md task 270 (h)-B).
         let lr_row = match self.cfg.schedule {
             LearningRate::Constant => Some(self.cfg.learning_rate),
             LearningRate::InvScaling { power } => {
-                Some(self.cfg.learning_rate / (1.0 + n_eff).powf(power))
+                Some(self.cfg.learning_rate / (1.0 + lam * self.w_sum).powf(power))
             }
             LearningRate::AdaGrad => None,
         };
@@ -1334,7 +1364,7 @@ impl OnlineModel for Sgd {
             }
         }
         if let Some(sc) = &mut self.scaler {
-            sc.update(&self.rawbuf, lam, weight);
+            sc.update(&self.rawbuf, scaler_decay(sc, lam, weight), weight);
         }
         // Project after the scaler moved: the bounds live in the caller's
         // units, and in standardized coordinates they move with the scales,

@@ -7,6 +7,9 @@ pub mod bank {
 pub mod bank_diagnosed {
     include!("bank_diagnosed.rs");
 }
+pub mod bank_autocorr {
+    include!("bank_autocorr.rs");
+}
 pub mod with_windows {
     include!("with_windows.rs");
 }
@@ -24,6 +27,7 @@ pub mod refresh_time_int {
 pub const ALL: &[&crate::Fixture] = &[
     &bank::FIXTURE,
     &bank_diagnosed::FIXTURE,
+    &bank_autocorr::FIXTURE,
     &with_windows::FIXTURE,
     &with_windows_int::FIXTURE,
     &refresh_time::FIXTURE,

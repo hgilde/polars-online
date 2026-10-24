@@ -104,6 +104,35 @@ def test_a_scale_with_a_shorter_memory_follows_a_level_shift():
     assert sgd_short < 0.5 * sgd_fit, (sgd_short, sgd_fit)
 
 
+def test_sgd_follows_a_level_shift_with_a_fifth_of_the_fits_memory():
+    """``sgd``'s Huber gradient is clipped at ``delta * s``, so under the
+    MAD at the fit's memory it follows a level shift seven times worse than
+    under the RMS, the default before the MAD; a scale half-life of a fifth
+    of the fit's brings it within 1.3x of the RMS (MODELS.md). The stream of
+    the test above, seed 1; the mean absolute error over rows 200-400 after
+    the shift, measured: 1.17 for the squared loss, 2.45 for the RMS, 17.33
+    for the MAD at the fit's 500 rows, 2.99 at 100 and 1.41 at 20 (seeds 2
+    and 3 within 0.06 of each)."""
+    rng = np.random.default_rng(1)
+    n = 14_000
+    x = rng.standard_normal(n)
+    y = 2.0 * x + 0.5 * rng.standard_normal(n)
+    y[10_000:] += 20.0
+    df = pl.DataFrame({"x": x, "y": y, "t": np.arange(n, dtype=float)})
+    c = dict(targets=["y"], features=["x"], clock="t", gap_cap=10.0, half_life=500.0)
+
+    def late_error(spec):
+        pred = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y").to_numpy()
+        return float(np.abs(y - pred)[10_200:10_400].mean())
+
+    rms = late_error(po.spec.sgd("m", loss="huber", huber_scale="rms", **c))
+    fit_memory = late_error(po.spec.sgd("m", loss="huber", **c))
+    fifth = late_error(po.spec.sgd("m", loss="huber", huber_scale_half_life=100.0, **c))
+    assert fifth < 1.3 * rms, (fifth, rms)
+    assert fit_memory > 5.0 * rms, (fit_memory, rms)
+    assert fit_memory == pytest.approx(17.33, abs=0.01)
+
+
 def _specs():
     c = dict(
         targets=["y0", "y1"],

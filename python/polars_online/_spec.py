@@ -2876,6 +2876,15 @@ def sgd(
         The scale ``s`` and its own memory, as for :func:`huber`: ``"mad"``
         (the default) or ``"rms"``, and a half-life defaulting to the spec's
         ``half_life``. ``loss = "huber"`` only; refused beside another loss.
+        The gradient is clipped at ``huber_delta * s``, so under ``"mad"`` a
+        change of level many times the noise is followed at most
+        ``learning_rate * huber_delta * s`` a row until the median has
+        crossed. With a fit half-life of 500 rows and a +20 shift, the mean
+        absolute error 200-400 rows after it was 17.33 under ``"mad"`` at
+        the fit's memory, 2.45 under ``"rms"``, 2.99 with
+        ``huber_scale_half_life = 100`` and 1.41 with 20. On a stream whose
+        level can change, give it about a fifth of ``half_life``, or
+        shorter.
     ``quantile``
         The level for ``loss = "quantile"``, in ``(0, 1)``; required for it.
     ``eps``
@@ -2913,13 +2922,14 @@ def sgd(
         in intercept and slope together.
     ``learning_rate``, ``schedule``, ``power``
         The rate (default 0.01) and its schedule: ``"constant"``,
-        ``"inv_scaling"`` (``lr / (1 + weight_sum) ** power``, ``power``
-        default 0.5) or ``"adagrad"`` (``lr / (sqrt(G_i) + 1e-8)``). The rate
-        is per gradient coordinate: a step is ``lr * g_i``, so ``lr`` is in the
-        coefficient's units over the gradient's, in standardized units under
-        ``standardize``. That is one over the feature squared for the squared
-        and Huber losses, and the target over the feature squared for the
-        sign-valued quantile and epsilon-insensitive ones. A sign-valued step
+        ``"inv_scaling"`` (``lr / (1 + lam * weight_sum) ** power``, ``lam``
+        the row's decay, ``power`` default 0.5) or ``"adagrad"`` (``lr /
+        (sqrt(G_i) + 1e-8)``). The rate is per gradient coordinate: a step
+        is ``lr * g_i``, so ``lr`` is in the coefficient's units over the
+        gradient's, in standardized units under ``standardize``. That is one
+        over the feature squared for the squared and Huber losses, and the
+        target over the feature squared for the sign-valued quantile and
+        epsilon-insensitive ones. A sign-valued step
         moves the fit's level by the rate times the row's weight, so at the
         default 0.01 a target at a level of 1,000 is 100,000 unit-weight rows
         away; under ``"inv_scaling"`` at a rate of 0.5, without decay, about

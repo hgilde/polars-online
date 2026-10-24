@@ -697,7 +697,15 @@ vectors are orthogonal to the design: summed against `z'` they give
 is at most `n − k` for `k` coefficients, and `break_wald` waits for `2k`
 rows, whatever their weights. Read sooner, the rounding would decide the
 distance, and multiplying every weight by one constant could turn it on
-or off. The slow fit's Gram alone
+or off. A gap long enough to leave the old rows below the rounding of the
+new ones starts the wait over: that is where the history's share of the
+weight after the row, squared, is at most `2^-53`, so for a history of `W`
+rows at weight 1 a gap of `26.5 + log₂ W` half-lives before a row of
+weight 1. Without the restart, the rows just after such a gap read their
+distance off a variance whose rank was theirs alone: multiplying every
+weight by one constant moved it by 8.6e-4 of itself after a gap's decay of
+`2^-60`, by more than itself at `2^-80`, and turned it on or off after
+one that took the history to 0. The slow fit's Gram alone
 would serve both fits only while the design holds still. When a feature's
 spread fell tenfold with nothing broken, that shortcut passed 21.1 after
 the change on 85% of 100 streams, and the exact variance on none. On
