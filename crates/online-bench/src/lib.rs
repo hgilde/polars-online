@@ -481,12 +481,10 @@ fn warm_rows(id: &str) -> usize {
     }
 }
 
-/// A model case, warmed up: the model, the rows of its measured block, and
-/// the `Step` it is stepped into, as the bank keeps one per model.
+/// A model case, warmed up: the model and the rows of its measured block.
 pub struct ModelRun {
     pub model: AnyModel,
     rows: Rows,
-    step: online_polars::online_core::Step,
 }
 
 /// The setup of a model case: the model the spec builds, stepped through
@@ -497,12 +495,11 @@ pub fn model_setup(id: &str) -> ModelRun {
     assert_eq!(built.len(), 1, "{id}: one instance");
     let (_, mut model) = built.pop().expect("one instance");
     let rows = rows(id, &spec);
-    let mut step = online_polars::online_core::Step::default();
     for i in 0..WARM_ROWS {
         let (x, y, d) = rows.row(i);
-        model.step_into(x, y, d, 1.0, &mut step);
+        model.step(x, y, d, 1.0);
     }
-    ModelRun { model, rows, step }
+    ModelRun { model, rows }
 }
 
 /// What a measured block reports: a checksum, so no row's work can be
@@ -513,17 +510,15 @@ pub struct Block {
     pub predicted: usize,
 }
 
-/// The measured block of a model case: [`ROWS`] rows of
-/// `AnyModel::step_into`, each with weight 1, into the one `Step` the case
-/// keeps, as the bank steps a model (docs/PLAN.md task 270, M-4).
+/// The measured block of a model case: [`ROWS`] rows of `AnyModel::step`,
+/// each with weight 1.
 #[unsafe(no_mangle)]
 #[inline(never)]
 pub fn polars_online_budget_model_rows(run: &mut ModelRun) -> Block {
     let mut out = Block::default();
     for i in WARM_ROWS..run.rows.len() {
         let (x, y, d) = run.rows.row(i);
-        run.model.step_into(x, y, d, 1.0, &mut run.step);
-        let step = &run.step;
+        let step = run.model.step(x, y, d, 1.0);
         let finite: f64 = step.pred.iter().filter(|p| p.is_finite()).sum();
         out.predicted += usize::from(step.pred.iter().any(|p| p.is_finite()));
         out.checksum += finite + step.n_eff;

@@ -98,7 +98,8 @@
 //!
 //! - **`Mad`**, a spec's default: `s = m / Φ⁻¹(3/4)`, `m` the EW median of
 //!   `|e|` read from one [`EwQuantile`] at 0.5 per target (within
-//!   `tanh(1/128)` of the exact EW median), fed the residuals and raw
+//!   `tanh(1/128)` of the exact EW median; bounded to [`MAD_BAND_OCTAVES`]
+//!   either side of the median, task 271 (b)), fed the residuals and raw
 //!   weights `σ²` is. An outlier moves a median by its weight whatever its
 //!   size, so the outliers cannot widen the cut drawn to catch them, and a
 //!   fit's first residuals -- the level's size, while the intercept is near
@@ -207,10 +208,20 @@ pub(crate) fn mad_scale(q: &EwQuantile) -> Option<f64> {
     (s > 0.0 && s.is_finite()).then_some(s)
 }
 
+/// The octaves a MAD sketch keeps either side of its median's bucket
+/// ([`EwQuantile::bounded`]): 16 octaves in all, so a median that falls
+/// from the start-up residuals to the noise's by up to a factor of 2^16
+/// folds nothing it later reads (docs/PLAN.md task 271 (b)).
+pub const MAD_BAND_OCTAVES: u32 = 8;
+
 /// One sketch of `|e|` per target under the MAD, none under the RMS.
 pub(crate) fn mad_sketches(scale: HuberScale, n: usize) -> Vec<EwQuantile> {
     match scale {
-        HuberScale::Mad => vec![EwQuantile::new(&[0.5]).expect("0.5 is in (0, 1)"); n],
+        HuberScale::Mad => vec![
+            EwQuantile::bounded(&[0.5], MAD_BAND_OCTAVES)
+                .expect("0.5 is in (0, 1) and the band in range");
+            n
+        ],
         HuberScale::Rms => Vec::new(),
     }
 }

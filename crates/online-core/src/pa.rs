@@ -454,25 +454,10 @@ impl OnlineModel for Pa {
     }
 
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
-        let mut out = Step::default();
-        self.step_into(x, y, d_clock, weight, &mut out);
-        out
-    }
-
-    /// The step, into the caller's buffer (task 270, M-4).
-    fn step_into(
-        &mut self,
-        x: &[f64],
-        y: &[Option<f64>],
-        d_clock: f64,
-        weight: f64,
-        out: &mut Step,
-    ) {
         // A value that is not usable, by the rule every model keeps
         // (`OnlineModel`).
         if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
-            *out = refused;
-            return;
+            return refused;
         }
         self.ensure_buffers();
         let m = self.cfg.n_targets;
@@ -528,9 +513,7 @@ impl OnlineModel for Pa {
         let (head, tail) = row_parts(direct, off, x, &self.zbuf);
         let sq_norm: f64 = head.iter().chain(tail).map(|z| z * z).sum();
 
-        out.pred.clear();
-        out.pred.resize(m, f64::NAN);
-        let pred = &mut out.pred;
+        let mut pred = vec![f64::NAN; m];
         if self.cfg.constraint.is_some() {
             self.learned.clear();
             self.learned.resize(m, false);
@@ -648,8 +631,12 @@ impl OnlineModel for Pa {
             lam,
             weight,
         );
-        out.n_eff = n_eff;
-        out.extra = None;
+
+        Step {
+            pred,
+            n_eff,
+            extra: None,
+        }
     }
 
     fn predict(&self, x: &[f64], d_clock: f64) -> Step {

@@ -746,6 +746,20 @@ The median is read from a quantile sketch kept per target, within 0.78% of
 the exact weighted median. Each scale learns a residual at the row's own
 weight, not at its Huber weight, and ages on every row.
 
+The sketch's buckets span at most 16 octaves around the median, a factor
+of 65,536. A residual beyond them is folded into the outermost bucket on
+its side, its weight kept, so a wild residual of `1e200` costs no more
+memory than any other.
+Nothing is folded while the residuals span less than that, and the median
+stays the one an unbounded sketch reads unless it later moves past a
+bucket a residual was folded into, at least a factor of 256 from where the
+median stood then. A fit's first residuals, at the target's level while
+the intercept is still near 0, do that when they are more than 65,536
+times the noise's: the median then reads too high until the later
+residuals outweigh the first ones. The sketch costs at most about 9 KB of
+state per target and 15 to 20 ns per target per row, measured against
+`"rms"` with 20 features and 10 targets over 100,000 rows.
+
 **The root mean square is not robust, and the median is.** Measured on
 `y = 1000 + 2x + 0.5ε` over 20,000 rows with no decay, and a wild row 50
 too high on a share of the rows with `x` above 0, as the median slope over

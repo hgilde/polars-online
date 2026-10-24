@@ -496,7 +496,7 @@ fn held(v: &rmpv::Value) -> usize {
 /// scale's two forms (63, task 271): `huber_mad` and `sgd_huber_mad` keep
 /// a sketch of `|e|` per target, `huber_mad` its own scale memory, and each
 /// cfg names its scale, `"mad"` there and `"rms"` in `huber` and
-/// `sgd_huber`.
+/// `sgd_huber`; each MAD sketch names its band (task 271 (b)).
 #[test]
 fn every_layout_a_schema_moved_is_written_by_a_fixture() {
     if regenerating() {
@@ -589,6 +589,13 @@ fn every_layout_a_schema_moved_is_written_by_a_fixture() {
             .and_then(rmpv::Value::as_array)
             .unwrap_or_else(|| panic!("{name}: the state has no mad"));
         assert_eq!(sketches.is_empty(), scale == "rms", "{name}: mad");
+        // A MAD's sketch is bounded and names its band (docs/PLAN.md task
+        // 271 (b)); a sketch without one loads unbounded.
+        for q in sketches {
+            let band = at(q, &["band"]).and_then(rmpv::Value::as_u64);
+            let want = u64::from(online_core::MAD_BAND_OCTAVES);
+            assert_eq!(band, Some(want), "{name}: mad.band");
+        }
     }
     // Every snapshot a window holds keeps the counts as they stood before
     // its row; past the first rows, a target's are above 0.

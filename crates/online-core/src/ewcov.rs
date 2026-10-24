@@ -1732,11 +1732,6 @@ pub struct EwCovModel {
     /// always did and a state written before task 63 loads unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     win: Option<Windowed>,
-    /// The features' standard deviations a row's correlations divide by,
-    /// kept so a step allocates nothing (task 270, M-4): not state, and
-    /// written nowhere, so the positional encoding above is unchanged.
-    #[serde(skip)]
-    std: Scratch,
 }
 
 /// What a window needs beyond the accumulator: where the clock has got to,
@@ -1791,7 +1786,6 @@ impl EwCovModel {
                 }),
                 None => None,
             },
-            std: Scratch::default(),
         })
     }
 
@@ -2103,19 +2097,9 @@ impl EwCovModel {
         out
     }
 
-    #[cfg(test)]
     fn read(&self, cov: &EwCov, x: &[f64]) -> Vec<f64> {
-        let mut out = Vec::new();
-        self.read_into(cov, x, &mut out, &mut Vec::new());
-        out
-    }
-
-    /// The row's statistics, into `out`, whatever it held; `std` is scratch
-    /// for the standard deviations the correlations divide by.
-    fn read_into(&self, cov: &EwCov, x: &[f64], out: &mut Vec<f64>, std: &mut Vec<f64>) {
         let k = self.cfg.n_features;
-        out.clear();
-        out.reserve(self.cfg.n_outputs());
+        let mut out = Vec::with_capacity(self.cfg.n_outputs());
         // `bias`'s factor on every second moment, 1 under `bias`, where the
         // multiplication is exact. The correlations read the co-moments as
         // kept: the factor cancels from them.
@@ -2144,8 +2128,7 @@ impl EwCovModel {
                     // `sqrt` was 80% of `ew_cov`'s row (docs/PERFORMANCE.md
                     // §13). Same product of the same two roots, so the
                     // correlations are bit-identical.
-                    std.clear();
-                    std.extend((0..k).map(|i| cov.var(i).sqrt()));
+                    let std: Vec<f64> = (0..k).map(|i| cov.var(i).sqrt()).collect();
                     for i in 0..k {
                         for j in (i + 1)..k {
                             let d = std[i] * std[j];
@@ -2181,8 +2164,7 @@ impl EwCovModel {
                     // ago, scaled". Not clamped: unlike a contemporaneous
                     // correlation it is not bounded by 1 in finite samples,
                     // and clamping would hide that.
-                    std.clear();
-                    std.extend((0..k).map(|i| cov.var(i).sqrt()));
+                    let std: Vec<f64> = (0..k).map(|i| cov.var(i).sqrt()).collect();
                     match &self.lag {
                         Some(lag) => {
                             for li in 0..lag.lags().len() {
@@ -2235,34 +2217,7 @@ impl EwCovModel {
                 None => out.extend(std::iter::repeat_n(f64::NAN, self.cfg.pca * (k + 3))),
             }
         }
-    }
-
-    /// [`crate::OnlineModel::predict`], into the caller's buffer: what
-    /// `step` reports, read before the row (task 270, M-4).
-    fn predict_into(&self, x: &[f64], d_clock: f64, out: &mut crate::Step, std: &mut Vec<f64>) {
-        if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
-            *out = refused;
-            return;
-        }
-        // With a `window`, every statistic -- and `n_eff` with them -- comes
-        // from the truncated accumulator, so `min_weight` gates on the
-        // weight *inside* the window, which stops growing once the window is
-        // full rather than rising for the life of the stream.
-        // The weight gates, and the view is built only when there is a
-        // statistic to read from it: an `ew_cov` that emits none (E43's
-        // accumulate-only use) built the O(k²) copy every row for its
-        // `n_eff` (review 2026-09-12, P3).
-        let n_eff = self.window_n_eff();
-        if self.cfg.n_outputs() == 0 {
-            out.pred.clear();
-        } else if n_eff >= self.cfg.min_weight {
-            self.read_into(&self.view(), x, &mut out.pred, std);
-        } else {
-            out.pred.clear();
-            out.pred.resize(self.cfg.n_outputs(), f64::NAN);
-        }
-        out.n_eff = n_eff;
-        out.extra = None;
+        out
     }
 }
 
@@ -2311,20 +2266,6 @@ impl crate::OnlineModel for EwCovModel {
     }
 
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
-        let mut out = crate::Step::default();
-        self.step_into(x, y, d_clock, weight, &mut out);
-        out
-    }
-
-    /// The step, into the caller's buffer (task 270, M-4).
-    fn step_into(
-        &mut self,
-        x: &[f64],
-        y: &[Option<f64>],
-        d_clock: f64,
-        weight: f64,
-        out: &mut crate::Step,
-    ) {
         // A value that is not usable, by the rule every model keeps
         // (`OnlineModel`): a feature that is not a number reached the
         // co-moments and the lag matrices through the zero-weight update's
@@ -2333,14 +2274,11 @@ impl crate::OnlineModel for EwCovModel {
         // side of a refused row are adjacent, as they are when the plumbing
         // skips one.
         if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
-            *out = refused;
-            return;
+            return refused;
         }
         // Statistics are read before this row is folded in, so an `ew_cov`
         // column is usable as a feature for the same row without leaking it.
-        let mut std = std::mem::take(&mut self.std.0);
-        self.predict_into(x, d_clock, out, &mut std);
-        self.std.0 = std;
+        let out = self.predict(x, d_clock);
         let lam = self.cfg.decay.factor(d_clock);
         if let Some(q) = self.mahal_q.as_mut() {
             // The row's own out-of-sample score joins the history it will be
@@ -2406,12 +2344,34 @@ impl crate::OnlineModel for EwCovModel {
                 self.refresh_pca();
             }
         }
+        out
     }
 
     fn predict(&self, x: &[f64], d_clock: f64) -> crate::Step {
-        let mut out = crate::Step::default();
-        self.predict_into(x, d_clock, &mut out, &mut Vec::new());
-        out
+        if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
+            return refused;
+        }
+        // With a `window`, every statistic -- and `n_eff` with them -- comes
+        // from the truncated accumulator, so `min_weight` gates on the
+        // weight *inside* the window, which stops growing once the window is
+        // full rather than rising for the life of the stream.
+        // The weight gates, and the view is built only when there is a
+        // statistic to read from it: an `ew_cov` that emits none (E43's
+        // accumulate-only use) built the O(k²) copy every row for its
+        // `n_eff` (review 2026-09-12, P3).
+        let n_eff = self.window_n_eff();
+        let pred = if self.cfg.n_outputs() == 0 {
+            Vec::new()
+        } else if n_eff >= self.cfg.min_weight {
+            self.read(&self.view(), x)
+        } else {
+            vec![f64::NAN; self.cfg.n_outputs()]
+        };
+        crate::Step {
+            pred,
+            n_eff,
+            extra: None,
+        }
     }
 
     fn state(&self) -> crate::State {
