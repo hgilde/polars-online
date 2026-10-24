@@ -40,6 +40,7 @@ EXCEPTIONS = {
     "stream outweighs sooner (classic RLS regularization)",
     "kalman": "a row's weight scales its observation's precision: its variance is obs_var / w",
     "sgd": "the gradient is d * z * w: a weight is a step size",
+    "sgd_huber_mad": "sgd's: the gradient is d * z * w, a weight is a step size",
     "ftrl": "an importance weight, as Vowpal Wabbit's: the gradient carries it "
     "against l1, l2 and beta in absolute weight (task 147 kept VW's semantics)",
     "pa": "a weight below 1 scales tau, one above 1 counts as 1",

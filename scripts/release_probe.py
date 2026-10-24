@@ -114,6 +114,17 @@ WORKLOAD: list[tuple[str, str, dict, list[str]]] = [
     ("enet", "lasso", dict(FIT, penalties=[0.1, 0.0], l1_ratio=0.5), []),
     ("kalman", "kalman", dict(FIT, coef_half_life=50.0), []),
     ("huber", "huber", dict(FIT), []),
+    # Task 271's scales: the MAD, the default since, with a memory of its
+    # own, and the RMS, every release's before it; and sgd's Huber loss.
+    # A release without `huber_scale` refuses them: not comparable.
+    ("huber_mad", "huber", dict(FIT, huber_scale="mad", huber_scale_half_life=10.0), []),
+    ("huber_rms", "huber", dict(FIT, huber_scale="rms"), []),
+    (
+        "sgd_huber_mad",
+        "sgd",
+        dict(FIT, learning_rate=0.01, loss="huber", huber_scale="mad"),
+        [],
+    ),
     ("quantile", "quantile", dict(FIT, quantile=0.8), []),
     ("ftrl", "ftrl", dict(FIT, targets=["hit"]), []),
     ("sgd", "sgd", dict(FIT, learning_rate=0.01), []),

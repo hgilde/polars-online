@@ -660,7 +660,7 @@ pub enum ModelKind {
     },
     /// Huber regression (docs/PLAN.md §4.5).
     Huber {
-        /// Cut point in units of the EW residual std. Default 1.345, the
+        /// Cut point in units of the residual scale. Default 1.345, the
         /// constant of 95% efficiency at the normal (Huber 1981), filled
         /// where the model is built ([`crate::build_models`]); `"inf"` cuts
         /// nothing, which is least squares.
@@ -818,7 +818,7 @@ pub enum ModelKind {
         /// "poisson" or "logistic".
         #[serde(default)]
         loss: Option<String>,
-        /// Huber cut, in units of the target's EW residual std, as
+        /// Huber cut, in units of the target's residual scale, as
         /// `huber`'s; default 1.345. `"inf"` clips nothing, which is the
         /// squared loss. The residual's std, where `eps` is in the target's
         /// own: a clipped gradient keeps learning while early residuals
@@ -5211,6 +5211,9 @@ mod clock_tests;
 
 #[cfg(test)]
 mod sgd_tests;
+
+#[cfg(test)]
+mod huber_scale_tests;
 
 #[cfg(test)]
 mod pa_tests;

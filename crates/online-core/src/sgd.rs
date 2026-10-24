@@ -66,10 +66,14 @@
 //! does (below). The ridge is on the slope in the row's coordinates, `s_i
 //! b_i`, as it was on `b_i` while the scaler warmed up.
 //!
-//! **`delta` is in units of `s`**, the target's EW residual standard
-//! deviation as the row arrives, as `huber`'s `huber_delta` is
-//! (`crate::Robust`); **`eps` is in units of `s_y`**, the target's own EW
-//! standard deviation as the row arrives. A cut and a tube in the target's
+//! **`delta` is in units of `s`**, the target's residual scale as the row
+//! arrives, as `huber`'s `huber_delta` is (`crate::Robust`), in the scale
+//! `huber_scale` names ([`crate::HuberScale`]): the EW median of `|y − p|`
+//! over `Φ⁻¹(3/4)` under `Mad`, a spec's default, one [`crate::EwQuantile`]
+//! per target fed the residuals and weights `s²` is below, or `√s²` under
+//! `Rms`, each aged on `huber_scale_decay` (the model's decay unless
+//! given); **`eps` is in units of `s_y`**, the target's own EW standard
+//! deviation as the row arrives. A cut and a tube in the target's
 //! own units fitted one scale and failed the others -- a target in
 //! thousandths never left a tube of 0.1, so the model was passive for
 //! ever, and one in thousands never entered it (docs/PLAN.md task 195,
@@ -99,7 +103,13 @@
 //! **Why two units.** The fit starts from zero coefficients, so its first
 //! residuals are the target's whole level. Outside the Huber cut the
 //! gradient is clipped, not zero, so a cut drawn wide by those residuals
-//! still lets every row teach, and narrows as they leave the mean. Inside
+//! still lets every row teach. Under `Mad` the cut narrows once the fit has
+//! the level, since the median leaves those residuals behind; under `Rms`
+//! it narrows only as a decay forgets them, so without decay it never
+//! does, every later residual is inside the cut, and the loss is the
+//! squared loss to the bit (C-1, review round 9: slope 3.751 under both on
+//! a target at 1,000 with 5% one-sided outliers, 2.016 under `Mad`;
+//! docs/PLAN.md task 271). Inside
 //! the tube the gradient is zero: a tube of `eps = 0.1` drawn in the
 //! residual's spread on a target at 1,000 in a spread of 2 was about 100
 //! wide, held every row, and without decay never narrowed, so the fit
@@ -151,9 +161,10 @@ use crate::{Constraint, Decay, EwDiag, Warmup};
 #[serde(rename_all = "snake_case")]
 pub enum SgdLoss {
     Squared,
-    /// `delta` is in units of the target's EW residual std, as `robust`'s
-    /// Huber is: a clipped gradient keeps learning, so a cut a fit's first
-    /// residuals widen does not stop it (the module docs).
+    /// `delta` is in units of the target's residual scale
+    /// ([`SgdCfg::huber_scale`]), as `robust`'s Huber is: a clipped
+    /// gradient keeps learning, so a cut a fit's first residuals widen does
+    /// not stop it (the module docs).
     Huber {
         delta: f64,
     },

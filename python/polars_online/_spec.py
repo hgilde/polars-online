@@ -245,6 +245,8 @@ def _got(v: Any) -> str:
 _SKIPPED_WHEN_ABSENT: dict[str, frozenset[str]] = {
     "holt": frozenset({"trend"}),
     "ewridge": frozenset({"gram_threads"}),
+    "huber": frozenset({"huber_scale", "huber_scale_half_life"}),
+    "sgd": frozenset({"huber_scale", "huber_scale_half_life"}),
     "ew_cov": frozenset({"gram_threads"}),
     "marginal": frozenset(
         {
@@ -2754,6 +2756,8 @@ def sgd(
         "squared", "huber", "quantile", "epsilon_insensitive", "poisson", "logistic"
     ] = "squared",
     huber_delta: float | None = None,
+    huber_scale: Literal["mad", "rms"] | None = None,
+    huber_scale_half_life: float | Duration | None = None,
     quantile: float | None = None,
     eps: float | None = None,
     learning_rate: float | None = None,
@@ -2821,10 +2825,12 @@ def sgd(
     The Poisson link clamps ``eta`` to ``+/- 30`` before the ``exp``, so a
     Poisson prediction never exceeds ``e ** 30``, about ``1.07e13``.
 
-    ``s`` is the EW standard deviation of the target's out-of-sample residuals,
-    as the row arrives, as for :func:`huber`. Its square is the EW mean of ``(y
-    - p) ** 2`` over the rows with the target, a weight above 0 and a
-    prediction, each joining after its own step; its weight ages on every row.
+    ``s`` is the scale of the target's out-of-sample residuals ``y - p`` as the
+    row arrives, as for :func:`huber`: under ``huber_scale = "mad"``, the
+    default, the EW median of ``|y - p|`` over 0.6745, and under ``"rms"`` the
+    EW root mean square of ``y - p``. Either learns from the rows with the
+    target, a weight above 0 and a prediction, each joining after its own step,
+    and ages on every row.
     ``s_y`` is the target's own EW standard deviation as the row arrives: the
     spread of ``y`` around its EW mean, over the rows with the target and a
     weight above 0, whatever the fit. Until the target has an ``s`` above 0 the
@@ -2839,8 +2845,14 @@ def sgd(
     The cut and the tube are in different units because the fit starts from
     zero coefficients, so its first residuals are the target's whole level.
     Beyond the cut the Huber gradient is clipped, not zero, so a cut those
-    residuals widen still lets every row teach. Inside the tube the gradient is
-    zero. On a target at 1,000 with a spread of 2, the first residuals put the
+    residuals widen still lets every row teach, and the median scale forgets
+    them once the fit has the level. The root mean square does not: without
+    decay the first residuals stay in it at their full weight, the cut stays
+    wider than every later residual, and the loss is the squared loss. On
+    ``y = 1000 + 2x + 0.5ε`` with +50 on 5% of the rows, all with ``x > 0``,
+    and no decay, the slope is 3.751 under the squared loss, 3.751 under
+    ``"rms"`` (the same number) and 2.016 under ``"mad"``. Inside the tube
+    the gradient is zero. On a target at 1,000 with a spread of 2, the first residuals put the
     residual's std near 1,000, so a tube of ``eps = 0.1`` drawn in it would be
     about 100 wide and hold every row. Without decay it would never narrow,
     and the fit would stop where it stood.
@@ -2857,9 +2869,13 @@ def sgd(
         target's ``p - y`` would drive the prediction down to the link's floor,
         ``e ** -30``, and hold it there. ``-0.0`` is the count 0.
     ``huber_delta``
-        The Huber cut, in units of ``s``, the residuals' root mean square, as
-        for :func:`huber`, with its default, 1.345; above 0. ``inf`` clips
+        The Huber cut, in units of ``s``, the residuals' scale, as for
+        :func:`huber`, with its default, 1.345; above 0. ``inf`` clips
         nothing, which is the squared loss.
+    ``huber_scale``, ``huber_scale_half_life``
+        The scale ``s`` and its own memory, as for :func:`huber`: ``"mad"``
+        (the default) or ``"rms"``, and a half-life defaulting to the spec's
+        ``half_life``. ``loss = "huber"`` only; refused beside another loss.
     ``quantile``
         The level for ``loss = "quantile"``, in ``(0, 1)``; required for it.
     ``eps``
@@ -3070,6 +3086,8 @@ def sgd(
         "type": "sgd",
         "loss": loss,
         "huber_delta": huber_delta,
+        "huber_scale": huber_scale,
+        "huber_scale_half_life": huber_scale_half_life,
         "quantile": quantile,
         "eps": eps,
         "learning_rate": learning_rate,
@@ -3083,12 +3101,16 @@ def sgd(
         "coef_sum": coef_sum,
         "strict_binary": strict_binary,
     }
+    skipped = _SKIPPED_WHEN_ABSENT["sgd"]
+    model = {k: v for k, v in model.items() if v is not None or k not in skipped}
     spec = _common(name, model, targets=targets, features=features, **common)
     # A parameter of a loss or a schedule the spec does not use is refused, as
     # a switch that is off is; each was taken and ignored (review 2026-10-05,
     # YA8). After the Rust side's checks, so an unknown loss is named first.
     for key, value, what, owner, chosen in (
         ("huber_delta", huber_delta, "loss", "huber", loss),
+        ("huber_scale", huber_scale, "loss", "huber", loss),
+        ("huber_scale_half_life", huber_scale_half_life, "loss", "huber", loss),
         ("quantile", quantile, "loss", "quantile", loss),
         ("eps", eps, "loss", "epsilon_insensitive", loss),
         ("power", power, "schedule", "inv_scaling", schedule),

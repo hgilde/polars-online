@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from reference import _enet_descent
+from reference import EwMedian, _enet_descent
 
 
 def _within(horizon: float, closed: str):
@@ -1093,6 +1093,8 @@ def sgd_ref(
     coef_min: float | None = None,
     coef_max: float | None = None,
     coef_sum: float | None = None,
+    huber_scale: str = "mad",
+    huber_scale_half_life: float | None = None,
 ) -> dict[str, np.ndarray]:
     """Stochastic gradient descent as the ``sgd`` builder's docstring states
     it, unstandardized by default (``standardize=False``)::
@@ -1103,10 +1105,14 @@ def sgd_ref(
         poisson: exp(eta) - y         logistic: sigmoid(eta) - clamp(y, 0, 1)
         g_i = clamp(d * z_i * w + l2 * b_i, +/- clip_gradient)    b_i -= lr_i * g_i
 
-    ``s`` is the EW std of the target's out-of-sample residuals as the row
-    arrives: ``s ** 2`` the EW mean of ``(y - p) ** 2`` over the rows with the
-    target, a weight above 0 and a prediction, each joining after its own
-    step, its weight aged by every row's decay (docs/PLAN.md task 195).
+    ``s`` is the scale of the target's out-of-sample residuals as the row
+    arrives, under ``huber_scale``: ``"rms"``, the EW std, ``s ** 2`` the EW
+    mean of ``(y - p) ** 2`` over the rows with the target, a weight above 0
+    and a prediction, each joining after its own step, its weight aged by
+    every row's decay (docs/PLAN.md task 195); ``"mad"``, the default, the EW
+    median of ``|y - p|`` over the same rows over ``Φ⁻¹(3/4)``
+    (``reference.EwMedian``; task 271). Either ages on
+    ``huber_scale_half_life``, the model's decay unless given.
     ``s_y`` is the target's own EW std as the row arrives, as ``pa_ref``
     keeps it (docs/PLAN.md task 202). Before ``s`` is above 0 the Huber loss
     cuts nothing, and before ``s_y`` is the tube has no width.
@@ -1160,6 +1166,7 @@ def sgd_ref(
     w_sum = 0.0
     w_target = np.zeros(m)
     sig2, wsig = np.zeros(m), np.zeros(m)
+    mads = [EwMedian() for _ in range(m)]
     history: list[list[list[float]]] = [[] for _ in range(m)]
     links = {
         "poisson": np.exp,
@@ -1168,7 +1175,10 @@ def sgd_ref(
     for i, d in _accepted_steps(X, dclock, gap_cap):
         lam = _decay(half_life, decay_lam, d)
         G *= lam
-        wsig *= lam
+        lam_s = lam if huber_scale_half_life is None else 0.5 ** (d / huber_scale_half_life)
+        wsig *= lam_s
+        for q in mads:
+            q.age(lam_s)
         xt = np.concatenate(([1.0], X[i])) if fit_intercept else X[i]
         z, scale = xt, np.ones(kt)
         if standardize:
@@ -1186,6 +1196,8 @@ def sgd_ref(
             yj = min(max(Y[i, j], 0.0), 1.0) if loss == "logistic" else Y[i, j]
             e = p[j] - yj
             s = np.sqrt(sig2[j]) if sig2[j] > 0.0 else None
+            if huber_scale == "mad":
+                s = mads[j].scale()
             cut = huber_delta * s if s is not None else np.inf
             tube = eps * np.sqrt(s_y2) if s_y2 > 0.0 else 0.0
             dl = {
@@ -1199,6 +1211,7 @@ def sgd_ref(
             if np.isfinite(pred[i, j]):
                 sig2[j] = (wsig[j] * sig2[j] + w[i] * e * e) / (wsig[j] + w[i])
                 wsig[j] += w[i]
+                mads[j].add(abs(e), w[i])
             # The ridge on the slope in the row's coordinates: `b` itself
             # while it is held there, `s_i * b_i` once it is in the caller's
             # units.

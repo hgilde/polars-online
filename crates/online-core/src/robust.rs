@@ -4,7 +4,7 @@
 //! the robust weight of its *prior* residual, so the reweighting is still
 //! out-of-sample (the residual comes from the prediction made before the update).
 //!
-//! Huber, with `d = huber_delta` in units of the EW residual std `s_j`:
+//! Huber, with `d = huber_delta` in units of the target's residual scale `s_j`:
 //!
 //! ```text
 //! w_robust = 1                 if |r| <= d * s
@@ -77,8 +77,10 @@
 //! band, and a band the floor keeps at a share of the sample is never near
 //! one row in steady state, so the warm-up's bias does not return.
 //!
-//! `s` is the EW residual std of that target as the row arrives. The target
-//! has one once `s²` is finite and above 0; before that -- no residual yet,
+//! `s` is the residual scale of that target as the row arrives (under the
+//! RMS, the quantile band's, the EW residual std; under the MAD, below, the
+//! EW median of `|e|` over `Φ⁻¹(3/4)`). The target has one once it is
+//! finite and above 0 (under the RMS, once `s²` is); before that -- no residual yet,
 //! or every one so far exactly zero -- there is nothing to judge an outlier
 //! against, and Huber down-weights no row: its weight is 1. Nor is there a
 //! band to draw, and a quantile row is a least-squares row, as in its
@@ -91,12 +93,31 @@
 //! weight, and a mean-form estimate keeps its value across a gap while its
 //! weight ages, as the fit itself does (CLAUDE.md hard rule 8).
 //!
-//! **`s` is not itself robust.** It is the plain EW mean of squared
-//! residuals, in which the rows Huber down-weights count at full weight, so
-//! an outlier inflates the scale the next rows' cuts are drawn in, and
-//! `huber_delta` is in units of that std, not of a robust one (a MAD, or a
-//! Huber-weighted variance). A burst of outliers widens the cut for the rows
-//! after it until the EW mean forgets them (review 2026-09-12, D4).
+//! **The Huber cut's scale is a configuration, `huber_scale`**
+//! ([`HuberScale`]; docs/PLAN.md task 271, docs/HUBER.md):
+//!
+//! - **`Mad`**, a spec's default: `s = m / Φ⁻¹(3/4)`, `m` the EW median of
+//!   `|e|` read from one [`EwQuantile`] at 0.5 per target (within
+//!   `tanh(1/128)` of the exact EW median), fed the residuals and raw
+//!   weights `σ²` is. An outlier moves a median by its weight whatever its
+//!   size, so the outliers cannot widen the cut drawn to catch them, and a
+//!   fit's first residuals -- the level's size, while the intercept is near
+//!   0 -- leave it once the fit has the level. At 5% one-sided outliers on a
+//!   target at 1,000 with no decay the slope is 2.041 where statsmodels'
+//!   converged `RLM` with the MAD gives 2.039.
+//! - **`Rms`**: `s = √σ²`, the plain EW mean of squared residuals, in which
+//!   the rows Huber down-weights count at full weight, so an outlier
+//!   inflates the scale the next rows' cuts are drawn in, and without decay
+//!   the first residuals stay in it for good (review 2026-09-12, D4; C-1 of
+//!   review round 9): 2.676 on the same stream, least squares 4.05. The
+//!   only scale before schema 63, and what a state written before it loads
+//!   as ([`HuberScale::of_a_state_before_63`]).
+//!
+//! Either ages on `huber_scale_decay`, the model's decay unless given: a
+//! robust scale holds the fit back after a level shift until the median
+//! itself has moved (every post-shift row is an outlier until then), and a
+//! shorter memory follows the shift sooner (docs/HUBER.md §4). A quantile
+//! fit's band is drawn in `√σ²` on the model's clock, whatever these say.
 //!
 //! Because the weights are per target, the `S` accumulator is per target here
 //! (one [`EwCov`] each) — unlike [`crate::EwRidge`], which shares one.
@@ -129,7 +150,8 @@ use crate::{Decay, EwCov, EwQuantile, SpdFactor};
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RobustLoss {
-    /// Huber with `delta` in units of the EW residual std.
+    /// Huber with `delta` in units of the residual scale
+    /// ([`RobustCfg::huber_scale`]).
     Huber { delta: f64 },
     /// Quantile regression at level `tau`.
     Quantile { tau: f64 },
@@ -766,7 +788,7 @@ impl Robust {
     /// it takes a least-squares row, as in its warm-up.
     ///
     /// `pred` is the prediction the row was scored with, so both stay
-    /// out-of-sample, and `scale` is the EW residual std, `None` until one
+    /// out-of-sample, and `scale` is the residual scale, `None` until one
     /// exists ([`Self::residual_scale`]).
     /// `present` is the count of the rows this target was present
     /// on, decayed to the row (`nobs`): under `WARM_ROWS` of them per

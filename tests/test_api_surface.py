@@ -636,6 +636,7 @@ ENUM_PROBES: list[
     ("ftrl.loss", "ftrl", {}, "model.loss", "word"),
     ("hmm.covariance_type", "hmm", {}, "model.covariance_type", "word"),
     ("hmm.init", "hmm", {}, "model.init", "word"),
+    ("huber.huber_scale", "huber", {}, "model.huber_scale", "word"),
     ("kmeans.init", "kmeans", {}, "model.init", "word"),
     ("lasso.target_gaps", "lasso", {}, "model.target_gaps", "word"),
     ("lasso.window_budget", "lasso", {"window_size": 100.0}, "model.window_budget", "key"),
@@ -647,6 +648,8 @@ ENUM_PROBES: list[
     ("pa.mode", "pa", {}, "model.mode", "word"),
     ("rcov.kernel", "rcov", {}, "model.kernel", "word"),
     ("rcov.kind", "rcov", {}, "model.kind", "word"),
+    # Huber's scale, read under the Huber loss alone.
+    ("sgd.huber_scale", "sgd", {"loss": "huber"}, "model.huber_scale", "word"),
     # `"quantile"` needs its level.
     ("sgd.loss", "sgd", {}, "model.loss", "word", {"quantile": {"quantile": 0.5}}),
     ("sgd.schedule", "sgd", {}, "model.schedule", "word"),

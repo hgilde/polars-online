@@ -394,10 +394,23 @@ const ROBUST_LOSSES: [RobustLoss; 2] = [
     RobustLoss::Quantile { tau: 0.5 },
 ];
 
+/// Huber's cut in the MAD scale, its sketch of `|e|` aged on a memory of
+/// its own (docs/PLAN.md task 271): held to the contract as the RMS is.
+fn huber_mad_cfg() -> RobustCfg {
+    RobustCfg {
+        huber_scale: online_core::HuberScale::Mad,
+        huber_scale_decay: Some(Decay::Halflife(HALFLIFE / 5.0)),
+        ..robust_cfg(ROBUST_LOSSES[0])
+    }
+}
+
 #[test]
 fn robust() {
-    for loss in ROBUST_LOSSES {
-        let cfg = robust_cfg(loss);
+    for cfg in ROBUST_LOSSES
+        .map(robust_cfg)
+        .into_iter()
+        .chain([huber_mad_cfg()])
+    {
         let r = probe_with(Robust::new(cfg).unwrap(), 2, Some(&Robust::n_eff));
         check(&r, "robust", 2, 1);
     }
@@ -446,11 +459,29 @@ fn sgd_cfg() -> SgdCfg {
     }
 }
 
+/// `sgd` under the Huber loss, its cut in each scale (docs/PLAN.md task
+/// 271): the RMS on the model's clock, the MAD on a memory of its own.
+fn sgd_huber_cfgs() -> [SgdCfg; 2] {
+    let huber = SgdCfg {
+        loss: SgdLoss::Huber { delta: 1.345 },
+        ..sgd_cfg()
+    };
+    [
+        huber.clone(),
+        SgdCfg {
+            huber_scale: online_core::HuberScale::Mad,
+            huber_scale_decay: Some(Decay::Halflife(HALFLIFE / 5.0)),
+            ..huber
+        },
+    ]
+}
+
 #[test]
 fn sgd() {
-    let cfg = sgd_cfg();
-    let r = probe_with(Sgd::new(cfg).unwrap(), 2, Some(&Sgd::n_eff));
-    check(&r, "sgd", 2, 1);
+    for cfg in [sgd_cfg()].into_iter().chain(sgd_huber_cfgs()) {
+        let r = probe_with(Sgd::new(cfg).unwrap(), 2, Some(&Sgd::n_eff));
+        check(&r, "sgd", 2, 1);
+    }
 }
 
 fn pa_cfg() -> PaCfg {
@@ -3125,6 +3156,13 @@ fn robust_predict_is_the_step() {
         cfg.max_rows_between_solves = 10_000;
         predict_is_the_step_without_the_step(move || Robust::new(cfg.clone()).unwrap(), 2, false);
     }
+    // The MAD's sketch, aged and fed beside the RMS's variance: a
+    // zero-weight row ages it and adds nothing (hard rules 8 and 9).
+    for standardize in [false, true] {
+        let mut cfg = huber_mad_cfg();
+        cfg.standardize = standardize;
+        predict_is_the_step_without_the_step(move || Robust::new(cfg.clone()).unwrap(), 2, false);
+    }
 }
 
 #[test]
@@ -3148,6 +3186,9 @@ fn sgd_predict_is_the_step() {
     let mut cfg = sgd_cfg();
     cfg.loss = SgdLoss::Logistic;
     predict_is_the_step_without_the_step(move || Sgd::new(cfg.clone()).unwrap(), 2, true);
+    for cfg in sgd_huber_cfgs() {
+        predict_is_the_step_without_the_step(move || Sgd::new(cfg.clone()).unwrap(), 2, false);
+    }
 }
 
 #[test]
