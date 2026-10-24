@@ -43,14 +43,34 @@ pub const MODEL_CASES: &[&str] = &[
     "micro",
     "kalman",
     "ew_cov",
+    "lasso_k20",
 ];
 
 /// The clock cases: a float clock, and a temporal one on the exact path.
 pub const CLOCK_CASES: &[&str] = &["clock_float", "clock_temporal"];
 
 /// The bank cases: a frame through `Bank::fit_predict`, every per-row step
-/// of the bank around the model, for the cheapest model and a regression.
-pub const BANK_CASES: &[&str] = &["bank_seqtest", "bank_ewridge_k5"];
+/// of the bank around the model, for the cheapest model and a regression;
+/// and the same two over [`GROUPS`] groups of one row each, on a pool of one
+/// thread, where what a `(spec, group)` task costs whatever its rows is most
+/// of the count (docs/PLAN.md task 270, G-1).
+pub const BANK_CASES: &[&str] = &[
+    "bank_seqtest",
+    "bank_ewridge_k5",
+    "bank_seqtest_groups",
+    "bank_ewridge_k5_groups",
+];
+
+/// Groups in a grouped bank case: its block is one row of each.
+pub const GROUPS: usize = 1_000;
+
+/// Rows of a grouped case's warm-up: ten a group, past `min_weight` and the
+/// first solve of each group's fit.
+pub const GROUPED_WARM_ROWS: usize = 10 * GROUPS;
+
+fn grouped(id: &str) -> bool {
+    id.ends_with("_groups")
+}
 
 /// The wide bank cases: a frame of [`WIDE_ROWS`] rows of the `ew_cov` case's
 /// 230 statistics through `Bank::fit_predict`, on a pool of one thread.
@@ -103,8 +123,11 @@ enum Shape {
 }
 
 /// Rows in the layout a model steps them: features row-major, targets
-/// row-major, and each row's clock step and clock value.
+/// row-major, and each row's clock step and clock value. Over `groups`
+/// groups (0: none), row `i` is group `i % groups`'s, and each group keeps
+/// a clock of its own, a unit a row.
 pub struct Rows {
+    groups: usize,
     k: usize,
     m: usize,
     x: Vec<f64>,
@@ -114,7 +137,7 @@ pub struct Rows {
 }
 
 impl Rows {
-    fn generate(shape: Shape, k: usize, m: usize, n: usize, seed: u64) -> Self {
+    fn generate(shape: Shape, k: usize, m: usize, n: usize, groups: usize, seed: u64) -> Self {
         let mut g = Lcg(seed);
         let (mut x, mut y) = (Vec::with_capacity(n * k), Vec::with_capacity(n * m));
         let (mut d, mut t) = (Vec::with_capacity(n), Vec::with_capacity(n));
@@ -140,9 +163,20 @@ impl Rows {
             let step = if i == 0 { 0.0 } else { step_of(g.next()) };
             clock += step;
             d.push(step);
-            t.push(clock);
+            t.push(match i.checked_div(groups) {
+                None => clock,
+                Some(row) => 1_000.0 + row as f64,
+            });
         }
-        Self { k, m, x, y, d, t }
+        Self {
+            groups,
+            k,
+            m,
+            x,
+            y,
+            d,
+            t,
+        }
     }
 
     fn len(&self) -> usize {
@@ -170,6 +204,10 @@ impl Rows {
             Column::new(format!("y{j}").into(), v)
         }));
         cols.push(Column::new("t".into(), self.t[from..to].to_vec()));
+        if self.groups > 0 {
+            let g: Vec<i64> = (from..to).map(|i| (i % self.groups) as i64).collect();
+            cols.push(Column::new("g".into(), g));
+        }
         DataFrame::new_infer_height(cols).expect("columns of one length")
     }
 }
@@ -209,6 +247,14 @@ fn case_spec(id: &str) -> (Value, Shape) {
     };
     match id {
         "ewridge_k5" | "bank_ewridge_k5" => (fit(json!({"type": "ewridge"}), 5), Shape::Linear),
+        // A solve every 20 rows of a group's clock: at the default cadence a
+        // fit ten rows old solves on nearly every row, and the case is for
+        // the task's constant, not a young fit's solves.
+        "bank_ewridge_k5_groups" => {
+            let mut s = fit(json!({"type": "ewridge", "solve_every": 20.0}), 5);
+            s["group"] = json!("g");
+            (s, Shape::Linear)
+        }
         "ewridge_k20" => (fit(json!({"type": "ewridge"}), 20), Shape::Linear),
         // The blocked Gram with ten targets folded into its merge
         // (docs/PLAN.md task 257): 50 features, a 64-row block, one Gram
@@ -229,10 +275,22 @@ fn case_spec(id: &str) -> (Value, Shape) {
             Shape::Linear,
         ),
         "pa" => (fit(json!({"type": "pa"}), 20), Shape::Linear),
+        // The penalty path's selection on every row and its solves on the
+        // default cadence (docs/PLAN.md task 270, C-2); the path is
+        // `scripts/wide_benchmark.py`'s.
+        "lasso_k20" => (
+            fit(json!({"type": "lasso", "penalties": [0.1, 0.01, 0.0]}), 20),
+            Shape::Linear,
+        ),
         "kalman" => (
             fit(json!({"type": "kalman", "coef_half_life": 2000.0}), 20),
             Shape::Linear,
         ),
+        "bank_seqtest_groups" => {
+            let (mut s, shape) = case_spec("seqtest");
+            s["group"] = json!("g");
+            (s, shape)
+        }
         "seqtest" | "bank_seqtest" => (
             json!({
                 "name": "m",
@@ -286,7 +344,17 @@ fn rows(id: &str, spec: &Spec) -> Rows {
     } else {
         ROWS
     };
-    Rows::generate(shape, spec.k(), spec.m(), WARM_ROWS + block, 7)
+    let groups = if grouped(id) { GROUPS } else { 0 };
+    Rows::generate(shape, spec.k(), spec.m(), warm_rows(id) + block, groups, 7)
+}
+
+/// Rows a case steps before its measured block.
+fn warm_rows(id: &str) -> usize {
+    if grouped(id) {
+        GROUPED_WARM_ROWS
+    } else {
+        WARM_ROWS
+    }
 }
 
 /// A model case, warmed up: the model and the rows of its measured block.
@@ -402,7 +470,8 @@ pub struct BankRun {
 }
 
 /// The setup of a bank case: a bank of the case's one spec, fed the
-/// warm-up rows as one frame. A wide case's bank is given its pool size:
+/// warm-up rows as one frame. A wide or grouped case's bank is given its
+/// pool size:
 /// one thread is the process default's pool when that has one thread, as
 /// under the bench, so the rows are learned on the thread that calls.
 pub fn bank_setup(id: &str) -> BankRun {
@@ -412,6 +481,7 @@ pub fn bank_setup(id: &str) -> BankRun {
     let threads = match id {
         "bank_ew_cov_wide_t1" => Some(1),
         "bank_ew_cov_wide_t4" => Some(4),
+        id if grouped(id) => Some(1),
         _ => None,
     };
     if threads.is_some() {
@@ -419,9 +489,10 @@ pub fn bank_setup(id: &str) -> BankRun {
         bank.set_threads(threads)
             .unwrap_or_else(|e| panic!("{id}: {e}"));
     }
-    bank.fit_predict(&rows.frame(0, WARM_ROWS))
+    let warm = warm_rows(id);
+    bank.fit_predict(&rows.frame(0, warm))
         .unwrap_or_else(|e| panic!("{id}: {e}"));
-    let frame = rows.frame(WARM_ROWS, rows.len());
+    let frame = rows.frame(warm, rows.len());
     BankRun { bank, frame }
 }
 

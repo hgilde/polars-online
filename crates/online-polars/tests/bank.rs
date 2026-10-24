@@ -1742,3 +1742,107 @@ fn a_zoned_datetime_group_is_keyed_by_its_instant() {
         assert_eq!(groups, want_groups, "{tz}");
     }
 }
+
+/// What a run's buffers hold, field by field, for a comparison: NaN shows as
+/// NaN, so two buffers of the same nulls compare equal.
+fn image(c: &ChunkOut) -> String {
+    format!(
+        "{:?}",
+        (
+            (
+                &c.rows,
+                &c.processed,
+                &c.pred,
+                &c.resid,
+                &c.sigma,
+                &c.zscore
+            ),
+            (&c.autocorr, &c.metrics, &c.conformal, &c.checks, &c.health),
+            (&c.resid_q, &c.drift, &c.n_eff, &c.lam_selected, &c.coef),
+            (
+                &c.settled,
+                &c.reason,
+                &c.inflation,
+                &c.support_coef,
+                &c.se_coef
+            ),
+            (
+                &c.se_coef_hc0,
+                &c.se_coef_hac,
+                &c.scored_clock,
+                &c.learned_clock
+            ),
+            (c.n_models, c.n_slots, c.n_levels, c.n_checks),
+        )
+    )
+}
+
+/// A run's buffers filled again for another run (task 270, G-1) are the
+/// buffers a new run gets, field for field: after every buffer was written,
+/// for a spec of another shape, more rows and fewer.
+#[test]
+fn a_renewed_run_buffer_is_a_new_one() {
+    let full: Spec = serde_json::from_str(
+        r#"{"name": "full", "model": {"type": "lasso", "penalties": [1.0, 0.1, 0.01]},
+            "targets": ["y", "z"], "features": ["x0", "x1"], "clock": "t",
+            "half_life": [30.0, 120.0], "emit_sigma": true, "emit_zscore": true,
+            "emit_metrics": true, "resid_quantiles": [0.5, 0.9], "emit_autocorr": true,
+            "conformal": 0.9, "emit_drift": true, "drift_threshold": 20.0,
+            "emit_error_inflation": true, "emit_clocks": true, "emit_feature_health": true,
+            "emit_calibration": true, "emit_breaks": true}"#,
+    )
+    .unwrap();
+    let plain = spec_json("plain", true);
+    let shape = |s: &Spec| {
+        let stream = Stream::new(s).unwrap();
+        (stream.n_models(), stream.n_slots())
+    };
+    for (a, b, rows_a, rows_b) in [
+        (&full, &plain, 7, 3),
+        (&plain, &full, 3, 11),
+        (&full, &full, 5, 5),
+    ] {
+        let ((ma, sa), (mb, sb)) = (shape(a), shape(b));
+        let mut out = ChunkOut::new(a, ma, sa, rows_a);
+        out.rows.extend(0..rows_a);
+        out.processed.fill(true);
+        for buf in [
+            &mut out.pred,
+            &mut out.resid,
+            &mut out.sigma,
+            &mut out.zscore,
+            &mut out.autocorr,
+            &mut out.metrics,
+            &mut out.conformal,
+            &mut out.checks,
+            &mut out.health,
+            &mut out.resid_q,
+            &mut out.n_eff,
+            &mut out.lam_selected,
+            &mut out.settled,
+            &mut out.inflation,
+        ] {
+            buf.fill(1.5);
+        }
+        out.drift.fill(true);
+        out.reason.fill(2);
+        for lists in [
+            &mut out.coef,
+            &mut out.support_coef,
+            &mut out.se_coef,
+            &mut out.se_coef_hc0,
+            &mut out.se_coef_hac,
+        ] {
+            for inst in lists.iter_mut() {
+                inst.fill(Some(vec![1.0, 2.0]));
+            }
+        }
+        out.scored_clock
+            .fill(Some(online_polars::online_core::ClockValue::F64(1.0)));
+        out.learned_clock
+            .fill(Some(online_polars::online_core::ClockValue::F64(2.0)));
+        assert!(out.heap_bytes() > std::mem::size_of::<ChunkOut>());
+        out.renew(b, mb, sb, rows_b);
+        assert_eq!(image(&out), image(&ChunkOut::new(b, mb, sb, rows_b)));
+    }
+}

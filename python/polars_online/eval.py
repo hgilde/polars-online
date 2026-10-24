@@ -284,9 +284,28 @@ def unpack(
       rule no column is named after the slot) and, given the dict, whatever
       :func:`polars_online.spec.output_index` raises for it.
     """
+    return _unpack(df, spec, targets=targets)
+
+
+def _unpack(
+    df: pl.DataFrame,
+    spec: str | dict,
+    *,
+    targets: Sequence[str] | None = None,
+    columns: Sequence[str] | None = None,
+) -> pl.DataFrame:
+    """:func:`unpack`, carrying of the input's columns only those in
+    ``columns`` (all of them when ``None``). A score reads the key columns
+    and the clock or weight beside ``pred`` and ``y``; carrying every input
+    column once per slot made its long form the frame's width times the
+    slots, 1.4 GiB from a 290 MiB frame of 43 columns and 8 slots, where
+    the four columns it reads take 137 MiB."""
     spec_name, written = _spec_of("po.eval.unpack", spec)
     fields = _pred_fields(df, spec_name)
     keep = [c for c, d in df.schema.items() if not isinstance(d, pl.Struct) and c not in RESERVED]
+    if columns is not None:
+        wanted = set(columns)
+        keep = [c for c in keep if c in wanted]
     # With the spec in hand, the slot -> target mapping comes from
     # `output_index` -- the same Rust code that named the fields -- and each
     # target's value from the spec's own table of it, instead of the
@@ -574,8 +593,8 @@ def metrics(
     """
     spec_name, written = _spec_of("po.eval.metrics", spec)
     binary = _binary(binary, written)
-    long = _scored(unpack(df, written or spec_name, targets=targets))
     keys = ["slot", "target", *_group_keys(group)]
+    long = _scored(_unpack(df, written or spec_name, targets=targets, columns=keys))
     exprs = _metric_exprs(binary=binary, hit=not _no_hit(written))
     out = long.group_by(keys).agg(exprs).sort(keys)
     return _thin(out, min_samples, keys)
@@ -669,10 +688,10 @@ def window_metrics(
         )
     else:
         start = pl.col(clock).dt.truncate(format_duration(ns))
-    long = _scored(unpack(df, written or spec_name, targets=targets)).with_columns(
-        start.alias("window_start")
-    )
     keys = ["slot", "target", *_group_keys(group), "window_start"]
+    long = _scored(
+        _unpack(df, written or spec_name, targets=targets, columns=[*keys, clock])
+    ).with_columns(start.alias("window_start"))
     exprs = _metric_exprs(binary=_binary(binary, written), hit=not _no_hit(written))
     out = long.group_by(keys).agg(exprs).sort(keys)
     return _thin(out, min_samples, keys)
@@ -1021,7 +1040,8 @@ def sums(
     """
     spec_name, written = _spec_of("po.eval.sums", spec)
     binary = _binary(binary, written)
-    long = _scored(unpack(df, written or spec_name, targets=targets))
+    columns = [*_group_keys(group), *([] if weight is None else [weight])]
+    long = _scored(_unpack(df, written or spec_name, targets=targets, columns=columns))
     if weight is not None:
         # What the bank does with the same weight: it skips a row whose
         # weight it cannot use and refuses a negative one (review round 4,

@@ -601,6 +601,9 @@ impl RefreshTime {
         // Rows of the output, as (group, pair index, row index, ticks).
         let mut points: Vec<Point> = Vec::new();
         let mut consumed = n;
+        // The last row's group key, kept while the rows stay in its group:
+        // its text was a `String` a row (task 270, H-3).
+        let mut key: Option<GroupKey> = None;
         for row in 0..n {
             if limit.is_some_and(|l| points.len() >= l) {
                 consumed = row;
@@ -632,13 +635,15 @@ impl RefreshTime {
                 ),
                 _ => self.kind = Some(t.kind()),
             }
-            let key = GroupKey(
-                by.map_or_else(|| Some(String::new()), |b| b.get(row).map(str::to_string)),
-            );
+            let text = by.map_or(Some(""), |b| b.get(row));
+            let key = match key.as_mut() {
+                Some(k) if k.0.as_deref() == text => k,
+                _ => key.insert(GroupKey(text.map(str::to_string))),
+            };
             // Update the last-seen time in place; the key is cloned into the
             // map only the first time its group is seen, not on every row
             // (review 2026-09-18, minor).
-            match self.last_time.get_mut(&key) {
+            match self.last_time.get_mut(&*key) {
                 Some(prev) => {
                     if t < *prev {
                         polars_bail!(ComputeError:
@@ -672,18 +677,18 @@ impl RefreshTime {
             // Likewise: build and insert only when the group is new, then take
             // it by reference, rather than cloning the key into `entry` every
             // row (review 2026-09-18, minor).
-            if !self.states.contains_key(&key) {
+            if !self.states.contains_key(&*key) {
                 let init: Vec<GridState> = (0..n_states)
                     .map(|_| GridState::new(if self.pairs.is_empty() { m } else { 2 }))
                     .collect();
                 self.states.insert(key.clone(), init);
             }
-            let states = self.states.get_mut(&key).expect("inserted above");
+            let states = self.states.get_mut(&*key).expect("inserted above");
             if self.pairs.is_empty() {
                 if states[0].tick(si, v) {
                     let last: Vec<f64> = states[0].series.iter().map(|s| s.last).collect();
                     let ticks = states[0].close(m);
-                    points.push((key, 0, row, ticks, last));
+                    points.push((key.clone(), 0, row, ticks, last));
                 }
             } else {
                 for (pi, &(a, b)) in self.pairs.iter().enumerate() {
