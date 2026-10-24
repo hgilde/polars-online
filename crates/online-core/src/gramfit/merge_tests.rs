@@ -120,6 +120,174 @@ pub(super) fn close(a: &[f64], b: &[f64], tol: f64, what: &str) {
     }
 }
 
+// --- Rounding bounds for the fits against the oracle (docs/PLAN.md task
+// 274). `ridge_fits` factorizes by Cholesky, solves by substitution
+// ([`super::trisolve`]), and reads `diag(A⁻¹)` and `m'A⁻¹m` from `L⁻¹`;
+// the oracle solves and inverts by faer's LU. Each bound is the model's
+// a-priori rounding plus the oracle's own, a posteriori.
+
+/// `|x̂ − x|` for the slopes `b = x̃/s` of `ridge_fits`, which solves
+/// `sys·x̃ = rhs_s` by Cholesky (Higham, Theorem 10.4, through
+/// [`oracle::forward_error`]), beside the oracle's LU solve of the same
+/// system (its residual, [`oracle::solve_error`]), and the division by `s`
+/// on each side.
+pub(super) fn slope_error(sys: &[f64], rhs_s: &[f64], s: &[f64]) -> Vec<f64> {
+    let n = rhs_s.len();
+    let x = oracle::solve(sys, rhs_s);
+    let fe = oracle::forward_error(sys, &x, &oracle::cholesky_backward(sys), &vec![0.0; n]);
+    let own = oracle::solve_error(sys, rhs_s, &x);
+    (0..n)
+        .map(|p| (fe[p] + own[p]) / s[p] + 2.0 * oracle::U * (x[p] / s[p]).abs())
+        .collect()
+}
+
+/// faer's lower Cholesky factor `L̂` of `c` and `X̂ = L̂⁻¹`, for the bounds
+/// below only: no expected value is read from them.
+fn factor_and_inverse(c: &[f64]) -> (Vec<f64>, Vec<f64>) {
+    let n = c.len().isqrt();
+    let m = faer::Mat::from_fn(n, n, |i, j| c[i * n + j]);
+    let llt = m.llt(faer::Side::Lower).expect("positive definite");
+    let l = llt.L();
+    let mut inv = faer::Mat::<f64>::zeros(n, n);
+    faer::linalg::triangular_inverse::invert_lower_triangular(inv.as_mut(), l, faer::Par::Seq);
+    (
+        (0..n * n).map(|ij| l[(ij / n, ij % n)]).collect(),
+        (0..n * n).map(|ij| inv[(ij / n, ij % n)]).collect(),
+    )
+}
+
+/// `F ≥ |X̂ − L̂⁻¹|`, the triangular inverse's forward error: `γ_n|X||L||X|`
+/// for either residual bound of a substitution-based inverse (Higham §8.3,
+/// Methods 1 and 2), doubled for faer's blocked recursion.
+fn inverse_factor_error(l: &[f64], x: &[f64]) -> Vec<f64> {
+    let n = l.len().isqrt();
+    let g = oracle::gamma(2 * n);
+    let lx: Vec<f64> = (0..n * n)
+        .map(|ij| {
+            let (i, j) = (ij / n, ij % n);
+            (0..n)
+                .map(|m| l[i * n + m].abs() * x[m * n + j].abs())
+                .sum()
+        })
+        .collect();
+    (0..n * n)
+        .map(|ij| {
+            let (i, j) = (ij / n, ij % n);
+            g * (0..n)
+                .map(|m| x[i * n + m].abs() * lx[m * n + j])
+                .sum::<f64>()
+        })
+        .collect()
+}
+
+/// The most `ridge_fits`' `diag(C⁻¹)` may be off, as it forms it: `L̂L̂ᵀ =
+/// C + ΔC`, `|ΔC| ≤ γ_{n+1}√(cᵢᵢcⱼⱼ)` ([`oracle::cholesky_backward`]'s
+/// step), moving `(C⁻¹)ᵢᵢ` by `(|C⁻¹|ΔC|C⁻¹|)ᵢᵢ`; `X̂ = L̂⁻¹` off by `F`
+/// ([`inverse_factor_error`]), moving `Σⱼ X̂ⱼᵢ²` by `2Σⱼ|Xⱼᵢ|Fⱼᵢ`; and the
+/// sum's own `γ_n`.
+pub(super) fn inverse_diagonal_error(c: &[f64]) -> Vec<f64> {
+    let n = c.len().isqrt();
+    let inv = oracle::inverse(c);
+    let d: Vec<f64> = (0..n).map(|i| c[i * n + i].sqrt()).collect();
+    let (l, x) = factor_and_inverse(c);
+    let f = inverse_factor_error(&l, &x);
+    let g = oracle::gamma(n + 1) * (1.0 + oracle::gamma(n + 1));
+    (0..n)
+        .map(|i| {
+            let cd: f64 = (0..n).map(|m| inv[i * n + m].abs() * d[m]).sum();
+            let tri: f64 = (0..n)
+                .map(|j| 2.0 * x[j * n + i].abs() * f[j * n + i])
+                .sum();
+            g * cd * cd + tri + oracle::gamma(n) * inv[i * n + i].abs()
+        })
+        .collect()
+}
+
+/// The most `ridge_fits`' `m'C⁻¹m`, read as `‖L̂⁻¹m‖²`, may be off: the
+/// factor's backward error through `x = C⁻¹m`, `γ_{n+1}(Σ|xᵢ|√cᵢᵢ)²`; `F`
+/// through `y = L̂⁻¹m`, `2|y|ᵀF|m|`; and the products' sums, `γ_n` of
+/// `2|y|ᵀ|X̂||m| + ‖y‖²`.
+pub(super) fn factor_quad_error(c: &[f64], m: &[f64]) -> f64 {
+    let n = m.len();
+    let xs = oracle::solve(c, m);
+    let d: Vec<f64> = (0..n).map(|i| c[i * n + i].sqrt()).collect();
+    let (l, x) = factor_and_inverse(c);
+    let f = inverse_factor_error(&l, &x);
+    let am: Vec<f64> = m.iter().map(|v| v.abs()).collect();
+    let y: Vec<f64> = (0..n)
+        .map(|i| (0..n).map(|j| x[i * n + j] * m[j]).sum())
+        .collect();
+    let fm = oracle::abs_times(&f, &am);
+    let xm = oracle::abs_times(&x, &am);
+    let g = oracle::gamma(n + 1) * (1.0 + oracle::gamma(n + 1));
+    let cd: f64 = xs.iter().zip(&d).map(|(a, b)| a.abs() * b).sum();
+    let yy: f64 = y.iter().map(|v| v * v).sum();
+    g * cd * cd
+        + (0..n)
+            .map(|i| 2.0 * y[i].abs() * (fm[i] + oracle::gamma(n) * xm[i]))
+            .sum::<f64>()
+        + oracle::gamma(n) * yy
+}
+
+/// The most `(LU⁻¹)ᵢᵢ` and `m'(LU⁻¹)m` of the oracle may be off: its own
+/// inverse's residual ([`oracle::inverse_error`]), and the quadratic
+/// form's ([`oracle::quad_form_error`]).
+pub(super) fn oracle_diagonal_error(c: &[f64]) -> Vec<f64> {
+    let n = c.len().isqrt();
+    let e = oracle::inverse_error(c);
+    (0..n).map(|i| e[i * n + i]).collect()
+}
+
+/// `√(d·σ²/n)` on both sides from `d` and `d + Δd`, `σ²` shared: half `Δd`'s
+/// share of `d`, and the product, the quotient and the root on each side.
+pub(super) fn se_error(se: f64, d: f64, dd: f64) -> f64 {
+    se * (0.5 * dd / d.abs() + 6.0 * oracle::U)
+}
+
+/// Bounds on the rounding [`gram_of`] leaves in each field it sums from
+/// `rows` over the rows `own`, two-pass at weight 1: a mean `Σf/n` within
+/// `γ_{N+1}Σ|f|/n` (Higham (3.5)); a centred moment `Σ(f − f̄)(g − ḡ)/n`
+/// within `γ_{N+4}Σ|f − f̄||g − ḡ|/n` (two subtractions, a product, the sum
+/// and the quotient) and, since the deviations from a computed mean `f̄ +
+/// δ` sum to `−nδ`, `|δ_f δ_g|` more.
+pub(super) struct GramErrors {
+    /// The `k` column means, and the target's.
+    pub(super) means: Vec<f64>,
+    pub(super) ybar: f64,
+    /// The `k × k` co-moments, row-major, and the target's centred
+    /// cross-moments.
+    pub(super) comoments: Vec<f64>,
+    pub(super) cross: Vec<f64>,
+}
+
+pub(super) fn gram_errors(r: &Rows, t: usize, own: &[usize]) -> GramErrors {
+    let k = r.z[0].len();
+    let n = own.len() as f64;
+    let g1 = oracle::gamma(own.len() + 1);
+    let g4 = oracle::gamma(own.len() + 4);
+    let y = |i: usize| r.y[i][t].unwrap();
+    let mean = |f: &dyn Fn(usize) -> f64| own.iter().map(|&i| f(i)).sum::<f64>() / n;
+    let mz: Vec<f64> = (0..k).map(|a| mean(&|i| r.z[i][a])).collect();
+    let my = mean(&y);
+    let means: Vec<f64> = (0..k).map(|a| g1 * mean(&|i| r.z[i][a].abs())).collect();
+    let ybar = g1 * mean(&|i| y(i).abs());
+    let comoments = (0..k * k)
+        .map(|ab| {
+            let (a, b) = (ab / k, ab % k);
+            g4 * mean(&|i| ((r.z[i][a] - mz[a]) * (r.z[i][b] - mz[b])).abs()) + means[a] * means[b]
+        })
+        .collect();
+    let cross = (0..k)
+        .map(|a| g4 * mean(&|i| ((r.z[i][a] - mz[a]) * (y(i) - my)).abs()) + means[a] * ybar)
+        .collect();
+    GramErrors {
+        means,
+        ybar,
+        comoments,
+        cross,
+    }
+}
+
 #[test]
 fn a_merge_is_the_gram_of_the_pooled_rows() {
     for level in [0.0, 1e4] {
@@ -246,12 +414,25 @@ fn a_ridge_fit_solves_its_system_and_its_statistics_are_the_residuals() {
                         a[p * 3 + q] / (s[p] * s[q]) + if p == q { ridge } else { 0.0 };
                 }
             }
-            let x = oracle::solve(&sys, &(0..3).map(|p| rhs[p] / s[p]).collect::<Vec<_>>());
+            let rhs_s: Vec<f64> = (0..3).map(|p| rhs[p] / s[p]).collect();
+            let x = oracle::solve(&sys, &rhs_s);
             let b: Vec<f64> = (0..3).map(|p| x[p] / s[p]).collect();
-            close(&fit.coef[1..], &b, 1e-12, "slopes");
+            // Task 274: the same system on both sides, Cholesky against LU
+            // ([`slope_error`]); it was `1e-12` relative to `1 + |b|`.
+            // Measured on aarch64 (macOS): at most 0.17 (slopes) and 0.071 (intercept) of the
+            // bound.
+            let db = slope_error(&sys, &rhs_s, &s);
+            for p in 0..3 {
+                oracle::assert_within(fit.coef[p + 1], b[p], db[p], format_args!("slope {p}"));
+            }
             let m = &g.means_by_target[t * 4..(t + 1) * 4];
             let icept = g.target_means[t] - (0..3).map(|p| b[p] * m[p + 1]).sum::<f64>();
-            close(&fit.coef[..1], &[icept], 1e-12, "intercept");
+            // `ȳ − m·b`, the same sum on both sides of slopes `Δb` apart:
+            // `|m|·Δb`, and each side's sum and difference.
+            let bm: Vec<(f64, f64)> = (0..3).map(|p| (b[p], m[p + 1])).collect();
+            let di = (0..3).map(|p| m[p + 1].abs() * db[p]).sum::<f64>()
+                + 2.0 * (oracle::dot_error(bm.iter().copied()) + oracle::U * icept.abs());
+            oracle::assert_within(fit.coef[0], icept, di, "intercept");
             let own: Vec<usize> = (0..r.z.len()).filter(|&i| r.y[i][t].is_some()).collect();
             let rv = if t == 0 {
                 // A target on every row of the Gram: the variance of its
@@ -279,37 +460,122 @@ fn a_ridge_fit_solves_its_system_and_its_statistics_are_the_residuals() {
                 let brhs: f64 = (0..3).map(|p| b[p] * rhs[p]).sum();
                 g.target_vars[t] - 2.0 * brhs + bab
             };
-            close(&[fit.resid_var], &[rv], 1e-10, "resid_var");
+            // Task 274. On every row the expected value is the residuals' own
+            // variance, from the model's coefficients: no oracle, the
+            // tolerance kept. With gaps it is `S_yy − 2b'r + b'Ab` from the
+            // oracle's `b` on the model's moments: slopes `Δb` apart move it
+            // by `2|Ab − r|ᵀΔb` (and `|Δb|ᵀ|A||Δb|`), and each side's two dot
+            // products, its double sum and its two differences round.
+            // Measured on aarch64 (macOS): at most 0.046, 0.045 and 0.043 of the bound for
+            // `resid_var`, `sigma2` and `r2`.
+            let drv = if t == 0 {
+                1e-10 * (1.0 + rv.abs())
+            } else {
+                let ab: Vec<f64> = (0..3)
+                    .map(|p| (0..3).map(|q| a[p * 3 + q] * b[q]).sum::<f64>() - rhs[p])
+                    .collect();
+                let abs_a: Vec<f64> = a.iter().map(|v| v.abs()).collect();
+                let bab = oracle::abs_form(&b, &abs_a, &b);
+                let brhs: f64 = (0..3).map(|p| (b[p] * rhs[p]).abs()).sum();
+                (0..3).map(|p| 2.0 * ab[p].abs() * db[p]).sum::<f64>()
+                    + oracle::abs_form(&db, &abs_a, &db)
+                    + 2.0
+                        * (oracle::gamma(3) * 2.0 * brhs
+                            + oracle::gamma(6) * bab
+                            + oracle::gamma(2) * (g.target_vars[t] + 2.0 * brhs + bab))
+            };
+            oracle::assert_within(fit.resid_var, rv, drv, "resid_var");
             let n = own.len() as f64;
             assert_eq!(fit.n, n);
-            close(&[fit.sigma2], &[rv * n / (n - 4.0)], 1e-10, "sigma2");
-            close(&[fit.r2], &[1.0 - rv / g.target_vars[t]], 1e-10, "r2");
-            // se from the inverse of the slots' co-moments, by faer's LU.
+            let sigma2 = rv * n / (n - 4.0);
+            let r2 = 1.0 - rv / g.target_vars[t];
+            oracle::assert_within(
+                fit.sigma2,
+                sigma2,
+                drv * n / (n - 4.0) + 6.0 * oracle::U * sigma2.abs(),
+                "sigma2",
+            );
+            oracle::assert_within(
+                fit.r2,
+                r2,
+                drv / g.target_vars[t] + 4.0 * oracle::U * (1.0 + r2.abs()),
+                "r2",
+            );
+            // se from the inverse of the slots' co-moments, by faer's LU,
+            // beside `diag(A⁻¹)` from `L⁻¹` (task 274: [`se_error`] of
+            // [`inverse_diagonal_error`] and the oracle's own); `σ²` the
+            // model's on both sides. It was `1e-10` relative to `1 + |se|`.
+            // Measured on aarch64 (macOS): at most 0.14 (`se`) and 0.16 (`t`)
+            // of the bound.
             let inv = oracle::inverse(&a);
+            let (dd, od) = (inverse_diagonal_error(&a), oracle_diagonal_error(&a));
             for p in 0..3 {
                 let se = (inv[p * 3 + p] * fit.sigma2 / n).sqrt();
-                close(&[fit.se[p + 1]], &[se], 1e-10, "se");
-                close(&[fit.t[p + 1]], &[fit.coef[p + 1] / se], 1e-10, "t");
+                let dse = se_error(se, inv[p * 3 + p], dd[p] + od[p]);
+                oracle::assert_within(fit.se[p + 1], se, dse, format_args!("se {p}"));
+                let tv = fit.coef[p + 1] / se;
+                let dt = tv.abs() * (dse / se + 2.0 * oracle::U);
+                oracle::assert_within(fit.t[p + 1], tv, dt, format_args!("t {p}"));
             }
             // The intercept's, least squares' `(X'X)⁻¹` at it. On every row
             // of the Gram, by faer's LU of the raw moments of `[1, z]`
             // themselves; with gaps, `1 + m_t' C⁻¹ m_t` by faer's LU,
             // `m_t` the target's own column means.
-            let q = if t == 0 {
+            // Task 274: the model reads `1 + m'A⁻¹m` from `L⁻¹`
+            // ([`factor_quad_error`]). With gaps the oracle reads the same
+            // form on the same moments (its own error a posteriori); on
+            // every row it reads `(R⁻¹)₀₀` of the raw moments of `[1, z]`,
+            // summed afresh from the rows: there each side's sums carry
+            // their own rounding ([`gram_errors`]), moving the model's form
+            // by `2|x|ᵀΔm + |x|ᵀΔA|x|` (`x = A⁻¹m`) and the oracle's by
+            // `(|R⁻¹|ΔR|R⁻¹|)₀₀`, `ΔR ≤ γ_{N+1}` of the raw sums of `|zᵢzⱼ|`.
+            // It was `1e-10` relative to `1 + |se₀|`.
+            // Measured on aarch64 (macOS): at most 0.070 (`se₀`) and 0.10 (`t₀`) of the bound.
+            let mm = &m[1..];
+            let (q, dq) = if t == 0 {
                 let raw: Vec<f64> = (0..4)
                     .flat_map(|i| (0..4).map(move |j| (i, j)))
                     .map(|(i, j)| own.iter().map(|&o| r.z[o][i] * r.z[o][j]).sum::<f64>() / n)
                     .collect();
-                oracle::inverse(&raw)[0]
+                let ri = oracle::inverse(&raw);
+                let g1 = oracle::gamma(own.len() + 1);
+                let dr: Vec<f64> = (0..16)
+                    .map(|ij| {
+                        g1 * own
+                            .iter()
+                            .map(|&o| (r.z[o][ij / 4] * r.z[o][ij % 4]).abs())
+                            .sum::<f64>()
+                            / n
+                    })
+                    .collect();
+                let col0: Vec<f64> = (0..4).map(|i| ri[i * 4].abs()).collect();
+                let test = oracle::abs_form(&col0, &dr, &col0) + oracle::inverse_error(&raw)[0];
+                let ge = gram_errors(&r, t, &own);
+                let xs = oracle::solve(&a, mm);
+                let dc: Vec<f64> = slots
+                    .iter()
+                    .flat_map(|&i| slots.iter().map(move |&j| (i, j)))
+                    .map(|(i, j)| ge.comoments[i * 4 + j])
+                    .collect();
+                let moved = 2.0 * (0..3).map(|p| xs[p].abs() * ge.means[p + 1]).sum::<f64>()
+                    + oracle::abs_form(&xs, &dc, &xs);
+                (ri[0], test + moved + factor_quad_error(&a, mm))
             } else {
-                1.0 + oracle::quad_form(&a, &m[1..])
+                let q = 1.0 + oracle::quad_form(&a, mm);
+                (
+                    q,
+                    factor_quad_error(&a, mm) + oracle::quad_form_error(&a, mm),
+                )
             };
+            let dq = dq + 2.0 * oracle::U * q;
             let se0 = (q * fit.sigma2 / n).sqrt();
-            close(&[fit.se[0]], &[se0], 1e-10, "the intercept's se");
-            close(
-                &[fit.t[0]],
-                &[fit.coef[0] / se0],
-                1e-10,
+            let dse0 = se_error(se0, q, dq);
+            oracle::assert_within(fit.se[0], se0, dse0, "the intercept's se");
+            let t0 = fit.coef[0] / se0;
+            oracle::assert_within(
+                fit.t[0],
+                t0,
+                t0.abs() * (dse0 / se0 + 2.0 * oracle::U),
                 "the intercept's t",
             );
         }
@@ -378,11 +644,24 @@ fn a_column_of_no_variance_leaves_the_others_their_standard_errors() {
     };
     let check = |fit: &RidgeFit, a_kept: &[f64], m: Option<&[f64]>, what: &str| {
         assert!(fit.sigma2.is_finite() && fit.n > 0.0, "{what}");
+        // Task 274: `diag(C⁻¹)` from `L⁻¹` against the LU's inverse, and
+        // `1 + m'C⁻¹m` from `L⁻¹` against its LU form, on the same matrix,
+        // `σ²` the model's on both sides ([`se_error`]); they were `1e-12`
+        // relative to `1 + |se|`.
+        // Measured on aarch64 (macOS): at most 0.27 of the bound, on a `t` of 12, 3 ulps off
+        // against 11: a few roundings each side, nothing to accumulate.
         let inv = oracle::inverse(a_kept);
+        let (dd, od) = (
+            inverse_diagonal_error(a_kept),
+            oracle_diagonal_error(a_kept),
+        );
         for (p, &i) in kept.iter().enumerate() {
             let se = (inv[p * 2 + p] * fit.sigma2 / fit.n).sqrt();
-            close(&[fit.se[i]], &[se], 1e-12, what);
-            close(&[fit.t[i]], &[fit.coef[i] / se], 1e-12, what);
+            let dse = se_error(se, inv[p * 2 + p], dd[p] + od[p]);
+            oracle::assert_within(fit.se[i], se, dse, format_args!("{what}: se {i}"));
+            let tv = fit.coef[i] / se;
+            let dt = tv.abs() * (dse / se + 2.0 * oracle::U);
+            oracle::assert_within(fit.t[i], tv, dt, format_args!("{what}: t {i}"));
         }
         assert!(
             fit.se[2].is_nan() && fit.t[2].is_nan(),
@@ -392,8 +671,17 @@ fn a_column_of_no_variance_leaves_the_others_their_standard_errors() {
         match m {
             Some(m) => {
                 let mk: Vec<f64> = kept.iter().map(|&i| m[i]).collect();
-                let se0 = ((1.0 + oracle::quad_form(a_kept, &mk)) * fit.sigma2 / fit.n).sqrt();
-                close(&[fit.se[0]], &[se0], 1e-12, what);
+                let q = 1.0 + oracle::quad_form(a_kept, &mk);
+                let dq = factor_quad_error(a_kept, &mk)
+                    + oracle::quad_form_error(a_kept, &mk)
+                    + 2.0 * oracle::U * q;
+                let se0 = (q * fit.sigma2 / fit.n).sqrt();
+                oracle::assert_within(
+                    fit.se[0],
+                    se0,
+                    se_error(se0, q, dq),
+                    format_args!("{what}: se0"),
+                );
             }
             None => assert!(fit.se[0].is_nan(), "{what}"),
         }
@@ -459,12 +747,73 @@ fn a_dropped_column_is_no_degree_of_freedom() {
         .collect();
     let b = oracle::solve(&raw, &rhs);
     let coef = [b[0], b[1], b[2]];
-    close(
-        &[fit.coef[0], fit.coef[1], fit.coef[3]],
-        &coef,
-        1e-12,
-        "least squares on the kept columns",
-    );
+    // Task 274. The oracle solves the raw normal equations of `[1, z₁, z₃]`,
+    // summed afresh from the rows: within `γ_{N+1}` of the sums of `|zᵢzⱼ|`
+    // and `|zᵢy|`, through its forward error ([`oracle::forward_error`]),
+    // and its own LU error. The model solves the kept columns' centred
+    // system by Cholesky, standardized, from the Gram's sums
+    // ([`gram_errors`]): the slopes move by `|C⁻¹|(ΔC|b| + Δc)` and by the
+    // solve's backward error, and the intercept `ȳ − m·b` by `Δȳ + |b|ᵀΔm +
+    // |m|ᵀΔb` and its sum. It was `1e-12` relative to `1 + |b|`.
+    // Measured on aarch64 (macOS): at most 0.018 of the bound.
+    let all: Vec<usize> = (0..r.z.len()).collect();
+    let g1 = oracle::gamma(r.z.len() + 1);
+    let dr: Vec<f64> = cols
+        .iter()
+        .flat_map(|&i| cols.iter().map(move |&j| (i, j)))
+        .map(|(i, j)| g1 * r.z.iter().map(|z| (z[i] * z[j]).abs()).sum::<f64>())
+        .collect();
+    let drhs: Vec<f64> = cols
+        .iter()
+        .map(|&i| {
+            g1 * r
+                .z
+                .iter()
+                .zip(&r.y)
+                .map(|(z, y)| (z[i] * y[0].unwrap()).abs())
+                .sum::<f64>()
+        })
+        .collect();
+    let test = oracle::forward_error(&raw, &b, &dr, &drhs);
+    let own = oracle::solve_error(&raw, &rhs, &b);
+    let ge = gram_errors(&r, 0, &all);
+    let kept = [1usize, 3];
+    let (gc, gec) = (&g.comoments, &ge.comoments);
+    let c: Vec<f64> = kept
+        .iter()
+        .flat_map(|&i| kept.iter().map(move |&j| gc[i * 4 + j]))
+        .collect();
+    let dc: Vec<f64> = kept
+        .iter()
+        .flat_map(|&i| kept.iter().map(move |&j| gec[i * 4 + j]))
+        .collect();
+    let cr: Vec<f64> = kept.iter().map(|&i| g.cross_centred[i]).collect();
+    let dcr: Vec<f64> = kept.iter().map(|&i| ge.cross[i]).collect();
+    let sk: Vec<f64> = (0..2).map(|p| c[p * 2 + p].sqrt()).collect();
+    let sys: Vec<f64> = (0..4).map(|pq| c[pq] / (sk[pq / 2] * sk[pq % 2])).collect();
+    let xs = oracle::solve(&sys, &(0..2).map(|p| cr[p] / sk[p]).collect::<Vec<_>>());
+    let bk: Vec<f64> = (0..2).map(|p| xs[p] / sk[p]).collect();
+    let chol = oracle::forward_error(&sys, &xs, &oracle::cholesky_backward(&sys), &[0.0; 2]);
+    let moved = oracle::forward_error(&c, &bk, &dc, &dcr);
+    let dbk: Vec<f64> = (0..2)
+        .map(|p| chol[p] / sk[p] + moved[p] + 4.0 * oracle::U * bk[p].abs())
+        .collect();
+    let mk: Vec<f64> = kept.iter().map(|&i| g.means_by_target[i]).collect();
+    let dicept = ge.ybar
+        + (0..2)
+            .map(|p| bk[p].abs() * ge.means[kept[p]] + mk[p].abs() * dbk[p])
+            .sum::<f64>()
+        + oracle::dot_error(bk.iter().copied().zip(mk.iter().copied()))
+        + oracle::U * coef[0].abs();
+    let dcoef = [dicept, dbk[0], dbk[1]];
+    for (p, &i) in cols.iter().enumerate() {
+        oracle::assert_within(
+            fit.coef[i],
+            coef[p],
+            dcoef[p] + test[p] + own[p],
+            format_args!("least squares on the kept columns, column {i}"),
+        );
+    }
     let rss: f64 =
         r.z.iter()
             .zip(&r.y)
@@ -479,10 +828,40 @@ fn a_dropped_column_is_no_degree_of_freedom() {
         1e-12,
         "sigma2 over n - 3",
     );
+    // Task 274: `n·(R⁻¹)ₚₚ` of the raw sums (the oracle's LU, its sums'
+    // rounding through `|R⁻¹|ΔR|R⁻¹|` and its own residual) against the
+    // model's `diag(C⁻¹)` from `L⁻¹` and its Gram's rounding through
+    // `|C⁻¹|ΔC|C⁻¹|` -- for the intercept, `1 + m'C⁻¹m` and `2|x|ᵀΔm +
+    // |x|ᵀΔC|x|`, `x = C⁻¹m` -- under the two `σ²`, whose difference, held
+    // above, enters as it is: `σ²`'s is a sum of residuals against a
+    // difference of moments, no linear algebra, and this check is the
+    // inverse's. It was `1e-10` relative to `1 + |se|`.
+    // Measured on aarch64 (macOS): at most 0.019 of the bound.
     let inv = oracle::inverse(&raw);
+    let ie = oracle::inverse_error(&raw);
+    let ci = oracle::inverse(&c);
+    let dd = inverse_diagonal_error(&c);
+    let xm = oracle::solve(&c, &mk);
+    let q = 1.0 + mk.iter().zip(&xm).map(|(a, b)| a * b).sum::<f64>();
+    let abs_ci: Vec<f64> = ci.iter().map(|v| v.abs()).collect();
     for (p, &i) in cols.iter().enumerate() {
         let se = (inv[p * 3 + p] * rss / (n - 3.0)).sqrt();
-        close(&[fit.se[i]], &[se], 1e-10, "se");
+        let col: Vec<f64> = (0..3).map(|m| inv[m * 3 + p].abs()).collect();
+        let d_test = oracle::abs_form(&col, &dr, &col) + ie[p * 3 + p];
+        let d_model = if p == 0 {
+            factor_quad_error(&c, &mk)
+                + 2.0 * (0..2).map(|m| xm[m].abs() * ge.means[kept[m]]).sum::<f64>()
+                + oracle::abs_form(&xm, &dc, &xm)
+                + 2.0 * oracle::U * q
+        } else {
+            let cc: Vec<f64> = (0..2).map(|m| abs_ci[m * 2 + p - 1]).collect();
+            dd[p - 1] + oracle::abs_form(&cc, &dc, &cc)
+        };
+        // Both in units of `(R⁻¹)ₚₚ = d/n`.
+        let s2 = rss / (n - 3.0);
+        let rel = (d_test + d_model / n) / inv[p * 3 + p] + (fit.sigma2 - s2).abs() / s2;
+        let dse = se * (0.5 * rel + 6.0 * oracle::U);
+        oracle::assert_within(fit.se[i], se, dse, format_args!("se, column {i}"));
     }
     // Pooled within parts, through the origin: the constant has no
     // variance and is no degree of freedom either.
@@ -521,8 +900,15 @@ fn without_an_intercept_the_system_is_the_raw_moments() {
         .iter()
         .flat_map(|&i| [1, 2].map(|j| g.comoments[i * 3 + j] + g.means[i] * g.means[j]))
         .collect();
-    let b = oracle::solve(&raw, &[g.cross_moments[1], g.cross_moments[2]]);
-    close(&fits[0].coef[1..], &b, 1e-12, "slopes");
+    let rhs = [g.cross_moments[1], g.cross_moments[2]];
+    let b = oracle::solve(&raw, &rhs);
+    // Task 274: the same system on both sides, Cholesky against LU
+    // ([`slope_error`]); it was `1e-12` relative to `1 + |b|`.
+    // Measured on aarch64 (macOS): at most 0.085 of the bound.
+    let db = slope_error(&raw, &rhs, &[1.0, 1.0]);
+    for p in 0..2 {
+        oracle::assert_within(fits[0].coef[p + 1], b[p], db[p], format_args!("slope {p}"));
+    }
     assert_eq!(fits[0].coef[0], 0.0);
     // And its statistics are least squares' through the origin, read from
     // the residuals themselves: their mean square, not their variance, an
@@ -545,11 +931,23 @@ fn without_an_intercept_the_system_is_the_raw_moments() {
         .sum::<f64>()
         / n;
     close(&[fit.r2], &[1.0 - ms / yy], 1e-10, "r2, uncentred");
+    // Task 274: `diag(A⁻¹)` from `L⁻¹` against the LU's inverse of the same
+    // raw moments, `σ²` the model's on both sides ([`se_error`]); it was
+    // `1e-10` relative to `1 + |se|`. The three statistics above compare
+    // the residuals' sums with the moments' differences, and the oracle's
+    // slopes enter them only to second order (least squares, no ridge):
+    // no linear algebra, their tolerance kept.
+    // Measured on aarch64 (macOS): equal to the bit; the result moved by 100u of itself fails
+    // it (3.8 and 4.1 times the bound).
     let inv = oracle::inverse(&raw);
+    let (dd, od) = (inverse_diagonal_error(&raw), oracle_diagonal_error(&raw));
     for p in 0..2 {
         let se = (inv[p * 2 + p] * fit.sigma2 / n).sqrt();
-        close(&[fit.se[p + 1]], &[se], 1e-10, "se");
-        close(&[fit.t[p + 1]], &[fit.coef[p + 1] / se], 1e-10, "t");
+        let dse = se_error(se, inv[p * 2 + p], dd[p] + od[p]);
+        oracle::assert_within(fit.se[p + 1], se, dse, format_args!("se {p}"));
+        let tv = fit.coef[p + 1] / se;
+        let dt = tv.abs() * (dse / se + 2.0 * oracle::U);
+        oracle::assert_within(fit.t[p + 1], tv, dt, format_args!("t {p}"));
     }
     assert!(fit.se[0].is_nan(), "column 0 is no slot");
 }

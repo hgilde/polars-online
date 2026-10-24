@@ -292,6 +292,9 @@ impl Sandwich {
 }
 
 #[cfg(test)]
+pub(crate) mod rounding;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -305,17 +308,27 @@ mod tests {
     /// The sandwich by its definition, from every folded row at its present
     /// weight: `X'ΩX`, the meat's double sum over pairs at most `L` folded
     /// rows apart at Bartlett's weights, inverted by faer's LU
-    /// (`crate::oracle`) in the features' own units -- `z = (1, x)`, no
-    /// origin -- under a decay, uneven weights, zeros and residuals that
-    /// carry a lag.
+    /// (`crate::oracle`), about the level `(50, −7)` and mapped to the
+    /// features' own units -- not the model's origin, its first row -- under
+    /// a decay, uneven weights, zeros and residuals that carry a lag.
+    ///
+    /// Task 274: each standard error within a bound on both sides'
+    /// rounding ([`rounding::covariance_bound`]), the root halving its
+    /// variance's relative error, where it was `1e-8` relative. Summed about
+    /// 0, the definition's bread held the level's square, and its own
+    /// rounding, `u` of entries 2,500 times the spread, was all it could
+    /// see: 3e-11 of the model's numbers, against the model's 1e-15.
+    /// Measured on aarch64 (macOS): at most 0.012 of the bound.
     #[test]
     fn the_sandwich_is_its_definition() {
+        use rounding::{DefRow, Track, covariance_bound};
         let lags = 3usize;
         let lam = 0.99;
         let mut s = Sandwich::new(2, true, lags);
+        let mut track = Track::new(2, lags);
         let mut st = 13u64;
-        // (z, e, present weight); folded rows only, in order.
-        let mut rows: Vec<([f64; 3], f64, f64)> = Vec::new();
+        // Folded rows only, in order.
+        let mut rows: Vec<DefRow> = Vec::new();
         let mut prev = 0.0;
         for i in 0..300 {
             let x = [lcg(&mut st) + 50.0, 2.0 * lcg(&mut st) - 7.0];
@@ -328,61 +341,33 @@ mod tests {
                 0.5 + lcg(&mut st) + 0.5
             };
             s.update(&x, e, lam, w);
-            rows.iter_mut().for_each(|r| r.2 *= lam);
+            track.update(&x, e, lam, w);
+            rows.iter_mut().for_each(|r| r.w *= lam);
             if w > 0.0 {
-                rows.push(([1.0, x[0], x[1]], e, w));
+                rows.push(DefRow {
+                    x: x.to_vec(),
+                    e,
+                    w,
+                    born: i,
+                });
             }
             if i < 20 || i % 41 != 0 {
                 continue;
             }
             for hac in [false, true] {
-                let n = rows.len();
-                let (mut b, mut m) = (vec![0.0; 9], vec![0.0; 9]);
-                for r in &rows {
-                    for a in 0..3 {
-                        for c in 0..3 {
-                            b[a * 3 + c] += r.2 * r.0[a] * r.0[c];
-                        }
-                    }
-                }
                 let reach = if hac { lags } else { 0 };
-                for t in 0..n {
-                    for l in 0..=reach.min(t) {
-                        let (rt, rs) = (&rows[t], &rows[t - l]);
-                        let k = if l == 0 {
-                            1.0
-                        } else {
-                            1.0 - l as f64 / (lags as f64 + 1.0)
-                        };
-                        for a in 0..3 {
-                            for c in 0..3 {
-                                let p = rt.2 * rt.1 * rt.0[a] * rs.2 * rs.1 * rs.0[c];
-                                m[a * 3 + c] += k * p;
-                                if l > 0 {
-                                    m[c * 3 + a] += k * p;
-                                }
-                            }
-                        }
-                    }
-                }
-                let bi = crate::oracle::inverse(&b);
-                let mut v = [0.0; 9];
-                for a in 0..3 {
-                    for c in 0..3 {
-                        for p in 0..3 {
-                            for q in 0..3 {
-                                v[a * 3 + c] += bi[a * 3 + p] * m[p * 3 + q] * bi[q * 3 + c];
-                            }
-                        }
-                    }
-                }
+                let b = covariance_bound(&track, &rows, i, &[0.0, 50.0, -7.0], (reach, lags));
+                let (v, dv) = (b.v, b.dv);
                 let got = s.standard_errors(&[0, 1], hac).unwrap();
                 for a in 0..3 {
                     let want = v[a * 3 + a].sqrt();
-                    assert!(
-                        (got[a] - want).abs() < 1e-8 * want,
-                        "row {i}, hac {hac}, coefficient {a}: {} vs {want}",
-                        got[a]
+                    let bound =
+                        want * (0.5 * dv[a * 3 + a] / v[a * 3 + a] + 2.0 * crate::oracle::U);
+                    crate::oracle::assert_within(
+                        got[a],
+                        want,
+                        bound,
+                        format_args!("row {i}, hac {hac}, coefficient {a}"),
                     );
                 }
             }
@@ -579,7 +564,14 @@ mod tests {
         let x = crate::oracle::solve(&sub, &d);
         let want: f64 = x.iter().zip(&d).map(|(a, b)| a * b).sum();
         let got = s.wald(&idx, true, &pick, &d).unwrap();
-        assert!((got - want).abs() < 1e-10 * want, "{got} vs {want}");
+        // Task 274: the model's Cholesky form of the same block against the
+        // oracle's LU form, each side's rounding bounded (`crate::oracle`);
+        // it was `1e-10` relative.
+        // Measured on aarch64 (macOS): equal to the bit; the result moved by 100u of itself
+        // fails it (6.5 times the bound).
+        let bound = crate::oracle::quad_error(&sub, &d, &crate::oracle::cholesky_backward(&sub))
+            + crate::oracle::quad_form_error(&sub, &d);
+        crate::oracle::assert_within(got, want, bound, "wald");
         assert!(s.wald(&idx, true, &[], &[]).is_none(), "nothing picked");
         assert!(s.wald(&idx, true, &pick, &d[..1]).is_none(), "d too short");
         assert!(s.wald(&idx, true, &[0, 3], &d).is_none(), "outside");

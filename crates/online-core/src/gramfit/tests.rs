@@ -83,6 +83,180 @@ pub(super) fn assert_kkt(r: &[f64], d: &[f64], b: &[f64], lambda: f64, tol: f64)
     }
 }
 
+/// `R`'s block on rows `a` and columns `b`, row-major.
+fn block(r: &[f64], k: usize, a: &[usize], b: &[usize]) -> Vec<f64> {
+    a.iter()
+        .flat_map(|&i| b.iter().map(move |&j| r[i * k + j]))
+        .collect()
+}
+
+/// A bound, per knot and column, on `|d_j − R_j·b − λ s_j|` for the
+/// active columns of the path, the residual of the active-set system
+/// `R_AA b_A = d_A − λ s_A` the knot's coefficients solve in exact
+/// arithmetic (docs/PLAN.md task 274). LARS reaches them by steps, `b ←
+/// b + γδ` with `δ` solved from the active set's Cholesky factor, so the
+/// residual is what the steps leave, counted from the path's own
+/// magnitudes as a running error bound (Higham §3.3) in the module docs'
+/// terms:
+///
+/// - the first knot's columns sit within `TIE·λ_max` of `λ_max`, or, joined
+///   by a step within the tie of 0, `|1 − s a|` times that;
+/// - a step adds `γ·E|δ|` (`R_AA δ̂ = s + e`, `|e| ≤ E|δ̂|`, the factor
+///   solve's backward error, Higham Theorem 10.4), `u|R|(|b| + |γδ|)`
+///   (the update's rounding) and `u λ` (the penalty's subtraction);
+/// - a column leaving is set to 0 from `|b_l| ≤ TIE·λ_max·|δ_l|` (its step
+///   was within the tie of `γ`), which moves every other residual by
+///   `|R_il|` times that; alone at its knot its step is `γ`, and it is
+///   short of 0 by its step's rounding, `4u|b_l|`;
+/// - a column entering does so with `|c_e − s λ|` at most `|1 − s a_e|`
+///   times its step's distance from `γ` (the tie, 0 for a column alone at
+///   its knot, and `4u` of the step's own rounding), plus the rounding of
+///   the `c_e` and `a_e` it was read from;
+/// - at a knot where several columns change, the columns staying are
+///   solved afresh: their residual is that one solve's, `E|b|` and the
+///   right-hand side's rounding, and the entering ones move by the
+///   staying ones' change, `|R_eS||R_SS⁻¹|` times their old residuals.
+pub(super) fn residual_bounds(r: &[f64], d: &[f64], path: &LarsPath) -> Vec<Vec<f64>> {
+    use oracle::{U, abs_times, gamma};
+    let k = d.len();
+    let tie = lars::TIE * path.penalties[0];
+    let mut res = vec![0.0f64; k];
+    let first = &path.active[0];
+    if first.len() == 1 {
+        res[first[0]] = U * d[first[0]].abs();
+    } else if !first.is_empty() {
+        // Tied at `λ_max`, or joined within the tie of a step of 0, which
+        // leaves a column `|1 − s a|` times that short: at most `1 +
+        // |R_jA||δ|`, `δ = R_AA⁻¹s` over the knot's columns.
+        let raa = block(r, k, first, first);
+        let sa: Vec<f64> = first.iter().map(|&j| d[j].signum()).collect();
+        let delta = oracle::solve(&raa, &sa);
+        for &j in first {
+            let a: f64 = first
+                .iter()
+                .zip(&delta)
+                .filter(|(i, _)| **i != j)
+                .map(|(&i, di)| (r[j * k + i] * di).abs())
+                .sum();
+            res[j] = tie * (1.0 + a) + U * d[j].abs();
+        }
+    }
+    let mut out = vec![res.clone()];
+    for n in 1..path.len() {
+        let (prev, cur) = (&path.active[n - 1], &path.active[n]);
+        let (lam0, lam) = (path.penalties[n - 1], path.penalties[n]);
+        let step = lam0 - lam;
+        let bp = &path.coefs[(n - 1) * k..n * k];
+        let bc = &path.coefs[n * k..(n + 1) * k];
+        let delta: Vec<f64> = prev.iter().map(|&i| (bc[i] - bp[i]) / step).collect();
+        let ad: Vec<f64> = delta.iter().map(|v| v.abs()).collect();
+        let rpp = block(r, k, prev, prev);
+        let ed = abs_times(&oracle::cholesky_backward(&rpp), &ad);
+        // The update's rounding as it reaches column `j`.
+        let moved = |j: usize| -> f64 {
+            prev.iter()
+                .zip(&delta)
+                .map(|(&i, di)| r[j * k + i].abs() * (bc[i].abs() + (step * di).abs()))
+                .sum::<f64>()
+                * U
+        };
+        let mut next = vec![0.0f64; k];
+        for (p, &i) in prev.iter().enumerate() {
+            next[i] = res[i] + step * ed[p] + moved(i) + U * lam;
+        }
+        let entering: Vec<usize> = cur.iter().copied().filter(|j| !prev.contains(j)).collect();
+        let gone = prev.iter().filter(|i| !cur.contains(i)).count();
+        // One column changing at the knot is the one whose step `γ` is: its
+        // distance from `γ` is the step's own rounding, not the tie.
+        let alone = entering.len() + gone == 1;
+        let leaving: Vec<(usize, f64)> = prev
+            .iter()
+            .zip(&delta)
+            .filter(|(i, _)| !cur.contains(i))
+            .map(|(&i, &di)| {
+                let short = if alone {
+                    4.0 * U * bp[i].abs()
+                } else {
+                    tie * di.abs()
+                };
+                (i, short)
+            })
+            .collect();
+        for &i in cur {
+            next[i] += leaving
+                .iter()
+                .map(|&(l, bl)| r[i * k + l].abs() * bl)
+                .sum::<f64>();
+        }
+        for &e in &entering {
+            let c: f64 = d[e] - prev.iter().map(|&i| r[e * k + i] * bp[i]).sum::<f64>();
+            let a: f64 = prev
+                .iter()
+                .zip(&delta)
+                .map(|(&i, di)| r[e * k + i] * di)
+                .sum();
+            let s = c.signum();
+            let ec = gamma(prev.len() + 1)
+                * prev
+                    .iter()
+                    .map(|&i| (r[e * k + i] * bp[i]).abs())
+                    .sum::<f64>()
+                + U * d[e].abs();
+            let ea = gamma(prev.len())
+                * prev
+                    .iter()
+                    .zip(&ad)
+                    .map(|(&i, di)| r[e * k + i].abs() * di)
+                    .sum::<f64>();
+            let off = if alone { 0.0 } else { tie };
+            next[e] =
+                (1.0 - s * a).abs() * (off + 4.0 * U * step) + ec + step * ea + moved(e) + U * lam;
+        }
+        if entering.len() + leaving.len() > 1 {
+            // The columns staying, solved afresh at this penalty.
+            let staying: Vec<usize> = cur
+                .iter()
+                .copied()
+                .filter(|j| !entering.contains(j))
+                .collect();
+            if !staying.is_empty() {
+                let rss = block(r, k, &staying, &staying);
+                let bs: Vec<f64> = staying.iter().map(|&i| bc[i].abs()).collect();
+                let fresh = abs_times(&oracle::cholesky_backward(&rss), &bs);
+                let old: Vec<f64> = staying.iter().map(|&i| next[i]).collect();
+                let change = abs_times(&oracle::inverse(&rss), &old);
+                for (p, &i) in staying.iter().enumerate() {
+                    next[i] = fresh[p] + U * (d[i].abs() + lam);
+                }
+                for &e in &entering {
+                    next[e] += staying
+                        .iter()
+                        .zip(&change)
+                        .map(|(&i, ch)| r[e * k + i].abs() * ch)
+                        .sum::<f64>();
+                }
+            }
+        }
+        res = next;
+        out.push(res.clone());
+    }
+    out
+}
+
+/// The most knot `n`'s active coefficients may be off the oracle's solve of
+/// `R_AA b_A = rhs`: `b − b* = −R_AA⁻¹ r_A` for the residual `r` that
+/// [`residual_bounds`] bounds, so `|R_AA⁻¹|·r_A`, beside the oracle's own
+/// error ([`oracle::solve_error`]).
+pub(super) fn knot_error(r: &[f64], act: &[usize], res: &[f64], rhs: &[f64]) -> Vec<f64> {
+    let k = res.len();
+    let raa = block(r, k, act, act);
+    let want = oracle::solve(&raa, rhs);
+    let ra: Vec<f64> = act.iter().map(|&i| res[i]).collect();
+    let lib = oracle::abs_times(&oracle::inverse(&raa), &ra);
+    let own = oracle::solve_error(&raa, rhs, &want);
+    lib.iter().zip(&own).map(|(a, b)| a + b).collect()
+}
+
 #[test]
 fn every_knot_meets_the_lasso_conditions_and_the_active_set_solve() {
     let beta = [1.0, -0.8, 0.6, 0.0, 0.3, 0.0, -0.2, 0.0];
@@ -104,6 +278,7 @@ fn every_knot_meets_the_lasso_conditions_and_the_active_set_solve() {
     for w in path.penalties.windows(2) {
         assert!(w[1] < w[0], "λ falls along the path: {w:?}");
     }
+    let res = residual_bounds(&r, &d, &path);
     for (n, &lambda) in path.penalties.iter().enumerate() {
         let b = &path.coefs[n * 8..(n + 1) * 8];
         assert_kkt(&r, &d, b, lambda, 1e-12);
@@ -127,25 +302,36 @@ fn every_knot_meets_the_lasso_conditions_and_the_active_set_solve() {
             })
             .collect();
         let want = oracle::solve(&raa, &rhs);
+        // Task 274: the residual the path's steps leave, through `R_AA⁻¹`
+        // ([`knot_error`]); it was `1e-12` relative to `1 + |b|`.
+        // Measured on aarch64 (macOS): at most 0.24 of the bound, at the first step from the
+        // first knot (a few roundings, nothing accumulated yet); 0.010 at the path's end.
+        let bound = knot_error(&r, act, &res[n], &rhs);
         for p in 0..m {
-            assert!(
-                (b[act[p]] - want[p]).abs() <= 1e-12 * (1.0 + want[p].abs()),
-                "knot {n}, column {}: {} vs {}",
-                act[p],
+            oracle::assert_within(
                 b[act[p]],
-                want[p]
+                want[p],
+                bound[p],
+                format_args!("knot {n}, column {}", act[p]),
             );
         }
     }
-    // The end of the path is the least-squares fit (faer's LU).
-    let last = &path.coefs[(path.len() - 1) * 8..];
+    // The end of the path is the least-squares fit (faer's LU), held as
+    // the last knot is. It was `1e-12`.
+    let n = path.len() - 1;
+    let last = &path.coefs[n * 8..];
     let ls = oracle::solve(&r, &d);
+    let all: Vec<usize> = (0..8).collect();
+    let mut every = path.active[n].clone();
+    every.sort_unstable();
+    assert_eq!(every, all);
+    let bound = knot_error(&r, &all, &res[n], &d);
     for j in 0..8 {
-        assert!(
-            (last[j] - ls[j]).abs() < 1e-12,
-            "{j}: {} vs {}",
+        oracle::assert_within(
             last[j],
-            ls[j]
+            ls[j],
+            bound[j],
+            format_args!("the end, column {j}"),
         );
     }
 }
@@ -191,12 +377,18 @@ fn a_column_leaves_where_its_coefficient_crosses_zero() {
     assert_eq!(path.active.last().unwrap().len(), k);
     let ls = oracle::solve(&r, &d);
     let last = &path.coefs[(path.len() - 1) * k..];
+    // Task 274: the residual the path's steps leave, through `R⁻¹`
+    // ([`knot_error`]); it was `1e-10`.
+    // Measured on aarch64 (macOS): at most 0.024 of the bound.
+    let all: Vec<usize> = (0..k).collect();
+    let res = residual_bounds(&r, &d, &path);
+    let bound = knot_error(&r, &all, res.last().unwrap(), &d);
     for j in 0..k {
-        assert!(
-            (last[j] - ls[j]).abs() < 1e-10,
-            "{j}: {} vs {}",
+        oracle::assert_within(
             last[j],
-            ls[j]
+            ls[j],
+            bound[j],
+            format_args!("the end, column {j}"),
         );
     }
     // Without the drop the coefficient would change sign: the conditions
@@ -282,12 +474,19 @@ fn columns_leave_and_come_back_and_every_knot_is_the_lasso() {
         }
         let ls = oracle::solve(&r, &d);
         let last = &path.coefs[(path.len() - 1) * 10..];
+        // Task 274: the residual the path's steps leave, through `R⁻¹`
+        // ([`knot_error`]); it was `1e-9`.
+        // Measured on aarch64 (macOS): at most 0.013 of the bound.
+        let all: Vec<usize> = (0..10).collect();
+        assert_eq!(path.active.last().unwrap().len(), 10);
+        let res = residual_bounds(&r, &d, &path);
+        let bound = knot_error(&r, &all, res.last().unwrap(), &d);
         for j in 0..10 {
-            assert!(
-                (last[j] - ls[j]).abs() < 1e-9,
-                "seed {seed}, {j}: {} vs {}",
+            oracle::assert_within(
                 last[j],
-                ls[j]
+                ls[j],
+                bound[j],
+                format_args!("seed {seed}, the end, column {j}"),
             );
         }
     }

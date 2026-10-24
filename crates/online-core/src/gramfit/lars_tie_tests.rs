@@ -7,7 +7,9 @@
 //! opinion here: its `lars_path_gram` (1.9.1) ends the first case below at
 //! `[2, 1]`, the least-squares fit being `[1, 1]`.
 
-use super::tests::{assert_kkt, design, mixed_design, path_with_a_drop};
+use super::tests::{
+    assert_kkt, design, knot_error, mixed_design, path_with_a_drop, residual_bounds,
+};
 use super::*;
 use crate::oracle;
 
@@ -50,8 +52,20 @@ fn assert_kkt_everywhere(r: &[f64], d: &[f64], path: &LarsPath, tol: f64) {
 }
 
 /// The path's last knot is least squares on the columns `keep` (faer's
-/// LU), and 0 on the rest.
-fn assert_ends_at_least_squares(r: &[f64], d: &[f64], path: &LarsPath, keep: &[usize], tol: f64) {
+/// LU), and 0 on the rest: within `tol` where a case gives one, and
+/// otherwise within the residual the path's steps and ties leave, through
+/// `R_kk⁻¹` ([`super::tests::knot_error`] of
+/// [`super::tests::residual_bounds`], docs/PLAN.md task 274). That bound
+/// allows every knot where several columns change the tie's 64 ulps of
+/// `λ_max`; a case built on an exact tie, or whose offset from the tie is
+/// worked out by hand, keeps the tighter tolerance it states.
+fn assert_ends_at_least_squares(
+    r: &[f64],
+    d: &[f64],
+    path: &LarsPath,
+    keep: &[usize],
+    tol: Option<f64>,
+) {
     let k = d.len();
     let rk: Vec<f64> = keep
         .iter()
@@ -61,12 +75,20 @@ fn assert_ends_at_least_squares(r: &[f64], d: &[f64], path: &LarsPath, keep: &[u
     let ls = oracle::solve(&rk, &dk);
     let last = &path.coefs[(path.len() - 1) * k..];
     assert_eq!(*path.penalties.last().unwrap(), 0.0);
+    let mut active = path.active.last().unwrap().clone();
+    active.sort_unstable();
+    assert_eq!(active, keep, "the last knot's columns");
+    let res = residual_bounds(r, d, path);
+    let bound = knot_error(r, keep, res.last().unwrap(), &dk);
     for (j, &got) in last.iter().enumerate() {
-        let want = keep.iter().position(|&i| i == j).map_or(0.0, |p| ls[p]);
-        assert!(
-            (got - want).abs() <= tol,
-            "column {j}: {got} vs least squares {want}"
-        );
+        let at = keep.iter().position(|&i| i == j);
+        let want = at.map_or(0.0, |p| ls[p]);
+        let tol = match (tol, at) {
+            (Some(t), _) => t,
+            (None, Some(p)) => bound[p],
+            (None, None) => 0.0,
+        };
+        oracle::assert_within(got, want, tol, format_args!("column {j}, least squares"));
     }
 }
 
@@ -147,7 +169,9 @@ fn an_equicorrelated_design_with_equal_correlations_has_its_closed_form_path() {
     let path = lars_lasso(&r, &d, &vec![true; k], LarsLimits::default());
     assert_eq!(path.penalties, vec![c, 0.0]);
     assert_eq!(path.active, vec![all.clone(), all.clone()]);
-    assert_ends_at_least_squares(&r, &d, &path, &all, 1e-15);
+    // An exact tie: the end to 4.5 ulps of its largest coefficient, where
+    // the derived bound (6.2e-14) carries the tie at its first knot.
+    assert_ends_at_least_squares(&r, &d, &path, &all, Some(1e-15));
     assert_kkt_everywhere(&r, &d, &path, 1e-15);
     // Mixed signs at ρ = −0.4: one of the three tied columns stays out.
     let r = equicorrelated(3, -0.4);
@@ -229,7 +253,10 @@ fn two_coefficients_reaching_zero_at_one_step_leave_at_one_knot() {
         assert_eq!(path.coefs[drop * 2 * k + j], 0.0, "it leaves at exactly 0");
     }
     assert_kkt_everywhere(&r, &d, &path, 1e-12);
-    assert_ends_at_least_squares(&r, &d, &path, &(0..2 * k).collect::<Vec<_>>(), 1e-10);
+    // The derived bound (task 274), 2.2e-12, where the case gave `1e-10`:
+    // its error, 1.6e-15, is 7.0e-4 of it on aarch64 (macOS), the two
+    // columns leaving at one knot allowed the whole tie.
+    assert_ends_at_least_squares(&r, &d, &path, &(0..2 * k).collect::<Vec<_>>(), None);
 }
 
 /// A seventh column, uncorrelated with the six of a design with a drop,
@@ -282,7 +309,9 @@ fn an_entry_and_an_exit_at_one_step_are_one_knot() {
     assert_eq!(gone.len(), 1, "{before:?} -> {after:?}");
     assert_eq!(path.coefs[at * 7 + gone[0]], 0.0);
     assert_kkt_everywhere(&r, &d, &path, 1e-12);
-    assert_ends_at_least_squares(&r, &d, &path, &(0..7).collect::<Vec<_>>(), 1e-10);
+    // The derived bound (task 274), 6.5e-14, where the case gave `1e-10`:
+    // its error is 0.017 of it on aarch64 (macOS).
+    assert_ends_at_least_squares(&r, &d, &path, &(0..7).collect::<Vec<_>>(), None);
 }
 
 /// Columns 1 and 2 are symmetric about column 0 (`R_01 = R_02 = ½`,
@@ -340,7 +369,7 @@ fn duplicate_columns_tie_and_the_collinearity_check_sets_one_aside() {
     ];
     assert_eq!(path.coefs, coefs);
     assert_kkt_everywhere(&r, &d, &path, 0.0);
-    assert_ends_at_least_squares(&r, &d, &path, &[0, 2, 3], 0.0);
+    assert_ends_at_least_squares(&r, &d, &path, &[0, 2, 3], Some(0.0));
 }
 
 /// `max_steps` counts knots, each at its own penalty, however many columns
@@ -450,7 +479,10 @@ fn a_step_within_tie_of_zero_joins_the_knot_just_made() {
     // that far off it, which moves the end from least squares by
     // `R⁻¹ (1.25 TIE)`: the size of the tie itself.
     assert_kkt_everywhere(&r, &d, &path, 2.0 * lars::TIE);
-    assert_ends_at_least_squares(&r, &d, &path, &[0, 1], 2.0 * lars::TIE);
+    // Worked by hand above: `R⁻¹(1.25 TIE)`, at most 1.67 TIE, where the
+    // derived bound reads the joining step's offset as `1 + |R_jA||δ|`
+    // times the tie, 1.5.
+    assert_ends_at_least_squares(&r, &d, &path, &[0, 1], Some(2.0 * lars::TIE));
 }
 
 /// Every column ties at `λ_max` (`|d_j| = 1`, random signs) on correlation
@@ -559,7 +591,10 @@ fn columns_merged_at_a_knot_leave_the_conditions_to_rounding() {
         .any(|w| w[0].iter().filter(|j| !w[1].contains(j)).count() == 2);
     assert!(two_leave, "{:?}", path.active);
     assert_kkt_everywhere(&r, &d, &path, 1e-13);
-    assert_ends_at_least_squares(&r, &d, &path, &(0..k).collect::<Vec<_>>(), 1e-6);
+    // The two steps 7.2 ulps apart leave through `|δ| = 1.6e7`: the derived
+    // bound, which allows them the whole tie of 64, is 3.4e-5; the case's
+    // own tolerance is the measured move, 1.0e-7, ten times over.
+    assert_ends_at_least_squares(&r, &d, &path, &(0..k).collect::<Vec<_>>(), Some(1e-6));
 }
 
 /// Penalty weights tie columns in the scaled problem: on `R = I` with
@@ -644,7 +679,9 @@ fn a_column_joining_a_knot_is_settled_with_the_columns_already_there() {
     assert_kkt_everywhere(&r, &d, &path, 1e-13);
     // Column 3 joined `1.5 TIE` short of the active correlation, which the
     // least-squares fit, of coefficients near 11, magnifies to `1.6e-13`.
-    assert_ends_at_least_squares(&r, &d, &path, &[0, 1, 2, 3], 1e-12);
+    // The derived bound, which allows the joining column the whole tie, is
+    // 1.8e-12; the case's own tolerance is five times its measured 1.8e-13.
+    assert_ends_at_least_squares(&r, &d, &path, &[0, 1, 2, 3], Some(1e-12));
 }
 
 /// Two columns tie below the first knot, and the lasso admits one. On

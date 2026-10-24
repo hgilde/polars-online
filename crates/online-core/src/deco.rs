@@ -923,6 +923,85 @@ mod tests {
         }
     }
 
+    /// The most [`Deco::loglik`] may be off the density of `R(ρ)` at `r`, by
+    /// its own Woodbury path (docs/PLAN.md task 274), each quantity it forms
+    /// counted with the roundings that form it, to first order in `u`:
+    ///
+    /// - per block, `S₁ = Σrᵢ` and `S₂ = Σrᵢ²` within `γ_{n_b+1}` of
+    ///   `Σ|rᵢ|` and `S₂` (Higham (3.5)); `d = 1 − ρ` within `u·d`;
+    /// - `y = S₁/√(n d)` within `ΔS₁/√(nd) + 3u|y|` (the product, the root
+    ///   and the quotient, the root halving `d`'s); `√(n/d)` within `2u`;
+    /// - `S = I + N^½PN^½`, each entry from two such roots and two products,
+    ///   within `7u|S|`, plus its Cholesky solve's backward error
+    ///   ([`oracle::cholesky_backward`]), all held as one `E`;
+    /// - `yᵀS⁻¹y` through its solve ([`oracle::quad_error`] with `E`) and
+    ///   through `y`, `2|S⁻¹y|ᵀΔy`; `yᵀy` within `2|y|ᵀΔy + γ_k yᵀy`;
+    ///   `Σ S₂/d` term by term within `(γ_{n_b+1} + 2u)S₂/d`;
+    /// - `ln det S` by [`oracle::cholesky_log_det_error`] and through `S`'s
+    ///   entries, `Σ|S⁻¹|∘7u|S|`; `n ln d` within `n(u + LIBM·u|ln d|)`;
+    /// - the sums that gather them, `γ_{k+2}` of the terms' magnitudes, and
+    ///   `−½(n ln 2π + ln det + quad)`, `γ_2` of its three.
+    fn woodbury_error(blocks: &[Vec<usize>], rho: &[f64], r: &[f64]) -> f64 {
+        use crate::oracle::{self, U, gamma};
+        let k = blocks.len();
+        let (mut ld_err, mut ld_abs, mut q_err, mut q_abs) = (0.0, 0.0, 0.0, 0.0);
+        let mut y = vec![0.0; k];
+        let mut dy = vec![0.0; k];
+        let mut sn = vec![0.0; k];
+        for (bi, b) in blocks.iter().enumerate() {
+            let n = b.len() as f64;
+            let s1: f64 = b.iter().map(|&i| r[i]).sum();
+            let s1_abs: f64 = b.iter().map(|&i| r[i].abs()).sum();
+            let s2: f64 = b.iter().map(|&i| r[i] * r[i]).sum();
+            let g = gamma(b.len() + 1);
+            let d = 1.0 - rho[bi];
+            ld_err += n * (U + oracle::LIBM * U * d.ln().abs()) + U * (n * d.ln()).abs();
+            ld_abs += (n * d.ln()).abs();
+            q_err += (g + 2.0 * U) * s2 / d;
+            q_abs += s2 / d;
+            y[bi] = s1 / (n * d).sqrt();
+            dy[bi] = g * s1_abs / (n * d).sqrt() + 3.0 * U * y[bi].abs();
+            sn[bi] = (n / d).sqrt();
+        }
+        let mut s = vec![0.0; k * k];
+        let mut p = k;
+        for i in 0..k {
+            s[i * k + i] = 1.0 + sn[i] * rho[i] * sn[i];
+            for j in (i + 1)..k {
+                s[i * k + j] = sn[i] * rho[p] * sn[j];
+                s[j * k + i] = s[i * k + j];
+                p += 1;
+            }
+        }
+        let chol = oracle::cholesky_backward(&s);
+        let e: Vec<f64> = (0..k * k)
+            .map(|ij| 7.0 * U * s[ij].abs() + chol[ij])
+            .collect();
+        let entries: Vec<f64> = s.iter().map(|v| 7.0 * U * v.abs()).collect();
+        let z = oracle::solve(&s, &y);
+        let t2: f64 = y.iter().zip(&z).map(|(a, b)| a * b).sum();
+        let t3: f64 = y.iter().map(|v| v * v).sum();
+        q_err += oracle::quad_error(&s, &y, &e)
+            + 2.0 * z.iter().zip(&dy).map(|(a, b)| a.abs() * b).sum::<f64>()
+            + 2.0 * y.iter().zip(&dy).map(|(a, b)| a.abs() * b).sum::<f64>()
+            + gamma(k) * t3;
+        q_abs += t2 + t3;
+        let s_inv = oracle::inverse(&s);
+        let ld_s = oracle::log_det(&s);
+        ld_err += oracle::cholesky_log_det_error(&s)
+            + s_inv
+                .iter()
+                .zip(&entries)
+                .map(|(a, b)| a.abs() * b)
+                .sum::<f64>();
+        ld_abs += ld_s.abs();
+        let gather = gamma(k + 2) * (ld_abs + q_abs);
+        let n_total = r.len() as f64;
+        let c = n_total * std::f64::consts::TAU.ln();
+        let ll = ld_abs + q_abs + c;
+        0.5 * (ld_err + q_err + gather + gamma(2) * ll + (oracle::LIBM * U + U) * c)
+    }
+
     /// The Woodbury path against a dense `n x n` density, built from the
     /// block correlations by hand and read off faer's eigendecomposition
     /// `R = Σ λᵢ vᵢvᵢᵀ` (`crate::oracle`): `ln det R = Σ ln λᵢ` and
@@ -959,7 +1038,12 @@ mod tests {
             }
         }
         let want = crate::oracle::gaussian_log_density(&dense, &r);
-        assert!((got - want).abs() < 1e-9, "{got} vs {want}");
+        // The model's Woodbury path, counted roundings, beside the
+        // oracle's eigendecomposition, a posteriori (task 274). Measured
+        // on aarch64 (macOS): 0.052 of the bound; it was `1e-9`.
+        let bound = woodbury_error(&blocks, &rho, &r)
+            + crate::oracle::gaussian_log_density_error(&dense, &r);
+        crate::oracle::assert_within(got, want, bound, "two blocks' density");
     }
 
     /// One block holding every feature reproduces the unblocked `u`.
@@ -1461,8 +1545,19 @@ mod tests {
         );
         let log_det = oracle::log_det(&dense);
         let quad = oracle::quad_form(&dense, &r);
-        let want = -0.5 * (n as f64 * std::f64::consts::TAU.ln() + log_det + quad);
-        assert!((got - want).abs() < 1e-9, "{got} vs {want}");
+        let c = n as f64 * std::f64::consts::TAU.ln();
+        let want = -0.5 * (c + log_det + quad);
+        // The model's Woodbury path, counted roundings, beside the
+        // oracle's eigenvalues and LU, a posteriori, and its own sum
+        // (task 274). Measured on aarch64 (macOS): 0.064 of the bound; it was
+        // `1e-9`.
+        let own = 0.5
+            * (oracle::log_det_error(&dense)
+                + oracle::quad_form_error(&dense, &r)
+                + (oracle::LIBM * oracle::U + oracle::U) * c
+                + oracle::gamma(2) * (c + log_det.abs() + quad));
+        let bound = woodbury_error(&blocks, &rho, &r) + own;
+        oracle::assert_within(got, want, bound, "three blocks' density");
     }
 
     /// Two blocks with a flat column in one for a while give each value its

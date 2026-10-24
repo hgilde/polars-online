@@ -402,6 +402,268 @@ mod tests {
         (*state >> 11) as f64 / (1u64 << 53) as f64 - 0.5
     }
 
+    /// Ljung and Box's statistic from its autocorrelations `ρ_l` and Kish's
+    /// size, as both sides read it once they have them: each tested lag
+    /// scaled by `√((n + 2)/(n − l))` unless the memory `forget`s, the
+    /// lags past `skip` solved against Bartlett's covariance by the
+    /// oracle's LU, `n·x'r`.
+    fn lb_of(rho: &[f64], n: f64, skip: usize, lags: usize, forget: bool) -> f64 {
+        let r: Vec<f64> = (skip + 1..=skip + lags)
+            .map(|l| {
+                let f = if forget {
+                    1.0
+                } else {
+                    (n + 2.0) / (n - l as f64)
+                };
+                rho[l - 1] * f.sqrt()
+            })
+            .collect();
+        let at = |j: isize| -> f64 {
+            let a = j.unsigned_abs();
+            if a == 0 {
+                1.0
+            } else if a <= skip {
+                rho[a - 1]
+            } else {
+                0.0
+            }
+        };
+        let sk = skip as isize;
+        let gamma = |v: usize| -> f64 { (-sk..=sk).map(|j| at(j) * at(j + v as isize)).sum() };
+        let c: Vec<f64> = (0..lags)
+            .flat_map(|k| (0..lags).map(move |l| gamma(k.abs_diff(l))))
+            .collect();
+        let x = crate::oracle::solve(&c, &r);
+        n * x.iter().zip(&r).map(|(a, b)| a * b).sum::<f64>()
+    }
+
+    /// The most the model's Ljung–Box statistic may be off the
+    /// definition's (docs/PLAN.md task 274), to first order. Both read the
+    /// statistic off each lag's autocorrelation and Kish's size, through
+    /// [`lb_of`], whose sensitivity carries their errors
+    /// ([`crate::oracle::propagate`]); its own rounding on each side --
+    /// Bartlett's covariance, its terms' products and sums `γ_{2s+1}`, the
+    /// scaling's three roundings, the model's Cholesky form of `x'r` and
+    /// the oracle's LU form, the product by `n` -- is counted beside.
+    ///
+    /// - The model's: its sums `Σω`, `Σω²`, `Σωe`, `Σωe²` and each lag's four,
+    ///   decayed by `λ` and added to on each row, carried along its run by
+    ///   `sums` (each decay one rounding of the partial sum, two for `Σω²`,
+    ///   each term its products and the addition one of the sum it makes);
+    ///   `ρ_l = (Σωee' − m(Σωe + Σωe') + m²Σω)/(Σωe² − Wm²)`, `m = Σωe/W`,
+    ///   their errors through its derivatives and its own subtractions'
+    ///   rounding.
+    /// - The definition's: each row's weight a product of `age` decays,
+    ///   `(age + 4)u` of each term with its products, each addition `u` of
+    ///   its partial sum, the mean's error first order in a lag's sum over
+    ///   the rows that have that partner (`Σ ω(e − m)` over them is not 0).
+    fn lb_error(
+        rows: &[(f64, f64, usize)],
+        now: usize,
+        sums: &LbTrack,
+        (skip, lags, forget): (usize, usize, bool),
+        want: f64,
+    ) -> f64 {
+        use crate::oracle::{self, U, gamma};
+        let nl = skip + lags;
+        // The definition's pieces and their rounding.
+        let (mut sw, mut esw, mut sw2, mut esw2) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        let (mut se, mut ese) = (0.0f64, 0.0f64);
+        for &(e, w, born) in rows {
+            let age = (now - born) as f64;
+            sw += w;
+            esw += age * U * w + U * sw;
+            sw2 += w * w;
+            esw2 += (2.0 * age + 1.0) * U * w * w + U * sw2;
+            se += w * e;
+            ese += (age + 1.0) * U * (w * e).abs() + U * se.abs();
+        }
+        let mean = se / sw;
+        let dmean = ese / sw + mean.abs() * (esw / sw + U);
+        let (mut den, mut eden) = (0.0f64, 0.0f64);
+        for &(e, w, born) in rows {
+            let t = w * (e - mean).powi(2);
+            den += t;
+            eden += ((now - born) as f64 + 4.0) * U * t + U * den;
+        }
+        let n = sw * sw / sw2;
+        let dn = n * (2.0 * esw / sw + esw2 / sw2 + 2.0 * U);
+        let mut rho = vec![0.0; nl];
+        let mut drho_t = vec![0.0; nl];
+        for l in 1..=nl {
+            let (mut num, mut enu) = (0.0f64, 0.0f64);
+            let (mut s1, mut s2) = (0.0f64, 0.0f64);
+            for t in l..rows.len() {
+                let (et, wt, born) = rows[t];
+                let el = rows[t - l].0;
+                let v = wt * (et - mean) * (el - mean);
+                num += v;
+                enu += ((now - born) as f64 + 4.0) * U * v.abs() + U * num.abs();
+                s1 += wt * (et - mean);
+                s2 += wt * (el - mean);
+            }
+            rho[l - 1] = num / den;
+            drho_t[l - 1] =
+                (enu + dmean * (s1.abs() + s2.abs())) / den + rho[l - 1].abs() * (eden / den + U);
+        }
+        // The model's pieces from its tracked sums.
+        let t = sums;
+        let mm = t.e1.0 / t.w.0;
+        let dmm = (t.e1.1 + mm.abs() * t.w.1) / t.w.0 + U * mm.abs();
+        let dden_m = t.e2.1
+            + t.w.1 * mm * mm
+            + 2.0 * (t.w.0 * mm).abs() * dmm
+            + gamma(3) * (t.e2.0.abs() + (t.w.0 * mm * mm).abs());
+        let den_m = t.e2.0 - t.w.0 * mm * mm;
+        let mut drho_m = vec![0.0; nl];
+        for (j, (p, ep)) in t.pairs.iter().enumerate() {
+            let [sv, a, b, c] = *p;
+            let num = sv - mm * (a + b) + c * mm * mm;
+            let r = num / den_m;
+            let dnum = ep[0]
+                + mm.abs() * (ep[1] + ep[2])
+                + (a + b).abs() * dmm
+                + ep[3] * mm * mm
+                + 2.0 * (c * mm).abs() * dmm
+                + gamma(5) * (sv.abs() + (mm * (a + b)).abs() + (c * mm * mm).abs());
+            drho_m[j] = dnum / den_m.abs() + r.abs() * (dden_m / den_m.abs() + U);
+        }
+        let drho: Vec<f64> = (0..nl).map(|j| drho_t[j] + drho_m[j]).collect();
+        let dn_m = n * (2.0 * t.w.1 / t.w.0 + t.w2.1 / t.w2.0 + 2.0 * U);
+        let mut inputs = rho.clone();
+        inputs.push(n);
+        let mut dinputs = drho;
+        dinputs.push(dn + dn_m);
+        let moved = oracle::propagate(
+            |v| lb_of(&v[..nl], v[nl], skip, lags, forget),
+            &inputs,
+            &dinputs,
+        );
+        // Each side's own evaluation from its `ρ` and `n`.
+        let r: Vec<f64> = (skip + 1..=skip + lags)
+            .map(|l| {
+                let f = if forget {
+                    1.0
+                } else {
+                    (n + 2.0) / (n - l as f64)
+                };
+                rho[l - 1] * f.sqrt()
+            })
+            .collect();
+        let at = |j: isize| -> f64 {
+            let a = j.unsigned_abs();
+            if a == 0 {
+                1.0
+            } else if a <= skip {
+                rho[a - 1]
+            } else {
+                0.0
+            }
+        };
+        let sk = skip as isize;
+        let c: Vec<f64> = (0..lags)
+            .flat_map(|k| (0..lags).map(move |l| (k, l)))
+            .map(|(k, l)| {
+                (-sk..=sk)
+                    .map(|j| at(j) * at(j + k.abs_diff(l) as isize))
+                    .sum()
+            })
+            .collect();
+        let cabs: Vec<f64> = (0..lags)
+            .flat_map(|k| (0..lags).map(move |l| (k, l)))
+            .map(|(k, l)| {
+                gamma(2 * skip + 2)
+                    * (-sk..=sk)
+                        .map(|j| (at(j) * at(j + k.abs_diff(l) as isize)).abs())
+                        .sum::<f64>()
+            })
+            .collect();
+        let x = oracle::solve(&c, &r);
+        let dr: Vec<f64> = r.iter().map(|v| 4.0 * U * v.abs()).collect();
+        let own = n
+            * 2.0
+            * (oracle::abs_form(&x, &cabs, &x)
+                + 2.0 * x.iter().zip(&dr).map(|(a, b)| a.abs() * b).sum::<f64>())
+            + n * (oracle::quad_error(&c, &r, &oracle::cholesky_backward(&c))
+                + oracle::quad_form_error(&c, &r))
+            + 2.0 * U * want.abs();
+        moved + own
+    }
+
+    /// The model's Ljung–Box sums replayed with a running bound on each
+    /// one's rounding: `(value, error)` for `Σω`, `Σω²`, `Σωe`, `Σωe²`, and
+    /// each lag's four sums.
+    #[derive(Default)]
+    struct LbTrack {
+        w: (f64, f64),
+        w2: (f64, f64),
+        e1: (f64, f64),
+        e2: (f64, f64),
+        pairs: Vec<([f64; 4], [f64; 4])>,
+        ring: std::collections::VecDeque<f64>,
+    }
+
+    impl LbTrack {
+        fn new(nl: usize) -> Self {
+            Self {
+                pairs: vec![([0.0; 4], [0.0; 4]); nl],
+                ..Default::default()
+            }
+        }
+
+        /// [`Specification::update`]'s sums: `S ← λS + term`, one rounding
+        /// of `λS` (two under `λ²`), the term's products, and the sum's.
+        fn update(&mut self, e: f64, lam: f64, w: f64) {
+            use crate::oracle::U;
+            let step = |s: &mut (f64, f64), l: f64, lr: f64, t: f64, tr: f64| {
+                let (v, e0) = *s;
+                let nv = l * v + t;
+                *s = (
+                    nv,
+                    l * e0 + lr * U * (l * v).abs() + tr * U * t.abs() + U * nv.abs(),
+                );
+            };
+            if w > 0.0 {
+                step(&mut self.w, lam, 1.0, w, 0.0);
+                step(&mut self.w2, lam * lam, 2.0, w * w, 1.0);
+                step(&mut self.e1, lam, 1.0, w * e, 1.0);
+                step(&mut self.e2, lam, 1.0, w * e * e, 2.0);
+                let nl = self.pairs.len();
+                for j in 0..nl {
+                    let back = self.ring.get(j).copied();
+                    let (p, ep) = &mut self.pairs[j];
+                    let terms = match back {
+                        Some(b) => [(w * e * b, 2.0), (w * e, 1.0), (w * b, 1.0), (w, 0.0)],
+                        None => [(0.0, 0.0); 4],
+                    };
+                    for (q, (t, tr)) in terms.iter().enumerate() {
+                        let v = lam * p[q];
+                        let nv = v + t;
+                        ep[q] = lam * ep[q] + U * v.abs() + tr * U * t.abs() + U * nv.abs();
+                        p[q] = nv;
+                    }
+                }
+                if nl > 0 {
+                    self.ring.push_front(e);
+                    self.ring.truncate(nl);
+                }
+            } else {
+                for s in [&mut self.w, &mut self.e1, &mut self.e2] {
+                    s.0 *= lam;
+                    s.1 = lam * s.1 + U * s.0.abs();
+                }
+                self.w2.0 *= lam * lam;
+                self.w2.1 = lam * lam * self.w2.1 + 2.0 * U * self.w2.0;
+                for (p, ep) in self.pairs.iter_mut() {
+                    for q in 0..4 {
+                        p[q] *= lam;
+                        ep[q] = lam * ep[q] + U * p[q].abs();
+                    }
+                }
+            }
+        }
+    }
+
     /// Ljung and Box's statistic by its definition, from every scored row
     /// at its present weight, with skipped lags, a decay, uneven weights
     /// and zeros, and residuals that carry a lag.
@@ -411,6 +673,8 @@ mod tests {
         let mut s = Specification::new(1, skip, lags, 0);
         let mut st = 7u64;
         let mut rows: Vec<(f64, f64)> = Vec::new(); // (e, present weight), scored only
+        let mut born: Vec<usize> = Vec::new();
+        let mut track = LbTrack::new(skip + lags);
         let mut prev = 0.0;
         for i in 0..400 {
             let e = 0.8 * prev + lcg(&mut st) + 0.2;
@@ -421,9 +685,11 @@ mod tests {
                 0.5 + lcg(&mut st) + 0.5
             };
             s.update(&[lcg(&mut st)], 1.0 + lcg(&mut st), e, lam, w);
+            track.update(e, lam, w);
             rows.iter_mut().for_each(|r| r.1 *= lam);
             if w > 0.0 {
                 rows.push((e, w));
+                born.push(i);
             }
             if i < 30 || i % 37 != 0 {
                 continue;
@@ -472,9 +738,22 @@ mod tests {
                 let x = crate::oracle::solve(&c, &r);
                 let want = n * x.iter().zip(&r).map(|(a, b)| a * b).sum::<f64>();
                 let got = s.ljung_box(forget).unwrap();
-                assert!(
-                    (got - want).abs() < 1e-8 * want.max(1.0),
-                    "row {i}, forget {forget}: {got} vs {want}"
+                // Task 274: [`lb_error`], where it was `1e-8` relative to
+                // `max(1, Q)`.
+                // Measured on aarch64 (macOS): at most 0.0034 of the bound: the sums'
+                // worst-case running bound over some 100 rows of memory against their realized
+                // rounding.
+                let tagged: Vec<(f64, f64, usize)> = rows
+                    .iter()
+                    .zip(&born)
+                    .map(|(r, &b)| (r.0, r.1, b))
+                    .collect();
+                let bound = lb_error(&tagged, i, &track, (skip, lags, forget), want);
+                crate::oracle::assert_within(
+                    got,
+                    want,
+                    bound,
+                    format_args!("forget {forget}, row {i}"),
                 );
             }
         }
@@ -516,6 +795,80 @@ mod tests {
         assert!((got - want).abs() < 1e-10 * want, "{got} vs {want}");
     }
 
+    /// The most the model's `R²` of column `y` on columns `xs` may be off
+    /// the definition's (docs/PLAN.md task 274), the definition two-pass
+    /// over `cols` (each row's regressors) and `ys` at unit weights, the
+    /// model's from its moments' run `tr` (column `y` of it the target), to
+    /// first order. `R² = b'A⁻¹b/v` on both sides, in either's scale (the
+    /// ratio has none), moves by `(2|x|ᵀΔb + |x|ᵀΔA|x| + R²Δv)/v` for each
+    /// side's errors in `A`, `b` and `v` (`x = A⁻¹b`): the model's from its
+    /// weighted Welford run ([`crate::ewcov::rounding::Rounding`]), the
+    /// definition's from its sums (each term three roundings with its
+    /// deviations, each addition `u` of its partial sum; a deviation from a
+    /// computed mean is off it only to second order); and by each side's own
+    /// form `b'A⁻¹b`, the model's Cholesky ([`crate::oracle::quad_error`])
+    /// and the oracle's LU ([`crate::oracle::quad_form_error`]), and its
+    /// quotient. Returns `(R², its bound)`.
+    fn r2_error(
+        cols: &[Vec<f64>],
+        ys: &[f64],
+        tr: &crate::ewcov::rounding::Rounding,
+        xs: &[usize],
+        y: usize,
+    ) -> (f64, f64) {
+        use crate::oracle::{self, U, abs_form};
+        let n = cols.len() as f64;
+        let k = cols[0].len();
+        let mx: Vec<f64> = (0..k)
+            .map(|j| cols.iter().map(|c| c[j]).sum::<f64>() / n)
+            .collect();
+        let my = ys.iter().sum::<f64>() / n;
+        let run = |f: &dyn Fn(usize) -> f64, rounds: f64| -> (f64, f64) {
+            let (mut sm, mut e) = (0.0f64, 0.0f64);
+            for i in 0..cols.len() {
+                let t = f(i);
+                sm += t;
+                e += rounds * U * t.abs() + U * sm.abs();
+            }
+            (sm, e)
+        };
+        let mut a = vec![0.0; k * k];
+        let mut da = vec![0.0; k * k];
+        let mut b = vec![0.0; k];
+        let mut db = vec![0.0; k];
+        for i in 0..k {
+            for j in 0..k {
+                let (v, e) = run(&|r| (cols[r][i] - mx[i]) * (cols[r][j] - mx[j]), 3.0);
+                a[i * k + j] = v;
+                da[i * k + j] = e;
+            }
+            let (v, e) = run(&|r| (cols[r][i] - mx[i]) * (ys[r] - my), 3.0);
+            b[i] = v;
+            db[i] = e;
+        }
+        let (vy, dvy) = run(&|r| (ys[r] - my) * (ys[r] - my), 3.0);
+        // The model's errors in the definition's scale: its moments are
+        // means, the definition's sums over the `n` rows.
+        let kt = tr.m.len();
+        let ec = |i: usize, j: usize| n * tr.ec[i * kt + j];
+        for (p, &i) in xs.iter().enumerate() {
+            for (q, &j) in xs.iter().enumerate() {
+                da[p * k + q] += ec(i, j);
+            }
+            db[p] += ec(i, y);
+        }
+        let dvy = dvy + ec(y, y);
+        let x = oracle::solve(&a, &b);
+        let fit: f64 = x.iter().zip(&b).map(|(p, q)| p * q).sum();
+        let r2 = fit / vy;
+        let e = oracle::cholesky_backward(&a);
+        let dfit = 2.0 * x.iter().zip(&db).map(|(p, q)| p.abs() * q).sum::<f64>()
+            + abs_form(&x, &da, &x)
+            + oracle::quad_error(&a, &b, &e)
+            + oracle::quad_form_error(&a, &b);
+        (r2, (dfit + r2 * dvy) / vy + 4.0 * U * r2)
+    }
+
     /// Breusch and Pagan's and RESET's statistics by their definitions:
     /// least squares by faer's LU (`crate::oracle`) on every row, centred
     /// by hand, at Kish's size.
@@ -524,11 +877,19 @@ mod tests {
         let mut s = Specification::new(2, 0, 1, 0);
         let mut st = 11u64;
         let mut rows: Vec<([f64; 2], f64, f64)> = Vec::new(); // (x, p, e)
+        // The model's two accumulators' rounding along its run (task 274):
+        // `(x, e²)` for Breusch and Pagan, `(q, q², q³, e)` for RESET.
+        let mut het = crate::ewcov::rounding::Rounding::new(3, 0.0);
+        let mut res = crate::ewcov::rounding::Rounding::new(4, 0.0);
+        let mut origin: Option<f64> = None;
         for _ in 0..300 {
             let x = [lcg(&mut st) * 2.0, lcg(&mut st)];
             let p = 3.0 + x[0] - x[1];
             let e = (0.5 + x[0].abs()) * lcg(&mut st) + 0.3 * (p - 3.0).powi(2);
             s.update(&x, p, e, 1.0, 1.0);
+            het.update(&[x[0], x[1], e * e], 1.0, 1.0);
+            let q = p - *origin.get_or_insert(p);
+            res.update(&[q, q * q, q * q * q, e], 1.0, 1.0);
             rows.push((x, p, e));
         }
         let n = rows.len() as f64;
@@ -559,13 +920,40 @@ mod tests {
         };
         let bp = n * r2(&|r| r.0.to_vec(), &|r| r.2 * r.2);
         let got = s.breusch_pagan(&[0, 1]).unwrap();
-        assert!((got - bp).abs() < 1e-8 * bp, "{got} vs {bp}");
+        // Task 274: each `R²` within [`r2_error`] (`n` exact on both sides,
+        // unit weights), where they were `1e-8` and `1e-7` relative; RESET's
+        // `n(full − base)/(1 − base)` carries both through its derivatives
+        // and rounds four times.
+        // Measured on aarch64 (macOS): at most 1.6e-4 (Breusch and Pagan, its `R²` 0.04, a
+        // one-ulp error) and 5.1e-3 (RESET) of the bound: three hundred rows with no decay,
+        // whose worst-case running bound grows with their count and whose realized rounding
+        // does not.
+        let xs: Vec<Vec<f64>> = rows.iter().map(|r| r.0.to_vec()).collect();
+        let e2: Vec<f64> = rows.iter().map(|r| r.2 * r.2).collect();
+        let (_, dbp) = r2_error(&xs, &e2, &het, &[0, 1], 2);
+        crate::oracle::assert_within(
+            got,
+            bp,
+            n * dbp + 2.0 * crate::oracle::U * bp,
+            "breusch pagan",
+        );
         let q = |r: &([f64; 2], f64, f64)| r.1 - rows[0].1;
         let full = r2(&|r| vec![q(r), q(r).powi(2), q(r).powi(3)], &|r| r.2);
         let base = r2(&|r| vec![q(r)], &|r| r.2);
         let want = n * (full - base) / (1.0 - base);
         let got = s.reset().unwrap();
-        assert!((got - want).abs() < 1e-7 * want, "{got} vs {want}");
+        let es: Vec<f64> = rows.iter().map(|r| r.2).collect();
+        let qs3: Vec<Vec<f64>> = rows
+            .iter()
+            .map(|r| vec![q(r), q(r).powi(2), q(r).powi(3)])
+            .collect();
+        let qs1: Vec<Vec<f64>> = rows.iter().map(|r| vec![q(r)]).collect();
+        let (_, dfull) = r2_error(&qs3, &es, &res, &[0, 1, 2], 3);
+        let (_, dbase) = r2_error(&qs1, &es, &res, &[0], 3);
+        let dreset = n * (dfull + dbase) / (1.0 - base)
+            + n * (full - base).abs() * dbase / (1.0 - base).powi(2)
+            + 4.0 * crate::oracle::U * want.abs();
+        crate::oracle::assert_within(got, want, dreset, "reset");
         assert!(got > 20.0, "a curvature the fit missed");
     }
 
@@ -607,62 +995,120 @@ mod tests {
         crate::oracle::solve(&a, &b)
     }
 
-    /// Wald's statistic for the slopes at `pick` (positions in `z = (1,
-    /// cols)`) against 0, `V` the sandwich of the regression with residual
-    /// `u` and Newey and West's meat at `lags` lags at Bartlett's weights,
-    /// by its definition over every folded row, inverted by faer's LU.
-    fn hac_wald(
+    /// Weighted least squares' slopes of `y` on `cols` at weights `w`, as
+    /// [`wls_slopes`] forms them, and a bound on how far they and a model's
+    /// slopes from its moments' run `tr` (columns `xs`, target `y_col`) may
+    /// part (docs/PLAN.md task 274), to first order: the definition's sums,
+    /// two-pass, each weight within `age·u` of itself and each term three
+    /// roundings more, each addition `u` of its partial sum; the model's
+    /// weighted Welford run ([`crate::ewcov::rounding::Rounding`]); both
+    /// through `|A⁻¹|(ΔA|β| + Δb)` in the means' scale, beside the model's
+    /// Cholesky and the oracle's LU.
+    fn slopes_error(
         cols: &[Vec<f64>],
-        u: &[f64],
+        y: &[f64],
         w: &[f64],
-        lags: usize,
-        pick: &[usize],
-        d: &[f64],
-    ) -> f64 {
-        let n = cols.len();
-        let p = cols[0].len() + 1;
-        let z: Vec<Vec<f64>> = cols
-            .iter()
-            .map(|c| std::iter::once(1.0).chain(c.iter().copied()).collect())
+        ages: &[f64],
+        tr: &crate::ewcov::rounding::Rounding,
+        (xs, y_col): (&[usize], usize),
+    ) -> (Vec<f64>, Vec<f64>) {
+        use crate::oracle::{self, U};
+        let k = cols[0].len();
+        let (mut sw, mut esw) = (0.0f64, 0.0f64);
+        for (wi, ai) in w.iter().zip(ages) {
+            sw += wi;
+            esw += ai * U * wi + U * sw;
+        }
+        let mx: Vec<f64> = (0..k)
+            .map(|j| cols.iter().zip(w).map(|(c, w)| w * c[j]).sum::<f64>() / sw)
             .collect();
-        let (mut b, mut m) = (vec![0.0; p * p], vec![0.0; p * p]);
-        for t in 0..n {
-            for i in 0..p {
-                for j in 0..p {
-                    b[i * p + j] += w[t] * z[t][i] * z[t][j];
+        let my = y.iter().zip(w).map(|(y, w)| w * y).sum::<f64>() / sw;
+        let run = |f: &dyn Fn(usize) -> f64| -> (f64, f64) {
+            let (mut sm, mut e) = (0.0f64, 0.0f64);
+            for (i, age) in ages.iter().enumerate() {
+                let t = f(i);
+                sm += t;
+                e += (age + 3.0) * U * t.abs() + U * sm.abs();
+            }
+            (sm / sw, e / sw + (sm / sw).abs() * (esw / sw + U))
+        };
+        let mut a = vec![0.0; k * k];
+        let mut da = vec![0.0; k * k];
+        let mut b = vec![0.0; k];
+        let mut db = vec![0.0; k];
+        let kt = tr.m.len();
+        for i in 0..k {
+            for j in 0..k {
+                let (v, e) = run(&|r| w[r] * (cols[r][i] - mx[i]) * (cols[r][j] - mx[j]));
+                a[i * k + j] = v;
+                da[i * k + j] = e + tr.ec[xs[i] * kt + xs[j]];
+            }
+            let (v, e) = run(&|r| w[r] * (cols[r][i] - mx[i]) * (y[r] - my));
+            b[i] = v;
+            db[i] = e + tr.ec[xs[i] * kt + y_col];
+        }
+        let beta = oracle::solve(&a, &b);
+        let e = oracle::cholesky_backward(&a);
+        let both: Vec<f64> = da.iter().zip(&e).map(|(x, y)| x + y).collect();
+        let fe = oracle::forward_error(&a, &beta, &both, &db);
+        let own = oracle::solve_error(&a, &b, &beta);
+        let bound = (0..k)
+            .map(|p| fe[p] + own[p] + 2.0 * U * beta[p].abs())
+            .collect();
+        (beta, bound)
+    }
+
+    /// The sandwich's meat moves with its residuals `u`: `|Δu_t|` on row `t`
+    /// moves `Σ_t Σ_l k_l ω_tω_s u_t u_s z_t z_sᵀ` by `k_l ω_tω_s(|Δu_t||u_s| +
+    /// |u_t||Δu_s|)|z_t||z_s|ᵀ` (and its transpose past lag 0), and `V =
+    /// B⁻¹MB⁻¹` by `|B⁻¹|·ΔM·|B⁻¹|`: `z` about `level`, the slopes' block
+    /// the same in any such frame.
+    fn residual_error(
+        rows: &[crate::sandwich::rounding::DefRow],
+        du: &[f64],
+        level: &[f64],
+        lags: usize,
+    ) -> Vec<f64> {
+        let d = level.len();
+        let z: Vec<Vec<f64>> = rows
+            .iter()
+            .map(|r| {
+                std::iter::once(1.0)
+                    .chain(r.x.iter().zip(&level[1..]).map(|(x, c)| x - c))
+                    .collect()
+            })
+            .collect();
+        let mut dm = vec![0.0; d * d];
+        let mut b = vec![0.0; d * d];
+        for t in 0..rows.len() {
+            for a in 0..d {
+                for c in 0..d {
+                    b[a * d + c] += rows[t].w * z[t][a] * z[t][c];
                 }
             }
             for l in 0..=lags.min(t) {
                 let s = t - l;
-                let k = 1.0 - l as f64 / (lags as f64 + 1.0);
-                for i in 0..p {
-                    for j in 0..p {
-                        let a = k * w[t] * u[t] * z[t][i] * w[s] * u[s] * z[s][j];
-                        m[i * p + j] += a;
+                let k = if l == 0 {
+                    1.0
+                } else {
+                    1.0 - l as f64 / (lags as f64 + 1.0)
+                };
+                let mag =
+                    k * rows[t].w * rows[s].w * (du[t] * rows[s].e.abs() + rows[t].e.abs() * du[s]);
+                for a in 0..d {
+                    for c in 0..d {
+                        let v = mag * (z[t][a] * z[s][c]).abs();
+                        dm[a * d + c] += v;
                         if l > 0 {
-                            m[j * p + i] += a;
+                            dm[c * d + a] += v;
                         }
                     }
                 }
             }
         }
-        let bi = crate::oracle::inverse(&b);
-        let mut v = vec![0.0; p * p];
-        for i in 0..p {
-            for j in 0..p {
-                for a in 0..p {
-                    for c in 0..p {
-                        v[i * p + j] += bi[i * p + a] * m[a * p + c] * bi[c * p + j];
-                    }
-                }
-            }
-        }
-        let sub: Vec<f64> = pick
-            .iter()
-            .flat_map(|&i| pick.iter().map(|&j| v[i * p + j]).collect::<Vec<_>>())
-            .collect();
-        let x = crate::oracle::solve(&sub, d);
-        x.iter().zip(d).map(|(a, b)| a * b).sum()
+        let bi: Vec<f64> = crate::oracle::inverse(&b).iter().map(|v| v.abs()).collect();
+        let r = crate::sandwich::rounding::abs_mul(&bi, &dm, d);
+        crate::sandwich::rounding::abs_mul(&r, &bi, d)
     }
 
     /// Under a horizon, Breusch and Pagan's and RESET's statistics are
@@ -673,16 +1119,30 @@ mod tests {
     /// its EW mean before the row, `e − ē − b (q − q̄)` from the EW fit on
     /// `q` before the row, and 0 on the first row, which has none before it
     /// -- under a decay, uneven weights, zeros, a row that is not a number,
-    /// and residuals that carry a lag.
+    /// and residuals that carry a lag. The sandwich is summed about the
+    /// regressors' weighted means and its slopes' block read there, where it
+    /// is the same as in `z = (1, x)`'s own frame
+    /// ([`crate::sandwich::rounding::covariance_bound`]).
     #[test]
     fn breusch_pagan_and_reset_under_a_horizon_are_their_definitions() {
         let (nw, lam) = (2usize, 0.99);
         let mut s = Specification::new(2, 0, 1, nw);
         let mut st = 19u64;
         // (x, q, e, present weight, BP's null residual, RESET's), folded
-        // rows only.
+        // rows only, and the row each was folded on.
         type Row = ([f64; 2], f64, f64, f64, f64, f64);
         let mut rows: Vec<Row> = Vec::new();
+        let mut born: Vec<usize> = Vec::new();
+        // Task 274: the model's runs' rounding -- its two accumulators and
+        // its two sandwiches -- and each null residual's own error on both
+        // sides: the model's mean before the row off by its run's bound, the
+        // definition's by its sums', and each residual's own subtractions.
+        use crate::oracle::{self, U};
+        use crate::sandwich::rounding::{DefRow, Track, covariance_bound};
+        let mut het = crate::ewcov::rounding::Rounding::new(3, 0.0);
+        let mut res = crate::ewcov::rounding::Rounding::new(4, 0.0);
+        let (mut het_hac, mut res_hac) = (Track::new(2, nw), Track::new(3, nw));
+        let (mut du, mut dr): (Vec<f64>, Vec<f64>) = (Vec::new(), Vec::new());
         let mut first: Option<f64> = None;
         let mut prev = 0.0;
         for i in 0..260 {
@@ -699,7 +1159,8 @@ mod tests {
             let e_in = if i % 29 == 11 { f64::NAN } else { e };
             s.update(&x, p, e_in, lam, w);
             rows.iter_mut().for_each(|r| r.3 *= lam);
-            if w > 0.0 && e_in.is_finite() {
+            let folds = w > 0.0 && e_in.is_finite();
+            if folds {
                 let q = p - *first.get_or_insert(p);
                 let (u, r) = if rows.is_empty() {
                     (0.0, 0.0)
@@ -713,19 +1174,123 @@ mod tests {
                     let b = if var_q > 0.0 { cov / var_q } else { 0.0 };
                     (e * e - e2, e - me - b * (q - mq))
                 };
+                // Each residual's errors: the definition's means' sums (each
+                // weight `age·u` off, each term and partial sum `u`), the
+                // model's means' runs, and the subtractions.
+                let (dui, dri) = if rows.is_empty() {
+                    (0.0, 0.0)
+                } else {
+                    let ages: Vec<f64> = born.iter().map(|&b| (i - b) as f64).collect();
+                    let sw: f64 = rows.iter().map(|r| r.3).sum();
+                    let rel = |f: &dyn Fn(&Row) -> f64| -> f64 {
+                        let (mut sm, mut e) = (0.0f64, 0.0f64);
+                        for (r, a) in rows.iter().zip(&ages) {
+                            let t = r.3 * f(r);
+                            sm += t;
+                            e += (a + 2.0) * U * t.abs() + U * sm.abs();
+                        }
+                        e / sw + 2.0 * U * (sm / sw).abs()
+                    };
+                    let me = rows.iter().map(|r| r.3 * r.2).sum::<f64>() / sw;
+                    let mq = rows.iter().map(|r| r.3 * r.1).sum::<f64>() / sw;
+                    let var_q = res.c[0];
+                    let b = if var_q > 0.0 { res.c[3] / var_q } else { 0.0 };
+                    let db = (res.ec[3] + b.abs() * res.ec[0]) / var_q.max(f64::MIN_POSITIVE);
+                    let d_e2 = rel(&|r| r.2 * r.2) + het.em[2];
+                    let d_me = rel(&|r| r.2) + res.em[3];
+                    let d_mq = rel(&|r| r.1) + res.em[0];
+                    (
+                        d_e2 + 2.0 * U * ((e * e).abs() + u.abs()),
+                        d_me + b.abs() * d_mq
+                            + 2.0 * (q - mq).abs() * db
+                            + 4.0 * U * (e.abs() + me.abs() + (b * (q - mq)).abs()),
+                    )
+                };
+                het_hac.update(&x, u, lam, w);
+                res_hac.update(&[q, q * q, q * q * q], r, lam, w);
+                het.update(&[x[0], x[1], e * e], lam, w);
+                res.update(&[q, q * q, q * q * q, e], lam, w);
                 rows.push((x, q, e, w, u, r));
+                born.push(i);
+                du.push(dui);
+                dr.push(dri);
+            } else {
+                // The sandwiches only age.
+                het_hac.update(&[0.0; 2], f64::NAN, lam, 0.0);
+                res_hac.update(&[0.0; 3], f64::NAN, lam, 0.0);
+                het.decay(lam);
+                res.decay(lam);
             }
             if i < 30 || i % 37 != 0 {
                 continue;
             }
             let w: Vec<f64> = rows.iter().map(|r| r.3).collect();
+            let ages: Vec<f64> = born.iter().map(|&b| (i - b) as f64).collect();
             let xs: Vec<Vec<f64>> = rows.iter().map(|r| r.0.to_vec()).collect();
             let e2: Vec<f64> = rows.iter().map(|r| r.2 * r.2).collect();
             let u: Vec<f64> = rows.iter().map(|r| r.4).collect();
             let gamma = wls_slopes(&xs, &e2, &w);
-            let bp = hac_wald(&xs, &u, &w, nw, &[1, 2], &gamma);
             let got = s.breusch_pagan(&[0, 1]).unwrap();
-            assert!((got - bp).abs() < 1e-7 * bp, "row {i}: {got} vs {bp}");
+            // Task 274: each Wald statistic within both sides' rounding,
+            // where each was `1e-7` relative: the slopes' ([`slopes_error`])
+            // through `2|y|ᵀΔd`, the slopes' block of the variance -- the same
+            // in every frame of `z`'s origin, so bounded in the level's
+            // ([`covariance_bound`]) with the residuals' own errors
+            // ([`residual_error`]) -- through `|y|ᵀΔV|y|` (`y = V⁻¹d`), and the
+            // model's Cholesky form and the oracle's LU form of `d'V⁻¹d`.
+            // Measured on aarch64 (macOS): at most 3.7e-3 (Breusch and Pagan) and 8.6e-5
+            // (RESET, whose regressors are a prediction's first three powers, nearly collinear)
+            // of the bound.
+            let wald_bound = |track: &Track,
+                              defs: &[DefRow],
+                              level: &[f64],
+                              pick: &[usize],
+                              d: &[f64],
+                              dd: &[f64],
+                              dres: &[f64]|
+             -> (f64, f64) {
+                let p = level.len();
+                let b = covariance_bound(track, defs, i, level, (nw, nw));
+                let extra = residual_error(defs, dres, level, nw);
+                let sub = |m: &[f64]| -> Vec<f64> {
+                    pick.iter()
+                        .flat_map(|&a| pick.iter().map(move |&c| m[a * p + c]))
+                        .collect()
+                };
+                let (vs, dvs, xs) = (sub(&b.v_level), sub(&b.dv_level), sub(&extra));
+                let y = oracle::solve(&vs, d);
+                let dv: Vec<f64> = dvs.iter().zip(&xs).map(|(a, c)| a + c).collect();
+                let bound = oracle::abs_form(&y, &dv, &y)
+                    + 2.0 * y.iter().zip(dd).map(|(a, c)| a.abs() * c).sum::<f64>()
+                    + oracle::quad_error(&vs, d, &oracle::cholesky_backward(&vs))
+                    + oracle::quad_form_error(&vs, d);
+                (oracle::quad_form(&vs, d), bound)
+            };
+            let defs = |cols: &[Vec<f64>], resid: &[f64]| -> Vec<DefRow> {
+                (0..rows.len())
+                    .map(|t| DefRow {
+                        x: cols[t].clone(),
+                        e: resid[t],
+                        w: w[t],
+                        born: born[t],
+                    })
+                    .collect()
+            };
+            let (_, dg) = slopes_error(&xs, &e2, &w, &ages, &het, (&[0, 1], 2));
+            let mean_of = |c: usize, cols: &[Vec<f64>]| -> f64 {
+                cols.iter().zip(&w).map(|(v, w)| w * v[c]).sum::<f64>() / w.iter().sum::<f64>()
+            };
+            let level_x = [0.0, mean_of(0, &xs), mean_of(1, &xs)];
+            let (bp, bound) = wald_bound(
+                &het_hac,
+                &defs(&xs, &u),
+                &level_x,
+                &[1, 2],
+                &gamma,
+                &dg,
+                &du,
+            );
+            oracle::assert_within(got, bp, bound, format_args!("breusch pagan at row {i}"));
             let qs: Vec<Vec<f64>> = rows
                 .iter()
                 .map(|r| vec![r.1, r.1 * r.1, r.1.powi(3)])
@@ -733,9 +1298,19 @@ mod tests {
             let es: Vec<f64> = rows.iter().map(|r| r.2).collect();
             let rs: Vec<f64> = rows.iter().map(|r| r.5).collect();
             let beta = wls_slopes(&qs, &es, &w);
-            let want = hac_wald(&qs, &rs, &w, nw, &[2, 3], &beta[1..]);
             let got = s.reset().unwrap();
-            assert!((got - want).abs() < 1e-7 * want, "row {i}: {got} vs {want}");
+            let (_, db) = slopes_error(&qs, &es, &w, &ages, &res, (&[0, 1, 2], 3));
+            let level_q = [0.0, mean_of(0, &qs), mean_of(1, &qs), mean_of(2, &qs)];
+            let (want, bound) = wald_bound(
+                &res_hac,
+                &defs(&qs, &rs),
+                &level_q,
+                &[2, 3],
+                &beta[1..],
+                &db[1..],
+                &dr,
+            );
+            oracle::assert_within(got, want, bound, format_args!("reset at row {i}"));
         }
         // The meat is built under the null, so the curvature it carries
         // widens `V`: RESET reads 2.65 here, Breusch and Pagan 32.
