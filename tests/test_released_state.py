@@ -69,6 +69,11 @@ REFUSED = [v for v in RELEASES if _major(v) < 1]
 #: the refusal (`audit`, task 223 (b), after 0.13.0).
 INTRODUCED = {"audit": "1.0.0"}
 
+#: The workload's specs no listed release can build: a parameter added
+#: since the newest (task 271's `huber_scale`). On the release day that
+#: ships it, its specs leave this set, as that release builds them.
+UNRELEASED = {"huber_mad", "huber_rms", "sgd_huber_mad"}
+
 
 def _version(v: str) -> tuple[int, ...]:
     return tuple(int(p) for p in v.split("."))
@@ -79,7 +84,11 @@ def _buildable(version: str) -> list[str]:
     return [
         name
         for name, builder, *_ in probe.WORKLOAD
-        if version == THIS_BUILD or _version(version) >= _version(INTRODUCED.get(builder, "0.0.0"))
+        if version == THIS_BUILD
+        or (
+            name not in UNRELEASED
+            and _version(version) >= _version(INTRODUCED.get(builder, "0.0.0"))
+        )
     ]
 
 
@@ -89,10 +98,18 @@ def _buildable(version: str) -> list[str]:
 #: build's, so its continuation is held to loading and running alone. Every
 #: other spec of every 1.x release goes on to the bit: measured on
 #: 2026-10-23, 68 specs of 1.0.0, 1.0.1, 1.1.0 and 1.2.0, every gap 0 but
-#: this one.
+#: these.
 DECLARED: dict[tuple[str, str], str] = {
     ("ridge_blocked", "1.0.1"): "1.1.0, Changed: a blocked `ewridge`'s target cross-moments "
     "move in their last bits (5.2e-16 here)",
+    # Task 271 (the next release's Changed): `huber` and `sgd(loss="huber")`
+    # scale their cut by the residuals' MAD by default, where every release
+    # through 1.2.0 used their plain RMS; a file of one goes on from the old
+    # scale's fit (3e-2 to 4e-1 here).
+    **{
+        (name, "1.2.0"): "the next release, Changed: the Huber scale is the MAD by default"
+        for name in ("huber", "full_huber", "sgd_huber")
+    },
 }
 
 #: The releases from 1.0, whose files load and go on; and this build, whose
@@ -186,7 +203,7 @@ def test_every_spec_was_saved_by_the_release_at_an_older_schema(refused):
     newer = {name for name, *_ in probe.WORKLOAD} - set(manifest["saved"]) - reach
     assert set(manifest["refused"]) - reach == newer
     for name, why in manifest["refused"].items():
-        if name not in reach:
+        if name not in reach | UNRELEASED:
             assert why.startswith("AttributeError") and name in why, (name, why)
     # An older schema: the refusal below is by the version, not the layout.
     assert manifest["schema"] < po.schema_version()
@@ -268,13 +285,15 @@ def _tables(bank: po.ModelBank, name: str) -> list[pl.DataFrame]:
 
 def test_a_released_state_loads_and_goes_on_as_this_builds_own(loaded):
     version, manifest, states = loaded
-    assert manifest["refused"] == {}
-    assert manifest["saved"] == [name for name, *_ in probe.WORKLOAD]
+    assert manifest["saved"] == _buildable(version)
+    assert set(manifest["refused"]) == {n for n, *_ in probe.WORKLOAD} - set(manifest["saved"])
     df = probe.stream()
     first, second = df.head(probe.HALF), df.slice(probe.HALF)
     built = {name: probe.build(b, name, kw) for name, b, kw, _ in probe.WORKLOAD}
     gaps = {}
     for name, _, _, reads in probe.WORKLOAD:
+        if name not in manifest["saved"]:
+            continue
         specs = [built[r] for r in reads] + [built[name]]
         file_bank = po.ModelBank.load(states / f"{name}.state", specs=specs)
         own = po.ModelBank(specs)

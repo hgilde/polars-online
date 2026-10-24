@@ -208,8 +208,8 @@ as this build's own**, as decided on 2026-10-06. The same test holds a 1.x
 release's files to that. This build loads each with its own spec, and fits
 the second half beside a bank of its own that fitted both halves. Every
 float, the closed groups, the coefficients and `marginal`'s table agree to
-the bit. The one exception is a spec whose numbers a CHANGELOG entry moved
-since that release, which the test names with the entry: a blocked
+the bit. The exceptions are the specs whose numbers a CHANGELOG entry moved
+since that release, which the test names with the entry. A blocked
 `ewridge` from 1.0.0 or 1.0.1, whose target sums 1.1.0 took in another
 order, goes on 5.2e-16 from this build's own.
 It ran on the states this build writes itself until 1.0.0 was released, so
