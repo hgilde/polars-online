@@ -173,6 +173,24 @@ returns.
   `sgd(loss="huber")`; IPC writes a struct at about the cost of flat
   columns; the suite's test counts are 2026-10-24's (task 270).
 
+- Documentation: the README's throughput table is measured again (five
+  runs of `scripts/benchmark.py`, each row the best of the five, at a load
+  average of 2.8-3.6); it had been a run three releases old, and 19 of its
+  35 rows had moved by more than its stated 11% noise (`corrchange`'s
+  monitor 11× faster, its window kind 2.6×, `ftrl` +30%, `ew_cov` +26%,
+  `bocpd`'s diagonal −21%, `micro` −16%, `ewridge` at 5 features −14%);
+  `quantile`, `holt`, `marginal` and `audit` join it. Release step 2 now
+  refreshes the table, and a test holds its date to no older than the
+  previous release (task 270).
+- Documentation: `docs/PERFORMANCE.md`'s headline gives the bank's share
+  of a row by width in place of "a bank's row is the model's own
+  arithmetic": one stream on one thread, the model's step against the
+  bank, `seqtest` 13 → 70 ns; at 5 features `sgd` 41 → 130, `ewridge` 118
+  → 235, `ew_cov` 57 → 153; at 50 features `sgd` 1.9×, `ewridge` 1.2×,
+  `ew_cov` (1,328 fields) 3.1×; at 500 features `sgd` 1.7×, `ewridge`
+  1.0-1.2×, `ew_cov` 4.8×. The bank adds about 60 to 170 ns a row, plus
+  about 2 ns a feature read and 2 to 4 ns a field written (task 270).
+
 ### Performance
 
 - **A bank of many small groups runs faster** (task 270): each spec keeps

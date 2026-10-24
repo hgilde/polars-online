@@ -15940,7 +15940,7 @@ kept as the default) and `unnest` before `sink_parquet` documented; D5
 alone, jemalloc on unix and mimalloc on Windows, the wheel unchanged. Built
 as task 270.
 
-- [ ] 270. **Review round 9's fixes** -- the user, 2026-10-23 (above).
+- [x] 270. **Review round 9's fixes** -- the user, 2026-10-23 (above).
       Five batches, one worker each in a slot, test first (each new test
       fails on `cb230ef` where its finding says; a performance fix shows its
       measurement before and after, with the load, and keeps every output's
@@ -15957,6 +15957,44 @@ as task 270.
       edit the CHANGELOG's `[Unreleased]` or this plan; the coordinator adds
       both at merge. Then a review of the merged diff (Fable, high effort)
       and the fix of its findings before the push.
+      *Done 2026-10-24*, eleven batches merged into `main`, each worker an
+      Opus at high effort in a slot, each new test failing first on the old
+      code: (d) `b418fc3` H-1/H-2 (the CLI refuses URLs by name), M-1
+      (`--output-layout flat`), M-5 (the CLI's own allocator, jemalloc off
+      Windows and mimalloc on it: rule 12, raised and approved as D5), X-1
+      (rustls, rustls-webpki, tokio bumped; certifi, pillow), D3 (a weekly
+      OSV advisories job, quick-xml accepted until object_store moves), J-4,
+      H-4; (a) `777f3ee` B-1, B-2, B-3 + I-2, A-1, F-1 (C-1 moved to task
+      271); (c) `97bec0c` G-1, E-1, E-3, A-2, D-5..D-7, F-3, C-2, H-3, I-1,
+      A-3 measured and not adopted (1.14-1.20x at the default schedule, below
+      D2's 1.5x), the ChunkOut move; (e) `66b214c` J-1..J-7, F-2, the
+      documents; (f) `fbb4604` M-4's code half, `OnlineModel::step_into`;
+      (g) `558864c` `break_wald`'s 2k-row rule (its variance is singular in
+      exact arithmetic below 2k rows), D-4 measured and declined (a layout
+      change for a path no budget runs); (h) `e0accf8` `sgd`'s `step_into`;
+      (b) `798b380` M-2, M-3, E-2, D-1 (declared last bits), D-2 in place
+      (the O(pairs) form declined: a layout change and drift at a level).
+      **Task 271 (b)'s squash reverted (f)** in twelve files (its commit had
+      (f)'s merge as parent and a tree from before it); found at (h)'s merge,
+      repaired in `92ce27b` by restoring the twelve files from `fbb4604`;
+      workers forbidden to squash, every merge checked against its report.
+      Then the review (Fable, high effort, four slices R1-R4 over
+      `a0923f6..20a8ece`): no high finding; R1-1 (sgd's level-shift cost
+      under the MAD), R1-2 (`break_wald` after a wiping gap), R4-1 (a
+      release-comparison sentence claiming bit identity) medium; the rest
+      low. Fixed by (i) `a9b95e6` (the two pre-existing sgd/pa defects batch
+      (h) found: a scaler history below the normal range forgotten,
+      `inv_scaling`'s rate on the decayed weight, a numbers move declared;
+      `break_wald`'s wait restarted after a wiping gap; sgd's figures and
+      the `huber_scale_half_life` lever documented; a `bank_autocorr`
+      fixture) and (j) (the documents, the policy page's record of the
+      `huber_scale` default, the RSS placeholders unmeasured, the run-buffer
+      decision from the headers, the release comparison reaching kalman's
+      unsized prior). The disk filled once during the review (450 GB of
+      slot builds); cleared. Follow-ups: bound `ew_cov`'s tail-quantile
+      sketches as the MAD's are (a layout change), the per-group bank
+      constant's remaining part (group keys), D-4 and D-2's O(pairs) form if
+      a budget ever runs those paths.
 
 ## 24. Huber regression, from first principles (2026-10-23)
 
@@ -15979,7 +16017,7 @@ than the fit (14.4 at a fifth). The plain RMS is the *stated* definition
 (docstring, MODELS.md), so the policy makes a replaced default a major: the
 plan adds `huber_scale` with the present behaviour as the default.
 
-- [ ] 271. **`huber_scale` and the Huber documents** -- the plan in
+- [x] 271. **`huber_scale` and the Huber documents** -- the plan in
       `docs/HUBER.md` §7, P1-P6: `huber_scale="rms"|"mad"` on `huber` and
       `sgd(loss="huber")` (an `EwQuantile` per target, schema 63 with the
       v62 sets kept and a loader, fixtures for both forms);
@@ -16000,6 +16038,14 @@ plan adds `huber_scale` with the present behaviour as the default.
       changed-default row); (b) `huber_scale_half_life` built now; (c) P7
       out. Then a review of the change (Fable, high effort) and the fix of
       its findings.
+      *Done 2026-10-24*: `77ab85c` (`huber_scale` "mad" default with "rms"
+      kept, `huber_scale_half_life`, C-1, schema 63 with the v62 sets and a
+      loader reading a v62 state as "rms"; slopes 2.008 / 2.041 / 2.128 at 1%
+      / 5% / 12.6% outliers against statsmodels' converged 2.008 / 2.039 /
+      2.124; sgd's C-1 3.751 → 2.016), and 271 (b) `063c0c8` (the MAD's
+      sketch bounded to 16 octaves around its median, 13.9 → 9.3 KB per
+      target and a wild residual no longer 680 KB; a select for every
+      sketch's per-row branch, 10-12 → 7-9.5 ns), reviewed with task 270.
 
 - [ ] 272. **Huber through the bank, `po.eval`, `po.gram`, `marginal` and
       the window operators** -- a downstream project's five requests, the
