@@ -609,6 +609,69 @@ level needs its median taken off first, and an operator's input cannot hold
 another operator. So make the median a column in one `with_windows` call,
 and take the MAD of the deviation from it in a second.
 
+### A scale of a target, used as a weight
+
+**A weight read from a target must leave out the labels not yet known on
+the row it weighs.** A spec's `weight` multiplies the row's place in the
+fit. A weight from the row's own label, such as `1 / scale²` or Huber's
+`min(1, c · scale / |y − m|)` about a level `m`, would let a wild label set its own weight, and
+the label of a row is not known at that row: in a backtest it would weigh
+the row with the future. Two cases cover it:
+
+| the label of row *t* is known | the scale on row *t* | how |
+|---|---|---|
+| at the next row | over the rows before *t* | `closed="left"`: the rows at *t*'s own stamp are outside its window, so its label is too |
+| `d` of the clock later, as under a spec's `embargo` | over the rows whose labels have arrived by *t*, those at or before `t − d` | the stream twice, from `po.stream.embargo(lf, clock=, delay=d)`: a predict row at *t* and a learn row at `t + d`; the operator reads the label only on the learn rows, `pl.when(pl.col("_online_role") == "learn").then(...)`, and the predict rows, filtered back, carry the scale |
+
+A shift of the label column by `k` rows in Polars' `with_columns`, before
+the call (`pl.col("y").shift(k).over("symbol")`), lags it by rows rather
+than by clock: right only on a stream whose labels arrive a
+fixed number of rows late. The doubled stream lags it by the clock, as an
+`embargo` does, and in the same order: a label that arrives at the row's
+own stamp counts there.
+
+**For the scale of a model's residual, use the scale `po.spec.huber` can
+emit.** It is the model's own robust scale of its out-of-sample residuals,
+read before the row, and it takes each residual in when the row is
+learned, so the spec's `embargo` holds it back as it holds back the fit.
+
+Here `ret`'s label arrives 5 rows late. The recipe computes its EW-MAD on
+each row from the labels that have arrived, and checks row 250 by hand
+against numpy's weighted median of the labels of rows 0 to 245 alone.
+This code uses `df` and `ticks.parquet` from [Example data](../README.md#example-data):
+
+```python
+# Each label of ret arrives 5 rows late: the stream twice, a predict row at t and a learn row at t + 5.
+doubled = po.stream.embargo(pl.scan_parquet("ticks.parquet"), clock="t", delay=5.0)
+known = pl.when(pl.col("_online_role") == "learn").then(pl.col("ret").abs())   # a label counts once it has arrived
+scaled = (
+    doubled.online.with_windows(
+        ret_scale=po.ewm_quantile(known, quantile=0.5, half_life=20.0) / 0.6744897501960817,
+        clock="t", gap_cap=10.0,
+    )
+    .filter(pl.col("_online_role") == "predict")                               # back to one row per row
+    .collect()
+)
+# Row 250's scale again by hand, from the labels of rows 0 to 245 alone.
+arrived = df["ret"].abs().to_numpy()[:246]
+weight = 0.5 ** ((250 - (np.arange(246) + 5)) / 20.0)                          # each weighed from its arrival
+by_hand = np.quantile(arrived, 0.5, weights=weight, method="inverted_cdf") / 0.6744897501960817
+got = scaled["ret_scale"][250]
+print(f"row 250: ret_scale {got:.4f}, by hand from rows 0 to 245 {by_hand:.4f}, apart by {abs(got / by_hand - 1):.4f}")
+print(f"null on the first {scaled['ret_scale'].null_count()} rows, before any label has arrived")
+print("in the calm and the volatile stretches:", ", ".join(f"{scaled['ret_scale'][i]:.2f}" for i in (90, 190, 290, 390)))
+```
+
+```text
+row 250: ret_scale 1.1409, by hand from rows 0 to 245 1.1362, apart by 0.0041
+null on the first 5 rows, before any label has arrived
+in the calm and the volatile stretches: 0.91, 2.30, 0.77, 1.66
+```
+
+`ret`'s noise has a spread of 0.5 on rows 0-99 and 200-299 and 2.0 on the
+others, so its spread is about 0.94 in the calm stretches and 2.15 in the
+volatile ones, and the scale follows it.
+
 ## Saving and resuming a window run
 
 To feed `with_windows` a stream in two runs, give the first `save_state=`
