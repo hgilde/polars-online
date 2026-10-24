@@ -470,8 +470,9 @@ impl KMeans {
     }
 
     /// The assignment and the two distances, from the search `near` made.
-    fn score(&self, x: &[f64], near: Option<Near>, n_eff: f64) -> Vec<f64> {
-        let mut pred = vec![f64::NAN; 3];
+    fn score_into(&self, x: &[f64], near: Option<Near>, n_eff: f64, pred: &mut Vec<f64>) {
+        pred.clear();
+        pred.resize(3, f64::NAN);
         if let Some((j, d2, d2_second, second_j)) = near
             && n_eff >= self.cfg.min_weight
         {
@@ -482,7 +483,6 @@ impl KMeans {
                 None => f64::NAN,
             };
         }
-        pred
     }
 
     /// Learn a row into its nearest centre, from the search `step` made to
@@ -984,11 +984,26 @@ fn lloyd(
 
 impl OnlineModel for KMeans {
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+        let mut out = Step::default();
+        self.step_into(x, y, d_clock, weight, &mut out);
+        out
+    }
+
+    /// The step, into the caller's buffer (task 270, M-4).
+    fn step_into(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        out: &mut Step,
+    ) {
         // A value that is not usable, by the rule every model keeps
         // (`OnlineModel`): a feature or a weight past the input bound was
         // learned, the feature as a point, which no centre leaves.
         if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
-            return refused;
+            *out = refused;
+            return;
         }
         let (lam, lam_long) = self.factors.of(self.cfg.decay, d_clock);
         let n_before = self.moments.w;
@@ -1014,7 +1029,7 @@ impl OnlineModel for KMeans {
         // Decay moves no centre and the metric is refreshed only below, so
         // this is exactly what `predict` reads.
         let near = self.near(x, valid);
-        let pred = self.score(x, near, n_before);
+        self.score_into(x, near, n_before, &mut out.pred);
 
         if learn {
             self.moments.absorb(x, weight);
@@ -1029,12 +1044,8 @@ impl OnlineModel for KMeans {
         }
         self.moments
             .metric(self.cfg.standardize, self.cfg.scale_floor, &mut self.mw);
-
-        Step {
-            pred,
-            n_eff: n_before,
-            extra: None,
-        }
+        out.n_eff = n_before;
+        out.extra = None;
     }
 
     fn predict(&self, x: &[f64], d_clock: f64) -> Step {
@@ -1042,8 +1053,10 @@ impl OnlineModel for KMeans {
             return refused;
         }
         let valid = x.iter().all(|v| v.is_finite());
+        let mut pred = Vec::new();
+        self.score_into(x, self.near(x, valid), self.moments.w, &mut pred);
         Step {
-            pred: self.score(x, self.near(x, valid), self.moments.w),
+            pred,
             n_eff: self.moments.w,
             extra: None,
         }
