@@ -1,5 +1,5 @@
 //! A stream's output buffers for one run of rows ([`ChunkOut`]), moved out
-//! of `stream.rs`, which had reached the size a source file is held to
+//! of `stream.rs`, which had passed the size a source file is held to
 //! (task 270, G-1).
 
 use super::*;
@@ -133,6 +133,64 @@ impl Buffers {
 impl ChunkOut {
     /// Buffers for `n_rows` rows of one stream, all null until written.
     pub fn new(spec: &Spec, n_models: usize, n_slots: usize, n_rows: usize) -> Self {
+        let mut out = Self::empty();
+        out.renew(spec, n_models, n_slots, n_rows);
+        out
+    }
+
+    /// No buffers at all, for [`Self::renew`] to size.
+    fn empty() -> Self {
+        Self {
+            rows: Vec::new(),
+            processed: Vec::new(),
+            pred: Vec::new(),
+            resid: Vec::new(),
+            sigma: Vec::new(),
+            zscore: Vec::new(),
+            autocorr: Vec::new(),
+            metrics: Vec::new(),
+            conformal: Vec::new(),
+            checks: Vec::new(),
+            health: Vec::new(),
+            resid_q: Vec::new(),
+            drift: Vec::new(),
+            n_eff: Vec::new(),
+            lam_selected: Vec::new(),
+            coef: Vec::new(),
+            settled: Vec::new(),
+            reason: Vec::new(),
+            inflation: Vec::new(),
+            support_coef: Vec::new(),
+            se_coef: Vec::new(),
+            se_coef_hc0: Vec::new(),
+            se_coef_hac: Vec::new(),
+            scored_clock: Vec::new(),
+            learned_clock: Vec::new(),
+            n_models: 0,
+            n_slots: 0,
+            n_levels: 0,
+            n_checks: 0,
+        }
+    }
+
+    /// [`Self::new`]'s buffers, in the memory these already hold: every
+    /// buffer cleared and filled as `new` fills it, allocating only where
+    /// one has less room than it needs. `new` is this on empty buffers, so
+    /// the two cannot differ. A bank of many small groups makes a run's
+    /// buffers for every group of every chunk, and allocating and freeing
+    /// them was the largest share of such a task (task 270, G-1).
+    pub fn renew(&mut self, spec: &Spec, n_models: usize, n_slots: usize, n_rows: usize) {
+        fn fill<T: Clone>(v: &mut Vec<T>, n: usize, x: T) {
+            v.clear();
+            v.resize(n, x);
+        }
+        fn lists(v: &mut Vec<Vec<Option<Vec<f64>>>>, n_models: usize, n_rows: usize) {
+            v.truncate(n_models);
+            for inner in v.iter_mut() {
+                fill(inner, n_rows, None);
+            }
+            v.resize_with(n_models, || vec![None; n_rows]);
+        }
         let per = n_models * n_slots * n_rows;
         let on = |flag: bool| if flag { per } else { 0 };
         let Buffers {
@@ -142,51 +200,102 @@ impl ChunkOut {
             is_lasso,
         } = Buffers::of(spec);
         let n_checks = crate::checks::value_names(spec).len();
-        Self {
-            rows: Vec::with_capacity(n_rows),
-            processed: vec![false; n_rows],
-            pred: vec![f64::NAN; per],
-            resid: vec![f64::NAN; on(residuals)],
-            sigma: vec![f64::NAN; on(extras)],
-            zscore: vec![f64::NAN; on(extras)],
-            autocorr: vec![f64::NAN; on(spec.emit_autocorr)],
-            metrics: vec![f64::NAN; 3 * on(spec.emit_metrics)],
-            conformal: vec![f64::NAN; 3 * on(spec.conformal.is_some())],
-            checks: vec![f64::NAN; n_checks * per],
-            health: vec![
-                f64::NAN;
-                if spec.emit_feature_health {
-                    n_models * 2 * spec.k() * n_rows
-                } else {
-                    0
-                }
-            ],
-            resid_q: vec![f64::NAN; n_levels * per],
-            drift: vec![false; on(spec.emit_drift)],
-            n_eff: vec![f64::NAN; n_models * n_rows],
-            lam_selected: vec![
-                f64::NAN;
-                if is_lasso {
-                    n_models * spec.m() * n_rows
-                } else {
-                    0
-                }
-            ],
-            coef: vec![vec![None; n_rows]; n_models],
-            settled: vec![f64::NAN; n_models * n_rows],
-            reason: vec![0; n_models * n_rows],
-            inflation: vec![f64::NAN; on(spec.emit_error_inflation)],
-            support_coef: vec![vec![None; n_rows]; n_models],
-            se_coef: vec![vec![None; n_rows]; n_models],
-            se_coef_hc0: vec![vec![None; n_rows]; n_models],
-            se_coef_hac: vec![vec![None; n_rows]; n_models],
-            scored_clock: vec![None; if spec.emit_clocks { n_rows } else { 0 }],
-            learned_clock: vec![None; if spec.emit_clocks { n_rows } else { 0 }],
-            n_models,
-            n_slots,
-            n_levels,
-            n_checks,
+        self.rows.clear();
+        self.rows.reserve(n_rows);
+        fill(&mut self.processed, n_rows, false);
+        fill(&mut self.pred, per, f64::NAN);
+        fill(&mut self.resid, on(residuals), f64::NAN);
+        fill(&mut self.sigma, on(extras), f64::NAN);
+        fill(&mut self.zscore, on(extras), f64::NAN);
+        fill(&mut self.autocorr, on(spec.emit_autocorr), f64::NAN);
+        fill(&mut self.metrics, 3 * on(spec.emit_metrics), f64::NAN);
+        fill(
+            &mut self.conformal,
+            3 * on(spec.conformal.is_some()),
+            f64::NAN,
+        );
+        fill(&mut self.checks, n_checks * per, f64::NAN);
+        let health = if spec.emit_feature_health {
+            n_models * 2 * spec.k() * n_rows
+        } else {
+            0
+        };
+        fill(&mut self.health, health, f64::NAN);
+        fill(&mut self.resid_q, n_levels * per, f64::NAN);
+        fill(&mut self.drift, on(spec.emit_drift), false);
+        fill(&mut self.n_eff, n_models * n_rows, f64::NAN);
+        let lam = if is_lasso {
+            n_models * spec.m() * n_rows
+        } else {
+            0
+        };
+        fill(&mut self.lam_selected, lam, f64::NAN);
+        lists(&mut self.coef, n_models, n_rows);
+        fill(&mut self.settled, n_models * n_rows, f64::NAN);
+        fill(&mut self.reason, n_models * n_rows, 0);
+        fill(&mut self.inflation, on(spec.emit_error_inflation), f64::NAN);
+        lists(&mut self.support_coef, n_models, n_rows);
+        lists(&mut self.se_coef, n_models, n_rows);
+        lists(&mut self.se_coef_hc0, n_models, n_rows);
+        lists(&mut self.se_coef_hac, n_models, n_rows);
+        let clocks = if spec.emit_clocks { n_rows } else { 0 };
+        fill(&mut self.scored_clock, clocks, None);
+        fill(&mut self.learned_clock, clocks, None);
+        self.n_models = n_models;
+        self.n_slots = n_slots;
+        self.n_levels = n_levels;
+        self.n_checks = n_checks;
+    }
+
+    /// The bytes these buffers hold, the struct itself included: what a
+    /// bank keeps when it keeps them for a later run ([`Self::renew`]).
+    pub fn heap_bytes(&self) -> usize {
+        use std::mem::size_of;
+        fn cap<T>(v: &Vec<T>) -> usize {
+            v.capacity() * size_of::<T>()
         }
+        fn lists(v: &Vec<Vec<Option<Vec<f64>>>>) -> usize {
+            cap(v)
+                + v.iter()
+                    .map(|inner| cap(inner) + inner.iter().flatten().map(cap).sum::<usize>())
+                    .sum::<usize>()
+        }
+        size_of::<Self>()
+            + cap(&self.rows)
+            + cap(&self.processed)
+            + [
+                &self.pred,
+                &self.resid,
+                &self.sigma,
+                &self.zscore,
+                &self.autocorr,
+                &self.metrics,
+                &self.conformal,
+                &self.checks,
+                &self.health,
+                &self.resid_q,
+                &self.n_eff,
+                &self.lam_selected,
+                &self.settled,
+                &self.inflation,
+            ]
+            .into_iter()
+            .map(cap)
+            .sum::<usize>()
+            + cap(&self.drift)
+            + cap(&self.reason)
+            + [
+                &self.coef,
+                &self.support_coef,
+                &self.se_coef,
+                &self.se_coef_hc0,
+                &self.se_coef_hac,
+            ]
+            .into_iter()
+            .map(lists)
+            .sum::<usize>()
+            + cap(&self.scored_clock)
+            + cap(&self.learned_clock)
     }
 
     /// How many rows one learning run covers (docs/PERFORMANCE.md §13).

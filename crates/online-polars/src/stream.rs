@@ -2311,6 +2311,11 @@ pub struct Stream {
     /// they are durations, for the rows' stamps (docs/PLAN.md task 175):
     /// configuration from the spec, like `embargo`.
     exact_caps: ExactCaps,
+    /// What each instance's diagnostics decay by, from the spec and the
+    /// instance's decay alone: configuration, built once with the stream.
+    /// Built for every run, it named every combo's label a run (task 270,
+    /// G-1).
+    check_cfgs: Vec<CheckCfg>,
 }
 
 impl Stream {
@@ -2619,6 +2624,18 @@ fn take_row<T: Copy>(dst: &mut Vec<T>, src: &[T], n_rows: usize, ri: usize) {
     dst.extend(src.iter().skip(ri).step_by(n_rows.max(1)));
 }
 
+/// Row `ri` of a `coef`-like buffer, one list per instance, cloned into the
+/// lists `dst` already holds, so a list of the same length as the last is
+/// copied into its memory rather than allocated (task 270, G-1).
+fn take_list_row(dst: &mut Vec<Option<Vec<f64>>>, src: &[Vec<Option<Vec<f64>>>], ri: usize) {
+    dst.truncate(src.len());
+    for (d, s) in dst.iter_mut().zip(src) {
+        d.clone_from(&s[ri]);
+    }
+    let have = dst.len();
+    dst.extend(src[have..].iter().map(|s| s[ri].clone()));
+}
+
 impl LastRow {
     /// Overwrite with row `ri` of `out`, reusing the vectors.
     pub fn take(&mut self, out: &ChunkOut, ri: usize) {
@@ -2639,23 +2656,14 @@ impl LastRow {
         take_row(&mut self.scored_clock, &out.scored_clock, n, ri);
         take_row(&mut self.learned_clock, &out.learned_clock, n, ri);
         take_row(&mut self.lam_selected, &out.lam_selected, n, ri);
-        self.coef.clear();
-        self.coef.extend(out.coef.iter().map(|c| c[ri].clone()));
+        take_list_row(&mut self.coef, &out.coef, ri);
         take_row(&mut self.settled, &out.settled, n, ri);
         take_row(&mut self.reason, &out.reason, n, ri);
         take_row(&mut self.inflation, &out.inflation, n, ri);
-        self.support_coef.clear();
-        self.support_coef
-            .extend(out.support_coef.iter().map(|c| c[ri].clone()));
-        self.se_coef.clear();
-        self.se_coef
-            .extend(out.se_coef.iter().map(|c| c[ri].clone()));
-        self.se_coef_hc0.clear();
-        self.se_coef_hc0
-            .extend(out.se_coef_hc0.iter().map(|c| c[ri].clone()));
-        self.se_coef_hac.clear();
-        self.se_coef_hac
-            .extend(out.se_coef_hac.iter().map(|c| c[ri].clone()));
+        take_list_row(&mut self.support_coef, &out.support_coef, ri);
+        take_list_row(&mut self.se_coef, &out.se_coef, ri);
+        take_list_row(&mut self.se_coef_hc0, &out.se_coef_hc0, ri);
+        take_list_row(&mut self.se_coef_hac, &out.se_coef_hac, ri);
     }
 
     /// A one-row chunk at absolute row `row`, marked processed, for
@@ -2744,6 +2752,7 @@ impl Stream {
     pub fn new(spec: &Spec) -> Result<Self, String> {
         let models = build_models(spec)?;
         let decays: Vec<Decay> = spec.decays()?.into_iter().map(|(_, d)| d).collect();
+        let check_cfgs = decays.iter().map(|&d| CheckCfg::of(spec, d)).collect();
         let slots: Vec<usize> = models.iter().map(|(_, m)| m.n_outputs()).collect();
         let drift = if spec.emit_drift {
             // 20 only without a clock, where a row is one unit: the spec
@@ -2827,6 +2836,17 @@ impl Stream {
             scratch: slots.iter().map(|_| Scratch::default()).collect(),
             embargo,
             exact_caps: spec.exact_caps(),
+            check_cfgs,
+        })
+        .inspect(|stream| {
+            // The bank replays only the rings of a spec that says it keeps
+            // one (`ModelKind::keeps_window_ring`).
+            debug_assert_eq!(
+                spec.model.keeps_window_ring(),
+                !stream.window_shadows().is_empty(),
+                "spec {:?}",
+                spec.name
+            );
         })
     }
 
@@ -3614,7 +3634,16 @@ impl Stream {
             pending_clock: &mut self.persisted.pending_clock,
             notified: &mut self.persisted.notified,
         };
-        let mut insts = build_instances(spec, models, rings, &self.decays, diag, out, n_rows);
+        let mut insts = build_instances(
+            spec,
+            models,
+            rings,
+            &self.decays,
+            &self.check_cfgs,
+            diag,
+            out,
+            n_rows,
+        );
         if coupled && insts.len() > 1 {
             for pi in 0..plans.len() {
                 let mut seen = false;
@@ -4096,7 +4125,16 @@ impl Stream {
             .resid_win
             .iter()
             .map(|r| r.as_ref().map(SpreadRef::Score));
-        let mut insts = build_instances(spec, models, rings, &self.decays, diag, out, n_rows);
+        let mut insts = build_instances(
+            spec,
+            models,
+            rings,
+            &self.decays,
+            &self.check_cfgs,
+            diag,
+            out,
+            n_rows,
+        );
         if insts.len() > 1 {
             use rayon::prelude::*;
             insts.par_iter_mut().for_each(|inst| {
@@ -4187,6 +4225,7 @@ fn build_instances<'a>(
     models: impl Iterator<Item = ModelRef<'a>>,
     mut rings: impl Iterator<Item = Option<SpreadRef<'a>>>,
     decays: &[Decay],
+    check_cfgs: &'a [CheckCfg],
     diag: Diagnostics<'a>,
     out: &'a mut ChunkOut,
     n_rows: usize,
@@ -4234,6 +4273,7 @@ fn build_instances<'a>(
 
     let n_slots = out.n_slots;
     let mut decays = decays.iter();
+    let mut check_cfgs = check_cfgs.iter();
     let mut resid_var = diag.resid_var.iter_mut();
     let mut resid_w = diag.resid_w.iter_mut();
     let mut scratch = diag.scratch.iter_mut();
@@ -4253,7 +4293,7 @@ fn build_instances<'a>(
                 model,
                 resid_win: rings.next().expect("one per instance"),
                 decay,
-                check_cfg: CheckCfg::of(spec, decay),
+                check_cfg: check_cfgs.next().expect("one per instance"),
                 residuals: !spec.model.predicts_no_target(),
                 resid_var: resid_var.next().expect("one per instance"),
                 resid_w: resid_w.next().expect("one per instance"),
@@ -4451,7 +4491,7 @@ struct Instance<'a> {
     /// Task 221's accumulators, and what they decay by: `None` when the
     /// spec switches none on.
     checks: Option<&'a mut Checks>,
-    check_cfg: CheckCfg,
+    check_cfg: &'a CheckCfg,
     scratch: &'a mut Scratch,
     /// This instance's score-time predictions for the rows still waiting
     /// under `embargo`, oldest first (C21).
@@ -5225,7 +5265,7 @@ fn run_instance(
             c.recursive(&row, &mut sc.z);
             if emit {
                 c.read(
-                    &inst.check_cfg,
+                    inst.check_cfg,
                     &row,
                     &sc.z,
                     inst.n_slots,
@@ -5236,7 +5276,7 @@ fn run_instance(
                 c.read_health(xs.len(), n_rows, ri, inst.o_health);
             }
             if learn {
-                c.learn(&inst.check_cfg, plan.d_clock, &row, &sc.z, w, diag_ready);
+                c.learn(inst.check_cfg, plan.d_clock, &row, &sc.z, w, diag_ready);
             }
         }
 
@@ -5342,11 +5382,11 @@ fn run_instance(
             // The robust standard errors of the fit after the row, as
             // `se_coef`'s (task 221 (c)).
             if let Some(c) = inst.checks.as_deref() {
-                if let Some(hc0) = c.robust_se(&inst.check_cfg, false) {
+                if let Some(hc0) = c.robust_se(inst.check_cfg, false) {
                     inst.o_se_hc0[ri] = Some(hc0);
                 }
                 if inst.check_cfg.hac() {
-                    inst.o_se_hac[ri] = c.robust_se(&inst.check_cfg, true);
+                    inst.o_se_hac[ri] = c.robust_se(inst.check_cfg, true);
                 }
             }
             if inst.spec.emit_se_coef {

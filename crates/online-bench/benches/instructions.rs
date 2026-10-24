@@ -52,6 +52,7 @@ fn counted_from(entry: &str) -> LibraryBenchmarkConfig {
 #[bench::micro(args = ("micro"), setup = model_setup)]
 #[bench::kalman(args = ("kalman"), setup = model_setup)]
 #[bench::ew_cov(args = ("ew_cov"), setup = model_setup)]
+#[bench::lasso_k20(args = ("lasso_k20"), setup = model_setup)]
 fn model(mut run: ModelRun) -> ModelRun {
     black_box(polars_online_budget_model_rows(black_box(&mut run)));
     run
@@ -71,6 +72,8 @@ fn clock(mut run: ClockRun) -> ClockRun {
 #[library_benchmark(config = counted_from("polars_online_budget_bank_rows"))]
 #[bench::bank_seqtest(args = ("bank_seqtest"), setup = bank_setup)]
 #[bench::bank_ewridge_k5(args = ("bank_ewridge_k5"), setup = bank_setup)]
+#[bench::bank_seqtest_groups(args = ("bank_seqtest_groups"), setup = bank_setup)]
+#[bench::bank_ewridge_k5_groups(args = ("bank_ewridge_k5_groups"), setup = bank_setup)]
 #[bench::bank_ew_cov_wide_t1(args = ("bank_ew_cov_wide_t1"), setup = bank_setup)]
 fn bank(mut run: BankRun) -> BankRun {
     let pool = online_polars::pool().expect("the bank's pool, built by the setup");
