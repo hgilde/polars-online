@@ -1241,8 +1241,23 @@ fn a_url_in_any_path_is_refused_by_name_before_a_fetch() {
         &["--dry-run", "--input", &file_url(&input)],
     );
     assert_eq!(code, Some(0), "{stdout}{err}");
+    // The path is the one the URL names, spelt as the URL spelt it: on
+    // Windows `C:/.../in.parquet`, which Windows reads as `C:\...\in.parquet`
+    // (CI's Windows legs, task 270 (m)). There the two spellings compare
+    // with their separators made one; elsewhere a backslash is a file name's
+    // character, so the comparison stays exact.
+    let same_seps = |s: &str| {
+        if cfg!(windows) {
+            s.replace('\\', "/")
+        } else {
+            s.to_string()
+        }
+    };
     assert!(
-        stdout.contains(&format!("input:  {} (parquet)", input.display())),
+        same_seps(&stdout).contains(&same_seps(&format!(
+            "input:  {} (parquet)",
+            input.display()
+        ))),
         "{stdout}"
     );
     let (code, stdout, err) = online_with(

@@ -26,7 +26,7 @@ TIER = "essential"
 REPO = Path(__file__).resolve().parent.parent
 SCOPE = REPO / "scripts" / "memory_scope.sh"
 
-#: Stands in for `sudo -E systemd-run --scope -p ... -- setpriv ... CMD`:
+#: Stands in for `sudo systemd-run --scope -p ... -- setpriv ... CMD`:
 #: logs systemd-run's arguments, drops setpriv's options, runs CMD.
 STUB_SUDO = """#!/usr/bin/env bash
 [ "$1" = "-E" ] && shift
@@ -40,6 +40,13 @@ while [ "${1#--}" != "$1" ]; do shift; done
 exec "$@"
 """
 
+#: The same, but as the runners' sudo now is: ubuntu-26.04's sudo-rs
+#: ignores `-E` ("preserving the entire environment is not supported") and
+#: hands the command a reset environment, with only what the `env` after
+#: setpriv names. On 2026-10-24 that lost the workflow's CARGO_INCREMENTAL=0
+#: inside every mutants scope (run 40076792577, task 270 (m)).
+RESETTING_SUDO = STUB_SUDO.replace('exec "$@"', 'exec env -i "$@"')
+
 #: A `sudo` whose scope never runs the command, and says nothing.
 SILENT_SUDO = "#!/usr/bin/env bash\nexit 0\n"
 
@@ -49,14 +56,17 @@ needs_posix = pytest.mark.skipif(
 )
 
 
-def _run(tmp_path: Path, sudo: str, *command: str) -> tuple[subprocess.CompletedProcess, str]:
+def _run(
+    tmp_path: Path, sudo: str, *command: str, env: dict[str, str] | None = None
+) -> tuple[subprocess.CompletedProcess, str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     stub = bin_dir / "sudo"
     stub.write_text(sudo, encoding="utf-8")
     stub.chmod(0o755)
     log = tmp_path / "systemd-run.log"
-    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    extra = env or {}
+    env = {**os.environ, **extra, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
     env["STUB_LOG"] = str(log)
     r = subprocess.run(
         ["bash", str(SCOPE), "12G", "--", *command],
@@ -89,6 +99,28 @@ def test_the_command_runs_with_the_callers_path_and_home(tmp_path):
 
 
 @needs_posix
+@pytest.mark.parametrize("sudo", [STUB_SUDO, RESETTING_SUDO], ids=["sudo", "sudo-rs"])
+def test_the_command_runs_with_the_callers_whole_environment(tmp_path, sudo):
+    """Everything the job sets reaches the command in the scope, whatever
+    the runner's sudo keeps: the workflow's CARGO_INCREMENTAL=0 and the
+    TMPDIR that puts cargo-mutants' build copies on the runner's disk, a
+    value with a space, a newline and an `=` in it among them. The scope's
+    own bookkeeping does not leak into the command."""
+    odd = "a b\nc=d"
+    r, _ = _run(
+        tmp_path,
+        sudo,
+        "bash",
+        "-c",
+        'printf "%s|%s|%s|%s|%s" "$CARGO_INCREMENTAL" "$TMPDIR" "$SCOPE_ODD" '
+        '"${MEMORY_SCOPE_ENV-unset}" "$name"',
+        env={"CARGO_INCREMENTAL": "0", "TMPDIR": str(tmp_path), "SCOPE_ODD": odd, "name": "n"},
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.split("|") == ["0", str(tmp_path), odd, "unset", "n"], r.stdout
+
+
+@needs_posix
 def test_a_scope_that_never_ran_the_command_fails(tmp_path):
     r, _ = _run(tmp_path, SILENT_SUDO, "true")
     assert r.returncode == 1
@@ -113,16 +145,23 @@ def _check():
     return module
 
 
+#: What the check's sentinel reads inside a scope the environment reached.
+OK = "reached the scope = yes"
+
+
 @pytest.mark.parametrize(
     ("result", "passes"),
     [
-        ({"runaway_exit": -9, "reached_mib": 11_900, "survivor": 64 << 20}, True),
+        ({"runaway_exit": -9, "reached_mib": 11_900, "survivor": 64 << 20, "env": OK}, True),
         # Not killed: it stopped on its own, or something else stopped it.
-        ({"runaway_exit": 0, "reached_mib": 11_900, "survivor": 64 << 20}, False),
+        ({"runaway_exit": 0, "reached_mib": 11_900, "survivor": 64 << 20, "env": OK}, False),
         # Killed far below the cap: some other, smaller limit is in force.
-        ({"runaway_exit": -9, "reached_mib": 512, "survivor": 64 << 20}, False),
+        ({"runaway_exit": -9, "reached_mib": 512, "survivor": 64 << 20, "env": OK}, False),
         # Killed past the cap: the cap is not the scope's.
-        ({"runaway_exit": -9, "reached_mib": 20_000, "survivor": 64 << 20}, False),
+        ({"runaway_exit": -9, "reached_mib": 20_000, "survivor": 64 << 20, "env": OK}, False),
+        # Killed near the cap, but the command ran without the caller's
+        # environment: sudo-rs reset it.
+        ({"runaway_exit": -9, "reached_mib": 11_900, "survivor": 64 << 20, "env": None}, False),
     ],
 )
 def test_the_check_passes_only_a_runaway_killed_near_the_cap(monkeypatch, result, passes):
@@ -144,3 +183,8 @@ def test_the_check_reads_the_cap_as_systemd_does():
     assert check.mib("12G") == 12 * 1024
     assert check.mib("512M") == 512
     assert check.mib(str(3 << 30)) == 3 * 1024
+
+
+def test_the_checks_sentinel_is_the_one_it_reads():
+    check = _check()
+    assert check.SENTINEL_VALUE == OK

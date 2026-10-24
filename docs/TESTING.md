@@ -1883,6 +1883,26 @@ runner in the `memory-cap` job (`scripts/memory_scope_check.py`): a process
 allocating without end inside a scope of the shards' cap is killed within
 the cap's last quarter, and the process that started it goes on.
 
+**The scope carries the job's whole environment, and the build copies sit
+on the runner's disk.** The scope is made with `sudo`, which resets the
+environment, and ubuntu-26.04's sudo-rs ignores `sudo -E`; so
+`memory_scope.sh` writes the caller's environment to a file and exports it
+again inside, and the `memory-cap` job checks a variable set outside
+arrives. cargo-mutants copies the tree into `TMPDIR` (else `/tmp`), once a
+job, and builds each copy cold. On ubuntu-26.04 `/tmp` is a RAM-backed
+tmpfs with a per-user quota, charged to the scope's memory: the push of
+`85da91e` lost 23 of its 24 shards to `Disk quota exceeded (os error 122)`,
+each after one to six mutants, while the root disk had 109 GB free. Each
+step now sets `TMPDIR` to a directory under the job's `RUNNER_TEMP`, on that
+disk, and prints the disk before the run and the most it used. A shard's
+use is one build copy a job whatever the diff's size: a larger diff makes
+more shards, not larger ones. A pass that failed this way cannot be rerun
+under the fixed workflow, since a rerun keeps its run's own workflow file,
+and the next push lists only its own diff; so a dispatch given a `base`
+(`gh workflow run mutants.yml --ref main -f base=<commit>`) runs the
+changed-lines pass over the diff from that commit to the ref's head, and a
+dispatch without one runs the weekly pass.
+
 **Each mutant's tests run under cargo-nextest**, a process per test, as the
 gate's do: the full Rust suite took 84 s under nextest against `cargo
 test`'s 182 s on the development machine.
