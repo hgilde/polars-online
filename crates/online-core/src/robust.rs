@@ -681,20 +681,27 @@ struct PendingShares {
     /// Per kept column, in the factor's order, the coefficient slot its
     /// share goes to.
     to: Vec<usize>,
-    /// The shares before any column's ([`Self::base`]), `k_total` long.
-    base: Vec<f64>,
+    /// The coefficients a target has, and whether the first is an
+    /// intercept.
+    k: usize,
+    intercept: bool,
+    /// The fit's feature set, `None` for every feature: kept only under
+    /// sets, so a plain solve allocates nothing for it. A base of `k`
+    /// shares allocated at every solve, read or not, cost a 20-feature
+    /// `huber` solve 3% (docs/PLAN.md task 272 (e), R5-4).
+    set: Option<Vec<usize>>,
     shares: OnceLock<Vec<f64>>,
 }
 
 impl PendingShares {
-    /// The shares of `k` coefficients before any column's: NaN in the
+    /// Write into `out` the shares before any column's: NaN in the
     /// intercept's slot, which is not a share, and in a slot outside the
     /// fit's feature set (`set`, `None` for every feature), which has no
     /// coefficient to share, as `ewridge`'s sets have it; and 0 elsewhere, a
     /// column the solve dropped having none of the data's.
-    fn base(k: usize, intercept: bool, set: Option<&[usize]>) -> Vec<f64> {
+    fn fill_base(out: &mut [f64], intercept: bool, set: Option<&[usize]>) {
         let off = usize::from(intercept);
-        let mut out = vec![0.0; k];
+        out.fill(0.0);
         if let Some(set) = set {
             for (i, v) in out.iter_mut().enumerate().skip(off) {
                 if !set.contains(&(i - off)) {
@@ -705,13 +712,13 @@ impl PendingShares {
         if intercept && let Some(first) = out.first_mut() {
             *first = f64::NAN;
         }
-        out
     }
 
     /// `1 − λ (A⁻¹)_jj` for each kept column, in its slot (the module doc).
     fn shares(&self) -> &[f64] {
         self.shares.get_or_init(|| {
-            let mut out = self.base.clone();
+            let mut out = vec![0.0; self.k];
+            Self::fill_base(&mut out, self.intercept, self.set.as_deref());
             let inv = self.factor.inverse_diagonal(self.to.len());
             for (&slot, inv) in self.to.iter().zip(inv) {
                 // NaN in the base is no share: the intercept, which the
@@ -985,6 +992,9 @@ impl Robust {
         }
     }
 
+    // Not inlined into `step`: a solve is `O(k³)`, a call costs it nothing,
+    // and the row's own path keeps its size (task 272 (e), R5-4).
+    #[inline(never)]
     fn solve(&mut self) {
         let k = self.cfg.k_total();
         // A target nothing solved has no fit, NaN, which predicts nothing
@@ -1037,12 +1047,11 @@ impl Robust {
                                 // No column kept: nothing to invert, every
                                 // slope 0.
                                 self.support.pending[slot] = None;
-                                let base = PendingShares::base(
-                                    k,
+                                PendingShares::fill_base(
+                                    &mut self.support.stored[slot],
                                     self.cfg.fit_intercept,
                                     self.cfg.set_of(c),
                                 );
-                                self.support.stored[slot] = base;
                             }
                         }
                     }
@@ -1133,7 +1142,9 @@ impl Robust {
             factor: f,
             lam,
             to,
-            base: PendingShares::base(k, self.cfg.fit_intercept, self.cfg.set_of(c)),
+            k,
+            intercept: self.cfg.fit_intercept,
+            set: self.cfg.set_of(c).map(<[usize]>::to_vec),
             shares: OnceLock::new(),
         };
         (pending, kept)
@@ -1472,7 +1483,9 @@ impl Robust {
             factor: f,
             lam,
             to: keep,
-            base: PendingShares::base(k, self.cfg.fit_intercept, self.cfg.set_of(c)),
+            k,
+            intercept: self.cfg.fit_intercept,
+            set: self.cfg.set_of(c).map(<[usize]>::to_vec),
             shares: OnceLock::new(),
         };
         Some((out, Some(pending)))
