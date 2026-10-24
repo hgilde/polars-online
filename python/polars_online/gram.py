@@ -1563,13 +1563,16 @@ def solve_subsets(
         se        = sqrt(diag(inv(A)) * sigma2 / n),   t = b / se
         se_0      = sqrt((1 + m_t' inv(A) m_t) * sigma2 / n)
 
-    with ``p`` the slots and the intercept, or under ``within`` the slots
-    and the parts the target has rows in. With an intercept ``A`` is the
-    slots' centred co-moments, ``r_t`` the centred cross-moments and
-    ``S_yy`` the target's variance; without one they are the raw moments
-    and ``E[y**2]``, as :func:`coef_stats` reads them, and there is no
-    ``se_0``. Under ``within`` the intercept has none either. Under ``standardize`` the
-    system is solved in correlation form, as :func:`solve` solves it. Both
+    with ``p`` the slots with variance and the intercept, or under
+    ``within`` the slots with variance and the parts the target has rows
+    in: a column of none, such as a constant that ``standardize`` drops at
+    0, has no coefficient to estimate and spends no degree of freedom.
+    With an intercept ``A`` is the slots' centred co-moments, ``r_t`` the
+    centred cross-moments and ``S_yy`` the target's variance; without one
+    they are the raw moments and ``E[y**2]``, as :func:`coef_stats` reads
+    them, and there is no ``se_0``. Under ``within`` the intercept has none
+    either. Under ``standardize`` the system is solved in correlation form,
+    as :func:`solve` solves it. Both
     systems are factorized by Cholesky, where :func:`solve` runs numpy's
     symmetric eigendecomposition and :func:`coef_stats` its inverse, so the
     two agree to rounding, the system's condition number times ``1e-16``:
@@ -2119,11 +2122,14 @@ def coef_stats(
 
     ``C`` is the features' centred co-moments, ``Cov[X, y]`` the target's
     centred cross-moments (``cross_centered``) and ``m`` the column means over
-    the target's rows. ``k`` counts the features and the intercept. ``se_0``
+    the target's rows. ``k`` counts the features with variance and the
+    intercept: a column of none, such as a constant that ``standardize``
+    drops at 0, has no coefficient to estimate and spends no degree of
+    freedom. ``se_0``
     is least squares' error of the intercept, ``ybar - m . b``: the mean and
     the slopes are uncorrelated, so its variance is ``Var[ybar] + m' Var[b]
     m``. On a Gram pooled within parts (``merge(within=True)``) ``k`` counts
-    the features and one intercept per part the target has rows in
+    the features with variance and one intercept per part the target has rows in
     (``target_within_parts``), the intercept has no error (each part had its
     own), and ``r2`` is the share of the variance inside the parts that the
     fit explains.
@@ -2142,9 +2148,9 @@ def coef_stats(
     ``E[y**2]``. So ``resid_var`` is the residuals' mean square, ``se`` and
     ``t`` are least squares' through the origin, and ``r2`` is uncentred,
     ``1 - E[e**2] / E[y**2]``, as statsmodels reports a fit with no constant.
-    ``k`` counts the features alone. On a Gram pooled within parts the means
-    are 0, the target's too, so the raw moments are the centred ones and
-    nothing moves.
+    ``k`` counts the features alone, those not identically 0. On a Gram
+    pooled within parts the means are 0, the target's too, so the raw
+    moments are the centred ones and nothing moves.
 
     .. rubric:: Parameters
 
@@ -2245,20 +2251,22 @@ def coef_stats(
 
     resid_var = s_yy - 2.0 * b @ rhs + b @ a @ b
     resid_var = max(resid_var, 0.0)
+    # The columns with variance: one of none, such as a constant that
+    # standardize dropped, has a coefficient of 0 by construction, spends no
+    # degree of freedom, and is a zero row no inverse of the whole takes, so
+    # it keeps its nan (task 270, review round 9 I-2).
+    kept = np.flatnonzero(np.diag(a) > 0.0)
     # A Gram pooled within parts spent an intercept on each part, and has
     # none of its own (docs/PLAN.md task 240).
     if _is_within(g):
         absorbed = int(np.asarray(g["target_within_parts"])[t])
     else:
         absorbed = 1 if icept >= 0 else 0
-    dof = n - (len(slots) + absorbed)
+    dof = n - (len(kept) + absorbed)
     sigma2 = resid_var * n / dof if dof > 0.0 else np.nan
     se = np.full(k, np.nan)
     tstat = np.full(k, np.nan)
     if np.isfinite(sigma2) and n > 0.0:
-        # Over the columns with variance: one of none, such as a constant,
-        # is a zero row no inverse of the whole takes, and keeps its nan.
-        kept = np.flatnonzero(np.diag(a) > 0.0)
         a_kept = a[np.ix_(kept, kept)]
         try:
             inv = np.linalg.inv(a_kept)

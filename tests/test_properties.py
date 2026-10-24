@@ -226,11 +226,20 @@ def warmed_streams(
     weight 1, so every stream has a row the model scored. Drawn at random, too
     few streams had one, and kalman failed Hypothesis's `filter_too_much`
     health check once in a gate and once in 460 runs (2026-10-07). With a
-    ``sign``, the warm rows' ``columns`` sit on its side of zero too."""
+    ``sign``, the warm rows' ``columns`` sit on its side of zero too. Their
+    targets are at least 1e-3 from 0, and their features 0 or at least 1e-3
+    from it: kalman sizes a target's prior from three squared innovations
+    above 0 and predicts nothing while it is unsized (task 270, review round
+    9 B-1), so warm targets of 0, or of 1e-172, whose square underflows to
+    0, left it no row to score, and so did a feature at 7.9e-57 beside one
+    at 11, after which its prior was unsized again at the fourth row."""
     df = draw(streams(sign=sign, offset=offset, columns=columns))
     finite = st.floats(min_value=-1e3, max_value=1e3, allow_nan=False, allow_infinity=False)
     rows = st.lists(finite, min_size=WARM_ROWS, max_size=WARM_ROWS)
     warm = {c: draw(rows) for c in ("x0", "x1", "y0")}
+    warm["y0"] = [v if abs(v) >= 1e-3 else 1.0 for v in warm["y0"]]
+    for c in ("x0", "x1"):
+        warm[c] = [v if abs(v) >= 1e-3 else 0.0 for v in warm[c]]
     for c in columns:
         warm[c] = [_signed(v, sign, offset) for v in warm[c]]
     head = pl.DataFrame(

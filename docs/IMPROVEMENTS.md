@@ -300,7 +300,28 @@ Tests: `row_groups_need_not_align_with_chunk_rows` in
 debug assertion fires instead of the arrow panic. Its Python twin, a
 reproduction through `po.run`, went with task 83.
 
-### C8 — the CLI's NDJSON output is pathological on the system allocator — *done: fix 2, 2026-09-28*
+### C8 — the CLI's NDJSON output is pathological on the system allocator — *done: fix 2, 2026-09-28; fix 1 too, 2026-10-23*
+
+**Fix 1 done too (task 270, review 9 M-5; the user's decision D5 under rule
+12, 2026-10-23).** Review 9 measured what option 1 would buy and found more
+than this entry's 15%: on the system allocator the binary ran the same bank
+1.3x slower a row and 1.8x slower a one-row task than under jemalloc. The
+command line now has a `#[global_allocator]` of its own: jemalloc
+(`tikv-jemallocator`) off Windows and mimalloc on it, as py-polars does,
+each a statically linked C library in the binary alone; the wheel keeps
+`PolarsAllocator`. The release's arm64 Linux build fixes jemalloc's page
+size at 64 KiB, which also runs under 4 and 16 KiB pages. The CLI itself,
+1M rows of parquet in and out, best of five interleaved, load 16-23 on 14
+cores (`cli_system` against `cli_jemalloc`, the same commit):
+
+| shape | system | jemalloc | ratio |
+|---|---:|---:|---:|
+| `ewridge` k=5, one stream | 342 ns/row | 274 | 1.25x |
+| `ewridge` k=5, 1,000 groups in 1,000-row chunks (one-row tasks) | 2,785 | 1,447 | 1.93x |
+| `ewridge` k=5, 10,000 groups | 728 | 405 | 1.80x |
+| `seqtest`, one stream | 234 | 228 | 1.03x |
+| `seqtest`, 1,000 groups in 1,000-row chunks | 1,562 | 1,131 | 1.38x |
+
 
 **Done (docs/PLAN.md task 115 (g)).** Re-measured first, at HEAD, on the
 three-spec example bank over 3M rows: the slice-per-thread writer no longer

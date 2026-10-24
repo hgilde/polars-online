@@ -26,7 +26,8 @@
 //! - **LightGBM** ([`lightgbm_dataset`]): LightGBM's own sample rows
 //!   (`LGBM_SampleIndices`) gathered in a first pass place its bins
 //!   (`LGBM_DatasetCreateFromSampledColumn`), and a second pass pushes every
-//!   frame as float32 rows built in parallel (`LGBM_DatasetPushRows`); or,
+//!   frame as float32 rows built in parallel, with its labels and weights
+//!   (`LGBM_DatasetPushRowsWithMetadata`); or,
 //!   when the data fits, the whole stream goes in as Arrow
 //!   (`LGBM_DatasetCreateFromArrowStream`), which LightGBM pushes column by
 //!   column.

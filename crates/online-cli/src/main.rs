@@ -16,10 +16,24 @@ use std::process::ExitCode;
 use std::sync::LazyLock;
 
 use clap::{CommandFactory, Parser};
-use online_polars::{Format, RunConfig, RunStats, run_config_reported};
+use online_polars::{Format, OutputLayout, RunConfig, RunStats, run_config_reported};
 use serde::Deserialize;
 use toml::Spanned;
 use toml::de::{DeTable, DeValue};
+
+/// The binary's allocator, as py-polars' own: jemalloc off Windows, and
+/// mimalloc on it, where py-polars uses mimalloc too. On the system
+/// allocator the bank ran 1.3x slower a row and 1.8x slower a
+/// one-row task than in the wheel: each chunk's output columns and each
+/// group's index vectors were handed back to the kernel when freed and
+/// faulted in again for the next chunk (review 9, M-5). The wheel keeps
+/// `PolarsAllocator`; this is the binary's alone.
+#[cfg(not(target_os = "windows"))]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+#[cfg(target_os = "windows")]
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// A `--input-format` / `--output-format` value: one of `Format::ALL` by name.
 fn parse_format(s: &str) -> Result<Format, String> {
@@ -29,6 +43,17 @@ fn parse_format(s: &str) -> Result<Format, String> {
         .ok_or_else(|| {
             let names: Vec<&str> = Format::ALL.iter().map(|f| f.name()).collect();
             format!("`{s}` is not a format; one of {}", names.join(", "))
+        })
+}
+
+/// A `--output-layout` value: one of `OutputLayout::ALL` by name.
+fn parse_layout(s: &str) -> Result<OutputLayout, String> {
+    OutputLayout::ALL
+        .into_iter()
+        .find(|l| l.name() == s)
+        .ok_or_else(|| {
+            let names: Vec<&str> = OutputLayout::ALL.iter().map(|l| l.name()).collect();
+            format!("`{s}` is not an output layout; one of {}", names.join(", "))
         })
 }
 
@@ -130,6 +155,13 @@ struct Cli {
     /// decides when unset. Overrides the config's `output_format`.
     #[arg(long, value_parser = parse_format)]
     output_format: Option<Format>,
+
+    /// How the output lays out each spec's struct column: `struct` (the
+    /// default) or `flat`, each field a `<spec>.<field>` column, as a CSV
+    /// always is. Flat writes a wide spec to parquet several times faster.
+    /// Overrides the config's `output_layout`.
+    #[arg(long, value_parser = parse_layout)]
+    output_layout: Option<OutputLayout>,
 
     /// Rows per chunk: Polars' `chunk_size`. Overrides the config's
     /// `chunk_size`.
@@ -388,10 +420,13 @@ fn read_config(text: &str, table: &[(&str, &str)]) -> Result<(Read, Vec<String>)
 /// `cfg`'s relative paths, read from `dir`, the config file's directory, so
 /// that a config runs the same from any working directory, as a path in a
 /// ruff or Cargo config does (task 244, C-2). An empty path, a run with no
-/// output, stays empty; an absolute one stays as it is.
+/// output, stays empty; an absolute one stays as it is, and so does a URL,
+/// which [`RunConfig::localize`] reads or refuses by the name it was given:
+/// it was joined under the directory, and refused as a missing
+/// `conf/s3://...` (review 9, H-2).
 fn relative_to(cfg: &mut RunConfig, dir: &Path) {
     let from_dir = |p: &mut PathBuf| {
-        if !p.as_os_str().is_empty() && p.is_relative() {
+        if !p.as_os_str().is_empty() && p.is_relative() && online_polars::url_scheme(p).is_none() {
             *p = dir.join(&*p);
         }
     };
@@ -488,6 +523,9 @@ fn run() -> Result<(), String> {
     if let Some(f) = cli.output_format {
         cfg.output_format = Some(f);
     }
+    if let Some(l) = cli.output_layout {
+        cfg.output_layout = l;
+    }
     if let Some(n) = cli.chunk_size {
         cfg.chunk_size = n;
     }
@@ -517,6 +555,10 @@ fn run() -> Result<(), String> {
     if let Some(p) = cli.closed_groups {
         cfg.closed_groups = Some(p);
     }
+    // A `file://` URL is the path it names, and any other URL is refused
+    // naming it, before anything reads a path: an `https://` input went to
+    // polars' cloud reader (review 9, H-1).
+    cfg.localize()?;
     // What a spec may leave out, filled before anything reads it (E53).
     cfg.fill_defaults();
     cfg.validate()?;
@@ -550,7 +592,15 @@ fn run() -> Result<(), String> {
         }
         println!("input:  {} ({})", cfg.input.display(), input_format.name());
         match output_format {
-            Some(f) => println!("output: {} ({})", cfg.output.display(), f.name()),
+            Some(f) => {
+                // The layout is named where it is not the default, and a CSV
+                // is flat whatever it says.
+                let layout = match cfg.output_layout {
+                    OutputLayout::Flat if f != Format::Csv => ", flat",
+                    _ => "",
+                };
+                println!("output: {} ({}{layout})", cfg.output.display(), f.name());
+            }
             // `validate` refuses a run with neither, so the list is never
             // empty. The closed groups were left out of it until task 154,
             // and a run whose product they were said it had none.

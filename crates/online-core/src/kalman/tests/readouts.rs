@@ -221,9 +221,15 @@ impl Twin {
         let mo = self.moments();
         let z = self.z(&mo, x);
         let dot = |v: &[f64]| -> f64 { (0..k).map(|a| z[a] * v[a]).sum() };
+        // A covariance not yet sized predicts nothing (task 270, review
+        // round 9 B-1).
+        let sized = |j: usize| {
+            let pj = &self.p[if share { 0 } else { j }];
+            (0..k).any(|a| pj[a * k + a] != 0.0)
+        };
         let want: Vec<f64> = (0..m)
             .map(|j| {
-                if self.wj[j] > 0.0 {
+                if self.wj[j] > 0.0 && sized(j) {
                     dot(&self.b[j])
                 } else {
                     f64::NAN
@@ -1272,7 +1278,11 @@ fn before_a_residual_variance_a_covariance_reads_no_noise() {
 /// alone, across the rows without the target too -- the noise of the
 /// clock goes on sized slots only, and there are none (docs/PLAN.md task
 /// 220). An infinite prior is no prior: it would refuse every gain for
-/// good.
+/// good. A filter never sized predicts nothing (task 270, review round 9
+/// B-1), so it measures no residual of its own: the residual variance is
+/// set here as one sized once and since lost would carry it, the near
+/// `1e200` its unsized predictions of 0 used to read off targets at the
+/// bound.
 #[test]
 fn a_prior_that_would_overflow_is_never_sized() {
     for (standardize, fit_intercept) in [(false, false), (false, true), (true, true), (true, false)]
@@ -1290,7 +1300,11 @@ fn a_prior_that_would_overflow_is_never_sized() {
         for i in 0..15 {
             let x = 1.0 + lcg(&mut s);
             let y = (i % 3 != 2).then(|| crate::INPUT_BOUND * lcg(&mut s));
-            m.step(&[x], &[y], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            let pred = m.step(&[x], &[y], if i == 0 { 0.0 } else { 1.0 }, 1.0).pred;
+            assert!(pred[0].is_nan(), "{what}, row {i}: {pred:?}");
+            if i == 0 {
+                m.sig2[0] = 1e195;
+            }
             assert!(
                 m.p[0].iter().all(|v| *v == 0.0),
                 "{what}, row {i}: {:?}",

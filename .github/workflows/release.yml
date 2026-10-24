@@ -257,11 +257,20 @@ jobs:
       # is `manylinux2014_<arch>` for the runner's own architecture, so the
       # arm64 build stays native (see the matrix note). As root, into the
       # bind-mounted workspace; the ownership step below takes it back.
+      #
+      # The binary's allocator is jemalloc, which fixes its page size when it
+      # is built: built on this 4 KiB-page runner, it refuses to start under
+      # an arm64 kernel with 64 KiB pages (some RHEL and Oracle Linux
+      # images), so the arm64 build takes 64 KiB, which runs under 4 KiB and
+      # 16 KiB pages too, as polars' own arm64 builds do. x86-64 kernels use
+      # 4 KiB pages alone.
       - name: build the CLI (Linux, in the manylinux2014 image)
         if: matrix.cli && runner.os == 'Linux'
         run: |
+          lg_page=()
+          if [ "$(uname -m)" = aarch64 ]; then lg_page=(-e JEMALLOC_SYS_WITH_LG_PAGE=16); fi
           docker run --rm -v "$PWD":/io -w /io \
-            -e CARGO_TARGET_DIR=/io/target-cli \
+            -e CARGO_TARGET_DIR=/io/target-cli "${lg_page[@]}" \
             "quay.io/pypa/manylinux2014_$(uname -m)" bash -euxc '
               curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs \
                 | sh -s -- -y --profile minimal --default-toolchain stable

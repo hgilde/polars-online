@@ -1383,7 +1383,7 @@ The readiness fields:
 | field | on | what it holds |
 |---|---|---|
 | `settled_frac` | every model that writes a row | how full the decay window is |
-| `withheld_reason` | every model that writes a row | why `pred_y` is null, or null when it is not: `below_min_settled_frac`, `below_min_weight`, `above_max_error_inflation` or `below_warm_rows` (the rows `kmeans`, `hmm` and `bocpd` hold to seed themselves from), in that order of precedence |
+| `withheld_reason` | every model that writes a row | why `pred_y` is null, or null when it is not: `below_min_settled_frac`, `below_min_weight`, `above_max_error_inflation` or `below_warm_rows` (the rows `kmeans`, `hmm` and `bocpd` hold to seed themselves from, and the rows `kalman` sizes a target's prior from), in that order of precedence |
 | `error_inflation_y` | `ewridge`, `rls`, `kalman`, under `emit_error_inflation` | the row's own estimation variance over the noise: high on a row leaning on a direction the data never showed, at one triangular solve a row |
 | `support_coef` | `ewridge`, `huber`, `quantile`, beside `coef` | each coefficient's data share, `1 - ridge * (S^-1)_jj` on the system the solve inverts. A duplicated pair of features reads 0.5 each |
 | `se_coef` | `ewridge`, `rls`, `kalman`, under `emit_se_coef`, beside `coef` | each coefficient's standard error in its own units: `sigma` times the fit's own covariance, `kalman`'s posterior exactly. A report, not a gate; it errs large in warm-up and under a ridge |
@@ -1854,6 +1854,14 @@ fields ([Output field names](#output-field-names) lists them). `weight_sum`
 is the weight a fit rests on, so the filter keeps each stock's rows once
 its fit has seen about 50 rows' worth. `lf.online.fit_predict([spec]).head(5)`
 feeds the bank the first 5 rows and no more.
+
+**Unnest a wide spec before `sink_parquet`.** Polars' parquet writer
+encodes a record's fields at several times the cost of the same values as
+plain columns. An `ew_cov` over 20 series writes 233 fields: 2,785 ns a row
+as the record, 365 unnested, where the bank's own work is 550. So write
+`.online.unnest([spec]).sink_parquet("fitted.parquet")`, which turns each
+field into a column of its own. The command line's `--output-layout flat`
+does the same for its files ([RUNNER.md](docs/RUNNER.md)).
 
 **Filter after the bank, not before it.** A `filter` after the bank keeps
 the query running a chunk at a time. One before the bank makes Polars hold
