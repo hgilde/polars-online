@@ -1,7 +1,8 @@
 # Performance: where the time and memory go
 
-**A bank spends its time on the models' own arithmetic, and its memory on
-their state, the chunks in flight and what Polars has read ahead.** When a
+**A bank spends its time on the models' own arithmetic and its own work
+around each row, and its memory on their state, the chunks in flight and
+what Polars has read ahead.** When a
 run is slower or larger than you expected, [the headline](#the-headline)
 names the setting that moves each number. The numbered sections hold the
 measurements behind it, grouped by topic. Each keeps the number it was
@@ -49,10 +50,11 @@ each reads as of its date, with the names of its day.
 | [39. The state's traffic behind `marginal`'s slope](#39-the-states-traffic-behind-marginals-slope-2026-10-10) | you want what a loop order that keeps a wide `marginal`'s state in cache wins, and why a pair-major run was not built | |
 | **[Releases compared, and slowdowns bisected](#releases-compared-and-slowdowns-bisected)** | | |
 | [26. 0.11.1 against 0.10.0](#26-0111-against-0100-two-slowdowns-fixed-and-what-the-readers-hold-2026-09-27) | you want the current numbers against the last two releases, the two slowdowns 0.11.0 shipped, or what the CSV and NDJSON readers hold | [three builds](#the-benchmark-three-builds) · [threads](#thread-scaling) · [memory](#peak-memory-re-measured) · [read-ahead](#the-csv-and-ndjson-read-ahead) · [plan inspection](#the-plan-inspection-re-measured) |
-| [28. The README's numbers, re-measured](#28-the-readmes-numbers-re-measured-2026-09-29) | you want the numbers the README quotes, the run they came from, and how much a run moves | [the benchmark](#the-benchmark) · [the Parallelism workloads](#the-parallelism-workloads) · [the wheel's size](#the-wheels-size) |
+| [28. The README's numbers, re-measured](#28-the-readmes-numbers-re-measured-2026-09-29) | you want the numbers the README quoted from 2026-09-29 to 2026-10-24, the run they came from, and how much a run moves | [the benchmark](#the-benchmark) · [the Parallelism workloads](#the-parallelism-workloads) · [the wheel's size](#the-wheels-size) |
 | [29. The drop since 0.2.0, bisected](#29-the-drop-since-020-bisected-2026-09-29) | you want which change cost how much speed since 0.2.0, why the readiness cost is the inverse's diagonal, and what taking it only when read recovered | [the method](#method) · [the causes](#the-causes) · [the readiness cost](#the-readiness-cost-the-inverses-diagonal-on-every-solve) · [the fix](#the-fix-the-shares-when-they-are-read) |
 | [30. Where every row solves](#30-where-every-row-solves-2026-09-29) | your stream solves on every row, and you want what that path lost since 0.5.1 and what a cheaper solve won back | [bisecting the solve](#bisecting-the-solve) · [where the time went](#where-the-time-went) · [the change](#the-change) |
 | [31. 0.13.0 against 0.12.0](#31-0130-against-0120-2026-09-29) | you want this release's speed against the last, the one slowdown it found and halved, or the Parallelism figures on it | [Parallelism, re-measured](#the-parallelism-figures-re-measured) |
+| [44. The README's numbers, re-measured](#44-the-readmes-numbers-re-measured-2026-10-24) | you want the numbers the README quotes now, the five runs they came from, or the bank's own share of a row by width | [the benchmark](#the-benchmark-1) · [the recipes](#the-recipes) · [the bank's share](#the-banks-own-share-by-width) |
 | **[The window operators](#the-window-operators)** | | |
 | [32. Windowed means against the `rolling` recipe](#32-windowed-means-against-the-rolling-recipe-2026-09-30) | you compare a windowed mean with Polars' `rolling` window, in time and in memory | |
 | [33. Window operators](#33-window-operators-2026-10-03) | you run `with_windows`: what an operator costs, what sharing a kernel saves, and the engine against §32's | |
@@ -70,10 +72,33 @@ engine, and the parameter names of its day, each defined here.
 
 ### The headline
 
-**A bank's row is the model's own arithmetic: reading the file, and
-assembling the output, take a small share of a run.** The first pass,
-§1–§8, brought everything around the models down, and every golden number
-stayed as it was. This recipe times each part of one run of `ewridge` with
+**A wide model's row is its own arithmetic, and a narrow model's is half
+the bank's work around it or more.** Around each row the bank clocks it,
+keeps its schedule, copies its features in and writes its fields out:
+about 60 to 170 ns at up to 50 features and one target, 2 ns more for each
+feature and 2 to 4 ns for each field a row writes. Measured on 2026-10-24
+at a load average of 2.3 to 3.1, one stream on one thread, the model's
+step alone against the same rows through a bank (§44), in ns a row:
+
+| model | features | the model's step | through the bank | bank over step |
+|---|---:|---:|---:|---:|
+| `seqtest` | 0 | 13 | 70 | 5.4× |
+| `sgd` | 5 | 41 | 130 | 3.2× |
+| `ewridge` | 5 | 118 | 235 | 2.0× |
+| `ew_cov`, 23 fields | 5 | 57 | 153 | 2.7× |
+| `sgd` | 50 | 159 | 296 | 1.9× |
+| `ewridge` | 50 | 968 | 1,141 | 1.2× |
+| `ew_cov`, 1,328 fields | 50 | 1,359 | 4,204 | 3.1× |
+| `sgd` | 500 | 1,357 | 2,349 | 1.7× |
+| `ewridge` | 500 | 123,433 | 129,397 | 1.0–1.2× |
+| `ew_cov`, 125,753 fields | 500 | 126,995 | 603,508 | 4.8× |
+
+So a regression's row is the bank's bookkeeping as much as the model's at
+five features, and the model's from about 50, while a model that writes a
+field per pair, `ew_cov`, spends most of a wide row writing it. Reading the
+file takes a small share of a run either way. The first pass, §1–§8,
+brought everything around the models down, and every golden number stayed
+as it was. This recipe times each part of one run of `ewridge` with
 20 features over a million generated rows: the read alone, learning with
 no output, learning and scoring, and scoring from a saved state without
 learning. The times are your machine's:
@@ -112,21 +137,21 @@ print(f"time to score from a state: {rows_a_second(lambda: query.online.predict(
 ```
 
 ```text
-time to read the file:      26.7 million rows a second
-time to learn, no output:   2.3 million rows a second
-time to learn and score:    2.4 million rows a second
-time to score from a state: 6.0 million rows a second
+time to read the file:      39.4 million rows a second
+time to learn, no output:   2.9 million rows a second
+time to learn and score:    2.9 million rows a second
+time to score from a state: 6.5 million rows a second
 ```
 
 Learning sets the pace, and scoring from a state skips the update, so it
 runs more than twice as fast. What a row costs per model is in the
-README's [Throughput](../README.md#throughput) table, from §28 and §31.
+README's [Throughput](../README.md#throughput) table, from §44.
 Where a number is not what you expected, find what you see here:
 
 | what you see | where the time or memory goes | what moves it | § |
 |---|---|---|---|
-| a row slower than the README's throughput | the model's own update, `O(k²)` a row for a model that solves, and its solves on their schedule | `solve_every` and `max_rows_between_solves`; `gram_block_rows` and `gram_threads` for a wide `ewridge` | §18, §28, §30, §37, §38 |
-| a grid slower than one model | a ridge or feature-set grid shares one set of sums; each half-life of a grid keeps its own, run alongside the others | the number of half-lives | §28 |
+| a row slower than the README's throughput | the model's own update, `O(k²)` a row for a model that solves, and its solves on their schedule; below about 50 features, as much again in the bank's work around the row; and for a model with many fields, writing them | `solve_every` and `max_rows_between_solves`; `gram_block_rows` and `gram_threads` for a wide `ewridge`; only the `stats` you read for `ew_cov` | §18, §30, §37, §38, §44 |
+| a grid slower than one model | a ridge or feature-set grid shares one set of sums; each half-life of a grid keeps its own, run alongside the others | the number of half-lives | §28, §44 |
 | small chunks slower than large ones | a fixed overhead per call: handing the frame across, gathering the columns and assembling the output, about 8 ms at 10,000 columns | `chunk_size`, 100,000 by default (`chunk_rows` in the sections written before it was renamed) | §12, §20 |
 | memory that grows with the file | Polars reading ahead in the parquet file, sized from its thread count, and the allocator keeping pages it has freed | `POLARS_ROW_GROUP_PREFETCH_SIZE`, `POLARS_MAX_THREADS` | §11 |
 | an eager `fit_predict` above its output | a spec of many groups keeps every run's buffers until its streams are done, about its output again; a spec of one group or none holds its output and two runs | a smaller frame, or the streaming path, whose peak is a chunk's | §40 |
@@ -5273,6 +5298,151 @@ because one thread is 87% faster, not because more threads are slower.
 | eight single-group specs, one at a time | 726 ms | 641 ms |
 | 12M rows, 14 Polars and 14 bank threads | 1.9 s, 0.85 GB | 1.63 s, 0.86 GB |
 | 12M rows, 4 Polars and 14 bank threads | 2.1 s, 0.61 GB | 1.87 s, 0.58 GB |
+
+### 44. The README's numbers, re-measured (2026-10-24)
+
+*Provenance: measured at `6e9570d`, 1.2.0 with the changes made since, on
+polars 2.0.0 and Python 3.12.13. An Apple M4 Pro. Load: a load average of
+2.8 to 3.6 for the benchmark's five runs, 2.6 to 3.0 for the recipes, and
+2.3 to 3.1 for the bank's share.*
+
+The README's throughput table was §28's run 2 at `5e96018`, three releases
+old, and more than half of its rows had moved past the 11% that §28 found a
+run moves by. So it was measured again, and release step 2
+(`docs/RELEASE-READINESS.md`) now pastes this run into the README at every
+release, with its date, commit and load.
+
+#### The benchmark
+
+`uv run python scripts/benchmark.py --markdown` five times in a row, each
+run the best of 3 over 200k rows, on a release build of the extension
+(`maturin develop --release`). The README carries the best of the five
+for each row. *Spread* is the gap between a row's fastest and slowest run,
+over its fastest:
+
+| configuration | notes | the README before | run 1 | run 2 | run 3 | run 4 | run 5 | best, the README now | spread | move |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| ewridge k=5 | 1 target, 1 half_life | 6,199,532 | 5,308,531 | 5,241,537 | 5,176,916 | 5,170,107 | 5,118,297 | 5,308,531 | 3.6% | −14% |
+| ewridge k=20 | 1 target, 1 half_life | 3,068,424 | 3,170,104 | 3,152,401 | 3,113,529 | 3,115,534 | 3,100,986 | 3,170,104 | 2.2% | +3% |
+| ewridge k=50 | 1 target, 1 half_life | 946,975 | 1,006,740 | 997,690 | 989,885 | 992,659 | 990,099 | 1,006,740 | 1.7% | +6% |
+| ewridge k=20, 1 target(s) | 1 half_life |  | 3,170,900 | 3,117,347 | 3,114,658 | 3,118,631 | 3,093,651 | 3,170,900 | 2.4% |  |
+| ewridge k=20, 10 target(s) | 1 half_life | 1,653,010 | 1,606,239 | 1,589,407 | 1,573,642 | 1,573,962 | 1,557,572 | 1,606,239 | 3.0% | −3% |
+| ewridge k=20, 1 half_life(s) | 1 target |  | 2,531,679 | 2,484,810 | 2,482,538 | 2,484,262 | 2,453,896 | 2,531,679 | 3.1% |  |
+| ewridge k=20, 5 half_life(s) | 1 target | 1,714,699 | 1,792,804 | 1,738,172 | 1,769,590 | 1,730,512 | 1,719,412 | 1,792,804 | 4.1% | +5% |
+| ewridge | k=20, 1 target |  | 3,181,570 | 3,101,076 | 3,102,834 | 3,107,703 | 3,100,827 | 3,181,570 | 2.5% |  |
+| rls | k=20, 1 target | 1,662,687 | 1,754,311 | 1,735,791 | 1,684,950 | 1,700,115 | 1,678,038 | 1,754,311 | 4.3% | +6% |
+| kalman | k=20, 1 target | 1,876,826 | 1,780,012 | 1,810,799 | 1,748,144 | 1,760,285 | 1,771,390 | 1,810,799 | 3.5% | −4% |
+| lasso | k=20, 1 target | 1,629,739 | 1,756,243 | 1,737,150 | 1,722,443 | 1,728,050 | 1,707,315 | 1,756,243 | 2.8% | +8% |
+| huber | k=20, 1 target | 3,267,509 | 3,249,208 | 3,209,650 | 3,180,858 | 3,196,018 | 3,189,884 | 3,249,208 | 2.1% | −1% |
+| ftrl | k=20, 1 target | 3,873,282 | 5,027,531 | 5,001,563 | 5,013,280 | 4,972,146 | 4,959,661 | 5,027,531 | 1.3% | +30% |
+| ewridge + conformal | k=20, 90% interval | 3,070,074 | 3,090,637 | 3,029,517 | 3,071,707 | 3,052,012 | 2,973,720 | 3,090,637 | 3.8% | +1% |
+| sgd | k=20, squared loss, standardize=False | 8,423,373 | 8,380,020 | 8,289,039 | 8,375,282 | 8,282,674 | 8,264,065 | 8,380,020 | 1.4% | −1% |
+| sgd, simplex | k=20, coef >= 0, sum 1 | 2,288,779 | 2,495,205 | 2,455,654 | 2,445,110 | 2,428,624 | 2,398,785 | 2,495,205 | 3.9% | +9% |
+| pa | k=20, standardize=False | 8,284,518 | 8,640,631 | 8,638,329 | 8,644,801 | 8,653,217 | 8,530,649 | 8,653,217 | 1.4% | +4% |
+| kalman + revert | k=20, revert_half_life | 1,677,506 | 1,542,118 | 1,553,487 | 1,551,661 | 1,545,964 | 1,551,370 | 1,553,487 | 0.7% | −7% |
+| ew_cov | k=20: mean, std, corr (230 statistics) | 1,655,993 | 2,087,094 | 2,075,686 | 2,080,394 | 2,063,689 | 2,072,858 | 2,087,094 | 1.1% | +26% |
+| ew_cov, mahal | k=20: mean, mahal, mahal_q0.99 | 692,690 | 798,069 | 799,744 | 793,451 | 788,917 | 780,715 | 799,744 | 2.4% | +15% |
+| ew_class, full | k=20, 3 classes (QDA) | 466,466 | 511,732 | 510,172 | 508,582 | 500,185 | 503,376 | 511,732 | 2.3% | +10% |
+| ew_class, shared | k=20, 3 classes (LDA) | 531,384 | 602,587 | 593,320 | 588,801 | 587,790 | 585,172 | 602,587 | 2.9% | +13% |
+| ew_class, diagonal | k=20, 3 classes (naive Bayes) | 2,448,700 | 2,461,667 | 2,438,027 | 2,386,186 | 2,381,607 | 2,389,875 | 2,461,667 | 3.3% | +1% |
+| kmeans | 4 features, K=8 | 4,590,376 | 5,523,590 | 5,537,903 | 5,505,629 | 5,471,382 | 5,443,911 | 5,537,903 | 1.7% | +21% |
+| kmeans | k=20, K=8 | 2,383,197 | 3,397,876 | 3,361,639 | 3,324,143 | 3,297,546 | 3,338,350 | 3,397,876 | 3.0% | +43% |
+| micro | 4 features, eps=1 | 8,799,815 | 7,384,104 | 7,310,699 | 7,344,031 | 7,320,242 | 7,310,276 | 7,384,104 | 1.0% | −16% |
+| seqtest | sign of one column | 14,919,853 | 14,870,257 | 14,731,020 | 14,665,669 | 14,638,430 | 14,572,523 | 14,870,257 | 2.0% | 0% |
+| deco | k=20, ew dynamics | 2,093,753 | 2,991,724 | 2,918,982 | 2,881,948 | 2,856,820 | 2,927,063 | 2,991,724 | 4.5% | +43% |
+| deco, blocks | k=20 in 4 blocks | 1,563,248 | 2,217,056 | 2,186,700 | 2,163,024 | 2,173,588 | 2,152,806 | 2,217,056 | 2.9% | +42% |
+| hmm | 4 features, K=2 | 1,182,841 | 1,448,084 | 1,425,041 | 1,408,969 | 1,419,657 | 1,415,103 | 1,448,084 | 2.7% | +22% |
+| hmm | k=20, K=2 | 325,937 | 381,254 | 375,053 | 372,631 | 374,739 | 371,731 | 381,254 | 2.5% | +17% |
+| corrchange, monitor | 4 features, horizon 500 | 449,526 | 4,962,636 | 4,913,939 | 4,818,643 | 4,847,535 | 4,813,878 | 4,962,636 | 3.0% | 11.0× |
+| corrchange, window | 4 features, window 100, permute every 500 | 173,711 | 449,380 | 438,911 | 436,807 | 443,758 | 440,768 | 449,380 | 2.8% | 2.6× |
+| bocpd | 4 features, diag, max_run 200 | 884,387 | 696,801 | 684,929 | 682,527 | 682,232 | 677,938 | 696,801 | 2.7% | −21% |
+| bocpd | 4 features, diag, max_run 20 | 884,622 | 703,994 | 696,477 | 692,583 | 694,516 | 690,529 | 703,994 | 1.9% | −20% |
+| bocpd, gaussian | 4 features, full covariance, max_run 200 | 568,724 | 736,270 | 728,915 | 726,876 | 728,240 | 717,267 | 736,270 | 2.6% | +29% |
+| rcov | 4 features, kernel, groups of 1000 | 3,385,427 | 3,758,286 | 3,854,778 | 3,867,135 | 3,909,091 | 3,900,815 | 3,909,091 | 3.9% | +15% |
+| ew_cov, lags | k=20: mean, cov, lags 1-5 | 1,123,565 | 1,378,347 | 1,376,630 | 1,371,687 | 1,370,621 | 1,375,156 | 1,378,347 | 0.6% | +23% |
+| quantile | k=20, the median |  | 1,637,164 | 1,630,013 | 1,628,469 | 1,611,156 | 1,610,270 | 1,637,164 | 1.6% |  |
+| holt | level and trend of one column |  | 11,467,096 | 11,342,075 | 11,287,266 | 11,090,803 | 11,149,930 | 11,467,096 | 3.3% |  |
+| marginal | 20 features against one target |  | 10,442,705 | 10,316,613 | 10,353,374 | 10,284,363 | 10,246,798 | 10,442,705 | 1.9% |  |
+| audit | 20 continuous columns, 256 counters |  | 960,082 | 949,491 | 939,545 | 933,423 | 932,841 | 960,082 | 2.8% |  |
+| ew_cov, write_parquet struct | k=20, 230 statistics: the writer alone |  | 256,889 | 256,702 | 253,515 | 253,940 | 253,716 | 256,889 | 1.3% |  |
+| ew_cov, write_parquet flat | k=20, 230 statistics: the writer alone |  | 2,531,803 | 2,688,945 | 2,585,824 | 2,606,166 | 2,682,411 | 2,688,945 | 5.8% |  |
+
+**The five runs of a row lay within 0.6% to 5.8% of one another**, the
+widest the parquet writer's flat row, at a load of about three. That is
+half §28's spread, so read a single row to about a twentieth here, and to a
+tenth on a busier day.
+
+**19 of the 35 rows the README had moved by more than 11% since
+2026-09-29, both ways.** Slower: `bocpd`'s diagonal rows by a fifth,
+`micro` by 16% and `ewridge` at five features by 14%. Faster: `corrchange`'s
+monitor 11 times, since it no longer closes a span in time quadratic in the
+span, and its window kind 2.6 times, since it no longer copies its two
+windows every row; `deco` and `kmeans` at 20 features by 42–43%; `ftrl`,
+`bocpd`'s full covariance and `ew_cov`'s moments by 23–30%. Four rows are
+new to the README: `quantile`, `holt`, `marginal` and `audit`. The two
+writer rows time Polars' parquet writer on `ew_cov`'s output, not a model,
+and the README leaves them out.
+
+**`bocpd`'s full covariance now runs faster than its diagonal at four
+features.** The `max_run=20` row reads the same as `max_run=200`, so
+`prune_below` keeps fewer than 20 runs on these rows, and at so few runs
+and four features the factorization the full form adds costs less than
+whatever the diagonal form does per feature. Its `O(runs · d³)` still
+dominates as `d` grows.
+
+#### The recipes
+
+The README's first timing recipe printed 2.8 and 0.9 million rows a second
+at 5 and 50 features, against 2.2 and 0.8 before, the same in each of three
+runs. The headline's printed 39.4, 2.9, 2.9 and 6.5 million rows a second
+for the read, learning, learning and scoring, and scoring from a state, the
+best of three, against 26.7, 2.3, 2.4 and 6.0 before.
+
+#### The bank's own share, by width
+
+The headline used to say a bank's row is the model's own arithmetic. That
+holds for a wide model, not for the narrow shapes the README's table leads
+with. A Rust example timed the model's step, `AnyModel::step_into` in a
+loop into one kept `Step`, against `Bank::fit_predict` of the same rows as
+one frame, one stream on a pool of one thread, after the same warm-up of
+2,000 rows (500 for `ew_cov` at 500 features, 3,000 for `ewridge`). It ran
+on the system allocator, where the wheel uses Polars' jemalloc. The models
+are the benchmark's: half-life 1,000, `sgd` at a learning rate of 0.01
+standardized, `ew_cov`'s default statistics (mean, std, corr). Over 200,000
+rows at 5 features, 100,000 at 50 (50,000 for `ew_cov`), 20,000 for `sgd`
+at 500, 4,000 for `ewridge` and 1,000 for `ew_cov`; the best of four
+passes, three for `ew_cov`, ns a row:
+
+| model | features | output fields | the model's step | through the bank | bank over step |
+|---|---:|---:|---:|---:|---:|
+| `seqtest` | 0 | 7 | 13 | 70 | 5.4× |
+| `sgd` | 5 | 6 | 41 | 130 | 3.2× |
+| `ewridge` | 5 | 7 | 118 | 235 | 2.0× |
+| `ew_cov` | 5 | 23 | 57 | 153 | 2.7× |
+| `sgd` | 50 | 6 | 159 | 296 | 1.9× |
+| `ewridge` | 50 | 7 | 968 | 1,141 | 1.2× |
+| `ew_cov` | 50 | 1,328 | 1,359 | 4,204 | 3.1× |
+| `sgd` | 500 | 6 | 1,357 | 2,349 | 1.7× |
+| `ewridge` | 500 | 7 | 123,433 | 129,397 | 1.0–1.2× |
+| `ew_cov` | 500 | 125,753 | 126,995 | 603,508 | 4.8× |
+
+**Around each row the bank adds about 60 to 170 ns at up to 50 features
+and one target, about 2 ns for each feature it copies in, and 2 to 4 ns
+for each field it writes out.** It clocks the row, keeps the schedule,
+copies the features into rows, and writes each field into the run's
+buffers.
+So the bank's share is most of a sequential test's row, half or more of a
+five-feature regression's, a sixth of a 50-feature ridge's and almost none
+of a 500-feature one's, whose row is its solve: `ewridge` at 500 read 1.01,
+1.13, 1.18 and 1.04 in four passes. A model whose row is cheap against
+its features, `sgd`, keeps the copy in: 1.7× at 500 features. A model that
+writes many fields a row, `ew_cov`, pays for the writes: the run's buffers
+hold each field's values together, so a row's fields land in as many
+places, and the writes outgrow the model as the fields grow. The instruction
+budgets read the same way at five features: `bank_ewridge_k5` counts
+5.75M instructions to `ewridge_k5`'s 2.96M, 1.9×, and `bank_seqtest`
+2.02M to `seqtest`'s 0.62M, 3.3×. A count does not see a cache miss, so it
+reads the wide `ew_cov`'s writes lower than the clock does.
 
 ## The window operators
 
