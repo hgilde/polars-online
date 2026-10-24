@@ -3056,6 +3056,11 @@ class TestHuberMadAgainstStatsmodels:
         # The control: the RMS scale, which the outliers inflate, is not.
         rms = self.slope(df, huber_scale="rms")
         assert abs(rms - theirs) > 4 * abs(ours - theirs) + 0.02, (rms, ours, theirs)
+        # RLS's sum-scale prior (task 272 (a)): with no decay the prior's
+        # weight against 20,000 rows is nothing, and the fit is the same
+        # M-estimate.
+        summed = self.slope(df, ridge_scale="sum")
+        assert abs(summed - theirs) < 0.01, (summed, theirs)
 
 
 class TestTheBinsAgainstScipyAndAStump:

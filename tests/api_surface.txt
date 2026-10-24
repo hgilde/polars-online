@@ -244,6 +244,7 @@
     solve_every = None
     max_rows_between_solves = None
     feature_sets = None
+    ridge_scale = 'mean'
     common
   kalman:
     name
@@ -650,6 +651,7 @@
     model.n_targets = 1
     model.quantile_eps = 0.001
     model.ridge = 1e-06
+    model.ridge_scale = false
     model.solve_every = 1.0
     model.solve_share = 0.013862943611198907
     model.standardize = false
@@ -810,6 +812,7 @@
     model.n_targets = 1
     model.quantile_eps = 0.2
     model.ridge = 1e-06
+    model.ridge_scale = false
     model.solve_every = 1.0
     model.solve_share = 0.013862943611198907
     model.standardize = false
@@ -2367,6 +2370,7 @@
   hmm.covariance_type: diag, full, tied
   hmm.init: farthest, first, k-means++, lloyd
   huber.huber_scale: mad, rms
+  huber.ridge_scale: mean, sum
   kmeans.init: farthest, first, k-means++, lloyd
   lasso.target_gaps: own_rows, pairwise
   lasso.window_budget: refuse, thin
@@ -2487,7 +2491,7 @@
     ftrl: alpha, beta, l1, l2, loss, strict_binary
     hmm: covariance_type, covs, exog_tvtp, init, learn, means, n_components, precision_prior, seed, transition, transition_prior, tvtp_coef, warm_rows
     holt: trend, trend_half_life
-    huber: feature_sets, huber_delta, huber_scale, huber_scale_half_life, max_rows_between_solves, ridge, solve_every, standardize
+    huber: feature_sets, huber_delta, huber_scale, huber_scale_half_life, max_rows_between_solves, ridge, ridge_scale, solve_every, standardize
     kalman: coef_half_life, obs_var, p0, q, revert_half_life, share_p, standardize
     kmeans: dead_frac, init, n_clusters, scale_floor, seed, split_merge, split_merge_every_rows, standardize, update_every_rows, warm_rows
     lasso: closed, l1_ratio, max_iter, max_rows_between_snapshots, max_rows_between_solves, penalties, select_half_life, snapshot_every, solve_every, target_gaps, tol, window_budget, window_size

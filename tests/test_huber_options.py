@@ -155,3 +155,87 @@ class TestFeatureSets:
             po.spec.huber("m", feature_sets={}, **COMMON)
         with pytest.raises(ValueError, match='feature set "a" lists "x0" more than once'):
             po.spec.huber("m", feature_sets={"a": ["x0", "x0"]}, **COMMON)
+
+
+class TestRidgeScale:
+    """``huber(ridge_scale="sum")`` is the Huber form of ``rls``, as
+    ``ewridge(ridge_scale="sum")`` is its least-squares form: at
+    ``huber_delta=inf``, solved on every row, all three give the same
+    predictions (``tests/test_rls.py`` holds the last two to each other)."""
+
+    @staticmethod
+    def _common(**kw):
+        return dict(
+            targets=["y0"],
+            features=["x0", "x1", "x2"],
+            clock="t",
+            half_life=300.0,
+            gap_cap=50.0,
+            weight="w",
+            min_weight=5.0,
+            **kw,
+        )
+
+    def _three(self, df, common, ridge):
+        hub = po.spec.huber(
+            "m", huber_delta=float("inf"), ridge=ridge, ridge_scale="sum", solve_every=0.0, **common
+        )
+        rls = po.spec.rls("m", delta=ridge, **common)
+        ew = po.spec.ewridge(
+            "m", ridge=ridge, ridge_scale="sum", max_rows_between_solves=1, **common
+        )
+        return [_field(po.ModelBank([s]).fit_predict(df), "pred_y0") for s in (hub, rls, ew)]
+
+    def test_at_an_infinite_cut_it_is_rls_and_ewridge(self):
+        from data import synthetic
+
+        df, _ = synthetic(seed=21, n_groups=1, n_rows=400, k=3, null_frac=0.0)
+        h, r, e = self._three(df, self._common(), 0.7)
+        both = np.isfinite(h) & np.isfinite(r) & np.isfinite(e)
+        assert both.sum() > 350
+        assert np.max(np.abs(h[both] - r[both])) < 1e-9
+        assert np.max(np.abs(h[both] - e[both])) < 1e-9
+
+    def test_leading_zero_weight_rows_age_the_prior_as_rls_does(self):
+        rng = np.random.default_rng(3)
+        n = 60
+        x = rng.standard_normal((n, 3))
+        df = pl.DataFrame(
+            {
+                "t": np.arange(float(n)),
+                "x0": x[:, 0],
+                "x1": x[:, 1],
+                "x2": x[:, 2],
+                "y0": x @ np.array([1.0, -2.0, 0.5]) + 0.1 * rng.standard_normal(n),
+                "w": [0.0, 0.0, 0.0] + [1.0] * (n - 3),
+            }
+        )
+        h, r, _ = self._three(df, self._common() | {"half_life": 5.0, "gap_cap": 10.0}, 5.0)
+        both = np.isfinite(h) & np.isfinite(r)
+        assert both.sum() > 40
+        assert np.max(np.abs(h[both] - r[both])) < 1e-9
+
+    def test_the_sum_scale_prior_fades_as_the_rows_arrive(self):
+        """Under ``"sum"`` the prior reaches the intercept, at a weight that
+        falls against the rows' as they arrive (here with no decay, as
+        ``ridge / W``), so the early fit sits far below the mean form's on a
+        target at 500 and the late one closer: 129 below in rows 10-60 and
+        within 3.7 in the last 200, as ``ewridge``'s two forms part."""
+        df = _frame()
+        c = dict(COMMON, targets=["y0"], half_life=float("inf"))
+        mean = _field(po.ModelBank([po.spec.huber("m", ridge=1.0, **c)]).fit_predict(df), "pred_y0")
+        summed = _field(
+            po.ModelBank([po.spec.huber("m", ridge=1.0, ridge_scale="sum", **c)]).fit_predict(df),
+            "pred_y0",
+        )
+        early = np.nanmax(np.abs(mean[10:60] - summed[10:60]))
+        late = np.nanmax(np.abs(mean[-200:] - summed[-200:]))
+        assert early > 5.0 and late < early / 10, (early, late)
+
+    def test_it_is_refused_where_ewridges_is(self):
+        with pytest.raises(ValueError, match="ridge_scale is incompatible with standardize"):
+            po.spec.huber("m", ridge_scale="sum", standardize=True, **COMMON)
+        with pytest.raises(ValueError, match="two or more feature sets"):
+            po.spec.huber("m", ridge_scale="sum", feature_sets=SETS, **COMMON)
+        with pytest.raises(ValueError, match='ridge_scale must be one of "mean", "sum"'):
+            po.spec.huber("m", ridge_scale="median", **COMMON)  # type: ignore[arg-type]

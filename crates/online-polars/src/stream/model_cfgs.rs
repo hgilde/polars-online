@@ -500,6 +500,7 @@ pub fn huber_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         solve_every,
         max_rows_between_solves,
         feature_sets: _,
+        ridge_scale: _,
     } = &spec.model
     else {
         return Err("not a huber spec".into());
@@ -528,6 +529,7 @@ pub fn huber_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             .as_ref()
             .map(|h| Decay::Halflife(h.value())),
         feature_sets: huber_feature_sets(spec),
+        ridge_scale: huber_ridge_scale_sum(spec),
     };
     let mut m = Robust::new(cfg)?;
     // Each target's own threshold, for its own first solve (S9b).
@@ -555,6 +557,17 @@ fn huber_feature_sets(spec: &Spec) -> Vec<(String, Vec<usize>)> {
             (name.clone(), idx)
         })
         .collect()
+}
+
+/// Whether a `huber` spec asks for RLS's sum-scale prior.
+fn huber_ridge_scale_sum(spec: &Spec) -> bool {
+    matches!(
+        spec.model,
+        ModelKind::Huber {
+            ridge_scale: crate::spec::RidgeScale::Sum,
+            ..
+        }
+    )
 }
 
 /// A `quantile` spec's model.
@@ -590,6 +603,7 @@ pub fn quantile_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         huber_scale: HuberScale::Rms,
         huber_scale_decay: None,
         feature_sets: Vec::new(),
+        ridge_scale: false,
     };
     let mut m = Robust::new(cfg)?;
     // Each target's own threshold, for its own first solve (S9b).

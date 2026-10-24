@@ -747,6 +747,14 @@ the weights the largest set's residuals chose, which is not a Huber fit of
 its own. `quantile` takes no `feature_sets`: its rows outside the band step
 the fit through one system per target.
 
+**`huber`'s `ridge_scale="sum"` is the Huber form of `rls`.** It puts RLS's
+prior on the decaying sum scale in place of the ridge on the means, as
+`ewridge`'s does: `(W S + prior_scale · ridge · I) b = W r`, with `W` the
+weight the target's sums hold after the Huber weights, and the intercept
+penalized too. The prior fades as the rows arrive. At `huber_delta=inf`,
+solved on every row, it gives `rls`'s predictions with `delta=ridge`
+within 1e-9, as `ewridge(ridge_scale="sum")` does.
+
 **The scale `σ` is the part of Huber's estimator that makes it robust.**
 The cut is `δσ`, so a scale that the outliers inflate moves the cut out of
 their way. `huber_scale=` chooses between two scales:

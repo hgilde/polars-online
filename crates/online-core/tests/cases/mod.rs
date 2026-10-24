@@ -311,6 +311,7 @@ fn robust_cfg(loss: RobustLoss) -> RobustCfg {
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
         feature_sets: Vec::new(),
+        ridge_scale: false,
     }
 }
 
@@ -650,6 +651,23 @@ pub fn all() -> Vec<Case> {
             Robust::new(RobustCfg {
                 huber_scale: online_core::HuberScale::Mad,
                 feature_sets: vec![("one".into(), vec![1]), ("all".into(), (0..K).collect())],
+                ..robust_cfg(RobustLoss::Huber { delta: 1.5 })
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            40
+        ),
+        // RLS's sum-scale prior on each target's raw moments (schema 63,
+        // docs/PLAN.md task 272 (a)), its prior scale aged in the sums.
+        case!(
+            "huber_sum",
+            "Robust",
+            Robust,
+            Robust::new(RobustCfg {
+                ridge: 0.5,
+                standardize: false,
+                ridge_scale: true,
                 ..robust_cfg(RobustLoss::Huber { delta: 1.5 })
             })
             .unwrap(),

@@ -27,6 +27,7 @@ def huber(
     solve_every: float | Duration | None = None,
     max_rows_between_solves: int | None = None,
     feature_sets: dict[str, list[str]] | None = None,
+    ridge_scale: Literal["mean", "sum"] = "mean",
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Huber regression: :func:`ewridge` with the rows that miss by far
@@ -171,6 +172,19 @@ def huber(
         squares fit at the weights the largest set's residuals chose, not a
         Huber fit of its own. The residual scale ``s`` is the largest set's
         too.
+    ``ridge_scale``
+        What the ridge is scaled against, as for :func:`ewridge`: ``"mean"``
+        (the default), a fixed penalty on the mean-form sums whose pull is
+        permanent, or ``"sum"``, RLS's prior on the decaying sum scale,
+        ``(W * S + prior_scale * ridge * I) b = W * r``, which fades as the
+        rows arrive and penalizes the intercept too. ``W`` is the weight the
+        target's sums hold, the Huber weights applied. With
+        ``huber_delta=inf`` and ``"sum"``, the fit is :func:`rls`'s with
+        ``delta=ridge``, solved on the schedule rather than on every row, so
+        ``huber(ridge_scale="sum")`` is the Huber form of :func:`rls` as
+        ``ewridge(ridge_scale="sum")`` is its least-squares form. ``"sum"``
+        is refused beside ``standardize`` and beside two or more
+        ``feature_sets``.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the
@@ -235,6 +249,8 @@ def huber(
         "feature_sets": (
             [[k, list(v)] for k, v in feature_sets.items()] if feature_sets is not None else None
         ),
+        # Written only away from its default, which the Rust spec skips.
+        "ridge_scale": None if ridge_scale == "mean" else ridge_scale,
     }
     # Written only when given: the Rust spec skips them when absent.
     skipped = _SKIPPED_WHEN_ABSENT["huber"]

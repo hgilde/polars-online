@@ -30,6 +30,7 @@ fn base(loss: RobustLoss) -> RobustCfg {
         huber_scale: HuberScale::Rms,
         huber_scale_decay: None,
         feature_sets: Vec::new(),
+        ridge_scale: false,
     }
 }
 

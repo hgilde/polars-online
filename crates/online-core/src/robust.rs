@@ -292,6 +292,18 @@ pub struct RobustCfg {
     /// State since schema 63, empty in a state written before it.
     #[serde(default)]
     pub feature_sets: Vec<(String, Vec<usize>)>,
+    /// RLS's decaying prior on the sum scale in place of the ridge on the
+    /// means, as [`crate::EwRidgeCfg::ridge_scale`]: each target solves
+    /// `(W_j S_j + p_j · ridge · I) β = W_j r_j` over its raw moments, `W_j`
+    /// the weight its sums hold (Huber's reweighted rows) and `p_j` the
+    /// product of the decay factors they have aged by, so the prior fades as
+    /// the rows arrive and the intercept is penalized with the slopes. At
+    /// `huber_delta = inf` that is `rls`'s fit, and `ewridge`'s under the
+    /// same setting. Huber only, and refused beside `standardize` and two or
+    /// more feature sets, as `ewridge`'s is (docs/PLAN.md task 272 (a)).
+    /// State since schema 63, false in a state written before it.
+    #[serde(default)]
+    pub ridge_scale: bool,
 }
 
 /// A target's band system as a solve factorizes it -- `A`, the band Gram
@@ -454,6 +466,20 @@ impl RobustCfg {
                 "{kind}: feature_sets are for huber: a quantile fit's nudges read one band \
                  system per target"
             ));
+        }
+        if self.ridge_scale {
+            if !matches!(self.loss, RobustLoss::Huber { .. }) {
+                return Err(format!(
+                    "{kind}: ridge_scale is for huber: a quantile fit's nudges step the mean-form \
+                     system"
+                ));
+            }
+            if self.standardize || self.n_sets() > 1 {
+                return Err(format!(
+                    "{kind}: ridge_scale is incompatible with standardize and with two or more \
+                     feature sets"
+                ));
+            }
         }
         for (name, idx) in &self.feature_sets {
             if idx.is_empty() {
@@ -674,7 +700,11 @@ impl PendingShares {
             let mut out = self.base.clone();
             let inv = self.factor.inverse_diagonal(self.to.len());
             for (&slot, inv) in self.to.iter().zip(inv) {
-                out[slot] = (1.0 - self.lam * inv).clamp(0.0, 1.0);
+                // NaN in the base is no share: the intercept, which the
+                // sum-scale system solves with the slopes.
+                if !out[slot].is_nan() {
+                    out[slot] = (1.0 - self.lam * inv).clamp(0.0, 1.0);
+                }
             }
             out
         })
@@ -977,7 +1007,9 @@ impl Robust {
                 // `None` is a solve that failed at every jitter: counted, and
                 // the previous fit kept. It returned through `?` before the
                 // count (review 2026-09-12, S13).
-                let solved = if self.cfg.fit_intercept {
+                let solved = if self.cfg.ridge_scale {
+                    self.solve_sum(k, j, c)
+                } else if self.cfg.fit_intercept {
                     self.solve_centred(k, j, c)
                 } else {
                     self.solve_through_origin(k, j, c)
@@ -1372,6 +1404,64 @@ impl Robust {
             Some(sys)
         });
         *self.systems.slot(n, j) = moved;
+    }
+
+    /// The solve under `ridge_scale` (`RobustCfg::ridge_scale`): RLS's
+    /// system on the sum scale over the raw moments of the slots set `c`
+    /// keeps, the intercept's among them, `(W·E[z zᵀ] + p·ridge·I) β =
+    /// W·E[z·y]`, with `E[z·y] = c + m·ȳ` one step from what is kept, as
+    /// [`Self::solve_through_origin`] forms it. `ewridge`'s `ridge_scale`
+    /// solve, on this target's own sums. The data shares read `λ = p·ridge`
+    /// plus the factor's jitter, as `ewridge`'s do; the intercept's is NaN.
+    /// `None` when every jitter failed.
+    fn solve_sum(
+        &mut self,
+        k: usize,
+        j: usize,
+        c: usize,
+    ) -> Option<(Vec<f64>, Option<PendingShares>)> {
+        let cov = &self.cov[j];
+        let w = cov.n_eff();
+        let prior = cov.prior_scale() * self.cfg.ridge;
+        let off = usize::from(self.cfg.fit_intercept);
+        let keep: Vec<usize> = (0..k)
+            .filter(|&i| {
+                i < off
+                    || self
+                        .cfg
+                        .set_of(c)
+                        .is_none_or(|set| set.contains(&(i - off)))
+            })
+            .collect();
+        let kk = keep.len();
+        let mut a = vec![0.0; kk * kk];
+        for (p, &i) in keep.iter().enumerate() {
+            for (q, &jj) in keep.iter().enumerate() {
+                a[p * kk + q] = w * cov.raw(i, jj);
+            }
+            a[p * kk + p] += prior;
+        }
+        let ybar = self.ybar[j];
+        let b: Vec<f64> = keep
+            .iter()
+            .map(|&i| w * (self.cross[j][i] + cov.mean(i) * ybar))
+            .collect();
+        let f = SpdFactor::of(&a, kk)?;
+        let sol = f.solve(&b, kk, 1);
+        self.solve_failures += u64::from(f.attempts());
+        let mut out = vec![0.0; k];
+        for (p, &i) in keep.iter().enumerate() {
+            out[i] = sol[p];
+        }
+        let lam = prior + f.jitter();
+        let pending = PendingShares {
+            factor: f,
+            lam,
+            to: keep,
+            base: PendingShares::base(k, self.cfg.fit_intercept, self.cfg.set_of(c)),
+            shares: OnceLock::new(),
+        };
+        Some((out, Some(pending)))
     }
 
     /// The solve through the origin, on the raw system: every slot is a
@@ -1902,6 +1992,7 @@ mod tests {
             huber_scale: HuberScale::Rms,
             huber_scale_decay: None,
             feature_sets: Vec::new(),
+            ridge_scale: false,
         }
     }
 

@@ -31,6 +31,7 @@ fn huber(k: usize, m: usize) -> RobustCfg {
         huber_scale: HuberScale::Mad,
         huber_scale_decay: Some(Decay::Halflife(60.0)),
         feature_sets: Vec::new(),
+        ridge_scale: false,
     }
 }
 
@@ -266,5 +267,151 @@ fn feature_sets_are_refused_where_they_mean_nothing() {
             ..huber(3, 1)
         },
         "more than once",
+    );
+}
+
+/// `huber(ridge_scale)` at `huber_delta = inf`, solved on every row, is
+/// `rls` with `delta = ridge` and `ewridge(ridge_scale)` under `own_rows`:
+/// every row at its own weight, RLS's prior on the decaying sum scale, the
+/// intercept penalized. The identity `rls.rs` holds `ewridge` to, held here
+/// for the Huber form, on a stream whose second target is null on some
+/// rows: each target's sums learn its own rows and age over the rest, as
+/// `rls` does per target and `ewridge`'s `own_rows` Gram does.
+#[test]
+fn the_sum_scale_huber_at_an_infinite_cut_is_rls() {
+    let (k, hl, ridge) = (3usize, 40.0, 0.7);
+    let mut hub = Robust::new(RobustCfg {
+        loss: RobustLoss::Huber {
+            delta: f64::INFINITY,
+        },
+        decay: Decay::Halflife(hl),
+        ridge,
+        ridge_scale: true,
+        min_weight: 0.0,
+        ..huber(k, 2)
+    })
+    .unwrap();
+    let mut rls: Vec<crate::Rls> = (0..2)
+        .map(|_| {
+            crate::Rls::new(crate::RlsCfg {
+                n_features: k,
+                n_targets: 1,
+                fit_intercept: true,
+                decay: Decay::Halflife(hl),
+                delta: ridge,
+                coef_prior: None,
+                min_weight: 0.0,
+            })
+            .unwrap()
+        })
+        .collect();
+    let mut ew = EwRidge::new(EwRidgeCfg {
+        n_targets: 2,
+        ridge_scale: true,
+        ..ridge_on(k, Decay::Halflife(hl), ridge).cfg().clone()
+    })
+    .unwrap();
+    let mut s = 99u64;
+    let (mut worst_rls, mut worst_ew, mut compared) = (0.0f64, 0.0f64, 0);
+    for i in 0..400 {
+        let x: Vec<f64> = (0..k).map(|_| lcg(&mut s)).collect();
+        let y0 = 1.5 * x[0] - x[1] + 0.3 + 0.05 * lcg(&mut s);
+        let y1 = (i % 7 != 3).then(|| 4.0 + 0.2 * x[2] + 0.01 * lcg(&mut s));
+        let d = if i == 0 { 0.0 } else { 0.5 + lcg(&mut s).abs() };
+        // Two leading rows of weight 0 age the prior and teach nothing.
+        let w = if i < 2 { 0.0 } else { 0.5 + lcg(&mut s).abs() };
+        let y = [Some(y0), y1];
+        let h = hub.step(&x, &y, d, w);
+        let e = ew.step(&x, &y, d, w);
+        for j in 0..2 {
+            let r = rls[j].step(&x, &[y[j]], d, w);
+            if i > 8 && h.pred[j].is_finite() {
+                compared += 1;
+                worst_rls = worst_rls.max((h.pred[j] - r.pred[0]).abs());
+                worst_ew = worst_ew.max((h.pred[j] - e.pred[j]).abs());
+            }
+        }
+    }
+    assert!(compared > 700, "{compared}");
+    assert!(worst_rls < 1e-9, "huber against rls: {worst_rls:e}");
+    assert!(worst_ew < 1e-9, "huber against ewridge: {worst_ew:e}");
+}
+
+/// Under the sum scale a cut that binds still weighs the rows, and the
+/// prior's pull fades: a constant target's intercept, shrunk toward 0 at
+/// first, reaches the target as the rows arrive, where the mean-form ridge
+/// at the same value holds it short for good.
+#[test]
+fn the_sum_scale_prior_fades_and_the_mean_one_does_not() {
+    let fit = |sum: bool| {
+        let mut m = Robust::new(RobustCfg {
+            decay: Decay::Halflife(50.0),
+            ridge: 10.0,
+            ridge_scale: sum,
+            min_weight: 0.0,
+            ..huber(1, 1)
+        })
+        .unwrap();
+        let mut s = 3u64;
+        let mut at = Vec::new();
+        for i in 0..300 {
+            let x = [lcg(&mut s)];
+            m.step(&x, &[Some(5.0)], f64::from(u8::from(i > 0)), 1.0);
+            if i == 19 || i == 299 {
+                at.push(m.coefficients().unwrap()[0][0]);
+            }
+        }
+        at
+    };
+    let sum = fit(true);
+    assert!(sum[0] < 4.5 && (sum[1] - 5.0).abs() < 0.02, "{sum:?}");
+    let mean = fit(false);
+    // The mean-form ridge leaves the intercept unpenalized: 5 throughout.
+    assert!(
+        (mean[0] - 5.0).abs() < 1e-9 && (mean[1] - 5.0).abs() < 1e-9,
+        "{mean:?}"
+    );
+}
+
+#[test]
+fn ridge_scale_is_refused_where_ewridge_refuses_it() {
+    let bad = |cfg: RobustCfg, want: &str| match Robust::new(cfg) {
+        Err(e) => assert!(e.contains(want), "{e}"),
+        Ok(_) => panic!("accepted; wanted {want}"),
+    };
+    bad(
+        RobustCfg {
+            ridge_scale: true,
+            standardize: true,
+            ..huber(3, 1)
+        },
+        "ridge_scale is incompatible with standardize",
+    );
+    bad(
+        RobustCfg {
+            ridge_scale: true,
+            feature_sets: vec![("a".into(), vec![0]), ("b".into(), vec![1])],
+            ..huber(3, 1)
+        },
+        "two or more feature sets",
+    );
+    bad(
+        RobustCfg {
+            ridge_scale: true,
+            loss: RobustLoss::Quantile { tau: 0.5 },
+            huber_scale: HuberScale::Rms,
+            huber_scale_decay: None,
+            ..huber(3, 1)
+        },
+        "quantile: ridge_scale is for huber",
+    );
+    // One set is no grid, as for `ewridge`.
+    assert!(
+        Robust::new(RobustCfg {
+            ridge_scale: true,
+            feature_sets: vec![("a".into(), vec![0, 2])],
+            ..huber(3, 1)
+        })
+        .is_ok()
     );
 }

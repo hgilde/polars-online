@@ -387,6 +387,7 @@ fn robust_cfg(loss: RobustLoss) -> RobustCfg {
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
         feature_sets: Vec::new(),
+        ridge_scale: false,
     }
 }
 

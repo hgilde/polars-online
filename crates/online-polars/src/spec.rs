@@ -421,6 +421,13 @@ pub enum RidgeScale {
     Sum,
 }
 
+impl RidgeScale {
+    /// The default, which a `huber` spec does not write.
+    pub fn is_mean(&self) -> bool {
+        *self == Self::Mean
+    }
+}
+
 /// A windowed model's `closed`: the window operators' name and two of its
 /// values (`crate::windows::Closed`, Polars' `rolling_*_by(closed=)`;
 /// docs/PLAN.md task 196, N17), which edge of the window holds the row
@@ -693,6 +700,13 @@ pub enum ModelKind {
         /// it did.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         feature_sets: Option<Vec<(String, Vec<String>)>>,
+        /// `"mean"` (the default), the ridge on the means, or `"sum"`,
+        /// RLS's decaying prior on the sum scale, as `EwRidge`'s: at
+        /// `huber_delta = inf` the fit is `rls`'s (docs/PLAN.md task 272
+        /// (a)). Skipped at its default, so a spec written before it
+        /// serializes as it did.
+        #[serde(default, skip_serializing_if = "RidgeScale::is_mean")]
+        ridge_scale: RidgeScale,
     },
     /// Quantile regression at level `quantile` (docs/PLAN.md §4.5).
     Quantile {
