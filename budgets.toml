@@ -145,6 +145,45 @@ what = "Bank::fit_predict of one frame of 8,192 rows, ew_cov's 230 statistics, o
 budget = 168992955
 release = 167032168
 
+# Added with the review of 2026-10-23 (task 270 (e)): no budget until CI's
+# first count, which `scripts/budgets.py apply` writes.
+
+[instructions.rls]
+what = "rls, 20 features, delta 1, half-life 1000: AnyModel::step"
+
+[instructions.quantile]
+what = "quantile, the median, 20 features, half-life 1000: AnyModel::step"
+
+[instructions.ftrl]
+what = "ftrl, 20 features, logistic loss, half-life 1000: AnyModel::step"
+
+[instructions.holt]
+what = "holt, level and trend of one column, half-life 1000: AnyModel::step"
+
+[instructions.marginal]
+what = "marginal, 20 features against one target, half-life 1000: AnyModel::step"
+
+[instructions.ew_class]
+what = "ew_class, 20 features, 3 classes, full covariance, precision prior 1: AnyModel::step"
+
+[instructions.deco]
+what = "deco, 20 features, ew dynamics: AnyModel::step"
+
+[instructions.hmm]
+what = "hmm, 4 features, 2 states, full covariance, precision prior 1: AnyModel::step"
+
+[instructions.rcov]
+what = "rcov, 4 features, kernel, the rows a block takes in: AnyModel::step"
+
+[instructions.audit_continuous]
+what = "audit, one continuous column, 256 counters: AnyModel::step, past the cap on nearly every row"
+
+[instructions.bocpd_full]
+what = "bocpd, 4 features, full covariance, max_run 200, prune below 1e-6: AnyModel::step"
+
+[instructions.ew_cov_lags]
+what = "ew_cov, 20 features, mean and cov, lags 1-5: AnyModel::step"
+
 # --- memory ----------------------------------------------------------------------
 # Bytes per row of every output field of every model at its fullest, over the
 # same rows (tests/test_budgets_memory.py), and the peak resident memory a
@@ -1088,11 +1127,6 @@ zscore_y = { budget = 8.125, release = 8.125 }
 zscore_z = { budget = 8.125, release = 8.125 }
 
 
-[rss.streaming_bounded]
-darwin = { budget = 178.3125, release = 170.8594 }
-linux = { budget = 154.2383, release = 171.1368 }
-windows = { budget = 151.8907, release = 164.8594 }
-
 [rss.ew_cov_wide]
 darwin = { budget = 410.0938, release = 414.6875 }
 linux = { budget = 416.7813, release = 418.5625 }
@@ -1102,6 +1136,24 @@ windows = { budget = 396.1915, release = 395.2266 }
 darwin = { budget = 104.1407, release = 104.5782 }
 linux = { budget = 123.1016, release = 123.8672 }
 windows = { budget = 80.129, release = 79.3321 }
+
+# Added with the review of 2026-10-23 (task 270 (e)): darwin's numbers are
+# placeholders from a local M4 Pro (load 9-22, the best of three runs' upper
+# reading), to be replaced by CI's floor-leg readings; linux and windows have
+# none until then. `streaming_5m` replaces `streaming_bounded`, a million rows
+# that a whole read passed: five million, the allocator's pages given back
+# at once, and a whole read the test's negative control.
+[rss.streaming_5m]
+darwin = { budget = 184.4219 }
+
+[rss.predict_wide]
+darwin = { budget = 164.2657 }
+
+[rss.ewridge_window]
+darwin = { budget = 171.4375 }
+
+[rss.bocpd_runs]
+darwin = { budget = 22.5625 }
 
 # --- raises and sign-offs -------------------------------------------------------
 [[raised]]

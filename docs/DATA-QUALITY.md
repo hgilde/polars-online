@@ -126,7 +126,7 @@ feature is missing, so it never sees the row. An audit reads every row of
 its columns and counts nulls, NaNs and infinities apart. It also counts
 repeated values, runs of one value, persistence like a random walk's,
 heavy tails, duplicated columns and the clock's stamps. Its memory does not
-grow with the rows: about 10 KiB a column. Run it alone before choosing a
+grow with the rows: about 14 KiB a column. Run it alone before choosing a
 model, or beside the models in the same pass, as the [three-fault example](#data-quality) does.
 Without one in the bank, `check()` says nothing about sentinels, frozen
 feeds, few values, random walks, tails, duplicates or the clock's spacing.

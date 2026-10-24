@@ -313,6 +313,20 @@ def main() -> None:
             "k=20: mean, cov, lags 1-5",
             po.spec.ew_cov("m", stats=["mean", "cov"], lags=[1, 2, 3, 4, 5], **no_target),
         ),
+        # The kinds the release's comparison of throughput could not see
+        # (review 9, J-3).
+        ("quantile", "k=20, the median", po.spec.quantile("m", quantile=0.5, **common)),
+        (
+            "holt",
+            "level and trend of one column",
+            po.spec.holt("m", targets=["y0"], clock="t", half_life=1000.0, gap_cap=100.0),
+        ),
+        ("marginal", "20 features against one target", po.spec.marginal("m", **common)),
+        (
+            "audit",
+            "20 continuous columns, 256 counters",
+            po.spec.audit("m", columns=feats, clock="t", gap_cap=100.0),
+        ),
     ]
     other_results: list[tuple[str, str, float]] = []
     for name, note, spec in others:

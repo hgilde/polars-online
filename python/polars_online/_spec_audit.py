@@ -111,20 +111,20 @@ def audit(
            are kept, with the largest step of all, as ``Duration`` on a
            temporal clock
 
-    **Cost.** A value already held costs a binary search among a column's
-    ``distinct_cap`` counters. A value not held costs a pass over them,
-    ``O(distinct_cap)``: below the cap the counters after it move to make room,
-    and past it every counter gives up one. A continuous column, whose values
-    are nearly all new, pays that pass on nearly every row. The digest
-    compresses every 256 rows, a few comparisons a row amortized, and
-    ``pairs`` costs ``k(k - 1)/2`` pair updates a row. Memory does not grow
-    with the rows: about 10 KiB a column at the defaults (``distinct_cap``
-    counters of 16 bytes, a digest of at most about 200 centroids and 256
+    **Cost.** A value costs one lookup in a hash table of a column's
+    counters, held or not. Past the cap, a new value takes one from every
+    counter, which empties the table at most once in ``distinct_cap + 1``
+    new values, so a continuous column pays a few operations a row at any
+    cap. The digest compresses every 256 rows, a few comparisons a row
+    amortized, and ``pairs`` costs ``k(k - 1)/2`` pair updates a row. Memory
+    does not grow with the rows: about 14 KiB a column at the defaults (a
+    table of ``distinct_cap`` counters, 16 bytes each and as much again of
+    the table's slack, a digest of at most about 200 centroids and 256
     values waiting), and 72 bytes a pair, in every group.
 
     Measured through :meth:`~polars_online.ModelBank.fit_predict` on frames
     in memory, of columns drawn from ``N(0, 1)``, the best of seven runs on an
-    Apple M4 Pro under a load average of 3 to 4 (polars 2.0.0):
+    Apple M4 Pro under a load average of 22 to 24 (polars 2.0.0):
 
     .. list-table::
        :header-rows: 1
@@ -133,17 +133,17 @@ def audit(
        * - what ran
          - million rows a second
        * - one column, 100,000 rows, at 256 / 8,192 / 65,536 counters
-         - 8.8 / 2.6 / 0.34
+         - 9.3 / 9.4 / 9.1
        * - ten columns, 500,000 rows
-         - 1.47
+         - 1.71
        * - the same, with ``pairs=True``
-         - 1.33
+         - 1.51
        * - an ``ewridge`` on the same columns (nine features, one target)
          - 4.4
 
-    The saved state of those ten columns held 4.9 KB a column
-    (:meth:`~polars_online.ModelBank.save_bytes`, 48,654 bytes, of which an
-    unfed bank is 988), and 4.7 KB a column at fifty.
+    The saved state of those ten columns held 4.8 KB a column
+    (:meth:`~polars_online.ModelBank.save_bytes`, 48,625 bytes, of which an
+    unfed bank is 996), and 4.7 KB a column at fifty.
 
     **Every row is read.** Another model skips a row whose feature is not
     usable; an audit counts it, which is the point. A restart, at a session
