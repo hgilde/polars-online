@@ -1097,11 +1097,26 @@ impl OnlineModel for Sgd {
     }
 
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+        let mut out = Step::default();
+        self.step_into(x, y, d_clock, weight, &mut out);
+        out
+    }
+
+    /// The step, into the caller's buffer (task 270, M-4).
+    fn step_into(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        out: &mut Step,
+    ) {
         // A value that is not usable, by the rule every model keeps
         // (`OnlineModel`): a feature that is not a number made every
         // coefficient NaN (docs/PLAN.md task 183).
         if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
-            return refused;
+            *out = refused;
+            return;
         }
         let m = self.cfg.n_targets;
         let off = usize::from(self.cfg.fit_intercept);
@@ -1180,7 +1195,9 @@ impl OnlineModel for Sgd {
         // `min_weight` reads its own weight, the rows that carried it.
         let n_eff = self.w_sum;
 
-        let mut pred = vec![f64::NAN; m];
+        out.pred.clear();
+        out.pred.resize(m, f64::NAN);
+        let pred = &mut out.pred;
         if self.cfg.constraint.is_some() {
             // Skipped by serde, so sized here rather than in `new`.
             self.learned.clear();
@@ -1362,12 +1379,8 @@ impl OnlineModel for Sgd {
             lam,
             weight,
         );
-
-        Step {
-            pred,
-            n_eff,
-            extra: None,
-        }
+        out.n_eff = n_eff;
+        out.extra = None;
     }
 
     fn predict(&self, x: &[f64], d_clock: f64) -> Step {

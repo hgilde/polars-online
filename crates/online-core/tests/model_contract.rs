@@ -2907,6 +2907,70 @@ fn same_bits(a: &Step, b: &Step) -> bool {
         && extra
 }
 
+/// `step_into` on one kept buffer, reset to another row's answer every
+/// third row, against `step` on a twin, over 400 rows of the stream
+/// [`predict_is_the_step_without_the_step`] reads (missing targets,
+/// zero-weight and uneven rows, clock gaps): the same answer to the bit and
+/// the same state, byte for byte, on every row, of which at least a hundred
+/// report every slot.
+fn step_into_is_step_on_a_stream<M: OnlineModel>(
+    build: impl Fn() -> M,
+    targets: usize,
+    binary: bool,
+) {
+    let (mut m, mut twin) = (build(), build());
+    let kind = m.state().model.kind();
+    let mut kept = Step::default();
+    let mut s = 20260902u64;
+    let mut ready = 0usize;
+    for i in 0..400 {
+        let x: Vec<f64> = (0..K).map(|_| lcg(&mut s) * 3.0).collect();
+        let y: Vec<Option<f64>> = (0..targets)
+            .map(|j| {
+                if lcg(&mut s) > 0.8 {
+                    return None;
+                }
+                let lin = 0.5 * (j as f64 + 1.0) + x[0] - 0.5 * x[1] + 0.1 * lcg(&mut s);
+                Some(if binary { f64::from(lin > 0.5) } else { lin })
+            })
+            .collect();
+        let u = lcg(&mut s);
+        let w = if u < -0.9 {
+            0.0
+        } else if u < -0.5 {
+            0.5
+        } else if u > 0.7 {
+            2.0
+        } else {
+            1.0
+        };
+        let d = match (i, lcg(&mut s)) {
+            (0, _) => 0.0,
+            (_, v) if v > 0.95 => 25.0,
+            (_, v) if v > 0.8 => 3.0,
+            _ => 1.0,
+        };
+        let step = m.step(&x, &y, d, w);
+        if i % 3 == 0 {
+            kept = stale_step();
+        }
+        twin.step_into(&x, &y, d, w, &mut kept);
+        assert!(
+            same_bits(&kept, &step),
+            "{kind}: row {i}: step_into wrote {kept:?}, step returned {step:?}"
+        );
+        assert!(
+            state_bytes(&twin) == state_bytes(&m),
+            "{kind}: row {i}: step_into left another state than step"
+        );
+        ready += usize::from(step.pred.iter().all(|v| v.is_finite()));
+    }
+    assert!(
+        ready >= 100,
+        "{kind}: only {ready} rows reported every slot"
+    );
+}
+
 /// A buffer holding another row's answer, of the wrong length and with an
 /// `extra`, for [`OnlineModel::step_into`] to overwrite whole.
 fn stale_step() -> Step {
@@ -3241,6 +3305,91 @@ fn sgd_predict_is_the_step() {
     predict_is_the_step_without_the_step(move || Sgd::new(cfg.clone()).unwrap(), 2, true);
     for cfg in sgd_huber_cfgs() {
         predict_is_the_step_without_the_step(move || Sgd::new(cfg.clone()).unwrap(), 2, false);
+    }
+}
+
+/// `sgd`'s own `step_into` (task 270 (h)) under every loss (Huber in both
+/// scales), every schedule, with and without a constraint, a scaler and an
+/// intercept: [`step_into_is_step_on_a_stream`] holds a twin stepped into a
+/// kept buffer to `step`'s bits and state, row by row. The parity alone:
+/// `sgd_predict_is_the_step` runs the whole contract on the settings it
+/// holds. Widened to this grid, it fails on settings that never ran it (a
+/// zero-weight row past the underflow under a scaler with a constraint or
+/// AdaGrad; a zero-weight row under `inv_scaling`), which are raised with
+/// the coordinator, not fixed here.
+#[test]
+fn sgd_step_into_is_step_under_every_setting() {
+    let [huber_rms, huber_mad] = sgd_huber_cfgs();
+    let losses = [
+        (sgd_cfg(), false),
+        (huber_rms, false),
+        (huber_mad, false),
+        (
+            SgdCfg {
+                loss: SgdLoss::Quantile { tau: 0.3 },
+                ..sgd_cfg()
+            },
+            false,
+        ),
+        (
+            SgdCfg {
+                loss: SgdLoss::EpsilonInsensitive { eps: 0.1 },
+                ..sgd_cfg()
+            },
+            false,
+        ),
+        (
+            SgdCfg {
+                loss: SgdLoss::Poisson,
+                ..sgd_cfg()
+            },
+            false,
+        ),
+        (
+            SgdCfg {
+                loss: SgdLoss::Logistic,
+                ..sgd_cfg()
+            },
+            true,
+        ),
+    ];
+    let schedules = [
+        LearningRate::Constant,
+        LearningRate::InvScaling { power: 0.25 },
+        LearningRate::AdaGrad,
+    ];
+    let simplex = Constraint {
+        lo: vec![0.0; K],
+        hi: vec![f64::INFINITY; K],
+        sum: Some(1.0),
+    };
+    for (base, binary) in losses {
+        for schedule in schedules {
+            for constraint in [None, Some(simplex.clone())] {
+                for standardize in [false, true] {
+                    let cfg = SgdCfg {
+                        schedule,
+                        constraint: constraint.clone(),
+                        standardize,
+                        l2: 0.01,
+                        ..base.clone()
+                    };
+                    step_into_is_step_on_a_stream(
+                        move || Sgd::new(cfg.clone()).unwrap(),
+                        2,
+                        binary,
+                    );
+                }
+            }
+        }
+    }
+    for standardize in [false, true] {
+        let cfg = SgdCfg {
+            fit_intercept: false,
+            standardize,
+            ..sgd_cfg()
+        };
+        step_into_is_step_on_a_stream(move || Sgd::new(cfg.clone()).unwrap(), 2, false);
     }
 }
 
