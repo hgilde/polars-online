@@ -63,8 +63,63 @@
 //! zero -- a clock gap past `gap_cap` under the default `+inf` cap --
 //! folds in the same way and leaves every bin empty, which is what the pair
 //! moments do on that row.
+//!
+//! # A robust location per bin
+//!
+//! Under [`BinStat::Huber`] a bin's location is Huber's M-estimate of
+//! location of its decayed sample, learned in one pass (docs/HUBER.md §8,
+//! request 4; docs/PLAN.md task 272 (c)). With `σ_t` the target's robust
+//! scale and `c = δ·σ_t` the cut, both read before the row, a row of weight
+//! `w` and deviation `e = y − m` from the bin's location before it is
+//! weighed as `huber`'s regression weighs a residual, and the location is
+//! the weighted mean over those weights:
+//!
+//! ```text
+//! ω  = w·min(1, c/|e|)            Ω' = λ·Ω + ω       W' = λ·W + w
+//! m' = m + (ω/Ω')·e = m + (w/Ω')·σ_t·ψ_δ(e/σ_t)      ψ_δ(u) = max(−δ, min(δ, u))
+//! M2' = λ·M2 + w·ψ²·σ_t²·(λ·Ω/Ω')       (Welford's `w·e·(y − m')` where unclipped)
+//! ```
+//!
+//! Its fixed point is the root of `Σ ω_i·(y_i − m) = 0`, that is of
+//! `Σ w_i·ψ_δ((y_i − m)/σ)`: the Huber M-location of the bin's decayed
+//! sample. A row's step is bounded by `c·w/Ω'`, so one spike moves a thin
+//! bin by at most `δ·σ_t` times its share where it moves the mean by its
+//! whole size times its share. The step is divided by `Ω`, the weight the
+//! rows count for, and not by `W`, the weight they carry: a location that
+//! starts far from its bin's sample -- its first row a spike -- then
+//! recovers as a mean does, in about `1.7·|error|/c` rows, where a step over
+//! `W` moves at most `c·w/W` a row and recovers only as `c·ln(rows)`
+//! (measured: a spike seeding a bin left it 15 to 19 scales off after
+//! 20,000 rows over `W`, 0.02 to 0.06 over `Ω`).
+//!
+//! A bin has no location of its own to judge its first row against, so it
+//! judges it against the target's: `m = m_t + max(−c, min(c, y − m_t))`,
+//! the row winsorized at the cut around the target's own location `m_t`,
+//! at the weight `ω` it counts for there. Until the target has a scale above 0 --
+//! its first two rows, and while at least half its weight sits on
+//! deviations of exactly 0 -- nothing is clipped, and every number is the
+//! mean's to the bit, as `huber` down-weights nothing before its scale
+//! exists.
+//!
+//! **The scale is per target**: `σ_t = median|y − m_t| / Φ⁻¹(3/4)`, an
+//! [`EwQuantile`] of the target's deviations from its own location (itself
+//! the one-bin form of the recursion above), bounded as `huber`'s MAD is
+//! and aged on the histogram's clock. Per feature it would be `p·T`
+//! sketches and a sketch update per pair per row -- several MB and a
+//! multiple of the cells' cost at 10⁴ features by 50 targets -- for a scale
+//! the cells share: what a cell's cut is for is a row far from the
+//! target's spread, which is the same row whichever feature bins it.
+//!
+//! `bin_n` reads `W`, the rows' weight, under either statistic; `bin_var_y`
+//! reads `M2/W`, the mean square of the deviations clipped at the cut,
+//! `σ_t²·E[ψ_δ²]` at the fixed point, equal to the variance where nothing is
+//! clipped; `split_gain` is the stump's gain read from those, the
+//! locations' spread between bins over their total, so a spike bounds its
+//! pull on both terms alike.
 
 use serde::{Deserialize, Serialize};
+
+use crate::EwQuantile;
 
 /// The renormalization point: the stored weights run to `1/RENORM_AT` times
 /// the real ones before a fold, and a cell's `m2` adds `u·δ²` at that
@@ -86,6 +141,140 @@ pub(crate) const NO_BIN: usize = usize::MAX;
 /// counted by the other. The count was kept by hand before, and stayed at
 /// three when task 101 added the fourth (docs/PLAN.md task 129).
 pub(crate) const CELL_VALUES: usize = 4;
+
+/// The values a cell keeps under [`BinStat::Huber`]: [`CELL_VALUES`] and
+/// the weight its rows count for, `Ω` (the module doc's robust location).
+pub(crate) const HUBER_CELL_VALUES: usize = CELL_VALUES + 1;
+
+/// What a bin's location is ([`BinCfg::stat`]; docs/PLAN.md task 272 (c)).
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BinStat {
+    /// The weighted mean, West's recurrence (the module doc).
+    #[default]
+    Mean,
+    /// Huber's M-estimate of location, one pass, with the cut at `delta`
+    /// times the target's robust scale (the module doc's "A robust location
+    /// per bin"). `delta` above 0; `inf` clips nothing, which is the mean
+    /// to the bit.
+    Huber { delta: f64 },
+}
+
+impl BinStat {
+    /// The values each cell keeps.
+    pub(crate) fn cell_values(self) -> usize {
+        match self {
+            Self::Mean => CELL_VALUES,
+            Self::Huber { .. } => HUBER_CELL_VALUES,
+        }
+    }
+}
+
+/// What a row's cells of one target are judged against under
+/// [`BinStat::Huber`], read before the row ([`BinScales::judge`]): the cut
+/// `δ·σ_t`, `+inf` while the target has no scale, and the target's own
+/// location, which a bin's first row is judged against.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Judge {
+    pub cut: f64,
+    pub m: f64,
+    pub m_lo: f64,
+    /// The target has a location (`m` is one).
+    pub has: bool,
+}
+
+impl Judge {
+    /// Nothing to judge against: no cut, no location.
+    pub(crate) const NONE: Judge = Judge {
+        cut: f64::INFINITY,
+        m: 0.0,
+        m_lo: 0.0,
+        has: false,
+    };
+}
+
+/// Per target, under [`BinStat::Huber`]: the target's own robust location
+/// and the sketch of its deviations from it that gives its scale (the
+/// module doc). The location is the one-bin form of a cell's: a weight it
+/// counts for, undecayed against the histogram's scale as a cell's is, and
+/// a compensated mean.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct BinScales {
+    delta: f64,
+    w: Vec<f64>,
+    m: Vec<f64>,
+    m_lo: Vec<f64>,
+    mad: Vec<EwQuantile>,
+}
+
+impl BinScales {
+    fn new(delta: f64, n_targets: usize) -> Self {
+        Self {
+            delta,
+            w: vec![0.0; n_targets],
+            m: vec![0.0; n_targets],
+            m_lo: vec![0.0; n_targets],
+            mad: crate::robust::mad_sketches(crate::robust::HuberScale::Mad, n_targets),
+        }
+    }
+
+    fn has_shape(&self, n_targets: usize) -> bool {
+        (self.delta > 0.0)
+            && [&self.w, &self.m, &self.m_lo]
+                .iter()
+                .all(|v| v.len() == n_targets)
+            && self.w.iter().all(|w| w.is_finite() && *w >= 0.0)
+            && crate::robust::mad_sketches_fit(crate::robust::HuberScale::Mad, n_targets, &self.mad)
+    }
+
+    /// Target `t`'s cut and location, before the row.
+    pub(crate) fn judge(&self, t: usize) -> Judge {
+        let cut = crate::robust::mad_scale(&self.mad[t]).map_or(f64::INFINITY, |s| self.delta * s);
+        Judge {
+            cut,
+            m: self.m[t],
+            m_lo: self.m_lo[t],
+            has: self.w[t] > 0.0,
+        }
+    }
+
+    /// Target `t`'s value `y` at undecayed weight `u` and weight `w`, judged
+    /// by `j` (its [`Self::judge`] before the row): the deviation from the
+    /// location into the sketch, then the location's step.
+    pub(crate) fn learn(&mut self, t: usize, y: f64, u: f64, w: f64, j: Judge) {
+        if !j.has {
+            self.w[t] = u;
+            self.m[t] = y;
+            self.m_lo[t] = 0.0;
+            return;
+        }
+        let e = crate::comp::dev(y, self.m[t], self.m_lo[t]);
+        self.mad[t].add(e.abs(), w);
+        let (wt, m, lo) = (&mut self.w[t], &mut self.m[t], &mut self.m_lo[t]);
+        if e.abs() <= j.cut {
+            let ob = *wt + u;
+            crate::comp::add(m, lo, e * (u / ob));
+            *wt = ob;
+        } else {
+            let ob = *wt + u * (j.cut / e.abs());
+            if ob > 0.0 {
+                crate::comp::add(m, lo, j.cut.copysign(e) * (u / ob));
+                *wt = ob;
+            }
+        }
+    }
+
+    fn age(&mut self, lam: f64) {
+        self.mad.iter_mut().for_each(|q| q.age(lam));
+    }
+
+    fn reset(&mut self) {
+        self.w.iter_mut().for_each(|v| *v = 0.0);
+        self.m.iter_mut().for_each(|v| *v = 0.0);
+        self.m_lo.iter_mut().for_each(|v| *v = 0.0);
+        self.mad.iter_mut().for_each(EwQuantile::reset);
+    }
+}
 
 /// A held row's feature and target, as [`HeldRow`] stores them and as the
 /// hold's budget counts them: a target is an `Option<f64>`, twice a
@@ -115,20 +304,32 @@ pub(crate) fn hold_bytes(warm_rows: usize, p: usize, n_targets: usize) -> usize 
 }
 
 /// The bytes a histogram's buffers take, for `p` features whose bins add up
-/// to `width` over `n_targets` targets: the cells, the edges (one fewer than
+/// to `width` over `n_targets` targets, `values` doubles a cell
+/// ([`BinStat::cell_values`]): the cells, the edges (one fewer than
 /// the bins, per feature) and their lists, the feature offsets, and the
 /// row's bin offsets, which take at least four slots, a vector's smallest
 /// non-zero capacity.
-pub(crate) fn histogram_bytes(p: usize, n_targets: usize, width: usize) -> usize {
+pub(crate) fn histogram_bytes(p: usize, n_targets: usize, width: usize, values: usize) -> usize {
     let (f, u) = (std::mem::size_of::<f64>(), std::mem::size_of::<usize>());
     let cells = n_targets.saturating_mul(width);
     cells
-        .saturating_mul(CELL_VALUES.saturating_mul(f))
+        .saturating_mul(values.saturating_mul(f))
         .saturating_add(width.saturating_sub(p).saturating_mul(f))
         .saturating_add(p.saturating_mul(std::mem::size_of::<Vec<f64>>()))
         .saturating_add(p.saturating_add(1).saturating_mul(u))
         .saturating_add(p.max(4).saturating_mul(u))
+        .saturating_add(if values > CELL_VALUES {
+            n_targets.saturating_mul(SCALES_BYTES_PER_TARGET)
+        } else {
+            0
+        })
 }
+
+/// The most a target's location and scale take under [`BinStat::Huber`]:
+/// three doubles, and a sketch bounded to `2 · 64 · MAD_BAND_OCTAVES`
+/// buckets beside its level's, with room for its fields.
+const SCALES_BYTES_PER_TARGET: usize =
+    (2 * 64 * crate::robust::MAD_BAND_OCTAVES as usize + 2 + 3) * 8 + 256;
 
 /// Where each feature's value fell on the row being learned, as a cell
 /// offset within one target's block ([`MarginalBins::update_row`]). A
@@ -180,6 +381,16 @@ pub struct MarginalBins {
     /// gap and the split gain on a ratio of rounding artefacts. One per
     /// cell.
     mean_lo: Vec<f64>,
+    /// Under [`BinStat::Huber`], per cell the weight its rows count for,
+    /// `Ω`, undecayed like `w` (the module doc); empty under the mean.
+    /// `default`, and not skipped: only one field may skip in the compact
+    /// encoding, and `BinCfg::budget_mib` is that one.
+    #[serde(default)]
+    om: Vec<f64>,
+    /// Under [`BinStat::Huber`], each target's location and scale; `None`
+    /// under the mean.
+    #[serde(default)]
+    scales: Option<Box<BinScales>>,
     /// Row scratch for [`Self::update_row`]. Not part of the state -- serde
     /// skips it and [`PartialEq`] ignores it.
     #[serde(skip)]
@@ -224,8 +435,21 @@ fn check_edges(p: usize, edges: &[Vec<f64>]) -> Result<(), String> {
 
 impl MarginalBins {
     /// `edges` is one list of interior edges per feature, strictly
-    /// increasing and finite; empty is allowed and means one open bin.
-    pub fn new(p: usize, n_targets: usize, mut edges: Vec<Vec<f64>>) -> Result<Self, String> {
+    /// increasing and finite; empty is allowed and means one open bin. Each
+    /// bin's location is its mean ([`Self::new_with`] for another). The
+    /// tests' form: the model builds through [`Self::new_with`].
+    #[cfg(test)]
+    pub fn new(p: usize, n_targets: usize, edges: Vec<Vec<f64>>) -> Result<Self, String> {
+        Self::new_with(p, n_targets, edges, BinStat::Mean)
+    }
+
+    /// [`Self::new`], each bin's location read as `stat` says.
+    pub fn new_with(
+        p: usize,
+        n_targets: usize,
+        mut edges: Vec<Vec<f64>>,
+        stat: BinStat,
+    ) -> Result<Self, String> {
         check_edges(p, &edges)?;
         // Learned edges were reserved for every edge asked for; a feature
         // that supports fewer keeps only what it has.
@@ -242,6 +466,20 @@ impl MarginalBins {
         // the budget reads (`histogram_bytes`).
         let [w, mean, m2, mean_lo]: [Vec<f64>; CELL_VALUES] =
             std::array::from_fn(|_| vec![0.0; cells]);
+        let (om, scales) = match stat {
+            BinStat::Mean => (Vec::new(), None),
+            BinStat::Huber { delta } => {
+                if delta.is_nan() || delta <= 0.0 {
+                    return Err(format!(
+                        "marginal: bin_huber_delta must be > 0 (inf is the mean), got {delta}"
+                    ));
+                }
+                (
+                    vec![0.0; cells],
+                    Some(Box::new(BinScales::new(delta, n_targets))),
+                )
+            }
+        };
         Ok(Self {
             p,
             n_targets,
@@ -253,8 +491,17 @@ impl MarginalBins {
             scale: 1.0,
             empty: true,
             mean_lo,
+            om,
+            scales,
             row: RowBins::default(),
         })
+    }
+
+    /// What each bin's location is: the statistic it was built with.
+    pub fn stat(&self) -> BinStat {
+        self.scales
+            .as_ref()
+            .map_or(BinStat::Mean, |s| BinStat::Huber { delta: s.delta })
     }
 
     /// Whether the edges, the offsets and the cell vectors are those of `p`
@@ -279,6 +526,10 @@ impl MarginalBins {
             && self.mean.len() == cells
             && self.m2.len() == cells
             && self.mean_lo.len() == cells
+            && match &self.scales {
+                None => self.om.is_empty(),
+                Some(s) => self.om.len() == cells && s.has_shape(n_targets),
+            }
     }
 
     /// Bins feature `j` actually has, which is one more than its edges.
@@ -325,6 +576,11 @@ impl MarginalBins {
         if self.empty || !lam.is_finite() || lam < 0.0 {
             return;
         }
+        // The scales' sketches age on the histogram's clock, as their
+        // locations do through `scale`.
+        if let Some(sc) = self.scales.as_deref_mut() {
+            sc.age(lam);
+        }
         let s = self.scale * lam;
         if s >= RENORM_AT {
             self.scale = s;
@@ -335,14 +591,31 @@ impl MarginalBins {
         // the next row's `w / scale` would poison every bin at once. Two
         // factors rather than their product, since the product is what just
         // proved too small to keep.
-        for v in self.w.iter_mut().chain(&mut self.m2) {
+        let targets = self.scales.as_deref_mut().map(|s| &mut s.w);
+        for v in self
+            .w
+            .iter_mut()
+            .chain(&mut self.m2)
+            .chain(&mut self.om)
+            .chain(targets.into_iter().flatten())
+        {
             *v = *v * self.scale * lam;
         }
         self.scale = 1.0;
         // A factor of zero wipes every bin; so, more rarely, does a fold
         // whose factor underflows a small weight. Either way the histogram
-        // is back where it started, scale included.
-        self.empty = self.w.iter().all(|v| *v == 0.0);
+        // is back where it started, scale included, and so are the targets'
+        // locations and scales.
+        self.empty = self.w.iter().all(|v| *v == 0.0)
+            && self
+                .scales
+                .as_ref()
+                .is_none_or(|s| s.w.iter().all(|v| *v == 0.0));
+        if self.empty
+            && let Some(sc) = self.scales.as_deref_mut()
+        {
+            sc.reset();
+        }
     }
 
     /// Add one row's contribution for target `t` alone, searching every
@@ -389,7 +662,7 @@ impl MarginalBins {
     #[cfg(test)]
     pub(crate) fn heap_bytes(&self) -> usize {
         let (f, u) = (std::mem::size_of::<f64>(), std::mem::size_of::<usize>());
-        [&self.w, &self.mean, &self.m2, &self.mean_lo]
+        [&self.w, &self.mean, &self.m2, &self.mean_lo, &self.om]
             .iter()
             .map(|v| v.capacity() * f)
             .sum::<usize>()
@@ -421,19 +694,65 @@ impl MarginalBins {
                 continue;
             };
             let r = t * width..(t + 1) * width;
-            if update_cells(
-                u,
-                v,
-                &row,
-                &mut self.w[r.clone()],
-                &mut self.mean[r.clone()],
-                &mut self.m2[r.clone()],
-                &mut self.mean_lo[r],
-            ) {
+            let wrote = match self.scales.as_deref_mut() {
+                None => update_cells(
+                    u,
+                    v,
+                    &row,
+                    &mut self.w[r.clone()],
+                    &mut self.mean[r.clone()],
+                    &mut self.m2[r.clone()],
+                    &mut self.mean_lo[r],
+                ),
+                Some(sc) => {
+                    // The cut and the target's location before the row,
+                    // then the cells, then the target's own step.
+                    let j = sc.judge(t);
+                    update_cells_huber(
+                        u,
+                        v,
+                        j,
+                        &row,
+                        HuberCells {
+                            w: &mut self.w[r.clone()],
+                            om: &mut self.om[r.clone()],
+                            mean: &mut self.mean[r.clone()],
+                            m2: &mut self.m2[r.clone()],
+                            mean_lo: &mut self.mean_lo[r],
+                        },
+                    );
+                    sc.learn(t, v, u, w, j);
+                    // The target's location holds weight now, and ages.
+                    true
+                }
+            };
+            if wrote {
                 self.empty = false;
             }
         }
         self.row.0 = row;
+    }
+
+    /// Under [`BinStat::Huber`], the row's judges, one per target, pushed
+    /// onto `out` -- [`Judge::NONE`] where the target is absent -- and each
+    /// present target's own step taken: what a caller holding the row's
+    /// cells for later ([`crate::Marginal`]'s shards) does now, since the
+    /// next row's judge reads it. `u` and `w` as [`Self::update_row`] has
+    /// them. Nothing under the mean.
+    pub(crate) fn judge_row(&mut self, y: &[Option<f64>], u: f64, w: f64, out: &mut Vec<Judge>) {
+        let Some(sc) = self.scales.as_deref_mut() else {
+            return;
+        };
+        for (t, yt) in y.iter().enumerate().take(self.n_targets) {
+            let Some(v) = yt.filter(|v| v.is_finite()) else {
+                out.push(Judge::NONE);
+                continue;
+            };
+            let j = sc.judge(t);
+            sc.learn(t, v, u, w, j);
+            out.push(j);
+            self.empty = false;
+        }
     }
 
     /// The undecayed weight a row of weight `w` adds to each cell it
@@ -486,20 +805,22 @@ impl MarginalBins {
             mean: &mut self.mean,
             m2: &mut self.m2,
             mean_lo: &mut self.mean_lo,
+            om: &mut self.om,
             edges: &self.edges,
             off: &self.off,
         }
     }
 }
 
-/// [`MarginalBins::cell_parts`]: the four cell vectors, laid out
-/// `[t·off[p] + off[j] + bin]`, and the edges and feature offsets that
-/// find a value's cell ([`bin_offsets_in`]).
+/// [`MarginalBins::cell_parts`]: the cell vectors, laid out
+/// `[t·off[p] + off[j] + bin]` (`om` empty under the mean), and the edges
+/// and feature offsets that find a value's cell ([`bin_offsets_in`]).
 pub(crate) struct CellParts<'a> {
     pub w: &'a mut [f64],
     pub mean: &'a mut [f64],
     pub m2: &'a mut [f64],
     pub mean_lo: &'a mut [f64],
+    pub om: &'a mut [f64],
     pub edges: &'a [Vec<f64>],
     pub off: &'a [usize],
 }
@@ -561,6 +882,88 @@ pub(crate) fn update_cells(
         crate::comp::add(mi, lo, delta * (u / wb));
         m2[o] += u * delta * crate::comp::dev(y, *mi, *lo);
         *wi = wb;
+    }
+    wrote
+}
+
+/// One target's cells under [`BinStat::Huber`], as [`update_cells_huber`]
+/// writes them.
+pub(crate) struct HuberCells<'a> {
+    pub w: &'a mut [f64],
+    pub om: &'a mut [f64],
+    pub mean: &'a mut [f64],
+    pub m2: &'a mut [f64],
+    pub mean_lo: &'a mut [f64],
+}
+
+/// [`update_cells`] under [`BinStat::Huber`]: each named cell takes `y` at
+/// undecayed weight `u`, judged by `j` (the module doc's robust location).
+/// A row inside the cut takes West's step over `Ω` in place of `W`, the
+/// same operations, so a cell no row was ever clipped in -- every cell
+/// before the target has a scale, and every cell under `δ = inf` -- holds
+/// the mean's numbers to the bit. A row past it steps by the cut over `Ω'`
+/// at the weight `u·c/|e|`. Whether any cell was written.
+#[inline]
+pub(crate) fn update_cells_huber(
+    u: f64,
+    y: f64,
+    j: Judge,
+    at: &[usize],
+    c: HuberCells<'_>,
+) -> bool {
+    let HuberCells {
+        w,
+        om,
+        mean,
+        m2,
+        mean_lo,
+    } = c;
+    let mut wrote = false;
+    for &o in at {
+        if o == NO_BIN {
+            continue;
+        }
+        wrote = true;
+        let (mi, lo) = (&mut mean[o], &mut mean_lo[o]);
+        if w[o] <= 0.0 {
+            // The bin's first row: judged against the target's location,
+            // where it has one, winsorized at the cut around it.
+            w[o] = u;
+            m2[o] = 0.0;
+            if j.has {
+                let e = crate::comp::dev(y, j.m, j.m_lo);
+                if e.abs() > j.cut {
+                    *mi = j.m;
+                    *lo = j.m_lo;
+                    crate::comp::add(mi, lo, j.cut.copysign(e));
+                    om[o] = u * (j.cut / e.abs());
+                    continue;
+                }
+            }
+            *mi = y;
+            *lo = 0.0;
+            om[o] = u;
+            continue;
+        }
+        let delta = crate::comp::dev(y, *mi, *lo);
+        if delta.abs() <= j.cut {
+            let ob = om[o] + u;
+            crate::comp::add(mi, lo, delta * (u / ob));
+            m2[o] += u * delta * crate::comp::dev(y, *mi, *lo);
+            om[o] = ob;
+        } else {
+            let before = om[o];
+            let ob = before + u * (j.cut / delta.abs());
+            // A weight that underflowed to nothing takes no step: the
+            // location holds, and the row counts in `W` alone.
+            if ob > 0.0 {
+                let c = j.cut.copysign(delta);
+                crate::comp::add(mi, lo, c * (u / ob));
+                m2[o] += u * c * c * (before / ob);
+                om[o] = ob;
+            }
+        }
+        w[o] += u;
     }
     wrote
 }
@@ -689,6 +1092,12 @@ pub struct BinCfg {
     /// own decay, so the histogram is what it would have been had the edges
     /// been known from the start.
     pub warm_rows: usize,
+    /// What each bin's location is: its mean, or Huber's M-location
+    /// ([`BinStat`]; docs/PLAN.md task 272 (c)). `default`, the mean, so a
+    /// state written before it reads as it was fitted; not skipped, since
+    /// `budget_mib` is the one field here that may.
+    #[serde(default)]
+    pub stat: BinStat,
     /// The MiB the warm-up hold and the histogram may each take before the
     /// model refuses to build; `None` is [`DEFAULT_BUDGET_MIB`], and
     /// infinity is no bound (docs/PLAN.md task 131). **Last, and the one
@@ -751,13 +1160,21 @@ impl BinCfg {
                  got {budget}"
             ));
         }
+        if let BinStat::Huber { delta } = self.stat
+            && (delta.is_nan() || delta <= 0.0)
+        {
+            return Err(format!(
+                "marginal: bin_huber_delta must be > 0 (inf is the mean), got {delta}"
+            ));
+        }
+        let values = self.stat.cell_values();
         match &self.edges {
             Some(e) => {
                 check_edges(p, e)?;
                 let bins: usize = e.iter().map(|f| f.len() + 1).sum();
                 budget_check(
                     "the bin histogram",
-                    histogram_bytes(p, n_targets, bins),
+                    histogram_bytes(p, n_targets, bins, values),
                     budget,
                     &format!("{bins} bins over {p} features x {n_targets} targets"),
                 )?;
@@ -789,7 +1206,7 @@ impl BinCfg {
                 // most a learned histogram can take.
                 budget_check(
                     "the bin histogram",
-                    histogram_bytes(p, n_targets, p.saturating_mul(self.n_bins)),
+                    histogram_bytes(p, n_targets, p.saturating_mul(self.n_bins), values),
                     budget,
                     &format!("{p} features x {n_targets} targets x {} bins", self.n_bins),
                 )?;
@@ -1231,7 +1648,11 @@ mod tests {
         for p in 1..4 {
             let mut b = MarginalBins::new(p, 1, vec![vec![0.0]; p]).unwrap();
             b.update_row(&vec![0.5; p], &[Some(1.0)], 1.0);
-            assert_eq!(b.heap_bytes(), histogram_bytes(p, 1, 2 * p), "{p} features");
+            assert_eq!(
+                b.heap_bytes(),
+                histogram_bytes(p, 1, 2 * p, CELL_VALUES),
+                "{p} features"
+            );
         }
         for t in [1, 3, 20] {
             let y: Vec<Option<f64>> = (0..t).map(|k| Some(k as f64)).collect();
@@ -1240,9 +1661,13 @@ mod tests {
                 let mut b = MarginalBins::new(p, t, edges.clone()).unwrap();
                 // The row's offsets are allocated by the first row.
                 b.update_row(&x, &y, 1.0);
-                assert_eq!(b.heap_bytes(), histogram_bytes(p, t, width), "{t} targets");
+                assert_eq!(
+                    b.heap_bytes(),
+                    histogram_bytes(p, t, width, CELL_VALUES),
+                    "{t} targets"
+                );
                 // What a learned kind is refused by bounds what it takes.
-                assert!(b.heap_bytes() <= histogram_bytes(p, t, p * 8));
+                assert!(b.heap_bytes() <= histogram_bytes(p, t, p * 8, CELL_VALUES));
             }
         }
     }
@@ -1287,6 +1712,7 @@ mod tests {
             edges: None,
             rule: BinRule::Quantile,
             warm_rows,
+            stat: BinStat::Mean,
             budget_mib: None,
         };
         let cfg = learned(16, 1_000);
@@ -1325,6 +1751,7 @@ mod tests {
             edges: None,
             rule: BinRule::Quantile,
             warm_rows: 1_000,
+            stat: BinStat::Mean,
             budget_mib,
         };
         // Sixty targets at 10,000 features pass 256 MiB; 512 holds them.
@@ -1351,6 +1778,7 @@ mod tests {
             edges: Some(vec![vec![0.0, 1.0]; 10]),
             rule: BinRule::Quantile,
             warm_rows: 0,
+            stat: BinStat::Mean,
             budget_mib: Some(1e-6),
         };
         let err = given.validate(10, 1).unwrap_err();
@@ -1367,6 +1795,7 @@ mod tests {
             edges: None,
             rule: BinRule::Quantile,
             warm_rows: 8,
+            stat: BinStat::Mean,
             budget_mib: Some(1e-6),
         };
         let err = cfg.validate(1, 1).unwrap_err();
@@ -1391,6 +1820,7 @@ mod tests {
             edges: Some(vec![vec![0.0, 1.0, 2.0]]),
             rule: BinRule::Quantile,
             warm_rows: 0,
+            stat: BinStat::Mean,
             budget_mib: None,
         };
         assert!(cfg.validate(1, 1).is_ok());
@@ -1548,12 +1978,13 @@ mod tests {
     #[test]
     fn the_budget_is_inclusive_and_counts_bins() {
         let (p, t) = (3, 2);
-        let bytes = histogram_bytes(p, t, 9);
+        let bytes = histogram_bytes(p, t, 9, CELL_VALUES);
         let at = |bytes: usize| BinCfg {
             n_bins: 0,
             edges: Some(vec![vec![0.0, 1.0]; 3]),
             rule: BinRule::Quantile,
             warm_rows: 0,
+            stat: BinStat::Mean,
             budget_mib: Some(bytes as f64 / (1u64 << 20) as f64),
         };
         assert!(at(bytes).validate(p, t).is_ok());
@@ -1908,6 +2339,355 @@ mod tests {
                 prop_assert!(edges.windows(2).all(|w| w[1] > w[0]), "{edges:?}");
                 prop_assert!(MarginalBins::new(1, 1, vec![edges]).is_ok());
             }
+        }
+    }
+
+    /// `BinStat::Huber`: each bin's location is Huber's M-location, one
+    /// pass (the module doc; docs/PLAN.md task 272 (c)).
+    mod huber {
+        use super::*;
+
+        const HUBER: BinStat = BinStat::Huber { delta: 1.0 };
+
+        /// A stream of one feature against two targets, the second absent
+        /// on a fifth of the rows, with weights (zeros among them), spikes
+        /// of 40 on one row in twenty, and a decay of `lam` a row.
+        fn rows(n: usize) -> Vec<(f64, [Option<f64>; 2], f64)> {
+            let mut seed = 11u64;
+            (0..n)
+                .map(|i| {
+                    let x = lcg(&mut seed);
+                    let spike = if (lcg(&mut seed) + 1.0) * 10.0 < 1.0 {
+                        40.0
+                    } else {
+                        0.0
+                    };
+                    let y0 = 2.0 * x * x + 0.3 * lcg(&mut seed) + spike;
+                    let y1 = (lcg(&mut seed) > -0.6).then(|| -x + 0.2 * lcg(&mut seed));
+                    let w = if i % 17 == 3 {
+                        0.0
+                    } else {
+                        0.5 + 0.5 * (i % 3) as f64
+                    };
+                    (x, [Some(y0), y1], w)
+                })
+                .collect()
+        }
+
+        fn run(stat: BinStat, lam: f64, n: usize) -> MarginalBins {
+            let mut b = MarginalBins::new_with(1, 2, vec![vec![-0.3, 0.3]], stat).unwrap();
+            for (i, (x, y, w)) in rows(n).into_iter().enumerate() {
+                if i > 0 {
+                    b.decay(lam);
+                }
+                b.update_row(&[x], &y, w);
+            }
+            b
+        }
+
+        /// `delta = inf` clips nothing, and a cell nothing was clipped in
+        /// takes the mean's operations: the histogram is the mean's to the
+        /// bit, through folds, spikes, zero weights and absent targets.
+        #[test]
+        fn an_infinite_delta_is_the_mean_to_the_bit() {
+            let inf = BinStat::Huber {
+                delta: f64::INFINITY,
+            };
+            for lam in [1.0, 0.97, 0.74] {
+                let (mean, huber) = (run(BinStat::Mean, lam, 2000), run(inf, lam, 2000));
+                assert_eq!(huber.stat(), inf);
+                for (a, b) in [
+                    (&mean.w, &huber.w),
+                    (&mean.mean, &huber.mean),
+                    (&mean.m2, &huber.m2),
+                    (&mean.mean_lo, &huber.mean_lo),
+                    // Every row counted at its full weight.
+                    (&mean.w, &huber.om),
+                ] {
+                    let bits = |v: &Vec<f64>| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                    assert_eq!(bits(a), bits(b), "lam {lam}");
+                }
+                assert_eq!(mean.scale.to_bits(), huber.scale.to_bits());
+            }
+        }
+
+        /// Until a target has a scale -- its first two rows -- nothing is
+        /// clipped and the bins are the mean's to the bit; the third row's
+        /// spike is the first a scale judges.
+        #[test]
+        fn nothing_is_clipped_before_the_target_has_a_scale() {
+            let ys = [1.0, 1.5, 500.0];
+            let xs = [-0.5, -0.4, -0.45];
+            let mut m = MarginalBins::new(1, 1, vec![vec![0.0]]).unwrap();
+            let mut h = MarginalBins::new_with(1, 1, vec![vec![0.0]], HUBER).unwrap();
+            for (i, (x, y)) in xs.iter().zip(ys).enumerate() {
+                let judge = h.scales.as_ref().unwrap().judge(0);
+                assert_eq!(judge.cut.is_finite(), i == 2, "row {i}: {judge:?}");
+                m.update_row(&[*x], &[Some(y)], 1.0);
+                h.update_row(&[*x], &[Some(y)], 1.0);
+                let (a, b) = (m.bins(0, 0)[0], h.bins(0, 0)[0]);
+                if i < 2 {
+                    assert_eq!(a.mean_y.to_bits(), b.mean_y.to_bits(), "row {i}");
+                    assert_eq!(a.var_y.to_bits(), b.var_y.to_bits(), "row {i}");
+                } else {
+                    // The scale is |1.5 - 1.0| / Φ⁻¹(3/4), within the
+                    // sketch's 0.78%; the spike is clipped at it, and counts
+                    // for `cut/|e|` of a row: `Ω' = 2 + cut/|e|`.
+                    let cut = judge.cut;
+                    assert!((cut - 0.5 / crate::robust::NORMAL_Q3).abs() < 0.008 * cut);
+                    let om = 2.0 + cut / (500.0 - 1.25);
+                    assert!((b.mean_y - (1.25 + cut / om)).abs() < 1e-12, "{b:?}");
+                    assert!(a.mean_y > 160.0, "the mean takes the spike: {a:?}");
+                }
+                assert_eq!(
+                    a.n.to_bits(),
+                    b.n.to_bits(),
+                    "the count is the rows' weight"
+                );
+            }
+        }
+
+        /// A thin bin and one spike: the mean moves by the spike's size
+        /// times its share, the location by the cut times its share, and
+        /// no more. The target's two thick bins at -5 and +5 give it a
+        /// scale near 7.4, which the thin bin's noise never reaches, so
+        /// every one of its rows counted at full weight before the spike.
+        #[test]
+        fn a_spike_in_a_thin_bin_moves_the_location_by_the_cut_times_its_share() {
+            let edges = vec![vec![-1.0, 1.0]];
+            let mut m = MarginalBins::new(1, 1, edges.clone()).unwrap();
+            let mut h = MarginalBins::new_with(1, 1, edges, HUBER).unwrap();
+            let mut seed = 5u64;
+            for i in 0..420 {
+                let (x, level) = match i % 21 {
+                    0 => (0.0, 0.0),
+                    k if k % 2 == 0 => (-2.0, -5.0),
+                    _ => (2.0, 5.0),
+                };
+                let y = level + 0.01 * lcg(&mut seed);
+                m.update_row(&[x], &[Some(y)], 1.0);
+                h.update_row(&[x], &[Some(y)], 1.0);
+            }
+            let thin = |b: &MarginalBins| b.bins(0, 0)[1];
+            assert_eq!(thin(&h).n, 20.0);
+            assert_eq!(h.om[1].to_bits(), h.w[1].to_bits(), "nothing clipped yet");
+            let cut = h.scales.as_ref().unwrap().judge(0).cut;
+            assert!((5.0..12.0).contains(&cut), "the target's scale: {cut}");
+            let (m0, h0) = (thin(&m).mean_y, thin(&h).mean_y);
+            m.update_row(&[0.0], &[Some(1000.0)], 1.0);
+            h.update_row(&[0.0], &[Some(1000.0)], 1.0);
+            let (dm, dh) = (thin(&m).mean_y - m0, thin(&h).mean_y - h0);
+            assert!((dm - (1000.0 - m0) / 21.0).abs() < 1e-9, "the mean: {dm}");
+            // At most `c·w/W`, `W = 20` the bin's weight before the row,
+            // every row of which counted in full: the step is `c·w/Ω'`, the
+            // spike counting for `c/|e|` of a row in `Ω' = 20 + c/|e|`.
+            assert!(dh > 0.0 && dh <= cut / 20.0, "{dh} against {cut}");
+            let om = 20.0 + cut / (1000.0 - h0);
+            assert!(
+                (dh - cut / om).abs() < 1e-12 * cut,
+                "{dh} against {}",
+                cut / om
+            );
+            assert_eq!(thin(&h).n, 21.0, "the spike still counts as a row");
+        }
+
+        /// The scale trick by brute force: every bin's and every target's
+        /// weights decayed every row, in the definition's own terms -- the
+        /// row's weight `ω = w·min(1, c/|e|)` from the cut and the location
+        /// before the row, the location stepped over `Ω'`, a bin's first row
+        /// winsorized at the target's location, the second moment
+        /// `w·ψ²σ²·λΩ/Ω'` -- against the histogram's undecayed weights and
+        /// folds, through spikes, zero weights, an absent target and, at
+        /// `lam = 0.74`, several folds. The sketches are the same component
+        /// on both sides, aged and fed alike.
+        #[test]
+        fn the_decayed_recursion_by_brute_force() {
+            let BinStat::Huber { delta } = HUBER else {
+                unreachable!("HUBER is a Huber")
+            };
+            for lam in [1.0, 0.97, 0.74] {
+                let real = run(HUBER, lam, 2000);
+                // [t][bin]: W, Ω, m, M2.
+                let mut cells = [[[0.0f64; 4]; 3]; 2];
+                let mut targets = [[0.0f64; 2]; 2]; // Ω_t, m_t
+                let mut mad: Vec<EwQuantile> = (0..2)
+                    .map(|_| EwQuantile::bounded(&[0.5], crate::robust::MAD_BAND_OCTAVES).unwrap())
+                    .collect();
+                let (mut clipped, mut seeded_at_target, mut learned) = (0, 0, false);
+                for (i, (x, y, w)) in rows(2000).into_iter().enumerate() {
+                    if i > 0 && learned {
+                        for c in cells.iter_mut().flatten() {
+                            c[0] *= lam;
+                            c[1] *= lam;
+                            c[3] *= lam;
+                        }
+                        for t in targets.iter_mut() {
+                            t[0] *= lam;
+                        }
+                        mad.iter_mut().for_each(|q| q.age(lam));
+                    }
+                    if w <= 0.0 {
+                        continue;
+                    }
+                    learned = true;
+                    let k = [-0.3, 0.3].partition_point(|e: &f64| *e <= x);
+                    for t in 0..2 {
+                        let Some(v) = y[t] else { continue };
+                        let cut =
+                            crate::robust::mad_scale(&mad[t]).map_or(f64::INFINITY, |s| delta * s);
+                        let has = targets[t][0] > 0.0;
+                        let c = &mut cells[t][k];
+                        if c[0] <= 0.0 {
+                            let e = v - targets[t][1];
+                            if has && e.abs() > cut {
+                                *c = [w, w * cut / e.abs(), targets[t][1] + cut.copysign(e), 0.0];
+                                seeded_at_target += 1;
+                            } else {
+                                *c = [w, w, v, 0.0];
+                            }
+                        } else {
+                            let e = v - c[2];
+                            let om = w * (cut / e.abs()).min(1.0);
+                            clipped += usize::from(om < w);
+                            let ob = c[1] + om;
+                            let step = (om / ob) * e;
+                            let psi = e.clamp(-cut, cut);
+                            c[3] += w * psi * psi * (c[1] / ob);
+                            c[2] += step;
+                            c[1] = ob;
+                            c[0] += w;
+                        }
+                        if has {
+                            let e = v - targets[t][1];
+                            mad[t].add(e.abs(), w);
+                            let om = w * (cut / e.abs()).min(1.0);
+                            targets[t][0] += om;
+                            targets[t][1] += (om / targets[t][0]) * e;
+                        } else {
+                            targets[t] = [w, v];
+                        }
+                    }
+                }
+                assert!(
+                    clipped > 100,
+                    "lam {lam}: the case needs clipped rows: {clipped}"
+                );
+                assert!(
+                    seeded_at_target > 0 || lam == 1.0,
+                    "lam {lam}: a seed at the target"
+                );
+                for (t, cells_t) in cells.iter().enumerate() {
+                    for (k, got) in real.bins(t, 0).iter().enumerate() {
+                        let [w, _, m, m2] = cells_t[k];
+                        assert!(
+                            (got.n - w).abs() <= 1e-9 * w,
+                            "lam {lam} t {t} bin {k}: weight"
+                        );
+                        assert!(
+                            (got.mean_y - m).abs() <= 1e-9 * (1.0 + m.abs()),
+                            "lam {lam} t {t} bin {k}: {} {m}",
+                            got.mean_y
+                        );
+                        assert!(
+                            (got.var_y - m2 / w).abs() <= 1e-7 * (1.0 + m2 / w),
+                            "lam {lam} t {t} bin {k}: variance"
+                        );
+                    }
+                }
+            }
+        }
+
+        /// A clock gap past `gap_cap` wipes the bins, and the targets'
+        /// locations and scales with them: the next row starts a target
+        /// over, judged against nothing.
+        #[test]
+        fn a_total_gap_wipes_the_scales_too() {
+            let mut h = run(HUBER, 0.9, 300);
+            assert!(h.scales.as_ref().unwrap().judge(0).cut.is_finite());
+            h.decay(0.0);
+            assert!(h.is_empty());
+            let s = h.scales.as_ref().unwrap();
+            assert_eq!(s.judge(0), Judge::NONE);
+            assert_eq!(s.mad[0].get(0), None);
+        }
+
+        /// A restored histogram must carry the robust part its statistic
+        /// asks for, of the right shape.
+        #[test]
+        fn has_shape_holds_the_robust_part() {
+            let h = run(HUBER, 0.97, 50);
+            assert!(h.has_shape(1, 2));
+            let mut short = h.clone();
+            short.om.pop();
+            assert!(!short.has_shape(1, 2));
+            let mut none = h.clone();
+            none.scales = None;
+            assert!(
+                !none.has_shape(1, 2),
+                "cells' robust weights with no scales"
+            );
+            let mut targets = h.clone();
+            targets.scales.as_mut().unwrap().w.pop();
+            assert!(!targets.has_shape(1, 2));
+            let mut delta = h;
+            delta.scales.as_mut().unwrap().delta = f64::NAN;
+            assert!(!delta.has_shape(1, 2));
+            assert!(run(BinStat::Mean, 0.97, 50).has_shape(1, 2));
+        }
+
+        /// The budget counts the fifth value a cell keeps, and the targets'
+        /// scales at their most.
+        #[test]
+        fn the_budget_counts_the_robust_weights() {
+            let (p, t) = (6, 3);
+            let mut h = MarginalBins::new_with(p, t, vec![vec![0.0, 1.0]; p], HUBER).unwrap();
+            // The row's offsets are allocated by the first row.
+            h.update_row(&vec![0.5; p], &vec![Some(1.0); t], 1.0);
+            let cells =
+                histogram_bytes(p, t, 3 * p, HUBER_CELL_VALUES) - t * SCALES_BYTES_PER_TARGET;
+            assert_eq!(h.heap_bytes(), cells);
+            assert_eq!(
+                cells - histogram_bytes(p, t, 3 * p, CELL_VALUES),
+                3 * p * t * std::mem::size_of::<f64>()
+            );
+            let cfg = |budget_mib| BinCfg {
+                n_bins: 3,
+                edges: Some(vec![vec![0.0, 1.0]; p]),
+                rule: BinRule::Quantile,
+                warm_rows: 3,
+                stat: HUBER,
+                budget_mib: Some(budget_mib),
+            };
+            let bytes = histogram_bytes(p, t, 3 * p, HUBER_CELL_VALUES) as f64;
+            assert!(cfg(bytes / (1u64 << 20) as f64).validate(p, t).is_ok());
+            assert!(
+                cfg(0.999 * bytes / (1u64 << 20) as f64)
+                    .validate(p, t)
+                    .is_err()
+            );
+        }
+
+        /// A cut must be a positive number; `inf` is the mean.
+        #[test]
+        fn delta_is_above_zero() {
+            for bad in [0.0, -1.0, f64::NAN] {
+                let e = MarginalBins::new_with(1, 1, vec![vec![]], BinStat::Huber { delta: bad });
+                assert!(
+                    e.unwrap_err().contains("bin_huber_delta must be > 0"),
+                    "{bad}"
+                );
+            }
+            assert!(
+                MarginalBins::new_with(
+                    1,
+                    1,
+                    vec![vec![]],
+                    BinStat::Huber {
+                        delta: f64::INFINITY
+                    }
+                )
+                .is_ok()
+            );
         }
     }
 }

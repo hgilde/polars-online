@@ -55,7 +55,15 @@ fn every_model_case_predicts_on_every_row_of_its_block() {
 /// continuous column takes on nearly every row (review 2026-10-23, F-2).
 #[test]
 fn every_silent_case_reaches_its_path() {
-    assert_eq!(SILENT_CASES, ["marginal", "rcov", "audit_continuous"]);
+    assert_eq!(
+        SILENT_CASES,
+        [
+            "marginal",
+            "marginal_bins_huber",
+            "rcov",
+            "audit_continuous"
+        ]
+    );
     let rows = (online_bench::WARM_ROWS + ROWS) as u64;
     for &id in SILENT_CASES {
         assert!(MODEL_CASES.contains(&id), "{id}");
@@ -72,6 +80,16 @@ fn every_silent_case_reaches_its_path() {
                         p.corr.is_finite() && p.n_eff > 500.0,
                         "{id}: pair {j}: {p:?}"
                     );
+                    // The bins' case: every bin of every feature taken rows,
+                    // its Huber location read (docs/PLAN.md task 272 (c)).
+                    if id == "marginal_bins_huber" {
+                        assert_eq!(p.bin_n.len(), 4, "{id}: pair {j}");
+                        assert!(
+                            p.bin_n.iter().all(|n| *n > 50.0)
+                                && p.bin_mean_y.iter().all(|v| v.is_finite()),
+                            "{id}: pair {j}: {p:?}"
+                        );
+                    }
                 }
             }
             AnyModel::Rcov(r) => {

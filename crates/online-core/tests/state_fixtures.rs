@@ -497,12 +497,31 @@ fn held(v: &rmpv::Value) -> usize {
 /// a sketch of `|e|` per target, `huber_mad` its own scale memory, and each
 /// cfg names its scale, `"mad"` there and `"rms"` in `huber` and
 /// `sgd_huber`; each MAD sketch names its band (task 271 (b)).
+/// `marginal`'s Huber location per bin (63, task 272 (c)):
+/// `marginal_bins_huber` keeps each cell's robust weight and each target's
+/// location and scale, and its cfg names its statistic and cut.
 #[test]
 fn every_layout_a_schema_moved_is_written_by_a_fixture() {
     if regenerating() {
         return;
     }
-    const FORMS: [(&str, &[&str]); 32] = [
+    const FORMS: [(&str, &[&str]); 36] = [
+        (
+            "marginal_bins_huber",
+            &["model", "Marginal", "bins", "hist", "om"],
+        ),
+        (
+            "marginal_bins_huber",
+            &["model", "Marginal", "bins", "hist", "scales", "w"],
+        ),
+        (
+            "marginal_bins_huber",
+            &["model", "Marginal", "bins", "hist", "scales", "mad"],
+        ),
+        (
+            "marginal_bins_huber",
+            &["model", "Marginal", "cfg", "bins", "stat", "huber", "delta"],
+        ),
         ("huber_mad", &["model", "Robust", "mad"]),
         (
             "huber_mad",

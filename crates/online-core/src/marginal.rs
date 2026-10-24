@@ -533,6 +533,10 @@ struct Deferred {
     /// Per row, the weight its cells take in the bins, `None` where it
     /// writes none.
     u: Vec<Option<f64>>,
+    /// Under `bin_stat = "huber"`, per row and target, what its cells are
+    /// judged against ([`crate::margbins::Judge`]), read before the row;
+    /// empty under the mean.
+    judges: Vec<crate::margbins::Judge>,
     /// Per row and lag, where the row that far back is; `None` where the
     /// ring does not reach it yet, and the lag waits.
     backs: Vec<Option<Src>>,
@@ -565,6 +569,7 @@ impl Deferred {
         self.mixes.clear();
         self.shared.clear();
         self.u.clear();
+        self.judges.clear();
         self.backs.clear();
         self.dy_lag.clear();
         self.ring.clear();
@@ -694,7 +699,7 @@ impl Binned {
                 crate::edges_from(cfg.rule, cfg.n_bins, &mut vals)
             })
             .collect();
-        let mut hist = crate::MarginalBins::new(p, n_targets, edges)
+        let mut hist = crate::MarginalBins::new_with(p, n_targets, edges, cfg.stat)
             .expect("edges_from gives one finite, strictly increasing list per feature");
         for row in &self.held {
             hist.decay(row.lam);
@@ -735,7 +740,7 @@ impl Marginal {
             None => None,
             Some(bc) => {
                 let hist = match &bc.edges {
-                    Some(e) => Some(crate::MarginalBins::new(p, t, e.clone())?),
+                    Some(e) => Some(crate::MarginalBins::new_with(p, t, e.clone(), bc.stat)?),
                     None => None,
                 };
                 Some(Box::new(Binned {
@@ -1483,6 +1488,14 @@ impl Marginal {
         }
         self.defer.xs.extend_from_slice(x);
         self.defer.ys.extend_from_slice(y);
+        // One judge per target for every held row under `"huber"`, whether
+        // its cells are written or not (`defer_bins` pushed them where they
+        // are), so row `r`'s are at `r·T`.
+        if self.huber_bins() {
+            self.defer
+                .judges
+                .resize((r + 1) * n_targets, crate::margbins::Judge::NONE);
+        }
         self.defer.u.push(u);
         self.defer.n += 1;
         // The ring holds rows that taught something, as `step` pushes them.
@@ -1540,7 +1553,19 @@ impl Marginal {
         if hist.is_empty() && x.iter().any(|v| v.is_finite()) {
             hist.mark_written();
         }
+        // Under `"huber"`, each target's judge for the row now, and its own
+        // step, which the next row's judge reads; the cells take theirs at
+        // the flush.
+        hist.judge_row(y, u, w, &mut self.defer.judges);
         Some(u)
+    }
+
+    /// Whether the bins' locations are Huber's.
+    fn huber_bins(&self) -> bool {
+        self.cfg
+            .bins
+            .as_ref()
+            .is_some_and(|b| matches!(b.stat, crate::BinStat::Huber { .. }))
     }
 
     /// Learn the held rows' pairs: every pair vector cut into
@@ -1599,6 +1624,7 @@ impl Marginal {
                 ring_x,
                 cross_of: &cross_of,
                 bins: cells.as_ref().map(|c| (c.edges, c.off)),
+                huber: cells.as_ref().is_some_and(|c| !c.om.is_empty()),
             };
             let mut parts: Vec<MarginalShard<'_>> = cuts
                 .windows(2)
@@ -1630,6 +1656,7 @@ impl Marginal {
                 deal(c.mean, width, &at, |k, v| parts[k].mean.push(v));
                 deal(c.m2, width, &at, |k, v| parts[k].m2.push(v));
                 deal(c.mean_lo, width, &at, |k, v| parts[k].mean_lo.push(v));
+                deal(c.om, width, &at, |k, v| parts[k].om.push(v));
             }
             (shards.run)(&mut parts);
             debug_assert!(
@@ -2029,6 +2056,9 @@ struct Job<'a> {
     cross_of: &'a [Option<usize>],
     /// The bins' edges and feature offsets, where a held row writes a cell.
     bins: Option<(&'a [Vec<f64>], &'a [usize])>,
+    /// The bins' locations are Huber's: each cell is judged by its row's
+    /// judge (`Deferred::judges`).
+    huber: bool,
 }
 
 impl Job<'_> {
@@ -2068,6 +2098,8 @@ pub struct MarginalShard<'a> {
     mean: Vec<&'a mut [f64]>,
     m2: Vec<&'a mut [f64]>,
     mean_lo: Vec<&'a mut [f64]>,
+    /// Per target, this range's cells' robust weights under `"huber"`.
+    om: Vec<&'a mut [f64]>,
     /// Whether a cell was written.
     wrote: bool,
 }
@@ -2090,6 +2122,7 @@ impl<'a> MarginalShard<'a> {
             mean: Vec::new(),
             m2: Vec::new(),
             mean_lo: Vec::new(),
+            om: Vec::new(),
             wrote: false,
         }
     }
@@ -2275,15 +2308,31 @@ impl<'a> MarginalShard<'a> {
             let Some(v) = d.ys[r * n_targets + t].filter(|v| v.is_finite()) else {
                 continue;
             };
-            self.wrote |= crate::margbins::update_cells(
-                u,
-                v,
-                at,
-                self.w[t],
-                self.mean[t],
-                self.m2[t],
-                self.mean_lo[t],
-            );
+            self.wrote |= if job.huber {
+                crate::margbins::update_cells_huber(
+                    u,
+                    v,
+                    d.judges[r * n_targets + t],
+                    at,
+                    crate::margbins::HuberCells {
+                        w: self.w[t],
+                        om: self.om[t],
+                        mean: self.mean[t],
+                        m2: self.m2[t],
+                        mean_lo: self.mean_lo[t],
+                    },
+                )
+            } else {
+                crate::margbins::update_cells(
+                    u,
+                    v,
+                    at,
+                    self.w[t],
+                    self.mean[t],
+                    self.m2[t],
+                    self.mean_lo[t],
+                )
+            };
         }
     }
 }
@@ -2455,8 +2504,11 @@ impl OnlineModel for Marginal {
                     }
                     None => m.cfg.lags.is_empty(),
                 };
+                // The histogram's statistic is the cfg's, its scales with it.
                 let bins_ok = match (&m.bins, &m.cfg.bins) {
-                    (Some(b), Some(_)) => b.has_shape(p, t),
+                    (Some(b), Some(c)) => {
+                        b.has_shape(p, t) && b.hist.as_ref().is_none_or(|h| h.stat() == c.stat)
+                    }
                     (None, None) => true,
                     _ => false,
                 };

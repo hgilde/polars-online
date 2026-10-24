@@ -1908,6 +1908,7 @@ fn bins_cfg(n_bins: usize, warm_rows: usize) -> Box<crate::BinCfg> {
         edges: None,
         rule: crate::BinRule::Quantile,
         warm_rows,
+        stat: crate::BinStat::Mean,
         budget_mib: None,
     })
 }
@@ -1957,6 +1958,7 @@ fn learned_edges_lose_no_row() {
         edges: Some(vec![got.bin_edges.clone()]),
         rule: crate::BinRule::Quantile,
         warm_rows: 50,
+        stat: crate::BinStat::Mean,
         budget_mib: None,
     })));
     for (i, (x, y)) in rows.iter().enumerate() {
@@ -2002,6 +2004,7 @@ fn learned_edges_lose_no_row_across_targets() {
                 edges,
                 rule: crate::BinRule::Quantile,
                 warm_rows: 60,
+                stat: crate::BinStat::Mean,
                 budget_mib: None,
             })),
             feature_moments: FeatureMomentLayout::PerTarget,
@@ -2294,6 +2297,7 @@ fn given_edges(edges: Vec<f64>) -> Box<crate::BinCfg> {
         edges: Some(vec![edges]),
         rule: crate::BinRule::Quantile,
         warm_rows: 2,
+        stat: crate::BinStat::Mean,
         budget_mib: None,
     })
 }
@@ -2560,6 +2564,7 @@ fn shard_cfgs(p: usize) -> Vec<(&'static str, MarginalCfg)> {
             edges: None,
             rule: crate::BinRule::Quantile,
             warm_rows: 40,
+            stat: crate::BinStat::Mean,
             budget_mib: None,
         }))
     };
@@ -2601,6 +2606,34 @@ fn shard_cfgs(p: usize) -> Vec<(&'static str, MarginalCfg)> {
                     ),
                     rule: crate::BinRule::Quantile,
                     warm_rows: 2,
+                    stat: crate::BinStat::Mean,
+                    budget_mib: None,
+                }))
+            }),
+        ),
+        // Huber's location per bin (docs/PLAN.md task 272 (c)): each held
+        // row carries every target's judge, read before the row, and the
+        // targets' scales step as the row arrives, warm-up replay included.
+        (
+            "learned bins, huber",
+            with(&|c| {
+                learned(c);
+                if let Some(b) = c.bins.as_mut() {
+                    b.stat = crate::BinStat::Huber { delta: 1.0 };
+                }
+            }),
+        ),
+        (
+            "given bins, huber, shared moments with lags",
+            with(&|c| {
+                c.feature_moments = FeatureMomentLayout::Shared;
+                c.lags = vec![1, 3];
+                c.bins = Some(Box::new(crate::BinCfg {
+                    n_bins: 3,
+                    edges: Some((0..p).map(|j| vec![-0.4 + (j % 5) as f64 * 0.15]).collect()),
+                    rule: crate::BinRule::Quantile,
+                    warm_rows: 2,
+                    stat: crate::BinStat::Huber { delta: 0.5 },
                     budget_mib: None,
                 }))
             }),
@@ -3108,7 +3141,7 @@ fn the_hold_budget_is_what_the_held_rows_take() {
     let b = m.bins.as_ref().unwrap();
     assert!(b.held.is_empty() && b.held.capacity() == 0);
     let hist = b.hist.as_ref().unwrap();
-    assert!(hist.heap_bytes() <= histogram_bytes(p, t, p * n_bins));
+    assert!(hist.heap_bytes() <= histogram_bytes(p, t, p * n_bins, crate::margbins::CELL_VALUES));
 }
 
 /// A shard is sent to a pool's threads.
@@ -3916,6 +3949,7 @@ fn a_bins_state_of_another_shape_is_refused() {
         edges: Some(vec![vec![0.0], vec![0.0]]),
         rule: crate::BinRule::Quantile,
         warm_rows: 2,
+        stat: crate::BinStat::Mean,
         budget_mib: None,
     }));
     let given = Marginal::new(c).unwrap();
@@ -4359,6 +4393,7 @@ fn a_row_with_no_finite_feature_leaves_the_histogram_empty_when_sharded() {
         edges: Some(vec![vec![0.0], vec![0.0]]),
         rule: crate::BinRule::Quantile,
         warm_rows: 2,
+        stat: crate::BinStat::Mean,
         budget_mib: None,
     }));
     let shards = Shards {
@@ -4695,5 +4730,113 @@ fn a_row_of_weight_zero_moves_no_moment() {
         assert!(zero > 90, "{name}: {zero} rows of weight 0");
         let bytes = |m: &Marginal| rmp_serde::to_vec(&m.state()).unwrap();
         assert!(bytes(&a) == bytes(&b), "{name}: the states differ");
+    }
+}
+
+/// `bin_stat = "huber"` (docs/PLAN.md task 272 (c)): the targets' scales
+/// step through the warm-up's replay as they would have with the edges
+/// known from the start, so learned edges lose no row here either -- to
+/// the bit, through spikes the scale clips.
+#[test]
+fn learned_edges_lose_no_row_under_huber() {
+    let huber = crate::BinStat::Huber { delta: 1.345 };
+    let rows: Vec<(f64, f64)> = {
+        let mut seed = 98u64;
+        (0..400)
+            .map(|i| {
+                let x = lcg(&mut seed);
+                let spike = if i % 23 == 4 { 30.0 } else { 0.0 };
+                (x, x.abs() + 0.2 * lcg(&mut seed) + spike)
+            })
+            .collect()
+    };
+    let run = |bins: Box<crate::BinCfg>| {
+        let mut m = marginal_with(Some(bins));
+        for (i, (x, y)) in rows.iter().enumerate() {
+            OnlineModel::step(&mut m, &[*x], &[Some(*y)], step_clock(i), 1.0);
+        }
+        m.pair(0, 0)
+    };
+    let mut learned_cfg = bins_cfg(4, 50);
+    learned_cfg.stat = huber;
+    let got = run(learned_cfg);
+    assert_eq!(got.bin_edges.len(), 3);
+    let mut given_cfg = bins_cfg(4, 50);
+    given_cfg.edges = Some(vec![got.bin_edges.clone()]);
+    given_cfg.stat = huber;
+    let want = run(given_cfg);
+    let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    assert_eq!(bits(&got.bin_n), bits(&want.bin_n));
+    assert_eq!(bits(&got.bin_mean_y), bits(&want.bin_mean_y));
+    assert_eq!(bits(&got.bin_var_y), bits(&want.bin_var_y));
+    assert_eq!(got.split_gain.to_bits(), want.split_gain.to_bits());
+    // And the spikes were clipped: the mean's bins read otherwise.
+    let mut mean_cfg = bins_cfg(4, 50);
+    mean_cfg.edges = Some(vec![got.bin_edges.clone()]);
+    let mean = run(mean_cfg);
+    assert_eq!(
+        bits(&mean.bin_n),
+        bits(&want.bin_n),
+        "the count is the rows' weight"
+    );
+    let moved = mean
+        .bin_mean_y
+        .iter()
+        .zip(&want.bin_mean_y)
+        .map(|(a, b)| a - b)
+        .fold(0.0, f64::max);
+    assert!(
+        moved > 0.5,
+        "the spikes move the means and not the locations: {moved}"
+    );
+}
+
+/// A restored state's histogram must be the statistic its cfg names: a
+/// Huber histogram under a mean cfg, a mean one under a Huber cfg, or
+/// another cut, is refused by shape rather than continued as the other.
+#[test]
+fn a_restored_histogram_is_the_statistic_its_cfg_names() {
+    use crate::{ModelState, StateError};
+    let huber = crate::BinStat::Huber { delta: 1.345 };
+    let given = |stat| {
+        let mut c = bins_cfg(3, 3);
+        c.edges = Some(vec![vec![-0.2, 0.2]]);
+        c.stat = stat;
+        c
+    };
+    let fed = |stat| {
+        let mut m = marginal_with(Some(given(stat)));
+        let mut seed = 4u64;
+        for i in 0..30 {
+            let x = lcg(&mut seed);
+            OnlineModel::step(
+                &mut m,
+                &[x],
+                &[Some(x + lcg(&mut seed))],
+                step_clock(i),
+                1.0,
+            );
+        }
+        m
+    };
+    let swap = |m: &Marginal, stat| {
+        let mut s = m.state();
+        let ModelState::Marginal(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.cfg.bins = Some(given(stat));
+        <Marginal as OnlineModel>::restore(&s)
+    };
+    for (from, to) in [
+        (huber, crate::BinStat::Mean),
+        (crate::BinStat::Mean, huber),
+        (huber, crate::BinStat::Huber { delta: 2.0 }),
+    ] {
+        let m = fed(from);
+        assert!(<Marginal as OnlineModel>::restore(&m.state()).is_ok());
+        assert!(
+            matches!(swap(&m, to), Err(StateError::Invalid(_))),
+            "{from:?} restored under {to:?}"
+        );
     }
 }
