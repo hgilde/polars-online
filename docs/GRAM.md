@@ -160,6 +160,7 @@ What you can do with a set of Grams, and the calls that do it:
 | read Grams back from files | `po.gram.from_row`, `po.ModelBank.load`, or numpy alone | [Reading Grams from saved files](#reading-grams-from-saved-files) |
 | halve or quarter a Gram's bytes | `bank.gram(dtype="float32", layout="packed")` | [A compact Gram](#a-compact-gram) |
 | collect one wide Gram on several cores | `gram_threads` | [One wide Gram on several threads](#one-wide-gram-on-several-threads) |
+| fit Huber's loss, reading the rows once a pass and the Gram once | `po.gram.solve`, a Polars query a pass | [Huber regression on a Gram](#huber-regression-on-a-gram) |
 
 ## How a Gram stands in for the rows
 
@@ -251,7 +252,7 @@ hold, needs the rows, or a model that ran over them:
 
 | question | why a Gram cannot answer it | where it is answered |
 |---|---|---|
-| a fit whose loss is not a sum of squares: robust, quantile or logistic | its minimum depends on each residual, so no sum of moments holds it | the robust and quantile regressions `huber` and `quantile`, and the online logistic regression `ftrl`, run over the stream |
+| a fit whose loss is not a sum of squares: robust, quantile or logistic | its minimum depends on each residual, so no sum of moments holds it | the robust and quantile regressions `huber` and `quantile`, and the online logistic regression `ftrl`, run over the stream; or, for Huber's loss, passes over the rows that share one Gram ([Huber regression on a Gram](#huber-regression-on-a-gram)) |
 | the residuals' tails, autocorrelation and spread, and which row moved the fit | each reads a row's own residual | the diagnostics a spec switches on, which judge each row's residual as the bank runs ([Is the model working?](DIAGNOSTICS.md)) |
 | standard errors robust to heteroskedasticity or autocorrelation | their middle term sums each row's `x x' e²`, or products of residuals rows apart | the spec's `emit_robust_se` on the stream ([Can its t be trusted?](DIAGNOSTICS.md#can-its-t-be-trusted)), or the spread of [per-block coefficients](#per-block-coefficients) |
 | a column the Gram does not hold: a square, a product or a lag | its moments with the other columns are sums the pass never took | make the column with Polars' `with_columns` in the query before the bank, and run the pass again |
@@ -1841,6 +1842,159 @@ fast, on a machine whose other work kept its load average near 14 on 14
 cores. The time includes reading the file and each row's `O(k)` work,
 which stay on one thread.
 
+## Huber regression on a Gram
+
+A Huber fit down-weights the rows that miss by far, so its weights depend
+on each row's residual, and no single Gram holds it: it reads the rows
+again, once a pass. It does not need a Gram for each pass or for each
+target. Huber's algorithm H (1981) reuses one Gram, that of the rows at
+their own weights, in every pass.
+
+**Weighting only the targets' cross-moments is not weighted least
+squares.** Giving each row its Huber weight `w_i` in `x·y` and not in
+`x·x'` solves `b = (X'X)⁻¹ X'W y`. A row it down-weights is not pulled
+toward the fit: its target is shrunk toward 0, by the whole level of a
+target that has one. On the recipe's
+stream below, a target at 1,000 with a slope of 2, that iteration reaches
+a slope of −59.4 after 30 passes. Weighted least squares weights `x·x'`
+too, so it needs a Gram per target in every pass.
+
+**Algorithm H moves the target instead of the weights.** With the fit `b`,
+each row's residual `r = y − x'b`, a scale `s` and the cut `c`, the
+pseudo-response is
+
+```text
+y* = x'b + s · ψ(r / s)        ψ(u) = u clipped to [−c, c]
+```
+
+which is the target where the residual is inside the cut, and the fit
+plus or minus `c·s` beyond it. Its least-squares fit, on the rows at
+their own weights, is the next `b`. That fit's matrix is the Gram of the
+rows, which no pass changes, so it is factored once. A pass reads only
+`y*`'s mean and its centred cross-moments with the columns, in one query
+over the rows. At a fixed point the fit of `y*` is `b`, so
+`Σ x ψ(r / s) = 0`, which is Huber's estimating equation. Each target has
+its own `y*`, and all of them share the one Gram.
+
+**Start from a fit that has the target's level.** The recipe starts once
+from least squares, which the Gram gives, and once from the target's
+median alone, an intercept and no slopes. From `b = 0` every residual is
+the level. A scale read again from those residuals is the level's too, so
+nothing is clipped and the first pass is least squares, a pass lost. A
+scale taken from elsewhere, the noise's or a `huber` spec's
+`huber_scale_<t>`, clips every row instead, and each pass then moves the
+fit by at most `c·s`: from 0 at `s = 0.5`, a level of 1,000 takes about
+1,500 passes.
+
+**Read the scale again in each pass.** The recipe takes the MAD,
+`median(|r|) / 0.6745`, which is the noise's standard deviation when the
+errors are normal and holds until half the rows are outliers. A median
+is a query of its own over the rows, and two blocks' medians do not
+combine into their union's. Huber's Proposal 2 is a scale built from
+sums, which do combine: the `s` that solves `mean(ψ(r/s)²) = E[ψ(Z)²]`,
+0.7102 at `c = 1.345` for a standard normal `Z`. It breaks sooner.
+Measured with statsmodels' `RLM` iterated to convergence, on
+`y = 1000 + 2x + 0.5ε` over 20,000 rows with +50 on a share of the rows
+with `x` above 0, the median slope over ten seeds was 2.124 under the MAD
+and 2.222 under Proposal 2 with 12.4% of the rows wild, and 2.317 and
+8.556 with 20%.
+
+```python
+import numpy as np
+import polars as pl
+
+import polars_online as po
+
+# y = 1000 + 2x plus noise, and 50 added to a tenth of the rows with x above 0: 5% of all rows.
+rng = np.random.default_rng(3)
+n = 20_000
+x = rng.standard_normal(n)
+y = 1000.0 + 2.0 * x + 0.5 * rng.standard_normal(n)
+y[(rng.random(n) < 0.10) & (x > 0)] += 50.0
+pl.DataFrame({"x": x, "y": y}).write_parquet("level.parquet")
+
+# One pass leaves the Gram. Its matrix is the same in every pass below, so it is factored once.
+features = ["x"]
+spec = po.spec.ewridge(
+    "g", targets=["y"], features=features, half_life=float("inf"), solve_every=1e18
+)
+bank = po.ModelBank([spec])
+bank.fit(pl.scan_parquet("level.parquet"))
+g = bank.gram("g")[0]
+means = np.asarray(g["means"])[1:]  # the features' means; slot 0 is the intercept's
+factor = np.linalg.cholesky(np.asarray(g["comoments"])[1:, 1:])  # of the centred co-moments
+
+
+# One pass of either iteration below.
+def refit(coef: np.ndarray, response, c: float = 1.345) -> np.ndarray:
+    """One pass: a response built from this fit's residuals, its mean and centred
+    cross-moments read in one query over the file, and its least squares on the Gram."""
+    # This fit's residuals, this pass's scale, and the response built from them.
+    fit = coef[0] + sum(b * pl.col(f) for b, f in zip(coef[1:], features))
+    r = pl.col("y") - fit
+    s = r.abs().median() / 0.6745  # the MAD of this pass's residuals
+    target = response(fit, r, s, c)
+    # The response's mean and centred cross-moments, in one query over the file.
+    moments = (
+        pl.scan_parquet("level.parquet")
+        .select(
+            mean=target.mean(),
+            **{f: ((pl.col(f) - m) * target).mean() for f, m in zip(features, means)},
+        )
+        .collect()
+    )
+    # Its least squares against the one factor; the intercept from the means.
+    cross = np.asarray(moments.select(features).row(0))
+    slopes = np.linalg.solve(factor.T, np.linalg.solve(factor, cross))
+    return np.r_[moments["mean"][0] - means @ slopes, slopes]
+
+
+# The two responses: algorithm H's pseudo-response, and the Huber weights on x·y alone.
+def pseudo_response(fit, r, s, c):
+    return fit + s * (r / s).clip(-c, c)  # each residual clipped at c scales: algorithm H
+
+
+def weighted_target(fit, r, s, c):
+    return pl.min_horizontal(1.0, c * s / r.abs()) * pl.col("y")  # Huber weights on x·y alone
+
+
+# Least squares from the Gram, then the passes from it and from the target's median alone.
+least_squares = po.gram.solve(g)
+median = pl.scan_parquet("level.parquet").select(pl.col("y").median()).collect().item()
+print(f"least squares: slope {least_squares[1]:.4f}")
+# Ten passes of algorithm H from each start.
+for name, coef in [("least squares", least_squares), ("the median", np.r_[median, 0.0])]:
+    slopes = []
+    for k in range(1, 11):
+        coef = refit(coef, pseudo_response)
+        if k in (1, 2, 5, 10):
+            slopes.append(f"{coef[1]:.4f}")
+    print(f"from {name}: slope after 1, 2, 5, 10 passes {', '.join(slopes)}; intercept {coef[0]:.3f}")
+# The Huber weights on x·y alone, from least squares, for 30 passes.
+coef = least_squares
+for _ in range(30):
+    coef = refit(coef, weighted_target)
+print(f"the weights on x·y alone, after 30 passes: slope {coef[1]:.1f}")
+```
+
+```text
+least squares: slope 4.0626
+from least squares: slope after 1, 2, 5, 10 passes 2.6203, 2.1988, 2.0415, 2.0393; intercept 1000.049
+from the median: slope after 1, 2, 5, 10 passes 1.7377, 1.9865, 2.0388, 2.0393; intercept 1000.049
+the weights on x·y alone, after 30 passes: slope -59.4
+```
+
+From least squares the slope is 2.620 after one pass, 2.199 after two,
+2.042 after five and 2.0393 after ten; from the median, 1.738, 1.987,
+2.039 and 2.0393. statsmodels' `RLM` with `HuberT(1.345)` and the MAD
+scale, iterated to a tolerance of 1e-12 on the same rows, gives 2.03923,
+3e-5 from the passes' 2.03925, and the same intercept, 1000.049. Weighted
+least squares, a new Gram in each pass, reaches 2.0393 in five passes, and
+algorithm H in ten, each a query over the rows and a solve against the
+one factor. A `huber` spec instead weighs each row once, by its residual
+against the fit before the row, in one pass over the stream, and lands
+near the same fit: 2.046 on this stream.
+
 ## Sources
 
 Each claim above that is not measured here rests on one of these.
@@ -1855,6 +2009,7 @@ Each claim above that is not measured here rests on one of these.
 | Friedman, J., Hastie, T. and Tibshirani, R. (2010). Regularization paths for generalized linear models via coordinate descent. *Journal of Statistical Software* 33(1), 1–22. | coordinate descent for the lasso and the elastic net, warm-started along a path |
 | Frisch, R. and Waugh, F. V. (1933). Partial time regressions as compared with individual trends. *Econometrica* 1(4), 387–401. | a regression's slopes with a constant per block, from the rows less their block's means |
 | Higham, N. J. (2002). *Accuracy and Stability of Numerical Algorithms*, 2nd ed. SIAM. | the error a perturbation of a linear system's entries carries into its solution |
+| Huber, P. J. (1981). *Robust Statistics*. Wiley. | algorithm H, the pseudo-response iteration on a fixed matrix, and the scale of Proposal 2 |
 | Hoerl, A. E. and Kennard, R. W. (1970). Ridge regression: biased estimation for nonorthogonal problems. *Technometrics* 12(1), 55–67. | the ridge |
 | IEEE (2019). *IEEE Standard for Floating-Point Arithmetic*, IEEE Std 754-2019. | float32's rounding and range |
 | Kish, L. (1965). *Survey Sampling*. Wiley. | the effective sample size of unequal weights |

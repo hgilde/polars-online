@@ -3063,6 +3063,60 @@ class TestHuberMadAgainstStatsmodels:
         assert abs(summed - theirs) < 0.01, (summed, theirs)
 
 
+class TestAlgorithmHOnAGramAgainstStatsmodels:
+    """``docs/GRAM.md``, *Huber regression on a Gram* (task 272 (a), batch
+    (b)): Huber's algorithm H on the bank's Gram, the pseudo-response's
+    moments read by a Polars query a pass, converges to statsmodels' Huber
+    M-estimate with the MAD scale, ``RLM(HuberT(1.345)).fit(scale_est=mad)``
+    iterated to 1e-12. Measured on the page's stream: 2.039252 against
+    2.039232 after 30 passes; the tolerance is 1e-4 on the slope and 1e-3
+    on the intercept, over three seeds."""
+
+    @pytest.mark.parametrize("seed", [3, 4, 5])
+    def test_the_passes_reach_the_m_estimate(self, seed, tmp_path):
+        import warnings
+
+        import statsmodels.api as sm
+
+        rng = np.random.default_rng(seed)
+        n = 20_000
+        x = rng.standard_normal(n)
+        y = 1000.0 + 2.0 * x + 0.5 * rng.standard_normal(n)
+        y[(rng.random(n) < 0.10) & (x > 0)] += 50.0
+        path = tmp_path / "level.parquet"
+        pl.DataFrame({"x": x, "y": y}).write_parquet(path)
+        spec = po.spec.ewridge(
+            "g", targets=["y"], features=["x"], half_life=float("inf"), solve_every=1e18
+        )
+        bank = po.ModelBank([spec])
+        bank.fit(pl.scan_parquet(path))
+        g = bank.gram("g")[0]
+        m = float(np.asarray(g["means"])[1])
+        var = float(np.asarray(g["comoments"])[1, 1])
+        coef = np.asarray(po.gram.solve(g), dtype=float)
+        for _ in range(30):
+            fit = coef[0] + coef[1] * pl.col("x")
+            r = pl.col("y") - fit
+            s = r.abs().median() / 0.6745
+            ystar = fit + s * (r / s).clip(-1.345, 1.345)
+            q = (
+                pl.scan_parquet(path)
+                .select(mean=ystar.mean(), c=((pl.col("x") - m) * ystar).mean())
+                .collect()
+            )
+            slope = q["c"][0] / var
+            coef = np.array([q["mean"][0] - m * slope, slope])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            theirs = (
+                sm.RLM(y, sm.add_constant(x), M=sm.robust.norms.HuberT(1.345))
+                .fit(scale_est=sm.robust.scale.mad, tol=1e-12, maxiter=500)
+                .params
+            )
+        assert abs(coef[1] - theirs[1]) < 1e-4, (coef, theirs)
+        assert abs(coef[0] - theirs[0]) < 1e-3, (coef, theirs)
+
+
 class TestTheBinsAgainstScipyAndAStump:
     """T-S12 (``docs/REVIEW-2026-09-12.md``). With given edges, ``half_life =
     inf`` and unit weights, ``marginal``'s bins are
