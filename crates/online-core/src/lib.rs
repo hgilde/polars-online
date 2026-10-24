@@ -693,7 +693,15 @@ pub use window::{
 ///   (`HuberScale::of_a_state_before_63`), where a spec's default is
 ///   `"mad"`, the decay to the model's and the sketches to none, and the
 ///   state goes on to the bit. Schema 62's fixtures are kept
-///   (`tests/state_fixtures/v62/`).
+///   (`tests/state_fixtures/v62/`). Within 63, before its release (task
+///   275): a window's ring keeps the running product of the per-row decay
+///   factors its model took (`Snapshots::decay`, one per decay the window
+///   is read with, two for `lasso`), and each snapshot the products it was
+///   taken at, a fourth element of its tuple, by whose ratio it is decayed
+///   forward. A ring saved without them loads with none: its snapshots are
+///   decayed by the summed clock as they were, so the first read after
+///   loading is the saved state's to the bit, and those taken after the load
+///   carry products.
 pub const SCHEMA_VERSION: u32 = 63;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`

@@ -2368,22 +2368,38 @@ mod tests {
     /// at 1e8 over a window of 30 exported a variance of 2.5e-9 (review
     /// 2026-10-05, CB2). A target that moves inside the window keeps its
     /// spread, against the definition.
+    ///
+    /// Under literal `lam`s at unit steps, each about the half-life it is
+    /// named by (docs/PLAN.md task 273). Under `half_life` the per-row
+    /// factor is `exp2(−1/h)`, and the window subtracts a snapshot scaled
+    /// by one `exp2(−d/h)` from moments decayed by the per-row factor `d`
+    /// times: a factor `e` ulps off parts the two by about `d·e` ulps, more
+    /// than the guard's `64 ε` over a window of 199 rows. With Apple's
+    /// `exp2` the held target read 0 here (and in 490 cases of seven
+    /// windows, ten levels and seven seeds); with it 1 ulp higher, 1.4e-15
+    /// at a window of 199, and so did 140 of the 490, every one at 199 or
+    /// 500 rows. A literal is the model's factor itself, and its window
+    /// factor `lam^d` one `powf`.
     #[test]
     fn a_target_held_over_the_window_has_no_spread_there() {
         use crate::{EwRidge, EwRidgeCfg, OnlineModel};
         for level in [0.5, 1e3, 1e8, -1e8] {
-            for (window, h, held) in [
-                (30.0, 50.0, 100usize),
-                (9.0, 10.0, 12),
-                (0.5, 40.0, 3),
-                (199.0, 70.0, 230),
-                (1999.0, 2.0, 2100),
+            for (window, lam, held) in [
+                (30.0, 0.98623, 100usize), // a half-life of 50
+                (9.0, 0.93303, 12),        // 10
+                (0.5, 0.98282, 3),         // 40
+                (199.0, 0.99015, 230),     // 70
+                // 2, and the double nearest `2^(−1/2)`: at 0.70711 the
+                // history's spread sank into the subnormals, and a variance
+                // of 5e-324 survived the window's subtraction.
+                (1999.0, std::f64::consts::FRAC_1_SQRT_2, 2100),
             ] {
+                let decay = crate::Decay::Lam(lam);
                 let mut m = EwRidge::new(EwRidgeCfg {
                     n_features: 1,
                     n_targets: 2,
                     fit_intercept: true,
-                    decay: crate::Decay::Halflife(h),
+                    decay,
                     ridge: vec![1e-6],
                     feature_sets: vec![],
                     standardize: false,
@@ -2407,7 +2423,7 @@ mod tests {
                 m.set_window_closed(crate::WindowClosed::Both);
                 let n = 300 + held;
                 let mut s = 2u64;
-                let lam = crate::Decay::Halflife(h).factor(1.0);
+                let lam = decay.factor(1.0);
                 let mut inside = Vec::new();
                 for i in 0..n {
                     let x = lcg(&mut s);
@@ -2428,7 +2444,7 @@ mod tests {
                         inside.push((y1, w * lam.powi((n - 1 - i) as i32)));
                     }
                 }
-                let case = format!("level {level}, window {window}, h {h}");
+                let case = format!("level {level}, window {window}, lam {lam}");
                 let tm = m.gram_parts().1.expect("the window's target moments");
                 assert_eq!(tm.vars()[0], 0.0, "{case}: the held target");
                 let mean = tm.means()[0];
@@ -2448,6 +2464,69 @@ mod tests {
                 }
                 let _ = OnlineModel::n_outputs(&m);
             }
+        }
+    }
+
+    /// A held target whose spread from before the window has sunk into the
+    /// subnormals still reads no spread inside the window (docs/PLAN.md
+    /// task 273). At `lam = 0.70711` over 2,100 held rows the live variance
+    /// is 5.6e-317 and the snapshot's share of it the same: they differ by
+    /// one subnormal step, 5e-324, and the guard `var ≤ 64 ε·terms` read
+    /// it as spread, since `64 ε·terms` underflows to 0 there. A double
+    /// below the normal range holds a fixed step, 2⁻¹⁰⁷⁴, rather than `ε`
+    /// of itself, so the guard is 64 of whichever is larger.
+    #[test]
+    // 0.70711 on purpose: under `FRAC_1_SQRT_2` this stream's held target
+    // already read 0, and the subnormal remainder is what this pins.
+    #[allow(clippy::approx_constant)]
+    fn a_held_target_whose_history_sank_below_the_normal_range_reads_no_spread() {
+        use crate::{EwRidge, EwRidgeCfg, OnlineModel};
+        for level in [0.5, 1e3, -1e8] {
+            let mut m = EwRidge::new(EwRidgeCfg {
+                n_features: 1,
+                n_targets: 2,
+                fit_intercept: true,
+                decay: crate::Decay::Lam(0.70711),
+                ridge: vec![1e-6],
+                feature_sets: vec![],
+                standardize: false,
+                ridge_scale: false,
+                coef_prior: None,
+                session_shrink: None,
+                long_half_life: None,
+                min_weight: 3.0,
+                solve_every: 0.0,
+                max_rows_between_solves: 1,
+                solve_share: None,
+                gram_block_rows: 0,
+                target_gaps: TargetGaps::OwnRows,
+                window: Some(1999.0),
+                window_every: None,
+                max_rows_between_snapshots: None,
+            })
+            .unwrap();
+            m.set_window_closed(crate::WindowClosed::Both);
+            let (held, n) = (2100, 2400);
+            let mut s = 2u64;
+            for i in 0..n {
+                let x = lcg(&mut s);
+                let y0 = if i >= n - held {
+                    level + 0.37
+                } else {
+                    level + lcg(&mut s)
+                };
+                let y1 = level + 0.5 * x + lcg(&mut s);
+                let w = 0.75 + 0.5 * lcg(&mut s).abs();
+                m.step(
+                    &[x],
+                    &[Some(y0), Some(y1)],
+                    if i == 0 { 0.0 } else { 1.0 },
+                    w,
+                );
+            }
+            let tm = m.gram_parts().1.expect("the window's target moments");
+            assert_eq!(tm.vars()[0], 0.0, "level {level}: the held target");
+            assert!(tm.vars()[1] > 0.1, "level {level}: the moving target");
         }
     }
 

@@ -95,6 +95,24 @@ returns.
 - A weekly workflow checks `Cargo.lock` and `uv.lock` against OSV's
   published advisories, failing on a vulnerability in a crate the wheel or
   the command line links and reporting the rest (task 270).
+- CI's test matrix runs every Windows leg on Windows Server 2022 as well
+  as Server 2025, at Python 3.12 and 3.14: on Windows `exp`, `log` and
+  `pow` come from `ucrtbase.dll`, which ships with the operating system, so
+  a second Windows build holds each numeric bound to a second math library.
+  Every CI job that can run on Windows, and every leg of the test matrix,
+  first prints the machine it ran on (CPU model, L2 and L3, AVX2, AVX-512F
+  and FMA, logical cores, OS build, and `ucrtbase.dll`'s or glibc's
+  version), so a failure names its machine (task 273).
+- A weekly workflow, `cpu-paths.yml`, tests the CPU paths one at a time
+  rather than whichever machine the runner pool hands out: online-core's
+  numeric tests (910 in the modules that run faer's products or compare
+  with the oracle) under Intel SDE posing as Sandy Bridge, Haswell, Ice
+  Lake server and Sapphire Rapids, and as Haswell and Ice Lake with a 2 MiB
+  L3, the size at which `private-gemm-x86` 0.1.20 gave wrong products; and
+  the Python tests marked `oracle` with OpenBLAS's kernels pinned to
+  Prescott, SandyBridge and Haswell and NumPy's loops capped at its
+  baseline or X86_V3. Each leg shows that the path it asked for took effect
+  before its tests count (task 273).
 
 ### Changed
 
@@ -169,8 +187,22 @@ returns.
 - `kmeans`' refusal of `n_clusters` past 65,536 states the default
   seeding's cost, and the docs give its one-off cost per group (93 ms at
   400 features and 8 centres; 0.2 ms under `init="k-means++"`) (task 270).
-- The state schema is 63 (the robust scale's sketch and settings); 1.x
-  states load and continue to the bit.
+- The state schema is 63 (the robust scale's sketch and settings, and a
+  window's running products of its decay factors); 1.x states load and
+  continue to the bit, except a windowed one's rows after a snapshot taken
+  since its load, which continue within 1e-12.
+- A window's saved state keeps the running products of its decay factors:
+  12 bytes more per snapshot per decay (23 for `lasso`), and 48 bytes more
+  per snapshot in memory; no measurable change in speed (task 275).
+- Tests: six Python tests whose results moved when the math library or a
+  linear-algebra kernel changed in its last bits now hold derived bounds
+  (the quantile fit's nudge ratio by the band system's condition number,
+  the API snapshot's resolved defaults at 12 significant figures, `deco`'s
+  density by the correlation matrix's condition number, the `bocpd` clock
+  oracle summed with one `logsumexp`, `half_life` against `lam`, and the
+  standardized Kalman's `coef·x = pred`). Found by running the whole suite
+  with the extension's `exp`, `exp2`, `ln` and `powf`, and NumPy's, `math`'s
+  and the linear algebra's results, moved by 1 or 2 ulp (task 273).
 
 ### Fixed
 
@@ -253,6 +285,37 @@ returns.
   `ew_cov` (1,328 fields) 3.1×; at 500 features `sgd` 1.7×, `ewridge`
   1.0-1.2×, `ew_cov` 4.8×. The bank adds about 60 to 170 ns a row, plus
   about 2 ns a feature read and 2 to 4 ns a field written (task 270).
+- The "min_weight has not been met" notice no longer advises lowering
+  `min_weight` below a figure such as 5.7e-17 (task 273). Where a stream's
+  weight is still its first row's alone, the projected settled weight
+  `(W − w₁(1 − s))/s` is 0, and the computed value was its rounding,
+  positive or negative by the platform's math library (+5.7e-17 with
+  `exp2` one ulp high, at or below 0 on macOS). A difference within
+  `8·2⁻⁵³` times the rows read times `W + w₁` now reads exactly 0, so that
+  notice gives no figure on any platform and `summary()`'s
+  `weight_sum_settled` reads 0 there; a real ceiling as small as 7.7e-9
+  keeps its figure, and on the release probe's workload no
+  `weight_sum_settled` value or notice moved.
+- `po.eval.merge_sums`' docstring quoted one random stream's accuracy
+  ("within 3e-15"): over eight streams 2 chunks merge within 6e-15 and
+  1,000 within 9e-15 of the exact sums, and the test holds them to a bound
+  derived from the parts' rounding and any summation order (task 273).
+- A windowed target or feature whose variance inside the window is within
+  the subtraction's rounding now reads 0 also when the variance from before
+  the window has decayed below the smallest normal double (task 273): the
+  guard's `64 ε` of the terms underflowed to 0 there, so a held target over
+  a long window read a variance of 5e-324.
+- A window's snapshot is decayed forward by the product of the per-row
+  decay factors the model's moments took, rather than by one factor of the
+  summed clock (task 275). The two differed by the per-row factor's
+  rounding times the rows in the window, so on a platform whose `exp2`
+  rounds a half-life's per-row factor differently, a target held at one
+  value over a window of a few hundred rows could read a variance near
+  1e-15 instead of 0. Windowed outputs move in their last bits, by at most
+  3.3e-13 relative on the release probe. A windowed state saved by 1.2.0
+  loads and its first read is the one it saved; once a snapshot taken
+  after the load is the window's edge it continues within 1e-12, not to
+  the bit, since such a state never recorded the per-row factors.
 
 ### Performance
 
@@ -329,9 +392,11 @@ returns.
   value that is not a number took the clock's difference a second time on
   every row; it now takes it once, and a temporal clock's step forward
   within its session takes a short cut held to the general step to the
-  bit. On aarch64 a float clock's row is 96 instructions (117 before the
-  check, 130 with it) and a temporal clock's 167 (275 and 338); in wall
-  time 3.3 ns where it was 5.0, and 5.3 ns where it was 10.5.
+  bit. On Linux x86-64, counted under Valgrind, a float clock's row is 103
+  instructions (112 before the check, 120 with its first form) and a
+  temporal clock's 218 (394 before); on aarch64 96 and 167 (117 and 275
+  before). In wall time on an M-series Mac a float clock's row is 3.3 ns
+  where it was 5.0, and a temporal clock's 5.3 ns where it was 10.5.
 
 ## [1.2.0] — 2026-10-17
 

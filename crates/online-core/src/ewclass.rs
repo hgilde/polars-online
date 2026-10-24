@@ -321,9 +321,8 @@ impl EwClass {
         let Some(win) = self.win.as_ref() else {
             return self.n_eff;
         };
-        match win.snaps.boundary() {
-            Some((u, old)) if old.n_eff > 0.0 => {
-                let f = self.cfg.decay.factor(win.clock - u);
+        match win.snaps.cut(win.clock, self.cfg.decay, 0) {
+            Some((f, old)) if old.n_eff > 0.0 => {
                 let wn = self.n_eff - f * old.n_eff;
                 // Zeroed below the same `EMPTY_FRACTION` the windowed
                 // covariance uses, so after a gap that empties the window the
@@ -347,11 +346,10 @@ impl EwClass {
     /// is `O(k^3)`.
     fn view(&self) -> Option<Vec<EwCov>> {
         let win = self.win.as_ref()?;
-        let (u, old) = win.snaps.boundary()?;
+        let (f, old) = win.snaps.cut(win.clock, self.cfg.decay, 0)?;
         if old.n_eff == 0.0 {
             return None;
         }
-        let f = self.cfg.decay.factor(win.clock - u);
         let mut out = Vec::with_capacity(self.classes.len());
         for (cov, old_c) in self.classes.iter().zip(&old.classes) {
             match crate::truncated(cov, old_c, f) {
@@ -659,14 +657,15 @@ impl OnlineModel for EwClass {
             // Built inside the closure so the per-class snapshot is only
             // formed on the rows `offer` keeps, not on every row (review
             // 2026-09-18, P1).
-            win.snaps.learn(&mut win.clock, d_clock, || ClassMoments {
-                n_eff: self.n_eff * lam,
-                classes: self
-                    .classes
-                    .iter()
-                    .map(|c| crate::Moments::of(c, lam))
-                    .collect(),
-            });
+            win.snaps
+                .learn_decayed(&mut win.clock, d_clock, &[lam], || ClassMoments {
+                    n_eff: self.n_eff * lam,
+                    classes: self
+                        .classes
+                        .iter()
+                        .map(|c| crate::Moments::of(c, lam))
+                        .collect(),
+                });
             // A window's truncated covariance moves every row, because the
             // decay carried to the boundary does, so no cached factor
             // survives a row. This is the cost the `window` doc states.
@@ -1717,29 +1716,42 @@ mod tests {
     /// After a gap that empties the window, `n_eff` is 0 exactly at any
     /// scale of the weights: the subtraction's remainder is a rounding of
     /// the history's weight, so the floor that zeroes it is a fraction of
-    /// that weight too. A half-life of two rows makes the per-row factor a
-    /// rounded `2^(-1/2)`, so the decay row by row and the boundary's factor
-    /// in one step round apart, and leave remainders above zero to floor;
-    /// `2⁴⁰` rounds as the unit scale does, its remainders `2⁴⁰` larger.
+    /// that weight too. The decay row by row rounds once a row and the
+    /// boundary's factor `λ^20` once, so they round apart, and leave
+    /// remainders above zero to floor; `2⁴⁰` rounds as the unit scale does,
+    /// its remainders `2⁴⁰` larger.
+    ///
+    /// A literal `λ` at unit steps (docs/PLAN.md task 273): the product row
+    /// by row is then the same bits on every platform, and only the one
+    /// `powf` for `λ^20` is the platform's. Under a half-life of two rows at
+    /// steps of 2 the per-row factor was `exp2(−1/2)`, whose own rounding
+    /// the product took to the 35th power, so its last bit set every
+    /// remainder's sign: Apple's left remainders above zero on 9 to 21 of
+    /// 26 rows at each scale, and the same 1 ulp lower on none. Here a
+    /// remainder above zero needs the product's 20 roundings to outweigh
+    /// `powf`'s: measured 21 to 37 of 41 rows at each scale with Apple's,
+    /// 7 to 14 with it 1 ulp higher, every row with it lower, and 0 or 1
+    /// with it 2 ulps higher. So it holds for a `powf` up to 1 ulp above
+    /// Apple's, which is within 0.51 ulps of the exact power.
     #[test]
     fn a_gap_that_empties_the_window_leaves_zero_at_any_weight_scale() {
         for scale in [1e-6, 1.0, 1e6, 2f64.powi(40)] {
             let mut c = cfg(2, 2, Covariance::Diagonal);
-            c.decay = Decay::Halflife(4.0);
-            c.window = Some(70.0);
+            c.decay = Decay::Lam(0.73);
+            c.window = Some(20.0);
             c.max_rows_between_snapshots = Some(1);
             let mut m = EwClass::new(c).unwrap();
             let mut s = 11u64;
             for i in 0..40 {
                 let label = f64::from(lcg(&mut s) > 0.0);
                 let x = [lcg(&mut s), lcg(&mut s)];
-                let d = if i == 0 { 0.0 } else { 2.0 };
+                let d = if i == 0 { 0.0 } else { 1.0 };
                 OnlineModel::step(&mut m, &x, &[Some(label)], d, scale * (1.5 + lcg(&mut s)));
             }
             let last = m.win.as_ref().unwrap().clock;
             let (mut empty, mut crumbs) = (0, 0);
             for _ in 0..60 {
-                OnlineModel::step(&mut m, &[0.0, 0.0], &[None], 2.0, 0.0);
+                OnlineModel::step(&mut m, &[0.0, 0.0], &[None], 1.0, 0.0);
                 let win = m.win.as_ref().unwrap();
                 let (u, old) = win.snaps.boundary().unwrap();
                 if u <= last {
@@ -1748,7 +1760,8 @@ mod tests {
                 // The window holds no weighted row: what the subtraction
                 // leaves is rounding, and it reads as 0.
                 empty += 1;
-                let raw = m.n_eff - m.cfg.decay.factor(win.clock - u) * old.n_eff;
+                let (f, _) = win.snaps.cut(win.clock, m.cfg.decay, 0).unwrap();
+                let raw = m.n_eff - f * old.n_eff;
                 assert!(raw.abs() < 1e-9 * m.n_eff, "scale {scale}: {raw}");
                 crumbs += usize::from(raw > 0.0);
                 assert_eq!(m.n_eff(), 0.0, "scale {scale}: n_eff is a crumb, not 0");

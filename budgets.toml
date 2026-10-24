@@ -86,9 +86,11 @@ budget = 7757378
 
 [instructions.huber_k20_sets]
 what = "huber, 20 features, 1 target, half-life 1000, the MAD scale, feature sets of 5, 10 and 20 features: AnyModel::step_into, into one kept Step"
+budget = 10131895
 
 [instructions.huber_k20_sum]
 what = "huber, 20 features, 1 target, half-life 1000, the MAD scale, ridge_scale sum: AnyModel::step_into, into one kept Step"
+budget = 8244317
 
 [instructions.sgd]
 what = "sgd, 20 features, squared loss, learning rate 0.01, standardized: AnyModel::step_into, into one kept Step"
@@ -153,12 +155,12 @@ release = 112029
 
 [instructions.clock_temporal]
 what = "ClockState::advance_stamped, a nanosecond clock, gap_cap 100 s, exact stamps"
-budget = 394029
+budget = 218029
 release = 394029
 
 [instructions.bank_seqtest]
 what = "Bank::fit_predict of one frame, seqtest: every per-row step of the bank around the cheapest model"
-budget = 2019524
+budget = 1974796
 release = 2015679
 
 [instructions.bank_ewridge_k5]
@@ -206,6 +208,7 @@ what = "marginal, 20 features against one target, half-life 1000: AnyModel::step
 budget = 859026
 [instructions.marginal_bins_huber]
 what = "marginal, 20 features against one target, four given bins a feature under bin_stat huber, half-life 1000: AnyModel::step_into, into one kept Step"
+budget = 3805301
 
 [instructions.ew_class]
 what = "ew_class, 20 features, 3 classes, full covariance, precision prior 1: AnyModel::step_into, into one kept Step"
@@ -249,9 +252,11 @@ budget = 12418077
 
 [instructions.window_ewm_quantile_w10k]
 what = "WindowsRun::feed of one frame, ewm_quantile at 0.5 over a window of 12,500 clock units (about 10,000 rows), half-life 1000, inside the stream's first window: the sketches walked an octave at a time on every row"
+budget = 16337168
 
 [instructions.window_ewm_quantile_running]
 what = "WindowsRun::feed of one frame, ewm_quantile at 0.5 of abs(x0) with no window, half-life 1000: the running sketch an EW-MAD reads, one value added and the sketch walked on every row"
+budget = 13555761
 
 # --- memory ----------------------------------------------------------------------
 # Bytes per row of every output field of every model at its fullest, over the
@@ -1218,12 +1223,24 @@ windows = { budget = 80.129, release = 79.3321 }
 # read passed: five million, the allocator's pages given back at once, and a
 # whole read the test's negative control.
 [rss.streaming_5m]
+windows = { budget = 162.6172 }
+darwin = { budget = 142.4688 }
+linux = { budget = 140.7852 }
 
 [rss.predict_wide]
+windows = { budget = 153.168 }
+darwin = { budget = 159.3594 }
+linux = { budget = 161.3399 }
 
 [rss.ewridge_window]
+windows = { budget = 155.0938 }
+darwin = { budget = 165.7657 }
+linux = { budget = 215.918 }
 
 [rss.bocpd_runs]
+windows = { budget = 17.043 }
+darwin = { budget = 18.25 }
+linux = { budget = 27.5196 }
 
 # --- raises and sign-offs -------------------------------------------------------
 [[raised]]

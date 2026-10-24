@@ -116,6 +116,10 @@ runs both tiers, but a plain `cargo test` skips the extended Rust tests
    current sets to `v<N>/`, ships a loader and regenerates the current sets. The bank
    fixture carries the package version, so it is regenerated at every version bump.
    `ModelState`'s variant names are frozen: they are the file's tags.
+   One exception, the user's (2026-10-24, task 275): a *windowed* state of
+   schema 61 or 62 continues within the golden tolerance, not to the bit,
+   once a snapshot taken after its load is the window's edge (those states
+   never recorded the per-row decay factors); its first read is exact.
 6. No `unsafe` in `online-core`. f64 everywhere.
 7. Commit after each completed task in `docs/PLAN.md`, with the task number in the message.
 8. **`n_eff` -- the models' accessor, emitted as `weight_sum` -- means the same thing in

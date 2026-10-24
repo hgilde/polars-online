@@ -250,6 +250,12 @@ mod tests {
     #[test]
     fn norm_ppf_matches_known_quantiles() {
         // (p, Φ⁻¹(p)) to 15 digits; both branches of the approximation.
+        // The lower tail at `2⁻⁷` rather than 0.01 (docs/PLAN.md task 273):
+        // `1 − 2⁻⁷` is exact, so `norm_ppf(1 − p)` takes the log of the same
+        // number `norm_ppf(p)` does and the two are negatives to the bit on
+        // any libm. At 0.01 the upper tail read `ln(1 − 0.99)`, 8.7e-18
+        // from 0.01, and agreed with Apple's `ln` alone: 4.5 ulps apart with
+        // it moved by 2. Φ⁻¹(2⁻⁷) from MPFR at 200 bits.
         for (p, z) in [
             (0.5, 0.0),
             (0.75, 0.6744897501960817),
@@ -259,7 +265,7 @@ mod tests {
             (0.99, 2.3263478740408408),
             (0.995, 2.5758293035489004),
             (0.9995, 3.2905267314919255),
-            (0.01, -2.3263478740408408),
+            (0.0078125, -2.417559016236505),
         ] {
             let got = norm_ppf(p);
             assert!(

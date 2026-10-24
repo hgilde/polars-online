@@ -507,7 +507,7 @@ branch's value: `log_densities` returns every `ln fₗ` finite or none"""
 file = "crates/online-core/src/ewclass.rs"
 function = "EwClass::n_eff"
 mutation = "replace match guard old.n_eff > 0.0 with true"
-line_has = "Some((u, old)) if old.n_eff > 0.0 => {"
+line_has = "Some((f, old)) if old.n_eff > 0.0 => {"
 why = """a snapshot's weight is never negative, so the guard fails only at \
 0, where the subtraction leaves `n_eff` itself -- the factor to the \
 boundary is at most 1 on a clock that does not step back, which the \
@@ -518,7 +518,7 @@ returns as the 0 it is"""
 file = "crates/online-core/src/ewclass.rs"
 function = "EwClass::n_eff"
 mutation = "replace > with >="
-line_has = "Some((u, old)) if old.n_eff > 0.0 => {"
+line_has = "Some((f, old)) if old.n_eff > 0.0 => {"
 why = """as the guard's other mutant: at a snapshot weight of 0 the \
 subtraction gives back `n_eff`, which is what the other arm returns"""
 

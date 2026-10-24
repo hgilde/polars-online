@@ -43,12 +43,15 @@ shift 2
 if [ -n "${MEMORY_SCOPE_STATUS:-}" ]; then
     # Inside the scope, as the calling user: the caller's environment back,
     # then run, and leave the status. A name bash will not take (readonly,
-    # or not an identifier) is passed over.
+    # or not an identifier) is passed over, as are this script's own two,
+    # by name: a `MEMORY_SCOPE_*` pattern also dropped the self-test's
+    # `MEMORY_SCOPE_CHECK_SENTINEL`, so the check failed although the rest
+    # of the environment arrived (run 40093690949).
     if [ -n "${MEMORY_SCOPE_ENV:-}" ]; then
         while IFS= read -r -d '' _scope_kv; do
             _scope_name="${_scope_kv%%=*}"
             case "$_scope_name" in
-                MEMORY_SCOPE_* | BASH* | SHELLOPTS | UID | EUID | PPID) continue ;;
+                MEMORY_SCOPE_STATUS | MEMORY_SCOPE_ENV | BASH* | SHELLOPTS | UID | EUID | PPID) continue ;;
             esac
             [[ "$_scope_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
             export "$_scope_kv" 2>/dev/null || true
