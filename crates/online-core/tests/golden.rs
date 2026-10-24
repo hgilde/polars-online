@@ -1691,11 +1691,15 @@ const GOLDEN_FTRL: &[f64] = &[0.4937166166955374, 0.5893822512193234, 0.45266254
 // inside the warm-up and kept its bits; rows 45 and 59 were
 // 0.8740905120546256 and -0.026418737010923815. `tests/reference_paths.py`'s
 // `sgd_ref` under `standardize`, the moments by their definition, gives the
-// new ones to 1.3e-17.
+// new ones to 1.3e-17. Again for task 270 (h)-B (2026-10-24): `inv_scaling`'s
+// rate reads the weight decayed to the row, `lam·W`, where it read `W`, so a
+// zero-weight row in between moves nothing; the three were
+// -9.140859901712872e-5, 0.9626546015542387 and -0.09404195296589056, and
+// `sgd_ref` with the new rate gives the new ones to 1.2e-16.
 const GOLDEN_SGD: &[f64] = &[
-    -9.140859901712872e-5,
-    0.9626546015542387,
-    -0.09404195296589056,
+    -0.00016259422228694087,
+    0.9721184635694746,
+    -0.09328251505787867,
 ];
 const GOLDEN_SGD_SQUARED: &[f64] = &[
     0.31727038792368356,

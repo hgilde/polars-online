@@ -3313,12 +3313,27 @@ fn sgd_predict_is_the_step() {
 /// intercept: [`step_into_is_step_on_a_stream`] holds a twin stepped into a
 /// kept buffer to `step`'s bits and state, row by row. The parity alone:
 /// `sgd_predict_is_the_step` runs the whole contract on the settings it
-/// holds. Widened to this grid, it fails on settings that never ran it (a
-/// zero-weight row past the underflow under a scaler with a constraint or
-/// AdaGrad; a zero-weight row under `inv_scaling`), which are raised with
-/// the coordinator, not fixed here.
+/// holds; `sgd_and_pa_zero_weight_rows_under_every_setting` runs its
+/// zero-weight rows on this grid.
 #[test]
 fn sgd_step_into_is_step_under_every_setting() {
+    for (cfg, binary) in sgd_settings() {
+        step_into_is_step_on_a_stream(move || Sgd::new(cfg.clone()).unwrap(), 2, binary);
+    }
+    for standardize in [false, true] {
+        let cfg = SgdCfg {
+            fit_intercept: false,
+            standardize,
+            ..sgd_cfg()
+        };
+        step_into_is_step_on_a_stream(move || Sgd::new(cfg.clone()).unwrap(), 2, false);
+    }
+}
+
+/// `sgd` under every loss (Huber in both scales), every schedule, with and
+/// without a simplex and a scaler, `l2` 0.01; and whether its labels are
+/// binary.
+fn sgd_settings() -> Vec<(SgdCfg, bool)> {
     let [huber_rms, huber_mad] = sgd_huber_cfgs();
     let losses = [
         (sgd_cfg(), false),
@@ -3358,14 +3373,10 @@ fn sgd_step_into_is_step_under_every_setting() {
         LearningRate::InvScaling { power: 0.25 },
         LearningRate::AdaGrad,
     ];
-    let simplex = Constraint {
-        lo: vec![0.0; K],
-        hi: vec![f64::INFINITY; K],
-        sum: Some(1.0),
-    };
+    let mut out = Vec::new();
     for (base, binary) in losses {
         for schedule in schedules {
-            for constraint in [None, Some(simplex.clone())] {
+            for constraint in [None, Some(simplex())] {
                 for standardize in [false, true] {
                     let cfg = SgdCfg {
                         schedule,
@@ -3374,22 +3385,223 @@ fn sgd_step_into_is_step_under_every_setting() {
                         l2: 0.01,
                         ..base.clone()
                     };
-                    step_into_is_step_on_a_stream(
-                        move || Sgd::new(cfg.clone()).unwrap(),
-                        2,
-                        binary,
-                    );
+                    out.push((cfg, binary));
                 }
             }
         }
     }
-    for standardize in [false, true] {
-        let cfg = SgdCfg {
-            fit_intercept: false,
-            standardize,
-            ..sgd_cfg()
+    out
+}
+
+/// The simplex over the `K` features: each weight at least 0, summing to 1.
+fn simplex() -> Constraint {
+    Constraint {
+        lo: vec![0.0; K],
+        hi: vec![f64::INFINITY; K],
+        sum: Some(1.0),
+    }
+}
+
+/// `pa` with and without a simplex and a scaler.
+fn pa_settings() -> Vec<PaCfg> {
+    let mut out = Vec::new();
+    for constraint in [None, Some(simplex())] {
+        for standardize in [false, true] {
+            out.push(PaCfg {
+                constraint: constraint.clone(),
+                standardize,
+                ..pa_cfg()
+            });
+        }
+    }
+    out
+}
+
+/// Hard rule 9 over every setting of `sgd` and `pa` (task 270 (h)), which
+/// the contract ran on a few of them: a zero-weight row advances the clock
+/// and teaches nothing, and one past the underflow forgets as the decay
+/// does. Two defects hid outside the few. Under `inv_scaling` the rate read
+/// the weight before the row's own decay, so a zero-weight row in between
+/// moved the next row's rate (up to 1.6e-2 relative at half-life 1). And
+/// under a scaler with a constraint or AdaGrad, a zero-weight row one
+/// half-life short of the underflow left the scaler a history of
+/// subnormal weight, whose spread the next row's step divided by: every
+/// coefficient NaN for good.
+#[test]
+fn sgd_and_pa_zero_weight_rows_under_every_setting() {
+    for (cfg, binary) in sgd_settings() {
+        // `poisson` at a level of 1,000 chases targets near 500 through an
+        // exponential link with its gradient clipped, and amplifies
+        // rounding past this test's 1e-9: one ulp more in one feature on
+        // one row moved its fit by up to 3.6e-7 relative 66 rows later,
+        // the same order as the zero-weight rows (up to 6.0e-7, under a
+        // constant rate, a simplex and a scaler), so there the comparison
+        // measures the path's conditioning rather than the rule. It is
+        // compared at a level of 0.
+        let levels: &[f64] = if cfg.loss == SgdLoss::Poisson {
+            &[0.0]
+        } else {
+            &[0.0, 1e3, -1e3]
         };
-        step_into_is_step_on_a_stream(move || Sgd::new(cfg.clone()).unwrap(), 2, false);
+        let build = move || Sgd::new(cfg.clone()).unwrap();
+        for &level in levels {
+            zero_weight_rows_only_advance_the_clock(&build, 2, binary, "sgd", level);
+        }
+        a_zero_weight_row_past_the_underflow_forgets(&build, 2, binary, "sgd");
+    }
+    for cfg in pa_settings() {
+        let build = move || Pa::new(cfg.clone()).unwrap();
+        for level in [0.0, 1e3, -1e3] {
+            zero_weight_rows_only_advance_the_clock(&build, 2, false, "pa", level);
+        }
+        a_zero_weight_row_past_the_underflow_forgets(&build, 2, false, "pa");
+    }
+}
+
+/// A scaler's history aged below the normal range of the row it meets is
+/// forgotten, as one the decay takes to exactly 0 is (task 270 (h)-A, the
+/// rule `lasso`'s Grams keep, `gaps::decay_into`). A zero-weight row
+/// `g` half-lives on, for every `g` from 1022 to 1075, under every setting
+/// of `sgd` and `pa` and at half-lives 1 and 20: no prediction or
+/// coefficient after the gap is NaN, and wherever the history the scaler
+/// carries into the first row after the gap is in the subnormal range of
+/// that row, every prediction, coefficient and `n_eff` is the bits of the
+/// stream whose gap was 1075 half-lives, where the decay itself is 0 (and a
+/// prediction that stream makes, every gap makes). Before
+/// the fix a gap of 1074 half-lives left every coefficient NaN for good
+/// under a scaler with a constraint or AdaGrad.
+#[test]
+fn a_scaler_history_aged_below_the_normal_range_is_forgotten() {
+    type Run = Vec<(Vec<f64>, Vec<Vec<f64>>, f64)>;
+    fn run<M: OnlineModel>(
+        build: &impl Fn(f64) -> M,
+        coefs: &impl Fn(&M) -> Vec<Vec<f64>>,
+        half_life: f64,
+        binary: bool,
+        half_lives: f64,
+    ) -> (Run, f64) {
+        let mut m = build(half_life);
+        let mut s = 2701u64;
+        let row = |s: &mut u64| {
+            let x: Vec<f64> = (0..K).map(|_| 3.0 * lcg(s)).collect();
+            let y: Vec<Option<f64>> = (0..2)
+                .map(|j| {
+                    let lin = 0.5 * (j as f64 + 1.0) + x[0] - 0.5 * x[1] + 0.1 * lcg(s);
+                    Some(if binary { f64::from(lin > 0.5) } else { lin })
+                })
+                .collect();
+            (x, y)
+        };
+        for i in 0..40 {
+            let (x, y) = row(&mut s);
+            m.step(&x, &y, if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        let (x, y) = row(&mut s);
+        m.step(&x, &y, half_life * half_lives, 0.0);
+        // The weight the scaler carries into the next row, which is the
+        // model's own: both age `lam·W + w` from 0 on the same rows.
+        let carried = Decay::Halflife(half_life).factor(1.0) * m.predict(&[0.0; K], 0.0).n_eff;
+        let out = (0..40)
+            .map(|_| {
+                let (x, y) = row(&mut s);
+                let st = m.step(&x, &y, 1.0, 1.0);
+                (st.pred, coefs(&m), st.n_eff)
+            })
+            .collect();
+        (out, carried)
+    }
+    fn check<M: OnlineModel>(
+        what: &str,
+        build: impl Fn(f64) -> M,
+        coefs: impl Fn(&M) -> Vec<Vec<f64>>,
+        binary: bool,
+    ) -> usize {
+        let mut forgotten = 0;
+        for half_life in [1.0, 20.0] {
+            let (reference, _) = run(&build, &coefs, half_life, binary, 1075.0);
+            for g in 1022..=1075 {
+                let (got, carried) = run(&build, &coefs, half_life, binary, f64::from(g));
+                for (i, ((pred, coef, _), (want, _, _))) in got.iter().zip(&reference).enumerate() {
+                    // A prediction the stream that forgot makes, this one
+                    // makes too: `poisson` refuses a negative count, so its
+                    // own weight may not reach `min_weight` on every row.
+                    assert!(
+                        coef.iter().flatten().all(|c| c.is_finite())
+                            && pred
+                                .iter()
+                                .zip(want)
+                                .all(|(p, q)| p.is_finite() || !q.is_finite()),
+                        "{what}, half-life {half_life}, a gap of {g} half-lives: row {i} \
+                         after it, predictions {pred:?}, coefficients {coef:?}"
+                    );
+                }
+                if carried <= f64::MIN_POSITIVE {
+                    forgotten += 1;
+                    let bits = |r: &Run| -> Vec<u64> {
+                        r.iter()
+                            .skip(1)
+                            .flat_map(|(p, c, n)| {
+                                p.iter()
+                                    .chain(c.iter().flatten())
+                                    .chain([n])
+                                    .map(|v| v.to_bits())
+                            })
+                            .collect::<Vec<_>>()
+                    };
+                    let (u, v) = (bits(&got), bits(&reference));
+                    let first = u.iter().zip(&v).position(|(a, b)| a != b);
+                    assert!(
+                        u.len() == v.len() && first.is_none(),
+                        "{what}, half-life {half_life}: a gap of {g} half-lives carries {carried:e} \
+                         into the next row and is not the stream whose decay was 0 (number \
+                         {first:?} of {} differs)",
+                        v.len()
+                    );
+                    // The first row after the gap reports the weight before
+                    // it, which the decay to 0 left at 0 and the other at
+                    // the subnormal it carries; its numbers are the same.
+                    let (p0, c0, _) = &got[0];
+                    let (q0, d0, _) = &reference[0];
+                    let same = |u: &f64, v: &f64| u.to_bits() == v.to_bits();
+                    assert!(
+                        p0.iter().zip(q0).all(|(u, v)| same(u, v))
+                            && c0
+                                .iter()
+                                .flatten()
+                                .zip(d0.iter().flatten())
+                                .all(|(u, v)| same(u, v)),
+                        "{what}, half-life {half_life}, a gap of {g} half-lives: the first row"
+                    );
+                }
+            }
+        }
+        forgotten
+    }
+    for (cfg, binary) in sgd_settings() {
+        let what = format!("{cfg:?}");
+        let build = |h: f64| {
+            Sgd::new(SgdCfg {
+                decay: Decay::Halflife(h),
+                min_weight: 0.5,
+                ..cfg.clone()
+            })
+            .unwrap()
+        };
+        let n = check(&what, build, Sgd::coefficients, binary);
+        assert!(n > 2 * 40, "{what}: {n} gaps forgotten");
+    }
+    for cfg in pa_settings() {
+        let what = format!("{cfg:?}");
+        let build = |h: f64| {
+            Pa::new(PaCfg {
+                decay: Decay::Halflife(h),
+                min_weight: 0.5,
+                ..cfg.clone()
+            })
+            .unwrap()
+        };
+        let n = check(&what, build, Pa::coefficients, false);
+        assert!(n > 2 * 40, "{what}: {n} gaps forgotten");
     }
 }
 

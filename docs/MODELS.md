@@ -918,9 +918,13 @@ step, with `z = [1, x]` and `β` in the caller's units under
 eta = zᵀβ        p = link(eta)        d = dL/d eta
 g₀ = d·w         gᵢ = d·zᵢ·w + l2·βᵢ     each clipped to ±clip_gradient; the intercept takes no l2
 βᵢ -= lrᵢ·gᵢ     lrᵢ = learning_rate                           schedule="constant"
-                     = learning_rate/(1 + weight_sum)^power    schedule="inv_scaling"
+                     = learning_rate/(1 + λ·weight_sum)^power  schedule="inv_scaling"
                      = learning_rate/(√Gᵢ + 1e-8)              schedule="adagrad"
 ```
+
+`λ` is the row's decay, so `λ·weight_sum` is the weight before the row
+decayed to it, and `Gᵢ` is decayed by it too. A row of weight 0 in between
+therefore leaves the next row's rate where it would be without that row.
 
 Under `standardize`, the default, `z` is the row standardized,
 `zᵢ = (xᵢ − mᵢ)/sᵢ`, and the ridge reads `l2·sᵢ·βᵢ`. Once the scaler has

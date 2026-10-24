@@ -1120,8 +1120,9 @@ def sgd_ref(
     the ridge on the slopes only (the intercept's ``g_0 = clamp(d * w)``),
     and the clip a cap on each coordinate of the gradient, not on its norm
     (review 2026-10-05, TC6). ``lr`` is ``learning_rate`` for ``"constant"``, ``learning_rate / (1 +
-    weight_sum) ** power`` for ``"inv_scaling"`` with ``weight_sum`` the weight before
-    the row, and ``learning_rate / (sqrt(G_i) + 1e-8)`` for ``"adagrad"``,
+    lam * weight_sum) ** power`` for ``"inv_scaling"`` with ``weight_sum`` the weight
+    before the row and ``lam`` the row's decay (task 270 (h)-B), and
+    ``learning_rate / (sqrt(G_i) + 1e-8)`` for ``"adagrad"``,
     ``G_i`` the sum of squared gradients with this row's in it. ``weight_sum``
     and ``G`` decay on the clock; the coefficients do not. Per target, from
     zero; a null target or a zero weight moves nothing. ``pred_j`` is ``p``,
@@ -1221,7 +1222,7 @@ def sgd_ref(
             if schedule == "constant":
                 lr = learning_rate
             elif schedule == "inv_scaling":
-                lr = learning_rate / (1.0 + w_sum) ** power
+                lr = learning_rate / (1.0 + lam * w_sum) ** power
             else:
                 G[j] += g * g
                 lr = learning_rate / (np.sqrt(G[j]) + 1e-8)

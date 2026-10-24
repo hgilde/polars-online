@@ -2913,13 +2913,14 @@ def sgd(
         in intercept and slope together.
     ``learning_rate``, ``schedule``, ``power``
         The rate (default 0.01) and its schedule: ``"constant"``,
-        ``"inv_scaling"`` (``lr / (1 + weight_sum) ** power``, ``power``
-        default 0.5) or ``"adagrad"`` (``lr / (sqrt(G_i) + 1e-8)``). The rate
-        is per gradient coordinate: a step is ``lr * g_i``, so ``lr`` is in the
-        coefficient's units over the gradient's, in standardized units under
-        ``standardize``. That is one over the feature squared for the squared
-        and Huber losses, and the target over the feature squared for the
-        sign-valued quantile and epsilon-insensitive ones. A sign-valued step
+        ``"inv_scaling"`` (``lr / (1 + lam * weight_sum) ** power``, ``lam``
+        the row's decay, ``power`` default 0.5) or ``"adagrad"`` (``lr /
+        (sqrt(G_i) + 1e-8)``). The rate is per gradient coordinate: a step
+        is ``lr * g_i``, so ``lr`` is in the coefficient's units over the
+        gradient's, in standardized units under ``standardize``. That is one
+        over the feature squared for the squared and Huber losses, and the
+        target over the feature squared for the sign-valued quantile and
+        epsilon-insensitive ones. A sign-valued step
         moves the fit's level by the rate times the row's weight, so at the
         default 0.01 a target at a level of 1,000 is 100,000 unit-weight rows
         away; under ``"inv_scaling"`` at a rate of 0.5, without decay, about

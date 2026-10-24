@@ -264,7 +264,8 @@ def sgd_replay(
                 if schedule == "constant":
                     rate = lr
                 elif schedule == "inv_scaling":
-                    rate = lr / (1.0 + weight_sum) ** power
+                    # The weight decayed to the row (task 270 (h)-B).
+                    rate = lr / (1.0 + lam * weight_sum) ** power
                 else:
                     g2[j] += g * g
                     rate = lr / (math.sqrt(g2[j]) + 1e-8)
