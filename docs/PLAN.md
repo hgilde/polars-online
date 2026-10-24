@@ -15831,3 +15831,129 @@ size; C-1 the bound documented. Built as task 269 in four batches.
       Recorded after: budgets.toml's release counts from the run's artifacts
       (`--release 1.2.0`), RELEASES gains 1.2.0 (its states load and go on
       as this build's own), RELEASE-READINESS's list follows.
+
+## 23. Review round 9 (2026-10-23): the whole repository, code, theory, performance and memory
+
+The user, 2026-10-23: "Do a deep review of the code and theory", then "Be
+sure to consider performance and memory use". Twelve read-only reviewers at
+`cb230ef` (1.2.0 and its record), one slice each in a worktree slot, four at
+a time: A the Gram foundations, B the Gram-backed and dynamic regressors, C
+the online learners and robust fits, D covariance structure, regimes and
+change points, E marginals, classification and clustering, F the core's
+foundations and state, G the bank and stream, H the window operators,
+formula targets, GBDT adapter, runner and command line, I the Python package
+and bindings, J tests, scripts and CI, K the documents and the theory they
+state, M performance and memory end to end. Three lenses: code (as rounds
+4-8), theory (every update equation, weight, null, critical value and
+stated bound against its paper, with a second opinion from a library
+wherever one computes the quantity) and performance and memory (every
+per-row path's cost by its order, allocations per row, state kept, peak
+memory against the stream, with a measurement and the load logged). Every
+finding shown by a probe; the coordinator reproduced A-1, B-1, C-1,
+D-1/D-2, M-1, M-2, M-3 on the main checkout and confirmed F-1's and H-1's
+mechanisms in the source, and audited the locks: no yanked crate (467) or
+package (88); OSV advisories against `rustls`, `rustls-webpki`, `tokio`,
+`quick-xml` (the wheel's graph through polars' cloud reader), `certifi`
+(docs group) and `pillow` (dev group). Findings and probes: the session
+scratchpad, `review9/FINDINGS.md` (consolidated), `FINDINGS-<slice>.md`,
+`<slice>/`.
+
+**Theory: nothing wrong against a paper.** Every recursion, merge
+identity, null distribution, critical value and documented constant checked
+in the code (A-F, H, I) and the documents (K) is the paper's or a recorded,
+stated departure; the second opinions taken anew (sklearn PA, Lasso,
+ElasticNet, QuantileRegressor, LDA, GaussianNB, k-means step, stump;
+statsmodels OLS, acf, jarque_bera; scipy quadrature and distributions;
+Polars' own window kernels) agree to rounding or to the stated statistical
+tolerance. Where theory parts from the code: a stated scale that is not the
+paper's robust one (C-1), and stated bounds or orders the mechanism does not
+give (A-4, D-3, M-2, M-3, M-4).
+
+**Found: 0 high, 14 medium, 41 low.**
+- Medium, numbers and guards. C-1: `sgd(loss="huber")` scales its cut by
+  the plain EW RMS of every residual, so on a target with a level and no
+  decay the start-up residuals set the scale for good and the cut never
+  binds (squared loss's slope 3.563 at level 1,000; the robust fit's
+  2.189). B-1: `kalman`, standardized without `obs_var`, predicts exactly
+  0.0 on the rows past `min_weight` before its prior is sized, and that 0
+  seeds the residual variance with the level squared (sigma 106 at row 2
+  for a noise of 0.5). A-1: the `gram_block_rows` budget counts one block;
+  `own_rows` holds one per pattern of missing rows (ten targets, ten blocks,
+  2.5 GiB accepted as 256 MiB). F-1: the core clock takes a NaN value as a
+  step of `gap_cap` on that row and the next and poisons every later stamp
+  (the bank refuses it first). H-1: the command line hands a URL input to
+  polars' cloud reader (an HTTP HEAD over `rustls 0.23.45`, ten retries),
+  so the advisories X-1 found are reachable from a user-supplied input.
+  J-1: the `streaming_bounded` RSS budget cannot tell a bounded stream from
+  a whole-frame read at its 1M-row size (collect-then-plan 185.8 MiB, under
+  the streaming run's 192.8). J-2: the release comparison runs 135 of the
+  346 output field names and never reaches 20 paths, against "every output
+  field".
+- Medium, performance and memory. M-1: a wide spec's struct output costs
+  7.6-15x in Polars' parquet writer what the same values cost as flat
+  columns (`ew_cov` k=50 through `sink_parquet` 47,649 ns/row, the bank's
+  row 2,900). M-2: a windowed `ewm_mean`/`var`/`std` costs O(rows in the
+  window) per row where `ewm_sum` is O(1) (161 to 36,995 ns/row for 1,000
+  to 100,000 rows). M-3: a formula target or any `embargo` pays O(held
+  rows) per row (536 to 20,078 ns/row for 10 to 10,000 held; a `Vec`
+  shifted from its front). D-1: `corrchange`'s monitor closes a span in
+  O(T²) per pair. D-2: the window kind clones its whole ring every row (204
+  allocations a row at w = 100). G-1: a (spec, group) task carries ~3.6 µs
+  of fixed work per chunk, so a bank of many small groups runs 5-18x below
+  one stream (M-6: half of the `ewridge` figure is the young streams' solve
+  cadence). M-4: the bank's row is 2-3.5x the model's step for the narrow
+  shapes the README leads with, against the headline's claim. M-5
+  (IMPROVEMENTS C8, measured): the CLI on the system allocator is 1.3x a
+  row and 1.8x a task slower than under jemalloc. X-1: the advisories above
+  and no advisory job.
+- Low (41): B-2 (`sandwich.rs` maps a NaN variance to `0.0`); B-3/I-2
+  (`coef_stats`' dof counts a dropped column, Rust and Python); A-2, A-3
+  (measured proposal), A-4; C-2; D-3..D-8; E-1..E-4; F-2, F-3; G-2; H-2..H-4;
+  I-1 (`po.eval`'s long form 7x the frame), I-3; J-3..J-7; K-1..K-8 (stale
+  numbers: the README throughput table three releases old, the install size
+  0.13.0's, the windows state version); M-7..M-9. Each in
+  `review9/FINDINGS.md` with its probe.
+
+**Decisions for the user** (recommendations in `review9/FINDINGS.md`):
+D1 C-1's scale (recommended Huber Proposal 2 in `sgd` and `robust`, a
+numbers-moving minor); D2 A-3 (measure end to end first); D3 advisories
+weekly or gating (recommended weekly, failing on the shipped graphs); D4
+M-1's CLI output layout (recommended an `--output-layout` flag, the
+default kept, `unnest` documented for the Python sink); D5 M-5 (rule 12: a
+`#[global_allocator]` in the CLI alone; recommended jemalloc/mimalloc as
+py-polars). Everything else needs none. Proposed batches (a) numerics,
+(b) the window and target paths, (c) the bank and output path, (d) the
+CLI, locks and CI, (e) tests, budgets and documents, in
+`review9/FINDINGS.md`.
+
+**Decided** (the user, 2026-10-23: "Fix all using opus high workers then
+review changes with fable high and fix any findings", to the five decisions
+as recommended): D1 Huber Proposal 2's scale in `sgd` and `robust` (the
+clipped squared residual over `E[ψ²]`), a numbers-moving minor declared with
+its measured size; D2 the lower-triangle per-row update measured end to end
+first and adopted only at ≥ 1.5× for an unblocked wide `ewridge`, otherwise
+recorded with the measurement; D3 a weekly `advisories.yml` over both locks
+failing only on a crate in the shipped graphs, the lock bumps and the URL
+refusal now; D4 an `--output-layout` flag on the command line (the struct
+kept as the default) and `unnest` before `sink_parquet` documented; D5
+(rule 12, raised and approved) a `#[global_allocator]` in the command line
+alone, jemalloc on unix and mimalloc on Windows, the wheel unchanged. Built
+as task 270.
+
+- [ ] 270. **Review round 9's fixes** -- the user, 2026-10-23 (above).
+      Five batches, one worker each in a slot, test first (each new test
+      fails on `cb230ef` where its finding says; a performance fix shows its
+      measurement before and after, with the load, and keeps every output's
+      bits unless the finding says otherwise): (a) numerics: B-1, B-2 (+
+      `kalman.rs:1894`), B-3 + I-2, A-1, F-1, C-1 (D1); (b) the window and
+      target paths: M-2, M-3, D-1, D-2, E-2, with the instruction cases that
+      pin them; (c) the bank and output path: G-1 (M-6's cadence caveat in
+      its measurement), M-4's `Step::pred`, I-1, E-1, E-3, A-2, A-3 (D2),
+      D-5..D-7, F-3, H-3, C-2; (d) the command line, the locks and CI: H-1,
+      H-2, X-1's bumps, the advisories job (D3), J-4, M-1 (D4), M-5 (D5),
+      H-4; (e) tests, budgets and documents: J-1, J-2, J-3 and slice M's
+      proposed cases, J-5..J-7, A-4, D-3/D-8/M-9, D-4, E-4, F-2 (+ its
+      case), G-2, I-3, K-1..K-8, M-4's headline, M-7, M-8. Workers do not
+      edit the CHANGELOG's `[Unreleased]` or this plan; the coordinator adds
+      both at merge. Then a review of the merged diff (Fable, high effort)
+      and the fix of its findings before the push.
