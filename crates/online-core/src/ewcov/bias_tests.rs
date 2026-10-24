@@ -162,6 +162,97 @@ fn errors(pred: &[f64], c: f64, x: &[f64], mean: &[f64], s: &[f64], ridge: f64) 
     e
 }
 
+/// The most the model's `mahal` may be off the definition's, relative
+/// (docs/PLAN.md task 274), without a window, to first order: `d² =
+/// δᵀ(S + rI)⁻¹δ / c` on both sides, the ridge `r` the model's. The model's
+/// `S`, mean, `W` and `Q` from its run ([`super::rounding::Rounding`], each
+/// factor the platform's `exp2`), `c = W²/(W² − Q)` within `2ε_W + (2W²ε_W +
+/// Qε_Q)/(W² − Q)` and three roundings of itself, its Cholesky form
+/// ([`crate::oracle::quad_error`]); the definition's: each weight
+/// `w·2^(−age/h)` by the platform's `powf` (its exponent's rounding `|ln
+/// u|·u`) within `θ` of itself, every sum `u` of its partial sum, the
+/// quotient by `V₁` and `V₁`'s and `V₂`'s own, its LU form
+/// ([`crate::oracle::quad_form_error`]); each side's `S` through
+/// `|y|ᵀΔS|y|` and its `δ` through `2|y|ᵀΔδ` (`y = (S + rI)⁻¹δ`); the root
+/// halving the form's relative error.
+fn mahal_error(
+    rows: &[Row],
+    now: f64,
+    h: f64,
+    x: &[f64],
+    ridge: f64,
+    tr: &super::rounding::Rounding,
+) -> f64 {
+    use crate::oracle::{self, LIBM, U, abs_form};
+    let kept = kept(rows, now, h, None);
+    let k = 3;
+    let theta: Vec<f64> = kept
+        .iter()
+        .map(|(_, u)| (LIBM + u.ln().abs() + 2.0) * U)
+        .collect();
+    let (mut v1, mut ev1, mut v2, mut ev2) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    for ((_, u), th) in kept.iter().zip(&theta) {
+        v1 += u;
+        ev1 += th * u + U * v1;
+        v2 += u * u;
+        ev2 += (2.0 * th + U) * u * u + U * v2;
+    }
+    let mut mean = vec![0.0; k];
+    let mut em = vec![0.0; k];
+    for a in 0..k {
+        let (mut sm, mut e) = (0.0f64, 0.0f64);
+        for ((xr, u), th) in kept.iter().zip(&theta) {
+            let t = u * xr[a];
+            sm += t;
+            e += (th + U) * t.abs() + U * sm.abs();
+        }
+        mean[a] = sm / v1;
+        em[a] = e / v1 + mean[a].abs() * (ev1 / v1 + U);
+    }
+    let mut sd = vec![0.0; k * k];
+    let mut es = vec![0.0; k * k];
+    for ((xr, u), th) in kept.iter().zip(&theta) {
+        for a in 0..k {
+            for b in 0..k {
+                let t = u * (xr[a] - mean[a]) * (xr[b] - mean[b]) / v1;
+                sd[a * k + b] += t;
+                es[a * k + b] += (th + 4.0 * U + ev1 / v1) * t.abs() + U * sd[a * k + b].abs();
+            }
+        }
+    }
+    for ab in 0..k * k {
+        es[ab] += em[ab / k] * em[ab % k];
+    }
+    let dc_def = 2.0 * ev1 / v1 + (2.0 * v1 * ev1 + ev2) / (v1 * v1 - v2) + 3.0 * U;
+    let (w, q) = (tr.w, tr.q);
+    let dc_lib = 2.0 * tr.ew + (2.0 * w * w * tr.ew + q * tr.eq) / (w * w - q) + 3.0 * U;
+    let m: Vec<f64> = (0..k * k)
+        .map(|ab| sd[ab] + if ab / k == ab % k { ridge } else { 0.0 })
+        .collect();
+    let delta: Vec<f64> = (0..k).map(|a| x[a] - mean[a]).collect();
+    let y = oracle::solve(&m, &delta);
+    let qf: f64 = delta.iter().zip(&y).map(|(a, b)| a * b).sum();
+    let ds: Vec<f64> = (0..k * k)
+        .map(|ab| {
+            es[ab]
+                + tr.ec[ab]
+                + if ab / k == ab % k {
+                    2.0 * U * m[ab]
+                } else {
+                    0.0
+                }
+        })
+        .collect();
+    let dd: Vec<f64> = (0..k)
+        .map(|a| em[a] + tr.em[a] + 3.0 * U * delta[a].abs())
+        .collect();
+    let dq = abs_form(&y, &ds, &y)
+        + 2.0 * y.iter().zip(&dd).map(|(a, b)| a.abs() * b).sum::<f64>()
+        + oracle::quad_error(&m, &delta, &oracle::cholesky_backward(&m))
+        + oracle::quad_form_error(&m, &delta);
+    0.5 * (dq / qf + dc_lib + dc_def) + 4.0 * U
+}
+
 /// Every unbiased moment is the definition's, `c = V₁² / (V₁² − V₂)` times
 /// the weighted mean of the deviations' products, with and without a
 /// window, over irregular steps and rows of weight 0 (hard rule 9, the first
@@ -181,10 +272,16 @@ fn the_unbiased_moments_are_the_definition() {
         let mut unbiased = EwCovModel::new(cfg(h, window, false)).unwrap();
         let mut biased = EwCovModel::new(cfg(h, window, true)).unwrap();
         let (mut worst, mut twin_worst, mut checked) = ([0.0f64; 5], [0.0f64; 5], 0);
+        // The model's run's rounding, for `mahal`'s bound (task 274).
+        let mut tr =
+            super::rounding::Rounding::new(3, (crate::oracle::LIBM + 1.0) * crate::oracle::U);
+        let mut mahal_share = 0.0f64;
         for i in 0..rows.len() {
             let (x, t, w) = &rows[i];
             let d = if i == 0 { 0.0 } else { t - rows[i - 1].1 };
             let ridge = 0.05 * unbiased.view().precision_scale();
+            let tr_before = tr.clone();
+            tr.update(x, crate::Decay::Halflife(h).factor(d), *w);
             let got = unbiased.step(x, &[], d, *w);
             let twin = biased.step(x, &[], d, *w);
             assert_eq!(got.n_eff.to_bits(), twin.n_eff.to_bits(), "row {i}");
@@ -236,12 +333,29 @@ fn the_unbiased_moments_are_the_definition() {
                 worst[q] = worst[q].max(e[q]);
                 twin_worst[q] = twin_worst[q].max(te[q]);
             }
+            // Without a window, `mahal` is held row by row to its derived
+            // bound (task 274) rather than to the shared `1e-12`; it reads
+            // the moments before the row, which the run had reached.
+            // Measured on aarch64 (macOS): at most 0.071 of the bound.
+            if window.is_none() {
+                let bound = mahal_error(&rows[..i], now, h, x, ridge, &tr_before);
+                assert!(
+                    e[3] <= bound,
+                    "row {i}: mahal off by {:e}, past its bound {bound:e}",
+                    e[3]
+                );
+                mahal_share = mahal_share.max(e[3] / bound);
+            }
             checked += 1;
         }
         assert!(checked > 120, "{checked}");
         println!("window {window:?}: {worst:?}, the twin {twin_worst:?}, over {checked} reads");
+        if window.is_none() {
+            println!("mahal: largest share of its bound {mahal_share:e}");
+        }
         for q in 0..5 {
             let bound = match window {
+                None if q == 3 => f64::INFINITY,
                 None => 1e-12,
                 Some(_) => (4.0 * twin_worst[q]).max(1e-12),
             };

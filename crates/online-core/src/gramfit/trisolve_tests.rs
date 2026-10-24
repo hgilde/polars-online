@@ -7,25 +7,16 @@
 use super::trisolve::{backward, forward, solve_llt};
 use super::*;
 use crate::SplitMix64;
-use crate::oracle;
+use crate::oracle::{self, U, gamma};
 use faer::Mat;
 use faer::Par;
 use faer::dyn_stack::{MemBuffer, MemStack};
 use faer::linalg::cholesky::llt;
 
-const U: f64 = f64::EPSILON / 2.0;
-
 fn normal(rng: &mut SplitMix64) -> f64 {
     let u = 1.0 - rng.uniform();
     let v = rng.uniform();
     (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos()
-}
-
-/// `γ_m = m·u / (1 − m·u)`, the bound on `m` rounded operations' relative
-/// error (Higham, *Accuracy and Stability of Numerical Algorithms*, §3.1).
-fn gamma(m: usize) -> f64 {
-    let mu = m as f64 * U;
-    mu / (1.0 - mu)
 }
 
 /// A symmetric positive definite `A = GᵀG + ρ I`, row-major `n × n`, with

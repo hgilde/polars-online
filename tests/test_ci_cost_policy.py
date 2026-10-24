@@ -197,6 +197,15 @@ class TestWindowsIsTwoImagesAndEveryJobNamesItsMachine:
         for clause in clauses:
             assert '"windows-latest", "windows-2022"' in clause, clause
 
+    def test_windows_peak_memory_is_held_on_one_image(self):
+        """Both Windows images at the floor Python wrote the one
+        `rss.*.windows` budget and read the streaming case 143.9 and 148.7
+        MiB on one build, so each failed it as one to tighten (task 273
+        (a2)). `windows-2022` reports its peak and `windows-latest` holds
+        it (tests/test_budgets_memory.py, `_rss_held_here`)."""
+        (step,) = [s for s in CI["jobs"]["test"]["steps"] if s.get("name") == "pytest"]
+        assert step["env"]["POLARS_ONLINE_RSS_HELD"] == "${{ matrix.os != 'windows-2022' }}"
+
     @staticmethod
     def _can_run_on_windows(spec: dict) -> bool:
         return "windows" in json.dumps({k: spec.get(k) for k in ("runs-on", "strategy")})

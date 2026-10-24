@@ -1131,6 +1131,235 @@ mod tests {
         Some(out)
     }
 
+    /// The most each posterior of [`oracle`] and the model's may part
+    /// (docs/PLAN.md task 274), to first order, `tracks` each class's
+    /// moments' rounding along the model's run
+    /// ([`crate::ewcov::rounding::Rounding`], decayed by the same factors
+    /// the definition's weights are products of):
+    ///
+    /// - each class's score `ℓ_c = ln(n_c/Σn) − ½ ln det M_c − ½ q_c` moves
+    ///   by its matrix's errors, `Σ|M⁻¹|∘ΔM` in `ln det` and `|y|ᵀΔM|y|` in
+    ///   `q` (`y = M⁻¹d`), its deviation's `2|y|ᵀΔd`, its weight's share and
+    ///   the platform's `ln`, on each side: the model's moments from the
+    ///   tracks and its Cholesky ([`oracle::cholesky_log_det_error`],
+    ///   [`oracle::quad_error`]); the definition's sums -- each weight a
+    ///   product of `age` decay factors, `(age + 3)u` of each term with its
+    ///   products, every addition `u` of its partial sum, the quotient by
+    ///   `n_c` and `n_c`'s own -- and the oracle's eigenvalues and LU
+    ///   ([`oracle::log_det_error`], [`oracle::quad_form_error`]); the
+    ///   shared shape pools the matrices by their shares, and the diagonal
+    ///   one reads `Σ ln vᵢ` and `Σ dᵢ²/vᵢ` on both sides;
+    /// - a posterior `p_c = e^(ℓ_c − ℓ_max)/Σ` moves by `p_c(|Δℓ_c| +
+    ///   Σ_d p_d|Δℓ_d|)`, and each side's exponentials (the platform's),
+    ///   sum and quotient round.
+    fn oracle_bound(
+        rows: &[Row],
+        upto: usize,
+        cfg: &EwClassCfg,
+        x: &[f64],
+        tracks: &[crate::ewcov::rounding::Rounding],
+    ) -> Option<Vec<f64>> {
+        use crate::oracle::{self, LIBM, U, abs_form, gamma};
+        let k = cfg.n_features;
+        let nc = cfg.n_classes;
+        let want = oracle(rows, upto, cfg, x)?;
+        let lams: Vec<f64> = rows[..upto].iter().map(|r| cfg.decay.factor(r.d)).collect();
+        // The definition's moments and their rounding.
+        let mut n = vec![0.0; nc];
+        let mut en = vec![0.0; nc];
+        let mut mu = vec![vec![0.0; k]; nc];
+        let mut emu = vec![vec![0.0; k]; nc];
+        let mut scale = vec![1.0; nc];
+        let mut n_run = vec![0.0; nc];
+        let age = |i: usize| (upto - 1 - i) as f64;
+        for (i, r) in rows[..upto].iter().enumerate() {
+            let lam = lams[i];
+            for c in 0..nc {
+                let is_row = r.label == Some(c) && r.w > 0.0;
+                let w_new = lam * n_run[c] + if is_row { r.w } else { 0.0 };
+                if is_row && w_new > 0.0 {
+                    let a = lam * n_run[c] / w_new;
+                    scale[c] = if a <= 0.0 { 1.0 } else { scale[c] * a };
+                }
+                n_run[c] = w_new;
+            }
+            if let Some(c) = r.label
+                && r.w > 0.0
+            {
+                let wt: f64 = r.w * lams[i + 1..].iter().product::<f64>();
+                n[c] += wt;
+                en[c] += (age(i) + 1.0) * U * wt + U * n[c];
+                for j in 0..k {
+                    mu[c][j] += wt * r.x[j];
+                    emu[c][j] += (age(i) + 2.0) * U * (wt * r.x[j]).abs() + U * mu[c][j].abs();
+                }
+            }
+        }
+        for c in 0..nc {
+            if n[c] > 0.0 {
+                for j in 0..k {
+                    mu[c][j] /= n[c];
+                    emu[c][j] = emu[c][j] / n[c] + mu[c][j].abs() * (en[c] / n[c] + U);
+                }
+            }
+        }
+        let mut cov = vec![vec![0.0; k * k]; nc];
+        let mut ecov = vec![vec![0.0; k * k]; nc];
+        for (i, r) in rows[..upto].iter().enumerate() {
+            if let Some(c) = r.label
+                && r.w > 0.0
+            {
+                let wt: f64 = r.w * lams[i + 1..].iter().product::<f64>();
+                for a in 0..k {
+                    for b in 0..k {
+                        let t = wt * (r.x[a] - mu[c][a]) * (r.x[b] - mu[c][b]);
+                        cov[c][a * k + b] += t;
+                        ecov[c][a * k + b] +=
+                            (age(i) + 4.0) * U * t.abs() + U * cov[c][a * k + b].abs();
+                    }
+                }
+            }
+        }
+        for c in 0..nc {
+            if n[c] > 0.0 {
+                for ab in 0..k * k {
+                    cov[c][ab] /= n[c];
+                    ecov[c][ab] = ecov[c][ab] / n[c] + cov[c][ab].abs() * (en[c] / n[c] + U);
+                    // A deviation from a computed mean is off it only to
+                    // second order (`Σ w(x − μ) = 0`).
+                    ecov[c][ab] += emu[c][ab / k] * emu[c][ab % k];
+                }
+            }
+        }
+        let total: f64 = n.iter().sum();
+        let etotal = en.iter().sum::<f64>() + gamma(nc) * total;
+        let ltotal: f64 = tracks.iter().map(|t| t.w).sum();
+        let eltotal = tracks.iter().map(|t| t.ew * t.w).sum::<f64>() + gamma(nc) * ltotal;
+        // Each class's matrix, deviation and their errors on both sides.
+        let seen: Vec<usize> = (0..nc).filter(|&c| n[c] > 0.0).collect();
+        let share_err = |c: usize| -> f64 {
+            en[c] / n[c] + etotal / total + tracks[c].ew + eltotal / ltotal + 4.0 * U
+        };
+        let mats = |c: usize| -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+            // (M, ΔM model, ΔM test)
+            let ridge_of = |cc: usize| cfg.precision_prior * scale[cc];
+            let own = |cc: usize| -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+                let m: Vec<f64> = (0..k * k)
+                    .map(|ij| cov[cc][ij] + if ij / k == ij % k { ridge_of(cc) } else { 0.0 })
+                    .collect();
+                let dl: Vec<f64> = (0..k * k)
+                    .map(|ij| {
+                        tracks[cc].ec[ij]
+                            + if ij / k == ij % k {
+                                U * m[ij].abs()
+                            } else {
+                                0.0
+                            }
+                    })
+                    .collect();
+                let dt: Vec<f64> = (0..k * k)
+                    .map(|ij| {
+                        ecov[cc][ij]
+                            + if ij / k == ij % k {
+                                U * m[ij].abs()
+                            } else {
+                                0.0
+                            }
+                    })
+                    .collect();
+                (m, dl, dt)
+            };
+            match cfg.covariance {
+                Covariance::Full | Covariance::Diagonal => {
+                    let (mut m, mut dl, mut dt) = own(c);
+                    if cfg.covariance == Covariance::Diagonal {
+                        for ij in 0..k * k {
+                            if ij / k != ij % k {
+                                m[ij] = 0.0;
+                                dl[ij] = 0.0;
+                                dt[ij] = 0.0;
+                            }
+                        }
+                    }
+                    (m, dl, dt)
+                }
+                Covariance::Shared => {
+                    let (mut m, mut dl, mut dt) =
+                        (vec![0.0; k * k], vec![0.0; k * k], vec![0.0; k * k]);
+                    for &cc in &seen {
+                        let pi = n[cc] / total;
+                        let (mc, dlc, dtc) = own(cc);
+                        let dpi = pi * share_err(cc);
+                        for ij in 0..k * k {
+                            m[ij] += pi * mc[ij];
+                            let r = 3.0 * U * (pi * mc[ij]).abs();
+                            dl[ij] += pi * dlc[ij] + mc[ij].abs() * dpi + r;
+                            dt[ij] += pi * dtc[ij] + mc[ij].abs() * dpi + r;
+                        }
+                    }
+                    (m, dl, dt)
+                }
+            }
+        };
+        let mut dell = vec![0.0; nc];
+        for &c in &seen {
+            let (m, dl, dt) = mats(c);
+            let d: Vec<f64> = (0..k).map(|j| x[j] - mu[c][j]).collect();
+            let dd_l: Vec<f64> = (0..k)
+                .map(|j| tracks[c].em[j] + 2.0 * U * d[j].abs())
+                .collect();
+            let dd_t: Vec<f64> = (0..k).map(|j| emu[c][j] + U * d[j].abs()).collect();
+            let inv = oracle::inverse(&m);
+            let y = oracle::solve(&m, &d);
+            let tr_err = |dm: &[f64]| -> f64 { inv.iter().zip(dm).map(|(a, b)| a.abs() * b).sum() };
+            let (ld, q) = match cfg.covariance {
+                Covariance::Diagonal => {
+                    // `Σ ln vᵢ` and `Σ dᵢ²/vᵢ`, summed in order on each side:
+                    // the model's by hand, the oracle's by its eigenvalues
+                    // and LU of the diagonal matrix.
+                    let lv: f64 = (0..k).map(|j| m[j * (k + 1)].ln().abs()).sum();
+                    let qv: f64 = (0..k).map(|j| d[j] * d[j] / m[j * (k + 1)]).sum();
+                    let model = (LIBM * U + gamma(k)) * lv + gamma(k + 2) * qv;
+                    (
+                        oracle::log_det_error(&m) + model,
+                        oracle::quad_form_error(&m, &d),
+                    )
+                }
+                _ => (
+                    oracle::cholesky_log_det_error(&m) + oracle::log_det_error(&m),
+                    oracle::quad_error(&m, &d, &oracle::cholesky_backward(&m))
+                        + oracle::quad_form_error(&m, &d),
+                ),
+            };
+            let both: Vec<f64> = dl.iter().zip(&dt).map(|(a, b)| a + b).collect();
+            let dlogdet = ld + tr_err(&both);
+            let dq = q
+                + abs_form(&y, &both, &y)
+                + 2.0
+                    * y.iter()
+                        .zip(dd_l.iter().zip(&dd_t))
+                        .map(|(yi, (a, b))| yi.abs() * (a + b))
+                        .sum::<f64>();
+            let lpi = (n[c] / total).ln().abs();
+            dell[c] = share_err(c)
+                + 2.0 * (LIBM * U * lpi + 3.0 * U * (lpi + 0.5 * dlogdet.abs()))
+                + 0.5 * dlogdet
+                + 0.5 * dq;
+        }
+        let p = &want[1..];
+        let spread: f64 = seen.iter().map(|&c| p[c] * dell[c]).sum();
+        let bound = std::iter::once(0.0)
+            .chain((0..nc).map(|c| {
+                if n[c] > 0.0 {
+                    p[c] * (dell[c] + spread) + 2.0 * p[c] * (2.0 * LIBM * U + gamma(nc) + U)
+                } else {
+                    0.0
+                }
+            }))
+            .collect();
+        Some(bound)
+    }
+
     /// Bitwise equality, so NaN slots compare equal to NaN slots.
     fn same_bits(a: &[f64], b: &[f64]) -> bool {
         a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
@@ -1149,16 +1378,47 @@ mod tests {
             let cfg = cfg(3, 3, shape);
             let rows = stream(400, 3, 3, 7);
             let mut m = EwClass::new(cfg.clone()).unwrap();
+            // Each class's moments' rounding along the model's run (task
+            // 274), each decayed by the factors the definition's weights
+            // are products of: the class's row updates it, any other row
+            // ages it.
+            let mut tracks = vec![crate::ewcov::rounding::Rounding::new(3, 0.0); 3];
             for (i, r) in rows.iter().enumerate() {
                 let y = r.label.map(|c| c as f64);
                 let step = m.step(&r.x, &[y], r.d, r.w);
                 let want = oracle(&rows, i, &cfg, &r.x).unwrap_or(vec![f64::NAN; 4]);
-                assert!(
-                    close(&step.pred, &want, 1e-9),
-                    "{shape:?} row {i}: {:?} vs oracle {:?}",
-                    step.pred,
-                    want
-                );
+                // Task 274: the class is the definition's, and each
+                // posterior within [`oracle_bound`], where it was `1e-9`
+                // relative to `1 + |p|`.
+                // Measured on aarch64 (macOS): at most 0.029 (full), 0.012 (shared) and 0.058
+                // (diagonal) of the bound.
+                match oracle_bound(&rows, i, &cfg, &r.x, &tracks) {
+                    Some(bound) => {
+                        assert_eq!(step.pred[0], want[0], "{shape:?} row {i}: the class");
+                        for c in 1..4 {
+                            crate::oracle::assert_within(
+                                step.pred[c],
+                                want[c],
+                                bound[c],
+                                format_args!("{shape:?} posterior {c} at row {i}"),
+                            );
+                        }
+                    }
+                    None => assert!(
+                        same_bits(&step.pred, &want),
+                        "{shape:?} row {i}: {:?} vs oracle {:?}",
+                        step.pred,
+                        want
+                    ),
+                }
+                let lam = cfg.decay.factor(r.d);
+                for (c, t) in tracks.iter_mut().enumerate() {
+                    if r.label == Some(c) {
+                        t.update(&r.x, lam, r.w);
+                    } else {
+                        t.decay(lam);
+                    }
+                }
                 assert_eq!(step.pred.len(), 4);
                 if step.pred[0].is_finite() {
                     let s: f64 = step.pred[1..].iter().sum();

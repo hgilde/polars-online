@@ -301,11 +301,21 @@ jobs:
       #
       # The memory budgets (budgets.toml) are held here: the bytes of every
       # output field on every leg, and each platform's peak resident memory
-      # on its floor Python (reported on the others). Their measurements go to the job summary and, as JSON, to
-      # the artifact below, for `scripts/budgets.py apply`.
+      # on its floor Python (reported on the others). Their measurements go
+      # to the job summary and, as JSON, to the artifact below, for
+      # `scripts/budgets.py apply`.
+      #
+      # Windows' peak is held on `windows-latest` alone, the newer image,
+      # and reported on `windows-2022`. Both wrote the one `rss.*.windows`
+      # budget, and the two images, on two machines, read the six runs up
+      # to 8% apart on one build (`bocpd_runs` 15.6 MiB on 2022 against 17.0
+      # on 2025, the streaming case 143.9 against 148.7; 2026-10-24), so
+      # each would tighten the budget below the other.
+      # The second image is there for its math library, not its memory.
       - name: pytest
         env:
           POLARS_ONLINE_BUDGETS_OUT: ${{ runner.temp }}/budgets
+          POLARS_ONLINE_RSS_HELD: ${{ matrix.os != 'windows-2022' }}
         run: uv run pytest ${{ runner.os == 'Linux' && matrix.python == '3.12' && '--cov=polars_online --cov-report=term' || '' }}
 
       - name: keep the memory measurements

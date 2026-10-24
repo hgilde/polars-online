@@ -1186,10 +1186,42 @@ mod tests {
                         crate::oracle::gaussian_log_density(&mat, &dv)
                     }
                 };
-                assert!(
-                    (got[s] - want).abs() <= 1e-9 * want.abs() + 1e-12,
-                    "{covariance:?}, state {s}: {} against {want}",
-                    got[s]
+                // Task 274: the model's one Cholesky factor against the
+                // oracle's eigendecomposition, each side's rounding bounded
+                // (`crate::oracle`); the diagonal shape, the same formula on
+                // both sides, twice its rounding -- each `ln` the
+                // platform's, each quotient two roundings, the two sums and
+                // the combination. It was `1e-9` relative.
+                // Measured on aarch64 (macOS): at most 0.059 of the bound (the diagonal shape
+                // equal to the bit; the result moved by 100u of itself fails it, 7.9 times).
+                let bound = match covariance {
+                    Covariance::Diagonal => {
+                        let (v0, v1) = (state.var(0) + r, state.var(1) + r);
+                        let lv = v0.ln().abs() + v1.ln().abs();
+                        let qv = dv[0] * dv[0] / v0 + dv[1] * dv[1] / v1;
+                        use crate::oracle::{LIBM, U, gamma};
+                        2.0 * (0.5 * (LIBM * U + gamma(2)) * lv
+                            + 0.5 * gamma(4) * qv
+                            + (LIBM * U + U) * base.abs()
+                            + gamma(2) * (base.abs() + 0.5 * lv + 0.5 * qv))
+                    }
+                    Covariance::Shared => {
+                        crate::oracle::cholesky_log_density_error(&shared, &dv)
+                            + crate::oracle::gaussian_log_density_error(&shared, &dv)
+                    }
+                    Covariance::Full => {
+                        let mut mat = state.comoments().to_vec();
+                        mat[0] += r;
+                        mat[3] += r;
+                        crate::oracle::cholesky_log_density_error(&mat, &dv)
+                            + crate::oracle::gaussian_log_density_error(&mat, &dv)
+                    }
+                };
+                crate::oracle::assert_within(
+                    got[s],
+                    want,
+                    bound,
+                    format_args!("{covariance:?}, state {s}"),
                 );
             }
         }
@@ -1986,6 +2018,28 @@ mod tests {
                 })
                 .collect()
         };
+        // Task 274: the model's one Cholesky factor of the pool against the
+        // oracle's eigendecomposition of it, each side's rounding bounded
+        // (`crate::oracle`); the pool itself is the same sums on both
+        // sides. It was `1e-9` relative.
+        // Measured on aarch64 (macOS): at most 0.083 of the bound.
+        let bound = |m: &Hmm, s: usize| -> f64 {
+            let weights: Vec<f64> = m.states.iter().map(EwCov::n_eff).collect();
+            let total: f64 = weights.iter().sum();
+            let mut pool = vec![0.0; 4];
+            for (t, state) in m.states.iter().enumerate() {
+                let pi = if total > 0.0 { weights[t] / total } else { 0.5 };
+                for (p, c) in pool.iter_mut().zip(state.comoments()) {
+                    *p += pi * c;
+                }
+                pool[0] += pi * m.ridge(t);
+                pool[3] += pi * m.ridge(t);
+            }
+            let st = &m.states[s];
+            let delta = [st.deviation(0, x[0]), st.deviation(1, x[1])];
+            crate::oracle::cholesky_log_density_error(&pool, &delta)
+                + crate::oracle::gaussian_log_density_error(&pool, &delta)
+        };
         let w: Vec<f64> = m.states.iter().map(EwCov::n_eff).collect();
         assert!(
             (w[0] - w[1]).abs() > 0.1 * (w[0] + w[1]),
@@ -1993,20 +2047,14 @@ mod tests {
         );
         let (got, expect) = (m.log_densities(&x).unwrap(), want(&m));
         for s in 0..2 {
-            assert!(
-                (got[s] - expect[s]).abs() < 1e-9 * expect[s].abs(),
-                "{got:?} vs {expect:?}"
-            );
+            crate::oracle::assert_within(got[s], expect[s], bound(&m, s), "pooled density");
         }
         // A gap of two thousand half-lives: every state's weight is 0.
         m.step(&x, &[], 2000.0, 0.0);
         assert!(m.states.iter().all(|s| s.n_eff() == 0.0));
         let (got, expect) = (m.log_densities(&x).unwrap(), want(&m));
         for s in 0..2 {
-            assert!(
-                (got[s] - expect[s]).abs() < 1e-9 * expect[s].abs(),
-                "{got:?} vs {expect:?}"
-            );
+            crate::oracle::assert_within(got[s], expect[s], bound(&m, s), "pooled density");
         }
         let fails = m.solve_failures;
         let out = m.step(&x, &[], 1.0, 1.0);
