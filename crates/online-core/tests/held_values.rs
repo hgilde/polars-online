@@ -984,6 +984,7 @@ fn a_held_target_leaves_no_split_in_the_bins() {
                 edges: None,
                 rule: BinRule::Quantile,
                 warm_rows: 100,
+                stat: online_core::BinStat::Mean,
                 budget_mib: None,
             })),
             feature_moments: online_core::FeatureMomentLayout::PerTarget,

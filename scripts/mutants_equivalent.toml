@@ -377,7 +377,7 @@ either way"""
 file = "crates/online-core/src/marginal.rs"
 function = "MarginalShard<'a>::cells"
 mutation = "replace |= with &="
-line_has = "self.wrote |= crate::margbins::update_cells("
+line_has = "self.wrote |= if job.huber {"
 why = """`wrote` is read only by a `debug_assert!` in `flush_rows`, which holds \
 of a correct flush; under `&=` it stays false and the assertion holds \
 vacuously, and no number reads it"""

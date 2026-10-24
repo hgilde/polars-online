@@ -909,6 +909,7 @@ pub fn all() -> Vec<Case> {
                     edges: None,
                     rule: BinRule::Quantile,
                     warm_rows: 30,
+                    stat: online_core::BinStat::Mean,
                     budget_mib: None,
                 })),
                 ..marginal_cfg()
@@ -917,6 +918,29 @@ pub fn all() -> Vec<Case> {
             K,
             Targets::Linear(2),
             24
+        ),
+        // Huber's location per bin (63, docs/PLAN.md task 272 (c)): saved
+        // past the warm-up, with every cell's robust weight and each
+        // target's location and scale.
+        case!(
+            "marginal_bins_huber",
+            "Marginal",
+            Marginal,
+            Marginal::new(MarginalCfg {
+                bins: Some(Box::new(BinCfg {
+                    n_bins: 4,
+                    edges: None,
+                    rule: BinRule::Quantile,
+                    warm_rows: 12,
+                    stat: online_core::BinStat::Huber { delta: 1.0 },
+                    budget_mib: None,
+                })),
+                ..marginal_cfg()
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            30
         ),
         case!(
             "marginal_window",

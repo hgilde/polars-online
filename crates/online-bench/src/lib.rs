@@ -53,6 +53,8 @@ pub const MODEL_CASES: &[&str] = &[
     "ftrl",
     "holt",
     "marginal",
+    // Its bins under Huber's location (docs/PLAN.md task 272 (c)).
+    "marginal_bins_huber",
     "ew_class",
     "deco",
     "hmm",
@@ -73,7 +75,12 @@ pub const SPAN_CASE: &str = "corrchange_monitor_w2500";
 /// The model cases whose model predicts nothing by design: `Step::pred` is
 /// empty on every row, so the native test holds each to the path it is
 /// named for by another reading (`tests/workloads.rs`).
-pub const SILENT_CASES: &[&str] = &["marginal", "rcov", "audit_continuous"];
+pub const SILENT_CASES: &[&str] = &[
+    "marginal",
+    "marginal_bins_huber",
+    "rcov",
+    "audit_continuous",
+];
 
 /// The clock cases: a float clock, and a temporal one on the exact path.
 pub const CLOCK_CASES: &[&str] = &["clock_float", "clock_temporal"];
@@ -436,6 +443,20 @@ fn case_spec(id: &str) -> (Value, Shape) {
         }
         // Twenty features against one target, every pair's moments.
         "marginal" => (fit(json!({"type": "marginal"}), 20), Shape::Linear),
+        // The same, with four given bins a feature and each bin's location
+        // Huber's (docs/PLAN.md task 272 (c)): a cell's step, its judge
+        // and each target's scale on every row.
+        "marginal_bins_huber" => (
+            fit(
+                json!({
+                    "type": "marginal",
+                    "bin_edges": vec![vec![-0.5, 0.0, 0.5]; 20],
+                    "bin_stat": "huber",
+                }),
+                20,
+            ),
+            Shape::Linear,
+        ),
         "ew_class" => {
             let model = json!({
                 "type": "ew_class",

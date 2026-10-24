@@ -156,7 +156,7 @@ pub use holt::{Holt, HoltCfg};
 pub use influence::Influence;
 pub use kalman::{Kalman, KalmanCfg};
 pub use lasso::{Lasso, LassoCfg};
-pub use margbins::{BinCfg, BinRule};
+pub use margbins::{BinCfg, BinRule, BinStat};
 pub(crate) use margbins::{MarginalBins, edges_from};
 pub use marginal::{
     FeatureMomentLayout, Marginal, MarginalCfg, MarginalShard, Pair as MarginalPair, SerialRule,
