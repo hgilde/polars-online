@@ -757,8 +757,10 @@ median stood then. A fit's first residuals, at the target's level while
 the intercept is still near 0, do that when they are more than 65,536
 times the noise's: the median then reads too high until the later
 residuals outweigh the first ones. The sketch costs at most about 9 KB of
-state per target and 15 to 20 ns per target per row, measured against
-`"rms"` with 20 features and 10 targets over 100,000 rows.
+state per target. Against `"rms"`, with 20 features and 10 targets over
+100,000 to 200,000 rows on an Apple M4 Pro under other load, it adds 14 to
+17 ns per target per row to `huber` and 20 to 32 to `sgd(loss="huber")`,
+whose step is cheaper.
 
 **The root mean square is not robust, and the median is.** Measured on
 `y = 1000 + 2x + 0.5ε` over 20,000 rows with no decay, and a wild row 50

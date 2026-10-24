@@ -36,6 +36,19 @@ TIER = "essential"
 REPO = Path(__file__).resolve().parent.parent
 REFERENCE = REPO / "docs" / "reference"
 
+
+def records() -> list[str]:
+    """Each document ``docs/README.md`` lists under *Records*, by its file
+    name without the extension, the plan aside (it has a pattern of its
+    own). Read from the table, so a record filed there is held at once
+    (task 270, review 9's R4-6: ``HUBER.md`` was filed and not held)."""
+    text = (REPO / "docs" / "README.md").read_text(encoding="utf-8")
+    section = text.split("\n## Records\n", 1)[1].split("\n## ", 1)[0]
+    names = re.findall(r"^\| \[([^\]]+)\]\(", section, flags=re.M)
+    stems = {name.rsplit(".", 1)[0] for name in names}
+    return sorted(stems - {"PLAN"}, key=lambda s: (-len(s), s))
+
+
 #: What a reader-facing text may not cite, each with what it names. The
 #: records are the documents ``docs/README.md`` lists under *Records*.
 PATTERNS: list[tuple[str, re.Pattern[str]]] = [
@@ -51,12 +64,7 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ),
     (
         "a record",
-        re.compile(
-            r"\b(?:ENHANCEMENTS|IMPROVEMENTS|SIMPLIFICATION|README-ITERATIONS|PHRASING"
-            r"|BEYOND-O-STATE|CLUSTERING|BOOSTED-TREES|ARROW-SOURCES|WARMUP-AND-CONVERGENCE"
-            r"|MARGINAL-[A-Z-]+|GBDT-ADAPTER|ANSWERS-E54-E64)\b"
-            r"|\brecords/"
-        ),
+        re.compile(r"\b(?:" + "|".join(map(re.escape, records())) + r")\b|\brecords/"),
     ),
     # Not T-E9: TESTING.md's own entry IDs, which the code and tests cite.
     ("an entry of ENHANCEMENTS by its number", re.compile(r"(?<!T-)\bE\d{1,3}\b")),
@@ -116,11 +124,25 @@ def citations(text: str) -> list[str]:
         "docs/REVIEW-2026-09-18.md",
         "docs/WARMUP-AND-CONVERGENCE.md",
         "records/PHRASING.md",
+        "docs/HUBER.md §8",
         "(E37)",
     ],
 )
 def test_each_kind_of_citation_is_caught(text):
     assert citations(text), text
+
+
+def test_every_record_is_held():
+    """The records' list is read from ``docs/README.md``, and it holds every
+    record named by hand before it was, and the ones filed since."""
+    held = set(records())
+    by_hand = {
+        "ENHANCEMENTS", "IMPROVEMENTS", "SIMPLIFICATION", "README-ITERATIONS",
+        "PHRASING", "BEYOND-O-STATE", "CLUSTERING", "BOOSTED-TREES",
+        "ARROW-SOURCES", "WARMUP-AND-CONVERGENCE", "MARGINAL-LAGS-AND-BINS",
+        "MARGINAL-AT-WIDTH", "GBDT-ADAPTER", "ANSWERS-E54-E64", "HUBER",
+    }  # fmt: skip
+    assert by_hand <= held, sorted(by_hand - held)
 
 
 @pytest.mark.parametrize(
