@@ -406,6 +406,27 @@ class TestMutationTesting:
         ):
             assert needed in text, needed
 
+    @pytest.mark.parametrize("job", ["changed", "weekly"])
+    def test_every_mutants_run_builds_its_copies_on_the_runners_disk(self, job):
+        """cargo-mutants copies the tree into `TMPDIR` (else `/tmp`) and
+        builds each copy there, a cold target per build directory. On
+        ubuntu-26.04 `/tmp` is a RAM-backed tmpfs with a per-user quota,
+        charged to the scope's memory: the push of 85da91e lost 23 of its 24
+        shards to `Disk quota exceeded (os error 122)` after one to six
+        mutants each (run 40076792577), where the root disk had 109 GB free.
+        So `TMPDIR` is a directory under the job's `RUNNER_TEMP`, on that
+        disk, made before the run and set before the scope is entered (the
+        scope carries the caller's environment through), and the step
+        prints the most of that disk the run used, so a shard that fills it
+        says how near it came (task 270 (m))."""
+        script = self._mutants_step(job)
+        lines = [line.strip() for line in script.splitlines()]
+        assert 'export TMPDIR="$RUNNER_TEMP/mutants-tmp"' in lines, script
+        assert 'mkdir -p "$TMPDIR"' in lines, script
+        at = lines.index('export TMPDIR="$RUNNER_TEMP/mutants-tmp"')
+        assert at < lines.index(self.SCOPE), script
+        assert "disk_peak" in script, script
+
     def test_the_memory_scope_is_proven_on_every_run(self):
         """A job with no condition plants a runaway in a scope of the
         shards' own cap and holds it killed near the cap with its parent
@@ -495,11 +516,32 @@ class TestMutationTesting:
     def test_the_changed_lines_run_on_every_push_and_pull_request_and_gate(self):
         assert {"push", "pull_request"} <= set(self.MUT["on"])
         cond = " ".join(self.MUT["jobs"][self.LISTING]["if"].split())
-        assert cond == "github.event_name == 'push' || github.event_name == 'pull_request'"
+        assert cond == (
+            "github.event_name == 'push' || github.event_name == 'pull_request'"
+            " || (github.event_name == 'workflow_dispatch' && inputs.base != '')"
+        )
         assert self.MUT["jobs"]["changed"]["needs"] == self.LISTING
         assert "--in-diff changed.diff" in self.MUT["env"]["CHANGED_SCOPE"]
         report = self._runs(self.MUT["jobs"]["changed-report"])
         assert "mutants_report.py" in report and "--fail-on-missed" in report
+
+    def test_a_dispatch_with_a_base_reruns_the_changed_lines_not_the_week(self):
+        """A failed push's pass cannot be rerun under a fixed workflow (a
+        rerun keeps its own workflow file) and the next push lists only its
+        own diff, so a dispatch given `base` runs the changed-lines pass
+        over base..HEAD, and the weekly pass only when it is given none:
+        the push of 85da91e lost 23 of its 24 shards to a full /tmp (run
+        40076792577, task 270 (m))."""
+        base = self.MUT["on"]["workflow_dispatch"]["inputs"]["base"]
+        assert base["required"] is False and base["default"] == ""
+        weekly = " ".join(self.MUT["jobs"]["weekly"]["if"].split())
+        assert "(github.event_name == 'workflow_dispatch' && inputs.base == '')" in weekly
+        for job in (self.LISTING, "changed"):
+            step = next(
+                s for s in self.MUT["jobs"][job]["steps"] if "changed.diff" in str(s.get("run", ""))
+            )
+            assert step["env"]["BASE"].endswith("|| inputs.base }}"), job
+            assert 'git diff "$BASE" HEAD -- crates/ > changed.diff' in step["run"], job
 
     def test_the_changed_lines_are_sharded_as_the_weekly_pass_is(self):
         """A shard deals round-robin, as the weekly pass does, so no shard

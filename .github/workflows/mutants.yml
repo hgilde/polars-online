@@ -59,6 +59,18 @@ name: Mutants
 # The `memory-cap` job below proves the scope on every run: a runaway is
 # killed near the cap, and the command that started it goes on.
 #
+# Every run builds its copies on the runner's disk. cargo-mutants copies the
+# tree into TMPDIR (else /tmp), once a job (`-j`), and builds each copy cold,
+# Polars and all for the changed lines' pass. On ubuntu-26.04, which
+# ubuntu-latest became in October 2026, /tmp is a RAM-backed tmpfs with a
+# per-user quota, and what is written there is charged to the memory scope
+# below: the push of 85da91e lost 23 of its 24 shards to `Disk quota
+# exceeded (os error 122)`, each after one to six mutants (run 40076792577),
+# while the root disk had 109 GB free. So TMPDIR is a directory under the
+# job's RUNNER_TEMP, on that disk. A shard's use is its build copies, one a
+# job, however large the diff: a larger diff makes more shards, not larger
+# ones. Each step prints the disk before the run and the most it used.
+#
 # Scope: online-core, and online-polars' span.rs, whose duration parser its own
 # Rust tests pin. cargo-mutants runs the Rust tests only, so the rest of
 # online-polars and online-py, which the pytest suite covers through the
@@ -72,7 +84,20 @@ on:
   pull_request:
   schedule:
     - cron: "41 3 * * 0"
+  # By hand: the weekly pass, or, given a base, the changed-lines pass over
+  # the diff from that commit to the dispatched ref's head. A failed push's
+  # pass cannot be rerun with a fixed workflow (a rerun keeps the run's own
+  # workflow file), and the next push lists only its own diff, so this is
+  # how its lines are tested again: `gh workflow run mutants.yml --ref main
+  # -f base=<the commit the push moved main from>`.
   workflow_dispatch:
+    inputs:
+      base:
+        description: >-
+          A commit: run the changed-lines pass over the diff from it to the
+          ref's head instead of the weekly pass. Empty runs the weekly pass.
+        required: false
+        default: ""
 
 permissions: {}
 
@@ -132,7 +157,9 @@ jobs:
   # cargo-mutants' own build.
   changed-list:
     name: mutants on the changed lines, the listing
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    if: >-
+      github.event_name == 'push' || github.event_name == 'pull_request'
+      || (github.event_name == 'workflow_dispatch' && inputs.base != '')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -146,8 +173,9 @@ jobs:
           fetch-depth: 0
       - name: the diff this run examines
         env:
-          # A pull request's base, or the commit a push moved the branch from.
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          # A pull request's base, the commit a push moved the branch from,
+          # or the base a dispatch names.
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base }}
         run: |
           if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
             BASE=HEAD~1
@@ -208,8 +236,9 @@ jobs:
           fetch-depth: 0
       - name: the diff this run examines
         env:
-          # A pull request's base, or the commit a push moved the branch from.
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          # A pull request's base, the commit a push moved the branch from,
+          # or the base a dispatch names.
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base }}
         run: |
           if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
             BASE=HEAD~1
@@ -235,11 +264,20 @@ jobs:
           set +e
           read -ra scope <<< "$CHANGED_SCOPE"
           args=("${scope[@]}" --shard ${{ matrix.shard }}/${{ needs.changed-list.outputs.shards }} --sharding round-robin)
+          # The build copies on the runner's disk, not in /tmp (see the
+          # top of this file).
+          export TMPDIR="$RUNNER_TEMP/mutants-tmp"
+          mkdir -p "$TMPDIR"
+          df -h / "$TMPDIR"; findmnt /tmp || true
           cargo mutants --list "${args[@]}" > listed.txt
           code=$?
           # A listing that failed would read as a shard dealt nothing.
           if [ "$code" -ne 0 ]; then exit "$code"; fi
           if [ -s listed.txt ]; then
+            # The most of that disk the run used, sampled every 30 s.
+            disk_peak="$RUNNER_TEMP/disk-peak"
+            ( while :; do df --output=used -B1M "$TMPDIR" | tail -1; sleep 30; done > "$disk_peak" ) &
+            sampler=$!
             # Stopped inside the job's 330 minutes, setup included, so the
             # report still runs and counts what a large diff left untested;
             # in the memory scope, so a runaway mutant is killed alone.
@@ -248,6 +286,8 @@ jobs:
               --test-tool nextest --cargo-test-arg=--tests --cargo-test-arg=--run-ignored=all \
               --timeout-multiplier 10 -j 2 --minimum-test-timeout 30 --output mutants-out
             code=$?
+            kill "$sampler"
+            echo "disk used: $(head -n 1 "$disk_peak") MiB at the start, $(sort -n "$disk_peak" | tail -n 1) MiB at most"
           else
             echo "this shard was dealt no mutants"
           fi
@@ -289,7 +329,7 @@ jobs:
     name: mutants, online-core, shard ${{ matrix.shard }} of 96
     if: >-
       (github.event_name == 'schedule' && github.event.repository.private == false)
-      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'workflow_dispatch' && inputs.base == '')
     runs-on: ubuntu-latest
     # The stop below is 325 minutes inside this 350 (GitHub's limit is 360).
     timeout-minutes: 350
@@ -330,7 +370,16 @@ jobs:
         run: |
           set +e
           args=(--package online-core --shard ${{ matrix.shard }}/96 --sharding round-robin)
+          # The build copies on the runner's disk, not in /tmp (see the
+          # top of this file).
+          export TMPDIR="$RUNNER_TEMP/mutants-tmp"
+          mkdir -p "$TMPDIR"
+          df -h / "$TMPDIR"; findmnt /tmp || true
           cargo mutants --list "${args[@]}" > listed.txt
+          # The most of that disk the run used, sampled every 30 s.
+          disk_peak="$RUNNER_TEMP/disk-peak"
+          ( while :; do df --output=used -B1M "$TMPDIR" | tail -1; sleep 30; done > "$disk_peak" ) &
+          sampler=$!
           # Stopped inside the job's 350 minutes, setup included, so the shard
           # still uploads what it finished and the report counts the rest;
           # in the memory scope, so a runaway mutant is killed alone.
@@ -339,6 +388,8 @@ jobs:
             --test-tool nextest --cargo-test-arg=--tests --cargo-test-arg=--run-ignored=all \
             --timeout-multiplier 10 -j 4 --minimum-test-timeout 10 --output shard
           code=$?
+          kill "$sampler"
+          echo "disk used: $(head -n 1 "$disk_peak") MiB at the start, $(sort -n "$disk_peak" | tail -n 1) MiB at most"
           mkdir -p shard/mutants.out && cp listed.txt shard/mutants.out/
           case "$code" in 0|2|3|124|137) exit 0 ;; *) exit "$code" ;; esac
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
