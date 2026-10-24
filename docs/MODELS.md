@@ -63,7 +63,9 @@ What `half_life` decays differs by model:
 
 Start with `ewridge`, ridge regression solved from running sums, and change
 to another linear model when your data need what it adds, such as
-coefficients that drift (`kalman`).
+coefficients that drift (`kalman`). For a Huber loss use
+[`huber`](#huber--quantile--robust-regression), which is these sums with
+each row down-weighted by its residual.
 
 **A grid of half-lives and ridge values is fitted in one pass.** Each
 half-life keeps a set of running sums, and each ridge value is one more
@@ -263,7 +265,10 @@ for `lstsq` on the same rows.
 *API:* [`po.spec.rls`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.rls) — *Rust:* [`rls.rs`](../crates/online-core/src/rls.rs) — *Outputs:* [fields](OUTPUTS.md#rls)
 
 Use `rls` when the coefficients must be current at every row: it updates
-them on every row in O(k²) time, without a solve.
+them on every row in O(k²) time, without a solve. For a Huber loss use
+[`huber`](#huber--quantile--robust-regression) with `ridge_scale="sum"`,
+which is this fit with each row down-weighted by its residual, solved on
+a schedule.
 
 **`rls` is `ewridge(ridge_scale="sum")` solved on every row, to better
 than 1e-9.** Its `delta` is that `ridge`. Here the two run side by side on
