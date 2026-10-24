@@ -679,17 +679,55 @@ impl CorrChange {
         }
         let tf = t as f64;
         let (mut best, mut at) = (0.0f64, 0);
-        for j in 2..=t {
-            let rj = Self::corr_of(rows, j, a, b);
+        // Every prefix's `ρ̂ⱼ` from one pass of the mean-form (Welford) sums,
+        // a row at a time, as `sequential_since_change` keeps them: O(T) a
+        // pair, where a two-pass correlation of each prefix afresh was
+        // O(T²) (docs/PLAN.md task 270, D-1). The rows are taken about the
+        // span's means first, so the sums run at the spread's scale and not
+        // the level's: a row and its span's mean within a factor of two
+        // subtract exactly (Sterbenz), and a correlation does not see the
+        // shift.
+        let (ca, cb) = Self::span_means(rows, a, b);
+        let (mut ma, mut mb, mut saa, mut sbb, mut sab) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        for (i, r) in rows.iter().enumerate() {
+            let j = i + 1;
+            let jf = j as f64;
+            let (xa, xb) = (r[a] - ca, r[b] - cb);
+            let (da, db) = (xa - ma, xb - mb);
+            ma += da / jf;
+            mb += db / jf;
+            saa += da * (xa - ma);
+            sbb += db * (xb - mb);
+            sab += da * (xb - mb);
+            if j < 2 {
+                continue;
+            }
+            let den = (saa * sbb).sqrt();
+            if den.is_nan() || den <= 0.0 {
+                continue;
+            }
+            let rj = sab / den;
             if !rj.is_finite() {
                 continue;
             }
-            let v = (j as f64 / tf.sqrt()) * (rj - rho_t).abs() / sd;
+            let v = (jf / tf.sqrt()) * (rj - rho_t).abs() / sd;
             if v > best {
                 (best, at) = (v, j);
             }
         }
         (best, at)
+    }
+
+    /// The span's means of columns `a` and `b`: what [`Self::monitor_stat_at`]
+    /// takes its rows about.
+    fn span_means(rows: &[Vec<f64>], a: usize, b: usize) -> (f64, f64) {
+        let tf = rows.len() as f64;
+        let (mut sa, mut sb) = (0.0, 0.0);
+        for r in rows {
+            sa += r[a];
+            sb += r[b];
+        }
+        (sa / tf, sb / tf)
     }
 
     /// The pair `(a, b)`, `a < b`, at position `idx` in the order the pairs
@@ -1629,10 +1667,13 @@ mod tests {
                     })
                     .fold(0.0f64, f64::max)
             };
+            // The statistic's prefixes are one pass of mean-form sums and
+            // the longhand's two passes each (task 270, D-1): equal to
+            // rounding, not to the bit.
             for gamma in [1, 20, usize::MAX] {
                 let (got, want) = (stat_at(gamma), longhand(gamma));
                 assert!(
-                    same(got, want),
+                    same(got, want) || (got - want).abs() <= 1e-12 * want.abs(),
                     "seed {seed}, bandwidth {gamma}: {got} vs {want}"
                 );
             }
@@ -1895,6 +1936,89 @@ mod tests {
             (got_q - want_q).abs() <= 1e-12 * (1.0 + want_q),
             "{got_q} vs {want_q}"
         );
+    }
+
+    /// [`CorrChange::monitor_stat_at`] as the code before task 270 (D-1)
+    /// computed it: each prefix's correlation by two passes over it afresh.
+    fn monitor_stat_two_pass(
+        m: &CorrChange,
+        rows: &[Vec<f64>],
+        a: usize,
+        b: usize,
+    ) -> (f64, usize) {
+        let t = rows.len();
+        let gamma = m
+            .cfg
+            .bandwidth
+            .unwrap_or_else(|| ((t as f64).ln().floor() as usize).max(1));
+        let sd = CorrChange::long_run_sd(rows, a, b, gamma);
+        if sd.is_nan() || sd <= 0.0 {
+            return (f64::NAN, 0);
+        }
+        let rho_t = CorrChange::corr_of(rows, t, a, b);
+        if !rho_t.is_finite() {
+            return (f64::NAN, 0);
+        }
+        let tf = t as f64;
+        let (mut best, mut at) = (0.0f64, 0);
+        for j in 2..=t {
+            let rj = CorrChange::corr_of(rows, j, a, b);
+            if !rj.is_finite() {
+                continue;
+            }
+            let v = (j as f64 / tf.sqrt()) * (rj - rho_t).abs() / sd;
+            if v > best {
+                (best, at) = (v, j);
+            }
+        }
+        (best, at)
+    }
+
+    /// The one-pass statistic against the two-pass one it replaced (task
+    /// 270, D-1), on spans with and without a break, at a level of 0 and
+    /// of 1e4: within 1e-12 relative, the same row as its argmax.
+    #[test]
+    fn the_one_pass_statistic_is_the_two_pass_one() {
+        let mut worst = 0.0f64;
+        for (seed, t, brk) in [
+            (3, 60, false),
+            (4, 500, true),
+            (5, 2000, true),
+            (6, 2000, false),
+        ] {
+            let mut n = Normals::new(seed);
+            let base: Vec<Vec<f64>> = (0..t)
+                .map(|i| {
+                    let mut r = n.pair(if brk && i > t / 3 { 0.8 } else { 0.2 });
+                    r.push(n.normal());
+                    r
+                })
+                .collect();
+            let m = CorrChange::new(CorrChangeCfg {
+                span_rows: t,
+                ..cfg(3, CorrChangeKind::Monitor)
+            })
+            .unwrap();
+            for level in [0.0, 1e4] {
+                let rows: Vec<Vec<f64>> = base
+                    .iter()
+                    .map(|r| r.iter().map(|v| v + level).collect())
+                    .collect();
+                for (a, b) in [(0, 1), (0, 2), (1, 2)] {
+                    let (want, want_at) = monitor_stat_two_pass(&m, &rows, a, b);
+                    let (got, got_at) = m.monitor_stat_at(&rows, a, b);
+                    assert!(want.is_finite() && want > 0.0, "{want}");
+                    let rel = (got - want).abs() / want;
+                    worst = worst.max(rel);
+                    assert!(
+                        rel <= 1e-12,
+                        "t {t} level {level} ({a}, {b}): {got} vs {want}"
+                    );
+                    assert_eq!(got_at, want_at, "t {t} level {level} ({a}, {b})");
+                }
+            }
+        }
+        eprintln!("the one-pass statistic's largest move: {worst:e} relative");
     }
 
     /// The empirical size against Wied, Krämer & Dehling's Table 1. Theirs

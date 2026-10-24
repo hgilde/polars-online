@@ -120,6 +120,12 @@ what = "ew_cov, 20 features, mean, std and corr: AnyModel::step"
 budget = 13889690
 release = 13888690
 
+[instructions.corrchange_monitor_w2500]
+what = "corrchange monitor, 4 features (6 pairs), a span of 2,500 rows closing once in the block: AnyModel::step"
+
+[instructions.corrchange_window_w100]
+what = "corrchange window, 4 features, two windows of 100 rows, 100 permutations redrawn every 250 rows: AnyModel::step"
+
 [instructions.clock_float]
 what = "ClockState::advance_stamped, a float clock, gap_cap 100"
 budget = 112029

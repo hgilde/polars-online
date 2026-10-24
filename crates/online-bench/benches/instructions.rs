@@ -52,6 +52,8 @@ fn counted_from(entry: &str) -> LibraryBenchmarkConfig {
 #[bench::micro(args = ("micro"), setup = model_setup)]
 #[bench::kalman(args = ("kalman"), setup = model_setup)]
 #[bench::ew_cov(args = ("ew_cov"), setup = model_setup)]
+#[bench::corrchange_monitor_w2500(args = ("corrchange_monitor_w2500"), setup = model_setup)]
+#[bench::corrchange_window_w100(args = ("corrchange_window_w100"), setup = model_setup)]
 fn model(mut run: ModelRun) -> ModelRun {
     black_box(polars_online_budget_model_rows(black_box(&mut run)));
     run

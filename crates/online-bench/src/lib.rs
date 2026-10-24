@@ -43,7 +43,15 @@ pub const MODEL_CASES: &[&str] = &[
     "micro",
     "kalman",
     "ew_cov",
+    "corrchange_monitor_w2500",
+    "corrchange_window_w100",
 ];
+
+/// The one model case that reports on a single row of its block:
+/// `corrchange`'s monitor tests its span when the span's last row arrives,
+/// and its span of 2,500 rows closes once in the block, at its 500th row.
+/// That close is the cost the case is for (docs/PLAN.md task 270, D-1).
+pub const SPAN_CASE: &str = "corrchange_monitor_w2500";
 
 /// The clock cases: a float clock, and a temporal one on the exact path.
 pub const CLOCK_CASES: &[&str] = &["clock_float", "clock_temporal"];
@@ -291,6 +299,26 @@ fn case_spec(id: &str) -> (Value, Shape) {
         "micro" => (
             four(json!({"type": "micro", "eps": 1.0}), true),
             Shape::Blobs,
+        ),
+        // Four columns, six pairs, a span of 2,500 rows: the warm-up's 2,000
+        // and the block's first 500 (docs/PLAN.md task 270, D-1).
+        "corrchange_monitor_w2500" => (
+            four(
+                json!({"type": "corrchange", "kind": "monitor", "window_rows": 2500}),
+                false,
+            ),
+            Shape::Linear,
+        ),
+        // Two adjacent windows of 100 rows over four columns, a permutation
+        // critical value of 100 draws redrawn every 250 rows (docs/PLAN.md
+        // task 270, D-2).
+        "corrchange_window_w100" => (
+            four(
+                json!({"type": "corrchange", "kind": "window", "window_rows": 100,
+                       "n_perm": 100, "permute_every_rows": 250}),
+                false,
+            ),
+            Shape::Linear,
         ),
         other => panic!("no case {other:?}"),
     }

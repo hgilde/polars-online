@@ -4,8 +4,8 @@
 //! path no user runs, so each case proves it ran past the warm-up first.
 
 use online_bench::{
-    BANK_CASES, CLOCK_CASES, MODEL_CASES, ROWS, WARM_ROWS, WIDE_CASES, WIDE_ROWS, WINDOW_CASES,
-    bank_setup, clock_setup, model_setup, polars_online_budget_bank_rows,
+    BANK_CASES, CLOCK_CASES, MODEL_CASES, ROWS, SPAN_CASE, WARM_ROWS, WIDE_CASES, WIDE_ROWS,
+    WINDOW_CASES, bank_setup, clock_setup, model_setup, polars_online_budget_bank_rows,
     polars_online_budget_clock_rows, polars_online_budget_model_rows,
     polars_online_budget_windows_rows, spec, windows_setup,
 };
@@ -42,7 +42,8 @@ fn every_model_case_predicts_on_every_row_of_its_block() {
         let mut run = model_setup(id);
         let block = polars_online_budget_model_rows(&mut run);
         assert!(block.checksum.is_finite(), "{id}: {block:?}");
-        assert_eq!(block.predicted, ROWS, "{id}: still warming up: {block:?}");
+        let want = if id == SPAN_CASE { 1 } else { ROWS };
+        assert_eq!(block.predicted, want, "{id}: still warming up: {block:?}");
     }
 }
 
