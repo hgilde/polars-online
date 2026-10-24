@@ -1070,18 +1070,25 @@ impl ClockState {
             return None;
         }
         let raw = c - p;
-        // A step forward, finite (not a NaN, nor past the largest double,
-        // which `step_any` refuses), as `step_any`'s within-session arm.
-        // An infinite step is at least any cap, so only a step at the cap or
-        // past it is asked whether it is one: `(0.0..INFINITY).contains`
-        // became eleven instructions of bit tests on every row (task 270).
+        // A step forward, as `step_any`'s within-session arm, and finite: a
+        // NaN fails the first test, and a step past 1e308 -- an infinite
+        // one, which `step_any` refuses, among them -- goes the general way.
+        // One comparison against a finite bound is two instructions a row
+        // on x86-64; `(0.0..INFINITY).contains` became eleven of bit tests,
+        // and `raw == INFINITY` eight (task 270).
         #[allow(clippy::neg_cmp_op_on_partial_ord)]
-        if !(raw >= 0.0) || (raw >= cfg.gap_cap && raw == f64::INFINITY) {
+        if !(raw >= 0.0) || raw > 1e308 {
             return None;
         }
         let ex = self.exact.as_mut()?;
         let capped = raw > cfg.gap_cap;
-        let d = raw.min(cfg.gap_cap);
+        // `raw.min(cap)`, taken on the comparison just made: the same double
+        // for every cap a clock takes (finite and > 0, or infinite), and for
+        // a NaN one, without `min`'s fix-up of a NaN cap -- nine of the
+        // float row's instructions on x86-64 (task 270). The two part only
+        // at a cap of zero, which every clock refuses, where `min` leaves
+        // the sign of a zero unspecified. The same for `d_clock` below.
+        let d = if capped { cfg.gap_cap } else { raw };
         // `Exact::step`'s number-clock arm: a forward step is its own
         // elapsed time, so the elapsed clock removes nothing.
         ex.rows = ex.rows.saturating_add(1);
@@ -1097,7 +1104,8 @@ impl ClockState {
         self.started = true;
         // The accepted row's arm, its fold of the skipped rows' time
         // included.
-        let (d_clock, over) = (total.min(cfg.gap_cap), total > cfg.gap_cap);
+        let over = total > cfg.gap_cap;
+        let d_clock = if over { cfg.gap_cap } else { total };
         self.pending = 0.0;
         self.pending_int = Ticks::ZERO;
         let elapsed = self.skipped_elapsed + raw;
