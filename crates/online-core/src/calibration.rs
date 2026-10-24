@@ -343,12 +343,174 @@ mod tests {
         (beta[0], beta[1], n_kish * quad / s2)
     }
 
+    /// How far [`by_definition`]'s own rounding may have moved its slope,
+    /// intercept and statistic (docs/PLAN.md task 274), to first order:
+    ///
+    /// - its sums, terms of one to three products each, every addition `u`
+    ///   of the partial sum it makes, read off the run (Higham §3.3), through
+    ///   the normal equations' forward error ([`crate::oracle::forward_error`])
+    ///   in the frame of the predictions' level, and the LU's own (its
+    ///   residual);
+    /// - its weights, each decayed `age` times by repeated products and so
+    ///   within `age·u` of itself, through `∂β/∂(ln wᵣ) = wᵣM⁻¹zᵣeᵣ`;
+    /// - the statistic `(n − 2)·d'Md/ssr`: through `β`, `2|Md|ᵀΔβ/d'Md` of
+    ///   it (the residuals' sum of squares does not move with `β` to first
+    ///   order at the least-squares fit), through the sums `d'ΔMd`, the
+    ///   weights through `∂ ln W/∂ ln wᵣ = wᵣ[2(1/Σw − wᵣ/Σw²)n/(n − 2) +
+    ///   ((d'zᵣ)² + 2(d'zᵣ)eᵣ)/d'Md − eᵣ²/ssr]`, the residuals' rounding
+    ///   into `ssr`, and twelve roundings of its own formula.
+    fn definition_error(rows: &[(f64, f64, f64)], now: usize) -> [f64; 3] {
+        use crate::oracle::{self, U, gamma};
+        let (mut m, mut r) = (vec![0.0; 4], vec![0.0; 2]);
+        let (mut em, mut er) = (vec![0.0; 4], vec![0.0; 2]);
+        let (mut sw, mut sw2, mut esw, mut esw2) = (0.0, 0.0, 0.0, 0.0);
+        let add = |s: &mut f64, e: &mut f64, t: f64, k: f64| {
+            *s += t;
+            *e += k * U * t.abs() + U * s.abs();
+        };
+        for &(p, y, w) in rows {
+            add(&mut m[0], &mut em[0], w, 0.0);
+            add(&mut m[1], &mut em[1], w * p, 1.0);
+            add(&mut m[2], &mut em[2], w * p, 1.0);
+            add(&mut m[3], &mut em[3], w * p * p, 2.0);
+            add(&mut r[0], &mut er[0], w * y, 1.0);
+            add(&mut r[1], &mut er[1], w * p * y, 2.0);
+            add(&mut sw, &mut esw, w, 0.0);
+            add(&mut sw2, &mut esw2, w * w, 1.0);
+        }
+        let beta = oracle::solve(&m, &r);
+        // The errors are carried in the frame of `(1, p − 5)`, the
+        // predictions' level, where the normal equations are well
+        // conditioned: `β = Sβ_c`, `S = [[1, −5], [0, 1]]`, `M_c = SᵀMS`,
+        // and the sums' errors `|S|ᵀΔM|S|` there. In the raw frame an
+        // error in the intercept is −5 times one in the slope, and bounds
+        // taken entry by entry there part the two and lose that.
+        let lv = 5.0;
+        let s_abs = [1.0, lv, 0.0, 1.0];
+        let st_abs = [1.0, 0.0, lv, 1.0];
+        let mc = {
+            let ms = [m[0], m[1] - lv * m[0], m[2], m[3] - lv * m[2]];
+            [ms[0], ms[1], ms[2] - lv * ms[0], ms[3] - lv * ms[1]]
+        };
+        let bc = [beta[0] + lv * beta[1], beta[1]];
+        let emc = {
+            let a = crate::sandwich::rounding::abs_mul(&st_abs, &em, 2);
+            crate::sandwich::rounding::abs_mul(&a, &s_abs, 2)
+        };
+        let erc = [er[0], er[1] + lv * er[0]];
+        let mci = oracle::inverse(&mc);
+        let res = oracle::solve_error(&m, &r, &beta);
+        let mut dbc: Vec<f64> = oracle::forward_error(&mc, &bc, &emc, &erc);
+        // The LU's own, `β − β̂ = M⁻¹·res`, is `M_c⁻¹Sᵀ·res` in this frame;
+        // `res` read back from its bound in the raw frame, `|M|·Δβ̂`.
+        let raw_res = oracle::abs_times(&m, &res);
+        let own = oracle::abs_times(&mci, &[raw_res[0], raw_res[1] + lv * raw_res[0]]);
+        dbc[0] += own[0];
+        dbc[1] += own[1];
+        // The same in the raw frame, which for the coefficients themselves
+        // (not the statistic) can be the tighter of the two; both are
+        // bounds, and each coefficient takes the smaller.
+        let mi = oracle::inverse(&m);
+        let mut dbr: Vec<f64> = oracle::forward_error(&m, &beta, &em, &er)
+            .iter()
+            .zip(&res)
+            .map(|(a, b)| a + b)
+            .collect();
+        let resid = |p: f64, y: f64| y - beta[0] - beta[1] * p;
+        let n = sw * sw / sw2;
+        let d = [beta[0], beta[1] - 1.0];
+        let dc = [d[0] + lv * d[1], d[1]];
+        let g = [mc[0] * dc[0] + mc[1] * dc[1], mc[2] * dc[0] + mc[3] * dc[1]];
+        let dmd = dc[0] * g[0] + dc[1] * g[1];
+        let ssr: f64 = rows.iter().map(|&(p, y, w)| w * resid(p, y).powi(2)).sum();
+        let total = rows.len();
+        let mut dln_w = 0.0;
+        let mut dssr = 0.0;
+        for (t, &(p, y, w)) in rows.iter().enumerate() {
+            let e = resid(p, y);
+            let age = (now - t) as f64 * U;
+            for (a, dba) in dbc.iter_mut().enumerate() {
+                *dba += (w * (mci[a * 2] + mci[a * 2 + 1] * (p - lv)) * e).abs() * age;
+            }
+            for (a, dba) in dbr.iter_mut().enumerate() {
+                *dba += (w * (mi[a * 2] + mi[a * 2 + 1] * p) * e).abs() * age;
+            }
+            let dz = d[0] + d[1] * p;
+            let gw = w
+                * (2.0 * (1.0 / sw - w / sw2) * n / (n - 2.0) + (dz * dz + 2.0 * dz * e) / dmd
+                    - e * e / ssr);
+            dln_w += gw.abs() * age;
+            // `e` rounds by `u` of each of its three terms, its square and
+            // its weight by two more; the sum by `γ_N`.
+            let de = U * (y.abs() + beta[0].abs() + 2.0 * (beta[1] * p).abs());
+            dssr += w * (2.0 * e.abs() * de + 3.0 * U * e * e);
+        }
+        dssr += gamma(total) * ssr;
+        let wald = (n - 2.0) * dmd / ssr;
+        let dn = 2.0 * esw / sw + esw2 / sw2;
+        let dwald = wald
+            * (2.0 * (g[0].abs() * dbc[0] + g[1].abs() * dbc[1]) / dmd
+                + oracle::abs_form(&dc, &emc, &dc) / dmd
+                + dln_w
+                + dssr / ssr
+                + dn * n / (n - 2.0)
+                + 12.0 * U);
+        let db = [(dbc[0] + lv * dbc[1]).min(dbr[0]), dbc[1].min(dbr[1])];
+        [db[0], db[1], dwald]
+    }
+
+    /// How far [`Calibration`]'s own rounding may have moved its slope,
+    /// intercept and statistic, from its moments' errors as
+    /// [`crate::ewcov::rounding::Rounding`] carries them along the run:
+    /// `b = C_py/C_pp`, `a = m_y − b·m_p` and `(n − 2)·d/s²`, `n = W²/Q`,
+    /// `s² = C_yy − C_py²/C_pp`, `d = (m_y − m_p)² + (b − 1)²C_pp`, their
+    /// inputs' errors carried to first order ([`crate::oracle::propagate`])
+    /// and each formula's own roundings counted.
+    fn model_error(tr: &crate::ewcov::rounding::Rounding) -> [f64; 3] {
+        use crate::oracle::{U, propagate};
+        let (c, m) = (&tr.c, &tr.m);
+        let x = [tr.w, tr.q, m[0], m[1], c[0], c[1], c[3]];
+        let dx = [
+            tr.ew * tr.w,
+            tr.eq * tr.q,
+            tr.em[0],
+            tr.em[1],
+            tr.ec[0],
+            tr.ec[1],
+            tr.ec[3],
+        ];
+        let slope = |v: &[f64]| v[5] / v[4];
+        let icept = |v: &[f64]| v[3] - v[5] / v[4] * v[2];
+        let wald = |v: &[f64]| {
+            let n = v[0] * v[0] / v[1];
+            let b = v[5] / v[4];
+            let s2 = v[6] - v[5] * v[5] / v[4];
+            let d = (v[3] - v[2]).powi(2) + (b - 1.0).powi(2) * v[4];
+            (n - 2.0) * d / s2
+        };
+        let (b, a, w) = (slope(&x), icept(&x), wald(&x));
+        let s2 = c[3] - c[1] * c[1] / c[0];
+        let mr = m[1] - m[0];
+        let dd = (mr * mr + (b - 1.0).powi(2) * c[0]).abs();
+        let rw = 5.0 * U
+            + U * (2.0 * c[1] * c[1] / c[0] + s2.abs()) / s2.abs()
+            + U * (3.0 * mr * mr + 4.0 * (b - 1.0).powi(2) * c[0] + dd) / dd;
+        [
+            propagate(slope, &x, &dx) + U * b.abs(),
+            propagate(icept, &x, &dx)
+                + 2.0 * U * ((b * m[0]).abs() + a.abs())
+                + U * b.abs() * m[0].abs(),
+            propagate(wald, &x, &dx) + rw * w.abs(),
+        ]
+    }
+
     /// Slope, intercept and Wald against the definition, row by row, under a
     /// decay, uneven weights with zeros among them, and a miscalibrated
     /// prediction, `y = 0.3 + 0.7·pred + e`.
     #[test]
     fn calibration_matches_weighted_least_squares_at_kish_size() {
         let mut c = Calibration::new();
+        let mut tr = crate::ewcov::rounding::Rounding::new(2, 0.0);
         let mut s = 7u64;
         let mut rows: Vec<(f64, f64, f64)> = Vec::new();
         let lam = 0.97;
@@ -361,19 +523,40 @@ mod tests {
                 0.5 + lcg(&mut s) + 0.5
             };
             c.update(p, y, lam, w);
+            if w > 0.0 {
+                tr.update(&[p, y], lam, w);
+            } else {
+                tr.decay(lam);
+            }
             rows.iter_mut().for_each(|r| r.2 *= lam);
             rows.push((p, y, w));
             if i < 5 {
                 continue;
             }
             let (a, b, wald) = by_definition(&rows);
-            let tol = 1e-9;
-            assert!((c.slope().unwrap() - b).abs() < tol, "row {i}");
-            assert!((c.intercept().unwrap() - a).abs() < tol, "row {i}");
-            let got = c.wald().unwrap();
-            assert!(
-                (got - wald).abs() < tol * wald.max(1.0),
-                "row {i}: {got} vs {wald}"
+            // Task 274: each side's rounding, the model's carried along its
+            // run ([`model_error`]) and the definition's ([`definition_error`]),
+            // where each was `1e-9` (relative to `max(1, W)` for the statistic).
+            // Measured on aarch64 (macOS): at most 0.090 (slope), 0.091 (intercept) and 0.0084
+            // (statistic) of the bound.
+            let (dm, dd) = (model_error(&tr), definition_error(&rows, i));
+            crate::oracle::assert_within(
+                c.slope().unwrap(),
+                b,
+                dm[0] + dd[1],
+                format_args!("slope at row {i}"),
+            );
+            crate::oracle::assert_within(
+                c.intercept().unwrap(),
+                a,
+                dm[1] + dd[0],
+                format_args!("intercept at row {i}"),
+            );
+            crate::oracle::assert_within(
+                c.wald().unwrap(),
+                wald,
+                dm[2] + dd[2],
+                format_args!("wald at row {i}"),
             );
         }
         let (a, b) = (c.intercept().unwrap(), c.slope().unwrap());
@@ -400,15 +583,26 @@ mod tests {
     /// the meat's double sum of `u_t = ω_t (y_t − pred_t) z_t` over pairs at
     /// most `L` rows apart at Bartlett's weights, `B⁻¹ S B⁻¹` and its
     /// inverse by faer's LU (`crate::oracle`), under a decay, uneven weights
-    /// and zeros, with residuals that carry a lag.
+    /// and zeros, with residuals that carry a lag. The variance is summed
+    /// about the predictions' level, 5, and mapped to `(1, pred)`
+    /// ([`crate::sandwich::rounding::covariance_bound`]).
+    ///
+    /// Task 274: within the two sides' rounding, where it was `1e-7`
+    /// relative: the variance's, entry by entry, through `−x'ΔVx` (`x =
+    /// V⁻¹d`, `d` the model's own distance on both sides) in the level's
+    /// frame, and the two quadratic forms', the model's Cholesky and the
+    /// oracle's LU.
+    /// Measured on aarch64 (macOS): at most 0.019 of the bound.
     #[test]
     fn under_a_horizon_the_wald_is_newey_and_wests() {
+        use crate::sandwich::rounding::{DefRow, Track, covariance_bound};
         let lags = 4usize;
         let lam = 0.995;
         let mut c = Calibration::with_lags(lags);
+        let mut track = Track::new(1, lags);
         let mut s = 31u64;
-        // (pred, y, weight now), folded rows only.
-        let mut rows: Vec<(f64, f64, f64)> = Vec::new();
+        // Folded rows only.
+        let mut rows: Vec<DefRow> = Vec::new();
         let mut prev = 0.0;
         for i in 0..300 {
             let p = 2.0 * lcg(&mut s) + 5.0;
@@ -417,57 +611,34 @@ mod tests {
             let y = 0.2 + 0.9 * p + shock;
             let w = if i % 13 == 6 { 0.0 } else { 1.0 + lcg(&mut s) };
             c.update(p, y, lam, w);
-            rows.iter_mut().for_each(|r| r.2 *= lam);
+            // The calibration ages its sandwich, or updates it, as the
+            // sandwich updates itself on a row of weight 0.
+            track.update(&[p], y - p, lam, w);
+            rows.iter_mut().for_each(|r| r.w *= lam);
             if w > 0.0 {
-                rows.push((p, y, w));
+                rows.push(DefRow {
+                    x: vec![p],
+                    e: y - p,
+                    w,
+                    born: i,
+                });
             }
             if i < 30 || i % 41 != 0 {
                 continue;
             }
-            let mut bread = [0.0; 4];
-            let mut meat = [0.0; 4];
-            let u: Vec<[f64; 2]> = rows
-                .iter()
-                .map(|&(p, y, w)| [w * (y - p), w * (y - p) * p])
-                .collect();
-            for &(p, _, w) in &rows {
-                let z = [1.0, p];
-                for a in 0..2 {
-                    for b in 0..2 {
-                        bread[a * 2 + b] += w * z[a] * z[b];
-                    }
-                }
-            }
-            for t in 0..u.len() {
-                for l in 0..=lags.min(t) {
-                    let bw = if l == 0 {
-                        1.0
-                    } else {
-                        1.0 - l as f64 / (lags as f64 + 1.0)
-                    };
-                    for a in 0..2 {
-                        for b in 0..2 {
-                            let pair = u[t][a] * u[t - l][b];
-                            let back = u[t - l][a] * u[t][b];
-                            meat[a * 2 + b] += if l == 0 { pair } else { bw * (pair + back) };
-                        }
-                    }
-                }
-            }
-            let bi = crate::oracle::inverse(&bread);
-            let mul = |x: &[f64], y: &[f64]| -> Vec<f64> {
-                (0..4)
-                    .map(|n| (0..2).map(|k| x[(n / 2) * 2 + k] * y[k * 2 + n % 2]).sum())
-                    .collect()
-            };
-            let v = mul(&mul(&bi, &meat), &bi);
+            let b = covariance_bound(&track, &rows, i, &[0.0, 5.0], (lags, lags));
             let d = [c.intercept().unwrap(), c.slope().unwrap() - 1.0];
-            let want = crate::oracle::quad_form(&v, &d);
+            let want = crate::oracle::quad_form(&b.v, &d);
             let got = c.wald().unwrap();
-            assert!(
-                (got - want).abs() < 1e-7 * want.max(1.0),
-                "row {i}: {got} vs {want}"
-            );
+            // The variance's errors move the form by `x_l'ΔV_l x_l` in the
+            // level's frame (`d_l = (d₀ + 5d₁, d₁)`), where they are bounded
+            // entry by entry without the level's cancellation.
+            let dl = [d[0] + 5.0 * d[1], d[1]];
+            let xl = crate::oracle::solve(&b.v_level, &dl);
+            let bound = crate::oracle::abs_form(&xl, &b.dv_level, &xl)
+                + crate::oracle::quad_error(&b.v, &d, &crate::oracle::cholesky_backward(&b.v))
+                + crate::oracle::quad_form_error(&b.v, &d);
+            crate::oracle::assert_within(got, want, bound, format_args!("wald at row {i}"));
         }
         assert!(c.has_shape(lags) && !c.has_shape(0));
     }

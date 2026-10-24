@@ -1307,19 +1307,165 @@ mod tests {
         assert_eq!(b.cusum(1.0), before.cusum(1.0));
     }
 
+    /// `|A|·|B|` and `A·B`, `p × p` row-major.
+    fn abs_mul(a: &[f64], b: &[f64], p: usize) -> Vec<f64> {
+        crate::sandwich::rounding::abs_mul(a, b, p)
+    }
+
+    /// [`TwinFit`]'s run replayed with running bounds on its rounding
+    /// (docs/PLAN.md task 274): its two accumulators of `(x, y)`
+    /// ([`crate::ewcov::rounding::Rounding`], each decayed by the same
+    /// factor the definition's weights are products of), and its three
+    /// sums `H = Σ ω ω' z zᵀ` about its origin, each decayed by a product of
+    /// two factors (one rounding of it, one of the partial sum) and added to
+    /// a term of four roundings (`z`'s subtraction, `w²`, two products) and
+    /// one of the sum.
+    struct TwinTrack {
+        fast: crate::ewcov::rounding::Rounding,
+        slow: crate::ewcov::rounding::Rounding,
+        origin: Option<[f64; 2]>,
+        h: [Vec<f64>; 3],
+        eh: [Vec<f64>; 3],
+    }
+
+    impl TwinTrack {
+        fn new() -> Self {
+            Self {
+                fast: crate::ewcov::rounding::Rounding::new(3, 0.0),
+                slow: crate::ewcov::rounding::Rounding::new(3, 0.0),
+                origin: None,
+                h: [vec![0.0; 9], vec![0.0; 9], vec![0.0; 9]],
+                eh: [vec![0.0; 9], vec![0.0; 9], vec![0.0; 9]],
+            }
+        }
+
+        fn update(&mut self, x: &[f64; 2], y: f64, lam: f64, w: f64) {
+            use crate::oracle::U;
+            let slow = slow_factor(lam);
+            let factors = [lam * lam, slow * slow, lam * slow];
+            for ((h, eh), f) in self.h.iter_mut().zip(self.eh.iter_mut()).zip(factors) {
+                for (hv, ev) in h.iter_mut().zip(eh.iter_mut()) {
+                    let aged = f * *hv;
+                    *ev = f * *ev + 2.0 * U * aged.abs();
+                    *hv = aged;
+                }
+            }
+            if w <= 0.0 {
+                self.fast.decay(lam);
+                self.slow.decay(slow);
+                return;
+            }
+            let row = [x[0], x[1], y];
+            self.fast.update(&row, lam, w);
+            self.slow.update(&row, slow, w);
+            let o = *self.origin.get_or_insert(*x);
+            let z = [1.0, x[0] - o[0], x[1] - o[1]];
+            for q in 0..3 {
+                for a in 0..3 {
+                    for b in 0..3 {
+                        let t = w * w * z[a] * z[b];
+                        let v = a * 3 + b;
+                        self.h[q][v] += t;
+                        self.eh[q][v] += 4.0 * U * t.abs() + U * self.h[q][v].abs();
+                    }
+                }
+            }
+        }
+    }
+
+    /// One fit by weighted least squares from the rows at one memory's
+    /// weights (`pick`), `z = zs(row)`, by faer's LU: its coefficients, its
+    /// Gram and right-hand side, the sums' weight and squared weight, the
+    /// residuals' weighted sum of squares, and bounds on the rounding of
+    /// each sum -- each weight a product of `age` decays (`age·u`), each term
+    /// two products more, each addition `u` of its partial sum.
+    #[allow(clippy::type_complexity)]
+    fn def_fit(
+        rows: &[([f64; 2], f64, f64, f64, f64)],
+        ages: &[f64],
+        pick: fn(&([f64; 2], f64, f64, f64, f64)) -> f64,
+        zs: &dyn Fn(&([f64; 2], f64, f64, f64, f64)) -> Vec<f64>,
+    ) -> (Vec<f64>, [Vec<f64>; 4], [f64; 6]) {
+        use crate::oracle::U;
+        let p = zs(&rows[0]).len();
+        let (mut g, mut r, mut eg, mut er) = (
+            vec![0.0; p * p],
+            vec![0.0; p],
+            vec![0.0; p * p],
+            vec![0.0; p],
+        );
+        let (mut sw, mut sw2, mut esw, mut esw2) = (0.0, 0.0, 0.0, 0.0);
+        for (row, age) in rows.iter().zip(ages) {
+            let om = pick(row);
+            let z = zs(row);
+            for a in 0..p {
+                let t = om * z[a] * row.1;
+                r[a] += t;
+                er[a] += (age + 2.0) * U * t.abs() + U * r[a].abs();
+                for b in 0..p {
+                    let t = om * z[a] * z[b];
+                    g[a * p + b] += t;
+                    eg[a * p + b] += (age + 2.0) * U * t.abs() + U * g[a * p + b].abs();
+                }
+            }
+            sw += om;
+            esw += age * U * om + U * sw;
+            sw2 += om * om;
+            esw2 += (2.0 * age + 1.0) * U * om * om + U * sw2;
+        }
+        let beta = crate::oracle::solve(&g, &r);
+        let (mut ssr, mut essr) = (0.0, 0.0);
+        for (row, age) in rows.iter().zip(ages) {
+            let z = zs(row);
+            let fit: f64 = (0..p).map(|a| beta[a] * z[a]).sum();
+            let e = row.1 - fit;
+            let de = crate::oracle::gamma(p + 1)
+                * (row.1.abs() + (0..p).map(|a| (beta[a] * z[a]).abs()).sum::<f64>());
+            let t = pick(row) * e * e;
+            ssr += t;
+            essr += pick(row) * 2.0 * e.abs() * de + (age + 2.0) * U * t + U * ssr;
+        }
+        (beta, [g, r, eg, er], [sw, sw2, ssr, esw, esw2, essr])
+    }
+
     /// The fast and slow fits' slopes, intercepts, residual spread and the
     /// cross sum against their definitions: weighted least squares by
     /// faer's LU (`crate::oracle`) from every row at each memory's weight,
-    /// and the statistic built from them by the module's formula.
+    /// and the statistic built from them by the module's formula -- with an
+    /// intercept, about the first feature's level 3 (the statistic is the
+    /// same in any frame of `z`'s origin, the model's being its first row).
+    ///
+    /// Task 274: within both sides' rounding, where it was `1e-6` relative.
+    /// The statistic `δ'V⁻¹δ/s²` moves by `(2|y|ᵀΔδ + |y|ᵀΔV|y|)/s²`
+    /// (`y = V⁻¹δ`) and `s²`'s share, and by each side's own form of it.
+    /// The model's ([`TwinTrack`]): each fit's slopes from its moments by a
+    /// Cholesky solve and its level `m_y − β'(m_x − c)`; `A = G⁻¹` by a
+    /// Cholesky solve per column (`|ΔA| ≤ |A|(ΔG + E)|A|`, `G` from the
+    /// moments and the weight); `V = A_fH_ffA_f + A_sH_ssA_s − A_fH_fsA_s −
+    /// (·)ᵀ` through each factor's error, each triple product's `γ_{2k}`, and
+    /// the four terms' cancellation, three roundings of each; `s²` from the
+    /// slow moments, `Δvar_y + 2|b|ᵀΔc + |b|ᵀΔC|b|` and Kish's factor; each
+    /// mapped to the test's frame, whose shift from the model's origin is
+    /// under 1. The definition's: its sums ([`def_fit`]) through each fit's
+    /// normal equations, its inverses by their residuals and its sums, each
+    /// `d_t` its products' and difference's rounding and its factors'
+    /// errors, `V = Σ d_t d_tᵀ` its terms' and partial sums', its residuals'
+    /// sum of squares; and the oracle's LU form of `δ'V⁻¹δ`.
+    /// Measured on aarch64 (macOS): at most 4.1e-4 (with an intercept, where the model's
+    /// variance is four terms that cancel to rounding and is bounded term by term) and 8.1e-3
+    /// (through the origin) of the bound.
     #[test]
     fn the_wald_distance_is_the_two_fits_by_definition() {
+        use crate::oracle::{self, U, abs_form, gamma};
         // (x, y, weight, its fast weight now, its slow weight now)
         type Row = ([f64; 2], f64, f64, f64, f64);
         let mut t = TwinFit::new(2);
+        let mut track = TwinTrack::new();
         let mut s = 9u64;
         let lam = 0.97_f64;
         let slow = slow_factor(lam);
         let mut rows: Vec<Row> = Vec::new();
+        let mut born: Vec<usize> = Vec::new();
         for i in 0..400 {
             // The second feature goes quiet at row 150, the first's slope
             // breaks at 250.
@@ -1333,59 +1479,56 @@ mod tests {
                 0.5 + lcg(&mut s) + 0.5
             };
             t.update(&x, y, lam, w);
+            track.update(&x, y, lam, w);
             rows.iter_mut().for_each(|r| {
                 r.3 *= lam;
                 r.4 *= slow;
             });
             rows.push((x, y, w, w, w));
+            born.push(i);
             if i < 30 || i % 37 != 0 {
                 continue;
             }
+            let ages: Vec<f64> = born.iter().map(|&b| (i - b) as f64).collect();
+            let o = track.origin.unwrap();
             for intercept in [true, false] {
                 let zs = |row: &Row| -> Vec<f64> {
                     if intercept {
-                        vec![1.0, row.0[0], row.0[1]]
+                        vec![1.0, row.0[0] - 3.0, row.0[1]]
                     } else {
                         vec![row.0[0], row.0[1]]
                     }
                 };
                 let p = if intercept { 3 } else { 2 };
-                // Each fit by weighted least squares, faer's LU, in the
-                // features' own units.
-                let fit = |pick: fn(&Row) -> f64| {
-                    let (mut g, mut r, mut sw, mut sw2) =
-                        (vec![0.0; p * p], vec![0.0; p], 0.0, 0.0);
-                    for row in &rows {
-                        let om = pick(row);
-                        let z = zs(row);
-                        for a in 0..p {
-                            r[a] += om * z[a] * row.1;
-                            for b in 0..p {
-                                g[a * p + b] += om * z[a] * z[b];
-                            }
-                        }
-                        sw += om;
-                        sw2 += om * om;
-                    }
-                    let beta = crate::oracle::solve(&g, &r);
-                    let ssr: f64 = rows
-                        .iter()
-                        .map(|row| {
-                            let z = zs(row);
-                            let e = row.1 - (0..p).map(|a| beta[a] * z[a]).sum::<f64>();
-                            pick(row) * e * e
-                        })
-                        .sum();
-                    (beta, g, sw, sw2, ssr)
-                };
-                let (bf, gf, _, _, _) = fit(|r| r.3);
-                let (bs, gs, ws, ws2, ssr_s) = fit(|r| r.4);
+                // Each fit by weighted least squares, faer's LU.
+                let (bf, [gf, rf, egf, erf], _) = def_fit(&rows, &ages, |r| r.3, &zs);
+                let (bs, [gs, rs, egs, ers], [ws, ws2, ssr_s, ews, ews2, essr]) =
+                    def_fit(&rows, &ages, |r| r.4, &zs);
                 // The difference is `Σ_t d_t ε_t`, `d_t = (A_f ω_f,t − A_s
                 // ω_s,t) z_t`: its variance over the noise's is `Σ d_t d_t'`,
                 // each row's `d_t` built from the inverses outright.
-                let (af, a_s) = (crate::oracle::inverse(&gf), crate::oracle::inverse(&gs));
+                let (af, a_s) = (oracle::inverse(&gf), oracle::inverse(&gs));
+                let daf: Vec<f64> = {
+                    let r = oracle::inverse_error(&gf);
+                    let m = abs_mul(
+                        &abs_mul(&af.iter().map(|v| v.abs()).collect::<Vec<_>>(), &egf, p),
+                        &af.iter().map(|v| v.abs()).collect::<Vec<_>>(),
+                        p,
+                    );
+                    r.iter().zip(&m).map(|(a, b)| a + b).collect()
+                };
+                let das: Vec<f64> = {
+                    let r = oracle::inverse_error(&gs);
+                    let m = abs_mul(
+                        &abs_mul(&a_s.iter().map(|v| v.abs()).collect::<Vec<_>>(), &egs, p),
+                        &a_s.iter().map(|v| v.abs()).collect::<Vec<_>>(),
+                        p,
+                    );
+                    r.iter().zip(&m).map(|(a, b)| a + b).collect()
+                };
                 let mut var = vec![0.0; p * p];
-                for row in &rows {
+                let mut evar = vec![0.0; p * p];
+                for (row, age) in rows.iter().zip(&ages) {
                     let z = zs(row);
                     let d: Vec<f64> = (0..p)
                         .map(|a| {
@@ -1394,20 +1537,247 @@ mod tests {
                                 .sum()
                         })
                         .collect();
+                    let dd: Vec<f64> = (0..p)
+                        .map(|a| {
+                            (0..p)
+                                .map(|b| {
+                                    let (tf, ts) = (
+                                        (af[a * p + b] * row.3 * z[b]).abs(),
+                                        (a_s[a * p + b] * row.4 * z[b]).abs(),
+                                    );
+                                    (gamma(p + 3) + age * U) * (tf + ts)
+                                        + (daf[a * p + b] * row.3 + das[a * p + b] * row.4)
+                                            * z[b].abs()
+                                })
+                                .sum()
+                        })
+                        .collect();
                     for a in 0..p {
                         for b in 0..p {
                             var[a * p + b] += d[a] * d[b];
+                            evar[a * p + b] += dd[a] * d[b].abs()
+                                + d[a].abs() * dd[b]
+                                + U * (d[a] * d[b]).abs()
+                                + U * var[a * p + b].abs();
                         }
                     }
                 }
                 let ns = ws * ws / ws2;
                 let s2 = ssr_s / ws * ns / (ns - p as f64);
                 let delta: Vec<f64> = (0..p).map(|a| bf[a] - bs[a]).collect();
-                let want = crate::oracle::quad_form(&var, &delta) / s2;
+                let want = oracle::quad_form(&var, &delta) / s2;
                 let got = t.wald(&[0, 1], intercept, 1.0).unwrap();
-                assert!(
-                    (got - want).abs() < 1e-6 * want.max(1.0),
-                    "row {i}, intercept {intercept}: {got} vs {want}"
+                // The definition's errors in `δ` and `s²`.
+                let fe_f = oracle::forward_error(&gf, &bf, &egf, &erf);
+                let fe_s = oracle::forward_error(&gs, &bs, &egs, &ers);
+                let own_f = oracle::solve_error(&gf, &rf, &bf);
+                let own_s = oracle::solve_error(&gs, &rs, &bs);
+                let dd_test: Vec<f64> = (0..p)
+                    .map(|a| fe_f[a] + fe_s[a] + own_f[a] + own_s[a] + U * delta[a].abs())
+                    .collect();
+                // `s² = ssr/W·n/(n − p)`, `n = W²/W₂`: the sums' errors, and
+                // `n`'s through `p/(n − p)` of its relative error.
+                let dn = 2.0 * ews / ws + ews2 / ws2 + 2.0 * U;
+                let ds2_test = s2 * (essr / ssr_s + ews / ws + 4.0 * U)
+                    + s2 * (p as f64) / (ns - p as f64) * dn;
+                // The model's, in its origin's frame, then the test's.
+                let (fa, sa) = (&track.fast, &track.slow);
+                let cols: Vec<usize> = vec![0, 1];
+                let lib_fit = |m: &crate::ewcov::rounding::Rounding| -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+                    // (coefficients, their bound, G, ΔG) in the model's frame.
+                    let mom = |i: usize, j: usize| -> (f64, f64) {
+                        if intercept {
+                            (m.c[i * 3 + j], m.ec[i * 3 + j])
+                        } else {
+                            let r = m.c[i * 3 + j] + m.m[i] * m.m[j];
+                            (r, m.ec[i * 3 + j] + m.m[i].abs() * m.em[j] + m.em[i] * m.m[j].abs() + U * ((m.m[i] * m.m[j]).abs() + r.abs()))
+                        }
+                    };
+                    let k = cols.len();
+                    let a: Vec<f64> = (0..k * k).map(|ij| mom(cols[ij / k], cols[ij % k]).0).collect();
+                    let da: Vec<f64> = (0..k * k).map(|ij| mom(cols[ij / k], cols[ij % k]).1).collect();
+                    let b: Vec<f64> = (0..k).map(|i| mom(cols[i], 2).0).collect();
+                    let db: Vec<f64> = (0..k).map(|i| mom(cols[i], 2).1).collect();
+                    let beta = oracle::solve(&a, &b);
+                    let e = oracle::cholesky_backward(&a);
+                    let da_e: Vec<f64> = da.iter().zip(&e).map(|(x, y)| x + y).collect();
+                    let dbeta = oracle::forward_error(&a, &beta, &da_e, &db);
+                    let w = m.w;
+                    let pk = if intercept { 3 } else { 2 };
+                    let mut g = vec![0.0; pk * pk];
+                    let mut dg = vec![0.0; pk * pk];
+                    if intercept {
+                        let dev = [m.m[0] - o[0], m.m[1] - o[1]];
+                        g[0] = w;
+                        dg[0] = m.ew * w + U * w;
+                        for a2 in 0..2 {
+                            g[a2 + 1] = w * dev[a2];
+                            g[(a2 + 1) * 3] = g[a2 + 1];
+                            let e1 = (dev[a2] * w).abs() * (m.ew + 2.0 * U) + w * m.em[a2];
+                            dg[a2 + 1] = e1;
+                            dg[(a2 + 1) * 3] = e1;
+                            for b2 in 0..2 {
+                                let v = m.c[a2 * 3 + b2] + dev[a2] * dev[b2];
+                                g[(a2 + 1) * 3 + b2 + 1] = w * v;
+                                dg[(a2 + 1) * 3 + b2 + 1] = (w * v).abs() * (m.ew + 3.0 * U)
+                                    + w * (m.ec[a2 * 3 + b2] + dev[a2].abs() * m.em[b2] + m.em[a2] * dev[b2].abs());
+                            }
+                        }
+                        let level = m.m[2] - beta[0] * dev[0] - beta[1] * dev[1];
+                        let dlevel = m.em[2]
+                            + (0..2).map(|a2| beta[a2].abs() * m.em[a2] + dev[a2].abs() * dbeta[a2]).sum::<f64>()
+                            + gamma(3) * (m.m[2].abs() + (beta[0] * dev[0]).abs() + (beta[1] * dev[1]).abs());
+                        (vec![level, beta[0], beta[1]], vec![dlevel, dbeta[0], dbeta[1]], g, dg)
+                    } else {
+                        for ij in 0..4 {
+                            g[ij] = w * a[ij];
+                            dg[ij] = w * da[ij] + (w * a[ij]).abs() * (m.ew + U);
+                        }
+                        (beta, dbeta, g, dg)
+                    }
+                };
+                let (cf, dcf, gfm, dgfm) = lib_fit(fa);
+                let (cs, dcs, gsm, dgsm) = lib_fit(sa);
+                let inv_err = |g: &[f64], dg: &[f64]| -> (Vec<f64>, Vec<f64>) {
+                    let a = oracle::inverse(g);
+                    let aa: Vec<f64> = a.iter().map(|v| v.abs()).collect();
+                    let e = oracle::cholesky_backward(g);
+                    let tot: Vec<f64> = dg.iter().zip(&e).map(|(x, y)| x + y).collect();
+                    let d = abs_mul(&abs_mul(&aa, &tot, p), &aa, p);
+                    (a, d)
+                };
+                let (afm, dafm) = inv_err(&gfm, &dgfm);
+                let (asm, dasm) = inv_err(&gsm, &dgsm);
+                // The sums `H` in the coefficients' coordinates: through the
+                // origin, `x = c + (x − c)` maps them.
+                let hmap = |q: usize| -> (Vec<f64>, Vec<f64>) {
+                    if intercept {
+                        (track.h[q].clone(), track.eh[q].clone())
+                    } else {
+                        let tm = [o[0], 1.0, 0.0, o[1], 0.0, 1.0];
+                        let mut h = vec![0.0; 4];
+                        let mut e = vec![0.0; 4];
+                        for a2 in 0..2 {
+                            for b2 in 0..2 {
+                                for i3 in 0..3 {
+                                    for j3 in 0..3 {
+                                        let c = tm[a2 * 3 + i3] * tm[b2 * 3 + j3];
+                                        h[a2 * 2 + b2] += c * track.h[q][i3 * 3 + j3];
+                                        e[a2 * 2 + b2] += c.abs()
+                                            * (track.eh[q][i3 * 3 + j3]
+                                                + 2.0 * U * track.h[q][i3 * 3 + j3].abs());
+                                    }
+                                }
+                            }
+                        }
+                        (h, e)
+                    }
+                };
+                let (hff, ehff) = hmap(0);
+                let (hss, ehss) = hmap(1);
+                let (hfs, ehfs) = hmap(2);
+                let abs = |v: &[f64]| -> Vec<f64> { v.iter().map(|x| x.abs()).collect() };
+                let term = |a: &[f64],
+                            da: &[f64],
+                            h: &[f64],
+                            dh: &[f64],
+                            b: &[f64],
+                            db: &[f64]|
+                 -> (Vec<f64>, Vec<f64>) {
+                    let (aa, ab, ah) = (abs(a), abs(b), abs(h));
+                    let mag = abs_mul(&abs_mul(&aa, &ah, p), &ab, p);
+                    let e1 = abs_mul(&abs_mul(da, &ah, p), &ab, p);
+                    let e2 = abs_mul(&abs_mul(&aa, dh, p), &ab, p);
+                    let e3 = abs_mul(&abs_mul(&aa, &ah, p), db, p);
+                    let err = (0..p * p)
+                        .map(|ij| e1[ij] + e2[ij] + e3[ij] + gamma(2 * p) * mag[ij])
+                        .collect();
+                    (mag, err)
+                };
+                let (mff, eff) = term(&afm, &dafm, &hff, &ehff, &afm, &dafm);
+                let (mss, ess) = term(&asm, &dasm, &hss, &ehss, &asm, &dasm);
+                let (mfs, efs) = term(&afm, &dafm, &hfs, &ehfs, &asm, &dasm);
+                let dvar_lib: Vec<f64> = (0..p * p)
+                    .map(|ij| {
+                        let ji = (ij % p) * p + ij / p;
+                        eff[ij]
+                            + ess[ij]
+                            + efs[ij]
+                            + efs[ji]
+                            + 3.0 * U * (mff[ij] + mss[ij] + mfs[ij] + mfs[ji])
+                    })
+                    .collect();
+                let ddel_lib: Vec<f64> = (0..p)
+                    .map(|a| dcf[a] + dcs[a] + U * (cf[a] - cs[a]).abs())
+                    .collect();
+                // The slow fit's `s²` and Kish's factor.
+                let bsl = &cs[if intercept { 1 } else { 0 }..];
+                let mom_s = |i: usize, j: usize| -> (f64, f64) {
+                    if intercept {
+                        (sa.c[i * 3 + j], sa.ec[i * 3 + j])
+                    } else {
+                        let r = sa.c[i * 3 + j] + sa.m[i] * sa.m[j];
+                        (
+                            r,
+                            sa.ec[i * 3 + j]
+                                + sa.m[i].abs() * sa.em[j]
+                                + sa.em[i] * sa.m[j].abs()
+                                + U * ((sa.m[i] * sa.m[j]).abs() + r.abs()),
+                        )
+                    }
+                };
+                let resid = mom_s(2, 2).0 - (0..2).map(|a2| bsl[a2] * mom_s(a2, 2).0).sum::<f64>();
+                let dresid = mom_s(2, 2).1
+                    + 2.0 * (0..2).map(|a2| bsl[a2].abs() * mom_s(a2, 2).1).sum::<f64>()
+                    + (0..4)
+                        .map(|ij| bsl[ij / 2].abs() * mom_s(ij / 2, ij % 2).1 * bsl[ij % 2].abs())
+                        .sum::<f64>()
+                    + gamma(3)
+                        * (mom_s(2, 2).0.abs()
+                            + (0..2)
+                                .map(|a2| (bsl[a2] * mom_s(a2, 2).0).abs())
+                                .sum::<f64>());
+                let nsm = sa.w * sa.w / sa.q;
+                let dns = nsm * (2.0 * sa.ew + sa.eq + 2.0 * U);
+                let ds2_lib = s2
+                    * (dresid / resid.abs()
+                        + (p as f64) * dns / (nsm * (nsm - p as f64))
+                        + 4.0 * U);
+                // The model's frame to the test's: with an intercept, the
+                // level at the origin `c` against the level at `(3, 0)`.
+                let shift = [3.0 - o[0], -o[1]];
+                let (ddel_m, dvar_m) = if intercept {
+                    let r_abs = [
+                        1.0,
+                        shift[0].abs(),
+                        shift[1].abs(),
+                        0.0,
+                        1.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0,
+                    ];
+                    let rt: Vec<f64> = (0..9).map(|ij| r_abs[(ij % 3) * 3 + ij / 3]).collect();
+                    let dd = oracle::abs_times(&r_abs, &ddel_lib);
+                    let dv = abs_mul(&abs_mul(&r_abs, &dvar_lib, 3), &rt, 3);
+                    (dd, dv)
+                } else {
+                    (ddel_lib, dvar_lib)
+                };
+                let y = oracle::solve(&var, &delta);
+                let ddel: Vec<f64> = (0..p).map(|a| dd_test[a] + ddel_m[a]).collect();
+                let dvar: Vec<f64> = (0..p * p).map(|ij| evar[ij] + dvar_m[ij]).collect();
+                let dquad = abs_form(&y, &dvar, &y)
+                    + 2.0 * y.iter().zip(&ddel).map(|(a, b)| a.abs() * b).sum::<f64>()
+                    + oracle::quad_error(&var, &delta, &oracle::cholesky_backward(&var))
+                    + oracle::quad_form_error(&var, &delta);
+                let bound = dquad / s2 + want * (ds2_test + ds2_lib) / s2 + 2.0 * U * want;
+                oracle::assert_within(
+                    got,
+                    want,
+                    bound,
+                    format_args!("intercept {intercept}, row {i}"),
                 );
                 // A long-run factor divides it.
                 let half = t.wald(&[0, 1], intercept, 2.0).unwrap();

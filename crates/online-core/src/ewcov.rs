@@ -2519,6 +2519,9 @@ impl crate::OnlineModel for EwCovModel {
 mod bias_tests;
 
 #[cfg(test)]
+pub(crate) mod rounding;
+
+#[cfg(test)]
 mod damaged_state_tests;
 
 #[cfg(test)]
@@ -3129,6 +3132,59 @@ mod tests {
         off.validate().unwrap();
     }
 
+    /// The most a model's `mahal` of `x` may be off the oracle's
+    /// `√(δᵀ(C + s·prior·I)⁻¹δ / scale)` with `δ = x − mean` read off the
+    /// accessors, as these tests write it (docs/PLAN.md task 274), to first
+    /// order: the model solves by Cholesky ([`crate::oracle::quad_error`]),
+    /// or `by_precision` reads the precision matrix that `EwCov::precision`
+    /// forms column by column -- each column `p̂ⱼ` a backward-stable solve,
+    /// `(A + ΔAⱼ)p̂ⱼ = eⱼ` with `|ΔAⱼ| ≤ E` the Cholesky backward error, so
+    /// `δᵀ(P̂ − A⁻¹)δ = −Σⱼ (A⁻¹δ)ᵀΔAⱼp̂ⱼδⱼ` is at most `|A⁻¹δ|ᵀE|A⁻¹||δ|`
+    /// -- then symmetrized (`u`), then `δᵀP̂δ` as `k` row sums and their
+    /// sum, each sum's rounding read off its run on the model's own `P̂`
+    /// ([`crate::oracle::running_dot`]); the
+    /// oracle's LU, a posteriori ([`crate::oracle::quad_form_error`]); and
+    /// the two `δ`s, which part by the mean's low part (the model's mean is
+    /// a compensated pair, the accessor its high part) and by three
+    /// roundings, moving the form by `2|A⁻¹δ|ᵀ|Δδ|`. The quotient by the
+    /// scale and the root are two roundings a side, and the root halves the
+    /// form's relative error.
+    fn mahal_error(cov: &EwCov, x: &[f64], scale: f64, by_precision: bool) -> f64 {
+        use crate::oracle::{self, U, abs_form, abs_times};
+        let k = cov.k();
+        let ridge = cov.precision_prior * cov.precision_scale();
+        let m: Vec<f64> = (0..k * k)
+            .map(|ij| cov.cov(ij / k, ij % k) + if ij / k == ij % k { ridge } else { 0.0 })
+            .collect();
+        let dt: Vec<f64> = (0..k).map(|i| x[i] - cov.mean(i)).collect();
+        let dd: Vec<f64> = (0..k)
+            .map(|i| cov.m_lo[i].abs() + 3.0 * U * dt[i].abs())
+            .collect();
+        let xs = oracle::solve(&m, &dt);
+        let q: f64 = dt.iter().zip(&xs).map(|(a, b)| a * b).sum();
+        let e = oracle::cholesky_backward(&m);
+        let lib = if by_precision {
+            let inv = oracle::inverse(&m);
+            let ad: Vec<f64> = dt.iter().map(|v| v.abs()).collect();
+            let pa = abs_times(&inv, &ad);
+            // The sums' rounding as the model runs them on its own `P̂`.
+            let p = cov.precision().unwrap();
+            let rows: Vec<(f64, f64)> = (0..k)
+                .map(|i| oracle::running_dot((0..k).map(|j| (p[i * k + j], dt[j]))))
+                .collect();
+            let (_, outer) = oracle::running_dot(dt.iter().zip(&rows).map(|(d, r)| (*d, r.0)));
+            let inner: f64 = dt.iter().zip(&rows).map(|(d, r)| d.abs() * r.1).sum();
+            let sym = U * abs_form(&ad, &p.iter().map(|v| v.abs()).collect::<Vec<_>>(), &ad);
+            abs_form(&xs, &e, &pa) + outer + inner + sym
+        } else {
+            oracle::quad_error(&m, &dt, &e)
+        };
+        let own = oracle::quad_form_error(&m, &dt);
+        let moved: f64 = 2.0 * xs.iter().zip(&dd).map(|(a, b)| a.abs() * b).sum::<f64>();
+        let mahal = (q / scale).sqrt();
+        mahal * (0.5 * (lib + own + moved) / q + 4.0 * U)
+    }
+
     fn mahal_cfg(k: usize, prior: f64) -> EwCovCfg {
         let mut c = model_cfg(k, vec![EwCovStat::Mahal]);
         c.precision_prior = Some(prior);
@@ -3238,12 +3294,18 @@ mod tests {
                 .collect();
             let x = [50.7, -0.4, 1.1, 0.3];
             let delta: Vec<f64> = (0..4).map(|i| x[i] - cov.mean(i)).collect();
-            let want = (crate::oracle::quad_form(&m, &delta) / b.second_moment_scale(cov)).sqrt();
+            let scale = b.second_moment_scale(cov);
+            let want = (crate::oracle::quad_form(&m, &delta) / scale).sqrt();
             let got = *crate::OnlineModel::predict(&b, &x, 0.0)
                 .pred
                 .last()
                 .unwrap();
-            assert!((got - want).abs() <= 1e-9 * want, "{got} against {want}");
+            // Task 274: the precision matrix's rounding and the oracle's
+            // ([`mahal_error`]), where it was `1e-9` relative.
+            // Measured on aarch64 (macOS): at most 0.0095 of the bound (2 ulps against an
+            // explicit inverse's worst case).
+            let bound = mahal_error(cov, &x, scale, true);
+            crate::oracle::assert_within(got, want, bound, format_args!("bias {bias}"));
         }
     }
 
@@ -3270,7 +3332,15 @@ mod tests {
         let x = [0.7, -0.4, 1.1];
         let delta: Vec<f64> = (0..3).map(|i| x[i] - cov.mean(i)).collect();
         let d2 = crate::oracle::quad_form(&a, &delta);
-        assert!((m.mahal(&x) - d2.sqrt()).abs() < 1e-9);
+        // Task 274: the Cholesky solve's rounding and the oracle's
+        // ([`mahal_error`]), where it was `1e-9`; the model's own scale,
+        // 1 under its `bias`, divides neither side.
+        // Measured on aarch64 (macOS): equal to the bit; the result moved by 100u of itself
+        // fails it (2.6 times the bound).
+        let scale = m.second_moment_scale(cov);
+        assert_eq!(scale, 1.0);
+        let bound = mahal_error(cov, &x, scale, false);
+        crate::oracle::assert_within(m.mahal(&x), d2.sqrt(), bound, "three columns");
         // A single column is the |z| of the row.
         let mut one = EwCovModel::new(mahal_cfg(1, 1e-12)).unwrap();
         for i in 0..20 {
@@ -4481,16 +4551,53 @@ mod tests {
             let x = [a, b, a + b + 0.3 * lcg(&mut s), 0.5 * lcg(&mut s)];
             ew.update(&x, 0.99, 1.0);
         }
-        let reference = crate::oracle::inverse(&regularized(&ew, prior, ew.precision_scale()));
+        let a = regularized(&ew, prior, ew.precision_scale());
+        let reference = crate::oracle::inverse(&a);
         let p = ew.precision().unwrap();
+        // Task 274: `P̂`'s column `c` is a Cholesky solve, `(A + ΔA_c)x̂_c =
+        // e_c` with `|ΔA_c| ≤ E` (`crate::oracle::cholesky_backward`), so
+        // `ΔX_rc = −Σ_mn P_rm (ΔA_c)_mn P_nc`, and `P̂_ij` averages `X̂_ij`
+        // and `X̂_ji`. Then `ρ = −P_ij/√(P_ii P_jj)` moves by `−ΔP_ij/D +
+        // (ρ/2)(ΔP_ii/P_ii + ΔP_jj/P_jj)`, which gathers, to first order,
+        // into `Σ_mn (ΔA_j)_mn c_mn + Σ_mn (ΔA_i)_mn c'_mn` with
+        // `c_mn = ½P_im P_nj/D − (ρ/2)P_jm P_nj/P_jj` and its mirror: at
+        // most `Σ E_mn(|c_mn| + |c'_mn|)`, the signs kept inside each
+        // column, where an entry-by-entry bound summed three errors that
+        // largely cancel (it sat at 0.006 of the measured error). Beside it
+        // the LU's own errors (`crate::oracle::inverse_error`) through the
+        // same formula, and each side's two roots, product and quotient,
+        // four roundings. It was `1e-6`.
+        // Measured on aarch64 (macOS): at most 0.025 of the bound.
+        let e = crate::oracle::cholesky_backward(&a);
+        let own = crate::oracle::inverse_error(&a);
+        let r = &reference;
         for i in 0..k {
             for j in 0..k {
-                let want =
-                    -reference[i * k + j] / (reference[i * k + i] * reference[j * k + j]).sqrt();
+                let (ii, jj, ij) = (i * k + i, j * k + j, i * k + j);
+                let want = -r[ij] / (r[ii] * r[jj]).sqrt();
                 let got = partial_corr(&p, k, i, j);
-                assert!(
-                    (got - want.clamp(-1.0, 1.0)).abs() < 1e-6,
-                    "pcorr({i},{j}) = {got}, want {want}"
+                let d = (r[ii] * r[jj]).sqrt();
+                let lib: f64 = if i == j {
+                    0.0
+                } else {
+                    (0..k * k)
+                        .map(|mn| {
+                            let (m, n) = (mn / k, mn % k);
+                            let cj = 0.5 * r[i * k + m] * r[n * k + j] / d
+                                - 0.5 * want * r[j * k + m] * r[n * k + j] / r[jj];
+                            let ci = 0.5 * r[j * k + m] * r[n * k + i] / d
+                                - 0.5 * want * r[i * k + m] * r[n * k + i] / r[ii];
+                            e[mn] * (cj.abs() + ci.abs())
+                        })
+                        .sum()
+                };
+                let lu = own[ij] / d + 0.5 * want.abs() * (own[ii] / r[ii] + own[jj] / r[jj]);
+                let bound = lib + lu + 8.0 * crate::oracle::U * want.abs();
+                crate::oracle::assert_within(
+                    got,
+                    want.clamp(-1.0, 1.0),
+                    bound,
+                    format_args!("pcorr({i},{j})"),
                 );
             }
             // A column against itself is -1 by the formula's own definition;
@@ -4525,14 +4632,31 @@ mod tests {
         for step in 0..60 {
             let x = [lcg(), lcg(), lcg() * 3.0];
             ew.update(&x, 0.97, 0.5 + lcg().abs());
-            let want = crate::oracle::inverse(&regularized(&ew, prior, ew.precision_scale()));
+            let a = regularized(&ew, prior, ew.precision_scale());
+            let want = crate::oracle::inverse(&a);
             let got = ew.precision().unwrap();
+            // Task 274: each column a Cholesky solve, then the two halves
+            // averaged (one rounding), against the LU's inverse and its own
+            // residual's error (`crate::oracle`), entry by entry. It was
+            // `1e-9` relative to `1 + |w|`.
+            // Measured on aarch64 (macOS): at most 0.31 of the bound, on a diagonal entry of a
+            // 3 x 3 inverse 2.7 ulps off against a worst case of 9.5 (checked against the
+            // inverse refined by its exact residual: no term is missing; a factor of order 3
+            // has few roundings to lose).
+            let (lib, own) = (
+                crate::oracle::cholesky_inverse_error(&a),
+                crate::oracle::inverse_error(&a),
+            );
             for i in 0..3 {
                 for j in 0..3 {
-                    let (g, w) = (got[i * 3 + j], want[i * 3 + j]);
-                    assert!(
-                        (g - w).abs() < 1e-9 * (1.0 + w.abs()),
-                        "step {step}, ({i},{j}): cholesky {g}, lu {w}"
+                    let ij = i * 3 + j;
+                    let (g, w) = (got[ij], want[ij]);
+                    let bound = lib[ij].max(lib[j * 3 + i]) + crate::oracle::U * w.abs() + own[ij];
+                    crate::oracle::assert_within(
+                        g,
+                        w,
+                        bound,
+                        format_args!("step {step}, ({i},{j})"),
                     );
                 }
             }

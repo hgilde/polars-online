@@ -3,7 +3,10 @@
 //! by its own means, then the Gram of all of them, two-pass; and every
 //! solve and inverse by faer's LU (`crate::oracle`).
 
-use super::merge_tests::{Rows, close, gram_of, rows};
+use super::merge_tests::{
+    Rows, close, gram_of, inverse_diagonal_error, oracle_diagonal_error, rows, se_error,
+    slope_error,
+};
 use super::*;
 use crate::oracle;
 
@@ -260,7 +263,13 @@ fn a_fit_within_has_no_intercept_and_a_degree_less_per_part() {
             assert!(fit.coef[0].is_nan(), "no intercept: {:?}", fit.coef);
             let rhs: Vec<f64> = slots.iter().map(|&i| g.cross_centred[t * 4 + i]).collect();
             let b = oracle::solve(&a, &rhs);
-            close(&fit.coef[1..], &b, 1e-10, "slopes");
+            // Task 274: the same system on both sides, Cholesky against LU
+            // ([`slope_error`]); it was `1e-10` relative to `1 + |b|`.
+            // Measured on aarch64 (macOS): at most 0.068 of the bound.
+            let db = slope_error(&a, &rhs, &[1.0; 3]);
+            for p in 0..3 {
+                oracle::assert_within(fit.coef[p + 1], b[p], db[p], format_args!("slope {p}"));
+            }
             let res = within_residuals(&parts, t, &b);
             let n = res.len() as f64;
             assert_eq!(fit.n, n);
@@ -276,19 +285,56 @@ fn a_fit_within_has_no_intercept_and_a_degree_less_per_part() {
                 let brhs: f64 = (0..3).map(|p| b[p] * rhs[p]).sum();
                 (g.target_vars[t] - 2.0 * brhs + bab).max(0.0)
             };
-            close(&[fit.resid_var], &[rv], 1e-9, "resid_var");
+            // Task 274. On every row the expected value is the residuals'
+            // mean square: their sums against the moments' differences, the
+            // oracle's slopes only to second order (least squares, no
+            // ridge), no linear algebra: the tolerance kept. Otherwise it is
+            // `S_yy − 2b'r + b'Ab` from the oracle's `b` on the model's own
+            // moments: slopes `Δb` apart move it by `2|Ab − r|ᵀΔb` (and
+            // `|Δb|ᵀ|A||Δb|`), and each side's dot products, double sum and
+            // differences round.
+            // Measured on aarch64 (macOS): at most 0.041 (`resid_var`) and 0.028 (`sigma2`) of
+            // the bound; the standard errors below at most 0.34, the two `σ²`'s measured
+            // difference, which enters as it is, taking most of their bound.
+            let drv = if t == 0 && !absent {
+                1e-9 * (1.0 + rv.abs())
+            } else {
+                let ab: Vec<f64> = (0..3)
+                    .map(|p| (0..3).map(|q| a[p * 3 + q] * b[q]).sum::<f64>() - rhs[p])
+                    .collect();
+                let abs_a: Vec<f64> = a.iter().map(|v| v.abs()).collect();
+                let bab = oracle::abs_form(&b, &abs_a, &b);
+                let brhs: f64 = (0..3).map(|p| (b[p] * rhs[p]).abs()).sum();
+                (0..3).map(|p| 2.0 * ab[p].abs() * db[p]).sum::<f64>()
+                    + oracle::abs_form(&db, &abs_a, &db)
+                    + 2.0
+                        * (oracle::gamma(3) * 2.0 * brhs
+                            + oracle::gamma(6) * bab
+                            + oracle::gamma(2) * (g.target_vars[t] + 2.0 * brhs + bab))
+            };
+            oracle::assert_within(fit.resid_var, rv, drv, "resid_var");
             let groups = [if absent { 2.0 } else { 3.0 }, 2.0][t];
             assert_eq!(g.within.as_ref().unwrap()[t] as f64, groups);
             let sigma2 = rv * n / (n - 3.0 - groups);
-            close(
-                &[fit.sigma2],
-                &[sigma2],
-                1e-9,
+            oracle::assert_within(
+                fit.sigma2,
+                sigma2,
+                drv * n / (n - 3.0 - groups) + 6.0 * oracle::U * sigma2.abs(),
                 "sigma2: a degree less per part",
             );
+            // `diag(A⁻¹)` from `L⁻¹` against the LU's inverse ([`se_error`]),
+            // under the two `σ²`, whose difference, held above, enters as it
+            // is. It was `1e-9` relative to `1 + |se|`.
+            let (dd, od) = (inverse_diagonal_error(&a), oracle_diagonal_error(&a));
+            let ds2 = if fit.sigma2 == sigma2 {
+                0.0
+            } else {
+                (fit.sigma2 - sigma2).abs() / sigma2
+            };
             for p in 0..3 {
                 let se = (inv[p * 3 + p] * sigma2 / n).sqrt();
-                close(&[fit.se[p + 1]], &[se], 1e-9, "se");
+                let dse = se_error(se, inv[p * 3 + p], dd[p] + od[p]) + 0.5 * se * ds2;
+                oracle::assert_within(fit.se[p + 1], se, dse, format_args!("se {p}"));
             }
             assert!(fit.se[0].is_nan() && fit.t[0].is_nan());
         }

@@ -1785,9 +1785,15 @@ mod tests {
         }
         let e = m.estimate();
         let cov = e.rcov.unwrap();
-        // Whatever happened, the result is PSD.
-        let (ev, _) = crate::oracle::sym_eigen(&cov);
-        assert!(ev.iter().all(|v| *v >= -1e-9), "{ev:?}");
+        // Whatever happened, the result is PSD: its least eigenvalue as the
+        // oracle computes it is no further below 0 than the oracle's own
+        // error in it, a posteriori (`crate::oracle::eigen_error`), where it
+        // was `−1e-9` (task 274).
+        let (ev, err) = crate::oracle::eigen_error(&cov);
+        assert!(
+            ev.iter().zip(&err).all(|(v, e)| *v >= -e),
+            "{ev:?} beside their errors {err:?}"
+        );
     }
 
     #[test]

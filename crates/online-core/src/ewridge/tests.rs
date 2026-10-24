@@ -196,6 +196,131 @@ fn session_shrink_reverts_toward_the_long_run() {
     );
 }
 
+/// How far a blended model's centred fit may be off the oracle's, the
+/// rows weighed by `a` (docs/PLAN.md task 274), `rows` its `(x, y)`, `θ`
+/// each weight's own relative error, `(a_sys, rhs)` the centred system
+/// `(C + ρI)β = c` the test solved, `beta` its slopes and `(mx, my)` its
+/// means. To first order:
+///
+/// - the model's two accumulators, each a weighted Welford run decayed by
+///   the platform's `exp2(−1/h)` ([`crate::ewcov::rounding::Rounding`], the
+///   factor within `(LIBM + |ln λ|)u` of `2^(−1/h)`), mixed `(1 − f, f)`
+///   into `C = (1−f)C_f + fC_s + f(1−f)δδᵀ` and the means and the target's
+///   cross-moments alike, each mixture's three products and two sums
+///   rounding; then the centred solve's Cholesky, the unscaling and the
+///   intercept's recovery;
+/// - the test's weights, each `a_i(1 + θ_i)`: its formulas are the
+///   definition at those weights, which move `β` by `Σ θ_i a_i|(C +
+///   ρI)⁻¹dev_i r_i|` (`r_i` the row's residual) and the intercept by
+///   `Σ θ_i a_i|r_i + b₀ − m·(C + ρI)⁻¹dev_i r_i|`, the weights' sum not being
+///   normalized to 1 there; its sums, each term its products' roundings and
+///   each addition `u` of its partial sum; and its LU's own.
+#[allow(clippy::too_many_arguments)]
+fn blended_error(
+    rows: &[([f64; 2], f64)],
+    (h_fast, h_slow, f): (f64, f64, f64),
+    a: &[f64],
+    theta: &[f64],
+    (a_sys, rhs, beta): (&[f64], &[f64], &[f64]),
+    (mx, my): (&[f64], f64),
+) -> Vec<f64> {
+    use oracle::{U, gamma};
+    let lam_err = |h: f64| (oracle::LIBM + (1.0 / h).abs()) * U;
+    let (lf, ls) = ((-1.0 / h_fast).exp2(), (-1.0 / h_slow).exp2());
+    let mut fast = crate::ewcov::rounding::Rounding::new(3, lam_err(h_fast));
+    let mut slow = crate::ewcov::rounding::Rounding::new(3, lam_err(h_slow));
+    for (i, (x, y)) in rows.iter().enumerate() {
+        let v = [x[0], x[1], *y];
+        fast.update(&v, if i == 0 { 1.0 } else { lf }, 1.0);
+        slow.update(&v, if i == 0 { 1.0 } else { ls }, 1.0);
+    }
+    let (af, as_) = (1.0 - f, f);
+    let delta: Vec<f64> = (0..3).map(|i| fast.m[i] - slow.m[i]).collect();
+    let ddelta: Vec<f64> = (0..3)
+        .map(|i| fast.em[i] + slow.em[i] + U * delta[i].abs())
+        .collect();
+    let mix = |i: usize, j: usize| -> f64 {
+        let ij = i * 3 + j;
+        let t = af * as_ * delta[i] * delta[j];
+        af * fast.ec[ij]
+            + as_ * slow.ec[ij]
+            + af * as_ * (ddelta[i] * delta[j].abs() + delta[i].abs() * ddelta[j])
+            + U * (2.0 * (af * fast.c[ij]).abs() + 2.0 * (as_ * slow.c[ij]).abs() + 4.0 * t.abs())
+            + U * (af * fast.c[ij] + as_ * slow.c[ij] + t).abs()
+    };
+    let dmean: Vec<f64> = (0..3)
+        .map(|i| {
+            af * fast.em[i]
+                + as_ * slow.em[i]
+                + U * (2.0 * (af * fast.m[i]).abs() + 2.0 * (as_ * slow.m[i]).abs())
+        })
+        .collect();
+    let mut da = [0.0; 4];
+    let mut dr = [0.0; 2];
+    for i in 0..2 {
+        for j in 0..2 {
+            da[i * 2 + j] = mix(i, j);
+        }
+        da[i * 2 + i] += U * a_sys[i * 2 + i].abs();
+        dr[i] = mix(i, 2);
+    }
+    let e = oracle::cholesky_backward(a_sys);
+    let da_lib: Vec<f64> = da.iter().zip(&e).map(|(x, y)| x + y).collect();
+    let lib = oracle::forward_error(a_sys, beta, &da_lib, &dr);
+    // The test's weights and sums.
+    let ai = oracle::inverse(a_sys);
+    let b0 = my - mx[0] * beta[0] - mx[1] * beta[1];
+    let (mut wb, mut w0) = ([0.0f64; 2], 0.0f64);
+    let mean_err = |g: &dyn Fn(usize) -> (f64, f64)| -> f64 {
+        let (mut sum, mut e) = (0.0f64, 0.0f64);
+        for (i, ai) in a.iter().enumerate() {
+            let (v, rounds) = g(i);
+            let t = ai * v;
+            sum += t;
+            e += (rounds + 1.0) * U * t.abs() + U * sum.abs();
+        }
+        e
+    };
+    for (i, (x, y)) in rows.iter().enumerate() {
+        let dev = [x[0] - mx[0], x[1] - mx[1]];
+        let r = (y - my) - dev[0] * beta[0] - dev[1] * beta[1];
+        let g = [
+            ai[0] * dev[0] + ai[1] * dev[1],
+            ai[2] * dev[0] + ai[3] * dev[1],
+        ];
+        for (p, w) in wb.iter_mut().enumerate() {
+            *w += theta[i] * a[i] * (g[p] * r).abs();
+        }
+        w0 += theta[i] * a[i] * (r + b0 - (mx[0] * g[0] + mx[1] * g[1]) * r).abs();
+    }
+    let mut dat = vec![0.0; 4];
+    let mut drt = vec![0.0; 2];
+    for p in 0..2 {
+        for q in 0..2 {
+            dat[p * 2 + q] = mean_err(&|i| ((rows[i].0[p] - mx[p]) * (rows[i].0[q] - mx[q]), 3.0));
+        }
+        dat[p * 2 + p] += U * a_sys[p * 2 + p].abs();
+        drt[p] = mean_err(&|i| ((rows[i].0[p] - mx[p]) * (rows[i].1 - my), 3.0));
+    }
+    let test = oracle::forward_error(a_sys, beta, &dat, &drt);
+    let own = oracle::solve_error(a_sys, rhs, beta);
+    let slopes: Vec<f64> = (0..2)
+        .map(|p| lib[p] + test[p] + own[p] + wb[p] + U * beta[p].abs())
+        .collect();
+    let dmx: Vec<f64> = (0..2).map(|p| mean_err(&|i| (rows[i].0[p], 0.0))).collect();
+    let dmy = mean_err(&|i| (rows[i].1, 0.0));
+    let d0 = dmean[2]
+        + dmy
+        + w0
+        + (0..2)
+            .map(|p| (dmean[p] + dmx[p]) * beta[p].abs() + mx[p].abs() * slopes[p])
+            .sum::<f64>()
+        + 2.0
+            * (gamma(2) * (mx[0] * beta[0]).abs().max((mx[1] * beta[1]).abs()) * 2.0
+                + U * b0.abs());
+    vec![d0, slopes[0], slopes[1]]
+}
+
 /// Task 145: `session_shrink = f` fits on `1 − f` of today's rows and `f`
 /// of the long run's, at today's weight. Worked from the rows alone: each
 /// accumulator weighs a row by `λ^age`; the two kernels, each normalised,
@@ -240,22 +365,53 @@ fn a_blend_fits_a_share_of_the_long_run() {
         let a: Vec<f64> = (0..n)
             .map(|i| (1.0 - f) * kf[i] / sf + f * ks[i] / ss)
             .collect();
+        // Each weight's relative error (task 274): the platform's `powf`
+        // and its exponent's rounding (`|ln k|·u`), the kernel's sum (`u`
+        // of each partial sum), its quotient, and the mixture's products
+        // and sum.
+        let sum_err = |k: &[f64]| -> f64 {
+            let (mut acc, mut e) = (0.0, 0.0);
+            for v in k {
+                acc += v;
+                e += oracle::U * acc;
+            }
+            e / acc
+        };
+        let (ef, es) = (sum_err(&kf), sum_err(&ks));
+        let theta: Vec<f64> = (0..n)
+            .map(|i| {
+                let part = |k: f64, e: f64| {
+                    (oracle::LIBM + k.ln().abs()) * oracle::U + e + 2.0 * oracle::U
+                };
+                part(kf[i], ef).max(part(ks[i], es)) + 2.0 * oracle::U
+            })
+            .collect();
         let mean = |g: &dyn Fn(usize) -> f64| (0..n).map(|i| a[i] * g(i)).sum::<f64>();
         let mx = [mean(&|i| rows[i].0[0]), mean(&|i| rows[i].0[1])];
         let my = mean(&|i| rows[i].1);
         let cov = |p: usize, q: usize| mean(&|i| (rows[i].0[p] - mx[p]) * (rows[i].0[q] - mx[q]));
         let cxy = |p: usize| mean(&|i| (rows[i].0[p] - mx[p]) * (rows[i].1 - my));
-        let b = oracle::solve(
-            &[cov(0, 0) + ridge, cov(0, 1), cov(1, 0), cov(1, 1) + ridge],
-            &[cxy(0), cxy(1)],
-        );
+        let a_sys = [cov(0, 0) + ridge, cov(0, 1), cov(1, 0), cov(1, 1) + ridge];
+        let rhs = [cxy(0), cxy(1)];
+        let b = oracle::solve(&a_sys, &rhs);
         let want = [my - mx[0] * b[0] - mx[1] * b[1], b[0], b[1]];
         let got = &m.coefficients().unwrap()[0];
-        for (g, w) in got.iter().zip(want) {
-            assert!(
-                (g - w).abs() <= 1e-9 * (1.0 + w.abs()),
-                "f = {f}: {got:?} vs {want:?}"
-            );
+        // Task 274: [`blended_error`], where it was `1e-9` relative to `1 +
+        // |w|`.
+        // Measured on aarch64 (macOS): at most 0.0018 of the bound: 600 rows, the twin at a
+        // half-life of 400, whose worst-case running bound grows with its memory and whose
+        // realized rounding does not.
+        let xy: Vec<([f64; 2], f64)> = rows.iter().map(|(x, y)| (*x, *y)).collect();
+        let bound = blended_error(
+            &xy,
+            (h_fast, h_slow, f),
+            &a,
+            &theta,
+            (&a_sys, &rhs, &b),
+            (&mx, my),
+        );
+        for (i, (g, w)) in got.iter().zip(want).enumerate() {
+            oracle::assert_within(*g, w, bound[i], format_args!("f = {f}, slot {i}"));
         }
     }
 }
@@ -923,13 +1079,89 @@ fn a_blend_keeps_the_decaying_prior_with_the_weight() {
         .collect();
     let want = oracle::solve(&a.concat(), &b);
     let got = full.coefficients().unwrap()[0].clone();
-    for i in 0..3 {
-        assert!(
-            (got[i] - want[i]).abs() <= 1e-9 * (1.0 + want[i].abs()),
-            "coef {i}: {} after a full blend, {} from the rows",
-            got[i],
-            want[i]
+    // Task 274: within both sides' rounding, where it was `1e-9` relative
+    // to `1 + |β|`. At `f = 1` the blend takes the twin's moments whole
+    // (each mixture `0·x + 1·y`, exact) at today's `W` and prior scale, read
+    // off the model on both sides. The model's: the twin's run, decayed by
+    // the platform's `exp2(−1/h)` ([`crate::ewcov::rounding::Rounding`]),
+    // read as `W·E[zz']` ([`sum_scale_errors`], `W` exact here), the prior's
+    // addition and its Cholesky solve. The test's: each kernel weight within
+    // `(LIBM + |ln k|)u` of `2^(−age/h)` and its total's rounding, which move
+    // `β` by `Σ θᵢaᵢ|A⁻¹W zᵢ eᵢ|` (`eᵢ` the row's residual); its sums
+    // ([`sum_err`]); and its LU's own.
+    // Measured on aarch64 (macOS): at most 0.0023 of the bound, the same long memory's.
+    use oracle::{U, abs_times};
+    let a = a.concat();
+    let lam_s = (-1.0 / long).exp2();
+    let mut tr = crate::ewcov::rounding::Rounding::new(3, (oracle::LIBM + 1.0 / long) * U);
+    for (i, (z, y)) in rows.iter().enumerate() {
+        tr.update(&[z[1], z[2], *y], if i == 0 { 1.0 } else { lam_s }, 1.0);
+    }
+    let kz = 3;
+    let at = |p: usize| p.checked_sub(1);
+    let raw = |p: Option<usize>, q: Option<usize>| -> (f64, f64) {
+        let (mi, dmi) = p.map_or((1.0, 0.0), |i| (tr.m[i], tr.em[i]));
+        let (mq, dmq) = q.map_or((1.0, 0.0), |i| (tr.m[i], tr.em[i]));
+        let (c, dc) = match (p, q) {
+            (Some(i), Some(j)) => (tr.c[i * 3 + j], tr.ec[i * 3 + j]),
+            _ => (0.0, 0.0),
+        };
+        let r = c + mi * mq;
+        (
+            r,
+            dc + mi.abs() * dmq + dmi * mq.abs() + U * ((mi * mq).abs() + r.abs()),
+        )
+    };
+    let mut da = vec![0.0; 9];
+    let mut dr = vec![0.0; 3];
+    for p in 0..kz {
+        for q in 0..kz {
+            let (r, d) = raw(at(p), at(q));
+            da[p * kz + q] = w * d + U * (w * r).abs();
+        }
+        da[p * kz + p] += U * a[p * kz + p].abs();
+        let (r, d) = raw(at(p), Some(2));
+        dr[p] = w * d + U * (w * r).abs();
+    }
+    let e = oracle::cholesky_backward(&a);
+    let te: f64 = {
+        let (_, e) = sum_err(ks.iter().map(|v| (*v, 0.0)));
+        e / total
+    };
+    let theta: Vec<f64> = ks
+        .iter()
+        .map(|k| (oracle::LIBM + k.ln().abs()) * U + te + U)
+        .collect();
+    let ai = oracle::inverse(&a);
+    let mut dw = [0.0f64; 3];
+    for (i, (z, y)) in rows.iter().enumerate() {
+        let ei = y - z.iter().zip(&want).map(|(a, b)| a * b).sum::<f64>();
+        let g = abs_times(&ai, &z.iter().map(|v| w * v * ei).collect::<Vec<_>>());
+        for p in 0..3 {
+            dw[p] += theta[i] * ks[i] / total * g[p];
+        }
+    }
+    for p in 0..kz {
+        for q in 0..kz {
+            let (_, et) = sum_err(
+                rows.iter()
+                    .enumerate()
+                    .map(|(i, r)| (ks[i] * r.0[p] * r.0[q], 2.0)),
+            );
+            da[p * kz + q] += e[p * kz + q] + w * et / total + 2.0 * U * a[p * kz + q].abs();
+        }
+        let (_, et) = sum_err(
+            rows.iter()
+                .enumerate()
+                .map(|(i, r)| (ks[i] * r.0[p] * r.1, 2.0)),
         );
+        dr[p] += w * et / total + 2.0 * U * b[p].abs();
+    }
+    let fe = oracle::forward_error(&a, &want, &da, &dr);
+    let own = oracle::solve_error(&a, &b, &want);
+    for i in 0..3 {
+        let bound = fe[i] + own[i] + dw[i] + U * want[i].abs();
+        oracle::assert_within(got[i], want[i], bound, format_args!("coef {i}"));
     }
 }
 
@@ -2886,6 +3118,207 @@ type OracleRow = (Vec<f64>, [f64; 2], f64);
 /// A weighted row of [`fitted`]: features, the targets, the weight.
 type FitRow = (Vec<f64>, Vec<Option<f64>>, f64);
 
+// --- Rounding bounds against the oracle (docs/PLAN.md task 274) ---------
+
+/// The system a test writes from the rows, and how the model forms the
+/// same one from its moments: centred (`C + diag(p)`, the intercept
+/// eliminated), or raw over `z` (`s·E[zz'] + diag(p)`, `s` the weight under
+/// `ridge_scale`, else 1). `standardize` puts the penalty on the
+/// correlation scale, `λ` times each diagonal entry in these units.
+#[derive(Clone, Copy)]
+struct Shape {
+    centred: bool,
+    intercept: bool,
+    standardize: bool,
+    ridge_scale: bool,
+}
+
+/// How far the model's coefficients may be off the oracle's solve of
+/// `a·β = rhs`, the system [`Shape`] says, over `rows` at weight `w` with no
+/// decay, for target `j` at penalty `lam` toward `c0` (the slots' prior,
+/// the intercept's first under `ridge_scale`). To first order:
+///
+/// - the model's moments, its Gram's and its target's weighted Welford
+///   steps carried along the run ([`crate::ewcov::rounding::Rounding`] over
+///   `(x, y_j)`), read as the shape reads them -- `C`, or raw `C + m mᵀ`
+///   (`|m|Δm` twice and two roundings), times `W` and its error under
+///   `ridge_scale` -- and the penalty read off them under `standardize`;
+/// - its forming of the system: each scaled entry three roundings (the
+///   scale's root, the product of two, the quotient), the penalty's
+///   addition one, each right-hand side two;
+/// - its Cholesky solve (Higham, Theorem 10.4, through
+///   [`oracle::cholesky_backward`]) and the unscaling's `u|β|`;
+/// - the test's own sums, `Σ w·f / Σ w` with `f` one or two products of
+///   deviations (each a rounding), every addition `u` of its partial sum,
+///   the quotient and the weights' own sum; deviations from a computed mean
+///   are off it only to second order (`Σ w(x − x̄) = 0`);
+/// - the oracle's LU, by its residual;
+///
+/// the systems' errors through `|a⁻¹|·(ΔA|β| + Δr)` ([`oracle::forward_error`]).
+/// The intercept recovered after a centred solve, `ȳ − m·β`, adds `Δȳ +
+/// |β|ᵀΔm + |m|ᵀΔβ` and its sum's rounding. Returns the bound per slot, the
+/// intercept first where there is one.
+#[allow(clippy::too_many_arguments)]
+fn closed_form_error(
+    rows: &[OracleRow],
+    j: usize,
+    shape: Shape,
+    lam: f64,
+    c0: &[f64],
+    a: &[f64],
+    rhs: &[f64],
+    beta: &[f64],
+) -> Vec<f64> {
+    use oracle::{U, gamma};
+    let k = rows[0].0.len();
+    let mut tr = crate::ewcov::rounding::Rounding::new(k + 1, 0.0);
+    for (x, y, w) in rows {
+        let v: Vec<f64> = x.iter().copied().chain(std::iter::once(y[j])).collect();
+        tr.update(&v, 1.0, *w);
+    }
+    let kp = k + 1;
+    let ky = k;
+    let (c, m, ec, em) = (&tr.c, &tr.m, &tr.ec, &tr.em);
+    // The model's moments on `z`: the intercept's column, where the shape
+    // has one in the system, is the constant 1 (no error, mean 1).
+    let off = usize::from(!shape.centred && shape.intercept);
+    let n = a.len().isqrt();
+    let col = |p: usize| -> Option<usize> { if p < off { None } else { Some(p - off) } };
+    let mom = |p: Option<usize>, q: Option<usize>| -> (f64, f64) {
+        if shape.centred {
+            let (i, jq) = (p.unwrap(), q.unwrap());
+            return (c[i * kp + jq], ec[i * kp + jq]);
+        }
+        let mi = p.map_or(1.0, |i| m[i]);
+        let mq = q.map_or(1.0, |i| m[i]);
+        let dmi = p.map_or(0.0, |i| em[i]);
+        let dmq = q.map_or(0.0, |i| em[i]);
+        let (cc, dc) = match (p, q) {
+            (Some(i), Some(jq)) => (c[i * kp + jq], ec[i * kp + jq]),
+            _ => (0.0, 0.0),
+        };
+        let raw = cc + mi * mq;
+        (
+            raw,
+            dc + mi.abs() * dmq + dmi * mq.abs() + U * ((mi * mq).abs() + raw.abs()),
+        )
+    };
+    let wsum: f64 = rows.iter().map(|r| r.2).sum();
+    let (scale, escale) = if shape.ridge_scale {
+        (tr.w, tr.ew)
+    } else {
+        (1.0, 0.0)
+    };
+    // The model's errors in the test's units.
+    let mut da = vec![0.0; n * n];
+    let mut dr = vec![0.0; n];
+    for pi in 0..n {
+        let (diag, ddiag) = mom(col(pi), col(pi));
+        let (pen, dpen) = if shape.standardize {
+            (lam * diag, lam * (ddiag + 3.0 * U * diag.abs()))
+        } else {
+            (lam, 0.0)
+        };
+        for qi in 0..n {
+            let (v, dv) = mom(col(pi), col(qi));
+            let form = if shape.standardize { 3.0 * U } else { 0.0 };
+            da[pi * n + qi] = scale * (dv + (escale + U) * v.abs()) + form * v.abs();
+        }
+        da[pi * n + pi] += dpen + U * (scale * diag + pen).abs();
+        let (r, drr) = mom(col(pi), Some(ky));
+        dr[pi] = scale * (drr + (escale + U) * r.abs())
+            + dpen * c0[pi].abs()
+            + 2.0 * U * (r.abs() + (pen * c0[pi]).abs());
+    }
+    let e = oracle::cholesky_backward(a);
+    let da_lib: Vec<f64> = da.iter().zip(&e).map(|(x, y)| x + y).collect();
+    let lib = oracle::forward_error(a, beta, &da_lib, &dr);
+    // The test's sums, in its own arithmetic.
+    let mut ew = 0.0;
+    let mut accw = 0.0;
+    for r in rows {
+        accw += r.2;
+        ew += U * accw;
+    }
+    let mean_err = |f: &dyn Fn(&OracleRow) -> (f64, f64)| -> (f64, f64) {
+        let (mut sum, mut e) = (0.0f64, 0.0f64);
+        for r in rows {
+            let (v, rounds) = f(r);
+            let t = r.2 * v;
+            sum += t;
+            e += (rounds + 1.0) * U * t.abs() + U * sum.abs();
+        }
+        let mval = sum / wsum;
+        (mval, e / wsum + mval.abs() * (ew / wsum + U))
+    };
+    let mx: Vec<f64> = (0..k).map(|i| mean_err(&|r| (r.0[i], 0.0)).0).collect();
+    let my = mean_err(&|r| (r.1[j], 0.0)).0;
+    let zv = |r: &OracleRow, p: usize| -> f64 {
+        match col(p) {
+            None => 1.0,
+            Some(i) => r.0[i],
+        }
+    };
+    let mut dat = vec![0.0; n * n];
+    let mut drt = vec![0.0; n];
+    for pi in 0..n {
+        let diag_err = if shape.centred {
+            let i = pi;
+            mean_err(&|r| ((r.0[i] - mx[i]) * (r.0[i] - mx[i]), 3.0)).1
+        } else {
+            mean_err(&|r| (zv(r, pi) * zv(r, pi), 1.0)).1
+        };
+        let tscale = if shape.ridge_scale { wsum } else { 1.0 };
+        let tescale = if shape.ridge_scale {
+            ew / wsum + U
+        } else {
+            0.0
+        };
+        let dpen = if shape.standardize {
+            lam * diag_err + U * lam * a[pi * n + pi].abs()
+        } else {
+            0.0
+        };
+        for qi in 0..n {
+            let (v, dv) = if shape.centred {
+                let (i, q) = (pi, qi);
+                mean_err(&|r| ((r.0[i] - mx[i]) * (r.0[q] - mx[q]), 3.0))
+            } else {
+                mean_err(&|r| (zv(r, pi) * zv(r, qi), 1.0))
+            };
+            dat[pi * n + qi] = tscale * (dv + (tescale + U) * v.abs());
+        }
+        dat[pi * n + pi] += dpen + U * a[pi * n + pi].abs();
+        let (v, dv) = if shape.centred {
+            let i = pi;
+            mean_err(&|r| ((r.0[i] - mx[i]) * (r.1[j] - my), 3.0))
+        } else {
+            mean_err(&|r| (zv(r, pi) * r.1[j], 1.0))
+        };
+        drt[pi] =
+            tscale * (dv + (tescale + U) * v.abs()) + dpen * c0[pi].abs() + 2.0 * U * rhs[pi].abs();
+    }
+    let test = oracle::forward_error(a, beta, &dat, &drt);
+    let own = oracle::solve_error(a, rhs, beta);
+    let slots: Vec<f64> = (0..n)
+        .map(|p| lib[p] + test[p] + own[p] + U * beta[p].abs())
+        .collect();
+    if !shape.centred {
+        return slots;
+    }
+    // The intercept recovered, `ȳ − m·β`, on both sides.
+    let dmx: Vec<f64> = (0..k).map(|i| mean_err(&|r| (r.0[i], 0.0)).1).collect();
+    let dmy = mean_err(&|r| (r.1[j], 0.0)).1;
+    let b0 = my - (0..k).map(|i| mx[i] * beta[i]).sum::<f64>();
+    let d0 = em[ky]
+        + dmy
+        + (0..k)
+            .map(|i| (em[i] + dmx[i]) * beta[i].abs() + mx[i].abs() * slots[i])
+            .sum::<f64>()
+        + 2.0 * (gamma(k) * (0..k).map(|i| (mx[i] * beta[i]).abs()).sum::<f64>() + U * b0.abs());
+    std::iter::once(d0).chain(slots).collect()
+}
+
 /// Every solve against its closed form, from weighted sums written out
 /// here (mutation baseline, docs/PLAN.md task 113): two targets and a
 /// ridge grid of two (one under `ridge_scale`, which refuses a grid), so
@@ -2966,6 +3399,7 @@ fn every_solve_is_its_closed_form_across_targets_and_ridges() {
             for j in 0..m {
                 let c0 = &prior[j][1 - off..];
                 for (ci, &lam) in grid.iter().enumerate() {
+                    let bound;
                     let want: Vec<f64> = if intercept && !ridge_scale {
                         let mx: Vec<f64> = (0..k).map(|i| mean(&|r| r.0[i])).collect();
                         let my = mean(&|r| r.1[j]);
@@ -2986,6 +3420,21 @@ fn every_solve_is_its_closed_form_across_targets_and_ridges() {
                             .collect();
                         let slopes = oracle::solve(&a.concat(), &rhs);
                         let b0 = my - (0..k).map(|i| mx[i] * slopes[i]).sum::<f64>();
+                        bound = closed_form_error(
+                            &rows,
+                            j,
+                            Shape {
+                                centred: true,
+                                intercept,
+                                standardize,
+                                ridge_scale,
+                            },
+                            lam,
+                            &c0[1..],
+                            &a.concat(),
+                            &rhs,
+                            &slopes,
+                        );
                         std::iter::once(b0).chain(slopes).collect()
                     } else {
                         let scale = if ridge_scale { wsum } else { 1.0 };
@@ -3009,7 +3458,23 @@ fn every_solve_is_its_closed_form_across_targets_and_ridges() {
                         let rhs: Vec<f64> = (0..kz)
                             .map(|a| scale * mean(&|r| z(r, a) * r.1[j]) + pen(a) * c0[a])
                             .collect();
-                        oracle::solve(&a.concat(), &rhs)
+                        let b = oracle::solve(&a.concat(), &rhs);
+                        bound = closed_form_error(
+                            &rows,
+                            j,
+                            Shape {
+                                centred: false,
+                                intercept,
+                                standardize,
+                                ridge_scale,
+                            },
+                            lam,
+                            c0,
+                            &a.concat(),
+                            &rhs,
+                            &b,
+                        );
+                        b
                     };
                     let got = &beta[j * grid.len() + ci];
                     let zx: Vec<f64> = if intercept {
@@ -3019,15 +3484,28 @@ fn every_solve_is_its_closed_form_across_targets_and_ridges() {
                     };
                     let p_want: f64 = zx.iter().zip(&want).map(|(a, b)| a * b).sum();
                     let p_got = pred[j * grid.len() + ci];
-                    assert!(
-                        (p_got - p_want).abs() <= 1e-9 * (1.0 + p_want.abs()),
-                        "predict, target {j}, ridge {lam}: {p_got} against {p_want}"
+                    // Task 274: each slot within [`closed_form_error`], and
+                    // the prediction within its slots' errors through `|z|`
+                    // and each side's sum; they were `1e-9` relative to `1 +
+                    // |w|`.
+                    // Measured on aarch64 (macOS): at most 0.018 (slots) and 0.0084
+                    // (predictions) of the bound; 0.0051 under `ridge_scale`.
+                    let dp = zx.iter().zip(&bound).map(|(z, b)| z.abs() * b).sum::<f64>()
+                        + 2.0 * oracle::dot_error(zx.iter().copied().zip(want.iter().copied()));
+                    oracle::assert_within(
+                        p_got,
+                        p_want,
+                        dp,
+                        format_args!("predict, target {j}, ridge {lam}"),
                     );
                     for (i, (g, w)) in got.iter().zip(&want).enumerate() {
-                        assert!(
-                            (g - w).abs() <= 1e-9 * (1.0 + w.abs()),
-                            "{intercept} {standardize} {ridge_scale} {gaps:?}: target {j}, \
-                             ridge {lam}, slot {i}: {g} against the closed form {w}"
+                        oracle::assert_within(
+                            *g,
+                            *w,
+                            bound[i],
+                            format_args!(
+                                "{intercept} {standardize} {ridge_scale} {gaps:?}, target {j}, ridge {lam}, slot {i}"
+                            ),
                         );
                     }
                 }
@@ -3384,6 +3862,46 @@ fn a_row_that_is_not_a_number_has_no_row_inflation() {
     }
 }
 
+/// The model's error in `W·E[zz']` over `z = (1, x)`, entry by entry, its
+/// Gram's weighted Welford run carried by `tr` (docs/PLAN.md task 274): raw
+/// moments `C + m mᵀ` (`|m|Δm` twice and two roundings; the intercept's
+/// column the constant 1, exact) times the weight, its own error and the
+/// product's rounding.
+fn sum_scale_errors(tr: &crate::ewcov::rounding::Rounding) -> (Vec<f64>, Vec<f64>) {
+    use oracle::U;
+    let k = tr.m.len();
+    let kz = k + 1;
+    let at = |p: usize| p.checked_sub(1);
+    let mut raw = vec![0.0; kz * kz];
+    let mut err = vec![0.0; kz * kz];
+    for p in 0..kz {
+        for q in 0..kz {
+            let (mi, dmi) = at(p).map_or((1.0, 0.0), |i| (tr.m[i], tr.em[i]));
+            let (mq, dmq) = at(q).map_or((1.0, 0.0), |i| (tr.m[i], tr.em[i]));
+            let (c, dc) = match (at(p), at(q)) {
+                (Some(i), Some(j)) => (tr.c[i * k + j], tr.ec[i * k + j]),
+                _ => (0.0, 0.0),
+            };
+            let r = c + mi * mq;
+            let dr = dc + mi.abs() * dmq + dmi * mq.abs() + U * ((mi * mq).abs() + r.abs());
+            raw[p * kz + q] = tr.w * r;
+            err[p * kz + q] = tr.w * (dr + (tr.ew + U) * r.abs());
+        }
+    }
+    (raw, err)
+}
+
+/// `Σ w·f` over the rows, and the most its rounding can be: each term's
+/// `rounds` roundings and each addition `u` of the partial sum it makes.
+fn sum_err(terms: impl Iterator<Item = (f64, f64)>) -> (f64, f64) {
+    let (mut sum, mut e) = (0.0f64, 0.0f64);
+    for (t, rounds) in terms {
+        sum += t;
+        e += rounds * oracle::U * t.abs() + oracle::U * sum.abs();
+    }
+    (sum, e)
+}
+
 /// `sqrt(1 + h)`, `h` the row's leverage over Kish's sample size, from
 /// the definition: centred and standardized, `h = (1 + v'(R + λI)⁻¹v)/n`
 /// with `v` the row centred and scaled and `R` the correlation; under
@@ -3411,7 +3929,26 @@ fn the_row_error_inflation_is_the_leverage_of_its_definition() {
         let wq: f64 = rows.iter().map(|r| r.2 * r.2).sum();
         let n = ws * ws / wq;
         let mean = |f: &dyn Fn(&[f64]) -> f64| rows.iter().map(|r| r.2 * f(&r.0)).sum::<f64>() / ws;
-        let want = if ridge_scale {
+        // Task 274: within both sides' rounding, where it was `1e-10`
+        // relative. The model's Gram carried along its run
+        // ([`crate::ewcov::rounding::Rounding`]), the test's sums read off
+        // theirs ([`sum_err`]); each side's system error through `|y|ᵀΔA|y|`
+        // (`y = A⁻¹v`) and its row's `2|y|ᵀΔv`, the model's Cholesky form and
+        // the oracle's LU form, the weight and Kish's size `W²/Q` on each
+        // side, and the root's half of `h`'s relative error.
+        // Measured on aarch64 (macOS): equal to the bit in both forms; the result moved by 100u
+        // of itself fails it (7.5 and 10 times the bound).
+        use oracle::{U, abs_form};
+        let mut tr = crate::ewcov::rounding::Rounding::new(3, 0.0);
+        for (x, _, w) in &rows {
+            tr.update(x, 1.0, *w);
+        }
+        let (ews, ewq) = (
+            sum_err(rows.iter().map(|r| (r.2, 0.0))).1,
+            sum_err(rows.iter().map(|r| (r.2 * r.2, 1.0))).1,
+        );
+        let dn = n * (tr.eq + 2.0 * tr.ew + 2.0 * ews / ws + ewq / wq + 4.0 * U);
+        let (want, dh) = if ridge_scale {
             let z = |r: &[f64], i: usize| if i == 0 { 1.0 } else { r[i - 1] };
             let a: Vec<Vec<f64>> = (0..4)
                 .map(|i| {
@@ -3420,9 +3957,38 @@ fn the_row_error_inflation_is_the_leverage_of_its_definition() {
                         .collect()
                 })
                 .collect();
+            let a = a.concat();
             let v: Vec<f64> = (0..4).map(|i| z(&x, i)).collect();
-            let q = oracle::quad_form(&a.concat(), &v) * ws;
-            (1.0 + q / n).sqrt()
+            let q = oracle::quad_form(&a, &v) * ws;
+            let (_, dlib) = sum_scale_errors(&tr);
+            let dtest: Vec<f64> = (0..16)
+                .map(|ij| {
+                    let (i, j) = (ij / 4, ij % 4);
+                    let (sm, e) =
+                        sum_err(rows.iter().map(|r| (r.2 * z(&r.0, i) * z(&r.0, j), 2.0)));
+                    ws * (e + sm.abs() * (ews / ws + U)) / ws + (ews + U * ws) * (sm / ws).abs()
+                })
+                .collect();
+            let e = oracle::cholesky_backward(&a);
+            let y = oracle::solve(&a, &v);
+            let da: Vec<f64> = (0..16)
+                .map(|ij| {
+                    dlib[ij]
+                        + dtest[ij]
+                        + e[ij]
+                        + if ij % 5 == 0 {
+                            2.0 * U * a[ij].abs()
+                        } else {
+                            0.0
+                        }
+                })
+                .collect();
+            let qa = q / ws;
+            let dq = abs_form(&y, &da, &y)
+                + 2.0 * oracle::dot_error(v.iter().copied().zip(y.iter().copied()))
+                + oracle::quad_form_error(&a, &v);
+            let dqq = q * (dq / qa + tr.ew + ews / ws + 2.0 * U);
+            ((1.0 + q / n).sqrt(), dqq / n + q / (n * n) * dn)
         } else {
             let mx: Vec<f64> = (0..3).map(|i| mean(&|r| r[i])).collect();
             let cov = |a: usize, b: usize| mean(&|r| (r[a] - mx[a]) * (r[b] - mx[b]));
@@ -3434,14 +4000,83 @@ fn the_row_error_inflation_is_the_leverage_of_its_definition() {
                         .collect()
                 })
                 .collect();
+            let a = a.concat();
             let v: Vec<f64> = (0..3).map(|i| (x[i] - mx[i]) / sd[i]).collect();
-            let q = oracle::quad_form(&a.concat(), &v);
-            (1.0 + (1.0 + q) / n).sqrt()
+            let q = oracle::quad_form(&a, &v);
+            // Both sides' co-moments' errors, then the correlation's and
+            // the scaled row's.
+            let dc_test: Vec<f64> = (0..9)
+                .map(|ij| {
+                    let (i, j) = (ij / 3, ij % 3);
+                    let (sm, e) = sum_err(
+                        rows.iter()
+                            .map(|r| (r.2 * (r.0[i] - mx[i]) * (r.0[j] - mx[j]), 3.0)),
+                    );
+                    e / ws + (sm / ws).abs() * (ews / ws + U)
+                })
+                .collect();
+            let dm_test: Vec<f64> = (0..3)
+                .map(|i| {
+                    let (sm, e) = sum_err(rows.iter().map(|r| (r.2 * r.0[i], 1.0)));
+                    e / ws + (sm / ws).abs() * (ews / ws + U)
+                })
+                .collect();
+            let corr_err = |dc: &[f64]| -> Vec<f64> {
+                (0..9)
+                    .map(|ij| {
+                        let (i, j) = (ij / 3, ij % 3);
+                        let c = cov(i, i).max(f64::MIN_POSITIVE);
+                        let cj = cov(j, j).max(f64::MIN_POSITIVE);
+                        let r = cov(i, j) / (sd[i] * sd[j]);
+                        dc[ij] / (sd[i] * sd[j])
+                            + 0.5 * r.abs() * (dc[i * 4] / c + dc[j * 4] / cj)
+                            + 3.0 * U * r.abs()
+                    })
+                    .collect()
+            };
+            let row_err = |dc: &[f64], dm: &[f64]| -> Vec<f64> {
+                (0..3)
+                    .map(|i| {
+                        (dm[i] + U * (x[i] - mx[i]).abs()) / sd[i]
+                            + v[i].abs() * (0.5 * dc[i * 4] / cov(i, i) + 2.0 * U)
+                    })
+                    .collect()
+            };
+            let (dr_lib, dr_test) = (corr_err(&tr.ec), corr_err(&dc_test));
+            let (dv_lib, dv_test) = (row_err(&tr.ec, &tr.em), row_err(&dc_test, &dm_test));
+            let e = oracle::cholesky_backward(&a);
+            let y = oracle::solve(&a, &v);
+            let da: Vec<f64> = (0..9)
+                .map(|ij| {
+                    dr_lib[ij]
+                        + dr_test[ij]
+                        + e[ij]
+                        + if ij % 4 == 0 {
+                            2.0 * U * a[ij].abs()
+                        } else {
+                            0.0
+                        }
+                })
+                .collect();
+            let dq = abs_form(&y, &da, &y)
+                + 2.0
+                    * y.iter()
+                        .zip(dv_lib.iter().zip(&dv_test))
+                        .map(|(yi, (a, b))| yi.abs() * (a + b))
+                        .sum::<f64>()
+                + oracle::dot_error(v.iter().copied().zip(y.iter().copied()))
+                + oracle::quad_form_error(&a, &v);
+            (
+                (1.0 + (1.0 + q) / n).sqrt(),
+                dq / n + (1.0 + q) / (n * n) * dn,
+            )
         };
-        assert!(
-            (got[0] - want).abs() <= 1e-10 * want,
-            "ridge_scale {ridge_scale}: {} against {want}",
-            got[0]
+        let bound = dh / (2.0 * want) + 4.0 * U * want;
+        oracle::assert_within(
+            got[0],
+            want,
+            bound,
+            format_args!("ridge_scale {ridge_scale}"),
         );
     }
 }
@@ -4003,6 +4638,34 @@ fn the_row_error_inflation_has_each_slots_own_leverage() {
                 .sum::<f64>()
                 / n
         };
+        // Task 274: within both sides' rounding, where it was `1e-9`
+        // relative: the target's own rows' Gram carried along the model's
+        // run ([`crate::ewcov::rounding::Rounding`], a row the target misses
+        // ageing it by a factor of 1), the test's two-pass sums read off
+        // theirs; each side's system error through `|y|ᵀΔA|y|` (`y = A⁻¹v`),
+        // its row's deviation `2|y|ᵀΔv`, the model's Cholesky form and the
+        // oracle's LU form, Kish's size (exact here: unit weights) and the
+        // root's half of `h`'s relative error.
+        // Measured on aarch64 (macOS): equal to the bit; the result moved by 100u of itself
+        // fails it (20 times the bound).
+        use oracle::{U, abs_form};
+        let mut tr = crate::ewcov::rounding::Rounding::new(2, 0.0);
+        for x in &own {
+            tr.update(x, 1.0, 1.0);
+        }
+        let dc_test: Vec<f64> = (0..4)
+            .map(|ab| {
+                let (a, b) = (ab / 2, ab % 2);
+                let (sm, e) = sum_err(own.iter().map(|x| ((x[a] - mx[a]) * (x[b] - mx[b]), 3.0)));
+                e / n + U * (sm / n).abs()
+            })
+            .collect();
+        let dm_test: Vec<f64> = (0..2)
+            .map(|i| {
+                let (sm, e) = sum_err(own.iter().map(|x| (x[i], 0.0)));
+                e / n + U * (sm / n).abs()
+            })
+            .collect();
         for (ci, lam) in ridges.iter().enumerate() {
             let a: Vec<Vec<f64>> = (0..2)
                 .map(|i| {
@@ -4011,14 +4674,34 @@ fn the_row_error_inflation_has_each_slots_own_leverage() {
                         .collect()
                 })
                 .collect();
+            let a = a.concat();
             let v: Vec<f64> = (0..2).map(|i| x_new[i] - mx[i]).collect();
-            let q = oracle::quad_form(&a.concat(), &v);
+            let q = oracle::quad_form(&a, &v);
             let want = (1.0 + (1.0 + q) / n).sqrt();
             let got = out[j * 3 + ci];
-            assert!(
-                (got - want).abs() <= 1e-9 * want,
-                "target {j}, ridge {lam}: {got} against {want}"
-            );
+            let e = oracle::cholesky_backward(&a);
+            let y = oracle::solve(&a, &v);
+            let da: Vec<f64> = (0..4)
+                .map(|ij| {
+                    tr.ec[ij]
+                        + dc_test[ij]
+                        + e[ij]
+                        + if ij % 3 == 0 {
+                            2.0 * U * a[ij].abs()
+                        } else {
+                            0.0
+                        }
+                })
+                .collect();
+            let dv: Vec<f64> = (0..2)
+                .map(|i| tr.em[i] + dm_test[i] + 2.0 * U * v[i].abs())
+                .collect();
+            let dq = abs_form(&y, &da, &y)
+                + 2.0 * y.iter().zip(&dv).map(|(a, b)| a.abs() * b).sum::<f64>()
+                + oracle::dot_error(v.iter().copied().zip(y.iter().copied()))
+                + oracle::quad_form_error(&a, &v);
+            let bound = dq / n / (2.0 * want) + 4.0 * U * want;
+            oracle::assert_within(got, want, bound, format_args!("target {j}, ridge {lam}"));
         }
     }
     m.ready.system_of.clear();
@@ -4051,13 +4734,37 @@ fn the_support_under_ridge_decay_is_the_sum_scale_systems() {
         })
         .collect();
     let support = &m.support_coef().unwrap()[0];
-    let inv = oracle::inverse(&a.concat());
+    let a = a.concat();
+    let inv = oracle::inverse(&a);
+    // Task 274: a share moves by `λ·Δ(A⁻¹)ᵢᵢ`, and `(A⁻¹)ᵢᵢ` by `cᵢᵀΔAcᵢ`
+    // (`cᵢ` its column) for each side's error in `A`: the model's
+    // `W·E[zz'] + λI` from its Gram's run ([`sum_scale_errors`]) and the
+    // penalty's addition, its diagonal by a Cholesky solve per column (its
+    // backward error); the test's sums ([`sum_err`]); and the oracle's
+    // inverse, by its residual. It was `1e-9`.
+    // Measured on aarch64 (macOS): equal to the bit; the result moved by 100u of itself fails
+    // it (4.9 times the bound).
+    use oracle::{U, abs_form};
+    let mut tr = crate::ewcov::rounding::Rounding::new(2, 0.0);
+    for (x, _, w) in &rows {
+        tr.update(x, 1.0, *w);
+    }
+    let (_, dlib) = sum_scale_errors(&tr);
+    let e = oracle::cholesky_backward(&a);
+    let own = oracle::inverse_error(&a);
+    let da: Vec<f64> = (0..9)
+        .map(|ij| {
+            let (i, j) = (ij / 3, ij % 3);
+            let (_, et) = sum_err(rows.iter().map(|r| (r.2 * z(&r.0, i) * z(&r.0, j), 2.0)));
+            dlib[ij] + et + e[ij] + if i == j { 2.0 * U * a[ij].abs() } else { 0.0 }
+        })
+        .collect();
     for (i, &share) in support.iter().enumerate().skip(1) {
         let want = 1.0 - lam * inv[i * 3 + i];
-        assert!(
-            (share - want).abs() <= 1e-9,
-            "slot {i}: {share} against {want}"
-        );
+        let ci: Vec<f64> = (0..3).map(|m| inv[m * 3 + i]).collect();
+        let bound = lam * (abs_form(&ci, &da, &ci) + own[i * 3 + i])
+            + 2.0 * U * (want.abs() + (lam * inv[i * 3 + i]).abs());
+        oracle::assert_within(share, want, bound, format_args!("slot {i}"));
     }
 }
 

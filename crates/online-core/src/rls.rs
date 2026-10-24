@@ -1174,6 +1174,187 @@ mod tests {
         (a, s1, s2)
     }
 
+    /// The rounding [`by_definition`] leaves in `A`, `s₁` and `s₂`, read
+    /// off its run (docs/PLAN.md task 274): each decay one rounding of the
+    /// partial sum (two for `s₂`, `λ²` rounded first), each term two of its
+    /// products and the addition one of the sum it makes (Higham §3.3).
+    fn definition_errors(
+        rows: &[(Vec<f64>, Option<f64>, f64)],
+        lam: f64,
+        delta: f64,
+    ) -> (Vec<f64>, f64, f64) {
+        use crate::oracle::U;
+        let k = rows[0].0.len() + 1;
+        let (mut a, mut e) = (vec![0.0; k * k], vec![0.0; k * k]);
+        let (mut s1, mut s2, mut prior) = (0.0f64, 0.0f64, delta);
+        let (mut e1, mut e2, mut ep) = (0.0, 0.0, 0.0);
+        for (i, (x, y, w)) in rows.iter().enumerate() {
+            let l = if i == 0 { 1.0 } else { lam };
+            for (v, ev) in a.iter_mut().zip(e.iter_mut()) {
+                *v *= l;
+                *ev = l * *ev + U * v.abs();
+            }
+            prior *= l;
+            ep = l * ep + U * prior;
+            s1 *= l;
+            e1 = l * e1 + U * s1;
+            s2 *= l * l;
+            e2 = l * l * e2 + 2.0 * U * s2;
+            if y.is_some() && *w > 0.0 {
+                let z: Vec<f64> = std::iter::once(1.0).chain(x.iter().copied()).collect();
+                for r in 0..k {
+                    for c in 0..k {
+                        let t = w * z[r] * z[c];
+                        a[r * k + c] += t;
+                        e[r * k + c] += 2.0 * U * t.abs() + U * a[r * k + c].abs();
+                    }
+                }
+                s1 += w;
+                e1 += U * s1;
+                s2 += w * w;
+                e2 += U * w * w + U * s2;
+            }
+        }
+        for r in 0..k {
+            e[r * k + r] += ep + U * (a[r * k + r] + prior).abs();
+        }
+        (e, e1, e2)
+    }
+
+    /// The rounding [`Rls`]' square-root information form leaves in `A =
+    /// RᵀR`, `s₁` and `s₂`, carried along its run (docs/PLAN.md task 274):
+    ///
+    /// - the decay `R ← fl(√λ)·R` is `λ(1 + 2δ)` on `A` with `|δ| ≤ u` the
+    ///   same on every row: a row learned `n` decays ago is weighed within
+    ///   `2nu` of its weight, as the prior is, which moves `z'A⁻¹z` by
+    ///   `Σ θᵣωᵣ(x'zᵣ)²`, `x = A⁻¹z` -- no rounding of `A`'s entries one by
+    ///   one; the product's own rounding of each entry of `R` is `2u√(aᵢᵢaⱼⱼ)`
+    ///   of `A` (Cauchy–Schwarz on `RᵀR`);
+    /// - a row's `k` Givens rotations are backward stable, `‖Δsⱼ‖ ≤
+    ///   γ_{6k}‖sⱼ‖` on each column of the stacked `[√λR; √w zᵀ]` (Higham,
+    ///   Lemma 19.8, and Lemma 19.7's constants), so `|ΔA| ≤ 2γ_{6k}·
+    ///   √(aᵢᵢaⱼⱼ)` of the new `A`, and `√w`'s rounding and `z`'s scaling by
+    ///   it `2u` more of each term; each error then decays with `A`;
+    /// - `s₁` and `s₂` as the definition's.
+    struct Track {
+        k: usize,
+        intercept: bool,
+        a: Vec<f64>,
+        e: Vec<f64>,
+        /// The rows learned: `z`, the weight now, and its decays since.
+        rows: Vec<(Vec<f64>, f64, u32)>,
+        prior: (f64, u32),
+        s1: (f64, f64),
+        s2: (f64, f64),
+    }
+
+    impl Track {
+        fn new(k: usize, intercept: bool, delta: f64) -> Self {
+            use crate::oracle::U;
+            let mut a = vec![0.0; k * k];
+            let mut e = vec![0.0; k * k];
+            for i in 0..k {
+                a[i * k + i] = delta;
+                // `R₀ = √δ I`, its root one rounding.
+                e[i * k + i] = 2.0 * U * delta;
+            }
+            Self {
+                k,
+                intercept,
+                a,
+                e,
+                rows: Vec::new(),
+                prior: (delta, 0),
+                s1: (0.0, 0.0),
+                s2: (0.0, 0.0),
+            }
+        }
+
+        fn dd(&self) -> Vec<f64> {
+            let k = self.k;
+            (0..k * k)
+                .map(|ij| (self.a[(ij / k) * (k + 1)] * self.a[(ij % k) * (k + 1)]).sqrt())
+                .collect()
+        }
+
+        fn update(&mut self, x: &[f64], learns: bool, w: f64, lam: f64) {
+            use crate::oracle::{U, gamma};
+            let k = self.k;
+            if lam != 1.0 {
+                self.a.iter_mut().for_each(|v| *v *= lam);
+                let dd = self.dd();
+                for (e, d) in self.e.iter_mut().zip(dd) {
+                    *e = lam * *e + 2.0 * U * d;
+                }
+                for r in self.rows.iter_mut() {
+                    r.1 *= lam;
+                    r.2 += 1;
+                }
+                self.prior.0 *= lam;
+                self.prior.1 += 1;
+            }
+            let (s1, e1) = self.s1;
+            let n1 = lam * s1 + if learns { w } else { 0.0 };
+            self.s1 = (n1, lam * e1 + U * (lam * s1 + n1));
+            let (s2, e2) = self.s2;
+            let n2 = lam * lam * s2 + if learns { w * w } else { 0.0 };
+            self.s2 = (
+                n2,
+                lam * lam * e2 + U * (2.0 * lam * lam * s2 + n2) + U * w * w,
+            );
+            if learns {
+                let z: Vec<f64> = (self.intercept.then_some(1.0))
+                    .into_iter()
+                    .chain(x.iter().copied())
+                    .collect();
+                for r in 0..k {
+                    for c in 0..k {
+                        self.a[r * k + c] += w * z[r] * z[c];
+                    }
+                }
+                let dd = self.dd();
+                for (ij, (e, d)) in self.e.iter_mut().zip(dd).enumerate() {
+                    let t = (w * z[ij / k] * z[ij % k]).abs();
+                    *e += 2.0 * gamma(6 * k) * d + 2.0 * U * t;
+                }
+                self.rows.push((z, w, 0));
+            }
+        }
+
+        /// How far the model's `vᵀA⁻¹v`-shaped readings move with its `A`:
+        /// `|x|ᵀΔA|x|` for the entries' errors and `Σ θᵣωᵣ(x'zᵣ)²` for the
+        /// rows' weights, `x = A⁻¹v`.
+        fn moved(&self, x: &[f64]) -> f64 {
+            use crate::oracle::{U, abs_form};
+            let structured: f64 = self
+                .rows
+                .iter()
+                .map(|(z, w, n)| {
+                    let p: f64 = z.iter().zip(x).map(|(a, b)| a * b).sum();
+                    2.0 * f64::from(*n) * U * w * p * p
+                })
+                .sum::<f64>()
+                + 2.0
+                    * f64::from(self.prior.1)
+                    * U
+                    * self.prior.0
+                    * x.iter().map(|v| v * v).sum::<f64>();
+            abs_form(x, &self.e, x) + structured
+        }
+    }
+
+    /// The model's `‖R⁻ᵀv‖²`: its substitution's backward error, `2γ_k·
+    /// √(aᵢᵢaⱼⱼ)` of `A = RᵀR` (Higham, Theorem 8.5, and Cauchy–Schwarz),
+    /// through `|x|ᵀ·|ΔA|·|x|` (`x = A⁻¹v`), and its sum of squares, `γ_k q`.
+    fn solve_err(a: &[f64], x: &[f64], q: f64) -> f64 {
+        use crate::oracle::gamma;
+        let k = x.len();
+        let dd: Vec<f64> = (0..k * k)
+            .map(|ij| 2.0 * gamma(k) * (a[(ij / k) * (k + 1)] * a[(ij % k) * (k + 1)]).sqrt())
+            .collect();
+        crate::oracle::abs_form(x, &dd, x) + gamma(k) * q
+    }
+
     fn readiness_rows(n: usize) -> Vec<(Vec<f64>, Option<f64>, f64)> {
         let mut s = 41u64;
         (0..n)
@@ -1203,31 +1384,70 @@ mod tests {
             let mut m = Rls::new(c).unwrap();
             let rows = readiness_rows(200);
             let mut out = Vec::new();
+            // Task 274: each reading within both sides' rounding, where it
+            // was `1e-10` relative: `A`'s ([`Track`], [`definition_errors`])
+            // through `|x|ᵀΔA|x|`, `x = A⁻¹v`, the model's triangular solve
+            // against `R` (`2γ_k√(aᵢᵢaⱼⱼ)` of `A`, and its sum of squares'
+            // `γ_k`), the oracle's own, and the ratio `s₂/s₁`'s.
+            // Measured on aarch64 (macOS): at most 0.093 (the row field) and 0.025 (the
+            // variances) of the bound.
+            use crate::oracle::U;
+            let mut tr = Track::new(3, true, delta);
             for (i, (x, y, w)) in rows.iter().enumerate() {
                 let d = if i == 0 { 0.0 } else { 1.0 };
                 if i > 0 {
                     let (a, s1, s2) = by_definition(&rows[..i], 0.97, delta);
+                    let (ea, e1, e2) = definition_errors(&rows[..i], 0.97, delta);
                     let z = [1.0, x[0], x[1]];
-                    let want = (1.0 + crate::oracle::quad_form(&a, &z) * s2 / s1).sqrt();
+                    let q = crate::oracle::quad_form(&a, &z);
+                    let want = (1.0 + q * s2 / s1).sqrt();
                     assert!(m.row_error_inflation_into(x, d, &mut out));
-                    assert!(
-                        (out[0] - want).abs() <= 1e-10 * want,
-                        "row {i}: {} vs {want}",
-                        out[0]
+                    let xs = crate::oracle::solve(&a, &z);
+                    let dq = tr.moved(&xs)
+                        + crate::oracle::abs_form(&xs, &ea, &xs)
+                        + solve_err(&a, &xs, q)
+                        + crate::oracle::quad_form_error(&a, &z);
+                    let r = s2 / s1;
+                    let dr =
+                        r * (tr.s1.1 / tr.s1.0 + tr.s2.1 / tr.s2.0 + e1 / s1 + e2 / s2 + 2.0 * U);
+                    let bound = (dq * r + q * dr) / (2.0 * want) + 6.0 * U * want;
+                    crate::oracle::assert_within(
+                        out[0],
+                        want,
+                        bound,
+                        format_args!("row field at row {i}"),
                     );
                     let gate = (1.0 + 3.0 * s2 / (s1 * s1)).sqrt();
                     assert!(m.error_inflation_into(&mut out));
                     assert!((out[0] - gate).abs() <= 1e-12 * gate, "row {i}");
                 }
                 m.step(x, &[*y], d, *w);
+                let lam = if i == 0 { 1.0 } else { 0.97 };
+                tr.update(x, y.is_some() && *w > 0.0, *w, lam);
                 let (a, s1, s2) = by_definition(&rows[..=i], 0.97, delta);
+                let (ea, e1, e2) = definition_errors(&rows[..=i], 0.97, delta);
                 let inv = crate::oracle::inverse(&a);
+                let own = crate::oracle::inverse_error(&a);
                 let Some(crate::CoefVariance::PerNoise(v)) = m.coef_variance() else {
                     panic!("rls's variances are over the noise");
                 };
+                let r = s2 / s1;
+                let dr = r * (tr.s1.1 / tr.s1.0 + tr.s2.1 / tr.s2.0 + e1 / s1 + e2 / s2 + 2.0 * U);
                 for (j, got) in v[0].iter().enumerate() {
-                    let want = s2 / s1 * inv[j * 3 + j];
-                    assert!((got - want).abs() <= 1e-10 * want, "row {i}, {j}");
+                    let q = inv[j * 3 + j];
+                    let want = r * q;
+                    let cj: Vec<f64> = (0..3).map(|m| inv[m * 3 + j]).collect();
+                    let dq = tr.moved(&cj)
+                        + crate::oracle::abs_form(&cj, &ea, &cj)
+                        + solve_err(&a, &cj, q)
+                        + own[j * 3 + j];
+                    let bound = dq * r + q * dr + 2.0 * U * want;
+                    crate::oracle::assert_within(
+                        *got,
+                        want,
+                        bound,
+                        format_args!("variance {j} at row {i}"),
+                    );
                 }
             }
         }
@@ -1372,39 +1592,72 @@ mod tests {
         let k = 2;
         let mut a = vec![0.0; k * k];
         let (mut s1, mut s2, mut prior) = (0.0, 0.0, delta);
+        // Task 274: within both sides' rounding, where it was `1e-10`
+        // relative, as `the_readiness_statistics_are_the_definitions` holds
+        // it: the model's `A` carried along its run ([`Track`]), these sums'
+        // read off theirs, each decay and term as [`definition_errors`]
+        // counts them.
+        // Measured on aarch64 (macOS): at most 0.090 of the bound.
+        use crate::oracle::U;
+        let mut tr = Track::new(k, false, delta);
+        let mut ea = vec![0.0; k * k];
+        let (mut e1, mut e2, mut ep) = (0.0, 0.0, 0.0);
         let mut out = Vec::new();
         for (i, (x, y, w)) in rows.iter().enumerate() {
             let d = if i == 0 { 0.0 } else { 1.0 };
             if s1 > 0.0 {
                 let mut ap = a.clone();
+                let mut eap = ea.clone();
                 for r in 0..k {
                     ap[r * k + r] += prior;
+                    eap[r * k + r] += ep + U * ap[r * k + r].abs();
                 }
                 // Read before the row, against the rows before it (the
                 // row's own decay scales `A` and `s₂ / s₁` alike, and
                 // cancels).
-                let want = (1.0 + crate::oracle::quad_form(&ap, x) * s2 / s1).sqrt();
+                let q = crate::oracle::quad_form(&ap, x);
+                let want = (1.0 + q * s2 / s1).sqrt();
                 assert!(m.row_error_inflation_into(x, d, &mut out));
-                assert!(
-                    (out[0] - want).abs() <= 1e-10 * want,
-                    "row {i}: {} vs {want}",
-                    out[0]
+                let xs = crate::oracle::solve(&ap, x);
+                let dq = tr.moved(&xs)
+                    + crate::oracle::abs_form(&xs, &eap, &xs)
+                    + solve_err(&ap, &xs, q)
+                    + crate::oracle::quad_form_error(&ap, x);
+                let r = s2 / s1;
+                let dr = r * (tr.s1.1 / tr.s1.0 + tr.s2.1 / tr.s2.0 + e1 / s1 + e2 / s2 + 2.0 * U);
+                let bound = (dq * r + q * dr) / (2.0 * want) + 6.0 * U * want;
+                crate::oracle::assert_within(
+                    out[0],
+                    want,
+                    bound,
+                    format_args!("row field at row {i}"),
                 );
             }
             m.step(x, &[*y], d, *w);
             let l = if i == 0 { 1.0 } else { lam };
-            a.iter_mut().for_each(|v| *v *= l);
+            tr.update(x, y.is_some() && *w > 0.0, *w, l);
+            for (v, ev) in a.iter_mut().zip(ea.iter_mut()) {
+                *v *= l;
+                *ev = l * *ev + U * v.abs();
+            }
             prior *= l;
+            ep = l * ep + U * prior;
             s1 *= l;
+            e1 = l * e1 + U * s1;
             s2 *= l * l;
+            e2 = l * l * e2 + 2.0 * U * s2;
             if y.is_some() && *w > 0.0 {
                 for r in 0..k {
                     for cc in 0..k {
-                        a[r * k + cc] += w * x[r] * x[cc];
+                        let t = w * x[r] * x[cc];
+                        a[r * k + cc] += t;
+                        ea[r * k + cc] += 2.0 * U * t.abs() + U * a[r * k + cc].abs();
                     }
                 }
                 s1 += w;
+                e1 += U * s1;
                 s2 += w * w;
+                e2 += U * w * w + U * s2;
             }
         }
         assert!(s1 > 0.0, "the fit learned");
