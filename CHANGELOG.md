@@ -9,6 +9,169 @@ order, another kernel), each declared with its size. Before 1.0, the minor
 version carried breaking changes, and any change to the numbers a model
 returns.
 
+## [Unreleased]
+
+### Added
+
+- **`huber_scale` on `po.spec.huber` and `po.spec.sgd`** (`"mad"`, the
+  default, or `"rms"`; on `sgd` it applies to the Huber loss alone and is
+  refused by name beside another loss), and **`huber_scale_half_life`**,
+  the scale's own memory, a number or a duration and a clock parameter,
+  defaulting to the spec's `half_life` (task 271). A robust scale treats
+  every row after a level shift as an outlier until its median has moved:
+  with a fit half-life of 500 rows and a +20 shift, the mean absolute
+  error over rows 200-400 after the shift is 19.5 at the fit's half-life
+  and 14.6 at `huber_scale_half_life=100`, against least squares' 13.3.
+- **`--output-layout flat`** on the command line (TOML
+  `output_layout = "flat"`) writes each spec's output as `<spec>.<field>`
+  columns, as a CSV already gets, in parquet, IPC and NDJSON; the default
+  stays one struct column per spec (task 270). Polars' parquet writer
+  encodes a struct's fields at several times the cost of plain columns: an
+  `ew_cov` over 20 series (233 fields) ran through the command line at
+  7,697 ns a row writing the struct to parquet and 1,274 flat. The frame
+  `fit_predict` docstring, the README and RUNNER.md say to unnest a wide
+  spec before `sink_parquet` (2,785 against 365 ns a row for the same 233
+  fields).
+- **`OnlineModel::step_into`**, a step that writes into a `Step` the caller
+  keeps; its default goes through `step` (task 270).
+- A weekly workflow checks `Cargo.lock` and `uv.lock` against OSV's
+  published advisories, failing on a vulnerability in a crate the wheel or
+  the command line links and reporting the rest (task 270).
+
+### Changed
+
+- **`huber` and `sgd(loss="huber")` draw their cut in a robust scale by
+  default** (task 271). The scale `σ` in `w · min(1, δσ/|e|)` and in
+  `clamp(p − y, ±δσ)` is now the exponentially weighted median of `|e|`
+  over `Φ⁻¹(3/4) = 0.6745` (`huber_scale="mad"`), read per target from a
+  quantile sketch within 0.78% of the exact weighted median. It was the
+  exponentially weighted root mean square, which one wild row sets and
+  which, without decay, a fit's first residuals (the target's level while
+  the intercept is near 0) widen for good. On `y = 1000 + 2x + 0.5ε`,
+  20,000 rows, no decay, +50 on a share of the rows with `x > 0` (median of
+  five seeds), `huber`'s slope at 1% / 5% / 12.6% outliers is 2.008 / 2.041
+  / 2.128, where it was 2.057 / 2.676 / 4.885; least squares gives 2.415 /
+  4.050 / 6.975 and statsmodels' converged `RLM` with the MAD scale 2.008 /
+  2.039 / 2.124. On MODELS.md's example the slope is 2.02 (it was 2.18;
+  truth 2). On the release probe 376 of 384 `huber` predictions move, by
+  at most 0.21, with a median relative move of 0.9%. **`huber_scale="rms"`
+  restores 1.2.0's numbers to the bit**, and a state saved by 1.0 to 1.2
+  loads as `"rms"`, the scale it was fitted under, and continues to the
+  bit. `quantile` is unchanged. This changes a default in a minor release,
+  by the maintainer's decision, against the policy's row for a changed
+  default; the way back is the one setting above.
+- **The command line refuses a URL in any path** (input, output,
+  `load_state`, `save_state`, `closed_groups`), from a flag or the TOML,
+  naming it before anything is read, under `--dry-run` too (task 270). An
+  `https://` input used to go to Polars' cloud reader, which retries an
+  unreachable host ten times over up to three minutes. A `file://` URL is
+  read as the local path it names, and a URL in the TOML is no longer
+  joined under the config's directory.
+- **`ewridge`'s `gram_block_rows` budget counts a block per target under
+  `target_gaps="own_rows"`** (task 270): each pattern of missing rows holds
+  its own block, so ten targets missing on different rows held 2.5 GiB
+  where the refusal named 256 MiB. The refusal now says so and suggests
+  `target_gaps="pairwise"`; a spec with many always-present targets is
+  refused at a smaller block.
+- `ew_cov` with both `partial_corr` and `mahal` reads `mahal` from the
+  precision `partial_corr` already computed; on that path `mahal` moves
+  within rounding, at most 1e-15 relative in the tests (task 270).
+- Dependencies: rustls 0.23.46, rustls-webpki 0.103.16 and tokio 1.54.1,
+  which fix published advisories; the dev group's pillow 13.0.0 and the
+  docs group's certifi 2026.10.23 (task 270).
+- `kmeans`' refusal of `n_clusters` past 65,536 states the default
+  seeding's cost, and the docs give its one-off cost per group (93 ms at
+  400 features and 8 centres; 0.2 ms under `init="k-means++"`) (task 270).
+- The state schema is 63 (the robust scale's sketch and settings); 1.x
+  states load and continue to the bit.
+
+### Fixed
+
+- **`sgd(loss="huber")` on a target with a level and no decay was the
+  squared loss** (task 271): its scale held the first residuals, the
+  level's size, for good, so no later row was clipped. At 5% outliers its
+  slope was 3.751, the squared loss's to the bit; under the new default it
+  is 2.016. The docs no longer say the cut "narrows as [the first
+  residuals] leave the mean", which held only under decay.
+- **`kalman` no longer predicts 0.0 before a target's prior is sized**
+  (task 270). Standardized without `obs_var`, a row past `min_weight`
+  before the first three observed rows had sized the prior was predicted
+  as `0.0` whatever the target's level (with a weight column or a lowered
+  `min_weight`), and that 0 seeded the residual variance with the level
+  squared: `sigma` was 106 at row 2 for a noise of 0.5, and 1.84 at row
+  1,000 where it is now 0.97. Those rows are withheld as
+  `below_warm_rows`, and the residual variance starts at the first
+  prediction of a sized filter.
+- **`po.gram.coef_stats` and `po.gram.solve_subsets` no longer count a
+  column of no variance as a degree of freedom** (task 270): `sigma2` was
+  inflated by `(n−p)/(n−p−1)` (1.8% at 60 rows, 0.2% at 500) where
+  `standardize` dropped a constant; `sigma2`, `se` and `t` are now
+  statsmodels' OLS on the columns kept, to 1e-12.
+- **The robust standard errors (`se_coef_hc0`, `se_coef_hac`) no longer
+  read 0.0 after a row whose score overflows** (task 270): such a row now
+  only ages the sums, and a variance that is not a number is NaN, not 0;
+  `kalman`'s intercept variance keeps a NaN the same way.
+- **The core clock refuses a NaN or infinite clock value, or a step past
+  the largest double**, instead of taking it as a step of `gap_cap` on
+  that row and the next and leaving every later exact stamp NaN (task
+  270). The bank already refused these; `with_windows` now refuses an
+  overflowing step by row, naming both values.
+- Documentation: `bocpd`'s full covariance costs `O(runs·d³)` a row, not
+  `O(runs·d²)`; `predict` reads no `coef_every`/`max_rows_between_coefs`;
+  a wide eager `predict` peaks at the width of its input (164 MiB at 1,000
+  features × 20,000 rows, 23 MiB in 2,000-row chunks); the README's install
+  size is 1.2.0's (24-30 MB download, 70-98 MB installed); the windows
+  state is version 9 (task 270).
+
+### Performance
+
+- **A bank of many small groups runs faster** (task 270): each spec keeps
+  its run buffers between chunks, each stream builds its diagnostics'
+  configuration once, a spec with no window skips the window pre-pass, and
+  a run's buffers move between threads as one pointer. With one row per
+  group per chunk on one thread, `seqtest` 1,219 → 779 ns a row at 1,000
+  groups and 1,990 → 1,308 at 10,000; `ewridge` with 5 features 1,863 →
+  1,298 and 2,556 → 1,800. Ten rows per group run 1.03-1.24× faster; a
+  single stream is unchanged.
+- **The model's step no longer allocates its prediction vector** in
+  `seqtest`, `pa`, `ewridge`, `ew_cov` and `kmeans` (task 270): the bank
+  keeps one output buffer per model instance. Through the wheel, ns a row:
+  `seqtest` 79 → 70, `pa` (20 features) 131 → 121, `ewridge` 5 features
+  209 → 199, 20 features 343 → 334, `kmeans` (20 features, 8 clusters)
+  323 → 309. Outputs unchanged to the bit.
+- **The command line has its own allocator**, jemalloc off Windows and
+  mimalloc on it, as py-polars uses; the wheel is unchanged (task 270). On
+  the system allocator the binary ran 1.23-1.25× slower a row on one
+  `ewridge` stream, 1.89-1.93× slower with 1,000 one-row groups a chunk and
+  1.77-1.80× slower at 10,000 groups.
+- `audit`'s distinct-value counters are a hash table, so a column of mostly
+  new values costs the same at any `distinct_cap`: 75 / 214 / 3,183 ns a
+  row became 59 / 52 / 58 at caps 256 / 4,096 / 65,536; a saved state's
+  bytes are unchanged; the counters take about 14 KiB a column at the
+  defaults, against 10 (task 270).
+- The robust Huber scale's sketch keeps its buckets within 16 octaves of
+  the median: at most 9.3 KB per target (13.9 before the bound; one
+  residual of `1e200` stretched an unbounded sketch to about 680 KB), its
+  outputs unchanged on every probe and test stream (task 271). Every
+  exponentially weighted quantile sketch (the Huber scale,
+  `resid_quantiles`, `ew_cov`'s `mahal_quantiles`) updates a level's
+  weight without a data-dependent branch: 10-12 → 7-9.5 ns a row for the
+  sketch, answers bit-identical. The MAD scale costs about 12.5-15 ns per
+  target per row over `"rms"`.
+- `kmeans` searches for a learned row's nearest centre once instead of
+  twice (163 → 124 ns a row at 8 centres and 4 features, 629 → 409 at 20
+  and 20); `marginal` skips the pair work on a row of weight 0 (5,167 →
+  991 ns per such row at 10,000 features); `refresh_time` with `group` no
+  longer builds a string per row (10.8 → 12.3 M rows/s); `po.eval`'s scores
+  carry only the columns they read (peak 2.0 → 0.7 GiB on a 290 MiB frame
+  with 43 columns and 8 slots); fewer allocations per row in `ew_cov` with
+  lags (5 → 2), `deco` (19 → 14), `hmm` (29 → 26), `lasso` (6 → 2) and the
+  feature-health and specification diagnostics (1.86 → 0) (task 270).
+- `po.gbdt.lightgbm_dataset`'s streamed route hands LightGBM each batch's
+  labels and weights with its rows rather than holding the whole dataset's
+  until the end: 16M weighted rows peaked 125 MB lower; the trees are
+  bit-identical (task 270).
+
 ## [1.2.0] — 2026-10-17
 
 ### Fixed
