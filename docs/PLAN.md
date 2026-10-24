@@ -16023,3 +16023,11 @@ plan adds `huber_scale` with the present behaviour as the default.
       the loss, numpy's weighted quantile) and, where a path is new, a
       budget case. Then a review (Fable, high effort) and the fix of its
       findings.
+      *Revised 2026-10-23* after the requester's reply (relayed by the
+      user): request 3 withdrawn (they checked it: slope 1.92 for 2.00 with
+      outliers independent of `x`, and the pseudo-response matched a direct
+      reweighted fit to 5e-15); request 2 is their own scoring code; request
+      1 is `po.spec.huber`, already built, with the robust scale arriving in
+      task 271; requests 4 and 5 conveniences. So batch (b) shrinks to the
+      GRAM.md section on algorithm H with its passes table (no helper, no
+      `po.eval` metric), and (a), (c), (d) stand, in that order of value.

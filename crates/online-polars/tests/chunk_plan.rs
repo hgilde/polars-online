@@ -869,3 +869,36 @@ fn the_fixture_s_two_keys_partition_alike() {
             .any(|(k, ..)| k.as_str() == Some("-2"))
     );
 }
+
+/// Run buffers a bank keeps between chunks for its small runs to fill again
+/// (task 270, G-1) change no number and no state: the grouped specs, every
+/// optional output on in one of them, fed in small chunks of forty groups,
+/// return every field to the bit, and leave the state byte for byte, as a
+/// bank loaded from that state before each chunk does, which keeps none;
+/// and buffers were kept and filled again on every chunk after the first.
+#[test]
+fn run_buffers_kept_between_chunks_change_nothing() {
+    let df = interleaved(1_500, 40, 9);
+    let specs = grouped_specs("g");
+    let mut kept = Bank::new(specs.clone()).unwrap();
+    let mut state = kept.save_bytes().unwrap();
+    let (mut chunks, mut refilled) = (0, 0);
+    for start in (0..df.height()).step_by(60) {
+        let chunk = df.slice(start as i64, 60);
+        let mut fresh = Bank::load_bytes(&state, Some(&specs)).unwrap();
+        assert_eq!(fresh.spare_runs(), 0, "a loaded bank keeps no buffers");
+        if chunks > 0 {
+            assert!(kept.spare_runs() > 0, "chunk {chunks}: nothing kept");
+            refilled += 1;
+        }
+        let h = chunk.height();
+        let a = DataFrame::new(h, kept.fit_predict(&chunk).unwrap()).unwrap();
+        let b = DataFrame::new(h, fresh.fit_predict(&chunk).unwrap()).unwrap();
+        assert_same(&a, &b, &format!("chunk {chunks}"));
+        state = fresh.save_bytes().unwrap();
+        assert!(kept.save_bytes().unwrap() == state, "chunk {chunks}: state");
+        chunks += 1;
+    }
+    assert_eq!(refilled, chunks - 1);
+    assert!(chunks >= 20, "{chunks} chunks");
+}

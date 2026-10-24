@@ -421,25 +421,58 @@ impl Deco {
         }
     }
 
-    /// The row's outputs, from the state as it stands.
-    fn read(&self, x: &[f64]) -> Vec<f64> {
+    /// The row's block sums and estimates, from the state as it stands:
+    /// what the row reports and what it learns from, taken once for both
+    /// (task 270, D-6).
+    fn row(&self, x: &[f64]) -> Row {
         let mut r = Vec::with_capacity(x.len());
         self.standardise(x, &mut r);
         let (s1, s2, n, ok) = self.block_sums(&r);
         let u = self.row_u(&s1, &s2, &n);
+        Row { s1, s2, ok, u }
+    }
+
+    /// What [`crate::OnlineModel::predict`] reports for the row whose sums
+    /// are `row`: its outputs, once the weight reaches `min_weight`.
+    fn step_of(&self, row: &Row) -> crate::Step {
+        let n_eff = self.diag.n_eff();
+        let pred = if n_eff >= self.cfg.min_weight {
+            self.read_row(row)
+        } else {
+            vec![f64::NAN; Self::n_outputs_for(self.blocks.len())]
+        };
+        crate::Step {
+            pred,
+            n_eff,
+            extra: None,
+        }
+    }
+
+    /// The row's outputs, from its sums ([`Self::row`]).
+    fn read_row(&self, row: &Row) -> Vec<f64> {
+        let Row { s1, s2, ok, u } = row;
         // The density is over every column, so a row with one that has no
         // standardised value has none (task 115 (h)).
-        let loglik = if ok {
-            self.loglik(&self.rho, &s1, &s2)
+        let loglik = if *ok {
+            self.loglik(&self.rho, s1, s2)
         } else {
             f64::NAN
         };
         let mut out = Vec::with_capacity(Self::n_outputs_for(self.blocks.len()));
-        out.extend_from_slice(&u);
+        out.extend_from_slice(u);
         out.extend_from_slice(&self.rho);
         out.push(loglik);
         out
     }
+}
+
+/// A row's standardised block sums `(S₁, S₂)`, whether every entry had a
+/// standardised value, and its equicorrelation estimates ([`Deco::row`]).
+struct Row {
+    s1: Vec<f64>,
+    s2: Vec<f64>,
+    ok: bool,
+    u: Vec<f64>,
 }
 
 /// Correlation values for `k` blocks: one per block, one per pair.
@@ -457,16 +490,15 @@ impl crate::OnlineModel for Deco {
         }
         // Read before the update: `u`, `rho` and `loglik` are all as of the
         // state before this row, which is what makes them usable as features
-        // for the same row.
-        let out = self.predict(x, d_clock);
+        // for the same row. The row's estimates are the ones it then learns
+        // from, standardised once (task 270, D-6).
+        let row = self.row(x);
+        let out = self.step_of(&row);
         let lam = self.cfg.decay.factor(d_clock);
-        let mut r = Vec::with_capacity(x.len());
-        self.standardise(x, &mut r);
-        let (s1, s2, n, _) = self.block_sums(&r);
         if weight >= 0.0 {
             // Each value learns from its own estimate, where the row has one
             // (task 115 (h)).
-            self.advance(&self.row_u(&s1, &s2, &n), lam, weight);
+            self.advance(&row.u, lam, weight);
         }
         self.diag.update(x, lam, weight);
         out
@@ -476,17 +508,7 @@ impl crate::OnlineModel for Deco {
         if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
             return refused;
         }
-        let n_eff = self.diag.n_eff();
-        let pred = if n_eff >= self.cfg.min_weight {
-            self.read(x)
-        } else {
-            vec![f64::NAN; Self::n_outputs_for(self.blocks.len())]
-        };
-        crate::Step {
-            pred,
-            n_eff,
-            extra: None,
-        }
+        self.step_of(&self.row(x))
     }
 
     fn state(&self) -> crate::State {

@@ -4630,3 +4630,70 @@ fn the_shards_of_a_flush_cover_the_features_once() {
         }
     }
 }
+
+/// A row of weight 0 moves no moment, so it is skipped without its pair
+/// pass (task 270, E-3): two streams whose rows of weight 0 carry different
+/// features and targets end in the same state, byte for byte, under either
+/// feature layout, with lags and with a window, and every row reports the
+/// same numbers. Its mix is `a = 1`, `b = 0` where the target has weight, so
+/// the pass stepped every moment by nothing; what a row of weight 0 must
+/// still do -- age the weights -- is held by
+/// `matches_the_longhand_moments_with_weights_gaps_and_a_missing_target`.
+#[test]
+fn a_row_of_weight_zero_moves_no_moment() {
+    let with = |f: &dyn Fn(&mut MarginalCfg)| {
+        let mut c = cfg(4, 2);
+        f(&mut c);
+        c
+    };
+    for (name, c) in [
+        ("per target", cfg(4, 2)),
+        (
+            "per target with lags",
+            with(&|c| {
+                c.lags = vec![1, 3];
+                c.cross_lags = Some(vec![1]);
+            }),
+        ),
+        (
+            "shared with lags",
+            with(&|c| {
+                c.feature_moments = FeatureMomentLayout::Shared;
+                c.lags = vec![1, 3];
+            }),
+        ),
+        ("window", with(&|c| c.window = Some(30.0))),
+    ] {
+        let (mut a, mut b) = (Marginal::new(c.clone()).unwrap(), Marginal::new(c).unwrap());
+        let mut s = 5u64;
+        let mut zero = 0;
+        for i in 0..400 {
+            let x: Vec<f64> = (0..4).map(|_| lcg(&mut s) + 3.0).collect();
+            let y = [Some(x[0] - x[1]), (i % 5 != 3).then(|| x[2] + lcg(&mut s))];
+            // Every fourth row, and the first, of weight 0; in `b` its
+            // values are others, of another scale.
+            let w = if i % 4 == 1 || i == 0 {
+                0.0
+            } else {
+                0.5 + lcg(&mut s).abs()
+            };
+            let d = if i % 37 == 0 { 7.0 } else { 1.0 };
+            let (xb, yb) = if w == 0.0 {
+                zero += 1;
+                let xb: Vec<f64> = x.iter().map(|v| -40.0 * v).collect();
+                (xb, [Some(1e3), Some(-2e3)])
+            } else {
+                (x.clone(), y)
+            };
+            let (sa, sb) = (a.step(&x, &y, d, w), b.step(&xb, &yb, d, w));
+            assert_eq!(sa.n_eff.to_bits(), sb.n_eff.to_bits(), "{name}: row {i}");
+            let bits = |v: &[f64]| v.iter().map(|p| p.to_bits()).collect::<Vec<_>>();
+            if w > 0.0 {
+                assert_eq!(bits(&sa.pred), bits(&sb.pred), "{name}: row {i}");
+            }
+        }
+        assert!(zero > 90, "{name}: {zero} rows of weight 0");
+        let bytes = |m: &Marginal| rmp_serde::to_vec(&m.state()).unwrap();
+        assert!(bytes(&a) == bytes(&b), "{name}: the states differ");
+    }
+}

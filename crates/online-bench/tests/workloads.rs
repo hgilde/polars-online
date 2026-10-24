@@ -4,8 +4,8 @@
 //! path no user runs, so each case proves it ran past the warm-up first.
 
 use online_bench::{
-    BANK_CASES, CLOCK_CASES, MODEL_CASES, ROWS, WIDE_CASES, WIDE_ROWS, bank_setup, clock_setup,
-    model_setup, polars_online_budget_bank_rows, polars_online_budget_clock_rows,
+    BANK_CASES, CLOCK_CASES, GROUPS, MODEL_CASES, ROWS, WIDE_CASES, WIDE_ROWS, bank_setup,
+    clock_setup, model_setup, polars_online_budget_bank_rows, polars_online_budget_clock_rows,
     polars_online_budget_model_rows, spec,
 };
 use online_polars::{ChunkOut, PAR_MIN_ROWS, Stream};
@@ -78,9 +78,17 @@ fn every_bank_case_learns_its_block_below_the_parallel_threshold() {
     for (id, field) in [
         ("bank_seqtest", "log_e_pos_y0"),
         ("bank_ewridge_k5", "pred_y0"),
+        ("bank_seqtest_groups", "log_e_pos_y0"),
+        ("bank_ewridge_k5_groups", "pred_y0"),
     ] {
         assert!(BANK_CASES.contains(&id), "{id}");
         let mut run = bank_setup(id);
+        if id.ends_with("_groups") {
+            // One row of each group, on the pool of one thread the count
+            // is taken on.
+            assert_eq!(run.bank.threads().asked(), Some(1), "{id}");
+            assert_eq!(ROWS, GROUPS, "{id}: one row a group");
+        }
         let before = run.bank.rows_fed();
         let out = polars_online_budget_bank_rows(&mut run);
         assert_eq!(run.bank.rows_fed() - before, ROWS as u64, "{id}");
@@ -105,7 +113,7 @@ fn every_bank_case_learns_its_block_below_the_parallel_threshold() {
             "{id}: {field}"
         );
     }
-    assert_eq!(BANK_CASES.len(), 2);
+    assert_eq!(BANK_CASES.len(), 4);
 }
 
 /// The wide cases learn their block on the pool they are named for, in

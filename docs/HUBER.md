@@ -250,3 +250,18 @@ names.
 The requester's ordering (1, then 2, then 3-5) stands, and 1 is the one
 that only the library can do: the bank predicts and learns inside one call,
 so the weight must be computed in its state.
+
+**The requester's reply (2026-10-23).** They checked request 3 and
+withdrew it (slope 1.92 for 2.00 with outliers independent of `x`; the
+bias grows with leverage), confirmed the pseudo-response iteration (a step
+of 5e-5 by pass 5, 8e-9 by pass 10, equal to a direct reweighted fit to
+5e-15), and moved requests 2 and 3 into their own code. Task 272 keeps
+(a) `huber`'s gaps, (c) the robust bin mean and (d) `po.ewm_quantile`, and
+narrows (b) to the GRAM.md section on algorithm H. Three points from §2-§4
+went back to them: request 1 is `po.spec.huber` (one online pass with the
+MAD scale equals the converged fit at 1% and 5%, so their "pass 3" needs
+no re-streaming); Proposal 2 is additive but broke between 12% and 20%
+one-sided contamination here where the MAD held, and online it keeps an
+inflated start; and a first step "at `b = 0`" clips every row of a target
+with a level, so the first step should be taken at an intercept-only fit
+(the target's median).
