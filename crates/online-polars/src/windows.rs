@@ -75,6 +75,7 @@ use online_core::{ClockAdvance, ClockCfg, ClockState, ClockValue, Stamp, seconds
 use serde::{Deserialize, Serialize};
 
 use crate::stream::usable;
+use crate::window_quantile::QSide;
 
 /// Which way a window looks from its row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,6 +186,9 @@ pub enum Stat {
     Var,
     /// The variance's root.
     Std,
+    /// The quantile at an operator's level of the values in the window, each
+    /// weighed as a sum weighs it (task 272 (d), `window_quantile.rs`).
+    Quantile,
 }
 
 impl Stat {
@@ -213,6 +217,8 @@ pub enum OpKind {
     RewmRate,
     EwmVar,
     EwmStd,
+    EwmQuantile,
+    RewmQuantile,
     Increment,
 }
 
@@ -227,6 +233,8 @@ impl OpKind {
             OpKind::RewmRate => "rewm_rate",
             OpKind::EwmVar => "ewm_var",
             OpKind::EwmStd => "ewm_std",
+            OpKind::EwmQuantile => "ewm_quantile",
+            OpKind::RewmQuantile => "rewm_quantile",
             OpKind::Increment => "increment",
         }
     }
@@ -241,6 +249,8 @@ impl OpKind {
             "rewm_rate" => Some(OpKind::RewmRate),
             "ewm_var" => Some(OpKind::EwmVar),
             "ewm_std" => Some(OpKind::EwmStd),
+            "ewm_quantile" => Some(OpKind::EwmQuantile),
+            "rewm_quantile" => Some(OpKind::RewmQuantile),
             "increment" => Some(OpKind::Increment),
             _ => None,
         }
@@ -248,7 +258,9 @@ impl OpKind {
 
     pub fn direction(self) -> Direction {
         match self {
-            OpKind::RewmMean | OpKind::RewmSum | OpKind::RewmRate => Direction::Forward,
+            OpKind::RewmMean | OpKind::RewmSum | OpKind::RewmRate | OpKind::RewmQuantile => {
+                Direction::Forward
+            }
             _ => Direction::Backward,
         }
     }
@@ -261,6 +273,7 @@ impl OpKind {
             OpKind::EwmRate | OpKind::RewmRate => Some(Stat::Rate),
             OpKind::EwmVar => Some(Stat::Var),
             OpKind::EwmStd => Some(Stat::Std),
+            OpKind::EwmQuantile | OpKind::RewmQuantile => Some(Stat::Quantile),
             OpKind::Increment => None,
         }
     }
@@ -324,7 +337,7 @@ impl KernelDef {
 
     /// `λ^d`, the discount across `d` units of policy time.
     #[inline]
-    fn discount(&self, d: f64) -> f64 {
+    pub(crate) fn discount(&self, d: f64) -> f64 {
         if self.half_life.is_infinite() {
             1.0
         } else {
@@ -365,6 +378,10 @@ pub struct OpDef {
     /// A variance's: the variance of the weights as they are, uncorrected
     /// for their count (Polars' `bias`); read by no other statistic.
     pub bias: bool,
+    /// A quantile's level, in (0, 1); `None` for every other statistic, and
+    /// then not written, so a state without a quantile keeps its bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantile: Option<f64>,
 }
 
 /// One row as the core reads it: its group, clock and session, every
@@ -783,6 +800,10 @@ impl PartialEq for Memo {
 ///
 /// A backward kernel with no window evicts nothing, so it keeps only
 /// `total`, the running sums.
+///
+/// A quantile (task 272 (d)) keeps sketches beside the stacks, in `quant`:
+/// its rows' sums give only its count of values, for `min_samples`
+/// (`window_quantile.rs` has the rest).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 struct Queue {
     n: usize,
@@ -794,12 +815,17 @@ struct Queue {
     /// Stride `sum_w() * n`; empty until the first row.
     total: Vec<f64>,
     total_at: f64,
+    /// Per operator, a quantile's sketches, `None` for any other; empty for
+    /// a kernel with no quantile, and then not written, so its state keeps
+    /// the bytes it had before there was one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    quant: Vec<Option<QSide>>,
     #[serde(skip)]
     memo: Memo,
 }
 
 impl Queue {
-    fn new(var: Vec<bool>) -> Self {
+    fn new(var: Vec<bool>, quant: &[bool]) -> Self {
         let (n, wide) = (var.len(), var.contains(&true));
         Queue {
             n,
@@ -808,8 +834,25 @@ impl Queue {
             back: Stack::new(n, wide),
             total: Vec::new(),
             total_at: 0.0,
+            quant: if quant.contains(&true) {
+                quant.iter().map(|&q| q.then(QSide::default)).collect()
+            } else {
+                Vec::new()
+            },
             memo: Memo::default(),
         }
+    }
+
+    /// The quantile at `p` of operator `j`'s window, with `open`, a forward
+    /// kernel's open row as its time and value, counted too; `None` with no
+    /// weight.
+    fn quantile(&self, k: &KernelDef, j: usize, p: f64, open: Option<(f64, f64)>) -> Option<f64> {
+        self.quant.get(j)?.as_ref()?.read(k, p, open)
+    }
+
+    /// The buckets every quantile's sketches hold.
+    fn quantile_buckets(&self) -> usize {
+        self.quant.iter().flatten().map(QSide::buckets).sum()
     }
 
     #[inline]
@@ -906,6 +949,16 @@ impl Queue {
             }
             self.total_at = at;
         }
+        // A quantile's value joins its sketch: the row's `x`, its own value
+        // in either direction (`fill_forward`).
+        for (j, q) in self.quant.iter_mut().enumerate() {
+            if let Some(q) = q {
+                let x = row[j * rw + 1];
+                if !x.is_nan() {
+                    q.push(k, tau, x);
+                }
+            }
+        }
     }
 
     /// Turn `back` over into `front` when `front` is empty, so the oldest
@@ -913,6 +966,14 @@ impl Queue {
     fn settle<const W: bool>(&mut self, k: &KernelDef, scratch: &mut [f64]) {
         if !self.front.is_empty() {
             return;
+        }
+        if !self.back.is_empty() {
+            let back = &self.back;
+            for (j, q) in self.quant.iter_mut().enumerate() {
+                if let Some(q) = q {
+                    q.turn_over(k, &back.tau, |i| back.x::<W>(i, j));
+                }
+            }
         }
         let (n, rw) = (self.n, row_w::<W>());
         let scratch = &mut scratch[..sum_w::<W>() * n];
@@ -979,6 +1040,11 @@ impl Queue {
                 self.front.off[top],
             ) {
                 return;
+            }
+            for (j, q) in self.quant.iter_mut().enumerate() {
+                if let Some(q) = q {
+                    q.pop(top, self.front.x::<W>(top, j));
+                }
             }
             self.front.pop();
         }
@@ -1135,6 +1201,7 @@ impl Queue {
         self.front.clear();
         self.back.clear();
         self.total.clear();
+        self.quant.iter_mut().flatten().for_each(QSide::clear);
     }
 
     fn len(&self) -> usize {
@@ -1142,14 +1209,25 @@ impl Queue {
     }
 
     /// Whether both stacks and the running sums are at these operators:
-    /// their count, which are variances, and the width that gives.
-    fn has_width(&self, var: &[bool]) -> bool {
+    /// their count, which are variances, and the width that gives; and a
+    /// sketch for each quantile, none for any other, each at `front`'s rows.
+    fn has_width(&self, var: &[bool], quant: &[bool]) -> bool {
         let (n, wide) = (var.len(), var.contains(&true));
+        let sketches = if quant.contains(&true) {
+            self.quant.len() == n
+                && self.quant.iter().zip(quant).all(|(s, &q)| match s {
+                    Some(s) => q && s.has_shape(self.front.len()),
+                    None => !q,
+                })
+        } else {
+            self.quant.is_empty()
+        };
         self.n == n
             && self.var == var
             && self.front.has_width(n, wide)
             && self.back.has_width(n, wide)
             && (self.total.is_empty() || self.total.len() == self.sum_w() * n)
+            && sketches
     }
 }
 
@@ -1512,6 +1590,18 @@ fn check_op(o: usize, op: &OpDef, k: &KernelDef) -> Result<(), String> {
             "operator {o}: a variance looks back only; it has no forward kernel"
         ));
     }
+    match (op.stat, op.quantile) {
+        (Stat::Quantile, Some(p)) if p > 0.0 && p < 1.0 => {}
+        (Stat::Quantile, p) => {
+            return Err(format!(
+                "operator {o}: a quantile's level must be in (0, 1), got {p:?}"
+            ));
+        }
+        (_, Some(_)) => {
+            return Err(format!("operator {o}: only a quantile has a level"));
+        }
+        _ => {}
+    }
     Ok(())
 }
 
@@ -1603,6 +1693,15 @@ impl Windows {
             .collect()
     }
 
+    /// Per kernel, which of its operators are quantiles: which keep
+    /// sketches in its queue.
+    fn quant_of(&self, ki: usize) -> Vec<bool> {
+        self.members[ki]
+            .iter()
+            .map(|&o| self.ops[o].stat == Stat::Quantile)
+            .collect()
+    }
+
     /// Say whether the rows carry a group column (review R2, W3): with
     /// one, a session is each group's and the stream's clock takes none;
     /// without, the stream is the one group, and its session change ends
@@ -1680,9 +1779,13 @@ impl Windows {
         };
         let mut open = vec![0u32; held];
         let var: Vec<Vec<bool>> = (0..nk).map(|ki| self.var_of(ki)).collect();
+        let quant: Vec<Vec<bool>> = (0..nk).map(|ki| self.quant_of(ki)).collect();
         for (gi, g) in self.groups.iter().enumerate() {
             let fits = g.queues.len() == nk
-                && g.queues.iter().zip(&var).all(|(q, v)| q.has_width(v))
+                && g.queues
+                    .iter()
+                    .zip(var.iter().zip(&quant))
+                    .all(|(q, (v, qu))| q.has_width(v, qu))
                 && g.open.len() == nk
                 && widths(&g.open_x)
                 && widths(&g.open_held)
@@ -1822,6 +1925,16 @@ impl Windows {
             .sum()
     }
 
+    /// Buckets every quantile's sketches hold, summed: what the quantiles
+    /// cost beside the rows queued.
+    pub fn quantile_buckets(&self) -> usize {
+        self.groups
+            .iter()
+            .flat_map(|g| g.queues.iter())
+            .map(Queue::quantile_buckets)
+            .sum()
+    }
+
     /// The `seq` the next row fed takes: the rows fed so far, across a save
     /// and a load.
     pub fn next_seq(&self) -> u64 {
@@ -1840,7 +1953,7 @@ impl Windows {
         }
         let gi = self.groups.len();
         let queues = (0..self.kernels.len())
-            .map(|ki| Queue::new(self.var_of(ki)))
+            .map(|ki| Queue::new(self.var_of(ki), &self.quant_of(ki)))
             .collect();
         self.groups.push(Group {
             clock: ClockState::new(),
@@ -2537,7 +2650,7 @@ fn fill_forward<const W: bool>(
             }
             // A variance has no forward kernel (`check_op`).
             Stat::Mean | Stat::Var | Stat::Std => Acc::default(),
-            Stat::Sum | Stat::Rate => Acc {
+            Stat::Sum | Stat::Rate | Stat::Quantile => Acc {
                 s: if v.is_nan() { 0.0 } else { v },
                 w: 0.0,
                 n,
@@ -2546,7 +2659,9 @@ fn fill_forward<const W: bool>(
         };
         let b = j * row_w::<W>();
         row[b] = tau;
-        row[b + 1] = h;
+        // A quantile counts the row's own value, as a sum does, and its
+        // sketch reads it here (`Queue::push`).
+        row[b + 1] = if ops[o].stat == Stat::Quantile { v } else { h };
         acc.write(&mut row[b + 2..], W);
     }
 }
@@ -2589,6 +2704,16 @@ fn read_backward<const W: bool>(
             out[j] = f64::NAN;
             continue;
         };
+        if op.stat == Stat::Quantile {
+            // The sums count the values; the sketches hold them.
+            out[j] = if sum.n < f64::from(op.min_samples) {
+                f64::NAN
+            } else {
+                let p = op.quantile.expect("a quantile has a level (`check_op`)");
+                q.quantile(k, j, p, None).unwrap_or(f64::NAN)
+            };
+            continue;
+        }
         // The oldest held value's interval may start before the window:
         // only the part inside counts, so a mean (and a variance) takes the
         // window less the rows up to that one, then the row's mass inside,
@@ -2636,6 +2761,8 @@ fn value_of(k: &KernelDef, op: &OpDef, a: Acc, t: f64) -> f64 {
             }
         }
         Stat::Sum => a.s,
+        // Read from the queue's sketches (`read_backward`, `close`).
+        Stat::Quantile => f64::NAN,
         Stat::Rate => {
             let m = k.mass(t);
             if m > 0.0 { a.s / m } else { f64::NAN }
@@ -2782,13 +2909,14 @@ fn close<const W: bool>(
                     a = scaled(b);
                 }
             }
-            Stat::Sum | Stat::Rate => {
+            Stat::Sum | Stat::Rate | Stat::Quantile => {
                 if let Some(s) = seg {
                     a = scaled(s);
                 }
             }
             Stat::Var | Stat::Std => {}
         }
+        let mut open_value = None;
         if let Some((_, otau, _)) = open {
             let (x, h) = (open_x[j], open_held[j]);
             let own = !x.is_nan();
@@ -2807,7 +2935,7 @@ fn close<const W: bool>(
                     );
                     any = true;
                 }
-                Stat::Sum | Stat::Rate if own => {
+                Stat::Sum | Stat::Rate | Stat::Quantile if own => {
                     a = a.plus(
                         Acc {
                             s: k.discount(otau - t.tau) * x,
@@ -2817,6 +2945,7 @@ fn close<const W: bool>(
                         },
                         false,
                     );
+                    open_value = Some((otau, x));
                     any = true;
                 }
                 _ => {}
@@ -2825,7 +2954,16 @@ fn close<const W: bool>(
         if !any {
             continue;
         }
-        held.values[r * held.n_outputs + o] = value_of(k, op, a, len);
+        held.values[r * held.n_outputs + o] = if op.stat == Stat::Quantile {
+            if a.n < f64::from(op.min_samples) {
+                f64::NAN
+            } else {
+                let p = op.quantile.expect("a quantile has a level (`check_op`)");
+                q.quantile(k, j, p, open_value).unwrap_or(f64::NAN)
+            }
+        } else {
+            value_of(k, op, a, len)
+        };
     }
 }
 
@@ -3385,6 +3523,7 @@ mod tests {
                     // The value, from the definition.
                     let (mut sum, mut mass, mut count) = (0.0, 0.0, 0.0);
                     let mut held: Vec<(f64, f64)> = Vec::new();
+                    let mut weighed: Vec<(f64, f64)> = Vec::new();
                     for &b in &members {
                         let x = value(s.rows[b], op.input);
                         if x.is_nan() {
@@ -3431,7 +3570,7 @@ mod tests {
                                 mass += m;
                                 held.push((m, x));
                             }
-                            Stat::Sum | Stat::Rate => {
+                            Stat::Sum | Stat::Rate | Stat::Quantile => {
                                 let d = (tb - ta).abs();
                                 let f = if k.half_life.is_infinite() {
                                     1.0
@@ -3439,6 +3578,7 @@ mod tests {
                                     (-(d / k.half_life)).exp2()
                                 };
                                 sum += f * x;
+                                weighed.push((x, f));
                             }
                         }
                     }
@@ -3455,6 +3595,7 @@ mod tests {
                         }
                         Stat::Sum => sum,
                         Stat::Var | Stat::Std => var_bf(&held, op.bias, op.stat == Stat::Std),
+                        Stat::Quantile => quantile_bf(&weighed, op.quantile.unwrap()),
                         Stat::Rate => {
                             let m = mass_bf(k, 0.0, 0.0, span).abs();
                             let m = if k.direction == Direction::Backward {
@@ -3470,6 +3611,40 @@ mod tests {
         }
         let _ = (&stretch_of, &tau_of);
         Ok(t)
+    }
+
+    /// The quantile at `p` of `(value, weight)` pairs as the sketch defines
+    /// it: each value in its bucket (`window_quantile::Key`), the buckets in
+    /// value order, and the representative of the first at which the weight
+    /// reaches `p` of the total. NaN with no weight.
+    fn quantile_bf(weighed: &[(f64, f64)], p: f64) -> f64 {
+        use crate::window_quantile::Key;
+        let rank = |k: Key| match k {
+            Key::Neg(b) => (0, -i64::from(b)),
+            Key::Zero => (1, 0),
+            Key::Pos(b) => (2, i64::from(b)),
+        };
+        let mut keyed: Vec<(Key, f64)> = weighed.iter().map(|&(x, w)| (Key::of(x), w)).collect();
+        keyed.sort_by_key(|&(k, _)| rank(k));
+        let total: f64 = keyed.iter().map(|&(_, w)| w).sum();
+        if total.is_nan() || total <= 0.0 {
+            return f64::NAN;
+        }
+        let mut buckets: Vec<(Key, f64)> = Vec::new();
+        for (k, w) in keyed {
+            match buckets.last_mut() {
+                Some((last, sum)) if *last == k => *sum += w,
+                _ => buckets.push((k, w)),
+            }
+        }
+        let mut cum = 0.0;
+        for &(k, w) in &buckets {
+            cum += w;
+            if w > 0.0 && cum >= p * total {
+                return k.value();
+            }
+        }
+        buckets.last().map_or(f64::NAN, |&(k, _)| k.value())
     }
 
     /// The variance of `held`'s `(weight, value)` pairs from the definition,
@@ -3647,6 +3822,27 @@ mod tests {
                     min_samples: min,
                     partial,
                     bias: false,
+                    quantile: None,
+                });
+            }
+            // A quantile on every kernel, low and high, so its walk runs up
+            // from the smallest value and down from the largest (task 272
+            // (d)); `min_samples` of 2 looking back, where a window of 3 ahead
+            // holds two rows on no row of one integer stream.
+            let min = if direction == Direction::Backward {
+                2
+            } else {
+                1
+            };
+            for (partial, min, level) in [(Partial::Keep, 1, 0.3), (Partial::Null, min, 0.85)] {
+                ops.push(OpDef {
+                    kernel: ki,
+                    stat: Stat::Quantile,
+                    input: ops.len() % 2,
+                    min_samples: min,
+                    partial,
+                    bias: false,
+                    quantile: Some(level),
                 });
             }
             // A variance and a standard deviation on every backward kernel,
@@ -3663,6 +3859,7 @@ mod tests {
                         min_samples: min,
                         partial,
                         bias,
+                        quantile: None,
                     });
                 }
             }
@@ -3754,10 +3951,11 @@ mod tests {
         let got = run(kernels, ops, c, rows, 1).unwrap();
         // A match where a variance is never valued holds nothing of it (a
         // sparse forward sum is valued on no row of one integer stream).
+        // Nor where a quantile is never valued (task 272 (d)).
         for (o, col) in want.values.iter().enumerate() {
             let valued = col.iter().filter(|v| !v.is_nan()).count();
             assert!(
-                valued > 0 || !ops[o].stat.is_var(),
+                valued > 0 || !(ops[o].stat.is_var() || ops[o].stat == Stat::Quantile),
                 "seed {seed}: output {o} valued on {valued} rows"
             );
         }
@@ -3828,6 +4026,7 @@ mod tests {
                 min_samples: 1,
                 partial: Partial::Keep,
                 bias: false,
+                quantile: None,
             }],
             ClockCfg::default(),
         )
@@ -3929,17 +4128,25 @@ mod tests {
                 window_ns: Some(ns_of(5.0)),
                 closed,
             };
-            let ops: Vec<OpDef> = [Stat::Mean, Stat::Sum, Stat::Rate]
-                .into_iter()
-                .map(|stat| OpDef {
-                    kernel: 0,
-                    stat,
-                    input: 0,
-                    min_samples: 1,
-                    partial: Partial::Null,
-                    bias: false,
-                })
-                .collect();
+            let ops: Vec<OpDef> = [
+                Stat::Mean,
+                Stat::Sum,
+                Stat::Rate,
+                Stat::Quantile,
+                Stat::Quantile,
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(i, stat)| OpDef {
+                kernel: 0,
+                stat,
+                input: 0,
+                min_samples: 1,
+                partial: Partial::Null,
+                bias: false,
+                quantile: (stat == Stat::Quantile).then_some(if i == 3 { 0.2 } else { 0.7 }),
+            })
+            .collect();
             let fwd = run(std::slice::from_ref(&k), &ops, c, rows, 1).unwrap();
             let kb = KernelDef {
                 direction: Direction::Backward,
@@ -4056,6 +4263,7 @@ mod tests {
                 min_samples: 1,
                 partial: Partial::Keep,
                 bias: false,
+                quantile: None,
             };
             run(&[k], &[op], c, &rows, 1).unwrap().values[0].clone()
         };
@@ -4107,6 +4315,7 @@ mod tests {
             min_samples: 1,
             partial: Partial::Keep,
             bias: false,
+            quantile: None,
         };
         let got = run(&[k], &[op], cfg(100.0, None, None), &rows, 1)
             .unwrap()
@@ -4207,6 +4416,7 @@ mod tests {
                 min_samples: 1,
                 partial: Partial::Keep,
                 bias,
+                quantile: None,
             };
             let got = run(
                 &[k],
@@ -4311,6 +4521,7 @@ mod tests {
             min_samples: 1,
             partial: Partial::Keep,
             bias: true,
+            quantile: None,
         };
         let v = run(&[k], &[op], cfg(100.0, None, None), &rows, 1)
             .unwrap()
@@ -4346,6 +4557,7 @@ mod tests {
             min_samples: 1,
             partial: Partial::Keep,
             bias: false,
+            quantile: None,
         };
         let err = Windows::new(
             vec![k(Direction::Forward)],
@@ -4397,6 +4609,7 @@ mod tests {
                 min_samples: 1,
                 partial: Partial::Keep,
                 bias: false,
+                quantile: None,
             },
             OpDef {
                 kernel: 0,
@@ -4405,6 +4618,7 @@ mod tests {
                 min_samples: 1,
                 partial: Partial::Null,
                 bias: false,
+                quantile: None,
             },
             OpDef {
                 kernel: 0,
@@ -4413,6 +4627,7 @@ mod tests {
                 min_samples: 1,
                 partial: Partial::Drop,
                 bias: false,
+                quantile: None,
             },
         ];
         let mk = |ts: &[f64]| -> Vec<Row> {
@@ -4500,6 +4715,7 @@ mod tests {
             min_samples: 2,
             partial: Partial::Keep,
             bias: false,
+            quantile: None,
         };
         let got = run(&[k], &[op], cfg(100.0, None, None), &rows, 1)
             .unwrap()
@@ -4564,6 +4780,7 @@ mod tests {
             min_samples: 1,
             partial: Partial::Keep,
             bias: false,
+            quantile: None,
         };
         let mut core = Windows::new(vec![k], vec![op], cfg(10.0, None, None)).unwrap();
         let row = |t: f64| Row {
@@ -4594,6 +4811,7 @@ mod tests {
             min_samples: 1,
             partial: Partial::Keep,
             bias: false,
+            quantile: None,
         };
         let same = |got: &[f64], want: &[f64]| {
             got.len() == want.len()
@@ -4694,6 +4912,7 @@ mod tests {
             min_samples: 1,
             partial: Partial::Keep,
             bias: false,
+            quantile: None,
         };
         let row = |t: f64, g: Option<&str>, s: u64, x: f64| Row {
             group: g.map(str::to_string),
@@ -4753,6 +4972,7 @@ mod tests {
             min_samples: 1,
             partial: Partial::Keep,
             bias: false,
+            quantile: None,
         };
         let rows: Vec<Row> = [0, 100, 400, 800]
             .iter()
@@ -4832,6 +5052,7 @@ mod tests {
             min_samples: 1,
             partial: Partial::Keep,
             bias: false,
+            quantile: None,
         };
         let row = |t: f64, g: Option<&str>, s: u64, x: f64| Row {
             group: g.map(str::to_string),
@@ -4896,6 +5117,7 @@ mod tests {
             min_samples: 1,
             partial: Partial::Keep,
             bias: false,
+            quantile: None,
         };
         let k = KernelDef {
             direction: Direction::Backward,
@@ -4956,6 +5178,7 @@ mod tests {
             min_samples,
             partial: Partial::Keep,
             bias: false,
+            quantile: None,
         };
         let back = || kernel(Direction::Backward, 1.0, Some(2.0));
         let refused = |kernels: Vec<KernelDef>, ops: Vec<OpDef>| {
@@ -5015,6 +5238,7 @@ mod tests {
                 min_samples: 1,
                 partial: Partial::Keep,
                 bias: false,
+                quantile: None,
             })
             .collect();
         let mut core = Windows::new(vec![k], ops, cfg(10.0, None, None)).unwrap();
@@ -5127,6 +5351,7 @@ mod tests {
                         min_samples,
                         partial: Partial::Keep,
                         bias,
+                        quantile: None,
                     });
                 }
             }

@@ -228,6 +228,7 @@ def library_names() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
         "ewm_rate",
         "ewm_var",
         "ewm_std",
+        "ewm_quantile",
         "rewm_mean",
         "rewm_sum",
         "rewm_rate",

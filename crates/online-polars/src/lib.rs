@@ -60,6 +60,7 @@ mod stream;
 mod summary;
 mod targets;
 mod timing;
+mod window_quantile;
 mod windows;
 mod windows_frame;
 

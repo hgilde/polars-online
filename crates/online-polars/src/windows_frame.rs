@@ -63,6 +63,11 @@ pub struct WindowsConfig {
 
 const WHO: &str = "with_windows";
 const WINDOWS_MAGIC: &str = "polars-online windows";
+/// 10 since task 272 (d): a queue keeps a quantile's sketches (`quant`) and
+/// an operator its level (`quantile`), each written only where there is a
+/// quantile, so a version-9 state is a version-10 state without one and
+/// loads as one ([`MIN_WINDOWS_VERSION`]); an older build refuses a 10 by
+/// its number rather than at the quantile's name;
 /// 9 since task 212: a queue keeps which of its operators are variances
 /// (`ewm_var`, `ewm_std`), its arenas six wide for one where every other
 /// operator's are three, and an operator keeps its `bias`;
@@ -81,7 +86,12 @@ const WINDOWS_MAGIC: &str = "polars-online windows";
 /// task 143: formulas over operators, where 1 held descriptions. An older
 /// state would load with defaults and misbehave. The bank's schema moves
 /// with this number (review R4, A2; R6, D5).
-const WINDOWS_VERSION: u32 = 9;
+const WINDOWS_VERSION: u32 = 10;
+
+/// The oldest windows state this build reads: 9, whose layout is 10's
+/// without a quantile (task 272 (d)). A bank file embeds a core per window
+/// target, so a bank saved by a build that wrote 9 resumes on this one.
+const MIN_WINDOWS_VERSION: u32 = 9;
 
 /// What [`WindowsRun::save_bytes`] writes: the call, the core, the rows the
 /// core holds as Arrow IPC with their increment columns, and each group's
@@ -381,6 +391,7 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, String> {
                     Direction::Forward => Partial::Null,
                 }),
                 bias: op.bias,
+                quantile: op.quantile,
             });
             p.columns.push((key, p.ops.len() - 1));
         }
@@ -723,6 +734,7 @@ impl WindowsRun {
                     min_samples: 1,
                     partial: Partial::Keep,
                     bias: false,
+                    quantile: None,
                 }],
                 cfg,
             )
@@ -1791,9 +1803,10 @@ impl WindowsRun {
         if header.magic != WINDOWS_MAGIC {
             return Err(format!("{WHO}: not a state it saved"));
         }
-        if header.version != WINDOWS_VERSION {
+        if !(MIN_WINDOWS_VERSION..=WINDOWS_VERSION).contains(&header.version) {
             return Err(format!(
-                "{WHO} state version {} not supported (this build reads {WINDOWS_VERSION})",
+                "{WHO} state version {} not supported (this build reads \
+                 {MIN_WINDOWS_VERSION} to {WINDOWS_VERSION})",
                 header.version
             ));
         }
@@ -2391,7 +2404,7 @@ mod tests {
             .err()
             .expect("refused");
         assert!(
-            err.contains("state version 2 not supported (this build reads 9)"),
+            err.contains("state version 2 not supported (this build reads 9 to 10)"),
             "{err}"
         );
         let other = rmp_serde::to_vec_named(&Old {
@@ -2504,7 +2517,13 @@ mod tests {
         // 62 for task 257's held targets of a blocked `ewridge`, the first
         // change since 1.0, whose loader reads 61, and 63 for task 271's
         // Huber scale, whose loader reads 62: the windows state unchanged.
-        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (9, 63));
+        // Windows state 10 (task 272 (d), a quantile's sketches) within
+        // schema 63: this build reads a 9 core as a 10 without a quantile,
+        // so a 62 or 63 bank holding window targets resumes here, and no
+        // released build reads a 63 bank (1.2.0 refuses it by number), so
+        // none meets a 10 core at a group's first chunk.
+        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (10, 63));
+        assert_eq!(MIN_WINDOWS_VERSION, 9);
     }
 
     /// Review R6, D2: a run on the next file under a slice keeps the first

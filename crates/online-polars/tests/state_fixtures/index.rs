@@ -16,6 +16,9 @@ pub mod with_windows {
 pub mod with_windows_int {
     include!("with_windows_int.rs");
 }
+pub mod with_windows_quantile {
+    include!("with_windows_quantile.rs");
+}
 pub mod refresh_time {
     include!("refresh_time.rs");
 }
@@ -30,6 +33,7 @@ pub const ALL: &[&crate::Fixture] = &[
     &bank_autocorr::FIXTURE,
     &with_windows::FIXTURE,
     &with_windows_int::FIXTURE,
+    &with_windows_quantile::FIXTURE,
     &refresh_time::FIXTURE,
     &refresh_time_int::FIXTURE,
 ];

@@ -219,6 +219,12 @@ what = "WindowsRun::feed of one frame, ewm_mean over a window of 12,500 clock un
 [instructions.window_ewm_sum_w10k]
 what = "WindowsRun::feed of one frame, ewm_sum over a window of 12,500 clock units (about 10,000 rows), half-life 1000, inside the stream's first window"
 
+[instructions.window_ewm_quantile_w10k]
+what = "WindowsRun::feed of one frame, ewm_quantile at 0.5 over a window of 12,500 clock units (about 10,000 rows), half-life 1000, inside the stream's first window: the sketches walked an octave at a time on every row"
+
+[instructions.window_ewm_quantile_running]
+what = "WindowsRun::feed of one frame, ewm_quantile at 0.5 of abs(x0) with no window, half-life 1000: the running sketch an EW-MAD reads, one value added and the sketch walked on every row"
+
 # --- memory ----------------------------------------------------------------------
 # Bytes per row of every output field of every model at its fullest, over the
 # same rows (tests/test_budgets_memory.py), and the peak resident memory a

@@ -25,7 +25,7 @@ row, and `side`, `quantity` and `price` are null on a quote.
 `tests/test_windows_page.py` runs each recipe and holds what it prints to
 what is shown.
 
-Nine operators make the expressions. `half_life` and `window_size` are in
+Eleven operators make the expressions. `half_life` and `window_size` are in
 the clock's units: numbers on a numeric clock, and durations (`"10s"`, a
 `timedelta`, `pl.duration`) on a temporal one:
 
@@ -35,6 +35,7 @@ the clock's units: numbers on a numeric clock, and durations (`"10s"`, a
 | `po.ewm_mean(x, half_life=, window_size=, reverse=True)` | the rows after *t*, at most `window_size` after it; `window_size` is required | the mirror of `ewm_mean`: each value is held until the next row |
 | `po.ewm_sum(x, ...)`, `po.ewm_sum(x, ..., reverse=True)` | as for the mean in the same direction | `Σ 0.5 ** (age / half_life) · x`, each row counted once at its own time, as Polars' `ewm_sum_by` computes it on distinct stamps; at a repeated stamp every row carries the stamp's total, where `ewm_sum_by`'s is a running sum. A row whose `x` is null, NaN, infinite or beyond 1e100 adds nothing, and gets the window's sum as it stands, where `ewm_sum_by` gives it null |
 | `po.ewm_rate(x, ...)`, `po.ewm_rate(x, ..., reverse=True)` | as for the mean in the same direction | the sum divided by the decayed time the window covers: a quantity per unit of clock. A row whose `x` is null adds nothing, and gets the window's rate as it stands |
+| `po.ewm_quantile(x, quantile=, half_life=, window_size=)`, and with `reverse=True` | as for the mean in the same direction | the quantile at `quantile` of the window's values, each row counted once at its own time with the weight `po.ewm_sum` gives it: the smallest value whose share of the weight, with every value below it, reaches `quantile`. It is read from buckets each spanning a ratio of `e^(1/64)`, so it is within 0.78% of the exact weighted quantile, relatively ([Quantiles and a robust scale](#quantiles-and-a-robust-scale)). A row whose `x` is null adds nothing, and gets the window's quantile as it stands |
 | `po.ewm_var(x, ...)`, `po.ewm_std(x, ...)` | as for `po.ewm_mean`; they look back only | the variance about `po.ewm_mean`, each value weighed as the mean weighs it, and its square root. With `bias=False`, the default, the variance is corrected for the weights' number and inequality as Polars' `ewm_var` corrects it, so a window that one row's weight fills is null. On a clock that steps by 1 a row, with `half_life` in rows, they are Polars' `ewm_var` and `ewm_std` with `adjust=False` (Polars before 1.44 gave the first row 0.0 under `bias=False` where it now gives null, as these do). A window that holds one value gives 0 exactly |
 | `po.increment(x)` | back to the last row with a value, within the group and session | `x_t − x_{t−1}`: null on a session's first row and after a restart, and in seconds when `x` is a temporal column |
 
@@ -69,7 +70,8 @@ volume: largest difference from Polars 0.000000000000
 ```
 
 Every operator except `po.increment` takes these keywords. `po.ewm_var`
-and `po.ewm_std` also take Polars' `bias`. Here `min_samples=3` nulls the
+and `po.ewm_std` also take Polars' `bias`, and `po.ewm_quantile` its
+`quantile`, above 0 and below 1. Here `min_samples=3` nulls the
 first two rows of each symbol, whose windows hold fewer than three values.
 This code uses `trades.parquet` from [Example data](../README.md#example-data):
 
@@ -362,7 +364,7 @@ the window itself, one set per group on the spec's clock, so the groups may
 interleave in time.
 
 **Give a target expression an operator that looks ahead (`po.ewm_mean`,
-`po.ewm_sum` or `po.ewm_rate` with `reverse=True`) and a name, with `.alias()`.** The alias
+`po.ewm_sum`, `po.ewm_rate` or `po.ewm_quantile` with `reverse=True`) and a name, with `.alias()`.** The alias
 is used to name the output fields: `.alias("fwd_edge")` gives
 `pred_fwd_edge`. Without an operator that looks ahead, the target is known
 at its own row, and the spec builder raises `ValueError`. Make such a
@@ -517,6 +519,158 @@ each is closer to 0 on the z-scores:
 | `ewridge`, solved every row | -0.0647 | -0.0412 | -0.1113 | -0.0474 |
 | `rls` | -0.0644 | -0.0412 | -0.1108 | -0.0475 |
 | `kalman` | -0.0592 | -0.0412 | -0.0746 | -0.0585 |
+
+## Quantiles and a robust scale
+
+**`po.ewm_quantile` is the quantile of the window's values, each weighed as
+`po.ewm_sum` weighs it.** Row *j* weighs `0.5 ** (age / half_life)`, its age
+taken from the row the window is read at. The quantile at `q` is the
+smallest value whose share of the weight, counting it and every value below
+it, reaches `q`. That is numpy's weighted quantile,
+`np.quantile(x, q, weights=w, method="inverted_cdf")`. Under
+`half_life=float("inf")` every row of the window weighs the same, and it is
+a rolling quantile.
+
+**It reads each value as a bucket, so it is within 0.78% of the exact
+quantile, relatively.** A value `m · 2^e`, with `m` in `[1, 2)`, lands in
+bucket `⌊64 (e + m − 1)⌋`; a negative value lands below zero by its
+magnitude's bucket. A bucket spans a ratio of at most `e^(1/64)`, and the
+value reported for it is within `tanh(1/128)`, about 0.0078, of every value
+in it, at any scale and either sign. A magnitude below the smallest normal
+double, about 2.2e-308, reads as 0. These are DDSketch's buckets (Masson,
+Rim and Lee, 2019), the ones `po.spec.huber`'s MAD scale reads too.
+
+**A row leaves a hard window without a subtraction.** The windowed
+operators keep a window's rows in two stacks: new rows join the newer one,
+and when the older one is empty the newer one turns over into it. A row
+leaving must take its weight out of its bucket. A subtraction would leave a
+rounding behind in a bucket that should be empty, and the roundings would
+build up over a long stream. So at the turnover each row keeps what its
+bucket, its bucket's octave and the total weighed before it, the newest
+row first. A row leaving puts those three numbers back, and the sketch is
+then exactly the one built from the rows that are left. A sketch kept per
+row, the textbook form of a two-stack queue, would cost the whole sketch a
+row: about 11 KB for a window of 1,000 rows, where this costs 24 bytes.
+
+| the window | what it keeps | its sketches, on standard normal values | time a row, against the same window's `po.ewm_mean` |
+|---|---|---|---|
+| no `window_size` | one sketch of every row since the stretch began, decayed, folding the decay in every 64 half-lives and then dropping an end octave that holds under 1e-12 of the weight | 1,985 buckets, about 16 KB, at a half-life of 500 rows | 1.9 times |
+| a `window_size` | the window's rows, as every windowed operator keeps them, three numbers a row, and two sketches | 1,345 buckets for a window of 1,000 rows | 1.7 times |
+| `reverse=True` | as under a `window_size` | as under a `window_size` | 1.9 times `po.ewm_sum`'s |
+
+The times are the best of five runs over 2,000,000 rows of one group,
+interleaved, through `po.stream.with_windows` on a shared laptop. A read
+walks the buckets an octave at a time, then the one octave's 64 buckets, so
+a quantile costs about as much as its window's values span octaves.
+
+**The median of `|x|` over `Φ⁻¹(3/4)` is the median absolute deviation of
+`x` about 0, a scale that a few wild values do not move.** `Φ⁻¹(3/4) =
+0.6744897501960817` is the MAD of a standard normal, so for normal values
+the result estimates their standard deviation. It holds while up to half the
+weight is wild, where one value of 1e6 sets a standard deviation. The recipe
+adds a wild print of 1.00 to every 40th trade, whose prints sit about 0.02
+from the mid, and compares the two scales. It checks the last row against
+numpy's weighted median by hand.
+This code uses `trades` from [Example data](../README.md#example-data):
+
+```python
+# The trades' prints about the mid, a few of them wild: every 40th print 1.00 off.
+prints = trades.filter(pl.col("price").is_not_null()).with_row_index("i").with_columns(
+    dev=pl.col("price") - pl.col("mid") + pl.when(pl.col("i") % 40 == 0).then(1.0).otherwise(0.0),
+)
+spread = dict(half_life="2m")
+scales = po.stream.with_windows(
+    prints,
+    mad=po.ewm_quantile(pl.col("dev").abs(), quantile=0.5, **spread) / 0.6744897501960817,   # the EW-MAD about 0
+    std=po.ewm_std("dev", **spread),                                                         # moved by every wild print
+    clock="ts", gap_cap="5m", group="symbol",
+)
+# The last row's EW-MAD again by hand: numpy's weighted median of |dev| over its symbol's prints.
+last = scales.row(-1, named=True)
+mine = scales.filter(pl.col("symbol") == last["symbol"])
+minutes = (last["ts"] - mine["ts"]).dt.total_microseconds().to_numpy() / 6e7
+by_hand = np.quantile(mine["dev"].abs(), 0.5, weights=0.5 ** (minutes / 2), method="inverted_cdf") / 0.6744897501960817
+print(f"last row: mad {last['mad']:.5f}, by hand {by_hand:.5f}, apart by {abs(last['mad'] / by_hand - 1):.4f}")
+print(f"medians over the prints: mad {scales['mad'].median():.4f}, std {scales['std'].median():.4f}; the prints' spread is 0.02")
+```
+
+```text
+last row: mad 0.02126, by hand 0.02132, apart by 0.0027
+medians over the prints: mad 0.0204, std 0.1815; the prints' spread is 0.02
+```
+
+The two values of the last row are 0.27% apart, inside the buckets' 0.78%.
+One print in 40 at 50 times the spread multiplies the standard deviation by
+nine, and moves the MAD by 2%.
+
+**Centre a value before its MAD.** The MAD about 0 is a scale only for a
+value centred on 0, such as a model's residual or a return. A column with a
+level needs its median taken off first, and an operator's input cannot hold
+another operator. So make the median a column in one `with_windows` call,
+and take the MAD of the deviation from it in a second.
+
+### A scale of a target, used as a weight
+
+**A weight read from a target must leave out the labels not yet known on
+the row it weighs.** A spec's `weight` multiplies the row's place in the
+fit. A weight from the row's own label, such as `1 / scale²` or Huber's
+`min(1, c · scale / |y − m|)` about a level `m`, would let a wild label set its own weight, and
+the label of a row is not known at that row: in a backtest it would weigh
+the row with the future. Two cases cover it:
+
+| the label of row *t* is known | the scale on row *t* | how |
+|---|---|---|
+| at the next row | over the rows before *t* | `closed="left"`: the rows at *t*'s own stamp are outside its window, so its label is too |
+| `d` of the clock later, as under a spec's `embargo` | over the rows whose labels have arrived by *t*, those at or before `t − d` | the stream twice, from `po.stream.embargo(lf, clock=, delay=d)`: a predict row at *t* and a learn row at `t + d`; the operator reads the label only on the learn rows, `pl.when(pl.col("_online_role") == "learn").then(...)`, and the predict rows, filtered back, carry the scale |
+
+A shift of the label column by `k` rows in Polars' `with_columns`, before
+the call (`pl.col("y").shift(k).over("symbol")`), lags it by rows rather
+than by clock: right only on a stream whose labels arrive a
+fixed number of rows late. The doubled stream lags it by the clock, as an
+`embargo` does, and in the same order: a label that arrives at the row's
+own stamp counts there.
+
+**For the scale of a model's residual, use the scale `po.spec.huber` can
+emit.** It is the model's own robust scale of its out-of-sample residuals,
+read before the row, and it takes each residual in when the row is
+learned, so the spec's `embargo` holds it back as it holds back the fit.
+
+Here `ret`'s label arrives 5 rows late. The recipe computes its EW-MAD on
+each row from the labels that have arrived, and checks row 250 by hand
+against numpy's weighted median of the labels of rows 0 to 245 alone.
+This code uses `df` and `ticks.parquet` from [Example data](../README.md#example-data):
+
+```python
+# Each label of ret arrives 5 rows late: the stream twice, a predict row at t and a learn row at t + 5.
+doubled = po.stream.embargo(pl.scan_parquet("ticks.parquet"), clock="t", delay=5.0)
+known = pl.when(pl.col("_online_role") == "learn").then(pl.col("ret").abs())   # a label counts once it has arrived
+scaled = (
+    doubled.online.with_windows(
+        ret_scale=po.ewm_quantile(known, quantile=0.5, half_life=20.0) / 0.6744897501960817,
+        clock="t", gap_cap=10.0,
+    )
+    .filter(pl.col("_online_role") == "predict")                               # back to one row per row
+    .collect()
+)
+# Row 250's scale again by hand, from the labels of rows 0 to 245 alone.
+arrived = df["ret"].abs().to_numpy()[:246]
+weight = 0.5 ** ((250 - (np.arange(246) + 5)) / 20.0)                          # each weighed from its arrival
+by_hand = np.quantile(arrived, 0.5, weights=weight, method="inverted_cdf") / 0.6744897501960817
+got = scaled["ret_scale"][250]
+print(f"row 250: ret_scale {got:.4f}, by hand from rows 0 to 245 {by_hand:.4f}, apart by {abs(got / by_hand - 1):.4f}")
+print(f"null on the first {scaled['ret_scale'].null_count()} rows, before any label has arrived")
+print("in the calm and the volatile stretches:", ", ".join(f"{scaled['ret_scale'][i]:.2f}" for i in (90, 190, 290, 390)))
+```
+
+```text
+row 250: ret_scale 1.1409, by hand from rows 0 to 245 1.1362, apart by 0.0041
+null on the first 5 rows, before any label has arrived
+in the calm and the volatile stretches: 0.91, 2.30, 0.77, 1.66
+```
+
+`ret`'s noise has a spread of 0.5 on rows 0-99 and 200-299 and 2.0 on the
+others, so its spread is about 0.94 in the calm stretches and 2.15 in the
+volatile ones, and the scale follows it.
 
 ## Saving and resuming a window run
 

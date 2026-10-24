@@ -345,8 +345,10 @@ recipe. Here is what each rule guarantees, and the test that holds it:
 | without a clock column, an input that does not begin with a new session | refused: a row-count clock steps forward at every row | `test_without_a_clock_the_next_file_begins_with_a_new_session` |
 | a state of another version, or a damaged file | refused by its version, or reported as damaged | `test_a_windows_state_of_another_version_is_refused_by_its_version`, `test_a_damaged_windows_state_says_so` |
 
-The windows state is version 9, and a bank file that carries one per window
-target moves its own schema with it, which a Rust test pairs. A state
+The windows state is version 10, and this build reads 9 too, whose layout
+is 10's without a quantile operator. A bank file carries one per window
+target, and a Rust test pairs the two numbers, so a change to the windows
+state cannot pass the bank unseen. A state
 resumes only the call that saved it (`test_a_state_resumes_only_its_own_call`).
 `with_windows`' docstring states two limits. A clock that starts over at
 the same stamp each day needs a session column. And an input whose rows
