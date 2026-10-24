@@ -349,8 +349,10 @@ struct, and 1,274 flat, against 676 with no output at all. That is the
 best of three runs on 14 cores, under a load of 22 to 24 from other work.
 `--output-layout flat` writes the `<spec>.<field>` columns a CSV gets, so
 the writer no longer sets the run's pace. A list field such as `coef`
-stays one list column. IPC gains less: the same run took 1,262 ns a row as
-the struct and 1,029 flat.
+stays one list column. IPC writes the struct at about the cost of the flat
+columns, so `flat` buys little there: repeated at a load of 2.4 to 3.1, the
+same run took 991 ns a row as the struct and 1,026 flat, within the runs'
+noise, while the parquet figures held (7,104 and 1,181 at a load of 3).
 
 In TOML, a Windows path needs single quotes or forward slashes
 (`input = 'C:\data\in.parquet'`), since a backslash in a double-quoted

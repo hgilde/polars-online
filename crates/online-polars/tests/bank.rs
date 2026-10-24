@@ -1841,7 +1841,13 @@ fn a_renewed_run_buffer_is_a_new_one() {
             .fill(Some(online_polars::online_core::ClockValue::F64(1.0)));
         out.learned_clock
             .fill(Some(online_polars::online_core::ClockValue::F64(2.0)));
-        assert!(out.heap_bytes() > std::mem::size_of::<ChunkOut>());
+        let bytes = out.heap_bytes();
+        assert!(bytes > std::mem::size_of::<ChunkOut>());
+        // The bound a bank keeps a run's buffers under (task 270, R2-1):
+        // the same count at the limit, none past it.
+        assert_eq!(out.heap_bytes_within(bytes), Some(bytes));
+        assert_eq!(out.heap_bytes_within(bytes - 1), None);
+        assert_eq!(out.heap_bytes_within(std::mem::size_of::<ChunkOut>()), None);
         out.renew(b, mb, sb, rows_b);
         assert_eq!(image(&out), image(&ChunkOut::new(b, mb, sb, rows_b)));
     }

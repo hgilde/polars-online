@@ -110,6 +110,12 @@ DECLARED: dict[tuple[str, str], str] = {
         (name, "1.2.0"): "the next release, Changed: the Huber scale is the MAD by default"
         for name in ("huber", "full_huber", "sgd_huber")
     },
+    # Task 270 (a), B-1 (the next release's Fixed): standardized with no
+    # `obs_var`, the rows past `min_weight` before a target's prior is sized
+    # predicted 0.0 and seeded the residual variance with the level squared;
+    # a file of one goes on from that variance.
+    ("kalman_unsized", "1.2.0"): "the next release, Fixed: `kalman` no longer predicts 0.0 "
+    "before a target's prior is sized",
 }
 
 #: The releases from 1.0, whose files load and go on; and this build, whose
@@ -339,3 +345,44 @@ def test_the_policy_page_lists_every_release_the_test_holds():
         assert version in paragraph, f"{version} is not named after {lead}"
     if any(_major(v) >= 1 for v in RELEASES):
         assert "any release so far is refused" not in section
+
+
+def _changelog_entries() -> list[str]:
+    """Each bullet of ``CHANGELOG.md``, its lines joined: an entry runs from
+    a line opening with ``- `` to the next such line, blank line or heading."""
+    entries: list[str] = []
+    current: list[str] | None = None
+    for line in (REPO / "CHANGELOG.md").read_text(encoding="utf-8").splitlines():
+        if line.startswith("- "):
+            if current:
+                entries.append(" ".join(current))
+            current = [line[2:].strip()]
+        elif current is not None and line.startswith("  ") and line.strip():
+            current.append(line.strip())
+        else:
+            if current:
+                entries.append(" ".join(current))
+            current = None
+    if current:
+        entries.append(" ".join(current))
+    return entries
+
+
+def test_a_change_against_the_policy_is_on_the_policy_page():
+    """A CHANGELOG entry that says a change went against the release policy
+    names a setting, as ``name="value"`` in backticks, that
+    ``docs/RELEASE-READINESS.md``'s policy names too: the page records each
+    departure from its own table, with the reason (task 270, review 9's R4-2:
+    ``huber_scale``'s default moved in a minor and the page did not say)."""
+    import re
+
+    page = (REPO / "docs" / "RELEASE-READINESS.md").read_text(encoding="utf-8")
+    policy = page.split("### The policy", 1)[1].split("\n### ", 1)[0]
+    against = [e for e in _changelog_entries() if "against the policy" in " ".join(e.split())]
+    assert against, "no CHANGELOG entry says it went against the policy"
+    for entry in against:
+        settings = set(re.findall(r"`([a-z_][a-z0-9_]*)=", entry))
+        assert settings, f"names no setting: {entry[:120]}"
+        assert any(f"`{s}`" in policy or f"`{s}=" in policy for s in settings), (
+            f"the policy names none of {sorted(settings)}: {entry[:120]}"
+        )

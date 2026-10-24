@@ -60,7 +60,7 @@ def huber(
     exact weighted median. The sketch's buckets span at most 16 octaves around
     the median, a factor of 65,536, and a residual beyond them is folded into
     the outermost bucket on its side, its weight kept: at most about 9 KB of state per target,
-    whatever the residuals, and 15 to 20 ns per target per row. Nothing is
+    whatever the residuals, and 14 to 17 ns per target per row. Nothing is
     folded while the residuals span less, and the median reads what an
     unbounded sketch would unless it later moves past a bucket a residual was
     folded into, at least a factor of 256 from where it stood then: as when a
