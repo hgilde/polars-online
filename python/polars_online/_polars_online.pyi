@@ -210,7 +210,7 @@ def gram_cd_path(
     weights: list[float],
     max_iter: int,
     tol: float,
-) -> list[float]: ...
+) -> tuple[list[float], list[bool]]: ...
 
 # A ridge fit: `coef`, `se` and `t` (each the bytes of native-endian float64s),
 # then `resid_var`, `sigma2`, `r2` and `n`.

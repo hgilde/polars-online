@@ -110,6 +110,16 @@ use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 /// continues to the bit (`kmeans`); its centres are in the old rule's
 /// order, so its bytes are not the current set's, which the new rule
 /// seeded, and it is held to saving bytes that load back to the same.
+///
+/// The `lasso` cases convert otherwise since task 278 too (rule 5's third
+/// exception, the user's, 2026-10-25): the descent's stopping rule reads a
+/// sweep's move against `tol` times the target's spread, where it read it
+/// against `tol` itself, so where the spread is not 1 a descent stops on
+/// another sweep. A `lasso` state of schema 61-63 continues within 1e-9
+/// relative, not to the bit, and re-saves the same bytes; [`MOVED`] lists
+/// the cases and their bound, and holds an unwindowed one's converted
+/// state to the current fixture's field for field, its floats within the
+/// bound.
 macro_rules! previous {
     ($($schema:literal),* $(,)?) => {
         const PREVIOUS: &[u32] = &[$($schema),*];
@@ -128,6 +138,30 @@ macro_rules! previous {
 }
 
 previous![61, 62];
+
+/// The cases whose numbers a later fix moved without touching the layout,
+/// each with how far its continuation may part from a previous set's
+/// frozen one. A previous fixture of such a case was fitted under the old
+/// arithmetic, so neither its continuation nor its converted state is the
+/// current build's to the bit: it is held to loading, to saving bytes that
+/// load back to the same, and to its continuation within the bound, by
+/// [`agree`]'s relative measure. The current set is regenerated as for any
+/// change that moves a number, and holds them to the bit.
+///
+/// Its converted state is held to the current fixture's field for field:
+/// the same keys, lengths and every number but a float the same, each
+/// float within the bound ([`same_but_floats`]), so the loader's work is
+/// still checked whole -- but under a window, whose converted ring differs
+/// by design (the doc above `previous!`).
+///
+/// - `lasso`, `lasso_window`: the descent's stopping rule compares a
+///   sweep's move with `tol` times the target's spread, not with `tol`
+///   itself (task 278, D3), so a descent stops on another sweep where the
+///   spread is not 1. On these rows that moved the predictions by at most
+///   5.8e-11 (`lasso`) and 1.7e-11 (`lasso_window`) of `1 + |pred|`,
+///   measured 2026-10-25 on both kept sets; the bound is 17 times the
+///   larger.
+const MOVED: &[(&str, f64)] = &[("lasso", 1e-9), ("lasso_window", 1e-9)];
 
 /// How far a continuation may part from the one frozen, on a platform other
 /// than the writer's: the golden files' tolerance (`tests/golden.rs`).
@@ -374,6 +408,7 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
                 f.writer, current.writer
             );
             let windowed = holds_a_window(&f.bytes());
+            let moved = MOVED.iter().find(|(n, _)| *n == f.name).map(|&(_, b)| b);
             // Seeded by the `lloyd` rule before task 278 (plain k-means++
             // starts, ten Lloyd passes): the rule since finds the same
             // centres in another order (the doc above `previous!`).
@@ -385,17 +420,25 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
                     named(&again.state()) == saved,
                     "{what}: saved, loaded, saved"
                 );
-            } else if windowed {
+            } else if windowed || moved.is_some() {
                 // A window's snapshots from before task 275 carry no running
                 // products (the doc above `previous!`): converted, they say
                 // so, and the state saves bytes that load back to the same.
+                // A moved case's (`MOVED`) state is the old arithmetic's,
+                // and saves bytes that load back to the same.
                 let saved = named(&m.state());
-                assert!(holds_a_window(&saved), "{what}: the window is gone");
+                assert_eq!(holds_a_window(&saved), windowed, "{what}: the window");
                 let again = load(&case, &saved).unwrap_or_else(|e| panic!("{what}: {e}"));
                 assert!(
                     named(&again.state()) == saved,
                     "{what}: saved, loaded, saved"
                 );
+                // A window's converted ring lacks the running products, as
+                // above, so a windowed case is not held field for field.
+                if let Some(bound) = moved.filter(|_| !windowed) {
+                    let decode = |b: &[u8]| rmpv::decode::read_value(&mut &b[..]).unwrap();
+                    same_but_floats(&decode(&saved), &decode(&current.bytes()), bound, &what);
+                }
             } else {
                 assert!(
                     named(&m.state()) == current.bytes(),
@@ -429,14 +472,38 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
                 // its products decay it, and the reads part from the old
                 // build's in their last bits, as a fresh run's do.
                 let tol = if windowed && i > 0 { tol.max(TOL) } else { tol };
-                same_out(
-                    &format!("{what}, row {i} after the save"),
-                    &m.step(row),
-                    &want,
-                    tol,
-                );
+                let tol = moved.map_or(tol, |b| tol.max(b));
+                let got = m.step(row);
+                same_out(&format!("{what}, row {i} after the save"), &got, &want, tol);
             }
         }
+    }
+}
+
+/// `got` is `want` field for field -- the same map keys in the same order,
+/// the same array lengths, every value but a float equal -- and each float
+/// within `bound` of its twin by [`agree`]'s measure: a [`MOVED`] case's
+/// converted state beside the current fixture's.
+fn same_but_floats(got: &rmpv::Value, want: &rmpv::Value, bound: f64, what: &str) {
+    use rmpv::Value as V;
+    match (got, want) {
+        (V::Map(g), V::Map(w)) => {
+            assert_eq!(g.len(), w.len(), "{what}: a map of another size");
+            for ((gk, gv), (wk, wv)) in g.iter().zip(w) {
+                assert_eq!(gk, wk, "{what}: another key");
+                same_but_floats(gv, wv, bound, &format!("{what}.{gk}"));
+            }
+        }
+        (V::Array(g), V::Array(w)) => {
+            assert_eq!(g.len(), w.len(), "{what}: an array of another length");
+            for (i, (gv, wv)) in g.iter().zip(w).enumerate() {
+                same_but_floats(gv, wv, bound, &format!("{what}[{i}]"));
+            }
+        }
+        (V::F64(g), V::F64(w)) => {
+            assert!(agree(*g, *w, bound), "{what}: {g:e} against {w:e}");
+        }
+        _ => assert_eq!(got, want, "{what}"),
     }
 }
 

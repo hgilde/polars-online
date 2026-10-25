@@ -7,7 +7,8 @@
 //!   the Gram has an intercept, and its correlation form;
 //! - [`lars_lasso`]: the lasso path by least angle regression, stopped early;
 //! - [`cd_path`]: the elastic-net path by the `lasso` model's coordinate
-//!   descent, over a grid of penalties;
+//!   descent, over a grid of penalties, by its stopping rule
+//!   ([`sweep_tol`]);
 //! - [`merge`]: Grams of disjoint row sets pooled, on a subset of columns;
 //!   [`merge_within`]: pooled within the parts, each about its own means
 //!   (block fixed effects), with a sign per part on the target
@@ -34,7 +35,8 @@ mod trisolve_tests;
 #[cfg(test)]
 mod within_tests;
 
-pub use cd::cd_path;
+pub(crate) use cd::settled;
+pub use cd::{CdPath, cd_path, sweep_tol, target_spread};
 pub use lars::{
     CorrRows, DenseRows, LarsLimits, LarsPath, LarsStop, lars_lasso, lars_lasso_rows,
     lars_lasso_weighted,
