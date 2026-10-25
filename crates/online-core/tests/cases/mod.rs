@@ -315,6 +315,7 @@ fn robust_cfg(loss: RobustLoss) -> RobustCfg {
         feature_sets: Vec::new(),
         ridge_scale: false,
         emit_scale: false,
+        warm_rows: 0,
     }
 }
 
@@ -673,6 +674,7 @@ pub fn all() -> Vec<Case> {
                 standardize: false,
                 ridge_scale: true,
                 emit_scale: true,
+                warm_rows: 0,
                 ..robust_cfg(RobustLoss::Huber { delta: 1.5 })
             })
             .unwrap(),

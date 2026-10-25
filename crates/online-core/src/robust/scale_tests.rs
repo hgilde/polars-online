@@ -32,6 +32,7 @@ fn base(loss: RobustLoss) -> RobustCfg {
         feature_sets: Vec::new(),
         ridge_scale: false,
         emit_scale: false,
+        warm_rows: 0,
     }
 }
 

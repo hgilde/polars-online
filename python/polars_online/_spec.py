@@ -246,7 +246,14 @@ _SKIPPED_WHEN_ABSENT: dict[str, frozenset[str]] = {
     "holt": frozenset({"trend"}),
     "ewridge": frozenset({"gram_threads"}),
     "huber": frozenset(
-        {"huber_scale", "huber_scale_half_life", "feature_sets", "ridge_scale", "emit_huber_scale"}
+        {
+            "huber_scale",
+            "huber_scale_half_life",
+            "feature_sets",
+            "ridge_scale",
+            "emit_huber_scale",
+            "huber_warm_rows",
+        }
     ),
     "sgd": frozenset({"huber_scale", "huber_scale_half_life"}),
     "ew_cov": frozenset({"gram_threads"}),
@@ -334,6 +341,7 @@ _U32 = frozenset(
         "max_iter",
         "update_every_rows",
         "split_merge_every_rows",
+        "huber_warm_rows",
     }
 )
 

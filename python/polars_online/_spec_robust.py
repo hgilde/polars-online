@@ -29,6 +29,7 @@ def huber(
     feature_sets: dict[str, list[str]] | None = None,
     ridge_scale: Literal["mean", "sum"] = "mean",
     emit_huber_scale: bool = False,
+    huber_warm_rows: int | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Huber regression: :func:`ewridge` with the rows that miss by far
@@ -282,6 +283,8 @@ def huber(
         # Written only away from their defaults, which the Rust spec skips.
         "ridge_scale": None if ridge_scale == "mean" else ridge_scale,
         "emit_huber_scale": True if emit_huber_scale else None,
+        # Scratch (prototype, default off): refit the first rows to convergence.
+        "huber_warm_rows": huber_warm_rows,
     }
     # Written only when given: the Rust spec skips them when absent.
     skipped = _SKIPPED_WHEN_ABSENT["huber"]

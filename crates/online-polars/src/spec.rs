@@ -713,6 +713,11 @@ pub enum ModelKind {
         /// serializes as it did.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         emit_huber_scale: bool,
+        /// Scratch (prototype, branch `huber-warmup`): each target's first
+        /// rows refit to convergence (`RobustCfg::warm_rows`). Skipped when
+        /// absent, so a spec written before it serializes as it did.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        huber_warm_rows: Option<u32>,
     },
     /// Quantile regression at level `quantile` (docs/PLAN.md §4.5).
     Quantile {
