@@ -1378,3 +1378,321 @@ def test_the_new_forms_keep_the_hard_rules(form):
         np.testing.assert_allclose(
             out[f][2:].to_numpy(), rest[f].to_numpy(), rtol=1e-12, atol=0, equal_nan=True
         )
+
+
+# --- each memory against the others (task 278, batch 5) ---------------------
+
+#: The seven diagnostics with a memory of their own: each memory's key, its
+#: switch, and the fields the diagnostic writes for target `y` and features
+#: `x0`, `x1`.
+MEMORIES = {
+    "calibration_half_life": ("emit_calibration", SWITCHES["emit_calibration"][1]),
+    "breaks_half_life": ("emit_breaks", SWITCHES["emit_breaks"][1]),
+    "robust_se_half_life": ("emit_robust_se", ROBUST),
+    "specification_half_life": ("emit_specification", SWITCHES["emit_specification"][1]),
+    "tails_half_life": ("emit_tails", SWITCHES["emit_tails"][1]),
+    "influence_half_life": ("emit_influence", SWITCHES["emit_influence"][1]),
+    "feature_health_half_life": ("emit_feature_health", HEALTH),
+}
+#: Seven distinct memories, none the fit's (120) or a multiple of another's.
+DISTINCT = dict(zip(MEMORIES, [33.0, 37.0, 41.0, 43.0, 47.0, 53.0, 59.0], strict=True))
+#: The memories each model takes: the sandwich is of a least-squares fit's
+#: coefficients, the influence reads a row's leverage, and `holt` has no
+#: features for the health to read.
+TAKES = {
+    "ewridge": list(MEMORIES),
+    "rls": list(MEMORIES),
+    "sgd": [k for k in MEMORIES if k not in ("robust_se_half_life", "influence_half_life")],
+    "holt": [
+        "calibration_half_life",
+        "breaks_half_life",
+        "specification_half_life",
+        "tails_half_life",
+    ],
+}
+
+
+def _crossed(n: int = 2_500, seed: int = 7) -> pl.DataFrame:
+    """A residual every diagnostic has something to read in: serially
+    correlated (AR(2)), heavy-tailed, wider with the first feature, and an
+    intercept that moves by 3 halfway; uneven weights."""
+    rng = np.random.default_rng(seed)
+    x = rng.normal(size=(n, 2))
+    e = rng.standard_t(5, size=n)
+    u = np.zeros(n)
+    for i in range(2, n):
+        u[i] = 0.1 * u[i - 1] + 0.5 * u[i - 2] + e[i]
+    y = 0.3 + x @ np.array([1.2, -0.7]) + u * (1 + 0.3 * np.abs(x[:, 0]))
+    y[n // 2 :] += 3.0
+    return pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y, "w": rng.uniform(0.5, 1.5, n)})
+
+
+def _every_switch(model: str, **kw) -> pl.DataFrame:
+    base: dict = dict(targets=["y"], half_life=120.0, weight="w", min_weight=10.0)
+    if model != "holt":
+        base.update(features=["x0", "x1"], coef_every=0)
+    for key in TAKES[model]:
+        base[MEMORIES[key][0]] = True
+    if "robust_se_half_life" in TAKES[model]:
+        base["robust_se_lags"] = 2
+    base.update(kw)
+    spec = getattr(po.spec, model)("m", **base)
+    return po.ModelBank([spec], threads=1).fit_predict(_crossed()).unnest("m")
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "ewridge",
+        *(
+            pytest.param(m, marks=pytest.mark.extended(reason="a grid over the models"))
+            for m in ("rls", "sgd", "holt")
+        ),
+    ],
+)
+def test_each_memory_moves_its_own_fields_and_nothing_else(model):
+    """With every diagnostic on and each memory distinct, changing one
+    memory moves its diagnostic's fields and leaves every other column --
+    the fit's, the other diagnostics' -- as it was. At the defaults every
+    memory but the calibration's is the fit's own, so two memories wired to
+    each other's accumulators would pass every test that leaves them out.
+    The Rust twin, which `cargo mutants` sees, is
+    `crates/online-polars/tests/diagnostic_memories.rs`."""
+    memories = {k: DISTINCT[k] for k in TAKES[model]}
+    base = _every_switch(model, **memories)
+    for key in TAKES[model]:
+        _, fields = MEMORIES[key]
+        # The fields that read anything: `holt`'s Breusch-Pagan is null, as
+        # it has no features to regress the squares on.
+        want = [f for f in fields if base[f].drop_nulls().len() > 0]
+        assert len(want) >= len(fields) - 1, (key, want)
+        for f in want:
+            assert base[f].drop_nulls().len() > 300, (model, f)
+        got = _every_switch(model, **{**memories, key: 71.0})
+        moved = [c for c in base.columns if not base[c].equals(got[c], null_equal=True)]
+        assert sorted(moved) == sorted(want), (model, key, moved)
+
+
+@pytest.mark.parametrize(
+    ("knob", "value", "fields"),
+    [
+        ("ljung_box_lags", 4, ["ljung_box_y"]),
+        ("robust_se_lags", 5, ["se_coef_hac"]),
+    ],
+)
+def test_each_lag_moves_its_own_field_and_nothing_else(knob, value, fields):
+    """Ljung and Box's lags move `ljung_box` alone, and Newey and West's
+    `se_coef_hac` alone, with every other diagnostic on beside them."""
+    memories = {k: DISTINCT[k] for k in MEMORIES}
+    base = _every_switch("ewridge", **memories)
+    got = _every_switch("ewridge", **memories, **{knob: value})
+    moved = [c for c in base.columns if not base[c].equals(got[c], null_equal=True)]
+    assert moved == fields, moved
+
+
+def test_every_memory_and_lag_is_refused_out_of_range_or_without_its_switch():
+    """Each of the seven memories at 0 and below, and without its switch;
+    the lags without theirs, below 0 and past the ring's 2^20; the horizon
+    below 0. Each refusal names the key."""
+    base = dict(targets=["y"], features=["x0", "x1"], half_life=60.0)
+    for key, (switch, _) in MEMORIES.items():
+        with pytest.raises(ValueError, match=f"{key} needs {switch}"):
+            po.spec.ewridge("m", **base, **{key: 30.0})
+        for bad in (0.0, -1.0):
+            with pytest.raises(ValueError, match=f"{key} must be > 0"):
+                po.spec.ewridge("m", **base, **{switch: True, key: bad})
+    for kw, says in (
+        (dict(ljung_box_lags=3), "ljung_box_lags needs emit_specification"),
+        (
+            dict(emit_specification=True, ljung_box_lags=2**20 + 1),
+            "ljung_box_lags must be <= 1048576, got 1048577",
+        ),
+        (dict(emit_robust_se=True, robust_se_lags=-1), "robust_se_lags must be >= 0, got -1"),
+        (
+            dict(emit_robust_se=True, robust_se_lags=2**20 + 1),
+            "robust_se_lags must be <= 1048576, got 1048577",
+        ),
+        (dict(emit_breaks=True, horizon_rows=-1), "horizon_rows must be >= 0, got -1"),
+    ):
+        with pytest.raises(ValueError, match=says):
+            po.spec.ewridge("m", **base, **kw)
+    # The edges themselves are taken.
+    for kw in (
+        dict(emit_robust_se=True, robust_se_lags=0),
+        dict(emit_robust_se=True, robust_se_lags=2**20),
+        dict(emit_breaks=True, horizon_rows=0),
+    ):
+        po.ModelBank([po.spec.ewridge("m", **base, **kw)])
+
+
+def test_the_influence_scale_reads_its_own_memory():
+    """`influence_half_life=30` beside a fit at 120: `influence = (v / s)
+    sqrt(h)` with `v = resid / error_inflation`, `h = error_inflation² - 1`
+    and `s²` the mean of the folded rows' `v²` before the row, each at its
+    weight aged at 30. The rows folded are the fit's: 95% settled at 120."""
+    n = 1_500
+    df = _crossed(n, 31)
+    spec = po.spec.ewridge(
+        "m",
+        targets=["y"],
+        features=["x0", "x1"],
+        half_life=120.0,
+        weight="w",
+        min_weight=10.0,
+        emit_error_inflation=True,
+        emit_influence=True,
+        influence_half_life=30.0,
+    )
+    out = _run(df, spec)
+    infl = out["error_inflation_y"].to_numpy()
+    v = out["resid_y"].to_numpy() / infl
+    w = df["w"].to_numpy()
+    ready = out["settled_frac"].to_numpy() >= 0.95
+    assert 500 < int(np.argmax(ready)) < 560
+    got = out["influence_y"].to_numpy().astype(float)
+    checked = 0
+    for t in range(560, n):
+        ok = np.isfinite(v[:t]) & ready[:t]
+        om = (w[:t] * 0.5 ** (((t - 1) - np.arange(t)) / 30.0))[ok]
+        s = np.sqrt((om * v[:t][ok] ** 2).sum() / om.sum())
+        # Measured 2026-10-25: 9e-16 relative at most.
+        np.testing.assert_allclose(got[t], v[t] / s * np.sqrt(infl[t] ** 2 - 1.0), rtol=1e-12)
+        checked += 1
+    assert checked == n - 560
+
+
+def test_the_studentized_scale_reads_the_breaks_memory():
+    """`breaks_half_life=40` beside a fit at 120: `studentized = v / s`, `s²`
+    the folded rows' mean `v²` before the row at their weights aged at 40,
+    once those weights have a Kish size of 10."""
+    n, h = 1_500, 40.0
+    df = _crossed(n, 32)
+    spec = po.spec.ewridge(
+        "m",
+        targets=["y"],
+        features=["x0", "x1"],
+        half_life=120.0,
+        weight="w",
+        min_weight=10.0,
+        emit_error_inflation=True,
+        emit_breaks=True,
+        breaks_half_life=h,
+    )
+    out = _run(df, spec)
+    v = (out["resid_y"] / out["error_inflation_y"]).to_numpy()
+    w = df["w"].to_numpy()
+    ready = out["settled_frac"].to_numpy() >= 0.95
+    z = out["studentized_y"].to_numpy().astype(float)
+    checked = 0
+    for t in range(1, n):
+        ok = np.isfinite(v[:t]) & ready[:t]
+        om = (w[:t] * 0.5 ** (((t - 1) - np.arange(t)) / h))[ok]
+        if om.size == 0 or om.sum() ** 2 / (om**2).sum() < 10:
+            assert np.isnan(z[t]), t
+            continue
+        want = v[t] / np.sqrt((om * v[:t][ok] ** 2).sum() / om.sum())
+        np.testing.assert_allclose(z[t], want, rtol=1e-12)
+        checked += 1
+    assert checked > 900, checked
+
+
+def test_box_pierce_at_a_memory_of_its_own():
+    """`specification_half_life=30` beside a fit at 200: Box and Pierce's
+    statistic at Kish's size with each folded row aged at 30, the rows folded
+    the fit's (95% settled at 200)."""
+    rng = np.random.default_rng(6)
+    n = 2_000
+    x = rng.normal(size=(n, 2))
+    df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": x @ [0.5, -0.3] + rng.normal(size=n)})
+    spec = po.spec.ewridge(
+        "m",
+        targets=["y"],
+        features=["x0", "x1"],
+        half_life=200.0,
+        emit_specification=True,
+        specification_half_life=30.0,
+    )
+    out = _run(df, spec)
+    ready = out["settled_frac"].to_numpy() >= 0.95
+    assert 850 < int(np.argmax(ready)) < 880
+    resid = out["resid_y"].to_numpy()
+    for t in (1_100, 1_500, n - 1):
+        want = _ew_box_pierce(resid[: t + 1], 0.5 ** (1 / 30.0), 10, ready[: t + 1])
+        assert out["ljung_box_y"][t] == pytest.approx(want, rel=1e-9), t
+
+
+@pytest.mark.oracle_grid(reason="200 streams at six memories, read by their tails")
+def test_a_longer_breaks_memory_finds_an_intercept_break_later():
+    """An intercept break of one noise sd, 2,100 rows into the CUSUM's
+    readiness, on 200 streams beside a fit at 200: the delay to `|cusum| >
+    3` grows with the breaks' memory at every tail -- the 90th and 95th
+    percentiles and the worst stream -- from 25 to run once, and no stream
+    goes undetected. Measured 2026-10-25 (90th / 95th / worst, rows): 26 /
+    29 / 41 at 25, 32 / 33 / 46 at 50, 36 / 40 / 47 at 100, 42 / 48 / 54
+    at 200, 50 / 52 / 63 at 400, 261 / 277 / 333 run once."""
+    groups, n, at = 200, 3_600, 3_000
+    rng = np.random.default_rng(2780)
+    x = rng.normal(size=(groups * n, 2))
+    level = 0.5 + 1.0 * (np.tile(np.arange(n), groups) >= at)
+    y = level + x @ np.array([1.0, -1.0]) + rng.normal(size=groups * n)
+    df = pl.DataFrame({"g": np.repeat(np.arange(groups), n), "x0": x[:, 0], "x1": x[:, 1], "y": y})
+    tails = []
+    for memory in (25.0, 50.0, 100.0, 200.0, 400.0, float("inf")):
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            half_life=200.0,
+            group="g",
+            min_weight=10.0,
+            emit_breaks=True,
+            breaks_half_life=memory,
+        )
+        out = po.ModelBank([spec]).fit_predict(df)
+        c = out["m"].struct.field("cusum_y").fill_null(0.0).fill_nan(0.0).to_numpy()
+        hit = np.abs(c.reshape(groups, n)[:, at:]) > 3.0
+        assert hit.any(axis=1).all(), (memory, (~hit.any(axis=1)).sum())
+        delay = hit.argmax(axis=1)
+        tails.append(np.quantile(delay, [0.9, 0.95, 1.0]))
+        print(memory, tails[-1])
+    tails = np.array(tails)
+    assert (np.diff(tails, axis=0) > 0).all(), tails
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="defect (task 278, batch 5): the windowed CUSUMs divide by their null's "
+    "steady-state share from the first folded row, so they are over-sized until the "
+    "sums fill their memory",
+)
+@pytest.mark.parametrize("field", ["cusum_y", "cusum_sq_y"])
+def test_a_windowed_cusum_is_near_its_size_from_its_first_rows(field):
+    """At the default memory (the fit's 200), on 100 clean streams, the
+    CUSUM and the CUSUM of squares pass 1.96 on about 5% of rows once their
+    sums are steady (`test_a_windowed_cusum_reads_its_own_null`), but on
+    16.5% and 14.6% of the 150 rows after the diagnostics' readiness, with
+    spreads of 1.40 and 2.77 (measured 2026-10-25; 8.1% and 8.3% still 300
+    to 600 rows in). The null's share of the plain variance, `h_fit /
+    (h_fit + h)` and 1/2, is that of sums which have filled their memory;
+    a young sum is mostly its plain variance, so dividing it by the share's
+    square root inflates it. `sgd`'s CUSUM, which takes no share, read 2.8%
+    there; its CUSUM of squares, which does, 14.7%. The bound below is the
+    steady state's with room: at most 8% of the first 150 rows."""
+    groups, n = 100, 1_500
+    df = _clean(groups, n, 5)
+    spec = po.spec.ewridge(
+        "m",
+        targets=["y"],
+        features=["x0", "x1"],
+        half_life=200.0,
+        group="g",
+        min_weight=10.0,
+        emit_breaks=True,
+    )
+    c = _run(df, spec)[field].to_numpy().astype(float).reshape(groups, n)
+    first = int(np.argmax(np.isfinite(c[0])))
+    assert 860 < first < 900, first
+    young = c[:, first : first + 150]
+    young = young[np.isfinite(young)]
+    assert young.size > 100 * 140
+    assert np.mean(np.abs(young) > 1.96) <= 0.08

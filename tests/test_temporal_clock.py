@@ -629,6 +629,37 @@ class TestEveryClockParameterTakesADuration:
         assert seen == 1, seen
 
 
+class TestADiagnosticsMemoryIsItsSeconds:
+    """Each diagnostic's own memory, ``"20m"`` on a ``Datetime`` clock, gives
+    the numbers of ``1200`` on the same instants in seconds (task 278, batch
+    5): the struct field for field, beside a fit at ``"10m"`` and ``600``.
+    That the memory acted, it is not the default's struct."""
+
+    #: Each memory, its switch, and one field its diagnostic writes.
+    MEMORIES = {
+        "calibration_half_life": ("emit_calibration", "calibration_slope_y"),
+        "breaks_half_life": ("emit_breaks", "cusum_y"),
+        "robust_se_half_life": ("emit_robust_se", "se_coef_hc0"),
+        "specification_half_life": ("emit_specification", "ljung_box_y"),
+        "tails_half_life": ("emit_tails", "skew_y"),
+        "influence_half_life": ("emit_influence", "influence_y"),
+        "feature_health_half_life": ("emit_feature_health", "spread_ratio_x0"),
+    }
+
+    @pytest.mark.parametrize("key", sorted(MEMORIES))
+    def test_twenty_minutes_are_1200_seconds(self, key):
+        switch, field = self.MEMORIES[key]
+        df = _frame()
+        numbers = dict(half_life=600.0, gap_cap=1_800.0, coef_every=0.0, **{switch: True})
+        ref = _fit(df, _ridge("t_s", **numbers, **{key: 1_200.0}))
+        durations = dict(half_life="10m", gap_cap="30m", coef_every="0s", **{switch: True})
+        got = _fit(_temporal(df), _ridge("t", **durations, **{key: "20m"}))
+        assert got.equals(ref, null_equal=True), key
+        assert ref.struct.field(field).drop_nulls().len() > 200, key
+        default = _fit(df, _ridge("t_s", **numbers))
+        assert not default.struct.field(field).equals(ref.struct.field(field), null_equal=True)
+
+
 class TestADurationTheDataCannotHold:
     """A duration can be well formed and still mean nothing on the clock it
     is given: finer than the column's own step, where it cannot act."""
