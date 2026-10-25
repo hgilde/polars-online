@@ -34,7 +34,7 @@ START_ROWS = 5
 MASK64 = (1 << 64) - 1
 INPUT_BOUND = 1e100
 BUF_CAP = 1000
-LLOYD_ITERS = 10
+LLOYD_MAX_ITERS = 300
 LLOYD_RESTARTS = 10
 FAR_SIGMAS = 4.0
 FAR_SHARE = 0.05
@@ -323,18 +323,43 @@ def _farthest(buf: list[list[float]], k: int, mw: list[float]) -> list[list[floa
     return out
 
 
+#: The least ``k`` with ``ln k >= m + 1``, entry ``m``: ``local_trials``'s
+#: table, read without the math library.
+_E_POWERS = (3, 8, 21, 55, 149, 404, 1097, 2981, 8104, 22027, 59875)
+
+
+def local_trials(k: int) -> int:
+    """Greedy k-means++'s candidates per centre: ``2 + floor(ln k)``."""
+    return 2 + sum(1 for at in _E_POWERS if k >= at)
+
+
 def _kmeanspp(
     buf: list[list[float]], w: list[float], k: int, mw: list[float], rng: SplitMix64
 ) -> list[list[float]]:
+    """Greedy k-means++: each centre after the first is the candidate, of
+    ``local_trials(k)`` drawn by ``w * D^2``, whose potential is least (the
+    first of a tie)."""
     idx0 = rng.choice(w)
     out = [list(buf[idx0])]
     dd = [math.inf] * len(buf)
     _shrink(dd, buf, buf[idx0], mw)
+    trials = local_trials(k)
     while len(out) < k:
         pr = [w[i] * dd[i] for i in range(len(buf))]
-        idx = rng.choice(pr)
-        out.append(list(buf[idx]))
-        _shrink(dd, buf, buf[idx], mw)
+        best: tuple[float, int, list[float]] | None = None
+        for _ in range(trials):
+            idx = rng.choice(pr)
+            pot = 0.0
+            cand = [0.0] * len(buf)
+            for i, z in enumerate(buf):
+                q = dist2(buf[idx], z, mw)
+                cand[i] = q if q < dd[i] else dd[i]
+                pot += w[i] * cand[i]
+            if best is None or pot < best[0]:
+                best = (pot, idx, cand)
+        assert best is not None
+        out.append(list(buf[best[1]]))
+        dd = best[2]
     return out
 
 
@@ -343,26 +368,35 @@ def _lloyd(
     w: list[float],
     centres: list[list[float]],
     mw: list[float],
-    iters: int,
-) -> list[list[float]]:
+    cap: int,
+) -> tuple[list[list[float]], bool]:
+    """Lloyd's passes to a fixed point, at most ``cap`` of them: the centres,
+    and whether a pass assigned every row where the last did."""
     k, p = len(centres), len(mw)
-    for _ in range(iters):
+    assigned = [-1] * len(buf)
+    for _ in range(cap):
         sw = [0.0] * k
         sx = [[0.0] * p for _ in range(k)]
-        for z, wi in zip(buf, w, strict=True):
+        moved = False
+        for r, (z, wi) in enumerate(zip(buf, w, strict=True)):
             best, best_d = 0, math.inf
             for j, c in enumerate(centres):
                 d = dist2(c, z, mw)
                 if d < best_d:
                     best_d, best = d, j
+            if assigned[r] != best:
+                assigned[r] = best
+                moved = True
             sw[best] += wi
             for i in range(p):
                 sx[best][i] += wi * z[i]
+        if not moved:
+            return centres, True
         for j in range(k):
             if sw[j] > 0.0:
                 for i in range(p):
                     centres[j][i] = sx[j][i] / sw[j]
-    return centres
+    return centres, False
 
 
 def _inertia(
@@ -379,6 +413,47 @@ def _inertia(
     return total
 
 
+def seed_counted(
+    buf: list[list[float]],
+    w: list[float],
+    k: int,
+    rule: str,
+    seed: int,
+    allow_dup: bool,
+    mw: list[float],
+    cap: int = LLOYD_MAX_ITERS,
+) -> tuple[list[list[float]] | None, int]:
+    """The seeding rules: the centres, and how many ``lloyd`` runs stopped
+    at ``cap`` short of a fixed point."""
+    if len(buf) < k:
+        return None, 0
+    if rule == "first":
+        out: list[list[float]] = []
+        for z in buf:
+            if not any(c == z for c in out):
+                out.append(list(z))
+                if len(out) == k:
+                    return out, 0
+        return ([list(z) for z in buf[:k]] if allow_dup else None), 0
+    if rule == "farthest":
+        return _farthest(buf, k, mw), 0
+    rng = SplitMix64(seed)
+    if rule == "k-means++":
+        return _kmeanspp(buf, w, k, mw, rng), 0
+    if rule == "lloyd":
+        best: tuple[float, list[list[float]]] | None = None
+        hits = 0
+        for _ in range(LLOYD_RESTARTS):
+            centres, converged = _lloyd(buf, w, _kmeanspp(buf, w, k, mw, rng), mw, cap)
+            hits += not converged
+            cost = _inertia(buf, w, centres, mw)
+            if best is None or cost < best[0]:
+                best = (cost, centres)
+        return (None if best is None else best[1]), hits
+    msg = f"unknown init {rule!r}"
+    raise ValueError(msg)
+
+
 def seed_centres(
     buf: list[list[float]],
     w: list[float],
@@ -388,31 +463,7 @@ def seed_centres(
     allow_dup: bool,
     mw: list[float],
 ) -> list[list[float]] | None:
-    if len(buf) < k:
-        return None
-    if rule == "first":
-        out: list[list[float]] = []
-        for z in buf:
-            if not any(c == z for c in out):
-                out.append(list(z))
-                if len(out) == k:
-                    return out
-        return [list(z) for z in buf[:k]] if allow_dup else None
-    if rule == "farthest":
-        return _farthest(buf, k, mw)
-    rng = SplitMix64(seed)
-    if rule == "k-means++":
-        return _kmeanspp(buf, w, k, mw, rng)
-    if rule == "lloyd":
-        best: tuple[float, list[list[float]]] | None = None
-        for _ in range(LLOYD_RESTARTS):
-            centres = _lloyd(buf, w, _kmeanspp(buf, w, k, mw, rng), mw, LLOYD_ITERS)
-            cost = _inertia(buf, w, centres, mw)
-            if best is None or cost < best[0]:
-                best = (cost, centres)
-        return None if best is None else best[1]
-    msg = f"unknown init {rule!r}"
-    raise ValueError(msg)
+    return seed_counted(buf, w, k, rule, seed, allow_dup, mw)[0]
 
 
 @dataclass
@@ -450,6 +501,7 @@ class KMeansRef:
     since_sm: int = 0
     n_merges: int = 0
     n_dead: int = 0
+    solve_failures: int = 0
 
     def __post_init__(self) -> None:
         self.moments = Moments.new(self.p)
@@ -646,7 +698,7 @@ class KMeansRef:
         kept = [i for i, z in enumerate(self.buf) if dist2(self.moments.mean, z, self.mw) <= cut]
         seeds = None
         if self.k <= len(kept) < len(self.buf):
-            seeds = seed_centres(
+            seeds, hits = seed_counted(
                 [self.buf[i] for i in kept],
                 [self.buf_w[i] for i in kept],
                 self.k,
@@ -655,12 +707,14 @@ class KMeansRef:
                 allow_dup,
                 self.mw,
             )
+            self.solve_failures += hits
             if seeds is not None and any(a == b for n, a in enumerate(seeds) for b in seeds[:n]):
                 seeds = None
         if seeds is None:
-            seeds = seed_centres(
+            seeds, hits = seed_counted(
                 self.buf, self.buf_w, self.k, self.init, self.seed, allow_dup, self.mw
             )
+            self.solve_failures += hits
         if seeds is None:
             return
         self.clusters = [Summary(0.0, c, 0.0) for c in seeds]

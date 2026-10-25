@@ -129,18 +129,29 @@ def hmm(
         ``learn = True`` the stream washes the given states out at the ordinary
         rate, and under ``learn = False`` they are held exactly.
     ``warm_rows``, ``init``, ``seed``
-        Without given states, the first ``warm_rows`` learned rows (default 50,
-        at least ``n_components``) are buffered. :func:`kmeans`' ``init``
+        Without given states, the first ``warm_rows`` learned rows (default
+        1,000, or ``n_components`` where that is more, and at least
+        ``n_components``) are buffered. A group with fewer rows than that
+        never seeds, and reports null on every row. :func:`kmeans`' ``init``
         (``"lloyd"`` by default; ``"first"``, ``"farthest"``, ``"k-means++"``)
         chooses centres among them with ``seed`` (default 0; ``None`` is 0, so
         a run seeds the same states every time), and the buffer is
         replayed through those centres as hard assignments. Every field but
         ``weight_sum`` and ``settled_frac`` is null until then. The buffered
         rows age as ``weight_sum`` does, so the states start at the weight
-        ``weight_sum`` says, not at the rows' raw weights. The buffer should
-        span more than one regime, or the seeds are two halves of one. With
-        ``means`` and ``covs`` given nothing is seeded, and the three are
-        refused.
+        ``weight_sum`` says, not at the rows' raw weights.
+
+        The buffer must hold every regime, several times over. The seeding
+        places the states where the buffer's rows are, so a regime absent from
+        it gets no state, and a regime with a few percent of its rows is
+        cheaper, by inertia, to share than to own. Learning does not move a
+        misplaced state out. Measured on three regimes three noise
+        standard deviations apart, each lasting 50 rows on average, over 50
+        seeds of 5,000 rows: the worst share of rows in their true state was
+        0.95 from 1,000 rows, 0.81 from 500 and 0.46 from 50. The buffer
+        holds ``warm_rows`` rows of ``d`` values until the states are seeded,
+        and the rows it holds report nothing. With ``means`` and ``covs``
+        given nothing is seeded, and the three are refused.
     ``exog_tvtp``, ``tvtp_coef``
         A column (declared like ``weight``, not a feature) whose value drives
         the matrix instead: ``Pi_kl(t) = softmax_l(A_kl + B_kl z_t)`` from the

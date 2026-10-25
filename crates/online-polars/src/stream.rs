@@ -366,8 +366,9 @@ impl AnyModel {
     /// `ewridge` and `robust` count their jittered or failed factorizations,
     /// `lasso` its coordinate descents that ran out of sweeps, `ew_class` the
     /// rows whose scoring met a failed factorization, `hmm` the rows its
-    /// filter could not evaluate, and `bocpd` the rows whose predictive could
-    /// not be. Every other model reports 0 because it counts nothing, not
+    /// filter could not evaluate, `bocpd` the rows whose predictive could
+    /// not be, and `kmeans` and `hmm` the seeding's Lloyd runs that stopped
+    /// at their cap short of a fixed point (task 278, D7). Every other model reports 0 because it counts nothing, not
     /// because nothing can fail: `kalman` inverts an innovation variance, and
     /// `ew_cov` solves for `mahal` and `partial_corr` (review 2026-09-12, S8).
     pub fn solve_failures(&self) -> u64 {
@@ -378,6 +379,7 @@ impl AnyModel {
             AnyModel::EwClass(m) => m.solve_failures,
             AnyModel::Hmm(m) => m.solve_failures,
             AnyModel::Bocpd(m) => m.solve_failures,
+            AnyModel::KMeans(m) => m.solve_failures,
             AnyModel::Rls(_)
             | AnyModel::Kalman(_)
             | AnyModel::Ftrl(_)
@@ -385,7 +387,6 @@ impl AnyModel {
             | AnyModel::Sgd(_)
             | AnyModel::Pa(_)
             | AnyModel::Holt(_)
-            | AnyModel::KMeans(_)
             | AnyModel::Micro(_)
             | AnyModel::SeqTest(_)
             | AnyModel::Marginal(_)
