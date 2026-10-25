@@ -16318,3 +16318,23 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       taking effect is a dead-parameter suspect. A read-only inventory
       (scratchpad `t278/PARAMS.md`) groups the missing tests into batches;
       heavy grids run on CI (free, 20 concurrent jobs) rather than locally.
+      *Inventory 2026-10-25* (`t278/PARAMS.md`, 436 parameters: 176 against
+      a third-party oracle, 222 shown taking effect, 38 with no test showing
+      an effect, of which probes show 37 act): three inert keys, four
+      defects, invalid values accepted; 33 batches that do not collide on
+      files. *Decided by the user, 2026-10-25*: (i) the inert keys act or
+      are deprecated -- `marginal`'s `min_settled_frac` and `rcov`'s
+      `min_weight` withhold as their names say, `with_windows` no longer
+      requires a numeric `session_gap` and warns that a number has no effect
+      (`"reset"` kept); (ii) `session_shrink`: "Do the right thing do not
+      worry about moving results as long as we can test" -- a blend leaves
+      the solve schedule alone, as its docstring says, so the output is
+      continuous in the factor and 0 is no shrink to the bit, the move
+      declared and pinned; (iii) the nonsense values (`min_weight=inf`,
+      `bin_edges=[[]]`, kmeans `dead_frac >= 1`, `emit_averaged` on one
+      slot, corrchange `bandwidth` unbounded) refused by name as validation
+      fixes. Plain fixes without a decision: `rls` under
+      `drift_action="reset"` matches a fresh bank on the next row as every
+      other kind does (it differed by up to 0.017); `with_windows` refuses
+      `session_gap` without `session` and `restart_after_step_back` without
+      `clock`; `bocpd`'s refusal names its current keywords.
