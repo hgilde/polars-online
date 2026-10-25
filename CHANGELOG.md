@@ -9,6 +9,21 @@ order, another kernel), each declared with its size. Before 1.0, the minor
 version carried breaking changes, and any change to the numbers a model
 returns.
 
+## [Unreleased]
+
+### Changed
+
+- The weekly CPU-paths workflow's forced-Haswell oracle leg runs under
+  Intel SDE posing as an Intel Haswell (task 273). OpenBLAS 0.3.34 resizes
+  a forced core's blocking on AMD Zen 4 and 5 hosts with AVX-512, which
+  overran the Haswell kernel's stack buffer on Windows
+  (OpenMathLib/OpenBLAS#6013 and #6021); `OPENBLAS_L2_SIZE` cannot prevent
+  it there, since OpenBLAS's Windows build reads any variable that is set as
+  0. Under SDE the CPU reports Intel on every host, so the block never
+  fires; proven on an AMD EPYC 9V74 runner, all 2,345 oracle tests passing
+  with NumPy reporting no AVX-512. The `OPENBLAS_L2_SIZE` setting is
+  removed.
+
 ## [1.3.0] — 2026-10-24
 
 ### Added
