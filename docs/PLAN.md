@@ -16274,3 +16274,36 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       MODELS.md and docstrings with the capture tables, the `sgd` analogue,
       the refit row solving only its own target, budgets and the release
       comparison declared. Then a review and the fix of its findings.
+- [ ] 278. **Convergence tests of every kind, before 1.4.0** -- the user,
+      2026-10-25: "What additional tests should we do to catch all kinds of
+      convergence issues", then "Do them all before 1.4". Task 277's capture
+      was invisible to medians (0.001 at 12.5% while 13 of 40 seeds were
+      captured, worst 0.43). Rules for every class: judge by the worst seed
+      or a high quantile over 50+ seeds, never a median; the oracle is a
+      third-party batch fit on the same weighted rows; measure the rate
+      (error against n, or against half-lives), not only the endpoint; print
+      evidence the hard path activated. Classes: (1) consistency on
+      stationary known-truth streams, no decay -- the worst seed's error
+      shrinks with n toward the oracle; (2) start independence -- the same
+      data from a wrong state (a loaded state from another regime, extreme
+      coefficients, a large level) reaches the same fit; (3) front-loaded
+      adversity -- outliers, a shift or heavy tails in the first rows; (4)
+      contamination to breakdown -- zero captures below each robust model's
+      documented breakdown (huber, quantile, sgd's losses, the MAD
+      sketches); (5) re-convergence after a mid-stream break, within a
+      stated number of half-lives of the decayed batch oracle; (6)
+      equivariance -- y scaled by 1e±6, x affine, the level shifted, the fit
+      transforms as theory says; (7) conditioning -- near-collinear,
+      rank-deficient and 1e-10..1e10 features, predictions within task 274's
+      derived bounds; (8) inner-iteration honesty -- lasso's coordinate
+      descent, hmm's EM, kmeans, the warm-up refit: the stopping rule met
+      (KKT for lasso, residual otherwise), every iteration-limit hit
+      counted; (9) long-run stability -- 1e8-row soaks with periodic
+      from-scratch recomputes, kalman's P positive definite and bounded; (10)
+      learning-rate models -- sgd, pa, ftrl: excess loss falls under each
+      schedule, a large rate fails loudly; (11) truth recovery for kmeans,
+      micro, hmm, bocpd on known synthetic regimes, by the worst seed. A
+      harness in the extended tier: each model registers a generator, an
+      oracle and the classes that apply, so a new model must opt in
+      (EXTENDING.md). Heavy grids (4, 9) weekly. Library defects the classes
+      find are reported and fixed before 1.4.0.
