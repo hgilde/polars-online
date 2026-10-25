@@ -696,7 +696,15 @@ The diagnostics add, per slot:
        absorbs a level at its own memory ``h_fit``, so ``cusum``'s variance
        is ``h_fit / (h_fit + h)`` of a plain sum's at the memory ``h``, and
        ``cusum_sq``'s scale shares its memory, a half. Each is divided by
-       that share, and their spreads read 1.01-1.10 on clean streams, where
+       that share as far as its sums have filled: a sum of a few rows holds
+       little of what the fit's mean spread a level over, so its share runs
+       from 1 at the first row to the filled one, read off the sums' own
+       weights (their ``sum(w)`` at the memory against the fourth moment's
+       at four times it). Over the filled share from the first row they
+       passed 1.96 on 6.5-34% (``cusum``) and 11-16% (``cusum_sq``) of the
+       150 rows after the diagnostics' readiness beside ``ewridge`` at
+       memories of 50 to 800; as filled, on 6.1-6.7%, and 5% once filled.
+       Their spreads read 1.03-1.06 and 0.98-1.26 on clean streams, where
        undivided they read 0.48-0.94. Under ``window_size`` the fit absorbs a
        level as a mean over the window, weighted by the decay inside it, and
        a sum of its residuals cancels less. With no decay, and ``u =
@@ -708,18 +716,19 @@ The diagnostics add, per slot:
        read as an exponential of the window's Kish size, 1.08-1.20.
        ``quantile`` with an intercept absorbs its coverage the
        same way, and its indicators' ``cusum`` is divided by the same share:
-       over it, 1.03-1.06 at memories of 50 and 200 and 1.10-1.25 at 800.
+       over it, at ``q = 0.5``, 1.03-1.05 at memories of 50 and 200 and 1.09
+       at 800, and up to 1.25 at 800 at ``q = 0.9``.
        The other fits keep the plain sum, whose spread reads below 1 beside
        them, so ``|cusum| > 3`` is conservative there and finds less: on
        clean streams at a half-life of 200 and memories of 50, 200 and
-       800, ``huber`` 0.95, 0.79, 0.57 (it found every intercept break of
-       half a noise sd), ``holt`` 0.94, 0.77, 0.51 (85%, 75%, 8% of them),
-       ``sgd`` 0.79, 0.53, 0.30 (82%, 47%, 2%), ``ftrl`` 0.77, 0.52, 0.30
-       (93%, 93%, 40%) and ``pa`` 0.51, 0.48, 0.51 (none). A gradient fit
+       800, ``huber`` 0.95, 0.81, 0.62 (it found every intercept break of
+       half a noise sd), ``holt`` 0.92, 0.74, 0.52 (80%, 58%, 5% of them),
+       ``sgd`` 0.78, 0.55, 0.37 (88%, 50%, none), ``ftrl`` 0.77, 0.53, 0.39
+       (93%, 92%, 48%) and ``pa`` 0.51, 0.48, 0.47 (none). A gradient fit
        absorbs a level at its learning rate, and its CUSUM sees little of
        the move. ``break_wald``, whose twin fits read the target and the
        features alone, found 93-100% of the same breaks beside every model
-       with features (``holt``'s level alone: 52-100%), and
+       with features (``holt``'s level alone: 20-100%), and
        ``calibration_wald`` found none beside ``sgd`` and ``ftrl``.
        ``break_wald``
        is the Wald distance between two least-squares fits of the target on
@@ -737,9 +746,9 @@ The diagnostics add, per slot:
        on a centred feature, whose residuals keep a zero mean: it crossed on
        2.5%. Beside a fit at a half-life of 200, ``break_wald``
        passed ``chi2(3)``'s 0.01% value, 21.1, on no stream with no break
-       and on every slope break, 94 rows after it; ``|cusum| > 3`` found
-       every intercept break in 62 rows on the median and ``|cusum_sq| > 3``
-       every variance break in 17, each passing 3 on 0.2-0.3% of the rows of
+       and on every slope break, 55 rows after it; ``|cusum| > 3`` found
+       every intercept break in 66 rows on the median and ``|cusum_sq| > 3``
+       every variance break in 20, each passing 3 on 0.3% of the rows of
        streams with no break. ``drift`` found 1.5% of the variance breaks
        there and none of the others. Under a horizon each of the CUSUMs is
        over its long-run variance, Bartlett's weights on its terms'
