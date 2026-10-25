@@ -12,10 +12,15 @@ Each test prints its measurement before it asserts (``pytest -s`` shows it),
 with the evidence that the hard path ran: how many rows were made wild, how
 far the start was, the gap at the break.
 
-Tiers: the full grids of 50 seeds are extended; one cheap representative
-case per class runs in the essentials; the heaviest grid, class 4's sweep
-over 200 seeds and longer streams, is in ``tests/test_convergence_soak.py``,
-which the weekly leak-check workflow runs.
+Tiers: the full grids of 50 seeds against a third-party oracle carry the
+``oracle_grid`` mark, which no local run takes (``pyproject.toml``'s
+``addopts`` and ``scripts/gate.sh`` leave it out) and
+``.github/workflows/oracles.yml`` runs on every push, sharded across jobs;
+``pytest -m oracle_grid tests/test_convergence.py`` runs them here. One cheap
+representative case per class runs in the essentials. The heaviest grid,
+class 4's sweep over 200 seeds and longer streams, is in
+``tests/test_convergence_soak.py``, which the weekly leak-check workflow
+runs.
 """
 
 from __future__ import annotations
@@ -35,7 +40,7 @@ TIER = "mixed"
 SEEDS = 50
 CUTS = [500, 2000, 8000, 32000]
 
-_GRID = pytest.mark.extended(reason="a grid of 50 seeds against a third-party oracle")
+_GRID = pytest.mark.oracle_grid(reason="a grid of 50 seeds against a third-party oracle")
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +202,7 @@ def test_consistency_essential():
     assert b <= 0.75 * a, "the worst seed's gap falls with n"
 
 
-@pytest.mark.extended(reason="a grid of 50 seeds at three settings of C")
+@pytest.mark.oracle_grid(reason="a grid of 50 seeds at three settings of C")
 def test_pa_wanders_in_a_neighbourhood_set_by_c():
     """``pa`` is not consistent by design: a row outside the tube is
     projected onto it, its step capped by C, so the coefficients wander about
@@ -219,7 +224,7 @@ def test_pa_wanders_in_a_neighbourhood_set_by_c():
     assert q95[0.01] < q95[0.1] < q95[1.0]
 
 
-@pytest.mark.extended(reason="a grid of 50 seeds at two constant rates and a power")
+@pytest.mark.oracle_grid(reason="a grid of 50 seeds at two constant rates and a power")
 def test_a_constant_rate_settles_in_a_neighbourhood_and_a_power_sets_the_rate():
     """``sgd`` at a constant rate is not consistent by design: the iterate's
     stationary spread is about ``sqrt(lr / 2)`` times the noise per
@@ -246,7 +251,7 @@ def test_a_constant_rate_settles_in_a_neighbourhood_and_a_power_sets_the_rate():
     assert -0.4 <= r <= -0.15
 
 
-@pytest.mark.extended(reason="a grid of 50 seeds against a weighted least-squares trend")
+@pytest.mark.oracle_grid(reason="a grid of 50 seeds against a weighted least-squares trend")
 @pytest.mark.xfail(
     strict=True,
     reason=(
@@ -468,7 +473,7 @@ def test_start_at_a_large_level(key):
     assert at.worst <= 3 * base.worst + 1e-13 * abs(reg.level)
 
 
-@pytest.mark.extended(reason="a grid of seeds, with and without decay, for two models")
+@pytest.mark.oracle_grid(reason="a grid of seeds, with and without decay, for two models")
 @pytest.mark.parametrize("builder", sorted(cv.PRIOR_SPECS))
 def test_start_from_an_extreme_prior(builder):
     """A ``coef_prior`` of 1e6 against coefficients of about 1. The fit is
@@ -496,7 +501,7 @@ def test_start_from_an_extreme_prior(builder):
 # Class 3: adversity in the first rows.
 
 
-@pytest.mark.extended(reason="downloads three public datasets and fits three orders of each")
+@pytest.mark.oracle_grid(reason="downloads three public datasets and fits three orders of each")
 @pytest.mark.parametrize("name", sorted(cv.ROBUST_SETS))
 def test_quantile_on_the_classic_robust_datasets_outliers_first(name):
     """Rousseeuw and Leroy's datasets as a stream whose first rows are the

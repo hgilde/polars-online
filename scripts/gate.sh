@@ -21,10 +21,17 @@
 # tests run either way, with the same results.
 #
 # The essentials leave out the tests marked `extended` (pytest
-# `-m "not extended and not soak"`, cargo test without
+# `-m "not extended and not soak and not oracle_grid"`, cargo test without
 # `--include-ignored`) and run the property tests at fewer examples
 # (HYPOTHESIS_PROFILE=essential, PROPTEST_CASES below). The two test steps
 # print their wall time, so a slow test creeping into the essentials shows.
+#
+# Neither tier runs the tests marked `oracle_grid`: the heavy grids against
+# a third-party oracle (50 seeds, batch fits over long streams, downloads),
+# which .github/workflows/oracles.yml runs on every push, sharded across
+# jobs (the user, 2026-10-25: "we do not want to run more very long tests
+# in the gate as it's already long"). `uv run pytest -m oracle_grid` runs
+# them here.
 #
 # Exits non-zero on any failure and prints the actual diagnostics -- grepping
 # this output for "FAILED" hides compile and lint errors, which is how two
@@ -62,15 +69,15 @@ if [ "$tier" = extended ]; then
     unset PROPTEST_CASES
     cargo_tier=(-- --include-ignored)
     nextest_tier=(--run-ignored all)
-    pytest_tier=()
-    marks="not soak"
+    pytest_tier=(-m "not soak and not oracle_grid")
+    marks="not soak and not oracle_grid"
 else
     export HYPOTHESIS_PROFILE=essential
     export PROPTEST_CASES=32
     cargo_tier=()
     nextest_tier=()
-    pytest_tier=(-m "not extended and not soak")
-    marks="not extended and not soak"
+    pytest_tier=(-m "not extended and not soak and not oracle_grid")
+    marks="not extended and not soak and not oracle_grid"
 fi
 if [ -n "$serial" ]; then
     echo "gate: the $tier tier, in one process"
