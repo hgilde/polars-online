@@ -18,6 +18,8 @@ once its label would really have been known. Two things have to be earned:
    gone.
 """
 
+import inspect
+import math
 import subprocess
 from datetime import time
 
@@ -28,8 +30,10 @@ import pytest
 import polars_online as po
 from conftest import run_online
 from polars_online import stream
+from test_diagnostic_isolation import BEFORE_277
+from test_model_registry import MINIMAL
 
-TIER = "essential"
+TIER = "mixed"
 
 HALFLIFE = 50.0
 
@@ -886,6 +890,25 @@ class TestEmbargoItself:
         assert out["_online_role_weight"].to_list() == [0.0, 0.0, 1.0, 0.0, 1.0, 1.0]
         assert out.columns == ["t", "x", "_online_role_weight", stream.ROLE]
 
+    def test_a_role_of_its_own_names_both_columns(self):
+        """``role`` names the role column and, with ``_weight`` after it, the
+        weight column added beside it (task 278, batch 15: no test passed
+        it but to see it refused). The frame is the default one with those
+        two columns renamed, and a bank reading them predicts the same."""
+        df = frame(n=60, seed=14)
+        default = stream.embargo(df, clock="t", delay=3.0)
+        mine = stream.embargo(df, clock="t", delay=3.0, role="r")
+        assert mine.columns == [*df.columns, "r_weight", "r"]
+        assert stream.ROLE not in mine.columns and f"{stream.ROLE}_weight" not in mine.columns
+        renamed = default.rename({stream.ROLE: "r", f"{stream.ROLE}_weight": "r_weight"})
+        assert mine.equals(renamed)
+        a = po.ModelBank([spec(weight=f"{stream.ROLE}_weight")]).fit_predict(default)
+        b = po.ModelBank([spec(weight="r_weight")]).fit_predict(mine)
+        assert a["m"].equals(b["m"], null_equal=True)
+        assert a["m"].struct.field("pred_y").drop_nulls().len() > 40
+        # Lazily too.
+        assert stream.embargo(df.lazy(), clock="t", delay=3.0, role="r").collect().equals(mine)
+
     def test_an_existing_weight_is_zeroed_not_replaced(self):
         df = pl.DataFrame({"t": [0.0, 1.0], "x": [1.0, 2.0], "w": [3.0, 4.0]})
         out = stream.embargo(df, clock="t", delay=1.0, weight="w")
@@ -998,3 +1021,657 @@ class TestEmbargoItself:
             assert stream.embargo(rows.lazy(), clock="t", delay=1.0).collect().height == 6
         doc = " ".join((stream.embargo.__doc__ or "").split())
         assert "reads its input twice" in doc
+
+
+# ---------------------------------------------------------------------------
+# Every kind that takes an embargo (task 278, batch 15)
+#
+# The relations above were held on `ewridge` and `ew_cov`. Here they run over
+# every kind that takes an `embargo`, each kind built as
+# `test_model_registry.MINIMAL` builds it:
+#
+# - on a row clock a delay of E rows is the undelayed run E rows behind;
+# - on any clock a row is scored as a bank fed only the rows matured by then
+#   scores it -- the definition of the delay, with no doubled stream between;
+# - the doubled stream, where it is the reference by construction, with each
+#   kind it is not named beside the reason, and the reason shown;
+# - a delay shorter than every clock step is the undelayed run.
+#
+# Essentials: `ewridge` and one other kind per relation. Extended: the rest.
+
+EVERY_KIND = pytest.mark.extended(reason="the sweep over every kind that takes an embargo")
+
+#: The kinds that refuse an embargo, and the words each refuses it in:
+#: `audit` counts what it is given and learns nothing a delay could hold
+#: back; `rcov` needs `group_close`, and a closed group cannot release the
+#: rows it still holds.
+REFUSE_EMBARGO = {"audit": "embargo", "rcov": "group_close does not work with embargo"}
+
+#: Task 277 changes `huber`'s warm-up and gives `sgd(loss="huber")` the same;
+#: their legs join the sweeps when it merges (`test_the_huber_legs_still_wait`
+#: says when) and build and run today (`test_the_waiting_legs_are_ready`).
+AFTER_TASK_277: dict[str, tuple[str, dict]] = {
+    "huber": ("huber", {}),
+    "sgd_huber": ("sgd", {"learning_rate": 0.01, "loss": "huber"}),
+}
+TAKE_EMBARGO = sorted(set(MINIMAL) - set(REFUSE_EMBARGO) - set(AFTER_TASK_277))
+#: The kinds with no half-life (MINIMAL sets it to None).
+NO_HALF_LIFE = frozenset(
+    k for k, v in MINIMAL.items() if "half_life" in v and v["half_life"] is None
+)
+#: `seqtest` takes no weight: every row it learns is one trial.
+NO_WEIGHT = frozenset({"seqtest"})
+#: The fields laid out like `coef`, written after the row's update.
+AFTER_THE_UPDATE = frozenset({"coef", "support_coef", "se_coef", "se_coef_hc0", "se_coef_hac"})
+
+
+def kind_frame(kind: str, *, n: int = 400, steps=None, seed: int = 5) -> pl.DataFrame:
+    """Two features, a target with a level shift halfway, uneven weights;
+    the target binary for `ftrl` and a label for `ew_class`. ``steps`` puts a
+    clock ``t`` under it (the first step is the first row's clock)."""
+    rng = np.random.default_rng(seed)
+    x0, x1 = rng.standard_normal(n), rng.standard_normal(n)
+    y = (
+        1.0
+        + 2.0 * x0
+        - x1
+        + 0.3 * rng.standard_normal(n)
+        + np.where(np.arange(n) > n // 2, 3.0, 0.0)
+    )
+    df = pl.DataFrame({"x0": x0, "x1": x1, "y": y, "w": rng.uniform(0.2, 3.0, n)})
+    if steps is not None:
+        df = df.with_columns(t=pl.Series(np.cumsum(steps), dtype=pl.Float64))
+    if kind == "ftrl":
+        df = df.with_columns(y=(pl.col("y") > 1).cast(pl.Float64))
+    if kind == "ew_class":
+        df = df.with_columns(y=pl.when(pl.col("y") > 1).then(pl.lit("a")).otherwise(pl.lit("b")))
+    return df
+
+
+def irregular_steps(n: int, top: int, seed: int = 3) -> np.ndarray:
+    """Whole clock steps of 1 to ``top``, the first row's 0: sums exact."""
+    steps = np.random.default_rng(seed).integers(1, top + 1, n).astype(float)
+    steps[0] = 0.0
+    return steps
+
+
+def kind_spec(kind: str, **kw) -> dict:
+    """``kind`` as MINIMAL builds it on these frames, ``kw`` on top; a key
+    given None is left out."""
+    builder, own = AFTER_TASK_277.get(kind, (kind, {}))
+    a: dict[str, object] = {"targets": ["y"], "features": ["x0", "x1"], "half_life": 50.0}
+    a.update(MINIMAL[builder])
+    a.update(own)
+    if builder in ("kmeans", "hmm"):
+        # Seeded inside the stream's first rows, so most rows are scored.
+        a["warm_rows"] = 20
+    a.update(kw)
+    return getattr(po.spec, builder)("m", **{k: v for k, v in a.items() if v is not None})
+
+
+def has_coef(kind: str) -> bool:
+    return "coef" in po.spec.output_fields(kind_spec(kind))
+
+
+def fields_of(kind: str, **kw) -> pl.DataFrame:
+    """The kind's output index: each field's ``kind``."""
+    return po.spec.output_index(kind_spec(kind, **kw))
+
+
+def unnested(spec: dict, df: pl.DataFrame) -> pl.DataFrame:
+    return po.ModelBank([spec], threads=1).fit_predict(df).select("m").unnest("m")
+
+
+def kind_params(names, essential):
+    """One param per name, extended unless the name is ``essential``."""
+    return [pytest.param(n, id=n, marks=() if n in essential else (EVERY_KIND,)) for n in names]
+
+
+def same(a: pl.Series, b: pl.Series) -> bool:
+    return a.equals(b, null_equal=True)
+
+
+def test_the_kinds_left_out_refuse_an_embargo():
+    for kind, words in REFUSE_EMBARGO.items():
+        with pytest.raises(ValueError, match=words):
+            kind_spec(kind, embargo=5.0)
+    # And every other kind takes one.
+    for kind in TAKE_EMBARGO + sorted(AFTER_TASK_277):
+        kind_spec(kind, embargo=5.0)
+
+
+# -- the shift on a row clock ------------------------------------------------
+
+#: Each kind's fields computed from its state alone, before the row: on a
+#: row clock the delayed run's row ``i`` reads the state the undelayed run's
+#: row ``i - E + 1`` read, since both have learned rows ``0 .. i - E``. Every
+#: kind's ``weight_sum`` and ``withheld_reason`` are such fields too. The
+#: rest read the row itself (a prediction, a distance, a statistic of the
+#: row), and ``settled_frac`` reads the clock, which held rows advance as
+#: learned ones do.
+STATE_READS: dict[str, frozenset[str]] = {
+    "bocpd": frozenset({"run_mode", "run_mean", "pred_x0", "pred_x1"}),
+    "corrchange": frozenset({"crit", "since_flag"}),
+    "deco": frozenset({"rho"}),
+    "ew_cov": frozenset({"mean_x0", "mean_x1", "std_x0", "std_x1", "corr_x0_x1"}),
+    "hmm": frozenset(
+        {"filtered_state0", "filtered_state1", "predicted_state0", "predicted_state1", "state"}
+    ),
+    # Holt reads no features: its forecast is the state's.
+    "holt": frozenset({"pred_y"}),
+    "lasso": frozenset({"penalty_selected_y"}),
+    "micro": frozenset({"n_clusters", "n_micro"}),
+    "seqtest": frozenset({"log_e_pos_y", "log_e_neg_y", "n_pos_y", "n_neg_y"}),
+}
+ALWAYS_STATE = frozenset({"weight_sum", "withheld_reason"})
+SHIFT_ROWS = 5
+SHIFT_CASES = [
+    pytest.param(
+        kind,
+        h,
+        id=f"{kind}-h{h}",
+        marks=() if kind in ("ewridge", "kmeans") and h == 50.0 else (EVERY_KIND,),
+    )
+    for kind in TAKE_EMBARGO
+    for h in ((None,) if kind in NO_HALF_LIFE else (math.inf, 50.0))
+]
+
+
+class TestTheShiftOnARowClock:
+    """Without a clock column a unit of delay is a row, so `embargo=E` learns
+    row ``i - E`` at row ``i``: the same rows, in the same order, at the same
+    steps as the undelayed run, ``E`` rows later. So the fit written after
+    row ``i`` (``coef`` and the fields laid out like it) is the undelayed
+    run's after row ``i - E``, and a field read from the state before row
+    ``i`` is the undelayed run's before row ``i - E + 1``. The probe of
+    2026-10-25 found this to the bit on fourteen kinds; here it is held on
+    every kind that takes an embargo, at no decay and at a half-life, with
+    uneven weights."""
+
+    @pytest.mark.parametrize(("kind", "half_life"), SHIFT_CASES)
+    def test_a_delay_of_e_rows_is_the_undelayed_run_e_rows_behind(self, kind, half_life):
+        e = SHIFT_ROWS
+        df = kind_frame(kind)
+        kw: dict[str, object] = {"weight": None if kind in NO_WEIGHT else "w"}
+        if kind not in NO_HALF_LIFE:
+            kw["half_life"] = half_life
+        if has_coef(kind):
+            kw["coef_every"] = 0
+        plain = unnested(kind_spec(kind, **kw), df)
+        held = unnested(kind_spec(kind, embargo=float(e), **kw), df)
+        n = df.height
+        # `marginal` writes `weight_sum` alone; its table is read from the
+        # state.
+        state = (ALWAYS_STATE & set(held.columns)) | STATE_READS.get(kind, frozenset())
+        assert "weight_sum" in state and state <= set(held.columns), state - set(held.columns)
+        for c in held.columns:
+            if c in AFTER_THE_UPDATE:
+                assert same(held[c][e:], plain[c][: n - e]), c
+                # Before the first release the fit is the unlearned one.
+                assert all(same(held[c][:1], held[c][r : r + 1]) for r in range(e)), c
+            elif c == "settled_frac":
+                assert same(held[c], plain[c]), c
+            elif c in state:
+                assert same(held[c][e - 1 :], plain[c][: n - e + 1]), c
+            else:
+                # The row's own reading: a field that matched here would be
+                # a state read this table leaves out.
+                assert not same(held[c][e - 1 :], plain[c][: n - e + 1]), (
+                    f"{kind}: {c} reads only the state; add it to STATE_READS"
+                )
+        # The delay took effect.
+        assert not same(held["weight_sum"], plain["weight_sum"])
+        if has_coef(kind):
+            assert held["coef"].null_count() < n // 2
+
+
+# -- scored as the matured rows would score it -------------------------------
+
+#: The delay on the clock of these tests, and the stream: steps of 1 to 5
+#: clock units, so a row waits for 3 to 15 others.
+MATURED_DELAY, MATURED_ROWS = 15.0, 300
+
+#: The cases: each kind as MINIMAL builds it, and a few with a part of the
+#: model the default leaves off or on (the error inflation, off by default;
+#: ``sgd``'s and ``pa``'s scaler, on by default).
+MATURED_CASES: dict[str, tuple[str, dict]] = {
+    **{k: (k, {}) for k in TAKE_EMBARGO},
+    "kalman-error-inflation": ("kalman", {"emit_error_inflation": True}),
+    "ewridge-error-inflation": ("ewridge", {"emit_error_inflation": True}),
+    "rls-error-inflation": ("rls", {"emit_error_inflation": True}),
+    "sgd-unscaled": ("sgd", {"standardize": False}),
+    "pa-unscaled": ("pa", {"standardize": False}),
+}
+
+#: DEFECT (task 278, batch 15; reported to the coordinator). Under an
+#: embargo a held row is scored with the model's `predict` given the row's
+#: own clock step, not the clock since the last row the model learned
+#: (which `settled_frac` already counts, through the held rows' clock). A
+#: model whose score reads that step then scores the row as if it sat one
+#: step after the last learned row: `holt` extrapolates its trend one step
+#: where the row is several ahead; `hmm` ages its transition counts by one
+#: step; `micro` decays its summaries' weights by one step before deciding
+#: where the row goes; `sgd` and `pa` fold the row into their scaler's
+#: moments at that step while the scaler warms up; `kalman` adds one step's
+#: drift to the row's estimation variance. Every other kind's score reads no
+#: step. A delay shorter than every step (below) hides it: there the row's
+#: own step is the clock since the last learned row. Each case runs the real
+#: relation, so the fix turns it into a pass (strict).
+SCORED_OVER_ITS_OWN_STEP: dict[str, tuple[str, ...]] = {
+    "holt": ("pred_y", "resid_y"),
+    "hmm": ("predicted_state0", "predicted_state1", "loglik"),
+    "micro": ("micro_id", "outlier"),
+    "sgd": ("pred_y", "resid_y"),
+    "pa": ("pred_y", "resid_y"),
+    "kalman-error-inflation": ("error_inflation_y",),
+}
+
+
+def matured_case(case: str, **kw) -> dict:
+    kind, extra = MATURED_CASES[case]
+    return kind_spec(kind, clock="t", gap_cap=1e9, **{**extra, **kw})
+
+
+def matured_frame(case: str) -> pl.DataFrame:
+    kind = MATURED_CASES[case][0]
+    return kind_frame(kind, n=MATURED_ROWS, steps=irregular_steps(MATURED_ROWS, 5))
+
+
+def matured_rows(t: np.ndarray, i: int, delay: float) -> int:
+    """How many rows have matured when row ``i`` is scored: those at least
+    ``delay`` behind it on the clock."""
+    return int(np.searchsorted(t, t[i] - delay, side="right"))
+
+
+def score_as_matured(case: str, df: pl.DataFrame, *, own_step: bool = False) -> dict[int, dict]:
+    """Each row as a plain bank fed only the rows matured by then scores it
+    (`ModelBank.predict`, which learns nothing), walking forward, by row; a
+    row with no matured row yet has nothing to be scored by and is left
+    out. With ``own_step`` the row is scored at the clock one of its own
+    steps after the last matured row instead."""
+    t = df["t"].to_numpy()
+    bank = po.ModelBank([matured_case(case)], threads=1)
+    fed, got = 0, {}
+    for i in range(df.height):
+        k = matured_rows(t, i, MATURED_DELAY)
+        if k > fed:
+            bank.fit_predict(df.slice(fed, k - fed))
+            fed = k
+        if k == 0:
+            continue
+        row = df.slice(i, 1)
+        if own_step:
+            row = row.with_columns(t=pl.lit(t[k - 1] + (t[i] - t[i - 1])))
+        got[i] = bank.predict(row).select("m").unnest("m").row(0, named=True)
+    return got
+
+
+def parted(held: pl.DataFrame, oracle: dict[int, dict]) -> dict[str, list[int]]:
+    """The rows on which each field read before the row differs from the
+    oracle's, over the rows the oracle scored. NaN equals NaN."""
+    out: dict[str, list[int]] = {}
+    for i, want in oracle.items():
+        for c, v in want.items():
+            if c in NOT_SCORED:
+                continue
+            got = held[c][i]
+            nan = isinstance(got, float) and isinstance(v, float) and got != got and v != v
+            if got != v and not nan:
+                out.setdefault(c, []).append(i)
+    return out
+
+
+#: Read before the row, the fields a bank's `predict` writes and the
+#: delayed row is compared on; `settled_frac` counts the held rows' clock
+#: (`settled_frac`'s own tests), and the rest are written after the update.
+NOT_SCORED = AFTER_THE_UPDATE | {"settled_frac"}
+
+
+def _matured_params():
+    out = []
+    for case in MATURED_CASES:
+        marks: list = [] if case in ("ewridge", "ew_cov", "holt") else [EVERY_KIND]
+        if case in SCORED_OVER_ITS_OWN_STEP:
+            marks.append(
+                pytest.mark.xfail(
+                    strict=True,
+                    reason="DEFECT: a held row is scored over its own clock step, not the "
+                    "clock since the last learned row",
+                )
+            )
+        out.append(pytest.param(case, id=case, marks=marks))
+    return out
+
+
+class TestScoredAsTheMaturedRowsWouldScoreIt:
+    """What an embargo means, with nothing between: a row is scored as a
+    bank fed only the rows whose delay had passed would score it. Each row
+    of the delayed run against `ModelBank.predict` on a plain bank fed
+    exactly the matured rows, every field read before the row, to the bit,
+    on an irregular clock where a row waits for 3 to 15 others. No doubled
+    stream: its lessons sit `delay` after their rows, which is not the
+    clock the rows were learned at (below)."""
+
+    @pytest.mark.parametrize("case", _matured_params())
+    def test_a_held_row_is_scored_as_the_matured_rows_would_score_it(self, case):
+        df = matured_frame(case)
+        held = unnested(matured_case(case, embargo=MATURED_DELAY), df)
+        oracle = score_as_matured(case, df)
+        assert len(oracle) > MATURED_ROWS * 0.9, len(oracle)
+        assert set(oracle[MATURED_ROWS - 1]) == set(held.columns)
+        bad = parted(held, oracle)
+        assert not bad, {c: (len(r), r[:4]) for c, r in bad.items()}
+
+    @pytest.mark.parametrize(
+        "case",
+        [
+            pytest.param(c, id=c, marks=() if c == "holt" else (EVERY_KIND,))
+            for c in SCORED_OVER_ITS_OWN_STEP
+        ],
+    )
+    def test_today_a_held_row_is_scored_over_its_own_step(self, case):
+        """DEFECT, today's behaviour pinned (task 278, batch 15): each row of
+        a case above is scored as the matured bank scores it at the clock one
+        of the row's own steps after the last matured row. The fields the
+        defect moves part from the matured bank's score at the row's real
+        clock, and only those."""
+        df = matured_frame(case)
+        held = unnested(matured_case(case, embargo=MATURED_DELAY), df)
+        assert not parted(held, score_as_matured(case, df, own_step=True))
+        moved = parted(held, score_as_matured(case, df))
+        assert set(moved) == set(SCORED_OVER_ITS_OWN_STEP[case]), moved
+
+
+# -- the doubled stream on every kind ----------------------------------------
+
+#: The kinds the doubled stream is the reference for, each with what it
+#: needs: every field but `settled_frac` (see `TestItIsTheDoubledStream`)
+#: to the bit, on a clock of one unit a row. Their state moves only on the
+#: rows they learn, by the steps between them, and their score reads no
+#: clock past the last learned row; the doubled stream's lessons sit `delay`
+#: after their rows, all by the same amount, which such a model cannot see.
+DOUBLED: dict[str, dict] = {
+    "bocpd": {},
+    "corrchange": {},
+    "deco": {},
+    "ew_class": {},
+    "ew_cov": {},
+    "ewridge": {},
+    "ftrl": {},
+    "kmeans": {},
+    "lasso": {},
+    "marginal": {},
+    "quantile": {},
+    # With no decay; at a half-life, `NOT_DOUBLED` says why not.
+    "rls": {"half_life": math.inf},
+    # With the scaler off; on, `NOT_DOUBLED` says why not.
+    "sgd": {"standardize": False},
+    "pa": {"standardize": False},
+}
+
+#: The kinds it is not the reference for, why, and how each is shown to
+#: part from it (`test_each_kind_left_out_parts_for_its_reason`): the
+#: spec's extra keywords, the delay, and a field that parts. The first four
+#: reasons are one: the score reads the clock since the last learned row,
+#: and the doubled stream's lesson sits `delay` later than its row.
+NOT_DOUBLED: dict[str, tuple[str, dict, float, str]] = {
+    "holt": (
+        "forecasts over the clock since its last observation, so a lesson that "
+        "sits `delay` late forecasts `delay` short",
+        {},
+        5.0,
+        "pred_y",
+    ),
+    "hmm": (
+        "ages its transition counts over the clock from the last learned row",
+        {},
+        5.0,
+        "predicted_state0",
+    ),
+    "micro": (
+        "decays its summaries over the clock from the last learned row before it places the row",
+        {},
+        1.0,
+        "micro_id",
+    ),
+    "sgd-scaled": (
+        "folds the row into its scaler's moments over that clock while the scaler warms up",
+        {},
+        5.0,
+        "pred_y",
+    ),
+    "pa-scaled": (
+        "folds the row into its scaler's moments over that clock while the scaler warms up",
+        {},
+        5.0,
+        "pred_y",
+    ),
+    "rls-decayed": (
+        "its prior `delta I` decays with the clock from the stream's first row, and "
+        "the doubled stream's first lesson comes `delay` after that row",
+        {"half_life": 50.0},
+        5.0,
+        "pred_y",
+    ),
+}
+#: Left out for a reason no stream shows: `seqtest` takes no weight, so the
+#: doubled stream's predict rows, a weight of 0, cannot be written for it;
+#: and `kalman` until its fix on another branch (task 278's kalman batch: P
+#: in units of the noise, a diffuse intercept on the first row that observes
+#: a target) merges, since that fix changes how its first rows are read, the
+#: doubled stream's leading predict rows among them. At this commit kalman
+#: matches the doubled stream to the bit (probe 2026-10-25).
+NOT_DOUBLED_AT_ALL = {"seqtest": "weight does not apply to seqtest", "kalman": None}
+
+
+def doubled_against_native(kind: str, delay: float, **kw) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """The native run and the bank over the doubled stream's predict rows,
+    on a clock of one unit a row, ``coef`` on every row where there is one."""
+    df = kind_frame(kind, steps=np.r_[0.0, np.ones(399)])
+    if has_coef(kind):
+        kw.setdefault("coef_every", 0)
+    native = unnested(kind_spec(kind, clock="t", gap_cap=1e9, embargo=delay, **kw), df)
+    frame_ = stream.embargo(df, clock="t", delay=delay)
+    spec_ = kind_spec(kind, clock="t", gap_cap=1e9, weight=stream.ROLE + "_weight", **kw)
+    oracle = (
+        po.ModelBank([spec_], threads=1)
+        .fit_predict(frame_)
+        .filter(pl.col(stream.ROLE) == "predict")
+        .select("m")
+        .unnest("m")
+    )
+    return native, oracle
+
+
+class TestTheDoubledStreamOnEveryKind:
+    @pytest.mark.parametrize("delay", [1.0, 5.0])
+    @pytest.mark.parametrize("kind", kind_params(DOUBLED, essential={"kmeans"}))
+    def test_every_field_matches_the_doubled_stream(self, kind, delay):
+        native, oracle = doubled_against_native(kind, delay, **DOUBLED[kind])
+        assert native.columns == oracle.columns
+        bad = [c for c in native.columns if c != "settled_frac" and not same(native[c], oracle[c])]
+        assert not bad, bad
+        assert native["weight_sum"].null_count() < native.height
+
+    @pytest.mark.parametrize("case", kind_params(NOT_DOUBLED, essential={"holt"}))
+    def test_each_kind_left_out_parts_for_its_reason(self, case):
+        """The reason a kind is left out is real: run as `NOT_DOUBLED` says,
+        the field it names parts from the doubled stream."""
+        _, extra, delay, field = NOT_DOUBLED[case]
+        kind = case.split("-")[0]
+        native, oracle = doubled_against_native(kind, delay, **extra)
+        assert not same(native[field], oracle[field]), case
+        # The weight is read from the learned rows alone, and does not part.
+        assert same(native["weight_sum"], oracle["weight_sum"]), case
+
+    def test_seqtest_takes_no_weight_to_zero(self):
+        with pytest.raises(ValueError, match=NOT_DOUBLED_AT_ALL["seqtest"]):
+            kind_spec("seqtest", weight="w")
+
+    def test_every_kind_is_held_or_left_out_with_its_reason(self):
+        named = set(DOUBLED) | {c.split("-")[0] for c in NOT_DOUBLED} | set(NOT_DOUBLED_AT_ALL)
+        assert named == set(TAKE_EMBARGO), named ^ set(TAKE_EMBARGO)
+
+
+# -- a delay shorter than every clock step -----------------------------------
+
+#: The residual diagnostics, on wherever a kind scores a target, so the
+#: residual path is in the relation too.
+DIAGNOSTICS = dict(
+    emit_sigma=True,
+    emit_metrics=True,
+    conformal=0.9,
+    emit_autocorr=True,
+    emit_drift=True,
+    drift_threshold=20.0,
+    emit_calibration=True,
+    emit_breaks=True,
+    # The target looks no row ahead (the breaks' long-run variance needs to
+    # be told, on a clock where the embargo is not in rows).
+    horizon_rows=0,
+)
+SHORT = 0.5
+#: The drift flags' prefix.
+DRIFT = "drift_"
+#: The kinds the level shift halfway does not trip the detector on: `holt`
+#: follows a level, and `ftrl` scores a probability against a 0/1 label.
+QUIET = frozenset({"holt", "ftrl"})
+
+
+def scores_a_target(kind: str) -> bool:
+    return any(f.startswith("pred_y") for f in po.spec.output_fields(kind_spec(kind)))
+
+
+def short_frame(kind: str) -> pl.DataFrame:
+    """Steps of 1 to 3 clock units: every one longer than ``SHORT``."""
+    return kind_frame(kind, steps=irregular_steps(400, 3))
+
+
+class TestADelayShorterThanEveryStep:
+    """A delay shorter than every clock step releases each row at the next,
+    before that row is scored: the model has learned every row before the
+    one it scores, as without a delay. So the run is the undelayed run, every
+    field to the bit, but for the two things a release does where it lands:
+    the fit written after row ``i`` has not learned row ``i`` yet, so `coef`
+    is the undelayed run's one row back; and a drift flag goes on the row
+    whose clock released the label that tripped it (`TestDriftUnderAnEmbargo`),
+    one row on. The doubled stream with such a delay is the undelayed run too
+    (with no decay, below). Nothing shorter can be asked: a delay of 0 is
+    refused, with leave-it-out as the reason."""
+
+    @pytest.mark.parametrize("kind", kind_params(TAKE_EMBARGO, essential={"ewridge", "holt"}))
+    def test_it_is_the_undelayed_run(self, kind):
+        df = short_frame(kind)
+        kw: dict[str, object] = {"clock": "t", "gap_cap": 1e9}
+        if scores_a_target(kind):
+            kw.update(DIAGNOSTICS)
+        if has_coef(kind):
+            kw["coef_every"] = 0
+        plain = unnested(kind_spec(kind, **kw), df)
+        held = unnested(kind_spec(kind, embargo=SHORT, **kw), df)
+        assert held.columns == plain.columns
+        flags = 0
+        for c in held.columns:
+            if c in AFTER_THE_UPDATE:
+                assert same(held[c][1:], plain[c][:-1]), c
+            elif c.startswith(DRIFT):
+                assert held[c][0] in (None, False), c
+                assert same(held[c][1:], plain[c][:-1]), c
+                flags += int(plain[c].sum() or 0)
+            else:
+                assert same(held[c], plain[c]), c
+        if scores_a_target(kind) and kind not in QUIET:
+            # The level shift halfway trips the detector: the flag's move is
+            # seen, not assumed.
+            assert flags > 0, kind
+
+    @pytest.mark.parametrize(
+        "kind",
+        kind_params(
+            [k for k in TAKE_EMBARGO if k not in ("holt", "seqtest", "kalman")],
+            essential={"ewridge", "hmm"},
+        ),
+    )
+    def test_the_doubled_stream_is_the_undelayed_run_with_no_decay(self, kind):
+        """Each lesson sits ``SHORT`` after its row and before the next row,
+        so the bank over the doubled stream's predict rows is the undelayed
+        bank, every field but `settled_frac`, `coef` (the predict row's
+        `coef` has not learned its own row) and the drift flags, with no
+        decay. The detector sums each residual's excess times the clock step
+        of the row that carries it, and a lesson's step is the ``SHORT``
+        since its own predict row, not the row's: its flag comes later, on a
+        lesson row. Under a decay the
+        step split at the lesson multiplies two decay factors where the
+        undelayed run multiplies one, which agree to rounding only, and the
+        kinds `NOT_DOUBLED` names read the clock the lesson moved. Holt is the
+        one kind that parts with no decay: its lesson ``SHORT`` late forecasts
+        the next row ``SHORT`` short. `seqtest` takes no weight, and `kalman`
+        waits for its fix (`NOT_DOUBLED_AT_ALL`)."""
+        df = short_frame(kind)
+        kw: dict[str, object] = {"clock": "t", "gap_cap": 1e9}
+        if kind not in NO_HALF_LIFE:
+            kw["half_life"] = math.inf
+        if scores_a_target(kind):
+            kw.update(DIAGNOSTICS)
+        plain = unnested(kind_spec(kind, weight="w", **kw), df)
+        doubled_ = stream.embargo(df, clock="t", delay=SHORT, weight="w")
+        oracle = (
+            po.ModelBank([kind_spec(kind, weight="w", **kw)], threads=1)
+            .fit_predict(doubled_)
+            .filter(pl.col(stream.ROLE) == "predict")
+            .select("m")
+            .unnest("m")
+        )
+        skip = AFTER_THE_UPDATE | {"settled_frac"}
+        bad = [
+            c
+            for c in plain.columns
+            if c not in skip and not c.startswith(DRIFT) and not same(plain[c], oracle[c])
+        ]
+        assert not bad, bad
+
+    def test_holt_parts_from_the_doubled_stream_even_with_no_decay(self):
+        df = short_frame("holt")
+        kw = dict(clock="t", gap_cap=1e9, half_life=math.inf, weight="w")
+        plain = unnested(kind_spec("holt", **kw), df)
+        oracle = (
+            po.ModelBank([kind_spec("holt", **kw)], threads=1)
+            .fit_predict(stream.embargo(df, clock="t", delay=SHORT, weight="w"))
+            .filter(pl.col(stream.ROLE) == "predict")
+            .select("m")
+            .unnest("m")
+        )
+        assert same(plain["weight_sum"], oracle["weight_sum"])
+        assert not same(plain["pred_y"], oracle["pred_y"])
+
+
+# -- the legs that wait for task 277 -----------------------------------------
+
+
+@pytest.mark.parametrize("kind", sorted(AFTER_TASK_277))
+def test_the_waiting_legs_are_ready(kind):
+    """The `huber` legs build and run every relation above, so adding them
+    is a move into the sweeps (`TAKE_EMBARGO` and `DOUBLED`), not a build."""
+    df = kind_frame(kind)
+    kw = {"weight": "w", "coef_every": 0}
+    assert unnested(kind_spec(kind, embargo=5.0, **kw), df).height == df.height
+    native, oracle = doubled_against_native(kind, 5.0)
+    assert native.height == oracle.height == df.height
+    short = short_frame(kind)
+    assert unnested(kind_spec(kind, clock="t", gap_cap=1e9, embargo=SHORT), short).height == 400
+    bank = po.ModelBank([kind_spec(kind, clock="t", gap_cap=1e9)])
+    bank.fit_predict(short.head(100))
+    assert bank.predict(short.slice(120, 1)).height == 1
+
+
+def test_the_huber_legs_still_wait():
+    """Task 277's warm-up is a parameter ``po.spec.huber`` (or ``po.spec.sgd``)
+    did not take before it. When one arrives, move ``AFTER_TASK_277``'s
+    entries into the sweeps."""
+    for builder, before in BEFORE_277.items():
+        now = set(inspect.signature(getattr(po.spec, builder)).parameters)
+        new = sorted(now - before)
+        assert not new, (
+            f"po.spec.{builder} gained {new}: if this is task 277's warm-up, move "
+            f"AFTER_TASK_277's entries into the sweeps"
+        )
