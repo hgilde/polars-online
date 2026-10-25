@@ -320,3 +320,38 @@ def public_quotes_and_trades_or_skip(
         return public_quotes_and_trades(symbol, date)
     except Offline as e:
         pytest.skip(f"offline: could not download {symbol} quotes and trades ({e.__cause__})")
+
+
+# ---------------------------------------------------------------------------
+# Classic robust-regression datasets (docs/PLAN.md task 278)
+
+#: Rdatasets (Vincent Arel-Bundock's collection of the datasets R packages
+#: ship), served as CSV from its GitHub pages. The robust-regression sets are
+#: Rousseeuw and Leroy's (*Robust Regression and Outlier Detection*, 1987),
+#: as R's ``robustbase`` and ``datasets`` packages distribute them.
+_RDATASETS = "https://vincentarelbundock.github.io/Rdatasets/csv/{package}/{name}.csv"
+
+
+def rdataset(package: str, name: str) -> pl.DataFrame:
+    """One Rdatasets table, cached under ``.cache/rdatasets/``; its row-name
+    column is dropped. Raises :class:`Offline` when the network fails."""
+    folder = CACHE_DIR / "rdatasets"
+    folder.mkdir(parents=True, exist_ok=True)
+    cached = folder / f"{package}-{name}.parquet"
+    if cached.exists():
+        return pl.read_parquet(cached)
+    raw = _download(_RDATASETS.format(package=package, name=name))
+    df = pl.read_csv(io.BytesIO(raw)).drop("rownames")
+    df = df.with_columns(pl.col(c).cast(pl.Float64) for c in df.columns)
+    write_atomically(cached, df.write_parquet)
+    return df
+
+
+def rdataset_or_skip(package: str, name: str) -> pl.DataFrame:
+    """:func:`rdataset`, skipping the test when offline (hard rule 1)."""
+    import pytest
+
+    try:
+        return rdataset(package, name)
+    except Offline as e:
+        pytest.skip(f"offline: could not download Rdatasets {package}/{name} ({e.__cause__})")
