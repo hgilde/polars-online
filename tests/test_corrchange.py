@@ -12,6 +12,7 @@ on a stationary stream.
 """
 
 import itertools
+import math
 
 import numpy as np
 import polars as pl
@@ -19,7 +20,7 @@ import pytest
 
 import polars_online as po
 
-TIER = "essential"
+TIER = "mixed"
 
 
 def pair(n, rho, seed=0, k=2):
@@ -274,26 +275,65 @@ KIND_KW = {
 }
 
 
-@pytest.mark.parametrize("kind", ["monitor", "window", "sequential"])
-@pytest.mark.parametrize("size", [1, 13, 300])
+#: The window kind's permutation knobs off their defaults, and its reset:
+#: the redraw cadence, the blocks and the generator are state that a chunk
+#: boundary or a save must carry (task 278, F2).
+CHUNK_KW = {
+    **KIND_KW,
+    "window, blocks": {
+        "kind": "window",
+        "window_rows": 50,
+        "n_perm": 30,
+        "perm_block": 7,
+        "permute_every_rows": 3,
+        "seed": 11,
+    },
+    "window, reset": {
+        "kind": "window",
+        "window_rows": 40,
+        "n_perm": 30,
+        "permute_every_rows": 5,
+        "change_action": "reset",
+    },
+}
+
+
+def broken():
+    """1,300 rows in ten segments whose correlation alternates 0 and 0.9, so
+    every kind flags and the reset fires inside each chunked run."""
+    return pl.concat([pair(130, (0.0, 0.9)[i % 2], seed=40 + i) for i in range(10)])
+
+
+@pytest.mark.parametrize("kind", list(CHUNK_KW))
+@pytest.mark.parametrize("size", [1, 7, 13, 300, 600])
 def test_chunk_invariance(kind, size):
-    df = pair(600, 0.4, seed=15)
-    kw = KIND_KW[kind]
+    # One row at a time over half the frame: it holds the same boundaries,
+    # five breaks, at half the essentials' time.
+    df = broken().head(650 if size == 1 else 1300)
+    kw = CHUNK_KW[kind]
     want = run(df, **kw)
+    # Evidence the paths ran: each kind flags, and a window kind redraws.
+    assert want["flag"].fill_null(False).sum() >= 2, kind
+    if kw.get("kind") == "window":
+        assert want["crit"].drop_nulls().n_unique() > 3, kind
     bank = po.ModelBank([spec(**kw)])
     got = pl.concat([bank.fit_predict(df[i : i + size]) for i in range(0, df.height, size)])
     assert want.equals(got["c"].struct.unnest())
 
 
-@pytest.mark.parametrize("kind", ["monitor", "sequential"])
-@pytest.mark.parametrize("cut", [60, 170, 300])
+@pytest.mark.parametrize("kind", list(CHUNK_KW))
+@pytest.mark.parametrize("cut", [60, 101, 170, 300, 707])
 def test_save_load_mid_stream(kind, cut):
     """A state saved in a span, in a history or in a monitoring period goes
     on as the unbroken stream does; the sequential kind's critical value is
-    recomputed on load, not stored."""
-    df = pair(600, 0.4, seed=16)
-    s = spec(**KIND_KW[kind])
-    want = run(df, **KIND_KW[kind])
+    recomputed on load, not stored. The window kind had no such test (task
+    278, F2): its generator, the critical value in force and the rows since
+    it was drawn are state, and a cut falls before both windows fill (60),
+    on the first draw's row (101 under a window of 50) and between redraws."""
+    df = broken()
+    kw = CHUNK_KW[kind]
+    s = spec(**kw)
+    want = run(df, **kw)
     bank = po.ModelBank([s])
     bank.fit_predict(df[:cut])
     again = po.ModelBank.load_bytes(bank.save_bytes(), [s])
@@ -606,3 +646,437 @@ def test_the_size_is_near_nominal_on_columns_of_different_scale():
     # The wrong gradient inflated `D̂` by ~1e4 here, so `Q` never reached the
     # critical value and the size read zero -- inside the band above.
     assert flags >= 2, flags
+
+
+# --- every parameter, without a library (task 278, F2) -----------------------
+#
+# No third-party library computes any of the three tests, so each parameter
+# is held to a relation it must keep: an equivalent spelling, a monotone
+# effect, a limit with a hand-checkable answer, a definition written from the
+# paper, its boundaries, and an activation test showing it moves what it
+# should and nothing else.
+
+#: Two windows of 50 over a stream whose correlation moves 0 -> 0.6 -> 0,
+#: with the permutation quantile in force on most rows.
+WINDOW = {"kind": "window", "window_rows": 50, "features": ["x0", "x1"]}
+
+
+def three_regimes():
+    return pl.concat([pair(300, 0.0, seed=1), pair(300, 0.6, seed=2), pair(300, 0.0, seed=3)])
+
+
+def test_the_seed_reproduces_and_moves_only_the_critical_value():
+    """``seed`` seeds the draws: the same seed twice is the same frame,
+    ``None`` is 0, and so is leaving it out. Another seed moves the critical
+    value and what it decides -- ``flag``, ``since_flag``, ``since_change``
+    -- and never ``stat`` or ``weight_sum``, which the data alone set."""
+    df = three_regimes()
+    default = run(df, **WINDOW)
+    assert default.equals(run(df, **WINDOW))
+    assert default.equals(run(df, **WINDOW, seed=None))
+    assert default.equals(run(df, **WINDOW, seed=0))
+    other = run(df, **WINDOW, seed=7)
+    for col in ("stat", "weight_sum"):
+        assert other[col].equals(default[col]), col
+    crit_a, crit_b = default["crit"].to_numpy(), other["crit"].to_numpy()
+    live = np.isfinite(crit_a)
+    assert np.array_equal(live, np.isfinite(crit_b))
+    moved = int((crit_a[live] != crit_b[live]).sum())
+    print(f"seed 0 vs 7: crit differs on {moved} of {live.sum()} rows")
+    assert moved > 0.9 * live.sum()
+    assert not other["flag"].equals(default["flag"])
+
+
+@pytest.mark.parametrize(
+    ("knob", "values"),
+    [("n_perm", (20, 1000)), ("perm_block", (1, 10)), ("permute_every_rows", (1, 50))],
+)
+def test_each_permutation_knob_moves_the_critical_value_and_not_the_statistic(knob, values):
+    """Activation: each of the permutation quantile's knobs changes the
+    critical value in force, at the same seed, and leaves the statistic --
+    a function of the two windows alone -- where it was."""
+    df = three_regimes()
+    a, b = (run(df, **WINDOW, **{knob: v}) for v in values)
+    assert a["stat"].equals(b["stat"])
+    crit_a, crit_b = a["crit"].to_numpy(), b["crit"].to_numpy()
+    live = np.isfinite(crit_a) & np.isfinite(crit_b)
+    assert live.sum() > 700
+    assert (crit_a[live] != crit_b[live]).mean() > 0.9, knob
+
+
+def test_n_perm_tightens_the_critical_value_around_its_limit():
+    """The essentials' share of the grid below: on one pool, the first
+    critical value drawn over 20 seeds spreads less at 2,000 draws than at
+    20. An empirical quantile's error falls like ``1 / sqrt(n_perm)``, so the
+    ratio is 10 in the limit; measured 8.2 over these 20 seeds and 7.6 over
+    50 (2026-10-25)."""
+    df = pair(101, 0.4, seed=280, k=3)
+    kw = {"kind": "window", "window_rows": 50, "features": ["x0", "x1", "x2"]}
+    spread = {}
+    for n in (20, 2000):
+        specs = [po.spec.corrchange(f"s{s}", n_perm=n, seed=s, **kw) for s in range(20)]
+        out = po.ModelBank(specs).fit_predict(df)
+        spread[n] = np.std([out[f"s{s}"].struct.field("crit")[100] for s in range(20)])
+    print(f"crit's spread over 20 seeds: {spread}")
+    assert spread[20] > 4 * spread[2000], spread
+
+
+@pytest.mark.oracle_grid(reason="100 seeds at four sizes of n_perm, and 400,000 reference draws")
+def test_n_perm_converges_at_the_rate_of_an_empirical_quantile():
+    """The critical value is the empirical ``1 - alpha`` quantile of
+    ``n_perm`` permutations of the pooled rows. As ``n_perm`` grows it
+    converges to the quantile of the permutation distribution, its error
+    falling like ``1 / sqrt(n_perm)``.
+
+    The reference is that distribution's quantile from 400,000 draws in
+    NumPy (the statistic from ``np.corrcoef``'s definition, the quantile
+    ``inverted_cdf``, which is the empirical quantile's definition), good to
+    about 0.002: two reference seeds differ by 0.0023. Judged by the worst of
+    100 seeds and the 95th percentile, at each size. Measured (2026-10-25),
+    worst / p95: 20 draws 0.261 / 0.215 (biased low: the 19th of 20); 200,
+    0.128 / 0.094; 2,000, 0.039 / 0.029; 20,000, 0.017 / 0.0092 -- a slope
+    of -0.50 at the 95th percentile from 200 to 20,000.
+    """
+    w, k, alpha = 50, 3, 0.05
+    df = pair(2 * w + 1, 0.4, seed=280, k=k)
+    cols = [f"x{i}" for i in range(k)]
+    pool = df.to_numpy()[: 2 * w]
+    iu = np.triu_indices(k, 1)
+    rng = np.random.default_rng(278)
+    draws = []
+    for _ in range(20):
+        perm = np.argsort(rng.random((20_000, 2 * w)), axis=1)
+        rows = pool[perm]
+        r = [np.array([np.corrcoef(b.T)[iu] for b in half]) for half in (rows[:, :w], rows[:, w:])]
+        draws.append(np.abs(r[0] - r[1]).sum(axis=1))
+    limit = float(np.quantile(np.concatenate(draws), 1 - alpha, method="inverted_cdf"))
+
+    seeds = range(100)
+    worst, p95 = {}, {}
+    for n in (20, 200, 2_000, 20_000):
+        specs = [
+            po.spec.corrchange(
+                f"s{s}", features=cols, kind="window", window_rows=w, n_perm=n, seed=s
+            )
+            for s in seeds
+        ]
+        out = po.ModelBank(specs).fit_predict(df)
+        crit = np.array([out[f"s{s}"].struct.field("crit")[2 * w] for s in seeds])
+        err = np.abs(crit - limit)
+        worst[n], p95[n] = float(err.max()), float(np.quantile(err, 0.95))
+    print(f"limit {limit:.4f}; worst {worst}; p95 {p95}")
+    # The rate: 100x the draws, a tenth of the error, at the tail; a
+    # slope of -0.35 or steeper on a log-log line through 200 and 20,000.
+    assert np.log(p95[20_000] / p95[200]) / np.log(100) < -0.35, p95
+    assert worst[20] > worst[200] > worst[2_000] > worst[20_000], worst
+    # The endpoint: 20,000 draws' worst seed within 0.03 of the limit
+    # (measured 0.017; 0.0045 of it is the draws' own sd, 0.002 the
+    # reference's).
+    assert worst[20_000] < 0.03, worst
+
+
+def test_a_block_of_a_whole_window_makes_the_quantile_the_observed_statistic():
+    """``perm_block = window_rows`` leaves two blocks, so every draw is the
+    two windows as they are or swapped, and the statistic is the same both
+    ways: the critical value drawn after a row is that row's statistic,
+    exactly, so the next row flags just when its statistic rose."""
+    w = 30
+    out = run(three_regimes(), **{**WINDOW, "window_rows": w}, perm_block=w, permute_every_rows=1)
+    stat, crit, flag = (out[c].to_list() for c in ("stat", "crit", "flag"))
+    assert crit[2 * w - 1] is None
+    for t in range(2 * w - 1, len(stat) - 1):
+        assert crit[t + 1] == stat[t], t
+        assert flag[t + 1] == (stat[t + 1] > stat[t]), t
+
+
+@pytest.mark.parametrize(
+    ("kw", "message"),
+    [
+        ({"n_perm": 19}, "n_perm >= 20"),
+        ({"n_perm": 2**20 + 1}, "n_perm must be <= 1048576, got 1048577"),
+        ({"perm_block": 31}, r"perm_block must be 1..=30 \(window_rows\)"),
+        ({"alpha": 0.0}, "alpha must be strictly between 0 and 1"),
+        ({"alpha": 1.0}, "alpha must be strictly between 0 and 1"),
+    ],
+)
+def test_the_permutation_knobs_bounds_are_refused_by_name(kw, message):
+    with pytest.raises(ValueError, match=message):
+        spec(kind="window", window_rows=30, **kw)
+
+
+def test_the_permutation_knobs_bounds_are_accepted():
+    """20 and 2^20 draws, a block of the whole window and of one row: each
+    bound is inclusive, and each draws a critical value. 2^20 draws over
+    windows of 3 rows, so the ceiling runs in a second."""
+    for w, kw in (
+        (30, {"n_perm": 20}),
+        (3, {"n_perm": 2**20}),
+        (30, {"perm_block": 30}),
+        (30, {"perm_block": 1}),
+    ):
+        out = run(pair(2 * w + 1, 0.3, seed=5), kind="window", window_rows=w, **kw)
+        assert out["stat"].drop_nulls().len() == 2, kw
+        assert out["crit"][2 * w] is not None, kw
+
+
+def test_alpha_nests_the_flags():
+    """A higher level never flags less, row by row. Under ``"monitor"`` the
+    statistic does not read ``alpha`` and the Kolmogorov quantile falls as
+    it rises. Under ``"window"`` the same seed gives the same draws, and the
+    level picks a lower order statistic of them, so the critical value falls
+    on every row."""
+    spans = pl.concat([pair(50, (0.1, 0.7)[i % 2], seed=100 + i) for i in range(80)])
+    window = three_regimes()
+    for frame, kw in (
+        (spans, {"window_rows": 100, "alpha_adjust": "none"}),
+        (window, {**WINDOW, "permute_every_rows": 5}),
+    ):
+        flags, crits = [], []
+        for alpha in (0.001, 0.01, 0.05, 0.2, 0.5):
+            out = run(frame, alpha=alpha, **kw)
+            flags.append(out["flag"].fill_null(False).to_numpy())
+            crits.append(out["crit"].to_numpy())
+        counts = [int(f.sum()) for f in flags]
+        print(kw.get("kind", "monitor"), "flags at rising alpha:", counts)
+        assert counts[0] < counts[-1], counts
+        for lo, hi, c_lo, c_hi in zip(flags, flags[1:], crits, crits[1:], strict=False):
+            assert np.all(hi >= lo)
+            live = np.isfinite(c_lo)
+            assert np.all(c_hi[live] < c_lo[live])
+
+
+@pytest.mark.parametrize("kind", ["monitor", "sequential"])
+@pytest.mark.parametrize("k", [3, 4])
+def test_bonferroni_at_alpha_is_none_at_alpha_over_the_pairs(kind, k):
+    """``alpha_adjust="bonferroni"`` tests each pair at ``alpha / npairs``,
+    so it is ``"none"`` at that level, to the bit, on every field."""
+    cols = [f"x{i}" for i in range(k)]
+    # The break mid-span, at row 375, so a span straddles it.
+    df = pl.concat([pair(375, 0.2, seed=9, k=k), pair(525, 0.8, seed=10, k=k)])
+    kw = {"features": cols, "kind": kind, "window_rows": 150}
+    adjusted = run(df, alpha=0.05, **kw)
+    plain = run(df, alpha=0.05 / (k * (k - 1) // 2), alpha_adjust="none", **kw)
+    assert adjusted.equals(plain)
+    assert adjusted["flag"].fill_null(False).any(), "a flag, so the level was read"
+    # And it is an adjustment: "none" at alpha itself is a lower value.
+    assert run(df, alpha=0.05, alpha_adjust="none", **kw)["crit"].max() < adjusted["crit"].min()
+
+
+@pytest.mark.parametrize("kind", ["monitor", "sequential"])
+@pytest.mark.parametrize("m", [8, 20, 21, 150])
+def test_the_default_bandwidth_is_the_floor_of_ln_m(kind, m):
+    """Left out, the Bartlett bandwidth is ``floor(ln window_rows)``: 2 at 8
+    and at 20, 3 at 21 (``e^3`` is 20.09), 5 at 150. The explicit value is
+    the same frame to the bit, and one either side of it is not, so the
+    equality is the kernel reading the value."""
+    df = pl.concat([pair(300, 0.2, seed=11), pair(300, 0.7, seed=12)])
+    kw = {"kind": kind, "window_rows": m}
+    want = math.floor(math.log(m))
+    default = run(df, **kw)
+    assert default.equals(run(df, **kw, bandwidth=want))
+    for other in (want - 1, want + 1):
+        if other >= 1:
+            assert not default["stat"].equals(run(df, **kw, bandwidth=other)["stat"]), other
+
+
+@pytest.mark.parametrize("kind", ["monitor", "sequential"])
+def test_a_bandwidth_of_the_whole_span_is_the_largest_accepted(kind):
+    """The bandwidth is at most ``window_rows``: a span of ``m`` rows has no
+    lag past ``m - 1``, so a larger one adds no lag and only flattens the
+    weights toward 1, where the centred moments' lags sum to 0. ``m`` itself
+    is accepted and gives a statistic; ``m + 1`` is refused by name, under
+    both kinds that read it."""
+    df = pair(400, 0.4, seed=13)
+    out = run(df, kind=kind, window_rows=50, bandwidth=50)
+    stats = out["stat"].drop_nulls()
+    assert stats.len() > 0 and np.isfinite(stats.to_numpy()).all()
+    with pytest.raises(ValueError, match=r"bandwidth must be at most window_rows \(50\), got 51"):
+        spec(kind=kind, window_rows=50, bandwidth=51)
+
+
+def _sequential_break():
+    return pl.concat([pair(400, 0.3, seed=4), pair(600, 0.8, seed=5)])
+
+
+def test_a_sequential_crit_replaces_wied_and_galeanos_value():
+    """``crit`` under ``"sequential"`` is reported on every live row as
+    given, and a row flags just when its statistic is above it. Given Wied &
+    Galeano's own value it is the default frame, to the bit."""
+    df = _sequential_break()
+    kw = {"kind": "sequential", "window_rows": 200}
+    default = run(df, **kw)
+    theirs = default["crit"].drop_nulls().unique()
+    assert theirs.len() == 1
+    assert run(df, **kw, crit=theirs[0]).equals(default)
+    for crit in (0.5, 1.0, 50.0):
+        live = run(df, **kw, crit=crit).filter(pl.col("stat").is_not_null())
+        assert live["crit"].unique().to_list() == [crit]
+        assert (live["flag"] == (live["stat"] > crit)).all(), crit
+
+
+def test_a_larger_sequential_crit_flags_no_sooner():
+    """A cycle ends at its first flag, so flag counts need not nest across
+    values of ``crit``; what must hold is that the two runs are the same
+    frame up to the smaller value's first flag, and the larger flags there
+    or later, or never."""
+    df = _sequential_break()
+    kw = {"kind": "sequential", "window_rows": 200}
+    firsts = []
+    for crit in (0.5, 1.0, 2.0, 50.0):
+        out = run(df, **kw, crit=crit)
+        flag = out["flag"].fill_null(False)
+        firsts.append((out, int(flag.arg_max()) if flag.any() else None))
+    print("first flags at rising crit:", [f for _, f in firsts])
+    assert firsts[0][1] is not None and firsts[-1][1] is None
+    for (lo, at), (hi, later) in zip(firsts, firsts[1:], strict=False):
+        if at is None:
+            assert later is None
+            continue
+        assert lo["stat"][: at + 1].equals(hi["stat"][: at + 1])
+        assert later is None or later >= at
+
+
+def test_the_sequential_critical_value_rises_with_the_boundary_exponent():
+    """At a fixed ``T`` the boundary is lower at the start of the period the
+    larger ``boundary_gamma`` is, so its critical value is higher: Wied &
+    Galeano's Table 1 reads 1.5578, 1.9924, 2.6844 at ``T = 1``."""
+    crits = [_sequential_crit(100, 1.0, g) for g in (0.0, 0.1, 0.25, 0.45)]
+    assert all(b > a for a, b in zip(crits, crits[1:], strict=False)), crits
+
+
+@pytest.mark.extended(reason="the critical value's solve takes about 3 s at 0.49")
+def test_the_largest_boundary_exponent_is_accepted_and_finite():
+    at_45 = _sequential_crit(100, 1.0, 0.45)
+    at_49 = _sequential_crit(100, 1.0, 0.49)
+    assert np.isfinite(at_49) and at_49 > at_45, (at_45, at_49)
+
+
+def test_monitor_rows_defaults_to_window_rows():
+    df = pair(1000, 0.4, seed=6)
+    kw = {"kind": "sequential", "window_rows": 100}
+    assert run(df, **kw).equals(run(df, **kw, monitor_rows=100))
+    assert not run(df, **kw).equals(run(df, **kw, monitor_rows=101))
+
+
+def test_the_scalar_standardisers_half_life_moves_the_statistic():
+    """``half_life`` is accepted under ``scalar`` only, and there it decays
+    the standardiser and ``weight_sum``: 20, 2,000 and none give three
+    statistics and three weights."""
+    cols = [f"x{i}" for i in range(4)]
+    df = pair(1000, 0.4, seed=7, k=4)
+    outs = [
+        run(df, features=cols, scalar=True, **({} if h is None else {"half_life": h}))
+        for h in (None, 20.0, 2000.0)
+    ]
+    assert outs[0]["weight_sum"][-1] == 999.0
+    for a, b in itertools.combinations(outs, 2):
+        assert not a["stat"].equals(b["stat"])
+        assert a["weight_sum"][-1] != b["weight_sum"][-1]
+
+
+@pytest.mark.parametrize("norm", ["l1", "linf"])
+def test_the_window_statistic_is_its_norm_on_every_row(norm):
+    """The definition, by hand: ``norm(vech(R_pre - R_post))`` over the two
+    windows ending at each row, the correlations from ``np.corrcoef``. No
+    library computes the statistic, so this is the reference, on every row
+    of a stream with a break, at four columns (six pairs); ``linf`` the
+    largest pair, ``l1`` their sum."""
+    w, k = 40, 4
+    df = pl.concat([pair(100, 0.1, seed=8, k=k), pair(100, 0.8, seed=9, k=k)])
+    cols = [f"x{i}" for i in range(k)]
+    out = run(df, features=cols, kind="window", window_rows=w, crit=9.0, norm=norm)
+    x = df.to_numpy()
+    iu = np.triu_indices(k, 1)
+    reduce = np.max if norm == "linf" else np.sum
+    for t in range(df.height):
+        if t < 2 * w - 1:
+            assert out["stat"][t] is None
+            continue
+        pre = np.corrcoef(x[t - 2 * w + 1 : t - w + 1].T)[iu]
+        post = np.corrcoef(x[t - w + 1 : t + 1].T)[iu]
+        assert out["stat"][t] == pytest.approx(reduce(np.abs(pre - post)), rel=1e-12), t
+
+
+def test_reset_under_the_permutation_quantile():
+    """``change_action="reset"`` without ``crit``: the quantile is drawn from
+    the windows, so a reset also discards the value in force. Each flag
+    empties both windows, so the next ``2 * window_rows - 1`` rows report
+    nothing, the row after them reports a statistic with no critical value
+    yet (drawn after it), and ``since_flag`` there counts the ``2 *
+    window_rows`` rows since the flag. Between flags the statistic is a
+    fresh bank's on the rows after the flag: the windows start over. The
+    critical values are not: the generator draws on, so they are new draws,
+    not a replay of the first ones."""
+    w = 40
+    df = broken()
+    kw = {"kind": "window", "window_rows": w, "n_perm": 30, "permute_every_rows": 5}
+    kept = run(df, **kw)
+    reset = run(df, **kw, change_action="reset")
+    flags = [i for i, f in enumerate(reset["flag"].to_list()) if f]
+    print(f"flags: kept {kept['flag'].sum()}, reset {len(flags)} at {flags}")
+    assert len(flags) >= 5 and kept["flag"].sum() > 3 * len(flags)
+    for f, nxt in zip(flags, [*flags[1:], df.height], strict=True):
+        if f + 2 * w >= df.height:
+            continue  # the stream ends in the refill
+        assert reset["stat"][f + 1 : f + 2 * w].null_count() == 2 * w - 1, f
+        assert reset["stat"][f + 2 * w] is not None and reset["crit"][f + 2 * w] is None, f
+        assert reset["since_flag"][f + 2 * w] == 2 * w, f
+        fresh = run(df[f + 1 : nxt + 1], **kw)
+        assert fresh["stat"].equals(reset["stat"][f + 1 : nxt + 1]), f
+        assert fresh["since_flag"].equals(reset["since_flag"][f + 1 : nxt + 1]), f
+
+
+def test_a_state_saved_across_a_reset_goes_on_to_the_bit():
+    """Cut on the row after a reset, in the refill, and on the first row
+    the refilled windows report; each loads and goes on as the unbroken
+    stream does (the chunk legs above cover 1, 7, 13, 300 and 600 rows)."""
+    w = 40
+    df = broken()
+    s = spec(**CHUNK_KW["window, reset"])
+    want = run(df, **CHUNK_KW["window, reset"])
+    first = want["flag"].to_list().index(True)
+    for cut in (first + 1, first + w, first + 2 * w, first + 2 * w + 1):
+        bank = po.ModelBank([s])
+        bank.fit_predict(df[:cut])
+        again = po.ModelBank.load_bytes(bank.save_bytes(), [s])
+        assert want[cut:].equals(again.fit_predict(df[cut:])["c"].struct.unnest()), cut
+
+
+@pytest.mark.parametrize(
+    ("kw", "live"),
+    [
+        # A span of 8 reports on its last row, every 8 rows.
+        ({"window_rows": 8}, [7, 15, 23]),
+        # A history of 8 (rows 0-7), the first monitored row silent, the
+        # second reports and ends the period; then the next history.
+        ({"kind": "sequential", "window_rows": 8, "monitor_rows": 2}, [9, 19]),
+        # Two windows of 3: the first statistic once six rows are in.
+        ({"kind": "window", "window_rows": 3}, list(range(5, 24))),
+    ],
+)
+def test_the_smallest_window_rows_report_where_they_close(kw, live):
+    out = run(pair(24, 0.3, seed=1), **kw)
+    assert [i for i, v in enumerate(out["stat"].to_list()) if v is not None] == live
+    if kw.get("kind") == "window":
+        # The quantile is drawn after the first report, so it is in force
+        # from the next row.
+        assert out["crit"][5] is None and out["crit"][6] is not None
+
+
+@pytest.mark.parametrize(
+    ("kw", "message"),
+    [
+        ({"window_rows": 7}, 'kind = "monitor" needs window_rows of at least 8'),
+        (
+            {"kind": "sequential", "window_rows": 7},
+            'kind = "sequential" needs window_rows of at least 8',
+        ),
+        (
+            {"kind": "sequential", "window_rows": 8, "monitor_rows": 1},
+            "monitor_rows of at least 2",
+        ),
+    ],
+)
+def test_one_below_the_smallest_window_rows_is_refused(kw, message):
+    with pytest.raises(ValueError, match=message):
+        spec(**kw)
