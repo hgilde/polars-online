@@ -214,7 +214,12 @@ blend = po.spec.ewridge(
 
 The blended moments keep today's weight, Kish's effective sample size and
 prior scale, so `weight_sum`, the warm-up gates and the solve schedule do
-not move.
+not move. The blend changes the moments and nothing else: the coefficients
+stay as last solved until the next solve the schedule brings due, which
+reads the blended moments. So a small `f` moves the output by a small amount,
+and `0` is the same as no `session_shrink`. With `max_rows_between_solves=1`
+the solve on the session's first row reads the blend, and every row after
+it is predicted from it.
 
 **For a fit over hundreds of features, give `gram_block_rows=256`.**
 Updating `S` takes O(k²) time per row for `k` features, and at a thousand

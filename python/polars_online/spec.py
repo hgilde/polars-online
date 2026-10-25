@@ -625,7 +625,13 @@ The diagnostics add, per slot:
        counts the same burst the same whatever the rows' density. Each
        residual is scored against the ``sigma`` before its row, which
        trails a moving scale further where rows are sparser.
-       ``drift_action = "reset"`` also starts the model over there.
+       ``drift_action = "reset"`` also starts the model over there: from
+       the next row the stream is the one a fresh bank fed those rows
+       makes, every field. That row reads a clock step of 0, as a fresh
+       stream's first row does, so nothing the rebuilt model holds -- a
+       prior, a covariance, the settled clock -- decays by the step before
+       it. (Under an ``embargo`` the rows still held are kept and taught to
+       the rebuilt model as they are released.)
    * - ``emit_calibration``
      - ``calibration_slope_<slot>``, ``calibration_intercept_<slot>``,
        ``calibration_wald_<slot>``

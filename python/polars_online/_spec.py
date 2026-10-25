@@ -1021,6 +1021,14 @@ def ewridge(
 
         for the means and the centred moments. The weight stays today's, so
         ``weight_sum``, the warm-up gates and the solve schedule do not move.
+        The blend changes the moments and nothing else: the coefficients stay
+        as last solved until the next solve the schedule brings due, which
+        reads the blended moments together with every row learned since. So
+        the output is continuous in ``f``, and ``0`` is the same as no
+        ``session_shrink``, to the bit. For the new session's first rows to
+        read the blend at once, solve on every row
+        (``max_rows_between_solves = 1``): the solve on the open's row reads
+        it, and the row after is predicted from it.
         ``0`` keeps today's fit, ``1`` takes the long run's moments at today's
         weight, and ``f`` between fits on that share of the long run. Unlike
         ``session_gap`` this changes what the model believes, not how

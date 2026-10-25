@@ -354,6 +354,9 @@ fn a_blend_fits_a_share_of_the_long_run() {
             weight.to_bits(),
             "f = {f}: the weight moved"
         );
+        // The blend leaves the schedule alone (task 278): the next solve
+        // reads it, run here.
+        m.solve();
 
         let kernel = |h: f64| -> Vec<f64> {
             (0..n)
@@ -414,6 +417,88 @@ fn a_blend_fits_a_share_of_the_long_run() {
             oracle::assert_within(*g, w, bound[i], format_args!("f = {f}, slot {i}"));
         }
     }
+}
+
+/// Task 278: a blend moves the moments and nothing else. The coefficients
+/// stand, and the schedule counts on from the last solve -- the clock, the
+/// rows and the weight since it -- so the solves fall where they fall
+/// without the blend, and the next one reads the blended moments. It used
+/// to re-solve at once and restart the cadence, so `f = 1e-12` parted from
+/// `f = 0` (which returns early) by a whole solve.
+#[test]
+fn a_blend_moves_no_fit_and_no_schedule() {
+    let build = |f: Option<f64>| {
+        let mut c = cfg(2, 1);
+        c.decay = Decay::Halflife(40.0);
+        c.session_shrink = f;
+        c.long_half_life = f.map(|_| 400.0);
+        c.min_weight = 0.0;
+        c.max_rows_between_solves = 7;
+        c.solve_every = 1e9;
+        EwRidge::new(c).unwrap()
+    };
+    let (mut plain, mut tiny, mut half) = (build(None), build(Some(1e-12)), build(Some(0.5)));
+    let mut s = 5u64;
+    let mut solves = [Vec::new(), Vec::new(), Vec::new()];
+    for i in 0..200usize {
+        let x = [lcg(&mut s), lcg(&mut s) + 1.0];
+        let slope = if i < 100 { 1.0 } else { -1.0 };
+        let y = 0.5 + slope * x[0] - x[1] + 0.1 * lcg(&mut s);
+        let d = if i == 0 { 0.0 } else { 1.0 };
+        if i == 103 {
+            let before: Vec<_> = [&tiny, &half]
+                .iter()
+                .map(|m| {
+                    (
+                        m.coefficients().map(<[Vec<f64>]>::to_vec),
+                        m.rows_since_solve,
+                        m.weight_since_solve,
+                        m.since_solve.clone(),
+                    )
+                })
+                .collect();
+            tiny.blend_toward_long_run();
+            half.blend_toward_long_run();
+            for (m, b) in [&tiny, &half].iter().zip(&before) {
+                assert_eq!(m.coefficients(), b.0.as_deref(), "the blend moved the fit");
+                assert_eq!(m.rows_since_solve, b.1, "the blend moved the row cap");
+                assert_eq!(m.weight_since_solve.to_bits(), b.2.to_bits());
+                assert_eq!(m.since_solve, b.3, "the blend moved the clock");
+            }
+        }
+        for (k, m) in [&mut plain, &mut tiny, &mut half].into_iter().enumerate() {
+            let rows = m.rows_since_solve;
+            m.step(&x, &[Some(y)], d, 1.0);
+            if m.rows_since_solve <= rows {
+                solves[k].push(i);
+            }
+        }
+    }
+    assert!(
+        solves[0].len() > 20 && !solves[0].contains(&103),
+        "{:?}",
+        solves[0]
+    );
+    assert_eq!(solves[1], solves[0], "f = 1e-12 moved the solves");
+    assert_eq!(solves[2], solves[0], "f = 0.5 moved the solves");
+    // The next solve read the blend: a half share moved the fit far, a
+    // share of 1e-12 by about that share.
+    let (p, t, h) = (
+        plain.coefficients().unwrap()[0][1],
+        tiny.coefficients().unwrap()[0][1],
+        half.coefficients().unwrap()[0][1],
+    );
+    let first_after = solves[0].iter().find(|&&i| i > 103).copied().unwrap();
+    assert!(first_after < 110, "{first_after}");
+    assert!(
+        (h - p).abs() > 1e-3,
+        "the half blend never reached a solve: {h} vs {p}"
+    );
+    assert!(
+        (t - p).abs() < 1e-9,
+        "a 1e-12 share moved the slope by {}",
+        (t - p).abs()
+    );
 }
 
 /// E45: the target moments must survive a blend as a mixture, not go
@@ -1059,6 +1144,8 @@ fn a_blend_keeps_the_decaying_prior_with_the_weight() {
     let (w, ps) = (full.gram(0).n_eff(), full.gram(0).prior_scale());
     full.blend_toward_long_run();
     assert_eq!(full.gram(0).prior_scale().to_bits(), ps.to_bits());
+    // The next scheduled solve reads the blend (task 278), run here.
+    full.solve();
     let ks: Vec<f64> = (0..n)
         .map(|i| 0.5f64.powf((n - 1 - i) as f64 / long))
         .collect();
