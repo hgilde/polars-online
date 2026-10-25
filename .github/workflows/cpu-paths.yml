@@ -88,7 +88,7 @@ jobs:
     env:
       # Every module of online-core whose tests run faer's products or
       # factorizations or compare against `crate::oracle`, as libtest
-      # filters. tests/test_ci_cost_policy.py fails when a module that does
+      # filters. tests/test_cpu_paths.py fails when a module that does
       # either is missing here.
       SDE_TESTS: >-
         bocpd:: breaks:: calibration:: deco:: ewclass:: ewcov:: ewridge::
