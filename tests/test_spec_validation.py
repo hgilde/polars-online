@@ -621,22 +621,20 @@ NONSENSE = [
         dict(targets=["y"], features=["x0", "x1"], half_life=10.0, min_weight=[INF]),
         'spec "m": min_weight must be finite, got inf',
     ),
-    # One open bin: no response curve and no cut. It was taken, and the
-    # "finite and strictly increasing" rule held only because there was
-    # nothing to hold it to.
+    # Every feature one open bin: no response curve and no cut anywhere. It
+    # was taken, and the "finite and strictly increasing" rule held only
+    # because there was nothing to hold it to.
     (
         po.spec.marginal,
         dict(targets=["y"], features=["x0"], half_life=10.0, bin_edges=[[]]),
-        'spec "m": marginal bin_edges gives feature "x0" no edges: that is one open bin, '
-        "which has no response curve and no cut to report; give every feature at least one "
-        "edge",
+        'spec "m": marginal bin_edges gives no feature an edge: each would be one open bin, '
+        "with no response curve and no cut to report; give at least one feature an edge, or "
+        "leave bin_edges out for no bins",
     ),
     (
         po.spec.marginal,
-        dict(
-            targets=["y"], features=["x0", "x1"], half_life=10.0, bin_edges={"x0": [0.0], "x1": []}
-        ),
-        'marginal bin_edges gives feature "x1" no edges',
+        dict(targets=["y"], features=["x0", "x1"], half_life=10.0, bin_edges={"x0": [], "x1": []}),
+        "marginal bin_edges gives no feature an edge",
     ),
     # At 1 or more the lightest centre is always "dead": it re-placed one at
     # every check on any far row.
@@ -683,6 +681,11 @@ NONSENSE = [
 NONSENSE_NEIGHBOURS = [
     (po.spec.ewridge, dict(**BASE, half_life=10.0, min_weight=1e300)),
     (po.spec.marginal, dict(targets=["y"], features=["x0"], half_life=10.0, bin_edges=[[0.0]])),
+    # One feature without edges beside one with them runs: below.
+    (
+        po.spec.marginal,
+        dict(targets=["y"], features=["x0", "x1"], half_life=10.0, bin_edges=[[0.0], []]),
+    ),
     (po.spec.kmeans, dict(**_KM, dead_frac=0.999)),
     (po.spec.ewridge, dict(**BASE, half_life=[10.0, 20.0], emit_averaged=True)),
     (po.spec.corrchange, dict(**_CC, bandwidth=20)),
@@ -718,6 +721,34 @@ _TOP_LEVEL = frozenset({"min_weight", "emit_averaged"})
 )
 def test_the_nearest_legal_value_still_builds(builder, kw):
     po.ModelBank([builder("m", **kw)])
+
+
+def test_a_feature_left_without_edges_reports_one_bin():
+    """``bin_edges`` refuses only the list in which no feature has an edge
+    (above). One feature left without edges beside one that has them is a
+    request that runs, and the user chose not to refuse what runs (task 278,
+    2026-10-25): that feature reports a single open bin holding every row's
+    weight, with no cut, while the other is binned as it says."""
+    df = pl.DataFrame(
+        {
+            "x0": [float(i % 7) - 3.0 for i in range(60)],
+            "x1": [float(i % 5) for i in range(60)],
+            "y": [float((i % 7) * 2 + 1) for i in range(60)],
+        }
+    )
+    spec = po.spec.marginal(
+        "m", targets=["y"], features=["x0", "x1"], half_life=INF, bin_edges=[[0.0], []]
+    )
+    bank = po.ModelBank([spec])
+    bank.fit_predict(df)
+    got = {r["feature"]: r for r in bank.marginal("m").iter_rows(named=True)}
+    assert list(got["x1"]["bin_edges"]) == []
+    assert list(got["x1"]["bin_n"]) == [60.0] and got["x1"]["weight_sum"] == 60.0
+    assert got["x1"]["bin_mean_y"][0] == pytest.approx(got["x1"]["mean_y"], rel=1e-12)
+    assert got["x1"]["split_gain"] is None and got["x1"]["split_at"] is None
+    # The other feature is binned at its edge: two bins, and the cut at 0.
+    assert list(got["x0"]["bin_edges"]) == [0.0] and len(got["x0"]["bin_n"]) == 2
+    assert sum(got["x0"]["bin_n"]) == 60.0 and got["x0"]["split_at"] == 0.0
 
 
 # --- task 278: fit_intercept on the kinds with no intercept -----------------

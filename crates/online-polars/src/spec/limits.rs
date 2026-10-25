@@ -44,19 +44,19 @@ impl Spec {
                 }
             }
             // An empty list is one open bin: no response curve and no cut to
-            // report, so the binned view of that feature is nothing. A learned
-            // feature that is constant gets one, but a list a caller gives
-            // says what to bin, and saying nothing is a mistake.
+            // report. One feature left without edges beside others that have
+            // them is a request that runs (that feature reports its single
+            // bin), but when every list is empty the binned view holds
+            // nothing at all, which no caller asks for on purpose.
             ModelKind::Marginal { bin_edges, .. } => {
-                if let Some(j) = bin_edges
+                if bin_edges
                     .as_ref()
-                    .and_then(|e| e.iter().position(Vec::is_empty))
+                    .is_some_and(|e| !e.is_empty() && e.iter().all(Vec::is_empty))
                 {
-                    let feature = self.features.get(j).map_or("", String::as_str);
                     return Err(format!(
-                        "spec {:?}: marginal bin_edges gives feature {feature:?} no edges: that is \
-                         one open bin, which has no response curve and no cut to report; give \
-                         every feature at least one edge",
+                        "spec {:?}: marginal bin_edges gives no feature an edge: each would be \
+                         one open bin, with no response curve and no cut to report; give at \
+                         least one feature an edge, or leave bin_edges out for no bins",
                         self.name
                     ));
                 }

@@ -4665,8 +4665,9 @@ def marginal(
     naming the problem for:
 
     - ``bin_edges`` that miss or add a feature, that are not finite and
-      increasing, or that give a feature no edge (one open bin, which has no
-      response curve and no cut);
+      increasing, or that give no feature an edge (every feature one open
+      bin, with no response curve and no cut; one feature without edges
+      beside others is taken, and reports a single bin);
     - ``bins`` beside ``bin_edges``, and ``bins`` or ``bin_edges`` beside
       ``window_size``;
     - ``bins`` below 2, or a ``bin_warm_rows`` below ``bins``;
