@@ -16274,6 +16274,19 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       MODELS.md and docstrings with the capture tables, the `sgd` analogue,
       the refit row solving only its own target, budgets and the release
       comparison declared. Then a review and the fix of its findings.
+      *Reviewed (two Fable reviews, 2026-10-25)*: a high finding -- the
+      buffer held every ageing row at full width, unbounded -- fixed by runs
+      of `(λ, λ_s, count)` with a cap past which a target gives its refit up;
+      the rest fixed (passes uncounted as failures, `sgd`'s `l2` in the
+      refit, the resumed 1.3.0 bank documented and tested, capture counts
+      with their stream lengths, a reproducing script). *Decided by the user,
+      2026-10-25*: a per-spec refit-buffer budget of 256 MiB, past which a
+      target gives up its refit (counted, with a notice); the default count
+      500 ("500"), scaling as `max(500, 10·k)` up to 100 features and off by
+      default above 100 (an explicit value still taken); and
+      `marginal(bin_stat="huber")`, captured by the same mechanism (2,000
+      rows at 12%: 13 of 40 seeds with a bin more than 0.1 scale off, worst
+      4.1), fixed in 1.4.0 too.
 - [ ] 278. **Convergence tests of every kind, before 1.4.0** -- the user,
       2026-10-25: "What additional tests should we do to catch all kinds of
       convergence issues", then "Do them all before 1.4". Task 277's capture
