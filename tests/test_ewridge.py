@@ -371,6 +371,133 @@ class TestSessionShrink:
         rest = df.slice(400, 400)
         assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)
 
+    # ---- the blend leaves the solve schedule alone (task 278, batch 4) ----
+    #
+    # A blend used to force a solve at the open and restart the cadence from
+    # it, while `f = 0` returned early and forced nothing: at `f = 1e-12`
+    # against `0` the predictions parted by 0.48 under the default cadence
+    # and 1.43 under `solve_every=50` (3,000 rows, measured 2026-10-25),
+    # though the moments differed by 1e-12 of their spread. Now a blend
+    # moves the moments and nothing else; the next scheduled solve reads
+    # them. These hold the four consequences: 0 is no shrink to the bit,
+    # the output is continuous in `f`, the solve rows do not move, and `1`
+    # is still the long run's moments at today's weight.
+
+    SCHEDULES = ({}, {"solve_every": 50.0})
+
+    def _sessions_df(self, n: int = 3000):
+        """Three sessions of 1,000 rows; the slopes change at each open, so a
+        blend moves the fit."""
+        rng = np.random.default_rng(11)
+        x = rng.standard_normal((n, 2))
+        seg = np.arange(n) // 1000
+        slopes = np.array([[1.0, -0.5], [-1.0, 0.8], [0.4, 1.2]])[seg]
+        y = 0.2 + (x * slopes).sum(axis=1) + 0.1 * rng.standard_normal(n)
+        return pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y0": y, "s": seg})
+
+    def _session_run(self, schedule, **kw):
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y0"],
+            features=["x0", "x1"],
+            half_life=200.0,
+            min_weight=10.0,
+            session="s",
+            session_gap=1.0,
+            coef_every=0,
+            **schedule,
+            **kw,
+        )
+        return po.ModelBank([spec], threads=1).fit_predict(self._sessions_df()).unnest("m")
+
+    @staticmethod
+    def _solve_rows(out) -> np.ndarray:
+        """The rows a solve ran on: where `coef` changed (every row is a
+        `coef` row under `coef_every=0`)."""
+        coef = np.array(
+            [[np.nan] * 3 if c is None else c for c in out["coef"].to_list()], dtype=float
+        )
+        changed = np.any(coef[1:] != coef[:-1], axis=1) & ~np.isnan(coef[1:]).any(axis=1)
+        return np.flatnonzero(changed) + 1
+
+    @pytest.mark.parametrize("schedule", SCHEDULES, ids=["default", "solve_every"])
+    def test_zero_shrink_is_no_shrink_to_the_bit(self, schedule):
+        plain = self._session_run(schedule)
+        zero = self._session_run(schedule, session_shrink=0.0, long_half_life=500.0)
+        assert zero.equals(plain, null_equal=True)
+
+    @pytest.mark.parametrize("schedule", SCHEDULES, ids=["default", "solve_every"])
+    def test_the_blend_moves_no_solve(self, schedule):
+        """The rows a solve runs on are the same with and without a blend, at
+        any share. The evidence the schedule is not every row: the open rows
+        1000 and 2000 are not solve rows without a blend, and solves are
+        several rows apart."""
+        plain = self._solve_rows(self._session_run(schedule))
+        gaps = np.diff(plain)
+        print(f"{plain.size} solves, median spacing {np.median(gaps)} rows")
+        assert 1000 not in plain and 2000 not in plain, "an open is a solve row without a blend"
+        assert np.median(gaps) >= 3, "the cadence solves too often to show a moved solve"
+        for f in (1e-12, 0.5, 1.0):
+            got = self._solve_rows(
+                self._session_run(schedule, session_shrink=f, long_half_life=500.0)
+            )
+            np.testing.assert_array_equal(got, plain, err_msg=f"session_shrink={f}")
+
+    @pytest.mark.parametrize("schedule", SCHEDULES, ids=["default", "solve_every"])
+    def test_the_output_is_continuous_in_the_share(self, schedule):
+        """``pred(f) - pred(0)`` is ``O(f)``. The blend is
+        ``m' = m + f (m_slow - m)`` and
+        ``C' = C + f (C_slow - C) + f (1 - f) dm dm'``: affine in ``f`` up to a
+        term of ``f``'s order, and every row after it -- decay and a rank-one
+        addition -- carries that forward linearly, so the moments at any row
+        are ``M(0) + f D + O(f^2)``. A solve and a prediction are smooth in
+        the moments where the system is regular, so
+        ``|pred(f) - pred(0)| = f |g'(0)| + O(f^2)``: the largest difference
+        over the stream, divided by ``f``, tends to a constant ``L``. Held as:
+        the ratio at ``f = 1e-6`` and ``1e-9`` is within 1% of the ratio at
+        ``1e-4`` (the second-order term is ``f`` times smaller again), plus a
+        floor of 1e-13 for the double's rounding of a prediction of order 1,
+        and ``L`` is finite and nonzero (the blend acts)."""
+        base = self._session_run(schedule, session_shrink=0.0, long_half_life=500.0)
+        p0 = base["pred_y0"].to_numpy().astype(float)
+        ok = np.isfinite(p0)
+
+        def gap(f: float) -> float:
+            out = self._session_run(schedule, session_shrink=f, long_half_life=500.0)
+            pf = out["pred_y0"].to_numpy().astype(float)
+            np.testing.assert_array_equal(np.isfinite(pf), ok)
+            return float(np.max(np.abs(pf[ok] - p0[ok])))
+
+        lip = gap(1e-4) / 1e-4
+        print(f"L = max |pred(f) - pred(0)| / f at f = 1e-4: {lip:.6g}")
+        # Measured 2026-10-25: 1.265 (default cadence), 1.280 (solve_every
+        # 50); the ratio agreed at 1e-6 and 1e-9 to five digits. Before the
+        # fix the forced solve gave 608 and 7,325 here, and 6.1e4 at 1e-6.
+        assert 0.1 < lip < 10.0, lip
+        for f in (1e-6, 1e-9):
+            d = gap(f)
+            print(f"f = {f:g}: max |dpred| = {d:.3g}, / f = {d / f:.6g}")
+            assert abs(d - lip * f) <= 0.01 * lip * f + 1e-13, (f, d, lip * f)
+
+    def test_full_shrink_at_the_fits_own_half_life_moves_nothing(self):
+        """At ``f = 1`` the moments become the slow twin's, at today's weight.
+        With ``long_half_life == half_life`` the twin is the fit itself, so
+        the blend changes nothing and the output is the no-blend stream's, to
+        the rounding of two accumulators summed apart (under 1e-12 of a
+        prediction of order 1). It moved predictions by up to 0.48 while a
+        blend forced a solve."""
+        for schedule in self.SCHEDULES:
+            plain = self._session_run(schedule)
+            full = self._session_run(schedule, session_shrink=1.0, long_half_life=200.0)
+            a = plain["pred_y0"].to_numpy().astype(float)
+            b = full["pred_y0"].to_numpy().astype(float)
+            np.testing.assert_array_equal(np.isfinite(a), np.isfinite(b))
+            ok = np.isfinite(a)
+            assert np.max(np.abs(a[ok] - b[ok])) < 1e-12, schedule
+            np.testing.assert_array_equal(
+                full["weight_sum"].to_numpy(), plain["weight_sum"].to_numpy()
+            )
+
     def test_config_is_validated(self):
         base = dict(targets=["y0"], features=["x0"], half_life=50.0, session="s", session_gap=0.0)
         with pytest.raises(ValueError, match="needs long_half_life"):
