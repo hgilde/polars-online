@@ -30,7 +30,9 @@ jobs:
   native:
     name: leak check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    # 90 until task 278 (c) added the long-run soak (tests/test_long_run_soak.py,
+    # about ten minutes at 1e8 rows a case on a developer Mac).
+    timeout-minutes: 120
     # uv's own standalone Python, never the runner's. With nothing pinned, uv
     # built the macOS venv on Homebrew's Python 3.14, a framework build, and
     # there `leaks --atExit` printed nothing at all -- as it is, under sudo,
@@ -105,7 +107,11 @@ jobs:
       # Ten million rows through one state, then a 2M-row state saved and
       # resumed. Deselected everywhere else, it ran nowhere until task 160,
       # and its resume test had failed unseen since task 120. Seconds on the
-      # release build above.
+      # release build above. Since task 278 (c) also the long-run stability
+      # cases at 1e8 rows each against recomputations from scratch
+      # (tests/test_long_run_soak.py), about ten minutes; and since task 278
+      # (a) class 4's contamination sweep, 200 seeds a cell
+      # (tests/test_convergence_soak.py), about six minutes in three processes.
       - name: soak
         if: always()
         run: uv run pytest -q -m soak
