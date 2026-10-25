@@ -16341,3 +16341,18 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       asked for as much parallel work as possible and approved six builders
       at once for this effort (CLAUDE.md's four otherwise):
       `POLARS_ONLINE_SLOTS=6`.
+- [ ] 279. **Smaller build caches: no debug info for dependencies** -- the
+      user, 2026-10-25 ("Why do agents take so much disk I though we shared
+      caches", then "Yes"). Each worktree slot keeps its own `target/` (a
+      shared one clobbers the workspace's crates between paths), and they
+      grow to 58-171 GB: slot 2's 171 GB was 130 GB of `debug/deps` (234,000
+      files: every test binary links Polars with its debug info, and cargo
+      keeps each superseded build -- mutants, debug-assertion release builds,
+      cross builds, other toolchains) and 24 GB incremental. Measure
+      `[profile.dev.package."*"] debug = false` (our crates keep line
+      tables): a slot's `target/` size after the essentials gate, the gate's
+      cold and warm build times, the link time, and a backtrace through our
+      code still naming lines; propose it with those numbers. Meanwhile, a
+      slot's `target/` is cleared when its task is given back whenever free
+      disk is under 100 GB, and `cargo-sweep` between tasks is to be weighed
+      beside it. After the task 277/278 wave, so no slot rebuilds mid-task.
