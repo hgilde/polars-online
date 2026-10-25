@@ -16341,6 +16341,20 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       asked for as much parallel work as possible and approved six builders
       at once for this effort (CLAUDE.md's four otherwise):
       `POLARS_ONLINE_SLOTS=6`.
+      *Classes 6-8 merged (278 (b))*, finding seven defects, each pinned as
+      a labelled test of today's behaviour; fixed before 1.4.0 under the
+      user's direction ("do the right thing ... as long as we can test"),
+      each declared: D4 (high) a numerically singular normal-equations solve
+      is reported nowhere -- estimate the condition from the Cholesky factor
+      and withhold and count above a threshold, a new `withheld_reason`; D5
+      `gram.solve(standardize=False)` rescales the Gram by its diagonal
+      before `eigh`; D1 `sgd`'s `clip_gradient` measured in the residual
+      scale's units; D2 AdaGrad's epsilon relative; D3 `lasso`'s `tol`
+      relative to the target's spread (and `gram.lasso_path`'s); D6
+      `gram.lasso_path` counts and warns on its sweep cap; D7 `kmeans`/`hmm`
+      seeding iterates to a fixed point under a cap and counts cap hits; K1
+      `kalman`'s noise estimate inflated while the intercept absorbs a large
+      level. D1/D2 wait for task 277 (both touch `sgd`).
 - [ ] 279. **Smaller build caches: no debug info for dependencies** -- the
       user, 2026-10-25 ("Why do agents take so much disk I though we shared
       caches", then "Yes"). Each worktree slot keeps its own `target/` (a
