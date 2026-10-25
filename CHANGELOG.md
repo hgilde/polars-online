@@ -83,6 +83,10 @@ returns.
 
 ### Fixed
 
+- A negative `jitter`, `noise_stride` or `iv_stride` given to
+  `po.spec.rcov` is refused as needing to be at least 1, the real floor; it
+  was refused as needing to be at least 0, and then 0 was refused as well
+  (task 278).
 - `lasso`'s `tol` was in the target's units (task 278): the coordinate
   descent stopped when no standardized coefficient moved by `tol`, and those
   coefficients are in the target's units, so a target near 1e-9 met the
