@@ -33,11 +33,17 @@ from typing import Any
 import numpy as np
 import polars as pl
 import pytest
+from scipy.stats import multivariate_normal
 from sklearn.linear_model import Ridge
 
 import polars_online as po
+from reference_paths import WindowRing, window_starts
 
-TIER = "essential"
+TIER = "mixed"
+
+#: The closed x shape x cadence matrix (task 278, batch 10): one case a model
+#: is essential, the rest extended.
+GRID = pytest.mark.extended(reason="the closed x shape x cadence matrix")
 
 #: The ridge here is large enough to be seen in the fit, as the oracle maps
 #: it, so a short window early on reads mostly ridge, which the readiness
@@ -66,6 +72,15 @@ def stream_steps(n: int = 700, seed: int = 3) -> np.ndarray:
         steps[gap] = 7200
     steps[0] = 0
     return steps
+
+
+def coarse_steps() -> np.ndarray:
+    """``stream_steps`` with every ordinary step rounded up to whole half
+    minutes and the bursts kept: the window of thirty minutes is sixty of
+    them, so rows sit exactly one window back often enough for
+    ``closed`` to move a row's window on many rows."""
+    steps = stream_steps()
+    return np.where(steps >= 5, 30 * np.ceil(steps / 30), steps).astype(int)
 
 
 def frame(steps: np.ndarray, seed: int = 4) -> pl.DataFrame:
@@ -183,6 +198,63 @@ def ridge(**kw):
     return po.spec.ewridge("r", **d)
 
 
+def lasso(**kw):
+    d: dict[str, Any] = dict(
+        targets=["y"],
+        features=FEATURES,
+        clock="ts",
+        half_life="10m",
+        gap_cap="10m",
+        window_size="30m",
+        penalties=[0.05],
+        min_weight=0.0,
+        weight="w",
+    )
+    d.update(kw)
+    return po.spec.lasso("l", **d)
+
+
+def marginal(**kw):
+    d: dict[str, Any] = dict(
+        targets=["y"],
+        features=FEATURES,
+        clock="ts",
+        half_life="10m",
+        gap_cap="10m",
+        window_size="30m",
+        weight="w",
+    )
+    d.update(kw)
+    return po.spec.marginal("g", **d)
+
+
+def label(df: pl.DataFrame) -> pl.DataFrame:
+    """A class from the features and the noise in the target, so both
+    classes stay in every window and their moments differ."""
+    return df.with_columns(
+        cls=pl.when(pl.col("x0") - 0.3 * pl.col("x1") + pl.col("y") * 0.2 > 0.8)
+        .then(pl.lit("a"))
+        .otherwise(pl.lit("b"))
+    )
+
+
+def ew_class(**kw):
+    d: dict[str, Any] = dict(
+        features=FEATURES,
+        label="cls",
+        classes=["a", "b"],
+        clock="ts",
+        half_life="10m",
+        gap_cap="10m",
+        window_size="30m",
+        precision_prior=1.0,
+        min_weight=0.0,
+        weight="w",
+    )
+    d.update(kw)
+    return po.spec.ew_class("k", **d)
+
+
 def run(spec, df: pl.DataFrame) -> pl.DataFrame:
     return po.ModelBank([spec]).fit_predict(df).unnest(spec["name"])
 
@@ -246,6 +318,61 @@ class TestTheWindowIsTheDefinitions:
             checked += 1
         assert checked > 100, checked
 
+    @pytest.mark.parametrize(
+        ("every", "cap"),
+        [
+            pytest.param("1m", 25, id="both"),
+            pytest.param("1m", None, id="clock", marks=GRID),
+            pytest.param(None, 5, id="rows", marks=GRID),
+            pytest.param(None, None, id="every-row", marks=GRID),
+        ],
+    )
+    def test_past_a_thinning_budget_the_ridge_is_sklearns_on_the_thinned_rings_rows(
+        self, every, cap
+    ):
+        """A thinning budget keeps the newest snapshot and every second one
+        before it, and doubles the cadence, each time the ring would pass it
+        (``reference_paths.WindowRing``). The budget counts bytes, so the
+        ring's capacity in snapshots is measured by the same budget refusing:
+        on a window no row leaves, a ``{"refuse": mib}`` budget refuses at the
+        row whose snapshot would not fit. Under ``{"thin": mib}`` every row's
+        ``weight_sum`` is then the weight from the thinned ring's front on,
+        and its prediction scikit-learn's ``Ridge`` on those rows."""
+        steps = stream_steps()
+        df = frame(steps)
+        mib = 0.003
+        cap_rows = capacity(ridge, df, mib)
+        out = run(ridge(window_budget={"thin": mib}, **cadence(every, cap)), df)
+        clock = model_clock(steps)
+        ring = WindowRing(WINDOW, every=spacing_of(every), cap=cap, capacity=cap_rows)
+        starts = np.array([ring.learn(i, c) for i, c in enumerate(clock)])
+        w, x, y = df["w"].to_numpy(), df.select(FEATURES).to_numpy(), df["y"].to_numpy()
+        want = ring_weights(clock, w, starts, HALF_LIFE)
+        np.testing.assert_allclose(out["weight_sum"].to_numpy(), want, rtol=1e-9, atol=1e-12)
+        unthinned = window_starts(clock, WINDOW, every=spacing_of(every), cap=cap)
+        moved = (np.abs(ring_weights(clock, w, unthinned, HALF_LIFE) - want) > 1e-6).sum()
+        print(f"capacity {cap_rows}, thinned {ring.thinned} times, {moved} rows moved")
+        # Measured 2026-10-25: a capacity of 10 snapshots, thinned 2-5 times,
+        # moving the weight of 342-609 of the 700 rows.
+        assert ring.thinned >= 1 and moved > 100, (ring.thinned, moved)
+        got_p = out["pred_y"].to_numpy()
+        checked = 0
+        for t in range(2, len(steps), 3):
+            s = t
+            while s > 1 and w[s - 1] <= 0.0:
+                s -= 1
+            b = starts[s - 1]
+            a = w[b:s] * 0.5 ** ((clock[s - 1] - clock[b:s]) / HALF_LIFE)
+            if (a > 0).sum() < 10:
+                continue
+            fit = Ridge(alpha=RIDGE * a.sum()).fit(x[b:s], y[b:s], sample_weight=a)
+            want_p = fit.predict(x[t : t + 1])[0]
+            # Measured 2026-10-25: at most 4.7e-15 relative to 1 + |pred| on
+            # 230 rows a case; the unthinned test's bound.
+            assert got_p[t] == pytest.approx(want_p, rel=1e-8, abs=1e-8), (t, got_p[t], want_p)
+            checked += 1
+        assert checked > 150, checked
+
     def test_the_spread_is_cut_where_the_fit_is(self):
         """``sigma`` reads the stream's own ring of the residual spread, which
         takes the model's cadence, so its boundary is the fit's: the EW root
@@ -275,13 +402,17 @@ class TestTheWindowIsTheDefinitions:
         assert np.nanmax(np.abs(every_row - want) / want) > 1e-3
 
     @pytest.mark.parametrize(("every", "cap"), [CADENCES[0], CADENCES[2]], ids=["clock", "both"])
-    @pytest.mark.parametrize("make", [ew_cov, ridge], ids=["ew_cov", "ewridge"])
+    @pytest.mark.parametrize(
+        "make",
+        [ew_cov, ridge, lasso, marginal, ew_class],
+        ids=["ew_cov", "ewridge", "lasso", "marginal", "ew_class"],
+    )
     def test_the_effective_window_is_inside_the_window_less_one_spacing(self, every, cap, make):
         """Every row at most ``window_size - snapshot_every`` old is inside the
         window and none older than ``window_size`` is, read from the model's
         own ``weight_sum`` against the weights of those two sets of rows."""
         steps = stream_steps()
-        df = frame(steps)
+        df = label(frame(steps))
         got = run(make(**cadence(every, cap)), df)["weight_sum"].to_numpy()
         clock, w = model_clock(steps), df["w"].to_numpy()
         tight = 0
@@ -313,6 +444,195 @@ class TestTheWindowIsTheDefinitions:
         burst = set(np.flatnonzero(steps <= 1))
         by_rows = snapshot_rows(model_clock(steps), every=None, cap=3)
         assert len(set(capped) & burst) * 4 < len(set(by_rows) & burst)
+
+
+MODELS = {
+    "ew_cov": ew_cov,
+    "ewridge": ridge,
+    "lasso": lasso,
+    "marginal": marginal,
+    "ew_class": ew_class,
+}
+
+
+def matrix(essential: tuple[Any, ...]) -> list[Any]:
+    """Every model x edge x cadence, ``essential`` the one case a model the
+    essentials run."""
+    cases = []
+    for name in MODELS:
+        for closed in ("right", "both"):
+            for (every, cap), cid in zip(CADENCES, IDS, strict=True):
+                case = (name, closed, every, cap)
+                marks = () if (closed, every, cap) == essential else (GRID,)
+                cases.append(pytest.param(*case, id=f"{name}-{closed}-{cid}", marks=marks))
+    return cases
+
+
+def capacity(make, df: pl.DataFrame, mib: float) -> int:
+    """How many of ``make``'s snapshots a budget of ``mib`` holds: the row at
+    which ``{"refuse": mib}`` refuses, fed a row at a time with a snapshot on
+    every row and a window no row leaves, so each row adds one snapshot."""
+    bank = po.ModelBank(
+        [make(window_size="1000d", snapshot_every=0, window_budget={"refuse": mib})]
+    )
+    for i in range(df.height):
+        try:
+            bank.fit_predict(df.slice(i, 1))
+        except ValueError as e:
+            assert "window_budget" in str(e), e
+            return i
+    raise AssertionError(f"{mib} MiB held every row's snapshot")
+
+
+def ring_weights(clock: np.ndarray, w: np.ndarray, starts: np.ndarray, hl: float) -> np.ndarray:
+    """Each row's ``weight_sum``: the weights of the rows the ring kept after
+    the row before it, ``starts[t - 1]`` to ``t - 1``, aged from that row."""
+    got = np.zeros(len(clock))
+    for t in range(1, len(clock)):
+        b = starts[t - 1]
+        got[t] = (w[b:t] * 0.5 ** ((clock[t - 1] - clock[b:t]) / hl)).sum()
+    return got
+
+
+class TestEveryWindowedModelsRing:
+    """Every windowed model under each cadence and each edge reads its window
+    from the ring's front snapshot (``reference_paths.WindowRing``, the rule
+    the module docstring states, with ``closed="both"`` keeping a snapshot
+    exactly one window old): its ``weight_sum`` is the weight of the rows from
+    there on, and under ``closed="both"`` and a clock cadence ``ew_class``'s
+    posterior and ``marginal``'s table are scipy's and numpy's of those rows.
+    The stream is ``coarse_steps``, on which the edge decides many rows.
+    Before task 278 (batch 10) only ``ew_cov`` and ``ewridge`` were held to a
+    cadence, and ``max_rows_between_snapshots`` was shown taking effect on
+    neither ``lasso`` nor ``ew_class``."""
+
+    @pytest.mark.parametrize(("name", "closed", "every", "cap"), matrix(("both", "1m", 25)))
+    def test_weight_sum_is_the_weight_from_the_rings_front_on(self, name, closed, every, cap):
+        steps = coarse_steps()
+        df = label(frame(steps))
+        out = run(MODELS[name](closed=closed, **cadence(every, cap)), df)
+        clock, w = model_clock(steps), df["w"].to_numpy()
+        starts = window_starts(clock, WINDOW, every=spacing_of(every), cap=cap, closed=closed)
+        want = ring_weights(clock, w, starts, HALF_LIFE)
+        got = out["weight_sum"].to_numpy()
+        np.testing.assert_allclose(got, want, rtol=1e-9, atol=1e-12)
+        # Evidence the case reads the cadence and the edge: the plain window
+        # (every row a snapshot) and the other edge are other weights.
+        plain = ring_weights(clock, w, window_starts(clock, WINDOW, closed=closed), HALF_LIFE)
+        other = "right" if closed == "both" else "both"
+        edge = window_starts(clock, WINDOW, every=spacing_of(every), cap=cap, closed=other)
+        moved = (np.abs(plain - want) > 1e-6).sum()
+        edged = (np.abs(ring_weights(clock, w, edge, HALF_LIFE) - want) > 1e-6).sum()
+        # Measured 2026-10-25 (every model to 1.7e-15 relative): the cadence
+        # moves 152-637 of the 700 rows' weights, and the edge 7-122.
+        assert moved > 100, moved
+        assert edged >= 5, edged
+
+    @pytest.mark.parametrize(
+        ("every", "cap"),
+        [
+            pytest.param("1m", 25, id="both"),
+            pytest.param("1m", None, id="clock", marks=GRID),
+            pytest.param(None, 25, id="rows", marks=GRID),
+        ],
+    )
+    def test_ew_class_is_the_scipy_posterior_from_the_rings_front_on(self, every, cap):
+        """At ``half_life = inf`` and a tiny precision prior the posterior is
+        the two weighted Gaussians of the rows the ring keeps, each class's
+        prior its share of their weight."""
+        steps = coarse_steps()
+        df = label(frame(steps))
+        prior = 1e-12
+        spec = ew_class(
+            half_life=float("inf"), precision_prior=prior, closed="both", **cadence(every, cap)
+        )
+        out = run(spec, df)
+        clock = model_clock(steps)
+        x, w = df.select(FEATURES).to_numpy(), df["w"].to_numpy()
+        lab = df["cls"].to_numpy()
+        starts = window_starts(clock, WINDOW, every=spacing_of(every), cap=cap, closed="both")
+        plain = window_starts(clock, WINDOW, closed="both")
+
+        def posterior(t: int, b: int) -> float | None:
+            rows, wr, lr = x[b:t], w[b:t], lab[b:t]
+            logp = []
+            for c in ("a", "b"):
+                wc = wr[lr == c]
+                if (wc > 0).sum() < 5:
+                    return None
+                mean = np.average(rows[lr == c], axis=0, weights=wc)
+                cov = np.cov(rows[lr == c].T, aweights=wc, ddof=0) + prior * np.eye(2)
+                logp.append(
+                    np.log(wc.sum() / wr.sum()) + multivariate_normal(mean, cov).logpdf(x[t])
+                )
+            p = np.exp(np.array(logp) - max(logp))
+            return float(p[0] / p.sum())
+
+        checked, apart = 0, 0.0
+        for t in range(2, len(steps), 2):
+            want = posterior(t, starts[t - 1])
+            if want is None:
+                continue
+            # Measured 2026-10-25: at most 2.3e-12 from scipy over the three
+            # cadences, the every-row window 0.18-0.99 away; 1e-9 is the bound.
+            assert out["p_a"][t] == pytest.approx(want, abs=1e-9), t
+            checked += 1
+            every_row = posterior(t, plain[t - 1])
+            if every_row is not None:
+                apart = max(apart, abs(every_row - want))
+        print(f"{every} {cap}: {checked} rows; the every-row window moves p_a by {apart:.3g}")
+        assert checked > 250, checked
+        assert apart > 1e-3, apart
+
+    @pytest.mark.parametrize(
+        ("every", "cap"),
+        [
+            pytest.param("1m", 25, id="both"),
+            pytest.param("1m", None, id="clock", marks=GRID),
+            pytest.param(None, 25, id="rows", marks=GRID),
+        ],
+    )
+    def test_the_marginal_table_is_numpy_from_the_rings_front_on(self, every, cap):
+        """The table read after the last row is numpy's weighted moments of
+        the rows from the ring's front on, each at ``w * 0.5 ** (age /
+        half_life)``. The stream ends at rows between snapshots, where the
+        every-row table is another one (a row that takes a snapshot is read
+        the same way under every cadence)."""
+        steps = coarse_steps()
+        df = label(frame(steps))
+        clock = model_clock(steps)
+        starts = window_starts(clock, WINDOW, every=spacing_of(every), cap=cap, closed="both")
+        plain = window_starts(clock, WINDOW, closed="both")
+        x, y, w = df["x0"].to_numpy(), df["y"].to_numpy(), df["w"].to_numpy()
+
+        def table(n: int, b: int) -> dict[str, float]:
+            a = w[b:n] * 0.5 ** ((clock[n - 1] - clock[b:n]) / HALF_LIFE)
+            cov = np.cov(np.vstack([x[b:n], y[b:n]]), aweights=a, ddof=0)
+            return {
+                "weight_sum": a.sum(),
+                "mean_x": np.average(x[b:n], weights=a),
+                "mean_y": np.average(y[b:n], weights=a),
+                "var_x": cov[0, 0],
+                "cov": cov[0, 1],
+                "beta": cov[0, 1] / cov[0, 0],
+                "corr": cov[0, 1] / np.sqrt(cov[0, 0] * cov[1, 1]),
+            }
+
+        ends = [
+            n
+            for n in range(150, len(steps), 11)
+            if abs(table(n, starts[n - 1])["weight_sum"] - table(n, plain[n - 1])["weight_sum"])
+            > 1e-3
+        ]
+        assert len(ends) >= 5, ends
+        for n in ends[:5]:
+            bank = po.ModelBank([marginal(closed="both", **cadence(every, cap))])
+            bank.fit_predict(df.head(n))
+            got = bank.marginal("g").filter(pl.col("feature") == "x0").row(0, named=True)
+            want = table(n, starts[n - 1])
+            for key, value in want.items():
+                # Measured 2026-10-25: at most 1.4e-15 relative; 1e-10 is the bound.
+                assert got[key] == pytest.approx(value, rel=1e-10, abs=1e-12), (n, key)
 
 
 class TestTheCadence:

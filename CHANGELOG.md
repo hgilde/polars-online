@@ -83,6 +83,25 @@ returns.
 
 ### Fixed
 
+- `lasso`'s `tol` was in the target's units (task 278): the coordinate
+  descent stopped when no standardized coefficient moved by `tol`, and those
+  coefficients are in the target's units, so a target near 1e-9 met the
+  default after a sweep with no descent counted unconverged (0.20 of the
+  target's spread off at y×2^-30, 1e-3 at 2^-20) and a target in the
+  millions could not meet it above its rounding. A sweep now ends the descent
+  when no coefficient moves by `tol` times the target's spread (its standard
+  deviation, or its root mean square without an intercept): a target and
+  penalties scaled by a power of two give the same fit scaled, to the bit,
+  with the same `solve_failures`. `po.gram.lasso_path` follows the same rule.
+  Outputs move only where the target's spread is not 1, by at most 7.8e-10
+  in a prediction or coefficient on the release probe. A `lasso` state saved
+  by 1.0-1.3 loads and goes on within 1e-9 of this build's own, not to the
+  bit.
+- `po.gram.lasso_path` returned a penalty whose descent ran out of its
+  `max_iter` sweeps with nothing to say so (at a condition of 4e8 and a
+  penalty of 0.001, 5 and 1,000 sweeps both left a KKT violation of 7.8e-9
+  against the rule's 2e-10); it now raises a `ReadinessWarning` naming each
+  such penalty (task 278).
 - `kmeans` and `hmm`: the default seeding, `init="lloyd"`, runs Lloyd's
   passes from each of its ten starts until no row changes centre, at most
   300 passes, where it stopped after ten wherever they had reached (task

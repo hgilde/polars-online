@@ -43,6 +43,86 @@ def _within(horizon: float, closed: str):
     return lambda ages: ages <= horizon
 
 
+class WindowRing:
+    """A window's ring of snapshots, written from its documented rule
+    (``crates/online-core/src/window.rs``, the ``snapshot_every``,
+    ``max_rows_between_snapshots``, ``closed`` and ``window_budget``
+    docstrings), holding each snapshot as the row it precedes: the window
+    is the rows from the ring's front snapshot on.
+
+    - **Cadence.** A learned row takes a snapshot when it is the first, when
+      its clock is ``every`` past the newest snapshot's, when it is ``cap``
+      rows past it (every learned row counts, weight 0 included), or, whatever
+      the cadence, when the newest snapshot has left the window. With neither
+      ``every`` nor ``cap`` -- or ``every == 0`` or ``cap == 1`` -- every row.
+    - **The edge.** A snapshot has left once it is more than ``window`` old,
+      or exactly that old under ``closed="right"``. After a row is learned the
+      ring drops every snapshot that has left, but always keeps the newest.
+    - **Thinning.** Past ``capacity`` snapshots (a thinning budget over a
+      snapshot's bytes) the ring keeps the newest and every second one before
+      it, and doubles both cadences (none stays none), until it fits. It
+      thins as it takes a snapshot, before it drops what has left.
+    """
+
+    def __init__(
+        self,
+        window: float,
+        *,
+        every: float | None = None,
+        cap: int | None = None,
+        closed: str = "right",
+        capacity: int | None = None,
+    ) -> None:
+        if every == 0 or cap == 1 or (every is None and cap is None):
+            self.spacing, self.rows = np.inf, 1.0
+        else:
+            self.spacing = np.inf if every is None else float(every)
+            self.rows = np.inf if cap is None else float(cap)
+        self.window, self.closed, self.capacity = window, closed, capacity
+        self.ring: list[tuple[int, float]] = []
+        self.since = np.inf
+        self.thinned = 0
+
+    def _left(self, now: float, then: float) -> bool:
+        age = now - then
+        return age > self.window or (self.closed == "right" and age == self.window)
+
+    def learn(self, row: int, clock: float) -> int:
+        """Learn ``row`` at the model's ``clock``; the row the front snapshot
+        precedes, the first row of the window as it stands after it."""
+        self.since += 1
+        newest = self.ring[-1][1] if self.ring else None
+        if (
+            newest is None
+            or self.since >= self.rows
+            or clock - newest >= self.spacing
+            or self._left(clock, newest)
+        ):
+            self.since = 0
+            self.ring.append((row, clock))
+            while self.capacity is not None and len(self.ring) > max(self.capacity, 1):
+                n = len(self.ring)
+                self.ring = [e for j, e in enumerate(self.ring) if (n - 1 - j) % 2 == 0]
+                self.rows *= 2
+                self.spacing *= 2
+                self.thinned += 1
+        while len(self.ring) > 1 and self._left(clock, self.ring[0][1]):
+            self.ring.pop(0)
+        return self.ring[0][0]
+
+    @property
+    def front(self) -> int:
+        return self.ring[0][0]
+
+
+def window_starts(clock: np.ndarray, window: float, **ring: object) -> np.ndarray:
+    """:class:`WindowRing` run over every row of ``clock`` (the model's own
+    clock, each row learned): entry ``i`` is the first row of the window after
+    row ``i`` is learned, so row ``i + 1`` reads rows ``starts[i]`` to ``i``."""
+    r = WindowRing(window, **ring)  # type: ignore[arg-type]
+    return np.array([r.learn(i, float(c)) for i, c in enumerate(clock)], dtype=int)
+
+
 def _weighted_mean(v: np.ndarray, om: np.ndarray) -> np.ndarray:
     return (om[:, None] * v).sum(axis=0) / om.sum()
 
@@ -75,6 +155,8 @@ def lasso_paths_ref(
     gap_cap: float = np.inf,
     window_size: float | None = None,
     closed: str = "right",
+    snapshot_every: float | None = None,
+    max_rows_between_snapshots: int | None = None,
     fit_intercept: bool = True,
     target_gaps: str = "own_rows",
     tol: float = 1e-14,
@@ -99,7 +181,10 @@ def lasso_paths_ref(
       pairwise-complete covariance). The intercept reads the target's own
       means either way;
     - ``window_size``: of those, only the rows whose age is less than
-      ``window_size``, or at most it under ``closed="both"``.
+      ``window_size``, or at most it under ``closed="both"``; under a
+      snapshot cadence (``snapshot_every``, ``max_rows_between_snapshots``),
+      the rows from the front snapshot of :class:`WindowRing` on, which the
+      selection errors are cut at too.
 
     With an intercept, ``C`` is the correlation matrix of the centred
     features, ``c_i = cov(x_i, y) / s_i``, ``coef_i = b_i / s_i`` and the
@@ -174,6 +259,19 @@ def lasso_paths_ref(
     horizon = np.inf if window_size is None else window_size
     within = _within(horizon, closed)
     single = m == 1 and np.ndim(min_weight) == 0
+    cadenced = snapshot_every is not None or max_rows_between_snapshots is not None
+    ring = (
+        WindowRing(horizon, every=snapshot_every, cap=max_rows_between_snapshots, closed=closed)
+        if window_size is not None and cadenced
+        else None
+    )
+
+    def keep(times: np.ndarray, rows: np.ndarray, t_ref: float) -> np.ndarray:
+        """The rows inside the window as the newest learned row, at
+        ``t_ref``, sees it: by age, or from the ring's front snapshot on."""
+        if ring is None:
+            return within(t_ref - times)
+        return rows >= ring.front
 
     pred = np.full((n, m, npath), np.nan)
     weight_sum = np.full(n, np.nan)
@@ -228,7 +326,7 @@ def lasso_paths_ref(
     def solve(t_now: float) -> np.ndarray:
         ta, wa, xa, ya = (np.asarray(v) for v in (T, Wr, Xr, Yr))
         ages = t_now - ta
-        inside = within(ages)
+        inside = keep(ta, np.arange(len(ta)), t_now)
         om = wa * decay(ages, half_life)
         fit = np.full((m, npath, kt), np.nan)
         for j in range(m):
@@ -242,7 +340,7 @@ def lasso_paths_ref(
     Wr: list[float] = []
     Xr: list[np.ndarray] = []
     Yr: list[np.ndarray] = []
-    errs: list[list[tuple[float, float, np.ndarray]]] = [[] for _ in range(m)]
+    errs: list[list[tuple[float, float, np.ndarray, int]]] = [[] for _ in range(m)]
 
     fit = None
     t_last, pending = 0.0, 0.0
@@ -259,7 +357,7 @@ def lasso_paths_ref(
         # ---- before the row: every weight is seen from the last accepted row ----
         if T:
             ages = t_last - np.asarray(T)
-            inside = within(ages)
+            inside = keep(np.asarray(T), np.arange(len(T)), t_last)
             om = np.where(inside, np.asarray(Wr) * decay(ages, half_life), 0.0)
             present = ~np.isnan(np.asarray(Yr))
             weight_sum[i] = om.sum()
@@ -280,9 +378,9 @@ def lasso_paths_ref(
                     )
                 pred[i, j] = p
             if errs[j]:
-                te, we, ee = (np.asarray(v) for v in zip(*errs[j], strict=True))
+                te, we, ee, re = (np.asarray(v) for v in zip(*errs[j], strict=True))
                 ages_e = t_last - te
-                wt = np.where(within(ages_e), we * decay(ages_e, select_half_life), 0.0)
+                wt = np.where(keep(te, re, t_last), we * decay(ages_e, select_half_life), 0.0)
                 if wt.sum() > 0.0:
                     score = wt @ (ee**2)
                     lo, second = np.sort(score)[:2]
@@ -294,10 +392,12 @@ def lasso_paths_ref(
         Wr.append(float(w[i]))
         Xr.append(X[i].copy())
         Yr.append(Y[i].copy())
+        if ring is not None:
+            ring.learn(len(T) - 1, t_now)
         for j in range(m):
             if np.isnan(pred[i, j]).any() or np.isnan(Y[i, j]) or not w[i] > 0.0:
                 continue
-            errs[j].append((t_now, float(w[i]), Y[i, j] - pred[i, j]))
+            errs[j].append((t_now, float(w[i]), Y[i, j] - pred[i, j], len(T) - 1))
         t_last = t_now
 
         # ---- solve, on the schedule ----
@@ -310,14 +410,16 @@ def lasso_paths_ref(
         since_w += max(float(w[i]), 0.0)
         if share is not None:
             ages = t_now - np.asarray(T)
-            held = (np.asarray(Wr) * decay(ages, half_life))[within(ages)].sum()
+            inside = keep(np.asarray(T), np.arange(len(T)), t_now)
+            held = (np.asarray(Wr) * decay(ages, half_life))[inside].sum()
             by_cadence = since_w >= share * held
         else:
             by_cadence = solve_every <= 0.0 or since_clock >= solve_every
         cadence = teaches and (by_cadence or since_rows >= max_rows)
         if teaches and not cadence and fit is None:
             ages = t_now - np.asarray(T)
-            weight = (np.asarray(Wr) * decay(ages, half_life))[within(ages)].sum()
+            inside = keep(np.asarray(T), np.arange(len(T)), t_now)
+            weight = (np.asarray(Wr) * decay(ages, half_life))[inside].sum()
             if weight >= float(np.min(mp)):
                 if not single:
                     raise ValueError(

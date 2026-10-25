@@ -16274,6 +16274,19 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       MODELS.md and docstrings with the capture tables, the `sgd` analogue,
       the refit row solving only its own target, budgets and the release
       comparison declared. Then a review and the fix of its findings.
+      *Reviewed (two Fable reviews, 2026-10-25)*: a high finding -- the
+      buffer held every ageing row at full width, unbounded -- fixed by runs
+      of `(λ, λ_s, count)` with a cap past which a target gives its refit up;
+      the rest fixed (passes uncounted as failures, `sgd`'s `l2` in the
+      refit, the resumed 1.3.0 bank documented and tested, capture counts
+      with their stream lengths, a reproducing script). *Decided by the user,
+      2026-10-25*: a per-spec refit-buffer budget of 256 MiB, past which a
+      target gives up its refit (counted, with a notice); the default count
+      500 ("500"), scaling as `max(500, 10·k)` up to 100 features and off by
+      default above 100 (an explicit value still taken); and
+      `marginal(bin_stat="huber")`, captured by the same mechanism (2,000
+      rows at 12%: 13 of 40 seeds with a bin more than 0.1 scale off, worst
+      4.1), fixed in 1.4.0 too.
 - [ ] 278. **Convergence tests of every kind, before 1.4.0** -- the user,
       2026-10-25: "What additional tests should we do to catch all kinds of
       convergence issues", then "Do them all before 1.4". Task 277's capture
@@ -16408,6 +16421,14 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       gains and the textbook gains, three new f64 a target (`S0`, `ā`, `Q`)
       joining unreleased schema 64 after task 277; statsmodels WLS to 2e-13
       without decay and statsmodels `Holt` to 1e-12 in steady state.
+      *lasso (D3, D6), 2026-10-25*: `tol` relative to the target's spread
+      (bitwise scale equivariance at 2^±20, 2^±30; outputs move only where
+      the spread is not 1, at most 7.8e-10 on the probe); `gram.lasso_path`
+      warns naming each penalty that ran out of sweeps. Rule 5's third
+      exception, the user's ("Accept within 1e-9"): a `lasso` state of schema
+      61-63 continues within 1e-9 relative (measured 5.8e-11, windowed
+      1.7e-11), and loads and re-saves the same bytes. The 798-of-799 cap
+      hits at defaults are the descent's rate, not the rule; `max_iter` kept.
 - [ ] 279. **Smaller build caches: no debug info for dependencies** -- the
       user, 2026-10-25 ("Why do agents take so much disk I though we shared
       caches", then "Yes"). Each worktree slot keeps its own `target/` (a
