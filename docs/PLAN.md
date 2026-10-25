@@ -16249,3 +16249,28 @@ line's bounded memory (task 270 (o)), and the release preparation (steps
 Recorded after it: the run's budgets (`--release 1.3.0`), `RELEASES` gains
 1.3.0 and `UNRELEASED` empties, the README's install size from PyPI's
 wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
+- [ ] 277. **Huber's converged warm-up, on by default, for `huber` and
+      `sgd(loss="huber")`** -- the user, 2026-10-25: "Fix the cpu paths and
+      check the Huber warmup", then, on the measurement, "1.4.0, on by
+      default" and the `sgd` analogue "same release". Measured (scratchpad
+      `huber-warmup/`): one online pass is *captured* in some streams -- the
+      outliers pull the first solves toward least squares, the MAD sketch
+      learns that fit's residuals, the cut is drawn wide and the outliers
+      keep entering at nearly full weight. Medians hide it (0.001 at 12.5%);
+      seeds do not: 13 of 40 captured at 12.5% (worst 0.43 in slope), 25 of
+      40 at 20% (worst 4.3), and without decay it persists (200,000 rows,
+      20%: 4.67 against the oracle's 2.34). The level makes no difference.
+      A refit of the coefficients alone is pulled back; refitting and
+      rebuilding the scale from the converged residuals fixes it: warm-up
+      200 captures 0 / 0 / 4 of 40 at 12.5 / 15 / 20% (1,000: 0 / 0 / 2), a
+      one-off 0.07-5 ms, per-row speed unchanged, about 8 KB a target held
+      until the refit. `sgd(loss="huber")` is captured too (20 of 20 seeds
+      at 20%). Ship in 1.4.0: schema 64 (v63 sets to `v63/`, a loader that
+      reads a v63 state with the warm-up off), fixtures freezing a mid-buffer
+      and a post-refit state, a clearer public name than `warm_rows`
+      (`hmm`/`kmeans` have one), default 200 on, `0` restoring 1.3.0's
+      numbers to the bit, declared in the CHANGELOG and in the release
+      policy as a second default moved in a minor (beside `huber_scale`),
+      MODELS.md and docstrings with the capture tables, the `sgd` analogue,
+      the refit row solving only its own target, budgets and the release
+      comparison declared. Then a review and the fix of its findings.
