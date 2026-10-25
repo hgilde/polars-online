@@ -2182,19 +2182,25 @@ pub(crate) fn clock_cfg_of(p: &ClockPolicy<'_>) -> Result<ClockCfg, String> {
             ));
         }
     };
+    // A window ends at every session change, so the clock's jump across one
+    // is never measured inside a window: a caller with no model reads no
+    // number there, and needs none beside a session (task 278, the user's
+    // decision of 2026-10-25). Only "reset" acts, on the windows still open
+    // ahead of the change, which it discards rather than cuts. A gap of 0
+    // stands in for the number.
+    let session_gap = match session_gap {
+        None if !model && p.session.is_some() => Some(SessionGap::Gap(0.0)),
+        given => given,
+    };
     // `group_close = "session"` is itself the prescription for a session
     // change -- emit the span and start over -- so it takes the place of
     // `session_gap` rather than sitting beside it (E54); `validate`
     // refuses the pair.
     if p.session.is_some() && session_gap.is_none() && p.spec_closes_on_session != Some(true) {
-        return Err(if model {
-            format!(
-                "{who}: session_gap is required when session is given (or \
-                 group_close = \"session\", which closes the group at the change instead)"
-            )
-        } else {
-            format!("{who}: session_gap is required when session is given")
-        });
+        return Err(format!(
+            "{who}: session_gap is required when session is given (or \
+             group_close = \"session\", which closes the group at the change instead)"
+        ));
     }
     // What a late row is belongs to the caller: unset, every step back is
     // refused; given, a step back no larger than it is a late row and is
