@@ -58,7 +58,11 @@ def python_lasso_path(
 ):
     """``po.gram.lasso_path`` as 0.13.0 ran it, in Python: the reference the
     Rust descent is held to. Its defaults follow the Rust function's (``tol``
-    1e-10 since 1.0, the ``lasso`` model's; 0.13.0 ran 1e-7)."""
+    1e-10 since 1.0, the ``lasso`` model's; 0.13.0 ran 1e-7), and so does its
+    stopping rule since task 278 (D3): a sweep's largest move against ``tol``
+    times the target's spread -- its standard deviation with an intercept,
+    its root mean square through the origin, never below the largest
+    ``|d_i|`` -- or a sweep that moves nothing."""
     t = pg._target_index(g, target)
     slots, icept = pg._feature_slots(g, features)
     k = len(pg._columns(g))
@@ -66,6 +70,12 @@ def python_lasso_path(
     cross = np.asarray(g["cross_moments"], dtype=float)[t]
     como = np.asarray(g["comoments"], dtype=float)
     m, ybar = means, 0.0
+    # A mapping without target moments has no spread: the floor is the scale.
+    tv, tm = g.get("target_vars"), g.get("target_means")
+    var_y = np.nan if tv is None else float(np.asarray(tv, dtype=float)[t])
+    mean_y = np.nan if tm is None else float(np.asarray(tm, dtype=float)[t])
+    second = var_y if icept >= 0 else var_y + mean_y * mean_y
+    spread = 0.0 if np.isnan(second) else max(second, 0.0) ** 0.5
     if icept >= 0:
         m = pg._means_of(np, g, t)
         ybar = cross[icept]
@@ -82,6 +92,7 @@ def python_lasso_path(
     corr[:, ~live] = 0.0
     corr[~live, ~live] = 1.0
     d = np.where(live, rhs / scale, 0.0)
+    limit = tol * max(spread, float(np.abs(d).max(initial=0.0)))
     pw = np.ones(len(slots)) if penalty_weights is None else np.asarray(penalty_weights, float)
     out = np.zeros((len(penalties), k))
     b = np.zeros(len(slots))
@@ -97,7 +108,7 @@ def python_lasso_path(
                 new = np.sign(rho) * max(abs(rho) - l1[i], 0.0) / (corr[i, i] + l2[i])
                 delta = max(delta, abs(new - b[i]))
                 b[i] = new
-            if delta < tol:
+            if delta < limit or delta == 0.0:
                 break
         out[li, slots] = np.where(live, b / scale, 0.0)
         if icept >= 0:
@@ -133,7 +144,12 @@ class TestLassoPathIsTheLoopItReplaced:
         data = {key: case.pop(key) for key in ("constant", "offset") if key in case}
         spec = {key: case.pop(key) for key in ("fit_intercept",) if key in case}
         g = gram(stream(seed=3, **data), targets=("y", "y2"), **spec)
-        got = pg.lasso_path(g, PENALTIES, **case)
+        if "max_iter" in case:
+            # Three sweeps leave penalties short of the rule, which is said.
+            with pytest.warns(po.ReadinessWarning, match="ran out of sweeps"):
+                got = pg.lasso_path(g, PENALTIES, **case)
+        else:
+            got = pg.lasso_path(g, PENALTIES, **case)
         want = python_lasso_path(g, PENALTIES, **case)
         scale = 1.0 + np.abs(want).max()
         assert np.abs(got - want).max() <= 4e-15 * scale, np.abs(got - want).max()
@@ -147,6 +163,19 @@ class TestLassoPathIsTheLoopItReplaced:
         got = pg.lasso_path(g, PENALTIES, target="y2")
         want = python_lasso_path(g, PENALTIES, target="y2")
         assert np.abs(got - want).max() <= 4e-15 * (1.0 + np.abs(want).max())
+
+    def test_a_mapping_without_target_moments_stops_on_the_largest_cross_moment(self):
+        # The stopping rule's scale is the target's spread; without the
+        # target's moments it is the largest `|d_i|`, no larger by
+        # Cauchy-Schwarz, so the rule keeps the target's units. A `tol` at
+        # which the two scales stop on other sweeps here (the target's
+        # spread is 2.1, the largest `|d_i|` smaller), so they give two paths.
+        g = gram(stream(seed=5))
+        bare = dict(g, target_vars=None, target_means=None)
+        got = pg.lasso_path(bare, PENALTIES, tol=1e-2)
+        want = python_lasso_path(bare, PENALTIES, tol=1e-2)
+        assert np.abs(got - want).max() <= 4e-15 * (1.0 + np.abs(want).max())
+        assert np.abs(got - pg.lasso_path(g, PENALTIES, tol=1e-2)).max() > 1e-3
 
     def test_a_mapping_without_the_centred_forms_forms_them(self):
         g = gram(stream(seed=5))

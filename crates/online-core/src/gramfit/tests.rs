@@ -593,7 +593,19 @@ fn coordinate_descent_reaches_the_lars_knots() {
     let (r, d) = design(7, 400, 8, 0.6, &beta);
     let path = lars_lasso(&r, &d, &[true; 8], LarsLimits::default());
     let grid: Vec<f64> = path.penalties.clone();
-    let cd = cd_path(&r, &d, &[true; 8], &grid, 1.0, &[1.0; 8], 10_000, 1e-13);
+    let cd = cd_path(
+        &r,
+        &d,
+        &[true; 8],
+        &grid,
+        1.0,
+        &[1.0; 8],
+        10_000,
+        1e-13,
+        f64::NAN,
+    );
+    assert!(cd.unconverged.iter().all(|&u| !u));
+    let cd = cd.coefs;
     for (a, b) in cd.iter().zip(&path.coefs) {
         assert!((a - b).abs() < 1e-10, "{a} vs {b}");
     }
@@ -608,7 +620,18 @@ fn coordinate_descent_meets_the_elastic_net_conditions_with_weights() {
     let (lam, ratio) = (0.05, 0.7);
     let mut live = vec![true; 6];
     live[5] = false;
-    let b = cd_path(&r, &d, &live, &[0.2, lam], ratio, &w, 10_000, 1e-14);
+    let b = cd_path(
+        &r,
+        &d,
+        &live,
+        &[0.2, lam],
+        ratio,
+        &w,
+        10_000,
+        1e-14,
+        f64::NAN,
+    )
+    .coefs;
     let b = &b[6..];
     assert_eq!(b[5], 0.0, "a dead column stays at 0");
     for j in 0..5 {
@@ -626,9 +649,22 @@ fn coordinate_descent_meets_the_elastic_net_conditions_with_weights() {
 #[test]
 fn coordinate_descent_stops_at_max_iter() {
     let (r, d) = design(3, 100, 4, 0.9, &[1.0, 1.0, 1.0, 1.0]);
-    let one = cd_path(&r, &d, &[true; 4], &[0.0], 1.0, &[1.0; 4], 1, 1e-7);
-    let many = cd_path(&r, &d, &[true; 4], &[0.0], 1.0, &[1.0; 4], 10_000, 1e-7);
-    assert_ne!(one, many, "one sweep is not the converged fit");
+    let one = cd_path(&r, &d, &[true; 4], &[0.0], 1.0, &[1.0; 4], 1, 1e-7, 1.0);
+    let many = cd_path(
+        &r,
+        &d,
+        &[true; 4],
+        &[0.0],
+        1.0,
+        &[1.0; 4],
+        10_000,
+        1e-7,
+        1.0,
+    );
+    assert_ne!(one.coefs, many.coefs, "one sweep is not the converged fit");
+    // The cap is said per penalty (task 278, D6: it was silent).
+    assert_eq!(one.unconverged, vec![true]);
+    assert_eq!(many.unconverged, vec![false]);
 }
 
 #[test]
@@ -1034,17 +1070,32 @@ fn a_column_set_aside_makes_no_knot() {
     assert!(set_aside > 0);
 }
 
-/// A sweep that moves no coefficient by `tol` or more ends the descent
-/// (the module doc): the path at `tol` is the sweeps run one at a time --
-/// at `tol = 0`, where none ends early -- up to the first whose largest
-/// move is under `tol`. A sweep that moves one by exactly `tol` does not
-/// end it.
+/// A sweep that moves no coefficient by `tol · s` or more ends the descent
+/// (the module doc), `s` the target's spread: the path at `tol` is the
+/// sweeps run one at a time -- at `tol = 0`, where none ends early but on a
+/// sweep that moves nothing -- up to the first whose largest move is under
+/// `tol · s`. A sweep that moves one by exactly `tol · s` does not end it.
+/// `s` is a power of two above every `|d_i|`, so `tol · s` is exact.
 #[test]
 fn coordinate_descent_stops_at_the_first_sweep_that_moves_less_than_tol() {
     let (r, d) = design(3, 100, 4, 0.9, &[1.0, -1.0, 0.5, 1.0]);
     let live = [true; 4];
-    let run =
-        |max_iter: usize, tol: f64| cd_path(&r, &d, &live, &[0.01], 1.0, &[1.0; 4], max_iter, tol);
+    let spread = 8.0;
+    assert!(d.iter().all(|v| v.abs() < spread));
+    let run = |max_iter: usize, tol: f64| {
+        let path = cd_path(
+            &r,
+            &d,
+            &live,
+            &[0.01],
+            1.0,
+            &[1.0; 4],
+            max_iter,
+            tol / spread,
+            spread,
+        );
+        path.coefs
+    };
     // Sweep m's coefficients and its largest move, by definition.
     let mut after = vec![vec![0.0; 4]];
     let mut moves = vec![f64::INFINITY];
@@ -1071,4 +1122,101 @@ fn coordinate_descent_stops_at_the_first_sweep_that_moves_less_than_tol() {
     assert_eq!(run(10_000, tol), after[stop], "tol = sweep {m0}'s move");
     // Just above that move, the sweep that made it is the last.
     assert_eq!(run(10_000, tol * (1.0 + 1e-12)), after[m0]);
+}
+
+/// The rule is dimensionless (task 278, D3): the target scaled by `2^p`,
+/// its spread and the penalties with it, is the same descent scaled, to
+/// the bit, stopping on the same sweep -- with the spread given, and with
+/// it unknown (NaN), where the floor `max_i |d_i|` is the scale. Before,
+/// `tol` was compared with the move itself: at `2^-30` the first sweeps'
+/// moves were already under it.
+#[test]
+fn coordinate_descent_is_the_same_at_any_scale_of_the_target() {
+    let (r, d) = design(5, 200, 5, 0.95, &[1.0, -0.7, 0.5, 0.0, 0.3]);
+    let live = [true; 5];
+    let grid = [0.1, 0.01, 0.0];
+    let at = |c: f64, spread: f64, sweeps: usize| {
+        let dc: Vec<f64> = d.iter().map(|v| v * c).collect();
+        let lams: Vec<f64> = grid.iter().map(|v| v * c).collect();
+        cd_path(
+            &r,
+            &dc,
+            &live,
+            &lams,
+            1.0,
+            &[1.0; 5],
+            sweeps,
+            1e-10,
+            spread * c,
+        )
+    };
+    for spread in [1.7, f64::NAN] {
+        for sweeps in [20, 100_000] {
+            let base = at(1.0, spread, sweeps);
+            assert!(base.coefs.iter().any(|&v| v != 0.0));
+            if sweeps == 20 {
+                assert!(base.unconverged.iter().any(|&u| u), "the cap's path ran");
+            } else {
+                assert!(base.unconverged.iter().all(|&u| !u), "the rule's path ran");
+            }
+            for p in [-30, -20, 20, 30] {
+                let c = 2f64.powi(p);
+                let scaled = at(c, spread, sweeps);
+                let want: Vec<f64> = base.coefs.iter().map(|v| v * c).collect();
+                assert_eq!(
+                    scaled.coefs, want,
+                    "spread {spread}, {sweeps} sweeps, 2^{p}"
+                );
+                assert_eq!(scaled.unconverged, base.unconverged, "2^{p}");
+            }
+        }
+    }
+}
+
+/// `sweep_tol` is `tol` times the larger of the target's spread and the
+/// largest `|d_i|`, the spread unknown (NaN) leaving the floor; `settled`
+/// ends a descent on a move under the limit, or on no move at all, which a
+/// limit of 0 still allows.
+#[test]
+fn the_sweep_limit_is_tol_times_the_targets_spread() {
+    let d = [1.0, -5.0, 0.0];
+    assert_eq!(sweep_tol(2.0, 8.0, &d), 16.0);
+    assert_eq!(sweep_tol(2.0, 3.0, &d), 10.0, "the floor binds");
+    assert_eq!(
+        sweep_tol(2.0, f64::NAN, &d),
+        10.0,
+        "an unknown spread is the floor"
+    );
+    assert_eq!(sweep_tol(2.0, f64::NAN, &[0.0, 0.0]), 0.0);
+    assert!(cd::settled(0.5, 1.0));
+    assert!(
+        !cd::settled(1.0, 1.0),
+        "a move of exactly the limit goes on"
+    );
+    assert!(!cd::settled(1.5, 1.0));
+    assert!(cd::settled(0.0, 0.0), "no move ends it at a limit of 0");
+    assert!(!cd::settled(1e-300, 0.0));
+}
+
+/// A target with no spread, every `d_i` 0: the limit is 0, and the descent
+/// from 0 moves nothing in its first sweep, which ends it. Counted
+/// unconverged it would be a cap hit on every constant target.
+#[test]
+fn a_target_with_no_spread_converges_in_a_sweep() {
+    let (r, _) = design(2, 50, 3, 0.3, &[]);
+    for spread in [0.0, f64::NAN] {
+        let path = cd_path(
+            &r,
+            &[0.0; 3],
+            &[true; 3],
+            &[0.1, 0.0],
+            1.0,
+            &[1.0; 3],
+            1,
+            1e-10,
+            spread,
+        );
+        assert_eq!(path.coefs, vec![0.0; 6]);
+        assert_eq!(path.unconverged, vec![false, false]);
+    }
 }

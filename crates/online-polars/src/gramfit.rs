@@ -113,8 +113,12 @@ fn path_of(
 
 /// Target `t`'s elastic-net path on `g` over `penalties` by the `lasso`
 /// model's coordinate descent, `penalties.len() × k` over the Gram's
-/// columns in original units with the intercept recovered. `weights`
-/// scales the penalty per slot.
+/// columns in original units with the intercept recovered, and per penalty
+/// whether its descent ran out of sweeps. `weights` scales the penalty per
+/// slot. The stopping rule reads the target's spread as the model's does
+/// (`online_core::gramfit::sweep_tol`): its standard deviation with an
+/// intercept, its root mean square through the origin, as `ridge_fits`
+/// reads the target's second moment.
 #[allow(clippy::too_many_arguments)]
 pub fn cd_path_of(
     g: &GramArrays<'_>,
@@ -125,10 +129,19 @@ pub fn cd_path_of(
     weights: &[f64],
     max_iter: usize,
     tol: f64,
-) -> Vec<f64> {
+) -> (Vec<f64>, Vec<bool>) {
     let corr = Correlation::of(&Design::of(g, &cols.slots, cols.icept));
     let resp = Response::of(g, t, &cols.slots, cols.icept);
     let d = corr.scaling.d(&resp);
+    let at = |v: &[f64]| v.get(t).copied().unwrap_or(f64::NAN);
+    let (var, mean) = (at(g.target_vars), at(g.target_means));
+    let second = match cols.icept {
+        Some(_) => var,
+        None => var + mean * mean,
+    };
+    // A variance a window's subtraction left a rounding below 0 is 0; a NaN
+    // (a Gram without the target's moments) stays one, for `sweep_tol`.
+    let spread = if second < 0.0 { 0.0 } else { second.sqrt() };
     let path = cd_path(
         &corr.r,
         &d,
@@ -138,14 +151,15 @@ pub fn cd_path_of(
         weights,
         max_iter,
         tol,
+        spread,
     );
     let n = cols.slots.len();
     let mut out = Vec::with_capacity(penalties.len() * g.k);
     for i in 0..penalties.len() {
-        let b = &path[i * n..(i + 1) * n];
+        let b = &path.coefs[i * n..(i + 1) * n];
         out.extend(resp.coef(&corr.scaling, b, g.k, &cols.slots, cols.icept));
     }
-    out
+    (out, path.unconverged)
 }
 
 /// What [`fit_subsets`] fits on each merged Gram.
