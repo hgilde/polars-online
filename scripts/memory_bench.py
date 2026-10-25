@@ -1,6 +1,7 @@
 """Peak memory of each way of running a bank over a parquet file, at 3M and
-12M rows: the figures the README's *Memory* table, its advice to filter after
-the bank, and ``docs/RUNNER.md``'s *Memory* cite.
+12M rows, and the command line at 24M too: the figures the README's *Memory*
+table, its advice to filter after the bank, and ``docs/RUNNER.md``'s *Memory*
+cite.
 
     uv run python scripts/memory_bench.py generate .cache/memory
     uv run python scripts/memory_bench.py all .cache/memory
@@ -8,12 +9,12 @@ the bank, and ``docs/RUNNER.md``'s *Memory* cite.
 
 ``generate`` writes a seeded file of 3M rows, 20 features, a clock, a weight
 and 32 groups (0.5 GB of parquet), and the same rows four times over, the
-clock shifted, for 12M (2.0 GB): the state is the same at both sizes and only
-the data grows. Each case then runs in a fresh process under macOS's
-``/usr/bin/time -l``, and its figure is the peak memory footprint, the most
-physical memory the process held at once. The spec is ``ewridge`` with a
-clock, the weight, a minimum weight and the 32 groups, parquet in and
-parquet out. The cases:
+clock shifted, for 12M (2.0 GB), and eight times over for 24M (4.1 GB): the
+state is the same at every size and only the data grows. Each case then runs
+in a fresh process under macOS's ``/usr/bin/time -l``, and its figure is the
+peak memory footprint, the most physical memory the process held at once. The
+spec is ``ewridge`` with a clock, the weight, a minimum weight and the 32
+groups, parquet in and parquet out. The cases:
 
 ``query``
     ``lf.online.fit_predict([spec]).sink_parquet(..)``
@@ -28,7 +29,8 @@ parquet out. The cases:
     (``_RJEM_MALLOC_CONF=dirty_decay_ms:0,muzzy_decay_ms:0``)
 ``online`` and ``online-prefetch1``
     the command line, given with ``--online``, and the same with
-    ``POLARS_ROW_GROUP_PREFETCH_SIZE=1``
+    ``POLARS_ROW_GROUP_PREFETCH_SIZE=1``, at 24M rows as well: a peak that
+    grows from 12M to 24M is the allocator holding pages, not the bank
 
 macOS only: the footprint comes from ``/usr/bin/time -l``.
 """
@@ -65,6 +67,8 @@ def generate(d: Path) -> None:
     df.write_parquet(d / "r3m.parquet")
     parts = [pl.scan_parquet(d / "r3m.parquet").with_columns(pl.col("t") + i * N) for i in range(4)]
     pl.concat(parts).sink_parquet(d / "r12m.parquet")
+    parts = [pl.scan_parquet(d / "r3m.parquet").with_columns(pl.col("t") + i * N) for i in range(8)]
+    pl.concat(parts).sink_parquet(d / "r24m.parquet")
 
 
 def _spec():
@@ -140,7 +144,7 @@ def all_cases(d: Path, online: str | None, repeats: int = 2) -> None:
     print(header(), flush=True)
     cases = [(c, s) for s in ("3m", "12m") for c in PY_CASES]
     if online:
-        cases += [(c, s) for s in ("3m", "12m") for c in ("online", "online-prefetch1")]
+        cases += [(c, s) for s in ("3m", "12m", "24m") for c in ("online", "online-prefetch1")]
     print("| case | rows | peak footprint, GB (each run) |\n|---|---|---|")
     for case, size in cases:
         env = dict(os.environ)

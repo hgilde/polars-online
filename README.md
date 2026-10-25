@@ -3729,9 +3729,10 @@ The bank does not grow from 3M to 12M rows: the growth is the memory
 allocator keeping pages it has freed. Told to return them at once, with
 `_RJEM_MALLOC_CONF=dirty_decay_ms:0,muzzy_decay_ms:0`, the query holds
 0.86 GB at 3M rows and 0.95 GB at 12M. Of the rest, nearly all is Polars
-reading ahead in the parquet file. The command line, whose allocator
-returns freed pages at once, holds 0.77 GB at 12M rows against 0.74 GB at
-3M ([docs/RUNNER.md](docs/RUNNER.md#memory)).
+reading ahead in the parquet file. The command line's allocator reuses
+the pages it frees across all its threads, so it holds 0.75 GB at 3M rows,
+0.85 GB at 12M and 0.86 GB at 24M
+([docs/RUNNER.md](docs/RUNNER.md#memory)).
 
 **Memory has four parts, each with its own bound:**
 

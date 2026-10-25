@@ -465,21 +465,42 @@ what Polars has read ahead of it.
 
 The figures are the peak footprint on one file, `ewridge` with 20
 features, parquet in and out: the same measurement as the README's
-[Memory](../README.md#memory) table.
+[Memory](../README.md#memory) table, made on 2026-10-24 on macOS with
+Polars 2.0.0 on 14 cores. The 24M rows are the 3M rows eight times over,
+so the state is the same at every size.
 
-| what you run | 3M rows | 12M rows |
-|---|---:|---:|
-| `polars-online --config` | 0.74 GB | 0.77 GB |
-| `polars-online --config`, with `POLARS_ROW_GROUP_PREFETCH_SIZE=1` | 0.24 GB | 0.24 GB |
+| what you run | 3M rows | 12M rows | 24M rows |
+|---|---:|---:|---:|
+| `polars-online --config` | 0.75 GB | 0.85 GB | 0.86 GB |
+| `polars-online --config`, with `POLARS_ROW_GROUP_PREFETCH_SIZE=1` | 0.42 GB | 0.43 GB | 0.44 GB |
 
-It is flat: the bank's memory does not grow with the rows, and this
-process keeps none of the freed pages the Python surfaces in the README's
-table hold on to as they run longer. Nearly all of it is Polars reading
-ahead in the parquet file, and with
-`POLARS_ROW_GROUP_PREFETCH_SIZE=1` a run takes 0.24 GB.
-`scripts/memory_bench.py` makes these measurements, on Polars 2.0.0 and 14
-cores, and [docs/PERFORMANCE.md](PERFORMANCE.md) §26 re-measures the command
-line, CSV and NDJSON included.
+It is bounded: the bank's memory does not grow with the rows, and the
+allocator reuses the pages it frees rather than hold more as the run goes
+on. Most of what is left is Polars reading ahead in the parquet file;
+`POLARS_ROW_GROUP_PREFETCH_SIZE=1` halves it.
+
+The bound comes from how the binary sets up its allocator. Off Windows it
+is jemalloc, set to one arena for every thread (`narenas:1`). jemalloc's
+default is four arenas a core. Each arena keeps the pages freed in it for
+ten seconds, for the threads on that arena alone. It gives them back only
+when one of those threads allocates again. The reader's, the bank's and
+the writer's buffers then strand pages in every arena, and the peak grows
+with the rows: 0.94, 1.36 and 1.48 GB at 3M, 12M and 24M rows. One arena
+costs no speed in these runs. Threads contending for it would show as CPU
+time, and the 12M-row run took 24.5 s of CPU either way.
+
+`_RJEM_MALLOC_CONF` overrides the binary's setting. With
+`_RJEM_MALLOC_CONF=dirty_decay_ms:0` freed pages go back to the system at
+once: 0.74, 0.76 and 0.78 GB, for about 18% more CPU time. The system
+allocator holds less still at the floor, 0.21-0.23 GB with the prefetch at
+1, but runs slower. On a million rows of a five-feature `ewridge`, best of
+five runs, it took 1.6 times as long with a thousand one-row groups a chunk
+and 1.2 times as long with one stream. On Windows the binary's allocator is
+mimalloc, and these figures were not measured there.
+
+`scripts/memory_bench.py` makes these measurements, and
+[docs/PERFORMANCE.md](PERFORMANCE.md) §26 re-measures the command line, CSV
+and NDJSON included.
 
 ### The pipeline and its threads
 
