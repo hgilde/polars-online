@@ -162,26 +162,26 @@ def test_micro_finds_separated_blobs_on_the_worst_seed():
 
 #: Per set, the bounds on the worst of 50 orderings: ARI at least, the
 #: centroid index at most, and the inertia over the batch oracle's at most.
-#: Measured over the 50 (the comment: the worst ARI, the worst centroid
-#: index and in how many orders it is above 0, the worst inertia ratio and
-#: its median), bounds with headroom.
+#: Measured over the 50, 2026-10-25 (the comment: the worst ARI, the worst
+#: centroid index and in how many orders it is above 0, the worst inertia
+#: ratio and its median; before greedy k-means++ and Lloyd to its fixed
+#: point, task 278, D7 and F3, after the arrow), bounds with headroom.
 FRANTI = {
-    # 0.886; CI 1 in 10 of 50; 2.19x, median 1.001 (a local minimum: two
-    # centres in one cluster, one between two)
-    "s1": (0.85, 1, 2.6),
-    # 0.854; CI 1 in 13; 1.29x, 1.001
-    "s2": (0.82, 1, 1.55),
-    # 0.664; CI 1 in 19; 1.14x, 1.005 (heavy overlap: the truth's labels
-    # are not the best partition's)
-    "s3": (0.62, 1, 1.35),
-    # 0.557; CI 2 in 22; 1.18x, 1.023
-    "s4": (0.5, 2, 1.4),
-    # 0.822; CI 2 in 39; 1.56x, 1.257
-    "a1": (0.78, 3, 1.9),
-    # 0.860; CI 3 in 50; 1.51x, 1.280
-    "a2": (0.82, 4, 1.8),
-    # 0.871; CI 4 in 50; 1.60x, 1.256
-    "a3": (0.83, 5, 1.95),
+    # 0.886 -> 0.986; CI 1 in 10 -> 0 in 0; 2.19x -> 1.001x, median 1.001
+    "s1": (0.95, 0, 1.05),
+    # 0.854 -> 0.936; CI 1 in 13 -> 0 in 0; 1.29x -> 1.001x, median 1.001
+    "s2": (0.9, 0, 1.05),
+    # 0.664 -> 0.672; CI 1 in 19 -> 1 in 1; 1.14x -> 1.12x, median 1.003
+    # (heavy overlap: the truth's labels are not the best partition's)
+    "s3": (0.63, 1, 1.25),
+    # 0.557 -> 0.594; CI 2 in 22 -> 1 in 6; 1.18x -> 1.09x, median 1.011
+    "s4": (0.55, 1, 1.2),
+    # 0.822 -> 0.865; CI 2 in 39 -> 1 in 10; 1.56x -> 1.30x, median 1.009
+    "a1": (0.83, 1, 1.45),
+    # 0.860 -> 0.929; CI 3 in 50 -> 1 in 30; 1.51x -> 1.24x, median 1.101
+    "a2": (0.89, 1, 1.4),
+    # 0.871 -> 0.913; CI 4 in 50 -> 3 in 44; 1.71x -> 1.50x, median 1.104
+    "a3": (0.87, 3, 1.65),
 }
 
 
@@ -189,21 +189,32 @@ FRANTI = {
 @pytest.mark.parametrize("name", sorted(FRANTI))
 def test_kmeans_on_frantis_benchmark_by_the_worst_ordering(name):
     """One pass in each of 50 shuffled orders, ``n_clusters`` the truth's.
-    The oracle for the inertia is scikit-learn's batch ``KMeans`` (greedy
-    k-means++, ten starts, Lloyd to convergence), taken as given: it reaches
-    the truth's inertia on S1, S2, A1 and A2. A finding, not a bound to
-    tighten: ``kmeans``' seeding (ten plain k-means++ starts, ten Lloyd
-    iterations each, over ``warm_rows``) ends in a local minimum (centroid
-    index 1 or more) in most orders of the A-sets, 1.3 times the optimal
-    inertia at the median, and in a quarter of S1's; buffering every row
-    does not remove it (20 orders of A1 with all 3,000 rows buffered and the
-    metric unstandardized: median 1.16, worst 1.22)."""
+    The oracle for the inertia is scikit-learn's batch ``KMeans``, taken as
+    given: the lower of its fit from ten greedy k-means++ starts and its fit
+    from the published centres, Lloyd to convergence in both. Ten starts
+    miss A3's optimum, which the fit from the centres finds 0.933 times
+    lower; on the other sets the two agree within 1e-4.
+
+    ``kmeans`` seeds from its first ``warm_rows`` (500) rows: ten greedy
+    k-means++ starts, each run to its fixed point. Every S1 and S2 order
+    finds every cluster. The A-sets' 20 to 50 clusters leave 10 to 25
+    buffered rows a cluster, and 10, 30 and 44 of their 50 orders still end
+    in a local minimum, a cluster missed and another split; the median
+    order is 1.009, 1.101 and 1.104 times the optimum. With every row
+    buffered the medians are 1.006, 1.001 and 1.065, and 2, 14 and 30
+    orders still miss a cluster. When the seeding ran ten plain k-means++
+    starts with ten Lloyd iterations each, the A-sets' median order was
+    1.26 to 1.35 times the optimum, and 10 of S1's 50 orders missed a
+    cluster (2026-10-25)."""
     points, label, truth = franti_or_skip(name)
     k = len(truth)
     min_ari, max_ci, max_ratio = FRANTI[name]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        best = KMeans(k, n_init=10, random_state=0).fit(points).inertia_
+        best = min(
+            KMeans(k, n_init=10, random_state=0).fit(points).inertia_,
+            KMeans(k, init=truth, n_init=1).fit(points).inertia_,
+        )
     rows = []
     for s in SEEDS:
         order = np.random.default_rng(s).permutation(len(points))
@@ -259,6 +270,8 @@ def test_micro_on_s1_by_the_worst_ordering():
 # --- hmm --------------------------------------------------------------------------
 
 HMM_K = 3
+#: ``hmm``'s default ``warm_rows`` at three states.
+HMM_WARM_ROWS = 1_000
 HMM_MEANS = np.array([[0.0, 0.0], [3.0, 0.0], [0.0, 3.0]])
 HMM_STAY = 0.98
 
@@ -297,7 +310,7 @@ def hmm_scores(seed: int, n: int, oracle: bool = True, **kw) -> tuple[float, flo
     bank = po.ModelBank([spec])
     out = bank.fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]})).unnest("h")
     got = out["state"].fill_null(-1).to_numpy()
-    after = slice(kw.get("warm_rows", 50), n)
+    after = slice(kw.get("warm_rows", HMM_WARM_ROWS), n)
     share = max(
         float(np.mean(np.array(p)[got[after]] == state[after]))
         for p in itertools.permutations(range(HMM_K))
@@ -343,18 +356,22 @@ def test_hmm_recovers_location_regimes_on_the_worst_seed():
     assert a[:, 2].max() < 0.3
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "task 278 (c) finding: seeded from the default warm_rows (50), which "
-        "regimes lasting 50 rows fill with one or two of them, hmm places "
-        "two states inside one regime and online EM never moves them out: "
-        "over 20 seeds the worst share in the true state is 0.54 at 5,000 "
-        "rows and 0.65 at 50,000, its means 2.8 and 2.9 from Baum-Welch's"
-    ),
-)
 def test_hmm_at_its_default_warm_up_recovers_sticky_regimes():
+    """Seeded from the default ``warm_rows``, 1,000 rows, which regimes
+    lasting 50 rows on average fill about twenty times over. Measured over 20
+    seeds at 5,000 rows: the worst share in the true state 0.951 (seed 0;
+    0.947 over 50 seeds, and 0.963 over 20 at 50,000 rows). The default was
+    50 rows, which such regimes fill with one or two of them: the seeding
+    placed two states inside one regime and online EM never moved them out,
+    the worst share 0.53 over the same 20 seeds (0.46 over 50, 0.52 at
+    50,000 rows; task 278 (c), D9). A buffer of 500 is not enough either: a
+    regime with a few percent of its rows is cheaper, by inertia, to share
+    than to own (0.81 over 50 seeds). Bound 0.9, and the old default still
+    below 0.7, which shows the case is the one that failed."""
     worst = min(hmm_scores(s, 5_000, oracle=False)[0] for s in range(20))
+    old = min(hmm_scores(s, 5_000, oracle=False, warm_rows=50)[0] for s in range(20))
+    print(f"hmm: worst share {worst:.4f} at the default, {old:.4f} at 50 warm-up rows")
+    assert old < 0.7, old
     assert worst > 0.9, worst
 
 

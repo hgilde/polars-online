@@ -13,6 +13,21 @@ returns.
 
 ### Changed
 
+- `init="k-means++"`, and the starts of `init="lloyd"`, are greedy
+  k-means++, scikit-learn's rule: each centre after the first is the best of
+  `2 + ⌊ln k⌋` candidates by the inertia it leaves (task 278). On Fränti's
+  benchmark sets in 50 orders each, the worst order's inertia over the
+  optimum fell from 2.19 to 1.001 on S1, from 1.29 to 1.001 on S2 and from
+  1.56 / 1.51 / 1.71 to 1.30 / 1.24 / 1.50 on A1-A3 (median 1.26-1.35 to
+  1.01-1.10); no S1 or S2 order now misses a cluster, where 10 and 13 did.
+  Seeded centres move, and where they do not, their numbering may change.
+- `hmm`'s `warm_rows` defaults to 1,000 rows (or `n_components` where that
+  is more), where it was 50 (task 278): the seeding places states where the
+  buffered rows are, and 50 rows hold one or two regimes. On three regimes
+  lasting about 50 rows each, the worst of 50 seeds put 0.46 of the rows in
+  their true state; it now puts 0.95. Each group's first 1,000 rows report
+  null and the buffer holds them until seeding; a group with fewer rows never
+  seeds and reports null throughout.
 - Documentation: `ftrl` states how fast it follows a break under a
   half-life (task 278). AdaGrad's normalised step moves a settled
   coefficient at most about `2·alpha·√(1 − λ)` a row, however large the
@@ -68,6 +83,17 @@ returns.
 
 ### Fixed
 
+- `kmeans` and `hmm`: the default seeding, `init="lloyd"`, runs Lloyd's
+  passes from each of its ten starts until no row changes centre, at most
+  300 passes, where it stopped after ten wherever they had reached (task
+  278). A start stopped at the cap is counted in `solve_failures`, which
+  `kmeans` now reports. On eight overlapping blobs in two dimensions (500
+  rows), 38 of 50 seeds kept centres that were not a fixed point, up to 0.12
+  noise standard deviations off, and nothing said so. A model seeded from the
+  same rows may now number its clusters or states differently even where it
+  finds the same centres, so read labels by their centres, not their numbers.
+  A `kmeans` state saved before it seeded seeds by the new rule after
+  loading; one saved after seeding goes on exactly as before.
 - These values are refused, each with the reason in the message (task
   278): `min_weight=inf`, which withheld every row for good while the model
   kept learning; a `marginal` `bin_edges` that gives no feature an edge, such
@@ -94,6 +120,12 @@ returns.
 - `po.stream.with_windows` refuses a `session_gap` without `session` and a
   `restart_after_step_back` without `clock`, as a spec does; each was
   accepted before and did nothing (task 278).
+
+### Performance
+
+- Seeding with `init="lloyd"` at 500 rows, 8 centres and 400 features
+  takes 56 ms on separated blobs (from 97) and 91 ms on overlapping ones
+  (from 98); `init="k-means++"` takes 3.6 ms there, from 1.9 (task 278).
 
 ## [1.3.0] — 2026-10-24
 

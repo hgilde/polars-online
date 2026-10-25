@@ -329,7 +329,10 @@ pub fn hmm_cfg(spec: &Spec) -> Result<HmmCfg, String> {
         transition: transition.clone(),
         means: means.clone(),
         covs: covs.clone(),
-        warm_rows: warm_rows.unwrap_or(50),
+        // 1,000 rows, or `k` where that is more: the buffer must hold every
+        // regime several times over for the seeding to place a state on each
+        // (task 278, D9: at 50, regimes lasting 50 rows were never found).
+        warm_rows: warm_rows.unwrap_or_else(|| (*k).max(1000)),
         seed_rule: crate::stream::init_rule(init.as_deref())?,
         seed: seed.unwrap_or(0),
         tvtp,

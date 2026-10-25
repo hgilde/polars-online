@@ -241,7 +241,8 @@ class TestLargeData:
     def test_recovers_five_blobs_in_four_dimensions(self):
         # Five Gaussian blobs at a random layout in four dimensions, the
         # closest pair 5.4 sd apart. One k-means++ start followed by Lloyd
-        # lands in the split-one-merge-two optimum here (ARI 0.72); the
+        # lands in the split-one-merge-two optimum here (ARI 0.72) in 9 of
+        # 100 seeds, 28 of 100 from plain k-means++ (2026-10-25); the
         # `lloyd` rule's ten restarts pick the right partition by its cost.
         n, k, p = 200_000, 5, 4
         rng = np.random.default_rng(27)
