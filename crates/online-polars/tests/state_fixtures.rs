@@ -877,9 +877,12 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
             }
             let tol = if f.writer == writer() { 0.0 } else { TOL };
             assert_eq!(frames.len(), f.output.len(), "{what}");
-            for ((name, got), (frozen_name, want)) in frames.iter().zip(f.output) {
+            assert_eq!(current.output.len(), f.output.len(), "{what}");
+            for (((name, got), (frozen_name, want)), (_, now)) in
+                frames.iter().zip(f.output).zip(current.output)
+            {
                 assert_eq!(name, frozen_name, "{what}");
-                let want = from_ipc(want);
+                let want = moved_since(&from_ipc(want), &from_ipc(now));
                 if windowed {
                     same(
                         &format!("{what}: {name}, the first row"),
@@ -893,6 +896,56 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
             }
         }
     }
+}
+
+/// The fields whose numbers a fix moved after a kept schema's fixtures were
+/// written, each a declared output change: a kept fixture goes on to the
+/// current fixture's numbers in them -- the same stream, saved at the same
+/// row, fed the same input -- and to its own frozen numbers in every other
+/// field. A field is named by its prefix. `cusum_<t>` and `cusum_sq_<t>`
+/// (task 278, D-B5): the windowed CUSUMs' null share is read as far as
+/// their sums have filled, where it was the filled share from the first
+/// row.
+const MOVED_SINCE: &[&str] = &["cusum_"];
+
+/// `kept`, a kept fixture's frozen frame, with the struct fields that
+/// [`MOVED_SINCE`] names taken from `now`, the current fixture's frame of
+/// the same name.
+fn moved_since(kept: &DataFrame, now: &DataFrame) -> DataFrame {
+    let moved = |name: &str| MOVED_SINCE.iter().any(|p| name.starts_with(p));
+    let columns: Vec<Column> = kept
+        .columns()
+        .iter()
+        .map(|k| {
+            let ks = k.as_materialized_series();
+            let (DataType::Struct(_), Some(ns)) = (
+                ks.dtype(),
+                now.column(k.name())
+                    .ok()
+                    .map(|c| c.as_materialized_series()),
+            ) else {
+                return k.clone();
+            };
+            let (kst, nst) = (ks.struct_().unwrap(), ns.struct_().unwrap());
+            let fields: Vec<Series> = kst
+                .fields_as_series()
+                .into_iter()
+                .map(|f| {
+                    if moved(f.name()) {
+                        nst.field_by_name(f.name()).unwrap_or(f)
+                    } else {
+                        f
+                    }
+                })
+                .collect();
+            StructChunked::from_series(ks.name().clone(), ks.len(), fields.iter())
+                .unwrap()
+                .with_outer_validity(kst.rechunk_validity())
+                .into_series()
+                .into_column()
+        })
+        .collect();
+    DataFrame::new(kept.height(), columns).unwrap()
 }
 
 /// Whether a saved state holds a window's snapshots: a non-empty `ring`
