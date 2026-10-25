@@ -721,6 +721,8 @@ pub(crate) fn dot_aug(beta: &[f64], x: &[f64], fit_intercept: bool) -> f64 {
     acc
 }
 
+mod condition;
+
 #[cfg(test)]
 mod pool_tests;
 

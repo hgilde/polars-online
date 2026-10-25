@@ -201,8 +201,8 @@ class TestNistLinearRegression:
     def test_the_gram_solve_reaches_the_bound_standardized(self, name):
         # `gram.solve` diagonalizes the Gram (numpy's `eigh`); standardized,
         # the correlation matrix's eigenvalues are what it inverts, and the
-        # normal equations' bound holds. Unstandardized it does not
-        # (`TestKnownDefects`).
+        # normal equations' bound holds. Unstandardized the Gram is scaled
+        # by its diagonal first, and holds it too (`TestGramSolveScales`).
         d = nist_strd_linear_or_skip(name)
         x, y, want, icpt = d["x"], d["y"], d["coef"], d["intercept"]
         n, k = x.shape
@@ -377,84 +377,146 @@ class TestSyntheticDesigns:
         assert err <= bound
 
 
-class TestKnownDefects:
-    """What this class found (task 278 (b), 2026-10-25), pinned as it
-    stands so that the fix flips the test rather than passing unnoticed."""
+def _last_row(
+    spec: dict[str, Any], x: np.ndarray, y: np.ndarray
+) -> tuple[pl.DataFrame, po.ModelBank, int]:
+    """Every row but the last in one chunk, then the last alone, so the
+    last row's own solve can be told from the rest: the fit's rows, the
+    bank, and the failures counted before the last row."""
+    cols = {f"x{i}": x[:, i] for i in range(x.shape[1])}
+    frame = pl.DataFrame({**cols, "y": y})
+    bank = po.ModelBank([spec])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", po.ReadinessWarning)
+        head = bank.fit_predict(frame[:-1])["m"].struct.unnest()
+        before = solve_failures(bank)
+        tail = bank.fit_predict(frame[-1:])["m"].struct.unnest()
+    return pl.concat([head, tail]), bank, before
 
-    def test_a_numerically_singular_solve_is_reported_nowhere(self):
-        # Past `kappa_c u = 1` the normal equations carry no digit. The
-        # Cholesky does not always fail there -- rounding can leave the
-        # matrix numerically positive definite -- and where it succeeds the
-        # coefficients are off by far more than their own size with nothing
-        # said: the last solve took no jitter (`solve_failures` does not
-        # move on it), `support_coef` reads 1 for every slope, the
-        # error-inflation gate passes and no warning is raised. Measured
-        # 2026-10-25 at `eps = 1e-11` (a correlation condition near 1e22 by
-        # construction; numpy's estimate saturates near `1 / u`): silent on
-        # 19 of 40 seeds, 16 of 40 at 1e-12 and 19 of 40 at 1e-13; seed 3
-        # has slopes -364.1 and 363.1 for a truth of 1 and -2. The rest
-        # jittered their last solve, which is counted, and read support
-        # 0.5. NIST's Filip is the same (`test_filip_is_reported_nowhere`).
+
+def _served_reasons(bank: po.ModelBank, x: np.ndarray) -> tuple[int, list[Any]]:
+    """`predict` on the rows `x` against the fit as it stands -- the rows
+    after the stream, the serving path -- its null predictions counted, and
+    each row's `withheld_reason`."""
+    out = bank.predict(pl.DataFrame({f"x{i}": x[:, i] for i in range(x.shape[1])}))
+    out = out["m"].struct.unnest()
+    return out["pred_y"].null_count(), out["withheld_reason"].cast(pl.String).to_list()
+
+
+class TestIllConditioned:
+    """A solve past the condition at which it keeps a digit is withheld and
+    counted (task 278 (d4); defect D4 of 278 (b)). Past ``kappa_c u = 1`` the
+    normal equations carry no digit, and the Cholesky does not always fail
+    there: rounding can leave the matrix numerically positive definite, and
+    where it succeeded the coefficients were off by far more than their own
+    size with nothing said -- no jitter, ``support_coef`` 1, every gate
+    passed, no warning. Measured 2026-10-25 at ``eps = 1e-11`` (a correlation
+    condition near ``1e22`` by construction): silent on 19 of 40 seeds, 16 of
+    40 at ``1e-12`` and 19 of 40 at ``1e-13``; seed 3 had slopes -364.1 and
+    363.1 for a truth of 1 and -2.
+
+    The solve now estimates the equilibrated system's ``||H^-1||_1`` from its
+    factor (Hager and Higham's estimator) and withholds the fit where the
+    forward-error bound of the solve reaches 1, ``3 k gamma_{3k+1}
+    ||H^-1||_1 >= 1`` (``crates/online-core/src/solve/condition.rs`` derives
+    it): ``coef``, ``pred`` and ``support_coef`` null, ``withheld_reason``
+    ``ill_conditioned``, and the solve counted in ``solve_failures``. A row's
+    prediction comes from the fit before it, so the last row's own solve is
+    read on its ``coef`` and ``solve_failures``, and its withheld fit on the
+    rows predicted after it."""
+
+    def test_a_numerically_singular_solve_is_withheld_and_counted(self):
         n = 800
         x, y = _rows(n, 3, "collinear", 1e-11)
         _, _, kappa_c, _ = design(x, True)
         assert kappa_c * U > 0.5, "the design was meant to be numerically singular"
-        spec = po.spec.ewridge("m", ridge=0.0, **_SYNTH)
-        cols = {f"x{i}": x[:, i] for i in range(3)}
-        frame = pl.DataFrame({**cols, "y": y})
-        bank = po.ModelBank([spec])
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            head = bank.fit_predict(frame[:-1])["m"].struct.unnest()
-            before = solve_failures(bank)
-            tail = bank.fit_predict(frame[-1:])["m"].struct.unnest()
-        out = pl.concat([head, tail])
-        coef = last_coef(out)
-        print("slopes", coef[1:], "support", out["support_coef"].to_list()[-1])
-        assert np.max(np.abs(coef[1:3] - [1.0, -2.0])) > 100.0
-        assert solve_failures(bank) == before
-        assert np.all(np.array(out["support_coef"].to_list()[-1][1:]) > 0.99)
-        assert out["withheld_reason"][-1] is None
-        assert not [w for w in caught if issubclass(w.category, po.ReadinessWarning)]
+        out, bank, before = _last_row(po.spec.ewridge("m", ridge=0.0, **_SYNTH), x, y)
+        last = out.row(-1, named=True)
+        print("last row", {k: last[k] for k in ("coef", "support_coef")})
+        assert solve_failures(bank) == before + 1, "the last solve was not counted"
+        assert all(c is None for c in last["coef"])
+        assert all(v is None for v in last["support_coef"])
+        # The rows predicted from it -- `predict`, the serving path, and the
+        # next row a stream learns from -- are withheld and say why.
+        assert _served_reasons(bank, x[-5:]) == (5, ["ill_conditioned"] * 5)
+        cols = {f"x{i}": x[:1, i] for i in range(3)}
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", po.ReadinessWarning)
+            nxt = bank.fit_predict(pl.DataFrame({**cols, "y": y[:1]}))["m"].struct.unnest()
+        assert nxt["pred_y"][0] is None
+        assert nxt["withheld_reason"].cast(pl.String)[0] == "ill_conditioned"
+
+    @pytest.mark.extended(reason="120 fits of 800 rows, the seed grid of the pinned defect")
+    @pytest.mark.parametrize("eps", [1e-11, 1e-12, 1e-13])
+    def test_no_seed_is_silent_past_one_over_u(self, eps):
+        # Every seed's last fit either took jitter -- counted, the duplicated
+        # pair's shares 0.5, the predictions least squares' -- or was
+        # withheld as ill-conditioned; none reports coefficients off by more
+        # than their size with nothing said. Measured 2026-10-25: withheld
+        # 19, 16 and 19 of 40 at 1e-11, 1e-12 and 1e-13 -- the seeds that
+        # were silent -- and the rest jittered.
+        counts = {"withheld": 0, "jittered": 0}
+        for seed in range(40):
+            x, y = _rows(800, seed, "collinear", eps)
+            out, bank, before = _last_row(po.spec.ewridge("m", ridge=0.0, **_SYNTH), x, y)
+            last = out.row(-1, named=True)
+            assert solve_failures(bank) > before, (seed, "the last solve was not counted")
+            if all(c is None for c in last["coef"]):
+                assert _served_reasons(bank, x[-3:]) == (3, ["ill_conditioned"] * 3), seed
+                counts["withheld"] += 1
+            else:
+                coef = np.array(last["coef"], float)
+                assert coef[1] + coef[2] == pytest.approx(-1.0, abs=0.05), (seed, coef)
+                assert np.max(np.abs(np.array(last["support_coef"][1:3]) - 0.5)) < 0.01, seed
+                counts["jittered"] += 1
+        print(eps, counts)
+        assert counts["withheld"] > 0, "the detector never fired"
 
     @pytest.mark.extended(reason="the network: NIST's Filip, downloaded once and cached")
-    def test_filip_is_reported_nowhere(self):
-        # Filip by the normal equations: every coefficient off by its own
-        # size (NIST's 0.0 digits), and the last solve took no jitter,
-        # `support_coef` reads 1, no gate withholds the prediction and no
-        # warning is raised. The fitted values' residual spread is 0.00389
-        # against the certified 0.00335 (measured 2026-10-25). `rls` reaches
-        # 7.3 digits (`test_filip_is_solved_by_rotations...`).
+    def test_filip_by_the_normal_equations_is_withheld(self):
+        # Filip by the normal equations kept 0.0 digits of every coefficient
+        # (NIST's measure) with nothing said; `rls` reaches 7.3
+        # (`test_filip_is_solved_by_rotations...`). Its correlation matrix's
+        # condition is 1.5e16, past `1 / u`, so the estimate is too.
         d = nist_strd_linear_or_skip("Filip")
-        x, y, want = d["x"], d["y"], d["coef"]
-        k = x.shape[1]
-        spec = _strd_specs(k, True)["ewridge"]
-        cols = {f"x{i}": x[:, i] for i in range(k)}
-        frame = pl.DataFrame({**cols, "y": y})
-        bank = po.ModelBank([spec])
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            head = bank.fit_predict(frame[:-1])["m"].struct.unnest()
-            before = solve_failures(bank)
-            tail = bank.fit_predict(frame[-1:])["m"].struct.unnest()
-        out = pl.concat([head, tail])
-        coef = last_coef(out)
-        assert lre(coef, want) < 1.0
-        assert solve_failures(bank) == before
-        assert np.all(np.array(out["support_coef"].to_list()[-1][1:]) > 0.99)
-        assert out["withheld_reason"][-1] is None
-        assert not [w for w in caught if issubclass(w.category, po.ReadinessWarning)]
+        x, y = d["x"], d["y"]
+        out, bank, before = _last_row(_strd_specs(x.shape[1], True)["ewridge"], x, y)
+        last = out.row(-1, named=True)
+        assert solve_failures(bank) == before + 1
+        assert all(c is None for c in last["coef"])
+        assert _served_reasons(bank, x[-3:]) == (3, ["ill_conditioned"] * 3)
+        # Measured 2026-10-25: of Filip's 82 rows, 29 predicted from a fit
+        # withheld for its condition; the rest from a fit that took jitter
+        # (counted) or under the noise gate.
+        assert (out["withheld_reason"].cast(pl.String) == "ill_conditioned").sum() > 10
 
-    def test_the_gram_solve_unstandardized_is_not_free_of_the_features_units(self):
-        # `gram.solve` diagonalizes the raw Gram with numpy's `eigh`, whose
-        # eigenvalues are accurate to `u` times the largest: with features
-        # from 1e-10 to 1e10 the small feature's eigenvalue (1e-20) is lost
-        # beside 1e20, and the solve is garbage where the model's own
-        # Cholesky on the same Gram, and `gram.solve(standardize=True)`,
-        # are accurate to 1e-14. Measured 2026-10-25: relative errors 8.9,
-        # 2.4e-2, 1.0 and 1.1e-3 against least squares. On NIST's Longley
-        # (features from 1e2 to 4e5) it keeps 6.4 digits where the model
-        # keeps 11.5, 3.8e-7 against the normal equations' bound of 3.4e-10.
+    @pytest.mark.extended(reason="the network: NIST's datasets, downloaded once and cached")
+    @pytest.mark.parametrize("name", STRD_SOLVABLE)
+    def test_the_solvable_datasets_are_not_withheld(self, name):
+        # The detector does not fire where the normal equations keep digits:
+        # the last fit of each of NIST's solvable designs (Wampler's
+        # correlation matrices at 2.7e6, seven orders below the limit) is
+        # reported, and its solve counted nowhere.
+        d = nist_strd_linear_or_skip(name)
+        x, y, icpt = d["x"], d["y"], d["intercept"]
+        out, bank, before = _last_row(_strd_specs(x.shape[1], icpt)["ewridge"], x, y)
+        assert "ill_conditioned" not in out["withheld_reason"].cast(pl.String).to_list()
+        assert solve_failures(bank) == before
+        assert np.all(np.isfinite(last_coef(out)))
+        n_null, reasons = _served_reasons(bank, x[-3:])
+        assert n_null == 0 and reasons == [None] * 3
+
+
+class TestGramSolveScales:
+    """``gram.solve(standardize=False)`` scales the Gram by its diagonal
+    before ``eigh`` (task 278 (d4); defect D5 of 278 (b)). ``eigh``'s
+    eigenvalues are accurate to ``u`` times the largest, so on the raw Gram
+    with features from 1e-10 to 1e10 the small feature's eigenvalue (1e-20)
+    was lost beside 1e20: relative errors of 8.9, 2.4e-2, 1.0 and 1.1e-3
+    against least squares (measured 2026-10-25), and NIST's Longley kept 6.4
+    digits where the model keeps 11.5."""
+
+    def test_the_gram_solve_unstandardized_is_free_of_the_features_units(self):
         n = 800
         x, y = _rows(n, 12, "scales")
         out, bank = fit(po.spec.ewridge("m", ridge=0.0, **_SYNTH), x, y)
@@ -465,4 +527,54 @@ class TestKnownDefects:
         model = last_coef(out)
         np.testing.assert_allclose(model, want, rtol=1e-12)
         np.testing.assert_allclose(std, want, rtol=1e-12)
-        assert float(np.max(np.abs(raw - want) / np.abs(want))) > 1e-3
+        np.testing.assert_allclose(raw, want, rtol=1e-12)
+        # Measured 2026-10-25: 9.4e-14 at most, against 8.9 before.
+        print("raw", float(np.max(np.abs(raw - want) / np.abs(want))))
+
+    def test_a_ridge_grid_on_unequal_scales_solves_each_ridge_as_alone(self):
+        # The uniform ridge is not uniform once the columns are scaled, so
+        # on columns of unequal scale each ridge takes a decomposition of its
+        # own: a grid gives each ridge's row as a call with that ridge alone
+        # gives it, and each row solves its own system, against scipy's
+        # Cholesky solve of the column-scaled system (the oracle). On the
+        # standardized system, whose diagonal is even, the grid rides one
+        # decomposition, as before.
+        import scipy.linalg
+
+        n = 800
+        x, y = _rows(n, 12, "scales")
+        _, bank = fit(po.spec.ewridge("m", ridge=0.0, **_SYNTH), x, y)
+        g = bank.gram("m")[0]
+        ridges = [0.0, 1e-24, 1e-18, 1e-6, 1.0]
+        grid = np.asarray(gram.solve(g, ridge=ridges))
+        assert g["columns"][0] == "intercept"
+        c = np.asarray(g["comoments"], float)[1:, 1:]
+        b = np.asarray(g["cross_centered"], float)[0][1:]
+        for i, r in enumerate(ridges):
+            alone = np.asarray(gram.solve(g, ridge=r)).ravel()
+            # The slopes to the bit; the intercept, `ybar - m . b`, is a
+            # product numpy takes over the grid's rows at once, which may
+            # round apart from one row's.
+            np.testing.assert_array_equal(grid[i][1:], alone[1:])
+            np.testing.assert_allclose(grid[i][0], alone[0], rtol=1e-14)
+            m = c + r * np.eye(3)
+            e = np.sqrt(np.diag(m))
+            want = scipy.linalg.solve(m / np.outer(e, e), b / e, assume_a="pos") / e
+            np.testing.assert_allclose(grid[i][1:], want, rtol=1e-11, err_msg=str(r))
+
+    @pytest.mark.extended(reason="the network: NIST's datasets, downloaded once and cached")
+    @pytest.mark.parametrize("name", STRD_SOLVABLE)
+    def test_the_gram_solve_unstandardized_reaches_the_bound(self, name):
+        # As `test_the_gram_solve_reaches_the_bound_standardized`, on the
+        # raw Gram: Longley's features run from 1e2 to 4e5, and it kept 6.4
+        # digits, 3.8e-7 against the bound of 2.3e-10, before the Gram was
+        # scaled; 12.0 digits, 3.2e-13, after (measured 2026-10-25).
+        d = nist_strd_linear_or_skip(name)
+        x, y, want, icpt = d["x"], d["y"], d["coef"], d["intercept"]
+        n, k = x.shape
+        s, _, kappa_c, _ = design(x, icpt)
+        _, bank = fit(_strd_specs(k, icpt)["ewridge"], x, y)
+        coef = np.asarray(gram.solve(bank.gram("m")[0], ridge=0.0)).ravel()
+        err = standardized_error(coef, want, s, icpt)
+        bound = forward_bound(kappa_c, gamma(4 * n + 3 * k + 1 + d["degree"] + 4 * k))
+        assert err <= bound, (name, err, bound)

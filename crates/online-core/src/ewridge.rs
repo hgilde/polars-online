@@ -934,8 +934,9 @@ impl EwRidge {
                         }
                         // The system is on the sum scale, so a row form
                         // against it is scaled back by `W` (see `System`).
-                        Self::run_solve(&mut failures, &a, &b, kc, mr)
-                            .map(|(sol, factor)| Solved::raw(sol, factor, a, kc, ps * ridge, w))
+                        Self::run_solve(&mut failures, &a, &b, kc, mr).map(|(sol, factor, ill)| {
+                            Solved::raw(sol, factor, a, kc, ps * ridge, w, ill)
+                        })
                     } else if !self.cfg.standardize {
                         // Through the origin every slot is a slope, and every
                         // slot is penalized.
@@ -952,8 +953,9 @@ impl EwRidge {
                                 }
                             }
                         }
-                        Self::run_solve(&mut failures, &a, &b, kc, mr)
-                            .map(|(sol, factor)| Solved::raw(sol, factor, a, kc, ridge, 1.0))
+                        Self::run_solve(&mut failures, &a, &b, kc, mr).map(|(sol, factor, ill)| {
+                            Solved::raw(sol, factor, a, kc, ridge, 1.0, ill)
+                        })
                     } else {
                         Self::solve_scaled_through_origin(
                             cov,
@@ -967,7 +969,26 @@ impl EwRidge {
                     }
                 };
 
-                if let Some(mut solved) = solved {
+                if solved.as_ref().is_some_and(|s| s.ill) {
+                    // Past the condition at which the solve keeps a digit:
+                    // no fit, so no prediction and no readiness shares, as a
+                    // slot with no system has none -- but the slot names the
+                    // system it was solved from, which is how a withheld fit
+                    // is told from a missing one ([`EwRidge::ill_conditioned`])
+                    // with no field added to the state. No system is kept for
+                    // the leverage either: there is no fit to read it against.
+                    let at = g * nc + ci;
+                    for &j in &readers {
+                        let slot = j * nc + ci;
+                        beta[slot].fill(f64::NAN);
+                        ready.clear(slot);
+                        ready.system_of[slot] = at;
+                    }
+                    if keep_factor {
+                        ready.systems[at] = None;
+                        factors[at] = None;
+                    }
+                } else if let Some(mut solved) = solved {
                     for (jj, &j) in readers.iter().enumerate() {
                         for (ai, &zi) in zidx.iter().enumerate() {
                             beta[j * nc + ci][zi] = solved.sol[jj * kc + ai];
@@ -1103,17 +1124,28 @@ impl EwRidge {
     /// back with the solution so the readiness statistics can read it
     /// (docs/WARMUP-AND-CONVERGENCE.md §2.1). The solution is
     /// `crate::solve_spd`'s to the bit: both are the same factor's `solve`.
+    ///
+    /// A factorization that succeeded on a system past the condition at
+    /// which its solve keeps a digit ([`SpdFactor::carries_no_digit`]) is
+    /// not solved: it is counted as a failure, the solution is NaN, and the
+    /// flag that comes back says so, so the caller withholds the fit
+    /// (docs/PLAN.md task 278, D4). Every other solve is untouched, to the
+    /// bit: the estimate reads the factor and changes nothing.
     fn run_solve(
         failures: &mut u64,
         a: &[f64],
         b: &[f64],
         k: usize,
         m: usize,
-    ) -> Option<(Vec<f64>, SpdFactor)> {
+    ) -> Option<(Vec<f64>, SpdFactor, bool)> {
         match SpdFactor::of(a, k) {
             Some(f) => {
                 *failures += u64::from(f.attempts());
-                Some((f.solve(b, k, m), f))
+                if f.carries_no_digit(a) {
+                    *failures += 1;
+                    return Some((vec![f64::NAN; k * m], f, true));
+                }
+                Some((f.solve(b, k, m), f, false))
             }
             None => {
                 *failures += 1;
@@ -1163,6 +1195,7 @@ impl EwRidge {
                 centred: false,
                 shift: ridge,
                 scale: 1.0,
+                ill: false,
             });
         }
         let mut asub = vec![0.0; kk * kk];
@@ -1181,7 +1214,7 @@ impl EwRidge {
                 }
             }
         }
-        let (sol, factor) = Self::run_solve(failures, &asub, &bsub, kk, m)?;
+        let (sol, factor, ill) = Self::run_solve(failures, &asub, &bsub, kk, m)?;
         let mut out = vec![0.0; kc * m];
         for j in 0..m {
             for (i2, &i) in keep.iter().enumerate() {
@@ -1199,6 +1232,7 @@ impl EwRidge {
             centred: false,
             shift: ridge,
             scale: 1.0,
+            ill,
         })
     }
 
@@ -1254,6 +1288,7 @@ impl EwRidge {
         let kk = keep.len();
         let mut out = vec![0.0; kc * mr];
         let mut system = None;
+        let mut ill = false;
         if kk > 0 {
             let mut asub = vec![0.0; kk * kk];
             for (i2, &i) in keep.iter().enumerate() {
@@ -1290,7 +1325,8 @@ impl EwRidge {
                     }
                 }
             }
-            let (sol, factor) = Self::run_solve(failures, &asub, &bsub, kk, mr)?;
+            let (sol, factor, past) = Self::run_solve(failures, &asub, &bsub, kk, mr)?;
+            ill = past;
             for jj in 0..mr {
                 for (i2, &i) in keep.iter().enumerate() {
                     let v = sol[jj * kk + i2];
@@ -1335,6 +1371,7 @@ impl EwRidge {
             centred: true,
             shift: ridge,
             scale: 1.0,
+            ill,
         })
     }
 
@@ -1472,6 +1509,13 @@ impl EwRidge {
             };
             for c in 0..nc {
                 let slot = j * nc + c;
+                // A fit withheld as ill-conditioned has no estimation
+                // variance to read: not a number, which no gate withholds
+                // on, so the row's reason is the condition's.
+                if self.slot_ill(slot) {
+                    out[slot] = f64::NAN;
+                    continue;
+                }
                 if n > 0.0
                     && let Some(bound) = self.ready.edf_bound_at(slot)
                 {
@@ -1505,6 +1549,32 @@ impl EwRidge {
     /// stream's chunk.
     pub fn pending_readiness(&self) -> usize {
         self.ready.pending.iter().flatten().count()
+    }
+
+    /// Whether slot `slot`'s fit is withheld because the system it was
+    /// solved from was past the condition at which a solve keeps a digit
+    /// (docs/PLAN.md task 278, D4): its coefficients are NaN while it names
+    /// the system it was solved from. Every other slot without a fit -- no
+    /// weight, no row, an empty window, a first solve that failed at every
+    /// jitter -- names none (`Readiness::clear`, or never named one), so the
+    /// two are told apart from what the state already holds.
+    fn slot_ill(&self, slot: usize) -> bool {
+        self.beta.as_ref().is_some_and(|b| {
+            self.ready
+                .system_of
+                .get(slot)
+                .is_some_and(|&at| at != usize::MAX)
+                && b.get(slot)
+                    .and_then(|c| c.first())
+                    .is_some_and(|v| v.is_nan())
+        })
+    }
+
+    /// Whether any slot's fit is withheld as too ill-conditioned to carry a
+    /// digit, as the state stands: what the stream reads before a row to
+    /// name its withheld predictions `ill_conditioned`.
+    pub fn ill_conditioned(&self) -> bool {
+        (0..self.ready.system_of.len()).any(|slot| self.slot_ill(slot))
     }
 
     /// The `z` slot `zi` of a feature row, without the augmentation buffer:
@@ -1544,6 +1614,10 @@ struct Solved {
     /// What a row form against `a` is scaled by to be in the mean-form
     /// Gram's units: the Gram's weight under `ridge_scale`, else 1.
     scale: f64,
+    /// The system was past the condition at which its solve keeps a digit
+    /// ([`SpdFactor::carries_no_digit`]): `sol` is NaN and the fit is
+    /// withheld (docs/PLAN.md task 278, D4).
+    ill: bool,
 }
 
 impl Solved {
@@ -1555,6 +1629,7 @@ impl Solved {
         kc: usize,
         shift: f64,
         scale: f64,
+        ill: bool,
     ) -> Self {
         Self {
             sol,
@@ -1566,6 +1641,7 @@ impl Solved {
             centred: false,
             shift,
             scale,
+            ill,
         }
     }
 }
@@ -1902,7 +1978,9 @@ impl OnlineModel for EwRidge {
     /// of freedom over Kish's sample size behind the Gram the target reads
     /// now, as it stands before the row (docs/WARMUP-AND-CONVERGENCE.md
     /// §2.1). Infinite before the first solve and where the Gram has no
-    /// weight.
+    /// weight; NaN where the fit is withheld as too ill-conditioned to carry
+    /// a digit ([`EwRidge::ill_conditioned`]), which has no estimation
+    /// variance to read.
     fn error_inflation_into(&self, out: &mut Vec<f64>) -> bool {
         self.inflation_into(out, f64::NEG_INFINITY)
     }
@@ -1954,6 +2032,10 @@ impl OnlineModel for EwRidge {
             }
             for c in 0..nc {
                 let slot = j * nc + c;
+                if self.slot_ill(slot) {
+                    out[slot] = f64::NAN;
+                    continue;
+                }
                 let Some((sys, factor)) = self.kept_system(slot) else {
                     continue;
                 };
@@ -2263,3 +2345,6 @@ impl OnlineModel for EwRidge {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod condition_tests;

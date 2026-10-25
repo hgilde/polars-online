@@ -936,7 +936,35 @@ def ewridge(
     so a feature far from zero loses no precision. The solve is a Cholesky
     factorization: a near-singular system is retried with a small diagonal
     jitter, and a solve that needed one is counted in
-    :meth:`polars_online.ModelBank.solve_failures`. A prediction uses the
+    :meth:`polars_online.ModelBank.solve_failures`.
+
+    A system can also factorize and still be too nearly singular for its
+    solve to keep a digit: rounding can leave a matrix past ``1/u`` in
+    condition positive definite, and its coefficients then come out wrong by
+    more than their own size. So each factorization that needed no jitter
+    estimates the condition of the system with each column scaled by the
+    root of its diagonal, ``H = D^-1 A D^-1``, which is what a Cholesky solve
+    is accurate to, whatever the features' units. The estimate is
+    ``||H^-1||_1`` by Hager and Higham's method (LAPACK's ``dlacn2``), from
+    the factor in ``O(k^2)``. The factorization and solve are backward
+    stable with a backward error of at most ``k * gamma_{3k+1}`` in ``H``'s
+    entries, ``gamma_m = m u / (1 - m u)``, so the forward error of the
+    scaled coefficients is at most ``2 kappa eta / (1 - kappa eta)`` with
+    ``kappa eta = k * gamma_{3k+1} * ||H^-1||_1``. Where that bound reaches
+    1, no digit is promised:
+
+    .. code-block:: text
+
+        withheld where   3 * k * gamma_{3k+1} * ||H^-1||_1 >= 1
+        (k = 3: ||H^-1||_1 >= 1.0e14;  k = 10: 9.7e12;  k = 50: 4.0e11)
+
+    There the fit is withheld: ``coef``, ``support_coef`` and the
+    predictions are null, ``withheld_reason`` reads ``ill_conditioned``,
+    and the solve is counted in ``solve_failures``. The next solve whose
+    system is within the limit reports again. A ridge, ``standardize``
+    with a ridge, or fewer collinear features keep a system inside it;
+    ``rls``, which rotates the design rather than squaring it, loses half
+    as many digits to the same design. A prediction uses the
     coefficients of the last solve and the state before the row. A wide
     solve runs on the bank's threads, and its result is the same to the bit
     whatever their number (``POLARS_ONLINE_MAX_THREADS``, or the machine's

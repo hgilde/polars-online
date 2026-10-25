@@ -390,12 +390,17 @@ releases none. A regression writes, with ``<t>`` a target:
 ``withheld_reason``
     Which gate withheld the row's predictions, as an ``Enum``, and null where
     no gate did. ``below_min_settled_frac``, ``below_min_weight``,
-    ``above_max_error_inflation`` and ``below_warm_rows`` are named in that
-    order, the first that withheld anything. ``below_warm_rows`` is the
-    model's own warm-up: the rows ``kmeans``, ``hmm`` and ``bocpd`` hold to
-    seed their centres, states or prior from (``warm_rows``), a count of
-    rows, where ``min_weight`` is a weight, and the rows ``kalman`` takes a
-    target's prior from before it is sized. Fields null for another reason,
+    ``above_max_error_inflation``, ``below_warm_rows`` and ``ill_conditioned``
+    are named in that order, the first that withheld anything.
+    ``below_warm_rows`` is the model's own warm-up: the rows ``kmeans``,
+    ``hmm`` and ``bocpd`` hold to seed their centres, states or prior from
+    (``warm_rows``), a count of rows, where ``min_weight`` is a weight, and
+    the rows ``kalman`` takes a target's prior from before it is sized.
+    ``ill_conditioned`` is an ``ewridge`` fit withheld because its normal
+    equations are past the condition at which a solve keeps a digit: its
+    ``coef`` and ``support_coef`` are null too, and the solve is counted in
+    ``solve_failures``. The estimate and the limit are in the ``ewridge``
+    builder's docstring. Fields null for another reason,
     such as a skipped row or a statistic not yet due, leave it null. An
     ``Enum`` rather than a string, because a string column costs sixteen
     bytes a row even when every value is null.

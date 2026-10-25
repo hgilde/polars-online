@@ -1066,7 +1066,7 @@
     resid_y: Float64
     weight_sum: Float64
     settled_frac: Float64
-    withheld_reason: Enum[below_min_settled_frac, below_min_weight, above_max_error_inflation, below_warm_rows]
+    withheld_reason: Enum[below_min_settled_frac, below_min_weight, above_max_error_inflation, below_warm_rows, ill_conditioned]
     coef: List[Float64]
     support_coef: List[Float64]
   ModelBank.marginal():
@@ -2414,7 +2414,7 @@
   po.ewm_rate(reverse=True).partial: drop, keep, null
   po.ewm_sum(reverse=True).closed: both, left, none, right
   po.ewm_sum(reverse=True).partial: drop, keep, null
-  withheld_reason, in precedence order: below_min_settled_frac, below_min_weight, above_max_error_inflation, below_warm_rows
+  withheld_reason, in precedence order: below_min_settled_frac, below_min_weight, above_max_error_inflation, below_warm_rows, ill_conditioned
   toml.input_format: csv, ipc, ndjson, parquet
   toml.output_format: csv, ipc, ndjson, parquet
   cli --input-format: csv, ipc, ndjson, parquet

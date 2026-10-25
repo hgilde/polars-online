@@ -255,10 +255,12 @@ SHARED_FIELDS: list[tuple[str, str, str]] = [
     (
         "withheld_reason",
         "why the row's predictions are null: `below_min_settled_frac`, `below_min_weight`, "
-        "`above_max_error_inflation` or `below_warm_rows`. That order is their precedence, so "
-        "the first that applies is the one named. `below_warm_rows` is the model's own "
-        "warm-up, the rows `kmeans`, `hmm` and `bocpd` hold to seed themselves from, and the "
-        "rows `kalman` sizes a target's prior from",
+        "`above_max_error_inflation`, `below_warm_rows` or `ill_conditioned`. That order is "
+        "their precedence, so the first that applies is the one named. `below_warm_rows` is "
+        "the model's own warm-up, the rows `kmeans`, `hmm` and `bocpd` hold to seed themselves "
+        "from, and the rows `kalman` sizes a target's prior from. `ill_conditioned` is an "
+        "`ewridge` fit whose normal equations are too nearly singular for a solve to keep a "
+        "digit",
         "where nothing was withheld",
     ),
     (
