@@ -315,6 +315,11 @@ _AT_LEAST_ONE = frozenset(
         "max_rows_between_snapshots",
         "max_rows_between_pcas",
         "max_rows_between_prunes",
+        # rcov's: a jitter of 1 is none, and a stride of 1 every return; a
+        # negative one was told ">= 0", and 0 then refused (task 278, b11).
+        "jitter",
+        "noise_stride",
+        "iv_stride",
     }
 )
 
