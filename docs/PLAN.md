@@ -16355,6 +16355,20 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       seeding iterates to a fixed point under a cap and counts cap hits; K1
       `kalman`'s noise estimate inflated while the intercept absorbs a large
       level. D1/D2 wait for task 277 (both touch `sgd`).
+      *Classes 9-11 merged (278 (c))*: no drift at 1e8 rows (NIST NumAcc,
+      the decayed and windowed moments, ewridge against an fsum fit, kalman's
+      P, both clocks); every learning-rate schedule's worst seed converges to
+      the batch optimum; bocpd and corrchange miss no break over 50 seeds.
+      Found, to fix before 1.4.0: D8 `sgd` at too large a learning rate
+      diverges quietly (the clip keeps predictions finite and wrong: MSE 1e6
+      against 1.07) -- detect divergence and withhold with a reason and a
+      notice, after task 277; D9 `hmm` at its default `warm_rows` (50) never
+      recovers sticky regimes (worst 0.54-0.65 in the true state; 0.94 at
+      2,000) -- a better default or a re-seeding rule, measured; F3
+      `kmeans`' seeding ends in a local minimum in most orders of Fränti's
+      A-sets (median 1.26x the optimal inertia) -- greedy k-means++, with
+      D7; F4 the standardized metric stretches isotropic blobs, a documented
+      trade-off (docs only).
 - [ ] 279. **Smaller build caches: no debug info for dependencies** -- the
       user, 2026-10-25 ("Why do agents take so much disk I though we shared
       caches", then "Yes"). Each worktree slot keeps its own `target/` (a
