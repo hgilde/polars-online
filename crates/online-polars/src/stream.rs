@@ -3536,27 +3536,6 @@ impl Stream {
             }
         }
 
-        // ---- the clocks a row shows (docs/PLAN.md task 152) ----
-        // Its own, and the newest row the models had learned from, at a
-        // positive weight, when it was scored; in plan order, so a row
-        // released just before this one counts, and a reset clears it.
-        for plan in &plans {
-            if plan.reset {
-                self.persisted.last_learned = None;
-            }
-            if spec.emit_clocks && plan.emit && plan.accept {
-                out.scored_clock[plan.ri] = plan.clock;
-                out.learned_clock[plan.ri] = self.persisted.last_learned;
-            }
-            if plan.accept && plan.learn && plan.w > 0.0 {
-                self.persisted.last_learned = if plan.direct() {
-                    plan.clock
-                } else {
-                    released[plan.pending].clock
-                };
-            }
-        }
-
         // ---- pass 2: the instances ----
         let drift_resets = spec.drift_action.as_deref() == Some("reset");
         let coupled = !self.persisted.drift.is_empty() && drift_resets;
@@ -3645,6 +3624,41 @@ impl Stream {
         }
         drop(insts);
         self.min_weight = min_weight;
+
+        // ---- the clocks a row shows (docs/PLAN.md task 152) ----
+        // Its own, and the newest row the models had learned from, at a
+        // positive weight, when it was scored; in plan order, so a row
+        // released just before this one counts, and a reset clears it: a
+        // clock reset at its own row, a drift reset after the row that
+        // fired, which only the instances above know -- so this runs after
+        // them. The rebuilt model has learned from nothing, so the next row
+        // shows none, as a fresh bank's first row does (task 278). A
+        // detection is flagged on the row being output (`drift_ri`); every
+        // row learned at that output row that may have fired clears after
+        // its own lesson, so the last of them leaves it cleared.
+        let fired = |plan: &RowPlan| {
+            drift_resets
+                && plan.drift_ri != usize::MAX
+                && out.drift.chunks(n_rows.max(1)).any(|c| c[plan.drift_ri])
+        };
+        for plan in &plans {
+            if plan.reset {
+                self.persisted.last_learned = None;
+            }
+            if spec.emit_clocks && plan.emit && plan.accept {
+                out.scored_clock[plan.ri] = plan.clock;
+                out.learned_clock[plan.ri] = self.persisted.last_learned;
+            }
+            if plan.accept && plan.learn && plan.w > 0.0 {
+                self.persisted.last_learned = if fired(plan) {
+                    None
+                } else if plan.direct() {
+                    plan.clock
+                } else {
+                    released[plan.pending].clock
+                };
+            }
+        }
         Ok(())
     }
 
@@ -4301,6 +4315,16 @@ struct Instance<'a> {
     pending_clock: Option<&'a mut f64>,
 }
 
+/// An instance's decay time when it was restarted and has read no row since:
+/// zero, and the sign marks it. The next accepted row reads a step of 0
+/// ([`run_instance`]), which leaves a decay time of +0.0.
+const RESTARTED: f64 = -0.0;
+
+/// Whether `decay_time` is [`RESTARTED`]'s mark.
+fn is_restarted(decay_time: f64) -> bool {
+    decay_time == 0.0 && decay_time.is_sign_negative()
+}
+
 impl Instance<'_> {
     /// Restart this instance: the same thing a clock reset or a drift break
     /// does, applied to one instance rather than the whole stream.
@@ -4328,7 +4352,20 @@ impl Instance<'_> {
         // had never added, and `settled_frac` left the held rows out for
         // the rest of the stream (review round 4, PB1). A clock reset drops
         // the rows, and the held clock with them (`run_instance`).
-        *self.decay_time = 0.0;
+        //
+        // Without an `embargo` the restart is marked in the same number
+        // ([`RESTARTED`], -0.0): the next accepted row reads a step of 0, as
+        // a fresh stream's first row does, and its learning clears the mark
+        // (`run_instance`). The mark is a value of the field the state
+        // already keeps, so it crosses a chunk boundary and a save with the
+        // rebuilt model, and a file written before it reads as +0.0, the
+        // value it had. Under an `embargo` the held rows carry their own
+        // steps into the rebuilt model, so nothing is marked.
+        *self.decay_time = if self.pending_clock.is_none() {
+            RESTARTED
+        } else {
+            0.0
+        };
         self.notified.restart_waits();
         if let Some(ring) = self.resid_win.as_mut() {
             *ring.get_mut() = resid_window(spec)
@@ -4458,6 +4495,16 @@ fn run_instance(
         if plan.direct() {
             inst.steps = inst.steps.saturating_add(1);
         }
+        // The first row a restarted instance reads is a fresh stream's first
+        // row: a step of 0, so nothing the rebuilt instance holds decays on
+        // it -- `rls`'s prior `delta I`, `kalman`'s `P0` and its process
+        // noise, a cadence's start, the settled clock. The row's own step
+        // belonged to the history the restart dropped. A clock reset's row
+        // has a step of 0 already; a drift reset's next row did not, and
+        // `rls` after one predicted up to 0.017 away from a fresh bank
+        // (task 278). Every use of the step below reads this one.
+        let restarted = is_restarted(*inst.decay_time);
+        let d_clock = if restarted { 0.0 } else { plan.d_clock };
         let (i, ri, w) = (plan.i, plan.ri, plan.w);
         let (emit, learn) = (plan.emit, plan.learn);
         let sc = &mut *inst.scratch;
@@ -4507,14 +4554,14 @@ fn run_instance(
             && inst
                 .model
                 .get()
-                .error_inflation_gate_into(xs, plan.d_clock, &mut sc.infl, max_infl);
+                .error_inflation_gate_into(xs, d_clock, &mut sc.infl, max_infl);
         // The row's own error inflation: its field, and the breaks'
         // studentized residual, read it (task 221 (b)).
         let has_row_infl = inst.spec.reads_row_inflation()
             && inst
                 .model
                 .get()
-                .row_error_inflation_into(xs, plan.d_clock, &mut sc.row_infl);
+                .row_error_inflation_into(xs, d_clock, &mut sc.row_infl);
         // Whether the instance is ready for task 221's diagnostics to fold
         // its residuals (task 232 (1); review round 6, F-1), read before the
         // step as the gates are: the model past its own warm-up, and the
@@ -4551,16 +4598,16 @@ fn run_instance(
             }
             // An audit counts the step as it elapsed, which no decay reads
             // (review 6, C-5: its largest step read `gap_cap`).
-            let d_clock = if matches!(inst.model.get(), AnyModel::Audit(_)) {
+            let step_d = if matches!(inst.model.get(), AnyModel::Audit(_)) {
                 plan.elapsed_step
             } else {
-                plan.d_clock
+                d_clock
             };
             inst.model
                 .get_mut()
-                .step_sharded_into(xs, &sc.ys, d_clock, w, inst.shards, &mut step);
+                .step_sharded_into(xs, &sc.ys, step_d, w, inst.shards, &mut step);
         } else {
-            step = inst.model.get().predict(xs, &sc.ys, plan.d_clock);
+            step = inst.model.get().predict(xs, &sc.ys, d_clock);
         }
         let n_slots = step.pred.len();
         // `ew_cov` has no targets; its slots are statistics, so every one
@@ -4842,7 +4889,7 @@ fn run_instance(
         sc.r.clear();
         sc.sig.clear();
         sc.zs.clear();
-        let lam = inst.decay.factor(plan.d_clock);
+        let lam = inst.decay.factor(d_clock);
         if inst.residuals {
             sc.sig.resize(n_slots, f64::NAN);
             sc.zs.resize(n_slots, f64::NAN);
@@ -4884,7 +4931,7 @@ fn run_instance(
                     // And counts the slots whose residual the row folds at
                     // a positive weight (task 217).
                     ring.get_mut().learn(
-                        plan.d_clock,
+                        d_clock,
                         plan.stamp,
                         lam,
                         (inst.resid_w.as_slice(), inst.resid_var.as_slice()),
@@ -4946,7 +4993,7 @@ fn run_instance(
             for (slot, &rv) in sc.r.iter().enumerate() {
                 let scale = sc.sig[slot];
                 if w > 0.0 && rv.is_finite() && scale.is_finite() && scale > 0.0 {
-                    let flag = dets[slot].update(rv.abs() / scale, plan.d_clock, lam);
+                    let flag = dets[slot].update(rv.abs() / scale, d_clock, lam);
                     // On the row being output: this one, or under an
                     // embargo the row releasing this one (task 160, PB1).
                     // Set, never cleared: one row may release several.
@@ -5063,7 +5110,7 @@ fn run_instance(
                 c.read_health(xs.len(), n_rows, ri, inst.o_health);
             }
             if learn {
-                c.learn(inst.check_cfg, plan.d_clock, &row, &sc.z, w, diag_ready);
+                c.learn(inst.check_cfg, d_clock, &row, &sc.z, w, diag_ready);
             }
         }
 
@@ -5091,7 +5138,11 @@ fn run_instance(
         // row held under `embargo` parks its delta until its release
         // replays it.
         if learn {
-            *inst.decay_time += plan.d_clock;
+            *inst.decay_time = if restarted {
+                0.0
+            } else {
+                *inst.decay_time + d_clock
+            };
         }
         if let Some(c) = inst.pending_clock.as_deref_mut() {
             if plan.buffered {

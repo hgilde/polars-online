@@ -13,6 +13,15 @@ returns.
 
 ### Changed
 
+- `ewridge(session_shrink=f)`'s blend no longer forces a solve and
+  restarts the solve schedule at a session change (task 278): it moves the
+  moments only, and the next scheduled solve reads them, as the docstring
+  promised. The output is continuous in `f` and `f=0` is no `session_shrink`
+  to the bit; before, `f=1e-12` differed from `f=0` by up to 0.48 in a
+  prediction (1.43 under `solve_every=50`, 3,000 rows), now by 1.3e-12. The
+  rows from a session's start to the next scheduled solve are predicted from
+  the fit before the blend; `max_rows_between_solves=1` makes every row after
+  the session's first read it.
 - A number or a duration given as `session_gap` to `po.stream.with_windows`
   is deprecated, because it has no effect there: every window ends at a
   session change, so no window measures the clock's step across one (task
@@ -37,6 +46,17 @@ returns.
 
 ### Fixed
 
+- `drift_action="reset"` starts the model over exactly (task 278): from
+  the row after the one that fired, every output field equals what a fresh
+  bank fed those rows returns. That row read the clock step since the row
+  that fired, which a fresh stream's first row does not have, so the rebuilt
+  model decayed by it: `rls`'s prior moved predictions by up to 2.5e-3 at
+  `delta=1` and 8.0e-3 at `delta=100` (3,000 rows, `half_life=200`),
+  `kalman` with a fixed process noise by up to 4.7e-3, every model's
+  `settled_frac` counted the extra step, and the diagnostics began folding
+  residuals a row early (`calibration_slope` up to 0.86 apart on `kalman`
+  with a mean-reverting slot). `learned_clock` on that row showed the clock
+  of the row that fired; it is null, as documented.
 - `po.stream.with_windows` refuses a `session_gap` without `session` and a
   `restart_after_step_back` without `clock`, as a spec does; each was
   accepted before and did nothing (task 278).

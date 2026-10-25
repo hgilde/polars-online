@@ -568,10 +568,11 @@ class TestSessionShrinkBlend:
 
     C16: both blends went back through raw second moments, which at a level of
     ``1e8`` leave nothing of a unit variance; ``offset = 0`` is the control.
-    C3: the blend never re-solved, so the first rows of a new session were
-    predicted with the coefficients from before it -- the rows the feature is
-    for. At ``f = 1`` the blended state *is* the slow twin, whose fit is the
-    weighted least squares of every row at ``λ_H^age``."""
+    The blend leaves the solve schedule alone (task 278, the user's decision,
+    reversing C3's forced solve, which made ``f -> 0+`` discontinuous): the
+    first solve after the open reads the blend. At ``f = 1`` the blended
+    state *is* the slow twin, whose fit is the weighted least squares of
+    every row at ``λ_H^age``."""
 
     H_FAST, H_SLOW = 40.0, 400.0
 
@@ -620,7 +621,7 @@ class TestSessionShrinkBlend:
         assert abs(g["target_vars"][0] - yvar) <= (1e-12 if offset == 0.0 else 1e-6) * yvar
 
     @pytest.mark.parametrize("long_half_life", [2000.0, float("inf")])
-    def test_the_first_row_of_a_session_is_predicted_from_the_blend(self, long_half_life):
+    def test_the_first_solve_after_the_open_reads_the_blend(self, long_half_life):
         rng = np.random.default_rng(32)
         n1, n2 = 4300, 10
         n = n1 + n2
@@ -629,30 +630,44 @@ class TestSessionShrinkBlend:
         y = 0.5 + slope * x + rng.normal(0.0, 0.05, n)
         session = np.where(np.arange(n) < n1, 1, 2)
         df = pl.DataFrame({"x": x, "y": y, "s": session})
-        spec = po.spec.ewridge(
-            "m",
+        kw = dict(
             targets=["y"],
             features=["x"],
             ridge=1e-10,
             half_life=100.0,
             session="s",
             session_gap=1.0,
+            max_rows_between_solves=1,  # a solve on every row: the open's included
+        )
+        spec = po.spec.ewridge(
+            "m",
             session_shrink=1.0,  # the blend is the slow twin itself
             long_half_life=long_half_life,
+            **kw,
         )
         pred = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y")
-        # The slow twin's fit: every row of session 1 at 0.5 ** (age / H). At
-        # H = inf the weights are numpy's unit ones: the long run is the whole
-        # history, which the builder refused (review 2026-09-12, S27).
+        # The open's own row is scored with the solve before it: the blend
+        # moves no fit (the row's prediction is the no-blend stream's).
+        plain = po.ModelBank([po.spec.ewridge("m", **kw)]).fit_predict(df)
+        assert pred[n1] == plain["m"].struct.field("pred_y")[n1]
+        # The solve after it reads the blend: the slow twin's rows -- every
+        # row of session 1 at 0.5 ** (age / H), scaled to today's weight --
+        # aged one fast step by the open's `session_gap`, and the open's row
+        # at weight 1. At H = inf the twin's weights are numpy's unit ones:
+        # the long run is the whole history, which the builder refused
+        # (review 2026-09-12, S27).
         age = (n1 - 1) - np.arange(n1)
-        b = _wls(x[:n1, None], y[:n1], 0.5 ** (age / long_half_life))
-        assert pred[n1] == pytest.approx(b[0] + b[1] * x[n1], abs=1e-8)
-        # E31: scoring that row against the bank fitted to the end of session 1
-        # gives the same number, from a blended copy.
+        lam_f = 0.5 ** (1.0 / 100.0)
+        kf, ks = 0.5 ** (age / 100.0), 0.5 ** (age / long_half_life)
+        w = np.append(lam_f * kf.sum() * ks / ks.sum(), 1.0)
+        b = _wls(x[: n1 + 1, None], y[: n1 + 1], w)
+        assert pred[n1 + 1] == pytest.approx(b[0] + b[1] * x[n1 + 1], abs=1e-8)
+        # E31: scoring the open's row against the bank fitted to the end of
+        # session 1 gives the same number, from a blended copy.
         bank = po.ModelBank([spec])
         bank.fit_predict(df[:n1])
         scored = bank.predict(df[n1 : n1 + 1])["m"].struct.field("pred_y")[0]
-        assert scored == pytest.approx(pred[n1], abs=1e-12)
+        assert scored == pred[n1]
 
 
 def _no_intercept_rows(n: int, seed: int):
