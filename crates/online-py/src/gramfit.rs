@@ -327,7 +327,7 @@ pub(crate) fn gram_lars_paths<'py>(
 
 /// Target `target`'s elastic-net path on one Gram by the `lasso` model's
 /// coordinate descent (`online_core::gramfit::cd_path`): `penalties × k`,
-/// flat.
+/// flat, and per penalty whether its descent ran out of sweeps.
 #[pyfunction]
 #[pyo3(signature = (gram, target, slots, icept, penalties, l1_ratio, weights, max_iter, tol))]
 #[allow(clippy::too_many_arguments)]
@@ -342,7 +342,7 @@ pub(crate) fn gram_cd_path(
     weights: Vec<f64>,
     max_iter: usize,
     tol: f64,
-) -> PyResult<Vec<f64>> {
+) -> PyResult<(Vec<f64>, Vec<bool>)> {
     let owned = read(py, &gram)?;
     check_axes(
         std::slice::from_ref(&owned),
