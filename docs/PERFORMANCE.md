@@ -152,7 +152,7 @@ Where a number is not what you expected, find what you see here:
 |---|---|---|---|
 | a row slower than the README's throughput | the model's own update, `O(k²)` a row for a model that solves, and its solves on their schedule; below about 50 features, as much again in the bank's work around the row; and for a model with many fields, writing them | `solve_every` and `max_rows_between_solves`; `gram_block_rows` and `gram_threads` for a wide `ewridge`; only the `stats` you read for `ew_cov` | §18, §30, §37, §38, §44 |
 | a grid slower than one model | a ridge or feature-set grid shares one set of sums; each half-life of a grid keeps its own, run alongside the others | the number of half-lives | §28, §44 |
-| small chunks slower than large ones | a fixed overhead per call: handing the frame across, gathering the columns and assembling the output, about 8 ms at 10,000 columns | `chunk_size`, 100,000 by default (`chunk_rows` in the sections written before it was renamed) | §12, §20 |
+| small chunks slower than large ones | a fixed overhead per call: handing the frame across, gathering the columns and assembling the output, about 8 ms at 10,000 columns | `chunk_size`, 100,000 by default on the query and the command line (`chunk_rows` in the sections written before it was renamed); the eager call takes the frame whole unless given one | §12, §20 |
 | memory that grows with the file | Polars reading ahead in the parquet file, sized from its thread count, and the allocator keeping pages it has freed | `POLARS_ROW_GROUP_PREFETCH_SIZE`, `POLARS_MAX_THREADS` | §11 |
 | an eager `fit_predict` above its output | a spec of many groups keeps every run's buffers until its streams are done, about its output again; a spec of one group or none holds its output and two runs | a smaller frame, or the streaming path, whose peak is a chunk's | §40 |
 | memory that jumps with a filter | a filter before the bank makes Polars hold several blocks of each file per thread | a filter after the bank, or weight 0 on the rows to skip | §11 |
@@ -163,7 +163,7 @@ Where a number is not what you expected, find what you see here:
 | `bocpd` slowing as a stream runs | the run lengths it keeps | `max_run`, `prune_below` | §15 |
 | a window operator | one queue per kernel, the same work a row whatever the window's length; memory about one window of rows | operators with one direction, half-life, window and `closed` share a kernel | §33, §35 |
 | a model whose target is a window expression | the bank's own window core, at 1.5 to 1.6 times the column form's time and less memory | the column form, `with_windows(..., like=spec)` | §34 |
-| scoring against learning | `predict` skips the update: `ewridge` scores 1.8 times as fast as it learns at k=5, 2.8 at k=20 | | §30 |
+| scoring against learning | `predict` skips the update: on a frame of a million rows, `ewridge` scored 1.85 times as fast as it learned at k=5 and 2.82 at k=20 (§30, 2026-09-29); through a query, the headline's recipe reads 2.2 at k=20 (§44) | | §30, §44 |
 
 ### Words this document uses
 
@@ -300,9 +300,9 @@ against the last. There are three kinds:
 
 | kind | what is measured | where it runs | tolerance |
 |---|---|---|---|
-| `instructions` | the instructions one block of 1,000 rows executes, after 2,000 rows of warm-up, counted by Callgrind; one case each for `ewridge` at 5 and 20 features, `ewridge` at 50 features with 10 targets folded into a 64-row block's merge, `sgd`, `pa`, `seqtest`, `bocpd`, `kmeans`, `micro`, `kalman`, `ew_cov`, the clock's step on a float and on a nanosecond clock, and `Bank::fit_predict` around `seqtest` and around `ewridge`; and `Bank::fit_predict` of 8,192 rows of `ew_cov`'s 230 statistics on a pool of one thread | `.github/workflows/budgets.yml`, on Linux | 2% |
+| `instructions` | the instructions one block of 1,000 rows executes, after 2,000 rows of warm-up, counted by Callgrind. The cases are the lists in `crates/online-bench/src/lib.rs`: a step of each of the 22 models at a standard width, and beside them the costlier options (`ewridge` at 50 features with 10 targets folded into a 64-row block's merge, `huber`'s feature sets and `ridge_scale="sum"`, `sgd`'s Huber loss, `bocpd`'s full run, `ew_cov`'s lags, `marginal`'s Huber bins, and `corrchange`'s monitor and window); the clock's step on a float and on a nanosecond clock; `Bank::fit_predict` around `seqtest` and around `ewridge`, as one stream and as 1,000 groups of one row each, and around a window target that holds 1,000 rows back; four window operators through `WindowsRun::feed`; and `Bank::fit_predict` of 8,192 rows of `ew_cov`'s 230 statistics on a pool of one thread | `.github/workflows/budgets.yml`, on Linux | 2% |
 | `memory` | the bytes per row of every output field of every model with every output it has switched on, over 20,000 rows, from `estimated_size()` | `tests/test_budgets_memory.py`, on every CI leg | 2% |
-| `rss` | the peak resident memory a standard run adds over its process's baseline, per platform, in MiB: ten targets over 200,000 rows, 230 moments a row over 200,000, and a million rows streamed from one parquet file to another with Polars reading one row group ahead on four threads, since its default read-ahead grows with a file this size and would be most of the number | the same file, in the extended tier: held on CI at each OS's floor Python, on Windows on `windows-latest` alone, and reported everywhere else, since the interpreter alone moved macOS's peak 18-20% between 3.12 and 3.14, the machine moved the streaming run's 23%, and Windows Server 2022 and Server 2025 read the six runs up to 8% apart on one build, so the two images would each tighten the budget below the other | 30% over: two runs of one build on one CI runner read 14-18% apart; tightened at 7.5% under |
+| `rss` | the peak resident memory a standard run adds over its process's baseline, per platform, in MiB, for six runs: `ewridge` with ten targets over 200,000 rows; `ew_cov`'s 230 moments a row over 200,000; an eager `predict` of 1,000 features over 20,000 rows; a windowed `ewridge` (`window_size` 20,000) over 200,000; `bocpd` holding up to 200 runs over 50,000; and five million rows streamed from one parquet file to another. The streamed run has Polars reading one row group ahead on four threads, and the allocator giving freed pages back at once (`_RJEM_MALLOC_CONF=dirty_decay_ms:0,muzzy_decay_ms:0`, `MIMALLOC_PURGE_DELAY=0`), so its peak is the live memory. A control reads the same rows whole before the plan, and must exceed the streamed run's budget | the same file, in the extended tier: held on CI at each OS's floor Python, on Windows on `windows-latest` alone, and reported everywhere else, since the interpreter alone moved macOS's peak 18-20% between 3.12 and 3.14, the machine moved the streaming run's 23%, and Windows Server 2022 and Server 2025 read the six runs up to 8% apart on one build, so the two images would each tighten the budget below the other | 30% over: two runs of one build on one CI runner read 14-18% apart; tightened at 7.5% under |
 
 **An instruction count can gate where a timing cannot.** Two release builds
 of one source measured up to 19% apart in wall time, from where the linker
@@ -3484,6 +3484,11 @@ per second on the same stream:
 | `po.spec.sgd` | 6,000,000 | every row before it |
 | `po.spec.ewridge`, refit every row | 575,000 | every row before it |
 | `po.spec.ewridge`, solve every 100 rows | 5,000,000 | every row before it, coefficients ≤100 rows old |
+
+These rates are this section's, of 2026-09-08. The refit-every-row rate
+was re-measured at 480,202 rows a second on 2026-09-29, after the change
+[§30](#30-where-every-row-solves-2026-09-29) describes, and the README's
+comparison quotes that later figure.
 
 sklearn's fast form and ours are not doing the same thing. `partial_fit` on
 a mini-batch is one BLAS-shaped update for 1,000 rows, and the predictions

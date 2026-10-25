@@ -63,7 +63,7 @@ LightGBM: validation RMSE 0.313 after 50 rounds
 XGBoost's pass that sketches every row.** That pass is about half the time
 before the first round. `sample_rows=None` keeps it, and with it XGBoost's
 own trees. Without weights the sample is uniform. On 10 million unweighted
-rows of 50 features, at 50 rounds, XGBoost's sketch scored a validation
+rows of 50 features, at 50 rounds, measured on 2026-10-10, XGBoost's sketch scored a validation
 RMSE of 1.2379, and cuts from five seeds of the sample 1.2347 to 1.2411.
 LightGBM's own sampling spans 1.2298 to 1.2443 over five seeds.
 `po.gbdt.lightgbm_dataset` returns a constructed `lgb.Dataset`, binned on
@@ -76,7 +76,8 @@ the weights (priority sampling) and places the cuts at the sample's
 weighted quantiles. A row of weight 0 places no cut. LightGBM's sample is
 uniform, and `LGBM_DatasetCreateFromSampledColumn`, the call that bins it,
 takes no weights, so `lightgbm_dataset` bins as LightGBM does. Measured on
-50,000 normal values with weight 50 above 1.0 and `max_bin=16`:
+2026-10-11, on 50,000 normal values with weight 50 above 1.0 and
+`max_bin=16`:
 
 | bins | bounds | above 1.0 | heaviest bin's share of the weight |
 |---|---:|---:|---:|
@@ -95,7 +96,7 @@ against 8.7 for XGBoost's own iterator over Polars batches. For LightGBM it
 began after 1.68 seconds streamed and 1.45 in memory, against 1.54 for its
 own route from a collected frame at three times the memory. Each time is the
 median of three interleaved runs on 8 threads, from Arrow IPC files, on an
-Apple M4 Pro at a load average of 4.5 to 10. The docstrings of
+Apple M4 Pro at a load average of 4.5 to 10, on 2026-10-10. The docstrings of
 `xgboost_matrix` and `lightgbm_dataset` have every parameter.
 
 **A Huber loss is the train call's objective, and its slope is a scale to
@@ -308,8 +309,8 @@ LightGBMError: Cannot change max_bin after constructed Dataset handle.
 ### LightGBM's route in memory
 
 **`in_memory="auto"` takes LightGBM's Arrow route when the features as
-float32 take at most a quarter of the memory available.** On 1e7 × 50 that
-route was 14% sooner than the two passes, at a peak 1.4 times the float32
+float32 take at most a quarter of the memory available.** On 1e7 × 50,
+measured on 2026-10-10, that route was 14% sooner than the two passes, at a peak 1.4 times the float32
 data (2.9 GB for 2.0 GB). Both routes hand LightGBM the same float32
 values, so the choice, which depends on the machine, never changes the
 trees.

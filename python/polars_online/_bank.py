@@ -2466,8 +2466,8 @@ class ModelBank:
         - not a bank state file at all;
         - written by a newer build (the file's format or state schema version is above
           this build's);
-        - written under a state schema below this build's floor -- before 1.0 a schema
-          change is not carried across, and such a state is refit rather than loaded
+        - written under a state schema below this build's floor, which is 1.0's: a
+          state saved by 0.13.0 or earlier is refit rather than loaded
           (:func:`polars_online.schema_version` is the current schema);
         - a state that contradicts its own spec, such as an ``sgd`` state without the
           scaler its ``standardize`` needs;

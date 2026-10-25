@@ -320,7 +320,12 @@ embargo shorter than the target's window. `ModelBank.fit` and `online
 --no-output` keep none, so they take any embargo. A bank file is refused by
 any build whose schema it does not meet; from 1.0 every later 1.x build
 loads it, and a 0.x file is refit rather than loaded ([Saving, loading and
-serving](../README.md#saving-loading-and-serving)).
+serving](../README.md#saving-loading-and-serving)). A file this build
+saved goes on as one run to the bit, as the recipes show. A windowed state
+saved by 1.2.0 or earlier loads, and its first read is the one it saved.
+Once a snapshot taken after the load is the window's edge, its windowed
+outputs continue within 1e-12, not to the bit, because such a state never
+recorded the per-row decay factors.
 
 ### A window run's state
 
@@ -393,7 +398,7 @@ came after it:
 | **status** | decided and implemented on 2026-09-03 (PLAN task 20); the decisions are in §7 |
 | **the syntax** | `lf.online.fit_predict(.., save_state=)`, proposed in §4 under the rules R1–R7 |
 | **checked by** | §5's checks, which are `tests/test_frame.py`'s E35 tests |
-| **measured on** | polars 1.34.0 (the floor), 1.38.1 and 1.44.1 (the pin then), by `scripts/io_source_semantics.py` (§2) |
+| **measured on** | polars 1.34.0 (the floor then; 1.37.0 since 2026-10-12), 1.38.1 and 1.44.1 (the pin then), by `scripts/io_source_semantics.py` (§2) |
 | **declined** | the memory side: a query that updates a `ModelBank` object, or takes one as `load_state`. The file is the state's one form in a query, and a bank object stays the tool of your own Python loop over chunks (§1, §3 B/E) |
 
 **Read with two changes since.** Task 83 (2026-09-17) removed `po.run`,
@@ -717,7 +722,9 @@ runs, too (R1 never uses it). The write is atomic and idempotent. The only
 new failure mode is R6, which is documented and has a supported
 alternative. The floor stays 1.34.0. *Since then:*
 py-polars 2.0.0rc1 does stop a long enough stream, as the note at the top
-records.
+records. And on 2026-10-12 the floor rose to py-polars 1.37.0, the first
+whose `collect_batches` stops reading ahead of a slower consumer: 1.34.0
+to 1.36.1 held a whole 1 GB source. The measurements on 1.34.0 stand.
 
 **Rules kept.** Hard rules 2 and 3 are untouched (C1, C8), and so are
 `weight_sum` and zero weight. There is no new Rust surface unless the

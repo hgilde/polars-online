@@ -5,7 +5,7 @@ suite and wants the evidence: what each part proves, what it has found, and
 where it is thin. Its emphasis is on edge cases, and on comparing behaviour
 against reference implementations, including [river](https://riverml.xyz).
 
-**The suite has 2,575 Rust tests and 7,072 pytest cases, counted on
+**The suite has 2,649 Rust tests and 7,209 pytest cases, counted on
 2026-10-24.** The Rust count is the lines ending in `: test` that
 `cargo test --workspace --exclude online-py -- --list` prints, the
 extended tests and the doctests included; the pytest count is what
@@ -25,7 +25,7 @@ from 2026-09-27 ([Measured coverage](#measured-coverage)).
 | 2026-09-25 | 976 | 3,265 cases |
 | 2026-10-03 | 1,215 | 3,840 cases |
 | 2026-10-11 | 2,207 | 6,262 cases |
-| 2026-10-24 | 2,575 | 7,072 cases |
+| 2026-10-24 | 2,649 | 7,209 cases |
 
 The 2 opt-in soak tests are outside every count. They run with
 `pytest -m soak`, and the weekly leak-check workflow runs them. The counts
@@ -205,6 +205,7 @@ in `tests/test_second_opinion.py`, Vowpal Wabbit among them.
 | `huber` and `quantile` under a finite half-life, with nulls, several targets, `standardize` or zero weights; `ftrl` under a half-life; `sgd`'s Poisson loss and AdaGrad schedule; `ew_class` under decay; `EwQuantile` | **definition only**: `robust_ref`, `ftrl_ref`, `sgd_ref` and the definitions in `tests/test_diagnostics.py` and `tests/test_ew_class.py`. No library checked forgets as a half-life does, and scikit-learn's SGD has neither the Poisson loss nor AdaGrad | as each row above | |
 | `micro`, `seqtest`, `deco`, `corrchange`, `rcov` | **definition only**: the oracles above, each written from its paper. river's `DenStream` takes another macro step, so it could agree only statistically, and no Python library computes the other four | as each row above | |
 | the window operators | the brute force; the time-reversal identity; Polars' `ewm_mean_by` and `ewm_sum_by`; Polars' `rolling_sum_by`, for which rows a window holds ([below](#the-window-operators-and-formula-targets)) | 1e-9; 1e-9; 1e-9; exactly | |
+| `po.ewm_quantile`, looking back with and without a window, and looking ahead | numpy's weighted quantile, `np.quantile(..., weights=, method="inverted_cdf")`, over the rows each window holds at the weights `po.ewm_sum` gives them; under even weights, statsmodels' MAD about 0 of the last 101 rows (`tests/test_ewm_quantile.py`) | `tanh(1/128)`, relative, the sketch's accuracy | |
 | a formula target | its column form | bit for bit, every prediction | |
 
 ### An oracle, not a golden number
@@ -342,7 +343,7 @@ identity.**
 | oracle | what it checks | held by |
 |---|---|---|
 | the brute force | every operator, a mean, a sum and a rate, on nine kernels: each direction, every `closed`, finite and infinite half-lives. Five streams of 400 rows carry gaps, repeated stamps, sessions, missing values and groups. To 1e-9 | `windows.rs::every_operator_matches_its_definition` |
-| a loop from the definition, in Python | each of the six operators under each `closed`, to 1e-9 | `test_windows.py::test_each_operator_matches_the_definition` |
+| a loop from the definition, in Python | the mean, the sum and the rate, each looking back and looking ahead, under each `closed`, to 1e-9 | `test_windows.py::test_each_operator_matches_the_definition` |
 | Polars' own functions | the backward mean and sum, with no window, against `ewm_mean_by` and `ewm_sum_by` (1.44.1 on) on a `Datetime` clock, to 1e-9; which rows a window holds under each `closed`, against `rolling_sum_by`, exactly | `test_polars_computes_the_same_mean_and_sum`; `test_which_rows_a_window_holds_is_polars_rolling` |
 | the time-reversal identity | a forward window against a backward one over the reversed stream, to 1e-9 | `windows.rs::a_forward_window_is_a_backward_one_over_the_reversed_stream`, and `test_windows.py`'s test of the same name |
 | chunking | chunks of 1, 2, 3, 7, 50 and 499 rows give one chunk's bits | `windows.rs::chunking_changes_no_bit` |
@@ -415,6 +416,7 @@ behaves, then the files the repository promises.
 | an integer clock (2026-10-07) | `tests/test_integer_clock.py`, `an_integer_*` in `crates/online-core/src/clock.rs`, `an_integer_clock_decides_its_edges_in_integers` in `crates/online-polars/src/windows.rs` | an `Int64` clock of epoch nanoseconds near 1.79e18, where a double resolves 256, against the raw integers: its steps, `settled_frac`, a `coef_every` cadence, a model window's edge, an embargo's release, a step back of 1 and one of exactly `restart_after_step_back`, a gap of exactly `gap_cap`, the window operators against Polars' `rolling_sum_by` and `po.increment` of an integer input; the same stream shifted to 0 as a float clock gives the same output to the bit; the frames give the clock in its own integer dtype |
 | the clocks a row reports (2026-10-02) | `tests/test_clocks.py` | `emit_clocks`' `scored_clock`, the clock a row was scored at, and `learned_clock`, the clock of the newest row learned by then: counted from the frame, and exact to the nanosecond on a `Datetime` clock |
 | `kalman` at any row spacing (2026-10-03) | `crates/online-core/tests/kalman_clock.rs` | `coef_half_life` is a half-life on the clock: a slope step takes about the same clock time to learn at rows 1, 0.25 and 0.04 apart, where the old form parted by a factor of five, and a gap row adds exactly `q d²` to `P` |
+| [the math library's last bits](#the-math-librarys-last-bits) | the bound helpers in `crates/online-core/src/oracle.rs`, and the comments beside each oracle comparison | each oracle comparison held to a bound derived from both sides' rounding, a few ulps for each call to `exp`, `ln`, `exp2` or `powf` among the terms; each value pinned to its bits on a stream that calls none of them |
 | the solve cadence | `tests/test_solve_cadence.py` | by default, `ewridge`, `lasso`, `huber` and `quantile` solve again once the weight learned since the last solve reaches `ln 2 / 50` of the weight the fit holds, so a long half-life still re-solves |
 
 The files the repository promises are held the same way:
@@ -958,6 +960,47 @@ instruction. Running these tests under SDE instead would make that leg
 independent of the machine; it has not been tried. Until then the pool's
 Intel machines run those kernels in `ci.yml`, and the machine report says
 when.
+
+#### The math library's last bits
+
+**No test takes a blanket tolerance for the platform: each kind of test
+treats the math library's last bits its own way.** `exp`, `ln`, `exp2` and
+`powf` differ in their last bits between Apple's library, glibc and each
+Windows build's `ucrtbase.dll`. online-core calls the platform's own. A
+pure-Rust copy, the `libm` crate, would give the same bits everywhere, but
+measured 1.4 times as slow for `exp` and `exp2` and 3.5 to 4.5 times for
+`powf`, and was declined. So a test is one of three kinds:
+
+| kind | what it compares | how it is held |
+|---|---|---|
+| a build against itself | one chunk against many, one thread against eight, a state saved and continued | exactly: both sides call the same library on the same machine |
+| a value pinned to its bits | a digest or a frozen number from a fixed stream | a stream that calls none of those functions, such as a decay given as a literal `lam` on a clock that steps by 1, so the pin holds on every platform |
+| this library against an oracle | another library, or a definition computed another way | a bound derived from both computations' rounding: a few ulps for each call to one of those functions, times the formula's amplification, measured on all three platforms and written beside the test |
+
+**A Rust oracle comparison is held to a derived bound, from the helpers in
+`crates/online-core/src/oracle.rs`.** A fixed tolerance such as `1e-9` is
+too tight for an ill-conditioned case, or far too loose for a
+well-conditioned one, where a kernel a hundred times past its rounding
+still passes. The helpers are the standard results from Higham's
+*Accuracy and Stability of Numerical Algorithms*:
+
+| helper | the bound |
+|---|---|
+| `U`, `LIBM` | the unit roundoff `2⁻⁵³`, and the four units of it a call to the platform's `ln`, `exp`, `exp2` or `powf` may be off: two ulps. Apple's and glibc's are within one, and the second is left for `ucrtbase.dll`, which has not been measured to the ulp |
+| `gamma(m)` | `γ_m = m·u / (1 − m·u)`, what `m` roundings in a row can move a result by, relative |
+| `dot_error`, `running_dot` | the most a dot product's rounding can move it: a priori from the terms, or read off the run from its partial sums, which is smaller where the terms cancel |
+| `condition` | the 2-norm condition number of a symmetric positive definite matrix, each eigenvalue moved by its own error bound the way that makes it larger |
+| `forward_bound(κ, η)` | a backward-stable solve's normwise forward error, `2κη / (1 − κη)` |
+
+Each test states which helpers it uses and how it counts its terms, with
+the headroom it measured in a comment. About 32 comparisons sit at 0.01 to
+0.31 of their bounds, or agree to the bit, so a kernel 100 times past its
+rounding fails them. Eleven that a long accumulation dominates sit at 1e-4
+to 1e-2 of their bounds: the worst case per step grows with the row count,
+while the realized error grows with its square root. Even so, each is 10³
+to 10⁶ times tighter than the fixed tolerance it replaced. A Python oracle
+comparison whose two sides pass through those functions carries a bound of
+the same kind, derived in a comment beside it.
 
 ### What the README's guarantees are held to
 

@@ -28,18 +28,18 @@ half_life)``:
        stretch, and a row at a repeated stamp holds no interval, so it moves
        no mean. No mean counts rows; pandas' ``ewm(times=)`` is that form,
        and is not offered
-   * - :func:`rewm_mean`
+   * - :func:`ewm_mean` with ``reverse=True``
      - the mirror: value *j* is held over ``[t_j, t_{j+1})``, until the next
        row, and weighed by ``integral lam**(s - tau_t) ds`` inside ``(tau_t,
        tau_t + w]``
      - the reversed stream's :func:`ewm_mean`
-   * - :func:`ewm_sum`, :func:`rewm_sum`
+   * - :func:`ewm_sum`, and with ``reverse=True``
      - ``sum lam**|t_j - tau_t| * x_j`` over the rows of the window, each
        counted once at its own time
      - Polars' ``ewm_sum_by`` on distinct stamps; at a repeated stamp every
        row holds the stamp's whole window, so each carries the stamp's
        total where ``ewm_sum_by``'s is a running sum
-   * - :func:`ewm_rate`, :func:`rewm_rate`
+   * - :func:`ewm_rate`, and with ``reverse=True``
      - the sum over the decayed time the window covers, ``integral_0^T lam**s
        ds = half_life / ln 2 * (1 - 2 ** (-T / half_life))``, ``T`` the
        window's span inside the stretch: a quantity per unit time
@@ -55,8 +55,8 @@ half_life)``:
    * - :func:`ewm_quantile`
      - the smallest ``x`` with ``W(<= x) >= q W``, each row of the window
        weighing ``lam**|t_j - tau_t|``, as in :func:`ewm_sum`, ``W`` their
-       total; read from buckets each spanning a ratio of ``e**(1/64)``, so
-       within ``tanh(1/128)``, 0.78%, of it, relatively
+       total; read from buckets each spanning a ratio of at most
+       ``e**(1/64)``, so within ``tanh(1/128)``, 0.78%, of it, relatively
      - numpy's ``inverted_cdf`` quantile over the window's values and
        their weights
    * - :func:`increment`
@@ -384,8 +384,8 @@ def ewm_quantile(
     ``W(<= x)`` is the weight of the values at or below ``x`` and ``W`` the
     weight of all of them: numpy's ``inverted_cdf`` quantile over the
     window's values and weights. A value is read as
-    the bucket it falls in, each bucket spanning a ratio of ``e ** (1/64)``,
-    so the result is within ``tanh(1/128)``, 0.78%, of the exact quantile,
+    the bucket it falls in, each bucket spanning a ratio of at most
+    ``e ** (1/64)``, so the result is within ``tanh(1/128)``, 0.78%, of the exact quantile,
     relatively, at any scale and either sign; a magnitude below the smallest
     normal double counts as 0. A row whose value is missing counts for
     nothing and gives the window as it stands, as the sums do.

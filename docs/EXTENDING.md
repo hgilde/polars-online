@@ -99,7 +99,8 @@ Each such case overrides a method, and each has its check:
 |---|---|---|
 | keeps a ring of past rows: a lag ring, a window | **`clear_lags`**, dropping that ring and nothing else | `probe_with` in `tests/model_contract.rs`, against `KEEPS_LAGS` |
 | has a `window_size` | its snapshots in `online_core::Snapshots`, a **`Footprint`** for the snapshot type (the heap it holds, in bytes), and **`set_window_budget`** and **`window_over_budget`** reaching the ring, so that `window_budget` bounds it; **`set_window_closed`** reaching the ring too, so that the spec's `closed` decides its edge, and a `closed` field in its `ModelKind` variant | `tests/test_window_budget.py`: `test_every_windowed_model_holds_its_budget` and `test_the_budget_table_names_every_windowed_builder`; `crates/online-polars/tests/window_edge.rs`, every test of which runs each windowed model under both edges |
-| is windowed and predicts a target | an entry in `ModelKind::window_and_every`, so the stream cuts its `sigma` and `zscore` at the fit's window | `test_second_opinion::TestWindowedSpread`, in whose parametrization it belongs |
+| is windowed and predicts a target | an entry in `ModelKind::window_and_cadence`, which returns the window and its snapshot cadence, so the stream cuts its `sigma` and `zscore` at the fit's window | `test_second_opinion::TestWindowedSpread`, in whose parametrization it belongs |
+| has a `window_size` and decays its moments | **`Snapshots::learn_decayed(&mut clock, d_clock, &[lam], make)`** on every row it learns, a row of weight 0 included, so the ring's running product takes each row's decay factor; and its window's edge read through **`Snapshots::cut(clock, decay, which)`**, which decays the snapshot by that product (a model with two decays, as `lasso` has, passes both factors and reads each with its index `which`). One factor of the summed clock instead differs from the live moments' decay by the per-row factor's rounding times the rows in the window, so a target held at one value can read a variance near 1e-15 instead of 0. No model calls `offer` itself | **no check**: chunk invariance and the window tests pass either way, so the model's own unit tests must hold the edge |
 | keeps a weight per target: the rows each target was present on | **`target_n_eff_into`** | `test_a_sparse_target_warms_up_on_its_own_weight` in `tests/test_bank.py`, to which it is added |
 | reads a number out of `y` rather than regressing it | **`predict_with(x, y, d_clock)`** | `predict_is_the_step_without_the_step` and `a_value_in_the_targets_slot_reaches_predict` |
 | steps a row so cheaply that a heap allocation is a large share of it, as `seqtest`, `pa`, `sgd`, `ewridge`, `ew_cov` and `kmeans` do | **`step_into`**, writing every slot of `pred`, `n_eff` and `extra` into the caller's `Step` whatever it held, with `step` written as `step_into` into a new `Step`. The bank steps every model through `step_into`, into one `Step` kept per model instance, so the override saves the `pred` vector `step` allocates a row; the trait's default goes through `step` | `predict_is_the_step_without_the_step` in `tests/model_contract.rs`, which steps a twin through `step_into` on a buffer left with another row's answer and holds its answer and state to `step`'s bits, and `refuses_unusable_values`; `crates/online-bench/tests/allocations.rs` for the count a row |
@@ -562,6 +563,14 @@ scripts/budgets.py apply <dir>/memory.json`. The third is
 from `features[0]`, which `ModelKind::is_unsupervised` names in `spec.rs`.
 Add the model to each, and to the names in that function's doc comment,
 which nothing holds.
+
+Two more lists have **no check** that holds them to the registered models.
+`crates/online-bench/src/lib.rs`'s `MODEL_CASES` is the instruction-count
+cases, one per model: add the model's case there, with its
+`[instructions.<case>]` entry in `budgets.toml`, and set the budget from
+CI's first `measured.json` with `python scripts/budgets.py apply`. And
+`scripts/benchmark.py`'s rows are the README's *Throughput* table: add a
+row for the model if the table should show it.
 
 A regression also goes into `python/polars_online/_check.py`'s
 `_REGRESSIONS`, which `ModelBank.check` reads for `few_rows`. If it does not
