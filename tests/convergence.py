@@ -649,101 +649,46 @@ def _registrations() -> list[Registration]:
             "no bias on a straight line; without decay meant to be the whole history's trend",
             other=OTHER_TREND,
         ),
+        Registration(
+            key="huber",
+            builder="huber",
+            build=_spec("huber", solve_every=0.0),
+            stream=linear,
+            oracle=huber_oracle(),
+            classes=frozenset({1, 2, 3, 4, 5}),
+            limit="the converged batch Huber fit with the MAD scale on the same weighted rows "
+            "(statsmodels' RLM loop): the refit of the first 200 learned rows lands on it, and "
+            "each row after it is weighed once, by the fit before it, so the one pass converges "
+            "to it on a stationary stream",
+            robust=True,
+            other=OTHER_LINEAR,
+        ),
+        Registration(
+            key="sgd:huber",
+            builder="sgd",
+            build=_spec("sgd", loss="huber", schedule="inv_scaling", power=1.0, learning_rate=2.0),
+            stream=linear,
+            oracle=huber_oracle(),
+            classes=frozenset({1, 2, 3, 4, 5}),
+            limit="the converged batch Huber fit with the MAD scale, at 1/sqrt(n) under "
+            "inv_scaling with power 1: the refit of the first 200 learned rows sets the "
+            "coefficients to that fit of those rows, and the steps go on from there",
+            robust=True,
+            other=OTHER_LINEAR,
+            level=1e3,
+        ),
     ]
 
 
 REGISTRY: dict[str, Registration] = {r.key: r for r in _registrations()}
 
 #: Registered, but with no assertions yet, and why. Each name leaves this
-#: table when its reason is gone (``test_convergence.py`` checks the reason
-#: still holds).
-PENDING: dict[str, str] = {
-    "huber": (
-        "task 277 is changing its warm-up (a converged refit of the first rows, on by "
-        "default in 1.4.0): one online pass is captured by front-loaded outliers today, and "
-        "its classes 1-5 are asserted on the warm-up, once it merges"
-    ),
-    "sgd:huber": (
-        "task 277 gives sgd(loss='huber') the same warm-up as huber; its classes are "
-        "asserted on it, once it merges"
-    ),
-}
-
-#: The registrations ``PENDING`` waits to add: ready, so that once task 277
-#: merges each is one line in ``_registrations`` and its bounds in
-#: ``tests/test_convergence.py``. Classes 1-5, the robust oracle on the same
-#: weighted rows.
-AFTER_277: dict[str, dict] = {
-    "huber": {
-        "builder": "huber",
-        "build": _spec("huber", solve_every=0.0),
-        "stream": linear,
-        "oracle": huber_oracle(),
-        "classes": frozenset({1, 2, 3, 4, 5}),
-        "robust": True,
-        "other": OTHER_LINEAR,
-    },
-    "sgd:huber": {
-        "builder": "sgd",
-        "build": _spec("sgd", loss="huber", schedule="inv_scaling", power=1.0, learning_rate=2.0),
-        "stream": linear,
-        "oracle": huber_oracle(),
-        "classes": frozenset({1, 2, 3, 4, 5}),
-        "robust": True,
-        "other": OTHER_LINEAR,
-    },
-}
+#: table when its reason is gone. Empty since task 277 gave ``huber`` and
+#: ``sgd(loss="huber")`` the refit of their first rows, and both registered.
+PENDING: dict[str, str] = {}
 
 #: Models (or losses) that predict a target and have no registration, and why.
 NOT_REGISTERED: dict[str, str] = {}
-
-#: The parameters ``po.spec.huber`` and ``po.spec.sgd`` took before task 277.
-#: A parameter outside these is the warm-up arriving: then :data:`PENDING`'s
-#: entries become registrations with their assertions.
-BEFORE_277 = {
-    "huber": frozenset(
-        {
-            "name",
-            "targets",
-            "features",
-            "huber_delta",
-            "huber_scale",
-            "huber_scale_half_life",
-            "ridge",
-            "standardize",
-            "solve_every",
-            "max_rows_between_solves",
-            "feature_sets",
-            "ridge_scale",
-            "emit_huber_scale",
-            "common",
-        }
-    ),
-    "sgd": frozenset(
-        {
-            "name",
-            "targets",
-            "features",
-            "loss",
-            "huber_delta",
-            "huber_scale",
-            "huber_scale_half_life",
-            "quantile",
-            "eps",
-            "learning_rate",
-            "schedule",
-            "power",
-            "l2",
-            "clip_gradient",
-            "standardize",
-            "coef_min",
-            "coef_max",
-            "coef_sum",
-            "strict_binary",
-            "common",
-        }
-    ),
-}
 
 
 def losses(builder: str) -> tuple[str, ...]:
