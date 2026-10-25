@@ -703,6 +703,18 @@ def test_chunks_and_a_reload_do_not_move_it():
         (dict(covariance_prior=[0.0]), "scalar covariance_prior"),
         (dict(covariance_prior=[-1.0]), "scalar covariance_prior"),
         (dict(mean_prior=[float("nan")]), "mean_prior"),
+        # In the public keywords' names (task 278: it named `prior_mean` and
+        # `prior_scale`, which no surface takes), and the floor in full.
+        (
+            dict(mean_prior=[0.0], covariance_prior=[1.0], warm_rows=5),
+            'spec "b": bocpd: warm_rows sets the prior from the first rows, and mean_prior and '
+            "covariance_prior are both given; leave one out, or warm_rows",
+        ),
+        (
+            dict(warm_rows=1),
+            'spec "b": bocpd: warm_rows must be at least 2, got 1: the prior\'s scale is a '
+            "variance, which takes two rows",
+        ),
     ],
 )
 def test_bad_parameters_are_refused(kwargs, message):
