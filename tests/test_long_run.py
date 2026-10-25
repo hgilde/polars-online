@@ -67,7 +67,7 @@ def test_numacc_moments_are_the_certified_ones(i):
         assert abs(naive - sd) > 1e-3 * sd, naive
 
 
-@pytest.mark.extended(reason="a million rows of NumAcc4 through the bank, a second or more")
+@pytest.mark.oracle_grid(reason="a million rows of NumAcc4 through the bank, a second or more")
 def test_numacc4_cycled_a_million_rows_does_not_drift():
     """NumAcc4 repeated to 1e6 rows. Measured at 1e8: the mean within 9.3e-17
     at every checkpoint; the sd within 1.4e-13 (2e7 to 1e8 rows) and 1.7e-14
@@ -127,13 +127,13 @@ def test_the_clocks_weight_reaches_its_steady_state_and_stays(name):
     check_case(name, 100_000)
 
 
-@pytest.mark.extended(reason="a million rows a case, against a recomputation from scratch")
+@pytest.mark.oracle_grid(reason="a million rows a case, against a recomputation from scratch")
 @pytest.mark.parametrize("name", sorted(CASES))
 def test_a_million_rows_do_not_drift(name):
     check_case(name, 1_000_000)
 
 
-@pytest.mark.extended(reason="a window over a million rows, a second or more")
+@pytest.mark.oracle_grid(reason="a window over a million rows, a second or more")
 def test_the_window_discards_what_it_should():
     """Evidence the windowed case exercises the subtraction: its weight is the
     window's, well under the unwindowed steady state ``h / ln 2`` of about 72
@@ -152,7 +152,7 @@ def test_the_window_discards_what_it_should():
     assert 0.8 * 72.1 < ws.mean() < 0.9 * 72.1, ws.mean()
 
 
-@pytest.mark.extended(reason="a million rows through a Kalman filter, its P read from the state")
+@pytest.mark.oracle_grid(reason="a million rows through a Kalman filter, its P read from the state")
 def test_kalman_p_stays_positive_definite_and_bounded():
     """``P`` symmetric to the bit, positive definite, and inside a factor of
     two of its value at 10,000 rows at every checkpoint. Measured at 1e8: the

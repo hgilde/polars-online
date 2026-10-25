@@ -286,7 +286,9 @@ jobs:
           # shellcheck disable=SC2086
           uv run python scripts/cpu_paths.py under --sde-args="$SDE_KNOB" -- \
             .venv/Scripts/python.exe scripts/cpu_paths.py check --numpy-sees $SEES
-      # `not soak`: a command line's -m replaces pyproject's. Four workers,
+      # `not soak and not oracle_grid`: a command line's -m replaces
+      # pyproject's. The oracle grids (oracles.yml) hold bounds measured with
+      # headroom far above a CPU path's last bits, and take an hour. Four workers,
       # the runner's cores; none of these tests is `serial`.
       - name: pytest
         shell: bash
@@ -294,4 +296,4 @@ jobs:
           SDE_KNOB: ${{ matrix.sde }}
         run: |
           uv run python scripts/cpu_paths.py under --sde-args="$SDE_KNOB" -- \
-            .venv/Scripts/python.exe -m pytest -m "oracle and not soak" -n 4 --dist worksteal
+            .venv/Scripts/python.exe -m pytest -m "oracle and not soak and not oracle_grid" -n 4 --dist worksteal

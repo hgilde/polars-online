@@ -52,6 +52,17 @@
 //! `half_life = 100` and 4.96 at 1000 -- the prior against the window's
 //! worth of evidence, which vanishes as the half-life grows.
 //!
+//! **Following a break** (docs/PLAN.md task 278, D-F). All three sums
+//! decay, so the step's divisor forgets on the half-life; what bounds the
+//! pace is AdaGrad's normalised step. In steady state `n ≈ G²/(1 − lam)`
+//! and `d ≈ G/(2·alpha·sqrt(1 − lam))` for a coordinate's RMS gradient `G`,
+//! so a step `g/d` moves a coefficient at most about `2·alpha·sqrt(1 − lam)`
+//! a row whatever the error, and a break that moves it by `D` takes about
+//! `D/(2·alpha·sqrt(1 − lam))` rows: measured 0.011 a row against 0.012 at
+//! `alpha = 0.1`, `half_life = 200` (tests/test_convergence.py,
+//! `test_ftrl_follows_a_break_at_the_pace_of_its_steps`). A larger `alpha`
+//! is faster and noisier; the trade is the caller's, as the learning rate.
+//!
 //! A row that teaches the target nothing -- absent, at weight 0, a label
 //! `strict_binary` refuses, or a gradient whose square would overflow --
 //! minimizes nothing: the sums wait for the next row that teaches, with

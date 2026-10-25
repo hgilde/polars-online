@@ -45,6 +45,7 @@ impl WindowBudgetSpec {
 }
 
 pub(crate) mod diagnostics;
+mod limits;
 mod names;
 mod readiness;
 
@@ -3636,6 +3637,8 @@ impl Spec {
                 self.name
             ));
         }
+        // The values that mean nothing (`limits.rs`).
+        self.refuse_values_that_mean_nothing()?;
         if let Some(Num(f)) = self.min_settled_frac {
             if !(0.0..1.0).contains(&f) {
                 return Err(format!(
@@ -4137,11 +4140,20 @@ impl Spec {
                 ));
             }
         }
-        if self.emit_selected {
+        // Both choose across a target's slots, and one slot leaves nothing to
+        // choose: `emit_averaged` there was the slot's own prediction under
+        // another name, null on the first scored row (task 278).
+        for (flag, on) in [
+            ("emit_selected", self.emit_selected),
+            ("emit_averaged", self.emit_averaged),
+        ] {
+            if !on {
+                continue;
+            }
             let n_slots = self.decays()?.len() * crate::combo_labels(self).len();
             if n_slots < 2 {
                 return Err(format!(
-                    "spec {:?}: emit_selected needs more than one slot per target; add a \
+                    "spec {:?}: {flag} needs more than one slot per target; add a \
                      ridge/feature_set/half_life grid or a lasso path",
                     self.name
                 ));

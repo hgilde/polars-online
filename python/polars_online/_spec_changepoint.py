@@ -543,9 +543,13 @@ def corrchange(
         more than the 0.03 Wied and Galeano's own table is good to.
     ``bandwidth``
         ``"monitor"`` and ``"sequential"``: overrides the Bartlett bandwidth,
-        ``floor(ln window_rows)``, for the span and for the history alike. At 1
-        only lag 0 is left,
-        and 0 is refused.
+        ``floor(ln window_rows)``, for the span and for the history alike. Lag
+        ``l`` is weighted ``1 - l / bandwidth`` for ``l < bandwidth``, so at 1
+        only lag 0 is left, and 0 is refused. At most ``window_rows``: a span
+        of ``window_rows`` rows has no lag past ``window_rows - 1``, so a
+        larger bandwidth adds no lag. It only flattens the weights toward 1,
+        where the centred lags sum to 0, and the long-run variance falls
+        toward 0 with them.
     ``scalar``
         ``"monitor"`` and ``"sequential"``: test the equicorrelation of the
         standardised row (:func:`deco`'s ``u``) instead of every pair -- its
@@ -648,7 +652,8 @@ def corrchange(
     - fewer than two features, and an ``alpha`` outside ``(0, 1)``;
     - ``window_rows`` below the kind's minimum;
     - a parameter of another kind;
-    - a ``bandwidth`` of 0, a ``crit`` not above 0, and an ``n_perm``,
+    - a ``bandwidth`` of 0 or above ``window_rows``, a ``crit`` not above 0,
+      and an ``n_perm``,
       ``permute_every_rows`` or ``perm_block`` outside the range above;
     - ``boundary_gamma`` outside ``[0, 0.49]``;
     - ``monitor_rows`` below 2;

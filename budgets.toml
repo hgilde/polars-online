@@ -452,9 +452,7 @@ mean_shift_x0 = { budget = 8.125, release = 8.125 }
 mean_shift_x1 = { budget = 8.125, release = 8.125 }
 mean_shift_x2 = { budget = 8.125, release = 8.125 }
 pred_y = { budget = 8.125, release = 8.125 }
-pred_y__averaged = { budget = 8.125, release = 8.125 }
 pred_z = { budget = 8.125, release = 8.125 }
-pred_z__averaged = { budget = 8.125, release = 8.125 }
 r2_y = { budget = 8.125, release = 8.125 }
 r2_z = { budget = 8.125, release = 8.125 }
 ramsey_reset_y = { budget = 8.125, release = 8.125 }
@@ -506,7 +504,6 @@ mean_shift_x0 = { budget = 8.125, release = 8.125 }
 mean_shift_x1 = { budget = 8.125, release = 8.125 }
 mean_shift_x2 = { budget = 8.125, release = 8.125 }
 pred_hit = { budget = 8.125, release = 8.125 }
-pred_hit__averaged = { budget = 8.125, release = 8.125 }
 r2_hit = { budget = 8.125, release = 8.125 }
 ramsey_reset_hit = { budget = 8.125, release = 8.125 }
 resid_hit = { budget = 8.125, release = 8.125 }
@@ -559,7 +556,6 @@ learned_clock = { budget = 8.125, release = 8.125 }
 ljung_box_y = { budget = 8.125, release = 8.125 }
 lo_y = { budget = 8.125, release = 8.125 }
 pred_y = { budget = 8.125, release = 8.125 }
-pred_y__averaged = { budget = 8.125, release = 8.125 }
 r2_y = { budget = 8.125, release = 8.125 }
 ramsey_reset_y = { budget = 8.125, release = 8.125 }
 resid_y = { budget = 8.125, release = 8.125 }
@@ -617,9 +613,7 @@ mean_shift_x0 = { budget = 8.125, release = 8.125 }
 mean_shift_x1 = { budget = 8.125, release = 8.125 }
 mean_shift_x2 = { budget = 8.125, release = 8.125 }
 pred_y = { budget = 8.125, release = 8.125 }
-pred_y__averaged = { budget = 8.125, release = 8.125 }
 pred_z = { budget = 8.125, release = 8.125 }
-pred_z__averaged = { budget = 8.125, release = 8.125 }
 r2_y = { budget = 8.125, release = 8.125 }
 r2_z = { budget = 8.125, release = 8.125 }
 ramsey_reset_y = { budget = 8.125, release = 8.125 }
@@ -692,9 +686,7 @@ mean_shift_x0 = { budget = 8.125, release = 8.125 }
 mean_shift_x1 = { budget = 8.125, release = 8.125 }
 mean_shift_x2 = { budget = 8.125, release = 8.125 }
 pred_y = { budget = 8.125, release = 8.125 }
-pred_y__averaged = { budget = 8.125, release = 8.125 }
 pred_z = { budget = 8.125, release = 8.125 }
-pred_z__averaged = { budget = 8.125, release = 8.125 }
 r2_y = { budget = 8.125, release = 8.125 }
 r2_z = { budget = 8.125, release = 8.125 }
 ramsey_reset_y = { budget = 8.125, release = 8.125 }
@@ -977,9 +969,7 @@ mean_shift_x0 = { budget = 8.125, release = 8.125 }
 mean_shift_x1 = { budget = 8.125, release = 8.125 }
 mean_shift_x2 = { budget = 8.125, release = 8.125 }
 pred_y = { budget = 8.125, release = 8.125 }
-pred_y__averaged = { budget = 8.125, release = 8.125 }
 pred_z = { budget = 8.125, release = 8.125 }
-pred_z__averaged = { budget = 8.125, release = 8.125 }
 r2_y = { budget = 8.125, release = 8.125 }
 r2_z = { budget = 8.125, release = 8.125 }
 ramsey_reset_y = { budget = 8.125, release = 8.125 }
@@ -1045,9 +1035,7 @@ mean_shift_x0 = { budget = 8.125, release = 8.125 }
 mean_shift_x1 = { budget = 8.125, release = 8.125 }
 mean_shift_x2 = { budget = 8.125, release = 8.125 }
 pred_y = { budget = 8.125, release = 8.125 }
-pred_y__averaged = { budget = 8.125, release = 8.125 }
 pred_z = { budget = 8.125, release = 8.125 }
-pred_z__averaged = { budget = 8.125, release = 8.125 }
 r2_y = { budget = 8.125, release = 8.125 }
 r2_z = { budget = 8.125, release = 8.125 }
 ramsey_reset_y = { budget = 8.125, release = 8.125 }
@@ -1125,9 +1113,7 @@ mean_shift_x0 = { budget = 8.125, release = 8.125 }
 mean_shift_x1 = { budget = 8.125, release = 8.125 }
 mean_shift_x2 = { budget = 8.125, release = 8.125 }
 pred_y = { budget = 8.125, release = 8.125 }
-pred_y__averaged = { budget = 8.125, release = 8.125 }
 pred_z = { budget = 8.125, release = 8.125 }
-pred_z__averaged = { budget = 8.125, release = 8.125 }
 r2_y = { budget = 8.125, release = 8.125 }
 r2_z = { budget = 8.125, release = 8.125 }
 ramsey_reset_y = { budget = 8.125, release = 8.125 }
@@ -1208,9 +1194,7 @@ mean_shift_x0 = { budget = 8.125, release = 8.125 }
 mean_shift_x1 = { budget = 8.125, release = 8.125 }
 mean_shift_x2 = { budget = 8.125, release = 8.125 }
 pred_y = { budget = 8.125, release = 8.125 }
-pred_y__averaged = { budget = 8.125, release = 8.125 }
 pred_z = { budget = 8.125, release = 8.125 }
-pred_z__averaged = { budget = 8.125, release = 8.125 }
 r2_y = { budget = 8.125, release = 8.125 }
 r2_z = { budget = 8.125, release = 8.125 }
 ramsey_reset_y = { budget = 8.125, release = 8.125 }

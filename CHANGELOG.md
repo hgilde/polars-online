@@ -13,6 +13,28 @@ returns.
 
 ### Changed
 
+- Documentation: `ftrl` states how fast it follows a break under a
+  half-life (task 278). AdaGrad's normalised step moves a settled
+  coefficient at most about `2·alpha·√(1 − λ)` a row, however large the
+  error, so a break that moves a coefficient by D takes about
+  `D / (2·alpha·√(1 − λ))` rows (measured 0.011 a row against 0.012 at
+  `alpha=0.1`, `half_life=200`). A larger `alpha` follows sooner and settles
+  noisier: after a change of regime that moved the intercept by 46, the fit
+  was 34.4, 18.4 and 2.6 off four half-lives later at `alpha` 0.1, 0.3 and 1,
+  and the settled fit 0.17, 0.24 and 0.43 off. Under a half-life the fixed
+  prior holds a logistic fit up to 0.41 from the decayed maximum likelihood at
+  the defaults, against 0.17 at `beta=0.1, l2=0`.
+- `marginal`'s `min_settled_frac` does what it says (task 278): while the
+  stream is less settled than the fraction, `ModelBank.marginal()` and the
+  `pair_*` columns of `closed_groups` report `corr`, `beta`, `t_stat`,
+  `t_stat_serial` and the split columns as null, as `min_weight` does; the
+  moments are reported either way. It was accepted and changed nothing;
+  output changes only for specs that set it.
+- `rcov`'s `min_weight` withholds a closed block's estimate (task 278):
+  each row weighs 0 or 1, so the block's `weight_sum` counts its returns;
+  below the floor `rcov` and `rcorr` are null, as for a block too short to
+  estimate from, and the other fields are unchanged. It was accepted and
+  changed nothing; output changes only for specs that set it.
 - `ewridge(session_shrink=f)`'s blend no longer forces a solve and
   restarts the solve schedule at a session change (task 278): it moves the
   moments only, and the next scheduled solve reads them, as the docstring
@@ -46,6 +68,18 @@ returns.
 
 ### Fixed
 
+- These values are refused, each with the reason in the message (task
+  278): `min_weight=inf`, which withheld every row for good while the model
+  kept learning; a `marginal` `bin_edges` that gives no feature an edge, such
+  as `[[]]` (one feature without edges beside others that have them is still
+  taken, and reports a single bin); a `kmeans` `dead_frac` of 1 or more,
+  which called a centre dead at every check; `emit_averaged` with one slot
+  per target, as `emit_selected` already was; a `corrchange` `bandwidth`
+  above `window_rows`, which adds no lag and drives the long-run variance
+  toward 0 (on independent noise the statistic's median went from 1.8 at 20
+  to 12.5 at 1,000). A state saved with any of these values still loads.
+- `bocpd`'s refusal of `warm_rows` beside both priors names the keywords the
+  builder takes, `mean_prior` and `covariance_prior` (task 278).
 - `drift_action="reset"` starts the model over exactly (task 278): from
   the row after the one that fired, every output field equals what a fresh
   bank fed those rows returns. That row read the clock step since the row

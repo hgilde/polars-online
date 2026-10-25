@@ -2268,6 +2268,26 @@ impl Stream {
             })
     }
 
+    /// Whether `min_settled_frac` withholds what instance `i` reports from its
+    /// state as it stands -- `marginal`'s table, whose rows carry nothing to
+    /// withhold (task 278). The fraction is the one the next row would read,
+    /// as [`Self::readiness`] gives it: the clock the decay has covered, the
+    /// rows held under `embargo` counted. The row gate's test, so the two
+    /// open together.
+    pub fn settled_withholds(&self, spec: &Spec, i: usize) -> bool {
+        let min_settled = spec.min_settled_frac_or_default();
+        if min_settled <= 0.0 {
+            return false;
+        }
+        let Some(&decay) = self.decays.get(i) else {
+            return false;
+        };
+        let time = self.persisted.decay_time.get(i).copied().unwrap_or(0.0);
+        let held = self.persisted.pending_clock.get(i).copied().unwrap_or(0.0);
+        let settled = settled_frac(decay, time + held);
+        settled.is_finite() && settled < min_settled
+    }
+
     /// Summed over this stream's model instances (one per half-life).
     pub fn solve_failures(&self) -> u64 {
         self.models.iter().map(|(_, m)| m.solve_failures()).sum()

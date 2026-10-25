@@ -597,3 +597,194 @@ def test_a_tuple_comes_back_from_the_bank_as_it_went_in():
     assert po.ModelBank([s]).specs[0] == s
     m = po.spec.marginal("p", targets=["y"], features=("x0",), lags=(1, 2), half_life=10.0)
     assert po.ModelBank([m]).specs[0] == m
+
+
+# --- task 278: nonsense values refused by name, each with its reason --------
+
+#: (builder, keyword arguments, the refusal's text), with the legal neighbour
+#: beside each in ``NONSENSE_NEIGHBOURS``. Each value was taken before and
+#: did something no one could want (the user's decision of 2026-10-25).
+_KM = dict(features=["x0", "x1"], n_clusters=2, half_life=10.0)
+_CC = dict(features=["x0", "x1"], window_rows=20)
+NONSENSE = [
+    # A floor at inf withheld every row for good, said only by a notice a
+    # half-life after the stream settled.
+    (
+        po.spec.ewridge,
+        dict(**BASE, half_life=10.0, min_weight=INF),
+        'spec "m": min_weight must be finite, got inf: a floor no weight reaches withholds '
+        "every row for good while the model learns from each; give the weight a model must "
+        "have seen before it reports, or leave min_weight out for the model's default",
+    ),
+    (
+        po.spec.marginal,
+        dict(targets=["y"], features=["x0", "x1"], half_life=10.0, min_weight=[INF]),
+        'spec "m": min_weight must be finite, got inf',
+    ),
+    # Every feature one open bin: no response curve and no cut anywhere. It
+    # was taken, and the "finite and strictly increasing" rule held only
+    # because there was nothing to hold it to.
+    (
+        po.spec.marginal,
+        dict(targets=["y"], features=["x0"], half_life=10.0, bin_edges=[[]]),
+        'spec "m": marginal bin_edges gives no feature an edge: each would be one open bin, '
+        "with no response curve and no cut to report; give at least one feature an edge, or "
+        "leave bin_edges out for no bins",
+    ),
+    (
+        po.spec.marginal,
+        dict(targets=["y"], features=["x0", "x1"], half_life=10.0, bin_edges={"x0": [], "x1": []}),
+        "marginal bin_edges gives no feature an edge",
+    ),
+    # At 1 or more the lightest centre is always "dead": it re-placed one at
+    # every check on any far row.
+    (
+        po.spec.kmeans,
+        dict(**_KM, dead_frac=1.0),
+        'spec "m": dead_frac must be below 1, got 1: the lightest centre never carries more '
+        "than the mean share, weight_sum / n_clusters, so a dead_frac of 1 or more calls a "
+        "centre dead at every split-merge check and re-places it on any far row, whatever the "
+        "clusters",
+    ),
+    (po.spec.kmeans, dict(**_KM, dead_frac=1.5), "dead_frac must be below 1, got 1.5"),
+    # One slot leaves nothing to average: the field was that slot's
+    # prediction under another name, as `emit_selected` was refused for.
+    (
+        po.spec.ewridge,
+        dict(**BASE, half_life=10.0, emit_averaged=True),
+        'spec "m": emit_averaged needs more than one slot per target; add a '
+        "ridge/feature_set/half_life grid or a lasso path",
+    ),
+    (
+        po.spec.rls,
+        dict(**BASE, half_life=10.0, emit_averaged=True),
+        "emit_averaged needs more than one slot per target",
+    ),
+    # A Bartlett bandwidth past the span adds no lag; it only flattens the
+    # weights toward the limit where the long-run variance is 0.
+    (
+        po.spec.corrchange,
+        dict(**_CC, bandwidth=21),
+        'spec "m": corrchange bandwidth must be at most window_rows (20), got 21: the '
+        "Bartlett kernel weights lag l by 1 - l/bandwidth, and a span of window_rows rows has "
+        "no lag past window_rows - 1, so a larger bandwidth adds no lag; it only flattens the "
+        "weights toward 1, where the centred moments' lags sum to 0 and the long-run variance "
+        "falls toward 0 with them",
+    ),
+    (
+        po.spec.corrchange,
+        dict(**_CC, kind="sequential", bandwidth=10**9),
+        "corrchange bandwidth must be at most window_rows (20), got 1000000000",
+    ),
+]
+
+NONSENSE_NEIGHBOURS = [
+    (po.spec.ewridge, dict(**BASE, half_life=10.0, min_weight=1e300)),
+    (po.spec.marginal, dict(targets=["y"], features=["x0"], half_life=10.0, bin_edges=[[0.0]])),
+    # One feature without edges beside one with them runs: below.
+    (
+        po.spec.marginal,
+        dict(targets=["y"], features=["x0", "x1"], half_life=10.0, bin_edges=[[0.0], []]),
+    ),
+    (po.spec.kmeans, dict(**_KM, dead_frac=0.999)),
+    (po.spec.ewridge, dict(**BASE, half_life=[10.0, 20.0], emit_averaged=True)),
+    (po.spec.corrchange, dict(**_CC, bandwidth=20)),
+    (po.spec.corrchange, dict(**_CC, kind="sequential", bandwidth=20)),
+]
+
+
+@pytest.mark.parametrize("builder,kw,msg", NONSENSE, ids=[_label(c) for c in NONSENSE])
+def test_a_nonsense_value_is_refused_with_its_reason(builder, kw, msg):
+    with pytest.raises(ValueError) as exc:
+        builder("m", **kw)
+    assert msg in str(exc.value), str(exc.value)
+    # And by the bank, from a dict that skipped the builder's own checks: the
+    # refusal is the Rust side's, so a TOML config meets it too.
+    key = next(k for k in kw if k in _NONSENSE_KEYS)
+    spec = builder("m", **{k: v for k, v in kw.items() if k != key})
+    value = kw[key]
+    if isinstance(value, dict):
+        value = [value[f] for f in spec["features"]]
+    value = ["inf" if v == INF else v for v in value] if isinstance(value, list) else value
+    (spec if key in _TOP_LEVEL else spec["model"])[key] = "inf" if value == INF else value
+    with pytest.raises(ValueError) as exc:
+        po.ModelBank([spec])
+    assert msg.removeprefix('spec "m": ') in str(exc.value), str(exc.value)
+
+
+_NONSENSE_KEYS = frozenset({"min_weight", "bin_edges", "dead_frac", "emit_averaged", "bandwidth"})
+_TOP_LEVEL = frozenset({"min_weight", "emit_averaged"})
+
+
+@pytest.mark.parametrize(
+    "builder,kw", NONSENSE_NEIGHBOURS, ids=[_label(c) for c in NONSENSE_NEIGHBOURS]
+)
+def test_the_nearest_legal_value_still_builds(builder, kw):
+    po.ModelBank([builder("m", **kw)])
+
+
+def test_a_feature_left_without_edges_reports_one_bin():
+    """``bin_edges`` refuses only the list in which no feature has an edge
+    (above). One feature left without edges beside one that has them is a
+    request that runs, and the user chose not to refuse what runs (task 278,
+    2026-10-25): that feature reports a single open bin holding every row's
+    weight, with no cut, while the other is binned as it says."""
+    df = pl.DataFrame(
+        {
+            "x0": [float(i % 7) - 3.0 for i in range(60)],
+            "x1": [float(i % 5) for i in range(60)],
+            "y": [float((i % 7) * 2 + 1) for i in range(60)],
+        }
+    )
+    spec = po.spec.marginal(
+        "m", targets=["y"], features=["x0", "x1"], half_life=INF, bin_edges=[[0.0], []]
+    )
+    bank = po.ModelBank([spec])
+    bank.fit_predict(df)
+    got = {r["feature"]: r for r in bank.marginal("m").iter_rows(named=True)}
+    assert list(got["x1"]["bin_edges"]) == []
+    assert list(got["x1"]["bin_n"]) == [60.0] and got["x1"]["weight_sum"] == 60.0
+    assert got["x1"]["bin_mean_y"][0] == pytest.approx(got["x1"]["mean_y"], rel=1e-12)
+    assert got["x1"]["split_gain"] is None and got["x1"]["split_at"] is None
+    # The other feature is binned at its edge: two bins, and the cut at 0.
+    assert list(got["x0"]["bin_edges"]) == [0.0] and len(got["x0"]["bin_n"]) == 2
+    assert sum(got["x0"]["bin_n"]) == 60.0 and got["x0"]["split_at"] == 0.0
+
+
+# --- task 278: fit_intercept on the kinds with no intercept -----------------
+
+
+def test_fit_intercept_is_inert_on_every_kind_without_an_intercept():
+    """``fit_intercept`` puts a constant 1 in front of a regression's
+    features. The kinds that fit no regression have nothing for it to act on,
+    and take it without a word (``Spec::default_min_periods`` says so): the
+    user chose to keep that rather than refuse a key that runs today
+    (2026-10-25). Pinned here over every such kind -- every row, every closed
+    row and every table read from the state is the same under ``False`` --
+    and its boundary too: on each kind that fits one, ``False`` moves the
+    predictions, so a kind cannot slip from one list to the other unseen.
+    Only ``ew_cov``'s inertness was pinned (the warm-up test above)."""
+    from test_every_kind import frame_for
+    from test_model_registry import MINIMAL, REGRESSIONS, _build
+
+    inert = (frozenset(MINIMAL) - REGRESSIONS) | {"holt"}
+    assert len(inert) == 13, sorted(inert)
+
+    def run(name, flag):
+        spec = {**_build(name), "fit_intercept": flag}
+        bank = po.ModelBank([spec])
+        out = bank.fit_predict(frame_for(name))
+        tables = [out, bank.closed_groups(drop=False)]
+        if name == "marginal":
+            tables.append(bank.marginal("m"))
+        if name == "audit":
+            tables.append(bank.audit("m"))
+        return tables
+
+    moved = []
+    for name in sorted(MINIMAL):
+        on, off = run(name, True), run(name, False)
+        same = all(a.equals(b, null_equal=True) for a, b in zip(on, off, strict=True))
+        if (name in inert) != same:
+            moved.append((name, "inert" if name in inert else "fits an intercept", same))
+    assert not moved, moved

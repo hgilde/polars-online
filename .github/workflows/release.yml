@@ -509,7 +509,7 @@ jobs:
       - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
       # `pins` marks the tests that can only pass on the pinned polars; see
       # the marker's description in pyproject.toml.
-      - run: uv run pytest -q -m "not soak and not pins"
+      - run: uv run pytest -q -m "not soak and not pins and not oracle_grid"
 
   # The floor of the declared range, `polars>=1.37.0`: the suite on exactly
   # that py-polars and its runtime package. The legs above move polars up,
@@ -546,7 +546,7 @@ jobs:
           FLOOR: ${{ steps.floor.outputs.version }}
         run: uv run python -c "import os, polars; print('py-polars', polars.__version__); assert polars.__version__ == os.environ['FLOOR']"
       - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
-      - run: uv run pytest -q -m "not soak and not pins"
+      - run: uv run pytest -q -m "not soak and not pins and not oracle_grid"
 
   next-numpy:
     name: the suite on ${{ matrix.leg }}
@@ -589,7 +589,7 @@ jobs:
       - name: versions in play
         run: uv run python -c "import numpy, polars; print('numpy', numpy.__version__, '| py-polars', polars.__version__)"
       - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
-      - run: uv run pytest -q -m "not soak and not pins"
+      - run: uv run pytest -q -m "not soak and not pins and not oracle_grid"
 
   # THE HUMAN GATE IS HERE. Since 2026-09-06 the `pypi` environment has the
   # owner as a required reviewer (self-review allowed -- with one reviewer,
