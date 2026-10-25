@@ -2971,4 +2971,186 @@ mod tests {
             assert_eq!(e, "rcov: at least one column is required", "{kind:?}");
         }
     }
+
+    /// Every field of a closed block, by kind: what a scaling or a
+    /// parameter is held to move or leave alone.
+    fn closed(c: &RcovCfg, rows: &[Vec<f64>]) -> RcovEstimate {
+        let mut m = Rcov::new(c.clone()).unwrap();
+        feed(&mut m, rows);
+        m.estimate()
+    }
+
+    fn scaled(e: &Option<Vec<f64>>, f: f64) -> Option<Vec<f64>> {
+        e.as_ref().map(|v| v.iter().map(|x| x * f).collect())
+    }
+
+    /// Task 278 (b11): returns times `2^s` give the estimate times `4^s`, the
+    /// noise variance and the sparse variance times `4^s` and the quarticity
+    /// times `16^s`, to the bit, and leave the correlation, `rcov_n`, the
+    /// bandwidth and the repair flag alone. Every step is a sum, a product
+    /// or a ratio of sums that scale alike, and a power of two is exact in
+    /// each; the automatic bandwidth reads `omega2 / iv_sparse`, which does
+    /// not scale. A step that mixed a scaled sum with an unscaled one (the
+    /// bias without its `Σ x x'`, `H` from `omega2` alone) breaks it. Under
+    /// each kind, a fixed and an automatic bandwidth, and both forms of
+    /// pre-averaging.
+    #[test]
+    fn a_power_of_two_scales_every_kind_exactly() {
+        let k = 2;
+        let rows = returns(300, k, 41, 0.3);
+        let cases = [
+            RcovCfg {
+                psd: true,
+                ..cfg(k, RcovKind::Plain)
+            },
+            cfg(k, RcovKind::Kernel),
+            RcovCfg {
+                bandwidth: None,
+                psd: true,
+                block_rows: Some(300),
+                ..cfg(k, RcovKind::Kernel)
+            },
+            RcovCfg {
+                psd: true,
+                ..cfg(k, RcovKind::Preavg)
+            },
+            cfg(k, RcovKind::Preavg),
+        ];
+        for c in &cases {
+            let base = closed(c, &rows);
+            assert!(base.rcov.is_some(), "{c:?}");
+            for s in [-20i32, -3, 7, 20] {
+                let f = 2f64.powi(s);
+                let up: Vec<Vec<f64>> = rows
+                    .iter()
+                    .map(|r| r.iter().map(|x| x * f).collect())
+                    .collect();
+                let e = closed(c, &up);
+                let case = format!(
+                    "{:?}, psd {}, bandwidth {:?}, 2^{s}",
+                    c.kind, c.psd, c.bandwidth
+                );
+                assert_eq!(e.rcov, scaled(&base.rcov, f * f), "{case}");
+                assert_eq!(e.omega2, scaled(&base.omega2, f * f), "{case}");
+                assert_eq!(e.iv_sparse, scaled(&base.iv_sparse, f * f), "{case}");
+                assert_eq!(e.iq, scaled(&base.iq, f.powi(4)), "{case}");
+                assert_eq!(e.rcorr, base.rcorr, "{case}");
+                assert_eq!(e.n, base.n, "{case}");
+                assert_eq!(e.bandwidth_used, base.bandwidth_used, "{case}");
+                assert_eq!(e.psd_repaired, base.psd_repaired, "{case}");
+            }
+        }
+    }
+
+    /// Task 278 (b11): the two strides feed the automatic bandwidth and
+    /// nothing else. Under a fixed bandwidth, and under the kinds with no
+    /// bandwidth, `noise_stride` moves `omega2` alone and `iv_stride`
+    /// moves `iv_sparse` and `iq` alone; the estimate, its correlation,
+    /// `rcov_n` and the bandwidth stay to the bit. Under the automatic one
+    /// the noise stride reaches the estimate through `H`.
+    #[test]
+    fn the_strides_reach_the_estimate_only_through_an_automatic_bandwidth() {
+        let k = 2;
+        let rows = returns(400, k, 43, 0.4);
+        let same = |a: &RcovEstimate, b: &RcovEstimate, case: &str| {
+            assert_eq!(a.rcov, b.rcov, "{case}");
+            assert_eq!(a.rcorr, b.rcorr, "{case}");
+            assert_eq!(a.n, b.n, "{case}");
+            assert_eq!(a.bandwidth_used, b.bandwidth_used, "{case}");
+            assert_eq!(a.psd_repaired, b.psd_repaired, "{case}");
+        };
+        for c in [
+            cfg(k, RcovKind::Plain),
+            cfg(k, RcovKind::Kernel),
+            cfg(k, RcovKind::Preavg),
+        ] {
+            let base = closed(&c, &rows);
+            let noise = closed(
+                &RcovCfg {
+                    noise_stride: 3,
+                    ..c.clone()
+                },
+                &rows,
+            );
+            let iv = closed(
+                &RcovCfg {
+                    iv_stride: 7,
+                    ..c.clone()
+                },
+                &rows,
+            );
+            let case = format!("{:?}", c.kind);
+            same(&base, &noise, &case);
+            same(&base, &iv, &case);
+            assert_ne!(noise.omega2, base.omega2, "{case}");
+            assert_eq!(noise.iv_sparse, base.iv_sparse, "{case}");
+            assert_eq!(noise.iq, base.iq, "{case}");
+            assert_eq!(iv.omega2, base.omega2, "{case}");
+            assert_ne!(iv.iv_sparse, base.iv_sparse, "{case}");
+            assert_ne!(iv.iq, base.iq, "{case}");
+        }
+        let auto = RcovCfg {
+            bandwidth: None,
+            ..cfg(k, RcovKind::Kernel)
+        };
+        let base = closed(&auto, &rows);
+        let noise = closed(
+            &RcovCfg {
+                noise_stride: 3,
+                ..auto.clone()
+            },
+            &rows,
+        );
+        assert_ne!(noise.bandwidth_used, base.bandwidth_used);
+        assert_ne!(noise.rcov, base.rcov);
+    }
+
+    /// Task 278 (b11): `block_rows` sizes the automatic bandwidth's ring,
+    /// `⌈c*·block_rows^{3/5}⌉`, and a block longer than the hint runs with
+    /// its `H` clipped to the ring: the same block as the ring given as
+    /// `max_bandwidth`, to the bit. At a hint long enough, the formula sets
+    /// `H` below the ring and the hint moves nothing.
+    #[test]
+    fn a_short_hint_clips_the_automatic_bandwidth_to_its_ring() {
+        let k = 2;
+        let rows = returns(400, k, 47, 0.5);
+        let auto = |block_rows| RcovCfg {
+            bandwidth: None,
+            block_rows: Some(block_rows),
+            ..cfg(k, RcovKind::Kernel)
+        };
+        let free = closed(&auto(400), &rows);
+        let h = free.bandwidth_used.unwrap();
+        assert!(h >= 4, "the formula's H is long enough to clip: {h}");
+        assert!((h as usize) < auto(400).ring_for().unwrap());
+        // Every hint up to the block's length: those whose ring is below
+        // the formula's `H` clip it, and the rest move nothing.
+        let mut clipped = 0;
+        for b in 1..=400usize {
+            let ring = auto(b).ring_for().unwrap();
+            assert_eq!(
+                ring as f64,
+                (parzen_c_star() * (b as f64).powf(0.6)).ceil(),
+                "{b}"
+            );
+            let e = closed(&auto(b), &rows);
+            if (ring as i64) < h {
+                clipped += 1;
+                assert_eq!(e.bandwidth_used, Some(ring as i64), "block_rows {b}");
+                let given = closed(
+                    &RcovCfg {
+                        max_bandwidth: Some(ring),
+                        ..auto(400)
+                    },
+                    &rows,
+                );
+                assert_eq!(e.rcov, given.rcov, "block_rows {b}");
+                assert_ne!(e.rcov, free.rcov, "block_rows {b}");
+            } else {
+                assert_eq!(e.rcov, free.rcov, "block_rows {b}");
+                assert_eq!(e.bandwidth_used, Some(h), "block_rows {b}");
+            }
+        }
+        assert!(clipped > 0, "a hint clipped the bandwidth");
+    }
 }
