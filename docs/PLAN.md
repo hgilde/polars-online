@@ -16223,3 +16223,14 @@ model), with ulp comparisons in Python (`np.testing.assert_array_max_ulp`).
       not to the bit, since the old state never recorded the per-row
       factors; unwindowed states stay exact. Recorded in rule 5
       (CLAUDE.md) and the `previous!` docs of both fixture files.
+- [ ] 276. **The command line's memory on Windows and on wide machines** --
+      from task 270 (o) (2026-10-24): jemalloc's default of four arenas a
+      core let the CLI's peak grow with the rows (0.94 / 1.36 / 1.48 GB at
+      3M / 12M / 24M), fixed off Windows by `narenas:1` (0.75 / 0.85 /
+      0.86 GB, the same wall and CPU time on 14 cores). Two things were not
+      measured: Windows, whose mimalloc 3.3.2 (purge delay 1000 ms) grew on
+      a macOS stand-in (0.86 → 1.01 GB from 3M to 12M) and was left
+      unchanged; and one arena's lock under many more than 14 cores. Measure
+      both on CI (a dispatchable job on `windows-latest` and a large Linux
+      runner, `scripts/memory_bench.py`'s command-line cases), then bound
+      Windows' peak the same way or record why not.

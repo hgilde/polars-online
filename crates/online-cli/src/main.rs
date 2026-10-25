@@ -31,6 +31,26 @@ use toml::de::{DeTable, DeValue};
 #[cfg(not(target_os = "windows"))]
 #[global_allocator]
 static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+/// jemalloc's options, which it reads from this symbol before `main` runs:
+/// one arena for every thread, where its default is four a core. Each arena
+/// keeps the pages freed in it for ten seconds, for reuse by the threads on
+/// that arena alone, and returns them only when one of those threads
+/// allocates again; on 56 arenas (14 cores) the reader's, the bank's and
+/// the writer's buffers stranded pages in each, and the peak grew with the
+/// rows: 0.94 / 1.36 / 1.48 GB at 3M / 12M / 24M rows of the README's
+/// memory file, against 0.75 / 0.85 / 0.86 on one arena, at the same speed
+/// (a contended arena would show as CPU time: 24.5 s either way at 12M rows
+/// on 14 cores; task 270 (o)). `dirty_decay_ms:0` bounded it too, at 18-19%
+/// more CPU. `_RJEM_MALLOC_CONF` is read after this and overrides it. The
+/// test below holds the option.
+#[cfg(not(target_os = "windows"))]
+#[unsafe(export_name = "_rjem_malloc_conf")]
+static MALLOC_CONF: Option<&std::ffi::c_char> = Some(
+    // SAFETY: the pointer is a `'static` C string literal's first byte,
+    // which is what jemalloc's `const char *malloc_conf` points at.
+    unsafe { &*c"narenas:1".as_ptr() },
+);
 #[cfg(target_os = "windows")]
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -670,6 +690,58 @@ fn run() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use online_polars::RunStats;
+
+    /// The binary's jemalloc runs on one arena, read back from jemalloc
+    /// itself, so a symbol it no longer reads (a renamed prefix, an
+    /// unprefixed build) fails here rather than bring back a peak that grows
+    /// with the rows; and `docs/RUNNER.md` names the option this sets.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn jemalloc_runs_on_one_arena_as_the_docs_say() {
+        use std::ffi::{c_char, c_int, c_void};
+        // jemalloc's `mallctl`, under the `_rjem_` prefix `tikv-jemalloc-sys`
+        // builds it with off Windows: the library the binary already links,
+        // declared here rather than taken on as a dependency.
+        unsafe extern "C" {
+            #[link_name = "_rjem_mallctl"]
+            fn mallctl(
+                name: *const c_char,
+                oldp: *mut c_void,
+                oldlenp: *mut usize,
+                newp: *mut c_void,
+                newlen: usize,
+            ) -> c_int;
+        }
+        let mut narenas: std::ffi::c_uint = 0;
+        let mut len = std::mem::size_of::<std::ffi::c_uint>();
+        // SAFETY: `opt.narenas` is an `unsigned`, and `narenas` / `len` are
+        // that size, as `mallctl` requires; nothing is written.
+        let rc = unsafe {
+            mallctl(
+                c"opt.narenas".as_ptr(),
+                (&raw mut narenas).cast(),
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        assert_eq!(rc, 0, "mallctl(opt.narenas) failed");
+        assert_eq!(
+            narenas, 1,
+            "the binary's jemalloc options went unread, or `_RJEM_MALLOC_CONF` \
+             in this environment overrides them"
+        );
+        let conf = super::MALLOC_CONF.map(|c| {
+            // SAFETY: `MALLOC_CONF` points at a C string literal.
+            unsafe { std::ffi::CStr::from_ptr(c) }
+        });
+        assert_eq!(conf, Some(c"narenas:1"));
+        let runner = include_str!("../../../docs/RUNNER.md");
+        assert!(
+            runner.contains("`narenas:1`"),
+            "docs/RUNNER.md names `narenas:1`"
+        );
+    }
 
     /// A relative path is read from the config's directory, an absolute one
     /// stays as it is, and an empty one -- `output` left out, a run with no
