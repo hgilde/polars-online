@@ -16307,3 +16307,14 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       oracle and the classes that apply, so a new model must opt in
       (EXTENDING.md). Heavy grids (4, 9) weekly. Library defects the classes
       find are reported and fixed before 1.4.0.
+      *Widened 2026-10-25* (the user: "We should use this chance to test all
+      parameters that can't be compared to third party libraries", and to run
+      as much as possible in parallel): (12) every public parameter with no
+      third-party oracle gets oracle-free tests -- limits reducing it to an
+      oracled model, equivalent spellings, monotonicity, the invariances it
+      must keep, boundaries, chosen interactions, a definition written by
+      hand where no library computes it -- and an activation test showing it
+      takes effect where it should and nowhere else; a parameter no test shows
+      taking effect is a dead-parameter suspect. A read-only inventory
+      (scratchpad `t278/PARAMS.md`) groups the missing tests into batches;
+      heavy grids run on CI (free, 20 concurrent jobs) rather than locally.
