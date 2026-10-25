@@ -375,9 +375,12 @@ se_coef_hac_y_intercept se_coef_hac_y_x0 se_coef_hac_y_x1 scored_clock learned_c
 **Most diagnostics add a few nanoseconds a row, and the ones that solve
 or keep a matrix add microseconds.** Each was timed alone, added to an
 `ewridge` with one slot, over 200,000 rows with 5 features and 100,000 rows
-with 20, in one chunk, the best of five runs. The machine was shared, at a
-load average near 3.3, and the noise of a measurement is about ±10 ns. The
-fit alone took 202 ns a row at 5 features and 416 ns at 20.
+with 20, in one chunk, the best of five runs, on 2026-10-09. The machine
+was shared, at a load average near 3.3, and the noise of a measurement is
+about ±10 ns. The fit alone and the two switches whose paths changed since,
+`emit_feature_health` and `emit_specification`, were timed again on
+2026-10-24 for 1.3.0 the same way, at a load of 1.9 to 3.4: the fit alone
+took 191 ns a row at 5 features and 326 ns at 20.
 
 | switch | added per row, 5 features | 20 features | grows with | models |
 |---|---:|---:|---|---|
@@ -386,12 +389,12 @@ fit alone took 202 ns a row at 5 features and 416 ns at 20.
 | `resid_quantiles` (two levels) | 14 ns | 24 ns | nothing | the ten linear models |
 | `emit_se_coef` | 10 ns | 19 ns | `k²`, on `coef`'s rows only | `ewridge`, `rls`, `kalman` |
 | `emit_calibration` | 20 ns | 26 ns | nothing | the ten linear models |
-| `emit_feature_health` | 36 ns | 84 ns | `k` | the nine linear models with features |
+| `emit_feature_health` | 31 ns | 75 ns | `k` | the nine linear models with features |
 | `emit_error_inflation` | 125 ns | 334 ns | `k²`: a triangular solve | `ewridge`, `rls`, `kalman` |
 | `emit_influence` | 145 ns | 349 ns | `k²`, the same solve | `ewridge`, `rls`, `kalman` |
 | `emit_tails` | 157 ns | 355 ns | `k²`, the same solve | the ten linear models |
 | `emit_robust_se` (10 lags) | 350 ns | 3,266 ns | `L × k²` for `L` lags | `ewridge`, `rls` |
-| `emit_specification` | 719 ns | 1,922 ns | `k²`, and the lags | the ten linear models |
+| `emit_specification` | 737 ns | 1,898 ns | `k²`, and the lags | the ten linear models |
 | `emit_breaks` | 903 ns | 4,567 ns | `k²`: two fits and their distance | the ten linear models |
 
 The ten linear models are `ewridge`, `rls`, `lasso`, `kalman`, `huber`,
@@ -1479,7 +1482,7 @@ themselves, before any coefficient moves.
 | statistic | `spread_ratio` is the fast standard deviation over the slow one; `mean_shift` the two means' difference in units of the slow standard deviation. A steady feature reads about 1 and 0 |
 | memory | the fit's memory by default; refused where that is `inf` (run once, with no window), since both memories would be the whole stream |
 | threshold | `spread_ratio` outside 0.5 to 2: no row of a clean feature at a half-life of 200, independent or AR(1) at 0.95. `\|mean_shift\| > 0.3`: every move of one spread, within 190 rows; 6% of rows of an AR(1) feature at 0.95, and 0.03% above 0.5 |
-| cost, models | 36 ns a row at 5 features; the nine linear models with features |
+| cost, models | 31 ns a row at 5 features; the nine linear models with features |
 
 Under `embargo` the features fold when their row is released, with the
 row's target, so the fields lag the feed by the embargo. On a feed frozen

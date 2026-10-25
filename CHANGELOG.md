@@ -112,7 +112,11 @@ returns.
   the Python tests marked `oracle` with OpenBLAS's kernels pinned to
   Prescott, SandyBridge and Haswell and NumPy's loops capped at its
   baseline or X86_V3. Each leg shows that the path it asked for took effect
-  before its tests count (task 273).
+  before its tests count (task 273). Its forced-OpenBLAS legs set
+  `OPENBLAS_L2_SIZE=2048`: OpenBLAS 0.3.34 resizes a forced core's blocking
+  on Zen 4 and 5 hosts with AVX-512, which overruns the Haswell kernel's
+  stack buffer on Windows (OpenMathLib/OpenBLAS#6013 and #6021); a run
+  without a forced core is unaffected.
   Its Prescott leg expects the name OpenBLAS reports for forced Prescott
   kernels, "Katmai": NumPy's and SciPy's Windows builds compile five cores
   and alias the rest, and OpenBLAS's name lookup reaches the Katmai alias
@@ -131,7 +135,7 @@ returns.
   which, without decay, a fit's first residuals (the target's level while
   the intercept is near 0) widen for good. On `y = 1000 + 2x + 0.5ε`,
   20,000 rows, no decay, +50 on a share of the rows with `x > 0` (median of
-  five seeds), `huber`'s slope at 1% / 5% / 12.6% outliers is 2.008 / 2.041
+  five seeds), `huber`'s slope at 1% / 5% / 12.5% outliers is 2.008 / 2.040
   / 2.128, where it was 2.057 / 2.676 / 4.885; least squares gives 2.415 /
   4.050 / 6.975 and statsmodels' converged `RLM` with the MAD scale 2.008 /
   2.039 / 2.124. On MODELS.md's example the slope is 2.02 (it was 2.18;
@@ -341,6 +345,29 @@ returns.
   holds for `huber`'s and `sgd`'s MAD scales in every state. No output
   changes.
 
+- **A panic in the MAD scale's quantile sketch, introduced during this
+  release's development and absent from 1.2.0**, in `po.spec.huber` under
+  the default `huber_scale="mad"` and in `po.spec.marginal(bin_stat="huber")`
+  (task 272 (p)): while half or more of the residual weight sat at exactly
+  0, a residual arriving more than the sketch's band below every other one,
+  as residuals near 1e-12 beside 1e100 weights do, raised `PanicException:
+  range start index ... out of range`. The sketch now folds every bucket
+  above the band into the band's end bucket: the weight is kept, the sketch
+  stays within its 1,025 buckets, and no output on any other stream moves.
+- Documentation: GRAM.md's comparison of Huber's Proposal 2 with the MAD
+  scale measured Proposal 2 at statsmodels' default cut, `d = 2.5`, not
+  the `c = 1.345` the text defines. At `HuberScale(d=1.345)` (statsmodels
+  0.15.0, seeds 0-9) Proposal 2 holds nearly as well as the MAD to a fifth
+  of the rows wild (2.129 against 2.124 at 12.4%, 2.392 against 2.317 at
+  20%) and breaks between a fifth and a quarter (11.825 against 2.889 at
+  25%) (task 273).
+- Tests: the test-only oracle's rounding-error bounds hold as computed:
+  `γ` is rounded up, each bound is lifted by its own evaluation's rounding,
+  and `|A⁻¹|` is bounded through the inverse's residual rather than read as
+  the computed inverse. A CPU without FMA made an LU error equal its old
+  bound, which floating point then put 14 units of roundoff below the error
+  (task 273).
+
 ### Performance
 
 - **1.3.0 against 1.2.0, measured before the release**: on an Apple M4 Pro
@@ -394,7 +421,15 @@ returns.
   mimalloc on it, as py-polars uses; the wheel is unchanged (task 270). On
   the system allocator the binary ran 1.23-1.25× slower a row on one
   `ewridge` stream, 1.89-1.93× slower with 1,000 one-row groups a chunk and
-  1.77-1.80× slower at 10,000 groups.
+  1.77-1.80× slower at 10,000 groups. Its jemalloc runs on one arena
+  (`narenas:1`), so the peak memory stays bounded: on jemalloc's default
+  of four arenas a core each arena kept the pages freed in it for its own
+  threads, and the peak grew with the rows, 0.94 / 1.36 / 1.48 GB at 3M /
+  12M / 24M rows of the memory benchmark's file, where it is now 0.75 /
+  0.85 / 0.86 GB (0.42 / 0.43 / 0.44 GB with
+  `POLARS_ROW_GROUP_PREFETCH_SIZE=1`), at the same wall and CPU time;
+  `_RJEM_MALLOC_CONF` still overrides it. Windows' mimalloc was not
+  measured (task 270 (o)).
 - A bank decides whether to keep a finished run's output buffers for the
   next chunk from its flat buffers' sizes alone, without walking every
   row's coefficient lists: 99.5 µs a 100,000-row run before, 2 ns now
