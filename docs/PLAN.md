@@ -16234,3 +16234,18 @@ model), with ulp comparisons in Python (`np.testing.assert_array_max_ulp`).
       both on CI (a dispatchable job on `windows-latest` and a large Linux
       runner, `scripts/memory_bench.py`'s command-line cases), then bound
       Windows' peak the same way or record why not.
+
+**1.3.0 released (2026-10-25).** Run 40188023866 on `92d5bd41`
+(publish on; the user: "After everything is green push the next minor
+version", then "Dispatch now" with the weekly CPU-paths workflow's forced
+Haswell OpenBLAS leg still failing, a third-party crash on Zen 4 hosts that
+no user's install reaches); PyPI approved by the user, `v1.3.0` and the
+GitHub release (12 assets) by the workflow; verified from a clean venv
+(1.3.0 / 1.3.0 / schema 63, a `huber` fit). Before it: a ten-reviewer
+documentation review (2 high, 20 medium, 39 low, all applied or measured),
+the `huber` sketch panic found by that work (task 272 (p)), the command
+line's bounded memory (task 270 (o)), and the release preparation (steps
+1-7: compare, benchmark with declared slowdowns, sign-offs, version).
+Recorded after it: the run's budgets (`--release 1.3.0`), `RELEASES` gains
+1.3.0 and `UNRELEASED` empties, the README's install size from PyPI's
+wheels (24.5-29.8 MB, 70.9-98.4 MB installed).

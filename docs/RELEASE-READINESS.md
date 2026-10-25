@@ -211,9 +211,9 @@ in the suite, and is skipped offline, since it downloads the releases (hard
 rule 1 in `CLAUDE.md`).
 
 **Add each release to `RELEASES` there.** It lists every release from
-0.10.0 to 1.2.0. The four before 1.0 are refused by their schema (14, 17,
+0.10.0 to 1.3.0. The four before 1.0 are refused by their schema (14, 17,
 19 and 20): on 2026-10-03 each saved all 30 specs, and this build refused
-every file by its version. 1.0.0, 1.0.1, 1.1.0 and 1.2.0 load and go on, as
+every file by its version. 1.0.0, 1.0.1, 1.1.0, 1.2.0 and 1.3.0 load and go on, as
 the rule for a 1.x release's files says.
 
 **From 1.0, a file a 1.x release wrote loads in every later 1.x and goes on

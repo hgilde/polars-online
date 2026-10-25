@@ -54,7 +54,7 @@ REPO = Path(__file__).resolve().parents[1]
 #: to the latest. A release joins the list on its release day
 #: (docs/RELEASE-READINESS.md, "The steps of a release"): before 1.0 each
 #: wrote a schema of its own and is refused; from 1.0 each loads and goes on.
-RELEASES = ["0.10.0", "0.11.1", "0.12.0", "0.13.0", "1.0.0", "1.0.1", "1.1.0", "1.2.0"]
+RELEASES = ["0.10.0", "0.11.1", "0.12.0", "0.13.0", "1.0.0", "1.0.1", "1.1.0", "1.2.0", "1.3.0"]
 
 
 def _major(version: str) -> int:
@@ -70,9 +70,20 @@ REFUSED = [v for v in RELEASES if _major(v) < 1]
 INTRODUCED = {"audit": "1.0.0"}
 
 #: The workload's specs no listed release can build: a parameter added
-#: since the newest (task 271's `huber_scale`). On the release day that
-#: ships it, its specs leave this set, as that release builds them.
-UNRELEASED = {"huber_mad", "huber_rms", "sgd_huber_mad"}
+#: since the newest. On the release day that ships it, its specs move to
+#: `PARAMETER_INTRODUCED` under that release, which builds them.
+UNRELEASED: set[str] = set()
+
+#: The workload's specs that need a parameter newer than a release, by the
+#: first release that takes it (task 271's `huber_scale`, in 1.3.0). An
+#: older release refuses the keyword itself, a `TypeError`, not the
+#: `AttributeError` of a builder it lacks.
+PARAMETER_INTRODUCED = {name: "1.3.0" for name in ("huber_mad", "huber_rms", "sgd_huber_mad")}
+
+
+def _parameter_newer(name: str, version: str) -> bool:
+    """Whether the spec `name` needs a parameter `version` does not take."""
+    return _version(version) < _version(PARAMETER_INTRODUCED.get(name, "0.0.0"))
 
 
 def _version(v: str) -> tuple[int, ...]:
@@ -87,6 +98,7 @@ def _buildable(version: str) -> list[str]:
         if version == THIS_BUILD
         or (
             name not in UNRELEASED
+            and not _parameter_newer(name, version)
             and _version(version) >= _version(INTRODUCED.get(builder, "0.0.0"))
         )
     ]
@@ -226,7 +238,7 @@ def test_every_spec_was_saved_by_the_release_at_an_older_schema(refused):
     newer = {name for name, *_ in probe.WORKLOAD} - set(manifest["saved"]) - reach
     assert set(manifest["refused"]) - reach == newer
     for name, why in manifest["refused"].items():
-        if name not in reach | UNRELEASED:
+        if name not in reach | UNRELEASED and not _parameter_newer(name, version):
             assert why.startswith("AttributeError") and name in why, (name, why)
     # An older schema: the refusal below is by the version, not the layout.
     assert manifest["schema"] < po.schema_version()
