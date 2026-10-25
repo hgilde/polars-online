@@ -186,6 +186,14 @@ def test_a_truncated_download_is_retried_and_a_dead_one_is_offline(monkeypatch):
         data._download("http://example.invalid/x")
 
 
+def _benchmarks():
+    """`tests/public_benchmarks.py`, the sets task 278's convergence classes
+    download, held to the same rule."""
+    import public_benchmarks
+
+    return public_benchmarks
+
+
 def _outcome(fetch):
     """What a fetch does: ``("skipped", reason)``, ``(exception name,
     exception)``, or ``("returned", None)``."""
@@ -203,8 +211,12 @@ def _outcome(fetch):
     [
         lambda data: data.public_intraday_or_skip(("1999-01-01",)),
         lambda data: data.public_quotes_and_trades_or_skip("ZZZUSDT", "1999-01-01"),
+        lambda data: _benchmarks().numacc_or_skip(1),
+        lambda data: _benchmarks().franti_or_skip("s1"),
+        lambda data: _benchmarks().tcpd_or_skip("nile"),
+        lambda data: _benchmarks().libsvm_or_skip("regression/abalone", 8),
     ],
-    ids=["intraday", "quotes"],
+    ids=["intraday", "quotes", "numacc", "franti", "tcpd", "libsvm"],
 )
 def test_only_the_network_is_offline(monkeypatch, tmp_path, fetch):
     """Review 2026-10-05, TA3 and TB2. An HTTP error is an ``OSError``, so a
@@ -223,13 +235,13 @@ def test_only_the_network_is_offline(monkeypatch, tmp_path, fetch):
     calls: list[str] = []
 
     def status(code: int):
-        def urlopen(url, timeout):
+        def urlopen(url, timeout, **tls):
             calls.append(url)
             raise urllib.error.HTTPError(url, code, "status", {}, io.BytesIO(b""))
 
         return urlopen
 
-    def unreachable(url, timeout):
+    def unreachable(url, timeout, **tls):
         calls.append(url)
         raise urllib.error.URLError("network unreachable")
 
