@@ -650,9 +650,9 @@ fn a_session_without_its_rule_or_with_a_word_it_does_not_know_is_refused() {
     assert!(e.contains("session_gap must be >= 0 or \"reset\""), "{e}");
 }
 
-/// The window operators' run says the same about a session and its gap,
-/// and about a cap that is not finite, in a window's words rather than a
-/// model's.
+/// The window operators' run says the same about a cap that is not finite,
+/// and about a session and its gap, in a window's words rather than a
+/// model's: a gap without a session is refused, and a session needs none.
 #[test]
 fn a_window_runs_clock_rules_are_said_in_a_windows_words() {
     use online_polars::{WindowsConfig, WindowsRun};
@@ -676,9 +676,17 @@ fn a_window_runs_clock_rules_are_said_in_a_windows_words() {
         e.contains("gap_cap must be finite; it is the longest step a window spans"),
         "{e}"
     );
-    let e = refusal(r#", "gap_cap": 5.0, "session": "s""#);
+    // A session needs no gap here: every window ends at a session change,
+    // so no window reads the number (task 278).
+    let config: WindowsConfig = serde_json::from_str(
+        r#"{"formulas": [{"name": "f", "tree": ["ewm_mean", ["col", "x"], {"half_life": 5.0}]}],
+            "clock": "t", "gap_cap": 5.0, "session": "s"}"#,
+    )
+    .unwrap();
+    WindowsRun::new(config, &schema).expect("a session without a gap refused");
+    let e = refusal(r#", "gap_cap": 5.0, "session_gap": 1.0"#);
     assert!(
-        e.ends_with("session_gap is required when session is given"),
+        e.starts_with("with_windows: session_gap needs session;"),
         "{e}"
     );
 }

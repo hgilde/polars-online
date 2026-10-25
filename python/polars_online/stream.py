@@ -42,6 +42,7 @@ from __future__ import annotations
 import json
 import math
 import numbers
+import os
 import warnings
 from collections.abc import Iterator, Sequence
 from typing import Any, overload
@@ -622,6 +623,26 @@ def _clock_value(value: Any, who: str, key: str) -> Any:
     return duration_text(value, who, key)
 
 
+def _warn_session_gap_ignored(who: str, value: Any) -> None:
+    """The :class:`~polars_online.PolarsOnlineDeprecationWarning` for a
+    ``session_gap`` that is a number or a duration, which no window reads,
+    pointed at the first line outside the package."""
+    warnings.warn(
+        f"{who}: session_gap = {value!r} is deprecated: a number or a duration has no "
+        f"effect here. Every window ends at a session change, so no window measures the "
+        f"clock's step across one, and a session needs no session_gap. Leave it out, or give "
+        f'"reset" to discard the windows still open ahead of a session change rather than '
+        f"cut them. It is accepted and ignored until the next major version, which refuses it",
+        _warnings.PolarsOnlineDeprecationWarning,
+        skip_file_prefixes=(_PACKAGE_DIR,),
+    )
+
+
+#: The package's directory: a warning skips its frames, so it names the
+#: caller's line through any wrapper (the frame namespace's method).
+_PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
 #: The clock keywords of ``with_windows``, reserved: not output names.
 _WINDOW_KEYS = ("clock", "gap_cap", "restart_after_step_back", "session", "session_gap", "group")
 
@@ -760,16 +781,27 @@ def with_windows(
        * - ``restart_after_step_back``
          - unset, a step back is refused; given, one larger than it starts
            over, and one no larger is a late row, refused
-       * - ``session``, ``session_gap``
-         - a number, a duration or ``"reset"``
+       * - ``session``
+         - a column; a change of its value ends every window open across it
+       * - ``session_gap``
+         - ``"reset"``, to discard the windows a session change leaves open
+           rather than cut them; needs ``session``. A number or a duration
+           is deprecated here: no window reads it
        * - ``group``
          - groups that each have their own clock, sessions and windows; a
            window looking ahead under ``group`` needs ``clock``
 
-    A window is measured on that policy clock, after the cap and the session
-    gap. A gap longer than ``gap_cap`` or a session change ends every window
-    open across it, under each operator's ``partial``; a reset discards
-    them: null, never dropped. A window looking ahead under
+    A window is measured on that policy clock, after the cap. A gap longer
+    than ``gap_cap`` or a session change ends every window open across it,
+    under each operator's ``partial``; a reset discards them: null, never
+    dropped. Only a window looking ahead is still open at a session change,
+    so ``session_gap="reset"`` changes those windows and nothing else. Since
+    every window ends at a session change, no window measures the clock's
+    step across one, and the number a spec takes there would change nothing:
+    a session needs no ``session_gap`` here, and a number or a duration
+    given for it raises a
+    :class:`~polars_online.PolarsOnlineDeprecationWarning`. A window looking
+    ahead under
     ``closed="right"`` or ``"both"`` whose far edge is the last row before
     either holds every row it covers, so it is whole, and gives its value
     under any ``partial``. The rows must be in clock order across
@@ -870,9 +902,11 @@ def with_windows(
     Refused while the plan is built:
 
     - ``ValueError`` for a formula, a clock policy or a column that cannot
-      run (a look-ahead under ``group`` with no ``clock`` among them), an
-      output name that collides, ``chunk_size`` below 1, and a
-      ``load_state`` another call saved;
+      run (a look-ahead under ``group`` with no ``clock`` among them), a
+      ``session_gap`` without ``session`` and a ``restart_after_step_back``
+      without ``clock``, which would do nothing, an output name that
+      collides, ``chunk_size`` below 1, and a ``load_state`` another call
+      saved;
     - ``ValueError`` for a ``UInt128`` column, read or not: the extension
       cannot take one in, so the column is named with a cast to make;
     - ``TypeError`` for something that is not an expression, an expression
@@ -973,6 +1007,10 @@ def with_windows(
     # Built once now, so a formula or a column that cannot run is reported
     # while the plan is built, as polars reports its own errors.
     first = build()
+    # Once the call is known to run, so a gap the run refuses is refused in
+    # its own words first (task 278, the user's decision of 2026-10-25).
+    if like is None and session_gap is not None and session_gap != "reset":
+        _warn_session_gap_ignored(who, session_gap)
     schema = first.feed(empty).schema
     needed = set(first.needed())
 

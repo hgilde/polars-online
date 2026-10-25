@@ -757,7 +757,7 @@ def test_an_operators_parameters_are_checked_by_name() -> None:
 
 
 def events(**kw: Any) -> dict[str, Any]:
-    return {"clock": "t", "gap_cap": 10.0, "session": "s", "session_gap": 1.0} | kw
+    return {"clock": "t", "gap_cap": 10.0, "session": "s"} | kw
 
 
 def event_stream() -> pl.DataFrame:
@@ -1363,7 +1363,7 @@ def test_with_groups_a_session_is_each_groups() -> None:
             "x": [1.0, 10.0, 3.0, 30.0],
         }
     )
-    kw: dict[str, Any] = {"clock": "t", "gap_cap": 10.0, "session": "s", "session_gap": 1.0}
+    kw: dict[str, Any] = {"clock": "t", "gap_cap": 10.0, "session": "s"}
     total = po.ewm_sum("x", half_life=math.inf)
     assert po.stream.with_windows(df, y=total, group="g", **kw)["y"].to_list() == [1, 10, 4, 40]
     # A group's own session change ends its windows, and no other group's.
@@ -1675,7 +1675,7 @@ def test_an_unsliced_state_refuses_an_input_that_repeats_its_last_row(tmp_path: 
     one = po.stream.with_windows(pl.concat([first, second]), **y, **CLOCK)
     assert pl.concat([a, c]).equals(one)
     # A new session at that stamp is a new start, which the policy takes.
-    days = {**CLOCK, "session": "s", "session_gap": 1.0}
+    days = {**CLOCK, "session": "s"}
     first_day = first.with_columns(s=pl.lit("d1"))
     next_day = again.with_columns(s=pl.lit("d2"))
     a_day = po.stream.with_windows(first_day, **y, save_state=state, **days)
@@ -1709,7 +1709,7 @@ def test_a_sliced_state_takes_a_new_start_by_the_policys_word_for_the_next_file(
         day2 = pl.DataFrame(
             {"t": [start + i for i in range(8)], "x": [8.0 + i for i in range(8)], "d": ["b"] * 8}
         )
-        for extra in ({"restart_after_step_back": 2.0}, {"session": "d", "session_gap": 1.0}):
+        for extra in ({"restart_after_step_back": 2.0}, {"session": "d"}):
             kw = {**CLOCK, **extra}
             state = tmp_path / f"{next(iter(extra))}-{start}.state"
             a = day1.lazy().online.with_windows(**y, save_state=state, **kw).head(100).collect()
@@ -1729,7 +1729,7 @@ def test_without_a_clock_the_next_file_begins_with_a_new_session(tmp_path: Any) 
     file is one that begins with a new session, and a hand slice that starts
     in the session the state last read is refused, not fed twice."""
     df = pl.DataFrame({"x": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0], "s": ["a", "a", "a", "b", "b", "b"]})
-    kw: dict[str, Any] = {"session": "s", "session_gap": 1.0}
+    kw: dict[str, Any] = {"session": "s"}
     y = {"y": po.ewm_mean("x", half_life=1.0)}
     state = tmp_path / "rows.state"
     head = df.lazy().online.with_windows(**y, save_state=state, **kw).head(4).collect()
@@ -1788,7 +1788,7 @@ def test_a_state_refuses_a_group_or_session_column_of_another_dtype(tmp_path: An
     )
     # The row the state held comes out first, then the new rows.
     assert same["t"].to_list() == [3.0, 4.0, 5.0]
-    sessions = {**CLOCK, "session": "s", "session_gap": 1.0}
+    sessions = {**CLOCK, "session": "s"}
     po.stream.with_windows(first.with_columns(s=pl.lit(1)), **y, save_state=state, **sessions)
     with pytest.raises(ValueError, match='session column "s": i32.*this input has'):
         po.stream.with_windows(
@@ -1977,7 +1977,7 @@ def test_a_forward_window_whose_far_edge_is_the_last_row_before_a_break_is_whole
             "x": [1.0, 2.0, 4.0, 8.0, 16.0, 32.0],
         }
     )
-    out = run(sessions, gap_cap=100.0, session="s", session_gap=1.0)
+    out = run(sessions, gap_cap=100.0, session="s")
     assert out["f"].to_list()[:2] == [6.0, 12.0]
 
 
@@ -2133,7 +2133,6 @@ def test_a_zoned_datetime_group_is_keyed_by_its_instant() -> None:
             gap_cap=100.0,
             group="g",
             session="s",
-            session_gap=1.0,
         )
 
     want = run(zoned_keys(None))
@@ -2547,3 +2546,361 @@ def test_the_readmes_zscore_recipe_runs_and_is_polars_own_on_a_row_clock(
         )
         assert_close(fitted[f"z_{c}"].to_list(), df.select(z)[c].to_list(), c, tol=1e-12)
     assert fitted["per_sd"].struct.field("pred_y").is_not_null().sum() > 300
+
+
+# --------------------------------------------------------------------------
+# session_gap and the call's clock refusals (task 278, batch 2: the user's
+# decision of 2026-10-25 and the inventory's D3)
+
+#: The message a numeric ``session_gap`` warns with, after its value.
+_GAP_IGNORED = (
+    " is deprecated: a number or a duration has no effect here. Every window ends at a session "
+    "change, so no window measures the clock's step across one, and a session needs no "
+    'session_gap. Leave it out, or give "reset" to discard the windows still open ahead of a '
+    "session change rather than cut them. It is accepted and ignored until the next major "
+    "version, which refuses it"
+)
+
+#: The window, the half-life and the gap cap of the session streams below.
+_W, _HL, _CAP = 2.5, 2.0, 100.0
+
+
+def _session_stream(seed: int = 3) -> pl.DataFrame:
+    """90 distinct stamps one unit apart, each jittered by less than 0.3, so
+    no row sits on the edge of a window of 2.5; sessions change at rows 30
+    and 60, and at row 60 the clock starts over, 50 units back."""
+    rng = np.random.default_rng(seed)
+    n = 90
+    t = np.arange(n, dtype=float) + rng.uniform(0.0, 0.3, n)
+    t[60:] -= 50.0
+    return pl.DataFrame(
+        {"t": t, "x": rng.normal(size=n) * 3 + 1, "s": ["a"] * 30 + ["b"] * 30 + ["c"] * 30}
+    )
+
+
+def _session_ops() -> tuple[dict[str, pl.Expr], dict[str, pl.Expr]]:
+    """The seven operators looking back, each under every ``closed`` where
+    it takes one, and the four that look ahead, kept when cut, so a cut
+    window still gives a value: (backward, forward)."""
+    back: dict[str, pl.Expr] = {"increment": po.increment("x")}
+    ahead: dict[str, pl.Expr] = {}
+    win = {"half_life": _HL, "window_size": _W}
+    for closed in ("right", "left", "both", "none"):
+        c = {**win, "closed": closed}
+        back |= {
+            f"mean_{closed}": po.ewm_mean("x", **c),
+            f"sum_{closed}": po.ewm_sum("x", **c),
+            f"rate_{closed}": po.ewm_rate("x", **c),
+            f"quantile_{closed}": po.ewm_quantile("x", quantile=0.3, **c),
+            f"var_{closed}": po.ewm_var("x", **c),
+            f"std_{closed}": po.ewm_std("x", **c),
+        }
+        ahead |= {
+            f"ahead_mean_{closed}": po.ewm_mean("x", **c, reverse=True, partial="keep"),
+            f"ahead_sum_{closed}": po.ewm_sum("x", **c, reverse=True, partial="keep"),
+            f"ahead_rate_{closed}": po.ewm_rate("x", **c, reverse=True, partial="keep"),
+            f"ahead_quantile_{closed}": po.ewm_quantile(
+                "x", quantile=0.3, **c, reverse=True, partial="keep"
+            ),
+        }
+    # Looking ahead, a cut window is null by default.
+    ahead["ahead_mean_null"] = po.ewm_mean("x", **win, reverse=True)
+    return back, ahead
+
+
+def _session_run(df: pl.DataFrame, **kw: Any) -> pl.DataFrame:
+    back, ahead = _session_ops()
+    return po.stream.with_windows(df, **back, **ahead, clock="t", gap_cap=_CAP, session="s", **kw)
+
+
+def _open_at_a_change(df: pl.DataFrame) -> list[int]:
+    """The rows whose window looking ahead is still open at the session
+    change after them: no later row of their session is a window past them
+    (no row sits on an edge, so ``closed`` does not move the answer). The
+    last session's are left out: the input's end, not a change, ends
+    them."""
+    t, s = df["t"].to_list(), df["s"].to_list()
+    last = {v: max(i for i in range(len(s)) if s[i] == v) for v in s}
+    return [i for i in range(len(t)) if s[i] != s[-1] and t[last[s[i]]] - t[i] < _W]
+
+
+def test_a_numeric_session_gap_changes_nothing_and_says_so() -> None:
+    """Every window ends at a session change, so no window measures the
+    clock's step across one: a number given as ``session_gap`` is never
+    read. Over the seven operators, looking back under each ``closed`` and
+    looking ahead, on a clock that goes on at one change and starts over at
+    the other, any number gives the frame the call without one gives, with
+    one deprecation warning naming the caller's line. Once required beside
+    ``session``, and set to 1.0 in every test here, so nothing showed that
+    no number mattered."""
+    df = _session_stream()
+    want = _session_run(df)
+    # Evidence the changes acted: a kept window looking ahead that the
+    # change cut gives a value, and the default's is null there.
+    open_rows = _open_at_a_change(df)
+    assert len(open_rows) >= 4, open_rows
+    kept = [want["ahead_sum_right"][i] for i in open_rows]
+    assert sum(v is not None for v in kept) >= 2, kept
+    assert all(want["ahead_mean_null"][i] is None for i in open_rows)
+    assert want["increment"][30] is None and want["increment"][60] is None
+    for gap in (0, 1.0, 50, 1e6):
+        with pytest.warns(po.PolarsOnlineDeprecationWarning) as caught:
+            got = _session_run(df, session_gap=gap)
+        assert [str(w.message) for w in caught] == [
+            f"with_windows: session_gap = {gap!r}{_GAP_IGNORED}"
+        ]
+        assert caught[0].filename == __file__, "the warning names the caller's line"
+        assert got.equals(want), gap
+    # Through the frame namespace too, which still names the caller's line.
+    back, _ = _session_ops()
+    with pytest.warns(po.PolarsOnlineDeprecationWarning) as caught:
+        lazy = (
+            df.lazy()
+            .online.with_windows(**back, clock="t", gap_cap=_CAP, session="s", session_gap=7.0)
+            .collect()
+        )
+    assert len(caught) == 1 and caught[0].filename == __file__
+    assert lazy.equals(want.select(df.columns + list(back)))
+
+
+def test_a_duration_session_gap_changes_nothing_on_a_temporal_clock() -> None:
+    """A duration is the temporal clock's number: never read either."""
+    df = _session_stream().with_columns(
+        t=(pl.col("t") * 1e6).cast(pl.Int64).cast(pl.Datetime("us"))
+    )
+    ahead = po.ewm_sum("x", half_life="2s", window_size="2500ms", reverse=True, partial="keep")
+    back = po.ewm_var("x", half_life="2s", window_size="2500ms")
+
+    def run(**kw: Any) -> pl.DataFrame:
+        return po.stream.with_windows(
+            df, ahead=ahead, back=back, clock="t", gap_cap="100s", session="s", **kw
+        )
+
+    want = run()
+    assert want["ahead"].null_count() < df.height - 10
+    for gap in ("1m", timedelta(hours=3), "0s"):
+        with pytest.warns(po.PolarsOnlineDeprecationWarning, match="session_gap = .* no effect"):
+            assert run(session_gap=gap).equals(want), gap
+
+
+def test_reset_differs_exactly_in_the_windows_looking_ahead_open_at_a_change() -> None:
+    """``session_gap="reset"`` discards, where a number cuts. The only
+    windows still open at a session change are those looking ahead from the
+    rows before it: there a kept window's value becomes null, and nothing
+    else in the frame moves, a backward window under ``"right"`` or
+    ``"both"`` waiting for the change's row included."""
+    df = _session_stream()
+    cut = _session_run(df)
+    reset = _session_run(df, session_gap="reset")
+    back, ahead = _session_ops()
+    open_rows = _open_at_a_change(df)
+    assert reset.select(df.columns + list(back)).equals(cut.select(df.columns + list(back)))
+    moved = 0
+    for name in ahead:
+        nulled = cut[name].scatter(open_rows, None)
+        assert reset[name].equals(nulled), name
+        moved += sum(cut[name][i] is not None for i in open_rows)
+    assert moved >= 10, "the reset discarded values the cut kept"
+
+
+def test_a_spec_with_a_session_gap_lends_it_without_a_warning() -> None:
+    """``like=`` takes a spec's clock policy, whose number a model reads
+    (its decay across the change): no warning, and the frame is the call's
+    own without the number."""
+    df = _session_stream()
+    spec = po.spec.ewridge(
+        "m",
+        targets=["y"],
+        features=["x"],
+        half_life=10.0,
+        clock="t",
+        gap_cap=_CAP,
+        session="s",
+        session_gap=1.0,
+    )
+    _, ahead = _session_ops()
+    lent = po.stream.with_windows(df, **ahead, like=spec)
+    own = po.stream.with_windows(df, **ahead, clock="t", gap_cap=_CAP, session="s")
+    assert lent.equals(own)
+
+
+def test_a_state_saved_with_a_numeric_session_gap_resumes_the_call_without_one(
+    tmp_path: Any,
+) -> None:
+    """The number is no part of the call a state resumes: a state saved
+    with one goes on under the call without it, as one run would."""
+    df = _session_stream()
+    back, ahead = _session_ops()
+    kw: dict[str, Any] = {"clock": "t", "gap_cap": _CAP, "session": "s"}
+    state = tmp_path / "gap.state"
+    with pytest.warns(po.PolarsOnlineDeprecationWarning):
+        first = po.stream.with_windows(
+            df.head(45), **back, **ahead, save_state=state, session_gap=1.0, **kw
+        )
+    rest = po.stream.with_windows(df.slice(45), **back, **ahead, load_state=state, **kw)
+    assert pl.concat([first, rest]).equals(po.stream.with_windows(df, **back, **ahead, **kw))
+    with pytest.raises(ValueError, match="saved by another call"):
+        po.stream.with_windows(
+            df.slice(45), **back, **ahead, load_state=state, session_gap="reset", **kw
+        )
+
+
+#: Every clock refusal of ``with_windows``, each in its own words: (the
+#: call's clock keywords, the refusal's type, its whole message). A spec's
+#: are pinned in ``test_spec_validation.py``; these speak of windows.
+_CLOCK_REFUSALS: dict[str, tuple[dict[str, Any], type[Exception], str]] = {
+    "gap_cap missing": (
+        dict(clock="t"),
+        ValueError,
+        "with_windows: gap_cap is required when clock is given",
+    ),
+    "gap_cap inf": (
+        dict(clock="t", gap_cap=math.inf),
+        ValueError,
+        "with_windows: gap_cap must be finite; it is the longest step a window spans, and a "
+        "longer gap ends every window open across it. Give a cap longer than any gap a window "
+        "should span",
+    ),
+    "gap_cap 0": (
+        dict(clock="t", gap_cap=0.0),
+        ValueError,
+        "with_windows: gap_cap must be > 0; a cap of 0 froze the clock. For no decay set "
+        'half_life = "inf", or leave out the clock to count rows',
+    ),
+    "gap_cap negative": (
+        dict(clock="t", gap_cap=-1.0),
+        ValueError,
+        "with_windows: gap_cap must be a finite number > 0",
+    ),
+    "gap_cap NaN": (
+        dict(clock="t", gap_cap=math.nan),
+        ValueError,
+        "with_windows: gap_cap must not be NaN",
+    ),
+    "gap_cap without clock": (
+        dict(gap_cap=5.0),
+        ValueError,
+        "with_windows: gap_cap needs clock; it caps the step from one clock value to the next, "
+        "and without a clock every row is one step",
+    ),
+    "session_gap without session": (
+        dict(clock="t", gap_cap=5.0, session_gap=1.0),
+        ValueError,
+        "with_windows: session_gap needs session; it says what a session change does, and "
+        "without a session column there is none",
+    ),
+    "reset without session": (
+        dict(session_gap="reset"),
+        ValueError,
+        "with_windows: session_gap needs session; it says what a session change does, and "
+        "without a session column there is none",
+    ),
+    "session_gap inf": (
+        dict(clock="t", gap_cap=5.0, session="s", session_gap=math.inf),
+        ValueError,
+        "with_windows: session_gap must be finite; to start over at a session change set "
+        'session_gap = "reset"',
+    ),
+    "session_gap negative": (
+        dict(clock="t", gap_cap=5.0, session="s", session_gap=-1.0),
+        ValueError,
+        'with_windows: session_gap must be >= 0 or "reset"',
+    ),
+    "session_gap NaN": (
+        dict(clock="t", gap_cap=5.0, session="s", session_gap=math.nan),
+        ValueError,
+        "with_windows: session_gap must not be NaN",
+    ),
+    "session_gap word": (
+        dict(clock="t", gap_cap=5.0, session="s", session_gap="restart"),
+        ValueError,
+        'with_windows: session_gap "restart" is not a duration: expected a whole number at '
+        '"restart"; write a number and a unit, as in "10m"',
+    ),
+    "restart negative": (
+        dict(clock="t", gap_cap=5.0, restart_after_step_back=-1.0),
+        ValueError,
+        "with_windows: restart_after_step_back must be finite and >= 0 (0 starts every window "
+        "over at every step back)",
+    ),
+    "restart inf": (
+        dict(clock="t", gap_cap=5.0, restart_after_step_back=math.inf),
+        ValueError,
+        "with_windows: restart_after_step_back must be finite and >= 0 (0 starts every window "
+        "over at every step back)",
+    ),
+    "restart NaN": (
+        dict(clock="t", gap_cap=5.0, restart_after_step_back=math.nan),
+        ValueError,
+        "with_windows: restart_after_step_back must not be NaN",
+    ),
+    "restart without clock": (
+        dict(restart_after_step_back=1.0),
+        ValueError,
+        "with_windows: restart_after_step_back needs clock; a step back is read off the clock "
+        "column, and without one every row is one step forward",
+    ),
+    "duration on a number clock": (
+        dict(clock="t", gap_cap="5m"),
+        ValueError,
+        "with_windows: gap_cap is a duration, which needs a temporal clock column (Datetime, "
+        'Date or Duration); clock is "t" (f64)',
+    ),
+    "number on a temporal clock": (
+        dict(clock="ts", gap_cap=5.0),
+        ValueError,
+        'with_windows: gap_cap is a number, and clock column "ts" is datetime[ms]; write it as '
+        'a duration ("10m", a timedelta or pl.duration)',
+    ),
+    "duration beside a number": (
+        dict(clock="ts", gap_cap="5m", restart_after_step_back=1.0),
+        ValueError,
+        "with_windows: gap_cap is a duration and restart_after_step_back a number; on one clock "
+        "every clock parameter is written the same way",
+    ),
+    "gap_cap below the clock's tick": (
+        dict(clock="day", gap_cap="1h"),
+        ValueError,
+        'with_windows: gap_cap is 1h, less than the smallest step clock column "day" (date) '
+        "can take: every step would be capped to it, so the clock would count rows rather than "
+        "measure time",
+    ),
+    "restart below the clock's tick": (
+        dict(clock="day", gap_cap="5d", restart_after_step_back="1h"),
+        ValueError,
+        "with_windows: restart_after_step_back is 1h, less than the smallest step clock column "
+        '"day" (date) can take: no step back could be as small, so every one would start the '
+        "windows over, which 0 says directly",
+    ),
+    "no clock column": (
+        dict(clock="nope", gap_cap=5.0),
+        ValueError,
+        'with_windows: no clock column "nope" in the frame; it has ["t", "ts", "day", "s", "x"]',
+    ),
+    "no session column": (
+        dict(session="nope"),
+        ValueError,
+        'with_windows: no session column "nope" in the frame; it has ["t", "ts", "day", "s", "x"]',
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(_CLOCK_REFUSALS))
+def test_every_clock_refusal_is_said_in_the_calls_own_words(case: str) -> None:
+    """Each refusal of the call's clock keywords, whole: a spec's twin
+    speaks of a model, these of windows. ``session_gap`` without
+    ``session`` and ``restart_after_step_back`` without ``clock`` were
+    taken and did nothing; a spec refused both."""
+    kw, kind, says = _CLOCK_REFUSALS[case]
+    df = pl.DataFrame(
+        {
+            "t": [0.0, 1.0, 2.0],
+            "ts": pl.Series([0, 1, 2]).cast(pl.Datetime("ms")),
+            "day": [date(2024, 1, 1), date(2024, 1, 2), date(2024, 1, 3)],
+            "s": ["a", "a", "b"],
+            "x": [1.0, 2.0, 3.0],
+        }
+    )
+    with pytest.raises(kind) as exc:
+        po.stream.with_windows(df, y=po.increment("x"), **kw)
+    assert str(exc.value) == says
