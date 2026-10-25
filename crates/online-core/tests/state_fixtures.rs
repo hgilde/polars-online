@@ -107,6 +107,19 @@ use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 /// the current fixture's, whose reads took the products from the first
 /// row. So a windowed case is held to its first row exactly, the rest to
 /// the golden tolerance, and to saving bytes that load back to the same.
+///
+/// The `kmeans` cases convert otherwise since task 278 (before 63's
+/// release; rule 5's second exception, the user's, 2026-10-25): `init =
+/// "lloyd"` starts from greedy k-means++ and runs each start to its fixed
+/// point, where it took ten Lloyd passes from plain k-means++. A `kmeans`
+/// state of schema 61-63 saved before it seeded seeds by the new rule after
+/// loading: the same centres and distances to the bit, the cluster labels
+/// possibly permuted, held to one consistent relabelling of the frozen
+/// labels on every row (`kmeans_warming`, which seeds four rows after the
+/// save; its bytes are the current set's). A state saved after seeding
+/// continues to the bit (`kmeans`); its centres are in the old rule's
+/// order, so its bytes are not the current set's, which the new rule
+/// seeded, and it is held to saving bytes that load back to the same.
 macro_rules! previous {
     ($($schema:literal),* $(,)?) => {
         const PREVIOUS: &[u32] = &[$($schema),*];
@@ -371,7 +384,18 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
                 f.writer, current.writer
             );
             let windowed = holds_a_window(&f.bytes());
-            if windowed {
+            // Seeded by the `lloyd` rule before task 278 (plain k-means++
+            // starts, ten Lloyd passes): the rule since finds the same
+            // centres in another order (the doc above `previous!`).
+            let reseeded = f.name == "kmeans_warming";
+            if f.name == "kmeans" {
+                let saved = named(&m.state());
+                let again = load(&case, &saved).unwrap_or_else(|e| panic!("{what}: {e}"));
+                assert!(
+                    named(&again.state()) == saved,
+                    "{what}: saved, loaded, saved"
+                );
+            } else if windowed {
                 // A window's snapshots from before task 275 carry no running
                 // products (the doc above `previous!`): converted, they say
                 // so, and the state saves bytes that load back to the same.
@@ -391,7 +415,25 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
                 );
             }
             let tol = if f.writer == writer() { 0.0 } else { TOL };
+            let mut relabel: Vec<(u64, u64)> = Vec::new();
             for (i, (row, want)) in f.rows().iter().zip(f.outs()).enumerate() {
+                if reseeded {
+                    let got = m.step(row);
+                    let (g, w) = (got.pred[0], want.pred[0]);
+                    if !(g.is_nan() && w.is_nan()) {
+                        let pair = (w.to_bits(), g.to_bits());
+                        assert!(
+                            relabel.iter().all(|&(a, b)| (a == pair.0) == (b == pair.1)),
+                            "{what}, row {i} after the save: label {w} read as {g}, not one \
+                             relabelling of the frozen labels ({relabel:?})"
+                        );
+                        relabel.push(pair);
+                    }
+                    let mut want = want.clone();
+                    want.pred[0] = g;
+                    same_out(&format!("{what}, row {i} after the save"), &got, &want, tol);
+                    continue;
+                }
                 // Under a window, the first read is the saved state's to the
                 // bit; once a snapshot taken after the load is the boundary,
                 // its products decay it, and the reads part from the old

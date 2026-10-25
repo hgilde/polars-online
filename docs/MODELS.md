@@ -2529,8 +2529,8 @@ for lo, hi in ((3000, 4000), (7000, 8000)):
 ```
 
 ```text
-rows 3000-3999: cluster 0: 338, cluster 1: 175, cluster 2: 322, cluster 3: 165
-rows 7000-7999: cluster 0: 255, cluster 1: 266, cluster 2: 237, cluster 3: 242
+rows 3000-3999: cluster 0: 322, cluster 1: 164, cluster 2: 338, cluster 3: 176
+rows 7000-7999: cluster 0: 237, cluster 1: 266, cluster 2: 255, cluster 3: 242
 ```
 
 Before the fourth cluster appears, clusters 1 and 3 share one of the three,
@@ -2567,15 +2567,29 @@ index = po.spec.coef_index(km)   # how coef is labelled: cluster = 0, 1, ..., te
 ```
 
 **Seeding waits for `warm_rows` rows, places the centres, and replays the
-rows.** One k-means++ start lands in the wrong partition a third of the time
-on five blobs in four dimensions. So the default, `init="lloyd"`, takes
-ten starts, refines each by ten Lloyd iterations, and keeps the one of least
-inertia. `seed=` fixes the random draws. That is about 120 passes over the
-buffer, paid once by each group's stream: with the default 500 rows and 8
-centres it took 93 ms at 400 features and 3.2 ms at 20, where
-`init="k-means++"` took 0.2 and 0.03 ms (one thread, the load average about
-24, 2026-10-23). A bank of many groups at many features pays it per group:
-10,000 groups at 400 features spend about a quarter of an hour seeding.
+rows.** `init="k-means++"` is the greedy variant scikit-learn uses: each centre
+after the first is the best of `2 + ⌊ln k⌋` rows drawn by their squared
+distance from the centres so far, the one that leaves the least inertia. On five
+blobs in four dimensions one start, run to its fixed point, still lands in a
+partition 1.87 times as costly as the right one in 9 of 100 seeds (28 of 100
+for plain k-means++). So the default, `init="lloyd"`, takes ten starts, runs
+Lloyd's passes from each until no row changes centre, and keeps the one of
+least inertia. `seed=` fixes the random draws. A start still moving rows
+after 300 passes stops there and is counted in `solve_failures`; the most a
+start needed on 500 rows was 54 passes, on eight overlapping blobs. On
+Fränti's benchmark sets, in 50 orders each, no order of S1 or S2 misses a
+cluster, where ten passes from ten plain k-means++ starts missed one in 10
+and 13 of them. The A-sets' 20 to 50 clusters leave 10 to 25 of the 500
+buffered rows a cluster, and their median order ends 1.01 to 1.10 times the
+optimal inertia, where it ended 1.26 to 1.35 times it.
+
+The seeding is paid once by each group's stream. With the default 500 rows
+and 8 centres it took 56 ms at 400 features on separated blobs, where a start
+reaches its fixed point in a few passes, and 91 ms on overlapping ones; 1.9
+ms at 20 features; and `init="k-means++"` took 3.6 ms at 400 (one thread,
+the load average about 110, 2026-10-25). A bank of many groups at many
+features pays it per group: 10,000 groups at 400 features spend up to a
+quarter of an hour seeding.
 
 **While `split_merge` is above 0, a far row is scored but not learned from.**
 A row is far when it sits outside its cluster, about four standard deviations
@@ -3396,8 +3410,17 @@ out = df.online.fit_predict([hidden]).unnest("regime")
 
 **Seeding decides which regimes the filter can find.** `warm_rows` seeds the
 states from that many learned rows with `kmeans`' rule (`init="lloyd"`,
-`seed=0`). Give a `warm_rows` large enough for those rows to span more than
-one regime; otherwise the seeds split one regime in two.
+`seed=0`), by default 1,000 rows. A group with fewer rows than `warm_rows`
+never seeds, and reports null on every row. The seeds sit where the buffered
+rows are, so the buffer must hold every regime, several times over. A regime absent
+from it gets no state, and one with a few percent of its rows costs less
+inertia to share than to own, so the seeds split a larger regime in two
+instead. Learning does not move a misplaced state out. On three regimes
+three noise standard deviations apart, each lasting 50 rows on average, the
+worst of 50 seeds of 5,000 rows put 0.95 of the rows in their true state
+from 1,000 buffered rows, 0.81 from 500 and 0.46 from 50. The rows the
+buffer holds report nothing, and it holds `warm_rows` rows of every feature
+until the seeding frees it.
 
 **When the regimes differ only in covariance, give the states with `means`
 and `covs`.** The default seeding is k-means, and zero-mean states differ in
@@ -3429,9 +3452,9 @@ prior:** `transition=` a matrix whose diagonal is near 1, and
 `transition_prior=` the number of rows that prior counts as. The README's
 [Detecting changes and regimes](../README.md#detecting-changes-and-regimes)
 runs two series whose returns widen 2.7 times in every other block of 500
-rows. Under the default prior the filter put 59% of the rows after seeding
+rows. Under the default prior the filter put 58% of the rows after seeding
 in their true regime. Under `transition=[0.998, 0.002, 0.002, 0.998]` and
-`transition_prior=500.0` it put 94% there.
+`transition_prior=500.0` it put 93% there.
 
 **The transition matrix moves one step per row, whatever the clock between
 rows, so the gap over a weekend counts as a single step.** The transition
