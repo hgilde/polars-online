@@ -141,6 +141,7 @@ The keys of a Gram, in the names the formulas on this page give them:
 | `means_by_target` | per target, the columns' means over the rows the target was present on |
 | `target_weights`, `target_means`, `target_vars`, `target_n_kish` | per target, its weight, its mean, its variance `V` and its Kish size |
 | `lags`, `lag_comoments` | for an `ew_cov(lags=[...])`, the lags and the co-moments of each column with every column that many rows back. `None` for any other spec |
+| `within_parts`, `target_within_parts` | only on a Gram from `po.gram.merge(..., within=True)`: the number of parts with weight, and per target the number with weight for it. The fits read them to leave the intercept out and to take a degree of freedom per part ([Pooling within blocks](#pooling-within-blocks)) |
 
 What you can do with a set of Grams, and the calls that do it:
 
@@ -1892,12 +1893,23 @@ errors are normal and holds until half the rows are outliers. A median
 is a query of its own over the rows, and two blocks' medians do not
 combine into their union's. Huber's Proposal 2 is a scale built from
 sums, which do combine: the `s` that solves `mean(ψ(r/s)²) = E[ψ(Z)²]`,
-0.7102 at `c = 1.345` for a standard normal `Z`. It breaks sooner.
-Measured with statsmodels' `RLM` iterated to convergence, on
-`y = 1000 + 2x + 0.5ε` over 20,000 rows with +50 on a share of the rows
-with `x` above 0, the median slope over ten seeds was 2.124 under the MAD
-and 2.222 under Proposal 2 with 12.4% of the rows wild, and 2.317 and
-8.556 with 20%.
+0.7102 at `c = 1.345` for a standard normal `Z`. It holds nearly as well as
+the MAD up to a fifth of the rows wild, and breaks sooner. The stream is
+`y = 1000 + 2x + 0.5ε` over 20,000 rows, with +50 on a share of the rows
+with `x` above 0. Each fit is statsmodels' `RLM` with `HuberT(1.345)`,
+iterated to a tolerance of 1e-10, with `scale.mad` for the MAD and
+`HuberScale(d=1.345)` for Proposal 2, at the cut the recipe uses. Measured
+on 2026-10-24 with statsmodels 0.15.0, as the median slope over seeds 0 to
+9 (the truth is 2):
+
+| rows wild | least squares | MAD | Proposal 2 |
+|---|---:|---:|---:|
+| 12.4% | 6.960 | 2.124 | 2.129 |
+| 20% | 9.975 | 2.317 | 2.392 |
+| 25% | 11.978 | 2.889 | 11.825 |
+
+At statsmodels' default cut for the scale, `HuberScale()`'s `d = 2.5`,
+Proposal 2 breaks before 20%: 8.556 there.
 
 ```python
 import numpy as np

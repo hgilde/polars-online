@@ -51,8 +51,8 @@ What `half_life` decays differs by model:
 | `lasso` | the same sums, and the error that picks the penalty unless `select_half_life` is given |
 | `rls` | `A` and `b`, as decayed sums rather than means |
 | `kalman` | the observation-noise estimate and the features' standardization; `coef_half_life` sets how fast a coefficient may drift |
-| `huber`, `quantile` | their running sums, kept per target, and the residuals' spread `σ` |
-| `sgd` | `weight_sum`, the running moments `standardize` scales by, the spreads its cut and tube are drawn in, and adagrad's sums, but not the coefficients |
+| `huber`, `quantile` | their running sums, kept per target, and the residuals' spread `σ`, which `huber_scale_half_life` decays instead when given |
+| `sgd` | `weight_sum`, the running moments `standardize` scales by, the spreads its cut and tube are drawn in (the Huber cut's at `huber_scale_half_life` when given), and adagrad's sums, but not the coefficients |
 | `pa` | `weight_sum`, each target's own weight, the running moments `standardize` scales by and the spread its tube is drawn in, but not the coefficients |
 | `ftrl` | its per-coordinate sums, but not its penalties, so a shorter half-life shrinks the fit more |
 | `holt` | the level; the trend has `trend_half_life` |
@@ -623,7 +623,7 @@ intercept, give a `gap_cap` that spans several reversion half-lives. Under
 
 **With `standardize=False`, `q=0` and a fixed `obs_var=`, the filter is
 exactly Bayesian linear regression,** the ridge with penalty `1/p0`:
-river's `BayesianLinearRegression` agrees to 1e-13. Standardized, each
+river's `BayesianLinearRegression` agrees within 1e-12. Standardized, each
 prior waits for its feature's scale, so it is not that ridge.
 
 **`se_coef` and `error_inflation` are exact under the model,** which says
@@ -778,7 +778,8 @@ prior on the decaying sum scale in place of the ridge on the means, as
 weight the target's sums hold after the Huber weights, and the intercept
 penalized too. The prior fades as the rows arrive. At `huber_delta=inf`,
 solved on every row, it gives `rls`'s predictions with `delta=ridge`
-within 1e-9, as `ewridge(ridge_scale="sum")` does.
+within 1e-9, as `ewridge(ridge_scale="sum")` does. It is refused beside
+`standardize` and beside two or more `feature_sets`.
 
 **`emit_huber_scale=True` writes `huber_scale_<t>`, the scale each row's
 cut is drawn in.** It is read after the row's decay and before the row's
@@ -788,7 +789,7 @@ as the scale of a robust loss on the residuals. It is one field per target,
 the largest set's under `feature_sets`. It is null until the target has a
 `σ` above 0, and on a row the model does not read because a feature is
 null or not usable (NaN, ±inf or beyond 1e100), as `lasso`'s
-`lam_selected` is.
+`penalty_selected_<t>` is.
 
 **The scale `σ` is the part of Huber's estimator that makes it robust.**
 The cut is `δσ`, so a scale that the outliers inflate moves the cut out of
@@ -831,8 +832,8 @@ five seeds:
 |---|---|---|---|---|
 | none | 1.999 | 2.000 | 2.000 | 2.000 |
 | 1% | 2.415 | 2.008 | 2.057 | 2.008 |
-| 5% | 4.050 | 2.041 | 2.676 | 2.039 |
-| 12.6% | 6.975 | 2.128 | 4.885 | 2.124 |
+| 5% | 4.050 | 2.040 | 2.676 | 2.039 |
+| 12.5% | 6.975 | 2.128 | 4.885 | 2.124 |
 
 The root mean square fails twice. Its first residuals are the target's whole
 level, about 1,000 while the intercept is still near 0, and without decay
@@ -846,7 +847,7 @@ and hundreds of them add up.
 `huber` weighs each row once, by its residual against the fit before it.
 The early rows get their weights from a poor fit and the later rows from a
 good one, so the one pass converges to the batch fit on a stream that does
-not change. The table above shows the two within 0.005 up to 12.6% wild
+not change. The table above shows the two within 0.005 up to 12.5% wild
 rows. Reweighting more passes over a trailing window of 256 rows would
 close less than half of what is left at 12.5%, measured in a simulation of
 this recursion (2.183 to 2.155, against 2.124 for the batch fit), and it
@@ -859,8 +860,9 @@ shift as an outlier until the median itself has moved, which holds the fit
 back. `huber_scale_half_life=` gives the scale a memory of its own, the
 spec's `half_life` by default: shorter than the fit's, the scale follows a
 shift sooner. The price is that a longer burst of outliers widens the cut.
-Measured with a fit half-life of 500 rows, a shift of +20 at row 10,000
-and no outliers, as the mean absolute error after the shift:
+Measured on `y = 2x + 0.5ε`, with `x` and `ε` standard normal (seed 1,
+14,000 rows), a fit half-life of 500 rows, a shift of +20 at row 10,000 and
+no outliers, as the mean absolute error after the shift:
 
 | scale | rows 0-200 after the shift | rows 200-400 |
 |---|---|---|
@@ -1620,7 +1622,7 @@ writes `pc0_var`, `pc0_share` (of the trace), `pc0_loading_<feature>` and
 **`window_size` cuts the history off at a fixed age** ([A hard
 window](../README.md#a-hard-window)). For a frame that fits in memory, Polars'
 `df.rolling("t", period="3h").agg(...)` with an exponential weight, and `c`
-from the weights inside the window, gives the same numbers to about 1e-13,
+from the weights inside the window, gives the same numbers within 1e-12,
 but recomputes every window, in `O(n·W)` time,
 where the spec takes `O(n)`. So use the spec for a stream, a state to save, or
 speed: measured, it ran 24 times as fast at a 74-row window and 1,100 times
@@ -2300,7 +2302,7 @@ Each finding's `message` says what to do, and links its section of
 each model and how to fix it with Polars.
 
 An audit reads every row, where a model skips a row with a feature that is
-not a usable number. Its memory does not grow with the rows: about 10 KiB a
+not a usable number. Its memory does not grow with the rows: about 14 KiB a
 column at the defaults. Its counts are the same in one chunk or a thousand.
 Each statistic, its definition and its cost are in the builder's docstring.
 

@@ -276,7 +276,7 @@ A flag given on the command line wins over its key in the TOML file:
 | `--no-output` | `output` left out | write no per-row output |
 | `--input-format` | `input_format` | how to read the input: `parquet`, `ipc`, `csv` or `ndjson`. The extension decides when it is not given |
 | `--output-format` | `output_format` | how to write the output, from the same four |
-| `--output-layout` | `output_layout` | `struct` (the default) writes each spec as one struct column; `flat` writes each of its fields as a `<spec>.<field>` column, as a CSV always is |
+| `--output-layout` | `output_layout` | `struct` (the default) writes each spec as one struct column; `flat` writes each of its fields as a `<spec>.<field>` column, as a CSV always is. Under `flat`, `--dry-run` names the output as `(parquet, flat)` |
 | `--chunk-size` | `chunk_size` | rows per chunk; 100,000 by default |
 | `--threads` | `threads` | the threads the bank runs on, a whole number of at least 1; left out, the default pool, sized by `POLARS_ONLINE_MAX_THREADS`. The output is the same at any count |
 | `--load-state` | `load_state` | start from a saved state |
