@@ -4173,7 +4173,7 @@ A minor release adds models, parameters, outputs and functions, and breaks
 nothing stable. It can also correct numbers that were wrong, or move last
 bits when a sum is taken in another order, each declared with its size, so
 pin the minor as well if your numbers must not move.
-`polars-online~=1.2.0` pins the current minor: it takes that minor's patch
+`polars-online~=1.3.0` pins the current minor: it takes that minor's patch
 releases and stops before the next minor. The package follows semantic versioning
 ([CHANGELOG.md](CHANGELOG.md)).
 

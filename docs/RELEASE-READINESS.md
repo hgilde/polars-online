@@ -177,16 +177,20 @@ Measured when it was written, on 2026-09-24: this build against 0.10.0 and
 against 0.9.1, all 291 fields identical. Against 0.8.0, 112 fields differ,
 all from 0.9.0's declared readiness gates, which is the evidence it can
 fail. On 2026-10-23, with the workload widened to 68 specs, the build of
-that day against 1.2.0: 1,273 fields identical. The next release's build
-differs from 1.2.0 where its CHANGELOG declares a change, and nowhere else:
-in every field the fits of `huber` and `sgd(loss="huber")` feed, whose
-scale's default moved; in the last bits of `ew_cov`'s `mahal` beside
-`partial_corr` and of `corrchange`'s monitor statistic; in `break_wald`,
-null on a few early rows where 1.2.0 read a number from a variance that
-could not yet be of full rank; and in `kalman`'s rows before a target's
-prior is sized, withheld where 1.2.0 predicted 0.0, and the fit after
-them. The specs that set `huber_scale` are not comparable, since 1.2.0
-refuses the keyword.
+that day against 1.2.0: 1,273 fields identical. On 2026-10-24, 1.3.0's
+build against 1.2.0 compared 1,279 fields of 69 specs, and 106 differ,
+each where its CHANGELOG declares a change and nowhere else: every field
+the fits of `huber` and `sgd(loss="huber")` feed, whose scale's default
+moved; the last bits of the windowed specs (`ewridge`, `lasso`,
+`marginal` and `ew_class` with a `window_size`), at most 3.3e-13
+relative, whose snapshot now decays by the product of the per-row
+factors; the last bits of `ew_cov`'s `mahal` beside `partial_corr` and of
+`corrchange`'s monitor statistic, at most 6.4e-16 relative; `break_wald`,
+null on one to three early rows where 1.2.0 read a number from a variance
+that could not yet be of full rank, and no other value; and `kalman`'s
+rows before a target's prior is sized, withheld where 1.2.0 predicted
+0.0, and the fit after them. The specs that set `huber_scale` are not
+comparable, since 1.2.0 refuses the keyword.
 
 #### A released build's state files
 
