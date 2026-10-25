@@ -259,10 +259,30 @@ pub(crate) const LIBM: f64 = 4.0;
 /// `γ_m = m·u / (1 − m·u)`: a product of `m` factors `(1 + δᵢ)^(±1)`, each
 /// `|δᵢ| ≤ u`, is `1 + θ` with `|θ| ≤ γ_m` (Higham, Lemma 3.1). So `m`
 /// roundings in a row move a result by at most `γ_m` of itself.
+///
+/// Returned no smaller than the exact `γ_m`: `m·u` is exact, and the
+/// subtraction and the division each round by at most `u` of their result,
+/// which the factor `1 + 4u` (itself rounded once) more than restores.
 pub(crate) fn gamma(m: usize) -> f64 {
     let mu = m as f64 * U;
     assert!(mu < 0.5, "γ_{m} is no bound");
-    mu / (1.0 - mu)
+    mu / (1.0 - mu) * (1.0 + 4.0 * U)
+}
+
+/// `1 + γ_{m+4}`, the factor that lifts a bound evaluated in at most `m`
+/// roundings of sums and products of nonnegative numbers to no less than
+/// its exact value (task 273 (a3)). Each such rounding moves the running
+/// value by at most `u` of itself, so the computed bound is at least the
+/// exact one times `(1 − u)^m`; `1 + γ_{m+4}`, rounded to the nearest double
+/// above 1 (it can lose up to `u`) and multiplied in (one more rounding),
+/// more than restores it. A bound is a bound as computed: on a CPU without
+/// FMA, the LU solve of a 3 x 3 Hilbert system made an error equal to its
+/// a-posteriori bound in exact arithmetic, and the bound, evaluated in
+/// floating point from an inverse also taken without FMA, came out 14
+/// units of `u` below it (cpu-paths.yml's Sandy Bridge leg, 2026-10-24;
+/// `the_solve_bound_holds_a_solve_without_fma`).
+pub(crate) fn up(m: usize) -> f64 {
+    1.0 + gamma(m + 4)
 }
 
 /// `γ_n·Σ|xᵢ·yᵢ|`, the most a dot product of `n` terms summed in any order
@@ -272,7 +292,8 @@ pub(crate) fn dot_error(pairs: impl IntoIterator<Item = (f64, f64)>) -> f64 {
     let (n, abs) = pairs
         .into_iter()
         .fold((0usize, 0.0), |(n, s), (x, y)| (n + 1, s + (x * y).abs()));
-    gamma(n) * abs * (1.0 + gamma(n))
+    // `Σ|xᵢyᵢ|` took `2n` roundings, the product with `γ_n` one more.
+    gamma(n) * abs * up(2 * n + 1)
 }
 
 /// `Σ xᵢ·yᵢ` summed left to right from 0, as an iterator's `sum` does, and
@@ -282,13 +303,15 @@ pub(crate) fn dot_error(pairs: impl IntoIterator<Item = (f64, f64)>) -> f64 {
 /// (Higham §3.3, the running error bound). Where the terms cancel, the
 /// partial sums are smaller than `Σ|xᵢyᵢ|`, and so is the bound.
 pub(crate) fn running_dot(pairs: impl IntoIterator<Item = (f64, f64)>) -> (f64, f64) {
-    let (mut s, mut e) = (0.0f64, 0.0f64);
+    let (mut s, mut e, mut n) = (0.0f64, 0.0f64, 0usize);
     for (i, (x, y)) in pairs.into_iter().enumerate() {
         let p = x * y;
         s += p;
         e += p.abs() + if i > 0 { s.abs() } else { 0.0 };
+        n = i + 1;
     }
-    (s, e * U * (1.0 + 4.0 * U))
+    // `|xᵢyᵢ| ≤ |fl(xᵢyᵢ)|/(1 − u)`, and `e` took `2n` additions.
+    (s, e * U * (1.0 + 4.0 * U) * up(2 * n + 2))
 }
 
 /// The 2-norm condition number `κ₂(A) = λ_max / λ_min` of a symmetric
@@ -300,7 +323,8 @@ pub(crate) fn condition(a: &[f64]) -> f64 {
     let n = values.len();
     let least = values[0] - errors[0];
     assert!(least > 0.0, "not positive definite: eigenvalues {values:?}");
-    (values[n - 1] + errors[n - 1]) / least
+    // Rounded up: the sum, the difference and the quotient.
+    (values[n - 1] + errors[n - 1]) / (least * (1.0 - 4.0 * U)) * up(3)
 }
 
 /// The normwise forward error of a backward-stable solve, relative:
@@ -309,9 +333,10 @@ pub(crate) fn condition(a: &[f64]) -> f64 {
 /// with `E = A` and `f = b`). With `Δb = 0` the bound is half of it, and a
 /// caller halves it.
 pub(crate) fn forward_bound(kappa: f64, eta: f64) -> f64 {
-    let ke = kappa * eta;
+    let ke = kappa * eta * (1.0 + 2.0 * U);
     assert!(ke < 1.0, "a vacuous bound: κ {kappa:e} times η {eta:e}");
-    2.0 * ke / (1.0 - ke)
+    // `κη` rounded up, then `1 − κη` taken down and the quotient rounded up.
+    2.0 * ke / ((1.0 - ke) * (1.0 - 4.0 * U)) * up(2)
 }
 
 /// `Σᵢⱼ |xᵢ|·Eᵢⱼ·|yⱼ|` for a row-major `n x n` `E`.
@@ -339,11 +364,13 @@ pub(crate) fn abs_times(m: &[f64], v: &[f64]) -> Vec<f64> {
 /// order.
 pub(crate) fn forward_error(a: &[f64], x_hat: &[f64], e: &[f64], f: &[f64]) -> Vec<f64> {
     let n = x_hat.len();
-    let inv = inverse(a);
+    let inv = abs_inverse(a);
     let ex: Vec<f64> = (0..n)
         .map(|i| (0..n).map(|j| e[i * n + j] * x_hat[j].abs()).sum::<f64>() + f[i])
         .collect();
-    abs_times(&inv, &ex)
+    // `E|x̂| + f` took `2n` roundings, `|A⁻¹|·` that `2n` more.
+    let lift = up(4 * n);
+    abs_times(&inv, &ex).into_iter().map(|v| v * lift).collect()
 }
 
 /// The componentwise backward error of a Cholesky solve of `A x = b`, as
@@ -357,17 +384,26 @@ pub(crate) fn forward_error(a: &[f64], x_hat: &[f64], e: &[f64], f: &[f64]) -> V
 /// a factorization the jitter ladder took as given, its first rung.
 pub(crate) fn cholesky_backward(a: &[f64]) -> Vec<f64> {
     let n = order(a.len());
-    let g = gamma(3 * n + 1) * (1.0 + gamma(n + 1));
+    // Rounded up: the two square roots and the four products.
+    let g = gamma(3 * n + 1) * (1.0 + gamma(n + 1)) * up(6);
     let d: Vec<f64> = (0..n).map(|i| a[i * n + i].abs().sqrt()).collect();
     (0..n * n).map(|ij| g * d[ij / n] * d[ij % n]).collect()
 }
 
 /// The oracle's own error in [`solve`]'s `x̂` of `A x = b`, from its
-/// residual: `x − x̂ = A⁻¹ r` with `r = b − A x̂`, so `|x − x̂| ≤ |A⁻¹|·|r|`.
-/// Each `rᵢ` is summed exactly and rounded once ([`dot`]), so it is the
-/// exact residual to `u` of itself. An a-posteriori bound, the error the LU
-/// actually made, not the worst it could.
+/// residual: `x − x̂ = A⁻¹ r` with `r = b − A x̂`, so `|x − x̂| ≤ |A⁻¹|·|r|`,
+/// with `|A⁻¹|` bounded entry by entry ([`abs_inverse`]). Each `rᵢ` is
+/// summed exactly and rounded once ([`dot`]), so it is the exact residual to
+/// `u` of itself. An a-posteriori bound, the error the LU actually made, not
+/// the worst it could; it can be the error itself, where `r` has one sign
+/// against each row of `A⁻¹`, so it is lifted by its own evaluation's
+/// rounding ([`up`]).
 pub(crate) fn solve_error(a: &[f64], b: &[f64], x_hat: &[f64]) -> Vec<f64> {
+    solve_error_with(a, b, x_hat, &abs_inverse(a))
+}
+
+/// [`solve_error`] with `|A⁻¹|` bounded by `abs_inv`.
+fn solve_error_with(a: &[f64], b: &[f64], x_hat: &[f64], abs_inv: &[f64]) -> Vec<f64> {
     let n = b.len();
     let r: Vec<f64> = (0..n)
         .map(|i| {
@@ -375,16 +411,27 @@ pub(crate) fn solve_error(a: &[f64], b: &[f64], x_hat: &[f64]) -> Vec<f64> {
                 * (1.0 + 2.0 * U)
         })
         .collect();
-    abs_times(&inverse(a), &r)
+    let lift = up(2 * n);
+    abs_times(abs_inv, &r)
+        .into_iter()
+        .map(|v| v * lift)
+        .collect()
 }
 
-/// The oracle's own error in [`inverse`]'s `X̂`, from its residual:
-/// `X̂ − A⁻¹ = A⁻¹R` with `R = AX̂ − I`, so `|X̂ − A⁻¹| ≤ |A⁻¹|·|R|`, `A⁻¹`
-/// read as `X̂` to first order; each entry of `R` summed exactly and rounded
-/// once ([`dot`]). Row-major, entry by entry.
-pub(crate) fn inverse_error(a: &[f64]) -> Vec<f64> {
+/// [`inverse`]'s `X̂` and, entry by entry, a bound on `|X̂ − A⁻¹|`, from the
+/// residual `R = AX̂ − I`, each entry summed exactly and rounded once
+/// ([`dot`]): `X̂ − A⁻¹ = A⁻¹R`, so `D = |X̂ − A⁻¹| ≤ |A⁻¹||R| ≤ F + D|R|`
+/// with `F = |X̂||R|`. With `ρ` the largest column sum of `|R|`, the largest
+/// entry `dᵢ` of row `i` of `D` has `dᵢ ≤ maxⱼFᵢⱼ + dᵢρ`, so for `ρ < 1`
+/// `Dᵢⱼ ≤ Fᵢⱼ + ρ·maxₖFᵢₖ/(1 − ρ)`: no first-order step, and lifted by its
+/// own evaluation's rounding ([`up`]).
+fn inverse_with_error(a: &[f64]) -> (Vec<f64>, Vec<f64>) {
+    inverse_with_error_of(a, inverse(a))
+}
+
+/// [`inverse_with_error`] for any computed inverse `x` of `a`.
+fn inverse_with_error_of(a: &[f64], x: Vec<f64>) -> (Vec<f64>, Vec<f64>) {
     let n = order(a.len());
-    let x = inverse(a);
     let r: Vec<f64> = (0..n * n)
         .map(|ij| {
             let (i, j) = (ij / n, ij % n);
@@ -395,11 +442,47 @@ pub(crate) fn inverse_error(a: &[f64]) -> Vec<f64> {
                 * (1.0 + 2.0 * U)
         })
         .collect();
-    (0..n * n)
+    let f: Vec<f64> = (0..n * n)
         .map(|ij| {
             let (i, j) = (ij / n, ij % n);
             (0..n).map(|m| x[i * n + m].abs() * r[m * n + j]).sum()
         })
+        .collect();
+    let rho = (0..n)
+        .map(|j| (0..n).map(|k| r[k * n + j]).sum::<f64>())
+        .fold(0.0, f64::max)
+        * up(n);
+    assert!(rho < 0.5, "the inverse's residual is not small: ρ {rho:e}");
+    let spill = rho / ((1.0 - rho) * (1.0 - 2.0 * U));
+    let lift = up(2 * n + 4);
+    let d = (0..n * n)
+        .map(|ij| {
+            let row = &f[(ij / n) * n..(ij / n + 1) * n];
+            (f[ij] + spill * row.iter().copied().fold(0.0, f64::max)) * lift
+        })
+        .collect();
+    (x, d)
+}
+
+/// The oracle's own error in [`inverse`]'s `X̂`, entry by entry, row-major
+/// ([`inverse_with_error`]).
+pub(crate) fn inverse_error(a: &[f64]) -> Vec<f64> {
+    inverse_with_error(a).1
+}
+
+/// `|A⁻¹|` bounded above entry by entry, row-major: `|X̂| + |X̂ − A⁻¹|`
+/// ([`inverse_with_error`]), for a bound that multiplies by `|A⁻¹|`, where
+/// `|X̂|` alone could be below it.
+pub(crate) fn abs_inverse(a: &[f64]) -> Vec<f64> {
+    abs_inverse_of(a, inverse(a))
+}
+
+/// [`abs_inverse`] from any computed inverse `x` of `a`.
+fn abs_inverse_of(a: &[f64], x: Vec<f64>) -> Vec<f64> {
+    let (x, d) = inverse_with_error_of(a, x);
+    x.iter()
+        .zip(&d)
+        .map(|(v, e)| (v.abs() + e) * (1.0 + 2.0 * U))
         .collect()
 }
 
@@ -410,9 +493,9 @@ pub(crate) fn inverse_error(a: &[f64]) -> Vec<f64> {
 /// column). Row-major, entry by entry.
 pub(crate) fn cholesky_inverse_error(a: &[f64]) -> Vec<f64> {
     let n = order(a.len());
-    let inv = inverse(a);
     let e = cholesky_backward(a);
-    let abs: Vec<f64> = inv.iter().map(|v| v.abs()).collect();
+    let abs = abs_inverse(a);
+    let lift = up(4 * n);
     let ea: Vec<f64> = (0..n * n)
         .map(|ij| {
             let (i, j) = (ij / n, ij % n);
@@ -422,7 +505,7 @@ pub(crate) fn cholesky_inverse_error(a: &[f64]) -> Vec<f64> {
     (0..n * n)
         .map(|ij| {
             let (i, j) = (ij / n, ij % n);
-            (0..n).map(|m| abs[i * n + m] * ea[m * n + j]).sum()
+            (0..n).map(|m| abs[i * n + m] * ea[m * n + j]).sum::<f64>() * lift
         })
         .collect()
 }
@@ -433,8 +516,15 @@ pub(crate) fn cholesky_inverse_error(a: &[f64]) -> Vec<f64> {
 /// A⁻¹d`, and `A⁻¹` symmetric), at most `|x|ᵀ E |x|` to first order, and
 /// the sum's own `γ_n Σ|dᵢ x̂ᵢ|` ([`dot_error`]).
 pub(crate) fn quad_error(a: &[f64], d: &[f64], e: &[f64]) -> f64 {
+    let n = d.len();
+    // `|x|` bounded by the oracle's `|x̂|` and its own error.
     let x = solve(a, d);
-    abs_form(&x, e, &x) + dot_error(d.iter().copied().zip(x.iter().copied()))
+    let x: Vec<f64> = x
+        .iter()
+        .zip(solve_error(a, d, &x))
+        .map(|(v, s)| (v.abs() + s) * (1.0 + 2.0 * U))
+        .collect();
+    abs_form(&x, e, &x) * up(4 * n) + dot_error(d.iter().copied().zip(x.iter().copied()))
 }
 
 /// The oracle's own error in [`quad_form`]'s `uᵀx̂`: `uᵀ(x − x̂) = xᵀr`
@@ -444,13 +534,19 @@ pub(crate) fn quad_error(a: &[f64], d: &[f64], e: &[f64]) -> f64 {
 pub(crate) fn quad_form_error(a: &[f64], u: &[f64]) -> f64 {
     let n = u.len();
     let x = solve(a, u);
+    // `|x|`, the exact solution's, bounded by `|x̂|` and its own error.
+    let ax: Vec<f64> = x
+        .iter()
+        .zip(solve_error(a, u, &x))
+        .map(|(v, s)| (v.abs() + s) * (1.0 + 2.0 * U))
+        .collect();
     let r: f64 = (0..n)
         .map(|i| {
             let ri = dot(std::iter::once((u[i], 1.0)).chain((0..n).map(|j| (-a[i * n + j], x[j]))));
-            ri.abs() * (1.0 + 2.0 * U) * x[i].abs()
+            ri.abs() * (1.0 + 2.0 * U) * ax[i]
         })
         .sum();
-    r + dot_error(u.iter().copied().zip(x.iter().copied()))
+    r * up(2 * n) + dot_error(u.iter().copied().zip(x.iter().copied()))
 }
 
 /// [`sym_eigen`]'s eigenvalues and vectors, with `‖E‖_F` and `η = ‖G −
@@ -491,7 +587,7 @@ fn eigen_residuals(a: &[f64]) -> (Vec<f64>, Vec<Vec<f64>>, f64, f64) {
 /// ‖E‖_F + η|λ̂ⱼ|`.
 pub(crate) fn eigen_error(a: &[f64]) -> (Vec<f64>, Vec<f64>) {
     let (values, _, e, eta) = eigen_residuals(a);
-    let errors = values.iter().map(|l| e + eta * l.abs()).collect();
+    let errors = values.iter().map(|l| (e + eta * l.abs()) * up(2)).collect();
     (values, errors)
 }
 
@@ -506,10 +602,12 @@ pub(crate) fn log_det_error(a: &[f64]) -> f64 {
     let mut abs = 0.0;
     for (l, d) in values.iter().zip(&errors) {
         assert!(*l > *d, "an eigenvalue {l:e} within its error {d:e} of 0");
-        total += d / (l - d);
+        total += d / ((l - d) * (1.0 - 2.0 * U));
         abs += l.ln().abs();
     }
-    total + (LIBM * U + gamma(n)) * abs * (1.0 + gamma(n))
+    // The quotients' sum took `2n` roundings; `abs`, a size, is lifted by
+    // the platform's `ln` with `LIBM` and its sum by `γ_n`.
+    total * up(2 * n) + (LIBM * U + gamma(n)) * abs * (1.0 + gamma(n)) * up(4)
 }
 
 /// The most a model's `ln det A` may be off, taken as `solve.rs`'s
@@ -523,7 +621,7 @@ pub(crate) fn log_det_error(a: &[f64]) -> f64 {
 /// inverse of a leading block has a diagonal no larger than `A⁻¹`'s).
 pub(crate) fn cholesky_log_det_error(a: &[f64]) -> f64 {
     let n = order(a.len());
-    let inv = inverse(a);
+    let inv = abs_inverse(a);
     let g = gamma(n + 1) * (1.0 + gamma(n + 1));
     let d: Vec<f64> = (0..n).map(|i| a[i * n + i].sqrt()).collect();
     let trace: f64 = (0..n * n)
@@ -532,7 +630,7 @@ pub(crate) fn cholesky_log_det_error(a: &[f64]) -> f64 {
     let logs: f64 = (0..n)
         .map(|i| 2.0 * (0.5 * a[i * n + i].ln().abs()).max(0.5 * inv[i * n + i].ln().abs()))
         .sum();
-    trace + (LIBM * U + gamma(n)) * logs * (1.0 + gamma(n))
+    trace * up(2 * n * n + 4) + (LIBM * U + gamma(n)) * logs * (1.0 + gamma(n)) * up(4)
 }
 
 /// The oracle's own error in [`gaussian_log_density`]: half the
@@ -585,7 +683,9 @@ pub(crate) fn gaussian_log_density_error(cov: &[f64], delta: &[f64]) -> f64 {
             .sum::<f64>(),
     );
     let combine = (LIBM * U + U) * c + gamma(2) * (c + ld.abs() + q);
+    // Each of the terms above took at most `4n + 8` roundings of sizes.
     0.5 * (log_det_error(cov) + (polar + residual + rounding) * (1.0 + gamma(n)) + combine)
+        * up(4 * n + 8)
 }
 
 /// The most a model's Gaussian log density `−½(n ln 2π + ln det Σ +
@@ -601,6 +701,7 @@ pub(crate) fn cholesky_log_density_error(cov: &[f64], delta: &[f64]) -> f64 {
     let ld = log_det(cov).abs();
     let combine = (LIBM * U + U) * c + gamma(2) * (c + ld + q);
     0.5 * (cholesky_log_det_error(cov) + quad_error(cov, delta, &cholesky_backward(cov)) + combine)
+        * up(8)
 }
 
 /// `Σᵢ |∂f/∂xᵢ|·Δxᵢ`, the first-order bound on how far independent errors
@@ -965,17 +1066,118 @@ mod tests {
         }
     }
 
+    /// A partial-pivot LU solve of `A X = B` (columns of a row-major
+    /// `n x t`) with every product and sum rounded on its own, as a CPU
+    /// without FMA rounds them (Rust never fuses `a - l * u`).
+    fn lu_solve_without_fma(a: &[f64], b: &[f64], t: usize) -> Vec<f64> {
+        let n = order(a.len());
+        let (mut m, mut x) = (a.to_vec(), b.to_vec());
+        for k in 0..n {
+            let p = (k..n)
+                .max_by(|&i, &j| m[i * n + k].abs().total_cmp(&m[j * n + k].abs()))
+                .unwrap();
+            for j in 0..n {
+                m.swap(k * n + j, p * n + j);
+            }
+            for c in 0..t {
+                x.swap(k * t + c, p * t + c);
+            }
+            for i in k + 1..n {
+                let l = m[i * n + k] / m[k * n + k];
+                m[i * n + k] = l;
+                for j in k + 1..n {
+                    m[i * n + j] -= l * m[k * n + j];
+                }
+            }
+        }
+        for c in 0..t {
+            for i in 0..n {
+                for j in 0..i {
+                    x[i * t + c] -= m[i * n + j] * x[j * t + c];
+                }
+            }
+            for i in (0..n).rev() {
+                for j in i + 1..n {
+                    x[i * t + c] -= m[i * n + j] * x[j * t + c];
+                }
+                x[i * t + c] /= m[i * n + i];
+            }
+        }
+        x
+    }
+
+    /// The case that failed on cpu-paths.yml's Sandy Bridge leg, without
+    /// FMA, reproduced in plain arithmetic (task 273 (a3)): the LU's error
+    /// in `x₀` of the 3 x 3 Hilbert system is `2⁻⁴⁹`, exactly what
+    /// `|A⁻¹|·|r|` is in exact arithmetic, since `r` has one sign against
+    /// each row of `A⁻¹`. The bound as it was, `|X̂|·|r|` from an inverse
+    /// also taken without FMA and evaluated in floating point, came out
+    /// below it (CI: `1.7763568394002477e-15`, here `…479e-15`); the bound
+    /// as it is, `|A⁻¹|` bounded through the inverse's residual and lifted
+    /// by its own rounding, holds it at every order, and is not loose by
+    /// more than a thousand.
+    #[test]
+    fn the_solve_bound_holds_a_solve_without_fma() {
+        for n in 3..=9 {
+            let (p, _, _, _) = hilbert(n);
+            let x: Vec<f64> = (0..n).map(|i| [3.0, -1.0, 2.0, -5.0][i % 4]).collect();
+            let b: Vec<f64> = (0..n)
+                .map(|i| (0..n).map(|j| p[i * n + j] * x[j]).sum())
+                .collect();
+            let lu = lu_solve_without_fma(&p, &b, 1);
+            let ident: Vec<f64> = (0..n * n).map(|ij| f64::from(ij / n == ij % n)).collect();
+            let xinv = lu_solve_without_fma(&p, &ident, n);
+            let bound = solve_error_with(&p, &b, &lu, &abs_inverse_of(&p, xinv.clone()));
+            let r: Vec<f64> = (0..n)
+                .map(|i| {
+                    let terms = (0..n).map(|j| (-p[i * n + j], lu[j]));
+                    dot(std::iter::once((b[i], 1.0)).chain(terms)).abs() * (1.0 + 2.0 * U)
+                })
+                .collect();
+            let old = abs_times(&xinv, &r);
+            let mut worst = 0.0f64;
+            for i in 0..n {
+                let err = (lu[i] - x[i]).abs();
+                assert!(err <= bound[i], "n={n} x{i}: {err:e} > {:e}", bound[i]);
+                worst = worst.max(err / bound[i]);
+                if n == 3 {
+                    assert_eq!(err, [2f64.powi(-49), 3.0 * 2f64.powi(-48)][i.min(1)]);
+                    assert!(
+                        err > old[i],
+                        "n=3 x{i}: the old bound held, {err:e} <= {:e}",
+                        old[i]
+                    );
+                }
+            }
+            assert!(
+                worst > 1e-3,
+                "n={n}: the bound is {:.0} times its worst error",
+                1.0 / worst
+            );
+        }
+    }
+
     #[test]
     fn the_small_helpers_are_their_formulas() {
-        assert_eq!(gamma(1), U / (1.0 - U));
+        assert_eq!(gamma(1), U / (1.0 - U) * (1.0 + 4.0 * U));
         assert_eq!(gamma(0), 0.0);
-        assert_eq!(forward_bound(10.0, 0.01), 2.0 * 0.1 / 0.9);
+        // `γ_m` no smaller than `m·u/(1 − m·u)`: `1 − m·u` is exact, and the
+        // sign of `γ̂·(1 − m·u) − m·u`, summed exactly, says which side it
+        // lies on; and `up(m)` no smaller than `1 + γ_{m+4}`'s exact value.
+        for m in [1usize, 2, 3, 7, 30, 1000, 1 << 20] {
+            let mu = m as f64 * U;
+            assert!(dot([(gamma(m), 1.0 - mu), (-mu, 1.0)]) >= 0.0, "γ_{m}");
+            assert!(up(m) - 1.0 >= (m + 4) as f64 * U, "up({m})");
+        }
+        let ke = 0.1 * (1.0 + 2.0 * U);
         assert_eq!(
-            dot_error([(2.0, -3.0), (1.0, 1.0)]),
-            gamma(2) * 7.0 * (1.0 + gamma(2))
+            forward_bound(10.0, 0.01),
+            2.0 * ke / ((1.0 - ke) * (1.0 - 4.0 * U)) * up(2)
         );
+        assert!(forward_bound(10.0, 0.01) > 2.0 * 0.1 / 0.9);
+        assert_eq!(dot_error([(2.0, -3.0), (1.0, 1.0)]), gamma(2) * 7.0 * up(5));
         let e = cholesky_backward(&[4.0, 1.0, 1.0, 9.0]);
-        let g = gamma(7) * (1.0 + gamma(3));
+        let g = gamma(7) * (1.0 + gamma(3)) * up(6);
         assert_eq!(
             e,
             vec![g * 2.0 * 2.0, g * 2.0 * 3.0, g * 3.0 * 2.0, g * 3.0 * 3.0]
