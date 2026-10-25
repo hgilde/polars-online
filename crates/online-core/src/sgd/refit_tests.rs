@@ -229,3 +229,109 @@ fn a_state_whose_buffers_do_not_fit_does_not_load() {
     off.cfg.refit_rows = 0;
     assert!(!loads(&off), "buffers under a refit that is off");
 }
+
+/// The refit's fit under a constraint is projected on it in the
+/// coordinates the coefficients are held in: while the scaler warms up
+/// (a refit on the tenth row) and once they are held in the caller's units
+/// (on the fortieth).
+#[test]
+fn the_refit_is_projected_under_the_scaler() {
+    for at in [10, 40] {
+        let data = rows(at as usize, false);
+        let mut c = cfg(at, true, LearningRate::Constant, Decay::Lam(1.0));
+        c.constraint = Some(Constraint {
+            lo: vec![0.0, 0.0],
+            hi: vec![0.5, 0.5],
+            sum: None,
+        });
+        let mut m = Sgd::new(c).unwrap();
+        run(&mut m, &data);
+        assert!(!m.refit[1].open(), "the refit ran at {at}");
+        assert_eq!(m.scaler_warming(), at == 10);
+        for b in m.coefficients() {
+            assert!(
+                b[1..].iter().all(|v| (-1e-12..=0.5 + 1e-12).contains(v)),
+                "{at}: {b:?}"
+            );
+        }
+    }
+}
+
+/// `l2` enters the refit as the steps apply it, once a row on each slope:
+/// the refit is the fixed point of the penalized weighted least squares at
+/// its own Huber weights, solved here by faer's LU (`crate::oracle`) on the
+/// raw normal equations, the intercept unpenalized; and it is shrunk
+/// against the fit without the penalty.
+#[test]
+fn the_refit_takes_l2_as_the_steps_do() {
+    let n = 40usize;
+    let data = rows(n, false);
+    let fit = |l2: f64| {
+        let mut c = cfg(n as u32, false, LearningRate::Constant, Decay::Lam(1.0));
+        c.l2 = l2;
+        let mut m = Sgd::new(c).unwrap();
+        run(&mut m, &data);
+        assert!(!m.refit[1].open());
+        m.coefficients()[1].clone()
+    };
+    let (b, free) = (fit(0.5), fit(0.0));
+    assert!(
+        b[1].abs() + b[2].abs() < free[1].abs() + free[2].abs(),
+        "{b:?} {free:?}"
+    );
+    // The fixed point, target 1 (present on every row), unit weights, no decay.
+    let rows: Vec<([f64; 3], f64)> = data
+        .iter()
+        .map(|(x, y, _)| ([1.0, x[0], x[1]], y[1].unwrap()))
+        .collect();
+    let r: Vec<f64> = rows
+        .iter()
+        .map(|(z, y)| (y - (b[0] * z[0] + b[1] * z[1] + b[2] * z[2])).abs())
+        .collect();
+    let s = crate::huber_refit::weighted_median(&r, &vec![1.0; n]) / crate::NORMAL_Q3;
+    let u: Vec<f64> = r.iter().map(|a| (1.345 * s / a).min(1.0)).collect();
+    let total: f64 = u.iter().sum();
+    let mut a = vec![0.0; 9];
+    let mut rhs = vec![0.0; 3];
+    for ((z, y), ui) in rows.iter().zip(&u) {
+        for p in 0..3 {
+            rhs[p] += ui * z[p] * y;
+            for q in 0..3 {
+                a[p * 3 + q] += ui * z[p] * z[q];
+            }
+        }
+    }
+    for p in 1..3 {
+        a[p * 3 + p] += REFIT_RIDGE * total + 0.5 * n as f64;
+    }
+    let again = crate::oracle::solve(&a, &rhs);
+    for (p, q) in b.iter().zip(&again) {
+        assert!((p - q).abs() < 1e-7 * (1.0 + q.abs()), "{b:?} {again:?}");
+    }
+}
+
+/// A sparse target under an irregular clock holds a run of ageings a row
+/// it waits on: past four a learned row of its count, the refit is given up,
+/// its buffer freed, and the status says so; the fit is the one pass's.
+#[test]
+fn a_sparse_target_gives_its_refit_up_past_the_cap() {
+    let mut m = Sgd::new(cfg(
+        20,
+        false,
+        LearningRate::Constant,
+        Decay::Halflife(50.0),
+    ))
+    .unwrap();
+    let mut s = 3u64;
+    for i in 0..400 {
+        let x = [lcg(&mut s), lcg(&mut s)];
+        // Target 0 on every tenth row; target 1 on every row.
+        let y0 = (i % 10 == 0).then(|| 1.0 + x[0]);
+        let d = 1.0 + 0.5 * lcg(&mut s).abs();
+        m.step(&x, &[y0, Some(x[1])], d, 1.0);
+    }
+    let st = m.refit_status();
+    assert!(st[0].done && st[0].abandoned && !st[0].failed, "{st:?}");
+    assert!(st[1].done && !st[1].abandoned && st[1].passes > 0, "{st:?}");
+    assert_eq!(m.refit[0].held(), 0);
+}

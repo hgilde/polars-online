@@ -237,3 +237,74 @@ fn a_state_whose_buffers_do_not_fit_is_refused() {
         "buffers under a refit that is off"
     );
 }
+
+/// A sparse target under an irregular clock gives its refit up past four
+/// ageing runs a learned row of its count, its buffer freed; under a
+/// regular clock its ageings are one run a gap, and it refits. The run of
+/// ageings is replayed decay by decay, so the regular case is the stream's
+/// own sums at a cut of `1e300` (every Huber weight 1), to the bit.
+#[test]
+fn a_sparse_target_refits_on_a_regular_clock_and_gives_up_on_an_irregular_one() {
+    let mut s = 9u64;
+    let data: Vec<([f64; 2], [Option<f64>; 2], f64)> = (0..600)
+        .map(|i| {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y0 = (i % 10 == 0).then(|| 1.0 + x[0] - x[1]);
+            (x, [y0, Some(x[1] + 0.1 * lcg(&mut s))], lcg(&mut s).abs())
+        })
+        .collect();
+    let mut irregular = Robust::new(base(1.345, Decay::Halflife(80.0), 20)).unwrap();
+    for (x, y, d) in &data {
+        irregular.step(x, y, 1.0 + d, 1.0);
+    }
+    let st = irregular.refit_status();
+    assert!(st[0].abandoned && st[0].done, "{st:?}");
+    assert!(!st[1].abandoned && st[1].passes > 0, "{st:?}");
+    // A regular clock: the gaps are runs of nine.
+    let regular = |rows: u32| {
+        let mut m = Robust::new(base(1e300, Decay::Halflife(80.0), rows)).unwrap();
+        let p: Vec<Vec<f64>> = data
+            .iter()
+            .map(|(x, y, _)| m.step(x, y, 1.0, 1.0).pred)
+            .collect();
+        (m, p)
+    };
+    let (m, on) = regular(20);
+    let st = m.refit_status();
+    assert!(st[0].done && !st[0].abandoned && st[0].passes > 0, "{st:?}");
+    let (_, off) = regular(0);
+    assert_eq!(bits(&on), bits(&off));
+}
+
+/// The refit's passes do not count as solve failures: on a design whose
+/// every solve takes a jitter (two equal features, no ridge), the refit adds
+/// to the count only its own target's one solve after it, where each pass
+/// added its jitters.
+#[test]
+fn the_refit_passes_are_not_solve_failures() {
+    let mut s = 4u64;
+    let data: Vec<([f64; 2], [Option<f64>; 2], f64)> = (0..80)
+        .map(|_| {
+            let a = lcg(&mut s);
+            ([a, a], [Some(2.0 * a + 0.1 * lcg(&mut s)), Some(a)], 1.0)
+        })
+        .collect();
+    let mut c = base(1.345, Decay::Lam(1.0), 0);
+    c.ridge = 0.0;
+    let mut off = Robust::new(c.clone()).unwrap();
+    c.refit_rows = 40;
+    let mut on = Robust::new(c).unwrap();
+    for (x, y, w) in &data[..40] {
+        on.step(x, y, 1.0, *w);
+        off.step(x, y, 1.0, *w);
+    }
+    assert!(on.refit_status().iter().all(|r| r.done && r.passes > 0));
+    assert!(off.solve_failures > 0, "the design jitters");
+    // Two targets refit on row 39, each solving its own slots once more.
+    assert!(
+        on.solve_failures <= off.solve_failures + 2,
+        "{} vs {}",
+        on.solve_failures,
+        off.solve_failures
+    );
+}

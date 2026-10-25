@@ -4247,10 +4247,11 @@ captured. At one-sided wild rows on an eighth of 20,000 rows, 13 of 40
 `huber` streams ended more than 0.05 from statsmodels' converged fit, and
 none with the refit. The refit fits each target's first 200 learned rows
 to convergence, once, and rebuilds the scale from that fit's residuals.
-`huber_refit_rows=0` restores the earlier numbers to the bit, and a state
-saved before it loads with the refit off. The CHANGELOG declares the move
-with its size, and MODELS.md gives the capture measured with and without
-the refit.
+`huber_refit_rows=0` restores the earlier numbers to the bit. A state
+saved before it loads with the refit off, while a group a resumed bank
+first sees after the load, or one a drift reset starts over, refits under
+the default. The CHANGELOG declares the move with its size, and MODELS.md
+gives the capture measured with and without the refit.
 
 **A spec parameter renamed after 1.0 is forwarded by a table, and any
 other renamed name by a forwarding of its own.** The table reads a spec

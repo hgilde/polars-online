@@ -2877,8 +2877,11 @@ def sgd(
     the refit below rebuilds it from the converged fit's residuals. On
     ``y = 1000 + 2x + 0.5ε`` with +50 on 5% of the rows, all with ``x > 0``,
     and no decay, the median slope over five seeds is 3.751 under the squared
-    loss, 2.556 under ``"rms"`` (3.751, the squared loss's, with
-    ``huber_refit_rows = 0``) and 2.013 under ``"mad"``. Inside the tube
+    loss and 2.013 under ``"mad"`` (2.016 with ``huber_refit_rows = 0``).
+    The refit takes the first residuals out of ``"rms"`` too, but the
+    outliers still inflate it: over 40 seeds at 5% every stream stayed more
+    than 0.25 from statsmodels' converged ``RLM`` under ``"rms"``, with the
+    refit or without it. Inside the tube
     the gradient is zero. On a target at 1,000 with a spread of 2, the first residuals put the
     residual's std near 1,000, so a tube of ``eps = 0.1`` drawn in it would be
     about 100 wide and hold every row. Without decay it would never narrow,
@@ -2897,14 +2900,19 @@ def sgd(
 
     .. code-block:: text
 
-        v_i = w_i * (the decay factors of the rows after i)
+        v_i = w_i * (the decay factors of the rows after i), v_i' the same
+              by the scale's clock (huber_scale_half_life)
         b   = weighted least squares of the rows at v_i
-        r_i = y_i - z_i'b,  s = weighted median of |r_i| at v_i, over 0.6745
+        r_i = y_i - z_i'b,  s = weighted median of |r_i| at v_i', over 0.6745
         b   = weighted least squares at v_i * min(1, delta * s / |r_i|)
         repeated until b moves by under 1e-10 of max|b|, or 50 passes
 
-    with a ridge of 1e-6 on the mean-form system and without ``l2``, a
-    penalty on the steps, which the steps after it apply. ``s`` is then
+    with a ridge of 1e-6 on the mean-form system, and ``l2`` as the steps
+    apply it: a penalty of ``l2 * s_i^2`` on each slope (``s_i`` the
+    feature's scale under ``standardize``, 1 without), once a row, so the fit
+    is the minimum of ``sum(v_i * rho(r_i / s)) + l2 / 2 * sum(s_i^2 * b_i^2)
+    * sum(c_i)``, ``c_i`` each row counted once and decayed as its weight
+    is. The intercept is not penalized. ``s`` is then
     rebuilt from the fit's residuals. The fit is set in the coordinates the
     coefficients are held in: the caller's units, or, while the scaler still
     warms up, its moments' coordinates as they stand (``b_i * s_i`` and
@@ -2912,8 +2920,12 @@ def sgd(
     projects it as it projects a step. AdaGrad's sums of squared gradients
     stay, so the step sizes are the ones the rows taught; emptied, they would
     make the next steps throw the fit off. ``inv_scaling`` reads the weight,
-    which the refit does not move. With the refit, 2 of the 40 streams at 10%
-    were more than 0.05 from ``RLM``, the worst by 0.075.
+    which the refit does not move. Over 2,000 rows with the refit, 2 of the
+    40 streams at 10% were more than 0.05 from ``RLM``, the worst by 0.075,
+    and at 20% 16, 4 of them more than 0.25 (1,000 rows of refit: 8, none).
+    Over 20,000 rows at 20% the 40 of 40 captured streams became 23 more
+    than 0.05 and none more than 0.25. A constant learning rate's own wander
+    is about 0.03 at every share.
 
     .. rubric:: Parameters
 
@@ -2944,13 +2956,18 @@ def sgd(
         level can change, give it about a fifth of ``half_life``, or
         shorter.
     ``huber_refit_rows``
-        The learned rows after which each target's first rows are refit to
-        their converged Huber fit, once (the rubric above). Default 200 under
-        ``loss = "huber"``; ``0`` turns the refit off, which gives the numbers
-        of the releases before it, to the bit. A target's rows are held until
-        its refit, ``(features + 4) * 8`` bytes each. Off by default, and
-        refused when given, beside an infinite ``huber_delta``, the squared
-        loss. ``loss = "huber"`` only; refused beside another loss.
+        The learned rows after which each target's first rows are refit to their
+        converged Huber fit, once (the rubric above). Default 200 under ``loss =
+        "huber"``; ``0`` turns the refit off, which gives the numbers of the releases
+        before it, to the bit. A target's rows are held until its refit: ``(features +
+        4) * 8`` bytes a learned row, and 32 bytes a run of rows that only aged it (its
+        value null or its weight 0), one run for such rows in a row at one clock step.
+        Past 4 runs a learned row of the count, as on a target present on fewer than
+        about one row in five under an irregular clock, the target gives its refit up
+        and keeps its one-pass fit. The refit takes 0.06 to 7.2 ms once, for 1 to 50
+        features and 200 to 1,000 rows (an Apple M4 Pro under other load, best of 9).
+        Off by default, and refused when given, beside an infinite ``huber_delta``, the
+        squared loss. ``loss = "huber"`` only; refused beside another loss.
     ``quantile``
         The level for ``loss = "quantile"``, in ``(0, 1)``; required for it.
     ``eps``

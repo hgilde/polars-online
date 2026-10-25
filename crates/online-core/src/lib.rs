@@ -154,7 +154,7 @@ pub use gaps::{GramPart, TargetGaps};
 pub use health::FeatureHealth;
 pub use hmm::{Hmm, HmmCfg};
 pub use holt::{Holt, HoltCfg};
-pub use huber_refit::DEFAULT_REFIT_ROWS;
+pub use huber_refit::{DEFAULT_REFIT_ROWS, REFIT_PASSES, REFIT_RUNS_PER_ROW, RefitStatus};
 pub use influence::Influence;
 pub use kalman::{Kalman, KalmanCfg};
 pub use lasso::{Lasso, LassoCfg};
@@ -714,7 +714,18 @@ pub use window::{
 ///   and was fitted without a refit, so the loader is the fields'
 ///   defaults: `refit_rows` 0 and no buffers, and the state goes on to the
 ///   bit as a 63 build continued it; a stream resumed from it never refits
-///   rows it has long passed. Schema 63's fixtures are kept
+///   rows it has long passed. A bank saved at 63 keeps its spec as written,
+///   with no `huber_refit_rows`, so a group it first sees after the load, or
+///   one a drift reset rebuilds, takes the spec's default and refits at
+///   200 rows, beside the restored groups that do not. A buffer holds its
+///   learned rows and, between them, the rows that only aged its sums as
+///   runs of `(λ, λ_s, count, before)`, capped at four runs a learned row of
+///   the count, past which the target gives its refit up
+///   (`huber_refit::RefitBuf`). And a stream's instances keep their drift
+///   reset's restart mark as `restarted`, one per instance, which a 63
+///   state, written before it, loads as `false`: within 63, before its
+///   release, the mark was `decay_time`'s sign (task 278, batch 3), which a
+///   released 63 never wrote. Schema 63's fixtures are kept
 ///   (`tests/state_fixtures/v63/`).
 pub const SCHEMA_VERSION: u32 = 64;
 

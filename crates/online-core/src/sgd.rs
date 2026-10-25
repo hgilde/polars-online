@@ -109,7 +109,10 @@
 //! does, every later residual is inside the cut, and the loss is the
 //! squared loss to the bit (C-1, review round 9: slope 3.751 under both on
 //! a target at 1,000 with 5% one-sided outliers, 2.016 under `Mad`;
-//! docs/PLAN.md task 271). Inside
+//! docs/PLAN.md task 271). That was one pass; the refit of the first rows
+//! (`SgdCfg::refit_rows`, on by default, docs/PLAN.md task 277) rebuilds
+//! either scale from its converged fit's residuals, which takes the first
+//! residuals out of `Rms` too, though the outliers still inflate it. Inside
 //! the tube the gradient is zero: a tube of `eps = 0.1` drawn in the
 //! residual's spread on a target at 1,000 in a spread of 2 was about 100
 //! wide, held every row, and without decay never narrowed, so the fit
@@ -732,6 +735,12 @@ impl Sgd {
         &self.sig2
     }
 
+    /// Per target, how its refit stands ([`SgdCfg::refit_rows`]): empty
+    /// when the refit is off.
+    pub fn refit_status(&self) -> Vec<crate::RefitStatus> {
+        self.refit.iter().map(RefitBuf::status).collect()
+    }
+
     /// Per target, the sketch of `|e|` the MAD scale is read from, under
     /// `huber_scale = "mad"`; empty otherwise.
     pub fn mad_sketch(&self) -> &[crate::EwQuantile] {
@@ -901,25 +910,42 @@ impl Sgd {
     /// stays: AdaGrad's sums of squared gradients keep the step sizes the
     /// rows taught, where emptied they would make the next steps throw the
     /// fit off, and `inv_scaling` reads the weight, which a refit does not
-    /// move (hard rule 8). The fit leaves out `l2`, a penalty on the steps;
-    /// the steps after the refit apply it from there.
+    /// move (hard rule 8). The fit takes `l2` as the steps apply it, a
+    /// penalty on each standardized slope once a row ([`huber_refit::irls`]);
+    /// the steps after the refit go on applying it.
     #[inline(never)]
     fn refit_target(&mut self, j: usize) {
         let SgdLoss::Huber { delta } = self.cfg.loss else {
             return;
         };
         let intercept = self.cfg.fit_intercept;
-        let buf = self.refit[j].take();
-        let rows = Rows::new(&buf, self.cfg.n_features);
-        let Some(fit) =
-            huber_refit::irls(&rows, intercept, delta, self.cfg.huber_scale, REFIT_RIDGE)
-        else {
+        let off = usize::from(intercept);
+        let (buf, ages) = self.refit[j].take();
+        let rows = Rows::new(&buf, &ages, self.cfg.n_features);
+        // `l2` is a penalty on the standardized slope `β_i = s_i b_i` a step
+        // applies once a row, so in the caller's units it is `l2 · s_i²`
+        // a row; without a scaler `s_i` is 1.
+        let s: Vec<f64> = match &self.scaler {
+            Some(sc) => scales_of(sc, off)[off..].to_vec(),
+            None => vec![1.0; self.cfg.n_features],
+        };
+        let l2: Vec<f64> = s.iter().map(|si| self.cfg.l2 * si * si).collect();
+        let Some((fit, passes)) = huber_refit::irls(
+            &rows,
+            intercept,
+            delta,
+            self.cfg.huber_scale,
+            REFIT_RIDGE,
+            &l2,
+        ) else {
+            // No pass solved: the one-pass fit stands, and the refit says so.
+            self.refit[j].fail();
             return;
         };
+        self.refit[j].ran(passes);
         let scale = huber_refit::rebuild_scale(&rows, self.cfg.huber_scale, |i| {
             rows.y(i) - huber_refit::fitted(&fit, rows.x(i), intercept)
         });
-        let off = usize::from(intercept);
         match &self.scaler {
             Some(sc) if !self.warmup.switched() => {
                 let s = scales_of(sc, off);
@@ -1531,13 +1557,13 @@ impl OnlineModel for Sgd {
         // a target whose buffer it fills is refit, after the row's own
         // prediction, step and scale (hard rule 2).
         if !taught.is_empty() {
-            let (nf, cap) = (self.cfg.n_features, self.cfg.refit_rows);
+            let cap = self.cfg.refit_rows;
             for (j, t) in taught.iter().enumerate() {
                 let b = &mut self.refit[j];
                 let full = match t {
                     Some(yj) => b.learn(x, *yj, weight, lam, lam_scale, cap),
                     None => {
-                        b.age(nf, lam, lam_scale);
+                        b.age(lam, lam_scale, cap);
                         false
                     }
                 };

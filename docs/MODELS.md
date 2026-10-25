@@ -864,8 +864,9 @@ batch fit does:
 
 ```
 v_i = w_i · λ_{i+1} ⋯ λ_n                 each buffered row's weight, decayed to the refit's row n
+                                          (v_i' the same by the scale's clock, huber_scale_half_life)
 r_i = y_i − z_i·β                         against the last pass's fit (the first pass: the online fit)
-σ   = weighted median of |r_i| at v_i, over 0.6745        (the weighted root mean square under "rms")
+σ   = weighted median of |r_i| at v_i', over 0.6745       (the weighted root mean square under "rms")
 u_i = min(1, δσ / |r_i|)
 β   = the ridge solve of the rows at v_i · u_i            repeated until β moves by under 1e-10 of max|β|, or 50 passes
 ```
@@ -900,11 +901,23 @@ above 0, a first window of 200 rows can itself be captured; 1,000 rows
 holds there. `huber_refit_rows=0` turns the refit off, and gives the numbers
 of the releases before it, to the bit.
 
-The refit holds each target's rows until it runs: `(features + 4) · 8`
-bytes a row, about 8 KB a target with one feature and 200 rows, freed by
-the refit. It runs once, in 0.08 to 0.28 ms at one feature and 2.6 to 5.4
-ms at 50 features for 200 to 1,000 rows, measured on an Apple M4 Pro under
-other load, and a row after it costs what it did, within 1%.
+**The refit holds each target's rows until it runs, then frees them.** A
+learned row takes `(features + 4) · 8` bytes. The rows that only aged the
+target -- its value null, or its weight 0 -- take 32 bytes a run, one run
+for such rows in a row at one clock step. So one feature and 200 rows take
+about 8 KB a target. A group shorter than `huber_refit_rows` never refits
+and holds its rows to its end: measured with 5,000 groups of 150 rows, two
+targets and 20 features, the bank held 79 KB a group more than without the
+refit, and its saved state 62 KB more. Past four runs a learned row of
+`huber_refit_rows` the target gives its refit up, frees its rows and keeps
+its one-pass fit: under a regular clock that never happens, since a gap of
+any length is one run, and under an irregular one it happens to a target
+present on fewer than about one row in five. The refit runs once, in 0.06
+to 7.2 ms for 1 to 50 features and 200 to 1,000 rows (an Apple M4 Pro under
+other load, best of 9), and a row after it costs what it did, within 2%.
+At 500 features and more, 200 rows are fewer than the coefficients' count,
+the fit is the ridge's, and the iteration runs to its cap of 50 passes:
+7 s once at 1,000 features.
 
 **Two settings have no refit: it is off by default there, and refused when
 asked for.** Under `ridge_scale="sum"` the prior has aged with every row
@@ -1108,9 +1121,13 @@ residuals stay in it, the cut stays wider than every later residual, and the
 Huber loss is the squared loss, until the refit below rebuilds the scale
 from the converged fit's residuals. On `y = 1000 + 2x + 0.5ε` with a row 50
 too high on 5% of the rows, all with `x` above 0, and no decay, the median
-slope over five seeds is 3.751 under the squared loss, 2.556 under
-`huber_scale="rms"` (3.751 with `huber_refit_rows=0`) and 2.013 under the
-default `"mad"`. Inside the tube the gradient is zero. A tube drawn in
+slope over five seeds is 3.751 under the squared loss, 2.016 under the
+default `"mad"` with `huber_refit_rows=0`, and 2.013 with the default
+refit. The refit rebuilds `"rms"` from its converged fit's residuals too,
+which takes the first residuals out of it, but the outliers still inflate
+it: over 40 seeds at 5% wild rows every stream stayed more than 0.25 from
+`RLM` under `"rms"`, with the refit (a median gap of 0.60) or without it
+(1.85). Inside the tube the gradient is zero. A tube drawn in
 the residuals' spread on a target at 1,000 with a spread of 2 was about 100
 wide and held every row, and without decay it never narrowed.
 
@@ -1970,7 +1987,9 @@ thin bin bends the response curve there, and a screen that reads binned
 means of a residual, or of its square, sees a shape that is not in the data.
 Under `"huber"` each bin's location is Huber's M-estimate of location,
 learned in one pass, as [`huber`](#huber--quantile--robust-regression)
-learns a regression. With `c` the cut, `bin_huber_delta` (default 1.345)
+learns a regression past its first rows; the bins have no refit of their
+first rows, so a share of spikes can capture a bin's first locations and
+the scale learned from them, as one pass of `huber` can be captured. With `c` the cut, `bin_huber_delta` (default 1.345)
 times the target's robust scale `σ_t`, both read before the row, and `e` the
 row's distance from the bin's location `m`:
 

@@ -291,3 +291,29 @@ the constant learning rate's own wander (a median of 0.02 to 0.04). A
 one-off 0.06 to 7 ms; a row after it costs what it did. The scripts are
 `m5_capture.py`, `m5b_capture.py` and `m8_cost.py` in the task's
 scratchpad, `huber-warmup/`.
+
+**After the task's review (2026-10-25).** Measured with
+`scripts/huber/m6_refit_capture.py` (40 seeds, the worst seed named) under
+load 70-190:
+
+| model, rows | 20% outliers: `huber_refit_rows=0` / 200 / 500 / 1,000, streams more than 0.05 (more than 0.25) from `RLM` |
+|---|---|
+| `huber`, 2,000 | 29 (24) / 18 (5) / 10 (1) / 3 (0) |
+| `huber`, 20,000 | 25 (23) / 4 (0) / 4 (0) / 2 (0) |
+| `sgd`, 2,000 | 40 (40) / 16 (4) / 8 (0) / 8 (0) |
+| `sgd`, 20,000 | 40 (40) / 23 (0) / 24 (0) / 23 (0) |
+
+At 15% and below 200 rows leave none more than 0.25 in any cell. Under
+`"rms"` the refit takes the first residuals out of the scale but not the
+outliers: all 40 streams stay more than 0.25 away at 5% with it or without
+(`huber` median 0.61 either way; `sgd` 0.60 with it, 1.85 without). Memory:
+5,000 groups of 150 rows (no group reaches 200), two targets and 20
+features held 79 KB a group more after the fit than 1.3.0, and saved 62 KB
+a group more (435 against 125 MiB); at 100,000 such groups that is about
+7.7 GB. Wide specs: 200 rows of 500 or 1,000 features are fewer than the
+coefficients, the refit is the ridge's fit and runs its 50 passes, 0.7 s
+and 7.3 s once (100 features: 42 passes, 12 ms). `marginal(bin_stat="huber")`
+is captured by the same mechanism and has no refit: over 40 seeds in 16
+bins, 13 of 40 streams of 2,000 rows at 12% spikes had a bin more than 0.1
+of the scale from statsmodels' M-location (7 more than 0.5), and 18 of 40
+streams of 20,000 rows at 20%.

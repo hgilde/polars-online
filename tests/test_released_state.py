@@ -128,6 +128,12 @@ DECLARED: dict[tuple[str, str], str] = {
     # a file of one goes on from that variance.
     ("kalman_unsized", "1.2.0"): "the next release, Fixed: `kalman` no longer predicts 0.0 "
     "before a target's prior is sized",
+    # Task 278, batch 3 (the next release's Fixed): after `drift_action =
+    # "reset"` the next row reads a clock step of 0, as a fresh bank's first
+    # row does; a file whose reset fell in its first half went on from the
+    # step the release read (1.4e-2 here).
+    ("ridge_reset", "1.3.0"): "the next release, Fixed: a drift reset is a fresh bank from "
+    "the next row",
     # Task 275 (the next release's Fixed, and rule 5's exception the user
     # allowed on 2026-10-24): a window's snapshot decays by the product of
     # the per-row factors its moments took. A windowed file saved by a
@@ -493,3 +499,72 @@ def test_no_refit_is_the_release_before_it_to_the_bit(tmp_path):
     moved = run(None)
     for s in released:
         assert not moved[s["name"]].equals(then[s["name"]], null_equal=True), s["name"]
+
+
+_SAVE_SCRIPT = """
+import json, sys
+import polars as pl
+import polars_online as po
+specs, data, out = json.loads(sys.argv[1]), sys.argv[2], sys.argv[3]
+bank = po.ModelBank(specs)
+bank.fit_predict(pl.read_parquet(data))
+bank.save(out)
+"""
+
+
+def test_a_bank_of_the_release_before_the_refit_resumes_without_it_in_its_groups(tmp_path):
+    """A bank 1.3.0 saved holds `huber` groups fitted without the refit, and
+    its file has no `huber_refit_rows`: loaded here, each restored group goes
+    on as 1.3.0 did -- its state says the refit is off, so it never refits
+    rows its stream has passed -- to the bit, past 200 rows; a group the bank
+    first sees after the load is built from the spec, whose default refits
+    at 200 rows, as a fresh bank's does. One bank, two rules: the restored
+    groups' and the new one's."""
+    if not _online():
+        pytest.skip("offline: the released wheel cannot be downloaded")
+    rng = np.random.default_rng(21)
+    first, second = 150, 300
+
+    def rows(groups: list[str], n: int, t0: float) -> pl.DataFrame:
+        k = len(groups) * n
+        x = rng.standard_normal(k)
+        y = 1000.0 + 2.0 * x + 0.5 * rng.standard_normal(k)
+        y[(rng.random(k) < 0.25) & (x > 0)] += 50.0
+        t = t0 + np.repeat(np.arange(n, dtype=float), len(groups))
+        return pl.DataFrame({"g": groups * n, "t": t, "x": x, "y": y})
+
+    head = rows(["a", "b"], first, 0.0)
+    tail = rows(["a", "b", "c"], second, float(first))
+    data = tmp_path / "head.parquet"
+    head.write_parquet(data)
+    c = dict(targets=["y"], features=["x"], group="g", clock="t", gap_cap=10.0)
+    spec = po.spec.huber("m", half_life=float("inf"), **c)
+    saved = tmp_path / "bank.state"
+    subprocess.run(
+        [
+            str(compare.released_python(BEFORE_REFIT)),
+            "-I",
+            "-c",
+            _SAVE_SCRIPT,
+            json.dumps([spec]),
+            str(data),
+            str(saved),
+        ],
+        check=True,
+    )
+    resumed = po.ModelBank.load(saved, specs=[spec]).fit_predict(tail)
+    off = {**spec, "model": {**spec["model"], "huber_refit_rows": 0}}
+    one_pass = po.ModelBank([off])
+    one_pass.fit_predict(head)
+    restored = one_pass.fit_predict(tail)
+    fresh_c = po.ModelBank([spec]).fit_predict(tail.filter(pl.col("g") == "c"))
+    for g in ("a", "b"):
+        mine = resumed.filter(pl.col("g") == g)["m"]
+        assert mine.equals(restored.filter(pl.col("g") == g)["m"], null_equal=True), g
+    new = resumed.filter(pl.col("g") == "c")["m"]
+    assert new.equals(fresh_c["m"], null_equal=True)
+    # The new group's refit ran: it parts from the one pass after its 200th row.
+    p = new.struct.field("pred_y").to_numpy()
+    q = restored.filter(pl.col("g") == "c")["m"].struct.field("pred_y").to_numpy()
+    differ = np.flatnonzero(~((p == q) | (np.isnan(p) & np.isnan(q))))
+    assert differ.size and differ[0] >= 200, differ[:3]

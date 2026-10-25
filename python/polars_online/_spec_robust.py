@@ -113,25 +113,30 @@ def huber(
     ``s`` learns the pulled fit's residuals. The cut ``d * s`` is then wide,
     the outliers keep entering at nearly full weight, and without decay the
     fit stays where they pulled it. A median over a few streams hides this:
-    on the stream above at 12.5% outliers the median stream was within 0.002
-    of statsmodels' ``RLM``, while 13 of 40 streams ended more than 0.05 from
-    it, the worst by 0.43. So on the row a target's count of learned rows
-    reaches ``huber_refit_rows``, those rows are refit by iteratively
-    reweighted least squares, as a batch fit does:
+    on the stream above, 20,000 rows at 12.5% outliers, the median stream was
+    within 0.002 of statsmodels' ``RLM``, while 13 of 40 streams ended more
+    than 0.05 from it, the worst by 0.43. So on the row a target's count of
+    learned rows reaches ``huber_refit_rows``, those rows are refit by
+    iteratively reweighted least squares, as a batch fit does:
 
     .. code-block:: text
 
         v_i = w_i * (the decay factors of the rows after i)
+              v_i' the same by the scale's clock (huber_scale_half_life)
         r_i = y_i - z_i'b                  against the last pass's fit
-        s   = weighted median of |r_i| at v_i, over 0.6745  (root mean square under "rms")
+        s   = weighted median of |r_i| at v_i', over 0.6745  (root mean square under "rms")
         u_i = min(1, d * s / |r_i|)
         b   = the ridge solve of the rows at v_i * u_i
         repeated until b moves by under 1e-10 of max|b|, or 50 passes
 
     The target's sums are then rebuilt from the rows at their converged
     weights, and ``s`` from the converged fit's residuals, and the stream goes
-    on online. With the refit no stream of the 40 was more than 0.05 from
-    ``RLM`` at 5% to 15% outliers, and 4 at 20%, where 25 were without it.
+    on online. Over 20,000 rows with the refit no stream of the 40 was more
+    than 0.05 from ``RLM`` at 5% to 15% outliers, and 4 at 20%, where 25 were
+    without it. Over 2,000 rows the tail is longer: at 20%, 18 of 40 streams
+    stayed more than 0.05 away with the default, 5 of them more than 0.25
+    (the worst by 5.8), where 29 were without it; ``huber_refit_rows=1000``
+    left 3, none more than 0.25.
     It runs after the row's own prediction, and moves its own target's fit
     alone.
 
@@ -231,16 +236,22 @@ def huber(
         is refused beside ``standardize`` and beside two or more
         ``feature_sets``.
     ``huber_refit_rows``
-        The learned rows (each of positive weight, with its target) after
-        which each target's first rows are refit to convergence, once (the
-        rubric above). Default 200: at 20% one-sided outliers, 50 rows left
-        14 of 40 streams captured, where 200 left 4 and 1,000 left 2. ``0``
-        turns the refit off, which gives the numbers of the releases before
-        it, to the bit. A target's rows are held until its refit, ``(features
-        + 4) * 8`` bytes each, and the refit takes 0.08 to 5.4 ms once. Off by
-        default, and refused when given, beside ``ridge_scale = "sum"``,
-        whose prior has aged with every row before the first, and beside an
-        infinite ``huber_delta``, least squares.
+        The learned rows (each of positive weight, with its target) after which each
+        target's first rows are refit to convergence, once (the rubric above). Default
+        200: over 20,000 rows at 20% one-sided outliers, 50 rows left 14 of 40 streams
+        more than 0.05 from ``RLM``, 200 left 4 and 1,000 left 2; over 2,000 rows, 200
+        left 18 and 1,000 left 3. A group shorter than the count never refits, and holds
+        its rows to the end. ``0`` turns the refit off, which gives the numbers of the
+        releases before it, to the bit. A target's rows are held until its refit:
+        ``(features + 4) * 8`` bytes a learned row, and 32 bytes a run of rows that only
+        aged it (its value null or its weight 0), one run for such rows in a row at one
+        clock step. Past 4 runs a learned row of the count, as on a target present on
+        fewer than about one row in five under an irregular clock, the target gives its
+        refit up and keeps its one-pass fit. The refit takes 0.06 to 7.2 ms once, for 1
+        to 50 features and 200 to 1,000 rows (an Apple M4 Pro under other load, best of
+        9). Off by default, and refused when given, beside ``ridge_scale = "sum"``,
+        whose prior has aged with every row before the first, and beside an infinite
+        ``huber_delta``, least squares.
     ``emit_huber_scale``
         Emit ``huber_scale_<t>``, each target's residual scale ``s`` as the
         row's cut reads it: after the row's decay and before the row's own

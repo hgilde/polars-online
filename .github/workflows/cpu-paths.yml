@@ -93,7 +93,7 @@ jobs:
       SDE_TESTS: >-
         bocpd:: breaks:: calibration:: deco:: ewclass:: ewcov:: ewridge::
         gaps:: gramfit:: hmm:: kalman:: lasso:: oracle:: pieces:: rcov::
-        rls:: robust:: sandwich:: solve:: specification::
+        rls:: robust:: sandwich:: sgd:: solve:: specification::
       # A release build, ten or more times faster than the debug build CI
       # tests, which matters under an emulator; with the debug build's
       # assertions and overflow checks, so the tests that expect one to

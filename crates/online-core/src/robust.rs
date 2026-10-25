@@ -144,7 +144,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
 use crate::huber_refit::{
-    REFIT_PASSES, RefitBuf, Rows, converged, fitted, huber_weights, rebuild_scale, scale_of,
+    Event, REFIT_PASSES, RefitBuf, Rows, converged, fitted, huber_weights, rebuild_scale, scale_of,
 };
 use crate::model::{Fit, ModelState, OnlineModel, State, StateError, Step, check_schema};
 use crate::since::Since;
@@ -922,6 +922,12 @@ impl Robust {
         (s2 > 0.0 && s2.is_finite()).then(|| s2.sqrt())
     }
 
+    /// Per target, how its refit stands ([`RobustCfg::refit_rows`]): empty
+    /// when the refit is off.
+    pub fn refit_status(&self) -> Vec<crate::RefitStatus> {
+        self.refit.iter().map(RefitBuf::status).collect()
+    }
+
     /// Per target, the sketch of `|e|` the MAD scale is read from: empty
     /// under the RMS.
     pub fn mad_sketch(&self) -> &[EwQuantile] {
@@ -1037,10 +1043,12 @@ impl Robust {
             return;
         };
         let nf = self.cfg.n_features;
-        let buf = self.refit[j].take();
-        let rows = Rows::new(&buf, nf);
+        let (buf, ages) = self.refit[j].take();
+        let rows = Rows::new(&buf, &ages, nf);
         let n = rows.len();
-        let v = rows.decayed_weights();
+        // The scale reads the residuals at the weights its own clock has
+        // left them (`huber_scale_decay`), as the stream's scale holds them.
+        let vs = rows.scale_weights();
         let k = self.cfg.k_total();
         let c = self.cfg.weighing_set();
         let slot = j * self.cfg.n_sets() + c;
@@ -1054,7 +1062,13 @@ impl Robust {
         let mut z = vec![0.0; k];
         let mut absr = vec![0.0; n];
         let mut u = vec![1.0; n];
+        // The passes' factor jitters are the refit's, not failures of the
+        // fit: the count is left as it stood, and one refit that no pass
+        // solves counts once.
+        let failures = self.solve_failures;
+        let (mut passes, mut solved) = (0, false);
         for _ in 0..REFIT_PASSES {
+            passes += 1;
             match &beta {
                 Some(b) => {
                     for (i, a) in absr.iter_mut().enumerate() {
@@ -1062,7 +1076,7 @@ impl Robust {
                     }
                     huber_weights(
                         &absr,
-                        scale_of(self.cfg.huber_scale, &absr, &v),
+                        scale_of(self.cfg.huber_scale, &absr, &vs),
                         delta,
                         &mut u,
                     );
@@ -1070,21 +1084,26 @@ impl Robust {
                 None => u.fill(1.0),
             }
             self.replay(j, &rows, &u, &mut z);
-            let solved = if intercept {
+            let next = if intercept {
                 self.solve_centred(k, j, c)
             } else {
                 self.solve_through_origin(k, j, c)
             };
-            let Some((next, _)) = solved else {
+            let Some((next, _)) = next else {
                 break;
             };
+            solved = true;
             let done = converged(beta.as_deref(), &next);
             beta = Some(next);
             if done {
                 break;
             }
         }
-        let Some(b) = beta else {
+        self.solve_failures = failures;
+        self.refit[j].ran(passes);
+        let Some(b) = beta.filter(|_| solved) else {
+            self.refit[j].fail();
+            self.solve_failures += 1;
             return;
         };
         let scale = rebuild_scale(&rows, self.cfg.huber_scale, |i| {
@@ -1103,8 +1122,13 @@ impl Robust {
     }
 
     /// Target `j`'s sums rebuilt from the buffered rows at weights
-    /// `w_i · u_i`, in order, each aged by its own factor: `step`'s fit arm,
-    /// row for row, so at `u = 1` the sums the stream built, to the bit.
+    /// `w_i · u_i`, in the order the stream took them: `step`'s fit arm, row
+    /// for row, and an ageing run's rows one by one ([`Event::age_by`]; one
+    /// decay by `λⁿ` past 65,536 rows). So at `u = 1` -- every Huber weight 1
+    /// -- the replay is the sums the stream built, to the bit, unless a run
+    /// of ageings was that long. It is that only when every row the stream
+    /// learned had a Huber weight of 1; otherwise it is the sums at the
+    /// refit's weights, which is what it is for.
     fn replay(&mut self, j: usize, rows: &Rows<'_>, u: &[f64], z: &mut [f64]) {
         let k = self.cfg.k_total();
         let intercept = self.cfg.fit_intercept;
@@ -1113,12 +1137,23 @@ impl Robust {
         self.ybar[j] = 0.0;
         self.ybar_lo[j] = 0.0;
         self.wj[j] = 0.0;
-        for (i, &ui) in u.iter().enumerate() {
+        for e in rows.events() {
+            let i = match e {
+                Event::Age { lam, count, .. } => {
+                    let (cov, wj) = (&mut self.cov[j], &mut self.wj[j]);
+                    Event::age_by(lam, count, |l| {
+                        cov.decay(l);
+                        *wj *= l;
+                    });
+                    continue;
+                }
+                Event::Row(i) => i,
+            };
             let lam = rows.lam(i);
-            let w = rows.w(i) * ui;
+            let w = rows.w(i) * u[i];
             let aged = lam * self.wj[j];
-            // A row that only aged the sums has weight 0 (hard rule 9), and
-            // so does one a residual of `inf` gives a Huber weight of 0.
+            // A Huber weight of 0, from a residual of `inf`: the row ages the
+            // sums alone (hard rule 9).
             if w.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
                 self.cov[j].decay(lam);
                 self.wj[j] = aged;
@@ -1828,7 +1863,7 @@ impl OnlineModel for Robust {
             let rows = lam * self.nobs[j];
             let Some(yj) = y[j] else {
                 if let Some(b) = self.refit.get_mut(j) {
-                    b.age(self.cfg.n_features, lam, lam_scale);
+                    b.age(lam, lam_scale, self.cfg.refit_rows);
                 }
                 self.cov[j].decay(lam);
                 self.wj[j] *= lam;
@@ -1857,7 +1892,7 @@ impl OnlineModel for Robust {
                 // a row holding a value that is not usable never gets here.
                 RowUpdate::Fit { w, .. } if w.is_nan() || w <= 0.0 => {
                     if let Some(b) = self.refit.get_mut(j) {
-                        b.age(self.cfg.n_features, lam, lam_scale);
+                        b.age(lam, lam_scale, self.cfg.refit_rows);
                     }
                     self.cov[j].decay(lam);
                     self.wj[j] = aged;
