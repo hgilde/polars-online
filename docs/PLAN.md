@@ -16385,6 +16385,17 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       AdaGrad's pace (a limit to decide: document or forget the
       accumulators). Defect cells are strict xfails running the real bound;
       none may remain at 1.4.0.
+      *Seeding (D7, F3, D9), decided by the user 2026-10-25*: `kmeans`/`hmm`
+      seeding runs Lloyd to a fixed point (cap 300 passes, counted in
+      `solve_failures`); greedy k-means++ behind `init="k-means++"` and
+      `lloyd`'s starts (Fränti S1 worst 2.19 -> 1.001 of the optimum);
+      `hmm`'s `warm_rows` default 50 -> 1,000 ("1,000 rows": worst seed 0.46
+      -> 0.95 in the true state; each group's first 1,000 rows report null,
+      a shorter group never seeds). Rule 5's second exception ("Accept the
+      relabelling"): a 1.3.0 `kmeans` state saved mid-warm-up seeds by the new
+      rule after loading, the same centres and distances to the bit with the
+      labels possibly permuted, held to one consistent relabelling; a state
+      saved after seeding continues to the bit.
 - [ ] 279. **Smaller build caches: no debug info for dependencies** -- the
       user, 2026-10-25 ("Why do agents take so much disk I though we shared
       caches", then "Yes"). Each worktree slot keeps its own `target/` (a
