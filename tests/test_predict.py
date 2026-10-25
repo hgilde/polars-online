@@ -239,14 +239,16 @@ def test_session_and_clock_policies_hold(policy):
         assert all(pred[i] is None and weight_sum[i] == 0.0 for i in fresh)
         assert all(pred[i] is not None for i in range(20) if i not in fresh)
     elif "session_shrink" in policy:
-        # The blend keeps the weight (task 145) and moves the fit, and only
-        # for those rows: against the same rows in one session, every
-        # prediction there differs and every other one is the same.
+        # The blend keeps the weight (task 145) and moves the moments only:
+        # the fit stands until the next scheduled solve (task 278), and
+        # scoring learns nothing, so no solve reads the blend. A row of the
+        # new session is scored with the last solve, as `fit_predict` scores
+        # the open's own row (`assert_row_oracle` above): every prediction
+        # is the one-session stream's.
         assert len(set(weight_sum)) == 1
         one = bank.predict(later.with_columns(s=pl.lit("one")))["m"]
         same = one.struct.field("pred_y0").to_list()
-        assert all(pred[i] != same[i] for i in range(5, 10))
-        assert all(pred[i] == same[i] for i in range(20) if i not in range(5, 10))
+        assert pred == same
     else:
         assert len(set(weight_sum)) == 1 and all(p is not None for p in pred)
 
