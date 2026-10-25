@@ -8,7 +8,8 @@ runner pool, and shows each one took effect before it believes a green run:
     python scripts/cpu_paths.py probe PROBE --sde SDE --sde-args=-hsw --expect avx2=true
     python scripts/cpu_paths.py sde-tests EXE --sde SDE --sde-args=-hsw --filters "solve::"
     python scripts/cpu_paths.py numpy-env --openblas Haswell --keep X86_V3 >> "$GITHUB_ENV"
-    python scripts/cpu_paths.py check
+    python scripts/cpu_paths.py check --numpy-sees AVX512F=false
+    python scripts/cpu_paths.py under --sde-args=-hsw -- python -m pytest
 
 `lib-tests` reads cargo's `--message-format=json` and prints the path of
 the library's unit-test executable. `sde-cpuid` writes a copy of one of
@@ -22,7 +23,10 @@ nothing would otherwise pass with nothing run. `numpy-env` prints the
 environment variables that pin OpenBLAS's kernels and NumPy's loops, and
 `check`, run in that environment, fails unless both took effect.
 
-`numpy-env` also sets `OPENBLAS_L2_SIZE` (`forced_env` says why).
+`under` runs a command natively, or under SDE when given its knobs
+(`SDE_PATH` names the kit), and returns its exit code: the leg that forces
+OpenBLAS's Haswell kernels runs under SDE posing as an Intel Haswell
+(`ZEN4_BLOCK` says why).
 
 `--sde-args` takes its value after an `=`, since SDE's knobs start with a
 dash, which argparse would read as an option of its own.
@@ -180,26 +184,27 @@ def numpy_disable(dispatch: Sequence[str], keep: Sequence[str]) -> list[str]:
 REPORTED_AS = {"prescott": "katmai"}
 
 
-#: The L2 size, in KiB, OpenBLAS is told under a forced core. OpenBLAS 0.3.34,
-#: NumPy's copy, ends `init_parameter` (kernel/setparam-ref.c, lines
-#: 2087-2115) with a block that, on an AMD host with AVX-512, a 1 MiB L2 and
-#: an L3 a multiple of 32 MiB (Zen 4 and 5), sets `dgemm_q = 512` in whatever
-#: table is being initialised, a forced one included. The Haswell and Zen
-#: kernel (dgemm_kernel_4x8_haswell.S) copies 96 bytes a step of `k` into a
-#: stack buffer sized for `k <= 128` under the Windows ABI, so a product with
-#: a longer `k` overwrites the kernel's frame: an access violation, with one
-#: thread as with four (OpenMathLib/OpenBLAS#6013 and #6021; the second run
-#: of cpu-paths.yml, `np.cov` of 2,000 rows on an AMD EPYC 9V74 with
-#: AVX-512, where the first run's EPYC 7763 had none). OpenBLAS reads
-#: `OPENBLAS_L2_SIZE` before the CPU's own L2 (`get_l2_size`), and at 2048
-#: the block's `l2_kb == 1024` test fails, so a forced table keeps its own
-#: blocking on every host, as #6021 measured (byte-identical to an Intel
-#: host at every `k`). Unforced, OpenBLAS picks Cooperlake or SkylakeX on
-#: those hosts, whose kernels the block was written for, so a user's run is
-#: not affected and the suite's other legs set nothing. Older tables (none
-#: these legs force but Prescott) size their `p` from the L2, so the
-#: setting also gives Prescott's kernels one blocking on every host.
-L2_UNDER_A_FORCED_CORE = 2048
+#: Why the forced-Haswell leg runs under SDE as an Intel Haswell. OpenBLAS
+#: 0.3.34, NumPy's copy, ends `init_parameter` (kernel/setparam-ref.c,
+#: lines 2087-2115) with a block that, on an AMD host (CPUID vendor
+#: `AuthenticAMD`) with AVX-512, a 1 MiB L2 and an L3 a multiple of 32 MiB
+#: (Zen 4 and 5), sets `dgemm_q = 512` in whatever table is being set up, a
+#: forced one included. The Haswell and Zen kernel
+#: (kernel/x86_64/dgemm_kernel_4x8_haswell.S) copies 96 bytes a step of `k`
+#: into a stack buffer sized for `k <= 128` under the Windows ABI, so a
+#: longer `k` overwrites the kernel's frame: an access violation, with one
+#: thread as with four (OpenMathLib/OpenBLAS#6013 and #6021; `np.cov` of
+#: 2,000 rows on an AMD EPYC 9V74 with AVX-512, twice). `OPENBLAS_L2_SIZE`
+#: cannot turn the block off on Windows: `get_l2_size` reads it with
+#: `readenv_atoi`, which in common.h's Windows branch is `readenv(p, env) ?
+#: 0 : atoi(p)` with `readenv` = `GetEnvironmentVariable`, whose result is
+#: the value's length, so a variable that is set reads as 0 and the CPU's
+#: own L2 is used (the third run, 2048 set and the same crash). Under SDE
+#: the CPUID vendor is `GenuineIntel` on any host, so the block never fires
+#: and the forced table keeps its own blocking everywhere. Unforced,
+#: OpenBLAS picks Cooperlake or SkylakeX on those hosts, kernels the block
+#: suits, so a user's run is not affected.
+ZEN4_BLOCK = "OpenMathLib/OpenBLAS#6013, #6021"
 
 
 def forced_env(core: str, disable: Sequence[str]) -> list[str]:
@@ -207,7 +212,6 @@ def forced_env(core: str, disable: Sequence[str]) -> list[str]:
     in OpenBLAS and leave out NumPy's `disable` targets."""
     return [
         f"OPENBLAS_CORETYPE={core}",
-        f"OPENBLAS_L2_SIZE={L2_UNDER_A_FORCED_CORE}",
         f"NPY_DISABLE_CPU_FEATURES={' '.join(disable)}",
     ]
 
@@ -251,10 +255,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--sde-args", required=True)
     p.add_argument("--filters", required=True)
     p.add_argument("--threads", type=int, default=2)
+    p = sub.add_parser("under")
+    p.add_argument("--sde-args", default="")
+    p.add_argument("command", nargs=argparse.REMAINDER)
     p = sub.add_parser("numpy-env")
     p.add_argument("--openblas", required=True)
     p.add_argument("--keep", nargs="*", default=[])
-    sub.add_parser("check")
+    p = sub.add_parser("check")
+    p.add_argument("--numpy-sees", nargs="*", default=[])
     args = parser.parse_args(argv)
 
     if args.cmd == "lib-tests":
@@ -309,18 +317,44 @@ def main(argv: Sequence[str] | None = None) -> int:
         disable = numpy_disable(mu.__cpu_dispatch__, args.keep)
         for line in forced_env(args.openblas, disable):
             print(line)
+    elif args.cmd == "under":
+        return under(args.sde_args, args.command)
     elif args.cmd == "check":
-        return check()
+        return check(args.numpy_sees)
     return 0
 
 
-def check() -> int:
+def under_command(sde_args: str, command: Sequence[str], sde_path: str) -> list[str]:
+    """`command` as run: under SDE with `sde_args` when they are given, else
+    as it is. SDE follows the processes a command starts (on Windows the
+    virtual environment's `python.exe` starts the interpreter, and pytest's
+    workers are processes of their own)."""
+    command = list(command)
+    if command[:1] == ["--"]:
+        command = command[1:]
+    if not command:
+        raise SystemExit("no command to run")
+    if not sde_args:
+        return command
+    return [*_sde(str(Path(sde_path) / "sde.exe"), sde_args), *command]
+
+
+def under(sde_args: str, command: Sequence[str]) -> int:
+    cmd = under_command(sde_args, command, os.environ.get("SDE_PATH", ""))
+    print("+", shlex.join(cmd), flush=True)
+    return subprocess.call(cmd)
+
+
+def check(numpy_sees: Sequence[str] = ()) -> int:
     """Fail unless OpenBLAS runs the kernels `OPENBLAS_CORETYPE` names, in
     NumPy's copy and SciPy's alike, under the name it reports for them
     (`reported_core`), and NumPy's loops leave out every
     feature `NPY_DISABLE_CPU_FEATURES` names. NumPy refuses a baseline
     feature with an error and only warns of a name it does not dispatch,
-    so that warning is an error here."""
+    so that warning is an error here. `numpy_sees` names CPU features NumPy
+    must report as given (`AVX512F=false`): under SDE posing as a Haswell,
+    the proof that the interpreter itself ran under SDE, on a host whose own
+    CPU has AVX-512."""
     warnings.simplefilter("error", ImportWarning)
     import numpy as np
     import scipy.linalg  # noqa: F401  (loads SciPy's own OpenBLAS)
@@ -333,11 +367,12 @@ def check() -> int:
     problems = []
     core = os.environ.get("OPENBLAS_CORETYPE", "")
     want = reported_core(core)
-    l2 = os.environ.get("OPENBLAS_L2_SIZE", "")
-    if core and l2 != str(L2_UNDER_A_FORCED_CORE):
-        problems.append(
-            f"OPENBLAS_L2_SIZE is {l2!r} under a forced core, not {L2_UNDER_A_FORCED_CORE}"
-        )
+    for item in numpy_sees:
+        name, value = item.split("=", 1)
+        seen = mu.__cpu_features__.get(name)
+        print(f"NumPy's {name}: {seen}")
+        if str(seen).lower() != value.lower():
+            problems.append(f"NumPy's {name} is {seen}, not {value}")
     blas = [i for i in threadpoolctl.threadpool_info() if i.get("internal_api") == "openblas"]
     for info in blas:
         print(f"{info['filepath']}: {info.get('architecture')}")
