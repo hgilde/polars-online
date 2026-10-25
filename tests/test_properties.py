@@ -22,7 +22,7 @@ from collections.abc import Callable
 import numpy as np
 import polars as pl
 import pytest
-from hypothesis import HealthCheck, assume, given, settings
+from hypothesis import HealthCheck, assume, example, given, settings
 from hypothesis import strategies as st
 
 import polars_online as po
@@ -113,6 +113,27 @@ EXAMPLES = {
     "negative": examples(10, essential=4),
 }
 
+#: Streams a random draw found a failure on, run first wherever a property
+#: names them (`_given`'s ``pinned``), as each is mixed in sign. Four rows on
+#: which `huber`'s MAD scale panicked during 1.3.0's development: the
+#: residuals' median sat at 0 while one arrived more than the scale's band
+#: below every other, and the sketch's fold read a negative place in its
+#: buckets (task 272 (p); 2 of 40 random seeds, the derandomized CI profile
+#: none).
+FOUND = (
+    pl.DataFrame(
+        {
+            "g": ["g0"] * 4,
+            "t": [50003.5, 60004.5, 70013.0, 80027.0],
+            "x0": [-1e100, -1e100, -1e8, -0.0],
+            "x1": [-0.0, 1e-12, -0.0, 1e100],
+            "y0": [1e-12, 1e8, 1e-12, 0.0],
+            "w": [1e100, 7.7322, 1e100, 1e100],
+            "s": ["s0"] * 4,
+        }
+    ),
+)
+
 #: The chunk sizes a property cuts a stream into.
 CHUNKS = st.integers(min_value=1, max_value=13)
 
@@ -125,10 +146,20 @@ def _signed(v: float | None, sign: float | None, offset: float) -> float | None:
     return sign * abs(v) + offset
 
 
-def _given(sign: str, prop: Callable[..., None], **strategies: st.SearchStrategy) -> None:
+def _given(
+    sign: str,
+    prop: Callable[..., None],
+    pinned: tuple[dict, ...] = (),
+    **strategies: st.SearchStrategy,
+) -> None:
     """Run ``prop`` as a Hypothesis test over ``strategies``, at the number
-    of streams ``sign`` draws (`EXAMPLES`)."""
-    settings(SETTINGS, max_examples=EXAMPLES[sign])(given(**strategies)(prop))()
+    of streams ``sign`` draws (`EXAMPLES`), and on each of ``pinned``'s
+    arguments first, as an ``@example``: run in every profile, the
+    derandomized one included."""
+    test = given(**strategies)(prop)
+    for kw in pinned:
+        test = example(**kw)(test)
+    settings(SETTINGS, max_examples=EXAMPLES[sign])(test)()
 
 
 def _signed_columns(model: str) -> tuple[str, ...]:
@@ -398,7 +429,8 @@ class TestUniversalProperties:
                 )
                 assert np.isfinite(vals).all(), f"{f.name} produced a non-finite value"
 
-        _given(sign, prop, df=_streams(model, sign))
+        found = tuple({"df": df} for df in FOUND) if sign == "mixed" else ()
+        _given(sign, prop, found, df=_streams(model, sign))
 
     def test_feature_or_weight_null_means_all_outputs_null(self, model, extra, sign):
         """A row with a null feature or weight is skipped, and every field of

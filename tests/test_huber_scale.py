@@ -199,3 +199,47 @@ def test_the_scale_is_refused_beside_another_loss():
         po.spec.huber("h", huber_scale="median", **NO_DECAY)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="huber_scale_half_life must be > 0"):
         po.spec.huber("h", huber_scale_half_life=0.0, **NO_DECAY)
+
+
+#: Four rows on which `huber`'s MAD scale panicked during 1.3.0's
+#: development (docs/PLAN.md task 272 (p)): the residuals' median sat at 0
+#: while a residual arrived more than the scale's band below every other,
+#: and the sketch's fold took its end bucket's place as a negative index.
+PANIC_ROWS = pl.DataFrame(
+    {
+        "t": [50003.5, 60004.5, 70013.0, 80027.0],
+        "x0": [-1e100, -1e100, -1e8, -0.0],
+        "x1": [-0.0, 1e-12, -0.0, 1e100],
+        "y0": [1e-12, 1e8, 1e-12, 0.0],
+        "w": [1e100, 7.7322, 1e100, 1e100],
+    }
+)
+
+
+def test_a_residual_far_below_a_median_at_zero_does_not_panic():
+    """A residual more than the band below the rest, while the median is 0,
+    folds every other bucket into the band's end; every output is finite or
+    null, and one chunk or many give the same numbers (`coef` is emitted on
+    each chunk's last row, so it is left out)."""
+    spec = po.spec.huber(
+        "m",
+        targets=["y0"],
+        features=["x0", "x1"],
+        clock="t",
+        half_life=20.0,
+        gap_cap=100.0,
+        weight="w",
+        min_weight=2.0,
+        max_rows_between_solves=1,
+    )
+    whole = po.ModelBank([spec]).fit_predict(PANIC_ROWS)
+    fields = whole.select("m").unnest("m")
+    for name, dtype in fields.schema.items():
+        if dtype.is_float():
+            vals = fields[name].drop_nulls().to_numpy()
+            assert np.isfinite(vals).all(), name
+    bank = po.ModelBank([spec])
+    parts = pl.concat([bank.fit_predict(PANIC_ROWS.slice(i, 1)) for i in range(4)])
+    numbers = pl.exclude("coef", "support_coef")
+    got = parts.select("m").unnest("m").select(numbers)
+    assert got.equals(fields.select(numbers), null_equal=True)
