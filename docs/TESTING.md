@@ -27,7 +27,9 @@ from 2026-09-27 ([Measured coverage](#measured-coverage)).
 | 2026-10-11 | 2,207 | 6,262 cases |
 | 2026-10-24 | 2,653 | 7,211 cases |
 
-The 2 opt-in soak tests are outside every count. They run with
+The 10 opt-in soak tests are outside every count: the 10M-row soak's two,
+and since 2026-10-25 eight long-run stability cases at 1e8 rows each
+(`tests/test_long_run_soak.py`, about ten minutes). They run with
 `pytest -m soak`, and the weekly leak-check workflow runs them. The counts
 before 2026-10-03 used `cargo test --workspace -- --list`, which also lists
 `online-py`, a crate with no tests.
@@ -1084,7 +1086,7 @@ memory and crash safety](#ffi-memory-and-crash-safety-2026-08-31):
 | concurrent misuse | two threads calling `fit_predict` at once get a clean error |
 | copying a bank | `pickle` and `copy.deepcopy` resume bit-exactly |
 | across the FFI | memory safety where two copies of Polars share one process |
-| sustained load | a 10M-row soak, opt-in with `pytest -m soak` |
+| sustained load | a 10M-row soak, and 1e8-row stability cases against recomputations from scratch, opt-in with `pytest -m soak` |
 
 **Contracts that are files.** What is held to a file, and how, with each
 test named in [Beyond the eight classes](#beyond-the-eight-classes):

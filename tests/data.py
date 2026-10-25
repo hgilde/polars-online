@@ -10,6 +10,7 @@ from __future__ import annotations
 import http.client
 import io
 import os
+import ssl
 import time
 import urllib.error
 import urllib.request
@@ -137,13 +138,24 @@ def is_transient(e: BaseException) -> bool:
     return isinstance(e, _TRANSIENT)
 
 
-def _download(url: str, attempts: int = 3) -> bytes:
+def _download(
+    url: str,
+    attempts: int = 3,
+    user_agent: str | None = None,
+    context: ssl.SSLContext | None = None,
+) -> bytes:
     """One public file, retried with a short pause; :class:`Offline` once
     every attempt has failed. An HTTP status a retry cannot fix is raised at
-    once, as itself."""
+    once, as itself. ``user_agent`` names the client for a server that
+    refuses urllib's default with a 403 (NIST's, 2026-10-25); ``context`` is
+    the TLS context, for a server whose certificate needs one of its own."""
+    target: str | urllib.request.Request = url
+    if user_agent is not None:
+        target = urllib.request.Request(url, headers={"User-Agent": user_agent})
+    opened = {"timeout": 30} if context is None else {"timeout": 30, "context": context}
     for attempt in range(attempts):
         try:
-            with urllib.request.urlopen(url, timeout=30) as resp:
+            with urllib.request.urlopen(target, **opened) as resp:
                 return resp.read()
         except _TRANSIENT as e:
             if not is_transient(e):
