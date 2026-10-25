@@ -18,9 +18,11 @@ Intel SDE's CPUID definition files with its L3 cache resized, for SDE's
 SDE's run reports what `--expect` says.
 `sde-tests` lists the tests the filters select on the host, runs them under
 SDE, and fails unless every listed test passed: a filter that matches
-nothing would otherwise pass with nothing run. `numpy-env` prints the two
+nothing would otherwise pass with nothing run. `numpy-env` prints the
 environment variables that pin OpenBLAS's kernels and NumPy's loops, and
 `check`, run in that environment, fails unless both took effect.
+
+`numpy-env` also sets `OPENBLAS_L2_SIZE` (`forced_env` says why).
 
 `--sde-args` takes its value after an `=`, since SDE's knobs start with a
 dash, which argparse would read as an option of its own.
@@ -178,6 +180,38 @@ def numpy_disable(dispatch: Sequence[str], keep: Sequence[str]) -> list[str]:
 REPORTED_AS = {"prescott": "katmai"}
 
 
+#: The L2 size, in KiB, OpenBLAS is told under a forced core. OpenBLAS 0.3.34,
+#: NumPy's copy, ends `init_parameter` (kernel/setparam-ref.c, lines
+#: 2087-2115) with a block that, on an AMD host with AVX-512, a 1 MiB L2 and
+#: an L3 a multiple of 32 MiB (Zen 4 and 5), sets `dgemm_q = 512` in whatever
+#: table is being initialised, a forced one included. The Haswell and Zen
+#: kernel (dgemm_kernel_4x8_haswell.S) copies 96 bytes a step of `k` into a
+#: stack buffer sized for `k <= 128` under the Windows ABI, so a product with
+#: a longer `k` overwrites the kernel's frame: an access violation, with one
+#: thread as with four (OpenMathLib/OpenBLAS#6013 and #6021; the second run
+#: of cpu-paths.yml, `np.cov` of 2,000 rows on an AMD EPYC 9V74 with
+#: AVX-512, where the first run's EPYC 7763 had none). OpenBLAS reads
+#: `OPENBLAS_L2_SIZE` before the CPU's own L2 (`get_l2_size`), and at 2048
+#: the block's `l2_kb == 1024` test fails, so a forced table keeps its own
+#: blocking on every host, as #6021 measured (byte-identical to an Intel
+#: host at every `k`). Unforced, OpenBLAS picks Cooperlake or SkylakeX on
+#: those hosts, whose kernels the block was written for, so a user's run is
+#: not affected and the suite's other legs set nothing. Older tables (none
+#: these legs force but Prescott) size their `p` from the L2, so the
+#: setting also gives Prescott's kernels one blocking on every host.
+L2_UNDER_A_FORCED_CORE = 2048
+
+
+def forced_env(core: str, disable: Sequence[str]) -> list[str]:
+    """The lines a leg appends to `$GITHUB_ENV` to force `core`'s kernels
+    in OpenBLAS and leave out NumPy's `disable` targets."""
+    return [
+        f"OPENBLAS_CORETYPE={core}",
+        f"OPENBLAS_L2_SIZE={L2_UNDER_A_FORCED_CORE}",
+        f"NPY_DISABLE_CPU_FEATURES={' '.join(disable)}",
+    ]
+
+
 def reported_core(core: str) -> str:
     """The name, lower-cased, OpenBLAS reports when `core` is forced."""
     return REPORTED_AS.get(core.lower(), core.lower())
@@ -273,8 +307,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         from numpy._core import _multiarray_umath as mu
 
         disable = numpy_disable(mu.__cpu_dispatch__, args.keep)
-        print(f"OPENBLAS_CORETYPE={args.openblas}")
-        print(f"NPY_DISABLE_CPU_FEATURES={' '.join(disable)}")
+        for line in forced_env(args.openblas, disable):
+            print(line)
     elif args.cmd == "check":
         return check()
     return 0
@@ -299,6 +333,11 @@ def check() -> int:
     problems = []
     core = os.environ.get("OPENBLAS_CORETYPE", "")
     want = reported_core(core)
+    l2 = os.environ.get("OPENBLAS_L2_SIZE", "")
+    if core and l2 != str(L2_UNDER_A_FORCED_CORE):
+        problems.append(
+            f"OPENBLAS_L2_SIZE is {l2!r} under a forced core, not {L2_UNDER_A_FORCED_CORE}"
+        )
     blas = [i for i in threadpoolctl.threadpool_info() if i.get("internal_api") == "openblas"]
     for info in blas:
         print(f"{info['filepath']}: {info.get('architecture')}")

@@ -196,7 +196,13 @@ jobs:
         # OpenBLAS runs a forced core type without checking the CPU, so
         # SkylakeX on one of the pool's AMD machines would stop at an
         # illegal instruction; the pool's Intel machines run those kernels
-        # in ci.yml, and its machine report says when.
+        # in ci.yml, and its machine report says when. Every leg also sets
+        # OPENBLAS_L2_SIZE=2048: OpenBLAS 0.3.34 resizes a forced table's
+        # blocking on a Zen 4 or 5 host with AVX-512, which overruns the
+        # Haswell kernel's stack buffer on Windows (an access violation in
+        # `np.cov` on an EPYC 9V74; OpenMathLib/OpenBLAS#6013, #6021), and
+        # the setting keeps that block from firing (scripts/cpu_paths.py,
+        # `L2_UNDER_A_FORCED_CORE`).
         include:
           - openblas: Prescott
             numpy: baseline

@@ -953,6 +953,22 @@ first, so forced Prescott kernels report "Katmai". A runner's own choice is
 Haswell or SkylakeX, so the check still fails if the forced core did not
 take effect.
 
+Every leg also sets `OPENBLAS_L2_SIZE=2048`. OpenBLAS 0.3.34, NumPy's
+copy, ends its parameter setup with a block for Zen 4 and 5: on an AMD host
+with AVX-512, a 1 MiB L2 and an L3 a multiple of 32 MiB, it raises the
+`k` step of a double-precision product to 512, in whatever table is set up,
+a forced one included. The Haswell kernel copies its panel into a stack
+buffer sized for a `k` of 128 under the Windows ABI, so on such a host a
+forced Haswell table overruns it and the process dies of an access
+violation, as `np.cov` of 2,000 rows did on an AMD EPYC 9V74. That is a
+defect in OpenBLAS 0.3.34, reported upstream as OpenMathLib/OpenBLAS#6013
+and #6021 and unfixed in a release as of 2026-10-24. OpenBLAS reads
+`OPENBLAS_L2_SIZE` before the CPU's own L2, and at 2048 the block's test
+fails, so a forced table keeps its own blocking on every host. Without a
+forced core OpenBLAS picks Cooperlake or SkylakeX on those hosts, kernels
+the block suits, so the package's users and the suite's other runs are not
+affected.
+
 No leg forces AVX-512 kernels. OpenBLAS runs a forced core type without
 checking the CPU (`force_coretype` in its `driver/others/dynamic.c`), so
 SkylakeX on one of the pool's AMD machines would stop at an illegal
