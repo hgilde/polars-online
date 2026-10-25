@@ -516,8 +516,8 @@ impl BocpdCfg {
         if let Some(n) = self.warm_rows {
             if !self.warms_up() {
                 return Err(
-                    "bocpd: warm_rows sets the prior from the first rows, and prior_mean and \
-                     prior_scale are both given; leave one out, or warm_rows"
+                    "bocpd: warm_rows sets the prior from the first rows, and mean_prior and \
+                     covariance_prior are both given; leave one out, or warm_rows"
                         .into(),
                 );
             }
@@ -4280,7 +4280,13 @@ mod tests {
             warm_rows: Some(5),
             ..cfg(2)
         };
-        assert!(both.validate().unwrap_err().contains("warm_rows"));
+        // In the public keywords' names (task 278: it named `prior_mean` and
+        // `prior_scale`, which no surface takes).
+        assert_eq!(
+            both.validate().unwrap_err(),
+            "bocpd: warm_rows sets the prior from the first rows, and mean_prior and \
+             covariance_prior are both given; leave one out, or warm_rows"
+        );
         let one = BocpdCfg {
             warm_rows: Some(1),
             ..from_the_data(2, BocpdEmission::Diag)

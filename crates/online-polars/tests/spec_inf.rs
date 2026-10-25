@@ -48,7 +48,12 @@ const MEANS_SOMETHING: [(&str, &str); 9] = [
 ];
 
 /// Where it is no setting: a step, a penalty, a tube or a threshold at `inf`.
-const MEANS_NOTHING: [(&str, &str, &str); 15] = [
+const MEANS_NOTHING: [(&str, &str, &str); 17] = [
+    // A floor no weight reaches withheld every row for good, said only by a
+    // notice a half-life after the stream settled (task 278, the user's
+    // decision of 2026-10-25), as a scalar and in a per-target list.
+    ("min_weight = inf", "type = \"ewridge\"", "min_weight"),
+    ("min_weight = [inf]", "type = \"marginal\"", "min_weight"),
     // A fraction of steady state has no infinite value; `>= 1` is refused.
     (
         "min_settled_frac = inf",

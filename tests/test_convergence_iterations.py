@@ -232,7 +232,7 @@ class TestLassoDescent:
         assert case["counted"] == base["counted"]
         np.testing.assert_array_equal(case["b"], base["b"] * c)
 
-    @pytest.mark.extended(reason="a grid: 32 descents and scikit-learn beside each")
+    @pytest.mark.oracle_grid(reason="a grid: 32 descents and scikit-learn beside each")
     def test_every_descent_of_the_grid_meets_its_rule_or_is_counted(self):
         counted = [self.check(*point)["counted"] for point in GRID]
         assert 0 < sum(counted) < len(GRID), "both paths ran"
@@ -336,7 +336,8 @@ class TestKnownDefects:
         [
             5,
             pytest.param(
-                50, marks=pytest.mark.extended(reason="a grid: 50 seedings in the Python reference")
+                50,
+                marks=pytest.mark.oracle_grid(reason="a grid: 50 seedings in the Python reference"),
             ),
         ],
     )

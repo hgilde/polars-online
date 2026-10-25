@@ -219,11 +219,14 @@ no_implicit_optional = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Soak tests are opt-in: `uv run pytest -m soak`. The `extended` tier is
-# *not* deselected here: a plain run is the full one, and only the
-# essentials gate leaves it out, with `-m "not extended and not soak"`
-# (docs/TESTING.md, "Two tiers").
-addopts = "-ra -m 'not soak'"
+# Soak tests are opt-in: `uv run pytest -m soak`. So are the oracle grids,
+# `uv run pytest -m oracle_grid`, which `.github/workflows/oracles.yml` runs
+# on every push, sharded across jobs, so no local run waits on them. The
+# `extended` tier is *not* deselected here: a plain run is the full one, and
+# only the essentials gate leaves it out, with
+# `-m "not extended and not soak and not oracle_grid"` (docs/TESTING.md,
+# "Two tiers").
+addopts = "-ra -m 'not soak and not oracle_grid'"
 # A name renamed for 1.0 still works with a warning, so a test or a recipe
 # could read one unnoticed: under the suite it is an error, and a test that
 # means to read one says so with `pytest.warns` (tests/test_deprecation.py).
@@ -232,8 +235,9 @@ markers = [
     "soak: long-running stability tests (millions of rows)",
     "extended: the extended tier, which runs before every push, in CI and before a release, and which the essentials gate leaves out (`scripts/gate.sh`; `scripts/gate.sh --extended` runs it). Every use says why: `pytest.mark.extended(reason=\"...\")`, a second or more, the network, a document's experiments, memory or threads, or a grid (docs/TESTING.md, \"Two tiers\"; tests/test_tiers.py)",
     "serial: tests that measure the process's memory, which other work on the machine moves; `scripts/gate.sh` runs the rest in several processes (pytest-xdist) and these afterwards in one, alone (docs/TESTING.md, \"Iterating\")",
-    "oracle: tests that hold this library's numbers to another computation whose last bits follow the CPU's paths -- scipy, statsmodels, scikit-learn, numpy.linalg (OpenBLAS) or the NumPy references in tests/reference*.py; tests/conftest.py marks every test in a module that imports one (tests/oracle_marks.py), and `cpu-paths.yml` runs `-m 'oracle and not soak'` under OPENBLAS_CORETYPE and NPY_DISABLE_CPU_FEATURES (docs/TESTING.md, \"The machines and the CPU paths\")",
-    "pins: tests that can only pass on the versions this repo pins -- assertions about the pins themselves, docs that record the version they were generated with, and another library's current behaviour measured on its locked version (polars' multi-key sort, a pyarrow cast bug, duckdb's refusal); the canary unpins on purpose and runs `-m 'not soak and not pins'`",
+    "oracle: tests that hold this library's numbers to another computation whose last bits follow the CPU's paths -- scipy, statsmodels, scikit-learn, numpy.linalg (OpenBLAS) or the NumPy references in tests/reference*.py; tests/conftest.py marks every test in a module that imports one (tests/oracle_marks.py), and `cpu-paths.yml` runs `-m 'oracle and not soak and not oracle_grid'` under OPENBLAS_CORETYPE and NPY_DISABLE_CPU_FEATURES (docs/TESTING.md, \"The machines and the CPU paths\")",
+    "oracle_grid: the heavy grids against a third-party oracle -- 50 seeds or orders, batch fits over long streams, downloaded datasets -- which no local run takes (pyproject's addopts and `scripts/gate.sh` leave them out) and `.github/workflows/oracles.yml` runs on every push, sharded across jobs. Every use says why: `pytest.mark.oracle_grid(reason=\"...\")`. `uv run pytest -m oracle_grid` runs them here (docs/TESTING.md, \"Two tiers\"; tests/test_tiers.py)",
+    "pins: tests that can only pass on the versions this repo pins -- assertions about the pins themselves, docs that record the version they were generated with, and another library's current behaviour measured on its locked version (polars' multi-key sort, a pyarrow cast bug, duckdb's refusal); the canary unpins on purpose and runs `-m 'not soak and not pins and not oracle_grid'`",
 ]
 [tool.ruff]
 line-length = 100
