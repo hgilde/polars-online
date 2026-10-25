@@ -9,6 +9,38 @@ order, another kernel), each declared with its size. Before 1.0, the minor
 version carried breaking changes, and any change to the numbers a model
 returns.
 
+## [Unreleased]
+
+### Changed
+
+- A number or a duration given as `session_gap` to `po.stream.with_windows`
+  is deprecated, because it has no effect there: every window ends at a
+  session change, so no window measures the clock's step across one (task
+  278). A session no longer needs a `session_gap` in `with_windows`, and a
+  number raises a `PolarsOnlineDeprecationWarning` until the next major
+  version. `session_gap="reset"` is kept: it discards, rather than cuts, the
+  windows looking ahead that a session change leaves open, and changes
+  nothing else. A windows state saved with a numeric `session_gap` resumes
+  the call with any other number or none. A spec's `session_gap`, which sets
+  its decay across the change, is unchanged, and `like=spec` lends it without
+  a warning.
+- The weekly CPU-paths workflow's forced-Haswell oracle leg runs under
+  Intel SDE posing as an Intel Haswell (task 273). OpenBLAS 0.3.34 resizes
+  a forced core's blocking on AMD Zen 4 and 5 hosts with AVX-512, which
+  overran the Haswell kernel's stack buffer on Windows
+  (OpenMathLib/OpenBLAS#6013 and #6021); `OPENBLAS_L2_SIZE` cannot prevent
+  it there, since OpenBLAS's Windows build reads any variable that is set as
+  0. Under SDE the CPU reports Intel on every host, so the block never
+  fires; proven on an AMD EPYC 9V74 runner, all 2,345 oracle tests passing
+  with NumPy reporting no AVX-512. The `OPENBLAS_L2_SIZE` setting is
+  removed.
+
+### Fixed
+
+- `po.stream.with_windows` refuses a `session_gap` without `session` and a
+  `restart_after_step_back` without `clock`, as a spec does; each was
+  accepted before and did nothing (task 278).
+
 ## [1.3.0] — 2026-10-24
 
 ### Added

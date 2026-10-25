@@ -180,7 +180,11 @@ jobs:
     name: oracle tests (OpenBLAS ${{ matrix.openblas }}, NumPy ${{ matrix.numpy }})
     runs-on: windows-latest
     # As ci.yml's Windows legs: uv sync about 18 minutes, the extension's
-    # build about as long; the tests took 2.6 minutes on an Apple M4 Pro.
+    # build about as long. Natively the tests took 4.7 minutes on a runner,
+    # one process; 110 s on an Apple M4 Pro in one and 36 s in four. Under
+    # SDE they run in four (pytest-xdist), SDE following each worker, at
+    # SDE's slowdown of the host's own instructions (it emulates none a
+    # Haswell has on any host in the pool).
     timeout-minutes: 120
     permissions:
       contents: read
@@ -196,23 +200,37 @@ jobs:
         # OpenBLAS runs a forced core type without checking the CPU, so
         # SkylakeX on one of the pool's AMD machines would stop at an
         # illegal instruction; the pool's Intel machines run those kernels
-        # in ci.yml, and its machine report says when. Every leg also sets
-        # OPENBLAS_L2_SIZE=2048: OpenBLAS 0.3.34 resizes a forced table's
-        # blocking on a Zen 4 or 5 host with AVX-512, which overruns the
-        # Haswell kernel's stack buffer on Windows (an access violation in
-        # `np.cov` on an EPYC 9V74; OpenMathLib/OpenBLAS#6013, #6021), and
-        # the setting keeps that block from firing (scripts/cpu_paths.py,
-        # `L2_UNDER_A_FORCED_CORE`).
+        # in ci.yml, and its machine report says when.
+        #
+        # `sde`: the Haswell leg runs under Intel SDE posing as an Intel
+        # Haswell. OpenBLAS 0.3.34 resizes a forced table's blocking on an
+        # AMD Zen 4 or 5 host with AVX-512, which overruns the Haswell
+        # kernel's stack buffer on Windows: an access violation in `np.cov`
+        # on an EPYC 9V74, twice (OpenMathLib/OpenBLAS#6013, #6021). The
+        # block keys on the CPUID vendor, which SDE reports as Intel on any
+        # host; `OPENBLAS_L2_SIZE` cannot turn it off on Windows
+        # (scripts/cpu_paths.py, `ZEN4_BLOCK`). `sees`: what NumPy must
+        # report there, AVX-512 absent even on a host that has it, which
+        # shows the interpreter itself ran under SDE.
         include:
           - openblas: Prescott
             numpy: baseline
             keep: ""
+            sde: ""
+            sees: ""
           - openblas: SandyBridge
             numpy: baseline
             keep: ""
+            sde: ""
+            sees: ""
           - openblas: Haswell
             numpy: X86_V3
             keep: X86_V3
+            sde: -hsw
+            sees: AVX2=true AVX512F=false
+    env:
+      SDE_VERSION: 10.13.1
+      SDE_SHA256: 74E626EDE09B0BAA5011FC9E51B58627EA92C3FC0BAE5FD7DB34B490F335F651
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: the machine this job ran on
@@ -231,6 +249,19 @@ jobs:
       - run: uv sync --locked
       - name: build the extension
         run: uv run maturin develop --release -m crates/online-py/Cargo.toml
+      # As the `sde` job's: Intel's kit, checked by Intel's SHA-256.
+      - name: Intel SDE
+        if: matrix.sde != ''
+        uses: petarpetrovt/setup-sde@6d2773bc0ef3005fd52e0ae0bb91782321793aec # v6.0
+        with:
+          environmentVariableName: SDE_PATH
+          sdeVersion: ${{ env.SDE_VERSION }}
+      - name: the kit is Intel's
+        if: matrix.sde != ''
+        run: |
+          $hash = (Get-FileHash .output\sde-temp-file.tar.bz2 -Algorithm SHA256).Hash
+          if ($hash -ne $env:SDE_SHA256) { throw "SDE kit SHA-256 $hash is not Intel's $env:SDE_SHA256" }
+          "SDE $env:SDE_VERSION, SHA-256 $hash, at $env:SDE_PATH"
 
       # Set for every later step, and only those: the build above ran on
       # the libraries' own choices.
@@ -243,8 +274,24 @@ jobs:
           # Unquoted on purpose: one word a target.
           # shellcheck disable=SC2086
           uv run python scripts/cpu_paths.py numpy-env --openblas "$OPENBLAS" --keep $KEEP | tee -a "$GITHUB_ENV"
+      # Natively, or under SDE where the leg names a chip: the venv's own
+      # interpreter, which SDE follows into the process it starts.
       - name: they took effect
-        run: uv run python scripts/cpu_paths.py check
-      # `not soak`: a command line's -m replaces pyproject's.
+        shell: bash
+        env:
+          SDE_KNOB: ${{ matrix.sde }}
+          SEES: ${{ matrix.sees }}
+        run: |
+          # Unquoted on purpose: one word a feature.
+          # shellcheck disable=SC2086
+          uv run python scripts/cpu_paths.py under --sde-args="$SDE_KNOB" -- \
+            .venv/Scripts/python.exe scripts/cpu_paths.py check --numpy-sees $SEES
+      # `not soak`: a command line's -m replaces pyproject's. Four workers,
+      # the runner's cores; none of these tests is `serial`.
       - name: pytest
-        run: uv run pytest -m "oracle and not soak"
+        shell: bash
+        env:
+          SDE_KNOB: ${{ matrix.sde }}
+        run: |
+          uv run python scripts/cpu_paths.py under --sde-args="$SDE_KNOB" -- \
+            .venv/Scripts/python.exe -m pytest -m "oracle and not soak" -n 4 --dist worksteal

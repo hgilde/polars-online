@@ -473,8 +473,34 @@ pub(crate) fn inverse_error(a: &[f64]) -> Vec<f64> {
 /// `|A⁻¹|` bounded above entry by entry, row-major: `|X̂| + |X̂ − A⁻¹|`
 /// ([`inverse_with_error`]), for a bound that multiplies by `|A⁻¹|`, where
 /// `|X̂|` alone could be below it.
+///
+/// Taken on `D⁻¹AD⁻¹`, `D` the powers of two nearest `√aᵢᵢ`, and scaled
+/// back: `A⁻¹ = D⁻¹(D⁻¹AD⁻¹)⁻¹D⁻¹`, every scaling exact. The residual
+/// `R = AX̂ − I` is not invariant to a diagonal scaling, and a matrix whose
+/// diagonal spans 40 orders of magnitude (features from `1e-10` to `1e10`,
+/// task 278) has a residual of order `u·dᵢ/dⱼ` in an inverse accurate to
+/// `u` in every entry, which the bound would read as no bound at all; the
+/// equilibrated matrix's residual is the inverse's real error. A matrix
+/// with a diagonal entry that is not positive and finite is taken as it is.
 pub(crate) fn abs_inverse(a: &[f64]) -> Vec<f64> {
-    abs_inverse_of(a, inverse(a))
+    let n = order(a.len());
+    let scale: Option<Vec<f64>> = (0..n)
+        .map(|i| {
+            let v = a[i * n + i];
+            (v > 0.0 && v.is_finite()).then(|| 2f64.powi(v.sqrt().log2().round() as i32))
+        })
+        .collect();
+    let Some(d) = scale else {
+        return abs_inverse_of(a, inverse(a));
+    };
+    let scaled: Vec<f64> = (0..n * n)
+        .map(|ij| a[ij] / (d[ij / n] * d[ij % n]))
+        .collect();
+    abs_inverse_of(&scaled, inverse(&scaled))
+        .into_iter()
+        .enumerate()
+        .map(|(ij, v)| v / (d[ij / n] * d[ij % n]))
+        .collect()
 }
 
 /// [`abs_inverse`] from any computed inverse `x` of `a`.

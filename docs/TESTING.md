@@ -27,7 +27,9 @@ from 2026-09-27 ([Measured coverage](#measured-coverage)).
 | 2026-10-11 | 2,207 | 6,262 cases |
 | 2026-10-24 | 2,653 | 7,211 cases |
 
-The 2 opt-in soak tests are outside every count. They run with
+The 10 opt-in soak tests are outside every count: the 10M-row soak's two,
+and since 2026-10-25 eight long-run stability cases at 1e8 rows each
+(`tests/test_long_run_soak.py`, about ten minutes). They run with
 `pytest -m soak`, and the weekly leak-check workflow runs them. The counts
 before 2026-10-03 used `cargo test --workspace -- --list`, which also lists
 `online-py`, a crate with no tests.
@@ -933,7 +935,7 @@ the bank rather than with an oracle. Each leg runs
 |---|---|---|
 | Prescott | SSE3 kernels | the baseline, X86_V2 (SSE4.2) |
 | SandyBridge | AVX kernels | the baseline |
-| Haswell | AVX2 and FMA kernels | up to X86_V3 (AVX2, FMA) |
+| Haswell, under SDE as an Intel Haswell | AVX2 and FMA kernels | up to X86_V3 (AVX2, FMA) |
 
 `OPENBLAS_CORETYPE` picks the kernels in NumPy's copy of OpenBLAS and in
 SciPy's. `NPY_DISABLE_CPU_FEATURES` takes NumPy's dispatch targets away.
@@ -953,21 +955,27 @@ first, so forced Prescott kernels report "Katmai". A runner's own choice is
 Haswell or SkylakeX, so the check still fails if the forced core did not
 take effect.
 
-Every leg also sets `OPENBLAS_L2_SIZE=2048`. OpenBLAS 0.3.34, NumPy's
-copy, ends its parameter setup with a block for Zen 4 and 5: on an AMD host
-with AVX-512, a 1 MiB L2 and an L3 a multiple of 32 MiB, it raises the
-`k` step of a double-precision product to 512, in whatever table is set up,
-a forced one included. The Haswell kernel copies its panel into a stack
-buffer sized for a `k` of 128 under the Windows ABI, so on such a host a
-forced Haswell table overruns it and the process dies of an access
-violation, as `np.cov` of 2,000 rows did on an AMD EPYC 9V74. That is a
-defect in OpenBLAS 0.3.34, reported upstream as OpenMathLib/OpenBLAS#6013
-and #6021 and unfixed in a release as of 2026-10-24. OpenBLAS reads
-`OPENBLAS_L2_SIZE` before the CPU's own L2, and at 2048 the block's test
-fails, so a forced table keeps its own blocking on every host. Without a
-forced core OpenBLAS picks Cooperlake or SkylakeX on those hosts, kernels
-the block suits, so the package's users and the suite's other runs are not
-affected.
+The Haswell leg runs under Intel SDE posing as an Intel Haswell. OpenBLAS
+0.3.34, NumPy's copy, ends its parameter setup with a block for Zen 4 and 5:
+on a CPU whose CPUID names AMD, with AVX-512, a 1 MiB L2 and an L3 a
+multiple of 32 MiB, it raises the `k` step of a double-precision product to
+512, in whatever table is set up, a forced one included. The Haswell kernel
+copies its panel into a stack buffer sized for a `k` of 128 under the
+Windows ABI, so on such a host a forced Haswell table overruns it and the
+process dies of an access violation, as `np.cov` of 2,000 rows did twice on
+an AMD EPYC 9V74. That is a defect in OpenBLAS 0.3.34, reported upstream as
+OpenMathLib/OpenBLAS#6013 and #6021 and unfixed in a release as of
+2026-10-25. The block reads an L2 size from `OPENBLAS_L2_SIZE` first, but
+not on Windows: there OpenBLAS's `readenv_atoi` returns 0 for any variable
+that is set, since `GetEnvironmentVariable` returns the value's length and
+the code reads a nonzero result as failure. Under SDE the CPUID names Intel
+on any host, so the block cannot fire and the forced table keeps its own
+blocking everywhere. SDE follows the processes the interpreter starts,
+pytest's workers among them, and the leg's check fails unless NumPy reports
+AVX2 present and AVX-512 absent, which on a host with AVX-512 shows the
+interpreter itself ran under SDE. Without a forced core OpenBLAS picks
+Cooperlake or SkylakeX on those hosts, kernels the block suits, so the
+package's users and the suite's other runs are not affected.
 
 No leg forces AVX-512 kernels. OpenBLAS runs a forced core type without
 checking the CPU (`force_coretype` in its `driver/others/dynamic.c`), so
@@ -1078,7 +1086,7 @@ memory and crash safety](#ffi-memory-and-crash-safety-2026-08-31):
 | concurrent misuse | two threads calling `fit_predict` at once get a clean error |
 | copying a bank | `pickle` and `copy.deepcopy` resume bit-exactly |
 | across the FFI | memory safety where two copies of Polars share one process |
-| sustained load | a 10M-row soak, opt-in with `pytest -m soak` |
+| sustained load | a 10M-row soak, and 1e8-row stability cases against recomputations from scratch, opt-in with `pytest -m soak` |
 
 **Contracts that are files.** What is held to a file, and how, with each
 test named in [Beyond the eight classes](#beyond-the-eight-classes):

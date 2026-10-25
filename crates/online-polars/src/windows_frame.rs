@@ -16,7 +16,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Cursor;
 
-use online_core::{ClockCfg, ClockValue};
+use online_core::{ClockCfg, ClockValue, SessionGap};
 use polars::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -565,6 +565,28 @@ fn check_scale(
     Ok(())
 }
 
+/// The call a state resumes, as it compares: a numeric `session_gap` is no
+/// part of it, since no window reads the number (every window ends at a
+/// session change), so a state saved with one resumes the call without it,
+/// or with another (task 278). `"reset"` acts, and stays.
+fn same_call(config: &WindowsConfig) -> WindowsConfig {
+    let mut c = config.clone();
+    if matches!(c.session_gap, Some(SessionGapSpec::Gap(_))) {
+        c.session_gap = None;
+    }
+    c
+}
+
+/// [`same_call`] for the core's clock rules: a session's gap compares as
+/// any other number.
+fn same_clock(cfg: &ClockCfg) -> ClockCfg {
+    let mut c = *cfg;
+    if matches!(c.session_gap, Some(SessionGap::Gap(_))) {
+        c.session_gap = Some(SessionGap::Gap(0.0));
+    }
+    c
+}
+
 /// A session value as the core sees it: a hash of its text, so any dtype
 /// can mark sessions and only a change is read.
 /// The bank's session hash (`fnv1a`), which std's `DefaultHasher` is not: a
@@ -656,6 +678,20 @@ impl WindowsRun {
                     input.iter_names().map(|n| n.as_str()).collect::<Vec<_>>()
                 ));
             }
+        }
+        // A key that does nothing is refused, as a spec refuses it (task 278,
+        // D3): each was accepted here and changed nothing.
+        if config.session_gap.is_some() && config.session.is_none() {
+            return Err(format!(
+                "{WHO}: session_gap needs session; it says what a session change does, and \
+                 without a session column there is none"
+            ));
+        }
+        if config.restart_after_step_back.is_some() && config.clock.is_none() {
+            return Err(format!(
+                "{WHO}: restart_after_step_back needs clock; a step back is read off the clock \
+                 column, and without one every row is one step forward"
+            ));
         }
         let cfg: ClockCfg = clock_cfg_of(&ClockPolicy {
             who: WHO,
@@ -1818,7 +1854,7 @@ impl WindowsRun {
         })?;
         // A duration compares by its length, so "5000ms" is the call that
         // saved "5s" (task 160, PC3).
-        if file.config != config {
+        if same_call(&file.config) != same_call(&config) {
             return Err(format!(
                 "{WHO}: the state was saved by another call -- other formulas or another clock \
                  policy -- and resumes only the call that saved it"
@@ -1854,7 +1890,7 @@ impl WindowsRun {
         }
         if file.core.kernels() != run.core.kernels()
             || file.core.ops() != run.core.ops()
-            || file.core.clock_cfg() != run.core.clock_cfg()
+            || same_clock(file.core.clock_cfg()) != same_clock(run.core.clock_cfg())
         {
             return Err(format!(
                 "{WHO}: the state's operators do not match its own call"
@@ -2020,6 +2056,129 @@ mod tests {
         .err()
         .expect("refused");
         assert!(err.contains("with_windows: gap_cap needs clock"), "{err}");
+    }
+
+    /// Task 278 (D3): a `session_gap` without a session, in either form,
+    /// and a `restart_after_step_back` without a clock did nothing and were
+    /// taken; a spec refuses both, and so does this call now, in its own
+    /// words.
+    #[test]
+    fn a_key_with_nothing_to_act_on_is_refused() {
+        let input = df!("t" => [0.0, 1.0], "x" => [1.0, 2.0], "s" => ["a", "b"])
+            .unwrap()
+            .schema()
+            .clone();
+        let refused = |extra: &str| {
+            WindowsRun::new(
+                config(&format!(
+                    r#"{{"formulas": [{{"name": "f", "tree": ["ewm_mean", ["col", "x"],
+                    {{"half_life": 10, "window_size": 3}}]}}]{extra}}}"#
+                )),
+                &input,
+            )
+            .err()
+            .expect("refused")
+        };
+        let gap = "with_windows: session_gap needs session; it says what a session change \
+                   does, and without a session column there is none";
+        for extra in [
+            r#", "session_gap": 1"#,
+            r#", "session_gap": "reset""#,
+            r#", "clock": "t", "gap_cap": 5, "session_gap": 1"#,
+        ] {
+            assert_eq!(refused(extra), gap, "{extra}");
+        }
+        for extra in [
+            r#", "restart_after_step_back": 1"#,
+            r#", "restart_after_step_back": 0, "session": "s""#,
+        ] {
+            assert_eq!(
+                refused(extra),
+                "with_windows: restart_after_step_back needs clock; a step back is read off \
+                 the clock column, and without one every row is one step forward",
+                "{extra}"
+            );
+        }
+    }
+
+    /// Task 278, the user's decision of 2026-10-25: every window ends at a
+    /// session change, so no window measures the clock's jump across one,
+    /// and a numeric `session_gap` is never read. A session needs none; any
+    /// number gives the run without one, to the bit, backward and forward,
+    /// on a clock that goes on and one that starts over with the session;
+    /// and a state saved with one number resumes the call with another, or
+    /// with none.
+    #[test]
+    fn a_numeric_session_gap_is_never_read() {
+        const OPS: &str = r#"{"formulas": [
+            {"name": "back", "tree": ["ewm_mean", ["col", "x"], {"half_life": 2, "window_size": 3}]},
+            {"name": "ahead", "tree": ["rewm_sum", ["col", "x"],
+                {"half_life": 2, "window_size": 3, "partial": "keep"}]},
+            {"name": "dx", "tree": ["increment", ["col", "x"]]}],
+            "clock": "t", "gap_cap": 4, "session": "s""#;
+        let call = |gap: &str| config(&format!("{OPS}{gap}}}"));
+        let goes_on = df!(
+            "t" => [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+            "x" => [1.0, 3.0, 2.0, 5.0, 4.0, 8.0, 6.0, 7.0],
+            "s" => ["a", "a", "a", "a", "b", "b", "b", "b"],
+        )
+        .unwrap();
+        let starts_over = df!(
+            "t" => [0.0, 1.0, 2.0, 3.0, 0.5, 1.5, 2.5, 3.5],
+            "x" => [1.0, 3.0, 2.0, 5.0, 4.0, 8.0, 6.0, 7.0],
+            "s" => ["a", "a", "a", "a", "b", "b", "b", "b"],
+        )
+        .unwrap();
+        let run = |cfg: WindowsConfig, df: &DataFrame| {
+            let mut r = WindowsRun::new(cfg, df.schema()).unwrap();
+            let mut out = r.feed(df, None).unwrap();
+            out.vstack_mut(&r.finish().unwrap()).unwrap();
+            out
+        };
+        let bits = |df: &DataFrame| -> Vec<Vec<Option<u64>>> {
+            ["back", "ahead", "dx"]
+                .iter()
+                .map(|c| {
+                    let col = df.column(c).unwrap().f64().unwrap();
+                    col.iter().map(|v| v.map(f64::to_bits)).collect()
+                })
+                .collect()
+        };
+        for df in [&goes_on, &starts_over] {
+            let none = bits(&run(call(""), df));
+            // The forward window open across the change is cut there and
+            // keeps what it saw: the run is not all null.
+            assert!(none[1][1].is_some() && none[1][2].is_some(), "{none:?}");
+            for gap in [
+                r#", "session_gap": 0"#,
+                r#", "session_gap": 1"#,
+                r#", "session_gap": 50"#,
+            ] {
+                assert_eq!(bits(&run(call(gap), df)), none, "{gap}");
+            }
+            // "reset" discards what the change leaves open ahead of it.
+            let reset = bits(&run(call(r#", "session_gap": "reset""#), df));
+            assert_ne!(reset, none);
+        }
+        let df = &goes_on;
+        let want = bits(&run(call(""), df));
+        let mut first = WindowsRun::new(call(r#", "session_gap": 1"#), df.schema()).unwrap();
+        let head = first.feed(&df.slice(0, 3), None).unwrap();
+        let state = first.save_bytes().unwrap();
+        for gap in ["", r#", "session_gap": 50"#] {
+            let mut next = WindowsRun::load_bytes(&state, call(gap), df.schema()).unwrap();
+            let mut out = head.clone();
+            out.vstack_mut(&next.feed(&df.slice(3, 5), None).unwrap())
+                .unwrap();
+            out.vstack_mut(&next.finish().unwrap()).unwrap();
+            assert_eq!(bits(&out), want, "{gap}");
+        }
+        // "reset" is part of the call: a state saved without it resumes
+        // only a call without it.
+        let err = WindowsRun::load_bytes(&state, call(r#", "session_gap": "reset""#), df.schema())
+            .err()
+            .expect("refused");
+        assert!(err.contains("another call"), "{err}");
     }
 
     /// Task 173, PC1: without a clock column each group's clock counts its

@@ -164,18 +164,29 @@ class TestTheScript:
         built = {"prescott", "nehalem", "sandybridge", "haswell", "skylakex"}
         assert {leg["openblas"].lower() for leg in legs} <= built
 
-    def test_a_forced_core_keeps_its_own_blocking_on_a_zen_4(self):
-        """OpenBLAS 0.3.34 raised a forced Haswell table's `k` step to 512 on
-        an AMD EPYC 9V74 with AVX-512 and overran its kernel's stack buffer
-        (task 273 (a3); OpenMathLib/OpenBLAS#6013, #6021). The block tests
-        `l2_kb == 1024`; every forced leg tells OpenBLAS 2048."""
-        lines = cp.forced_env("Haswell", ["X86_V4", "AVX512_ICL"])
-        assert lines == [
+    def test_a_forced_core_sets_the_core_and_numpys_targets_alone(self):
+        """The `OPENBLAS_L2_SIZE=2048` of task 273 (a3) is gone: OpenBLAS
+        reads it on Windows with a `readenv_atoi` that returns 0 for any
+        variable that is set (common.h), and the forced-Haswell leg crashed
+        with it set (task 273 (a4))."""
+        assert cp.forced_env("Haswell", ["X86_V4", "AVX512_ICL"]) == [
             "OPENBLAS_CORETYPE=Haswell",
-            "OPENBLAS_L2_SIZE=2048",
             "NPY_DISABLE_CPU_FEATURES=X86_V4 AVX512_ICL",
         ]
-        assert cp.L2_UNDER_A_FORCED_CORE != 1024
+
+    def test_a_command_runs_under_sde_only_when_given_its_knobs(self):
+        cmd = ["--", ".venv/Scripts/python.exe", "-m", "pytest"]
+        assert cp.under_command("", cmd, "D:/sde") == cmd[1:]
+        assert cp.under_command("-hsw", cmd, "D:/sde") == [
+            str(Path("D:/sde") / "sde.exe"),
+            "-hsw",
+            "-update_cpuid_from_host",
+            "0",
+            "--",
+            *cmd[1:],
+        ]
+        with pytest.raises(SystemExit, match="no command"):
+            cp.under_command("-hsw", ["--"], "D:/sde")
 
     def test_sde_keeps_the_definition_files_leaves(self):
         assert cp._sde("sde.exe", "-cpuid_in D:/a/cpuid.def") == [
@@ -327,4 +338,28 @@ class TestTheWorkflow:
         assert env < self._at("oracles", "cpu_paths.py check") < self._at("oracles", "pytest")
         assert self._at("oracles", "maturin develop") < env
         (pytest_run,) = [s["run"] for s in self._steps("oracles") if "pytest" in s.get("run", "")]
-        assert pytest_run == 'uv run pytest -m "oracle and not soak"'
+        assert '-m pytest -m "oracle and not soak"' in pytest_run, pytest_run
+        check = self._steps("oracles")[self._at("oracles", "cpu_paths.py check")]["run"]
+        for run in (pytest_run, check):
+            assert 'cpu_paths.py under --sde-args="$SDE_KNOB" --' in run, run
+
+    def test_the_forced_haswell_leg_runs_as_an_intel_haswell_and_shows_it(self):
+        """OpenBLAS 0.3.34's Zen 4 block keys on the CPUID vendor; under SDE
+        `-hsw` it is Intel on any host, and NumPy's AVX512F reads false even
+        where the host has it, the proof that the interpreter ran under SDE
+        (task 273 (a4))."""
+        legs = {
+            leg["openblas"]: leg for leg in WF["jobs"]["oracles"]["strategy"]["matrix"]["include"]
+        }
+        assert legs["Haswell"]["sde"] == "-hsw"
+        assert set(legs["Haswell"]["sees"].split()) == {"AVX2=true", "AVX512F=false"}
+        for core in ("Prescott", "SandyBridge"):
+            assert legs[core]["sde"] == "" and legs[core]["sees"] == ""
+        setup = self._at("oracles", "petarpetrovt/setup-sde@")
+        steps = self._steps("oracles")
+        assert steps[setup]["if"] == "matrix.sde != ''"
+        assert (
+            setup
+            < self._at("oracles", "$env:SDE_SHA256")
+            < self._at("oracles", "cpu_paths.py check")
+        )

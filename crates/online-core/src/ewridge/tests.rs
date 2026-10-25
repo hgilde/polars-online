@@ -5847,3 +5847,153 @@ fn a_stamp_handed_to_a_windowed_fit_keys_its_next_row() {
     let win = m.win.as_ref().expect("windowed");
     assert_eq!(win.snaps.next_at(win.clock, 1.0).stamp, stamp);
 }
+
+// --- Conditioning (docs/PLAN.md task 278, class 7) ---------------------
+
+/// The closed form of a conditioned design, within [`closed_form_error`]:
+/// task 278's class 7. Two shapes push the solve where conditioning bites:
+///
+/// - **near-collinear**: `x1 = x0 + eps * v`, `eps` from `1e-1` to `1e-6`,
+///   so the correlation matrix's condition runs from about `1e2` to
+///   `1e12` and the slopes of `x0` and `x1` are determined only to
+///   `kappa * u` of their size;
+/// - **features from 1e-10 to 1e10**: three independent columns at those
+///   spreads (and levels 10 times them), whose raw Gram spans 40 orders of
+///   magnitude and whose correlation matrix is near the identity: a
+///   Cholesky is invariant to the diagonal scaling (van der Sluis), so the
+///   unstandardized solve must be as accurate as the standardized one.
+///
+/// Both at ridge 0 and at a tiny ridge, through the origin and with an
+/// intercept, standardized and not. The bound is task 274's: the model's
+/// moments, its forming of the system and its Cholesky through `|A^-1|`,
+/// componentwise, so a slope the design determines poorly is allowed its
+/// `kappa * u` and a well-determined one is not. The prediction at a point
+/// on the design's own manifold (`x1 = x0 + eps * v`) is held through the
+/// slots' errors, and is determined far better than the slopes. Measured on
+/// aarch64 (macOS) 2026-10-25: at most 0.048 of the bound (a slot of the
+/// `scales` shape, standardized at ridge 1e-14), 0.011 in the collinear
+/// sweep at its condition of 4e12.
+#[test]
+fn a_conditioned_design_is_solved_within_its_closed_form_bound() {
+    use oracle::{U, condition};
+    let mut worst = 0.0f64;
+    let mut reached = 0.0f64;
+    for (shape_name, eps_list) in [
+        ("collinear", vec![1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6]),
+        ("scales", vec![0.0]),
+    ] {
+        for eps in eps_list {
+            let mut s = 20261025u64;
+            let rows: Vec<OracleRow> = (0..80)
+                .map(|_| {
+                    let (a, b, c) = (lcg(&mut s), lcg(&mut s), lcg(&mut s));
+                    let x = if shape_name == "collinear" {
+                        vec![2.0 + a, 2.0 + a + eps * b, -1.0 + c]
+                    } else {
+                        vec![1e-9 + 1e-10 * a, 10.0 + b, 1e11 + 1e10 * c]
+                    };
+                    let truth = if shape_name == "collinear" {
+                        [1.0, -2.0, 0.5]
+                    } else {
+                        [3e9, -0.5, 2e-10]
+                    };
+                    let y0 = 0.7
+                        + x.iter().zip(truth).map(|(v, t)| v * t).sum::<f64>()
+                        + 0.1 * lcg(&mut s);
+                    (x, [y0, -y0], 0.5 + (lcg(&mut s) + 1.0))
+                })
+                .collect();
+            let wsum: f64 = rows.iter().map(|r| r.2).sum();
+            let mean = |f: &dyn Fn(&OracleRow) -> f64| -> f64 {
+                rows.iter().map(|r| r.2 * f(r)).sum::<f64>() / wsum
+            };
+            let k = 3;
+            for standardize in [false, true] {
+                // An unstandardized ridge is in the features' squared units:
+                // 1e-14 is 1e6 times the smallest feature's variance in the
+                // `scales` shape, the slope there is the ridge's `cov / lam`,
+                // and its error sat at 0.9993 of the bound's leading term,
+                // too close to hold on every FPU; that shape takes ridge 0
+                // unstandardized.
+                let ridges: &[f64] = if shape_name == "scales" && !standardize {
+                    &[0.0]
+                } else {
+                    &[0.0, 1e-14]
+                };
+                for &lam in ridges {
+                    let mut c = cfg(k, 2);
+                    c.standardize = standardize;
+                    c.ridge = vec![lam];
+                    c.min_weight = 0.0;
+                    let mut model = EwRidge::new(c).unwrap();
+                    for (i, (x, y, w)) in rows.iter().enumerate() {
+                        model.step(x, &[Some(y[0]), Some(y[1])], f64::from(u8::from(i > 0)), *w);
+                    }
+                    let beta = model.coefficients().unwrap()[0].clone();
+                    // The centred system, as the closed-form test writes it.
+                    let mx: Vec<f64> = (0..k).map(|i| mean(&|r| r.0[i])).collect();
+                    let my = mean(&|r| r.1[0]);
+                    let cov = |a: usize, b: usize| mean(&|r| (r.0[a] - mx[a]) * (r.0[b] - mx[b]));
+                    let pen = |i: usize| if standardize { lam * cov(i, i) } else { lam };
+                    let a: Vec<f64> = (0..k)
+                        .flat_map(|p| (0..k).map(move |q| (p, q)))
+                        .map(|(p, q)| cov(p, q) + if p == q { pen(p) } else { 0.0 })
+                        .collect();
+                    let rhs: Vec<f64> = (0..k)
+                        .map(|p| mean(&|r| (r.0[p] - mx[p]) * (r.1[0] - my)))
+                        .collect();
+                    let slopes = oracle::solve(&a, &rhs);
+                    let b0 = my - (0..k).map(|i| mx[i] * slopes[i]).sum::<f64>();
+                    let want: Vec<f64> = std::iter::once(b0).chain(slopes.clone()).collect();
+                    let shape = Shape {
+                        centred: true,
+                        intercept: true,
+                        standardize,
+                        ridge_scale: false,
+                    };
+                    let bound =
+                        closed_form_error(&rows, 0, shape, lam, &[0.0; 3], &a, &rhs, &slopes);
+                    // The correlation matrix's condition, as evidence of
+                    // where the sweep went.
+                    let d: Vec<f64> = (0..k).map(|i| a[i * k + i].sqrt()).collect();
+                    let corr: Vec<f64> = (0..k * k)
+                        .map(|ij| a[ij] / (d[ij / k] * d[ij % k]))
+                        .collect();
+                    let kappa = condition(&corr);
+                    reached = reached.max(kappa);
+                    assert!(
+                        kappa * U < 1e-2,
+                        "{shape_name} {eps}: kappa {kappa:e} is past the sweep"
+                    );
+                    let what = format!(
+                        "{shape_name} eps {eps} std {standardize} ridge {lam} kappa {kappa:.1e}"
+                    );
+                    for (i, (g, w)) in beta.iter().zip(&want).enumerate() {
+                        worst = worst.max((g - w).abs() / bound[i]);
+                        oracle::assert_within(*g, *w, bound[i], format_args!("{what}, slot {i}"));
+                    }
+                    // A point on the design's manifold, predicted through
+                    // the slots' errors and each side's sum.
+                    let x_new = if shape_name == "collinear" {
+                        [2.3, 2.3 + eps * 0.4, -0.6]
+                    } else {
+                        [1.05e-9, 10.2, 1.03e11]
+                    };
+                    let zx: Vec<f64> = std::iter::once(1.0).chain(x_new).collect();
+                    let p_want: f64 = zx.iter().zip(&want).map(|(z, b)| z * b).sum();
+                    let p_got = model.predict(&x_new, 1.0).pred[0];
+                    let dp = zx.iter().zip(&bound).map(|(z, b)| z.abs() * b).sum::<f64>()
+                        + 2.0 * oracle::dot_error(zx.iter().copied().zip(want.iter().copied()));
+                    oracle::assert_within(p_got, p_want, dp, format_args!("{what}, predict"));
+                }
+            }
+        }
+    }
+    println!(
+        "conditioned designs: the worst slot at {worst:.3e} of its bound, kappa to {reached:.1e}"
+    );
+    assert!(
+        reached > 1e12,
+        "the sweep never reached a hard condition: {reached:e}"
+    );
+}
