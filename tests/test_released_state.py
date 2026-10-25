@@ -72,7 +72,7 @@ INTRODUCED = {"audit": "1.0.0"}
 #: The workload's specs no listed release can build: a parameter added
 #: since the newest. On the release day that ships it, its specs move to
 #: `PARAMETER_INTRODUCED` under that release, which builds them.
-UNRELEASED: set[str] = set()
+UNRELEASED: set[str] = {"huber_refit", "sgd_huber_refit"}
 
 #: The workload's specs that need a parameter newer than a release, by the
 #: first release that takes it (task 271's `huber_scale`, in 1.3.0). An
@@ -415,3 +415,81 @@ def test_a_change_against_the_policy_is_on_the_policy_page():
         assert any(f"`{s}`" in policy or f"`{s}=" in policy for s in settings), (
             f"the policy names none of {sorted(settings)}: {entry[:120]}"
         )
+
+
+#: The last release without the Huber refit (task 277): `huber_refit_rows = 0`
+#: is its `huber` and `sgd(loss="huber")`, to the bit.
+BEFORE_REFIT = "1.3.0"
+
+_REFIT_SCRIPT = """
+import json, sys
+import polars as pl
+import polars_online as po
+specs, data, out = json.loads(sys.argv[1]), sys.argv[2], sys.argv[3]
+frames = [po.ModelBank([s]).fit_predict(pl.read_parquet(data)).select(s["name"]) for s in specs]
+pl.concat(frames, how="horizontal").write_parquet(out)
+"""
+
+
+def test_no_refit_is_the_release_before_it_to_the_bit(tmp_path):
+    """``huber_refit_rows = 0`` turns off the refit 1.4.0 put on by default,
+    and gives back the numbers of the release before it, every field to the
+    bit: ``huber`` under both scales and with feature sets, and ``sgd``'s
+    Huber loss under each schedule, standardized, on 2,000 rows of two
+    targets at a level of 1,000 with 12.5% one-sided outliers, nulls and
+    zero weights, where the default's refit runs on both targets and moves
+    each (the activation check below)."""
+    if not _online():
+        pytest.skip("offline: the released wheel cannot be downloaded")
+    rng = np.random.default_rng(12)
+    n = 2000
+    x = rng.standard_normal(n)
+    z = rng.standard_normal(n)
+    y0 = 1000.0 + 2.0 * x - z + 0.5 * rng.standard_normal(n)
+    y0[(rng.random(n) < 0.25) & (x > 0)] += 50.0
+    y1 = np.where(np.arange(n) % 7 == 3, np.nan, -3.0 * x + rng.standard_t(3, n))
+    w = np.where(np.arange(n) % 11 == 5, 0.0, rng.uniform(0.5, 1.5, n))
+    df = pl.DataFrame({"x": x, "z": z, "y0": y0, "y1": y1, "w": w}).with_columns(
+        pl.col("y1").fill_nan(None)
+    )
+    data = tmp_path / "rows.parquet"
+    df.write_parquet(data)
+    c = dict(targets=["y0", "y1"], features=["x", "z"], half_life=float("inf"), weight="w")
+    released = [
+        po.spec.huber("h_mad", **c),
+        po.spec.huber("h_rms", huber_scale="rms", **c),
+        po.spec.huber("h_sets", feature_sets={"x": ["x"], "both": ["x", "z"]}, **c),
+        *[
+            po.spec.sgd(f"s_{s}", loss="huber", schedule=s, learning_rate=0.05, **c)
+            for s in ("constant", "inv_scaling", "adagrad")
+        ],
+    ]
+    out = tmp_path / "released.parquet"
+    subprocess.run(
+        [
+            str(compare.released_python(BEFORE_REFIT)),
+            "-I",
+            "-c",
+            _REFIT_SCRIPT,
+            json.dumps(released),
+            str(data),
+            str(out),
+        ],
+        check=True,
+    )
+    then = pl.read_parquet(out)
+
+    def run(rows: int | None) -> pl.DataFrame:
+        frames = []
+        for s in released:
+            model = dict(s["model"])
+            if rows is not None:
+                model["huber_refit_rows"] = rows
+            spec = {**s, "model": model}
+            frames.append(po.ModelBank([spec]).fit_predict(df).select(s["name"]))
+        return pl.concat(frames, how="horizontal")
+
+    assert run(0).equals(then, null_equal=True)
+    moved = run(None)
+    for s in released:
+        assert not moved[s["name"]].equals(then[s["name"]], null_equal=True), s["name"]

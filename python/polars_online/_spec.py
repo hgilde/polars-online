@@ -252,10 +252,10 @@ _SKIPPED_WHEN_ABSENT: dict[str, frozenset[str]] = {
             "feature_sets",
             "ridge_scale",
             "emit_huber_scale",
-            "huber_warm_rows",
+            "huber_refit_rows",
         }
     ),
-    "sgd": frozenset({"huber_scale", "huber_scale_half_life"}),
+    "sgd": frozenset({"huber_scale", "huber_scale_half_life", "huber_refit_rows"}),
     "ew_cov": frozenset({"gram_threads"}),
     "marginal": frozenset(
         {
@@ -341,7 +341,7 @@ _U32 = frozenset(
         "max_iter",
         "update_every_rows",
         "split_merge_every_rows",
-        "huber_warm_rows",
+        "huber_refit_rows",
     }
 )
 
@@ -2774,6 +2774,7 @@ def sgd(
     huber_delta: float | None = None,
     huber_scale: Literal["mad", "rms"] | None = None,
     huber_scale_half_life: float | Duration | None = None,
+    huber_refit_rows: int | None = None,
     quantile: float | None = None,
     eps: float | None = None,
     learning_rate: float | None = None,
@@ -2864,14 +2865,47 @@ def sgd(
     residuals widen still lets every row teach, and the median scale forgets
     them once the fit has the level. The root mean square does not: without
     decay the first residuals stay in it at their full weight, the cut stays
-    wider than every later residual, and the loss is the squared loss. On
+    wider than every later residual, and the loss is the squared loss, until
+    the refit below rebuilds it from the converged fit's residuals. On
     ``y = 1000 + 2x + 0.5ε`` with +50 on 5% of the rows, all with ``x > 0``,
-    and no decay, the slope is 3.751 under the squared loss, 3.751 under
-    ``"rms"`` (the same number) and 2.016 under ``"mad"``. Inside the tube
+    and no decay, the median slope over five seeds is 3.751 under the squared
+    loss, 2.556 under ``"rms"`` (3.751, the squared loss's, with
+    ``huber_refit_rows = 0``) and 2.013 under ``"mad"``. Inside the tube
     the gradient is zero. On a target at 1,000 with a spread of 2, the first residuals put the
     residual's std near 1,000, so a tube of ``eps = 0.1`` drawn in it would be
     about 100 wide and hold every row. Without decay it would never narrow,
     and the fit would stop where it stood.
+
+    .. rubric:: The Huber loss's refit of the first rows
+
+    The first steps start from zero coefficients, so a share of outliers
+    captures the Huber fit: they pull the first steps, ``s`` learns the
+    pulled fit's residuals, the cut ``delta * s`` is wide, and the outliers
+    keep teaching at nearly full weight. Over 2,000 rows at 10% one-sided
+    outliers with no decay, every one of 40 streams ended more than 0.25 in
+    slope from statsmodels' converged ``RLM``. So on the row a target's count
+    of learned rows reaches ``huber_refit_rows``, those rows' converged Huber
+    fit replaces its coefficients:
+
+    .. code-block:: text
+
+        v_i = w_i * (the decay factors of the rows after i)
+        b   = weighted least squares of the rows at v_i
+        r_i = y_i - z_i'b,  s = weighted median of |r_i| at v_i, over 0.6745
+        b   = weighted least squares at v_i * min(1, delta * s / |r_i|)
+        repeated until b moves by under 1e-10 of max|b|, or 50 passes
+
+    with a ridge of 1e-6 on the mean-form system and without ``l2``, a
+    penalty on the steps, which the steps after it apply. ``s`` is then
+    rebuilt from the fit's residuals. The fit is set in the coordinates the
+    coefficients are held in: the caller's units, or, while the scaler still
+    warms up, its moments' coordinates as they stand (``b_i * s_i`` and
+    ``b_0 + sum(m_i * b_i)``), so that they read out as the fit. A constraint
+    projects it as it projects a step. AdaGrad's sums of squared gradients
+    stay, so the step sizes are the ones the rows taught; emptied, they would
+    make the next steps throw the fit off. ``inv_scaling`` reads the weight,
+    which the refit does not move. With the refit, 2 of the 40 streams at 10%
+    were more than 0.05 from ``RLM``, the worst by 0.075.
 
     .. rubric:: Parameters
 
@@ -2901,6 +2935,14 @@ def sgd(
         ``huber_scale_half_life = 100`` and 1.41 with 20. On a stream whose
         level can change, give it about a fifth of ``half_life``, or
         shorter.
+    ``huber_refit_rows``
+        The learned rows after which each target's first rows are refit to
+        their converged Huber fit, once (the rubric above). Default 200 under
+        ``loss = "huber"``; ``0`` turns the refit off, which gives the numbers
+        of the releases before it, to the bit. A target's rows are held until
+        its refit, ``(features + 4) * 8`` bytes each. Off by default, and
+        refused when given, beside an infinite ``huber_delta``, the squared
+        loss. ``loss = "huber"`` only; refused beside another loss.
     ``quantile``
         The level for ``loss = "quantile"``, in ``(0, 1)``; required for it.
     ``eps``
@@ -3114,6 +3156,7 @@ def sgd(
         "huber_delta": huber_delta,
         "huber_scale": huber_scale,
         "huber_scale_half_life": huber_scale_half_life,
+        "huber_refit_rows": huber_refit_rows,
         "quantile": quantile,
         "eps": eps,
         "learning_rate": learning_rate,
@@ -3137,6 +3180,7 @@ def sgd(
         ("huber_delta", huber_delta, "loss", "huber", loss),
         ("huber_scale", huber_scale, "loss", "huber", loss),
         ("huber_scale_half_life", huber_scale_half_life, "loss", "huber", loss),
+        ("huber_refit_rows", huber_refit_rows, "loss", "huber", loss),
         ("quantile", quantile, "loss", "quantile", loss),
         ("eps", eps, "loss", "epsilon_insensitive", loss),
         ("power", power, "schedule", "inv_scaling", schedule),

@@ -255,6 +255,13 @@ SCHEDULES = [
 ]
 
 
+def _one_pass(loss: str) -> dict:
+    """The reference is the one-pass recursion: under the Huber loss the
+    refit of the first rows (task 277) is off here, and held to statsmodels
+    in `test_huber_refit.py`."""
+    return {"huber_refit_rows": 0} if loss == "huber" else {}
+
+
 class TestSgd:
     @pytest.mark.parametrize(("schedule", "rate"), SCHEDULES, ids=[s for s, _ in SCHEDULES])
     @pytest.mark.parametrize(("loss", "kind", "extra"), LOSSES, ids=[s for s, *_ in LOSSES])
@@ -273,6 +280,7 @@ class TestSgd:
             coef_every=0,
             standardize=False,  # the oracle reads the features as they stand
             **kw,
+            **_one_pass(loss),
         )
         out = po.ModelBank([spec]).fit_predict(df)["m"]
         _held(out, sgd_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, **kw), y)
@@ -364,6 +372,7 @@ class TestStandardized:
             standardize=True,
             fit_intercept=fit_intercept,
             **kw,
+            **_one_pass(loss),
         )
         out = po.ModelBank([spec]).fit_predict(df)["m"]
         ref = sgd_ref(

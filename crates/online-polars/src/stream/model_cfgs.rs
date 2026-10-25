@@ -502,7 +502,7 @@ pub fn huber_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         feature_sets: _,
         ridge_scale: _,
         emit_huber_scale,
-        huber_warm_rows,
+        huber_refit_rows,
     } = &spec.model
     else {
         return Err("not a huber spec".into());
@@ -533,7 +533,17 @@ pub fn huber_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         feature_sets: huber_feature_sets(spec),
         ridge_scale: huber_ridge_scale_sum(spec),
         emit_scale: *emit_huber_scale,
-        warm_rows: huber_warm_rows.unwrap_or(0),
+        // On by default, but under the sum-scale prior, which the refit
+        // does not hold, and an infinite cut, least squares, with no
+        // outliers to refit for (`RobustCfg::refit_rows`): there it is off
+        // unless asked for, and asked for it is refused.
+        refit_rows: huber_refit_rows.unwrap_or(
+            if huber_ridge_scale_sum(spec) || huber_delta.is_some_and(|d| d.0.is_infinite()) {
+                0
+            } else {
+                online_core::DEFAULT_REFIT_ROWS
+            },
+        ),
     };
     let mut m = Robust::new(cfg)?;
     // Each target's own threshold, for its own first solve (S9b).
@@ -609,7 +619,7 @@ pub fn quantile_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         feature_sets: Vec::new(),
         ridge_scale: false,
         emit_scale: false,
-        warm_rows: 0,
+        refit_rows: 0,
     };
     let mut m = Robust::new(cfg)?;
     // Each target's own threshold, for its own first solve (S9b).
@@ -624,6 +634,7 @@ pub fn sgd_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         huber_delta,
         huber_scale,
         huber_scale_half_life,
+        huber_refit_rows,
         quantile,
         eps,
         learning_rate,
@@ -694,6 +705,71 @@ pub fn sgd_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             .as_ref()
             .filter(|_| matches!(loss, SgdLoss::Huber { .. }))
             .map(|h| Decay::Halflife(h.value())),
+        // `huber`'s refit under the Huber loss, on by default; every other
+        // loss has none, and the spec refuses one beside it.
+        // Off under an infinite cut, the squared loss, with no outliers to
+        // refit for.
+        refit_rows: match loss {
+            SgdLoss::Huber { delta } if delta.is_finite() => {
+                huber_refit_rows.unwrap_or(online_core::DEFAULT_REFIT_ROWS)
+            }
+            SgdLoss::Huber { .. } => huber_refit_rows.unwrap_or(0),
+            _ => 0,
+        },
     };
     Ok(AnyModel::Sgd(Box::new(Sgd::new(cfg)?)))
+}
+
+#[cfg(test)]
+mod refit_tests {
+    //! The refit's default (docs/PLAN.md task 277): on at
+    //! `DEFAULT_REFIT_ROWS` for `huber` and `sgd(loss = "huber")`, off
+    //! where the refit does not apply -- the sum-scale prior, an infinite
+    //! cut, another loss -- and as given where given, refused there.
+    use super::*;
+
+    fn spec(model: &str) -> Spec {
+        let text = format!(
+            "name = \"m\"\ntargets = [\"y\"]\nfeatures = [\"x\"]\nhalf_life = 10.0\n[model]\n{model}\n"
+        );
+        toml::from_str(&text).unwrap_or_else(|e| panic!("did not parse: {e}\n{text}"))
+    }
+
+    fn huber(model: &str) -> Result<u32, String> {
+        match huber_model(
+            &spec(&format!("type = \"huber\"\n{model}")),
+            Decay::Halflife(10.0),
+        )? {
+            AnyModel::Robust(m) => Ok(m.cfg().refit_rows),
+            _ => unreachable!(),
+        }
+    }
+
+    fn sgd(model: &str) -> Result<u32, String> {
+        match sgd_model(
+            &spec(&format!("type = \"sgd\"\n{model}")),
+            Decay::Halflife(10.0),
+        )? {
+            AnyModel::Sgd(m) => Ok(m.cfg().refit_rows),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn the_refit_is_on_by_default_where_it_applies() {
+        let on = online_core::DEFAULT_REFIT_ROWS;
+        assert_eq!(huber(""), Ok(on));
+        assert_eq!(huber("huber_refit_rows = 7"), Ok(7));
+        assert_eq!(huber("huber_refit_rows = 0"), Ok(0));
+        assert_eq!(huber("ridge_scale = \"sum\""), Ok(0));
+        assert_eq!(huber("huber_delta = inf"), Ok(0));
+        assert!(huber("ridge_scale = \"sum\"\nhuber_refit_rows = 7").is_err());
+        assert!(huber("huber_delta = inf\nhuber_refit_rows = 7").is_err());
+        assert_eq!(sgd("loss = \"huber\""), Ok(on));
+        assert_eq!(sgd("loss = \"huber\"\nhuber_refit_rows = 7"), Ok(7));
+        assert_eq!(sgd("loss = \"huber\"\nhuber_delta = inf"), Ok(0));
+        assert!(sgd("loss = \"huber\"\nhuber_delta = inf\nhuber_refit_rows = 7").is_err());
+        assert_eq!(sgd(""), Ok(0));
+        assert_eq!(sgd("loss = \"quantile\"\nquantile = 0.5"), Ok(0));
+    }
 }

@@ -223,6 +223,17 @@ WORKLOAD: list[tuple[str, str, dict, list[str]]] = [
         dict(FIT, learning_rate=0.01, loss="huber", huber_scale="mad"),
         [],
     ),
+    # Task 277's refit of the first rows, on by default at 200 rows, which
+    # no group of this stream reaches: at 90 each group's buffer is part
+    # full at the half and its refit runs in the second. A release without
+    # `huber_refit_rows` refuses them: not comparable.
+    ("huber_refit", "huber", dict(FIT, huber_refit_rows=90), []),
+    (
+        "sgd_huber_refit",
+        "sgd",
+        dict(FIT, learning_rate=0.01, loss="huber", huber_refit_rows=90),
+        [],
+    ),
     ("quantile", "quantile", dict(FIT, quantile=0.8), []),
     ("ftrl", "ftrl", dict(FIT, targets=["hit"]), []),
     ("sgd", "sgd", dict(FIT, learning_rate=0.01), []),

@@ -63,7 +63,9 @@ const CASES: [(&str, &str, &str, &str, &str, Event); 6] = [
     ),
     (
         "huber",
-        r#"{"type": "huber", "solve_every": {every}}"#,
+        // The refit moves a target's fit on its own row, off the cadence
+        // this file holds (docs/PLAN.md task 277), so it is off here.
+        r#"{"type": "huber", "solve_every": {every}, "huber_refit_rows": 0}"#,
         r#""targets": ["y"],"#,
         r#"["x"]"#,
         r#""coef_every": 0,"#,

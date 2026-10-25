@@ -93,7 +93,10 @@ const REGENERATE: &str = "PRINT_STATE_FIXTURES=1 cargo test -p online-polars --t
 /// (schema 63 before its release, docs/PLAN.md task 275; the core's
 /// `state_fixtures.rs` has why): their first output row is the old build's
 /// to the bit, the rest to the golden tolerance, and the state they save is
-/// not compared with the current fixture's.
+/// not compared with the current fixture's. 63 kept since 64 gave `huber`
+/// and `sgd(loss = "huber")` the refit of each target's first rows
+/// (docs/PLAN.md task 277): no bank fixture holds either model, so each
+/// converts to the current bytes exactly, the windowed ones as above.
 macro_rules! previous {
     ($($schema:literal),* $(,)?) => {
         const PREVIOUS: &[u32] = &[$($schema),*];
@@ -109,7 +112,7 @@ macro_rules! previous {
     };
 }
 
-previous![61, 62];
+previous![61, 62, 63];
 
 /// The golden pipeline's tolerance, off the writer's platform.
 const TOL: f64 = 1e-12;

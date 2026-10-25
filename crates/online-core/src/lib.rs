@@ -88,6 +88,7 @@ pub mod gramfit;
 mod health;
 mod hmm;
 mod holt;
+mod huber_refit;
 pub mod humanfloat;
 mod influence;
 mod kalman;
@@ -153,6 +154,7 @@ pub use gaps::{GramPart, TargetGaps};
 pub use health::FeatureHealth;
 pub use hmm::{Hmm, HmmCfg};
 pub use holt::{Holt, HoltCfg};
+pub use huber_refit::DEFAULT_REFIT_ROWS;
 pub use influence::Influence;
 pub use kalman::{Kalman, KalmanCfg};
 pub use lasso::{Lasso, LassoCfg};
@@ -702,7 +704,19 @@ pub use window::{
 ///   decayed by the summed clock as they were, so the first read after
 ///   loading is the saved state's to the bit, and those taken after the load
 ///   carry products.
-pub const SCHEMA_VERSION: u32 = 63;
+/// - 64 (2026-10-25, task 277): `huber` and `sgd(loss="huber")` refit each
+///   target's first `refit_rows` learned rows to convergence, once, and
+///   rebuild its residual scale from the converged residuals
+///   ([`crate::huber_refit`]): the configuration keeps `refit_rows` (a
+///   spec's `huber_refit_rows`, 200 by default) and the model a buffer per
+///   target (`refit`: the rows it learned and the ones that only aged its
+///   sums, until the refit, then none). A state of 63 has neither field
+///   and was fitted without a refit, so the loader is the fields'
+///   defaults: `refit_rows` 0 and no buffers, and the state goes on to the
+///   bit as a 63 build continued it; a stream resumed from it never refits
+///   rows it has long passed. Schema 63's fixtures are kept
+///   (`tests/state_fixtures/v63/`).
+pub const SCHEMA_VERSION: u32 = 64;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last

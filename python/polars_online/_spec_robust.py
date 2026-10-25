@@ -29,7 +29,7 @@ def huber(
     feature_sets: dict[str, list[str]] | None = None,
     ridge_scale: Literal["mean", "sum"] = "mean",
     emit_huber_scale: bool = False,
-    huber_warm_rows: int | None = None,
+    huber_refit_rows: int | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Huber regression: :func:`ewridge` with the rows that miss by far
@@ -98,17 +98,42 @@ def huber(
        * - 5%
          - 4.050
          - 2.040
-         - 2.676
+         - 2.675
          - 2.039
        * - 12.5%
          - 6.975
-         - 2.128
-         - 4.885
+         - 2.124
+         - 4.882
          - 2.124
 
-    One pass over the rows, each weighted once by its residual against the fit
-    before it, lands within 0.005 of the batch estimate that iterates to
-    convergence at these levels.
+    .. rubric:: The refit of the first rows
+
+    One pass weighs each row by the fit before it. Over the first rows that
+    fit is close to least squares, so a share of outliers pulls it, and
+    ``s`` learns the pulled fit's residuals. The cut ``d * s`` is then wide,
+    the outliers keep entering at nearly full weight, and without decay the
+    fit stays where they pulled it. A median over a few streams hides this:
+    on the stream above at 12.5% outliers the median stream was within 0.002
+    of statsmodels' ``RLM``, while 13 of 40 streams ended more than 0.05 from
+    it, the worst by 0.43. So on the row a target's count of learned rows
+    reaches ``huber_refit_rows``, those rows are refit by iteratively
+    reweighted least squares, as a batch fit does:
+
+    .. code-block:: text
+
+        v_i = w_i * (the decay factors of the rows after i)
+        r_i = y_i - z_i'b                  against the last pass's fit
+        s   = weighted median of |r_i| at v_i, over 0.6745  (root mean square under "rms")
+        u_i = min(1, d * s / |r_i|)
+        b   = the ridge solve of the rows at v_i * u_i
+        repeated until b moves by under 1e-10 of max|b|, or 50 passes
+
+    The target's sums are then rebuilt from the rows at their converged
+    weights, and ``s`` from the converged fit's residuals, and the stream goes
+    on online. With the refit no stream of the 40 was more than 0.05 from
+    ``RLM`` at 5% to 15% outliers, and 4 at 20%, where 25 were without it.
+    It runs after the row's own prediction, and moves its own target's fit
+    alone.
 
     Both scales age on every row the model sees, a row with no prediction or
     with weight 0 included, so they forget across a gap as the clock says, and
@@ -205,6 +230,17 @@ def huber(
         ``ewridge(ridge_scale="sum")`` is its least-squares form. ``"sum"``
         is refused beside ``standardize`` and beside two or more
         ``feature_sets``.
+    ``huber_refit_rows``
+        The learned rows (each of positive weight, with its target) after
+        which each target's first rows are refit to convergence, once (the
+        rubric above). Default 200: at 20% one-sided outliers, 50 rows left
+        14 of 40 streams captured, where 200 left 4 and 1,000 left 2. ``0``
+        turns the refit off, which gives the numbers of the releases before
+        it, to the bit. A target's rows are held until its refit, ``(features
+        + 4) * 8`` bytes each, and the refit takes 0.08 to 5.4 ms once. Off by
+        default, and refused when given, beside ``ridge_scale = "sum"``,
+        whose prior has aged with every row before the first, and beside an
+        infinite ``huber_delta``, least squares.
     ``emit_huber_scale``
         Emit ``huber_scale_<t>``, each target's residual scale ``s`` as the
         row's cut reads it: after the row's decay and before the row's own
@@ -283,8 +319,7 @@ def huber(
         # Written only away from their defaults, which the Rust spec skips.
         "ridge_scale": None if ridge_scale == "mean" else ridge_scale,
         "emit_huber_scale": True if emit_huber_scale else None,
-        # Scratch (prototype, default off): refit the first rows to convergence.
-        "huber_warm_rows": huber_warm_rows,
+        "huber_refit_rows": huber_refit_rows,
     }
     # Written only when given: the Rust spec skips them when absent.
     skipped = _SKIPPED_WHEN_ABSENT["huber"]

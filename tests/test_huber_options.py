@@ -122,7 +122,8 @@ class TestFeatureSets:
         c = dict(COMMON, targets=["y0"], half_life=200.0, solve_every=0.0)
         c.pop("coef_every")
         sets = {"one": ["x1"], "all": FEATURES}
-        hub = dict(huber_scale="rms", huber_delta=1.345, ridge=1e-4)
+        # The recursion below is the one pass: the refit (task 277) is off.
+        hub = dict(huber_scale="rms", huber_delta=1.345, ridge=1e-4, huber_refit_rows=0)
         out = po.ModelBank([po.spec.huber("m", feature_sets=sets, **hub, **c)]).fit_predict(df)
         plain = po.ModelBank([po.spec.huber("m", **hub, **c)]).fit_predict(df)
         pred = _field(plain, "pred_y0")
@@ -329,10 +330,12 @@ class TestEmittedScale:
         c = dict(COMMON, targets=["y0"], half_life=200.0, solve_every=0.0)
         c.pop("coef_every")
         sets = {"one": ["x1"], "all": FEATURES}
-        out = po.ModelBank([po.spec.huber("m", feature_sets=sets, ridge=1e-4, **c)]).fit_predict(df)
-        plain = po.ModelBank(
-            [po.spec.huber("m", emit_huber_scale=True, ridge=1e-4, **c)]
-        ).fit_predict(df)
+        # The recursion below is the one pass: the refit (task 277) is off.
+        one = dict(ridge=1e-4, huber_refit_rows=0)
+        out = po.ModelBank([po.spec.huber("m", feature_sets=sets, **one, **c)]).fit_predict(df)
+        plain = po.ModelBank([po.spec.huber("m", emit_huber_scale=True, **one, **c)]).fit_predict(
+            df
+        )
         pred, scale = _field(plain, "pred_y0"), _field(plain, "huber_scale_y0")
         r = np.abs(df["y0"].to_numpy() - pred)
         cut = 1.345 * scale

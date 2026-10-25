@@ -265,3 +265,29 @@ one-sided contamination here where the MAD held, and online it keeps an
 inflated start; and a first step "at `b = 0`" clips every row of a target
 with a level, so the first step should be taken at an intercept-only fit
 (the target's median).
+
+## 9. The refit of the first rows (task 277, 2026-10-25)
+
+§3's table was a median over five seeds, and it hid the streams the
+outliers capture. Over 40 seeds (100-139), 20,000 rows, no decay, level
+1,000, statsmodels' `RLM` as the oracle, 0, 6, 13, 15 and 25 streams ended
+more than 0.05 in slope from it at 5, 10, 12.5, 15 and 20% outliers, the
+worst by 0.014, 0.19, 0.43, 1.08 and 4.3, while the median stream was within
+0.002 to 12.5%. The level made no difference (at most 1.3e-4 between levels
+0, 1,000 and 1e6). The mechanism is the scale, not the coefficients: the
+first solves are close to least squares, the MAD learns the pulled fit's
+residuals, the cut is wide, and the outliers keep entering. A refit of the
+coefficients alone on the first 200 rows landed on `RLM` and was pulled
+back within 300 rows (slope 2.379, then 4.03 at row 500); refitting and
+rebuilding the scale from the converged residuals held (2.365 at row 500,
+2.361 at row 20,000, `RLM` 2.362).
+
+Built as `huber_refit_rows` (default 200, on) for `huber` and
+`sgd(loss="huber")`, schema 64. Measured with it: 0, 0, 0, 0 and 4 of 40
+captured at 5-20% for `huber` (1,000 rows: 0, 0, 0, 0, 2); for `sgd`, whose
+start from zero is captured more often (2,000 rows: 30, 40, 40, 40 and 40
+of 40 more than 0.05 away at 5-20%), 5, 2, 7, 10 and 16, the rest of them
+the constant learning rate's own wander (a median of 0.02 to 0.04). A
+one-off 0.06 to 7 ms; a row after it costs what it did. The scripts are
+`m5_capture.py`, `m5b_capture.py` and `m8_cost.py` in the task's
+scratchpad, `huber-warmup/`.

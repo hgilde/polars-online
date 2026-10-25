@@ -38,8 +38,12 @@ pub const MODEL_CASES: &[&str] = &[
     "huber_k20",
     "huber_k20_sets",
     "huber_k20_sum",
+    // The refit of the first rows (docs/PLAN.md task 277) inside the
+    // measured block: its buffer of 2,500 rows fills on the block's 500th.
+    "huber_k20_refit",
     "sgd",
     "sgd_huber",
+    "sgd_huber_refit",
     "pa",
     "seqtest",
     "bocpd",
@@ -364,6 +368,13 @@ fn case_spec(id: &str) -> (Value, Shape) {
             fit(json!({"type": "huber", "ridge_scale": "sum"}), 20),
             Shape::Linear,
         ),
+        // The default refit runs in the warm-up's first 200 rows, outside
+        // every block; here it holds 2,500 rows and runs on the block's
+        // 500th, so the block pays for it once (docs/PLAN.md task 277).
+        "huber_k20_refit" => (
+            fit(json!({"type": "huber", "huber_refit_rows": 2500}), 20),
+            Shape::Linear,
+        ),
         "huber_k20_sets" => {
             let sets = json!([
                 ["x5", names("x", 5)],
@@ -382,6 +393,13 @@ fn case_spec(id: &str) -> (Value, Shape) {
         "sgd_huber" => (
             fit(
                 json!({"type": "sgd", "learning_rate": 0.01, "loss": "huber"}),
+                20,
+            ),
+            Shape::Linear,
+        ),
+        "sgd_huber_refit" => (
+            fit(
+                json!({"type": "sgd", "learning_rate": 0.01, "loss": "huber", "huber_refit_rows": 2500}),
                 20,
             ),
             Shape::Linear,

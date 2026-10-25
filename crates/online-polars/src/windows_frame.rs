@@ -2521,8 +2521,10 @@ mod tests {
         // schema 63: this build reads a 9 core as a 10 without a quantile,
         // so a 62 or 63 bank holding window targets resumes here, and no
         // released build reads a 63 bank (1.2.0 refuses it by number), so
-        // none meets a 10 core at a group's first chunk.
-        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (10, 63));
+        // none meets a 10 core at a group's first chunk. 64 for task 277's
+        // refit of `huber`'s and `sgd`'s first rows, whose loader reads 63:
+        // the windows state unchanged.
+        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (10, 64));
         assert_eq!(MIN_WINDOWS_VERSION, 9);
     }
 

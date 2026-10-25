@@ -1064,8 +1064,8 @@ silently:
 | a default or a meaning changed, or a stable name removed | minor, with a CHANGELOG entry saying what moved and by how much | major, with the same entry |
 | a change to an unstable part | minor | minor, with a CHANGELOG entry |
 
-**One default has changed in a minor release, against the table's row for
-a changed default.** In the release after 1.2.0, `huber_scale` moved from
+**Two defaults have changed in a minor release, against the table's row
+for a changed default.** In the release after 1.2.0, `huber_scale` moved from
 `"rms"` to `"mad"`, by the maintainer's decision. It is the scale `huber`
 and `sgd(loss="huber")` draw their cut in, and the CHANGELOG declares the
 move with its size. The old default defeated the loss it served. Huber's
@@ -1082,6 +1082,23 @@ slopes measured under each scale are in
 [MODELS.md](MODELS.md#huber--quantile--robust-regression).
 `huber_scale="rms"` is the way back: it restores the earlier numbers to the
 bit, and a state saved under the old default loads under it.
+
+In the release after 1.3.0, `huber_refit_rows` was turned on, at 200, by
+the maintainer's decision. The CHANGELOG declares the move with its size.
+One pass weighs each row by the fit before it, and the first fits are close
+to least squares, so a share of wild rows pulls them, and the scale learns
+the pulled fit's residuals. The cut is then wide, the wild rows keep their
+weight, and without decay the fit stays captured. A median over a few
+streams hides it: at an eighth of the rows wild, the median stream was
+within 0.002 of statsmodels' converged fit, and 13 of 40 streams were
+more than 0.05 from it, the worst by 0.43. The refit fits each target's
+first 200 learned rows to convergence, once, and rebuilds the scale from
+that fit's residuals: no stream of the 40 was then more than 0.05 away up
+to 15% wild rows. The capture measured with and without it is in
+[MODELS.md](MODELS.md#huber--quantile--robust-regression).
+`huber_refit_rows=0` is the way back: it restores the earlier numbers to
+the bit, and a state saved before the refit existed loads with it off and
+goes on as it did.
 
 **From 1.0, a rename is a deprecation, not a refusal.**
 `polars_online.PolarsOnlineDeprecationWarning`, a `DeprecationWarning`,

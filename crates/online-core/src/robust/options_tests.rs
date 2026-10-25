@@ -33,7 +33,7 @@ fn huber(k: usize, m: usize) -> RobustCfg {
         feature_sets: Vec::new(),
         ridge_scale: false,
         emit_scale: false,
-        warm_rows: 0,
+        refit_rows: 0,
     }
 }
 
@@ -435,14 +435,14 @@ fn the_emitted_scale_is_the_cuts_and_reads_no_row_its_own() {
     for scale in [HuberScale::Mad, HuberScale::Rms] {
         let cfg = RobustCfg {
             emit_scale: true,
-            warm_rows: 0,
+            refit_rows: 0,
             huber_scale: scale,
             ..huber(3, 2)
         };
         let mut m = Robust::new(cfg.clone()).unwrap();
         let mut quiet = Robust::new(RobustCfg {
             emit_scale: false,
-            warm_rows: 0,
+            refit_rows: 0,
             ..cfg
         })
         .unwrap();
@@ -491,7 +491,7 @@ fn the_emitted_scale_is_the_cuts_and_reads_no_row_its_own() {
 fn the_emitted_scale_is_refused_on_a_quantile_fit() {
     let e = Robust::new(RobustCfg {
         emit_scale: true,
-        warm_rows: 0,
+        refit_rows: 0,
         loss: RobustLoss::Quantile { tau: 0.5 },
         huber_scale: HuberScale::Rms,
         huber_scale_decay: None,

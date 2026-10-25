@@ -878,7 +878,7 @@ A parameter whose switch is off is refused rather than ignored:
 - ``snapshot_every``, ``max_rows_between_snapshots``, ``window_budget`` or
   ``closed = "both"`` without ``window_size``;
 - ``sgd``'s ``huber_delta``, ``huber_scale``, ``huber_scale_half_life``,
-  ``quantile`` or ``eps`` beside a loss that does not use it, its
+  ``huber_refit_rows``, ``quantile`` or ``eps`` beside a loss that does not use it, its
   ``strict_binary`` beside a loss other than ``"logistic"``, and its
   ``power`` beside a schedule other than ``"inv_scaling"``;
 - ``ftrl``'s ``strict_binary`` beside ``loss = "squared"``;

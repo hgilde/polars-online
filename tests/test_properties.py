@@ -759,3 +759,98 @@ class TestEveryOtherKind:
         says = r'weight column "w" has a negative value \(-0\.5\) at row 8'
         with pytest.raises((pl.exceptions.ComputeError, ValueError), match=says):
             po.ModelBank([spec]).fit_predict(bad)
+
+
+#: The models with the Huber refit of the first rows (task 277), at a count
+#: a 40-row stream's group reaches, so the refit runs inside it.
+REFIT_MODELS = [
+    ("huber", {"max_rows_between_solves": 1, "huber_refit_rows": 4}),
+    ("sgd", {"learning_rate": 0.01, "clip_gradient": 1e3, "loss": "huber", "huber_refit_rows": 4}),
+]
+
+#: Streams run first by each refit property, as ``@example``s: one group
+#: whose fourth learned row falls mid-stream, after a zero weight, a null
+#: target, a missing feature and values at the input bound and past it, so
+#: the refit reads rows of every kind; and `FOUND`'s rows, on which the MAD
+#: scale once panicked.
+REFIT_FOUND = (
+    pl.DataFrame(
+        {
+            "g": ["g0"] * 9,
+            "t": [0.0, 1.0, 1.0, 8.0, 8.5, 1e4 + 8.5, 1e4 + 9.0, 1e4 + 10.0, 1e4 + 11.0],
+            "x0": [1.0, -2.0, 0.5, 1e8, float("nan"), 3.0, -1e-12, 2.0, 0.0],
+            "x1": [0.0, 1.0, 1e100, -1.0, 2.0, 0.5, 4.0, -3.0, 1.0],
+            "y0": [1e3, None, 1e3 + 2.0, 1e3 - 50.0, 1e3, 5e4, 1e3 + 1.0, 1e3, -1e8],
+            "w": [1.0, 2.0, 0.0, 1.0, 1.0, 0.5, 1e-100, 3.0, 1.0],
+            "s": ["s0"] * 9,
+        }
+    ),
+    *FOUND,
+)
+
+
+@pytest.mark.parametrize(("model", "extra"), REFIT_MODELS, ids=[m for m, _ in REFIT_MODELS])
+class TestRefitProperties:
+    """The refit keeps the invariants every regression keeps: the buffer ends
+    on a count of learned rows, never at a chunk's end (hard rule 3), it is
+    state (a save and a load anywhere go on to the bit), and it writes no
+    number that is not finite."""
+
+    def test_chunking_never_changes_the_output(self, model, extra):
+        def prop(df, chunk):
+            spec = build(model, extra)
+            one = unnested(po.ModelBank([spec]).fit_predict(df))
+            bank = po.ModelBank([spec])
+            parts = [bank.fit_predict(df.slice(i, chunk)) for i in range(0, df.height, chunk)]
+            assert one.equals(unnested(pl.concat(parts)), null_equal=True)
+
+        pinned = tuple({"df": df, "chunk": c} for df in REFIT_FOUND for c in (1, 3))
+        _given("mixed", prop, pinned, df=_streams(model, "mixed"), chunk=CHUNKS)
+
+    def test_save_load_is_transparent(self, model, extra):
+        def prop(df, split):
+            split = min(split, df.height - 1)
+            spec = build(model, extra)
+            a = po.ModelBank([spec])
+            a.fit_predict(df.slice(0, split))
+            b = po.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
+            rest = df.slice(split, df.height - split)
+            assert unnested(a.fit_predict(rest)).equals(
+                unnested(b.fit_predict(rest)), null_equal=True
+            )
+
+        pinned = tuple({"df": df, "split": s} for df in REFIT_FOUND for s in (2, 4))
+        _given(
+            "mixed",
+            prop,
+            pinned,
+            df=_streams(model, "mixed", min_rows=2),
+            split=st.integers(min_value=1, max_value=39),
+        )
+
+    def test_outputs_are_finite_or_null(self, model, extra):
+        def prop(df):
+            out = po.ModelBank([build(model, extra)]).fit_predict(df)
+            for f in out.schema["m"].fields:
+                if f.name.startswith(("coef", "support_coef")) or not f.dtype.is_float():
+                    continue
+                vals = np.array(
+                    [v for v in out["m"].struct.field(f.name).to_list() if v is not None],
+                    dtype=float,
+                )
+                assert np.isfinite(vals).all(), f"{f.name} produced a non-finite value"
+
+        pinned = tuple({"df": df} for df in REFIT_FOUND)
+        _given("mixed", prop, pinned, df=_streams(model, "mixed"))
+
+    def test_the_pinned_stream_reaches_the_refit(self, model, extra):
+        """The activation check: on the first pinned stream the refit runs,
+        so its predictions part from the run without it after the fourth
+        learned row and not before."""
+        df = REFIT_FOUND[0]
+        on = po.ModelBank([build(model, extra)]).fit_predict(df)["m"]
+        off = po.ModelBank([build(model, {**extra, "huber_refit_rows": 0})]).fit_predict(df)["m"]
+        a, b = (o.struct.field("pred_y0").to_numpy() for o in (on, off))
+        same = (a == b) | (np.isnan(a) & np.isnan(b))
+        assert not same.all()
+        assert same[:6].all(), same

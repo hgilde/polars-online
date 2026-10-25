@@ -713,11 +713,12 @@ pub enum ModelKind {
         /// serializes as it did.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         emit_huber_scale: bool,
-        /// Scratch (prototype, branch `huber-warmup`): each target's first
-        /// rows refit to convergence (`RobustCfg::warm_rows`). Skipped when
-        /// absent, so a spec written before it serializes as it did.
+        /// Each target's first rows refit to convergence, once
+        /// (`RobustCfg::refit_rows`, docs/PLAN.md task 277): absent is
+        /// `DEFAULT_REFIT_ROWS`, 0 is off. Skipped when absent, so a spec
+        /// written before it serializes as it did.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        huber_warm_rows: Option<u32>,
+        huber_refit_rows: Option<u32>,
     },
     /// Quantile regression at level `quantile` (docs/PLAN.md §4.5).
     Quantile {
@@ -867,6 +868,11 @@ pub enum ModelKind {
         /// `half_life`. Refused under any other loss.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         huber_scale_half_life: Option<Span>,
+        /// `huber`'s refit of each target's first rows (docs/PLAN.md task
+        /// 277): absent is `DEFAULT_REFIT_ROWS` under `loss = "huber"`, 0
+        /// is off. Refused under any other loss. Skipped when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        huber_refit_rows: Option<u32>,
         #[serde(default)]
         quantile: Option<f64>,
         /// Half-width of the insensitive tube, in units of the target's
@@ -4192,6 +4198,7 @@ impl Spec {
                 huber_delta,
                 huber_scale,
                 huber_scale_half_life,
+                huber_refit_rows,
                 quantile,
                 eps,
                 learning_rate,
@@ -4257,6 +4264,13 @@ impl Spec {
                     (
                         "huber_scale_half_life",
                         huber_scale_half_life.is_some(),
+                        "loss",
+                        "huber",
+                        loss,
+                    ),
+                    (
+                        "huber_refit_rows",
+                        huber_refit_rows.is_some(),
                         "loss",
                         "huber",
                         loss,

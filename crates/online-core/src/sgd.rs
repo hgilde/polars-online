@@ -152,6 +152,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::huber_refit::{self, RefitBuf, Rows};
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
 use crate::spread::TargetSpread;
 use crate::{Constraint, Decay, EwDiag, Warmup};
@@ -308,7 +309,20 @@ pub struct SgdCfg {
     /// schema 63. Huber only.
     #[serde(default)]
     pub huber_scale_decay: Option<Decay>,
+    /// Each target's first `refit_rows` learned rows refit to the converged
+    /// Huber fit, once ([`crate::huber_refit`]): the coefficients set to it
+    /// and the residual scale rebuilt from its residuals, a spec's
+    /// `huber_refit_rows`, 200 by default under the Huber loss; 0 is off.
+    /// Huber only. A state written before schema 64 has no such field and
+    /// was fitted without a refit, so it loads as 0 and goes on as it was.
+    #[serde(default)]
+    pub refit_rows: u32,
 }
+
+/// The ridge on the mean-form system an `sgd` refit solves
+/// ([`crate::huber_refit::irls`]): `huber`'s default, so that the refit
+/// is the converged fit `huber` reaches on the same rows.
+const REFIT_RIDGE: f64 = 1e-6;
 
 impl SgdCfg {
     pub fn k_total(&self) -> usize {
@@ -364,13 +378,26 @@ impl SgdCfg {
         }
         // The Huber cut's scale and its memory are the Huber loss's
         // (docs/PLAN.md task 271).
-        if matches!(self.loss, SgdLoss::Huber { .. }) {
+        if let SgdLoss::Huber { delta } = self.loss {
             if let Some(d) = self.huber_scale_decay {
                 d.check()
                     .map_err(|e| format!("sgd: huber_scale_half_life: {e}"))?;
             }
-        } else if self.huber_scale != crate::HuberScale::Rms || self.huber_scale_decay.is_some() {
-            return Err("sgd: huber_scale and huber_scale_half_life are for loss \"huber\"".into());
+            if self.refit_rows > 0 && delta.is_infinite() {
+                return Err(
+                    "sgd: huber_refit_rows needs a finite huber_delta: an infinite one \
+                            is the squared loss, with no outliers to refit for"
+                        .into(),
+                );
+            }
+        } else if self.huber_scale != crate::HuberScale::Rms
+            || self.huber_scale_decay.is_some()
+            || self.refit_rows > 0
+        {
+            return Err(
+                "sgd: huber_scale, huber_scale_half_life and huber_refit_rows are for loss \"huber\""
+                    .into(),
+            );
         }
         // What the spec layer refuses, refused here too, so the Rust API
         // and a state file are held to it (review round 5, C6): a NaN
@@ -424,6 +451,9 @@ pub struct Sgd {
     /// `eps` is in (the module docs; docs/PLAN.md task 202). Kept under the
     /// epsilon-insensitive loss only, and empty under every other.
     spread: TargetSpread,
+    /// Per target, the refit's buffer ([`SgdCfg::refit_rows`]): none when
+    /// it is off, and in a state written before schema 64.
+    refit: Vec<RefitBuf>,
     /// The standardized row `[1, z]` under a scaler; unused without one,
     /// where the model reads `x` in place.
     #[serde(skip)]
@@ -472,6 +502,8 @@ struct SgdV3 {
     #[serde(default)]
     mad: Vec<crate::EwQuantile>,
     spread: TargetSpread,
+    #[serde(default)]
+    refit: Vec<RefitBuf>,
 }
 
 impl TryFrom<SgdV3> for Sgd {
@@ -480,7 +512,7 @@ impl TryFrom<SgdV3> for Sgd {
     fn try_from(v: SgdV3) -> Result<Self, String> {
         let (cfg, scaler, beta, g2, w_sum) = (v.cfg, v.scaler, v.beta, v.g2, v.w_sum);
         let (sig2, wsig, mad, spread) = (v.sig2, v.wsig, v.mad, v.spread);
-        let (w_target, warmup) = (v.w_target, v.warmup);
+        let (w_target, warmup, refit) = (v.w_target, v.warmup, v.refit);
         let k = cfg.k_total();
         let m = cfg.n_targets;
         // What the cfg asks for, the state carries, and nothing else: a
@@ -538,6 +570,18 @@ impl TryFrom<SgdV3> for Sgd {
                 "sgd: the state's residual sketches do not match its cfg's huber_scale".into(),
             );
         }
+        // The refit's buffers, one per target exactly when it is on, each
+        // one this configuration writes.
+        let refit_fits = if cfg.refit_rows == 0 {
+            refit.is_empty()
+        } else {
+            refit.len() == m && refit.iter().all(|b| b.fits(cfg.n_features, cfg.refit_rows))
+        };
+        if !refit_fits {
+            return Err(
+                "sgd: the state's refit buffers do not match its cfg's huber_refit_rows".into(),
+            );
+        }
         Ok(Self {
             cfg,
             scaler,
@@ -550,6 +594,7 @@ impl TryFrom<SgdV3> for Sgd {
             wsig,
             mad,
             spread,
+            refit,
             zbuf: vec![],
             mbuf: vec![],
             sbuf: vec![],
@@ -603,6 +648,7 @@ impl Sgd {
             } else {
                 TargetSpread::none()
             },
+            refit: RefitBuf::per_target(cfg.refit_rows, m),
             zbuf: vec![0.0; k],
             mbuf: vec![0.0; k],
             sbuf: vec![1.0; k],
@@ -842,6 +888,72 @@ impl Sgd {
             sums.copy_from_slice(gbuf);
         }
         true
+    }
+
+    /// The refit of target `j` ([`SgdCfg::refit_rows`],
+    /// [`crate::huber_refit`]): the converged Huber fit of its buffered
+    /// rows, by IRLS from their weighted least-squares fit, in the caller's
+    /// units, becomes its coefficients -- while a scaler warms up, in the
+    /// coordinates of its moments as they stand (`b_i = β_i s_i`,
+    /// `b_0 = β_0 + Σ m_i β_i`), so they read out as the fit exactly -- and
+    /// under a constraint is projected on it as a step is. Its residual
+    /// scale is rebuilt from the fit's residuals. The learning rate's state
+    /// stays: AdaGrad's sums of squared gradients keep the step sizes the
+    /// rows taught, where emptied they would make the next steps throw the
+    /// fit off, and `inv_scaling` reads the weight, which a refit does not
+    /// move (hard rule 8). The fit leaves out `l2`, a penalty on the steps;
+    /// the steps after the refit apply it from there.
+    #[inline(never)]
+    fn refit_target(&mut self, j: usize) {
+        let SgdLoss::Huber { delta } = self.cfg.loss else {
+            return;
+        };
+        let intercept = self.cfg.fit_intercept;
+        let buf = self.refit[j].take();
+        let rows = Rows::new(&buf, self.cfg.n_features);
+        let Some(fit) =
+            huber_refit::irls(&rows, intercept, delta, self.cfg.huber_scale, REFIT_RIDGE)
+        else {
+            return;
+        };
+        let scale = huber_refit::rebuild_scale(&rows, self.cfg.huber_scale, |i| {
+            rows.y(i) - huber_refit::fitted(&fit, rows.x(i), intercept)
+        });
+        let off = usize::from(intercept);
+        match &self.scaler {
+            Some(sc) if !self.warmup.switched() => {
+                let s = scales_of(sc, off);
+                let mut b: Vec<f64> = fit.iter().zip(&s).map(|(f, si)| f * si).collect();
+                if intercept {
+                    // `b_0 = β_0 + Σ m_i β_i`, the intercept's scale being 1.
+                    b[0] = fit[0];
+                    for (i, f) in fit.iter().enumerate().skip(1) {
+                        b[0] += f * sc.mean(i);
+                    }
+                }
+                self.beta[j] = b;
+                if let Some(c) = &self.cfg.constraint {
+                    c.project(&mut self.beta[j][off..], Some(&s[off..]), &mut self.pbuf);
+                }
+            }
+            Some(_) => {
+                self.beta[j] = fit;
+                if self.cfg.constraint.is_some() {
+                    self.project_mapped(j);
+                }
+            }
+            None => {
+                self.beta[j] = fit;
+                if let Some(c) = &self.cfg.constraint {
+                    c.project(&mut self.beta[j][off..], None, &mut self.pbuf);
+                }
+            }
+        }
+        self.sig2[j] = scale.sig2;
+        self.wsig[j] = scale.wsig;
+        if let Some(q) = scale.mad {
+            self.mad[j] = q;
+        }
     }
 
     /// Project target `j`'s slopes, held in the caller's units, on the
@@ -1244,6 +1356,14 @@ impl OnlineModel for Sgd {
             LearningRate::AdaGrad => None,
         };
         let (lr0, l2, clip) = (self.cfg.learning_rate, self.cfg.l2, self.cfg.clip_gradient);
+        // Per target, the label a row taught it with, while a refit buffer
+        // is open (`SgdCfg::refit_rows`); empty otherwise, which costs a
+        // row nothing once every refit has run.
+        let mut taught: Vec<Option<f64>> = if self.refit.iter().any(RefitBuf::open) {
+            vec![None; m]
+        } else {
+            Vec::new()
+        };
         for j in 0..m {
             let eta = if reads_z {
                 dot(&self.beta[j], off, &self.zbuf[off..])
@@ -1298,8 +1418,13 @@ impl OnlineModel for Sgd {
             if held {
                 // The step in the row's coordinates, mapped into the
                 // caller's units by the row's map, and projected there.
-                if self.step_mapped(j, d, weight, lr_row) && self.cfg.constraint.is_some() {
-                    self.project_mapped(j);
+                if self.step_mapped(j, d, weight, lr_row) {
+                    if let Some(t) = taught.get_mut(j) {
+                        *t = Some(yj);
+                    }
+                    if self.cfg.constraint.is_some() {
+                        self.project_mapped(j);
+                    }
                 }
                 continue;
             }
@@ -1362,6 +1487,9 @@ impl OnlineModel for Sgd {
             if let Some(l) = self.learned.get_mut(j) {
                 *l = true;
             }
+            if let Some(t) = taught.get_mut(j) {
+                *t = Some(yj);
+            }
         }
         if let Some(sc) = &mut self.scaler {
             sc.update(&self.rawbuf, scaler_decay(sc, lam, weight), weight);
@@ -1398,6 +1526,25 @@ impl OnlineModel for Sgd {
             && self.warmup.learn(weight)
         {
             self.beta = unscaled(&self.beta, sc, self.cfg.fit_intercept);
+        }
+        // The refit's buffers take the row, a learned one or an ageing, and
+        // a target whose buffer it fills is refit, after the row's own
+        // prediction, step and scale (hard rule 2).
+        if !taught.is_empty() {
+            let (nf, cap) = (self.cfg.n_features, self.cfg.refit_rows);
+            for (j, t) in taught.iter().enumerate() {
+                let b = &mut self.refit[j];
+                let full = match t {
+                    Some(yj) => b.learn(x, *yj, weight, lam, lam_scale, cap),
+                    None => {
+                        b.age(nf, lam, lam_scale);
+                        false
+                    }
+                };
+                if full {
+                    self.refit_target(j);
+                }
+            }
         }
         self.w_sum = lam * self.w_sum + weight;
         // A label `strict_binary` refuses, or a negative count, carries no
@@ -1510,6 +1657,7 @@ mod tests {
             strict_binary: false,
             huber_scale: crate::HuberScale::Rms,
             huber_scale_decay: None,
+            refit_rows: 0,
         }
     }
 
@@ -3579,3 +3727,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "sgd/refit_tests.rs"]
+mod refit_tests;
