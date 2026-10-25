@@ -16396,6 +16396,18 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       rule after loading, the same centres and distances to the bit with the
       labels possibly permuted, held to one consistent relabelling; a state
       saved after seeding continues to the bit.
+      *ftrl and holt (2026-10-25)*: D-F is a limit of the method, not a
+      defect -- `ftrl` already decays `n`, `zz` and `d`; AdaGrad's normalised
+      step caps a coefficient's move at about `2·alpha·√(1 − λ)` a row;
+      documented and pinned, defaults kept (a weaker logistic prior measured
+      better under a half-life, recorded as a trade-off). D-H is real and
+      wider: `holt`'s trend is pinned to the first observation (gains
+      `c_g = c_h = 1`), so its level error grows like ln n without decay and
+      during every warm-up (worst 3.4-6.3 against the oracle's 0.03-0.2).
+      Approved design: per row the larger of the exact weighted line fit's
+      gains and the textbook gains, three new f64 a target (`S0`, `ā`, `Q`)
+      joining unreleased schema 64 after task 277; statsmodels WLS to 2e-13
+      without decay and statsmodels `Holt` to 1e-12 in steady state.
 - [ ] 279. **Smaller build caches: no debug info for dependencies** -- the
       user, 2026-10-25 ("Why do agents take so much disk I though we shared
       caches", then "Yes"). Each worktree slot keeps its own `target/` (a

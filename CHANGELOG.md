@@ -13,6 +13,17 @@ returns.
 
 ### Changed
 
+- Documentation: `ftrl` states how fast it follows a break under a
+  half-life (task 278). AdaGrad's normalised step moves a settled
+  coefficient at most about `2·alpha·√(1 − λ)` a row, however large the
+  error, so a break that moves a coefficient by D takes about
+  `D / (2·alpha·√(1 − λ))` rows (measured 0.011 a row against 0.012 at
+  `alpha=0.1`, `half_life=200`). A larger `alpha` follows sooner and settles
+  noisier: after a change of regime that moved the intercept by 46, the fit
+  was 34.4, 18.4 and 2.6 off four half-lives later at `alpha` 0.1, 0.3 and 1,
+  and the settled fit 0.17, 0.24 and 0.43 off. Under a half-life the fixed
+  prior holds a logistic fit up to 0.41 from the decayed maximum likelihood at
+  the defaults, against 0.17 at `beta=0.1, l2=0`.
 - `marginal`'s `min_settled_frac` does what it says (task 278): while the
   stream is less settled than the fraction, `ModelBank.marginal()` and the
   `pair_*` columns of `closed_groups` report `corr`, `beta`, `t_stat`,
