@@ -1015,6 +1015,7 @@ def test_reset_under_the_permutation_quantile():
     flags = [i for i, f in enumerate(reset["flag"].to_list()) if f]
     print(f"flags: kept {kept['flag'].sum()}, reset {len(flags)} at {flags}")
     assert len(flags) >= 5 and kept["flag"].sum() > 3 * len(flags)
+    redrawn = 0
     for f, nxt in zip(flags, [*flags[1:], df.height], strict=True):
         if f + 2 * w >= df.height:
             continue  # the stream ends in the refill
@@ -1024,6 +1025,11 @@ def test_reset_under_the_permutation_quantile():
         fresh = run(df[f + 1 : nxt + 1], **kw)
         assert fresh["stat"].equals(reset["stat"][f + 1 : nxt + 1]), f
         assert fresh["since_flag"].equals(reset["since_flag"][f + 1 : nxt + 1]), f
+        a, b = fresh["crit"].to_numpy(), reset["crit"][f + 1 : nxt + 1].to_numpy()
+        live = np.isfinite(a)
+        assert np.array_equal(live, np.isfinite(b)), f
+        redrawn += int(np.any(a[live] != b[live]))
+    assert redrawn > 0, "the generator drew on: not a fresh bank's draws"
 
 
 def test_a_state_saved_across_a_reset_goes_on_to_the_bit():
