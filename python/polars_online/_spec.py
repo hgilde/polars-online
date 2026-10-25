@@ -2295,6 +2295,16 @@ def ftrl(
     of ``(1 - lam) * (beta / alpha + l2)``: a constant 5 settles at 4.65 at
     ``half_life = 100`` and 4.96 at 1000.
 
+    Under a half-life the fit also follows a break at the pace of its steps,
+    not of its half-life. A coordinate steps by its gradient over the root of
+    its recent squared gradients, so a settled coefficient moves at most about
+    ``2 * alpha * sqrt(1 - lam)`` a row, ``lam`` the decay over one row's
+    clock, however large the error. A break that moves a coefficient by ``D``
+    takes about ``D / (2 * alpha * sqrt(1 - lam))`` rows to follow, and the
+    large gradients just after it raise the sums that divide every step for
+    about a half-life. A larger ``alpha`` follows a break sooner and settles
+    noisier; ``docs/MODELS.md`` has the measurements.
+
     A row that teaches the target nothing -- absent, at weight 0, a label
     ``strict_binary`` refuses, or a row whose squared gradient would
     overflow, which is skipped -- leaves the sums as the last row that
