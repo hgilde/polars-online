@@ -214,7 +214,12 @@ blend = po.spec.ewridge(
 
 The blended moments keep today's weight, Kish's effective sample size and
 prior scale, so `weight_sum`, the warm-up gates and the solve schedule do
-not move.
+not move. The blend changes the moments and nothing else: the coefficients
+stay as last solved until the next solve the schedule brings due, which
+reads the blended moments. So a small `f` moves the output by a small amount,
+and `0` is the same as no `session_shrink`. With `max_rows_between_solves=1`
+the solve on the session's first row reads the blend, and every row after
+it is predicted from it.
 
 **For a fit over hundreds of features, give `gram_block_rows=256`.**
 Updating `S` takes O(k²) time per row for `k` features, and at a thousand
@@ -1366,7 +1371,34 @@ as a ridge of `(1 − λ)(β/α + l2)` on the mean scale. Under
 `loss="squared"`, a constant target of 5 then settles at 4.65 at `half_life=100`, and at 4.96 at 1000. For a
 penalty that weight and density leave alone, use
 [`lasso`](#lasso--lasso-path-its-penalty-chosen-as-it-runs), whose penalty
-is on the mean scale.
+is on the mean scale. The ridge weighs most on a 0/1 target, whose
+log-odds the evidence pins only weakly: a probability's curvature is at
+most a quarter. On two features at `half_life=200`, with one row a clock
+unit, the defaults left the settled logistic fit up to 0.41 from the
+decayed maximum likelihood in some coefficient, the worst of 50 seeds, and
+`beta=0.1, l2=0` left it 0.17 from it.
+
+**Under a half-life, `ftrl` follows a break at the pace of its steps, not
+of its half-life.** Each coordinate steps by its gradient over the root of
+its recent squared gradients, so a settled coefficient moves at most about
+`2α·√(1 − λ)` a row, with `λ` the decay over one row's clock, however
+large the error. A break that moves a coefficient by `D` takes about
+`D / (2α·√(1 − λ))` rows to follow. The large gradients just after a
+break also raise the sums that divide every step, for about a half-life.
+Measured on two features at `half_life=200`, one row a clock unit, after a
+change of regime that moved the intercept by 46 (the worst of 50 seeds,
+the largest coefficient gap to the decayed least squares):
+
+| `alpha` | settled, before the break | 4 half-lives after | 12 half-lives after |
+|---|---|---|---|
+| 0.1, the default | 0.17 | 34.4 | 19.9 |
+| 0.3 | 0.24 | 18.4 | 0.90 |
+| 1.0 | 0.43 | 2.6 | 0.70 |
+
+At the default the intercept closed at 0.011 a row, against
+`2α·√(1 − λ)` = 0.012. A larger `alpha` follows a break sooner and settles
+noisier: over the 24 half-lives after the noise quadrupled, the default
+came at most 0.23 from the decayed least squares, and `alpha=1` 1.17.
 
 **`ftrl` does not centre a feature, so give it features near 0.** A
 coefficient's error reaches the prediction multiplied by the feature's

@@ -416,7 +416,11 @@ def rcov(
         that failed; the matrix is then reported as it stands.
 
     For a block too short to estimate from, ``rcov`` and ``rcorr`` are null,
-    and the other fields say what the block held.
+    and the other fields say what the block held. ``min_weight`` (default 0)
+    withholds them the same way from a block with fewer returns: a row's
+    weight is 0 or 1, so the block's ``weight_sum`` is its count of returns,
+    and a block of 40 returns under ``min_weight=50`` reports null ``rcov``
+    and ``rcorr`` beside its ``rcov_n`` and the noise fields.
 
     .. rubric:: Example
 

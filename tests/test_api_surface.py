@@ -793,13 +793,15 @@ def enum_values_section(cli: Path | None) -> list[str]:
     assert isinstance(reasons, pl.Enum)
     out.append("  withheld_reason, in precedence order: " + ", ".join(reasons.categories.to_list()))
     if cli is not None:
-        for key in ("input_format", "output_format"):
+        # `output_layout` too (task 278): its key and flag were listed, but not
+        # the words they take.
+        for key in ("input_format", "output_format", "output_layout"):
 
             def toml_refusal(word: str, key: str = key) -> str:
                 return _format_refusal(cli, key, word)
 
             out.append(f"  toml.{key}: {', '.join(sorted(taken_words(key, toml_refusal)))}")
-        for flag in ("--input-format", "--output-format"):
+        for flag in ("--input-format", "--output-format", "--output-layout"):
 
             def flag_refusal(word: str, flag: str = flag) -> str:
                 return _format_refusal(cli, flag, word)

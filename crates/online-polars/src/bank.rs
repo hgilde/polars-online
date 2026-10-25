@@ -787,6 +787,30 @@ fn run_buffers(
     }
 }
 
+/// Pair `(t, j)` of a `marginal` instance as its table reports it: with
+/// `corr`, `beta`, `t_stat`, `t_stat_serial` and the split withheld while the
+/// stream is less settled than `min_settled_frac` (`unsettled`), as the core
+/// withholds them below `min_weight` (task 278, the user's decision of
+/// 2026-10-25). The moments are reported either way, as under `min_weight`.
+fn gated_pair(
+    m: &online_core::Marginal,
+    t: usize,
+    j: usize,
+    unsettled: bool,
+) -> online_core::MarginalPair {
+    let mut p = m.pair(t, j);
+    if unsettled {
+        p.corr = f64::NAN;
+        p.beta = f64::NAN;
+        p.t = f64::NAN;
+        p.t_serial = f64::NAN;
+        p.split_gain = f64::NAN;
+        p.split_at = f64::NAN;
+        p.split_gain_t = f64::NAN;
+    }
+    p
+}
+
 /// The [`ClosedRow`]s of one stream at the moment it closes: one per decay
 /// instance, the state exactly as it stands (docs/ENHANCEMENTS.md E54).
 ///
@@ -810,8 +834,10 @@ fn close_rows(
     stream
         .models
         .iter()
-        .flat_map(|(label, model)| {
+        .enumerate()
+        .flat_map(|(i, (label, model))| {
             let grams = gram_of(key, label, model);
+            let unsettled = stream.settled_withholds(spec, i);
             let pairs = match model {
                 AnyModel::Marginal(m) => spec
                     .targets
@@ -819,7 +845,7 @@ fn close_rows(
                     .enumerate()
                     .flat_map(|(t_i, t)| {
                         spec.features.iter().enumerate().map(move |(j, f)| {
-                            let p = m.pair(t_i, j);
+                            let p = gated_pair(m, t_i, j, unsettled);
                             PairRow {
                                 feature: f.clone(),
                                 target: t.clone(),
@@ -858,9 +884,16 @@ fn close_rows(
                 AnyModel::Rcov(m) => {
                     let e = m.estimate();
                     let k = spec.k();
+                    // `min_weight` on a block (task 278, the user's decision
+                    // of 2026-10-25): its weight is the returns accepted, each
+                    // row's weight being 0 or 1, so the floor is a count of
+                    // returns. Below it the estimate is withheld, as one too
+                    // short to estimate from is, and the other fields still
+                    // say what the block held.
+                    let enough = m.n_eff() >= spec.min_periods_or_default();
                     Some(RcovRow {
-                        rcov: e.rcov.as_ref().map(|c| vech(c, k)),
-                        rcorr: e.rcorr.as_ref().map(|c| vech(c, k)),
+                        rcov: e.rcov.as_ref().filter(|_| enough).map(|c| vech(c, k)),
+                        rcorr: e.rcorr.as_ref().filter(|_| enough).map(|c| vech(c, k)),
                         n: e.n,
                         kind: e.kind.to_string(),
                         bandwidth_used: e.bandwidth_used,
@@ -3249,7 +3282,8 @@ impl Bank {
     /// [`online_core::Marginal::pair`] reads them from the state as it
     /// stands, with the core's NaN -- `corr`, `beta` and `t_stat` below the
     /// target's `min_weight` or undefined, `n_kish` before its first row --
-    /// as null.
+    /// as null. `min_settled_frac` withholds the same statistics, and the
+    /// split, while the instance is less settled than it ([`gated_pair`]).
     ///
     /// `group` narrows the frame to those keys, in key order
     /// ([`Self::sorted_keys`]); a key the bank has never seen gives nothing,
@@ -3275,17 +3309,19 @@ impl Bank {
         let mut target: Vec<&str> = Vec::new();
         let mut pairs: Vec<online_core::MarginalPair> = Vec::new();
         for key in keys {
-            for (label, model) in &states[key].models {
+            let stream = &states[key];
+            for (i, (label, model)) in stream.models.iter().enumerate() {
                 let AnyModel::Marginal(m) = model else {
                     unreachable!("a marginal spec builds marginal models");
                 };
+                let unsettled = stream.settled_withholds(s, i);
                 for (t_i, t) in s.targets.iter().enumerate() {
                     for (j, f) in s.features.iter().enumerate() {
                         group_col.push(key.as_str());
                         instance.push(label.as_str());
                         feature.push(f.as_str());
                         target.push(t.as_str());
-                        pairs.push(m.pair(t_i, j));
+                        pairs.push(gated_pair(m, t_i, j, unsettled));
                     }
                 }
             }

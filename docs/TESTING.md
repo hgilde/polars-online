@@ -558,7 +558,8 @@ many steps." A push never rides on the essentials, whatever they said.
 |---|---|---|
 | each commit while a task is in progress | `./scripts/gate.sh` | the essentials |
 | before every push, always | `./scripts/gate.sh --extended` | everything |
-| every push and pull request | `ci.yml` on Linux, macOS and Windows | everything, and the essentials nowhere |
+| every push and pull request | `ci.yml` on Linux, macOS and Windows | everything but the oracle grids, and the essentials nowhere |
+| every push to `main`, and on dispatch | `oracles.yml`, sharded across parallel jobs on Linux | the oracle grids (`-m oracle_grid`) |
 | before a release | `release.yml`, which runs `ci.yml` | everything |
 | on their schedules | `polars-canary.yml`; `mutants.yml` | everything; every Rust test, the ignored ones included |
 
@@ -575,19 +576,35 @@ cases, stays in the essentials, and the full form moves. A golden stays
 whole however slow, since fewer rows are other numbers. The `soak` tests
 stay opt-in, as before.
 
+**The oracle grids run on CI, not in the gate.** A grid that holds a model
+to a third-party oracle over 50 seeds or orders, with batch fits over long
+streams or downloaded datasets, is marked
+`@pytest.mark.oracle_grid(reason="...")`. The user set the rule on
+2026-10-25: "we do not want to run more very long tests in the gate as it's
+already long". The convergence grids took 22 minutes in four processes, more
+than the rest of `gate.sh --extended` together. No local run takes them:
+`addopts` and both tiers of `gate.sh` leave them out, and
+`.github/workflows/oracles.yml` runs them on every push to `main`, one job a
+module or a model, in parallel (CI's minutes are free; its limits are 20
+jobs at once and six hours a job). Read its conclusion after each push with
+the other workflows'. `uv run pytest -m oracle_grid` runs them here, and
+`pytest -m oracle_grid tests/test_convergence.py -k quantile` one model's.
+Each such module keeps one cheap representative cell per class in the
+essentials, so the code paths stay covered locally.
+
 **How a test says its tier:**
 
 | where | extended | essentials |
 |---|---|---|
 | a pytest test | `@pytest.mark.extended(reason="...")` on the test, on one of its parameters, or as its module's `pytestmark` | no mark |
-| a pytest module | `TIER = "extended"`, or `TIER = "mixed"` when only some of its tests are | `TIER = "essential"` |
+| a pytest module | `TIER = "extended"`, or `TIER = "mixed"` when only some of its tests are (or are `oracle_grid`); `TIER = "oracle_grid"` when its `pytestmark` is | `TIER = "essential"` |
 | a Rust test | `#[ignore = "extended: <reason>"]` under its `#[test]` | no `#[ignore]` |
 | a Hypothesis property | the `extended` profile: the count its file names, 30 by default | the `essential` profile: at most 10 examples, or the smaller count its file names |
 | a proptest property | a multiple of proptest's own 256: 128 to 2,048 | `PROPTEST_CASES=32`, an eighth: 16 to 256 |
 
 **A plain `pytest` runs both tiers; a plain `cargo test` runs the
-essentials.** `uv run pytest` is the full run. Its `addopts` leave out the
-soak alone, and the Hypothesis profile is `extended` unless
+essentials.** `uv run pytest` is the full local run. Its `addopts` leave
+out the soak and the oracle grids, and the Hypothesis profile is `extended` unless
 `HYPOTHESIS_PROFILE=essential` is set (`tests/tiers.py`). cargo skips an
 ignored test, so `cargo test` alone runs the Rust essentials, and
 `cargo test -- --include-ignored` is the full Rust run. `gate.sh
@@ -596,8 +613,8 @@ it. The mutation runs in CI test each mutant under cargo-nextest and pass
 `--cargo-test-arg=--run-ignored=all`, nextest's form, and
 `scripts/mutants.sh` passes `-- -- --include-ignored` to `cargo test`, so a
 mutant only an extended test catches is not counted a survivor. The essentials gate
-runs pytest with `-m "not extended and not soak"`, the `essential` profile
-and `PROPTEST_CASES=32`.
+runs pytest with `-m "not extended and not soak and not oracle_grid"`, the
+`essential` profile and `PROPTEST_CASES=32`.
 
 **Every hard rule a test can hold has tests in the essentials.**
 `tests/test_tiers.py` reads this table and fails if a test it names is
@@ -834,9 +851,10 @@ own schedule:
 | when | where | what runs |
 |---|---|---|
 | each commit while a task is in progress | `./scripts/gate.sh` | `cargo fmt`, `clippy -D warnings`, the Rust tests' essentials (under cargo-nextest where it is installed), `uv lock --check`, `ruff`, `mypy`, the extension's build, `pytest`'s essentials in parallel, and Sphinx with `-W` |
-| before every push, always | `./scripts/gate.sh --extended` | the same checks with every test |
+| before every push, always | `./scripts/gate.sh --extended` | the same checks with every test but the oracle grids |
 | every push to `main` and pull request | `ci.yml` | the suite on Linux at Python 3.12, 3.13 and 3.14, on macOS at 3.12 and 3.14, and on two Windows builds, Server 2025 and Server 2022, at 3.12 and 3.14, each leg first printing the machine it ran on ([The machines and the CPU paths](#the-machines-and-the-cpu-paths)); on Linux, the format, lint, type and documentation checks (`cargo fmt`, `clippy`, `ruff`, `mypy` and Sphinx); the release comparison's outputs against the newest release's, bit for bit, as a report; the Python coverage, as a report |
 | every push to `main` and pull request | `mutants.yml` | mutation testing of the lines the change touched in `online-core` and `online-polars/src/span.rs`, in a shard for every thirty mutants the change lists, with one report. The report fails on a mutant no test catches, unless `scripts/mutants_equivalent.toml` lists it |
+| every push to `main`, and by hand | `oracles.yml` | the oracle grids (`-m oracle_grid`): the convergence, learning-rate, truth-recovery and long-run grids against third-party batch fits and downloaded datasets, in twelve shards dealt round-robin over the tests (`--oracle-shard`), on Linux; no local run takes them ([Two tiers](#two-tiers)) |
 | every push to `main` but a docs-only one | `benchmark.yml` | throughput, into the job summary and an artifact, never gating |
 | every release | `release.yml` | the whole of `ci.yml`; a state written on macOS and continued on Windows and Linux; the suite on the newest Polars the range admits, on the floor of the range and on the newest NumPy, all blocking; the suite on the next Polars major and on NumPy's next release candidate, both advisory |
 | weekly | `ci.yml`, `polars-canary.yml`, `leakcheck.yml`, `benchmark.yml`, `mutants.yml`, `msrv.yml`, `advisories.yml`, `cpu-paths.yml` | the suite again; the suite on the newest py-polars, release candidates included, and on NumPy's next release candidate; the leak check across the boundary with Polars, on Linux and macOS, its control included, and the soak tests; throughput; mutation testing of all of `online-core`, as a report; `cargo check` of the workspace on the Rust its `rust-version` declares; both lock files against OSV's published advisories (`scripts/advisories.py`), failing on a vulnerability in a crate the wheel or the command line links and reporting the rest; on Windows, the numeric tests down each CPU path in turn, under Intel SDE and with OpenBLAS's and NumPy's paths pinned ([The machines and the CPU paths](#the-machines-and-the-cpu-paths)) |
@@ -929,7 +947,7 @@ module that imports one of those or calls `numpy.linalg`
 (`tests/oracle_marks.py`), so the mark cannot fall behind the tests. It
 leaves out a test that runs the command line, which compares the binary with
 the bank rather than with an oracle. Each leg runs
-`pytest -m "oracle and not soak"` with two variables set:
+`pytest -m "oracle and not soak and not oracle_grid"` with two variables set (the oracle grids run in `oracles.yml`):
 
 | leg | `OPENBLAS_CORETYPE` | NumPy's loops |
 |---|---|---|

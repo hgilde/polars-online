@@ -338,7 +338,7 @@ class TestTheWorkflow:
         assert env < self._at("oracles", "cpu_paths.py check") < self._at("oracles", "pytest")
         assert self._at("oracles", "maturin develop") < env
         (pytest_run,) = [s["run"] for s in self._steps("oracles") if "pytest" in s.get("run", "")]
-        assert '-m pytest -m "oracle and not soak"' in pytest_run, pytest_run
+        assert '-m pytest -m "oracle and not soak and not oracle_grid"' in pytest_run, pytest_run
         check = self._steps("oracles")[self._at("oracles", "cpu_paths.py check")]["run"]
         for run in (pytest_run, check):
             assert 'cpu_paths.py under --sde-args="$SDE_KNOB" --' in run, run

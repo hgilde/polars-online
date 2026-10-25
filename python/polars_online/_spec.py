@@ -1013,6 +1013,14 @@ def ewridge(
 
         for the means and the centred moments. The weight stays today's, so
         ``weight_sum``, the warm-up gates and the solve schedule do not move.
+        The blend changes the moments and nothing else: the coefficients stay
+        as last solved until the next solve the schedule brings due, which
+        reads the blended moments together with every row learned since. So
+        the output is continuous in ``f``, and ``0`` is the same as no
+        ``session_shrink``, to the bit. For the new session's first rows to
+        read the blend at once, solve on every row
+        (``max_rows_between_solves = 1``): the solve on the open's row reads
+        it, and the row after is predicted from it.
         ``0`` keeps today's fit, ``1`` takes the long run's moments at today's
         weight, and ``f`` between fits on that share of the long run. Unlike
         ``session_gap`` this changes what the model believes, not how
@@ -2286,6 +2294,16 @@ def ftrl(
     against the prior. In steady state the penalties act as a mean-scale ridge
     of ``(1 - lam) * (beta / alpha + l2)``: a constant 5 settles at 4.65 at
     ``half_life = 100`` and 4.96 at 1000.
+
+    Under a half-life the fit also follows a break at the pace of its steps,
+    not of its half-life. A coordinate steps by its gradient over the root of
+    its recent squared gradients, so a settled coefficient moves at most about
+    ``2 * alpha * sqrt(1 - lam)`` a row, ``lam`` the decay over one row's
+    clock, however large the error. A break that moves a coefficient by ``D``
+    takes about ``D / (2 * alpha * sqrt(1 - lam))`` rows to follow, and the
+    large gradients just after it raise the sums that divide every step for
+    about a half-life. A larger ``alpha`` follows a break sooner and settles
+    noisier; ``docs/MODELS.md`` has the measurements.
 
     A row that teaches the target nothing -- absent, at weight 0, a label
     ``strict_binary`` refuses, or a row whose squared gradient would
@@ -3662,7 +3680,10 @@ def kmeans(
     ``dead_frac``
         Re-place a centre whose weight has decayed below ``dead_frac *
         weight_sum / n_clusters`` the same way, on whatever far rows there are
-        (default 0.05; ``0`` disables). A centre whose cluster vanished is
+        (default 0.05; ``0`` disables; below 1, since the lightest centre
+        never carries more than the mean share ``weight_sum / n_clusters``,
+        so at 1 or more every check would find one dead whatever the
+        clusters). A centre whose cluster vanished is
         re-placed ``log2(1 / dead_frac)`` half-lives later (4.3 at the
         default, 2 at 0.25). A cluster lighter than ``dead_frac / n_clusters`` of the
         stream loses its centre whenever any row is far. The rule runs at a
@@ -3740,6 +3761,7 @@ def kmeans(
       past 256 MiB;
     - a ``init`` not in the list;
     - ``split_merge``, ``dead_frac`` or ``scale_floor`` below 0 or not finite,
+      a ``dead_frac`` of 1 or more,
       ``dead_frac`` above 0 beside ``split_merge = 0``, and ``scale_floor``
       beside ``standardize=False``.
     """
@@ -4631,7 +4653,10 @@ def marginal(
     residual-based applies (there is no prediction), so the residual switches
     are refused by name. A column may not be both a target and a feature.
     ``min_weight`` defaults to 3: two rows give a correlation of ±1 whatever
-    the data, three the first one with content.
+    the data, three the first one with content. Below a target's
+    ``min_weight`` its pairs' ``corr``, ``beta``, ``t_stat``, ``t_stat_serial``
+    and split are null, and so are every pair's while the stream is less
+    settled than ``min_settled_frac``; the moments are reported either way.
 
     .. rubric:: Output
 
@@ -4664,8 +4689,10 @@ def marginal(
     As every builder does (:mod:`polars_online.spec`), and ``ValueError``
     naming the problem for:
 
-    - ``bin_edges`` that miss or add a feature, or that are not finite and
-      increasing;
+    - ``bin_edges`` that miss or add a feature, that are not finite and
+      increasing, or that give no feature an edge (every feature one open
+      bin, with no response curve and no cut; one feature without edges
+      beside others is taken, and reports a single bin);
     - ``bins`` beside ``bin_edges``, and ``bins`` or ``bin_edges`` beside
       ``window_size``;
     - ``bins`` below 2, or a ``bin_warm_rows`` below ``bins``;

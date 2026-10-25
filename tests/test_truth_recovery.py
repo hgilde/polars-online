@@ -9,7 +9,8 @@ not want to retest existing libraries just our part"): a public set is an
 input to our models.
 
 Every case is judged by its worst seed or ordering, over 50 of them in the
-extended tier; the essentials hold one cheap case per model. Every bound is
+``oracle_grid`` tier, which ``.github/workflows/oracles.yml`` runs on every
+push and no local gate takes; the essentials hold one cheap case per model. Every bound is
 the measurement with headroom, 2026-10-25, macOS arm64, quoted beside it.
 
 `docs/REGIMES.md` measures `hmm`, `corrchange`, `bocpd`, `deco` and `rcov`
@@ -105,7 +106,7 @@ def test_kmeans_recovers_separated_blobs():
         assert ari > 0.99 and err < 0.3, (seed, ari, err)
 
 
-@pytest.mark.extended(reason="50 seeds of 3,000 rows, twice")
+@pytest.mark.oracle_grid(reason="50 seeds of 3,000 rows, twice")
 def test_kmeans_recovers_separated_blobs_on_the_worst_seed():
     """In the features' own units every seed's partition is the truth's.
     Under the default ``standardize``, distances are in each feature's own
@@ -126,7 +127,7 @@ def test_kmeans_recovers_separated_blobs_on_the_worst_seed():
     assert std[:, 0].min() > 0.9 and std[:, 1].max() < 0.5
 
 
-@pytest.mark.extended(reason="50 seeds of 3,000 rows")
+@pytest.mark.oracle_grid(reason="50 seeds of 3,000 rows")
 def test_micro_finds_separated_blobs_on_the_worst_seed():
     """``micro`` at ``eps = 0.1``, with no fixed count: the clusters it links,
     the rows no summary takes counted as a cluster of their own. Measured,
@@ -184,7 +185,7 @@ FRANTI = {
 }
 
 
-@pytest.mark.extended(reason="the network, and 50 orderings of each of seven sets")
+@pytest.mark.oracle_grid(reason="the network, and 50 orderings of each of seven sets")
 @pytest.mark.parametrize("name", sorted(FRANTI))
 def test_kmeans_on_frantis_benchmark_by_the_worst_ordering(name):
     """One pass in each of 50 shuffled orders, ``n_clusters`` the truth's.
@@ -238,7 +239,7 @@ def test_kmeans_on_frantis_benchmark_by_the_worst_ordering(name):
     assert a[:, 2].min() >= 1 - 1e-9, "below the batch optimum: the oracle is wrong"
 
 
-@pytest.mark.extended(reason="the network, and 50 orderings")
+@pytest.mark.oracle_grid(reason="the network, and 50 orderings")
 def test_micro_on_s1_by_the_worst_ordering():
     """``micro`` on S1, the least overlapped S-set, at ``eps = 0.02``: its
     15 Gaussians touch, so a coarser ``eps`` chains them (``eps = 0.07``
@@ -338,7 +339,7 @@ def test_hmm_recovers_location_regimes():
     assert share > 0.93 and truth < 0.25, (share, truth)
 
 
-@pytest.mark.extended(reason="50 seeds of 5,000 rows, each with a Baum-Welch fit")
+@pytest.mark.oracle_grid(reason="50 seeds of 5,000 rows, each with a Baum-Welch fit")
 def test_hmm_recovers_location_regimes_on_the_worst_seed():
     """Seeded from 2,000 rows, which hold every regime. Measured over 50
     seeds: the worst seed's share in the true state 0.945 (seed 34), the
@@ -430,7 +431,7 @@ def test_bocpd_finds_a_large_mean_shift():
 BOCPD_BOUNDS = {1.0: (100, 30, 0.95), 2.0: (20, 4, 1.0), 3.0: (12, 3, 1.0)}
 
 
-@pytest.mark.extended(reason="50 seeds of 2,000 rows at three shifts")
+@pytest.mark.oracle_grid(reason="50 seeds of 2,000 rows at three shifts")
 @pytest.mark.parametrize("delta", sorted(BOCPD_BOUNDS))
 def test_bocpd_finds_every_mean_shift_and_dates_it(delta):
     rows = [bocpd_break(s, delta) for s in SEEDS]
@@ -543,7 +544,7 @@ def test_corrchange_flags_a_correlation_break():
     assert len(after) and after[0] - 999 <= 100, after[:3]
 
 
-@pytest.mark.extended(reason="50 seeds of 2,000 rows, broken and quiet")
+@pytest.mark.oracle_grid(reason="50 seeds of 2,000 rows, broken and quiet")
 def test_corrchange_flags_every_break_and_holds_its_size():
     """The window test at ``alpha = 0.05``. Measured over 50 seeds: no break
     missed; delay worst 80 rows, 95th percentile 62, median 33 (a window of
@@ -574,7 +575,7 @@ def test_corrchange_flags_every_break_and_holds_its_size():
     [
         pytest.param(range(3), id="3 seeds"),
         pytest.param(
-            SEEDS, id="50 seeds", marks=pytest.mark.extended(reason="50 seeds of 4,800 rows")
+            SEEDS, id="50 seeds", marks=pytest.mark.oracle_grid(reason="50 seeds of 4,800 rows")
         ),
     ],
 )
@@ -631,7 +632,7 @@ def test_deco_level_settles_low_and_moves_at_its_half_life(seeds):
 # --- rcov ---------------------------------------------------------------------------
 
 
-@pytest.mark.extended(reason="50 seeds of 20 blocks of 2,000 rows")
+@pytest.mark.oracle_grid(reason="50 seeds of 20 blocks of 2,000 rows")
 def test_rcov_plain_matches_each_blocks_correlation():
     """`docs/REGIMES.md` section 8's clean condition at 50 seeds: two series,
     20 blocks of 2,000 rows, each block's correlation drawn from 0.3 and

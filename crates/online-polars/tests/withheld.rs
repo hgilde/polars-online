@@ -156,3 +156,97 @@ fn bocpd_rows_held_for_its_prior_name_warm_rows() {
         &[("below_min_weight", 2), ("below_warm_rows", 3)],
     );
 }
+
+/// `min_settled_frac` withholds `marginal`'s derived statistics, read from
+/// the state, while the stream is less settled than it: at 0.5 and a
+/// half-life of 10 on the row clock, the table opens once the decay has
+/// covered 10 steps, after 11 rows (task 278). The moments are the ungated
+/// run's throughout; the gate moves no learning.
+#[test]
+fn min_settled_frac_withholds_the_marginal_table_until_it_settles() {
+    let df = frame(40);
+    let make = |gate: &str| {
+        spec(&format!(
+            r#"{{"name": "m", "model": {{"type": "marginal"}}, "targets": ["x1"],
+                "features": ["x0"], "half_life": 10.0, "min_weight": 0.0 {gate}}}"#
+        ))
+    };
+    let column = |t: &DataFrame, name: &str| -> Vec<Option<f64>> {
+        t.column(name).unwrap().f64().unwrap().iter().collect()
+    };
+    for (rows, withheld) in [(5usize, true), (10, true), (11, false), (40, false)] {
+        let mut gated = Bank::new(vec![make(r#", "min_settled_frac": 0.5"#)]).unwrap();
+        let mut plain = Bank::new(vec![make("")]).unwrap();
+        gated.fit_predict(&df.head(Some(rows))).unwrap();
+        plain.fit_predict(&df.head(Some(rows))).unwrap();
+        let (got, want) = (
+            gated.marginal(0, None).unwrap(),
+            plain.marginal(0, None).unwrap(),
+        );
+        for name in ["weight_sum", "mean_x", "var_x", "mean_y", "var_y", "cov"] {
+            assert_eq!(
+                column(&got, name),
+                column(&want, name),
+                "{rows} rows: {name}"
+            );
+        }
+        for name in ["corr", "beta", "t_stat"] {
+            assert!(
+                column(&want, name)[0].is_some(),
+                "{rows} rows: {name} ungated"
+            );
+            let expect = if withheld {
+                None
+            } else {
+                column(&want, name)[0]
+            };
+            assert_eq!(column(&got, name)[0], expect, "{rows} rows: {name}");
+        }
+    }
+}
+
+/// `min_weight` on `rcov` counts a block's returns, each row weighing 0 or
+/// 1, and withholds the closed block's `rcov` and `rcorr` below it, leaving
+/// every other field as it was (task 278). `frame` gives rows 0, 7, 14, ...
+/// weight 0: of the first block's 30 rows, 25 are returns.
+#[test]
+fn min_weight_withholds_a_closed_rcov_block_with_fewer_returns() {
+    let mut df = frame(60);
+    let g: Vec<i64> = (0..60).map(|i| i / 30).collect();
+    df.with_column(Series::new("g".into(), g).into()).unwrap();
+    let closed = |floor: f64| -> DataFrame {
+        let s = spec(&format!(
+            r#"{{"name": "m", "model": {{"type": "rcov", "kind": "plain"}}, "features": ["x0", "x1"],
+                "weight": "w", "group": "g", "group_close": "monotone", "min_weight": {floor}}}"#
+        ));
+        let mut bank = Bank::new(vec![s]).unwrap();
+        bank.fit_predict(&df).unwrap();
+        bank.closed_groups(None, true).unwrap()
+    };
+    let base = closed(0.0);
+    let weight: Vec<Option<f64>> = base
+        .column("weight_sum")
+        .unwrap()
+        .f64()
+        .unwrap()
+        .iter()
+        .collect();
+    assert_eq!(weight, vec![Some(25.0)]);
+    for (floor, withheld) in [(25.0, false), (26.0, true)] {
+        let got = closed(floor);
+        for name in base.get_column_names() {
+            let name = name.as_str();
+            let (a, b) = (got.column(name).unwrap(), base.column(name).unwrap());
+            if withheld && (name == "rcov" || name == "rcorr") {
+                assert_eq!(a.null_count(), 1, "{floor}: {name}");
+                assert_eq!(b.null_count(), 0, "{floor}: {name}");
+            } else {
+                assert!(
+                    a.as_materialized_series()
+                        .equals_missing(b.as_materialized_series()),
+                    "{floor}: {name}"
+                );
+            }
+        }
+    }
+}
