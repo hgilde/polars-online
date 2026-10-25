@@ -137,13 +137,15 @@ def is_transient(e: BaseException) -> bool:
     return isinstance(e, _TRANSIENT)
 
 
-def _download(url: str, attempts: int = 3) -> bytes:
+def _download(url: str, attempts: int = 3, headers: dict[str, str] | None = None) -> bytes:
     """One public file, retried with a short pause; :class:`Offline` once
     every attempt has failed. An HTTP status a retry cannot fix is raised at
-    once, as itself."""
+    once, as itself. ``headers`` go with the request (NIST's server answers
+    urllib's default agent with a 403)."""
     for attempt in range(attempts):
         try:
-            with urllib.request.urlopen(url, timeout=30) as resp:
+            request = urllib.request.Request(url, headers=headers or {})
+            with urllib.request.urlopen(request, timeout=30) as resp:
                 return resp.read()
         except _TRANSIENT as e:
             if not is_transient(e):
@@ -320,3 +322,97 @@ def public_quotes_and_trades_or_skip(
         return public_quotes_and_trades(symbol, date)
     except Offline as e:
         pytest.skip(f"offline: could not download {symbol} quotes and trades ({e.__cause__})")
+
+
+# ---------------------------------------------------------------------------
+# NIST's Statistical Reference Datasets, linear regression (task 278 (b))
+
+#: Where NIST serves the StRD linear least-squares files: a public-domain work
+#: of the United States government (NIST/ITL, Statistical Engineering
+#: Division; https://www.itl.nist.gov/div898/strd/), each a few kilobytes.
+_STRD_URL = "https://www.itl.nist.gov/div898/strd/lls/data/LINKS/DATA/{name}.dat"
+#: The linear datasets with certified values, by NIST's own order of
+#: difficulty (lower, average, higher).
+STRD_LINEAR = (
+    "Norris",
+    "Pontius",
+    "NoInt1",
+    "NoInt2",
+    "Filip",
+    "Longley",
+    "Wampler1",
+    "Wampler2",
+    "Wampler3",
+    "Wampler4",
+    "Wampler5",
+)
+
+
+def nist_strd_linear(name: str) -> dict[str, object]:
+    """One StRD linear least-squares dataset, cached under ``.cache/strd``.
+
+    Returns ``x`` (the predictors as the model states them: the six columns
+    of ``Longley``, or the powers ``x, x**2, ...`` of a polynomial model,
+    computed in double precision), ``y``, ``coef`` (the certified
+    estimates, ``B0`` first), ``se`` (their certified standard deviations),
+    ``resid_sd`` (the certified residual standard deviation),
+    ``intercept`` (whether the model has ``B0``) and ``degree`` (the
+    polynomial's degree, 0 for ``Longley``). Raises :class:`Offline` when the
+    network fails, which :func:`nist_strd_linear_or_skip` turns into a skip.
+    """
+    import re
+
+    out_dir = CACHE_DIR / "strd"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cached = out_dir / f"{name}.dat"
+    if not cached.exists():
+        body = _download(_STRD_URL.format(name=name), headers={"User-Agent": "polars-online-tests"})
+        write_atomically(cached, lambda tmp: tmp.write_bytes(body))
+    text = cached.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    number = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
+    coef, se = [], []
+    for line in lines:
+        m = re.match(rf"^\s*B(\d+)\s+({number})\s+({number})\s*$", line)
+        if m:
+            coef.append(float(m.group(2)))
+            se.append(float(m.group(3)))
+    m = re.search(rf"Residual\s+Standard Deviation\s+({number})", text)
+    if m is None:
+        raise ValueError(f"{name}: no certified residual standard deviation")
+    resid_sd = float(m.group(1))
+    start = next(i for i, line in enumerate(lines) if re.match(r"^Data:\s+y\s", line))
+    rows = [
+        [float(v) for v in line.split()]
+        for line in lines[start + 1 :]
+        if line.strip() and re.match(rf"^\s*{number}(\s+{number})+\s*$", line)
+    ]
+    data = np.array(rows)
+    y = data[:, 0]
+    intercept = "B0" in text.split("Model:")[1].split("Certified")[0]
+    if data.shape[1] == 2 and (len(coef) > 2 or not intercept):
+        # A polynomial in the one predictor: its powers, as the model reads.
+        degree = len(coef) - 1 if intercept else len(coef)
+        x = np.column_stack([data[:, 1] ** j for j in range(1, degree + 1)])
+    else:
+        degree = 0
+        x = data[:, 1:]
+    return {
+        "x": x,
+        "y": y,
+        "coef": np.array(coef),
+        "se": np.array(se),
+        "resid_sd": resid_sd,
+        "intercept": intercept,
+        "degree": degree,
+    }
+
+
+def nist_strd_linear_or_skip(name: str) -> dict[str, object]:
+    """:func:`nist_strd_linear`, skipping the test when offline (hard rule 1)."""
+    import pytest
+
+    try:
+        return nist_strd_linear(name)
+    except Offline as e:
+        pytest.skip(f"offline: could not download NIST StRD {name} ({e.__cause__})")
