@@ -72,7 +72,7 @@ def _cached(name: str, url: str, context: ssl.SSLContext | None = None) -> bytes
     bench.mkdir(parents=True, exist_ok=True)
     path = bench / name
     if not path.exists():
-        raw = data._download(url, user_agent=USER_AGENT, context=context)
+        raw = data._download(url, headers={"User-Agent": USER_AGENT}, context=context)
         data.write_atomically(path, lambda tmp: Path(tmp).write_bytes(raw))
     return path.read_bytes()
 

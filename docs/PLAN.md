@@ -16307,3 +16307,66 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       oracle and the classes that apply, so a new model must opt in
       (EXTENDING.md). Heavy grids (4, 9) weekly. Library defects the classes
       find are reported and fixed before 1.4.0.
+      *Widened 2026-10-25* (the user: "We should use this chance to test all
+      parameters that can't be compared to third party libraries", and to run
+      as much as possible in parallel): (12) every public parameter with no
+      third-party oracle gets oracle-free tests -- limits reducing it to an
+      oracled model, equivalent spellings, monotonicity, the invariances it
+      must keep, boundaries, chosen interactions, a definition written by
+      hand where no library computes it -- and an activation test showing it
+      takes effect where it should and nowhere else; a parameter no test shows
+      taking effect is a dead-parameter suspect. A read-only inventory
+      (scratchpad `t278/PARAMS.md`) groups the missing tests into batches;
+      heavy grids run on CI (free, 20 concurrent jobs) rather than locally.
+      *Inventory 2026-10-25* (`t278/PARAMS.md`, 436 parameters: 176 against
+      a third-party oracle, 222 shown taking effect, 38 with no test showing
+      an effect, of which probes show 37 act): three inert keys, four
+      defects, invalid values accepted; 33 batches that do not collide on
+      files. *Decided by the user, 2026-10-25*: (i) the inert keys act or
+      are deprecated -- `marginal`'s `min_settled_frac` and `rcov`'s
+      `min_weight` withhold as their names say, `with_windows` no longer
+      requires a numeric `session_gap` and warns that a number has no effect
+      (`"reset"` kept); (ii) `session_shrink`: "Do the right thing do not
+      worry about moving results as long as we can test" -- a blend leaves
+      the solve schedule alone, as its docstring says, so the output is
+      continuous in the factor and 0 is no shrink to the bit, the move
+      declared and pinned; (iii) the nonsense values (`min_weight=inf`,
+      `bin_edges=[[]]`, kmeans `dead_frac >= 1`, `emit_averaged` on one
+      slot, corrchange `bandwidth` unbounded) refused by name as validation
+      fixes. Plain fixes without a decision: `rls` under
+      `drift_action="reset"` matches a fresh bank on the next row as every
+      other kind does (it differed by up to 0.017); `with_windows` refuses
+      `session_gap` without `session` and `restart_after_step_back` without
+      `clock`; `bocpd`'s refusal names its current keywords. The user, 2026-10-25,
+      asked for as much parallel work as possible and approved six builders
+      at once for this effort (CLAUDE.md's four otherwise):
+      `POLARS_ONLINE_SLOTS=6`.
+      *Classes 6-8 merged (278 (b))*, finding seven defects, each pinned as
+      a labelled test of today's behaviour; fixed before 1.4.0 under the
+      user's direction ("do the right thing ... as long as we can test"),
+      each declared: D4 (high) a numerically singular normal-equations solve
+      is reported nowhere -- estimate the condition from the Cholesky factor
+      and withhold and count above a threshold, a new `withheld_reason`; D5
+      `gram.solve(standardize=False)` rescales the Gram by its diagonal
+      before `eigh`; D1 `sgd`'s `clip_gradient` measured in the residual
+      scale's units; D2 AdaGrad's epsilon relative; D3 `lasso`'s `tol`
+      relative to the target's spread (and `gram.lasso_path`'s); D6
+      `gram.lasso_path` counts and warns on its sweep cap; D7 `kmeans`/`hmm`
+      seeding iterates to a fixed point under a cap and counts cap hits; K1
+      `kalman`'s noise estimate inflated while the intercept absorbs a large
+      level. D1/D2 wait for task 277 (both touch `sgd`).
+- [ ] 279. **Smaller build caches: no debug info for dependencies** -- the
+      user, 2026-10-25 ("Why do agents take so much disk I though we shared
+      caches", then "Yes"). Each worktree slot keeps its own `target/` (a
+      shared one clobbers the workspace's crates between paths), and they
+      grow to 58-171 GB: slot 2's 171 GB was 130 GB of `debug/deps` (234,000
+      files: every test binary links Polars with its debug info, and cargo
+      keeps each superseded build -- mutants, debug-assertion release builds,
+      cross builds, other toolchains) and 24 GB incremental. Measure
+      `[profile.dev.package."*"] debug = false` (our crates keep line
+      tables): a slot's `target/` size after the essentials gate, the gate's
+      cold and warm build times, the link time, and a backtrace through our
+      code still naming lines; propose it with those numbers. Meanwhile, a
+      slot's `target/` is cleared when its task is given back whenever free
+      disk is under 100 GB, and `cargo-sweep` between tasks is to be weighed
+      beside it. After the task 277/278 wave, so no slot rebuilds mid-task.
