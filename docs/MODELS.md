@@ -499,55 +499,65 @@ for row in (1_999, 2_010, 2_050, 2_200):
 
 ```text
 row 1999: truth 1, kalman 1.00, ewridge 1.01
-row 2010: truth 3, kalman 1.50, ewridge 1.09
-row 2050: truth 3, kalman 2.68, ewridge 1.45
+row 2010: truth 3, kalman 1.56, ewridge 1.09
+row 2050: truth 3, kalman 2.76, ewridge 1.45
 row 2200: truth 3, kalman 3.04, ewridge 2.05
 ```
 
-Per target `j`, `β_j` are the coefficients and `P_j` their covariance.
-`κ_i` is coefficient `i`'s `revert_half_life`, and `φ_i = 2^(−Δclock/κ_i)`
-its entry of `Φ`. `Q` is the process noise, which `coef_half_life` sets, and
-`R_j` the observation noise, the target's exponentially weighted residual
-variance unless `obs_var` is given:
+Per target `j`, `β_j` are the coefficients and `R_j·P_j` their covariance:
+`P_j` is held in units of the observation noise `R_j`, the target's
+exponentially weighted residual variance. `κ_i` is coefficient `i`'s
+`revert_half_life`, and `φ_i = 2^(−Δclock/κ_i)` its entry of `Φ`. `Q` is the
+process noise, which `coef_half_life` sets, in the same units:
 
 ```
 β_j ← Φβ_j    P_j ← ΦP_jΦ              Φ = diag(2^(−Δclock/κ_i)), every row
 P_j ← P_j + Q·D_j²,  D_j ← 0           on a row that observes y_j; D_j the clock since the last
                                        (bounded on a reverting coefficient, below)
-s   = zᵀP_j z + R_j/w                   K   = P_j z / s
+s   = zᵀP_j z + 1/w                     K   = P_j z / s
 β_j ← β_j + K(y_j − zᵀβ_j)              P_j ← P_j − K zᵀP_j
 ```
 
-A row's weight scales its observation's precision: the rule divides `R_j`
-by `w`, so with a fixed `obs_var=` the observation's variance is
-`obs_var / w`.
+A row's weight scales its observation's precision: the observation's
+variance is `R_j / w`.
 
-**Until a target has a residual variance, each row takes its noise from
-its own innovation:** `R_j = (y_j − zᵀβ_j)²`, computed before the update,
-so the prediction stays out of sample. The process noise reads the same
-number. The residual variance starts at the target's first prediction,
-which waits for the target's prior to be sized: a row before then is
-withheld (`below_warm_rows`), since its prediction would be the
-uncorrected coefficients' `0.0` whatever the target's level. A
-row whose innovation is exactly 0 says nothing about the size of the noise,
-and changes nothing.
+**The noise is a scale, not a weight: the gain never reads the noise
+estimate.** The model's noise is one constant per target, and its prior
+(`p0` times the noise) and its drift (`(ln 2·D/h)²` times the noise) are both
+multiples of it, so it cancels from the gain. The estimate only scales what
+is read out: `pred_var`, `se_coef` and the predictions' error, `R_j·zᵀP_j z`.
+An estimate inside the gain weighs each row by the inverse of the noise as
+it stood before the row. A burst of large residuals then inflates it, and
+the rows after the burst count for less than the burst did. With no drift,
+a fifth of the first 500 rows 50 too high held the slopes at [−25.5, 33.6]
+where least squares on the same rows gives [4.1, −1.4], and after a change
+of regime the fit stayed 45.7 of a gap of 46 away. Weighing rows by a running
+noise estimate is also volatility weighting: on the intraday returns of
+[docs/VALIDATION.md](VALIDATION.md), section 5, it had scored R² −0.059
+against −0.070 now on the next minute's return, and −0.075 against −0.101 on
+five minutes'. A fixed `obs_var=` leaves the gain as it is and scales the
+readouts by its own number; only the intercept's prior differs (below). A
+state saved by a release before this form goes on as it was fitted, with
+the estimate in the gain.
 
-**The prior variance comes from the squared innovations:** `p0` times a
-noise estimate, so the default `p0=1` gives a prior as uncertain as one
-observation. Unstandardized, the first row with a noise sets `P_j =
-p0·R_j·I` before its correction. Standardized, each coefficient waits for
-its feature's scale: its prior is set on the first row that observes the
-target once the feature's variance is above 0. The noise estimate there is
-the weighted median of the first three rows' squared innovations, divided
-by 0.4549. That number is the median of a chi-squared of one degree, so the
-estimate reads the noise variance as a mean would. One squared innovation
-falls below 1% of the noise one time in twelve, and the median of three
-about one time in 120. With no process noise, a prior that small pins the
-fit for good. The median also keeps one wild row among the three from
-sizing the prior.
-Since the noise and the prior both come from the data, the warm-up does
-not depend on the target's units. With a fixed `obs_var=`, the noise is
-known from the start.
+**The intercept's prior is diffuse, so a level costs nothing.** The first
+row that observes the target fills the intercept with its whole innovation,
+`β_0 = y − zᵀβ`, at a variance of `zᵀP z + 1/w`: the limit of a prior that
+knows nothing of the level (Durbin and Koopman, *Time Series Analysis by
+State Space Methods*, §5.2). Every prediction on a target shifted by a level
+`L` then moves by `L`, to the rounding of a number of its size, from the
+first. When the noise estimate set the prior and the gain, the first
+innovations, the level among them, inflated it: at `L = 1e4` the predictions
+stood 0.03 of the target's spread off the unshifted fit for thousands of
+rows. Each slope's prior is `p0` in units of the noise, so the default
+`p0=1` gives a prior as uncertain as one observation: unstandardized from
+the start, standardized on the first row that observes the target once the
+feature's variance is above 0. A target with nothing sized yet is not
+predicted, and the row is withheld (`below_warm_rows`); with an intercept
+no row waits for it, the first sizing the intercept. Since
+neither the gain nor the prior reads the noise, the warm-up does not depend
+on the target's units. With a fixed `obs_var=`, `P` is absolute and starts
+at `p0·obs_var` on every coefficient, the intercept included.
 
 ```python
 revert = po.spec.kalman(
@@ -556,32 +566,35 @@ revert = po.spec.kalman(
     coef_half_life=100.0,              # how fast a coefficient may drift; or q, never both
     revert_half_life=[float("inf"), 50.0, 50.0],   # inf leaves the intercept alone; the slopes revert at 50
     standardize=True,                  # the default
-    p0=1.0,                            # the default: the prior variance is p0 times the first noise estimate
-    share_p=False,                     # the default: one P per target; True keeps one for all, driven by their mean σ²
+    p0=1.0,                            # the default: each slope's prior variance, in units of the noise
+    share_p=False,                     # the default: one P per target; True keeps one for all
 )
 ```
 
 **By default each coefficient drifts as a random walk: between observations
 its estimate holds and its variance grows.** With `h_i` its
 `coef_half_life`, a row that observes the target `D` clock units after its
-last observation adds `σ²(ln2 · D / h_i)²` to that variance on standardized
-features. That matches EW-RLS's steady state at any spacing. The noise is
+last observation adds `(ln2 · D / h_i)²` to that variance, in units of the
+noise, on standardized features. That matches EW-RLS's steady state at any
+spacing. The noise is
 charged once for the whole of `D`, since `D²` does not split into the
 squares of its parts. Charged per row, a row of weight 0 inside a gap moved
 every later prediction, and a target seen on one row in ten forgot 3.6
 times slower on the clock. For a rate per coefficient, give
 `coef_half_life` a list with the intercept's entry leading, and an entry
 of `inf` pins its coefficient. To set the process noise outright, give
-`q=`, whose `q_i` is added as `q_i · D²`.
+`q=`, whose `q_i` is added as `q_i · D²` in the coefficient's own units:
+measured against the noise estimate, the one place the estimate reaches
+the fit.
 
 **`coef_half_life` is each standardized direction's memory, with the other
 directions held still.** Under correlated features, a direction of the
 design's correlation with eigenvalue `λ` is learned with a memory of about
 `h/√λ` (Ljung and Gunnarsson, 1990). At a correlation of 0.9 and `h = 50`
 that measured 37.5 and 160.5 clock units, against 36.3 and 158.1. EW-RLS
-forgets every direction at `h`. The default `R`, the EW residual variance,
-grows at a step in the truth, so a step is learned about 1.45 times slower
-than with the true noise. Under `standardize` the drift is per standard
+forgets every direction at `h`. The gain reads no noise estimate, so a
+step in the truth is learned at that memory, however much the step inflates
+the residual variance. Under `standardize` the drift is per standard
 deviation: in the caller's units a slope's walk has variance `q_i·D²/s_i²`
 per observation, `s_i` the feature's spread as it stands.
 
@@ -637,18 +650,17 @@ does not move, the standard errors come out about √2 too large. With `R`
 the residual variance, which already carries the estimation error,
 `error_inflation` counts that error twice: the mean squared error is 0.96 of
 `R·error_inflation²` at `coef_half_life=50`. Under `share_p`, each target's
-`se_coef` reads the shared `P` times its own noise over the mean.
+`se_coef` reads the shared `P` times its own noise.
 
-**Keep one `P` per target, the default, unless the targets share their
-noise.** With a constant noise, `P/σ²` and the gain never read `σ²`, so a
-shared `P` and one per target part only where the targets' noises move
-apart. Give `share_p=True` for related targets, whose noises move together,
-or where each target's own noise estimate is noisy, from a short or sparse
-history, which the mean over the targets smooths. It also takes one `k×k`
-update a row instead of one per target. On section 4 of
-[docs/VALIDATION.md](VALIDATION.md), the next minute's return scored
-R² -0.0110 shared against -0.0168 per target, and the next five minutes'
--0.0880 against -0.0746.
+**`share_p=True` saves work and changes no prediction where every target
+is on every row.** `P`'s recursion reads neither the targets nor the noise,
+so targets observed on the same rows would each carry the same `P`, and one
+`k×k` update a row serves them all: on section 4 of
+[docs/VALIDATION.md](VALIDATION.md) the two specs score the same, to the
+bit. Where a target is null on rows the others are present on, the shared
+`P` takes those rows too, and that target's memory follows the other
+targets' rows. With an explicit `q`, the shared `P` measures it against the
+targets' mean noise.
 
 ### `huber` / `quantile` — robust regression
 

@@ -1805,7 +1805,7 @@ print(f"kalman against ridge: dm {dm:.2f}; the betting evidence peaked at log_e_
 
 ```text
 ridge   59988 rows: R² 0.7899, IC 0.8889, hit rate 0.8255, mse 1.0341
-kalman  59988 rows: R² 0.7922, IC 0.8901, hit rate 0.8258, mse 1.0225
+kalman  59988 rows: R² 0.7927, IC 0.8903, hit rate 0.8264, mse 1.0200
 ridge on A: R² 0.8089
 ridge on B: R² 0.8525
 ridge on C: R² 0.5585
@@ -1813,13 +1813,13 @@ ridge from t =      0: R² 0.6802
 ridge from t =   5000: R² 0.7853
 ridge from t =  10000: R² 0.8200
 ridge from t =  15000: R² 0.8240
-kalman against ridge: dm 8.41; the betting evidence peaked at log_e_a 9.56 (ln 20 = 3.00)
+kalman against ridge: dm 11.58; the betting evidence peaked at log_e_a 8.54 (ln 20 = 3.00)
 ```
 
 `kalman`, whose coefficients drift, predicts a little better than `ridge`
-here, with an error of 1.0225 against 1.0341. The difference is small, but
-it holds on enough rows that Diebold and Mariano's t reads 8.4. The
-betting evidence peaks at 9.56, past `ln 20`, the 5% level however often
+here, with an error of 1.0200 against 1.0341. The difference is small, but
+it holds on enough rows that Diebold and Mariano's t reads 11.6. The
+betting evidence peaks at 8.54, past `ln 20`, the 5% level however often
 it is read. R² differs between stocks because each stock's coefficient
 wandered its own way, and an R² is larger where the signal is larger
 against the same noise. The first window's R² is the lowest because it

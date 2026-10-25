@@ -412,14 +412,16 @@ REACH: list[tuple[str, str, dict, list[str]]] = [
         [],
     ),
     ("kalman_standardized", "kalman", dict(FIT, coef_half_life=50.0, standardize=True), []),
-    # Standardized with no `obs_var`, a target's prior is sized from its
-    # first three observed rows; a `min_weight` of one row's weight lets
-    # rows past it arrive before then, which predict nothing and withhold
-    # as `below_warm_rows` (1.2.0 predicted 0.0 there: review round 9, B-1).
+    # Standardized with no `obs_var` and no intercept, each slope's prior
+    # waits for its feature's scale, which the first row cannot give; a
+    # `min_weight` of one row's weight lets the next row arrive before then,
+    # which predicts nothing and withholds as `below_warm_rows` (1.2.0
+    # predicted 0.0 there: review round 9, B-1). With an intercept the first
+    # row sizes the diffuse intercept, and no row waits (task 278).
     (
         "kalman_unsized",
         "kalman",
-        dict(FIT, coef_half_life=50.0, standardize=True, min_weight=1.0),
+        dict(FIT, coef_half_life=50.0, standardize=True, min_weight=1.0, fit_intercept=False),
         [],
     ),
     *[

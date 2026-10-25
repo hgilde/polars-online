@@ -103,12 +103,13 @@ def _sgd_on(loss: str):
 
 
 def _kalman_unsized(b: str, kw: dict) -> bool:
-    """`kalman` standardized with no `obs_var` and a lowered `min_weight`:
-    rows past `min_weight` before a target's prior is sized (review round 9,
-    B-1, the path 1.2.0 predicted 0.0 on)."""
-    return (
-        b == "kalman" and kw.get("standardize") is True and "obs_var" not in kw
-    ) and "min_weight" in kw
+    """`kalman` standardized with no `obs_var`, no intercept and a lowered
+    `min_weight`: rows past `min_weight` before a target's prior is sized
+    (review round 9, B-1, the path 1.2.0 predicted 0.0 on). With an
+    intercept the first row sizes it, diffuse, and no row waits (task 278)."""
+    return (b == "kalman" and kw.get("standardize") is True and "obs_var" not in kw) and (
+        "min_weight" in kw and kw.get("fit_intercept") is False
+    )
 
 
 #: The paths the release comparison must reach, each by the keyword that

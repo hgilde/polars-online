@@ -145,6 +145,16 @@ DECLARED: dict[tuple[str, str], str] = {
             "ew_class_window",
         )
     },
+    # Task 278 (the next release's Fixed): with no `obs_var`, `kalman` holds
+    # `P` in units of the noise, its gain reading no noise estimate, and its
+    # intercept's prior is diffuse. A file of a release has no such form and
+    # goes on as it was fitted, the estimate in the gain, where this build's
+    # own bank runs the new form; `seqtest` reads a `kalman`'s predictions.
+    **{
+        (name, "1.3.0"): "the next release, Fixed: `kalman` holds its covariance in units of "
+        "the noise, and its intercept's prior is diffuse"
+        for name in ("kalman", "full_kalman", "kalman_standardized", "kalman_unsized", "seqtest")
+    },
 }
 
 #: The releases from 1.0, whose files load and go on; and this build, whose
@@ -325,6 +335,14 @@ def test_a_released_state_loads_and_goes_on_as_this_builds_own(loaded):
     df = probe.stream()
     first, second = df.head(probe.HALF), df.slice(probe.HALF)
     built = {name: probe.build(b, name, kw) for name, b, kw, _ in probe.WORKLOAD}
+    # Every file goes on to the bit, as the release comparison holds the
+    # outputs (review round 9, J-5: a bound of 1e-12 was described as the
+    # comparison's, which allows nothing). A spec a CHANGELOG entry moved
+    # since the release is named in `DECLARED`, and held to having loaded
+    # and run: its rows withheld may move too (task 278's `kalman`).
+    moved = set()
+    if version != THIS_BUILD:
+        moved = {n for (n, since), _ in DECLARED.items() if _version(version) <= _version(since)}
     gaps = {}
     for name, _, _, reads in probe.WORKLOAD:
         if name not in manifest["saved"]:
@@ -333,23 +351,18 @@ def test_a_released_state_loads_and_goes_on_as_this_builds_own(loaded):
         file_bank = po.ModelBank.load(states / f"{name}.state", specs=specs)
         own = po.ModelBank(specs)
         own.fit_predict(first)
-        gap = _worst_gap(
-            file_bank.fit_predict(second).select(name), own.fit_predict(second).select(name)
-        )
+        got_rows = file_bank.fit_predict(second).select(name)
+        want_rows = own.fit_predict(second).select(name)
+        if name in moved:
+            assert got_rows.height == want_rows.height, name
+            continue
+        gap = _worst_gap(got_rows, want_rows)
         for got, want in zip(_tables(file_bank, name), _tables(own, name), strict=True):
             assert got.height == want.height, name
             if got.height:
                 gap = max(gap, _worst_gap(got, want))
         gaps[name] = gap
-    # Every file goes on to the bit, as the release comparison holds the
-    # outputs (review round 9, J-5: a bound of 1e-12 was described as the
-    # comparison's, which allows nothing). A spec a CHANGELOG entry moved
-    # since the release is named in `DECLARED`, and held to having loaded
-    # and run.
-    moved = set()
-    if version != THIS_BUILD:
-        moved = {n for (n, since), _ in DECLARED.items() if _version(version) <= _version(since)}
-    wrong = {k: f"{v:.1e}" for k, v in gaps.items() if v > 0.0 and k not in moved}
+    wrong = {k: f"{v:.1e}" for k, v in gaps.items() if v > 0.0}
     assert not wrong, wrong
 
 

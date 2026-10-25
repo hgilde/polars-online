@@ -328,8 +328,11 @@ fn lasso() {
     check(&r, "lasso", 1, 2);
 }
 
+/// The form the bank builds, `P` in units of the noise (task 278); the
+/// form a state saved before it goes on in is held below too.
 fn kalman_cfg() -> KalmanCfg {
     KalmanCfg {
+        noise_units: true,
         n_features: K,
         n_targets: 2,
         fit_intercept: true,
@@ -348,6 +351,18 @@ fn kalman_cfg() -> KalmanCfg {
 #[test]
 fn kalman() {
     let cfg = kalman_cfg();
+    let r = probe_with(Kalman::new(cfg).unwrap(), 2, Some(&Kalman::n_eff));
+    check(&r, "kalman", 2, 1);
+}
+
+/// A state saved before task 278 has no `noise_units` and goes on with `P`
+/// absolute and the noise estimate in the gain: held to the same contract.
+#[test]
+fn kalman_with_the_noise_in_the_gain() {
+    let cfg = KalmanCfg {
+        noise_units: false,
+        ..kalman_cfg()
+    };
     let r = probe_with(Kalman::new(cfg).unwrap(), 2, Some(&Kalman::n_eff));
     check(&r, "kalman", 2, 1);
 }
@@ -2226,23 +2241,50 @@ fn lasso_recovers_from_bounded_extremes() {
 
 #[test]
 fn kalman_recovers_from_bounded_extremes() {
+    // A target at the bound moves the coefficients by its innovation, as any
+    // observation does, and the drift forgets it at `coef_half_life`: 1e100
+    // needs about 330 of them. So the drift's half-life is the script's,
+    // whose tail is 1500 of it. With the noise estimate in the gain, the
+    // estimate the bound inflated inflated the derived process noise with
+    // it, and `P` forgot everything within a few rows: the filter recovered
+    // at a coefficient half-life of 100 (task 278).
+    let drift = |c: KalmanCfg| KalmanCfg {
+        half_life: vec![HALFLIFE],
+        ..c
+    };
+    let cfg = drift(kalman_cfg());
     recovers_from_bounded_extremes(
-        || Kalman::new(kalman_cfg()).unwrap(),
+        move || Kalman::new(cfg.clone()).unwrap(),
         2,
         Recovery::Twin(1e-9),
     );
-    let mut cfg = kalman_cfg();
+    let mut cfg = drift(kalman_cfg());
     cfg.standardize = false;
     recovers_from_bounded_extremes(
         move || Kalman::new(cfg.clone()).unwrap(),
         2,
         Recovery::Twin(1e-9),
     );
+    let cfg = drift(kalman_revert_cfg());
     recovers_from_bounded_extremes(
-        || Kalman::new(kalman_revert_cfg()).unwrap(),
+        move || Kalman::new(cfg.clone()).unwrap(),
         2,
         Recovery::Twin(1e-9),
     );
+    // The form a state saved before task 278 goes on in, at the half-life
+    // it always recovered at.
+    for standardize in [true, false] {
+        let cfg = KalmanCfg {
+            noise_units: false,
+            standardize,
+            ..kalman_cfg()
+        };
+        recovers_from_bounded_extremes(
+            move || Kalman::new(cfg.clone()).unwrap(),
+            2,
+            Recovery::Twin(1e-9),
+        );
+    }
 }
 
 #[test]

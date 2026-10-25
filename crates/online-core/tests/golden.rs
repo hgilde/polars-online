@@ -210,6 +210,7 @@ fn huber_origin_standardized_golden() {
 #[test]
 fn kalman_plain_golden() {
     let mut m = Kalman::new(KalmanCfg {
+        noise_units: false,
         n_features: 2,
         n_targets: 1,
         fit_intercept: true,
@@ -245,6 +246,7 @@ fn rls_golden() {
 #[test]
 fn kalman_golden() {
     let mut m = Kalman::new(KalmanCfg {
+        noise_units: false,
         n_features: 2,
         n_targets: 1,
         fit_intercept: true,
@@ -267,6 +269,7 @@ fn kalman_golden() {
 #[test]
 fn kalman_revert_golden() {
     let mut m = Kalman::new(KalmanCfg {
+        noise_units: false,
         n_features: 2,
         n_targets: 1,
         fit_intercept: true,
@@ -1210,6 +1213,7 @@ fn lasso_windowed_golden() {
 #[test]
 fn kalman_noise_golden() {
     let cfg = || KalmanCfg {
+        noise_units: false,
         n_features: 2,
         n_targets: 1,
         fit_intercept: true,

@@ -134,9 +134,11 @@ CONSISTENCY: dict[str, tuple[float, float | None]] = {
     # The descent stops when no standardised coefficient moves by its tol,
     # 1e-10; scikit-learn's stops at 1e-12. Measured 4.1e-11.
     "lasso": (1e-9, None),
-    # The prior sized from the first rows fades as 1/n (rate -1). Measured
+    # The prior, `p0` on each standardised slope with the intercept's
+    # diffuse, fades as 1/n (rate -1). Measured 0.00051 (seed 3) and -1.01;
+    # before task 278's fix the prior was sized from the first rows' noise,
     # 0.0051 (seed 22, whose prior came out small) and -0.93.
-    "kalman": (0.01, -0.8),
+    "kalman": (0.001, -0.9),
     # Measured 0.00275 and -0.70: the band narrows with the effective sample.
     "quantile": (0.006, -0.5),
     # Robbins-Monro past the curvature's 1/2: the gap to least squares falls
@@ -291,8 +293,12 @@ START: dict[str, dict[float, float]] = {
     "ewridge": {200.0: 1e-11, cv.INF: 1e-11},
     "rls": {200.0: 1e-11, cv.INF: 1e-11},
     "lasso": {200.0: 1e-9, cv.INF: 1e-9},
-    # 0.0119 (fresh 0.0105).
-    "kalman": {200.0: 0.02},
+    # 0.0129 (fresh 0.0106). Without decay, no process noise: Bayesian
+    # regression on every row, the other regime's included, its prior fading
+    # as 1/n: 0.00104 (seed 10). Before task 278's fix the other regime's
+    # residuals inflated the noise in the gain and held the fit there, 45.7
+    # of a 46 gap after 32,000 rows.
+    "kalman": {200.0: 0.02, cv.INF: 0.002},
     # 0.0291 (fresh 0.0277).
     "quantile": {200.0: 0.045},
     # 0.0465 (fresh 0.0472).
@@ -358,12 +364,6 @@ START_DEFECTS: dict[tuple[str, float], str] = {
         "residuals, which without decay keeps the other regime's residuals for good: 0.137 "
         "off the batch fit of every row at 32,000 rows (seed 41), against 0.00275 from a "
         "fresh start"
-    ),
-    ("kalman", cv.INF): (
-        "defect (task 278 (a)): kalman with no process noise and the learned noise R "
-        "stays at the other regime's fit: the old fit's residuals inflate R, which divides "
-        "the gain, so the fit never moves (gap 45.7 of 46 after 32,000 rows; with obs_var "
-        "fixed it reaches the pooled least squares to 1e-4)"
     ),
 }
 
@@ -442,13 +442,6 @@ LEVEL_DEFECTS: dict[str, str] = {
     ),
     "sgd:quantile": _SGD_LEVEL.format(
         "0.206 off QuantReg at 8,000 rows at a level of 3 (seed 32), against 0.042 at level 0"
-    ),
-    "kalman": (
-        "defect (task 278 (a)): kalman's learned noise R keeps the level's first residuals "
-        "(the intercept starts at 0) when nothing decays, and the rows are then weighed "
-        "unevenly against the prior: at a level of 1e6 the worst seed is 0.402 off least "
-        "squares at 8,000 rows (seed 40) against 0.0049 at level 0; it converges, as 1/n "
-        "(0.0024 at 128,000 rows over 20 seeds)"
     ),
 }
 
@@ -567,17 +560,30 @@ ADVERSE: dict[str, dict[tuple[str, float], float]] = {
     "ewridge": _every(1e-11),
     "rls": _every(1e-11),
     "lasso": _every(1e-9),
-    # Under a half-life kalman forgets through its drift (coef_half_life =
-    # 500). Measured 0.0060, 0.0118, 0.0049, 0.0072 and 0.0157, beside
-    # 0.0072 from a clean start. Without decay, t2 noise alone: 0.049
-    # (clean 0.0049); the rest are defects (below).
+    # Without decay, no process noise, the gain reads no noise estimate
+    # (task 278): Bayesian regression on the same rows, the adversity
+    # weighed as least squares weighs it, its prior fading as 1/n. Measured
+    # 0.0103, 0.00248, 0.00185, 0.0019 and 0.0284 (Cauchy: least squares'
+    # own fit moves by hundreds), beside 0.00188 from a clean start. Under a
+    # half-life kalman forgets through its drift (coef_half_life = 500),
+    # whose start-up keeps its first rows about 2.7 times longer than EW
+    # least squares' weights do (the filter weighs them evenly until its `P`
+    # meets the drift, some h / ln 2 rows): measured 0.00881, 0.028, 0.00744,
+    # 0.00744 and 0.0682, beside 0.00744 clean. Before task 278 the noise
+    # estimate in the gain down-weighed the rows after a burst (0.0060 to
+    # 0.0157 here) and captured the fit without decay (19.3, 5.76, 17.8 and
+    # 658 at 8,000 rows).
     "kalman": {
-        ("outliers", 500.0): 0.01,
-        ("wild", 500.0): 0.018,
-        ("shift", 500.0): 0.008,
+        ("outliers", INF): 0.015,
+        ("wild", INF): 0.004,
+        ("shift", INF): 0.003,
+        ("t2", INF): 0.003,
+        ("cauchy", INF): 0.045,
+        ("outliers", 500.0): 0.013,
+        ("wild", 500.0): 0.04,
+        ("shift", 500.0): 0.011,
         ("t2", 500.0): 0.011,
-        ("cauchy", 500.0): 0.024,
-        ("t2", INF): 0.075,
+        ("cauchy", 500.0): 0.1,
     },
     # A robust fit: without decay it is held to three times its clean worst
     # (0.0079): t2 noise measured 0.0076. Under a half-life of 500, measured
@@ -618,12 +624,6 @@ ADVERSE: dict[str, dict[tuple[str, float], float]] = {
     },
 }
 
-_KALMAN_CAPTURE = (
-    "defect (task 278 (a)): kalman with no process noise and the learned noise R is "
-    "captured by a burst of large residuals in its first rows: R grows with them and "
-    "divides the gain, and the fit stays far from least squares on the same rows "
-    "(measured {}); with obs_var fixed it is least squares to rounding"
-)
 _QUANTILE_RMS = (
     "defect (task 278 (a)): quantile's band is drawn in the root mean square of its "
     "residuals, which without decay keeps the first rows' wild residuals for good, so the "
@@ -631,10 +631,6 @@ _QUANTILE_RMS = (
     "grows with the scale: measured {} at 8,000 rows, three times its clean worst 0.024"
 )
 ADVERSE_DEFECTS: dict[tuple[str, str, float], str] = {
-    ("kalman", "outliers", INF): _KALMAN_CAPTURE.format("19.3 at 8,000 rows, seed 31"),
-    ("kalman", "wild", INF): _KALMAN_CAPTURE.format("5.76, seed 22"),
-    ("kalman", "shift", INF): _KALMAN_CAPTURE.format("17.8 and growing, seed 22"),
-    ("kalman", "cauchy", INF): _KALMAN_CAPTURE.format("658 and growing, seed 39"),
     ("quantile", "outliers", INF): _QUANTILE_RMS.format("0.165 (seed 1)"),
     ("quantile", "wild", INF): _QUANTILE_RMS.format("4.08 (seed 47)"),
     ("quantile", "shift", INF): _QUANTILE_RMS.format("0.097 (seed 18)"),
@@ -696,6 +692,104 @@ def test_adversity_essential():
     assert p.to_oracle[8000].worst <= ADVERSE["quantile"][("outliers", 500.0)]
 
 
+def test_kalman_is_not_captured_by_a_burst_essential():
+    """Task 278 (a)'s D-K, the representative cell: ``kalman`` with no
+    process noise and the noise learned, one-sided outliers on a fifth of its
+    first 500 rows, ten seeds. Its gain reads no noise estimate, so it is
+    Bayesian regression on the same rows and least squares' fit to them.
+    Measured 2026-10-25 over 50 seeds: 0.0103 at 8,000 rows (seed 46); with
+    the estimate in the gain, 19.3 (seed 31)."""
+    p, touched = cv.front_loaded(cv.REGISTRY["kalman"], "outliers", 10, cv.INF, [2000, 8000])
+    p.show(f"kalman, outliers first, no decay, 10 seeds, {touched}+ rows wild")
+    assert touched >= 50
+    assert p.to_oracle[8000].worst <= ADVERSE["kalman"][("outliers", cv.INF)]
+
+
+#: K1 (task 278 (b)): ``kalman`` at a drift of 200 and a half-life of 300 on
+#: a target 1e4 above the truth's. Its residual variance learned from the
+#: warm-up's innovations, the level among them, and the filter ran on that
+#: noise for some log2(L^2 / sigma^2) half-lives: predictions 0.019 to 0.032
+#: of the target's spread off the fit at level 0 over rows 3,000 to 6,000.
+K1_SPEC = dict(targets=["y"], features=cv.FEATURES, coef_half_life=200.0, half_life=300.0)
+K1_LEVEL = 1e4
+
+
+def _k1_level_deviation(seed: int, n: int, level: float) -> tuple[float, float]:
+    """The largest |pred at level L - L - pred at level 0| over a stream's
+    rows, in units of the target's spread and in ``u (|L| + max|y|)``."""
+    spec = po.spec.kalman("m", **K1_SPEC)
+    base = cv.linear(n, seed)
+    preds = []
+    for s in (base, cv.linear(n, seed, level=level)):
+        out = po.ModelBank([spec]).fit_predict(s.frame).unnest("m")
+        preds.append(out["pred_y"].to_numpy().astype(float))
+    p0, p1 = preds
+    assert np.array_equal(np.isnan(p0), np.isnan(p1)), "the level withholds no other row"
+    assert np.isfinite(p0[100:]).all()
+    off = float(np.nanmax(np.abs(p1 - level - p0)))
+    u = 2.0**-53 * (abs(level) + float(np.max(np.abs(base.y))))
+    return off / float(np.std(base.y)), off / u
+
+
+def test_kalman_moves_every_prediction_by_a_level_essential():
+    """K1, the representative cell: ten seeds, 6,000 rows. The diffuse
+    intercept takes the level on the first row and nothing reads the noise,
+    so every prediction moves by the level, to the rounding of a number of
+    its size: 64 ``u (|L| + max|y|)``, as the equivariance class holds the
+    models that absorb a level exactly. Measured 2026-10-25: at most 24.6 of
+    those units on these ten seeds, 22.8 over 50 seeds of 12,000 rows (1.4e-11
+    of the spread); before task 278's fix, 0.0307 of the spread at rows 3,000
+    to 6,000 (seed 25)."""
+    worst = max(_k1_level_deviation(seed, 6000, K1_LEVEL)[1] for seed in range(10))
+    print(f"kalman, level {K1_LEVEL:g}: at most {worst:.1f} units of u (|L| + max|y|)")
+    assert worst <= 64.0
+
+
+@pytest.mark.oracle_grid(reason="a grid of 50 seeds against a decayed least-squares oracle")
+def test_kalman_reaches_the_oracle_at_a_level_as_at_zero():
+    """K1 against the oracle: at the level and at 0 the worst seed's gap to
+    EW least squares at the drift's half-life is the same at every cut to
+    3e-13 of the level -- the level costs nothing at any row -- and every
+    prediction moves by the level (above). Without decay, at the
+    registration's level of 1e6, the worst seed's gap to least squares falls
+    as 1/n, its prior fading: measured 2026-10-25, 0.0343 at 500 rows to
+    0.00051 at 32,000 (seed 3), rate -1.01, the same as at level 0; before
+    task 278's fix 0.402 at 8,000 (seed 40)."""
+    cuts = [1000, 2000, 4000, 8000, 12000]
+    spec = po.spec.kalman("m", **K1_SPEC)
+    gaps: dict[float, dict[int, dict[int, float]]] = {
+        L: {c: {} for c in cuts} for L in (0.0, K1_LEVEL)
+    }
+    worst_units = 0.0
+    for seed in range(SEEDS):
+        for level in gaps:
+            s = cv.linear(cuts[-1], seed, level=level)
+            path = cv.fit(spec, s.frame, cuts)
+            for c in cuts:
+                gaps[level][c][seed] = cv.gap(
+                    path[c], cv.oracle_at(cv.REGISTRY["kalman"], s, c, 200.0)
+                )
+        worst_units = max(worst_units, _k1_level_deviation(seed, cuts[-1], K1_LEVEL)[1])
+    print(f"  every prediction within {worst_units:.1f} units of u (|L| + max|y|) of level 0's")
+    assert worst_units <= 64.0
+    for c in cuts:
+        at, base = cv.tail(gaps[K1_LEVEL][c]), cv.tail(gaps[0.0][c])
+        print(f"  {c} rows: level {K1_LEVEL:g} {at}; level 0 {base}")
+        assert abs(at.worst - base.worst) <= 3e-13 * K1_LEVEL
+    reg = cv.REGISTRY["kalman"]
+    by_cut: dict[int, dict[int, float]] = {c: {} for c in CUTS}
+    for seed in range(SEEDS):
+        s = reg.stream(CUTS[-1], seed, level=reg.level)
+        path = cv.fit(reg.build(cv.INF), s.frame, CUTS)
+        for c in CUTS:
+            by_cut[c][seed] = cv.gap(path[c], cv.oracle_at(reg, s, c, cv.INF))
+    worst = [cv.tail(by_cut[c]).worst for c in CUTS]
+    r = cv.rate(CUTS, worst)
+    print(f"  no decay, level {reg.level:g}: worst {worst}, rate {r:.2f}")
+    assert worst[-1] <= CONSISTENCY["kalman"][0]
+    assert r <= CONSISTENCY["kalman"][1]
+
+
 # ---------------------------------------------------------------------------
 # Class 5: re-convergence after a break.
 
@@ -720,9 +814,12 @@ REBREAK: dict[str, dict[str, tuple[float, float]]] = {
     "rls": _exact(1e-11),
     "lasso": _exact(1e-9),
     # Drift at coef_half_life = 200 matches EW least squares' gain in steady
-    # state only. Measured 0.0206 at 6, 0.0196 at 8, 0.0474 and 0.0246 at 12.
+    # state only. Measured 0.0221 at 4 (0.0122 at 6), 0.021 at 8, 0.0472 and
+    # 0.0274 at 12. A level break is followed faster than before task 278,
+    # whose noise estimate the break inflated and the gain read: 0.241 at 4
+    # half-lives then, 0.0206 at 6.
     "kalman": {
-        "level": (6, 0.04),
+        "level": (4, 0.035),
         "slope": (8, 0.03),
         "variance": (12, 0.075),
         "regime": (12, 0.04),

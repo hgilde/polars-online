@@ -281,6 +281,7 @@ fn lasso_cfg() -> LassoCfg {
 
 fn kalman_cfg() -> KalmanCfg {
     KalmanCfg {
+        noise_units: false,
         n_features: K,
         n_targets: 2,
         fit_intercept: true,
