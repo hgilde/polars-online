@@ -3788,8 +3788,8 @@ for group in (None, "g"):
 ```text
 one group, after    10,000 rows: state 10 KB
 one group, after 1,000,000 rows: state 10 KB
-64 groups, after    10,000 rows: state 581 KB
-64 groups, after 1,000,000 rows: state 583 KB
+64 groups, after    10,000 rows: state 582 KB
+64 groups, after 1,000,000 rows: state 584 KB
 ```
 
 **For a statistic per group over a long stream, use a spec's `group=`,

@@ -490,6 +490,74 @@ fn autocorr_run(bytes: &[u8], input: &DataFrame) -> Ran {
     Ok((again, vec![("fit_predict".into(), out)]))
 }
 
+/// The spec of the fourth bank file, `bank_reset`: `rls` under
+/// `drift_action = "reset"`, whose prior a step on the row after a reset
+/// would decay (docs/PLAN.md tasks 278 and 277).
+fn reset_specs() -> Vec<Spec> {
+    [
+        r#"{"name": "reset", "model": {"type": "rls"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "gap_cap": 10.0, "half_life": 100.0, "min_weight": 10.0, "emit_drift": true, "drift_threshold": 20.0, "drift_action": "reset"}"#,
+    ]
+    .iter()
+    .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))
+    .collect()
+}
+
+/// Rows of `bank_reset`'s stream: at its middle both slopes flip and the
+/// level moves by 6 against noise of 0.1, which fires the detector.
+const RESET_N: usize = 300;
+
+fn reset_frame() -> DataFrame {
+    let mut r = lcg(7);
+    let (mut t, mut x0, mut x1, mut y) = (vec![], vec![], vec![], vec![]);
+    let mut clock = 0.0;
+    for i in 0..RESET_N {
+        clock += 1.0 + 0.5 * r();
+        let (a, b) = (r(), r());
+        let (sign, level) = if i < RESET_N / 2 {
+            (1.0, 0.3)
+        } else {
+            (-1.0, 6.3)
+        };
+        t.push(clock);
+        x0.push(a);
+        x1.push(b);
+        y.push(level + sign * (2.0 * a - 1.5 * b) + 0.1 * r());
+    }
+    df!("t" => t, "x0" => x0, "x1" => x1, "y" => y).unwrap()
+}
+
+/// Saved on the row that fired: the rebuilt model has learned no row, and
+/// the instance's restart mark is set, so the continuation's first row
+/// reads a step of 0 from the state (schema 64, `Persisted::restarted`).
+fn reset_first() -> (Vec<u8>, DataFrame) {
+    let df = reset_frame();
+    let mut probe = Bank::new(reset_specs()).unwrap();
+    let cols = probe.fit_predict(&df).unwrap();
+    let out = DataFrame::new(df.height(), cols).unwrap();
+    let drift = out
+        .column("reset")
+        .unwrap()
+        .struct_()
+        .unwrap()
+        .field_by_name("drift_y")
+        .unwrap();
+    let fired = (0..df.height())
+        .find(|&i| drift.bool().unwrap().get(i) == Some(true))
+        .expect("the detector fires");
+    assert!(fired + 20 < RESET_N, "rows after the reset to continue on");
+    let mut bank = Bank::new(reset_specs()).unwrap();
+    bank.fit_predict(&df.slice(0, fired + 1)).unwrap();
+    (bank.save_bytes().unwrap(), df.slice((fired + 1) as i64, 20))
+}
+
+fn reset_run(bytes: &[u8], input: &DataFrame) -> Ran {
+    let mut bank = Bank::load_bytes(bytes, Some(&reset_specs()))?;
+    let again = bank.save_bytes()?;
+    let cols = bank.fit_predict(input).map_err(|e| e.to_string())?;
+    let out = DataFrame::new(input.height(), cols).map_err(|e| e.to_string())?;
+    Ok((again, vec![("fit_predict".into(), out)]))
+}
+
 fn windows_first_of(config: WindowsConfig, input: DataFrame) -> (Vec<u8>, DataFrame) {
     let mut run = WindowsRun::new(config, input.schema()).unwrap();
     run.feed(&input.slice(0, SPLIT), None).unwrap();
@@ -576,6 +644,11 @@ fn kinds() -> Vec<Kind> {
             name: "bank_autocorr",
             first: autocorr_first,
             run: autocorr_run,
+        },
+        Kind {
+            name: "bank_reset",
+            first: reset_first,
+            run: reset_run,
         },
         Kind {
             name: "with_windows",
@@ -982,6 +1055,11 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
         }),
         ("bank", "pca_prev_by_group", |p, _| {
             p.starts_with(".pca_prev_by_group.")
+        }),
+        // Schema 64 (docs/PLAN.md task 277): an instance restarted by a
+        // drift reset and not yet past its next row.
+        ("bank_reset", "a restart mark", |p, v| {
+            p.contains(".restarted.") && v.as_bool() == Some(true)
         }),
         ("with_windows_int", "OffForm::Int", |p, v| {
             p.ends_with(".form") && v.as_str() == Some("Int")
