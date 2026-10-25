@@ -3616,11 +3616,15 @@ def kmeans(
            * - ``init``
              - the centres
            * - ``"lloyd"`` (the default)
-             - the best, by inertia, of ten k-means++ starts, each followed by
-               ten weighted Lloyd iterations over the buffer: once per group,
-               93 ms at 400 features and 8 centres (k-means++ 0.2 ms)
+             - the best, by inertia, of ten ``"k-means++"`` starts, each
+               followed by weighted Lloyd passes over the buffer until no row
+               changes centre: once per group, 56 to 91 ms at 400 features
+               and 8 centres (``"k-means++"`` 3.6 ms)
            * - ``"k-means++"``
-             - k-means++
+             - greedy k-means++, scikit-learn's: each centre after the first
+               is the best of ``2 + floor(ln n_clusters)`` rows drawn by their
+               squared distance from the centres so far, the one that leaves
+               the least inertia
            * - ``"farthest"``
              - Gonzalez, from the first row
            * - ``"first"``
@@ -3628,9 +3632,12 @@ def kmeans(
 
         ``seed`` (default 0) drives the two random rules; the same seed gives
         the same centres. ``None`` is 0, so a run draws the same centres
-        every time. Under ``"first"``, seeding waits past ``warm_rows``
-        if it must for ``n_clusters`` distinct rows, holding up to
-        ``max(warm_rows, 1000)`` rows. The buffer is replayed into the centres
+        every time. A ``"lloyd"`` start that is still moving rows after 300
+        passes stops there and is counted in
+        :meth:`polars_online.ModelBank.solve_failures`; the starts measured
+        on 500 rows needed at most 54. Under ``"first"``, seeding waits past
+        ``warm_rows`` if it must for ``n_clusters`` distinct rows, holding up
+        to ``max(warm_rows, 1000)`` rows. The buffer is replayed into the centres
         and freed, so the model is O(state) again from that row on. Outputs are
         null until seeding and until ``weight_sum`` reaches ``min_weight``.
     ``update_every_rows``
@@ -3717,7 +3724,7 @@ def kmeans(
             "km", features=["x0", "x1", "x2"], clock="t", half_life=2000.0, gap_cap=300.0,
             n_clusters=3,
             warm_rows=100,           # seeding waits for this many rows, then replays them
-            init="lloyd",       # ten k-means++ starts, each refined by Lloyd iterations
+            init="lloyd",       # ten k-means++ starts, each refined by Lloyd's passes
             split_merge=0.5,         # two centres in one blob: one moves to the far rows
             dead_frac=0.05,         # a centre whose blob vanished is re-placed 4.3 half-lives later
         )

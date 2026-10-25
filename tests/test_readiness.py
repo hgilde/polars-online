@@ -358,10 +358,20 @@ def test_every_kind_settles_by_the_formula_and_withholds_until_it(name):
         ("ew_cov", {"min_weight": 0.0, "window_size": 5.0}, [("below_min_weight", 3)]),
         ("kmeans", {}, [("below_min_weight", 4), ("below_warm_rows", 236)]),
         ("kmeans", {"warm_rows": 20}, [("below_min_weight", 4), ("below_warm_rows", 16)]),
-        ("hmm", {}, [("below_warm_rows", 50)]),
+        ("hmm", {}, [("below_warm_rows", 240)]),
+        ("hmm", {"warm_rows": 50}, [("below_warm_rows", 50)]),
         ("bocpd", {}, [("below_min_weight", 1), ("below_warm_rows", 3)]),
     ],
-    ids=["ew_cov 0", "ew_cov 1", "ew_cov window", "kmeans", "kmeans 20", "hmm", "bocpd"],
+    ids=[
+        "ew_cov 0",
+        "ew_cov 1",
+        "ew_cov window",
+        "kmeans",
+        "kmeans 20",
+        "hmm",
+        "hmm 50",
+        "bocpd",
+    ],
 )
 def test_a_models_own_floor_and_warm_up_say_why(name, extra, want):
     """Every row a model holds back names why. ``ew_cov``'s floor of 2 (a
@@ -371,8 +381,9 @@ def test_a_models_own_floor_and_warm_up_say_why(name, extra, want):
     seed their centres, states or prior from read ``below_warm_rows``: a
     count of learned rows, which a decayed weight can sit above for every
     row of it -- ``kmeans``' default buffer of 500 at a half-life of 10, whose
-    weight tops out near 15 against a ``min_weight`` of 3. Each null row says
-    why, and no other row does."""
+    weight tops out near 15 against a ``min_weight`` of 3. ``hmm``'s default
+    of 1,000 holds every one of the 240 rows. Each null row says why, and no
+    other row does."""
     kw: dict[str, object] = dict(targets=["y"], features=["x0", "x1"], half_life=10.0)
     # `bocpd` takes no half-life: its registry entry drops it.
     kw |= {k: v for k, v in MINIMAL[name].items() if k != "half_life" or v is None}

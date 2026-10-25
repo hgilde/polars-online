@@ -617,7 +617,7 @@
     model.transition = null
     model.transition_prior = 1.0
     model.tvtp = null
-    model.warm_rows = 50
+    model.warm_rows = 1000
     stream.breaks_half_life = 50.0
     stream.calibration_half_life = 200.0
     stream.feature_health_half_life = 50.0
