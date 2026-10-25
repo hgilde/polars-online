@@ -7,8 +7,9 @@
 > that does not fit in RAM.
 
 Python 3.12+, `polars>=1.37.0,<3`. `pip install polars-online`. `numpy` is an optional
-extra, needed only by `ModelBank.gram()` and by `po.gram`, `po.corr` and `po.sim`.
-No pandas.
+extra, needed only by `ModelBank.gram()`, by `po.gram`, `po.corr`, `po.sim` and
+`po.gbdt`, and by `bank.check()`'s collinearity and leakage checks, which report
+`not_checked` without it. No pandas.
 
 The two Python surfaces, in full:
 
@@ -58,7 +59,7 @@ bank.save("bank.state")
   `gap_cap`, `session` / `session_gap` and `restart_after_step_back` say what happens
   across a gap, a session boundary or a clock that goes backwards. A step back is
   refused unless `restart_after_step_back` is set and the step is larger, which starts
-  the model over; a smaller one is a late row, refused.
+  the model over; one no larger is a late row, refused.
 - **A `clock` needs a `gap_cap`.** A spec that names a clock and no cap is refused:
   "gap_cap is required when clock is given". The cap is the most one step between two
   rows can age the state, in the clock's units, so a gap such as a weekend does not
@@ -162,7 +163,8 @@ Windows alike.
 - [Wide fits from Grams](https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md):
   one pass leaves a Gram per week; `po.gram` pools weeks, with or without their weekly
   levels, fits a ridge with its t, walks the lasso path, selects features over halves of
-  the weeks against a null by sign flips, and reads compact exports -- each with its
+  the weeks against a null by sign flips, reads compact exports, and fits a Huber
+  regression on one shared Gram (algorithm H, a Polars query each pass) -- each with its
   theory and a recipe that runs
 - [Performance](https://github.com/hgilde/polars-online/blob/main/docs/PERFORMANCE.md):
   where time and memory go, chunk size, thread count, every measurement
