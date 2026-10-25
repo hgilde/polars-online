@@ -9,7 +9,7 @@ order, another kernel), each declared with its size. Before 1.0, the minor
 version carried breaking changes, and any change to the numbers a model
 returns.
 
-## [Unreleased]
+## [1.3.0] — 2026-10-24
 
 ### Added
 
@@ -185,8 +185,9 @@ returns.
 - `corrchange`'s `monitor` statistic is computed from one pass of running
   sums per pair instead of two passes per prefix; it moves in its last
   bits, by about 1e-13 relative over 60,000-row streams (5.3e-14 at a
-  level of 1e4) and 5e-15 on the 400-row release probe (1 ulp on one
-  row), with no flag or change date different (task 270).
+  level of 1e4), and on the 400-row release probe by 1 to 4 ulp (at most
+  6.3e-16 relative) on 6 of the 8 values it emits, with no flag or change
+  date different (task 270).
 - Dependencies: rustls 0.23.46, rustls-webpki 0.103.16 and tokio 1.54.1,
   which fix published advisories; the dev group's pillow 13.0.0 and the
   docs group's certifi 2026.10.23 (task 270).
@@ -279,7 +280,6 @@ returns.
   scale costs 14-17 ns per target per row in `huber` and 20-32 in
   `sgd(loss="huber")`; IPC writes a struct at about the cost of flat
   columns; the suite's test counts are 2026-10-24's (task 270).
-
 - Documentation: the README's throughput table is measured again (five
   runs of `scripts/benchmark.py`, each row the best of the five, at a load
   average of 2.8-3.6); it had been a run three releases old, and 19 of its
@@ -342,6 +342,22 @@ returns.
   changes.
 
 ### Performance
+
+- **1.3.0 against 1.2.0, measured before the release**: on an Apple M4 Pro
+  at a load of 1.8 to 4.5, 1.2.0's wheel from PyPI, 1.2.0 built here from
+  its tag and this build, five interleaved rounds of `scripts/benchmark.py`
+  at 200,000 rows: `corrchange`'s monitor 10.3 times as fast and its window
+  kind 2.4 times, `deco` 24-34% faster, `audit` 25%, `kmeans` 18-19%,
+  `seqtest` 11%, `pa` and the raw `sgd` 6-8%, and `huber` 6% slower, the
+  robust scale's cost (`huber_scale="rms"` is 1.2.0's row). The cheapest
+  rows read 2 to 5% slower: `marginal` 5%, `holt` and `ew_cov` with lags 4%,
+  `ew_class` diagonal and `micro` 2%. For all but `ew_cov`'s lags, a
+  bisection over the commits between the two puts it at the clock's refusal
+  of a step that is not a number, about 3 ns a row. That cost is in wall
+  time alone: a float clock's row counts 103 instructions on Linux x86-64
+  against 1.2.0's 112. `scripts/wide_benchmark.py`'s `ewridge` at 200 to
+  1,000 features is within 1.5% of 1.2.0 built here on every schedule, and
+  `lasso` runs 14-21% faster there (task 275).
 
 - **A bank of many small groups runs faster** (task 270): each spec keeps
   its run buffers between chunks, each stream builds its diagnostics'

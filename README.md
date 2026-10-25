@@ -3398,8 +3398,8 @@ these conditions:
 | | |
 |---|---|
 | machine | an Apple M4 Pro, one process |
-| runs | five runs of `uv run python scripts/benchmark.py --markdown`, each the best of 3 over 200k rows, and the best of the five for each row; measured on 2026-10-24 at commit `6e9570d`, beside a load average of 2.8 to 3.6 ([PERFORMANCE §44](docs/PERFORMANCE.md#44-the-readmes-numbers-re-measured-2026-10-24)) |
-| noise | the five runs of a row lay within 6% of one another, and on busier days a run has moved by up to 11% from the last on this machine, so read a gap smaller than that as noise |
+| runs | five runs of `uv run python scripts/benchmark.py --markdown`, each the best of 3 over 200k rows, and the best of the five for each row; measured on 2026-10-24 at commit `e40faaf`, 1.3.0's build, beside a load average of 1.8 to 4.1 ([PERFORMANCE §45](docs/PERFORMANCE.md#45-130-against-120-2026-10-24)) |
+| noise | the five runs of a row lay within 5.3% of one another, and on busier days a run has moved by up to 11% from the last on this machine, so read a gap smaller than that as noise |
 | half-life | 1,000, in every row that gives none of its own |
 | `k`, `K` | the number of features; the number of clusters or hidden states |
 
@@ -3407,31 +3407,31 @@ The [linear models](docs/MODELS.md#linear-models):
 
 | model | settings | rows/sec | what sets its speed |
 |---|---|---:|---|
-| `ewridge` | k=5, 1 target, 1 half-life | 5,308,531 | |
-| `ewridge` | k=20, 1 target, 1 half-life | 3,170,104 | |
-| `ewridge` | k=50, 1 target, 1 half-life | 1,006,740 | |
-| `ewridge` | k=20, 10 targets | 1,606,239 | one set of feature sums for every target (below) |
-| `ewridge` | k=20, 5 half-lives, 500 to 2,500 | 1,792,804 | one set of sums per half-life, run in parallel (below) |
-| `ewridge` + `conformal` | k=20, 90% interval | 3,090,637 | nothing measurable: the interval reads the residual the model already has |
-| `rls` | k=20, 1 target | 1,754,311 | its square-root form, at 55% of `ewridge`'s speed: the form is what keeps one extreme row from destroying it by cancellation |
-| `kalman` | k=20, 1 target | 1,810,799 | |
-| `kalman` | k=20, `revert_half_life` | 1,553,487 | |
-| `lasso` | k=20, 1 target (3-point path) | 1,756,243 | |
-| `huber` | k=20, 1 target | 3,249,208 | |
-| `quantile` | k=20, the median | 1,637,164 | |
-| `sgd` | k=20, squared loss, `standardize=False` | 8,380,020 | the raw step; the default, `standardize=True`, scales each feature on the row first |
-| `sgd` | k=20, `coef_min=0`, `coef_sum=1`, `standardize=False` | 2,495,205 | a simplex constraint sorts `2k` breakpoints per row, which makes `sgd` 3.4 times slower |
-| `pa` | k=20, `standardize=False` | 8,653,217 | the raw step, as for `sgd` |
-| `ftrl` | k=20, 1 target | 5,027,531 | |
-| `holt` | level and trend of one column | 11,467,096 | |
+| `ewridge` | k=5, 1 target, 1 half-life | 5,133,113 | |
+| `ewridge` | k=20, 1 target, 1 half-life | 3,071,302 | |
+| `ewridge` | k=50, 1 target, 1 half-life | 986,569 | |
+| `ewridge` | k=20, 10 targets | 1,559,650 | one set of feature sums for every target (below) |
+| `ewridge` | k=20, 5 half-lives, 500 to 2,500 | 1,754,276 | one set of sums per half-life, run in parallel (below) |
+| `ewridge` + `conformal` | k=20, 90% interval | 3,022,078 | nothing measurable: the interval reads the residual the model already has |
+| `rls` | k=20, 1 target | 1,662,189 | its square-root form, at 54% of `ewridge`'s speed: the form is what keeps one extreme row from destroying it by cancellation |
+| `kalman` | k=20, 1 target | 1,783,236 | |
+| `kalman` | k=20, `revert_half_life` | 1,559,577 | |
+| `lasso` | k=20, 1 target (3-point path) | 1,710,651 | |
+| `huber` | k=20, 1 target | 3,125,934 | |
+| `quantile` | k=20, the median | 1,610,201 | |
+| `sgd` | k=20, squared loss, `standardize=False` | 8,305,792 | the raw step; the default, `standardize=True`, scales each feature on the row first |
+| `sgd` | k=20, `coef_min=0`, `coef_sum=1`, `standardize=False` | 2,384,867 | a simplex constraint sorts `2k` breakpoints per row, which makes `sgd` 3.5 times slower |
+| `pa` | k=20, `standardize=False` | 8,623,385 | the raw step, as for `sgd` |
+| `ftrl` | k=20, 1 target | 4,929,989 | |
+| `holt` | level and trend of one column | 11,372,090 | |
 
 **List several targets on the same features in one spec's `targets`, where
-they share one set of feature sums:** 10 targets take 1.97 times as long as
+they share one set of feature sums:** 10 targets take 1.98 times as long as
 one.
 
 **A grid of half-lives keeps one set of sums per half-life, and runs them
 in parallel.** So the grid of five takes 1.41 times as long as its shortest
-half-life, 500, which runs alone at 2,531,679 rows a second. That is slower
+half-life, 500, which runs alone at 2,467,955 rows a second. That is slower
 than at the half-life of 1,000 that every other row here uses, because a
 shorter half-life solves more often.
 
@@ -3439,37 +3439,37 @@ The models of [moments and correlation](docs/MODELS.md#moments-and-correlation):
 
 | model | settings | rows/sec | what sets its speed |
 |---|---|---:|---|
-| `ew_cov` | k=20: mean, std, corr (230 statistics) | 2,087,094 | |
-| `ew_cov` | k=20: mean, mahal, `mahal_q0.99` | 799,744 | the Mahalanobis distance factors a `k × k` matrix by Cholesky once per row |
-| `ew_cov` | k=20: mean, cov, lags 1–5 | 1,378,347 | |
-| `marginal` | 20 features against one target | 10,442,705 | `O(k)` pairs a row, and each row writes only `weight_sum`: the pairs are read from the state after the run |
-| `deco` | k=20, one equicorrelation | 2,991,724 | one number for the whole matrix of its `m` series, computed in `O(m)` a row with no `m × m` matrix to factor |
-| `deco` | k=20 in 4 blocks | 2,217,056 | |
-| `rcov` | 4 features, kernel, blocks of 1000 | 3,909,091 | it accumulates per row and computes its kernel only when the block closes |
-| `audit` | 20 columns, 256 counters each | 960,082 | each row updates every column's counts and measures, and writes only `weight_sum` |
+| `ew_cov` | k=20: mean, std, corr (230 statistics) | 2,087,054 | |
+| `ew_cov` | k=20: mean, mahal, `mahal_q0.99` | 777,544 | the Mahalanobis distance factors a `k × k` matrix by Cholesky once per row |
+| `ew_cov` | k=20: mean, cov, lags 1–5 | 1,355,858 | |
+| `marginal` | 20 features against one target | 10,285,531 | `O(k)` pairs a row, and each row writes only `weight_sum`: the pairs are read from the state after the run |
+| `deco` | k=20, one equicorrelation | 2,866,669 | one number for the whole matrix of its `m` series, computed in `O(m)` a row with no `m × m` matrix to factor |
+| `deco` | k=20 in 4 blocks | 2,129,160 | |
+| `rcov` | 4 features, kernel, blocks of 1000 | 3,836,477 | it accumulates per row and computes its kernel only when the block closes |
+| `audit` | 20 columns, 256 counters each | 926,429 | each row updates every column's counts and measures, and writes only `weight_sum` |
 
 The models of [clustering and classification](docs/MODELS.md#clustering-and-classification):
 
 | model | settings | rows/sec | what sets its speed |
 |---|---|---:|---|
-| `ew_class` | k=20, 3 classes, full covariance | 511,732 | a `k × k` matrix factored by Cholesky once per *learned* row |
-| `ew_class` | k=20, 3 classes, tied covariance | 602,587 | |
-| `ew_class` | k=20, 3 classes, diagonal | 2,461,667 | |
-| `kmeans` | 4 features, K=8 | 5,537,903 | a distance to each centre |
-| `kmeans` | k=20, K=8 | 3,397,876 | a distance to each centre |
-| `micro` | 4 features, `eps=1` | 7,384,104 | a distance to each centre |
+| `ew_class` | k=20, 3 classes, full covariance | 500,971 | a `k × k` matrix factored by Cholesky once per *learned* row |
+| `ew_class` | k=20, 3 classes, tied covariance | 580,926 | |
+| `ew_class` | k=20, 3 classes, diagonal | 2,372,706 | |
+| `kmeans` | 4 features, K=8 | 5,460,571 | a distance to each centre |
+| `kmeans` | k=20, K=8 | 3,291,572 | a distance to each centre |
+| `micro` | 4 features, `eps=1` | 7,306,948 | a distance to each centre |
 
 The [sequential tests and regimes](docs/MODELS.md#sequential-tests-and-regimes):
 
 | model | settings | rows/sec | what sets its speed |
 |---|---|---:|---|
-| `seqtest` | sign of one column | 14,870,257 | a handful of operations |
-| `corrchange` | 4 features, monitor, `window_rows=500` | 4,962,636 | |
-| `corrchange` | 4 features, window 100, permute every 500 | 449,380 | its permutation null (below) |
-| `bocpd` | 4 features, diagonal, `max_run=200` | 696,801 | the number of runs it keeps (below) |
-| `bocpd` | 4 features, full covariance, `max_run=200` | 736,270 | the number of runs it keeps (below) |
-| `hmm` | 4 features, K=2 | 1,448,084 | a `k × k` covariance factorized per state per row, which is `ew_class`'s work with the classes hidden |
-| `hmm` | k=20, K=2 | 381,254 | |
+| `seqtest` | sign of one column | 14,896,654 | a handful of operations |
+| `corrchange` | 4 features, monitor, `window_rows=500` | 4,804,276 | |
+| `corrchange` | 4 features, window 100, permute every 500 | 447,334 | its permutation null (below) |
+| `bocpd` | 4 features, diagonal, `max_run=200` | 679,794 | the number of runs it keeps (below) |
+| `bocpd` | 4 features, full covariance, `max_run=200` | 720,351 | the number of runs it keeps (below) |
+| `hmm` | 4 features, K=2 | 1,401,701 | a `k × k` covariance factorized per state per row, which is `ew_class`'s work with the classes hidden |
+| `hmm` | k=20, K=2 | 369,439 | |
 
 **`corrchange`'s window kind runs at a tenth of its monitor kind's speed,
 because its permutation null redraws `n_perm` statistics every
@@ -4191,7 +4191,7 @@ A minor release adds models, parameters, outputs and functions, and breaks
 nothing stable. It can also correct numbers that were wrong, or move last
 bits when a sum is taken in another order, each declared with its size, so
 pin the minor as well if your numbers must not move.
-`polars-online~=1.2.0` pins the current minor: it takes that minor's patch
+`polars-online~=1.3.0` pins the current minor: it takes that minor's patch
 releases and stops before the next minor. The package follows semantic versioning
 ([CHANGELOG.md](CHANGELOG.md)).
 

@@ -1263,3 +1263,21 @@ changelog = "The peak-memory (RSS) budgets are recorded, at a 30% tolerance"
 # key = "instructions.bocpd"
 # version = "1.1.0"
 # reason = "why a release may carry this drift"
+
+[[signoff]]
+key = "instructions.clock_temporal"
+version = "1.3.0"
+reason = "-44.7% since 1.2.0 (394,029 -> 218,029), a gain: the not-a-number check takes the clock's difference once, and a temporal clock's step forward within its session takes a short cut held to the general step to the bit"
+changelog = "A clock's row costs less"
+
+[[signoff]]
+key = "instructions.seqtest"
+version = "1.3.0"
+reason = "-30.1% since 1.2.0 (620,971 -> 433,958), a gain: the step writes into a Step the bank keeps (OnlineModel::step_into) instead of allocating its prediction vector each row; the case now counts that kept step"
+changelog = "The model's step no longer allocates its prediction vector"
+
+[[signoff]]
+key = "instructions.kmeans"
+version = "1.3.0"
+reason = "-25.4% since 1.2.0 (4,299,477 -> 3,205,518), a gain: a learned row's nearest centre is searched once instead of twice, and the step writes into a kept Step instead of allocating its prediction vector; the case now counts that kept step"
+changelog = "`kmeans` searches for a learned row's nearest centre once instead of twice"
