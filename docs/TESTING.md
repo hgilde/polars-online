@@ -5,7 +5,7 @@ suite and wants the evidence: what each part proves, what it has found, and
 where it is thin. Its emphasis is on edge cases, and on comparing behaviour
 against reference implementations, including [river](https://riverml.xyz).
 
-**The suite has 2,649 Rust tests and 7,209 pytest cases, counted on
+**The suite has 2,650 Rust tests and 7,210 pytest cases, counted on
 2026-10-24.** The Rust count is the lines ending in `: test` that
 `cargo test --workspace --exclude online-py -- --list` prints, the
 extended tests and the doctests included; the pytest count is what
@@ -25,7 +25,7 @@ from 2026-09-27 ([Measured coverage](#measured-coverage)).
 | 2026-09-25 | 976 | 3,265 cases |
 | 2026-10-03 | 1,215 | 3,840 cases |
 | 2026-10-11 | 2,207 | 6,262 cases |
-| 2026-10-24 | 2,649 | 7,209 cases |
+| 2026-10-24 | 2,650 | 7,210 cases |
 
 The 2 opt-in soak tests are outside every count. They run with
 `pytest -m soak`, and the weekly leak-check workflow runs them. The counts
@@ -1007,6 +1007,12 @@ still passes. The helpers are the standard results from Higham's
 | `dot_error`, `running_dot` | the most a dot product's rounding can move it: a priori from the terms, or read off the run from its partial sums, which is smaller where the terms cancel |
 | `condition` | the 2-norm condition number of a symmetric positive definite matrix, each eigenvalue moved by its own error bound the way that makes it larger |
 | `forward_bound(κ, η)` | a backward-stable solve's normwise forward error, `2κη / (1 − κη)` |
+
+**A bound is a bound as computed.** Each helper rounds its result up, by
+`up(m) = 1 + γ_{m+4}` for a bound evaluated in `m` roundings, so it is no
+smaller than the exact bound. On a CPU without FMA, a 3 × 3 Hilbert solve
+made an error equal to its bound in exact arithmetic, and the bound
+evaluated in floating point came out 14 units of `u` below it.
 
 Each test states which helpers it uses and how it counts its terms, with
 the headroom it measured in a comment. About 32 comparisons sit at 0.01 to

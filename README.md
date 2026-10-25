@@ -253,7 +253,7 @@ These hold for every spec, however a bank is run:
 | **one `weight_sum`** | `weight_sum` means the same in every model, so one `min_weight` means the same for every spec in a bank ([Warm-up](#warm-up)) |
 | **a clock policy** | a spec with a clock caps each step at `gap_cap`, and applies `session_gap` at a session boundary. A step back the model would learn from is refused, naming the row, unless `restart_after_step_back` makes it a restart ([Sessions, gaps and steps back](#sessions-gaps-and-steps-back)) |
 | **named mistakes** | every keyword is checked against its type when the spec is built, and a missing column is reported, with the spec that wanted it and the role it had there, before the bank learns any row |
-| **tested** | 2,649 Rust tests and 7,209 Python cases (counted on 2026-10-24), held to independent libraries such as scikit-learn, statsmodels and river and to adversarial streams, run on macOS, Windows and Linux at every push ([Testing](#testing)) |
+| **tested** | 2,650 Rust tests and 7,210 Python cases (counted on 2026-10-24), held to independent libraries such as scikit-learn, statsmodels and river and to adversarial streams, run on macOS, Windows and Linux at every push ([Testing](#testing)) |
 
 ### Install
 
@@ -4351,7 +4351,7 @@ values at ±1e8, zero weights and tiny groups:
 | zero weights and one `weight_sum` | every model held to the same `weight_sum` recursion (`crates/online-core/tests/model_contract.rs`) |
 | each model's numbers | a reference written from its update equations, and another library wherever one computes the same quantity, such as statsmodels, scipy and [river](https://riverml.xyz) |
 
-The suite has 2,649 Rust tests and 7,209 pytest cases, counted on
+The suite has 2,650 Rust tests and 7,210 pytest cases, counted on
 2026-10-24. It runs on Linux at Python 3.12, 3.13 and 3.14, and on macOS
 and two Windows builds (Server 2025 and Server 2022) at 3.12 and 3.14, at
 every push to `main` and every pull request. Windows runs twice because
