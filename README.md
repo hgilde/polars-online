@@ -3315,7 +3315,7 @@ a switch at row 1000: 50 rows later, bocpd dates the regime to row 1000
 a switch at row 1500: 50 rows later, bocpd dates the regime to row 1501
 a switch at row 2000: 50 rows later, bocpd dates the regime to row 1998
 a switch at row 2500: 50 rows later, bocpd dates the regime to row 2501
-hmm puts 94% of the rows after seeding in their true regime
+hmm puts 93% of the rows after seeding in their true regime
 ```
 
 **Read a regime's age from `bocpd`'s `run_mode`.** Fifty rows after each
@@ -3327,7 +3327,7 @@ enough on its own.
 **Tell `hmm` that regimes last.** One return says little about which regime
 it came from. A sticky `transition` matrix, counted by `transition_prior`
 as 500 rows, lets the filter weigh each row against what the rows before
-it said. Without those two arguments, the filter puts 59% of the rows in
+it said. Without those two arguments, the filter puts 58% of the rows in
 their true regime.
 
 ## Performance

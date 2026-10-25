@@ -61,8 +61,8 @@
 //! there are. What the rule cannot see is a cluster that owns two blobs:
 //! its rows are all within its own radius, and their far mean, when any
 //! are far, is its own centre. Seeding with `lloyd` (the best of
-//! [`LLOYD_RESTARTS`] k-means++ starts by inertia) is what keeps that from
-//! happening.
+//! [`LLOYD_RESTARTS`] greedy k-means++ starts, each run to its fixed point,
+//! by inertia) is what keeps that from happening.
 //!
 //! Seeding applies the same far rule to the buffer as a whole: rows whose
 //! squared distance to the EW mean exceeds `f` times the buffer's mean
@@ -100,15 +100,18 @@ pub enum SeedRule {
     First,
     /// Gonzalez' farthest-first traversal from the first row.
     Farthest,
-    /// k-means++ (Arthur & Vassilvitskii 2007), weighted by the buffered
-    /// row weights, from a `splitmix64` stream keyed by `seed`.
+    /// Greedy k-means++ (Arthur & Vassilvitskii 2007, [`kmeanspp`]),
+    /// weighted by the buffered row weights, from a `splitmix64` stream
+    /// keyed by `seed`.
     Kmeanspp,
-    /// The best of [`LLOYD_RESTARTS`] runs of k-means++ followed by
-    /// [`LLOYD_ITERS`] weighted Lloyd iterations on the buffer, by the
-    /// weighted sum of squared distances over the buffer (first minimum
-    /// wins). One run lands in a split-one-blob, merge-two local optimum
-    /// a third of the time on five blobs in four dimensions; its cost is
-    /// ~1.8x the right partition's, so the restarts tell them apart.
+    /// The best of [`LLOYD_RESTARTS`] runs of greedy k-means++ followed by
+    /// weighted Lloyd iterations on the buffer to a fixed point (at most
+    /// [`LLOYD_MAX_ITERS`] passes; a run stopped there is counted in
+    /// `solve_failures`), by the weighted sum of squared distances over the
+    /// buffer (first minimum wins). One run lands in a split-one-blob,
+    /// merge-two local optimum in 9 of 100 seeds on five blobs in four
+    /// dimensions (28 of 100 from plain k-means++); its cost is 1.87x the
+    /// right partition's, so the restarts tell them apart.
     #[default]
     Lloyd,
 }
@@ -171,8 +174,8 @@ impl KMeansCfg {
         if self.k > KMeans::MAX_K {
             return Err(format!(
                 "kmeans: n_clusters must be at most {} (2^16), got {}: every row is scored against every \
-                 centre, and the default seeding (`init = \"lloyd\"`) makes about 120 passes over the warm-up \
-                 buffer, each O(k · n_features) a buffered row",
+                 centre, and the default seeding (`init = \"lloyd\"`) runs Lloyd's passes over the warm-up \
+                 buffer from ten greedy k-means++ starts, each pass O(k · n_features) a buffered row",
                 KMeans::MAX_K,
                 self.k
             ));
@@ -315,6 +318,19 @@ pub struct KMeans {
     since_sm: u32,
     n_merges: u64,
     n_dead: u64,
+    /// The seeding's `lloyd` runs that stopped at [`LLOYD_MAX_ITERS`]
+    /// passes short of a fixed point. Last, and skipped when zero, so a
+    /// state that never hit the cap writes the bytes it always did and no
+    /// schema bump is owed (`bocpd`'s `solve_failures` keeps the same rule):
+    /// the compact encoding writes a struct as an array, where a skipped
+    /// field anywhere but the end would shift the fields after it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub solve_failures: u64,
+}
+
+/// Whether a count is zero: what `solve_failures` is left out of a state at.
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 impl KMeans {
@@ -367,6 +383,7 @@ impl KMeans {
             since_sm: 0,
             n_merges: 0,
             n_dead: 0,
+            solve_failures: 0,
             cfg,
         })
     }
@@ -749,6 +766,8 @@ impl KMeans {
         let kept: Vec<usize> = (0..self.buf.len())
             .filter(|&i| dist2(&self.moments.mean, &self.buf[i], &self.mw) <= cut)
             .collect();
+        // Every run that stopped at the cap is counted, a seeding of the
+        // rows within the cut whose centres coincide included: it ran.
         let mut seeds = None;
         if kept.len() >= k && kept.len() < self.buf.len() {
             let buf: Vec<Vec<f64>> = kept.iter().map(|&i| self.buf[i].clone()).collect();
@@ -762,10 +781,13 @@ impl KMeans {
                 allow_dup,
                 &self.mw,
             )
-            .filter(|c| distinct(c));
+            .and_then(|(c, hits)| {
+                self.solve_failures += hits;
+                distinct(&c).then_some(c)
+            });
         }
-        let seeds = seeds.or_else(|| {
-            seed_centres(
+        if seeds.is_none() {
+            seeds = seed_centres(
                 &self.buf,
                 &self.buf_w,
                 k,
@@ -774,7 +796,11 @@ impl KMeans {
                 allow_dup,
                 &self.mw,
             )
-        });
+            .map(|(c, hits)| {
+                self.solve_failures += hits;
+                c
+            });
+        }
         let Some(seeds) = seeds else {
             return;
         };
@@ -814,8 +840,10 @@ fn distinct(centres: &[Vec<f64>]) -> bool {
 }
 
 /// The seeding rules over a buffer of rows with weights `w`, under the
-/// metric `mw`. `None` only for `first` when fewer than `k` distinct rows
-/// exist and duplicates are not yet allowed.
+/// metric `mw`: the centres, and how many of the `lloyd` rule's runs stopped
+/// at [`LLOYD_MAX_ITERS`] without reaching a fixed point (0 under the other
+/// rules, which iterate nothing). `None` only for `first` when fewer than
+/// `k` distinct rows exist and duplicates are not yet allowed.
 pub(crate) fn seed_centres(
     buf: &[Vec<f64>],
     w: &[f64],
@@ -824,7 +852,7 @@ pub(crate) fn seed_centres(
     seed: u64,
     allow_dup: bool,
     mw: &[f64],
-) -> Option<Vec<Vec<f64>>> {
+) -> Option<(Vec<Vec<f64>>, u64)> {
     if buf.len() < k {
         return None;
     }
@@ -835,41 +863,68 @@ pub(crate) fn seed_centres(
                 if !out.iter().any(|c| c == z) {
                     out.push(z.clone());
                     if out.len() == k {
-                        return Some(out);
+                        return Some((out, 0));
                     }
                 }
             }
-            allow_dup.then(|| buf[..k].to_vec())
+            allow_dup.then(|| (buf[..k].to_vec(), 0))
         }
-        SeedRule::Farthest => Some(farthest(buf, k, mw)),
+        SeedRule::Farthest => Some((farthest(buf, k, mw), 0)),
         SeedRule::Kmeanspp => {
             let mut rng = SplitMix64::new(seed);
-            Some(kmeanspp(buf, w, k, mw, &mut rng))
+            Some((kmeanspp(buf, w, k, mw, &mut rng), 0))
         }
         SeedRule::Lloyd => {
             // One generator across the restarts, so the draws are one
             // stream keyed by `seed` and the reference can replay them.
             let mut rng = SplitMix64::new(seed);
+            let cap = lloyd_cap();
             let mut best: Option<(f64, Vec<Vec<f64>>)> = None;
+            let mut cap_hits = 0;
             for _ in 0..LLOYD_RESTARTS {
                 let init = kmeanspp(buf, w, k, mw, &mut rng);
-                let centres = lloyd(buf, w, init, mw, LLOYD_ITERS);
+                let (centres, converged) = lloyd(buf, w, init, mw, cap);
+                cap_hits += u64::from(!converged);
                 let cost = inertia(buf, w, &centres, mw);
                 if best.as_ref().is_none_or(|(c, _)| cost < *c) {
                     best = Some((cost, centres));
                 }
             }
-            best.map(|(_, c)| c)
+            best.map(|(_, c)| (c, cap_hits))
         }
     }
 }
 
-/// Lloyd iterations the `lloyd` rule runs on the buffer, per restart.
-pub(crate) const LLOYD_ITERS: usize = 10;
+/// The most assignment passes a `lloyd` run makes on the buffer before it
+/// stops short of a fixed point, which is then counted (scikit-learn's
+/// `max_iter`, 300). The runs on 500 rows measured here reach theirs well
+/// within it (2026-10-25): at most 54 passes, median 15, over ten runs on
+/// each of 50 seeds of eight overlapping blobs in two dimensions; at most
+/// 28 on the first 500 rows of Fränti's S- and A-sets, `k` from 15 to 50,
+/// in 50 orders each.
+pub(crate) const LLOYD_MAX_ITERS: usize = 300;
 
 /// k-means++ starts the `lloyd` rule tries, keeping the lowest
 /// [`inertia`].
 pub(crate) const LLOYD_RESTARTS: usize = 10;
+
+/// The cap a `lloyd` run is held to: [`LLOYD_MAX_ITERS`], which a test may
+/// lower on its own thread to make a run stop short.
+#[cfg(not(test))]
+fn lloyd_cap() -> usize {
+    LLOYD_MAX_ITERS
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The cap on this test thread ([`lloyd_cap`]).
+    pub(crate) static LLOYD_CAP: std::cell::Cell<usize> = const { std::cell::Cell::new(LLOYD_MAX_ITERS) };
+}
+
+#[cfg(test)]
+fn lloyd_cap() -> usize {
+    LLOYD_CAP.with(std::cell::Cell::get)
+}
 
 /// The weighted sum over the buffer of each row's squared distance to its
 /// nearest centre: the k-means objective the restarts are ranked by.
@@ -915,6 +970,23 @@ fn farthest(buf: &[Vec<f64>], k: usize, mw: &[f64]) -> Vec<Vec<f64>> {
     out
 }
 
+/// Candidates greedy k-means++ draws for each centre after the first:
+/// `2 + ⌊ln k⌋`, scikit-learn's number. Read from the powers of `e` rather
+/// than from `ln`, whose last bit is the platform's math library's: entry
+/// `m` is the least `k` with `ln k ≥ m + 1`, the ceiling of `e^(m + 1)`.
+fn local_trials(k: usize) -> usize {
+    const E_POWERS: [usize; 11] = [3, 8, 21, 55, 149, 404, 1097, 2981, 8104, 22027, 59875];
+    2 + E_POWERS.iter().take_while(|&&at| k >= at).count()
+}
+
+/// Greedy k-means++ (Arthur & Vassilvitskii 2007, the variant of their
+/// section 6, and scikit-learn's `init="k-means++"`): the first centre is a
+/// row drawn by weight; each later one is the best of
+/// [`local_trials`]`(k)` rows drawn with probability `w_i · D²_i`, `D_i` a
+/// row's distance to its nearest centre so far, by the potential `Σ w_i ·
+/// min(D²_i, ‖z_i − c‖²)` it leaves (first minimum wins). One candidate is
+/// plain k-means++, `O(log k)`-competitive in expectation; the greedy draw
+/// lands in fewer local minima for `log k` times the passes.
 fn kmeanspp(
     buf: &[Vec<f64>],
     w: &[f64],
@@ -926,37 +998,59 @@ fn kmeanspp(
     let mut out = vec![buf[idx0].clone()];
     let mut dd = vec![f64::INFINITY; buf.len()];
     shrink(&mut dd, buf, &buf[idx0], mw);
+    let trials = local_trials(k);
     let mut pr = vec![0.0; buf.len()];
+    let mut cand = vec![0.0; buf.len()];
+    let mut kept = vec![0.0; buf.len()];
     while out.len() < k {
         for i in 0..pr.len() {
             pr[i] = w[i] * dd[i];
         }
-        let idx = rng.choice(&pr);
+        let mut best: Option<(f64, usize)> = None;
+        for _ in 0..trials {
+            let idx = rng.choice(&pr);
+            let mut pot = 0.0;
+            for (i, z) in buf.iter().enumerate() {
+                let q = dist2(&buf[idx], z, mw);
+                cand[i] = if q < dd[i] { q } else { dd[i] };
+                pot += w[i] * cand[i];
+            }
+            if best.is_none_or(|(b, _)| pot < b) {
+                best = Some((pot, idx));
+                std::mem::swap(&mut cand, &mut kept);
+            }
+        }
+        let (_, idx) = best.expect("at least two trials");
         out.push(buf[idx].clone());
-        shrink(&mut dd, buf, &buf[idx], mw);
+        std::mem::swap(&mut dd, &mut kept);
     }
     out
 }
 
-/// Weighted Lloyd iterations: assign (first minimum wins), then each centre
-/// becomes the weighted mean of its rows, sums taken in row order; a centre
-/// with no weight stays put.
+/// Weighted Lloyd iterations to a fixed point: assign (first minimum wins),
+/// then each centre becomes the weighted mean of its rows, sums taken in row
+/// order; a centre with no weight stays put. A pass that assigns every row
+/// where the last did leaves the centres the means of their rows, which is
+/// the fixed point, and the run stops there: `(centres, true)`. After `cap`
+/// passes that each moved a row, `(centres, false)`.
 fn lloyd(
     buf: &[Vec<f64>],
     w: &[f64],
     mut centres: Vec<Vec<f64>>,
     mw: &[f64],
-    iters: usize,
-) -> Vec<Vec<f64>> {
+    cap: usize,
+) -> (Vec<Vec<f64>>, bool) {
     let k = centres.len();
     let p = mw.len();
     let mut sw = vec![0.0; k];
     let mut sx = vec![vec![0.0; p]; k];
-    for _ in 0..iters {
+    let mut assigned = vec![usize::MAX; buf.len()];
+    for _ in 0..cap {
         sw.iter_mut().for_each(|v| *v = 0.0);
         sx.iter_mut()
             .for_each(|s| s.iter_mut().for_each(|v| *v = 0.0));
-        for (z, &wi) in buf.iter().zip(w) {
+        let mut moved = false;
+        for ((z, &wi), a) in buf.iter().zip(w).zip(assigned.iter_mut()) {
             let mut best = 0;
             let mut best_d = f64::INFINITY;
             for (j, c) in centres.iter().enumerate() {
@@ -966,10 +1060,17 @@ fn lloyd(
                     best = j;
                 }
             }
+            if *a != best {
+                *a = best;
+                moved = true;
+            }
             sw[best] += wi;
             for (s, &zi) in sx[best].iter_mut().zip(z) {
                 *s += wi * zi;
             }
+        }
+        if !moved {
+            return (centres, true);
         }
         for j in 0..k {
             if sw[j] > 0.0 {
@@ -979,7 +1080,7 @@ fn lloyd(
             }
         }
     }
-    centres
+    (centres, false)
 }
 
 impl OnlineModel for KMeans {
@@ -3020,7 +3121,7 @@ mod tests {
             &[1.0, 1.0],
             1,
         );
-        assert_eq!(got, vec![vec![-0.5, 0.0], vec![1.0, 0.0]]);
+        assert_eq!(got, (vec![vec![-0.5, 0.0], vec![1.0, 0.0]], false));
         let got = lloyd(
             &buf,
             &w,
@@ -3028,7 +3129,169 @@ mod tests {
             &[1.0, 1.0],
             3,
         );
-        assert_eq!(got[1], vec![50.0, 50.0]);
+        assert_eq!(got.0[1], vec![50.0, 50.0]);
+        assert!(got.1, "the second pass assigns as the first did");
+    }
+
+    /// Ten rows on a line, two centres started at the left end: each pass
+    /// moves the boundary, so the run needs several passes to its fixed
+    /// point (task 278, D7). It stops at the first pass that assigns every
+    /// row where the last did, so a cap of that many passes reaches it. One
+    /// fewer has already moved the centres to it, but no pass has shown
+    /// that, so the run is counted as stopped short; two fewer stops with
+    /// the centres of the pass before. The fixed point is one: another
+    /// pass, from it, moves nothing.
+    #[test]
+    fn lloyd_runs_to_its_fixed_point_and_says_when_the_cap_stopped_it() {
+        let buf: Vec<Vec<f64>> = (0..10).map(|i| vec![f64::from(i * i)]).collect();
+        let w = [1.0; 10];
+        let start = vec![vec![0.0], vec![1.0]];
+        let passes = (1..100)
+            .find(|&cap| lloyd(&buf, &w, start.clone(), &[1.0], cap).1)
+            .unwrap();
+        assert!(passes >= 4, "a slow run, so the cap can bind: {passes}");
+        let (fixed, done) = lloyd(&buf, &w, start.clone(), &[1.0], passes);
+        assert!(done);
+        assert_eq!(
+            lloyd(&buf, &w, fixed.clone(), &[1.0], 2),
+            (fixed.clone(), true)
+        );
+        let unconfirmed = lloyd(&buf, &w, start.clone(), &[1.0], passes - 1);
+        assert_eq!(unconfirmed, (fixed.clone(), false));
+        let (short, done) = lloyd(&buf, &w, start.clone(), &[1.0], passes - 2);
+        assert!(!done);
+        assert_ne!(short, fixed);
+        // Past the fixed point a larger cap changes nothing, to the bit.
+        assert_eq!(
+            lloyd(&buf, &w, start, &[1.0], LLOYD_MAX_ITERS),
+            (fixed, true)
+        );
+    }
+
+    /// The candidates per centre are `2 + ⌊ln k⌋`, scikit-learn's number,
+    /// read without the math library: every `k` up to `MAX_K` against `ln`
+    /// (compared here, never kept, so its last bit cannot reach a state).
+    #[test]
+    fn greedy_trials_are_two_plus_the_floor_of_ln_k() {
+        for k in 1..=KMeans::MAX_K {
+            let want = 2 + (k as f64).ln().floor() as usize;
+            assert_eq!(local_trials(k), want, "k = {k}");
+        }
+    }
+
+    /// Greedy k-means++ written out: the first centre one weighted draw;
+    /// each later one the candidate, of `local_trials(k)` drawn by `w·D²`,
+    /// whose potential `Σ w min(D², d²)` is least, the first of a tie. The
+    /// same draws from the same generator, so the same centres to the bit;
+    /// and on this buffer some centre's candidates differ in potential, so
+    /// keeping the first, or the last, would choose otherwise.
+    #[test]
+    fn greedy_kmeanspp_keeps_the_candidate_of_least_potential() {
+        let mut g = 9u64;
+        let buf: Vec<Vec<f64>> = (0..60)
+            .map(|i| {
+                let c = [[0.0, 0.0], [6.0, 0.0], [0.0, 6.0], [6.0, 6.0]][i % 4];
+                vec![c[0] + lcg(&mut g) * 2.0, c[1] + lcg(&mut g) * 2.0]
+            })
+            .collect();
+        let w: Vec<f64> = (0..60).map(|i| 0.5 + f64::from(i % 3)).collect();
+        let mw = [1.0, 0.5];
+        let k = 4;
+        let pot = |dd: &[f64]| dd.iter().zip(&w).map(|(d, wi)| wi * d).sum::<f64>();
+        let mut rng = SplitMix64::new(3);
+        let first = rng.choice(&w);
+        let mut want = vec![buf[first].clone()];
+        let mut dd: Vec<f64> = buf.iter().map(|z| dist2(&buf[first], z, &mw)).collect();
+        let (mut firsts, mut lasts) = (0, 0);
+        while want.len() < k {
+            let pr: Vec<f64> = dd.iter().zip(&w).map(|(d, wi)| wi * d).collect();
+            let cands: Vec<(f64, usize, Vec<f64>)> = (0..local_trials(k))
+                .map(|_| {
+                    let c = rng.choice(&pr);
+                    let after: Vec<f64> = buf
+                        .iter()
+                        .zip(&dd)
+                        .map(|(z, &d)| d.min(dist2(&buf[c], z, &mw)))
+                        .collect();
+                    (pot(&after), c, after)
+                })
+                .collect();
+            let best = (0..cands.len())
+                .min_by(|&a, &b| cands[a].0.total_cmp(&cands[b].0).then(a.cmp(&b)))
+                .unwrap();
+            firsts += usize::from(best != 0);
+            lasts += usize::from(best != cands.len() - 1);
+            want.push(buf[cands[best].1].clone());
+            dd = cands[best].2.clone();
+        }
+        assert!(
+            firsts > 0 && lasts > 0,
+            "the draws never told the rules apart"
+        );
+        assert_eq!(kmeanspp(&buf, &w, k, &mw, &mut SplitMix64::new(3)), want);
+    }
+
+    /// A `lloyd` seeding whose runs stop at the cap counts each of them in
+    /// `solve_failures`, which the state keeps; one that reaches its fixed
+    /// point counts nothing and leaves the field out of the state, so a
+    /// state that never hit the cap writes the bytes it always did. The
+    /// other rules iterate nothing and count nothing, whatever the cap.
+    #[test]
+    fn every_seeding_run_stopped_at_the_cap_is_counted() {
+        let rows = blobs(40, 3);
+        let seed = |rule: SeedRule| {
+            seed_on(
+                &rows,
+                KMeansCfg {
+                    seed_rule: rule,
+                    ..cfg(3)
+                },
+            )
+        };
+        let m = seed(SeedRule::Lloyd);
+        assert_eq!(m.solve_failures, 0);
+        let v = serde_json::to_value(&m).unwrap();
+        assert!(v.get("solve_failures").is_none(), "{v}");
+        LLOYD_CAP.with(|c| c.set(1));
+        let short = seed(SeedRule::Lloyd);
+        let others: Vec<u64> = [SeedRule::First, SeedRule::Farthest, SeedRule::Kmeanspp]
+            .into_iter()
+            .map(|r| seed(r).solve_failures)
+            .collect();
+        LLOYD_CAP.with(|c| c.set(LLOYD_MAX_ITERS));
+        assert_eq!(short.solve_failures, LLOYD_RESTARTS as u64);
+        assert_eq!(others, vec![0, 0, 0]);
+        let v = serde_json::to_value(&short).unwrap();
+        assert_eq!(v["solve_failures"], LLOYD_RESTARTS as u64, "{v}");
+        let back =
+            KMeans::restore(&State::new(ModelState::KMeans(Box::new(short.clone())))).unwrap();
+        assert_eq!(back, short);
+        let bytes = rmp_serde::to_vec(&short).unwrap();
+        let back: KMeans = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(back.solve_failures, LLOYD_RESTARTS as u64);
+    }
+
+    /// A seeding of the rows within the buffer's cut whose centres coincide
+    /// is thrown away for one of the whole buffer, and both ran: the cap
+    /// hits of each are counted.
+    #[test]
+    fn a_seeding_thrown_away_counts_its_cap_hits_too() {
+        // Two rows four times each and one far row, past the cut once more
+        // than five rows sit near the mean: the rows within the cut hold
+        // two distinct values, so two of their three seeds coincide.
+        let mut rows = [[0.0, 0.0], [1.0, 0.0]].repeat(4);
+        rows.push([90.0, 90.0]);
+        LLOYD_CAP.with(|c| c.set(1));
+        let m = seed_on(
+            &rows,
+            KMeansCfg {
+                seed_rule: SeedRule::Lloyd,
+                split_merge: 0.5,
+                ..cfg(3)
+            },
+        );
+        LLOYD_CAP.with(|c| c.set(LLOYD_MAX_ITERS));
+        assert_eq!(m.solve_failures, 2 * LLOYD_RESTARTS as u64);
     }
 
     /// Each part of a state's shape is checked on its own: a centre, a

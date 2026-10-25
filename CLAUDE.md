@@ -120,6 +120,14 @@ runs both tiers, but a plain `cargo test` skips the extended Rust tests
    schema 61 or 62 continues within the golden tolerance, not to the bit,
    once a snapshot taken after its load is the window's edge (those states
    never recorded the per-row decay factors); its first read is exact.
+   A second, the user's (2026-10-25, task 278): a `kmeans` state of schema
+   61-63 saved before it seeded seeds by the new rule after loading -- the
+   same centres and distances to the bit, the cluster labels possibly
+   permuted, held to one consistent relabelling.
+   A third, the user's (2026-10-25, task 278): a `lasso` state of schema
+   61-63 continues within 1e-9 relative, not to the bit (the stopping rule
+   became relative to the target's spread), and still loads and re-saves the
+   same bytes.
 6. No `unsafe` in `online-core`. f64 everywhere.
 7. Commit after each completed task in `docs/PLAN.md`, with the task number in the message.
 8. **`n_eff` -- the models' accessor, emitted as `weight_sum` -- means the same thing in

@@ -13,6 +13,63 @@ returns.
 
 ### Changed
 
+- `init="k-means++"`, and the starts of `init="lloyd"`, are greedy
+  k-means++, scikit-learn's rule: each centre after the first is the best of
+  `2 + ⌊ln k⌋` candidates by the inertia it leaves (task 278). On Fränti's
+  benchmark sets in 50 orders each, the worst order's inertia over the
+  optimum fell from 2.19 to 1.001 on S1, from 1.29 to 1.001 on S2 and from
+  1.56 / 1.51 / 1.71 to 1.30 / 1.24 / 1.50 on A1-A3 (median 1.26-1.35 to
+  1.01-1.10); no S1 or S2 order now misses a cluster, where 10 and 13 did.
+  Seeded centres move, and where they do not, their numbering may change.
+- `hmm`'s `warm_rows` defaults to 1,000 rows (or `n_components` where that
+  is more), where it was 50 (task 278): the seeding places states where the
+  buffered rows are, and 50 rows hold one or two regimes. On three regimes
+  lasting about 50 rows each, the worst of 50 seeds put 0.46 of the rows in
+  their true state; it now puts 0.95. Each group's first 1,000 rows report
+  null and the buffer holds them until seeding; a group with fewer rows never
+  seeds and reports null throughout.
+- Documentation: `ftrl` states how fast it follows a break under a
+  half-life (task 278). AdaGrad's normalised step moves a settled
+  coefficient at most about `2·alpha·√(1 − λ)` a row, however large the
+  error, so a break that moves a coefficient by D takes about
+  `D / (2·alpha·√(1 − λ))` rows (measured 0.011 a row against 0.012 at
+  `alpha=0.1`, `half_life=200`). A larger `alpha` follows sooner and settles
+  noisier: after a change of regime that moved the intercept by 46, the fit
+  was 34.4, 18.4 and 2.6 off four half-lives later at `alpha` 0.1, 0.3 and 1,
+  and the settled fit 0.17, 0.24 and 0.43 off. Under a half-life the fixed
+  prior holds a logistic fit up to 0.41 from the decayed maximum likelihood at
+  the defaults, against 0.17 at `beta=0.1, l2=0`.
+- `marginal`'s `min_settled_frac` does what it says (task 278): while the
+  stream is less settled than the fraction, `ModelBank.marginal()` and the
+  `pair_*` columns of `closed_groups` report `corr`, `beta`, `t_stat`,
+  `t_stat_serial` and the split columns as null, as `min_weight` does; the
+  moments are reported either way. It was accepted and changed nothing;
+  output changes only for specs that set it.
+- `rcov`'s `min_weight` withholds a closed block's estimate (task 278):
+  each row weighs 0 or 1, so the block's `weight_sum` counts its returns;
+  below the floor `rcov` and `rcorr` are null, as for a block too short to
+  estimate from, and the other fields are unchanged. It was accepted and
+  changed nothing; output changes only for specs that set it.
+- `ewridge(session_shrink=f)`'s blend no longer forces a solve and
+  restarts the solve schedule at a session change (task 278): it moves the
+  moments only, and the next scheduled solve reads them, as the docstring
+  promised. The output is continuous in `f` and `f=0` is no `session_shrink`
+  to the bit; before, `f=1e-12` differed from `f=0` by up to 0.48 in a
+  prediction (1.43 under `solve_every=50`, 3,000 rows), now by 1.3e-12. The
+  rows from a session's start to the next scheduled solve are predicted from
+  the fit before the blend; `max_rows_between_solves=1` makes every row after
+  the session's first read it.
+- A number or a duration given as `session_gap` to `po.stream.with_windows`
+  is deprecated, because it has no effect there: every window ends at a
+  session change, so no window measures the clock's step across one (task
+  278). A session no longer needs a `session_gap` in `with_windows`, and a
+  number raises a `PolarsOnlineDeprecationWarning` until the next major
+  version. `session_gap="reset"` is kept: it discards, rather than cuts, the
+  windows looking ahead that a session change leaves open, and changes
+  nothing else. A windows state saved with a numeric `session_gap` resumes
+  the call with any other number or none. A spec's `session_gap`, which sets
+  its decay across the change, is unchanged, and `like=spec` lends it without
+  a warning.
 - The weekly CPU-paths workflow's forced-Haswell oracle leg runs under
   Intel SDE posing as an Intel Haswell (task 273). OpenBLAS 0.3.34 resizes
   a forced core's blocking on AMD Zen 4 and 5 hosts with AVX-512, which
@@ -23,6 +80,71 @@ returns.
   fires; proven on an AMD EPYC 9V74 runner, all 2,345 oracle tests passing
   with NumPy reporting no AVX-512. The `OPENBLAS_L2_SIZE` setting is
   removed.
+
+### Fixed
+
+- `lasso`'s `tol` was in the target's units (task 278): the coordinate
+  descent stopped when no standardized coefficient moved by `tol`, and those
+  coefficients are in the target's units, so a target near 1e-9 met the
+  default after a sweep with no descent counted unconverged (0.20 of the
+  target's spread off at y×2^-30, 1e-3 at 2^-20) and a target in the
+  millions could not meet it above its rounding. A sweep now ends the descent
+  when no coefficient moves by `tol` times the target's spread (its standard
+  deviation, or its root mean square without an intercept): a target and
+  penalties scaled by a power of two give the same fit scaled, to the bit,
+  with the same `solve_failures`. `po.gram.lasso_path` follows the same rule.
+  Outputs move only where the target's spread is not 1, by at most 7.8e-10
+  in a prediction or coefficient on the release probe. A `lasso` state saved
+  by 1.0-1.3 loads and goes on within 1e-9 of this build's own, not to the
+  bit.
+- `po.gram.lasso_path` returned a penalty whose descent ran out of its
+  `max_iter` sweeps with nothing to say so (at a condition of 4e8 and a
+  penalty of 0.001, 5 and 1,000 sweeps both left a KKT violation of 7.8e-9
+  against the rule's 2e-10); it now raises a `ReadinessWarning` naming each
+  such penalty (task 278).
+- `kmeans` and `hmm`: the default seeding, `init="lloyd"`, runs Lloyd's
+  passes from each of its ten starts until no row changes centre, at most
+  300 passes, where it stopped after ten wherever they had reached (task
+  278). A start stopped at the cap is counted in `solve_failures`, which
+  `kmeans` now reports. On eight overlapping blobs in two dimensions (500
+  rows), 38 of 50 seeds kept centres that were not a fixed point, up to 0.12
+  noise standard deviations off, and nothing said so. A model seeded from the
+  same rows may now number its clusters or states differently even where it
+  finds the same centres, so read labels by their centres, not their numbers.
+  A `kmeans` state saved before it seeded seeds by the new rule after
+  loading; one saved after seeding goes on exactly as before.
+- These values are refused, each with the reason in the message (task
+  278): `min_weight=inf`, which withheld every row for good while the model
+  kept learning; a `marginal` `bin_edges` that gives no feature an edge, such
+  as `[[]]` (one feature without edges beside others that have them is still
+  taken, and reports a single bin); a `kmeans` `dead_frac` of 1 or more,
+  which called a centre dead at every check; `emit_averaged` with one slot
+  per target, as `emit_selected` already was; a `corrchange` `bandwidth`
+  above `window_rows`, which adds no lag and drives the long-run variance
+  toward 0 (on independent noise the statistic's median went from 1.8 at 20
+  to 12.5 at 1,000). A state saved with any of these values still loads.
+- `bocpd`'s refusal of `warm_rows` beside both priors names the keywords the
+  builder takes, `mean_prior` and `covariance_prior` (task 278).
+- `drift_action="reset"` starts the model over exactly (task 278): from
+  the row after the one that fired, every output field equals what a fresh
+  bank fed those rows returns. That row read the clock step since the row
+  that fired, which a fresh stream's first row does not have, so the rebuilt
+  model decayed by it: `rls`'s prior moved predictions by up to 2.5e-3 at
+  `delta=1` and 8.0e-3 at `delta=100` (3,000 rows, `half_life=200`),
+  `kalman` with a fixed process noise by up to 4.7e-3, every model's
+  `settled_frac` counted the extra step, and the diagnostics began folding
+  residuals a row early (`calibration_slope` up to 0.86 apart on `kalman`
+  with a mean-reverting slot). `learned_clock` on that row showed the clock
+  of the row that fired; it is null, as documented.
+- `po.stream.with_windows` refuses a `session_gap` without `session` and a
+  `restart_after_step_back` without `clock`, as a spec does; each was
+  accepted before and did nothing (task 278).
+
+### Performance
+
+- Seeding with `init="lloyd"` at 500 rows, 8 centres and 400 features
+  takes 56 ms on separated blobs (from 97) and 91 ms on overlapping ones
+  (from 98); `init="k-means++"` takes 3.6 ms there, from 1.9 (task 278).
 
 ## [1.3.0] — 2026-10-24
 

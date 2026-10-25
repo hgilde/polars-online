@@ -447,8 +447,10 @@ def ewridge_paths_ref(
     keeps one weight per target beside the Gram's; the mean-form sums are
     linear in these weights, so the blend is exact on them
     (``tests/test_second_opinion.py`` ``TestSessionShrinkBlend`` pins that
-    reading). The new session's first row is then scored from the blend,
-    re-solved, and every row ages from there at ``half_life``.
+    reading). The blend leaves the fit and the solve schedule alone: the
+    new session's rows are scored with the last solve until the next
+    scheduled one, which reads the blended moments, and every row ages from
+    there at ``half_life``.
     ``session_gap="reset"`` starts the state over.
 
     **Scoring.** Target ``j`` is scored with the last solve once its own
@@ -576,8 +578,8 @@ def ewridge_paths_ref(
             for j in range(m):
                 wt[:, j] = _share(wt[:, j], ks, present[:, j], session_shrink)
             fast_t = list(wt)
-            fit = solve()
-            since_clock, since_rows, since_w = 0.0, 0, 0.0
+            # The blend moves the moments and nothing else: the fit stands
+            # until the next scheduled solve, which reads them (task 278).
         z = np.concatenate(([1.0], X[i])) if fit_intercept else X[i]
 
         # ---- before the row, seen from the last accepted row ----

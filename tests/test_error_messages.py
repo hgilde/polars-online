@@ -75,6 +75,9 @@ SHAPES = [
         "max_rows_between_coefs must be an int, got float 1.5",
     ),
     (po.spec.ewridge, dict(standardize=1), "standardize must be a bool, got int 1"),
+    # The common bools, each pinned (task 278: no test matched either).
+    (po.spec.ewridge, dict(fit_intercept="yes"), "fit_intercept must be a bool, got str 'yes'"),
+    (po.spec.ewridge, dict(emit_clocks=1), "emit_clocks must be a bool, got int 1"),
     (po.spec.ewridge, dict(coef_prior=[1.0, 2.0]), "coef_prior must be a list of lists of numbers"),
     (
         po.spec.ewridge,
@@ -150,6 +153,14 @@ def test_ew_class_takes_a_label_not_targets():
 
 
 VALUES = [
+    # The common parameters' NaN and inf refusals, each pinned in full (task
+    # 278: the min_weight NaN had no test, and the others were matched on
+    # their names alone).
+    (po.spec.ewridge, dict(min_weight=float("nan")), 'spec "m": min_weight must not be NaN'),
+    (po.spec.ewridge, dict(min_weight=[float("nan")]), 'spec "m": min_weight must not be NaN'),
+    (po.spec.ewridge, dict(half_life=None, lam=INF), 'spec "m": lam must be finite, got float inf'),
+    (po.spec.ewridge, dict(coef_every=float("nan")), 'spec "m": coef_every must not be NaN'),
+    (po.spec.ewridge, dict(embargo=float("nan")), 'spec "m": embargo must not be NaN'),
     # A list's entries are held to the int floor as a scalar is (review
     # 2026-09-26, F7: a negative lag was named by serde as `model`).
     (po.spec.marginal, dict(lags=[-1]), "lags must be >= 1, got list [-1]"),

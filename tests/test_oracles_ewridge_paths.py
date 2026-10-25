@@ -306,8 +306,10 @@ class TestSessions:
     def test_a_blend_with_the_slow_twin(self, shrink, long_half_life, schedule):
         """``session_shrink``: the fit takes ``1 - f`` of today's rows and
         ``f`` of the twin's, each normalised by its weight, at today's weight
-        (task 145); the new session's first row is scored from the blend, and
-        the rows age from there."""
+        (task 145). The blend leaves the solve schedule alone (task 278): the
+        next scheduled solve reads it -- on the open's own row under
+        ``solve_every=1e-9``, wherever the row cap or the weight's share next
+        falls otherwise -- and the rows age from there."""
         _check(
             _session_stream(44),
             40.0,

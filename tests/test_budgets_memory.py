@@ -126,24 +126,24 @@ EVERY_OUTPUT = dict(
     emit_selected=True,
 )
 
-#: What each regression has not, as the spec checks refuse it.
+#: What each regression has not, as the spec checks refuse it. A single slot
+#: has nothing to choose or average across, so ``emit_selected`` and
+#: ``emit_averaged`` go wherever there is no grid (lasso's path is one; the
+#: refusal of ``emit_averaged`` on one slot is task 278's).
+ONE_SLOT = {"emit_selected", "emit_averaged"}
+#: And what a model with no least-squares fit has not.
+NOT_LEAST_SQUARES = {"emit_error_inflation", "emit_se_coef", "emit_robust_se", "emit_influence"}
 EXCEPT = {
-    "ewridge": {"emit_selected"},
-    "rls": {"emit_selected"},
-    "lasso": {"emit_error_inflation", "emit_se_coef", "emit_robust_se", "emit_influence"},
-    "kalman": {"emit_selected", "emit_robust_se"},
-    "huber": {"emit_selected", "emit_error_inflation", "emit_se_coef", "emit_robust_se"}
-    | {"emit_influence"},
-    "quantile": {"emit_selected", "emit_error_inflation", "emit_se_coef", "emit_robust_se"}
-    | {"emit_influence"},
-    "ftrl": {"emit_selected", "emit_error_inflation", "emit_se_coef", "emit_robust_se"}
-    | {"emit_influence"},
-    "sgd": {"emit_selected", "emit_error_inflation", "emit_se_coef", "emit_robust_se"}
-    | {"emit_influence"},
-    "pa": {"emit_selected", "emit_error_inflation", "emit_se_coef", "emit_robust_se"}
-    | {"emit_influence"},
-    "holt": {"emit_selected", "emit_error_inflation", "emit_se_coef", "emit_robust_se"}
-    | {"emit_influence", "emit_feature_health"},
+    "ewridge": ONE_SLOT,
+    "rls": ONE_SLOT,
+    "lasso": NOT_LEAST_SQUARES,
+    "kalman": ONE_SLOT | {"emit_robust_se"},
+    "huber": ONE_SLOT | NOT_LEAST_SQUARES,
+    "quantile": ONE_SLOT | NOT_LEAST_SQUARES,
+    "ftrl": ONE_SLOT | NOT_LEAST_SQUARES,
+    "sgd": ONE_SLOT | NOT_LEAST_SQUARES,
+    "pa": ONE_SLOT | NOT_LEAST_SQUARES,
+    "holt": ONE_SLOT | NOT_LEAST_SQUARES | {"emit_feature_health"},
 }
 
 

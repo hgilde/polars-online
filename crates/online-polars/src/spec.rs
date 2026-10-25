@@ -45,6 +45,7 @@ impl WindowBudgetSpec {
 }
 
 pub(crate) mod diagnostics;
+mod limits;
 mod names;
 mod readiness;
 
@@ -1415,7 +1416,8 @@ pub enum ModelKind {
         /// State covariances, `K` matrices of `d x d`, row-major.
         #[serde(default)]
         covs: Option<Vec<f64>>,
-        /// Learned rows buffered before the states are seeded (default 50).
+        /// Learned rows buffered before the states are seeded (default
+        /// 1,000, or `n_components` where that is more).
         /// With `means` and `covs` given nothing is seeded, and it, like
         /// `init` and `seed`, is refused (review 2026-10-06, CE4).
         #[serde(default)]
@@ -2182,19 +2184,25 @@ pub(crate) fn clock_cfg_of(p: &ClockPolicy<'_>) -> Result<ClockCfg, String> {
             ));
         }
     };
+    // A window ends at every session change, so the clock's jump across one
+    // is never measured inside a window: a caller with no model reads no
+    // number there, and needs none beside a session (task 278, the user's
+    // decision of 2026-10-25). Only "reset" acts, on the windows still open
+    // ahead of the change, which it discards rather than cuts. A gap of 0
+    // stands in for the number.
+    let session_gap = match session_gap {
+        None if !model && p.session.is_some() => Some(SessionGap::Gap(0.0)),
+        given => given,
+    };
     // `group_close = "session"` is itself the prescription for a session
     // change -- emit the span and start over -- so it takes the place of
     // `session_gap` rather than sitting beside it (E54); `validate`
     // refuses the pair.
     if p.session.is_some() && session_gap.is_none() && p.spec_closes_on_session != Some(true) {
-        return Err(if model {
-            format!(
-                "{who}: session_gap is required when session is given (or \
-                 group_close = \"session\", which closes the group at the change instead)"
-            )
-        } else {
-            format!("{who}: session_gap is required when session is given")
-        });
+        return Err(format!(
+            "{who}: session_gap is required when session is given (or \
+             group_close = \"session\", which closes the group at the change instead)"
+        ));
     }
     // What a late row is belongs to the caller: unset, every step back is
     // refused; given, a step back no larger than it is a late row and is
@@ -3619,6 +3627,8 @@ impl Spec {
                 self.name
             ));
         }
+        // The values that mean nothing (`limits.rs`).
+        self.refuse_values_that_mean_nothing()?;
         if let Some(Num(f)) = self.min_settled_frac {
             if !(0.0..1.0).contains(&f) {
                 return Err(format!(
@@ -4120,11 +4130,20 @@ impl Spec {
                 ));
             }
         }
-        if self.emit_selected {
+        // Both choose across a target's slots, and one slot leaves nothing to
+        // choose: `emit_averaged` there was the slot's own prediction under
+        // another name, null on the first scored row (task 278).
+        for (flag, on) in [
+            ("emit_selected", self.emit_selected),
+            ("emit_averaged", self.emit_averaged),
+        ] {
+            if !on {
+                continue;
+            }
             let n_slots = self.decays()?.len() * crate::combo_labels(self).len();
             if n_slots < 2 {
                 return Err(format!(
-                    "spec {:?}: emit_selected needs more than one slot per target; add a \
+                    "spec {:?}: {flag} needs more than one slot per target; add a \
                      ridge/feature_set/half_life grid or a lasso path",
                     self.name
                 ));

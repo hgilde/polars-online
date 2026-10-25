@@ -16274,6 +16274,19 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       MODELS.md and docstrings with the capture tables, the `sgd` analogue,
       the refit row solving only its own target, budgets and the release
       comparison declared. Then a review and the fix of its findings.
+      *Reviewed (two Fable reviews, 2026-10-25)*: a high finding -- the
+      buffer held every ageing row at full width, unbounded -- fixed by runs
+      of `(λ, λ_s, count)` with a cap past which a target gives its refit up;
+      the rest fixed (passes uncounted as failures, `sgd`'s `l2` in the
+      refit, the resumed 1.3.0 bank documented and tested, capture counts
+      with their stream lengths, a reproducing script). *Decided by the user,
+      2026-10-25*: a per-spec refit-buffer budget of 256 MiB, past which a
+      target gives up its refit (counted, with a notice); the default count
+      500 ("500"), scaling as `max(500, 10·k)` up to 100 features and off by
+      default above 100 (an explicit value still taken); and
+      `marginal(bin_stat="huber")`, captured by the same mechanism (2,000
+      rows at 12%: 13 of 40 seeds with a bin more than 0.1 scale off, worst
+      4.1), fixed in 1.4.0 too.
 - [ ] 278. **Convergence tests of every kind, before 1.4.0** -- the user,
       2026-10-25: "What additional tests should we do to catch all kinds of
       convergence issues", then "Do them all before 1.4". Task 277's capture
@@ -16355,6 +16368,67 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       seeding iterates to a fixed point under a cap and counts cap hits; K1
       `kalman`'s noise estimate inflated while the intercept absorbs a large
       level. D1/D2 wait for task 277 (both touch `sgd`).
+      *Classes 9-11 merged (278 (c))*: no drift at 1e8 rows (NIST NumAcc,
+      the decayed and windowed moments, ewridge against an fsum fit, kalman's
+      P, both clocks); every learning-rate schedule's worst seed converges to
+      the batch optimum; bocpd and corrchange miss no break over 50 seeds.
+      Found, to fix before 1.4.0: D8 `sgd` at too large a learning rate
+      diverges quietly (the clip keeps predictions finite and wrong: MSE 1e6
+      against 1.07) -- detect divergence and withhold with a reason and a
+      notice, after task 277; D9 `hmm` at its default `warm_rows` (50) never
+      recovers sticky regimes (worst 0.54-0.65 in the true state; 0.94 at
+      2,000) -- a better default or a re-seeding rule, measured; F3
+      `kmeans`' seeding ends in a local minimum in most orders of Fränti's
+      A-sets (median 1.26x the optimal inertia) -- greedy k-means++, with
+      D7; F4 the standardized metric stretches isotropic blobs, a documented
+      trade-off (docs only).
+      *Classes 1-5 (278 (a))*, held back from merging until its heavy grids
+      leave the local gate for a CI job (task 280's first piece; they added
+      ~22 min to `gate.sh --extended`). Found, to fix before 1.4.0: D-Q
+      `quantile` draws its band in the residuals' RMS, not robust (50 of 50
+      seeds captured at 5% one-sided outliers) -- a MAD-type scale, a layout
+      change that joins unreleased schema 64 after task 277; D-K `kalman`
+      with a learned R and no drift is captured by an early burst (R
+      inflates, the gain vanishes; slopes [-25.5, 33.6] against OLS [4.1,
+      -1.4]), overlapping K1; D-H `holt` without decay: the level error grows
+      like log n (both gains 1/n, the trend error summing into the level);
+      D-S `sgd` does not centre its target (a level L moves every coefficient
+      by about lr·L; at 1e6 the clip means it is never learned), with the
+      `sgd` group after 277; D-F `ftrl` under a half-life tracks a break at
+      AdaGrad's pace (a limit to decide: document or forget the
+      accumulators). Defect cells are strict xfails running the real bound;
+      none may remain at 1.4.0.
+      *Seeding (D7, F3, D9), decided by the user 2026-10-25*: `kmeans`/`hmm`
+      seeding runs Lloyd to a fixed point (cap 300 passes, counted in
+      `solve_failures`); greedy k-means++ behind `init="k-means++"` and
+      `lloyd`'s starts (Fränti S1 worst 2.19 -> 1.001 of the optimum);
+      `hmm`'s `warm_rows` default 50 -> 1,000 ("1,000 rows": worst seed 0.46
+      -> 0.95 in the true state; each group's first 1,000 rows report null,
+      a shorter group never seeds). Rule 5's second exception ("Accept the
+      relabelling"): a 1.3.0 `kmeans` state saved mid-warm-up seeds by the new
+      rule after loading, the same centres and distances to the bit with the
+      labels possibly permuted, held to one consistent relabelling; a state
+      saved after seeding continues to the bit.
+      *ftrl and holt (2026-10-25)*: D-F is a limit of the method, not a
+      defect -- `ftrl` already decays `n`, `zz` and `d`; AdaGrad's normalised
+      step caps a coefficient's move at about `2·alpha·√(1 − λ)` a row;
+      documented and pinned, defaults kept (a weaker logistic prior measured
+      better under a half-life, recorded as a trade-off). D-H is real and
+      wider: `holt`'s trend is pinned to the first observation (gains
+      `c_g = c_h = 1`), so its level error grows like ln n without decay and
+      during every warm-up (worst 3.4-6.3 against the oracle's 0.03-0.2).
+      Approved design: per row the larger of the exact weighted line fit's
+      gains and the textbook gains, three new f64 a target (`S0`, `ā`, `Q`)
+      joining unreleased schema 64 after task 277; statsmodels WLS to 2e-13
+      without decay and statsmodels `Holt` to 1e-12 in steady state.
+      *lasso (D3, D6), 2026-10-25*: `tol` relative to the target's spread
+      (bitwise scale equivariance at 2^±20, 2^±30; outputs move only where
+      the spread is not 1, at most 7.8e-10 on the probe); `gram.lasso_path`
+      warns naming each penalty that ran out of sweeps. Rule 5's third
+      exception, the user's ("Accept within 1e-9"): a `lasso` state of schema
+      61-63 continues within 1e-9 relative (measured 5.8e-11, windowed
+      1.7e-11), and loads and re-saves the same bytes. The 798-of-799 cap
+      hits at defaults are the descent's rate, not the rule; `max_iter` kept.
 - [ ] 279. **Smaller build caches: no debug info for dependencies** -- the
       user, 2026-10-25 ("Why do agents take so much disk I though we shared
       caches", then "Yes"). Each worktree slot keeps its own `target/` (a
@@ -16370,3 +16444,24 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       slot's `target/` is cleared when its task is given back whenever free
       disk is under 100 GB, and `cargo-sweep` between tasks is to be weighed
       beside it. After the task 277/278 wave, so no slot rebuilds mid-task.
+- [ ] 280. **An oracle ledger: no drift from the oracles and datasets, no
+      longer gate** -- the user, 2026-10-25: "After all the fixes we need a
+      way not to drift from all the oracles and data sets for every
+      parameter test. But we do not want to run more very long tests in the
+      gate as it's already long." Before 1.4.0, after task 278's fixes. (1)
+      A committed ledger, as `budgets.toml` is for speed: per oracle and
+      dataset case (every task 278 class, every parameter test with an
+      oracle), the error against the oracle (worst seed, p95) and the
+      oracle's version; it only tightens -- a larger error fails unless a
+      `[[raised]]` entry gives the reason and a CHANGELOG line, a smaller one
+      asks to be tightened, as `scripts/budgets.py` does. (2) The oracle side
+      (the batch fits over many seeds, the downloads) runs on CI on every
+      push, sharded across parallel jobs (free, 20 concurrent), and its
+      conclusion is read after each push with the others. (3) The gate keeps
+      a cheap guard: a hash of our outputs on each case's inputs, seconds in
+      all; unchanged means the comparison still holds (the oracle's answer is
+      fixed by its pinned version); changed names the cases whose oracle runs
+      must re-run (one command locally, or CI on push), and `quick.sh`-style
+      selection runs a changed model's cases only. (4) A weekly full sweep,
+      and any bump of an oracle library or dataset in `uv.lock` re-runs
+      everything.

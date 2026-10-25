@@ -212,7 +212,14 @@ BBB: volume_rate's median 1.59, rate_trend's median 1.52
 `restart_after_step_back`, `session`, `session_gap` and `group`. Pass them
 to `with_windows` once, for every formula in the call. `gap_cap` is
 required with a clock. A window target reads them from its spec. With
-`group`, each group keeps its own sessions and windows.
+`group`, each group keeps its own sessions and windows. A session needs no
+`session_gap` here, as a spec's does: every window ends at a session
+change, so no window measures the clock's step across one. A number or a
+duration given for it changes nothing, and raises a
+`PolarsOnlineDeprecationWarning`. Only `session_gap="reset"` acts, on the
+windows looking ahead that a session change leaves open (below). A
+`session_gap` without `session`, and a `restart_after_step_back` without
+`clock`, would do nothing, and are refused.
 
 **A gap longer than `gap_cap`, or a session change, ends every window open
 across it, and the operator's `partial` sets what the cut window gives.**
@@ -734,7 +741,7 @@ state for the next minute of trades, and the second run returns them first.
 session) and the last rows it read, so it refuses the wrong input, never
 silently skipping or doubling rows.** If the clock starts over at the same
 stamp each day, add a session column, such as the date, and name it in
-`session=` with a `session_gap`. Otherwise the next day's file starts as
+`session=`. Otherwise the next day's file starts as
 the saved input did, and passes for it. If the stream's rows can repeat, as
 a daily grid's can, resume only on the same input: another input that
 matches the state's rows where it was cut is taken for the same input.

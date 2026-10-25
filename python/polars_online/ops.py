@@ -144,8 +144,11 @@ in units of their spread*, with the measured gain):
 **The clock and its policy** -- ``clock``, ``gap_cap``,
 ``restart_after_step_back``, ``session``, ``session_gap``, ``group`` -- are
 the call's, shared by every operator in it, in a spec's own words
-(:mod:`polars_online.spec`). A gap past ``gap_cap`` or a session change ends
-every window open across it, and ``partial`` says what such a window gives.
+(:mod:`polars_online.spec`), with one difference: a session needs no
+``session_gap``, since no window measures the clock's step across a session
+change, and a number given for it changes nothing (only ``"reset"`` acts).
+A gap past ``gap_cap`` or a session change ends every window open across
+it, and ``partial`` says what such a window gives.
 A backward window whose span reaches before its stretch's first row is
 partial too, the stream's own start included, so ``partial`` also says what
 every stream's first ``window_size`` gives:

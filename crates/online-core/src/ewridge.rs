@@ -114,6 +114,14 @@ pub struct EwRidgeCfg {
     /// moments at today's weight, and `f` between fits on that share of the
     /// long run (docs/PLAN.md task 145). Unlike `session_gap` this changes
     /// *what the model believes*, not how confident it is.
+    ///
+    /// The blend moves the moments only. The coefficients stay as last
+    /// solved until the next solve the schedule brings due, which reads the
+    /// blended moments with every row learned since; the schedule counts
+    /// from the last solve as it would without the blend (task 278). So the
+    /// output is continuous in `f`, and `0` is no blend to the bit.
+    /// `max_rows_between_solves = 1` solves on the open's row, and the next
+    /// row reads the blend.
     #[serde(default)]
     pub session_shrink: Option<f64>,
     /// Half-life of the slow twin. Required by `session_shrink`.
@@ -702,16 +710,16 @@ impl EwRidge {
         let Some(slow) = self.slow.as_deref() else {
             return;
         };
-        // The blend moved the accumulators the fit is read from, so the fit
-        // moves with it: re-solve now, when anything was mixed and there is a
-        // fit to replace. Left to the schedule, the first rows of the new
-        // session -- the rows the blend exists for -- were predicted with the
-        // coefficients from before it, and so was every row `predict` scored
-        // on a blended copy (review 2026-09-12, C3). A blend with no weight on
-        // either side stays the no-op the doc promises, re-solve included.
-        if self.acc.blend(slow, f) && self.beta.is_some() {
-            self.solve();
-        }
+        // The blend moves the moments and nothing else: the fit stands until
+        // the next scheduled solve, which reads them, and the schedule counts
+        // on from the last solve as it would without the blend. It used to
+        // re-solve here (review 2026-09-12, C3), which made the output jump
+        // between `f = 0`, which returns above, and any `f > 0`: 0.48 in a
+        // prediction at `f = 1e-12` on 3,000 rows, 1.43 under `solve_every =
+        // 50` (task 278; the user chose the schedule over the forced solve,
+        // 2026-10-25). Now the output is continuous in `f`. A blend with no
+        // weight on either side changes nothing.
+        self.acc.blend(slow, f);
     }
 
     fn z(&mut self, x: &[f64]) {

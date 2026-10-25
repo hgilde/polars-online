@@ -245,7 +245,12 @@ blend = po.spec.ewridge(
 
 The blended moments keep today's weight, Kish's effective sample size and
 prior scale, so `weight_sum`, the warm-up gates and the solve schedule do
-not move.
+not move. The blend changes the moments and nothing else: the coefficients
+stay as last solved until the next solve the schedule brings due, which
+reads the blended moments. So a small `f` moves the output by a small amount,
+and `0` is the same as no `session_shrink`. With `max_rows_between_solves=1`
+the solve on the session's first row reads the blend, and every row after
+it is predicted from it.
 
 **For a fit over hundreds of features, give `gram_block_rows=256`.**
 Updating `S` takes O(k²) time per row for `k` features, and at a thousand
@@ -448,7 +453,8 @@ It runs coordinate descent on the standardized sums, warm-started along the
 path and from one solve to the next. `C` is the features' correlation
 matrix, and `c_i` is feature `i`'s covariance with the target over the
 feature's standard deviation. For each penalty `l` in `penalties`, the
-sweep repeats until no coefficient moves by more than `tol`:
+sweep repeats until a sweep moves no coefficient by `tol·s_y` or more, with
+`s_y` the target's spread:
 
 ```
 ρ_i = c_i − Σ_{j≠i} C_ij β_j
@@ -459,9 +465,19 @@ After the sweeps the slopes are unscaled, and the intercept is `ȳ − m·β`,
 with `m` the features' means. The target is centred but not scaled, so the
 L1 threshold `l·l1_ratio` is in the target's units. So scale `penalties`
 with the target: for a pure lasso, a target ten times larger needs
-penalties ten times larger to zero the same coefficients. A descent that
-runs out of its `max_iter` sweeps is counted in `bank.solve_failures()`,
-so if that count is above zero, give a larger `max_iter`.
+penalties ten times larger to zero the same coefficients.
+
+**The stopping rule has no units.** The coefficients `β_i` the sweep moves
+are in the standardized coordinates, so they are in the target's units, and
+`tol` is compared with a move as a share of the target's spread `s_y`: its
+standard deviation over the rows the fit reads, or its root mean square
+without an intercept. So a target scaled by a power of two, with
+`penalties` scaled by the same factor, gives the same fit scaled, to the
+bit. A descent that runs out of its `max_iter` sweeps is counted in
+`bank.solve_failures()`, so if that count is above zero, give a larger
+`max_iter`. Columns that nearly repeat each other slow the descent most: it
+shrinks the error along such a pair by about `1 − 1/κ` a sweep, with `κ`
+the correlation matrix's condition number.
 
 ```python
 las = po.spec.lasso(
@@ -1397,7 +1413,34 @@ as a ridge of `(1 − λ)(β/α + l2)` on the mean scale. Under
 `loss="squared"`, a constant target of 5 then settles at 4.65 at `half_life=100`, and at 4.96 at 1000. For a
 penalty that weight and density leave alone, use
 [`lasso`](#lasso--lasso-path-its-penalty-chosen-as-it-runs), whose penalty
-is on the mean scale.
+is on the mean scale. The ridge weighs most on a 0/1 target, whose
+log-odds the evidence pins only weakly: a probability's curvature is at
+most a quarter. On two features at `half_life=200`, with one row a clock
+unit, the defaults left the settled logistic fit up to 0.41 from the
+decayed maximum likelihood in some coefficient, the worst of 50 seeds, and
+`beta=0.1, l2=0` left it 0.17 from it.
+
+**Under a half-life, `ftrl` follows a break at the pace of its steps, not
+of its half-life.** Each coordinate steps by its gradient over the root of
+its recent squared gradients, so a settled coefficient moves at most about
+`2α·√(1 − λ)` a row, with `λ` the decay over one row's clock, however
+large the error. A break that moves a coefficient by `D` takes about
+`D / (2α·√(1 − λ))` rows to follow. The large gradients just after a
+break also raise the sums that divide every step, for about a half-life.
+Measured on two features at `half_life=200`, one row a clock unit, after a
+change of regime that moved the intercept by 46 (the worst of 50 seeds,
+the largest coefficient gap to the decayed least squares):
+
+| `alpha` | settled, before the break | 4 half-lives after | 12 half-lives after |
+|---|---|---|---|
+| 0.1, the default | 0.17 | 34.4 | 19.9 |
+| 0.3 | 0.24 | 18.4 | 0.90 |
+| 1.0 | 0.43 | 2.6 | 0.70 |
+
+At the default the intercept closed at 0.011 a row, against
+`2α·√(1 − λ)` = 0.012. A larger `alpha` follows a break sooner and settles
+noisier: over the 24 half-lives after the noise quadrupled, the default
+came at most 0.23 from the decayed least squares, and `alpha=1` 1.17.
 
 **`ftrl` does not centre a feature, so give it features near 0.** A
 coefficient's error reaches the prediction multiplied by the feature's
@@ -2415,8 +2458,8 @@ for lo, hi in ((3000, 4000), (7000, 8000)):
 ```
 
 ```text
-rows 3000-3999: cluster 0: 338, cluster 1: 175, cluster 2: 322, cluster 3: 165
-rows 7000-7999: cluster 0: 255, cluster 1: 266, cluster 2: 237, cluster 3: 242
+rows 3000-3999: cluster 0: 322, cluster 1: 164, cluster 2: 338, cluster 3: 176
+rows 7000-7999: cluster 0: 237, cluster 1: 266, cluster 2: 255, cluster 3: 242
 ```
 
 Before the fourth cluster appears, clusters 1 and 3 share one of the three,
@@ -2453,15 +2496,29 @@ index = po.spec.coef_index(km)   # how coef is labelled: cluster = 0, 1, ..., te
 ```
 
 **Seeding waits for `warm_rows` rows, places the centres, and replays the
-rows.** One k-means++ start lands in the wrong partition a third of the time
-on five blobs in four dimensions. So the default, `init="lloyd"`, takes
-ten starts, refines each by ten Lloyd iterations, and keeps the one of least
-inertia. `seed=` fixes the random draws. That is about 120 passes over the
-buffer, paid once by each group's stream: with the default 500 rows and 8
-centres it took 93 ms at 400 features and 3.2 ms at 20, where
-`init="k-means++"` took 0.2 and 0.03 ms (one thread, the load average about
-24, 2026-10-23). A bank of many groups at many features pays it per group:
-10,000 groups at 400 features spend about a quarter of an hour seeding.
+rows.** `init="k-means++"` is the greedy variant scikit-learn uses: each centre
+after the first is the best of `2 + ⌊ln k⌋` rows drawn by their squared
+distance from the centres so far, the one that leaves the least inertia. On five
+blobs in four dimensions one start, run to its fixed point, still lands in a
+partition 1.87 times as costly as the right one in 9 of 100 seeds (28 of 100
+for plain k-means++). So the default, `init="lloyd"`, takes ten starts, runs
+Lloyd's passes from each until no row changes centre, and keeps the one of
+least inertia. `seed=` fixes the random draws. A start still moving rows
+after 300 passes stops there and is counted in `solve_failures`; the most a
+start needed on 500 rows was 54 passes, on eight overlapping blobs. On
+Fränti's benchmark sets, in 50 orders each, no order of S1 or S2 misses a
+cluster, where ten passes from ten plain k-means++ starts missed one in 10
+and 13 of them. The A-sets' 20 to 50 clusters leave 10 to 25 of the 500
+buffered rows a cluster, and their median order ends 1.01 to 1.10 times the
+optimal inertia, where it ended 1.26 to 1.35 times it.
+
+The seeding is paid once by each group's stream. With the default 500 rows
+and 8 centres it took 56 ms at 400 features on separated blobs, where a start
+reaches its fixed point in a few passes, and 91 ms on overlapping ones; 1.9
+ms at 20 features; and `init="k-means++"` took 3.6 ms at 400 (one thread,
+the load average about 110, 2026-10-25). A bank of many groups at many
+features pays it per group: 10,000 groups at 400 features spend up to a
+quarter of an hour seeding.
 
 **While `split_merge` is above 0, a far row is scored but not learned from.**
 A row is far when it sits outside its cluster, about four standard deviations
@@ -3282,8 +3339,17 @@ out = df.online.fit_predict([hidden]).unnest("regime")
 
 **Seeding decides which regimes the filter can find.** `warm_rows` seeds the
 states from that many learned rows with `kmeans`' rule (`init="lloyd"`,
-`seed=0`). Give a `warm_rows` large enough for those rows to span more than
-one regime; otherwise the seeds split one regime in two.
+`seed=0`), by default 1,000 rows. A group with fewer rows than `warm_rows`
+never seeds, and reports null on every row. The seeds sit where the buffered
+rows are, so the buffer must hold every regime, several times over. A regime absent
+from it gets no state, and one with a few percent of its rows costs less
+inertia to share than to own, so the seeds split a larger regime in two
+instead. Learning does not move a misplaced state out. On three regimes
+three noise standard deviations apart, each lasting 50 rows on average, the
+worst of 50 seeds of 5,000 rows put 0.95 of the rows in their true state
+from 1,000 buffered rows, 0.81 from 500 and 0.46 from 50. The rows the
+buffer holds report nothing, and it holds `warm_rows` rows of every feature
+until the seeding frees it.
 
 **When the regimes differ only in covariance, give the states with `means`
 and `covs`.** The default seeding is k-means, and zero-mean states differ in
@@ -3315,9 +3381,9 @@ prior:** `transition=` a matrix whose diagonal is near 1, and
 `transition_prior=` the number of rows that prior counts as. The README's
 [Detecting changes and regimes](../README.md#detecting-changes-and-regimes)
 runs two series whose returns widen 2.7 times in every other block of 500
-rows. Under the default prior the filter put 59% of the rows after seeding
+rows. Under the default prior the filter put 58% of the rows after seeding
 in their true regime. Under `transition=[0.998, 0.002, 0.002, 0.998]` and
-`transition_prior=500.0` it put 94% there.
+`transition_prior=500.0` it put 93% there.
 
 **The transition matrix moves one step per row, whatever the clock between
 rows, so the gap over a weekend counts as a single step.** The transition

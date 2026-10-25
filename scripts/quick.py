@@ -264,7 +264,11 @@ def main() -> int:
             ["uv", "run", "maturin", "develop", *PROFILE, "-m", "crates/online-py/Cargo.toml"]
         )
     if p.tests:
-        marks = "not soak" if args.extended else "not extended and not soak"
+        marks = (
+            "not soak and not oracle_grid"
+            if args.extended
+            else "not extended and not soak and not oracle_grid"
+        )
         many = []
         if len(p.tests) > PARALLEL_FROM:
             workers = subprocess.run(

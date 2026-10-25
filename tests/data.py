@@ -10,6 +10,7 @@ from __future__ import annotations
 import http.client
 import io
 import os
+import ssl
 import time
 import urllib.error
 import urllib.request
@@ -137,15 +138,22 @@ def is_transient(e: BaseException) -> bool:
     return isinstance(e, _TRANSIENT)
 
 
-def _download(url: str, attempts: int = 3, headers: dict[str, str] | None = None) -> bytes:
+def _download(
+    url: str,
+    attempts: int = 3,
+    headers: dict[str, str] | None = None,
+    context: ssl.SSLContext | None = None,
+) -> bytes:
     """One public file, retried with a short pause; :class:`Offline` once
     every attempt has failed. An HTTP status a retry cannot fix is raised at
     once, as itself. ``headers`` go with the request (NIST's server answers
-    urllib's default agent with a 403)."""
+    urllib's default agent with a 403); ``context`` is the TLS context, for
+    a server whose certificate needs one of its own."""
+    opened = {"timeout": 30} if context is None else {"timeout": 30, "context": context}
     for attempt in range(attempts):
         try:
             request = urllib.request.Request(url, headers=headers or {})
-            with urllib.request.urlopen(request, timeout=30) as resp:
+            with urllib.request.urlopen(request, **opened) as resp:
                 return resp.read()
         except _TRANSIENT as e:
             if not is_transient(e):
@@ -416,3 +424,38 @@ def nist_strd_linear_or_skip(name: str) -> dict[str, object]:
         return nist_strd_linear(name)
     except Offline as e:
         pytest.skip(f"offline: could not download NIST StRD {name} ({e.__cause__})")
+
+
+# ---------------------------------------------------------------------------
+# Classic robust-regression datasets (docs/PLAN.md task 278)
+
+#: Rdatasets (Vincent Arel-Bundock's collection of the datasets R packages
+#: ship), served as CSV from its GitHub pages. The robust-regression sets are
+#: Rousseeuw and Leroy's (*Robust Regression and Outlier Detection*, 1987),
+#: as R's ``robustbase`` and ``datasets`` packages distribute them.
+_RDATASETS = "https://vincentarelbundock.github.io/Rdatasets/csv/{package}/{name}.csv"
+
+
+def rdataset(package: str, name: str) -> pl.DataFrame:
+    """One Rdatasets table, cached under ``.cache/rdatasets/``; its row-name
+    column is dropped. Raises :class:`Offline` when the network fails."""
+    folder = CACHE_DIR / "rdatasets"
+    folder.mkdir(parents=True, exist_ok=True)
+    cached = folder / f"{package}-{name}.parquet"
+    if cached.exists():
+        return pl.read_parquet(cached)
+    raw = _download(_RDATASETS.format(package=package, name=name))
+    df = pl.read_csv(io.BytesIO(raw)).drop("rownames")
+    df = df.with_columns(pl.col(c).cast(pl.Float64) for c in df.columns)
+    write_atomically(cached, df.write_parquet)
+    return df
+
+
+def rdataset_or_skip(package: str, name: str) -> pl.DataFrame:
+    """:func:`rdataset`, skipping the test when offline (hard rule 1)."""
+    import pytest
+
+    try:
+        return rdataset(package, name)
+    except Offline as e:
+        pytest.skip(f"offline: could not download Rdatasets {package}/{name} ({e.__cause__})")

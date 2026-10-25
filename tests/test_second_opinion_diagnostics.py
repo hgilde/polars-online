@@ -271,6 +271,39 @@ class TestBreaksAreBrownDurbinAndEvans:
         assert checked == 3
         assert out["break_wald_y"][650] > 21.1, "the break passes chi2(3)'s 0.01% value"
 
+    def test_the_wald_distance_reads_the_breaks_memory_not_the_fits(self):
+        """At ``breaks_half_life=40`` beside a fit at 200, the two fits are
+        ``WLS`` at 40 and 160: the twin fits are the breaks' own, and the
+        model's memory does not enter them (task 278, batch 5)."""
+        import statsmodels.api as sm
+
+        h_breaks = 40.0
+        df = _break_rows(900, 41, 1.0, 600)
+        out = self._run(df, half_life=200.0, breaks_half_life=h_breaks)
+        X = sm.add_constant(df.select("x0", "x1").to_numpy())
+        y = df["y"].to_numpy()
+        checked = 0
+        for t in (300, 650, 899):
+            age = (t - 1) - np.arange(t)
+            wf, ws = 0.5 ** (age / h_breaks), 0.5 ** (age / (4 * h_breaks))
+            fast = sm.WLS(y[:t], X[:t], weights=wf).fit()
+            slow = sm.WLS(y[:t], X[:t], weights=ws).fit()
+            ns = ws.sum() ** 2 / (ws**2).sum()
+            s2 = (ws * slow.resid**2).sum() / ws.sum() * ns / (ns - 3)
+            Xt = X[:t]
+            D = np.linalg.solve((Xt * wf[:, None]).T @ Xt, (Xt * wf[:, None]).T) - np.linalg.solve(
+                (Xt * ws[:, None]).T @ Xt, (Xt * ws[:, None]).T
+            )
+            d = fast.params - slow.params
+            want = d @ np.linalg.solve(D @ D.T, d) / s2
+            # Measured 2026-10-25: 2.4e-14 relative at most.
+            np.testing.assert_allclose(out["break_wald_y"][t], want, rtol=1e-9)
+            checked += 1
+        assert checked == 3
+        # The memory acted: at the fit's own it reads another number.
+        default = self._run(df, half_life=200.0)["break_wald_y"][650]
+        assert abs(default / out["break_wald_y"][650] - 1.0) > 0.1
+
     def test_a_quantile_fits_wald_under_a_horizon_takes_the_residuals_long_run_variance(self):
         """Under a horizon ``break_wald``'s noise variance is scaled by the
         studentized residuals' long-run over short-run variance; on a
@@ -417,6 +450,36 @@ class TestRobustStandardErrorsAreTheSandwich:
                 S = S_hac_simple(Xk * (om * ek)[:, None], nlags=nlags)
                 want = np.sqrt(np.diag(bi @ S @ bi))
                 np.testing.assert_allclose(out[field][t].to_numpy(), want, rtol=1e-8)
+                checked += 1
+        assert checked == 6
+
+    def test_at_a_memory_of_its_own_each_row_is_aged_by_it(self):
+        """``robust_se_half_life=40`` beside a fit at 150: the bread and the
+        meat both weigh each folded row by its weight aged at 40, and the
+        rows it folds are the fit's (95% settled at 150; task 278, batch 5)."""
+        import statsmodels.api as sm
+        from statsmodels.stats.sandwich_covariance import S_hac_simple
+
+        lags, h_model, h_robust = 4, 150.0, 40.0
+        df = _sandwich_rows(900, 51)
+        out = self._run(df, lags, half_life=h_model, weight="w", robust_se_half_life=h_robust)
+        resid = out["resid_y"].to_numpy()
+        w = df["w"].to_numpy()
+        X = sm.add_constant(df.select("x0", "x1").to_numpy())
+        ready = out["settled_frac"].fill_null(0.0).fill_nan(0.0).to_numpy() >= 0.95
+        # 4.3 half-lives of the fit's 150 rows, not of the sandwich's 40.
+        assert 640 < int(np.argmax(ready)) < 660
+        checked = 0
+        for t in (700, 800, 899):
+            omega = w[: t + 1] * 0.5 ** ((t - np.arange(t + 1)) / h_robust)
+            keep = np.isfinite(resid[: t + 1]) & (omega > 0) & ready[: t + 1]
+            Xk, ek, om = X[: t + 1][keep], resid[: t + 1][keep], omega[keep]
+            bi = np.linalg.inv((Xk * om[:, None]).T @ Xk)
+            for nlags, field in ((0, "se_coef_hc0"), (lags, "se_coef_hac")):
+                S = S_hac_simple(Xk * (om * ek)[:, None], nlags=nlags)
+                want = np.sqrt(np.diag(bi @ S @ bi))
+                # Measured 2026-10-25: 7e-15 relative at most.
+                np.testing.assert_allclose(out[field][t].to_numpy(), want, rtol=1e-10)
                 checked += 1
         assert checked == 6
 
@@ -826,6 +889,44 @@ class TestFeatureHealthIsTwoWeightedMoments:
                     (fast.mean[i] - slow.mean[i]) / slow.std[i],
                     rtol=1e-7,
                     atol=1e-10,
+                )
+
+    def test_at_a_memory_of_its_own_the_slow_one_is_four_times_it(self):
+        """``feature_health_half_life=30`` beside a fit at 60: the moments at
+        30 and 120, the fit's memory nowhere (task 278, batch 5)."""
+        from statsmodels.stats.weightstats import DescrStatsW
+
+        rng = np.random.default_rng(91)
+        n, h = 900, 30.0
+        x = rng.normal(size=(n, 2)) + np.array([50.0, -3.0])
+        x[500:, 1] += 2.0
+        w = rng.uniform(0.5, 1.5, size=n)
+        w[rng.random(n) < 0.05] = 0.0
+        df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": x[:, 0] + rng.normal(size=n), "w": w})
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            half_life=60.0,
+            weight="w",
+            emit_feature_health=True,
+            feature_health_half_life=h,
+        )
+        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        for t in (100, 560, 899):
+            age = (t - 1) - np.arange(t)
+            fast = DescrStatsW(x[:t], weights=w[:t] * 0.5 ** (age / h), ddof=0)
+            slow = DescrStatsW(x[:t], weights=w[:t] * 0.5 ** (age / (4 * h)), ddof=0)
+            for i, f in enumerate(("x0", "x1")):
+                # Measured 2026-10-25: 9e-16 relative and 9e-15 absolute.
+                np.testing.assert_allclose(
+                    out[f"spread_ratio_{f}"][t], fast.std[i] / slow.std[i], rtol=1e-12
+                )
+                np.testing.assert_allclose(
+                    out[f"mean_shift_{f}"][t],
+                    (fast.mean[i] - slow.mean[i]) / slow.std[i],
+                    rtol=1e-9,
+                    atol=1e-12,
                 )
 
 

@@ -129,13 +129,16 @@ def _fullest() -> dict[str, dict]:
         emit_influence=True,
         emit_selected=True,
     )
-    simple = {"emit_selected", "emit_error_inflation", "emit_se_coef", "emit_robust_se"}
+    # One slot has nothing to choose or average across: both are refused
+    # there (`emit_averaged` since task 278), and only lasso's path is a grid.
+    one_slot = {"emit_selected", "emit_averaged"}
+    simple = one_slot | {"emit_error_inflation", "emit_se_coef", "emit_robust_se"}
     simple |= {"emit_influence"}
     lacks = {
-        "ewridge": {"emit_selected"},
-        "rls": {"emit_selected"},
+        "ewridge": one_slot,
+        "rls": one_slot,
         "lasso": {"emit_error_inflation", "emit_se_coef", "emit_robust_se", "emit_influence"},
-        "kalman": {"emit_selected", "emit_robust_se"},
+        "kalman": one_slot | {"emit_robust_se"},
         "huber": simple,
         "quantile": simple,
         "ftrl": simple,
@@ -290,7 +293,16 @@ WORKLOAD: list[tuple[str, str, dict, list[str]]] = [
     (
         "hmm",
         "hmm",
-        dict(features=["x1", "x2"], n_components=2, precision_prior=0.1, half_life=25.0, **CLOCK),
+        # `warm_rows` given: the default (1,000 rows since task 278) would
+        # seed nothing in the probe's 400.
+        dict(
+            features=["x1", "x2"],
+            n_components=2,
+            precision_prior=0.1,
+            half_life=25.0,
+            warm_rows=50,
+            **CLOCK,
+        ),
         [],
     ),
     (

@@ -62,11 +62,13 @@ from __future__ import annotations
 
 import math
 import operator
+import warnings
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, NotRequired, TypedDict
 
 from polars_online import _polars_online as _native
 from polars_online._bank import _check_threads
+from polars_online._frame import ReadinessWarning, _user_stacklevel
 from polars_online._renamed import renamed_keywords
 from polars_online._warnings import deprecated_keywords, forward_deprecated
 
@@ -1209,17 +1211,36 @@ def lasso_path(
     ``target``, ``features``
         As for :func:`solve`.
     ``max_iter``, ``tol``
-        The descent's cap on sweeps and its stopping rule, a sweep's
-        largest move. ``tol`` is the model's, 1e-10: it costs the same as
-        1e-7 here (0.07 ms on 15 features at seven penalties) and lands
-        3e-10 from the converged path where 1e-7 landed 4e-7. ``max_iter``
-        is 1,000 where the model's is 100, since this path starts each
-        penalty from zero and the model starts each solve from its last fit.
+        The descent's cap on sweeps and its stopping rule. A sweep ends the
+        descent when it moves no standardized coefficient by ``tol * s``
+        or more, or moves none at all. ``s`` is the target's spread, read
+        from the Gram's target moments: its standard deviation with an
+        intercept, its root mean square through the origin. The
+        standardized coefficients are in the target's units, so the rule
+        has none: the target scaled by a power of two, with the penalties,
+        gives the same path scaled, to the bit, stopped on the same sweep. ``s`` is
+        never below the largest standardized cross-moment ``|d_i|``, which
+        cannot exceed the target's spread, so a Gram without target
+        moments has a scale too. ``tol`` is the model's, 1e-10. On 15
+        features at seven penalties it cost the same as 1e-7 (0.07 ms) and
+        landed 3e-10 from the converged path where 1e-7 landed 4e-7.
+        ``max_iter`` is 1,000 where the model's is 100, since this path
+        starts each penalty from zero and the model starts each solve from
+        its last fit.
 
     Returns an array of shape ``(len(penalties), k)`` over the Gram's columns,
     the intercept first when there is one. On a Gram pooled within parts
     (``merge(within=True)``) the intercept is ``nan``: such a Gram has an
     intercept per part and none of its own.
+
+    A penalty whose descent runs out of sweeps keeps its row where the
+    descent stopped, short of the rule, and a
+    :class:`~polars_online.ReadinessWarning` names each such penalty. A
+    cyclic descent contracts the error along two correlated columns by
+    about ``1 - 1 / kappa`` a sweep, ``kappa`` the correlation matrix's
+    condition number, so on columns that nearly repeat each other it needs
+    about ``kappa`` sweeps. Raise ``max_iter``, or take the knots exactly
+    from :func:`lars_path`.
 
     .. code-block:: python
 
@@ -1278,7 +1299,7 @@ def lasso_path(
     if not np.all(np.isfinite(pw) & (pw >= 0.0)):
         msg = f"lasso_path: penalty_weights must be finite and >= 0, got {pw.tolist()!r}"
         raise ValueError(msg)
-    flat = _native.gram_cd_path(
+    flat, unconverged = _native.gram_cd_path(
         _native_gram(np, g, icept),
         t,
         slots,
@@ -1289,6 +1310,20 @@ def lasso_path(
         int(max_iter),
         float(tol),
     )
+    short = [float(v) for v, u in zip(lams, unconverged, strict=True) if u]
+    if short:
+        # Counted and said (task 278, D6): the rows were returned as the
+        # descent left them with nothing to tell them apart.
+        warnings.warn(
+            ReadinessWarning(
+                f"lasso_path: the coordinate descent ran out of sweeps at {len(short)} of "
+                f"{len(lams)} penalties, {short}: after {max_iter} sweeps one still moved a "
+                "coefficient by tol times the target's spread or more, so those rows are where "
+                "it stopped, short of its stopping rule. Strongly correlated columns slow a "
+                "descent; raise max_iter, or take the path's knots exactly from lars_path"
+            ),
+            stacklevel=_user_stacklevel(),
+        )
     return np.asarray(flat, dtype=float).reshape(len(lams), k)
 
 
