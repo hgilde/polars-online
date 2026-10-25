@@ -1033,8 +1033,8 @@ class TestEmbargoItself:
 # - on a row clock a delay of E rows is the undelayed run E rows behind;
 # - on any clock a row is scored as a bank fed only the rows matured by then
 #   scores it -- the definition of the delay, with no doubled stream between;
-# - the doubled stream, where it is the reference by construction, with each
-#   kind it is not named beside the reason, and the reason shown;
+# - the doubled stream, where it is the reference by construction; each kind
+#   it is not the reference for is named with its reason, and the reason shown;
 # - a delay shorter than every clock step is the undelayed run.
 #
 # Essentials: `ewridge` and one other kind per relation. Extended: the rest.
@@ -1111,11 +1111,6 @@ def kind_spec(kind: str, **kw) -> dict:
 
 def has_coef(kind: str) -> bool:
     return "coef" in po.spec.output_fields(kind_spec(kind))
-
-
-def fields_of(kind: str, **kw) -> pl.DataFrame:
-    """The kind's output index: each field's ``kind``."""
-    return po.spec.output_index(kind_spec(kind, **kw))
 
 
 def unnested(spec: dict, df: pl.DataFrame) -> pl.DataFrame:
