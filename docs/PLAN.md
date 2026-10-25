@@ -16369,6 +16369,22 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       A-sets (median 1.26x the optimal inertia) -- greedy k-means++, with
       D7; F4 the standardized metric stretches isotropic blobs, a documented
       trade-off (docs only).
+      *Classes 1-5 (278 (a))*, held back from merging until its heavy grids
+      leave the local gate for a CI job (task 280's first piece; they added
+      ~22 min to `gate.sh --extended`). Found, to fix before 1.4.0: D-Q
+      `quantile` draws its band in the residuals' RMS, not robust (50 of 50
+      seeds captured at 5% one-sided outliers) -- a MAD-type scale, a layout
+      change that joins unreleased schema 64 after task 277; D-K `kalman`
+      with a learned R and no drift is captured by an early burst (R
+      inflates, the gain vanishes; slopes [-25.5, 33.6] against OLS [4.1,
+      -1.4]), overlapping K1; D-H `holt` without decay: the level error grows
+      like log n (both gains 1/n, the trend error summing into the level);
+      D-S `sgd` does not centre its target (a level L moves every coefficient
+      by about lr·L; at 1e6 the clip means it is never learned), with the
+      `sgd` group after 277; D-F `ftrl` under a half-life tracks a break at
+      AdaGrad's pace (a limit to decide: document or forget the
+      accumulators). Defect cells are strict xfails running the real bound;
+      none may remain at 1.4.0.
 - [ ] 279. **Smaller build caches: no debug info for dependencies** -- the
       user, 2026-10-25 ("Why do agents take so much disk I though we shared
       caches", then "Yes"). Each worktree slot keeps its own `target/` (a
