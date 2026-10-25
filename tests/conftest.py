@@ -47,6 +47,43 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.oracle)
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--oracle-shard",
+        default=None,
+        metavar="I/N",
+        help=(
+            "run the I-th of N shards of the selected tests (1-based), dealt round-robin "
+            "over their sorted node ids, so every test is in exactly one shard: how "
+            ".github/workflows/oracles.yml splits `-m oracle_grid` across jobs"
+        ),
+    )
+
+
+def oracle_shard(spec: str, nodeids: list[str]) -> set[str]:
+    """The node ids of shard ``I`` of ``N`` (``spec`` is ``"I/N"``, 1-based):
+    every ``N``-th of the sorted ids, from the ``I``-th."""
+    i, n = (int(v) for v in spec.split("/"))
+    if not 1 <= i <= n:
+        raise pytest.UsageError(f"--oracle-shard {spec}: expected 1 <= I <= N")
+    return set(sorted(nodeids)[i - 1 :: n])
+
+
+@pytest.hookimpl(trylast=True, specname="pytest_collection_modifyitems")
+def pytest_collection_modifyitems_oracle_shard(config, items):
+    """After ``-m`` has selected, keep this shard's share of what is left.
+    A second implementation of the hook, under a name of its own (pytest
+    reads only names that start with ``pytest_``): the ``oracle``
+    marking above runs first, before ``-m`` reads it."""
+    spec = config.getoption("--oracle-shard")
+    if spec is None:
+        return
+    keep = oracle_shard(spec, [item.nodeid for item in items])
+    dropped = [item for item in items if item.nodeid not in keep]
+    items[:] = [item for item in items if item.nodeid in keep]
+    config.hook.pytest_deselected(items=dropped)
+
+
 @contextlib.contextmanager
 def _build_lock(path: Path):
     """An exclusive lock across processes, where the platform has `flock`.

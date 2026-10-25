@@ -45,7 +45,7 @@ The steps at a glance:
 | [9](#step-9--_specpy-and-specpy) | `python/polars_online/_spec.py`, `spec.py` | the builder | `test_every_rust_kind_has_exactly_one_builder`, and the checks in the step |
 | [10](#step-10--testsapi_surfacetxt) | `tests/api_surface.txt` | the regenerated snapshot | `test_api_surface_matches_the_snapshot`; `test_the_api_snapshot_pins_every_models_output_fields` |
 | [11](#step-11--teststest_modelpy) | `tests/test_<model>.py` | the Python-side oracle | `test_every_builder_has_a_per_model_test_file` |
-| [12](#step-12--per-model-sweeps) | four sweep lists | one entry each | `test_the_sweeps_cover_every_regression_model` |
+| [12](#step-12--per-model-sweeps) | four sweep lists, and `tests/convergence.py` | one entry each; a model that predicts a target registers its convergence: a known-truth stream, a third-party oracle and its classes | `test_the_sweeps_cover_every_regression_model`; `test_every_regression_registers_its_convergence` |
 | [13](#step-13--teststest_model_registrypy) | `tests/test_model_registry.py` | the `MINIMAL` entry | `test_minimal_names_every_builder` |
 | [14](#step-14--teststest_golden_pipelinepy) | `tests/test_golden_pipeline.py` | a spec in `specs()`, and its lines in `GOLDEN` | `test_the_golden_pipeline_pins_every_model` |
 | [15](#step-15--docsmodelsmd-and-readmemd) | `docs/MODELS.md`, `README.md`, `docs/OUTPUTS.md`, `llms.txt` | the model's heading, its row and its API links; its family and field meanings in the OUTPUTS generator; the model count | `test_the_models_page_documents_every_model`, the `test_api_links` pair, the `test_outputs_doc` trio, `test_it_says_how_many_models_there_are` |
@@ -572,13 +572,35 @@ CI's first `measured.json` with `python scripts/budgets.py apply`. And
 `scripts/benchmark.py`'s rows are the README's *Throughput* table: add a
 row for the model if the table should show it.
 
+**A model that predicts a target registers its convergence** in
+`tests/convergence.py`'s `REGISTRY`, once per value of `loss=` if it takes
+one. A registration brings four things: a generator of streams with a known
+truth; an oracle, a third-party batch fit (statsmodels, scikit-learn or
+scipy) of the problem the model means to solve, on the same rows at their
+decayed weights; the classes that apply to it; and one sentence saying what
+the model converges to. `tests/test_convergence.py` then runs it over a
+grid of 50 seeds and asserts on the worst seed, never the median: one
+online pass can be pulled away for good on a share of streams while the
+median looks perfect. The classes are consistency without decay, at the
+rate theory gives; the same fit from a wrong start (a loaded state from
+another regime, an extreme prior, a large level); wild rows, a level shift
+or heavy tails in the first rows; contamination short of the breakdown
+point, for a robust model; and the fit after a break, within a stated
+number of half-lives of the decayed batch fit. Each class reads its bound
+from a table in the test, with the measurement it came from. A model that
+cannot register yet goes into `PENDING` or `NOT_REGISTERED`, with the
+reason.
+
 A regression also goes into `python/polars_online/_check.py`'s
 `_REGRESSIONS`, which `ModelBank.check` reads for `few_rows`. If it does not
 centre its features, measure the level and the spread ratio at which its
 out-of-sample R² falls by 0.05, as the docstring of `check` describes, and add
 them to `_UNCENTRED_LIMITS`.
 
-**Check:** `test_model_registry::test_the_sweeps_cover_every_regression_model`,
+**Check:** `test_convergence::test_every_regression_registers_its_convergence`,
+which reads the models from `test_model_registry.REGRESSIONS` and the
+losses from each builder's signature;
+`test_model_registry::test_the_sweeps_cover_every_regression_model`,
 `test_the_release_workload_builds_every_model`,
 `test_the_memory_budgets_hold_every_model`,
 `test_unsupervised_is_the_models_the_bank_fills_a_target_for` and

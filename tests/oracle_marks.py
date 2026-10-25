@@ -22,9 +22,18 @@ import functools
 from pathlib import Path
 
 #: The modules whose import makes a test module an oracle module: the
-#: third-party libraries, and the tests' own NumPy references.
+#: third-party libraries, the tests' own NumPy references, and the
+#: convergence harness, whose oracles are statsmodels, scikit-learn and scipy.
 ORACLE_MODULES = frozenset(
-    {"scipy", "statsmodels", "sklearn", "reference", "reference_paths", "reference_cluster"}
+    {
+        "scipy",
+        "statsmodels",
+        "sklearn",
+        "reference",
+        "reference_paths",
+        "reference_cluster",
+        "convergence",
+    }
 )
 
 #: The fixture of the tests that run the command line.

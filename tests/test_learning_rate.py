@@ -203,7 +203,7 @@ def test_an_annealed_rate_keeps_lowering_the_excess_loss():
     assert ex[1] * f1 <= ex[0], ex
 
 
-@pytest.mark.extended(reason="50 seeds of 100,000 rows per schedule, each with batch optima")
+@pytest.mark.oracle_grid(reason="50 seeds of 100,000 rows per schedule, each with batch optima")
 @pytest.mark.parametrize("name", sorted(SCHEDULES))
 def test_each_schedule_keeps_lowering_the_worst_seeds_excess_loss(name):
     spec, kind, tau, (f1, f2) = SCHEDULES[name]
@@ -216,7 +216,7 @@ def test_each_schedule_keeps_lowering_the_worst_seeds_excess_loss(name):
     assert worst[2] * f2 <= worst[1], (worst, f2)
 
 
-@pytest.mark.extended(reason="50 seeds of 100,000 rows, each with batch optima")
+@pytest.mark.oracle_grid(reason="50 seeds of 100,000 rows, each with batch optima")
 def test_a_constant_rate_falls_to_its_plateau_and_holds_it():
     """Least mean squares at a constant rate does not converge: it settles
     where each row's step balances the noise, an excess of about ``lr (k +
@@ -287,7 +287,7 @@ def test_pa_reaches_a_realizable_target():
         assert ex[1] < 1e-2 * np.var(y), (mode, ex)
 
 
-@pytest.mark.extended(reason="50 seeds of 100,000 rows, each with batch optima")
+@pytest.mark.oracle_grid(reason="50 seeds of 100,000 rows, each with batch optima")
 def test_pas_excess_on_a_noisy_target_holds_where_c_sets_it():
     """On a noisy target PA has no rate to anneal, so its excess does not fall
     to 0: every row outside the tube moves the fit by up to ``c``. A smaller
@@ -329,7 +329,7 @@ def _passes(spec: dict, x, y, order, epochs: int) -> list[np.ndarray]:
     return out
 
 
-@pytest.mark.extended(reason="the network, and four passes over a LIBSVM set in ten orders")
+@pytest.mark.oracle_grid(reason="the network, and four passes over a LIBSVM set in ten orders")
 @pytest.mark.parametrize(
     "case",
     ["abalone sgd inv_scaling", "abalone sgd adagrad", "abalone ftrl", "a9a ftrl", "a9a sgd"],

@@ -7,8 +7,16 @@ test is extended by ``pytest.mark.extended(reason="...")``, on the test, on
 one of its parameters, or as its module's ``pytestmark``. Every test module
 says which it is in a module-level ``TIER``: ``"essential"`` (no test in it
 is extended), ``"extended"`` (its ``pytestmark`` is), ``"mixed"`` (some
-tests are) or ``"soak"`` (opt-in, ``pytest -m soak``).
-``tests/test_tiers.py`` holds each module's ``TIER`` to its marks.
+tests are), ``"soak"`` (opt-in, ``pytest -m soak``) or ``"oracle_grid"``
+(its ``pytestmark`` is ``pytest.mark.oracle_grid``). ``tests/test_tiers.py``
+holds each module's ``TIER`` to its marks.
+
+The heavy grids against a third-party oracle -- 50 seeds or orders, batch
+fits over long streams, downloaded datasets -- are marked
+``pytest.mark.oracle_grid(reason="...")``. No local run takes them:
+pyproject's ``addopts`` and both tiers of ``scripts/gate.sh`` leave them
+out, and ``.github/workflows/oracles.yml`` runs them on every push, sharded
+across jobs. ``pytest -m oracle_grid`` runs them here.
 
 The property tests run in both tiers; the tier sets how many examples each
 draws. ``HYPOTHESIS_PROFILE`` picks the Hypothesis profile: ``extended``, the
