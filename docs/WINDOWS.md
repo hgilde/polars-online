@@ -35,7 +35,7 @@ the clock's units: numbers on a numeric clock, and durations (`"10s"`, a
 | `po.ewm_mean(x, half_life=, window_size=, reverse=True)` | the rows after *t*, at most `window_size` after it; `window_size` is required | the mirror of `ewm_mean`: each value is held until the next row |
 | `po.ewm_sum(x, ...)`, `po.ewm_sum(x, ..., reverse=True)` | as for the mean in the same direction | `Σ 0.5 ** (age / half_life) · x`, each row counted once at its own time, as Polars' `ewm_sum_by` computes it on distinct stamps; at a repeated stamp every row carries the stamp's total, where `ewm_sum_by`'s is a running sum. A row whose `x` is null, NaN, infinite or beyond 1e100 adds nothing, and gets the window's sum as it stands, where `ewm_sum_by` gives it null |
 | `po.ewm_rate(x, ...)`, `po.ewm_rate(x, ..., reverse=True)` | as for the mean in the same direction | the sum divided by the decayed time the window covers: a quantity per unit of clock. A row whose `x` is null adds nothing, and gets the window's rate as it stands |
-| `po.ewm_quantile(x, quantile=, half_life=, window_size=)`, and with `reverse=True` | as for the mean in the same direction | the quantile at `quantile` of the window's values, each row counted once at its own time with the weight `po.ewm_sum` gives it: the smallest value whose share of the weight, with every value below it, reaches `quantile`. It is read from buckets each spanning a ratio of `e^(1/64)`, so it is within 0.78% of the exact weighted quantile, relatively ([Quantiles and a robust scale](#quantiles-and-a-robust-scale)). A row whose `x` is null adds nothing, and gets the window's quantile as it stands |
+| `po.ewm_quantile(x, quantile=, half_life=, window_size=)`, and with `reverse=True` | as for the mean in the same direction | the quantile at `quantile` of the window's values, each row counted once at its own time with the weight `po.ewm_sum` gives it: the smallest value whose share of the weight, with every value below it, reaches `quantile`. It is read from buckets each spanning a ratio of at most `e^(1/64)`, so it is within 0.78% of the exact weighted quantile, relatively ([Quantiles and a robust scale](#quantiles-and-a-robust-scale)). A row whose `x` is null adds nothing, and gets the window's quantile as it stands |
 | `po.ewm_var(x, ...)`, `po.ewm_std(x, ...)` | as for `po.ewm_mean`; they look back only | the variance about `po.ewm_mean`, each value weighed as the mean weighs it, and its square root. With `bias=False`, the default, the variance is corrected for the weights' number and inequality as Polars' `ewm_var` corrects it, so a window that one row's weight fills is null. On a clock that steps by 1 a row, with `half_life` in rows, they are Polars' `ewm_var` and `ewm_std` with `adjust=False` (Polars before 1.44 gave the first row 0.0 under `bias=False` where it now gives null, as these do). A window that holds one value gives 0 exactly |
 | `po.increment(x)` | back to the last row with a value, within the group and session | `x_t − x_{t−1}`: null on a session's first row and after a restart, and in seconds when `x` is a temporal column |
 
@@ -559,7 +559,8 @@ row: about 11 KB for a window of 1,000 rows, where this costs 24 bytes.
 | `reverse=True` | as under a `window_size` | as under a `window_size` | 1.9 times `po.ewm_sum`'s |
 
 The times are the best of five runs over 2,000,000 rows of one group,
-interleaved, through `po.stream.with_windows` on a shared laptop. A read
+interleaved, through `po.stream.with_windows`, measured on 2026-10-24 on a
+shared laptop at a load average of 8 to 12. A read
 walks the buckets an octave at a time, then the one octave's 64 buckets, so
 a quantile costs about as much as its window's values span octaves.
 

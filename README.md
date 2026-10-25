@@ -248,12 +248,12 @@ These hold for every spec, however a bank is run:
 | **bounded memory** | memory grows with the models' state and the rows a delay or a window holds, and never with the number of rows that have passed ([Memory](#memory)) |
 | **any chunking** | one chunk or a thousand, with or without a save and resume in the middle, gives the same numbers, to the last bit. Only which rows carry the coefficients can change: `coef`, and `support_coef` and the standard errors beside it ([Row order and the two guarantees](#row-order-and-the-two-guarantees)) |
 | **any thread count** | the thread count, set with a bank's `threads=` (or `POLARS_ONLINE_MAX_THREADS` for the default pool), changes only the speed. Each spec and group is one task on the bank's thread pool: with 64 groups, 14 threads process 7.3× the rows per second of one ([Parallelism](#parallelism)) |
-| **unusable values** | NaN, ±inf and any magnitude above `1e100` count as null, so a sentinel value never reaches a model. A null skips an update but never stops the clock ([Nulls, and three ways to hold a row back](#nulls-and-three-ways-to-hold-a-row-back)) |
+| **unusable values** | in a feature, target or weight, NaN, ±inf and any magnitude above `1e100` count as null, so a sentinel value never reaches a model. A null skips an update but never stops the clock ([Nulls, and three ways to hold a row back](#nulls-and-three-ways-to-hold-a-row-back)) |
 | **zero weights** | a row of weight 0 is scored and moves the clock, but teaches the model nothing ([Weights](#weights)) |
 | **one `weight_sum`** | `weight_sum` means the same in every model, so one `min_weight` means the same for every spec in a bank ([Warm-up](#warm-up)) |
 | **a clock policy** | a spec with a clock caps each step at `gap_cap`, and applies `session_gap` at a session boundary. A step back the model would learn from is refused, naming the row, unless `restart_after_step_back` makes it a restart ([Sessions, gaps and steps back](#sessions-gaps-and-steps-back)) |
 | **named mistakes** | every keyword is checked against its type when the spec is built, and a missing column is reported, with the spec that wanted it and the role it had there, before the bank learns any row |
-| **tested** | 2,575 Rust tests and 7,072 Python cases (counted on 2026-10-24), held to independent libraries such as scikit-learn, statsmodels and river and to adversarial streams, run on macOS, Windows and Linux at every push ([Testing](#testing)) |
+| **tested** | 2,650 Rust tests and 7,210 Python cases (counted on 2026-10-24), held to independent libraries such as scikit-learn, statsmodels and river and to adversarial streams, run on macOS, Windows and Linux at every push ([Testing](#testing)) |
 
 ### Install
 
@@ -268,7 +268,7 @@ pip install polars-online      # or: uv add polars-online
 | Python | 3.12 or newer: one wheel per platform covers every CPython from 3.12 on ([Testing](#testing) lists the versions CI runs) |
 | Polars | `polars>=1.37.0,<3`: the range the test suite has measured, which is not a guarantee. A weekly job and every release run the test suite on the newest Polars ([Versioning and the Polars pin](#versioning-and-the-polars-pin)) |
 | depends on | nothing beyond `polars` at run time, since the wheel carries its own copy of Polars' Rust code |
-| numpy | needed only by `ModelBank.gram()` and the `po.gram`, `po.corr` and `po.sim` helpers: to use them, install it with the package, as `pip install "polars-online[numpy]"`. Without it, those calls raise `ModuleNotFoundError` |
+| numpy | needed only by `ModelBank.gram()`, the `po.gram`, `po.corr`, `po.sim` and `po.gbdt` helpers, and `bank.check()`'s collinearity and leakage checks: to use them, install it with the package, as `pip install "polars-online[numpy]"`. Without it, those calls raise `ModuleNotFoundError`, and `bank.check()` reports the two checks as `not_checked` |
 | wheels | macOS (arm64, x86_64), Windows x64, and Linux (x64 glibc and musl, aarch64 glibc), on PyPI and on each GitHub release beside the command-line binaries. On any other platform, the install builds the package from its source distribution, which needs a stable Rust toolchain ([rustup](https://rustup.rs)) |
 | size | 24 to 30 MB to download and 70 to 98 MB installed, by platform, for 1.2.0 |
 
@@ -437,9 +437,10 @@ intercept, x0, x1, venue X: [1.02, 1.99, -1.01, -0.05]
 A target is often one value less another, such as the next five minutes'
 mean trade price less the mid at the row. Build it in one of two ways, by
 when its value is known. Only a model that regresses its targets takes a
-target expression. Four kinds of model refuse one by name: a model that
-reads only its features, `ew_class`, `seqtest`, and an `ftrl` or `sgd`
-fitting a probability or a count.
+target expression. Four kinds of model refuse one. Two take no targets at
+all: a model that reads only its features, and `ew_class`. Two refuse one
+naming the expression: `seqtest`, and an `ftrl` or `sgd` fitting a
+probability or a count.
 
 **To use a target computed from the rows after its row, write it as a
 Polars expression and put it in the spec's `targets`.** Its `.alias` names
@@ -670,7 +671,9 @@ name.** A `UInt64` value past the largest `Int64` is refused by row. An
 values fit, or after subtracting an origin. A `UInt128` column is refused
 wherever it is in the frame, since no frame carrying one can reach the
 bank. A later chunk whose clock is a float, or an integer of another width,
-is refused by name.
+is refused by name. A null, NaN or infinite clock value is refused by row.
+A feature may be null and its row skipped, but a clock value cannot: every
+later row's step is measured from it.
 
 #### Sessions, gaps and steps back
 
@@ -1100,9 +1103,10 @@ maintain_order='left': no warning
 and walks the query's steps only when that names a join, an aggregation, a
 `unique` or a `sort`. A step followed by a `sort` counts as ordered, unless
 that sort is by several keys without `maintain_order=True`. Such a sort
-leaves rows with equal keys in no particular order: 2,109 of 10,000 rows
-moved when measured. A join with `maintain_order="left"` is followed on its
-left side only. A query Polars cannot serialize passes without a warning,
+leaves rows with equal keys in no particular order. Sorted by two keys on
+Polars 1.44.2 and again on 2.0.0, 2,109 of 10,000 rows came out in another
+order than a stable sort's; sorted by one key, none did. A join with
+`maintain_order="left"` is followed on its left side only. A query Polars cannot serialize passes without a warning,
 and the check never fails a run. For a query whose order you know, silence
 the warning with
 `warnings.simplefilter("ignore", po.OrderNotGuaranteedWarning)`.
@@ -1220,7 +1224,8 @@ groups. The bank refuses a column of another kind by name, and keeps the
 kind in its state: integer, float, text, boolean, or a temporal type with
 its unit and zone. An `Int32` after an `Int64`, or a `Categorical` after a
 `String`, is the same kind and goes on. `bank.groups()` and the other
-readers list an integer column's keys as numbers, the null group first.
+readers return the keys as text, an integer column's in numeric order, the
+null group first.
 
 **Without `group_close`, the bank keeps every group it has seen.** To free
 the groups that have gone quiet, find them with `bank.groups()` and drop
@@ -1510,10 +1515,12 @@ weight_sum: 400 rows, 400 equal to the bit
 
 ### Nulls, and three ways to hold a row back
 
-A null skips an update but never stops the clock. NaN, ±inf and any
-magnitude above `1e100` count as null, so sentinel values never reach a
-model. A null target is one of three ways to keep a row from teaching a
-model, beside a weight of 0 and `predict`:
+A null skips an update but never stops the clock. In a feature, target or
+weight, NaN, ±inf and any magnitude above `1e100` count as null, so sentinel
+values never reach a model. A clock value cannot be null, and is refused by
+row instead ([Clock types and units](#clock-types-and-units)). A null target
+is one of three ways to keep a row from teaching a model, beside a weight of
+0 and `predict`:
 
 | | the row is scored | the clock advances | the fit moves | `weight_sum` | use it to |
 |---|---|---|---|---|---|
@@ -1588,7 +1595,7 @@ run:
 
 | tool | what it makes | where it runs | subsection |
 |---|---|---|---|
-| the window operators of [`po.ops`](https://hgilde.github.io/polars-online/ops.html) | exponentially weighted means, variances, sums and rates over a window of the clock, looking back or ahead | in [`po.stream.with_windows`](https://hgilde.github.io/polars-online/stream.html#polars_online.stream.with_windows), before the bank, as columns; or in a spec's `targets`, as a target the bank computes | [Making features and targets from windows](#making-features-and-targets-from-windows) |
+| the window operators of [`po.ops`](https://hgilde.github.io/polars-online/ops.html) | exponentially weighted means, variances, sums, rates and quantiles over a window of the clock, looking back or ahead | in [`po.stream.with_windows`](https://hgilde.github.io/polars-online/stream.html#polars_online.stream.with_windows), before the bank, as columns; or in a spec's `targets`, as a target the bank computes | [Making features and targets from windows](#making-features-and-targets-from-windows) |
 | [`po.stream.refresh_time`](https://hgilde.github.io/polars-online/stream.html#polars_online.stream.refresh_time) | one grid for series that tick at their own times | before the bank | [Series that tick at their own times](#series-that-tick-at-their-own-times) |
 
 ### Making features and targets from windows
@@ -1598,15 +1605,17 @@ each row is computed over the rows near it on the clock. A window that
 looks back from the row makes a feature, and one that looks ahead, under
 `reverse=True`, makes a target. `po.ewm_mean` in either direction is a
 time-weighted mean, as Polars' `ewm_mean_by` computes one, and the sums and rates divide
-into weighted means such as a VWAP (volume-weighted average price). Each
-operator keeps running sums, so it does the same work on a row however long
-its window.
+into weighted means such as a VWAP (volume-weighted average price).
+`po.ewm_quantile` is the weighted quantile of the window's values, such as
+a median that a few wild values do not move. Each operator keeps running
+sums, or for the quantile a sketch of buckets, so it does the same work on
+a row however long its window.
 
 [docs/WINDOWS.md](docs/WINDOWS.md) shows each part of this with a recipe.
-Its recipes hold the nine operators to Polars' own, and show which ends of
-a window are in and what a gap does to a window. Others fit a window
-target beside its column form, make features in units of their spread,
-and resume a window run.
+Its recipes hold the operators to Polars' own and the quantile to numpy's
+weighted quantile. They show which ends of a window are in and what a gap
+does to a window. Others fit a window target beside its column form, make
+features in units of their spread, and resume a window run.
 
 **To add windows as columns, call `po.stream.with_windows` before the
 bank.** It takes formulas as `with_columns` does, computes them over the
@@ -1771,7 +1780,7 @@ print(f"on a grid every 0.1: corr {moves.corr()['AAA'][1]:.2f}, {moves.corr()['A
 ```text
 1064 refresh times from 5835 ticks
 on the refresh grid: corr 0.34, 0.32, 0.36; AAA on BBB 0.27, on CCC 0.23
-on a grid every 0.1: corr 0.03, 0.02, 0.03
+on a grid every 0.1: corr 0.01, 0.02, 0.02
 ```
 
 The fine grid finds almost no correlation, since in most of its steps one
@@ -2050,6 +2059,8 @@ run goes, and `--quiet` turns it off. After `wrote`, a run prints a line
 for each spec that ended with groups not ready, and nothing for the
 others. Such a line reads
 `spec "ridge": 2 groups whose last row was withheld (below_min_weight 2)`.
+A spec with groups whose smallest data share is below one half adds
+`; 3 groups with support_coef_min < 0.5` to its line.
 
 **The same file builds the same bank in Python**, as
 `po.ModelBank(tomllib.load(f)["specs"])` with the file opened in binary
@@ -2905,13 +2916,12 @@ reference](https://hgilde.github.io/polars-online/corr.html):
 
 | kind | function | what it gives |
 |---|---|---|
-| input | `matrix` | a correlation matrix from an array, a `gram()` dict, or a closed row |
 | shrinkage | `shrink` | Ledoit-Wolf shrinkage toward a constant-correlation (or identity) target, and its weight |
 | transform | `to_z`, `from_z` | Fisher's transform and its inverse, clipped so a degenerate ±1 is finite |
 | spectrum | `spectral`, `from_spectral` | the top eigenpairs, and the completion back to a correlation matrix |
 | spectrum | `absorption` | the absorption ratio: how much of the variance the top `k` eigenpairs carry |
 | spectrum | `mp_edge`, `mp_density` | the Marchenko–Pastur edges and density: what pure noise gives |
-| spectrum | `shift` | the standardised absorption shift, `(fast − slow) / scale` |
+| spectrum | `absorption_shift` | the standardised absorption shift, `(fast − slow) / scale` |
 | one number | `equicorr` | [`deco`](docs/MODELS.md#deco--one-correlation-for-the-whole-matrix)'s one number for the whole matrix, offline |
 | one number | `equicorr_row` | the equicorrelation estimate of one standardised row, the `u` `deco` computes per row |
 | one number | `equicorr_loglik` | the Gaussian log-density of a standardised row under an equicorrelation matrix |
@@ -2941,7 +2951,7 @@ wrong with the data,** with what to do about each finding.
 [docs/DATA-QUALITY.md](docs/DATA-QUALITY.md) has a section on each
 finding. An [`audit`](docs/MODELS.md#audit--what-a-streams-columns-hold)
 spec in the same bank counts what no model keeps, so run it beside the
-models in the same pass. It keeps about 10 KiB of state a column,
+models in the same pass. It keeps about 14 KiB of state a column,
 whatever the rows. Here three faults are planted in `df`: a sentinel, a
 missing feature and a constant one. An audit and a ridge regression learn
 from the faulty file, and `check()` names each fault.
@@ -3612,7 +3622,9 @@ column per spec, which is what `po.eval.compare_specs` reads, and one state
 file, `grid.state`, holds them all. `df`'s target is built from `x0` and
 `x1`, so the set of those two scores best, and adding `x2`, which plays no
 part, scores a little lower.
-This code uses the file `ticks.parquet` from [Example data](#example-data):
+This code is a script of its own, run in a new process, since Polars reads
+`POLARS_MAX_THREADS` when it is first imported. It uses the file
+`ticks.parquet` from [Example data](#example-data):
 
 ```python
 import os
@@ -3831,7 +3843,9 @@ memory-mapped local file.
 **To fit a run in less memory, give Polars fewer threads and the bank every
 core.** Polars sizes its read-ahead from `POLARS_MAX_THREADS`, while the
 bank's `threads` changes only the bank's speed.
-This code uses the file `ticks.parquet` from [Example data](#example-data):
+This code is a script of its own, run in a new process, since Polars reads
+`POLARS_MAX_THREADS` when it is first imported. It uses the file
+`ticks.parquet` from [Example data](#example-data):
 
 ```python
 import os
@@ -3924,7 +3938,9 @@ The comparison ran on one generated stream of 100,000 rows with `k = 20`,
 on 2026-09-08. Each contender ran at its best over a sweep of its own
 settings, by `scripts/sklearn_comparison.py` on scikit-learn 1.9.0.
 `ewridge` solves on every row here, and its rate was re-measured on
-2026-09-29. The noise ceiling is the R² of the generating signal itself:
+2026-09-29
+([PERFORMANCE §30](docs/PERFORMANCE.md#30-where-every-row-solves-2026-09-29)).
+The noise ceiling is the R² of the generating signal itself:
 
 | contender | R² stationary | R² drifting | rows/sec | what a prediction saw |
 |---|---:|---:|---:|---|
@@ -3992,8 +4008,8 @@ polars-online does two things to a stream itself
 ([Preparing a stream](#preparing-a-stream)). `po.stream.refresh_time` puts
 series that tick at their own times on one grid, and
 `po.stream.with_windows` computes exponentially weighted means, variances,
-sums and rates over a window of the clock. It deliberately does **not**
-provide the rest:
+sums, rates and quantiles over a window of the clock. It deliberately does
+**not** provide the rest:
 
 | not provided | use instead |
 |---|---|
@@ -4109,7 +4125,8 @@ unchanged.** Both libraries bin each feature before they boost, and
 binning reads every row. `po.gbdt` reads the rows in batches, in Rust, and
 hands each library one batch at a time.
 [docs/GBDT.md](docs/GBDT.md) says how it bins, what each library is
-handed, and what Polars' read-ahead does to its memory. `po.gbdt` is
+handed, which objective to give each train call (such as a Huber loss),
+and what Polars' read-ahead does to its memory. `po.gbdt` is
 unstable: its keywords may change in any release.
 
 This code writes a training file and a validation file whose target
@@ -4211,6 +4228,18 @@ the model's stated definition, the update equations its docstring gives:
 | a default or a meaning changed, or a stable name removed | major |
 | a change to an unstable part | minor, declared in the CHANGELOG |
 
+**One default has changed in a minor release, against the table's row for
+a changed default.** Release 1.3.0 moved `huber_scale` from `"rms"` to
+`"mad"`. It is the scale `huber` and `sgd(loss="huber")` draw their cut in,
+and Huber's loss caps a row's pull at `huber_delta` times that scale. A root
+mean square is set by one wild row, so wild rows widened the cut meant to
+catch them, and the fit drifted toward least squares. A median absolute
+deviation moves by a wild row's weight, whatever the size of its miss.
+`huber_scale="rms"` restores the earlier numbers to the bit, and a state
+saved under the old default loads under it. The CHANGELOG declares the
+move with its size, and [MODELS.md](docs/MODELS.md#huber--quantile--robust-regression)
+gives the slopes measured under each scale.
+
 **A spec parameter renamed after 1.0 is forwarded by a table, and any
 other renamed name by a forwarding of its own.** The table reads a spec
 builder's old keyword, a spec dict's old key and a TOML file's old key as
@@ -4230,10 +4259,14 @@ layout's fixtures load, continue to the bit, and save back byte for byte.
 A previous layout's fixtures load through its loader, continue to the bit,
 and save back as the current layout's fixture bytes of the same case. So
 the loader turns a state into exactly what this build writes from the same
-rows. The two unstable formats, a window run's state and a formula target
-inside a bank's, are outside that promise. A 0.x state is refused by its
-schema version, with an error that says to refit it from its input
-([Saving, loading and serving](#saving-loading-and-serving)).
+rows. A windowed state is the one exception, declared in the CHANGELOG. A
+windowed state saved by 1.2.0 or earlier loads, and its first read is the
+one it saved. Once a snapshot taken after the load is the window's edge,
+its windowed outputs continue within 1e-12, not to the bit, because such a
+state never recorded the per-row decay factors. The two unstable formats,
+a window run's state and a formula target inside a bank's, are outside that
+promise. A 0.x state is refused by its schema version, with an error that
+says to refit it from its input ([Saving, loading and serving](#saving-loading-and-serving)).
 
 **Moving the Polars floor up needs a minor release, and dropping a Polars
 major version a major one.** A resolver that installs the new release
@@ -4319,10 +4352,12 @@ values at ±1e8, zero weights and tiny groups:
 | zero weights and one `weight_sum` | every model held to the same `weight_sum` recursion (`crates/online-core/tests/model_contract.rs`) |
 | each model's numbers | a reference written from its update equations, and another library wherever one computes the same quantity, such as statsmodels, scipy and [river](https://riverml.xyz) |
 
-The suite has 2,575 Rust tests and 7,072 pytest cases, counted on
+The suite has 2,650 Rust tests and 7,210 pytest cases, counted on
 2026-10-24. It runs on Linux at Python 3.12, 3.13 and 3.14, and on macOS
-and Windows at 3.12 and 3.14, at every push to `main` and every pull
-request. [docs/TESTING.md](docs/TESTING.md) is the ledger of what each part
+and two Windows builds (Server 2025 and Server 2022) at 3.12 and 3.14, at
+every push to `main` and every pull request. Windows runs twice because
+its math library is part of the operating system, so each build's last
+bits can differ. [docs/TESTING.md](docs/TESTING.md) is the ledger of what each part
 proves: every reference and its agreement, every invariant, and [where the
 suite runs](docs/TESTING.md#where-the-suite-runs).
 

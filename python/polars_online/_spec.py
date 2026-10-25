@@ -2883,7 +2883,7 @@ def sgd(
     ``huber_scale``, ``huber_scale_half_life``
         The scale ``s`` and its own memory, as for :func:`huber`: ``"mad"``
         (the default) or ``"rms"``, and a half-life defaulting to the spec's
-        ``half_life``. ``loss = "huber"`` only; refused beside another loss.
+        ``half_life`` (or ``lam``). ``loss = "huber"`` only; refused beside another loss.
         The gradient is clipped at ``huber_delta * s``, so under ``"mad"`` a
         change of level many times the noise is followed at most
         ``learning_rate * huber_delta * s`` a row until the median has

@@ -164,6 +164,19 @@ class TestTheScript:
         built = {"prescott", "nehalem", "sandybridge", "haswell", "skylakex"}
         assert {leg["openblas"].lower() for leg in legs} <= built
 
+    def test_a_forced_core_keeps_its_own_blocking_on_a_zen_4(self):
+        """OpenBLAS 0.3.34 raised a forced Haswell table's `k` step to 512 on
+        an AMD EPYC 9V74 with AVX-512 and overran its kernel's stack buffer
+        (task 273 (a3); OpenMathLib/OpenBLAS#6013, #6021). The block tests
+        `l2_kb == 1024`; every forced leg tells OpenBLAS 2048."""
+        lines = cp.forced_env("Haswell", ["X86_V4", "AVX512_ICL"])
+        assert lines == [
+            "OPENBLAS_CORETYPE=Haswell",
+            "OPENBLAS_L2_SIZE=2048",
+            "NPY_DISABLE_CPU_FEATURES=X86_V4 AVX512_ICL",
+        ]
+        assert cp.L2_UNDER_A_FORCED_CORE != 1024
+
     def test_sde_keeps_the_definition_files_leaves(self):
         assert cp._sde("sde.exe", "-cpuid_in D:/a/cpuid.def") == [
             "sde.exe",

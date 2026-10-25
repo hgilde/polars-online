@@ -96,10 +96,10 @@ def huber(
          - 2.008
        * - 5%
          - 4.050
-         - 2.041
+         - 2.040
          - 2.676
          - 2.039
-       * - 12.6%
+       * - 12.5%
          - 6.975
          - 2.128
          - 4.885
@@ -158,7 +158,7 @@ def huber(
     ``huber_scale_half_life``
         The scale's own memory, a half-life in clock units (a duration on a
         temporal clock), above 0; ``inf`` forgets nothing. Default the spec's
-        ``half_life``. In a series a run of large residuals is either a burst
+        ``half_life`` (or ``lam``). In a series a run of large residuals is either a burst
         of outliers or a new level, and no rule on one row tells the two apart.
         A robust scale treats every row after a level shift as an outlier until
         the median itself has moved, so it holds the fit back for longer than

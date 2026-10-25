@@ -596,7 +596,7 @@ work out what to do. *Because this is a local regression, remember that
 saving the final state may be of limited value* says it, after its reason.
 
 **Lead with the setting and what it produces, and call the result by its
-short name.** *Using `coef_every=1` produces a time series of the betas at
+short name.** *Using `coef_every=0` produces a time series of the betas at
 every row* names the setting, a plain verb and the result. *The thing to
 read is the path the coefficients took, which coef_every=1 writes on every
 row, rather than the state they ended on* put a placeholder subject first,
@@ -763,15 +763,17 @@ Before:
 > before that row. It is a time series, to plot, difference, or compare
 > between two stocks over a day.
 
-After, in the user's words, with code formatting added and one fact
-corrected (§4): a row's betas are the fit *after* learning that row.
+After, in the user's words, with code formatting added and two facts
+corrected (§4). A row's betas are the fit *after* learning that row. And
+every row is now `coef_every=0`: `coef_every` became a clock parameter, as
+`solve_every` is, so 1 now means one of the clock's units.
 
 > Give the same spec a clock (timestamp column `ts`) and `half_life="10m"`
 > and each row's weight halves every ten minutes of `ts`. The fit is now
 > local: it describes the recent past, and it moves from row to row,
 > weighted toward the last few tens of minutes. Because this is a local
 > regression, remember that saving the final state may be of limited
-> value. But using `coef_every=1` produces a time series of the betas at
+> value. But using `coef_every=0` produces a time series of the betas at
 > every row, as they stood after learning that row. This can be used to
 > track the betas over time.
 
@@ -780,7 +782,7 @@ corrected (§4): a row's betas are the fit *after* learning that row.
 | an aside inside a list | *a clock, the timestamp column ts, and a finite half_life*: three things, apparently | *a clock (timestamp column ts) and half_life="10m"*: two | §5, an aside goes in parentheses |
 | the value | *a finite half_life* | `half_life="10m"` | §5, give the value |
 | what the final state is good for | *serving from the final state predicts with the most recent fit alone* | *Because this is a local regression, remember that saving the final state may be of limited value* | §5, the advice a mechanism implies |
-| the setting and its result | *The thing to read is the path the coefficients took, which coef_every=1 writes on every row* | *using coef_every=1 produces a time series of the betas at every row* | §5, lead with the setting |
+| the setting and its result | *The thing to read is the path the coefficients took, which coef_every=1 writes on every row* | *using coef_every=0 produces a time series of the betas at every row* | §5, lead with the setting |
 | where a fact sits | *weighted toward the last few tens of minutes* in the sentence about serving | the same words in the sentence about the fit they describe | §2, every paragraph serves its heading |
 | the uses | *to plot, difference, or compare between two stocks over a day* | *to track the betas over time* | §5, one idea per sentence |
 | how the sentences connect | six facts in a row | *Because …, remember … But …*: an argument | |
