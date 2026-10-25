@@ -263,6 +263,86 @@ class TestArithmetic:
             assert x0["corr"].null_count() == nulls, rows
 
 
+class TestMinSettledFrac:
+    """``min_settled_frac`` withholds what ``marginal`` reports while the
+    stream is less settled than it, as ``min_weight`` does: the table's
+    ``corr``, ``beta``, ``t_stat``, ``t_stat_serial`` and split, at the
+    fraction the next row would read, ``1 - 2 ** (-T / half_life)`` over the
+    ``T`` clock units the decay has covered. It was accepted and did nothing:
+    10 rows at a half-life of 50 read the same table with or without 0.9
+    (task 278, the user's decision of 2026-10-25)."""
+
+    GATED = ["corr", "beta", "t_stat", "t_stat_serial", "split_gain", "split_at", "split_gain_t"]
+
+    def kw(self, **extra):
+        # Lags with a serial rule and bins, so every gated column is there.
+        return dict(
+            half_life=50.0,
+            lags=[1],
+            serial_rule="truncated",
+            bin_edges=[[0.0], [0.0], [0.0]],
+            **extra,
+        )
+
+    def test_withholds_the_derived_statistics_until_the_stream_settles(self):
+        df = frame(n=200, seed=7)
+        # On the row clock the first row brings no step, so after `n` rows the
+        # decay has covered `n - 1`: at 0.5 the table opens at 51 rows, where
+        # `T` is the half-life and the fraction exactly 0.5 (the gate
+        # withholds strictly below it, as the row gate does).
+        for rows, withheld in ((10, True), (50, True), (51, False), (200, False)):
+            gated = po.ModelBank([spec(**self.kw(min_settled_frac=0.5))])
+            plain = po.ModelBank([spec(**self.kw())])
+            gated.fit_predict(df.head(rows))
+            plain.fit_predict(df.head(rows))
+            got, want = gated.marginal("m"), plain.marginal("m")
+            rest = [c for c in want.columns if c not in self.GATED]
+            # The moments are reported either way, and the gate moves no
+            # learning: every column it leaves is the ungated run's.
+            assert got.select(rest).equals(want.select(rest)), rows
+            if withheld:
+                assert got.select(self.GATED).null_count().sum_horizontal().item() == (
+                    len(self.GATED) * got.height
+                ), rows
+                # The ungated table has the numbers the gate withholds.
+                assert (
+                    want.select("corr", "beta", "split_gain").null_count().sum_horizontal().item()
+                    == 0
+                )
+            else:
+                assert got.equals(want), rows
+
+    def test_a_closed_group_is_gated_by_its_own_settled_fraction(self):
+        # Group "a" closes after 30 rows (29 of decay, 0.33 settled), group
+        # "b" after 80 (79, 0.67); a lone "c" row closes "b".
+        df = frame(n=111, seed=8).with_columns(g=pl.Series(["a"] * 30 + ["b"] * 80 + ["c"]))
+        kw = self.kw(group="g", group_close="monotone")
+        gated = po.ModelBank([spec(**kw, min_settled_frac=0.5)])
+        plain = po.ModelBank([spec(**kw)])
+        gated.fit_predict(df)
+        plain.fit_predict(df)
+        got, want = gated.closed_groups(), plain.closed_groups()
+        assert got["group"].to_list() == ["a", "b"]
+        for col in self.GATED:
+            a, b = got[f"pair_{col}"].to_list()
+            assert all(v is None for v in a), col
+            assert b == want[f"pair_{col}"][1].to_list(), col
+        assert got["pair_cov"].equals(want["pair_cov"])
+        assert all(v is not None for v in want["pair_corr"][0].to_list())
+
+    def test_a_lam_settles_as_its_half_life_does(self):
+        # lam = 2 ** (-1 / 50) is a half-life of 50: the same rows open.
+        df = frame(n=60, seed=9)
+        lam = 0.5 ** (1 / 50)
+        for rows, withheld in ((50, True), (52, False)):
+            bank = po.ModelBank(
+                [spec(**{**self.kw(min_settled_frac=0.5), "half_life": None, "lam": lam})]
+            )
+            bank.fit_predict(df.head(rows))
+            nulls = bank.marginal("m")["corr"].null_count()
+            assert (nulls == 6) is withheld, rows
+
+
 class TestPlumbing:
     def test_every_surface_runs_it(self, tmp_path, online_cli):
         df = frame(n=500, null_target_every=7, weights=True, clock=True, seed=10)

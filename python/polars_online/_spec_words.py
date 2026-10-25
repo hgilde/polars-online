@@ -114,14 +114,15 @@ def words_refusal(who: str, key: str, got: str, words: Sequence[str], hint: Any 
 #: Where ``inf`` meant something until task 120 (2026-09-28), and the Rust
 #: side now refuses it with a message that names what to write instead:
 #: ``half_life = "inf"`` or a finite cap, and ``"reset"``. The builder passes
-#: these to it rather than say only "must be finite".
-_INF_REFUSED_BY_RUST = frozenset({"gap_cap", "session_gap"})
+#: these to it rather than say only "must be finite". ``min_weight`` joined
+#: them in task 278 (the user, 2026-10-25): a floor at ``inf`` withheld every
+#: row for good, and the Rust side's refusal says why.
+_INF_REFUSED_BY_RUST = frozenset({"gap_cap", "session_gap", "min_weight"})
 
 _INF_OK: dict[str, frozenset[str]] = {
     "*": frozenset(
         {
             "half_life",
-            "min_weight",
             "average_eta",
             # The noise gate at `inf` is off: no ratio is above it.
             "max_error_inflation",

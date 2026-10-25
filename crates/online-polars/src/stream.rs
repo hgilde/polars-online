@@ -366,8 +366,9 @@ impl AnyModel {
     /// `ewridge` and `robust` count their jittered or failed factorizations,
     /// `lasso` its coordinate descents that ran out of sweeps, `ew_class` the
     /// rows whose scoring met a failed factorization, `hmm` the rows its
-    /// filter could not evaluate, and `bocpd` the rows whose predictive could
-    /// not be. Every other model reports 0 because it counts nothing, not
+    /// filter could not evaluate, `bocpd` the rows whose predictive could
+    /// not be, and `kmeans` and `hmm` the seeding's Lloyd runs that stopped
+    /// at their cap short of a fixed point (task 278, D7). Every other model reports 0 because it counts nothing, not
     /// because nothing can fail: `kalman` inverts an innovation variance, and
     /// `ew_cov` solves for `mahal` and `partial_corr` (review 2026-09-12, S8).
     pub fn solve_failures(&self) -> u64 {
@@ -378,6 +379,7 @@ impl AnyModel {
             AnyModel::EwClass(m) => m.solve_failures,
             AnyModel::Hmm(m) => m.solve_failures,
             AnyModel::Bocpd(m) => m.solve_failures,
+            AnyModel::KMeans(m) => m.solve_failures,
             AnyModel::Rls(_)
             | AnyModel::Kalman(_)
             | AnyModel::Ftrl(_)
@@ -385,7 +387,6 @@ impl AnyModel {
             | AnyModel::Sgd(_)
             | AnyModel::Pa(_)
             | AnyModel::Holt(_)
-            | AnyModel::KMeans(_)
             | AnyModel::Micro(_)
             | AnyModel::SeqTest(_)
             | AnyModel::Marginal(_)
@@ -2261,6 +2262,26 @@ impl Stream {
                     .flatten()
                     .find_map(ResidWindow::over_budget)
             })
+    }
+
+    /// Whether `min_settled_frac` withholds what instance `i` reports from its
+    /// state as it stands -- `marginal`'s table, whose rows carry nothing to
+    /// withhold (task 278). The fraction is the one the next row would read,
+    /// as [`Self::readiness`] gives it: the clock the decay has covered, the
+    /// rows held under `embargo` counted. The row gate's test, so the two
+    /// open together.
+    pub fn settled_withholds(&self, spec: &Spec, i: usize) -> bool {
+        let min_settled = spec.min_settled_frac_or_default();
+        if min_settled <= 0.0 {
+            return false;
+        }
+        let Some(&decay) = self.decays.get(i) else {
+            return false;
+        };
+        let time = self.persisted.decay_time.get(i).copied().unwrap_or(0.0);
+        let held = self.persisted.pending_clock.get(i).copied().unwrap_or(0.0);
+        let settled = settled_frac(decay, time + held);
+        settled.is_finite() && settled < min_settled
     }
 
     /// Summed over this stream's model instances (one per half-life).

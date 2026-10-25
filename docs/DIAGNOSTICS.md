@@ -1590,8 +1590,9 @@ same names:
 
 Two switches choose among a grid's slots as the stream runs, by each
 slot's exponentially weighted out-of-sample error so far. `emit_selected`
-commits to the best slot, and a spec with one slot per target refuses it.
-`emit_averaged` hedges across all of them.
+commits to the best slot. `emit_averaged` hedges across all of them. A
+spec with one slot per target refuses both, since one slot leaves nothing
+to choose or average.
 
 | switch | fields, one per target | what it gives |
 |---|---|---|

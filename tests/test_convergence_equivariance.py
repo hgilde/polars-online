@@ -26,9 +26,10 @@ deviation from the bits is therefore a constant reached by the target, the
 defect this class exists for, and the tests hold the bits, not a tolerance.
 
 **A parameter in the target's units is scaled with it.** Theory maps such a
-parameter, and the builder documents its units: ``lasso``'s penalties and
-its ``tol``, ``pa1``'s ``c``, ``kalman``'s ``obs_var`` (squared), ``ftrl``'s
-``alpha`` and ``beta``, ``sgd``'s ``clip_gradient`` (the squared loss's
+parameter, and the builder documents its units: ``lasso``'s penalties (its
+``tol`` is relative to the target's spread, so it is not mapped),
+``pa1``'s ``c``, ``kalman``'s ``obs_var`` (squared), ``ftrl``'s ``alpha``
+and ``beta``, ``sgd``'s ``clip_gradient`` (the squared loss's
 gradient is the residual times the feature) and its learning rate under the
 sign-valued losses (a step of ``lr * psi * z`` moves a coefficient by the
 rate whatever the target's scale). ``Y_SCALE`` builds every spec at a scale
@@ -139,9 +140,11 @@ Y_SCALE: dict[str, Builder] = {
     "ewridge_standardized": lambda c, **kw: po.spec.ewridge("m", standardize=True, **_COMMON, **kw),
     "ewridge_window": lambda c, **kw: po.spec.ewridge("m", window_size=200.0, **_COMMON, **kw),
     "rls": lambda c, **kw: po.spec.rls("m", **_COMMON, **kw),
-    # The L1 threshold and the descent's `tol` are in the target's units.
+    # The L1 threshold is in the target's units; the descent's `tol` is
+    # relative to the target's spread, so the default is the same at every
+    # scale (task 278, D3: it was in the target's units, and mapped here).
     "lasso": lambda c, **kw: po.spec.lasso(
-        "m", penalties=[0.1 * c, 0.01 * c, 0.0], tol=1e-10 * c, **_COMMON, **kw
+        "m", penalties=[0.1 * c, 0.01 * c, 0.0], **_COMMON, **kw
     ),
     "kalman": lambda c, **kw: po.spec.kalman("m", coef_half_life=200.0, **_COMMON, **kw),
     "kalman_obs_var": lambda c, **kw: po.spec.kalman(
@@ -280,6 +283,32 @@ class TestPowerOfTwoTargetScale:
         for k in (-20, 20):
             c = 2.0**k
             assert_scaled(base, fit(Y_SCALE[model](c), x, y * c), c, f"{model} at 2^{k}")
+
+    def test_the_lassos_default_descent_scales_to_the_bit_with_its_counts(self):
+        # The descent's `tol` is relative to the target's spread, so the
+        # default descent stops on the same sweep at every scale: the fit is
+        # bitwise the unscaled one scaled, and `solve_failures` counts the
+        # same cap hits. While `tol` was in the target's units (task 278,
+        # D3), a target near 1e-9 met it after a sweep: 0.20 of the spread
+        # off at 2^-30 and 1e-3 at 2^-20 (0.57 and 1.05e-3 on this stream),
+        # with no descent counted, and 16 counted at 2^20 and up against 10
+        # at scale 1 (measured 2026-10-25).
+        x, y = stream(0, N_FULL)
+
+        def run(c: float) -> tuple[pl.DataFrame, int]:
+            bank = po.ModelBank([Y_SCALE["lasso"](c)])
+            cols: dict[str, Any] = {f: x[:, i] for i, f in enumerate(FEATURES)}
+            out = bank.fit_predict(pl.DataFrame({**cols, "y": y * c}))["m"].struct.unnest()
+            return out, int(bank.solve_failures()["solve_failures"].sum())
+
+        base, counted = run(1.0)
+        print("lasso at scale 1:", counted, "descents counted")
+        assert counted > 0, "no descent ran out of sweeps: the cap's path did not run"
+        for k in (-30, -20, 20, 30):
+            c = 2.0**k
+            out, failures = run(c)
+            assert_scaled(base, out, c, f"lasso at 2^{k}")
+            assert failures == counted, (k, failures, counted)
 
     @pytest.mark.extended(reason="a grid: every model at six scales over five streams")
     @pytest.mark.parametrize("model", sorted(Y_SCALE))
@@ -827,33 +856,3 @@ class TestKnownDefects:
         off = float(np.nanmax(np.abs(p1 - p0 * c))) / (c * float(np.std(y)))
         print("adagrad at 2^-20: off by", off)
         assert off > 1e-5
-
-    def test_lassos_tol_is_in_the_targets_units_and_stops_early_in_silence(self):
-        # The descent stops when no standardized coefficient `beta_i * s_i`,
-        # which is in the target's units, moves by `tol` (default 1e-10). A
-        # target near 1e-9 meets that after one sweep, so the path is
-        # wherever the warm start left it: 0.20 of the spread off at 2^-30
-        # and 1e-3 at 2^-20, with no descent counted unconverged in
-        # `solve_failures`. (At 2^20 and up the same `tol` is below the
-        # coefficients' rounding, and more descents run out of sweeps:
-        # 16 counted against 10 at scale 1.)
-        x, y = stream(0, N_FULL)
-
-        def run(c: float) -> tuple[pl.DataFrame, int]:
-            spec = po.spec.lasso("m", penalties=[0.1 * c, 0.01 * c, 0.0], **_COMMON)
-            bank = po.ModelBank([spec])
-            cols: dict[str, Any] = {f: x[:, i] for i, f in enumerate(FEATURES)}
-            out = bank.fit_predict(pl.DataFrame({**cols, "y": y * c}))["m"].struct.unnest()
-            return out, int(bank.solve_failures()["solve_failures"].sum())
-
-        base, _ = run(1.0)
-        c = 2.0**-30
-        small, failures = run(c)
-        off = max(
-            float(np.nanmax(np.abs(floats(small[g]) - floats(base[f]) * c)))
-            / (c * float(np.std(y)))
-            for f, g in zip(preds(base), preds(small), strict=True)
-        )
-        print("lasso at 2^-30 with the default tol: off by", off, "with", failures, "counted")
-        assert off > 0.1
-        assert failures == 0

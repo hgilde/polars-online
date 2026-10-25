@@ -885,12 +885,24 @@ REBREAK: dict[str, dict[str, tuple[float, float]]] = {
     # AdaGrad's per-coordinate rate against a fixed regulariser, a noisy
     # tracker. Measured 0.314, 0.244 and 0.203 at 12; 0.56 for the logistic
     # level break.
+    #
+    # Under a half-life ftrl follows a break at the pace of its steps (task
+    # 278, D-F: all three sums already decay; AdaGrad's normalised step
+    # moves a settled coefficient at most about 2 alpha sqrt(1 - lam) a row,
+    # 0.0118 here). A change of regime moves the intercept by 46, so it is
+    # still 19.9 off at 12 half-lives (seed 44); the pace itself is held in
+    # test_ftrl_follows_a_break_at_the_pace_of_its_steps. A logistic fit's
+    # gap after a slope break or a change of regime, 1.07 and 1.36 at 12, is
+    # the fixed prior's steady-state ridge, (1 - lam)(beta/alpha + l2), on a
+    # log-odds the evidence pins only weakly (0.30 and 0.58 at beta=0.1,
+    # l2=0, held in the same test). Measured 2026-10-25, 50 seeds.
     "ftrl:squared": {
         "level": (12, 0.47),
         "slope": (12, 0.37),
         "variance": (12, 0.3),
+        "regime": (12, 30.0),
     },
-    "ftrl:logistic": {"level": (12, 0.84)},
+    "ftrl:logistic": {"level": (12, 0.84), "slope": (12, 1.6), "regime": (12, 2.0)},
     # holt's trend forgets at trend_half_life, four times the half-life, so
     # 12 half-lives are three of its trend's: measured 0.267, 0.744, 0.127 and
     # 4.88 (a level 100 off and a slope 0.06 off at the break) at 12.
@@ -902,23 +914,9 @@ REBREAK: dict[str, dict[str, tuple[float, float]]] = {
     },
 }
 
-_FTRL_SLOW = (
-    "defect (task 278 (a)): ftrl under a half-life follows a break at AdaGrad's pace, "
-    "and the break's own large gradients inflate the sum that divides every step, so the "
-    "fit lags the decayed batch fit for many half-lives: {}"
-)
-REBREAK_DEFECTS: dict[tuple[str, str], str] = {
-    ("ftrl:squared", "regime"): _FTRL_SLOW.format(
-        "20.2 off one half-life past a change of regime, 34.4 at four, 19.9 at twelve (seed 44)"
-    ),
-    ("ftrl:logistic", "slope"): _FTRL_SLOW.format(
-        "after a slope break the gap grows from 0.53 at one half-life to 1.0 at twelve "
-        "(seed 5), the slope still 0.93 from the new truth"
-    ),
-    ("ftrl:logistic", "regime"): _FTRL_SLOW.format(
-        "after a change of regime the gap grows from 0.33 to 1.16 at twelve half-lives (seed 39)"
-    ),
-}
+#: Cells that fail on a defect: the reason, with its measurement. Empty since
+#: task 278's D-F was found a limit of the method, not a defect (above).
+REBREAK_DEFECTS: dict[tuple[str, str], str] = {}
 
 
 def _break_params() -> list:
@@ -955,6 +953,41 @@ def test_reconvergence_after_a_break(key, kind):
         most = max(p.to_truth[k].median for k in BREAK_KS)
         assert most > 1.5 * p.to_truth[BREAK_KS[-1]].median, "the break was taken"
     assert p.to_oracle[k].worst <= bound
+
+
+@pytest.mark.oracle_grid(reason="a grid of 50 seeds at three settings of ftrl")
+def test_ftrl_follows_a_break_at_the_pace_of_its_steps():
+    """Under a half-life ``ftrl``'s sums all decay, and what bounds how fast
+    it follows a break is AdaGrad's normalised step: in steady state a
+    coefficient moves at most about ``2 alpha sqrt(1 - lam)`` a row however
+    large its error (``ftrl.rs``, "Following a break"). Held: (a) after a
+    change of regime the intercept's median distance to the new truth closes
+    at that pace from 4 to 12 half-lives; (b) a larger ``alpha`` follows the
+    same break sooner; (c) a logistic fit's lasting gap is the prior's: a
+    weaker one closes it. Measured 2026-10-25 over 50 seeds (task 278, D-F):
+    (a) 0.0108 a row against 0.0118; (b) at ``alpha = 1`` the worst gap 0.70
+    at 8 half-lives, against 28.5 at the default; (c) at ``beta = 0.1, l2 =
+    0`` the worst gap 0.30 after a slope break and 0.58 after a change of
+    regime at 12 half-lives, against 1.07 and 1.36 at the defaults."""
+    lam = 0.5 ** (1.0 / BREAK_HALF_LIFE)
+    pace = 2 * 0.1 * np.sqrt(1 - lam)
+    reg = cv.REGISTRY["ftrl:squared"]
+    p = cv.reconvergence(reg, "regime", SEEDS, BREAK_HALF_LIFE, BREAK_AT, [4, 12])
+    p.show("ftrl, a change of regime at the default alpha")
+    closed = (p.to_truth[4].median - p.to_truth[12].median) / (8 * BREAK_HALF_LIFE)
+    print(f"  closed {closed:.4f} a row against 2 alpha sqrt(1 - lam) = {pace:.4f}")
+    assert 0.7 * pace <= closed <= 1.1 * pace
+    fast = dataclasses.replace(reg, build=cv._spec("ftrl", loss="squared", alpha=1.0))
+    q = cv.reconvergence(fast, "regime", SEEDS, BREAK_HALF_LIFE, BREAK_AT, [8])
+    q.show("ftrl, a change of regime at alpha = 1")
+    assert q.to_oracle[8].worst <= 1.1
+    weak = dataclasses.replace(
+        cv.REGISTRY["ftrl:logistic"], build=cv._spec("ftrl", loss="logistic", beta=0.1, l2=0.0)
+    )
+    for kind, bound in (("slope", 0.45), ("regime", 0.85)):
+        r = cv.reconvergence(weak, kind, SEEDS, BREAK_HALF_LIFE, BREAK_AT, [12])
+        r.show(f"ftrl logistic, a break in {kind}, beta = 0.1 and l2 = 0")
+        assert r.to_oracle[12].worst <= bound
 
 
 def test_reconvergence_essential():

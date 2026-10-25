@@ -617,7 +617,7 @@
     model.transition = null
     model.transition_prior = 1.0
     model.tvtp = null
-    model.warm_rows = 50
+    model.warm_rows = 1000
     stream.breaks_half_life = 50.0
     stream.calibration_half_life = 200.0
     stream.feature_health_half_life = 50.0
@@ -2418,8 +2418,10 @@
   withheld_reason, in precedence order: below_min_settled_frac, below_min_weight, above_max_error_inflation, below_warm_rows
   toml.input_format: csv, ipc, ndjson, parquet
   toml.output_format: csv, ipc, ndjson, parquet
+  toml.output_layout: flat, struct
   cli --input-format: csv, ipc, ndjson, parquet
   cli --output-format: csv, ipc, ndjson, parquet
+  cli --output-layout: flat, struct
 
 [toml keys]  # read from the refusal of a key the table has not got: a key added, renamed or removed is a diff here; the run config's keys need the CLI
   run config:

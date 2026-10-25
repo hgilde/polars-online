@@ -1628,7 +1628,9 @@ class ModelBank:
             t-statistic of that correlation at the Kish sample size. Read ``t_stat`` as
             a scale for comparing pairs, not a p-value: the rows are neither independent
             nor Gaussian. Null until ``weight_sum`` reaches the target's ``min_weight``,
-            and null where undefined (a constant column, ``n_kish <= 2``).
+            null while the stream is less settled than ``min_settled_frac``, and null
+            where undefined (a constant column, ``n_kish <= 2``). Both gates withhold
+            ``t_stat_serial`` and the split columns too.
 
         With ``lags``, four more list columns and four numbers:
 

@@ -641,7 +641,9 @@ class TestTheSolversCheckTheirNumbers:
 
     def test_the_edges_of_each_range_are_taken(self, g):
         assert np.isfinite(pg.solve(g, ridge=0.0)).all()
-        path = pg.lasso_path(g, [0.0], l1_ratio=0.0, max_iter=1, penalty_weights=[0.0] * 3)
+        # One sweep is short of the rule here, which is said.
+        with pytest.warns(po.ReadinessWarning, match="ran out of sweeps"):
+            path = pg.lasso_path(g, [0.0], l1_ratio=0.0, max_iter=1, penalty_weights=[0.0] * 3)
         assert np.isfinite(path).all()
         assert np.isfinite(pg.lasso_path(g, [0.1], l1_ratio=1.0, tol=1e-300)).all()
 

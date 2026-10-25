@@ -1790,8 +1790,9 @@ def lasso(
 
     For each penalty ``l`` in ``penalties``, with ``C`` the feature correlation
     matrix and ``c_i = cov(x_i, y) / s_i``, each feature's covariance with the
-    target over the feature's standard deviation. The descent runs until no
-    coefficient moves by more than ``tol``:
+    target over the feature's standard deviation. The descent runs until a
+    sweep moves no coefficient ``b_i`` by ``tol * s_y`` or more, ``s_y`` the
+    target's spread:
 
     .. code-block:: text
 
@@ -1832,19 +1833,29 @@ def lasso(
         The solve schedule, as for :func:`ewridge`.
     ``max_iter``, ``tol``
         Within a solve, the descent stops after ``max_iter`` sweeps (default
-        100, at least 1) or when no coefficient in the standardized
-        coordinates, ``b_i = beta_i * s_i``, moved by ``tol`` or more in a
-        sweep (default ``1e-10``, finite and above 0). A descent that runs out
-        of sweeps first is counted in
-        :meth:`polars_online.ModelBank.solve_failures`, one per target and path
-        point. :func:`polars_online.gram.lasso_path` runs the same descent with
-        ten times the sweeps by default, 1,000, because it starts its path
-        from zero. A solve here starts from the last solve's fit, which the
-        rows since then have moved only a little once the moments settle: on
-        15 features correlated at ``0.8 ** |i - j|``, solved on every row of
-        20,000 at seven penalties, 696 of the 140,000 descents ran out of their
-        100 sweeps, every one of them within the first 500 rows, where each row
-        still moves the fit far. 1,000 sweeps left 26 there.
+        100, at least 1), or after a sweep that moved no coefficient in the
+        standardized coordinates, ``b_i = beta_i * s_i``, by ``tol * s_y`` or
+        more (default ``1e-10``, finite and above 0), or moved none at all.
+        ``s_y`` is the target's spread over the rows the fit reads: its
+        standard deviation, or its root mean square without an intercept,
+        where the fit is not centred. The standardized coefficients are in
+        the target's units, so the rule has none: ``y`` and ``penalties``
+        scaled by a power of two give the same fit scaled, to the bit,
+        stopped on the same sweeps. A descent that runs out of sweeps first is
+        counted in :meth:`polars_online.ModelBank.solve_failures`, one per
+        target and path point. :func:`polars_online.gram.lasso_path` runs the
+        same descent with ten times the sweeps by default, 1,000, because it
+        starts its path from zero. A solve here starts its first path point
+        from the last solve's fit, which the rows since then have moved only a
+        little once the moments settle, and each later point from the one
+        before it. On 15 features correlated at ``0.8 ** |i - j|``, solved on
+        every row of 20,000 at seven penalties, 798 of the 140,000 descents
+        ran out of their 100 sweeps; 1,000 sweeps left 44, at 1% more sweeps
+        in all. A cyclic descent contracts the error along two correlated
+        columns by about ``1 - 1 / kappa`` a sweep, ``kappa`` the
+        correlation matrix's condition number, so where columns nearly repeat
+        each other most descents can run out: on 800 rows of two columns
+        0.1 apart (``kappa`` near 400) at a penalty of 0.001, 798 of 799.
     ``target_gaps``
         Which rows a target's feature correlations are taken over where the target
         is null on some: ``"own_rows"``, the default, or ``"pairwise"``, as for
@@ -2286,6 +2297,16 @@ def ftrl(
     against the prior. In steady state the penalties act as a mean-scale ridge
     of ``(1 - lam) * (beta / alpha + l2)``: a constant 5 settles at 4.65 at
     ``half_life = 100`` and 4.96 at 1000.
+
+    Under a half-life the fit also follows a break at the pace of its steps,
+    not of its half-life. A coordinate steps by its gradient over the root of
+    its recent squared gradients, so a settled coefficient moves at most about
+    ``2 * alpha * sqrt(1 - lam)`` a row, ``lam`` the decay over one row's
+    clock, however large the error. A break that moves a coefficient by ``D``
+    takes about ``D / (2 * alpha * sqrt(1 - lam))`` rows to follow, and the
+    large gradients just after it raise the sums that divide every step for
+    about a half-life. A larger ``alpha`` follows a break sooner and settles
+    noisier; ``docs/MODELS.md`` has the measurements.
 
     A row that teaches the target nothing -- absent, at weight 0, a label
     ``strict_binary`` refuses, or a row whose squared gradient would
@@ -3616,11 +3637,15 @@ def kmeans(
            * - ``init``
              - the centres
            * - ``"lloyd"`` (the default)
-             - the best, by inertia, of ten k-means++ starts, each followed by
-               ten weighted Lloyd iterations over the buffer: once per group,
-               93 ms at 400 features and 8 centres (k-means++ 0.2 ms)
+             - the best, by inertia, of ten ``"k-means++"`` starts, each
+               followed by weighted Lloyd passes over the buffer until no row
+               changes centre: once per group, 56 to 91 ms at 400 features
+               and 8 centres (``"k-means++"`` 3.6 ms)
            * - ``"k-means++"``
-             - k-means++
+             - greedy k-means++, scikit-learn's: each centre after the first
+               is the best of ``2 + floor(ln n_clusters)`` rows drawn by their
+               squared distance from the centres so far, the one that leaves
+               the least inertia
            * - ``"farthest"``
              - Gonzalez, from the first row
            * - ``"first"``
@@ -3628,9 +3653,12 @@ def kmeans(
 
         ``seed`` (default 0) drives the two random rules; the same seed gives
         the same centres. ``None`` is 0, so a run draws the same centres
-        every time. Under ``"first"``, seeding waits past ``warm_rows``
-        if it must for ``n_clusters`` distinct rows, holding up to
-        ``max(warm_rows, 1000)`` rows. The buffer is replayed into the centres
+        every time. A ``"lloyd"`` start that is still moving rows after 300
+        passes stops there and is counted in
+        :meth:`polars_online.ModelBank.solve_failures`; the starts measured
+        on 500 rows needed at most 54. Under ``"first"``, seeding waits past
+        ``warm_rows`` if it must for ``n_clusters`` distinct rows, holding up
+        to ``max(warm_rows, 1000)`` rows. The buffer is replayed into the centres
         and freed, so the model is O(state) again from that row on. Outputs are
         null until seeding and until ``weight_sum`` reaches ``min_weight``.
     ``update_every_rows``
@@ -3655,7 +3683,10 @@ def kmeans(
     ``dead_frac``
         Re-place a centre whose weight has decayed below ``dead_frac *
         weight_sum / n_clusters`` the same way, on whatever far rows there are
-        (default 0.05; ``0`` disables). A centre whose cluster vanished is
+        (default 0.05; ``0`` disables; below 1, since the lightest centre
+        never carries more than the mean share ``weight_sum / n_clusters``,
+        so at 1 or more every check would find one dead whatever the
+        clusters). A centre whose cluster vanished is
         re-placed ``log2(1 / dead_frac)`` half-lives later (4.3 at the
         default, 2 at 0.25). A cluster lighter than ``dead_frac / n_clusters`` of the
         stream loses its centre whenever any row is far. The rule runs at a
@@ -3717,7 +3748,7 @@ def kmeans(
             "km", features=["x0", "x1", "x2"], clock="t", half_life=2000.0, gap_cap=300.0,
             n_clusters=3,
             warm_rows=100,           # seeding waits for this many rows, then replays them
-            init="lloyd",       # ten k-means++ starts, each refined by Lloyd iterations
+            init="lloyd",       # ten k-means++ starts, each refined by Lloyd's passes
             split_merge=0.5,         # two centres in one blob: one moves to the far rows
             dead_frac=0.05,         # a centre whose blob vanished is re-placed 4.3 half-lives later
         )
@@ -3733,6 +3764,7 @@ def kmeans(
       past 256 MiB;
     - a ``init`` not in the list;
     - ``split_merge``, ``dead_frac`` or ``scale_floor`` below 0 or not finite,
+      a ``dead_frac`` of 1 or more,
       ``dead_frac`` above 0 beside ``split_merge = 0``, and ``scale_floor``
       beside ``standardize=False``.
     """
@@ -4624,7 +4656,10 @@ def marginal(
     residual-based applies (there is no prediction), so the residual switches
     are refused by name. A column may not be both a target and a feature.
     ``min_weight`` defaults to 3: two rows give a correlation of ±1 whatever
-    the data, three the first one with content.
+    the data, three the first one with content. Below a target's
+    ``min_weight`` its pairs' ``corr``, ``beta``, ``t_stat``, ``t_stat_serial``
+    and split are null, and so are every pair's while the stream is less
+    settled than ``min_settled_frac``; the moments are reported either way.
 
     .. rubric:: Output
 
@@ -4657,8 +4692,10 @@ def marginal(
     As every builder does (:mod:`polars_online.spec`), and ``ValueError``
     naming the problem for:
 
-    - ``bin_edges`` that miss or add a feature, or that are not finite and
-      increasing;
+    - ``bin_edges`` that miss or add a feature, that are not finite and
+      increasing, or that give no feature an edge (every feature one open
+      bin, with no response curve and no cut; one feature without edges
+      beside others is taken, and reports a single bin);
     - ``bins`` beside ``bin_edges``, and ``bins`` or ``bin_edges`` beside
       ``window_size``;
     - ``bins`` below 2, or a ``bin_warm_rows`` below ``bins``;

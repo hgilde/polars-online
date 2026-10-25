@@ -121,7 +121,8 @@ MEANING: dict[str, str] = {
 #: a weight of 0 in its stream (review 2026-10-06, DA14).
 WITHHELD = "while withheld"
 UNTIL_SEEDED = (
-    "while withheld, and until `warm_rows` learned rows (default 50) have seeded the states"
+    "while withheld, and until `warm_rows` learned rows (by default 1,000, or `k` where that is "
+    "more) have seeded the states"
 )
 ALSO_NULL: dict[str, str] = {
     "pred_<t>": WITHHELD,
