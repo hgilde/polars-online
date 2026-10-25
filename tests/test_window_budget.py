@@ -16,6 +16,7 @@ import polars as pl
 import pytest
 
 import polars_online as po
+from reference_paths import WindowRing
 
 TIER = "essential"
 
@@ -251,3 +252,103 @@ def test_the_budget_table_names_every_windowed_builder():
         if "window_budget" in params:
             takes.add(name)
     assert takes == set(WINDOWED)
+
+
+# --- thinning on every windowed model (task 278, batch 10) ---------------------
+
+#: A half-life the ring's products are read with, on the row-number clock, a
+#: window of 50 rows and a snapshot on every row, so a budget of a few
+#: snapshots thins it.
+THIN = {"half_life": 40.0, "window_size": 50.0, "snapshot_every": 0}
+
+
+def _labelled(n: int = 300) -> pl.DataFrame:
+    label = pl.when(pl.col("x0") > 0).then(pl.lit("a")).otherwise(pl.lit("b"))
+    return _frame(n).with_columns(c=label)
+
+
+def _run(spec, df: pl.DataFrame) -> pl.DataFrame:
+    return po.ModelBank([spec]).fit_predict(df).unnest("m")
+
+
+def _capacity(kind: str, df: pl.DataFrame) -> int:
+    """How many of ``kind``'s snapshots ``TINY`` MiB holds: the row at which a
+    refusing budget of as much refuses, fed a row at a time on a window no
+    row leaves, each row adding one snapshot. A thinning budget counts the
+    same bytes."""
+    bank = po.ModelBank(
+        [WINDOWED[kind](**(THIN | {"window_size": 1e9}), window_budget={"refuse": TINY})]
+    )
+    for i in range(df.height):
+        try:
+            bank.fit_predict(df.slice(i, 1))
+        except ValueError as e:
+            assert "window_budget" in str(e), e
+            return i
+    raise AssertionError(f"{TINY} MiB held every row's snapshot")
+
+
+def _ring_weights(n: int, capacity: int | None) -> tuple[np.ndarray, WindowRing]:
+    """Each row's ``weight_sum`` under ``THIN`` (unit weights on the
+    row-number clock) from the front of a ring of at most ``capacity``
+    snapshots, and the ring."""
+    ring = WindowRing(THIN["window_size"], capacity=capacity)
+    starts = [ring.learn(i, float(i)) for i in range(n)]
+    want = np.zeros(n)
+    for t in range(1, n):
+        ages = (t - 1) - np.arange(starts[t - 1], t)
+        want[t] = (0.5 ** (ages / THIN["half_life"])).sum()
+    return want, ring
+
+
+@pytest.mark.parametrize("kind", sorted(WINDOWED))
+def test_past_a_thinning_budget_every_windowed_model_reads_the_thinned_ring(kind):
+    """Each windowed model thins its own ring past the budget: its
+    ``weight_sum`` is the weight from the front of a ring that keeps the
+    newest snapshot and every second one before it whenever it would pass
+    the budget's capacity (``reference_paths.WindowRing``), which drops more
+    rows than the exact window and never keeps an older one. Before task 278
+    (batch 10) thinning was shown on ``ewridge`` alone."""
+    df = _labelled()
+    cap = _capacity(kind, df)
+    got = _run(WINDOWED[kind](**THIN, window_budget={"thin": TINY}), df)["weight_sum"].to_numpy()
+    want, ring = _ring_weights(df.height, cap)
+    exact, _ = _ring_weights(df.height, None)
+    print(f"{kind}: capacity {cap}, thinned {ring.thinned} times")
+    # Measured 2026-10-25: capacities of 4 (ewridge, lasso) to 14 (ew_cov,
+    # marginal) snapshots, each ring thinned 2 to 4 times.
+    assert ring.thinned >= 1
+    np.testing.assert_allclose(got, want, rtol=1e-9, atol=1e-12)
+    assert (got <= exact + 1e-9).all(), "a thinned window holds no row the exact one does not"
+    assert (got < exact - 0.5).any(), "and past the budget it did thin"
+
+
+@pytest.mark.parametrize("kind", sorted(WINDOWED))
+def test_a_budget_every_windowed_ring_stays_under_changes_nothing(kind):
+    df = _labelled()
+    plain = _run(WINDOWED[kind](**THIN), df)
+    for action in ("thin", "refuse"):
+        roomy = _run(WINDOWED[kind](**THIN, window_budget={action: 64.0}), df)
+        assert roomy.equals(plain), (kind, action)
+
+
+@pytest.mark.parametrize("kind", sorted(WINDOWED))
+def test_a_thinned_ring_does_not_depend_on_the_chunking_or_a_save(kind):
+    """Hard rule 3 under a thinning budget, and a save mid-ring: the doubled
+    cadence and the thinned ring are state, and the budget is the spec's, so
+    a loaded bank goes on thinning where the unbroken one does."""
+    df = _labelled()
+    spec = WINDOWED[kind](**THIN, window_budget={"thin": TINY})
+    whole = _run(spec, df)
+    floats = [c for c, t in whole.schema.items() if t.is_float()]
+    for rows in (1, 7, 37):
+        parts = pl.concat(po.ModelBank([spec]).fit_predict_batches(df, chunk_size=rows))
+        parts = parts.unnest("m")
+        for f in floats:
+            assert whole[f].equals(parts[f]), (kind, rows, f)
+    for cut in (23, 151):
+        first = po.ModelBank([spec])
+        first.fit_predict(df.head(cut))
+        tail = po.ModelBank.load_bytes(first.save_bytes()).fit_predict(df.slice(cut)).unnest("m")
+        for f in floats:
+            assert whole[f].slice(cut).equals(tail[f]), (kind, cut, f)

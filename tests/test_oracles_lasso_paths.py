@@ -34,11 +34,16 @@ lowered gate those rows are scored, and held.
 
 import numpy as np
 import polars as pl
+import pytest
 
 import polars_online as po
 from reference_paths import lasso_paths_ref
 
-TIER = "essential"
+TIER = "mixed"
+
+#: A grid over the window's edge and cadence (task 278 batch 10): one case
+#: of each is essential, the rest of the matrix extended.
+GRID = pytest.mark.extended(reason="a grid over the window's edge and cadence")
 
 FEATURES = ["x0", "x1", "x2", "x3"]
 TARGETS = ["ya", "yb", "yc"]
@@ -93,6 +98,22 @@ def _stream(seed: int, n: int = 240, level: float = 2.0) -> pl.DataFrame:
     frame = {"t": np.cumsum(dt), "x0": x0, "x1": x1, "x2": x2, "x3": x3}
     frame |= {"ya": ya, "yb": yb, "yc": yc, "w": w}
     return pl.DataFrame(frame).with_columns(pl.col(c).fill_nan(None) for c in ["x1", *TARGETS])
+
+
+def _model_clock(df: pl.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """The clock the model is stepped on, whose steps ``gap_cap`` caps and a
+    row skipped for a null feature folds into the next, and which rows are
+    skipped (each at the clock of the last row learned)."""
+    dt = np.diff(df["t"].to_numpy(), prepend=0.0)
+    skipped = df.select(pl.any_horizontal(pl.col(FEATURES).is_null())).to_series().to_numpy()
+    clock, pending, last = np.zeros(df.height), 0.0, 0.0
+    for i in range(df.height):
+        if skipped[i]:
+            clock[i], pending = last, pending + dt[i]
+            continue
+        last = last + min(dt[i] + pending, MAX_DCLOCK) if i else 0.0
+        clock[i], pending = last, 0.0
+    return clock, skipped
 
 
 def _close(got, exp, tol, what):
@@ -317,15 +338,7 @@ class TestWindow:
         # On the model's clock, whose steps ``gap_cap`` caps and a row
         # skipped for a null feature folds into the next: 32 units a bucket,
         # so no two of the target's rows are within 24 of each other.
-        dt = np.diff(df["t"].to_numpy(), prepend=0.0)
-        skipped = df.select(pl.any_horizontal(pl.col(FEATURES).is_null())).to_series().to_numpy()
-        clock, pending, last = np.zeros(df.height), 0.0, 0.0
-        for i in range(df.height):
-            if skipped[i]:
-                clock[i], pending = last, pending + dt[i]
-                continue
-            last = last + min(dt[i] + pending, MAX_DCLOCK) if i else 0.0
-            clock[i], pending = last, 0.0
+        clock, skipped = _model_clock(df)
         bucket = np.floor(clock / 32.0)
         first = np.r_[True, bucket[1:] != bucket[:-1]] & ~skipped
         df = df.with_columns(
@@ -357,3 +370,71 @@ class TestWindow:
         scored = np.isfinite(ref["pred"][:, 2, -1])
         assert scored.sum() >= 20, f"only {scored.sum()} rows scored from a window of one row"
         assert (ref["w_target"][scored, 2] <= 1.5).all(), "one row of the target in the window"
+
+
+class TestWindowEdgeAndCadence:
+    """The window of ``TestWindow`` under ``closed="both"`` and under a
+    snapshot cadence, held to the same reference: ``closed="both"`` keeps a
+    row exactly ``window_size`` old, and under ``snapshot_every`` or
+    ``max_rows_between_snapshots`` the window is the rows from the ring's
+    front snapshot on (``reference_paths.WindowRing``), the selection errors
+    cut there too. Before task 278 (batch 10) no test passed ``"both"`` or a
+    row cap to a lasso, though the reference took ``closed`` and the core's
+    ring is shared.
+
+    Each case first shows the reference can tell it apart: the reference with
+    the plain window (every row a snapshot, ``closed="right"``) reads another
+    ``weight_sum`` on many rows, so a lasso that ignored the keyword fails."""
+
+    WINDOW = 24.0
+
+    def _check(self, n_moved: int, **kw):
+        df = _stream(35)
+        spec, out, ref = _fit(
+            df, half_life=40.0, min_weight=10.0, solve_every=1.0, window_size=self.WINDOW, **kw
+        )
+        _held_to_the_reference(df, spec, out, ref, min_selected=100)
+        _, _, plain = _fit(
+            df, half_life=40.0, min_weight=10.0, solve_every=1.0, window_size=self.WINDOW
+        )
+        moved = np.abs(ref["weight_sum"] - plain["weight_sum"]) > 1e-6
+        print(f"{kw}: weight_sum moved on {moved.sum()} of {df.height} rows")
+        assert moved.sum() >= n_moved, moved.sum()
+
+    def test_closed_both_keeps_the_row_exactly_one_window_old(self):
+        """The dyadic clock puts rows exactly 24 behind a learned row, and
+        under ``"both"`` they stay in the weight, the gates, the fit and the
+        selection."""
+        clock, skipped = _model_clock(_stream(35))
+        learned = clock[~skipped]
+        edges = sum(
+            int((learned[i] - learned[:i] == self.WINDOW).sum()) for i in range(len(learned))
+        )
+        # Measured 2026-10-25: 46 such pairs.
+        assert edges > 30, f"only {edges} rows sit exactly one window back"
+        # Measured 2026-10-25: weight_sum moves on 45 rows.
+        self._check(n_moved=30, closed="both")
+
+    @pytest.mark.parametrize(
+        "kw",
+        [
+            pytest.param({"max_rows_between_snapshots": 3}, id="rows"),
+            pytest.param({"snapshot_every": 3.0}, id="clock", marks=GRID),
+            pytest.param(
+                {"snapshot_every": 3.0, "max_rows_between_snapshots": 4}, id="both", marks=GRID
+            ),
+            pytest.param(
+                {"snapshot_every": 3.0, "max_rows_between_snapshots": 4, "closed": "both"},
+                id="both-closed-both",
+                marks=GRID,
+            ),
+            pytest.param(
+                {"max_rows_between_snapshots": 5, "target_gaps": "pairwise"},
+                id="rows-pairwise",
+                marks=GRID,
+            ),
+        ],
+    )
+    def test_a_cadence_cuts_the_window_at_the_rings_front_snapshot(self, kw):
+        # Measured 2026-10-25: weight_sum moves on 111-160 of the 240 rows.
+        self._check(n_moved=80, **kw)
