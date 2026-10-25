@@ -422,7 +422,8 @@ It runs coordinate descent on the standardized sums, warm-started along the
 path and from one solve to the next. `C` is the features' correlation
 matrix, and `c_i` is feature `i`'s covariance with the target over the
 feature's standard deviation. For each penalty `l` in `penalties`, the
-sweep repeats until no coefficient moves by more than `tol`:
+sweep repeats until a sweep moves no coefficient by `tol·s_y` or more, with
+`s_y` the target's spread:
 
 ```
 ρ_i = c_i − Σ_{j≠i} C_ij β_j
@@ -433,9 +434,19 @@ After the sweeps the slopes are unscaled, and the intercept is `ȳ − m·β`,
 with `m` the features' means. The target is centred but not scaled, so the
 L1 threshold `l·l1_ratio` is in the target's units. So scale `penalties`
 with the target: for a pure lasso, a target ten times larger needs
-penalties ten times larger to zero the same coefficients. A descent that
-runs out of its `max_iter` sweeps is counted in `bank.solve_failures()`,
-so if that count is above zero, give a larger `max_iter`.
+penalties ten times larger to zero the same coefficients.
+
+**The stopping rule has no units.** The coefficients `β_i` the sweep moves
+are in the standardized coordinates, so they are in the target's units, and
+`tol` is compared with a move as a share of the target's spread `s_y`: its
+standard deviation over the rows the fit reads, or its root mean square
+without an intercept. So a target scaled by a power of two, with
+`penalties` scaled by the same factor, gives the same fit scaled, to the
+bit. A descent that runs out of its `max_iter` sweeps is counted in
+`bank.solve_failures()`, so if that count is above zero, give a larger
+`max_iter`. Columns that nearly repeat each other slow the descent most: it
+shrinks the error along such a pair by about `1 − 1/κ` a sweep, with `κ`
+the correlation matrix's condition number.
 
 ```python
 las = po.spec.lasso(

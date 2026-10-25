@@ -12,7 +12,7 @@
 
 use online_core::gramfit::{
     Correlation, Design, GramArrays, GramRows, LarsLimits, LarsStop, Response, RidgeFit, cd_path,
-    lars_lasso_weighted, merge, merge_within, ridge_fits, within_cross,
+    lars_lasso_weighted, merge, merge_within, ridge_fits, target_spread, within_cross,
 };
 use polars::prelude::*;
 use rayon::prelude::*;
@@ -133,15 +133,10 @@ pub fn cd_path_of(
     let corr = Correlation::of(&Design::of(g, &cols.slots, cols.icept));
     let resp = Response::of(g, t, &cols.slots, cols.icept);
     let d = corr.scaling.d(&resp);
+    // NaN where the Gram carries no target moments: `target_spread` reads
+    // it as 0, which leaves `sweep_tol`'s floor.
     let at = |v: &[f64]| v.get(t).copied().unwrap_or(f64::NAN);
-    let (var, mean) = (at(g.target_vars), at(g.target_means));
-    let second = match cols.icept {
-        Some(_) => var,
-        None => var + mean * mean,
-    };
-    // A variance a window's subtraction left a rounding below 0 is 0; a NaN
-    // (a Gram without the target's moments) stays one, for `sweep_tol`.
-    let spread = if second < 0.0 { 0.0 } else { second.sqrt() };
+    let spread = target_spread(at(g.target_vars), at(g.target_means), cols.icept.is_some());
     let path = cd_path(
         &corr.r,
         &d,

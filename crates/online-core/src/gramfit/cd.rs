@@ -51,6 +51,17 @@ pub fn sweep_tol(tol: f64, spread: f64, d: &[f64]) -> f64 {
     tol * spread.max(largest)
 }
 
+/// The target's spread for [`sweep_tol`] from its variance and mean over
+/// the rows the fit reads: the standard deviation where the fit is centred
+/// (an intercept), the root mean square where it is not. A second moment
+/// below 0 (a window's subtraction, by rounding) or NaN (moments the caller
+/// does not have) reads 0, which leaves [`sweep_tol`]'s floor as the scale.
+pub fn target_spread(var: f64, mean: f64, centred: bool) -> f64 {
+    let second = if centred { var } else { var + mean * mean };
+    // `f64::max` reads a NaN as the other side: 0.
+    second.max(0.0).sqrt()
+}
+
 /// Whether a sweep whose largest move was `delta` ends the descent, at the
 /// [`sweep_tol`] `limit`: a move under it, or none at all, which a limit of
 /// 0 (a target with no spread, every `d_i` 0) still meets.

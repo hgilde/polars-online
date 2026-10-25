@@ -755,13 +755,11 @@ impl Lasso {
                 // The stopping rule's scale: the target's spread over the
                 // rows its Gram is read from, its standard deviation with an
                 // intercept and its root mean square through the origin
-                // (`gramfit::sweep_tol`; task 278, D3). NaN where a window's
+                // (`gramfit::sweep_tol`; task 278, D3). None where a window's
                 // snapshot predates the target moments, which leaves the
                 // floor `max_i |d_i|`.
-                let spread = tm.map_or(f64::NAN, |t| {
-                    let (v, m) = (t.vars()[j], t.means()[j]);
-                    let second = if self.cfg.fit_intercept { v } else { v + m * m };
-                    if second < 0.0 { 0.0 } else { second.sqrt() }
+                let spread = tm.map_or(0.0, |t| {
+                    crate::gramfit::target_spread(t.vars()[j], t.means()[j], self.cfg.fit_intercept)
                 });
                 let limit = crate::gramfit::sweep_tol(self.cfg.tol, spread, &d[jj]);
                 // Warm start from the previous solve's largest-penalty

@@ -1137,8 +1137,8 @@ def lasso_path(
         from the Gram's target moments: its standard deviation with an
         intercept, its root mean square through the origin. The
         standardized coefficients are in the target's units, so the rule
-        has none: the target scaled by any factor, with the penalties,
-        gives the same path scaled, stopped on the same sweep. ``s`` is
+        has none: the target scaled by a power of two, with the penalties,
+        gives the same path scaled, to the bit, stopped on the same sweep. ``s`` is
         never below the largest standardized cross-moment ``|d_i|``, which
         cannot exceed the target's spread, so a Gram without target
         moments has a scale too. ``tol`` is the model's, 1e-10. On 15

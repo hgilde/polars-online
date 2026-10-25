@@ -1790,8 +1790,9 @@ def lasso(
 
     For each penalty ``l`` in ``penalties``, with ``C`` the feature correlation
     matrix and ``c_i = cov(x_i, y) / s_i``, each feature's covariance with the
-    target over the feature's standard deviation. The descent runs until no
-    coefficient moves by more than ``tol``:
+    target over the feature's standard deviation. The descent runs until a
+    sweep moves no coefficient ``b_i`` by ``tol * s_y`` or more, ``s_y`` the
+    target's spread:
 
     .. code-block:: text
 
@@ -1832,19 +1833,29 @@ def lasso(
         The solve schedule, as for :func:`ewridge`.
     ``max_iter``, ``tol``
         Within a solve, the descent stops after ``max_iter`` sweeps (default
-        100, at least 1) or when no coefficient in the standardized
-        coordinates, ``b_i = beta_i * s_i``, moved by ``tol`` or more in a
-        sweep (default ``1e-10``, finite and above 0). A descent that runs out
-        of sweeps first is counted in
-        :meth:`polars_online.ModelBank.solve_failures`, one per target and path
-        point. :func:`polars_online.gram.lasso_path` runs the same descent with
-        ten times the sweeps by default, 1,000, because it starts its path
-        from zero. A solve here starts from the last solve's fit, which the
-        rows since then have moved only a little once the moments settle: on
-        15 features correlated at ``0.8 ** |i - j|``, solved on every row of
-        20,000 at seven penalties, 696 of the 140,000 descents ran out of their
-        100 sweeps, every one of them within the first 500 rows, where each row
-        still moves the fit far. 1,000 sweeps left 26 there.
+        100, at least 1), or after a sweep that moved no coefficient in the
+        standardized coordinates, ``b_i = beta_i * s_i``, by ``tol * s_y`` or
+        more (default ``1e-10``, finite and above 0), or moved none at all.
+        ``s_y`` is the target's spread over the rows the fit reads: its
+        standard deviation, or its root mean square without an intercept,
+        where the fit is not centred. The standardized coefficients are in
+        the target's units, so the rule has none: ``y`` and ``penalties``
+        scaled by a power of two give the same fit scaled, to the bit,
+        stopped on the same sweeps. A descent that runs out of sweeps first is
+        counted in :meth:`polars_online.ModelBank.solve_failures`, one per
+        target and path point. :func:`polars_online.gram.lasso_path` runs the
+        same descent with ten times the sweeps by default, 1,000, because it
+        starts its path from zero. A solve here starts its first path point
+        from the last solve's fit, which the rows since then have moved only a
+        little once the moments settle, and each later point from the one
+        before it. On 15 features correlated at ``0.8 ** |i - j|``, solved on
+        every row of 20,000 at seven penalties, 798 of the 140,000 descents
+        ran out of their 100 sweeps; 1,000 sweeps left 44, at 1% more sweeps
+        in all. A cyclic descent contracts the error along two correlated
+        columns by about ``1 - 1 / kappa`` a sweep, ``kappa`` the
+        correlation matrix's condition number, so where columns nearly repeat
+        each other most descents can run out: on 800 rows of two columns
+        0.1 apart (``kappa`` near 400) at a penalty of 0.001, 798 of 799.
     ``target_gaps``
         Which rows a target's feature correlations are taken over where the target
         is null on some: ``"own_rows"``, the default, or ``"pairwise"``, as for

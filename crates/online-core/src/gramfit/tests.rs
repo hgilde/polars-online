@@ -1220,3 +1220,15 @@ fn a_target_with_no_spread_converges_in_a_sweep() {
         assert_eq!(path.unconverged, vec![false, false]);
     }
 }
+
+/// The spread the rule reads: the standard deviation of a centred fit, the
+/// root mean square of one through the origin, and 0 -- the floor's cue --
+/// for a second moment below 0 or NaN.
+#[test]
+fn the_targets_spread_is_centred_with_an_intercept_and_raw_without() {
+    assert_eq!(target_spread(16.0, 3.0, true), 4.0);
+    assert_eq!(target_spread(16.0, 3.0, false), 5.0);
+    assert_eq!(target_spread(-1e-20, 0.0, true), 0.0);
+    assert_eq!(target_spread(f64::NAN, 1.0, true), 0.0);
+    assert_eq!(target_spread(f64::NAN, 1.0, false), 0.0);
+}

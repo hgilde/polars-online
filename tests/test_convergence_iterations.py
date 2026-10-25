@@ -181,12 +181,18 @@ class TestLassoDescent:
     its rule certifies, and a descent that is not within it must have been
     counted.
 
-    Measured 2026-10-25 over `GRID`: every uncounted last solve sat at or
-    below 1e-14 of KKT violation (bounds 2e-14 to 2e-10), every counted one
-    at 1e-11 to 1e-5; the defaults count a cap hit on 798 of 799 solves at
-    a penalty of 0.001 and a pair 0.1 apart (a condition of 4e2), and the
-    strict settings still count every solve at 1e-4 (4e8): a cyclic descent
-    there needs about `kappa` sweeps.
+    Measured 2026-10-25 over `GRID`, with the rule relative to the target's
+    spread (1.1 on these streams): every uncounted last solve sat at or
+    below 4.4e-14 of KKT violation (bounds 1e-11 to 2.3e-10), every counted
+    one at 1.0e-11 to 1.2e-5; the defaults count a cap hit on 798 of 799
+    solves at a penalty of 0.001 and a pair 0.1 apart (a condition of 4e2),
+    and the strict settings still count every solve at 1e-4 (4e8): a cyclic
+    descent there needs about `kappa` sweeps. The 798 are the descent's
+    rate, not its rule: from a warm start about 1e-3 off, contracting by
+    about 0.99 a sweep, it needs some 1,600 sweeps to meet 1e-10; at `tol`
+    1e-6 it still counted 676, and at `max_iter` 1,000 it counted 349 at
+    9.4 times the sweeps. A single penalty takes nothing from a warm start
+    per path point.
     """
 
     @staticmethod
