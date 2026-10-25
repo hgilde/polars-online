@@ -368,6 +368,9 @@ class ReadinessWarning(PolarsOnlineWarning, UserWarning):
       (``weight_sum_settled`` in :meth:`ModelBank.summary`), and the way out.
       A target no row has given a value with a positive weight has no rate
       to project from, so its message says that instead, with no ceiling.
+      Where the rows are too uneven to project one -- a target present on
+      few of them, weights far apart, or a stream whose weight is still its
+      first row's -- the message says so, with no figure.
     - **A diagnostic has no horizon**: a spec with a ``clock``, an
       ``embargo`` and no ``horizon_rows``, beside a diagnostic that reads
       the target's horizon (``emit_calibration``, ``emit_breaks``,
@@ -1194,8 +1197,11 @@ class LazyFrameOnlineNamespace:
         ``sink_ipc()`` writes the struct at about the cost of flat columns.
 
         Filters, selections and ``head`` applied after are pushed into the source. A
-        filter never changes what the bank learns from. To keep rows from the bank,
-        filter before it. A selection is read from the input, so a wide scan reads
+        filter never changes what the bank learns from. To keep rows from teaching
+        the model, give them weight 0 in the spec's ``weight`` column: a filter
+        before the bank makes Polars hold several blocks of each parquet file per
+        thread, where one after keeps the query running a chunk at a time. A
+        selection is read from the input, so a wide scan reads
         only the columns the specs and the query need. ``head(n)`` feeds the bank the
         first ``n`` rows and no more.
 

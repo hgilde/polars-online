@@ -222,7 +222,11 @@ release's files to that. This build loads each with its own spec, and fits
 the second half beside a bank of its own that fitted both halves. Every
 float, the closed groups, the coefficients and `marginal`'s table agree to
 the bit. The exceptions are the specs whose numbers a CHANGELOG entry moved
-since that release, which the test names with the entry. A blocked
+since that release, which the test names with the entry. The windowed
+specs are among them. A windowed state saved by 1.2.0 or earlier loads, and
+its first read is the one it saved. Once a snapshot taken after the load is
+the window's edge, its windowed outputs continue within 1e-12, not to the
+bit, because such a state never recorded the per-row decay factors. A blocked
 `ewridge` from 1.0.0 or 1.0.1, whose target sums 1.1.0 took in another
 order, goes on 5.2e-16 from this build's own.
 It ran on the states this build writes itself until 1.0.0 was released, so
@@ -239,7 +243,8 @@ released-state test holds it against what PyPI shipped.** A state of every
 Both minimums were raised to 44 on 2026-10-07, and for 1.0.0 all three
 constants stand at 61. Each fixture is held to loading, going on to the bit
 and saving its bytes again (`crates/online-core/tests/state_fixtures.rs`,
-`crates/online-polars/tests/state_fixtures.rs`). Before 1.0, a layout
+`crates/online-polars/tests/state_fixtures.rs`), apart from the previous
+schemas' windowed states, which go on as the next paragraph but one says. Before 1.0, a layout
 change regenerates them (`PRINT_STATE_FIXTURES=1`) and moves both minimums
 up to the new schema. From 1.0, it keeps the previous set beside a loader
 for it.
@@ -1000,9 +1005,9 @@ The rest of the policy lives here, and CONTRIBUTING carries none of it.
 
 | | what it covers |
 |---|---|
-| **stable** | everything in `__all__`, the `spec.*` constructors, their keyword names and their defaults (those that resolve in Rust included), the helper modules' functions but those of `po.sim` and `po.corr`, the `.online` namespace, output field names, the column names and dtypes of the frames the bank returns, the columns and dtypes of the closed-groups frame, the two columns `po.stream.embargo` adds, the words each string-valued parameter takes, the TOML config keys, the CLI's flags and its exit status, and the environment variables the shipped code reads |
+| **stable** | everything in `__all__`, the `spec.*` constructors, their keyword names and their defaults (those that resolve in Rust included), the helper modules' functions but those of `po.sim`, `po.corr` and `po.gbdt`, the `.online` namespace, output field names, the column names and dtypes of the frames the bank returns, the columns and dtypes of the closed-groups frame, the two columns `po.stream.embargo` adds, the words each string-valued parameter takes, the TOML config keys, the CLI's flags and its exit status, and the environment variables the shipped code reads |
 | **unstable** | the file format of a window run's state; the written form of a formula target, in a TOML config and in a state file; the Arrow export, `fit_predict_arrow`, `predict_arrow` and `ArrowStruct`; and the modules `po.sim`, `po.corr` and `po.gbdt`. Each carries a docstring label, and warns with `UnstableWarning` when used with `POLARS_ONLINE_WARN_UNSTABLE=1` set, as Polars warns under its own `POLARS_WARN_UNSTABLE`. An unstable part can change in any minor release, with a CHANGELOG entry |
-| **stable by schema** | the state file format, versioned msgpack, which loads on every OS. From 1.0, a file a 1.x build wrote loads in every later 1.x. Before 1.0, a change of layout moves the minimum schema up rather than adding a loader, so an older file is refused by its version (the user's waiver of hard rule 5, 2026-09-14 and 2026-09-28) |
+| **stable by schema** | the state file format, versioned msgpack, which loads on every OS. From 1.0, a file a 1.x build wrote loads in every later 1.x. A windowed state saved by 1.2.0 or earlier loads, and its first read is the one it saved. Once a snapshot taken after the load is the window's edge, its windowed outputs continue within 1e-12, not to the bit, because such a state never recorded the per-row decay factors. Before 1.0, a change of layout moves the minimum schema up rather than adding a loader, so an older file is refused by its version (the user's waiver of hard rule 5, 2026-09-14 and 2026-09-28) |
 | **not stable** | anything underscore-prefixed, apart from `po.stream.embargo`'s `_online_role` and `_online_role_weight`: a user passes the second to a spec's `weight` and filters on the first, so both are stable; the Rust crates, which the going-public item [R3](#r3--rust-crates-not-published) decided not to publish; and the exact numeric output, which depends on the polars version and the platform, within the 1e-12 tolerance `test_golden_pipeline.py` pins |
 
 **Each part is unstable for a reason that a 1.0 promise would make
@@ -1109,9 +1114,13 @@ frozen fixtures of that layout. Each fixture is checked three ways. The current 
 the bit, and re-save byte for byte. A previous schema's fixtures load through the
 loader, continue to the bit, and re-save as the current schema's fixture
 bytes of the same case. So the loader turns a state into exactly what this
-build writes from the same rows. The two unstable formats, a window run's
-state and a formula target inside a bank's, are outside the promise.
-Before 1.0, refit a saved state from its input after upgrading across a
+build writes from the same rows. A windowed state is the one exception,
+declared in the CHANGELOG. A windowed state saved by 1.2.0 or earlier
+loads, and its first read is the one it saved. Once a snapshot taken after
+the load is the window's edge, its windowed outputs continue within 1e-12,
+not to the bit, because such a state never recorded the per-row decay
+factors. The two unstable formats, a window run's state and a formula
+target inside a bank's, are outside the promise. Before 1.0, refit a saved state from its input after upgrading across a
 release.
 
 **From 1.0, raising the Polars floor is a minor release, capping the range
@@ -1131,9 +1140,9 @@ floor ([The floor and the ceiling](#the-floor-and-the-ceiling)):
 **From 1.0, a user who wants stability pins the major, as `~=1.0` or
 `>=1,<2`, and the current minor as well to hold the numbers.** Before 1.0 the minor carries breaking changes. From 1.0 it carries
 none, but it can carry a declared fix to numbers that were wrong, or a
-declared move of their last bits, so `~=1.0` keeps code working and `~=1.4.0` holds the numbers as well. The
-README's example pin names the current minor, as `~=0.13.0` names the
-0.13 series, and a minor release updates that example
+declared move of their last bits, so `~=1.0` keeps code working and a pin
+of the current minor, such as `~=1.3.0` for the 1.3 series, holds the
+numbers as well. The README's example pin names the current minor, and a minor release updates that example
 ([step 6](#the-steps-of-a-release)). The current release is the version
 `pyproject.toml` names.
 
@@ -1182,8 +1191,8 @@ today. The four helper modules named then were `po.corr`, `po.sim`,
 `po.gram` and `po.prep` (`po.stream` since 0.12.0), whose functions are
 read the same way. `tests/api_surface.txt` pins the constructors and their
 keyword names. It pins every helper module the package has, read from the
-package's directory: today `corr`, `eval`, `gram`, `ops`, `sim` and
-`stream` (`tests/test_api_surface.py`, since 0.11.1). Since 2026-10-07 it
+package's directory: today `corr`, `eval`, `gbdt`, `gram`, `ops`, `sim`
+and `stream` (`tests/test_api_surface.py`, since 0.11.1). Since 2026-10-07 it
 pins each of their functions with its signature, keyword names and defaults
 included, as it does every function in `__all__` and `ModelBank.__init__`.
 Before, it pinned their names alone.
@@ -1281,7 +1290,7 @@ What the snapshot renders, as the proposal asked for it, as it was built on
 | constructors | every spec constructor's **full signature including default values** | every constructor signature *including defaults*, the shared `**common` parameters listed once, explicitly | |
 | the namespace | the expression-namespace method list | the expression namespace | the `lf.online` and `df.online` namespaces; the expression namespace went with the expression plugin, on 2026-09-17 |
 | `ModelBank` | | | its name and signature, `__init__`'s since 2026-10-07 |
-| helper modules | | | every one: `corr`, `eval`, `gram`, `ops`, `sim` and `stream` (`prep` until 0.12.0), each function with its signature since 2026-10-07 |
+| helper modules | | | every one: `corr`, `eval`, `gbdt`, `gram`, `ops`, `sim` and `stream` (`prep` until 0.12.0), each function with its signature since 2026-10-07 |
 | output fields | `output_fields()` for a canonical matrix of ~12 spec shapes: each model, plus grids, feature sets, multi-target, and every `emit_*` combination | `output_fields()` across a 14-case matrix covering every model, the full grid/emit combinations, and the float-rendering extremes | 28 cases |
 | the closed-groups columns | | | each kind's columns, in order (since 2026-09-24) |
 | the defaults that resolve in Rust | | | `[resolved defaults]`: every kind's configuration as the bank builds it from its least spec, and the defaults only an option reads (since 2026-10-07) |
