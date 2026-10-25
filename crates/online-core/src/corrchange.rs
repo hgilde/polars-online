@@ -3818,4 +3818,108 @@ mod tests {
         assert!(reported > w, "the windows filled: {reported}");
         assert!(m.ring.len() >= 2 * w);
     }
+
+    // --- task 278 (b09): the permutation quantile's knobs ----------------
+
+    /// Bonferroni at `alpha` is `"none"` at `alpha / npairs`, to the bit:
+    /// the critical value is a function of the one level each pair is
+    /// tested at, under `monitor` and under `sequential`, at three and at
+    /// ten pairs; and `"none"` at `alpha` itself is a smaller value, so the
+    /// equality is not the adjustment doing nothing.
+    #[test]
+    fn bonferroni_at_alpha_is_none_at_alpha_over_the_pairs() {
+        for d in [3usize, 5] {
+            let npairs = (d * (d - 1) / 2) as f64;
+            for kind in [CorrChangeKind::Monitor, CorrChangeKind::Sequential] {
+                let base = CorrChangeCfg {
+                    monitor_rows: 200,
+                    ..cfg(d, kind)
+                };
+                let split = CorrChangeCfg {
+                    alpha: 0.05 / npairs,
+                    alpha_adjust: "none".into(),
+                    ..base.clone()
+                };
+                let whole = CorrChangeCfg {
+                    alpha_adjust: "none".into(),
+                    ..base.clone()
+                };
+                let (b, s, w) = (
+                    base.fixed_crit().unwrap(),
+                    split.fixed_crit().unwrap(),
+                    whole.fixed_crit().unwrap(),
+                );
+                assert!(b.is_finite(), "{d} {kind:?}");
+                assert_eq!(b.to_bits(), s.to_bits(), "{d} {kind:?}: {b} vs {s}");
+                assert!(w < b, "{d} {kind:?}: {w} against {b}");
+                let m = CorrChange::new(base).unwrap();
+                assert_eq!(m.seq_crit.is_nan(), kind == CorrChangeKind::Monitor);
+            }
+        }
+    }
+
+    /// With `perm_block = window_rows` the pool is two blocks, so a draw is
+    /// the two windows as they are or swapped, and both give the observed
+    /// statistic (`|pre - post|` is symmetric): the critical value is that
+    /// statistic exactly, whatever the seed and the level. The generator
+    /// still moved, one swap draw per permutation.
+    #[test]
+    fn a_block_of_the_whole_window_leaves_only_the_observed_statistic() {
+        let w = 12usize;
+        let mut n = Normals::new(278);
+        let rows: Vec<Vec<f64>> = (0..2 * w).map(|_| n.pair(0.4)).collect();
+        for (seed, alpha) in [(0u64, 0.05), (7, 0.5), (11, 0.001)] {
+            let mut m = CorrChange::new(CorrChangeCfg {
+                span_rows: w,
+                perm_block: w,
+                n_perm: 40,
+                seed,
+                alpha,
+                ..cfg(2, CorrChangeKind::Window)
+            })
+            .unwrap();
+            m.ring = rows.iter().cloned().collect();
+            let observed = m.window_stat(&rows);
+            assert!(observed.is_finite() && observed > 0.0, "{observed}");
+            let crit = m.permutation_crit().expect("both windows are full");
+            assert_eq!(crit.to_bits(), observed.to_bits(), "seed {seed}");
+            let mut fresh = SplitMix64::new(seed);
+            for _ in 0..40 {
+                fresh.next_u64();
+            }
+            assert_eq!(m.rng, fresh, "seed {seed}: one draw per permutation");
+        }
+    }
+
+    /// The seed sets the draws and nothing else: on one pool, one seed
+    /// gives one critical value however often it is drawn from a fresh
+    /// model, two seeds give two, and at either seed the value falls as the
+    /// level rises (the same draws, a lower order statistic).
+    #[test]
+    fn the_seed_sets_the_draws_and_the_level_their_order_statistic() {
+        let w = 20usize;
+        let mut n = Normals::new(2780);
+        let rows: Vec<Vec<f64>> = (0..2 * w).map(|_| n.pair(0.3)).collect();
+        let crit_at = |seed: u64, alpha: f64| {
+            let mut m = CorrChange::new(CorrChangeCfg {
+                span_rows: w,
+                n_perm: 200,
+                seed,
+                alpha,
+                ..cfg(2, CorrChangeKind::Window)
+            })
+            .unwrap();
+            m.ring = rows.iter().cloned().collect();
+            m.permutation_crit().expect("both windows are full")
+        };
+        assert_eq!(crit_at(0, 0.05).to_bits(), crit_at(0, 0.05).to_bits());
+        assert_ne!(crit_at(0, 0.05), crit_at(7, 0.05));
+        for seed in [0u64, 7] {
+            let at: Vec<f64> = [0.01, 0.05, 0.2, 0.5]
+                .iter()
+                .map(|&a| crit_at(seed, a))
+                .collect();
+            assert!(at.windows(2).all(|p| p[1] < p[0]), "seed {seed}: {at:?}");
+        }
+    }
 }
