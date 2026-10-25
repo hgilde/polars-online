@@ -16384,3 +16384,24 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       slot's `target/` is cleared when its task is given back whenever free
       disk is under 100 GB, and `cargo-sweep` between tasks is to be weighed
       beside it. After the task 277/278 wave, so no slot rebuilds mid-task.
+- [ ] 280. **An oracle ledger: no drift from the oracles and datasets, no
+      longer gate** -- the user, 2026-10-25: "After all the fixes we need a
+      way not to drift from all the oracles and data sets for every
+      parameter test. But we do not want to run more very long tests in the
+      gate as it's already long." Before 1.4.0, after task 278's fixes. (1)
+      A committed ledger, as `budgets.toml` is for speed: per oracle and
+      dataset case (every task 278 class, every parameter test with an
+      oracle), the error against the oracle (worst seed, p95) and the
+      oracle's version; it only tightens -- a larger error fails unless a
+      `[[raised]]` entry gives the reason and a CHANGELOG line, a smaller one
+      asks to be tightened, as `scripts/budgets.py` does. (2) The oracle side
+      (the batch fits over many seeds, the downloads) runs on CI on every
+      push, sharded across parallel jobs (free, 20 concurrent), and its
+      conclusion is read after each push with the others. (3) The gate keeps
+      a cheap guard: a hash of our outputs on each case's inputs, seconds in
+      all; unchanged means the comparison still holds (the oracle's answer is
+      fixed by its pinned version); changed names the cases whose oracle runs
+      must re-run (one command locally, or CI on push), and `quick.sh`-style
+      selection runs a changed model's cases only. (4) A weekly full sweep,
+      and any bump of an oracle library or dataset in `uv.lock` re-runs
+      everything.
