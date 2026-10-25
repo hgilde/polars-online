@@ -523,3 +523,78 @@ fn a_sketch_wider_than_its_band_folds_on_its_next_value() {
     assert_eq!(q.total, 5.0);
     assert_eq!(q.buckets.iter().sum::<f64>(), 3.0);
 }
+
+/// A median at 0 and a value arriving more than the band below the
+/// buckets: the band is kept from that value up, so every bucket lies past
+/// it and folds into its end bucket, one the buckets did not reach yet.
+/// The fold took the end bucket's place in the buckets as `hi − lo + 1`,
+/// negative here, and drained from a start near `usize::MAX` (docs/PLAN.md
+/// task 272 (p): `huber` panicked on four rows). The weight is kept, the
+/// buckets stay within the band, the same rows in the other order leave
+/// the same sketch, and the median reads it as a walk would.
+#[test]
+fn a_median_at_zero_and_a_value_far_below_the_buckets_folds_them_all() {
+    let mut q = EwQuantile::bounded(&[0.5], 8).unwrap();
+    q.add(0.0, 2.0);
+    q.add(1e300, 1.0);
+    q.add(1e-300, 1.0);
+    assert_eq!(q.at[0], None, "the median is 0");
+    let low = EwQuantile::index(1e-300);
+    assert_eq!(held(&q), vec![(low, 1.0), (low + 1024, 1.0)]);
+    assert_eq!((q.zero, q.total), (2.0, 4.0));
+    let most = EwQuantile::one_level_buckets(8);
+    let (len, cap) = q.buckets_held();
+    assert!(len <= most && cap <= most, "{len} spanned, {cap} held");
+    let mut ascending = EwQuantile::bounded(&[0.5], 8).unwrap();
+    for (v, w) in [(0.0, 2.0), (1e-300, 1.0), (1e300, 1.0)] {
+        ascending.add(v, w);
+    }
+    assert_eq!(q, ascending);
+    // The median then leaves 0 as it would have: for the lowest value's
+    // bucket, then for the band's end bucket, a bound on the values folded
+    // into it; each pointer and the weight below it are a walk's.
+    let walked = |q: &EwQuantile| {
+        let mut r = q.clone();
+        r.rebuild();
+        (r.at, r.below, r.total)
+    };
+    q.add(1e-300, 3.0);
+    assert_eq!(q.at[0], Some(low));
+    assert_eq!(q.get(0), Some(EwQuantile::representative(low)));
+    assert_eq!((q.at.clone(), q.below.clone(), q.total), walked(&q));
+    q.add(1e300, 10.0);
+    assert_eq!(q.at[0], Some(low + 1024));
+    assert_eq!(held(&q), vec![(low, 4.0), (low + 1024, 11.0)]);
+    assert_eq!((q.at.clone(), q.below.clone(), q.total), walked(&q));
+    let (len, cap) = q.buckets_held();
+    assert!(len <= most && cap <= most, "{len} spanned, {cap} held");
+
+    // Just past the band: every bucket folds into the bucket right below
+    // them, where `hi − lo + 1` was 0 and the fold indexed `usize::MAX`.
+    let mut q = EwQuantile::bounded(&[0.5], 1).unwrap();
+    q.add(0.0, 2.0);
+    q.add(1.0, 1.0);
+    q.add(EwQuantile::representative(-129), 1.0);
+    assert_eq!(held(&q), vec![(-129, 1.0), (-1, 1.0)]);
+    assert_eq!((q.lo, q.buckets.len(), q.total), (-129, 129, 4.0));
+}
+
+/// Where the band's top end is the first bucket itself, the fold is the
+/// one it always was: the buckets past it summed, then added to it. Summed
+/// with it from the start, `1 + 2^-53 + 2^-53` rounds to 1, where `1 +
+/// (2^-53 + 2^-53)` is `1 + 2^-52`, so the grouping shows in the bits.
+#[test]
+fn a_band_ending_at_the_first_bucket_folds_into_it_as_before() {
+    let mut q = EwQuantile::bounded(&[0.5], 1).unwrap();
+    q.add(0.0, 10.0);
+    let tiny = f64::EPSILON / 2.0;
+    q.add(1.0, 1.0);
+    for k in [1, 2] {
+        q.add(EwQuantile::representative(k), tiny);
+    }
+    assert_eq!(held(&q), vec![(0, 1.0), (1, tiny), (2, tiny)]);
+    q.add(EwQuantile::representative(-128), 1.0);
+    assert_eq!(q.at[0], None, "the median is 0");
+    assert_eq!(held(&q), vec![(-128, 1.0), (0, 1.0 + f64::EPSILON)]);
+    assert_eq!((q.lo, q.buckets.len()), (-128, 129));
+}

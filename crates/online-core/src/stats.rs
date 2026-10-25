@@ -348,6 +348,15 @@ impl EwQuantile {
     /// Fold the buckets below `lo` into bucket `lo` and those above `hi`
     /// into bucket `hi`, their weight kept; `lo..=hi` holds every level's
     /// bucket, so no pointer, no weight below one and no total changes.
+    ///
+    /// `lo` is never past the last bucket: the band reaches down from a
+    /// level's bucket, inside the buckets, or from the lowest bucket
+    /// holding weight. `hi` can be below the first, where every level is at
+    /// the zero bucket and a value arrives more than the band below the
+    /// buckets: the band then reaches up from that value, and every bucket
+    /// folds into bucket `hi`, which the buckets do not reach yet. Read as
+    /// a place in the buckets, `hi − lo + 1` was 0 or negative there, and
+    /// the fold indexed near `usize::MAX` (docs/PLAN.md task 272 (p)).
     fn fold_to(&mut self, lo: i32, hi: i32) {
         if self.lo < lo {
             let cut = (lo - self.lo) as usize;
@@ -355,7 +364,11 @@ impl EwQuantile {
             self.buckets[0] += moved;
             self.lo = lo;
         }
-        if self.end() > hi {
+        if hi < self.lo {
+            let moved: f64 = self.buckets.drain(..).sum();
+            self.buckets.push(moved);
+            self.lo = hi;
+        } else if self.end() > hi {
             let keep = (hi - self.lo + 1) as usize;
             let moved: f64 = self.buckets.drain(keep..).sum();
             self.buckets[keep - 1] += moved;
