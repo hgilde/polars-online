@@ -1,0 +1,86 @@
+name: Oracles
+
+# The heavy grids against a third-party oracle (`-m oracle_grid`): 50 seeds
+# or orders, batch fits over long streams by statsmodels, scikit-learn and
+# scipy, and downloaded datasets. No local run takes them -- pyproject's
+# addopts and both tiers of scripts/gate.sh leave them out (the user,
+# 2026-10-25: "we do not want to run more very long tests in the gate as
+# it's already long"); the convergence grids alone took 22 minutes in four
+# processes, more than the rest of `gate.sh --extended`. They run here
+# instead, on every push to main and by hand, split across parallel jobs
+# (CI's minutes are free: the limits are 20 jobs at once and six hours a
+# job). Read this workflow's conclusion after each push with the others'.
+#
+# Each shard takes every SHARDS-th of the selected tests in node-id order
+# (`--oracle-shard I/N`, tests/conftest.py), so every test is in exactly one
+# shard however the modules grow, and a module's or a model's cells spread
+# across the jobs. Within a shard pytest-xdist runs them on the runner's
+# cores. `uv run pytest -m oracle_grid` runs them all locally;
+# docs/TESTING.md, "Two tiers", has the rule.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Least privilege: no token scope by default, granted per job.
+permissions: {}
+
+# A second run tells you nothing the newer one will not.
+concurrency:
+  group: oracles-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  UV_PYTHON: "3.12"
+
+jobs:
+  grid:
+    name: oracle grids, shard ${{ matrix.shard }} of 12
+    runs-on: ubuntu-latest
+    # The longest shard of twelve: the grids took about 90 minutes of CPU
+    # on a developer Mac under load (2026-10-25), so about eight a shard
+    # on a runner's four cores, after a cold build of 10 to 20.
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Twelve, so the shards and ci.yml's legs fit the account's 20
+        # concurrent jobs in one wave.
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      # Before the cache restore and before `uv sync`, as in ci.yml: the
+      # restored target/ does not fit the image's free disk, and the
+      # rustflags must be in place before anything compiles.
+      - name: free disk and use a leaner linker (Linux)
+        uses: ./.github/actions/linux-build-prep
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          cache-on-failure: true
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      # The public datasets the grids download (tests/data.py: Rdatasets,
+      # NIST StRD, LIBSVM, Fränti's clustering sets, TCPD), kept between
+      # runs; a test whose download fails is skipped as offline (hard rule
+      # 1), so a cold cache costs time, never a result.
+      - name: the downloaded datasets
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache
+          key: oracle-data-${{ hashFiles('tests/data.py', 'tests/public_benchmarks.py') }}
+          restore-keys: oracle-data-
+
+      - run: uv sync --locked
+      # `--release`, as every workflow and the gate build it: what is tested
+      # is what ships (tests/test_dev_loop.py).
+      - name: build the extension
+        run: uv run maturin develop --release -m crates/online-py/Cargo.toml
+
+      - name: pytest, this shard
+        run: uv run pytest -m oracle_grid -q -rfExX -n 4 --dist worksteal --oracle-shard ${{ matrix.shard }}/12

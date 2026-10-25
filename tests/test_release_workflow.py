@@ -190,7 +190,7 @@ def test_the_suite_runs_on_the_declared_polars_floor_before_a_release():
         )
         assert sync in runs, (where, runs)
         assert not any("--prerelease" in r or "unpin" in r for r in runs), where
-        assert 'uv run pytest -q -m "not soak and not pins"' in runs, where
+        assert 'uv run pytest -q -m "not soak and not pins and not oracle_grid"' in runs, where
         assert spec.get("env", {}).get("UV_PYTHON", canary.get("env", {}).get("UV_PYTHON")) == (
             "3.12"
         ), where

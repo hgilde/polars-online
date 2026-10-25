@@ -908,12 +908,14 @@ class TestTheLinuxPrepIsOneAction:
                 )
         # Every caller by name, so a new one is a decision: the two NumPy
         # jobs were added on 2026-09-30, the two floor legs on 2026-10-07,
-        # the instruction counts (Valgrind) on 2026-10-12.
+        # the instruction counts (Valgrind) on 2026-10-12, the oracle grids'
+        # shards on 2026-10-25.
         assert sorted(callers) == [
             "budgets.yml:instructions",
             "ci.yml:test",
             "leakcheck.yml:native",
             "mutants.yml:changed",
+            "oracles.yml:grid",
             "polars-canary.yml:floor-polars",
             "polars-canary.yml:latest-polars",
             "polars-canary.yml:next-numpy",

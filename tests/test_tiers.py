@@ -30,10 +30,10 @@ import tiers
 TIER = "essential"
 
 REPO = Path(__file__).resolve().parents[1]
-TIERS = {"essential", "extended", "mixed", "soak"}
+TIERS = {"essential", "extended", "mixed", "soak", "oracle_grid"}
 WORKFLOWS = REPO / ".github" / "workflows"
 #: What the essentials gate passes pytest; no workflow passes it.
-ESSENTIALS_MARKERS = '-m "not extended and not soak"'
+ESSENTIALS_MARKERS = '-m "not extended and not soak and not oracle_grid"'
 
 
 def _modules() -> list[Path]:
@@ -108,7 +108,9 @@ def test_each_modules_tier_is_what_its_marks_make_it(trees):
             want = "soak"
         elif any(_is_mark(m, "extended") for m in module):
             want = "extended"
-        elif _uses(tree, "extended"):
+        elif any(_is_mark(m, "oracle_grid") for m in module):
+            want = "oracle_grid"
+        elif _uses(tree, "extended") or _uses(tree, "oracle_grid"):
             want = "mixed"
         else:
             want = "essential"
@@ -119,10 +121,11 @@ def test_each_modules_tier_is_what_its_marks_make_it(trees):
 
 def test_every_extended_mark_says_why(trees):
     """``pytest.mark.extended(reason="...")``, the reason a sentence and
-    nothing positional, so the tier can be read off the source."""
+    nothing positional, so the tier can be read off the source; and so for
+    ``pytest.mark.oracle_grid``."""
     bad = []
     for name, tree in trees.items():
-        for use in _uses(tree, "extended"):
+        for use in [*_uses(tree, "extended"), *_uses(tree, "oracle_grid")]:
             reason = None
             if isinstance(use, ast.Call) and not use.args:
                 reason = next((k.value for k in use.keywords if k.arg == "reason"), None)
@@ -348,3 +351,34 @@ def test_mutation_testing_runs_the_extended_rust_tests_too():
     assert listing == {"changed-list"}, listing
     script = (REPO / "scripts" / "mutants.sh").read_text(encoding="utf-8")
     assert 'cargo mutants "${args[@]}" -- -- --include-ignored' in script
+
+
+# --- the oracle grids: on CI, every test in exactly one shard ----------------
+
+
+def test_the_oracle_shards_deal_every_test_exactly_once():
+    from conftest import oracle_shard
+
+    ids = [f"tests/test_x.py::test_{i}[{i % 5}]" for i in range(37)]
+    shards = [oracle_shard(f"{i}/12", ids) for i in range(1, 13)]
+    assert sum(len(s) for s in shards) == len(ids)
+    assert set().union(*shards) == set(ids)
+    assert max(len(s) for s in shards) - min(len(s) for s in shards) <= 1
+    for bad in ("0/12", "13/12"):
+        with pytest.raises(pytest.UsageError):
+            oracle_shard(bad, ids)
+
+
+def test_the_oracle_workflow_runs_every_shard_of_the_grids():
+    """`.github/workflows/oracles.yml` deals `-m oracle_grid` into N shards
+    and runs shards 1 to N, so no grid is left out of every job."""
+    wf = yaml.safe_load((WORKFLOWS / "oracles.yml").read_text(encoding="utf-8"))
+    job = wf["jobs"]["grid"]
+    shards = job["strategy"]["matrix"]["shard"]
+    n = len(shards)
+    assert shards == list(range(1, n + 1)), shards
+    (run,) = [s["run"] for s in job["steps"] if "--oracle-shard" in str(s.get("run", ""))]
+    assert "-m oracle_grid" in run, run
+    assert f"--oracle-shard ${{{{ matrix.shard }}}}/{n}" in run, run
+    assert f"of {n}" in job["name"], job["name"]
+    assert set(wf[True] if True in wf else wf["on"]) == {"push", "workflow_dispatch"}
