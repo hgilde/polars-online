@@ -279,6 +279,8 @@ pub struct Hmm {
     /// Rows waiting to seed the states, with their weights.
     buffer: Vec<(Vec<f64>, f64)>,
     seeded: bool,
+    /// Rows the filter could not evaluate, and the seeding's `lloyd` runs
+    /// that stopped at their cap short of a fixed point.
     pub solve_failures: u64,
     /// The `full` shape's per-state factors between rows; see [`Factors`].
     #[serde(skip)]
@@ -641,17 +643,20 @@ impl Hmm {
 
     /// Seed the states from the buffer, `kmeans`' recipe: choose centres
     /// under `seed_rule`, then replay the buffer through them as hard
-    /// assignments so each state starts with real moments.
+    /// assignments so each state starts with real moments. Each `lloyd` run
+    /// that stopped at its cap short of a fixed point is counted in
+    /// `solve_failures`, as `kmeans` counts them.
     fn seed(&mut self) {
         let (k, d) = (self.cfg.k, self.cfg.n_features);
         let rows: Vec<Vec<f64>> = self.buffer.iter().map(|(x, _)| x.clone()).collect();
         let w: Vec<f64> = self.buffer.iter().map(|(_, w)| *w).collect();
         let mw = vec![1.0; d];
-        let Some(centres) =
+        let Some((centres, cap_hits)) =
             seed_centres(&rows, &w, k, self.cfg.seed_rule, self.cfg.seed, true, &mw)
         else {
             return;
         };
+        self.solve_failures += cap_hits;
         for (x, wi) in &self.buffer {
             let mut best = 0;
             let mut best_d = f64::INFINITY;
@@ -1010,6 +1015,35 @@ mod tests {
             Hmm::new(given).unwrap().seeded(),
             "given states need no rows"
         );
+    }
+
+    /// The `lloyd` seeding's runs that stop at their cap short of a fixed
+    /// point are each counted in `solve_failures`, as `kmeans` counts them
+    /// (task 278, D7); at the default cap the runs reach theirs and count
+    /// nothing, and the other rules iterate nothing to count.
+    #[test]
+    fn a_seeding_run_stopped_at_the_cap_is_a_solve_failure() {
+        use crate::OnlineModel;
+        use crate::cluster::kmeans::{LLOYD_CAP, LLOYD_MAX_ITERS, LLOYD_RESTARTS};
+        let seeded = |rule: SeedRule| {
+            let mut m = Hmm::new(HmmCfg {
+                seed_rule: rule,
+                ..cfg(2, 2)
+            })
+            .unwrap();
+            for (x, _) in stream(20, 3, 5) {
+                m.step(&x, &[], 1.0, 1.0);
+            }
+            assert!(m.seeded());
+            m.solve_failures
+        };
+        assert_eq!(seeded(SeedRule::Lloyd), 0);
+        LLOYD_CAP.with(|c| c.set(1));
+        let short = seeded(SeedRule::Lloyd);
+        let others = [SeedRule::First, SeedRule::Farthest, SeedRule::Kmeanspp].map(seeded);
+        LLOYD_CAP.with(|c| c.set(LLOYD_MAX_ITERS));
+        assert_eq!(short, LLOYD_RESTARTS as u64);
+        assert_eq!(others, [0, 0, 0]);
     }
 
     /// The warm-up replay gives each state its rows' weights as the clock has

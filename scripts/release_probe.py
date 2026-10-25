@@ -293,7 +293,16 @@ WORKLOAD: list[tuple[str, str, dict, list[str]]] = [
     (
         "hmm",
         "hmm",
-        dict(features=["x1", "x2"], n_components=2, precision_prior=0.1, half_life=25.0, **CLOCK),
+        # `warm_rows` given: the default (1,000 rows since task 278) would
+        # seed nothing in the probe's 400.
+        dict(
+            features=["x1", "x2"],
+            n_components=2,
+            precision_prior=0.1,
+            half_life=25.0,
+            warm_rows=50,
+            **CLOCK,
+        ),
         [],
     ),
     (

@@ -1241,3 +1241,38 @@ fn the_averaged_forecast_weighs_each_of_a_targets_own_slots() {
         assert!(apart > 300, "{t}: the slots agree on all but {apart} rows");
     }
 }
+
+/// `kmeans` reports its seeding's Lloyd runs stopped at their cap short of
+/// a fixed point in `solve_failures`, as `hmm` does (task 278, D7), and the
+/// count rides in its state: a state that counted three reads three, and
+/// one that counted none reads none.
+#[test]
+fn kmeans_reports_the_seeding_runs_its_cap_stopped() {
+    use online_core::{KMeans, KMeansCfg, ModelState, SeedRule, State};
+    use online_polars::AnyModel;
+    let m = KMeans::new(KMeansCfg {
+        n_features: 2,
+        k: 2,
+        decay: online_core::Decay::Halflife(f64::INFINITY),
+        min_weight: 0.0,
+        warm_rows: 4,
+        seed_rule: SeedRule::Lloyd,
+        seed: 0,
+        update_every_rows: 1,
+        split_merge: 0.0,
+        split_merge_every_rows: 1,
+        dead_frac: 0.0,
+        standardize: false,
+        scale_floor: 0.0,
+    })
+    .unwrap();
+    let of = |m: KMeans| {
+        AnyModel::restore(&State::new(ModelState::KMeans(Box::new(m))))
+            .unwrap()
+            .solve_failures()
+    };
+    assert_eq!(of(m.clone()), 0);
+    let mut v = serde_json::to_value(&m).unwrap();
+    v["solve_failures"] = 3.into();
+    assert_eq!(of(serde_json::from_value(v).unwrap()), 3);
+}

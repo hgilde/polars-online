@@ -1416,7 +1416,8 @@ pub enum ModelKind {
         /// State covariances, `K` matrices of `d x d`, row-major.
         #[serde(default)]
         covs: Option<Vec<f64>>,
-        /// Learned rows buffered before the states are seeded (default 50).
+        /// Learned rows buffered before the states are seeded (default
+        /// 1,000, or `n_components` where that is more).
         /// With `means` and `covs` given nothing is seeded, and it, like
         /// `init` and `seed`, is refused (review 2026-10-06, CE4).
         #[serde(default)]

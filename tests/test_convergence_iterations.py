@@ -7,9 +7,9 @@ two things on inputs built to make the iteration slow:
 - **the stopping rule was met** where the library says it converged, checked
   against what the rule certifies: the lasso's KKT conditions, and its
   solution next to scikit-learn's (taken as given, not tested);
-- **every cap hit is counted** where the library counts them, and where it
-  does not, the silence is pinned in ``TestKnownDefects`` with the measured
-  rate, so that the fix flips it.
+- **every cap hit is counted** or said: in ``solve_failures``, or for
+  ``gram.lasso_path`` in a ``ReadinessWarning``. Where one was silent, the
+  silence was pinned with its measured rate until the fix flipped the test.
 
 What iterates, and what each says about a cap hit (2026-10-25, at
 ``fe98f01``):
@@ -25,9 +25,10 @@ the iteration                               its stopping rule and cap    a cap h
                                                                           ``ReadinessWarning``
                                                                           naming the
                                                                           penalties
-``kmeans``' and ``hmm``'s ``lloyd`` seeding  none: 10 Lloyd iterations    silent
-                                            from each of 10 k-means++
-                                            starts, the cheapest kept
+``kmeans``' and ``hmm``'s ``lloyd`` seeding  a pass that assigns every    counted in
+                                            row where the last did; 300  ``solve_failures``
+                                            passes, from each of 10
+                                            greedy k-means++ starts
 ``hmm``'s learning                          none needed: one filtered     --
                                             EM step a row, no inner loop
 ``audit``'s MAD bisection                   adjacent doubles; 2,100       cannot bind:
@@ -38,9 +39,10 @@ the iteration                               its stopping rule and cap    a cap h
 warm-up refit                               it lands
 ==========================================  ===========================  =========
 
-Until task 278's fix (D3 and D6), the lasso's rule compared the move with
-``tol`` itself, in the target's units, and ``gram.lasso_path``'s cap hits
-were silent.
+Until task 278's fixes (D3, D6 and D7), the lasso's rule compared the move
+with ``tol`` itself, in the target's units, ``gram.lasso_path``'s cap hits
+were silent, and the ``lloyd`` seeding ran ten passes with no rule and no
+count.
 """
 
 from __future__ import annotations
@@ -280,6 +282,101 @@ class TestLassoDescent:
         assert failures(bank) == len(points) * (len(y) - 1)
 
 
+def eight_blobs(seed: int, n: int = 500) -> np.ndarray:
+    """Eight unit blobs whose centres are drawn in a square of side 4, so
+    they overlap: Lloyd's passes move rows between them for a while."""
+    rng = np.random.default_rng(seed)
+    centres = rng.uniform(-2.0, 2.0, (8, 2))
+    return centres[rng.integers(0, 8, n)] + rng.normal(size=(n, 2))
+
+
+class TestLloydSeeding:
+    """``init = "lloyd"``, the default seeding of ``kmeans`` and the one
+    ``hmm`` shares, runs each of its ten greedy k-means++ starts to a fixed
+    point -- a pass that assigns every row where the last did -- at most 300
+    passes, and counts a run stopped there in ``solve_failures``. The recipe
+    is ``tests/reference_cluster.py``'s, which ``test_kmeans.py`` holds to
+    the library bit for bit. A run stopped at the cap is counted in the
+    core's unit tests, which can lower it; no stream measured here reaches
+    it.
+
+    It ran ten passes from each start, with no test that the assignments had
+    stopped changing and no count where they had not: on eight overlapping
+    blobs in two dimensions (500 rows, ``kmeans``' default buffer), measured
+    2026-10-25, 38 of 50 seeds kept centres that were not a fixed point,
+    the largest move 0.12 spreads, and ``solve_failures`` read 0 (task 278,
+    D7).
+    """
+
+    @pytest.mark.parametrize(
+        "seeds",
+        [
+            5,
+            pytest.param(
+                50,
+                marks=pytest.mark.oracle_grid(reason="a grid: 50 seedings in the Python reference"),
+            ),
+        ],
+    )
+    def test_the_lloyd_seeding_ends_at_a_fixed_point(self, seeds):
+        # One more pass from the kept centres assigns every row as the last
+        # did and moves no centre, to the bit; and ten passes, the old rule,
+        # stop short on these seeds, so the fixed point is not ten passes'.
+        short, hits, at_ten = 0, 0, 0
+        for seed in range(seeds):
+            buf = eight_blobs(seed).tolist()
+            w, mw = [1.0] * len(buf), [1.0, 1.0]
+            kept, n = ref.seed_counted(buf, w, 8, "lloyd", seed, True, mw)
+            assert kept is not None
+            hits += n
+            again, fixed = ref._lloyd(buf, w, [list(c) for c in kept], mw, 2)
+            short += not (fixed and again == kept)
+            at_ten += ref.seed_counted(buf, w, 8, "lloyd", seed, True, mw, cap=10)[1]
+        print(
+            f"lloyd: {short} of {seeds} short of a fixed point, {hits} runs at the cap; "
+            f"{at_ten} of {10 * seeds} runs short at ten passes"
+        )
+        assert at_ten > 0, "ten passes reached every fixed point: the case is not slow"
+        assert short == 0
+        assert hits == 0
+        # The library's own: seeded from the buffer alone, in the features'
+        # units, its centres are the means of the rows its seeds own, which
+        # for seeds at a fixed point are the seeds, so one more pass from
+        # them moves no row. Rows past the buffer's far cut (five times its
+        # mean squared distance from the mean, in two dimensions) choose no
+        # seed but are replayed into the centres, so the rows here are those
+        # within 0.8 of the cut, which leaves every row inside the cut the
+        # model computes. Before the fix one more pass moved rows on OLD.
+        moved = []
+        for seed in range(seeds):
+            x = eight_blobs(seed)
+            x = x[((x - x.mean(0)) ** 2).sum(1) <= 0.8 * 5.0 * ((x - x.mean(0)) ** 2).sum(1).mean()]
+            d2 = ((x - x.mean(0)) ** 2).sum(1)
+            assert d2.max() < 0.95 * 5.0 * d2.mean(), "a row near the model's cut"
+            spec = po.spec.kmeans(
+                "m",
+                features=["x0", "x1"],
+                n_clusters=8,
+                half_life=float("inf"),
+                warm_rows=len(x),
+                seed=seed,
+                split_merge=0.0,
+                standardize=False,
+            )
+            bank = po.ModelBank([spec])
+            bank.fit(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]}))
+            assert failures(bank) == 0
+            c = bank.coef()["coef"].to_numpy().reshape(8, 2)
+            label = ((x[:, None] - c[None]) ** 2).sum(-1).argmin(1)
+            means = np.array(
+                [x[label == j].mean(0) if (label == j).any() else c[j] for j in range(8)]
+            )
+            again = ((x[:, None] - means[None]) ** 2).sum(-1).argmin(1)
+            moved.append(int((again != label).sum()))
+        print(f"the library: rows one more pass moves, by seed: {moved}")
+        assert max(moved) == 0
+
+
 class TestGramLassoPath:
     """`gram.lasso_path` runs the model's descent offline, by the same rule,
     and says which penalties ran out of sweeps: a `ReadinessWarning` naming
@@ -325,56 +422,3 @@ class TestGramLassoPath:
         print(f"lasso_path, converged: KKT {case['kkt'].max():.1e} vs {case['bound'].max():.1e}")
         assert not said, said
         assert np.all(case["kkt"] <= case["bound"])
-
-
-class TestKnownDefects:
-    """Caps that bind in silence (task 278 (b), 2026-10-25), pinned as they
-    stand so that the fix flips the test rather than passing unnoticed."""
-
-    @pytest.mark.parametrize(
-        "seeds",
-        [
-            5,
-            pytest.param(
-                50,
-                marks=pytest.mark.oracle_grid(reason="a grid: 50 seedings in the Python reference"),
-            ),
-        ],
-    )
-    def test_the_lloyd_seeding_stops_short_of_its_fixed_point_in_silence(self, seeds):
-        # `init = "lloyd"`, the default seeding of `kmeans` and the one
-        # `hmm` shares, runs 10 Lloyd iterations from each of 10 k-means++
-        # starts and keeps the cheapest, with no test that the assignments
-        # stopped changing and no count where they did not. The recipe is
-        # `tests/reference_cluster.py`'s, which `test_kmeans.py` holds to
-        # the library bit for bit; one more Lloyd iteration on the kept
-        # centres tells whether they were a fixed point. On eight blobs
-        # one spread apart in two dimensions (500 rows, `kmeans`' default
-        # buffer), measured 2026-10-25: 38 of 50 seeds kept centres that
-        # were not a fixed point, the largest move 0.12 spreads. The
-        # library's `solve_failures` for the same `kmeans` reads 0.
-        def blobs(seed: int, n: int = 500) -> np.ndarray:
-            rng = np.random.default_rng(seed)
-            centres = rng.uniform(-2.0, 2.0, (8, 2))
-            return centres[rng.integers(0, 8, n)] + rng.normal(size=(n, 2))
-
-        short, moves = 0, []
-        for seed in range(seeds):
-            buf = blobs(seed).tolist()
-            w, mw = [1.0] * len(buf), [1.0, 1.0]
-            kept = ref.seed_centres(buf, w, 8, "lloyd", seed, True, mw)
-            assert kept is not None
-            again = ref._lloyd(buf, w, [list(c) for c in kept], mw, 1)
-            move = float(np.max(np.abs(np.array(again) - np.array(kept))))
-            moves.append(move)
-            short += move > 0.0
-        print(f"lloyd: {short} of {seeds} short of a fixed point, largest move {max(moves):.2f}")
-        assert short > 0
-        x = blobs(0, 2000)
-        spec = po.spec.kmeans("m", features=["x0", "x1"], n_clusters=8, half_life=float("inf"))
-        bank = po.ModelBank([spec])
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            bank.fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]}))
-        assert failures(bank) == 0
-        assert not [w for w in caught if "converge" in str(w.message).lower()]
