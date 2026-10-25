@@ -138,7 +138,7 @@ release = 13888690
 
 [instructions.lasso_k20]
 what = "lasso, 20 features, 1 target, half-life 1000, penalties 0.1, 0.01 and 0, the default cadence: AnyModel::step_into, into one kept Step"
-budget = 16949033
+budget = 12879135
 
 [instructions.corrchange_monitor_w2500]
 what = "corrchange monitor, 4 features (6 pairs), a span of 2,500 rows closing once in the block: AnyModel::step"
