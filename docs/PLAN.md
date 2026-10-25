@@ -16337,4 +16337,7 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       `drift_action="reset"` matches a fresh bank on the next row as every
       other kind does (it differed by up to 0.017); `with_windows` refuses
       `session_gap` without `session` and `restart_after_step_back` without
-      `clock`; `bocpd`'s refusal names its current keywords.
+      `clock`; `bocpd`'s refusal names its current keywords. The user, 2026-10-25,
+      asked for as much parallel work as possible and approved six builders
+      at once for this effort (CLAUDE.md's four otherwise):
+      `POLARS_ONLINE_SLOTS=6`.
