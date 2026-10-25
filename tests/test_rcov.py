@@ -314,6 +314,40 @@ def test_a_short_block_gives_nulls():
     assert rows["rcov_n"][0] == 0
 
 
+@pytest.mark.parametrize("kind", ["plain", "kernel", "preavg"])
+def test_min_weight_withholds_a_block_with_fewer_returns(kind):
+    """``min_weight`` on a block counts its returns: each row weighs 0 or 1,
+    so the closed row's ``weight_sum`` is the returns accepted, and below the
+    floor ``rcov`` and ``rcorr`` are null, as for a block too short to
+    estimate from, while every other field says what the block held. It was
+    accepted and did nothing: ``min_weight=1e9`` closed the same row as the
+    default (task 278, the user's decision of 2026-10-25)."""
+    df = ticks(n=300, blocks=2).with_columns(
+        # Ten zero-weight rows in block 0: they advance the clock and are no
+        # return, so the block holds 140 returns over 150 rows.
+        w=pl.when(pl.int_range(pl.len()) % 15 == 7).then(0.0).otherwise(1.0)
+    )
+    base, _ = block(df, kind=kind, weight="w")
+    assert base["weight_sum"][0] == 140.0 and base["rows_fed"][0] == 150
+    assert base["rcov"][0] is not None and base["rcorr"][0] is not None
+    estimate = ["rcov", "rcorr"]
+    for floor, withheld in (
+        (0.0, False),
+        (139.0, False),
+        (140.0, False),
+        (141.0, True),
+        (1e9, True),
+    ):
+        got, _ = block(df, kind=kind, weight="w", min_weight=floor)
+        rest = [c for c in got.columns if c not in estimate]
+        # The other fields never move, and the gate moves nothing it reads.
+        assert got.select(rest).equals(base.select(rest)), floor
+        if withheld:
+            assert got["rcov"][0] is None and got["rcorr"][0] is None, floor
+        else:
+            assert got.select(estimate).equals(base.select(estimate)), floor
+
+
 def test_the_correlation_is_the_covariance_scaled():
     df = ticks(n=400)
     rows, _ = block(df, kind="plain")

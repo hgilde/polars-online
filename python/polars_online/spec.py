@@ -103,7 +103,12 @@ refusals below. The README's *How a bank sees a stream* shows them at work.
     models check the shared ``weight_sum``. The ``weight_sum`` field is the
     shared weight in every model. So a target that is often null is gated on
     its own rows, and its first prediction comes later than the others'. Units:
-    ``weight_sum`` units, not rows. The default depends on the model:
+    ``weight_sum`` units, not rows. ``rcov`` reports nothing per row, and its
+    ``min_weight`` withholds a closed block's ``rcov`` and ``rcorr``: each row
+    weighs 0 or 1 there, so the floor is a count of the block's returns, and
+    a block with fewer is reported as one too short to estimate from. A
+    finite number: a floor at ``inf`` would withhold every row for good while
+    the model learned from each. The default depends on the model:
 
     .. list-table::
        :header-rows: 1
@@ -133,7 +138,9 @@ refusals below. The README's *How a bank sees a stream* shows them at work.
     ``[0, 1)``: ``0.5`` waits one half-life, ``0.75`` two. Default ``0``,
     off, since a fit kept as weighted means is unbiased from its first row
     when the process is stationary. Needs a decay: a finite ``half_life``, or
-    ``lam`` below 1.
+    ``lam`` below 1. ``marginal`` predicts nothing, so it withholds its
+    table's ``corr``, ``beta``, ``t_stat``, ``t_stat_serial`` and split
+    instead, as ``min_weight`` does, at the fraction the next row would read.
 ``max_error_inflation``
     ``ewridge``, ``rls``, ``kalman`` and ``lasso``. Why: a fit from too
     little data adds its estimation error to every prediction's. What:
@@ -545,7 +552,7 @@ The diagnostics add, per slot:
      - The grid slot with the lowest EW out-of-sample squared error so
        far, an ``Enum`` of the slots' labels in grid order (``@h50``,
        ``r0.5``, ``a_r0.5``), and its prediction. Needs more than one slot
-       per target. Each
+       per target, as ``emit_averaged`` does. Each
        slot's error decays at its own instance's half-life: like for like
        within a ridge or feature-set grid. Across a half-life grid a short
        half-life is ranked on fewer, more recent rows than a long one.
@@ -562,7 +569,8 @@ The diagnostics add, per slot:
        they stay bounded and do not sharpen as rows accumulate, as a
        weighting by summed losses (river's ``EWARegressor``) does. A slot
        with no prediction or no ``sigma`` on the row is left out of that
-       row's average; the field is null only when every slot is.
+       row's average; the field is null only when every slot is. Needs
+       more than one slot per target: one slot leaves nothing to average.
    * - ``emit_metrics``
      - ``ic_<slot>``, ``r2_<slot>``, ``hit_rate_<slot>``
      - Exponentially weighted correlation of prediction with target,
@@ -841,7 +849,7 @@ value the model refuses:
   2^16, ``hmm``'s ``k`` past 2^10, a ``kmeans`` or ``bocpd`` warm-up buffer
   past 256 MiB, ``rcov``'s lagged products past 256 MiB;
 - ``inf`` where it means nothing (it is allowed where it does -- ``half_life``,
-  ``min_weight``, ``average_eta``, ``max_error_inflation``, ``window_budget``,
+  ``average_eta``, ``max_error_inflation``, ``window_budget``,
   each diagnostic's ``*_half_life`` and the model parameters that say so);
 - neither ``half_life`` nor ``lam`` on a model that decays (all but
   ``seqtest``, ``audit``, ``rcov``, ``corrchange`` and ``bocpd``), or both; a
@@ -856,7 +864,9 @@ value the model refuses:
 - ``emit_drift`` with a ``clock`` and no ``drift_threshold``;
 - a window target beside ``group`` without ``clock``;
 - a column listed twice, or as both target and feature;
-- a ``min_weight`` list whose length is not the number of targets;
+- a ``min_weight`` list whose length is not the number of targets, and a
+  ``min_weight`` of ``inf``, which would withhold every row for good;
+- ``emit_selected`` or ``emit_averaged`` with one slot per target;
 - ``emit_feature_health`` on a model with no features (``holt``);
 - a level outside ``(0, 1)``, or an option not in the list the message
   gives;
