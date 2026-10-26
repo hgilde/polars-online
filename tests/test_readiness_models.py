@@ -467,6 +467,69 @@ class TestSeCoef:
         assert se[0] is None or all(v is None for v in se[0])
         assert all(v is not None for v in se[-1])
 
+    @pytest.mark.parametrize("half_life", [math.inf, 50.0])
+    @pytest.mark.parametrize("delta", [1e-3, 1.0])
+    def test_rls_is_ewridge_with_its_ridge_on_the_sums(self, delta, half_life):
+        """``rls``'s prior ``delta·I`` is ``ewridge``'s ridge on the sums,
+        ``ridge_scale="sum"``: the same fit, residuals and spread, so the
+        same ``se_coef``, run once and under a memory, with weights.
+        ``ewridge``'s noise gate (``max_error_inflation``, default ``√2``)
+        withholds its first rows where ``rls``'s, off by default, does not;
+        it is opened so both score the same rows. Measured 2026-10-26:
+        ``se_coef`` 4.3e-15 relative at most, ``coef`` 7.5e-15, ``pred``
+        2.8e-14 absolute."""
+        df = frame(400)
+        common: dict[str, Any] = dict(
+            targets=["y"],
+            features=["x0", "x1"],
+            half_life=half_life,
+            weight="w",
+            min_weight=3.0,
+            emit_se_coef=True,
+            emit_sigma=True,
+            coef_every=1,
+        )
+        a = unnest(po.ModelBank([po.spec.rls("m", delta=delta, **common)]).fit_predict(df))
+        b = unnest(
+            po.ModelBank(
+                [
+                    po.spec.ewridge(
+                        "m",
+                        ridge=delta,
+                        ridge_scale="sum",
+                        max_rows_between_solves=1,
+                        max_error_inflation=math.inf,
+                        **common,
+                    )
+                ]
+            ).fit_predict(df)
+        )
+        for col in ("pred_y", "sigma_y"):
+            x, y = a[col].to_numpy().astype(float), b[col].to_numpy().astype(float)
+            assert (np.isnan(x) == np.isnan(y)).all(), col
+            assert np.isfinite(x).sum() > 390, col
+            np.testing.assert_allclose(x, y, rtol=1e-12, atol=1e-12, err_msg=col)
+        for col in ("coef", "se_coef"):
+            assert a[col].null_count() == b[col].null_count(), col
+            x = np.array([v.to_list() for v in a[col] if v is not None], dtype=float)
+            y = np.array([v.to_list() for v in b[col] if v is not None], dtype=float)
+            assert len(x) > 390, col
+            np.testing.assert_allclose(x, y, rtol=1e-12, err_msg=col)
+
+    @pytest.mark.parametrize("kind", ["ewridge", "rls", "kalman"])
+    def test_survives_a_save_and_load_on_every_coef_row(self, kind, tmp_path):
+        df = frame(210)
+        s = build(kind, emit_se_coef=True, coef_every=1)
+        one = unnest(po.ModelBank([s]).fit_predict(df))
+        bank = po.ModelBank([s])
+        head = unnest(bank.fit_predict(df[:97]))
+        bank.save(tmp_path / "s.state")
+        tail = unnest(po.ModelBank.load(tmp_path / "s.state", specs=[s]).fit_predict(df[97:]))
+        both = pl.concat([head, tail])
+        assert both["se_coef"].null_count() < 20
+        assert both["se_coef"].equals(one["se_coef"])
+        assert both["coef"].equals(one["coef"])
+
     def test_shrinks_as_the_sample_grows(self):
         """Without decay the standard errors fall like one over the root of
         the rows."""
