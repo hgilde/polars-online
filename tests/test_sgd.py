@@ -4,6 +4,8 @@ The cheap baseline — one gradient step per row, no solves — and the only mod
 here that takes count targets, via the Poisson loss with a log link.
 """
 
+import warnings
+
 import numpy as np
 import polars as pl
 import pytest
@@ -157,6 +159,18 @@ class TestSchedules:
         plain, _ = _fit(df)
         shrunk, _ = _fit(df, l2=1.0)
         assert abs(shrunk[1]) < abs(plain[1])
+
+    @pytest.mark.parametrize("standardize", [True, False], ids=["standardized", "raw"])
+    @pytest.mark.parametrize("lr", [0.01, 0.05])
+    def test_inv_scaling_at_power_zero_is_the_constant_rate(self, lr, standardize):
+        """``lr / (1 + lam * weight_sum) ** 0`` is ``lr``: every field the
+        constant schedule's, to the bit, its stability gate's included (task
+        278, batch 18)."""
+        df = _linear(n=3000, seed=12, noise=0.5)
+        kw = dict(half_life=200.0, learning_rate=lr, standardize=standardize)
+        power0 = po.ModelBank([_spec(schedule="inv_scaling", power=0.0, **kw)]).fit_predict(df)
+        constant = po.ModelBank([_spec(**kw)]).fit_predict(df)
+        assert power0.equals(constant, null_equal=True)
 
 
 class TestPlumbing:
@@ -645,6 +659,89 @@ class TestLogisticLabels:
         with pytest.raises(ValueError, match="strict_binary"):
             po.spec.sgd("m", targets=["y"], features=["x"], half_life=1e9, strict_binary=True)
 
+    @staticmethod
+    def _strict(strict=True, **kw):
+        return po.spec.sgd(
+            "m",
+            targets=["y"],
+            features=["x"],
+            half_life=1e9,
+            min_weight=5.0,
+            loss="logistic",
+            **({"strict_binary": True} if strict else {}),
+            **kw,
+        )
+
+    def test_on_labels_of_zero_and_one_it_is_the_default(self):
+        """Where every label is 0, 1 or null there is nothing to refuse or
+        clamp: every field the default's, to the bit (task 278, batch 18)."""
+        df = self._frame(1.0).with_columns(
+            y=pl.when(pl.int_range(pl.len()) % 7 == 3).then(None).otherwise(pl.col("y"))
+        )
+        assert df["y"].null_count() > 50
+        strict = po.ModelBank([self._strict()]).fit_predict(df)
+        assert strict.equals(po.ModelBank([self._strict(False)]).fit_predict(df), null_equal=True)
+
+    def test_negative_zero_is_the_label_zero_and_nan_is_a_null(self):
+        """``-0.0`` equals 0 and is taken as it; a NaN label is no label, a
+        null target, scored and not learned, as everywhere."""
+        df = self._frame(1.0)
+        signed = df.with_columns(y=pl.when(pl.col("y") == 0.0).then(-0.0).otherwise(pl.col("y")))
+        assert np.signbit(signed["y"].to_numpy()).sum() > 200
+        out = po.ModelBank([self._strict()]).fit_predict(signed)["m"]
+        assert out.equals(po.ModelBank([self._strict()]).fit_predict(df)["m"], null_equal=True)
+        nan = df.with_columns(y=pl.when(pl.col("x") > 1.5).then(np.nan).otherwise(pl.col("y")))
+        null = nan.with_columns(pl.col("y").fill_nan(None))
+        assert null["y"].null_count() > 20
+        got = po.ModelBank([self._strict()]).fit_predict(nan)["m"]
+        assert got.equals(po.ModelBank([self._strict()]).fit_predict(null)["m"], null_equal=True)
+
+    @pytest.mark.parametrize("row", [0, 299], ids=["first-row", "last-row"])
+    def test_a_refused_chunk_leaves_the_bank_as_it_was(self, row):
+        """The refusal names the row, at either end of the chunk, before
+        any stream is touched: the bank's bytes are those before the chunk,
+        and the corrected chunk goes on as on a bank that never saw the bad
+        one."""
+        df = self._frame(1.0)
+        first, second = df.slice(0, 300), df.slice(300, 300)
+        bank = po.ModelBank([self._strict()])
+        bank.fit_predict(first)
+        before = bank.save_bytes()
+        bad = second.with_columns(
+            y=pl.when(pl.int_range(pl.len()) == row).then(2.0).otherwise(pl.col("y"))
+        )
+        with pytest.raises(ValueError, match=rf"has the value 2 at row {row}, which is neither"):
+            bank.fit_predict(bad)
+        assert bank.save_bytes() == before, "the refused chunk touched the bank"
+        clean = po.ModelBank([self._strict()])
+        clean.fit_predict(first)
+        assert bank.fit_predict(second).equals(clean.fit_predict(second), null_equal=True)
+
+    def test_a_refusal_under_a_group_touches_no_group(self):
+        df = self._frame(1.0).with_columns(g=pl.int_range(pl.len()) % 3)
+        spec = self._strict(group="g")
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df.slice(0, 300))
+        before = bank.save_bytes()
+        bad = df.slice(300, 300).with_columns(
+            y=pl.when(pl.int_range(pl.len()) == 151).then(0.5).otherwise(pl.col("y"))
+        )
+        with pytest.raises(ValueError, match=r"has the value 0.5 at row 151"):
+            bank.fit_predict(bad)
+        assert bank.save_bytes() == before, "the refused chunk touched a group"
+
+    def test_a_zero_weight_row_with_a_bad_label_is_refused_too(self):
+        """The check reads the label, not the weight: a row with a weight of
+        0 learns nothing, yet a label other than 0 or 1 on it still refuses
+        the chunk, as the message says, null the rows that should only be
+        scored. Pinned as the decision it is (task 278, batch 18)."""
+        df = self._frame(1.0).with_columns(
+            w=pl.when(pl.int_range(pl.len()) == 40).then(0.0).otherwise(1.0),
+            y=pl.when(pl.int_range(pl.len()) == 40).then(0.5).otherwise(pl.col("y")),
+        )
+        with pytest.raises(ValueError, match=r"has the value 0.5 at row 40.*null the rows"):
+            po.ModelBank([self._strict(weight="w")]).fit_predict(df)
+
 
 class TestATargetBelowZero:
     """docs/PLAN.md task 209 (c): every loss on a target at a level below
@@ -781,3 +878,171 @@ def test_a_poisson_fits_hit_rate_is_null():
     out = po.ModelBank([spec]).fit_predict(df)["s"].struct.unnest()
     assert out["hit_rate_y"].null_count() == n
     assert out["r2_y"].drop_nulls().len() > n - 20
+
+
+# The parameters each move the fit one way (task 278, batch 18). Three seeds
+# in the essentials, seventeen more in the extended tier; each assertion
+# holds on every seed.
+SEEDS = [0, 1, 2] + [
+    pytest.param(seed, marks=pytest.mark.extended(reason="the monotone grids' further seeds"))
+    for seed in range(3, 20)
+]
+
+
+def _coefs(df, **kw) -> tuple[np.ndarray, pl.DataFrame]:
+    """Every row's coefficients after it, and the output."""
+    out = po.ModelBank([_spec(coef_every=1, **kw)]).fit_predict(df)
+    rows = out["m"].struct.field("coef").to_list()
+    width = len(rows[-1])
+    return np.array([[np.nan] * width if r is None else r for r in rows], float), out
+
+
+class TestEachParameterMovesTheFitOneWay:
+    """``l2``, ``eps`` and ``quantile`` on a stationary stream, held to the
+    direction their docstrings give and, where it can be derived, to the
+    point the fit settles on."""
+
+    L2 = [0.0, 0.01, 0.1, 1.0, 10.0]
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    def test_the_ridge_shrinks_the_slopes_and_not_the_intercept(self, seed):
+        """Under ``standardize`` the ridge is on ``s_i * b_i`` and the step on
+        ``z_i = (x_i - m_i) / s_i``, so on independent features the mean step
+        is ``(b_i - beta_i) s_i + l2 s_i b_i``, zero at ``b_i = beta_i / (1 +
+        l2)`` whatever the feature's scale. The intercept is not penalised
+        and stays at the level. Over the last 3,000 of 6,000 rows, 20 seeds,
+        the slopes were at most 0.028 from that point and the intercept at
+        most 0.065 from 0.25 (measured 2026-10-26)."""
+        df = _linear(n=6000, seed=seed, noise=0.5)
+        tails = np.array(
+            [_coefs(df, l2=l2, learning_rate=0.01)[0][-3000:].mean(0) for l2 in self.L2]
+        )
+        slopes = np.abs(tails[:, 1:])
+        assert (np.diff(slopes, axis=0) < 0).all(), slopes
+        for l2, tail in zip(self.L2, tails, strict=True):
+            np.testing.assert_allclose(tail[1:], np.array([1.5, -0.5]) / (1.0 + l2), atol=0.05)
+            assert abs(tail[0] - 0.25) < 0.1, (l2, tail)
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    def test_a_wider_tube_moves_the_fit_on_fewer_rows(self, seed):
+        """Inside ``eps * s_y`` the epsilon-insensitive gradient is 0 and,
+        with no ridge, the row moves nothing; at ``eps = 0`` every row moves
+        it. Counted from row 100, past the level rule's warm-up, on the raw
+        features (the scaler's warm-up moves the coefficients it reads out
+        on rows that step nothing). Measured 2026-10-26 on 20 seeds: 5,899,
+        4,336-4,504, 547-710, 50-75 and 20-34 of 5,899 rows, neighbours at
+        least 28 rows apart."""
+        df = _linear(n=6000, seed=seed, noise=0.5)
+        moved = []
+        for eps in (0.0, 0.1, 0.5, 1.0, 2.0):
+            coef, _ = _coefs(
+                df,
+                loss="epsilon_insensitive",
+                eps=eps,
+                learning_rate=0.01,
+                standardize=False,
+            )
+            moved.append(int((np.diff(coef[100:], axis=0) != 0.0).any(axis=1).sum()))
+        assert moved[0] == df.height - 101, moved
+        assert (np.diff(moved) < 0).all(), moved
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    def test_the_quantile_level_orders_the_intercept(self, seed):
+        """On a target with standard normal noise the fit at level ``tau``
+        settles on the intercept ``0.25 + Phi^-1(tau)``, so the intercept
+        rises with ``tau`` and a share ``tau`` of the targets falls below the
+        prediction. Over the last 3,000 of 6,000 rows, 20 seeds, the
+        intercept was at most 0.077 from that point and the share at most
+        0.0073 from ``tau`` (measured 2026-10-26)."""
+        from statistics import NormalDist
+
+        df = _linear(n=6000, seed=seed, noise=1.0)
+        y = df["y0"].to_numpy()[-3000:]
+        intercepts = []
+        for tau in (0.1, 0.25, 0.5, 0.75, 0.9):
+            coef, out = _coefs(df, loss="quantile", quantile=tau, learning_rate=0.01)
+            pred = out["m"].struct.field("pred_y0").to_numpy().astype(float)[-3000:]
+            intercepts.append(coef[-3000:, 0].mean())
+            assert abs(intercepts[-1] - (0.25 + NormalDist().inv_cdf(tau))) < 0.15, intercepts
+            assert abs(np.mean(y < pred) - tau) < 0.02, (tau, np.mean(y < pred))
+        assert (np.diff(intercepts) > 0).all(), intercepts
+
+
+def _stream_for(loss: str, n: int = 2000, seed: int = 0) -> pl.DataFrame:
+    rng = np.random.default_rng(seed)
+    x = rng.standard_normal((n, 2))
+    eta = 0.25 + 1.5 * x[:, 0] - 0.5 * x[:, 1]
+    if loss == "poisson":
+        y = rng.poisson(np.exp(0.3 * x[:, 0])).astype(float)
+    elif loss == "logistic":
+        y = (rng.random(n) < 1.0 / (1.0 + np.exp(-eta))).astype(float)
+    else:
+        y = eta + 0.1 * rng.standard_normal(n)
+    return pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y0": y})
+
+
+class TestARateOf1e300:
+    """A learning rate of ``1e300`` is accepted, and nothing it reaches is
+    NaN (task 278, batch 18). Under a shared rate and a loss with a
+    curvature it is past the stability bound on every row, and every
+    prediction is withheld as ``unstable_rate``, with one notice; the fit
+    itself stays finite, held by the clip and the overflow guard. AdaGrad
+    moves a coefficient at most the rate a row and the sign-valued losses
+    step a sign times the rate, so neither is gated: their predictions are
+    huge and finite, as the docstring states."""
+
+    GATED = [
+        (loss, schedule)
+        for loss in ("squared", "huber", "poisson", "logistic")
+        for schedule in ("constant", "inv_scaling")
+    ]
+    UNGATED = [(loss, "adagrad") for loss in ("squared", "huber", "poisson", "logistic")] + [
+        (loss, schedule)
+        for loss in ("quantile", "epsilon_insensitive")
+        for schedule in ("constant", "inv_scaling", "adagrad")
+    ]
+
+    @staticmethod
+    def _run(loss, schedule, standardize):
+        extra = {"quantile": 0.5} if loss == "quantile" else {}
+        spec = _spec(
+            loss=loss,
+            schedule=schedule,
+            learning_rate=1e300,
+            standardize=standardize,
+            half_life=500.0,
+            min_weight=5.0,
+            coef_every=1,
+            **extra,
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            out = po.ModelBank([spec]).fit_predict(_stream_for(loss))["m"].struct.unnest()
+        coef = np.array([r for r in out["coef"].to_list() if r is not None], float)
+        assert np.isfinite(coef).all(), "a coefficient left the doubles"
+        assert np.abs(coef).max() > 1e250, "the rate never reached the fit"
+        pred = out["pred_y0"].to_numpy().astype(float)
+        reasons = out["withheld_reason"].cast(pl.String)
+        notices = [str(c.message) for c in caught if "stability bound" in str(c.message)]
+        return pred, reasons, notices
+
+    @pytest.mark.parametrize("standardize", [True, False], ids=["standardized", "raw"])
+    @pytest.mark.parametrize(("loss", "schedule"), GATED)
+    def test_is_withheld_as_an_unstable_rate(self, loss, schedule, standardize):
+        pred, reasons, notices = self._run(loss, schedule, standardize)
+        assert np.isnan(pred).all(), "a prediction past the bound was served"
+        counts = dict(reasons.value_counts().iter_rows())
+        print(counts)
+        assert set(counts) == {"below_min_weight", "unstable_rate"}, counts
+        assert counts["unstable_rate"] >= len(pred) - 10, counts
+        assert len(notices) == 1, notices
+
+    @pytest.mark.parametrize("standardize", [True, False], ids=["standardized", "raw"])
+    @pytest.mark.parametrize(("loss", "schedule"), UNGATED)
+    def test_the_ungated_steps_stay_finite(self, loss, schedule, standardize):
+        pred, reasons, notices = self._run(loss, schedule, standardize)
+        served = reasons.is_null().to_numpy()
+        assert served.sum() >= len(pred) - 10, "the gate withheld a step it does not read"
+        assert np.isfinite(pred[served]).all(), "a served prediction is not finite"
+        assert (reasons.drop_nulls() == "below_min_weight").all()
+        assert notices == []
