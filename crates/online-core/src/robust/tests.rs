@@ -413,7 +413,7 @@ fn the_residual_variance_ages_on_every_row() {
                 _ => (Some(y), 1.0),
             };
             // The fit's own prediction, from the last solve.
-            let own = m.slot_predictions(&x)[0];
+            let own = m.slot_predictions(&x, m.cfg.floor())[0];
             let p = m.step(&x, &[y], d, w).pred[0];
             let learned_from = if holds { p } else { own };
             wsig *= 0.5f64.powf(d / hl);
@@ -2559,7 +2559,7 @@ fn scaling_the_targets_scales_every_prediction_to_the_bit() {
             let ys: Vec<Option<f64>> = ys.iter().map(|y| y.map(|v| v * c)).collect();
             // The fit's own prediction, the one it learns from, whether
             // or not `min_weight` withholds it (task 278, D10).
-            let p = m.slot_predictions(x);
+            let p = m.slot_predictions(x, m.cfg.floor());
             for (j, y) in ys.iter().enumerate() {
                 let Some(y) = *y else { continue };
                 let r = y - p[j];
@@ -2678,7 +2678,7 @@ fn scaling_the_targets_scales_every_quantile_prediction_to_the_bit() {
             let ys: Vec<Option<f64>> = ys.iter().map(|y| y.map(|v| v * c)).collect();
             // The fit's own prediction, the one it learns from, whether
             // or not `min_weight` withholds it (task 278, D10).
-            let p = m.slot_predictions(x);
+            let p = m.slot_predictions(x, m.cfg.floor());
             for (j, y) in ys.iter().enumerate() {
                 let Some(y) = *y else { continue };
                 if !p[j].is_finite() || *w <= 0.0 {

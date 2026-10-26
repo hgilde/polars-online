@@ -706,6 +706,17 @@ returns.
   10-target blocked case solving every 400 rows (556.1 -> 565.9), measured
   natively, best of seven runs interleaved with the previous build (task
   278).
+- A readiness gate that no longer holds learning back costs a little on
+  each row (task 278): `huber`, `quantile` and `sgd(loss="huber")` count
+  each target's first rows against the model's own floor of a row per
+  coefficient, and forget a history aged below the smallest normal double;
+  `ewridge` checks each target against its own floor beside `min_weight`.
+  Counted natively in instructions, the change cost `huber` 1.0% a row at
+  20 features and 2.0% with three feature sets, and `ewridge` 0.9% at 5
+  features. Reading the floor once a row rather than up to three times
+  takes back 0.3% and 0.9% of `huber`'s, and the gate's own work is now
+  within 0.3% of the old path's for `huber`, `quantile` and
+  `sgd(loss="huber")`, to the bit (task 281).
 - Seeding with `init="lloyd"` at 500 rows, 8 centres and 400 features
   takes 56 ms on separated blobs (from 97) and 91 ms on overlapping ones
   (from 98); `init="k-means++"` takes 3.6 ms there, from 1.9 (task 278).
