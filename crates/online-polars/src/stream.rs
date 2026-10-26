@@ -4576,6 +4576,15 @@ fn run_instance(
     } else {
         HitTest::Sign
     };
+    // The cap a scored row's step is held to under an `embargo`, read once:
+    // the step from the last learned row that the held rows' clock spans
+    // (below) is a gap like any other.
+    let held_cap = inst.pending_clock.is_some().then(|| {
+        inst.spec
+            .clock_cfg()
+            .expect("spec was already validated")
+            .gap_cap
+    });
     for plan in plans {
         if plan.reset {
             inst.reset();
@@ -4664,6 +4673,23 @@ fn run_instance(
         // `kalman`'s is `O(k²)` a row, paid only where it is used.
         let held = inst.pending_clock.as_deref().copied().unwrap_or(0.0);
         let settled = settled_frac(inst.decay, *inst.decay_time + held);
+        // The step a row is scored over: the clock since the last row the
+        // model learned, as a bank fed only the matured rows scores it. A
+        // row learned where it sits, or released from the `embargo` buffer,
+        // steps from the row before it. A row only scored -- held under an
+        // `embargo`, or scored by `predict` against a bank holding rows --
+        // sits after every held row the model has not learned yet, so its
+        // step is theirs and its own, capped as the gap they span would be
+        // (`min(a + b, cap)` is the cap of the raw sum, since a step that was
+        // capped alone is the cap already). Scored over its own step, a held
+        // row read as if it sat one step after the last learned row: `holt`
+        // forecast one step ahead where the row was several, `hmm` aged its
+        // transitions by one step, `kalman` added one step's drift to the
+        // row's variance (task 278, D11).
+        let score_d = match held_cap {
+            Some(cap) if !learn => (held + d_clock).min(cap),
+            _ => d_clock,
+        };
         // The two "not met" notices below read the learned rows'
         // clock alone, as `Stream::readiness` does: the weight they
         // project a ceiling from has neither decayed by nor accumulated
@@ -4678,14 +4704,14 @@ fn run_instance(
             && inst
                 .model
                 .get()
-                .error_inflation_gate_into(xs, d_clock, &mut sc.infl, max_infl);
+                .error_inflation_gate_into(xs, score_d, &mut sc.infl, max_infl);
         // The row's own error inflation: its field, and the breaks'
         // studentized residual, read it (task 221 (b)).
         let has_row_infl = inst.spec.reads_row_inflation()
             && inst
                 .model
                 .get()
-                .row_error_inflation_into(xs, d_clock, &mut sc.row_infl);
+                .row_error_inflation_into(xs, score_d, &mut sc.row_infl);
         // Whether the instance is ready for task 221's diagnostics to fold
         // its residuals (task 232 (1); review round 6, F-1), read before the
         // step as the gates are: the model past its own warm-up, and the
@@ -4742,7 +4768,7 @@ fn run_instance(
                 .get_mut()
                 .step_sharded_into(xs, &sc.ys, step_d, w, inst.shards, &mut step);
         } else {
-            step = inst.model.get().predict(xs, &sc.ys, d_clock);
+            step = inst.model.get().predict(xs, &sc.ys, score_d);
         }
         let n_slots = step.pred.len();
         // `ew_cov` has no targets; its slots are statistics, so every one

@@ -1454,6 +1454,7 @@ row 300: scored at 14:30, having learned the rows up to 14:25, weight_sum 43.74
 | case | what `embargo` does |
 |---|---|
 | what the delay counts | the time that passed on the clock column, skipped rows included, and `session_gap` where a session restarts the clock. It is not the capped step the model decays by, so the release depends on the rows alone and survives any chunking |
+| the step a row is scored over | the clock from the newest row learned to the row, the held rows' steps included, capped at `gap_cap` as one gap. A `holt` forecast reaches that far ahead, and `kalman`'s `error_inflation` adds that much drift. `predict` against a bank holding rows reads the same clock. Either way the score is the one a bank fed only the learned rows gives |
 | exactly at the delay | the row is learned. The time that passed is held exactly: in integer nanoseconds on a temporal clock, and by one subtraction of the two rows' values on a number clock, in integers on an integer clock. Rows 1 ms apart under `embargo="2s"` are each learned 2,000 rows on |
 | with no clock column | one unit is one row of the group, a skipped row included: `embargo=20` is twenty rows |
 | at a break | nothing is released early. A break's own effect, such as a lag ring's clearing or `session_shrink`'s blend, waits with the row after it, and runs when that row is learned. A reset drops the rows still waiting |
@@ -1480,7 +1481,10 @@ and `_online_role_weight`, which you pass to the spec's `weight`.
 clock.** An evenly spaced clock with a delay of whole steps is such a case.
 On an irregular clock they differ, since the doubled stream decays a label
 from `t + delay` and the built-in delay learns it at the row that releases
-it.
+it. A model whose score reads the clock since its last learned row differs
+on any clock: `holt`, `hmm`, `micro`, `kalman`'s `error_inflation`, and
+`sgd` and `pa` while their scaler warms up. The doubled stream's last
+lesson sits `delay` after its row, so such a score reads `delay` less clock.
 
 **Every residual diagnostic differs in any case**, from `sigma` and
 `zscore` to the conformal band and drift. `embargo` takes in the residual
