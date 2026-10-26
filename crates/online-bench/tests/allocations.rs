@@ -182,12 +182,15 @@ fn hmm_builds_its_transition_matrix_once_a_row() {
 
 /// `lasso` copied each target's selection errors a row to take their
 /// argmin (C-2). No solve falls in the counted block, so what is left is
-/// the `Step`: `pred` and `lam_selected`.
+/// the `Step`: `pred` and `lam_selected`. The row cap of 1,800 ends the
+/// first period -- solved on the default schedule (task 278) -- on the
+/// warm-up's 1,800th row, and the next solve is 1,800 rows on, past the
+/// block's last.
 #[test]
 fn lasso_reads_its_selection_errors_in_place() {
     let got = per_row(
         json!({"name": "m", "model": {"type": "lasso", "penalties": [1.0, 0.1, 0.01, 0.001],
-                                       "solve_every": 1e9, "max_rows_between_solves": 1000000},
+                                       "solve_every": 1e9, "max_rows_between_solves": 1800},
                "targets": names("y", 4), "features": names("x", 20), "clock": "t",
                "gap_cap": 100.0, "half_life": 100.0, "min_weight": 20.0}),
         20,

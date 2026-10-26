@@ -185,7 +185,6 @@ VALUES = [
     # read like a fit (review 2026-10-05, PB7).
     (po.spec.lasso, dict(penalties=[0.1], max_iter=-1), "max_iter must be >= 1, got -1"),
     (po.spec.lasso, dict(penalties=[0.1], max_iter=0), "max_iter must be >= 1, got 0"),
-    (po.spec.ewridge, dict(solve_every=INF), "solve_every must be finite, got float inf"),
     (po.spec.ewridge, dict(resid_quantiles=[0.5, INF]), "resid_quantiles must be finite"),
     (po.spec.rls, dict(delta=-INF), "delta must be finite, got float -inf"),
     (po.spec.ewridge, dict(conformal=INF), "conformal must be finite, got float inf"),
@@ -282,7 +281,7 @@ VALUES = [
     (
         po.spec.ewridge,
         dict(solve_every=-1.0),
-        "solve_every must be finite and >= 0 (0 solves every row), got -1",
+        "solve_every must be >= 0 (0 solves every row, inf never), got -1",
     ),
     (po.spec.ewridge, dict(half_life=-1.0), 'half_life must be > 0 ("inf" for no decay), got -1'),
     (po.spec.ewridge, dict(half_life=None, lam=1.5), "lam must be in (0, 1], got 1.5"),

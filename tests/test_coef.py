@@ -96,14 +96,15 @@ def test_coef_does_not_wait_for_min_periods_but_says_so():
     assert out["pred_y"].is_null().all() and out["coef"][-1] is not None
     c = bank.coef("m")
     assert c["coef"].null_count() == 0 and c["weight_sum"][0] < 5
-    # Before its first solve there is no fit, and the row is null. Under a
-    # clock schedule the first row of a stream has not solved; the default
-    # schedule solves it, since all of the row's weight is new (task 115 (b)).
+    # Before its first solve there is no fit, and the row is null. A row of
+    # weight 0 never solves; a row with weight does on every schedule, the
+    # default's (all of its weight is new, task 115 (b)) and a clock's, whose
+    # first period runs on the default one (task 278).
     lazy = po.spec.ewridge(
-        "m", targets=["y"], features=["x1", "x2"], half_life=30, solve_every=10.0
+        "m", targets=["y"], features=["x1", "x2"], half_life=30, solve_every=10.0, weight="w"
     )
     bank = po.ModelBank([lazy])
-    bank.fit_predict(df.head(1))
+    bank.fit_predict(df.head(1).with_columns(w=pl.lit(0.0)))
     c = bank.coef("m")
     assert c["coef"].is_null().all() and c["term"].to_list() == ["intercept", "x1", "x2"]
 

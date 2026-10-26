@@ -8,7 +8,13 @@ after 4,000 rows was the first 20 rows' slope, 0.99, where the stream said
 2.95. The default is now a solve once the weight learned since the last
 reaches `ln 2 / 50` of the weight the fit holds, which in steady state is the
 same `half-life / 50` of clock at any row spacing. An explicit `solve_every`
-keeps its clock, and `half_life=inf` or `lam` still solve every row.
+keeps its clock once its first period has passed, and `half_life=inf` or
+`lam` still solve every row. Until `solve_every` has passed since the
+model's start, or `max_rows_between_solves` rows, an explicit cadence solves
+on the default weight-share schedule (task 278, "Default cadence first"):
+with `min_weight` withholding the output alone, a model first solves at its
+own floor, about a row per unknown, and a long `solve_every` held that early
+fit a whole period.
 """
 
 import json
@@ -64,17 +70,64 @@ def test_a_halflife_far_longer_than_the_stream_keeps_solving(model, extra, half_
 @pytest.mark.parametrize(("model", "extra"), MODELS, ids=[m for m, _ in MODELS])
 def test_an_explicit_solve_every_keeps_its_clock(model, extra):
     """The rule replaces only the default: a caller who names `solve_every`
-    gets that clock, the stale fit included. `huber`, `quantile` and `lasso`
-    first solve where their target has a row per coefficient, two here,
-    whatever `min_weight` says (task 278, D10): the fit of the first two
-    rows, held. `ewridge` likewise solves first at its own floor, on its
-    third row here, since `min_weight` withholds its output alone (task 278,
-    the gates batch; it waited for `min_weight`, 20 rows of slope 1)."""
-    got = slope(model, extra, stream(), half_life=1e12, solve_every=1e9)
-    rows = 3 if model == "ewridge" else 2
-    first = slope(model, extra, stream().head(rows), half_life=1e12, solve_every=1e9)
-    assert got == first, (got, first)
-    assert abs(got - 2.95) > 1.0, got
+    gets that clock once its first period has passed, the stale fit
+    included. With no clock column the clock is the row's number, the
+    model's start a row before the first, so `solve_every=150` ends the
+    first period on the 150th row (0-based 149) and solves every 150th row
+    from it, the last at 3,899 of 4,000: the fit of the first 3,900 rows,
+    held for the last hundred."""
+    got = slope(model, extra, stream(), half_life=1e12, solve_every=150.0)
+    last = slope(model, extra, stream().head(3_900), half_life=1e12, solve_every=150.0)
+    assert got == last, (got, last)
+    assert got != slope(model, extra, stream(), half_life=1e12, max_rows_between_solves=1)
+
+
+@pytest.mark.parametrize(("model", "extra"), MODELS, ids=[m for m, _ in MODELS])
+@pytest.mark.parametrize("cadence", ["solve_every", "max_rows_between_solves"])
+def test_an_explicit_cadences_first_period_is_the_default_schedule(model, extra, cadence):
+    """Task 278, "Default cadence first": until an explicit cadence's first
+    period has passed -- 150 clock units from the model's start, a row before
+    the first on the row clock, or 150 rows with weight -- the model solves on
+    the default weight-share schedule, so every row before the period's last
+    reports what the spec without the cadence reports, every field, to the
+    bit. A `solve_every` held the fit of the model's floor, about a row per
+    unknown, for the whole period."""
+    df = stream()
+    kw = (
+        {"solve_every": 150.0}
+        if cadence == "solve_every"
+        else {
+            "solve_every": 1e9,
+            "max_rows_between_solves": 150,
+        }
+    )
+
+    def run(**more):
+        spec = getattr(po.spec, model)(
+            "m",
+            targets=["y"],
+            features=["x0"],
+            min_weight=20.0,
+            half_life=1e12,
+            max_rows_between_coefs=1,
+            **extra,
+            **more,
+        )
+        return po.ModelBank([spec]).fit_predict(df).unnest("m")
+
+    explicit, default = run(**kw), run()
+    assert explicit.head(149).equals(default.head(149), null_equal=True)
+    # And from the period's end the explicit cadence alone: the fit moves on
+    # rows 149, 299, ... and holds between.
+    coef = explicit["coef"].to_list()
+    moved = [i for i in range(149, 1_000) if coef[i] != coef[i - 1]]
+    assert moved == list(range(149, 1_000, 150)), moved
+    # The evidence the period acts: its fit moved on most of its rows (every
+    # row of the first 72, then geometrically), where the floor's fit was
+    # held the whole period.
+    fits = {tuple(c) for c in coef[:149]}
+    print(f"{model}, {cadence}: {len(fits)} fits in the first period")
+    assert len(fits) > 100, len(fits)
 
 
 def test_in_steady_state_the_rule_is_the_clocks_cadence():
@@ -161,7 +214,9 @@ def test_a_clock_cadence_is_decided_on_the_exact_clock(model, extra, unit):
     1.9999999999998905 s, so ``solve_every="2s"`` solved a row late, and
     every solve after it a row later again. The cadence is now decided on
     the decayed clock held exactly, so the solves fall every 2,000th row, as
-    the raw nanoseconds say, in every unit."""
+    the raw nanoseconds say, in every unit: from the first period's end, 2 s
+    from the first row, before which the model solves on the default
+    schedule (task 278)."""
     df, ns = millisecond_rows(6_100, unit)
     spec = getattr(po.spec, model)(
         "m",
@@ -176,8 +231,15 @@ def test_a_clock_cadence_is_decided_on_the_exact_clock(model, extra, unit):
         **extra,
     )
     got = solves(po.ModelBank([spec]).fit_predict(df))
-    assert got == on_the_clock(got[0], ns, 2_000_000_000)
-    assert np.diff(got).tolist() == [2_000] * 3, got
+    end = next(i for i in range(len(ns)) if int(ns[i]) - int(ns[0]) >= 2_000_000_000)
+    assert end == 2_000
+    explicit = [i for i in got if i >= end]
+    assert explicit == on_the_clock(end, ns, 2_000_000_000)
+    assert explicit == [2_000, 4_000, 6_000], explicit
+    # Before it, the default schedule: geometric under no decay, every row
+    # until the weight held reaches fifty-odd rows.
+    before = [i for i in got if i < end]
+    assert before[:72] == list(range(72)) and 100 < len(before) < 500, before
 
 
 # ---- the cadence relation (task 278, batch 27) ----
@@ -324,3 +386,63 @@ def test_on_each_solve_row_lasso_is_the_every_row_path_within_its_rule(schedule)
     worst = max(float(np.nanmax(np.abs(cs[i] - ce[i]))) for i in solved)
     print(f"{schedule}: {len(solved)} solve rows, worst |d coef| {worst:.3g}")
     assert worst < 1e-12
+
+
+# ---- a cadence that never comes due (task 278, the user's 2026-10-26) ----
+
+#: The value from which ``solve_every`` never comes due, as ``inf`` does.
+NEVER = 1e18
+
+
+def _models(bank: po.ModelBank) -> list:
+    """Each group's model states, the part of a bank's state a spec's value
+    builds (the spec itself is kept as written)."""
+    doc = json.loads(bank.write_json())
+    return [pair[1]["models"] for pair in doc["states"][0]]
+
+
+@pytest.mark.parametrize(("model", "extra"), MODELS, ids=[m for m, _ in MODELS])
+@pytest.mark.parametrize("cap", [None, 500], ids=["no cap", "a cap of 500"])
+def test_inf_and_any_value_past_the_threshold_never_solve(model, extra, cap):
+    """``solve_every=inf`` never comes due, and neither does any value from
+    ``1e18`` on: past the end of any stream on every clock (``1e18`` seconds
+    is 3.2e10 years). Both build the same model, every output and every
+    model's state the same to the bit, with no first period: the sums are
+    collected and the model solves only to give its first rows a fit, and
+    where a row cap says. The largest value below the threshold is a cadence:
+    its first period, which no stream ends, solves on the default schedule
+    throughout."""
+    df = stream()
+    kw = {} if cap is None else {"max_rows_between_solves": cap}
+
+    def run(every):
+        spec = getattr(po.spec, model)(
+            "m",
+            targets=["y"],
+            features=["x0"],
+            min_weight=20.0,
+            half_life=1e12,
+            max_rows_between_coefs=1,
+            solve_every=every,
+            **extra,
+            **kw,
+        )
+        bank = po.ModelBank([spec])
+        return bank.fit_predict(df).unnest("m"), bank
+
+    (inf, b_inf), (big, b_big) = run(float("inf")), run(NEVER)
+    assert inf.equals(big, null_equal=True)
+    assert _models(b_inf) == _models(b_big)
+    state = _models(b_inf)[0][0]["model"]
+    inner = next(iter(state.values()))
+    assert inner["first_period_by_share"] is False
+    coef = inf["coef"].to_list()
+    moved = [i for i in range(1, df.height) if coef[i] != coef[i - 1]]
+    print(f"{model}, cap {cap}: the fit moved on {moved[:6]}... ({len(moved)} rows)")
+    if cap is None:
+        assert len(moved) <= 3 and all(i < 10 for i in moved), moved
+    else:
+        assert moved[-3:] == [moved[-1] - 1_000, moved[-1] - 500, moved[-1]], moved
+    below, _ = run(np.nextafter(NEVER, 0.0))
+    fits = below["coef"].to_list()
+    assert sum(fits[i] != fits[i - 1] for i in range(1, df.height)) > 100

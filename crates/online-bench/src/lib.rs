@@ -323,11 +323,15 @@ fn case_spec(id: &str) -> (Value, Shape) {
     };
     match id {
         "ewridge_k5" | "bank_ewridge_k5" => (fit(json!({"type": "ewridge"}), 5), Shape::Linear),
-        // A solve every 20 rows of a group's clock: at the default cadence a
+        // A solve every 4 rows of a group's clock: at the default cadence a
         // fit ten rows old solves on nearly every row, and the case is for
-        // the task's constant, not a young fit's solves.
+        // the task's constant, not a young fit's solves. The cadence's
+        // first period, which solves on the default schedule (task 278,
+        // "Default cadence first"), ends on a group's 5th row, and its
+        // solves fall on the 5th, 9th and 13th: the measured 11th solves
+        // none, as the old cadence of 20 from the first solve did not.
         "bank_ewridge_k5_groups" => {
-            let mut s = fit(json!({"type": "ewridge", "solve_every": 20.0}), 5);
+            let mut s = fit(json!({"type": "ewridge", "solve_every": 4.0}), 5);
             s["group"] = json!("g");
             (s, Shape::Linear)
         }

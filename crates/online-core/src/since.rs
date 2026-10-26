@@ -120,6 +120,79 @@ impl Since {
     }
 }
 
+/// Whether a regression's schedule is an explicit cadence, one whose first
+/// period runs on the default weight-share schedule ([`FirstPeriod`]): no
+/// weight share of its own, and a clock between solves, `solve_every > 0`.
+/// A `solve_every <= 0` solves every row, so it has no period to wait out,
+/// and one that never comes due ([`crate::SOLVE_NEVER`]: `inf`, or past
+/// the end of any stream) asks for no solves, so it has none either.
+pub(crate) fn explicit_cadence(solve_share: Option<f64>, solve_every: f64) -> bool {
+    solve_share.is_none() && solve_every > 0.0 && !crate::solve_never(solve_every)
+}
+
+/// Whether a regression's clock cadence `solve_every` has come due at the
+/// row last stepped: on every row at `<= 0`, never at or past
+/// [`crate::SOLVE_NEVER`] (where a stamp comparison against `inf` has no
+/// answer, which [`Since::reached`] reads as equal), and otherwise once
+/// `solve_every` clock units have passed since the last solve.
+pub(crate) fn clock_due(since: &Since, solve_every: f64) -> bool {
+    solve_every <= 0.0 || (!crate::solve_never(solve_every) && since.reached(solve_every))
+}
+
+/// The first period of an explicit solve cadence (task 278, the user's
+/// decision of 2026-10-26, "Default cadence first"), for `ewridge`,
+/// `lasso`, `huber` and `quantile`.
+///
+/// With `min_weight` withholding the output alone, a model first solves at
+/// its own floor, about a row per unknown, and an explicit `solve_every`
+/// held that early fit a whole period: under `solve_every = 500` and
+/// `min_weight = 50`, the served error over the first 600 rows was eight
+/// times the old first solve's. So, until the explicit cadence's first
+/// period has passed, the model also solves on the default schedule, once
+/// the weight learned since its last solve reaches
+/// [`crate::DEFAULT_SOLVE_SHARE`] of the weight its fit holds -- whatever
+/// the decay, as the share is defined at any -- and those solves leave the
+/// cadence's own counters where they were. The period has passed on the
+/// first row with weight on which
+///
+/// - `solve_every` clock units have passed since the model's start, the
+///   origin a [`Since`] measures from before its first event: the first
+///   stamped row's stamp less its own step, which is that row's stamp
+///   where the stream's first row is learned, and on the row clock a row
+///   before the first (task 278, D13), so a cadence of `n` is reached on
+///   the `n`-th row; or
+/// - `max_rows_between_solves` rows with weight have been learned since
+///   the model's start.
+///
+/// That row solves, as the explicit cadence's first event, and starts the
+/// cadence's clock and row count; from there the explicit cadence alone
+/// decides, and its solves fall on the rows the same cadence from the
+/// model's start reaches. A model's own first solves (a fresh model's at
+/// its floor, a late target's) during the period are the period's too.
+///
+/// A spec with an explicit `solve_every` sets the mark
+/// ([`crate::OnlineModel::set_first_period_by_share`]); a state written
+/// before it has none and goes on as it was fitted, from its first solve
+/// by the explicit cadence alone.
+#[derive(Debug)]
+pub(crate) struct FirstPeriod(Option<(Since, u32)>);
+
+impl FirstPeriod {
+    /// The cadence's counters, kept across a solve that falls inside the
+    /// first period (`inside`), which must not restart them.
+    pub(crate) fn keep(inside: bool, since: &Since, rows: u32) -> Self {
+        Self(inside.then(|| (since.clone(), rows)))
+    }
+
+    /// Put the kept counters back after the solve.
+    pub(crate) fn put_back(self, since: &mut Since, rows: &mut u32) {
+        if let Some((s, r)) = self.0 {
+            *since = s;
+            *rows = r;
+        }
+    }
+}
+
 /// For a model's own test (task 180): rows `0..n`, 1 ms apart, through
 /// `step(row, stamp, d_clock)`, which steps the model and says whether the
 /// row was an event; the rows that were. Each row is handed its stamp in
@@ -178,6 +251,9 @@ fn back_by(stamp: Stamp, d: f64) -> Stamp {
             .unwrap_or(Stamp::Raw(whole as f64 + frac - d, 0.0)),
     }
 }
+
+#[cfg(test)]
+mod first_period_tests;
 
 #[cfg(test)]
 mod tests {

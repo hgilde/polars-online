@@ -706,6 +706,14 @@ pub trait OnlineModel: Sized {
     /// a model with no schedule ignores it -- hence the default.
     fn set_solve_share(&mut self, _share: Option<f64>) {}
 
+    /// Let an explicit solve cadence's first period run on the default
+    /// weight-share schedule (`since::FirstPeriod`; task 278): set by a
+    /// spec on every model it builds, and taken by a model whose schedule
+    /// is an explicit `solve_every` with no weight share. Configuration a
+    /// state keeps, so a state written before it goes on as it was fitted;
+    /// a model with no solve cadence ignores it -- hence the default.
+    fn set_first_period_by_share(&mut self, _on: bool) {}
+
     /// The weight-share cadence this model runs by, if any.
     fn solve_share(&self) -> Option<f64> {
         None

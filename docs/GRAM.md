@@ -50,7 +50,7 @@ pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("week
 lf = pl.scan_parquet("weeks.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
 spec = po.spec.ewridge(
     "blocks", targets=["y"], features=features, group="week",
-    half_life=float("inf"), solve_every=1e18, target_gaps="pairwise", gram_block_rows=256,
+    half_life=float("inf"), solve_every=float("inf"), target_gaps="pairwise", gram_block_rows=256,
 )
 bank = po.ModelBank([spec])
 bank.fit(lf)  # learns from every row, and keeps only the state
@@ -272,7 +272,7 @@ collected as fast as the bank can:
 |---|---|---|
 | `group` | `"week"`, the column made by `pl.col("ts").dt.truncate("1w")` | a state, and so a Gram, for each week |
 | `half_life` | `float("inf")` | every row weighs the same, so a block's Gram is least squares' and blocks pool as they are |
-| `solve_every` | `1e18` rows, past the end of any stream (a duration, such as `"1000w"`, on a spec with a time clock) | under an infinite half-life the model solves on every row unless told otherwise. The fits are made from the Grams, so the pass solves nothing |
+| `solve_every` | `float("inf")`, never, on any clock | under an infinite half-life the model solves on every row unless told otherwise. The fits are made from the Grams, so the pass solves nothing |
 | `target_gaps` | `"pairwise"` | one Gram per block whatever rows each target is missing on, so every block has the same targets and they pool |
 | `gram_block_rows` | `256` | adds 256 rows to the matrix in one product, 5.1 to 6.6 times as fast as one row at a time from 256 to 2,000 features ([`ewridge`](MODELS.md#ewridge--ew-ridge-on-sufficient-statistics)) |
 | `gram_threads` | left out, so `"auto"` | runs that product on the threads the bank's other groups leave idle ([One wide Gram on several threads](#one-wide-gram-on-several-threads)) |
@@ -336,7 +336,7 @@ pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("week
 lf = pl.scan_parquet("weeks.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
 spec = po.spec.ewridge(
     "blocks", targets=["y"], features=features, group="week",
-    half_life=float("inf"), solve_every=1e18, target_gaps="pairwise", gram_block_rows=256,
+    half_life=float("inf"), solve_every=float("inf"), target_gaps="pairwise", gram_block_rows=256,
 )
 bank = po.ModelBank([spec])
 bank.fit(lf)  # learns from every row, and keeps only the state
@@ -434,7 +434,7 @@ pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("week
 lf = pl.scan_parquet("weeks.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
 spec = po.spec.ewridge(
     "blocks", targets=["y"], features=features, group="week",
-    half_life=float("inf"), solve_every=1e18, target_gaps="pairwise", gram_block_rows=256,
+    half_life=float("inf"), solve_every=float("inf"), target_gaps="pairwise", gram_block_rows=256,
 )
 bank = po.ModelBank([spec])
 bank.fit(lf)  # learns from every row, and keeps only the state
@@ -525,7 +525,8 @@ pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("week
 # One pass, two specs: a decayed Gram per week, and one decayed Gram of the whole stream.
 lf = pl.scan_parquet("weeks.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
 decayed = dict(
-    targets=["y"], features=features, clock="ts", gap_cap="1h", half_life="4w", solve_every="1000w"
+    targets=["y"], features=features, clock="ts", gap_cap="1h", half_life="4w",
+    solve_every=float("inf"),
 )
 bank = po.ModelBank(
     [po.spec.ewridge("by_week", group="week", **decayed), po.spec.ewridge("whole", **decayed)]
@@ -648,7 +649,7 @@ pl.DataFrame({"ts": ts, "slow": slow, "quick": quick, "y": y}).write_parquet("le
 lf = pl.scan_parquet("levels.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
 spec = po.spec.ewridge(
     "blocks", targets=["y"], features=["slow", "quick"], group="week",
-    half_life=float("inf"), solve_every=1e18,
+    half_life=float("inf"), solve_every=float("inf"),
 )
 bank = po.ModelBank([spec])
 bank.fit(lf)
@@ -775,7 +776,7 @@ pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("week
 lf = pl.scan_parquet("weeks.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
 spec = po.spec.ewridge(
     "blocks", targets=["y"], features=features, group="week",
-    half_life=float("inf"), solve_every=1e18, target_gaps="pairwise", gram_block_rows=256,
+    half_life=float("inf"), solve_every=float("inf"), target_gaps="pairwise", gram_block_rows=256,
 )
 bank = po.ModelBank([spec])
 bank.fit(lf)  # learns from every row, and keeps only the state
@@ -883,7 +884,7 @@ pl.DataFrame({**dict(zip(features, [*x.T, x5])), "y": y}).write_parquet("near.pa
 
 # One pass leaves one Gram of the six features.
 spec = po.spec.ewridge(
-    "fit", targets=["y"], features=features, half_life=float("inf"), solve_every=1e18
+    "fit", targets=["y"], features=features, half_life=float("inf"), solve_every=float("inf")
 )
 bank = po.ModelBank([spec])
 bank.fit(pl.scan_parquet("near.parquet"))
@@ -1003,7 +1004,7 @@ pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("week
 lf = pl.scan_parquet("weeks.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
 spec = po.spec.ewridge(
     "blocks", targets=["y"], features=features, group="week",
-    half_life=float("inf"), solve_every=1e18, target_gaps="pairwise", gram_block_rows=256,
+    half_life=float("inf"), solve_every=float("inf"), target_gaps="pairwise", gram_block_rows=256,
 )
 bank = po.ModelBank([spec])
 bank.fit(lf)  # learns from every row, and keeps only the state
@@ -1144,7 +1145,7 @@ pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("week
 lf = pl.scan_parquet("weeks.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
 spec = po.spec.ewridge(
     "blocks", targets=["y"], features=features, group="week",
-    half_life=float("inf"), solve_every=1e18, target_gaps="pairwise", gram_block_rows=256,
+    half_life=float("inf"), solve_every=float("inf"), target_gaps="pairwise", gram_block_rows=256,
 )
 bank = po.ModelBank([spec])
 bank.fit(lf)  # learns from every row, and keeps only the state
@@ -1265,7 +1266,7 @@ pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("week
 lf = pl.scan_parquet("weeks.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
 spec = po.spec.ewridge(
     "blocks", targets=["y"], features=features, group="week",
-    half_life=float("inf"), solve_every=1e18, target_gaps="pairwise", gram_block_rows=256,
+    half_life=float("inf"), solve_every=float("inf"), target_gaps="pairwise", gram_block_rows=256,
 )
 bank = po.ModelBank([spec])
 bank.fit(lf)  # learns from every row, and keeps only the state
@@ -1376,7 +1377,7 @@ pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("week
 lf = pl.scan_parquet("weeks.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
 spec = po.spec.ewridge(
     "blocks", targets=["y"], features=features, group="week",
-    half_life=float("inf"), solve_every=1e18, target_gaps="pairwise", gram_block_rows=256,
+    half_life=float("inf"), solve_every=float("inf"), target_gaps="pairwise", gram_block_rows=256,
 )
 bank = po.ModelBank([spec])
 bank.fit(lf)  # learns from every row, and keeps only the state
@@ -1487,7 +1488,7 @@ pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("week
 lf = pl.scan_parquet("weeks.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
 spec = po.spec.ewridge(
     "blocks", targets=["y"], features=features, group="week",
-    half_life=float("inf"), solve_every=1e18, target_gaps="pairwise", gram_block_rows=256,
+    half_life=float("inf"), solve_every=float("inf"), target_gaps="pairwise", gram_block_rows=256,
 )
 bank = po.ModelBank([spec])
 bank.fit(lf)  # learns from every row, and keeps only the state
@@ -1593,7 +1594,7 @@ lf = pl.scan_parquet("weeks.parquet").with_columns(
 )
 spec = po.spec.ewridge(
     "blocks", targets=["y"], features=features, group="week", group_close="monotone",
-    half_life=float("inf"), solve_every=1e18, target_gaps="pairwise", gram_block_rows=256,
+    half_life=float("inf"), solve_every=float("inf"), target_gaps="pairwise", gram_block_rows=256,
 )
 bank = po.ModelBank([spec])
 bank.fit(lf, closed_groups="blocks.parquet")  # a row per week, written once the next week begins
@@ -1695,7 +1696,7 @@ pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("week
 lf = pl.scan_parquet("weeks.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
 spec = po.spec.ewridge(
     "blocks", targets=["y"], features=features, group="week",
-    half_life=float("inf"), solve_every=1e18, target_gaps="pairwise", gram_block_rows=256,
+    half_life=float("inf"), solve_every=float("inf"), target_gaps="pairwise", gram_block_rows=256,
 )
 bank = po.ModelBank([spec])
 bank.fit(lf)  # learns from every row, and keeps only the state
@@ -1718,7 +1719,9 @@ for dtype in ("float64", "float32"):
 
 # A column spread 1e20 wide has a variance that float32 cannot hold.
 pl.DataFrame({"a": 1e20 * rng.standard_normal(1_000), "y": rng.standard_normal(1_000)}).write_parquet("huge.parquet")
-huge = po.spec.ewridge("huge", targets=["y"], features=["a"], half_life=float("inf"), solve_every=1e18)
+huge = po.spec.ewridge(
+    "huge", targets=["y"], features=["a"], half_life=float("inf"), solve_every=float("inf")
+)
 bank = po.ModelBank([huge])
 bank.fit(pl.scan_parquet("huge.parquet"))
 # Asking for it in float32 is refused, with the column named.
@@ -1836,7 +1839,7 @@ pl.DataFrame({**dict(zip(features, x.T)), "y": y}).write_parquet("wide.parquet")
 grams, seconds = {}, {}
 for threads in (1, 8):
     spec = po.spec.ewridge(
-        "wide", targets=["y"], features=features, half_life=float("inf"), solve_every=1e18,
+        "wide", targets=["y"], features=features, half_life=float("inf"), solve_every=float("inf"),
         gram_block_rows=256, gram_threads=threads,
     )
     bank = po.ModelBank([spec])
@@ -1945,7 +1948,7 @@ pl.DataFrame({"x": x, "y": y}).write_parquet("level.parquet")
 # One pass leaves the Gram. Its matrix is the same in every pass below, so it is factored once.
 features = ["x"]
 spec = po.spec.ewridge(
-    "g", targets=["y"], features=features, half_life=float("inf"), solve_every=1e18
+    "g", targets=["y"], features=features, half_life=float("inf"), solve_every=float("inf")
 )
 bank = po.ModelBank([spec])
 bank.fit(pl.scan_parquet("level.parquet"))

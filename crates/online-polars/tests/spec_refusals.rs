@@ -371,7 +371,7 @@ fn a_refused_value_is_named() {
         ),
         (
             sup(r#"{"type": "ewridge", "solve_every": -3.0}"#, ""),
-            "solve_every must be finite and >= 0 (0 solves every row), got -3",
+            "solve_every must be >= 0 (0 solves every row, inf never), got -3",
         ),
         (
             sup(r#"{"type": "ewridge"}"#, r#", "conformal": 1.5"#),

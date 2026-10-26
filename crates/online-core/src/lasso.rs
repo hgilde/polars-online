@@ -106,6 +106,7 @@ pub struct LassoCfg {
     /// where the caller hands them (`since::Since`, docs/PLAN.md task 180).
     /// A row of weight 0 never solves: a solve due on one waits for the next
     /// row with weight (hard rule 9, docs/PLAN.md task 214).
+    #[serde(with = "crate::humanfloat::f64_or_tag")]
     pub solve_every: f64,
     /// Row cap between solves, counted on the rows with weight.
     pub max_rows_between_solves: u32,
@@ -321,6 +322,14 @@ pub struct Lasso {
     /// meeting `tol`, one per target and path point; such a fit is where
     /// the descent stopped (review 2026-09-12, S11: nothing wrote this).
     pub solve_failures: u64,
+    /// Whether the explicit cadence's first period runs on the default
+    /// weight-share schedule (`since::FirstPeriod`; task 278): set by a
+    /// spec with a `solve_every` of its own, and cleared on the row that
+    /// period ends. Schema 64; `false` in a state written before it, and in
+    /// one of 64 saved before the rule, which go on with the explicit
+    /// cadence alone, to the bit.
+    #[serde(default)]
+    first_period_by_share: bool,
     /// The hard-cutoff window, when the spec asks for one. Last, for the
     /// reason `LassoCfg::window` gives.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -402,6 +411,7 @@ impl Lasso {
             rows_since_solve: 0,
             weight_since_solve: 0.0,
             solve_failures: 0,
+            first_period_by_share: false,
             win,
             zbuf: vec![0.0; k_total],
             cfg,
@@ -952,6 +962,11 @@ impl OnlineModel for Lasso {
         self.cfg.solve_share = share;
     }
 
+    fn set_first_period_by_share(&mut self, on: bool) {
+        self.first_period_by_share =
+            on && crate::since::explicit_cadence(self.cfg.solve_share, self.cfg.solve_every);
+    }
+
     fn solve_share(&self) -> Option<f64> {
         self.cfg.solve_share
     }
@@ -1216,9 +1231,19 @@ impl OnlineModel for Lasso {
         // `refused_step` steps a row whose weight is not as a row of 0).
         self.rows_since_solve += 1;
         self.weight_since_solve += weight;
+        // The explicit cadence: the clock or the row cap since the last
+        // solve, or, in its first period, since the model's start. Not read
+        // under a weight share, whose rows it leaves as they were.
+        let explicit = self.cfg.solve_share.is_none()
+            && (crate::since::clock_due(&self.since_solve, self.cfg.solve_every)
+                || self.rows_since_solve >= self.cfg.max_rows_between_solves);
+        let first = self.first_period_by_share && self.cfg.solve_share.is_none();
+        let by_share = |share: f64| self.weight_since_solve >= share * self.n_eff();
         let by_cadence = match self.cfg.solve_share {
-            Some(share) => self.weight_since_solve >= share * self.n_eff(),
-            None => self.cfg.solve_every <= 0.0 || self.since_solve.reached(self.cfg.solve_every),
+            Some(share) => by_share(share),
+            // Until the explicit cadence's first period has passed, the
+            // default schedule's solves too (`since::FirstPeriod`).
+            None => explicit || (first && by_share(crate::DEFAULT_SOLVE_SHARE)),
         };
         // A target's first solve fires on the row its rows of positive
         // weight in the fit reach the floor (`Self::reaches_floor`) -- a
@@ -1234,7 +1259,14 @@ impl OnlineModel for Lasso {
             || (holds && self.beta.is_none() && self.n_eff() >= self.cfg.min_weight)
             || own_first;
         if due {
+            let period = crate::since::FirstPeriod::keep(
+                first && !explicit,
+                &self.since_solve,
+                self.rows_since_solve,
+            );
             self.solve();
+            self.first_period_by_share &= !(first && explicit);
+            period.put_back(&mut self.since_solve, &mut self.rows_since_solve);
         }
         out
     }

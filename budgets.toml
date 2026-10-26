@@ -187,7 +187,7 @@ budget = 11726134
 release = 11517941
 
 [instructions.bank_ewridge_k5_groups]
-what = "Bank::fit_predict of one frame of 1,000 groups, one row each, ewridge with 5 features and a solve every 20 rows, on a pool of one thread"
+what = "Bank::fit_predict of one frame of 1,000 groups, one row each, ewridge with 5 features and a solve every 4 rows, on a pool of one thread"
 budget = 27197600
 release = 26990984
 

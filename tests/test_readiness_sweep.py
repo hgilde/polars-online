@@ -814,6 +814,9 @@ def test_a_gate_never_moves_the_drift_detector(action: str | None, gate: dict[st
 #: weight's share, which solves on the first rows anyway), a clock cadence
 #: and a row cap, where the first solve's own rule decides the fit until the
 #: cadence's next solve.
+#: The kinds that solve on a schedule.
+REGRESSIONS_ON_A_CADENCE = ("ewridge", "lasso", "huber", "quantile")
+
 CADENCES: dict[str, dict[str, Any]] = {
     "default": {},
     "solve_every=25": {"solve_every": 25.0},
@@ -894,6 +897,44 @@ def test_ewridge_min_weight_moves_neither_its_noise_nor_its_first_solve(variant:
     assert abs(got_wsig[0] - wsig) <= 1e-12 * wsig
     assert abs(got_sig2[0] - sig2) <= 1e-12 * sig2
     assert use.sum() > 250, "the variance must fold most of the rows"
+
+
+@pytest.mark.parametrize(
+    ("kind", "variant", "cadence"),
+    [
+        pytest.param(k, v, c, marks=_tier(v == "rows" and c == "solve_every=25"), id=f"{k}-{v}-{c}")
+        for k in REGRESSIONS_ON_A_CADENCE
+        for v in VARIANTS
+        for c in CADENCES
+        if c != "default"
+    ],
+)
+def test_an_explicit_cadences_first_period_moves_with_no_min_weight(
+    kind: str, variant: str, cadence: str
+):
+    """Task 278, "Default cadence first": until an explicit cadence's first
+    period has passed, the model solves on the default weight-share
+    schedule, which reads the weight learned and held and nothing of
+    ``min_weight``. So at every ``min_weight`` the state is the spec's
+    without one and ``coef`` the same on every row, to the bit; and the
+    period's solves act, the fit moving on most of its first rows, where the
+    model's first solve was held a whole period before."""
+    base, b_state = run(kind, variant, CADENCES[cadence]), state(kind, variant, CADENCES[cadence])
+    coef = base["coef"].to_list()
+    fits = len({repr(c) for c in coef[:20]})
+    print(f"{kind} on {variant}, {cadence}: {fits} fits in the first 20 rows")
+    assert fits >= 15, f"{kind}: the first period's solves did not act"
+    for m in (3.0, 10.0, 30.0):
+        gate = CADENCES[cadence] | {"min_weight": m}
+        out, g_state = run(kind, variant, gate), state(kind, variant, gate)
+        what = f"{kind} on {variant}, {cadence}, min_weight={m}"
+        held = _withheld(out) - _withheld(base)
+        if m > 3.0:
+            assert held, f"{what}: the gate withheld nothing, so it proves nothing"
+        assert _bits(base["coef"]) == _bits(out["coef"]), (
+            f"{what}: coef moved, first at {_first_difference(base['coef'], out['coef'])}"
+        )
+        assert_the_state_is_the_same(b_state, g_state, what, OUTPUT_RECORDS)
 
 
 # ---------------------------------------------------------------------------

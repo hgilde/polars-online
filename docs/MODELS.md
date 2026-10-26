@@ -160,7 +160,16 @@ to keep a fit on every feature, name a set that holds them all, such as
 coefficients of its last solve. Under a finite half-life it solves once the
 weight learned since then reaches `ln 2 / 50` of the weight the fit holds:
 about 1.4 %, or every `half_life/50` of clock in steady state. To solve on
-the clock instead, give `solve_every` in clock units. `half_life=inf` and
+the clock instead, give `solve_every` in clock units. Until `solve_every`
+has passed since the stream's start, or `max_rows_between_solves` rows, the
+model solves by weight as it does by default, so a fit of its first few rows
+is not held for a whole period: with `solve_every=500` and `min_weight=50`,
+the error of the predictions it served in the first 600 rows fell from
+5.6e-4 to 3.1e-6 on five seeds of a five-feature stream at a half-life of
+1,000. `solve_every=float("inf")`, or any value from `1e18` on, past the end
+of any stream, never comes due and has no first period: the model collects
+its sums and solves only to give its first rows a fit and where a row
+cap says. `half_life=inf` and
 `lam=` solve on every row, so when the fit need not be current at every
 row, give them a `solve_every`. On 6M rows × 20 features from a parquet
 stream, `solve_every=1000` took 1.4 s instead of 10.7 s, with the
@@ -257,14 +266,15 @@ Updating `S` takes O(k²) time per row for `k` features, and at a thousand
 features that update takes most of the run. The option holds 256 rows back
 and adds them to `S` with one matrix product
 ([docs/PERFORMANCE.md](PERFORMANCE.md) §18). A solve brings `S` up to
-date before it runs, so solve rarely: under `half_life=inf`, give a
-`solve_every`, as `wide` does:
+date before it runs, so solve rarely: under `half_life=inf`, give
+`solve_every=float("inf")`, which never comes due, and a row cap, as `wide`
+does:
 
 ```python
 wide = po.spec.ewridge(
     "wide", targets=["y"],
     features=["x0", "x1", "x2"],   # three here, so the block runs; the speed-ups are for 256 to 2,000
-    half_life=float("inf"), solve_every=1e9, max_rows_between_solves=1000,
+    half_life=float("inf"), solve_every=float("inf"), max_rows_between_solves=1000,
     gram_block_rows=256,           # add 256 held rows to S in one matrix product
 )
 ```

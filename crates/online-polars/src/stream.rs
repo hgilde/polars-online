@@ -331,6 +331,12 @@ impl AnyModel {
         dispatch!(self, m => m.window_shadow())
     }
 
+    /// The default schedule in an explicit cadence's first period
+    /// ([`OnlineModel::set_first_period_by_share`]).
+    pub fn set_first_period_by_share(&mut self, on: bool) {
+        dispatch!(self, m => m.set_first_period_by_share(on))
+    }
+
     /// The weight-share cadence ([`OnlineModel::set_solve_share`]).
     pub fn set_solve_share(&mut self, share: Option<f64>) {
         dispatch!(self, m => m.set_solve_share(share))
@@ -694,6 +700,11 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
     // The window's edge travels with the state, so it is set once, here,
     // before the first row (docs/PLAN.md task 196, N17).
     m.set_window_closed(spec.model.window_edge());
+    // An explicit solve cadence's first period runs on the default
+    // weight-share schedule (task 278, "Default cadence first"); a model
+    // with no explicit cadence leaves the mark off. It travels with the
+    // state, so a state written before it goes on as it was fitted.
+    m.set_first_period_by_share(true);
     Ok(m)
 }
 
@@ -778,9 +789,10 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                     Some(_) => spec.min_periods_or_default(),
                     None => (spec.k() + usize::from(spec.fit_intercept)) as f64,
                 },
-                solve_every: solve_every
-                    .as_ref()
-                    .map_or_else(|| spec.solve_every_default(decay), Span::value),
+                solve_every: solve_every.as_ref().map_or_else(
+                    || spec.solve_every_default(decay),
+                    model_cfgs::solve_every_of,
+                ),
                 max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
                 solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
                 gram_block_rows: gram_block_rows.unwrap_or(0),
@@ -849,9 +861,10 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 // coefficient (task 278, D10); a state saved before keeps
                 // its own.
                 min_weight_holds_learning: false,
-                solve_every: solve_every
-                    .as_ref()
-                    .map_or_else(|| spec.solve_every_default(decay), Span::value),
+                solve_every: solve_every.as_ref().map_or_else(
+                    || spec.solve_every_default(decay),
+                    model_cfgs::solve_every_of,
+                ),
                 max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
                 solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
                 window: window.as_ref().map(Span::value),

@@ -1106,9 +1106,14 @@ def ewridge(
         ``group_close = "session"``, which start the model over instead.
         ``long_half_life`` is above 0.
     ``solve_every``, ``max_rows_between_solves``
-        The solve schedule: every ``solve_every`` clock units (finite and at
-        least 0, ``0`` every row), and at least every
-        ``max_rows_between_solves`` rows (at least 1). Left out, the schedule
+        The solve schedule: every ``solve_every`` clock units (at least 0,
+        ``0`` every row), and at least every ``max_rows_between_solves`` rows
+        (at least 1). ``solve_every = inf`` never solves on the clock: the
+        sums are collected and nothing is solved but where the row cap and a
+        target's first rows say. So does any value of ``1e18`` or more, past
+        the end of any stream on every clock: ``1e18`` seconds is 3.2e10
+        years, ``1e18`` rows is 31.7 years at a billion rows a second, and on
+        a number clock it is 31.7 years of epoch nanoseconds. Left out, the schedule
         is by weight: a solve once the weight learned since the last reaches
         ``ln 2 / 50`` of the weight the fit holds. In steady state that is
         every ``half_life / 50`` of clock at any row spacing, and more often
@@ -1116,8 +1121,15 @@ def ewridge(
         far longer than the stream still solves, at rows further apart as the
         weight grows. ``half_life = inf`` and ``lam`` solve every row.
         ``max_rows_between_solves`` is off by default. The coefficients are the
-        sums' as of the last solve. A target's first solve falls on the row
-        its weight reaches ``k + 1`` (``k`` without an intercept), whatever
+        sums' as of the last solve. A given ``solve_every`` below ``1e18``
+        starts with a first period that solves by weight, as the default does: until
+        ``solve_every`` has passed since the stream's start (on the row clock,
+        the start is a row before the first row), or ``max_rows_between_solves``
+        rows with weight have been learned, so an early fit of a few rows is
+        not held for a whole period. The row that ends the period solves, and
+        the schedule's clock and row count run from there. A target's first
+        solve falls on the row its weight reaches ``k + 1`` (``k`` without an
+        intercept), where the schedule has not solved it sooner, whatever
         ``min_weight`` above that says, which withholds the output alone: the
         fit is the same at any ``min_weight`` from ``k + 1`` up, on every
         schedule. A row of weight 0 is clock alone: it never

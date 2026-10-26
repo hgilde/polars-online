@@ -128,6 +128,9 @@ _INF_OK: dict[str, frozenset[str]] = {
             "max_error_inflation",
             # A window budget at `inf` is no bound (`{"thin": inf}`).
             "window_budget",
+            # A solve cadence at `inf` never comes due: the sums are
+            # collected and nothing is solved (task 278).
+            "solve_every",
             # A diagnostic's memory at `inf` is the run-once form (task 221).
             "calibration_half_life",
             "breaks_half_life",

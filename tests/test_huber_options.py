@@ -11,6 +11,7 @@ references are ``crates/online-core/src/robust/options_tests.rs``.
 
 from __future__ import annotations
 
+import math
 import warnings
 
 import numpy as np
@@ -588,10 +589,14 @@ class TestParameterRelations:
 class TestHuberSolveEvery:
     """``solve_every`` through the bank, on a clock whose steps are quarters
     (so every elapsed clock is exact, and a solve falls on the edge itself
-    often). The fit is first solved on the row its target has been present
-    on a row per coefficient (the third), then on the first row whose clock
-    is at least ``solve_every`` past the last solve's, and the coefficients
-    hold in between, ``coef`` on every row showing each solve. The refit of
+    often). Until ``solve_every`` has passed since the first row, the first
+    period, the fit is solved on the default weight-share schedule (task
+    278, "Default cadence first"); the row it passes on solves, then each
+    first row whose clock is at least ``solve_every`` past the last solve's,
+    and the coefficients hold in between, ``coef`` on every row showing each
+    solve. (Until then the fit was first solved on the row its target had
+    been present on a row per coefficient, the third, and the cadence
+    counted from it.) The refit of
     the first rows solves the target once more, on the row its 500th learned
     row arrives, and leaves the schedule as it stood (``robust.rs``,
     ``refit_target``). Under the Huber loss a cadence moves the trajectory
@@ -624,9 +629,21 @@ class TestHuberSolveEvery:
             "m", targets=["y"], features=["x0", "x1"], max_rows_between_coefs=1, **kw
         )
 
-    def schedule(self, t: np.ndarray, first: int) -> list[int]:
-        want, last = [first], first
-        for i in range(first + 1, self.N):
+    def schedule(self, t: np.ndarray) -> list[int]:
+        """The first period's solves on the default schedule -- once the
+        weight learned since the last reaches ln 2 / 50 of the weight held,
+        both after the row -- then the period's end, ``EVERY`` past the
+        first row, and the clock from there."""
+        end = next(i for i in range(self.N) if t[i] - t[0] >= self.EVERY)
+        share, held, since = [], 0.0, 0.0
+        for i in range(end):
+            held = (0.5 ** ((t[i] - t[i - 1]) / 100.0) if i else 1.0) * held + 1.0
+            since += 1.0
+            if since >= math.log(2) / 50 * held:
+                share.append(i)
+                since = 0.0
+        want, last = [*share, end], end
+        for i in range(end + 1, self.N):
             if t[i] - t[last] >= self.EVERY:
                 want.append(i)
                 last = i
@@ -641,7 +658,7 @@ class TestHuberSolveEvery:
         moved = [
             i for i in range(self.N) if coef[i] is not None and (i == 0 or coef[i] != coef[i - 1])
         ]
-        want = self.schedule(t, 2)
+        want = self.schedule(t)
         on_the_edge = sum(t[b] - t[a] == self.EVERY for a, b in zip(want, want[1:], strict=False))
         assert on_the_edge > 10, on_the_edge
         # Every row has weight, so the 500th learned row is row 499, off

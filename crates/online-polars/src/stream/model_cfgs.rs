@@ -7,6 +7,19 @@
 #[allow(unused_imports)]
 use super::*;
 
+/// A given `solve_every` as a model's configuration takes it: its value in
+/// clock units, and `inf` for any value that never comes due
+/// ([`online_core::SOLVE_NEVER`]; task 278), so a spec written with `1e18`
+/// builds the model one written with `inf` does, to the bit.
+pub(crate) fn solve_every_of(span: &Span) -> f64 {
+    let v = span.value();
+    if online_core::solve_never(v) {
+        f64::INFINITY
+    } else {
+        v
+    }
+}
+
 /// An `audit` spec's [`online_core::AuditCfg`]: its columns are the spec's
 /// features, and the clock's `gap_cap` is the stream's.
 pub fn audit_cfg(spec: &Spec) -> Result<online_core::AuditCfg, String> {
@@ -526,7 +539,7 @@ pub fn huber_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         min_weight: spec.min_periods_or_default(),
         solve_every: solve_every
             .as_ref()
-            .map_or_else(|| spec.solve_every_default(decay), Span::value),
+            .map_or_else(|| spec.solve_every_default(decay), solve_every_of),
         max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
         solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
         quantile_eps: 1e-3,
@@ -619,7 +632,7 @@ pub fn quantile_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         min_weight: spec.min_periods_or_default(),
         solve_every: solve_every
             .as_ref()
-            .map_or_else(|| spec.solve_every_default(decay), Span::value),
+            .map_or_else(|| spec.solve_every_default(decay), solve_every_of),
         max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
         solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
         quantile_eps: quantile_eps.unwrap_or(0.2),

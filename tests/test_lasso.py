@@ -219,11 +219,13 @@ class TestEachTargetsSelectionCountsFromTheFloor:
 def test_on_the_row_clock_solve_every_is_its_row_cap():
     """Without a clock column the clock is the row's number, the first row
     being 1, so ``solve_every=n`` solves on the rows
-    ``max_rows_between_solves=n`` does, every ``n``-th row from the first
-    solve, on the third row, where the target reaches the floor of a row per
-    coefficient (task 278, D10; ``min_weight`` withholds the output alone).
-    Measured from the first row, whose step is 0, it solved a row later, the
-    whole stream long, which ``coef`` showed (task 278, D13)."""
+    ``max_rows_between_solves=n`` does: the first period ends on the
+    ``n``-th row, solving on the default weight-share schedule before it --
+    every row at this half-life -- and then every ``n``-th row (task 278,
+    "Default cadence first"; until then both counted from the first solve,
+    on the third row, the floor of a row per coefficient). Measured from the
+    first row, whose step is 0, it solved a row later, the whole stream
+    long, which ``coef`` showed (task 278, D13)."""
     import warnings
 
     rng = np.random.default_rng(0)
@@ -247,9 +249,9 @@ def test_on_the_row_clock_solve_every_is_its_row_cap():
             return po.ModelBank([spec]).fit_predict(df).unnest("m")
 
     clock = run(solve_every=7.0)
-    assert clock.equals(run(solve_every=1e18, max_rows_between_solves=7), null_equal=True)
+    assert clock.equals(run(solve_every=1e9, max_rows_between_solves=7), null_equal=True)
     c = clock["coef"].to_list()
-    assert [i for i in range(1, n) if c[i] != c[i - 1]] == [2, 9, 16, 23, 30, 37, 44, 51, 58]
+    assert [i for i in range(1, n) if c[i] != c[i - 1]] == [1, 2, 3, 4, 5, *range(6, n, 7)]
 
 
 # ---- the keywords against each other (task 278, batch 27) ----

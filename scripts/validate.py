@@ -214,10 +214,10 @@ def main() -> None:
         f"since the last reaches `ln 2 / 50` of the weight the fit holds: "
         f"mse {default['mse']:.6g}, r2 {default['r2']:.6g}, ic {default['ic']:.6g}"
         + (", below every clock schedule's" if default["mse"] < best["mse"] else "")
-        + ". A clock schedule's first solve falls at the model's own floor, a "
-        "row per unknown, since `min_weight` withholds the output alone; so at the "
-        "longest cadences the fit of those first few rows is held for the whole "
-        "first period, which is what the small divisors pay for.",
+        + ". Until a clock schedule's first period has passed, `half_life/d` "
+        "from the stream's start, the model solves on the default schedule, so even "
+        "the longest cadence does not hold the fit of its first few rows for that "
+        "whole period; after it, each schedule solves on its own clock.",
     )
 
     # ---- 2. standardize default ----

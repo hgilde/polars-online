@@ -105,14 +105,21 @@ class TestSolveIsTheModelsSolve:
         """`gram()` is as of the last row; `coef()` is as of the last *solve*,
         which the spec's schedule decides. On a spec that solves rarely the
         two differ, and it is the Gram that is current -- worth knowing before
-        reading a disagreement as a bug in one of them."""
+        reading a disagreement as a bug in one of them. Here a row cap of
+        2,001 solves on row 2,000, which ends its first period, and next on
+        row 4,001, past the stream, whose slope on ``x0`` moves by 1 after
+        row 2,000: ``coef`` is the first half's fit."""
         df, _ = stream()
+        df = df.with_columns(
+            y=pl.col("y")
+            + pl.when(pl.int_range(pl.len()) > 2_000).then(pl.col("x0")).otherwise(0.0)
+        )
         rare = fit(
             df,
             ridge=0.2,
             standardize=False,
             solve_every=1e9,
-            max_rows_between_solves=4_000_000,
+            max_rows_between_solves=2_001,
         )
         eager = fit(df, ridge=0.2, standardize=False, max_rows_between_solves=1)
         stale = rare.coef("m")["coef"].to_numpy()

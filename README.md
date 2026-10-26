@@ -2745,7 +2745,7 @@ This code uses `lf` from [Example data](#example-data):
 features = ["x0", "x1", "x2", "signal_a", "signal_b"]
 hours = po.spec.ewridge(
     "hours", targets=["y"], features=features, group="hour",   # a Gram per hour
-    half_life=float("inf"), solve_every=1e18,                  # least squares' sums; the pass solves nothing
+    half_life=float("inf"), solve_every=float("inf"),          # least squares' sums; the pass solves nothing
 )
 bank = po.ModelBank([hours])
 bank.fit(lf.with_columns(hour=pl.col("ts").dt.truncate("1h")))   # the hour, made in the query
@@ -3762,8 +3762,8 @@ the pages it frees across all its threads, so it holds 0.75 GB at 3M rows,
 **Measure the first part by saving the state, whose size is what the models
 keep.** This code fits one `ewridge` of 20 features on the first
 10,000 rows of a generated file and on all 1,000,000, once with no groups
-and once over 64. The state stays the same size as the rows grow, and it
-grows with the groups:
+and once over 64. The state stays about the same size as the rows grow,
+within a few counters' bytes, and it grows with the groups:
 
 ```python
 import numpy as np
@@ -3791,9 +3791,9 @@ for group in (None, "g"):
 
 ```text
 one group, after    10,000 rows: state 10 KB
-one group, after 1,000,000 rows: state 10 KB
-64 groups, after    10,000 rows: state 585 KB
-64 groups, after 1,000,000 rows: state 586 KB
+one group, after 1,000,000 rows: state 11 KB
+64 groups, after    10,000 rows: state 586 KB
+64 groups, after 1,000,000 rows: state 588 KB
 ```
 
 **For a statistic per group over a long stream, use a spec's `group=`,

@@ -236,6 +236,11 @@ impl Case {
 const K: usize = 2;
 const H: f64 = 10.0;
 
+/// The `solve_every` of the `*_first_period` cases: the clock the stream
+/// reaches on row 42, two rows into the continuation (rows 1-42 a unit
+/// apart, rows 13 and 36 nine).
+pub const FIRST_PERIOD_EVERY: f64 = 58.0;
+
 fn decay() -> Decay {
     Decay::Halflife(H)
 }
@@ -590,6 +595,53 @@ pub fn all() -> Vec<Case> {
             Targets::Linear(2),
             40
         ),
+        // An explicit cadence's first period on the default weight-share
+        // schedule (schema 64, task 278, "Default cadence first"): saved
+        // inside it, with the mark set and the cadence's clock measured
+        // from the model's start, and the continuation's row 42, 58 clock
+        // units from it, ends the period and clears the mark. Every other
+        // `ewridge` case is the form a state saved before it goes on in.
+        case!(
+            "ewridge_first_period",
+            "EwRidge",
+            EwRidge,
+            {
+                let mut m = EwRidge::new(EwRidgeCfg {
+                    solve_every: FIRST_PERIOD_EVERY,
+                    max_rows_between_solves: u32::MAX,
+                    ..ewridge_cfg()
+                })
+                .unwrap();
+                m.set_min_weight_output_only(true);
+                m.set_first_period_by_share(true);
+                m
+            },
+            K,
+            Targets::Linear(2),
+            40
+        ),
+        // A cadence that never comes due (`solve_every = inf`, task 278): the
+        // spec sets the first period's mark and the model does not take it,
+        // so there is no first period; it solves only at its own floor.
+        case!(
+            "ewridge_never",
+            "EwRidge",
+            EwRidge,
+            {
+                let mut m = EwRidge::new(EwRidgeCfg {
+                    solve_every: f64::INFINITY,
+                    max_rows_between_solves: u32::MAX,
+                    ..ewridge_cfg()
+                })
+                .unwrap();
+                m.set_min_weight_output_only(true);
+                m.set_first_period_by_share(true);
+                m
+            },
+            K,
+            Targets::Linear(2),
+            40
+        ),
         // A blocked Gram saved mid-block (schema 62, docs/PLAN.md task
         // 257): its held rows, and each target's values on them waiting for
         // the block's merge, `acc.held`, empty in every other state.
@@ -670,6 +722,26 @@ pub fn all() -> Vec<Case> {
             Targets::Linear(1),
             40
         ),
+        // The first period's form (`ewridge_first_period`'s comment).
+        case!(
+            "lasso_first_period",
+            "Lasso",
+            Lasso,
+            {
+                let mut m = Lasso::new(LassoCfg {
+                    min_weight_holds_learning: false,
+                    solve_every: FIRST_PERIOD_EVERY,
+                    max_rows_between_solves: u32::MAX,
+                    ..lasso_cfg()
+                })
+                .unwrap();
+                m.set_first_period_by_share(true);
+                m
+            },
+            K,
+            Targets::Linear(1),
+            40
+        ),
         case!(
             "kalman",
             "Kalman",
@@ -738,6 +810,26 @@ pub fn all() -> Vec<Case> {
             "Robust",
             Robust,
             Robust::new(robust_cfg(RobustLoss::Huber { delta: 1.5 })).unwrap(),
+            K,
+            Targets::Linear(2),
+            40
+        ),
+        // The first period's form (`ewridge_first_period`'s comment).
+        case!(
+            "huber_first_period",
+            "Robust",
+            Robust,
+            {
+                let mut m = Robust::new(RobustCfg {
+                    min_weight_holds_learning: false,
+                    solve_every: FIRST_PERIOD_EVERY,
+                    max_rows_between_solves: u32::MAX,
+                    ..robust_cfg(RobustLoss::Huber { delta: 1.5 })
+                })
+                .unwrap();
+                m.set_first_period_by_share(true);
+                m
+            },
             K,
             Targets::Linear(2),
             40

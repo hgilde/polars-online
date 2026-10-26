@@ -19,6 +19,12 @@ pub mod ewridge_leverage {
 pub mod ewridge_output_only {
     include!("ewridge_output_only.rs");
 }
+pub mod ewridge_first_period {
+    include!("ewridge_first_period.rs");
+}
+pub mod ewridge_never {
+    include!("ewridge_never.rs");
+}
 pub mod ewridge_blocked {
     include!("ewridge_blocked.rs");
 }
@@ -34,6 +40,9 @@ pub mod lasso_window {
 pub mod lasso_floor {
     include!("lasso_floor.rs");
 }
+pub mod lasso_first_period {
+    include!("lasso_first_period.rs");
+}
 pub mod kalman {
     include!("kalman.rs");
 }
@@ -48,6 +57,9 @@ pub mod kalman_output_only {
 }
 pub mod huber {
     include!("huber.rs");
+}
+pub mod huber_first_period {
+    include!("huber_first_period.rs");
 }
 pub mod huber_mad {
     include!("huber_mad.rs");
@@ -219,16 +231,20 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &ewridge_window::FIXTURE,
     &ewridge_leverage::FIXTURE,
     &ewridge_output_only::FIXTURE,
+    &ewridge_first_period::FIXTURE,
+    &ewridge_never::FIXTURE,
     &ewridge_blocked::FIXTURE,
     &rls::FIXTURE,
     &lasso::FIXTURE,
     &lasso_window::FIXTURE,
     &lasso_floor::FIXTURE,
+    &lasso_first_period::FIXTURE,
     &kalman::FIXTURE,
     &kalman_gap::FIXTURE,
     &kalman_noise_units::FIXTURE,
     &kalman_output_only::FIXTURE,
     &huber::FIXTURE,
+    &huber_first_period::FIXTURE,
     &huber_mad::FIXTURE,
     &huber_mad_anchored::FIXTURE,
     &huber_mad_awaiting::FIXTURE,
