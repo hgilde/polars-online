@@ -399,3 +399,54 @@ fn a_level_does_not_loosen_the_refit() {
         assert_eq!(p, p0, "{level}");
     }
 }
+
+/// A level far above the noise moves the refit's fit by the level and by
+/// rounding alone: the intercept to a few hundred units in the last place
+/// of the level, the slopes likewise. The test's bound is `128 u (|L| +
+/// max|y|)`, the bound the convergence classes hold the stream to. Its
+/// "no descent" stop compared the loss at two fits, each a sum of
+/// residuals `y - z'β` rounded at the level: at `1e6` that rounding was
+/// `1e-10` a row, ten thousand times the loss's own slack, so a Newton step
+/// of `1e-5` that did lower the loss read as one that did not, and the
+/// refit stopped there; the stream then carried that fit on (task 278,
+/// qequiv: up to `4.5e7` of the bound in the convergence class).
+#[test]
+fn a_far_level_moves_the_refit_by_rounding_alone() {
+    let n = 500;
+    let (mut worst, mut over) = (0.0f64, Vec::new());
+    for seed in 0..20u64 {
+        for tau in [0.5, 0.9] {
+            let data = stream(n, 100 + seed, 0, 1, false);
+            let top = data
+                .iter()
+                .fold(0.0f64, |m, (_, y, _)| m.max(y[0].unwrap().abs()));
+            let fit = |level: f64| {
+                let shifted: Vec<Row> = data
+                    .iter()
+                    .map(|(x, y, w)| (*x, vec![y[0].map(|v| v + level)], *w))
+                    .collect();
+                let mut m = Robust::new(base(tau, Decay::Lam(1.0), n as u32)).unwrap();
+                run(&mut m, &shifted);
+                let st = m.refit_status()[0];
+                assert!(st.done && !st.ran_to_cap(), "{level}: {st:?}");
+                m.coefficients().unwrap()[0].clone()
+            };
+            let at0 = fit(0.0);
+            for level in [1e6, -1e9] {
+                let b = fit(level);
+                let unit = f64::EPSILON / 2.0 * (level.abs() + top);
+                let off = (b[0] - level - at0[0])
+                    .abs()
+                    .max((b[1] - at0[1]).abs())
+                    .max((b[2] - at0[2]).abs())
+                    / unit;
+                worst = worst.max(off);
+                if off > 128.0 {
+                    over.push(format!("seed {seed}, tau {tau}, {level}: {off:.0} units"));
+                }
+            }
+        }
+    }
+    println!("worst: {worst} units");
+    assert!(over.is_empty(), "{over:#?}");
+}

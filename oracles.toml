@@ -855,20 +855,20 @@ n = 12
 
 [case."online_diagnostics.cusum_size.quantile_cusum_y_300_to_600"]
 ideal = 0.05
-worst = 0.0654333
-p95 = 0.0654333
+worst = 0.0643556
+p95 = 0.0643556
 n = 12
 
 [case."online_diagnostics.cusum_size.quantile_cusum_y_steady"]
 ideal = 0.05
-worst = 0.0825521
-p95 = 0.0825521
+worst = 0.0817167
+p95 = 0.0817167
 n = 12
 
 [case."online_diagnostics.cusum_size.quantile_cusum_y_young"]
 ideal = 0.05
-worst = 0.0569778
-p95 = 0.0569778
+worst = 0.05653333
+p95 = 0.05653333
 n = 12
 
 [case."online_diagnostics.cusum_size.rls_cusum_sq_y_300_to_600"]

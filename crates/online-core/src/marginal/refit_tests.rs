@@ -299,3 +299,53 @@ fn a_restored_refit_is_the_one_it_wrote() {
     );
     assert!(!refused(&|_| {}));
 }
+
+/// The refit's rebuilt scale reads to the rounding of the deviations' size
+/// (task 278, qequiv): a target whose first row sits within `1e-4` of its
+/// location (the rest symmetric about 0) has a first deviation that a
+/// level of `1e6` rounds by `1e-10`, a relative `1e-6`, and a sketch
+/// anchored at it read every scale `1e-6` off where the deviations
+/// themselves are `1e-10` off. Anchored at the deviations' median size, it
+/// moves by rounding.
+#[test]
+fn a_level_moves_the_refits_scale_by_rounding() {
+    let n = 61;
+    let rows_at = |level: f64| -> Vec<Row> {
+        let mut s = 0x9e37_79b9_7f4a_7c15u64;
+        let mut u = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            (s >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        (0..n)
+            .map(|i| {
+                let x: Vec<f64> = (0..3).map(|_| 2.0 * u()).collect();
+                // 1e-4, then +a, -a, +a', -a', ...: symmetric about 0.
+                let a = 0.1 + 0.037 * ((i + 1) / 2) as f64;
+                let y = match i {
+                    0 => 1e-4,
+                    _ if i % 2 == 1 => a,
+                    _ => -a,
+                };
+                (x, vec![Some(y + level), Some(-y)], 1.0)
+            })
+            .collect()
+    };
+    let cut = |level: f64| {
+        let mut m = model(given(), 2, n as u32, f64::INFINITY);
+        for (x, y, w) in &rows_at(level) {
+            m.step(x, y, 1.0, *w);
+        }
+        assert!(m.refit_status()[0].done);
+        let hist = m.bins.as_ref().unwrap().hist.as_ref().unwrap();
+        hist.cell_and_cut(0, 0, 0).3
+    };
+    let at0 = cut(0.0);
+    assert!(at0.is_finite() && at0 > 0.1, "{at0}");
+    for level in [1e6, -1e9] {
+        let moved = (cut(level) - at0).abs() / at0;
+        println!("{level}: {moved:e}");
+        assert!(moved <= 1e-8, "{level}: {moved:e}");
+    }
+}
