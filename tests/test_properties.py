@@ -81,7 +81,7 @@ _values = st.one_of(
 #: draws it from ``floats(min_value=0.0)``, so it is named (task 209 (e)).
 _weights = st.one_of(
     st.floats(min_value=0.0, max_value=10.0, allow_nan=False, allow_infinity=False),
-    st.sampled_from([-0.0, 1e-100, INPUT_BOUND, float("nan"), float("inf")]),
+    st.sampled_from([-0.0, 1e-100, INPUT_BOUND, float("nan"), float("inf"), 1e101, -1e101]),
     st.none(),
 )
 
@@ -1087,10 +1087,11 @@ def test_each_kind_takes_every_stream_parameter_but_those_it_refuses():
 
 
 #: `rcov`'s weights: a row is a return or it is not, so it takes 0 or 1 and
-#: refuses any other finite weight; NaN, an infinity and a null are missing.
-#: A weight past the bound is left out: `rcov` refuses it where the rest of
-#: the bank reads it as missing (`test_a_weight_past_the_bound_is_missing`).
-_RCOV_WEIGHTS = st.sampled_from([0.0, -0.0, 1.0, float("nan"), float("inf"), None])
+#: refuses any other usable weight; NaN, an infinity, a magnitude past the
+#: bound and a null are missing (`test_a_weight_past_the_bound_is_missing`).
+_RCOV_WEIGHTS = st.sampled_from(
+    [0.0, -0.0, 1.0, float("nan"), float("inf"), float("-inf"), 1e101, -1e101, None]
+)
 
 
 @st.composite
@@ -1270,36 +1271,19 @@ def test_one_seven_and_six_hundred_chunks_and_a_save_at_each_event(kind, session
         assert resets == want
 
 
-#: A weight past the bound is missing, as the README says of a feature, a
-#: target or a weight ("NaN, ±inf and any magnitude above 1e100 count as
-#: null"), but `bank.rs` checks a weight's sign, and `rcov`'s 0 or 1, on
-#: every *finite* value: so -1e101 is refused as a negative weight on every
-#: kind, and 1e101 as neither 0 nor 1 on `rcov`, where -inf and inf are read
-#: as missing (task 278, batch 13; reported, not fixed: the checks are the
-#: bank's, beside every model).
-WEIGHT_BOUND_DEFECT = (
-    "bank.rs checks a weight's sign (and rcov's 0 or 1) on every finite value, "
-    "not on the usable ones, so a weight past the bound is refused, not missing"
-)
-
-
+# A weight past the bound is missing, as the README says of a feature, a
+# target or a weight ("NaN, ±inf and any magnitude above 1e100 count as
+# null"). `bank.rs` checked a weight's sign, and `rcov`'s 0 or 1, on every
+# *finite* value, so -1e101 was refused as a negative weight on every kind,
+# and 1e101 as neither 0 nor 1 on `rcov` (task 278, batch 13 found it; D-WB
+# fixed it: the checks read the usable values only).
 def _weight_cases() -> list:
     cases = []
     for kind in sorted(MINIMAL):
         if kind in ("seqtest", "audit"):
             continue  # neither takes a weight column
         for value in (float("inf"), float("-inf"), 1e101, -1e101):
-            refused = value == -1e101 or (value == 1e101 and kind == "rcov")
-            marks = (
-                pytest.mark.xfail(
-                    strict=True,
-                    raises=(ValueError, pl.exceptions.ComputeError),
-                    reason=WEIGHT_BOUND_DEFECT,
-                )
-                if refused
-                else ()
-            )
-            cases.append(pytest.param(kind, value, id=f"{kind}-{value:g}", marks=marks))
+            cases.append(pytest.param(kind, value, id=f"{kind}-{value:g}"))
     return cases
 
 
