@@ -16449,6 +16449,17 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       5's fifth exception, the user's ("Accept"): a 61-63 `holt` state
       continues to the bit with the textbook gains and is held, beside
       `kmeans`, to re-saving bytes that load back the same.
+      *Robust decisions, the user's (2026-10-26)*: (i) the sketch's median is
+      read continuously within its bucket, so `quantile`'s MAD band (D-Q) and
+      `huber`'s MAD keep decimal-scale equivariance to rounding ("Read median
+      continuously"; old states keep the bucketed read); (ii) `quantile` gets
+      task 277's converged refit of its first rows, on by default under
+      `refit_budget` (D-Q2: no-decay front-loaded wild 0.20 off after the
+      MAD fix); (iii) `min_weight` withholds output only in every model --
+      `kalman` and `lasso` lose their documented exceptions, `lasso` counting
+      its selection errors from its own floor (a row per coefficient)
+      ("Both output-only"; kalman at min_weight 50 was 100x off least
+      squares on clean data).
 - [ ] 279. **Smaller build caches: no debug info for dependencies** -- the
       user, 2026-10-25 ("Why do agents take so much disk I though we shared
       caches", then "Yes"). Each worktree slot keeps its own `target/` (a
