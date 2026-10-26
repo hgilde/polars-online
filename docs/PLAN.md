@@ -16476,6 +16476,13 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       `min_weight`. (The "100x" kalman figure above did not reproduce:
       `noise_units` had already removed it; the real move was through an
       explicit `q`.)
+      *"Never solve" (the user, 2026-10-26, "inf = never; huge = never
+      too")*: the first-period rule made `solve_every=1e18` (GRAM.md's,
+      README's and MODELS.md's "collect the sums, solve nothing") solve on the
+      default schedule all stream (a Gram pass 27x slower at 1,000 features).
+      `solve_every=inf` now means never solve with no first period, the docs
+      use it, and a finite value past a threshold no stream reaches counts as
+      never too, so existing `1e18` code keeps its speed.
 - [ ] 279. **Smaller build caches: no debug info for dependencies** -- the
       user, 2026-10-25 ("Why do agents take so much disk I though we shared
       caches", then "Yes"). Each worktree slot keeps its own `target/` (a
