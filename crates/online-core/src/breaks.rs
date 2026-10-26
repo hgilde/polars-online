@@ -417,11 +417,9 @@ impl Breaks {
     /// which also reads as filled. 0 before the first row and with nothing
     /// decaying (run once, where `S1 = Σ ω_s`).
     pub fn elapsed(&self) -> f64 {
-        if !(self.s1 > 0.0 && self.s2 > 0.0 && self.w4 > 0.0) {
-            return 0.0;
-        }
+        // `w4 ≥ S1` over the same rows: 4 at a single row, NaN before any.
         let target = 4.0 * self.s1 / self.w4;
-        if target >= 4.0 {
+        if target >= 4.0 || target.is_nan() {
             return 0.0;
         }
         if target <= 1.0 {
@@ -668,13 +666,14 @@ pub fn cusum_null_at(window: f64, fit_half_life: f64, own_half_life: f64, elapse
 }
 
 /// `e^{−scale} J(σ κ_c)` beside a window, `J` over `ℓ` of it
-/// ([`cusum_null_at`]), `σ = ±1`; `v` below `1e-8` reads the window with no
-/// decay, as [`cusum_null_window`] does.
+/// ([`cusum_null_at`]), `σ = ±1`, `scale` 0 where `σ = 1`; `v` below `1e-8`
+/// reads the window with no decay, as [`cusum_null_window`] does.
 fn window_j(u: f64, v: f64, l: f64, sigma: f64, scale: f64) -> f64 {
     let y = u * l;
     if v < 1e-8 {
+        // `J(κ_c)` is read unscaled: `scale` is 0 there.
         let h = if sigma > 0.0 {
-            -d_absorbed(y) * (-scale).exp()
+            -d_absorbed(y)
         } else {
             scaled_h_neg(y, scale)
         };
@@ -1613,6 +1612,10 @@ mod tests {
             assert_eq!(cusum_null_at(inf, hm, hc, 800.0), steady);
             assert!(cusum_null_at(inf, hm, hc, 1e-300) > 1.0 - 1e-15);
             assert_eq!(cusum_null_at(inf, hm, hc, f64::NAN), steady);
+            // A window of 0 is no window, as in the steady form.
+            for x in [0.3, 2.0] {
+                assert_eq!(cusum_null_at(0.0, hm, hc, x), cusum_null_at(inf, hm, hc, x));
+            }
         }
         // Equal memories, where `F(|1 − β| x)` is `F(0)`, lie on the same
         // curve as their neighbours.
@@ -1743,6 +1746,34 @@ mod tests {
             );
         }
         assert_eq!(cusum_sq_null_at(f64::INFINITY, 1.0, 0.1), 1.0);
+        assert_eq!(cusum_sq_null_at(50.0, f64::NAN, 0.1), 0.5);
+    }
+
+    /// `e^{−s} H(−y) = e^{−s} ∫_0^1 t e^{y t} dt` by its definition
+    /// (Simpson's rule), on both sides of the series' edge at 0.1, where the
+    /// closed form would cancel, and far past it, where the series would
+    /// not converge in its terms.
+    #[test]
+    fn the_windows_scaled_moment_is_its_integral() {
+        for (y, scale) in [
+            (1e-4, 0.0),
+            (0.05, 0.3),
+            (0.0999, 0.0),
+            (0.1, 0.0),
+            (0.7, 1.0),
+            (6.9, 13.8),
+            (30.0, 40.0),
+        ] {
+            let want = simpson(&|t: f64| t * (y * t - scale).exp(), 0.0, 1.0, 4_000);
+            let got = scaled_h_neg(y, scale);
+            // Simpson's rule read 2e-11 off the closed form at `y = 30`, which
+            // 40-digit arithmetic gives to its last bit. The series past its
+            // edge, or the closed form below it, part by far more.
+            assert!(
+                (got - want).abs() < 1e-10 * want,
+                "{y} {scale}: {got} vs {want}"
+            );
+        }
     }
 
     /// The sums' age is read off their own weights: rows at unit steps and
@@ -1773,6 +1804,9 @@ mod tests {
                     scored += 1;
                 } else {
                     ahead += 1;
+                }
+                if scored == 1 {
+                    assert_eq!(b.elapsed(), 0.0, "{h}: one row is no age");
                 }
                 let x = b.elapsed();
                 if scored >= 2 && (scored as f64) < 6.0 * h {
@@ -1823,6 +1857,18 @@ mod tests {
             young.age(lam.powf(20.0 * h));
             assert_eq!(young.elapsed(), f64::INFINITY);
         }
+        // A scale that read far heavier rows before the sums began leads
+        // them by more than the sums' unfilled share, and is held to it,
+        // `D = q = e^{−x}`.
+        let (mut heavy, mut s) = (Breaks::new(), 5u64);
+        let lam = 0.5f64.powf(1.0 / 200.0);
+        for i in 0..60 {
+            let w = if heavy.s1 > 0.0 { 1.0 } else { 100.0 };
+            heavy.update(lcg(&mut s) + 0.01 * f64::from(i), lam, w, None);
+        }
+        let x = heavy.elapsed();
+        assert!(x > 0.0 && x.is_finite() && heavy.v1 > 5.0 * heavy.s1, "{x}");
+        assert_eq!(heavy.scale_lead(x), (-x).exp());
         let (mut once, mut s) = (Breaks::new(), 3u64);
         for _ in 0..50 {
             once.update(lcg(&mut s), 1.0, 1.0, None);

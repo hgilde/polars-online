@@ -108,3 +108,50 @@ fn a_young_windowed_cusum_is_near_its_size() {
         assert!((floor..0.08).contains(&size), "{field}: {size}");
     }
 }
+
+/// A gradient fit absorbs a level at its learning rate, not as a mean at a
+/// memory, so its CUSUM keeps the plain sum at every age: `Z1 / sqrt(S2)`
+/// over the studentized residuals before the row, unit weights decayed at
+/// the breaks' memory, from the first one on -- no share, young or filled.
+/// Its CUSUM of squares does take its scale's share, so it is left out.
+#[test]
+fn a_gradient_fits_cusum_keeps_the_plain_sum() {
+    let spec: Spec = serde_json::from_str(
+        r#"{"name": "m", "model": {"type": "sgd"}, "targets": ["y"],
+            "features": ["x0", "x1"], "half_life": 50.0, "min_weight": 10.0,
+            "emit_breaks": true}"#,
+    )
+    .unwrap();
+    let df = frame().head(Some(ROWS));
+    let mut bank = Bank::new(vec![spec]).unwrap();
+    let out = DataFrame::new(df.height(), bank.fit_predict(&df).unwrap()).unwrap();
+    let s = out.column("m").unwrap().struct_().unwrap();
+    let read = |name: &str| -> Vec<f64> {
+        let col = s.field_by_name(name).unwrap();
+        col.f64()
+            .unwrap()
+            .iter()
+            .map(|x| x.unwrap_or(f64::NAN))
+            .collect()
+    };
+    let (z, cusum) = (read("studentized_y"), read("cusum_y"));
+    let lam = 0.5f64.powf(1.0 / 50.0);
+    let first = z
+        .iter()
+        .position(|v| v.is_finite())
+        .expect("a studentized row");
+    let (mut z1, mut s2, mut checked) = (0.0, 0.0, 0);
+    for t in first..ROWS {
+        if t > first {
+            let want = z1 / f64::sqrt(s2);
+            assert!(
+                (cusum[t] - want).abs() <= 1e-10 * want.abs().max(1.0),
+                "row {t}: {} vs {want}",
+                cusum[t]
+            );
+            checked += 1;
+        }
+        (z1, s2) = (z1 * lam + z[t], s2 * lam * lam + 1.0);
+    }
+    assert!(checked > 100, "{checked} rows checked");
+}
