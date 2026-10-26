@@ -543,9 +543,10 @@ The diagnostics add, per slot:
        ``1 - l / (L + 1)`` for ``se_coef_hac``, written when there is a
        lag. ``e`` is the row's out-of-sample residual, which carries its
        estimation error where the classical sandwich's in-sample residual
-       does not: run once on 1,500 rows it read 0.9-1.3% above
-       statsmodels' ``cov_type="HC0"`` and ``"HAC"``, and on 3,000 rows
-       under a 5- to 20-row embargo 2-9% above. The lags default to twice
+       does not, so it tends to read above statsmodels' ``cov_type="HC0"``
+       and ``"HAC"``, though not always: run once on 1,500 rows over 50
+       seeds the ratio ran 0.990-1.034 (HC0) and 0.985-1.059 (HAC), and on
+       3,000 rows under a 5- to 20-row embargo 2-9% above. The lags default to twice
        ``horizon_rows``, or on a spec with no clock column to twice
        ``embargo`` once rounded up to whole rows (6 at 2.5), and to ``0``
        otherwise. Read from ``embargo`` they

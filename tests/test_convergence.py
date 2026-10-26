@@ -31,6 +31,7 @@ import numpy as np
 import pytest
 
 import convergence as cv
+import ledger
 import polars_online as po
 from test_model_registry import REGRESSIONS
 
@@ -40,6 +41,177 @@ SEEDS = 50
 CUTS = [500, 2000, 8000, 32000]
 
 _GRID = pytest.mark.oracle_grid(reason="a grid of 50 seeds against a third-party oracle")
+
+
+# ---------------------------------------------------------------------------
+# The oracle ledger (tests/ledger.py; docs/TESTING.md, "The oracle ledger").
+#
+# Each registration is a group named by its key (``sgd:huber`` is
+# ``convergence.sgd_huber``), so a change to one model's source re-runs that
+# model's grids alone. Each grid records what it bounds, one value a seed:
+# the gap at the cut, or the half-lives, its assertion reads.
+
+
+def slug(key: str) -> str:
+    """A registration's key as a ledger group's name."""
+    return key.replace(":", "_")
+
+
+def tag(x: float) -> str:
+    """A number in a case's name: ``200``, ``inf``, ``0_05``."""
+    return "inf" if np.isinf(x) else f"{x:g}".replace(".", "_")
+
+
+def _record(key: str, case: str, values, **kw) -> None:
+    """Record a case of ``key``'s group, with its round-off floor if it has one."""
+    floor = ROUND_OFF.get(f"{slug(key)}.{case}", 0.0)
+    ledger.record(slug(key), case, values, floor=floor, **kw)
+
+
+#: The rows of each scenario's stream the guard runs.
+GUARD_ROWS = 2_000
+
+
+def _fields(spec: dict, frame) -> object:
+    """Every field ``fit_predict`` emits for a spec named ``m`` on a frame."""
+    return po.ModelBank([spec]).fit_predict(frame).unnest("m")
+
+
+def guard_outputs(key: str) -> dict:
+    """This library's outputs on the first seed of each scenario the grids
+    run a registration on, at 2,000 rows, every field: the grids' 50 seeds
+    at up to 32,000 rows take minutes and their oracles longer, while these
+    take milliseconds, and a change to the model's arithmetic moves the
+    first seed as it moves the rest."""
+    reg = cv.REGISTRY[key]
+    n = GUARD_ROWS
+    s = reg.stream(n, 0)
+    out: dict = {"no_decay": _fields(reg.build(cv.INF), s.frame)}
+    out["decayed"] = _fields(reg.build(200.0), s.frame)
+    if 2 in reg.classes:
+        other = reg.stream(500, 7919, **reg.other).frame
+        out["from_state"] = cv.from_state(reg, reg.build(200.0), other, s.frame, [500, n])
+        if reg.level is not None:
+            out["level"] = _fields(reg.build(cv.INF), reg.stream(n, 0, level=reg.level).frame)
+    if 3 in reg.classes:
+        for kind in cv.ADVERSITIES:
+            out[kind] = _fields(reg.build(cv.INF), cv.adverse(reg, kind, n, 0)[0].frame)
+    if 4 in reg.classes:
+        wild = cv.contaminate(s, 0.2, seed=0)[0].frame
+        out["contaminated"] = _fields(reg.build(5000.0), wild)
+    if 5 in reg.classes:
+        for kind in cv.breaks_for(reg):
+            out[f"break_{kind}"] = _fields(
+                reg.build(BREAK_HALF_LIFE), cv.broken(reg, kind, n // 2, n // 2, 0).frame
+            )
+    return out
+
+
+def guard_prior(builder: str) -> dict:
+    """``guard_outputs`` and the extreme prior's fits, with and without decay."""
+    frame = cv.linear(GUARD_ROWS, 0).frame
+    prior = {"coef_prior": [cv.FAR_PRIOR.tolist()]}
+    out = guard_outputs(builder)
+    for h in (cv.INF, 200.0):
+        out[f"prior_{tag(h)}"] = _fields(cv.PRIOR_SPECS[builder](h, **prior), frame)
+    return out
+
+
+def guard_kalman() -> dict:
+    """``guard_outputs`` and K1's spec at its level."""
+    out = guard_outputs("kalman")
+    out["k1"] = _fields(
+        po.spec.kalman("m", **K1_SPEC), cv.linear(GUARD_ROWS, 0, level=K1_LEVEL).frame
+    )
+    return out
+
+
+def guard_pa() -> dict:
+    """``guard_outputs`` and the two smaller settings of C."""
+    out = guard_outputs("pa")
+    s = cv.REGISTRY["pa"].stream(GUARD_ROWS, 0)
+    for c in (0.1, 0.01):
+        out[f"c_{tag(c)}"] = _fields(cv.REGISTRY["pa"].build(cv.INF, c=c), s.frame)
+    return out
+
+
+def guard_ftrl(key: str, **settings: float) -> dict:
+    """``guard_outputs`` and the pace test's other settings after a change
+    of regime."""
+    reg = cv.REGISTRY[key]
+    out = guard_outputs(key)
+    frame = cv.broken(reg, "regime", GUARD_ROWS // 2, GUARD_ROWS // 2, 0).frame
+    spec = cv._spec("ftrl", loss=key.split(":")[1], **settings)(BREAK_HALF_LIFE)
+    out["settings"] = _fields(spec, frame)
+    return out
+
+
+def guard_rates() -> dict:
+    """``sgd`` at two constant rates, and its quantile loss at power 0.5."""
+    squared, quantile = cv.REGISTRY["sgd:squared"], cv.REGISTRY["sgd:quantile"]
+    s = squared.stream(GUARD_ROWS, 0)
+    out = {
+        f"constant_{tag(lr)}": _fields(
+            squared.build(cv.INF, schedule="constant", power=None, learning_rate=lr), s.frame
+        )
+        for lr in (0.01, 0.04)
+    }
+    spec = quantile.build(cv.INF, power=0.5, learning_rate=0.5)
+    out["quantile_power"] = _fields(spec, quantile.stream(GUARD_ROWS, 0).frame)
+    return out
+
+
+def guard_robust_sets() -> dict:
+    """``quantile`` on the first order of each of Rousseeuw and Leroy's sets."""
+    import data
+
+    out = {}
+    for name in sorted(cv.ROBUST_SETS):
+        package, target, outliers = cv.ROBUST_SETS[name]
+        table = data.rdataset_or_skip(package, name)
+        stream, fs = cv.front_loaded_dataset(table, target, outliers, 300, 0)
+        out[name] = _fields(robust_spec(fs), stream)
+    return out
+
+
+def robust_spec(features: list[str]) -> dict:
+    """The spec the robust datasets run."""
+    return po.spec.quantile(
+        "m", targets=["y"], features=features, half_life=cv.INF, quantile=0.5, solve_every=0.0
+    )
+
+
+#: One group a registration; ewridge, rls, lasso, holt and kalman hold
+#: cases at rounding, so their hashes keep every bit (``bits=52``).
+ledger.guard(
+    "ewridge", lambda: guard_prior("ewridge"), oracles=["scikit-learn", "statsmodels"], bits=52
+)
+ledger.guard("rls", lambda: guard_prior("rls"), oracles=["scikit-learn", "statsmodels"], bits=52)
+ledger.guard("lasso", lambda: guard_outputs("lasso"), oracles=["scikit-learn"], bits=52)
+ledger.guard("kalman", guard_kalman, oracles=["statsmodels"], bits=52)
+ledger.guard("holt", lambda: guard_outputs("holt"), oracles=["statsmodels"], bits=52)
+ledger.guard("quantile", lambda: guard_outputs("quantile"), oracles=["statsmodels"])
+ledger.guard("huber", lambda: guard_outputs("huber"), oracles=["statsmodels"])
+ledger.guard("pa", guard_pa, oracles=["statsmodels"])
+ledger.guard("sgd_squared", lambda: guard_outputs("sgd:squared"), oracles=["statsmodels"])
+ledger.guard("sgd_quantile", lambda: guard_outputs("sgd:quantile"), oracles=["statsmodels"])
+ledger.guard(
+    "sgd_epsilon_insensitive", lambda: guard_outputs("sgd:epsilon_insensitive"), oracles=["scipy"]
+)
+ledger.guard("sgd_poisson", lambda: guard_outputs("sgd:poisson"), oracles=["statsmodels"])
+ledger.guard("sgd_logistic", lambda: guard_outputs("sgd:logistic"), oracles=["statsmodels"])
+ledger.guard("sgd_huber", lambda: guard_outputs("sgd:huber"), oracles=["statsmodels"])
+ledger.guard("sgd_rates", guard_rates, oracles=["statsmodels"])
+ledger.guard("ftrl_squared", lambda: guard_ftrl("ftrl:squared", alpha=1.0), oracles=["statsmodels"])
+ledger.guard(
+    "ftrl_logistic", lambda: guard_ftrl("ftrl:logistic", beta=0.1, l2=0.0), oracles=["statsmodels"]
+)
+ledger.guard(
+    "quantile_robust_sets",
+    guard_robust_sets,
+    oracles=["statsmodels"],
+    dataset="rdatasets:datasets/stackloss,robustbase/starsCYG,robustbase/hbk",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +345,8 @@ def test_consistency(key):
     end, steepest = CONSISTENCY[key]
     p = cv.consistency(reg, SEEDS, CUTS)
     p.show(f"{key}: {reg.limit}")
+    for c in CUTS:
+        _record(key, f"consistency_at_{c}", p.to_oracle[c].values)
     worst = p.worst()
     assert worst[-1] <= end, f"worst seed {p.to_oracle[CUTS[-1]]}"
     if steepest is not None:
@@ -217,6 +391,8 @@ def test_pa_wanders_in_a_neighbourhood_set_by_c():
     for c, b in bound.items():
         p = cv.consistency(cv.REGISTRY["pa"], SEEDS, CUTS, c=c)
         p.show(f"pa, C = {c}")
+        for x in CUTS[1:]:
+            _record("pa", f"c_{tag(c)}_truth_at_{x}", p.to_truth[x].values)
         assert max(p.worst("truth")[1:]) <= b
         q = [p.to_truth[x].q95 for x in CUTS[1:]]
         assert 0.5 <= q[-1] / q[0] <= 2.0, "the neighbourhood is stationary"
@@ -239,6 +415,8 @@ def test_a_constant_rate_settles_in_a_neighbourhood_and_a_power_sets_the_rate():
     for lr in (0.01, 0.04):
         p = cv.consistency(reg, SEEDS, CUTS, schedule="constant", power=None, learning_rate=lr)
         p.show(f"sgd, constant rate {lr}")
+        for x in CUTS[1:]:
+            _record("sgd_rates", f"constant_{tag(lr)}_at_{x}", p.to_oracle[x].values)
         q[lr] = [p.to_oracle[x].q95 for x in CUTS[1:]]
         assert 0.6 <= q[lr][-1] / q[lr][0] <= 1.6, "settled: neither shrinking nor growing"
     ratio = q[0.04][-1] / q[0.01][-1]
@@ -246,6 +424,8 @@ def test_a_constant_rate_settles_in_a_neighbourhood_and_a_power_sets_the_rate():
     assert 1.5 <= ratio <= 2.8
     p = cv.consistency(cv.REGISTRY["sgd:quantile"], SEEDS, CUTS, power=0.5, learning_rate=0.5)
     p.show("sgd quantile, inv_scaling at power 0.5")
+    for c in CUTS:
+        _record("sgd_rates", f"quantile_power_0_5_at_{c}", p.to_oracle[c].values)
     r = cv.rate(CUTS, p.worst())
     print(f"  rate {r:.2f} (theory -0.25)")
     assert -0.4 <= r <= -0.15
@@ -382,6 +562,15 @@ def test_start_from_another_regime(key, half_life):
     cuts = START_CUTS[half_life]
     p = cv.start_from_regime(reg, SEEDS, half_life, cuts)
     p.show(f"{key} from another regime's loaded state, half-life {half_life:g}")
+    h, last = tag(half_life), cuts[-1]
+    if np.isinf(half_life) and key in START_AS_FRESH:
+        _record(key, f"start_{h}_truth_at_{last}", p.to_truth[last].values)
+        _record(key, f"start_{h}_clean_at_{last}", p.clean[last].values)
+    elif np.isinf(half_life) and key in START_RATE:
+        for c in cuts:
+            _record(key, f"start_{h}_truth_at_{c}", p.to_truth[c].values)
+    else:
+        _record(key, f"start_{h}_at_{last}", p.to_oracle[last].values)
     # The evidence: at the first cut the fit is still far from this stream's own.
     assert p.to_truth[cuts[0]].median > 0.3, "the loaded state was a long way off"
     if np.isinf(half_life) and key in START_AS_FRESH:
@@ -439,6 +628,8 @@ def _level_params() -> list:
 def test_start_at_a_large_level(key):
     reg = cv.REGISTRY[key]
     at, base = cv.start_at_level(reg, SEEDS, 8000)
+    _record(key, "large_level_at_8000", at.values)
+    _record(key, "level_zero_at_8000", base.values)
     print(f"{key}: level {reg.level:g}: {at}\n  level 0: {base}\n  {reg.limit}")
     assert at.worst <= 3 * base.worst + 1e-13 * abs(reg.level)
 
@@ -458,6 +649,11 @@ def test_start_from_an_extreme_prior(builder):
     for half_life, cuts in ((cv.INF, CUTS), (200.0, [200, 2000, 6000, 8000])):
         p = cv.start_from_prior(builder, 20, half_life, cuts)
         p.show(f"{builder} from a prior of 1e6, half-life {half_life:g}")
+        h = tag(half_life)
+        for c in cuts:
+            _record(builder, f"prior_{h}_at_{c}", p.to_oracle[c].values)
+        for c in cuts if np.isinf(half_life) else cuts[-1:]:
+            _record(builder, f"prior_{h}_truth_at_{c}", p.to_truth[c].values)
         assert max(p.worst()) <= 1e-8, "the batch fit from the prior, to rounding"
         if np.isinf(half_life):
             r = cv.rate(cuts, p.worst("truth"))
@@ -498,12 +694,10 @@ def test_quantile_on_the_classic_robust_datasets_outliers_first(name):
     package, target, outliers = cv.ROBUST_SETS[name]
     table = data.rdataset_or_skip(package, name)
     bound = {"stackloss": 0.023, "starsCYG": 0.0017, "hbk": 0.0066}[name]
+    runs = []
     for seed in range(3):
         stream, fs = cv.front_loaded_dataset(table, target, outliers, 300, seed)
-        spec = po.spec.quantile(
-            "m", targets=["y"], features=fs, half_life=cv.INF, quantile=0.5, solve_every=0.0
-        )
-        coef = cv.fit(spec, stream, [stream.height])[stream.height]
+        coef = cv.fit(robust_spec(fs), stream, [stream.height])[stream.height]
         X = np.column_stack([np.ones(stream.height), stream.select(fs).to_numpy()])
         y = stream["y"].to_numpy()
         oracle = cv.quantreg(0.5)(X, y, np.ones(len(y)))
@@ -513,6 +707,9 @@ def test_quantile_on_the_classic_robust_datasets_outliers_first(name):
             f"{name}, order {seed}: coef {np.round(coef, 3)}, "
             f"QuantReg {np.round(oracle, 3)}, excess {excess:.2e}"
         )
+        runs.append((excess, coef))
+    _record("quantile_robust_sets", f"{name.lower()}_excess", [e for e, _ in runs])
+    for excess, coef in runs:
         assert excess <= bound
         if name == "starsCYG":
             assert coef[1] < 0, "pulled by the giants, as every residual-based fit is"
@@ -691,6 +888,11 @@ def test_front_loaded_adversity(key, kind, half_life):
     unit = cv.lasso_stop_bound if key == "lasso" else None
     p, touched = cv.front_loaded(reg, kind, SEEDS, half_life, ADVERSE_CUTS, unit=unit)
     p.show(f"{key}, {kind} in the first 500 rows, half-life {half_life:g}: {touched}+ rows touched")
+    h, (first_cut, last_cut) = tag(half_life), ADVERSE_CUTS
+    values = p.to_oracle[last_cut].values
+    _record(key, f"{kind}_{h}_at_{last_cut}", values)
+    if np.isinf(half_life) and key in ("sgd:squared", "pa"):
+        _record(key, f"{kind}_{h}_at_{first_cut}", p.to_oracle[first_cut].values)
     if unit is not None:
         print("  (the gap to the oracle in units of the stopping rule's bound)")
     assert touched >= 3, "the adversity is there"
@@ -783,7 +985,7 @@ def test_kalman_reaches_the_oracle_at_a_level_as_at_zero():
     gaps: dict[float, dict[int, dict[int, float]]] = {
         L: {c: {} for c in cuts} for L in (0.0, K1_LEVEL)
     }
-    worst_units = 0.0
+    units = []
     for seed in range(SEEDS):
         for level in gaps:
             s = cv.linear(cuts[-1], seed, level=level)
@@ -792,8 +994,12 @@ def test_kalman_reaches_the_oracle_at_a_level_as_at_zero():
                 gaps[level][c][seed] = cv.gap(
                     path[c], cv.oracle_at(cv.REGISTRY["kalman"], s, c, 200.0)
                 )
-        worst_units = max(worst_units, _k1_level_deviation(seed, cuts[-1], K1_LEVEL)[1])
+        units.append(_k1_level_deviation(seed, cuts[-1], K1_LEVEL)[1])
+    worst_units = max(units)
     print(f"  every prediction within {worst_units:.1f} units of u (|L| + max|y|) of level 0's")
+    _record("kalman", "k1_prediction_units", units)
+    for c in cuts:
+        _record("kalman", f"k1_level_at_{c}", list(gaps[K1_LEVEL][c].values()))
     assert worst_units <= 64.0
     for c in cuts:
         at, base = cv.tail(gaps[K1_LEVEL][c]), cv.tail(gaps[0.0][c])
@@ -806,6 +1012,8 @@ def test_kalman_reaches_the_oracle_at_a_level_as_at_zero():
         path = cv.fit(reg.build(cv.INF), s.frame, CUTS)
         for c in CUTS:
             by_cut[c][seed] = cv.gap(path[c], cv.oracle_at(reg, s, c, cv.INF))
+    for c in CUTS:
+        _record("kalman", f"level_inf_at_{c}", list(by_cut[c].values()))
     worst = [cv.tail(by_cut[c]).worst for c in CUTS]
     r = cv.rate(CUTS, worst)
     print(f"  no decay, level {reg.level:g}: worst {worst}, rate {r:.2f}")
@@ -986,6 +1194,7 @@ def test_reconvergence_after_a_break(key, kind):
     p = cv.reconvergence(reg, kind, SEEDS, BREAK_HALF_LIFE, BREAK_AT, BREAK_KS)
     p.show(f"{key}, a break in {kind} after {BREAK_AT} rows, half-life {BREAK_HALF_LIFE:g}")
     k, bound = REBREAK[key][kind]
+    _record(key, f"break_{kind}_at_{tag(k)}", p.to_oracle[k].values)
     if kind != "variance":
         # The evidence: at some point past the break (at 0 half-lives, the
         # fit before it) the fit was far from the new truth, farther than at
@@ -1016,10 +1225,12 @@ def test_ftrl_follows_a_break_at_the_pace_of_its_steps():
     p.show("ftrl, a change of regime at the default alpha")
     closed = (p.to_truth[4].median - p.to_truth[12].median) / (8 * BREAK_HALF_LIFE)
     print(f"  closed {closed:.4f} a row against 2 alpha sqrt(1 - lam) = {pace:.4f}")
+    _record("ftrl:squared", "regime_closed_over_pace", closed / pace, ideal=1.0)
     assert 0.7 * pace <= closed <= 1.1 * pace
     fast = dataclasses.replace(reg, build=cv._spec("ftrl", loss="squared", alpha=1.0))
     q = cv.reconvergence(fast, "regime", SEEDS, BREAK_HALF_LIFE, BREAK_AT, [8])
     q.show("ftrl, a change of regime at alpha = 1")
+    _record("ftrl:squared", "alpha_1_regime_at_8", q.to_oracle[8].values)
     assert q.to_oracle[8].worst <= 1.1
     weak = dataclasses.replace(
         cv.REGISTRY["ftrl:logistic"], build=cv._spec("ftrl", loss="logistic", beta=0.1, l2=0.0)
@@ -1027,6 +1238,7 @@ def test_ftrl_follows_a_break_at_the_pace_of_its_steps():
     for kind, bound in (("slope", 0.45), ("regime", 0.85)):
         r = cv.reconvergence(weak, kind, SEEDS, BREAK_HALF_LIFE, BREAK_AT, [12])
         r.show(f"ftrl logistic, a break in {kind}, beta = 0.1 and l2 = 0")
+        _record("ftrl:logistic", f"weak_prior_{kind}_at_12", r.to_oracle[12].values)
         assert r.to_oracle[12].worst <= bound
 
 
@@ -1085,6 +1297,7 @@ def _breakdown_params() -> list:
 def test_quantile_is_never_captured_short_of_breakdown(share, half_life):
     captured, t, wild = cv.captures(cv.REGISTRY["quantile"], share, SEEDS, 20_000, half_life)
     print(f"quantile, {share:.0%} wild, half-life {half_life:g}: {captured}/{SEEDS}; {t}")
+    _record("quantile", f"breakdown_{tag(share)}_{tag(half_life)}_slope_gap", t.values)
     assert wild > 0.5 * share * 20_000, "the contamination is there"
     assert captured == 0, t
 
@@ -1143,5 +1356,95 @@ def _huber_breakdown_params() -> list:
 def test_huber_is_never_captured_short_of_breakdown(key, share, half_life):
     captured, t, wild = cv.captures(cv.REGISTRY[key], share, SEEDS, 20_000, half_life)
     print(f"{key}, {share:.0%} wild, half-life {half_life:g}: {captured}/{SEEDS}; {t}")
+    _record(key, f"breakdown_{tag(share)}_{tag(half_life)}_slope_gap", t.values)
     assert wild > 0.5 * share * 20_000, "the contamination is there"
     assert captured == 0, t
+
+
+#: The cases whose gap to the oracle is rounding, by ``<group>.<case>``:
+#: the batch fits (ewridge, rls, lasso to its stopping rule, holt without
+#: decay) and K1's predictions in units of ``u``. Each is the case's
+#: ``floor``, the gap below which a difference is another processor's last
+#: bits: twice the worst measured over the grid's seeds, 2026-10-26, macOS
+#: arm64 (docs/TESTING.md, "The oracle ledger").
+ROUND_OFF: dict[str, float] = {
+    "ewridge.break_level_at_1": 5.3e-14,
+    "ewridge.break_regime_at_1": 4.7e-13,
+    "ewridge.break_slope_at_1": 3.6e-14,
+    "ewridge.break_variance_at_1": 2.3e-14,
+    "ewridge.cauchy_500_at_8000": 2.5e-14,
+    "ewridge.cauchy_inf_at_8000": 1.1e-13,
+    "ewridge.consistency_at_2000": 4e-14,
+    "ewridge.consistency_at_32000": 1.2e-13,
+    "ewridge.consistency_at_500": 1.7e-14,
+    "ewridge.consistency_at_8000": 6e-14,
+    "ewridge.large_level_at_8000": 2.4e-10,
+    "ewridge.level_zero_at_8000": 7.1e-14,
+    "ewridge.outliers_500_at_8000": 2.3e-14,
+    "ewridge.outliers_inf_at_8000": 9.3e-14,
+    "ewridge.prior_200_at_200": 1.5e-09,
+    "ewridge.prior_200_at_2000": 1.7e-09,
+    "ewridge.prior_200_at_6000": 1.5e-09,
+    "ewridge.prior_200_at_8000": 1.5e-09,
+    "ewridge.prior_inf_at_2000": 2.1e-09,
+    "ewridge.prior_inf_at_32000": 6.3e-09,
+    "ewridge.prior_inf_at_500": 1.7e-09,
+    "ewridge.prior_inf_at_8000": 2.4e-09,
+    "ewridge.shift_500_at_8000": 2.8e-14,
+    "ewridge.shift_inf_at_8000": 6e-14,
+    "ewridge.start_200_at_3200": 1.4e-14,
+    "ewridge.start_inf_at_32000": 1.8e-13,
+    "ewridge.t2_500_at_8000": 2.5e-14,
+    "ewridge.t2_inf_at_8000": 5.3e-14,
+    "ewridge.wild_500_at_8000": 2.2e-14,
+    "ewridge.wild_inf_at_8000": 2.2e-13,
+    "holt.consistency_at_2000": 9.3e-14,
+    "holt.consistency_at_32000": 6.9e-12,
+    "holt.consistency_at_500": 3.6e-14,
+    "holt.consistency_at_8000": 7.2e-13,
+    "holt.large_level_at_8000": 8.2e-09,
+    "holt.level_zero_at_8000": 7.2e-13,
+    "holt.start_inf_at_32000": 6.6e-12,
+    "lasso.break_level_at_1": 2.7e-10,
+    "lasso.break_regime_at_1": 1.7e-09,
+    "lasso.break_slope_at_1": 1.9e-10,
+    "lasso.break_variance_at_1": 1.9e-10,
+    "lasso.consistency_at_2000": 1.3e-10,
+    "lasso.consistency_at_32000": 1.2e-10,
+    "lasso.consistency_at_500": 1.4e-10,
+    "lasso.consistency_at_8000": 1.3e-10,
+    "lasso.large_level_at_8000": 4.7e-10,
+    "lasso.level_zero_at_8000": 1.2e-10,
+    "lasso.start_200_at_3200": 1.4e-10,
+    "lasso.start_inf_at_32000": 7.2e-10,
+    "rls.break_level_at_1": 1.8e-14,
+    "rls.break_regime_at_1": 1.2e-13,
+    "rls.break_slope_at_1": 2.4e-14,
+    "rls.break_variance_at_1": 2.3e-14,
+    "rls.cauchy_500_at_8000": 2.4e-14,
+    "rls.cauchy_inf_at_8000": 5.6e-13,
+    "rls.consistency_at_2000": 2.8e-14,
+    "rls.consistency_at_32000": 2e-13,
+    "rls.consistency_at_500": 1.6e-14,
+    "rls.consistency_at_8000": 8e-14,
+    "rls.level_zero_at_8000": 6e-14,
+    "rls.outliers_500_at_8000": 2.4e-14,
+    "rls.outliers_inf_at_8000": 8e-14,
+    "rls.prior_200_at_200": 1.5e-09,
+    "rls.prior_200_at_2000": 1.7e-09,
+    "rls.prior_200_at_6000": 1.5e-09,
+    "rls.prior_200_at_8000": 1.5e-09,
+    "rls.prior_inf_at_2000": 2.1e-09,
+    "rls.prior_inf_at_32000": 6.3e-09,
+    "rls.prior_inf_at_500": 1.7e-09,
+    "rls.prior_inf_at_8000": 2.4e-09,
+    "rls.shift_500_at_8000": 2.4e-14,
+    "rls.shift_inf_at_8000": 8.2e-14,
+    "rls.start_200_at_3200": 2.2e-14,
+    "rls.start_inf_at_32000": 1.7e-13,
+    "rls.t2_500_at_8000": 2.9e-14,
+    "rls.t2_inf_at_8000": 6.3e-14,
+    "rls.wild_500_at_8000": 2.6e-14,
+    "rls.wild_inf_at_8000": 1.8e-13,
+    "kalman.k1_prediction_units": 46.0,
+}

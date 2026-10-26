@@ -978,9 +978,11 @@ back, at Bartlett weights that keep the estimate positive.
 
 All three sit on `coef`'s rows, laid out like `coef`, the intercept first.
 `e` is the row's out-of-sample residual, so the sandwich carries the
-estimation error that a sandwich over in-sample residuals leaves out. Run
-once on 1,500 rows, it read 0.9% to 1.3% above statsmodels'
-`cov_type="HC0"` and `"HAC"`. The lags default to twice the target's
+estimation error that a sandwich over in-sample residuals leaves out, and
+it tends to read above statsmodels' `cov_type="HC0"` and `"HAC"`, though
+not always. Run once on 1,500 rows, over 50 seeds, the ratio to
+statsmodels' ran from 0.990 to 1.034 for HC0 and from 0.985 to 1.059 for
+HAC, and was below 1 for some coefficient on 5 and 8 of the seeds. The lags default to twice the target's
 horizon in rows. The memory is `robust_se_half_life`, the fit's by default.
 It costs 350 ns a row at 5 features and 10 lags, and only `ewridge` and
 `rls` take it, the least-squares fits.

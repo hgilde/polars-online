@@ -20,6 +20,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+import ledger
 import long_run as lr
 import polars_online as po
 from public_benchmarks import numacc_or_skip
@@ -32,6 +33,87 @@ EPS = 2.0**-52
 def _within(points: list, column: int, a: float, b: float) -> list:
     """The checkpoints whose error in ``column`` exceeds ``a + b * sqrt(n) * EPS``."""
     return [p for p in points if p[column] > a + b * math.sqrt(p[0]) * EPS]
+
+
+# --- The oracle ledger (tests/ledger.py) ------------------------------------
+#
+# Each grid records its errors, one value a checkpoint. The errors are
+# rounding, so each case has a floor, twice the worst checkpoint measured at
+# a million rows (2026-10-26, macOS arm64), and each group's hash keeps every
+# bit. The guard runs each case's reads, without the recomputation, over
+# 20,000 rows.
+
+#: The rows the guard feeds each case.
+GUARD_ROWS = 20_000
+
+#: Each recorded error's floor, by case.
+FLOORS: dict[str, float] = {
+    "clock_weight.float_weight_sum_error": 9e-14,
+    "clock_weight.temporal_weight_sum_error": 2.8e-13,
+    "ewcov_drift.decayed_mean_error": 2.4e-16,
+    "ewcov_drift.decayed_sd_error": 1.2e-15,
+    "ewcov_drift.windowed_mean_error": 4.7e-16,
+    "ewcov_drift.windowed_sd_error": 4e-12,
+    "ewcov_numacc4.mean_error": 1.9e-16,
+    "ewcov_numacc4.sd_error": 3.4e-14,
+    "ewridge_drift.decayed_ridge_slope_error": 2e-14,
+    "ewridge_drift.no_decay_slope_error": 1.6e-13,
+}
+
+#: The columns of each case's checkpoints that it records, by name.
+COLUMNS = {
+    "decayed": {1: "mean_error", 2: "sd_error"},
+    "windowed": {1: "mean_error", 2: "sd_error"},
+    "no_decay": {1: "slope_error"},
+    "decayed_ridge": {1: "slope_error"},
+    "float": {1: "weight_sum_error"},
+    "temporal": {1: "weight_sum_error"},
+}
+
+#: The ledger group each case records to.
+GROUP = {
+    "decayed": "ewcov_drift",
+    "windowed": "ewcov_drift",
+    "no_decay": "ewridge_drift",
+    "decayed_ridge": "ewridge_drift",
+    "float": "clock_weight",
+    "temporal": "clock_weight",
+}
+
+
+def _record(group: str, case: str, values) -> None:
+    ledger.record(group, case, values, floor=FLOORS.get(f"{group}.{case}", 0.0))
+
+
+ledger.guard(
+    "ewcov_numacc4",
+    lambda: lr.numacc_cycled(numacc_or_skip(4)[0], GUARD_ROWS, oracle=False),
+    dataset="nist:NumAcc4",
+    bits=52,
+)
+ledger.guard(
+    "ewcov_drift",
+    lambda: [
+        lr.ew_cov_decayed(GUARD_ROWS, oracle=False),
+        lr.ew_cov_decayed(GUARD_ROWS, window=150.0, oracle=False),
+    ],
+    bits=52,
+)
+ledger.guard(
+    "ewridge_drift",
+    lambda: [
+        lr.ewridge_no_decay(GUARD_ROWS, oracle=False),
+        lr.ewridge_decayed(GUARD_ROWS, oracle=False),
+    ],
+    oracles=["statsmodels"],
+    bits=52,
+)
+ledger.guard(
+    "clock_weight",
+    lambda: [lr.clock_steady_state(GUARD_ROWS, t, oracle=False) for t in (False, True)],
+    bits=52,
+)
+ledger.guard("kalman_p", lambda: lr.kalman_p(GUARD_ROWS, oracle=False), bits=52)
 
 
 # --- NIST StRD NumAcc1-4: certified moments at a large offset ----------------
@@ -75,6 +157,8 @@ def test_numacc4_cycled_a_million_rows_does_not_drift():
     flat, the sd ``16 + 1.0 sqrt(n)`` roundings."""
     x, _, _ = numacc_or_skip(4)
     points = lr.numacc_cycled(x, 1_000_000)
+    _record("ewcov_numacc4", "mean_error", [p[1] for p in points])
+    _record("ewcov_numacc4", "sd_error", [p[2] for p in points])
     assert points[-1][0] >= 999_000
     assert not _within(points, 1, 4 * EPS, 0.0), points
     assert not _within(points, 2, 16 * EPS, 1.0), points
@@ -114,8 +198,8 @@ CASES = {
 }
 
 
-def check_case(name: str, rows: int) -> list:
-    points = CASES[name](rows)
+def check_case(name: str, rows: int, points: list | None = None) -> list:
+    points = CASES[name](rows) if points is None else points
     assert points and points[-1][0] >= rows // 2, points
     for column, a, b in BOUNDS[name]:
         assert not _within(points, column, a, b), (name, column, points)
@@ -130,7 +214,10 @@ def test_the_clocks_weight_reaches_its_steady_state_and_stays(name):
 @pytest.mark.oracle_grid(reason="a million rows a case, against a recomputation from scratch")
 @pytest.mark.parametrize("name", sorted(CASES))
 def test_a_million_rows_do_not_drift(name):
-    check_case(name, 1_000_000)
+    points = CASES[name](1_000_000)
+    for column, what in COLUMNS[name].items():
+        _record(GROUP[name], f"{name}_{what}", [p[column] for p in points])
+    check_case(name, 1_000_000, points)
 
 
 @pytest.mark.oracle_grid(reason="a window over a million rows, a second or more")
@@ -149,6 +236,7 @@ def test_the_window_discards_what_it_should():
     )
     chunk = next(lr._stream(20_000, 0, 1, 1e6, None))
     ws = po.ModelBank([spec]).fit_predict(chunk).unnest("c")["weight_sum"].to_numpy()[-1000:]
+    _record("ewcov_drift", "window_weight_share", ws.mean() / 72.1)
     assert 0.8 * 72.1 < ws.mean() < 0.9 * 72.1, ws.mean()
 
 
@@ -158,11 +246,17 @@ def test_kalman_p_stays_positive_definite_and_bounded():
     two of its value at 10,000 rows at every checkpoint. Measured at 1e8: the
     eigenvalues within [6.4e-5, 7.4e-5] and [2.2e-4, 2.6e-4] from 5,000 rows
     on, the asymmetry exactly 0."""
-    check_kalman(1_000_000)
+    points = lr.kalman_p(1_000_000)
+    ref = next(p for p in points if p[0] == 10_000)
+    settled = [p for p in points if p[0] >= 10_000]
+    _record("kalman_p", "asymmetry", [p[3] for p in points])
+    _record("kalman_p", "smallest_eigenvalue_drift", [abs(p[1] / ref[1] - 1) for p in settled])
+    _record("kalman_p", "largest_eigenvalue_drift", [abs(p[2] / ref[2] - 1) for p in settled])
+    check_kalman(1_000_000, points)
 
 
-def check_kalman(rows: int) -> None:
-    points = lr.kalman_p(rows)
+def check_kalman(rows: int, points: list | None = None) -> None:
+    points = lr.kalman_p(rows) if points is None else points
     ref = next(p for p in points if p[0] == 10_000)
     for n, lo, hi, asym in points:
         assert asym <= 1e-12, (n, asym)

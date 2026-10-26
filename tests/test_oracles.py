@@ -17,6 +17,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+import ledger
 import polars_online as po
 from data import synthetic
 from reference import EwMedian, ftrl_ref, kalman_ref, lasso_ref, robust_ref
@@ -847,7 +848,14 @@ class TestRobustOracles:
         coef, s = self._quantile_fit(x, y, tau, ridge=1e9)
         fit = sm.QuantReg(y, np.ones((n, 1))).fit(q=tau)
         smoothed = self._smoothed(np.ones((n, 1)), y, tau, 0.2 * s)[0]
-        return coef[1:], abs(coef[0] - fit.params[0]) / fit.bse[0], abs(coef[0] - smoothed)
+        se = fit.bse[0]
+        return (
+            coef[1:],
+            abs(coef[0] - fit.params[0]) / se,
+            abs(coef[0] - smoothed),
+            abs(smoothed - fit.params[0]) / se,
+            abs(coef[0] - smoothed) / se,
+        )
 
     # Bounds for the huge ridge (task 278 (b07), measured 2026-10-25 over
     # seeds 0-49; re-measured 2026-10-26 with the band in the MAD, D-Q: the
@@ -864,11 +872,25 @@ class TestRobustOracles:
     # band's smoothing, which does not shrink with n while the standard
     # error does (3.86 at 80,000 rows at tau 0.9), so that check is held at
     # 20,000 rows only.
+    #
+    # Re-measured 2026-10-26 with the first rows refit to the converged
+    # smoothed fit (D-Q2), seeds 0-49: against the batch-smoothed constant
+    # 0.0039 / 0.0011 / 0.00037 at tau 0.5 and 0.011 / 0.0059 / 0.0034 at
+    # 0.9, lower at every length, so at 0.9 the worst no longer falls four
+    # times over 16 times the rows (3.3 times): in QuantReg's standard
+    # errors it sits at 0.18 / 0.19 / 0.21, a fifth of one at every length.
+    # Against QuantReg the worst is 0.66 / 0.45 / 0.62 and 2.01 / 3.94 /
+    # 6.26 standard errors, the batch-smoothed fit's own 0.66 / 0.44 / 0.61
+    # and 1.98 / 3.89 / 6.17: the stream is the smoothed estimator, and its
+    # band's bias, not the stream, is what grows in standard errors. So the
+    # grid holds the stream within 0.3 standard errors of the batch-smoothed
+    # fit and of its distance from QuantReg at every length, where it held
+    # 3 standard errors from QuantReg at 20,000 rows and the fourfold fall.
     HUGE_RIDGE_SMOOTHED = {0.5: (0.032, 0.009, 0.0023), 0.9: (0.3, 0.1, 0.027)}
 
     @pytest.mark.parametrize("tau", [0.5, 0.9])
     def test_a_huge_ridge_leaves_quantreg_on_a_constant(self, tau):
-        slopes, in_se, smoothed = self._huge_ridge(20_000, 3, tau)
+        slopes, in_se, smoothed, _, _ = self._huge_ridge(20_000, 3, tau)
         assert np.max(np.abs(slopes)) <= 1e-8, slopes
         assert in_se <= 3.0, in_se
         assert smoothed <= self.HUGE_RIDGE_SMOOTHED[tau][1], smoothed
@@ -876,24 +898,30 @@ class TestRobustOracles:
     @pytest.mark.oracle_grid(reason="50 seeds at three lengths and two levels, against QuantReg")
     @pytest.mark.parametrize("tau", [0.5, 0.9])
     def test_a_huge_ridge_over_fifty_seeds(self, tau):
-        worst = []
         for n, bound in zip((5_000, 20_000, 80_000), self.HUGE_RIDGE_SMOOTHED[tau], strict=True):
             runs = [self._huge_ridge(n, seed, tau) for seed in range(50)]
             slopes = max(float(np.max(np.abs(r[0]))) for r in runs)
             in_se = np.array([r[1] for r in runs])
             smoothed = np.array([r[2] for r in runs])
+            bias_se = np.array([r[3] for r in runs])
+            stream_se = np.array([r[4] for r in runs])
             print(
                 f"tau {tau}, n {n}: slopes {slopes:.3g}; QuantReg worst {in_se.max():.3f} se "
                 f"(seed {in_se.argmax()}), p95 {np.quantile(in_se, 0.95):.3f}; smoothed worst "
                 f"{smoothed.max():.4f} (seed {smoothed.argmax()}), p95 "
                 f"{np.quantile(smoothed, 0.95):.4f}"
             )
+            t = f"tau_{tau:g}_n_{n}".replace(".", "_")
+            ledger.record(
+                "quantile_huge_ridge", f"{t}_slopes", [np.max(np.abs(r[0])) for r in runs]
+            )
+            ledger.record("quantile_huge_ridge", f"{t}_quantreg_se", in_se)
+            ledger.record("quantile_huge_ridge", f"{t}_smoothed", smoothed)
+            ledger.record("quantile_huge_ridge", f"{t}_smoothed_in_se", stream_se)
             assert slopes <= 1e-8, (n, slopes)
             assert smoothed.max() <= bound, (n, smoothed.max(), smoothed.argmax())
-            if n == 20_000:
-                assert in_se.max() <= 3.0, (in_se.max(), in_se.argmax())
-            worst.append(smoothed.max())
-        assert worst[-1] <= worst[0] / 4.0, worst
+            assert stream_se.max() <= 0.3, (n, stream_se.max(), stream_se.argmax())
+            assert (in_se <= bias_se + 0.3).all(), (n, np.flatnonzero(in_se > bias_se + 0.3))
 
     def _mixed_scales(self, seed, tau):
         """Features at 1e-3 and 1e3 under the default ridge of 1e-6:
@@ -936,6 +964,8 @@ class TestRobustOracles:
         runs = [self._mixed_scales(seed, tau) for seed in range(50)]
         corr = np.array([r[0] for r in runs])
         plain = np.array([r[1][1] for r in runs])
+        t = f"tau_{tau:g}".replace(".", "_")
+        ledger.record("quantile_mixed_scales", f"{t}_standardized_se", corr.max(axis=1))
         print(
             f"tau {tau}: standardized worst {corr.max(axis=0)} se (seed "
             f"{corr.max(axis=1).argmax()}), p95 {np.quantile(corr, 0.95, axis=0)}; plain's x0 "
@@ -987,6 +1017,8 @@ class TestRobustOracles:
         for n, bound in zip((5_000, 20_000, 80_000), self.EPS_BOUNDS[eps], strict=True):
             runs = np.array([self._eps_gap(n, seed, eps) for seed in range(50)])
             own, other = runs[:, 0], runs[:, 1]
+            t = f"eps_{eps:g}_n_{n}".replace(".", "_")
+            ledger.record("quantile_eps", f"{t}_from_the_smoothed_fit", own)
             print(
                 f"eps {eps}, n {n}: worst {own.max():.4f} (seed {own.argmax()}), p95 "
                 f"{np.quantile(own, 0.95):.4f}; nearer the other level's fit on "
@@ -997,6 +1029,28 @@ class TestRobustOracles:
                 assert (own < other).all(), (n, np.flatnonzero(other <= own))
             worst.append(own.max())
         assert worst[-1] <= worst[0] / self.EPS_RATE[eps], worst
+
+
+#: The oracle ledger's inputs (tests/ledger.py) for the three quantile grids
+#: above: the fits on the first three seeds at 5,000 rows, each grid's
+#: settings, every coefficient and the band's scale. The grids' 50 seeds at
+#: up to 80,000 rows, a solve a row, take a minute.
+def _quantile_guard(scales=(1.0, 1.0), taus=(0.5, 0.9), **kw) -> list:
+    rows = [TestRobustOracles._quantile_rows(5_000, seed, scales) for seed in range(3)]
+    return [TestRobustOracles._quantile_fit(x, y, tau, **kw) for x, y in rows for tau in taus]
+
+
+ledger.guard("quantile_huge_ridge", lambda: _quantile_guard(ridge=1e9), oracles=["statsmodels"])
+ledger.guard(
+    "quantile_mixed_scales",
+    lambda: [
+        _quantile_guard((1e-3, 1e3), standardize=standardize) for standardize in (True, False)
+    ],
+    oracles=["statsmodels"],
+)
+ledger.guard(
+    "quantile_eps", lambda: [_quantile_guard(taus=(0.9,), quantile_eps=e) for e in (0.1, 0.5)]
+)
 
 
 class TestFtrlOracle:

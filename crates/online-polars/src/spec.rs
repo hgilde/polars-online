@@ -4742,12 +4742,12 @@ impl Spec {
                         let l = n_lags as f64;
                         let c = cross_lags.as_ref().map_or(l, |c| c.len() as f64);
                         let base = (3.0 * p + 5.0) * t;
-                        let more = l * t + (l + 2.0 * c) * p * t;
+                        let more = 2.0 * l * t + 2.0 * (l + c) * p * t;
                         return Err(format!(
                             "spec {:?}: marginal lags under a window need window_lags = true. \
                              Each window snapshot then also holds the lag moments: here {more} \
                              doubles beside the {base} it holds without them, {:.1} times the \
-                             size (L·T + (L + 2C)·p·T against (3p + 5)·T, C the cross lags; \
+                             size (2L·T + 2(L + C)·p·T against (3p + 5)·T, C the cross lags; \
                              cross_lags = [] costs least, and n_serial does not read the cross \
                              terms). Set window_lags = true to accept that, or drop the window \
                              or the lags.",

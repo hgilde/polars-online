@@ -1683,7 +1683,7 @@ def test_a_longer_breaks_memory_finds_an_intercept_break_later():
         delay = hit.argmax(axis=1)
         tails.append(np.quantile(delay, [0.9, 0.95, 1.0]))
         print(memory, tails[-1])
-        ledger.record("breaks_memory", f"delay_at_{memory:g}", delay)
+        ledger.record("breaks_memory", f"delay_at_{memory:g}", delay, exact=True)
     tails = np.array(tails)
     assert (np.diff(tails, axis=0) > 0).all(), tails
 

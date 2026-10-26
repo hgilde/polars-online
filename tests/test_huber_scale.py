@@ -24,6 +24,7 @@ import statsmodels.api as sm
 from scipy.stats import norm
 from statsmodels.robust.norms import HuberT
 
+import ledger
 import polars_online as po
 
 TIER = "mixed"
@@ -439,18 +440,33 @@ class TestSgdPowersOfTwo:
 DELTAS = [INF, 8.0, 4.0, 2.0, 1.345, 1.0]
 
 
+def _cut_spec(kind: str, delta: float) -> dict:
+    """``kind`` with no decay at the cut ``delta``, every other keyword the
+    default, the refit of the first 500 rows included."""
+    c = dict(NO_DECAY, huber_delta=delta)
+    return po.spec.huber("m", **c) if kind == "huber" else po.spec.sgd("m", loss="huber", **c)
+
+
 def _biases(kind: str, share: float, seed: int, n: int = 5000) -> np.ndarray:
     """``|slope - 2|`` at the end of ``stream(n, share, seed)`` (the slope's
-    bias, the +50 rows on ``x > 0`` tilting it) for each of ``DELTAS``,
-    with no decay and every other keyword the default, the refit of the
-    first 500 rows included."""
+    bias, the +50 rows on ``x > 0`` tilting it) for each of ``DELTAS``."""
     df = stream(n, share, seed)
-    out = []
-    for delta in DELTAS:
-        c = dict(NO_DECAY, huber_delta=delta)
-        spec = po.spec.huber("m", **c) if kind == "huber" else po.spec.sgd("m", loss="huber", **c)
-        out.append(abs(slope(spec, df) - 2.0))
-    return np.array(out)
+    return np.array([abs(slope(_cut_spec(kind, delta), df) - 2.0) for delta in DELTAS])
+
+
+#: The oracle ledger's inputs (tests/ledger.py): every field of each kind at
+#: each cut, on the grid's first two seeds at each share, 2,000 rows.
+ledger.guard(
+    "huber_sgd_cuts",
+    lambda: [
+        _run(_cut_spec(kind, delta), stream(2_000, share, seed))
+        for kind in KINDS
+        for share in (0.1, 0.25)
+        for seed in (0, 1)
+        for delta in DELTAS
+    ],
+    oracles=["statsmodels"],
+)
 
 
 @pytest.mark.parametrize(("share", "seed"), [(0.1, 7), (0.25, 0)])
@@ -507,6 +523,9 @@ def test_the_cuts_bias_over_fifty_seeds():
             rlm.append(row)
         rlm = np.array(rlm)
         for kind in KINDS:
+            for i, delta in enumerate(DELTAS):
+                case = f"{kind}_share_{share:g}_bias_at_{delta:g}".replace(".", "_")
+                ledger.record("huber_sgd_cuts", case, b[kind][:, i])
             worst, p95 = b[kind].max(axis=0), np.quantile(b[kind], 0.95, axis=0)
             rise = np.diff(b[kind], axis=1).max()
             print(f"{kind} at {share}: worst {np.round(worst, 4)}, 95th {np.round(p95, 4)}")
@@ -516,13 +535,18 @@ def test_the_cuts_bias_over_fifty_seeds():
         assert (np.diff(b["huber"], axis=1) <= 0.0).all(), share
     for share in (0.1, 0.25):
         narrow = [DELTAS.index(d) for d in (2.0, 1.345, 1.0)]
+        gaps = np.zeros((50, len(narrow)))
         for seed in range(50):
             df = stream(5000, share, seed)
             X = sm.add_constant(df["x"].to_numpy())
             y = df["y"].to_numpy()
-            for i in narrow:
+            for j, i in enumerate(narrow):
                 want = sm.RLM(y, X, M=HuberT(DELTAS[i])).fit(
                     scale_est="mad", conv="coefs", tol=1e-10, maxiter=500
                 )
                 got = slope(po.spec.huber("m", huber_delta=DELTAS[i], **NO_DECAY), df)
-                assert abs(got - want.params[1]) < 0.05, (share, seed, DELTAS[i], got)
+                gaps[seed, j] = abs(got - want.params[1])
+        for j, i in enumerate(narrow):
+            case = f"huber_share_{share:g}_from_rlm_at_{DELTAS[i]:g}".replace(".", "_")
+            ledger.record("huber_sgd_cuts", case, gaps[:, j])
+        assert (gaps < 0.05).all(), (share, np.argwhere(gaps >= 0.05))

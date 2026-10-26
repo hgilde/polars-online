@@ -1475,14 +1475,16 @@ fn validation_rejects_each_bad_field() {
     Marginal::new(cfg(3, 2)).unwrap();
 }
 
-/// A windowed lag moment is the increments made inside the window
-/// (docs/PLAN.md task 137). An unwindowed twin's weight and moments,
-/// after the row before the window's first and after the last, give it
-/// in sum form, `(W·C − f·λ·W_u·C_u) / (W − f·λ·W_u)`, read through
-/// `lag_corr` against the window's own variances. The target is missing
-/// on every fifth row, where its moments hold and its weight ages.
+/// A windowed state saved before its lag moments took an origin (task
+/// 280, phase 3) keeps the rule it was fitted under: a windowed lag moment
+/// is the increments made inside the window, each centred at the running
+/// mean as it stood (docs/PLAN.md task 137). An unwindowed twin's weight
+/// and moments, after the row before the window's first and after the
+/// last, give it in sum form, `(W·C − f·λ·W_u·C_u) / (W − f·λ·W_u)`, read
+/// through `lag_corr` against the window's own variances. The target is
+/// missing on every fifth row, where its moments hold and its weight ages.
 #[test]
-fn a_windowed_lag_moment_is_the_increments_inside_the_window() {
+fn an_old_windowed_state_keeps_the_increments_about_the_running_mean() {
     let (hl, window, n) = (30.0, 50.0, 200usize);
     let mut c = cfg(2, 1);
     c.decay = Decay::Halflife(hl);
@@ -1492,6 +1494,8 @@ fn a_windowed_lag_moment_is_the_increments_inside_the_window() {
     let mut live = Marginal::new(c.clone()).unwrap();
     c.window = Some(window);
     let mut win = Marginal::new(c).unwrap();
+    // A state saved before the origin: none.
+    win.lag.as_mut().unwrap().drop_origin();
     // The inclusive edge, which the boundary row `u` below is placed by.
     crate::OnlineModel::set_window_closed(&mut win, crate::WindowClosed::Both);
     let mut s = 11u64;
@@ -1546,8 +1550,87 @@ fn a_windowed_lag_moment_is_the_increments_inside_the_window() {
     assert!((whole.lag_corr_yy[0] - pair.lag_corr_yy[0]).abs() > 1e-4);
 }
 
+/// A windowed lag correlation is the window's rows' own: each lagged
+/// product taken about the window's mean, over the window's weights, and
+/// read against the window's variances. Here both series move to a new
+/// level on the window's first row, so a lagged product centred anywhere
+/// else carries the level: centred at the running mean as it stood (the
+/// rule before task 280's phase 3) it read the window's lag-1
+/// autocorrelation as 22.1 on this stream. The target is missing on no row,
+/// so every product has its partner. Longhand over the rows inside, at
+/// their decayed weights.
+#[test]
+fn a_windowed_lag_correlation_is_centred_at_the_windows_own_mean() {
+    let (hl, window, n) = (30.0, 50.0, 300usize);
+    let lam = 0.5f64.powf(1.0 / hl);
+    let u = n - 1 - window as usize;
+    let mut c = cfg(2, 1);
+    c.decay = Decay::Halflife(hl);
+    c.lags = vec![1, 3];
+    c.min_weight = vec![0.0];
+    c.window = Some(window);
+    let mut m = Marginal::new(c).unwrap();
+    crate::OnlineModel::set_window_closed(&mut m, crate::WindowClosed::Both);
+    let mut s = 23u64;
+    let (mut xs, mut ys) = (Vec::new(), Vec::new());
+    for i in 0..n {
+        let level = if i >= u { 5.0 } else { 0.0 };
+        let x = [lcg(&mut s), 1000.0 + level + lcg(&mut s)];
+        let y = -2.0 * level + 0.5 * x[1] + lcg(&mut s);
+        let d = if i == 0 { 0.0 } else { 1.0 };
+        m.step(&x, &[Some(y)], d, 1.0);
+        xs.push(x[1]);
+        ys.push(y);
+    }
+    let w: Vec<f64> = (u..n).map(|i| lam.powi((n - 1 - i) as i32)).collect();
+    let sw: f64 = w.iter().sum();
+    let mean = |v: &[f64]| (u..n).map(|i| w[i - u] * v[i]).sum::<f64>() / sw;
+    let (mx, my) = (mean(&xs), mean(&ys));
+    let lagged = |a: &[f64], ma: f64, b: &[f64], mb: f64, l: usize| {
+        (u..n)
+            .map(|i| w[i - u] * (a[i] - ma) * (b[i - l] - mb))
+            .sum::<f64>()
+            / sw
+    };
+    let pair = m.pair(0, 1);
+    assert!(
+        (pair.mean_x - mx).abs() <= 1e-9,
+        "{} against {mx}",
+        pair.mean_x
+    );
+    let close = |a: f64, b: f64| (a - b).abs() <= 1e-9 * b.abs().max(1.0);
+    let sd = (pair.var_x.sqrt(), pair.var_y.sqrt());
+    for (li, l) in [1usize, 3].into_iter().enumerate() {
+        let want = [
+            (
+                pair.lag_corr_xx[li],
+                lagged(&xs, mx, &xs, mx, l) / (sd.0 * sd.0),
+            ),
+            (
+                pair.lag_corr_yy[li],
+                lagged(&ys, my, &ys, my, l) / (sd.1 * sd.1),
+            ),
+            (
+                pair.lag_corr_xy[li],
+                lagged(&xs, mx, &ys, my, l) / (sd.0 * sd.1),
+            ),
+            (
+                pair.lag_corr_yx[li],
+                lagged(&ys, my, &xs, mx, l) / (sd.0 * sd.1),
+            ),
+        ];
+        for (k, (got, want)) in want.into_iter().enumerate() {
+            assert!(
+                close(got, want),
+                "lag {l}, moment {k}: {got} against {want}"
+            );
+        }
+    }
+}
+
 /// What the lag moments add to a window's snapshot (docs/PLAN.md task
-/// 137): `L·T + (L + 2C)·p·T` doubles and the width, as `window_lags`
+/// 137): `L·T + (L + 2C)·p·T` doubles and the width without a window, and
+/// with one the lagged sides' sums, `2L·T + 2(L + C)·p·T`, as `window_lags`
 /// documents.
 #[test]
 fn the_lag_moments_add_what_window_lags_says() {
@@ -1560,11 +1643,19 @@ fn the_lag_moments_add_what_window_lags_says() {
         let mut c = cfg(p, t);
         c.lags = lags.clone();
         c.cross_lags = cross.clone();
-        let m = Marginal::new(c).unwrap();
+        let m = Marginal::new(c.clone()).unwrap();
         let got = crate::Footprint::footprint(&m.lag.as_ref().unwrap().moments());
         let (l, cl) = (lags.len(), cross.as_ref().map_or(lags.len(), Vec::len));
         let want = 8 * (l * t + (l + 2 * cl) * p * t) + std::mem::size_of::<usize>();
         assert_eq!(got, want, "p = {p}, T = {t}, L = {l}, C = {cl}");
+        // Under a window, the lagged sides' sums about the origin besides:
+        // `L·T + L·p·T` more (task 280, phase 3).
+        let mut c = c;
+        c.window = Some(50.0);
+        let m = Marginal::new(c).unwrap();
+        let got = crate::Footprint::footprint(&m.lag.as_ref().unwrap().moments());
+        let want = 8 * (2 * l * t + 2 * (l + cl) * p * t) + std::mem::size_of::<usize>();
+        assert_eq!(got, want, "windowed: p = {p}, T = {t}, L = {l}, C = {cl}");
     }
 }
 

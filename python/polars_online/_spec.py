@@ -4259,19 +4259,24 @@ def marginal(
            * - without lags
              - ``(3*p + 5)*T``
            * - the lag moments beside them
-             - ``L*T + (L + 2*C)*p*T``, about ``(L + 2*C) / 3`` times its size
+             - ``2*L*T + 2*(L + C)*p*T``, about ``2*(L + C) / 3`` times its
+               size: the lagged products and, beside each lag, the lagged
+               rows' own sums
            * - with ``cross_lags=[]``, the least
-             - ``L*(p + 1)*T``; ``n_serial`` does not read the cross terms
+             - ``2*L*(p + 1)*T``; ``n_serial`` does not read the cross terms
 
-        So a snapshot is twice the size at one lag, and six times at five
+        So a snapshot is 2.3 times the size at one lag, and 7.7 times at five
         lags with the default cross lags (every lag). The snapshots count in
         ``window_budget``. Without it, ``lags`` and ``window_size`` together
         are refused with this spec's own numbers; with it, and without both,
-        it is refused. Each windowed lag moment is the sum of the increments
-        made inside the window, each centred at the mean as it stood when it
-        was made. A lagged moment has no re-centring identity, so against
-        the rows inside the window it is a statistical estimate, as the whole
-        history's is. Default ``False``.
+        it is refused. Each windowed lag correlation is that of the rows
+        inside the window, each row's product with the row ``l`` back taken
+        about the window's own means: the moments are kept about a fixed
+        origin, each series' first value, and read about the window's means
+        when asked. A window's first ``l`` rows take the rows before it as
+        partners, where ``statsmodels``' ``acf`` of the window's rows stops
+        its products at the edge: on 50 AR(1) series, 500 rows a window, the
+        two parted by 0.0068 at most. Default ``False``.
     ``feature_moments``
         Where the feature's mean and variance are kept. ``"per_target"``, the
         default, keeps them per pair, over the rows the pair's target was
