@@ -28,6 +28,7 @@ read from the CPU time each thread accrues.
 
 from __future__ import annotations
 
+import json
 import pickle
 import subprocess
 import sys
@@ -36,7 +37,6 @@ from pathlib import Path
 
 import numpy as np
 import polars as pl
-import psutil
 import pytest
 
 import child
@@ -438,9 +438,9 @@ def test_none_is_the_default_pool_and_a_count_is_its_own():
     assert po.ModelBank(specs()[2:3]).threads is None
 
 
-def _python(code: str, **env: str) -> str:
+def _python(code: str, *args: str, **env: str) -> str:
     res = subprocess.run(
-        [sys.executable, "-c", code],
+        [sys.executable, "-c", code, *args],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -662,8 +662,63 @@ def test_every_kind_is_the_same_at_every_count(case):
         assert saved == state, (case, threads)
 
 
-def _cpu_by_thread() -> dict[int, float]:
-    return {t.id: t.user_time + t.system_time for t in psutil.Process().threads()}
+#: The child that times the threads of a pool. It runs in a process of its
+#: own, and holds a bank of each count from before the first reading of the
+#: threads' CPU times to after the last, so that no thread starts or ends
+#: between the two: a pool goes with its last holder, and a pool whose
+#: threads exit while psutil reads them fails the reading on macOS
+#: (``thread_info(THREAD_BASIC_INFO) syscall failed``; GitHub's macOS runner,
+#: 2026-10-26, where a dropped warm-up bank's pool was still exiting).
+#: psutil numbers macOS threads by their place in the process's list, not by
+#: an identity, so the two readings pair only while that list holds still;
+#: the child prints the list's length at each reading and the test holds it
+#: fixed.
+POOL_CHILD = """
+import json, sys, warnings
+sys.path.insert(0, sys.argv[1])
+import polars as pl, polars_online as po, psutil
+from test_threads import FIRST_CHUNK, kind_frame, kind_specs
+
+def cpu_by_thread():
+    return [t.user_time + t.system_time for t in psutil.Process().threads()]
+
+counts = [int(c) for c in sys.argv[2].split(',')]
+df, specs = kind_frame('ewridge'), kind_specs('ewridge')
+chunks = [df.slice(0, FIRST_CHUNK), df.slice(FIRST_CHUNK)]
+pl.thread_pool_size()  # Polars' own pool, built before the first reading.
+warnings.simplefilter('ignore')
+holders = {n: po.ModelBank(specs, threads=n) for n in counts}
+for bank in holders.values():
+    for c in chunks:
+        bank.fit_predict(c)
+got = {}
+for n in counts:
+    before = cpu_by_thread()
+    for _ in range(5):
+        bank = po.ModelBank(specs, threads=n)
+        for c in chunks:
+            bank.fit_predict(c)
+    after = cpu_by_thread()
+    spent = [a - b for a, b in zip(after, before)]
+    total = sum(d for d in spent if d > 0)
+    got[n] = {
+        'threads': [len(before), len(after)],
+        'shares': sorted((d / total for d in spent if d > 0), reverse=True),
+    }
+print(json.dumps(got))
+"""
+
+
+def pool_shares(counts: tuple[int, ...]) -> dict[int, list[float]]:
+    """Per pool size, each thread's share of the CPU time the process spent
+    while banks of that size learned, largest first, read in a child (see
+    ``POOL_CHILD``)."""
+    out = _python(POOL_CHILD, str(REPO / "tests"), ",".join(map(str, counts)))
+    got = json.loads(out.splitlines()[-1])
+    for n, run in got.items():
+        before, after = run["threads"]
+        assert before == after, f"threads={n}: the process had {before} threads, then {after}"
+    return {int(n): run["shares"] for n, run in got.items()}
 
 
 @pytest.mark.extended(reason="times the threads of a pool")
@@ -671,26 +726,15 @@ def test_a_pool_of_four_runs_the_work_on_more_than_one_thread():
     """The sweep above compares something: on a pool of four the kinds'
     (spec, group) tasks run on several threads, and on a pool of one on one.
     Read from the CPU time each of the process's threads accrues while the
-    banks learn. Measured 2026-10-25 (macOS arm64, 14 cores, load 190):
-    one thread ran 98-99% of the work at ``threads=1``; at ``threads=4``
-    three ran 32-34% each and the fourth 2% (in a fresh process, over 20
-    banks, all four ran 24-27%)."""
-    df, specs = kind_frame("ewridge"), kind_specs("ewridge")
-    chunks = [df.slice(0, FIRST_CHUNK), df.slice(FIRST_CHUNK)]
-    shares = {}
-    for threads in (1, 4):
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            po.ModelBank(specs, threads=threads).fit_predict(df.head(50))
-            before = _cpu_by_thread()
-            for _ in range(5):
-                bank = po.ModelBank(specs, threads=threads)
-                for c in chunks:
-                    bank.fit_predict(c)
-            after = _cpu_by_thread()
-        spent = [after[i] - before.get(i, 0.0) for i in after]
-        total = sum(d for d in spent if d > 0)
-        shares[threads] = sorted((d / total for d in spent if d > 0), reverse=True)
+    banks learn: a share of the work, not a speed, so a loaded machine slows
+    every thread and moves no share far. Measured 2026-10-25 (macOS arm64,
+    14 cores, load 190): one thread ran 98-99% of the work at
+    ``threads=1``; at ``threads=4`` three ran 32-34% each and the fourth 2%
+    (in a fresh process, over 20 banks, all four ran 24-27%). The bar
+    below, a second thread past 10%, sits between the 1-2% that the
+    Python thread's own share comes to at ``threads=1`` and the quarter to a
+    third each pool thread takes at ``threads=4``."""
+    shares = pool_shares((1, 4))
     print({k: [round(v, 3) for v in s[:6]] for k, s in shares.items()})
     assert shares[1][0] > 0.8, shares[1]
     assert sum(share > 0.1 for share in shares[4]) >= 2, shares[4]
