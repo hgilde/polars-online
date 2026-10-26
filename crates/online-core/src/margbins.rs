@@ -121,6 +121,41 @@
 //! clipped; `split_gain` is the stump's gain read from those, the
 //! locations' spread between bins over their total, so a spike bounds its
 //! pull on both terms alike.
+//!
+//! # The refit
+//!
+//! One pass is *captured* by a share of early wild rows, as `huber`'s is
+//! ([`crate::huber_refit`]): the first locations are pulled, the target's
+//! scale learns the pulled deviations, the cut is drawn wide, and the wild
+//! rows go on entering at nearly full weight; without decay the early rows
+//! keep their share for good. Measured on `tests/test_marginal_bin_huber.py`'s
+//! stream (16 bins, spikes of about 20 scales, no decay), the worst of 50
+//! seeds had a bin 1.85, 1.29 and 0.23 of the target's scale from
+//! statsmodels' M-location after 1,000, 2,000 and 20,000 rows at 12%
+//! spikes, and 6.5, 3.5 and 1.0 at 20% (docs/PLAN.md task 278).
+//!
+//! So under [`BinCfg::refit_rows`] the model holds its learned rows, and on
+//! the row their count is reached, after that row's own update, refits from
+//! them ([`MarginalBins::refit`]): each target's location and MAD scale
+//! jointly, as statsmodels' `RLM` with a constant column fits them; the
+//! target's sketch rebuilt from the converged deviations; and each cell's
+//! M-location at the cut that sketch gives, solved exactly
+//! ([`crate::huber_refit::huber_location`]), with `Ω` and `M2` its rows'
+//! Huber weights and clipped squares at it. The cells' `W` -- `bin_n` --
+//! do not move. With learned edges the warm-up's own hold is those rows, so
+//! the refit runs as the edges are fixed when its count is within the
+//! warm-up, and otherwise the hold goes on past the freeze to the count.
+//! The rows are then let go and the stream goes on in one pass. With the
+//! refit, the same worst seeds were 0.017, 0.015 and 0.004 at 12%, and 0.15,
+//! 0.14 and 0.057 at 20%.
+//!
+//! The count wants about 30 rows a bin: a bin whose rows at the refit are
+//! mostly wild has its M-location among them, rightly for those rows, and
+//! the next rows, clipped at the cut, bring it back only slowly
+//! ([`crate::huber_refit::BIN_REFIT_ROWS_PER_BIN`]). Where a cell's rows fit
+//! every point of an interval alike -- a bin of a clean row and a wild one
+//! -- the point nearest the target's own location is taken, as the stream
+//! judges a bin's first row against it.
 
 use serde::{Deserialize, Serialize};
 
@@ -560,7 +595,7 @@ impl MarginalBins {
 
     /// The bin a value falls in: `edges.partition_point`, so a value equal to
     /// an edge goes to the bin above it, and a NaN goes nowhere.
-    fn bin_of(edges: &[f64], v: f64) -> Option<usize> {
+    pub(crate) fn bin_of(edges: &[f64], v: f64) -> Option<usize> {
         if !v.is_finite() {
             return None;
         }
@@ -667,6 +702,23 @@ impl MarginalBins {
         crate::comp::add(&mut self.mean[i], lo, delta * (u / wb));
         self.m2[i] += u * delta * crate::comp::dev(y, self.mean[i], *lo);
         self.w[i] = wb;
+    }
+
+    /// Cell `(t, j, b)`'s weight `W`, location and robust weight `Ω`, and
+    /// target `t`'s cut before the next row: what the refit's tests read.
+    #[cfg(test)]
+    pub(crate) fn cell_and_cut(&self, t: usize, j: usize, b: usize) -> (f64, f64, f64, f64) {
+        let i = self.at(t, j).start + b;
+        let cut = self
+            .scales
+            .as_ref()
+            .map_or(f64::INFINITY, |s| s.judge(t).cut);
+        (
+            self.w[i] * self.scale,
+            self.mean[i],
+            self.om[i] * self.scale,
+            cut,
+        )
     }
 
     /// The bytes this histogram's buffers take, as each vector reports its
@@ -1071,6 +1123,167 @@ impl MarginalBins {
     }
 }
 
+impl MarginalBins {
+    /// The Huber refit of the first rows (docs/PLAN.md task 278): every
+    /// target's location and scale, and every cell's location, rebuilt from
+    /// the held rows `rows` -- the rows the histogram has learned so far,
+    /// each with the decay applied before it -- as the converged batch fit of
+    /// those rows, in place of the one pass (the module doc's "The refit").
+    /// Run right after the last of them is learned, so no decay has applied
+    /// since. Each target's rows are those carrying it:
+    ///
+    /// 1. its location and MAD scale jointly ([`crate::huber_refit::location_refit`]);
+    /// 2. its scale's sketch rebuilt from the converged deviations at the
+    ///    rows' raw weights, aged as the stream aged it;
+    /// 3. each cell's location at the cut that sketch gives, exactly
+    ///    ([`crate::huber_refit::huber_location`]); its `Ω` and `M2` the
+    ///    rows' Huber weights and clipped squares at it.
+    ///
+    /// The cells' weights `W` -- what `bin_n` reads, and what every pair
+    /// moment shares -- do not move (CLAUDE.md rule 8). The passes each
+    /// target's location took, 0 for a target no row carried. Nothing under
+    /// the mean.
+    pub(crate) fn refit(&mut self, rows: &[HeldRow]) -> Vec<u32> {
+        let mut passes = vec![0u32; self.n_targets];
+        let Some(delta) = self.scales.as_ref().map(|s| s.delta) else {
+            return passes;
+        };
+        let n = rows.len();
+        // Each row's raw weight decayed to now, `v_i = w_i · Π_{l > i} λ_l`,
+        // and in the cells' undecayed units, `v_i / scale` (the module doc's
+        // "Decay without touching every bin"), across any fold since.
+        let mut v = vec![0.0; n];
+        let mut age = 1.0;
+        for (i, r) in rows.iter().enumerate().rev() {
+            v[i] = r.w * age;
+            age *= r.lam;
+        }
+        let units: Vec<f64> = v.iter().map(|vi| vi / self.scale).collect();
+        let width = self.off[self.p];
+        let mut ys = Vec::new();
+        let mut vs = Vec::new();
+        let mut order: Vec<usize> = Vec::new();
+        let mut bin_at = Vec::new();
+        let mut counts = Vec::new();
+        let mut yb = Vec::new();
+        let mut vb = Vec::new();
+        let mut ub = Vec::new();
+        for (t, took_t) in passes.iter_mut().enumerate() {
+            order.clear();
+            order.extend((0..n).filter(|&i| {
+                v[i] > 0.0
+                    && rows[i]
+                        .y
+                        .get(t)
+                        .copied()
+                        .flatten()
+                        .is_some_and(f64::is_finite)
+            }));
+            if order.is_empty() {
+                continue;
+            }
+            let y_of = |i: usize| rows[i].y[t].expect("kept above");
+            order.sort_by(|&a, &b| y_of(a).total_cmp(&y_of(b)));
+            ys.clear();
+            ys.extend(order.iter().map(|&i| y_of(i)));
+            vs.clear();
+            vs.extend(order.iter().map(|&i| v[i]));
+            let Some((m, took)) = crate::huber_refit::location_refit(&ys, &vs, &vs, delta) else {
+                continue;
+            };
+            *took_t = took;
+            // The scale's sketch from the converged deviations, in the rows'
+            // order, at their raw weights, aged on the histogram's clock from
+            // the target's first row.
+            let mut q = crate::robust::mad_sketches(crate::robust::HuberScale::Mad, 1)
+                .pop()
+                .expect("one sketch under the MAD");
+            let mut started = false;
+            for (i, r) in rows.iter().enumerate() {
+                if started {
+                    q.age(r.lam);
+                }
+                if let Some(yi) = r.y.get(t).copied().flatten().filter(|y| y.is_finite())
+                    && v[i] > 0.0
+                {
+                    q.add((yi - m).abs(), r.w);
+                    started = true;
+                }
+            }
+            let cut = crate::robust::mad_scale(&q).map_or(f64::INFINITY, |s| delta * s);
+            let weigh = |e: f64| if e.abs() > cut { cut / e.abs() } else { 1.0 };
+            let sc = self.scales.as_deref_mut().expect("checked above");
+            sc.m[t] = m;
+            sc.m_lo[t] = 0.0;
+            sc.w[t] = order.iter().map(|&i| units[i] * weigh(y_of(i) - m)).sum();
+            sc.mad[t] = q;
+            // Each feature's cells: the target's rows dealt to their bins in
+            // the order of `y`, so each bin's rows arrive sorted.
+            let block = t * width;
+            for j in 0..self.p {
+                let edges = &self.edges[j];
+                let nb = edges.len() + 1;
+                bin_at.clear();
+                bin_at.extend(order.iter().map(|&i| {
+                    Self::bin_of(edges, rows[i].x.get(j).copied().unwrap_or(f64::NAN))
+                        .unwrap_or(NO_BIN)
+                }));
+                counts.clear();
+                counts.resize(nb + 1, 0usize);
+                for &b in &bin_at {
+                    if b != NO_BIN {
+                        counts[b + 1] += 1;
+                    }
+                }
+                for b in 0..nb {
+                    counts[b + 1] += counts[b];
+                }
+                yb.clear();
+                yb.resize(counts[nb], 0.0);
+                vb.clear();
+                vb.resize(counts[nb], 0.0);
+                ub.clear();
+                ub.resize(counts[nb], 0.0);
+                let mut fill = counts.clone();
+                for (k, &b) in bin_at.iter().enumerate() {
+                    if b == NO_BIN {
+                        continue;
+                    }
+                    let at = fill[b];
+                    fill[b] += 1;
+                    yb[at] = ys[k];
+                    vb[at] = vs[k];
+                    ub[at] = units[order[k]];
+                }
+                for b in 0..nb {
+                    let r = counts[b]..counts[b + 1];
+                    let cell = block + self.off[j] + b;
+                    if r.is_empty() || self.w[cell] <= 0.0 {
+                        continue;
+                    }
+                    let Some(loc) =
+                        crate::huber_refit::huber_location(&yb[r.clone()], &vb[r.clone()], cut, m)
+                    else {
+                        continue;
+                    };
+                    let (mut om, mut m2) = (0.0, 0.0);
+                    for k in r {
+                        let e = yb[k] - loc;
+                        om += ub[k] * weigh(e);
+                        let c = e.abs().min(cut);
+                        m2 += ub[k] * c * c;
+                    }
+                    self.mean[cell] = loc;
+                    self.mean_lo[cell] = 0.0;
+                    self.om[cell] = om;
+                    self.m2[cell] = m2;
+                }
+            }
+        }
+        passes
+    }
+}
+
 /// How `n_bins` becomes edges, when they are learned rather than given.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1110,6 +1323,16 @@ pub struct BinCfg {
     /// `budget_mib` is the one field here that may.
     #[serde(default)]
     pub stat: BinStat,
+    /// Under [`BinStat::Huber`], the learned rows after which every
+    /// target's location and scale and every cell's location are refit to
+    /// the converged batch fit of the rows learned so far, once (the module
+    /// doc's "The refit"; docs/PLAN.md task 278); 0 is off. With learned
+    /// edges the warm-up already holds its rows, so the refit runs at the
+    /// later of this count and `warm_rows`. `default`, 0, so a state written
+    /// before it -- fitted without the refit -- loads and goes on as it was;
+    /// not skipped, since `budget_mib` is the one field here that may.
+    #[serde(default)]
+    pub refit_rows: u32,
     /// The MiB the warm-up hold and the histogram may each take before the
     /// model refuses to build; `None` is [`DEFAULT_BUDGET_MIB`], and
     /// infinity is no bound (docs/PLAN.md task 131). **Last, and the one
@@ -1178,6 +1401,18 @@ impl BinCfg {
             return Err(format!(
                 "marginal: bin_huber_delta must be > 0 (inf is the mean), got {delta}"
             ));
+        }
+        // The refit is of Huber locations: under the mean, or a cut that
+        // clips nothing, the one pass is already the batch fit.
+        if self.refit_rows > 0
+            && !matches!(self.stat, BinStat::Huber { delta } if delta.is_finite())
+        {
+            return Err(
+                "marginal: bin_refit_rows applies only with bin_stat = \"huber\" and a finite \
+                 bin_huber_delta: under the mean, or a cut that clips nothing, the one pass is \
+                 already the batch fit"
+                    .into(),
+            );
         }
         let values = self.stat.cell_values();
         match &self.edges {
@@ -1725,6 +1960,7 @@ mod tests {
             rule: BinRule::Quantile,
             warm_rows,
             stat: BinStat::Mean,
+            refit_rows: 0,
             budget_mib: None,
         };
         let cfg = learned(16, 1_000);
@@ -1764,6 +2000,7 @@ mod tests {
             rule: BinRule::Quantile,
             warm_rows: 1_000,
             stat: BinStat::Mean,
+            refit_rows: 0,
             budget_mib,
         };
         // Sixty targets at 10,000 features pass 256 MiB; 512 holds them.
@@ -1791,6 +2028,7 @@ mod tests {
             rule: BinRule::Quantile,
             warm_rows: 0,
             stat: BinStat::Mean,
+            refit_rows: 0,
             budget_mib: Some(1e-6),
         };
         let err = given.validate(10, 1).unwrap_err();
@@ -1808,6 +2046,7 @@ mod tests {
             rule: BinRule::Quantile,
             warm_rows: 8,
             stat: BinStat::Mean,
+            refit_rows: 0,
             budget_mib: Some(1e-6),
         };
         let err = cfg.validate(1, 1).unwrap_err();
@@ -1833,6 +2072,7 @@ mod tests {
             rule: BinRule::Quantile,
             warm_rows: 0,
             stat: BinStat::Mean,
+            refit_rows: 0,
             budget_mib: None,
         };
         assert!(cfg.validate(1, 1).is_ok());
@@ -1997,6 +2237,7 @@ mod tests {
             rule: BinRule::Quantile,
             warm_rows: 0,
             stat: BinStat::Mean,
+            refit_rows: 0,
             budget_mib: Some(bytes as f64 / (1u64 << 20) as f64),
         };
         assert!(at(bytes).validate(p, t).is_ok());
@@ -2717,6 +2958,7 @@ mod tests {
                 rule: BinRule::Quantile,
                 warm_rows: 3,
                 stat: HUBER,
+                refit_rows: 0,
                 budget_mib: Some(budget_mib),
             };
             let bytes = histogram_bytes(p, t, 3 * p, HUBER_CELL_VALUES) as f64;
@@ -2756,6 +2998,7 @@ mod tests {
                 rule: BinRule::Quantile,
                 warm_rows: 3,
                 stat: BinStat::Huber { delta },
+                refit_rows: 0,
                 budget_mib: None,
             };
             for bad in [0.0, -1.0, f64::NAN] {

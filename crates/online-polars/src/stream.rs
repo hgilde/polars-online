@@ -242,6 +242,7 @@ impl AnyModel {
         match self {
             AnyModel::Robust(m) => m.refit_reservation(),
             AnyModel::Sgd(m) => m.refit_reservation(),
+            AnyModel::Marginal(m) => m.refit_reservation(),
             _ => 0,
         }
     }
@@ -252,6 +253,7 @@ impl AnyModel {
         match self {
             AnyModel::Robust(m) => m.refit_give_up(),
             AnyModel::Sgd(m) => m.refit_give_up(),
+            AnyModel::Marginal(m) => m.refit_give_up(),
             _ => {}
         }
     }
@@ -261,6 +263,7 @@ impl AnyModel {
         match self {
             AnyModel::Robust(m) => m.refit_status(),
             AnyModel::Sgd(m) => m.refit_status(),
+            AnyModel::Marginal(m) => m.refit_status(),
             _ => Vec::new(),
         }
     }
@@ -445,6 +448,7 @@ impl AnyModel {
             AnyModel::Bocpd(m) => m.solve_failures,
             AnyModel::KMeans(m) => m.solve_failures,
             AnyModel::Sgd(m) => m.solve_failures(),
+            AnyModel::Marginal(m) => m.solve_failures(),
             AnyModel::Rls(_)
             | AnyModel::Kalman(_)
             | AnyModel::Ftrl(_)
@@ -453,7 +457,6 @@ impl AnyModel {
             | AnyModel::Holt(_)
             | AnyModel::Micro(_)
             | AnyModel::SeqTest(_)
-            | AnyModel::Marginal(_)
             | AnyModel::Deco(_)
             | AnyModel::Rcov(_)
             | AnyModel::CorrChange(_)
@@ -1145,6 +1148,9 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             bin_budget,
             bin_stat,
             bin_huber_delta,
+            bin_refit_rows,
+            // The bank's, against every group's reservation (`reserve_refits`).
+            refit_budget: _,
             // How the pairs are run, not what they are (`marginal_shards`).
             shards: _,
         } => {
@@ -1200,6 +1206,25 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                                     other,
                                 ));
                             }
+                        },
+                        // On by default under a finite Huber cut, off
+                        // otherwise (`validate` refuses a count given there).
+                        refit_rows: match (bin_stat.as_deref(), bin_huber_delta) {
+                            // `max(500, 30 · bins)`, the widest feature's
+                            // bins (docs/PLAN.md task 278): 500 at the
+                            // default 16, which the learned edges' warm-up of
+                            // 1,000 rows covers, so by default the refit runs
+                            // when the edges are fixed and holds no row of
+                            // its own.
+                            (Some("huber"), d) if d.is_none_or(|d| d.0.is_finite()) => {
+                                bin_refit_rows.unwrap_or_else(|| {
+                                    online_core::default_bin_refit_rows(match edges {
+                                        Some(e) => e.iter().map(|f| f.len() + 1).max().unwrap_or(1),
+                                        None => bins.unwrap_or(DEFAULT_BINS),
+                                    })
+                                })
+                            }
+                            _ => 0,
                         },
                         budget_mib: bin_budget.map(|n| n.0),
                     })),

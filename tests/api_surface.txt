@@ -308,6 +308,8 @@
     bin_budget = None
     bin_stat = 'mean'
     bin_huber_delta = None
+    bin_refit_rows = None
+    refit_budget = None
     shards = None
     window_size = None
     closed = 'right'
@@ -958,6 +960,7 @@
     derived.bin_budget = 256.0
     model.bins.edges = null
     model.bins.n_bins = 4
+    model.bins.refit_rows = 0
     model.bins.rule = "quantile"
     model.bins.stat = "mean"
     model.bins.warm_rows = 1000
@@ -2521,7 +2524,7 @@
     kalman: coef_half_life, obs_var, p0, q, revert_half_life, share_p, standardize
     kmeans: dead_frac, init, n_clusters, scale_floor, seed, split_merge, split_merge_every_rows, standardize, update_every_rows, warm_rows
     lasso: closed, l1_ratio, max_iter, max_rows_between_snapshots, max_rows_between_solves, penalties, select_half_life, snapshot_every, solve_every, target_gaps, tol, window_budget, window_size
-    marginal: bin_budget, bin_edges, bin_huber_delta, bin_rule, bin_stat, bin_warm_rows, bins, closed, cross_lags, feature_moments, lags, max_rows_between_snapshots, serial_rule, shards, snapshot_every, window_budget, window_lags, window_size
+    marginal: bin_budget, bin_edges, bin_huber_delta, bin_refit_rows, bin_rule, bin_stat, bin_warm_rows, bins, closed, cross_lags, feature_moments, lags, max_rows_between_snapshots, refit_budget, serial_rule, shards, snapshot_every, window_budget, window_lags, window_size
     micro: beta_mu, eps, macro_link, max_clusters, max_rows_between_prunes, prune_every, scale_floor, standardize
     pa: c, coef_max, coef_min, coef_sum, eps, mode, standardize
     quantile: max_rows_between_solves, quantile, quantile_eps, ridge, solve_every, standardize

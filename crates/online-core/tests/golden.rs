@@ -1468,6 +1468,7 @@ fn marginal_paths_golden() {
             rule: online_core::BinRule::Quantile,
             warm_rows: 10,
             stat: online_core::BinStat::Mean,
+            refit_rows: 0,
             budget_mib: None,
         })),
         ..cfg()

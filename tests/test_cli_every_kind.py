@@ -452,6 +452,8 @@ CASES: list[Case] = [
             "bin_budget": 64,
             "bin_stat": "huber",
             "bin_huber_delta": 2.0,
+            "bin_refit_rows": 80,
+            "refit_budget": 16,
             "shards": 2,
             "feature_moments": "shared",
         },
@@ -460,6 +462,18 @@ CASES: list[Case] = [
         "marginal2",
         "marginal",
         {**XY, **NOCOEF2, "bin_edges": [[-0.5, 0.5]] * 3, "shards": "auto"},
+    ),
+    # The bins' refit beside given edges, holding its rows to the count.
+    Case(
+        "marginal_refit",
+        "marginal",
+        {
+            **XY,
+            **NOCOEF2,
+            "bin_edges": [[-0.5, 0.5]] * 3,
+            "bin_stat": "huber",
+            "bin_refit_rows": 60,
+        },
     ),
     Case(
         "marginal_window",

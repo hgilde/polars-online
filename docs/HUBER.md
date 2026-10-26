@@ -315,10 +315,12 @@ coefficients, the refit is the ridge's fit and runs to its cap, 200 passes,
 2.2 s and 8.7 s once (0.5 s and 1.9 s at the earlier cap of 50, at the same
 load; 100 features: 42 passes, 12 ms). A refit at its cap is counted in
 `solve_failures`. `marginal(bin_stat="huber")`
-is captured by the same mechanism and has no refit: over 40 seeds in 16
-bins, 13 of 40 streams of 2,000 rows at 12% spikes had a bin more than 0.1
-of the scale from statsmodels' M-location (7 more than 0.5), and 18 of 40
-streams of 20,000 rows at 20%.
+is captured by the same mechanism: over 40 seeds in 16 bins, 13 of 40
+streams of 2,000 rows at 12% spikes had a bin more than 0.1 of the scale
+from statsmodels' M-location (7 more than 0.5), and 18 of 40 streams of
+20,000 rows at 20%. It has its own refit, `bin_refit_rows`: the target's
+location and scale jointly, then each bin's location solved exactly at the
+rebuilt cut, over the rows held to the count ([the guide](MODELS.md)).
 
 **The user's decisions on the review (2026-10-25).** The default count is
 500, scaling as `max(500, 10·k)` up to 100 features and off above 100; a

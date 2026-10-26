@@ -53,6 +53,33 @@ pub(super) fn check_refit_budget(name: &str, budget: Option<Num>) -> Result<(), 
     }
 }
 
+/// `marginal`'s bin refit keys (docs/PLAN.md task 278): `bin_refit_rows`
+/// and `refit_budget` only for `bin_stat = "huber"` with a finite cut --
+/// under the mean, or a cut that clips nothing, the one pass is already the
+/// batch fit -- and the budget above 0.
+pub(super) fn check_bin_refit(
+    name: &str,
+    stat: Option<&str>,
+    delta: Option<Num>,
+    rows_given: bool,
+    budget: Option<Num>,
+) -> Result<(), String> {
+    let huber_cut = stat == Some("huber") && delta.is_none_or(|d| d.0.is_finite());
+    for (key, given) in [
+        ("bin_refit_rows", rows_given),
+        ("refit_budget", budget.is_some()),
+    ] {
+        if given && !huber_cut {
+            return Err(format!(
+                "spec {name:?}: marginal {key} is for the refit of bin_stat = \"huber\" with a \
+                 bin_huber_delta below inf, and does not apply here: under the mean, or a cut that \
+                 clips nothing, the one pass is already the batch fit"
+            ));
+        }
+    }
+    check_refit_budget(name, budget)
+}
+
 /// `ridge` for the IRLS models: finite and non-negative (zero is plain least
 /// squares).
 pub(super) fn check_ridge(name: &str, ridge: Option<f64>) -> Result<(), String> {

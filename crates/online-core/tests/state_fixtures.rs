@@ -101,6 +101,14 @@ use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 /// to the bit; the kept `kalman` and `kalman_gap` cases are that form, so
 /// each converts to the current bytes exactly, and the new form is the
 /// case `kalman_noise_units`, saved with its intercepts still diffuse.
+/// 64 gave `marginal(bin_stat = "huber")` its own refit of the first rows
+/// (task 278): a 63 state has no `refit_rows` in its bins' cfg and no
+/// refit record, loads with `refit_rows = 0` and goes on to the bit as the
+/// one pass it was fitted in; the kept `marginal_bins` and
+/// `marginal_bins_huber` cases are that form, so each converts to the
+/// current bytes exactly, and the refit's forms are the new cases
+/// `marginal_bins_refit`, saved holding its rows beside given edges, and
+/// `marginal_bins_refit_done`, saved after it ran past a learned warm-up.
 ///
 /// The windowed cases convert otherwise since the running products
 /// (schema 63 before its release, docs/PLAN.md task 275): a ring saved
@@ -1011,6 +1019,68 @@ fn the_refit_is_written_part_full_and_done() {
         let f = frozen::ALL.iter().find(|f| f.name == name).unwrap();
         assert_eq!(buffers(&f.bytes(), variant), (0, vec![]), "{name}");
     }
+}
+
+/// The bins' refit forms (schema 64, docs/PLAN.md task 278):
+/// `marginal_bins_refit` is saved with its edges given and its rows held,
+/// fewer than its count, and its continuation reaches the count, so the
+/// refit runs on a row the fixture holds; `marginal_bins_refit_done` is
+/// saved after its refit ran past a learned warm-up, its rows let go and
+/// each target's passes kept. The cases with the refit off write a count of
+/// 0, no passes and no held rows once the edges exist.
+#[test]
+fn the_bins_refit_is_written_holding_and_done() {
+    if regenerating() {
+        return;
+    }
+    let parts = |bytes: &[u8]| -> (u64, bool, usize, usize) {
+        let v = rmpv::decode::read_value(&mut &bytes[..]).unwrap();
+        let cap = at(&v, &["model", "Marginal", "cfg", "bins", "refit_rows"])
+            .and_then(rmpv::Value::as_u64)
+            .expect("cfg.bins.refit_rows");
+        let refit = at(&v, &["model", "Marginal", "bins", "refit"]).expect("bins.refit");
+        let done = at(refit, &["done"]).and_then(rmpv::Value::as_bool).unwrap();
+        let passes = at(refit, &["passes"])
+            .and_then(rmpv::Value::as_array)
+            .map_or(0, |p| p.iter().filter(|x| x.as_u64() > Some(0)).count());
+        let held = at(&v, &["model", "Marginal", "bins", "held"])
+            .and_then(rmpv::Value::as_array)
+            .map_or(0, Vec::len);
+        (cap, done, passes, held)
+    };
+    let f = frozen::ALL
+        .iter()
+        .find(|f| f.name == "marginal_bins_refit")
+        .unwrap();
+    let (cap, done, passes, held) = parts(&f.bytes());
+    assert!(
+        cap == 30 && !done && passes == 0 && held > 0 && held < 30,
+        "marginal_bins_refit: {:?}",
+        (cap, done, passes, held)
+    );
+    let mut m = load(&case_of(f), &f.bytes()).unwrap();
+    for row in f.rows() {
+        m.step(&row);
+    }
+    let after = parts(&named(&m.state()));
+    assert!(
+        after.1 && after.2 == 2 && after.3 == 0,
+        "marginal_bins_refit: the continuation does not reach the refit: {after:?}"
+    );
+    let f = frozen::ALL
+        .iter()
+        .find(|f| f.name == "marginal_bins_refit_done")
+        .unwrap();
+    assert_eq!(
+        parts(&f.bytes()),
+        (20, true, 2, 0),
+        "marginal_bins_refit_done"
+    );
+    let off = frozen::ALL
+        .iter()
+        .find(|f| f.name == "marginal_bins_huber")
+        .unwrap();
+    assert_eq!(parts(&off.bytes()), (0, false, 0, 0), "marginal_bins_huber");
 }
 
 /// `sgd`'s target-spread forms (schema 64, docs/PLAN.md task 278: D1, D2,

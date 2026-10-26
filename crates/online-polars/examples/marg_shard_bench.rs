@@ -111,6 +111,7 @@ fn main() {
                 rule: BinRule::Quantile,
                 warm_rows: num("warm", 200),
                 stat: online_core::BinStat::Mean,
+                refit_rows: 0,
                 budget_mib: None,
             })
         }),

@@ -155,8 +155,8 @@ pub use health::FeatureHealth;
 pub use hmm::{Hmm, HmmCfg};
 pub use holt::{Holt, HoltCfg};
 pub use huber_refit::{
-    DEFAULT_REFIT_MAX_FEATURES, DEFAULT_REFIT_ROWS, REFIT_PASSES, REFIT_RUNS_PER_ROW, RefitStatus,
-    default_refit_rows, refit_reservation,
+    BIN_REFIT_ROWS_PER_BIN, DEFAULT_REFIT_MAX_FEATURES, DEFAULT_REFIT_ROWS, REFIT_PASSES,
+    REFIT_RUNS_PER_ROW, RefitStatus, default_bin_refit_rows, default_refit_rows, refit_reservation,
 };
 pub use influence::Influence;
 pub use kalman::{Kalman, KalmanCfg};

@@ -270,6 +270,8 @@ _SKIPPED_WHEN_ABSENT: dict[str, frozenset[str]] = {
             "bin_budget",
             "bin_stat",
             "bin_huber_delta",
+            "bin_refit_rows",
+            "refit_budget",
             "shards",
             "window_lags",
             "feature_moments",
@@ -368,6 +370,7 @@ _U32 = frozenset(
         "update_every_rows",
         "split_merge_every_rows",
         "huber_refit_rows",
+        "bin_refit_rows",
     }
 )
 
@@ -3907,6 +3910,8 @@ def marginal(
     bin_budget: float | None = None,
     bin_stat: Literal["mean", "huber"] = "mean",
     bin_huber_delta: float | None = None,
+    bin_refit_rows: int | None = None,
+    refit_budget: float | None = None,
     shards: int | Literal["auto"] | None = None,
     window_size: float | Duration | None = None,
     closed: Literal["right", "both"] = "right",
@@ -4124,6 +4129,53 @@ def marginal(
         the mean is off by 0.45, 1.5 and 3. It keeps a fifth more per cell, 40
         bytes in place of 32, and up to 9 KB per target, and a row takes 0.75
         to 0.9 times the mean's throughput.
+    ``bin_refit_rows``, ``refit_budget``
+        The refit of the first rows under ``"huber"``. One pass weighs each
+        row against the location and the scale before it, and over the first
+        rows those are still settling. A share of spikes then pulls the first
+        locations, the scale learns the pulled deviations, the cut is drawn
+        wide, and the spikes go on entering at nearly full weight. Without
+        decay the bins stay there: captured. Measured on 16 bins with spikes
+        of about 20 of the target's scales and no decay, the worst of 50
+        streams had a bin 1.3 scales from statsmodels' M-location after
+        2,000 rows at 12% spikes, and 3.5 at 20%.
+
+        So once ``bin_refit_rows`` learned rows (rows of positive weight) are
+        in, every target's location and scale and every bin's location are
+        refit to the converged batch fit of those rows, once. The target's
+        location and MAD scale are fitted jointly, as statsmodels' ``RLM``
+        fits a constant with ``scale_est="mad"``. Its scale is rebuilt from
+        the converged deviations, and each bin's location is solved exactly
+        at the cut that scale gives. Then the stream goes on in one pass. The
+        refit runs after the row's own update, on a count of rows, so it is
+        the same whatever the chunking. It moves no weight: ``bin_n``,
+        ``weight_sum`` and every pair moment are those of the one pass. With
+        it the same worst streams were 0.015 and 0.14 scales away after
+        2,000 rows, and 0.004 and 0.057 after 20,000.
+
+        The default is ``max(500, 30 * bins)``, ``bins`` the most any
+        feature has: a bin needs about 30 rows at the refit. A bin whose rows
+        are then mostly spikes has its location among them, rightly for those
+        rows, and the rows after it bring it back only slowly. At 20% spikes,
+        12.5 rows a bin left 6 of 50 streams half a scale off after 20,000
+        rows, and 31 rows a bin left none. ``0`` turns the refit off, and is
+        the one pass alone. Under ``"mean"``, or ``bin_huber_delta=inf``,
+        there is nothing to refit, so the default is 0, and either key given
+        is refused.
+
+        With learned edges the warm-up already holds its rows: the refit runs
+        when the edges are fixed, over every held row, if the count is within
+        ``bin_warm_rows``, and holds no row of its own. With ``bin_edges``, or
+        a count past the warm-up, the model holds the rows until the count:
+        ``bin_refit_rows * (8 * features + 16 * targets + 64)`` bytes per
+        group, 4 MB at 1,000 features. ``refit_budget`` bounds those holds
+        over all of a spec's groups, in MiB, 256 by default and
+        ``float("inf")`` for no bound. Each new group reserves its hold when
+        it first appears; the group that would pass the bound keeps the one
+        pass, as does every new group after it. A notice says so once, and
+        ``summary()``'s ``refit_given_up`` counts their targets. The refit
+        itself runs once, in about 1 ms at 10 features, 13 ms at 1,000 and
+        110 ms at 10,000 over 500 rows, and a row after it costs what it did.
     ``shards``
         Split the pair work across the bank's threads: a count of ranges of
         features, or ``"auto"`` for as many as the width keeps busy. The
@@ -4277,6 +4329,8 @@ def marginal(
     - ``bin_budget`` without bins or not above 0, and bins past ``bin_budget``;
     - ``bin_stat`` without bins, and ``bin_huber_delta`` under ``"mean"`` or
       not above 0;
+    - ``bin_refit_rows`` or ``refit_budget`` under ``"mean"`` or
+      ``bin_huber_delta=inf``, and a ``refit_budget`` not above 0;
     - ``shards`` below 1, or a string other than ``"auto"``;
     - a ``serial_rule``, ``bin_rule``, ``bin_stat`` or ``feature_moments`` not
       in the list.
@@ -4317,6 +4371,8 @@ def marginal(
         "bin_budget": bin_budget,
         "bin_stat": None if bin_stat == "mean" else bin_stat,
         "bin_huber_delta": bin_huber_delta,
+        "bin_refit_rows": bin_refit_rows,
+        "refit_budget": refit_budget,
         "shards": shards,
         "window_size": window_size,
         "closed": closed,

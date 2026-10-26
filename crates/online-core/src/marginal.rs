@@ -672,6 +672,26 @@ struct Binned {
     /// nothing but still age the histogram. Folded into the next held row so
     /// a run of them cannot grow `held`.
     pending_lam: f64,
+    /// How the Huber refit of the first rows stands
+    /// ([`crate::BinCfg::refit_rows`], docs/PLAN.md task 278). While it
+    /// waits with the edges fixed, `held` goes on holding the learned rows,
+    /// and `pending_lam` the decays between them, for it. `default`: a
+    /// state written before it was fitted without the refit, and its cfg
+    /// asks for none.
+    #[serde(default)]
+    refit: BinRefit,
+}
+
+/// The bins' Huber refit, as it stands ([`Binned::refit`]).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+struct BinRefit {
+    /// It has run, or was given up.
+    done: bool,
+    /// Given up before it began, past the spec's `refit_budget`.
+    over_budget: bool,
+    /// The passes each target's location took ([`crate::huber_refit::location_refit`]):
+    /// empty before it ran.
+    passes: Vec<u32>,
 }
 
 impl Binned {
@@ -680,6 +700,75 @@ impl Binned {
     fn has_shape(&self, p: usize, t: usize) -> bool {
         self.hist.as_ref().is_none_or(|h| h.has_shape(p, t))
             && self.held.iter().all(|r| r.x.len() == p && r.y.len() == t)
+            && (self.refit.passes.is_empty() || self.refit.passes.len() == t)
+    }
+
+    /// Whether the refit waits for more rows: asked for, not done.
+    fn refit_open(&self, cfg: &crate::BinCfg) -> bool {
+        cfg.refit_rows > 0 && !self.refit.done
+    }
+
+    /// With the edges fixed, a row for the refit to come: held where it
+    /// has weight, its decay carried to the next held row where it has none
+    /// (as the warm-up holds rows). Nothing once the refit is done or off.
+    fn hold_for_refit(
+        &mut self,
+        cfg: &crate::BinCfg,
+        x: &[f64],
+        y: &[Option<f64>],
+        lam: f64,
+        w: f64,
+    ) {
+        if !self.refit_open(cfg) || self.hist.is_none() {
+            return;
+        }
+        if w > 0.0 && w.is_finite() {
+            let cap = cfg.refit_rows as usize;
+            if self.held.len() == self.held.capacity() {
+                let want = (2 * self.held.len()).clamp(4, cap.max(4));
+                self.held
+                    .reserve_exact(want.saturating_sub(self.held.len()));
+            }
+            self.held.push(crate::margbins::HeldRow {
+                x: x.to_vec(),
+                y: y.to_vec(),
+                lam: lam * self.pending_lam,
+                w,
+            });
+            self.pending_lam = 1.0;
+        } else {
+            self.pending_lam *= lam;
+        }
+    }
+
+    /// The refit is due: the edges fixed and the count of held rows reached.
+    fn refit_due(&self, cfg: &crate::BinCfg) -> bool {
+        self.refit_open(cfg) && self.hist.is_some() && self.held.len() >= cfg.refit_rows as usize
+    }
+
+    /// Run the refit over the held rows and let them go.
+    fn run_refit(&mut self) {
+        let held = std::mem::take(&mut self.held);
+        if let Some(hist) = self.hist.as_mut() {
+            self.refit.passes = hist.refit(&held);
+        }
+        self.refit.done = true;
+        self.pending_lam = 1.0;
+    }
+
+    /// Give the refit up, past the spec's `refit_budget`: done and marked,
+    /// and any rows held for it alone let go. The warm-up's rows stay: the
+    /// edges are still read from them.
+    fn refit_give_up(&mut self) {
+        if self.refit.done {
+            return;
+        }
+        self.refit.done = true;
+        self.refit.over_budget = true;
+        if self.hist.is_some() {
+            self.held = Vec::new();
+            self.pending_lam = 1.0;
+        }
     }
 }
 
@@ -708,8 +797,15 @@ impl Binned {
         // `feed_bins` folded the pending decay into the row it just held
         // before calling, so there is none left to apply.
         debug_assert_eq!(self.pending_lam, 1.0);
-        self.held = Vec::new();
         self.hist = Some(hist);
+        // The refit runs here when its count is reached, over every held
+        // row, and the rows wait on for it when it is not; otherwise they
+        // are done with.
+        if self.refit_due(cfg) {
+            self.run_refit();
+        } else if !self.refit_open(cfg) {
+            self.held = Vec::new();
+        }
     }
 }
 
@@ -747,6 +843,7 @@ impl Marginal {
                     hist,
                     held: Vec::new(),
                     pending_lam: 1.0,
+                    refit: BinRefit::default(),
                 }))
             }
         };
@@ -804,6 +901,10 @@ impl Marginal {
         if let Some(hist) = b.hist.as_mut() {
             hist.decay(lam);
             hist.update_row(x, y, weight);
+            b.hold_for_refit(cfg, x, y, lam, weight);
+            if b.refit_due(cfg) {
+                b.run_refit();
+            }
             return;
         }
         if weight > 0.0 && weight.is_finite() {
@@ -830,6 +931,71 @@ impl Marginal {
             // Learns nothing, but time still passed.
             b.pending_lam *= lam;
         }
+    }
+
+    /// How the bins' Huber refit stands, one entry per target
+    /// ([`crate::BinCfg::refit_rows`]): empty when it is off. The targets
+    /// share the held rows, so they share the count and the outcome; the
+    /// passes are each target's own.
+    pub fn refit_status(&self) -> Vec<crate::RefitStatus> {
+        let (Some(b), Some(c)) = (self.bins.as_ref(), self.cfg.bins.as_ref()) else {
+            return Vec::new();
+        };
+        if c.refit_rows == 0 {
+            return Vec::new();
+        }
+        let held = if b.hist.is_some() && !b.refit.done {
+            b.held.len() as u32
+        } else {
+            0
+        };
+        (0..self.cfg.n_targets)
+            .map(|t| crate::RefitStatus {
+                learned: held,
+                done: b.refit.done,
+                passes: b.refit.passes.get(t).copied().unwrap_or(0),
+                abandoned: false,
+                failed: false,
+                over_budget: b.refit.over_budget,
+            })
+            .collect()
+    }
+
+    /// Give the bins' refit up before it begins, past the spec's
+    /// `refit_budget`; a no-op without it.
+    pub fn refit_give_up(&mut self) {
+        if let Some(b) = self.bins.as_mut() {
+            b.refit_give_up();
+        }
+    }
+
+    /// The bytes the bins' refit can hold beyond what the model holds
+    /// without it: `refit_rows` held rows ([`crate::margbins::hold_bytes`])
+    /// where the edges are given or learned from fewer rows, and nothing
+    /// where the warm-up's own hold already covers the count (the refit then
+    /// runs when the edges are fixed). 0 when it is off or done.
+    pub fn refit_reservation(&self) -> usize {
+        let (Some(b), Some(c)) = (self.bins.as_ref(), self.cfg.bins.as_ref()) else {
+            return 0;
+        };
+        if !b.refit_open(c) || (c.edges.is_none() && c.refit_rows as usize <= c.warm_rows) {
+            return 0;
+        }
+        crate::margbins::hold_bytes(
+            c.refit_rows as usize,
+            self.cfg.n_features,
+            self.cfg.n_targets,
+        )
+    }
+
+    /// The targets whose refit took every pass of its cap
+    /// ([`crate::RefitStatus::ran_to_cap`]): what a bank reports as this
+    /// model's `solve_failures`.
+    pub fn solve_failures(&self) -> u64 {
+        self.refit_status()
+            .iter()
+            .filter(|r| r.ran_to_cap())
+            .count() as u64
     }
 
     pub fn cfg(&self) -> &MarginalCfg {
@@ -1512,6 +1678,14 @@ impl Marginal {
         if self.defer.n >= batch_rows(p) {
             self.flush_rows(shards, true);
         }
+        // The refit reads every cell as the held rows leave it, so they are
+        // learned first; the next row's judges read what it rebuilds.
+        if let (Some(b), Some(cfg)) = (self.bins.as_ref(), self.cfg.bins.as_ref())
+            && b.refit_due(cfg)
+        {
+            self.flush_rows(shards, true);
+            self.bins.as_mut().expect("checked above").run_refit();
+        }
     }
 
     /// The bins' side of a held row: [`Self::feed_bins`] with the cell
@@ -1540,6 +1714,9 @@ impl Marginal {
         };
         if folds {
             self.flush_rows(shards, true);
+        }
+        if let (Some(b), Some(cfg)) = (self.bins.as_mut(), self.cfg.bins.as_ref()) {
+            b.hold_for_refit(cfg, x, y, lam, w);
         }
         let hist = self
             .bins
@@ -2507,7 +2684,13 @@ impl OnlineModel for Marginal {
                 // The histogram's statistic is the cfg's, its scales with it.
                 let bins_ok = match (&m.bins, &m.cfg.bins) {
                     (Some(b), Some(c)) => {
-                        b.has_shape(p, t) && b.hist.as_ref().is_none_or(|h| h.stat() == c.stat)
+                        b.has_shape(p, t)
+                            && b.hist.as_ref().is_none_or(|h| h.stat() == c.stat)
+                            // With the edges fixed, rows are held only for a
+                            // refit still waiting, and fewer than its count.
+                            && (b.hist.is_none()
+                                || b.held.is_empty()
+                                || (b.refit_open(c) && b.held.len() < c.refit_rows as usize))
                     }
                     (None, None) => true,
                     _ => false,
@@ -2573,3 +2756,6 @@ impl OnlineModel for Marginal {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod refit_tests;
