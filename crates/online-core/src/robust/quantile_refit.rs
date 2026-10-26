@@ -210,7 +210,7 @@ impl Robust {
             let done = converged(&rows, intercept, beta.as_deref(), &next, scale);
             let (fit, stalled) = match (pass, beta.take()) {
                 (Pass::Newton(h), Some(b)) if !done => {
-                    match self.damped(j, &rows, &v, &b, next, h, tau) {
+                    match self.damped(j, &rows, &v, &r, &b, next, h, tau) {
                         Some(c) => (c, false),
                         None => (b, true),
                     }
@@ -284,22 +284,34 @@ impl Robust {
     /// penalized smoothed loss `F` (the module docs) does not rise past its
     /// rounding: `next` itself where the full step does not. The sums are
     /// the Newton pass's, which give `F`'s penalty its band weight and
-    /// scales.
+    /// scales; `r` holds the residuals at `b`.
     ///
-    /// `None` where the full step raises `F` past its rounding and no
+    /// `F` is compared as its change from `b`, `ΔF = Σ v_i (ρ_h(r_i − d_i)
+    /// − ρ_h(r_i))` plus the penalty's change, `d_i = z_i'(c − b)` the move
+    /// of row `i`'s fitted value: every term is in the residuals' units,
+    /// and the step's, so nothing in it reads the target's level. `F` itself
+    /// does: each `y_i − z_i'c` is rounded at the level, `1e-10` a row at a
+    /// level of `1e6`, so two values of `F` read a Newton step of `1e-5`
+    /// that lowered it as one that raised it, ten thousand times past `F`'s
+    /// slack, and the refit stopped there, a level apart from the fit it
+    /// reached at 0. A row's change is written in its piece's closed form,
+    /// a multiple of `d_i`, so its rounding is relative to the change and
+    /// the slack is a few units in the last place of the change's terms.
+    ///
+    /// `None` where the full step raises `F` past that rounding and no
     /// shorter step along it lowers `F` at all: `b` is then `F`'s minimum to
-    /// the rounding of `F`, the fit stands and the refit has converged. A
-    /// Newton direction of a convex `F` lowers it near `b` unless `F`'s
-    /// slope along it is lost in that rounding, which is where a target far
-    /// from 0 leaves it: at a level of `1e6` each residual is rounded to
-    /// `1e-10`, and the step that rounding leaves can stay a few hundred
-    /// units in the last place of the fitted values, pass after pass.
+    /// its rounding, the fit stands and the refit has converged. A Newton
+    /// direction of a convex `F` lowers it near `b` unless its slope along
+    /// it is lost in that rounding, which is where the solve's own rounding
+    /// leaves a step of a few hundred units in the last place of the fitted
+    /// values' level, pass after pass, at a level far from 0.
     #[allow(clippy::too_many_arguments)]
     fn damped(
         &self,
         j: usize,
         rows: &Rows<'_>,
         v: &[f64],
+        r: &[f64],
         b: &[f64],
         next: Vec<f64>,
         h: f64,
@@ -309,23 +321,30 @@ impl Robust {
         let (s, keep) = self.band_scales(j);
         let pen_weight = self.wj[j] * self.cfg.ridge / (4.0 * h);
         let off = usize::from(intercept);
-        let objective = |c: &[f64]| -> (f64, f64) {
+        let mut step = vec![0.0; b.len()];
+        // `ΔF` from `b` to `c`, and the size of its terms (its slack's unit).
+        let mut change = |c: &[f64]| -> (f64, f64) {
+            for ((d, &q), &p) in step.iter_mut().zip(c).zip(b) {
+                *d = q - p;
+            }
             let (mut f, mut size) = (0.0, 0.0);
             for (i, &vi) in v.iter().enumerate() {
-                let t = vi * smoothed_check(rows.y(i) - fitted(c, rows.x(i), intercept), h, tau);
-                f += t;
-                size += t.abs();
+                let (t, m) = check_change(r[i], fitted(&step, rows.x(i), intercept), h, tau);
+                f += vi * t;
+                size += vi * m;
             }
-            let pen: f64 = keep
-                .iter()
-                .map(|&i| (s[i] * c[i + off]).powi(2))
-                .sum::<f64>()
-                * pen_weight;
-            (f + pen, size + pen)
+            // `Σ s² (c² − b²) = Σ s² (c − b)(c + b)`, in the slopes' units.
+            let (mut pen, mut pen_size) = (0.0, 0.0);
+            for &i in &keep {
+                let t = s[i] * s[i] * step[i + off] * (c[i + off] + b[i + off]);
+                pen += t;
+                pen_size += t.abs();
+            }
+            (f + pen * pen_weight, size + pen_size * pen_weight)
         };
-        let (f0, size) = objective(b);
-        let slack = 64.0 * f64::EPSILON * size;
-        if objective(&next).0 <= f0 + slack {
+        let slack = |size: f64| 64.0 * f64::EPSILON * size;
+        let (f, size) = change(&next);
+        if f <= slack(size) {
             return Some(next);
         }
         count_pass(3);
@@ -336,12 +355,46 @@ impl Robust {
             for ((o, &p), &q) in out.iter_mut().zip(b).zip(&next) {
                 *o = p + t * (q - p);
             }
-            let f = objective(&out).0;
-            if f <= f0 + slack {
-                return (f < f0).then_some(out);
+            let (f, size) = change(&out);
+            if f <= slack(size) {
+                return (f < 0.0).then_some(out);
             }
         }
         None
+    }
+}
+
+/// `ρ_h(r − d) − ρ_h(r)`, the change of one row's smoothed check loss when
+/// its fitted value moves by `d`, and the size of its terms, which bounds
+/// its rounding. Where `r` and `r − d` share a piece the change is `d`
+/// times that piece's mean slope, `−d · ((r + r')/4h + τ − ½)` inside the
+/// band and `−d · τ` or `−d · (τ − 1)` outside it; across pieces it is the
+/// difference of the two losses, each in the residuals' units.
+fn check_change(r: f64, d: f64, h: f64, tau: f64) -> (f64, f64) {
+    let after = r - d;
+    let piece = |e: f64| {
+        if e.abs() < h {
+            0
+        } else if e > 0.0 {
+            1
+        } else {
+            2
+        }
+    };
+    match (piece(r), piece(after)) {
+        (0, 0) => {
+            let mean = (r + after) / (4.0 * h);
+            (
+                -d * (mean + (tau - 0.5)),
+                d.abs() * (mean.abs() + (tau - 0.5).abs()),
+            )
+        }
+        (1, 1) => (-d * tau, (d * tau).abs()),
+        (2, 2) => (-d * (tau - 1.0), (d * (tau - 1.0)).abs()),
+        _ => {
+            let (p, q) = (smoothed_check(after, h, tau), smoothed_check(r, h, tau));
+            (p - q, p.abs() + q.abs())
+        }
     }
 }
 

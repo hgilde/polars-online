@@ -383,7 +383,8 @@ pub struct RobustCfg {
     #[serde(default)]
     pub refit_rows: u32,
     /// Whether each MAD sketch buckets `|e|` in units of the first `|e|` it
-    /// takes ([`EwQuantile::anchored`]), so the scale, and the fit it
+    /// takes ([`EwQuantile::anchored`]; a refit's rebuilt sketch in units
+    /// of its residuals' median size), so the scale, and the fit it
     /// weighs, moves with a rescaled target by the factor to rounding,
     /// where the fixed buckets moved it by up to a bucket at any factor
     /// but a power of two. A spec sets it. A state written before schema

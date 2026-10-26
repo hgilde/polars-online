@@ -788,6 +788,20 @@ pub(crate) struct Rebuilt {
 /// scale's clock (`λ_s`) as the stream aged it, an ageing run's rows one by
 /// one ([`Event::age_by`]): the EW mean of `e²` (`σ²` and its weight) and,
 /// under the MAD, a fresh sketch of `|e|`.
+///
+/// An anchored sketch is anchored at the residuals' own weighted median
+/// size at the scale's weights, the MAD's numerator, not at the first
+/// residual: a sketch's reads are its anchor times a bucket's
+/// representative, so they carry the anchor's relative rounding, and a
+/// residual is rounded at the target's level, not at its own size. A first
+/// residual of `2.3e-4` at a level of `1e6` was `2e-7` off, and so was
+/// every band and cut drawn from the sketch after the refit, where the
+/// stream's rounding is `1e-10` (task 278, qequiv). The median is of the
+/// residuals' size, so its rounding is theirs; it scales with the
+/// residuals, to the bit by a power of two and to rounding by any other
+/// factor, as the first residual does. Without a median above 0 (half the
+/// weight on residuals of 0) the first residual anchors it, as on the
+/// stream.
 pub(crate) fn rebuild_scale(
     rows: &Rows<'_>,
     kind: HuberScale,
@@ -795,6 +809,10 @@ pub(crate) fn rebuild_scale(
     resid: impl Fn(usize) -> f64,
 ) -> Rebuilt {
     let mut mad = mad_sketches(kind, anchored, 1).pop();
+    if let Some(q) = mad.as_mut().filter(|q| q.anchor().is_some()) {
+        let absr: Vec<f64> = (0..rows.len()).map(|i| resid(i).abs()).collect();
+        q.anchor_at(weighted_median(&absr, &rows.scale_weights()));
+    }
     let (mut sig2, mut wsig) = (0.0, 0.0);
     for e in rows.events() {
         match e {
@@ -1222,6 +1240,41 @@ mod tests {
             if i == 0 { 2.0 } else { f64::INFINITY }
         });
         assert_eq!((inf.wsig, inf.sig2), (0.125, 4.0));
+    }
+
+    /// A rebuilt anchored sketch reads to the rounding of the residuals'
+    /// size, whatever the first residual's size (task 278, qequiv): each
+    /// residual moved by `1e-12`, as a level of `1e4` rounds them, moves the
+    /// read by about that over the median, `1e-12` -- where a sketch
+    /// anchored at a first residual of `1e-6` moved by `1e-6`, a million
+    /// times more, and every band drawn from it with it. A power of two
+    /// still scales the read to the bit.
+    #[test]
+    fn a_rebuilt_sketch_reads_to_the_residuals_rounding() {
+        let mut b = RefitBuf::new();
+        let mut s = 7u64;
+        let mut e = Vec::new();
+        for i in 0..300 {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let u = (s >> 11) as f64 / (1u64 << 53) as f64 - 0.5;
+            e.push(if i == 0 { 1e-6 } else { u });
+            b.learn(&[0.0], 0.0, 1.0, 1.0, 1.0, 9);
+        }
+        let (rows, ages) = (b.rows.clone(), b.ages.clone());
+        let r = Rows::new(&rows, &ages, 1);
+        let read = |f: &dyn Fn(usize) -> f64| {
+            let q = rebuild_scale(&r, HuberScale::Mad, true, f).mad.unwrap();
+            (q.get(0).unwrap(), q.anchor().unwrap())
+        };
+        let (base, anchor) = read(&|i| e[i]);
+        let (moved, _) = read(&|i| e[i] + if i % 2 == 0 { 1e-12 } else { -1e-12 });
+        let rel = (moved - base).abs() / base;
+        assert!(rel <= 1e-11, "{rel:e}");
+        assert!(anchor > 0.1, "anchored at the median size: {anchor}");
+        let (scaled, _) = read(&|i| e[i] * 2f64.powi(-30));
+        assert_eq!(scaled.to_bits(), (base * 2f64.powi(-30)).to_bits());
     }
 
     fn two_rows() -> (Vec<f64>, Vec<f64>) {

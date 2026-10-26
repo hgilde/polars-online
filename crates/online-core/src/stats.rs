@@ -102,12 +102,17 @@ pub const MAX_BAND_OCTAVES: u32 = 2048;
 /// and one value crossing an edge moves half that bucket's weight. An
 /// anchored sketch ([`EwQuantile::anchored`]) instead buckets `v / a`, where
 /// `a` is the first value it takes at a weight above 0 and above the
-/// smallest normal float, and reads `a` times the bucket's representative.
+/// smallest normal float, or one its caller gives before it takes any
+/// (`anchor_at`), and reads `a` times the bucket's
+/// representative.
 /// Scaled by `c`, every ratio is the same to a rounding of the division, so
 /// every value lands in the same bucket unless its ratio is within a
 /// rounding of an edge, and the read is `c` times the unscaled one to
 /// rounding. A power of two divides out exactly, so the read stays bitwise
-/// `c` times there, as unanchored. The bound `α` holds as it is: the read is
+/// `c` times there, as unanchored. Every read carries the anchor's own
+/// relative rounding, so a value rounded at a scale above its own -- a
+/// residual of `1e-4` of a target at `1e6` -- anchors the sketch only as
+/// well as that rounding. The bound `α` holds as it is: the read is
 /// within `α` of the quantile of the ratios, times `a`. A division and a
 /// multiplication, with no libm result in the state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -201,6 +206,18 @@ impl EwQuantile {
     /// `Some(a)` after; `None` for a sketch that buckets values as they are.
     pub fn anchor(&self) -> Option<f64> {
         self.anchor
+    }
+
+    /// Anchor an anchored sketch that has taken nothing yet at `a` rather
+    /// than at its first value: what a caller holding every value in hand
+    /// gives it, a value of the size it will read, so the anchor's own
+    /// rounding is a rounding of that size. A sketch already anchored, one
+    /// that is not anchored, or an `a` that is not a positive normal float
+    /// (the values a first value could set) is left as it is.
+    pub(crate) fn anchor_at(&mut self, a: f64) {
+        if self.anchor == Some(0.0) && a.is_finite() && a >= f64::MIN_POSITIVE {
+            self.anchor = Some(a);
+        }
     }
 
     /// Whether a restored sketch can be read and added to: a pointer and a

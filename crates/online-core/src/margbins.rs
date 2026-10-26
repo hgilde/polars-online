@@ -1231,6 +1231,14 @@ impl MarginalBins {
             let mut q = crate::robust::mad_sketches(crate::robust::HuberScale::Mad, anchored, 1)
                 .pop()
                 .expect("one sketch under the MAD");
+            // Anchored at the deviations' median size, not at the first
+            // deviation, which is rounded at the target's level and may sit
+            // at that rounding: `crate::huber_refit::rebuild_scale`'s rule
+            // (task 278, qequiv).
+            if anchored {
+                let dev: Vec<f64> = ys.iter().map(|y| (y - m).abs()).collect();
+                q.anchor_at(crate::huber_refit::weighted_median(&dev, &vs));
+            }
             let mut started = false;
             for (i, r) in rows.iter().enumerate() {
                 if started {
@@ -1367,7 +1375,8 @@ pub struct BinCfg {
     #[serde(default)]
     pub refit_rows: u32,
     /// Under [`BinStat::Huber`], whether each target's MAD sketch buckets
-    /// its deviations in units of the first it takes, as
+    /// its deviations in units of the first it takes (the refit's rebuilt
+    /// sketch in units of their median size), as
     /// [`crate::RobustCfg::mad_anchor`]. A spec sets it; a state written
     /// before schema 64 loads as `false` and goes on as it was.
     #[serde(default)]
