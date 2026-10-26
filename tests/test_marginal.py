@@ -605,3 +605,145 @@ class TestSharedFeatureMoments:
         shared = po.ModelBank([spec(feature_moments="shared", **kw)])
         shared.fit_predict(df)
         assert shared.marginal("m").equals(per.marginal("m"), null_equal=True)
+
+    # --- task 278 (b28): the stated estimator against numpy, and the chunking --
+
+    @staticmethod
+    def gappy(n: int = 600, seed: int = 3) -> tuple[pl.DataFrame, np.ndarray]:
+        """Two features off zero, a target absent on every third row and
+        wherever ``x1 > 0`` -- an absence that says something about the
+        feature, where the two estimators part most -- and unequal weights."""
+        rng = np.random.default_rng(seed)
+        x = rng.standard_normal((n, 2)) + np.array([3.0, -1.0])
+        y = x @ np.array([0.7, -0.4]) + 0.5 * rng.standard_normal(n)
+        absent = (np.arange(n) % 3 == 1) | (x[:, 1] > 0.0)
+        df = pl.DataFrame(
+            {
+                "x0": x[:, 0],
+                "x1": x[:, 1],
+                "y": np.where(absent, np.nan, y),
+                "w": rng.uniform(0.5, 1.5, n),
+            }
+        )
+        return df, absent
+
+    @staticmethod
+    def stated_cov(xj, y, w, absent, lam) -> float:
+        """The docstring's recursion summed in closed form. Unnormalised,
+        ``C' = lam C + w (W_t - w) / W_t * dx * dy`` on a row of the target,
+        so after the last row ``C = sum_i e_i (1 - w_i / W_t,i) dx_i dy_i``:
+        ``e_i`` the row's decayed weight at the end, ``W_t,i`` the target's
+        weight with the row, ``dx_i`` the feature against the mean of every
+        learned row before it and ``dy_i`` the target against its own rows'
+        mean before it -- each mean a weighted average numpy takes over the
+        rows so far. The covariance is ``C`` over the target's weight."""
+        n = len(xj)
+        present = ~absent
+        total = 0.0
+        for i in np.flatnonzero(present):
+            before = present[:i]
+            if not before.any():
+                continue  # the target's first row: its weight is its own, the term is 0
+            age = (i - np.arange(i + 1)).astype(float)
+            dec = w[: i + 1] * lam**age
+            w_t = dec[present[: i + 1]].sum()
+            mx = np.average(xj[:i], weights=dec[:i])
+            my = np.average(y[:i][before], weights=dec[:i][before])
+            e_i = w[i] * lam ** float(n - 1 - i)
+            total += e_i * (1.0 - w[i] / w_t) * (xj[i] - mx) * (y[i] - my)
+        e = w * lam ** (n - 1 - np.arange(n)).astype(float)
+        return total / e[present].sum()
+
+    @pytest.mark.parametrize("half_life", [float("inf"), 40.0])
+    def test_against_numpy_where_a_target_is_absent(self, half_life):
+        """Under ``"shared"``, ``mean_x`` and ``var_x`` are numpy's weighted
+        mean and variance of the feature over every row, ``cov`` the stated
+        estimator by the closed form above and ``corr`` read from the two;
+        under ``"per_target"`` the pair is ``np.cov`` of the target's rows.
+        To 1e-12. The two part by far more than that here (measured: 0.149
+        against 0.173 for ``x1``), so neither leg could pass for the other."""
+        df, absent = self.gappy()
+        n = df.height
+        lam = 0.5 ** (1.0 / half_life)
+        e = df["w"].to_numpy() * lam ** (n - 1 - np.arange(n)).astype(float)
+        y, w = df["y"].to_numpy(), df["w"].to_numpy()
+        present = ~absent
+        tables = {}
+        for fm in ("shared", "per_target"):
+            bank = po.ModelBank(
+                [
+                    spec(
+                        targets=["y"],
+                        features=["x0", "x1"],
+                        half_life=half_life,
+                        weight="w",
+                        feature_moments=fm,
+                        min_weight=0.0,
+                    )
+                ]
+            )
+            bank.fit_predict(df)
+            tables[fm] = {r["feature"]: r for r in bank.marginal("m").to_dicts()}
+        for f in ("x0", "x1"):
+            xj = df[f].to_numpy()
+            shared, per = tables["shared"][f], tables["per_target"][f]
+            assert shared["mean_x"] == pytest.approx(np.average(xj, weights=e), rel=1e-12)
+            var_x = float(np.cov(xj, aweights=e, bias=True))
+            assert shared["var_x"] == pytest.approx(var_x, rel=1e-12)
+            cov = self.stated_cov(xj, y, w, absent, lam)
+            assert shared["cov"] == pytest.approx(cov, rel=1e-12)
+            assert shared["corr"] == pytest.approx(
+                cov / np.sqrt(var_x * shared["var_y"]), rel=1e-12
+            )
+            own = np.cov(xj[present], y[present], aweights=e[present], bias=True)
+            assert per["cov"] == pytest.approx(own[0, 1], rel=1e-12)
+            assert per["var_x"] == pytest.approx(own[0, 0], rel=1e-12)
+            assert abs(shared["cov"] - per["cov"]) > 1e-3 * abs(per["cov"]), f
+        assert abs(tables["shared"]["x1"]["corr"] - tables["per_target"]["x1"]["corr"]) > 0.01
+
+    def test_one_chunk_or_many(self):
+        """Hard rule 3 for ``"shared"`` with a target absent on some rows,
+        lags and every clock event ``frame`` has: 1, 7 and 600 chunks give
+        the same struct and table, to the bit."""
+        df = frame(n=600, weights=True, clock=True, null_target_every=3, seed=8)
+        s = spec(feature_moments="shared", lags=[1, 3], serial_rule="geometric", **self.COMMON)
+        ref = po.ModelBank([s])
+        out = ref.fit_predict(df)
+        for chunks in (7, 600):
+            bank = po.ModelBank([s])
+            size = -(-df.height // chunks)
+            got = pl.concat(
+                [bank.fit_predict(df.slice(i, size)) for i in range(0, df.height, size)]
+            )
+            assert got.equals(out, null_equal=True), chunks
+            assert bank.marginal("m").equals(ref.marginal("m"), null_equal=True), chunks
+
+
+def test_auto_shards_are_the_unsplit_numbers_at_one_thread_and_at_four():
+    """``shards="auto"`` sizes its split to the pool, so a bank of one
+    thread and one of four cut the same wide spec differently: both are the
+    unsplit single-thread bank's numbers, to the bit, whole and in chunks.
+    At 1,000 features ``"auto"`` splits on any pool of two or more
+    (``auto_shards_at_the_python_suites_widths`` in marginal.rs pins the
+    counts)."""
+    from test_marginal_shards import AUTO_SHAPES, P_AUTO
+    from test_marginal_shards import frame as wide
+    from test_marginal_shards import spec as wide_spec
+
+    df = wide(n=600, p=P_AUTO)
+
+    def run(shards, threads: int, chunks: int) -> tuple[pl.DataFrame, pl.DataFrame]:
+        bank = po.ModelBank(
+            [wide_spec("lags", shards, p=P_AUTO, shapes=AUTO_SHAPES)], threads=threads
+        )
+        size = -(-df.height // chunks)
+        out = pl.concat([bank.fit_predict(df.slice(i, size)) for i in range(0, df.height, size)])
+        return out, bank.marginal("m")
+
+    out, pairs = run(None, 1, 1)
+    assert pairs.height == 2 * P_AUTO * 3
+    for threads in (1, 4):
+        for chunks in (1, 3):
+            got_out, got_pairs = run("auto", threads, chunks)
+            assert got_out.equals(out, null_equal=True), (threads, chunks)
+            assert got_pairs.equals(pairs, null_equal=True), (threads, chunks)

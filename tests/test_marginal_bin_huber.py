@@ -13,16 +13,18 @@ target's MAD (docs/PLAN.md task 272 (c)).
 from __future__ import annotations
 
 import re
+import warnings
 
 import numpy as np
 import polars as pl
 import pytest
+import statsmodels.api as sm
 from statsmodels.robust import norms
 from statsmodels.robust.scale import mad
 
 import polars_online as po
 
-TIER = "essential"
+TIER = "mixed"
 
 DELTA = 1.345
 #: Sixteen bins of equal width over the feature's range.
@@ -67,38 +69,54 @@ def bins_of(df: pl.DataFrame) -> np.ndarray:
     return np.searchsorted(np.asarray(EDGES), df["x"].to_numpy(), side="right")
 
 
-def batch_locations(df: pl.DataFrame) -> tuple[np.ndarray, float]:
+def batch_locations(df: pl.DataFrame, delta: float = DELTA) -> tuple[np.ndarray, float]:
     """statsmodels' converged M-location of each bin, at the target's MAD
-    about its own M-location: the fixed point the one pass aims at."""
+    about its own M-location, all at the cut `delta`: the fixed point the
+    one pass aims at."""
     y = df["y"].to_numpy()
-    centre = float(norms.estimate_location(y, mad(y), norms.HuberT(DELTA), maxiter=500, tol=1e-13))
+    huber = norms.HuberT(delta)
+    centre = float(norms.estimate_location(y, mad(y), huber, maxiter=500, tol=1e-13))
     s = float(mad(y, center=centre))
     b = bins_of(df)
     loc = [
-        float(norms.estimate_location(y[b == k], s, norms.HuberT(DELTA), maxiter=500, tol=1e-13))
+        float(norms.estimate_location(y[b == k], s, huber, maxiter=500, tol=1e-13))
         for k in range(len(EDGES) + 1)
     ]
     return np.asarray(loc), s
 
 
 @pytest.mark.parametrize(
-    ("frac", "tol"), [(0.0, 0.002), (0.01, 0.003), (0.05, 0.004), (0.12, 0.06)]
+    ("delta", "frac", "tol"),
+    [
+        # Task 278 (b28): with the refit of the first rows the worst of 50
+        # seeds (0-49, 2026-10-26) was 7.7e-16, 3.0e-4, 1.2e-3 and 3.1e-3 at
+        # the default cut, where the bounds were 0.002, 0.003, 0.004 and 0.06
+        # before it. Another cut is held to statsmodels at that cut: worst
+        # 7.6e-4 at 0.8 and 3.4e-3 at 2.5 (seed 1). Bounds about twice that.
+        (DELTA, 0.0, 0.002),
+        (DELTA, 0.01, 0.001),
+        (DELTA, 0.05, 0.003),
+        (DELTA, 0.12, 0.007),
+        (0.8, 0.05, 0.002),
+        (2.5, 0.05, 0.007),
+    ],
 )
-def test_one_pass_lands_on_statsmodels_batch_m_location(frac, tol):
+def test_one_pass_lands_on_statsmodels_batch_m_location(delta, frac, tol):
     """No decay, 20,000 rows in 16 bins (about 1,250 a bin): each bin's
-    location is the converged batch M-location of its rows to within `tol`
-    of the target's scale, over five seeds. The gap is the one pass's: early
-    rows weighed against a location and a scale still settling. The mean,
+    location is the converged batch M-location of its rows at the cut
+    `bin_huber_delta` to within `tol` of the target's scale, over five
+    seeds. The gap is the one pass's: the rows after the refit of the first
+    500 weighed against a location and a scale still settling. The mean,
     for contrast, sits `frac` times the spike away."""
     worst, worst_mean = 0.0, 0.0
     for seed in range(5):
         df = stream(20_000, frac, seed)
-        got = np.asarray(table(df).row(0, named=True)["bin_mean_y"])
-        want, s = batch_locations(df)
+        got = np.asarray(table(df, bin_huber_delta=delta).row(0, named=True)["bin_mean_y"])
+        want, s = batch_locations(df, delta)
         worst = max(worst, float(np.max(np.abs(got - want))) / s)
         mean = np.asarray(table(df, bin_stat="mean").row(0, named=True)["bin_mean_y"])
         worst_mean = max(worst_mean, float(np.max(np.abs(mean - want))) / s)
-    assert worst <= tol, f"{frac:.0%}: {worst:.5f} of the scale"
+    assert worst <= tol, f"{delta}, {frac:.0%}: {worst:.5f} of the scale"
     if frac > 0:
         assert worst_mean > 20 * worst, f"the mean: {worst_mean:.4f}, huber {worst:.5f}"
 
@@ -263,3 +281,110 @@ def test_the_spec_reports_back_what_it_was_given():
 def test_refusals(kw, message):
     with pytest.raises(ValueError, match=re.escape(message)):
         table(stream(50, 0.0, 0), **kw)
+
+
+# --- the cut itself: `bin_huber_delta` against statsmodels at that cut ---------
+#
+# Task 278 (b28). The legs above run the default cut; these hold two others,
+# 0.8 and 2.5, to statsmodels' `HuberT(t)` at the same t, on the refit's row
+# (where the bank solves the batch fit) and after it (the one pass).
+
+
+def joint_locations(df: pl.DataFrame, delta: float) -> tuple[np.ndarray, float]:
+    """statsmodels' `RLM` with `HuberT(delta)`: the target's joint
+    M-location and MAD scale (`scale_est="mad"`), then each bin's M-location
+    at that scale held fixed -- the fit the refit of the first rows solves."""
+    y, b = df["y"].to_numpy(), bins_of(df)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        fit = dict(conv="coefs", tol=1e-13, maxiter=500)
+        r = sm.RLM(y, np.ones((len(y), 1)), M=norms.HuberT(delta)).fit(scale_est="mad", **fit)
+        s = float(r.scale)
+        loc = []
+        for k in range(len(EDGES) + 1):
+            yb = y[b == k]
+            rb = sm.RLM(yb, np.ones((len(yb), 1)), M=norms.HuberT(delta)).fit(
+                start_scale=s, update_scale=False, **fit
+            )
+            loc.append(float(rb.params[0]))
+    return np.asarray(loc), s
+
+
+@pytest.mark.parametrize("delta", [0.8, 2.5])
+def test_on_the_refits_row_each_bin_is_statsmodels_at_its_cut(delta):
+    """800 rows with 12% spikes and the refit on the 800th: every bin's
+    location is statsmodels' at `HuberT(delta)` and the rebuilt scale, to
+    within the scale sketch's resolution -- over 50 seeds (0-49) the worst
+    was 0.0021 of the scale at 0.8 and 0.0069 at 2.5 (2026-10-26). The
+    other cut's fit is at least 0.30 scales away on every one of those
+    seeds, so the bound tells the two cuts apart."""
+    other = 2.5 if delta == 0.8 else 0.8
+    for seed in range(10):
+        df = stream(800, 0.12, seed)
+        got = np.asarray(
+            table(df, bin_huber_delta=delta, bin_refit_rows=800).row(0, named=True)["bin_mean_y"]
+        )
+        want, s = joint_locations(df, delta)
+        assert np.max(np.abs(got - want)) / s < 0.015, (seed, got - want)
+        elsewhere, _ = joint_locations(df, other)
+        assert np.max(np.abs(got - elsewhere)) / s > 0.2, seed
+
+
+def test_a_wider_cut_moves_every_bin_toward_the_mean():
+    """Spikes all one way: a bin's M-location moves with the cut `c` at the
+    rate `(#{r > c} - #{r < -c}) / #{|r| <= c}` (differentiate
+    `sum psi_c(y - m) = 0`), so it rises with `c` wherever a bin's spikes
+    outnumber the imbalance of its clean tails, and at `c = inf` it is the
+    mean (the test above holds that to the bit). On 4,000 rows with 5% spikes
+    every bin rises with every step of the cut, 0.5 to 10 and then the mean;
+    measured on 50 seeds (0-49) with none out of order (2026-10-26)."""
+    deltas = [0.5, 0.8, DELTA, 2.0, 3.0, 5.0, 10.0]
+    for seed in range(3):
+        df = stream(4_000, 0.05, seed)
+        curves = [table(df, bin_huber_delta=d).row(0, named=True)["bin_mean_y"] for d in deltas]
+        curves.append(table(df, bin_stat="mean").row(0, named=True)["bin_mean_y"])
+        steps = np.diff(np.asarray(curves, dtype=float), axis=0)
+        assert (steps > 0).all(), (seed, steps.min(axis=1))
+
+
+#: The worst bin's distance from statsmodels at the same cut, in target
+#: scales, over 50 seeds (100-149), after the rows in the key: the bound
+#: and, in the comment, what was measured on 2026-10-26 (worst / its seed /
+#: 95th percentile). 16 bins of given edges, the refit's default count of 500.
+#: The default cut's grid is `test_marginal_bin_refit.py`'s.
+_CUT_GRID = {
+    # 0.0038 (145) 0.0033 / 0.0031 (101) 0.0027 / 0.0008 (140) 0.0006
+    (0.8, 0.05): {1_000: 0.008, 2_000: 0.007, 20_000: 0.002},
+    # 0.0098 (106) 0.0082 / 0.0073 (133) 0.0056 / 0.0022 (109) 0.0014
+    (0.8, 0.12): {1_000: 0.02, 2_000: 0.015, 20_000: 0.005},
+    # 0.0214 (146) 0.013 / 0.0116 (146) 0.0082 / 0.0023 (140) 0.0019
+    (2.5, 0.05): {1_000: 0.04, 2_000: 0.025, 20_000: 0.005},
+    # 0.0905 (145) 0.0626 / 0.0701 (144) 0.0542 / 0.0177 (128) 0.0121; on
+    # seeds 0-49, seed 43 reached 0.30 at 1,000 rows and 0.049 at 20,000
+    (2.5, 0.12): {1_000: 0.18, 2_000: 0.14, 20_000: 0.04},
+}
+
+
+@pytest.mark.oracle_grid(reason="a grid of 50 seeds against statsmodels' RLM at two cuts")
+@pytest.mark.parametrize(("delta", "frac"), sorted(_CUT_GRID))
+def test_no_seed_of_fifty_strays_from_statsmodels_at_its_cut(delta, frac):
+    """By the worst of 50 seeds, never a median: every bin within the bound
+    of statsmodels' fit at `HuberT(delta)` at 1,000, 2,000 and 20,000 rows,
+    and the worst falling from 2,000 rows to 20,000 -- the rate, not only
+    the endpoint."""
+    bounds = _CUT_GRID[(delta, frac)]
+    cuts = sorted(bounds)
+    worst = dict.fromkeys(cuts, 0.0)
+    for seed in range(100, 150):
+        df = stream(cuts[-1], frac, seed)
+        bank = po.ModelBank([spec(bin_huber_delta=delta)])
+        start = 0
+        for n in cuts:
+            bank.fit_predict(df.slice(start, n - start))
+            start = n
+            got = np.asarray(bank.marginal("m").row(0, named=True)["bin_mean_y"], dtype=float)
+            want, s = joint_locations(df.head(n), delta)
+            worst[n] = max(worst[n], float(np.max(np.abs(got - want))) / s)
+    for n in cuts:
+        assert worst[n] <= bounds[n], f"{delta}, {frac:.0%} at {n}: {worst}"
+    assert worst[20_000] < worst[2_000], worst
