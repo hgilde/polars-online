@@ -259,11 +259,12 @@ SHARED_FIELDS: list[tuple[str, str, str]] = [
         "`above_max_error_inflation`, `below_warm_rows`, `ill_conditioned` or `unstable_rate`. "
         "That order is their precedence, so the first that applies is the one named. "
         "`below_warm_rows` is the model's own warm-up, the rows `kmeans`, `hmm` and `bocpd` hold "
-        "to seed themselves from, and the rows `kalman` sizes a target's prior from. "
-        "`ill_conditioned` is an `ewridge` fit whose normal equations are too nearly singular "
-        "for a solve to keep a digit. `unstable_rate` is an `sgd` target whose learning rate is "
-        "past its stability bound: its recent steps' gains have a mean square above twice their "
-        "mean, so each step grows its own row's residual and the fit diverges",
+        "to seed themselves from, and the rows before `kalman` has sized any of a target's "
+        "coefficients, standardized with no intercept. `ill_conditioned` is an `ewridge` fit "
+        "whose normal equations are too nearly singular for a solve to keep a digit. "
+        "`unstable_rate` is an `sgd` target whose learning rate is past its stability bound: its "
+        "recent steps' gains have a mean square above twice their mean, so each step grows its "
+        "own row's residual and the fit diverges",
         "where nothing was withheld",
     ),
     (

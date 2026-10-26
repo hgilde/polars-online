@@ -27,9 +27,13 @@ from 2026-09-27 ([Measured coverage](#measured-coverage)).
 | 2026-10-11 | 2,207 | 6,262 cases |
 | 2026-10-24 | 2,653 | 7,211 cases |
 
-The 10 opt-in soak tests are outside every count: the 10M-row soak's two,
-and since 2026-10-25 eight long-run stability cases at 1e8 rows each
-(`tests/test_long_run_soak.py`, about ten minutes). They run with
+The 45 opt-in soak tests are outside every count: the 10M-row soak's two;
+since 2026-10-25 eight long-run stability cases at 1e8 rows each
+(`tests/test_long_run_soak.py`, about ten minutes) and the nine cells of
+the robust models' contamination sweep (`tests/test_convergence_soak.py`);
+and since 2026-10-26 the 26 worst-seed grids of the clustering and
+changepoint models' own parameters (`tests/test_family_f_grids.py`, about
+15 seconds, beside five cheap cases in the essentials). They run with
 `pytest -m soak`, and the weekly leak-check workflow runs them. The counts
 before 2026-10-03 used `cargo test --workspace -- --list`, which also lists
 `online-py`, a crate with no tests.

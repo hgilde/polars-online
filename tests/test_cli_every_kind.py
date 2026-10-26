@@ -831,7 +831,9 @@ WAITING = {
     ("sgd", "huber_delta"),
     ("sgd", "huber_scale"),
     ("sgd", "huber_scale_half_life"),
-    # Task 277's keys, which `AFTER_TASK_277`'s registration covers.
+    # Task 277's refit, merged with no case here yet (found by the kalman
+    # worker's gate on main at 3ebc1c6e, 2026-10-26): registering
+    # AFTER_TASK_277 with the refit's keys takes these out.
     ("sgd", "huber_refit_rows"),
     ("sgd", "refit_budget"),
 }

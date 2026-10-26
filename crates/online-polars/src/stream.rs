@@ -863,6 +863,9 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                     .as_ref()
                     .map_or_else(|| vec![f64::INFINITY], SpanList::to_vec),
                 standardize: *standardize,
+                // `P` in units of the noise, the intercept's prior diffuse
+                // (docs/PLAN.md task 278); a state saved before keeps its own.
+                noise_units: true,
             };
             Ok(AnyModel::Kalman(Box::new(Kalman::new(cfg)?)))
         }
