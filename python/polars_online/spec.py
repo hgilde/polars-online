@@ -662,7 +662,12 @@ The diagnostics add, per slot:
        stream's first row does, so nothing the rebuilt model holds -- a
        prior, a covariance, the settled clock -- decays by the step before
        it. (Under an ``embargo`` the rows still held are kept and taught to
-       the rebuilt model as they are released.)
+       the rebuilt model as they are released.) The detector reads the
+       residuals of the predictions a readiness gate withholds too, as
+       ``sigma`` does, and can flag a row whose prediction is withheld: a
+       gate withholds output only, so no ``min_weight``,
+       ``min_settled_frac`` or ``max_error_inflation`` hides a break, or
+       moves the restart a reset makes there.
    * - ``emit_calibration``
      - ``calibration_slope_<slot>``, ``calibration_intercept_<slot>``,
        ``calibration_wald_<slot>``

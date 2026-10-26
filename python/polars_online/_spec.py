@@ -1115,7 +1115,11 @@ def ewridge(
         far longer than the stream still solves, at rows further apart as the
         weight grows. ``half_life = inf`` and ``lam`` solve every row.
         ``max_rows_between_solves`` is off by default. The coefficients are the
-        sums' as of the last solve. A row of weight 0 is clock alone: it never
+        sums' as of the last solve. A target's first solve falls on the row
+        its weight reaches ``k + 1`` (``k`` without an intercept), whatever
+        ``min_weight`` above that says, which withholds the output alone: the
+        fit is the same at any ``min_weight`` from ``k + 1`` up, on every
+        schedule. A row of weight 0 is clock alone: it never
         solves and is no row of the cap, so a solve that comes due on one waits
         for the next row with weight, and the solves fall where they would
         without it.

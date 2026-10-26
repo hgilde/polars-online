@@ -1243,7 +1243,10 @@ fn every_bank_reader_survives_a_held_block() {
             SortMultipleOptions::default().with_maintain_order(true),
         )
         .unwrap();
-    let cut = 200 + 21;
+    // g1's first solve falls where its weight reaches a row per unknown,
+    // 3, whatever its `min_weight` of 5 says (task 278), and flushes the
+    // block; 24 rows in, rows are held again.
+    let cut = 200 + 24;
     let (head, rest) = (df.slice(0, cut), df.slice(cut as i64, df.height() - cut));
 
     // Both groups are mid-block at the points that matter: g0 at its close

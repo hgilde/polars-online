@@ -106,7 +106,14 @@ use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 /// learning back as it was fitted, and goes on as before; the kept cases
 /// are that form, so each converts to the current bytes as it did, and the
 /// form a spec builds, the gate withholding the output alone, is the cases
-/// `kalman_output_only` and `lasso_floor`. 64 gave `marginal(bin_stat =
+/// `kalman_output_only` and `lasso_floor`. 64 gave `ewridge`
+/// `min_weight_output_only` too (task 278): a 61-63 state has none and
+/// loads as `false`, its residual variance and first solve held back to
+/// `min_weight` as they were fitted, and goes on to the bit; every kept
+/// `ewridge` case is that form, and re-saved writes the mark `false`, as
+/// the current case of the same name does, so each converts to the current
+/// bytes; the form a spec with a `min_weight` builds is the case
+/// `ewridge_output_only`. 64 gave `marginal(bin_stat =
 /// "huber")` its own refit of the first rows (task 278): a 63 state has no
 /// `refit_rows` in its bins' cfg and no refit record, loads with
 /// `refit_rows = 0` and goes on to the bit as the one pass it was fitted
@@ -1305,6 +1312,82 @@ fn the_gates_two_forms_are_written_and_act() {
             .count();
         assert!(moved > 0, "{name}: the gate's form moves nothing");
     }
+}
+
+/// `ewridge`'s `min_weight` withholding the output alone (schema 64,
+/// docs/PLAN.md task 278): `ewridge_output_only` writes the mark `true`, and
+/// every other `ewridge` case `false`, the form a state saved before it,
+/// which has no mark, loads as: the residual variance and the first solve
+/// held back to `min_weight`. The fixture is saved where the gate withholds the
+/// continuation's first rows and lets out the rest; its variance folds the
+/// withheld rows at the model's own floor, so the same state with the mark
+/// taken out goes on to another variance, and the same predictions (no
+/// output reads it; the first solve is long past).
+#[test]
+fn ewridges_output_only_form_is_written_and_acts() {
+    if regenerating() {
+        return;
+    }
+    let mark = ["model", "EwRidge", "min_weight_output_only"];
+    for f in frozen::ALL.iter().filter(|f| f.variant == "EwRidge") {
+        let v = rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap();
+        let got = at(&v, &mark).and_then(rmpv::Value::as_bool);
+        let want = Some(f.name == "ewridge_output_only");
+        assert_eq!(got, want, "{}: min_weight_output_only", f.name);
+    }
+    let f = frozen::ALL
+        .iter()
+        .find(|f| f.name == "ewridge_output_only")
+        .expect("ewridge_output_only: no fixture; add the case and regenerate");
+    let outs = f.outs();
+    let withheld = outs
+        .iter()
+        .filter(|o| o.pred.iter().all(|p| p.is_nan()))
+        .count();
+    let shown = outs
+        .iter()
+        .filter(|o| o.pred.iter().all(|p| p.is_finite()))
+        .count();
+    assert!(
+        withheld >= 1 && shown >= 1,
+        "the continuation withholds {withheld} rows and shows {shown}"
+    );
+    let mut v = rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap();
+    if let Some(rmpv::Value::Map(m)) = at(&v, &["model", "EwRidge"]).cloned().as_mut() {
+        m.retain(|(k, _)| k.as_str() != Some("min_weight_output_only"));
+        let model = match &mut v {
+            rmpv::Value::Map(top) => top
+                .iter_mut()
+                .find(|(k, _)| k.as_str() == Some("model"))
+                .map(|(_, v)| v)
+                .unwrap(),
+            _ => unreachable!("a state is a map"),
+        };
+        *model = rmpv::Value::Map(vec![("EwRidge".into(), rmpv::Value::Map(m.clone()))]);
+    } else {
+        panic!("an EwRidge model");
+    }
+    let mut bytes = Vec::new();
+    rmpv::encode::write_value(&mut bytes, &v).unwrap();
+    let case = case_of(f);
+    let (mut new, mut old) = (
+        load(&case, &f.bytes()).unwrap(),
+        load(&case, &bytes).unwrap(),
+    );
+    for (row, want) in f.rows().iter().zip(&outs) {
+        let (a, b) = (new.step(row), old.step(row));
+        let bits = |o: &Out| o.pred.iter().map(|p| p.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&a), bits(want), "the frozen continuation");
+        assert_eq!(bits(&a), bits(&b), "the mark moved a prediction");
+    }
+    let sig2 = |m: &dyn cases::Run| {
+        let s = named(&m.state());
+        let v = rmpv::decode::read_value(&mut s.as_slice()).unwrap();
+        format!("{}", at(&v, &["model", "EwRidge", "sig2"]).expect("sig2"))
+    };
+    let (a, b) = (sig2(new.as_ref()), sig2(old.as_ref()));
+    println!("sig2 with the mark {a}, without it {b}");
+    assert_ne!(a, b, "the mark moved no residual variance");
 }
 
 /// `kalman`'s covariance in units of the noise (schema 64, docs/PLAN.md task

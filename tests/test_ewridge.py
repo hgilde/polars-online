@@ -702,13 +702,15 @@ class TestRidgeDecayPenalisesTheIntercept:
 class TestTheRowClockSolveCadence:
     """Without a clock column the clock is the row's number, the first row
     being 1, so the model's start is a row before its first row. Before the
-    first solve, which a fresh model runs on the row its weight reaches
-    ``min_weight``, ``solve_every=n`` then solves on the ``n``-th row, the
-    row ``max_rows_between_solves=n`` does: the two are one schedule, as
+    first solve ``solve_every=n`` solves on the ``n``-th row, the row
+    ``max_rows_between_solves=n`` does: the two are one schedule, as
     ``coef_every=n`` and ``max_rows_between_coefs=n`` are. Measured from the
     first row, whose step is 0, the clock solved a row after the cap until
-    ``min_weight`` was met, and with a ``min_weight`` never met, the whole
-    stream long (task 278, D13), which ``coef`` and ``support_coef`` showed.
+    the first solve, and with a ``min_weight`` never met, which the first
+    solve waited for, the whole stream long (task 278, D13), which ``coef``
+    and ``support_coef`` showed. The first solve, on the row the weight
+    reaches a row per unknown whatever ``min_weight`` says (task 278), is
+    the third row here, and both schedules count from it.
     """
 
     @staticmethod
@@ -734,11 +736,11 @@ class TestTheRowClockSolveCadence:
         clock = self.run(solve_every=7.0)
         cap = self.run(solve_every=1e18, max_rows_between_solves=7)
         assert clock.equals(cap, null_equal=True)
-        # The solves, seen where the fit the rows report moves: on the 7th,
-        # 14th, ... row, 0-based 6, 13, ...
+        # The solves, seen where the fit the rows report moves: the first on
+        # the third row (0-based 2), then every 7th row from it.
         c = clock["support_coef"].to_list()
         moved = [i for i in range(1, len(c)) if c[i] != c[i - 1]]
-        assert moved == [6, 13, 20, 27, 34, 41, 48, 55]
+        assert moved == [2, 9, 16, 23, 30, 37, 44, 51, 58]
 
 
 def _relation_frame(seed: int, n: int = 2000, gaps: bool = True) -> pl.DataFrame:

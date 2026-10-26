@@ -14,6 +14,12 @@
 //! the autocorrelation: made here by leaving both flags out of a fresh
 //! bank's bytes, as such a state leaves them, and checked against the same
 //! definitions read over its own reported residuals.
+//!
+//! The drift detector folds the same residuals (`Persisted::ungated_drift`,
+//! task 278): with and without a gate its detections, and under
+//! `drift_action = "reset"` the restarts they make and so the fit, are the
+//! same on every row; a state without the flag goes on folding only what it
+//! reports, and there a gate after a restart hides the next break.
 
 use online_polars::online_core::EwAutoCorr;
 use online_polars::{Bank, Spec};
@@ -98,7 +104,12 @@ fn strip(v: &mut rmpv::Value, found: &mut usize) {
     match v {
         rmpv::Value::Map(m) => {
             let before = m.len();
-            m.retain(|(k, _)| !matches!(k.as_str(), Some("ungated_spread" | "weighted_autocorr")));
+            m.retain(|(k, _)| {
+                !matches!(
+                    k.as_str(),
+                    Some("ungated_spread" | "weighted_autocorr" | "ungated_drift")
+                )
+            });
             *found += before - m.len();
             m.iter_mut().for_each(|(_, v)| strip(v, found));
         }
@@ -391,4 +402,137 @@ fn the_residual_autocorrelation_weighs_each_residual_by_its_row() {
         moved > 300,
         "the weights moved {moved} rows of the autocorrelation"
     );
+}
+
+/// A level that moves by 4, −6, 5, 8 and −3 noise sd at rows 300, 450, 520,
+/// 600 and 640, over 1,200 rows with no weight column.
+fn breaks_frame() -> DataFrame {
+    let mut r = lcg(5);
+    let n = 1200;
+    let (mut x0, mut x1, mut y) = (vec![], vec![], vec![]);
+    for i in 0..n {
+        let (a, b) = (r(), r());
+        // Near-normal noise of sd 1: the sum of four uniforms, scaled.
+        let noise = (r() + r() + r() + r()) * 0.866;
+        let level: f64 = [(300, 4.0), (450, -6.0), (520, 5.0), (600, 8.0), (640, -3.0)]
+            .iter()
+            .filter(|(at, _)| i >= *at)
+            .map(|(_, s)| s)
+            .sum();
+        x0.push(a);
+        x1.push(b);
+        y.push(level + 1.0 * a - 0.5 * b + noise);
+    }
+    df!("x0" => x0, "x1" => x1, "y" => y).unwrap()
+}
+
+fn drift_spec(extra: &str) -> Spec {
+    let text = format!(
+        r#"{{"name": "m", "model": {{"type": "ewridge"}}, "targets": ["y"], "features": ["x0", "x1"],
+            "half_life": 30.0, "emit_drift": true, "emit_sigma": true, "drift_threshold": 3.0,
+            "coef_every": 0 {extra}}}"#
+    );
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("{e}\n{text}"))
+}
+
+fn flags(s: &Series) -> Vec<usize> {
+    s.bool()
+        .unwrap()
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| *v == Some(true))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// The values under every `drift` key of a saved state: the detectors.
+fn detectors(bytes: &[u8]) -> Vec<String> {
+    fn walk(v: &rmpv::Value, out: &mut Vec<String>) {
+        match v {
+            rmpv::Value::Map(m) => {
+                for (k, v) in m {
+                    if k.as_str() == Some("drift") {
+                        out.push(format!("{v}"));
+                    }
+                    walk(v, out);
+                }
+            }
+            rmpv::Value::Array(a) => a.iter().for_each(|v| walk(v, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(
+        &rmpv::decode::read_value(&mut &bytes[..]).unwrap(),
+        &mut out,
+    );
+    assert!(!out.is_empty(), "a state with detectors");
+    out
+}
+
+/// With and without a gate, the detections, the weight, `sigma` and the
+/// detectors in the state are the same to the bit, and every prediction
+/// both report: the detector folds each slot's own residual on the rows the
+/// gate withholds. Under `drift_action = "reset"` a detection restarts the
+/// model, and the gate withholds the rows after a restart, which carry the
+/// next break. A state without the flag goes on folding only the residuals
+/// it reports, and there the gate misses a break and moves the fit.
+#[test]
+fn a_gate_never_moves_the_drift_detector_or_its_reset() {
+    let df = breaks_frame();
+    for action in ["", r#", "drift_action": "reset""#] {
+        let (b, b_bytes) = run(&drift_spec(action), &df);
+        let fired = flags(named(&b, "drift_y"));
+        assert!(
+            fired.len() >= 3,
+            "{action}: the detector fired at {fired:?}"
+        );
+        for gate in [
+            r#", "min_weight": 40.0"#,
+            r#", "max_error_inflation": 1.02"#,
+        ] {
+            let what = format!("{action}{gate}");
+            let gated = drift_spec(&format!("{action}{gate}"));
+            let (g, g_bytes) = run(&gated, &df);
+            assert!(
+                withheld(&g) > withheld(&b) + 20,
+                "{what}: the gate withheld nothing the base reports"
+            );
+            assert_eq!(flags(named(&g, "drift_y")), fired, "{what}: the detections");
+            for name in ["weight_sum", "sigma_y"] {
+                assert_eq!(
+                    bits(named(&b, name)),
+                    bits(named(&g, name)),
+                    "{what}: {name}"
+                );
+            }
+            let (p, q) = (floats(named(&b, "pred_y")), floats(named(&g, "pred_y")));
+            for (i, (x, y)) in p.iter().zip(&q).enumerate() {
+                if let Some(y) = y {
+                    assert_eq!(x.map(f64::to_bits), Some(y.to_bits()), "{what}: row {i}");
+                }
+            }
+            assert_eq!(
+                detectors(&b_bytes),
+                detectors(&g_bytes),
+                "{what}: the detectors"
+            );
+            if action.is_empty() {
+                continue;
+            }
+            // The old rule: a detection the gate hides, and a fit it moves.
+            let kept = run_kept(&gated, &df);
+            let missed = flags(named(&kept, "drift_y"));
+            let ws = (
+                bits(named(&b, "weight_sum")),
+                bits(named(&kept, "weight_sum")),
+            );
+            let first = ws.0.iter().zip(&ws.1).position(|(x, y)| x != y);
+            println!(
+                "{what}: detections {fired:?}, the old rule's {missed:?}, the fit moved from row {first:?}"
+            );
+            assert_ne!(missed, fired, "{what}: the old rule hid no break");
+            assert!(first.is_some(), "{what}: the old rule moved no fit");
+        }
+    }
 }

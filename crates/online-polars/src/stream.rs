@@ -796,8 +796,11 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             m.set_keep_factor(spec.emit_se_coef || spec.reads_row_inflation());
             // Each target's own threshold, for its own first solve (task
             // 195, S9b); left out, every target's is the model's.
+            // And `min_weight` withholds the output alone: the model's own
+            // noise and its first solve read its own floor (task 278).
             if spec.min_weight.is_some() {
                 m.set_target_min_weight(spec.min_periods_per_target())?;
+                m.set_min_weight_output_only(true);
             }
             Ok(AnyModel::EwRidge(Box::new(m)))
         }
@@ -1717,6 +1720,16 @@ pub struct Persisted {
     /// bit; not written while `false`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub weighted_autocorr: bool,
+    /// Whether the drift detector folds each slot's own residual on the
+    /// rows a readiness gate withholds, as the spread does
+    /// ([`Self::ungated_spread`]; task 278): under `drift_action = "reset"`
+    /// it restarts the model, and a gate withholds output only, so it must
+    /// neither hide a break nor make a restart. A stream a spec builds sets
+    /// it under `emit_drift`. Schema 64; `false` in a file written before
+    /// it, which goes on folding only the residuals it reports, to the bit;
+    /// not written while `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ungated_drift: bool,
     /// Per model instance, the clock the rows held under `embargo` have
     /// covered and the model has not decayed by yet, which `settled_frac`
     /// adds (`Instance::pending_clock`). Kept, not rebuilt at each chunk:
@@ -2568,6 +2581,7 @@ impl Stream {
                 refit_over_budget: false,
                 ungated_spread: !spec.model.predicts_no_target(),
                 weighted_autocorr: spec.emit_autocorr,
+                ungated_drift: spec.emit_drift && !spec.model.predicts_no_target(),
                 // Only a delay ever holds rows: without one there is no
                 // clock to keep, and none is written.
                 pending_clock: if embargo.is_some() {
@@ -2749,6 +2763,10 @@ impl Stream {
             }
         }
         p.resid_win = rings;
+        // A detector that starts over starts on this build's rule.
+        if p.drift.len() != fresh.drift.len() {
+            p.ungated_drift = fresh.ungated_drift;
+        }
         take_diag("drift detectors", &mut p.drift, &fresh.drift, |_, _| true)?;
         // A sketch is held to its own shape too, as `ew_cov`'s is: the next
         // residual indexes its buckets by its pointers (review 2026-10-06,
@@ -3391,6 +3409,7 @@ impl Stream {
             refit_over_budget: self.persisted.refit_over_budget,
             ungated_spread: self.persisted.ungated_spread,
             weighted_autocorr: self.persisted.weighted_autocorr,
+            ungated_drift: self.persisted.ungated_drift,
         };
         let mut insts = build_instances(
             spec,
@@ -3719,6 +3738,7 @@ impl Stream {
             refit_over_budget: self.persisted.refit_over_budget,
             ungated_spread: self.persisted.ungated_spread,
             weighted_autocorr: self.persisted.weighted_autocorr,
+            ungated_drift: self.persisted.ungated_drift,
         };
         let models = models.iter().map(|(_, m)| ModelRef::Score(m));
         let rings = self
@@ -3828,9 +3848,11 @@ struct Diagnostics<'a> {
     pending_clock: &'a mut [f64],
     notified: &'a mut [Notified],
     refit_over_budget: bool,
-    /// [`Persisted::ungated_spread`] and [`Persisted::weighted_autocorr`].
+    /// [`Persisted::ungated_spread`], [`Persisted::weighted_autocorr`] and
+    /// [`Persisted::ungated_drift`].
     ungated_spread: bool,
     weighted_autocorr: bool,
+    ungated_drift: bool,
 }
 
 /// Split per-instance state and output into disjoint pieces, so instances
@@ -3955,6 +3977,7 @@ fn build_instances<'a>(
                 refit_over_budget: diag.refit_over_budget,
                 ungated_spread: diag.ungated_spread,
                 weighted_autocorr: diag.weighted_autocorr,
+                ungated_drift: diag.ungated_drift,
                 // None without an embargo, which keeps no held rows' clock.
                 pending_clock: pending_clock.next(),
             }
@@ -4172,10 +4195,12 @@ struct Instance<'a> {
     /// Whether the group's refits were given up past the spec's
     /// `refit_budget` ([`Persisted::refit_over_budget`]).
     refit_over_budget: bool,
-    /// [`Persisted::ungated_spread`] and [`Persisted::weighted_autocorr`]:
-    /// the rules this stream's spread and autocorrelation learn by.
+    /// [`Persisted::ungated_spread`], [`Persisted::weighted_autocorr`] and
+    /// [`Persisted::ungated_drift`]: the rules this stream's spread,
+    /// autocorrelation and drift detector learn by.
     ungated_spread: bool,
     weighted_autocorr: bool,
+    ungated_drift: bool,
     /// Clock the rows held under `embargo` have covered and the models
     /// have not yet decayed by: added as a row is buffered, taken back as it
     /// is released. `settled_frac` counts it, so a scored row reads what the
@@ -4500,9 +4525,12 @@ fn run_instance(
         // each target's own, where the model keeps one, else the shared --
         // is short of the highest floor: the warm-up and the rows after a
         // long gap. A row released from the `embargo` buffer folds what its
-        // score kept instead.
-        let keep =
-            inst.ungated_spread && inst.residuals && plan.direct() && (learn || plan.buffered);
+        // score kept instead. The drift detector folds the same residuals
+        // ([`Persisted::ungated_drift`]).
+        let keep = (inst.ungated_spread || inst.ungated_drift)
+            && inst.residuals
+            && plan.direct()
+            && (learn || plan.buffered);
         let mut kept = false;
         if keep {
             let top = min_weight.iter().copied().fold(0.0, f64::max);
@@ -4855,7 +4883,8 @@ fn run_instance(
             match inst.score_pred.pop_front() {
                 Some(p)
                     if p.len() == parts * n
-                        || (inst.ungated_spread && p.len() == (parts + 1) * n) =>
+                        || ((inst.ungated_spread || inst.ungated_drift)
+                            && p.len() == (parts + 1) * n) =>
                 {
                     step.pred.copy_from_slice(&p[..n]);
                     if conformal {
@@ -4938,7 +4967,11 @@ fn run_instance(
                         }));
                     }
                 }
-                let spread_r = if kept { &sc.r_spread } else { &sc.r };
+                let spread_r = if kept && inst.ungated_spread {
+                    &sc.r_spread
+                } else {
+                    &sc.r
+                };
                 if let Some(ring) = inst.resid_win.as_mut() {
                     // And counts the slots whose residual the row folds at
                     // a positive weight (task 217).
@@ -5000,9 +5033,21 @@ fn run_instance(
         // treats it as unseen, and a row that fired the detector could restart
         // the model under `drift_action = "reset"` (review 2026-09-12, S28).
         // Either still ages the detector's mean: it is clock.
+        //
+        // Each slot's own residual where a gate withheld the prediction, as
+        // the spread folds it ([`Persisted::ungated_drift`]; task 278): a
+        // gate withholds output only, and under `drift_action = "reset"` a
+        // detection restarts the model, so a gate that hid the residuals
+        // after a restart hid the next break and moved the fit. A detection
+        // on a withheld row is flagged on it like any other.
         let mut row_drift = false;
         if let (true, Some(dets)) = (learn, inst.drift.as_deref_mut()) {
-            for (slot, &rv) in sc.r.iter().enumerate() {
+            let drift_r = if kept && inst.ungated_drift {
+                &sc.r_spread
+            } else {
+                &sc.r
+            };
+            for (slot, &rv) in drift_r.iter().enumerate() {
                 let scale = sc.sig[slot];
                 if w > 0.0 && rv.is_finite() && scale.is_finite() && scale > 0.0 {
                     let flag = dets[slot].update(rv.abs() / scale, d_clock, lam);

@@ -16,6 +16,9 @@ pub mod ewridge_window {
 pub mod ewridge_leverage {
     include!("ewridge_leverage.rs");
 }
+pub mod ewridge_output_only {
+    include!("ewridge_output_only.rs");
+}
 pub mod ewridge_blocked {
     include!("ewridge_blocked.rs");
 }
@@ -212,6 +215,7 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &ewridge::FIXTURE,
     &ewridge_window::FIXTURE,
     &ewridge_leverage::FIXTURE,
+    &ewridge_output_only::FIXTURE,
     &ewridge_blocked::FIXTURE,
     &rls::FIXTURE,
     &lasso::FIXTURE,
