@@ -329,7 +329,7 @@ def test_quick_is_not_the_gate():
     """It says so when it passes, so a green loop is not read as a check."""
     text = (REPO / "scripts" / "quick.py").read_text(encoding="utf-8")
     assert re.search(
-        r"PASS \(the mapped tests only; the gate still runs before each commit\)", text
+        r"PASS \(the mapped tests only; the essentials gate runs on the merged wave\)", text
     )
 
 
