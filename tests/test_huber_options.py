@@ -458,10 +458,10 @@ def _coefs(out: pl.DataFrame, width: int) -> np.ndarray:
 class TestParameterRelations:
     """``huber``'s own keywords held to relations that need no oracle, each
     to the bit, and its ridge to ``robust_ref`` (task 278, batch 19): an
-    infinite cut is ``ewridge``, the emitted scale moves nothing, the clock
-    cadence solves where its docstring says, and a feature scaled by a power
-    of two changes only its own coefficient. ``huber_scale`` and
-    ``huber_scale_half_life`` are ``tests/test_huber_scale.py``'s."""
+    infinite cut is ``ewridge``, and the emitted scale moves nothing. The
+    clock cadence is ``TestHuberSolveEvery``'s, powers of two
+    ``TestPowersOfTwo``'s, and ``huber_scale`` and ``huber_scale_half_life``
+    ``tests/test_huber_scale.py``'s."""
 
     @pytest.mark.parametrize("ridge", [1e-6, 5.0])
     @pytest.mark.parametrize(
@@ -484,7 +484,8 @@ class TestParameterRelations:
         ``withheld_reason`` on the first rows. Under ``solve_every`` the two
         part on the first solve, which ``huber`` takes on the row its target
         has a row a coefficient and ``ewridge`` on the row its weight
-        reaches that many, then each schedules from its own first."""
+        reaches that many (rows 3 and 4 of this stream at ``solve_every`` 7
+        and 50), then each schedules from its own first."""
         df = _frame()
         c = dict(COMMON, targets=targets, min_weight=4.0, ridge=ridge, **schedule)
         with warnings.catch_warnings():
