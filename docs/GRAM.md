@@ -699,7 +699,13 @@ penalized.** The slopes solve `(C + λI) b = c`, and the intercept is
 system is solved in correlation form, so one `λ` means the same whatever
 the columns' units. A grid of penalties rides one eigendecomposition:
 with `C = Q diag(e) Q'`, each penalty's slopes are
-`Q diag(1 / (e + λ)) Q' c`. To reproduce the coefficients a spec reports
+`Q diag(1 / (e + λ)) Q' c`. That holds where `C`'s diagonal is even, as in
+correlation form. An eigendecomposition is accurate only relative to the
+largest eigenvalue, so on columns of unequal scale `solve` scales `C` by
+its diagonal first, as a Cholesky solve in effect does, and the features'
+units then cost no digits. A uniform `λ` is not uniform on the scaled
+matrix, so there each penalty takes a solve of its own. To
+reproduce the coefficients a spec reports
 in `bank.coef()`, pass its `ridge` and `standardize`. `solve` does not
 reproduce a spec's `ridge_scale="sum"` or `coef_prior`, a ridge on a
 decaying scale and a prior other than zero. Read those fits from
