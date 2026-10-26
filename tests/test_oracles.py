@@ -11,6 +11,8 @@ run from zero to a tolerance at which the start cannot matter, on the
 documented solve schedule.
 """
 
+import warnings
+
 import numpy as np
 import polars as pl
 import pytest
@@ -19,7 +21,7 @@ import polars_online as po
 from data import synthetic
 from reference import ftrl_ref, kalman_ref, lasso_ref, robust_ref
 
-TIER = "essential"
+TIER = "mixed"
 
 MAXD = 50.0
 
@@ -714,6 +716,261 @@ class TestRobustOracles:
         self._compare(
             df, targets=("y0", "y1"), model="quantile", ref_kw={"quantile": 0.9}, quantile=0.9
         )
+
+    # ---- quantile's own keywords at values other than their defaults (task
+    # 278 (b07)); the oracle-free halves are test_robust.py's
+    # TestTheQuantilesOwnKeywords and TestTheQuantileSolveEvery ----
+
+    @pytest.mark.parametrize("ridge", [0.5, 5.0])
+    @pytest.mark.parametrize("tau", [0.5, 0.9])
+    def test_quantile_ridge_values(self, tau, ridge):
+        """``robust_ref`` at two ridges, a penalty on the band system's
+        slopes in the features' squared units; the run is shown to be one
+        the ridge moves. At 5 the ridge sets most of a coefficient, which
+        the readiness notice reports; the case means it to."""
+        df, _ = synthetic(seed=93, n_groups=1, n_rows=250, k=2, null_frac=0.0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", po.ReadinessWarning)
+            out = self._compare(
+                df,
+                model="quantile",
+                ref_kw={"quantile": tau, "ridge": ridge},
+                quantile=tau,
+                ridge=ridge,
+            )
+        default = self._compare(df, model="quantile", ref_kw={"quantile": tau}, quantile=tau)
+        moved = np.nanmax(
+            np.abs(
+                out["m"].struct.field("pred_y0").to_numpy().astype(float)
+                - default["m"].struct.field("pred_y0").to_numpy().astype(float)
+            )
+        )
+        assert moved > 1e-3, moved
+
+    @pytest.mark.parametrize("ridge", [0.0, 0.5])
+    def test_quantile_standardized_solve(self, ridge):
+        df, _ = synthetic(seed=96, n_groups=1, n_rows=250, k=2, null_frac=0.0)
+        self._compare(
+            df,
+            model="quantile",
+            ref_kw={"quantile": 0.9, "ridge": ridge, "standardize": True},
+            quantile=0.9,
+            ridge=ridge,
+            standardize=True,
+        )
+
+    @pytest.mark.parametrize("eps", [0.1, 0.5])
+    def test_quantile_eps_values(self, eps):
+        df, _ = synthetic(seed=93, n_groups=1, n_rows=250, k=2, null_frac=0.0)
+        self._compare(
+            df,
+            model="quantile",
+            ref_kw={"quantile": 0.9, "quantile_eps": eps},
+            quantile=0.9,
+            quantile_eps=eps,
+        )
+
+    @staticmethod
+    def _quantile_rows(n, seed, scales=(1.0, 1.0)):
+        """``TestQuantileIsQuantReg``'s stream: two unit normal features,
+        each scaled, and ``y = 1 + 2 x0 - x1`` plus exponential noise, so the
+        0.9 quantile's fit is far from the mean's."""
+        rng = np.random.default_rng(seed)
+        x = rng.normal(0.0, 1.0, (n, 2))
+        y = 1.0 + 2.0 * x[:, 0] - x[:, 1] + rng.exponential(1.0, n)
+        return x * np.asarray(scales), y
+
+    @staticmethod
+    def _quantile_fit(x, y, tau, **kw):
+        """The last fit and the band's scale ``s`` before the last row, with
+        no decay and a solve on every row. Without decay ``s`` is the RMS of
+        every scored residual (``robust.rs``'s module doc), so the emitted
+        residuals give the bandwidth the stream had settled on. When the
+        band's scale changes rule (task 278's D-Q: a MAD-type scale), this
+        is the one line to change with it."""
+        spec = po.spec.quantile(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            quantile=tau,
+            half_life=float("inf"),
+            max_rows_between_solves=1,
+            **kw,
+        )
+        bank = po.ModelBank([spec])
+        with warnings.catch_warnings():
+            # A ridge of 1e9 makes the ridge, not the data, set the slopes.
+            warnings.simplefilter("ignore", po.ReadinessWarning)
+            out = bank.fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y}))
+        resid = out["m"].struct.field("resid_y").drop_nulls().to_numpy()
+        return bank.coef("m")["coef"].to_numpy(), float(np.sqrt(np.mean(resid**2)))
+
+    @staticmethod
+    def _smoothed(z, y, tau, h):
+        """The batch estimator the stream approximates, written from its
+        definition: the minimum of the check loss smoothed over a band of
+        half-width ``h`` (``psi`` is ``tau - 1/2 + r / 2h`` inside it and
+        ``tau - 1{r < 0}`` outside), by Newton to convergence from least
+        squares. The same estimator as ``TestQuantileIsQuantReg``'s."""
+        b = np.linalg.lstsq(z, y, rcond=None)[0]
+        for _ in range(500):
+            r = y - z @ b
+            near = np.abs(r) < h
+            psi = np.where(near, tau - 0.5 + r / (2.0 * h), tau - (r < 0))
+            step = np.linalg.solve((z[near].T @ z[near]) / (2.0 * h), z.T @ psi)
+            b = b + step
+            if np.max(np.abs(step)) < 1e-13:
+                return b
+        raise AssertionError("the smoothed fit did not converge")
+
+    def _huge_ridge(self, n, seed, tau):
+        """At ``ridge = 1e9`` the slopes are gone and the intercept, which
+        no ridge touches, is the tau-quantile of ``y`` alone. Returns the
+        slopes, the intercept's distance from ``QuantReg`` on a constant in
+        units of its standard error, and from the batch-smoothed constant
+        at the stream's bandwidth."""
+        import statsmodels.api as sm
+
+        x, y = self._quantile_rows(n, seed)
+        coef, s = self._quantile_fit(x, y, tau, ridge=1e9)
+        fit = sm.QuantReg(y, np.ones((n, 1))).fit(q=tau)
+        smoothed = self._smoothed(np.ones((n, 1)), y, tau, 0.2 * s)[0]
+        return coef[1:], abs(coef[0] - fit.params[0]) / fit.bse[0], abs(coef[0] - smoothed)
+
+    # Bounds for the huge ridge (task 278 (b07), measured 2026-10-25 over
+    # seeds 0-49). The slopes: a ridge of 1e9 over a cross-moment of about 2
+    # leaves 2e-9 (measured 2.08e-9 at most). Against the batch-smoothed
+    # constant, the worst seed at 5,000 / 20,000 / 80,000 rows: 0.0213 /
+    # 0.0060 / 0.0015 at tau 0.5, 0.204 / 0.066 / 0.018 at tau 0.9 -- a rate
+    # faster than 1/sqrt(n) (the worst fell 14 and 11 times over 16 times the
+    # rows); the bounds are 1.5 times those. Against QuantReg the worst was
+    # 0.59 and 1.97 standard errors at 20,000 rows; the gap there is the
+    # band's smoothing, which does not shrink with n while the standard
+    # error does (3.86 at 80,000 rows at tau 0.9), so that check is held at
+    # 20,000 rows only.
+    HUGE_RIDGE_SMOOTHED = {0.5: (0.032, 0.009, 0.0023), 0.9: (0.3, 0.1, 0.027)}
+
+    @pytest.mark.parametrize("tau", [0.5, 0.9])
+    def test_a_huge_ridge_leaves_quantreg_on_a_constant(self, tau):
+        slopes, in_se, smoothed = self._huge_ridge(20_000, 3, tau)
+        assert np.max(np.abs(slopes)) <= 1e-8, slopes
+        assert in_se <= 3.0, in_se
+        assert smoothed <= self.HUGE_RIDGE_SMOOTHED[tau][1], smoothed
+
+    @pytest.mark.oracle_grid(reason="50 seeds at three lengths and two levels, against QuantReg")
+    @pytest.mark.parametrize("tau", [0.5, 0.9])
+    def test_a_huge_ridge_over_fifty_seeds(self, tau):
+        worst = []
+        for n, bound in zip((5_000, 20_000, 80_000), self.HUGE_RIDGE_SMOOTHED[tau], strict=True):
+            runs = [self._huge_ridge(n, seed, tau) for seed in range(50)]
+            slopes = max(float(np.max(np.abs(r[0]))) for r in runs)
+            in_se = np.array([r[1] for r in runs])
+            smoothed = np.array([r[2] for r in runs])
+            print(
+                f"tau {tau}, n {n}: slopes {slopes:.3g}; QuantReg worst {in_se.max():.3f} se "
+                f"(seed {in_se.argmax()}), p95 {np.quantile(in_se, 0.95):.3f}; smoothed worst "
+                f"{smoothed.max():.4f} (seed {smoothed.argmax()}), p95 "
+                f"{np.quantile(smoothed, 0.95):.4f}"
+            )
+            assert slopes <= 1e-8, (n, slopes)
+            assert smoothed.max() <= bound, (n, smoothed.max(), smoothed.argmax())
+            if n == 20_000:
+                assert in_se.max() <= 3.0, (in_se.max(), in_se.argmax())
+            worst.append(smoothed.max())
+        assert worst[-1] <= worst[0] / 4.0, worst
+
+    def _mixed_scales(self, seed, tau):
+        """Features at 1e-3 and 1e3 under the default ridge of 1e-6:
+        ``QuantReg`` on the raw columns, and both solves' distance from it
+        per coefficient, in its standard errors."""
+        import statsmodels.api as sm
+
+        scales = np.array([1e-3, 1e3])
+        x, y = self._quantile_rows(20_000, seed, scales=scales)
+        # QuantReg's own iteration stops at its cap on these raw columns
+        # (an IterationLimitWarning on 3 of 100 fits, 2026-10-25). The
+        # problem is equivariant in each column's scale, so it is fitted on
+        # the unit columns and its coefficients and standard errors carried
+        # back to the raw ones, exactly.
+        fit = sm.QuantReg(y, sm.add_constant(x / scales)).fit(q=tau)
+        back = np.concatenate(([1.0], 1.0 / scales))
+        want, se = np.asarray(fit.params) * back, np.asarray(fit.bse) * back
+        corr, _ = self._quantile_fit(x, y, tau, standardize=True)
+        plain, _ = self._quantile_fit(x, y, tau)
+        return np.abs(corr - want) / se, np.abs(plain - want) / se
+
+    # Bounds on mixed scales (task 278 (b07), measured 2026-10-25 over seeds
+    # 0-49 at 20,000 rows): standardized, the worst coefficient sat 1.85 of
+    # QuantReg's standard errors away at tau 0.5 and 2.57 at 0.9 (the
+    # intercept, seeds 1 and 47); bound 4. Plain, the default ridge is the
+    # whole variance of the feature at 1e-3 and halves its slope: at least
+    # 137 standard errors off at tau 0.5 and 43 at 0.9 on every seed; held
+    # at more than 10.
+    @pytest.mark.parametrize("tau", [0.5, 0.9])
+    def test_standardized_on_mixed_scales_is_quantreg(self, tau):
+        corr, plain = self._mixed_scales(3, tau)
+        assert corr.max() <= 4.0, corr
+        assert plain[1] > 10.0, plain
+
+    @pytest.mark.oracle_grid(reason="50 seeds at two levels, each against QuantReg")
+    @pytest.mark.parametrize("tau", [0.5, 0.9])
+    def test_standardized_on_mixed_scales_over_fifty_seeds(self, tau):
+        runs = [self._mixed_scales(seed, tau) for seed in range(50)]
+        corr = np.array([r[0] for r in runs])
+        plain = np.array([r[1][1] for r in runs])
+        print(
+            f"tau {tau}: standardized worst {corr.max(axis=0)} se (seed "
+            f"{corr.max(axis=1).argmax()}), p95 {np.quantile(corr, 0.95, axis=0)}; plain's x0 "
+            f"at least {plain.min():.1f} se off"
+        )
+        assert corr.max() <= 4.0, (corr.max(), corr.max(axis=1).argmax())
+        assert plain.min() > 10.0, (plain.min(), plain.argmin())
+
+    def _eps_gap(self, n, seed, eps):
+        """At ``quantile_eps = eps`` and tau 0.9: the stream's distance from
+        the batch-smoothed fit at its own bandwidth ``eps * s``, and from the
+        one at the other level's (0.5 for 0.1, 0.1 for 0.5)."""
+        x, y = self._quantile_rows(n, seed)
+        coef, s = self._quantile_fit(x, y, 0.9, quantile_eps=eps)
+        z = np.column_stack([np.ones(n), x])
+        own = self._smoothed(z, y, 0.9, eps * s)
+        other = self._smoothed(z, y, 0.9, (0.6 - eps) * s)
+        return float(np.max(np.abs(coef - own))), float(np.max(np.abs(coef - other)))
+
+    # Bounds for quantile_eps (task 278 (b07), measured 2026-10-25 over seeds
+    # 0-49 at tau 0.9; k / n is small enough at these lengths that the floor
+    # never binds): the worst seed's distance from the batch-smoothed fit at
+    # 5,000 / 20,000 / 80,000 rows was 0.236 / 0.122 / 0.028 at eps 0.1 and
+    # 0.103 / 0.040 / 0.016 at eps 0.5 -- the early rows' nudges, which a
+    # stream with no decay never forgets, shrinking faster than 1/sqrt(n)
+    # (8.6 and 6.3 times over 16 times the rows). Bounds 1.5 times those. From
+    # 20,000 rows every seed sat nearer its own level's fit than the other's
+    # (at 5,000, 1 and 21 seeds of 50 did not).
+    EPS_BOUNDS = {0.1: (0.36, 0.18, 0.042), 0.5: (0.16, 0.06, 0.024)}
+
+    @pytest.mark.parametrize("eps", [0.1, 0.5])
+    def test_quantile_eps_is_the_batch_smoothed_fit_at_its_bandwidth(self, eps):
+        own, other = self._eps_gap(20_000, 3, eps)
+        assert own <= self.EPS_BOUNDS[eps][1], own
+        assert own < other, (own, other)
+
+    @pytest.mark.oracle_grid(reason="50 seeds at three lengths and two levels, each a batch fit")
+    @pytest.mark.parametrize("eps", [0.1, 0.5])
+    def test_quantile_eps_over_fifty_seeds(self, eps):
+        worst = []
+        for n, bound in zip((5_000, 20_000, 80_000), self.EPS_BOUNDS[eps], strict=True):
+            runs = np.array([self._eps_gap(n, seed, eps) for seed in range(50)])
+            own, other = runs[:, 0], runs[:, 1]
+            print(
+                f"eps {eps}, n {n}: worst {own.max():.4f} (seed {own.argmax()}), p95 "
+                f"{np.quantile(own, 0.95):.4f}; nearer the other level's fit on "
+                f"{int((other <= own).sum())} seeds"
+            )
+            assert own.max() <= bound, (n, own.max(), own.argmax())
+            if n >= 20_000:
+                assert (own < other).all(), (n, np.flatnonzero(other <= own))
+            worst.append(own.max())
+        assert worst[-1] <= worst[0] / 4.0, worst
 
 
 class TestFtrlOracle:
