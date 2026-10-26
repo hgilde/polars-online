@@ -47,8 +47,22 @@
 //! Lambda selection is free: predictions for every path point are computed
 //! anyway, so `penalty_selected_j` is the argmin over the path of an EW mean of
 //! squared out-of-sample error with half-life `select_half_life`, over the
-//! rows from the one where target `j`'s own weight reaches its own
-//! `min_weight` (`LassoCfg::target_min_weight`; review 2026-10-05, CA3).
+//! rows after the fit holds a row of target `j` per coefficient: the
+//! model's own floor, `k + 1` rows with an intercept and `k` without, counted
+//! on the rows of positive weight inside the window under one.
+//!
+//! **`min_weight` withholds the output alone (docs/PLAN.md task 278,
+//! D10).** The selection scores the prediction the fit makes on every row,
+//! whether or not `min_weight` lets it out, and a target's first solve
+//! falls on the row it reaches the floor, so the fit and the choice are the
+//! same at any `min_weight`. The gate held learning back too: the errors
+//! counted from the row where a target's own weight reached its own
+//! `min_weight` (`LassoCfg::target_min_weight`; review 2026-10-05, CA3),
+//! and the first solve waited for the weight to reach it, so the chosen
+//! penalty moved with the gate (6 of 50 seeds at the default and 13 at
+//! `min_weight` 50, six penalties, t(4) noise, 3,000 rows). A state written
+//! before schema 64 goes on that way
+//! ([`LassoCfg::min_weight_holds_learning`]).
 
 use std::borrow::Cow;
 
@@ -73,15 +87,18 @@ pub struct LassoCfg {
     /// Half-life of the EW squared-error used to pick lambda; defaults to the
     /// model half-life when None.
     pub select_half_life: Option<f64>,
-    /// The weight, over every row, the model predicts from: the smallest
-    /// of the targets' thresholds in a bank, which then withholds each
-    /// target's output until its own weight reaches its own.
+    /// The weight, over every row, the model reports a prediction from: the
+    /// smallest of the targets' thresholds in a bank, which then withholds
+    /// each target's output until its own weight reaches its own. A gate on
+    /// the output alone, unless [`Self::min_weight_holds_learning`].
     pub min_weight: f64,
     /// Per target, the threshold its own weight before a row is checked
-    /// against, as a bank checks it on the output (hard rule 8): a row
-    /// below it adds no error to the target's selection, so one target's
-    /// choice does not depend on another's threshold (review 2026-10-05,
-    /// CA3). Empty: `min_weight` for every target.
+    /// against, as a bank checks it on the output (hard rule 8). Read only
+    /// where the gate holds learning back
+    /// ([`Self::min_weight_holds_learning`]): a row below it adds no error
+    /// to the target's selection, so one target's choice does not depend
+    /// on another's threshold (review 2026-10-05, CA3). Empty: `min_weight`
+    /// for every target.
     #[serde(default)]
     pub target_min_weight: Vec<f64>,
     /// Solve cadence in clock units; <= 0 solves every row. Measured from
@@ -112,6 +129,21 @@ pub struct LassoCfg {
     /// every row.
     #[serde(default)]
     pub target_gaps: TargetGaps,
+    /// Whether `min_weight` holds learning back as well as the output, as
+    /// it did before schema 64: a target's selection counted errors from
+    /// the row its own weight reached its own `min_weight`
+    /// ([`Self::target_min_weight`]), on the predictions the gate let out,
+    /// and a fresh model's first solve waited for the row its weight
+    /// reached `min_weight`, a late target's for its own threshold. A spec
+    /// builds `false`: the selection scores the fit's prediction on every
+    /// row once the fit holds a row of the target per coefficient
+    /// ([`Self::floor`]), the first solve falls on the row a target reaches
+    /// that floor, and the fit and the choice are the same at any
+    /// `min_weight`. A state written before schema 64 has no such field and
+    /// was fitted the old way, so it loads as `true` and goes on to the bit.
+    /// Not last: [`Self::window`] says why.
+    #[serde(default = "gate_held_learning_before_64")]
+    pub min_weight_holds_learning: bool,
     /// Clock units of history the path is fitted from, with a **hard** cutoff:
     /// a row older than this is not in the Gram at all (docs/PLAN.md §13).
     /// Inside the window the weights are still exponential. The selection
@@ -137,9 +169,34 @@ pub struct LassoCfg {
     pub max_rows_between_snapshots: Option<usize>,
 }
 
+/// What a configuration written before schema 64, which had no
+/// [`LassoCfg::min_weight_holds_learning`], was fitted with: a gate that held
+/// learning back too. It must go on as one, to the bit (CLAUDE.md hard rule
+/// 5).
+fn gate_held_learning_before_64() -> bool {
+    true
+}
+
 impl LassoCfg {
     pub fn k_total(&self) -> usize {
         self.n_features + usize::from(self.fit_intercept)
+    }
+
+    /// The model's own floor: the rows of positive weight of a target the
+    /// fit must hold before its selection scores the target's predictions,
+    /// and the row count whose row solves it first -- one per coefficient,
+    /// so no error is read off a fit of fewer rows than unknowns, which
+    /// only the penalty determines. A count, so a weight's scale does not
+    /// reach it, and not `min_weight`, a gate on the output alone (task
+    /// 278, D10). Under the gate that held learning back
+    /// ([`Self::min_weight_holds_learning`]) there is none: the gate stood
+    /// in its place.
+    pub fn floor(&self) -> u64 {
+        if self.min_weight_holds_learning {
+            0
+        } else {
+            self.k_total() as u64
+        }
     }
 
     pub fn n_lambdas(&self) -> usize {
@@ -367,23 +424,64 @@ impl Lasso {
     /// `min_weight`. Read before the row is learned; a target's weight grows
     /// only on a row that carries it, `lam · W_j + w` there as `Acc::learn`
     /// forms it. The accumulator's weight, not a window's: a target that has
-    /// just joined has all its rows in the window.
+    /// just joined has all its rows in the window. Only where the gate holds
+    /// learning back ([`LassoCfg::min_weight_holds_learning`]); otherwise
+    /// [`Self::reaches_floor`].
     fn own_first_solve(&self, y: &[Option<f64>], lam: f64, weight: f64) -> bool {
         if !(weight > 0.0 && weight.is_finite()) {
             return false;
         }
+        let fitted = |j: usize| {
+            self.beta
+                .as_ref()
+                .is_some_and(|b| b[j].iter().flatten().all(|v| !v.is_nan()))
+        };
         y.iter().enumerate().any(|(j, yj)| {
             let t = self.cfg.min_weight_of(j);
             let reached = |w: f64| w >= t && w > 0.0;
             let before = self.acc.wj[j];
-            yj.is_some()
-                && !reached(before)
-                && reached(lam * before + weight)
-                && !self
-                    .beta
-                    .as_ref()
-                    .is_some_and(|b| b[j].iter().flatten().all(|v| !v.is_nan()))
+            yj.is_some() && !reached(before) && reached(lam * before + weight) && !fitted(j)
         })
+    }
+
+    /// Per target, the rows of positive weight the window's boundary
+    /// snapshot counted ([`crate::gaps::AccSnap::rows_of_targets`]): the
+    /// window holds the live count less these, exactly. `None` without a
+    /// window, or while it holds every row, where the live count is the
+    /// fit's.
+    fn window_boundary_rows(&self) -> Option<Vec<u64>> {
+        let win = self.win.as_ref()?;
+        let (_, old) = win.snaps.cut(win.clock, self.cfg.decay, 0)?;
+        Some(old.acc.rows_of_targets().to_vec())
+    }
+
+    /// Target `j`'s rows of positive weight the fit reads: every one, or
+    /// those inside the window whose boundary counted `boundary`.
+    fn rows_in_fit(&self, j: usize, boundary: Option<&[u64]>) -> u64 {
+        let old = boundary.and_then(|b| b.get(j)).copied().unwrap_or(0);
+        self.acc.cross.nj[j] - old
+    }
+
+    /// Where `min_weight` withholds the output alone
+    /// ([`LassoCfg::min_weight_holds_learning`] false): whether the row just
+    /// learned brings a target's rows of positive weight inside the fit to
+    /// the model's floor ([`LassoCfg::floor`]), the row its first solve falls
+    /// on, a fresh model's among them. Its selection counts errors once that
+    /// many rows stand before a row, so the prediction it scores is read off
+    /// a solve of at least the floor's rows: this one, or one after it. A
+    /// row adds one to the count, so it reaches the floor on one row; under a
+    /// window, again after rows aged out took it below. It reads no
+    /// `min_weight` and no earlier fit: a fit the cadence solved from fewer
+    /// rows is solved again here (task 278, D10).
+    fn reaches_floor(&self, y: &[Option<f64>], weight: f64) -> bool {
+        if !(weight > 0.0 && weight.is_finite()) {
+            return false;
+        }
+        let floor = self.cfg.floor();
+        let boundary = self.window_boundary_rows();
+        y.iter()
+            .enumerate()
+            .any(|(j, yj)| yj.is_some() && self.rows_in_fit(j, boundary.as_deref()) == floor)
     }
 
     /// Selected lambda per target.
@@ -516,8 +614,11 @@ impl Lasso {
     }
 
     /// `predict` from the window's weights, [`Self::window_weights`], which
-    /// `step` reads once for this and for its selection.
-    fn predict_with(&self, x: &[f64], weights: Option<&(f64, Vec<f64>)>) -> Step {
+    /// `step` reads once for this and for its selection. `gated` withholds
+    /// every slot while the weight is short of `min_weight`; ungated, it is
+    /// the fit's own prediction, which the selection scores where the gate
+    /// withholds the output alone ([`LassoCfg::min_weight_holds_learning`]).
+    fn predict_with(&self, x: &[f64], weights: Option<&(f64, Vec<f64>)>, gated: bool) -> Step {
         let (m, np) = (self.cfg.n_targets, self.cfg.n_lambdas());
         // Under a `window`, the `n_eff` reported and gated on is the weight
         // inside it, as `EwRidge::predict` reports it (review 2026-09-12, C9).
@@ -528,7 +629,7 @@ impl Lasso {
             None => (self.acc.cross.w, self.acc.wj.as_slice()),
         };
         let mut pred = vec![f64::NAN; m * np];
-        if let (true, Some(beta)) = (n_eff >= self.cfg.min_weight, &self.beta) {
+        if let (true, Some(beta)) = (!gated || n_eff >= self.cfg.min_weight, &self.beta) {
             for j in 0..m {
                 if wj[j] > 0.0 {
                     for li in 0..np {
@@ -983,13 +1084,28 @@ impl OnlineModel for Lasso {
         // `lam_selected` is read here too: the selection as it stood coming
         // into this row, like everything else a `Step` reports, so pairing it
         // with this row's `pred_<lambda>` slots is an out-of-sample choice.
+        // The fit's own prediction where `min_weight` withholds the output
+        // alone, which the selection scores whatever the gate says; the
+        // output's, which the gate held back, in a state written before
+        // schema 64 (`LassoCfg::min_weight_holds_learning`; task 278, D10).
+        let holds = self.cfg.min_weight_holds_learning;
         let weights = self.window_weights();
-        let out = self.predict_with(x, weights.as_ref());
+        let mut out = self.predict_with(x, weights.as_ref(), holds);
+        let withheld = out.n_eff < self.cfg.min_weight;
         let pred = &out.pred;
         // Each target's own weight before the row, inside the window under
         // one: what its own `min_weight` is checked against, here as on the
-        // output (hard rule 8).
+        // output (hard rule 8), where the gate holds learning back.
         let own: &[f64] = weights.as_ref().map_or(&self.acc.wj, |(_, wj)| wj);
+        // Otherwise the rows of positive weight before the row, inside the
+        // window under one, checked against the floor: the window's are
+        // the live count less its boundary snapshot's, exactly.
+        let before = if holds {
+            None
+        } else {
+            self.window_boundary_rows()
+        };
+        let floor = self.cfg.floor();
 
         // ---- the window moves to this row ----
         // The snapshot is every accumulator before this row, decayed to this
@@ -1015,14 +1131,20 @@ impl OnlineModel for Lasso {
         }
 
         // ---- lambda selection: EW mean squared OOS error, free from preds ----
-        // A target's errors count from the row where its own weight reaches
-        // its own `min_weight`: a row its threshold withholds from the
-        // output adds none, so its choice is the same whatever the other
-        // targets' thresholds, which the model's own gate takes the least of
-        // (review 2026-10-05, CA3).
+        // A target's errors count once the fit holds a row of it per
+        // coefficient, the model's floor, whatever `min_weight` says. Where
+        // the gate holds learning back they count from the row where its
+        // own weight reaches its own `min_weight`: a row its threshold
+        // withholds from the output adds none, so its choice is the same
+        // whatever the other targets' thresholds, which the model's own gate
+        // takes the least of (review 2026-10-05, CA3).
         for j in 0..m {
             let aged = sel_lam * self.sel_w[j];
-            let shown = own[j] >= self.cfg.min_weight_of(j);
+            let shown = if holds {
+                own[j] >= self.cfg.min_weight_of(j)
+            } else {
+                self.rows_in_fit(j, before.as_deref()) >= floor
+            };
             match y[j].filter(|_| shown && pred[j * np].is_finite()) {
                 Some(yj) if weight > 0.0 => {
                     let w_new = aged + weight;
@@ -1067,10 +1189,12 @@ impl OnlineModel for Lasso {
         }
 
         // ---- update accumulators ----
-        // Read before the row moves the target weights.
-        let own_first = self.own_first_solve(y, lam_decay, weight);
+        // Read before the row moves the target weights, where the gate holds
+        // learning back; after it, from the counts it moved, otherwise.
+        let mut own_first = holds && self.own_first_solve(y, lam_decay, weight);
         self.acc
             .learn(&self.zbuf, y, lam_decay, weight, self.cfg.target_gaps);
+        own_first = own_first || (!holds && self.reaches_floor(y, weight));
 
         // The clock since the last solve, on the row's stamp (task 180).
         self.since_solve.step(d_clock);
@@ -1081,6 +1205,10 @@ impl OnlineModel for Lasso {
         // (`ewridge`'s rule, docs/PLAN.md task 214: a clock-due solve fired
         // on the zero-weight row, before the next row's data, and the fit
         // read until the next solve moved 4.2e-2).
+        // `min_weight` withholds the output; the selection scored it.
+        if withheld {
+            out.pred.fill(f64::NAN);
+        }
         if weight <= 0.0 {
             return out;
         }
@@ -1092,15 +1220,18 @@ impl OnlineModel for Lasso {
             Some(share) => self.weight_since_solve >= share * self.n_eff(),
             None => self.cfg.solve_every <= 0.0 || self.since_solve.reached(self.cfg.solve_every),
         };
-        // A fresh model's first solve fires on the row its weight reaches
-        // `min_weight`; so does a target's own, on the row its own weight
-        // first reaches its own, where no solve has fit it -- a target that
-        // joins after the first solve, which waited for the cadence's next
-        // solve, null until then (review round 4, CC1; docs/PLAN.md task
-        // 195, S9b).
+        // A target's first solve fires on the row its rows of positive
+        // weight in the fit reach the floor (`Self::reaches_floor`) -- a
+        // fresh model's first solve, and a target that joins after it, which
+        // waited for the cadence's next solve, null until then (review
+        // round 4, CC1; docs/PLAN.md task 195, S9b). Where the gate holds
+        // learning back (a state written before schema 64) a fresh model's
+        // fires on the row its weight reaches `min_weight`, and a target's
+        // own on the row its own weight first reaches its own (task 278,
+        // D10; `Self::own_first_solve`).
         let due = by_cadence
             || self.rows_since_solve >= self.cfg.max_rows_between_solves
-            || (self.beta.is_none() && self.n_eff() >= self.cfg.min_weight)
+            || (holds && self.beta.is_none() && self.n_eff() >= self.cfg.min_weight)
             || own_first;
         if due {
             self.solve();
@@ -1112,7 +1243,7 @@ impl OnlineModel for Lasso {
         if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
             return refused;
         }
-        self.predict_with(x, self.window_weights().as_ref())
+        self.predict_with(x, self.window_weights().as_ref(), true)
     }
 
     fn state(&self) -> State {
@@ -1552,6 +1683,7 @@ mod tests {
 
     fn cfg(k: usize, m: usize, path: Vec<f64>) -> LassoCfg {
         LassoCfg {
+            min_weight_holds_learning: false,
             n_features: k,
             n_targets: m,
             fit_intercept: true,
@@ -1762,22 +1894,29 @@ mod tests {
     /// comparison false, the choice held at the heaviest penalty for the
     /// life of the state (review 2026-09-12, C7). The errors are those of
     /// `lambda_selection_tracks_the_out_of_sample_error`, which leave the
-    /// zero-weight row out as its weight does.
+    /// zero-weight row out as its weight does. The first row with an error
+    /// to fold is the first after the fit holds four rows of positive
+    /// weight, the model's floor of a row per coefficient (task 278, D10).
     #[test]
     fn a_zero_weight_row_on_the_first_prediction_leaves_the_selection_alone() {
         let mut c = cfg(3, 1, vec![1.0, 0.05, 0.0]);
         c.min_weight = 1.0;
         c.select_half_life = Some(f64::INFINITY);
         let np = c.n_lambdas();
+        let floor = c.floor() as usize;
+        assert_eq!(floor, 4);
         let mut m = Lasso::new(c).unwrap();
         let (mut sums, mut count, mut met) = (vec![0.0; np], 0.0, false);
         let mut s = 19u64;
+        let mut rows = 0;
         for i in 0..402 {
             let x = [lcg(&mut s), lcg(&mut s), lcg(&mut s)];
             let y = 2.0 * x[0] + 0.02 * lcg(&mut s);
-            let w = if i == 1 { 0.0 } else { 1.0 };
+            let w = if i == floor { 0.0 } else { 1.0 };
             let step = m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, w);
-            if step.pred[0].is_finite() {
+            let counts = rows >= floor;
+            rows += usize::from(w > 0.0);
+            if step.pred[0].is_finite() && counts {
                 if w == 0.0 {
                     met = true;
                 } else {
@@ -1795,7 +1934,7 @@ mod tests {
         }
         assert!(
             met,
-            "the zero-weight row must be the first with a prediction"
+            "the zero-weight row must be the first whose error counts"
         );
         for (li, sum) in sums.iter().enumerate() {
             assert!(
@@ -1820,11 +1959,15 @@ mod tests {
     /// CA3; hard rule 8). `y1`, present on every other row, waits for six
     /// rows of its own, where it counted from the model's first prediction;
     /// and one target's selection is the same whatever the other's threshold.
+    /// Where the gate holds learning back, as in a state written before
+    /// schema 64; otherwise the floor counts
+    /// (`each_targets_selection_counts_from_its_own_floor`, task 278, D10).
     #[test]
     fn each_targets_selection_counts_from_its_own_min_weight() {
         let t = 6.0;
         let run = |own: [f64; 2]| {
             let mut c = cfg(2, 2, vec![1.0, 0.1, 0.0]);
+            c.min_weight_holds_learning = true;
             c.min_weight = own[0].min(own[1]);
             c.target_min_weight = own.to_vec();
             let mut m = Lasso::new(c).unwrap();
@@ -1869,6 +2012,81 @@ mod tests {
             assert!(err.contains("target_min_weight"), "{err}");
         }
         with(vec![0.0, f64::INFINITY]).unwrap();
+    }
+
+    /// Where `min_weight` withholds the output alone (task 278, D10), each
+    /// target's selection counts its errors from the row its rows of
+    /// positive weight before it reach the model's floor, a row per
+    /// coefficient (three here: two features and the intercept), and the
+    /// fit, the choice and every prediction the gate lets out are the same
+    /// whatever the thresholds, the model's or the targets' own. `y1` is
+    /// present on every other row, so it waits for row 6; a row of weight 0
+    /// is not one of its rows.
+    #[test]
+    fn each_targets_selection_counts_from_its_own_floor() {
+        let run = |mw: f64, own: Vec<f64>| {
+            let mut c = cfg(2, 2, vec![1.0, 0.1, 0.0]);
+            c.solve_every = 3.0;
+            c.min_weight = mw;
+            c.target_min_weight = own;
+            assert_eq!(c.floor(), 3);
+            let mut m = Lasso::new(c).unwrap();
+            let mut s = 7u64;
+            (0..60)
+                .map(|i| {
+                    let x = [lcg(&mut s), lcg(&mut s)];
+                    let y = [1.0 + 2.0 * x[0], -1.0 + x[1]].map(|v| v + 0.3 * lcg(&mut s));
+                    let y1 = (i % 2 == 0).then_some(y[1]);
+                    let w = if i == 2 { 0.0 } else { 1.0 };
+                    let step = m.step(&x, &[Some(y[0]), y1], f64::from(u8::from(i > 0)), w);
+                    (
+                        step.pred,
+                        m.sel_w.clone(),
+                        m.sel_err.clone(),
+                        m.lam_selected(),
+                        m.beta.as_deref().map(|b| {
+                            b.iter()
+                                .flatten()
+                                .flatten()
+                                .map(|v| v.to_bits())
+                                .collect::<Vec<_>>()
+                        }),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let base = run(0.0, Vec::new());
+        for (i, r) in base.iter().enumerate() {
+            // `y0`'s rows: 0, 1, 3, ... (row 2 has no weight), so row 4 is
+            // its first with three before it; `y1`'s: 0, 4, 6, so row 8.
+            assert_eq!(r.1[0] > 0.0, i >= 4, "row {i}: y0's selection weight");
+            assert_eq!(r.1[1] > 0.0, i >= 8, "row {i}: y1's selection weight");
+        }
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        let mut withheld = 0;
+        for (mw, own) in [
+            (50.0, Vec::new()),
+            (5.0, vec![5.0, 30.0]),
+            (0.0, vec![0.0, 1e9]),
+        ] {
+            let gated = run(mw, own.clone());
+            for (i, (g, b)) in gated.iter().zip(&base).enumerate() {
+                let what = format!("min_weight {mw}, own {own:?}, row {i}");
+                assert_eq!(g.1, b.1, "{what}: selection weights");
+                assert_eq!(g.2, b.2, "{what}: selection errors");
+                assert_eq!(g.3, b.3, "{what}: the choice");
+                assert_eq!(g.4, b.4, "{what}: the fit");
+                // A prediction the gate lets out is the ungated one's bits.
+                for (p, q) in g.0.iter().zip(&b.0) {
+                    if p.is_nan() {
+                        withheld += usize::from(q.is_finite());
+                    } else {
+                        assert_eq!(bits(&[*p]), bits(&[*q]), "{what}");
+                    }
+                }
+            }
+        }
+        assert!(withheld > 0, "a gate withheld predictions it learned from");
     }
 
     /// Coordinate descent that runs out of sweeps before it meets `tol`
@@ -1960,8 +2178,10 @@ mod tests {
     /// window (the builder's docstring): each scored row at `w *
     /// 0.5^(age / select_half_life)`, its age counted from the last row
     /// learned, and the rows inside the window those at most `window`
-    /// older; a row scores a target once the target's own weight inside the
-    /// window, before the row, reaches `min_weight` (review 2026-10-05,
+    /// older; a row scores a target once the target's rows of positive
+    /// weight inside the window, before the row, reach the model's floor
+    /// (task 278, D10), or, where the gate holds learning back, once its own
+    /// weight inside the window reaches `min_weight` (review 2026-10-05,
     /// CA3). Recomputed here from each row's own predictions, which `step`
     /// reports, it is held on every row where it is decided: not a tie,
     /// and not an empty window. Three departures moved it on 14 to 90 rows
@@ -1972,14 +2192,19 @@ mod tests {
     #[test]
     fn penalty_selected_under_a_window_is_the_argmin_inside_it() {
         for closed in [crate::WindowClosed::Right, crate::WindowClosed::Both] {
-            penalty_selected_under_a_window_is_the_argmin_inside(closed);
+            for holds in [false, true] {
+                penalty_selected_under_a_window_is_the_argmin_inside(closed, holds);
+            }
         }
     }
 
     /// The test above under one edge (docs/PLAN.md task 196, N17): a row
     /// less than `window` old is inside under `Right`, and one exactly that
     /// old too under `Both`. The clocks are sums of quarters, exact.
-    fn penalty_selected_under_a_window_is_the_argmin_inside(closed: crate::WindowClosed) {
+    fn penalty_selected_under_a_window_is_the_argmin_inside(
+        closed: crate::WindowClosed,
+        holds: bool,
+    ) {
         let inside = |age: f64, window: f64| match closed {
             crate::WindowClosed::Right => age < window,
             crate::WindowClosed::Both => age <= window,
@@ -1994,7 +2219,12 @@ mod tests {
             c.select_half_life = select;
             c.window = Some(window);
             c.max_rows_between_snapshots = Some(1);
-            c.min_weight = 2.0;
+            // Under the gate that holds learning back the rows it withholds
+            // score nothing; otherwise the gate withholds nothing the
+            // selection reads, and the outputs are the fit's own.
+            c.min_weight_holds_learning = holds;
+            c.min_weight = if holds { 2.0 } else { 0.0 };
+            let floor = c.floor() as usize;
             let sel_h = select.unwrap_or(20.0);
             let mut m = Lasso::new(c).unwrap();
             m.set_window_closed(closed);
@@ -2054,6 +2284,14 @@ mod tests {
                         .sum::<f64>()
                 });
                 let own: Vec<f64> = own.collect();
+                let rows_in: Vec<usize> = on
+                    .iter()
+                    .map(|rows| {
+                        rows.iter()
+                            .filter(|(tr, wr)| *wr > 0.0 && inside(t_prev - tr, window))
+                            .count()
+                    })
+                    .collect();
                 let out = m.step(&x, &y, d, w);
                 let Some(Extra::Lasso { lam_selected }) = &out.extra else {
                     panic!("a lasso reports its selection");
@@ -2071,7 +2309,11 @@ mod tests {
                     }
                     if let (Some(yv), true) = (y[j], out.pred[j * np].is_finite())
                         && w > 0.0
-                        && own[j] >= 2.0
+                        && if holds {
+                            own[j] >= 2.0
+                        } else {
+                            rows_in[j] >= floor
+                        }
                     {
                         let e2 = out.pred[j * np..(j + 1) * np]
                             .iter()
@@ -3056,7 +3298,8 @@ mod tests {
 
     /// Under `solve_share` a solve is due once the weight learned since the
     /// last one reaches that share of `n_eff` (the row's own included), and
-    /// at the first row that meets `min_weight`; only a positive, finite
+    /// on the row whose rows of positive weight reach the floor of a row per
+    /// coefficient, three here (task 278, D10); only a positive, finite
     /// weight counts toward it, and a row of weight 0 never solves (task
     /// 214). Held to that rule kept beside the model, at weights that move
     /// and with a decay (`max_rows_between_solves` out of reach).
@@ -3069,7 +3312,7 @@ mod tests {
         c.max_rows_between_solves = u32::MAX;
         c.solve_share = Some(0.3);
         let mut m = Lasso::new(c).unwrap();
-        let (mut w_sum, mut since, mut first) = (0.0f64, 0.0f64, true);
+        let (mut w_sum, mut since, mut rows) = (0.0f64, 0.0f64, 0);
         let (mut s, mut solves) = (109u64, 0);
         for i in 0..200 {
             let x = [lcg(&mut s), lcg(&mut s)];
@@ -3082,10 +3325,11 @@ mod tests {
             m.step(&x, &[Some(x[0] - x[1])], d, w);
             w_sum = 0.5f64.powf(d / 20.0) * w_sum + w;
             since += w;
-            let due = w > 0.0 && (since >= 0.3 * w_sum || first);
+            rows += usize::from(w > 0.0);
+            let due = w > 0.0 && (since >= 0.3 * w_sum || rows == 3);
             assert_eq!(w > 0.0 && m.rows_since_solve == 0, due, "row {i}");
             if due {
-                (since, first, solves) = (0.0, false, solves + 1);
+                (since, solves) = (0.0, solves + 1);
             }
         }
         assert!((20..150).contains(&solves), "{solves} solves");
@@ -3125,12 +3369,14 @@ mod tests {
     /// Task 180: `solve_every` reads the stamps its caller hands: every
     /// 2,000th 1 ms row under 2 s after the first solve, where the clock
     /// summed since the last solve, read when none is handed, is a row late
-    /// each time, as it always was.
+    /// each time, as it always was. The first solve on row 0 is `min_weight`
+    /// 0's, under the gate that holds learning back (task 278, D10).
     #[test]
     fn solve_every_measures_the_stamps_it_is_handed() {
         use crate::OnlineModel;
         for (stamped, want) in [(true, [0, 2000, 4000]), (false, [0, 2001, 4002])] {
             let mut c = cfg(1, 1, vec![0.0]);
+            c.min_weight_holds_learning = true;
             c.min_weight = 0.0;
             c.solve_every = 2.0;
             c.max_rows_between_solves = u32::MAX;
@@ -3151,12 +3397,15 @@ mod tests {
     /// its first row, so before the first solve at `min_weight` (here never
     /// met) `solve_every = 7` solves on the rows `max_rows_between_solves =
     /// 7` does (0-based 6, 13, ...). Stamped as a clock column's rows, whose
-    /// start is the first row, the clock's come a row later.
+    /// start is the first row, the clock's come a row later. Under the gate
+    /// that holds learning back, the one form whose first solve a setting
+    /// can put off for good (task 278, D10: otherwise the floor's row).
     #[test]
     fn on_the_row_clock_solve_every_is_its_row_cap() {
         use crate::OnlineModel;
         let solves = |every: f64, cap: u32, on_rows: bool| {
             let mut c = cfg(1, 1, vec![0.0]);
+            c.min_weight_holds_learning = true;
             c.min_weight = 1e9;
             c.solve_every = every;
             c.max_rows_between_solves = cap;
@@ -3186,9 +3435,11 @@ mod tests {
     /// never washed out: every comparison false, its choice stuck at the
     /// heaviest penalty for good. The oracle is the definition: each path
     /// point's mean squared out-of-sample error over the rows the target
-    /// was predicted on (no decay), the choice the smallest, the first on a
-    /// tie. Target 1 is null for the first 20 rows, its threshold 0; the
-    /// heavier penalty zeroes its slope, the lighter fits it.
+    /// was predicted on once the fit held two of its rows, the model's floor
+    /// (a row per coefficient; task 278, D10), with no decay, the choice the
+    /// smallest, the first on a tie. Target 1 is null for the first 20 rows,
+    /// its threshold 0; the heavier penalty zeroes its slope, the lighter
+    /// fits it.
     #[test]
     fn a_target_present_late_selects_on_its_own_predictions() {
         use crate::OnlineModel;
@@ -3197,15 +3448,18 @@ mod tests {
         let mut c = cfg(1, 2, path.clone());
         c.min_weight = 0.0;
         let mut m = Lasso::new(c).unwrap();
-        let (mut sum, mut scored) = ([0.0f64; 2], 0usize);
+        let (mut sum, mut scored, mut rows1) = ([0.0f64; 2], 0usize, 0usize);
         let mut s = 127u64;
         for i in 0..120 {
             let x = lcg(&mut s);
             let y1 = (i >= 20).then(|| 0.5 - 3.0 * x + 0.01 * lcg(&mut s));
             let ys = [Some(2.0 * x + 0.1 * lcg(&mut s)), y1];
             let pred = m.step(&[x], &ys, if i == 0 { 0.0 } else { 1.0 }, 1.0).pred;
+            let floor_met = rows1 >= 2;
+            rows1 += usize::from(y1.is_some());
             if let Some(y) = y1
                 && pred[np].is_finite()
+                && floor_met
             {
                 for (li, e) in sum.iter_mut().enumerate() {
                     *e += (y - pred[np + li]).powi(2);
@@ -3225,7 +3479,7 @@ mod tests {
             };
             assert_eq!(m.lam_selected()[1], path[want], "row {i}");
         }
-        assert_eq!(scored, 99, "every row of target 1 but its first");
+        assert_eq!(scored, 98, "every row of target 1 but its first two");
         assert_eq!(m.lam_selected()[1], 0.0, "the lighter penalty fits");
     }
 

@@ -520,6 +520,7 @@ fn rls_a_stronger_prior_reads_no_larger_h_and_the_same_bound() {
 fn lasso_reads_the_active_count_over_kish_n() {
     let (k, n, lam) = (5, 400, 0.98);
     let mut m = Lasso::new(LassoCfg {
+        min_weight_holds_learning: false,
         n_features: k,
         n_targets: 1,
         fit_intercept: true,
@@ -584,6 +585,7 @@ fn lasso_reads_the_active_count_over_kish_n() {
 /// at a literal `λ`.
 fn lasso(n_targets: usize, fit_intercept: bool, path: Vec<f64>, lam: f64) -> Lasso {
     Lasso::new(LassoCfg {
+        min_weight_holds_learning: false,
         n_features: 2,
         n_targets,
         fit_intercept,

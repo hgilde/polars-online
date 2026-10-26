@@ -267,6 +267,7 @@ fn ewridge_cfg() -> EwRidgeCfg {
 
 fn lasso_cfg() -> LassoCfg {
     LassoCfg {
+        min_weight_holds_learning: true,
         n_features: K,
         n_targets: 1,
         fit_intercept: true,
@@ -290,6 +291,7 @@ fn lasso_cfg() -> LassoCfg {
 
 fn kalman_cfg() -> KalmanCfg {
     KalmanCfg {
+        min_weight_holds_learning: true,
         noise_units: false,
         n_features: K,
         n_targets: 2,
@@ -622,6 +624,26 @@ pub fn all() -> Vec<Case> {
             Targets::Linear(1),
             40
         ),
+        // `min_weight` withholding the output alone (schema 64, docs/PLAN.md
+        // task 278, D10): the selection counts from the floor, a row per
+        // coefficient, and the gate, which the clock gap on row 36 takes the
+        // weight back under, withholds the continuation's first rows while
+        // the selection scores them. `lasso` and `lasso_window` are the form
+        // a state saved before it goes on in.
+        case!(
+            "lasso_floor",
+            "Lasso",
+            Lasso,
+            Lasso::new(LassoCfg {
+                min_weight_holds_learning: false,
+                min_weight: 10.0,
+                ..lasso_cfg()
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(1),
+            40
+        ),
         case!(
             "kalman",
             "Kalman",
@@ -660,6 +682,30 @@ pub fn all() -> Vec<Case> {
             K,
             Targets::LinearFrom(2, 3),
             3
+        ),
+        // The form a spec builds (schema 64, docs/PLAN.md task 278, D10):
+        // `P` in units of the noise and `min_weight` withholding the output
+        // alone, so the residual variance learns from the rows the gate
+        // withholds -- the continuation's first, after the clock gap on row
+        // 36 took the weight back under it -- and the explicit `q`, read
+        // over it, carries that into the predictions. `kalman`, `kalman_gap`
+        // and `kalman_noise_units` hold learning back, the form a state
+        // saved before goes on in.
+        case!(
+            "kalman_output_only",
+            "Kalman",
+            Kalman,
+            Kalman::new(KalmanCfg {
+                noise_units: true,
+                min_weight_holds_learning: false,
+                min_weight: 10.0,
+                q: Some(vec![1e-3, 1e-3, 1e-3]),
+                ..kalman_cfg()
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            40
         ),
         case!(
             "huber",

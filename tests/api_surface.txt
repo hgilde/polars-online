@@ -681,6 +681,7 @@
     model.fit_intercept = true
     model.half_life = [50.0]
     model.min_weight = 2.0
+    model.min_weight_holds_learning = false
     model.n_features = 1
     model.n_targets = 1
     model.noise_units = true
@@ -730,6 +731,7 @@
     model.max_iter = 100
     model.max_rows_between_solves = 4294967295
     model.min_weight = 2.0
+    model.min_weight_holds_learning = false
     model.n_features = 1
     model.n_targets = 1
     model.select_half_life = null

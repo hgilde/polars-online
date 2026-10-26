@@ -300,6 +300,7 @@ fn rls() {
 
 fn lasso_cfg() -> LassoCfg {
     LassoCfg {
+        min_weight_holds_learning: false,
         n_features: K,
         n_targets: 1,
         fit_intercept: true,
@@ -332,6 +333,7 @@ fn lasso() {
 /// form a state saved before it goes on in is held below too.
 fn kalman_cfg() -> KalmanCfg {
     KalmanCfg {
+        min_weight_holds_learning: false,
         noise_units: true,
         n_features: K,
         n_targets: 2,

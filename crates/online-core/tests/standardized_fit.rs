@@ -72,6 +72,7 @@ fn pa(mode: PaMode, fit_intercept: bool, constraint: Option<Constraint>) -> PaCf
 
 fn kalman(fit_intercept: bool, share_p: bool) -> KalmanCfg {
     KalmanCfg {
+        min_weight_holds_learning: false,
         noise_units: false,
         n_features: 2,
         n_targets: 2,
