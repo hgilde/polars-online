@@ -68,7 +68,7 @@ returns.
   - **Size of the move.** The test stream had 2,000 rows, two targets and 12.5% outliers. On it, 1,450 and 1,358 of 1,997 predictions move.
     - The largest move is 7.3 for `huber`, where a captured target is freed.
     - For `sgd` the largest moves are 4.1 and 1.0.
-  - **The way back.** **`huber_refit_rows=0` restores 1.3.0's numbers exactly.**
+  - **The way back.** **`huber_refit_rows=0` restores 1.3.0's numbers exactly for `huber`;** `sgd(loss="huber")` also moves by this release's `sgd` fixes (its clip and epsilon in the target's spread, its level rule), so it does not return to 1.3.0's numbers.
   - **Old states and banks.** A state saved by 1.0 to 1.3 loads with the refit off and continues exactly as before. A bank saved then keeps its groups that way. A group it first sees after the load refits under the default, and so does a group a drift reset restarts.
   - **Where it is off.** The refit is off by default, and refused when asked for, under `ridge_scale="sum"` and under an infinite `huber_delta`.
   - **Memory.** Each target holds its rows until the refit runs: `(features + 4) · 8` bytes a learned row, about 20 KB a target at one feature. A group shorter than the count holds its rows to the end, bounded by `refit_budget` (below). Measured over 5,000 groups of 150 rows, with two targets and 20 features:
@@ -175,6 +175,18 @@ returns.
 
 ### Fixed
 
+- `huber` and `sgd(loss="huber")` count a refit of a target's first rows
+  that takes every one of its IRLS passes in `solve_failures`, as `kmeans`
+  and `hmm` count a seeding run stopped at its cap; before, nothing said so
+  (task 278). The cap rises from 50 passes to 200: over 3,000 streams of 50
+  to 500 rows with a level added to up to 45% of the rows with x > 0, 50
+  passes ran out on 142 streams (none below 20% of the rows) and 200 run out
+  on 6 (all past 39%); each converges if run on, the slowest after 880
+  passes. A refit that converges is unchanged. A spec with fewer rows than
+  coefficients, whose refit is the ridge's fit and never meets the rule,
+  now takes 200 passes once per target (8.7 s at 1,000 features and 200
+  rows, where 50 passes took 1.9 s). `check()` names the refit when it
+  reports such a count.
 - `holt`'s level no longer drifts by its first observation's error (task
   278, D-H). Its level and trend each gained `1/n`, which pinned the trend
   to the first observation, `(l − y₁)/(t − t₁)`, and the level, adding the
@@ -301,7 +313,8 @@ returns.
   `max_rows_between_prunes=n` for the whole stream -- with `prune_every=7`
   on rows 7, 14, 21 and 28 (from 0) where the cap checkpointed on 6, 13, 20
   and 27 -- so `prune_every=100` was not the default's every 100 learned
-  rows. `ewridge`'s and `lasso`'s `solve_every` had the same one-row offset
+  rows. `ewridge`'s, `lasso`'s, `huber`'s and `quantile`'s `solve_every` had
+  the same one-row offset
   until their first solve at `min_weight`, seen in `coef` and
   `support_coef`. Streams with a clock column are unchanged, and saved
   states load and continue as before.

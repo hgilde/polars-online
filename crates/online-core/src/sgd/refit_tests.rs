@@ -337,3 +337,31 @@ fn a_sparse_target_gives_its_refit_up_past_the_cap() {
     assert!(st[1].done && !st[1].abandoned && st[1].passes > 0, "{st:?}");
     assert_eq!(m.refit[0].held(), 0);
 }
+
+/// Task 278: a refit that takes every one of its IRLS passes is counted in
+/// `solve_failures` (`huber`'s rule, read from the target's refit status):
+/// `slow_refit_stream(687)` runs to the cap of 200, trial 0's converges
+/// inside it.
+#[test]
+fn a_refit_that_runs_to_its_cap_is_counted() {
+    for (trial, capped) in [(687, true), (0, false)] {
+        let rows = crate::huber_refit::slow_refit_stream(trial);
+        let mut c = cfg(
+            rows.len() as u32,
+            false,
+            LearningRate::Constant,
+            Decay::Halflife(f64::INFINITY),
+        );
+        c.n_features = 1;
+        c.n_targets = 1;
+        let mut m = Sgd::new(c).unwrap();
+        assert_eq!(m.solve_failures(), 0);
+        for (x, y) in &rows {
+            m.step(&[*x], &[Some(*y)], 1.0, 1.0);
+        }
+        let st = m.refit_status()[0];
+        assert!(st.done && !st.failed, "trial {trial}: {st:?}");
+        assert_eq!(st.ran_to_cap(), capped, "trial {trial}: {st:?}");
+        assert_eq!(m.solve_failures(), u64::from(capped), "trial {trial}");
+    }
+}

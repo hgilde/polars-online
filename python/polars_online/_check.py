@@ -633,7 +633,7 @@ def _spec_findings(
                 f"sweeps {n_fail} times, common on correlated features: raise "
                 "max_iter or loosen tol if the path's coefficients matter",
             )
-        elif kind != "lasso" and n_fail:
+        elif kind == "sgd" and n_fail:
             add(
                 "warning",
                 "solve_failures",
@@ -641,9 +641,26 @@ def _spec_findings(
                 None,
                 float(n_fail),
                 0.0,
-                f"{_who(g).capitalize()} needed jitter or kept the previous fit "
-                f"{n_fail} times: the features are constant, collinear or too few "
-                "rows for their number",
+                f"{_who(g).capitalize()}'s refit of its first rows took every IRLS "
+                f"pass for {n_fail} targets: past about 20% of outliers on one side "
+                "the refit converges slowly, and its last pass's fit stands",
+            )
+        elif kind != "lasso" and n_fail:
+            what = (
+                "needed jitter, kept the previous fit or ran its refit of the first rows to "
+                "its pass cap"
+                if kind == "huber"
+                else "needed jitter or kept the previous fit"
+            )
+            add(
+                "warning",
+                "solve_failures",
+                g,
+                None,
+                float(n_fail),
+                0.0,
+                f"{_who(g).capitalize()} {what} {n_fail} times: the features are "
+                "constant, collinear or too few rows for their number",
             )
 
     # (13) group sizes far apart.

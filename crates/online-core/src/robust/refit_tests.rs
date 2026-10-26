@@ -309,3 +309,32 @@ fn the_refit_passes_are_not_solve_failures() {
         off.solve_failures
     );
 }
+
+/// Task 278: a refit that takes every one of its IRLS passes is counted in
+/// `solve_failures`, as a seeding's Lloyd run stopped at its cap is. The
+/// stream (`slow_refit_stream(687)`: 71 rows, a level added to 39% of the
+/// rows with `x > 0`) needs 880 passes to meet the rule, so it runs to the
+/// cap of 200; the stream of trial 0 converges well inside it and counts
+/// nothing.
+#[test]
+fn a_refit_that_runs_to_its_cap_is_counted() {
+    for (trial, capped) in [(687, true), (0, false)] {
+        let rows = crate::huber_refit::slow_refit_stream(trial);
+        let mut c = base(1.345, Decay::Halflife(f64::INFINITY), rows.len() as u32);
+        c.n_features = 1;
+        c.n_targets = 1;
+        let mut m = Robust::new(c).unwrap();
+        for (x, y) in &rows {
+            m.step(&[*x], &[Some(*y)], 1.0, 1.0);
+        }
+        let st = m.refit_status()[0];
+        assert!(st.done && !st.failed, "trial {trial}: {st:?}");
+        assert_eq!(st.ran_to_cap(), capped, "trial {trial}: {st:?}");
+        assert_eq!(
+            st.passes == REFIT_PASSES as u32,
+            capped,
+            "trial {trial}: {st:?}"
+        );
+        assert_eq!(m.solve_failures, u64::from(capped), "trial {trial}");
+    }
+}

@@ -1266,6 +1266,11 @@ impl Robust {
             self.solve_failures += 1;
             return;
         };
+        // A refit that took every pass is counted, as a seeding's Lloyd run
+        // stopped at its cap is (task 278): its fit stands, the last pass's.
+        if self.refit[j].status().ran_to_cap() {
+            self.solve_failures += 1;
+        }
         let scale = rebuild_scale(&rows, self.cfg.huber_scale, |i| {
             rows.y(i) - fitted(&b, rows.x(i), intercept)
         });
@@ -1906,6 +1911,12 @@ impl OnlineModel for Robust {
     /// The solve cadence measures its clock by the row's stamp (task 180).
     fn stamp_next(&mut self, stamp: crate::Stamp) {
         self.since_solve.stamp_next(stamp);
+    }
+
+    /// On the row clock the solve cadence counts from a row before the
+    /// first, as `max_rows_between_solves` does (task 278, D13).
+    fn stamp_next_on_rows(&mut self, stamp: crate::Stamp) {
+        self.since_solve.stamp_next_on_rows(stamp);
     }
 
     /// Each coefficient's data share from the last solve, per target

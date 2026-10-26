@@ -151,6 +151,27 @@ DECLARED: dict[tuple[str, str], str] = {
             "ew_class_window",
         )
     },
+    # Task 278, D7 and F3 (the next release's Fixed and Changed): `hmm`'s
+    # default seeding runs Lloyd's passes to a fixed point from greedy
+    # k-means++ starts. On the probe's rows it finds the same two means and
+    # numbers them the other way round (and in their last bits), so this
+    # build's own bank reads each state under the other's number (9.9e-1 in
+    # `filtered_state*` here). A file seeded by a release goes on exactly as
+    # that release did (measured against 1.3.0's own continuation, every
+    # value equal), as the entry says a state saved after seeding does.
+    ("hmm", "1.3.0"): "the next release, Fixed: `kmeans` and `hmm` seed with Lloyd's "
+    "passes to a fixed point, and may number their states differently",
+    # Task 278, D3 (the next release's Fixed, and rule 5's third exception,
+    # the user's): `lasso`'s `tol` is relative to the target's spread, so a
+    # file saved by 1.0-1.3 goes on within 1e-9 of this build's own, not to
+    # the bit (2.0e-10 at most here, in `full_lasso`'s diagnostics; 1.0e-11
+    # in `lasso_window`'s predictions, which 1.2.0 and older move by the
+    # window entry above too).
+    **{
+        (name, "1.3.0"): "the next release, Fixed: `lasso`'s `tol` is relative to the "
+        "target's spread"
+        for name in ("full_lasso", "lasso_window")
+    },
     # Task 278 (the next release's Fixed): with no `obs_var`, `kalman` holds
     # `P` in units of the noise, its gain reading no noise estimate, and its
     # intercept's prior is diffuse. A file of a release has no such form and
@@ -160,6 +181,36 @@ DECLARED: dict[tuple[str, str], str] = {
         (name, "1.3.0"): "the next release, Fixed: `kalman` holds its covariance in units of "
         "the noise, and its intercept's prior is diffuse"
         for name in ("kalman", "full_kalman", "kalman_standardized", "kalman_unsized", "seqtest")
+    },
+    # Task 278, D-H (the next release's Fixed; rule 5's fifth exception, the
+    # user's): `holt`'s gains are the larger of the exact weighted line
+    # fit's and the textbook's. A file of a release goes on with the gains it
+    # was fitted with (3.0e-2 in `holt`'s predictions here, 1.0e-1 in
+    # `full_holt`'s diagnostics).
+    **{
+        (name, "1.3.0"): "the next release, Fixed: `holt`'s gains are the larger of the "
+        "weighted line fit's and the textbook's"
+        for name in ("holt", "full_holt")
+    },
+    # Task 278, D1, D2 and D-S (the next release's Fixed): `sgd`'s clip and
+    # AdaGrad's epsilon are in the target's own spread, and its intercept
+    # takes the running mean's step while the fit learns the level. A file
+    # of a release loads with the flag off (`target_spread`) and goes on as
+    # it was fitted, where this build's own bank runs the new steps (3.5e-1
+    # in `sgd`'s predictions, 4.6e-1 in `sgd_quantile`'s, 4.2 in `full_sgd`'s
+    # diagnostics here). `sgd_huber` moved at 1.2.0 too, by the MAD entry.
+    **{
+        (name, "1.3.0"): "the next release, Fixed: `sgd` steps in its target's own spread "
+        "and learns its level"
+        for name in (
+            "sgd",
+            "full_sgd",
+            "sgd_quantile",
+            "sgd_epsilon_insensitive",
+            "sgd_adagrad",
+            "sgd_huber",
+            "sgd_huber_mad",
+        )
     },
 }
 
@@ -453,11 +504,14 @@ pl.concat(frames, how="horizontal").write_parquet(out)
 def test_no_refit_is_the_release_before_it_to_the_bit(tmp_path):
     """``huber_refit_rows = 0`` turns off the refit 1.4.0 put on by default,
     and gives back the numbers of the release before it, every field to the
-    bit: ``huber`` under both scales and with feature sets, and ``sgd``'s
-    Huber loss under each schedule, standardized, on 2,000 rows of two
-    targets at a level of 1,000 with 12.5% one-sided outliers, nulls and
+    bit: ``huber`` under both scales and with feature sets, on 2,000 rows of
+    two targets at a level of 1,000 with 12.5% one-sided outliers, nulls and
     zero weights, where the default's refit runs on both targets and moves
-    each (the activation check below)."""
+    each (the activation check below). ``sgd``'s Huber loss under each
+    schedule is held to the activation check alone: task 278's sgd group
+    (D1, D2, D-S: the clip, AdaGrad's epsilon and the intercept in the
+    target's own spread and level) moved its steps after the refit merged,
+    so with the refit off it no longer gives 1.3.0's numbers."""
     if not _online():
         pytest.skip("offline: the released wheel cannot be downloaded")
     rng = np.random.default_rng(12)
@@ -515,7 +569,8 @@ def test_no_refit_is_the_release_before_it_to_the_bit(tmp_path):
             pl.col(c).struct.unnest().name.prefix(f"{c}.") for c in frame.columns
         ).with_columns(pl.col(pl.Enum).cast(pl.String))
 
-    assert plain(run(0)).equals(plain(then), null_equal=True)
+    huber = [s["name"] for s in released if s["model"]["type"] == "huber"]
+    assert plain(run(0).select(huber)).equals(plain(then.select(huber)), null_equal=True)
     moved = run(None)
     for s in released:
         assert not moved[s["name"]].equals(then[s["name"]], null_equal=True), s["name"]

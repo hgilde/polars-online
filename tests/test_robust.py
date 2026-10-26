@@ -915,3 +915,37 @@ class TestTheQuantileSolveEvery:
 
 def _pred_of(out) -> np.ndarray:
     return out["pred_y"].fill_null(float("nan")).to_numpy().astype(float)
+
+
+@pytest.mark.parametrize("loss", ["huber", "quantile"])
+def test_on_the_row_clock_solve_every_is_its_row_cap(loss):
+    """Without a clock column the clock is the row's number, the first row
+    being 1, so before the first solve at ``min_weight`` (here never met)
+    ``solve_every=n`` solves on the rows ``max_rows_between_solves=n`` does.
+    Measured from the first row, whose step is 0, it solved a row later, the
+    whole stream long, which ``coef`` showed (task 278, D13)."""
+    rng = np.random.default_rng(0)
+    n = 60
+    x = rng.standard_normal(n)
+    df = pl.DataFrame({"x0": x, "x1": rng.standard_normal(n), "y0": 2.0 * x})
+    extra = {"huber_refit_rows": 0} if loss == "huber" else {"quantile": 0.5}
+
+    def run(**kw):
+        spec = getattr(po.spec, loss)(
+            "m",
+            targets=["y0"],
+            features=["x0", "x1"],
+            half_life=20.0,
+            min_weight=1e9,
+            max_rows_between_coefs=1,
+            **extra,
+            **kw,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", po.ReadinessWarning)
+            return po.ModelBank([spec]).fit_predict(df).unnest("m")
+
+    clock = run(solve_every=7.0)
+    assert clock.equals(run(solve_every=1e18, max_rows_between_solves=7), null_equal=True)
+    c = clock["coef"].to_list()
+    assert [i for i in range(1, n) if c[i] != c[i - 1]] == [6, 13, 20, 27, 34, 41, 48, 55]

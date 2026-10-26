@@ -923,7 +923,7 @@ v_i = w_i · λ_{i+1} ⋯ λ_n                 each buffered row's weight, decay
 r_i = y_i − z_i·β                         against the last pass's fit (the first pass: the online fit)
 σ   = weighted median of |r_i| at v_i', over 0.6745       (the weighted root mean square under "rms")
 u_i = min(1, δσ / |r_i|)
-β   = the ridge solve of the rows at v_i · u_i            repeated until β moves by under 1e-10 of max|β|, or 50 passes
+β   = the ridge solve of the rows at v_i · u_i            repeated until β moves by under 1e-10 of max|β|, or 200 passes
 ```
 
 It then rebuilds the target's sums from the rows at their converged
@@ -955,8 +955,11 @@ from 15 and 26 of 40 to 0 and 2. At 20% wild rows, 40% of those with `x`
 above 0, a first window of 200 rows can itself be captured, and one of 500
 rows now and then; 1,000 rows holds there. Over 20,000 rows 200 rows left
 the same 4 streams at 20% as 500 do, the worst by 0.18; over 2,000 rows the
-table shows what the longer default buys. `huber_refit_rows=0` turns the refit off, and gives the numbers
-of the releases before it, to the bit.
+table shows what the longer default buys. `huber_refit_rows=0` turns the refit off,
+and gives `huber` the numbers of the releases before it, to the bit; `sgd`'s
+steps have changed since (its clip, AdaGrad's epsilon and its intercept read the
+target's own spread and level), so for it the refit off is the one-pass fit of
+today's steps.
 
 **The refit holds each target's rows until it runs, then frees them.** A
 learned row takes `(features + 4) · 8` bytes. The rows that only aged the
@@ -978,7 +981,11 @@ that the refit has rows enough for its coefficients, and stops at 100
 features, where a target's rows would pass 0.8 MB. A count given is taken at
 any width: at 500 features and more, 200 rows are fewer than the
 coefficients' count, the fit is the ridge's, and the iteration runs to its
-cap of 50 passes, 7 s once at 1,000 features.
+cap of 200 passes, about 9 s once at 1,000 features (2 s at 500), which
+`solve_failures` counts. The cap was 50 passes, about 2 s at 1,000
+features; 200 is where the slow refits of heavy one-sided outliers end:
+over 3,000 streams of 50 to 500 rows with up to 45% of the rows on one side
+moved by a level, 50 passes ran out on 142 and 200 on 6, all six past 39%.
 
 **`refit_budget` bounds the buffers of all a spec's groups together: 256
 MiB by default, or `inf` for no bound.** Each new group reserves, when it
