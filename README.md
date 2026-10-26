@@ -3788,8 +3788,8 @@ for group in (None, "g"):
 ```text
 one group, after    10,000 rows: state 10 KB
 one group, after 1,000,000 rows: state 10 KB
-64 groups, after    10,000 rows: state 581 KB
-64 groups, after 1,000,000 rows: state 583 KB
+64 groups, after    10,000 rows: state 582 KB
+64 groups, after 1,000,000 rows: state 584 KB
 ```
 
 **For a statistic per group over a long stream, use a spec's `group=`,
@@ -4228,8 +4228,8 @@ the model's stated definition, the update equations its docstring gives:
 | a default or a meaning changed, or a stable name removed | major |
 | a change to an unstable part | minor, declared in the CHANGELOG |
 
-**One default has changed in a minor release, against the table's row for
-a changed default.** Release 1.3.0 moved `huber_scale` from `"rms"` to
+**Two defaults have changed in a minor release, against the table's row
+for a changed default.** Release 1.3.0 moved `huber_scale` from `"rms"` to
 `"mad"`. It is the scale `huber` and `sgd(loss="huber")` draw their cut in,
 and Huber's loss caps a row's pull at `huber_delta` times that scale. A root
 mean square is set by one wild row, so wild rows widened the cut meant to
@@ -4239,6 +4239,20 @@ deviation moves by a wild row's weight, whatever the size of its miss.
 saved under the old default loads under it. The CHANGELOG declares the
 move with its size, and [MODELS.md](docs/MODELS.md#huber--quantile--robust-regression)
 gives the slopes measured under each scale.
+
+Release 1.4.0 turned on `huber_refit_rows`, at 500. One pass weighs each
+row by the fit before it, so a share of wild rows can capture the first
+fits of `huber` and `sgd(loss="huber")`, and without decay the fit stays
+captured. At one-sided wild rows on an eighth of 20,000 rows, 13 of 40
+`huber` streams ended more than 0.05 from statsmodels' converged fit, and
+none with the refit. The refit fits each target's first 500 learned rows
+to convergence, once (10 a feature from 51 features, and off above 100),
+and rebuilds the scale from that fit's residuals.
+`huber_refit_rows=0` restores the earlier numbers to the bit. A state
+saved before it loads with the refit off, while a group a resumed bank
+first sees after the load, or one a drift reset starts over, refits under
+the default. The CHANGELOG declares the move with its size, and MODELS.md
+gives the capture measured with and without the refit.
 
 **A spec parameter renamed after 1.0 is forwarded by a table, and any
 other renamed name by a forwarding of its own.** The table reads a spec

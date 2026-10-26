@@ -18,7 +18,6 @@ once its label would really have been known. Two things have to be earned:
    gone.
 """
 
-import inspect
 import math
 import subprocess
 from datetime import time
@@ -30,7 +29,6 @@ import pytest
 import polars_online as po
 from conftest import run_online
 from polars_online import stream
-from test_diagnostic_isolation import BEFORE_277
 from test_model_registry import MINIMAL
 
 TIER = "mixed"
@@ -1047,14 +1045,12 @@ EVERY_KIND = pytest.mark.extended(reason="the sweep over every kind that takes a
 #: rows it still holds.
 REFUSE_EMBARGO = {"audit": "embargo", "rcov": "group_close does not work with embargo"}
 
-#: Task 277 changes `huber`'s warm-up and gives `sgd(loss="huber")` the same;
-#: their legs join the sweeps when it merges (`test_the_huber_legs_still_wait`
-#: says when) and build and run today (`test_the_waiting_legs_are_ready`).
-AFTER_TASK_277: dict[str, tuple[str, dict]] = {
-    "huber": ("huber", {}),
+#: A sweep name that is not a kind: `sgd`'s Huber loss, with the refit of
+#: its first rows on as `huber`'s is (task 277).
+VARIANT_OF: dict[str, tuple[str, dict]] = {
     "sgd_huber": ("sgd", {"learning_rate": 0.01, "loss": "huber"}),
 }
-TAKE_EMBARGO = sorted(set(MINIMAL) - set(REFUSE_EMBARGO) - set(AFTER_TASK_277))
+TAKE_EMBARGO = sorted((set(MINIMAL) - set(REFUSE_EMBARGO)) | set(VARIANT_OF))
 #: The kinds with no half-life (MINIMAL sets it to None).
 NO_HALF_LIFE = frozenset(
     k for k, v in MINIMAL.items() if "half_life" in v and v["half_life"] is None
@@ -1098,7 +1094,7 @@ def irregular_steps(n: int, top: int, seed: int = 3) -> np.ndarray:
 def kind_spec(kind: str, **kw) -> dict:
     """``kind`` as MINIMAL builds it on these frames, ``kw`` on top; a key
     given None is left out."""
-    builder, own = AFTER_TASK_277.get(kind, (kind, {}))
+    builder, own = VARIANT_OF.get(kind, (kind, {}))
     a: dict[str, object] = {"targets": ["y"], "features": ["x0", "x1"], "half_life": 50.0}
     a.update(MINIMAL[builder])
     a.update(own)
@@ -1131,7 +1127,7 @@ def test_the_kinds_left_out_refuse_an_embargo():
         with pytest.raises(ValueError, match=words):
             kind_spec(kind, embargo=5.0)
     # And every other kind takes one.
-    for kind in TAKE_EMBARGO + sorted(AFTER_TASK_277):
+    for kind in TAKE_EMBARGO:
         kind_spec(kind, embargo=5.0)
 
 
@@ -1257,6 +1253,8 @@ SCORED_OVER_ITS_OWN_STEP: dict[str, tuple[str, ...]] = {
     "hmm": ("predicted_state0", "predicted_state1", "loglik"),
     "micro": ("micro_id", "outlier"),
     "sgd": ("pred_y", "resid_y"),
+    # sgd's scaler, the same defect under its Huber loss (task 277).
+    "sgd_huber": ("pred_y", "resid_y"),
     "pa": ("pred_y", "resid_y"),
     "kalman-error-inflation": ("error_inflation_y",),
 }
@@ -1393,6 +1391,7 @@ DOUBLED: dict[str, dict] = {
     "ew_cov": {},
     "ewridge": {},
     "ftrl": {},
+    "huber": {},
     "kmeans": {},
     "lasso": {},
     "marginal": {},
@@ -1402,6 +1401,7 @@ DOUBLED: dict[str, dict] = {
     # With the scaler off; on, `NOT_DOUBLED` says why not.
     "sgd": {"standardize": False},
     "pa": {"standardize": False},
+    "sgd_huber": {"standardize": False},
 }
 
 #: The kinds it is not the reference for, why, and how each is shown to
@@ -1638,35 +1638,3 @@ class TestADelayShorterThanEveryStep:
         )
         assert same(plain["weight_sum"], oracle["weight_sum"])
         assert not same(plain["pred_y"], oracle["pred_y"])
-
-
-# -- the legs that wait for task 277 -----------------------------------------
-
-
-@pytest.mark.parametrize("kind", sorted(AFTER_TASK_277))
-def test_the_waiting_legs_are_ready(kind):
-    """The `huber` legs build and run every relation above, so adding them
-    is a move into the sweeps (`TAKE_EMBARGO` and `DOUBLED`), not a build."""
-    df = kind_frame(kind)
-    kw = {"weight": "w", "coef_every": 0}
-    assert unnested(kind_spec(kind, embargo=5.0, **kw), df).height == df.height
-    native, oracle = doubled_against_native(kind, 5.0)
-    assert native.height == oracle.height == df.height
-    short = short_frame(kind)
-    assert unnested(kind_spec(kind, clock="t", gap_cap=1e9, embargo=SHORT), short).height == 400
-    bank = po.ModelBank([kind_spec(kind, clock="t", gap_cap=1e9)])
-    bank.fit_predict(short.head(100))
-    assert bank.predict(short.slice(120, 1)).height == 1
-
-
-def test_the_huber_legs_still_wait():
-    """Task 277's warm-up is a parameter ``po.spec.huber`` (or ``po.spec.sgd``)
-    did not take before it. When one arrives, move ``AFTER_TASK_277``'s
-    entries into the sweeps."""
-    for builder, before in BEFORE_277.items():
-        now = set(inspect.signature(getattr(po.spec, builder)).parameters)
-        new = sorted(now - before)
-        assert not new, (
-            f"po.spec.{builder} gained {new}: if this is task 277's warm-up, move "
-            f"AFTER_TASK_277's entries into the sweeps"
-        )

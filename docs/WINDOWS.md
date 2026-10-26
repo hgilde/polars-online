@@ -639,9 +639,13 @@ fixed number of rows late. The doubled stream lags it by the clock, as an
 own stamp counts there.
 
 **For the scale of a model's residual, use the scale `po.spec.huber` can
-emit.** It is the model's own robust scale of its out-of-sample residuals,
-read before the row, and it takes each residual in when the row is
-learned, so the spec's `embargo` holds it back as it holds back the fit.
+emit.** It is the model's own robust scale of its residuals, read before
+the row, and it takes each residual in when the row is learned, so the
+spec's `embargo` holds it back as it holds back the fit. Each residual is
+out of sample, except that a target's first 200 learned rows enter it,
+once those rows are refit to convergence, as residuals against that fit
+(`huber_refit_rows`); a row's own residual never enters the scale it is
+emitted with.
 
 Here `ret`'s label arrives 5 rows late. The recipe computes its EW-MAD on
 each row from the labels that have arrived, and checks row 250 by hand

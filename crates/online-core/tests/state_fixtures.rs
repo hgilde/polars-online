@@ -86,6 +86,16 @@ use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 /// the RMS's, so each converts to the current bytes exactly, and the MAD's
 /// form is the new cases `huber_mad` and `sgd_huber_mad`.
 ///
+/// 63 kept since 64 gave `huber` and `sgd(loss = "huber")` the refit of
+/// each target's first rows (docs/PLAN.md task 277): a 63 state has no
+/// `refit_rows` and no buffers and was fitted without a refit, so it loads
+/// with `refit_rows = 0` and none, and goes on to the bit, never refitting
+/// rows its stream has long passed; every kept case is the refit's off
+/// form, so each converts to the current bytes exactly, and the refit's
+/// forms are the new cases `huber_refit` and `sgd_huber_refit`, saved
+/// with their buffers half full, and `huber_refit_done` and
+/// `sgd_huber_refit_done`, saved after the refit.
+///
 /// The windowed cases convert otherwise since the running products
 /// (schema 63 before its release, docs/PLAN.md task 275): a ring saved
 /// without them loads with none, so the first read after loading is the
@@ -137,7 +147,7 @@ macro_rules! previous {
     };
 }
 
-previous![61, 62];
+previous![61, 62, 63];
 
 /// The cases whose numbers a later fix moved without touching the layout,
 /// each with how far its continuation may part from a previous set's
@@ -913,6 +923,71 @@ fn every_layout_a_schema_moved_is_written_by_a_fixture() {
             inner.join("."),
             list.join(".")
         );
+    }
+}
+
+/// The refit's forms (schema 64, docs/PLAN.md task 277): `huber_refit` and
+/// `sgd_huber_refit` are saved with every target's buffer part full -- rows
+/// held, fewer learned than the configuration's count -- and their
+/// continuations fill them, so the refit runs on a row the fixture holds;
+/// `huber_refit_done` and `sgd_huber_refit_done` are saved after it, every
+/// buffer done and empty. The cases with the refit off write no buffer.
+#[test]
+fn the_refit_is_written_part_full_and_done() {
+    if regenerating() {
+        return;
+    }
+    let buffers = |bytes: &[u8], variant: &str| -> (u64, Vec<(bool, u64, usize)>) {
+        let v = rmpv::decode::read_value(&mut &bytes[..]).unwrap();
+        let cap = at(&v, &["model", variant, "cfg", "refit_rows"])
+            .and_then(rmpv::Value::as_u64)
+            .unwrap_or_else(|| panic!("{variant}: cfg.refit_rows"));
+        let list = at(&v, &["model", variant, "refit"])
+            .and_then(rmpv::Value::as_array)
+            .unwrap_or_else(|| panic!("{variant}: refit"))
+            .iter()
+            .map(|b| {
+                let done = at(b, &["done"]).and_then(rmpv::Value::as_bool).unwrap();
+                let learned = at(b, &["learned"]).and_then(rmpv::Value::as_u64).unwrap();
+                (done, learned, held(at(b, &["rows"]).unwrap()))
+            })
+            .collect();
+        (cap, list)
+    };
+    for (name, variant) in [("huber_refit", "Robust"), ("sgd_huber_refit", "Sgd")] {
+        let f = frozen::ALL.iter().find(|f| f.name == name).unwrap();
+        let (cap, list) = buffers(&f.bytes(), variant);
+        assert_eq!(list.len(), 2, "{name}: a buffer a target");
+        for (done, learned, rows) in &list {
+            assert!(
+                !done && *learned > 0 && *learned < cap && *rows > 0,
+                "{name}: {list:?}"
+            );
+        }
+        let mut m = load(&case_of(f), &f.bytes()).unwrap();
+        for row in f.rows() {
+            m.step(&row);
+        }
+        let (_, after) = buffers(&named(&m.state()), variant);
+        assert!(
+            after.iter().all(|(done, _, rows)| *done && *rows == 0),
+            "{name}: the continuation does not reach the refit: {after:?}"
+        );
+    }
+    for (name, variant) in [
+        ("huber_refit_done", "Robust"),
+        ("sgd_huber_refit_done", "Sgd"),
+    ] {
+        let f = frozen::ALL.iter().find(|f| f.name == name).unwrap();
+        let (cap, list) = buffers(&f.bytes(), variant);
+        assert_eq!(list.len(), 2, "{name}: a buffer a target");
+        for (done, learned, rows) in &list {
+            assert!(*done && *learned == cap && *rows == 0, "{name}: {list:?}");
+        }
+    }
+    for (name, variant) in [("huber", "Robust"), ("sgd_huber", "Sgd")] {
+        let f = frozen::ALL.iter().find(|f| f.name == name).unwrap();
+        assert_eq!(buffers(&f.bytes(), variant), (0, vec![]), "{name}");
     }
 }
 

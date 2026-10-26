@@ -2,7 +2,7 @@
 // The frozen state fixtures, one file a case of tests/cases/mod.rs.
 
 /// The schema every fixture here was written at.
-pub const SCHEMA: u32 = 63;
+pub const SCHEMA: u32 = 64;
 
 pub mod ew_cov_accumulator {
     include!("ew_cov_accumulator.rs");
@@ -46,6 +46,12 @@ pub mod huber_sets {
 pub mod huber_sum {
     include!("huber_sum.rs");
 }
+pub mod huber_refit {
+    include!("huber_refit.rs");
+}
+pub mod huber_refit_done {
+    include!("huber_refit_done.rs");
+}
 pub mod quantile {
     include!("quantile.rs");
 }
@@ -69,6 +75,12 @@ pub mod sgd_huber {
 }
 pub mod sgd_huber_mad {
     include!("sgd_huber_mad.rs");
+}
+pub mod sgd_huber_refit {
+    include!("sgd_huber_refit.rs");
+}
+pub mod sgd_huber_refit_done {
+    include!("sgd_huber_refit_done.rs");
 }
 pub mod sgd_eps {
     include!("sgd_eps.rs");
@@ -162,6 +174,8 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &huber_mad::FIXTURE,
     &huber_sets::FIXTURE,
     &huber_sum::FIXTURE,
+    &huber_refit::FIXTURE,
+    &huber_refit_done::FIXTURE,
     &quantile::FIXTURE,
     &ftrl::FIXTURE,
     &ew_cov::FIXTURE,
@@ -170,6 +184,8 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &sgd_warming::FIXTURE,
     &sgd_huber::FIXTURE,
     &sgd_huber_mad::FIXTURE,
+    &sgd_huber_refit::FIXTURE,
+    &sgd_huber_refit_done::FIXTURE,
     &sgd_eps::FIXTURE,
     &sgd_logistic::FIXTURE,
     &pa::FIXTURE,

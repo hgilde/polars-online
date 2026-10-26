@@ -80,6 +80,9 @@ CASES: dict[str, tuple[Any, dict[str, Any], bool]] = {
     "kalman": (po.spec.kalman, {"coef_half_life": 100.0}, True),
     "lasso": (po.spec.lasso, {"penalties": [0.01]}, False),
     "huber": (po.spec.huber, {}, False),
+    # sgd's Huber loss: its refit of the first rows (default 500) runs again
+    # on the rebuilt model, 500 learned rows after the reset.
+    "sgd huber": (po.spec.sgd, {"loss": "huber", "learning_rate": 0.02}, False),
     "quantile": (po.spec.quantile, {"quantile": 0.5}, False),
     "pa": (po.spec.pa, {}, False),
     "ftrl": (po.spec.ftrl, {"loss": "squared"}, False),
@@ -181,7 +184,7 @@ def first_fire(out: pl.DataFrame) -> int:
     t = fired[0]
     print(f"fired {len(fired)}x, first at row {t} (break at {N // 2})")
     assert t >= N // 2, f"a fire at {t}, before the break at {N // 2}"
-    assert t < N - 200, f"the fire at {t} leaves too few rows after it to compare"
+    assert t < N - 700, f"the fire at {t} leaves too few rows after it to compare"
     return t
 
 
@@ -242,3 +245,31 @@ def test_chunking_and_save_load_across_the_reset(name, df, tmp_path):
     rest = df.slice(t + 1)
     assert_frame_equal(pl.concat([head, run(b, rest)]), one, check_exact=True)
     assert_frame_equal(run(a, rest), one.slice(t + 1), check_exact=True)
+
+
+@pytest.mark.parametrize("name", ["huber", "sgd huber"])
+def test_the_refit_starts_over_after_a_reset(name, df, tmp_path):
+    """A reset rebuilds the model as a fresh bank would, its refit buffer
+    empty: the refit of the first 500 learned rows runs before the break and
+    again 500 rows after the reset, each moving the fit (the run without it,
+    ``huber_refit_rows = 0``, parts there and not before). A save and a load
+    between the reset and the second refit, and after it, go on to the bit."""
+    s = spec(name)
+    off = {**s, "model": {**s["model"], "huber_refit_rows": 0}}
+    one = run(po.ModelBank([s], threads=1), df)
+    t = first_fire(one)
+    zero = run(po.ModelBank([off], threads=1), df)
+    p, q = (f["pred_y"].to_numpy() for f in (one, zero))
+    differ = np.flatnonzero(~((p == q) | (np.isnan(p) & np.isnan(q))))
+    assert differ.size and differ[0] > 499, "the first refit is on the 500th row"
+    # From the row after the reset both are fresh banks: equal until the
+    # second refit, on the 500th row after it, and apart after it.
+    after = differ[differ > t]
+    assert after.size and after[0] > t + 500, (t, after[:3])
+    for cut in (t + 250, t + 600):
+        a = po.ModelBank([s], threads=1)
+        head = run(a, df.slice(0, cut))
+        path = tmp_path / f"refit-{cut}.state"
+        a.save(path)
+        b = po.ModelBank.load(path, specs=[s], threads=1)
+        assert_frame_equal(pl.concat([head, run(b, df.slice(cut))]), one, check_exact=True)

@@ -24,7 +24,6 @@ the oracle's arithmetic is exact:
 
 from __future__ import annotations
 
-import inspect
 import json
 from datetime import datetime, timedelta
 
@@ -33,7 +32,6 @@ import polars as pl
 import pytest
 
 import polars_online as po
-from test_diagnostic_isolation import BEFORE_277
 from test_model_registry import MINIMAL
 
 TIER = "mixed"
@@ -523,12 +521,11 @@ BESIDE = {
 #: The kinds that take ``emit_sigma``: those with a target to score.
 SCORED = frozenset({"ewridge", "lasso", "rls", "kalman", "quantile", "ftrl", "sgd", "pa", "holt"})
 
-#: Task 277 changes these two's warm-up; their legs join the sweeps below
-#: when it merges (``test_the_huber_legs_still_wait`` says when). They build
-#: and run today (``test_the_waiting_legs_are_ready``).
-AFTER_TASK_277 = {"huber": {}, "sgd_huber": {"loss": "huber"}}
-#: The sweeps' kinds: every kind with a coef, but the two that wait.
-SWEPT = [k for k in KINDS if k not in AFTER_TASK_277]
+#: A sweep name that is not a kind: ``sgd``'s Huber loss, with the refit of
+#: its first rows on as ``huber``'s is (task 277).
+VARIANT_OF = {"sgd_huber": {"loss": "huber"}}
+#: The sweeps' kinds: every kind with a coef, and ``sgd``'s Huber loss.
+SWEPT = [*KINDS, *VARIANT_OF]
 #: One regression, with every field laid out like ``coef``, and one model
 #: with no target: the essentials' legs.
 ESSENTIAL_KINDS = ("ewridge", "kmeans")
@@ -545,7 +542,7 @@ def swept(name: str, **kw) -> dict:
     """The sweep's spec of ``name`` on the temporal clock, with what it
     writes beside ``coef``."""
     builder = "sgd" if name == "sgd_huber" else name
-    extra = {**AFTER_TASK_277.get(name, {}), **BESIDE.get(name, {})}
+    extra = {**VARIANT_OF.get(name, {}), **BESIDE.get(name, {})}
     if builder in SCORED:
         extra.setdefault("emit_sigma", True)
     return temporal(builder, emit_clocks=True, **extra, **kw)
@@ -617,30 +614,7 @@ class TestOnlyTheCoefficientsMove:
         assert parts.equals(whole, null_equal=True)
 
 
-@pytest.mark.parametrize("name", sorted(AFTER_TASK_277))
-def test_the_waiting_legs_are_ready(name):
-    """The ``huber`` legs build and run under every cadence, so adding them
-    is a move into ``SWEPT``, not a build."""
-    df = frame(irregular())
-    for cadence in CADENCES:
-        out = run(swept(name, **cadence), df)
-        assert out.height == df.height and out["coef"].null_count() < df.height
-
-
-def test_the_huber_legs_still_wait():
-    """Task 277's warm-up is a parameter ``po.spec.huber`` (or ``po.spec.sgd``)
-    did not take before it. When one arrives, move ``AFTER_TASK_277``'s
-    entries into the sweeps."""
-    for builder, before in BEFORE_277.items():
-        now = set(inspect.signature(getattr(po.spec, builder)).parameters)
-        new = sorted(now - before)
-        assert not new, (
-            f"po.spec.{builder} gained {new}: if this is task 277's warm-up, move "
-            f"AFTER_TASK_277's entries into SWEPT"
-        )
-
-
-def test_every_kind_with_a_coef_is_swept_or_waits():
+def test_every_kind_with_a_coef_is_swept():
     """A kind that gains a ``coef`` joins ``KINDS``, and so the sweeps."""
     with_coef = {
         k
@@ -648,7 +622,7 @@ def test_every_kind_with_a_coef_is_swept_or_waits():
         if "coef" in po.spec.output_fields(getattr(po.spec, k)("m", **_minimal(k)))
     }
     assert with_coef == set(KINDS), with_coef ^ set(KINDS)
-    assert set(SWEPT) | (set(AFTER_TASK_277) & set(KINDS)) == set(KINDS)
+    assert set(SWEPT) - set(VARIANT_OF) == set(KINDS)
 
 
 def _minimal(kind: str) -> dict:

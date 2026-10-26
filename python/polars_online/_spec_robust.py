@@ -29,6 +29,8 @@ def huber(
     feature_sets: dict[str, list[str]] | None = None,
     ridge_scale: Literal["mean", "sum"] = "mean",
     emit_huber_scale: bool = False,
+    huber_refit_rows: int | None = None,
+    refit_budget: float | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Huber regression: :func:`ewridge` with the rows that miss by far
@@ -97,17 +99,48 @@ def huber(
        * - 5%
          - 4.050
          - 2.040
-         - 2.676
+         - 2.675
          - 2.039
        * - 12.5%
          - 6.975
-         - 2.128
-         - 4.885
+         - 2.124
+         - 4.882
          - 2.124
 
-    One pass over the rows, each weighted once by its residual against the fit
-    before it, lands within 0.005 of the batch estimate that iterates to
-    convergence at these levels.
+    .. rubric:: The refit of the first rows
+
+    One pass weighs each row by the fit before it. Over the first rows that
+    fit is close to least squares, so a share of outliers pulls it, and
+    ``s`` learns the pulled fit's residuals. The cut ``d * s`` is then wide,
+    the outliers keep entering at nearly full weight, and without decay the
+    fit stays where they pulled it. A median over a few streams hides this:
+    on the stream above, 20,000 rows at 12.5% outliers, the median stream was
+    within 0.002 of statsmodels' ``RLM``, while 13 of 40 streams ended more
+    than 0.05 from it, the worst by 0.43. So on the row a target's count of
+    learned rows reaches ``huber_refit_rows``, those rows are refit by
+    iteratively reweighted least squares, as a batch fit does:
+
+    .. code-block:: text
+
+        v_i = w_i * (the decay factors of the rows after i)
+              v_i' the same by the scale's clock (huber_scale_half_life)
+        r_i = y_i - z_i'b                  against the last pass's fit
+        s   = weighted median of |r_i| at v_i', over 0.6745  (root mean square under "rms")
+        u_i = min(1, d * s / |r_i|)
+        b   = the ridge solve of the rows at v_i * u_i
+        repeated until b moves by under 1e-10 of max|b|, or 50 passes
+
+    The target's sums are then rebuilt from the rows at their converged
+    weights, and ``s`` from the converged fit's residuals, and the stream goes
+    on online. Over 20,000 rows with the refit no stream of the 40 was more
+    than 0.05 from ``RLM`` at 5% to 15% outliers, and 4 at 20%, where 25 were
+    without it. Over 2,000 rows the tail is longer: at 20%, 10 of 40 streams
+    stayed more than 0.05 away with the default, 1 of them more than 0.25
+    (by 0.32), where 29 were without it; ``huber_refit_rows=200`` left 18, 5
+    of them more than 0.25 (the worst by 5.8), and ``huber_refit_rows=1000``
+    left 3, none more than 0.25.
+    It runs after the row's own prediction, and moves its own target's fit
+    alone.
 
     Both scales age on every row the model sees, a row with no prediction or
     with weight 0 included, so they forget across a gap as the clock says, and
@@ -204,6 +237,37 @@ def huber(
         ``ewridge(ridge_scale="sum")`` is its least-squares form. ``"sum"``
         is refused beside ``standardize`` and beside two or more
         ``feature_sets``.
+    ``huber_refit_rows``
+        The learned rows (each of positive weight, with its target) after which each
+        target's first rows are refit to convergence, once (the rubric above). Default
+        ``max(500, 10 * features)`` up to 100 features, and off above 100, where the
+        rows a target holds would pass 0.8 MB; a count given is always taken. Over
+        20,000 rows at 20% one-sided outliers, 50 rows left 14 of 40 streams more than
+        0.05 from ``RLM``, 200 and 500 left 4 and 1,000 left 2; over 2,000 rows, 200
+        left 18, 500 left 10 and 1,000 left 3. A group shorter than the count never
+        refits, and holds its rows to the end. ``0`` turns the refit off, which gives
+        the numbers of the releases before it, to the bit. A target's rows are held
+        until its refit: ``(features + 4) * 8`` bytes a learned row, and 32 bytes a run
+        of rows that only aged it (its value null or its weight 0), one run for such
+        rows in a row at one clock step. Past 4 runs a learned row of the count, as on
+        a target present on fewer than about one row in five under an irregular clock,
+        the target gives its refit up and keeps its one-pass fit. The refit takes 0.06
+        to 7.2 ms once, for 1 to 50 features and 200 to 1,000 rows (an Apple M4 Pro
+        under other load, best of 9). Off by default, and refused when given, beside
+        ``ridge_scale = "sum"``, whose prior has aged with every row before the first,
+        and beside an infinite ``huber_delta``, least squares.
+    ``refit_budget``
+        A bound in MiB on the refit buffers of all the spec's groups together, above
+        0, or ``inf`` for none. Default 256. Each new group reserves the most its
+        targets' buffers can hold when it first appears, ``(features + 20) * 8`` bytes
+        a target for each row of the count (the row and its 4 runs), and keeps it
+        for the life of the bank, so which groups refit depends neither on the chunking
+        nor on the order the groups run in. The group that would cross the bound, and
+        every new group after it, gives its refit up and keeps its one-pass fit: a
+        notice says so once, and ``summary()``'s ``refit_given_up`` counts the targets.
+        A group's reservation is not handed back when its refit frees its buffer, so
+        once the bound is reached no later group refits. At 20 features and 500 rows a
+        target reserves 160 KB, and 256 MiB refits the first 1,677 targets.
     ``emit_huber_scale``
         Emit ``huber_scale_<t>``, each target's residual scale ``s`` as the
         row's cut reads it: after the row's decay and before the row's own
@@ -282,6 +346,8 @@ def huber(
         # Written only away from their defaults, which the Rust spec skips.
         "ridge_scale": None if ridge_scale == "mean" else ridge_scale,
         "emit_huber_scale": True if emit_huber_scale else None,
+        "huber_refit_rows": huber_refit_rows,
+        "refit_budget": refit_budget,
     }
     # Written only when given: the Rust spec skips them when absent.
     skipped = _SKIPPED_WHEN_ABSENT["huber"]

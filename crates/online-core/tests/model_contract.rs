@@ -389,6 +389,7 @@ fn robust_cfg(loss: RobustLoss) -> RobustCfg {
         feature_sets: Vec::new(),
         ridge_scale: false,
         emit_scale: false,
+        refit_rows: 0,
     }
 }
 
@@ -459,6 +460,7 @@ fn sgd_cfg() -> SgdCfg {
         min_weight: 3.0,
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
+        refit_rows: 0,
     }
 }
 

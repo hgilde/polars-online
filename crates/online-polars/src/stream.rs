@@ -235,6 +235,36 @@ impl AnyModel {
         }
     }
 
+    /// The bytes the model's Huber refit buffers can hold at most
+    /// (`refit_reservation`, docs/PLAN.md task 277): 0 for a model without
+    /// the refit.
+    pub fn refit_reservation(&self) -> usize {
+        match self {
+            AnyModel::Robust(m) => m.refit_reservation(),
+            AnyModel::Sgd(m) => m.refit_reservation(),
+            _ => 0,
+        }
+    }
+
+    /// Give the model's refits up, past its spec's `refit_budget`; a no-op
+    /// for a model without the refit.
+    pub fn refit_give_up(&mut self) {
+        match self {
+            AnyModel::Robust(m) => m.refit_give_up(),
+            AnyModel::Sgd(m) => m.refit_give_up(),
+            _ => {}
+        }
+    }
+
+    /// How each target's refit stands; empty for a model without it.
+    pub fn refit_status(&self) -> Vec<online_core::RefitStatus> {
+        match self {
+            AnyModel::Robust(m) => m.refit_status(),
+            AnyModel::Sgd(m) => m.refit_status(),
+            _ => Vec::new(),
+        }
+    }
+
     /// The step's answer without the step
     /// ([`OnlineModel::predict_with`]). `y` is passed because two models
     /// read a number out of the targets slot -- `bocpd`'s hazard column and
@@ -1822,6 +1852,22 @@ pub struct Persisted {
     /// written before it existed.
     #[serde(default)]
     pub decay_time: Vec<f64>,
+    /// Per model instance, whether it was restarted (a drift reset without
+    /// an `embargo`) and has learned no row since: its next accepted row
+    /// reads a step of 0, as a fresh stream's first row does
+    /// (`Instance::reset`, `run_instance`). Schema 64 (docs/PLAN.md task
+    /// 277); a file written before it holds none, which loads as `false`
+    /// for every instance.
+    #[serde(default)]
+    pub restarted: Vec<bool>,
+    /// Whether the bank gave this group's Huber refits up, past its spec's
+    /// `refit_budget` (docs/PLAN.md task 277): the models a reset rebuilds
+    /// give theirs up too, so the group never holds a buffer the bank did
+    /// not reserve for it. Schema 64; `false` in a file written before it,
+    /// and not written while `false`, so a stream that never met the budget
+    /// saves the bytes it did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub refit_over_budget: bool,
     /// Per model instance, the clock the rows held under `embargo` have
     /// covered and the model has not decayed by yet, which `settled_frac`
     /// adds (`Instance::pending_clock`). Kept, not rebuilt at each chunk:
@@ -2304,6 +2350,36 @@ impl Stream {
     }
 
     /// Summed over this stream's model instances (one per half-life).
+    /// The bytes this group's Huber refit buffers can hold at most, over
+    /// its model instances: what a bank reserves against the spec's
+    /// `refit_budget` (docs/PLAN.md task 277).
+    pub fn refit_reservation(&self) -> usize {
+        self.models.iter().map(|(_, m)| m.refit_reservation()).sum()
+    }
+
+    /// Give this group's Huber refits up, past its spec's `refit_budget`:
+    /// every model's, and those a reset rebuilds later.
+    pub fn refit_give_up(&mut self) {
+        self.persisted.refit_over_budget = true;
+        self.models.iter_mut().for_each(|(_, m)| m.refit_give_up());
+    }
+
+    /// Whether the bank gave this group's refits up past the budget.
+    pub fn refit_over_budget(&self) -> bool {
+        self.persisted.refit_over_budget
+    }
+
+    /// The targets, over the model instances, whose Huber refit was given
+    /// up: past the spec's `refit_budget`, or past the cap on a buffer's
+    /// ageing runs.
+    pub fn refits_given_up(&self) -> u64 {
+        self.models
+            .iter()
+            .flat_map(|(_, m)| m.refit_status())
+            .filter(|r| r.over_budget || r.abandoned)
+            .count() as u64
+    }
+
     pub fn solve_failures(&self) -> u64 {
         self.models.iter().map(|(_, m)| m.solve_failures()).sum()
     }
@@ -2784,6 +2860,8 @@ impl Stream {
                 last_row: None,
                 summary: Some(DataSummary::new(spec)),
                 decay_time: vec![0.0; instances],
+                restarted: vec![false; instances],
+                refit_over_budget: false,
                 // Only a delay ever holds rows: without one there is no
                 // clock to keep, and none is written.
                 pending_clock: if embargo.is_some() {
@@ -2885,6 +2963,18 @@ impl Stream {
                 "saved state's decay time has {} entries where this spec keeps {}",
                 p.decay_time.len(),
                 fresh.decay_time.len()
+            ));
+        }
+        // The restart marks, one per instance: none in a file written
+        // before schema 64, which loads as no instance restarted; any
+        // other length is damage, refused as the decay time is.
+        if p.restarted.is_empty() {
+            p.restarted = fresh.restarted.clone();
+        } else if p.restarted.len() != fresh.restarted.len() {
+            return Err(format!(
+                "saved state's restart marks have {} entries where this spec keeps {}",
+                p.restarted.len(),
+                fresh.restarted.len()
             ));
         }
         if p.notified.len() != fresh.notified.len() {
@@ -3583,8 +3673,10 @@ impl Stream {
             scratch: &mut self.scratch,
             score_pred: &mut self.persisted.score_pred,
             decay_time: &mut self.persisted.decay_time,
+            restarted: &mut self.persisted.restarted,
             pending_clock: &mut self.persisted.pending_clock,
             notified: &mut self.persisted.notified,
+            refit_over_budget: self.persisted.refit_over_budget,
         };
         let mut insts = build_instances(
             spec,
@@ -3892,6 +3984,7 @@ impl Stream {
         // Scoring learns nothing, so the decay time does not move and no
         // notice a scoring row might raise is kept.
         let mut decay_time = self.persisted.decay_time.clone();
+        let mut restarted = self.persisted.restarted.clone();
         let mut pending_clock = self.persisted.pending_clock.clone();
         let mut notified = self.persisted.notified.clone();
         let diag = Diagnostics {
@@ -3906,8 +3999,10 @@ impl Stream {
             scratch: &mut scratch,
             score_pred: &mut score_pred,
             decay_time: &mut decay_time,
+            restarted: &mut restarted,
             pending_clock: &mut pending_clock,
             notified: &mut notified,
+            refit_over_budget: self.persisted.refit_over_budget,
         };
         let models = models.iter().map(|(_, m)| ModelRef::Score(m));
         let rings = self
@@ -4002,8 +4097,10 @@ struct Diagnostics<'a> {
     scratch: &'a mut [Scratch],
     score_pred: &'a mut [std::collections::VecDeque<Vec<f64>>],
     decay_time: &'a mut [f64],
+    restarted: &'a mut [bool],
     pending_clock: &'a mut [f64],
     notified: &'a mut [Notified],
+    refit_over_budget: bool,
 }
 
 /// Split per-instance state and output into disjoint pieces, so instances
@@ -4071,6 +4168,7 @@ fn build_instances<'a>(
     let mut scratch = diag.scratch.iter_mut();
     let mut score_pred = diag.score_pred.iter_mut();
     let mut decay_time = diag.decay_time.iter_mut();
+    let mut restarted = diag.restarted.iter_mut();
     let mut pending_clock = diag.pending_clock.iter_mut();
     let mut notified = diag.notified.iter_mut();
 
@@ -4122,7 +4220,9 @@ fn build_instances<'a>(
                 o_se_hc0: o_se_hc0.next().expect("one per instance"),
                 o_se_hac: o_se_hac.next().expect("one per instance"),
                 decay_time: decay_time.next().expect("one per instance"),
+                restarted: restarted.next().expect("one per instance"),
                 notified: notified.next().expect("one per instance"),
+                refit_over_budget: diag.refit_over_budget,
                 // None without an embargo, which keeps no held rows' clock.
                 pending_clock: pending_clock.next(),
             }
@@ -4323,11 +4423,17 @@ struct Instance<'a> {
     /// The decay time this instance has seen (docs/WARMUP-AND-CONVERGENCE.md
     /// §2), read before each row and advanced by the rows it learns from.
     decay_time: &'a mut f64,
+    /// Whether this instance was restarted and has learned no row since
+    /// ([`Persisted::restarted`]).
+    restarted: &'a mut bool,
     /// Ranges of features a `marginal` splits its pair work into
     /// ([`marginal_shards`]); one for every other model.
     shards: usize,
     /// The readiness notices this instance has raised, and the ones pending.
     notified: &'a mut Notified,
+    /// Whether the group's refits were given up past the spec's
+    /// `refit_budget` ([`Persisted::refit_over_budget`]).
+    refit_over_budget: bool,
     /// Clock the rows held under `embargo` have covered and the models
     /// have not yet decayed by: added as a row is buffered, taken back as it
     /// is released. `settled_frac` counts it, so a scored row reads what the
@@ -4336,16 +4442,6 @@ struct Instance<'a> {
     /// it across chunks ([`Persisted::pending_clock`]), and keeps none
     /// without an embargo, where no row is ever held.
     pending_clock: Option<&'a mut f64>,
-}
-
-/// An instance's decay time when it was restarted and has read no row since:
-/// zero, and the sign marks it. The next accepted row reads a step of 0
-/// ([`run_instance`]), which leaves a decay time of +0.0.
-const RESTARTED: f64 = -0.0;
-
-/// Whether `decay_time` is [`RESTARTED`]'s mark.
-fn is_restarted(decay_time: f64) -> bool {
-    decay_time == 0.0 && decay_time.is_sign_negative()
 }
 
 impl Instance<'_> {
@@ -4363,6 +4459,11 @@ impl Instance<'_> {
         // This instance alone, at its own decay: `build_models` built every
         // instance of the grid to keep one (review 2026-09-12, P2).
         *self.model.get_mut() = build_one(spec, self.decay).expect("spec was already validated");
+        // The bank reserved no refit buffers for a group it gave them up
+        // for, and a rebuilt model must not hold one (docs/PLAN.md task 277).
+        if self.refit_over_budget {
+            self.model.get_mut().refit_give_up();
+        }
         self.resid_var.iter_mut().for_each(|v| *v = 0.0);
         self.resid_w.iter_mut().for_each(|v| *v = 0.0);
         // A rebuilt model has seen no decay: it settles from here. The
@@ -4376,19 +4477,14 @@ impl Instance<'_> {
         // the rest of the stream (review round 4, PB1). A clock reset drops
         // the rows, and the held clock with them (`run_instance`).
         //
-        // Without an `embargo` the restart is marked in the same number
-        // ([`RESTARTED`], -0.0): the next accepted row reads a step of 0, as
-        // a fresh stream's first row does, and its learning clears the mark
-        // (`run_instance`). The mark is a value of the field the state
-        // already keeps, so it crosses a chunk boundary and a save with the
-        // rebuilt model, and a file written before it reads as +0.0, the
-        // value it had. Under an `embargo` the held rows carry their own
+        // Without an `embargo` the restart is marked ([`Persisted::restarted`]):
+        // the next accepted row reads a step of 0, as a fresh stream's first
+        // row does, and its learning clears the mark (`run_instance`). The
+        // mark is state, so it crosses a chunk boundary and a save with the
+        // rebuilt model. Under an `embargo` the held rows carry their own
         // steps into the rebuilt model, so nothing is marked.
-        *self.decay_time = if self.pending_clock.is_none() {
-            RESTARTED
-        } else {
-            0.0
-        };
+        *self.decay_time = 0.0;
+        *self.restarted = self.pending_clock.is_none();
         self.notified.restart_waits();
         if let Some(ring) = self.resid_win.as_mut() {
             *ring.get_mut() = resid_window(spec)
@@ -4528,7 +4624,7 @@ fn run_instance(
         // has a step of 0 already; a drift reset's next row did not, and
         // `rls` after one predicted up to 0.017 away from a fresh bank
         // (task 278). Every use of the step below reads this one.
-        let restarted = is_restarted(*inst.decay_time);
+        let restarted = *inst.restarted;
         let d_clock = if restarted { 0.0 } else { plan.d_clock };
         let (i, ri, w) = (plan.i, plan.ri, plan.w);
         let (emit, learn) = (plan.emit, plan.learn);
@@ -5186,6 +5282,7 @@ fn run_instance(
             } else {
                 *inst.decay_time + d_clock
             };
+            *inst.restarted = false;
         }
         if let Some(c) = inst.pending_clock.as_deref_mut() {
             if plan.buffered {

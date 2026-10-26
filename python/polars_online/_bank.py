@@ -1221,6 +1221,10 @@ class ModelBank:
         ``solve_failures``
             The solves that needed jitter or kept the previous fit, what
             :meth:`solve_failures` reports.
+        ``refit_given_up``
+            The targets of a ``huber`` or ``sgd(loss="huber")`` stream that
+            gave up the refit of their first rows to the spec's
+            ``refit_budget``; 0 on every other spec.
         ``settled_frac``, ``error_inflation``
             The warm-up readings of the stream's first instance after the
             last row (`docs/DIAGNOSTICS.md, Is it ready?

@@ -143,6 +143,9 @@ use serde::{Deserialize, Serialize};
 
 use std::sync::OnceLock;
 
+use crate::huber_refit::{
+    Event, REFIT_PASSES, RefitBuf, Rows, converged, fitted, huber_weights, rebuild_scale, scale_of,
+};
 use crate::model::{Fit, ModelState, OnlineModel, State, StateError, Step, check_schema};
 use crate::since::Since;
 use crate::solve::{QuadWork, dot_aug};
@@ -313,6 +316,15 @@ pub struct RobustCfg {
     /// written before it.
     #[serde(default)]
     pub emit_scale: bool,
+    /// Each target's first `refit_rows` learned rows refit to convergence,
+    /// once, and its residual scale rebuilt from the converged residuals
+    /// ([`crate::huber_refit`]): a spec's `huber_refit_rows`, 200 by
+    /// default; 0 is off. Huber only, and not beside `ridge_scale`. A state
+    /// written before schema 64 has no such field and was fitted without a
+    /// refit, so it loads as 0 and goes on as it was, never refitting
+    /// rows its stream has long passed.
+    #[serde(default)]
+    pub refit_rows: u32,
 }
 
 /// A target's band system as a solve factorizes it -- `A`, the band Gram
@@ -445,6 +457,17 @@ impl RobustCfg {
         }
         if self.n_features == 0 || self.n_targets == 0 {
             return Err("n_features and n_targets must be >= 1".into());
+        }
+        if self.refit_rows > 0
+            && (!matches!(self.loss, RobustLoss::Huber { delta } if delta.is_finite())
+                || self.ridge_scale)
+        {
+            return Err(format!(
+                "{kind}: huber_refit_rows is for huber with a finite huber_delta, and not \
+                 beside ridge_scale \"sum\": an infinite cut is least squares, with no \
+                 outliers to refit for, and the sum-scale prior ages with every row before \
+                 the first, which a refit of the buffered rows does not hold"
+            ));
         }
         match self.loss {
             RobustLoss::Huber { delta } => {
@@ -631,6 +654,10 @@ pub struct Robust {
     /// (docs/PLAN.md task 271).
     #[serde(default)]
     mad: Vec<EwQuantile>,
+    /// Per target, the refit's buffer ([`RobustCfg::refit_rows`]): none
+    /// when it is off, and in a state written before schema 64.
+    #[serde(default)]
+    refit: Vec<RefitBuf>,
     /// The row's augmented values ([`RowBuf`]). Not state.
     #[serde(skip)]
     zbuf: RowBuf,
@@ -833,6 +860,7 @@ impl Robust {
                 Vec::new()
             },
             nudge: NudgeScratch::default(),
+            refit: RefitBuf::per_target(cfg.refit_rows, m),
             cfg,
         })
     }
@@ -892,6 +920,31 @@ impl Robust {
         }
         let s2 = self.sig2[j];
         (s2 > 0.0 && s2.is_finite()).then(|| s2.sqrt())
+    }
+
+    /// Per target, how its refit stands ([`RobustCfg::refit_rows`]): empty
+    /// when the refit is off.
+    pub fn refit_status(&self) -> Vec<crate::RefitStatus> {
+        self.refit.iter().map(RefitBuf::status).collect()
+    }
+
+    /// Give every target's refit up before it begins, past the spec's
+    /// `refit_budget` ([`RobustCfg::refit_rows`]): a bank does this to a
+    /// group whose reservation the budget cannot take, and to the models
+    /// a reset rebuilds for it.
+    pub fn refit_give_up(&mut self) {
+        self.refit
+            .iter_mut()
+            .for_each(RefitBuf::give_up_over_budget);
+    }
+
+    /// The bytes this model's refit buffers can hold at most
+    /// ([`crate::refit_reservation`] a target), 0 with the refit off.
+    pub fn refit_reservation(&self) -> usize {
+        if self.refit.is_empty() {
+            return 0;
+        }
+        self.cfg.n_targets * crate::refit_reservation(self.cfg.n_features, self.cfg.refit_rows)
     }
 
     /// Per target, the sketch of `|e|` the MAD scale is read from: empty
@@ -992,6 +1045,160 @@ impl Robust {
         }
     }
 
+    /// The refit of target `j` ([`RobustCfg::refit_rows`],
+    /// [`crate::huber_refit`]): IRLS on its buffered rows to convergence,
+    /// each pass's sums rebuilt by replaying the rows in their order, each
+    /// aged by its own factor as the stream entered it, at `w_i · u_i`, then
+    /// solved by the model's own solve on the weighing set; the first
+    /// pass reads the online fit as it stands, or unit weights where there
+    /// is none. Then the residual scale is rebuilt from the converged
+    /// residuals, and the target's own slots are solved from the rebuilt
+    /// sums if a solve had fit it -- no other target's, and the cadence is
+    /// left as it stands, so no other fit moves. One that no solve has fit
+    /// keeps waiting for its first, which then reads the rebuilt sums.
+    #[inline(never)]
+    fn refit_target(&mut self, j: usize) {
+        let RobustLoss::Huber { delta } = self.cfg.loss else {
+            return;
+        };
+        let nf = self.cfg.n_features;
+        let (buf, ages) = self.refit[j].take();
+        let rows = Rows::new(&buf, &ages, nf);
+        let n = rows.len();
+        // The scale reads the residuals at the weights its own clock has
+        // left them (`huber_scale_decay`), as the stream's scale holds them.
+        let vs = rows.scale_weights();
+        let k = self.cfg.k_total();
+        let c = self.cfg.weighing_set();
+        let slot = j * self.cfg.n_sets() + c;
+        let fitted_before = self.fitted(j);
+        let mut beta: Option<Vec<f64>> = if fitted_before {
+            self.beta.as_ref().map(|b| b[slot].clone())
+        } else {
+            None
+        };
+        let intercept = self.cfg.fit_intercept;
+        let mut z = vec![0.0; k];
+        let mut absr = vec![0.0; n];
+        let mut u = vec![1.0; n];
+        // The passes' factor jitters are the refit's, not failures of the
+        // fit: the count is left as it stood, and one refit that no pass
+        // solves counts once.
+        let failures = self.solve_failures;
+        let (mut passes, mut solved) = (0, false);
+        for _ in 0..REFIT_PASSES {
+            passes += 1;
+            match &beta {
+                Some(b) => {
+                    for (i, a) in absr.iter_mut().enumerate() {
+                        *a = (rows.y(i) - fitted(b, rows.x(i), intercept)).abs();
+                    }
+                    huber_weights(
+                        &absr,
+                        scale_of(self.cfg.huber_scale, &absr, &vs),
+                        delta,
+                        &mut u,
+                    );
+                }
+                None => u.fill(1.0),
+            }
+            self.replay(j, &rows, &u, &mut z);
+            let next = if intercept {
+                self.solve_centred(k, j, c)
+            } else {
+                self.solve_through_origin(k, j, c)
+            };
+            let Some((next, _)) = next else {
+                break;
+            };
+            solved = true;
+            let done = converged(beta.as_deref(), &next);
+            beta = Some(next);
+            if done {
+                break;
+            }
+        }
+        self.solve_failures = failures;
+        self.refit[j].ran(passes);
+        let Some(b) = beta.filter(|_| solved) else {
+            self.refit[j].fail();
+            self.solve_failures += 1;
+            return;
+        };
+        let scale = rebuild_scale(&rows, self.cfg.huber_scale, |i| {
+            rows.y(i) - fitted(&b, rows.x(i), intercept)
+        });
+        self.sig2[j] = scale.sig2;
+        self.wsig[j] = scale.wsig;
+        if let Some(q) = scale.mad {
+            self.mad[j] = q;
+        }
+        if fitted_before && let Some(prev) = self.beta.take() {
+            let mut out: Vec<Vec<f64>> = prev.to_vec();
+            self.solve_target(j, Some(prev.as_slice()), &mut out);
+            self.beta = Some(Fit(out));
+        }
+    }
+
+    /// Target `j`'s sums rebuilt from the buffered rows at weights
+    /// `w_i · u_i`, in the order the stream took them: `step`'s fit arm, row
+    /// for row, and an ageing run's rows one by one ([`Event::age_by`]; one
+    /// decay by `λⁿ` past 65,536 rows). So at `u = 1` -- every Huber weight 1
+    /// -- the replay is the sums the stream built, to the bit, unless a run
+    /// of ageings was that long. It is that only when every row the stream
+    /// learned had a Huber weight of 1; otherwise it is the sums at the
+    /// refit's weights, which is what it is for.
+    fn replay(&mut self, j: usize, rows: &Rows<'_>, u: &[f64], z: &mut [f64]) {
+        let k = self.cfg.k_total();
+        let intercept = self.cfg.fit_intercept;
+        self.cov[j] = EwCov::new(k).without_runs();
+        self.cross[j].fill(0.0);
+        self.ybar[j] = 0.0;
+        self.ybar_lo[j] = 0.0;
+        self.wj[j] = 0.0;
+        for e in rows.events() {
+            let i = match e {
+                Event::Age { lam, count, .. } => {
+                    let (cov, wj) = (&mut self.cov[j], &mut self.wj[j]);
+                    Event::age_by(lam, count, |l| {
+                        cov.decay(l);
+                        *wj *= l;
+                    });
+                    continue;
+                }
+                Event::Row(i) => i,
+            };
+            let lam = rows.lam(i);
+            let w = rows.w(i) * u[i];
+            let aged = lam * self.wj[j];
+            // A Huber weight of 0, from a residual of `inf`: the row ages the
+            // sums alone (hard rule 9).
+            if w.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
+                self.cov[j].decay(lam);
+                self.wj[j] = aged;
+                continue;
+            }
+            if intercept {
+                z[0] = 1.0;
+                z[1..].copy_from_slice(rows.x(i));
+            } else {
+                z.copy_from_slice(rows.x(i));
+            }
+            let wj_new = aged + w;
+            let a = aged / wj_new;
+            let bb = w / wj_new;
+            let dy = crate::comp::dev(rows.y(i), self.ybar[j], self.ybar_lo[j]);
+            let ab_dy = a * bb * dy;
+            let cov = &self.cov[j];
+            for (i2, (ci, &zi)) in self.cross[j].iter_mut().zip(z.iter()).enumerate() {
+                *ci = a * *ci + ab_dy * cov.deviation(i2, zi);
+            }
+            crate::comp::add(&mut self.ybar[j], &mut self.ybar_lo[j], bb * dy);
+            self.cov[j].update(z, lam, w);
+            self.wj[j] = wj_new;
+        }
+    }
+
     // Not inlined into `step`: a solve is `O(k³)`, a call costs it nothing,
     // and the row's own path keeps its size (task 272 (e), R5-4).
     #[inline(never)]
@@ -1013,62 +1220,68 @@ impl Robust {
         // ([`RobustCfg::feature_sets`]), each solved from its target's sums.
         let nc = self.cfg.n_sets();
         let mut beta = vec![vec![f64::NAN; k]; self.cfg.n_targets * nc];
-        // The data shares move in place, slot by slot, as the fit does: a
-        // slot this solve skips has none, one it fits the solve's, one whose
-        // solve fails keeps its own.
-        self.support.shape(self.cfg.n_targets * nc, k);
+        let prev = self.beta.take();
         for j in 0..self.cfg.n_targets {
-            for c in 0..nc {
-                let slot = j * nc + c;
-                let fit_before = self
-                    .beta
-                    .as_ref()
-                    .is_some_and(|b| !b[slot].iter().any(|v| v.is_nan()));
-                if self.wj[j] <= 0.0 && !fit_before {
-                    self.support.unfit(slot);
-                    continue;
-                }
-                // `None` is a solve that failed at every jitter: counted, and
-                // the previous fit kept. It returned through `?` before the
-                // count (review 2026-09-12, S13).
-                let solved = if self.cfg.ridge_scale {
-                    self.solve_sum(k, j, c)
-                } else if self.cfg.fit_intercept {
-                    self.solve_centred(k, j, c)
-                } else {
-                    self.solve_through_origin(k, j, c)
-                };
-                match solved {
-                    Some((sol, shares)) => {
-                        beta[slot] = sol;
-                        match shares {
-                            Some(p) => self.support.pending[slot] = Some(p),
-                            None => {
-                                // No column kept: nothing to invert, every
-                                // slope 0.
-                                self.support.pending[slot] = None;
-                                PendingShares::fill_base(
-                                    &mut self.support.stored[slot],
-                                    self.cfg.fit_intercept,
-                                    self.cfg.set_of(c),
-                                );
-                            }
-                        }
-                    }
-                    None => {
-                        self.solve_failures += 1;
-                        if let Some(prev) = &self.beta {
-                            beta[slot] = prev[slot].clone();
-                        }
-                        // The previous fit is kept, and its shares with it.
-                    }
-                }
-            }
+            self.solve_target(j, prev.as_deref().map(Vec::as_slice), &mut beta);
         }
         self.beta = Some(Fit(beta));
         self.since_solve.restart();
         self.rows_since_solve = 0;
         self.weight_since_solve = 0.0;
+    }
+
+    /// Target `j`'s slots solved into `beta`, one per feature set, each from
+    /// the target's sums ([`Self::solve`]'s loop body): `prev` is the fit
+    /// before, which a slot whose solve fails keeps, and which says whether
+    /// a slot with no weight has a fit to keep solving. The data shares move
+    /// in place, slot by slot, as the fit does.
+    fn solve_target(&mut self, j: usize, prev: Option<&[Vec<f64>]>, beta: &mut [Vec<f64>]) {
+        let k = self.cfg.k_total();
+        let nc = self.cfg.n_sets();
+        self.support.shape(self.cfg.n_targets * nc, k);
+        for c in 0..nc {
+            let slot = j * nc + c;
+            let fit_before = prev.is_some_and(|b| !b[slot].iter().any(|v| v.is_nan()));
+            if self.wj[j] <= 0.0 && !fit_before {
+                self.support.unfit(slot);
+                continue;
+            }
+            // `None` is a solve that failed at every jitter: counted, and
+            // the previous fit kept. It returned through `?` before the
+            // count (review 2026-09-12, S13).
+            let solved = if self.cfg.ridge_scale {
+                self.solve_sum(k, j, c)
+            } else if self.cfg.fit_intercept {
+                self.solve_centred(k, j, c)
+            } else {
+                self.solve_through_origin(k, j, c)
+            };
+            match solved {
+                Some((sol, shares)) => {
+                    beta[slot] = sol;
+                    match shares {
+                        Some(p) => self.support.pending[slot] = Some(p),
+                        None => {
+                            // No column kept: nothing to invert, every
+                            // slope 0.
+                            self.support.pending[slot] = None;
+                            PendingShares::fill_base(
+                                &mut self.support.stored[slot],
+                                self.cfg.fit_intercept,
+                                self.cfg.set_of(c),
+                            );
+                        }
+                    }
+                }
+                None => {
+                    self.solve_failures += 1;
+                    if let Some(prev) = prev {
+                        beta[slot] = prev[slot].clone();
+                    }
+                    // The previous fit is kept, and its shares with it.
+                }
+            }
+        }
     }
 
     /// The solve with an intercept, plain or standardized, on the centred
@@ -1649,6 +1862,8 @@ impl OnlineModel for Robust {
                 || (0..m).any(|j| self.own_first_solve(j, y[j].is_some(), lam, weight)));
 
         // ---- update: Huber reweights the row, the quantile linearises it ----
+        // Targets whose refit buffer this row fills (`RobustCfg::refit_rows`).
+        let mut refits: Vec<usize> = Vec::new();
         for j in 0..m {
             // `σ²`'s weight ages on every row, as `wj` does, and a row adds to
             // it only with a target, a weight and a prediction to measure the
@@ -1666,6 +1881,9 @@ impl OnlineModel for Robust {
             let present = lam * self.wobs[j];
             let rows = lam * self.nobs[j];
             let Some(yj) = y[j] else {
+                if let Some(b) = self.refit.get_mut(j) {
+                    b.age(lam, lam_scale, self.cfg.refit_rows);
+                }
                 self.cov[j].decay(lam);
                 self.wj[j] *= lam;
                 self.wobs[j] = present;
@@ -1692,6 +1910,9 @@ impl OnlineModel for Robust {
                 // It is a usable row that fails, and counted as present above;
                 // a row holding a value that is not usable never gets here.
                 RowUpdate::Fit { w, .. } if w.is_nan() || w <= 0.0 => {
+                    if let Some(b) = self.refit.get_mut(j) {
+                        b.age(lam, lam_scale, self.cfg.refit_rows);
+                    }
                     self.cov[j].decay(lam);
                     self.wj[j] = aged;
                     continue;
@@ -1721,6 +1942,11 @@ impl OnlineModel for Robust {
                     self.cov[j].update(&self.zbuf, lam, w);
                     self.wj[j] = wj_new;
                     self.move_band_system(j, a, step);
+                    if let Some(b) = self.refit.get_mut(j)
+                        && b.learn(x, yj, weight, lam, lam_scale, self.cfg.refit_rows)
+                    {
+                        refits.push(j);
+                    }
                 }
                 RowUpdate::Nudge { nudge } => {
                     // Outside the band a row is one term of the score and none
@@ -1799,6 +2025,12 @@ impl OnlineModel for Robust {
 
         if due {
             self.solve();
+        }
+        // The refits, after the row's own update, scale and solve: the row
+        // was predicted before any of them, so it stays out of sample (hard
+        // rule 2), and each solves its own target alone (`refit_target`).
+        for &j in &refits {
+            self.refit_target(j);
         }
         if emit {
             out.extra = Some(crate::Extra::Huber { scale: seen });
@@ -1903,6 +2135,22 @@ impl OnlineModel for Robust {
                 if !mad_sketches_fit(scale, n, &m.mad) {
                     return Err(StateError::Invalid(format!(
                         "{kind}: the residual sketches do not match huber_scale"
+                    )));
+                }
+                // The refit's buffers (`RobustCfg::refit_rows`): one per
+                // target when it is on, each one this configuration writes,
+                // and none when it is off.
+                let refit_fits = if m.cfg.refit_rows == 0 {
+                    m.refit.is_empty()
+                } else {
+                    m.refit.len() == n
+                        && m.refit
+                            .iter()
+                            .all(|b| b.fits(m.cfg.n_features, m.cfg.refit_rows))
+                };
+                if !refit_fits {
+                    return Err(StateError::Invalid(format!(
+                        "{kind}: the refit's buffers do not match huber_refit_rows"
                     )));
                 }
                 // No window here: a state written before the runs' flag keeps
@@ -2034,6 +2282,7 @@ mod tests {
             feature_sets: Vec::new(),
             ridge_scale: false,
             emit_scale: false,
+            refit_rows: 0,
         }
     }
 
@@ -5126,3 +5375,7 @@ mod scale_tests;
 #[cfg(test)]
 #[path = "robust/options_tests.rs"]
 mod options_tests;
+
+#[cfg(test)]
+#[path = "robust/refit_tests.rs"]
+mod refit_tests;
