@@ -23,7 +23,14 @@ returns.
   entry quoting this CHANGELOG. The Oracles workflow records every shard and
   checks the merged run in a final job, and runs weekly with the datasets
   downloaded afresh. It now holds every oracle grid: 59 groups and 755
-  cases (task 280).
+  cases (task 280). The ledger's numbers are CI's, measured on Linux
+  x86-64, where the check judges every push; a run on another platform,
+  such as `rerun` on a Mac, is held to 5% and writes none of its numbers.
+  A case whose oracle agrees to round-off has a floor of twice the larger
+  of macOS arm64's and Linux's error, since Linux x86-64 rounds some of
+  those cases up to 3.7 times differently. CI fetches every dataset the
+  ledger names in one job before the grids run, and fails naming any it
+  cannot get, so no grid skips as offline (task 281).
 - A hash guard in the essentials gate (task 280): it hashes this library's
   outputs on each oracle group's inputs, rounded to 24 significant bits so
   another platform's last bits do not move it, or whole where the oracle
@@ -699,6 +706,17 @@ returns.
   10-target blocked case solving every 400 rows (556.1 -> 565.9), measured
   natively, best of seven runs interleaved with the previous build (task
   278).
+- A readiness gate that no longer holds learning back costs a little on
+  each row (task 278): `huber`, `quantile` and `sgd(loss="huber")` count
+  each target's first rows against the model's own floor of a row per
+  coefficient, and forget a history aged below the smallest normal double;
+  `ewridge` checks each target against its own floor beside `min_weight`.
+  Counted natively in instructions, the change cost `huber` 1.0% a row at
+  20 features and 2.0% with three feature sets, and `ewridge` 0.9% at 5
+  features. Reading the floor once a row rather than up to three times
+  takes back 0.3% and 0.9% of `huber`'s, and the gate's own work is now
+  within 0.3% of the old path's for `huber`, `quantile` and
+  `sgd(loss="huber")`, to the bit (task 281).
 - Seeding with `init="lloyd"` at 500 rows, 8 centres and 400 features
   takes 56 ms on separated blobs (from 97) and 91 ms on overlapping ones
   (from 98); `init="k-means++"` takes 3.6 ms there, from 1.9 (task 278).

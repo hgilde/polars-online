@@ -58,7 +58,9 @@ def enforced() -> bool:
     """Where a moved hash fails: on the platform the hashes were written on,
     off CI. CI runs the oracles themselves on every push, and the hashes are
     the gate's early word, so elsewhere a moved hash is reported, not
-    failed: what the CI legs report says whether one set serves them all."""
+    failed. One set of the 24-bit hashes serves every platform CI runs, with
+    the odd value on a rounding boundary (on 2026-10-26 one group of 42 on
+    one Windows image); a hash of every bit is compared only here."""
     mode = os.environ.get(MODE_VARIABLE)
     if mode in ("enforce", "report"):
         return mode == "enforce"
@@ -89,9 +91,14 @@ class TestTheHashGuard:
             problems.append(f"a test the ledger names is gone ({e})")
         want = HASHES.get("hashes", {}).get(gid)
         installed = ledger.versions(group.oracles)
+        # A hash of every bit is the processor's: elsewhere it moves with no
+        # change at all (12 of the 17 on Linux, up to 15 on Windows, and 3
+        # on GitHub's arm64 Macs, 2026-10-26), so only where it was written
+        # does comparing it say anything.
+        compared = group.bits < 52 or enforced()
         if want is None:
             problems.append("no hash yet: a new group")
-        elif got is not None and got != want:
+        elif got is not None and got != want and compared:
             problems.append("this library's outputs on its inputs, or its tests, changed")
         if installed != entry.get("oracles", {}):
             problems.append(
@@ -238,6 +245,18 @@ def test_the_ledger_the_hashes_and_the_guards_name_the_same_groups():
     assert len(GROUP_IDS) == len(set(GROUP_IDS)), "a group registered twice"
 
 
+def test_every_dataset_a_group_names_is_one_ci_fetches():
+    """CI's `datasets` job fetches what the groups name, by
+    `public_benchmarks.fetch`: a group naming a source it has no loader for
+    would leave its grid to download, and skip, on its own."""
+    import public_benchmarks
+
+    for gid, g in DOC.get("group", {}).items():
+        for part in filter(None, g.get("dataset", "").split(";")):
+            source, _, names = part.partition(":")
+            assert source in public_benchmarks.SOURCES and names, (gid, part)
+
+
 def test_the_ledger_is_well_formed_and_every_raise_quotes_the_changelog():
     changelog = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
     assert oracles.check_file(DOC, changelog) == []
@@ -249,7 +268,8 @@ def test_the_ledger_is_well_formed_and_every_raise_quotes_the_changelog():
 SMALL = """
 [meta]
 tolerance = 0.02
-platform = "darwin-arm64"
+tolerance_elsewhere = 0.05
+platform = "linux-x86_64"
 
 [group."m.g"]
 tests = []
@@ -370,6 +390,23 @@ class TestTheRules:
         assert oracles.check_file(doc, "nothing")[0].endswith("'worth having'")
         assert isinstance(doc["raised"][0]["date"], dt.date)
 
+    def test_a_floor_raised_or_added_needs_an_entry_and_answers_for_its_case(self):
+        # A wider floor lifts the case's worst and p95 to it: the floor's
+        # entry answers for all three.
+        wider = SMALL.replace("floor = 1e-12", "floor = 2e-12")
+        errors = oracles.check_history([("a" * 40, SMALL)], wider)
+        assert len(errors) == 1 and "m.g.tiny.floor" in errors[0], errors
+        entry = (
+            '\n[[raised]]\nkey = "m.g.tiny.floor"\nfrom = 1e-12\nto = 2e-12\n'
+            'date = 2026-10-26\nreason = "another platform rounds it twice as far"\n'
+            'changelog = "twice as far"\n'
+        )
+        assert oracles.check_history([("a" * 40, SMALL)], wider + entry) == []
+        # A floor where there was none is a raise from 0.
+        added = SMALL.replace("p95 = 0.05\nn = 50\n", "p95 = 0.05\nn = 50\nfloor = 0.2\n")
+        errors = oracles.check_history([("a" * 40, SMALL)], added)
+        assert len(errors) == 1 and "m.g.err.floor: 0 -> 0.2" in errors[0], errors
+
     def test_a_count_is_held_exactly_however_large(self):
         # 2% of a delay of 333 rows is 6.7 rows; a count holds to the row.
         count = '[case."m.g.delay"]\nideal = 0.0\nworst = 333.0\np95 = 277.0\nn = 200\n'
@@ -395,6 +432,67 @@ class TestTheRules:
         new = tomllib.loads(text)["case"]
         assert new["m.g.new"]["tolerance"] == 0.0 and new["m.g.err"]["tolerance"] == 0.0
         assert oracles.check_history([("a" * 40, SMALL)], text) == [], "a tightening"
+
+    def test_another_platform_is_held_wider_and_writes_no_number(self):
+        # The ledger is Linux's; a Mac reads its last bits differently.
+        mac = {**_m("m.g.err", 0.104, 0.0485), "platform": "darwin-arm64-py3.12"}
+        s = _status(self.doc, mac)
+        assert s == {"m.g.err.worst": "ok", "m.g.err.p95": "elsewhere"}, s
+        assert _status(self.doc, {**mac, "worst": 0.106})["m.g.err.worst"] == "over"
+        # The same numbers on the ledger's own platform: 2%.
+        assert _status(self.doc, {**mac, "platform": "linux-x86_64"}) == {
+            "m.g.err.worst": "over",
+            "m.g.err.p95": "under",
+        }
+        # A count is held exactly everywhere.
+        count = '[case."m.g.delay"]\nideal = 0.0\nworst = 333.0\np95 = 277.0\nn = 200\n'
+        doc = tomllib.loads(
+            SMALL.replace("# --- raises", count + "tolerance = 0.0\n\n# --- raises")
+        )
+        delay = {**_m("m.g.delay", 334.0, 277.0), "platform": "darwin-arm64"}
+        assert _status(doc, delay)["m.g.delay.worst"] == "over"
+        # `apply` keeps none of it: no tightening, and a new case without numbers.
+        cases = {
+            "m.g.err": mac,
+            "m.g.new": {**_m("m.g.new", 0.3, 0.2), "platform": "darwin-arm64"},
+        }
+        groups = {"m.g": {"oracles": {"scikit-learn": "1.9.1"}, "dataset": "", "tests": []}}
+        verdicts = oracles.judge_all(self.doc, cases, groups)
+        assert not [v for v in verdicts if v.failed]
+        text, _ = oracles.apply(SMALL, self.doc, cases, groups, verdicts)
+        new = tomllib.loads(text)["case"]
+        assert new["m.g.err"]["p95"] == 0.05
+        assert new["m.g.new"] == {"ideal": 0.0, "n": 50}
+        assert (
+            oracles.judge_all(tomllib.loads(text), {"m.g.new": cases["m.g.new"]}, groups)[0].status
+            == "new"
+        )
+        # CI's run then writes the numbers.
+        linux = {"m.g.new": {**_m("m.g.new", 0.31, 0.21), "platform": "linux-x86_64-py3.12"}}
+        doc = tomllib.loads(text)
+        text, _ = oracles.apply(text, doc, linux, groups, oracles.judge_all(doc, linux, groups))
+        assert tomllib.loads(text)["case"]["m.g.new"]["worst"] == 0.31
+
+    def test_moving_the_ledger_to_another_platform_raises_within_the_tolerance(self):
+        mac = SMALL.replace('platform = "linux-x86_64"', 'platform = "darwin-arm64"')
+        moved = SMALL.replace("worst = 0.1\n", "worst = 0.1019\n")
+        assert oracles.check_history([("a" * 40, mac)], moved), "no [[rebased]] entry"
+        entry = (
+            '\n[[rebased]]\nfrom = "darwin-arm64"\nto = "linux-x86_64"\ndate = 2026-10-26\n'
+            'reason = "the numbers CI judges are measured on Linux"\nchangelog = "on Linux"\n'
+        )
+        assert oracles.check_history([("a" * 40, mac)], moved + entry) == []
+        too_far = SMALL.replace("worst = 0.1\n", "worst = 0.103\n")
+        errors = oracles.check_history([("a" * 40, mac)], too_far + entry)
+        assert len(errors) == 1 and "m.g.err.worst" in errors[0]
+        # A floor is no platform's last bits: it needs a [[raised]] entry.
+        floor = SMALL.replace("floor = 1e-12", "floor = 1.01e-12")
+        assert oracles.check_history([("a" * 40, mac)], floor + entry)
+        # Without a move of platform, the entry excuses nothing.
+        assert oracles.check_history([("a" * 40, SMALL)], moved + entry)
+        doc = tomllib.loads(moved + entry)
+        assert oracles.check_file(doc, "- measured on Linux") == []
+        assert oracles.check_file(doc, "nothing")[0].endswith("'on Linux'")
 
     def test_records_are_the_worst_seed_and_the_nearest_rank_p95(self):
         values = np.r_[np.arange(1, 101) / 100.0]
@@ -525,11 +623,24 @@ def test_the_oracle_workflow_records_every_shard_and_checks_the_ledger():
     # a dataset's loader re-runs everything on the push that carries it.
     assert on["push"] == {"branches": ["main"]}, on["push"]
     assert "github.event_name" in wf["concurrency"]["group"], "a push cannot cancel the sweep"
-    cache = [s for s in wf["jobs"]["grid"]["steps"] if "actions/cache" in str(s.get("uses", ""))]
+    # One job fetches every dataset, failing on any it cannot get, and
+    # hands them to every shard, which downloads none.
+    fetch = wf["jobs"]["datasets"]
+    cache = [s for s in fetch["steps"] if "actions/cache" in str(s.get("uses", ""))]
     assert [s.get("if") for s in cache] == ["github.event_name != 'schedule'"], (
         "the weekly sweep downloads the datasets afresh"
     )
+    assert "oracles.py fetch" in " ".join(str(s.get("run", "")) for s in fetch["steps"])
     grid = wf["jobs"]["grid"]
+    assert grid["needs"] == "datasets"
+    assert not [s for s in grid["steps"] if "actions/cache" in str(s.get("uses", ""))]
+    assert any(
+        "download-artifact" in str(s.get("uses", ""))
+        and s.get("with", {}).get("name") == "oracle-datasets"
+        for s in grid["steps"]
+    )
+    # A skip's reason shows in the log (`s` in `-r`).
+    assert "-rfEsxX" in " ".join(str(s.get("run", "")) for s in grid["steps"])
     assert grid["env"][oracles.OUT_VARIABLE]
     n = len(grid["strategy"]["matrix"]["shard"])
     uploads = [s for s in grid["steps"] if "upload-artifact" in str(s.get("uses", ""))]

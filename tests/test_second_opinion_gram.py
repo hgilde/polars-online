@@ -239,7 +239,8 @@ class TestLassoPathsWeightsAreEnetPathOnRescaledColumns:
         errs = [weighted_path_error(seed) for seed in range(50)]
         worst = max(range(50), key=lambda s: errs[s][0])
         print(f"worst {errs[worst][0]:.1e} at seed {worst}")
-        # Round-off: held at about twice the measured 1.8e-11.
-        ledger.record("lasso_weights", "error", [e for e, _ in errs], floor=4e-11)
+        # Round-off: twice the larger of the measured 1.8e-11 (macOS arm64)
+        # and 2.5e-11 (Linux x86-64).
+        ledger.record("lasso_weights", "error", [e for e, _ in errs], floor=5e-11)
         assert all(moved > 1.0 for _, moved in errs)
         assert errs[worst][0] <= 1e-10

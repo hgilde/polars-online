@@ -179,11 +179,16 @@ def tcpd_or_skip(name: str) -> tuple[np.ndarray, dict[str, list[int]]]:
 # LIBSVM
 
 
+def libsvm_text(path: str) -> str:
+    """A LIBSVM-format set's text; ``path`` is under the datasets root."""
+    name = f"libsvm-{path.replace('/', '-')}"
+    return _cached(name, LIBSVM.format(path=path), _lenient_tls()).decode("ascii")
+
+
 def libsvm(path: str, n_features: int) -> tuple[np.ndarray, np.ndarray]:
     """A LIBSVM-format set as a dense ``X`` (``n x n_features``) and ``y``.
     ``path`` is under the datasets root, such as ``regression/abalone``."""
-    name = f"libsvm-{path.replace('/', '-')}"
-    text = _cached(name, LIBSVM.format(path=path), _lenient_tls()).decode("ascii")
+    text = libsvm_text(path)
     rows = [line.split() for line in text.splitlines() if line.strip()]
     y = np.array([float(r[0]) for r in rows])
     x = np.zeros((len(rows), n_features))
@@ -196,3 +201,41 @@ def libsvm(path: str, n_features: int) -> tuple[np.ndarray, np.ndarray]:
 
 def libsvm_or_skip(path: str, n_features: int) -> tuple[np.ndarray, np.ndarray]:
     return _or_skip(lambda: libsvm(path, n_features), f"the LIBSVM set {path}")
+
+
+# ---------------------------------------------------------------------------
+# Every set an oracle group names
+
+
+#: The sources a ledger group's ``dataset`` may name, each a loader here.
+SOURCES = ("franti", "libsvm", "nist", "rdatasets", "tcpd")
+
+
+def fetch(dataset: str) -> list[str]:
+    """Download (or find cached) every set a ledger group's ``dataset``
+    names -- ``source:name,name`` with the sources ``franti``, ``libsvm``,
+    ``nist``, ``rdatasets`` and ``tcpd``, several joined by ``;`` -- and
+    return what each was. Raises :class:`data.Offline` as the loaders do,
+    and ``ValueError`` on a source this does not know, so a group cannot
+    name a set nothing fetches."""
+    done = []
+    for part in filter(None, (p.strip() for p in dataset.split(";"))):
+        source, _, names = part.partition(":")
+        for name in filter(None, names.split(",")):
+            if source == "franti":
+                franti(name)
+            elif source == "libsvm":
+                libsvm_text(name)
+            elif source == "nist" and name.startswith("NumAcc"):
+                numacc(int(name.removeprefix("NumAcc")))
+            elif source == "nist":
+                data.nist_strd_linear(name)
+            elif source == "rdatasets":
+                package, _, table = name.partition("/")
+                data.rdataset(package, table)
+            elif source == "tcpd":
+                tcpd(name)
+            else:
+                raise ValueError(f"{part!r}: no loader for the source {source!r}")
+            done.append(f"{source}:{name}")
+    return done

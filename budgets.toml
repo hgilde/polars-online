@@ -67,12 +67,12 @@ rss = 0.30
 
 [instructions.ewridge_k5]
 what = "ewridge, 5 features, 1 target, half-life 1000: AnyModel::step_into, into one kept Step"
-budget = 2789535
+budget = 2949476
 release = 2805466
 
 [instructions.ewridge_k20]
 what = "ewridge, 20 features, 1 target, half-life 1000: AnyModel::step_into, into one kept Step"
-budget = 7929239
+budget = 8375323
 release = 7947283
 
 [instructions.ewridge_gram_t10]
@@ -82,12 +82,12 @@ release = 13715304
 
 [instructions.huber_k20]
 what = "huber, 20 features, 1 target, half-life 1000, the MAD scale: AnyModel::step_into, into one kept Step"
-budget = 7757378
+budget = 8048480
 release = 7833126
 
 [instructions.huber_k20_sets]
 what = "huber, 20 features, 1 target, half-life 1000, the MAD scale, feature sets of 5, 10 and 20 features: AnyModel::step_into, into one kept Step"
-budget = 10131895
+budget = 10480393
 release = 10123658
 
 [instructions.huber_k20_sum]
@@ -97,19 +97,21 @@ release = 8242907
 
 [instructions.huber_k20_refit]
 what = "huber, 20 features, 1 target, half-life 1000, the MAD scale, the refit of the first 2,500 rows on the block's 500th row: AnyModel::step_into, into one kept Step"
+budget = 93770043
 
 [instructions.sgd]
 what = "sgd, 20 features, squared loss, learning rate 0.01, standardized: AnyModel::step_into, into one kept Step"
-budget = 3053026
+budget = 3519026
 release = 3053026
 
 [instructions.sgd_huber]
 what = "sgd, 20 features, Huber loss in the MAD scale, learning rate 0.01, standardized: AnyModel::step_into, into one kept Step"
-budget = 3497355
+budget = 3971398
 release = 3501863
 
 [instructions.sgd_huber_refit]
 what = "sgd, 20 features, Huber loss in the MAD scale, learning rate 0.01, standardized, the refit of the first 2,500 rows on the block's 500th row: AnyModel::step_into, into one kept Step"
+budget = 112279156
 
 [instructions.pa]
 what = "pa, 20 features, standardized: AnyModel::step_into, into one kept Step"
@@ -173,12 +175,12 @@ release = 218029
 
 [instructions.bank_seqtest]
 what = "Bank::fit_predict of one frame, seqtest: every per-row step of the bank around the cheapest model"
-budget = 1974796
+budget = 2013107
 release = 1980599
 
 [instructions.bank_ewridge_k5]
 what = "Bank::fit_predict of one frame, ewridge with 5 features"
-budget = 5753653
+budget = 6213818
 release = 5785175
 
 [instructions.bank_seqtest_groups]
@@ -206,11 +208,12 @@ release = 9047026
 
 [instructions.quantile]
 what = "quantile, the median, 20 features, half-life 1000: AnyModel::step_into, into one kept Step"
-budget = 15595496
+budget = 16742239
 release = 15678333
 
 [instructions.quantile_refit]
 what = "quantile, the median, 20 features, half-life 1000, the refit of the first 2,500 rows on the block's 500th row: AnyModel::step_into, into one kept Step"
+budget = 62209473
 
 [instructions.ftrl]
 what = "ftrl, 20 features, logistic loss, half-life 1000: AnyModel::step_into, into one kept Step"
@@ -219,7 +222,7 @@ release = 3696553
 
 [instructions.holt]
 what = "holt, level and trend of one column, half-life 1000: AnyModel::step_into, into one kept Step"
-budget = 577026
+budget = 678581
 release = 577026
 
 [instructions.marginal]
@@ -271,7 +274,7 @@ release = 21569026
 
 [instructions.formula_target_held1k]
 what = "Bank::fit_predict of one frame, ewridge with 5 features, its target the mean of y0 over the next 1,250 clock units (about 1,000 rows) and an embargo of the same span: about a thousand rows held behind each"
-budget = 15075642
+budget = 15425396
 release = 15117355
 
 [instructions.window_ewm_mean_w10k]
@@ -1270,6 +1273,94 @@ to = 0.3
 date = 2026-10-13
 reason = "two runs of one build on CI's macOS runner at Python 3.12 read the streaming case at 236.7 then 193.4 MiB and ten-target ewridge at 192.5 then 165.5 (2026-10-12 and 13), 14-18% apart, so a 15% tolerance either way failed one of them; 30% still catches the dense coef's +3.9 GiB"
 changelog = "The peak-memory (RSS) budgets are recorded, at a 30% tolerance"
+
+[[raised]]
+key = "instructions.ewridge_k5"
+from = 2789535
+to = 2949476
+date = 2026-10-26
+reason = "ewridge's condition estimate (task 278, D4), read at every solve to withhold a solve past its condition; traced by counting the block's instructions natively (arm64, retired instructions) at each merge to main since the last passing Budgets run (52a4077a): the condition estimate's merge +1.95%, and the gate that no longer holds learning back, min_weight withholding the output alone (its own floor and the capped thresholds each row), +0.92%, which the CHANGELOG's Performance entry 'A readiness gate that no longer holds learning back costs a little on each row' answers for; the rest within 0.2%"
+changelog = "`ewridge`'s condition estimate costs 4.3% at 5 features"
+
+[[raised]]
+key = "instructions.ewridge_k20"
+from = 7929239
+to = 8375323
+date = 2026-10-26
+reason = "ewridge's condition estimate (task 278, D4), read at every solve to withhold a solve past its condition; traced by counting the block's instructions natively (arm64, retired instructions) at each merge to main since the last passing Budgets run (52a4077a): the condition estimate's merge +3.98%, the rest within 0.6%"
+changelog = "`ewridge`'s condition estimate costs 4.3% at 5 features"
+
+[[raised]]
+key = "instructions.sgd"
+from = 3053026
+to = 3519026
+date = 2026-10-26
+reason = "sgd's step keeps each target's spread, step gains and level (task 278, D1, D2, D8, D-S): the clip in the target's units, the level rule and the unstable-rate gate; traced by counting the block's instructions natively (arm64, retired instructions) at each merge to main since the last passing Budgets run (52a4077a): the sgd merge +13.91%, the Huber refit's bookkeeping (task 277) +1.45%"
+changelog = "`sgd`'s step keeps each target's spread, step gains and level"
+
+[[raised]]
+key = "instructions.sgd_huber"
+from = 3497355
+to = 3971398
+date = 2026-10-26
+reason = "sgd's step keeps each target's spread, step gains and level (task 278, D1, D2, D8, D-S), and under the Huber loss the refit's bookkeeping (task 277) and the anchored MAD sketch; traced by counting the block's instructions natively (arm64, retired instructions) at each merge to main since the last passing Budgets run (52a4077a): the sgd merge +12.37%, the Huber refit +1.62%, the anchored sketch +0.63%"
+changelog = "`sgd`'s step keeps each target's spread, step gains and level"
+
+[[raised]]
+key = "instructions.quantile"
+from = 15595496
+to = 16742239
+date = 2026-10-26
+reason = "quantile keeps a sketch of |e| per target for its band's scale (task 278, D-Q), anchored (the sketch's merge); traced by counting the block's instructions natively (arm64, retired instructions) at each merge to main since the last passing Budgets run (52a4077a): the D-Q merge +4.94% (which also made min_weight withhold the output alone), the anchored sketch +0.73%, the follow-ups +0.94%, the first rows' refit (D-Q2) -1.17%"
+changelog = "`quantile` keeps a sketch of `|e|` per target for its band's scale"
+
+[[raised]]
+key = "instructions.holt"
+from = 577026
+to = 678581
+date = 2026-10-26
+reason = "holt's step updates the weighted line fit's three sums to take the larger of its gains and the textbook's (task 278, D-H); traced by counting the block's instructions natively (arm64, retired instructions) at each merge to main since the last passing Budgets run (52a4077a): the holt merge +10.09%, the rest within 0.3%"
+changelog = "`holt`'s step also updates the line fit's three sums"
+
+[[raised]]
+key = "instructions.bank_ewridge_k5"
+from = 5753653
+to = 6213818
+date = 2026-10-26
+reason = "ewridge's condition estimate (task 278, D4) at every solve, and the bank's residual spread, which now folds each slot's own prediction on the rows a gate withholds (task 278, b17); traced by counting the block's instructions natively (arm64, retired instructions, best of 15 runs) at each merge to main since the last passing Budgets run (52a4077a): the condition estimate +1.99%, the residual spread +1.82%, min_weight withholding ewridge's output alone +1.01% (the CHANGELOG's Performance entry 'A readiness gate that no longer holds learning back costs a little on each row'; the residual spread is the entry 'The bank's residual spread reads one extra prediction a row'), the rest within the bank's 0.7% run-to-run spread"
+changelog = "`ewridge`'s condition estimate costs 4.3% at 5 features"
+
+[[raised]]
+key = "instructions.huber_k20"
+from = 7757378
+to = 8048480
+date = 2026-10-26
+reason = "the gate that no longer holds learning back (task 278, D10), the Huber refit (task 277) and the anchored MAD sketch; traced by counting the block's instructions natively (arm64, retired instructions) at each merge to main since the last passing Budgets run (52a4077a): D10's merge +0.97%, of which reading the model's floor once a row (task 281) takes back 0.28%, leaving that change's code in the step (its own work within 0.3% of the old path's); the refit and its follow-up +1.26%; the anchored sketch +0.10%. Set at CI's count before task 281's fix, which lowers it by about 0.3% natively, inside the tolerance"
+changelog = "A readiness gate that no longer holds learning back costs a little on each row"
+
+[[raised]]
+key = "instructions.huber_k20_sets"
+from = 10131895
+to = 10480393
+date = 2026-10-26
+reason = "the gate that no longer holds learning back (task 278, D10), the Huber refit (task 277) and the anchored MAD sketch; traced by counting the block's instructions natively (arm64, retired instructions) at each merge to main since the last passing Budgets run (52a4077a): D10's merge +2.04%, of which reading the model's floor once a row rather than up to three times (task 281) takes back 0.90%, leaving that change's own work 0.27% over the old path's and its code in the step; the refit and its follow-up +0.38%; the anchored sketch +0.18%. Set at CI's count before task 281's fix, which lowers it by about 0.9% natively, inside the tolerance"
+changelog = "A readiness gate that no longer holds learning back costs a little on each row"
+
+[[raised]]
+key = "instructions.bank_seqtest"
+from = 1974796
+to = 2013107
+date = 2026-10-26
+reason = "the part of CI's +5.18% that ties to changes, raised alone: ewridge's condition estimate merge, which also counts withheld solves in the stream (task 278, D4) +0.64%; the Huber refit's bank changes, the restart mark and refit counts (task 277) +0.92%; the residual spread folding each slot's own prediction on rows a gate withholds (task 278, b17; the entry 'The bank's residual spread reads one extra prediction a row') +0.38%; together +1.94%. traced natively (arm64, retired instructions, best of 15 runs of the block) at each merge to main since the last passing Budgets run (52a4077a), where builds of unchanged bank code differ by up to about 1.9% (a merge touching no source the case runs moved it +1.87%). Not raised: the rest, about 3.2%: the drift reset's merge (task 278, b03) +0.57% has no Performance entry, a held row scored over the clock since the newest learned row (task 278, D11) reads the gap cap once a frame and costs nothing a row (its +2.45% follows the holt merge's -1.84%, which touches no bank code), and the remainder is that build-to-build spread"
+changelog = "`ewridge`'s condition estimate costs 4.3% at 5 features"
+
+[[raised]]
+key = "instructions.formula_target_held1k"
+from = 15075642
+to = 15425396
+date = 2026-10-26
+reason = "the part of CI's +4.45% that ties to changes, raised alone: ewridge's condition estimate (task 278, D4) +1.44%; min_weight withholding ewridge's output alone, the gate that no longer holds learning back (the entry 'A readiness gate that no longer holds learning back costs a little on each row') +0.61%; the residual spread folding each slot's own prediction on rows a gate withholds (task 278, b17; the entry 'The bank's residual spread reads one extra prediction a row') +0.38%; the Huber refit's bank changes (task 277; the entry 'The refit's buffers, and the bound on them') -0.11%; together +2.32%. traced natively (arm64, retired instructions, best of 15 runs of the block) at each merge to main since the last passing Budgets run (52a4077a), where builds of unchanged bank code differ by up to about 1.9% (a merge touching no source the case runs moved it +1.87%); this case flips by about 1.45% between builds, so each share is good to that. Not raised: the rest, about 2.1%, which no change accounts for; a held row scored over the clock since the newest learned row (task 278, D11) reads the gap cap once a frame and costs nothing a row"
+changelog = "`ewridge`'s condition estimate costs 4.3% at 5 features"
 
 # [[raised]]
 # key = "instructions.bocpd"

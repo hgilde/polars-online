@@ -196,11 +196,12 @@ def record(
 
 
 def platform_tag() -> str:
-    """``darwin-arm64-py3.12``, ``linux-x86_64-py3.14``: the system, the
-    processor, and Python's minor version, whose ``ast.unparse`` writes the
-    tests' source into the hash."""
-    v = sys.version_info
-    return f"{sys.platform}-{platform.machine().lower()}-py{v.major}.{v.minor}"
+    """``darwin-arm64``, ``linux-x86_64``: the system and the processor,
+    whose arithmetic the numbers and the hashes are. Not Python's version:
+    ``ast.unparse`` writes the tests' source into the hash, and on each of
+    CI's systems Python 3.12, 3.13 and 3.14 gave every group the same hash
+    (2026-10-26)."""
+    return f"{sys.platform}-{platform.machine().lower()}"
 
 
 def _floats(a: np.ndarray, bits: int) -> bytes:

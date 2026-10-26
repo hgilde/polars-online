@@ -561,11 +561,19 @@ impl RobustCfg {
     /// row is learned from ([`Self::weighing_set`]), so that set is the fit
     /// of a `huber` on its features alone, to the bit.
     fn floor(&self) -> u32 {
+        self.floor_at(self.weighing_set())
+    }
+
+    /// [`Self::floor`] given the weighing set, which a row reads once
+    /// ([`Self::weighing_set`] walks the sets): the floor was read up to
+    /// three times a row, and under three feature sets that cost about 0.8%
+    /// of `huber`'s row (measured natively, 2026-10-26).
+    fn floor_at(&self, weighing: usize) -> u32 {
         if self.min_weight_holds_learning {
             return 0;
         }
         let k = self
-            .set_of(self.weighing_set())
+            .set_of(weighing)
             .map_or(self.n_features, <[usize]>::len)
             + usize::from(self.fit_intercept);
         u32::try_from(k).unwrap_or(u32::MAX)
@@ -1054,12 +1062,14 @@ impl Robust {
     /// `min_weight` while no solve has fit it: the row its own first solve
     /// fell on (S9b). A target's weight grows only on a row that carries
     /// it, `lam·W + w` there as in the update below.
-    fn own_solve(&self, j: usize, present: bool, lam: f64, weight: f64) -> bool {
+    ///
+    /// `floor` is the model's floor ([`RobustCfg::floor`]), read once a row.
+    fn own_solve(&self, j: usize, present: bool, lam: f64, weight: f64, floor: u32) -> bool {
         if !present || !(weight > 0.0 && weight.is_finite()) {
             return false;
         }
         if !self.cfg.min_weight_holds_learning {
-            return self.seen.get(j).is_some_and(|&n| n + 1 == self.cfg.floor());
+            return self.seen.get(j).is_some_and(|&n| n + 1 == floor);
         }
         let t = crate::model::min_weight_of(&self.target_min_weight, self.cfg.min_weight, j);
         let reached = |w: f64| w >= t && w > 0.0;
@@ -1091,12 +1101,14 @@ impl Robust {
     /// normal double, where a decay one half-life longer would have taken
     /// it to 0 (task 215's line): the fit then learns the same from a
     /// history aged to `2^-1074` of its weight as from one aged to nothing.
-    fn slot_predictions(&self, x: &[f64]) -> Vec<f64> {
+    ///
+    /// `floor` is the model's floor ([`RobustCfg::floor`]), read once a row.
+    fn slot_predictions(&self, x: &[f64], floor: u32) -> Vec<f64> {
         let nc = self.cfg.n_sets();
-        let (least, floor) = if self.cfg.min_weight_holds_learning {
-            (0.0, 0)
+        let least = if self.cfg.min_weight_holds_learning {
+            0.0
         } else {
-            (f64::MIN_POSITIVE, self.cfg.floor())
+            f64::MIN_POSITIVE
         };
         let mut pred = vec![f64::NAN; self.cfg.n_targets * nc];
         if let Some(beta) = &self.beta {
@@ -1110,6 +1122,28 @@ impl Robust {
             }
         }
         pred
+    }
+
+    /// [`OnlineModel::predict`] with the model's floor given, as the step
+    /// reads it once for its row ([`RobustCfg::floor_at`]).
+    fn predict_at(&self, x: &[f64], d_clock: f64, floor: u32) -> Step {
+        if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
+            return refused;
+        }
+        let n_eff = self.w_raw;
+        let pred = if self.withheld() {
+            vec![f64::NAN; self.cfg.n_targets * self.cfg.n_sets()]
+        } else {
+            self.slot_predictions(x, floor)
+        };
+        // Each target's scale as it stands: a row scored and not learned
+        // (held under an embargo) reads it so (`RobustCfg::emit_scale`).
+        let extra = self.cfg.emit_scale.then(|| crate::Extra::Huber {
+            scale: (0..self.cfg.n_targets)
+                .map(|j| self.residual_scale(j).unwrap_or(f64::NAN))
+                .collect(),
+        });
+        Step { pred, n_eff, extra }
     }
 
     pub fn sigma2(&self) -> &[f64] {
@@ -2104,24 +2138,27 @@ impl OnlineModel for Robust {
             self.zbuf.copy_from_slice(x);
         }
 
+        // The slot whose prediction weighs the row, per target: under
+        // feature sets the largest set's, since the sets share the target's
+        // sums and a row enters them at one weight (`RobustCfg::feature_sets`).
+        let (nc, weighing) = (self.cfg.n_sets(), self.cfg.weighing_set());
+        // The model's floor, read once for the row (`RobustCfg::floor_at`).
+        let floor = self.cfg.floor_at(weighing);
+
         // ---- predict (state before the update) ----
-        let mut out = self.predict(x, d_clock);
+        let mut out = self.predict_at(x, d_clock, floor);
         // The fit learns from the prediction it makes, whether or not
         // `min_weight` withholds it from the output; only a state written
         // before schema 64 learns from the output's
         // (`RobustCfg::min_weight_holds_learning`). Built only on a
         // withheld row, so a row past the gate allocates nothing more.
         let own = (!self.cfg.min_weight_holds_learning && self.withheld())
-            .then(|| self.slot_predictions(x));
+            .then(|| self.slot_predictions(x, floor));
         let pred = own.as_deref().unwrap_or(&out.pred);
         // Each target's scale as this row's cut reads it, after its decay
         // and before its residual (`RobustCfg::emit_scale`).
         let emit = self.cfg.emit_scale;
         let mut seen = if emit { vec![f64::NAN; m] } else { Vec::new() };
-        // The slot whose prediction weighs the row, per target: under
-        // feature sets the largest set's, since the sets share the target's
-        // sums and a row enters them at one weight (`RobustCfg::feature_sets`).
-        let (nc, weighing) = (self.cfg.n_sets(), self.cfg.weighing_set());
 
         // ---- the solve schedule, decided before the targets learn the row:
         // it reads nothing they move, and a band row whose system the solve
@@ -2173,7 +2210,7 @@ impl OnlineModel for Robust {
             && (by_cadence
                 || self.rows_since_solve >= self.cfg.max_rows_between_solves
                 || (self.beta.is_none() && self.w_raw >= self.cfg.first_solve_at())
-                || (0..m).any(|j| self.own_solve(j, y[j].is_some(), lam, weight)));
+                || (0..m).any(|j| self.own_solve(j, y[j].is_some(), lam, weight, floor)));
 
         // ---- update: Huber reweights the row, the quantile linearises it ----
         // Targets whose refit buffer this row fills (`RobustCfg::refit_rows`).
@@ -2228,7 +2265,6 @@ impl OnlineModel for Robust {
             // The floor's count of the target's rows, which starts over
             // where its history is gone -- forgotten above, or aged to
             // nothing while it was absent -- as a fresh target's does.
-            let floor = self.cfg.floor();
             if let Some(n) = self.seen.get_mut(j)
                 && counts
             {
@@ -2418,25 +2454,8 @@ impl OnlineModel for Robust {
     }
 
     fn predict(&self, x: &[f64], d_clock: f64) -> Step {
-        if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
-            return refused;
-        }
-        let n_eff = self.w_raw;
-        let pred = if self.withheld() {
-            vec![f64::NAN; self.cfg.n_targets * self.cfg.n_sets()]
-        } else {
-            self.slot_predictions(x)
-        };
-        // Each target's scale as it stands: a row scored and not learned
-        // (held under an embargo) reads it so (`RobustCfg::emit_scale`).
-        let extra = self.cfg.emit_scale.then(|| crate::Extra::Huber {
-            scale: (0..self.cfg.n_targets)
-                .map(|j| self.residual_scale(j).unwrap_or(f64::NAN))
-                .collect(),
-        });
-        Step { pred, n_eff, extra }
+        self.predict_at(x, d_clock, self.cfg.floor())
     }
-
     fn state(&self) -> State {
         State::new(ModelState::Robust(Box::new(self.clone())))
     }
