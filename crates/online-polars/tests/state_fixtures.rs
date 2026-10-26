@@ -93,7 +93,10 @@ const REGENERATE: &str = "PRINT_STATE_FIXTURES=1 cargo test -p online-polars --t
 /// (schema 63 before its release, docs/PLAN.md task 275; the core's
 /// `state_fixtures.rs` has why): their first output row is the old build's
 /// to the bit, the rest to the golden tolerance, and the state they save is
-/// not compared with the current fixture's.
+/// not compared with the current fixture's. 63 kept since 64 gave `huber`
+/// and `sgd(loss = "huber")` the refit of each target's first rows
+/// (docs/PLAN.md task 277): no bank fixture holds either model, so each
+/// converts to the current bytes exactly, the windowed ones as above.
 macro_rules! previous {
     ($($schema:literal),* $(,)?) => {
         const PREVIOUS: &[u32] = &[$($schema),*];
@@ -109,7 +112,7 @@ macro_rules! previous {
     };
 }
 
-previous![61, 62];
+previous![61, 62, 63];
 
 /// The golden pipeline's tolerance, off the writer's platform.
 const TOL: f64 = 1e-12;
@@ -487,6 +490,142 @@ fn autocorr_run(bytes: &[u8], input: &DataFrame) -> Ran {
     Ok((again, vec![("fit_predict".into(), out)]))
 }
 
+/// The spec of the fourth bank file, `bank_reset`: `rls` under
+/// `drift_action = "reset"`, whose prior a step on the row after a reset
+/// would decay (docs/PLAN.md tasks 278 and 277).
+fn reset_specs() -> Vec<Spec> {
+    [
+        r#"{"name": "reset", "model": {"type": "rls"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "gap_cap": 10.0, "half_life": 100.0, "min_weight": 10.0, "emit_drift": true, "drift_threshold": 20.0, "drift_action": "reset"}"#,
+    ]
+    .iter()
+    .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))
+    .collect()
+}
+
+/// Rows of `bank_reset`'s stream: at its middle both slopes flip and the
+/// level moves by 6 against noise of 0.1, which fires the detector.
+const RESET_N: usize = 300;
+
+fn reset_frame() -> DataFrame {
+    let mut r = lcg(7);
+    let (mut t, mut x0, mut x1, mut y) = (vec![], vec![], vec![], vec![]);
+    let mut clock = 0.0;
+    for i in 0..RESET_N {
+        clock += 1.0 + 0.5 * r();
+        let (a, b) = (r(), r());
+        let (sign, level) = if i < RESET_N / 2 {
+            (1.0, 0.3)
+        } else {
+            (-1.0, 6.3)
+        };
+        t.push(clock);
+        x0.push(a);
+        x1.push(b);
+        y.push(level + sign * (2.0 * a - 1.5 * b) + 0.1 * r());
+    }
+    df!("t" => t, "x0" => x0, "x1" => x1, "y" => y).unwrap()
+}
+
+/// Saved on the row that fired: the rebuilt model has learned no row, and
+/// the instance's restart mark is set, so the continuation's first row
+/// reads a step of 0 from the state (schema 64, `Persisted::restarted`).
+fn reset_first() -> (Vec<u8>, DataFrame) {
+    let df = reset_frame();
+    let mut probe = Bank::new(reset_specs()).unwrap();
+    let cols = probe.fit_predict(&df).unwrap();
+    let out = DataFrame::new(df.height(), cols).unwrap();
+    let drift = out
+        .column("reset")
+        .unwrap()
+        .struct_()
+        .unwrap()
+        .field_by_name("drift_y")
+        .unwrap();
+    let fired = (0..df.height())
+        .find(|&i| drift.bool().unwrap().get(i) == Some(true))
+        .expect("the detector fires");
+    assert!(fired + 20 < RESET_N, "rows after the reset to continue on");
+    let mut bank = Bank::new(reset_specs()).unwrap();
+    bank.fit_predict(&df.slice(0, fired + 1)).unwrap();
+    (bank.save_bytes().unwrap(), df.slice((fired + 1) as i64, 20))
+}
+
+/// The specs of the fifth bank file, `bank_refit`: `huber` and
+/// `sgd(loss = "huber")` grouped, each refitting a target's first 20 rows
+/// (docs/PLAN.md task 277, schema 64). `huber`'s `refit_budget` holds two
+/// groups' buffers, so the third group to appear, and every later one, gives
+/// its refit up: the bank keeps the spec's reservation and each such
+/// stream's mark.
+fn refit_specs() -> Vec<Spec> {
+    [
+        r#"{"name": "robust", "model": {"type": "huber", "huber_refit_rows": 20, "refit_budget": 0.008}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "gap_cap": 10.0, "half_life": 60.0, "group": "g"}"#,
+        r#"{"name": "stepped", "model": {"type": "sgd", "loss": "huber", "huber_refit_rows": 20}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "gap_cap": 10.0, "half_life": 60.0, "group": "g"}"#,
+    ]
+    .iter()
+    .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))
+    .collect()
+}
+
+/// Rows of `bank_refit`'s stream: group `a` on every other row, `b` on every
+/// fourth, `c` and `d` on every eighth, and `e` in `d`'s place from row 72,
+/// so `e` first appears after the split. A wild row, 8 above, on every
+/// seventh.
+const REFIT_N: usize = 96;
+const REFIT_SPLIT: usize = 48;
+
+fn refit_frame() -> DataFrame {
+    let mut r = lcg(11);
+    let pattern = ["a", "b", "a", "c", "a", "b", "a", "d"];
+    let (mut t, mut g, mut x0, mut x1, mut y) = (vec![], vec![], vec![], vec![], vec![]);
+    for i in 0..REFIT_N {
+        let (a, b) = (r(), r());
+        let key = match pattern[i % 8] {
+            "d" if i >= 72 => "e",
+            k => k,
+        };
+        t.push(i as f64);
+        g.push(key);
+        x0.push(a);
+        x1.push(b);
+        let wild = if i % 7 == 3 { 8.0 } else { 0.0 };
+        y.push(1.0 + 2.0 * a - 1.5 * b + 0.1 * r() + wild);
+    }
+    df!("t" => t, "g" => g, "x0" => x0, "x1" => x1, "y" => y).unwrap()
+}
+
+/// Saved at the split: `a` has refit and freed its rows, `b` holds its 12,
+/// and `c` and `d` gave their refits up to the budget; `e`, new after the
+/// load, gives its up too.
+fn refit_first() -> (Vec<u8>, DataFrame) {
+    let df = refit_frame();
+    let mut bank = Bank::new(refit_specs()).unwrap();
+    bank.fit_predict(&df.slice(0, REFIT_SPLIT)).unwrap();
+    (
+        bank.save_bytes().unwrap(),
+        df.slice(REFIT_SPLIT as i64, REFIT_N - REFIT_SPLIT),
+    )
+}
+
+fn refit_run(bytes: &[u8], input: &DataFrame) -> Ran {
+    let mut bank = Bank::load_bytes(bytes, Some(&refit_specs()))?;
+    let again = bank.save_bytes()?;
+    let cols = bank.fit_predict(input).map_err(|e| e.to_string())?;
+    let out = DataFrame::new(input.height(), cols).map_err(|e| e.to_string())?;
+    let summary = bank.summary(0, None)?;
+    Ok((
+        again,
+        vec![("fit_predict".into(), out), ("summary".into(), summary)],
+    ))
+}
+
+fn reset_run(bytes: &[u8], input: &DataFrame) -> Ran {
+    let mut bank = Bank::load_bytes(bytes, Some(&reset_specs()))?;
+    let again = bank.save_bytes()?;
+    let cols = bank.fit_predict(input).map_err(|e| e.to_string())?;
+    let out = DataFrame::new(input.height(), cols).map_err(|e| e.to_string())?;
+    Ok((again, vec![("fit_predict".into(), out)]))
+}
+
 fn windows_first_of(config: WindowsConfig, input: DataFrame) -> (Vec<u8>, DataFrame) {
     let mut run = WindowsRun::new(config, input.schema()).unwrap();
     run.feed(&input.slice(0, SPLIT), None).unwrap();
@@ -573,6 +712,16 @@ fn kinds() -> Vec<Kind> {
             name: "bank_autocorr",
             first: autocorr_first,
             run: autocorr_run,
+        },
+        Kind {
+            name: "bank_reset",
+            first: reset_first,
+            run: reset_run,
+        },
+        Kind {
+            name: "bank_refit",
+            first: refit_first,
+            run: refit_run,
         },
         Kind {
             name: "with_windows",
@@ -1057,6 +1206,20 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
         }),
         ("bank", "pca_prev_by_group", |p, _| {
             p.starts_with(".pca_prev_by_group.")
+        }),
+        // Schema 64 (docs/PLAN.md task 277): an instance restarted by a
+        // drift reset and not yet past its next row.
+        ("bank_reset", "a restart mark", |p, v| {
+            p.contains(".restarted.") && v.as_bool() == Some(true)
+        }),
+        // Schema 64 (docs/PLAN.md task 277): a spec's refit reservation,
+        // a stream given up to the refit budget, and a target's buffer
+        // before its refit.
+        ("bank_refit", "a refit reservation", |p, v| {
+            p.starts_with(".refit_reserved.") && v.as_f64().is_some_and(|f| f > 0.0)
+        }),
+        ("bank_refit", "a stream over the refit budget", |p, v| {
+            p.ends_with(".refit_over_budget") && v.as_bool() == Some(true)
         }),
         ("with_windows_int", "OffForm::Int", |p, v| {
             p.ends_with(".form") && v.as_str() == Some("Int")

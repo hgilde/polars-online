@@ -141,9 +141,17 @@ _INF_OK: dict[str, frozenset[str]] = {
     "ewridge": frozenset({"long_half_life"}),
     "lasso": frozenset({"select_half_life"}),
     "kalman": frozenset({"coef_half_life", "revert_half_life"}),
-    "huber": frozenset({"huber_delta", "huber_scale_half_life"}),
+    # A refit budget at `inf` is no bound (task 277).
+    "huber": frozenset({"huber_delta", "huber_scale_half_life", "refit_budget"}),
     "sgd": frozenset(
-        {"clip_gradient", "coef_min", "coef_max", "huber_delta", "huber_scale_half_life"}
+        {
+            "clip_gradient",
+            "coef_min",
+            "coef_max",
+            "huber_delta",
+            "huber_scale_half_life",
+            "refit_budget",
+        }
     ),
     "pa": frozenset({"c", "coef_min", "coef_max"}),
     "holt": frozenset({"trend_half_life"}),

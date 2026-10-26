@@ -88,6 +88,7 @@ pub mod gramfit;
 mod health;
 mod hmm;
 mod holt;
+mod huber_refit;
 pub mod humanfloat;
 mod influence;
 mod kalman;
@@ -153,6 +154,10 @@ pub use gaps::{GramPart, TargetGaps};
 pub use health::FeatureHealth;
 pub use hmm::{Hmm, HmmCfg};
 pub use holt::{Holt, HoltCfg};
+pub use huber_refit::{
+    DEFAULT_REFIT_MAX_FEATURES, DEFAULT_REFIT_ROWS, REFIT_PASSES, REFIT_RUNS_PER_ROW, RefitStatus,
+    default_refit_rows, refit_reservation,
+};
 pub use influence::Influence;
 pub use kalman::{Kalman, KalmanCfg};
 pub use lasso::{Lasso, LassoCfg};
@@ -702,7 +707,34 @@ pub use window::{
 ///   decayed by the summed clock as they were, so the first read after
 ///   loading is the saved state's to the bit, and those taken after the load
 ///   carry products.
-pub const SCHEMA_VERSION: u32 = 63;
+/// - 64 (2026-10-25, task 277): `huber` and `sgd(loss="huber")` refit each
+///   target's first `refit_rows` learned rows to convergence, once, and
+///   rebuild its residual scale from the converged residuals
+///   ([`crate::huber_refit`]): the configuration keeps `refit_rows` (a
+///   spec's `huber_refit_rows`, 500 by default) and the model a buffer per
+///   target (`refit`: the rows it learned and the ones that only aged its
+///   sums, until the refit, then none). A state of 63 has neither field
+///   and was fitted without a refit, so the loader is the fields'
+///   defaults: `refit_rows` 0 and no buffers, and the state goes on to the
+///   bit as a 63 build continued it; a stream resumed from it never refits
+///   rows it has long passed. A bank saved at 63 keeps its spec as written,
+///   with no `huber_refit_rows`, so a group it first sees after the load, or
+///   one a drift reset rebuilds, takes the spec's default and refits at
+///   500 rows, beside the restored groups that do not. A buffer holds its
+///   learned rows and, between them, the rows that only aged its sums as
+///   runs of `(λ, λ_s, count, before)`, capped at four runs a learned row of
+///   the count, past which the target gives its refit up
+///   (`huber_refit::RefitBuf`), or, given up to a spec's `refit_budget`,
+///   `over_budget`. The bank keeps each spec's reservation of that budget
+///   (`refit_reserved`) and each stream whether its group gave its refit
+///   up to it (`refit_over_budget`); a 63 bank has neither and loads none.
+///   And a stream's instances keep their drift
+///   reset's restart mark as `restarted`, one per instance, which a 63
+///   state, written before it, loads as `false`: within 63, before its
+///   release, the mark was `decay_time`'s sign (task 278, batch 3), which a
+///   released 63 never wrote. Schema 63's fixtures are kept
+///   (`tests/state_fixtures/v63/`).
+pub const SCHEMA_VERSION: u32 = 64;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last

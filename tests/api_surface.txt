@@ -35,7 +35,7 @@
   target(column: 'str', *, name: 'str | None' = None) -> 'Target'
   thread_pool_size(*, threads: 'int | None' = None) -> 'int'
   unnest(frame: 'pl.LazyFrame | pl.DataFrame', specs: 'Specs | ModelBank | State', *, separator: 'str | None' = None) -> 'pl.LazyFrame | pl.DataFrame'
-  schema_version = 63
+  schema_version = 64
 
 [common parameters]  # every constructor accepts these via **common
   targets
@@ -247,6 +247,8 @@
     feature_sets = None
     ridge_scale = 'mean'
     emit_huber_scale = False
+    huber_refit_rows = None
+    refit_budget = None
     common
   kalman:
     name
@@ -392,6 +394,8 @@
     huber_delta = None
     huber_scale = None
     huber_scale_half_life = None
+    huber_refit_rows = None
+    refit_budget = None
     quantile = None
     eps = None
     learning_rate = None
@@ -655,6 +659,7 @@
     model.n_features = 1
     model.n_targets = 1
     model.quantile_eps = 0.001
+    model.refit_rows = 500
     model.ridge = 1e-06
     model.ridge_scale = false
     model.solve_every = 1.0
@@ -817,6 +822,7 @@
     model.n_features = 1
     model.n_targets = 1
     model.quantile_eps = 0.2
+    model.refit_rows = 0
     model.ridge = 1e-06
     model.ridge_scale = false
     model.solve_every = 1.0
@@ -897,6 +903,7 @@
     model.min_weight = 2.0
     model.n_features = 1
     model.n_targets = 1
+    model.refit_rows = 0
     model.schedule = "constant"
     model.standardize = true
     model.strict_binary = false
@@ -933,6 +940,7 @@
   sgd(features=['x0'], half_life=50.0, loss='huber', targets=['y']), the lines that differ from sgd's:
     model.huber_scale = "mad"
     model.loss.huber.delta = 1.345
+    model.refit_rows = 500
   sgd(features=['x0'], half_life=50.0, loss='epsilon_insensitive', targets=['y']), the lines that differ from sgd's:
     model.loss.epsilon_insensitive.eps = 0.01
   sgd(features=['x0'], half_life=50.0, schedule='inv_scaling', targets=['y']), the lines that differ from sgd's:
@@ -1025,6 +1033,7 @@
     clock_backwards: Int64
     resets: Int64
     solve_failures: Int64
+    refit_given_up: Int64
     settled_frac: Float64
     weight_sum_settled: Float64
     error_inflation: Float64
@@ -2506,7 +2515,7 @@
     ftrl: alpha, beta, l1, l2, loss, strict_binary
     hmm: covariance_type, covs, exog_tvtp, init, learn, means, n_components, precision_prior, seed, transition, transition_prior, tvtp_coef, warm_rows
     holt: trend, trend_half_life
-    huber: emit_huber_scale, feature_sets, huber_delta, huber_scale, huber_scale_half_life, max_rows_between_solves, ridge, ridge_scale, solve_every, standardize
+    huber: emit_huber_scale, feature_sets, huber_delta, huber_refit_rows, huber_scale, huber_scale_half_life, max_rows_between_solves, refit_budget, ridge, ridge_scale, solve_every, standardize
     kalman: coef_half_life, obs_var, p0, q, revert_half_life, share_p, standardize
     kmeans: dead_frac, init, n_clusters, scale_floor, seed, split_merge, split_merge_every_rows, standardize, update_every_rows, warm_rows
     lasso: closed, l1_ratio, max_iter, max_rows_between_snapshots, max_rows_between_solves, penalties, select_half_life, snapshot_every, solve_every, target_gaps, tol, window_budget, window_size
@@ -2517,7 +2526,7 @@
     rcov: bandwidth, block_rows, iv_stride, jitter, kernel, kind, max_bandwidth, noise_stride, preavg_rows, psd, theta
     rls: coef_prior, delta
     seqtest: a, a_suffix, b, b_suffix
-    sgd: clip_gradient, coef_max, coef_min, coef_sum, eps, huber_delta, huber_scale, huber_scale_half_life, l2, learning_rate, loss, power, quantile, schedule, standardize, strict_binary
+    sgd: clip_gradient, coef_max, coef_min, coef_sum, eps, huber_delta, huber_refit_rows, huber_scale, huber_scale_half_life, l2, learning_rate, loss, power, quantile, refit_budget, schedule, standardize, strict_binary
 
 [cli flags]  # `polars-online --help`: a flag added, renamed or removed, or one that starts or stops taking a value, is a diff here
   Usage: polars-online [OPTIONS] --config <CONFIG>

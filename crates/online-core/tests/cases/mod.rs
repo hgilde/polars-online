@@ -315,6 +315,7 @@ fn robust_cfg(loss: RobustLoss) -> RobustCfg {
         feature_sets: Vec::new(),
         ridge_scale: false,
         emit_scale: false,
+        refit_rows: 0,
     }
 }
 
@@ -409,6 +410,7 @@ fn sgd_cfg(loss: SgdLoss, n_targets: usize) -> SgdCfg {
         strict_binary: false,
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
+        refit_rows: 0,
     }
 }
 
@@ -673,6 +675,39 @@ pub fn all() -> Vec<Case> {
                 standardize: false,
                 ridge_scale: true,
                 emit_scale: true,
+                refit_rows: 0,
+                ..robust_cfg(RobustLoss::Huber { delta: 1.5 })
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            40
+        ),
+        // The refit of each target's first rows (schema 64, docs/PLAN.md
+        // task 277): saved with its buffers part full, the refit falling in
+        // the continuation, and saved after it, the buffers freed and the
+        // scale rebuilt from the converged residuals (the MAD's sketch in
+        // the first, the RMS in the second).
+        case!(
+            "huber_refit",
+            "Robust",
+            Robust,
+            Robust::new(RobustCfg {
+                huber_scale: online_core::HuberScale::Mad,
+                refit_rows: 40,
+                ..robust_cfg(RobustLoss::Huber { delta: 1.5 })
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            40
+        ),
+        case!(
+            "huber_refit_done",
+            "Robust",
+            Robust,
+            Robust::new(RobustCfg {
+                refit_rows: 20,
                 ..robust_cfg(RobustLoss::Huber { delta: 1.5 })
             })
             .unwrap(),
@@ -784,6 +819,37 @@ pub fn all() -> Vec<Case> {
             Sgd,
             Sgd::new(SgdCfg {
                 huber_scale: online_core::HuberScale::Mad,
+                ..sgd_cfg(SgdLoss::Huber { delta: 1.5 }, 2)
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            40
+        ),
+        // `sgd`'s refit (schema 64, docs/PLAN.md task 277): saved with its
+        // buffers part full, and saved after a refit that fell while the
+        // scaler warmed up, so its fit was set in the moments' coordinates.
+        case!(
+            "sgd_huber_refit",
+            "Sgd",
+            Sgd,
+            Sgd::new(SgdCfg {
+                huber_scale: online_core::HuberScale::Mad,
+                refit_rows: 40,
+                ..sgd_cfg(SgdLoss::Huber { delta: 1.5 }, 2)
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            40
+        ),
+        case!(
+            "sgd_huber_refit_done",
+            "Sgd",
+            Sgd,
+            Sgd::new(SgdCfg {
+                huber_scale: online_core::HuberScale::Mad,
+                refit_rows: 10,
                 ..sgd_cfg(SgdLoss::Huber { delta: 1.5 }, 2)
             })
             .unwrap(),

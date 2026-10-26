@@ -32,6 +32,7 @@ fn base(loss: RobustLoss) -> RobustCfg {
         feature_sets: Vec::new(),
         ridge_scale: false,
         emit_scale: false,
+        refit_rows: 0,
     }
 }
 
@@ -235,6 +236,7 @@ fn sgd_cfg(loss: crate::SgdLoss, scale: HuberScale) -> crate::SgdCfg {
         strict_binary: false,
         huber_scale: scale,
         huber_scale_decay: None,
+        refit_rows: 0,
     }
 }
 

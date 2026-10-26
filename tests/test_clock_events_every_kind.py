@@ -62,9 +62,8 @@ Documented exceptions, each held to its own form rather than skipped:
 
 Essentials: ``ew_cov``, ``kmeans`` and ``marginal`` (moments with a clock,
 a warm-up and seeding, and a state read from a table). Extended: every
-other kind. ``huber`` waits for task 277, which changes its warm-up (its
-refit must restart with the model); its leg builds and runs today
-(``test_the_waiting_leg_is_ready``).
+other kind, ``huber`` among them with the refit of its first rows on
+(task 277), which restarts with the model.
 """
 
 from __future__ import annotations
@@ -96,9 +95,7 @@ SESSIONS = (150, 280)
 GAP_CAP = 50.0
 
 ESSENTIAL = ("ew_cov", "kmeans", "marginal")
-#: Task 277 changes its warm-up; it joins ``KINDS`` when that merges.
-AFTER_TASK_277 = ("huber",)
-KINDS = sorted(set(MINIMAL) - set(AFTER_TASK_277))
+KINDS = sorted(MINIMAL)
 #: The kinds the regressions' own sweeps never ran ``group`` on.
 OTHER_KINDS = sorted(
     {
@@ -578,22 +575,6 @@ def test_a_group_is_a_separate_bank(kind):
 # Keeping the sweep honest
 
 
-def test_every_kind_is_swept_or_waits():
-    assert set(KINDS) | set(AFTER_TASK_277) == set(MINIMAL)
+def test_every_kind_is_swept():
+    assert set(KINDS) == set(MINIMAL)
     assert set(OTHER_KINDS) <= set(KINDS)
-
-
-@pytest.mark.parametrize("kind", AFTER_TASK_277)
-def test_the_waiting_leg_is_ready(kind):
-    """The ``huber`` leg builds every case and runs, so adding it is a move
-    into ``KINDS``, not a build."""
-    for kw in (
-        dict(restart_after_step_back=0.0),
-        dict(session="s", session_gap=3.0),
-        dict(session="s", session_gap="reset"),
-        dict(group="g", group_close="monotone"),
-        dict(group="k", session="s", group_close="session"),
-    ):
-        df = stepped(kind) if "restart_after_step_back" in kw else frame(kind)
-        out, _ = fit(clocked(kind, **kw), df)
-        assert out.height == N

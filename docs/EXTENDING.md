@@ -564,6 +564,15 @@ from `features[0]`, which `ModelKind::is_unsupervised` names in `spec.rs`.
 Add the model to each, and to the names in that function's doc comment,
 which nothing holds.
 
+`tests/test_cli_every_kind.py`'s `CASES` runs every kind at its fullest
+through the command line, from TOML, and holds each field, the saved state
+and the closed groups to `ModelBank.fit_predict` to the bit. Add a case
+for the model with every one of its keys; split keys that cannot sit
+together across several cases. `test_every_kind_and_key_is_covered` reads
+the kinds and keys from `tests/api_surface.txt`'s `[toml keys]`, and fails
+for a kind with no case, a model key no case uses, or a spec key the kind
+takes that no case of it uses.
+
 Two more lists have **no check** that holds them to the registered models.
 `crates/online-bench/src/lib.rs`'s `MODEL_CASES` is the instruction-count
 cases, one per model: add the model's case there, with its
