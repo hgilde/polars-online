@@ -15,6 +15,15 @@ count the bank never reads the variable. The Rust tests hold the pool
 itself: the registry's sharing and release
 (``crates/online-polars/src/pool.rs``) and that a bank of one thread runs
 every task on it (``crates/online-polars/src/bank/threads_tests.rs``).
+
+Every kind is held to the same bits (task 278, batch 31): each builder as
+``MINIMAL`` builds it and at its fullest, on four groups with a clock and a
+weight, at one thread, four and the process's pool -- every output field,
+every table read from the bank, and the saved state. Run on CI under each
+OS's pool, as part of the extended tier; ``kmeans`` is the essentials' case.
+``huber`` and ``sgd``'s Huber loss wait for task 277, which changes their
+warm-up; their legs build and run today. That the comparison compares work
+spread over several threads is read from the CPU time each thread accrues.
 """
 
 from __future__ import annotations
@@ -22,10 +31,12 @@ from __future__ import annotations
 import pickle
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
 import polars as pl
+import psutil
 import pytest
 
 import child
@@ -33,8 +44,9 @@ import polars_online as po
 from polars_online import _polars_online as native
 from polars_online._bank import _threads_refusal
 from polars_online._spec import _json
+from test_model_registry import MINIMAL, fullest
 
-TIER = "essential"
+TIER = "mixed"
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -202,19 +214,35 @@ def single_stream() -> tuple[pl.DataFrame, list[dict]]:
     return df, specs
 
 
+def _series_bits(s: pl.Series) -> object:
+    """A series as plain values that compare equal only when every value is
+    the same to the bit: a float as its null mask and the bits of its values
+    (``-0.0`` is not ``0.0``, and one NaN is not another), a list, an array
+    or a struct as its null mask, its shape and its members' bits, anything
+    else as its values."""
+    nulls = s.is_null().to_list()
+    if s.dtype in (pl.Float64, pl.Float32):
+        view = np.uint64 if s.dtype == pl.Float64 else np.uint32
+        return nulls, s.to_numpy().view(view).tolist()
+    if isinstance(s.dtype, pl.List):
+        return nulls, s.list.len().to_list(), _series_bits(s.explode())
+    if isinstance(s.dtype, pl.Array):
+        return nulls, _series_bits(s.explode())
+    if isinstance(s.dtype, pl.Struct):
+        return nulls, [_series_bits(f) for f in s.struct.unnest().iter_columns()]
+    return s.to_list()
+
+
+def _frame_bits(df: pl.DataFrame, prefix: str = "") -> dict[str, object]:
+    """Every column of a frame, as :func:`_series_bits` gives it."""
+    return {f"{prefix}{s.name}": _series_bits(s) for s in df.iter_columns()}
+
+
 def _bits(out: pl.DataFrame) -> dict[str, object]:
-    """Every field of every spec: a float field as its null mask and the bits
-    of its values, anything else as the series itself."""
+    """Every field of every spec, as :func:`_series_bits` gives it."""
     got: dict[str, object] = {}
     for spec in out.columns:
-        for s in out[spec].struct.unnest().iter_columns():
-            if s.dtype == pl.Float64:
-                got[f"{spec}.{s.name}"] = (
-                    s.is_null().to_list(),
-                    s.to_numpy().view(np.uint64).tolist(),
-                )
-            else:
-                got[f"{spec}.{s.name}"] = s
+        got |= _frame_bits(out[spec].struct.unnest(), f"{spec}.")
     return got
 
 
@@ -240,10 +268,7 @@ def test_a_spec_one_stream_serves_is_the_same_at_every_count(chunks):
         fields, state = got
         assert fields.keys() == want[0].keys(), threads
         for key, value in fields.items():
-            if isinstance(value, pl.Series):
-                assert value.equals(want[0][key], null_equal=True), (threads, chunks, key)
-            else:
-                assert value == want[0][key], (threads, chunks, key)
+            assert value == want[0][key], (threads, chunks, key)
         assert state == want[1], (threads, chunks)
 
 
@@ -454,3 +479,235 @@ def test_the_variable_sizes_the_default_pool_and_nothing_given_a_count():
         POLARS_ONLINE_MAX_THREADS="eight",
     )
     assert out.split("\n") == ["3", "4", 'POLARS_ONLINE_MAX_THREADS="eight"']
+
+
+# ---------------------------------------------------------------------------
+# Every kind (task 278, batch 31)
+
+#: Rows of the every-kind stream, fed in two chunks; the first is past the
+#: 4,096 rows from which a spec's output columns are allocated and finished
+#: in parallel.
+N_KINDS = 6_000
+FIRST_CHUNK = 5_000
+#: Above every step of the clock but its few long gaps, which it caps.
+GAP_CAP = 50.0
+#: Each kind's case: its builder and the keywords beyond its ``MINIMAL``
+#: entry. Every builder as ``MINIMAL`` builds it (``audit`` keeping its
+#: pairs too), and ``sgd``'s Huber loss.
+CASES: dict[str, tuple[str, dict[str, object]]] = {name: (name, {}) for name in MINIMAL} | {
+    "audit": ("audit", {"pairs": True}),
+    "sgd_huber": ("sgd", {"loss": "huber"}),
+}
+#: Task 277 changes their warm-up (a converged refit); each joins the sweep
+#: when it merges, by leaving this tuple.
+AFTER_TASK_277 = ("huber", "sgd_huber")
+SWEPT = sorted(set(CASES) - set(AFTER_TASK_277))
+#: The essentials' case: a kind the sweeps above never ran, seeded inside
+#: the stream.
+ESSENTIAL_KIND = "kmeans"
+#: The kinds that refuse a weight by name: a count, and a test whose every
+#: learned row is one trial. ``rcov`` takes a weight of 0 or 1 only.
+NO_WEIGHT = frozenset({"audit", "seqtest"})
+WEIGHT = {"rcov": "w01"}
+#: The kinds whose rows hold little beyond ``weight_sum``: what they learned
+#: is read from the bank, and compared too.
+READERS = {
+    "marginal": lambda bank, spec: {"pairs": bank.marginal(spec)},
+    "audit": lambda bank, spec: {
+        table: bank.audit(spec, table=table) for table in ("columns", "pairs", "clock")
+    },
+    "rcov": lambda bank, spec: {"closed": bank.closed_groups(spec)},
+}
+
+
+def kind_frame(case: str) -> pl.DataFrame:
+    """Four keys interleaved at random, an irregular clock with a few gaps
+    past ``GAP_CAP``, weights with zeros among them (and as 0 or 1), a feature with nulls,
+    two targets with a break in the first, and a key that only grows (rcov's
+    block). ``ftrl`` reads 0/1 targets, ``ew_class`` a label."""
+    rng = np.random.default_rng(31)
+    i = np.arange(N_KINDS)
+    step = np.where(rng.random(N_KINDS) < 0.005, 80.0, rng.exponential(1.0, N_KINDS))
+    x0, x1 = rng.standard_normal((2, N_KINDS))
+    y = 1.0 + 2.0 * x0 - x1 + 0.3 * rng.standard_normal(N_KINDS) + 3.0 * (i > N_KINDS // 2)
+    z = -x0 + 0.5 * x1 + 0.5 * rng.standard_normal(N_KINDS)
+    w = 0.5 + rng.random(N_KINDS)
+    w[::37] = 0.0
+    df = pl.DataFrame(
+        {
+            "t": np.cumsum(step),
+            "x0": np.where(rng.random(N_KINDS) < 0.01, np.nan, x0),
+            "x1": x1,
+            "y": y,
+            "z": z,
+            "w": w,
+            "w01": (w > 0).astype(float),
+            "g": rng.choice(["a", "b", "c", "d"], N_KINDS),
+            "blk": i // (N_KINDS // 4),
+        }
+    ).with_columns(pl.col("x0").fill_nan(None))
+    builder = CASES[case][0]
+    if builder == "ftrl":
+        df = df.with_columns((pl.col("y") > 1).cast(pl.Float64), (pl.col("z") > 0).cast(pl.Float64))
+    if builder == "ew_class":
+        df = df.with_columns(y=pl.when(pl.col("y") > 1).then(pl.lit("a")).otherwise(pl.lit("b")))
+    return df
+
+
+def kind_specs(case: str) -> list[dict]:
+    """The kind as ``MINIMAL`` builds it, and at its fullest (every output
+    switch it takes, two targets where it takes any, a half-life grid where
+    it decays), each on four groups with a clock and a weight, and ``coef``
+    on every row where it has one."""
+    builder, extra = CASES[case]
+    stream: dict[str, object] = {
+        "group": "blk" if builder == "rcov" else "g",
+        "clock": "t",
+        "gap_cap": GAP_CAP,
+    }
+    if builder not in NO_WEIGHT:
+        stream["weight"] = WEIGHT.get(builder, "w")
+    kw: dict[str, object] = {"targets": ["y"], "features": ["x0", "x1"], "half_life": 50.0}
+    kw |= MINIMAL[builder] | extra | stream
+    lone = getattr(po.spec, builder)("lone", **{k: v for k, v in kw.items() if v is not None})
+    full = fullest(builder) | {"name": "full"} | stream
+    full["model"] = full["model"] | extra
+    if full.get("emit_drift"):
+        # On a clock the drift detector's threshold is in clock time.
+        full["drift_threshold"] = 20.0
+    if any(f.startswith("coef") for f in po.spec.output_fields(lone)):
+        lone["coef_every"] = full["coef_every"] = 0
+    return [lone, full]
+
+
+def run_kind(case: str, threads: int | None) -> tuple[pl.DataFrame, po.ModelBank]:
+    df = kind_frame(case)
+    bank = po.ModelBank(kind_specs(case), threads=threads)
+    with warnings.catch_warnings():
+        # The readiness notices of a short warm-up are expected.
+        warnings.simplefilter("ignore")
+        chunks = [df.slice(0, FIRST_CHUNK), df.slice(FIRST_CHUNK)]
+        out = pl.concat([bank.fit_predict(c) for c in chunks]).drop(df.columns)
+    return out, bank
+
+
+def kind_bits(case: str, threads: int | None) -> tuple[po.ModelBank, dict[str, object], bytes]:
+    """The bank, its output's every field and every table read from it as
+    bits, and its saved state."""
+    out, bank = run_kind(case, threads)
+    state = bank.save_bytes()
+    got = _bits(out) | {"rows": out.height}
+    for spec, table, frame in _tables(case, bank):
+        got |= _frame_bits(frame, f"{spec}.{table}.")
+    return bank, got, state
+
+
+def _tables(case: str, bank: po.ModelBank) -> list[tuple[str, str, pl.DataFrame]]:
+    reader = READERS.get(CASES[case][0])
+    if reader is None:
+        return []
+    return [(spec, t, f) for spec in ("lone", "full") for t, f in reader(bank, spec).items()]
+
+
+def _learned(out: pl.DataFrame) -> dict[str, int]:
+    """Per spec, the finite values of its float fields beyond ``weight_sum``:
+    evidence that the comparison compares what the kind learned."""
+    got = {}
+    for spec in out.columns:
+        fields = out[spec].struct.unnest()
+        got[spec] = sum(
+            int(s.is_finite().sum())
+            for s in fields.iter_columns()
+            if s.dtype == pl.Float64 and s.name != "weight_sum"
+        )
+    return got
+
+
+def _kind(case: str):
+    if case == ESSENTIAL_KIND:
+        return case
+    return pytest.param(
+        case, marks=pytest.mark.extended(reason="a kind of the every-kind threads sweep")
+    )
+
+
+@pytest.mark.parametrize("case", [_kind(c) for c in SWEPT])
+def test_every_kind_is_the_same_at_every_count(case):
+    """Each kind, as ``MINIMAL`` builds it and at its fullest, on four
+    groups: one thread, four and the process's pool give every field and
+    every table read from the bank to the bit, null slots included, and the
+    same saved state."""
+    out, bank = run_kind(case, 1)
+    want = _bits(out) | {"rows": out.height}
+    state = bank.save_bytes()
+    # Compared over what the kind learned: four groups in each spec, and
+    # numbers in its fields, or in the tables its rows leave to the bank.
+    tables = _tables(case, bank)
+    for spec in ("lone", "full"):
+        # rcov's groups are blocks, closed as the next begins.
+        closed = sum(f.height for s, t, f in tables if (s, t) == (spec, "closed"))
+        assert bank.groups(spec).height + closed == 4, (case, spec)
+    learned = _learned(out)
+    print(case, learned, {f"{s}.{t}": f.height for s, t, f in tables})
+    if tables:
+        assert all(f.height > 0 for _, _, f in tables), case
+    else:
+        assert min(learned.values()) > N_KINDS // 20, (case, learned)
+    for spec, table, frame in tables:
+        want |= _frame_bits(frame, f"{spec}.{table}.")
+    for threads in (4, None):
+        _, got, saved = kind_bits(case, threads)
+        assert got.keys() == want.keys(), (case, threads)
+        for key, value in got.items():
+            assert value == want[key], (case, threads, key)
+        assert saved == state, (case, threads)
+
+
+def _cpu_by_thread() -> dict[int, float]:
+    return {t.id: t.user_time + t.system_time for t in psutil.Process().threads()}
+
+
+@pytest.mark.extended(reason="times the threads of a pool")
+def test_a_pool_of_four_runs_the_work_on_more_than_one_thread():
+    """The sweep above compares something: on a pool of four the kinds'
+    (spec, group) tasks run on several threads, and on a pool of one on one.
+    Read from the CPU time each of the process's threads accrues while the
+    banks learn. Measured 2026-10-25 (macOS arm64, 14 cores, load 190):
+    one thread ran 98-99% of the work at ``threads=1``; at ``threads=4``
+    three ran 32-34% each and the fourth 2% (in a fresh process, over 20
+    banks, all four ran 24-27%)."""
+    df, specs = kind_frame("ewridge"), kind_specs("ewridge")
+    chunks = [df.slice(0, FIRST_CHUNK), df.slice(FIRST_CHUNK)]
+    shares = {}
+    for threads in (1, 4):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            po.ModelBank(specs, threads=threads).fit_predict(df.head(50))
+            before = _cpu_by_thread()
+            for _ in range(5):
+                bank = po.ModelBank(specs, threads=threads)
+                for c in chunks:
+                    bank.fit_predict(c)
+            after = _cpu_by_thread()
+        spent = [after[i] - before.get(i, 0.0) for i in after]
+        total = sum(d for d in spent if d > 0)
+        shares[threads] = sorted((d / total for d in spent if d > 0), reverse=True)
+    print({k: [round(v, 3) for v in s[:6]] for k, s in shares.items()})
+    assert shares[1][0] > 0.8, shares[1]
+    assert sum(share > 0.1 for share in shares[4]) >= 2, shares[4]
+
+
+@pytest.mark.parametrize("case", AFTER_TASK_277)
+def test_the_waiting_legs_are_ready(case):
+    """``huber`` and ``sgd``'s Huber loss build both specs and run on a pool
+    of four, so adding each to the sweep is its removal from
+    ``AFTER_TASK_277``, not a build."""
+    out, bank = run_kind(case, 4)
+    assert out.height == N_KINDS
+    assert min(_learned(out).values()) > N_KINDS // 4
+    assert bank.groups("full").height == 4
+
+
+def test_every_kind_is_swept_or_waits():
+    assert set(SWEPT) | set(AFTER_TASK_277) == set(CASES)
+    assert {builder for builder, _ in CASES.values()} == set(MINIMAL)
