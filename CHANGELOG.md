@@ -114,6 +114,13 @@ returns.
 
 ### Fixed
 
+- A formula target's saved state is the same bytes whatever the layout of
+  the input's text columns in memory (task 278). A session or text column
+  read from parquet carried a data buffer its inline values did not need,
+  and the held rows were written with it, so the command line, which reads
+  parquet, saved a state of different bytes than `ModelBank.fit_predict` on
+  the same rows; every value, prediction and continuation was already the
+  same.
 - `corrchange`'s `monitor` critical value keeps its precision in either
   tail (task 278). It was solved from `1 − alpha`, which a double holds only
   to about 1e-16 absolute, so it was off by 5.9e-7 relative at a per-pair
