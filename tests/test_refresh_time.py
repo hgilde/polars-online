@@ -14,7 +14,7 @@ import pytest
 import polars_online as po
 from polars_online import stream
 
-TIER = "essential"
+TIER = "mixed"
 
 NAMES = ["a", "b", "c"]
 
@@ -654,3 +654,308 @@ def test_time_refresh_is_the_completing_ticks_clock_in_its_own_dtype(dtype: str)
     assert out.height > 10
     assert out.schema["time_refresh"] == df.schema["t"] == lazy.collect_schema()["time_refresh"]
     assert out["time_refresh"].equals(df["t"].gather(out["i"]).alias("time_refresh"))
+
+
+# --- task 278 (b26): names, pairs, group and keep together ---------------------
+#
+# Every comparison here is to the bit: a grid point is a tick's own clock and
+# values, the counts are integers, and ``retained_fraction`` is the number of
+# series over an integer sum, which no reordering of the series or the chunks
+# changes. Series are named x, y, z so that they are never confused with the
+# pairs columns' generic ``a`` and ``b``.
+
+XYZ = ["x", "y", "z"]
+
+
+def xyz_obs(n=200, seed=0, rates=(1.0, 0.4, 0.15)):
+    """``poisson_obs`` on x, y, z, with the row ``i`` to read the completing
+    tick by."""
+    return (
+        poisson_obs(names=XYZ, rates=rates, n=n, seed=seed)
+        .with_row_index("i")
+        .with_columns(pl.col("i").cast(pl.Int64))
+    )
+
+
+def xyz(df, **kw):
+    kw.setdefault("names", XYZ)
+    return run(df, **kw)
+
+
+def oriented(out, names, order):
+    """A pairs frame run under ``names``, relabelled to the orientation that
+    ``order`` gives: a pair whose series come the other way round in
+    ``order`` has its label reversed and its ``a``/``b`` columns swapped.
+    Sorted by tick and pair, as two runs need not emit one tick's pairs in
+    the same order."""
+    rank = {s: k for k, s in enumerate(order)}
+    reversed_labels = [f"{a}|{b}" for a in names for b in names if rank[a] > rank[b] and a != b]
+    out = out.with_columns(_swap=pl.col("pair").is_in(reversed_labels))
+
+    def pick(a, b):
+        return pl.when(pl.col("_swap")).then(pl.col(b)).otherwise(pl.col(a))
+
+    return (
+        out.with_columns(
+            pair=pl.when(pl.col("_swap"))
+            .then(pl.col("pair").str.split("|").list.reverse().list.join("|"))
+            .otherwise(pl.col("pair")),
+            a_value=pick("a_value", "b_value"),
+            b_value=pick("b_value", "a_value"),
+            n_obs_a=pick("n_obs_a", "n_obs_b"),
+            n_obs_b=pick("n_obs_b", "n_obs_a"),
+        )
+        .drop("_swap")
+        .sort("i", "pair")
+    )
+
+
+def multi_pair_ticks(out):
+    """The ticks (by ``i``) that completed more than one pair's point."""
+    return out.group_by("i").len().filter(pl.col("len") > 1)["i"].sort()
+
+
+def test_permuting_names_permutes_the_columns_and_nothing_else():
+    """``names`` sets the output's column order, not the grid: a point is
+    where the set of series completes, whatever order the set is listed in."""
+    df = xyz_obs()
+    want = xyz(df, keep=["i"])
+    for order in (["z", "x", "y"], ["y", "z", "x"], ["z", "y", "x"]):
+        got = xyz(df, names=order, keep=["i"])
+        assert got.columns == [
+            "time_refresh",
+            *(f"{s}_value" for s in order),
+            *(f"n_obs_{s}" for s in order),
+            "retained_fraction",
+            "i",
+        ]
+        assert got.select(want.columns).equals(want), order
+    assert want.height > 20, "the grid has points to compare"
+
+
+def test_permuting_names_reorients_the_pairs_and_nothing_else():
+    """Under ``pairs=True`` the label is in ``names`` order, so a permutation
+    that reverses two series reverses their label and swaps their ``a`` and
+    ``b`` columns; the points are the same."""
+    df = xyz_obs()
+    want = oriented(xyz(df, pairs=True, keep=["i"]), XYZ, XYZ)
+    for order in (["z", "x", "y"], ["z", "y", "x"]):
+        raw = xyz(df, names=order, pairs=True, keep=["i"])
+        # Activation: some labels did come out the other way round.
+        assert set(raw["pair"]) - set(want["pair"]), order
+        assert oriented(raw, order, XYZ).equals(want), order
+
+
+def test_pairs_with_two_names_are_the_joint_grid():
+    """With two series there is one pair, and its grid is the joint grid,
+    relabelled: ``pair`` added, ``<s>_value`` and ``n_obs_<s>`` named for
+    ``a`` and ``b``."""
+    df = xyz_obs().filter(pl.col("series").is_in(["x", "z"]))
+    joint = xyz(df, names=["x", "z"], keep=["i"])
+    pairs = xyz(df, names=["x", "z"], pairs=True, keep=["i"])
+    assert joint.height > 20
+    want = joint.select(
+        pl.lit("x|z").alias("pair"),
+        "time_refresh",
+        pl.col("x_value").alias("a_value"),
+        pl.col("z_value").alias("b_value"),
+        pl.col("n_obs_x").alias("n_obs_a"),
+        pl.col("n_obs_z").alias("n_obs_b"),
+        "retained_fraction",
+        "i",
+    )
+    assert pairs.equals(want)
+
+
+def test_keep_columns_under_pairs_come_last_at_the_completing_tick():
+    """``keep`` under ``pairs=True`` is what it is on the joint grid: the
+    column after the pairs columns, at its value on the tick that completed
+    the pair's point. The point is the longhand loop's."""
+    df = xyz_obs(n=120).with_columns(tag=pl.format("r{}", pl.col("i")), w=pl.col("v") * 2.0)
+    out = xyz(df, pairs=True, keep=["tag", "w"])
+    assert out.columns == [
+        "pair",
+        "time_refresh",
+        "a_value",
+        "b_value",
+        "n_obs_a",
+        "n_obs_b",
+        "retained_fraction",
+        "tag",
+        "w",
+    ]
+    assert out.schema["tag"] == pl.String and out.schema["w"] == pl.Float64
+    # The completing tick, found by its clock (one tick per clock value).
+    tick = out.join(
+        df.select("t", "i", tag_in="tag", w_in="w"), left_on="time_refresh", right_on="t"
+    )
+    assert tick.height == out.height
+    assert tick["tag"].equals(tick["tag_in"].alias("tag"))
+    assert tick["w"].equals(tick["w_in"].alias("w"))
+    # And the pairs columns are the longhand loop's.
+    want = pl.DataFrame(oracle(df, XYZ, pairs=True))
+    for p in ("x|y", "x|z", "y|z"):
+        a, b = p.split("|")
+        mine = out.filter(pl.col("pair") == p).drop("tag", "w", "pair")
+        theirs = want.filter(pl.col("pair") == p).select(
+            "time_refresh",
+            pl.col(f"{a}_value").alias("a_value"),
+            pl.col(f"{b}_value").alias("b_value"),
+            pl.col(f"n_obs_{a}").alias("n_obs_a"),
+            pl.col(f"n_obs_{b}").alias("n_obs_b"),
+            "retained_fraction",
+        )
+        assert mine.equals(theirs), p
+
+
+def two_groups_xyz(n=120):
+    a = xyz_obs(n=n, seed=8).with_columns(g=pl.lit("p"))
+    b = xyz_obs(n=n, seed=9).with_columns(g=pl.lit("q"))
+    return (
+        pl.concat([a, b])
+        .sort("t")
+        .drop("i")
+        .with_row_index("i")
+        .with_columns(pl.col("i").cast(pl.Int64))
+    )
+
+
+def test_pairs_under_a_group_are_each_groups_own_pairs():
+    """``group`` x ``pairs``: each group runs its own pairs, so a group's rows
+    are the pairs grid of its part of the input alone, and the group column
+    comes first."""
+    df = two_groups_xyz()
+    out = xyz(df, pairs=True, group="g", keep=["i"])
+    assert out.columns[:2] == ["g", "pair"]
+    # Activation: the groups interleave, so each group's grid is read across
+    # the other's ticks.
+    assert out["g"].head(20).n_unique() == 2
+    for key in ("p", "q"):
+        part = df.filter(pl.col("g") == key)
+        want = xyz(part, pairs=True, keep=["i"])
+        got = out.filter(pl.col("g") == key).drop("g")
+        assert want.height > 30 and got.equals(want), key
+
+
+def _pairs_split_case():
+    """Two interleaved groups under pairs: 600 rows, 100 ticks a series a
+    group."""
+    df = two_groups_xyz(n=100)
+    kw = dict(series="series", names=XYZ, clock="t", value="v", group="g", pairs=True, keep=["i"])
+    return df, kw
+
+
+@pytest.mark.parametrize("chunks", [1, 7, 600])
+def test_pairs_are_the_same_from_one_chunk_or_many(chunks):
+    """Pairs are chunk-invariant as the joint grid is, including where one
+    tick completes several pairs and, at one row a chunk, every such tick
+    ends its chunk."""
+    df, kw = _pairs_split_case()
+    assert df.height == 600
+    want = stream.refresh_time(df, chunk_size=df.height, **kw)
+    multi = multi_pair_ticks(want)
+    assert multi.len() > 10, "ticks completing several pairs at once"
+    size = -(-df.height // chunks)  # 600 rows in 1, 7 or 600 chunks
+    got = stream.refresh_time(df.lazy(), chunk_size=size, **kw).collect()
+    assert got.equals(want)
+
+
+@pytest.mark.parametrize("split", [1, 50, 237, 400, "after a multi-pair tick"])
+def test_pairs_through_a_saved_state_are_the_one_runs_pairs(tmp_path, split):
+    """A pairs state holds each group's every pair part-way through its
+    interval, so two runs give the one run's pairs and end in its state."""
+    df, kw = _pairs_split_case()
+    want = stream.refresh_time(df, **kw)
+    if isinstance(split, str):
+        # The first run ends on a tick that completed several pairs at once.
+        split = multi_pair_ticks(want)[0] + 1
+    state = tmp_path / "pairs.state"
+    first = stream.refresh_time(df.head(split).lazy(), save_state=state, chunk_size=7, **kw)
+    first = first.collect()
+    second = stream.refresh_time(df.slice(split), load_state=state, save_state=state, **kw)
+    assert pl.concat([first, second]).equals(want)
+    whole = tmp_path / "whole.state"
+    stream.refresh_time(df, save_state=whole, **kw)
+    assert state.read_bytes() == whole.read_bytes()
+
+
+def test_a_slice_ending_among_one_ticks_pairs_saves_the_state_after_that_tick(tmp_path):
+    """The docstring's warning, held: one tick can complete several pairs'
+    points, and a ``head(n)`` that ends among them reads up to that tick and
+    saves the state after it, whatever the chunk size. That state is the one
+    a run over the input up to the tick saves, so the points the slice left
+    out of that tick are returned by neither the slice nor a run resumed
+    after the tick; every other point is."""
+    df = xyz_obs()
+    kw = dict(series="series", names=XYZ, clock="t", value="v", pairs=True, keep=["i"])
+    whole = stream.refresh_time(df, **kw)
+    tick = multi_pair_ticks(whole)[0]
+    first_at_tick = whole.with_row_index("r").filter(pl.col("i") == tick)["r"]
+    assert first_at_tick.len() >= 2, "the tick completes several pairs"
+    n = first_at_tick[0] + 1  # the slice ends after the first of them
+    states = []
+    for size in (1, 7, 100_000):
+        path = tmp_path / f"head{size}.state"
+        plan = stream.refresh_time(df.lazy(), save_state=path, chunk_size=size, **kw)
+        head = plan.head(n).collect()
+        assert head.equals(whole.head(n)), size
+        states.append(path.read_bytes())
+    assert states[0] == states[1] == states[2]
+    upto = tmp_path / "upto.state"
+    stream.refresh_time(df.filter(pl.col("i") <= tick), save_state=upto, **kw)
+    assert upto.read_bytes() == states[0]
+    resumed = stream.refresh_time(
+        df.filter(pl.col("i") > tick), load_state=tmp_path / "head1.state", **kw
+    )
+    lost = whole.slice(n, first_at_tick.len() - 1)
+    assert lost["i"].to_list() == [tick] * (first_at_tick.len() - 1)
+    assert pl.concat([head, lost, resumed]).equals(whole)
+
+
+_GRID_ORDERS = [XYZ, ["z", "x", "y"], ["y", "x", "z"]]
+
+
+@pytest.mark.extended(reason="a grid: 54 cases of up to 1.2 s, 15 s in all")
+@pytest.mark.parametrize("seed", [11, 12, 13])
+@pytest.mark.parametrize("chunks", [1, 7, 600])
+@pytest.mark.parametrize("order", range(len(_GRID_ORDERS)))
+@pytest.mark.parametrize("grouped", [False, True])
+def test_pairs_grid_chunks_orders_groups_and_keep(seed, chunks, order, grouped):
+    """Every combination of the options at once, on streams with a slow
+    series: each group's pairs, chunked, under a permutation of ``names``
+    and with a ``keep`` column, are the longhand loop's pairs in the
+    canonical orientation."""
+    names = _GRID_ORDERS[order]
+    a = xyz_obs(n=200, seed=seed, rates=(2.0, 0.7, 0.1)).with_columns(g=pl.lit("p"))
+    b = xyz_obs(n=200, seed=seed + 100, rates=(0.3, 1.5, 0.6)).with_columns(g=pl.lit("q"))
+    df = pl.concat([a, b] if grouped else [a]).sort("t").drop("i")
+    df = df.with_row_index("i").with_columns(pl.col("i").cast(pl.Int64))
+    size = -(-df.height // chunks)
+    kw = dict(series="series", names=names, clock="t", value="v", pairs=True, keep=["i"])
+    if grouped:
+        kw["group"] = "g"
+    got = stream.refresh_time(df.lazy(), chunk_size=size, **kw).collect()
+    assert multi_pair_ticks(got).len() > 0
+    for key in ("p", "q") if grouped else (None,):
+        part = df if key is None else df.filter(pl.col("g") == key)
+        mine = got if key is None else got.filter(pl.col("g") == key).drop("g")
+        rows = oracle(part, XYZ, pairs=True)
+        tick_of = dict(zip(part["t"], part["i"], strict=True))
+        want = pl.DataFrame(
+            [
+                {
+                    "pair": r["pair"],
+                    "time_refresh": r["time_refresh"],
+                    "a_value": r[f"{sa}_value"],
+                    "b_value": r[f"{sb}_value"],
+                    "n_obs_a": r[f"n_obs_{sa}"],
+                    "n_obs_b": r[f"n_obs_{sb}"],
+                    "retained_fraction": r["retained_fraction"],
+                    "i": tick_of[r["time_refresh"]],
+                }
+                for r in rows
+                for sa, sb in [r["pair"].split("|")]
+            ]
+        ).sort("i", "pair")
+        assert want.height > 30
+        assert oriented(mine, names, XYZ).equals(want), (key, names)

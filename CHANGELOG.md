@@ -114,6 +114,23 @@ returns.
 
 ### Fixed
 
+- `corrchange`'s `monitor` critical value keeps its precision in either
+  tail (task 278). It was solved from `1 − alpha`, which a double holds only
+  to about 1e-16 absolute, so it was off by 5.9e-7 relative at a per-pair
+  level of 1e-12 and 2.8e-10 at 1e-8, stopped rising at 4.366 below about
+  1e-16 (the true value is 4.835 at 1e-20 and 18.594 at 1e-300), and was off
+  by 3.3e-12 at 1 − 1e-6. Below 0.01 it is now solved on the Kolmogorov
+  survival series against `alpha`, above 0.99 on the theta-function series,
+  and is within 1.2 ulps of a 50-digit reference from 1e-300 to 1 − 1e-12.
+  From 0.01 to 0.99 it is unchanged to the bit, so saved states at the usual
+  levels continue where they were; a Bonferroni share below 0.01 moves by a
+  few ulps toward the true value.
+- `po.stream.refresh_time`'s docstring lists the `group` and `keep`
+  columns and their places in the `pairs=True` output (group first, keep
+  last; `a` is the pair's series listed first in `names`), and says plainly
+  that when a `.head(n)` ends among the points one tick completes for
+  several pairs, the points it leaves out are returned neither by the slice
+  nor by a run resumed after that tick (task 278).
 - On a stream with no clock column, a cadence counted on the clock starts a
   row before the first row, as `coef_every` does, so `X_every=n` and its row
   cap `max_rows_between_X=n` give the same schedule (task 278, D13).
