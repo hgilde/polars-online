@@ -3706,15 +3706,19 @@ def kmeans(
     ``dead_frac``
         Re-place a centre whose weight has decayed below ``dead_frac *
         weight_sum / n_clusters`` the same way, on whatever far rows there are
-        (default 0.05; ``0`` disables; below 1, since the lightest centre
-        never carries more than the mean share ``weight_sum / n_clusters``,
-        so at 1 or more every check would find one dead whatever the
-        clusters). A centre whose cluster vanished is
-        re-placed ``log2(1 / dead_frac)`` half-lives later (4.3 at the
-        default, 2 at 0.25). A cluster lighter than ``dead_frac / n_clusters`` of the
+        (default 0.05; ``0`` disables; below 0.5). The freed centre takes half
+        the weight of the cluster it is split from, which keeps the other half,
+        so from a cluster at an equal share both halves start at ``weight_sum /
+        (2 n_clusters)``: the floor itself at 0.5. Each check then re-places
+        one of them on the far rows, and the clustering is lost. Over 50
+        streams with a check every 25 rows, a centre whose blob vanished was
+        re-placed once on every stream at 0.45 and below; 3 streams cascaded at
+        0.5, 29 at 0.6 and all 50 at 0.9. A centre whose cluster vanished is
+        re-placed ``log2(1 / dead_frac)`` half-lives later (4.3 at the default,
+        2 at 0.25). A cluster lighter than ``dead_frac / n_clusters`` of the
         stream loses its centre whenever any row is far. The rule runs at a
-        split-merge check, so beside ``split_merge = 0``, which runs none,
-        the default is 0 and a value above 0 is refused.
+        split-merge check, so beside ``split_merge = 0``, which runs none, the
+        default is 0 and a value above 0 is refused.
     ``standardize``
         Measure distances in units of each feature's EW standard deviation,
         tracked alongside the centres; the coordinates themselves are never
@@ -3788,7 +3792,7 @@ def kmeans(
       past 256 MiB;
     - a ``init`` not in the list;
     - ``split_merge``, ``dead_frac`` or ``scale_floor`` below 0 or not finite,
-      a ``dead_frac`` of 1 or more,
+      a ``dead_frac`` of 0.5 or more,
       ``dead_frac`` above 0 beside ``split_merge = 0``, and ``scale_floor``
       beside ``standardize=False``.
     """

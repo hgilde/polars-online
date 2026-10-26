@@ -403,17 +403,23 @@ MODELS.md](MODELS.md#bocpd--how-long-has-this-regime-lasted)).
 
 | detector           | false alarms / 1000 quiet rows | found the break | median delay | worst delay |
 |--------------------|--------------------------------|-----------------|--------------|-------------|
-| corrchange, `kind="window"` | 53.67                          | 20/20           | 25           | 56          |
+| corrchange, `kind="window"` | 44.70                          | 20/20           | 30           | 57          |
 | bocpd              | 0.53                           | 20/20           | 121          | 351         |
 
 **The two detectors answer different questions, which is why both are
 here.** `corrchange(kind="window")` is a test of one thing: whether the
 correlation matrix has moved between two adjacent windows. It is looking
-straight at this break, so it flags it fast, in a median of 25 rows and 56
-at worst. It also flags 53.67 rows per 1000 quiet ones. Two windows that
+straight at this break, so it flags it fast, in a median of 30 rows and 57
+at worst. It also flags 44.70 rows per 1000 quiet ones. Two windows that
 slide by one row are almost the same windows, so its flags come in runs.
 That rate is nearer a fraction of rows above the quantile than a count of
 events.
+
+> **Measured before the window test's critical value moved to the standard
+> permutation rule on 2026-10-26** (with 100 shuffles at `alpha` 0.05, the
+> 95th smallest shuffle became the 96th, and the size 5.94% became 4.95%):
+> 53.67 false alarms per 1000 quiet rows, a median delay of 25 rows and 56
+> at worst.
 
 `bocpd` is a full joint model of the rows, and a correlation change is the
 one break its `p_change` cannot see: no single row is surprising, only the

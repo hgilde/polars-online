@@ -534,7 +534,7 @@ IGNORED = [
     ),
     (
         po.spec.kmeans,
-        dict(**_KMEANS, n_clusters=3, split_merge=0.0, dead_frac=0.5),
+        dict(**_KMEANS, n_clusters=3, split_merge=0.0, dead_frac=0.25),
         "kmeans: dead_frac re-places a centre at a split-merge check",
     ),
     (
@@ -636,17 +636,21 @@ NONSENSE = [
         dict(targets=["y"], features=["x0", "x1"], half_life=10.0, bin_edges={"x0": [], "x1": []}),
         "marginal bin_edges gives no feature an edge",
     ),
-    # At 1 or more the lightest centre is always "dead": it re-placed one at
-    # every check on any far row.
+    # A re-placed centre starts at half its source's weight, which is the
+    # floor from 0.5 on: re-placed again at the next check, and the clusters
+    # lost (tests/test_family_f_grids.py measured it; task 278 batch 33).
+    # At 1 or more the lightest centre was "dead" at every check.
     (
         po.spec.kmeans,
-        dict(**_KM, dead_frac=1.0),
-        'spec "m": dead_frac must be below 1, got 1: the lightest centre never carries more '
-        "than the mean share, weight_sum / n_clusters, so a dead_frac of 1 or more calls a "
-        "centre dead at every split-merge check and re-places it on any far row, whatever the "
-        "clusters",
+        dict(**_KM, dead_frac=0.5),
+        'spec "m": dead_frac must be below 0.5, got 0.5: a re-placed centre starts at half '
+        "its source's weight, so at 0.5 or above it can be born at the floor that marks a "
+        "centre dead, dead_frac * weight_sum / n_clusters, and the next split-merge check "
+        "re-places it again",
     ),
-    (po.spec.kmeans, dict(**_KM, dead_frac=1.5), "dead_frac must be below 1, got 1.5"),
+    (po.spec.kmeans, dict(**_KM, dead_frac=0.6), "dead_frac must be below 0.5, got 0.6"),
+    (po.spec.kmeans, dict(**_KM, dead_frac=1.0), "dead_frac must be below 0.5, got 1"),
+    (po.spec.kmeans, dict(**_KM, dead_frac=1.5), "dead_frac must be below 0.5, got 1.5"),
     # One slot leaves nothing to average: the field was that slot's
     # prediction under another name, as `emit_selected` was refused for.
     (
@@ -686,7 +690,7 @@ NONSENSE_NEIGHBOURS = [
         po.spec.marginal,
         dict(targets=["y"], features=["x0", "x1"], half_life=10.0, bin_edges=[[0.0], []]),
     ),
-    (po.spec.kmeans, dict(**_KM, dead_frac=0.999)),
+    (po.spec.kmeans, dict(**_KM, dead_frac=0.499)),
     (po.spec.ewridge, dict(**BASE, half_life=[10.0, 20.0], emit_averaged=True)),
     (po.spec.corrchange, dict(**_CC, bandwidth=20)),
     (po.spec.corrchange, dict(**_CC, kind="sequential", bandwidth=20)),

@@ -57,7 +57,10 @@
 //! it was, so a sign-flip null has no spread at all. The exchangeable null
 //! for "the two windows share a distribution" is a permutation of the
 //! pooled rows between them, in blocks of `perm_block` so that serially
-//! dependent rows do not make it too liberal.
+//! dependent rows do not make it too liberal. A report flags when fewer than
+//! `⌊alpha·(B + 1)⌋` of the `B` draws reach its statistic: the standard
+//! permutation test, whose size is that count over `B + 1`, at most `alpha`
+//! ([`perm_rejections`]). Too few draws to flag at all are refused.
 
 use std::collections::VecDeque;
 
@@ -271,6 +274,42 @@ const MAX_BOUNDARY_GAMMA: f64 = 0.49;
 /// "capacity overflow" at the first full window and `10^11` never returned
 /// (review 2026-10-06, CD10); the ceiling of the lags (`MAX_LAG`).
 pub const MAX_PERM: usize = 1 << 20;
+
+/// How many of `draws` permutation statistics may reach the observed one,
+/// plus one, before the window test stops flagging: `m = ⌊alpha·(draws +
+/// 1)⌋`. The permutation test counts the observed statistic among the
+/// draws, `p = (1 + #{T_b ≥ T}) / (B + 1)`, and rejects at `p ≤ alpha`, so
+/// it flags when fewer than `m` draws reach `T`: `T` above the `(B + 1 −
+/// m)`-th smallest draw. On exchangeable rows the observed statistic is one
+/// more draw of the same law, its rank among the `B + 1` uniform, so the
+/// size is `m / (B + 1) ≤ alpha`, exactly. One product is rounded, so a
+/// level that is a multiple of `1 / (B + 1)` lands on it. At 0 no
+/// statistic can flag.
+pub fn perm_rejections(alpha: f64, draws: usize) -> usize {
+    // `alpha < 1`, so the product is below `draws + 1`: at most `draws`.
+    (alpha * (draws as f64 + 1.0)).floor() as usize
+}
+
+/// The fewest draws at which the window test can flag at `alpha`: the
+/// smallest `B` with [`perm_rejections`]`(alpha, B) ≥ 1`, which is
+/// `⌈1/alpha⌉ − 1`; `None` past [`MAX_PERM`].
+pub fn min_perm(alpha: f64) -> Option<usize> {
+    if perm_rejections(alpha, MAX_PERM) == 0 {
+        return None;
+    }
+    // Start from the closed form and settle it on the predicate itself, so
+    // the two never disagree by a rounding.
+    let mut b = ((1.0 / alpha).ceil() as usize)
+        .saturating_sub(1)
+        .min(MAX_PERM);
+    while b > 0 && perm_rejections(alpha, b - 1) >= 1 {
+        b -= 1;
+    }
+    while perm_rejections(alpha, b) == 0 {
+        b += 1;
+    }
+    Some(b)
+}
 
 impl CorrChangeCfg {
     pub fn validate(&self) -> Result<(), String> {
@@ -514,6 +553,26 @@ pub struct CorrChange {
 impl CorrChange {
     pub fn new(cfg: CorrChangeCfg) -> Result<Self, String> {
         cfg.validate()?;
+        // Refused here and not in `validate`, which a restored state runs
+        // too: a state saved with such a pair still loads, and reports no
+        // critical value (task 278, ff).
+        if cfg.kind == CorrChangeKind::Window
+            && cfg.crit.is_none()
+            && perm_rejections(cfg.alpha, cfg.n_perm) == 0
+        {
+            let fix = match min_perm(cfg.alpha) {
+                Some(b) => format!("give n_perm of at least {b}, or a fixed crit"),
+                None => format!(
+                    "no n_perm up to {MAX_PERM} (2^20) can, so raise alpha or give a fixed crit"
+                ),
+            };
+            return Err(format!(
+                "corrchange: n_perm = {} draws cannot flag at alpha = {}: the permutation test \
+                 flags when fewer than floor(alpha * (n_perm + 1)) draws reach the observed \
+                 statistic, and that is 0 here; {fix}",
+                cfg.n_perm, cfg.alpha
+            ));
+        }
         let d = cfg.n_features;
         let seq_crit = Self::sequential_crit_of(&cfg);
         Ok(Self {
@@ -1095,8 +1154,11 @@ impl CorrChange {
         acc
     }
 
-    /// The `(1 − alpha)` quantile of the statistic under a permutation of
-    /// the pooled rows between the two windows, in blocks.
+    /// The critical value of the permutation test at `alpha`: the
+    /// `(B + 1 − m)`-th smallest of the `B` finite draws of the statistic
+    /// under a permutation of the pooled rows between the two windows, in
+    /// blocks, with `m` = [`perm_rejections`], so that its size is at most
+    /// `alpha`. `None` where `m` is 0: no statistic could flag.
     fn permutation_crit(&mut self) -> Option<f64> {
         let w = self.cfg.span_rows;
         if self.ring.len() < 2 * w {
@@ -1130,8 +1192,11 @@ impl CorrChange {
             return None;
         }
         stats.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
-        let q = ((1.0 - self.cfg.alpha) * stats.len() as f64).ceil() as usize;
-        Some(stats[q.min(stats.len()) - 1])
+        // It was the `⌈(1 − alpha)·B⌉`-th smallest, whose size is `(B + 1 −
+        // q) / (B + 1)`: 0.0952 at 20 draws and alpha 0.05, 0.0476 at 0.01
+        // (task 278, batch 33 measured it; fixed in ff).
+        let m = perm_rejections(self.cfg.alpha, stats.len());
+        (m > 0).then(|| stats[stats.len() - m])
     }
 
     /// The row as the ring would hold it, or `None` when the standardiser
@@ -2306,8 +2371,10 @@ mod tests {
             return None;
         }
         stats.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
-        let q = ((1.0 - m.cfg.alpha) * stats.len() as f64).ceil() as usize;
-        Some(stats[q.min(stats.len()) - 1])
+        // The standard rule's critical rank, `⌈(1 − alpha)(B + 1)⌉`, spelled
+        // apart from `perm_rejections`.
+        let q = ((1.0 - m.cfg.alpha) * (stats.len() + 1) as f64).ceil() as usize;
+        (q <= stats.len()).then(|| stats[q - 1])
     }
 
     /// The window kind read where its rows are (task 270, D-2) reports the
@@ -2738,6 +2805,92 @@ mod tests {
             })
             .is_ok()
         );
+    }
+
+    /// The window test's size is `m / (B + 1)`, `m = ⌊alpha (B + 1)⌋`: at
+    /// most `alpha` at every draw count, and alpha itself where `alpha (B +
+    /// 1)` is whole (task 278, ff: the old `⌈(1 − alpha) B⌉`-th draw gave
+    /// 0.0952 at 20 draws and alpha 0.05). The fewest draws that can flag
+    /// is `⌈1/alpha⌉ − 1`.
+    #[test]
+    fn the_permutation_size_is_at_most_alpha_and_the_fewest_draws_can_flag() {
+        for alpha in [0.001, 0.01, 0.03, 0.05, 0.1, 0.2, 0.5, 0.9] {
+            for b in 1..=3000 {
+                let m = perm_rejections(alpha, b);
+                assert!(m <= b, "{alpha} {b}");
+                let size = m as f64 / (b + 1) as f64;
+                assert!(size <= alpha * (1.0 + 1e-15), "{alpha} {b}: {size}");
+                // And the largest such: one more rejection would pass alpha.
+                assert!((m + 1) as f64 / (b + 1) as f64 > alpha, "{alpha} {b}");
+            }
+        }
+        assert_eq!(perm_rejections(0.05, 19), 1);
+        assert_eq!(perm_rejections(0.05, 20), 1);
+        assert_eq!(perm_rejections(0.05, 199), 10);
+        assert_eq!(perm_rejections(0.01, 98), 0);
+        assert_eq!(perm_rejections(0.01, 99), 1);
+        for (alpha, want) in [
+            (0.05, 19),
+            (0.01, 99),
+            (0.03, 33),
+            (0.2, 4),
+            (0.5, 1),
+            (0.001, 999),
+        ] {
+            assert_eq!(min_perm(alpha), Some(want), "{alpha}");
+            assert_eq!(perm_rejections(alpha, want - 1), 0, "{alpha}");
+        }
+        assert_eq!(min_perm(1e-7), None);
+        assert_eq!(min_perm(1.0 / (MAX_PERM as f64 + 1.0)), Some(MAX_PERM));
+    }
+
+    /// An `n_perm` too small for `alpha` can never flag, and is refused by
+    /// name with the fewest draws that can; a fixed `crit` reads no draws,
+    /// and a state saved with such a pair still loads (`restore` runs
+    /// `validate`, not `new`'s refusal), reporting no critical value.
+    #[test]
+    fn an_n_perm_too_small_to_flag_at_alpha_is_refused_by_name() {
+        use crate::{ModelState, OnlineModel};
+        let window = |n_perm, alpha, crit| CorrChangeCfg {
+            n_perm,
+            alpha,
+            crit,
+            ..cfg(2, CorrChangeKind::Window)
+        };
+        let e = CorrChange::new(window(20, 0.01, None)).unwrap_err();
+        assert!(
+            e.contains("corrchange: n_perm = 20 draws cannot flag at alpha = 0.01")
+                && e.contains("give n_perm of at least 99, or a fixed crit"),
+            "{e}"
+        );
+        let e = CorrChange::new(window(98, 0.01, None)).unwrap_err();
+        assert!(e.contains("at least 99"), "{e}");
+        let e = CorrChange::new(window(MAX_PERM, 1e-7, None)).unwrap_err();
+        assert!(e.contains("no n_perm up to 1048576 (2^20) can"), "{e}");
+        assert!(CorrChange::new(window(99, 0.01, None)).is_ok());
+        assert!(CorrChange::new(window(20, 0.01, Some(0.5))).is_ok());
+        // Another kind reads no draws.
+        assert!(
+            CorrChange::new(CorrChangeCfg {
+                n_perm: 20,
+                alpha: 0.01,
+                ..cfg(2, CorrChangeKind::Monitor)
+            })
+            .is_ok()
+        );
+        let mut s = CorrChange::new(window(99, 0.01, None)).unwrap().state();
+        let ModelState::CorrChange(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.cfg.n_perm = 20;
+        let mut back = CorrChange::restore(&s).unwrap();
+        let mut n = Normals::new(5);
+        let mut crits = Vec::new();
+        for _ in 0..(4 * back.cfg.span_rows) {
+            let x = [n.normal(), n.normal()];
+            crits.push(back.step(&x, &[], 1.0, 1.0).pred[1]);
+        }
+        assert!(crits.iter().all(|c| c.is_nan()), "{crits:?}");
     }
 
     #[test]
@@ -3793,7 +3946,10 @@ mod tests {
             all.iter().zip(odd).all(|(&s, o)| s < top || o),
             "the largest must be at an odd order only: {all:?}"
         );
-        for (alpha, at_top) in [(0.001, true), (0.5, false)] {
+        // 0.005 over 200 draws: one may reach the observed statistic, so the
+        // critical value is the largest draw (0.001 is refused now: 200
+        // draws cannot flag at it).
+        for (alpha, at_top) in [(0.005, true), (0.5, false)] {
             let mut m = CorrChange::new(CorrChangeCfg {
                 alpha,
                 ..base.cfg.clone()
@@ -4042,7 +4198,7 @@ mod tests {
         let w = 12usize;
         let mut n = Normals::new(278);
         let rows: Vec<Vec<f64>> = (0..2 * w).map(|_| n.pair(0.4)).collect();
-        for (seed, alpha) in [(0u64, 0.05), (7, 0.5), (11, 0.001)] {
+        for (seed, alpha) in [(0u64, 0.05), (7, 0.5), (11, 0.025)] {
             let mut m = CorrChange::new(CorrChangeCfg {
                 span_rows: w,
                 perm_block: w,
