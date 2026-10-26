@@ -31,7 +31,7 @@ import polars_online as po
 from reference import ftrl_ref
 from reference_paths import holt_ref, pa_ref, sgd_ref
 
-TIER = "essential"
+TIER = "mixed"
 
 MAX_DCLOCK = 20.0
 FEATURES = ["x0", "x1", "x2"]
@@ -508,6 +508,153 @@ class TestStandardized:
             ref = pa_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, standardize=True, **kw, **bounds)
         out = po.ModelBank([spec]).fit_predict(df)["m"]
         _held(out, ref, y)
+
+
+#: The losses ``TestStandardized.test_sgd`` leaves out, on the stream each
+#: is for (task 278, batch 18).
+OTHER_LOSSES = [loss for loss in LOSSES if loss[0] not in ("squared", "huber")]
+_GRID = pytest.mark.extended(reason="a grid: every schedule and shape beside the essential leg")
+
+
+def _rest(params, essential):
+    """``params``, each one ``essential`` rejects marked extended."""
+    return [p if essential(p) else pytest.param(*p, marks=_GRID) for p in params]
+
+
+CONSTRAINED = [
+    (loss, kind, extra, bounds, standardize)
+    for loss, kind, extra in OTHER_LOSSES
+    for bounds in ({"coef_min": 0.0, "coef_sum": 1.0}, {"coef_min": -0.5, "coef_max": 0.5})
+    for standardize in (True, False)
+]
+
+
+def _on_a_bound(coef: np.ndarray, bounds: dict) -> int:
+    """The rows on which some slope sits on one of ``bounds``' edges, the
+    evidence that the projection moved the fit."""
+    slopes = coef[..., 1:]
+    hit = np.zeros(slopes.shape, dtype=bool)
+    for key in ("coef_min", "coef_max"):
+        if key in bounds:
+            hit |= np.abs(slopes - bounds[key]) <= 1e-12
+    return int(hit.reshape(len(coef), -1).any(axis=1).sum())
+
+
+class TestStandardizedOtherLosses:
+    """``sgd``'s quantile, epsilon-insensitive, Poisson and logistic losses
+    under ``standardize``, its default, with the clip and the constraints
+    there too, held row by row to ``sgd_ref``'s standardized path (task 278,
+    batch 18): ``TestStandardized.test_sgd`` runs the squared and Huber
+    losses only, ``test_the_clip_and_the_ridge_bind`` the clip on the raw
+    features only, and the constraints' replays the squared loss only. The
+    sign-valued losses take the level rule's warm-up and no stability gate,
+    the Poisson and logistic links the gate and no level rule; the clip is
+    in the standardized gradient's units, times the target's spread under
+    the squared loss."""
+
+    @pytest.mark.parametrize("fit_intercept", [True, False], ids=["intercept", "no-intercept"])
+    @pytest.mark.parametrize(
+        ("schedule", "rate"),
+        _rest(SCHEDULES, lambda p: p[0] == "constant"),
+        ids=[s for s, _ in SCHEDULES],
+    )
+    @pytest.mark.parametrize(
+        ("loss", "kind", "extra"), OTHER_LOSSES, ids=[s for s, *_ in OTHER_LOSSES]
+    )
+    def test_every_other_loss(self, loss, kind, extra, schedule, rate, fit_intercept):
+        df = _scaled(_stream(5, kind=kind))
+        x, y, dc, w = _inputs(df)
+        kw = {"loss": loss, "schedule": schedule, "half_life": 50.0, "min_weight": 5.0, "l2": 0.01}
+        kw |= extra | rate
+        spec = po.spec.sgd(
+            "m",
+            targets=TARGETS,
+            features=FEATURES,
+            clock="t",
+            gap_cap=MAX_DCLOCK,
+            weight="w",
+            coef_every=0,
+            standardize=True,
+            fit_intercept=fit_intercept,
+            **kw,
+        )
+        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        ref = sgd_ref(
+            x, y, dc, w, gap_cap=MAX_DCLOCK, standardize=True, fit_intercept=fit_intercept, **kw
+        )
+        _held(out, ref, y)
+
+    @pytest.mark.parametrize("fit_intercept", [True, False], ids=["intercept", "no-intercept"])
+    @pytest.mark.parametrize(
+        ("schedule", "rate"),
+        _rest(SCHEDULES, lambda p: p[0] == "constant"),
+        ids=[s for s, _ in SCHEDULES],
+    )
+    def test_the_clip_binds_under_standardize(self, schedule, rate, fit_intercept):
+        """At 0.05 of the target's spread the clip binds on most of the
+        standardized gradient's coordinates (measured 2026-10-26: 1,751 to
+        2,343 of them over these six cases)."""
+        df = _scaled(_stream(5))
+        x, y, dc, w = _inputs(df)
+        kw = {"schedule": schedule, "half_life": 50.0, "min_weight": 5.0, "l2": 0.01} | rate
+        kw |= {"clip_gradient": 0.05}
+        spec = po.spec.sgd(
+            "m",
+            targets=TARGETS,
+            features=FEATURES,
+            clock="t",
+            gap_cap=MAX_DCLOCK,
+            weight="w",
+            coef_every=0,
+            standardize=True,
+            fit_intercept=fit_intercept,
+            **kw,
+        )
+        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        ref = sgd_ref(
+            x, y, dc, w, gap_cap=MAX_DCLOCK, standardize=True, fit_intercept=fit_intercept, **kw
+        )
+        _held(out, ref, y)
+        print(f"the clip bound {ref['clipped']} coordinates")
+        assert ref["clipped"] > 1000, f"the clip bound {ref['clipped']} times"
+
+    @pytest.mark.parametrize(
+        ("loss", "kind", "extra", "bounds", "standardize"),
+        [
+            case if case[4] and "coef_sum" in case[3] else pytest.param(*case, marks=_GRID)
+            for case in CONSTRAINED
+        ],
+        ids=[f"{c[0]}-{'simplex' if 'coef_sum' in c[3] else 'box'}-{c[4]}" for c in CONSTRAINED],
+    )
+    def test_a_constraint_under_every_other_loss(self, loss, kind, extra, bounds, standardize):
+        """The projection follows each loss's step as it follows the squared
+        loss's: a simplex and a box, on the standardized and the raw
+        features. A slope sits on a bound on 41 to 388 of the 400 rows,
+        the fewest under the Poisson loss on the raw features (measured
+        2026-10-26; printed)."""
+        df = _stream(7, kind=kind)
+        if standardize:
+            df = _scaled(df)
+        x, y, dc, w = _inputs(df)
+        kw = {"loss": loss, "learning_rate": 0.05, "half_life": 50.0, "min_weight": 5.0}
+        kw |= extra | bounds
+        spec = po.spec.sgd(
+            "m",
+            targets=TARGETS,
+            features=FEATURES,
+            clock="t",
+            gap_cap=MAX_DCLOCK,
+            weight="w",
+            coef_every=0,
+            standardize=standardize,
+            **kw,
+        )
+        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        ref = sgd_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, standardize=standardize, **kw)
+        _held(out, ref, y)
+        bound = _on_a_bound(ref["coef"][~np.isnan(ref["weight_sum"])], bounds)
+        print(f"a slope on a bound on {bound} rows")
+        assert bound > 20, f"a slope sat on a bound on {bound} rows only"
 
 
 class TestHolt:
