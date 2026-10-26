@@ -124,3 +124,26 @@ pub(super) fn check_feature_sets(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_shared_checks_refuse_what_they_name() {
+        assert!(positive(1e-300) && !positive(0.0) && !positive(-1.0) && !positive(f64::NAN));
+        assert!(non_negative(0.0) && !non_negative(-1e-300) && !non_negative(f64::NAN));
+        assert!(check_ridge("m", None).is_ok());
+        assert!(check_ridge("m", Some(0.0)).is_ok() && check_ridge("m", Some(2.5)).is_ok());
+        for bad in [-1.0, f64::INFINITY, f64::NAN] {
+            let e = check_ridge("m", Some(bad)).unwrap_err();
+            assert!(e.contains("ridge must be finite and >= 0"), "{bad}: {e}");
+        }
+        assert!(check_refit_budget("m", Some(Num(f64::INFINITY))).is_ok());
+        for bad in [0.0, -1.0, f64::NAN] {
+            assert!(check_refit_budget("m", Some(Num(bad))).is_err(), "{bad}");
+        }
+        assert_eq!(first_duplicate(&[1.0, 2.0, -0.0, 0.0]), Some(0.0));
+        assert_eq!(first_duplicate(&[1.0, 2.0]), None);
+    }
+}

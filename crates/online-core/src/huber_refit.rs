@@ -733,6 +733,9 @@ mod tests {
         let mut b = RefitBuf::new();
         assert!(!b.learn(&[1.0, 2.0, 3.0], 4.0, 1.0, 1.0, 1.0, 50));
         assert!(b.rows.capacity() >= 50 * 7, "{}", b.rows.capacity());
+        let mut one = RefitBuf::new();
+        one.learn(&[1.0], 2.0, 1.0, 1.0, 1.0, 50);
+        assert!(one.rows.capacity() >= 50 * 5, "{}", one.rows.capacity());
         b.age(0.5, 0.5, 50);
         assert!(b.held() > 0 && b.open());
         b.give_up_over_budget();
@@ -847,6 +850,35 @@ mod tests {
         done.take();
         assert!(done.fits(1, 5));
         assert!(bad(&|c| c.done = true), "done and still holding rows");
+        assert!(
+            bad(&|c| c.over_budget = true),
+            "over the budget and still open"
+        );
+        assert!(
+            bad(&|c| c.rows[2] = f64::INFINITY),
+            "a learned row of infinite weight"
+        );
+        // At most four runs a row of the count: eight at a count of 2.
+        let mut runs = RefitBuf::new();
+        runs.learn(&[1.0], 2.0, 1.0, 0.9, 0.8, 2);
+        runs.ages = [0.5, 0.5, 1.0, 1.0].repeat(8);
+        assert!(runs.fits(1, 2), "four runs a row of the count");
+        runs.ages = [0.5, 0.5, 1.0, 1.0].repeat(9);
+        assert!(!runs.fits(1, 2), "past four runs a row of the count");
+        assert!(
+            bad(&|c| {
+                c.done = true;
+                c.ages.clear();
+            }),
+            "done and still holding learned rows"
+        );
+        assert!(
+            bad(&|c| {
+                c.done = true;
+                c.rows.clear();
+            }),
+            "done and still holding runs"
+        );
     }
 
     /// Past [`REFIT_RUNS_PER_ROW`] runs a row of its count, a target's refit

@@ -215,3 +215,117 @@ fn a_reset_keeps_a_group_given_up() {
     feed(&mut free, &df, df.height());
     assert_eq!(given_up(&free), vec![0]);
 }
+
+fn sgd_spec(budget: &str, loss: &str) -> Spec {
+    let text = format!(
+        r#"{{"name": "m", "model": {{"type": "sgd", "loss": "{loss}", "huber_refit_rows": 50, "refit_budget": {budget}}},
+            "targets": ["y", "z"], "features": ["x"], "group": "g", "half_life": "inf", "coef_every": 0}}"#
+    );
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("{text}: {e}"))
+}
+
+/// `sgd(loss = "huber")` reserves and gives up as `huber` does: the same
+/// 16,800 bytes a group, so the same 62 groups refit. Another loss has no
+/// refit and so no budget.
+#[test]
+fn sgds_huber_loss_holds_the_same_budget() {
+    let df = frame(100, 60);
+    let mut bank = Bank::new(vec![sgd_spec("1.0", "huber")]).unwrap();
+    feed(&mut bank, &df, df.height());
+    let counts = given_up(&bank);
+    assert_eq!(counts[..62], vec![0; 62][..]);
+    assert_eq!(counts[62..], vec![2; 38][..]);
+    assert_eq!(sgd_spec("1.0", "huber").model.refit_budget_mib(), Some(1.0));
+    assert_eq!(sgd_spec("\"inf\"", "huber").model.refit_budget_mib(), None);
+    let squared: Spec = serde_json::from_str(
+        r#"{"name": "m", "model": {"type": "sgd"}, "targets": ["y"], "features": ["x"], "half_life": "inf"}"#,
+    )
+    .unwrap();
+    assert_eq!(squared.model.refit_budget_mib(), None);
+    assert_eq!(spec("2.5", 50).model.refit_budget_mib(), Some(2.5));
+}
+
+/// A bank file whose reservation is not a count of bytes, or names a spec
+/// the caller did not give, is refused as damaged.
+#[test]
+fn a_damaged_reservation_is_refused() {
+    let df = frame(10, 20);
+    let mut bank = Bank::new(vec![spec("1.0", 50)]).unwrap();
+    feed(&mut bank, &df, df.height());
+    let bytes = bank.save_bytes().unwrap();
+    let file = rmpv::decode::read_value(&mut &bytes[..]).unwrap();
+    let with = |f: &dyn Fn(&mut Vec<rmpv::Value>)| -> Vec<u8> {
+        let mut v = file.clone();
+        let rmpv::Value::Map(map) = &mut v else {
+            panic!("a bank file is a map")
+        };
+        let (_, reserved) = map
+            .iter_mut()
+            .find(|(k, _)| k.as_str() == Some("refit_reserved"))
+            .expect("the file keeps the reservation");
+        let rmpv::Value::Array(entries) = reserved else {
+            panic!("the reservations are an array")
+        };
+        let rmpv::Value::Array(entry) = &mut entries[0] else {
+            panic!("a reservation is a pair")
+        };
+        f(entry);
+        let mut out = Vec::new();
+        rmpv::encode::write_value(&mut out, &v).unwrap();
+        out
+    };
+    let specs = [spec("1.0", 50)];
+    assert!(Bank::load_bytes(&with(&|_| {}), Some(&specs)).is_ok());
+    for (what, bad) in [
+        ("negative", with(&|e| e[1] = rmpv::Value::F64(-1.0))),
+        ("NaN", with(&|e| e[1] = rmpv::Value::F64(f64::NAN))),
+        (
+            "infinite",
+            with(&|e| e[1] = rmpv::Value::F64(f64::INFINITY)),
+        ),
+        ("another spec", with(&|e| e[0] = rmpv::Value::from(3))),
+    ] {
+        let e = Bank::load_bytes(&bad, Some(&specs))
+            .err()
+            .unwrap_or_else(|| panic!("{what}"));
+        assert!(e.contains("refit reservation"), "{what}: {e}");
+    }
+}
+
+/// A session restart under `session_gap = "reset"` rebuilds each group's
+/// stream, and the group keeps what the budget gave it when the bank first
+/// saw it: the two groups admitted refit again in the new session, and the
+/// two past the budget stay given up. Each group reserves
+/// `2 · 8 · 20 · 21` = 6,720 bytes; the budget holds two and a half.
+#[test]
+fn a_session_restart_keeps_each_group_as_the_budget_left_it() {
+    let base = frame(4, 60);
+    let n = base.height();
+    let t: Vec<f64> = (0..n).map(|i| i as f64).collect();
+    let s: Vec<&str> = (0..n).map(|i| if i < n / 2 { "a" } else { "b" }).collect();
+    let df = base
+        .hstack(&[Column::new("t".into(), t), Column::new("s".into(), s)])
+        .unwrap();
+    let each = 2 * online_polars::online_core::refit_reservation(1, 20);
+    assert_eq!(each, 6_720);
+    let budget = 2.5 * each as f64 / (1024.0 * 1024.0);
+    let text = format!(
+        r#"{{"name": "m", "model": {{"type": "huber", "huber_refit_rows": 20, "refit_budget": {budget}}},
+            "targets": ["y", "z"], "features": ["x"], "group": "g", "half_life": "inf",
+            "coef_every": 0, "clock": "t", "gap_cap": 10.0, "session": "s",
+            "session_gap": "reset"}}"#
+    );
+    let spec: Spec = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{text}: {e}"));
+    let mut bank = Bank::new(vec![spec]).unwrap();
+    feed(&mut bank, &df, n);
+    let resets = bank.summary(0, None).unwrap();
+    let resets: i64 = resets
+        .column("resets")
+        .unwrap()
+        .i64()
+        .unwrap()
+        .sum()
+        .unwrap();
+    assert_eq!(resets, 4, "each group restarted once");
+    assert_eq!(given_up(&bank), vec![0, 0, 2, 2]);
+}

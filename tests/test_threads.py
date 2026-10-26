@@ -498,10 +498,9 @@ CASES: dict[str, tuple[str, dict[str, object]]] = {name: (name, {}) for name in 
     "audit": ("audit", {"pairs": True}),
     "sgd_huber": ("sgd", {"loss": "huber"}),
 }
-#: Task 277 changes their warm-up (a converged refit); each joins the sweep
-#: when it merges, by leaving this tuple.
-AFTER_TASK_277 = ("huber", "sgd_huber")
-SWEPT = sorted(set(CASES) - set(AFTER_TASK_277))
+#: Every case, ``huber`` and ``sgd``'s Huber loss with the refit of their
+#: first rows on (task 277).
+SWEPT = sorted(CASES)
 #: The essentials' case: a kind the sweeps above never ran, seeded inside
 #: the stream.
 ESSENTIAL_KIND = "kmeans"
@@ -697,17 +696,6 @@ def test_a_pool_of_four_runs_the_work_on_more_than_one_thread():
     assert sum(share > 0.1 for share in shares[4]) >= 2, shares[4]
 
 
-@pytest.mark.parametrize("case", AFTER_TASK_277)
-def test_the_waiting_legs_are_ready(case):
-    """``huber`` and ``sgd``'s Huber loss build both specs and run on a pool
-    of four, so adding each to the sweep is its removal from
-    ``AFTER_TASK_277``, not a build."""
-    out, bank = run_kind(case, 4)
-    assert out.height == N_KINDS
-    assert min(_learned(out).values()) > N_KINDS // 4
-    assert bank.groups("full").height == 4
-
-
-def test_every_kind_is_swept_or_waits():
-    assert set(SWEPT) | set(AFTER_TASK_277) == set(CASES)
+def test_every_kind_is_swept():
+    assert set(SWEPT) == set(CASES)
     assert {builder for builder, _ in CASES.values()} == set(MINIMAL)

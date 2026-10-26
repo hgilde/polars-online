@@ -599,13 +599,8 @@ SWITCHES: dict[str, dict] = {
     "trend off": {"trend": False},
 }
 
-#: Switches that wait for task 277, which rebuilds huber's warm-up and its
-#: scale. Each is ready: registering it is one line,
-#: ``SWITCHES.update(AFTER_TASK_277)``, and `test_the_waiting_switches_build`
-#: holds that each builds today.
-AFTER_TASK_277: dict[str, dict] = {
-    "huber rms": {"huber_scale": "rms"},
-}
+# The RMS Huber scale, swept now that task 277's refit rebuilds the scale.
+SWITCHES["huber rms"] = {"huber_scale": "rms"}
 
 #: The second target a switch may name (`share_p`): the first target's
 #: values in reverse, so its nulls, zeros and values past the bound fall on
@@ -641,14 +636,6 @@ def test_every_switch_reaches_a_model_and_every_model_a_switch():
     for model, got in SWITCHES_FOR.items():
         assert len(got) > 1, (model, got)
     assert {m for m, _ in MODELS} == set(REGRESSIONS)
-
-
-def test_the_waiting_switches_build():
-    """Each switch waiting for task 277 builds for some model today, so
-    registering it is the one line `AFTER_TASK_277` names."""
-    for name, sw in AFTER_TASK_277.items():
-        assert name not in SWITCHES, name
-        assert any(_takes(model, extra, sw) for model, extra in MODELS), name
 
 
 def _switched(df: pl.DataFrame, spec: dict) -> pl.DataFrame:
