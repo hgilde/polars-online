@@ -23,7 +23,14 @@ returns.
   entry quoting this CHANGELOG. The Oracles workflow records every shard and
   checks the merged run in a final job, and runs weekly with the datasets
   downloaded afresh. It now holds every oracle grid: 59 groups and 755
-  cases (task 280).
+  cases (task 280). The ledger's numbers are CI's, measured on Linux
+  x86-64, where the check judges every push; a run on another platform,
+  such as `rerun` on a Mac, is held to 5% and writes none of its numbers.
+  A case whose oracle agrees to round-off has a floor of twice the larger
+  of macOS arm64's and Linux's error, since Linux x86-64 rounds some of
+  those cases up to 3.7 times differently. CI fetches every dataset the
+  ledger names in one job before the grids run, and fails naming any it
+  cannot get, so no grid skips as offline (task 281).
 - A hash guard in the essentials gate (task 280): it hashes this library's
   outputs on each oracle group's inputs, rounded to 24 significant bits so
   another platform's last bits do not move it, or whole where the oracle

@@ -20,10 +20,20 @@ fails until ``apply`` records it. A case with no numbers yet is reported
 and fails nothing. A count (``ledger.record(..., exact=True)``) carries a
 ``tolerance`` of 0: one more is past the ledger, one fewer asks to tighten.
 
+The numbers are one platform's, ``[meta] platform``: CI's, where ``check``
+judges every push. A run on another platform (``rerun`` on a developer's
+Mac) is held to ``tolerance_elsewhere`` instead, since the two platforms'
+arithmetic differs in the last bits, and writes none of its numbers: a
+gain it sees is reported, and a case new to the ledger is written without
+numbers, for CI's ``measured.json`` to fill. A version of the file that
+moves the ledger to another platform may move each number by up to the
+tolerance with a ``[[rebased]]`` entry; further needs a ``[[raised]]`` one.
+
     python scripts/oracles.py check RECORDS... [--expect-shards N] [--measured OUT.json]
     python scripts/oracles.py apply RECORDS...
     python scripts/oracles.py raises
     uv run python scripts/oracles.py rerun [GROUP...]
+    uv run python scripts/oracles.py fetch [--rounds N]
 
 ``RECORDS`` are directories of the JSON lines ``tests/ledger.py`` writes
 under ``POLARS_ONLINE_ORACLES_OUT``, or a merged file ``check --measured``
@@ -32,8 +42,11 @@ the oracle grids of the groups whose hashes or oracle versions moved (or
 those named), fails if a test fails or a case is past the ledger, and
 otherwise applies the run and writes those groups' hashes to
 ``oracle_hashes.toml`` -- so a hash moves only with a passing run of its
-oracles. Everything but ``rerun`` uses the standard library alone: the CI
-job that checks has no project environment.
+oracles. ``fetch`` downloads every dataset the ledger's groups name, once,
+and fails naming any it could not get: CI runs it before the shards, so no
+shard skips a grid as offline. Everything but ``rerun`` and ``fetch`` uses
+the standard library alone: the CI job that checks has no project
+environment.
 """
 
 from __future__ import annotations
@@ -64,6 +77,12 @@ OUT_VARIABLE = "POLARS_ONLINE_ORACLES_OUT"
 
 def load(path: Path | None = None) -> dict:
     return tomllib.loads((path or LEDGER).read_text(encoding="utf-8"))
+
+
+def system(tag: str) -> str:
+    """A platform tag without Python's version: ``linux-x86_64-py3.12`` is
+    ``linux-x86_64``. The numbers are the arithmetic's, not Python's."""
+    return tag.split("-py", 1)[0]
 
 
 # --- measurements ------------------------------------------------------------
@@ -116,7 +135,7 @@ def read_records(paths: list[Path]) -> tuple[dict[str, dict], dict[str, dict], i
 @dataclass
 class Verdict:
     key: str  # <case>.worst, <case>.p95, or <group>.oracles
-    status: str  # ok | over | under | new | version | missing
+    status: str  # ok | over | under | elsewhere | new | version | missing
     message: str
     measured: float | None = None
 
@@ -143,14 +162,26 @@ def written(v: float, ideal: float = 0.0) -> float:
     return ideal + gap
 
 
-def judge_case(case: str, measured: dict, entry: dict | None, tol: float) -> list[Verdict]:
+def judge_case(
+    case: str,
+    measured: dict,
+    entry: dict | None,
+    tol: float,
+    home: str = "",
+    elsewhere: float | None = None,
+) -> list[Verdict]:
+    """``home`` is the ledger's platform; a case measured on another is held
+    to ``elsewhere`` past the ledger and never asked to tighten."""
+    platform = system(measured.get("platform", "")) or home
+    here = not home or platform == home
     if entry is None or "worst" not in entry:
+        how = "`apply` writes it" if here else f"CI's run on {home} writes it"
         return [
             Verdict(
                 case,
                 "new",
                 f"{case}: not in the ledger yet; measured worst {_fmt(measured['worst'])}, "
-                f"p95 {_fmt(measured['p95'])} ({measured['n']} values): `apply` writes it",
+                f"p95 {_fmt(measured['p95'])} ({measured['n']} values): {how}",
             )
         ]
     tol = float(entry.get("tolerance", tol))
@@ -158,6 +189,10 @@ def judge_case(case: str, measured: dict, entry: dict | None, tol: float) -> lis
         # A count (`ledger.record(..., exact=True)`) is held exactly even
         # before `apply` has written its tolerance into the ledger.
         tol = min(tol, float(measured["tolerance"]))
+    under_tol = tol
+    if not here and elsewhere is not None and tol > 0:
+        # Another platform's last bits: a count is held exactly everywhere.
+        tol = max(tol, elsewhere)
     ideal = float(entry.get("ideal", 0.0))
     if abs(float(measured.get("ideal", 0.0)) - ideal) > 0:
         return [
@@ -175,14 +210,26 @@ def judge_case(case: str, measured: dict, entry: dict | None, tol: float) -> lis
         g, g0 = max(abs(have - ideal), floor), max(abs(want - ideal), floor)
         # To the twelfth place: exactly the tolerance away is within it.
         if round(g - g0 * (1 + tol), 12) > 0:
+            where = "" if here else f" (measured on {platform}, the ledger on {home})"
             out.append(
                 Verdict(
                     key,
                     "over",
                     f"{key}: {_fmt(have)} is {_fmt(g)} from its ideal {_fmt(ideal)}, past the "
-                    f"ledger's {_fmt(want)} ({_fmt(g0)}) by more than {tol:.0%}. Find what "
-                    "moved it; if that is the price of a change worth having, raise it with a "
-                    "[[raised]] entry naming the reason and a CHANGELOG line.",
+                    f"ledger's {_fmt(want)} ({_fmt(g0)}) by more than {tol:.0%}{where}. Find "
+                    "what moved it; if that is the price of a change worth having, raise it "
+                    "with a [[raised]] entry naming the reason and a CHANGELOG line.",
+                    have,
+                )
+            )
+        elif round(g - g0 * (1 - under_tol), 12) < 0 and not here:
+            out.append(
+                Verdict(
+                    key,
+                    "elsewhere",
+                    f"{key}: {_fmt(have)} on {platform}, under the ledger's {_fmt(want)} by "
+                    f"more than {under_tol:.0%}; the ledger holds {home}'s numbers, so CI's "
+                    "run there tightens it if the gain is real",
                     have,
                 )
             )
@@ -221,11 +268,15 @@ def judge_group(gid: str, measured: dict, entry: dict | None) -> list[Verdict]:
 
 
 def judge_all(doc: dict, cases: dict[str, dict], groups: dict[str, dict]) -> list[Verdict]:
-    tol = float(doc["meta"]["tolerance"])
+    meta = doc["meta"]
+    tol = float(meta["tolerance"])
+    home = system(meta.get("platform", ""))
+    elsewhere = meta.get("tolerance_elsewhere")
+    elsewhere = None if elsewhere is None else float(elsewhere)
     out: list[Verdict] = []
     ledger_cases = doc.get("case", {})
     for case in sorted(cases):
-        out += judge_case(case, cases[case], ledger_cases.get(case), tol)
+        out += judge_case(case, cases[case], ledger_cases.get(case), tol, home, elsewhere)
     for gid in sorted(groups):
         out += judge_group(gid, groups[gid], doc.get("group", {}).get(gid))
     return out
@@ -254,16 +305,22 @@ def missing(doc: dict, cases: dict[str, dict], only: set[str] | None = None) -> 
 
 def numbers(doc: dict) -> dict[str, float]:
     """Every number a raise must answer for, as a gap: each case's worst and
-    p95, its floor and tolerance where it has them, and the tolerance."""
+    p95, its floor and tolerance where it has them, and the tolerance. A gap
+    under its case's floor is the floor, as ``check`` judges it: round-off
+    moving below the floor raises nothing, and the floor's own key answers
+    for a wider one."""
     out = {"tolerance": float(doc["meta"]["tolerance"])}
     for case, e in doc.get("case", {}).items():
         ideal = float(e.get("ideal", 0.0))
+        floor = float(e.get("floor", 0.0))
         for f in ("worst", "p95"):
             if f in e:
-                out[f"{case}.{f}"] = abs(float(e[f]) - ideal)
-        for f in ("floor", "tolerance"):
-            if f in e:
-                out[f"{case}.{f}"] = float(e[f])
+                out[f"{case}.{f}"] = max(abs(float(e[f]) - ideal), floor)
+        if "worst" in e:
+            # No floor is a floor of 0: adding one is a raise too.
+            out[f"{case}.floor"] = floor
+        if "tolerance" in e:
+            out[f"{case}.tolerance"] = float(e["tolerance"])
     return out
 
 
@@ -271,11 +328,39 @@ def raised_value(doc: dict, key: str, v: float) -> float:
     """A ``[[raised]]`` entry's ``from``/``to`` as the gap ``numbers`` keys."""
     case, f = key.rsplit(".", 1) if "." in key else ("", key)
     if f in ("worst", "p95"):
-        return abs(v - float(doc.get("case", {}).get(case, {}).get("ideal", 0.0)))
+        e = doc.get("case", {}).get(case, {})
+        return max(abs(v - float(e.get("ideal", 0.0))), float(e.get("floor", 0.0)))
     return v
 
 
-def _unexplained(before: dict, after: dict, ledger: dict) -> list[str]:
+def _rebase_allows(before_doc: dict, after_doc: dict, ledger: dict) -> dict[str, float]:
+    """The most each number may reach without a ``[[raised]]`` entry when
+    ``after_doc`` moves the ledger to another platform than ``before_doc``'s
+    and a ``[[rebased]]`` entry names the move: its gap and the tolerance
+    (a case's own, else the file's) -- the share the ledger already gives
+    another platform's last bits. A floor or a tolerance gets nothing."""
+    old = before_doc.get("meta", {}).get("platform")
+    new = after_doc.get("meta", {}).get("platform")
+    if old == new or not any(
+        (r.get("from"), r.get("to")) == (old, new) for r in ledger.get("rebased", [])
+    ):
+        return {}
+    tol = float(before_doc.get("meta", {}).get("tolerance", 0.0))
+    out = {}
+    for case, e in before_doc.get("case", {}).items():
+        ideal = float(e.get("ideal", 0.0))
+        t = float(e.get("tolerance", tol))
+        floor = float(e.get("floor", 0.0))
+        for f in ("worst", "p95"):
+            if f in e:
+                out[f"{case}.{f}"] = max(abs(float(e[f]) - ideal), floor) * (1 + t)
+    return out
+
+
+def _unexplained(
+    before: dict, after: dict, ledger: dict, allowed: dict[str, float] | None = None
+) -> list[str]:
+    allowed = allowed or {}
     raised = set()
     for r in ledger.get("raised", []):
         if {"key", "from", "to"} <= set(r):
@@ -287,10 +372,21 @@ def _unexplained(before: dict, after: dict, ledger: dict) -> list[str]:
                     written(raised_value(ledger, k, r["to"])),
                 )
             )
+
+    def at_floor(k: str) -> bool:
+        # A worst or p95 that rose only to its case's floor: the floor's
+        # own key answers for it.
+        case, f = k.rsplit(".", 1)
+        return f in ("worst", "p95") and after[k] == after.get(f"{case}.floor")
+
     return [
         f"{k}: {before[k]:.6g} -> {after[k]:.6g} with no [[raised]] entry for it"
         for k in sorted(set(before) & set(after))
-        if after[k] > before[k] and (k, written(before[k]), written(after[k])) not in raised
+        if after[k] > before[k]
+        and not at_floor(k)
+        and (k, written(before[k]), written(after[k])) not in raised
+        # Within the rebase's share, to the six figures the file writes.
+        and not (k in allowed and after[k] <= allowed[k] * (1 + 1e-6))
     ]
 
 
@@ -298,12 +394,17 @@ def check_file(doc: dict, changelog: str) -> list[str]:
     """What is wrong with the ledger on its own."""
     errors = []
     meta = doc.get("meta", {})
-    for key in ("tolerance", "platform"):
+    for key in ("tolerance", "tolerance_elsewhere", "platform"):
         if key not in meta:
             errors.append(f"[meta] has no {key}")
     tol = meta.get("tolerance")
     if not (isinstance(tol, float) and 0.0 < tol < 0.5):
         errors.append(f"tolerance = {tol!r}: a share above 0 and below 0.5")
+    elsewhere = meta.get("tolerance_elsewhere")
+    if isinstance(tol, float) and not (isinstance(elsewhere, float) and tol <= elsewhere < 0.5):
+        errors.append(f"tolerance_elsewhere = {elsewhere!r}: from the tolerance to below 0.5")
+    if "platform" in meta and system(str(meta["platform"])) != meta["platform"]:
+        errors.append(f"platform = {meta['platform']!r}: the system and processor alone")
     groups = doc.get("group", {})
     for case, e in doc.get("case", {}).items():
         gid = case.rsplit(".", 1)[0]
@@ -339,6 +440,20 @@ def check_file(doc: dict, changelog: str) -> list[str]:
             errors.append(f"{where}: the reason says too little: {r['reason']!r}")
         if " ".join(str(r["changelog"]).split()).casefold() not in folded:
             errors.append(f"{where}: the CHANGELOG has no line containing {r['changelog']!r}")
+    for i, r in enumerate(doc.get("rebased", [])):
+        where = f"[[rebased]] #{i + 1} ({r.get('from', '?')} -> {r.get('to', '?')})"
+        lack = {"from", "to", "date", "reason", "changelog"} - set(r)
+        if lack:
+            errors.append(f"{where} has no {sorted(lack)}")
+            continue
+        if r["from"] == r["to"]:
+            errors.append(f"{where}: a move needs two platforms")
+        if not isinstance(r["date"], dt.date):
+            errors.append(f"{where}: `date` is not a TOML date")
+        if len(str(r["reason"]).split()) < 4:
+            errors.append(f"{where}: the reason says too little: {r['reason']!r}")
+        if " ".join(str(r["changelog"]).split()).casefold() not in folded:
+            errors.append(f"{where}: the CHANGELOG has no line containing {r['changelog']!r}")
     return errors
 
 
@@ -366,11 +481,15 @@ def check_history(versions: list[tuple[str, str]], working: str | None) -> list[
     ledger = tomllib.loads(texts[-1][1])
     errors: list[str] = []
     last: dict[str, float] = {}
+    previous: dict = {}
     for i, (label, text) in enumerate(texts):
-        now = numbers(tomllib.loads(text))
+        doc = tomllib.loads(text)
+        now = numbers(doc)
         if i:
-            errors += [f"{label}: {e}" for e in _unexplained(last, now, ledger)]
+            allowed = _rebase_allows(previous, doc, ledger)
+            errors += [f"{label}: {e}" for e in _unexplained(last, now, ledger, allowed)]
         last.update(now)
+        previous = doc
     return errors
 
 
@@ -430,6 +549,7 @@ def apply(
     measured group's tests, oracles and dataset. Never a raise."""
     done = []
     by_key = {v.key: v for v in verdicts}
+    home = system(doc.get("meta", {}).get("platform", ""))
     for gid, g in sorted(groups.items()):
         old = doc.get("group", {}).get(gid, {})
         # The tests that recorded it: a run measures a group whole, so a test
@@ -446,19 +566,23 @@ def apply(
     for case, m in sorted(cases.items()):
         entry = doc.get("case", {}).get(case)
         header = f"[case.{_quoted(case)}]"
+        # Another platform's numbers never enter the ledger: CI's do.
+        here = not home or (system(m.get("platform", "")) or home) == home
         if entry is None or "worst" not in entry:
-            values = {
-                "ideal": m["ideal"],
-                "worst": written(m["worst"], m["ideal"]),
-                "p95": written(m["p95"], m["ideal"]),
-                "n": m["n"],
-            }
+            values = {"ideal": m["ideal"]}
+            if here:
+                values["worst"] = written(m["worst"], m["ideal"])
+                values["p95"] = written(m["p95"], m["ideal"])
+            values["n"] = m["n"]
             if m.get("floor"):
                 values["floor"] = m["floor"]
             if "tolerance" in m:
                 values["tolerance"] = m["tolerance"]
+            if entry is not None and not here:
+                continue
             text = _set_table(text, header, values)
-            done.append(f"{case}: worst {_fmt(m['worst'])}, p95 {_fmt(m['p95'])} (new)")
+            how = "" if here else f", its numbers left to CI's run on {home}"
+            done.append(f"{case}: worst {_fmt(m['worst'])}, p95 {_fmt(m['p95'])} (new{how})")
             continue
         values = {}
         for f in ("worst", "p95"):
@@ -509,6 +633,7 @@ def report(verdicts: list[Verdict], extra: dict[str, list[str]]) -> str:
     for heading, status in (
         ("Past the ledger", "over"),
         ("Tighten", "under"),
+        ("Under the ledger on another platform (not applied)", "elsewhere"),
         ("Oracle versions moved", "version"),
         ("Not measured", "missing"),
         ("New cases", "new"),
@@ -677,6 +802,34 @@ def _cmd_rerun(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_fetch(args: argparse.Namespace) -> int:
+    """Every dataset the ledger's groups name, each tried ``rounds`` times
+    (the loaders retry three times within a round), into ``.cache``."""
+    import time
+
+    sys.path.insert(0, str(REPO / "tests"))
+    import data
+    import public_benchmarks
+
+    wanted = sorted({g.get("dataset", "") for g in load().get("group", {}).values()} - {""})
+    failed = []
+    for dataset in wanted:
+        for attempt in range(args.rounds):
+            try:
+                got = public_benchmarks.fetch(dataset)
+            except data.Offline as e:
+                if attempt + 1 == args.rounds:
+                    failed.append(f"{dataset}: {e.__cause__!r}")
+                else:
+                    time.sleep(30.0 * (attempt + 1))
+                continue
+            print(f"fetch: {', '.join(got)}", flush=True)
+            break
+    for f in failed:
+        print(f"::error::fetch: could not download {f}")
+    return 1 if failed else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -696,6 +849,9 @@ def main(argv: list[str] | None = None) -> int:
     rr = sub.add_parser("rerun", help="run the oracle grids whose hashes moved, then record")
     rr.add_argument("groups", nargs="*")
     rr.set_defaults(fn=_cmd_rerun)
+    f = sub.add_parser("fetch", help="download every dataset the ledger's groups name")
+    f.add_argument("--rounds", type=int, default=3)
+    f.set_defaults(fn=_cmd_fetch)
     args = ap.parse_args(argv)
     return args.fn(args)
 

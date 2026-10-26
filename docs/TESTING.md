@@ -717,15 +717,34 @@ units. `check` fails on four things:
 | not measured | a case of the ledger that a complete run did not record | a skip (offline), or a `record` call gone |
 
 A case new to the ledger is reported and fails nothing. The grids are
-deterministic, so one platform reads the same numbers on every run. The 2%
-absorbs the other platform's last bits in a statistical case. A count is
-held exactly: one row more of delay on the worst seed is a regression.
+deterministic, so one platform reads the same numbers on every run. A count
+is held exactly: one row more of delay on the worst seed is a regression.
 Two per cent of a count under 50 is less than one, but of a delay of 333
 rows it is six, so a grid records a count with `exact=True`, and the case
-carries a `tolerance` of 0. A case whose oracle agrees to round-off carries a `floor`, the gap below
-which a difference counts as round-off. Each such floor is about twice the
-measured error, since another processor's arithmetic moves a round-off
-error by about that much.
+carries a `tolerance` of 0. A case whose oracle agrees to round-off carries
+a `floor`, the gap below which a difference counts as round-off; a gap
+under it is judged as the floor. Each floor is twice the larger of the
+errors measured on macOS arm64 and on CI's Linux x86-64.
+
+**The numbers are CI's, measured on Linux x86-64.** `[meta] platform`
+names the platform, and `check` judges every push there, so the whole 2%
+is room for drift on the platform that judges. The ledger was first
+written on a developer's Mac, and CI's first run against the same commit
+(2026-10-26, an M4 Pro against GitHub's x86-64 runners) measured how far
+the two platforms part. Of 1,495 cases, every statistical case but one
+agreed within 1.8%, and that one, a quantile regression's distance from
+statsmodels' `QuantReg` in its standard errors, by 2.9%. The round-off
+cases parted by up to 3.7 times: the regularised prior's fits, the NIST
+Grams and Wampler's polynomials. So the ledger was re-based on CI's
+`measured.json`, and every floor raised to cover both platforms. A run on
+another platform than the ledger's, such as `rerun` on a Mac, is held to
+`tolerance_elsewhere` (5%) past the ledger. It writes none of its numbers,
+since they are not the ones the ledger holds: a gain it sees is reported,
+not applied, and a case new to the ledger gets its table without numbers,
+which `apply` on CI's next `measured.json` fills. A version of the file
+that moves `platform` may move each number by up to the tolerance under a
+`[[rebased]]` entry, which gives the reason and a CHANGELOG line; a larger
+move, or a wider floor, still needs its own `[[raised]]` entry.
 
 **A raise needs its reason and a CHANGELOG line.** `scripts/oracles.py
 raises` reads every committed version of `oracles.toml` and fails on any
@@ -747,6 +766,15 @@ The weekly run measures everything when nothing was pushed. It downloads
 each dataset afresh rather than reading the cache, so a set that changed at
 its source is measured too.
 
+**One job fetches every dataset before the grids run.** `oracles.py fetch`
+downloads every set the ledger's groups name in their `dataset` (Rdatasets,
+NIST StRD, LIBSVM, Fränti's clustering sets, TCPD), retrying each, and
+fails naming any it cannot get. The shards read its files and download
+nothing. On the ledger's first CI run each shard fetched its own sets from
+a cold cache, one shard's download of Fränti's S4 failed, and its grid
+skipped as offline. Its three cases went unmeasured, and the ledger job
+failed on them. The shards also print each skip's reason (`-rfEsxX`).
+
 **The gate keeps a cheap guard instead of the grids.** For each group,
 `tests/test_oracle_ledger.py` calls the group's callable and hashes this
 library's outputs, with the source of the tests that record the group. Each
@@ -765,8 +793,8 @@ uv run python scripts/oracles.py rerun <group>    # those named
 
 `rerun` runs those groups' oracle grids with recording on. It fails if a
 test fails, or if a case is past the ledger or was not measured. Otherwise
-it applies the run to the ledger (new cases, tightened numbers, versions)
-and writes the groups' hashes. So a hash changes only after a passing run
+it applies the run to the ledger (new cases, versions, and on the ledger's
+own platform tightened numbers) and writes the groups' hashes. So a hash changes only after a passing run
 of its oracles. Fifty-nine groups in seventeen modules hold 755 cases. A
 `rerun` of 38 of them, the convergence grids among them, took 10.6 minutes
 here (2026-10-26, eight processes, at a load of 5 to 35 on 14 cores); the
@@ -806,11 +834,25 @@ since the 24-bit group's states and means moved by less than its quantum;
 1e-3 larger moved both `hmm` groups and none of the other nineteen.
 
 **The guard enforces where its hashes were written, off CI.** That is the
-system, the processor and Python's minor version, since `ast.unparse`
-may write a test's source differently on another Python. CI runs the
-grids themselves on every push, so there, and on any other platform, a
-moved hash is a warning in the job summary. Those warnings show whether
-one set of hashes serves every platform.
+system and the processor, such as `darwin-arm64`. Python's version is not
+part of it: on each of CI's systems, Python 3.12, 3.13 and 3.14 gave every
+group the same hash. CI runs the grids themselves on every push, so there,
+and on any other platform, a moved hash is a warning in the job summary.
+
+**One set of hashes serves every platform for the 24-bit groups, and none
+for the whole ones.** On the first push with the guard (2026-10-26), every
+one of the 42 groups hashed at 24 bits held on Linux x86-64, Windows
+Server 2022 and 2025 and GitHub's arm64 Macs, under each Python, but one:
+`online_diagnostics.cusum_size` on Windows Server 2022, a value on a
+rounding boundary. The 17 groups hashed whole (`bits=52`) moved where the
+processor differs: 12 on Linux, 8 on Windows Server 2025 and 15 on 2022,
+and 3 on GitHub's arm64 Macs against the M4 Pro the hashes were written
+on: the three that solve a Gram through `po.gram`. A per-platform set could not keep the guard's promise, that a hash
+moves only after a passing run of its oracles on that platform, since only
+Linux runs the grids, and only on CI. A coarser rounding would hide what a
+whole hash is for, a change in the last bits a round-off case's ledger
+sees. So a whole hash is compared only where the guard enforces, and
+elsewhere only the 24-bit hashes are reported.
 
 **`scripts/quick.sh` runs the guard for what a branch changed.** A model's
 source moves the groups whose id names the module, or one of its aliases,

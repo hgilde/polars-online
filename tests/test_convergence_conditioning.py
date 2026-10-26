@@ -154,16 +154,17 @@ STRD_SOLVABLE = tuple(n for n in STRD_LINEAR if n != "Filip")
 # The oracle ledger (tests/ledger.py): each solve's bound is the theory's,
 # up to six hundred times the error it reaches, so a change could lose two
 # digits without failing. The ledger holds each error as measured; they are
-# rounding, so each has a floor, twice the error measured (2026-10-26, macOS
-# arm64), and the group's hash keeps every bit.
+# rounding, so each has a floor, twice the larger of the errors measured on
+# macOS arm64 and on CI's Linux x86-64 (2026-10-26), and the group's hash
+# keeps every bit.
 
 #: Each case's floor.
 NIST_FLOORS: dict[str, float] = {
     "filip_rls": 1.1e-07,
     "longley_ewridge": 9.7e-13,
     "longley_ewridge_standardized": 9.1e-13,
-    "longley_gram_standardized": 6.5e-13,
-    "longley_gram_unstandardized": 6.5e-13,
+    "longley_gram_standardized": 1.3e-12,
+    "longley_gram_unstandardized": 1.5e-12,
     "longley_rls": 1.3e-12,
     "noint1_ewridge": 3.9e-15,
     "noint1_ewridge_standardized": 4.3e-15,
@@ -182,8 +183,8 @@ NIST_FLOORS: dict[str, float] = {
     "norris_rls": 9.4e-15,
     "pontius_ewridge": 2.5e-14,
     "pontius_ewridge_standardized": 4.2e-14,
-    "pontius_gram_standardized": 3.1e-14,
-    "pontius_gram_unstandardized": 3.1e-14,
+    "pontius_gram_standardized": 3.4e-14,
+    "pontius_gram_unstandardized": 3.2e-14,
     "pontius_rls": 1.9e-15,
     "wampler1_ewridge": 2e-10,
     "wampler1_ewridge_standardized": 3.2e-10,
@@ -193,22 +194,22 @@ NIST_FLOORS: dict[str, float] = {
     "wampler2_ewridge": 1.9e-10,
     "wampler2_ewridge_standardized": 3.1e-10,
     "wampler2_gram_standardized": 2.1e-10,
-    "wampler2_gram_unstandardized": 2.1e-10,
+    "wampler2_gram_unstandardized": 5.9e-10,
     "wampler2_rls": 1.3e-13,
     "wampler3_ewridge": 2.4e-10,
     "wampler3_ewridge_standardized": 3.6e-10,
-    "wampler3_gram_standardized": 3.9e-10,
+    "wampler3_gram_standardized": 4.3e-10,
     "wampler3_gram_unstandardized": 3.9e-10,
     "wampler3_rls": 1.8e-13,
     "wampler4_ewridge": 2e-10,
     "wampler4_ewridge_standardized": 3.2e-10,
     "wampler4_gram_standardized": 2.4e-10,
-    "wampler4_gram_unstandardized": 2.4e-10,
+    "wampler4_gram_unstandardized": 4.3e-10,
     "wampler4_rls": 1.5e-11,
     "wampler5_ewridge": 1.7e-10,
     "wampler5_ewridge_standardized": 2.7e-11,
-    "wampler5_gram_standardized": 5.2e-11,
-    "wampler5_gram_unstandardized": 5.2e-11,
+    "wampler5_gram_standardized": 6e-11,
+    "wampler5_gram_unstandardized": 2e-10,
     "wampler5_rls": 1.5e-09,
 }
 

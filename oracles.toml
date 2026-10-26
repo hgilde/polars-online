@@ -34,11 +34,17 @@
 # platform reads the same numbers every time; what 2% absorbs is another
 # platform's last bits in a statistical case. A count is held exactly.
 tolerance = 0.02
-# Where the numbers were measured (`rerun`, on a developer's Mac). CI's
-# Oracles workflow checks them on linux-x86_64; a case another platform
-# reads past the tolerance is raised with that reason, or the ledger is
-# re-based on CI's measured.json and this names its platform.
-platform = "darwin-arm64"
+# Where the numbers were measured: CI's Oracles workflow, on Linux x86-64,
+# where `check` judges every push; `apply` on its measured.json writes them.
+# A run on another platform -- `rerun` on a developer's Mac -- is held to
+# `tolerance_elsewhere` past the ledger instead, writes none of its numbers
+# (a case new to the ledger gets its table without them, for CI's run to
+# fill) and is never asked to tighten. Measured 2026-10-26 (run 40364575712
+# against the same commit on an M4 Pro): of 1,495 cases, every statistical
+# one but a single quantile case within 1.8% across the two, that one 2.9%;
+# the round-off cases up to 3.7 times apart, which their floors cover.
+platform = "linux-x86_64"
+tolerance_elsewhere = 0.05
 
 [group."truth_recovery.bocpd_shift"]
 tests = [
@@ -279,7 +285,7 @@ n = 50
 
 [case."conformal.coverage_rates.misses_after_the_shift_at_0p05"]
 ideal = 0.0
-worst = 0.226
+worst = 0.224
 p95 = 0.22
 n = 50
 
@@ -417,14 +423,14 @@ n = 10
 
 [case."learning_rate.libsvm_passes.a9a_sgd_pass_2"]
 ideal = 0.0
-worst = 0.00582332
-p95 = 0.00582332
+worst = 0.00582333
+p95 = 0.00582333
 n = 10
 
 [case."learning_rate.libsvm_passes.a9a_sgd_pass_3"]
 ideal = 0.0
-worst = 0.00423661
-p95 = 0.00423661
+worst = 0.00423662
+p95 = 0.00423662
 n = 10
 
 [case."learning_rate.libsvm_passes.a9a_sgd_pass_4"]
@@ -585,20 +591,20 @@ n = 50
 
 [case."learning_rate.schedules.sgd_huber_inv_scaling_at_1000"]
 ideal = 0.0
-worst = 0.0465629
-p95 = 0.0311399
+worst = 0.0464759
+p95 = 0.0311405
 n = 50
 
 [case."learning_rate.schedules.sgd_huber_inv_scaling_at_10000"]
 ideal = 0.0
-worst = 0.0124904
-p95 = 0.0100572
+worst = 0.0124629
+p95 = 0.0100585
 n = 50
 
 [case."learning_rate.schedules.sgd_huber_inv_scaling_at_100000"]
 ideal = 0.0
-worst = 0.00477877
-p95 = 0.00363641
+worst = 0.00477818
+p95 = 0.0036398
 n = 50
 
 [case."learning_rate.schedules.sgd_inv_scaling_at_1000"]
@@ -843,20 +849,20 @@ n = 12
 
 [case."online_diagnostics.cusum_size.quantile_cusum_sq_y_300_to_600"]
 ideal = 0.05
-worst = 0.0602222
-p95 = 0.0602222
+worst = 0.0601667
+p95 = 0.0601667
 n = 12
 
 [case."online_diagnostics.cusum_size.quantile_cusum_sq_y_steady"]
 ideal = 0.05
-worst = 0.0608122
-p95 = 0.0608122
+worst = 0.0608166
+p95 = 0.0608166
 n = 12
 
 [case."online_diagnostics.cusum_size.quantile_cusum_sq_y_young"]
 ideal = 0.05
-worst = 0.0627045
-p95 = 0.0627045
+worst = 0.062727
+p95 = 0.062727
 n = 12
 
 [case."online_diagnostics.cusum_size.quantile_cusum_y_300_to_600"]
@@ -969,21 +975,21 @@ n = 12
 
 [case."second_opinion_gram.lasso_weights.error"]
 ideal = 0.0
-worst = 1.8162e-11
-p95 = 1.27143e-12
+worst = 2.46769e-11
+p95 = 1.35358e-12
 n = 50
-floor = 4e-11
+floor = 5e-11
 
 [case."second_opinion_gram.ridge.error_over_bound"]
 ideal = 0.0
-worst = 0.187255
-p95 = 0.014828
+worst = 0.185717
+p95 = 0.0145052
 n = 1200
 floor = 0.4
 
 [case."second_opinion_regimes.bocpd_priors.error_over_tolerance"]
 ideal = 0.0
-worst = 0.165736
+worst = 0.165737
 p95 = 0.108816
 n = 200
 floor = 0.35
@@ -1850,57 +1856,57 @@ floor = 4.7e-13
 
 [case."convergence.ewridge.break_slope_at_1"]
 ideal = 0.0
-worst = 1.77636e-14
-p95 = 1.11022e-14
+worst = 1.68754e-14
+p95 = 1.06581e-14
 n = 50
 floor = 3.6e-14
 
 [case."convergence.ewridge.break_variance_at_1"]
 ideal = 0.0
-worst = 1.11022e-14
-p95 = 5.55112e-15
+worst = 1.06581e-14
+p95 = 7.54952e-15
 n = 50
 floor = 2.3e-14
 
 [case."convergence.ewridge.cauchy_500_at_8000"]
 ideal = 0.0
-worst = 1.22125e-14
-p95 = 8.88178e-15
+worst = 1.13243e-14
+p95 = 1.03251e-14
 n = 50
 floor = 2.5e-14
 
 [case."convergence.ewridge.cauchy_inf_at_8000"]
 ideal = 0.0
-worst = 5.07511e-14
-p95 = 2.93099e-14
+worst = 6.75016e-14
+p95 = 2.79776e-14
 n = 50
-floor = 1.1e-13
+floor = 1.4e-13
 
 [case."convergence.ewridge.consistency_at_2000"]
 ideal = 0.0
-worst = 1.9984e-14
-p95 = 1.68754e-14
+worst = 2.04281e-14
+p95 = 1.77636e-14
 n = 50
-floor = 4e-14
+floor = 4.1e-14
 
 [case."convergence.ewridge.consistency_at_32000"]
 ideal = 0.0
-worst = 5.81757e-14
-p95 = 5.32907e-14
+worst = 5.86198e-14
+p95 = 5.19584e-14
 n = 50
 floor = 1.2e-13
 
 [case."convergence.ewridge.consistency_at_500"]
 ideal = 0.0
-worst = 8.43769e-15
+worst = 9.76996e-15
 p95 = 7.10543e-15
 n = 50
-floor = 1.7e-14
+floor = 2e-14
 
 [case."convergence.ewridge.consistency_at_8000"]
 ideal = 0.0
-worst = 2.9976e-14
-p95 = 2.13163e-14
+worst = 2.95319e-14
+p95 = 2.26485e-14
 n = 50
 floor = 6e-14
 
@@ -1913,52 +1919,52 @@ floor = 2.4e-10
 
 [case."convergence.ewridge.level_zero_at_8000"]
 ideal = 0.0
-worst = 3.5083e-14
-p95 = 2.70894e-14
+worst = 3.64153e-14
+p95 = 2.88658e-14
 n = 50
-floor = 7.1e-14
+floor = 7.3e-14
 
 [case."convergence.ewridge.outliers_500_at_8000"]
 ideal = 0.0
-worst = 1.13243e-14
-p95 = 8.32667e-15
+worst = 1.31006e-14
+p95 = 9.54792e-15
 n = 50
-floor = 2.3e-14
+floor = 2.7e-14
 
 [case."convergence.ewridge.outliers_inf_at_8000"]
 ideal = 0.0
-worst = 4.61853e-14
-p95 = 3.90799e-14
+worst = 4.39648e-14
+p95 = 4.13003e-14
 n = 50
 floor = 9.3e-14
 
 [case."convergence.ewridge.prior_200_at_200"]
 ideal = 0.0
-worst = 7.46695e-10
-p95 = 6.1118e-10
+worst = 2.21917e-09
+p95 = 1.35697e-09
 n = 20
-floor = 1.5e-09
+floor = 4.5e-09
 
 [case."convergence.ewridge.prior_200_at_2000"]
 ideal = 0.0
-worst = 8.0012e-10
-p95 = 7.35347e-10
+worst = 1.36489e-09
+p95 = 1.30596e-09
 n = 20
-floor = 1.7e-09
+floor = 2.8e-09
 
 [case."convergence.ewridge.prior_200_at_6000"]
 ideal = 0.0
-worst = 7.48884e-10
-p95 = 7.23915e-10
+worst = 1.78726e-09
+p95 = 1.47383e-09
 n = 20
-floor = 1.5e-09
+floor = 3.6e-09
 
 [case."convergence.ewridge.prior_200_at_8000"]
 ideal = 0.0
-worst = 7.11159e-10
-p95 = 6.16657e-10
+worst = 1.12462e-09
+p95 = 1.06435e-09
 n = 20
-floor = 1.5e-09
+floor = 2.3e-09
 
 [case."convergence.ewridge.prior_200_truth_at_8000"]
 ideal = 0.0
@@ -1968,29 +1974,29 @@ n = 20
 
 [case."convergence.ewridge.prior_inf_at_2000"]
 ideal = 0.0
-worst = 1.03159e-09
-p95 = 7.48855e-10
+worst = 1.60071e-09
+p95 = 1.5234e-09
 n = 20
-floor = 2.1e-09
+floor = 3.3e-09
 
 [case."convergence.ewridge.prior_inf_at_32000"]
 ideal = 0.0
-worst = 3.10663e-09
-p95 = 2.99505e-09
+worst = 1.1504e-09
+p95 = 9.52568e-10
 n = 20
 floor = 6.3e-09
 
 [case."convergence.ewridge.prior_inf_at_500"]
 ideal = 0.0
-worst = 8.17636e-10
-p95 = 6.4847e-10
+worst = 2.74667e-09
+p95 = 2.26737e-09
 n = 20
-floor = 1.7e-09
+floor = 5.5e-09
 
 [case."convergence.ewridge.prior_inf_at_8000"]
 ideal = 0.0
-worst = 1.16614e-09
-p95 = 1.1209e-09
+worst = 1.14184e-09
+p95 = 9.19698e-10
 n = 20
 floor = 2.4e-09
 
@@ -2020,36 +2026,36 @@ n = 20
 
 [case."convergence.ewridge.shift_500_at_8000"]
 ideal = 0.0
-worst = 1.39888e-14
-p95 = 1.11022e-14
+worst = 1.42109e-14
+p95 = 1.02141e-14
 n = 50
-floor = 2.8e-14
+floor = 2.9e-14
 
 [case."convergence.ewridge.shift_inf_at_8000"]
 ideal = 0.0
-worst = 2.95319e-14
-p95 = 2.22045e-14
+worst = 2.9754e-14
+p95 = 2.35367e-14
 n = 50
 floor = 6e-14
 
 [case."convergence.ewridge.start_200_at_3200"]
 ideal = 0.0
-worst = 6.66134e-15
-p95 = 5.77316e-15
+worst = 7.10543e-15
+p95 = 6.21725e-15
 n = 50
-floor = 1.4e-14
+floor = 1.5e-14
 
 [case."convergence.ewridge.start_inf_at_32000"]
 ideal = 0.0
-worst = 8.61533e-14
-p95 = 4.37428e-14
+worst = 8.19345e-14
+p95 = 4.30767e-14
 n = 50
 floor = 1.8e-13
 
 [case."convergence.ewridge.t2_500_at_8000"]
 ideal = 0.0
-worst = 1.24345e-14
-p95 = 9.54792e-15
+worst = 1.02141e-14
+p95 = 9.76996e-15
 n = 50
 floor = 2.5e-14
 
@@ -2062,15 +2068,15 @@ floor = 5.3e-14
 
 [case."convergence.ewridge.wild_500_at_8000"]
 ideal = 0.0
-worst = 1.06581e-14
-p95 = 9.54792e-15
+worst = 1.04361e-14
+p95 = 9.32587e-15
 n = 50
 floor = 2.2e-14
 
 [case."convergence.ewridge.wild_inf_at_8000"]
 ideal = 0.0
-worst = 1.0747e-13
-p95 = 6.75016e-14
+worst = 1.09246e-13
+p95 = 6.9722e-14
 n = 50
 floor = 2.2e-13
 
@@ -2286,43 +2292,43 @@ n = 50
 
 [case."convergence.holt.consistency_at_2000"]
 ideal = 0.0
-worst = 4.61853e-14
-p95 = 4.26326e-14
+worst = 5.32907e-14
+p95 = 4.9738e-14
 n = 50
-floor = 9.3e-14
+floor = 1.1e-13
 
 [case."convergence.holt.consistency_at_32000"]
 ideal = 0.0
-worst = 3.41061e-12
+worst = 3.35376e-12
 p95 = 2.55795e-12
 n = 50
 floor = 6.9e-12
 
 [case."convergence.holt.consistency_at_500"]
 ideal = 0.0
-worst = 1.77636e-14
-p95 = 1.06581e-14
+worst = 1.42109e-14
+p95 = 9.76996e-15
 n = 50
 floor = 3.6e-14
 
 [case."convergence.holt.consistency_at_8000"]
 ideal = 0.0
-worst = 3.55271e-13
-p95 = 2.70006e-13
+worst = 3.41061e-13
+p95 = 2.98428e-13
 n = 50
 floor = 7.2e-13
 
 [case."convergence.holt.large_level_at_8000"]
 ideal = 0.0
-worst = 4.07454e-09
-p95 = 3.14321e-09
+worst = 5.00586e-09
+p95 = 3.72529e-09
 n = 50
-floor = 8.2e-09
+floor = 1.1e-08
 
 [case."convergence.holt.level_zero_at_8000"]
 ideal = 0.0
-worst = 3.55271e-13
-p95 = 2.70006e-13
+worst = 3.41061e-13
+p95 = 2.98428e-13
 n = 50
 floor = 7.2e-13
 
@@ -2334,105 +2340,105 @@ n = 50
 
 [case."convergence.holt.start_inf_at_32000"]
 ideal = 0.0
-worst = 3.29692e-12
-p95 = 2.72848e-12
+worst = 3.12639e-12
+p95 = 2.78533e-12
 n = 50
 floor = 6.6e-12
 
 [case."convergence.huber.break_level_at_8"]
 ideal = 0.0
-worst = 0.0266175
-p95 = 0.0259698
+worst = 0.0266334
+p95 = 0.0260276
 n = 50
 
 [case."convergence.huber.break_regime_at_12"]
 ideal = 0.0
-worst = 0.0183451
-p95 = 0.0176392
+worst = 0.0182347
+p95 = 0.0176456
 n = 50
 
 [case."convergence.huber.break_slope_at_8"]
 ideal = 0.0
-worst = 0.0112588
-p95 = 0.0102363
+worst = 0.0113448
+p95 = 0.0102723
 n = 50
 
 [case."convergence.huber.break_variance_at_12"]
 ideal = 0.0
-worst = 0.0306654
-p95 = 0.0246094
+worst = 0.0309548
+p95 = 0.0247475
 n = 50
 
 [case."convergence.huber.breakdown_0_05_5000_slope_gap"]
 ideal = 0.0
-worst = 0.00135238
-p95 = 0.00127491
+worst = 0.00137446
+p95 = 0.00127308
 n = 50
 
 [case."convergence.huber.breakdown_0_05_inf_slope_gap"]
 ideal = 0.0
-worst = 0.00198027
-p95 = 0.00154603
+worst = 0.00196425
+p95 = 0.00155292
 n = 50
 
 [case."convergence.huber.breakdown_0_15_5000_slope_gap"]
 ideal = 0.0
-worst = 0.00429354
-p95 = 0.00373347
+worst = 0.00427401
+p95 = 0.00374263
 n = 50
 
 [case."convergence.huber.breakdown_0_15_inf_slope_gap"]
 ideal = 0.0
-worst = 0.012692
-p95 = 0.00738828
+worst = 0.0127172
+p95 = 0.00735044
 n = 50
 
 [case."convergence.huber.breakdown_0_1_5000_slope_gap"]
 ideal = 0.0
-worst = 0.00209056
+worst = 0.002096
 p95 = 0.00163878
 n = 50
 
 [case."convergence.huber.breakdown_0_1_inf_slope_gap"]
 ideal = 0.0
 worst = 0.00288426
-p95 = 0.00240245
+p95 = 0.00239293
 n = 50
 
 [case."convergence.huber.breakdown_0_2_5000_slope_gap"]
 ideal = 0.0
-worst = 0.587191
-p95 = 0.142201
+worst = 0.58654
+p95 = 0.141647
 n = 50
 
 [case."convergence.huber.breakdown_0_2_inf_slope_gap"]
 ideal = 0.0
-worst = 0.852577
-p95 = 0.248949
+worst = 0.851052
+p95 = 0.249137
 n = 50
 
 [case."convergence.huber.cauchy_500_at_8000"]
 ideal = 0.0
-worst = 0.00501959
+worst = 0.00497911
 p95 = 0.00392744
 n = 50
 
 [case."convergence.huber.cauchy_inf_at_8000"]
 ideal = 0.0
-worst = 0.00508048
-p95 = 0.00476977
+worst = 0.00508824
+p95 = 0.00476015
 n = 50
 
 [case."convergence.huber.consistency_at_2000"]
 ideal = 0.0
-worst = 0.00511345
-p95 = 0.00395504
+worst = 0.00512308
+p95 = 0.00394018
 n = 50
 
 [case."convergence.huber.consistency_at_32000"]
 ideal = 0.0
-worst = 0.00169483
-p95 = 0.00136098
+worst = 0.00169859
+p95 = 0.00136375
 n = 50
 
 [case."convergence.huber.consistency_at_500"]
@@ -2443,38 +2449,38 @@ n = 50
 
 [case."convergence.huber.consistency_at_8000"]
 ideal = 0.0
-worst = 0.00264253
+worst = 0.00265367
 p95 = 0.00223272
 n = 50
 
 [case."convergence.huber.large_level_at_8000"]
 ideal = 0.0
-worst = 0.00342625
-p95 = 0.00263545
+worst = 0.00343366
+p95 = 0.00263378
 n = 50
 
 [case."convergence.huber.level_zero_at_8000"]
 ideal = 0.0
-worst = 0.00342481
-p95 = 0.0026345
+worst = 0.00343222
+p95 = 0.00263283
 n = 50
 
 [case."convergence.huber.outliers_500_at_8000"]
 ideal = 0.0
-worst = 0.00501408
-p95 = 0.0040139
+worst = 0.00501679
+p95 = 0.0039902
 n = 50
 
 [case."convergence.huber.outliers_inf_at_8000"]
 ideal = 0.0
-worst = 0.0575841
-p95 = 0.0405456
+worst = 0.0576019
+p95 = 0.0405421
 n = 50
 
 [case."convergence.huber.shift_500_at_8000"]
 ideal = 0.0
-worst = 0.00511058
-p95 = 0.00406659
+worst = 0.00502696
+p95 = 0.00406591
 n = 50
 
 [case."convergence.huber.shift_inf_at_8000"]
@@ -2485,55 +2491,55 @@ n = 50
 
 [case."convergence.huber.start_200_at_3200"]
 ideal = 0.0
-worst = 0.00891122
-p95 = 0.00702008
+worst = 0.0089199
+p95 = 0.0069406
 n = 50
 
 [case."convergence.huber.start_inf_truth_at_2000"]
 ideal = 0.0
-worst = 44.7586
-p95 = 44.7397
+worst = 44.7588
+p95 = 44.7393
 n = 50
 
 [case."convergence.huber.start_inf_truth_at_32000"]
 ideal = 0.0
-worst = 2.77667
-p95 = 2.77438
+worst = 2.77766
+p95 = 2.77432
 n = 50
 
 [case."convergence.huber.start_inf_truth_at_500"]
 ideal = 0.0
 worst = 45.8487
-p95 = 45.8373
+p95 = 45.8372
 n = 50
 
 [case."convergence.huber.start_inf_truth_at_8000"]
 ideal = 0.0
-worst = 11.1282
-p95 = 11.1237
+worst = 11.128
+p95 = 11.1264
 n = 50
 
 [case."convergence.huber.t2_500_at_8000"]
 ideal = 0.0
-worst = 0.00499525
-p95 = 0.00403727
+worst = 0.00503254
+p95 = 0.00401344
 n = 50
 
 [case."convergence.huber.t2_inf_at_8000"]
 ideal = 0.0
-worst = 0.00363376
-p95 = 0.00344599
+worst = 0.00361817
+p95 = 0.00341742
 n = 50
 
 [case."convergence.huber.wild_500_at_8000"]
 ideal = 0.0
-worst = 0.00503592
-p95 = 0.00399905
+worst = 0.00495999
+p95 = 0.00398185
 n = 50
 
 [case."convergence.huber.wild_inf_at_8000"]
 ideal = 0.0
-worst = 0.00367766
+worst = 0.00367332
 p95 = 0.00274324
 n = 50
 
@@ -2740,20 +2746,20 @@ floor = 2.7e-10
 [case."convergence.lasso.break_regime_at_1"]
 ideal = 0.0
 worst = 8.31475e-10
-p95 = 6.85355e-10
+p95 = 6.85354e-10
 n = 50
 floor = 1.7e-09
 
 [case."convergence.lasso.break_slope_at_1"]
 ideal = 0.0
 worst = 9.22786e-11
-p95 = 8.19633e-11
+p95 = 8.19638e-11
 n = 50
 floor = 1.9e-10
 
 [case."convergence.lasso.break_variance_at_1"]
 ideal = 0.0
-worst = 9.29969e-11
+worst = 9.29967e-11
 p95 = 7.22258e-11
 n = 50
 floor = 1.9e-10
@@ -2766,27 +2772,27 @@ n = 50
 
 [case."convergence.lasso.cauchy_inf_at_8000"]
 ideal = 0.0
-worst = 0.324346
-p95 = 0.322021
+worst = 0.324345
+p95 = 0.32202
 n = 50
 
 [case."convergence.lasso.consistency_at_2000"]
 ideal = 0.0
-worst = 6.05671e-11
-p95 = 5.89773e-11
+worst = 6.05669e-11
+p95 = 5.89775e-11
 n = 50
 floor = 1.3e-10
 
 [case."convergence.lasso.consistency_at_32000"]
 ideal = 0.0
-worst = 5.81764e-11
-p95 = 5.69997e-11
+worst = 5.81761e-11
+p95 = 5.69995e-11
 n = 50
 floor = 1.2e-10
 
 [case."convergence.lasso.consistency_at_500"]
 ideal = 0.0
-worst = 6.77844e-11
+worst = 6.77842e-11
 p95 = 5.25355e-11
 n = 50
 floor = 1.4e-10
@@ -2794,7 +2800,7 @@ floor = 1.4e-10
 [case."convergence.lasso.consistency_at_8000"]
 ideal = 0.0
 worst = 6.09037e-11
-p95 = 5.8761e-11
+p95 = 5.87614e-11
 n = 50
 floor = 1.3e-10
 
@@ -2814,8 +2820,8 @@ floor = 1.2e-10
 
 [case."convergence.lasso.outliers_500_at_8000"]
 ideal = 0.0
-worst = 0.311509
-p95 = 0.28638
+worst = 0.311508
+p95 = 0.286379
 n = 50
 
 [case."convergence.lasso.outliers_inf_at_8000"]
@@ -2826,26 +2832,26 @@ n = 50
 
 [case."convergence.lasso.shift_500_at_8000"]
 ideal = 0.0
-worst = 0.311521
+worst = 0.311522
 p95 = 0.286051
 n = 50
 
 [case."convergence.lasso.shift_inf_at_8000"]
 ideal = 0.0
-worst = 0.338811
+worst = 0.338812
 p95 = 0.299553
 n = 50
 
 [case."convergence.lasso.start_200_at_3200"]
 ideal = 0.0
-worst = 6.7786e-11
-p95 = 6.0677e-11
+worst = 6.77862e-11
+p95 = 6.06772e-11
 n = 50
 floor = 1.4e-10
 
 [case."convergence.lasso.start_inf_at_32000"]
 ideal = 0.0
-worst = 3.57509e-10
+worst = 3.5751e-10
 p95 = 3.37293e-10
 n = 50
 floor = 7.2e-10
@@ -2853,18 +2859,18 @@ floor = 7.2e-10
 [case."convergence.lasso.t2_500_at_8000"]
 ideal = 0.0
 worst = 0.311711
-p95 = 0.28673
+p95 = 0.286729
 n = 50
 
 [case."convergence.lasso.t2_inf_at_8000"]
 ideal = 0.0
 worst = 0.316908
-p95 = 0.310938
+p95 = 0.310937
 n = 50
 
 [case."convergence.lasso.wild_500_at_8000"]
 ideal = 0.0
-worst = 0.334525
+worst = 0.334526
 p95 = 0.300715
 n = 50
 
@@ -3074,14 +3080,14 @@ n = 50
 
 [case."convergence.quantile.break_level_at_6"]
 ideal = 0.0
-worst = 0.0189586
-p95 = 0.0180399
+worst = 0.019095
+p95 = 0.0178937
 n = 50
 
 [case."convergence.quantile.break_regime_at_8"]
 ideal = 0.0
-worst = 0.0211705
-p95 = 0.0188017
+worst = 0.0213967
+p95 = 0.0187286
 n = 50
 
 [case."convergence.quantile.break_slope_at_6"]
@@ -3093,79 +3099,79 @@ n = 50
 [case."convergence.quantile.break_variance_at_12"]
 ideal = 0.0
 worst = 0.0618823
-p95 = 0.0537994
+p95 = 0.0536428
 n = 50
 
 [case."convergence.quantile.breakdown_0_05_5000_slope_gap"]
 ideal = 0.0
-worst = 0.00408993
-p95 = 0.00326763
+worst = 0.00411406
+p95 = 0.00325891
 n = 50
 
 [case."convergence.quantile.breakdown_0_05_inf_slope_gap"]
 ideal = 0.0
-worst = 0.00426534
-p95 = 0.00331039
+worst = 0.00425871
+p95 = 0.00329781
 n = 50
 
 [case."convergence.quantile.breakdown_0_15_5000_slope_gap"]
 ideal = 0.0
-worst = 0.00600277
-p95 = 0.00580163
+worst = 0.00607369
+p95 = 0.00579933
 n = 50
 
 [case."convergence.quantile.breakdown_0_15_inf_slope_gap"]
 ideal = 0.0
-worst = 0.00646911
-p95 = 0.00610296
+worst = 0.00648417
+p95 = 0.00615931
 n = 50
 
 [case."convergence.quantile.breakdown_0_1_5000_slope_gap"]
 ideal = 0.0
-worst = 0.00491483
-p95 = 0.00396276
+worst = 0.0049956
+p95 = 0.00392765
 n = 50
 
 [case."convergence.quantile.breakdown_0_1_inf_slope_gap"]
 ideal = 0.0
-worst = 0.00433522
-p95 = 0.0042555
+worst = 0.00434177
+p95 = 0.00425866
 n = 50
 
 [case."convergence.quantile.breakdown_0_2_5000_slope_gap"]
 ideal = 0.0
-worst = 0.0109106
-p95 = 0.00881734
+worst = 0.0109737
+p95 = 0.00865682
 n = 50
 
 [case."convergence.quantile.breakdown_0_2_inf_slope_gap"]
 ideal = 0.0
-worst = 0.0087825
-p95 = 0.00790717
+worst = 0.00876837
+p95 = 0.00784159
 n = 50
 
 [case."convergence.quantile.cauchy_500_at_8000"]
 ideal = 0.0
-worst = 0.0112643
-p95 = 0.00911986
+worst = 0.011235
+p95 = 0.00914337
 n = 50
 
 [case."convergence.quantile.cauchy_inf_at_8000"]
 ideal = 0.0
-worst = 0.00583633
-p95 = 0.00490933
+worst = 0.00589752
+p95 = 0.00492993
 n = 50
 
 [case."convergence.quantile.consistency_at_2000"]
 ideal = 0.0
-worst = 0.0110838
-p95 = 0.00708015
+worst = 0.0111929
+p95 = 0.00708658
 n = 50
 
 [case."convergence.quantile.consistency_at_32000"]
 ideal = 0.0
-worst = 0.0022436
-p95 = 0.00205023
+worst = 0.00221591
+p95 = 0.00201903
 n = 50
 
 [case."convergence.quantile.consistency_at_500"]
@@ -3176,20 +3182,20 @@ n = 50
 
 [case."convergence.quantile.consistency_at_8000"]
 ideal = 0.0
-worst = 0.0048523
-p95 = 0.00430994
+worst = 0.00483907
+p95 = 0.00428962
 n = 50
 
 [case."convergence.quantile.large_level_at_8000"]
 ideal = 0.0
-worst = 0.00519311
-p95 = 0.00409626
+worst = 0.00521049
+p95 = 0.00404413
 n = 50
 
 [case."convergence.quantile.level_zero_at_8000"]
 ideal = 0.0
-worst = 0.00519309
-p95 = 0.00409626
+worst = 0.0052105
+p95 = 0.00404412
 n = 50
 
 [case."convergence.quantile.outliers_500_at_8000"]
@@ -3200,218 +3206,219 @@ n = 50
 
 [case."convergence.quantile.outliers_inf_at_8000"]
 ideal = 0.0
-worst = 0.00846415
-p95 = 0.00626368
+worst = 0.00843536
+p95 = 0.0062112
 n = 50
 
 [case."convergence.quantile.shift_500_at_8000"]
 ideal = 0.0
 worst = 0.0112378
-p95 = 0.00911517
+p95 = 0.00912395
 n = 50
 
 [case."convergence.quantile.shift_inf_at_8000"]
 ideal = 0.0
-worst = 0.0607696
+worst = 0.0607248
 p95 = 0.0605435
 n = 50
 
 [case."convergence.quantile.start_200_at_3200"]
 ideal = 0.0
-worst = 0.0225457
-p95 = 0.0178194
+worst = 0.0225487
+p95 = 0.0179478
 n = 50
 
 [case."convergence.quantile.start_inf_truth_at_2000"]
 ideal = 0.0
-worst = 44.7913
-p95 = 44.7635
+worst = 44.791
+p95 = 44.7607
 n = 50
 
 [case."convergence.quantile.start_inf_truth_at_32000"]
 ideal = 0.0
-worst = 0.156435
-p95 = 0.149148
+worst = 0.157172
+p95 = 0.150117
 n = 50
 
 [case."convergence.quantile.start_inf_truth_at_500"]
 ideal = 0.0
-worst = 45.9088
+worst = 45.9084
 p95 = 45.8789
 n = 50
 
 [case."convergence.quantile.start_inf_truth_at_8000"]
 ideal = 0.0
-worst = 0.636728
-p95 = 0.608421
+worst = 0.641834
+p95 = 0.608539
 n = 50
 
 [case."convergence.quantile.t2_500_at_8000"]
 ideal = 0.0
-worst = 0.0113286
+worst = 0.0112403
 p95 = 0.00941013
 n = 50
 
 [case."convergence.quantile.t2_inf_at_8000"]
 ideal = 0.0
-worst = 0.00575149
-p95 = 0.00494357
+worst = 0.00575008
+p95 = 0.00498023
 n = 50
 
 [case."convergence.quantile.wild_500_at_8000"]
 ideal = 0.0
 worst = 0.0112524
-p95 = 0.00940628
+p95 = 0.00948922
 n = 50
 
 [case."convergence.quantile.wild_inf_at_8000"]
 ideal = 0.0
-worst = 0.0052841
-p95 = 0.00419535
+worst = 0.00522167
+p95 = 0.00419911
 n = 50
 
 [case."convergence.quantile_robust_sets.hbk_excess"]
 ideal = 0.0
-worst = 0.00206747
-p95 = 0.00206747
+worst = 0.00208014
+p95 = 0.00208014
 n = 3
 
 [case."convergence.quantile_robust_sets.stackloss_excess"]
 ideal = 0.0
-worst = 0.00725158
-p95 = 0.00725158
+worst = 0.00725893
+p95 = 0.00725893
 n = 3
 
 [case."convergence.quantile_robust_sets.starscyg_excess"]
 ideal = 0.0
-worst = 0.00118169
-p95 = 0.00118169
+worst = 0.00118073
+p95 = 0.00118073
 n = 3
 
 [case."convergence.rls.break_level_at_1"]
 ideal = 0.0
-worst = 8.88178e-15
-p95 = 8.88178e-15
+worst = 9.76996e-15
+p95 = 8.43769e-15
 n = 50
-floor = 1.8e-14
+floor = 2e-14
 
 [case."convergence.rls.break_regime_at_1"]
 ideal = 0.0
-worst = 5.68434e-14
-p95 = 4.61853e-14
+worst = 4.61853e-14
+p95 = 3.19744e-14
 n = 50
 floor = 1.2e-13
 
 [case."convergence.rls.break_slope_at_1"]
 ideal = 0.0
-worst = 1.15463e-14
-p95 = 1.06581e-14
+worst = 1.19904e-14
+p95 = 1.02141e-14
 n = 50
 floor = 2.4e-14
 
 [case."convergence.rls.break_variance_at_1"]
 ideal = 0.0
-worst = 1.13243e-14
-p95 = 7.99361e-15
+worst = 9.99201e-15
+p95 = 8.21565e-15
 n = 50
 floor = 2.3e-14
 
 [case."convergence.rls.cauchy_500_at_8000"]
 ideal = 0.0
-worst = 1.19904e-14
+worst = 1.28786e-14
 p95 = 1.06581e-14
 n = 50
-floor = 2.4e-14
+floor = 2.6e-14
 
 [case."convergence.rls.cauchy_inf_at_8000"]
 ideal = 0.0
-worst = 2.77112e-13
-p95 = 3.44169e-14
+worst = 2.52243e-13
+p95 = 3.33067e-14
 n = 50
 floor = 5.6e-13
 
 [case."convergence.rls.consistency_at_2000"]
 ideal = 0.0
-worst = 1.39888e-14
-p95 = 1.06581e-14
+worst = 1.37668e-14
+p95 = 1.04361e-14
 n = 50
 floor = 2.8e-14
 
 [case."convergence.rls.consistency_at_32000"]
 ideal = 0.0
-worst = 9.50351e-14
-p95 = 5.19584e-14
+worst = 1.0103e-13
+p95 = 5.35127e-14
 n = 50
-floor = 2e-13
+floor = 2.1e-13
 
 [case."convergence.rls.consistency_at_500"]
 ideal = 0.0
-worst = 7.99361e-15
-p95 = 7.54952e-15
+worst = 8.77076e-15
+p95 = 7.99361e-15
 n = 50
-floor = 1.6e-14
+floor = 1.8e-14
 
 [case."convergence.rls.consistency_at_8000"]
 ideal = 0.0
-worst = 3.9746e-14
-p95 = 2.88658e-14
+worst = 3.79696e-14
+p95 = 2.68674e-14
 n = 50
 floor = 8e-14
 
 [case."convergence.rls.large_level_at_8000"]
 ideal = 0.0
-worst = 1.59489e-08
+worst = 1.5134e-08
 p95 = 1.28057e-08
 n = 50
+floor = 3.2e-08
 
 [case."convergence.rls.level_zero_at_8000"]
 ideal = 0.0
-worst = 2.95319e-14
+worst = 2.86438e-14
 p95 = 2.66454e-14
 n = 50
 floor = 6e-14
 
 [case."convergence.rls.outliers_500_at_8000"]
 ideal = 0.0
-worst = 1.17684e-14
-p95 = 1.04361e-14
+worst = 1.19904e-14
+p95 = 9.76996e-15
 n = 50
 floor = 2.4e-14
 
 [case."convergence.rls.outliers_inf_at_8000"]
 ideal = 0.0
-worst = 3.95239e-14
-p95 = 3.41949e-14
+worst = 3.9968e-14
+p95 = 3.33067e-14
 n = 50
 floor = 8e-14
 
 [case."convergence.rls.prior_200_at_200"]
 ideal = 0.0
-worst = 7.24867e-10
-p95 = 5.96629e-10
+worst = 2.1746e-09
+p95 = 1.30331e-09
 n = 20
-floor = 1.5e-09
+floor = 4.4e-09
 
 [case."convergence.rls.prior_200_at_2000"]
 ideal = 0.0
-worst = 8.00854e-10
-p95 = 7.3611e-10
+worst = 8.8973e-10
+p95 = 8.12519e-10
 n = 20
-floor = 1.7e-09
+floor = 1.8e-09
 
 [case."convergence.rls.prior_200_at_6000"]
 ideal = 0.0
-worst = 7.48879e-10
-p95 = 7.23916e-10
+worst = 1.70707e-09
+p95 = 1.41692e-09
 n = 20
-floor = 1.5e-09
+floor = 3.5e-09
 
 [case."convergence.rls.prior_200_at_8000"]
 ideal = 0.0
-worst = 7.11157e-10
-p95 = 6.16663e-10
+worst = 1.14162e-09
+p95 = 1.12463e-09
 n = 20
-floor = 1.5e-09
+floor = 2.3e-09
 
 [case."convergence.rls.prior_200_truth_at_8000"]
 ideal = 0.0
@@ -3421,29 +3428,29 @@ n = 20
 
 [case."convergence.rls.prior_inf_at_2000"]
 ideal = 0.0
-worst = 1.03319e-09
-p95 = 7.53744e-10
+worst = 1.98213e-09
+p95 = 1.35844e-09
 n = 20
-floor = 2.1e-09
+floor = 4e-09
 
 [case."convergence.rls.prior_inf_at_32000"]
 ideal = 0.0
-worst = 3.10838e-09
-p95 = 2.99477e-09
+worst = 9.22874e-10
+p95 = 8.49738e-10
 n = 20
 floor = 6.3e-09
 
 [case."convergence.rls.prior_inf_at_500"]
 ideal = 0.0
-worst = 8.22183e-10
-p95 = 6.43922e-10
+worst = 9.10404e-10
+p95 = 8.16271e-10
 n = 20
-floor = 1.7e-09
+floor = 1.9e-09
 
 [case."convergence.rls.prior_inf_at_8000"]
 ideal = 0.0
-worst = 1.16768e-09
-p95 = 1.1251e-09
+worst = 1.03509e-09
+p95 = 9.085e-10
 n = 20
 floor = 2.4e-09
 
@@ -3473,57 +3480,57 @@ n = 20
 
 [case."convergence.rls.shift_500_at_8000"]
 ideal = 0.0
-worst = 1.19904e-14
-p95 = 1.02141e-14
+worst = 1.33227e-14
+p95 = 9.32587e-15
 n = 50
-floor = 2.4e-14
+floor = 2.7e-14
 
 [case."convergence.rls.shift_inf_at_8000"]
 ideal = 0.0
-worst = 4.08562e-14
-p95 = 3.4639e-14
+worst = 3.9968e-14
+p95 = 3.33067e-14
 n = 50
 floor = 8.2e-14
 
 [case."convergence.rls.start_200_at_3200"]
 ideal = 0.0
-worst = 1.06581e-14
-p95 = 7.10543e-15
+worst = 1.02141e-14
+p95 = 6.21725e-15
 n = 50
 floor = 2.2e-14
 
 [case."convergence.rls.start_inf_at_32000"]
 ideal = 0.0
-worst = 8.17124e-14
-p95 = 7.19425e-14
+worst = 8.26006e-14
+p95 = 6.88338e-14
 n = 50
 floor = 1.7e-13
 
 [case."convergence.rls.t2_500_at_8000"]
 ideal = 0.0
-worst = 1.42109e-14
-p95 = 9.10383e-15
+worst = 1.68754e-14
+p95 = 8.88178e-15
 n = 50
-floor = 2.9e-14
+floor = 3.4e-14
 
 [case."convergence.rls.t2_inf_at_8000"]
 ideal = 0.0
-worst = 3.10862e-14
-p95 = 3.08642e-14
+worst = 3.15303e-14
+p95 = 2.93099e-14
 n = 50
-floor = 6.3e-14
+floor = 6.4e-14
 
 [case."convergence.rls.wild_500_at_8000"]
 ideal = 0.0
-worst = 1.28786e-14
-p95 = 1.08802e-14
+worst = 1.5099e-14
+p95 = 1.02141e-14
 n = 50
-floor = 2.6e-14
+floor = 3.1e-14
 
 [case."convergence.rls.wild_inf_at_8000"]
 ideal = 0.0
-worst = 8.61533e-14
-p95 = 7.4607e-14
+worst = 8.52651e-14
+p95 = 7.37188e-14
 n = 50
 floor = 1.8e-13
 
@@ -3619,98 +3626,98 @@ n = 50
 
 [case."convergence.sgd_huber.break_level_at_8"]
 ideal = 0.0
-worst = 0.0251957
-p95 = 0.0202088
+worst = 0.0252659
+p95 = 0.0202878
 n = 50
 
 [case."convergence.sgd_huber.break_regime_at_12"]
 ideal = 0.0
-worst = 0.0324616
-p95 = 0.0223472
+worst = 0.0325216
+p95 = 0.0223412
 n = 50
 
 [case."convergence.sgd_huber.break_slope_at_8"]
 ideal = 0.0
-worst = 0.0246671
-p95 = 0.022866
+worst = 0.0246447
+p95 = 0.0228023
 n = 50
 
 [case."convergence.sgd_huber.break_variance_at_12"]
 ideal = 0.0
-worst = 0.12903
-p95 = 0.0819975
+worst = 0.129294
+p95 = 0.0819984
 n = 50
 
 [case."convergence.sgd_huber.breakdown_0_05_5000_slope_gap"]
 ideal = 0.0
-worst = 0.00581043
-p95 = 0.00470319
+worst = 0.0058102
+p95 = 0.00468705
 n = 50
 
 [case."convergence.sgd_huber.breakdown_0_05_inf_slope_gap"]
 ideal = 0.0
-worst = 0.00491031
-p95 = 0.00397468
+worst = 0.0048747
+p95 = 0.00395641
 n = 50
 
 [case."convergence.sgd_huber.breakdown_0_15_5000_slope_gap"]
 ideal = 0.0
-worst = 0.00815593
-p95 = 0.00678022
+worst = 0.00822744
+p95 = 0.00685206
 n = 50
 
 [case."convergence.sgd_huber.breakdown_0_15_inf_slope_gap"]
 ideal = 0.0
-worst = 0.0143204
-p95 = 0.00905044
+worst = 0.0143554
+p95 = 0.00900358
 n = 50
 
 [case."convergence.sgd_huber.breakdown_0_1_5000_slope_gap"]
 ideal = 0.0
-worst = 0.007609
-p95 = 0.00657535
+worst = 0.00763804
+p95 = 0.00662269
 n = 50
 
 [case."convergence.sgd_huber.breakdown_0_1_inf_slope_gap"]
 ideal = 0.0
 worst = 0.00608734
-p95 = 0.00497225
+p95 = 0.00495722
 n = 50
 
 [case."convergence.sgd_huber.breakdown_0_2_5000_slope_gap"]
 ideal = 0.0
-worst = 0.532284
-p95 = 0.109438
+worst = 0.532622
+p95 = 0.10927
 n = 50
 
 [case."convergence.sgd_huber.breakdown_0_2_inf_slope_gap"]
 ideal = 0.0
-worst = 0.811474
-p95 = 0.206757
+worst = 0.810095
+p95 = 0.206762
 n = 50
 
 [case."convergence.sgd_huber.cauchy_500_at_8000"]
 ideal = 0.0
-worst = 0.0163953
-p95 = 0.0140098
+worst = 0.0164472
+p95 = 0.0140608
 n = 50
 
 [case."convergence.sgd_huber.cauchy_inf_at_8000"]
 ideal = 0.0
-worst = 0.00825923
-p95 = 0.00772594
+worst = 0.00830754
+p95 = 0.00772714
 n = 50
 
 [case."convergence.sgd_huber.consistency_at_2000"]
 ideal = 0.0
-worst = 0.0135329
-p95 = 0.0120991
+worst = 0.0135281
+p95 = 0.0121035
 n = 50
 
 [case."convergence.sgd_huber.consistency_at_32000"]
 ideal = 0.0
-worst = 0.0041557
-p95 = 0.00331381
+worst = 0.00415817
+p95 = 0.00330798
 n = 50
 
 [case."convergence.sgd_huber.consistency_at_500"]
@@ -3721,98 +3728,98 @@ n = 50
 
 [case."convergence.sgd_huber.consistency_at_8000"]
 ideal = 0.0
-worst = 0.00701873
-p95 = 0.00606165
+worst = 0.006981
+p95 = 0.00607191
 n = 50
 
 [case."convergence.sgd_huber.large_level_at_8000"]
 ideal = 0.0
-worst = 0.00678894
-p95 = 0.0057419
+worst = 0.00672504
+p95 = 0.00574572
 n = 50
 
 [case."convergence.sgd_huber.level_zero_at_8000"]
 ideal = 0.0
-worst = 0.00678894
-p95 = 0.0057419
+worst = 0.00672504
+p95 = 0.00574572
 n = 50
 
 [case."convergence.sgd_huber.outliers_500_at_8000"]
 ideal = 0.0
-worst = 0.0163887
-p95 = 0.0140712
+worst = 0.0163598
+p95 = 0.0140204
 n = 50
 
 [case."convergence.sgd_huber.outliers_inf_at_8000"]
 ideal = 0.0
-worst = 0.0697917
-p95 = 0.0363717
+worst = 0.0698368
+p95 = 0.0363789
 n = 50
 
 [case."convergence.sgd_huber.shift_500_at_8000"]
 ideal = 0.0
-worst = 0.0163759
-p95 = 0.0141234
+worst = 0.0164318
+p95 = 0.0141171
 n = 50
 
 [case."convergence.sgd_huber.shift_inf_at_8000"]
 ideal = 0.0
-worst = 0.238701
-p95 = 0.236789
+worst = 0.238688
+p95 = 0.236782
 n = 50
 
 [case."convergence.sgd_huber.start_200_at_3200"]
 ideal = 0.0
-worst = 0.0328615
-p95 = 0.0269253
+worst = 0.0328538
+p95 = 0.026931
 n = 50
 
 [case."convergence.sgd_huber.start_inf_truth_at_2000"]
 ideal = 0.0
-worst = 44.445
-p95 = 44.4256
+worst = 44.4451
+p95 = 44.426
 n = 50
 
 [case."convergence.sgd_huber.start_inf_truth_at_32000"]
 ideal = 0.0
-worst = 0.651706
+worst = 0.651728
 p95 = 0.640528
 n = 50
 
 [case."convergence.sgd_huber.start_inf_truth_at_500"]
 ideal = 0.0
-worst = 45.6993
-p95 = 45.6948
+worst = 45.6992
+p95 = 45.6949
 n = 50
 
 [case."convergence.sgd_huber.start_inf_truth_at_8000"]
 ideal = 0.0
-worst = 7.16887
-p95 = 7.14321
+worst = 7.16893
+p95 = 7.14319
 n = 50
 
 [case."convergence.sgd_huber.t2_500_at_8000"]
 ideal = 0.0
-worst = 0.0163238
-p95 = 0.0140269
+worst = 0.0163752
+p95 = 0.0141085
 n = 50
 
 [case."convergence.sgd_huber.t2_inf_at_8000"]
 ideal = 0.0
-worst = 0.00789735
-p95 = 0.00673854
+worst = 0.0078852
+p95 = 0.00675798
 n = 50
 
 [case."convergence.sgd_huber.wild_500_at_8000"]
 ideal = 0.0
-worst = 0.0165159
-p95 = 0.0140516
+worst = 0.0163976
+p95 = 0.0140887
 n = 50
 
 [case."convergence.sgd_huber.wild_inf_at_8000"]
 ideal = 0.0
-worst = 0.00692375
-p95 = 0.00593071
+worst = 0.00689463
+p95 = 0.00591923
 n = 50
 
 [case."convergence.sgd_logistic.break_level_at_12"]
@@ -4291,8 +4298,8 @@ n = 50
 
 [case."convergence_conditioning.nist_ewridge_rls_gram.filip_rls"]
 ideal = 0.0
-worst = 5.00452e-08
-p95 = 5.00452e-08
+worst = 5.16022e-08
+p95 = 5.16022e-08
 n = 1
 floor = 1.1e-07
 
@@ -4312,17 +4319,17 @@ floor = 9.1e-13
 
 [case."convergence_conditioning.nist_ewridge_rls_gram.longley_gram_standardized"]
 ideal = 0.0
-worst = 3.22458e-13
-p95 = 3.22458e-13
+worst = 6.12001e-13
+p95 = 6.12001e-13
 n = 1
-floor = 6.5e-13
+floor = 1.3e-12
 
 [case."convergence_conditioning.nist_ewridge_rls_gram.longley_gram_unstandardized"]
 ideal = 0.0
-worst = 3.22458e-13
-p95 = 3.22458e-13
+worst = 7.18201e-13
+p95 = 7.18201e-13
 n = 1
-floor = 6.5e-13
+floor = 1.5e-12
 
 [case."convergence_conditioning.nist_ewridge_rls_gram.longley_rls"]
 ideal = 0.0
@@ -4452,17 +4459,17 @@ floor = 4.2e-14
 
 [case."convergence_conditioning.nist_ewridge_rls_gram.pontius_gram_standardized"]
 ideal = 0.0
-worst = 1.53942e-14
-p95 = 1.53942e-14
+worst = 1.66043e-14
+p95 = 1.66043e-14
 n = 1
-floor = 3.1e-14
+floor = 3.4e-14
 
 [case."convergence_conditioning.nist_ewridge_rls_gram.pontius_gram_unstandardized"]
 ideal = 0.0
-worst = 1.53942e-14
-p95 = 1.53942e-14
+worst = 1.55265e-14
+p95 = 1.55265e-14
 n = 1
-floor = 3.1e-14
+floor = 3.2e-14
 
 [case."convergence_conditioning.nist_ewridge_rls_gram.pontius_rls"]
 ideal = 0.0
@@ -4487,15 +4494,15 @@ floor = 3.2e-10
 
 [case."convergence_conditioning.nist_ewridge_rls_gram.wampler1_gram_standardized"]
 ideal = 0.0
-worst = 1.19333e-10
-p95 = 1.19333e-10
+worst = 3.10365e-11
+p95 = 3.10365e-11
 n = 1
 floor = 2.4e-10
 
 [case."convergence_conditioning.nist_ewridge_rls_gram.wampler1_gram_unstandardized"]
 ideal = 0.0
-worst = 1.19333e-10
-p95 = 1.19333e-10
+worst = 3.10365e-11
+p95 = 3.10365e-11
 n = 1
 floor = 2.4e-10
 
@@ -4522,17 +4529,17 @@ floor = 3.1e-10
 
 [case."convergence_conditioning.nist_ewridge_rls_gram.wampler2_gram_standardized"]
 ideal = 0.0
-worst = 1.0333e-10
-p95 = 1.0333e-10
+worst = 5.94519e-11
+p95 = 5.94519e-11
 n = 1
 floor = 2.1e-10
 
 [case."convergence_conditioning.nist_ewridge_rls_gram.wampler2_gram_unstandardized"]
 ideal = 0.0
-worst = 1.0333e-10
-p95 = 1.0333e-10
+worst = 2.93057e-10
+p95 = 2.93057e-10
 n = 1
-floor = 2.1e-10
+floor = 5.9e-10
 
 [case."convergence_conditioning.nist_ewridge_rls_gram.wampler2_rls"]
 ideal = 0.0
@@ -4557,15 +4564,15 @@ floor = 3.6e-10
 
 [case."convergence_conditioning.nist_ewridge_rls_gram.wampler3_gram_standardized"]
 ideal = 0.0
-worst = 1.91866e-10
-p95 = 1.91866e-10
+worst = 2.10976e-10
+p95 = 2.10976e-10
 n = 1
-floor = 3.9e-10
+floor = 4.3e-10
 
 [case."convergence_conditioning.nist_ewridge_rls_gram.wampler3_gram_unstandardized"]
 ideal = 0.0
-worst = 1.91866e-10
-p95 = 1.91866e-10
+worst = 1.03542e-10
+p95 = 1.03542e-10
 n = 1
 floor = 3.9e-10
 
@@ -4592,17 +4599,17 @@ floor = 3.2e-10
 
 [case."convergence_conditioning.nist_ewridge_rls_gram.wampler4_gram_standardized"]
 ideal = 0.0
-worst = 1.19333e-10
-p95 = 1.19333e-10
+worst = 3.10365e-11
+p95 = 3.10365e-11
 n = 1
 floor = 2.4e-10
 
 [case."convergence_conditioning.nist_ewridge_rls_gram.wampler4_gram_unstandardized"]
 ideal = 0.0
-worst = 1.19333e-10
-p95 = 1.19333e-10
+worst = 2.10976e-10
+p95 = 2.10976e-10
 n = 1
-floor = 2.4e-10
+floor = 4.3e-10
 
 [case."convergence_conditioning.nist_ewridge_rls_gram.wampler4_rls"]
 ideal = 0.0
@@ -4627,17 +4634,17 @@ floor = 2.7e-11
 
 [case."convergence_conditioning.nist_ewridge_rls_gram.wampler5_gram_standardized"]
 ideal = 0.0
-worst = 2.57351e-11
-p95 = 2.57351e-11
+worst = 2.96715e-11
+p95 = 2.96715e-11
 n = 1
-floor = 5.2e-11
+floor = 6e-11
 
 [case."convergence_conditioning.nist_ewridge_rls_gram.wampler5_gram_unstandardized"]
 ideal = 0.0
-worst = 2.57351e-11
-p95 = 2.57351e-11
+worst = 9.59317e-11
+p95 = 9.59317e-11
 n = 1
-floor = 5.2e-11
+floor = 2e-10
 
 [case."convergence_conditioning.nist_ewridge_rls_gram.wampler5_rls"]
 ideal = 0.0
@@ -4676,39 +4683,39 @@ tolerance = 0.0
 
 [case."convergence_iterations.lasso_descent.kkt_over_certificate"]
 ideal = 0.0
-worst = 0.00121621
-p95 = 0.00121621
+worst = 0.00115047
+p95 = 0.00115047
 n = 17
 floor = 0.0025
 
 [case."huber_scale.huber_sgd_cuts.huber_share_0_1_bias_at_1"]
 ideal = 0.0
-worst = 0.0572637
-p95 = 0.0463705
+worst = 0.0572316
+p95 = 0.0463724
 n = 50
 
 [case."huber_scale.huber_sgd_cuts.huber_share_0_1_bias_at_1_345"]
 ideal = 0.0
-worst = 0.058966
-p95 = 0.0506623
+worst = 0.0589848
+p95 = 0.0506136
 n = 50
 
 [case."huber_scale.huber_sgd_cuts.huber_share_0_1_bias_at_2"]
 ideal = 0.0
-worst = 0.0693668
-p95 = 0.0619401
+worst = 0.069349
+p95 = 0.0619778
 n = 50
 
 [case."huber_scale.huber_sgd_cuts.huber_share_0_1_bias_at_4"]
 ideal = 0.0
-worst = 0.121687
-p95 = 0.11831
+worst = 0.121766
+p95 = 0.118239
 n = 50
 
 [case."huber_scale.huber_sgd_cuts.huber_share_0_1_bias_at_8"]
 ideal = 0.0
-worst = 2.07609
-p95 = 0.539633
+worst = 2.07596
+p95 = 0.539895
 n = 50
 
 [case."huber_scale.huber_sgd_cuts.huber_share_0_1_bias_at_inf"]
@@ -4719,44 +4726,44 @@ n = 50
 
 [case."huber_scale.huber_sgd_cuts.huber_share_0_1_from_rlm_at_1"]
 ideal = 0.0
-worst = 0.00616059
-p95 = 0.0039663
+worst = 0.00612531
+p95 = 0.00395894
 n = 50
 
 [case."huber_scale.huber_sgd_cuts.huber_share_0_1_from_rlm_at_1_345"]
 ideal = 0.0
-worst = 0.00431656
-p95 = 0.00210619
+worst = 0.00431447
+p95 = 0.0021273
 n = 50
 
 [case."huber_scale.huber_sgd_cuts.huber_share_0_1_from_rlm_at_2"]
 ideal = 0.0
-worst = 0.00217469
-p95 = 0.00154685
+worst = 0.0021715
+p95 = 0.00152119
 n = 50
 
 [case."huber_scale.huber_sgd_cuts.huber_share_0_25_bias_at_1"]
 ideal = 0.0
-worst = 0.136326
-p95 = 0.12738
+worst = 0.136251
+p95 = 0.127361
 n = 50
 
 [case."huber_scale.huber_sgd_cuts.huber_share_0_25_bias_at_1_345"]
 ideal = 0.0
-worst = 0.153531
-p95 = 0.145383
+worst = 0.153544
+p95 = 0.145495
 n = 50
 
 [case."huber_scale.huber_sgd_cuts.huber_share_0_25_bias_at_2"]
 ideal = 0.0
-worst = 0.234614
-p95 = 0.205645
+worst = 0.234526
+p95 = 0.205796
 n = 50
 
 [case."huber_scale.huber_sgd_cuts.huber_share_0_25_bias_at_4"]
 ideal = 0.0
 worst = 5.33528
-p95 = 5.15264
+p95 = 5.15145
 n = 50
 
 [case."huber_scale.huber_sgd_cuts.huber_share_0_25_bias_at_8"]
@@ -4773,50 +4780,50 @@ n = 50
 
 [case."huber_scale.huber_sgd_cuts.huber_share_0_25_from_rlm_at_1"]
 ideal = 0.0
-worst = 0.0078606
-p95 = 0.0062309
+worst = 0.00789298
+p95 = 0.00619169
 n = 50
 
 [case."huber_scale.huber_sgd_cuts.huber_share_0_25_from_rlm_at_1_345"]
 ideal = 0.0
-worst = 0.00851048
+worst = 0.00852413
 p95 = 0.00586479
 n = 50
 
 [case."huber_scale.huber_sgd_cuts.huber_share_0_25_from_rlm_at_2"]
 ideal = 0.0
-worst = 0.0236196
-p95 = 0.0160581
+worst = 0.0235309
+p95 = 0.0159832
 n = 50
 
 [case."huber_scale.huber_sgd_cuts.sgd_share_0_1_bias_at_1"]
 ideal = 0.0
-worst = 0.0857812
-p95 = 0.0818309
+worst = 0.0856523
+p95 = 0.0818524
 n = 50
 
 [case."huber_scale.huber_sgd_cuts.sgd_share_0_1_bias_at_1_345"]
 ideal = 0.0
-worst = 0.102098
-p95 = 0.0919973
+worst = 0.102418
+p95 = 0.0919327
 n = 50
 
 [case."huber_scale.huber_sgd_cuts.sgd_share_0_1_bias_at_2"]
 ideal = 0.0
-worst = 0.134728
-p95 = 0.111124
+worst = 0.134315
+p95 = 0.111325
 n = 50
 
 [case."huber_scale.huber_sgd_cuts.sgd_share_0_1_bias_at_4"]
 ideal = 0.0
-worst = 0.224034
-p95 = 0.2066
+worst = 0.223764
+p95 = 0.207139
 n = 50
 
 [case."huber_scale.huber_sgd_cuts.sgd_share_0_1_bias_at_8"]
 ideal = 0.0
-worst = 1.06248
-p95 = 0.676983
+worst = 1.05779
+p95 = 0.676087
 n = 50
 
 [case."huber_scale.huber_sgd_cuts.sgd_share_0_1_bias_at_inf"]
@@ -4827,26 +4834,26 @@ n = 50
 
 [case."huber_scale.huber_sgd_cuts.sgd_share_0_25_bias_at_1"]
 ideal = 0.0
-worst = 0.184506
-p95 = 0.17412
+worst = 0.184301
+p95 = 0.174152
 n = 50
 
 [case."huber_scale.huber_sgd_cuts.sgd_share_0_25_bias_at_1_345"]
 ideal = 0.0
-worst = 0.212312
-p95 = 0.196434
+worst = 0.213231
+p95 = 0.196612
 n = 50
 
 [case."huber_scale.huber_sgd_cuts.sgd_share_0_25_bias_at_2"]
 ideal = 0.0
-worst = 0.294783
-p95 = 0.26698
+worst = 0.295137
+p95 = 0.268166
 n = 50
 
 [case."huber_scale.huber_sgd_cuts.sgd_share_0_25_bias_at_4"]
 ideal = 0.0
-worst = 6.99003
-p95 = 6.71121
+worst = 6.99009
+p95 = 6.71123
 n = 50
 
 [case."huber_scale.huber_sgd_cuts.sgd_share_0_25_bias_at_8"]
@@ -4904,8 +4911,8 @@ floor = 4.7e-16
 
 [case."long_run.ewcov_drift.windowed_sd_error"]
 ideal = 0.0
-worst = 1.99581e-12
-p95 = 1.99581e-12
+worst = 1.99592e-12
+p95 = 1.99592e-12
 n = 10
 floor = 4e-12
 
@@ -4925,15 +4932,15 @@ floor = 3.4e-14
 
 [case."long_run.ewridge_drift.decayed_ridge_slope_error"]
 ideal = 0.0
-worst = 9.50788e-15
-p95 = 9.50788e-15
+worst = 8.51304e-15
+p95 = 8.51304e-15
 n = 10
 floor = 2e-14
 
 [case."long_run.ewridge_drift.no_decay_slope_error"]
 ideal = 0.0
-worst = 7.83807e-14
-p95 = 7.83807e-14
+worst = 7.86028e-14
+p95 = 7.86028e-14
 n = 10
 floor = 1.6e-13
 
@@ -4976,7 +4983,7 @@ n = 50
 [case."marginal_bin_huber.margbins_cuts.cut_0_8_spikes_0_12_at_1000"]
 ideal = 0.0
 worst = 0.0112905
-p95 = 0.00875368
+p95 = 0.00877296
 n = 50
 
 [case."marginal_bin_huber.margbins_cuts.cut_0_8_spikes_0_12_at_2000"]
@@ -4993,20 +5000,20 @@ n = 50
 
 [case."marginal_bin_huber.margbins_cuts.cut_2_5_spikes_0_05_at_1000"]
 ideal = 0.0
-worst = 0.0213518
+worst = 0.0216602
 p95 = 0.0129638
 n = 50
 
 [case."marginal_bin_huber.margbins_cuts.cut_2_5_spikes_0_05_at_2000"]
 ideal = 0.0
 worst = 0.010811
-p95 = 0.0082513
+p95 = 0.00831199
 n = 50
 
 [case."marginal_bin_huber.margbins_cuts.cut_2_5_spikes_0_05_at_20000"]
 ideal = 0.0
-worst = 0.00234429
-p95 = 0.00204468
+worst = 0.00234089
+p95 = 0.00207465
 n = 50
 
 [case."marginal_bin_huber.margbins_cuts.cut_2_5_spikes_0_12_at_1000"]
@@ -5017,14 +5024,14 @@ n = 50
 
 [case."marginal_bin_huber.margbins_cuts.cut_2_5_spikes_0_12_at_2000"]
 ideal = 0.0
-worst = 0.0700815
+worst = 0.0708273
 p95 = 0.0568439
 n = 50
 
 [case."marginal_bin_huber.margbins_cuts.cut_2_5_spikes_0_12_at_20000"]
 ideal = 0.0
 worst = 0.0181356
-p95 = 0.012388
+p95 = 0.0125194
 n = 50
 
 [case."marginal_bin_refit.margbins_spikes.spikes_0_05_at_1000"]
@@ -5036,13 +5043,13 @@ n = 50
 [case."marginal_bin_refit.margbins_spikes.spikes_0_05_at_2000"]
 ideal = 0.0
 worst = 0.00494108
-p95 = 0.00436723
+p95 = 0.00444635
 n = 50
 
 [case."marginal_bin_refit.margbins_spikes.spikes_0_05_at_20000"]
 ideal = 0.0
 worst = 0.00127996
-p95 = 0.00102629
+p95 = 0.00100635
 n = 50
 
 [case."marginal_bin_refit.margbins_spikes.spikes_0_12_at_1000"]
@@ -5060,31 +5067,31 @@ n = 50
 [case."marginal_bin_refit.margbins_spikes.spikes_0_12_at_20000"]
 ideal = 0.0
 worst = 0.00410806
-p95 = 0.00310895
+p95 = 0.00312453
 n = 50
 
 [case."marginal_bin_refit.margbins_spikes.spikes_0_2_at_1000"]
 ideal = 0.0
-worst = 0.149628
+worst = 0.151855
 p95 = 0.117517
 n = 50
 
 [case."marginal_bin_refit.margbins_spikes.spikes_0_2_at_2000"]
 ideal = 0.0
-worst = 0.140487
-p95 = 0.100583
+worst = 0.142626
+p95 = 0.101825
 n = 50
 
 [case."marginal_bin_refit.margbins_spikes.spikes_0_2_at_20000"]
 ideal = 0.0
-worst = 0.0576099
-p95 = 0.0401774
+worst = 0.0574957
+p95 = 0.0402207
 n = 50
 
 [case."oracles.quantile_eps.eps_0_1_n_20000_from_the_smoothed_fit"]
 ideal = 0.0
-worst = 0.0119768
-p95 = 0.00872981
+worst = 0.0118015
+p95 = 0.00868704
 n = 50
 
 [case."oracles.quantile_eps.eps_0_1_n_5000_from_the_smoothed_fit"]
@@ -5095,44 +5102,44 @@ n = 50
 
 [case."oracles.quantile_eps.eps_0_1_n_80000_from_the_smoothed_fit"]
 ideal = 0.0
-worst = 0.00322326
+worst = 0.00319097
 p95 = 0.00270255
 n = 50
 
 [case."oracles.quantile_eps.eps_0_5_n_20000_from_the_smoothed_fit"]
 ideal = 0.0
 worst = 0.0218907
-p95 = 0.0141867
+p95 = 0.0143926
 n = 50
 
 [case."oracles.quantile_eps.eps_0_5_n_5000_from_the_smoothed_fit"]
 ideal = 0.0
-worst = 0.0467681
-p95 = 0.0347838
+worst = 0.0471903
+p95 = 0.0353774
 n = 50
 
 [case."oracles.quantile_eps.eps_0_5_n_80000_from_the_smoothed_fit"]
 ideal = 0.0
-worst = 0.0111974
-p95 = 0.00674067
+worst = 0.0110238
+p95 = 0.00678098
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_5_n_20000_quantreg_se"]
 ideal = 0.0
-worst = 0.449624
-p95 = 0.37904
+worst = 0.44795
+p95 = 0.374829
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_5_n_20000_slopes"]
 ideal = 0.0
-worst = 2.07364e-09
-p95 = 2.05269e-09
+worst = 2.07271e-09
+p95 = 2.0528e-09
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_5_n_20000_smoothed"]
 ideal = 0.0
 worst = 0.000950647
-p95 = 0.000828853
+p95 = 0.000813482
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_5_n_20000_smoothed_in_se"]
@@ -5143,38 +5150,38 @@ n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_5_n_5000_quantreg_se"]
 ideal = 0.0
-worst = 0.655404
-p95 = 0.534743
+worst = 0.660311
+p95 = 0.535807
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_5_n_5000_slopes"]
 ideal = 0.0
-worst = 2.18858e-09
-p95 = 2.16589e-09
+worst = 2.18832e-09
+p95 = 2.15611e-09
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_5_n_5000_smoothed"]
 ideal = 0.0
-worst = 0.00386346
+worst = 0.00393317
 p95 = 0.00160432
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_5_n_5000_smoothed_in_se"]
 ideal = 0.0
-worst = 0.0944605
+worst = 0.0961647
 p95 = 0.0358329
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_5_n_80000_quantreg_se"]
 ideal = 0.0
-worst = 0.618648
-p95 = 0.55649
+worst = 0.6197
+p95 = 0.553066
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_5_n_80000_slopes"]
 ideal = 0.0
-worst = 2.05636e-09
-p95 = 2.03757e-09
+worst = 2.05761e-09
+p95 = 2.03875e-09
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_5_n_80000_smoothed"]
@@ -5191,62 +5198,62 @@ n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_20000_quantreg_se"]
 ideal = 0.0
-worst = 3.94075
-p95 = 3.33191
+worst = 3.93491
+p95 = 3.32973
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_20000_slopes"]
 ideal = 0.0
-worst = 2.15154e-09
-p95 = 2.10939e-09
+worst = 2.15644e-09
+p95 = 2.10896e-09
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_20000_smoothed"]
 ideal = 0.0
-worst = 0.00590518
+worst = 0.00595934
 p95 = 0.00372258
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_20000_smoothed_in_se"]
 ideal = 0.0
-worst = 0.194434
+worst = 0.196217
 p95 = 0.119417
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_5000_quantreg_se"]
 ideal = 0.0
-worst = 2.01421
-p95 = 1.9209
+worst = 2.01434
+p95 = 1.91789
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_5000_slopes"]
 ideal = 0.0
-worst = 2.35305e-09
-p95 = 2.26783e-09
+worst = 2.35475e-09
+p95 = 2.27156e-09
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_5000_smoothed"]
 ideal = 0.0
 worst = 0.0115512
-p95 = 0.00953725
+p95 = 0.00969791
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_5000_smoothed_in_se"]
 ideal = 0.0
 worst = 0.192449
-p95 = 0.142263
+p95 = 0.14466
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_80000_quantreg_se"]
 ideal = 0.0
-worst = 6.26389
-p95 = 6.08802
+worst = 6.26141
+p95 = 6.09186
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_80000_slopes"]
 ideal = 0.0
-worst = 2.07394e-09
-p95 = 2.03794e-09
+worst = 2.07494e-09
+p95 = 2.0368e-09
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_80000_smoothed"]
@@ -5263,14 +5270,14 @@ n = 50
 
 [case."oracles.quantile_mixed_scales.tau_0_5_standardized_se"]
 ideal = 0.0
-worst = 0.958061
-p95 = 0.850014
+worst = 0.930223
+p95 = 0.855667
 n = 50
 
 [case."oracles.quantile_mixed_scales.tau_0_9_standardized_se"]
 ideal = 0.0
-worst = 2.61499
-p95 = 2.37978
+worst = 2.61246
+p95 = 2.37602
 n = 50
 
 [case."truth_recovery.bocpd_tcpd.nile_f1"]
@@ -5358,7 +5365,7 @@ n = 50
 [case."second_opinion_grids.ewridge_gram_huber.slope_gap"]
 ideal = 0.0
 worst = 3.78552e-07
-p95 = 3.63036e-07
+p95 = 3.63035e-07
 n = 50
 
 [case."second_opinion_grids.ewridge_robust_se.hac_ratio_largest"]
@@ -5775,3 +5782,330 @@ to = 0.228592
 date = 2026-10-26
 reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
 changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[rebased]]
+from = "darwin-arm64"
+to = "linux-x86_64"
+date = 2026-10-26
+reason = "the ledger was written on a developer's Mac and CI judges it on Linux x86-64, whose last bits differ: the numbers are now CI's own, from run 40364575712's measured.json, so the 2% tolerance is all room for drift on the platform that judges; 722 of 2,990 numbers moved up within that 2%"
+changelog = "The ledger's numbers are CI's, measured on Linux x86-64"
+
+[[raised]]
+key = "convergence.ewridge.cauchy_inf_at_8000.floor"
+from = 1.1e-13
+to = 1.4e-13
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 6.75e-14 where macOS arm64 measured 5.08e-14, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.ewridge.consistency_at_2000.floor"
+from = 4e-14
+to = 4.1e-14
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 2.04e-14 where macOS arm64 measured 2e-14, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.ewridge.consistency_at_500.floor"
+from = 1.7e-14
+to = 2e-14
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 9.77e-15 where macOS arm64 measured 8.44e-15, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.ewridge.level_zero_at_8000.floor"
+from = 7.1e-14
+to = 7.3e-14
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 3.64e-14 where macOS arm64 measured 3.51e-14, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.ewridge.outliers_500_at_8000.floor"
+from = 2.3e-14
+to = 2.7e-14
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 1.31e-14 where macOS arm64 measured 1.13e-14, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.ewridge.prior_200_at_200.floor"
+from = 1.5e-09
+to = 4.5e-09
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 2.22e-09 where macOS arm64 measured 7.47e-10, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.ewridge.prior_200_at_2000.floor"
+from = 1.7e-09
+to = 2.8e-09
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 1.36e-09 where macOS arm64 measured 8e-10, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.ewridge.prior_200_at_6000.floor"
+from = 1.5e-09
+to = 3.6e-09
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 1.79e-09 where macOS arm64 measured 7.49e-10, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.ewridge.prior_200_at_8000.floor"
+from = 1.5e-09
+to = 2.3e-09
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 1.12e-09 where macOS arm64 measured 7.11e-10, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.ewridge.prior_inf_at_2000.floor"
+from = 2.1e-09
+to = 3.3e-09
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 1.6e-09 where macOS arm64 measured 1.03e-09, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.ewridge.prior_inf_at_500.floor"
+from = 1.7e-09
+to = 5.5e-09
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 2.75e-09 where macOS arm64 measured 8.18e-10, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.ewridge.shift_500_at_8000.floor"
+from = 2.8e-14
+to = 2.9e-14
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 1.42e-14 where macOS arm64 measured 1.4e-14, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.ewridge.start_200_at_3200.floor"
+from = 1.4e-14
+to = 1.5e-14
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 7.11e-15 where macOS arm64 measured 6.66e-15, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.holt.consistency_at_2000.floor"
+from = 9.3e-14
+to = 1.1e-13
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 5.33e-14 where macOS arm64 measured 4.62e-14, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.holt.large_level_at_8000.floor"
+from = 8.2e-09
+to = 1.1e-08
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 5.01e-09 where macOS arm64 measured 4.07e-09, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.rls.break_level_at_1.floor"
+from = 1.8e-14
+to = 2e-14
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 9.77e-15 where macOS arm64 measured 8.88e-15, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.rls.cauchy_500_at_8000.floor"
+from = 2.4e-14
+to = 2.6e-14
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 1.29e-14 where macOS arm64 measured 1.2e-14, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.rls.consistency_at_32000.floor"
+from = 2e-13
+to = 2.1e-13
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 1.01e-13 where macOS arm64 measured 9.5e-14, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.rls.consistency_at_500.floor"
+from = 1.6e-14
+to = 1.8e-14
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 8.77e-15 where macOS arm64 measured 7.99e-15, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.rls.large_level_at_8000.floor"
+from = 0.0
+to = 3.2e-08
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 1.51e-08 where macOS arm64 measured 1.59e-08, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.rls.prior_200_at_200.floor"
+from = 1.5e-09
+to = 4.4e-09
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 2.17e-09 where macOS arm64 measured 7.25e-10, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.rls.prior_200_at_2000.floor"
+from = 1.7e-09
+to = 1.8e-09
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 8.9e-10 where macOS arm64 measured 8.01e-10, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.rls.prior_200_at_6000.floor"
+from = 1.5e-09
+to = 3.5e-09
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 1.71e-09 where macOS arm64 measured 7.49e-10, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.rls.prior_200_at_8000.floor"
+from = 1.5e-09
+to = 2.3e-09
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 1.14e-09 where macOS arm64 measured 7.11e-10, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.rls.prior_inf_at_2000.floor"
+from = 2.1e-09
+to = 4e-09
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 1.98e-09 where macOS arm64 measured 1.03e-09, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.rls.prior_inf_at_500.floor"
+from = 1.7e-09
+to = 1.9e-09
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 9.1e-10 where macOS arm64 measured 8.22e-10, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.rls.shift_500_at_8000.floor"
+from = 2.4e-14
+to = 2.7e-14
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 1.33e-14 where macOS arm64 measured 1.2e-14, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.rls.t2_500_at_8000.floor"
+from = 2.9e-14
+to = 3.4e-14
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 1.69e-14 where macOS arm64 measured 1.42e-14, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.rls.t2_inf_at_8000.floor"
+from = 6.3e-14
+to = 6.4e-14
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 3.15e-14 where macOS arm64 measured 3.11e-14, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence.rls.wild_500_at_8000.floor"
+from = 2.6e-14
+to = 3.1e-14
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 1.51e-14 where macOS arm64 measured 1.29e-14, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence_conditioning.nist_ewridge_rls_gram.longley_gram_standardized.floor"
+from = 6.5e-13
+to = 1.3e-12
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 6.12e-13 where macOS arm64 measured 3.22e-13, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence_conditioning.nist_ewridge_rls_gram.longley_gram_unstandardized.floor"
+from = 6.5e-13
+to = 1.5e-12
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 7.18e-13 where macOS arm64 measured 3.22e-13, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence_conditioning.nist_ewridge_rls_gram.pontius_gram_standardized.floor"
+from = 3.1e-14
+to = 3.4e-14
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 1.66e-14 where macOS arm64 measured 1.54e-14, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence_conditioning.nist_ewridge_rls_gram.pontius_gram_unstandardized.floor"
+from = 3.1e-14
+to = 3.2e-14
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 1.55e-14 where macOS arm64 measured 1.54e-14, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence_conditioning.nist_ewridge_rls_gram.wampler2_gram_unstandardized.floor"
+from = 2.1e-10
+to = 5.9e-10
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 2.93e-10 where macOS arm64 measured 1.03e-10, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence_conditioning.nist_ewridge_rls_gram.wampler3_gram_standardized.floor"
+from = 3.9e-10
+to = 4.3e-10
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 2.11e-10 where macOS arm64 measured 1.92e-10, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence_conditioning.nist_ewridge_rls_gram.wampler4_gram_unstandardized.floor"
+from = 2.4e-10
+to = 4.3e-10
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 2.11e-10 where macOS arm64 measured 1.19e-10, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence_conditioning.nist_ewridge_rls_gram.wampler5_gram_standardized.floor"
+from = 5.2e-11
+to = 6e-11
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 2.97e-11 where macOS arm64 measured 2.57e-11, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "convergence_conditioning.nist_ewridge_rls_gram.wampler5_gram_unstandardized.floor"
+from = 5.2e-11
+to = 2e-10
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 9.59e-11 where macOS arm64 measured 2.57e-11, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
+
+[[raised]]
+key = "second_opinion_gram.lasso_weights.error.floor"
+from = 4e-11
+to = 5e-11
+date = 2026-10-26
+reason = "a round-off case: Linux x86-64 measured 2.47e-11 where macOS arm64 measured 1.82e-11, so the floor is twice the larger of the two platforms' errors, not of the Mac's alone"
+changelog = "a floor of twice the larger of macOS arm64's and Linux's error"
