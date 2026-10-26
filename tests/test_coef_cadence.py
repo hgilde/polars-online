@@ -24,6 +24,7 @@ the oracle's arithmetic is exact:
 
 from __future__ import annotations
 
+import inspect
 import json
 from datetime import datetime, timedelta
 
@@ -32,8 +33,14 @@ import polars as pl
 import pytest
 
 import polars_online as po
+from test_diagnostic_isolation import BEFORE_277
+from test_model_registry import MINIMAL
 
-TIER = "essential"
+TIER = "mixed"
+
+#: Every kind's leg of a sweep but the cheap representatives (task 278,
+#: batch 15).
+EVERY_KIND = pytest.mark.extended(reason="the sweep over every kind with a coef")
 
 #: Fitting a ridge from a handful of rows says so; beside the point here.
 pytestmark = pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
@@ -498,6 +505,156 @@ class TestChunkingAndResume:
         unset = po.ModelBank([temporal()])
         unset.fit_predict(df.head(77))
         assert "coef_cadence" not in unset.write_json(), "a default spec writes what it did"
+
+
+#: The fields laid out like ``coef``, one value per coefficient, which ride
+#: its cadence (``po.spec.output_index``'s ``kind``); every other field is
+#: computed whatever the cadence.
+RIDES_THE_CADENCE = frozenset({"coef", "support_coef", "se_coef", "se_coef_hc0", "se_coef_hac"})
+
+#: What each kind writes beside ``coef`` here: the standard errors where it
+#: has them, and a residual diagnostic and the clocks wherever it takes
+#: them, so the sweep has fields of every sort to hold still.
+BESIDE = {
+    "ewridge": dict(emit_se_coef=True, emit_robust_se=True, emit_sigma=True, emit_metrics=True),
+    "rls": dict(emit_se_coef=True, emit_robust_se=True, emit_sigma=True),
+    "kalman": dict(emit_se_coef=True, emit_sigma=True),
+}
+#: The kinds that take ``emit_sigma``: those with a target to score.
+SCORED = frozenset({"ewridge", "lasso", "rls", "kalman", "quantile", "ftrl", "sgd", "pa", "holt"})
+
+#: Task 277 changes these two's warm-up; their legs join the sweeps below
+#: when it merges (``test_the_huber_legs_still_wait`` says when). They build
+#: and run today (``test_the_waiting_legs_are_ready``).
+AFTER_TASK_277 = {"huber": {}, "sgd_huber": {"loss": "huber"}}
+#: The sweeps' kinds: every kind with a coef, but the two that wait.
+SWEPT = [k for k in KINDS if k not in AFTER_TASK_277]
+#: One regression, with every field laid out like ``coef``, and one model
+#: with no target: the essentials' legs.
+ESSENTIAL_KINDS = ("ewridge", "kmeans")
+#: The cadences: the clock, the row cap, both, and every row.
+CADENCES = [
+    {"coef_every": "15m"},
+    {"max_rows_between_coefs": 7},
+    {"coef_every": "15m", "max_rows_between_coefs": 7},
+    {"coef_every": 0},
+]
+
+
+def swept(name: str, **kw) -> dict:
+    """The sweep's spec of ``name`` on the temporal clock, with what it
+    writes beside ``coef``."""
+    builder = "sgd" if name == "sgd_huber" else name
+    extra = {**AFTER_TASK_277.get(name, {}), **BESIDE.get(name, {})}
+    if builder in SCORED:
+        extra.setdefault("emit_sigma", True)
+    return temporal(builder, emit_clocks=True, **extra, **kw)
+
+
+def kind_params(names):
+    return [
+        pytest.param(n, id=n, marks=() if n in ESSENTIAL_KINDS else (EVERY_KIND,)) for n in names
+    ]
+
+
+def riding(spec: dict) -> set[str]:
+    idx = po.spec.output_index(spec)
+    return set(idx.filter(pl.col("kind").is_in(list(RIDES_THE_CADENCE)))["field"])
+
+
+class TestOnlyTheCoefficientsMove:
+    """Task 278, batch 15: a cadence decides on which rows ``coef`` and the
+    fields laid out like it are written, and nothing else. Every other
+    field -- the predictions, the weight, the gates' reason, the
+    diagnostics, the clocks -- is the same bit for bit under every cadence
+    as with none, and on a row the cadence writes, every field laid out like
+    ``coef`` is the every-row run's. The probe of 2026-10-25 found it so on
+    every kind with a coef (``coef_every`` 0 and 7, a row cap of 7); no test
+    held the fields beside ``coef`` still before."""
+
+    @pytest.mark.parametrize("name", kind_params(SWEPT))
+    @pytest.mark.parametrize("cadence", CADENCES, ids=["clock", "rows", "both", "every-row"])
+    def test_a_cadence_moves_only_the_fields_laid_out_like_coef(self, name, cadence):
+        df = frame(irregular())
+        unset = run(swept(name), df)
+        spec = swept(name, **cadence)
+        out = run(spec, df)
+        ride = riding(spec)
+        assert "coef" in ride and set(out.columns) == set(unset.columns)
+        still = [c for c in out.columns if c not in ride]
+        moved = [c for c in still if not out[c].equals(unset[c], null_equal=True)]
+        assert not moved, f"{name}: the cadence moved {moved}"
+        # The cadence took effect on every field it carries...
+        for c in ride:
+            assert not out[c].equals(unset[c], null_equal=True), (name, c)
+        # ... and each is written on the rows `coef` is, with the every-row
+        # run's values there: null where that run's is (a standard error
+        # waits for its own estimate), and nowhere else.
+        every_row = run(swept(name, coef_every=0), df)
+        rows = observed(out)
+        assert len(rows) >= 10, rows
+        for c in ride:
+            written = out.with_row_index("i").filter(pl.col(c).is_not_null())["i"].to_list()
+            assert written and set(written) <= set(rows), c
+            for r in rows:
+                got, want = out[c][r], every_row[c][r]
+                assert (got is None and want is None) or got.to_list() == want.to_list(), (c, r)
+        if name == "ewridge":
+            # The leg that carries every field laid out like `coef`.
+            assert ride == {"coef", "support_coef", "se_coef", "se_coef_hc0"}, ride
+
+    @pytest.mark.parametrize("name", kind_params(SWEPT))
+    def test_zero_is_a_row_cap_of_one(self, name):
+        """``coef_every = 0`` (every accepted row) and
+        ``max_rows_between_coefs = 1`` (every accepted row, counted) are one
+        cadence, spelled twice: every field, whole and chunked."""
+        df = frame(irregular())
+        zero, one = swept(name, coef_every=0), swept(name, max_rows_between_coefs=1)
+        whole = run(zero, df)
+        assert whole.equals(run(one, df), null_equal=True)
+        assert whole["coef"].null_count() < df.height // 2
+        parts = pl.concat(po.ModelBank([one]).fit_predict_batches(df, chunk_size=37)).unnest("m")
+        assert parts.equals(whole, null_equal=True)
+
+
+@pytest.mark.parametrize("name", sorted(AFTER_TASK_277))
+def test_the_waiting_legs_are_ready(name):
+    """The ``huber`` legs build and run under every cadence, so adding them
+    is a move into ``SWEPT``, not a build."""
+    df = frame(irregular())
+    for cadence in CADENCES:
+        out = run(swept(name, **cadence), df)
+        assert out.height == df.height and out["coef"].null_count() < df.height
+
+
+def test_the_huber_legs_still_wait():
+    """Task 277's warm-up is a parameter ``po.spec.huber`` (or ``po.spec.sgd``)
+    did not take before it. When one arrives, move ``AFTER_TASK_277``'s
+    entries into the sweeps."""
+    for builder, before in BEFORE_277.items():
+        now = set(inspect.signature(getattr(po.spec, builder)).parameters)
+        new = sorted(now - before)
+        assert not new, (
+            f"po.spec.{builder} gained {new}: if this is task 277's warm-up, move "
+            f"AFTER_TASK_277's entries into SWEPT"
+        )
+
+
+def test_every_kind_with_a_coef_is_swept_or_waits():
+    """A kind that gains a ``coef`` joins ``KINDS``, and so the sweeps."""
+    with_coef = {
+        k
+        for k in MINIMAL
+        if "coef" in po.spec.output_fields(getattr(po.spec, k)("m", **_minimal(k)))
+    }
+    assert with_coef == set(KINDS), with_coef ^ set(KINDS)
+    assert set(SWEPT) | (set(AFTER_TASK_277) & set(KINDS)) == set(KINDS)
+
+
+def _minimal(kind: str) -> dict:
+    a: dict[str, object] = {"targets": ["y"], "features": ["x0", "x1"], "half_life": 50.0}
+    a.update(MINIMAL[kind])
+    return {k: v for k, v in a.items() if v is not None}
 
 
 class TestRefusals:

@@ -12,11 +12,21 @@ TA3: none of that was drawn). Each property runs on streams of mixed signs
 and on one-sided ones, all positive and all negative, at a level (docs/PLAN.md
 task 209 (a), `SIGNS`).
 
+Each parameter with no chunking or save test of its own is a switch here
+(task 278, batch 13): the solve cadences, the grids and sets, the priors, a
+session's shrink, a window's edge, cadence and budget, and each model's own
+keywords; `test_each_switch_keeps_the_properties` runs each switch on each model, one case
+a switch in the essentials and the rest in the extended tier. The seven
+kinds no sweep ran under a clock, a weight, a session or an embargo run
+under each, with the clock restarting, on drawn streams and on a long one
+cut into 1, 7 and 600 chunks.
+
 Hypothesis shrinks a failure to a minimal reproducing frame, which is the point:
 these tests are meant to produce a small counterexample, not just a red mark.
 """
 
 import math
+import warnings
 from collections.abc import Callable
 
 import numpy as np
@@ -27,9 +37,10 @@ from hypothesis import strategies as st
 
 import polars_online as po
 from test_model_registry import MINIMAL, REGRESSIONS, _build
+from test_properties_temporal import CLOCK_MODELS
 from tiers import examples
 
-TIER = "essential"
+TIER = "mixed"
 
 #: The bank's bound on a value it learns from (`online_core::INPUT_BOUND`):
 #: a magnitude past it, NaN and the infinities are missing, as a null is.
@@ -541,19 +552,78 @@ SWITCHES: dict[str, dict] = {
     "pairwise gaps": {"target_gaps": "pairwise"},
     "no intercept": {"fit_intercept": False},
     "standardize": {"standardize": True},
+    # `kalman`, `sgd` and `pa` standardize by default, so the switch above
+    # was their plain spec (`_takes`); this is theirs.
+    "no standardize": {"standardize": False},
     "embargo": {"embargo": 3.0},
     "session": {"session": "s", "session_gap": 2.0},
+    # Every parameter of a regression's own below had no chunking or save
+    # test of its own (task 278, batch 13; C6): the switches are the
+    # invariance test of each.
+    #
+    # The solve cadences. `MODELS` solves every row (`max_rows_between_solves
+    # = 1`), so no schedule was ever cut by a chunk: the default schedule by
+    # weight, and one on the clock. At `build`'s half-life of 20 the default
+    # schedule solves every 0.4 of clock in steady state, so at nearly every
+    # row of a stream stepping by 1; at 1,000 it solves every 20.
+    "default cadence": {"max_rows_between_solves": None, "half_life": 1000.0},
+    "clock cadence": {"solve_every": 3.0, "max_rows_between_solves": None},
+    "ridge grid": {"ridge": [1e-6, 0.5]},
+    "feature sets": {"feature_sets": {"a": ["x0"], "b": ["x0", "x1"]}},
+    "sum scale": {"ridge_scale": "sum"},
+    # One target and two features with an intercept is every model's shape
+    # here: `[intercept, x0, x1]`, the intercept read only under "sum".
+    "coef prior": {"coef_prior": [[0.5, 2.0, -1.0]]},
+    "session shrink": {
+        "session": "s",
+        "session_gap": 2.0,
+        "session_shrink": 0.5,
+        "long_half_life": 200.0,
+    },
+    "closed both": {"window_size": 15.0, "closed": "both"},
+    "snapshot cadence": {
+        "window_size": 15.0,
+        "snapshot_every": 4.0,
+        "max_rows_between_snapshots": 3,
+    },
+    # MiB: about half a kilobyte, a few snapshots, so the ring thins on
+    # these streams (`test_every_switch_moves_an_output`).
+    "thin budget": {"window_size": 15.0, "window_budget": {"thin": 0.0005}},
+    # One covariance for both targets: with one target it is the per-target
+    # filter, so the switch adds a second (`SECOND_TARGET`).
+    "share_p": {"targets": ["y0", "y1"], "share_p": True},
+    "revert": {"revert_half_life": 30.0},
+    "quantile_eps": {"quantile_eps": 0.5},
+    "l1_ratio": {"l1_ratio": 0.5},
+    "select_half_life": {"select_half_life": 5.0},
+    "trend off": {"trend": False},
 }
+
+#: Switches that wait for task 277, which rebuilds huber's warm-up and its
+#: scale. Each is ready: registering it is one line,
+#: ``SWITCHES.update(AFTER_TASK_277)``, and `test_the_waiting_switches_build`
+#: holds that each builds today.
+AFTER_TASK_277: dict[str, dict] = {
+    "huber rms": {"huber_scale": "rms"},
+}
+
+#: The second target a switch may name (`share_p`): the first target's
+#: values in reverse, so its nulls, zeros and values past the bound fall on
+#: other rows.
+SECOND_TARGET = pl.col("y0").reverse().alias("y1")
 
 
 def _takes(model: str, extra: dict, switch: dict) -> bool:
     """Whether the builder takes ``switch`` for ``model``: probed, so each
-    model draws only the switches it accepts and no case is a refusal."""
+    model draws only the switches it accepts and no case is a refusal. A
+    switch that builds the plain spec again is not taken: ``standardize=True``
+    on a model that standardizes by default ran the plain spec under another
+    name (task 278, batch 13)."""
     try:
-        build(model, extra, **switch)
+        spec = build(model, extra, **switch)
     except (TypeError, ValueError):
         return False
-    return True
+    return not switch or spec != build(model, extra)
 
 
 #: Per model, the switches it takes, probed from the builders.
@@ -573,43 +643,198 @@ def test_every_switch_reaches_a_model_and_every_model_a_switch():
     assert {m for m, _ in MODELS} == set(REGRESSIONS)
 
 
+def test_the_waiting_switches_build():
+    """Each switch waiting for task 277 builds for some model today, so
+    registering it is the one line `AFTER_TASK_277` names."""
+    for name, sw in AFTER_TASK_277.items():
+        assert name not in SWITCHES, name
+        assert any(_takes(model, extra, sw) for model, extra in MODELS), name
+
+
+def _switched(df: pl.DataFrame, spec: dict) -> pl.DataFrame:
+    """``df`` with the second target where ``spec`` names it."""
+    return df.with_columns(SECOND_TARGET) if "y1" in spec["targets"] else df
+
+
+def _holds_under(model: str, extra: dict, switch: str, df, chunk: int, split: int) -> None:
+    """The universal properties under ``switch``: one chunk or many give the
+    same numbers, a save and load at row ``split`` is transparent, every
+    number is finite or null, and a skipped row reports nothing."""
+    df = binarize(df, model)
+    spec = build(model, extra, **SWITCHES[switch])
+    df = _switched(df, spec)
+    one = po.ModelBank([spec]).fit_predict(df)
+    bank = po.ModelBank([spec])
+    many = pl.concat([bank.fit_predict(df.slice(i, chunk)) for i in range(0, df.height, chunk)])
+    assert unnested(one).equals(unnested(many), null_equal=True), "chunking moved a number"
+    a = po.ModelBank([spec])
+    a.fit_predict(df.slice(0, split))
+    b = po.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
+    rest = df.slice(split)
+    got = unnested(b.fit_predict(rest))
+    assert unnested(a.fit_predict(rest)).equals(got, null_equal=True)
+    fields = one.select("m").unnest("m")
+    _finite_or_null(fields)
+    cond = _missing("w")
+    for f in spec["features"]:
+        cond = cond | _missing(f)
+    for i, skip in enumerate(df.select(cond).to_series().to_list()):
+        if skip:
+            present = [c for c in fields.columns if fields[c][i] is not None]
+            assert not present, f"row {i} was skipped but reported {present}"
+
+
 @pytest.mark.parametrize("sign", list(SIGNS))
 @pytest.mark.parametrize(("model", "extra"), MODELS, ids=IDS)
 class TestEverySwitch:
     """The universal properties under each switch a model takes: one chunk
     or many give the same numbers, a save and load at any row is
     transparent, every number is finite or null, and a skipped row reports
-    nothing (review 2026-10-06, TA3); on streams of each sign."""
+    nothing (review 2026-10-06, TA3); on streams of each sign. Each stream
+    draws its switch, so every model meets a mix of them in the essentials;
+    `test_each_switch_keeps_the_properties` runs each switch on each model."""
 
     def test_the_properties_hold_under_each_switch(self, model, extra, sign):
         def prop(df, chunk, data):
             switch = data.draw(st.sampled_from(SWITCHES_FOR[model]), label="switch")
             split = data.draw(st.integers(1, df.height - 1), label="split")
-            df = binarize(df, model)
-            spec = build(model, extra, **SWITCHES[switch])
-            one = po.ModelBank([spec]).fit_predict(df)
-            bank = po.ModelBank([spec])
-            many = pl.concat(
-                [bank.fit_predict(df.slice(i, chunk)) for i in range(0, df.height, chunk)]
-            )
-            assert unnested(one).equals(unnested(many), null_equal=True), "chunking moved a number"
-            a = po.ModelBank([spec])
-            a.fit_predict(df.slice(0, split))
-            b = po.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
-            rest = df.slice(split)
-            got = unnested(b.fit_predict(rest))
-            assert unnested(a.fit_predict(rest)).equals(got, null_equal=True)
-            fields = one.select("m").unnest("m")
-            _finite_or_null(fields)
-            cond = _missing("w")
-            for f in spec["features"]:
-                cond = cond | _missing(f)
-            for i, skip in enumerate(df.select(cond).to_series().to_list()):
-                if skip:
-                    present = [c for c in fields.columns if fields[c][i] is not None]
-                    assert not present, f"row {i} was skipped but reported {present}"
+            _holds_under(model, extra, switch, df, chunk, split)
 
         _given(sign, prop, df=_streams(model, sign, min_rows=2), chunk=CHUNKS, data=st.data())
+
+
+def _representatives() -> dict[str, str]:
+    """The model each switch runs on in the essentials: of the models that
+    take it, the one given the fewest switches so far, so the essentials
+    spread over the models rather than run every `ewridge` switch on it."""
+    given: dict[str, int] = {model: 0 for model, _ in MODELS}
+    out = {}
+    for name in SWITCHES:
+        takers = [model for model, _ in MODELS if name in SWITCHES_FOR[model]]
+        out[name] = min(takers, key=lambda m: given[m])
+        given[out[name]] += 1
+    return out
+
+
+REPRESENTATIVE = _representatives()
+
+
+def _switch_cases() -> list:
+    """Every (model, switch, sign) a model takes: in the essentials, each
+    switch on its `REPRESENTATIVE` with streams of mixed signs; the rest of
+    the grid in the extended tier, which CI runs on each of its legs and
+    `scripts/gate.sh --extended` before each push."""
+    cases = []
+    for (model, extra), mid in zip(MODELS, IDS, strict=True):
+        for name in SWITCHES_FOR[model]:
+            if name == "plain":
+                continue  # `TestUniversalProperties` is the plain spec
+            for sign in SIGNS:
+                essential = sign == "mixed" and REPRESENTATIVE[name] == model
+                marks = (
+                    ()
+                    if essential
+                    else pytest.mark.extended(reason="a grid: every switch on every model")
+                )
+                cases.append(
+                    pytest.param(model, extra, name, sign, id=f"{mid}-{name}-{sign}", marks=marks)
+                )
+    return cases
+
+
+@pytest.mark.parametrize(("model", "extra", "switch", "sign"), _switch_cases())
+def test_each_switch_keeps_the_properties(model, extra, switch, sign):
+    """`TestEverySwitch`'s properties with the switch fixed, so each switch
+    on each model draws its own streams (task 278, batch 13): a stream that
+    draws its switch among the fifteen `ewridge` takes ran each about twice
+    in the essentials."""
+
+    def prop(df, chunk, data):
+        split = data.draw(st.integers(1, df.height - 1), label="split")
+        _holds_under(model, extra, switch, df, chunk, split)
+
+    _given(sign, prop, df=_streams(model, sign, min_rows=2), chunk=CHUNKS, data=st.data())
+
+
+def _ordinary(n: int = 120) -> pl.DataFrame:
+    """An ordinary stream for the activation checks: finite features, a
+    target missing now and then, unit weights but a few rows of weight 0, a
+    clock in unit steps with a gap of 40, and a session that changes every
+    30 rows."""
+    r = np.random.default_rng(278)
+    x0, x1 = r.normal(size=n), r.normal(size=n)
+    y0 = 1.0 + 2.0 * x0 - x1 + 0.5 * r.standard_t(3, size=n)
+    t = np.arange(n, dtype=float) + np.where(np.arange(n) >= 70, 40.0, 0.0)
+    w = np.where(np.arange(n) % 17 == 5, 0.0, 1.0)
+    return pl.DataFrame(
+        {
+            "g": ["g0"] * n,
+            "t": t,
+            "x0": x0,
+            "x1": x1,
+            "y0": np.where(np.arange(n) % 23 == 7, np.nan, y0),
+            "w": w,
+            "s": [f"s{i // 30}" for i in range(n)],
+        }
+    )
+
+
+def _moved(a: pl.DataFrame, b: pl.DataFrame) -> list[str]:
+    """The fields of two runs of one stream that differ, or that one has and
+    the other does not."""
+    return sorted(
+        c
+        for c in set(a.columns) | set(b.columns)
+        if c not in a.columns or c not in b.columns or not a[c].equals(b[c], null_equal=True)
+    )
+
+
+#: A switch a model takes that moves nothing by design: `holt` has no
+#: intercept to drop, and `test_spec_validation.py` pins `fit_intercept` as
+#: inert on it.
+INERT = frozenset({("holt", "no intercept")})
+
+
+def _new_value(c: str, plain: pl.DataFrame, got: pl.DataFrame) -> bool:
+    """Whether field ``c`` of ``got`` says something ``plain`` does not: it
+    is a field of both that moved, or a slot of a grid or a set (``pred_y0__a``)
+    that differs from the plain spec's field (``pred_y0``), or a field of a
+    target ``plain`` has none of."""
+    if c in plain.columns:
+        return True
+    base = c.split("__")[0]
+    return base not in plain.columns or not got[c].equals(plain[base], null_equal=True)
+
+
+@pytest.mark.parametrize(("model", "extra"), MODELS, ids=IDS)
+def test_every_switch_moves_an_output(model, extra):
+    """No switch is dead in the sweep: on an ordinary stream, each moves a
+    value the plain spec reports, so its invariance is not that of a
+    parameter that did nothing; a grid's or a set's slot differs from the
+    plain spec's field it renames (`_new_value`). `weight_sum` is where a window's ring
+    shows: `closed="both"` keeps a row exactly a window old (the clock
+    steps by 1), and a cadence or a thinned ring holds fewer rows."""
+    df = _ordinary()
+    if model == "ftrl":
+        df = df.with_columns(y0=(pl.col("y0") > 1).cast(pl.Float64))
+    shared = unnested(po.ModelBank([build(model, extra)]).fit_predict(df))
+    for name in SWITCHES_FOR[model]:
+        if name == "plain":
+            continue
+        spec = build(model, extra, **SWITCHES[name])
+        got = unnested(po.ModelBank([spec]).fit_predict(_switched(df, spec)))
+        moved = _moved(shared, got)
+        values = [c for c in moved if c in got.columns and _new_value(c, shared, got)]
+        print(f"{model} {name}: moved {moved}")
+        if (model, name) in INERT:
+            assert not moved, f"{name} is pinned inert on {model} and moved {moved}"
+            continue
+        assert values, f"{name} moved no value {model} reports on its own"
+        if "window_size" in SWITCHES[name] and name != "window":
+            # Against the window alone: the switch itself moves the ring.
+            window = build(model, extra, **SWITCHES["window"])
+            alone = unnested(po.ModelBank([window]).fit_predict(df))
+            assert "weight_sum" in _moved(alone, got), f"{name} left {model}'s ring as it was"
 
 
 def _finite_or_null(fields: pl.DataFrame) -> None:
@@ -759,3 +984,346 @@ class TestEveryOtherKind:
         says = r'weight column "w" has a negative value \(-0\.5\) at row 8'
         with pytest.raises((pl.exceptions.ComputeError, ValueError), match=says):
             po.ModelBank([spec]).fit_predict(bad)
+
+
+# --- the stream parameters on the kinds no sweep cut (task 278, batch 13) ---
+
+#: The kinds neither property sweep ran under a clock, a weight, a session or
+#: an embargo: `TestEveryOtherKind` runs each as `MINIMAL` builds it, and
+#: `test_properties_temporal.py`'s `CLOCK_MODELS` leaves them out (A6).
+#: `test_clock_events_every_kind.py` holds a restart and a session reset on
+#: them to a fresh run, in one chunk; here the same events are cut by chunks
+#: and by a save.
+UNCLOCKED_KINDS = sorted(set(OTHER_KINDS) - set(CLOCK_MODELS))
+
+#: The stream parameters a kind may run under. The clock steps back by more
+#: than `MINIMUM` now and then (`cut_streams`), so a clocked stream restarts.
+STREAM_PARAMETERS: dict[str, dict] = {
+    "clock": {"clock": "t", "gap_cap": 100.0, "restart_after_step_back": MINIMUM},
+    "weight": {"weight": "w"},
+    "session": {"session": "s", "session_gap": 2.0},
+    "session reset": {"session": "s", "session_gap": "reset"},
+    "embargo": {"embargo": 3.0},
+}
+
+#: What a kind refuses of `STREAM_PARAMETERS`, by name: `audit` counts every
+#: row whatever it weighs and has no label to wait for, `seqtest` reads each
+#: learned row as one trial, and `rcov`'s block closes with its group, which
+#: cannot release the rows an embargo holds.
+REFUSED: dict[str, set[str]] = {
+    "audit": {"weight", "embargo"},
+    "seqtest": {"weight"},
+    "rcov": {"embargo"},
+}
+
+
+def _cut_spec(kind: str, names: tuple[str, ...]) -> dict:
+    """``kind`` as `_kind_spec` builds it, under the stream parameters
+    ``names``, and with a coefficient row on every row where it reports
+    coefficients, so `coef` is compared on each row too."""
+    kw: dict = {"targets": ["y"], "features": ["x0"], "half_life": 50.0}
+    kw.update(MINIMAL[kind])
+    kw.update(KIND_ARGS.get(kind, {}))
+    for name in names:
+        kw.update(STREAM_PARAMETERS[name])
+    kw = {k: v for k, v in kw.items() if v is not None}
+    build = getattr(po.spec, kind)
+    try:
+        return build("m", coef_every=0, **kw)
+    except ValueError as e:
+        if "coef_every" not in str(e):
+            raise
+        return build("m", **kw)
+
+
+def _cuts(kind: str, names: tuple[str, ...]) -> bool:
+    """Whether ``kind`` runs under ``names``: the builder and the bank both
+    take it."""
+    try:
+        po.ModelBank([_cut_spec(kind, names)])
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _combinations(kind: str) -> list[tuple[str, ...]]:
+    """Every combination of the stream parameters ``kind`` runs under, each
+    given or not, and the session as a gap or a reset or neither: probed, so
+    a stream draws only one it takes."""
+    out = []
+    for clock in ((), ("clock",)):
+        for weight in ((), ("weight",)):
+            for session in ((), ("session",), ("session reset",)):
+                for embargo in ((), ("embargo",)):
+                    names = clock + weight + session + embargo
+                    if names and _cuts(kind, names):
+                        out.append(names)
+    return out
+
+
+COMBINATIONS = {kind: _combinations(kind) for kind in UNCLOCKED_KINDS}
+
+
+def test_each_kind_takes_every_stream_parameter_but_those_it_refuses():
+    """The probe is no false skip: the seven kinds are the ones no sweep
+    cut, and each runs under every stream parameter but the ones `REFUSED`
+    names, all together too."""
+    assert UNCLOCKED_KINDS == [
+        "audit",
+        "corrchange",
+        "deco",
+        "hmm",
+        "kmeans",
+        "rcov",
+        "seqtest",
+    ]
+    for kind in UNCLOCKED_KINDS:
+        taken = {name for names in COMBINATIONS[kind] for name in names}
+        assert taken == set(STREAM_PARAMETERS) - REFUSED.get(kind, set()), kind
+        for name in REFUSED.get(kind, ()):
+            assert not _cuts(kind, (name,)), (kind, name)
+        fullest = tuple(n for n in STREAM_PARAMETERS if n in taken and n != "session reset")
+        assert fullest in COMBINATIONS[kind], (kind, fullest)
+
+
+#: `rcov`'s weights: a row is a return or it is not, so it takes 0 or 1 and
+#: refuses any other finite weight; NaN, an infinity and a null are missing.
+#: A weight past the bound is left out: `rcov` refuses it where the rest of
+#: the bank reads it as missing (`test_a_weight_past_the_bound_is_missing`).
+_RCOV_WEIGHTS = st.sampled_from([0.0, -0.0, 1.0, float("nan"), float("inf"), None])
+
+
+@st.composite
+def cut_streams(draw, kind: str, sign: float | None = None, offset: float = 0.0):
+    """`kind_streams`, with a clock ``t`` that steps forward by 0 to 1e4 and
+    back by more than `MINIMUM` now and then, so a clocked run restarts; a
+    weight ``w`` drawn as `streams` draws it; and a session ``s`` that
+    changes now and then. The group key ``g`` only grows, and `rcov` closes
+    each group as the next opens; a step back across a close is the next
+    group's first row, which has no clock to step back from."""
+    df = draw(kind_streams(kind, sign=sign, offset=offset))
+    n = df.height
+    steps = draw(
+        st.lists(
+            st.sampled_from([0.0, 0.5, 1.0, 7.0, 1e4, -(MINIMUM + 2.0), -1e4]),
+            min_size=n,
+            max_size=n,
+        )
+    )
+    flips = draw(st.lists(st.booleans(), min_size=n, max_size=n))
+    weights = _RCOV_WEIGHTS if kind == "rcov" else _weights
+    return df.with_columns(
+        t=pl.Series(np.cumsum([0.0, *steps[1:]]), dtype=pl.Float64),
+        w=pl.Series(draw(st.lists(weights, min_size=n, max_size=n)), dtype=pl.Float64),
+        s=pl.Series([f"s{k}" for k in np.cumsum(flips)]),
+    )
+
+
+def _fields(out: pl.DataFrame) -> pl.DataFrame:
+    """Every field of the spec's output, `coef` included: `_cut_spec` writes
+    one on every row, so a chunk's end writes no extra one."""
+    return out.select("m").unnest("m")
+
+
+def _skipped(df: pl.DataFrame, kind: str, spec: dict) -> list[bool]:
+    """The rows the bank skips: a feature missing, or the weight where the
+    spec reads one. An audit reads every row: what the others skip is what
+    it counts."""
+    cond = pl.lit(False)
+    if kind != "audit":
+        for f in spec["features"]:
+            cond = cond | _missing(f)
+        if spec.get("weight"):
+            cond = cond | _missing(spec["weight"])
+    return df.select(cond).to_series().to_list()
+
+
+def _cut_holds(kind: str, names: tuple[str, ...], df: pl.DataFrame, chunks, splits) -> None:
+    """Under ``names``: the stream cut at ``chunks`` (chunk lengths) gives
+    the numbers and the state one chunk does, a save and load at each of
+    ``splits`` is transparent, every number is finite or null, and a skipped
+    row reports nothing."""
+    spec = _cut_spec(kind, names)
+    whole = po.ModelBank([spec])
+    one = _fields(whole.fit_predict(df))
+    for chunk in chunks:
+        bank = po.ModelBank([spec])
+        many = pl.concat([bank.fit_predict(df.slice(i, chunk)) for i in range(0, df.height, chunk)])
+        assert one.equals(_fields(many), null_equal=True), f"{chunk}-row chunks moved a number"
+        if (state := _state(whole, kind)) is not None:
+            assert state.equals(_state(bank, kind), null_equal=True), "chunking moved the state"
+    for split in splits:
+        a = po.ModelBank([spec])
+        a.fit_predict(df.slice(0, split))
+        b = po.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
+        rest = df.slice(split)
+        got = _fields(b.fit_predict(rest))
+        assert _fields(a.fit_predict(rest)).equals(got, null_equal=True), f"a load at {split}"
+        assert one.slice(split).equals(got, null_equal=True), f"a load at {split}"
+        if (state := _state(a, kind)) is not None:
+            assert state.equals(_state(b, kind), null_equal=True), f"a load at {split}"
+    _finite_or_null(one)
+    for i, skip in enumerate(_skipped(df, kind, spec)):
+        if skip:
+            present = [c for c in one.columns if one[c][i] is not None]
+            assert not present, f"row {i} was skipped but reported {present}"
+
+
+@pytest.mark.parametrize("kind", UNCLOCKED_KINDS)
+@pytest.mark.parametrize("sign", list(SIGNS))
+def test_the_properties_hold_under_the_stream_parameters(kind, sign):
+    """`TestEveryOtherKind`'s properties under a combination of a clock that
+    steps back past the restart bound, a weight, a session (a gap or a
+    reset) and an embargo, each drawn from those the kind takes
+    (`COMBINATIONS`), on adversarial streams of each sign."""
+
+    def prop(data, chunk):
+        names = data.draw(st.sampled_from(COMBINATIONS[kind]), label="parameters")
+        df = data.draw(cut_streams(kind, **SIGNS[sign]), label="stream")
+        split = data.draw(st.integers(1, df.height - 1), label="split")
+        _cut_holds(kind, names, df, [chunk], [split])
+
+    _given(sign, prop, data=st.data(), chunk=CHUNKS)
+
+
+#: The long stream's events: the clock steps back past the restart bound at
+#: `RESTARTS`, inside `rcov`'s groups of 100 rows; the session changes at
+#: `CHANGES`; the clock leaps past `gap_cap` at `LEAPS`.
+RESTARTS = (150, 420)
+CHANGES = (200, 350, 500)
+LEAPS = (90, 260)
+
+
+def _long_stream(kind: str, n: int = 600) -> pl.DataFrame:
+    """600 ordinary rows with every event: two restarts, three session
+    changes, two gaps past the cap, weights of 0 and missing ones, a missing
+    feature now and then, and a group key that grows every 100 rows."""
+    r = np.random.default_rng(278)
+    i = np.arange(n)
+    steps = np.where(np.isin(i, LEAPS), 400.0, r.choice([0.0, 1.0, 2.5], size=n))
+    steps[list(RESTARTS)] = -(MINIMUM + 2.0)
+    steps[0] = 0.0
+    x0 = np.where(i % 37 == 11, np.nan, r.normal(size=n))
+    w = np.where(i % 23 == 4, 0.0, r.uniform(0.5, 2.0, size=n))
+    if kind == "rcov":
+        w = np.where(i % 23 == 4, 0.0, 1.0)  # a return or not (`_RCOV_WEIGHTS`)
+    df = pl.DataFrame(
+        {
+            "x0": x0,
+            "x1": r.normal(size=n) + np.where(i >= 300, 2.0, 0.0),
+            "y": r.normal(size=n),
+            "g": i // 100,
+            "t": np.cumsum(steps),
+            "w": pl.Series(w).scatter([31, 333], None),
+            "s": np.searchsorted(CHANGES, i, side="right"),
+        }
+    )
+    if kind == "ew_class":
+        df = df.with_columns(y=pl.when(pl.col("y") > 0).then(pl.lit("a")).otherwise(pl.lit("b")))
+    return df
+
+
+def _fullest(kind: str, session: str) -> tuple[str, ...]:
+    """Every stream parameter ``kind`` takes, with the session as ``session``."""
+    taken = {name for names in COMBINATIONS[kind] for name in names}
+    keep = {*taken} - ({"session", "session reset"} - {session})
+    return tuple(n for n in STREAM_PARAMETERS if n in keep)
+
+
+@pytest.mark.parametrize("session", ["session", "session reset"])
+@pytest.mark.parametrize("kind", UNCLOCKED_KINDS)
+def test_one_seven_and_six_hundred_chunks_and_a_save_at_each_event(kind, session):
+    """Hard rule 3 on a long stream with every event, under every stream
+    parameter the kind takes: 1, 7 and 600 chunks give the same numbers and
+    the same state, and a save and load is transparent at a restart's row,
+    the rows beside it, a session change and a gap past the cap. The run
+    under them differs from the plain spec's, and the summary counts each
+    restart and each reset, so the events took effect."""
+    df = _long_stream(kind)
+    names = _fullest(kind, session)
+    n = df.height
+    chunks = [n, -(-n // 7), 1]
+    splits = [1, RESTARTS[0] - 1, RESTARTS[0], RESTARTS[0] + 1, CHANGES[0], LEAPS[1], n - 1]
+    with warnings.catch_warnings():
+        # A restart's and a reset's readiness notices are expected here.
+        warnings.simplefilter("ignore")
+        _cut_holds(kind, names, df, chunks, splits)
+        bank = po.ModelBank([_cut_spec(kind, names)])
+        cut = _fields(bank.fit_predict(df))
+        plain_bank = po.ModelBank([_kind_spec(kind)])
+        plain = _fields(plain_bank.fit_predict(df))
+    moved = _moved(plain, cut)
+    print(f"{kind} under {names}: {moved} moved against the plain spec")
+    if kind == "audit":
+        # Its rows count what it read, whatever the parameters; a restart
+        # starts its runs of equal values over, in its tables.
+        assert not _state(bank, kind).equals(_state(plain_bank, kind))
+    else:
+        assert [c for c in moved if c in plain.columns], f"{names} moved nothing on {kind}"
+    if kind == "rcov":
+        # Its rows hold only `weight_sum`; the estimate is each closed row.
+        assert not _state(bank, kind).equals(_state(plain_bank, kind))
+    if kind != "rcov":  # its summary keeps only the group still open
+        resets = bank.summary()["resets"].sum()
+        want = len(RESTARTS) + (len(CHANGES) if session == "session reset" else 0)
+        print(f"{kind}: {resets} resets, {want} events")
+        assert resets == want
+
+
+#: A weight past the bound is missing, as the README says of a feature, a
+#: target or a weight ("NaN, ±inf and any magnitude above 1e100 count as
+#: null"), but `bank.rs` checks a weight's sign, and `rcov`'s 0 or 1, on
+#: every *finite* value: so -1e101 is refused as a negative weight on every
+#: kind, and 1e101 as neither 0 nor 1 on `rcov`, where -inf and inf are read
+#: as missing (task 278, batch 13; reported, not fixed: the checks are the
+#: bank's, beside every model).
+WEIGHT_BOUND_DEFECT = (
+    "bank.rs checks a weight's sign (and rcov's 0 or 1) on every finite value, "
+    "not on the usable ones, so a weight past the bound is refused, not missing"
+)
+
+
+def _weight_cases() -> list:
+    cases = []
+    for kind in sorted(MINIMAL):
+        if kind in ("seqtest", "audit"):
+            continue  # neither takes a weight column
+        for value in (float("inf"), float("-inf"), 1e101, -1e101):
+            refused = value == -1e101 or (value == 1e101 and kind == "rcov")
+            marks = (
+                pytest.mark.xfail(
+                    strict=True,
+                    raises=(ValueError, pl.exceptions.ComputeError),
+                    reason=WEIGHT_BOUND_DEFECT,
+                )
+                if refused
+                else ()
+            )
+            cases.append(pytest.param(kind, value, id=f"{kind}-{value:g}", marks=marks))
+    return cases
+
+
+@pytest.mark.parametrize(("kind", "value"), _weight_cases())
+def test_a_weight_past_the_bound_is_missing(kind, value):
+    """A weight of ±inf or of a magnitude past `INPUT_BOUND` gives the
+    numbers a null weight on that row gives."""
+    n = 12
+    rng = np.random.default_rng(9)
+    df = pl.DataFrame(
+        {
+            "x0": rng.normal(size=n),
+            "x1": rng.normal(size=n),
+            "y": rng.normal(size=n),
+            "g": np.arange(n) // 4,
+            "w": [1.0] * n,
+        }
+    )
+    if kind == "ew_class":
+        df = df.with_columns(y=pl.when(pl.col("y") > 0).then(pl.lit("a")).otherwise(pl.lit("b")))
+    spec = {**_kind_spec(kind), "weight": "w"}
+    w = df["w"].to_list()
+    w[8] = None
+    null = po.ModelBank([spec]).fit_predict(df.with_columns(w=pl.Series(w, dtype=pl.Float64)))
+    w[8] = value
+    got = po.ModelBank([spec]).fit_predict(df.with_columns(w=pl.Series(w, dtype=pl.Float64)))
+    assert got["m"].equals(null["m"], null_equal=True)
