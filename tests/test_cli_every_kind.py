@@ -831,6 +831,11 @@ WAITING = {
     ("sgd", "huber_delta"),
     ("sgd", "huber_scale"),
     ("sgd", "huber_scale_half_life"),
+    # Task 277's refit keys, which its merge added to sgd's model keys
+    # beside this table's registration still waiting (found by task 278's
+    # holt gate, 2026-10-26).
+    ("sgd", "huber_refit_rows"),
+    ("sgd", "refit_budget"),
 }
 
 
