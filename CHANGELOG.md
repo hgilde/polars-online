@@ -95,6 +95,21 @@ returns.
 
 ### Fixed
 
+- The windowed CUSUM and CUSUM of squares (`emit_breaks` with a memory)
+  are divided by their null's share of the plain variance as far as their
+  sums have filled, not by the filled share from the first row (task 278,
+  D-B5). A young sum holds little of what the fit's mean spreads a level
+  over, so its variance is nearly the plain sum's, and it read too wide
+  until its sums had filled their memory. On clean Gaussian streams beside
+  `ewridge` at a half-life of 200, the share of the first 150 rows after the
+  diagnostics' readiness past 1.96 fell from 6.5%-34% (`cusum`, memories 50
+  to 800) and 11%-16% (`cusum_sq`) to 6.1%-6.4% and 6.2%-6.7%; 300 to 600
+  rows in, from up to 23% and 15% to 5.0%-5.9%; filled, it is about 5% as
+  before. `sgd`'s CUSUM of squares read 15% there and now 6.1%. The share
+  is read from the sums' own weights, so no saved state changes; values
+  move only while the sums are young, by up to a factor of 0.71 on the
+  first row at the default memory, and once filled equal the old values to
+  the bit with unit weights and within 1e-6 under uneven weights.
 - `ewridge` withholds a fit whose normal equations are too nearly singular
   to keep a digit, and says so (task 278). Past a condition of `1/u` a
   Cholesky factorization does not always fail -- rounding can leave the
@@ -179,6 +194,8 @@ returns.
 
 ### Performance
 
+- Reading the windowed CUSUMs' young share costs about 60-90 ns a slot and
+  row under `emit_breaks`, about 3% of such a row (task 278, D-B5).
 - `ewridge`'s condition estimate costs 4.3% at 5 features (135.9 -> 141.7
   ns a row), 7.6% at 20 (288.9 -> 311.0) and 1.8% for the 50-feature,
   10-target blocked case solving every 400 rows (556.1 -> 565.9), measured

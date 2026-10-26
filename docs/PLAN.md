@@ -16429,6 +16429,18 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       61-63 continues within 1e-9 relative (measured 5.8e-11, windowed
       1.7e-11), and loads and re-saves the same bytes. The 798-of-799 cap
       hits at defaults are the descent's rate, not the rule; `max_iter` kept.
+      *Windowed CUSUMs (D-B5), 2026-10-25*: the windowed `cusum` and
+      `cusum_sq` are divided by their null's share of the plain variance at
+      the sums' age, read from the sums' own weights (`S1/w4`), not the filled
+      share from the first row (first 150 rows past 1.96: 6.5-34% -> 6.1-6.4%
+      for `cusum`, 11-16% -> 6.2-6.7% for `cusum_sq`; filled values unchanged
+      to the bit under unit weights, within 1e-6 under uneven weights; no
+      layout change). Rule 5's fourth exception, the user's ("Accept"): a
+      state of schema 61-63 continues to the current values in its `cusum_*`
+      fields while its sums are young (`MOVED_SINCE` in the fixture test);
+      every other field and the state bytes stay exact. Left: the young
+      scale's ~1 point over 5% (needs a new accumulator), and the quantile
+      fit's filled CUSUMs oversized at q = 0.9 (8-15%), pre-existing.
 - [ ] 279. **Smaller build caches: no debug info for dependencies** -- the
       user, 2026-10-25 ("Why do agents take so much disk I though we shared
       caches", then "Yes"). Each worktree slot keeps its own `target/` (a
