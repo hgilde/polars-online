@@ -495,7 +495,14 @@ def test_no_refit_is_the_release_before_it_to_the_bit(tmp_path):
             frames.append(po.ModelBank([spec]).fit_predict(df).select(s["name"]))
         return pl.concat(frames, how="horizontal")
 
-    assert run(0).equals(then, null_equal=True)
+    def plain(frame: pl.DataFrame) -> pl.DataFrame:
+        # `withheld_reason`'s Enum gained categories after the release (task
+        # 278); its values are compared, as strings.
+        return frame.select(
+            pl.col(c).struct.unnest().name.prefix(f"{c}.") for c in frame.columns
+        ).with_columns(pl.col(pl.Enum).cast(pl.String))
+
+    assert plain(run(0)).equals(plain(then), null_equal=True)
     moved = run(None)
     for s in released:
         assert not moved[s["name"]].equals(then[s["name"]], null_equal=True), s["name"]
