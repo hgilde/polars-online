@@ -2064,7 +2064,11 @@ mod tests {
         }
         let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
         let mut withheld = 0;
-        for (mw, own) in [(50.0, Vec::new()), (5.0, vec![5.0, 30.0]), (0.0, vec![0.0, 1e9])] {
+        for (mw, own) in [
+            (50.0, Vec::new()),
+            (5.0, vec![5.0, 30.0]),
+            (0.0, vec![0.0, 1e9]),
+        ] {
             let gated = run(mw, own.clone());
             for (i, (g, b)) in gated.iter().zip(&base).enumerate() {
                 let what = format!("min_weight {mw}, own {own:?}, row {i}");

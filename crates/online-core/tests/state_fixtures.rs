@@ -1179,8 +1179,14 @@ fn the_gates_two_forms_are_written_and_act() {
             continue;
         }
         let outs = f.outs();
-        let withheld = outs.iter().filter(|o| o.pred.iter().all(|p| p.is_nan())).count();
-        let shown = outs.iter().filter(|o| o.pred.iter().all(|p| p.is_finite())).count();
+        let withheld = outs
+            .iter()
+            .filter(|o| o.pred.iter().all(|p| p.is_nan()))
+            .count();
+        let shown = outs
+            .iter()
+            .filter(|o| o.pred.iter().all(|p| p.is_finite()))
+            .count();
         assert!(
             withheld >= 1 && shown >= 1,
             "{name}: the continuation withholds {withheld} rows and shows {shown}"

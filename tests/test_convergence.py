@@ -530,10 +530,16 @@ def _every(bound: float) -> dict[tuple[str, float], float]:
 INF = cv.INF
 ADVERSE: dict[str, dict[tuple[str, float], float]] = {
     # The batch fit on the same rows, wild ones and all: rounding. Measured at
-    # most 1.1e-13 (ewridge, three targets 1e4 off), 4.2e-11 (lasso's tol).
+    # most 1.1e-13 (ewridge, three targets 1e4 off).
     "ewridge": _every(1e-11),
     "rls": _every(1e-11),
-    "lasso": _every(1e-9),
+    # In units of the gap the descent's stopping rule allows each seed
+    # (`cv.lasso_stop_bound`): its tolerance is relative to the target's
+    # spread (task 278, D3), which the wild and Cauchy rows inflate to 194
+    # and 545 against 2.3 clean, so a fixed 1e-9 failed them at 6.6e-9 and
+    # 1.4e-8 while the gap stood where the rule puts it. Measured at most
+    # 0.34 of the bound in every cell (2026-10-26).
+    "lasso": _every(1.0),
     # Without decay, no process noise, the gain reads no noise estimate
     # (task 278): Bayesian regression on the same rows, the adversity
     # weighed as least squares weighs it, its prior fading as 1/n. Measured
@@ -677,8 +683,11 @@ def test_every_adverse_cell_has_a_bound_or_a_defect():
 @pytest.mark.parametrize("key, kind, half_life", _adverse_params())
 def test_front_loaded_adversity(key, kind, half_life):
     reg = cv.REGISTRY[key]
-    p, touched = cv.front_loaded(reg, kind, SEEDS, half_life, ADVERSE_CUTS)
+    unit = cv.lasso_stop_bound if key == "lasso" else None
+    p, touched = cv.front_loaded(reg, kind, SEEDS, half_life, ADVERSE_CUTS, unit=unit)
     p.show(f"{key}, {kind} in the first 500 rows, half-life {half_life:g}: {touched}+ rows touched")
+    if unit is not None:
+        print("  (the gap to the oracle in units of the stopping rule's bound)")
     assert touched >= 3, "the adversity is there"
     first, last = (p.to_oracle[c].worst for c in ADVERSE_CUTS)
     assert last <= ADVERSE[key][(kind, half_life)]
