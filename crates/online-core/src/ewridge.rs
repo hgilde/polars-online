@@ -454,6 +454,19 @@ pub struct EwRidge {
     /// for every target.
     #[serde(default)]
     target_min_weight: Vec<f64>,
+    /// Whether `min_weight` withholds the output alone
+    /// ([`EwRidge::set_min_weight_output_only`]; task 278): the residual
+    /// variance folds the model's prediction at its own floor
+    /// ([`EwRidge::own_floor`]) on the rows `min_weight` withholds, and the
+    /// first solve, a fresh model's or a late target's, falls on the row the
+    /// weight reaches that floor, so the state is the same at any
+    /// `min_weight` above it. A spec that gives `min_weight` sets it. Schema
+    /// 64; `false` in a state written before it, which goes on holding both
+    /// back to `min_weight`, to the bit. Always written: the compact
+    /// encoding writes a struct as an array, so a field skipped here would
+    /// shift [`Self::win`] (which says why it stays last).
+    #[serde(default)]
+    min_weight_output_only: bool,
     /// The hard-cutoff window, when the spec asks for one (docs/PLAN.md §13).
     /// Absent otherwise, so an ordinary fit writes no ring.
     ///
@@ -552,6 +565,7 @@ impl EwRidge {
             ready: Readiness::default(),
             keep_factor: false,
             target_min_weight: Vec::new(),
+            min_weight_output_only: false,
             factors: Factors::default(),
             cfg,
         })
@@ -572,6 +586,40 @@ impl EwRidge {
         Ok(())
     }
 
+    /// Let `min_weight` withhold the output alone, as it does in every
+    /// model (task 278, the user's decision of 2026-10-26): the residual
+    /// variance `sig2` folds the prediction the model makes at its own
+    /// floor ([`Self::own_floor`]) on a row `min_weight` withholds, and the
+    /// first solve -- a fresh model's, or a target's own -- falls on the
+    /// row the weight reaches that floor. With it, the state is the one the
+    /// same model keeps with `min_weight` at the floor, to the bit, whatever
+    /// `min_weight` above it withholds. Without it, as in a state written
+    /// before schema 64, both wait for `min_weight`.
+    pub fn set_min_weight_output_only(&mut self, on: bool) {
+        self.min_weight_output_only = on;
+    }
+
+    /// The floor the model learns at ([`Self::set_min_weight_output_only`]):
+    /// a row per unknown -- below it the system has fewer rows than
+    /// unknowns, and the model with no `min_weight` given withholds there --
+    /// or `min_weight` where that is lower and so lowers the model's own
+    /// floor. A weight, as `min_weight` is. `min_weight` itself where it
+    /// holds learning back.
+    fn own_floor(&self) -> f64 {
+        self.capped(self.cfg.min_weight)
+    }
+
+    /// A `min_weight` threshold as the floor learning reads: no higher than
+    /// a row per unknown under [`Self::set_min_weight_output_only`], the
+    /// threshold itself otherwise.
+    fn capped(&self, threshold: f64) -> f64 {
+        if self.min_weight_output_only {
+            threshold.min(self.cfg.k_total() as f64)
+        } else {
+            threshold
+        }
+    }
+
     /// Whether a row carrying the targets `y` at `weight` takes a target's
     /// own weight across its own threshold while no solve has fit it: the
     /// row its own first solve falls on (S9b). Read before the row is
@@ -585,7 +633,12 @@ impl EwRidge {
         }
         let nc = self.cfg.n_combos();
         y.iter().enumerate().any(|(j, yj)| {
-            let t = crate::model::min_weight_of(&self.target_min_weight, self.cfg.min_weight, j);
+            // Under the output-only floor, no higher than a row per unknown.
+            let t = self.capped(crate::model::min_weight_of(
+                &self.target_min_weight,
+                self.cfg.min_weight,
+                j,
+            ));
             let reached = |w: f64| w >= t && w > 0.0;
             let before = self.acc.wj[j];
             yj.is_some()
@@ -2177,7 +2230,6 @@ impl OnlineModel for EwRidge {
 
         // ---- predict (state before this row's update) ----
         self.predict_into(x, d_clock, out);
-        let pred = &out.pred;
 
         // ---- update ----
         // The slow twin sees the same rows under its own, longer half-life.
@@ -2203,6 +2255,23 @@ impl OnlineModel for EwRidge {
                     sig2: self.sig2.clone(),
                 });
         }
+        // Where `min_weight` withholds the row's prediction and the model's
+        // own floor is lower ([`Self::set_min_weight_output_only`]), the
+        // variance folds the prediction at that floor: the one the model
+        // keeps with no `min_weight` above it makes, read from the same
+        // state (task 278). A second read only on those rows -- the
+        // warm-up, and the rows after a long gap.
+        let floor = self.own_floor();
+        let below = if floor < self.cfg.min_weight && out.n_eff < self.cfg.min_weight {
+            let gate = std::mem::replace(&mut self.cfg.min_weight, floor);
+            let mut at = Step::default();
+            self.predict_into(x, d_clock, &mut at);
+            self.cfg.min_weight = gate;
+            Some(at.pred)
+        } else {
+            None
+        };
+        let pred = below.as_deref().unwrap_or(&out.pred);
         // EW residual variance from the primary (first-combo) pred. Its
         // weight ages on every row, and a row with a target, a weight and a
         // prediction adds its squared residual. A row with a target and no
@@ -2257,7 +2326,7 @@ impl OnlineModel for EwRidge {
         // rows of 80 (review round 4, CC1; docs/PLAN.md task 195, S9b).
         let due = by_cadence
             || self.rows_since_solve >= self.cfg.max_rows_between_solves
-            || (self.beta.is_none() && self.n_eff() >= self.cfg.min_weight)
+            || (self.beta.is_none() && self.n_eff() >= self.own_floor())
             || own_first;
         if due {
             self.solve();
@@ -2382,3 +2451,6 @@ mod tests;
 
 #[cfg(test)]
 mod condition_tests;
+
+#[cfg(test)]
+mod output_only_tests;

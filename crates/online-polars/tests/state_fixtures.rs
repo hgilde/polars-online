@@ -110,7 +110,12 @@ const REGENERATE: &str = "PRINT_STATE_FIXTURES=1 cargo test -p online-polars --t
 /// state loads with neither and goes on so to the bit, so the current
 /// `bank`, `bank_diagnosed` and `bank_autocorr` streams are set to that form
 /// before their first row ([`kept_rules`]), and `bank_gated` freezes the
-/// form a spec builds.
+/// form a spec builds. So too, since task 278, a spec's drift detector
+/// folds each slot's own residual on the rows a gate withholds
+/// (`Persisted::ungated_drift`), and a spec's `ewridge` with a `min_weight`
+/// learns its residual variance and first solve at its own floor
+/// (`min_weight_output_only`): [`kept_rules`] leaves both out of the kept
+/// forms, `bank_reset` freezes the first, and `bank_gated` the second.
 macro_rules! previous {
     ($($schema:literal),* $(,)?) => {
         const PREVIOUS: &[u32] = &[$($schema),*];
@@ -498,7 +503,9 @@ fn kept_rules_bank(specs: Vec<Spec>, df: &DataFrame) -> Bank {
 /// written before schema 64 holds (task 278, batch 17): the spread folding
 /// only the residuals the bank reports, the autocorrelation weighing each
 /// residual 1 -- the two flags a spec sets, `ungated_spread` and
-/// `weighted_autocorr`, left out, as such a state leaves them. So the kept
+/// `weighted_autocorr`, left out, as such a state leaves them; and the drift
+/// detector's and `ewridge`'s `min_weight` rules (task 278), `ungated_drift`
+/// and `min_weight_output_only`, likewise. So the kept
 /// fixtures of these kinds, which load in that form, go on to this
 /// fixture's numbers and convert to its bytes; the form since is frozen by
 /// `bank_gated`.
@@ -509,7 +516,15 @@ fn kept_rules(bytes: &[u8]) -> Vec<u8> {
             Value::Map(m) => {
                 let before = m.len();
                 m.retain(|(k, _)| {
-                    !matches!(k.as_str(), Some("ungated_spread" | "weighted_autocorr"))
+                    !matches!(
+                        k.as_str(),
+                        Some(
+                            "ungated_spread"
+                                | "weighted_autocorr"
+                                | "ungated_drift"
+                                | "min_weight_output_only"
+                        )
+                    )
                 });
                 *found += before - m.len();
                 m.iter_mut().for_each(|(_, v)| walk(v, found));
@@ -541,7 +556,17 @@ fn kept_throughout(bytes: Vec<u8>) -> Vec<u8> {
     );
     let set: Vec<&String> = all
         .iter()
-        .filter(|(p, _)| p.ends_with(".ungated_spread") || p.ends_with(".weighted_autocorr"))
+        .filter(|(p, v)| {
+            [
+                ".ungated_spread",
+                ".weighted_autocorr",
+                ".ungated_drift",
+                ".min_weight_output_only",
+            ]
+            .iter()
+            .any(|flag| p.ends_with(flag))
+                && v.as_bool() == Some(true)
+        })
         .map(|(p, _)| p)
         .collect();
     assert!(set.is_empty(), "streams in the current form: {set:?}");
@@ -1399,6 +1424,14 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
         }),
         ("bank_gated", "the autocorrelation's flag", |p, v| {
             p.ends_with(".weighted_autocorr") && v.as_bool() == Some(true)
+        }),
+        // Task 278: `ewridge`'s `min_weight` withholding the output alone,
+        // and the drift detector folding what a gate withholds.
+        ("bank_gated", "ewridge's output-only floor", |p, v| {
+            p.ends_with(".min_weight_output_only") && v.as_bool() == Some(true)
+        }),
+        ("bank_reset", "the drift detector's flag", |p, v| {
+            p.ends_with(".ungated_drift") && v.as_bool() == Some(true)
         }),
         (
             "bank_gated",

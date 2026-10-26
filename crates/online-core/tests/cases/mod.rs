@@ -564,6 +564,32 @@ pub fn all() -> Vec<Case> {
             Targets::Linear(2),
             40
         ),
+        // `min_weight` withholding the output alone (schema 64, docs/PLAN.md
+        // task 278): the residual variance folds the prediction at the
+        // model's own floor, a row per unknown, on the rows the gate
+        // withholds, and the first solve falls on the row the weight
+        // reaches that floor. The clock gap on row 36 takes the weight back
+        // under the gate, which withholds the continuation's first rows
+        // while the variance folds them. Every other `ewridge` case is the
+        // form a state saved before it goes on in.
+        case!(
+            "ewridge_output_only",
+            "EwRidge",
+            EwRidge,
+            {
+                let mut m = EwRidge::new(EwRidgeCfg {
+                    min_weight: 12.0,
+                    ..ewridge_cfg()
+                })
+                .unwrap();
+                m.set_target_min_weight(vec![12.0, 12.0]).unwrap();
+                m.set_min_weight_output_only(true);
+                m
+            },
+            K,
+            Targets::Linear(2),
+            40
+        ),
         // A blocked Gram saved mid-block (schema 62, docs/PLAN.md task
         // 257): its held rows, and each target's values on them waiting for
         // the block's merge, `acc.held`, empty in every other state.

@@ -782,7 +782,11 @@ the streams with no break: within one standard error of each other.
 scaled by `sigma`, which adapts to a larger spread within a half-life. Beside
 a fit at a half-life of 200 it found 1.5% of the variance breaks on those
 200 streams and none of the others. Its false-alarm rate depends on the residuals' tails,
-which [Are its tails heavy?](#are-its-tails-heavy) measures.
+which [Are its tails heavy?](#are-its-tails-heavy) measures. It reads the
+residuals of the predictions a readiness gate withholds too, as `sigma`
+does, so a gate never hides a break: under `drift_action="reset"` the rows
+a `min_weight` withholds after a restart are the rows that show the next
+break.
 
 The first recipe runs the CUSUM once over a stream whose intercept rises
 at row 2,000, and restarts the fit from where the CUSUM crossed:

@@ -535,8 +535,7 @@ type RowClockCase = (
 /// `coef_every` counts). A cadence of 7 units is then reached on the rows a
 /// cap of 7 learned rows is, the 7th, 14th, ... (0-based 6, 13, ...), and
 /// the two give the same output to the bit: `micro`'s checkpoints, which no
-/// event at the start restarts, and `ewridge`'s solves while its first, at
-/// `min_weight`, has not come (here it never does). Counted from
+/// event at the start restarts. Counted from
 /// the first row, whose step is 0, each came a row after the cap's, the
 /// whole stream long. `ew_cov`'s first refresh, at `min_weight` 0, starts
 /// both counters, so it was the cap's before and is still: every 7th row
@@ -545,7 +544,8 @@ type RowClockCase = (
 /// first solve is now their own floor, a row per coefficient, whatever
 /// `min_weight` says (task 278, D10), so theirs are every 7th row from it;
 /// so is `lasso`'s, from the row its target reaches that floor (the third
-/// here).
+/// here), and since task 278 `ewridge`'s, whose first solve waited for its
+/// `min_weight` (here never met) and now falls on that floor too.
 #[test]
 fn on_the_row_clock_each_cadence_is_its_row_cap() {
     let n = 60;
@@ -628,9 +628,10 @@ fn on_the_row_clock_each_cadence_is_its_row_cap() {
             // (row 1 here), whatever `min_weight` says, and the cadence
             // counts from it (task 278, D10).
             (1..n - 1).step_by(7).collect()
-        } else if name == "lasso" {
-            // The first solve on the third row, the floor's, and every 7th
-            // row from it.
+        } else if matches!(name, "lasso" | "ewridge") {
+            // The first solve on the third row, the floor's -- a row per
+            // coefficient, whatever `min_weight` says (task 278) -- and
+            // every 7th row from it.
             (2..n - 1).step_by(7).collect()
         } else {
             want

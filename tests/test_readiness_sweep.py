@@ -42,13 +42,22 @@ model. So, per kind and per gate:
   278's batch 17 it folded only the residuals the bank reports; a state
   written before schema 64 goes on that way.)
 
-Known defects, each a strict xfail running the real assertion
-(``DEFECTS``, ``DRIFT_DEFECT``): ``ewridge`` keeps a residual variance of
-its own in its state that learns only from the predictions ``min_weight``
-lets through; and the drift detector folds ``|resid| / sigma`` only on the
-rows the bank reports, so under ``drift_action="reset"`` a gate that
-withholds the rows after a restart hides the next break, and the restart it
-would have made moves the fit.
+- **``ewridge``'s own noise and first solve.** ``ewridge`` keeps a residual
+  variance of its own in its state, and a fresh model's first solve waits
+  for a floor: both read the model at the floor it keeps with no
+  ``min_weight`` (a row per unknown, or a lower ``min_weight``), so on any
+  solve cadence the state and ``coef`` are those of the spec without one,
+  and the variance is the EW mean square of that spec's residuals. (Until
+  task 278 they read ``min_weight``; a state written before schema 64 goes
+  on that way.)
+- **The drift detector.** It folds ``|resid| / sigma`` of each slot's own
+  prediction on the rows a gate withholds, as the spread does, so under
+  ``drift_action="reset"`` no gate hides a break or the restart it makes.
+  (Until task 278 it folded only the rows the bank reports; a state written
+  before schema 64 goes on that way.)
+- **The gates' own diagnostics.** ``emit_error_inflation`` and
+  ``emit_clocks`` write their own fields and move no other, under a gate
+  and without one.
 
 Each case prints and asserts evidence that the gate took effect: it
 withholds rows the ungated run reports (or, on ``marginal`` and ``rcov``,
@@ -57,8 +66,9 @@ nulls a statistic in the table it reports through).
 Two streams: ``rows``, uneven weights with zeros on the row clock; and
 ``clocked``, the same rows on an irregular clock with steps past
 ``gap_cap``. Essentials: each kind on ``rows`` with ``min_weight``, the
-nesting on ``ewridge``, the spread and the selection on ``ewridge``, the
-defects on ``ewridge``. Extended: the rest of the grid.
+nesting on ``ewridge``, the spread, the selection, the noise, the drift
+reset and the gates' diagnostics on ``ewridge``. Extended: the rest of the
+grid.
 """
 
 from __future__ import annotations
@@ -116,8 +126,16 @@ LEARNED = ("weight_sum", "settled_frac", "coef", "support_coef")
 LEARNED_PREFIXES = ("penalty_selected_",)
 #: The gates' own settings, in the spec and in each model's configuration:
 #: left out of the state comparison, which is about what was learned.
+#: ``min_weight_output_only`` is ``ewridge``'s mark that a spec gave it a
+#: ``min_weight`` that withholds the output alone.
 GATE_KEYS = frozenset(
-    {"min_weight", "target_min_weight", "min_settled_frac", "max_error_inflation"}
+    {
+        "min_weight",
+        "target_min_weight",
+        "min_settled_frac",
+        "max_error_inflation",
+        "min_weight_output_only",
+    }
 )
 
 #: The values each grid steps through, loosest first.
@@ -407,20 +425,11 @@ def _gates(kind: str) -> list[tuple[str, dict[str, Any]]]:
 #: The (kind, gate) pairs where a gate moves the model's state: each a
 #: defect, a strict xfail running the real assertion until it is fixed.
 DEFECTS: dict[tuple[str, str], str] = {
-    # `ewridge` keeps a per-target residual variance in its state (`sig2`,
-    # weighed by `wsig`), folded from its own prediction, which it withholds
-    # below `min_weight`: the floor moves it (first at the first row the
-    # floor withholds and the default reports). No output reads it today
-    # (`EwRidge::sigma2` has only test callers), so no field moves.
-    ("ewridge", "min_weight=30"): "ewridge's state residual variance learns only past min_weight",
+    # `ewridge`'s own residual variance (`sig2`, weighed by `wsig`) folded
+    # only the predictions `min_weight` let through, until task 278: it now
+    # folds the model's prediction at the floor it keeps with no
+    # `min_weight` (`test_ewridge_min_weight_moves_neither_its_noise_nor_its_first_solve`).
 }
-
-#: The defect behind a drift reset under a gate.
-DRIFT_DEFECT = (
-    "the drift detector folds |resid| / sigma only on the rows the bank reports, so a gate "
-    "that withholds the rows after a restart hides the next break, and drift_action='reset''s "
-    "restart with it"
-)
 
 
 def _gate_params(kinds: list[str]) -> list[Any]:
@@ -712,52 +721,241 @@ def test_the_residual_spread_never_moves_with_a_gate(kind: str, name: str, held:
     assert _differences(keep(a), keep(b)) == [], f"{what}: the residual spread moved"
 
 
-@pytest.mark.parametrize(
-    "gate",
-    [
-        pytest.param({"min_weight": 40.0}, marks=_tier(True), id="min_weight=40"),
-        pytest.param(
-            {"max_error_inflation": 1.02}, marks=_tier(False), id="max_error_inflation=1.02"
-        ),
-    ],
-)
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=DRIFT_DEFECT)
-def test_a_gate_never_moves_a_drift_reset(gate: dict[str, Any]):
-    """Under ``drift_action="reset"`` the detector restarts the model, so
-    it is part of the fit: it reads ``|resid| / sigma`` on the rows the
-    bank reports. Breaks at rows 300, 450, 520 and 600: after the restart
-    at 450 the gate withholds the rows that would show the break at 520,
-    the detector misses it, and the fit moves from row 521 (measured
-    2026-10-26: resets at 301, 450, 520, 600 without the gate, 301, 450,
-    600 with it)."""
+@functools.cache
+def _breaks_frame() -> pl.DataFrame:
     r = np.random.default_rng(5)
     n = 1200
     x = r.normal(size=(n, 2))
     y = x @ np.array([1.0, -0.5]) + r.normal(size=n)
     for at, shift in ((300, 4.0), (450, -6.0), (520, 5.0), (600, 8.0), (640, -3.0)):
         y[at:] += shift
-    df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
+    return pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
 
-    def fit(g: dict[str, Any]) -> pl.DataFrame:
-        s = po.spec.ewridge(
-            "m",
-            targets=["y"],
-            features=["x0", "x1"],
-            half_life=30.0,
-            emit_drift=True,
-            drift_action="reset",
-            drift_threshold=3.0,
-            coef_every=0,
-            **g,
+
+@functools.cache
+def _drift_run(key: str) -> tuple[pl.DataFrame, dict]:
+    kw = json.loads(key)
+    s = po.spec.ewridge(
+        "m",
+        targets=["y"],
+        features=["x0", "x1"],
+        half_life=30.0,
+        emit_drift=True,
+        emit_sigma=True,
+        drift_threshold=3.0,
+        coef_every=0,
+        **kw,
+    )
+    bank = po.ModelBank([s], threads=1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", po.ReadinessWarning)
+        out = bank.fit_predict(_breaks_frame())["m"].struct.unnest()
+    return out, json.loads(bank.write_json())
+
+
+@pytest.mark.parametrize(
+    ("action", "gate"),
+    [
+        pytest.param(
+            action,
+            gate,
+            marks=_tier(action == "reset" and "min_weight" in gate),
+            id=f"{action}-{next(iter(gate))}={next(iter(gate.values()))}",
         )
-        return po.ModelBank([s], threads=1).fit_predict(df)["m"].struct.unnest()
-
-    base, gated = fit({}), fit(gate)
-    fired = base["drift_y"].fill_null(False).arg_true().to_list()
-    moved = gated["drift_y"].fill_null(False).arg_true().to_list()
-    print(f"{gate}: resets without the gate {fired}, with it {moved}")
+        for action in ("reset", None)
+        for gate in ({"min_weight": 40.0}, {"max_error_inflation": 1.02})
+    ],
+)
+def test_a_gate_never_moves_the_drift_detector(action: str | None, gate: dict[str, Any]):
+    """The drift detector folds ``|resid| / sigma`` of each slot's own
+    prediction, on the rows a gate withholds as on the rows it reports, so
+    with and without a gate its flags are the same on every row, and its
+    state is the same to the bit. Under ``drift_action="reset"`` it
+    restarts the model, so it is part of the fit: breaks at rows 300, 450,
+    520 and 600, and after the restart at 450 the gate withholds the rows
+    that show the break at 520. Until task 278 the detector read only the
+    rows the bank reports, missed that break, and the fit moved from row
+    521 (measured 2026-10-26: resets at 301, 450, 520, 600 without the gate,
+    301, 450, 601 with it). Without a reset the gate still moved the
+    detector's state, through the warm-up rows it withheld."""
+    extra = {"drift_action": action} if action else {}
+    (base, b_state), (gated, g_state) = (
+        _drift_run(_key(extra)),
+        _drift_run(_key(extra | gate)),
+    )
+    what = f"{action}, {gate}"
+    fired = base["drift_y"].arg_true().to_list()
+    flagged = gated["drift_y"].arg_true().to_list()
+    print(f"{what}: detections without the gate {fired}, with it {flagged}")
     assert len(fired) >= 3, "the detector must fire for the case to mean anything"
-    for n in ("weight_sum", "coef", "drift_y"):
+    # Evidence the gate withheld rows the detector folds: a residual and a
+    # scale in the base, none reported under the gate.
+    folded = base["resid_y"].is_not_null() & base["sigma_y"].is_not_null()
+    hidden = int((folded & gated["resid_y"].is_null()).sum())
+    print(f"{what}: {hidden} rows the detector folds that the gate withholds")
+    assert hidden > 20, f"{what}: the gate hid no row the detector reads"
+    if action == "reset":
+        after = [i for i in fired if i > 450]
+        held = [i for i in after if gated["resid_y"][i] is None]
+        print(f"{what}: detections after the restart at 450 on a withheld row: {held}")
+        assert held, f"{what}: no detection on a row the gate withheld"
+    for n in ("weight_sum", "coef", "drift_y", "sigma_y"):
         assert _bits(base[n]) == _bits(gated[n]), (
-            f"{gate}: {n} moved, first at {_first_difference(base[n], gated[n])}"
+            f"{what}: {n} moved, first at {_first_difference(base[n], gated[n])}"
+        )
+    assert_the_state_is_the_same(b_state, g_state, what, OUTPUT_RECORDS)
+
+
+# ---------------------------------------------------------------------------
+# ewridge's own noise and its first solve
+
+
+#: The solve cadences ``ewridge``'s first solve meets: the default (by the
+#: weight's share, which solves on the first rows anyway), a clock cadence
+#: and a row cap, where the first solve's own rule decides the fit until the
+#: cadence's next solve.
+CADENCES: dict[str, dict[str, Any]] = {
+    "default": {},
+    "solve_every=25": {"solve_every": 25.0},
+    "max_rows_between_solves=50": {"solve_every": 1e9, "max_rows_between_solves": 50},
+}
+
+
+def _ewridge_noise(state: dict) -> tuple[list[float], list[float]]:
+    """``ewridge``'s own residual variance and its weight, from the state."""
+    found: list[tuple[list[float], list[float]]] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            if "EwRidge" in node:
+                found.append((node["EwRidge"]["sig2"], node["EwRidge"]["wsig"]))
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(state)
+    assert len(found) == 1, found
+    return found[0]
+
+
+@pytest.mark.parametrize(
+    ("variant", "cadence"),
+    [
+        pytest.param(v, c, marks=_tier(v == "rows" and c != "default"), id=f"{v}-{c}")
+        for v in VARIANTS
+        for c in CADENCES
+    ],
+)
+def test_ewridge_min_weight_moves_neither_its_noise_nor_its_first_solve(variant: str, cadence: str):
+    """``ewridge`` keeps a residual variance of its own (``sig2``, weighed
+    by ``wsig``), and a fresh model's first solve waits for a floor. Both
+    read the floor the model keeps with no ``min_weight`` -- a row per
+    unknown, or a ``min_weight`` below that -- so at every ``min_weight``
+    the state is the spec's without one, to the bit, and ``coef`` is the
+    same on every row, on every solve cadence. And the variance is its
+    definition, over that spec's residuals: with ``v_t = w_t λ^(T−t)``,
+    ``wsig = Σ v_t`` and ``sig2 = Σ v_t r_t² / Σ v_t`` over the rows with a
+    prediction and a positive weight.
+
+    Until task 278 the variance folded only the predictions ``min_weight``
+    let out, and the first solve waited for ``min_weight``: under a clock
+    cadence ``min_weight = 30`` moved ``coef`` from row 3 to the end of the
+    stream (measured 2026-10-26: 197 rows of 200)."""
+    free = {"max_error_inflation": math.inf} | CADENCES[cadence]
+    base, b_state = run("ewridge", variant, free), state("ewridge", variant, free)
+    for m in (3.0, 10.0, 30.0):
+        gate = free | {"min_weight": m}
+        out, g_state = run("ewridge", variant, gate), state("ewridge", variant, gate)
+        what = f"ewridge on {variant}, {cadence}, min_weight={m}"
+        held = _withheld(out) - _withheld(base)
+        print(f"{what}: withheld {len(held)} rows the spec without it reports")
+        if m > 3.0:
+            assert held, f"{what}: the gate withheld nothing, so it proves nothing"
+        assert _bits(base["coef"]) == _bits(out["coef"]), (
+            f"{what}: coef moved, first at {_first_difference(base['coef'], out['coef'])}"
+        )
+        assert_the_state_is_the_same(b_state, g_state, what, OUTPUT_RECORDS)
+    if variant != "rows":
+        return
+    # The definition, on the row clock: every row decays by `λ`, the first
+    # row's step being 0.
+    df = _frame("ewridge")
+    w = df["w"].to_numpy()
+    resid = base["resid_y"].to_numpy(allow_copy=True).astype(float)
+    use = np.isfinite(resid) & (w > 0)
+    lam = 0.5 ** (1.0 / HALF_LIFE)
+    v = np.where(use, w, 0.0) * lam ** np.arange(N - 1, -1, -1, dtype=float)
+    wsig = float(v.sum())
+    sig2 = float((v * np.where(use, resid, 0.0) ** 2).sum() / wsig)
+    got_sig2, got_wsig = _ewridge_noise(state("ewridge", variant, free | {"min_weight": 30.0}))
+    print(f"ewridge, {cadence}: sig2 {got_sig2[0]!r} vs {sig2!r}, wsig {got_wsig[0]!r} vs {wsig!r}")
+    assert abs(got_wsig[0] - wsig) <= 1e-12 * wsig
+    assert abs(got_sig2[0] - sig2) <= 1e-12 * sig2
+    assert use.sum() > 250, "the variance must fold most of the rows"
+
+
+# ---------------------------------------------------------------------------
+# The gates' own diagnostics
+
+
+#: The kinds that write ``error_inflation_<slot>`` for a row: the leverage
+#: of a least-squares system (``tests/test_diagnostic_isolation.py``).
+LEVERAGE_KINDS = ("ewridge", "rls", "kalman")
+
+
+def _switch_params() -> list[Any]:
+    params = []
+    for switch, kinds in (
+        ("emit_error_inflation", LEVERAGE_KINDS),
+        ("emit_clocks", tuple(ROW_KINDS)),
+    ):
+        for kind in kinds:
+            for variant in VARIANTS:
+                for gate in ("none", "min_weight=30"):
+                    essential = kind == "ewridge" and variant == "rows"
+                    params.append(
+                        pytest.param(
+                            switch,
+                            kind,
+                            variant,
+                            gate,
+                            marks=_tier(essential),
+                            id=f"{switch}-{kind}-{variant}-{gate}",
+                        )
+                    )
+    return params
+
+
+#: Each switch's own fields, by their stem.
+OWN_FIELDS = {
+    "emit_error_inflation": ("error_inflation",),
+    "emit_clocks": ("scored_clock", "learned_clock"),
+}
+
+
+@pytest.mark.parametrize(("switch", "kind", "variant", "gate"), _switch_params())
+def test_the_gates_own_diagnostics_move_no_other_field(
+    switch: str, kind: str, variant: str, gate: str
+):
+    """``emit_error_inflation`` and ``emit_clocks`` add fields of their own
+    and change no other: with and without each, every other output field is
+    the same on every row, to the bit -- the predictions, the residuals, the
+    weight, ``withheld_reason`` and the rest -- with no gate and under
+    ``min_weight``. Each writes a value of its own on some row, so no case
+    compares two identical runs."""
+    g: dict[str, Any] = {} if gate == "none" else {"min_weight": 30.0}
+    base, out = run(kind, variant, g), run(kind, variant, g | {switch: True})
+    stems = OWN_FIELDS[switch]
+    own = [c for c in out.columns if c.split("@", 1)[0].rsplit("_", 1)[0] in stems or c in stems]
+    print(f"{switch} on {kind}, {variant}, {gate}: its fields {own}")
+    assert own, f"{switch} on {kind}: wrote no field of its own"
+    assert sum(out[c].drop_nulls().len() for c in own) > 0, f"{switch}: every value null"
+    others = [c for c in out.columns if c not in own]
+    assert others == base.columns, f"{switch} on {kind}: the other fields differ by name"
+    for c in others:
+        assert _bits(base[c]) == _bits(out[c]), (
+            f"{switch} on {kind}, {variant}, {gate}: {c} moved, first at "
+            f"{_first_difference(base[c], out[c])}"
         )
