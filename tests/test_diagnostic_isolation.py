@@ -32,7 +32,8 @@ Everything a gate could only move by touching the fit -- ``coef``,
 -- is compared on every row: a gate never moves learning, ``min_weight``
 in every kind (``kalman``'s noise and ``lasso``'s selection learned only
 from the rows it let through, documented exceptions until task 278, D10);
-``quantile``'s is a defect, a strict xfail (``DEFECTS``).
+a pair that moves the fit is a defect, a strict xfail (``DEFECTS``, empty
+since ``quantile``, ``huber`` and ``sgd(loss="huber")`` were fixed).
 
 Each case prints and asserts evidence that it took effect, so no case
 compares two identical runs: a switch writes at least one non-null value
@@ -395,21 +396,11 @@ def _diagnostic_fields(out: pl.DataFrame, fit: list[str]) -> dict[str, tuple]:
 #: The pairs where a switch moves a fit field and nothing documents it: each
 #: a defect, a strict xfail running the real assertion until it is fixed.
 DEFECTS: dict[tuple[str, str], str] = {
-    ("quantile", "min_weight=50"): (
-        "quantile: min_weight moves coef (first at row 13 on `rows`, 0.0038 against "
-        "-0.2214 on x0's slope). A row min_weight withholds teaches the residual "
-        "scale s nothing (robust.rs: s learns only from a row with a prediction), and "
-        "the band h = quantile_eps * s and the first solve (on the row the weight "
-        "reaches min_weight) follow it. min_settled_frac and max_error_inflation "
-        "withhold rows without moving the fit; the builder does not document the "
-        "difference, as kalman's and lasso's do. Measured 2026-10-25."
-    ),
-    # The Huber legs share the cause (a residual scale learned only from
-    # rows with a prediction); measured on main at b45fa81, 2026-10-25, both
-    # streams, first at rows 5-9, and still so with the refit of the first
-    # rows on (task 277, re-measured when they joined KINDS).
-    ("huber", "min_weight=50"): "huber: min_weight moves coef, as quantile's does",
-    ("sgd_huber", "min_weight=50"): "sgd(loss='huber'): min_weight moves coef, as quantile's does",
+    # quantile, huber and sgd(loss="huber") learned their residual scale only
+    # from rows with a prediction, and their first solve waited for the row
+    # whose weight reached min_weight, so min_weight moved coef (first at
+    # rows 5-13). Fixed in task 278 (D10): their gate withholds the output
+    # alone, and the fit is the same at any min_weight.
 }
 
 

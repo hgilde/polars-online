@@ -52,8 +52,20 @@ use serde::{Deserialize, Serialize};
 use crate::robust::{HuberScale, NORMAL_Q3, mad_sketches};
 use crate::{EwQuantile, SpdFactor};
 
-/// The most IRLS passes a refit takes.
-pub const REFIT_PASSES: usize = 50;
+/// The most IRLS passes a refit takes. A refit that takes them all has run
+/// to its cap ([`RefitStatus::ran_to_cap`]) and is counted in the model's
+/// `solve_failures`, as `kmeans`' and `hmm`'s seeding counts a Lloyd run
+/// stopped at its cap (docs/PLAN.md task 278). Measured over 3,000 streams
+/// of 50-500 rows, `y = 1 + 2x + 0.5e` with a level added to up to 45% of
+/// the rows with `x > 0` (the tests' `slow_refit_stream`): 50 passes ran
+/// out on 142 (none below 20% of the rows), 200 on 6 (all past 39%, beyond
+/// the breakdown); every one converged on its own, the slowest in 880
+/// passes. A pass is one weighted solve of the buffer, so the cap costs only
+/// where a refit does not converge: a spec with fewer rows than
+/// coefficients, whose refit is the ridge's fit and never meets the rule,
+/// pays 200 passes once a target (8.7 s at 1,000 features and 200 rows,
+/// where 50 took 1.9 s).
+pub const REFIT_PASSES: usize = 200;
 
 /// A refit has converged when no coefficient moved by more than this,
 /// relative to `max|β|`.
@@ -111,6 +123,15 @@ pub struct RefitStatus {
     /// Given up before it began, past its spec's `refit_budget`
     /// ([`refit_reservation`]).
     pub over_budget: bool,
+}
+
+impl RefitStatus {
+    /// Whether the refit took every one of its [`REFIT_PASSES`] passes: the
+    /// rule unmet before the last, as scikit-learn reads an iteration count
+    /// at its `max_iter`. Counted in the model's `solve_failures`.
+    pub fn ran_to_cap(&self) -> bool {
+        self.passes as usize >= REFIT_PASSES
+    }
 }
 
 /// The bytes one target's refit buffer can hold at most: `refit_rows`
@@ -701,6 +722,33 @@ pub(crate) fn irls(
         }
     }
     Some((beta, passes))
+}
+
+/// A stream whose refit converges slowly (task 278): `y = 1 + 2x + 0.5e`
+/// with a level added to a share of the rows with `x > 0`, its length (50
+/// to 500 rows), share (up to 45%) and level drawn from `trial`. Trial 687
+/// is 71 rows at 39% whose IRLS needs 880 passes; the probe that found it
+/// drew 3,000 trials.
+#[cfg(test)]
+pub(crate) fn slow_refit_stream(trial: u64) -> Vec<(f64, f64)> {
+    let mut state: u64 = (trial + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let mut rnd = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let n = 50 + (rnd() * 450.0) as usize;
+    let frac = rnd() * 0.45;
+    let level = (rnd() * 6.0 - 1.0).exp() * 3.0;
+    (0..n)
+        .map(|_| {
+            let x = rnd() * 2.0 - 1.0;
+            let e = (-2.0 * rnd().max(1e-300).ln()).sqrt() * (std::f64::consts::TAU * rnd()).cos();
+            let out = if rnd() < frac && x > 0.0 { level } else { 0.0 };
+            (x, 1.0 + 2.0 * x + 0.5 * e + out)
+        })
+        .collect()
 }
 
 #[cfg(test)]

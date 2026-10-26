@@ -10,6 +10,7 @@ import pytest
 
 import polars_online as po
 from data import synthetic
+from reference import EwMedian
 
 TIER = "mixed"
 
@@ -390,9 +391,11 @@ class TestTheQuantileFitsDefinition:
     into the cross-moment only, with ``psi = tau - 1{r < 0}``, its step
     bounded by ``|r| / (1 + u'A^-1 u)``, the row's full leverage against the
     band's system: ``A`` the band rows' centred covariance plus the ridge,
-    ``u`` the row's centred features (TC1b). ``s`` is the RMS of the scored
-    residuals before the row and ``n`` the target's rows, both decayed, and
-    ``r`` the residual the row was scored with."""
+    ``u`` the row's centred features (TC1b). ``s`` is the MAD of the scored
+    residuals before the row, their EW median over ``Phi^-1(3/4)`` on the
+    sketch's buckets (``reference.EwMedian``, written from the sketch's
+    definition; the RMS until task 278's D-Q), and ``n`` the target's rows,
+    both decayed, and ``r`` the residual the row was scored with."""
 
     EPS, RIDGE = 0.2, 1e-6
 
@@ -434,22 +437,20 @@ class TestTheQuantileFitsDefinition:
         lam = 1.0 if np.isinf(half_life) else 2.0 ** (-1.0 / half_life)
         kinds, h_at, nudge = [], np.full(n, np.nan), np.zeros((n, k))
         fit_rows: list[int] = []
-        scored: list[int] = []
+        mad = EwMedian()
         for t in range(n):
             rows = float((lam ** (t - np.arange(t))).sum())
-            sig2 = 0.0
-            if scored:
-                s = np.array(scored)
-                d = lam ** (t - s)
-                sig2 = float((d * (y[s] - pred[s]) ** 2).sum() / d.sum())
+            if t > 0:
+                mad.age(lam)
+            scale = mad.scale()
             f = np.array(fit_rows, dtype=int)
             fw = lam ** (t - f)
             band_w = float(fw.sum())
-            if not np.isfinite(pred[t]) or rows < 3 * k or band_w < k or sig2 == 0.0:
+            if not np.isfinite(pred[t]) or rows < 3 * k or band_w < k or scale is None:
                 kinds.append("ols")
                 fit_rows.append(t)
             else:
-                h = np.sqrt(sig2) * max(self.EPS, (k / rows) ** 0.4)
+                h = scale * max(self.EPS, (k / rows) ** 0.4)
                 r = y[t] - pred[t]
                 h_at[t] = h
                 if abs(r) < h:
@@ -467,7 +468,7 @@ class TestTheQuantileFitsDefinition:
                     step = np.copysign(most, raw) if abs(raw) > most else raw
                     nudge[t] = band_w * step * Z[t]
             if np.isfinite(pred[t]):
-                scored.append(t)
+                mad.add(abs(y[t] - pred[t]), 1.0)
         return Z, lam, kinds, h_at, nudge
 
     @pytest.mark.parametrize(("half_life", "tau"), [(float("inf"), 0.5), (300.0, 0.9)])
@@ -808,11 +809,12 @@ class TestTheQuantilesOwnKeywords:
 class TestTheQuantileSolveEvery:
     """Task 278 (b07): ``solve_every`` through the bank, on a clock column
     whose steps are quarters (so every elapsed clock is exact, and a solve
-    falls on the edge itself 22 times in this stream). The fit is solved on
-    the row a fresh model's weight reaches ``min_weight``, then on the first
-    row whose clock is at least ``solve_every`` past the last solve's, and
-    the coefficients hold in between (the builder's docstring, after
-    ``ewridge``'s); ``coef`` on every row shows each solve."""
+    falls on the edge itself 22 times in this stream). The fit is first
+    solved on the row its target has been present on a row per coefficient
+    (the third), whatever ``min_weight`` says (task 278, D10), then on the
+    first row whose clock is at least ``solve_every`` past the last solve's,
+    and the coefficients hold in between (the builder's docstring);
+    ``coef`` on every row shows each solve."""
 
     N, EVERY, MIN_WEIGHT = 600, 5.0, 3.0
 
@@ -851,10 +853,10 @@ class TestTheQuantileSolveEvery:
         moved = [
             i for i in range(self.N) if coef[i] is not None and (i == 0 or coef[i] != coef[i - 1])
         ]
-        # `weight_sum` is the weight before the row, so the row whose own
-        # weight brings the model to `min_weight` is the one before the
-        # first row to report it.
-        first = next(i for i in range(self.N - 1) if ws[i + 1] >= self.MIN_WEIGHT)
+        # Three coefficients: the third row. `min_weight` moves none of it:
+        # the weight before the row after it, decayed, is still short of it.
+        first = 2
+        assert ws[first + 1] < self.MIN_WEIGHT
         want, last = [first], first
         for i in range(first + 1, self.N):
             if t[i] - t[last] >= self.EVERY:
@@ -913,3 +915,39 @@ class TestTheQuantileSolveEvery:
 
 def _pred_of(out) -> np.ndarray:
     return out["pred_y"].fill_null(float("nan")).to_numpy().astype(float)
+
+
+@pytest.mark.parametrize("loss", ["huber", "quantile"])
+def test_on_the_row_clock_solve_every_is_its_row_cap(loss):
+    """Without a clock column the clock is the row's number, the first row
+    being 1, so ``solve_every=n`` solves on the rows
+    ``max_rows_between_solves=n`` does. Measured from the first row, whose
+    step is 0, it solved a row later, the whole stream long, which ``coef``
+    showed (task 278, D13). The first solve is the model's floor, a row per
+    coefficient (row 2, three coefficients), whatever ``min_weight`` says
+    (1e9 here, never met; task 278, D10), and the cadence counts from it."""
+    rng = np.random.default_rng(0)
+    n = 60
+    x = rng.standard_normal(n)
+    df = pl.DataFrame({"x0": x, "x1": rng.standard_normal(n), "y0": 2.0 * x})
+    extra = {"huber_refit_rows": 0} if loss == "huber" else {"quantile": 0.5}
+
+    def run(**kw):
+        spec = getattr(po.spec, loss)(
+            "m",
+            targets=["y0"],
+            features=["x0", "x1"],
+            half_life=20.0,
+            min_weight=1e9,
+            max_rows_between_coefs=1,
+            **extra,
+            **kw,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", po.ReadinessWarning)
+            return po.ModelBank([spec]).fit_predict(df).unnest("m")
+
+    clock = run(solve_every=7.0)
+    assert clock.equals(run(solve_every=1e18, max_rows_between_solves=7), null_equal=True)
+    c = clock["coef"].to_list()
+    assert [i for i in range(1, n) if c[i] != c[i - 1]] == list(range(2, n, 7))

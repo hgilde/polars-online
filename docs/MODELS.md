@@ -935,7 +935,7 @@ v_i = w_i · λ_{i+1} ⋯ λ_n                 each buffered row's weight, decay
 r_i = y_i − z_i·β                         against the last pass's fit (the first pass: the online fit)
 σ   = weighted median of |r_i| at v_i', over 0.6745       (the weighted root mean square under "rms")
 u_i = min(1, δσ / |r_i|)
-β   = the ridge solve of the rows at v_i · u_i            repeated until β moves by under 1e-10 of max|β|, or 50 passes
+β   = the ridge solve of the rows at v_i · u_i            repeated until β moves by under 1e-10 of max|β|, or 200 passes
 ```
 
 It then rebuilds the target's sums from the rows at their converged
@@ -967,8 +967,11 @@ from 15 and 26 of 40 to 0 and 2. At 20% wild rows, 40% of those with `x`
 above 0, a first window of 200 rows can itself be captured, and one of 500
 rows now and then; 1,000 rows holds there. Over 20,000 rows 200 rows left
 the same 4 streams at 20% as 500 do, the worst by 0.18; over 2,000 rows the
-table shows what the longer default buys. `huber_refit_rows=0` turns the refit off, and gives the numbers
-of the releases before it, to the bit.
+table shows what the longer default buys. `huber_refit_rows=0` turns the refit off,
+and gives `huber` the numbers of the releases before it, to the bit; `sgd`'s
+steps have changed since (its clip, AdaGrad's epsilon and its intercept read the
+target's own spread and level), so for it the refit off is the one-pass fit of
+today's steps.
 
 **The refit holds each target's rows until it runs, then frees them.** A
 learned row takes `(features + 4) · 8` bytes. The rows that only aged the
@@ -990,7 +993,11 @@ that the refit has rows enough for its coefficients, and stops at 100
 features, where a target's rows would pass 0.8 MB. A count given is taken at
 any width: at 500 features and more, 200 rows are fewer than the
 coefficients' count, the fit is the ridge's, and the iteration runs to its
-cap of 50 passes, 7 s once at 1,000 features.
+cap of 200 passes, about 9 s once at 1,000 features (2 s at 500), which
+`solve_failures` counts. The cap was 50 passes, about 2 s at 1,000
+features; 200 is where the slow refits of heavy one-sided outliers end:
+over 3,000 streams of 50 to 500 rows with up to 45% of the rows on one side
+moved by a level, 50 passes ran out on 142 and 200 on 6, all six past 39%.
 
 **`refit_budget` bounds the buffers of all a spec's groups together: 256
 MiB by default, or `inf` for no bound.** Each new group reserves, when it
@@ -1056,8 +1063,20 @@ median breaks too, and every estimator that reads only residuals does.
 before its first residual, or while every residual so far is exactly zero
 (under `"mad"`, while half the weight is on such residuals): there is
 nothing to judge an outlier against. `quantile` has no band to draw there,
-and takes least-squares rows. `quantile`'s `σ` is always the root mean
-square, on the model's clock: it sets the width of the band, not a weight.
+and takes least-squares rows. `quantile`'s `σ` is always the MAD, on the
+model's clock: it sets the width of the band, not a weight. In the root
+mean square, wild rows widened the band drawn to bound their pull: at 5%
+of the rows lifted by a hundred noise deviations on one side of `x`, every
+one of 50 streams of 20,000 rows ended more than 0.05 from statsmodels'
+`QuantReg` on the same rows (the worst 0.098 at 5%, 0.98 at 20%); in the
+MAD none did (the worst 0.006 at 5%, 0.026 at 20%).
+
+**`min_weight` withholds the output alone.** On a row it withholds, both
+models still learn from the prediction the fit made: the scale takes its
+residual and `huber` its weight, so the fit is the same at any
+`min_weight`. A target's first prediction, reported or learned from, waits
+instead for its own first row per coefficient, the models' floor, since a
+fit of fewer rows than unknowns is the ridge's alone.
 
 ```python
 hub = po.spec.huber("hub", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=600.0,
@@ -1101,7 +1120,7 @@ land close but not equal, for three reasons:
 | reason | applies to |
 |---|---|
 | each row's weight was set by the fit before it | both; for `huber`, each row after its target's first `huber_refit_rows` |
-| `σ` is an exponentially weighted median, read from a sketch, where a batch fit takes the median of the final residuals | `huber` |
+| `σ` is an exponentially weighted median, read from a sketch, where a batch fit takes the median of the final residuals | both |
 | the check loss is smoothed over the band | `quantile` |
 
 ### `sgd` — stochastic gradient descent

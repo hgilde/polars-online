@@ -5,8 +5,8 @@ and reads the coefficients at checkpoints. The measure is the **excess
 loss**: the case's loss of those coefficients on the rows seen so far, less
 the loss of the batch optimum on the same rows, which scikit-learn's batch
 solvers compute (``LinearRegression``, ``LogisticRegression`` without a
-penalty, ``PoissonRegressor``, and statsmodels' ``QuantReg``); it is at least 0 by
-the optimum's definition. A schedule that anneals (``inv_scaling``,
+penalty, ``PoissonRegressor``, and statsmodels' ``QuantReg`` and ``RLM``); it is
+at least 0 by the optimum's definition. A schedule that anneals (``inv_scaling``,
 AdaGrad, FTRL's per-coordinate rates) must keep lowering it, judged on the
 worst of 50 seeds; a constant rate lowers it to the least-mean-squares
 plateau, about ``lr (k + 1) sigma^2 / 2`` in standardized coordinates, and
@@ -22,8 +22,12 @@ A learning rate too large must fail loudly (a refusal, a notice, a
 ``withheld_reason``, or bounded output): ``sgd``'s rate past its stability
 bound is withheld as ``unstable_rate``, with a notice.
 
-`sgd(loss="huber")` joins once task 277's warm-up refit merges: add its
-row to :data:`SCHEDULES`.
+`sgd(loss="huber")` joined once task 277's refit of its first rows merged.
+Its loss is Huber's at ``delta`` times a scale the model learns, the
+residuals' median absolute deviation, which on these streams settles on
+the noise's standard deviation, 1; the loss here and statsmodels' ``RLM``
+with ``HuberT(delta)`` hold the scale at that 1, so both measure the same
+loss on the same rows.
 
 Every bound is the measurement with headroom, 2026-10-25, macOS arm64.
 """
@@ -51,6 +55,8 @@ SCALE = np.array([1.0, 2.0, 0.5, 1.0, 3.0])
 SHIFT = np.array([0.0, 1.0, -1.0, 2.0, 0.0])
 MARKS = [1_000, 10_000, 100_000]
 SEEDS = range(50)
+#: `sgd`'s default Huber ``delta``, statsmodels' ``HuberT`` default too.
+HUBER = sm.robust.norms.HuberT(t=1.345)
 
 
 def stream(seed: int, n: int, kind: str) -> tuple[np.ndarray, np.ndarray]:
@@ -95,6 +101,9 @@ def _loss(kind: str, c: np.ndarray, x: np.ndarray, y: np.ndarray, tau: float = 0
         return float(np.mean(np.logaddexp(0.0, eta) - y * eta))
     if kind == "poisson":
         return float(np.mean(np.exp(eta) - y * eta))
+    if kind == "huber":
+        # At the noise's scale, 1 (the module's docstring).
+        return float(np.mean(HUBER.rho(y - eta)))
     r = y - eta
     return float(np.mean(np.maximum(tau * r, (tau - 1.0) * r)))
 
@@ -112,6 +121,12 @@ def optimum(kind: str, x: np.ndarray, y: np.ndarray, tau: float = 0.5) -> np.nda
         if kind == "poisson":
             m = PoissonRegressor(alpha=0.0, max_iter=10_000, tol=1e-12).fit(x, y)
             return np.r_[m.intercept_, m.coef_]
+        if kind == "huber":
+            # statsmodels' RLM, its scale held at the noise's, 1.
+            fit = sm.RLM(y, sm.add_constant(x), M=HUBER).fit(
+                update_scale=False, start_scale=1.0, conv="coefs", tol=1e-12, maxiter=1_000
+            )
+            return np.asarray(fit.params)
         # statsmodels' QuantReg (iteratively reweighted least squares): a
         # second at 1e5 rows, where scikit-learn's linear program took eight
         # at 1e4.
@@ -168,6 +183,13 @@ SCHEDULES: dict[str, tuple[dict, str, float, tuple[float, float]]] = {
         "quantile",
         0.5,
         (1.6, 1.25),
+    ),
+    # 4.65e-2, 1.25e-2, 4.78e-3: 3.7x, 2.6x (2026-10-26)
+    "sgd huber inv_scaling": (
+        _sgd(loss="huber", learning_rate=0.5, schedule="inv_scaling"),
+        "huber",
+        0.5,
+        (1.85, 1.3),
     ),
     # 1.57e-1, 1.34e-3, 4.62e-4: 117x, 2.9x
     "sgd quantile 0.9 inv_scaling": (

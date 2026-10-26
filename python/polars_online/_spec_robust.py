@@ -128,7 +128,7 @@ def huber(
         s   = weighted median of |r_i| at v_i', over 0.6745  (root mean square under "rms")
         u_i = min(1, d * s / |r_i|)
         b   = the ridge solve of the rows at v_i * u_i
-        repeated until b moves by under 1e-10 of max|b|, or 50 passes
+        repeated until b moves by under 1e-10 of max|b|, or 200 passes
 
     The target's sums are then rebuilt from the rows at their converged
     weights, and ``s`` from the converged fit's residuals, and the stream goes
@@ -220,10 +220,9 @@ def huber(
         squares fit at the weights the largest set's residuals chose, not a
         Huber fit of its own. The residual scale ``s`` is the largest set's
         too. The largest set is the fit of a ``huber`` on its features alone,
-        to the bit, when it is every feature or when both take the same
-        ``min_weight``. The default ``min_weight`` counts every feature of
-        the spec, so a largest set short of them predicts later, and the two
-        fits part until the decay forgets the first rows.
+        to the bit. The default ``min_weight`` counts every feature of the
+        spec, so a largest set short of them is reported later, the fit
+        unchanged.
     ``ridge_scale``
         What the ridge is scaled against, as for :func:`ewridge`: ``"mean"``
         (the default), a fixed penalty on the mean-form sums whose pull is
@@ -285,7 +284,13 @@ def huber(
     ``min_weight`` counts the rows the target was present on, at their raw
     weights, decayed. The reweighted sum, which an outlier lowers, is not what it
     reads, so a stream whose warm-up meets outliers reports its first prediction
-    when the rows say to.
+    when the rows say to. It withholds the output alone: the fit learns from
+    the prediction it made on a row the gate withholds -- the scale takes its
+    residual, and the row its Huber weight -- so it is the same fit at any
+    ``min_weight``. A target's first prediction, reported or learned from,
+    waits for its own first row per coefficient of the largest feature set,
+    the model's floor, since a fit of fewer rows than unknowns is the
+    ridge's alone; a ``min_weight`` below that withholds nothing more.
 
     .. rubric:: Output
 
@@ -379,9 +384,9 @@ def quantile(
 
     .. rubric:: The fit
 
-    With ``e`` the row's residual, ``psi(e) = tau - 1{e < 0}``, ``s`` the EW
-    root mean square of the target's residuals, about 0, ``w`` the row's
-    weight and ``h`` the band's half-width:
+    With ``e`` the row's residual, ``psi(e) = tau - 1{e < 0}``, ``s`` the
+    target's residual scale, ``w`` the row's weight and ``h`` the band's
+    half-width:
 
     .. code-block:: text
 
@@ -403,6 +408,19 @@ def quantile(
     against ``statsmodels``' ``QuantReg``, the step is 0.005 away, inside
     ``QuantReg``'s own standard error of 0.007, where the weights settled 0.164
     short.
+
+    The scale. ``s`` is the MAD of the target's residuals: their EW median of
+    ``|e|`` over ``Phi^-1(3/4) = 0.6745``, which is the standard deviation for
+    normal residuals, aged on the model's clock. A wild row moves a median by
+    its weight, not by its size, so the rows the band is there to bound
+    cannot widen it. In their root mean square they did: at 5% of the rows
+    lifted by a hundred noise deviations, all on one side, the root mean
+    square stood near 11 against a noise of 0.5, the band held every clean
+    row as a least-squares row and gave every wild row a pull of the band's
+    width, and every one of 50 streams of 20,000 rows ended more than 0.05
+    from ``statsmodels``' ``QuantReg`` on the same rows, the worst 0.098 at
+    5% and 0.98 at 20%. In the MAD none did, the worst 0.006 at 5% and 0.026
+    at 20%, with or without a half-life of 5,000.
 
     The band. ``h`` is ``quantile_eps * s``. The rows inside the band are the
     curvature the step leans on, so a much narrower band converges more slowly
@@ -445,7 +463,7 @@ def quantile(
     ``quantile_eps``
         The band's half-width in units of ``s``, finite and above 0. Default
         0.2, at which the band holds about a sixth of the rows of normal noise
-        at the median and a ninth at the 0.9 quantile.
+        at the median and a seventh at the 0.9 quantile.
     ``ridge``, ``standardize``, ``solve_every``, ``max_rows_between_solves``
         As for :func:`ewridge`: the penalty (default ``1e-6``, finite and at
         least 0), correlation-form solving, and the solve schedule. ``ridge``
@@ -458,7 +476,12 @@ def quantile(
 
     ``min_weight`` counts the rows the target was present on, at their raw
     weights, decayed. The band's weight, which a half-life caps at the band's share
-    of the sample, is not what it reads.
+    of the sample, is not what it reads. It withholds the output alone: the
+    fit learns from the prediction it made on a row the gate withholds, so
+    it is the same fit at any ``min_weight``. A target's first prediction,
+    reported or learned from, waits for its own first row per coefficient,
+    the model's floor, since a fit of fewer rows than unknowns is the
+    ridge's alone; a ``min_weight`` below that withholds nothing more.
 
     .. rubric:: Output
 

@@ -35,18 +35,28 @@ the iteration                               its stopping rule and cap    a cap h
                                             halvings                      a double's
                                                                           exponents span
                                                                           2,098 halvings
-``huber``'s and ``sgd(loss="huber")``'s     task 277's, registered when   --
-warm-up refit                               it lands
+``huber``'s and ``sgd(loss="huber")``'s     no coefficient moves by more  counted in
+refit of each target's first rows           than 1e-10 of ``max|beta|``;  ``solve_failures``
+                                            200 IRLS passes
 ==========================================  ===========================  =========
 
 Until task 278's fixes (D3, D6 and D7), the lasso's rule compared the move
 with ``tol`` itself, in the target's units, ``gram.lasso_path``'s cap hits
 were silent, and the ``lloyd`` seeding ran ten passes with no rule and no
 count.
+
+Until task 278's fix the refit's cap hits were silent, and its cap was 50
+passes: over 3,000 streams of 50-500 rows, ``y = 1 + 2x + 0.5 e`` with a
+level added to up to 45% of the rows with ``x > 0``, 50 passes ran out on
+142, none below 20% of the rows; run on, every one met the rule, the
+slowest after 880 passes. At 200 passes 6 run out, all past 39%
+(``online_core``'s ``slow_refit_stream``; the Rust tests ``a_refit_that_runs_to_its_cap_is_counted``
+and ``a_refit_that_runs_to_its_cap_is_a_solve_failure`` hold the count).
 """
 
 from __future__ import annotations
 
+import math
 import warnings
 from typing import Any
 
@@ -422,3 +432,60 @@ class TestGramLassoPath:
         print(f"lasso_path, converged: KKT {case['kkt'].max():.1e} vs {case['bound'].max():.1e}")
         assert not said, said
         assert np.all(case["kkt"] <= case["bound"])
+
+
+def slow_refit_stream(trial: int) -> pl.DataFrame:
+    """``online_core``'s ``slow_refit_stream``, written out again: a xorshift
+    stream whose length, share of moved rows and level are drawn from
+    ``trial``. Trial 687 is 71 rows, 39% of the rows with ``x > 0`` moved,
+    whose refit needs 880 IRLS passes."""
+    mask = (1 << 64) - 1
+    state = ((trial + 1) * 0x9E3779B97F4A7C15) & mask
+
+    def rnd() -> float:
+        nonlocal state
+        state ^= (state << 13) & mask
+        state ^= state >> 7
+        state ^= (state << 17) & mask
+        return (state >> 11) / float(1 << 53)
+
+    n = 50 + int(rnd() * 450.0)
+    frac = rnd() * 0.45
+    level = math.exp(rnd() * 6.0 - 1.0) * 3.0
+    xs, ys = [], []
+    for _ in range(n):
+        x = rnd() * 2.0 - 1.0
+        e = math.sqrt(-2.0 * math.log(max(rnd(), 1e-300))) * math.cos(math.tau * rnd())
+        out = level if rnd() < frac and x > 0.0 else 0.0
+        xs.append(x)
+        ys.append(1.0 + 2.0 * x + 0.5 * e + out)
+    return pl.DataFrame({"x0": xs, "y": ys})
+
+
+class TestHuberRefit:
+    """The refit of each target's first rows, ``huber``'s and
+    ``sgd(loss="huber")``'s: IRLS until no coefficient moves by more than
+    1e-10 of ``max|beta|``, at most 200 passes, and a refit that takes all
+    200 counted in ``solve_failures`` (task 278). Trial 687's stream runs to
+    the cap; trial 0's converges inside it; the refit off counts nothing."""
+
+    @pytest.mark.parametrize("kind", ["huber", "sgd"])
+    def test_a_refit_at_its_cap_is_counted(self, kind):
+        extra = {"loss": "huber", "learning_rate": 0.05} if kind == "sgd" else {}
+        for trial, rows, want in [(687, None, 1), (0, None, 0), (687, 0, 0)]:
+            df = slow_refit_stream(trial)
+            spec = getattr(po.spec, kind)(
+                "m",
+                targets=["y"],
+                features=["x0"],
+                half_life=float("inf"),
+                min_weight=3.0,
+                huber_refit_rows=df.height if rows is None else rows,
+                **extra,
+            )
+            bank = po.ModelBank([spec])
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                bank.fit_predict(df)
+            print(f"{kind}, trial {trial}, refit rows {rows}: {failures(bank)}")
+            assert failures(bank) == want, (kind, trial, rows)

@@ -64,6 +64,9 @@ pub mod huber_refit_done {
 pub mod quantile {
     include!("quantile.rs");
 }
+pub mod quantile_mad {
+    include!("quantile_mad.rs");
+}
 pub mod ftrl {
     include!("ftrl.rs");
 }
@@ -201,6 +204,7 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &huber_refit::FIXTURE,
     &huber_refit_done::FIXTURE,
     &quantile::FIXTURE,
+    &quantile_mad::FIXTURE,
     &ftrl::FIXTURE,
     &ew_cov::FIXTURE,
     &ew_cov_window::FIXTURE,

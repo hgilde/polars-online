@@ -328,6 +328,10 @@ fn robust_cfg(loss: RobustLoss) -> RobustCfg {
         ridge_scale: false,
         emit_scale: false,
         refit_rows: 0,
+        // The cases a state written before schema 64 converts to: the gate
+        // held learning back then (docs/PLAN.md task 278, D10). The form
+        // since is the refit cases' and `quantile_mad`'s.
+        min_weight_holds_learning: true,
     }
 }
 
@@ -423,6 +427,10 @@ fn sgd_cfg(loss: SgdLoss, n_targets: usize) -> SgdCfg {
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
         refit_rows: 0,
+        // The cases a state written before schema 64 converts to: the gate
+        // held learning back then (docs/PLAN.md task 278, D10). The form
+        // since is the refit cases' and `quantile_mad`'s.
+        min_weight_holds_learning: true,
         target_spread: false,
     }
 }
@@ -771,6 +779,7 @@ pub fn all() -> Vec<Case> {
             Robust::new(RobustCfg {
                 huber_scale: online_core::HuberScale::Mad,
                 refit_rows: 40,
+                min_weight_holds_learning: false,
                 ..robust_cfg(RobustLoss::Huber { delta: 1.5 })
             })
             .unwrap(),
@@ -784,6 +793,7 @@ pub fn all() -> Vec<Case> {
             Robust,
             Robust::new(RobustCfg {
                 refit_rows: 20,
+                min_weight_holds_learning: false,
                 ..robust_cfg(RobustLoss::Huber { delta: 1.5 })
             })
             .unwrap(),
@@ -796,6 +806,24 @@ pub fn all() -> Vec<Case> {
             "Robust",
             Robust,
             Robust::new(robust_cfg(RobustLoss::Quantile { tau: 0.75 })).unwrap(),
+            K,
+            Targets::Linear(2),
+            40
+        ),
+        // The quantile band drawn in the MAD, each target's sketch of `|e|`
+        // in the state, and `min_weight` withholding the output alone
+        // (schema 64, docs/PLAN.md task 278, D-Q and D10); `quantile` is the
+        // RMS's form and the gate's old one.
+        case!(
+            "quantile_mad",
+            "Robust",
+            Robust,
+            Robust::new(RobustCfg {
+                huber_scale: online_core::HuberScale::Mad,
+                min_weight_holds_learning: false,
+                ..robust_cfg(RobustLoss::Quantile { tau: 0.75 })
+            })
+            .unwrap(),
             K,
             Targets::Linear(2),
             40
@@ -912,6 +940,7 @@ pub fn all() -> Vec<Case> {
             Sgd::new(SgdCfg {
                 huber_scale: online_core::HuberScale::Mad,
                 refit_rows: 40,
+                min_weight_holds_learning: false,
                 ..sgd_cfg(SgdLoss::Huber { delta: 1.5 }, 2)
             })
             .unwrap(),
@@ -926,6 +955,7 @@ pub fn all() -> Vec<Case> {
             Sgd::new(SgdCfg {
                 huber_scale: online_core::HuberScale::Mad,
                 refit_rows: 10,
+                min_weight_holds_learning: false,
                 ..sgd_cfg(SgdLoss::Huber { delta: 1.5 }, 2)
             })
             .unwrap(),
@@ -945,6 +975,8 @@ pub fn all() -> Vec<Case> {
             Sgd::new(SgdCfg {
                 schedule: LearningRate::InvScaling { power: 0.5 },
                 target_spread: true,
+                // The form since schema 64 (docs/PLAN.md task 278, D10).
+                min_weight_holds_learning: false,
                 ..sgd_cfg(SgdLoss::Squared, 2)
             })
             .unwrap(),
@@ -960,6 +992,8 @@ pub fn all() -> Vec<Case> {
                 schedule: LearningRate::Constant,
                 learning_rate: 2.0,
                 target_spread: true,
+                // The form since schema 64 (docs/PLAN.md task 278, D10).
+                min_weight_holds_learning: false,
                 ..sgd_cfg(SgdLoss::Squared, 2)
             })
             .unwrap(),
@@ -973,6 +1007,8 @@ pub fn all() -> Vec<Case> {
             Sgd,
             Sgd::new(SgdCfg {
                 target_spread: true,
+                // The form since schema 64 (docs/PLAN.md task 278, D10).
+                min_weight_holds_learning: false,
                 ..sgd_cfg(SgdLoss::Squared, 2)
             })
             .unwrap(),

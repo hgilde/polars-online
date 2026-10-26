@@ -19,7 +19,7 @@ import pytest
 
 import polars_online as po
 from data import synthetic
-from reference import ftrl_ref, kalman_ref, lasso_ref, robust_ref
+from reference import EwMedian, ftrl_ref, kalman_ref, lasso_ref, robust_ref
 
 TIER = "mixed"
 
@@ -790,11 +790,13 @@ class TestRobustOracles:
     @staticmethod
     def _quantile_fit(x, y, tau, **kw):
         """The last fit and the band's scale ``s`` before the last row, with
-        no decay and a solve on every row. Without decay ``s`` is the RMS of
-        every scored residual (``robust.rs``'s module doc), so the emitted
-        residuals give the bandwidth the stream had settled on. When the
-        band's scale changes rule (task 278's D-Q: a MAD-type scale), this
-        is the one line to change with it."""
+        no decay and a solve on every row. Without decay ``s`` is the median
+        of every scored ``|e|`` over ``Phi^-1(3/4)`` on the sketch's buckets
+        (``robust.rs``'s module doc; task 278's D-Q moved it from the RMS),
+        which ``reference.EwMedian`` reads from the emitted residuals: the
+        bandwidth the stream had settled on. ``min_weight = 0`` reports
+        every residual the scale learned from (it withholds the output
+        alone)."""
         spec = po.spec.quantile(
             "m",
             targets=["y"],
@@ -802,7 +804,7 @@ class TestRobustOracles:
             quantile=tau,
             half_life=float("inf"),
             max_rows_between_solves=1,
-            **kw,
+            **{"min_weight": 0.0, **kw},
         )
         bank = po.ModelBank([spec])
         with warnings.catch_warnings():
@@ -810,7 +812,10 @@ class TestRobustOracles:
             warnings.simplefilter("ignore", po.ReadinessWarning)
             out = bank.fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y}))
         resid = out["m"].struct.field("resid_y").drop_nulls().to_numpy()
-        return bank.coef("m")["coef"].to_numpy(), float(np.sqrt(np.mean(resid**2)))
+        mad = EwMedian()
+        for r in resid:
+            mad.add(abs(float(r)), 1.0)
+        return bank.coef("m")["coef"].to_numpy(), float(mad.scale())
 
     @staticmethod
     def _smoothed(z, y, tau, h):
@@ -845,7 +850,11 @@ class TestRobustOracles:
         return coef[1:], abs(coef[0] - fit.params[0]) / fit.bse[0], abs(coef[0] - smoothed)
 
     # Bounds for the huge ridge (task 278 (b07), measured 2026-10-25 over
-    # seeds 0-49). The slopes: a ridge of 1e9 over a cross-moment of about 2
+    # seeds 0-49; re-measured 2026-10-26 with the band in the MAD, D-Q: the
+    # slopes 2.2e-9, the smoothed constant 0.0211 / 0.0063 / 0.0015 at tau
+    # 0.5 and 0.224 / 0.057 / 0.018 at 0.9, QuantReg 0.60 and 2.74 standard
+    # errors at 20,000 rows, every bound below still holding). The slopes: a
+    # ridge of 1e9 over a cross-moment of about 2
     # leaves 2e-9 (measured 2.08e-9 at most). Against the batch-smoothed
     # constant, the worst seed at 5,000 / 20,000 / 80,000 rows: 0.0213 /
     # 0.0060 / 0.0015 at tau 0.5, 0.204 / 0.066 / 0.018 at tau 0.9 -- a rate
@@ -907,7 +916,9 @@ class TestRobustOracles:
         return np.abs(corr - want) / se, np.abs(plain - want) / se
 
     # Bounds on mixed scales (task 278 (b07), measured 2026-10-25 over seeds
-    # 0-49 at 20,000 rows): standardized, the worst coefficient sat 1.85 of
+    # 0-49 at 20,000 rows; re-measured 2026-10-26 with the band in the MAD,
+    # D-Q: 1.18 and 1.77 standardized, the plain x0 at least 136 and 43
+    # off): standardized, the worst coefficient sat 1.85 of
     # QuantReg's standard errors away at tau 0.5 and 2.57 at 0.9 (the
     # intercept, seeds 1 and 47); bound 4. Plain, the default ridge is the
     # whole variance of the feature at 1e-3 and halves its slope: at least
@@ -944,16 +955,24 @@ class TestRobustOracles:
         other = self._smoothed(z, y, 0.9, (0.6 - eps) * s)
         return float(np.max(np.abs(coef - own))), float(np.max(np.abs(coef - other)))
 
-    # Bounds for quantile_eps (task 278 (b07), measured 2026-10-25 over seeds
-    # 0-49 at tau 0.9; k / n is small enough at these lengths that the floor
-    # never binds): the worst seed's distance from the batch-smoothed fit at
-    # 5,000 / 20,000 / 80,000 rows was 0.236 / 0.122 / 0.028 at eps 0.1 and
-    # 0.103 / 0.040 / 0.016 at eps 0.5 -- the early rows' nudges, which a
-    # stream with no decay never forgets, shrinking faster than 1/sqrt(n)
-    # (8.6 and 6.3 times over 16 times the rows). Bounds 1.5 times those. From
-    # 20,000 rows every seed sat nearer its own level's fit than the other's
-    # (at 5,000, 1 and 21 seeds of 50 did not).
-    EPS_BOUNDS = {0.1: (0.36, 0.18, 0.042), 0.5: (0.16, 0.06, 0.024)}
+    # Bounds for quantile_eps (task 278 (b07); re-measured 2026-10-26 over
+    # seeds 0-49 at tau 0.9 with the band in the MAD, D-Q; k / n is small
+    # enough at these lengths that the floor never binds): the worst seed's
+    # distance from the batch-smoothed fit at 5,000 / 20,000 / 80,000 rows
+    # was 0.184 / 0.090 / 0.019 at eps 0.1 (seeds 3, 47, 19) and 0.112 /
+    # 0.063 / 0.034 at eps 0.5 (seeds 36, 47, 46) -- the early rows' nudges
+    # and band rows, which a stream with no decay never forgets. At eps 0.1
+    # that shrinks faster than 1/sqrt(n) (9.5 times over 16 times the rows),
+    # at eps 0.5 more slowly (3.3 times): the MAD of these residuals, a
+    # skewed noise read at its 0.9 quantile, is about 1.5 times their RMS,
+    # so the same eps is a band half as wide again as it was, holding more
+    # of the early rows at their own bandwidths. In the RMS the worst was
+    # 0.236 / 0.122 / 0.028 and 0.103 / 0.040 / 0.016. Bounds 1.5 times the
+    # measured, the rate held at a quarter and at 2.5 times less. From 20,000
+    # rows every seed sat nearer its own level's fit than the other's (at
+    # 5,000, 0 and 2 seeds of 50 did not).
+    EPS_BOUNDS = {0.1: (0.28, 0.14, 0.03), 0.5: (0.17, 0.095, 0.051)}
+    EPS_RATE = {0.1: 4.0, 0.5: 2.5}
 
     @pytest.mark.parametrize("eps", [0.1, 0.5])
     def test_quantile_eps_is_the_batch_smoothed_fit_at_its_bandwidth(self, eps):
@@ -977,7 +996,7 @@ class TestRobustOracles:
             if n >= 20_000:
                 assert (own < other).all(), (n, np.flatnonzero(other <= own))
             worst.append(own.max())
-        assert worst[-1] <= worst[0] / 4.0, worst
+        assert worst[-1] <= worst[0] / self.EPS_RATE[eps], worst
 
 
 class TestFtrlOracle:
