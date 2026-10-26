@@ -955,8 +955,11 @@ from 15 and 26 of 40 to 0 and 2. At 20% wild rows, 40% of those with `x`
 above 0, a first window of 200 rows can itself be captured, and one of 500
 rows now and then; 1,000 rows holds there. Over 20,000 rows 200 rows left
 the same 4 streams at 20% as 500 do, the worst by 0.18; over 2,000 rows the
-table shows what the longer default buys. `huber_refit_rows=0` turns the refit off, and gives the numbers
-of the releases before it, to the bit.
+table shows what the longer default buys. `huber_refit_rows=0` turns the refit off,
+and gives `huber` the numbers of the releases before it, to the bit; `sgd`'s
+steps have changed since (its clip, AdaGrad's epsilon and its intercept read the
+target's own spread and level), so for it the refit off is the one-pass fit of
+today's steps.
 
 **The refit holds each target's rows until it runs, then frees them.** A
 learned row takes `(features + 4) · 8` bytes. The rows that only aged the
