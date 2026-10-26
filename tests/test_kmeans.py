@@ -1355,7 +1355,7 @@ class TestTheDefaults:
             # (0.3 to 5 merge the same pair on the same check).
             (dict(split_merge=0.5), dict(split_merge=0.1)),
             (dict(split_merge_every_rows=100), dict(split_merge_every_rows=10)),
-            (dict(dead_frac=0.05), dict(dead_frac=0.5)),
+            (dict(dead_frac=0.05), dict(dead_frac=0.45)),
             (dict(standardize=True), dict(standardize=False)),
             (dict(scale_floor=0.1), dict(scale_floor=1.0)),
         ):
@@ -1411,12 +1411,14 @@ class TestTheBoundaries:
         with pytest.raises(ValueError, match=msg):
             po.ModelBank([spec(**kw)])
 
-    def test_dead_frac_just_below_one_runs(self):
-        # 1 and above are refused (every centre would be dead at every
-        # check); just below it is legal and re-places on the formula.
+    def test_dead_frac_just_below_one_half_runs(self):
+        # 0.5 and above are refused (a re-placed centre would be born at the
+        # floor); just below it is legal and re-places on the formula.
         X, _ = blobs(n=600, seed=7)
-        out = unnested(po.ModelBank([spec(dead_frac=0.999, warm_rows=50)]).fit_predict(frame(X)))
+        out = unnested(po.ModelBank([spec(dead_frac=0.499, warm_rows=50)]).fit_predict(frame(X)))
         assert out["dist"].drop_nulls().is_finite().all()
+        with pytest.raises(ValueError, match="dead_frac must be below 0.5, got 0.5"):
+            po.ModelBank([spec(dead_frac=0.5, warm_rows=50)])
 
 
 class TestScaleEquivariance:

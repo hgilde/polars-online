@@ -1155,6 +1155,16 @@ STATE_READS: dict[str, frozenset[str]] = {
     "seqtest": frozenset({"log_e_pos_y", "log_e_neg_y", "n_pos_y", "n_neg_y"}),
 }
 ALWAYS_STATE = frozenset({"weight_sum", "withheld_reason"})
+#: The state reads that also read the clock from the last learned row to
+#: the row (task 278, D11): a held row sits ``E`` rows after it, where the
+#: undelayed run's row sits one, so these part from the shift by
+#: construction. `holt` extrapolates its trend over that clock; `hmm` ages
+#: its transition counts over it, which moves nothing with no decay.
+#: `TestScoredAsTheMaturedRowsWouldScoreIt` holds them to their definition.
+STEP_READS: dict[str, frozenset[str]] = {
+    "holt": frozenset({"pred_y"}),
+    "hmm": frozenset({"predicted_state0", "predicted_state1"}),
+}
 SHIFT_ROWS = 5
 SHIFT_CASES = [
     pytest.param(
@@ -1174,7 +1184,9 @@ class TestTheShiftOnARowClock:
     steps as the undelayed run, ``E`` rows later. So the fit written after
     row ``i`` (``coef`` and the fields laid out like it) is the undelayed
     run's after row ``i - E``, and a field read from the state before row
-    ``i`` is the undelayed run's before row ``i - E + 1``. The probe of
+    ``i`` is the undelayed run's before row ``i - E + 1``, but for a field
+    that also reads the clock since the last learned row, ``E`` rows for the
+    held row and one for the undelayed run's (`STEP_READS`). The probe of
     2026-10-25 found this to the bit on fourteen kinds; here it is held on
     every kind that takes an embargo, at no decay and at a half-life, with
     uneven weights."""
@@ -1202,6 +1214,11 @@ class TestTheShiftOnARowClock:
                 assert all(same(held[c][:1], held[c][r : r + 1]) for r in range(e)), c
             elif c == "settled_frac":
                 assert same(held[c], plain[c]), c
+            elif c in STEP_READS.get(kind, frozenset()):
+                # Read over E rows where the undelayed row reads one: parts,
+                # unless the step moves nothing (`hmm` with no decay).
+                ages_only = kind == "hmm" and half_life == math.inf
+                assert same(held[c][e - 1 :], plain[c][: n - e + 1]) == ages_only, c
             elif c in state:
                 assert same(held[c][e - 1 :], plain[c][: n - e + 1]), c
             else:
@@ -1234,26 +1251,24 @@ MATURED_CASES: dict[str, tuple[str, dict]] = {
     "pa-unscaled": ("pa", {"standardize": False}),
 }
 
-#: DEFECT (task 278, batch 15; reported to the coordinator). Under an
-#: embargo a held row is scored with the model's `predict` given the row's
-#: own clock step, not the clock since the last row the model learned
-#: (which `settled_frac` already counts, through the held rows' clock). A
-#: model whose score reads that step then scores the row as if it sat one
-#: step after the last learned row: `holt` extrapolates its trend one step
-#: where the row is several ahead; `hmm` ages its transition counts by one
-#: step; `micro` decays its summaries' weights by one step before deciding
-#: where the row goes; `sgd` and `pa` fold the row into their scaler's
-#: moments at that step while the scaler warms up; `kalman` adds one step's
-#: drift to the row's estimation variance. Every other kind's score reads no
-#: step. A delay shorter than every step (below) hides it: there the row's
-#: own step is the clock since the last learned row. Each case runs the real
-#: relation, so the fix turns it into a pass (strict).
-SCORED_OVER_ITS_OWN_STEP: dict[str, tuple[str, ...]] = {
+#: The cases whose score reads the clock since the last row the model
+#: learned, and the fields it moves. Under an embargo that clock is the held
+#: rows' steps and the row's own; until task 278 (D11) a held row was scored
+#: over its own step alone, as if it sat one step after the last learned
+#: row: `holt` extrapolated its trend one step where the row was several
+#: ahead; `hmm` aged its transition counts by one step; `micro` decayed its
+#: summaries' weights by one step before deciding where the row goes; `sgd`
+#: and `pa` folded the row into their scaler's moments at that step while
+#: the scaler warmed up; `kalman` added one step's drift to the row's
+#: estimation variance. Every other kind's score reads no step. A delay
+#: shorter than every step (below) cannot tell the two apart: there the
+#: row's own step is the clock since the last learned row.
+READS_THE_STEP: dict[str, tuple[str, ...]] = {
     "holt": ("pred_y", "resid_y"),
     "hmm": ("predicted_state0", "predicted_state1", "loglik"),
     "micro": ("micro_id", "outlier"),
     "sgd": ("pred_y", "resid_y"),
-    # sgd's scaler, the same defect under its Huber loss (task 277).
+    # sgd's scaler, under its Huber loss (task 277).
     "sgd_huber": ("pred_y", "resid_y"),
     "pa": ("pred_y", "resid_y"),
     "kalman-error-inflation": ("error_inflation_y",),
@@ -1262,7 +1277,7 @@ SCORED_OVER_ITS_OWN_STEP: dict[str, tuple[str, ...]] = {
 
 def matured_case(case: str, **kw) -> dict:
     kind, extra = MATURED_CASES[case]
-    return kind_spec(kind, clock="t", gap_cap=1e9, **{**extra, **kw})
+    return kind_spec(kind, **{"clock": "t", "gap_cap": 1e9, **extra, **kw})
 
 
 def matured_frame(case: str) -> pl.DataFrame:
@@ -1276,14 +1291,16 @@ def matured_rows(t: np.ndarray, i: int, delay: float) -> int:
     return int(np.searchsorted(t, t[i] - delay, side="right"))
 
 
-def score_as_matured(case: str, df: pl.DataFrame, *, own_step: bool = False) -> dict[int, dict]:
+def score_as_matured(
+    case: str, df: pl.DataFrame, *, own_step: bool = False, **kw
+) -> dict[int, dict]:
     """Each row as a plain bank fed only the rows matured by then scores it
     (`ModelBank.predict`, which learns nothing), walking forward, by row; a
     row with no matured row yet has nothing to be scored by and is left
     out. With ``own_step`` the row is scored at the clock one of its own
-    steps after the last matured row instead."""
+    steps after the last matured row instead. ``kw`` goes to the spec."""
     t = df["t"].to_numpy()
-    bank = po.ModelBank([matured_case(case)], threads=1)
+    bank = po.ModelBank([matured_case(case, **kw)], threads=1)
     fed, got = 0, {}
     for i in range(df.height):
         k = matured_rows(t, i, MATURED_DELAY)
@@ -1324,14 +1341,6 @@ def _matured_params():
     out = []
     for case in MATURED_CASES:
         marks: list = [] if case in ("ewridge", "ew_cov", "holt") else [EVERY_KIND]
-        if case in SCORED_OVER_ITS_OWN_STEP:
-            marks.append(
-                pytest.mark.xfail(
-                    strict=True,
-                    reason="DEFECT: a held row is scored over its own clock step, not the "
-                    "clock since the last learned row",
-                )
-            )
         out.append(pytest.param(case, id=case, marks=marks))
     return out
 
@@ -1357,22 +1366,101 @@ class TestScoredAsTheMaturedRowsWouldScoreIt:
 
     @pytest.mark.parametrize(
         "case",
-        [
-            pytest.param(c, id=c, marks=() if c == "holt" else (EVERY_KIND,))
-            for c in SCORED_OVER_ITS_OWN_STEP
-        ],
+        [pytest.param(c, id=c, marks=() if c == "holt" else (EVERY_KIND,)) for c in READS_THE_STEP],
     )
-    def test_today_a_held_row_is_scored_over_its_own_step(self, case):
-        """DEFECT, today's behaviour pinned (task 278, batch 15): each row of
-        a case above is scored as the matured bank scores it at the clock one
-        of the row's own steps after the last matured row. The fields the
-        defect moves part from the matured bank's score at the row's real
-        clock, and only those."""
+    def test_the_rows_own_step_would_move_these_fields(self, case):
+        """The relation above is not met by a score that reads no step: scored
+        as the matured bank scores it at the clock one of the row's own steps
+        after the last matured row -- the step a held row was read over until
+        task 278 (D11) -- each case parts from the delayed run on the fields
+        `READS_THE_STEP` names, and only those."""
         df = matured_frame(case)
         held = unnested(matured_case(case, embargo=MATURED_DELAY), df)
-        assert not parted(held, score_as_matured(case, df, own_step=True))
-        moved = parted(held, score_as_matured(case, df))
-        assert set(moved) == set(SCORED_OVER_ITS_OWN_STEP[case]), moved
+        moved = parted(held, score_as_matured(case, df, own_step=True))
+        assert set(moved) == set(READS_THE_STEP[case]), moved
+
+    @pytest.mark.parametrize("case", kind_params(READS_THE_STEP, essential={"holt"}))
+    def test_a_capped_gap_is_scored_as_the_matured_rows_would_score_it(self, case):
+        """Under a `gap_cap` the clock since the last learned row is a gap
+        like any other, capped whole: the held rows' steps, each capped, and
+        the row's own, summed and capped, are the cap of the raw sum the
+        matured bank reads, since a step capped alone is the cap already.
+        Steps of 1 to 5 under a cap of 3: single steps are capped, and so is
+        nearly every held row's gap."""
+        df = matured_frame(case)
+        held = unnested(matured_case(case, embargo=MATURED_DELAY, gap_cap=3.0), df)
+        bad = parted(held, score_as_matured(case, df, gap_cap=3.0))
+        assert not bad, {c: (len(r), r[:4]) for c, r in bad.items()}
+        # The cap acts: summed uncapped, the score parts.
+        loose = parted(held, score_as_matured(case, df, gap_cap=1e9))
+        assert set(READS_THE_STEP[case]) & set(loose), loose
+
+    @pytest.mark.parametrize("case", kind_params(READS_THE_STEP, essential={"holt"}))
+    def test_predict_against_a_bank_holding_rows_is_the_matured_banks(self, case):
+        """`ModelBank.predict` against a delayed bank holding rows reads the
+        clock since the last row it learned, as its own held rows are scored:
+        the matured bank's `predict`, to the bit."""
+        df = matured_frame(case)
+        t = df["t"].to_numpy()
+        for m in (60, 150, 240):
+            bank = po.ModelBank([matured_case(case, embargo=MATURED_DELAY)], threads=1)
+            bank.fit_predict(df.head(m))
+            k = matured_rows(t, m - 1, MATURED_DELAY)
+            assert m - k >= 3, (m, k)
+            plain = po.ModelBank([matured_case(case)], threads=1)
+            plain.fit_predict(df.head(k))
+            for i in range(m, m + 10):
+                row = df.slice(i, 1)
+                a = bank.predict(row).select("m").unnest("m").row(0, named=True)
+                b = plain.predict(row).select("m").unnest("m").row(0, named=True)
+                bad = [
+                    c
+                    for c in a
+                    if c not in NOT_SCORED and a[c] != b[c] and not (a[c] != a[c] and b[c] != b[c])
+                ]
+                assert not bad, (m, i, bad)
+
+    @pytest.mark.parametrize("case", kind_params(READS_THE_STEP, essential={"holt"}))
+    def test_the_held_clock_crosses_chunks_and_a_save(self, case, tmp_path):
+        """The step reads the held rows' clock, which the stream keeps
+        across a chunk boundary and a save (hard rules 3 and 5): chunked into
+        1, 7 and 64 rows, and saved and loaded at each 64-row boundary, the
+        delayed run is the one-chunk run, every field to the bit."""
+        df = matured_frame(case)
+        spec_ = matured_case(case, embargo=MATURED_DELAY)
+        if has_coef(MATURED_CASES[case][0]):
+            spec_ = matured_case(case, embargo=MATURED_DELAY, coef_every=0)
+        whole = po.ModelBank([spec_], threads=1).fit_predict(df)
+        for size in (1, 7, 64):
+            bank = po.ModelBank([spec_], threads=1)
+            parts = []
+            for start in range(0, df.height, size):
+                parts.append(bank.fit_predict(df.slice(start, size)))
+                if size == 64:
+                    bank.save(tmp_path / "b.state")
+                    bank = po.ModelBank.load(tmp_path / "b.state")
+            assert pl.concat(parts).equals(whole, null_equal=True), size
+
+    def test_a_fractional_clock_is_scored_within_rounding(self):
+        """On a clock whose steps are not whole, the held rows' steps summed
+        and the matured bank's one subtraction round differently, so the
+        relation holds to the last bits rather than to the bit."""
+        df = matured_frame("holt").with_columns(pl.col("t") * 0.1)
+        t = df["t"].to_numpy()
+        delay = MATURED_DELAY * 0.1
+        held = unnested(matured_case("holt", embargo=delay), df)["pred_y"].to_numpy()
+        plain = po.ModelBank([matured_case("holt")], threads=1)
+        fed, want = 0, np.full(df.height, np.nan)
+        for i in range(df.height):
+            k = matured_rows(t, i, delay)
+            if k > fed:
+                plain.fit_predict(df.slice(fed, k - fed))
+                fed = k
+            if k:
+                want[i] = plain.predict(df.slice(i, 1))["m"].struct.field("pred_y")[0]
+        ok = np.isfinite(want)
+        assert ok.sum() > df.height * 0.9
+        np.testing.assert_allclose(held[ok], want[ok], rtol=1e-12, atol=0)
 
 
 # -- the doubled stream on every kind ----------------------------------------

@@ -332,3 +332,41 @@ def test_the_splits_are_where_they_say():
         for std in (True, False):
             s = _splits(_frame(kind, std))
             assert 0 < s["inside the warm-up"] < s["after the switch"] - 1 < s["gap"] < N, s
+
+
+def test_the_unstable_rates_gate_cuts_every_way():
+    """``sgd``'s gate on a rate past its stability bound (task 278, D8)
+    keeps its step gains in the state and reads them before each row, so a
+    run cut into 1, 7 or 600 chunks, or saved and loaded while the gate
+    withholds and after it has released the fit, is one run to the bit.
+    ``inv_scaling`` from a rate past the bound withholds the first rows as
+    ``unstable_rate`` and releases the rest: both are printed as evidence."""
+    spec = po.spec.sgd(
+        "m",
+        loss="squared",
+        schedule="inv_scaling",
+        learning_rate=6.0,
+        power=1.0,
+        standardize=False,
+        l2=0.01,
+        **COMMON,
+    )
+    df = _frame("linear", False)
+    whole = po.ModelBank([spec])
+    want = _columns(whole.fit_predict(df))
+    state = whole.save_bytes()
+    gated = (want["withheld_reason"].cast(pl.String) == "unstable_rate").fill_null(False).to_numpy()
+    first, last = int(np.flatnonzero(gated)[0]), int(np.flatnonzero(gated)[-1])
+    print(f"withheld as unstable_rate on {int(gated.sum())} rows, {first} to {last}")
+    assert gated.sum() > 20 and last < N // 2, "the gate never withheld, or never released"
+    for chunk in CHUNKS:
+        bank = po.ModelBank([spec])
+        got = pl.concat([bank.fit_predict(df.slice(i, chunk)) for i in range(0, N, chunk)])
+        _same_bits(want, _columns(got), f"{chunk}-row chunks")
+        assert bank.save_bytes() == state, f"{chunk}-row chunks moved the state"
+    for split in ((first + last) // 2, last + 5):
+        a = po.ModelBank([spec])
+        a.fit_predict(df.slice(0, split))
+        b = po.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
+        _same_bits(want.slice(split), _columns(b.fit_predict(df.slice(split))), f"save at {split}")
+        assert b.save_bytes() == state, f"a save at row {split} moved the final state"

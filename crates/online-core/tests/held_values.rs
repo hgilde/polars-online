@@ -473,6 +473,7 @@ fn sgd_predicts_the_same_at_every_level() {
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
         refit_rows: 0,
+        target_spread: false,
     };
     holds(
         "sgd",
@@ -806,6 +807,7 @@ fn without_decay_a_stopped_feature_keeps_its_slope() {
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
         refit_rows: 0,
+        target_spread: false,
     };
     let (base, _) = run_on(
         Sgd::new(cfg.clone()).unwrap(),
@@ -954,6 +956,7 @@ fn a_state_saved_mid_hold_resumes_to_the_bit() {
             huber_scale: online_core::HuberScale::Rms,
             huber_scale_decay: None,
             refit_rows: 0,
+            target_spread: false,
         })
         .unwrap()
     });
@@ -1173,6 +1176,7 @@ fn a_row_of_no_weight_moves_no_mean() {
             huber_scale: online_core::HuberScale::Rms,
             huber_scale_decay: None,
             refit_rows: 0,
+            target_spread: false,
         })
         .unwrap()
     });

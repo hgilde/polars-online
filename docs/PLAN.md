@@ -16441,6 +16441,14 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       every other field and the state bytes stay exact. Left: the young
       scale's ~1 point over 5% (needs a new accumulator), and the quantile
       fit's filled CUSUMs oversized at q = 0.9 (8-15%), pre-existing.
+      *holt (D-H), built 2026-10-26*: each row takes the larger of the
+      textbook gains and the exact weighted line fit's (`fit_weight`,
+      `fit_age`, `fit_spread`, schema 64); without decay it is statsmodels'
+      WLS line to 1e-15 (1.3.0: up to 3.4 off), decayed it is statsmodels'
+      `Holt` to 1e-12 once settled; warm-up worst 3.4-6.3 -> 0.03-0.17. Rule
+      5's fifth exception, the user's ("Accept"): a 61-63 `holt` state
+      continues to the bit with the textbook gains and is held, beside
+      `kmeans`, to re-saving bytes that load back the same.
 - [ ] 279. **Smaller build caches: no debug info for dependencies** -- the
       user, 2026-10-25 ("Why do agents take so much disk I though we shared
       caches", then "Yes"). Each worktree slot keeps its own `target/` (a

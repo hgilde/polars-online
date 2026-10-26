@@ -626,8 +626,8 @@ except ValueError as err:   # a plain number on a Datetime clock
 ```
 
 ```text
-on_t: weight_sum 135.66, trend 1.000406 per unit of t, a minute
-on_ts: weight_sum 135.66, trend 0.016673 per second
+on_t: weight_sum 135.66, trend 1.000000 per unit of t, a minute
+on_ts: weight_sum 135.66, trend 0.016667 per second
 spec "wrong": clock column "ts" has dtype datetime[μs], a temporal clock, but half_life is a plain
 number, which it cannot read: a number has no unit, and the column's own (e.g. epoch microseconds)
 would silently become it. Give half_life and the other clock parameters as durations, e.g.
@@ -1388,7 +1388,7 @@ The readiness fields:
 | field | on | what it holds |
 |---|---|---|
 | `settled_frac` | every model that writes a row | how full the decay window is |
-| `withheld_reason` | every model that writes a row | why `pred_y` is null, or null when it is not: `below_min_settled_frac`, `below_min_weight`, `above_max_error_inflation`, `below_warm_rows` (the rows `kmeans`, `hmm` and `bocpd` hold to seed themselves from, and the rows before `kalman` has sized any of a target's coefficients, standardized with no intercept) or `ill_conditioned` (an `ewridge` fit whose normal equations are too nearly singular to keep a digit), in that order of precedence |
+| `withheld_reason` | every model that writes a row | why `pred_y` is null, or null when it is not: `below_min_settled_frac`, `below_min_weight`, `above_max_error_inflation`, `below_warm_rows` (the rows `kmeans`, `hmm` and `bocpd` hold to seed themselves from, and the rows before `kalman` has sized any of a target's coefficients, standardized with no intercept), `ill_conditioned` (an `ewridge` fit whose normal equations are too nearly singular to keep a digit) or `unstable_rate` (an `sgd` target whose learning rate is past its stability bound, so the fit diverges), in that order of precedence |
 | `error_inflation_y` | `ewridge`, `rls`, `kalman`, under `emit_error_inflation` | the row's own estimation variance over the noise: high on a row leaning on a direction the data never showed, at one triangular solve a row |
 | `support_coef` | `ewridge`, `huber`, `quantile`, beside `coef` | each coefficient's data share, `1 - ridge * (S^-1)_jj` on the system the solve inverts. A duplicated pair of features reads 0.5 each |
 | `se_coef` | `ewridge`, `rls`, `kalman`, under `emit_se_coef`, beside `coef` | each coefficient's standard error in its own units: `sigma` times the fit's own covariance, `kalman`'s posterior exactly. A report, not a gate; it errs large in warm-up and under a ridge |
@@ -1454,6 +1454,7 @@ row 300: scored at 14:30, having learned the rows up to 14:25, weight_sum 43.74
 | case | what `embargo` does |
 |---|---|
 | what the delay counts | the time that passed on the clock column, skipped rows included, and `session_gap` where a session restarts the clock. It is not the capped step the model decays by, so the release depends on the rows alone and survives any chunking |
+| the step a row is scored over | the clock from the newest row learned to the row, the held rows' steps included, capped at `gap_cap` as one gap. A `holt` forecast reaches that far ahead, and `kalman`'s `error_inflation` adds that much drift. `predict` against a bank holding rows reads the same clock. Either way the score is the one a bank fed only the learned rows gives |
 | exactly at the delay | the row is learned. The time that passed is held exactly: in integer nanoseconds on a temporal clock, and by one subtraction of the two rows' values on a number clock, in integers on an integer clock. Rows 1 ms apart under `embargo="2s"` are each learned 2,000 rows on |
 | with no clock column | one unit is one row of the group, a skipped row included: `embargo=20` is twenty rows |
 | at a break | nothing is released early. A break's own effect, such as a lag ring's clearing or `session_shrink`'s blend, waits with the row after it, and runs when that row is learned. A reset drops the rows still waiting |
@@ -1480,7 +1481,10 @@ and `_online_role_weight`, which you pass to the spec's `weight`.
 clock.** An evenly spaced clock with a delay of whole steps is such a case.
 On an irregular clock they differ, since the doubled stream decays a label
 from `t + delay` and the built-in delay learns it at the row that releases
-it.
+it. A model whose score reads the clock since its last learned row differs
+on any clock: `holt`, `hmm`, `micro`, `kalman`'s `error_inflation`, and
+`sgd` and `pa` while their scaler warms up. The doubled stream's last
+lesson sits `delay` after its row, so such a score reads `delay` less clock.
 
 **Every residual diagnostic differs in any case**, from `sigma` and
 `zscore` to the conformal band and drift. `embargo` takes in the residual
@@ -3230,7 +3234,7 @@ centres found: [[0.0, -0.1], [0.0, 6.0], [6.0, 0.0]]
 **A sequential test says when the evidence is enough, and you may read it
 at any row.** Here `seqtest` asks whether a regression on `x0` and `x1`
 predicts `y` closer than `holt`, which reads only `y`'s own past. Its
-evidence passes the 5% level a few rows into `df`.
+evidence passes the 5% level a few dozen rows into `df`.
 This code uses `df` from [Example data](#example-data):
 
 ```python
@@ -3249,7 +3253,7 @@ print(f"ridge predicts closer than holt at the 5% level from row {passed.arg_tru
 ```
 
 ```text
-ridge predicts closer than holt at the 5% level from row 18
+ridge predicts closer than holt at the 5% level from row 48
 ```
 
 ### Detecting changes and regimes

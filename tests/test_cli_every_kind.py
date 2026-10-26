@@ -814,8 +814,10 @@ CASES += [
         ),
     ),
     Case("huber2", "huber", full2(max_rows_between_solves=4, ridge_scale="sum")),
+    # The refit is refused beside ridge_scale "sum", so a case of its own.
+    Case("huber3", "huber", full(huber_refit_rows=40, refit_budget=8)),
     # A budget below one group's buffer: every refit is given up.
-    Case("huber3", "huber", full2(huber_refit_rows=50, refit_budget=0.001)),
+    Case("huber4", "huber", full2(huber_refit_rows=50, refit_budget=0.001)),
     Case(
         "sgd_huber",
         "sgd",
@@ -825,8 +827,8 @@ CASES += [
             huber_scale="rms",
             huber_scale_half_life=40.0,
             learning_rate=0.01,
-            huber_refit_rows=80,
-            refit_budget=4.0,
+            huber_refit_rows=40,
+            refit_budget=8,
         ),
     ),
 ]

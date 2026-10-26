@@ -61,9 +61,12 @@ def test_the_mad_constant_is_the_normals_third_quartile():
 def test_sgd_huber_at_a_level_is_robust_under_the_mad(frac):
     """C-1 (review round 9): with no decay the first residuals, the level's
     size, held the RMS scale wide for good, so ``sgd(loss="huber")`` was the
-    squared loss to the bit. Under the MAD its slope is nearer the truth
-    than the squared loss's. Measured at 5% (seeds 0-4, median): 2.016
-    against 3.751 for both the squared loss and the RMS scale."""
+    squared loss to the bit. The intercept's running-mean step takes the
+    level from the first row (task 278, D-S), so the RMS scale no longer
+    keeps it and its slope is nearer the truth than the squared loss's too,
+    the outliers alone inflating it; under the MAD nearer still. Measured at
+    5% (seeds 0-4, median): 2.013 under the MAD, 2.557 under the RMS, 3.751
+    for the squared loss; at 1%: 1.990, 2.067 and 2.322 (2026-10-26)."""
     df = stream(20_000, frac, 3)
     squared = slope(po.spec.sgd("s", **NO_DECAY), df)
     # One pass under the RMS, as 1.2.0 ran it: the refit of the first rows
@@ -72,7 +75,8 @@ def test_sgd_huber_at_a_level_is_robust_under_the_mad(frac):
         po.spec.sgd("s", loss="huber", huber_scale="rms", huber_refit_rows=0, **NO_DECAY), df
     )
     mad = slope(po.spec.sgd("s", loss="huber", **NO_DECAY), df)
-    assert rms == squared, "the RMS scale at a level is the squared loss, kept as it was"
+    assert abs(rms - 2.0) < abs(squared - 2.0), (rms, squared)
+    assert abs(mad - 2.0) < abs(rms - 2.0), (mad, rms)
     assert abs(mad - 2.0) < 0.25 * abs(squared - 2.0), (mad, squared)
     assert abs(mad - 2.0) < 0.05, mad
 

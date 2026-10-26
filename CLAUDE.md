@@ -132,6 +132,11 @@ runs both tiers, but a plain `cargo test` skips the extended Rust tests
    61-63 continues to the current values in its windowed `cusum_*` and
    `cusum_sq_*` fields while their sums are young (their null's share is now
    read at the sums' age); every other field continues to the bit.
+   A fifth, the user's (2026-10-26, task 278): a `holt` state of schema
+   61-63 loads with no line fit and continues to the bit with the textbook
+   gains it was fitted under; its re-saved bytes cannot be the current
+   fixture's (which carries the line fit), so it is held, beside `kmeans`,
+   to re-saving bytes that load back the same.
 6. No `unsafe` in `online-core`. f64 everywhere.
 7. Commit after each completed task in `docs/PLAN.md`, with the task number in the message.
 8. **`n_eff` -- the models' accessor, emitted as `weight_sum` -- means the same thing in

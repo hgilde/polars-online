@@ -1360,9 +1360,11 @@ class TestHoltAcrossAMissingObservation:
     and its clock folded into the next row's.
 
     ``statsmodels`` is the second opinion twice. Its ``Holt`` is the textbook
-    recursion, whose gains are fixed; ``holt``'s level and trend are weighted
-    means (review 2026-09-12, S29/S30), whose gains ``w / (lam·W + w)`` start
-    at 1 and fall to those fixed ones as the weight saturates. So the two part
+    recursion, whose gains are fixed; ``holt``'s textbook gains are weighted
+    means' (review 2026-09-12, S29/S30), ``w / (lam·W + w)``, which fall to
+    those fixed ones as the weight saturates, and a row takes the weighted
+    line fit's where they are larger, as they are through the warm-up (task
+    278, D-H; settled from row 745 here, measured 2026-10-26). So the two part
     over the first rows by design and agree exactly from row ``SETTLED`` on a
     row-count clock -- the control that pins the mapping from half-lives to
     smoothing weights (the review's T-S14). Its state-space
@@ -1550,6 +1552,53 @@ class TestALevelOnlyHoltIsAnEwMean:
             age = t[i - 1] - t[:i][before]
             stats = DescrStatsW(y[:i][before], weights=w[:i][before] * 0.5 ** (age / self.HALFLIFE))
             assert pred[i] == pytest.approx(stats.mean, rel=1e-12), i
+
+
+class TestHoltWithoutDecayIsTheWeightedLineFit:
+    """Without decay ``holt`` is the weighted least-squares line through every
+    observation so far, on the clock, read at the last: each row's forecast
+    is that line extrapolated to the row's clock (task 278, D-H). statsmodels'
+    ``WLS`` on ``(1, t)`` fits it afresh before every row, on an irregular
+    clock with uneven weights, nulls and zero weights. Measured 2026-10-26:
+    within 1e-15 of ``1 + |pred|`` on every row once two clocks have been
+    observed. The weighted means it replaced (1.3.0) pinned the trend to the
+    first observation, and their forecasts parted from the line by up to
+    3.4 here."""
+
+    @staticmethod
+    def rows(n=400, seed=12):
+        rng = np.random.default_rng(seed)
+        t = np.cumsum(rng.choice([0.0, 0.5, 1.0, 3.0], n, p=[0.05, 0.3, 0.5, 0.15]))
+        y = 2.0 + 0.3 * t + 0.7 * rng.standard_normal(n)
+        y[rng.random(n) < 0.05] = np.nan
+        w = rng.choice([0.0, 0.5, 1.0, 2.0], n, p=[0.05, 0.25, 0.4, 0.3])
+        return t, y, w
+
+    def test_every_forecast_is_statsmodels_wls(self):
+        import statsmodels.api as sm
+
+        t, y, w = self.rows()
+        frame = pl.DataFrame({"t": t, "y": y, "w": w}).with_columns(pl.col("y").fill_nan(None))
+        inf = float("inf")
+        spec = po.spec.holt(
+            "m", targets=["y"], clock="t", gap_cap=1e9, half_life=inf,
+            trend_half_life=inf, min_weight=0.0, weight="w",
+        )  # fmt: skip
+        pred = po.ModelBank([spec]).fit_predict(frame)["m"].struct.field("pred_y").to_numpy()
+        seen = ~np.isnan(y) & (w > 0.0)
+        checked, worst = 0, 0.0
+        for i in range(1, len(y)):
+            before = seen[:i]
+            if len(np.unique(t[:i][before])) < 2:
+                continue
+            X = np.column_stack([np.ones(before.sum()), t[:i][before]])
+            b = sm.WLS(y[:i][before], X, weights=w[:i][before]).fit().params
+            want = b[0] + b[1] * t[i]
+            worst = max(worst, abs(pred[i] - want) / (1.0 + abs(want)))
+            checked += 1
+        print(f"  {checked} rows, worst {worst:.2g} of 1 + |pred|")
+        assert checked > 350, "the evidence: most rows are checked"
+        assert worst <= 1e-12
 
 
 class TestBocpdAtALevel:
@@ -4112,7 +4161,16 @@ class TestSgdIsScikitLearnsSgd:
     units, so the epsilon-insensitive loss is held at ``eps = 0`` -- the sign of the
     residual, which is the step's whole shape outside a tube -- and the
     clamp to ``sgd_ref``. Ours steps on the raw features here, as
-    scikit-learn's ``partial_fit`` does."""
+    scikit-learn's ``partial_fit`` does.
+
+    One rule has no scikit-learn twin and is written into its loop by its
+    definition (task 278, D-S): a regression's intercept takes the running
+    mean's step, ``(w / W) * (y - p)`` with ``W`` the weight learned so far,
+    in place of its gradient's while that gain is the larger or Kish's count
+    of the rows is at most 22 (the count alone for the sign-valued loss), and
+    on the first row that step alone. scikit-learn's ``partial_fit`` steps,
+    then its intercept is set to the one before plus that step (and its
+    slopes put back, on the first row)."""
 
     TOL = 1e-12
     LR = 0.02
@@ -4143,11 +4201,21 @@ class TestSgdIsScikitLearnsSgd:
         return out.field(f"pred_{target}").to_numpy().astype(float)
 
     @staticmethod
-    def sklearns(est: Any, frame: pl.DataFrame, target: str, weighted: bool) -> np.ndarray:
+    def sklearns(
+        est: Any,
+        frame: pl.DataFrame,
+        target: str,
+        weighted: bool,
+        level: str | None = None,
+        rate: Any = None,
+    ) -> np.ndarray:
+        """``level``: ``"squared"`` or ``"sign"``, the intercept's level rule
+        (the class docstring); ``rate(i)`` the shared rate on row ``i``."""
         x = frame.select("x0", "x1").to_numpy()
         y, w = frame[target].to_numpy(), frame["w"].to_numpy()
         classifier = hasattr(est, "predict_proba")
         pred = np.full(len(y), 0.5 if classifier else 0.0)
+        lw = lw2 = 0.0
         for i in range(len(y)):
             row = x[i : i + 1]
             if i:
@@ -4155,7 +4223,20 @@ class TestSgdIsScikitLearnsSgd:
             kw: dict[str, Any] = {"sample_weight": [w[i]]} if weighted else {}
             if classifier:
                 kw["classes"] = [0.0, 1.0]
+            wi = w[i] if weighted else 1.0
+            before = (np.copy(est.coef_), float(est.intercept_[0])) if i else None
             est.partial_fit(row, y[i : i + 1], **kw)
+            if level is None:
+                continue
+            lw, lw2 = lw + wi, lw2 + wi * wi
+            a = wi / lw
+            step = a * (y[i] - pred[i])
+            young = lw * lw / lw2 <= 22.0
+            if before is None:
+                est.coef_ = np.zeros_like(est.coef_)
+                est.intercept_ = np.array([step])
+            elif young or (level == "squared" and a > rate(i)):
+                est.intercept_ = np.array([before[1] + step])
         return pred
 
     @pytest.mark.parametrize("weighted", [False, True], ids=["unit weights", "weighted"])
@@ -4198,7 +4279,8 @@ class TestSgdIsScikitLearnsSgd:
         else:
             got = self.ours(frame, "yb", weighted, loss=loss, learning_rate=self.LR)
             est, target = SGDClassifier(loss="log_loss", **sk), "yb"
-        want = self.sklearns(est, frame, target, weighted)
+        rule = {"squared": "squared", "epsilon_insensitive": "sign"}.get(loss)
+        want = self.sklearns(est, frame, target, weighted, rule, lambda i: self.LR)
         np.testing.assert_allclose(got, want, rtol=self.TOL, atol=1e-15 * _magnitude(level))
 
     def test_inv_scaling_at_unit_weights_is_scikit_learns_invscaling(self):
@@ -4222,7 +4304,8 @@ class TestSgdIsScikitLearnsSgd:
             power_t=0.5,
             shuffle=False,
         )
-        want = self.sklearns(est, frame, "y", False)
+        # The weight before row `i` is `i` at unit weights, undecayed.
+        want = self.sklearns(est, frame, "y", False, "squared", lambda i: 0.1 / (1.0 + i) ** 0.5)
         np.testing.assert_allclose(got, want, rtol=self.TOL, atol=1e-15)
 
     def test_a_slip_in_the_mapping_misses(self):

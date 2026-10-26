@@ -64,17 +64,19 @@ def test_the_refit_is_statsmodels_converged_fit_on_the_buffer(kind, share):
 
 
 @pytest.mark.parametrize(
-    ("kind", "rows", "seed", "before", "after"),
-    [("huber", 20_000, 110, 0.4261, 0.0025), ("sgd", 2_000, 101, 1.1057, 0.0120)],
+    ("kind", "rows", "seed", "share", "before", "after"),
+    [("huber", 20_000, 110, 0.25, 0.4261, 0.0025), ("sgd", 2_000, 100, 0.4, 2.9419, 0.0351)],
 )
-def test_the_refit_frees_a_captured_stream(kind, rows, seed, before, after):
+def test_the_refit_frees_a_captured_stream(kind, rows, seed, share, before, after):
     """The capture the refit is there for (the module doc of
-    ``huber_refit.rs``): at 12.5% outliers with no decay, the one-pass fit of
-    a captured stream ends far from statsmodels' converged ``RLM``, and with
+    ``huber_refit.rs``): with outliers and no decay, the one-pass fit of a
+    captured stream ends far from statsmodels' converged ``RLM``, and with
     the default refit near it (the gaps in slope measured and pinned here:
-    13 of 40 such ``huber`` streams of 20,000 rows were captured, and 40 of
-    40 ``sgd`` streams of 2,000)."""
-    df = stream(rows, 0.25, seed, level=1000.0)
+    at 12.5% outliers 13 of 40 ``huber`` streams of 20,000 rows were
+    captured; at 20%, 28 of 40 ``sgd`` streams of 2,000. At 12.5% all 40
+    ``sgd`` streams were, seed 101's by 1.1057, before its intercept took
+    the level from the first row, task 278 D-S; now the worst is 0.157)."""
+    df = stream(rows, share, seed, level=1000.0)
     X = sm.add_constant(df["x"].to_numpy())
     oracle = sm.RLM(df["y"].to_numpy(), X, M=HuberT(1.345)).fit(scale_est="mad").params
     plain = abs(_coef(_model(kind, huber_refit_rows=0), df)[1] - oracle[1])

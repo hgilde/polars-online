@@ -19,8 +19,8 @@ The datasets: synthetic streams with a known optimum, and two LIBSVM sets
 give a second opinion on the plateau of a constant rate.
 
 A learning rate too large must fail loudly (a refusal, a notice, a
-``withheld_reason``, or bounded output), and the last test records where it
-does not.
+``withheld_reason``, or bounded output): ``sgd``'s rate past its stability
+bound is withheld as ``unstable_rate``, with a notice.
 
 `sgd(loss="huber")` joined once task 277's refit of its first rows merged.
 Its loss is Huber's at ``delta`` times a scale the model learns, the
@@ -426,13 +426,16 @@ def _diverged(spec: dict, n: int = 20_000) -> tuple[float, float, list, bool]:
         out = po.ModelBank([spec]).fit_predict(_frame(x, y, FEATURES)).unnest("m")
     pred = out["pred_y"].to_numpy().astype(float)
     tail = slice(n - 1_000, n)
-    ratio = float(np.nanmean((pred[tail] - y[tail]) ** 2) / np.var(y))
+    # Every row withheld (a gate) leaves no error to read: NaN.
+    seen = np.isfinite(pred[tail])
+    ratio = float(np.mean((pred[tail] - y[tail])[seen] ** 2) / np.var(y)) if seen.any() else np.nan
     withheld = out["withheld_reason"].is_not_null().to_numpy()
     reasons = out["withheld_reason"].drop_nulls().unique().to_list()
     notices = [str(w.message) for w in caught]
     # A NaN where no gate withheld the row; the warm-up's rows are null.
     nan = bool(np.isnan(pred[~withheld]).any())
-    return ratio, float(np.nanmax(np.abs(pred))), [*reasons, *notices], nan
+    largest = float(np.nanmax(np.abs(pred))) if np.isfinite(pred).any() else np.nan
+    return ratio, largest, [*reasons, *notices], nan
 
 
 @pytest.mark.parametrize(
@@ -454,16 +457,6 @@ def test_a_stable_constant_rate_is_quiet_and_right(rate):
     assert reasons == ["below_min_weight"], reasons
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "task 278 (c) defect: sgd at a constant rate past least mean squares' "
-        "stability bound (about 2 / (k + 1) standardized) diverges until "
-        "clip_gradient holds it, with finite predictions, no notice and no "
-        "withheld_reason: at 0.5 the last 1,000 rows' error is 5e4 times the "
-        "target's variance"
-    ),
-)
 @pytest.mark.parametrize("rate", [0.5, 2.0, 100.0])
 def test_a_constant_rate_too_large_fails_loudly(rate):
     """What failing loudly means here: a refusal at the spec, a warning, a
@@ -476,6 +469,31 @@ def test_a_constant_rate_too_large_fails_loudly(rate):
     ratio, _, reasons, nan = _diverged(spec)
     loud = nan or ratio < 10 or any(r != "below_min_weight" for r in reasons)
     assert loud, (ratio, reasons)
+
+
+@pytest.mark.parametrize("rate", [0.5, 2.0, 100.0])
+def test_a_constant_rate_past_its_bound_is_withheld_with_a_notice(rate):
+    """What ``sgd`` does past the bound (task 278, D8; it was quiet: at 0.5
+    the last 1,000 rows' error was 5e4 times the target's variance, the clip
+    holding the fit finite and wrong). A step multiplies its own row's
+    residual by ``1 - q``, ``q = lr * w * |z|^2`` here, so the fit diverges in
+    mean square once ``E[q^2] > 2 E[q]``: on five standardized normal
+    features and the intercept's 1 that is a rate past 0.261. From the first
+    rows on every prediction is withheld as ``unstable_rate``, and the bank
+    says so once."""
+    x, y = stream(0, 2_000, "squared")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        out = po.ModelBank([_sgd(learning_rate=rate)]).fit_predict(_frame(x, y, FEATURES))
+    out = out.unnest("m")
+    reasons = out["withheld_reason"].cast(pl.String)
+    counts = reasons.value_counts().sort("withheld_reason").to_dicts()
+    print(f"rate {rate}: {counts}")
+    assert out["pred_y"].is_not_null().sum() == 0
+    assert (reasons == "unstable_rate").sum() > 1_990
+    said = [str(w.message) for w in caught if "stability bound" in str(w.message)]
+    assert len(said) == 1, said
+    assert "bound at 0.261" in said[0]
 
 
 @pytest.mark.parametrize(
@@ -501,11 +519,12 @@ def test_a_constant_rate_too_large_fails_loudly(rate):
     ids=["sgd logistic 1e3", "ftrl alpha 1e6", "sgd adagrad 1e3"],
 )
 def test_a_large_rate_that_stays_bounded(spec):
-    """Measured (2026-10-25): logistic predictions stay probabilities; FTRL
-    at ``alpha = 1e6`` ends at 2.4 noise variances; AdaGrad at 1e3 at 19,
-    its own rate's normalisation holding it. NaN-free and bounded, so loud
-    enough: the error is the caller's to see, not hidden behind a number
-    that grows."""
+    """Measured (2026-10-25): logistic predictions stay probabilities (and
+    at 1e3 ``sgd``'s gate withholds most of them, its steps past their
+    stability bound, ``p (1 - p) |z|^2`` the curvature); FTRL at ``alpha =
+    1e6`` ends at 2.4 noise variances; AdaGrad at 1e3 at 19, its own rate's
+    normalisation holding it. NaN-free and bounded, so loud enough: the
+    error is the caller's to see, not hidden behind a number that grows."""
     if spec["model"]["loss"] == "logistic":
         x, y = stream(0, 20_000, "logistic")
         out = po.ModelBank([spec]).fit_predict(_frame(x, y, FEATURES)).unnest("m")

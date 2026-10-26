@@ -127,6 +127,13 @@ use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 /// order, so its bytes are not the current set's, which the new rule
 /// seeded, and it is held to saving bytes that load back to the same.
 ///
+/// The `holt` case converts otherwise since task 278 (D-H, schema 64 before
+/// its release): a state of schema 61-63 keeps no line fit, so it loads
+/// without one and goes on with the textbook gains alone, the recursion it
+/// was fitted under, to the bit. The current set's `holt` was fitted with
+/// the line fit, so a kept state's bytes are not its, and it is held to
+/// saving bytes that load back to the same, as `kmeans` is.
+///
 /// The `lasso` cases convert otherwise since task 278 too (rule 5's third
 /// exception, the user's, 2026-10-25): the descent's stopping rule reads a
 /// sweep's move against `tol` times the target's spread, where it read it
@@ -429,7 +436,8 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
             // starts, ten Lloyd passes): the rule since finds the same
             // centres in another order (the doc above `previous!`).
             let reseeded = f.name == "kmeans_warming";
-            if f.name == "kmeans" {
+            // A `holt` of 61-63 keeps no line fit (the doc above `previous!`).
+            if f.name == "kmeans" || f.name == "holt" {
                 let saved = named(&m.state());
                 let again = load(&case, &saved).unwrap_or_else(|e| panic!("{what}: {e}"));
                 assert!(
@@ -672,13 +680,21 @@ fn held(v: &rmpv::Value) -> usize {
 /// prior and the emitted scale. `marginal`'s Huber location per bin (63,
 /// task 272 (c)): `marginal_bins_huber` keeps each cell's robust weight and
 /// each target's location and scale, and its cfg names its statistic and
-/// cut.
+/// cut. `holt`'s line fit (64, task 278, D-H): its weight, mean age and
+/// spread per target, under a half-life (`holt`) and without one
+/// (`holt_inf`).
 #[test]
 fn every_layout_a_schema_moved_is_written_by_a_fixture() {
     if regenerating() {
         return;
     }
-    const FORMS: [(&str, &[&str]); 37] = [
+    const FORMS: [(&str, &[&str]); 43] = [
+        ("holt", &["model", "Holt", "fit_weight"]),
+        ("holt", &["model", "Holt", "fit_age"]),
+        ("holt", &["model", "Holt", "fit_spread"]),
+        ("holt_inf", &["model", "Holt", "fit_weight"]),
+        ("holt_inf", &["model", "Holt", "fit_age"]),
+        ("holt_inf", &["model", "Holt", "fit_spread"]),
         ("huber_sets", &["model", "Robust", "cfg", "feature_sets"]),
         (
             "marginal_bins_huber",
@@ -994,6 +1010,64 @@ fn the_refit_is_written_part_full_and_done() {
     for (name, variant) in [("huber", "Robust"), ("sgd_huber", "Sgd")] {
         let f = frozen::ALL.iter().find(|f| f.name == name).unwrap();
         assert_eq!(buffers(&f.bytes(), variant), (0, vec![]), "{name}");
+    }
+}
+
+/// `sgd`'s target-spread forms (schema 64, docs/PLAN.md task 278: D1, D2,
+/// D8, D-S): `sgd_spread` keeps each target's spread under the squared loss,
+/// its step gains and its level, every one holding a number; `sgd_unstable`
+/// is saved with its gate withholding, so its continuation reads the gains
+/// from the file and withholds every row; `sgd_spread_adagrad` keeps the
+/// spread and the level and no gains, AdaGrad's step being bounded. The
+/// cases without the flag write none of them.
+#[test]
+fn the_target_spread_forms_are_written() {
+    if regenerating() {
+        return;
+    }
+    let decoded = |name: &str| -> rmpv::Value {
+        let f = frozen::ALL.iter().find(|f| f.name == name).unwrap();
+        rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap()
+    };
+    let field = |name: &str, key: &str| -> rmpv::Value {
+        at(&decoded(name), &["model", "Sgd", key])
+            .cloned()
+            .unwrap_or_else(|| panic!("{name}: no {key}"))
+    };
+    let len = |v: &rmpv::Value| v.as_array().map_or(0, Vec::len);
+    for name in ["sgd_spread", "sgd_unstable", "sgd_spread_adagrad"] {
+        let on = at(&decoded(name), &["model", "Sgd", "cfg", "target_spread"])
+            .and_then(rmpv::Value::as_bool);
+        assert_eq!(on, Some(true), "{name}: cfg.target_spread");
+        for key in ["spread", "level"] {
+            assert_eq!(len(&field(name, key)), 2, "{name}: {key}, one a target");
+            assert!(held(&field(name, key)) > 0, "{name}: {key} holds nothing");
+        }
+    }
+    for name in ["sgd_spread", "sgd_unstable"] {
+        assert_eq!(len(&field(name, "gain")), 2, "{name}: gains, one a target");
+        assert!(
+            held(&field(name, "gain")) > 0,
+            "{name}: the gains hold nothing"
+        );
+    }
+    assert_eq!(len(&field("sgd_spread_adagrad", "gain")), 0);
+    for name in ["sgd", "sgd_huber", "sgd_logistic"] {
+        for key in ["gain", "level"] {
+            assert_eq!(len(&field(name, key)), 0, "{name}: {key} without the flag");
+        }
+    }
+    // The gate: the stable case predicts after its save, the unstable one
+    // withholds every row, read from the gains in the file.
+    for (name, withheld) in [("sgd_spread", false), ("sgd_unstable", true)] {
+        let f = frozen::ALL.iter().find(|f| f.name == name).unwrap();
+        let mut m = load(&case_of(f), &f.bytes()).unwrap();
+        let preds: Vec<f64> = f.rows().iter().flat_map(|r| m.step(r).pred).collect();
+        assert_eq!(
+            preds.iter().all(|p| p.is_nan()),
+            withheld,
+            "{name}: {preds:?}"
+        );
     }
 }
 

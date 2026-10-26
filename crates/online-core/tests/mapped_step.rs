@@ -390,6 +390,7 @@ fn sgd_past_the_switch_steps_and_projects_as_written() {
                 huber_scale: online_core::HuberScale::Rms,
                 huber_scale_decay: None,
                 refit_rows: 0,
+                target_spread: false,
             })
             .unwrap();
             let what = format!("sgd, intercept {fit_intercept}, {name}");

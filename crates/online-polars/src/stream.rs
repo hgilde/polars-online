@@ -410,6 +410,19 @@ impl AnyModel {
         }
     }
 
+    /// Per target, whether its predictions are withheld because its recent
+    /// steps say the learning rate is past its stability bound: `sgd`'s
+    /// gate (`online_core::Sgd::unstable_targets`), read from the state, so
+    /// it names the prediction the next row makes; empty for every other
+    /// model, which takes no gradient step of a rate the caller sets (task
+    /// 278, D8).
+    pub fn unstable_targets(&self) -> Vec<bool> {
+        match self {
+            AnyModel::Sgd(m) if m.unstable() => m.unstable_targets(),
+            _ => Vec::new(),
+        }
+    }
+
     /// What went wrong in a model's solves, counted (docs/PLAN.md §7):
     /// `ewridge` and `robust` count their jittered or failed factorizations,
     /// `lasso` its coordinate descents that ran out of sweeps, `ew_class` the
@@ -419,8 +432,9 @@ impl AnyModel {
     /// their cap short of a fixed point (task 278, D7), and `robust`'s Huber
     /// and `sgd(loss="huber")` the targets whose refit of their first rows
     /// took every IRLS pass (task 278). Every other model reports 0 because
-    /// it counts nothing, not because nothing can fail: `kalman` inverts an innovation variance, and
-    /// `ew_cov` solves for `mahal` and `partial_corr` (review 2026-09-12, S8).
+    /// it counts nothing, not because nothing can fail: `kalman` inverts an
+    /// innovation variance, and `ew_cov` solves for `mahal` and
+    /// `partial_corr` (review 2026-09-12, S8).
     pub fn solve_failures(&self) -> u64 {
         match self {
             AnyModel::EwRidge(m) => m.solve_failures,
@@ -1968,6 +1982,37 @@ pub struct Notified {
     /// The same for the noise gate, over the instance's slots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_since: Option<f64>,
+    /// A target's learning rate was found past its stability bound
+    /// (`unstable_rate`; task 278, D8). Written only once set, so a state
+    /// that never met it keeps its bytes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unstable: bool,
+}
+
+/// The notice of an `sgd` target withheld because its learning rate is past
+/// its stability bound (task 278, D8): what the gate reads, and the ways
+/// out.
+fn unstable_rate_notice(spec: &Spec, target: &str) -> String {
+    // `E[q²] < 2·E[q]` at unit weight, no `l2` and the squared loss, on
+    // `p` standardized normal columns: `|z̃|²` is `χ²_p`, or `1 + χ²_p` with
+    // the intercept's 1, whose first two moments give the bound.
+    let p = spec.k() as f64;
+    let bound = if spec.fit_intercept {
+        2.0 * (p + 1.0) / (p * p + 4.0 * p + 1.0)
+    } else {
+        2.0 / (p + 2.0)
+    };
+    format!(
+        "the learning rate is past its stability bound for target {target:?}: a step \
+         multiplies its own row's residual by 1 - q, q = learning_rate * (weight * c * \
+         |z|^2 + l2) with c the loss's curvature, and over the recent steps the mean of q^2 \
+         passed twice the mean of q, so the fit diverges in mean square. Its predictions are \
+         withheld (withheld_reason \"unstable_rate\") while that holds. Lower learning_rate \
+         (standardized, {} independent normal features put a constant rate's bound at \
+         {bound:.3}), or use schedule = \"inv_scaling\", which lowers it row by row, or \
+         \"adagrad\"",
+        spec.k()
+    )
 }
 
 /// [`Notified::floor_since`] holds no wait: no target's floor is in a run.
@@ -2120,19 +2165,23 @@ pub fn settled_weight(weight: f64, first: f64, settled: f64, steps: f64) -> f64 
 /// the model's own warm-up (`warm_rows`) came after the gates, and no model
 /// that has it has the noise gate before it; `ill_conditioned` came last
 /// (task 278, D4), and the noise gate reads a fit withheld for its
-/// condition as not a number, so it never names that fit in its place.
-pub const WITHHELD_REASONS: [&str; 5] = [
+/// condition as not a number, so it never names that fit in its place;
+/// `unstable_rate` after it (task 278, D8), `sgd`'s gate, which no model
+/// with an earlier reason of its own has.
+pub const WITHHELD_REASONS: [&str; 6] = [
     "below_min_settled_frac",
     "below_min_weight",
     "above_max_error_inflation",
     "below_warm_rows",
     "ill_conditioned",
+    "unstable_rate",
 ];
 const REASON_SETTLED: u8 = 1;
 const REASON_MIN_PERIODS: u8 = 2;
 const REASON_INFLATION: u8 = 3;
 const REASON_WARM_ROWS: u8 = 4;
 const REASON_ILL_CONDITIONED: u8 = 5;
+const REASON_UNSTABLE_RATE: u8 = 6;
 
 /// The settled fraction at which a readiness notice judges a stream
 /// (docs/WARMUP-AND-CONVERGENCE.md §3): the one rule all three notices
@@ -4578,6 +4627,15 @@ fn run_instance(
     } else {
         HitTest::Sign
     };
+    // The cap a scored row's step is held to under an `embargo`, read once:
+    // the step from the last learned row that the held rows' clock spans
+    // (below) is a gap like any other.
+    let held_cap = inst.pending_clock.is_some().then(|| {
+        inst.spec
+            .clock_cfg()
+            .expect("spec was already validated")
+            .gap_cap
+    });
     for plan in plans {
         if plan.reset {
             inst.reset();
@@ -4666,6 +4724,23 @@ fn run_instance(
         // `kalman`'s is `O(k²)` a row, paid only where it is used.
         let held = inst.pending_clock.as_deref().copied().unwrap_or(0.0);
         let settled = settled_frac(inst.decay, *inst.decay_time + held);
+        // The step a row is scored over: the clock since the last row the
+        // model learned, as a bank fed only the matured rows scores it. A
+        // row learned where it sits, or released from the `embargo` buffer,
+        // steps from the row before it. A row only scored -- held under an
+        // `embargo`, or scored by `predict` against a bank holding rows --
+        // sits after every held row the model has not learned yet, so its
+        // step is theirs and its own, capped as the gap they span would be
+        // (`min(a + b, cap)` is the cap of the raw sum, since a step that was
+        // capped alone is the cap already). Scored over its own step, a held
+        // row read as if it sat one step after the last learned row: `holt`
+        // forecast one step ahead where the row was several, `hmm` aged its
+        // transitions by one step, `kalman` added one step's drift to the
+        // row's variance (task 278, D11).
+        let score_d = match held_cap {
+            Some(cap) if !learn => (held + d_clock).min(cap),
+            _ => d_clock,
+        };
         // The two "not met" notices below read the learned rows'
         // clock alone, as `Stream::readiness` does: the weight they
         // project a ceiling from has neither decayed by nor accumulated
@@ -4680,14 +4755,14 @@ fn run_instance(
             && inst
                 .model
                 .get()
-                .error_inflation_gate_into(xs, d_clock, &mut sc.infl, max_infl);
+                .error_inflation_gate_into(xs, score_d, &mut sc.infl, max_infl);
         // The row's own error inflation: its field, and the breaks'
         // studentized residual, read it (task 221 (b)).
         let has_row_infl = inst.spec.reads_row_inflation()
             && inst
                 .model
                 .get()
-                .row_error_inflation_into(xs, d_clock, &mut sc.row_infl);
+                .row_error_inflation_into(xs, score_d, &mut sc.row_infl);
         // Whether the instance is ready for task 221's diagnostics to fold
         // its residuals (task 232 (1); review round 6, F-1), read before the
         // step as the gates are: the model past its own warm-up, and the
@@ -4717,6 +4792,10 @@ fn run_instance(
         // step may solve again on this row, and the reason names the fit
         // the prediction came from (task 278, D4).
         let ill = inst.model.get().ill_conditioned();
+        // And which targets' rates were past their stability bound, read
+        // from the state before the step, as the model's own gate reads it
+        // (task 278, D8).
+        let unstable = inst.model.get().unstable_targets();
 
         // The instance's kept step, its buffers reused (task 270, M-4); put
         // back at the end of the row.
@@ -4744,7 +4823,7 @@ fn run_instance(
                 .get_mut()
                 .step_sharded_into(xs, &sc.ys, step_d, w, inst.shards, &mut step);
         } else {
-            step = inst.model.get().predict(xs, &sc.ys, d_clock);
+            step = inst.model.get().predict(xs, &sc.ys, score_d);
         }
         let n_slots = step.pred.len();
         // `ew_cov` has no targets; its slots are statistics, so every one
@@ -4895,6 +4974,21 @@ fn run_instance(
         // claim it; the model's own null is then named for what it is.
         if reason == 0 && ill {
             reason = REASON_ILL_CONDITIONED;
+        }
+        // A target withheld because its learning rate is past its stability
+        // bound, where no gate above has withheld the row; said once an
+        // instance, with the way out.
+        if let Some(tj) = unstable.iter().position(|u| *u) {
+            if reason == 0 {
+                reason = REASON_UNSTABLE_RATE;
+            }
+            if !inst.notified.unstable {
+                inst.notified.unstable = true;
+                let target = inst.spec.targets.get(tj).map_or("", String::as_str);
+                inst.notified
+                    .pending
+                    .push(unstable_rate_notice(inst.spec, target));
+            }
         }
         // The noise gate has not been met: the stream has all but settled,
         // the gate has withheld every row for a further half-life, and the

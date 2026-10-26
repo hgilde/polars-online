@@ -421,6 +421,7 @@ fn sgd_cfg(loss: SgdLoss, n_targets: usize) -> SgdCfg {
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
         refit_rows: 0,
+        target_spread: false,
     }
 }
 
@@ -886,6 +887,53 @@ pub fn all() -> Vec<Case> {
             Targets::Linear(2),
             40
         ),
+        // The target's own units (schema 64, task 278: D1, D2, D8, D-S):
+        // the target's spread under the squared loss and the step gains
+        // under a shared rate, at a stable rate and at one past its bound,
+        // saved with the gate withholding, and under AdaGrad, which keeps
+        // the spread for its epsilon and no gains.
+        case!(
+            "sgd_spread",
+            "Sgd",
+            Sgd,
+            Sgd::new(SgdCfg {
+                schedule: LearningRate::InvScaling { power: 0.5 },
+                target_spread: true,
+                ..sgd_cfg(SgdLoss::Squared, 2)
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            40
+        ),
+        case!(
+            "sgd_unstable",
+            "Sgd",
+            Sgd,
+            Sgd::new(SgdCfg {
+                schedule: LearningRate::Constant,
+                learning_rate: 2.0,
+                target_spread: true,
+                ..sgd_cfg(SgdLoss::Squared, 2)
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            40
+        ),
+        case!(
+            "sgd_spread_adagrad",
+            "Sgd",
+            Sgd,
+            Sgd::new(SgdCfg {
+                target_spread: true,
+                ..sgd_cfg(SgdLoss::Squared, 2)
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            40
+        ),
         case!(
             "sgd_eps",
             "Sgd",
@@ -931,6 +979,24 @@ pub fn all() -> Vec<Case> {
                 n_targets: 2,
                 level_half_life: H,
                 trend_half_life: 4.0 * H,
+                min_weight: 3.0,
+                trend: true,
+            })
+            .unwrap(),
+            0,
+            Targets::Linear(2),
+            40
+        ),
+        // Without decay, the weighted line fit alone (schema 64, docs/PLAN.md
+        // task 278, D-H): its weight, mean age and spread per target.
+        case!(
+            "holt_inf",
+            "Holt",
+            Holt,
+            Holt::new(HoltCfg {
+                n_targets: 2,
+                level_half_life: f64::INFINITY,
+                trend_half_life: f64::INFINITY,
                 min_weight: 3.0,
                 trend: true,
             })
