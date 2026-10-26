@@ -43,18 +43,14 @@ case compares two runs that would agree with the parameter ignored.
 
 Essentials: three kinds per relation (``ewridge``, ``ew_cov`` and
 ``kmeans`` where they apply). Extended: every kind the relation applies
-to. ``huber`` and ``sgd(loss="huber")`` wait in ``AFTER_TASK_277``: task
-277 is changing their warm-up. Their legs build and run today
-(``test_the_waiting_legs_run``), and ``test_the_huber_legs_still_wait``
-fails when a new parameter arrives on ``po.spec.huber`` or
-``po.spec.sgd``: then the two entries move into ``KINDS``.
+to, ``huber`` and ``sgd(loss="huber")`` among them, with the refit of
+their first rows on (task 277).
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import functools
-import inspect
 import math
 from typing import Any
 
@@ -63,7 +59,6 @@ import polars as pl
 import pytest
 
 import polars_online as po
-from test_diagnostic_isolation import BEFORE_277
 from test_model_registry import MINIMAL
 
 TIER = "mixed"
@@ -79,9 +74,7 @@ HALF_LIFE = 50.0
 #: Every kind, each under a name, built from ``MINIMAL`` with the keywords
 #: its plainest well-behaved fit needs on this stream. ``corrchange_scalar``
 #: is the one ``corrchange`` that decays (its standardiser).
-VARIANTS: dict[str, tuple[str, dict[str, Any]]] = {
-    kind: (kind, {}) for kind in sorted(MINIMAL) if kind != "huber"
-}
+VARIANTS: dict[str, tuple[str, dict[str, Any]]] = {kind: (kind, {}) for kind in sorted(MINIMAL)}
 # Seed early, so the clustering and the hidden states learn on these rows
 # (``hmm``'s default warm-up is longer than the stream).
 VARIANTS["kmeans"] = ("kmeans", {"warm_rows": 20})
@@ -89,12 +82,8 @@ VARIANTS["hmm"] = ("hmm", {"warm_rows": 20})
 VARIANTS["rcov"] = ("rcov", {"block_rows": 50})
 VARIANTS["corrchange_scalar"] = ("corrchange", {"scalar": True, "half_life": HALF_LIFE})
 
-#: Task 277 changes these two's warm-up; their legs join ``VARIANTS`` when
-#: it merges (``test_the_huber_legs_still_wait`` says when).
-AFTER_TASK_277: dict[str, tuple[str, dict[str, Any]]] = {
-    "huber": ("huber", {}),
-    "sgd_huber": ("sgd", {"loss": "huber"}),
-}
+# With the refit of its first rows, on by default (task 277).
+VARIANTS["sgd_huber"] = ("sgd", {"loss": "huber"})
 
 KINDS = tuple(VARIANTS)
 ESSENTIAL = ("ewridge", "ew_cov", "kmeans")
@@ -190,7 +179,7 @@ def frame(variant: str, df: pl.DataFrame | None = None) -> pl.DataFrame:
     """The stream as ``variant`` reads it: a label for ``ftrl`` (logistic)
     and ``ew_class``."""
     df = STREAM if df is None else df
-    kind = VARIANTS.get(variant, AFTER_TASK_277.get(variant, (variant, {})))[0]
+    kind = VARIANTS.get(variant, (variant, {}))[0]
     if kind == "ftrl":
         df = df.with_columns(y=(pl.col("y") > 1).cast(pl.Float64))
     if kind == "ew_class":
@@ -200,7 +189,7 @@ def frame(variant: str, df: pl.DataFrame | None = None) -> pl.DataFrame:
 
 def spec(variant: str, **kw: Any) -> dict:
     """``variant``'s spec with ``kw`` over it; a ``None`` removes a key."""
-    kind, extra = VARIANTS.get(variant) or AFTER_TASK_277[variant]
+    kind, extra = VARIANTS[variant]
     a: dict[str, Any] = {"targets": ["y"], "features": ["x0", "x1"], "half_life": HALF_LIFE}
     a.update(MINIMAL[kind])
     a.update(extra)
@@ -221,7 +210,7 @@ def _state(bank: po.ModelBank, kind: str) -> pl.DataFrame | None:
 
 def run(variant: str, df: pl.DataFrame | None = None, **kw: Any):
     """The rows' fields and the state's table, one chunk, one thread."""
-    kind = (VARIANTS.get(variant) or AFTER_TASK_277[variant])[0]
+    kind = VARIANTS[variant][0]
     bank = po.ModelBank([spec(variant, **kw)], threads=1)
     out = bank.fit_predict(frame(variant, df)).select("m").unnest("m")
     return out, _state(bank, kind)
@@ -634,31 +623,5 @@ def test_fit_leaves_the_same_state_at_every_chunk_size(variant: str):
     assert other.save_bytes() != whole
 
 
-# --- the legs that wait for task 277 ---------------------------------------
-
-
-@pytest.mark.parametrize("variant", sorted(AFTER_TASK_277))
-def test_the_waiting_legs_run(variant: str):
-    """The ``huber`` legs build and run, so adding them is a move into
-    ``VARIANTS``, not a build."""
-    assert_live(run(variant, clock="t", gap_cap=CAP), variant)
-    assert_live(run(variant, half_life=[HALF_LIFE, 10.0]), variant)
-
-
-def test_the_huber_legs_still_wait():
-    """Task 277's warm-up is a parameter ``po.spec.huber`` did not take
-    before it. When one arrives, move ``AFTER_TASK_277``'s entries into
-    ``VARIANTS`` (``SOLVES`` already names ``huber``)."""
-    for builder, before in BEFORE_277.items():
-        now = set(inspect.signature(getattr(po.spec, builder)).parameters)
-        new = sorted(now - before)
-        assert not new, (
-            f"po.spec.{builder} gained {new}: if this is task 277's warm-up, move "
-            f"AFTER_TASK_277's entries into VARIANTS"
-        )
-
-
-def test_every_kind_is_swept_or_waits():
-    assert set(MINIMAL) == {VARIANTS[v][0] for v in VARIANTS} | {
-        AFTER_TASK_277[v][0] for v in AFTER_TASK_277
-    }
+def test_every_kind_is_swept():
+    assert set(MINIMAL) == {VARIANTS[v][0] for v in VARIANTS}

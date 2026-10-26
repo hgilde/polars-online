@@ -1045,8 +1045,9 @@ def test_schema_version_is_current():
     `holt`'s weighted means and `ftrl`'s proximal sum. Pre-1.0, an older
     file is refused by its version. From 1.0 a layout change keeps the
     schema before it loading: 62 for a blocked ``ewridge``'s held targets
-    (task 257), 63 for ``huber``'s and ``sgd``'s Huber scale (task 271)."""
-    assert po.schema_version() == 63
+    (task 257), 63 for ``huber``'s and ``sgd``'s Huber scale (task 271), 64
+    for their refit of each target's first rows (task 277)."""
+    assert po.schema_version() == 64
 
 
 def test_an_integer_key_used_as_both_session_and_group_orders_numerically():

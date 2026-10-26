@@ -688,6 +688,11 @@ pub struct SummaryRow<'a> {
     /// The solves that needed jitter or kept the previous fit, over the
     /// stream's models (`Stream::solve_failures`).
     pub solve_failures: u64,
+    /// The targets, over the stream's model instances, whose Huber refit of
+    /// the first rows was given up: past the spec's `refit_budget`, or past
+    /// the cap on a buffer's ageing runs (`Stream::refits_given_up`,
+    /// docs/PLAN.md task 277).
+    pub refit_given_up: u64,
     /// Where the stream stands on the readiness statistics
     /// (docs/WARMUP-AND-CONVERGENCE.md §3); `None` where a caller has no
     /// stream to read them from.
@@ -773,6 +778,10 @@ pub fn summary_frame(
         counts(
             "solve_failures",
             rows.iter().map(|r| Some(r.solve_failures)),
+        ),
+        counts(
+            "refit_given_up",
+            rows.iter().map(|r| Some(r.refit_given_up)),
         ),
         // The readiness statistics, NaN as null: a fraction that does not
         // exist (no decay), a ratio the model has not got, a share before

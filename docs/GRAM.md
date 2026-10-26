@@ -2025,8 +2025,12 @@ reach statsmodels' fit to 1e-12. Weighted
 least squares, a new Gram in each pass, reaches 2.0393 in five passes, and
 algorithm H in ten, each a query over the rows and a solve against the
 one factor. A `huber` spec instead weighs each row once, by its residual
-against the fit before the row, in one pass over the stream, and lands
-near the same fit: 2.046 on this stream.
+against the fit before the row, in one pass over the stream, after
+refitting each target's first 500 rows to convergence: 2.0394 on this
+stream. One pass without that refit (`huber_refit_rows=0`) gives 2.046,
+and on some streams far more, since outliers can capture the first fits
+([MODELS.md](MODELS.md#huber--quantile--robust-regression) measures how
+often).
 
 ## Sources
 

@@ -398,6 +398,7 @@ fn a_standardized_huber_keeps_the_slope_it_learned() {
         feature_sets: Vec::new(),
         ridge_scale: false,
         emit_scale: false,
+        refit_rows: 0,
     };
     holds(
         "huber",
@@ -470,6 +471,7 @@ fn sgd_predicts_the_same_at_every_level() {
         constraint: None,
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
+        refit_rows: 0,
     };
     holds(
         "sgd",
@@ -682,6 +684,7 @@ fn a_held_target_leaves_no_slope_on_a_moving_feature() {
         feature_sets: Vec::new(),
         ridge_scale: false,
         emit_scale: false,
+        refit_rows: 0,
     };
     slopes_decay(
         "huber",
@@ -801,6 +804,7 @@ fn without_decay_a_stopped_feature_keeps_its_slope() {
         constraint: None,
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
+        refit_rows: 0,
     };
     let (base, _) = run_on(
         Sgd::new(cfg.clone()).unwrap(),
@@ -909,6 +913,7 @@ fn a_state_saved_mid_hold_resumes_to_the_bit() {
             feature_sets: Vec::new(),
             ridge_scale: false,
             emit_scale: false,
+            refit_rows: 0,
         })
         .unwrap()
     });
@@ -946,6 +951,7 @@ fn a_state_saved_mid_hold_resumes_to_the_bit() {
             constraint: None,
             huber_scale: online_core::HuberScale::Rms,
             huber_scale_decay: None,
+            refit_rows: 0,
         })
         .unwrap()
     });
@@ -1125,6 +1131,7 @@ fn a_row_of_no_weight_moves_no_mean() {
             feature_sets: Vec::new(),
             ridge_scale: false,
             emit_scale: false,
+            refit_rows: 0,
         })
         .unwrap()
     });
@@ -1162,6 +1169,7 @@ fn a_row_of_no_weight_moves_no_mean() {
             constraint: None,
             huber_scale: online_core::HuberScale::Rms,
             huber_scale_decay: None,
+            refit_rows: 0,
         })
         .unwrap()
     });
@@ -1637,6 +1645,7 @@ fn quantile_cfg() -> RobustCfg {
         feature_sets: Vec::new(),
         ridge_scale: false,
         emit_scale: false,
+        refit_rows: 0,
     }
 }
 

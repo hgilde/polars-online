@@ -44,6 +44,7 @@ fn sgd(loss: SgdLoss, fit_intercept: bool, constraint: Option<Constraint>) -> Sg
         strict_binary: false,
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
+        refit_rows: 0,
     }
 }
 

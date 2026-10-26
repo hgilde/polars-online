@@ -66,7 +66,11 @@ def test_sgd_huber_at_a_level_is_robust_under_the_mad(frac):
     against 3.751 for both the squared loss and the RMS scale."""
     df = stream(20_000, frac, 3)
     squared = slope(po.spec.sgd("s", **NO_DECAY), df)
-    rms = slope(po.spec.sgd("s", loss="huber", huber_scale="rms", **NO_DECAY), df)
+    # One pass under the RMS, as 1.2.0 ran it: the refit of the first rows
+    # (task 277) would move it off the squared loss.
+    rms = slope(
+        po.spec.sgd("s", loss="huber", huber_scale="rms", huber_refit_rows=0, **NO_DECAY), df
+    )
     mad = slope(po.spec.sgd("s", loss="huber", **NO_DECAY), df)
     assert rms == squared, "the RMS scale at a level is the squared loss, kept as it was"
     assert abs(mad - 2.0) < 0.25 * abs(squared - 2.0), (mad, squared)

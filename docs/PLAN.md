@@ -16249,7 +16249,7 @@ line's bounded memory (task 270 (o)), and the release preparation (steps
 Recorded after it: the run's budgets (`--release 1.3.0`), `RELEASES` gains
 1.3.0 and `UNRELEASED` empties, the README's install size from PyPI's
 wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
-- [ ] 277. **Huber's converged warm-up, on by default, for `huber` and
+- [x] 277. **Huber's converged warm-up, on by default, for `huber` and
       `sgd(loss="huber")`** -- the user, 2026-10-25: "Fix the cpu paths and
       check the Huber warmup", then, on the measurement, "1.4.0, on by
       default" and the `sgd` analogue "same release". Measured (scratchpad

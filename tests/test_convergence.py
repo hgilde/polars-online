@@ -26,7 +26,6 @@ runs.
 from __future__ import annotations
 
 import dataclasses
-import inspect
 
 import numpy as np
 import pytest
@@ -75,32 +74,6 @@ def test_nothing_registered_is_also_excused():
     known = {k for b in REGRESSIONS for k in cv.keys_for(b)}
     stale = (set(cv.REGISTRY) | set(cv.PENDING) | set(cv.NOT_REGISTERED)) - known
     assert not stale, f"registered under a name no builder answers to: {stale}"
-
-
-def test_the_pending_reasons_still_hold():
-    """``huber`` and ``sgd(loss="huber")`` wait on task 277's warm-up. Its
-    arrival is a parameter neither builder had before it: then this fails,
-    and their registrations and assertions take the place of the entries in
-    ``PENDING``."""
-    assert set(cv.PENDING) == {"huber", "sgd:huber"} == set(cv.AFTER_277)
-    for builder, before in cv.BEFORE_277.items():
-        now = set(inspect.signature(getattr(po.spec, builder)).parameters)
-        new = sorted(now - before)
-        assert not new, (
-            f"po.spec.{builder} gained {new}: if this is task 277's warm-up, move "
-            f"convergence.AFTER_277's entries into REGISTRY and assert their classes"
-        )
-
-
-def test_the_waiting_registrations_are_ready():
-    """``AFTER_277``'s entries build a ``Registration``, their specs build,
-    and their oracle runs, so registering them is a move, not a build."""
-    for key, kw in cv.AFTER_277.items():
-        reg = cv.Registration(key=key, limit="pending", **kw)
-        s = reg.stream(400, 0)
-        b = cv.fit(reg.build(cv.INF), s.frame, [400])[400]
-        o = cv.oracle_at(reg, s, 400, cv.INF)
-        assert b.shape == o.shape == s.truth.shape
 
 
 @pytest.mark.parametrize("key", sorted(cv.REGISTRY))
@@ -157,7 +130,21 @@ CONSISTENCY: dict[str, tuple[float, float | None]] = {
     # Measured 0.028 and -0.77; 0.051 and -0.65.
     "ftrl:squared": (0.05, -0.6),
     "ftrl:logistic": (0.1, -0.5),
+    # The refit of the first 500 rows lands on the batch fit of those rows,
+    # and each row after is weighed by the fit before it: the one pass's gap
+    # to the batch fit of every row falls as 1/sqrt(n), read from the cut
+    # after the refit's (RATE_FROM). Measured at the 500-row default
+    # (2026-10-25): 0.00171 and -0.40 over 2,000..32,000 (huber); 0.00413
+    # and -0.43 (sgd at power 1, rate 2).
+    "huber": (0.0025, -0.35),
+    "sgd:huber": (0.006, -0.35),
 }
+
+#: The cut a registration's rate is read from, where the first cut is not
+#: yet the one pass's: the Huber fits refit their first 500 rows, so at 500
+#: rows the gap is the refit's tolerance (3e-4 for both, measured), not a
+#: point on the 1/sqrt(n) the rows after it follow (task 277).
+RATE_FROM = {"huber": 2000, "sgd:huber": 2000}
 
 #: Registrations whose class 1 is a test of its own below.
 CONSISTENCY_ELSEWHERE = {"pa": "test_pa_wanders_in_a_neighbourhood_set_by_c", "holt": "test_holt"}
@@ -177,7 +164,8 @@ def test_consistency(key):
     worst = p.worst()
     assert worst[-1] <= end, f"worst seed {p.to_oracle[CUTS[-1]]}"
     if steepest is not None:
-        r = cv.rate(CUTS, worst)
+        first = CUTS.index(RATE_FROM.get(key, CUTS[0]))
+        r = cv.rate(CUTS[first:], worst[first:])
         print(f"  rate of the worst seed's gap: {r:.2f} (bound {steepest})")
         assert r <= steepest
     else:
@@ -315,6 +303,9 @@ START: dict[str, dict[float, float]] = {
     # trend's, so the far regime's slope (0.06 off) is 0.004 off still, and the
     # level carries it: 0.532 (fresh 0.061).
     "holt": {200.0: 0.8},
+    # 0.00892 (fresh 0.0101) and 0.0328 (fresh 0.0328).
+    "huber": {200.0: 0.0135},
+    "sgd:huber": {200.0: 0.05},
 }
 
 #: Without decay a model that is not the batch fit is held to leave the
@@ -339,6 +330,14 @@ START_RATE: dict[str, float] = {
     # steps start small: -0.43 (7.31 to 1.48) and -1.25 (1.96 to 0.053).
     "ftrl:squared": -0.3,
     "ftrl:logistic": -0.8,
+    # A loaded state's refit has run, on the other regime's rows: the one
+    # pass keeps those rows in its sums at the weights they were learned at,
+    # where the batch fit of every row reads them as outliers, so the gap to
+    # this stream's own fit falls as the rows after it outweigh them: -0.71
+    # (2.72 at 32,000 rows) and, for sgd's steps, -1.05 (0.651), measured at
+    # the 500-row default (2026-10-25; -0.67 and -1.02 at 200).
+    "huber": -0.5,
+    "sgd:huber": -0.7,
 }
 
 #: pa is at its neighbourhood (class 1) from the first cut: its gap to this
@@ -616,6 +615,28 @@ ADVERSE: dict[str, dict[tuple[str, float], float]] = {
         ("cauchy", INF): 32.0,
         **{(kind, 500.0): 1.35 for kind in cv.ADVERSITIES},
     },
+    # A robust fit with the refit of its first 500 rows. Measured at that
+    # default (2026-10-25) without decay 0.00367 (wild), 0.00361 (t2) and
+    # 0.00509 (cauchy), beside 0.0034 clean; a shift of every one of the
+    # first 500 rows is no outlier among them, so the refit keeps them and
+    # the one pass lets them go as 1/n (5.97 at 2,000 rows, 1.24 at 8,000).
+    # Under a half-life every kind 0.00497 to 0.00501, beside 0.00501 clean.
+    # sgd, at power 1: 0.00693, 0.00792, 0.00827 and the shift 0.239 (4.17
+    # at 2,000); under a half-life 0.0163 to 0.0164, its clean 0.0163.
+    "huber": {
+        ("wild", INF): 0.0055,
+        ("shift", INF): 1.9,
+        ("t2", INF): 0.007,
+        ("cauchy", INF): 0.01,
+        **{(kind, 500.0): 0.0075 for kind in cv.ADVERSITIES},
+    },
+    "sgd:huber": {
+        ("wild", INF): 0.011,
+        ("shift", INF): 0.36,
+        ("t2", INF): 0.014,
+        ("cauchy", INF): 0.015,
+        **{(kind, 500.0): 0.025 for kind in cv.ADVERSITIES},
+    },
 }
 
 _KALMAN_CAPTURE = (
@@ -639,6 +660,16 @@ ADVERSE_DEFECTS: dict[tuple[str, str, float], str] = {
     ("quantile", "wild", INF): _QUANTILE_RMS.format("4.08 (seed 47)"),
     ("quantile", "shift", INF): _QUANTILE_RMS.format("0.097 (seed 18)"),
     ("quantile", "cauchy", INF): _QUANTILE_RMS.format("0.143 (seed 36)"),
+    **{
+        (key, "outliers", INF): (
+            "defect (task 277): 20% wild rows in the first 500 rows, 40% of those with x0 "
+            "above 0, capture the refit of the first 500 rows itself, which starts from the "
+            "captured online fit; without decay the one pass then keeps the captured rows "
+            f"(measured {m} at 8,000 rows, seed 30, against {c} clean); the class 4 "
+            "cells at 20% are the same"
+        )
+        for key, m, c in (("huber", "0.158", "0.0034"), ("sgd:huber", "0.149", "0.0068"))
+    },
 }
 
 
@@ -815,6 +846,23 @@ REBREAK: dict[str, dict[str, tuple[float, float]]] = {
         "variance": (12, 0.19),
         "regime": (12, 7.3),
     },
+    # The MAD scale holds the fit back after a level or a regime break until
+    # the median has crossed (MODELS.md, a robust scale after a change of
+    # level). Measured 0.0266 and 0.0115 at 8, 0.0309 (flat from one
+    # half-life: the variance changes the scale, not the fit) and 0.0183 at
+    # 12; sgd at power 1, 0.0251 and 0.0247 at 8, 0.13 and 0.0326 at 12.
+    "huber": {
+        "level": (8, 0.04),
+        "slope": (8, 0.018),
+        "variance": (12, 0.047),
+        "regime": (12, 0.028),
+    },
+    "sgd:huber": {
+        "level": (8, 0.038),
+        "slope": (8, 0.037),
+        "variance": (12, 0.2),
+        "regime": (12, 0.05),
+    },
 }
 
 #: Cells that fail on a defect: the reason, with its measurement. Empty since
@@ -973,4 +1021,49 @@ def test_breakdown_essential():
     captured, t, wild = cv.captures(narrow, 0.05, 10, 20_000, cv.INF)
     print(f"quantile, quantile_eps 0.02, 5% wild: {captured}/10; {t}")
     assert wild > 500
+    assert captured == 0, t
+
+
+# Class 4 for the Huber fits, on the same contamination (cv.contaminate): a
+# seed is captured when its slope ends more than 0.05 from the batch Huber
+# fit with the MAD scale on the same rows. Measured 2026-10-25, 50 seeds at
+# 20,000 rows: no seed captured at 5%, 10% or 15%, with or without decay
+# (the worst 0.0175 for huber, 0.0208 for sgd, at 15% without decay); at
+# 20%, 40% of the rows with x0 above 0, the refit of the first rows is
+# itself captured in some seeds (below). Re-measured at the 500-row default
+# (2026-10-25): still none at 5% to 15% (the worst 0.0128 for huber, 0.0144
+# for sgd, at 15% without decay); at 20% 8 and 5 of 50 for huber, 6 and 5
+# for sgd, where 200 rows left 16, 12, 15 and 10.
+_HUBER_20 = (
+    "defect (task 277): at 20% wild rows, 40% of those with x0 above 0, the refit of "
+    "the first 500 rows is itself captured in some seeds, from the captured online fit "
+    "it starts from: {}/50 captured, the worst slope {} off (seed {}); "
+    "huber_refit_rows=1000 leaves fewer (MODELS.md)"
+)
+HUBER_BREAKDOWN_DEFECTS: dict[tuple[str, float, float], str] = {
+    ("huber", 0.20, cv.INF): _HUBER_20.format(8, "0.913", 30),
+    ("huber", 0.20, 5000.0): _HUBER_20.format(5, "0.769", 21),
+    ("sgd:huber", 0.20, cv.INF): _HUBER_20.format(6, "0.862", 30),
+    ("sgd:huber", 0.20, 5000.0): _HUBER_20.format(5, "0.703", 21),
+}
+
+
+def _huber_breakdown_params() -> list:
+    out = []
+    for key in ("huber", "sgd:huber"):
+        for share in BREAKDOWN_SHARES:
+            for h in BREAKDOWN_HALF_LIVES:
+                marks = [_GRID]
+                if (key, share, h) in HUBER_BREAKDOWN_DEFECTS:
+                    reason = HUBER_BREAKDOWN_DEFECTS[(key, share, h)]
+                    marks.append(pytest.mark.xfail(strict=True, reason=reason))
+                out.append(pytest.param(key, share, h, marks=marks, id=f"{key}-{share:.0%}-{h:g}"))
+    return out
+
+
+@pytest.mark.parametrize("key, share, half_life", _huber_breakdown_params())
+def test_huber_is_never_captured_short_of_breakdown(key, share, half_life):
+    captured, t, wild = cv.captures(cv.REGISTRY[key], share, SEEDS, 20_000, half_life)
+    print(f"{key}, {share:.0%} wild, half-life {half_life:g}: {captured}/{SEEDS}; {t}")
+    assert wild > 0.5 * share * 20_000, "the contamination is there"
     assert captured == 0, t

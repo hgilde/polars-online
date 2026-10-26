@@ -25,7 +25,9 @@ TIER = "essential"
 MODELS = [
     ("ewridge", {}),
     ("lasso", {"penalties": [0.0]}),
-    ("huber", {}),
+    # The refit moves a target's fit on its own row, off the cadence held
+    # here (task 277).
+    ("huber", {"huber_refit_rows": 0}),
     ("quantile", {"quantile": 0.5}),
 ]
 

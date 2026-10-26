@@ -18,8 +18,9 @@ concentrated where ``x0 > 0`` (``convergence.contaminate``), so a share
 median there breaks at ``s = 25%``, which docs/MODELS.md states as the
 point where every estimator that reads only residuals breaks (30% of the
 rows, 60% of those with ``x`` above 0, for ``huber``). The sweep stops
-short of it, at 20%. ``huber`` and ``sgd(loss="huber")`` join once task
-277's warm-up merges (``convergence.PENDING``).
+short of it, at 20%. ``huber``'s and ``sgd(loss="huber")``'s sweep, with
+the refit of their first rows (task 277), is
+``test_convergence.py``'s ``test_huber_is_never_captured_short_of_breakdown``.
 """
 
 from __future__ import annotations

@@ -53,19 +53,14 @@ the table leaves out must be refused by the builder
 that runs.
 
 Essentials: ``ewridge``, ``sgd`` and ``holt``. Extended: the other linear
-kinds. ``huber`` and ``sgd(loss="huber")`` wait in ``AFTER_TASK_277``:
-task 277 is changing their warm-up. Their legs build and run today
-(``test_the_waiting_legs_are_ready``), and
-``test_the_huber_legs_still_wait`` fails when a new parameter arrives on
-``po.spec.huber`` or ``po.spec.sgd``: then the two entries move into
-``KINDS``. The Rust twin, which ``cargo mutants`` sees, is
+kinds, ``huber`` and ``sgd(loss="huber")`` among them, with the refit of
+their first rows on (task 277). The Rust twin, which ``cargo mutants`` sees, is
 ``crates/online-polars/tests/diagnostic_isolation.rs``.
 """
 
 from __future__ import annotations
 
 import functools
-import inspect
 import json
 import math
 import warnings
@@ -103,60 +98,9 @@ KINDS: dict[str, Builder] = {
     # for the fit to settle (calibration, breaks, specification, tails)
     # would be null throughout.
     "holt": lambda **kw: po.spec.holt("m", trend_half_life=120.0, **kw),
-}
-
-#: Task 277 changes these two's warm-up; their legs join ``KINDS`` when it
-#: merges (``test_the_huber_legs_still_wait`` says when).
-AFTER_TASK_277: dict[str, Builder] = {
+    # With the refit of their first rows, on by default (task 277).
     "huber": lambda **kw: po.spec.huber("m", **kw),
     "sgd_huber": lambda **kw: po.spec.sgd("m", loss="huber", learning_rate=0.02, **kw),
-}
-
-#: The parameters ``po.spec.huber`` and ``po.spec.sgd`` take before task
-#: 277. A parameter outside these is its warm-up arriving.
-BEFORE_277 = {
-    "huber": frozenset(
-        {
-            "name",
-            "targets",
-            "features",
-            "huber_delta",
-            "huber_scale",
-            "huber_scale_half_life",
-            "ridge",
-            "standardize",
-            "solve_every",
-            "max_rows_between_solves",
-            "feature_sets",
-            "ridge_scale",
-            "emit_huber_scale",
-            "common",
-        }
-    ),
-    "sgd": frozenset(
-        {
-            "name",
-            "targets",
-            "features",
-            "loss",
-            "huber_delta",
-            "huber_scale",
-            "huber_scale_half_life",
-            "quantile",
-            "eps",
-            "learning_rate",
-            "schedule",
-            "power",
-            "l2",
-            "clip_gradient",
-            "standardize",
-            "coef_min",
-            "coef_max",
-            "coef_sum",
-            "strict_binary",
-            "common",
-        }
-    ),
 }
 
 ESSENTIAL_KINDS = ("ewridge", "sgd", "holt")
@@ -168,7 +112,7 @@ NO_FEATURES = frozenset({"holt"})
 LEVERAGE = frozenset({"ewridge", "rls", "kalman"})
 LEAST_SQUARES = frozenset({"ewridge", "rls"})
 NOISE_GATE = frozenset({"ewridge", "rls", "kalman", "lasso"})
-ALL = frozenset(KINDS) | frozenset(AFTER_TASK_277)
+ALL = frozenset(KINDS)
 WITH_FEATURES = ALL - NO_FEATURES
 
 #: Each switch's kinds. A knob is taken where its switch is.
@@ -367,7 +311,7 @@ def _spec(build: Builder, kind: str, variant: str, kw: dict[str, Any], grid: boo
 
 
 def _builder(kind: str) -> Builder:
-    return KINDS.get(kind) or AFTER_TASK_277[kind]
+    return KINDS[kind]
 
 
 @functools.cache
@@ -477,10 +421,10 @@ DEFECTS: dict[tuple[str, str], str] = {
         "withhold rows without moving the fit; the builder does not document the "
         "difference, as kalman's and lasso's do. Measured 2026-10-25."
     ),
-    # The waiting legs share the cause (a residual scale learned only from
+    # The Huber legs share the cause (a residual scale learned only from
     # rows with a prediction); measured on main at b45fa81, 2026-10-25, both
-    # streams, first at rows 5-9. Task 277 changes their warm-up, so each is
-    # re-measured when it moves into KINDS.
+    # streams, first at rows 5-9, and still so with the refit of the first
+    # rows on (task 277, re-measured when they joined KINDS).
     ("huber", "min_weight=50"): "huber: min_weight moves coef, as quantile's does",
     ("sgd_huber", "min_weight=50"): "sgd(loss='huber'): min_weight moves coef, as quantile's does",
 }
@@ -631,11 +575,11 @@ def test_every_switch_at_once_never_moves_the_fit(kind: str, variant: str) -> No
 # Keeping the tables honest
 
 
-def test_every_linear_kind_is_swept_or_waits():
-    """A new regression joins this sweep, or ``AFTER_TASK_277`` says why it
-    waits."""
-    waiting = {"huber"}
-    assert set(KINDS) | waiting == set(REGRESSIONS), set(REGRESSIONS) ^ (set(KINDS) | waiting)
+def test_every_linear_kind_is_swept():
+    """A new regression joins this sweep (``sgd_huber`` is ``sgd``'s Huber
+    loss, swept beside it)."""
+    swept = set(KINDS) - {"sgd_huber"}
+    assert swept == set(REGRESSIONS), set(REGRESSIONS) ^ swept
 
 
 def test_every_common_diagnostic_parameter_is_a_case():
@@ -676,27 +620,3 @@ def test_every_pair_left_out_is_refused(kind: str):
             continue
         with pytest.raises(ValueError, match=case.needs or next(iter(case.kw))):
             _spec(_builder(kind), kind, "rows", case.kw, case.grid)
-
-
-@pytest.mark.parametrize("kind", sorted(AFTER_TASK_277))
-def test_the_waiting_legs_are_ready(kind: str):
-    """The ``huber`` legs build every case and run, so adding them is a move
-    into ``KINDS``, not a build."""
-    for case in CASES.values():
-        if case.taken_by(kind):
-            _spec(_builder(kind), kind, "rows", case.kw, case.grid)
-    assert run(kind, "rows", _everything(kind)).height == N
-
-
-def test_the_huber_legs_still_wait():
-    """Task 277's warm-up is a parameter ``po.spec.huber`` did not take
-    before it. When one arrives, move ``AFTER_TASK_277``'s entries into
-    ``KINDS`` (and ``huber`` out of the wait in
-    ``test_every_linear_kind_is_swept_or_waits``)."""
-    for builder, before in BEFORE_277.items():
-        now = set(inspect.signature(getattr(po.spec, builder)).parameters)
-        new = sorted(now - before)
-        assert not new, (
-            f"po.spec.{builder} gained {new}: if this is task 277's warm-up, move "
-            f"AFTER_TASK_277's entries into KINDS"
-        )

@@ -768,6 +768,8 @@ squares has `ρ(u) = u²/2`, so one row that misses by 50 pulls as hard as
 at the weight `w` of its own residual. A batch fit iterates: fit, compute
 the residuals, reweight, fit again. `huber` weighs each row once, by its
 residual against the fit before the row, and keeps only the weighted sums.
+The exception is each target's first 500 learned rows, which it refits to
+convergence once (`huber_refit_rows=`, below).
 
 `e` is the row's residual, and `σ` the target's residual scale (below).
 `δ` is `huber_delta` and `τ` the `quantile` level. The *Gram* is
@@ -873,14 +875,14 @@ whose step is cheaper.
 **The root mean square is not robust, and the median is.** Measured on
 `y = 1000 + 2x + 0.5ε` over 20,000 rows with no decay, and a wild row 50
 too high on a share of the rows with `x` above 0, as the median slope over
-five seeds:
+five seeds, with the other settings at their defaults:
 
 | wild rows | least squares | `"mad"` | `"rms"` | statsmodels `RLM`, MAD scale, iterated to convergence |
 |---|---|---|---|---|
-| none | 1.999 | 2.000 | 2.000 | 2.000 |
+| none | 1.999 | 1.999 | 2.000 | 2.000 |
 | 1% | 2.415 | 2.008 | 2.057 | 2.008 |
-| 5% | 4.050 | 2.040 | 2.676 | 2.039 |
-| 12.5% | 6.975 | 2.128 | 4.885 | 2.124 |
+| 5% | 4.050 | 2.040 | 2.675 | 2.039 |
+| 12.5% | 6.975 | 2.124 | 4.882 | 2.124 |
 
 The root mean square fails twice. Its first residuals are the target's whole
 level, about 1,000 while the intercept is still near 0, and without decay
@@ -890,15 +892,111 @@ the level. The small bias left at 1% and 5% is Huber's own: a wild row still
 teaches, at about `1.345 · 0.5 / 50 ≈ 0.013` of an ordinary row's weight,
 and hundreds of them add up.
 
-**One pass with the median lands where the fully iterated batch fit does.**
-`huber` weighs each row once, by its residual against the fit before it.
-The early rows get their weights from a poor fit and the later rows from a
-good one, so the one pass converges to the batch fit on a stream that does
-not change. The table above shows the two within 0.005 up to 12.5% wild
-rows. Reweighting more passes over a trailing window of 256 rows would
-close less than half of what is left at 12.5%, measured in a simulation of
-this recursion (2.183 to 2.155, against 2.124 for the batch fit), and it
-would cost the window's rows in memory.
+**A median over five streams hides the streams the outliers capture, so
+`huber` refits each target's first rows to convergence.** One pass weighs
+each row by the fit before it. Over the first rows that fit is close to
+least squares, so the wild rows pull it, and `σ` learns the pulled fit's
+residuals, several times the noise's scale. The cut `δσ` is then wide, the
+wild rows keep entering at nearly their full weight, and the fit stays where
+they pulled it. Without decay it stays for good, since the first rows keep
+their share of the sums and `σ` its memory of them. So on the row a
+target's count of learned rows reaches `huber_refit_rows` (by default 500,
+or 10 a feature from 51 features to 100, and off above 100),
+`huber` refits those rows by iteratively reweighted least squares, as a
+batch fit does:
+
+```
+v_i = w_i · λ_{i+1} ⋯ λ_n                 each buffered row's weight, decayed to the refit's row n
+                                          (v_i' the same by the scale's clock, huber_scale_half_life)
+r_i = y_i − z_i·β                         against the last pass's fit (the first pass: the online fit)
+σ   = weighted median of |r_i| at v_i', over 0.6745       (the weighted root mean square under "rms")
+u_i = min(1, δσ / |r_i|)
+β   = the ridge solve of the rows at v_i · u_i            repeated until β moves by under 1e-10 of max|β|, or 50 passes
+```
+
+It then rebuilds the target's sums from the rows at their converged
+weights, and `σ` from the converged fit's residuals, and goes on online.
+Rebuilding `σ` is what keeps the refit: a refit that kept the pulled fit's
+`σ` was pulled back within a few hundred rows. The refit's row is predicted
+before any of it, so the prediction stays out-of-sample. It moves only its
+own target's fit, and the solve schedule stays as it was. `weight_sum`,
+and each target's weight that `min_weight` reads, count the raw weights
+and do not move.
+
+The refit takes a target from the first poor fit to the batch fit.
+Measured on the same stream as the table above, over 40 seeds, as the
+streams whose final slope is more than 0.05 from statsmodels' `RLM`, then
+more than 0.25, and the worst distance:
+
+| wild rows | 20,000 rows, `huber_refit_rows=0` | 20,000 rows, 500 (the default) | 2,000 rows, 0 | 2,000 rows, 200 | 2,000 rows, 500 | 2,000 rows, 1,000 |
+|---|---|---|---|---|---|---|
+| 5% | 0 and 0 of 40; worst 0.014 | 0 and 0; 0.001 | 4 and 0; 0.17 | 0 and 0; 0.004 | 0 and 0; 0.003 | 0 and 0; 0.003 |
+| 10% | 6 and 0; 0.19 | 0 and 0; 0.004 | 12 and 6; 0.49 | 0 and 0; 0.008 | 0 and 0; 0.006 | 0 and 0; 0.005 |
+| 12.5% | 13 and 2; 0.43 | 0 and 0; 0.007 | 15 and 13; 0.97 | 0 and 0; 0.013 | 0 and 0; 0.009 | 0 and 0; 0.007 |
+| 15% | 15 and 12; 1.08 | 0 and 0; 0.012 | 20 and 18; 2.33 | 1 and 0; 0.054 | 0 and 0; 0.016 | 0 and 0; 0.019 |
+| 20% | 25 and 23; 4.30 | 4 and 0; 0.14 | 29 and 24; 6.68 | 18 and 5; 5.76 | 10 and 1; 0.32 | 3 and 0; 0.15 |
+
+The median stream was within 0.002 of `RLM` at 12.5% either way, which is
+why five seeds did not show the captured ones. With a half-life of 5,000
+rows over 20,000 rows, the refit took the captured streams at 15% and 20%
+from 15 and 26 of 40 to 0 and 2. At 20% wild rows, 40% of those with `x`
+above 0, a first window of 200 rows can itself be captured, and one of 500
+rows now and then; 1,000 rows holds there. Over 20,000 rows 200 rows left
+the same 4 streams at 20% as 500 do, the worst by 0.18; over 2,000 rows the
+table shows what the longer default buys. `huber_refit_rows=0` turns the refit off, and gives the numbers
+of the releases before it, to the bit.
+
+**The refit holds each target's rows until it runs, then frees them.** A
+learned row takes `(features + 4) · 8` bytes. The rows that only aged the
+target -- its value null, or its weight 0 -- take 32 bytes a run, one run
+for such rows in a row at one clock step. So one feature and 500 rows take
+about 20 KB a target. A group shorter than `huber_refit_rows` never refits
+and holds its rows to its end: measured with 5,000 groups of 150 rows, two
+targets and 20 features and no bound, the bank's peak resident memory was
+87 KB a group more than without the refit, and its saved state 63 KB more.
+Past four runs a learned row of
+`huber_refit_rows` the target gives its refit up, frees its rows and keeps
+its one-pass fit: under a regular clock that never happens, since a gap of
+any length is one run, and under an irregular one it happens to a target
+present on fewer than about one row in five. The refit runs once, in 0.06
+to 7.2 ms for 1 to 50 features and 200 to 1,000 rows (an Apple M4 Pro under
+other load, best of 9), and a row after it costs what it did, within 2%.
+The default count grows with the features, 10 rows a feature past 50, so
+that the refit has rows enough for its coefficients, and stops at 100
+features, where a target's rows would pass 0.8 MB. A count given is taken at
+any width: at 500 features and more, 200 rows are fewer than the
+coefficients' count, the fit is the ridge's, and the iteration runs to its
+cap of 50 passes, 7 s once at 1,000 features.
+
+**`refit_budget` bounds the buffers of all a spec's groups together: 256
+MiB by default, or `inf` for no bound.** Each new group reserves, when it
+first appears, the most its targets' buffers can hold: `(features + 20) · 8`
+bytes a target for each row of `huber_refit_rows`, the row and its four
+runs. The group that would cross the bound, and every new group after it,
+gives its refit up and keeps its one-pass fit; a notice says so once, and
+`summary()`'s `refit_given_up` counts the targets. A reservation lasts the
+bank's life, even after the refit frees the buffer, and is saved with the
+bank, so which groups refit depends neither on the chunking nor on the order
+the groups run in, nor on a save and load between them. The price is that
+once the bound is reached no later group refits, though the first groups'
+buffers have long been freed. At 20 features and 500 rows a target reserves
+160 KB, and 256 MiB refits the first 1,677 targets. Measured on the 150-row
+groups above, fed from parquet, as the peak resident memory after the fit and
+the saved state (at 20,000 groups the median of three runs, which spread by
+up to 130 MiB; the reservation is the most a buffer can hold, and these held
+less):
+
+| groups | `huber_refit_rows=0` | the default, 256 MiB | `refit_budget=inf` |
+|---|---|---|---|
+| 5,000 | 660 MiB peak; state 126 MiB | 749 MiB; 178 MiB; 8,324 of 10,000 targets given up | 1,084 MiB; 435 MiB |
+| 20,000 | 1,625 MiB; 502 MiB | 1,641 MiB; 556 MiB; 38,324 of 40,000 given up | 3,161 MiB; 1,741 MiB |
+
+**Two settings have no refit: it is off by default there, and refused when
+asked for.** Under `ridge_scale="sum"` the prior has aged with every row
+before the first, which a refit of the buffered rows cannot hold. Under
+`huber_delta=inf` the fit is least squares, with no wild rows to refit for.
+Reweighting passes over a trailing window of rows would leave the first
+rows' weights and `σ` as they are, so they would free no captured fit.
 
 **A robust scale slows the fit after a change of level.** In a series, a
 run of large residuals is either a burst of outliers or a new level, and no
@@ -939,8 +1037,9 @@ square, on the model's clock: it sets the width of the band, not a weight.
 
 ```python
 hub = po.spec.huber("hub", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=600.0,
-                    huber_delta=1.5,             # a residual beyond huber_delta * sigma is down-weighted (default 1.345)
-                    huber_scale_half_life=120.0)  # sigma's own memory, shorter than the fit's (default half_life)
+                    huber_delta=1.5,              # a residual beyond huber_delta * sigma is down-weighted (default 1.345)
+                    huber_scale_half_life=120.0,  # sigma's own memory, shorter than the fit's (default half_life)
+                    huber_refit_rows=1000)        # each target's first rows refit to convergence (default 500; 0 is off)
 med = po.spec.quantile("med", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=600.0,
                        quantile=0.5,      # the level, strictly between 0 and 1: 0.5 is a median regression
                        quantile_eps=0.2)  # the band's half-width, in units of sigma (default 0.2)
@@ -950,8 +1049,9 @@ med = po.spec.quantile("med", targets=["y"], features=["x0", "x1"], clock="t", g
 95% as efficient as least squares when the errors are normal.**
 statsmodels' `HuberT` takes 1.345 and scikit-learn's `HuberRegressor`
 1.35. `huber_delta=inf` cuts nothing, which is least squares. To reproduce
-the numbers of a version before `huber_scale` existed, give
-`huber_scale="rms"`.
+the numbers of a version before the refit existed (1.3.0 and earlier), give
+`huber_refit_rows=0`; before `huber_scale` existed (1.2.0 and earlier),
+give `huber_scale="rms"` as well.
 
 **The band's rows, those with `|e| < h`, give the Newton step its
 curvature.** So a much smaller `quantile_eps` narrows the band and slows
@@ -968,14 +1068,15 @@ inside the band.
 | a band holding less than one row per coefficient | until the band holds rows again, which rebuilds a fit that a row near the input bound, `1e100`, has moved |
 | a target with no `σ` above 0 | until a residual other than 0 gives it one, since the band is a width in units of `σ` |
 
-**Both models are held to numpy references of their own recursions within
-1e-14.** Against batch fits of the same objectives, scikit-learn's
-`HuberRegressor` and statsmodels' `QuantReg`, they land close but not
-equal, for three reasons:
+**Both models' one pass is held to numpy references of its own recursion
+within 1e-14, and `huber`'s refit to statsmodels' `RLM` on the same rows
+within 1e-5.** Against batch fits of the same objectives over a whole
+stream, scikit-learn's `HuberRegressor` and statsmodels' `QuantReg`, they
+land close but not equal, for three reasons:
 
 | reason | applies to |
 |---|---|
-| each row's weight was set by the fit before it | both |
+| each row's weight was set by the fit before it | both; for `huber`, each row after its target's first `huber_refit_rows` |
 | `σ` is an exponentially weighted median, read from a sketch, where a batch fit takes the median of the final residuals | `huber` |
 | the check loss is smoothed over the band | `quantile` |
 
@@ -1057,7 +1158,7 @@ The loss sets the link and the gradient:
 | loss | link | `dL/d eta` | its constant |
 |---|---|---|---|
 | `squared` | identity | `p − y` | |
-| `huber` | identity | `clamp(p − y, ±delta·s)` | `delta` is `huber_delta=`, 1.345 by default, in units of `s` as `huber`'s is; `huber_scale=` and `huber_scale_half_life=` choose `s` as for `huber` |
+| `huber` | identity | `clamp(p − y, ±delta·s)` | `delta` is `huber_delta=`, 1.345 by default, in units of `s` as `huber`'s is; `huber_scale=` and `huber_scale_half_life=` choose `s` as for `huber`, and `huber_refit_rows=` sets the first rows' refit (below) |
 | `quantile` | identity | `1{y < p} − τ` | `τ` is `quantile=`, the level, between 0 and 1 |
 | `epsilon_insensitive` | identity | 0 within `eps·s_y` of `y`, else `sign(p − y)` | the tube's half-width is `eps=`, 0.01 by default, in units of `s_y` |
 | `poisson` | log, for count targets | `p − y` | a negative target refuses the chunk, naming the row |
@@ -1089,12 +1190,52 @@ cut the gradient is clipped, not zero, so a cut those residuals widen still
 lets every row teach, and the median scale leaves them behind once the fit
 has the level. The root mean square does not: without decay the first
 residuals stay in it, the cut stays wider than every later residual, and the
-Huber loss is the squared loss. On `y = 1000 + 2x + 0.5ε` with a row 50 too
-high on 5% of the rows, all with `x` above 0, and no decay, the slope is
-3.751 under the squared loss and under `huber_scale="rms"` alike, and 2.016
-under the default `"mad"`. Inside the tube the gradient is zero. A tube drawn in
+Huber loss is the squared loss, until the refit below rebuilds the scale
+from the converged fit's residuals. On `y = 1000 + 2x + 0.5ε` with a row 50
+too high on 5% of the rows, all with `x` above 0, and no decay, the median
+slope over five seeds is 3.751 under the squared loss, 2.016 under the
+default `"mad"` with `huber_refit_rows=0`, and 2.013 with the default
+refit. The refit rebuilds `"rms"` from its converged fit's residuals too,
+which takes the first residuals out of it, but the outliers still inflate
+it: over 40 seeds at 5% wild rows every stream stayed more than 0.05 from
+`RLM` under `"rms"`, and 36 of them more than 0.25 with the refit (a median
+gap of 0.60) where all 40 were without it (1.85). Inside the tube the gradient is zero. A tube drawn in
 the residuals' spread on a target at 1,000 with a spread of 2 was about 100
 wide and held every row, and without decay it never narrowed.
+
+**`sgd`'s Huber loss refits each target's first 500 learned rows to
+convergence, as `huber` does.** Its first steps start from zero, so the
+outliers capture it as they capture `huber`'s first solves, and more often:
+over 2,000 rows at 10% wild rows, every one of 40 streams ended more than
+0.25 in slope from statsmodels' `RLM`. On the row a target's count of
+learned rows reaches `huber_refit_rows`, the converged Huber fit of those
+rows replaces its coefficients, and its scale `s` is rebuilt from that
+fit's residuals. The fit is `huber`'s iteration (in its section), started
+from the rows' weighted least squares, as statsmodels starts, with a ridge
+of 1e-6 on the mean-form system. It leaves out `l2`, a penalty on the
+steps, which the steps after it apply. The coefficients are set in the
+coordinates the fit is held in: the caller's units, or, while the scaler
+still warms up, the coordinates of its moments as they stand, so that they
+read out as the fit. A constraint projects the fit as it projects a step.
+The learning rate's state stays. Adagrad's sums of squared gradients keep
+the step sizes the rows taught; emptied, they would make the next steps
+throw the fit off. `inv_scaling` reads the weight, which the refit does not
+move. Measured on
+the stream above, over 40 seeds, as the streams more than 0.05 and more
+than 0.25 from `RLM`, and the worst distance:
+
+| wild rows | 20,000 rows, `huber_refit_rows=0` | 20,000 rows, 500 (the default) | 2,000 rows, 0 | 2,000 rows, 200 | 2,000 rows, 500 | 2,000 rows, 1,000 |
+|---|---|---|---|---|---|---|
+| 5% | 9 and 0 of 40; worst 0.097 | 9 and 0; 0.091 | 30 and 0; 0.16 | 5 and 0; 0.065 | 5 and 0; 0.065 | 5 and 0; 0.065 |
+| 10% | 14 and 0; 0.15 | 9 and 0; 0.11 | 40 and 40; 1.16 | 2 and 0; 0.075 | 2 and 0; 0.075 | 2 and 0; 0.076 |
+| 12.5% | 22 and 0; 0.19 | 11 and 0; 0.11 | 40 and 40; 2.50 | 7 and 0; 0.098 | 7 and 0; 0.097 | 7 and 0; 0.098 |
+| 15% | 36 and 4; 0.35 | 12 and 0; 0.13 | 40 and 40; 4.20 | 10 and 0; 0.076 | 9 and 0; 0.078 | 10 and 0; 0.079 |
+| 20% | 40 and 40; 2.89 | 24 and 0; 0.16 | 40 and 40; 8.55 | 16 and 4; 2.98 | 8 and 0; 0.14 | 8 and 0; 0.13 |
+
+The streams still more than 0.05 away after the refit are the constant
+learning rate's own wander, a median of about 0.03 at every share of wild
+rows. Under `huber_delta=inf`, the squared loss, the refit is off, and
+refused when asked for.
 
 **Under the default `"mad"`, `sgd`'s Huber loss follows a change of level
 far more slowly than under `"rms"`.** Its gradient is clipped at
@@ -1945,7 +2086,9 @@ thin bin bends the response curve there, and a screen that reads binned
 means of a residual, or of its square, sees a shape that is not in the data.
 Under `"huber"` each bin's location is Huber's M-estimate of location,
 learned in one pass, as [`huber`](#huber--quantile--robust-regression)
-learns a regression. With `c` the cut, `bin_huber_delta` (default 1.345)
+learns a regression past its first rows; the bins have no refit of their
+first rows, so a share of spikes can capture a bin's first locations and
+the scale learned from them, as one pass of `huber` can be captured. With `c` the cut, `bin_huber_delta` (default 1.345)
 times the target's robust scale `σ_t`, both read before the row, and `e` the
 row's distance from the bin's location `m`:
 

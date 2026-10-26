@@ -67,6 +67,7 @@ fn main() {
                             constraint: None,
                             huber_scale: online_core::HuberScale::Rms,
                             huber_scale_decay: None,
+                            refit_rows: 0,
                         };
                         let mut model = Sgd::new(cfg).unwrap();
                         let mut acc = 0u64;

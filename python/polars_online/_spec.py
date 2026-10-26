@@ -246,9 +246,17 @@ _SKIPPED_WHEN_ABSENT: dict[str, frozenset[str]] = {
     "holt": frozenset({"trend"}),
     "ewridge": frozenset({"gram_threads"}),
     "huber": frozenset(
-        {"huber_scale", "huber_scale_half_life", "feature_sets", "ridge_scale", "emit_huber_scale"}
+        {
+            "huber_scale",
+            "huber_scale_half_life",
+            "feature_sets",
+            "ridge_scale",
+            "emit_huber_scale",
+            "huber_refit_rows",
+            "refit_budget",
+        }
     ),
-    "sgd": frozenset({"huber_scale", "huber_scale_half_life"}),
+    "sgd": frozenset({"huber_scale", "huber_scale_half_life", "huber_refit_rows", "refit_budget"}),
     "ew_cov": frozenset({"gram_threads"}),
     "marginal": frozenset(
         {
@@ -359,6 +367,7 @@ _U32 = frozenset(
         "max_iter",
         "update_every_rows",
         "split_merge_every_rows",
+        "huber_refit_rows",
     }
 )
 
@@ -2861,6 +2870,8 @@ def sgd(
     huber_delta: float | None = None,
     huber_scale: Literal["mad", "rms"] | None = None,
     huber_scale_half_life: float | Duration | None = None,
+    huber_refit_rows: int | None = None,
+    refit_budget: float | None = None,
     quantile: float | None = None,
     eps: float | None = None,
     learning_rate: float | None = None,
@@ -2951,14 +2962,59 @@ def sgd(
     residuals widen still lets every row teach, and the median scale forgets
     them once the fit has the level. The root mean square does not: without
     decay the first residuals stay in it at their full weight, the cut stays
-    wider than every later residual, and the loss is the squared loss. On
+    wider than every later residual, and the loss is the squared loss, until
+    the refit below rebuilds it from the converged fit's residuals. On
     ``y = 1000 + 2x + 0.5ε`` with +50 on 5% of the rows, all with ``x > 0``,
-    and no decay, the slope is 3.751 under the squared loss, 3.751 under
-    ``"rms"`` (the same number) and 2.016 under ``"mad"``. Inside the tube
+    and no decay, the median slope over five seeds is 3.751 under the squared
+    loss and 2.013 under ``"mad"`` (2.016 with ``huber_refit_rows = 0``).
+    The refit takes the first residuals out of ``"rms"`` too, but the
+    outliers still inflate it: over 40 seeds at 5% every stream stayed more
+    than 0.05 from statsmodels' converged ``RLM`` under ``"rms"``, and 36 of
+    40 more than 0.25 with the refit, where all 40 were without it. Inside the tube
     the gradient is zero. On a target at 1,000 with a spread of 2, the first residuals put the
     residual's std near 1,000, so a tube of ``eps = 0.1`` drawn in it would be
     about 100 wide and hold every row. Without decay it would never narrow,
     and the fit would stop where it stood.
+
+    .. rubric:: The Huber loss's refit of the first rows
+
+    The first steps start from zero coefficients, so a share of outliers
+    captures the Huber fit: they pull the first steps, ``s`` learns the
+    pulled fit's residuals, the cut ``delta * s`` is wide, and the outliers
+    keep teaching at nearly full weight. Over 2,000 rows at 10% one-sided
+    outliers with no decay, every one of 40 streams ended more than 0.25 in
+    slope from statsmodels' converged ``RLM``. So on the row a target's count
+    of learned rows reaches ``huber_refit_rows``, those rows' converged Huber
+    fit replaces its coefficients:
+
+    .. code-block:: text
+
+        v_i = w_i * (the decay factors of the rows after i), v_i' the same
+              by the scale's clock (huber_scale_half_life)
+        b   = weighted least squares of the rows at v_i
+        r_i = y_i - z_i'b,  s = weighted median of |r_i| at v_i', over 0.6745
+        b   = weighted least squares at v_i * min(1, delta * s / |r_i|)
+        repeated until b moves by under 1e-10 of max|b|, or 50 passes
+
+    with a ridge of 1e-6 on the mean-form system, and ``l2`` as the steps
+    apply it: a penalty of ``l2 * s_i^2`` on each slope (``s_i`` the
+    feature's scale under ``standardize``, 1 without), once a row, so the fit
+    is the minimum of ``sum(v_i * rho(r_i / s)) + l2 / 2 * sum(s_i^2 * b_i^2)
+    * sum(c_i)``, ``c_i`` each row counted once and decayed as its weight
+    is. The intercept is not penalized. ``s`` is then
+    rebuilt from the fit's residuals. The fit is set in the coordinates the
+    coefficients are held in: the caller's units, or, while the scaler still
+    warms up, its moments' coordinates as they stand (``b_i * s_i`` and
+    ``b_0 + sum(m_i * b_i)``), so that they read out as the fit. A constraint
+    projects it as it projects a step. AdaGrad's sums of squared gradients
+    stay, so the step sizes are the ones the rows taught; emptied, they would
+    make the next steps throw the fit off. ``inv_scaling`` reads the weight,
+    which the refit does not move. Over 2,000 rows with the refit, 2 of the
+    40 streams at 10% were more than 0.05 from ``RLM``, the worst by 0.075,
+    and at 20% 8, none more than 0.25 (200 rows of refit: 16, 4 of them).
+    Over 20,000 rows at 20% the 40 of 40 captured streams became 24 more
+    than 0.05 and none more than 0.25. A constant learning rate's own wander
+    is about 0.03 at every share.
 
     .. rubric:: Parameters
 
@@ -2988,6 +3044,28 @@ def sgd(
         ``huber_scale_half_life = 100`` and 1.41 with 20. On a stream whose
         level can change, give it about a fifth of ``half_life``, or
         shorter.
+    ``huber_refit_rows``
+        The learned rows after which each target's first rows are refit to their
+        converged Huber fit, once (the rubric above). Default ``max(500, 10 *
+        features)`` under ``loss = "huber"`` up to 100 features, and off above 100;
+        a count given is always taken. ``0`` turns the refit off, which gives the
+        numbers of the releases before it, to the bit. A target's rows are held until
+        its refit: ``(features + 4) * 8`` bytes a learned row, and 32 bytes a run of
+        rows that only aged it (its value null or its weight 0), one run for such rows
+        in a row at one clock step. Past 4 runs a learned row of the count, as on a
+        target present on fewer than about one row in five under an irregular clock,
+        the target gives its refit up and keeps its one-pass fit. The refit takes 0.06
+        to 7.2 ms once, for 1 to 50 features and 200 to 1,000 rows (an Apple M4 Pro
+        under other load, best of 9). Off by default, and refused when given, beside
+        an infinite ``huber_delta``, the squared loss. ``loss = "huber"`` only;
+        refused beside another loss.
+    ``refit_budget``
+        A bound in MiB on the refit buffers of all the spec's groups together, as for
+        :func:`huber`: above 0, or ``inf`` for none; default 256. Each new group
+        reserves ``(features + 20) * 8`` bytes a target for each row of the count when
+        it first appears, and the group that would cross the bound, and every new group
+        after it, keeps its one-pass fit, with a notice and ``summary()``'s
+        ``refit_given_up``. ``loss = "huber"`` only; refused beside another loss.
     ``quantile``
         The level for ``loss = "quantile"``, in ``(0, 1)``; required for it.
     ``eps``
@@ -3201,6 +3279,8 @@ def sgd(
         "huber_delta": huber_delta,
         "huber_scale": huber_scale,
         "huber_scale_half_life": huber_scale_half_life,
+        "huber_refit_rows": huber_refit_rows,
+        "refit_budget": refit_budget,
         "quantile": quantile,
         "eps": eps,
         "learning_rate": learning_rate,
@@ -3224,6 +3304,8 @@ def sgd(
         ("huber_delta", huber_delta, "loss", "huber", loss),
         ("huber_scale", huber_scale, "loss", "huber", loss),
         ("huber_scale_half_life", huber_scale_half_life, "loss", "huber", loss),
+        ("huber_refit_rows", huber_refit_rows, "loss", "huber", loss),
+        ("refit_budget", refit_budget, "loss", "huber", loss),
         ("quantile", quantile, "loss", "quantile", loss),
         ("eps", eps, "loss", "epsilon_insensitive", loss),
         ("power", power, "schedule", "inv_scaling", schedule),
@@ -3527,132 +3609,6 @@ def pa(
         "standardize": standardize,
     }
     return _common(name, model, targets=targets, features=features, **common)
-
-
-@_checked
-def holt(
-    name: str,
-    *,
-    targets: TargetList,
-    trend_half_life: float | Duration | None = None,
-    trend: bool = True,
-    **common: Unpack[CommonKwargs],
-) -> dict[str, Any]:
-    """Holt's linear trend: the target's own level and slope, extrapolated.
-
-    It takes no features, as only :func:`seqtest` among the other models
-    does -- the forecasting baseline a feature-based model should have to
-    beat. If a regression cannot
-    outperform "the series is going up at about this rate", its features are
-    not earning their place. Run it in the same bank and compare the two
-    ``sigma``, or let a :func:`seqtest` with ``a`` and ``b`` say which
-    predicts closer.
-
-    .. rubric:: The fit
-
-    Per row and target, with ``s`` the clock since the target was last
-    observed: this row's delta included, so ``s`` is the row's own delta on
-    a stream with no gaps. ``w`` is the row's weight, and ``W``, ``V`` the
-    weight the level and the trend have gathered, each decayed on its own
-    half-life (``lam_l = 0.5 ** (s / half_life)``, the spec's own, and
-    ``lam_b`` likewise at ``trend_half_life``):
-
-    .. code-block:: text
-
-        pred = l + b * s                                   extrapolate s clock units ahead
-        l'   = (lam_l * W * pred + w * y) / (lam_l * W + w)
-        b'   = (lam_b * V * b + w * (l' - l) / s) / (lam_b * V + w)
-
-    A target's first observation sets ``l = y`` and ``W = w``, and predicts
-    nothing; the trend starts at 0. Level and trend are weighted means, as
-    every accumulator here is: a row at weight ``w`` counts ``w`` times, and an
-    infinite half-life forgets nothing and fits the whole history. The gains
-    ``w / (lam * W + w)`` start at 1 and fall to the textbook's fixed
-    ``1 - lam`` as the weight saturates. So a new series is followed sooner,
-    and the fit is statsmodels' ``Holt`` from there. A row at the last row's
-    clock is a second observation the level takes in; the trend holds, since a
-    move over no clock has no slope. A row with a null target or a zero weight
-    leaves ``l`` and ``b`` where the last observation put them and carries its
-    clock to the next one. So it gives the same numbers as if it were absent.
-    The trend is per clock unit, so an irregular clock extrapolates the right
-    distance.
-
-    .. rubric:: Parameters
-
-    The level forgets at the spec's ``half_life`` (or ``lam``), in clock units,
-    ``inf`` included: one knob under one name, as for every model.
-    ``level_half_life`` is refused, with a message naming ``half_life``.
-
-    ``trend_half_life``
-        How fast the trend forgets, in clock units, above 0. Default four times
-        the level's half-life; ``inf`` is the whole history's drift, not a
-        trend pinned at zero.
-    ``trend``
-        ``False`` fits the level alone: the trend is held at zero and the
-        forecast is flat, which is simple exponential smoothing. The level is
-        then the weighted mean of the observations, each at its weight times
-        ``0.5 ** (age / half_life)``, which is pandas'
-        ``ewm(adjust=True)`` for unit weights. ``trend_half_life`` is refused
-        beside it. Default ``True``.
-
-    The stream parameters every builder takes are in :mod:`polars_online.spec`:
-    ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the
-    diagnostics and the rest, with the fields each diagnostic adds.
-    ``fit_intercept`` has nothing to act on: the level is the forecast's intercept.
-
-    There is no seasonal term: a seasonal index is a ``group`` on the phase,
-    which the bank already does.
-
-    .. rubric:: Output
-
-    One struct column named after the spec (`docs/OUTPUTS.md#holt
-    <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#holt>`_):
-
-    ``pred_<t>``, ``resid_<t>``
-        Per target: the prediction, and ``y - pred`` where the target is not
-        null.
-    ``weight_sum``
-        The accumulated weight before the row, as everywhere.
-    ``settled_frac``, ``withheld_reason``
-        How far the decay window had filled before the row, and which gate
-        withheld the row's predictions, null where none did, as everywhere.
-    ``coef``
-        ``[level, trend]`` per target, the whole state; :func:`coef_index`
-        names the two. Null for a target not yet observed, which has no
-        level to report. The trend is 0 under ``trend=False``.
-
-    plus the fields of the diagnostics switched on, as :mod:`polars_online.spec`
-    describes them. :meth:`polars_online.ModelBank.predict` extrapolates
-    over the clock distance from the row the model last learned, capped by
-    ``gap_cap``.
-
-    .. rubric:: Example
-
-    .. code-block:: python
-
-        baseline = po.spec.holt(
-            "baseline", targets=["y"], clock="t", gap_cap=600.0,
-            half_life=200.0,          # how fast the level forgets
-            trend_half_life=2000.0,   # how fast the trend forgets; inf is the whole history's drift
-        )
-        out = po.ModelBank([baseline]).fit_predict(df)
-
-    .. rubric:: Raises
-
-    As every builder does (:mod:`polars_online.spec`); ``TypeError`` for
-    ``features``, which this model has not got; and ``ValueError`` for a
-    ``trend_half_life`` not above 0, and ``trend_half_life`` beside
-    ``trend=False``.
-    """
-    model: dict[str, Any] = {
-        "type": "holt",
-        "trend_half_life": trend_half_life,
-    }
-    if not trend:
-        # Absent when on, as the Rust spec leaves it out, so a bank reports
-        # the dict this made (`ModelBank.specs`).
-        model["trend"] = False
-    return _common(name, model, targets=targets, features=[], **common)
 
 
 @_checked
@@ -5018,14 +4974,16 @@ def deco(
 #: plumbing, and nothing residual-based applies to them. ``ew_class`` is
 #: not one -- its label column travels as the target -- though it predicts
 #: no number either, and refuses the residual switches the same way.
-# The changepoint detectors', the regimes', the realised covariance's and
-# the robust regressions' builders live in files of their own (the 250 KB cap); read back here,
+# The changepoint detectors', the regimes', the realised covariance's, the
+# robust regressions' and the trend's builders live in files of their own
+# (the 250 KB cap); read back here,
 # after everything they use, for `__all__`, the key tables below and
 # `polars_online.spec`.
 from polars_online._spec_audit import audit  # noqa: E402
 from polars_online._spec_changepoint import bocpd, corrchange  # noqa: E402
 from polars_online._spec_regimes import hmm, rcov  # noqa: E402
 from polars_online._spec_robust import huber, quantile  # noqa: E402
+from polars_online._spec_trend import holt  # noqa: E402
 
 UNSUPERVISED = frozenset(
     {"ew_cov", "kmeans", "micro", "deco", "rcov", "hmm", "corrchange", "bocpd", "audit"}

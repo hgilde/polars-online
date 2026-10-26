@@ -566,7 +566,10 @@ class TestRobustOracles:
     ):
         if model == "huber":
             ref_kw = {**(ref_kw or {}), "huber_scale": scale}
-            spec_kw = {**spec_kw, "huber_scale": scale}
+            # The reference is the one-pass recursion: the refit of the
+            # first rows (task 277) is held to statsmodels in
+            # `test_huber_refit.py`.
+            spec_kw = {**spec_kw, "huber_scale": scale, "huber_refit_rows": 0}
             if scale_half_life is not None:
                 ref_kw["huber_scale_half_life"] = scale_half_life
                 spec_kw["huber_scale_half_life"] = scale_half_life
