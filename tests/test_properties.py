@@ -275,11 +275,12 @@ def warmed_streams(
     health check once in a gate and once in 460 runs (2026-10-07). With a
     ``sign``, the warm rows' ``columns`` sit on its side of zero too. Their
     targets are at least 1e-3 from 0, and their features 0 or at least 1e-3
-    from it: kalman sizes a target's prior from three squared innovations
-    above 0 and predicts nothing while it is unsized (task 270, review round
-    9 B-1), so warm targets of 0, or of 1e-172, whose square underflows to
-    0, left it no row to score, and so did a feature at 7.9e-57 beside one
-    at 11, after which its prior was unsized again at the fourth row."""
+    from it: kalman sized a target's prior from three squared innovations
+    above 0 and predicted nothing while it was unsized (task 270, review
+    round 9 B-1; its intercept's prior is diffuse since task 278), so warm
+    targets of 0, or of 1e-172, whose square underflows to 0, left it no row
+    to score, and so did a feature at 7.9e-57 beside one at 11, after which
+    its prior was unsized again at the fourth row."""
     df = draw(streams(sign=sign, offset=offset, columns=columns))
     finite = st.floats(min_value=-1e3, max_value=1e3, allow_nan=False, allow_infinity=False)
     rows = st.lists(finite, min_size=WARM_ROWS, max_size=WARM_ROWS)

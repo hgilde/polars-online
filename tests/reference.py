@@ -589,9 +589,23 @@ def kalman_ref(
     revert_half_life: float | list[float] = float("inf"),
     standardize: bool = True,
     gap_cap: float = np.inf,
+    noise_units: bool = True,
 ) -> dict[str, np.ndarray]:
     """Kalman / random-walk-beta oracle (docs/PLAN.md section 4.4), written
     from `kalman.rs`'s module doc (task 211).
+
+    ``noise_units`` (task 278, the form the bank builds) holds ``P`` in units
+    of the noise when ``obs_var`` is not given: the gain is ``P z / (z' P z
+    + 1 / w)``, reading no noise; the process noise from ``coef_half_life``
+    is ``(ln 2 / h)**2`` and an explicit ``q`` is divided by the row's noise
+    (none added where there is none); each slope's prior is ``p0`` with no
+    noise needed -- unstandardized from the start, standardized once its
+    scale is usable -- and the intercept's is diffuse: on the first row that
+    observes a covariance's target, ``b_0`` takes the whole innovation and
+    ``P`` the exact step ``P_00 = z' P z + 1 / w``, ``P_0i = -(P z)_i``, the
+    slopes' block unmoved, and a target first seen later is centred the same
+    way, ``b_0`` taking its first innovation. Without it, the form a state
+    saved before task 278 goes on in, every rule below.
 
     The state is held here in the *current* coordinates -- the row
     standardized against the EW stats before it -- and re-mapped after every
@@ -690,8 +704,13 @@ def kalman_ref(
     weight_sum = np.full(n, np.nan)
     coef = np.full((n, m, kt), np.nan)
 
+    units = noise_units and obs_var is None
+
     def init():
-        if obs_var is None:
+        if units:
+            # Slopes at ``p0`` unstandardized; the intercept diffuse.
+            prior = np.where(np.arange(kt) < off, 0.0, 0.0 if standardize else p0)
+        elif obs_var is None:
             prior = np.zeros(kt)
         elif standardize:
             prior = np.where(np.arange(kt) < off, p0 * obs_var, 0.0)
@@ -762,7 +781,7 @@ def kalman_ref(
         p_own = np.full(m, np.nan)
         if ready:
             for j in range(m):
-                if st["wj"][j] > 0.0:
+                if st["wj"][j] > 0.0 and np.diag(st["P"][0 if share_p else j]).any():
                     p_own[j] = zs @ st["beta"][j]
                     if st["wj"][j] >= min_weight:
                         pred[i, j] = p_own[j]
@@ -797,7 +816,7 @@ def kalman_ref(
                     noise[j] = e2[j] if np.isfinite(e2[j]) else 0.0
 
         # The squared innovations a standardized prior is sized from.
-        if standardize and obs_var is None:
+        if standardize and obs_var is None and not units:
             for pi in range(n_p):
                 mine = [
                     e2[j]
@@ -827,8 +846,27 @@ def kalman_ref(
                 if q is not None
                 else np.where(np.isinf(hl), 0.0, sigma2 * (np.log(2.0) / hl) ** 2)
             )
+            if units:
+                # In units of the noise: a derived ``q`` reads none, an
+                # explicit one is over the row's noise.
+                if q is None:
+                    qv = np.where(np.isinf(hl), 0.0, (np.log(2.0) / hl) ** 2)
+                elif sigma2 > 0.0 and np.isfinite(sigma2):
+                    qv = np.asarray(q, dtype=float) / sigma2
+                else:
+                    qv = np.zeros(kt)
             P = st["P"][pi]
-            if standardize:
+            if units:
+                sized = np.diag(P) != 0.0
+                if not standardize:
+                    sized = np.ones(kt, dtype=bool)
+                    sized[:off] = P[0, 0] != 0.0
+                P = P + np.diag(np.where(sized, qv * dd, 0.0))
+                if standardize:
+                    for a in range(off, kt):
+                        if P[a, a] == 0.0 and ok[a]:
+                            P[a, a] = p0
+            elif standardize:
                 sized = np.diag(P) != 0.0
                 P = P + np.diag(np.where(sized, qv * dd, 0.0))
                 r = obs_var if obs_var is not None else _weighted_median_over_chi2(st["basis"][pi])
@@ -845,6 +883,9 @@ def kalman_ref(
             st["P"][pi] = P
 
         shared_take = None
+        # A covariance whose intercept is still diffuse, read before any
+        # target's update moves it.
+        is_open = [units and fit_intercept and st["P"][pi][0, 0] == 0.0 for pi in range(n_p)]
         for j in range(m):
             pi = 0 if share_p else j
             if not seen[j]:
@@ -854,13 +895,29 @@ def kalman_ref(
                 st["wsig"][j] *= lam
                 continue
             sigma2 = noise[j]
+            r_inn = 1.0 if units else sigma2
             pz = st["P"][pi] @ zs
-            s_inn = zs @ pz + sigma2 / w[i]
-            if sigma2 > 0.0 and s_inn > 0.0:
+            s_inn = zs @ pz + r_inn / w[i]
+            if r_inn > 0.0 and s_inn > 0.0:
                 gain = pz / s_inn
                 err = Y[i, j] - zs @ st["beta"][j]
-                st["beta"][j] = st["beta"][j] + gain * err
-                if share_p:
+                if units and fit_intercept and (is_open[pi] or st["wj"][j] == 0.0):
+                    # The diffuse intercept's gain: the whole innovation.
+                    st["beta"][j][0] += err
+                    err = 0.0
+                if not is_open[pi]:
+                    st["beta"][j] = st["beta"][j] + gain * err
+                if is_open[pi]:
+                    # The exact step of a prior diffuse in the intercept.
+                    diffuse = st["P"][pi].copy()
+                    diffuse[0, 0] = s_inn
+                    diffuse[0, 1:] = -pz[1:]
+                    diffuse[1:, 0] = -pz[1:]
+                    if share_p:
+                        shared_take = st["P"][0] - diffuse
+                    else:
+                        st["P"][pi] = diffuse
+                elif share_p:
                     # Every target reads ``P`` as the row found it; ``P``
                     # takes the row once, after them (task 204).
                     shared_take = np.outer(gain, pz)

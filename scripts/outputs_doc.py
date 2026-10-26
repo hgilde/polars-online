@@ -259,7 +259,8 @@ SHARED_FIELDS: list[tuple[str, str, str]] = [
         "`above_max_error_inflation`, `below_warm_rows` or `ill_conditioned`. That order is "
         "their precedence, so the first that applies is the one named. `below_warm_rows` is "
         "the model's own warm-up, the rows `kmeans`, `hmm` and `bocpd` hold to seed themselves "
-        "from, and the rows `kalman` sizes a target's prior from. `ill_conditioned` is an "
+        "from, and the rows before `kalman` has sized any of a target's coefficients, "
+        "standardized with no intercept. `ill_conditioned` is an "
         "`ewridge` fit whose normal equations are too nearly singular for a solve to keep a "
         "digit",
         "where nothing was withheld",
