@@ -548,7 +548,13 @@ def switched_signature() -> dict[str, float | str | None]:
 #: ``moments``' variances: ``ew_cov``'s default ``bias=False`` multiplies
 #: them by ``W**2 / (W**2 - sum(w**2))``, 1.04 to 1.13 at these rows, which
 #: ``tests/test_ew_cov_bias.py`` holds to Polars and numpy; its means and
-#: correlations kept their bits, and nothing else moved.
+#: correlations kept their bits, and nothing else moved. Task 278 (D-H,
+#: 2026-10-26) moved 6, ``holt``'s predictions and residuals: a row takes the
+#: larger of the weighted line fit's gains and the textbook's, so these rows,
+#: inside the warm-up of a half-life of 25, are the line fit's, where the
+#: weighted means pinned the trend to the first observation; ``holt.rs``'s
+#: ``reference`` holds the step to its definition, ``tests/test_second_opinion.py``
+#: to statsmodels' ``WLS`` and ``Holt``; nothing else moved.
 GOLDEN: dict[str, float | str | None] = {
     "ridge.pred_y0__r0.000001@25": -4.684371132566456,
     "ridge.pred_y0__r0.000001@60": -0.25563207972202284,
@@ -775,12 +781,12 @@ GOLDEN: dict[str, float | str | None] = {
     "ftrl.withheld_reason@25": None,
     "ftrl.withheld_reason@60": None,
     "ftrl.withheld_reason@119": None,
-    "holt.pred_y0@25": -1.6482424919748164,
-    "holt.pred_y0@60": 5.630591873314062,
-    "holt.pred_y0@119": -1.4684387824643939,
-    "holt.resid_y0@25": -3.2033633322599,
-    "holt.resid_y0@60": -6.10263300213114,
-    "holt.resid_y0@119": 1.4177400115061651,
+    "holt.pred_y0@25": -0.6509754398513061,
+    "holt.pred_y0@60": 0.8460006837790632,
+    "holt.pred_y0@119": -0.9097093205227099,
+    "holt.resid_y0@25": -4.20063038438341,
+    "holt.resid_y0@60": -1.318041812596141,
+    "holt.resid_y0@119": 0.8590105495644811,
     "holt.weight_sum@25": 8.573837237596514,
     "holt.weight_sum@60": 13.244185655943454,
     "holt.weight_sum@119": 15.09397614533663,

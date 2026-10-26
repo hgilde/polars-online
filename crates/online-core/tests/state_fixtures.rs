@@ -121,6 +121,13 @@ use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 /// order, so its bytes are not the current set's, which the new rule
 /// seeded, and it is held to saving bytes that load back to the same.
 ///
+/// The `holt` case converts otherwise since task 278 (D-H, schema 64 before
+/// its release): a state of schema 61-63 keeps no line fit, so it loads
+/// without one and goes on with the textbook gains alone, the recursion it
+/// was fitted under, to the bit. The current set's `holt` was fitted with
+/// the line fit, so a kept state's bytes are not its, and it is held to
+/// saving bytes that load back to the same, as `kmeans` is.
+///
 /// The `lasso` cases convert otherwise since task 278 too (rule 5's third
 /// exception, the user's, 2026-10-25): the descent's stopping rule reads a
 /// sweep's move against `tol` times the target's spread, where it read it
@@ -423,7 +430,8 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
             // starts, ten Lloyd passes): the rule since finds the same
             // centres in another order (the doc above `previous!`).
             let reseeded = f.name == "kmeans_warming";
-            if f.name == "kmeans" {
+            // A `holt` of 61-63 keeps no line fit (the doc above `previous!`).
+            if f.name == "kmeans" || f.name == "holt" {
                 let saved = named(&m.state());
                 let again = load(&case, &saved).unwrap_or_else(|e| panic!("{what}: {e}"));
                 assert!(
@@ -666,13 +674,21 @@ fn held(v: &rmpv::Value) -> usize {
 /// prior and the emitted scale. `marginal`'s Huber location per bin (63,
 /// task 272 (c)): `marginal_bins_huber` keeps each cell's robust weight and
 /// each target's location and scale, and its cfg names its statistic and
-/// cut.
+/// cut. `holt`'s line fit (64, task 278, D-H): its weight, mean age and
+/// spread per target, under a half-life (`holt`) and without one
+/// (`holt_inf`).
 #[test]
 fn every_layout_a_schema_moved_is_written_by_a_fixture() {
     if regenerating() {
         return;
     }
-    const FORMS: [(&str, &[&str]); 37] = [
+    const FORMS: [(&str, &[&str]); 43] = [
+        ("holt", &["model", "Holt", "fit_weight"]),
+        ("holt", &["model", "Holt", "fit_age"]),
+        ("holt", &["model", "Holt", "fit_spread"]),
+        ("holt_inf", &["model", "Holt", "fit_weight"]),
+        ("holt_inf", &["model", "Holt", "fit_age"]),
+        ("holt_inf", &["model", "Holt", "fit_spread"]),
         ("huber_sets", &["model", "Robust", "cfg", "feature_sets"]),
         (
             "marginal_bins_huber",

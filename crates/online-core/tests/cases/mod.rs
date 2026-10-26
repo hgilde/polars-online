@@ -910,6 +910,24 @@ pub fn all() -> Vec<Case> {
             Targets::Linear(2),
             40
         ),
+        // Without decay, the weighted line fit alone (schema 64, docs/PLAN.md
+        // task 278, D-H): its weight, mean age and spread per target.
+        case!(
+            "holt_inf",
+            "Holt",
+            Holt,
+            Holt::new(HoltCfg {
+                n_targets: 2,
+                level_half_life: f64::INFINITY,
+                trend_half_life: f64::INFINITY,
+                min_weight: 3.0,
+                trend: true,
+            })
+            .unwrap(),
+            0,
+            Targets::Linear(2),
+            40
+        ),
         // Saved with its warm-up buffer still filling: 10 rows wanted, 6
         // held.
         case!(

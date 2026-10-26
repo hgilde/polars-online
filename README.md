@@ -626,8 +626,8 @@ except ValueError as err:   # a plain number on a Datetime clock
 ```
 
 ```text
-on_t: weight_sum 135.66, trend 1.000406 per unit of t, a minute
-on_ts: weight_sum 135.66, trend 0.016673 per second
+on_t: weight_sum 135.66, trend 1.000000 per unit of t, a minute
+on_ts: weight_sum 135.66, trend 0.016667 per second
 spec "wrong": clock column "ts" has dtype datetime[μs], a temporal clock, but half_life is a plain
 number, which it cannot read: a number has no unit, and the column's own (e.g. epoch microseconds)
 would silently become it. Give half_life and the other clock parameters as durations, e.g.
@@ -3230,7 +3230,7 @@ centres found: [[0.0, -0.1], [0.0, 6.0], [6.0, 0.0]]
 **A sequential test says when the evidence is enough, and you may read it
 at any row.** Here `seqtest` asks whether a regression on `x0` and `x1`
 predicts `y` closer than `holt`, which reads only `y`'s own past. Its
-evidence passes the 5% level a few rows into `df`.
+evidence passes the 5% level a few dozen rows into `df`.
 This code uses `df` from [Example data](#example-data):
 
 ```python
@@ -3249,7 +3249,7 @@ print(f"ridge predicts closer than holt at the 5% level from row {passed.arg_tru
 ```
 
 ```text
-ridge predicts closer than holt at the 5% level from row 18
+ridge predicts closer than holt at the 5% level from row 48
 ```
 
 ### Detecting changes and regimes

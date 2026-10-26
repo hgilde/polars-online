@@ -107,6 +107,12 @@ CONSISTENCY: dict[str, tuple[float, float | None]] = {
     # The descent stops when no standardised coefficient moves by its tol,
     # 1e-10; scikit-learn's stops at 1e-12. Measured 4.1e-11.
     "lasso": (1e-9, None),
+    # Without decay holt is the weighted line fit through every observation
+    # (task 278, D-H): the gap is rounding in the running mean age and
+    # spread, growing with n and the level's size (a line rising to 323).
+    # Measured 2026-10-26, 50 seeds: 1.78e-14 at 500 rows, 3.41e-12 at
+    # 32,000 (seed 27); before, the level's gap grew like ln n, 7.3 to 11.5.
+    "holt": (2e-11, None),
     # The prior sized from the first rows fades as 1/n (rate -1). Measured
     # 0.0051 (seed 22, whose prior came out small) and -0.93.
     "kalman": (0.01, -0.8),
@@ -147,7 +153,7 @@ CONSISTENCY: dict[str, tuple[float, float | None]] = {
 RATE_FROM = {"huber": 2000, "sgd:huber": 2000}
 
 #: Registrations whose class 1 is a test of its own below.
-CONSISTENCY_ELSEWHERE = {"pa": "test_pa_wanders_in_a_neighbourhood_set_by_c", "holt": "test_holt"}
+CONSISTENCY_ELSEWHERE = {"pa": "test_pa_wanders_in_a_neighbourhood_set_by_c"}
 
 
 def test_every_consistent_registration_has_a_bound():
@@ -239,29 +245,6 @@ def test_a_constant_rate_settles_in_a_neighbourhood_and_a_power_sets_the_rate():
     assert -0.4 <= r <= -0.15
 
 
-@pytest.mark.oracle_grid(reason="a grid of 50 seeds against a weighted least-squares trend")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "defect (task 278 (a)): holt without decay gains 1/n on both the level and the "
-        "trend, and the trend's early error, which falls only as 1/n, sums into the level "
-        "as log n: the worst level gap grows from 7.3 at 500 rows to 11.5 at 32,000 (seed "
-        "3, noise 0.5), level-invariant and present with no trend at all"
-    ),
-)
-def test_holt():
-    """Without decay ``holt`` is meant to be the whole history's trend, so
-    its level should approach the weighted least-squares line's at the last
-    row. Held to the theory's rate for a consistent estimate of a level,
-    -0.5, loosely: the worst seed's gap must fall at all."""
-    reg = cv.REGISTRY["holt"]
-    p = cv.consistency(reg, SEEDS, CUTS)
-    p.show(f"holt: {reg.limit}")
-    r = cv.rate(CUTS, p.worst())
-    print(f"  rate of the worst seed's level gap: {r:.2f}")
-    assert r <= -0.25
-
-
 # ---------------------------------------------------------------------------
 # Class 2: start independence.
 
@@ -302,7 +285,9 @@ START: dict[str, dict[float, float]] = {
     # holt's trend forgets at four half-lives: 16 half-lives are four of its
     # trend's, so the far regime's slope (0.06 off) is 0.004 off still, and the
     # level carries it: 0.532 (fresh 0.061).
-    "holt": {200.0: 0.8},
+    # Without decay the line fit through every row, the other regime's
+    # included (task 278, D-H): rounding, 3.3e-12 (seed 42); before, 346.
+    "holt": {200.0: 0.8, cv.INF: 2e-11},
     # 0.00892 (fresh 0.0101) and 0.0328 (fresh 0.0328).
     "huber": {200.0: 0.0135},
     "sgd:huber": {200.0: 0.05},
@@ -347,11 +332,6 @@ START_AS_FRESH = {"pa"}
 
 #: Cells that fail on a defect: the reason, with its measurement.
 START_DEFECTS: dict[tuple[str, float], str] = {
-    ("holt", cv.INF): (
-        "defect (task 278 (a)): holt without decay keeps a loaded state's trend at a gain "
-        "of 1/n, and the trend's error sums into the level: from another regime's state "
-        "the worst level gap grows from 37.6 at 500 rows to 346 at 32,000 (seed 34)"
-    ),
     ("quantile", cv.INF): (
         "defect (task 278 (a)): quantile's band is drawn in the root mean square of its "
         "residuals, which without decay keeps the other regime's residuals for good: 0.137 "

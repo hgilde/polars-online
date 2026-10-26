@@ -1360,9 +1360,11 @@ class TestHoltAcrossAMissingObservation:
     and its clock folded into the next row's.
 
     ``statsmodels`` is the second opinion twice. Its ``Holt`` is the textbook
-    recursion, whose gains are fixed; ``holt``'s level and trend are weighted
-    means (review 2026-09-12, S29/S30), whose gains ``w / (lam·W + w)`` start
-    at 1 and fall to those fixed ones as the weight saturates. So the two part
+    recursion, whose gains are fixed; ``holt``'s textbook gains are weighted
+    means' (review 2026-09-12, S29/S30), ``w / (lam·W + w)``, which fall to
+    those fixed ones as the weight saturates, and a row takes the weighted
+    line fit's where they are larger, as they are through the warm-up (task
+    278, D-H; settled from row 745 here, measured 2026-10-26). So the two part
     over the first rows by design and agree exactly from row ``SETTLED`` on a
     row-count clock -- the control that pins the mapping from half-lives to
     smoothing weights (the review's T-S14). Its state-space
@@ -1550,6 +1552,53 @@ class TestALevelOnlyHoltIsAnEwMean:
             age = t[i - 1] - t[:i][before]
             stats = DescrStatsW(y[:i][before], weights=w[:i][before] * 0.5 ** (age / self.HALFLIFE))
             assert pred[i] == pytest.approx(stats.mean, rel=1e-12), i
+
+
+class TestHoltWithoutDecayIsTheWeightedLineFit:
+    """Without decay ``holt`` is the weighted least-squares line through every
+    observation so far, on the clock, read at the last: each row's forecast
+    is that line extrapolated to the row's clock (task 278, D-H). statsmodels'
+    ``WLS`` on ``(1, t)`` fits it afresh before every row, on an irregular
+    clock with uneven weights, nulls and zero weights. Measured 2026-10-26:
+    within 1e-15 of ``1 + |pred|`` on every row once two clocks have been
+    observed. The weighted means it replaced (1.3.0) pinned the trend to the
+    first observation, and their forecasts parted from the line by up to
+    3.4 here."""
+
+    @staticmethod
+    def rows(n=400, seed=12):
+        rng = np.random.default_rng(seed)
+        t = np.cumsum(rng.choice([0.0, 0.5, 1.0, 3.0], n, p=[0.05, 0.3, 0.5, 0.15]))
+        y = 2.0 + 0.3 * t + 0.7 * rng.standard_normal(n)
+        y[rng.random(n) < 0.05] = np.nan
+        w = rng.choice([0.0, 0.5, 1.0, 2.0], n, p=[0.05, 0.25, 0.4, 0.3])
+        return t, y, w
+
+    def test_every_forecast_is_statsmodels_wls(self):
+        import statsmodels.api as sm
+
+        t, y, w = self.rows()
+        frame = pl.DataFrame({"t": t, "y": y, "w": w}).with_columns(pl.col("y").fill_nan(None))
+        inf = float("inf")
+        spec = po.spec.holt(
+            "m", targets=["y"], clock="t", gap_cap=1e9, half_life=inf,
+            trend_half_life=inf, min_weight=0.0, weight="w",
+        )  # fmt: skip
+        pred = po.ModelBank([spec]).fit_predict(frame)["m"].struct.field("pred_y").to_numpy()
+        seen = ~np.isnan(y) & (w > 0.0)
+        checked, worst = 0, 0.0
+        for i in range(1, len(y)):
+            before = seen[:i]
+            if len(np.unique(t[:i][before])) < 2:
+                continue
+            X = np.column_stack([np.ones(before.sum()), t[:i][before]])
+            b = sm.WLS(y[:i][before], X, weights=w[:i][before]).fit().params
+            want = b[0] + b[1] * t[i]
+            worst = max(worst, abs(pred[i] - want) / (1.0 + abs(want)))
+            checked += 1
+        print(f"  {checked} rows, worst {worst:.2g} of 1 + |pred|")
+        assert checked > 350, "the evidence: most rows are checked"
+        assert worst <= 1e-12
 
 
 class TestBocpdAtALevel:

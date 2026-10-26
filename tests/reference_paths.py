@@ -1380,25 +1380,31 @@ def holt_ref(
 ) -> dict[str, np.ndarray]:
     """Holt's linear trend as the ``holt`` builder's docstring states it, per
     target, with ``s`` the clock since the target was last observed (this
-    row's step included)::
+    row's step included) and ``e = y - pred``::
 
         pred = l + b * s
-        l'   = (lam_l * W * pred + w * y) / (lam_l * W + w)      W' = lam_l * W + w
-        b'   = (lam_b * V * b + w * (l' - l) / s) / (lam_b * V + w)      V' = lam_b * V + w
+        g_t  = w / (lam_l * W + w)                 W' = lam_l * W + w
+        h_t  = w / (lam_b * V + w) * g / s         V' = lam_b * V + w   (s > 0)
+        g_f  = w * (1 / S0 + a**2 / Q)             h_f = w * a / Q
+        l'   = pred + max(g_f, g_t) * e            b' = b + max(h_f, h_t) * e
 
     ``lam_l = 0.5 ** (s / half_life)`` and ``lam_b`` likewise at
-    ``trend_half_life``, default four times the level's. The first
-    observation sets the level; the second, at gain 1, the trend. A row at
-    the last observation's clock (``s = 0``) is a second observation the
-    level takes in, and the trend holds. A null target or a zero weight
-    leaves ``l``, ``b``, ``W`` and ``V`` where they were and carries its
-    clock to the next observation. ``pred`` is emitted from the second
-    observation's row on, once the target's weight -- the rows it was
-    present on, at their raw weights, decayed at the level half-life and seen
-    before the row's own step -- reaches ``min_weight``; ``weight_sum`` is every
-    row's weight so decayed. Each clock step is capped at ``gap_cap``.
-    Returns ``pred``, ``weight_sum`` and ``coef`` (``[level, trend]`` after the
-    row, NaN until the first observation)."""
+    ``trend_half_life``, default four times the level's. ``S0``, ``a`` and
+    ``Q`` are the weighted least-squares line's through every observation so
+    far, this row's included, summed here from their definitions: the
+    observations' weight, their weighted mean age on the clock and the
+    spread of their ages about it (task 278, D-H); with ``Q = 0`` the line
+    fit's gains are ``w / S0`` and 0. An infinite half-life gives no textbook
+    gain, and ``h_t`` is 0 at ``s = 0``. The first observation sets the
+    level. A null target or a zero weight leaves ``l``, ``b``, ``W`` and
+    ``V`` where they were and carries its clock to the next observation.
+    ``pred`` is emitted from the second observation's row on, once the
+    target's weight -- the rows it was present on, at their raw weights,
+    decayed at the level half-life and seen before the row's own step --
+    reaches ``min_weight``; ``weight_sum`` is every row's weight so decayed.
+    Each clock step is capped at ``gap_cap``. Returns ``pred``,
+    ``weight_sum`` and ``coef`` (``[level, trend]`` after the row, NaN until
+    the first observation)."""
     n, m = Y.shape
     th = 4.0 * half_life if trend_half_life is None else trend_half_life
 
@@ -1415,8 +1421,11 @@ def holt_ref(
     since = np.zeros(m)
     seen = np.zeros(m, dtype=int)
     w_sum, w_own = 0.0, np.zeros(m)
+    clock = 0.0
+    obs: list[list[tuple[float, float]]] = [[] for _ in range(m)]
     for i in range(n):
         d = 0.0 if i == 0 else min(max(t[i] - t[i - 1], 0.0), gap_cap)
+        clock += d
         weight_sum[i] = w_sum
         for j in range(m):
             since[j] += d
@@ -1425,20 +1434,30 @@ def holt_ref(
                 pred[i, j] = level[j] + trend[j] * s
             if np.isnan(Y[i, j]) or not w[i] > 0.0:
                 continue
+            obs[j].append((clock, w[i]))
             if seen[j] == 0:
                 level[j], W[j] = Y[i, j], w[i]
             else:
                 p = level[j] + trend[j] * s
+                e = Y[i, j] - p
+                at, wt = np.array(obs[j]).T
+                age = clock - at
+                s0 = wt.sum()
+                a = (wt * age).sum() / s0
+                q = (wt * (age - a) ** 2).sum()
+                g_f, h_f = (w[i] / s0 + w[i] * a * a / q, w[i] * a / q) if q > 0 else (w[i] / s0, 0)
                 ll = lam(s, half_life)
-                new = (ll * W[j] * p + w[i] * Y[i, j]) / (ll * W[j] + w[i])
+                g_t = 0.0 if np.isinf(half_life) else w[i] / (ll * W[j] + w[i])
+                g = max(g_f, g_t)
                 W[j] = ll * W[j] + w[i]
+                h = h_f
                 if s > 0.0:
                     lb = lam(s, th)
-                    trend[j] = (lb * V[j] * trend[j] + w[i] * (new - level[j]) / s) / (
-                        lb * V[j] + w[i]
-                    )
+                    h_t = 0.0 if np.isinf(th) else w[i] / (lb * V[j] + w[i]) * g / s
+                    h = max(h_f, h_t)
                     V[j] = lb * V[j] + w[i]
-                level[j] = new
+                level[j] = p + g * e
+                trend[j] += h * e
             seen[j] += 1
             since[j] = 0.0
         step = lam(d, half_life)
