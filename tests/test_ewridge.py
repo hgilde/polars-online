@@ -16,7 +16,7 @@ import polars_online as po
 from data import synthetic
 from reference import compute_dclock, ewridge_ref
 
-TIER = "essential"
+TIER = "mixed"
 
 HL = 300.0
 MAXD = 50.0
@@ -739,3 +739,299 @@ class TestTheRowClockSolveCadence:
         c = clock["support_coef"].to_list()
         moved = [i for i in range(1, len(c)) if c[i] != c[i - 1]]
         assert moved == [6, 13, 20, 27, 34, 41, 48, 55]
+
+
+def _relation_frame(seed: int, n: int = 2000, gaps: bool = True) -> pl.DataFrame:
+    """Three features of unlike scales and means, a slope that changes half
+    way, two targets -- ``z`` null where ``x0`` is high -- uneven weights with
+    a zero on the first row and every 37th, and a clock that is the row
+    number."""
+    rng = np.random.default_rng(seed)
+    t = np.arange(n, dtype=float)
+    x = rng.standard_normal((n, 3)) * [1.0, 2.0, 0.5] + [0.5, -1.0, 3.0]
+    beta = np.array([2.0, -1.0, 0.5])
+    y = 1.0 + x @ beta + np.where(t < n / 2, 0.0, 1.5) * x[:, 0] + rng.standard_normal(n)
+    z = 0.5 - x @ beta[::-1] + rng.standard_normal(n)
+    if gaps:
+        z[x[:, 0] > 1.2] = np.nan
+    w = rng.uniform(0.5, 1.5, n)
+    w[::37] = 0.0
+    return pl.DataFrame(
+        {"t": t, "x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "y": y, "w": w}
+        | {"z": pl.Series(z).fill_nan(None)}
+    )
+
+
+_GRID = pytest.mark.extended(reason="a grid: three seeds x two half-lives")
+#: (seed, half_life): one stream in the essentials, three seeds at a short and
+#: a long half-life in the extended tier.
+_CASES = [
+    pytest.param(278, 200.0, id="s278-h200"),
+    *(
+        pytest.param(s, h, id=f"s{s}-h{h:g}", marks=_GRID)
+        for s in (1, 2, 3)
+        for h in (50.0, 1000.0)
+    ),
+]
+_SEEDS = [
+    pytest.param(278, id="s278"),
+    *(
+        pytest.param(s, id=f"s{s}", marks=pytest.mark.extended(reason="a grid: three seeds"))
+        for s in (1, 2, 3)
+    ),
+]
+_F = ["x0", "x1", "x2"]
+
+
+class TestParameterRelations:
+    """``ewridge``'s own keywords against each other and against their limits
+    (task 278, batch 27): the spellings that must be one model, the values at
+    which a keyword must vanish, and the direction it must move the fit. Each
+    relation was measured on today's model (2026-10-26) before it was
+    written down; an exact one is held to the bit."""
+
+    @staticmethod
+    def run(df: pl.DataFrame, **kw) -> tuple[pl.DataFrame, po.ModelBank]:
+        base = dict(
+            targets=["y", "z"],
+            features=_F,
+            clock="t",
+            gap_cap=1e9,
+            weight="w",
+            min_weight=10.0,
+            coef_every=0,
+            max_rows_between_solves=1,
+        )
+        bank = po.ModelBank([po.spec.ewridge("m", **{**base, **kw})], threads=1)
+        with warnings.catch_warnings():
+            # A heavy ridge on a narrow column is mostly ridge: said, not wrong.
+            warnings.simplefilter("ignore", po.ReadinessWarning)
+            return bank.fit_predict(df).unnest("m"), bank
+
+    @staticmethod
+    def last_coef(bank: po.ModelBank) -> np.ndarray:
+        """Every target's coefficients, intercept first, in the bank's order."""
+        return bank.coef("m")["coef"].to_numpy()
+
+    # ---- spellings of one model ----
+
+    @pytest.mark.parametrize(("seed", "half_life"), _CASES)
+    def test_a_ridge_grid_slot_is_the_lone_spec_at_that_ridge(self, seed, half_life):
+        df = _relation_frame(seed)
+        grid, _ = self.run(df, half_life=half_life, ridge=[1e-6, 2.0])
+        lone, _ = self.run(df, half_life=half_life, ridge=2.0)
+        assert lone["pred_y"].is_not_null().sum() > 1900
+        for t in ("y", "z"):
+            for f in ("pred", "resid"):
+                assert grid[f"{f}_{t}__r2"].equals(lone[f"{f}_{t}"]), (f, t)
+        assert grid["weight_sum"].equals(lone["weight_sum"])
+        # The other slot is another fit: the grid is not one model twice.
+        assert not grid["pred_y__r0.000001"].equals(grid["pred_y__r2"])
+
+    @pytest.mark.parametrize(("seed", "half_life"), _CASES)
+    def test_a_feature_set_is_the_spec_on_its_columns(self, seed, half_life):
+        df = _relation_frame(seed)
+        sets, _ = self.run(df, half_life=half_life, feature_sets={"a": ["x0"], "b": ["x0", "x2"]})
+        for name, cols in (("a", ["x0"]), ("b", ["x0", "x2"])):
+            alone, _ = self.run(df, half_life=half_life, features=cols)
+            for t in ("y", "z"):
+                for f in ("pred", "resid"):
+                    assert sets[f"{f}_{t}__{name}"].equals(alone[f"{f}_{t}"]), (name, f, t)
+
+    @pytest.mark.parametrize(("seed", "half_life"), _CASES)
+    def test_one_set_of_every_feature_is_the_plain_spec(self, seed, half_life):
+        df = _relation_frame(seed)
+        one, _ = self.run(df, half_life=half_life, feature_sets={"all": _F})
+        plain, _ = self.run(df, half_life=half_life)
+        assert one.equals(plain, null_equal=True)
+
+    @pytest.mark.parametrize(("seed", "half_life"), _CASES)
+    def test_own_rows_is_pairwise_where_no_target_is_ever_null(self, seed, half_life):
+        full = _relation_frame(seed, gaps=False)
+        own, _ = self.run(full, half_life=half_life)
+        pairwise, _ = self.run(full, half_life=half_life, target_gaps="pairwise")
+        assert own.equals(pairwise, null_equal=True)
+        # With gaps the two rules read different rows, so they part.
+        gappy = _relation_frame(seed)
+        a, _ = self.run(gappy, half_life=half_life)
+        b, _ = self.run(gappy, half_life=half_life, target_gaps="pairwise")
+        assert not a["pred_z"].equals(b["pred_z"])
+
+    @pytest.mark.parametrize(("seed", "half_life"), _CASES)
+    def test_closed_both_is_right_where_no_row_sits_on_the_window_edge(self, seed, half_life):
+        """On the clock ``0.7 t + 0.05`` no two rows lie exactly 100 apart,
+        so no row is ever one window old and the edge rule decides nothing.
+        On the integer clock rows land on the edge and the rules part."""
+        df = _relation_frame(seed)
+        off = df.with_columns(pl.col("t") * 0.7 + 0.05)
+        right, _ = self.run(off, half_life=half_life, window_size=100.0)
+        both, _ = self.run(off, half_life=half_life, window_size=100.0, closed="both")
+        assert right.equals(both, null_equal=True)
+        on_r, _ = self.run(df, half_life=half_life, window_size=100.0)
+        on_b, _ = self.run(df, half_life=half_life, window_size=100.0, closed="both")
+        assert not on_r["weight_sum"].equals(on_b["weight_sum"])
+
+    # ---- the ridge: its direction and its limits ----
+
+    @pytest.mark.parametrize("seed", _SEEDS)
+    def test_the_standardized_slopes_shrink_as_the_ridge_grows(self, seed):
+        """Under ``standardize`` the ridge is on the slopes in units of each
+        feature's spread, so ``|b * s|`` is the norm it penalizes, and it
+        cannot grow with the ridge (a ridge path is monotone in the penalized
+        norm). Measured at seed 278: 3.38, 3.34, 3.06, 1.65, 0.30, 0.032 for
+        ridge 0, 0.01, ... 100."""
+        df = _relation_frame(seed)
+        spread = df.select(_F).to_numpy().std(axis=0)
+        norms = []
+        for r in (0.0, 0.01, 0.1, 1.0, 10.0, 100.0, 1e4):
+            _, bank = self.run(df, targets=["y"], half_life=float("inf"), standardize=True, ridge=r)
+            norms.append(float(np.linalg.norm(self.last_coef(bank)[1:] * spread)))
+        print("standardized slope norms:", [f"{v:.4g}" for v in norms])
+        assert np.all(np.diff(norms) < 0), norms
+        assert norms[-1] < 1e-2 * norms[0]
+
+    @pytest.mark.parametrize("standardize", [False, True])
+    @pytest.mark.parametrize("seed", _SEEDS)
+    def test_an_overwhelming_ridge_leaves_the_slopes_at_the_covariance_over_it(
+        self, seed, standardize
+    ):
+        """At ``half_life=inf`` the system is ``(C + r D) b = c``, ``C`` the
+        weighted covariance of the features, ``c`` theirs with ``y`` and
+        ``D`` the identity (or the variances, under ``standardize``). As
+        ``r`` grows, ``r b -> D^-1 c`` with an error of order ``|C| / r``,
+        and the unpenalized intercept ``ybar - xbar' b`` goes to the
+        weighted mean of ``y``. ``numpy.cov(aweights=)`` computes ``c``.
+        Measured 2026-10-26 over the four seeds: ``r b`` within 1e-8 to
+        4.1e-8 (relative) of the limit at ``r = 1e8`` and the intercept
+        2.7e-8 to 6.1e-8 from the mean, both falling by 1e4 at ``r = 1e12``."""
+        df = _relation_frame(seed).filter(pl.col("w") > 0)
+        x, y, w = df.select(_F).to_numpy(), df["y"].to_numpy(), df["w"].to_numpy()
+        cov = np.cov(np.column_stack([x, y]), rowvar=False, aweights=w, bias=True)
+        d = np.diag(cov)[:3] if standardize else np.ones(3)
+        limit = cov[:3, 3] / d
+        ybar = float(np.average(y, weights=w))
+        errs = []
+        for r in (1e8, 1e12):
+            _, bank = self.run(
+                df, targets=["y"], half_life=float("inf"), standardize=standardize, ridge=r
+            )
+            c = self.last_coef(bank)
+            slope_err = float(np.max(np.abs(r * c[1:] - limit) / np.abs(limit)))
+            errs.append((slope_err, abs(c[0] - ybar)))
+            print(f"ridge {r:g}: r b off the limit by {slope_err:.2g}, intercept {c[0] - ybar:.2g}")
+        (s8, i8), (s12, i12) = errs
+        # The error's order: |C| / r with |C| about 4, so ~4e-8 relative at
+        # 1e8 (bounded at 1e-5 for the seeds' spread) and the next order at
+        # 1e12, down to the double's rounding of ``r b``.
+        assert s8 < 1e-5 and s12 < max(1e-3 * s8, 1e-9), errs
+        assert i8 < 1e-6 and i12 < max(1e-3 * i8, 1e-13), errs
+
+    # ---- coef_prior ----
+
+    @pytest.mark.parametrize("seed", _SEEDS)
+    def test_a_prior_fades_from_the_fit_with_the_ridge(self, seed):
+        """``coef_prior`` enters the system only through ``r * prior`` on
+        its right-hand side, so its effect on a prediction is linear in the
+        ridge and none at 0, to the bit. Measured at seed 278: the largest
+        move 5.4e-5, 5.4e-9 and 5.4e-13 at ridge 1e-6, 1e-10, 1e-14."""
+        df = _relation_frame(seed)
+        prior = [[0.0, 7.0, 8.0, 6.0]]
+        kw = dict(targets=["y"], half_life=float("inf"))
+        moves = []
+        for r in (1e-6, 1e-10):
+            a, _ = self.run(df, ridge=r, coef_prior=prior, **kw)
+            b, _ = self.run(df, ridge=r, **kw)
+            pa, pb = a["pred_y"].to_numpy().astype(float), b["pred_y"].to_numpy().astype(float)
+            moves.append(float(np.nanmax(np.abs(pa - pb))))
+        print("the prior's largest move at ridge 1e-6, 1e-10:", moves)
+        assert moves[0] > 1e-7, "the prior moves nothing at a ridge of 1e-6"
+        assert moves[1] / 1e-10 == pytest.approx(moves[0] / 1e-6, rel=1e-3)
+        a, _ = self.run(df, ridge=0.0, coef_prior=prior, **kw)
+        b, _ = self.run(df, ridge=0.0, **kw)
+        assert a.equals(b, null_equal=True)
+
+    @pytest.mark.parametrize("standardize", [False, True])
+    def test_an_overwhelming_ridge_lands_on_the_prior_with_the_intercept_free(self, standardize):
+        """With an intercept the slopes land on the prior and the intercept,
+        which a plain ridge leaves free, is the weighted mean of
+        ``y - x' prior``, both off by order ``1 / r``. Measured 2026-10-26
+        at ``r = 1e12``: the slopes within 3.8e-11 (9.1e-12 standardized)
+        and the intercept within 2.8e-11 (1.5e-11), each 1e4 times its
+        distance at ``r = 1e8``."""
+        df = _relation_frame(278).filter(pl.col("w") > 0)
+        x, y, w = df.select(_F).to_numpy(), df["y"].to_numpy(), df["w"].to_numpy()
+        slopes = np.array([7.0, 8.0, 6.0])
+        intercept = float(np.average(y - x @ slopes, weights=w))
+        _, bank = self.run(
+            df,
+            targets=["y"],
+            half_life=float("inf"),
+            standardize=standardize,
+            ridge=1e12,
+            coef_prior=[[0.0, *slopes]],
+        )
+        c = self.last_coef(bank)
+        assert c[1:] == pytest.approx(slopes, abs=1e-9)
+        assert c[0] == pytest.approx(intercept, abs=1e-9)
+
+    @pytest.mark.parametrize("standardize", [False, True])
+    @pytest.mark.parametrize("half_life", [200.0, float("inf")])
+    def test_under_mean_the_priors_intercept_moves_nothing(self, half_life, standardize):
+        """Under ``ridge_scale="mean"`` the intercept is not penalized, so
+        the prior's intercept slot is never read: any value gives the same
+        output, to the bit. Under ``"sum"`` the intercept is penalized and
+        the slot acts."""
+        df = _relation_frame(278)
+        kw = dict(targets=["y"], half_life=half_life, ridge=3.0)
+        a, _ = self.run(df, standardize=standardize, coef_prior=[[0.0, 1.0, -2.0, 0.5]], **kw)
+        b, _ = self.run(df, standardize=standardize, coef_prior=[[123.0, 1.0, -2.0, 0.5]], **kw)
+        assert a.equals(b, null_equal=True)
+        if not standardize:
+            c, _ = self.run(df, ridge_scale="sum", coef_prior=[[0.0, 1.0, -2.0, 0.5]], **kw)
+            d, _ = self.run(df, ridge_scale="sum", coef_prior=[[123.0, 1.0, -2.0, 0.5]], **kw)
+            assert not c["pred_y"].equals(d["pred_y"])
+
+    # ---- standardize ----
+
+    @pytest.mark.parametrize(
+        "window", [{}, {"fit_intercept": False}, {"window_size": 300.0}], ids=str
+    )
+    @pytest.mark.parametrize("k", [-20, 5, 30])
+    def test_a_feature_scaled_by_a_power_of_two_predicts_the_same_to_the_bit(self, k, window):
+        """Standardized, the solve reads each feature only through its
+        z-score, and scaling by ``2^k`` changes no bit of a z-score: the
+        mean, the spread and the difference all scale exactly. So every
+        prediction is the same, to the bit, and the feature's slope is
+        scaled by exactly ``2^-k``; the other coefficients do not move."""
+        df = _relation_frame(278)
+        s = 2.0**k
+        kw = dict(half_life=200.0, standardize=True, ridge=0.5, **window)
+        a, ba = self.run(df, **kw)
+        b, bb = self.run(df.with_columns(pl.col("x1") * s), **kw)
+        for c in ("pred_y", "pred_z", "resid_y", "resid_z", "weight_sum"):
+            assert a[c].equals(b[c]), c
+        ca, cb = self.last_coef(ba), self.last_coef(bb)
+        on_x1 = (ba.coef("m")["term"] == "x1").to_numpy()
+        assert on_x1.sum() == 2
+        np.testing.assert_array_equal(cb[on_x1], ca[on_x1] / s)
+        np.testing.assert_array_equal(cb[~on_x1], ca[~on_x1])
+
+    # ---- ridge_scale ----
+
+    @pytest.mark.parametrize("seed", _SEEDS)
+    def test_without_decay_sum_at_ridge_r_is_mean_at_r_over_the_weight(self, seed):
+        """Through the origin at ``half_life=inf`` the sum form solves
+        ``(W S + r I) b = W s`` and the mean form ``(S + r' I) b = s``, ``W``
+        the weight learned: one system at ``r' = r / W``. ``W`` grows, so the
+        two meet at the last row only. Measured 4.9e-16 apart (relative)."""
+        df = _relation_frame(seed)
+        kw = dict(targets=["y"], half_life=float("inf"), fit_intercept=False)
+        _, by_sum = self.run(df, ridge=0.5, ridge_scale="sum", **kw)
+        weight = by_sum.gram("m")[0]["weight_sum"]
+        _, by_mean = self.run(df, ridge=0.5 / weight, **kw)
+        a, b = self.last_coef(by_sum), self.last_coef(by_mean)
+        np.testing.assert_allclose(b, a, rtol=1e-13, atol=0.0)
+        # The ridge is not negligible here: at ``r`` itself the mean form is
+        # another fit.
+        _, other = self.run(df, ridge=0.5 * 1e3, **kw)
+        assert np.max(np.abs(self.last_coef(other) - a)) > 1e-3

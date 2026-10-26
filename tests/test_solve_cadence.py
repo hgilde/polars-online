@@ -169,3 +169,149 @@ def test_a_clock_cadence_is_decided_on_the_exact_clock(model, extra, unit):
     got = solves(po.ModelBank([spec]).fit_predict(df))
     assert got == on_the_clock(got[0], ns, 2_000_000_000)
     assert np.diff(got).tolist() == [2_000] * 3, got
+
+
+# ---- the cadence relation (task 278, batch 27) ----
+#
+# A schedule decides only *when* a model solves, never what a solve reads: the
+# sums are updated on every row either way. So on each row a scheduled
+# `ewridge` solves, its `coef` is the every-row model's, to the bit, and the
+# prediction on the row after reads that fit too.
+# Measured 2026-10-26 on `relation_frame`: 40, 277 and 564 solve rows (of
+# 2,000) for `solve_every=50`, a row cap of 7 and the default, every one
+# bit-identical. `lasso`'s descent warm-starts from its last solve, so a
+# scheduled path reaches the every-row optimum from elsewhere: equal within
+# the descent's stopping rule, not to the bit (below).
+
+
+def relation_frame(seed: int = 278, n: int = 2000, gaps: bool = True) -> pl.DataFrame:
+    """Three features of unlike scales and means, a slope that changes half
+    way, two targets -- ``z`` null where ``x0`` is high, so its rows are its
+    own -- uneven weights with a zero on the first row and every 37th, and a
+    clock column that is the row number."""
+    rng = np.random.default_rng(seed)
+    t = np.arange(n, dtype=float)
+    x = rng.standard_normal((n, 3)) * [1.0, 2.0, 0.5] + [0.5, -1.0, 3.0]
+    beta = np.array([2.0, -1.0, 0.5])
+    y = 1.0 + x @ beta + np.where(t < n / 2, 0.0, 1.5) * x[:, 0] + rng.standard_normal(n)
+    z = 0.5 - x @ beta[::-1] + rng.standard_normal(n)
+    if gaps:
+        z[x[:, 0] > 1.2] = np.nan
+    w = rng.uniform(0.5, 1.5, n)
+    w[::37] = 0.0
+    return pl.DataFrame(
+        {"t": t, "x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "y": y, "w": w}
+        | {"z": pl.Series(z).fill_nan(None)}
+    )
+
+
+RELATION = dict(
+    targets=["y", "z"],
+    features=["x0", "x1", "x2"],
+    clock="t",
+    gap_cap=1e9,
+    weight="w",
+    half_life=200.0,
+    min_weight=10.0,
+    coef_every=0,
+)
+
+#: The three schedules: the clock, a row cap under a clock that never falls
+#: due, and the default weight cadence.
+SCHEDULES = {
+    "solve_every": {"solve_every": 50.0},
+    "row cap": {"max_rows_between_solves": 7, "solve_every": 1e9},
+    "default": {},
+}
+
+
+def relation_run(model: str, df: pl.DataFrame, **kw) -> pl.DataFrame:
+    spec = getattr(po.spec, model)("m", **{**RELATION, **kw})
+    return po.ModelBank([spec], threads=1).fit_predict(df).unnest("m")
+
+
+def coef_rows(out: pl.DataFrame) -> list[np.ndarray | None]:
+    return [
+        None if c is None else np.array([np.nan if e is None else e for e in c], dtype=float)
+        for c in out["coef"].to_list()
+    ]
+
+
+def solve_rows(coef: list[np.ndarray | None]) -> list[int]:
+    """The rows a solve moved the fit on (``coef`` is written on every row
+    under ``coef_every=0`` and is the fit after the row)."""
+    return [
+        i
+        for i in range(1, len(coef))
+        if coef[i] is not None
+        and (coef[i - 1] is None or not np.array_equal(coef[i], coef[i - 1], equal_nan=True))
+    ]
+
+
+@pytest.mark.parametrize("schedule", SCHEDULES.values(), ids=SCHEDULES.keys())
+def test_on_each_solve_row_the_fit_is_the_every_row_models_to_the_bit(schedule):
+    df = relation_frame()
+    every = relation_run("ewridge", df, max_rows_between_solves=1)
+    sched = relation_run("ewridge", df, **schedule)
+    ce, cs = coef_rows(every), coef_rows(sched)
+    solved = solve_rows(cs)
+    print(f"{schedule}: {len(solved)} solve rows of {df.height}")
+    # The evidence the schedule acts: far fewer solves than rows, and the
+    # every-row model's fit moves on rows the schedule holds.
+    assert 30 <= len(solved) < df.height // 3
+    assert len(solve_rows(ce)) > 1.5 * len(solved)
+    for i in solved:
+        assert np.array_equal(cs[i], ce[i], equal_nan=True), i
+    support_e, support_s = every["support_coef"].to_list(), sched["support_coef"].to_list()
+    assert all(support_s[i] == support_e[i] for i in solved)
+    after = [i + 1 for i in solved if i + 1 < df.height]
+    for c in ("pred_y", "pred_z"):
+        np.testing.assert_array_equal(
+            sched[c].to_numpy().astype(float)[after], every[c].to_numpy().astype(float)[after]
+        )
+
+
+@pytest.mark.parametrize(("model", "extra"), MODELS, ids=[m for m, _ in MODELS])
+def test_solve_every_zero_is_a_row_cap_of_one(model, extra):
+    """``solve_every=0`` solves on every row, as a row cap of 1 does: the
+    same output, every field, to the bit, on two targets with gaps and
+    zero-weight rows."""
+    df = relation_frame(n=600)
+    zero = relation_run(model, df, solve_every=0.0, **extra)
+    cap = relation_run(model, df, max_rows_between_solves=1, **extra)
+    assert zero["pred_y"].is_not_null().sum() > 500
+    assert zero.equals(cap, null_equal=True)
+
+
+def test_a_row_cap_longer_than_the_cadence_changes_nothing():
+    """The default cadence solves at least every few rows at this half-life,
+    so a cap of 200 rows never falls due first: the output is the same."""
+    df = relation_frame()
+    default = relation_run("ewridge", df)
+    capped = relation_run("ewridge", df, max_rows_between_solves=200)
+    spacing = int(np.diff(solve_rows(coef_rows(default))).max())
+    print(f"the default cadence's longest spacing: {spacing} rows")
+    assert spacing < 200
+    assert default.equals(capped, null_equal=True)
+    # And a cap shorter than the cadence does act.
+    assert not default.equals(relation_run("ewridge", df, max_rows_between_solves=2))
+
+
+@pytest.mark.parametrize("schedule", SCHEDULES.values(), ids=SCHEDULES.keys())
+def test_on_each_solve_row_lasso_is_the_every_row_path_within_its_rule(schedule):
+    """``lasso`` warm-starts each descent from its last solve's path, so a
+    scheduled solve starts further from the optimum than the every-row
+    model's and stops at another point inside the rule. At ``tol=1e-14`` the
+    two agree on every solve row to 3.1e-14, 3.6e-15 and 1.8e-15 (the three
+    schedules, measured 2026-10-26; 32 of 40, 230 of 277 and 507 of 564
+    rows to the bit), held to 1e-12."""
+    df = relation_frame()
+    path = dict(penalties=[0.5, 0.05], tol=1e-14, max_iter=100_000)
+    every = relation_run("lasso", df, max_rows_between_solves=1, **path)
+    sched = relation_run("lasso", df, **schedule, **path)
+    ce, cs = coef_rows(every), coef_rows(sched)
+    solved = solve_rows(cs)
+    assert 30 <= len(solved) < df.height // 3
+    worst = max(float(np.nanmax(np.abs(cs[i] - ce[i]))) for i in solved)
+    print(f"{schedule}: {len(solved)} solve rows, worst |d coef| {worst:.3g}")
+    assert worst < 1e-12
