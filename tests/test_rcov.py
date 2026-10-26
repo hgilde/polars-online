@@ -9,6 +9,7 @@ measured against, and the gap between them is the thing they remove.
 
 import math
 import re
+import warnings
 
 import numpy as np
 import polars as pl
@@ -725,20 +726,33 @@ def test_theta_sets_the_window_and_is_the_window_given_outright(psd):
     assert counts == sorted(counts, reverse=True) and len(set(counts)) == 4, counts
 
 
-def test_theta_beside_preavg_rows_is_inert_today():
-    """Today's behaviour, pinned for a decision rather than endorsed:
-    ``preavg_rows`` fixes the window, so a ``theta`` given beside it is
-    read by nothing, and is not refused, even at a value whose own window
+def test_theta_beside_preavg_rows_is_deprecated_and_changes_nothing():
+    """``preavg_rows`` fixes the window, which is all ``theta`` sets, so a
+    ``theta`` beside it is read by nothing, even at a value whose own window
     would be past ``block_rows`` and refused alone (theta 13 below). Every
-    other key its configuration does not read is refused by name (task 278
-    (b11) reports it; the coordinator decides between a refusal and this)."""
+    other key its configuration does not read is refused by name; this one
+    is deprecated instead, as the user decided (task 278, b11): one warning
+    naming the caller's line, and the block exactly as without it."""
     df = ticks(n=1200)
     base, _ = block(df, kind="preavg", preavg_rows=12)
     for theta in (0.5, 3.0, 13.0):
-        got, _ = block(df, kind="preavg", preavg_rows=12, theta=theta)
+        with pytest.warns(po.PolarsOnlineDeprecationWarning) as caught:
+            got, _ = block(df, kind="preavg", preavg_rows=12, theta=theta)
+        assert [str(w.message) for w in caught] == [
+            f'spec "r": theta = {theta!r} is deprecated beside preavg_rows: preavg_rows '
+            "fixes the pre-averaging window, which is all theta sets, so theta has no "
+            "effect. Leave it out. It is accepted and ignored until the next major "
+            "version, which refuses it"
+        ]
+        assert caught[0].filename == __file__, "the warning names the caller's line"
         assert got.equals(base), theta
     with pytest.raises(ValueError, match="theta = 13 sets is 6.04e2 returns"):
         spec(kind="preavg", theta=13.0)
+    # theta alone sets the window, and warns of nothing.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        alone, _ = block(df, kind="preavg", theta=3.0)
+    assert not alone.equals(base)
 
 
 @pytest.mark.parametrize(
@@ -751,6 +765,16 @@ def test_theta_beside_preavg_rows_is_inert_today():
         ({"noise_stride": -1}, ValueError, "noise_stride must be >= 1, got -1"),
         ({"iv_stride": -3}, ValueError, "iv_stride must be >= 1, got -3"),
         ({"jitter": -1}, ValueError, "jitter must be >= 1, got -1"),
+        # A negative block_rows or preavg_rows is told the real floor, not
+        # ">= 0"; from 0 to the floor the Rust refusal gives the reason.
+        ({"block_rows": -1}, ValueError, "block_rows must be >= 1, got -1"),
+        ({"block_rows": 0}, ValueError, "block_rows is the block's expected length"),
+        (
+            {"kind": "preavg", "preavg_rows": -1},
+            ValueError,
+            "preavg_rows must be >= 2 (3 under psd = False), got -1",
+        ),
+        ({"kind": "preavg", "preavg_rows": 1}, ValueError, "preavg_rows must be >= 2 (got 1)"),
         ({"noise_stride": 2**20 + 1}, ValueError, "noise_stride = 1048577 is above 1048576"),
         ({"iv_stride": 2**20 + 1}, ValueError, "iv_stride = 1048577 is above 1048576"),
         ({"noise_stride": 1.5}, TypeError, "noise_stride must be an int, got float 1.5"),

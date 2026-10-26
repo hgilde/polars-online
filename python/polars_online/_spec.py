@@ -324,6 +324,26 @@ _AT_LEAST_ONE = frozenset(
 )
 
 
+#: The int parameters whose floor the Rust side refuses with its reason,
+#: and the floor as this side's refusal of a negative one states it: a
+#: negative one was told ">= 0", which is not the floor (task 278, b11).
+#: Between 0 and the floor the Rust refusal, which gives the reason, is
+#: left to speak.
+_FLOOR = {
+    "block_rows": "1",
+    "preavg_rows": "2 (3 under psd = False)",
+}
+
+
+def _int_floor(key: str) -> tuple[int, str]:
+    """The least an int parameter may be here, and how its refusal states
+    the floor."""
+    if key in _FLOOR:
+        return 0, _FLOOR[key]
+    floor = 1 if key in _AT_LEAST_ONE else 0
+    return floor, str(floor)
+
+
 #: The int parameters that are a ``u32`` on the Rust side; every other count
 #: is a ``u64`` (``usize`` on the 64-bit platforms the package ships for).
 #: A count past the width was named by serde as ``model`` (review
@@ -355,6 +375,12 @@ _CEILING = {
     # Newey and West's lags are twice it.
     "horizon_rows": 2**19,
     "n_perm": 2**20,
+}
+
+#: Why a count's ceiling is where it is, said after the refusal where the
+#: Rust side says it too (``online_core::MAX_PERM``'s message).
+_CEILING_WHY = {
+    "n_perm": "the draws are held to take their quantile, and each is a pass over both blocks",
 }
 
 #: A ceiling one builder's count has that its width does not say:
@@ -509,14 +535,16 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
                 and not isinstance(value, bool)
                 and int in (hint, *typing.get_args(hint))
             ):
-                floor = 1 if key in _AT_LEAST_ONE else 0
+                floor, stated = _int_floor(key)
                 if value < floor:
-                    raise ValueError(f"{who}: {key} must be >= {floor}, got {value}")
+                    raise ValueError(f"{who}: {key} must be >= {stated}, got {value}")
                 # And at most its width, or the tighter ceiling of a count
                 # that sizes an allocation (review 2026-10-06, YA4 and CD10).
                 ceiling = _int_ceiling(key, fn.__name__)
                 if int(value) > ceiling:
-                    raise ValueError(f"{who}: {key} must be <= {ceiling}, got {value}")
+                    said = f"{who}: {key} must be <= {ceiling}, got {value}"
+                    why = _CEILING_WHY.get(key)
+                    raise ValueError(f"{said}: {why}" if why else said)
             # And each entry of a list of counts (review 2026-09-26, F7: a
             # negative lag was named by serde as `model`).
             if (
@@ -525,9 +553,9 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
                 and all(isinstance(x, numbers.Integral) and not isinstance(x, bool) for x in value)
                 and list[int] in (hint, *typing.get_args(hint))
             ):
-                floor = 1 if key in _AT_LEAST_ONE else 0
+                floor, stated = _int_floor(key)
                 if min(value) < floor:
-                    raise ValueError(f"{who}: {key} must be >= {floor}, got {_got(value)}")
+                    raise ValueError(f"{who}: {key} must be >= {stated}, got {_got(value)}")
                 ceiling = _int_ceiling(key, fn.__name__)
                 if max(value) > ceiling:
                     raise ValueError(f"{who}: {key} must be <= {ceiling}, got {_got(value)}")
@@ -2658,8 +2686,12 @@ def ew_cov(
         ``"lag_corr"`` to ``stats`` to write ``lag_corr_l<l>_<a>_<b>`` =
         ``C_l[a,b] / sqrt(C_0[a,a] * C_0[b,b])`` per lag and ordered pair, the
         auto terms included. That is ``k²`` slots a lag, since a lagged
-        matrix is not symmetric. Or read ``lags`` and ``lag_comoments`` (an
-        ``(L, k, k)`` array) from :meth:`polars_online.ModelBank.gram`.
+        matrix is not symmetric. ``C_l`` starts at 0 and takes its first
+        product when a learned row has one ``l`` rows back, so ``lag_corr``
+        reads 0.0, not null, until then: through the ``l``-th learned row of
+        a group, wherever ``min_weight`` lets those rows through. Or read
+        ``lags`` and ``lag_comoments`` (an ``(L, k, k)`` array) from
+        :meth:`polars_online.ModelBank.gram`.
     ``gram_threads``
         Run the per-row update of the ``k x k`` co-moments on up to that many
         threads of the bank's pool, or as ``"auto"`` shares the pool out, as
@@ -4932,7 +4964,14 @@ def deco(
     ``u_<A>_<B>`` per pair, and ``rho_*`` likewise, with one ``loglik`` over
     all of them. ``u`` is null on a row where fewer than two of its block's
     columns have a positive pre-row variance, or where ``S2`` is 0, and
-    ``loglik`` on a row where any column has none.
+    ``loglik`` on a row where any column has none. ``loglik`` is null too
+    where the levels hold no correlation matrix, or hold one too close to
+    singular for its density to keep a digit: each level can be inside
+    ``(-1, 1)`` while the blocks' levels together are not. Then the factor of
+    the ``K x K`` system the density solves needs a shift on its diagonal, or
+    its condition passes the point where the solve's forward-error bound
+    reaches 1. Such levels come from the first rows of a warm-up, when they
+    rest on one or two rows. One block never reaches that point.
 
     .. rubric:: Example
 

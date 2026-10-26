@@ -793,7 +793,11 @@ def test_a_block_of_a_whole_window_makes_the_quantile_the_observed_statistic():
     ("kw", "message"),
     [
         ({"n_perm": 19}, "n_perm >= 20"),
-        ({"n_perm": 2**20 + 1}, "n_perm must be <= 1048576, got 1048577"),
+        (
+            {"n_perm": 2**20 + 1},
+            "n_perm must be <= 1048576, got 1048577: the draws are held to take their "
+            "quantile, and each is a pass over both blocks$",
+        ),
         ({"perm_block": 31}, r"perm_block must be 1..=30 \(window_rows\)"),
         ({"alpha": 0.0}, "alpha must be strictly between 0 and 1"),
         ({"alpha": 1.0}, "alpha must be strictly between 0 and 1"),

@@ -3228,3 +3228,205 @@ def test_reverse_must_be_a_bool() -> None:
         with pytest.raises(TypeError) as exc:
             getattr(po, f"ewm_{name}")("x", half_life=1.0, window_size=2.0, reverse=1, **extra)
         assert str(exc.value) == f"po.ewm_{name}: reverse must be a bool, got int"
+
+
+# --------------------------------------------------------------------------
+# The call's clock policy (task 278, batch 25): what ``group``, ``gap_cap``,
+# ``session``, ``restart_after_step_back`` and ``like=`` must keep, held over
+# every operator on the relation streams above -- grouping as separate
+# calls, a cap as a threshold, a session change as a gap, a restart as a
+# reset, and a spec's skipped rows. Each is one seed under ``closed="right"``
+# in the essentials, every ``closed`` on three seeds extended. The kernels
+# do the same arithmetic on each side of every relation here, so each holds
+# to the bit.
+
+
+def _policy_ops(closed: str) -> dict[str, pl.Expr]:
+    """Every operator under ``closed``: windowed and running looking back,
+    looking ahead both null and kept where cut, and the increment."""
+    kw: dict[str, Any] = {"half_life": _RH, "window_size": _RW, "closed": closed}
+    ops = {n: _rel_op(n, **kw) for n in _BACK + _AHEAD}
+    ops |= {f"{n}_keep": _rel_op(n, partial="keep", **kw) for n in _AHEAD}
+    ops |= {f"running_{n}": _rel_op(n, half_life=_RH, closed=closed) for n in _BACK}
+    return ops | {"increment": po.increment("x")}
+
+
+def _differing(a: pl.DataFrame, b: pl.DataFrame, names: list[str]) -> int:
+    """How many values of ``names`` differ between two frames, nulls
+    included: evidence that a setting acted."""
+    return sum(u != v for n in names for u, v in zip(a[n].to_list(), b[n].to_list(), strict=True))
+
+
+@pytest.mark.parametrize(("closed", "seed"), _rel_grid())
+def test_group_is_each_group_called_alone(closed: str, seed: int) -> None:
+    """``group`` gives each group the output of a call on its rows alone,
+    joined back in input order, to the bit: its own clock, gaps, session
+    changes and windows. Three groups on the relation stream, whose own
+    steps pass the cap where the stream's do not, so a silent group is cut
+    as its own call cuts it at its next row. Each group is closed by a row
+    past the cap: without one, its last windows looking ahead are open
+    where its own input ends, unresolved, while the grouped call cuts them
+    once the stream's clock passes the cap (the test after this one)."""
+    df = _rel_stream(seed)
+    n = df.height
+    rng = np.random.default_rng(100 + seed)
+    df = df.with_columns(g=pl.Series([f"g{k}" for k in rng.integers(0, 3, n)]))
+    end = df["t"][-1] + 2 * _RCAP
+    closing = pl.DataFrame(
+        {"i": [n, n + 1, n + 2], "t": [end] * 3, "x": [None] * 3, "s": ["b"] * 3},
+        schema=df.drop("g").schema,
+    ).with_columns(g=pl.Series(["g0", "g1", "g2"]))
+    df = pl.concat([df, closing])
+    ops = _policy_ops(closed)
+    grouped = _rel_run(df, ops, group="g")
+    alone = pl.concat([_rel_run(df.filter(pl.col("g") == g), ops) for g in ("g0", "g1", "g2")])
+    assert grouped.equals(alone.sort("i"))
+    # Evidence the groups' own breaks acted: steps past the cap within a
+    # group where the stream has none, and a grouped frame unlike the
+    # stream's own.
+    own_breaks = sum(
+        int((np.diff(df.filter(pl.col("g") == g)["t"].to_numpy()) > _RCAP).sum())
+        for g in ("g0", "g1", "g2")
+    )
+    assert own_breaks >= 5, own_breaks
+    assert _differing(grouped, _rel_run(df, ops), list(ops)) > n
+
+
+def test_a_silent_group_is_cut_only_once_the_stream_is_past_the_cap() -> None:
+    """A group whose last row is at 0.5, under a cap of 10, could still
+    have its next row at 10.5 without a break, so its window looking ahead
+    stays open while the stream is at 10.5, and is cut, kept with the one
+    row it holds, once the stream is past it by one ulp."""
+
+    def run(end: float) -> list[float | None]:
+        df = pl.DataFrame(
+            {"t": [0.0, 0.5, 1.0, end], "g": ["a", "a", "b", "b"], "x": [1.0, 2.0, 3.0, 4.0]}
+        )
+        kept = po.ewm_sum("x", half_life=math.inf, window_size=100.0, partial="keep", reverse=True)
+        out = po.stream.with_windows(df, y=kept, clock="t", gap_cap=10.0, group="g")
+        return out["y"].to_list()
+
+    assert run(10.5) == [None] * 4
+    assert run(math.nextafter(10.5, math.inf)) == [2.0, None, None, None]
+
+
+@pytest.mark.parametrize(("closed", "seed"), _rel_grid())
+def test_a_cap_acts_only_through_the_steps_it_is_below(closed: str, seed: int) -> None:
+    """The cap is a threshold and nothing else: a step longer than it ends
+    every window, and no window measures that step. So a cap at or past
+    the stream's longest step is no cap -- 1e6, and 50 itself, a step of 50
+    being no longer than it, give the bits of 1e9 -- and every cap from the
+    second-longest step (3) to one ulp below 50 gives one frame, which
+    differs from the uncapped one."""
+    df = _rel_stream(seed).drop("s")
+    steps = np.diff(df["t"].to_numpy())
+    assert steps.max() == 50.0 and np.sort(steps)[-2] == 3.0
+    ops = _policy_ops(closed)
+    none = _rel_run(df, ops, gap_cap=1e9)
+    for cap in (1e6, 50.0):
+        assert _rel_run(df, ops, gap_cap=cap).equals(none), cap
+    capped = _rel_run(df, ops, gap_cap=_RCAP)
+    assert _differing(capped, none, list(ops)) > 500
+    for cap in (3.0, 20.0, math.nextafter(50.0, 0.0)):
+        assert _rel_run(df, ops, gap_cap=cap).equals(capped), cap
+
+
+@pytest.mark.parametrize(("closed", "seed"), _rel_grid())
+def test_a_session_change_is_a_gap_past_the_cap(closed: str, seed: int) -> None:
+    """A session change does to every window what a gap past the cap does:
+    the relation stream with its session change at row ``2n // 3``, and the
+    same stream with no session and its clock moved on by 50 from that row,
+    give every window operator's bits, backward, running and ahead, null or
+    kept where cut. The increment alone differs, at one row: it is taken
+    within the session, so the new session's first value has none, and
+    across a gap it is the step from the last value."""
+    df = _rel_stream(seed)
+    k = 2 * df.height // 3
+    ops = _policy_ops(closed)
+    session = _rel_run(df, ops)
+    t = df["t"].to_numpy().copy()
+    t[k:] += 50.0
+    gap = _rel_run(df.drop("s").with_columns(t=pl.Series(t)), ops)
+    windows = [n for n in ops if n != "increment"]
+    assert session.select(windows).equals(gap.select(windows))
+    first = next(i for i in range(k, df.height) if df["x"][i] is not None)
+    assert gap["increment"][first] is not None
+    assert session["increment"].equals(gap["increment"].scatter([first], None))
+    # Evidence the change acted: without it the windows run on across row k.
+    assert _differing(session, _rel_run(df.drop("s"), ops), windows) > 100
+
+
+@pytest.mark.parametrize(("closed", "seed"), _rel_grid())
+def test_a_step_back_restarts_only_past_the_threshold(closed: str, seed: int) -> None:
+    """A step back of 7.5 at row ``2n // 3``. Under ``restart_after_step_back``
+    of 0, 5 or one ulp below 7.5 it starts every window over and discards
+    those still open ahead, giving to the bit the frame of a session change
+    there under ``session_gap="reset"``, the increment included; it differs
+    from a cut, which keeps them. At 7.5 itself, or one ulp above, the step
+    is no larger than the threshold: a late row, refused naming the row, as
+    every step back is when the threshold is unset."""
+    df = _rel_stream(seed)
+    k = 2 * df.height // 3
+    t = df["t"].to_numpy().copy()
+    t[k:] -= t[k] - t[k - 1] + 7.5
+    df = df.with_columns(t=pl.Series(t))
+    ops = _policy_ops(closed)
+    reset = _rel_run(df, ops, session_gap="reset")
+    assert _differing(reset, _rel_run(df, ops), [f"{n}_keep" for n in _AHEAD]) >= 5
+    alone = df.drop("s")
+    for after in (0.0, 5.0, math.nextafter(7.5, 0.0)):
+        got = _rel_run(alone, ops, restart_after_step_back=after)
+        assert got.equals(reset.drop("s")), after
+    for after in (7.5, math.nextafter(7.5, math.inf)):
+        says = (
+            f'clock column "t" goes backwards by 7.5 at row {k}, no more than '
+            f"restart_after_step_back = {after!r}: a late row"
+        )
+        with pytest.raises(_REFUSAL, match=re.escape(says)):
+            _rel_run(alone, ops, restart_after_step_back=after)
+    with pytest.raises(_REFUSAL, match=re.escape(f"goes backwards by 7.5 at row {k} (")):
+        _rel_run(alone, ops)
+
+
+@pytest.mark.parametrize(("closed", "seed"), _rel_grid())
+def test_like_a_weighted_spec_nulls_the_windows_ahead_of_the_rows_it_skips(
+    closed: str, seed: int
+) -> None:
+    """``like=`` a spec with a weight takes its clock policy and its rule for
+    the rows it learns from: a row whose weight is null, NaN, infinite or
+    past 1e100 is one the model skips, so every window looking ahead from it
+    is null, kept or not. Every other value is the bits of the call with the
+    policy spelled out: a zero weight is learned, at weight 0, so its
+    windows stand, and the windows looking back are never touched."""
+    df = _rel_stream(seed)
+    n = df.height
+    rng = np.random.default_rng(200 + seed)
+    kinds = rng.choice(["ok", "null", "nan", "inf", "big", "zero"], n, p=[0.7] + [0.06] * 5)
+    given = {"null": None, "nan": math.nan, "inf": math.inf, "big": 1e101, "zero": 0.0}
+    w = [
+        given[k] if k in given else float(v)
+        for k, v in zip(kinds, rng.uniform(0.5, 2, n), strict=True)
+    ]
+    df = df.with_columns(w=pl.Series(w, dtype=pl.Float64), f=pl.Series(rng.normal(size=n)))
+    spec = po.spec.ewridge(
+        "m",
+        targets=["x"],
+        features=["f"],
+        weight="w",
+        half_life=10.0,
+        clock="t",
+        gap_cap=_RCAP,
+        session="s",
+        session_gap=1.0,
+    )
+    ops = _policy_ops(closed)
+    lent = po.stream.with_windows(df, **ops, like=spec)
+    own = _rel_run(df, ops)
+    skipped = [i for i, k in enumerate(kinds) if k not in ("ok", "zero")]
+    assert (kinds == "zero").sum() >= 5
+    ahead = [name for name in ops if name.startswith("ahead_")]
+    for name in ops:
+        want = own[name].scatter(skipped, None) if name in ahead else own[name]
+        assert lent[name].equals(want), name
+    # Evidence the rule acted: windows the spelled-out call gives a value.
+    assert sum(own[name][i] is not None for name in ahead for i in skipped) > 100

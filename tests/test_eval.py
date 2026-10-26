@@ -1,5 +1,9 @@
 """Task 12: the evaluation harness (docs/PLAN.md section 8)."""
 
+import warnings
+from datetime import datetime, timedelta
+from typing import Any
+
 import numpy as np
 import polars as pl
 import pytest
@@ -619,3 +623,260 @@ def test_a_score_carries_only_the_columns_it_reads(monkeypatch):
     for name, frame in got.items():
         assert frame.height > 0, name
         assert frame.equals(want[name], null_equal=True), name
+
+
+# -------------------- task 278 (b12): the metrics family against its own parts
+
+
+def _two_spec_fit() -> tuple[pl.DataFrame, list[dict]]:
+    """Two specs (one a ridge grid) over three groups with a few missing
+    targets, and a clock in three dtypes: ``t`` (float), ``ti`` (an
+    integer, 1000 per unit of ``t``) and ``dt`` (a naive ``Datetime``, 37
+    s per unit)."""
+    df, _ = synthetic(seed=51, n_groups=3, n_rows=400, k=3, null_frac=0.05)
+    df = df.with_columns(
+        ti=(pl.col("t") * 1000).cast(pl.Int64),
+        dt=pl.datetime(2024, 3, 9, 20) + pl.duration(seconds=pl.col("t") * 37.0),
+    )
+    common = dict(
+        targets=["y0"],
+        features=["x0", "x1", "x2"],
+        half_life=200.0,
+        clock="t",
+        gap_cap=50.0,
+        group="group",
+        min_weight=10.0,
+    )
+    specs = [
+        po.spec.ewridge("a", ridge=1e-6, **common),
+        po.spec.ewridge("b", ridge=[1.0, 10.0], **common),
+    ]
+    with warnings.catch_warnings():
+        # The heavy ridge leaves a coefficient mostly prior, which is said.
+        warnings.simplefilter("ignore", po.ReadinessWarning)
+        out = po.ModelBank(specs).fit_predict(df)
+    return out, specs
+
+
+@pytest.fixture(scope="module")
+def two_specs():
+    return _two_spec_fit()
+
+
+SCORING = [
+    dict(),
+    dict(group="group"),
+    dict(group="group", min_samples=320),
+    dict(group=["group"], binary=True, min_samples=1),
+]
+
+
+@pytest.mark.parametrize("kw", SCORING, ids=lambda kw: ",".join(kw) or "plain")
+def test_compare_specs_is_each_specs_metrics_stacked(two_specs, kw):
+    """``compare_specs`` passes ``group``, ``min_samples`` and ``binary`` to
+    ``metrics`` for each spec: the table is theirs stacked under a ``spec``
+    column, to the bit. ``min_samples=320`` sits between the groups'
+    counts (310, 311 and 327), so it nulls some rows and not others."""
+    out, specs = two_specs
+    got = po.eval.compare_specs(out, specs, **kw)
+    want = pl.concat(
+        po.eval.metrics(out, s, **kw).with_columns(spec=pl.lit(s["name"])).select(got.columns)
+        for s in specs
+    )
+    assert got.equals(want)
+    if "min_samples" in kw and kw["min_samples"] > 1:
+        nulled = got["r2"].is_null()
+        assert nulled.any() and not nulled.all(), got["n"].to_list()
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [dict(min_samples=40), dict(min_samples=40, binary=True)],
+    ids=["plain", "binary"],
+)
+def test_each_window_is_metrics_on_its_rows(two_specs, kw):
+    """Each ``window_metrics`` row is ``metrics`` on the rows of its key
+    whose clock lies in ``[window_start, window_start + every)``, to the
+    bit, with ``binary`` and ``min_samples`` passed through: the windows
+    hold 22 to 54 scored rows, so 40 nulls some of them."""
+    out, _ = two_specs
+    every = 500.0
+    got = po.eval.window_metrics(out, "b", clock="t", every=every, group="group", **kw)
+    assert got.height > 20
+    # One group's windows (sixteen), to keep the test cheap; group is held
+    # to filtered calls below.
+    for row in got.filter(pl.col("group") == "g1").iter_rows(named=True):
+        start = row["window_start"]
+        rows = out.filter(
+            (pl.col("group") == row["group"])
+            & (pl.col("t") >= start)
+            & (pl.col("t") < start + every)
+        )
+        want = po.eval.metrics(rows, "b", group="group", **kw).filter(pl.col("slot") == row["slot"])
+        want = want.with_columns(window_start=pl.lit(start)).select(got.columns)
+        assert want.equals(pl.DataFrame([row], schema=got.schema)), row
+    nulled = got["mse"].is_null()
+    assert nulled.any() and not nulled.all(), "min_samples did not bind on some windows"
+
+
+@pytest.mark.parametrize(
+    ("clock", "every", "polars_every"),
+    [
+        ("ti", 300_000, "300000i"),
+        ("dt", "1h", "1h"),
+        ("dt", "7m", "7m"),
+        ("dt", "1d", "1d"),
+    ],
+)
+def test_window_start_is_group_by_dynamics(two_specs, clock, every, polars_every):
+    """``window_start`` and ``n`` are Polars' ``group_by_dynamic`` buckets
+    (left-closed, labelled on the left) over the scored rows, per group, on
+    an integer clock and a naive ``Datetime`` one."""
+    out, _ = two_specs
+    got = po.eval.window_metrics(out, "a", clock=clock, every=every, group="group", min_samples=1)
+    scored = out.filter(
+        pl.col("a").struct.field("pred_y0").is_not_null() & pl.col("y0").is_not_null()
+    )
+    want = (
+        scored.sort("group", clock)
+        .group_by_dynamic(clock, every=polars_every, group_by="group", closed="left", label="left")
+        .agg(n=pl.len())
+        .sort("group", clock)
+    )
+    mine = got.select("group", pl.col("window_start").alias(clock), pl.col("n").cast(pl.UInt32))
+    assert mine.sort("group", clock).equals(want)
+
+
+#: Each zone's two changes of offset in 2024: spring forward and autumn back
+#: in the north, the reverse in Sydney.
+CHANGES = {
+    "America/New_York": (datetime(2024, 3, 10), datetime(2024, 11, 3)),
+    "Europe/London": (datetime(2024, 3, 31), datetime(2024, 10, 27)),
+    "Australia/Sydney": (datetime(2024, 4, 7), datetime(2024, 10, 6)),
+}
+
+
+def _zoned_fit(zone: str) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Rows every 17 minutes for two days around each of ``zone``'s changes
+    of offset, in two groups, the second starting 3 h 10 m later, so their
+    windows start apart. Returns the bank's output and its scored rows."""
+    parts = []
+    for change in CHANGES[zone]:
+        for key, late in (("a", timedelta(0)), ("b", timedelta(hours=3, minutes=10))):
+            t = pl.datetime_range(
+                change - timedelta(days=1) + late,
+                change + timedelta(days=1),
+                "17m",
+                eager=True,
+                time_zone="UTC",
+            ).dt.convert_time_zone(zone)
+            parts.append(pl.DataFrame({"t": t, "g": key}))
+    df = pl.concat(parts).sort("g", "t", maintain_order=True)
+    rng = np.random.default_rng(3)
+    x = rng.standard_normal(df.height)
+    df = df.with_columns(x0=pl.Series(x), y0=pl.Series(x + rng.standard_normal(df.height)))
+    spec = po.spec.ewridge(
+        "m", targets=["y0"], features=["x0"], half_life=50.0, min_weight=5.0, group="g"
+    )
+    out = po.ModelBank([spec]).fit_predict(df)
+    scored = out.filter(pl.col("m").struct.field("pred_y0").is_not_null())
+    return out, scored
+
+
+def _dynamic(scored: pl.DataFrame, clock: str, every: Any) -> pl.DataFrame:
+    """Polars' own buckets: ``group_by_dynamic`` per group, closed and
+    labelled on the left, the count of rows in each."""
+    return (
+        scored.sort("g", clock, maintain_order=True)
+        .group_by_dynamic(clock, every=every, group_by="g", closed="left", label="left")
+        .agg(n=pl.len())
+        .sort("g", clock)
+    )
+
+
+def _ours(out: pl.DataFrame, clock: str, every: Any) -> pl.DataFrame:
+    got = po.eval.window_metrics(out, "m", clock=clock, every=every, group="g", min_samples=1)
+    return got.select("g", pl.col("window_start").alias(clock), pl.col("n").cast(pl.UInt32)).sort(
+        "g", clock
+    )
+
+
+@pytest.mark.parametrize("zone", list(CHANGES))
+def test_on_a_time_zone_the_windows_are_group_by_dynamics(zone):
+    """On a clock with a time zone the windows are Polars'
+    ``group_by_dynamic``'s across both changes of offset: an hour or a
+    minute is elapsed time (a ``"5h"`` window holds five hours either side
+    of a change, and ``"24h"`` is 24 of them), while a day, a week and a
+    month are the wall calendar's (a ``"1d"`` window on the day of a change
+    holds 23 or 25 hours). Until task 278 (b12) the edges came from
+    ``dt.truncate`` in wall time, so a ``"5h"`` window across a change held
+    four hours and ``"24h"`` read as ``"1d"``."""
+    out, scored = _zoned_fit(zone)
+    for every in ("90m", "5h", "24h", "1d", "1w", "1mo", timedelta(hours=5)):
+        assert _ours(out, "t", every).equals(_dynamic(scored, "t", every)), every
+    # A duration expression is a length of time: elapsed, as "24h".
+    assert _ours(out, "t", pl.duration(hours=24)).equals(_dynamic(scored, "t", "24h"))
+    # The two readings of a day differ here, so the test can tell them apart.
+    assert not _dynamic(scored, "t", "24h").equals(_dynamic(scored, "t", "1d"))
+    # Within each two days of rows (the months between them aside), every
+    # "5h" window starts five elapsed hours after the one before.
+    spans = _ours(out, "t", "5h").filter(pl.col("g") == "a")["t"].diff().drop_nulls()
+    spans = spans.filter(spans < timedelta(days=1))
+    assert spans.unique().to_list() == [timedelta(hours=5)], "an hour is elapsed time"
+
+
+def test_a_month_is_the_calendar_s_on_a_naive_and_a_date_clock(two_specs):
+    """A month or a year has no fixed length, so a spec refuses one; a
+    window can take it, as ``group_by_dynamic`` does, on a ``Datetime`` or
+    ``Date`` clock. A ``Duration`` clock has no calendar and refuses it."""
+    out, _ = two_specs
+    long = out.with_columns(
+        pl.col("dt") + pl.duration(days=pl.int_range(pl.len()) % 90),
+        day=(pl.col("dt") + pl.duration(days=pl.int_range(pl.len()) % 90)).dt.date(),
+    )
+    long = long.rename({"group": "g"}).rename({"a": "m"})
+    scored = long.filter(
+        pl.col("m").struct.field("pred_y0").is_not_null() & pl.col("y0").is_not_null()
+    )
+    for clock in ("dt", "day"):
+        for every in ("1mo", "1q", "2w"):
+            assert _ours(long, clock, every).equals(_dynamic(scored, clock, every)), (clock, every)
+    span = long.with_columns(span=pl.col("dt") - pl.datetime(2024, 1, 1))
+    with pytest.raises(ValueError, match="month has no fixed length"):
+        po.eval.window_metrics(span, "m", clock="span", every="1mo")
+
+
+def test_group_is_the_call_on_each_keys_rows(two_specs):
+    """``group`` runs the same computation per key: each key's rows of
+    ``metrics``, ``window_metrics``, ``compare_specs`` and ``seqtest`` are
+    the call on the frame filtered to that key, to the bit. So are
+    ``diebold_mariano``'s and ``clark_west``'s but for the last bits of a
+    mean: Polars sums a ``group_by`` aggregate and a whole column in
+    different orders (measured 2026-10-25: one ulp in ``mean`` and the
+    statistic, 3e-14 relative in a ``p_value`` of 1.7e-31, whose relative
+    error is the statistic's times its square, 136 here)."""
+    out, specs = two_specs
+    exact = (
+        lambda f, **kw: po.eval.metrics(f, "a", **kw),
+        lambda f, **kw: po.eval.window_metrics(f, "a", clock="t", every=500.0, **kw),
+        lambda f, **kw: po.eval.compare_specs(f, specs, **kw),
+    )
+    tests = (
+        lambda f, **kw: po.eval.diebold_mariano(f, a="a", b="b", b_suffix="__r10", lags=2, **kw),
+        lambda f, **kw: po.eval.clark_west(f, big="a", small="b", small_suffix="__r1", **kw),
+    )
+    for key in ("g0", "g1", "g2"):
+        rows = out.filter(pl.col("group") == key)
+        mine = pl.col("group") == key
+        for fn in (*exact, *tests):
+            grouped = fn(out, group="group", min_samples=5).filter(mine).drop("group")
+            alone = fn(rows, min_samples=5)
+            assert grouped.height > 0
+            if fn in exact:
+                assert grouped.equals(alone)
+            else:
+                assert grouped.select("target", "n").equals(alone.select("target", "n"))
+                for col in grouped.columns[2:]:
+                    np.testing.assert_allclose(grouped[col], alone[col], rtol=1e-12, atol=0)
+        seq = po.eval.seqtest(out, a="a", b="b", b_suffix="__r10", group="group").filter(mine)
+        assert seq.equals(po.eval.seqtest(rows, a="a", b="b", b_suffix="__r10"))

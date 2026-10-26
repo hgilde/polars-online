@@ -201,7 +201,8 @@ def dense_loglik(r, rho, blocks):
     of that; and with the libm moved, one row of the blocked stream whose
     matrix is singular to rounding (smallest eigenvalue 1.5e-16) came out
     positive definite to `slogdet`, and was compared: 0.88 apart, relative,
-    which the condition number of 2e16 says is no density at all."""
+    which the condition number of 2e16 says is no density at all. The
+    model reads no density there either since task 278 (`past_the_edge`)."""
     n = len(r)
     of = {i: bi for bi, b in enumerate(blocks) for i in b}
     k = len(blocks)
@@ -221,6 +222,34 @@ def dense_loglik(r, rho, blocks):
     q = r @ np.linalg.solve(m, r)
     scale = 0.5 * (n * np.log(2 * np.pi) + abs(logdet) + abs(q))
     return -0.5 * (n * np.log(2 * np.pi) + logdet + q), 64 * 2.0**-53 * np.linalg.cond(m) * scale
+
+
+def past_the_edge(rho, sizes):
+    """Whether block levels `rho` (within, then each pair) are past the edge
+    at which `deco` gives no density: the block-mean matrix `T` (`T_AA = 1 +
+    (n_A - 1) rho_AA`, `T_AB = sqrt(n_A n_B) rho_AB`, whose eigenvalues are
+    the dense `R`'s other than its `1 - rho_AA`) equilibrated to `H`, read
+    by numpy's `eigvalsh`. The model refuses where its factorization of
+    `H`'s scaling needs jitter, or where `3 K gamma_{3K+1} ||H^-1||_1 >= 1`
+    by an estimate that is never above `||H^-1||_1 <= sqrt(K) / lambda_min`.
+    So a refused row has `lambda_min(H) <= sqrt(K) / limit`, up to the
+    rounding of forming `H` and of `eigvalsh` (a few `K 2^-53`; 64 of them
+    allowed)."""
+    k = len(sizes)
+    t = np.eye(k)
+    p = k
+    for i in range(k):
+        t[i, i] = 1.0 + (sizes[i] - 1) * rho[i]
+    for i in range(k):
+        for j in range(i + 1, k):
+            t[i, j] = t[j, i] = np.sqrt(sizes[i] * sizes[j]) * rho[p]
+            p += 1
+    d = np.sqrt(np.diag(t))
+    h = t / np.outer(d, d)
+    u = 2.0**-53
+    m = (3 * k + 1) * u
+    limit = (1 - m) / (3 * k * m)
+    return np.linalg.eigvalsh(h).min() <= np.sqrt(k) / limit + 64 * k * u
 
 
 def test_loglik_is_the_dense_gaussian_density():
@@ -256,19 +285,23 @@ def test_the_blocked_loglik_is_the_dense_gaussian_density():
     rho = np.column_stack([out["rho_a"], out["rho_b"], out["rho_a_b"]])
     got = out["loglik"].to_numpy()
     checked = 0
+    past = []
     for i in range(len(got)):
         if not (np.isfinite(rho[i]).all() and np.isfinite(r[i]).all()):
             continue
-        # A dense matrix that is not positive definite has no density; the
-        # model clamps for the density and `slogdet` would refuse, so those
-        # rows are skipped rather than compared to nothing.
-        try:
-            want, bound = dense_loglik(r[i], rho[i], [[0, 1, 2], [3, 4]])
-        except AssertionError:
+        # A level matrix past the edge has no density (task 278): the model
+        # reads NaN there, and only there.
+        if np.isnan(got[i]):
+            assert past_the_edge(rho[i], [3, 2]), (i, rho[i])
+            past.append(i)
             continue
+        want, bound = dense_loglik(r[i], rho[i], [[0, 1, 2], [3, 4]])
         assert abs(got[i] - want) <= bound, (i, got[i], want, bound)
         checked += 1
     assert checked > 500
+    # Row 3, in the warm-up, is the one past the edge on this stream: its
+    # density read -6.2e12 before.
+    assert past == [3], past
 
 
 def test_one_block_of_everything_reproduces_the_unblocked_model():
@@ -853,9 +886,9 @@ def test_the_order_of_the_blocks_and_of_their_columns_moves_only_the_names():
     order the blocks are listed, so `rho_p_q` reads as `rho_q_p`). `loglik`
     goes through a `K x K` factorization whose rows come in the blocks'
     order, so it agrees within the conditioning bound `dense_loglik` gives
-    (task 273); a row whose level matrix is singular to rounding has no
-    density, and is not compared (on this stream, row 3: smallest
-    eigenvalue -1.5e-17, the two orders' readings -2.3e8 and -2.6e12)."""
+    (task 273). A row whose level matrix is past the edge has no density in
+    either order (on this stream, row 3: smallest eigenvalue -1.5e-17, the
+    two orders' readings -2.3e8 and -2.6e12 until task 278 made both NaN)."""
     df = frame(n=1200)
     kw = dict(features=cols(4), half_life=100.0, min_weight=0.0)
     a = run(po.spec.deco("d", blocks={"p": ["x0", "x1"], "q": ["x2", "x3"]}, **kw), df)
@@ -866,14 +899,18 @@ def test_the_order_of_the_blocks_and_of_their_columns_moves_only_the_names():
     r = standardised(df)
     rho = np.column_stack([a["rho_p"], a["rho_q"], a["rho_p_q"]])
     la, lb = a["loglik"].to_numpy(), b["loglik"].to_numpy()
+    assert (np.isnan(la) == np.isnan(lb)).all(), np.flatnonzero(np.isnan(la) != np.isnan(lb))
     checked = 0
+    past = []
     for i in range(df.height):
         if not (np.isfinite(rho[i]).all() and np.isfinite(r[i]).all()):
             continue
-        try:
-            _, bound = dense_loglik(r[i], rho[i], [[0, 1], [2, 3]])
-        except AssertionError:
+        if np.isnan(la[i]):
+            assert past_the_edge(rho[i], [2, 2]), (i, rho[i])
+            past.append(i)
             continue
+        _, bound = dense_loglik(r[i], rho[i], [[0, 1], [2, 3]])
         assert abs(la[i] - lb[i]) <= 2 * bound, (i, la[i], lb[i], bound)
         checked += 1
     assert checked > 1100
+    assert past == [3], past

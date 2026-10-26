@@ -6,10 +6,17 @@ file. :mod:`polars_online.spec` documents them with the rest.
 
 from __future__ import annotations
 
+import os
+import warnings
 from typing import Any, Literal, Unpack
 
 from polars_online._kwargs import CommonKwargs
-from polars_online._spec import _checked, _common, _mirror_target
+from polars_online._spec import _checked, _common, _mirror_target, _who
+from polars_online._warnings import PolarsOnlineDeprecationWarning
+
+#: The package's directory: the warning skips its frames, so it names the
+#: caller's line.
+_PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 @_checked
@@ -119,7 +126,13 @@ def hmm(
         prior mean. A row with no
         counts is that mean, the given matrix or uniform,
         ``transition_prior = 0`` included. Both are refused beside
-        ``tvtp_coef``, which learns no count.
+        ``tvtp_coef``, which learns no count. One limit, accepted rather than
+        refused: under ``transition_prior = 0`` and ``learn = True`` the counts
+        are only what the rows put there. Where the states are very far apart,
+        the first learned row puts a posterior of about ``1e-50`` on the move
+        into the state it does not favour. The learned matrix then says that
+        move almost never happens, and an extremely separated state can stay
+        locked out. A prior above 0 keeps every move possible.
     ``means``, ``covs``
         The states given outright (``n_components x d``, and ``n_components``
         matrices of ``d x d``, both flattened row-major and finite, and given
@@ -360,7 +373,11 @@ def rcov(
         and its rescaling read theta from the window actually run,
         ``k_n / sqrt(n)`` over the block's own ``n`` rows (the paper's Eq. 7).
         A window ``theta`` derives is at least 2, at least 3 under
-        ``psd = False``, and no longer than ``block_rows``.
+        ``psd = False``, and no longer than ``block_rows``. So beside
+        ``preavg_rows``, which fixes the window, ``theta`` has no effect: it
+        is deprecated there, raising a
+        :class:`~polars_online.PolarsOnlineDeprecationWarning`, accepted and
+        ignored until the next major version, which refuses it.
     ``noise_stride``, ``iv_stride``
         The two subsampled grids behind an automatic bandwidth (defaults 1 and
         20): the noise variance ``omega2`` from the dense one, deliberately biased
@@ -474,4 +491,16 @@ def rcov(
         "iv_stride": iv_stride,
     }
     targets = _mirror_target(name, "rcov", features, common, "its covariance is of")
-    return _common(name, model, targets=targets, features=features, **common)
+    out = _common(name, model, targets=targets, features=features, **common)
+    if theta is not None and preavg_rows is not None:
+        # Inert since the window is all `theta` sets: deprecated rather than
+        # refused, as the user decided (task 278, b11).
+        warnings.warn(
+            f"{_who(name)}: theta = {theta!r} is deprecated beside preavg_rows: preavg_rows "
+            f"fixes the pre-averaging window, which is all theta sets, so theta has no effect. "
+            f"Leave it out. It is accepted and ignored until the next major version, which "
+            f"refuses it",
+            PolarsOnlineDeprecationWarning,
+            skip_file_prefixes=(_PACKAGE_DIR,),
+        )
+    return out
