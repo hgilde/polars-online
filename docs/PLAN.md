@@ -16449,10 +16449,16 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       5's fifth exception, the user's ("Accept"): a 61-63 `holt` state
       continues to the bit with the textbook gains and is held, beside
       `kmeans`, to re-saving bytes that load back the same.
-      *Robust decisions, the user's (2026-10-26)*: (i) the sketch's median is
-      read continuously within its bucket, so `quantile`'s MAD band (D-Q) and
-      `huber`'s MAD keep decimal-scale equivariance to rounding ("Read median
-      continuously"; old states keep the bucketed read); (ii) `quantile` gets
+      *Robust decisions, the user's (2026-10-26)*: (i) decimal-scale
+      equivariance of the MAD sketch -- first chosen as a continuous read
+      within the bucket, which a proof showed cannot be equivariant (the
+      bucket edges map onto themselves only under powers of two; measured, the
+      worst case did not move); then the user chose an anchored grid ("Anchored
+      grid"): each `EwQuantile` buckets `v / a`, `a` its first usable value
+      (one f64 in schema 64), behind a cfg flag a spec sets, for `huber`,
+      `quantile`, `sgd(huber)` and `marginal`'s Huber bins (prototype:
+      huber's decimal tail 3.9e-3 -> 5.2e-14); `ew_cov`'s `mahal_quantiles`,
+      `resid_quantiles` and `ewm_quantile` keep the plain grid; (ii) `quantile` gets
       task 277's converged refit of its first rows, on by default under
       `refit_budget` (D-Q2: no-decay front-loaded wild 0.20 off after the
       MAD fix); (iii) `min_weight` withholds output only in every model --
