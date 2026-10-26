@@ -387,6 +387,7 @@ fn sgd_golden() {
         huber_scale_decay: None,
         refit_rows: 0,
         min_weight_holds_learning: false,
+        target_spread: false,
     })
     .unwrap();
     check("sgd", &signature(&mut m, 0), GOLDEN_SGD);
@@ -413,6 +414,7 @@ fn sgd_squared_golden() {
         huber_scale_decay: None,
         refit_rows: 0,
         min_weight_holds_learning: false,
+        target_spread: false,
     })
     .unwrap();
     check("sgd_squared", &signature(&mut m, 0), GOLDEN_SGD_SQUARED);
@@ -463,6 +465,7 @@ fn sgd_simplex_golden() {
         huber_scale_decay: None,
         refit_rows: 0,
         min_weight_holds_learning: false,
+        target_spread: false,
     })
     .unwrap();
     check("sgd_simplex", &signature(&mut m, 0), GOLDEN_SGD_SIMPLEX);
@@ -1734,11 +1737,10 @@ const GOLDEN_PA_BOX: &[f64] = &[0.5262123538733023, 1.6796740252199436, 0.156626
 // the stream's null at row 31 and did not move.
 // Regenerated for the code review's S29/S30 (2026-09-15): level and trend
 // are weighted means, whose gains start at 1 where the textbook's were fixed.
-const GOLDEN_HOLT: &[f64] = &[
-    -1.5909733825311503,
-    0.07655111549786203,
-    0.17534943347133736,
-];
+// Regenerated for task 278 (D-H, 2026-10-26): a row takes the larger of the
+// weighted line fit's gains and the textbook's, so the warm-up is the line
+// fit, where the weighted means pinned the trend to the first observation.
+const GOLDEN_HOLT: &[f64] = &[1.510543784944197, 0.05346222911849938, 0.1063893470704486];
 const GOLDEN_SEQTEST: &[f64] = &[-0.6443570163905132, -1.086393303225433, -0.9577414997686987];
 const GOLDEN_SEQTEST_NEG: &[f64] = &[
     -0.9917118216489557,

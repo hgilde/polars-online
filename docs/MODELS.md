@@ -1152,11 +1152,47 @@ step, with `z = [1, x]` and `β` in the caller's units under
 
 ```
 eta = zᵀβ        p = link(eta)        d = dL/d eta
-g₀ = d·w         gᵢ = d·zᵢ·w + l2·βᵢ     each clipped to ±clip_gradient; the intercept takes no l2
+g₀ = d·w         gᵢ = d·zᵢ·w + l2·βᵢ     each clipped to ±clip_gradient·u; the intercept takes no l2
 βᵢ -= lrᵢ·gᵢ     lrᵢ = learning_rate                           schedule="constant"
                      = learning_rate/(1 + λ·weight_sum)^power  schedule="inv_scaling"
-                     = learning_rate/(√Gᵢ + 1e-8)              schedule="adagrad"
+                     = learning_rate/(√Gᵢ + 1e-8·u)            schedule="adagrad"
 ```
+
+`u` is the unit the gradient is in: `s_y`, the target's own spread (below),
+under `squared` and `huber`, whose gradient is in the target's units, with
+no clip before the target has one; 1 under the other losses, whose gradient
+is a sign, a count's residual or a probability's. So the clip and the
+epsilon mean the same at every scale of the target: in the target's units,
+the default clip bound every gradient of a target in the millions, and its
+fit was 0.59 to 6.5 of the target's spread off the unscaled one, scaled.
+
+**The intercept takes the running mean's step while it is the larger.** The
+coefficients start at 0, so the first residuals are the target's level, and
+left to the steps it moved every slope by about the rate times the level:
+2.49 off least squares after 8,000 rows at a level of 1,000 on the worst of
+50 streams, against 0.0096 at a level of 0. Under an identity link (every
+loss but `poisson` and `logistic`) with an intercept, with `W` the
+target's learned weight (undecayed, the row's in it) and `a = w/W`, the
+intercept's step is the running mean's, `−a·d` for `squared` and `huber`
+while `a` is above the rate or the rows number at most 22 by Kish's count,
+`a·(y − p)` for the sign-valued losses while they do, and the target's first
+row puts its whole residual there and moves nothing else. Now a level costs
+rounding (0.0077 at either level), and a target with no level loses
+nothing measurable.
+
+**A rate past its stability bound is withheld.** A step multiplies its own
+row's residual by `1 − q`, `q = learning_rate·(w·c·|z|² + l2)` with `c` the
+loss's curvature at the prediction (1 for `squared` and inside the Huber
+cut, 0 beyond it, `p` for `poisson`, `p·(1 − p)` for `logistic`), so the fit
+diverges in mean square once `E[q²] > 2·E[q]`. Each target keeps both sums
+over its recent steps (each decayed by `2^(−1/100)` a row), and while the
+squares' passes twice the gains' its predictions are withheld as
+`unstable_rate`, with a notice; the fit learns every row as before. On five
+standardized normal features the bound on a constant rate is 0.261; at 0.5
+the fit had diverged until `clip_gradient` held it, its error 50,000 times
+the target's variance, with nothing said. `inv_scaling` from a rate past
+the bound is withheld on its first rows only. `adagrad` and the sign-valued
+losses take steps that cannot grow, and are never withheld.
 
 `λ` is the row's decay, so `λ·weight_sum` is the weight before the row
 decayed to it, and `Gᵢ` is decayed by it too. A row of weight 0 in between
@@ -1209,29 +1245,29 @@ the moments instead, a half-life of 10 put the slope at 3.03 for a truth of
 2 at R² 0.978. Held in the caller's units, it is 2.02.
 
 **The cut reads the residuals and the tube does not, because the fit starts
-from zero.** Its first residuals are the target's whole level. Beyond the
+from zero.** A residual's spread can carry the target's level. Beyond the
 cut the gradient is clipped, not zero, so a cut those residuals widen still
 lets every row teach, and the median scale leaves them behind once the fit
-has the level. The root mean square does not: without decay the first
-residuals stay in it, the cut stays wider than every later residual, and the
-Huber loss is the squared loss, until the refit below rebuilds the scale
-from the converged fit's residuals. On `y = 1000 + 2x + 0.5ε` with a row 50
-too high on 5% of the rows, all with `x` above 0, and no decay, the median
-slope over five seeds is 3.751 under the squared loss, 2.016 under the
-default `"mad"` with `huber_refit_rows=0`, and 2.013 with the default
-refit. The refit rebuilds `"rms"` from its converged fit's residuals too,
-which takes the first residuals out of it, but the outliers still inflate
-it: over 40 seeds at 5% wild rows every stream stayed more than 0.05 from
-`RLM` under `"rms"`, and 36 of them more than 0.25 with the refit (a median
-gap of 0.60) where all 40 were without it (1.85). Inside the tube the gradient is zero. A tube drawn in
+has the level. The intercept takes the level from the first row (above), so
+the root mean square no longer keeps it, but the outliers still inflate it.
+On `y = 1000 + 2x + 0.5ε` with a row 50 too high on 5% of the rows, all
+with `x` above 0, and no decay, the median slope over five seeds is 3.751
+under the squared loss, 2.557 under `"rms"` and 2.013 under the default
+`"mad"`, with the refit below or without it. Over 40 seeds of 20,000 rows at
+5% wild rows every stream stayed more than 0.05 from `RLM` under `"rms"`,
+and 36 of them more than 0.25 (a median gap of 0.60), with the refit or
+without it; before the intercept took the level, all 40 were without it
+(1.85). Inside the tube the gradient is zero. A tube drawn in
 the residuals' spread on a target at 1,000 with a spread of 2 was about 100
 wide and held every row, and without decay it never narrowed.
 
 **`sgd`'s Huber loss refits each target's first 500 learned rows to
-convergence, as `huber` does.** Its first steps start from zero, so the
-outliers capture it as they capture `huber`'s first solves, and more often:
-over 2,000 rows at 10% wild rows, every one of 40 streams ended more than
-0.25 in slope from statsmodels' `RLM`. On the row a target's count of
+convergence, as `huber` does.** Its first steps start from zero slopes, so
+the outliers capture it as they capture `huber`'s first solves: over 2,000
+rows at 20% wild rows, 28 of 40 streams ended more than 0.05 in slope from
+statsmodels' `RLM` in one pass, the worst by 3.6 (at 10%, 4 of them, the
+worst by 0.069; all 40 more than 0.25 off before the intercept took the
+level from the first row). On the row a target's count of
 learned rows reaches `huber_refit_rows`, the converged Huber fit of those
 rows replaces its coefficients, and its scale `s` is rebuilt from that
 fit's residuals. The fit is `huber`'s iteration (in its section), started
@@ -1298,8 +1334,9 @@ the noise in noise variances:
 | 0.99998 | 0.20 | 24 (0.7 to 214) | 0.81 | 17 (3.4 to 30) |
 
 The sign-valued step moves the fit's level by the rate on each row of
-weight 1, so at the default rate of 0.01 a target at a level of 1,000 is
-100,000 rows away.
+weight 1, so at the default rate of 0.01 a target that moves by 1,000 is
+100,000 rows from its new level. Its first level, the first learned row
+sets.
 
 **Under `loss="poisson"`, keep `clip_gradient`, `1e3` by default,** because
 through the log link one large count would make the next gradient
@@ -1682,26 +1719,56 @@ print(f"with_x predicts closer at the 5% level from row {passed.arg_true()[0]}")
 ```text
 with_x: sigma_y at the last row 1.14
 naive: sigma_y at the last row 2.21
-with_x predicts closer at the 5% level from row 10
+with_x predicts closer at the 5% level from row 15
 ```
 
-Level and trend, `l` and `b`, are weighted means of what each row observes
-and what the model forecast, with `W` and `V` the weight each has gathered.
-`s` is the clock since the target was last observed, this row's step
-included. So a row with a null target or weight 0 leaves the level and
-trend where they were, and its step goes into the next observation's `s`:
+Each row moves the level `l` and the trend `b` by a gain times the forecast
+error `e = y − pred`. `s` is the clock since the target was last observed,
+this row's step included. So a row with a null target or weight 0 leaves
+the level and trend where they were, and its step goes into the next
+observation's `s`. A row takes the larger of two gains, on the level and on
+the slope:
 
 ```
 λ_l = 0.5^(s/half_life)                        λ_b = 0.5^(s/trend_half_life)
-pred = l + b·s
-l'   = (λ_l·W·pred + w·y)/(λ_l·W + w)          W' = λ_l·W + w
-b'   = (λ_b·V·b + w·(l' − l)/s)/(λ_b·V + w)    V' = λ_b·V + w
+pred = l + b·s                                 e = y − pred
+textbook:  g_t = w/(λ_l·W + w)                 W' = λ_l·W + w
+           h_t = w/(λ_b·V + w) · g/s           V' = λ_b·V + w     (s > 0)
+line fit:  S0' = S0 + w     ā' = S0·(ā + s)/S0'     Q' = Q + S0·w·(ā + s)²/S0'
+           g_f = w·(1/S0' + ā'²/Q')            h_f = w·ā'/Q'
+l' = pred + g·e     g = max(g_f, g_t)
+b' = b + h·e        h = max(h_f, h_t)
 ```
 
-A target's first observation sets `l = y` and `W = w`, predicts nothing,
-and starts the trend at 0. The gains `w/(λW + w)` start at 1 and fall to
-the textbook's fixed `1 − λ` as the weight saturates. So a new series is
-followed sooner, and from there the fit is statsmodels' `Holt`.
+**The textbook gains are weighted means'.** `W` and `V` are the weight the
+level and the trend have gathered, so a row at weight `w` counts `w` times.
+Where they win, the level is the weighted mean of the forecast and the row,
+and the trend the weighted mean of `b` and the slope the level moved at.
+Once the weight saturates they are the textbook's fixed `1 − λ`.
+
+**The line fit's gains are the weighted least-squares line's,** fitted
+through every observation so far on the clock and read at the last. `S0` is
+its weight, `ā` the observations' weighted mean age and `Q` the spread of
+their ages about it, none decayed. With every observation at one clock
+(`Q = 0`), no slope is determined: `g_f = w/S0'` and `h_f = 0`.
+
+**Without decay, `holt` is the weighted line fit,** whatever the weights
+and the clock, since an infinite half-life's fixed gain `1 − λ` is 0:
+statsmodels' `WLS` on `(1, t)` agrees to 1e-15. Under a half-life the line
+fit's gains fall as `1/n` and `1/n²` while the textbook's settle. After a
+warm-up of a few half-lives every row takes the textbook's, and from there
+the fit is statsmodels' `Holt`: to 1e-12 from row 745 at half-lives of 6
+and 25. Gains of `1/n` on both level and trend, without the line fit, pinned
+the trend to the first observation. The level then carried that
+observation's error times `ln n`: 11 off a flat series after 40,000 rows
+without decay, and 6.3 after 10,000 rows at `half_life=10000`, the worst of
+50 seeds at a noise of 0.5. The line fit's worst was 0.010 and 0.026, the
+weighted least squares' own.
+
+A target's first observation sets `l = y`, predicts nothing, and starts the
+trend at 0. A row at the last row's clock is a second observation the level
+takes in: the textbook trend holds, since a move over no clock has no
+slope, and the line fit's slope moves by its own gain.
 
 ```python
 baseline = po.spec.holt(
@@ -1717,7 +1784,8 @@ clock,** so on an irregular clock it extrapolates the right distance.
 
 **The level forgets at the spec's `half_life`, as every model's decay
 does.** `level_half_life` is refused, with a message naming `half_life`. To
-make the trend the whole history's drift, give `trend_half_life=inf`.
+make the trend the whole history's drift, the line fit's slope, give
+`trend_half_life=inf`.
 
 **For a flat forecast, give `trend=False`:** simple exponential smoothing,
 whose level is the target's exponentially weighted mean. It holds the
@@ -2708,6 +2776,10 @@ re-placed.** A centre whose blob vanished fades, and is re-placed once it holds
 less than `dead_frac` of an equal share: `log2(1/dead_frac)` half-lives after
 the blob vanished, 4.3 at 0.05 and 2 at 0.25. In exchange, a cluster lighter
 than `dead_frac/k` of the stream loses its centre whenever any row is far.
+It stays below 0.5. A re-placed centre starts with half the weight of the
+cluster it was split from, so at 0.5 it can start at the floor itself. The
+next check then re-places it again: over 50 streams, 3 cascaded at 0.5 and
+29 at 0.6, none at 0.45.
 
 **`scale_floor` keeps a feature that goes quiet from taking over the
 distance.** It floors each feature's variance at a fraction of its long-run
@@ -3219,6 +3291,14 @@ windows, redrawn every `permute_every_rows` rows. The shuffles move blocks of
 `perm_block` rows, so rows that resemble their neighbours do not make the
 null too liberal. To skip the permutations, give `crit=` as a fixed
 threshold. The same `seed` gives the same critical values.
+
+**The window test's size is at most `alpha`.** A report flags when fewer
+than `floor(alpha * (n_perm + 1))` shuffles reach its statistic. That counts
+the observed split as one more shuffle, so on rows with no change its rank
+is uniform among `n_perm + 1`. Over 200 streams of iid rows, at `alpha` 0.05
+and the default 200 shuffles, 5.1% of non-overlapping spans flagged, against
+an exact size of 4.98%. Fewer than `ceil(1/alpha) - 1` shuffles could never
+flag, so such an `n_perm` is refused: 99 at least at `alpha` 0.01.
 
 **Count a run of the window kind's flags as one change.** Two windows that
 slide by one row are almost the same windows, so a statistic above the

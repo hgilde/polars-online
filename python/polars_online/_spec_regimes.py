@@ -126,13 +126,28 @@ def hmm(
         prior mean. A row with no
         counts is that mean, the given matrix or uniform,
         ``transition_prior = 0`` included. Both are refused beside
-        ``tvtp_coef``, which learns no count. One limit, accepted rather than
-        refused: under ``transition_prior = 0`` and ``learn = True`` the counts
-        are only what the rows put there. Where the states are very far apart,
-        the first learned row puts a posterior of about ``1e-50`` on the move
-        into the state it does not favour. The learned matrix then says that
-        move almost never happens, and an extremely separated state can stay
-        locked out. A prior above 0 keeps every move possible.
+        ``tvtp_coef``, which learns no count.
+
+        The prior pulls harder than its count suggests. The counts are the
+        filtered joint of consecutive states, read through the matrix being
+        learned. A matrix pulled toward the prior mean is less sticky, so the
+        filter credits more switches, and the counts follow it. Measured on a
+        sticky two-state chain, the states three noise standard deviations
+        apart and learned from their true values: at ``transition_prior = 10``,
+        4,000 rows left the matrix 0.088 from the truth (the 95th percentile
+        over 50 streams), where the pseudo-counts alone would move it about
+        0.006. The pull still fades with the rows, so the estimate is
+        consistent. At the default the 95th percentile was 0.035, 0.016 and
+        0.0066 at 4,000, 16,000 and 64,000 rows, about halving with each
+        fourfold increase.
+
+        One limit, accepted rather than refused: under ``transition_prior = 0``
+        and ``learn = True`` the counts are only what the rows put there. A
+        state the first rows do not favour can get no count, and the learned
+        matrix then keeps it out. That needs no extreme separation: on the same
+        chain, 7 streams of 50 left a state under 10% of the counts, where the
+        chain spends a third of its rows in it. None did at 0.1 or above. A
+        prior above 0 keeps every move possible.
     ``means``, ``covs``
         The states given outright (``n_components x d``, and ``n_components``
         matrices of ``d x d``, both flattened row-major and finite, and given

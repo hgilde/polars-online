@@ -33,6 +33,7 @@ import pytest
 
 import polars_online as po
 import reference
+from reference_paths import _age_and_learn, _ew_variance
 
 TIER = "mixed"
 
@@ -216,7 +217,18 @@ def sgd_replay(
     w=None,
     gap_cap=INF,
 ):
-    """``sgd`` (squared loss, no scaler) with the projection, row by row."""
+    """``sgd`` (squared loss, no scaler) with the projection, row by row.
+
+    In the target's own units, as the builder's docstring states them (task
+    278: D1, D2, D8, D-S): the clip ``clip * s_y`` and AdaGrad's epsilon
+    ``1e-8 * s_y``, ``s_y`` the target's EW standard deviation before the row
+    (no clip before it is above 0); the intercept stepping by the running
+    mean's ``(w / W) * (y - p)``, ``W`` the learned weight with the row in,
+    while that gain is above the shared rate or Kish's count of the rows is
+    at most 22, the first learned row's whole residual and no other step;
+    and, under a shared rate, a prediction
+    withheld while the decayed sum of the step gains' squares is above twice
+    theirs."""
     n, k = X.shape
     lo = [-INF] * k if lo is None else list(lo)
     hi = [INF] * k if hi is None else list(hi)
@@ -227,6 +239,10 @@ def sgd_replay(
         beta[1:] = project(beta[1:], lo, hi, s)
     g2 = [0.0] * (k + 1)
     w_sum = 0.0
+    lev_w = lev_w2 = 0.0
+    history: list[list[float]] = []
+    q1 = q2 = 0.0
+    rho = 0.9930924954370359
     pending = 0.0
     preds, neffs, coefs = [], [], []
     for i in range(n):
@@ -246,21 +262,43 @@ def sgd_replay(
         if lam != 1.0:
             g2 = [v * lam for v in g2]
         weight_sum = w_sum
-        ready = weight_sum >= min_weight
+        ready = weight_sum >= min_weight and not q2 > 2.0 * q1
         eta = 0.0
         for zi, bi in zip(z, beta, strict=True):
             eta += zi * bi
         preds.append(eta if ready else None)
         neffs.append(weight_sum)
         yi = y[i]
+        present = yi is not None and not math.isnan(yi) and math.isfinite(yi)
+        s_y2 = _ew_variance(history)
+        _age_and_learn(history, lam, yi if present else math.nan, wi)
+        unit = math.sqrt(s_y2) if s_y2 > 0.0 else 0.0
+        clip_row = clip * unit if unit > 0.0 else INF
         learned = False
-        if yi is not None and not math.isnan(yi) and wi > 0.0 and math.isfinite(yi):
+        level_step = None
+        if present and wi > 0.0:
+            first = lev_w == 0.0
+            lev_w += wi
+            lev_w2 += wi * wi
+            a = wi / lev_w
+            shared = None
+            if schedule != "adagrad":
+                shared = lr if schedule == "constant" else lr / (1.0 + lam * weight_sum) ** power
+            if first:
+                beta[0] += a * (yi - eta)
+            elif lev_w * lev_w / lev_w2 <= 22.0 or (shared is not None and a > shared):
+                level_step = a * (yi - eta)
+        if present and wi > 0.0 and not first:
             dl = eta - yi
+            if schedule != "adagrad":
+                rate = lr if schedule == "constant" else lr / (1.0 + lam * weight_sum) ** power
+                q = min(rate * (wi * sum(v * v for v in z) + l2), 1e150)
+                q1, q2 = rho * q1 + q, rho * q2 + q * q
             for j in range(k + 1):
                 g = dl * z[j] * wi
                 if j >= 1:
                     g += l2 * beta[j]
-                g = _clamp(g, -clip, clip)
+                g = _clamp(g, -clip_row, clip_row)
                 if schedule == "constant":
                     rate = lr
                 elif schedule == "inv_scaling":
@@ -268,8 +306,12 @@ def sgd_replay(
                     rate = lr / (1.0 + lam * weight_sum) ** power
                 else:
                     g2[j] += g * g
-                    rate = lr / (math.sqrt(g2[j]) + 1e-8)
-                beta[j] -= rate * g
+                    den = math.sqrt(g2[j]) + 1e-8 * unit
+                    rate = lr / den if den > 0.0 else 0.0
+                if j == 0 and level_step is not None:
+                    beta[0] += level_step
+                else:
+                    beta[j] -= rate * g
             learned = True
         if learned and constrained:
             beta[1:] = project(beta[1:], lo, hi, s)

@@ -36,30 +36,60 @@ def holt(
 
     Per row and target, with ``s`` the clock since the target was last
     observed: this row's delta included, so ``s`` is the row's own delta on
-    a stream with no gaps. ``w`` is the row's weight, and ``W``, ``V`` the
-    weight the level and the trend have gathered, each decayed on its own
-    half-life (``lam_l = 0.5 ** (s / half_life)``, the spec's own, and
-    ``lam_b`` likewise at ``trend_half_life``):
+    a stream with no gaps. ``w`` is the row's weight, ``e = y - pred`` the
+    forecast error, and ``W``, ``V`` the weight the level and the trend have
+    gathered, each decayed on its own half-life (``lam_l = 0.5 ** (s /
+    half_life)``, the spec's own, and ``lam_b`` likewise at
+    ``trend_half_life``):
 
     .. code-block:: text
 
-        pred = l + b * s                                   extrapolate s clock units ahead
-        l'   = (lam_l * W * pred + w * y) / (lam_l * W + w)
-        b'   = (lam_b * V * b + w * (l' - l) / s) / (lam_b * V + w)
+        pred = l + b * s                          extrapolate s clock units ahead
+        textbook:  g_t = w / (lam_l * W + w)      W' = lam_l * W + w
+                   h_t = w / (lam_b * V + w) * g / s
+                                                  V' = lam_b * V + w   (s > 0)
+        line fit:  S0' = S0 + w
+                   a'  = S0 * (a + s) / S0'
+                   Q'  = Q + S0 * w * (a + s)**2 / S0'
+                   g_f = w * (1 / S0' + a'**2 / Q')
+                   h_f = w * a' / Q'
+        l' = pred + g * e                         g = max(g_f, g_t)
+        b' = b + h * e                            h = max(h_f, h_t)
 
-    A target's first observation sets ``l = y`` and ``W = w``, and predicts
-    nothing; the trend starts at 0. Level and trend are weighted means, as
-    every accumulator here is: a row at weight ``w`` counts ``w`` times, and an
-    infinite half-life forgets nothing and fits the whole history. The gains
-    ``w / (lam * W + w)`` start at 1 and fall to the textbook's fixed
-    ``1 - lam`` as the weight saturates. So a new series is followed sooner,
-    and the fit is statsmodels' ``Holt`` from there. A row at the last row's
-    clock is a second observation the level takes in; the trend holds, since a
-    move over no clock has no slope. A row with a null target or a zero weight
-    leaves ``l`` and ``b`` where the last observation put them and carries its
-    clock to the next one. So it gives the same numbers as if it were absent.
-    The trend is per clock unit, so an irregular clock extrapolates the right
-    distance.
+    A target's first observation sets ``l = y``, ``W = S0 = w`` and ``a = Q =
+    0``, and predicts nothing; the trend starts at 0.
+
+    The textbook gains are weighted means', as every accumulator here is: a
+    row at weight ``w`` counts ``w`` times. Where they win, ``l'`` is ``(lam_l *
+    W * pred + w * y) / (lam_l * W + w)``, and ``b'`` the weighted mean of
+    ``b`` and the slope the level moved at, ``(l' - l) / s``. Once the weight
+    saturates they are the textbook's fixed ``1 - lam``.
+
+    The line fit's gains are those of the weighted least-squares line through
+    every observation so far, on the clock, read at the last: ``S0`` its
+    weight, ``a`` the observations' weighted mean age, ``Q`` the spread of
+    their ages about it, none decayed. With every observation at one clock
+    (``Q = 0``) no slope is determined: ``g_f = w / S0'`` and ``h_f = 0``.
+
+    A row takes the larger gain, on the level and on the slope. An infinite
+    half-life has no textbook gain, its fixed ``1 - lam`` being 0, so without
+    decay the model is the weighted line fit, to rounding (statsmodels'
+    ``WLS`` agrees to 1e-15). Under a half-life the line fit's gains fall as
+    ``1/n`` and ``1/n**2`` and the textbook's settle, so after a warm-up of a
+    few half-lives every row takes the textbook's, and statsmodels' ``Holt``
+    agrees from there. The warm-up follows a new series sooner than the
+    textbook would. Without the line fit, gains of ``1/n`` on both level and
+    trend pinned the trend to the first observation, and the level carried
+    that observation's error times ``ln n``: 11 off a flat series after
+    40,000 rows without decay, at a noise of 0.5.
+
+    A row at the last row's clock is a second observation the level takes
+    in. The textbook trend holds, since a move over no clock has no slope;
+    the line fit's slope moves by its own gain, as a least-squares slope
+    does. A row with a null target or a zero weight leaves ``l`` and ``b``
+    where the last observation put them and carries its clock to the next
+    one. So it gives the same numbers as if it were absent. The trend is per
+    clock unit, so an irregular clock extrapolates the right distance.
 
     .. rubric:: Parameters
 
@@ -69,8 +99,8 @@ def holt(
 
     ``trend_half_life``
         How fast the trend forgets, in clock units, above 0. Default four times
-        the level's half-life; ``inf`` is the whole history's drift, not a
-        trend pinned at zero.
+        the level's half-life; ``inf`` is the whole history's drift, the line
+        fit's slope, not a trend pinned at zero.
     ``trend``
         ``False`` fits the level alone: the trend is held at zero and the
         forecast is flat, which is simple exponential smoothing. The level is

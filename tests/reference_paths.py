@@ -1199,6 +1199,7 @@ def sgd_ref(
     coef_sum: float | None = None,
     huber_scale: str = "mad",
     huber_scale_half_life: float | None = None,
+    target_spread: bool = True,
 ) -> dict[str, np.ndarray]:
     """Stochastic gradient descent as the ``sgd`` builder's docstring states
     it, unstandardized by default (``standardize=False``)::
@@ -1248,7 +1249,27 @@ def sgd_ref(
     ``s`` (:func:`_mapped`; docs/PLAN.md task 206). ``decay_lam``, where
     given, is the decay per clock unit in place of ``half_life``'s. With
     ``coef_min``, ``coef_max`` or ``coef_sum`` the slopes are projected as
-    :func:`pa_ref` projects them."""
+    :func:`pa_ref` projects them.
+
+    ``target_spread`` (the builder's, task 278: D1, D2, D8, D-S): under the
+    squared and Huber losses the clip is ``clip_gradient * s_y``, none
+    before ``s_y`` is above 0, and AdaGrad's epsilon ``1e-8 * s_y``, its
+    step 0 where its denominator is; under an identity link with an
+    intercept, the target's level: ``W`` and ``W2`` the sums of its learned
+    rows' weights and their squares, undecayed, ``a = w / W`` with the row
+    in, the intercept's step is ``-a * d`` under the squared and Huber losses
+    (``d`` their gradient) while ``a`` is above the shared rate or Kish's
+    count ``W^2 / W2`` is at most 22, and ``a * (y - p)`` under the
+    sign-valued losses while the count is at most 22, in place of its
+    gradient's (AdaGrad's sum still learns it); on the target's first
+    learned row that step alone, nothing else; and under a shared rate (not
+    AdaGrad) and a loss with a curvature ``c`` (1 for squared, 1 inside the
+    Huber cut and 0 beyond it, ``p`` for Poisson, ``p (1 - p)`` for
+    logistic), each stepped row adds ``q = lr * (w * c * |z|^2 + l2)``
+    (``z`` the row the step is taken on, the intercept's 1 in it, ``q`` at
+    most ``1e150``) to ``Q1 = rho * Q1 + q`` and ``Q2 = rho * Q2 + q^2``,
+    ``rho = 2^(-1/100)``, and a target's prediction is null while ``Q2 > 2
+    Q1`` (read before the row). Off, the releases before it."""
     n, k = X.shape
     m = Y.shape[1]
     kt = k + 1 if fit_intercept else k
@@ -1257,6 +1278,14 @@ def sgd_ref(
     coef = np.full((n, m, kt), np.nan)
     box = _box(k, coef_min, coef_max, coef_sum)
     b = np.zeros((m, kt))
+    spread_units = target_spread and loss in ("squared", "huber")
+    leveled = target_spread and fit_intercept and loss not in ("poisson", "logistic")
+    lev_w, lev_w2 = np.zeros(m), np.zeros(m)
+    gains = (
+        target_spread and schedule != "adagrad" and loss not in ("quantile", "epsilon_insensitive")
+    )
+    q1, q2 = np.zeros(m), np.zeros(m)
+    rho = 0.9930924954370359
     if box is not None:
         ones = np.ones(k)
         b = np.array([_projected_standardized(r, box, ones, fit_intercept) for r in b])
@@ -1291,13 +1320,17 @@ def sgd_ref(
             z, mv, scale = _row_map(rows, om, X[i], fit_intercept)
         weight_sum[i] = w_sum
         p = links.get(loss, lambda e: e)(b @ (xt if (held or not standardize) else z))
-        pred[i] = np.where(w_target >= min_weight, p, np.nan)
+        predicted = w_target >= min_weight
+        pred[i] = np.where(predicted & ~(q2 > 2.0 * q1), p, np.nan)
         stepped = np.zeros(m, dtype=bool)
         for j in range(m):
             s_y2 = _ew_variance(history[j])
             _age_and_learn(history[j], lam, Y[i, j], w[i])
             if np.isnan(Y[i, j]) or not w[i] > 0.0:
                 continue
+            unit = (np.sqrt(s_y2) if s_y2 > 0.0 else 0.0) if spread_units else 1.0
+            clip = clip_gradient * unit if unit > 0.0 else np.inf
+            ada_eps = 1e-8 * unit
             yj = min(max(Y[i, j], 0.0), 1.0) if loss == "logistic" else Y[i, j]
             e = p[j] - yj
             s = np.sqrt(sig2[j]) if sig2[j] > 0.0 else None
@@ -1319,25 +1352,63 @@ def sgd_ref(
                 sig2[j] = (wsig[j] * sig2[j] + w[i] * e * e) / (wsig[j] + w[i])
                 wsig[j] += w[i]
                 mads[j].add(abs(e), w[i])
+            if schedule == "constant":
+                lr_row = learning_rate
+            elif schedule == "inv_scaling":
+                lr_row = learning_rate / (1.0 + lam * w_sum) ** power
+            else:
+                lr_row = None
+            level_step = None
+            if leveled:
+                first = lev_w[j] == 0.0
+                lev_w[j] += w[i]
+                lev_w2[j] += w[i] ** 2
+                a = w[i] / lev_w[j]
+                young = lev_w[j] ** 2 / lev_w2[j] <= 22.0
+                if loss in ("squared", "huber"):
+                    step0 = -a * dl
+                    warm = young or (lr_row is not None and a > lr_row)
+                else:
+                    step0, warm = a * (yj - p[j]), young
+                if first:
+                    b[j][0] += step0
+                    continue
+                if warm:
+                    level_step = step0
             # The ridge on the slope in the row's coordinates: `b` itself
             # while it is held there, `s_i * b_i` once it is in the caller's
             # units.
             g = dl * z * w[i] + l2 * penalised * (scale * b[j] if held else b[j])
-            clipped += int((np.abs(g) > clip_gradient).sum())
-            g = np.clip(g, -clip_gradient, clip_gradient)
+            clipped += int((np.abs(g) > clip).sum())
+            g = np.clip(g, -clip, clip)
             if schedule == "constant":
                 lr = learning_rate
             elif schedule == "inv_scaling":
                 lr = learning_rate / (1.0 + lam * w_sum) ** power
             else:
                 G[j] += g * g
-                lr = learning_rate / (np.sqrt(G[j]) + 1e-8)
+                den = np.sqrt(G[j]) + ada_eps
+                lr = np.where(den > 0.0, learning_rate / np.where(den > 0.0, den, 1.0), 0.0)
+            if gains:
+                c = {
+                    "squared": 1.0,
+                    "huber": float(abs(e) <= cut),
+                    "poisson": p[j],
+                    "logistic": p[j] * (1.0 - p[j]),
+                }[loss]
+                along = w[i] * c * float(z @ z) if c > 0.0 else 0.0
+                q = min(lr * (along + l2), 1e150)
+                q1[j] = rho * q1[j] + q
+                q2[j] = rho * q2[j] + q * q
+            delta = -lr * g
+            if level_step is not None:
+                delta[0] = level_step
             if held:
-                b[j] += _mapped(-lr * g, mv, scale, fit_intercept)
+                b[j] += _mapped(delta, mv, scale, fit_intercept)
                 if box is not None:
                     b[j] = _projected_in_units(b[j], box, mv, scale, fit_intercept)
             else:
-                b[j] -= lr * g
+                b[j] += delta
                 stepped[j] = True
         if standardize:
             rows.append(X[i].copy())
@@ -1382,25 +1453,31 @@ def holt_ref(
 ) -> dict[str, np.ndarray]:
     """Holt's linear trend as the ``holt`` builder's docstring states it, per
     target, with ``s`` the clock since the target was last observed (this
-    row's step included)::
+    row's step included) and ``e = y - pred``::
 
         pred = l + b * s
-        l'   = (lam_l * W * pred + w * y) / (lam_l * W + w)      W' = lam_l * W + w
-        b'   = (lam_b * V * b + w * (l' - l) / s) / (lam_b * V + w)      V' = lam_b * V + w
+        g_t  = w / (lam_l * W + w)                 W' = lam_l * W + w
+        h_t  = w / (lam_b * V + w) * g / s         V' = lam_b * V + w   (s > 0)
+        g_f  = w * (1 / S0 + a**2 / Q)             h_f = w * a / Q
+        l'   = pred + max(g_f, g_t) * e            b' = b + max(h_f, h_t) * e
 
     ``lam_l = 0.5 ** (s / half_life)`` and ``lam_b`` likewise at
-    ``trend_half_life``, default four times the level's. The first
-    observation sets the level; the second, at gain 1, the trend. A row at
-    the last observation's clock (``s = 0``) is a second observation the
-    level takes in, and the trend holds. A null target or a zero weight
-    leaves ``l``, ``b``, ``W`` and ``V`` where they were and carries its
-    clock to the next observation. ``pred`` is emitted from the second
-    observation's row on, once the target's weight -- the rows it was
-    present on, at their raw weights, decayed at the level half-life and seen
-    before the row's own step -- reaches ``min_weight``; ``weight_sum`` is every
-    row's weight so decayed. Each clock step is capped at ``gap_cap``.
-    Returns ``pred``, ``weight_sum`` and ``coef`` (``[level, trend]`` after the
-    row, NaN until the first observation)."""
+    ``trend_half_life``, default four times the level's. ``S0``, ``a`` and
+    ``Q`` are the weighted least-squares line's through every observation so
+    far, this row's included, summed here from their definitions: the
+    observations' weight, their weighted mean age on the clock and the
+    spread of their ages about it (task 278, D-H); with ``Q = 0`` the line
+    fit's gains are ``w / S0`` and 0. An infinite half-life gives no textbook
+    gain, and ``h_t`` is 0 at ``s = 0``. The first observation sets the
+    level. A null target or a zero weight leaves ``l``, ``b``, ``W`` and
+    ``V`` where they were and carries its clock to the next observation.
+    ``pred`` is emitted from the second observation's row on, once the
+    target's weight -- the rows it was present on, at their raw weights,
+    decayed at the level half-life and seen before the row's own step --
+    reaches ``min_weight``; ``weight_sum`` is every row's weight so decayed.
+    Each clock step is capped at ``gap_cap``. Returns ``pred``,
+    ``weight_sum`` and ``coef`` (``[level, trend]`` after the row, NaN until
+    the first observation)."""
     n, m = Y.shape
     th = 4.0 * half_life if trend_half_life is None else trend_half_life
 
@@ -1417,8 +1494,11 @@ def holt_ref(
     since = np.zeros(m)
     seen = np.zeros(m, dtype=int)
     w_sum, w_own = 0.0, np.zeros(m)
+    clock = 0.0
+    obs: list[list[tuple[float, float]]] = [[] for _ in range(m)]
     for i in range(n):
         d = 0.0 if i == 0 else min(max(t[i] - t[i - 1], 0.0), gap_cap)
+        clock += d
         weight_sum[i] = w_sum
         for j in range(m):
             since[j] += d
@@ -1427,20 +1507,30 @@ def holt_ref(
                 pred[i, j] = level[j] + trend[j] * s
             if np.isnan(Y[i, j]) or not w[i] > 0.0:
                 continue
+            obs[j].append((clock, w[i]))
             if seen[j] == 0:
                 level[j], W[j] = Y[i, j], w[i]
             else:
                 p = level[j] + trend[j] * s
+                e = Y[i, j] - p
+                at, wt = np.array(obs[j]).T
+                age = clock - at
+                s0 = wt.sum()
+                a = (wt * age).sum() / s0
+                q = (wt * (age - a) ** 2).sum()
+                g_f, h_f = (w[i] / s0 + w[i] * a * a / q, w[i] * a / q) if q > 0 else (w[i] / s0, 0)
                 ll = lam(s, half_life)
-                new = (ll * W[j] * p + w[i] * Y[i, j]) / (ll * W[j] + w[i])
+                g_t = 0.0 if np.isinf(half_life) else w[i] / (ll * W[j] + w[i])
+                g = max(g_f, g_t)
                 W[j] = ll * W[j] + w[i]
+                h = h_f
                 if s > 0.0:
                     lb = lam(s, th)
-                    trend[j] = (lb * V[j] * trend[j] + w[i] * (new - level[j]) / s) / (
-                        lb * V[j] + w[i]
-                    )
+                    h_t = 0.0 if np.isinf(th) else w[i] / (lb * V[j] + w[i]) * g / s
+                    h = max(h_f, h_t)
                     V[j] = lb * V[j] + w[i]
-                level[j] = new
+                level[j] = p + g * e
+                trend[j] += h * e
             seen[j] += 1
             since[j] = 0.0
         step = lam(d, half_life)

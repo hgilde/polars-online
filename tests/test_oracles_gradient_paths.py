@@ -21,6 +21,8 @@ docstring puts the ridge on the slopes and not the intercept, and the clip
 on each coordinate of the gradient (review 2026-10-05, TC6).
 """
 
+import warnings
+
 import numpy as np
 import polars as pl
 import pytest
@@ -332,6 +334,66 @@ class TestSgd:
         ref = sgd_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, fit_intercept=fit_intercept, **kw)
         _held(out, ref, y)
         assert ref["clipped"] > 1000, f"the clip bound {ref['clipped']} times"
+
+
+GATED = [
+    ("squared", "linear", {}, 6.0),
+    ("huber", "linear", {"huber_delta": 0.3}, 4.0),
+    ("poisson", "poisson", {}, 1.0),
+    ("logistic", "logistic", {}, 8.0),
+]
+
+
+class TestTheUnstableRate:
+    """``sgd``'s gate on a rate past its stability bound (task 278, D8),
+    held to the rule ``sgd_ref`` writes out: each stepped row's gain ``q =
+    lr * (w * c * |z|^2 + l2)``, ``c`` the loss's curvature at the
+    prediction, summed with its square under a decay of ``2^(-1/100)`` a
+    row, and a target's prediction withheld while the squares' sum passes
+    twice the gains'. ``inv_scaling`` from a rate past the bound withholds
+    the first rows and releases the rest as the rate falls: both are held,
+    and printed as the evidence the gate ran."""
+
+    @pytest.mark.parametrize(("loss", "kind", "extra", "rate"), GATED, ids=[g[0] for g in GATED])
+    def test_the_gate_withholds_while_the_gains_say_so(self, loss, kind, extra, rate):
+        df = _stream(3, kind=kind)
+        x, y, dc, w = _inputs(df)
+        kw = {"loss": loss, "schedule": "inv_scaling", "power": 1.0, "learning_rate": rate}
+        kw |= {"half_life": 50.0, "min_weight": 1.0, "l2": 0.05} | extra
+        spec = po.spec.sgd(
+            "m",
+            targets=TARGETS,
+            features=FEATURES,
+            clock="t",
+            gap_cap=MAX_DCLOCK,
+            weight="w",
+            coef_every=0,
+            standardize=False,  # the oracle reads the features as they stand
+            **kw,
+            **_one_pass(loss),
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            out = po.ModelBank([spec]).fit_predict(df)["m"]
+        ref = sgd_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, **kw)
+        reasons = out.struct.field("withheld_reason").cast(pl.String)
+        gated = int((reasons == "unstable_rate").sum())
+        scored = int(np.isfinite(ref["pred"]).any(axis=1).sum())
+        print(f"{loss}: {gated} rows withheld as unstable_rate, {scored} scored")
+        assert gated >= 3, "the gate never withheld a row"
+        assert scored >= 200, "the gate never released the fit"
+        assert sum("stability bound" in str(c.message) for c in caught) == 1
+        for j, t in enumerate(TARGETS):
+            _close(
+                out.struct.field(f"pred_{t}").to_numpy().astype(float),
+                ref["pred"][:, j],
+                f"pred_{t}",
+            )
+        rows = out.struct.field("coef").to_list()
+        empty = [np.nan] * ref["coef"][0].size
+        got = np.array([empty if r is None else r for r in rows], float).reshape(ref["coef"].shape)
+        where = ~np.isnan(ref["weight_sum"])
+        _close(got[where], ref["coef"][where], "coef")
 
 
 def _scaled(df: pl.DataFrame) -> pl.DataFrame:

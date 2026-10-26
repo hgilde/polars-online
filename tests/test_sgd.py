@@ -426,8 +426,12 @@ class TestFeatureScaling:
         the 22nd row `beta` is read out with the moments as they stand, `b_i =
         beta_i / s_i` and `b_0 = beta_0 - sum_i b_i m_i`, and from then on the
         prediction is `[1, x] . b` and the step in `z` is mapped back by the
-        row's means and scales. Agreement to 1e-12 relative on every
-        prediction of a few groups."""
+        row's means and scales. The intercept takes the running mean of the
+        residuals, ``(y - p) / n``, in place of its gradient step while that
+        gain is the larger, ``1 / n > lr``, or ``n <= 22``; the first row's
+        whole residual and nothing else (task 278, D-S). The clip, 1e3 of the
+        target's spread, never binds here. Agreement to 1e-12 relative on
+        every prediction of a few groups."""
         n_groups, rows_per, k = 3, 200, 5
         lr, min_weight = 0.03, 10
         x, y, df = self._groups(n_groups, rows_per, k, seed=1)
@@ -459,7 +463,12 @@ class TestFeatureScaling:
                 p = beta[0] + xi @ beta[1:] if held else z @ beta
                 if n - 1 >= min_weight:
                     want[i] = p
-                step = -lr * np.clip((p - y[i]) * z, -1e3, 1e3)
+                step = -lr * (p - y[i]) * z
+                if n <= 22 or 1.0 / n > lr:
+                    # The level's running mean, the first row alone.
+                    step[0] = (y[i] - p) / n
+                    if n == 1:
+                        step[1:] = 0.0
                 if held:
                     step[1:] /= scale
                     step[0] -= mean @ step[1:]

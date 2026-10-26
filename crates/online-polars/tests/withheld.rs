@@ -310,3 +310,59 @@ fn min_weight_withholds_a_closed_rcov_block_with_fewer_returns() {
         }
     }
 }
+
+/// An `sgd` fit whose learning rate is past its stability bound is withheld
+/// and names it, `unstable_rate` (task 278, D8), and the bank says so once:
+/// `inv_scaling` from a rate of 2 on two standardized features withholds the
+/// first rows -- the steps' gains have a mean square above twice their mean
+/// -- and lets the rest through once the rate has fallen, the same in
+/// chunks of 3 rows. At a stable rate no row says it, and nothing is said.
+#[test]
+fn sgd_rows_at_a_rate_past_its_bound_name_unstable_rate() {
+    let make = |rate: f64| {
+        spec(&format!(
+            r#"{{"name": "m", "model": {{"type": "sgd", "learning_rate": {rate},
+                "schedule": "inv_scaling", "power": 1.0}}, "targets": ["y"],
+                "features": ["x0", "x2"], "lam": 1.0, "min_weight": 0}}"#
+        ))
+    };
+    let df = collinear(300, 1.0);
+    let (null, reason) = run(&make(2.0), &df, 300);
+    for (i, (n, r)) in null.iter().zip(&reason).enumerate() {
+        assert_eq!(*n, !r.is_empty(), "row {i} null {n}, reason {r:?}");
+    }
+    let gated: Vec<usize> = (0..reason.len())
+        .filter(|&i| reason[i] == "unstable_rate")
+        .collect();
+    assert!(gated.len() > 5, "{reason:?}");
+    let last = *gated.last().unwrap();
+    assert!(
+        last < 200 && reason[last + 1..].iter().all(String::is_empty),
+        "{reason:?}"
+    );
+    let (_, chunked) = run(&make(2.0), &df, 3);
+    assert_eq!(chunked, reason, "in chunks");
+    let mut bank = Bank::new(vec![make(2.0)]).unwrap();
+    bank.fit_predict(&df).unwrap();
+    bank.fit_predict(&df).unwrap();
+    let said = bank.take_notices();
+    let about: Vec<_> = said
+        .iter()
+        .filter(|n| n.contains("stability bound"))
+        .collect();
+    assert_eq!(about.len(), 1, "{said:?}");
+    assert!(
+        about[0].contains("unstable_rate") && about[0].contains("\"y\""),
+        "{about:?}"
+    );
+
+    let (_, reason) = run(&make(0.05), &df, 300);
+    assert!(reason.iter().all(|r| r != "unstable_rate"), "{reason:?}");
+    let mut bank = Bank::new(vec![make(0.05)]).unwrap();
+    bank.fit_predict(&df).unwrap();
+    assert!(
+        bank.take_notices()
+            .iter()
+            .all(|n| !n.contains("stability bound"))
+    );
+}

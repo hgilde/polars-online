@@ -725,6 +725,10 @@ pub fn sgd_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             _ => 0,
         },
         min_weight_holds_learning: false,
+        // The target's own units and the unstable rate's gate (task 278:
+        // D1, D2, D8, D-S), always on from a spec; a state written before
+        // them loads with them off.
+        target_spread: true,
     };
     Ok(AnyModel::Sgd(Box::new(Sgd::new(cfg)?)))
 }

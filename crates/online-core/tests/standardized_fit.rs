@@ -50,6 +50,7 @@ fn sgd(loss: SgdLoss, fit_intercept: bool, constraint: Option<Constraint>) -> Sg
         // `min_weight`; docs/PLAN.md task 278, D10): the switch is what is
         // held here, and it reads no gate.
         min_weight_holds_learning: true,
+        target_spread: false,
     }
 }
 

@@ -548,7 +548,13 @@ def switched_signature() -> dict[str, float | str | None]:
 #: ``moments``' variances: ``ew_cov``'s default ``bias=False`` multiplies
 #: them by ``W**2 / (W**2 - sum(w**2))``, 1.04 to 1.13 at these rows, which
 #: ``tests/test_ew_cov_bias.py`` holds to Polars and numpy; its means and
-#: correlations kept their bits, and nothing else moved. Task 278 (D-Q,
+#: correlations kept their bits, and nothing else moved. Task 278 (D-H,
+#: 2026-10-26) moved 6, ``holt``'s predictions and residuals: a row takes the
+#: larger of the weighted line fit's gains and the textbook's, so these rows,
+#: inside the warm-up of a half-life of 25, are the line fit's, where the
+#: weighted means pinned the trend to the first observation; ``holt.rs``'s
+#: ``reference`` holds the step to its definition, ``tests/test_second_opinion.py``
+#: to statsmodels' ``WLS`` and ``Holt``; nothing else moved. Task 278 (D-Q,
 #: D10; 2026-10-26) moved 8, ``huber``'s and ``quantile``'s at rows 60 and
 #: 119: ``quantile`` draws its band in the MAD, and ``min_weight`` withholds
 #: their output alone, the fit learning from its own prediction from the
@@ -691,12 +697,12 @@ GOLDEN: dict[str, float | str | None] = {
     "quantile.withheld_reason@25": None,
     "quantile.withheld_reason@60": None,
     "quantile.withheld_reason@119": None,
-    "sgd.pred_y0@25": -0.5042876466916486,
-    "sgd.pred_y0@60": -0.3200296009535316,
-    "sgd.pred_y0@119": -0.03480775917435869,
-    "sgd.resid_y0@25": -4.347318177543068,
-    "sgd.resid_y0@60": -0.15201152786354633,
-    "sgd.resid_y0@119": -0.015891011783870146,
+    "sgd.pred_y0@25": -0.7213797841768836,
+    "sgd.pred_y0@60": -0.6020133091571798,
+    "sgd.pred_y0@119": -0.5375164983182787,
+    "sgd.resid_y0@25": -4.130226040057833,
+    "sgd.resid_y0@60": 0.12997218034010183,
+    "sgd.resid_y0@119": 0.4868177273600499,
     "sgd.weight_sum@25": 7.999488060097996,
     "sgd.weight_sum@60": 12.473100285951407,
     "sgd.weight_sum@119": 15.110060335371337,
@@ -721,12 +727,12 @@ GOLDEN: dict[str, float | str | None] = {
     "pa.withheld_reason@25": None,
     "pa.withheld_reason@60": None,
     "pa.withheld_reason@119": None,
-    "sgd_simplex.pred_y0@25": 0.6901893652038122,
-    "sgd_simplex.pred_y0@60": -2.557240305293285,
-    "sgd_simplex.pred_y0@119": -1.158563092143918,
-    "sgd_simplex.resid_y0@25": -5.5417951894385284,
-    "sgd_simplex.resid_y0@60": 2.0851991764762072,
-    "sgd_simplex.resid_y0@119": 1.1078643211856893,
+    "sgd_simplex.pred_y0@25": 0.4386093880433905,
+    "sgd_simplex.pred_y0@60": -2.7846893637070504,
+    "sgd_simplex.pred_y0@119": -1.6403265649710628,
+    "sgd_simplex.resid_y0@25": -5.290215212278107,
+    "sgd_simplex.resid_y0@60": 2.3126482348899726,
+    "sgd_simplex.resid_y0@119": 1.5896277940128338,
     "sgd_simplex.weight_sum@25": 7.999488060097996,
     "sgd_simplex.weight_sum@60": 12.473100285951407,
     "sgd_simplex.weight_sum@119": 15.110060335371337,
@@ -781,12 +787,12 @@ GOLDEN: dict[str, float | str | None] = {
     "ftrl.withheld_reason@25": None,
     "ftrl.withheld_reason@60": None,
     "ftrl.withheld_reason@119": None,
-    "holt.pred_y0@25": -1.6482424919748164,
-    "holt.pred_y0@60": 5.630591873314062,
-    "holt.pred_y0@119": -1.4684387824643939,
-    "holt.resid_y0@25": -3.2033633322599,
-    "holt.resid_y0@60": -6.10263300213114,
-    "holt.resid_y0@119": 1.4177400115061651,
+    "holt.pred_y0@25": -0.6509754398513061,
+    "holt.pred_y0@60": 0.8460006837790632,
+    "holt.pred_y0@119": -0.9097093205227099,
+    "holt.resid_y0@25": -4.20063038438341,
+    "holt.resid_y0@60": -1.318041812596141,
+    "holt.resid_y0@119": 0.8590105495644811,
     "holt.weight_sum@25": 8.573837237596514,
     "holt.weight_sum@60": 13.244185655943454,
     "holt.weight_sum@119": 15.09397614533663,

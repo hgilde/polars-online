@@ -764,11 +764,12 @@ def run(query):
     )
     for row in shown.iter_rows():
         print(*row)
-    # Each model's out-of-sample R².
+    # Each model's out-of-sample R², or why its predictions were withheld.
     for s in specs:
         pred = pl.col(s["name"]).struct.field("pred_y")
         r2 = out.select(1 - (pl.col("y") - pred).pow(2).mean() / pl.col("y").var()).item()
-        print(f"{s['name']:8} R² {r2:.3g}")
+        why = out[s["name"]].struct.field("withheld_reason").cast(pl.String)
+        print(f"{s['name']:8} R² {r2:.3g}" if r2 is not None else f"{s['name']:8} {why[-1]}")
 
 
 # The columns as they come, then rescaled.
@@ -782,9 +783,10 @@ warning level_over_spread rls price 4960.0
 warning scales_apart rls ret 1020.0
 warning level_over_spread sgd price 4960.0
 warning scales_apart sgd ret 1020.0
+warning withheld sgd None None
 warning ridge_shrinks ewridge ret 1.02
 rls      R² 0.00487
-sgd      R² -2.06e+09
+sgd      unstable_rate
 ewridge  R² 0.541
 -- the price less its first value, the return in thousandths --
 rls      R² 0.579
@@ -797,7 +799,10 @@ sample spreads 1,020 times apart (5,000 and 1,000 in the generator), for
 both uncentred models. For `ewridge`, which centres,
 it finds only that its default ridge, `1e-6`, is as large as the return's
 variance. Left alone, `rls`'s R² over the last 10,000 rows is 0.005, and
-`sgd` diverges. `rls`'s prior pins both slopes near zero: the price's,
+`sgd` diverges: its steps' gains say its learning rate is past its
+stability bound, so every prediction is withheld as `unstable_rate`, and
+`check()` reports the stream's last row withheld (they read an R² of
+−2e9 before that gate). `rls`'s prior pins both slopes near zero: the price's,
 whose direction apart from the intercept carries little information at a
 level, and the return's, whose information `n·s²` is 0.02 against
 `delta = 1`. A ridge with that prior solved in numpy reads the same

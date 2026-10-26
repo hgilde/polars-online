@@ -989,7 +989,8 @@ pub enum ModelKind {
         #[serde(default)]
         split_merge_every_rows: Option<u32>,
         /// A cluster lighter than `dead_frac · n_eff / k` at a check is
-        /// re-placed. Default 0.05; `0` disables the dead rule. The rule runs
+        /// re-placed. Default 0.05; `0` disables the dead rule; below 0.5
+        /// (`limits.rs`). The rule runs
         /// at a split–merge check, so under `split_merge = 0` the default is
         /// 0 and a value above it is refused (review 2026-10-06, CF6).
         #[serde(default)]

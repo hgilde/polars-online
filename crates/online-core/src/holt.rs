@@ -6,31 +6,61 @@
 //! the features are not earning their place.
 //!
 //! Per row and target, with `s` the clock since the target was last observed
-//! -- this row's delta included -- `w` the row's weight, and `W`, `V` the
-//! weight the level and the trend have gathered, each decayed on its own
-//! half-life, `λ_l = 0.5^(s/level_half_life)` and `λ_b = 0.5^(s/trend_half_life)`:
+//! -- this row's delta included -- `w` the row's weight, `e = y − pred` the
+//! forecast error, and `W`, `V` the weight the level and the trend have
+//! gathered, each decayed on its own half-life, `λ_l = 0.5^(s/level_half_life)`
+//! and `λ_b = 0.5^(s/trend_half_life)`:
 //!
 //! ```text
-//! pred  = l + b·s                                (extrapolate s clock units ahead)
-//! l'    = (λ_l·W·pred + w·y) / (λ_l·W + w)         W' = λ_l·W + w
-//! b'    = (λ_b·V·b + w·(l' − l)/s) / (λ_b·V + w)   V' = λ_b·V + w
+//! pred  = l + b·s                                  (extrapolate s clock units ahead)
+//! textbook:  g_t = w/(λ_l·W + w)                   W' = λ_l·W + w
+//!            h_t = w/(λ_b·V + w) · g/s             V' = λ_b·V + w    (s > 0)
+//! line fit:  S0' = S0 + w     ā' = S0·(ā + s)/S0'    Q' = Q + S0·w·(ā + s)²/S0'
+//!            g_f = w·(1/S0' + ā'²/Q')              h_f = w·ā'/Q'
+//! l' = pred + g·e     g = max(g_f, g_t)
+//! b' = b + h·e        h = max(h_f, h_t)
 //! ```
 //!
-//! Level and trend are weighted means, of what the row observes and what the
-//! state forecast, as every accumulator here is: a row at weight `w` counts
-//! `w` times, `half_life = inf` forgets nothing and fits the whole history,
-//! and the first observation seeds the level at its own value. At `w = 1`
-//! with `W` saturated this is the textbook recursion, `α = 1 − λ_l`,
-//! `β = 1 − λ_b`, and statsmodels' `Holt` agrees with it from there; before
-//! that the gains `w/(λW + w)` are larger than the fixed ones, so a new
-//! series is followed sooner. The textbook form read the weight only as
-//! "learn or not" -- a row at weight 0.5 moved the level as far as one at 1
-//! -- and at an infinite half-life its rate was 0, so the level froze at the
-//! first row and a trend never learned (review 2026-09-12, S29/S30). So
-//! `trend_half_life = inf` is the whole history's drift, not a trend pinned at
-//! zero; and a row at the last row's clock (`s = 0`) is a second observation
-//! the level takes in, where it had changed nothing -- the trend holds, since
-//! a move over no clock has no slope.
+//! **The textbook gains** are weighted means, of what the row observes and
+//! what the state forecast, as every accumulator here is: `l'` is then
+//! `(λ_l·W·pred + w·y)/(λ_l·W + w)`, and `b'` the weighted mean of `b` and
+//! the slope the level moved at, `(l' − l)/s`. A row at weight `w` counts `w`
+//! times. At `w = 1` with `W` saturated this is the textbook recursion, `α =
+//! 1 − λ_l`, `β = 1 − λ_b`. The textbook form read the weight only as "learn
+//! or not" -- a row at weight 0.5 moved the level as far as one at 1 -- and at
+//! an infinite half-life its rate was 0, so the level froze at the first row
+//! and a trend never learned (review 2026-09-12, S29/S30).
+//!
+//! **The line fit's gains** are those of the weighted least-squares line
+//! through every observation so far, on the clock, read at the last: `S0` its
+//! weight, `ā` the observations' weighted mean age and `Q = Σ w·(age − ā)²`
+//! the spread of the ages, none decayed. In the coordinates (level now,
+//! slope) the fit's information is `[[S0, −S0·ā], [−S0·ā, Q + S0·ā²]]`, and
+//! `(g_f, h_f)` is `w` times the first column of its inverse. With every
+//! observation at one clock (`Q = 0`) no slope is determined: `g_f = w/S0'`,
+//! `h_f = 0`. The weighted means alone gained `1/n` on both the level and the
+//! trend, which telescoped the trend to `(l − y₁)/(t − t₁)`, pinned to the
+//! first observation, and the level, which adds the trend every row, carried
+//! that observation's error times `ln n` (docs/PLAN.md task 278, D-H: 10.96
+//! off a flat series at 40,000 rows without decay, the worst of 50 seeds at a
+//! noise of 0.5; 6.33 at 10,000 rows at `half_life = 10,000`).
+//!
+//! **A row takes the larger gain**, on the level and on the slope. An infinite
+//! half-life has no textbook gain to give (its fixed gain `1 − λ` is 0), so
+//! without decay the model *is* the weighted line fit, to rounding, whatever
+//! the weights and the clock. Under a half-life the line fit's gains fall as
+//! `1/n` and `1/n²` and the textbook's settle at `1 − λ`, so after a warm-up of
+//! a few half-lives every row takes the textbook's for good, and statsmodels'
+//! `Holt` agrees with the model from there; before, the warm-up is the line
+//! fit, never slower than the textbook. `trend_half_life = inf` is the whole
+//! history's drift, the line fit's slope. A row at the last row's clock (`s =
+//! 0`) is a second observation the level takes in; the textbook trend holds,
+//! since a move over no clock has no slope, and the line fit's moves by its
+//! own gain, as a least-squares slope does.
+//!
+//! **A state saved before the line fit** (schema 63 and earlier) keeps none
+//! and goes on with the textbook gains alone, the recursion it was fitted
+//! under, to the bit.
 //!
 //! **Without a trend** (`trend = false`) the trend is held at zero and the
 //! forecast is flat, `pred = l`: simple exponential smoothing. The level is
@@ -125,6 +155,19 @@ pub struct Holt {
     /// half-life: `V` in the module docs.
     #[serde(default)]
     w_trend: Vec<f64>,
+    /// Per target, the line fit to every observation so far, undecayed
+    /// (docs/PLAN.md task 278, D-H): its weight `S0`, its weighted mean age
+    /// `ā` on the clock, and the spread of the ages about it `Q =
+    /// Σ w·(age − ā)²`. They give the exact weighted least-squares gains,
+    /// which a row takes where they are the larger (the module docs). Empty
+    /// in a state saved before them (schema 63 and earlier), which goes on
+    /// with the textbook gains alone, as it was fitted.
+    #[serde(default)]
+    fit_weight: Vec<f64>,
+    #[serde(default)]
+    fit_age: Vec<f64>,
+    #[serde(default)]
+    fit_spread: Vec<f64>,
 }
 
 impl Holt {
@@ -139,8 +182,41 @@ impl Holt {
             since: vec![0.0; m],
             w_level: vec![0.0; m],
             w_trend: vec![0.0; m],
+            fit_weight: vec![0.0; m],
+            fit_age: vec![0.0; m],
+            fit_spread: vec![0.0; m],
             cfg,
         })
+    }
+
+    /// Whether the state keeps the line fit: every state made by this
+    /// build, and none saved before it (`fit_weight`).
+    fn has_line_fit(&self) -> bool {
+        !self.fit_weight.is_empty()
+    }
+
+    /// Fold target `j`'s observation at weight `w`, `s` clock units after
+    /// the last, into its line fit, and return the fit's gains `(g, h)`:
+    /// on the level, and on the slope per unit of the forecast error. In
+    /// the coordinates (level now, slope) the fit's information is
+    /// `[[S0, −S0·ā], [−S0·ā, Q + S0·ā²]]`, so the gain `w·A⁻¹·(1, 0)ᵀ` is
+    /// `g = w·(1/S0 + ā²/Q)` and `h = w·ā/Q`, read after the row. With every
+    /// observation at one clock (`Q = 0`) the slope is not determined: the
+    /// level is their weighted mean and the slope does not move.
+    fn line_fit_gains(&mut self, j: usize, s: f64, w: f64) -> (f64, f64) {
+        let s0 = self.fit_weight[j];
+        let aged = self.fit_age[j] + s;
+        let s0_new = s0 + w;
+        let age = s0 * aged / s0_new;
+        let spread = self.fit_spread[j] + s0 * w * aged * aged / s0_new;
+        self.fit_weight[j] = s0_new;
+        self.fit_age[j] = age;
+        self.fit_spread[j] = spread;
+        if spread > 0.0 {
+            (w * (1.0 / s0_new + age * age / spread), w * age / spread)
+        } else {
+            (w / s0_new, 0.0)
+        }
     }
 
     /// `(λ_l, λ_b)`, the level's and the trend's decay over `s` clock units
@@ -227,6 +303,9 @@ impl OnlineModel for Holt {
                     self.level[j] = yj;
                     self.w_level[j] = weight;
                     self.seen[j] = true;
+                    if self.has_line_fit() {
+                        self.fit_weight[j] = weight;
+                    }
                 }
                 continue;
             }
@@ -249,20 +328,52 @@ impl OnlineModel for Holt {
             } else {
                 self.decays(s)
             };
-            // Weighted means of what the row observes and what the state
-            // held; `weight > 0` here, so neither denominator is 0 (hard
-            // rule 9).
+            // The line fit's gains, where the state keeps one and fits a
+            // trend; without a trend the level's weighted mean below is
+            // already the larger gain (`λ·W ≤ S0`).
+            let line =
+                (self.cfg.trend && self.has_line_fit()).then(|| self.line_fit_gains(j, s, weight));
+            // The textbook gain: the level as a weighted mean of what the
+            // row observes and what the state held; `weight > 0` here, so
+            // no denominator is 0 (hard rule 9). An infinite half-life has
+            // no textbook gain to give: its fixed gain `1 − λ` is 0, and the
+            // line fit is the whole history's.
             let held = lam_l * self.w_level[j];
+            let gain = weight / (held + weight);
             let prev_level = self.level[j];
-            self.level[j] = (held * p + weight * yj) / (held + weight);
+            let error = yj - p;
+            let level_gain = match line {
+                Some((g, _)) if g > gain || self.cfg.level_half_life.is_infinite() => {
+                    self.level[j] = p + g * error;
+                    g
+                }
+                _ => {
+                    self.level[j] = (held * p + weight * yj) / (held + weight);
+                    gain
+                }
+            };
             self.w_level[j] = held + weight;
-            // A move over no clock has no slope: the trend holds. Without a
-            // trend it stays at zero.
-            if self.cfg.trend && s > 0.0 {
-                let held = lam_b * self.w_trend[j];
-                let slope = (self.level[j] - prev_level) / s;
-                self.trend[j] = (held * self.trend[j] + weight * slope) / (held + weight);
-                self.w_trend[j] = held + weight;
+            if self.cfg.trend {
+                // The textbook trend: a weighted mean of the slopes the
+                // level moved at, whose gain on the error is `w/(λ_b·V + w)
+                // · g/s`. A move over no clock has no slope, and an infinite
+                // trend half-life none to give where the line fit is kept:
+                // the line fit's slope is then the whole history's drift.
+                let textbook = s > 0.0 && (line.is_none() || self.cfg.trend_half_life.is_finite());
+                let held_b = lam_b * self.w_trend[j];
+                let take_line = match line {
+                    Some((_, h)) => !textbook || h > weight / (held_b + weight) * level_gain / s,
+                    None => false,
+                };
+                if take_line {
+                    self.trend[j] += line.map_or(0.0, |(_, h)| h) * error;
+                } else if textbook {
+                    let slope = (self.level[j] - prev_level) / s;
+                    self.trend[j] = (held_b * self.trend[j] + weight * slope) / (held_b + weight);
+                }
+                if s > 0.0 {
+                    self.w_trend[j] = held_b + weight;
+                }
             }
             self.since[j] = 0.0;
         }
@@ -308,10 +419,16 @@ impl OnlineModel for Holt {
                 // first `step` (review 2026-09-18, B3), and a clock since an
                 // observation of the wrong length was set to zero, the
                 // repair for a schema-6 state (docs/PLAN.md task 198).
+                // The line fit is all three vectors or none: none is a state
+                // saved before it, which goes on with the textbook gains.
+                let fit = [&m.fit_weight, &m.fit_age, &m.fit_spread];
+                let fit_len = m.fit_weight.len();
                 if m.seen.len() != n
                     || [&m.level, &m.trend, &m.w_level, &m.w_trend, &m.since]
                         .iter()
                         .any(|v| v.len() != n)
+                    || (fit_len != 0 && fit_len != n)
+                    || fit.iter().any(|v| v.len() != fit_len)
                 {
                     return Err(StateError::Invalid(
                         "holt: the state has the wrong shape".into(),
@@ -419,13 +536,13 @@ mod tests {
         (preds, m)
     }
 
-    /// The recursion written out longhand, against an irregular clock, so the
-    /// test cannot share a mistake with the implementation: level and trend
+    /// The textbook recursion alone, written out longhand: level and trend
     /// are each a weighted mean of what the row observes and what the state
     /// held, `(λ·W·old + w·new)/(λ·W + w)`, with `W` the weight each has
     /// gathered and `λ` its decay over the clock since the target was last
-    /// observed (review 2026-09-12, S29/S30).
-    fn reference(
+    /// observed (review 2026-09-12, S29/S30). The whole model until the line
+    /// fit (task 278, D-H), and still a state's saved before it.
+    fn textbook(
         cfg: &HoltCfg,
         ys: &[Option<f64>],
         ds: &[f64],
@@ -470,6 +587,95 @@ mod tests {
             w_sum = w_sum * decay(d, cfg.level_half_life) + w;
         }
         (preds, level, trend, w_sum)
+    }
+
+    /// The model written out from its definitions, against an irregular
+    /// clock, so the test cannot share a mistake with the implementation:
+    /// the line fit's weight, mean age and spread summed afresh over every
+    /// observation so far (`crate::oracle::sum`), its gains `g = w·(1/S0 +
+    /// ā²/Q)` and `h = w·ā/Q`, and the textbook's weighted means; a row
+    /// takes the larger gain, on the level and on the slope, and an infinite
+    /// half-life has no textbook gain (task 278, D-H).
+    fn reference(
+        cfg: &HoltCfg,
+        ys: &[Option<f64>],
+        ds: &[f64],
+        ws: &[f64],
+    ) -> (Vec<f64>, f64, f64, f64) {
+        use crate::oracle::sum;
+        let decay = |s: f64, h: f64| {
+            if h.is_infinite() {
+                1.0
+            } else {
+                0.5f64.powf(s / h)
+            }
+        };
+        let (mut level, mut trend, mut w_level, mut w_trend) = (0.0, 0.0, 0.0, 0.0);
+        let (mut w_sum, mut since, mut seen) = (0.0, 0.0, false);
+        let (mut clock, mut obs) = (0.0, Vec::<(f64, f64)>::new());
+        let mut preds = Vec::new();
+        for ((&y, &d), &w) in ys.iter().zip(ds).zip(ws) {
+            clock += d;
+            let y = y.filter(|v| v.is_finite() && w > 0.0);
+            if !seen {
+                preds.push(f64::NAN);
+                if let Some(y) = y {
+                    (level, w_level, seen) = (y, w, true);
+                    obs.push((clock, w));
+                }
+            } else {
+                let s = since + d;
+                let p = level + trend * s;
+                preds.push(if w_sum >= cfg.min_weight { p } else { f64::NAN });
+                if let Some(y) = y {
+                    obs.push((clock, w));
+                    let s0 = sum(obs.iter().map(|o| o.1));
+                    let age = sum(obs.iter().map(|o| o.1 * (clock - o.0))) / s0;
+                    let q = sum(obs.iter().map(|o| o.1 * (clock - o.0 - age).powi(2)));
+                    let (g_fit, h_fit) = if q > 0.0 {
+                        (w / s0 + w * age * age / q, w * age / q)
+                    } else {
+                        (w / s0, 0.0)
+                    };
+                    let e = y - p;
+                    let held = decay(s, cfg.level_half_life) * w_level;
+                    let g_book = if cfg.level_half_life.is_infinite() {
+                        0.0
+                    } else {
+                        w / (held + w)
+                    };
+                    let g = g_fit.max(g_book);
+                    level = p + g * e;
+                    w_level = held + w;
+                    if s > 0.0 {
+                        let held = decay(s, cfg.trend_half_life) * w_trend;
+                        let h_book = if cfg.trend_half_life.is_infinite() {
+                            0.0
+                        } else {
+                            w / (held + w) * g / s
+                        };
+                        trend += h_fit.max(h_book) * e;
+                        w_trend = held + w;
+                    } else {
+                        trend += h_fit * e;
+                    }
+                    since = 0.0;
+                } else {
+                    since = s;
+                }
+            }
+            w_sum = w_sum * decay(d, cfg.level_half_life) + w;
+        }
+        (preds, level, trend, w_sum)
+    }
+
+    /// A model whose state keeps no line fit: a state saved before it.
+    fn without_line_fit(c: HoltCfg) -> Holt {
+        let mut m = Holt::new(c).unwrap();
+        m.fit_weight.clear();
+        m.fit_age.clear();
+        m.fit_spread.clear();
+        Holt::restore(&m.state()).expect("a state without the line fit loads")
     }
 
     #[test]
@@ -575,22 +781,34 @@ mod tests {
     }
 
     /// A repeated timestamp is a second observation at the same time: the
-    /// level takes it in, as a weighted mean takes any row, and the trend is
-    /// held, since a move over no clock has no slope. The textbook form's
-    /// rate was 0 at `d = 0`, so such a row changed nothing (S29).
+    /// level takes it in, as a weighted mean takes any row. The textbook
+    /// trend holds, since a move over no clock has no slope; the line fit's
+    /// does not, since a second observation at one time still moves a
+    /// least-squares slope, by the fit's own gain (task 278, D-H). The
+    /// textbook form's rate was 0 at `d = 0`, so such a row once changed
+    /// nothing (S29).
     #[test]
-    fn a_zero_gap_folds_the_row_into_the_level_and_holds_the_trend() {
+    fn a_zero_gap_folds_the_row_into_the_level_and_the_line_fits_slope() {
         let c = cfg(5.0, 20.0);
         let mut ys: Vec<Option<f64>> = (0..30).map(|i| Some(2.0 * i as f64)).collect();
         let mut ds: Vec<f64> = (0..30).map(|i| if i == 0 { 0.0 } else { 1.0 }).collect();
         let mut m = Holt::new(c.clone()).unwrap();
+        let mut old = without_line_fit(c.clone());
         for (y, d) in ys.iter().zip(&ds) {
             m.step(&[], &[*y], *d, 1.0);
+            old.step(&[], &[*y], *d, 1.0);
         }
         let (l, t) = (m.level()[0], m.trend()[0]);
-        assert!(t > 0.5, "there should be a trend to hold: {t}");
+        assert!(t > 0.5, "there should be a trend: {t}");
+        let t_old = old.trend()[0];
         m.step(&[], &[Some(-1000.0)], 0.0, 1.0);
-        assert_eq!(m.trend()[0], t, "a zero gap must not move the trend");
+        old.step(&[], &[Some(-1000.0)], 0.0, 1.0);
+        assert_eq!(
+            old.trend()[0],
+            t_old,
+            "the textbook trend holds at a zero gap"
+        );
+        assert!(m.trend()[0] < t, "the line fit's slope takes the row in");
         assert!(
             m.level()[0] < l,
             "the row is taken in: {} vs {l}",
@@ -599,11 +817,16 @@ mod tests {
         ys.push(Some(-1000.0));
         ds.push(0.0);
         let ws = vec![1.0; ys.len()];
-        let (_, want, _, _) = reference(&c, &ys, &ds, &ws);
+        let (_, want, want_t, _) = reference(&c, &ys, &ds, &ws);
         assert!(
             (m.level()[0] - want).abs() < 1e-9,
             "{} vs {want}",
             m.level()[0]
+        );
+        assert!(
+            (m.trend()[0] - want_t).abs() < 1e-12,
+            "{} vs {want_t}",
+            m.trend()[0]
         );
     }
 
@@ -970,30 +1193,147 @@ mod tests {
     }
 
     /// An infinite half-life forgets nothing, so the fit is the whole
-    /// history's: on `y = 3 + 2t` level and trend follow the line, the first
-    /// rows' slopes damped by the level they are read from. The textbook
-    /// form's rate is 0 at an infinite half-life, so it forecast the first
-    /// row's 3 on every row for ever while `n_eff` climbed (review
-    /// 2026-09-12, S30).
+    /// history's: the weighted least-squares line through every observation
+    /// on the clock, read at the last one (task 278, D-H). Held against
+    /// faer's LU solve of the normal equations (`crate::oracle`), on an
+    /// irregular clock with uneven weights, nulls and zero weights. The
+    /// weighted means before it pinned the trend to the first observation,
+    /// `(l − y₁)/(t − t₁)`, and the level's error grew like that
+    /// observation's noise times `ln n`; the textbook form's rate is 0
+    /// there, so it forecast the first row for ever (review 2026-09-12,
+    /// S30).
     #[test]
-    fn an_infinite_halflife_is_the_cumulative_fit() {
+    fn an_infinite_halflife_is_the_weighted_line_fit() {
         let c = cfg(f64::INFINITY, f64::INFINITY);
-        let ys: Vec<f64> = (0..200).map(|i| 3.0 + 2.0 * i as f64).collect();
-        let (preds, _) = run(c.clone(), &ys, 1.0);
-        let opt: Vec<Option<f64>> = ys.iter().map(|y| Some(*y)).collect();
-        let ds: Vec<f64> = (0..200).map(|i| if i == 0 { 0.0 } else { 1.0 }).collect();
-        let (want, _, _, _) = reference(&c, &opt, &ds, &[1.0; 200]);
+        let mut st = 29u64;
+        let n = 3000;
+        let mut clock = 0.0;
+        let (mut ys, mut ds, mut ws, mut rows) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for i in 0..n {
+            let d = if i == 0 {
+                0.0
+            } else {
+                [0.0, 0.5, 1.0, 3.0][i % 4]
+            };
+            let w = [1.0, 0.5, 2.0, 0.0, 1.5][i % 5];
+            clock += d;
+            let y = 2.0 + 0.3 * clock + 0.7 * lcg(&mut st);
+            let y = (i % 7 != 3).then_some(y);
+            if let Some(y) = y.filter(|_| w > 0.0) {
+                rows.push((clock, w, y));
+            }
+            ds.push(d);
+            ws.push(w);
+            ys.push(y);
+        }
+        let mut m = Holt::new(c).unwrap();
+        for i in 0..n {
+            m.step(&[], &[ys[i]], ds[i], ws[i]);
+        }
+        // In clock units from the last observation, so the oracle's
+        // intercept is the level.
+        use crate::oracle::{solve, sum};
+        let t_last = rows.last().unwrap().0;
+        let a = |f: &dyn Fn(f64) -> f64| sum(rows.iter().map(|r| r.1 * f(r.0 - t_last)));
+        let b = |f: &dyn Fn(f64) -> f64| sum(rows.iter().map(|r| r.1 * r.2 * f(r.0 - t_last)));
+        let (s0, s1, s2) = (a(&|_| 1.0), a(&|t| t), a(&|t| t * t));
+        let fit = solve(&[s0, s1, s1, s2], &[b(&|_| 1.0), b(&|t| t)]);
+        let (level, trend) = (m.level()[0], m.trend()[0]);
         assert!(
-            (preds[199] - want[199]).abs() < 1e-9,
-            "{} vs {}",
-            preds[199],
-            want[199]
+            (level - fit[0]).abs() <= 1e-10 * fit[0].abs(),
+            "level {level} vs {}",
+            fit[0]
         );
         assert!(
-            (preds[199] - ys[199]).abs() < 2.5,
-            "{} vs {}",
-            preds[199],
-            ys[199]
+            (trend - fit[1]).abs() <= 1e-10 * fit[1].abs(),
+            "trend {trend} vs {}",
+            fit[1]
+        );
+    }
+
+    /// The defect itself (task 278, D-H): a flat series whose first
+    /// observation is 10 off. The weighted means carried that 10 into the
+    /// trend, `(l − y₁)/(t − t₁)`, so the level's error grew like `−10·ln
+    /// n` without decay and through every warm-up under one. The line fit's
+    /// first error falls as `1/n`.
+    #[test]
+    fn the_first_observations_error_does_not_grow() {
+        for (h, rows, bound) in [(f64::INFINITY, 10_000, 0.02), (1000.0, 1000, 0.1)] {
+            let mut m = Holt::new(cfg(h, 4.0 * h)).unwrap();
+            let mut st = 3u64;
+            for i in 0..rows {
+                let y = 3.0 + 0.5 * lcg(&mut st) + if i == 0 { 10.0 } else { 0.0 };
+                m.step(&[], &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            let off = m.level()[0] - 3.0;
+            assert!(
+                off.abs() < bound,
+                "half-life {h}: the level is {off} off after {rows} rows"
+            );
+        }
+    }
+
+    /// Once the line fit's gains fall below the textbook's, every row takes
+    /// the textbook's, so the model is the textbook recursion from there:
+    /// beside a state that never kept a line fit, on the same rows, the
+    /// predictions agree to 1e-12 once the warm-ups' differences have
+    /// decayed at the trend's half-life (`tests/test_second_opinion.py`
+    /// holds the same against statsmodels' `Holt`).
+    #[test]
+    fn settled_it_is_the_textbook_recursion() {
+        let c = cfg(6.0, 25.0);
+        let mut m = Holt::new(c.clone()).unwrap();
+        let mut old = without_line_fit(c);
+        let mut st = 41u64;
+        let mut level = 3.0;
+        for i in 0..2000 {
+            level += 0.4 + 0.5 * lcg(&mut st);
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            let a = m.step(&[], &[Some(level)], d, 1.0).pred[0];
+            let b = old.step(&[], &[Some(level)], d, 1.0).pred[0];
+            if i >= 1000 {
+                assert!((a - b).abs() <= 1e-12 * b.abs(), "row {i}: {a} vs {b}");
+            }
+        }
+    }
+
+    /// A state saved before the line fit (schema 63 and earlier) has none,
+    /// and goes on with the textbook gains alone, the recursion it was
+    /// fitted under (hard rule 5; the kept fixtures hold it to the bit): a
+    /// row the line fit would have taken does not reach it.
+    #[test]
+    fn a_state_saved_before_the_line_fit_goes_on_with_the_textbook_gains() {
+        let ds = [0.0, 1.0, 0.25, 7.0, 1.0, 1.0, 0.5, 13.0, 2.0, 1.0, 1.0, 3.0];
+        let ws = [1.0, 0.5, 2.0, 1.0, 0.25, 1.0, 3.0, 1.0, 0.0, 1.0, 1.5, 1.0];
+        let mut s = 5u64;
+        let mut ys: Vec<Option<f64>> = (0..ds.len())
+            .map(|i| Some(3.0 + 0.8 * i as f64 + lcg(&mut s)))
+            .collect();
+        ys[5] = None;
+        for c in [cfg(4.0, 9.0), cfg(f64::INFINITY, f64::INFINITY)] {
+            let (want, level, trend, _) = textbook(&c, &ys, &ds, &ws);
+            let mut m = without_line_fit(c.clone());
+            for (i, ((&y, &d), &w)) in ys.iter().zip(&ds).zip(&ws).enumerate() {
+                let p = m.step(&[], &[y], d, w).pred[0];
+                // The decays here run through `powf`, the model's through
+                // `exp2`; the kept fixtures hold the bits (state_fixtures).
+                assert!(
+                    (p - want[i]).abs() <= 1e-13 * (1.0 + want[i].abs())
+                        || (p.is_nan() && want[i].is_nan()),
+                    "row {i}: {p} vs {}",
+                    want[i]
+                );
+            }
+            assert!((m.level()[0] - level).abs() <= 1e-13 * (1.0 + level.abs()));
+            assert!((m.trend()[0] - trend).abs() <= 1e-13 * (1.0 + trend.abs()));
+            assert!(m.fit_weight.is_empty(), "and it saves none");
+        }
+        // The line fit is all three vectors or none.
+        let mut m = Holt::new(cfg(4.0, 9.0)).unwrap();
+        m.fit_age.clear();
+        assert!(
+            Holt::restore(&m.state()).is_err(),
+            "a part of the line fit is refused"
         );
     }
 

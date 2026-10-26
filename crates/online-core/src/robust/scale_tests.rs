@@ -248,6 +248,7 @@ fn sgd_cfg(loss: crate::SgdLoss, scale: HuberScale) -> crate::SgdCfg {
         huber_scale_decay: None,
         refit_rows: 0,
         min_weight_holds_learning: false,
+        target_spread: false,
     }
 }
 

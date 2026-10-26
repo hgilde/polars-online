@@ -181,7 +181,7 @@ in `tests/test_second_opinion.py`, Vowpal Wabbit among them.
 | `pa` | river's `PARegressor`, without an intercept, at unit weight and at `eps = 0`, river's tube being in the target's units and ours in the target's own EW std (`TestPassiveAggressiveIsRivers`) | 1e-12 | T-S18 |
 | `sgd` | scikit-learn's `SGDRegressor`, one per group (`tests/test_sgd.py`) | R² within 0.03 | |
 | `sgd`'s `l2` and `clip_gradient` | `sgd_ref` with the ridge on the slopes and the per-coordinate clip, on a case where the clip binds on more than 1,000 coordinates under every schedule (`test_the_clip_and_the_ridge_bind`) | 1e-12, relative | |
-| `holt` | statsmodels' `Holt` once the weight saturates, and its state-space `ExponentialSmoothing` across a missing observation (`TestHoltAcrossAMissingObservation`); without a trend, statsmodels' `DescrStatsW` and pandas' `ewm(times=)` (`TestALevelOnlyHoltIsAnEwMean`) | 1e-12 and 1e-9; 1e-12 and 1e-8 | T-S14, T-S17 |
+| `holt` | statsmodels' `Holt` once the weight saturates, and its state-space `ExponentialSmoothing` across a missing observation (`TestHoltAcrossAMissingObservation`); without decay, statsmodels' `WLS` on `(1, t)` before every row (`TestHoltWithoutDecayIsTheWeightedLineFit`); without a trend, statsmodels' `DescrStatsW` and pandas' `ewm(times=)` (`TestALevelOnlyHoltIsAnEwMean`) | 1e-12 and 1e-9; 1e-12; 1e-12 and 1e-8 | T-S14, T-S17 |
 | the plain `sigma` and `zscore` | the weighted EW root mean square of the residuals before the row (`tests/test_oracles_sigma.py`) | 8.1e-16 | |
 | `EwCov` | `river.stats.Mean` / `Var` / `Cov` / `PearsonCorr` | 1e-9 | T-R3 |
 | `ew_cov`'s `mean`, `var`, `cov` and `corr` | pandas' `ewm` on a row-count clock, at offsets up to 1e8 (`TestTheEwMomentsArePandas`) | 1e-12 | T-S9 |

@@ -165,17 +165,21 @@ def bocpd(
         20-sigma row is a changepoint (``p_change`` 0.91) whose run carries the
         outlier in its mean. Tempered, the row is atypical under every run,
         every tempered likelihood is about 1, and nothing moves. A trade: a
-        whole new regime is a run of individually forgiven rows, so above about
-        0.2 nothing is ever detected again; 0.1 ignores the outlier and still
-        dates a four-sigma shift to the right row. Above 0, and refused beside
-        ``"full"``. The tempered predictive is not free of the data's units:
-        its message ``pi ** w`` carries the constant a change of units
-        multiplies the density by as ``c ** w``, and ``w`` differs from run to
-        run, so the runs' odds move with the units. At a level of ``1e4`` with
-        a spread of ``1e-2``, ``p_change`` moved by up to 0.86 against the same
-        stream at level 0 and spread 1. Centre and scale the features before a
-        tempered run. ``robust_beta`` is a power on a ratio of two
-        densities, and has no units.
+        whole new regime is a run of individually forgiven rows, so a larger
+        power finds a real shift later, and past about 0.2 mostly not at all.
+        Measured over 50 streams with a four-sigma shift (hazard 250, a shift
+        found once the run mode dates it to within 5 rows, inside 150 rows): at
+        0.1 every shift was found within 6 rows, while a 20-sigma outlier left
+        ``p_change`` at its floor; at 0.15 all 50 were found, the worst 16 rows
+        late; at 0.2, 38 of 50, the worst 120 rows late; at 0.3 one, and at 0.5
+        none. Above 0, and refused beside ``"full"``. The tempered predictive
+        is not free of the data's units: its message ``pi ** w`` carries the
+        constant a change of units multiplies the density by as ``c ** w``, and
+        ``w`` differs from run to run, so the runs' odds move with the units.
+        At a level of ``1e4`` with a spread of ``1e-2``, ``p_change`` moved by
+        up to 0.86 against the same stream at level 0 and spread 1. Centre and
+        scale the features before a tempered run. ``robust_beta`` is a power on
+        a ratio of two densities, and has no units.
     ``mean_prior``, ``mean_precision_prior``, ``degrees_of_freedom_prior``, ``covariance_prior``
         The conjugate prior, under scikit-learn's ``BayesianGaussianMixture``
         names:
@@ -512,6 +516,14 @@ def corrchange(
     was constant. ``crit`` is a fixed threshold. Without one the critical
     value is a permutation quantile: ``n_perm`` draws of the pooled rows
     shuffled between the two windows, redrawn every ``permute_every_rows`` rows.
+    A report flags when fewer than ``floor(alpha * (n_perm + 1))`` draws reach
+    its statistic. That is the standard permutation test, which counts the
+    observed statistic as one more draw: on rows the null makes exchangeable
+    its rank among the ``n_perm + 1`` is uniform, so the test's size is that
+    count over ``n_perm + 1``, never above ``alpha``. At alpha 0.05 it is
+    0.0476 at 20 draws and 0.0498 at the default 200. Fewer than ``ceil(1 /
+    alpha) - 1`` draws could never flag, so such an ``n_perm`` is refused: at
+    alpha 0.01, 99 draws at least.
     The draws are in blocks of ``perm_block``, so that serial dependence does
     not make the null too liberal. It is not a sign-flip null, which a first
     reading of the literature suggests. Negating a whole row leaves every ``x
@@ -577,11 +589,12 @@ def corrchange(
         ``"sequential"``: replaces Wied & Galeano's critical value. Above 0.
     ``n_perm``, ``permute_every_rows``, ``perm_block``, ``seed``
         ``"window"``'s permutation quantile: ``n_perm`` draws (default 200, at
-        least 20 and at most 2^20), redrawn every ``permute_every_rows`` rows
-        (default 50, at least 1), in blocks of ``perm_block`` rows (default 1,
-        at most ``window_rows``). ``seed`` (default 0) seeds the draws, so two
-        runs with the same seed report the same critical values; ``None`` is
-        0, and nothing draws from the system's entropy.
+        least 20 and at least ``ceil(1 / alpha) - 1``, at most 2^20), redrawn
+        every ``permute_every_rows`` rows (default 50, at least 1), in blocks
+        of ``perm_block`` rows (default 1, at most ``window_rows``). ``seed``
+        (default 0) seeds the draws, so two runs with the same seed report the
+        same critical values; ``None`` is 0, and nothing draws from the
+        system's entropy.
     ``norm``
         ``"window"``: ``"l1"`` (the default) or ``"linf"``.
     ``change_action``
@@ -659,7 +672,8 @@ def corrchange(
     - a parameter of another kind;
     - a ``bandwidth`` of 0 or above ``window_rows``, a ``crit`` not above 0,
       and an ``n_perm``,
-      ``permute_every_rows`` or ``perm_block`` outside the range above;
+      ``permute_every_rows`` or ``perm_block`` outside the range above, an
+      ``n_perm`` among them too small to flag at ``alpha``;
     - ``boundary_gamma`` outside ``[0, 0.49]``;
     - ``monitor_rows`` below 2;
     - ``half_life``/``lam`` without ``scalar``.
