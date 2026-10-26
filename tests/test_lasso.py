@@ -249,7 +249,7 @@ def test_on_the_row_clock_solve_every_is_its_row_cap():
             return po.ModelBank([spec]).fit_predict(df).unnest("m")
 
     clock = run(solve_every=7.0)
-    assert clock.equals(run(solve_every=1e18, max_rows_between_solves=7), null_equal=True)
+    assert clock.equals(run(solve_every=1e9, max_rows_between_solves=7), null_equal=True)
     c = clock["coef"].to_list()
     assert [i for i in range(1, n) if c[i] != c[i - 1]] == [1, 2, 3, 4, 5, *range(6, n, 7)]
 

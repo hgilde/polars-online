@@ -121,7 +121,8 @@ use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 /// `false`, as the current case of the same name does, so each converts to
 /// the current bytes; the form a spec with an explicit `solve_every` builds
 /// is the cases `ewridge_first_period`, `lasso_first_period` and
-/// `huber_first_period`, saved inside the first period. 64 gave
+/// `huber_first_period`, saved inside the first period, and
+/// `ewridge_never`, at `solve_every = inf`, the form with no first period. 64 gave
 /// `marginal(bin_stat = "huber")` its own refit of the first rows (task 278): a 63 state has no
 /// `refit_rows` in its bins' cfg and no refit record, loads with
 /// `refit_rows = 0` and goes on to the bit as the one pass it was fitted
@@ -1341,10 +1342,11 @@ fn ewridges_output_only_form_is_written_and_acts() {
     for f in frozen::ALL.iter().filter(|f| f.variant == "EwRidge") {
         let v = rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap();
         let got = at(&v, &mark).and_then(rmpv::Value::as_bool);
-        // The first period's case is the form a spec builds, both marks.
+        // The first period's and the never cadence's cases are the form a
+        // spec builds, with this mark.
         let want = Some(matches!(
             f.name,
-            "ewridge_output_only" | "ewridge_first_period"
+            "ewridge_output_only" | "ewridge_first_period" | "ewridge_never"
         ));
         assert_eq!(got, want, "{}: min_weight_output_only", f.name);
     }
@@ -1410,7 +1412,8 @@ fn ewridges_output_only_form_is_written_and_acts() {
 /// Each is saved inside the period, which its continuation's row 42 ends:
 /// the period's solves move its predictions there, so the same state with
 /// the mark taken out goes on to other numbers, and the state it saves at
-/// the end has the mark cleared.
+/// the end has the mark cleared. `ewridge_never`, a cadence that never
+/// comes due (`inf`), is the spec's form that takes no mark.
 #[test]
 fn the_first_periods_form_is_written_and_acts() {
     if regenerating() {
@@ -1430,6 +1433,17 @@ fn the_first_periods_form_is_written_and_acts() {
             assert_eq!(got, want, "{}: first_period_by_share", f.name);
         }
     }
+    // A cadence that never comes due takes no mark, though the spec sets
+    // it: `ewridge_never`, at `solve_every = inf`, written as the double.
+    let never = frozen::ALL
+        .iter()
+        .find(|f| f.name == "ewridge_never")
+        .expect("ewridge_never: no fixture; add the case and regenerate");
+    let v = rmpv::decode::read_value(&mut never.bytes().as_slice()).unwrap();
+    let every = at(&v, &["model", "EwRidge", "cfg", "solve_every"]).and_then(rmpv::Value::as_f64);
+    assert_eq!(every, Some(f64::INFINITY), "ewridge_never: cfg.solve_every");
+    let mark = at(&v, &["model", "EwRidge", "first_period_by_share"]);
+    assert_eq!(mark.and_then(rmpv::Value::as_bool), Some(false));
     for (name, variant) in forms {
         let f = frozen::ALL
             .iter()

@@ -134,6 +134,7 @@ pub struct EwRidgeCfg {
     /// where the caller hands them (`since::Since`, docs/PLAN.md task 180).
     /// A row of weight 0 never solves: a solve due on one waits for the next
     /// row with weight (hard rule 9, docs/PLAN.md task 214).
+    #[serde(with = "crate::humanfloat::f64_or_tag")]
     pub solve_every: f64,
     /// Row cap between solves, counted on the rows with weight; 1 solves
     /// every such row.
@@ -2340,8 +2341,7 @@ impl OnlineModel for EwRidge {
         // solve, or, in its first period, since the model's start. Not read
         // under a weight share, whose rows it leaves as they were.
         let explicit = self.cfg.solve_share.is_none()
-            && (self.cfg.solve_every <= 0.0
-                || self.since_solve.reached(self.cfg.solve_every)
+            && (crate::since::clock_due(&self.since_solve, self.cfg.solve_every)
                 || self.rows_since_solve >= self.cfg.max_rows_between_solves);
         let first = self.in_first_period();
         let by_share = |share: f64| self.weight_since_solve >= share * self.n_eff();

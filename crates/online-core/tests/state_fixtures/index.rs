@@ -22,6 +22,9 @@ pub mod ewridge_output_only {
 pub mod ewridge_first_period {
     include!("ewridge_first_period.rs");
 }
+pub mod ewridge_never {
+    include!("ewridge_never.rs");
+}
 pub mod ewridge_blocked {
     include!("ewridge_blocked.rs");
 }
@@ -226,6 +229,7 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &ewridge_leverage::FIXTURE,
     &ewridge_output_only::FIXTURE,
     &ewridge_first_period::FIXTURE,
+    &ewridge_never::FIXTURE,
     &ewridge_blocked::FIXTURE,
     &rls::FIXTURE,
     &lasso::FIXTURE,

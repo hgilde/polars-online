@@ -742,6 +742,25 @@ pub const SCHEMA_VERSION: u32 = 64;
 /// `half_life / 50` of clock brings in steady state.
 pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 
+/// A `solve_every` at or past this many clock units never comes due, as
+/// `inf` does: the model solves only where its row cap or its own first
+/// solves say, and its cadence has no first period on the default schedule
+/// (task 278, the user's decision of 2026-10-26). Past the end of any stream
+/// on every kind of clock: on a temporal clock the units are seconds, and
+/// `1e18` s is 3.2e10 years where a 64-bit nanosecond stamp spans 584; on
+/// the row clock it is `1e18` rows, 31.7 years at a billion rows a second;
+/// on a number clock it is 31.7 years of an epoch-nanosecond integer
+/// column, the finest clock a column holds in practice. So `1e18`, which a
+/// spec wrote for "never" before `inf` was accepted, keeps that meaning, and
+/// a cadence that some stream could reach stays a cadence.
+pub const SOLVE_NEVER: f64 = 1e18;
+
+/// Whether `solve_every` never comes due ([`SOLVE_NEVER`]): `inf`, or a
+/// finite value at or past the threshold.
+pub fn solve_never(solve_every: f64) -> bool {
+    solve_every >= SOLVE_NEVER
+}
+
 /// The oldest schema version [`check_schema`] accepts: a [`State`] naming an
 /// older one is refused by its number, in the words
 /// [`StateError::SchemaVersion`] gives.

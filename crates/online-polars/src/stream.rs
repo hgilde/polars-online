@@ -789,9 +789,10 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                     Some(_) => spec.min_periods_or_default(),
                     None => (spec.k() + usize::from(spec.fit_intercept)) as f64,
                 },
-                solve_every: solve_every
-                    .as_ref()
-                    .map_or_else(|| spec.solve_every_default(decay), Span::value),
+                solve_every: solve_every.as_ref().map_or_else(
+                    || spec.solve_every_default(decay),
+                    model_cfgs::solve_every_of,
+                ),
                 max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
                 solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
                 gram_block_rows: gram_block_rows.unwrap_or(0),
@@ -860,9 +861,10 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 // coefficient (task 278, D10); a state saved before keeps
                 // its own.
                 min_weight_holds_learning: false,
-                solve_every: solve_every
-                    .as_ref()
-                    .map_or_else(|| spec.solve_every_default(decay), Span::value),
+                solve_every: solve_every.as_ref().map_or_else(
+                    || spec.solve_every_default(decay),
+                    model_cfgs::solve_every_of,
+                ),
                 max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
                 solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
                 window: window.as_ref().map(Span::value),

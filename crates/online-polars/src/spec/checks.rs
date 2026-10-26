@@ -91,12 +91,14 @@ pub(super) fn check_ridge(name: &str, ridge: Option<f64>) -> Result<(), String> 
     Ok(())
 }
 
-/// `solve_every`: clock units between solves; zero solves every row. A
-/// negative value silently meant "every row" too, NaN meant "never".
+/// `solve_every`: clock units between solves; zero solves every row, and
+/// `inf` -- or any value at or past `online_core::SOLVE_NEVER`, past the end
+/// of any stream -- never (task 278). A negative value silently meant
+/// "every row" too, NaN meant "never".
 pub(super) fn check_solve_every(name: &str, v: Option<&Span>) -> Result<(), String> {
-    if let Some(v) = v.filter(|v| !non_negative(v.value()) || !v.value().is_finite()) {
+    if let Some(v) = v.filter(|v| !non_negative(v.value())) {
         return Err(format!(
-            "spec {name:?}: solve_every must be finite and >= 0 (0 solves every row), got {v}"
+            "spec {name:?}: solve_every must be >= 0 (0 solves every row, inf never), got {v}"
         ));
     }
     Ok(())

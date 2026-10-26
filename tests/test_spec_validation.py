@@ -64,7 +64,7 @@ REJECTED = [
     (
         po.spec.ewridge,
         dict(half_life=10.0, solve_every=-1.0),
-        "solve_every must be finite and >= 0",
+        "solve_every must be >= 0",
     ),
     (po.spec.ewridge, dict(half_life=10.0, solve_every=NAN), "solve_every must not be NaN"),
     (po.spec.ewridge, dict(half_life=[10.0, 10.0]), "half_life lists 10 more than once"),
@@ -77,7 +77,7 @@ REJECTED = [
         "long_half_life must be > 0",
     ),
     (po.spec.huber, dict(half_life=10.0, ridge=-1.0), "ridge must be finite and >= 0"),
-    (po.spec.huber, dict(half_life=10.0, solve_every=-1.0), "solve_every must be finite and >= 0"),
+    (po.spec.huber, dict(half_life=10.0, solve_every=-1.0), "solve_every must be >= 0"),
     (
         po.spec.quantile,
         dict(half_life=10.0, quantile=0.5, ridge=-1e-3),
@@ -91,7 +91,6 @@ REJECTED = [
         dict(half_life=10.0, coef_half_life=10.0, obs_var=INF),
         "obs_var must be finite",
     ),
-    (po.spec.ewridge, dict(half_life=10.0, solve_every=INF), "solve_every must be finite"),
     (
         po.spec.quantile,
         dict(half_life=10.0, quantile=0.5, quantile_eps=NAN),

@@ -2745,7 +2745,7 @@ This code uses `lf` from [Example data](#example-data):
 features = ["x0", "x1", "x2", "signal_a", "signal_b"]
 hours = po.spec.ewridge(
     "hours", targets=["y"], features=features, group="hour",   # a Gram per hour
-    half_life=float("inf"), solve_every=1e18,                  # least squares' sums, solved rarely
+    half_life=float("inf"), solve_every=float("inf"),          # least squares' sums; the pass solves nothing
 )
 bank = po.ModelBank([hours])
 bank.fit(lf.with_columns(hour=pl.col("ts").dt.truncate("1h")))   # the hour, made in the query

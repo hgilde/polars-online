@@ -679,7 +679,7 @@ fn on_the_row_clock_each_cadence_is_its_row_cap() {
             0,
         );
         let cap = run(
-            &make(&format!(r#""{every_key}": 1e18, "{cap_key}": 7"#)),
+            &make(&format!(r#""{every_key}": 1e9, "{cap_key}": 7"#)),
             &df.drop("t").unwrap(),
             0,
         );
@@ -707,5 +707,34 @@ fn on_the_row_clock_each_cadence_is_its_row_cap() {
             clock.equals_missing(&cap),
             "{name}: the clock of 7 is the cap of 7"
         );
+    }
+}
+
+/// Task 278: `solve_every = inf` never comes due, on a temporal clock as on
+/// a number clock -- where a stamp compared against an infinite span has
+/// no answer, which the clock reads as reached -- and has no first period:
+/// the regressions solve only to give their first rows a fit. `1e18`, a
+/// number past the end of any stream, builds the same model on the number
+/// clock, every output the same to the bit.
+#[test]
+fn solve_every_inf_never_comes_due_on_any_clock() {
+    let n = 3_000;
+    let (t, _) = millisecond_rows(n, TimeUnit::Microseconds);
+    let ms = frame(t, 31);
+    let numbers = frame(Series::new("t".into(), irregular_tenths()), 32);
+    for name in ["ewridge", "lasso", "huber", "quantile"] {
+        for (df, temporal) in [(&ms, true), (&numbers, false)] {
+            let (never, event) = spec(name, r#""inf""#, temporal);
+            let out = run(&never, df, 0);
+            let got = events(&out, event);
+            assert!(
+                got.len() <= 3 && got.iter().all(|&i| i < 10),
+                "{name}, temporal {temporal}: solved on {got:?}"
+            );
+            if !temporal {
+                let (big, _) = spec(name, "1e18", false);
+                assert!(run(&big, df, 0).equals_missing(&out), "{name}: 1e18 is inf");
+            }
+        }
     }
 }

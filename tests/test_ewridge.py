@@ -736,7 +736,7 @@ class TestTheRowClockSolveCadence:
 
     def test_solve_every_is_its_row_cap(self):
         clock = self.run(solve_every=7.0)
-        cap = self.run(solve_every=1e18, max_rows_between_solves=7)
+        cap = self.run(solve_every=1e9, max_rows_between_solves=7)
         assert clock.equals(cap, null_equal=True)
         # The solves, seen where the fit the rows report moves: every row of
         # the first period, which ends on the 7th (0-based 6), then every 7th

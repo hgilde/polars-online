@@ -1374,3 +1374,33 @@ fn read_any(path: &Path, format: Format) -> DataFrame {
             .unwrap(),
     }
 }
+
+/// `solve_every = inf` in a TOML config: a cadence that never comes due
+/// (task 278), accepted on the row clock and beside a temporal clock, where a
+/// number of the clock's units would be refused but `inf` is the same in
+/// every unit.
+#[test]
+fn a_config_takes_solve_every_inf() {
+    let config = |extra: &str| -> RunConfig {
+        toml::from_str(&format!(
+            r#"
+input = "x.parquet"
+output = "y.parquet"
+[[specs]]
+name = "m"
+targets = ["y"]
+features = ["x"]
+half_life = inf
+{extra}
+[specs.model]
+type = "ewridge"
+solve_every = inf
+"#
+        ))
+        .unwrap()
+    };
+    for extra in ["", "clock = \"t\"\ngap_cap = \"1h\""] {
+        let cfg = config(extra);
+        cfg.validate().unwrap_or_else(|e| panic!("{extra:?}: {e}"));
+    }
+}

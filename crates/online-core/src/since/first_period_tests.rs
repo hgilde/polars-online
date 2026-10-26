@@ -197,7 +197,7 @@ fn definition(end: usize, step: usize) -> Vec<usize> {
 #[test]
 fn an_explicit_cadences_first_period_solves_on_the_default_schedule() {
     for kind in KINDS {
-        for (every, cap, end) in [(50.0, u32::MAX, 50), (1e18, 50, 49)] {
+        for (every, cap, end) in [(50.0, u32::MAX, 50), (1e9, 50, 49)] {
             let what = format!("{kind} under solve_every {every}, a cap of {cap}");
             let mut m = model(kind, 3.0, every, cap);
             each!(&mut m, m => m.set_first_period_by_share(true));
@@ -267,6 +267,62 @@ fn the_mark_is_taken_only_by_an_explicit_clock() {
             run(&mut marked),
             plain,
             "{kind}: the default schedule moved"
+        );
+    }
+}
+
+/// A cadence that never comes due ([`crate::SOLVE_NEVER`]): `inf`, and any
+/// finite value at or past the threshold, `1e18` among them, ask for no
+/// solves, so the mark is not taken and there is no first period. The model
+/// solves only where its own first solves and its row cap say, the same
+/// rows and predictions, to the bit, at `inf` and `1e18`, with the mark set
+/// or not; a row cap beside it still solves, as it did before the rule.
+/// The largest value below the threshold is a cadence: it takes the mark,
+/// and its first period, which this stream never ends, solves on the
+/// default schedule throughout.
+#[test]
+fn a_cadence_past_the_threshold_never_solves_and_has_no_first_period() {
+    assert!(crate::solve_never(f64::INFINITY) && crate::solve_never(1e18));
+    let below = f64::from_bits(crate::SOLVE_NEVER.to_bits() - 1);
+    assert!(!crate::solve_never(below));
+    assert!(!super::explicit_cadence(None, f64::INFINITY));
+    assert!(!super::explicit_cadence(None, 1e18));
+    assert!(super::explicit_cadence(None, below));
+    for kind in KINDS {
+        for cap in [u32::MAX, 50] {
+            let runs: Vec<_> = [(f64::INFINITY, true), (1e18, true), (f64::INFINITY, false)]
+                .into_iter()
+                .map(|(every, mark)| {
+                    let mut m = model(kind, 3.0, every, cap);
+                    each!(&mut m, m => m.set_first_period_by_share(mark));
+                    assert_eq!(read(&m, "first_period_by_share"), false, "{kind}");
+                    run(&mut m)
+                })
+                .collect();
+            assert_eq!(runs[1], runs[0], "{kind}, cap {cap}: 1e18 is inf");
+            assert_eq!(runs[2], runs[0], "{kind}, cap {cap}: the mark moved inf");
+            let solved = &runs[0].0;
+            let early = solved.iter().filter(|&&i| i < 49).count();
+            assert!((1..=3).contains(&early), "{kind}, cap {cap}: {solved:?}");
+            if cap == 50 {
+                // The cap's solves, 50 rows apart from the model's first.
+                let last = *solved.last().unwrap();
+                assert!(solved.contains(&(last - 50)), "{kind}: {solved:?}");
+            } else {
+                assert!(solved.iter().all(|&i| i < 49), "{kind}: {solved:?}");
+            }
+        }
+        let mut m = model(kind, 3.0, below, u32::MAX);
+        each!(&mut m, m => m.set_first_period_by_share(true));
+        let (solved, _, marks) = run(&mut m);
+        assert!(
+            marks.iter().all(|&on| on),
+            "{kind}: the period never ends here"
+        );
+        assert_eq!(
+            solved,
+            definition(N, 1),
+            "{kind}: the default schedule throughout"
         );
     }
 }

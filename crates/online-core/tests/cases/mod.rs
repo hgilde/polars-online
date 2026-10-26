@@ -620,6 +620,28 @@ pub fn all() -> Vec<Case> {
             Targets::Linear(2),
             40
         ),
+        // A cadence that never comes due (`solve_every = inf`, task 278): the
+        // spec sets the first period's mark and the model does not take it,
+        // so there is no first period; it solves only at its own floor.
+        case!(
+            "ewridge_never",
+            "EwRidge",
+            EwRidge,
+            {
+                let mut m = EwRidge::new(EwRidgeCfg {
+                    solve_every: f64::INFINITY,
+                    max_rows_between_solves: u32::MAX,
+                    ..ewridge_cfg()
+                })
+                .unwrap();
+                m.set_min_weight_output_only(true);
+                m.set_first_period_by_share(true);
+                m
+            },
+            K,
+            Targets::Linear(2),
+            40
+        ),
         // A blocked Gram saved mid-block (schema 62, docs/PLAN.md task
         // 257): its held rows, and each target's values on them waiting for
         // the block's merge, `acc.held`, empty in every other state.

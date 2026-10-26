@@ -123,9 +123,20 @@ impl Since {
 /// Whether a regression's schedule is an explicit cadence, one whose first
 /// period runs on the default weight-share schedule ([`FirstPeriod`]): no
 /// weight share of its own, and a clock between solves, `solve_every > 0`.
-/// A `solve_every <= 0` solves every row, so it has no period to wait out.
+/// A `solve_every <= 0` solves every row, so it has no period to wait out,
+/// and one that never comes due ([`crate::SOLVE_NEVER`]: `inf`, or past
+/// the end of any stream) asks for no solves, so it has none either.
 pub(crate) fn explicit_cadence(solve_share: Option<f64>, solve_every: f64) -> bool {
-    solve_share.is_none() && solve_every > 0.0
+    solve_share.is_none() && solve_every > 0.0 && !crate::solve_never(solve_every)
+}
+
+/// Whether a regression's clock cadence `solve_every` has come due at the
+/// row last stepped: on every row at `<= 0`, never at or past
+/// [`crate::SOLVE_NEVER`] (where a stamp comparison against `inf` has no
+/// answer, which [`Since::reached`] reads as equal), and otherwise once
+/// `solve_every` clock units have passed since the last solve.
+pub(crate) fn clock_due(since: &Since, solve_every: f64) -> bool {
+    solve_every <= 0.0 || (!crate::solve_never(solve_every) && since.reached(solve_every))
 }
 
 /// The first period of an explicit solve cadence (task 278, the user's

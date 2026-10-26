@@ -97,7 +97,7 @@ def test_an_explicit_cadences_first_period_is_the_default_schedule(model, extra,
         {"solve_every": 150.0}
         if cadence == "solve_every"
         else {
-            "solve_every": 1e18,
+            "solve_every": 1e9,
             "max_rows_between_solves": 150,
         }
     )
@@ -386,3 +386,63 @@ def test_on_each_solve_row_lasso_is_the_every_row_path_within_its_rule(schedule)
     worst = max(float(np.nanmax(np.abs(cs[i] - ce[i]))) for i in solved)
     print(f"{schedule}: {len(solved)} solve rows, worst |d coef| {worst:.3g}")
     assert worst < 1e-12
+
+
+# ---- a cadence that never comes due (task 278, the user's 2026-10-26) ----
+
+#: The value from which ``solve_every`` never comes due, as ``inf`` does.
+NEVER = 1e18
+
+
+def _models(bank: po.ModelBank) -> list:
+    """Each group's model states, the part of a bank's state a spec's value
+    builds (the spec itself is kept as written)."""
+    doc = json.loads(bank.write_json())
+    return [pair[1]["models"] for pair in doc["states"][0]]
+
+
+@pytest.mark.parametrize(("model", "extra"), MODELS, ids=[m for m, _ in MODELS])
+@pytest.mark.parametrize("cap", [None, 500], ids=["no cap", "a cap of 500"])
+def test_inf_and_any_value_past_the_threshold_never_solve(model, extra, cap):
+    """``solve_every=inf`` never comes due, and neither does any value from
+    ``1e18`` on: past the end of any stream on every clock (``1e18`` seconds
+    is 3.2e10 years). Both build the same model, every output and every
+    model's state the same to the bit, with no first period: the sums are
+    collected and the model solves only to give its first rows a fit, and
+    where a row cap says. The largest value below the threshold is a cadence:
+    its first period, which no stream ends, solves on the default schedule
+    throughout."""
+    df = stream()
+    kw = {} if cap is None else {"max_rows_between_solves": cap}
+
+    def run(every):
+        spec = getattr(po.spec, model)(
+            "m",
+            targets=["y"],
+            features=["x0"],
+            min_weight=20.0,
+            half_life=1e12,
+            max_rows_between_coefs=1,
+            solve_every=every,
+            **extra,
+            **kw,
+        )
+        bank = po.ModelBank([spec])
+        return bank.fit_predict(df).unnest("m"), bank
+
+    (inf, b_inf), (big, b_big) = run(float("inf")), run(NEVER)
+    assert inf.equals(big, null_equal=True)
+    assert _models(b_inf) == _models(b_big)
+    state = _models(b_inf)[0][0]["model"]
+    inner = next(iter(state.values()))
+    assert inner["first_period_by_share"] is False
+    coef = inf["coef"].to_list()
+    moved = [i for i in range(1, df.height) if coef[i] != coef[i - 1]]
+    print(f"{model}, cap {cap}: the fit moved on {moved[:6]}... ({len(moved)} rows)")
+    if cap is None:
+        assert len(moved) <= 3 and all(i < 10 for i in moved), moved
+    else:
+        assert moved[-3:] == [moved[-1] - 1_000, moved[-1] - 500, moved[-1]], moved
+    below, _ = run(np.nextafter(NEVER, 0.0))
+    fits = below["coef"].to_list()
+    assert sum(fits[i] != fits[i - 1] for i in range(1, df.height)) > 100
