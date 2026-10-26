@@ -57,8 +57,10 @@ only as fast as its own dynamics forget the start, which
 The tables are plain dictionaries of builders so that they fold into the
 convergence harness's registry (one entry per model, its classes listed).
 ``huber`` and ``sgd(loss="huber")`` are in ``Y_SCALE`` with the refit of
-their first rows on (task 277); a decimal scale moves them by their MAD
-sketch's resolution, not by rounding (``DECIMAL_SKETCH``).
+their first rows on (task 277); their MAD sketches keep ``|e|`` in units of
+the first, so a decimal scale moves them by rounding too (task 278: on the
+fixed buckets it moved them by a bucket's resolution, up to 4e-3 of the
+target's spread).
 """
 
 from __future__ import annotations
@@ -394,42 +396,16 @@ def worst_decimal_deviation(model: str, seed: int, n: int, scales) -> tuple[floa
     return worst, DECIMAL_FACTOR * N_EFF * U * float(np.max(np.abs(y))) / sd
 
 
-#: Where a decimal scale is more than rounding: the Huber fits' MAD sketch
-#: keeps |e| in buckets an octave apart, so a scale that is not a power of
-#: two moves a residual across a bucket's edge and the scale by that
-#: bucket's resolution. Measured bitwise exact under `2^±20`, and up to
-#: 4.9e-4 (huber) and 4.7e-4 (sgd) of the target's spread at 1e±6, with the
-#: refit of the first rows on as without it (2026-10-25).
-DECIMAL_SKETCH = (
-    "the MAD sketch's octave buckets: a decimal scale moves a residual across a "
-    "bucket's edge, up to 5e-4 of the target's spread (measured), its resolution"
-)
-
-
-def _decimal_params() -> list:
-    return [
-        pytest.param(
-            m,
-            marks=(
-                (pytest.mark.xfail(strict=True, raises=AssertionError, reason=DECIMAL_SKETCH),)
-                if m in ("huber", "sgd_huber")
-                else ()
-            ),
-        )
-        for m in sorted(Y_SCALE)
-    ]
-
-
 class TestDecimalTargetScale:
     """A decimal scale is rounding, held to `DECIMAL_FACTOR`'s bound."""
 
-    @pytest.mark.parametrize("model", _decimal_params())
+    @pytest.mark.parametrize("model", sorted(Y_SCALE))
     def test_a_decimal_scale_moves_predictions_by_rounding(self, model):
         worst, bound = worst_decimal_deviation(model, 0, N_ESSENTIAL, (1e-6, 1e6))
         assert worst <= bound, (model, worst, bound)
 
     @pytest.mark.extended(reason="a grid: every model over 50 streams and four scales")
-    @pytest.mark.parametrize("model", _decimal_params())
+    @pytest.mark.parametrize("model", sorted(Y_SCALE))
     def test_a_decimal_scale_moves_predictions_by_rounding_over_50_streams(self, model):
         tail = []
         for seed in SEEDS:

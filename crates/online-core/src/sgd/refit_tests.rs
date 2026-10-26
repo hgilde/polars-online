@@ -33,6 +33,7 @@ fn cfg(refit_rows: u32, standardize: bool, schedule: LearningRate, decay: Decay)
         huber_scale_decay: None,
         refit_rows,
         target_spread: false,
+        mad_anchor: false,
     }
 }
 

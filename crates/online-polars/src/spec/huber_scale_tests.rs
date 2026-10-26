@@ -100,3 +100,34 @@ fn a_spec_without_them_serializes_as_before() {
     let json = serde_json::to_string(&spec(r#"{"type": "huber", "huber_scale": "rms"}"#)).unwrap();
     assert!(json.contains(r#""huber_scale":"rms""#), "{json}");
 }
+
+/// Every MAD sketch a spec builds is anchored (task 278, the user's
+/// 2026-10-26): `huber`'s, `sgd`'s under the Huber loss, and `marginal`'s
+/// under `bin_stat = "huber"`, so each scale moves with a rescaled target
+/// by the factor to rounding. A state written without the flag loads with
+/// it off (`online_core`'s state fixtures).
+#[test]
+fn a_spec_anchors_every_mad_sketch() {
+    for model in [
+        r#"{"type": "huber"}"#,
+        r#"{"type": "sgd", "loss": "huber"}"#,
+    ] {
+        let mut s = spec(model);
+        s.check().unwrap();
+        let decay = s.decays().unwrap()[0].1;
+        let (flag, sketches) = match (huber_model(&s, decay), sgd_model(&s, decay)) {
+            (Ok(AnyModel::Robust(m)), _) => (m.cfg().mad_anchor, m.mad_sketch().to_vec()),
+            (_, Ok(AnyModel::Sgd(m))) => (m.cfg().mad_anchor, m.mad_sketch().to_vec()),
+            _ => panic!("{model}: neither huber nor sgd"),
+        };
+        assert!(flag, "{model}");
+        assert!(!sketches.is_empty() && sketches.iter().all(|q| q.anchor() == Some(0.0)));
+    }
+    let mut s = spec(r#"{"type": "marginal", "bins": 4, "bin_stat": "huber"}"#);
+    s.check().unwrap();
+    let models = crate::stream::build_models(&s).unwrap();
+    let Some((_, AnyModel::Marginal(m))) = models.first() else {
+        panic!("not a marginal model")
+    };
+    assert!(m.cfg().bins.as_ref().is_some_and(|b| b.mad_anchor));
+}

@@ -34,6 +34,7 @@ fn huber(k: usize, m: usize) -> RobustCfg {
         ridge_scale: false,
         emit_scale: false,
         refit_rows: 0,
+        mad_anchor: false,
     }
 }
 

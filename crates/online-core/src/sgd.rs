@@ -391,6 +391,11 @@ pub struct SgdCfg {
     /// it was, to the bit.
     #[serde(default)]
     pub target_spread: bool,
+    /// Whether each MAD sketch buckets `|e|` in units of the first `|e|` it
+    /// takes, as [`crate::RobustCfg::mad_anchor`]. A spec sets it; a state
+    /// written before schema 64 loads as `false` and goes on as it was.
+    #[serde(default)]
+    pub mad_anchor: bool,
 }
 
 /// The memory of the step gains' means ([`StepGain`]): `2^(-1/100)` a
@@ -721,7 +726,7 @@ impl TryFrom<SgdV3> for Sgd {
         } else {
             crate::HuberScale::Rms
         };
-        if !crate::robust::mad_sketches_fit(huber_scale, m, &mad) {
+        if !crate::robust::mad_sketches_fit(huber_scale, cfg.mad_anchor, m, &mad) {
             return Err(
                 "sgd: the state's residual sketches do not match its cfg's huber_scale".into(),
             );
@@ -794,7 +799,7 @@ impl Sgd {
         let gain = vec![StepGain::default(); if keeps_gain(&cfg) { m } else { 0 }];
         let level = vec![Level::default(); if keeps_level(&cfg) { m } else { 0 }];
         let mad = if residual {
-            crate::robust::mad_sketches(cfg.huber_scale, m)
+            crate::robust::mad_sketches(cfg.huber_scale, cfg.mad_anchor, m)
         } else {
             Vec::new()
         };
@@ -1177,9 +1182,10 @@ impl Sgd {
             return;
         };
         self.refit[j].ran(passes);
-        let scale = huber_refit::rebuild_scale(&rows, self.cfg.huber_scale, |i| {
-            rows.y(i) - huber_refit::fitted(&fit, rows.x(i), intercept)
-        });
+        let scale =
+            huber_refit::rebuild_scale(&rows, self.cfg.huber_scale, self.cfg.mad_anchor, |i| {
+                rows.y(i) - huber_refit::fitted(&fit, rows.x(i), intercept)
+            });
         match &self.scaler {
             Some(sc) if !self.warmup.switched() => {
                 let s = scales_of(sc, off);
@@ -2056,6 +2062,7 @@ mod tests {
             huber_scale_decay: None,
             refit_rows: 0,
             target_spread: false,
+            mad_anchor: false,
         }
     }
 

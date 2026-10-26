@@ -105,7 +105,12 @@
 //!   fit's first residuals -- the level's size, while the intercept is near
 //!   0 -- leave it once the fit has the level. At 5% one-sided outliers on a
 //!   target at 1,000 with no decay the slope is 2.041 where statsmodels'
-//!   converged `RLM` with the MAD gives 2.039.
+//!   converged `RLM` with the MAD gives 2.039. Under
+//!   [`RobustCfg::mad_anchor`], which a spec sets, each sketch keeps `|e|`
+//!   in units of its first ([`EwQuantile::anchored`], task 278), so a target
+//!   rescaled by any factor rescales `s`, and the fit, to rounding; on the
+//!   fixed buckets a factor other than a power of two moved `m` by up to a
+//!   bucket.
 //! - **`Rms`**: `s = √σ²`, the plain EW mean of squared residuals, in which
 //!   the rows Huber down-weights count at full weight, so an outlier
 //!   inflates the scale the next rows' cuts are drawn in, and without decay
@@ -217,12 +222,18 @@ pub(crate) fn mad_scale(q: &EwQuantile) -> Option<f64> {
 /// folds nothing it later reads (docs/PLAN.md task 271 (b)).
 pub const MAD_BAND_OCTAVES: u32 = 8;
 
-/// One sketch of `|e|` per target under the MAD, none under the RMS.
-pub(crate) fn mad_sketches(scale: HuberScale, n: usize) -> Vec<EwQuantile> {
+/// One sketch of `|e|` per target under the MAD, none under the RMS;
+/// anchored ([`EwQuantile::anchored`]) where the cfg says so
+/// ([`RobustCfg::mad_anchor`]).
+pub(crate) fn mad_sketches(scale: HuberScale, anchored: bool, n: usize) -> Vec<EwQuantile> {
     match scale {
         HuberScale::Mad => vec![
-            EwQuantile::bounded(&[0.5], MAD_BAND_OCTAVES)
-                .expect("0.5 is in (0, 1) and the band in range");
+            if anchored {
+                EwQuantile::anchored(&[0.5], MAD_BAND_OCTAVES)
+            } else {
+                EwQuantile::bounded(&[0.5], MAD_BAND_OCTAVES)
+            }
+            .expect("0.5 is in (0, 1) and the band in range");
             n
         ],
         HuberScale::Rms => Vec::new(),
@@ -231,10 +242,21 @@ pub(crate) fn mad_sketches(scale: HuberScale, n: usize) -> Vec<EwQuantile> {
 
 /// Whether a restored state's sketches are the ones its scale keeps: `n`
 /// sketches at the level 0.5 under the MAD, each one a sketch that can be
-/// read and added to, and none under the RMS.
-pub(crate) fn mad_sketches_fit(scale: HuberScale, n: usize, q: &[EwQuantile]) -> bool {
+/// read and added to and anchored exactly when the cfg says so, and none
+/// under the RMS.
+pub(crate) fn mad_sketches_fit(
+    scale: HuberScale,
+    anchored: bool,
+    n: usize,
+    q: &[EwQuantile],
+) -> bool {
     match scale {
-        HuberScale::Mad => q.len() == n && q.iter().all(|s| s.levels() == [0.5] && s.has_shape()),
+        HuberScale::Mad => {
+            q.len() == n
+                && q.iter().all(|s| {
+                    s.levels() == [0.5] && s.has_shape() && s.anchor().is_some() == anchored
+                })
+        }
         HuberScale::Rms => q.is_empty(),
     }
 }
@@ -325,6 +347,15 @@ pub struct RobustCfg {
     /// rows its stream has long passed.
     #[serde(default)]
     pub refit_rows: u32,
+    /// Whether each MAD sketch buckets `|e|` in units of the first `|e|` it
+    /// takes ([`EwQuantile::anchored`]), so the scale, and the fit it
+    /// weighs, moves with a rescaled target by the factor to rounding,
+    /// where the fixed buckets moved it by up to a bucket at any factor
+    /// but a power of two. A spec sets it. A state written before schema
+    /// 64 has no such field and its sketches bucket `|e|` as it is, so it
+    /// loads as `false` and goes on as it was, to the bit.
+    #[serde(default)]
+    pub mad_anchor: bool,
 }
 
 /// A target's band system as a solve factorizes it -- `A`, the band Gram
@@ -855,7 +886,7 @@ impl Robust {
             target_min_weight: Vec::new(),
             support: Shares::default(),
             mad: if matches!(cfg.loss, RobustLoss::Huber { .. }) {
-                mad_sketches(cfg.huber_scale, m)
+                mad_sketches(cfg.huber_scale, cfg.mad_anchor, m)
             } else {
                 Vec::new()
             },
@@ -1130,7 +1161,7 @@ impl Robust {
         if self.refit[j].status().ran_to_cap() {
             self.solve_failures += 1;
         }
-        let scale = rebuild_scale(&rows, self.cfg.huber_scale, |i| {
+        let scale = rebuild_scale(&rows, self.cfg.huber_scale, self.cfg.mad_anchor, |i| {
             rows.y(i) - fitted(&b, rows.x(i), intercept)
         });
         self.sig2[j] = scale.sig2;
@@ -2143,7 +2174,7 @@ impl OnlineModel for Robust {
                     RobustLoss::Huber { .. } => m.cfg.huber_scale,
                     RobustLoss::Quantile { .. } => HuberScale::Rms,
                 };
-                if !mad_sketches_fit(scale, n, &m.mad) {
+                if !mad_sketches_fit(scale, m.cfg.mad_anchor, n, &m.mad) {
                     return Err(StateError::Invalid(format!(
                         "{kind}: the residual sketches do not match huber_scale"
                     )));
@@ -2294,6 +2325,7 @@ mod tests {
             ridge_scale: false,
             emit_scale: false,
             refit_rows: 0,
+            mad_anchor: false,
         }
     }
 

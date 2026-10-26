@@ -699,8 +699,9 @@ impl Binned {
                 crate::edges_from(cfg.rule, cfg.n_bins, &mut vals)
             })
             .collect();
-        let mut hist = crate::MarginalBins::new_with(p, n_targets, edges, cfg.stat)
-            .expect("edges_from gives one finite, strictly increasing list per feature");
+        let mut hist =
+            crate::MarginalBins::new_with_anchor(p, n_targets, edges, cfg.stat, cfg.mad_anchor)
+                .expect("edges_from gives one finite, strictly increasing list per feature");
         for row in &self.held {
             hist.decay(row.lam);
             hist.update_row(&row.x, &row.y, row.w);
@@ -740,7 +741,13 @@ impl Marginal {
             None => None,
             Some(bc) => {
                 let hist = match &bc.edges {
-                    Some(e) => Some(crate::MarginalBins::new_with(p, t, e.clone(), bc.stat)?),
+                    Some(e) => Some(crate::MarginalBins::new_with_anchor(
+                        p,
+                        t,
+                        e.clone(),
+                        bc.stat,
+                        bc.mad_anchor,
+                    )?),
                     None => None,
                 };
                 Some(Box::new(Binned {
@@ -2507,7 +2514,13 @@ impl OnlineModel for Marginal {
                 // The histogram's statistic is the cfg's, its scales with it.
                 let bins_ok = match (&m.bins, &m.cfg.bins) {
                     (Some(b), Some(c)) => {
-                        b.has_shape(p, t) && b.hist.as_ref().is_none_or(|h| h.stat() == c.stat)
+                        b.has_shape(p, t)
+                            && b.hist.as_ref().is_none_or(|h| {
+                                h.stat() == c.stat
+                                    && h.mad_anchor()
+                                        == (c.mad_anchor
+                                            && matches!(c.stat, crate::BinStat::Huber { .. }))
+                            })
                     }
                     (None, None) => true,
                     _ => false,

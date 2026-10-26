@@ -40,6 +40,7 @@ fn cfg(loss: SgdLoss, schedule: LearningRate, learning_rate: f64) -> SgdCfg {
         huber_scale_decay: None,
         refit_rows: 0,
         target_spread: true,
+        mad_anchor: false,
     }
 }
 

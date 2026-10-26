@@ -33,6 +33,7 @@ fn base(loss: RobustLoss) -> RobustCfg {
         ridge_scale: false,
         emit_scale: false,
         refit_rows: 0,
+        mad_anchor: false,
     }
 }
 
@@ -238,6 +239,7 @@ fn sgd_cfg(loss: crate::SgdLoss, scale: HuberScale) -> crate::SgdCfg {
         huber_scale_decay: None,
         refit_rows: 0,
         target_spread: false,
+        mad_anchor: false,
     }
 }
 
@@ -562,4 +564,139 @@ fn a_scales_word_is_its_saved_name() {
         assert_eq!(format!("\"{}\"", s.word()), saved);
     }
     assert_eq!(HuberScale::Mad.word(), "mad");
+}
+
+// ---------------------------------------------------------------------------
+// The anchored sketch (task 278, the user's 2026-10-26).
+// ---------------------------------------------------------------------------
+
+/// Every row's prediction of `rows` with each target times `c`.
+fn preds(mut step: impl FnMut(f64, f64, f64) -> f64, rows: &[(f64, f64)], c: f64) -> Vec<f64> {
+    rows.iter()
+        .enumerate()
+        .map(|(i, &(x, y))| step(x, y * c, if i == 0 { 0.0 } else { 1.0 }))
+        .collect()
+}
+
+/// The largest `|pred(c) − c · pred(1)|` over the rows and the decimal
+/// scales, in units of `c` times the targets' spread, for the model `make`
+/// builds.
+fn decimal_move<M: OnlineModel>(make: impl Fn() -> M, rows: &[(f64, f64)]) -> f64 {
+    let run = |c: f64| {
+        let mut m = make();
+        preds(|x, y, d| m.step(&[x], &[Some(y)], d, 1.0).pred[0], rows, c)
+    };
+    let ys: Vec<f64> = rows.iter().map(|r| r.1).collect();
+    let mean = ys.iter().sum::<f64>() / ys.len() as f64;
+    let sd = (ys.iter().map(|y| (y - mean) * (y - mean)).sum::<f64>() / ys.len() as f64).sqrt();
+    let base = run(1.0);
+    let mut worst = 0.0f64;
+    for c in [1e-6, 1e-3, 1e3, 1e6] {
+        for (a, b) in run(c).iter().zip(&base) {
+            assert_eq!(a.is_nan(), b.is_nan(), "c {c}: the rows withheld differ");
+            if a.is_finite() {
+                worst = worst.max((a - c * b).abs() / (c * sd));
+            }
+        }
+    }
+    worst
+}
+
+/// With each MAD sketch anchored, `huber` (its refit off and on, the
+/// refit rebuilding the sketch anchored) and `sgd(loss="huber")` move by
+/// rounding under a decimal scale of the target -- a few `n · u` of the
+/// level over the spread -- where the fixed buckets moved them by up to a
+/// bucket's share; that move is printed and held above rounding as
+/// evidence that the scale bound the cut.
+#[test]
+fn an_anchored_mad_moves_the_fits_by_rounding_under_a_decimal_scale() {
+    let rows = contaminated(3000, 0.05, 23);
+    let huber = |anchor: bool, refit_rows: u32| {
+        move || {
+            Robust::new(RobustCfg {
+                decay: Decay::Lam(0.995),
+                mad_anchor: anchor,
+                refit_rows,
+                ..huber_cfg(HuberScale::Mad)
+            })
+            .unwrap()
+        }
+    };
+    let sgd = |anchor: bool| {
+        move || {
+            crate::Sgd::new(crate::SgdCfg {
+                decay: Decay::Lam(0.995),
+                target_spread: true,
+                mad_anchor: anchor,
+                ..sgd_cfg(crate::SgdLoss::Huber { delta: 1.345 }, HuberScale::Mad)
+            })
+            .unwrap()
+        }
+    };
+    // The refit ran, and the sketch it rebuilt is anchored.
+    let mut m = huber(true, 40)();
+    preds(
+        |x, y, d| m.step(&[x], &[Some(y)], d, 1.0).pred[0],
+        &rows,
+        1.0,
+    );
+    let st = &m.refit_status()[0];
+    assert!(
+        st.done && st.passes > 0 && !st.failed && !st.abandoned,
+        "{st:?}"
+    );
+    assert!(m.mad_sketch()[0].anchor().is_some_and(|a| a > 0.0));
+    for (what, anchored, fixed) in [
+        (
+            "huber",
+            decimal_move(huber(true, 0), &rows),
+            decimal_move(huber(false, 0), &rows),
+        ),
+        (
+            "huber refit",
+            decimal_move(huber(true, 40), &rows),
+            decimal_move(huber(false, 40), &rows),
+        ),
+        (
+            "sgd huber",
+            decimal_move(sgd(true), &rows),
+            decimal_move(sgd(false), &rows),
+        ),
+    ] {
+        println!("{what}: anchored {anchored:e}, fixed {fixed:e}");
+        assert!(anchored < 1e-10, "{what}: anchored {anchored:e}");
+        assert!(fixed > 1e-7, "{what}: the fixed buckets moved {fixed:e}");
+    }
+}
+
+/// A state whose sketches are not anchored as its cfg says is refused: the
+/// cfg's flag names the grid every residual so far was bucketed on.
+#[test]
+fn a_state_whose_sketches_are_not_anchored_as_its_cfg_says_is_refused() {
+    let anchored = || {
+        Robust::new(RobustCfg {
+            mad_anchor: true,
+            ..huber_cfg(HuberScale::Mad)
+        })
+        .unwrap()
+    };
+    let fixed = Robust::new(huber_cfg(HuberScale::Mad)).unwrap();
+    let mut lost = anchored();
+    lost.mad = fixed.mad.clone();
+    let mut stray = fixed.clone();
+    stray.mad = anchored().mad.clone();
+    for (what, m) in [("lost", lost), ("stray", stray)] {
+        let err = Robust::restore(&m.state()).unwrap_err().to_string();
+        assert!(err.contains("residual sketches"), "{what}: {err}");
+    }
+    assert!(Robust::restore(&anchored().state()).is_ok());
+    let sg = crate::Sgd::new(crate::SgdCfg {
+        mad_anchor: true,
+        ..sgd_cfg(crate::SgdLoss::Huber { delta: 1.0 }, HuberScale::Mad)
+    })
+    .unwrap();
+    let mut v = serde_json::to_value(sg.state()).unwrap();
+    v["model"]["Sgd"]["cfg"]["mad_anchor"] = serde_json::json!(false);
+    let err = serde_json::from_value::<State>(v).unwrap_err().to_string();
+    assert!(err.contains("residual sketches"), "{err}");
 }

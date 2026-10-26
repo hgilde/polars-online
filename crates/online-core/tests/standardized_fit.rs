@@ -46,6 +46,7 @@ fn sgd(loss: SgdLoss, fit_intercept: bool, constraint: Option<Constraint>) -> Sg
         huber_scale_decay: None,
         refit_rows: 0,
         target_spread: false,
+        mad_anchor: false,
     }
 }
 
