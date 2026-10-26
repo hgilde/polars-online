@@ -145,6 +145,8 @@ returns.
 
 ### Fixed
 
+- The builders of the thirteen kinds that fit no regression say that
+  `fit_intercept`, which they accept, has nothing to act on (task 278).
 - **A captured `huber` or `sgd(loss="huber")` fit is freed by the refit of its first rows** (task 277). Before, a share of one-sided wild rows could hold a stream's one-pass fit far from the converged Huber fit for good (see *Changed*).
 - A formula target's saved state is the same bytes whatever the layout of
   the input's text columns in memory (task 278). A session or text column
