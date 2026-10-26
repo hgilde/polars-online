@@ -657,6 +657,36 @@ pub struct WindowsRun {
     started: bool,
 }
 
+/// Each text and binary column of `rows` with its views rebuilt into the
+/// fewest data buffers, so the rows a state holds save to the same bytes
+/// however they were laid out in memory (task 278, b32). A parquet read
+/// gives a text column whose values all sit inline in their views a data
+/// buffer anyway, where a frame built in memory has none, and the IPC
+/// writer writes every buffer the array has: the command line saved 19
+/// bytes more than `ModelBank.fit_predict` of the same rows. The values,
+/// and so every number the state holds, are unchanged.
+fn compact_views(rows: &mut DataFrame) -> PolarsResult<()> {
+    let names: Vec<PlSmallStr> = rows.get_column_names_owned();
+    for name in names {
+        let col = rows.column(&name)?;
+        let compact = match col.dtype() {
+            DataType::String => StringChunked::from_chunk_iter(
+                name.clone(),
+                col.str()?.downcast_iter().map(|a| a.clone().gc()),
+            )
+            .into_column(),
+            DataType::Binary => BinaryChunked::from_chunk_iter(
+                name.clone(),
+                col.binary()?.downcast_iter().map(|a| a.clone().gc()),
+            )
+            .into_column(),
+            _ => continue,
+        };
+        rows.replace(&name, compact)?;
+    }
+    Ok(())
+}
+
 impl WindowsRun {
     /// A run of `config` over an input with schema `input`.
     ///
@@ -1764,6 +1794,7 @@ impl WindowsRun {
         // after 600 chunks of one row than after one chunk (docs/PLAN.md
         // task 269, review round 8 B-1). The bytes are the rows' alone.
         rows.rechunk_mut();
+        compact_views(&mut rows).map_err(|e| e.to_string())?;
         let mut held = Vec::new();
         IpcWriter::new(&mut held)
             .finish(&mut rows)
@@ -1774,6 +1805,7 @@ impl WindowsRun {
         if let (true, Some(r)) = (skip_on_resume > 0, &self.last_row) {
             let names: Vec<&str> = self.input.iter_names().map(|n| n.as_str()).collect();
             let mut r = r.select(names.iter().copied()).map_err(|e| e.to_string())?;
+            compact_views(&mut r).map_err(|e| e.to_string())?;
             IpcWriter::new(&mut last_row)
                 .finish(&mut r)
                 .map_err(|e| e.to_string())?;

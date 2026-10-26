@@ -318,6 +318,52 @@ fn a_state_s_bytes_are_the_same_however_the_input_was_chunked() {
     }
 }
 
+/// A state's bytes are the same however the input's text columns are laid
+/// out in memory (task 278, b32). The resolver holds the session column's
+/// text for an open window, and a parquet read gives a text column whose
+/// every value sits inline in its views a data buffer anyway, which a frame
+/// built in memory has not. The IPC writer wrote that buffer, so the
+/// command line, which reads parquet, saved 19 bytes more than
+/// `ModelBank.fit_predict` of the same rows, with every value the same.
+#[test]
+fn a_state_s_bytes_are_the_same_however_a_text_column_is_laid_out() {
+    let mut df = stream(600, 7);
+    let s: Vec<&str> = (0..df.height())
+        .map(|i| if i < 300 { "am" } else { "pm" })
+        .collect();
+    df.with_column(Column::new("s".into(), s)).unwrap();
+    let mut file = Vec::new();
+    ParquetWriter::new(&mut file)
+        .finish(&mut df.clone())
+        .unwrap();
+    let read = ParquetReader::new(std::io::Cursor::new(file))
+        .finish()
+        .unwrap();
+    assert!(
+        read.equals_missing(&df),
+        "the parquet round trip keeps the rows"
+    );
+    let spec = spec(
+        &format!(r#"[{{"name": "fwd", "formula": {TREE}}}]"#),
+        Some(12.5),
+        r#""session": "s", "session_gap": 30.0,"#,
+    );
+    for rows in [600usize, 403] {
+        let saved = |frame: &DataFrame| {
+            let mut bank = Bank::new(vec![spec.clone()]).unwrap();
+            feed(&mut bank, &frame.slice(0, rows), 1);
+            bank.save_bytes().unwrap()
+        };
+        let (mem, parquet) = (saved(&df), saved(&read));
+        assert!(
+            mem == parquet,
+            "{rows} rows: {} bytes from memory, {} from parquet",
+            mem.len(),
+            parquet.len()
+        );
+    }
+}
+
 /// Each group has its own window core, as it has its own stream: groups
 /// interleaved on clocks of their own run, and each group's predictions are
 /// the predictions of that group's rows run alone.
