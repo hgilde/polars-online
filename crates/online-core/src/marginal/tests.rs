@@ -1913,6 +1913,7 @@ fn bins_cfg(n_bins: usize, warm_rows: usize) -> Box<crate::BinCfg> {
         rule: crate::BinRule::Quantile,
         warm_rows,
         stat: crate::BinStat::Mean,
+        refit_rows: 0,
         budget_mib: None,
         mad_anchor: false,
     })
@@ -1964,6 +1965,7 @@ fn learned_edges_lose_no_row() {
         rule: crate::BinRule::Quantile,
         warm_rows: 50,
         stat: crate::BinStat::Mean,
+        refit_rows: 0,
         budget_mib: None,
         mad_anchor: false,
     })));
@@ -2015,6 +2017,7 @@ fn learned_edges_lose_no_row_across_targets() {
                 rule: crate::BinRule::Quantile,
                 warm_rows: 60,
                 stat: crate::BinStat::Mean,
+                refit_rows: 0,
                 budget_mib: None,
                 mad_anchor: false,
             })),
@@ -2309,6 +2312,7 @@ fn given_edges(edges: Vec<f64>) -> Box<crate::BinCfg> {
         rule: crate::BinRule::Quantile,
         warm_rows: 2,
         stat: crate::BinStat::Mean,
+        refit_rows: 0,
         budget_mib: None,
         mad_anchor: false,
     })
@@ -2577,6 +2581,7 @@ fn shard_cfgs(p: usize) -> Vec<(&'static str, MarginalCfg)> {
             rule: crate::BinRule::Quantile,
             warm_rows: 40,
             stat: crate::BinStat::Mean,
+            refit_rows: 0,
             budget_mib: None,
             mad_anchor: false,
         }))
@@ -2620,6 +2625,7 @@ fn shard_cfgs(p: usize) -> Vec<(&'static str, MarginalCfg)> {
                     rule: crate::BinRule::Quantile,
                     warm_rows: 2,
                     stat: crate::BinStat::Mean,
+                    refit_rows: 0,
                     budget_mib: None,
                     mad_anchor: false,
                 }))
@@ -2648,6 +2654,46 @@ fn shard_cfgs(p: usize) -> Vec<(&'static str, MarginalCfg)> {
                     rule: crate::BinRule::Quantile,
                     warm_rows: 2,
                     stat: crate::BinStat::Huber { delta: 0.5 },
+                    refit_rows: 0,
+                    budget_mib: None,
+                    mad_anchor: false,
+                }))
+            }),
+        ),
+        // The bins' Huber refit (docs/PLAN.md task 278): at the edges'
+        // freeze, where its count is within the warm-up; past it, the rows
+        // held on until the count; and with given edges at row 300, inside a
+        // batch, which the refit flushes first.
+        (
+            "learned bins, huber, refit at the freeze",
+            with(&|c| {
+                learned(c);
+                if let Some(b) = c.bins.as_mut() {
+                    b.stat = crate::BinStat::Huber { delta: 1.0 };
+                    b.refit_rows = 30;
+                }
+            }),
+        ),
+        (
+            "learned bins, huber, refit after the freeze",
+            with(&|c| {
+                learned(c);
+                if let Some(b) = c.bins.as_mut() {
+                    b.stat = crate::BinStat::Huber { delta: 1.0 };
+                    b.refit_rows = 100;
+                }
+            }),
+        ),
+        (
+            "given bins, huber, refit inside a batch",
+            with(&|c| {
+                c.bins = Some(Box::new(crate::BinCfg {
+                    n_bins: 3,
+                    edges: Some((0..p).map(|j| vec![-0.4 + (j % 5) as f64 * 0.15]).collect()),
+                    rule: crate::BinRule::Quantile,
+                    warm_rows: 2,
+                    stat: crate::BinStat::Huber { delta: 0.8 },
+                    refit_rows: 300,
                     budget_mib: None,
                     mad_anchor: false,
                 }))
@@ -3965,6 +4011,7 @@ fn a_bins_state_of_another_shape_is_refused() {
         rule: crate::BinRule::Quantile,
         warm_rows: 2,
         stat: crate::BinStat::Mean,
+        refit_rows: 0,
         budget_mib: None,
         mad_anchor: false,
     }));
@@ -4410,6 +4457,7 @@ fn a_row_with_no_finite_feature_leaves_the_histogram_empty_when_sharded() {
         rule: crate::BinRule::Quantile,
         warm_rows: 2,
         stat: crate::BinStat::Mean,
+        refit_rows: 0,
         budget_mib: None,
         mad_anchor: false,
     }));

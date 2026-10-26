@@ -86,6 +86,7 @@ fn marginal_round_trips_with_every_optional_part_present_or_absent() {
                                 rule: online_core::BinRule::Quantile,
                                 warm_rows: 4,
                                 stat: online_core::BinStat::Mean,
+                                refit_rows: 0,
                                 budget_mib: None,
                                 mad_anchor: false,
                             })
@@ -298,7 +299,7 @@ fn a_human_readable_float_does_not_move_the_msgpack() {
 /// scales -- round-trips in both encodings too.
 #[test]
 fn a_bins_budget_round_trips_in_both_encodings() {
-    let build = |budget_mib, stat, mad_anchor| {
+    let build = |budget_mib, stat, mad_anchor, refit_rows| {
         let cfg = MarginalCfg {
             n_features: 2,
             n_targets: 1,
@@ -313,6 +314,7 @@ fn a_bins_budget_round_trips_in_both_encodings() {
                 rule: online_core::BinRule::Quantile,
                 warm_rows: 4,
                 stat,
+                refit_rows,
                 budget_mib,
                 mad_anchor,
             })),
@@ -337,8 +339,16 @@ fn a_bins_budget_round_trips_in_both_encodings() {
             (huber, true),
         ] {
             roundtrip(
-                &build(budget, stat, anchor),
+                &build(budget, stat, anchor, 0),
                 &format!("marginal bin_budget={budget:?} {stat:?} mad_anchor={anchor}"),
+            );
+        }
+        // The Huber refit (task 278): waiting with rows held past the
+        // edges' warm-up (a count of 20 after 8 rows), and run (6).
+        for refit in [20, 6] {
+            roundtrip(
+                &build(budget, huber, true, refit),
+                &format!("marginal bin_budget={budget:?} refit {refit}"),
             );
         }
     }
@@ -349,12 +359,13 @@ fn a_bins_budget_round_trips_in_both_encodings() {
         rule: online_core::BinRule::Quantile,
         warm_rows: 4,
         stat: online_core::BinStat::Mean,
+        refit_rows: 0,
         budget_mib: None,
         mad_anchor: false,
     };
     let compact = rmp_serde::to_vec(&bins).unwrap();
     assert_eq!(
-        compact[0], 0x96,
-        "six fields: the statistic, the anchor, and no budget"
+        compact[0], 0x97,
+        "seven fields: the statistic, the refit's count, the anchor, and no budget"
     );
 }

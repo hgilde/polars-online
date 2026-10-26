@@ -2210,9 +2210,8 @@ thin bin bends the response curve there, and a screen that reads binned
 means of a residual, or of its square, sees a shape that is not in the data.
 Under `"huber"` each bin's location is Huber's M-estimate of location,
 learned in one pass, as [`huber`](#huber--quantile--robust-regression)
-learns a regression past its first rows; the bins have no refit of their
-first rows, so a share of spikes can capture a bin's first locations and
-the scale learned from them, as one pass of `huber` can be captured. With `c` the cut, `bin_huber_delta` (default 1.345)
+learns a regression past its first rows, and its first rows are refit to
+convergence once (below). With `c` the cut, `bin_huber_delta` (default 1.345)
 times the target's robust scale `σ_t`, both read before the row, and `e` the
 row's distance from the bin's location `m`:
 
@@ -2267,6 +2266,43 @@ huber: middle bin 0.51 over 21 rows
 
 The mean takes the spike's twenty-first share, 47.6. The location moves by
 the cut over twenty, 0.51, and the count still takes the row.
+
+**The first rows are refit once, `bin_refit_rows`.** One pass weighs each
+row against the location and the scale before it, and over the first rows
+those are still settling. A share of spikes pulls the first locations, the
+target's scale learns the pulled deviations, the cut is drawn wide, and the
+spikes go on entering at nearly full weight; without decay the bins stay
+there, captured, as one pass of `huber` can be. So once `bin_refit_rows`
+learned rows are in, each target's location and MAD scale are refit jointly,
+as statsmodels' `RLM` fits a constant with `scale_est="mad"`, the scale is
+rebuilt from the converged deviations, and each bin's location is solved
+exactly at the cut it gives. The stream then goes on in one pass. No weight
+moves: `bin_n`, `weight_sum` and every pair moment are the one pass's.
+
+| quantity | the refit |
+|---|---|
+| default count | `max(500, 30 · bins)`, `bins` the most any feature has; 0 under `"mean"` or an infinite cut |
+| learned edges | the warm-up's held rows are the refit's: within `bin_warm_rows` it runs as the edges are fixed and holds no row of its own |
+| given edges, or a count past the warm-up | the rows are held until the count: `bin_refit_rows · (8 · features + 16 · targets + 64)` bytes a group |
+| `refit_budget` | the holds of all a spec's groups, 256 MiB by default; past it a new group keeps the one pass, with a notice and `summary()`'s `refit_given_up` |
+| `bin_refit_rows=0` | the one pass alone |
+
+Against statsmodels' M-location of each bin over the rows so far (16 bins,
+spikes of about 20 of the target's scales, no decay), the worst bin of the
+worst of 50 streams, in the target's scales:
+
+| spikes | after 2,000 rows: one pass / refit | after 20,000 rows: one pass / refit |
+|---|---|---|
+| 5% | 0.36 / 0.005 | 0.03 / 0.001 |
+| 12% | 1.29 / 0.015 | 0.23 / 0.004 |
+| 20% | 3.5 / 0.14 | 1.0 / 0.057 |
+
+A bin needs about 30 rows at the refit: one whose rows are then mostly
+spikes has its location among them, rightly for those rows, and the rows
+after bring it back only slowly. At 20% spikes, 12.5 rows a bin left 6 of
+50 streams half a scale off after 20,000 rows, and 31 left none. The refit
+runs once, in about 1 ms at 10 features, 13 ms at 1,000 and 110 ms at
+10,000 over 500 rows; a row after it costs what it did.
 
 **The one pass lands on the converged batch estimate.** Against
 statsmodels' M-location of each bin (`estimate_location` with

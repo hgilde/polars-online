@@ -92,6 +92,25 @@ pub fn default_refit_rows(n_features: usize) -> u32 {
     DEFAULT_REFIT_ROWS.max(10 * n_features as u32)
 }
 
+/// The rows a bin's refit wants per bin of its widest feature
+/// ([`default_bin_refit_rows`]; `marginal(bin_stat = "huber")`,
+/// docs/PLAN.md task 278). A bin whose rows at the refit are mostly wild
+/// has its M-location among them, rightly for those rows, and the stream's
+/// next rows, clipped at the cut, bring it back only slowly. Measured with
+/// spikes of 20 scales on 20% of the rows, no decay, 50 seeds, statsmodels'
+/// M-location per bin as the oracle: at 12.5 rows a bin (16 bins, 200
+/// rows) 6 streams kept a bin more than half a scale off at 20,000 rows,
+/// at 15.6 (32 bins, 500 rows) 1, and at 31 (16 bins at 500, 32 at 1,000)
+/// none, the worst 0.07.
+pub const BIN_REFIT_ROWS_PER_BIN: usize = 30;
+
+/// A `marginal(bin_stat = "huber")` spec's default `bin_refit_rows` for
+/// features of at most `bins` bins: `max(500, 30 · bins)`, 500 at 16 bins.
+pub fn default_bin_refit_rows(bins: usize) -> u32 {
+    let per = bins.saturating_mul(BIN_REFIT_ROWS_PER_BIN);
+    DEFAULT_REFIT_ROWS.max(u32::try_from(per).unwrap_or(u32::MAX))
+}
+
 /// A buffer holds at most this many ageing runs per learned row its refit
 /// waits for (`refit_rows`): past it the refit of that target is given up
 /// ([`RefitBuf::age`]). Under a regular clock repeated ageings are one run,
@@ -484,6 +503,150 @@ impl<'a> Rows<'a> {
     }
 }
 
+/// Huber's M-location of `y` at weights `v` and a fixed cut: the root of
+/// `g(m) = Σ v_i ψ_c(y_i − m)`, `ψ_c(e) = max(−c, min(c, e))`, found
+/// exactly rather than iterated ([`crate::Marginal`]'s bins, docs/PLAN.md
+/// task 278). `y` is sorted ascending. `g` is continuous, non-increasing and
+/// linear between the breakpoints `y_i ± c`, so one sweep up the merged
+/// breakpoints finds where it crosses a level, on that segment's line
+/// `c·(C₊ − C₋) + Σ_in v_i y_i − Σ_in v_i · m`, with `C₊`, `C₋` the weight
+/// above and below the band and the sums over the rows inside it. The sums
+/// are formed afresh for the segment's rows, not carried through the
+/// sweep's additions and subtractions, and the values are taken from the
+/// middle row, so a target at `10⁶` with a spread of `10⁻²` keeps its
+/// digits.
+///
+/// The roots are where `g` crosses `+τ` and `−τ`, `τ` a rounding's worth
+/// of `c·Σv`: the root itself, to that rounding, where `g` falls through 0,
+/// and an interval where `g` is 0 along a segment -- a bin of two rows
+/// further apart than the band, one of them wild, or two clusters. Every
+/// point of that interval fits the rows alike, and the one nearest
+/// `toward` is taken: for a bin, its target's own location, as the stream
+/// judges a bin's first row against it. So a bin of a clean row and a wild
+/// one sits a cut from the clean row, where the middle of the interval would
+/// sit halfway to the wild one, and the stream's next rows, clipped at the
+/// cut, move it back only slowly. A cut that is not finite is the weighted
+/// mean. `None` without a row of positive weight.
+pub(crate) fn huber_location(y: &[f64], v: &[f64], cut: f64, toward: f64) -> Option<f64> {
+    let rows: Vec<usize> = (0..y.len()).filter(|&i| v[i] > 0.0).collect();
+    let mid = *rows.get(rows.len() / 2)?;
+    let at = y[mid];
+    let d = |i: usize| y[i] - at;
+    let total: f64 = rows.iter().map(|&i| v[i]).sum();
+    if !cut.is_finite() {
+        let s: f64 = rows.iter().map(|&i| v[i] * d(i)).sum();
+        return Some(at + s / total);
+    }
+    // `m` with `g(m) = level` on the line of the segment whose rows inside
+    // the band are those of `guess`, the sums formed afresh.
+    let line = |guess: f64, level: f64| -> f64 {
+        let (mut a, mut b, mut net) = (0.0, 0.0, 0.0);
+        for &i in &rows {
+            let e = d(i) - guess;
+            if e > cut {
+                net += v[i];
+            } else if e < -cut {
+                net -= v[i];
+            } else {
+                a += v[i];
+                b += v[i] * d(i);
+            }
+        }
+        if a > 0.0 {
+            (cut * net + b - level) / a
+        } else {
+            guess
+        }
+    };
+    // The least `m` with `g(m) <= level`: sweep `m` upward, row `i`
+    // entering the band at `d_i − c` and leaving it at `d_i + c`, both
+    // ascending in `i`.
+    let cross = |level: f64| -> f64 {
+        let (mut above, mut below, mut a, mut b) = (total, 0.0, 0.0, 0.0);
+        let (mut enter, mut leave) = (0usize, 0usize);
+        let mut prev = f64::NEG_INFINITY;
+        let n = rows.len();
+        while leave < n {
+            let next_in = (enter < n).then(|| d(rows[enter]) - cut);
+            let next_out = d(rows[leave]) + cut;
+            let (x, entering) = match next_in {
+                Some(e) if e <= next_out => (e, true),
+                _ => (next_out, false),
+            };
+            if cut * (above - below) + b - a * x <= level {
+                if a <= 0.0 {
+                    // Flat on `[prev, x]`, so it crossed at `prev` (to
+                    // rounding).
+                    return if prev.is_finite() { prev } else { x };
+                }
+                let guess = ((cut * (above - below) + b - level) / a).clamp(prev, x);
+                return line(guess, level).clamp(prev, x);
+            }
+            if entering {
+                let i = rows[enter];
+                above -= v[i];
+                a += v[i];
+                b += v[i] * d(i);
+                enter += 1;
+            } else {
+                let i = rows[leave];
+                a -= v[i];
+                b -= v[i] * d(i);
+                below += v[i];
+                leave += 1;
+            }
+            prev = x;
+        }
+        // At the last breakpoint `g` is `−c·Σv`, below any level here;
+        // rounding can leave it a hair above.
+        prev
+    };
+    let tau = 64.0 * f64::EPSILON * cut * total;
+    let (lo, hi) = (cross(tau), cross(-tau));
+    let near = toward - at;
+    Some(
+        at + if near.is_nan() {
+            0.5 * (lo + hi)
+        } else {
+            near.clamp(lo, hi.max(lo))
+        },
+    )
+}
+
+/// The target's own Huber M-location and MAD scale, refit jointly as
+/// statsmodels' `RLM` with a constant column and `scale_est = "mad"` fits
+/// them: from the weighted mean, each pass reads the scale
+/// `s = wmedian(|y − m|; vs) / Φ⁻¹(3/4)` and moves `m` to the M-location at
+/// the cut `δs` ([`huber_location`]), until `m` moves by no more than
+/// [`REFIT_TOL`] of `max(|m|, s)`, or [`REFIT_PASSES`] passes. Each pass
+/// solves the location exactly where `RLM` takes one reweighted step, so
+/// the fixed point is `RLM`'s and is reached in fewer passes. `y` sorted
+/// ascending; `v` the fit's weights and `vs` the scale's. Where a pass's
+/// roots are an interval, the one nearest the last pass's location. The
+/// location and the passes; `None` without a row of positive weight.
+pub(crate) fn location_refit(y: &[f64], v: &[f64], vs: &[f64], delta: f64) -> Option<(f64, u32)> {
+    let mut m = huber_location(y, v, f64::INFINITY, f64::NAN)?;
+    let mut absr = vec![0.0; y.len()];
+    let mut passes = 0u32;
+    for _ in 0..REFIT_PASSES {
+        passes += 1;
+        for (a, &yi) in absr.iter_mut().zip(y) {
+            *a = (yi - m).abs();
+        }
+        let Some(s) = scale_of(HuberScale::Mad, &absr, vs) else {
+            // No spread to cut in: every weight 1, the mean, as the stream.
+            break;
+        };
+        let next = huber_location(y, v, delta * s, m)?;
+        let moved = (next - m).abs();
+        m = next;
+        if moved <= REFIT_TOL * m.abs().max(s) {
+            break;
+        }
+    }
+    Some((m, passes))
+}
+
 /// `β'z` for the augmented row `z = [1, x]` with an intercept, `x` without.
 pub(crate) fn fitted(beta: &[f64], x: &[f64], intercept: bool) -> f64 {
     crate::solve::dot_aug(beta, x, intercept)
@@ -771,6 +934,12 @@ mod tests {
         assert_eq!(refit_reservation(20, 500), 160_000);
         assert_eq!(refit_reservation(1, 50), 8 * 50 * 21);
         assert_eq!(refit_reservation(3, 0), 0);
+        // The bins': 30 rows a bin of the widest feature, at least 500.
+        assert_eq!(default_bin_refit_rows(1), 500);
+        assert_eq!(default_bin_refit_rows(16), 500);
+        assert_eq!(default_bin_refit_rows(17), 510);
+        assert_eq!(default_bin_refit_rows(64), 1920);
+        assert_eq!(default_bin_refit_rows(usize::MAX), u32::MAX);
     }
 
     /// A buffer is held at its full size from its first row, so it never
@@ -1059,6 +1228,126 @@ mod tests {
         assert!((fit[0] - 3.132_054_975_780_772_3).abs() < 1e-9, "{fit:?}");
         assert!((fit[1] - 2.349_409_968_761_233_5).abs() < 1e-9, "{fit:?}");
         assert!(passes > 2 && passes < REFIT_PASSES as u32, "{passes}");
+    }
+
+    /// The 31 rows of [`the_refit_is_statsmodels_converged_fit`]'s noise
+    /// and spikes, as a location sample, sorted: `((17 i mod 13) − 6)/10`,
+    /// and 5 more on every row `i` with `i mod 7 = 3`.
+    fn location_rows() -> Vec<f64> {
+        let mut y: Vec<f64> = (0..31u32)
+            .map(|i| (f64::from((i * 17) % 13) - 6.0) / 10.0 + if i % 7 == 3 { 5.0 } else { 0.0 })
+            .collect();
+        y.sort_by(f64::total_cmp);
+        y
+    }
+
+    /// statsmodels' digits, written here so `cargo mutants` sees them:
+    /// `RLM(y, 1, M=HuberT(1.345)).fit(start_scale=0.5, update_scale=False,
+    /// conv="coefs", tol=1e-15)` gives 0.10302083333333342, the M-location at
+    /// the fixed cut 1.345 · 0.5; and `.fit(scale_est="mad", ...)` gives
+    /// 0.11402545645429082 at the scale 0.5722467145475555, the joint fixed
+    /// point (27 iterations). An odd count, so the weighted median is
+    /// numpy's median and the scale statsmodels' MAD.
+    #[test]
+    fn the_location_is_statsmodels_m_location() {
+        let y = location_rows();
+        let v = vec![1.0; y.len()];
+        let m = huber_location(&y, &v, 1.345 * 0.5, f64::NAN).unwrap();
+        assert!((m - 0.103_020_833_333_333_42).abs() < 1e-13, "{m}");
+        let (joint, passes) = location_refit(&y, &v, &v, 1.345).unwrap();
+        assert!((joint - 0.114_025_456_454_290_82).abs() < 1e-9, "{joint}");
+        assert!(passes > 1 && passes < 27, "{passes}");
+        // Each pass solves the location exactly: fewer passes than RLM's
+        // steps. And the root is a root: g(m) = Σ ψ(y − m) is 0.
+        let absr: Vec<f64> = y.iter().map(|yi| (yi - joint).abs()).collect();
+        let s = scale_of(HuberScale::Mad, &absr, &v).unwrap();
+        assert!((s - 0.572_246_714_547_555_5).abs() < 1e-9, "{s}");
+    }
+
+    /// The exact root against bisection on `g(m) = Σ v ψ_c(y − m)`, which
+    /// shares no arithmetic with the sweep: over weighted samples with
+    /// outliers, a far level, ties and rows of weight 0, the two agree to
+    /// rounding of the level, and `g` at the root is 0 to rounding of the
+    /// weight times the cut. A cut that is not finite is the weighted mean;
+    /// no positive weight, no location.
+    #[test]
+    fn the_location_is_the_root_of_the_estimating_equation() {
+        let g = |y: &[f64], v: &[f64], c: f64, m: f64| -> f64 {
+            y.iter()
+                .zip(v)
+                .map(|(yi, vi)| vi * (yi - m).clamp(-c, c))
+                .sum()
+        };
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for trial in 0..300 {
+            let n = 1 + trial % 40;
+            let level = [0.0, 1e6, -3.0e3][trial % 3];
+            let mut y: Vec<f64> = (0..n)
+                .map(|_| {
+                    let base = level + (next() - 0.5) * 2.0;
+                    let r = next();
+                    if r < 0.2 {
+                        base + 50.0
+                    } else if r < 0.3 {
+                        level // a tie
+                    } else {
+                        base
+                    }
+                })
+                .collect();
+            y.sort_by(f64::total_cmp);
+            let v: Vec<f64> = (0..n)
+                .map(|_| if next() < 0.1 { 0.0 } else { 0.1 + next() })
+                .collect();
+            let c = [0.05, 0.7, 3.0, 1e3][trial % 4];
+            let total: f64 = v.iter().sum();
+            let toward = level + [0.0, 100.0, -100.0][trial % 3];
+            let Some(m) = huber_location(&y, &v, c, toward) else {
+                assert_eq!(total, 0.0, "trial {trial}");
+                continue;
+            };
+            // Bisection over the sample's range.
+            let (mut lo, mut hi) = (y[0] - 1.0, y[n - 1] + 1.0);
+            for _ in 0..200 {
+                let mid = 0.5 * (lo + hi);
+                if g(&y, &v, c, mid) > 0.0 {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            let tol = 1e-12 * (1.0 + level.abs()) + 1e-12 * c;
+            assert!(
+                g(&y, &v, c, m).abs() <= 1e-10 * total * c.max(1.0) * (1.0 + level.abs() / 1e3),
+                "trial {trial}: g({m}) = {}",
+                g(&y, &v, c, m)
+            );
+            // Where g is flat at 0 over a segment every point is a root:
+            // the bisection's lies in it, and so does ours.
+            if (m - lo).abs() > tol + 1e-9 {
+                assert!(g(&y, &v, c, lo).abs() <= 1e-9 * total * c, "trial {trial}");
+            }
+        }
+        assert_eq!(huber_location(&[1.0, 2.0], &[0.0, 0.0], 1.0, 0.0), None);
+        let mean = huber_location(&[1.0, 2.0, 10.0], &[1.0, 1.0, 2.0], f64::INFINITY, 0.0).unwrap();
+        assert_eq!(mean, 23.0 / 4.0);
+        // Two far clusters of equal weight: every point between their bands
+        // is a root, and the one nearest `toward` is taken -- `toward`
+        // itself inside the interval, its nearer end outside, the middle
+        // without one; so for a bin of a clean row and a wild one.
+        let y = [0.0, 0.0, 100.0, 100.0];
+        assert_eq!(huber_location(&y, &[1.0; 4], 1.0, 30.0), Some(30.0));
+        let low = huber_location(&y, &[1.0; 4], 1.0, -5.0).unwrap();
+        assert!((low - 1.0).abs() < 1e-12, "{low}");
+        assert_eq!(huber_location(&y, &[1.0; 4], 1.0, f64::NAN), Some(50.0));
+        let two = huber_location(&[1.0, 51.0], &[1.0; 2], 3.1, 0.5).unwrap();
+        assert!((two - 4.1).abs() < 1e-12, "{two}");
     }
 
     #[test]

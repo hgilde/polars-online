@@ -1251,6 +1251,7 @@ pub fn all() -> Vec<Case> {
                     rule: BinRule::Quantile,
                     warm_rows: 30,
                     stat: online_core::BinStat::Mean,
+                    refit_rows: 0,
                     budget_mib: None,
                     mad_anchor: false,
                 })),
@@ -1275,8 +1276,58 @@ pub fn all() -> Vec<Case> {
                     rule: BinRule::Quantile,
                     warm_rows: 12,
                     stat: online_core::BinStat::Huber { delta: 1.0 },
+                    refit_rows: 0,
                     budget_mib: None,
                     mad_anchor: false,
+                })),
+                ..marginal_cfg()
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            30
+        ),
+        // The bins' Huber refit (64, docs/PLAN.md task 278): saved with
+        // given edges while it holds its rows (30 wanted, 21 held; the
+        // continuation reaches the count), and saved after
+        // it ran past a learned warm-up of 12 rows, at 20, with each
+        // target's passes.
+        case!(
+            "marginal_bins_refit",
+            "Marginal",
+            Marginal,
+            Marginal::new(MarginalCfg {
+                bins: Some(Box::new(BinCfg {
+                    n_bins: 4,
+                    edges: Some(vec![vec![-0.5, 0.0, 0.5]; K]),
+                    rule: BinRule::Quantile,
+                    warm_rows: 12,
+                    stat: online_core::BinStat::Huber { delta: 1.0 },
+                    refit_rows: 30,
+                    budget_mib: None,
+                    mad_anchor: true,
+                })),
+                ..marginal_cfg()
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            24
+        ),
+        case!(
+            "marginal_bins_refit_done",
+            "Marginal",
+            Marginal,
+            Marginal::new(MarginalCfg {
+                bins: Some(Box::new(BinCfg {
+                    n_bins: 4,
+                    edges: None,
+                    rule: BinRule::Quantile,
+                    warm_rows: 12,
+                    stat: online_core::BinStat::Huber { delta: 1.0 },
+                    refit_rows: 20,
+                    budget_mib: None,
+                    mad_anchor: true,
                 })),
                 ..marginal_cfg()
             })
@@ -1299,6 +1350,7 @@ pub fn all() -> Vec<Case> {
                     rule: BinRule::Quantile,
                     warm_rows: 12,
                     stat: online_core::BinStat::Huber { delta: 1.0 },
+                    refit_rows: 0,
                     budget_mib: None,
                     mad_anchor: true,
                 })),

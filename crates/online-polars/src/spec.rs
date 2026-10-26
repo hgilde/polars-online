@@ -1212,6 +1212,14 @@ pub enum ModelKind {
         /// under any other `bin_stat`. Skipped when absent, as `lags` is.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bin_huber_delta: Option<Num>,
+        /// The bins' refit count (`online_core::BinCfg::refit_rows`, task
+        /// 278): absent is `max(500, 30 · bins)`. Skipped when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bin_refit_rows: Option<u32>,
+        /// `huber`'s `refit_budget`, for the bins' refit holds (task 278).
+        /// Skipped when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        refit_budget: Option<Num>,
         /// Ranges of features to split the pair work into, run on the bank's
         /// pool a batch of rows at a time (docs/PLAN.md task 126): a count,
         /// or `"auto"` for as many as the width can keep busy. The numbers
@@ -1754,6 +1762,11 @@ impl ModelKind {
             ModelKind::Sgd {
                 refit_budget, loss, ..
             } if loss.as_deref() == Some("huber") => refit_budget,
+            ModelKind::Marginal {
+                refit_budget,
+                bin_stat,
+                ..
+            } if bin_stat.as_deref() == Some("huber") => refit_budget,
             _ => return None,
         };
         let mib = given.map_or(REFIT_BUDGET_MIB, |n| n.0);
@@ -4664,6 +4677,8 @@ impl Spec {
                 bin_budget,
                 bin_stat,
                 bin_huber_delta,
+                bin_refit_rows,
+                refit_budget,
                 window_size: window,
                 lags,
                 cross_lags,
@@ -4789,6 +4804,13 @@ impl Spec {
                         self.name, d.0
                     ));
                 }
+                checks::check_bin_refit(
+                    &self.name,
+                    bin_stat.as_deref(),
+                    *bin_huber_delta,
+                    bin_refit_rows.is_some(),
+                    *refit_budget,
+                )?;
                 // The lag ring is sized before the first row: `[2^62]`
                 // panicked inside the builder (review 2026-10-06, CD10).
                 if let Some(&l) = lags.as_ref().and_then(|l| l.iter().max()) {

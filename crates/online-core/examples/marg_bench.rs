@@ -117,6 +117,7 @@ fn main() {
                         Some("huber") => BinStat::Huber { delta: 1.345 },
                         Some(other) => panic!("stat is mean or huber, got {other:?}"),
                     },
+                    refit_rows: 0,
                     budget_mib: None,
                     mad_anchor: false,
                 })

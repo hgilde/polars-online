@@ -157,6 +157,12 @@ pub mod marginal_bins {
 pub mod marginal_bins_huber {
     include!("marginal_bins_huber.rs");
 }
+pub mod marginal_bins_refit {
+    include!("marginal_bins_refit.rs");
+}
+pub mod marginal_bins_refit_done {
+    include!("marginal_bins_refit_done.rs");
+}
 pub mod marginal_bins_huber_anchored {
     include!("marginal_bins_huber_anchored.rs");
 }
@@ -247,6 +253,8 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &marginal_lags::FIXTURE,
     &marginal_bins::FIXTURE,
     &marginal_bins_huber::FIXTURE,
+    &marginal_bins_refit::FIXTURE,
+    &marginal_bins_refit_done::FIXTURE,
     &marginal_bins_huber_anchored::FIXTURE,
     &marginal_window::FIXTURE,
     &deco::FIXTURE,
