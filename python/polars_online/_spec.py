@@ -3962,7 +3962,9 @@ def micro(
         regression's solve; with neither, every 100 learned rows.
         ``prune_every`` is a number of the clock's units, a duration on a
         temporal clock (``"10m"``), or ``0`` for every row; without a clock
-        column the clock is the row's number. A row of weight zero advances
+        column the clock is the row's number, the first row being 1, so
+        ``prune_every=n`` checkpoints on the rows ``max_rows_between_prunes=n``
+        does while every row has weight. A row of weight zero advances
         the clock, so a quiet spell still prunes on time, and a gap capped at
         ``gap_cap`` counts as the cap. DenStream checks every ``Tp`` clock
         units (above): give ``prune_every`` that to follow the paper.

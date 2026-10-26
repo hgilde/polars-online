@@ -114,6 +114,17 @@ returns.
 
 ### Fixed
 
+- On a stream with no clock column, a cadence counted on the clock starts a
+  row before the first row, as `coef_every` does, so `X_every=n` and its row
+  cap `max_rows_between_X=n` give the same schedule (task 278, D13).
+  `micro`'s `prune_every=n` checkpointed one row after
+  `max_rows_between_prunes=n` for the whole stream -- with `prune_every=7`
+  on rows 7, 14, 21 and 28 (from 0) where the cap checkpointed on 6, 13, 20
+  and 27 -- so `prune_every=100` was not the default's every 100 learned
+  rows. `ewridge`'s and `lasso`'s `solve_every` had the same one-row offset
+  until their first solve at `min_weight`, seen in `coef` and
+  `support_coef`. Streams with a clock column are unchanged, and saved
+  states load and continue as before.
 - A weight or target of finite magnitude above `1e100` is read as missing,
   as the README says, instead of being refused (task 278, D-WB): a weight
   of `-1e101` was refused as "a negative value" on every model that takes a

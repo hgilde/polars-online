@@ -697,3 +697,45 @@ class TestRidgeDecayPenalisesTheIntercept:
     def test_it_shrinks_toward_the_prior_intercept(self):
         got = self._intercepts(ridge_scale="sum", coef_prior=[[5.0, 0.0]])
         assert got == pytest.approx(5.0, abs=1e-9)
+
+
+class TestTheRowClockSolveCadence:
+    """Without a clock column the clock is the row's number, the first row
+    being 1, so the model's start is a row before its first row. Before the
+    first solve, which a fresh model runs on the row its weight reaches
+    ``min_weight``, ``solve_every=n`` then solves on the ``n``-th row, the
+    row ``max_rows_between_solves=n`` does: the two are one schedule, as
+    ``coef_every=n`` and ``max_rows_between_coefs=n`` are. Measured from the
+    first row, whose step is 0, the clock solved a row after the cap until
+    ``min_weight`` was met, and with a ``min_weight`` never met, the whole
+    stream long (task 278, D13), which ``coef`` and ``support_coef`` showed.
+    """
+
+    @staticmethod
+    def run(**kw) -> pl.DataFrame:
+        rng = np.random.default_rng(0)
+        n = 60
+        x = rng.standard_normal(n)
+        df = pl.DataFrame({"x": x, "y": 2.0 * x + rng.standard_normal(n)})
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x"],
+            half_life=20.0,
+            min_weight=1e9,
+            max_rows_between_coefs=1,
+            **kw,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", po.ReadinessWarning)
+            return po.ModelBank([spec]).fit_predict(df).unnest("m")
+
+    def test_solve_every_is_its_row_cap(self):
+        clock = self.run(solve_every=7.0)
+        cap = self.run(solve_every=1e18, max_rows_between_solves=7)
+        assert clock.equals(cap, null_equal=True)
+        # The solves, seen where the fit the rows report moves: on the 7th,
+        # 14th, ... row, 0-based 6, 13, ...
+        c = clock["support_coef"].to_list()
+        moved = [i for i in range(1, len(c)) if c[i] != c[i - 1]]
+        assert moved == [6, 13, 20, 27, 34, 41, 48, 55]

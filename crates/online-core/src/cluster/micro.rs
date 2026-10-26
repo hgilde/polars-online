@@ -740,6 +740,13 @@ impl OnlineModel for Micro {
         self.since_prune.stamp_next(stamp);
     }
 
+    /// On the row clock the checkpoint's cadence counts from a row before
+    /// the first, so `prune_every = n` checkpoints on the row
+    /// `max_rows_between_prunes = n` does (task 278, D13).
+    fn stamp_next_on_rows(&mut self, stamp: crate::Stamp) {
+        self.since_prune.stamp_next_on_rows(stamp);
+    }
+
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
         // A value that is not usable, by the rule every model keeps
         // (`OnlineModel`): a feature or a weight past the input bound was
@@ -1050,6 +1057,38 @@ mod tests {
             });
             assert_eq!(got, want, "stamped: {stamped}");
         }
+    }
+
+    /// Task 278, D13: on the row clock the model's start is a row before
+    /// its first row, so `prune_every = 7` checkpoints on the 7th, 14th, ...
+    /// row (0-based 6, 13, ...), as `max_rows_between_prunes = 7` does, and
+    /// both together are the same rows. Stamped as a clock column's rows,
+    /// whose start is the first row, the clock's come a row later.
+    #[test]
+    fn on_the_row_clock_prune_every_is_its_row_cap() {
+        let checkpoints = |every: f64, cap: u32, on_rows: bool| {
+            let mut m = Micro::new(MicroCfg {
+                prune_every: every,
+                max_rows_between_prunes: cap,
+                ..cfg()
+            })
+            .unwrap();
+            let mut g = crate::SplitMix64::new(6);
+            crate::since::events_on_the_row_clock(30, |_, stamp, d| {
+                if on_rows {
+                    crate::OnlineModel::stamp_next_on_rows(&mut m, stamp);
+                } else {
+                    crate::OnlineModel::stamp_next(&mut m, stamp);
+                }
+                crate::OnlineModel::step(&mut m, &[g.uniform(), g.uniform()], &[], d, 1.0);
+                m.rows_since_prune == 0
+            })
+        };
+        let rows = [6, 13, 20, 27];
+        assert_eq!(checkpoints(7.0, u32::MAX, true), rows);
+        assert_eq!(checkpoints(f64::INFINITY, 7, true), rows);
+        assert_eq!(checkpoints(7.0, 7, true), rows);
+        assert_eq!(checkpoints(7.0, u32::MAX, false), [7, 14, 21, 28]);
     }
 
     /// A save between checkpoints keeps the clock and the learned rows since

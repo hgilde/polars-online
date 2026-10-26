@@ -1139,6 +1139,11 @@ def micro_ref(
         cap = 100 if every is None else math.inf
     params["max_rows_between_prunes"] = cap
     model = MicroRef(p=p, eps=eps, **params)  # type: ignore[arg-type]
+    if clock is None:
+        # The row clock's start is a row before the first, the first row
+        # being 1, as `coef_every` counts (task 278, D13): one unit is on
+        # the checkpoint's clock before any row.
+        model.clock_since = 1.0
     out: dict[str, list] = {key: [] for key in (*MICRO_FIELDS, "weight_sum")}
     pending = 0.0
     for i, row in enumerate(rows):

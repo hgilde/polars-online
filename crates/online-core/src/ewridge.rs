@@ -1936,6 +1936,15 @@ impl OnlineModel for EwRidge {
         self.since_solve.stamp_next(stamp);
     }
 
+    /// On the row clock the solve cadence counts from a row before the
+    /// first, as `max_rows_between_solves` does (task 278, D13).
+    fn stamp_next_on_rows(&mut self, stamp: crate::Stamp) {
+        if let Some(win) = self.win.as_mut() {
+            win.snaps.stamp_next(stamp);
+        }
+        self.since_solve.stamp_next_on_rows(stamp);
+    }
+
     fn set_window_budget(&mut self, budget: Option<crate::WindowBudget>) {
         if let Some(win) = self.win.as_mut() {
             win.snaps.set_budget(budget);
