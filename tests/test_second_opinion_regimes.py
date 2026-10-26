@@ -377,27 +377,52 @@ def monitor_crit(alpha: float, k: int = 2, alpha_adjust: str = "none") -> float:
     return po.ModelBank([spec]).fit_predict(frame)["c"].struct.field("crit")[7]
 
 
+#: The levels from the end at which the model leaves the bisection on ``1 -
+#: alpha`` for a series that keeps the tail (``KOLMOGOROV_TAIL`` in
+#: ``corrchange.rs``).
+KOLMOGOROV_TAIL = 1e-2
+
+
 def crit_over_bound(alpha: float, k: int = 2, alpha_adjust: str = "none") -> float:
     """The critical value against ``kstwobign.isf`` of the pair's level, over
     its bound: at most 1 passes.
 
-    The model solves ``F(x) = 1 - alpha`` by bisection on the series ``F(x)
-    = 1 - 2 sum (-1)^(k-1) exp(-2 k^2 x^2)``. Its ``1 - alpha`` and its series
-    are each within ``2u`` of the true ``F``, so its root is within ``4u /
-    f(x)`` of the true quantile, ``f`` the distribution's density
-    (``kstwobign.pdf``); that is the term that grows in either tail, where
-    ``f`` is small. The bound adds ``1e-14 x`` for scipy's own quantile, which
-    differs from a 50-digit sum of the same series by ``2.1e-15 x`` at
-    ``alpha = 0.5`` (measured 2026-10-25)."""
+    Between 0.01 and 0.99 the model solves ``F(x) = 1 - alpha`` by bisection
+    on the series ``F(x) = 1 - 2 sum (-1)^(k-1) exp(-2 k^2 x^2)``. Its ``1 -
+    alpha`` and its series are each within ``2u`` of the true ``F``, so its
+    root is within ``4u / f(x)`` of the true quantile, ``f`` the
+    distribution's density (``kstwobign.pdf``).
+
+    Below 0.01 it solves ``S(x) = alpha`` on the survival series ``S(x) = 2
+    sum (-1)^(k-1) exp(-2 k^2 x^2)``, relative error ``(4x^2 + 4)u``: the
+    exponent ``2x^2`` is rounded to ``2u`` of itself, which ``exp`` turns
+    into ``4x^2 u`` of the term, and ``exp``, the sum and the doubling add
+    up to ``4u``. Above 0.99 it solves on the theta series ``F(x) =
+    sqrt(2 pi) / x sum exp(-(2k-1)^2 pi^2 / (8x^2))``, relative error
+    ``(pi^2 / (2x^2) + 5)u`` by the same count, its exponent ``pi^2 /
+    (8x^2)`` rounded to ``4u``. Either error, times the tail, over ``f``.
+    Each bisection ends between adjacent doubles, ``u x``. The bound adds
+    ``1e-14 x`` for scipy's own quantile, which differs from a 50-digit sum
+    of the same series by ``2.1e-15 x`` at ``alpha = 0.5`` and by at most
+    ``1.4e-16 x`` at each other level here (measured 2026-10-25)."""
     pairs = k * (k - 1) // 2
     level = alpha / pairs if alpha_adjust == "bonferroni" else alpha
     want = kstwobign.isf(level)
-    bound = 4.0 * U / kstwobign.pdf(want) + 1e-14 * want
+    density = kstwobign.pdf(want)
+    if level < KOLMOGOROV_TAIL:
+        solved = (4.0 * want**2 + 4.0) * U * level / density
+    elif level > 1.0 - KOLMOGOROV_TAIL:
+        solved = (np.pi**2 / (2.0 * want**2) + 5.0) * U * (1.0 - level) / density
+    else:
+        solved = 4.0 * U / density
+    bound = solved + U * want + 1e-14 * want
     return abs(monitor_crit(alpha, k, alpha_adjust) - want) / bound
 
 
 #: Levels from far in the upper tail to far in the lower one.
 ALPHAS = [
+    1e-300,
+    1e-20,
     1e-12,
     1e-10,
     1e-8,
@@ -425,21 +450,25 @@ class TestTheMonitorsQuantileIsScipysKolmogorov:
     to 1e-3."""
 
     def test_at_the_usual_levels_and_under_bonferroni(self):
-        for alpha in (0.01, 0.05, 0.1):
+        # 1e-12 and 1 - 1e-6 are each a tail's own series: solved on ``1 -
+        # alpha`` they were 5.8e7 and 317 of the bound (task 278, kq).
+        for alpha in (1e-12, 0.01, 0.05, 0.1, 1 - 1e-6):
             assert crit_over_bound(alpha) <= 1.0, alpha
         for k in (3, 5):
             assert crit_over_bound(0.05, k, "bonferroni") <= 1.0, k
         # Bonferroni took effect: three pairs' share is a larger value.
         assert monitor_crit(0.05, 3, "bonferroni") > monitor_crit(0.05) + 0.1
 
-    @pytest.mark.extended(reason="fifteen levels and four Bonferroni shares, each a bank")
+    @pytest.mark.extended(reason="seventeen levels and four Bonferroni shares, each a bank")
     def test_at_every_level_into_either_tail(self):
-        """Measured 2026-10-25 (aarch64, macOS): the worst 0.40 of the bound,
-        at ``alpha = 0.999``; 0.24 at ``1e-8``, 0.21 at ``0.5``.
-        In the upper tail the critical value is no better than the ``1 -
-        alpha`` it is solved from: relative ``5.9e-7`` at ``1e-12``,
-        ``1.3e-8`` at ``1e-10``, ``2.8e-10`` at ``1e-8``, a level error of
-        ``u / alpha`` relative."""
+        """Measured 2026-10-25 (aarch64, macOS): the worst 0.21 of the bound,
+        at ``alpha = 0.5``, where scipy's own quantile is ``2.1e-15 x`` off;
+        0.045 at three pairs' share of 0.05, at most 0.014 in either tail's
+        series. Solved on ``1 - alpha`` at every level, as it was before
+        task 278 (kq), the critical value was no better than that
+        subtraction: relative ``5.9e-7`` at ``1e-12``, ``0.097`` at
+        ``1e-20``, ``3.3e-12`` at ``1 - 1e-6``; over this bound, ``5.8e7``
+        at ``1e-12``, 2.2 at ``1e-4``, 1.4 at ``0.999``."""
         ratios = [(crit_over_bound(a), a) for a in ALPHAS]
         ratios += [(crit_over_bound(0.05, k, "bonferroni"), k) for k in (3, 5, 20, 64)]
         print("monitor crit over its bound:", [(f"{r:.3f}", a) for r, a in ratios])

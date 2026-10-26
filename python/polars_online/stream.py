@@ -424,12 +424,15 @@ def refresh_time(
         ``m / sum(n_obs)``: how many of the interval's ticks the grid kept.
         Look at it before trusting a correlation computed on the result.
 
-    plus the ``group`` column, in the dtype it came in as, and any ``keep``
-    columns at their value on the completing tick. ``pairs=True`` runs an
-    independent two-series grid per unordered pair instead, which keeps far
-    more of the data when one series is slow. It returns the long frame
-    ``(group?, pair, time_refresh, a_value, b_value, n_obs_a, n_obs_b,
-    retained_fraction)`` with ``pair = "a|b"`` in ``names`` order.
+    plus the ``group`` column first, in the dtype it came in as, and any
+    ``keep`` columns last, at their value on the completing tick.
+    ``pairs=True`` runs an independent two-series grid per unordered pair
+    instead, which keeps far more of the data when one series is slow. It
+    returns the long frame ``(group?, pair, time_refresh, a_value, b_value,
+    n_obs_a, n_obs_b, retained_fraction, keep...)``, with the ``group`` and
+    ``keep`` columns as above and ``pair = "a|b"`` in ``names`` order: ``a``
+    is the pair's series listed first in ``names``. Each group runs its own
+    pairs. With two ``names`` the one pair's grid is the joint grid.
 
     .. code-block:: python
 
@@ -476,13 +479,14 @@ def refresh_time(
     that tick, whatever the chunk size, as a bank's is after the rows a
     ``head(n)`` pulled. A run resumed on the input after that tick goes on
     with the next point. With ``pairs=True`` one tick can complete several
-    pairs' points at once; if the slice ends among them, the rest are in the
-    state and not in the output. ``load_state`` is read when the plan is
-    built and goes on from there, so feeding a stream in two runs gives the
-    grid one run gives. It must have been saved with the same ``names`` and
-    ``pairs``, on the same kind of clock (a temporal state resumes on any
-    unit). A row before its group's saved clock is refused like any other
-    step back.
+    pairs' points at once. If the slice ends among them, the state is still
+    the state after that tick, so the points it left out are returned by
+    neither the slice nor a run resumed after the tick. ``load_state`` is
+    read when the plan is built and goes on from there, so feeding a stream
+    in two runs gives the grid one run gives. It must have been saved with
+    the same ``names`` and ``pairs``, on the same kind of clock (a temporal
+    state resumes on any unit). A row before its group's saved clock is
+    refused like any other step back.
 
     ``ValueError`` for:
 
