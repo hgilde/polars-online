@@ -3535,9 +3535,16 @@ impl Spec {
             .then(|| self.features.iter().find(|f| is_target(f)))
             .flatten()
         {
+            // `ew_class` calls its target the label, and so does its message
+            // (task 278, batch 29).
+            let role = if matches!(self.model, ModelKind::EwClass { .. }) {
+                "label"
+            } else {
+                "target"
+            };
             return Err(format!(
-                "spec {:?}: {leak:?} is both a target and a feature; a feature is read \
-                 from the current row, so this would predict the target with itself \
+                "spec {:?}: {leak:?} is both a {role} and a feature; a feature is read \
+                 from the current row, so this would predict the {role} with itself \
                  (use a lagged copy of the column if you mean its past values)",
                 self.name
             ));

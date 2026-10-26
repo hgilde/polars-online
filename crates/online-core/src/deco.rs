@@ -102,6 +102,17 @@
 //! only** — the emitted `ρ` is never clamped. Near that edge `R⁻¹` is large,
 //! and a row far past the standardiser's spread can put the density below
 //! the double's range: `loglik` is then NaN, no reading, as `hmm`'s is.
+//!
+//! The clamp keeps each `d_A` and each block's own `1 + (n_A − 1)ρ_AA`
+//! positive, but not `S`: between-block values each inside `(−1, 1)` can
+//! still be values no correlation matrix holds, or hold one only to
+//! rounding. So `loglik` is NaN too where `S` does not factorize as given,
+//! or does but is past the condition at which its solve keeps no digit
+//! (`3k·γ_{3k+1}·‖H⁻¹‖₁ ≥ 1`, `H` the equilibrated `S`; `crate::solve`'s
+//! condition module derives it): there the factor's matrix can be as far
+//! from `S` as `S`'s smallest eigenvalue, and both `y'S⁻¹y` and `ln det S`
+//! say nothing. One block is never refused there: a `1 × 1` `S` is its
+//! own equilibration, of condition 1.
 
 use serde::{Deserialize, Serialize};
 
@@ -350,8 +361,9 @@ impl Deco {
 
     /// `−½[n·ln 2π + ln det R + r'R⁻¹r]` for the row, under `rho`. See the
     /// module docs for the block algebra; `NaN` when `rho` is, when the
-    /// `K × K` factorization fails, or when the density is past the
-    /// double's range.
+    /// `K × K` matrix `S` does not factorize as given or is past the
+    /// condition at which its solve keeps no digit, or when the density is
+    /// past the double's range.
     fn loglik(&self, rho: &[f64], s1: &[f64], s2: &[f64]) -> f64 {
         let k = self.blocks.len();
         if rho.iter().any(|v| !v.is_finite()) {
@@ -395,6 +407,22 @@ impl Deco {
         let Some(f) = SpdFactor::of(&s, k) else {
             return f64::NAN;
         };
+        // Past the edge, no density (task 278): a factor that needed jitter
+        // holds `S + δI`, another matrix, because `S` itself is not positive
+        // definite to rounding; and one that factorized as given may still
+        // be past the condition at which the solve `S⁻¹y` keeps no digit
+        // (`SpdFactor::carries_no_digit`), where the factor's matrix can be
+        // as far from `S` as `S`'s smallest eigenvalue -- an `S` whose exact
+        // determinant is negative factorized, and read -2.3e8 in one block
+        // order and -2.6e12 in the other. `y'S⁻¹y` is that solve read
+        // against `y`, and `ln det S` moves with the same eigenvalues, so
+        // neither keeps a digit there either. One block is not judged: a
+        // `1 x 1` `S` is positive (the clamp keeps `1 + (n - 1)ρ` so) and its
+        // own equilibration, of condition 1, and the unblocked model's rows
+        // pay nothing for a test it always passes.
+        if k != 1 && (f.attempts() != 0 || f.carries_no_digit(&s)) {
+            return f64::NAN;
+        }
         let yy: f64 = y.iter().map(|v| v * v).sum();
         let sinv = f.quad_forms(&y, k, 1)[0];
         log_det += f.log_det();
@@ -1632,6 +1660,8 @@ mod tests {
     /// blocks 0 and 1, and 0 and 2, at 0.99, and 1 and 2 at −0.99 -- leave
     /// `S` indefinite past what the jitter repairs, so the row has no
     /// density: NaN, where the same blocks at consistent values have one.
+    /// (Since task 278 a jitter that does repair `S` gives none either:
+    /// [`a_level_matrix_only_the_jitter_factorizes_has_no_density`].)
     #[test]
     fn values_no_correlation_matrix_holds_have_no_density() {
         let m = Deco::new(DecoCfg {
@@ -1644,5 +1674,210 @@ mod tests {
         assert!(fine.is_finite(), "{fine}");
         let none = m.loglik(&[0.0, 0.0, 0.0, 0.99, 0.99, -0.99], &s1, &s2);
         assert!(none.is_nan(), "{none}");
+    }
+
+    /// Two blocks of two in both orders, at the levels row 3 of a seeded
+    /// stream reached during warm-up (task 278, batch 29): the exact determinant of the dense `R` on these doubles
+    /// is −6.7e-17 (exact rational arithmetic) -- no correlation matrix holds
+    /// them -- and the density read −2.3e8 in one block order and −2.6e12 in
+    /// the other. It is past the edge in both: NaN.
+    #[test]
+    fn a_level_matrix_singular_to_rounding_has_no_density_in_either_order() {
+        let (rp, rq, rpq) = (0.02460733687561527, 0.7838406688986141, -0.6759689780549522);
+        let m = Deco::new(DecoCfg {
+            blocks: vec![vec![0, 1], vec![2, 3]],
+            ..cfg(4)
+        })
+        .unwrap();
+        let (s1, s2) = ([0.7, -1.3], [1.1, 2.4]);
+        let a = m.loglik(&[rp, rq, rpq], &s1, &s2);
+        let b = m.loglik(&[rq, rp, rpq], &[s1[1], s1[0]], &[s2[1], s2[0]]);
+        assert!(a.is_nan() && b.is_nan(), "{a} and {b}");
+        let f = SpdFactor::of(&level_matrix(&m.blocks, &[rp, rq, rpq]), 2).unwrap();
+        let sb = level_matrix(&m.blocks, &[rq, rp, rpq]);
+        let g = SpdFactor::of(&sb, 2).unwrap();
+        // Each order is refused by one of the two rules: in this one only
+        // the jitter factorizes `S`; in the other it factorizes as given,
+        // with `‖H⁻¹‖₁` estimated at 4.5e15, past the limit of 2.1e14.
+        assert!(f.attempts() > 0);
+        assert_eq!(g.attempts(), 0);
+        assert!(g.carries_no_digit(&sb));
+    }
+
+    /// Between-block values just past what a correlation matrix holds --
+    /// blocks of two at 0.5 within, so `R` is singular at 0.75 between, and
+    /// 0.75 + 1e-11 -- leave `S` indefinite by more than rounding, and only
+    /// the jitter ladder's `1e-9` rung factorizes it. That factor holds
+    /// `S + δI`, another matrix, and its density was reported; there is none.
+    #[test]
+    fn a_level_matrix_only_the_jitter_factorizes_has_no_density() {
+        let m = Deco::new(DecoCfg {
+            blocks: vec![vec![0, 1], vec![2, 3]],
+            ..cfg(4)
+        })
+        .unwrap();
+        let rho = [0.5, 0.5, 0.75 + 1e-11];
+        let f = SpdFactor::of(&level_matrix(&m.blocks, &rho), 2).unwrap();
+        assert!(f.attempts() > 0, "the jitter is what factorizes it");
+        let got = m.loglik(&rho, &[0.4, -0.2], &[1.0, 1.5]);
+        assert!(got.is_nan(), "{got}");
+        // Inside the edge by as much, the density is there.
+        let inside = m.loglik(&[0.5, 0.5, 0.75 - 1e-6], &[0.4, -0.2], &[1.0, 1.5]);
+        assert!(inside.is_finite(), "{inside}");
+    }
+
+    /// `S = I + N^{1/2} P N^{1/2}` as [`Deco::loglik`] forms it, unclamped.
+    fn level_matrix(blocks: &[Vec<usize>], rho: &[f64]) -> Vec<f64> {
+        let k = blocks.len();
+        let sn: Vec<f64> = blocks
+            .iter()
+            .enumerate()
+            .map(|(bi, b)| (b.len() as f64 / (1.0 - rho[bi])).sqrt())
+            .collect();
+        let mut s = vec![0.0; k * k];
+        let mut p = k;
+        for i in 0..k {
+            s[i * k + i] = 1.0 + sn[i] * rho[i] * sn[i];
+            for j in (i + 1)..k {
+                s[i * k + j] = sn[i] * rho[p] * sn[j];
+                s[j * k + i] = s[i * k + j];
+                p += 1;
+            }
+        }
+        s
+    }
+
+    /// The dense `n x n` matrix `R` the block levels stand for.
+    fn dense_level(blocks: &[Vec<usize>], rho: &[f64]) -> Vec<f64> {
+        let k = blocks.len();
+        let n: usize = blocks.iter().map(Vec::len).sum();
+        let of = |i: usize| blocks.iter().position(|b| b.contains(&i)).unwrap();
+        let pair = |a: usize, b: usize| {
+            let (a, b) = (a.min(b), a.max(b));
+            k + (0..a).map(|i| k - 1 - i).sum::<usize>() + (b - a - 1)
+        };
+        (0..n * n)
+            .map(|ij| {
+                let (i, j) = (ij / n, ij % n);
+                if i == j {
+                    1.0
+                } else if of(i) == of(j) {
+                    rho[of(i)]
+                } else {
+                    rho[pair(of(i), of(j))]
+                }
+            })
+            .collect()
+    }
+
+    /// Levels on both sides of the edge, by `1e-17` to `1e-3` relative, for
+    /// two and three blocks in two orders: (1) where `loglik` is finite, the
+    /// dense `R` is positive definite by faer's eigensolver (`crate::oracle`)
+    /// and the density is within [`woodbury_error`] of the oracle's; (2)
+    /// where the equilibrated `S`'s exact `‖H⁻¹‖₁`, bounded above from the
+    /// oracle's least eigenvalue by `√k / λ_min(H)`, is inside half the limit
+    /// `1 / (3k γ_{3k+1})`, it is finite; (3) the two orders agree on which
+    /// rows have one, except where an order's estimate is within a factor of
+    /// 3 (the estimate's own slack) of the limit.
+    #[test]
+    fn the_density_is_there_exactly_inside_the_edge_in_any_block_order() {
+        use crate::oracle::{self, U};
+        let shapes: [(Vec<Vec<usize>>, Vec<usize>); 2] = [
+            (vec![vec![0, 1], vec![2, 3]], vec![1, 0]),
+            (vec![vec![0, 1], vec![2, 3, 4], vec![5, 6]], vec![2, 1, 0]),
+        ];
+        let mut seed = 0x278u64;
+        let (mut finite, mut none, mut differ, mut near) = (0, 0, 0, 0);
+        for (blocks, order) in &shapes {
+            let k = blocks.len();
+            let n: usize = blocks.iter().map(Vec::len).sum();
+            let m = Deco::new(DecoCfg {
+                blocks: blocks.clone(),
+                ..cfg(n)
+            })
+            .unwrap();
+            let moved: Vec<Vec<usize>> = order.iter().map(|&b| blocks[b].clone()).collect();
+            let m2 = Deco::new(DecoCfg {
+                blocks: moved.clone(),
+                ..cfg(n)
+            })
+            .unwrap();
+            let m_ = (3 * k + 1) as f64 * U;
+            let limit = (1.0 - m_) / (3.0 * k as f64 * m_);
+            for _ in 0..4000 {
+                let within: Vec<f64> = (0..k).map(|_| 0.4 * lcg(&mut seed) + 0.4).collect();
+                let t: Vec<f64> = blocks
+                    .iter()
+                    .zip(&within)
+                    .map(|(b, r)| 1.0 + (b.len() as f64 - 1.0) * r)
+                    .collect();
+                // Between-block values: the first pair at its edge moved by
+                // `1e-17..1e-3` either way, the others well inside.
+                let mut rho = within.clone();
+                for i in 0..k {
+                    for j in (i + 1)..k {
+                        let nn = (blocks[i].len() * blocks[j].len()) as f64;
+                        let edge = (t[i] * t[j] / nn).sqrt();
+                        rho.push(if rho.len() == k {
+                            let e = 10f64.powf(-17.0 + 7.0 * (lcg(&mut seed) + 1.0));
+                            edge * (1.0 + e * lcg(&mut seed).signum())
+                        } else {
+                            0.2 * edge * lcg(&mut seed)
+                        });
+                    }
+                }
+                let r: Vec<f64> = (0..n).map(|_| 1.5 * lcg(&mut seed)).collect();
+                let (s1, s2, _, _) = m.block_sums(&r);
+                let got = m.loglik(&rho, &s1, &s2);
+                // The same levels and row under the other order.
+                let mut rho2: Vec<f64> = order.iter().map(|&b| rho[b]).collect();
+                for i in 0..k {
+                    for j in (i + 1)..k {
+                        let (a, b) = (order[i].min(order[j]), order[i].max(order[j]));
+                        let p = k + (0..a).map(|x| k - 1 - x).sum::<usize>() + (b - a - 1);
+                        rho2.push(rho[p]);
+                    }
+                }
+                let (t1, t2, _, _) = m2.block_sums(&r);
+                let got2 = m2.loglik(&rho2, &t1, &t2);
+
+                let s = level_matrix(blocks, &rho);
+                let h: Vec<f64> = (0..k * k)
+                    .map(|ij| s[ij] / (s[(ij / k) * (k + 1)] * s[(ij % k) * (k + 1)]).sqrt())
+                    .collect();
+                let least_h = oracle::sym_eigen(&h).0[0];
+                let dense = dense_level(blocks, &rho);
+                if got.is_finite() {
+                    finite += 1;
+                    let least = oracle::sym_eigen(&dense).0[0];
+                    assert!(
+                        least > 0.0,
+                        "{rho:?}: a density for an R of eigenvalue {least:e}"
+                    );
+                    let want = oracle::gaussian_log_density(&dense, &r);
+                    let bound = woodbury_error(blocks, &rho, &r)
+                        + oracle::gaussian_log_density_error(&dense, &r);
+                    oracle::assert_within(got, want, bound, format!("{rho:?}"));
+                } else {
+                    none += 1;
+                    assert!(
+                        !(least_h > 0.0 && (k as f64).sqrt() / least_h < 0.5 * limit),
+                        "{rho:?}: no density at λ_min(H) {least_h:e}"
+                    );
+                }
+                if got.is_finite() != got2.is_finite() {
+                    differ += 1;
+                    let f = SpdFactor::of(&s, k).unwrap();
+                    let est = f.equilibrated_inverse_norm(&s);
+                    if est >= limit / 3.0 {
+                        near += 1;
+                    }
+                    eprintln!("orders differ at {rho:?}: estimate {est:e}, limit {limit:e}");
+                }
+            }
+        }
+        eprintln!("finite {finite}, none {none}, orders differ {differ} ({near} near the limit)");
+        assert!(finite > 1000 && none > 1000, "{finite} {none}");
+        assert_eq!(differ, near, "the orders part only near the limit");
     }
 }
