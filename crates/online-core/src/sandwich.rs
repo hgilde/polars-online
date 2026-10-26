@@ -27,8 +27,11 @@
 //! products are those of the two rows' present weights. `e` is the row's
 //! out-of-sample residual, the one the model had not learned, where the
 //! classical sandwich has the in-sample residual of the final fit: larger
-//! by its estimation error, `sqrt(1 + h)` on a row of leverage `h`, which
-//! errs large while the fit is young and fades as it settles.
+//! in expectation by its estimation error, `sqrt(1 + h)` on a row of
+//! leverage `h`, which errs large while the fit is young and fades as it
+//! settles. So the standard errors tend to read above the classical ones,
+//! though not on every stream: run once on 1,500 rows over 50 seeds, the
+//! ratio to statsmodels' ran 0.990-1.034 (HC0) and 0.985-1.059 (HAC).
 //!
 //! The covariance is mapped to the features' own units: the slopes are the
 //! fit's, and the intercept `β_0 − c'β_x`, whose variance is

@@ -10,7 +10,8 @@ The single-seed tests stay where they are, the cheap check in the gate.
 
 - ``marglag_acf``: ``marginal``'s lag correlations against statsmodels'
   ``acf``, the truncated and Bartlett serial factors' pairs and a window's
-  rows (three tests of ``tests/test_second_opinion.py``, 0.02);
+  rows (three tests of ``tests/test_second_opinion.py``, 0.02), and the
+  window's against its definition written out;
 - ``kalman_share_p_se``: ``share_p``'s ``se_coef`` against each target's
   own filterpy ``KalmanFilter`` (a ratio within 0.05 and 0.15 of 1);
 - ``ewridge_robust_se``: ``ewridge``'s HC0 and HAC run once against
@@ -156,24 +157,45 @@ def test_lag_corr_is_acf_over_fifty_seeds(kind, phi_y):
         assert max(values) <= 0.02, (leg, max(values), int(np.argmax(values)))
 
 
-def test_windowed_lag_corr_is_acf_inside_the_window_over_fifty_seeds():
-    """The windowed lags against ``acf`` of the window's 500 rows. Measured
-    2026-10-26 over seeds 0-49: worst 0.165 (seed 28), 95th percentile
-    0.10, median 0.0095, and 19 of 50 seeds past the 0.02 the single-seed
-    test holds on seed 137 -- where the unwindowed lags sit within 0.0034
-    of ``acf`` on every seed. Each windowed lag moment is the increments
-    made inside the window, centred at the mean as it stood, which ``acf``'s
-    mean of the window does not reproduce; how far that may go is raised
-    with the coordinator. Held at 0.25."""
-    errors = []
+def window_lag_corr(x: np.ndarray, window: int, lags: list[int]) -> np.ndarray:
+    """The windowed lag correlation as the library defines it, by hand: over
+    the window's last ``window`` rows, unit weights, each row's product with
+    the row ``l`` back -- a row before the window included -- about the
+    window's own mean, over the window's population variance."""
+    inside = np.arange(len(x) - window, len(x))
+    m = x[inside].mean()
+    var = np.mean((x[inside] - m) ** 2)
+    return np.array([np.mean((x[inside] - m) * (x[inside - lag] - m)) / var for lag in lags])
+
+
+def test_windowed_lag_corr_is_its_definition_and_near_acf_over_fifty_seeds():
+    """The windowed lags against their definition written out, to rounding,
+    and against ``acf`` of the window's 500 rows, whose products stop at the
+    window's edge where the library's take the rows before it as partners
+    (``l`` of 500 products): measured 2026-10-26 over seeds 0-49, at most
+    8.3e-14 from the definition and 0.0068 from ``acf``. Before the lag
+    moments took an origin they were centred at the running mean as it
+    stood, which carried the history's mean into the window: 0.165 from
+    ``acf`` (seed 28, a lag-1 correlation of 1.016), 19 of 50 seeds past
+    0.02."""
+    own, against_acf = [], []
     for seed in SEEDS:
         frame = windowed_series(seed)
-        row = lag_row("windowed", frame)
-        inside = stattools.acf(frame["x"].to_numpy()[-500:], nlags=3)[1:]
-        errors.append(float(np.max(np.abs(np.asarray(row["lag_corr_xx"]) - inside))))
-    ledger.record("marglag_acf", "windowed_xx", errors)
-    print(f"windowed: worst {max(errors):.4f}")
-    assert max(errors) <= 0.25, (max(errors), int(np.argmax(errors)))
+        x = frame["x"].to_numpy()
+        got = np.asarray(lag_row("windowed", frame)["lag_corr_xx"])
+        own.append(float(np.max(np.abs(got - window_lag_corr(x, 500, [1, 2, 3])))))
+        inside = stattools.acf(x[-500:], nlags=3)[1:]
+        against_acf.append(float(np.max(np.abs(got - inside))))
+    ledger.record("marglag_acf", "windowed_xx_definition", own, floor=WINDOW_FLOOR)
+    ledger.record("marglag_acf", "windowed_xx", against_acf)
+    print(f"windowed: definition {max(own):.2g}, acf {max(against_acf):.4f}")
+    assert max(own) <= 1e-12, (max(own), int(np.argmax(own)))
+    assert max(against_acf) <= 0.01, (max(against_acf), int(np.argmax(against_acf)))
+
+
+#: The windowed lags' distance from their definition is rounding: its
+#: floor in the ledger, twice the worst measured (8.3e-14).
+WINDOW_FLOOR = 1.7e-13
 
 
 # --- kalman's shared covariance against each target's own filter ---------------

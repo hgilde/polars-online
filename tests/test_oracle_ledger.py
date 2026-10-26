@@ -79,13 +79,19 @@ class TestTheHashGuard:
     def test_our_outputs_on_the_cases_inputs_hold(self, gid):
         group = ledger.load(MODULE_OF[gid])[gid]
         entry = DOC.get("group", {}).get(gid, {})
-        got = ledger.digest(group, entry.get("tests", []))
+        problems = []
+        try:
+            got = ledger.digest(group, entry.get("tests", []))
+        except KeyError as e:
+            # A test the ledger names is gone, renamed or removed: the group
+            # must run again, which records the tests it has now.
+            got = None
+            problems.append(f"a test the ledger names is gone ({e})")
         want = HASHES.get("hashes", {}).get(gid)
         installed = ledger.versions(group.oracles)
-        problems = []
         if want is None:
             problems.append("no hash yet: a new group")
-        elif got != want:
+        elif got is not None and got != want:
             problems.append("this library's outputs on its inputs, or its tests, changed")
         if installed != entry.get("oracles", {}):
             problems.append(
@@ -339,6 +345,10 @@ class TestTheRules:
         assert new["case"]["m.g.new"] == {"ideal": 0.0, "worst": 0.3, "p95": 0.2, "n": 50}
         assert new["group"]["m.g"]["oracles"] == {"scikit-learn": "1.9.2"}
         assert new["group"]["m.g"]["tests"] == ["t"]
+        # A test renamed since: the run's tests replace the ledger's.
+        renamed = SMALL.replace("tests = []", 'tests = ["gone"]')
+        text, _ = oracles.apply(renamed, tomllib.loads(renamed), cases, groups, verdicts)
+        assert tomllib.loads(text)["group"]["m.g"]["tests"] == ["t"]
         assert text.index('[case."m.g.new"]') < text.index("# --- raises")
 
     def test_every_raise_in_the_history_needs_an_entry(self):

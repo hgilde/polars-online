@@ -178,6 +178,9 @@ pub mod marginal_bins_huber_anchored {
 pub mod marginal_window {
     include!("marginal_window.rs");
 }
+pub mod marginal_window_lags {
+    include!("marginal_window_lags.rs");
+}
 pub mod deco {
     include!("deco.rs");
 }
@@ -269,6 +272,7 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &marginal_bins_refit_done::FIXTURE,
     &marginal_bins_huber_anchored::FIXTURE,
     &marginal_window::FIXTURE,
+    &marginal_window_lags::FIXTURE,
     &deco::FIXTURE,
     &rcov::FIXTURE,
     &hmm::FIXTURE,

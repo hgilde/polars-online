@@ -2392,10 +2392,17 @@ in the record and in the table, is the weight inside the window. A window
 refuses `bins`, so bin the features in a second spec without one.
 
 **To use `lags` under a window, give `window_lags=True`; otherwise the spec is
-refused.** Each snapshot then holds the lag moments beside the pair moments:
-twice its size at one lag, and six times at five with the default cross lags.
-A windowed lag moment is an estimate, while the windowed pair moments are
-exact.
+refused.** Each snapshot then holds the lag moments beside the pair moments,
+and beside each lag the lagged rows' own sums: 2.3 times its size at one lag,
+and 7.7 times at five with the default cross lags. A windowed lag correlation
+is that of the rows inside the window, each product taken about the window's
+own means. The moments are kept about each series' first value, which
+truncates exactly, and read about the window's means when asked; a
+correlation centred at the running mean instead carries the history's mean
+into the window, and on a window whose rows had moved to another level read
+22. Only the window's first `l` rows differ from a correlation computed on
+the window's rows alone: they take the rows before the window as partners.
+On 50 AR(1) series, 500 rows a window, the two parted by 0.0068 at most.
 
 **With several targets present on every row, give `feature_moments="shared"`
 for speed.** Each feature then keeps one mean and variance, over every

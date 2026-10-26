@@ -432,7 +432,9 @@ def apply(
     by_key = {v.key: v for v in verdicts}
     for gid, g in sorted(groups.items()):
         old = doc.get("group", {}).get(gid, {})
-        tests = sorted(set(old.get("tests", [])) | set(g["tests"]))
+        # The tests that recorded it: a run measures a group whole, so a test
+        # renamed or removed leaves the list (a stale name fails the guard).
+        tests = sorted(g["tests"]) or sorted(old.get("tests", []))
         values = {
             "tests": tests,
             "oracles": dict(sorted(g["oracles"].items())),
@@ -598,6 +600,16 @@ def _guard_run(groups: list[str], out: Path) -> dict[str, dict]:
     return found
 
 
+def _exists(nodeid: str) -> bool:
+    """Whether the test a node id names is still defined in its file."""
+    path, *names = nodeid.split("::")
+    file = REPO / path
+    if not file.exists():
+        return False
+    name = names[-1].split("[", 1)[0] if names else ""
+    return f"def {name}(" in file.read_text(encoding="utf-8")
+
+
 def _cmd_rerun(args: argparse.Namespace) -> int:
     with tempfile.TemporaryDirectory() as tmp:
         hashes = _guard_run([], Path(tmp) / "hashes.jsonl")
@@ -618,7 +630,11 @@ def _cmd_rerun(args: argparse.Namespace) -> int:
         targets: list[str] = []
         for g in chosen:
             tests = doc.get("group", {}).get(g, {}).get("tests", [])
-            targets += tests or [f"tests/{hashes[g]['module']}.py"]
+            # A test renamed or removed since the ledger named it: the whole
+            # module, whose grids record the group's tests as they are now.
+            if not tests or not all(_exists(t) for t in tests):
+                tests = [f"tests/{hashes[g]['module']}.py"]
+            targets += tests
         targets = sorted(set(targets))
         print(f"rerun: {len(chosen)} groups: {' '.join(chosen)}")
         records = Path(tmp) / "records"

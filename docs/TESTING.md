@@ -697,9 +697,11 @@ bounds sit 0.05 under the measured. The gate holds their outputs by the
 hash instead. A single-seed second opinion in the essentials whose bound
 has room, and that no grid covers, keeps its cheap check and gains a twin
 in `tests/test_second_opinion_grids.py`: the same design over 50 seeds,
-against the same oracle, recorded. The twins found three of the five
+against the same oracle, recorded. The twins found two of the five
 single-seed bounds narrower than the seeds' spread, and hold the measured
-spread.
+spread. The third was a defect: `marginal`'s windowed lag correlations
+were centred at the running mean as it stood, 0.165 from `acf` over the 50
+seeds, and are now held to their definition to rounding.
 
 **A case is judged by its gap from its ideal.** The gap is `|value -
 ideal|`: the ideal is 0 for an error and 1 for a score such as an ARI, a
@@ -765,7 +767,7 @@ uv run python scripts/oracles.py rerun <group>    # those named
 test fails, or if a case is past the ledger or was not measured. Otherwise
 it applies the run to the ledger (new cases, tightened numbers, versions)
 and writes the groups' hashes. So a hash changes only after a passing run
-of its oracles. Fifty-nine groups in seventeen modules hold 754 cases. A
+of its oracles. Fifty-nine groups in seventeen modules hold 755 cases. A
 `rerun` of 38 of them, the convergence grids among them, took 10.6 minutes
 here (2026-10-26, eight processes, at a load of 5 to 35 on 14 cores); the
 first 21 groups' grids took two. A group whose callable is cheap hashes

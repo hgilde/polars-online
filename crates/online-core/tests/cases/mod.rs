@@ -1439,6 +1439,25 @@ pub fn all() -> Vec<Case> {
             Targets::Linear(2),
             40
         ),
+        // Lags under a window take their moments about a fixed origin, with
+        // the lagged sides' sums beside them (task 280, phase 3).
+        case!(
+            "marginal_window_lags",
+            "Marginal",
+            Marginal,
+            Marginal::new(MarginalCfg {
+                window: WINDOW.0,
+                window_every: WINDOW.1,
+                max_rows_between_snapshots: WINDOW.2,
+                lags: vec![1, 2],
+                cross_lags: Some(vec![2]),
+                ..marginal_cfg()
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            40
+        ),
         case!(
             "deco",
             "Deco",

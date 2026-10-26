@@ -905,7 +905,7 @@ What the window truncates depends on the model:
 | `lasso` | the same, and the error that selects the penalty. A feature that stays constant inside the window has no evidence there, and goes to exactly zero | |
 | `ew_cov` | every moment, and `mahal`, `partial_corr` and the principal components read from them | `lags`, `mahal_quantiles` |
 | `ew_class` | each class's moments, so the classifier follows class means that move | |
-| `marginal` | every pair's weight, means and second moments, so `corr`, `beta` and `t_stat` describe the window. Its lag moments, under `window_lags=True`, are an estimate rather than exact | `bins`, `feature_moments="shared"`, and `lags` unless `window_lags=True` |
+| `marginal` | every pair's weight, means and second moments, so `corr`, `beta` and `t_stat` describe the window. Its lag correlations, under `window_lags=True`, are the window's rows' own, about the window's means, the first `l` rows paired with the rows before the window | `bins`, `feature_moments="shared"`, and `lags` unless `window_lags=True` |
 
 **`window_budget` caps the snapshots' memory, per ring (one per spec and
 group), in MiB.** The ring's memory grows with the window: for an `ew_cov` over 20 columns, a

@@ -89,6 +89,121 @@ use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
+/// The fixed point a windowed spec's lag moments are taken about: each
+/// feature's and each target's first value on a learned row.
+///
+/// Under a `window` the lag moments are truncated as the pair's are, so a
+/// lagged product centred at the running mean as it stood carried the
+/// history's mean into the window's rows: a window whose rows sit at
+/// another level read a lag correlation of 22 (task 280, phase 3). About a
+/// fixed origin `r` the moments are raw, `E_w[(a − r_a)(b − r_b)]`, and
+/// beside each the lagged side's own, `E_w[b − r_b]` (`bx`, `by`): both
+/// truncate exactly. With `a` the series now, whose window mean `m_a` the
+/// pair moments give, the window's moment about its own means is
+/// `E_w[(a − m_a)(b − m_b)] = E_w[(a − r_a)(b − r_b)] − (m_a − r_a)·E_w[b − r_b]`,
+/// to rounding, where every lagged row is present: a target absent `ℓ`
+/// rows back adds nothing to either sum, which the old rule's moment did
+/// not add to either. The origin is a value of the series, so the
+/// subtraction cancels only what the series' drift from its first value
+/// puts there. A state saved before it has none and keeps the running
+/// mean ([`MarginalLags::origin`]).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LagOrigin {
+    x: Vec<f64>,
+    y: Vec<f64>,
+    x_set: Vec<bool>,
+    y_set: Vec<bool>,
+    /// `[lag][target*p + feature]`: `E_w[x_{t−ℓ} − r_x]` over the target's
+    /// rows, the lagged side of `cxx` and `cyx`.
+    bx: Vec<Vec<f64>>,
+    /// `[lag][target]`: `E_w[y_{t−ℓ} − r_y]` over the target's rows where
+    /// it was present `ℓ` rows back, the lagged side of `cyy` and `cxy`.
+    by: Vec<Vec<f64>>,
+    /// `p` zeros, the low parts the origin's deviations take: none.
+    #[serde(skip)]
+    zeros: Vec<f64>,
+}
+
+/// The origin's values and which are set; `zeros` is a buffer.
+impl PartialEq for LagOrigin {
+    fn eq(&self, other: &Self) -> bool {
+        self.x == other.x
+            && self.y == other.y
+            && self.x_set == other.x_set
+            && self.y_set == other.y_set
+            && self.bx == other.bx
+            && self.by == other.by
+    }
+}
+
+impl LagOrigin {
+    fn new(p: usize, t: usize, l: usize) -> Self {
+        Self {
+            x: vec![0.0; p],
+            y: vec![0.0; t],
+            x_set: vec![false; p],
+            y_set: vec![false; t],
+            bx: vec![vec![0.0; p * t]; l],
+            by: vec![vec![0.0; t]; l],
+            zeros: vec![0.0; p],
+        }
+    }
+
+    /// The lagged sides' sums of one learned row of target `t`, its mix
+    /// `a`, `b`: per lag, the feature `ℓ` rows back and the target, where
+    /// it was present, each against its origin; a lag the ring does not
+    /// reach yet ages alone. `back(ℓ)` is the ring's row `ℓ` back.
+    fn step_sides<'r>(
+        &mut self,
+        t: usize,
+        a: f64,
+        b: f64,
+        lags: &[usize],
+        back: impl Fn(usize) -> Option<(&'r [f64], Option<f64>)>,
+    ) {
+        let p = self.x.len();
+        let r = t * p..(t + 1) * p;
+        for (li, &lag) in lags.iter().enumerate() {
+            let bx = &mut self.bx[li][r.clone()];
+            match back(lag) {
+                Some((x_lag, y_lag)) => {
+                    step_side(a, b, x_lag, &self.x, bx);
+                    let by = &mut self.by[li][t];
+                    *by = match y_lag {
+                        Some(v) => a * *by + b * crate::comp::dev(v, self.y[t], 0.0),
+                        None => a * *by,
+                    };
+                }
+                None => {
+                    wait(a, bx);
+                    self.by[li][t] *= a;
+                }
+            }
+        }
+    }
+
+    /// Feature `j`'s origin.
+    pub fn x(&self, j: usize) -> f64 {
+        self.x[j]
+    }
+
+    /// Target `t`'s origin.
+    pub fn y(&self, t: usize) -> f64 {
+        self.y[t]
+    }
+
+    fn has_shape(&self, p: usize, t: usize, l: usize) -> bool {
+        self.x.len() == p
+            && self.x_set.len() == p
+            && self.y.len() == t
+            && self.y_set.len() == t
+            && self.bx.len() == l
+            && self.bx.iter().all(|v| v.len() == p * t)
+            && self.by.len() == l
+            && self.by.iter().all(|v| v.len() == t)
+    }
+}
+
 /// Lagged moments beside a [`crate::Marginal`]'s pair moments.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MarginalLags {
@@ -121,6 +236,12 @@ pub struct MarginalLags {
     /// is `p` a lag, not `p·T`. Last, and not skipped, as `cross_lags` is.
     #[serde(default)]
     shared: bool,
+    /// Under a `window`, the origin the moments are taken about
+    /// ([`LagOrigin`]); `None` for the running means as they stood, which a
+    /// spec without a window takes, and a windowed state saved before the
+    /// origin existed keeps. Last, and not skipped, as `shared` is.
+    #[serde(default)]
+    origin: Option<LagOrigin>,
 }
 
 /// A target's side of a row's lagged moments under shared feature moments
@@ -150,6 +271,12 @@ pub struct LagMoments {
     cxx: Vec<Vec<f64>>,
     cxy: Vec<Vec<f64>>,
     cyx: Vec<Vec<f64>>,
+    /// The lagged sides' sums about the origin ([`LagOrigin`]), empty where
+    /// the moments are about the running means. Last, and not skipped.
+    #[serde(default)]
+    bx: Vec<Vec<f64>>,
+    #[serde(default)]
+    by: Vec<Vec<f64>>,
 }
 
 impl LagMoments {
@@ -169,27 +296,47 @@ impl LagMoments {
         self.cyx[ci][t * self.p + j]
     }
 
+    /// `E_w[x_{t−ℓ} − r_x]` about the origin ([`LagOrigin`]).
+    pub fn bx(&self, li: usize, t: usize, j: usize) -> f64 {
+        self.bx[li][t * self.p + j]
+    }
+
+    /// `E_w[y_{t−ℓ} − r_y]` about the origin ([`LagOrigin`]).
+    pub fn by(&self, li: usize, t: usize) -> f64 {
+        self.by[li][t]
+    }
+
     /// Whether these are the moments of the lags `lags` holds: the same
-    /// matrices at the same widths (review 2026-09-18, B3).
+    /// matrices at the same widths (review 2026-09-18, B3), the lagged
+    /// sides' sums where its moments are about an origin and none where not.
     pub fn matches(&self, lags: &MarginalLags) -> bool {
         let dims = |a: &Vec<Vec<f64>>, b: &Vec<Vec<f64>>| {
             a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.len() == y.len())
         };
+        let empty: Vec<Vec<f64>> = Vec::new();
+        let (bx, by) = lags
+            .origin
+            .as_ref()
+            .map_or((&empty, &empty), |o| (&o.bx, &o.by));
         self.p == lags.p
             && dims(&self.cyy, &lags.cyy)
             && dims(&self.cxx, &lags.cxx)
             && dims(&self.cxy, &lags.cxy)
             && dims(&self.cyx, &lags.cyx)
+            && dims(&self.bx, bx)
+            && dims(&self.by, by)
     }
 }
 
 impl crate::Footprint for LagMoments {
     fn footprint(&self) -> usize {
-        [&self.cyy, &self.cxx, &self.cxy, &self.cyx]
-            .iter()
-            .flat_map(|m| m.iter())
-            .map(|v| crate::window::floats(v))
-            .sum::<usize>()
+        [
+            &self.cyy, &self.cxx, &self.cxy, &self.cyx, &self.bx, &self.by,
+        ]
+        .iter()
+        .flat_map(|m| m.iter())
+        .map(|v| crate::window::floats(v))
+        .sum::<usize>()
             + std::mem::size_of::<usize>()
     }
 }
@@ -245,7 +392,8 @@ pub(crate) fn check_lags(lags: &[usize], cross_lags: Option<&[usize]>) -> Result
 impl MarginalLags {
     /// `cross_lags` is `None` for a cross moment at every lag, or the lags
     /// to keep them at: strictly increasing, each one of `lags`, and empty
-    /// for none.
+    /// for none. About the running means; [`Self::with_origin`] says which.
+    #[cfg(test)]
     pub fn new(
         p: usize,
         t: usize,
@@ -253,6 +401,23 @@ impl MarginalLags {
         cross_lags: Option<Vec<usize>>,
         shared: bool,
     ) -> Result<Self, String> {
+        Self::with_origin(p, t, lags, cross_lags, shared, false)
+    }
+
+    /// [`Self::new`], its moments about a fixed origin where `about_origin`:
+    /// what a windowed spec's are ([`LagOrigin`]). Not under shared feature
+    /// moments, which take no window.
+    pub fn with_origin(
+        p: usize,
+        t: usize,
+        lags: Vec<usize>,
+        cross_lags: Option<Vec<usize>>,
+        shared: bool,
+        about_origin: bool,
+    ) -> Result<Self, String> {
+        if about_origin && shared {
+            return Err("marginal: lag moments about an origin are per target".into());
+        }
         check_lags(&lags, cross_lags.as_deref())?;
         let l = lags.len();
         let n_cross = cross_lags.as_ref().map_or(l, Vec::len);
@@ -269,7 +434,63 @@ impl MarginalLags {
             ring_y: VecDeque::with_capacity(max),
             cross_lags,
             shared,
+            origin: about_origin.then(|| LagOrigin::new(p, t, l)),
         })
+    }
+
+    /// The origin the moments are taken about, under a window
+    /// ([`LagOrigin`]); `None` where they are about the running means.
+    pub fn origin(&self) -> Option<&LagOrigin> {
+        self.origin.as_ref()
+    }
+
+    /// `E_w[x_{t−ℓ} − r_x]` at the `li`-th lag, about the origin.
+    pub fn side_x(&self, li: usize, t: usize, j: usize) -> f64 {
+        self.origin
+            .as_ref()
+            .map_or(0.0, |o| o.bx[li][t * self.p + j])
+    }
+
+    /// `E_w[y_{t−ℓ} − r_y]` at the `li`-th lag, about the origin.
+    pub fn side_y(&self, li: usize, t: usize) -> f64 {
+        self.origin.as_ref().map_or(0.0, |o| o.by[li][t])
+    }
+
+    /// Set each origin not yet set from the learned row `x`, `y`: a
+    /// feature's or target's first finite value. Called before the row's
+    /// lagged products are taken, so the first is about it.
+    pub fn fix_origin(&mut self, x: &[f64], y: &[Option<f64>]) {
+        let Some(o) = self.origin.as_mut() else {
+            return;
+        };
+        if o.zeros.len() != o.x.len() {
+            o.zeros = vec![0.0; o.x.len()];
+        }
+        for ((r, set), &v) in o.x.iter_mut().zip(&mut o.x_set).zip(x) {
+            if !*set && v.is_finite() {
+                (*r, *set) = (v, true);
+            }
+        }
+        for ((r, set), v) in o.y.iter_mut().zip(&mut o.y_set).zip(y) {
+            if let Some(v) = v.filter(|v| !*set && v.is_finite()) {
+                (*r, *set) = (v, true);
+            }
+        }
+    }
+
+    /// The origin's features and their low parts, and target `t`'s origin:
+    /// the means a lagged product about the origin is taken against.
+    pub(crate) fn origin_means(&self, t: usize) -> Option<(&[f64], &[f64], f64)> {
+        self.origin
+            .as_ref()
+            .map(|o| (&o.x[..], &o.zeros[..], o.y[t]))
+    }
+
+    /// The state as one saved before the origin existed: its moments about
+    /// the running means from here on.
+    #[cfg(test)]
+    pub(crate) fn drop_origin(&mut self) {
+        self.origin = None;
     }
 
     /// Whether the feature's autocovariance is kept once per feature.
@@ -285,12 +506,18 @@ impl MarginalLags {
     /// ring of raw rows is not in it, being the last `max(lags)` learned
     /// rows, inside any window.
     pub fn moments(&self) -> LagMoments {
+        let (bx, by) = self
+            .origin
+            .as_ref()
+            .map_or((Vec::new(), Vec::new()), |o| (o.bx.clone(), o.by.clone()));
         LagMoments {
             p: self.p,
             cyy: self.cyy.clone(),
             cxx: self.cxx.clone(),
             cxy: self.cxy.clone(),
             cyx: self.cyx.clone(),
+            bx,
+            by,
         }
     }
 
@@ -334,6 +561,7 @@ impl MarginalLags {
             // every lag a row too recent (review 2026-09-26, B3).
             && self.ring_x.len() == self.ring_y.len()
             && self.ring_x.len() <= lags.last().copied().unwrap_or(0)
+            && self.origin.as_ref().is_none_or(|o| o.has_shape(p, t, l))
     }
 
     /// `E_w[dy_t·dy_{t−ℓ}]` for target `t`, at the `li`-th configured lag.
@@ -410,7 +638,7 @@ impl MarginalLags {
             if let Some((a, b)) = row {
                 let l = Lagged {
                     a,
-                    b,
+                    k: a * b,
                     dy_now: 0.0,
                     dy_lag: None,
                     x,
@@ -432,7 +660,7 @@ impl MarginalLags {
                     let r = t * p..(t + 1) * p;
                     let l = Lagged {
                         a: m.a,
-                        b: m.b,
+                        k: m.a * m.b,
                         dy_now,
                         dy_lag,
                         x,
@@ -443,18 +671,47 @@ impl MarginalLags {
                     let (cxy, cyx) = (&mut self.cxy[ci], &mut self.cyx[ci]);
                     step_cross(l, &mut cxy[r.clone()], &mut cyx[r]);
                 }
-                self.cyy[li][t] = step_cyy(m.a, m.b, dy_now, dy_lag, self.cyy[li][t]);
+                self.cyy[li][t] = step_cyy(m.a, m.a * m.b, dy_now, dy_lag, self.cyy[li][t]);
             }
         }
     }
 
     /// One target's lagged moments, before its pair moments advance.
+    ///
+    /// About the running means `mix` names, a row's product takes `a·b`,
+    /// which makes the moments the pair's at lag 0; about an origin
+    /// ([`LagOrigin`]) they are raw moments, and it takes `b`.
     pub fn update_target(&mut self, t: usize, x: &[f64], yt: f64, mix: PairMix<'_>) {
+        let (a, b) = (mix.a, mix.b);
+        let origin = self.origin.take();
+        let (mix, k) = match origin.as_ref() {
+            Some(o) => {
+                debug_assert_eq!(o.zeros.len(), self.p, "fix_origin runs first");
+                let about = PairMix {
+                    mx: &o.x,
+                    mx_lo: &o.zeros,
+                    my: o.y[t],
+                    my_lo: 0.0,
+                    ..mix
+                };
+                (about, mix.b)
+            }
+            None => (mix, mix.a * mix.b),
+        };
         if self.cross_lags.is_none() {
-            self.update_every_lag(t, x, yt, mix);
+            self.update_every_lag(t, x, yt, mix, k);
         } else {
-            self.update_some_lags(t, x, yt, mix);
+            self.update_some_lags(t, x, yt, mix, k);
         }
+        let mut origin = origin;
+        if let Some(o) = origin.as_mut() {
+            let depth = self.ring_x.len();
+            let (ring_x, ring_y) = (&self.ring_x, &self.ring_y);
+            o.step_sides(t, a, b, &self.lags, |lag| {
+                (lag <= depth).then(|| (&ring_x[depth - lag][..], ring_y[depth - lag][t]))
+            });
+        }
+        self.origin = origin;
     }
 
     /// [`Self::update_target`] with the cross terms at every lag: the loop
@@ -462,14 +719,14 @@ impl MarginalLags {
     /// measured 1% slower on the default (docs/PERFORMANCE.md §23), so the
     /// default keeps its own, and `cross_lags_keep_the_default_cross_terms_at_their_lags`
     /// holds the two loops to the same bits with every lag named.
-    fn update_every_lag(&mut self, t: usize, x: &[f64], yt: f64, mix: PairMix<'_>) {
+    fn update_every_lag(&mut self, t: usize, x: &[f64], yt: f64, mix: PairMix<'_>, k: f64) {
         let PairMix {
             mx,
             mx_lo,
             my,
             my_lo,
             a,
-            b,
+            b: _,
         } = mix;
         use crate::comp::dev;
         let depth = self.ring_x.len();
@@ -496,7 +753,7 @@ impl MarginalLags {
             step_all(
                 Lagged {
                     a,
-                    b,
+                    k,
                     dy_now,
                     dy_lag,
                     x,
@@ -508,7 +765,7 @@ impl MarginalLags {
                 &mut self.cxy[li][r.clone()],
                 &mut self.cyx[li][r.clone()],
             );
-            self.cyy[li][t] = step_cyy(a, b, dy_now, dy_lag, self.cyy[li][t]);
+            self.cyy[li][t] = step_cyy(a, k, dy_now, dy_lag, self.cyy[li][t]);
         }
     }
 
@@ -517,14 +774,14 @@ impl MarginalLags {
     /// gives it. Never inlined, so that the default path's caller stays the
     /// size it was (docs/PERFORMANCE.md §23).
     #[inline(never)]
-    fn update_some_lags(&mut self, t: usize, x: &[f64], yt: f64, mix: PairMix<'_>) {
+    fn update_some_lags(&mut self, t: usize, x: &[f64], yt: f64, mix: PairMix<'_>, k: f64) {
         let PairMix {
             mx,
             mx_lo,
             my,
             my_lo,
             a,
-            b,
+            b: _,
         } = mix;
         use crate::comp::dev;
         let depth = self.ring_x.len();
@@ -558,7 +815,7 @@ impl MarginalLags {
             let dy_lag = self.ring_y[back][t].map(|v| dev(v, my, my_lo));
             let lagged = Lagged {
                 a,
-                b,
+                k,
                 dy_now,
                 dy_lag,
                 x,
@@ -577,7 +834,7 @@ impl MarginalLags {
                 // alone.
                 None => step_xx(lagged, &mut self.cxx[li][r.clone()]),
             }
-            self.cyy[li][t] = step_cyy(a, b, dy_now, dy_lag, self.cyy[li][t]);
+            self.cyy[li][t] = step_cyy(a, k, dy_now, dy_lag, self.cyy[li][t]);
         }
     }
 
@@ -659,6 +916,31 @@ impl MarginalLags {
             cxy: &mut self.cxy,
             cyx: &mut self.cyx,
             ring_x: &self.ring_x,
+            origin: self
+                .origin
+                .as_mut()
+                .map(|o| ((&o.x[..], &o.zeros[..], &o.y[..]), &mut o.bx[..])),
+        }
+    }
+
+    /// Target `t`'s lagged side at the `li`-th lag about the origin, where
+    /// there is one, stepped by its mix: `y_back` the target `ℓ` rows back
+    /// where it was present, `reached` whether the ring reaches it.
+    pub(crate) fn step_by(
+        &mut self,
+        li: usize,
+        t: usize,
+        a: f64,
+        b: f64,
+        reached: bool,
+        y_back: Option<f64>,
+    ) {
+        if let Some(o) = self.origin.as_mut() {
+            let by = &mut o.by[li][t];
+            *by = match (reached, y_back) {
+                (true, Some(v)) => a * *by + b * crate::comp::dev(v, o.y[t], 0.0),
+                _ => a * *by,
+            };
         }
     }
 }
@@ -669,6 +951,10 @@ pub(crate) struct LagParts<'a> {
     pub cxy: &'a mut [Vec<f64>],
     pub cyx: &'a mut [Vec<f64>],
     pub ring_x: &'a VecDeque<Vec<f64>>,
+    /// Under a window ([`LagOrigin`]): the features' origins, their low
+    /// parts (none) and the targets', and the features' lagged sides.
+    #[allow(clippy::type_complexity)]
+    pub origin: Option<((&'a [f64], &'a [f64], &'a [f64]), &'a mut [Vec<f64>])>,
 }
 
 /// What one target's lagged step reads over a range of features: its mix
@@ -678,13 +964,24 @@ pub(crate) struct LagParts<'a> {
 #[derive(Clone, Copy)]
 pub(crate) struct Lagged<'a> {
     pub a: f64,
-    pub b: f64,
+    /// The weight on the row's lagged product: `a·b` about the means as
+    /// they stood, `b` about a fixed origin ([`LagOrigin`]).
+    pub k: f64,
     pub dy_now: f64,
     pub dy_lag: Option<f64>,
     pub x: &'a [f64],
     pub x_lag: &'a [f64],
     pub mx: &'a [f64],
     pub mx_lo: &'a [f64],
+}
+
+/// The lagged side's sum about the origin ([`LagOrigin`]): `E_w[x_{t−ℓ} −
+/// r]` over a range of features, stepped by a row's mix.
+#[inline]
+pub(crate) fn step_side(a: f64, b: f64, x_lag: &[f64], origin: &[f64], c: &mut [f64]) {
+    for ((&xl, &r), c) in x_lag.iter().zip(origin).zip(c) {
+        *c = a * *c + b * crate::comp::dev(xl, r, 0.0);
+    }
 }
 
 /// Nothing `lag` rows back yet: the moments age and wait.
@@ -699,12 +996,12 @@ pub(crate) fn wait(a: f64, c: &mut [f64]) {
 #[inline]
 pub(crate) fn step_xx(l: Lagged<'_>, cxx: &mut [f64]) {
     use crate::comp::dev;
-    let (a, b) = (l.a, l.b);
+    let (a, k) = (l.a, l.k);
     let means = l.mx.iter().zip(l.mx_lo);
     for (((&xj, &xl), (&m, &lo)), c) in l.x.iter().zip(l.x_lag).zip(means).zip(cxx) {
         let dx_now = dev(xj, m, lo);
         let dx_lag = dev(xl, m, lo);
-        *c = a * *c + a * b * dx_now * dx_lag;
+        *c = a * *c + k * dx_now * dx_lag;
     }
 }
 
@@ -715,7 +1012,7 @@ pub(crate) fn step_xx(l: Lagged<'_>, cxx: &mut [f64]) {
 #[inline]
 pub(crate) fn step_all(l: Lagged<'_>, cxx: &mut [f64], cxy: &mut [f64], cyx: &mut [f64]) {
     use crate::comp::dev;
-    let (a, b, dy_now) = (l.a, l.b, l.dy_now);
+    let (a, k, dy_now) = (l.a, l.k, l.dy_now);
     let means = l.mx.iter().zip(l.mx_lo);
     let cells = cxx.iter_mut().zip(cxy.iter_mut()).zip(cyx.iter_mut());
     let each = l.x.iter().zip(l.x_lag).zip(means).zip(cells);
@@ -724,17 +1021,17 @@ pub(crate) fn step_all(l: Lagged<'_>, cxx: &mut [f64], cxy: &mut [f64], cyx: &mu
             for (((&xj, &xl), (&m, &lo)), ((xx, xy), yx)) in each {
                 let dx_now = dev(xj, m, lo);
                 let dx_lag = dev(xl, m, lo);
-                *xx = a * *xx + a * b * dx_now * dx_lag;
-                *yx = a * *yx + a * b * dy_now * dx_lag;
-                *xy = a * *xy + a * b * dx_now * dy_lag;
+                *xx = a * *xx + k * dx_now * dx_lag;
+                *yx = a * *yx + k * dy_now * dx_lag;
+                *xy = a * *xy + k * dx_now * dy_lag;
             }
         }
         None => {
             for (((&xj, &xl), (&m, &lo)), ((xx, xy), yx)) in each {
                 let dx_now = dev(xj, m, lo);
                 let dx_lag = dev(xl, m, lo);
-                *xx = a * *xx + a * b * dx_now * dx_lag;
-                *yx = a * *yx + a * b * dy_now * dx_lag;
+                *xx = a * *xx + k * dx_now * dx_lag;
+                *yx = a * *yx + k * dy_now * dx_lag;
                 *xy *= a;
             }
         }
@@ -747,7 +1044,7 @@ pub(crate) fn step_all(l: Lagged<'_>, cxx: &mut [f64], cxy: &mut [f64], cyx: &mu
 #[inline]
 pub(crate) fn step_cross(l: Lagged<'_>, cxy: &mut [f64], cyx: &mut [f64]) {
     use crate::comp::dev;
-    let (a, b, dy_now) = (l.a, l.b, l.dy_now);
+    let (a, k, dy_now) = (l.a, l.k, l.dy_now);
     let means = l.mx.iter().zip(l.mx_lo);
     let cells = cxy.iter_mut().zip(cyx.iter_mut());
     let each = l.x.iter().zip(l.x_lag).zip(means).zip(cells);
@@ -756,14 +1053,14 @@ pub(crate) fn step_cross(l: Lagged<'_>, cxy: &mut [f64], cyx: &mut [f64]) {
             for (((&xj, &xl), (&m, &lo)), (xy, yx)) in each {
                 let dx_now = dev(xj, m, lo);
                 let dx_lag = dev(xl, m, lo);
-                *yx = a * *yx + a * b * dy_now * dx_lag;
-                *xy = a * *xy + a * b * dx_now * dy_lag;
+                *yx = a * *yx + k * dy_now * dx_lag;
+                *xy = a * *xy + k * dx_now * dy_lag;
             }
         }
         None => {
             for (((_, &xl), (&m, &lo)), (xy, yx)) in each {
                 let dx_lag = dev(xl, m, lo);
-                *yx = a * *yx + a * b * dy_now * dx_lag;
+                *yx = a * *yx + k * dy_now * dx_lag;
                 *xy *= a;
             }
         }
@@ -773,9 +1070,9 @@ pub(crate) fn step_cross(l: Lagged<'_>, cxy: &mut [f64], cyx: &mut [f64]) {
 /// The target's own lagged moment `c`, stepped: `dy_lag` is its deviation
 /// `lag` rows back, `None` where it was absent then, which ages it alone.
 #[inline]
-pub(crate) fn step_cyy(a: f64, b: f64, dy_now: f64, dy_lag: Option<f64>, c: f64) -> f64 {
+pub(crate) fn step_cyy(a: f64, k: f64, dy_now: f64, dy_lag: Option<f64>, c: f64) -> f64 {
     match dy_lag {
-        Some(d) => a * c + a * b * dy_now * d,
+        Some(d) => a * c + k * dy_now * d,
         None => c * a,
     }
 }

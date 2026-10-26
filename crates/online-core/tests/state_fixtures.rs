@@ -703,13 +703,27 @@ fn held(v: &rmpv::Value) -> usize {
 /// each target's location and scale, and its cfg names its statistic and
 /// cut. `holt`'s line fit (64, task 278, D-H): its weight, mean age and
 /// spread per target, under a half-life (`holt`) and without one
-/// (`holt_inf`).
+/// (`holt_inf`). `marginal`'s windowed lag moments about an origin (64,
+/// task 280 phase 3): `marginal_window_lags` keeps the origin and the
+/// lagged sides' sums.
 #[test]
 fn every_layout_a_schema_moved_is_written_by_a_fixture() {
     if regenerating() {
         return;
     }
-    const FORMS: [(&str, &[&str]); 43] = [
+    const FORMS: [(&str, &[&str]); 46] = [
+        (
+            "marginal_window_lags",
+            &["model", "Marginal", "lag", "origin", "x"],
+        ),
+        (
+            "marginal_window_lags",
+            &["model", "Marginal", "lag", "origin", "bx"],
+        ),
+        (
+            "marginal_window_lags",
+            &["model", "Marginal", "lag", "origin", "by"],
+        ),
         ("holt", &["model", "Holt", "fit_weight"]),
         ("holt", &["model", "Holt", "fit_age"]),
         ("holt", &["model", "Holt", "fit_spread"]),

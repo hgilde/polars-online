@@ -5336,7 +5336,7 @@ tests = [
     "tests/test_second_opinion_grids.py::test_lag_corr_is_acf_over_fifty_seeds[-0.8-truncated]",
     "tests/test_second_opinion_grids.py::test_lag_corr_is_acf_over_fifty_seeds[0.8-bartlett]",
     "tests/test_second_opinion_grids.py::test_lag_corr_is_acf_over_fifty_seeds[0.8-truncated]",
-    "tests/test_second_opinion_grids.py::test_windowed_lag_corr_is_acf_inside_the_window_over_fifty_seeds",
+    "tests/test_second_opinion_grids.py::test_windowed_lag_corr_is_its_definition_and_near_acf_over_fifty_seeds",
 ]
 oracles = { "statsmodels" = "0.15.0" }
 dataset = ""
@@ -5471,8 +5471,8 @@ n = 50
 
 [case."second_opinion_grids.marglag_acf.windowed_xx"]
 ideal = 0.0
-worst = 0.164935
-p95 = 0.102523
+worst = 0.00683227
+p95 = 0.00510082
 n = 50
 
 [case."second_opinion_grids.rls_kalman_influence.kalman_relative_gap"]
@@ -5486,6 +5486,13 @@ ideal = 0.0
 worst = 3.77632e-06
 p95 = 3.49764e-07
 n = 50
+
+[case."second_opinion_grids.marglag_acf.windowed_xx_definition"]
+ideal = 0.0
+worst = 8.28226e-14
+p95 = 3.15303e-14
+n = 50
+floor = 1.7e-13
 
 # --- raises
 

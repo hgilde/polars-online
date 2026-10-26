@@ -2215,9 +2215,12 @@ class TestAWindowedLagIsTheWindows:
     moments are truncated as the pair's are, so ``lag_corr_xx`` is the
     autocorrelation of the rows inside the window. The reference is
     ``statsmodels``' ``acf`` of those rows, to the statistical tier T-S11
-    gives, 0.02: each windowed lag moment is the increments made inside the
-    window, centred at the mean as it stood, which ``acf``'s full-sample
-    mean does not reproduce to the bit. An AR(1) ``x`` changes ``phi`` from
+    gives, 0.02: each windowed lag product is taken about the window's own
+    mean, as ``acf``'s are, and the window's first ``l`` rows take the rows
+    before it as partners, where ``acf``'s products stop at its edge (0.0068
+    at most over 50 seeds, ``tests/test_second_opinion_grids.py``; centred
+    at the running mean as it stood, before task 280's phase 3, 0.165). An
+    AR(1) ``x`` changes ``phi`` from
     0.2 to 0.8 at row 4500 of 5000 and the window is the last 500 rows, so
     the whole history's autocorrelation is far from the window's: the
     reading sat between the two before (live co-moment over windowed
