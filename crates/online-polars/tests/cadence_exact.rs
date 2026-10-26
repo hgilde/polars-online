@@ -440,10 +440,10 @@ fn a_solve_due_on_a_row_of_weight_zero_waits_for_the_next_row_with_weight() {
         }
         // The case is the claim: the cadence reaches rows 2,000, 4,001 and
         // 6,002, each of weight 0, and the solves wait a row for each. The
-        // robust fits first solve at their floor, a row per coefficient (row
-        // 1; task 278, D10), so their clock reaches row 2,001 itself, and
-        // waits on the other two.
-        let first = usize::from(matches!(name, "huber" | "quantile"));
+        // robust fits and `lasso` first solve at their floor, a row per
+        // coefficient (row 1; task 278, D10), so their clock reaches row
+        // 2,001 itself, and waits on the other two.
+        let first = usize::from(matches!(name, "huber" | "quantile" | "lasso"));
         assert_eq!(want, [first, 2_001, 4_002, 6_003], "{name}");
         for size in [1, 7, 600] {
             let parts = run(&spec, &df, size);
