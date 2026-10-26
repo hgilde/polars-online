@@ -62,7 +62,7 @@ print("r2_y at rows 2,999, 3,100, 3,300 and 5,999: " + ", ".join(f"{v:.2f}" for 
 flag                      rows 1,000-2,999  rows 3,000-5,999  first row after
 calibration_wald > 5.99               0.0%              0.0%                -
 |cusum| > 3                           0.0%              1.8%             3052
-|cusum_sq| > 3                        0.8%              2.8%             3051
+|cusum_sq| > 3                        0.1%              2.8%             3051
 break_wald > 21.1                     0.0%             76.8%             3059
 r2_y at rows 2,999, 3,100, 3,300 and 5,999: 0.51, 0.43, 0.44, 0.55
 ```
@@ -72,7 +72,7 @@ threshold on 77% of the rows after. It is the Wald distance between two
 fits of the same regression, one at the diagnostic's memory and one at four
 times it, and it grows when a coefficient moves. The two CUSUMs watch the
 residuals' mean and spread. After the flip they pass 3 on 1.8% and 2.8% of
-the rows, near the 0.3% to 0.8% they pass on a stream with no break. A
+the rows, near the 0.3% they pass on a stream with no break. A
 slope that flips on a feature centred at zero leaves the residuals' mean at
 zero, so the CUSUM barely sees it, and the spread grows too little here for
 the CUSUM of squares. The calibration
@@ -598,20 +598,70 @@ entry instead, `[inf, 30, 30]` spread 1.40 on clean streams and `[30, 10,
 10]` 1.29, where `[30, 30, 30]` read 1.03; at the intercept's each reads
 about 1.03. The CUSUM of squares is studentized by a scale
 at its own memory, which absorbs the squares' level the same way, so its
-share is one half. Each is divided by its share. On 30 clean streams
-beside `ewridge`, `rls`, `lasso` and `kalman` at a half-life of 200, at
-memories of 800 to 50, the spreads read:
+share is one half. Each is divided by its share, as far as its sums have
+filled (below). On 30 clean streams beside `ewridge`, `rls`, `lasso` and
+`kalman` at a half-life of 200, at memories of 50 to 800, from each
+stream's readiness on, the spreads read:
 
 | | not divided | divided by its share |
 |---|---:|---:|
-| `cusum` | 0.48 to 0.94 | 1.04 to 1.08 |
-| `cusum_sq` | 0.72 to 0.79 | 1.01 to 1.10 |
+| `cusum` | 0.48 to 0.94 | 1.03 to 1.06 |
+| `cusum_sq` | 0.72 to 0.79 | 0.98 to 1.26 |
+
+The widest reads of the CUSUM of squares come from a few of its first
+values, whose fourth moment is read off a handful of rows.
+`scripts/diagnostics_rates.py memories` makes these streams.
+
+**A young sum's share is nearer 1.** The share above is that of sums which
+have filled their memory. The diagnostics start once the fit has settled,
+so the fit's residuals are steady from the first row, but a sum of a few
+of them holds little of what the fit's mean has spread a level over, and
+its variance is nearly the plain sum's. Over sums that have run for a time
+`T`, `x = T ln 2 / h`, the CUSUM's share beside an exponential fit is
+
+```text
+r(x) = h_fit / (h_fit + h) + (2h / (h_fit + h)) x e^(−(1 + min(1, β)) x) F(|1 − β| x) / (1 − e^(−2x))
+```
+
+with `β = h / h_fit` and `F(a) = (1 − e^(−a)) / a`. It is 1 at the first
+row and the filled share in the limit. Beside a window it is the same
+integral over the window's weights. The CUSUM of squares' scale starts a
+few rows before its sums, once it has 10 rows of Kish's size, and its
+share runs from 1 to one half as
+
+```text
+r₂ = 1/2 + (q − D) / (1 + q) + D² ln(N / D) / (1 − q²)
+```
+
+with `q = e^(−x)`, `D` the scale's lead on the sums, and `N = D + 1 − q`.
+The sums' own weights tell how far they have filled. Their `Σω` decays at
+the memory and the fourth moment's at four times it, so the ratio of the
+two runs from 1 to 1/4 as `(1 + p)(1 + p²) / 4`, `p = e^(−x/4)`, whatever
+the rows' rate and the weights' scale. Divided by the filled share from
+the first row, the two CUSUMs were too wide while young. Beside `ewridge`
+at a half-life of 200, at memories of 50 to 800, the share of rows past
+1.96 read as below, on 3 sets of 100 clean streams over the filled share
+and of 300 over the share as filled:
+
+| | first 150 rows after readiness | rows 300 to 600 | rows 4,700 on |
+|---|---:|---:|---:|
+| `cusum`, over the filled share | 6.5% to 34% | 4.8% to 23% | 5.3% |
+| `cusum`, over the share as filled | 6.1% to 6.4% | 5.4% to 5.9% | 5.0% to 5.4% |
+| `cusum_sq`, over the filled share | 11% to 16% | 5.0% to 15% | 4.9% to 5.2% |
+| `cusum_sq`, over the share as filled | 6.2% to 6.7% | 5.0% to 5.2% | 4.8% to 5.0% |
+
+A longer memory was worse, since its sums take longer to fill. The rest
+of the excess over 5% in the first rows is the young scale's: the first
+`z` are read against a spread of few rows, which leaves them a little
+wider than 1. The CUSUM of squares beside `sgd`, divided by one half from
+its first row, read 15% there.
 
 `quantile` with an intercept absorbs its coverage the same way, and its
-indicators' CUSUM is divided by the same share. On 30 clean streams at
-`q = 0.5` and `0.9`, that CUSUM's spread read 1.03 to 1.06 at memories of
-50 and 200, and 1.10 to 1.25 at 800. `huber`, `holt` and the gradient
-fits absorb at a pace of their own, so they keep the plain sum.
+indicators' CUSUM is divided by the same share. On the 30 clean streams
+above at `q = 0.5`, that CUSUM's spread read 1.03, 1.05 and 1.09 at
+memories of 50, 200 and 800; at `q = 0.9` it reads up to 1.25 at 800 once
+filled. `huber`, `holt` and the gradient fits absorb at a pace of their
+own, so they keep the plain sum.
 
 **A window absorbs a level as a mean over its rows, so its share is the
 window's own.** Under `window_size` the fit's prediction is a mean of the
@@ -642,43 +692,46 @@ over rows 3,000 on:
 
 **Beside a fit that keeps the plain sum, `|cusum| > 3` is conservative and
 finds less.** Its spread reads below 1 there. The table is measured at a
-half-life of 200 on 30 clean streams of 6,000 rows, and on 60 streams of
-3,000 rows whose intercept moved half a noise sd at row 1,500. For `holt`
-the streams are 12,000 and 9,000 rows, with the break at 6,000, past its
-trend's readiness:
+half-life of 200 on 30 clean streams of 6,000 rows, from each stream's
+readiness on, and on 60 streams of 3,000 rows whose intercept moved half a
+noise sd at row 1,500. For `holt` the streams are 12,000 and 9,000 rows,
+with the break at 6,000, past its trend's readiness.
+`scripts/diagnostics_rates.py memories` makes them:
 
 | model | spread of `cusum`, memory 50 / 200 / 800 | breaks `\|cusum\| > 3` found | `break_wald` found |
 |---|---|---|---|
-| `ewridge`, `rls`, `lasso`, `kalman` | 1.04-1.05 / 1.05-1.06 / 1.07-1.08 | 100% / 100% / 100% | 98% / 100% / 100% |
-| `quantile` | 1.04 / 1.06 / 1.10 | 100% / 100% / 100% | 98% / 100% / 100% |
-| `huber` | 0.95 / 0.79 / 0.57 | 100% / 100% / 100% | 98% / 100% / 100% |
-| `holt` | 0.94 / 0.77 / 0.51 | 85% / 75% / 8% | 52% / 100% / 100% |
-| `ftrl` | 0.77 / 0.52 / 0.30 | 93% / 93% / 40% | 98% / 100% / 100% |
-| `sgd` | 0.79 / 0.53 / 0.30 | 82% / 47% / 2% | 98% / 100% / 100% |
-| `pa` | 0.51 / 0.48 / 0.51 | 0% / 0% / 0% | 98% / 100% / 100% |
+| `ewridge`, `rls`, `lasso`, `kalman` | 1.03-1.04 / 1.05-1.06 / 1.05-1.06 | 100% / 100% / 100% | 93% / 100% / 100% |
+| `quantile` | 1.03 / 1.05 / 1.09 | 100% / 100% / 100% | 93% / 100% / 100% |
+| `huber` | 0.95 / 0.81 / 0.62 | 100% / 100% / 100% | 93% / 100% / 100% |
+| `holt` | 0.92 / 0.74 / 0.52 | 80% / 58% / 5% | 20% / 100% / 100% |
+| `ftrl` | 0.77 / 0.53 / 0.39 | 93% / 92% / 48% | 93% / 100% / 100% |
+| `sgd` | 0.78 / 0.55 / 0.37 | 88% / 50% / 0% | 93% / 100% / 100% |
+| `pa` | 0.51 / 0.48 / 0.47 | 0% / 0% / 0% | 93% / 100% / 100% |
 
 A gradient fit absorbs a level at its learning rate, so the residuals the
 CUSUM sums carry little of the move. Beside `pa` it found no break at any
-memory, and beside `sgd` 2% to 82% of them by memory. `break_wald` reads the
+memory, and beside `sgd` none to 88% of them by memory. `break_wald` reads the
 target and the features alone, so it finds a break beside every model
 alike. Beside `holt` its pair of fits has only the level to compare. On
-the clean streams `|cusum| > 3` held on at most 0.7% of rows beside any
-model, and `break_wald` on at most 0.22%. `calibration_wald` past
+the clean streams `|cusum| > 3` held on at most 0.6% of rows beside any
+model, and `break_wald` on at most 0.01%. `calibration_wald` past
 `chi2(2)`'s 0.01% value found none of the breaks beside `sgd` and `ftrl`.
 Beside `pa` it held on every clean row, whose predictions here were not
 calibrated.
 
 Beside a fit at a half-life of 200, each flag found its break as below.
-The breaks are on 200 streams of 3,000 rows, at row 1,500. The rows
+The breaks are on 200 streams of 3,000 rows, at row 1,500, made by
+`scripts/diagnostics_rates.py breaks` in the three ways of the second
+recipe below. The rows
 flagged with no break are on 200 streams of 25,000 rows, the Gaussian
 streams of [Are its tails heavy?](#are-its-tails-heavy), made by
 `scripts/diagnostics_rates.py windowed`:
 
 | flag | the breaks it found | median delay | rows flagged with no break |
 |---|---|---:|---:|
-| `\|cusum\| > 3` | every intercept break | 62 rows | 0.31% |
-| `\|cusum_sq\| > 3` | every variance break | 17 rows | 0.31% |
-| `break_wald > 21.1`, `chi2(3)`'s 0.01% value | every slope break | 102 rows | 0.011% |
+| `\|cusum\| > 3` | every intercept break | 66 rows | 0.28% |
+| `\|cusum_sq\| > 3` | every variance break | 20 rows | 0.28% |
+| `break_wald > 21.1`, `chi2(3)`'s 0.01% value | every slope break | 55 rows | 0.011% |
 
 A normal variable passes 3 on 0.27% of draws. Not divided by their
 null's share, the two CUSUMs held on 0.002% and 0.011% of the rows with
@@ -866,11 +919,11 @@ break            |cusum| > 3     |cusum_sq| > 3  break_wald > 21.1              
 mean                    3063                  -               3135                  -
 variance                   -               3024               3313                  -
 slope                      -               3087               3072                  -
-flags on rows 1,000-2,999, before any break: 18
+flags on rows 1,000-2,999, before any break: 15
 ```
 
 Each cell is the first row the flag fired after the break. Before row
-3,000 the flags fired on 18 of the 24,000 flag-rows (four flags on 2,000
+3,000 the flags fired on 15 of the 24,000 flag-rows (four flags on 2,000
 rows of each of the three streams), under 0.1%, as on any stream with no break, and `drift` fired on none of the
 breaks. Read together, the other three flags tell the breaks apart:
 
@@ -880,16 +933,17 @@ breaks. Read together, the other three flags tell the breaks apart:
 | the noise grew | quiet, or late | fires first, within 25 rows | quiet, or late |
 | a slope moved | quiet, or late | fires, while the fit catches up | fires |
 
-Over 200 streams of each break, "late" means this:
+Over the 200 streams of each break that `scripts/diagnostics_rates.py
+breaks` makes, "late" means this:
 
 | break | flag | streams it fired on | median delay |
 |---|---|---:|---:|
-| the noise doubled | `\|cusum_sq\| > 3` | every one | within 17 rows |
-| the noise doubled | `\|cusum\| > 3` | half | 120 rows |
-| the noise doubled | `break_wald > 21.1` | 18% | 155 rows |
-| a slope moved | `break_wald > 21.1` | every one | within 100 rows |
-| a slope moved | `\|cusum\| > 3` | a third | 146 rows |
-| a slope moved | `\|cusum_sq\| > 3` | a third | 501 rows |
+| the noise doubled | `\|cusum_sq\| > 3` | every one | within 20 rows |
+| the noise doubled | `\|cusum\| > 3` | half | 174 rows |
+| the noise doubled | `break_wald > 21.1` | 17% | 205 rows |
+| a slope moved | `break_wald > 21.1` | every one | within 55 rows |
+| a slope moved | `\|cusum\| > 3` | a quarter | 204 rows |
+| a slope moved | `\|cusum_sq\| > 3` | nine in ten | 74 rows |
 
 **What to do.** When `cusum` fires alone or with `break_wald`, the level
 moved: restart the fit from the crossing, or let a fit that forgets catch
@@ -1263,12 +1317,12 @@ gives the bank's own `cusum_sq` back within 1e-11:
 
 | noise | over `E[z⁴] − 1` | over 2 |
 |---|---:|---:|
-| Gaussian | 0.31% | 0.42% |
-| Student's t, 5 degrees of freedom | 0.57% | 8.6% |
-| Student's t, 4 degrees of freedom | 0.77% | 15% |
-| Student's t, 3 degrees of freedom | 1.0% | 31% |
+| Gaussian | 0.28% | 0.35% |
+| Student's t, 5 degrees of freedom | 0.54% | 8.4% |
+| Student's t, 4 degrees of freedom | 0.73% | 15% |
+| Student's t, 3 degrees of freedom | 0.99% | 31% |
 
-On the same streams `|cusum| > 3` held on 0.31% to 0.75% of rows, and
+On the same streams `|cusum| > 3` held on 0.28% to 0.70% of rows, and
 `break_wald > 21.1` on 0.11% or fewer, even with 3 degrees of freedom.
 What it gives up is power: under heavy tails a squared residual varies so
 much that a change of spread takes longer to stand out from it.

@@ -1659,25 +1659,19 @@ def test_a_longer_breaks_memory_finds_an_intercept_break_later():
     assert (np.diff(tails, axis=0) > 0).all(), tails
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="defect (task 278, batch 5): the windowed CUSUMs divide by their null's "
-    "steady-state share from the first folded row, so they are over-sized until the "
-    "sums fill their memory",
-)
 @pytest.mark.parametrize("field", ["cusum_y", "cusum_sq_y"])
 def test_a_windowed_cusum_is_near_its_size_from_its_first_rows(field):
     """At the default memory (the fit's 200), on 100 clean streams, the
     CUSUM and the CUSUM of squares pass 1.96 on about 5% of rows once their
-    sums are steady (`test_a_windowed_cusum_reads_its_own_null`), but on
-    16.5% and 14.6% of the 150 rows after the diagnostics' readiness, with
-    spreads of 1.40 and 2.77 (measured 2026-10-25; 8.1% and 8.3% still 300
-    to 600 rows in). The null's share of the plain variance, `h_fit /
-    (h_fit + h)` and 1/2, is that of sums which have filled their memory;
-    a young sum is mostly its plain variance, so dividing it by the share's
-    square root inflates it. `sgd`'s CUSUM, which takes no share, read 2.8%
-    there; its CUSUM of squares, which does, 14.7%. The bound below is the
-    steady state's with room: at most 8% of the first 150 rows."""
+    sums are steady (`test_a_windowed_cusum_reads_its_own_null`). Divided
+    by their null's filled share, `h_fit / (h_fit + h)` and 1/2, from the
+    first row, they passed it on 16.5% and 14.6% of the 150 rows after the
+    diagnostics' readiness, with spreads of 1.40 and 2.77 (8.1% and 8.3%
+    still 300 to 600 rows in): a young sum is mostly its plain variance.
+    Read as far as the sums have filled (task 278, D-B5), 6.4% and 7.0%,
+    spreads 1.05 and 2.01, and 6.1% and 4.3% 300 to 600 rows in (measured
+    2026-10-25). The bound is the steady state's with room: at most 8% of
+    the first 150 rows."""
     groups, n = 100, 1_500
     df = _clean(groups, n, 5)
     spec = po.spec.ewridge(
@@ -1696,3 +1690,181 @@ def test_a_windowed_cusum_is_near_its_size_from_its_first_rows(field):
     young = young[np.isfinite(young)]
     assert young.size > 100 * 140
     assert np.mean(np.abs(young) > 1.96) <= 0.08
+
+
+def _young_cusum(
+    z: np.ndarray, ahead: int, h: float, h_fit: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """The CUSUM and CUSUM of squares rebuilt from the studentized
+    residuals `z` of one stream with unit weights, each over its null's
+    share as far as its sums have filled. The sums' age `x = κ T` is read
+    from `S1 / Σ ω_s = (1 + p)(1 + p²) / 4`, `p = e^(−x/4)`, filled below
+    `p = 1.5 / K`; beside an exponential fit at `h_fit` the CUSUM's share
+    is `h_fit / (h_fit + h) + (2h / (h_fit + h)) x e^(−(1 + min(1, β)) x)
+    F(|1 − β| x) / (1 − e^(−2x))`, `β = h / h_fit`, `F(a) = (1 − e^(−a)) /
+    a`; the CUSUM of squares' `1/2 + (q − D) / (1 + q) + D² ln(N / D) / (1
+    − q²)`, `q = e^(−x)`, `D` the scale's lead, `N = D + 1 − q`. The scale
+    folded `ahead` rows before the first `z`. Written here from the
+    derivation, apart from the library's arithmetic."""
+    lam = 0.5 ** (1.0 / h)
+    slow = np.sqrt(np.sqrt(lam))
+    n = z.size
+    ok = np.isfinite(z)
+    first = int(np.argmax(ok))
+    cusum, cusum_sq = np.full(n, np.nan), np.full(n, np.nan)
+    s1 = s2 = z1 = z2 = z4 = w4 = v1 = 0.0
+    for t in range(first - ahead, n):
+        if t > first:
+            target = 4.0 * s1 / w4
+            p = 1.0
+            for _ in range(100):
+                nxt = p - (((p + 1.0) * p + 1.0) * p + 1.0 - target) / ((3.0 * p + 2.0) * p + 1.0)
+                if not nxt < p:
+                    break
+                p = nxt
+            if target >= 4.0:
+                x = 0.0
+            elif target <= 1.0 or p <= 1.5 * s2 / s1**2:
+                x = np.inf
+            else:
+                x = -4.0 * np.log(p)
+            beta = h / h_fit
+            if x == 0.0:
+                r = r2 = 1.0
+            elif np.isinf(x):
+                r, r2 = h_fit / (h_fit + h), 0.5
+            else:
+                a = abs(1.0 - beta) * x
+                f = 1.0 if a == 0.0 else -np.expm1(-a) / a
+                big = 2.0 * h / (h_fit + h) * x * np.exp(-(1.0 + min(1.0, beta)) * x) * f
+                r = h_fit / (h_fit + h) + big / -np.expm1(-2.0 * x)
+                q, m = np.exp(-x), -np.expm1(-x)
+                d = min(max(m * v1 / s1 - m, 0.0), q)
+                tail = d * d * np.log1p(m / d) / (m * (1.0 + q)) if d > 0.0 else 0.0
+                r2 = 0.5 + (q - d) / (1.0 + q) + tail
+            cusum[t] = z1 / np.sqrt(r * s2)
+            excess = z4 / w4 - 1.0
+            # No CUSUM of squares while the fourth moment is at most 1.
+            cusum_sq[t] = (z2 - s1) / np.sqrt(r2 * excess * s2) if excess > 0.0 else np.nan
+        v1 = v1 * lam + 1.0
+        if t >= first:
+            zt = z[t]
+            s1, s2 = s1 * lam + 1.0, s2 * lam * lam + 1.0
+            z1, z2 = z1 * lam + zt, z2 * lam + zt * zt
+            z4, w4 = z4 * slow + zt**4, w4 * slow + 1.0
+    return cusum, cusum_sq
+
+
+@pytest.mark.parametrize("memory", [120.0, 400.0])
+def test_a_young_windowed_cusum_reads_its_shares_definition(memory):
+    """The CUSUM and the CUSUM of squares beside `ewridge` at a half-life
+    of 200, rebuilt from `studentized` with the young shares written from
+    their derivation (`_young_cusum`), at memories below and above the
+    fit's: to 1e-10 relative from the first row after readiness, where the
+    shares are near 1, to the last, where they are their steady forms.
+    The scale folds the rows from readiness until its weights reach a Kish
+    size of 10, the count read off unit weights."""
+    rng = np.random.default_rng(11)
+    n = 4_000
+    x = rng.standard_normal((n, 2))
+    df = pl.DataFrame(
+        {
+            "x0": x[:, 0],
+            "x1": x[:, 1],
+            "y": 0.5 + x @ np.array([1.0, -1.0]) + rng.standard_normal(n),
+        }
+    )
+    spec = po.spec.ewridge(
+        "m",
+        targets=["y"],
+        features=["x0", "x1"],
+        half_life=200.0,
+        emit_breaks=True,
+        breaks_half_life=memory,
+    )
+    out = _run(df, spec)
+    z = out["studentized_y"].to_numpy().astype(float)
+    lam = 0.5 ** (1.0 / memory)
+    ahead = 1
+    while sum(lam**j for j in range(ahead)) ** 2 < 10.0 * sum(lam ** (2 * j) for j in range(ahead)):
+        ahead += 1
+    cusum, cusum_sq = _young_cusum(z, ahead, memory, 200.0)
+    for field, want in (("cusum_y", cusum), ("cusum_sq_y", cusum_sq)):
+        got = out[field].to_numpy().astype(float)
+        both = np.isfinite(got) & np.isfinite(want)
+        assert both.sum() > n - 1_000, field
+        assert (np.isfinite(got) == np.isfinite(want)).all(), field
+        np.testing.assert_allclose(got[both], want[both], rtol=1e-10, atol=1e-12, err_msg=field)
+    # The evidence the young path ran: the first rows' share, read back off
+    # the field, is near 1, where the filled one is 0.625 or 0.333.
+    first = int(np.argmax(np.isfinite(z)))
+    got = out["cusum_y"].to_numpy().astype(float)
+    for k in range(1, 6):
+        w = lam ** np.arange(k)[::-1]
+        z1, s2 = (w * z[first : first + k]).sum(), (w * w).sum()
+        assert (z1 / got[first + k]) ** 2 / s2 > 0.99, k
+
+
+@pytest.mark.oracle_grid(reason="300 streams x 3 seeds at four memories beside seven fits")
+@pytest.mark.parametrize(
+    "model",
+    ["ewridge", "rls", "lasso", "kalman", "quantile", "window", "sgd"],
+)
+def test_a_windowed_cusum_is_near_its_size_at_every_age(model):
+    """On 3 seeds of 300 clean streams of 7,200 rows beside a fit at a
+    half-life of 200, at breaks memories of 50, 200, 400 and 800, the worst
+    seed's share of rows past 1.96 over the 150 rows after the diagnostics'
+    readiness, rows 300 to 600 after it, and 4,700 to 6,300 after it
+    (steady). Divided by the filled shares from the first row, the first
+    150 rows passed on up to 35% (CUSUM, memory 800) and 18% (CUSUM of
+    squares); read as far as the sums have filled (task 278, D-B5), the
+    worst seed read 5.2% to 6.1% (CUSUM) and 5.9% to 6.6% (CUSUM of
+    squares) there, at most 6.7% 300 to 600 rows in and 4.9% to 6.1%
+    steady (measured 2026-10-25; the rest of the excess over 5% early is
+    the young scale's: its `z` are read against few rows and spread wider
+    than 1). `quantile`'s steady CUSUM at a memory of 800 read 8.4%, the
+    spread of 1.10 to 1.25 its indicators' CUSUM has there, which the young
+    share does not touch; it is held to 10%. `sgd`'s CUSUM keeps the plain
+    sum, which its learning rate leaves conservative (`|cusum| > 3` finds
+    fewer of its breaks), and is held only to its CUSUM of squares;
+    `quantile` at its median."""
+    kw: dict = {
+        "lasso": {"penalties": [0.001]},
+        "kalman": {"coef_half_life": 200.0},
+        "quantile": {"quantile": 0.5},
+        "window": {"window_size": 400.0},
+    }.get(model, {})
+    builder = getattr(po.spec, "ewridge" if model == "window" else model)
+    groups, n = 300, 7_200
+    segments = {"young": (0, 150), "300-600": (300, 600), "steady": (4_700, 6_300)}
+    fields = ["cusum_sq_y"] if model == "sgd" else ["cusum_y", "cusum_sq_y"]
+    worst: dict = {}
+    for seed in range(3):
+        df = _clean(groups, n, 2_780 + seed)
+        for memory in (50.0, 200.0, 400.0, 800.0):
+            spec = builder(
+                "m",
+                targets=["y"],
+                features=["x0", "x1"],
+                half_life=200.0,
+                group="g",
+                min_weight=10.0,
+                emit_breaks=True,
+                breaks_half_life=memory,
+                **kw,
+            )
+            out = _run(df, spec)
+            for field in fields:
+                c = out[field].to_numpy().astype(float).reshape(groups, n)
+                first = np.isfinite(c).argmax(axis=1)
+                for name, (a, b) in segments.items():
+                    v = np.concatenate([c[g, first[g] + a : first[g] + b] for g in range(groups)])
+                    v = v[np.isfinite(v)]
+                    assert v.size > groups * (b - a) * 0.9, (model, memory, field, name)
+                    size = float(np.mean(np.abs(v) > 1.96))
+                    key = (memory, field, name)
+                    worst[key] = max(worst.get(key, 0.0), size)
+    for (memory, field, name), size in worst.items():
+        bound = 0.10 if (model, memory, field) == ("quantile", 800.0, "cusum_y") else 0.085
+        assert size <= bound, (model, memory, field, name, size)
+        assert size >= 0.035, (model, memory, field, name, size)
