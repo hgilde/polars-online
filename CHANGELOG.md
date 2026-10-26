@@ -29,6 +29,20 @@ returns.
 
 ### Changed
 
+- `kalman` and `lasso`: `min_weight` withholds the output only, as in every
+  other model, so the fit is the same at any `min_weight` (task 278).
+  `kalman`'s residual variance learns from the filter's own prediction on
+  every row it predicts; it learned only from the predictions the gate let
+  out, so `pred_var`, `se_coef` and a `q` given outright (read over that
+  variance) moved with the gate -- a slope 0.0064 off the ungated fit at
+  2,000 rows (`q=1e-6`, `min_weight=50`, worst of 50 seeds). `lasso`'s
+  `penalty_selected_<t>` counts a target's errors once the fit holds
+  `k + 1` of its rows of positive weight (a row per coefficient; `k` without
+  an intercept), and a target's first solve falls on that row: with six
+  penalties and t(4) noise the penalty chosen after 3,000 rows differed from
+  `min_weight=0` on 6 of 50 seeds at the default and 13 at 50; it now
+  differs on none, and the out-of-sample error equals the old default's. A
+  state saved by 1.3.0 goes on as it was fitted.
 - `quantile` draws its band in the MAD of its residuals (their
   exponentially weighted median of `|e|` over Φ⁻¹(3/4), the sketch `huber`
   reads), not their root mean square (task 278, D-Q). In the root mean

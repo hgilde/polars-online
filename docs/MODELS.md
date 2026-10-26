@@ -494,7 +494,15 @@ las = po.spec.lasso(
 whose exponentially weighted out-of-sample squared error is lowest so far,**
 as it stood before the row. Predictions for every penalty are computed
 anyway, so the selection adds no work of its own. To rank the penalties on
-the plain mean of that error, give `select_half_life=inf`.
+the plain mean of that error, give `select_half_life=inf`. A target's errors
+count once the fit holds `k + 1` of its rows of positive weight (`k` without
+an intercept), a row per coefficient, and its first solve falls on that row
+where the schedule has not solved it sooner. Neither reads `min_weight`,
+which withholds the output alone: the selection scores the predictions the
+gate withholds, so the fit and the penalty chosen are the same at any
+`min_weight`. When the gate held the selection back too, the penalty chosen
+moved with it: six penalties on a stream with t(4) noise chose otherwise
+after 3,000 rows on 6 of 50 seeds at the default `min_weight` and 13 at 50.
 
 **Under a `window_size`, a feature that stays constant inside the window
 gets a coefficient of exactly zero,** and the error that picks the penalty
@@ -568,6 +576,10 @@ estimate.** The model's noise is one constant per target, and its prior
 (`p0` times the noise) and its drift (`(ln 2·D/h)²` times the noise) are both
 multiples of it, so it cancels from the gain. The estimate only scales what
 is read out: `pred_var`, `se_coef` and the predictions' error, `R_j·zᵀP_j z`.
+It learns from the filter's own prediction on every row the filter predicts,
+whether or not `min_weight` lets that prediction out, so the readouts, and a
+`q=` given outright, which is read over the estimate, are the same at any
+`min_weight`: the gate withholds the output alone.
 An estimate inside the gain weighs each row by the inverse of the noise as
 it stood before the row. A burst of large residuals then inflates it, and
 the rows after the burst count for less than the burst did. With no drift,

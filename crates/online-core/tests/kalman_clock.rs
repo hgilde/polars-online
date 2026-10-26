@@ -24,6 +24,7 @@ fn lcg(state: &mut u64) -> f64 {
 
 fn kalman() -> Kalman {
     Kalman::new(KalmanCfg {
+        min_weight_holds_learning: false,
         noise_units: false,
         n_features: 1,
         n_targets: 1,
@@ -134,6 +135,7 @@ fn a_slope_step_is_learned_in_the_same_clock_time_at_any_spacing() {
 #[test]
 fn a_gap_adds_q_times_the_square_of_the_clock_step() {
     let mut m = Kalman::new(KalmanCfg {
+        min_weight_holds_learning: false,
         noise_units: false,
         n_features: 1,
         n_targets: 1,
@@ -232,6 +234,7 @@ fn gappy(n: usize, seed: u64) -> Vec<([f64; 2], f64, f64)> {
 
 fn kalman_with(standardize: bool, share_p: bool, revert: f64) -> Kalman {
     Kalman::new(KalmanCfg {
+        min_weight_holds_learning: false,
         noise_units: false,
         n_features: 2,
         n_targets: if share_p { 2 } else { 1 },
@@ -357,6 +360,7 @@ fn crossing(n: usize, standardize: bool) -> f64 {
     let mut times = Vec::new();
     for seed in 0..15u64 {
         let mut m = Kalman::new(KalmanCfg {
+            min_weight_holds_learning: false,
             noise_units: false,
             n_features: 1,
             n_targets: 1,

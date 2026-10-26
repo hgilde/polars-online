@@ -1896,14 +1896,21 @@ def lasso(
         reported as it stood before the row -- the point this row was scored
         with, not the one its own error then elected. A row of weight 0 adds no
         error and ages the errors so far, so the selection moves only by what
-        the ageing forgets. A target's errors count from the row where its own
-        weight reaches its own ``min_weight``. A row that threshold withholds
-        from the output adds no error, so one target's choice does not depend
-        on another's threshold. Before the first scored row
+        the ageing forgets. A target's errors count once the fit holds a row
+        of it per coefficient: ``k + 1`` rows of positive weight with an
+        intercept, ``k`` without, inside the window under one. They count
+        whatever ``min_weight`` says, which withholds the output alone: the
+        selection scores the prediction on a row the gate withholds, so the
+        penalty chosen, as the fit, is the same at any ``min_weight``, and
+        one target's choice does not depend on another's threshold. Before
+        the first scored row
         ``penalty_selected_<t>`` is the path's last point, and a tie between
         points keeps the first in ``penalties`` order.
     ``solve_every``, ``max_rows_between_solves``
-        The solve schedule, as for :func:`ewridge`.
+        The solve schedule, as for :func:`ewridge`. A target's first solve
+        falls on the row it reaches ``k + 1`` rows of positive weight (``k``
+        without an intercept), whatever ``min_weight`` says, where the
+        schedule has not solved it sooner.
     ``max_iter``, ``tol``
         Within a solve, the descent stops after ``max_iter`` sweeps (default
         100, at least 1), or after a sweep that moved no coefficient in the
@@ -2060,11 +2067,15 @@ def kalman(
     coefficients' covariance is ``R_j * P_j``, and ``Q`` is the process noise
     in the same units. ``R_j`` is the target's EW residual variance, unless
     given as ``obs_var``. That variance is per target, and its weight ages on
-    every row, a row with no prediction or with weight 0 included. A row with
-    no prediction, before ``min_weight``, still moves the coefficients and
-    adds to the target's weight; only the residual variance learns nothing
-    from it. A row of weight 0, or one whose target is null, ages the
-    target's weight and learns nothing for it.
+    every row, a row with no prediction or with weight 0 included. It learns
+    from the filter's own prediction on every row the filter predicts,
+    whether or not ``min_weight`` lets that prediction out: ``min_weight``
+    withholds the output alone, so the fit, the variance and an explicit
+    ``q`` read over it are the same at any ``min_weight``. A row with no
+    prediction, before the filter has sized the target's coefficients,
+    still moves them and adds to the target's weight; only the residual
+    variance learns nothing from it. A row of weight 0, or one whose target
+    is null, ages the target's weight and learns nothing for it.
 
     The drift is charged once, on the row that next observes the target, for
     the whole clock since the last one (``D_j``; under ``share_p`` any target's
