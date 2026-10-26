@@ -694,7 +694,12 @@ room to drift in joins the grids' tier to be held: NIST's certified
 regressions, whose bounds are the theory's and sit up to six hundred times
 above the error each solve reaches, and TCPD's annotated series, whose F1
 bounds sit 0.05 under the measured. The gate holds their outputs by the
-hash instead.
+hash instead. A single-seed second opinion in the essentials whose bound
+has room, and that no grid covers, keeps its cheap check and gains a twin
+in `tests/test_second_opinion_grids.py`: the same design over 50 seeds,
+against the same oracle, recorded. The twins found three of the five
+single-seed bounds narrower than the seeds' spread, and hold the measured
+spread.
 
 **A case is judged by its gap from its ideal.** The gap is `|value -
 ideal|`: the ideal is 0 for an error and 1 for a score such as an ARI, a
@@ -760,7 +765,7 @@ uv run python scripts/oracles.py rerun <group>    # those named
 test fails, or if a case is past the ledger or was not measured. Otherwise
 it applies the run to the ledger (new cases, tightened numbers, versions)
 and writes the groups' hashes. So a hash changes only after a passing run
-of its oracles. Fifty-four groups in sixteen modules hold 731 cases. A
+of its oracles. Fifty-nine groups in seventeen modules hold 754 cases. A
 `rerun` of 38 of them, the convergence grids among them, took 10.6 minutes
 here (2026-10-26, eight processes, at a load of 5 to 35 on 14 cores); the
 first 21 groups' grids took two. A group whose callable is cheap hashes
@@ -772,8 +777,9 @@ run the first seed of each scenario its grids run, at 2,000 rows.
 **The guard costs seconds.** Measured 2026-10-26 on this machine, at a
 load of about 6 on 14 cores: the 54 groups' callables took 5.8 s in one
 process, the slowest 0.69 s, and the guard's tests 8.6 s run serially,
-imports included. The first 21 groups' took 4.7 s and 6.0 s. The gate
-spreads them over its workers.
+imports included. The first 21 groups' took 4.7 s and 6.0 s. The five
+second-opinion twins added 0.37 s of callables and 0.9 s of imports. The
+gate spreads them over its workers.
 
 **The hash survives the last bits and catches a real change.** Each float
 is rounded to 24 significant bits, a float32's mantissa, about 6e-8

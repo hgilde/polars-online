@@ -5309,6 +5309,184 @@ worst = 0.786891
 p95 = 0.786891
 n = 1
 
+[group."second_opinion_grids.ewridge_gram_huber"]
+tests = [
+    "tests/test_second_opinion_grids.py::test_algorithm_h_reaches_the_m_estimate_over_fifty_seeds",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = ""
+
+[group."second_opinion_grids.ewridge_robust_se"]
+tests = [
+    "tests/test_second_opinion_grids.py::test_the_sandwich_run_once_is_statsmodels_over_fifty_seeds",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = ""
+
+[group."second_opinion_grids.kalman_share_p_se"]
+tests = [
+    "tests/test_second_opinion_grids.py::test_each_targets_se_is_its_own_filters_over_fifty_seeds",
+]
+oracles = { "filterpy" = "1.4.5" }
+dataset = ""
+
+[group."second_opinion_grids.marglag_acf"]
+tests = [
+    "tests/test_second_opinion_grids.py::test_lag_corr_is_acf_over_fifty_seeds[-0.8-bartlett]",
+    "tests/test_second_opinion_grids.py::test_lag_corr_is_acf_over_fifty_seeds[-0.8-truncated]",
+    "tests/test_second_opinion_grids.py::test_lag_corr_is_acf_over_fifty_seeds[0.8-bartlett]",
+    "tests/test_second_opinion_grids.py::test_lag_corr_is_acf_over_fifty_seeds[0.8-truncated]",
+    "tests/test_second_opinion_grids.py::test_windowed_lag_corr_is_acf_inside_the_window_over_fifty_seeds",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = ""
+
+[group."second_opinion_grids.rls_kalman_influence"]
+tests = [
+    "tests/test_second_opinion_grids.py::test_influence_is_dffits_over_fifty_seeds[kalman-0.006]",
+    "tests/test_second_opinion_grids.py::test_influence_is_dffits_over_fifty_seeds[rls-6e-06]",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = ""
+
+[case."second_opinion_grids.ewridge_gram_huber.intercept_gap"]
+ideal = 0.0
+worst = 4.61523e-07
+p95 = 4.2189e-07
+n = 50
+
+[case."second_opinion_grids.ewridge_gram_huber.slope_gap"]
+ideal = 0.0
+worst = 3.78552e-07
+p95 = 3.63036e-07
+n = 50
+
+[case."second_opinion_grids.ewridge_robust_se.hac_ratio_largest"]
+ideal = 1.0
+worst = 1.0586778
+p95 = 1.0370857
+n = 50
+
+[case."second_opinion_grids.ewridge_robust_se.hac_ratio_smallest"]
+ideal = 1.0
+worst = 1.0228009
+p95 = 1.0167413
+n = 50
+
+[case."second_opinion_grids.ewridge_robust_se.hc0_ratio_largest"]
+ideal = 1.0
+worst = 1.0341426
+p95 = 1.0282135
+n = 50
+
+[case."second_opinion_grids.ewridge_robust_se.hc0_ratio_smallest"]
+ideal = 1.0
+worst = 1.0233374
+p95 = 1.0196523
+n = 50
+
+[case."second_opinion_grids.kalman_share_p_se.y0_median_ratio"]
+ideal = 1.0
+worst = 1.0440838
+p95 = 1.0372012
+n = 50
+
+[case."second_opinion_grids.kalman_share_p_se.y0_q01_ratio"]
+ideal = 1.0
+worst = 0.9634574
+p95 = 0.9642694
+n = 50
+
+[case."second_opinion_grids.kalman_share_p_se.y0_q99_ratio"]
+ideal = 1.0
+worst = 1.0959328
+p95 = 1.0690589
+n = 50
+
+[case."second_opinion_grids.kalman_share_p_se.y1_median_ratio"]
+ideal = 1.0
+worst = 1.0398131
+p95 = 1.0338176
+n = 50
+
+[case."second_opinion_grids.kalman_share_p_se.y1_q01_ratio"]
+ideal = 1.0
+worst = 0.9654968
+p95 = 0.9701017
+n = 50
+
+[case."second_opinion_grids.kalman_share_p_se.y1_q99_ratio"]
+ideal = 1.0
+worst = 1.0843006
+p95 = 1.0724636
+n = 50
+
+[case."second_opinion_grids.marglag_acf.bartlett_phi_y_0_8_xx"]
+ideal = 0.0
+worst = 0.00326749
+p95 = 0.00321286
+n = 50
+
+[case."second_opinion_grids.marglag_acf.bartlett_phi_y_0_8_yy"]
+ideal = 0.0
+worst = 0.00341794
+p95 = 0.00324769
+n = 50
+
+[case."second_opinion_grids.marglag_acf.bartlett_phi_y_minus_0_8_xx"]
+ideal = 0.0
+worst = 0.00326749
+p95 = 0.00321286
+n = 50
+
+[case."second_opinion_grids.marglag_acf.bartlett_phi_y_minus_0_8_yy"]
+ideal = 0.0
+worst = 0.00254798
+p95 = 0.00249471
+n = 50
+
+[case."second_opinion_grids.marglag_acf.truncated_phi_y_0_8_xx"]
+ideal = 0.0
+worst = 0.00139519
+p95 = 0.00132152
+n = 50
+
+[case."second_opinion_grids.marglag_acf.truncated_phi_y_0_8_yy"]
+ideal = 0.0
+worst = 0.00125771
+p95 = 0.00111934
+n = 50
+
+[case."second_opinion_grids.marglag_acf.truncated_phi_y_minus_0_8_xx"]
+ideal = 0.0
+worst = 0.00139519
+p95 = 0.00132152
+n = 50
+
+[case."second_opinion_grids.marglag_acf.truncated_phi_y_minus_0_8_yy"]
+ideal = 0.0
+worst = 0.00254798
+p95 = 0.00249471
+n = 50
+
+[case."second_opinion_grids.marglag_acf.windowed_xx"]
+ideal = 0.0
+worst = 0.164935
+p95 = 0.102523
+n = 50
+
+[case."second_opinion_grids.rls_kalman_influence.kalman_relative_gap"]
+ideal = 0.0
+worst = 0.0037786
+p95 = 0.000349731
+n = 50
+
+[case."second_opinion_grids.rls_kalman_influence.rls_relative_gap"]
+ideal = 0.0
+worst = 3.77632e-06
+p95 = 3.49764e-07
+n = 50
+
 # --- raises
 
 [[raised]]
