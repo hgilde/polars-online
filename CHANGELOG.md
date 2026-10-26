@@ -29,6 +29,29 @@ returns.
 
 ### Changed
 
+- `quantile` draws its band in the MAD of its residuals (their
+  exponentially weighted median of `|e|` over Φ⁻¹(3/4), the sketch `huber`
+  reads), not their root mean square (task 278, D-Q). In the root mean
+  square, wild rows widened the band drawn to bound their pull: at 5% of the
+  rows lifted by a hundred noise deviations on one side of `x`, every one of
+  50 streams of 20,000 rows ended more than 0.05 from statsmodels'
+  `QuantReg` (worst 0.098 at 5%, 0.98 at 20%); in the MAD none did (worst
+  0.006 at 5%, 0.026 at 20%; likewise 200 streams of 50,000 rows). For
+  normal noise the band holds about a sixth of the rows at the median, as
+  before, and a seventh at the 0.9 quantile, where it held a ninth. A
+  `quantile` state saved by 1.3.0 loads in the root mean square and goes on
+  to the bit.
+- `min_weight` withholds the output alone in `huber`, `quantile` and
+  `sgd(loss="huber")` (task 278, D10). A row it withheld had no prediction,
+  so its residual taught the scale nothing, Huber weighed it at 1, and the
+  first solve waited for `min_weight`; a `min_weight` of 50 moved `coef`
+  from rows 5 to 13 on. The fit now learns from its own prediction and is
+  the same at any `min_weight`. In `huber` and `quantile` a target's first
+  prediction waits instead for its own first row per coefficient (of the
+  largest feature set), counted again after its history is forgotten. At
+  the default `min_weight` on unit weights the first prediction falls on
+  the same row; otherwise the first rows move. A state saved by 1.3.0 loads
+  with the old gate and goes on to the bit.
 - `withheld_reason` has a sixth value, `unstable_rate`, appended after
   `ill_conditioned` (task 278, D8).
 - Every `sgd` fit with an intercept under an identity link moves (the
@@ -458,6 +481,9 @@ returns.
 
 ### Performance
 
+- `quantile` keeps a sketch of `|e|` per target for its band's scale: about
+  5% more time a row at 20 features (0.60 to 0.63 ms per 1,000 rows,
+  measured natively), and about 9 KB more state per target (task 278).
 - `sgd`'s step keeps each target's spread, step gains and level: about 3-5%
   more a row (about 5 ns at 20 features, about 100 ns at 1,000, measured
   natively), the cost of the clip in the target's units, the level rule and

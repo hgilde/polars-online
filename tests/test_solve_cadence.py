@@ -63,9 +63,18 @@ def test_a_halflife_far_longer_than_the_stream_keeps_solving(model, extra, half_
 @pytest.mark.parametrize(("model", "extra"), MODELS, ids=[m for m, _ in MODELS])
 def test_an_explicit_solve_every_keeps_its_clock(model, extra):
     """The rule replaces only the default: a caller who names `solve_every`
-    gets that clock, the stale fit included."""
+    gets that clock, the stale fit included. `ewridge` and `lasso` first
+    solve where the weight reaches `min_weight` (20 rows of slope 1);
+    `huber` and `quantile` where their target has a row per coefficient, two
+    here, whatever `min_weight` says (task 278, D10): the fit of the first
+    two rows, held."""
     got = slope(model, extra, stream(), half_life=1e12, solve_every=1e9)
-    assert abs(got - 1.0) < 0.05, got
+    if model in ("huber", "quantile"):
+        first = slope(model, extra, stream().head(2), half_life=1e12, solve_every=1e9)
+        assert got == first, (got, first)
+        assert abs(got - 2.95) > 1.0, got
+    else:
+        assert abs(got - 1.0) < 0.05, got
 
 
 def test_in_steady_state_the_rule_is_the_clocks_cadence():
