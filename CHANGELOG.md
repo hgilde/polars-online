@@ -13,6 +13,10 @@ returns.
 
 ### Added
 
+- `bin_refit_rows` and `refit_budget` on `marginal`, under
+  `bin_stat="huber"` (task 278). `refit_budget` bounds the refit holds of a
+  spec's groups, 256 MiB by default; past it a new group keeps the one pass,
+  a notice says so, and `summary()`'s `refit_given_up` counts it.
 - **`huber_refit_rows`, on `huber` and on `sgd(loss="huber")`**: the learned rows after which each target's first rows are refit to their converged Huber fit, once (task 277). The scale is rebuilt from the converged fit's residuals. The default is described under *Changed*, and `0` turns the refit off.
   - The refit runs after the row's own prediction, so predictions stay out of sample.
   - It moves only its own target's fit. `weight_sum` and `min_weight` do not move.
@@ -29,6 +33,26 @@ returns.
 
 ### Changed
 
+- **`marginal(bin_stat="huber")` refits its first rows to convergence by
+  default (`bin_refit_rows`; task 278).** One pass weighs each row against
+  the location and scale before it, so a share of spikes in the first rows
+  pulls the bins' locations, the target's scale learns the pulled
+  deviations, and without decay the bins stay captured: on 16 bins with
+  spikes of about 20 scales and no decay, the worst of 50 streams was 1.3
+  and 3.5 target scales from statsmodels' M-location after 2,000 rows at 12%
+  and 20% spikes, and 0.23 and 1.0 after 20,000; with the refit 0.015 and
+  0.14, then 0.004 and 0.057. Once `bin_refit_rows` learned rows are in,
+  each target's location and MAD scale are refit jointly, the scale is
+  rebuilt, and each bin's location is solved exactly at the rebuilt cut. The
+  default is `max(500, 30 · bins)` (a bin needs about 30 rows at the
+  refit); `0` restores 1.3.0's numbers exactly. `bin_n`, `weight_sum` and
+  every pair moment do not move; `bin_mean_y`, `bin_var_y` and the split
+  columns do (up to 3.5 scales in `bin_mean_y` on captured streams, 0.007 on
+  clean ones). With learned edges the warm-up's held rows are refit when the
+  edges are fixed, with no extra memory; with `bin_edges` the rows are held
+  until the count, `R·(8·features + 16·targets + 64)` bytes a group. The
+  refit costs about 1 ms at 10 features to 110 ms at 10,000, once. A state
+  saved by 1.0-1.3 loads with the refit off and continues exactly.
 - `kalman` and `lasso`: `min_weight` withholds the output only, as in every
   other model, so the fit is the same at any `min_weight` (task 278).
   `kalman`'s residual variance learns from the filter's own prediction on
@@ -212,6 +236,8 @@ returns.
 
 ### Fixed
 
+- A captured `marginal(bin_stat="huber")` bin is freed by the refit of its
+  first rows (task 278; see *Changed*).
 - `huber`, `sgd(loss="huber")`, `quantile` and `marginal(bin_stat="huber")`
   rescale with the target at any factor (task 278). A decimal factor, such
   as grams for kilograms, moved the robust scale by up to 1.6%: its sketch

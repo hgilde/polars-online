@@ -285,7 +285,7 @@ def main() -> int:
         if subprocess.run(step, cwd=REPO, env=env, check=False).returncode:
             print("quick: FAIL")
             return 1
-    print("quick: PASS (the mapped tests only; the gate still runs before each commit)")
+    print("quick: PASS (the mapped tests only; the essentials gate runs on the merged wave)")
     return 0
 
 

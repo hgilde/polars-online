@@ -649,18 +649,41 @@ that moved gives its reason in its mark.
 
 ### Iterating
 
-**Run the tests for what you changed while you work, the essentials before
-each commit, and every test before each push.** Each level reaches what the
-one before it cannot, and costs more. The times are this machine's, a
-14-core Mac shared with another user's jobs, measured on 2026-10-11 at the
-load each row gives.
+**Run the tests for what you changed while you work, the essentials once on
+each wave of merged branches, and every test before each push.** Each level
+reaches what the one before it cannot, and costs more. The times are this
+machine's, a 14-core Mac shared with another user's jobs, measured on
+2026-10-11 at the load each row gives.
 
 | when | what runs | command | time |
 |---|---|---|---|
 | after each change, inside a task | the tests that cover the changed paths | `scripts/quick.sh` | seconds to a minute |
-| before each commit | every check, and the tests' essentials | `scripts/gate.sh` | 48 s in 8 processes at a load of 4; 111 s in 2 at a load of 20; 139 to 191 s in one |
-| once a group of branches is merged to `main` | every check and every test, on `main` | `scripts/gate.sh --extended` | 224 s in 6 processes at a load of 8; 487 to 501 s in one |
-| before every push, always | the same, on the exact commit pushed | `scripts/gate.sh --extended` | the same |
+| at the end of a task | the same, with the mapped files' extended tests, and the lints | `scripts/quick.sh --extended` | a minute or two |
+| once on each wave of finished branches, merged together | every check, and the tests' essentials | `scripts/gate.sh` | 48 s in 8 processes at a load of 4; 111 s in 2 at a load of 20; 139 to 191 s in one |
+| before every push, always | every check and every test, on the exact commit pushed | `scripts/gate.sh --extended` | 224 s in 6 processes at a load of 8; 487 to 501 s in one |
+
+**Several branches in flight share one essentials gate.** A gate per branch
+cost twice over when branches ran side by side: each gate builds and links
+the release extension with every core, so five at once took 500 to 2,000 s
+each where one alone takes about 300; and every branch that landed made the
+others merge `main` and gate again, most often after a clean merge. So a
+task ends with `scripts/quick.sh --extended` and the lints, and does not
+merge `main`. The finished branches are merged in turn onto an
+`integration` branch cut from `main`. A conflict confined to generated
+files (the state fixtures, the golden values, the API snapshot) is resolved
+by regenerating them once. One essentials gate then runs, and `main` moves
+to `integration` only on PASS. A failure names its tests; `scripts/slot.sh
+overlap` and `git log` tie them to the branch that touched their files, and
+where that is not enough a bisection over the wave's merges finds it in
+about log₂ of the wave's size in gates. The branch goes back to its task,
+and the rest of the wave lands without it.
+
+**At most two gates run at once on this machine.** `scripts/gate.sh` takes
+one of `POLARS_ONLINE_GATES` (default 2) tokens, directories in the
+repository's common git directory holding their gate's pid, and waits for
+one when all are held; it prints that it waited and for how long, and its
+timing starts when it has a token. A token whose gate has died is taken
+back. CI runs one gate per job and takes none.
 
 **`scripts/quick.sh` runs the tests that cover the paths a branch changed,
 and nothing else.** It reads the paths from `git diff` against the

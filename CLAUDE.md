@@ -56,9 +56,18 @@ scripts/budgets.py check|raises|apply    # performance and memory budgets (budge
 ```
 
 Iterating (task 245; docs/TESTING.md, "Iterating" and "Caches and when to
-clear them"): workers run `scripts/quick.sh` while iterating and
-`scripts/gate.sh` (essentials) before each commit; the full tier runs once
-per merge wave on `main` and, always, before every push on the exact sha.
+clear them"): workers run `scripts/quick.sh` while iterating and finish
+with `scripts/quick.sh --extended` plus the lints, not a full gate, and
+never merge `main` unless asked. The coordinator merges each wave of
+finished branches onto an `integration` branch cut from `main`, regenerates
+any generated files that conflict (fixtures, goldens, the API snapshot)
+once, runs ONE essentials gate, and fast-forwards `main` on PASS; a failure
+is mapped to a branch by the files it touched (`scripts/slot.sh overlap`)
+or bisected over the wave's merges (the user, 2026-10-26: parallel gates
+and the re-gates of conflicting merges were the agents' two bottlenecks).
+`scripts/gate.sh` takes one of two machine-wide tokens and waits for one
+(`POLARS_ONLINE_GATES`). The full tier runs, always, before every push on
+the exact sha.
 Run at most about four agents at once on this machine. A worker gets a
 worktree slot, not a fresh worktree (task 248; docs/TESTING.md, "Worktree
 slots"): the coordinator runs `scripts/slot.sh take <branch> main`, starts
