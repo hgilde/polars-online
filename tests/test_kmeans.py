@@ -1226,3 +1226,248 @@ class TestRefusals:
         want = unnested(po.ModelBank([spec(warm_rows=30)]).fit_predict(frame(X)))
         assert got.equals(want, null_equal=True)
         assert not math.isnan(got["dist"][-1])
+
+
+# ------------------------------------------- the parameters (task 278, b22)
+
+
+def _differ(a: pl.DataFrame, b: pl.DataFrame) -> list[str]:
+    return [c for c in a.columns if not a[c].equals(b[c], null_equal=True)]
+
+
+class TestTheSeed:
+    """``seed`` drives the k-means++ draws, and through them ``lloyd``'s ten
+    starts; ``first`` and ``farthest`` draw nothing. Overlapping blobs, so
+    the draws matter."""
+
+    @staticmethod
+    def run(**kw):
+        X, _ = blobs(n=2000, k=4, seed=2, scale=1.4, spread=3.0)
+        s = spec(k=4, warm_rows=60, **kw)
+        return unnested(po.ModelBank([s]).fit_predict(frame(X)))
+
+    @pytest.mark.parametrize("rule", RULES)
+    def test_reproducible_and_none_is_zero(self, rule):
+        zero = self.run(init=rule, seed=0)
+        assert _differ(zero, self.run(init=rule, seed=0)) == []
+        assert _differ(zero, self.run(init=rule)) == []
+        assert _differ(zero, self.run(init=rule, seed=None)) == []
+
+    @pytest.mark.parametrize("seed", [1, 9, 2**64 - 1])
+    def test_it_moves_the_draws_and_only_the_draws(self, seed):
+        zero = {rule: self.run(init=rule, seed=0) for rule in RULES}
+        other = {rule: self.run(init=rule, seed=seed) for rule in RULES}
+        assert {"cluster", "dist"} <= set(_differ(zero["k-means++"], other["k-means++"]))
+        for rule in ("first", "farthest"):
+            assert _differ(zero[rule], other[rule]) == [], rule
+        # lloyd keeps the best of its ten starts: on this stream every seed
+        # tried finds the same partition, under other labels. So the
+        # distances hold to the bit and the labels are one relabelling.
+        moved = _differ(zero["lloyd"], other["lloyd"])
+        assert moved == ["cluster", "coef"], moved
+        pairs = set(
+            zip(
+                zero["lloyd"]["cluster"].drop_nulls(),
+                other["lloyd"]["cluster"].drop_nulls(),
+                strict=True,
+            )
+        )
+        assert len(pairs) == 4 == len({a for a, _ in pairs}) == len({b for _, b in pairs})
+
+
+class TestMergesAcrossChunksAndSaves:
+    """Chunk invariance and save/load where split-merge has fired, proven
+    from the state's own counters: the stationary-blob tests elsewhere never
+    show a merge or a re-placement."""
+
+    @staticmethod
+    def stream():
+        # Six hundred rows of a blob at (3, 3), then four overlapping blobs:
+        # two centres seeded on the first blob merge once it is gone.
+        X, _ = blobs(n=2000, k=4, seed=2, scale=1.4, spread=3.0)
+        rng = np.random.default_rng(5)
+        X[:600] = np.array([[3.0, 3.0]]) + 0.5 * rng.standard_normal((600, 2))
+        return frame(X)
+
+    SPEC = staticmethod(
+        lambda: spec(
+            k=4,
+            warm_rows=100,
+            half_life=300.0,
+            split_merge_every_rows=50,
+            dead_frac=0.1,
+        )
+    )
+
+    def test_chunk_invariance(self):
+        df = self.stream()
+        bank = po.ModelBank([self.SPEC()])
+        one = unnested(bank.fit_predict(df))
+        st = _state(bank)
+        # Measured 2026-10-25: three merges, between rows 600 and 800.
+        assert st["n_merges"] + st["n_dead"] > 0, st
+        for size in (1, 7, 600):
+            many = unnested(
+                pl.concat(po.ModelBank([self.SPEC()]).fit_predict_batches(df, chunk_size=size))
+            )
+            assert one.drop("coef").equals(many.drop("coef"), null_equal=True), size
+            has = one["coef"].is_not_null()
+            assert one.filter(has)["coef"].equals(many.filter(has)["coef"]), size
+
+    def test_save_load_before_between_and_after_the_merges(self):
+        df = self.stream()
+        counts = []
+        for cut in (550, 700, 1500):
+            a = po.ModelBank([self.SPEC()])
+            a.fit_predict(df.head(cut))
+            st = _state(a)
+            counts.append(st["n_merges"] + st["n_dead"])
+            b = po.ModelBank.load_bytes(a.save_bytes(), specs=[self.SPEC()])
+            assert _state(b) == st, cut
+            rest = df.slice(cut)
+            assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True), cut
+            assert _state(a) == _state(b), cut
+        # A cut before any merge, one after the first, one after them all.
+        assert counts[0] == 0 < counts[1] <= counts[2], counts
+
+
+class TestTheDefaults:
+    """Every keyword left out is the value the docstring names, and that
+    value is not inert: the other value given beside it moves the output.
+    On the stream whose first blob vanishes, so that split-merge acts."""
+
+    @staticmethod
+    def run(k=4, **kw):
+        df = TestMergesAcrossChunksAndSaves.stream()
+        d = dict(features=["x0", "x1"], n_clusters=k, half_life=200.0, min_weight=5.0)
+        d.update(kw)
+        return unnested(po.ModelBank([po.spec.kmeans("m", **d)]).fit_predict(df))
+
+    def test_each_default_spelled_out(self):
+        default = self.run()
+        assert default["cluster"].is_not_null().arg_max() == 500, "warm_rows is 500"
+        for given, other in (
+            (dict(warm_rows=500), dict(warm_rows=400)),
+            (dict(init="lloyd"), dict(init="first")),
+            (dict(seed=0), dict(seed=9)),
+            (dict(update_every_rows=1), dict(update_every_rows=10)),
+            # Measured 2026-10-25: the default merges once; 0.1 never does
+            # (0.3 to 5 merge the same pair on the same check).
+            (dict(split_merge=0.5), dict(split_merge=0.1)),
+            (dict(split_merge_every_rows=100), dict(split_merge_every_rows=10)),
+            (dict(dead_frac=0.05), dict(dead_frac=0.5)),
+            (dict(standardize=True), dict(standardize=False)),
+            (dict(scale_floor=0.1), dict(scale_floor=1.0)),
+        ):
+            assert _differ(default, self.run(**given)) == [], given
+            assert _differ(default, self.run(**other)) != [], other
+
+    def test_warm_rows_is_k_past_five_hundred(self):
+        # 501 centres need 501 buffered rows; `first` keeps the seeding cheap.
+        wide = self.run(k=501, init="first")
+        assert wide["cluster"].is_not_null().arg_max() == 501
+        assert _differ(wide, self.run(k=501, init="first", warm_rows=501)) == []
+
+    def test_dead_frac_is_zero_beside_split_merge_zero(self):
+        off = self.run(split_merge=0.0)
+        assert _differ(off, self.run(split_merge=0.0, dead_frac=0.0)) == []
+        assert _differ(off, self.run()) != []
+        with pytest.raises(ValueError, match="kmeans: dead_frac re-places a centre"):
+            po.ModelBank([spec(split_merge=0.0, dead_frac=0.05)])
+
+
+class TestTheBoundaries:
+    """The ceilings and floors through Python, each value on both sides."""
+
+    def test_n_clusters_ceiling(self):
+        po.ModelBank([po.spec.kmeans("m", features=["x0"], n_clusters=65_536, half_life=10.0)])
+        with pytest.raises(
+            ValueError, match="n_clusters must be at most 65536 \\(2\\^16\\), got 65537"
+        ):
+            po.spec.kmeans("m", features=["x0"], n_clusters=65_537, half_life=10.0)
+
+    def test_the_warm_up_buffer_ceiling(self):
+        # A buffered row of two features is its vector (24 bytes on a
+        # 64-bit target), its two values and its weight: 48 bytes, so
+        # 5,592,405 rows fit 256 MiB and one more is past it.
+        po.ModelBank([spec(warm_rows=5_592_405)])
+        with pytest.raises(
+            ValueError,
+            match="the warm-up buffer would hold 256.00003 MiB \\(warm_rows 5592406 rows of 2",
+        ):
+            po.ModelBank([spec(warm_rows=5_592_406)])
+
+    @pytest.mark.parametrize(
+        ("kw", "msg"),
+        [
+            ({"split_merge": float("inf")}, "split_merge must be finite, got float inf"),
+            ({"dead_frac": float("nan")}, "dead_frac must not be NaN"),
+            ({"scale_floor": float("inf")}, "scale_floor must be finite"),
+            ({"warm_rows": 2}, "warm_rows"),
+        ],
+        ids=lambda v: next(iter(v)) if isinstance(v, dict) else v,
+    )
+    def test_a_value_past_its_bound_is_refused_by_name(self, kw, msg):
+        with pytest.raises(ValueError, match=msg):
+            po.ModelBank([spec(**kw)])
+
+    def test_dead_frac_just_below_one_runs(self):
+        # 1 and above are refused (every centre would be dead at every
+        # check); just below it is legal and re-places on the formula.
+        X, _ = blobs(n=600, seed=7)
+        out = unnested(po.ModelBank([spec(dead_frac=0.999, warm_rows=50)]).fit_predict(frame(X)))
+        assert out["dist"].drop_nulls().is_finite().all()
+
+
+class TestScaleEquivariance:
+    """Under ``standardize`` distances are in units of each feature's EW
+    standard deviation, so a change of units moves no assignment: a power
+    of two per feature to the bit (the centres scale exactly), an affine
+    change with the distances to rounding. Without standardization the
+    units count, and one power of two for every feature scales every
+    distance exactly."""
+
+    SCALE = np.array([2.0**10, 2.0**-7])
+
+    @staticmethod
+    def run(X, **kw):
+        return unnested(po.ModelBank([spec(k=4, warm_rows=60, **kw)]).fit_predict(frame(X)))
+
+    @staticmethod
+    def stream():
+        X, _ = blobs(n=3000, k=4, seed=2, scale=0.8, spread=6.0)
+        return X
+
+    def test_a_power_of_two_per_feature_is_exact(self):
+        X = self.stream()
+        base, scaled = self.run(X), self.run(X * self.SCALE)
+        assert _differ(base, scaled) == ["coef"]
+        for a, b in zip(base["coef"], scaled["coef"], strict=True):
+            assert (a is None) == (b is None)
+            if a is not None:
+                assert np.array_equal(
+                    np.array(a).reshape(-1, 2) * self.SCALE, np.array(b).reshape(-1, 2)
+                )
+
+    def test_an_affine_change_holds_the_assignments(self):
+        X = self.stream()
+        a, b = np.array([3.7, 0.013]), np.array([1e3, -42.0])
+        base, moved = self.run(X), self.run(X * a + b)
+        assert base["cluster"].equals(moved["cluster"], null_equal=True)
+        assert base["weight_sum"].equals(moved["weight_sum"])
+        # Measured 2026-10-25: 6.7e-14 at most on either distance.
+        for key in ("dist", "dist_second"):
+            diff = np.abs(base[key].to_numpy() - moved[key].to_numpy())
+            assert np.nanmax(diff) < 1e-10, key
+        centres = np.array(base["coef"][-1]).reshape(-1, 2) * a + b
+        np.testing.assert_allclose(centres, np.array(moved["coef"][-1]).reshape(-1, 2), rtol=1e-12)
+
+    def test_without_standardization_the_units_count(self):
+        X = self.stream()
+        base = self.run(X, standardize=False)
+        assert "cluster" in _differ(base, self.run(X * self.SCALE, standardize=False))
+        c = 2.0**6
+        uniform = self.run(X * c, standardize=False)
+        assert _differ(base, uniform) == ["dist", "dist_second", "coef"]
+        assert (uniform["dist"] == base["dist"] * c).all()
+        assert (uniform["dist_second"] == base["dist_second"] * c).all()
