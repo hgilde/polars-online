@@ -920,10 +920,12 @@ def _pred_of(out) -> np.ndarray:
 @pytest.mark.parametrize("loss", ["huber", "quantile"])
 def test_on_the_row_clock_solve_every_is_its_row_cap(loss):
     """Without a clock column the clock is the row's number, the first row
-    being 1, so before the first solve at ``min_weight`` (here never met)
-    ``solve_every=n`` solves on the rows ``max_rows_between_solves=n`` does.
-    Measured from the first row, whose step is 0, it solved a row later, the
-    whole stream long, which ``coef`` showed (task 278, D13)."""
+    being 1, so ``solve_every=n`` solves on the rows
+    ``max_rows_between_solves=n`` does. Measured from the first row, whose
+    step is 0, it solved a row later, the whole stream long, which ``coef``
+    showed (task 278, D13). The first solve is the model's floor, a row per
+    coefficient (row 2, three coefficients), whatever ``min_weight`` says
+    (1e9 here, never met; task 278, D10), and the cadence counts from it."""
     rng = np.random.default_rng(0)
     n = 60
     x = rng.standard_normal(n)
@@ -948,4 +950,4 @@ def test_on_the_row_clock_solve_every_is_its_row_cap(loss):
     clock = run(solve_every=7.0)
     assert clock.equals(run(solve_every=1e18, max_rows_between_solves=7), null_equal=True)
     c = clock["coef"].to_list()
-    assert [i for i in range(1, n) if c[i] != c[i - 1]] == [6, 13, 20, 27, 34, 41, 48, 55]
+    assert [i for i in range(1, n) if c[i] != c[i - 1]] == list(range(2, n, 7))
