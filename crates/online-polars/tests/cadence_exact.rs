@@ -73,7 +73,8 @@ const CASES: [(&str, &str, &str, &str, &str, Event); 6] = [
     ),
     (
         "quantile",
-        r#"{"type": "quantile", "quantile": 0.5, "solve_every": {every}}"#,
+        // The refit is off for the same reason as huber's (task 278, D-Q2).
+        r#"{"type": "quantile", "quantile": 0.5, "solve_every": {every}, "quantile_refit_rows": 0}"#,
         r#""targets": ["y"],"#,
         r#"["x"]"#,
         r#""coef_every": 0,"#,

@@ -147,6 +147,14 @@
 //! worst 0.098 at 5%, 0.98 at 20%). The median of `|e|` moves by a wild
 //! row's weight, not its size, so the band stays the clean rows' width.
 //!
+//! **Each target's first rows are refit to convergence once**
+//! ([`RobustCfg::refit_rows`]): `huber`'s by IRLS ([`crate::huber_refit`]),
+//! a quantile fit's to the minimum of the smoothed check loss at the band
+//! its own residuals draw (`quantile_refit`; docs/PLAN.md task 278, D-Q2).
+//! Without decay one pass keeps every row in its sums as it took it: the
+//! warm-up's least-squares rows, and the rows a band drawn around a pulled
+//! fit held, at full weight for good.
+//!
 //! Because the weights are per target, the `S` accumulator is per target here
 //! (one [`EwCov`] each) — unlike [`crate::EwRidge`], which shares one.
 //!
@@ -364,8 +372,11 @@ pub struct RobustCfg {
     pub emit_scale: bool,
     /// Each target's first `refit_rows` learned rows refit to convergence,
     /// once, and its residual scale rebuilt from the converged residuals
-    /// ([`crate::huber_refit`]): a spec's `huber_refit_rows`, 200 by
-    /// default; 0 is off. Huber only, and not beside `ridge_scale`. A state
+    /// ([`crate::huber_refit`]): a spec's `huber_refit_rows`, on by default;
+    /// 0 is off. Not beside `ridge_scale` nor an infinite `huber_delta`. A
+    /// quantile fit's is a spec's `quantile_refit_rows`, the converged
+    /// smoothed check-loss fit of those rows (`robust::quantile_refit`;
+    /// docs/PLAN.md task 278, D-Q2), from three rows a coefficient up. A state
     /// written before schema 64 has no such field and was fitted without a
     /// refit, so it loads as 0 and goes on as it was, never refitting
     /// rows its stream has long passed.
@@ -573,14 +584,29 @@ impl RobustCfg {
             return Err("n_features and n_targets must be >= 1".into());
         }
         if self.refit_rows > 0
-            && (!matches!(self.loss, RobustLoss::Huber { delta } if delta.is_finite())
-                || self.ridge_scale)
+            && (self.ridge_scale
+                || matches!(self.loss, RobustLoss::Huber { delta } if !delta.is_finite()))
         {
             return Err(format!(
                 "{kind}: huber_refit_rows is for huber with a finite huber_delta, and not \
                  beside ridge_scale \"sum\": an infinite cut is least squares, with no \
                  outliers to refit for, and the sum-scale prior ages with every row before \
                  the first, which a refit of the buffered rows does not hold"
+            ));
+        }
+        // A quantile fit's refit is of rows past the warm-up: the stream
+        // takes its first three rows a coefficient as least squares, and a
+        // refit among them would leave the rows after it to that warm-up
+        // (`robust::quantile_refit`).
+        if matches!(self.loss, RobustLoss::Quantile { .. })
+            && self.refit_rows > 0
+            && f64::from(self.refit_rows) < WARM_ROWS * self.k_total() as f64
+        {
+            return Err(format!(
+                "{kind}: quantile_refit_rows must be 0 or at least three rows a coefficient \
+                 ({}), the rows the fit takes as least squares before its first band, got {}",
+                (WARM_ROWS * self.k_total() as f64) as u64,
+                self.refit_rows
             ));
         }
         match self.loss {
@@ -1230,8 +1256,9 @@ impl Robust {
     /// keeps waiting for its first, which then reads the rebuilt sums.
     #[inline(never)]
     fn refit_target(&mut self, j: usize) {
-        let RobustLoss::Huber { delta } = self.cfg.loss else {
-            return;
+        let delta = match self.cfg.loss {
+            RobustLoss::Huber { delta } => delta,
+            RobustLoss::Quantile { tau } => return self.refit_quantile(j, tau),
         };
         let nf = self.cfg.n_features;
         let (buf, ages) = self.refit[j].take();
@@ -1326,6 +1353,31 @@ impl Robust {
     /// learned had a Huber weight of 1; otherwise it is the sums at the
     /// refit's weights, which is what it is for.
     fn replay(&mut self, j: usize, rows: &Rows<'_>, u: &[f64], z: &mut [f64]) {
+        self.replay_rows(j, rows, z, |i| RowUpdate::Fit {
+            w: rows.w(i) * u[i],
+            target: rows.y(i),
+        });
+    }
+
+    /// Target `j`'s sums rebuilt from the buffered rows, each row doing what
+    /// `row(i)` says: a least-squares row at a weight and a target, entered
+    /// in the stream's order as `step`'s fit arm enters it, or a quantile
+    /// row outside the band, a nudge into the cross-moment. The nudges,
+    /// `Σ nudge_i · z_i` each decayed as the stream decays a row's weight,
+    /// enter once after the last row, over the band's weight then: the raw
+    /// step `E[z·y] += nudge·z/wj` summed, which in real arithmetic is the
+    /// same as entering each in its place, and which needs no band weight
+    /// before the first row inside the band (a nudge the stream drops,
+    /// having nothing to step). The leverage bound the stream puts on a
+    /// nudge is not applied: the refit is the batch fit, which has none. A
+    /// replay without a nudge is [`Self::replay`]'s, to the bit.
+    fn replay_rows(
+        &mut self,
+        j: usize,
+        rows: &Rows<'_>,
+        z: &mut [f64],
+        row: impl Fn(usize) -> RowUpdate,
+    ) {
         let k = self.cfg.k_total();
         let intercept = self.cfg.fit_intercept;
         self.cov[j] = EwCov::new(k).without_runs();
@@ -1333,21 +1385,56 @@ impl Robust {
         self.ybar[j] = 0.0;
         self.ybar_lo[j] = 0.0;
         self.wj[j] = 0.0;
+        // The nudges' sums, `Σ nudge_i` and `Σ nudge_i · z_i` decayed to the
+        // row, `None` until the first.
+        let mut nudged: Option<(f64, Vec<f64>)> = None;
+        let fill = |z: &mut [f64], x: &[f64]| {
+            if intercept {
+                z[0] = 1.0;
+                z[1..].copy_from_slice(x);
+            } else {
+                z.copy_from_slice(x);
+            }
+        };
         for e in rows.events() {
             let i = match e {
                 Event::Age { lam, count, .. } => {
                     let (cov, wj) = (&mut self.cov[j], &mut self.wj[j]);
+                    let sum = &mut nudged;
                     Event::age_by(lam, count, |l| {
                         cov.decay(l);
                         *wj *= l;
+                        if let Some((t, s)) = sum.as_mut() {
+                            *t *= l;
+                            s.iter_mut().for_each(|v| *v *= l);
+                        }
                     });
                     continue;
                 }
                 Event::Row(i) => i,
             };
             let lam = rows.lam(i);
-            let w = rows.w(i) * u[i];
             let aged = lam * self.wj[j];
+            if let Some((t, s)) = nudged.as_mut() {
+                *t *= lam;
+                s.iter_mut().for_each(|v| *v *= lam);
+            }
+            let (w, target) = match row(i) {
+                RowUpdate::Fit { w, target } => (w, target),
+                RowUpdate::Nudge { nudge } => {
+                    self.cov[j].decay(lam);
+                    self.wj[j] = aged;
+                    if nudge != 0.0 && nudge.is_finite() {
+                        fill(z, rows.x(i));
+                        let (t, s) = nudged.get_or_insert_with(|| (0.0, vec![0.0; k]));
+                        *t += nudge;
+                        for (v, &zi) in s.iter_mut().zip(z.iter()) {
+                            *v += nudge * zi;
+                        }
+                    }
+                    continue;
+                }
+            };
             // A Huber weight of 0, from a residual of `inf`: the row ages the
             // sums alone (hard rule 9).
             if w.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
@@ -1355,16 +1442,11 @@ impl Robust {
                 self.wj[j] = aged;
                 continue;
             }
-            if intercept {
-                z[0] = 1.0;
-                z[1..].copy_from_slice(rows.x(i));
-            } else {
-                z.copy_from_slice(rows.x(i));
-            }
+            fill(z, rows.x(i));
             let wj_new = aged + w;
             let a = aged / wj_new;
             let bb = w / wj_new;
-            let dy = crate::comp::dev(rows.y(i), self.ybar[j], self.ybar_lo[j]);
+            let dy = crate::comp::dev(target, self.ybar[j], self.ybar_lo[j]);
             let ab_dy = a * bb * dy;
             let cov = &self.cov[j];
             for (i2, (ci, &zi)) in self.cross[j].iter_mut().zip(z.iter()).enumerate() {
@@ -1373,6 +1455,23 @@ impl Robust {
             crate::comp::add(&mut self.ybar[j], &mut self.ybar_lo[j], bb * dy);
             self.cov[j].update(z, lam, w);
             self.wj[j] = wj_new;
+        }
+        // The nudges over the band's weight, centred: `ȳ += P₀/wj` and
+        // `c_i += (P_i − P₀·m_i)/wj`, `P₀ = Σ nudge_i` and `P = Σ nudge_i·z_i`,
+        // `m` the means (the module docs' nudge, summed). Without a row in the band
+        // there is no weight to step over, and the sum is dropped, as the
+        // stream drops a nudge then.
+        let wj = self.wj[j];
+        if let Some((total, sum)) = nudged
+            && wj > 0.0
+        {
+            let cov = &self.cov[j];
+            for (i2, (ci, &p)) in self.cross[j].iter_mut().zip(&sum).enumerate() {
+                *ci += (p - total * cov.mean(i2)) / wj;
+            }
+            if total != 0.0 {
+                crate::comp::add(&mut self.ybar[j], &mut self.ybar_lo[j], total / wj);
+            }
         }
     }
 
@@ -2183,9 +2282,20 @@ impl OnlineModel for Robust {
                     // A row of weight 0 learns nothing, the residual variance
                     // included, as the fit arm leaves it above: its nudge is
                     // 0, and `(wsig·σ² + 0)/(wsig + 0)` is not `σ²` to the bit
-                    // (hard rule 9; review 2026-10-05, CC5).
+                    // (hard rule 9; review 2026-10-05, CC5). The refit's
+                    // buffer takes it as an ageing, and a row of weight as a
+                    // learned row, as the fit arm does: the refit scores
+                    // every row afresh (task 278, D-Q2).
                     if weight.is_nan() || weight <= 0.0 {
+                        if let Some(b) = self.refit.get_mut(j) {
+                            b.age(lam, lam_scale, self.cfg.refit_rows);
+                        }
                         continue;
+                    }
+                    if let Some(b) = self.refit.get_mut(j)
+                        && b.learn(x, yj, weight, lam, lam_scale, self.cfg.refit_rows)
+                    {
+                        refits.push(j);
                     }
                     if nudge.is_finite() && aged > 0.0 {
                         // The step moves the fit at this row by the step
@@ -2426,6 +2536,9 @@ impl OnlineModel for Robust {
     }
 }
 
+#[path = "robust/quantile_refit.rs"]
+mod quantile_refit;
+
 #[cfg(test)]
 #[path = "robust/tests.rs"]
 mod tests;
@@ -2445,3 +2558,7 @@ mod refit_tests;
 #[cfg(test)]
 #[path = "robust/gate_tests.rs"]
 mod gate_tests;
+
+#[cfg(test)]
+#[path = "robust/quantile_refit_tests.rs"]
+mod quantile_refit_tests;

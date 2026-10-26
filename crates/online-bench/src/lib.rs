@@ -56,6 +56,9 @@ pub const MODEL_CASES: &[&str] = &[
     // 2026-10-23 found costly (task 270 (e): J-3, slice M's table, F-2).
     "rls",
     "quantile",
+    // Its refit of the first rows (docs/PLAN.md task 278, D-Q2) inside the
+    // measured block, as `huber_k20_refit`'s.
+    "quantile_refit",
     "ftrl",
     "holt",
     "marginal",
@@ -479,6 +482,16 @@ fn case_spec(id: &str) -> (Value, Shape) {
         "rls" => (fit(json!({"type": "rls", "delta": 1.0}), 20), Shape::Linear),
         "quantile" => (
             fit(json!({"type": "quantile", "quantile": 0.5}), 20),
+            Shape::Linear,
+        ),
+        // The default refit runs in the warm-up's first 500 rows, outside
+        // every block; here it holds 2,500 rows and runs on the block's
+        // 500th, so the block pays for it once (task 278, D-Q2).
+        "quantile_refit" => (
+            fit(
+                json!({"type": "quantile", "quantile": 0.5, "quantile_refit_rows": 2500}),
+                20,
+            ),
             Shape::Linear,
         ),
         "ftrl" => (fit(json!({"type": "ftrl"}), 20), Shape::Linear),

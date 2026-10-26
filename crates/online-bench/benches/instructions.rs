@@ -61,6 +61,7 @@ fn counted_from(entry: &str) -> LibraryBenchmarkConfig {
 #[bench::lasso_k20(args = ("lasso_k20"), setup = model_setup)]
 #[bench::rls(args = ("rls"), setup = model_setup)]
 #[bench::quantile(args = ("quantile"), setup = model_setup)]
+#[bench::quantile_refit(args = ("quantile_refit"), setup = model_setup)]
 #[bench::ftrl(args = ("ftrl"), setup = model_setup)]
 #[bench::holt(args = ("holt"), setup = model_setup)]
 #[bench::marginal(args = ("marginal"), setup = model_setup)]

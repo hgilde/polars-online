@@ -288,6 +288,10 @@ CASES: list[Case] = [
         ),
     ),
     Case("quantile2", "quantile", full2(quantile=0.3, max_rows_between_solves=4)),
+    # The refit of each target's first rows at a count of its own, inside a
+    # budget, and a budget below one group's buffer, every refit given up.
+    Case("quantile3", "quantile", full(quantile=0.6, quantile_refit_rows=40, refit_budget=8)),
+    Case("quantile4", "quantile", full2(quantile=0.5, quantile_refit_rows=50, refit_budget=0.001)),
     Case(
         "rls",
         "rls",

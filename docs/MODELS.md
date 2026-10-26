@@ -1097,8 +1097,9 @@ hub = po.spec.huber("hub", targets=["y"], features=["x0", "x1"], clock="t", gap_
                     huber_scale_half_life=120.0,  # sigma's own memory, shorter than the fit's (default half_life)
                     huber_refit_rows=1000)        # each target's first rows refit to convergence (default 500; 0 is off)
 med = po.spec.quantile("med", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=600.0,
-                       quantile=0.5,      # the level, strictly between 0 and 1: 0.5 is a median regression
-                       quantile_eps=0.2)  # the band's half-width, in units of sigma (default 0.2)
+                       quantile=0.5,             # the level, strictly between 0 and 1: 0.5 is a median regression
+                       quantile_eps=0.2,         # the band's half-width, in units of sigma (default 0.2)
+                       quantile_refit_rows=1000) # each target's first rows refit to convergence (default 500; 0 is off)
 ```
 
 **`huber_delta`'s default, 1.345, is the cut at which Huber's estimator is
@@ -1124,6 +1125,44 @@ inside the band.
 | a band holding less than one row per coefficient | until the band holds rows again, which rebuilds a fit that a row near the input bound, `1e100`, has moved |
 | a target with no `σ` above 0 | until a residual other than 0 gives it one, since the band is a width in units of `σ` |
 
+**`quantile` refits each target's first 500 learned rows to convergence
+once, as `huber` does (`quantile_refit_rows=`).** One pass keeps each row in
+its sums as it took it, and without decay keeps it there at full weight: its
+warm-up's rows as least-squares rows, and the rows inside a band drawn around
+a fit that wild rows pulled. A batch fit reads those wild rows as outliers,
+whose pull the band's width bounds; the one pass lets them go only as the rows
+after them outweigh them. On the row a target's count of learned rows is
+reached, its rows are refit to the minimum of the smoothed check loss at the
+band `h = σ·max(quantile_eps, (k/n)^(2/5))` its own residuals draw, `σ`
+their weighted median `|e|` over `Φ⁻¹(3/4)`. Each pass is a Newton step of
+that loss: the rows inside the band are least-squares rows at target
+`y + 2h(τ − ½)`, each row outside adds `2h·ψ(e)·z` with no cap, and a step
+that would raise the loss is halved until it does not. A band of fewer rows
+than coefficients has no curvature to step on; such a pass moves each
+prediction toward its row by at most the band's width instead. The sums are
+then rebuilt as the stream takes each row scored by the converged fit, `σ`
+from its residuals, and the stream goes on online. Measured over 50 streams of
+8,000 rows of `y = 1 + 2x₀ − x₁ + 0.5·Laplace`, no decay, as the worst
+stream's largest coefficient gap to statsmodels' `QuantReg` on the same rows:
+
+| the first 500 rows | `quantile_refit_rows=0` | 500 (the default) |
+|---|---|---|
+| clean | 0.0057 | 0.0052 |
+| a fifth wild, +50, where `x₀ > 0` | 0.038 | 0.0085 |
+| the first three 1e4 off | 0.22 | 0.0053 |
+| t(2) noise | 0.0078 | 0.0058 |
+| Cauchy noise | 0.0175 | 0.0058 |
+| a shift of 20 | 0.093 | 0.061 |
+
+A shift of every one of the first rows is no outlier among them, so the
+refit keeps them as the shifted fit's rows, and the one pass lets them go
+as before, faster than `1/n`. A state loaded from another regime has
+refit its first rows there, and the same holds of its rows. The refit's
+cost, its buffer, the count's default and `refit_budget` are `huber`'s
+(below); it takes 0.09 to 2.3 ms once, for 1 to 50 features and 500 to
+1,000 rows, and a count is taken from three rows a coefficient up, the
+rows the warm-up takes as least squares.
+
 **Both models' one pass is held to numpy references of its own recursion
 within 1e-14, and `huber`'s refit to statsmodels' `RLM` on the same rows
 within 1e-5.** Against batch fits of the same objectives over a whole
@@ -1132,7 +1171,7 @@ land close but not equal, for three reasons:
 
 | reason | applies to |
 |---|---|
-| each row's weight was set by the fit before it | both; for `huber`, each row after its target's first `huber_refit_rows` |
+| each row's weight was set by the fit before it | both, for each row after its target's first `huber_refit_rows` or `quantile_refit_rows` |
 | `σ` is an exponentially weighted median, read from a sketch, where a batch fit takes the median of the final residuals | both |
 | the check loss is smoothed over the band | `quantile` |
 

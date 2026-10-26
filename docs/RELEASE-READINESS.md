@@ -1108,6 +1108,13 @@ on as it did, and so does each group restored from a bank saved then. A
 group that bank first sees after the load, or one a drift reset starts
 over, is built from the spec, so it refits at 500 rows: one bank then holds
 groups under both rules, until `huber_refit_rows` is given in the spec.
+The same release turned on `quantile`'s refit, `quantile_refit_rows`, at
+the same count and under the same `refit_budget`. Without decay its one pass
+kept the rows its warm-up took as least squares, and those its first bands
+held, in its sums at full weight: three wild first targets left the worst
+of 50 streams 0.22 from statsmodels' `QuantReg` after 8,000 rows, and 0.0053
+with the refit. `quantile_refit_rows=0` turns it off, and a state saved
+before it loads with it off and goes on as it did.
 
 **From 1.0, a rename is a deprecation, not a refusal.**
 `polars_online.PolarsOnlineDeprecationWarning`, a `DeprecationWarning`,

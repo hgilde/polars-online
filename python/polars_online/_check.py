@@ -649,7 +649,7 @@ def _spec_findings(
             what = (
                 "needed jitter, kept the previous fit or ran its refit of the first rows to "
                 "its pass cap"
-                if kind == "huber"
+                if kind in ("huber", "quantile")
                 else "needed jitter or kept the previous fit"
             )
             add(

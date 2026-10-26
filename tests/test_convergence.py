@@ -118,7 +118,11 @@ CONSISTENCY: dict[str, tuple[float, float | None]] = {
     # before task 278's fix the prior was sized from the first rows' noise,
     # 0.0051 (seed 22, whose prior came out small) and -0.93.
     "kalman": (0.001, -0.9),
-    # Measured 0.00275 and -0.70: the band narrows with the effective sample.
+    # The band narrows with the effective sample. Measured 0.00275 and -0.70
+    # before the refit of the first rows (task 278, D-Q2); with it at the
+    # 500-row default (2026-10-26), 0.00224 (seed 25) and, from 2,000 rows,
+    # -0.58: the refit lands the first 500 rows on their own converged fit
+    # (0.054 -> 0.022 at 500 rows), so the rate is read after it.
     "quantile": (0.006, -0.5),
     # Robbins-Monro past the curvature's 1/2: the gap to least squares falls
     # faster than the estimate's own 1/sqrt(n). Measured 0.0038 and -0.78.
@@ -152,7 +156,7 @@ CONSISTENCY: dict[str, tuple[float, float | None]] = {
 #: yet the one pass's: the Huber fits refit their first 500 rows, so at 500
 #: rows the gap is the refit's tolerance (3e-4 for both, measured), not a
 #: point on the 1/sqrt(n) the rows after it follow (task 277).
-RATE_FROM = {"huber": 2000, "sgd:huber": 2000}
+RATE_FROM = {"huber": 2000, "sgd:huber": 2000, "quantile": 2000}
 
 #: Registrations whose class 1 is a test of its own below.
 CONSISTENCY_ELSEWHERE = {"pa": "test_pa_wanders_in_a_neighbourhood_set_by_c"}
@@ -321,6 +325,14 @@ START_RATE: dict[str, float] = {
     # steps start small: -0.43 (7.31 to 1.48) and -1.25 (1.96 to 0.053).
     "ftrl:squared": -0.3,
     "ftrl:logistic": -0.8,
+    # quantile without decay, as the Huber fits below (task 278, D-Q2): the
+    # loaded state's refit ran on the other regime's rows, and the one pass
+    # keeps the rows inside its bands in its sums as least-squares rows at
+    # full weight, where the batch fit of every row reads them as outliers;
+    # they leave as the rows after them outweigh them. Measured 2026-10-26
+    # at the 500-row default: -1.54 (0.123 off the oracle on every row at
+    # 32,000 rows, seed 20; 0.142 before the refit, seed 36).
+    "quantile": -1.0,
     # A loaded state's refit has run, on the other regime's rows: the one
     # pass keeps those rows in its sums at the weights they were learned at,
     # where the batch fit of every row reads them as outliers, so the gap to
@@ -337,16 +349,7 @@ START_RATE: dict[str, float] = {
 START_AS_FRESH = {"pa"}
 
 #: Cells that fail on a defect: the reason, with its measurement.
-START_DEFECTS: dict[tuple[str, float], str] = {
-    ("quantile", cv.INF): (
-        "defect (task 278 (a), D-Q2): quantile without decay keeps the other regime's rows "
-        "in its mean-form sums at the weight they were learned at (least-squares rows in "
-        "its warm-up and its band), where the batch fit of every row reads them as "
-        "outliers; nothing but dilution takes them out: 0.142 off at 32,000 rows (seed 36), "
-        "against 0.00254 from a fresh start (2026-10-26, the band in the MAD; 0.137 in the "
-        "RMS before)"
-    ),
-}
+START_DEFECTS: dict[tuple[str, float], str] = {}
 
 
 def _start_params() -> list:
@@ -569,7 +572,19 @@ ADVERSE: dict[str, dict[tuple[str, float], float]] = {
     # (0.0079): t2 noise measured 0.0076. Under a half-life of 500, measured
     # 0.0131, 0.0367 (three targets 1e4 off, forgotten as 2^-16), 0.0130,
     # 0.0129 and 0.0258, beside 0.0129 clean.
+    # Without decay, with the refit of the first 500 rows (task 278, D-Q2),
+    # measured 2026-10-26: 0.00846 (outliers), 0.00528 (wild), 0.00575 (t2)
+    # and 0.00584 (cauchy), beside 0.00519 clean; before the refit 0.038,
+    # 0.22, 0.0078 and 0.0175, the rows the warm-up took as least squares
+    # and the first bands held kept in the sums at full weight. A shift of
+    # every one of the first 500 rows is no outlier among them, so the refit
+    # keeps them as the shifted fit's rows and the one pass lets them go
+    # faster than 1/n: 0.535 at 2,000 rows, 0.0608 at 8,000 (seed 5; 0.093
+    # before the refit), as the Huber fits' shift below.
     "quantile": {
+        ("outliers", INF): 0.024,
+        ("wild", INF): 0.024,
+        ("shift", INF): 0.09,
         ("t2", INF): 0.024,
         # Measured 0.0178 (seed 45) on 2026-10-26, the band in the MAD (task
         # 278, D-Q): in the RMS it was 0.143, a defect.
@@ -629,17 +644,7 @@ ADVERSE: dict[str, dict[tuple[str, float], float]] = {
     },
 }
 
-_QUANTILE_KEPT = (
-    "defect (task 278 (a), D-Q2): quantile without decay keeps the rows its warm-up "
-    "took as least-squares rows (three a coefficient), and those its first bands held, in "
-    "its mean-form sums at full weight, where the batch fit reads them as outliers; "
-    "they leave only by dilution, as 1/n: measured {} at 8,000 rows (2026-10-26, the "
-    "band in the MAD), against a bound of three times its clean worst, 0.024"
-)
 ADVERSE_DEFECTS: dict[tuple[str, str, float], str] = {
-    ("quantile", "outliers", INF): _QUANTILE_KEPT.format("0.038 (seed 21; 0.165 in the RMS)"),
-    ("quantile", "wild", INF): _QUANTILE_KEPT.format("0.20 (seed 33; 4.08 in the RMS)"),
-    ("quantile", "shift", INF): _QUANTILE_KEPT.format("0.093 (seed 34; 0.097 in the RMS)"),
     **{
         (key, "outliers", INF): (
             "defect (task 277): 20% wild rows in the first 500 rows, 40% of those with x0 "

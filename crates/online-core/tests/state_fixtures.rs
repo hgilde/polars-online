@@ -967,7 +967,9 @@ fn every_layout_a_schema_moved_is_written_by_a_fixture() {
 /// held, fewer learned than the configuration's count -- and their
 /// continuations fill them, so the refit runs on a row the fixture holds;
 /// `huber_refit_done` and `sgd_huber_refit_done` are saved after it, every
-/// buffer done and empty. The cases with the refit off write no buffer.
+/// buffer done and empty. `quantile_refit` and `quantile_refit_done` are
+/// the quantile refit's same two forms (task 278, D-Q2). The cases with the
+/// refit off write no buffer.
 #[test]
 fn the_refit_is_written_part_full_and_done() {
     if regenerating() {
@@ -990,7 +992,11 @@ fn the_refit_is_written_part_full_and_done() {
             .collect();
         (cap, list)
     };
-    for (name, variant) in [("huber_refit", "Robust"), ("sgd_huber_refit", "Sgd")] {
+    for (name, variant) in [
+        ("huber_refit", "Robust"),
+        ("sgd_huber_refit", "Sgd"),
+        ("quantile_refit", "Robust"),
+    ] {
         let f = frozen::ALL.iter().find(|f| f.name == name).unwrap();
         let (cap, list) = buffers(&f.bytes(), variant);
         assert_eq!(list.len(), 2, "{name}: a buffer a target");
@@ -1013,6 +1019,7 @@ fn the_refit_is_written_part_full_and_done() {
     for (name, variant) in [
         ("huber_refit_done", "Robust"),
         ("sgd_huber_refit_done", "Sgd"),
+        ("quantile_refit_done", "Robust"),
     ] {
         let f = frozen::ALL.iter().find(|f| f.name == name).unwrap();
         let (cap, list) = buffers(&f.bytes(), variant);
@@ -1021,7 +1028,12 @@ fn the_refit_is_written_part_full_and_done() {
             assert!(*done && *learned == cap && *rows == 0, "{name}: {list:?}");
         }
     }
-    for (name, variant) in [("huber", "Robust"), ("sgd_huber", "Sgd")] {
+    for (name, variant) in [
+        ("huber", "Robust"),
+        ("sgd_huber", "Sgd"),
+        ("quantile", "Robust"),
+        ("quantile_mad", "Robust"),
+    ] {
         let f = frozen::ALL.iter().find(|f| f.name == name).unwrap();
         assert_eq!(buffers(&f.bytes(), variant), (0, vec![]), "{name}");
     }
@@ -1115,6 +1127,8 @@ fn the_gates_forms_and_the_quantile_scale_are_written() {
         ("huber_refit", "Robust", false),
         ("huber_refit_done", "Robust", false),
         ("quantile_mad", "Robust", false),
+        ("quantile_refit", "Robust", false),
+        ("quantile_refit_done", "Robust", false),
         ("sgd_huber_refit", "Sgd", false),
         ("sgd_huber_refit_done", "Sgd", false),
         ("sgd_spread", "Sgd", false),
@@ -1589,9 +1603,17 @@ fn the_anchored_sketch_forms_are_written() {
     // (case, where its sketches are, where its flag is, whether it is set,
     // the anchors: None for none, Some(true) set, Some(false) awaiting)
     type Form<'a> = (&'a str, &'a [&'a str], &'a [&'a str], bool, Option<bool>);
-    let cases: [Form; 8] = [
+    let cases: [Form; 10] = [
         ("huber_mad_anchored", &robust, &robust_cfg, true, Some(true)),
         ("quantile_mad", &robust, &robust_cfg, true, Some(true)),
+        ("quantile_refit", &robust, &robust_cfg, true, Some(true)),
+        (
+            "quantile_refit_done",
+            &robust,
+            &robust_cfg,
+            true,
+            Some(true),
+        ),
         (
             "huber_mad_awaiting",
             &robust,

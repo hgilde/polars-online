@@ -2220,9 +2220,9 @@ class ModelBank:
 
         ``ewridge``, ``huber``, ``quantile``
             A solve that needed jitter, or failed at every jitter and kept the
-            previous fit, the standardized solve included. ``huber`` also counts
-            each target whose refit of its first rows took all 200 of its IRLS
-            passes: the fit of the last pass stands.
+            previous fit, the standardized solve included. ``huber`` and
+            ``quantile`` also count each target whose refit of its first rows
+            took all 200 of its passes: the fit of the last pass stands.
         ``sgd(loss="huber")``
             Each target whose refit of its first rows took all 200 of its IRLS
             passes. Past about 20% of outliers on one side the refit converges
