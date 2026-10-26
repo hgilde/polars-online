@@ -406,24 +406,33 @@ class TestPerTargetMinPeriods:
         assert self._first(out, pred["y1"]) == 10 * (late - 1) + 1
         assert out["m"].struct.field("weight_sum").to_list()[41] == pytest.approx(41.0)
 
-    def test_a_late_target_has_no_residual_or_sigma_either(self):
+    def test_a_late_target_has_no_residual_and_its_sigma_is_the_eager_ones(self):
+        """The late target's residual is withheld with its prediction; its
+        ``sigma`` reads the spread, which folds the target's own
+        predictions on the rows its floor withholds -- a floor withholds
+        output only (task 278, batch 17) -- so it is the eager spec's on
+        every row, a number already while the floor withholds the target."""
         rng = np.random.default_rng(1)
         n = 120
         x = rng.standard_normal(n)
-        df = pl.DataFrame({"x0": x, "y0": 2 * x, "y1": -x})
-        spec = po.spec.ewridge(
-            "m",
-            targets=["y0", "y1"],
-            features=["x0"],
-            half_life=1e9,
-            min_weight=[5.0, 60.0],
-            max_rows_between_solves=1,
-            emit_sigma=True,
-        )
-        out = po.ModelBank([spec]).fit_predict(df)
-        for field in ("resid_y1", "sigma_y1"):
-            vals = out["m"].struct.field(field).to_list()
-            assert all(v is None for v in vals[:55]), f"{field} leaked during warmup"
+        df = pl.DataFrame({"x0": x, "y0": 2 * x, "y1": -x + 0.1 * rng.standard_normal(n)})
+
+        def fit(floors):
+            spec = po.spec.ewridge(
+                "m",
+                targets=["y0", "y1"],
+                features=["x0"],
+                half_life=1e9,
+                min_weight=floors,
+                max_rows_between_solves=1,
+                emit_sigma=True,
+            )
+            return po.ModelBank([spec]).fit_predict(df)["m"].struct
+
+        late, eager = fit([5.0, 60.0]), fit([5.0, 5.0])
+        assert all(v is None for v in late.field("resid_y1").to_list()[:55]), "resid leaked"
+        assert late.field("sigma_y1").equals(eager.field("sigma_y1"), null_equal=True)
+        assert late.field("sigma_y1").to_list()[30] is not None
 
     def test_learning_is_not_gated_only_output(self):
         # The late target's fit must be as good as if it had reported all along:

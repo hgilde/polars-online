@@ -50,6 +50,12 @@ EXCEPTIONS = {
     "pa": "a weight below 1 scales tau, one above 1 counts as 1",
     "hmm": "A <- decay A + w xi against the Dirichlet pseudo-count tau",
     "seqtest": "it scores ridge against kalman, which moves",
+    # Its `sigma` (and `zscore`, which reads it) folds the predictions
+    # `min_weight` withholds, down to ewridge's own floor of a row per
+    # unknown -- a weight, 3 here, which a stream a hundred times heavier
+    # crosses on its first row instead of its third (task 278, batch 17;
+    # the `spec` diagnostics table says so). Its fit does not move.
+    "ridge_diag": "sigma reads down to ewridge's own floor of a row per unknown, a weight",
 }
 
 SCALE = 100.0

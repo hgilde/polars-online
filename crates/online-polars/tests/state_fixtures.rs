@@ -103,6 +103,14 @@ const REGENERATE: &str = "PRINT_STATE_FIXTURES=1 cargo test -p online-polars --t
 /// gate holding learning back) and goes on in it to the bit, so the current
 /// fixture's fit is set to that form before its first row
 /// ([`kept_quantile`]) and the kept ones convert to its bytes exactly.
+/// Likewise, since task 278's batch 17 a stream a spec builds folds into its
+/// residual spread each slot's own prediction on the rows a gate withholds,
+/// and weighs its residual autocorrelation by the row's weight
+/// (`Persisted::ungated_spread`, `Persisted::weighted_autocorr`); a kept
+/// state loads with neither and goes on so to the bit, so the current
+/// `bank`, `bank_diagnosed` and `bank_autocorr` streams are set to that form
+/// before their first row ([`kept_rules`]), and `bank_gated` freezes the
+/// form a spec builds.
 macro_rules! previous {
     ($($schema:literal),* $(,)?) => {
         const PREVIOUS: &[u32] = &[$($schema),*];
@@ -433,14 +441,14 @@ struct Kind {
 
 fn bank_first() -> (Vec<u8>, DataFrame) {
     let df = frame();
-    let mut bank = Bank::new(specs()).unwrap();
+    let mut bank = kept_rules_bank(specs(), &df);
     bank.fit_predict(&df.slice(0, SPLIT)).unwrap();
     // A group closed before the save is drained, and the next is open
     // across it.
     let drained = bank.closed_groups(Some(CLOSING), true).unwrap();
     assert!(drained.height() > 0, "a group closed before the save");
     (
-        bank.save_bytes().unwrap(),
+        kept_throughout(bank.save_bytes().unwrap()),
         df.slice(SPLIT as i64, N - SPLIT),
     )
 }
@@ -466,15 +474,78 @@ fn diagnosed_first() -> (Vec<u8>, DataFrame) {
     // An empty chunk makes each stream, its models unfed.
     fresh.fit_predict(&df.slice(0, 0)).unwrap();
     let mut bank = Bank::load_bytes(
-        &kept_quantile(&fresh.save_bytes().unwrap()),
+        &kept_rules(&kept_quantile(&fresh.save_bytes().unwrap())),
         Some(&diagnosed_specs()),
     )
     .unwrap();
     bank.fit_predict(&df.slice(0, SPLIT)).unwrap();
     (
-        bank.save_bytes().unwrap(),
+        kept_throughout(bank.save_bytes().unwrap()),
         df.slice(SPLIT as i64, N - SPLIT),
     )
+}
+
+/// A bank of `specs` whose streams are in the form a state written before
+/// schema 64 holds, set before its first row ([`kept_rules`]): an empty
+/// chunk makes each ungrouped stream, its models unfed.
+fn kept_rules_bank(specs: Vec<Spec>, df: &DataFrame) -> Bank {
+    let mut fresh = Bank::new(specs.clone()).unwrap();
+    fresh.fit_predict(&df.slice(0, 0)).unwrap();
+    Bank::load_bytes(&kept_rules(&fresh.save_bytes().unwrap()), Some(&specs)).unwrap()
+}
+
+/// The residual spread and autocorrelation's rules in the form a state
+/// written before schema 64 holds (task 278, batch 17): the spread folding
+/// only the residuals the bank reports, the autocorrelation weighing each
+/// residual 1 -- the two flags a spec sets, `ungated_spread` and
+/// `weighted_autocorr`, left out, as such a state leaves them. So the kept
+/// fixtures of these kinds, which load in that form, go on to this
+/// fixture's numbers and convert to its bytes; the form since is frozen by
+/// `bank_gated`.
+fn kept_rules(bytes: &[u8]) -> Vec<u8> {
+    use rmpv::Value;
+    fn walk(v: &mut Value, found: &mut usize) {
+        match v {
+            Value::Map(m) => {
+                let before = m.len();
+                m.retain(|(k, _)| {
+                    !matches!(k.as_str(), Some("ungated_spread" | "weighted_autocorr"))
+                });
+                *found += before - m.len();
+                m.iter_mut().for_each(|(_, v)| walk(v, found));
+            }
+            Value::Array(a) => a.iter_mut().for_each(|v| walk(v, found)),
+            _ => {}
+        }
+    }
+    let mut v = rmpv::decode::read_value(&mut &bytes[..]).unwrap();
+    let mut found = 0;
+    walk(&mut v, &mut found);
+    assert!(
+        found > 0,
+        "a stream that forms a residual sets the spread's flag"
+    );
+    let mut out = Vec::new();
+    rmpv::encode::write_value(&mut out, &v).unwrap();
+    out
+}
+
+/// `bytes`, held to every stream having stayed in the kept form: no stream
+/// a later row made sets either flag ([`kept_rules`]).
+fn kept_throughout(bytes: Vec<u8>) -> Vec<u8> {
+    let mut all = Vec::new();
+    leaves(
+        &rmpv::decode::read_value(&mut &bytes[..]).unwrap(),
+        "",
+        &mut all,
+    );
+    let set: Vec<&String> = all
+        .iter()
+        .filter(|(p, _)| p.ends_with(".ungated_spread") || p.ends_with(".weighted_autocorr"))
+        .map(|(p, _)| p)
+        .collect();
+    assert!(set.is_empty(), "streams in the current form: {set:?}");
+    bytes
 }
 
 /// `bank_diagnosed`'s quantile fit in the form a state written before
@@ -531,12 +602,48 @@ fn diagnosed_run(bytes: &[u8], input: &DataFrame) -> Ran {
 
 fn autocorr_first() -> (Vec<u8>, DataFrame) {
     let df = frame();
-    let mut bank = Bank::new(autocorr_specs()).unwrap();
+    let mut bank = kept_rules_bank(autocorr_specs(), &df);
+    bank.fit_predict(&df.slice(0, SPLIT)).unwrap();
+    (
+        kept_throughout(bank.save_bytes().unwrap()),
+        df.slice(SPLIT as i64, N - SPLIT),
+    )
+}
+
+/// The spec of the sixth bank file, `bank_gated`: the residual spread and
+/// autocorrelation in the form a spec builds (task 278, batch 17, schema
+/// 64). An `ewridge` over a grid of two half-lives under a `min_weight` of
+/// 18, which the half-life of 8 never meets on this stream (its weight
+/// tops out near 16) and the half-life of 40 meets on row 23, with uneven
+/// weights, an `embargo` holding rows across the save -- each held row's
+/// record carrying the slot's own prediction the gate withheld, which the
+/// release folds into the spread -- and the selection, the average, `sigma`
+/// and the weighted autocorrelation that read it.
+fn gated_specs() -> Vec<Spec> {
+    [
+        r#"{"name": "gated", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": [8.0, 40.0], "gap_cap": 50.0, "embargo": 2.0, "weight": "w", "min_weight": 18.0, "emit_selected": true, "emit_averaged": true, "emit_sigma": true, "emit_autocorr": true, "resid_autocorr_lag": 2}"#,
+    ]
+    .iter()
+    .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))
+    .collect()
+}
+
+fn gated_first() -> (Vec<u8>, DataFrame) {
+    let df = frame();
+    let mut bank = Bank::new(gated_specs()).unwrap();
     bank.fit_predict(&df.slice(0, SPLIT)).unwrap();
     (
         bank.save_bytes().unwrap(),
         df.slice(SPLIT as i64, N - SPLIT),
     )
+}
+
+fn gated_run(bytes: &[u8], input: &DataFrame) -> Ran {
+    let mut bank = Bank::load_bytes(bytes, Some(&gated_specs()))?;
+    let again = bank.save_bytes()?;
+    let cols = bank.fit_predict(input).map_err(|e| e.to_string())?;
+    let out = DataFrame::new(input.height(), cols).map_err(|e| e.to_string())?;
+    Ok((again, vec![("fit_predict".into(), out)]))
 }
 
 fn autocorr_run(bytes: &[u8], input: &DataFrame) -> Ran {
@@ -779,6 +886,11 @@ fn kinds() -> Vec<Kind> {
             name: "bank_refit",
             first: refit_first,
             run: refit_run,
+        },
+        Kind {
+            name: "bank_gated",
+            first: gated_first,
+            run: gated_run,
         },
         Kind {
             name: "with_windows",
@@ -1278,6 +1390,25 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
         ("bank_refit", "a stream over the refit budget", |p, v| {
             p.ends_with(".refit_over_budget") && v.as_bool() == Some(true)
         }),
+        // Schema 64 (task 278, batch 17): the spread folding the slots' own
+        // predictions, the autocorrelation weighed by the rows, and a held
+        // row's record carrying the prediction a gate withheld: one slot an
+        // instance, so a second value in a record is that block.
+        ("bank_gated", "the spread's flag", |p, v| {
+            p.ends_with(".ungated_spread") && v.as_bool() == Some(true)
+        }),
+        ("bank_gated", "the autocorrelation's flag", |p, v| {
+            p.ends_with(".weighted_autocorr") && v.as_bool() == Some(true)
+        }),
+        (
+            "bank_gated",
+            "a record with the withheld prediction",
+            |p, v| {
+                p.contains(".score_pred.")
+                    && p.ends_with(".1")
+                    && v.as_f64().is_some_and(f64::is_finite)
+            },
+        ),
         ("with_windows_int", "OffForm::Int", |p, v| {
             p.ends_with(".form") && v.as_str() == Some("Int")
         }),

@@ -13,7 +13,14 @@ windowed spread (``tests/test_second_opinion.py::TestWindowedSpread``, unit
 weights, a row-count clock) was held to anything.
 
 The residuals are the bank's own: the fits behind them are held by the
-oracles of each model. What is held here is the spread's recursion.
+oracles of each model. What is held here is the spread's recursion. They
+are each slot's own residuals, whether or not a readiness gate withholds
+them: the residuals the same spec reports with no gate (``min_weight`` 0;
+on ``ewridge`` unset, its own floor a row per unknown, and the noise gate
+off). A gate withholds output
+only, so the spread folds the predictions it withholds too (docs/PLAN.md
+task 278, batch 17); here ``min_weight`` withholds each target's first
+10-20 rows, which the spread reads.
 """
 
 import numpy as np
@@ -72,7 +79,7 @@ def _sigma(resid: np.ndarray, w: np.ndarray, clock: np.ndarray, half_life: float
     return out
 
 
-def _spec(model, half_life):
+def _spec(model, half_life, *, gated=True):
     kw = dict(
         targets=TARGETS,
         features=FEATURES,
@@ -82,8 +89,11 @@ def _spec(model, half_life):
         half_life=half_life,
         emit_sigma=True,
         emit_zscore=True,
-        min_weight=[15.0, 10.0, 20.0],
     )
+    if gated:
+        kw["min_weight"] = [15.0, 10.0, 20.0]
+    elif model != "ewridge":
+        kw["min_weight"] = 0.0
     if model == "ewridge":
         return po.spec.ewridge("m", ridge=[1e-6, 0.5], max_error_inflation=float("inf"), **kw)
     if model == "lasso":
@@ -148,6 +158,7 @@ def test_sigma_is_the_ew_rms_of_the_residuals_before_the_row(model, half_life):
     df = _stream(61)
     spec = _spec(model, half_life)
     out = po.ModelBank([spec]).fit_predict(df)["m"]
+    free = po.ModelBank([_spec(model, half_life, gated=False)]).fit_predict(df)["m"]
     index = po.spec.output_index(spec)
     clock, w = _capped_clock(df, features=model != "holt"), df["w"].to_numpy()
     slots = index.filter(pl.col("kind") == "sigma")
@@ -155,7 +166,10 @@ def test_sigma_is_the_ew_rms_of_the_residuals_before_the_row(model, half_life):
     for row in slots.iter_rows(named=True):
         sigma = out.struct.field(row["field"]).to_numpy().astype(float)
         resid = out.struct.field(row["field"].replace("sigma_", "resid_", 1)).to_numpy()
-        want = _sigma(resid.astype(float), w, clock, row["half_life"])
+        own = free.struct.field(row["field"].replace("sigma_", "resid_", 1)).to_numpy()
+        # Evidence: the gate withheld residuals the spread folds.
+        assert (np.isfinite(own.astype(float)) & ~np.isfinite(resid.astype(float))).sum() >= 5
+        want = _sigma(own.astype(float), w, clock, row["half_life"])
         assert (np.isnan(sigma) == np.isnan(want)).all(), f"{row['field']}: null pattern"
         ok = ~np.isnan(want)
         assert ok.sum() > 150, row["field"]

@@ -2262,6 +2262,23 @@ impl OnlineModel for Robust {
         out
     }
 
+    /// The prediction at another `min_weight` floor, set for the read and
+    /// put back ([`OnlineModel::predict_with_floor`]).
+    fn predict_with_floor(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        floor: f64,
+    ) -> Step {
+        let floor = std::mem::replace(&mut self.cfg.min_weight, floor);
+        let own = std::mem::take(&mut self.target_min_weight);
+        let out = OnlineModel::predict_with(self, x, y, d_clock);
+        self.cfg.min_weight = floor;
+        self.target_min_weight = own;
+        out
+    }
+
     fn predict(&self, x: &[f64], d_clock: f64) -> Step {
         if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
             return refused;

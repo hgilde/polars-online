@@ -490,7 +490,18 @@ The diagnostics add, per slot:
        Its weight ages on every row the model sees, a row with no
        prediction or with weight 0 included, so it forgets across a gap
        as the clock says. Under a ``window_size`` it is the window's, as the
-       fit is, and so is everything below that reads it.
+       fit is, and so is everything below that reads it. The residuals
+       of the predictions a readiness gate withholds are among them: a
+       gate withholds output only, so ``sigma`` -- and ``zscore``, the
+       drift detector's scale, the ranking of ``emit_selected`` and
+       ``emit_averaged`` and the conformal radius's start -- is the same
+       whatever ``min_weight``, ``min_settled_frac`` or
+       ``max_error_inflation`` says, and can be a number on a row whose
+       prediction is withheld. On ``ewridge`` it reads none below the
+       model's own floor of a row per unknown (a weight, as ``min_weight``
+       is), where its system has fewer rows than unknowns, unless
+       ``min_weight`` sets the floor lower. Under ``embargo`` each row's
+       is the residual of the prediction it was scored with.
    * - ``emit_zscore``
      - ``zscore_<slot>``
      - ``resid / sigma``: how surprising the row was, in units of the
@@ -620,10 +631,12 @@ The diagnostics add, per slot:
      - ``autocorr_<slot>``
      - The EW correlation of each residual with the one
        ``resid_autocorr_lag`` scored residuals back (default 1, at most
-       2^20), within a run of adjacent rows. A gap capped by ``gap_cap`` or a session
-       change starts a new run, as it clears the models' lags; the weights
-       decay on every row's clock. A residual stream should look like
-       noise; a value away from zero says the model is missing something.
+       2^20), within a run of adjacent rows, each residual -- and the pair
+       it closes -- at its row's weight, as in ``sigma``. A gap capped by
+       ``gap_cap`` or a session change starts a new run, as it clears the
+       models' lags; the weights decay on every row's clock. A residual
+       stream should look like noise; a value away from zero says the
+       model is missing something.
    * - ``emit_drift``
      - ``drift_<slot>``
      - True on the row a Page-Hinkley detector on ``|resid|`` finds a

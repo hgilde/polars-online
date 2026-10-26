@@ -899,7 +899,14 @@ fn the_averaged_forecast_at_one_exact_slot_is_that_slots() {
     let avg = floats(&field(&out, 0, "pred_y__averaged"));
     let exact = floats(&field(&out, 0, "pred_y__r0"));
     let sig0 = floats(&field(&out, 0, "sigma_y__r0"));
-    let rows_at_zero: Vec<usize> = (0..n).filter(|&i| sig0[i] == Some(0.0)).collect();
+    // The other slot's error past 0: on the rows after the one both slots
+    // predicted exactly (`x = 0`, which the spread folds though the noise
+    // gate withheld the exact slot's: task 278, batch 17), both read 0 and
+    // weigh the same.
+    let sig1 = floats(&field(&out, 0, "sigma_y__r1"));
+    let rows_at_zero: Vec<usize> = (0..n)
+        .filter(|&i| sig0[i] == Some(0.0) && sig1[i].is_some_and(|s| s > 0.0))
+        .collect();
     assert!(!rows_at_zero.is_empty(), "the exact slot's error: {sig0:?}");
     for i in rows_at_zero {
         assert_eq!(avg[i], exact[i], "row {i}");

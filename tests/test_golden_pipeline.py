@@ -565,7 +565,17 @@ def switched_signature() -> dict[str, float | str | None]:
 #: units of the first, which regroups the residuals across bucket edges; the
 #: largest move 9.2e-4 of ``1 + |v|`` (``quantile.pred_y0@119``);
 #: ``robust_ref``'s sketch is anchored as the core's is, and holds both to
-#: every row; nothing else moved.
+#: every row; nothing else moved. Task 278 (batch 17, 2026-10-26) moved 29,
+#: ``ridge``'s ``sigma``, ``zscore`` and conformal ``lo``, ``hi`` and
+#: ``coverage``: the residual spread folds each slot's own prediction on the
+#: rows a readiness gate withholds (here the noise gate and ``min_weight``'s
+#: first rows), so ``sigma`` starts from them and the conformal radius with
+#: it: ``sigma`` by 48% at row 25 (the 1e-6 slot), 1% by row 60 and 0.2%
+#: by 119; the interval more, its radius keeping its start for many rows;
+#: ``tests/test_oracles_sigma.py`` holds ``sigma`` to its recursion over the
+#: residuals of the same spec with no gate, and
+#: ``crates/online-polars/tests/gate_isolation.rs`` to the gate never moving
+#: it; nothing else moved.
 GOLDEN: dict[str, float | str | None] = {
     "ridge.pred_y0__r0.000001@25": -4.684371132566456,
     "ridge.pred_y0__r0.000001@60": -0.25563207972202284,
@@ -579,36 +589,36 @@ GOLDEN: dict[str, float | str | None] = {
     "ridge.resid_y0__r0.5@25": -1.64420049699085,
     "ridge.resid_y0__r0.5@60": -0.35506765167380283,
     "ridge.resid_y0__r0.5@119": 0.47969646897678875,
-    "ridge.sigma_y0__r0.000001@25": 0.051493183224268005,
-    "ridge.sigma_y0__r0.000001@60": 0.14974398485680734,
-    "ridge.sigma_y0__r0.000001@119": 0.09333817729646239,
-    "ridge.sigma_y0__r0.5@25": 3.1349106139192906,
-    "ridge.sigma_y0__r0.5@60": 0.6856591658858987,
-    "ridge.sigma_y0__r0.5@119": 0.854495805542607,
-    "ridge.zscore_y0__r0.000001@25": -3.247705447532806,
-    "ridge.zscore_y0__r0.000001@60": -1.4451936036161734,
-    "ridge.zscore_y0__r0.000001@119": 1.168530932873234,
-    "ridge.zscore_y0__r0.5@25": -0.5244808224165783,
-    "ridge.zscore_y0__r0.5@60": -0.5178486182927948,
-    "ridge.zscore_y0__r0.5@119": 0.5613795478752295,
-    "ridge.lo_y0__r0.000001@25": -4.7831691229254405,
-    "ridge.lo_y0__r0.000001@60": -0.42565243395240016,
-    "ridge.lo_y0__r0.000001@119": -0.2911458059377575,
-    "ridge.lo_y0__r0.5@25": -12.12008108757161,
-    "ridge.lo_y0__r0.5@60": -0.987459316113378,
-    "ridge.lo_y0__r0.5@119": -9.116001200187965,
-    "ridge.hi_y0__r0.000001@25": -4.585573142207472,
-    "ridge.hi_y0__r0.000001@60": -0.0856117254916455,
-    "ridge.hi_y0__r0.000001@119": -0.028388830756545164,
-    "ridge.hi_y0__r0.5@25": 5.705270433083878,
-    "ridge.hi_y0__r0.5@60": 0.7535123618268278,
-    "ridge.hi_y0__r0.5@119": 8.055210720317929,
+    "ridge.sigma_y0__r0.000001@25": 0.07641734354131406,
+    "ridge.sigma_y0__r0.000001@60": 0.1483912149776585,
+    "ridge.sigma_y0__r0.000001@119": 0.09350168089292761,
+    "ridge.sigma_y0__r0.5@25": 2.8076126058896667,
+    "ridge.sigma_y0__r0.5@60": 0.6858895190735657,
+    "ridge.sigma_y0__r0.5@119": 0.8533874007852269,
+    "ridge.zscore_y0__r0.000001@25": -2.188438957942143,
+    "ridge.zscore_y0__r0.000001@60": -1.4583683348615835,
+    "ridge.zscore_y0__r0.000001@119": 1.1664875577351506,
+    "ridge.zscore_y0__r0.5@25": -0.5856222804890282,
+    "ridge.zscore_y0__r0.5@60": -0.5176747009538715,
+    "ridge.zscore_y0__r0.5@119": 0.5621086842100151,
+    "ridge.lo_y0__r0.000001@25": -4.9072646094336365,
+    "ridge.lo_y0__r0.000001@60": -0.421417765777976,
+    "ridge.lo_y0__r0.000001@119": -0.3638147239580231,
+    "ridge.lo_y0__r0.5@25": -3.9802489752542964,
+    "ridge.lo_y0__r0.5@60": -1.2485218301108685,
+    "ridge.lo_y0__r0.5@119": -1.684092645629295,
+    "ridge.hi_y0__r0.000001@25": -4.461477655699276,
+    "ridge.hi_y0__r0.000001@60": -0.08984639366606967,
+    "ridge.hi_y0__r0.000001@119": 0.0442800872637204,
+    "ridge.hi_y0__r0.5@25": -2.434561679233436,
+    "ridge.hi_y0__r0.5@60": 1.0145748758243183,
+    "ridge.hi_y0__r0.5@119": 0.6233021657592599,
     "ridge.coverage_y0__r0.000001@25": 1.0,
-    "ridge.coverage_y0__r0.000001@60": 0.708544385155888,
-    "ridge.coverage_y0__r0.000001@119": 0.746039777195224,
-    "ridge.coverage_y0__r0.5@25": 1.0,
-    "ridge.coverage_y0__r0.5@60": 0.8207252289588411,
-    "ridge.coverage_y0__r0.5@119": 1.0,
+    "ridge.coverage_y0__r0.000001@60": 0.652486590856464,
+    "ridge.coverage_y0__r0.000001@119": 0.9943019412287876,
+    "ridge.coverage_y0__r0.5@25": 0.5230027242465501,
+    "ridge.coverage_y0__r0.5@60": 0.9207933957773561,
+    "ridge.coverage_y0__r0.5@119": 0.9076565244103686,
     "ridge.weight_sum@25": 7.999488060097996,
     "ridge.weight_sum@60": 12.473100285951407,
     "ridge.weight_sum@119": 15.110060335371337,
@@ -1169,7 +1179,12 @@ GOLDEN: dict[str, float | str | None] = {
 #: (review round 9, B-1) moved ``formula``'s: its row 25, a row of weight
 #: past ``min_weight`` before its prior was sized, was predicted as the
 #: unsized prior's 0.0 and is now withheld (``below_warm_rows``), and the
-#: residual variance that 0 no longer seeds moves rows 60 and 119.
+#: residual variance that 0 no longer seeds moves rows 60 and 119. Task 278
+#: (batch 17, 2026-10-26) moved 17 of ``diagnostics``: ``sigma`` and
+#: ``zscore`` as `GOLDEN`'s ``ridge`` did, the averaged forecast at row 25 by
+#: 1.1e-12 (its weights read ``sigma``), and ``autocorr``, which weighs each
+#: residual at its row's weight, as ``sigma`` does, where it gave each 1
+#: (``tests/test_autocorr_weights.py`` holds it to its update equations).
 SWITCHED_GOLDEN: dict[str, float | str | None] = {
     "window.pred_y0@25": -4.68515442331697,
     "window.pred_y0@60": -0.2680628499022917,
@@ -1315,18 +1330,18 @@ SWITCHED_GOLDEN: dict[str, float | str | None] = {
     "diagnostics.error_inflation_y0__r0.5@25": 1.409364998814697,
     "diagnostics.error_inflation_y0__r0.5@60": 1.157007244603655,
     "diagnostics.error_inflation_y0__r0.5@119": 1.0393163626467838,
-    "diagnostics.sigma_y0__r0.000001@25": 0.04722546616544854,
-    "diagnostics.sigma_y0__r0.000001@60": 0.1372115392932475,
-    "diagnostics.sigma_y0__r0.000001@119": 0.10036314090241635,
-    "diagnostics.sigma_y0__r0.5@25": 0.2450256356138074,
-    "diagnostics.sigma_y0__r0.5@60": 0.763881587323822,
-    "diagnostics.sigma_y0__r0.5@119": 0.592950019155725,
-    "diagnostics.zscore_y0__r0.000001@25": -4.041334569490981,
-    "diagnostics.zscore_y0__r0.000001@60": -1.4744981918081381,
-    "diagnostics.zscore_y0__r0.000001@119": 1.0832691652702702,
-    "diagnostics.zscore_y0__r0.5@25": -4.470876697765937,
-    "diagnostics.zscore_y0__r0.5@60": -1.0310285676816366,
-    "diagnostics.zscore_y0__r0.5@119": 0.09784068840873988,
+    "diagnostics.sigma_y0__r0.000001@25": 0.07943782721058383,
+    "diagnostics.sigma_y0__r0.000001@60": 0.1359094927426904,
+    "diagnostics.sigma_y0__r0.000001@119": 0.10031023721687828,
+    "diagnostics.sigma_y0__r0.5@25": 1.1649675422699837,
+    "diagnostics.sigma_y0__r0.5@60": 0.7597627902910691,
+    "diagnostics.sigma_y0__r0.5@119": 0.6061464292449459,
+    "diagnostics.zscore_y0__r0.000001@25": -2.4025570144159936,
+    "diagnostics.zscore_y0__r0.000001@60": -1.488624249125424,
+    "diagnostics.zscore_y0__r0.000001@119": 1.0838404821454226,
+    "diagnostics.zscore_y0__r0.5@25": -0.9403518680756338,
+    "diagnostics.zscore_y0__r0.5@60": -1.036617940390484,
+    "diagnostics.zscore_y0__r0.5@119": 0.09571059939829772,
     "diagnostics.ic_y0__r0.000001@25": None,
     "diagnostics.ic_y0__r0.000001@60": 0.9978466202072177,
     "diagnostics.ic_y0__r0.000001@119": 0.9990654533620151,
@@ -1358,11 +1373,11 @@ SWITCHED_GOLDEN: dict[str, float | str | None] = {
     "diagnostics.abs_resid_q0.9_y0__r0.5@60": 1.0077519379844961,
     "diagnostics.abs_resid_q0.9_y0__r0.5@119": 0.8710762331838565,
     "diagnostics.autocorr_y0__r0.000001@25": None,
-    "diagnostics.autocorr_y0__r0.000001@60": -0.14548257378119903,
-    "diagnostics.autocorr_y0__r0.000001@119": -0.21134234792237652,
+    "diagnostics.autocorr_y0__r0.000001@60": -0.1239408863942342,
+    "diagnostics.autocorr_y0__r0.000001@119": -0.23974838730538164,
     "diagnostics.autocorr_y0__r0.5@25": None,
-    "diagnostics.autocorr_y0__r0.5@60": -0.27944465526984763,
-    "diagnostics.autocorr_y0__r0.5@119": 0.0087558548905179,
+    "diagnostics.autocorr_y0__r0.5@60": -0.19417299954011955,
+    "diagnostics.autocorr_y0__r0.5@119": -0.1438056077579475,
     "diagnostics.drift_y0__r0.000001@25": False,
     "diagnostics.drift_y0__r0.000001@60": False,
     "diagnostics.drift_y0__r0.000001@119": False,
@@ -1384,7 +1399,7 @@ SWITCHED_GOLDEN: dict[str, float | str | None] = {
     "diagnostics.selected_y0@25": "r0.000001",
     "diagnostics.selected_y0@60": "r0.000001",
     "diagnostics.selected_y0@119": "r0.000001",
-    "diagnostics.pred_y0__averaged@25": -4.660751915254954,
+    "diagnostics.pred_y0__averaged@25": -4.660751915259962,
     "diagnostics.pred_y0__averaged@60": -0.2697229622339181,
     "diagnostics.pred_y0__averaged@119": -0.15941906682749182,
     "diagnostics.scored_clock@25": 42.0,

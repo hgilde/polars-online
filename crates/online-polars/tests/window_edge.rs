@@ -738,7 +738,9 @@ fn window_every_spaces_the_snapshots_exactly(closed: &str) {
 /// residuals of the rows inside the model's window -- on a 1 ms clock the
 /// rows less than a second old, or at most a second under `closed =
 /// "both"`, the row exactly a second old included -- and `weight_sum`
-/// counts the same rows.
+/// counts the same rows. With the noise gate off, so every residual the
+/// spread folds is one the output reports (it folds a slot's own prediction
+/// on a row a gate withholds too: task 278, batch 17).
 #[test]
 fn the_residual_windows_boundary_is_the_models() {
     for closed in EDGES {
@@ -753,7 +755,7 @@ fn residual_windows_boundary_is_the_models(closed: &str) {
     let s = spec(
         "ewridge",
         &format!(r#""window_size": "1s", "closed": "{closed}""#),
-        r#""gap_cap": "1d", "half_life": "inf", "emit_sigma": true"#,
+        r#""gap_cap": "1d", "half_life": "inf", "emit_sigma": true, "max_error_inflation": "inf""#,
     );
     let out = run(&s, &df, 0);
     let (resid, sigma, wsum) = (

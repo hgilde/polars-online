@@ -151,13 +151,25 @@ class TestValues:
         assert s[301] > s[300] * 2, "the shock should raise sigma from the next row on"
 
     def test_sigma_is_null_before_the_first_residual(self):
+        """Null until the slot has a residual of its own: on and before the
+        row of its first prediction. A gate withholds output only, so the
+        spread folds the predictions ``min_weight`` withholds, and the first
+        row the gate lets out reads them (task 278, batch 17)."""
         out = po.ModelBank([_spec(min_weight=20.0)]).fit_predict(_df())
-        s = out["m"].struct.field("sigma_y0").to_list()
-        first_pred = next(
-            i for i, v in enumerate(out["m"].struct.field("pred_y0").to_list()) if v is not None
+        # The same model with no gate: ``min_weight`` unset, ``ewridge``'s
+        # own floor a row per unknown, and the noise gate off.
+        free = po.ModelBank([_spec(min_weight=None, max_error_inflation=float("inf"))]).fit_predict(
+            _df()
         )
-        assert s[first_pred] is None, "no residual has been seen yet"
-        assert s[first_pred + 2] is not None
+        s = out["m"].struct.field("sigma_y0").to_list()
+        first = lambda o: next(  # noqa: E731
+            i for i, v in enumerate(o["m"].struct.field("pred_y0").to_list()) if v is not None
+        )
+        own, shown = first(free), first(out)
+        assert own < shown, (own, shown)
+        assert all(v is None for v in s[: own + 1]), "no residual has been seen yet"
+        assert s[own + 1] is not None, "the first residual, which the gate withheld"
+        assert s[shown] == free["m"].struct.field("sigma_y0").to_list()[shown]
 
 
 @pytest.mark.parametrize(("model", "extra"), MODELS, ids=IDS)
@@ -276,20 +288,32 @@ class TestOnlineSelection:
         """Task 148: each slot's error is the EW mean of its own squared
         residuals at its own instance's half-life, so across a half-life grid
         the slots are ranked over windows of different lengths, as the docs
-        now say. Held against that recursion from the residuals."""
+        now say. Held against that recursion from the residuals -- each
+        slot's own, which the same spec reports with no gate: the gates
+        withhold output only (task 278, batch 17)."""
         rng = np.random.default_rng(5)
         n = 600
         x = rng.standard_normal(n)
         hs = (20.0, 2000.0)
         spec = self._grid_spec(ridge=1e-6, half_life=list(hs), emit_sigma=True)
-        out = po.ModelBank([spec]).fit_predict(
-            pl.DataFrame({"x0": x, "y0": 2 * x + 0.5 * rng.standard_normal(n)})
-        )
+        df = pl.DataFrame({"x0": x, "y0": 2 * x + 0.5 * rng.standard_normal(n)})
+        out = po.ModelBank([spec]).fit_predict(df)
+        free = po.ModelBank(
+            [
+                self._grid_spec(
+                    ridge=1e-6,
+                    half_life=list(hs),
+                    emit_sigma=True,
+                    min_weight=None,
+                    max_error_inflation=float("inf"),
+                )
+            ]
+        ).fit_predict(df)
         st = out["m"].struct
         sigma = {}
         for h in hs:
             tag = f"@h{h:g}"
-            r = st.field(f"resid_y0{tag}").to_numpy()
+            r = free["m"].struct.field(f"resid_y0{tag}").to_numpy()
             got = st.field(f"sigma_y0{tag}").to_numpy()
             lam, num, den, want = 0.5 ** (1 / h), 0.0, 0.0, np.full(n, np.nan)
             for i in range(n):

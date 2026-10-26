@@ -528,8 +528,15 @@ STATE_KEY = {"marginal": "feature", "audit": "column"}
 #: same numbers in another order, so the last bits may move. Measured
 #: 2026-10-25, worst of 50 seeds: 1.6e-13 (``kalman``), 2.9e-14 (``rls``),
 #: at most 1.1e-14 elsewhere; ``lasso`` (run converged, below) 1.1e-12.
+#: Measured again 2026-10-26 (task 278, batch 17), after ``quantile``'s
+#: band moved to the MAD and its sketch was anchored: ``quantile`` 1.8e-12
+#: (seed 15, its residual; 95th percentile 1.2e-13), ``kalman`` 5.9e-13,
+#: ``huber`` 4.0e-13 -- the same with the residual spread folding the
+#: withheld predictions or not, so the fit's own; ``quantile`` keeps about ten
+#: times its worst. Its sketch rounds each ``|e|`` into buckets, and the
+#: last bits a reordered sum moves can cross a bucket's edge.
 ORDER_RTOL = 1e-12
-ORDER_RTOL_BY_KIND = {"lasso": 1e-10}
+ORDER_RTOL_BY_KIND = {"lasso": 1e-10, "quantile": 2e-11}
 #: ``lasso``'s descent visits the features in the order given and stops at
 #: its sweep cap (100) or its tolerance, so at its defaults the order picks
 #: which unconverged point a solve returns: 4.6e-4 relative on ``pred`` at

@@ -386,6 +386,21 @@ impl OnlineModel for Holt {
         }
     }
 
+    /// The prediction at another `min_weight` floor, set for the read and
+    /// put back ([`OnlineModel::predict_with_floor`]).
+    fn predict_with_floor(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        floor: f64,
+    ) -> Step {
+        let floor = std::mem::replace(&mut self.cfg.min_weight, floor);
+        let out = OnlineModel::predict_with(self, x, y, d_clock);
+        self.cfg.min_weight = floor;
+        out
+    }
+
     fn predict(&self, _x: &[f64], d_clock: f64) -> Step {
         let n_eff = self.w_sum;
         let mut pred = vec![f64::NAN; self.cfg.n_targets];
