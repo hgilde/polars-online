@@ -157,6 +157,66 @@ fn bocpd_rows_held_for_its_prior_name_warm_rows() {
     );
 }
 
+/// `x1 = x0 + eps·b` and an independent `x2`, `n` rows, with `y` their
+/// combination and some noise.
+fn collinear(n: usize, eps: f64) -> DataFrame {
+    let mut s: u64 = 278;
+    let mut draw = || {
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (s >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+    };
+    let (mut x0, mut x1, mut x2, mut y) = (vec![], vec![], vec![], vec![]);
+    for _ in 0..n {
+        let (a, b, c, e) = (draw(), draw(), draw(), draw());
+        x0.push(2.0 + a);
+        x1.push(2.0 + a + eps * b);
+        x2.push(-1.0 + c);
+        y.push(0.7 + x0[x0.len() - 1] - 2.0 * x1[x1.len() - 1] + 0.5 * c + 0.1 * e);
+    }
+    df!("x0" => x0, "x1" => x1, "x2" => x2, "y" => y).unwrap()
+}
+
+/// A fit whose normal equations are past the condition at which a solve
+/// keeps a digit is withheld and names it, `ill_conditioned` (task 278
+/// (d4)): every row predicted from such a fit is null and says so, the
+/// same in chunks of 3 rows, and its solves are counted. The noise gate,
+/// on by default here, reads such a fit as not a number and leaves the row
+/// to this reason. Inside the limit (`eps = 1e-4`) no row says it.
+#[test]
+fn ewridge_rows_of_a_fit_past_its_condition_name_ill_conditioned() {
+    let s = spec(
+        r#"{"name": "m", "model": {"type": "ewridge", "ridge": 0.0, "max_rows_between_solves": 1},
+            "targets": ["y"], "features": ["x0", "x1", "x2"], "lam": 1.0}"#,
+    );
+    let df = collinear(300, 1e-11);
+    let (null, reason) = run(&s, &df, 300);
+    for (i, (n, r)) in null.iter().zip(&reason).enumerate() {
+        assert_eq!(*n, !r.is_empty(), "row {i} null {n}, reason {r:?}");
+    }
+    let ill = reason.iter().filter(|r| *r == "ill_conditioned").count();
+    // Measured 2026-10-25 on aarch64: 116 of the 300 rows. Which solves
+    // rounding lets through past `1/u` is the platform's arithmetic's, so
+    // the count is held loosely.
+    assert!(ill > 30, "{ill} rows named ill_conditioned");
+    let (_, chunked) = run(&s, &df, 3);
+    assert_eq!(chunked, reason, "in chunks");
+    let mut bank = Bank::new(vec![s.clone()]).unwrap();
+    bank.fit_predict(&df).unwrap();
+    let failures: u64 = bank.solve_failures()[0].iter().map(|(_, n)| n).sum();
+    assert!(
+        failures >= ill as u64,
+        "{failures} failures for {ill} withheld rows"
+    );
+
+    let (_, reason) = run(&s, &collinear(300, 1e-4), 300);
+    assert!(
+        reason[10..].iter().all(|r| r != "ill_conditioned"),
+        "{reason:?}"
+    );
+}
+
 /// `min_settled_frac` withholds `marginal`'s derived statistics, read from
 /// the state, while the stream is less settled than it: at 0.5 and a
 /// half-life of 10 on the row clock, the table opens once the decay has
