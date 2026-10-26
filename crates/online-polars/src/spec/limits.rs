@@ -28,17 +28,22 @@ impl Spec {
             ));
         }
         match &self.model {
-            // The lightest of `k` centres never carries more than the mean
-            // share, `weight_sum / k`, so at 1 or above every check finds a
-            // centre "dead" whatever the clusters, and re-places it on any
-            // far row. A value that is not finite is the next check's.
+            // The dead rule halves the source cluster and gives the freed
+            // centre the other half, so with the source at an equal share
+            // `weight_sum / k` both start at `weight_sum / (2k)`: the floor
+            // itself at 0.5, and each check then re-places one of them on
+            // the far rows (task 278, batch 33: over 50 seeds, no cascade at
+            // 0.45, 3 at 0.5, 29 at 0.6, all 50 at 0.9). At 1 or above the
+            // lightest centre, never above the mean share, is "dead" at
+            // every check whatever the clusters. A value that is not finite
+            // is the next check's.
             ModelKind::KMeans { dead_frac, .. } => {
-                if let Some(v) = dead_frac.filter(|v| v.is_finite() && *v >= 1.0) {
+                if let Some(v) = dead_frac.filter(|v| v.is_finite() && *v >= 0.5) {
                     return Err(format!(
-                        "spec {:?}: dead_frac must be below 1, got {v}: the lightest centre never \
-                         carries more than the mean share, weight_sum / n_clusters, so a \
-                         dead_frac of 1 or more calls a centre dead at every split-merge check \
-                         and re-places it on any far row, whatever the clusters",
+                        "spec {:?}: dead_frac must be below 0.5, got {v}: a re-placed centre \
+                         starts at half its source's weight, so at 0.5 or above it can be born \
+                         at the floor that marks a centre dead, dead_frac * weight_sum / \
+                         n_clusters, and the next split-merge check re-places it again",
                         self.name
                     ));
                 }

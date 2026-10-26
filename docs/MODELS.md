@@ -2684,6 +2684,10 @@ re-placed.** A centre whose blob vanished fades, and is re-placed once it holds
 less than `dead_frac` of an equal share: `log2(1/dead_frac)` half-lives after
 the blob vanished, 4.3 at 0.05 and 2 at 0.25. In exchange, a cluster lighter
 than `dead_frac/k` of the stream loses its centre whenever any row is far.
+It stays below 0.5. A re-placed centre starts with half the weight of the
+cluster it was split from, so at 0.5 it can start at the floor itself. The
+next check then re-places it again: over 50 streams, 3 cascaded at 0.5 and
+29 at 0.6, none at 0.45.
 
 **`scale_floor` keeps a feature that goes quiet from taking over the
 distance.** It floors each feature's variance at a fraction of its long-run

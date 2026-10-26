@@ -177,8 +177,8 @@ fn rcov_lagged_products_have_a_byte_ceiling() {
 fn kmeans_refuses_a_dead_rule_with_no_check_and_too_few_warm_rows() {
     let km = |model: &str| unsup(model, r#", "half_life": 10.0"#);
     refused(
-        &km(r#"{"type": "kmeans", "n_clusters": 3, "split_merge": 0.0, "dead_frac": 0.5}"#),
-        &["kmeans: dead_frac", "split_merge = 0", "0.5"],
+        &km(r#"{"type": "kmeans", "n_clusters": 3, "split_merge": 0.0, "dead_frac": 0.25}"#),
+        &["kmeans: dead_frac", "split_merge = 0", "0.25"],
     );
     accepted(&km(
         r#"{"type": "kmeans", "n_clusters": 3, "split_merge": 0.0}"#,

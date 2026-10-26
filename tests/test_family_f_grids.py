@@ -9,8 +9,8 @@ judged by the worst seed and the 95th percentile, never a median:
   ``log2(1 / dead_frac)`` half-lives later, at the first split-merge check
   after its weight crosses the floor; the delay grows with the checks'
   spacing; and a re-placed centre is born at half its source's weight, so a
-  ``dead_frac`` of 0.5 or more re-places it again at once (a defect, pinned
-  by strict xfails).
+  ``dead_frac`` of 0.5 or more re-placed it again at once (found here, and
+  now refused from 0.5, with 0.45 held to one re-placement).
 - ``corrchange`` (``kind="window"``): the permutation test's size on spans
   that do not overlap is the exact permutation level ``(n_perm + 1 - q) /
   (n_perm + 1)``, ``q = ceil((1 - alpha) n_perm)``, over 200 seeds.
@@ -166,27 +166,13 @@ def test_one_stranded_centre_is_re_placed_at_the_check_its_weight_predicts():
 #: there on whichever is lighter at the next check is "dead" and goes to
 #: whatever far rows that check has seen, the blobs' own chi-square tails
 #: included, and the clusters are lost. Measured 2026-10-26 over 50 seeds at
-#: a check every 25 rows: no cascade at 0.3, 0.4 or 0.45; at 0.5, 3 seeds
-#: (n_dead up to 210, late ARI 0.50); at 0.6, 29 (ARI 0.23); at 0.9, all 50
-#: (n_dead up to 518). `dead_frac` is refused from 1, not from 0.5.
-CASCADE = (
-    "defect: a centre re-placed by the dead rule is born at half its source's "
-    "weight, at or below the floor once dead_frac >= 0.5, and the rule re-places "
-    "again at once; dead_frac is refused only from 1 (task 278 batch 33)"
-)
+#: a check every 25 rows, before the refusal: no cascade at 0.3, 0.4 or 0.45;
+#: at 0.5, 3 seeds (n_dead up to 210, late ARI 0.50); at 0.6, 29 (ARI 0.23);
+#: at 0.9, all 50 (n_dead up to 518). So `dead_frac` is refused from 0.5
+#: (task 278, ff), where it was refused only from 1.
+BORN_DEAD = "dead_frac must be below 0.5, got {}: a re-placed centre starts at half"
 
-KM_CELLS = [
-    pytest.param(
-        d,
-        e,
-        marks=[pytest.mark.xfail(strict=True, reason=CASCADE)]
-        if (d, e) in {(0.5, 25), (0.5, 100)}
-        else [],
-        id=f"{d}-{e}",
-    )
-    for d in (0.05, 0.1, 0.25, 0.5)
-    for e in (25, 100, 400)
-]
+KM_CELLS = [pytest.param(d, e, id=f"{d}-{e}") for d in (0.05, 0.1, 0.25) for e in (25, 100, 400)]
 
 
 @pytest.mark.soak
@@ -200,8 +186,8 @@ def test_a_vanished_blob_s_centre_is_re_placed_log2_one_over_dead_frac_half_live
     and the lag allow. Measured 2026-10-26 (``e`` = delay in half-lives less
     ``log2(1 / dead_frac)``): ``e`` from -0.099 to 0.295 at 0.05 (the high
     end a check every 400 rows), to 0.089 at 0.1, 0.212 at 0.25, 0.408 at
-    0.5; lag worst 19. At 0.5 the checks every 25 and 100 rows cascade
-    (``CASCADE``)."""
+    0.5; lag worst 19. At 0.5 the checks every 25 and 100 rows cascaded
+    (``BORN_DEAD``), and 0.5 is refused now."""
     rs = [replacement(s, dead_frac, every) for s in KM_SEEDS]
     found = [r for r in rs if r["replaced"] is not None]
     e = [r["replaced"] / KM_H - math.log2(1 / dead_frac) for r in found]
@@ -243,38 +229,34 @@ def test_the_delay_grows_with_the_check_spacing():
     assert means[-1] > 4 * means[0], means
 
 
-@pytest.mark.xfail(strict=True, reason=CASCADE)
-def test_a_re_placed_centre_is_not_born_dead_one_seed():
-    """The essentials' repro of ``CASCADE``: seed 0 at ``dead_frac = 0.6``,
-    a check every 25 rows. Measured 2026-10-26: re-placed again and again."""
-    r = replacement(0, 0.6, 25)
-    print(f"seed 0, dead_frac 0.6: {r}")
+@pytest.mark.parametrize("dead_frac", [0.5, 0.6, 0.9, 0.999])
+def test_a_dead_frac_whose_re_placed_centre_is_born_dead_is_refused(dead_frac):
+    """``BORN_DEAD``: refused by name from 0.5, by the builder and by the
+    bank from a spec that skipped the builder (each value in the
+    cascade's measured range: 3 seeds of 50 at 0.5, 29 at 0.6, all at
+    0.9)."""
+    with pytest.raises(ValueError, match=BORN_DEAD.format(dead_frac)):
+        spec(k=4, half_life=KM_H, split_merge=0.5, dead_frac=dead_frac)
+    raw = spec(k=4, half_life=KM_H, split_merge=0.5)
+    raw["model"]["dead_frac"] = dead_frac
+    with pytest.raises(ValueError, match=BORN_DEAD.format(dead_frac)):
+        po.ModelBank([raw])
+
+
+def test_just_below_one_half_a_centre_is_re_placed_once_one_seed():
+    """The essentials' case beside the refusal: seed 0 at ``dead_frac =
+    0.45``, a check every 25 rows, where 0.6 re-placed again and again.
+    Measured 2026-10-26: one re-placement, at the predicted check."""
+    r = replacement(0, 0.45, 25)
+    print(f"seed 0, dead_frac 0.45: {r}")
     km_holds(r, 25)
-
-
-@pytest.mark.soak
-@pytest.mark.xfail(strict=True, reason=CASCADE)
-@pytest.mark.parametrize("dead_frac", [0.5, 0.6, 0.9])
-def test_a_re_placed_centre_is_not_born_below_the_floor(dead_frac):
-    """What a fix must make true: one re-placement and the late quarter
-    clustered on every seed, for any ``dead_frac`` the builder accepts."""
-    rs = [replacement(s, dead_frac, 25) for s in KM_SEEDS]
-    bad = [
-        (s, r["n_dead"], round(r["tail_ari"], 3))
-        for s, r in zip(KM_SEEDS, rs, strict=True)
-        if r["n_dead"] > 1
-    ]
-    print(f"dead_frac {dead_frac}: {len(bad)} seeds cascade {bad[:5]}")
-    assert not bad, bad
-    for r in rs:
-        km_holds(r, 25)
 
 
 @pytest.mark.soak
 @pytest.mark.parametrize("dead_frac", [0.3, 0.45])
 @pytest.mark.parametrize("every", [10, 25])
 def test_below_half_a_share_a_centre_is_re_placed_once(dead_frac, every):
-    """The other side of ``CASCADE``'s edge: below 0.5 a re-placed centre
+    """The other side of ``BORN_DEAD``'s edge: below 0.5 a re-placed centre
     and its halved source are born above the floor, and every seed sees one
     re-placement however close the checks. Measured 2026-10-26 at 0.3, 0.4
     and 0.45, checks every 10 and 25 rows: one on every seed."""
@@ -466,9 +448,10 @@ def test_robust_beta_trades_the_outlier_against_the_shift():
     0.5       0                          0.0074
     ========  ===========  ============  ======================
 
-    So the docstring's edge, "above about 0.2 nothing is ever detected
-    again", is a soft one: at 0.2 three streams in four still date the
-    shift, late, and at 0.25 three in fifty. Held: every seed found within
+    So the docstring's old edge, "above about 0.2 nothing is ever detected
+    again", was a soft one: at 0.2 three streams in four still date the
+    shift, late, and at 0.25 three in fifty; the docstring now states this
+    table's numbers. Held: every seed found within
     10 rows up to 0.1; some seed missed at 0.2; at most 3 found at 0.3 and
     none at 0.5; the count of streams found never rises with beta, nor the
     worst delay falls while every stream is found; and from 0.05 up the
@@ -518,7 +501,8 @@ def test_robust_beta_trades_the_outlier_against_the_shift():
 # a less sticky matrix makes the filter credit more switches, which makes the
 # matrix less sticky still. The pull falls with the rows all the same (the
 # rate test). At tau = 0 a state the first rows did not favour can get no
-# count and stay out (the docstring's limit), here at only three sds.
+# count and stay out (the docstring's limit), here at only three sds. The
+# hmm docstring states these measurements.
 
 HM_PT = np.array([[0.95, 0.05], [0.10, 0.90]])
 HM_MU = [-1.5, 1.5]

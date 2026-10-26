@@ -165,17 +165,21 @@ def bocpd(
         20-sigma row is a changepoint (``p_change`` 0.91) whose run carries the
         outlier in its mean. Tempered, the row is atypical under every run,
         every tempered likelihood is about 1, and nothing moves. A trade: a
-        whole new regime is a run of individually forgiven rows, so above about
-        0.2 nothing is ever detected again; 0.1 ignores the outlier and still
-        dates a four-sigma shift to the right row. Above 0, and refused beside
-        ``"full"``. The tempered predictive is not free of the data's units:
-        its message ``pi ** w`` carries the constant a change of units
-        multiplies the density by as ``c ** w``, and ``w`` differs from run to
-        run, so the runs' odds move with the units. At a level of ``1e4`` with
-        a spread of ``1e-2``, ``p_change`` moved by up to 0.86 against the same
-        stream at level 0 and spread 1. Centre and scale the features before a
-        tempered run. ``robust_beta`` is a power on a ratio of two
-        densities, and has no units.
+        whole new regime is a run of individually forgiven rows, so a larger
+        power finds a real shift later, and past about 0.2 mostly not at all.
+        Measured over 50 streams with a four-sigma shift (hazard 250, a shift
+        found once the run mode dates it to within 5 rows, inside 150 rows): at
+        0.1 every shift was found within 6 rows, while a 20-sigma outlier left
+        ``p_change`` at its floor; at 0.15 all 50 were found, the worst 16 rows
+        late; at 0.2, 38 of 50, the worst 120 rows late; at 0.3 one, and at 0.5
+        none. Above 0, and refused beside ``"full"``. The tempered predictive
+        is not free of the data's units: its message ``pi ** w`` carries the
+        constant a change of units multiplies the density by as ``c ** w``, and
+        ``w`` differs from run to run, so the runs' odds move with the units.
+        At a level of ``1e4`` with a spread of ``1e-2``, ``p_change`` moved by
+        up to 0.86 against the same stream at level 0 and spread 1. Centre and
+        scale the features before a tempered run. ``robust_beta`` is a power on
+        a ratio of two densities, and has no units.
     ``mean_prior``, ``mean_precision_prior``, ``degrees_of_freedom_prior``, ``covariance_prior``
         The conjugate prior, under scikit-learn's ``BayesianGaussianMixture``
         names:

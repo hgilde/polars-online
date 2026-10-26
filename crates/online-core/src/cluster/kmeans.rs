@@ -144,7 +144,10 @@ pub struct KMeansCfg {
     /// (4.3 at 0.05, 2 at 0.25); a blob lighter than `dead_frac / k` of
     /// the stream loses its centre whenever any row is far. The rule runs
     /// at a split–merge check, so above 0 it is refused beside
-    /// `split_merge = 0`, which runs none.
+    /// `split_merge = 0`, which runs none. Below 0.5 ([`KMeans::new`]): a
+    /// re-placed centre starts at half its source's weight, so from 0.5 a
+    /// centre taken from an equal share is born at the floor, and the
+    /// next check re-places it or its source again.
     pub dead_frac: f64,
     /// Measure distances in units of each feature's EW standard deviation.
     pub standardize: bool,
@@ -360,8 +363,29 @@ impl KMeans {
         rows as f64 * row / f64::from(1 << 20)
     }
 
+    /// The largest `dead_frac` a new model takes is below this: the dead
+    /// rule halves the source cluster (`split`) and gives the freed centre
+    /// the other half, so with the source at an equal share `W / k` both
+    /// start at `W / (2k)`, which is the floor `dead_frac · W / k` at 0.5.
+    /// From there each check re-places one of them onto the far rows and the
+    /// clustering is lost: over 50 seeds with a check every 25 rows, no
+    /// stream cascaded at 0.45, 3 at 0.5, 29 at 0.6 and all 50 at 0.9.
+    // Measured by task 278's batch 33 (tests/test_family_f_grids.py).
+    pub const DEAD_FRAC_BELOW: f64 = 0.5;
+
     pub fn new(cfg: KMeansCfg) -> Result<Self, String> {
         cfg.validate()?;
+        // Refused here and not in `validate`, which a restored state runs
+        // too: a state saved with such a value still loads and continues.
+        if cfg.dead_frac >= Self::DEAD_FRAC_BELOW {
+            return Err(format!(
+                "kmeans: dead_frac must be below 0.5, got {}: a re-placed centre starts at half \
+                 its source's weight, so at 0.5 or above it can be born at the floor that marks \
+                 a centre dead, dead_frac * weight_sum / n_clusters, and the next check \
+                 re-places it again",
+                cfg.dead_frac
+            ));
+        }
         let p = cfg.n_features;
         Ok(Self {
             moments: FeatureMoments::new(p),
@@ -2484,16 +2508,16 @@ mod tests {
     fn dead_frac_without_split_merge_is_refused_by_name() {
         let Err(e) = KMeans::new(KMeansCfg {
             split_merge: 0.0,
-            dead_frac: 0.5,
+            dead_frac: 0.25,
             ..cfg(3)
         }) else {
             panic!("accepted")
         };
         assert!(
-            e.contains("kmeans: dead_frac") && e.contains("split_merge = 0") && e.contains("0.5"),
+            e.contains("kmeans: dead_frac") && e.contains("split_merge = 0") && e.contains("0.25"),
             "{e}"
         );
-        for (split_merge, dead_frac) in [(0.0, 0.0), (0.5, 0.5), (0.5, 0.0)] {
+        for (split_merge, dead_frac) in [(0.0, 0.0), (0.5, 0.25), (0.5, 0.0)] {
             assert!(
                 KMeans::new(KMeansCfg {
                     split_merge,
@@ -2503,6 +2527,44 @@ mod tests {
                 .is_ok()
             );
         }
+    }
+
+    /// A re-placed centre starts at half its source's weight, so from
+    /// `dead_frac = 0.5` it can be born at the floor and re-placed at the
+    /// next check (task 278, batch 33: `tests/test_family_f_grids.py`
+    /// measured the cascade). A new model refuses it by name, just below
+    /// is taken, and a state saved with one still loads, since `restore`
+    /// runs `validate` and not `new`'s refusal.
+    #[test]
+    fn a_dead_frac_whose_re_placed_centre_is_born_dead_is_refused() {
+        use crate::{ModelState, OnlineModel};
+        for v in [0.5, 0.6, 0.999, 1.0, 7.0] {
+            let Err(e) = KMeans::new(KMeansCfg {
+                split_merge: 0.5,
+                dead_frac: v,
+                ..cfg(3)
+            }) else {
+                panic!("dead_frac {v} accepted")
+            };
+            assert!(
+                e.contains(&format!("kmeans: dead_frac must be below 0.5, got {v}"))
+                    && e.contains("half its source's weight"),
+                "{e}"
+            );
+        }
+        let below = KMeans::new(KMeansCfg {
+            split_merge: 0.5,
+            dead_frac: 0.499_999,
+            ..cfg(3)
+        })
+        .unwrap();
+        let mut s = below.state();
+        let ModelState::KMeans(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.cfg.dead_frac = 0.6;
+        let back = KMeans::restore(&s).unwrap();
+        assert_eq!(back.cfg.dead_frac, 0.6);
     }
 
     /// `k` and the warm-up buffer are sized by the spec before the stream
@@ -2936,7 +2998,7 @@ mod tests {
         assert_eq!(m.clusters[1].c, vec![50.0, 50.0], "the first of the two");
         assert_eq!(m.clusters[2].c, vec![0.0, 100.0]);
         // One cluster, far lighter than the floor.
-        let mut m = placed(&[[0.0, 0.0]], &[1.0], 0, 0.5, 0.5);
+        let mut m = placed(&[[0.0, 0.0]], &[1.0], 0, 0.5, 0.25);
         m.split_merge_check();
         assert_eq!(m.events(), (0, 0));
         assert_eq!(m.clusters[0].c, vec![0.0, 0.0]);
