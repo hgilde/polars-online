@@ -40,6 +40,7 @@ fn cfg(loss: RobustLoss, scale: HuberScale, refit_rows: u32) -> RobustCfg {
         emit_scale: false,
         refit_rows,
         min_weight_holds_learning: false,
+        mad_anchor: false,
     }
 }
 

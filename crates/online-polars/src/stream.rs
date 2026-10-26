@@ -1211,6 +1211,9 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                                 ));
                             }
                         },
+                        // Under `bin_stat = "huber"`, the target's MAD
+                        // sketch in units of its first deviation.
+                        mad_anchor: true,
                         budget_mib: bin_budget.map(|n| n.0),
                     })),
                 },

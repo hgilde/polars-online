@@ -87,6 +87,7 @@ fn marginal_round_trips_with_every_optional_part_present_or_absent() {
                                 warm_rows: 4,
                                 stat: online_core::BinStat::Mean,
                                 budget_mib: None,
+                                mad_anchor: false,
                             })
                         }),
                         window,
@@ -297,7 +298,7 @@ fn a_human_readable_float_does_not_move_the_msgpack() {
 /// scales -- round-trips in both encodings too.
 #[test]
 fn a_bins_budget_round_trips_in_both_encodings() {
-    let build = |budget_mib, stat| {
+    let build = |budget_mib, stat, mad_anchor| {
         let cfg = MarginalCfg {
             n_features: 2,
             n_targets: 1,
@@ -313,6 +314,7 @@ fn a_bins_budget_round_trips_in_both_encodings() {
                 warm_rows: 4,
                 stat,
                 budget_mib,
+                mad_anchor,
             })),
             feature_moments: online_core::FeatureMomentLayout::PerTarget,
             window: None,
@@ -328,10 +330,15 @@ fn a_bins_budget_round_trips_in_both_encodings() {
     };
     let huber = online_core::BinStat::Huber { delta: 1.345 };
     for budget in [None, Some(512.0), Some(f64::INFINITY)] {
-        for stat in [online_core::BinStat::Mean, huber] {
+        // The Huber scales' sketches anchored and not (task 278).
+        for (stat, anchor) in [
+            (online_core::BinStat::Mean, false),
+            (huber, false),
+            (huber, true),
+        ] {
             roundtrip(
-                &build(budget, stat),
-                &format!("marginal bin_budget={budget:?} {stat:?}"),
+                &build(budget, stat, anchor),
+                &format!("marginal bin_budget={budget:?} {stat:?} mad_anchor={anchor}"),
             );
         }
     }
@@ -343,10 +350,11 @@ fn a_bins_budget_round_trips_in_both_encodings() {
         warm_rows: 4,
         stat: online_core::BinStat::Mean,
         budget_mib: None,
+        mad_anchor: false,
     };
     let compact = rmp_serde::to_vec(&bins).unwrap();
     assert_eq!(
-        compact[0], 0x95,
-        "five fields: the statistic, and no budget"
+        compact[0], 0x96,
+        "six fields: the statistic, the anchor, and no budget"
     );
 }

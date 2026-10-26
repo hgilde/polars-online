@@ -51,6 +51,7 @@ fn sgd(loss: SgdLoss, fit_intercept: bool, constraint: Option<Constraint>) -> Sg
         // held here, and it reads no gate.
         min_weight_holds_learning: true,
         target_spread: false,
+        mad_anchor: false,
     }
 }
 

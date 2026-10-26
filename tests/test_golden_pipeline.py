@@ -560,7 +560,12 @@ def switched_signature() -> dict[str, float | str | None]:
 #: their output alone, the fit learning from its own prediction from the
 #: row its target holds a row per coefficient. The largest move 8.5e-3 of
 #: ``1 + |v|`` (``quantile.pred_y0@60``); ``robust_ref`` holds both to every
-#: row (``tests/test_oracles.py``); nothing else moved.
+#: row (``tests/test_oracles.py``); nothing else moved. Task 278's anchored
+#: MAD sketch (2026-10-26) moved the same 8: each sketch keeps ``|e|`` in
+#: units of the first, which regroups the residuals across bucket edges; the
+#: largest move 9.2e-4 of ``1 + |v|`` (``quantile.pred_y0@119``);
+#: ``robust_ref``'s sketch is anchored as the core's is, and holds both to
+#: every row; nothing else moved.
 GOLDEN: dict[str, float | str | None] = {
     "ridge.pred_y0__r0.000001@25": -4.684371132566456,
     "ridge.pred_y0__r0.000001@60": -0.25563207972202284,
@@ -668,11 +673,11 @@ GOLDEN: dict[str, float | str | None] = {
     "lasso.penalty_selected_y0@60": 0.0,
     "lasso.penalty_selected_y0@119": 0.0,
     "huber.pred_y0@25": -4.684375830329454,
-    "huber.pred_y0@60": -0.25293946135032397,
-    "huber.pred_y0@119": -0.15958072404404175,
+    "huber.pred_y0@60": -0.25295004317258707,
+    "huber.pred_y0@119": -0.15953151258978532,
     "huber.resid_y0@25": -0.16722999390526194,
-    "huber.resid_y0@60": -0.21910166746675397,
-    "huber.resid_y0@119": 0.10888195308581292,
+    "huber.resid_y0@60": -0.21909108564449087,
+    "huber.resid_y0@119": 0.10883274163155648,
     "huber.weight_sum@25": 7.999488060097996,
     "huber.weight_sum@60": 12.473100285951407,
     "huber.weight_sum@119": 15.110060335371337,
@@ -683,11 +688,11 @@ GOLDEN: dict[str, float | str | None] = {
     "huber.withheld_reason@60": None,
     "huber.withheld_reason@119": None,
     "quantile.pred_y0@25": -4.684375830329454,
-    "quantile.pred_y0@60": -0.2293427926658813,
-    "quantile.pred_y0@119": -0.10882890982485736,
+    "quantile.pred_y0@60": -0.2290338155024383,
+    "quantile.pred_y0@119": -0.10985340510060985,
     "quantile.resid_y0@25": -0.16722999390526194,
-    "quantile.resid_y0@60": -0.24269833615119663,
-    "quantile.resid_y0@119": 0.05813013886662853,
+    "quantile.resid_y0@60": -0.24300731331463965,
+    "quantile.resid_y0@119": 0.05915463414238102,
     "quantile.weight_sum@25": 7.999488060097996,
     "quantile.weight_sum@60": 12.473100285951407,
     "quantile.weight_sum@119": 15.110060335371337,

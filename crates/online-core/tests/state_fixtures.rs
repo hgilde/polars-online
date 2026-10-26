@@ -1490,3 +1490,74 @@ fn regenerate_when_asked() {
     writeln!(index, "];").unwrap();
     std::fs::write(dir.join("index.rs"), index).unwrap();
 }
+
+/// The anchored MAD sketches' forms (schema 64, task 278, the user's
+/// 2026-10-26): `huber_mad_anchored`, `sgd_huber_mad_anchored` and
+/// `marginal_bins_huber_anchored` and `quantile_mad` set the flag and hold every sketch's
+/// anchor at a positive value, the first residual's; `huber_mad_awaiting`
+/// is saved before any residual, every anchor 0, awaiting its first. The
+/// cases without the flag write it `false` and keep no anchor, the form a
+/// state saved before it goes on in.
+#[test]
+fn the_anchored_sketch_forms_are_written() {
+    if regenerating() {
+        return;
+    }
+    let decoded = |name: &str| -> rmpv::Value {
+        let f = frozen::ALL
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("{name}: no fixture; add the case and regenerate"));
+        rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap()
+    };
+    let robust = ["model", "Robust"];
+    let sgd = ["model", "Sgd"];
+    let bins = ["model", "Marginal", "bins", "hist", "scales"];
+    let robust_cfg = ["model", "Robust", "cfg"];
+    let sgd_cfg = ["model", "Sgd", "cfg"];
+    let bins_cfg = ["model", "Marginal", "cfg", "bins"];
+    // (case, where its sketches are, where its flag is, whether it is set,
+    // the anchors: None for none, Some(true) set, Some(false) awaiting)
+    type Form<'a> = (&'a str, &'a [&'a str], &'a [&'a str], bool, Option<bool>);
+    let cases: [Form; 8] = [
+        ("huber_mad_anchored", &robust, &robust_cfg, true, Some(true)),
+        ("quantile_mad", &robust, &robust_cfg, true, Some(true)),
+        (
+            "huber_mad_awaiting",
+            &robust,
+            &robust_cfg,
+            true,
+            Some(false),
+        ),
+        ("sgd_huber_mad_anchored", &sgd, &sgd_cfg, true, Some(true)),
+        (
+            "marginal_bins_huber_anchored",
+            &bins,
+            &bins_cfg,
+            true,
+            Some(true),
+        ),
+        ("huber_mad", &robust, &robust_cfg, false, None),
+        ("sgd_huber_mad", &sgd, &sgd_cfg, false, None),
+        ("marginal_bins_huber", &bins, &bins_cfg, false, None),
+    ];
+    for (name, place, flag_at, flag, anchors) in cases {
+        let v = decoded(name);
+        let path: Vec<&str> = flag_at.iter().copied().chain(["mad_anchor"]).collect();
+        let got = at(&v, &path).and_then(rmpv::Value::as_bool);
+        assert_eq!(got, Some(flag), "{name}: cfg.mad_anchor");
+        let path: Vec<&str> = place.iter().copied().chain(["mad"]).collect();
+        let sketches = at(&v, &path)
+            .and_then(rmpv::Value::as_array)
+            .unwrap_or_else(|| panic!("{name}: no sketches"));
+        assert_eq!(sketches.len(), 2, "{name}: a sketch a target");
+        for q in sketches {
+            let a = at(q, &["anchor"]).and_then(rmpv::Value::as_f64);
+            match anchors {
+                None => assert_eq!(a, None, "{name}: an anchor without the flag"),
+                Some(true) => assert!(a.is_some_and(|a| a > 0.0), "{name}: anchor {a:?}"),
+                Some(false) => assert_eq!(a, Some(0.0), "{name}: awaiting"),
+            }
+        }
+    }
+}

@@ -328,6 +328,7 @@ fn robust_cfg(loss: RobustLoss) -> RobustCfg {
         ridge_scale: false,
         emit_scale: false,
         refit_rows: 0,
+        mad_anchor: false,
         // The cases a state written before schema 64 converts to: the gate
         // held learning back then (docs/PLAN.md task 278, D10). The form
         // since is the refit cases' and `quantile_mad`'s.
@@ -432,6 +433,7 @@ fn sgd_cfg(loss: SgdLoss, n_targets: usize) -> SgdCfg {
         // since is the refit cases' and `quantile_mad`'s.
         min_weight_holds_learning: true,
         target_spread: false,
+        mad_anchor: false,
     }
 }
 
@@ -730,6 +732,40 @@ pub fn all() -> Vec<Case> {
             Targets::Linear(2),
             40
         ),
+        // The MAD's sketches anchored, in units of each target's first
+        // `|e|` (schema 64, task 278, the user's 2026-10-26): saved after
+        // the anchor is set, and saved after two rows, before any
+        // prediction and so before any residual, the anchors awaiting
+        // their first value, which the continuation sets. `huber_mad` is
+        // the form a state saved before it goes on in.
+        case!(
+            "huber_mad_anchored",
+            "Robust",
+            Robust,
+            Robust::new(RobustCfg {
+                huber_scale: online_core::HuberScale::Mad,
+                mad_anchor: true,
+                ..robust_cfg(RobustLoss::Huber { delta: 1.5 })
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            40
+        ),
+        case!(
+            "huber_mad_awaiting",
+            "Robust",
+            Robust,
+            Robust::new(RobustCfg {
+                huber_scale: online_core::HuberScale::Mad,
+                mad_anchor: true,
+                ..robust_cfg(RobustLoss::Huber { delta: 1.5 })
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            2
+        ),
         // Feature sets from each target's one set of sums, the rows weighed
         // by the largest set's residual (schema 63, docs/PLAN.md task 272
         // (a)).
@@ -813,7 +849,10 @@ pub fn all() -> Vec<Case> {
         // The quantile band drawn in the MAD, each target's sketch of `|e|`
         // in the state, and `min_weight` withholding the output alone
         // (schema 64, docs/PLAN.md task 278, D-Q and D10); `quantile` is the
-        // RMS's form and the gate's old one.
+        // RMS's form and the gate's old one. Its sketches are anchored, the
+        // one form a spec writes (task 278, the anchored sketch): a quantile
+        // band in the MAD is new in schema 64, so no state has the fixed
+        // buckets' form.
         case!(
             "quantile_mad",
             "Robust",
@@ -821,6 +860,7 @@ pub fn all() -> Vec<Case> {
             Robust::new(RobustCfg {
                 huber_scale: online_core::HuberScale::Mad,
                 min_weight_holds_learning: false,
+                mad_anchor: true,
                 ..robust_cfg(RobustLoss::Quantile { tau: 0.75 })
             })
             .unwrap(),
@@ -923,6 +963,23 @@ pub fn all() -> Vec<Case> {
             Sgd,
             Sgd::new(SgdCfg {
                 huber_scale: online_core::HuberScale::Mad,
+                ..sgd_cfg(SgdLoss::Huber { delta: 1.5 }, 2)
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            40
+        ),
+        // The MAD's sketches anchored under the Huber loss (schema 64, task
+        // 278); `sgd_huber_mad` is the form a state saved before it goes
+        // on in.
+        case!(
+            "sgd_huber_mad_anchored",
+            "Sgd",
+            Sgd,
+            Sgd::new(SgdCfg {
+                huber_scale: online_core::HuberScale::Mad,
+                mad_anchor: true,
                 ..sgd_cfg(SgdLoss::Huber { delta: 1.5 }, 2)
             })
             .unwrap(),
@@ -1195,6 +1252,7 @@ pub fn all() -> Vec<Case> {
                     warm_rows: 30,
                     stat: online_core::BinStat::Mean,
                     budget_mib: None,
+                    mad_anchor: false,
                 })),
                 ..marginal_cfg()
             })
@@ -1218,6 +1276,31 @@ pub fn all() -> Vec<Case> {
                     warm_rows: 12,
                     stat: online_core::BinStat::Huber { delta: 1.0 },
                     budget_mib: None,
+                    mad_anchor: false,
+                })),
+                ..marginal_cfg()
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            30
+        ),
+        // Each target's MAD sketch anchored (schema 64, task 278);
+        // `marginal_bins_huber` is the form a state saved before it goes
+        // on in.
+        case!(
+            "marginal_bins_huber_anchored",
+            "Marginal",
+            Marginal,
+            Marginal::new(MarginalCfg {
+                bins: Some(Box::new(BinCfg {
+                    n_bins: 4,
+                    edges: None,
+                    rule: BinRule::Quantile,
+                    warm_rows: 12,
+                    stat: online_core::BinStat::Huber { delta: 1.0 },
+                    budget_mib: None,
+                    mad_anchor: true,
                 })),
                 ..marginal_cfg()
             })

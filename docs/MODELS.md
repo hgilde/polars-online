@@ -877,6 +877,19 @@ The median is read from a quantile sketch kept per target, within 0.78% of
 the exact weighted median. Each scale learns a residual at the row's own
 weight, not at its Huber weight, and ages on every row.
 
+The sketch keeps each residual in units of the target's first one, so
+rescaling the target rescales the fit to rounding. Its buckets are fixed
+in the residual's own units, and only a power of two maps them onto
+themselves. Kept in those units, a target in grams instead of kilograms
+regrouped residuals across bucket edges and moved the median by up to a
+bucket, 1.6%. Over 50 streams of 1,500 rows with heavy-tailed noise and a
+half-life of 300 rows, predictions moved by up to 0.4% of the target's
+spread at scales of 1e±3 and 1e±6. In the first residual's units they move
+by at most 3e-12 of the spread, under the 2e-11 the fit's own rounding
+allows. The read costs a division more a row, about 2 ns per target. A
+state saved before this change keeps its fixed buckets and continues as it
+was.
+
 The sketch's buckets span at most 16 octaves around the median, a factor
 of 65,536. A residual beyond them is folded into the outermost bucket on
 its side, its weight kept, so a wild residual of `1e200` costs no more

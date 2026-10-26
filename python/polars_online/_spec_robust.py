@@ -73,7 +73,12 @@ def huber(
     folded into, at least a factor of 256 from where it stood then: as when a
     fit's first residuals, at the target's level, are more than 65,536 times
     the noise's, and the median reads too high until the later residuals
-    outweigh them. With ``huber_scale = "rms"`` it is the EW root mean
+    outweigh them. The sketch keeps each residual in units of the target's
+    first, so a target rescaled by any factor, grams for kilograms, rescales
+    the scale and the fit to rounding; kept in the residual's own units, a
+    factor other than a power of two moved the median by up to a bucket,
+    1.6%, and the predictions by up to 0.4% of the target's spread. With
+    ``huber_scale = "rms"`` it is the EW root mean
     square of the residuals about 0, in which every row counts at full weight:
     one wild row sets it, and a fit's first residuals, the target's whole level
     while the intercept is still near 0, widen it for as long as the decay
@@ -420,7 +425,11 @@ def quantile(
     width, and every one of 50 streams of 20,000 rows ended more than 0.05
     from ``statsmodels``' ``QuantReg`` on the same rows, the worst 0.098 at
     5% and 0.98 at 20%. In the MAD none did, the worst 0.006 at 5% and 0.026
-    at 20%, with or without a half-life of 5,000.
+    at 20%, with or without a half-life of 5,000. The median is read from
+    :func:`huber`'s sketch, which keeps each residual in units of the first,
+    so a rescaled target rescales the band and the fit to rounding; in the
+    residual's own units a decimal factor moved the fit by up to 0.044 of
+    the target's spread.
 
     The band. ``h`` is ``quantile_eps * s``. The rows inside the band are the
     curvature the step leans on, so a much narrower band converges more slowly

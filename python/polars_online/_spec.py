@@ -4118,7 +4118,9 @@ def marginal(
         location by the same recursion. It is one per target, not per
         feature: a cut is for a row far from the target's spread, the same row
         whichever feature bins it, and per feature it would take a quantile
-        sketch per pair. A bin's first row is judged against ``m_t``. Until
+        sketch per pair. The sketch keeps each deviation in units of the
+        first, as :func:`huber`'s does, so a rescaled target rescales the
+        cuts and the locations to rounding. A bin's first row is judged against ``m_t``. Until
         the target has a scale above 0, its first two rows, nothing is
         clipped, as :func:`huber` down-weights nothing before its scale
         exists. ``bin_huber_delta`` is the cut in units of ``sigma_t``,

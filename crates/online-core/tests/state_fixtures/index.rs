@@ -49,6 +49,12 @@ pub mod huber {
 pub mod huber_mad {
     include!("huber_mad.rs");
 }
+pub mod huber_mad_anchored {
+    include!("huber_mad_anchored.rs");
+}
+pub mod huber_mad_awaiting {
+    include!("huber_mad_awaiting.rs");
+}
 pub mod huber_sets {
     include!("huber_sets.rs");
 }
@@ -87,6 +93,9 @@ pub mod sgd_huber {
 }
 pub mod sgd_huber_mad {
     include!("sgd_huber_mad.rs");
+}
+pub mod sgd_huber_mad_anchored {
+    include!("sgd_huber_mad_anchored.rs");
 }
 pub mod sgd_huber_refit {
     include!("sgd_huber_refit.rs");
@@ -148,6 +157,9 @@ pub mod marginal_bins {
 pub mod marginal_bins_huber {
     include!("marginal_bins_huber.rs");
 }
+pub mod marginal_bins_huber_anchored {
+    include!("marginal_bins_huber_anchored.rs");
+}
 pub mod marginal_window {
     include!("marginal_window.rs");
 }
@@ -199,6 +211,8 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &kalman_output_only::FIXTURE,
     &huber::FIXTURE,
     &huber_mad::FIXTURE,
+    &huber_mad_anchored::FIXTURE,
+    &huber_mad_awaiting::FIXTURE,
     &huber_sets::FIXTURE,
     &huber_sum::FIXTURE,
     &huber_refit::FIXTURE,
@@ -212,6 +226,7 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &sgd_warming::FIXTURE,
     &sgd_huber::FIXTURE,
     &sgd_huber_mad::FIXTURE,
+    &sgd_huber_mad_anchored::FIXTURE,
     &sgd_huber_refit::FIXTURE,
     &sgd_huber_refit_done::FIXTURE,
     &sgd_spread::FIXTURE,
@@ -232,6 +247,7 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &marginal_lags::FIXTURE,
     &marginal_bins::FIXTURE,
     &marginal_bins_huber::FIXTURE,
+    &marginal_bins_huber_anchored::FIXTURE,
     &marginal_window::FIXTURE,
     &deco::FIXTURE,
     &rcov::FIXTURE,

@@ -213,23 +213,35 @@ pub(crate) struct BinScales {
 }
 
 impl BinScales {
-    fn new(delta: f64, n_targets: usize) -> Self {
+    fn new(delta: f64, anchored: bool, n_targets: usize) -> Self {
         Self {
             delta,
             w: vec![0.0; n_targets],
             m: vec![0.0; n_targets],
             m_lo: vec![0.0; n_targets],
-            mad: crate::robust::mad_sketches(crate::robust::HuberScale::Mad, n_targets),
+            mad: crate::robust::mad_sketches(crate::robust::HuberScale::Mad, anchored, n_targets),
         }
     }
 
+    /// Whether the sketches are anchored ([`BinCfg::mad_anchor`]): the first
+    /// one's, which [`Self::has_shape`] holds every other to.
+    fn anchored(&self) -> bool {
+        self.mad.first().is_some_and(|q| q.anchor().is_some())
+    }
+
     fn has_shape(&self, n_targets: usize) -> bool {
+        let anchored = self.anchored();
         (self.delta > 0.0)
             && [&self.w, &self.m, &self.m_lo]
                 .iter()
                 .all(|v| v.len() == n_targets)
             && self.w.iter().all(|w| w.is_finite() && *w >= 0.0)
-            && crate::robust::mad_sketches_fit(crate::robust::HuberScale::Mad, n_targets, &self.mad)
+            && crate::robust::mad_sketches_fit(
+                crate::robust::HuberScale::Mad,
+                anchored,
+                n_targets,
+                &self.mad,
+            )
     }
 
     /// Target `t`'s cut and location, before the row.
@@ -455,12 +467,26 @@ impl MarginalBins {
         Self::new_with(p, n_targets, edges, BinStat::Mean)
     }
 
-    /// [`Self::new`], each bin's location read as `stat` says.
+    /// [`Self::new`], each bin's location read as `stat` says, its MAD
+    /// sketches unanchored: the tests' form.
+    #[cfg(test)]
     pub fn new_with(
+        p: usize,
+        n_targets: usize,
+        edges: Vec<Vec<f64>>,
+        stat: BinStat,
+    ) -> Result<Self, String> {
+        Self::new_with_anchor(p, n_targets, edges, stat, false)
+    }
+
+    /// [`Self::new_with`], each target's MAD sketch under [`BinStat::Huber`]
+    /// anchored where `anchored` says ([`BinCfg::mad_anchor`]).
+    pub fn new_with_anchor(
         p: usize,
         n_targets: usize,
         mut edges: Vec<Vec<f64>>,
         stat: BinStat,
+        anchored: bool,
     ) -> Result<Self, String> {
         check_edges(p, &edges)?;
         // Learned edges were reserved for every edge asked for; a feature
@@ -488,7 +514,7 @@ impl MarginalBins {
                 }
                 (
                     vec![0.0; cells],
-                    Some(Box::new(BinScales::new(delta, n_targets))),
+                    Some(Box::new(BinScales::new(delta, anchored, n_targets))),
                 )
             }
         };
@@ -507,6 +533,12 @@ impl MarginalBins {
             scales,
             row: RowBins::default(),
         })
+    }
+
+    /// Whether each target's MAD sketch is anchored ([`BinCfg::mad_anchor`]);
+    /// `false` under the mean, which keeps none.
+    pub fn mad_anchor(&self) -> bool {
+        self.scales.as_ref().is_some_and(|s| s.anchored())
     }
 
     /// What each bin's location is: the statistic it was built with.
@@ -1110,6 +1142,12 @@ pub struct BinCfg {
     /// `budget_mib` is the one field here that may.
     #[serde(default)]
     pub stat: BinStat,
+    /// Under [`BinStat::Huber`], whether each target's MAD sketch buckets
+    /// its deviations in units of the first it takes, as
+    /// [`crate::RobustCfg::mad_anchor`]. A spec sets it; a state written
+    /// before schema 64 loads as `false` and goes on as it was.
+    #[serde(default)]
+    pub mad_anchor: bool,
     /// The MiB the warm-up hold and the histogram may each take before the
     /// model refuses to build; `None` is [`DEFAULT_BUDGET_MIB`], and
     /// infinity is no bound (docs/PLAN.md task 131). **Last, and the one
@@ -1726,6 +1764,7 @@ mod tests {
             warm_rows,
             stat: BinStat::Mean,
             budget_mib: None,
+            mad_anchor: false,
         };
         let cfg = learned(16, 1_000);
         // E73's full profile fits: 10,000 features, 50 targets, 16 bins.
@@ -1765,6 +1804,7 @@ mod tests {
             warm_rows: 1_000,
             stat: BinStat::Mean,
             budget_mib,
+            mad_anchor: false,
         };
         // Sixty targets at 10,000 features pass 256 MiB; 512 holds them.
         assert!(with(None).validate(10_000, 60).is_err());
@@ -1792,6 +1832,7 @@ mod tests {
             warm_rows: 0,
             stat: BinStat::Mean,
             budget_mib: Some(1e-6),
+            mad_anchor: false,
         };
         let err = given.validate(10, 1).unwrap_err();
         assert!(err.contains("the bin histogram"), "{err}");
@@ -1809,6 +1850,7 @@ mod tests {
             warm_rows: 8,
             stat: BinStat::Mean,
             budget_mib: Some(1e-6),
+            mad_anchor: false,
         };
         let err = cfg.validate(1, 1).unwrap_err();
         assert!(!err.contains("GiB"), "{err}");
@@ -1834,6 +1876,7 @@ mod tests {
             warm_rows: 0,
             stat: BinStat::Mean,
             budget_mib: None,
+            mad_anchor: false,
         };
         assert!(cfg.validate(1, 1).is_ok());
         let err = cfg.validate(1, 100_000_000).unwrap_err();
@@ -1998,6 +2041,7 @@ mod tests {
             warm_rows: 0,
             stat: BinStat::Mean,
             budget_mib: Some(bytes as f64 / (1u64 << 20) as f64),
+            mad_anchor: false,
         };
         assert!(at(bytes).validate(p, t).is_ok());
         let err = at(bytes - 1).validate(p, t).unwrap_err();
@@ -2397,6 +2441,51 @@ mod tests {
             b
         }
 
+        /// The stream of [`rows`] with each target times `c`, through a
+        /// histogram whose MAD sketches are anchored or not.
+        fn run_scaled(n: usize, c: f64, anchored: bool) -> MarginalBins {
+            let edges = vec![vec![-0.3, 0.3]];
+            let mut b = MarginalBins::new_with_anchor(1, 2, edges, HUBER, anchored).unwrap();
+            for (i, (x, y, w)) in rows(n).into_iter().enumerate() {
+                if i > 0 {
+                    b.decay(0.97);
+                }
+                b.update_row(&[x], &y.map(|v| v.map(|v| v * c)), w);
+            }
+            b
+        }
+
+        /// Anchored sketches (task 278, the user's 2026-10-26): a decimal
+        /// scale of the targets moves every cell's location by rounding,
+        /// where the fixed buckets moved the scale, and every cut and
+        /// location it judged, by up to a bucket. The unanchored move is
+        /// printed and held above rounding as evidence that the cuts bound.
+        #[test]
+        fn anchored_sketches_scale_the_locations_by_rounding() {
+            let n = 2000;
+            let (base, fixed) = (run_scaled(n, 1.0, true), run_scaled(n, 1.0, false));
+            assert!(base.mad_anchor() && !fixed.mad_anchor());
+            let spread = base.mean.iter().fold(0.0f64, |a, m| a.max(m.abs()));
+            let (mut worst_anchored, mut worst_fixed) = (0.0f64, 0.0f64);
+            for c in [1e-6, 1e-3, 1e3, 1e6] {
+                let (a, f) = (run_scaled(n, c, true), run_scaled(n, c, false));
+                for i in 0..base.mean.len() {
+                    let d = (a.mean[i] - c * base.mean[i]).abs() / (c * spread);
+                    worst_anchored = worst_anchored.max(d);
+                    let d = (f.mean[i] - c * fixed.mean[i]).abs() / (c * spread);
+                    worst_fixed = worst_fixed.max(d);
+                }
+            }
+            println!(
+                "location move over the spread: anchored {worst_anchored:e}, fixed {worst_fixed:e}"
+            );
+            assert!(worst_anchored < 1e-13, "{worst_anchored:e}");
+            assert!(
+                worst_fixed > 1e-9,
+                "the fixed buckets moved {worst_fixed:e}"
+            );
+        }
+
         /// `delta = inf` clips nothing, and a cell nothing was clipped in
         /// takes the mean's operations: the histogram is the mean's to the
         /// bit, through folds, spikes, zero weights and absent targets.
@@ -2718,6 +2807,7 @@ mod tests {
                 warm_rows: 3,
                 stat: HUBER,
                 budget_mib: Some(budget_mib),
+                mad_anchor: false,
             };
             let bytes = histogram_bytes(p, t, 3 * p, HUBER_CELL_VALUES) as f64;
             assert!(cfg(bytes / (1u64 << 20) as f64).validate(p, t).is_ok());
@@ -2757,6 +2847,7 @@ mod tests {
                 warm_rows: 3,
                 stat: BinStat::Huber { delta },
                 budget_mib: None,
+                mad_anchor: false,
             };
             for bad in [0.0, -1.0, f64::NAN] {
                 let e = spec(bad).validate(1, 1).unwrap_err();

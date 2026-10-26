@@ -118,6 +118,7 @@ fn main() {
                         Some(other) => panic!("stat is mean or huber, got {other:?}"),
                     },
                     budget_mib: None,
+                    mad_anchor: false,
                 })
             }),
             feature_moments: match get("moments") {

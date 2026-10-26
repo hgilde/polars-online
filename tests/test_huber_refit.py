@@ -65,7 +65,7 @@ def test_the_refit_is_statsmodels_converged_fit_on_the_buffer(kind, share):
 
 @pytest.mark.parametrize(
     ("kind", "rows", "seed", "share", "before", "after"),
-    [("huber", 20_000, 110, 0.25, 0.4261, 0.0025), ("sgd", 2_000, 100, 0.4, 2.9756, 0.0351)],
+    [("huber", 20_000, 110, 0.25, 0.4257, 0.0025), ("sgd", 2_000, 100, 0.4, 2.9735, 0.0349)],
 )
 def test_the_refit_frees_a_captured_stream(kind, rows, seed, share, before, after):
     """The capture the refit is there for (the module doc of
@@ -77,7 +77,10 @@ def test_the_refit_frees_a_captured_stream(kind, rows, seed, share, before, afte
     ``sgd`` streams were, seed 101's by 1.1057, before its intercept took
     the level from the first row, task 278 D-S; now the worst is 0.157).
     The one-pass gap of seed 100 read 2.9419 before its scale learned from
-    the first rows, which ``min_weight`` withheld (task 278, D10)."""
+    the first rows, which ``min_weight`` withheld (task 278, D10). On the
+    MAD sketch's fixed buckets, before it kept ``|e|`` in units of the first
+    (task 278), the one-pass gaps read 0.4261 and 2.9756, and ``sgd``'s
+    refitted one 0.0351."""
     df = stream(rows, share, seed, level=1000.0)
     X = sm.add_constant(df["x"].to_numpy())
     oracle = sm.RLM(df["y"].to_numpy(), X, M=HuberT(1.345)).fit(scale_est="mad").params
