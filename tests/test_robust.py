@@ -1,6 +1,8 @@
 """Task 13: robust models - Huber and quantile (docs/PLAN.md section 4.5)."""
 
+import datetime as dt
 import json
+import warnings
 
 import numpy as np
 import polars as pl
@@ -9,7 +11,7 @@ import pytest
 import polars_online as po
 from data import synthetic
 
-TIER = "essential"
+TIER = "mixed"
 
 
 def _pred(out, col="pred_y0"):
@@ -625,3 +627,289 @@ class TestTheBandFactorIsState:
         factor = found[0]["factor"]
         assert factor["order"] == 2 and len(factor["lower"]) == 3, factor
         assert factor["attempts"] == 0 and factor["moves"] > 0, factor
+
+
+class TestTheQuantilesOwnKeywords:
+    """Task 278 (b07): ``quantile``'s ``ridge``, ``standardize``,
+    ``quantile_eps`` and ``solve_every``, each shown taking effect where it
+    should and nowhere else, without an oracle. The oracled halves -- a
+    huge ridge against ``QuantReg`` on a constant, the standardized solve
+    against ``QuantReg`` on features of mixed scales, ``quantile_eps``
+    against the batch-smoothed fit at its bandwidth, and ``robust_ref`` at
+    two ridges -- are in ``tests/test_oracles.py``'s ``TestRobustOracles``.
+
+    The stream is ``TestQuantileIsQuantReg``'s: two unit normal features,
+    ``y = 1 + 2 x0 - x1`` plus exponential noise, so the 0.9 quantile's fit
+    sits far from the mean's and its band and its nudges both fire."""
+
+    @staticmethod
+    def stream(n=3000, seed=3, scales=(1.0, 1.0)):
+        rng = np.random.default_rng(seed)
+        x = rng.normal(0.0, 1.0, (n, 2))
+        y = 1.0 + 2.0 * x[:, 0] - x[:, 1] + rng.exponential(1.0, n)
+        return pl.DataFrame({"x0": x[:, 0] * scales[0], "x1": x[:, 1] * scales[1], "y": y})
+
+    @staticmethod
+    def run(df, **kw):
+        kw = {
+            "quantile": 0.9,
+            "half_life": 500.0,
+            "max_rows_between_solves": 1,
+            "coef_every": 1,
+            **kw,
+        }
+        spec = po.spec.quantile("m", targets=["y"], features=["x0", "x1"], **kw)
+        # A large ridge or a feature at 1e-3 draws the readiness notice that
+        # the ridge, not the data, sets a coefficient: the point of the case.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", po.ReadinessWarning)
+            return po.ModelBank([spec]).fit_predict(df).unnest("m")
+
+    @staticmethod
+    def coef(out) -> np.ndarray:
+        return np.array(out["coef"].to_list()[-1])
+
+    @pytest.mark.parametrize("half_life", [float("inf"), 500.0])
+    @pytest.mark.parametrize("seed", [3, 7, 9])
+    def test_a_ridge_shrinks_the_slopes_and_moves_the_fit(self, seed, half_life):
+        """The ridge is on the mean-form Gram's slopes, so the last fit's
+        slope norm falls at each tenfold step of it, and the predictions
+        move with it. Not a theorem for this fit: which rows sit in the band
+        follows the predictions, so a step too small to matter is noise. At
+        0 against 1e-6 the norm rose on 3 seeds of 100 (by 2e-7 of itself,
+        seeds 7, 9 and 19 at ``half_life = inf``; measured 2026-10-25), and
+        no step of this grid failed on any of the 100 (seeds 0-49, both
+        half-lives). Seeds 7 and 9 are two of those three."""
+        df = self.stream(seed=seed)
+        ridges = [0.0, 0.1, 1.0, 10.0, 100.0, 1e4]
+        outs = [self.run(df, half_life=half_life, ridge=r) for r in ridges]
+        norms = [float(np.sqrt(np.sum(self.coef(o)[1:] ** 2))) for o in outs]
+        assert all(b < a for a, b in zip(norms, norms[1:], strict=False)), norms
+        assert norms[0] > 1.5 and norms[-1] < 1e-3, norms
+        # The predictions move: by 7.0 at ridge 10 against the default on
+        # seed 3 under half_life 500 (measured 2026-10-25).
+        default = self.run(df, half_life=half_life)
+        moved = np.nanmax(np.abs(_pred_of(outs[3]) - _pred_of(default)))
+        assert moved > 1.0, moved
+
+    @pytest.mark.extended(reason="a grid: 50 seeds at two half-lives and six ridges, a few seconds")
+    def test_the_ridge_and_the_ridge_0_limit_over_fifty_seeds(self):
+        """The two relations above, judged by the worst of seeds 0-49: the
+        slope norm falls at every tenfold step of the ridge under both
+        half-lives, and at ``ridge = 0`` correlation form is the plain solve
+        within the bound below, features of mixed scales included."""
+        failures, worst = [], 0.0
+        for seed in range(50):
+            for half_life in (float("inf"), 500.0):
+                df = self.stream(seed=seed)
+                norms = [
+                    float(
+                        np.sqrt(
+                            np.sum(self.coef(self.run(df, half_life=half_life, ridge=r))[1:] ** 2)
+                        )
+                    )
+                    for r in (0.0, 0.1, 1.0, 10.0, 100.0, 1e4)
+                ]
+                if not all(b < a for a, b in zip(norms, norms[1:], strict=False)):
+                    failures.append((seed, half_life, norms))
+            for scales in ((1.0, 1.0), (1e-3, 1e3)):
+                df = self.stream(seed=seed, scales=scales)
+                a = _pred_of(self.run(df, ridge=0.0))
+                b = _pred_of(self.run(df, ridge=0.0, standardize=True))
+                assert np.array_equal(np.isnan(a), np.isnan(b)), (seed, scales)
+                worst = max(worst, float(np.nanmax(np.abs(a - b)) / np.nanmax(np.abs(a))))
+        assert not failures, failures
+        print(f"ridge 0, correlation form against plain: worst {worst:.3g} of the largest pred")
+        assert worst <= 1e-13, worst
+
+    @pytest.mark.parametrize("scales", [(1.0, 1.0), (1e-3, 1e3)], ids=["unit", "mixed"])
+    def test_at_ridge_0_standardizing_is_the_plain_solve(self, scales):
+        """Correlation form rescales the Gram by its diagonal and back,
+        which at ``ridge = 0`` is the same system, so the fits agree to
+        rounding, features at 1e-3 and 1e3 included, and every row is
+        predicted or withheld alike. Measured over seeds 0-49 (2026-10-25):
+        at most 1.6e-15 of the largest prediction with unit features and
+        3.2e-15 with mixed ones; the bound leaves thirty times that."""
+        df = self.stream(scales=scales)
+        plain = self.run(df, ridge=0.0)
+        corr = self.run(df, ridge=0.0, standardize=True)
+        a, b = _pred_of(plain), _pred_of(corr)
+        assert np.array_equal(np.isnan(a), np.isnan(b))
+        assert np.nanmax(np.abs(a - b)) <= 1e-13 * np.nanmax(np.abs(a))
+        # A quantile fit, its band and its nudges both at work: about a
+        # tenth of the residuals above the fit at the 0.9 quantile.
+        above = float((plain["resid_y"].drop_nulls() > 0).mean())
+        assert 0.07 < above < 0.13, above
+
+    def test_under_the_default_ridge_standardizing_saves_a_feature_in_thousandths(self):
+        """The default ridge, ``1e-6``, is in the features' squared units
+        under the plain solve: a feature at scale 1e-3 has a variance of
+        1e-6, so the ridge is its whole variance and halves its slope, ``2
+        v / (v + 1e-6) = 1`` in the feature's own units, where correlation
+        form makes the ridge dimensionless and keeps it at 2. Seed 3
+        measured 1.03 against 2.01 under ``half_life = 500`` (2026-10-25)."""
+        df = self.stream(scales=(1e-3, 1.0))
+        plain = self.coef(self.run(df, half_life=float("inf")))[1] * 1e-3
+        corr = self.coef(self.run(df, half_life=float("inf"), standardize=True))[1] * 1e-3
+        assert abs(corr - 2.0) < 0.15, corr
+        assert abs(plain - 1.0) < 0.15, plain
+
+    @pytest.mark.parametrize(
+        ("standardize", "ridge"),
+        [(True, 1e-6), (True, 1.0), (False, 0.0)],
+        ids=["standardized, default ridge", "standardized, ridge 1", "plain, ridge 0"],
+    )
+    def test_a_feature_scaled_by_a_power_of_two_changes_only_its_coefficient(
+        self, standardize, ridge
+    ):
+        """Scaling ``x0`` by ``2^k`` is exact, and so is every step of the
+        fit that reads it under correlation form (the ridge is
+        dimensionless there) or with no ridge: every field to the bit, and
+        ``x0``'s coefficient divided by ``2^k`` to the bit."""
+        df = self.stream()
+        base = self.run(df, standardize=standardize, ridge=ridge)
+        coef = np.array(base["coef"].to_list())
+        for k in (10, -10, 30):
+            out = self.run(
+                df.with_columns(pl.col("x0") * 2.0**k), standardize=standardize, ridge=ridge
+            )
+            got = np.array(out["coef"].to_list())
+            assert out.drop("coef", "x0").equals(base.drop("coef", "x0"), null_equal=True), k
+            np.testing.assert_array_equal(got[:, 1] * 2.0**k, coef[:, 1], err_msg=f"k = {k}")
+            np.testing.assert_array_equal(got[:, [0, 2]], coef[:, [0, 2]], err_msg=f"k = {k}")
+
+    def test_without_standardizing_a_ridge_has_units(self):
+        """The contrast: under the plain solve a ridge of 1 is in squared
+        feature units, so scaling ``x0`` by 2^10 moves the fit."""
+        df = self.stream()
+        base = _pred_of(self.run(df, ridge=1.0))
+        scaled = _pred_of(self.run(df.with_columns(pl.col("x0") * 2.0**10), ridge=1.0))
+        assert np.nanmax(np.abs(scaled - base)) > 0.1
+
+    def test_quantile_eps_under_its_floor_changes_nothing(self):
+        """The band's half-width is ``s max(quantile_eps, (k/n)^(2/5))``,
+        with ``n`` the target's rows decayed. Under ``half_life = 200`` on
+        the row clock ``n`` never passes ``1 / (1 - 2^(-1/200)) = 289.04``,
+        so with ``k = 3`` the floor never falls under ``(3 / 289.04)^0.4 =
+        0.1606``: ``quantile_eps`` at 0.05 and at 0.15 draw the same band on
+        every row, and the output is the same to the bit. At 0.17 the band
+        is wider once the window has filled, and the fit moves (by 0.12 on
+        seed 3, measured 2026-10-25). Without a half-life the floor falls to
+        0, and 0.05 and 0.15 part."""
+        df = self.stream()
+        low, under = (self.run(df, half_life=200.0, quantile_eps=e) for e in (0.05, 0.15))
+        assert low.equals(under, null_equal=True)
+        above = self.run(df, half_life=200.0, quantile_eps=0.17)
+        assert np.nanmax(np.abs(_pred_of(above) - _pred_of(low))) > 0.05
+        a, b = (self.run(df, half_life=float("inf"), quantile_eps=e) for e in (0.05, 0.15))
+        assert np.nanmax(np.abs(_pred_of(a) - _pred_of(b))) > 0.05
+
+
+class TestTheQuantileSolveEvery:
+    """Task 278 (b07): ``solve_every`` through the bank, on a clock column
+    whose steps are quarters (so every elapsed clock is exact, and a solve
+    falls on the edge itself 22 times in this stream). The fit is solved on
+    the row a fresh model's weight reaches ``min_weight``, then on the first
+    row whose clock is at least ``solve_every`` past the last solve's, and
+    the coefficients hold in between (the builder's docstring, after
+    ``ewridge``'s); ``coef`` on every row shows each solve."""
+
+    N, EVERY, MIN_WEIGHT = 600, 5.0, 3.0
+
+    @classmethod
+    def frame(cls):
+        rng = np.random.default_rng(4)
+        x = rng.normal(0.0, 1.0, (cls.N, 2))
+        y = 1.0 + 2.0 * x[:, 0] - x[:, 1] + rng.exponential(1.0, cls.N)
+        t = np.cumsum(rng.integers(1, 9, cls.N) * 0.25)
+        return pl.DataFrame({"t": t, "x0": x[:, 0], "x1": x[:, 1], "y": y})
+
+    @classmethod
+    def spec(cls, **kw):
+        kw = {
+            "clock": "t",
+            "gap_cap": 10.0,
+            "half_life": 100.0,
+            "min_weight": cls.MIN_WEIGHT,
+            "solve_every": cls.EVERY,
+            **kw,
+        }
+        return po.spec.quantile(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            quantile=0.9,
+            max_rows_between_coefs=1,
+            **kw,
+        )
+
+    def test_the_fit_moves_on_the_scheduled_rows_and_holds_between(self):
+        df = self.frame()
+        out = po.ModelBank([self.spec()]).fit_predict(df).unnest("m")
+        t, ws = df["t"].to_numpy(), out["weight_sum"].to_numpy()
+        coef = out["coef"].to_list()
+        moved = [
+            i for i in range(self.N) if coef[i] is not None and (i == 0 or coef[i] != coef[i - 1])
+        ]
+        # `weight_sum` is the weight before the row, so the row whose own
+        # weight brings the model to `min_weight` is the one before the
+        # first row to report it.
+        first = next(i for i in range(self.N - 1) if ws[i + 1] >= self.MIN_WEIGHT)
+        want, last = [first], first
+        for i in range(first + 1, self.N):
+            if t[i] - t[last] >= self.EVERY:
+                want.append(i)
+                last = i
+        assert moved == want
+        on_the_edge = sum(t[b] - t[a] == self.EVERY for a, b in zip(want, want[1:], strict=False))
+        assert on_the_edge > 10, on_the_edge
+        # And each prediction is the coefficients the row before reported.
+        pred = out["pred_y"].to_numpy()
+        z = np.column_stack([np.ones(self.N), df["x0"].to_numpy(), df["x1"].to_numpy()])
+        rows = [i for i in range(1, self.N) if coef[i - 1] is not None and np.isfinite(pred[i])]
+        assert len(rows) > self.N - 10
+        want_pred = np.array([z[i] @ np.array(coef[i - 1]) for i in rows])
+        np.testing.assert_allclose(pred[rows], want_pred, rtol=1e-14, atol=1e-14)
+
+    def test_zero_is_every_row(self):
+        """``solve_every = 0`` solves every row: the row cap of 1."""
+        df = self.frame()
+        zero = po.ModelBank([self.spec(solve_every=0.0)]).fit_predict(df)
+        cap = po.ModelBank([self.spec(solve_every=1e18, max_rows_between_solves=1)]).fit_predict(df)
+        assert zero.equals(cap, null_equal=True)
+        assert not zero.equals(po.ModelBank([self.spec()]).fit_predict(df), null_equal=True)
+
+    def test_a_duration_on_a_datetime_clock_is_seconds_on_a_float_one(self):
+        df = self.frame()
+        start = dt.datetime(2024, 1, 1)
+        stamps = pl.lit(start) + pl.duration(microseconds=(pl.col("t") * 1e6).cast(pl.Int64))
+        dated = df.with_columns(stamps.alias("t"))
+        spec = self.spec(solve_every="5s", gap_cap="10s", half_life="100s")
+        got = po.ModelBank([spec]).fit_predict(dated)["m"]
+        want = po.ModelBank([self.spec()]).fit_predict(df)["m"]
+        assert got.equals(want, null_equal=True)
+
+    def test_chunks_and_a_save_between_solves_keep_the_schedule(self):
+        """The clock since the last solve is state: chunks of 1, 7 and 600
+        rows, and a bank saved and loaded at rows on either side of solves,
+        give the one run to the bit."""
+        df, spec = self.frame(), self.spec()
+        whole = po.ModelBank([spec]).fit_predict(df)
+        coef = whole["m"].struct.field("coef").to_list()
+        solves = [i for i in range(200, 212) if coef[i] != coef[i - 1]]
+        assert 2 <= len(solves) <= 10, solves
+        for rows in (1, 7, 600):
+            bank = po.ModelBank([spec])
+            parts = [bank.fit_predict(df.slice(i, rows)) for i in range(0, df.height, rows)]
+            assert pl.concat(parts).equals(whole, null_equal=True), rows
+        for cut in range(200, 212):
+            bank = po.ModelBank([spec])
+            head = bank.fit_predict(df.slice(0, cut))
+            loaded = po.ModelBank.load_bytes(bank.save_bytes(), specs=[spec])
+            assert pl.concat([head, loaded.fit_predict(df.slice(cut))]).equals(
+                whole, null_equal=True
+            ), cut
+
+
+def _pred_of(out) -> np.ndarray:
+    return out["pred_y"].fill_null(float("nan")).to_numpy().astype(float)

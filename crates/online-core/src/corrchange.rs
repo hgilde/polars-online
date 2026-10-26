@@ -101,23 +101,108 @@ pub fn kolmogorov_cdf(x: f64) -> f64 {
     (1.0 - 2.0 * sum).clamp(0.0, 1.0)
 }
 
-/// The `1 − alpha` quantile of `sup|B|`, by bisection on
-/// [`kolmogorov_cdf`]. `1.3581` at 5 %, `1.6276` at 1 %, `1.2239` at 10 %.
+/// `P(sup|B| > x) = 2·Σ_{k≥1} (−1)^{k−1}·exp(−2k²x²)`, the Kolmogorov
+/// survival function, summed until a term no longer moves the sum: so it
+/// keeps its relative precision however small the tail, where `1 −`
+/// [`kolmogorov_cdf`] keeps only its absolute one. Converges in a few terms
+/// for `x ≥ 1`, which is where it is read.
+fn kolmogorov_sf(x: f64) -> f64 {
+    if x <= 0.0 {
+        return 1.0;
+    }
+    let mut sum = 0.0;
+    for k in 1..200 {
+        let term = (-2.0 * (k * k) as f64 * x * x).exp();
+        sum += if k % 2 == 1 { term } else { -term };
+        if term <= 0.25 * f64::EPSILON * sum {
+            break;
+        }
+    }
+    (2.0 * sum).clamp(0.0, 1.0)
+}
+
+/// [`kolmogorov_cdf`] by the theta-function series `√(2π)/x ·
+/// Σ_{k≥1} exp(−(2k−1)²π²/(8x²))` (Feller 1948, eq. 1.4), which keeps its
+/// relative precision as the distribution function goes to 0, where `1 −
+/// 2·Σ…` cancels. Converges in a few terms for `x ≤ 1`, which is where it
+/// is read.
+fn kolmogorov_cdf_theta(x: f64) -> f64 {
+    use std::f64::consts::PI;
+    if x <= 0.0 {
+        return 0.0;
+    }
+    let a = PI * PI / (8.0 * x * x);
+    let mut sum = 0.0;
+    for k in 1..200u32 {
+        let n = f64::from(2 * k - 1);
+        let term = (-(n * n) * a).exp();
+        sum += term;
+        if term <= 0.25 * f64::EPSILON * sum {
+            break;
+        }
+    }
+    ((2.0 * PI).sqrt() / x * sum).clamp(0.0, 1.0)
+}
+
+/// The levels at which [`kolmogorov_quantile`] leaves the bisection on `1 −
+/// alpha` for a series that keeps the tail: below `KOLMOGOROV_TAIL` it
+/// bisects on [`kolmogorov_sf`] against `alpha`, above `1 −
+/// KOLMOGOROV_TAIL` on [`kolmogorov_cdf_theta`] against `1 − alpha` (exact
+/// there, since `alpha ≥ 1/2`). Either is within about an ulp of the true
+/// quantile at every level.
+///
+/// Between them the bisection on [`kolmogorov_cdf`] against `1 − alpha` is
+/// kept, so the critical values the frozen states run at (5 % on one pair)
+/// and the usual levels from 1 % to 99 % keep their bits. Its root is
+/// off by the roundings of order `u = 2⁻⁵³` in `1 − alpha` and in `1 −
+/// 2·Σ…`, over the density `f(x)`: relative `u/(4x²α)` in the upper tail
+/// (`f ≈ 4xα`) and `u/((1 − α)(π²/(4x²) − 1))` in the lower one, `1.05e-15`
+/// and `9.5e-16` at 1e-2 from either end -- a handful of ulps -- and ten
+/// times that a decade further out. Measured against a 50-digit sum of the
+/// series (docs/PLAN.md task 278), the kept path is `5.1e-16` off at 0.01,
+/// `4.1e-16` at 0.05, `3.9e-16` at 0.9 and `1.5e-16` at 0.99; beyond it, it
+/// was `3.6e-15` off at 1e-3, `5.9e-7` at 1e-12, `0.097` at 1e-20 (where
+/// `1 − alpha` is 1 and the value stopped rising), `1.5e-14` at 0.999 and
+/// `3.3e-12` at `1 − 1e-6`.
+const KOLMOGOROV_TAIL: f64 = 1e-2;
+
+/// The `1 − alpha` quantile of `sup|B|`, by bisection. `1.3581` at 5 %,
+/// `1.6276` at 1 %, `1.2239` at 10 %.
+///
+/// Below `alpha = 0.01` it solves `P(sup|B| > x) = alpha` on the survival
+/// series, which keeps the tail's relative precision at any level down to
+/// the smallest double; above 0.99 it solves on the theta series,
+/// which keeps the lower tail's. Between them it solves [`kolmogorov_cdf`]
+/// `= 1 − alpha`, whose rounding is of order `1e-16` absolute: a small
+/// share of a level that large.
 pub fn kolmogorov_quantile(alpha: f64) -> f64 {
     if !(alpha > 0.0 && alpha < 1.0) {
         return f64::NAN;
     }
-    let target = 1.0 - alpha;
-    let (mut lo, mut hi) = (0.0f64, 10.0f64);
-    for _ in 0..200 {
-        let mid = 0.5 * (lo + hi);
-        if kolmogorov_cdf(mid) < target {
-            lo = mid;
-        } else {
-            hi = mid;
+    // `below(x)`: the quantile lies above `x`.
+    let bisect = |hi: f64, below: &dyn Fn(f64) -> bool| {
+        let mut lo = 0.0f64;
+        let mut hi = hi;
+        for _ in 0..200 {
+            let mid = 0.5 * (lo + hi);
+            if below(mid) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
         }
+        0.5 * (lo + hi)
+    };
+    if alpha < KOLMOGOROV_TAIL {
+        // `2·exp(−2x²) ≥ alpha` up to `x = 19.31` at the smallest double.
+        return bisect(20.0, &|x| kolmogorov_sf(x) > alpha);
     }
-    0.5 * (lo + hi)
+    let target = 1.0 - alpha;
+    if alpha > 1.0 - KOLMOGOROV_TAIL {
+        // The quantile at 0.99 is 0.441, and `F(1) = 0.73`.
+        return bisect(1.0, &|x| kolmogorov_cdf_theta(x) < target);
+    }
+    bisect(10.0, &|x| kolmogorov_cdf(x) < target)
 }
 
 /// The Bartlett kernel `k(x) = 1 − |x|` on `[−1, 1]`.
@@ -1451,8 +1536,9 @@ mod tests {
     /// 0.25, 9.15 at 0.45; docs/PLAN.md task 195,
     /// `boundary::MIN_SEQUENTIAL_TAIL`). A share at the limit runs, and its
     /// critical value is a number that rises with `γ`. A configured `crit`
-    /// reads no `alpha`, and `"monitor"`'s quantile saturates, so neither
-    /// refuses one.
+    /// reads no `alpha`, and `"monitor"`'s quantile is solved on the
+    /// survival series at any level (18.59 at 1e-300), so neither refuses
+    /// one.
     #[test]
     #[ignore = "extended: a second or more: the boundary law solved to refuse (2.1 s)"]
     fn an_alpha_too_small_for_its_quantile_is_refused_under_sequential() {
@@ -1528,6 +1614,94 @@ mod tests {
             assert!(kolmogorov_cdf(x) < kolmogorov_cdf(x + 0.1));
         }
         assert!(kolmogorov_quantile(0.0).is_nan() && kolmogorov_quantile(1.0).is_nan());
+    }
+
+    /// Task 278 (kq): the quantile against the series summed to 50 digits,
+    /// at every level into either tail. `1 − alpha` keeps only the absolute
+    /// precision of a double, so solving `F(x) = 1 − alpha` lost the tail:
+    /// relative 5.9e-7 at 1e-12, 0.097 at 1e-20, 3.3e-12 at `1 − 1e-6`.
+    ///
+    /// The reference: mpmath (not a dependency here; a scratch script) at
+    /// `mp.dps = 50`, the root by `findroot` to 1e-45 of `2·Σ(−1)^{k−1}
+    /// e^{−2k²x²} = alpha` below `alpha = 1/2` and of the theta series
+    /// `√(2π)/x·Σ e^{−(2k−1)²π²/(8x²)} = 1 − alpha` above, each summed by
+    /// `nsum` to infinity, at the double `alpha` exactly, then rounded to the
+    /// nearest double. Scipy's `kstwobign.isf` agrees with it to 1.4e-16 at
+    /// each of these levels but 0.5, where it is 2.1e-15 off.
+    ///
+    /// Each tail's path is within `2·ε` relative (measured 1.7e-16 at most,
+    /// 1.2 ulps); between them the bisection on `1 − alpha` is kept to the
+    /// bit, so a saved state at 5 % continues where it was, and is within
+    /// `2e-15` (measured 6.2e-16 at most from 0.01 to 0.99).
+    #[test]
+    fn the_kolmogorov_quantile_keeps_both_tails() {
+        // The bisection on `1 − alpha` as it was before task 278.
+        let on_one_minus = |alpha: f64| {
+            let target = 1.0 - alpha;
+            let (mut lo, mut hi) = (0.0f64, 10.0f64);
+            for _ in 0..200 {
+                let mid = 0.5 * (lo + hi);
+                if kolmogorov_cdf(mid) < target {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            0.5 * (lo + hi)
+        };
+        let reference = [
+            (1e-300, 18.593932815286465),
+            (1e-100, 10.745967999207064),
+            (1e-20, 4.8345035443383875),
+            (1e-16, 4.332118919678029),
+            (1e-12, 3.7632544623296798),
+            (1e-10, 3.4437623401231106),
+            (1e-8, 3.0914258784994595),
+            (1e-6, 2.6933861344527097),
+            (1e-4, 2.225251396195046),
+            (0.0099, 1.6291665938623514),
+            (0.01, 1.6276236115189504),
+            (0.05, 1.3580986393225507),
+            (0.1, 1.2238478702170823),
+            (0.5, 0.8275735551899077),
+            (0.9, 0.5711732651063401),
+            (0.99, 0.4410276985179294),
+            (0.995, 0.4170896319324851),
+            (0.999, 0.37421969027827845),
+            (1.0 - 1e-6, 0.27753935399887275),
+            (1.0 - 1e-12, 0.20229045531080908),
+        ];
+        for (alpha, want) in reference {
+            let got = kolmogorov_quantile(alpha);
+            let rel = (got - want).abs() / want;
+            let old = on_one_minus(alpha);
+            if (KOLMOGOROV_TAIL..=1.0 - KOLMOGOROV_TAIL).contains(&alpha) {
+                assert_eq!(got.to_bits(), old.to_bits(), "alpha = {alpha:e}");
+                assert!(rel < 2e-15, "alpha = {alpha:e}: {got} against {want}");
+            } else {
+                assert!(
+                    rel <= 2.0 * f64::EPSILON,
+                    "alpha = {alpha:e}: {got} against {want}, relative {rel:e}"
+                );
+            }
+        }
+        // Each tail's path is the one that moved: where the old one lost
+        // the tail, by more than 1e-9 relative.
+        for alpha in [1e-12, 1e-20, 1.0 - 1e-12] {
+            let off = (on_one_minus(alpha) - kolmogorov_quantile(alpha)).abs();
+            assert!(off > 1e-9 * kolmogorov_quantile(alpha), "alpha = {alpha:e}");
+        }
+        // The two tail series are the distribution: each agrees with
+        // `kolmogorov_cdf` where that one is good to its own precision.
+        for x in [1.0, 1.2, 1.5] {
+            assert!((kolmogorov_sf(x) - (1.0 - kolmogorov_cdf(x))).abs() < 1e-15);
+        }
+        for x in [0.5, 0.8, 1.0] {
+            assert!((kolmogorov_cdf_theta(x) - kolmogorov_cdf(x)).abs() < 1e-15);
+        }
+        // At the smallest double the quantile is finite and in its bracket.
+        let tiniest = kolmogorov_quantile(f64::from_bits(1));
+        assert!(tiniest > 19.0 && tiniest < 20.0, "{tiniest}");
     }
 
     /// A correlation is free of its columns' units, so `D̂` -- the delta
