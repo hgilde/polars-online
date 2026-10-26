@@ -473,10 +473,11 @@ def _registrations() -> list[Registration]:
             stream=linear,
             oracle=ols,
             classes=lin,
-            limit="without decay, no process noise: Bayesian linear regression from a prior "
-            "sized by the first rows' noise, least squares with the prior fading as 1/n; "
-            "under a half-life h, coefficients that drift at coef_half_life = h, whose "
-            "steady-state gain is EW least squares' at h",
+            limit="without decay, no process noise: Bayesian linear regression, the prior p0 "
+            "on each standardised slope in units of the noise and the intercept's diffuse, "
+            "least squares with the prior fading as 1/n, whatever the noise estimate; under a "
+            "half-life h, coefficients that drift at coef_half_life = h, whose steady-state "
+            "gain is EW least squares' at h",
             other=OTHER_LINEAR,
         ),
         Registration(

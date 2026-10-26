@@ -60,14 +60,14 @@ Lasso path [0.01, 0.001, 0.0001, 0.0]. `l1_ratio` = 1 is pure lasso; below 1 the
 
 ## 4. Kalman `share_p` approximation [validate]
 
-Two targets (['y0', 'y1']) with very different noise levels, so the shared-P approximation is doing real work; one spec holds both, so both wait the longer embargo. Both specs run in 0.01s total.
+Two targets (['y0', 'y1']) with very different noise levels; one spec holds both, so both wait the longer embargo. `P` is held in units of the noise, so with both targets on every row the shared `P` is each target's own and the two specs score the same: sharing saves work and changes no prediction. Both specs run in 0.13s total.
 
 | spec | slot | target | n | r2 | ic | mse |
 |---|---|---|---|---|---|---|
-| per_target_p | pred_y0 | y0 | 14279 | -0.016769 | 0.00458804 | 1.17095e-06 |
-| per_target_p | pred_y1 | y1 | 14279 | -0.0746302 | -0.00371497 | 5.32912e-06 |
-| shared_p | pred_y0 | y0 | 14279 | -0.0110198 | 0.00771061 | 1.16433e-06 |
-| shared_p | pred_y1 | y1 | 14279 | -0.0880463 | -0.00164336 | 5.39565e-06 |
+| per_target_p | pred_y0 | y0 | 14279 | -0.0186544 | -0.00445267 | 1.17313e-06 |
+| per_target_p | pred_y1 | y1 | 14279 | -0.100501 | -0.0370161 | 5.45741e-06 |
+| shared_p | pred_y0 | y0 | 14279 | -0.0186544 | -0.00445267 | 1.17313e-06 |
+| shared_p | pred_y1 | y1 | 14279 | -0.100501 | -0.0370161 | 5.45741e-06 |
 
 ## 5. Models at matched settings
 
@@ -78,14 +78,14 @@ Each target under its own embargo, every model at the same memory (*How the runs
 | ewridge | pred_y0 | y0 | 14283 | -0.0147959 | -0.00132871 | 0.499083 | 1.16848e-06 |
 | ewridge_every_row | pred_y0 | y0 | 14283 | -0.0646675 | -0.120803 | 0.496614 | 1.2259e-06 |
 | rls | pred_y0 | y0 | 14283 | -0.0644381 | -0.120948 | 0.496543 | 1.22564e-06 |
-| kalman | pred_y0 | y0 | 14283 | -0.0591696 | -0.10767 | 0.500494 | 1.21957e-06 |
+| kalman | pred_y0 | y0 | 14283 | -0.0699008 | -0.127431 | 0.494568 | 1.23193e-06 |
 | lasso | pred_y0__p0 | y0 | 14283 | -0.0147995 | -0.00132935 | 0.499083 | 1.16848e-06 |
 | lasso | pred_y0__p0.0001 | y0 | 14283 | -0.00368412 | -0.0144557 | 0.504374 | 1.15568e-06 |
 | lasso | pred_y0__p0.001 | y0 | 14283 | -0.00088852 | -0.0124867 | 0.500071 | 1.15246e-06 |
 | ewridge | pred_y1 | y1 | 14279 | -0.052132 | -0.00735021 | 0.495413 | 5.21755e-06 |
 | ewridge_every_row | pred_y1 | y1 | 14279 | -0.111272 | -0.0398077 | 0.493452 | 5.51082e-06 |
 | rls | pred_y1 | y1 | 14279 | -0.110781 | -0.0400024 | 0.493452 | 5.50839e-06 |
-| kalman | pred_y1 | y1 | 14279 | -0.0746302 | -0.00371497 | 0.496884 | 5.32912e-06 |
+| kalman | pred_y1 | y1 | 14279 | -0.100501 | -0.0370161 | 0.495413 | 5.45741e-06 |
 | lasso | pred_y1__p0 | y1 | 14279 | -0.0521462 | -0.00735635 | 0.495413 | 5.21762e-06 |
 | lasso | pred_y1__p0.0001 | y1 | 14279 | -0.0411806 | -0.0268843 | 0.499335 | 5.16324e-06 |
 | lasso | pred_y1__p0.001 | y1 | 14279 | -0.00456231 | -0.0246413 | 0.494292 | 4.98165e-06 |
@@ -100,16 +100,16 @@ The models of section 5 on the raw features and on each feature in units of its 
 | ewridge | y0 | raw | 14283 | -0.0147959 | -0.00132871 | 1.16848e-06 |
 | ewridge_every_row | y0 | z-scores | 14283 | -0.0411778 | -0.112844 | 1.19886e-06 |
 | ewridge_every_row | y0 | raw | 14283 | -0.0646675 | -0.120803 | 1.2259e-06 |
-| kalman | y0 | z-scores | 14283 | -0.0412231 | -0.113657 | 1.19891e-06 |
-| kalman | y0 | raw | 14283 | -0.0591696 | -0.10767 | 1.21957e-06 |
+| kalman | y0 | z-scores | 14283 | -0.0455391 | -0.120269 | 1.20388e-06 |
+| kalman | y0 | raw | 14283 | -0.0699008 | -0.127431 | 1.23193e-06 |
 | rls | y0 | z-scores | 14283 | -0.041183 | -0.11284 | 1.19886e-06 |
 | rls | y0 | raw | 14283 | -0.0644381 | -0.120948 | 1.22564e-06 |
 | ewridge | y1 | z-scores | 14279 | -0.0261524 | 0.0159958 | 5.08871e-06 |
 | ewridge | y1 | raw | 14279 | -0.052132 | -0.00735021 | 5.21755e-06 |
 | ewridge_every_row | y1 | z-scores | 14279 | -0.0474414 | -0.00240756 | 5.19429e-06 |
 | ewridge_every_row | y1 | raw | 14279 | -0.111272 | -0.0398077 | 5.51082e-06 |
-| kalman | y1 | z-scores | 14279 | -0.0584743 | 0.0200007 | 5.249e-06 |
-| kalman | y1 | raw | 14279 | -0.0746302 | -0.00371497 | 5.32912e-06 |
+| kalman | y1 | z-scores | 14279 | -0.0426645 | 0.00246861 | 5.1706e-06 |
+| kalman | y1 | raw | 14279 | -0.100501 | -0.0370161 | 5.45741e-06 |
 | rls | y1 | z-scores | 14279 | -0.047455 | -0.00241081 | 5.19435e-06 |
 | rls | y1 | raw | 14279 | -0.110781 | -0.0400024 | 5.50839e-06 |
 

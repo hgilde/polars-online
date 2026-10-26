@@ -94,7 +94,13 @@ use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 /// form, so each converts to the current bytes exactly, and the refit's
 /// forms are the new cases `huber_refit` and `sgd_huber_refit`, saved
 /// with their buffers half full, and `huber_refit_done` and
-/// `sgd_huber_refit_done`, saved after the refit.
+/// `sgd_huber_refit_done`, saved after the refit. 64 gave `kalman` its
+/// covariance in units of the noise and a diffuse intercept too (task
+/// 278): a 63 state has no `noise_units` and loads as the form it was
+/// fitted in, `P` absolute and the noise estimate in the gain, and goes on
+/// to the bit; the kept `kalman` and `kalman_gap` cases are that form, so
+/// each converts to the current bytes exactly, and the new form is the
+/// case `kalman_noise_units`, saved with its intercepts still diffuse.
 ///
 /// The windowed cases convert otherwise since the running products
 /// (schema 63 before its release, docs/PLAN.md task 275): a ring saved
@@ -1004,6 +1010,60 @@ fn the_refit_is_written_part_full_and_done() {
     for (name, variant) in [("huber", "Robust"), ("sgd_huber", "Sgd")] {
         let f = frozen::ALL.iter().find(|f| f.name == name).unwrap();
         assert_eq!(buffers(&f.bytes(), variant), (0, vec![]), "{name}");
+    }
+}
+
+/// `kalman`'s covariance in units of the noise (schema 64, docs/PLAN.md task
+/// 278): `kalman_noise_units` names the form in its cfg and is saved with
+/// every covariance's intercept still diffuse -- its row and column 0 --
+/// after rows that moved the moments and the clock since an observation,
+/// and its continuation takes the diffuse step. `kalman` and `kalman_gap`
+/// are the form before, which writes no `noise_units`, so a state saved
+/// before it loads as that form.
+#[test]
+fn kalmans_noise_units_form_is_written_with_its_intercept_open() {
+    if regenerating() {
+        return;
+    }
+    let intercepts = |v: &rmpv::Value| -> Vec<f64> {
+        at(v, &["model", "Kalman", "p"])
+            .and_then(rmpv::Value::as_array)
+            .expect("p")
+            .iter()
+            .map(|p| p.as_array().unwrap()[0].as_f64().unwrap())
+            .collect()
+    };
+    let f = frozen::ALL
+        .iter()
+        .find(|f| f.name == "kalman_noise_units")
+        .expect("kalman_noise_units: no fixture; add the case and regenerate");
+    let v = rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap();
+    let units = at(&v, &["model", "Kalman", "cfg", "noise_units"]).and_then(rmpv::Value::as_bool);
+    assert_eq!(units, Some(true), "cfg.noise_units");
+    let open = intercepts(&v);
+    assert!(
+        open.len() == 2 && open.iter().all(|p| *p == 0.0),
+        "{open:?}"
+    );
+    let elapsed = at(&v, &["model", "Kalman", "elapsed"]).expect("elapsed");
+    assert!(held(elapsed) > 0, "the clock since an observation moved");
+    let mut m = load(&case_of(f), &f.bytes()).unwrap();
+    for row in f.rows() {
+        m.step(&row);
+    }
+    let after = rmpv::decode::read_value(&mut named(&m.state()).as_slice()).unwrap();
+    let closed = intercepts(&after);
+    assert!(
+        closed.iter().all(|p| *p > 0.0),
+        "the continuation takes the step: {closed:?}"
+    );
+    for name in ["kalman", "kalman_gap"] {
+        let f = frozen::ALL.iter().find(|f| f.name == name).unwrap();
+        let v = rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap();
+        assert!(
+            at(&v, &["model", "Kalman", "cfg", "noise_units"]).is_none(),
+            "{name}"
+        );
     }
 }
 

@@ -142,6 +142,9 @@ fn restore<M: OnlineModel + 'static>(s: &State) -> Result<Box<dyn Run>, String> 
 pub enum Targets {
     /// `n` linear targets of the features, with noise.
     Linear(usize),
+    /// The same, null on every row before the second number: a model that
+    /// has seen its features and none of its targets.
+    LinearFrom(usize, usize),
     /// One 0/1 target.
     Binary,
     /// One class label in `0..n`.
@@ -197,6 +200,12 @@ impl Case {
                 let y = match self.targets {
                     Targets::Linear(t) => (0..t)
                         .map(|j| (!null).then_some(signal * (1.0 + j as f64) + noise - j as f64))
+                        .collect(),
+                    Targets::LinearFrom(t, first) => (0..t)
+                        .map(|j| {
+                            (!null && i >= first)
+                                .then_some(signal * (1.0 + j as f64) + noise - j as f64)
+                        })
                         .collect(),
                     Targets::Binary => {
                         vec![(!null).then_some(f64::from(u8::from(signal + noise > 1.0)))]
@@ -281,6 +290,7 @@ fn lasso_cfg() -> LassoCfg {
 
 fn kalman_cfg() -> KalmanCfg {
     KalmanCfg {
+        noise_units: false,
         n_features: K,
         n_targets: 2,
         fit_intercept: true,
@@ -620,6 +630,25 @@ pub fn all() -> Vec<Case> {
             K,
             Targets::Linear(2),
             41
+        ),
+        // `P` in units of the noise (schema 64, docs/PLAN.md task 278), saved
+        // after three rows whose targets are null: each covariance's
+        // intercept still diffuse, its row and column 0, the moments and the
+        // clock since an observation moved; the continuation's first row
+        // that observes the targets takes the diffuse step. `kalman` and
+        // `kalman_gap` are the form a state saved before it goes on in.
+        case!(
+            "kalman_noise_units",
+            "Kalman",
+            Kalman,
+            Kalman::new(KalmanCfg {
+                noise_units: true,
+                ..kalman_cfg()
+            })
+            .unwrap(),
+            K,
+            Targets::LinearFrom(2, 3),
+            3
         ),
         case!(
             "huber",

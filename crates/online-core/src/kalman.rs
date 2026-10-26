@@ -18,6 +18,74 @@
 //! P_j <- P_j - k z' P_j
 //! ```
 //!
+//! with `P_j` and `Q` in units of `R_j`, `R_j` read as 1 in `s`, wherever the
+//! noise is learned (below).
+//!
+//! **The noise is a scale, not a weight (docs/PLAN.md task 278).** The
+//! model's noise `R_j` is one constant per target, and the prior `p0 R_j` and
+//! the drift `R_j (ln 2 / h)²` are multiples of it, so `P_j / R_j` and the
+//! gain `P z / (z' P z + R / w)` never read it: the conjugate form of a
+//! regression with an unknown noise variance (West and Harrison, *Bayesian
+//! Forecasting and Dynamic Models*, §4.5). So without `obs_var` (and under
+//! [`KalmanCfg::noise_units`], which every model the bank builds sets) `P_j`
+//! is held in units of the noise: the gain is `P z / (z' P z + 1 / w)`, the
+//! derived process noise `(ln 2 D / h)²`, and the noise estimate, the EW
+//! residual variance, only scales what is read out -- `pred_var`,
+//! `se_coef`, the readiness gate, which is `z' P⁻ z` already in units of the
+//! noise -- and measures an explicit `q`, `q / R_j`, the one place it reaches
+//! the gain. An estimate inside the gain weighs each row by the inverse of
+//! the noise as it stood before the row, a weighted least squares whose
+//! weights a burst of large residuals sets: the burst's rows weigh as before
+//! it, and the clean rows after it count for less. With no process noise the
+//! burst never washes out. Task 278 (a) measured, seed 31, 2,000 rows, 20%
+//! of the first 500 rows 50 too high where `x0 > 0`: slopes [-25.5, 33.6]
+//! against least squares' [4.1, -1.4] on the same rows; after a change of
+//! regime the fit stayed 45.7 of a 46 gap away; Cauchy noise in the first
+//! rows left it 658 off and growing. In units of the noise each is Bayesian
+//! regression on the same rows: within 2.4e-15 of faer's solve of the
+//! posterior (`kalman/tests/noise_units.rs`). The same weighting is
+//! volatility weighting on returns whose volatility clusters, and
+//! docs/VALIDATION.md's intraday returns had scored R² -0.059 and -0.075 with
+//! it, -0.070 and -0.101 without; a fixed `obs_var` of any size scores as
+//! the learned noise does now (-0.06984 and -0.10019), which is the
+//! cancellation measured. A step in the truth inflates the residual
+//! variance too, and with it in the gain a step was learned about 1.45 times
+//! slower than with the true noise.
+//!
+//! **The intercept's prior is diffuse.** In units of the noise the prior
+//! needs no noise: `p0` on each slope -- from the start unstandardized, on
+//! the first observed row its scale is usable standardized -- and on the
+//! intercept no prior at all. The first row that observes a covariance's
+//! target takes the exact step of a prior diffuse in the intercept (Durbin
+//! and Koopman, *Time Series Analysis by State Space Methods*, §5.2): `b_0`
+//! takes the whole innovation, `b_0 += y − z' b`, `P_00 = z' P z + 1 / w`
+//! and `P_0i = −(P z)_i`, the slopes' block unmoved -- the limit of the
+//! ordinary update as the intercept's prior variance grows without bound
+//! ([`diffuse_step`]). Until then the intercept's row and column are 0 and
+//! nothing writes them. A target first seen after its shared covariance
+//! took that row has its intercept centred the same way, `b_0` taking its
+//! first innovation. So a level `L` in the target moves every prediction by
+//! `L`, to the rounding of a number of `L`'s size, from the first: within 17
+//! `u (|L| + max|y|)` at 1e4, -1e6 and 1e8. When the first innovations sized
+//! the noise and the prior, the level was among them (task 278 (b)'s K1):
+//! at `coef_half_life` 200 and a half-life of 300, a level of 1e4 left the
+//! predictions 0.019 to 0.032 of the target's spread off over rows 3,000 to
+//! 6,000, for about `log₂(L² / σ²)` half-lives. With no process noise and
+//! the noise learned, the filter is least squares with the ridge `1 / p0`
+//! on each slope and none on the intercept. The costs: an absurd target, at
+//! the input bound, now moves the coefficients as any observation does, and
+//! the drift forgets it at `coef_half_life`, where the inflated estimate
+//! inflated the derived process noise and `P` forgot everything within a
+//! few rows; and under a half-life the filter weighs its first rows evenly
+//! until `P` meets the drift, some `h / ln 2` rows, which keeps a burst
+//! there about 2.7 times longer than EW least squares' weights do.
+//!
+//! A state saved before task 278 has no `noise_units` and goes on as it
+//! was fitted, `P` absolute and the estimate in the gain, every rule the
+//! sections below give for it; with `obs_var`, `P` is absolute either way
+//! and nothing here changes. The sections below say which form each rule
+//! is.
+//!
 //! **Reversion (ENHANCEMENTS E41).** `revert_half_life` gives each slot a
 //! reversion half-life `r_i`: between observations the coefficient mean
 //! shrinks toward zero by `2^(-d/r_i)`, so a coefficient no row has
@@ -119,7 +187,9 @@
 //! spacing only on uncorrelated features. And with `R` the EW residual
 //! variance, which a step in the truth inflates before `P` catches up, the
 //! step response is slower than with the true noise: 72.5-74.5 clock units
-//! against 50-51.5 at `h` = 50 on uncorrelated features, about 1.45 times.
+//! against 50-51.5 at `h` = 50 on uncorrelated features, about 1.45 times
+//! (with the noise estimate in the gain; in units of the noise the gain
+//! reads none, below).
 //!
 //! **Standardized coordinates, held at an anchor (docs/PLAN.md task 211;
 //! task 206 before it).** Features are standardized against a shared
@@ -201,7 +271,9 @@
 //! −3.6e149 and the reverting filter never recovered; at 1024 the cost is
 //! 2.3e-10 of it.
 //!
-//! **The first rows (docs/PLAN.md task 211).** Over the first rows the
+//! **The first rows (docs/PLAN.md task 211).** In units of the noise each
+//! slope's prior is `p0` and the intercept's diffuse (above); the rest of
+//! this section is the form before, and `obs_var`'s. Over the first rows the
 //! moments rest on nothing: on row 0 a feature is read against a mean of 0
 //! and a scale of 1, raw, and on row 1 against a variance of 0. So each
 //! coefficient's prior is set on the first row that observes the target on
@@ -253,8 +325,9 @@
 //! prediction past the first rows (0.87 before). Features scaled by a power
 //! of two predict the same to the bit: no row reads a raw `x`.
 //!
-//! **The noise before the first residual (review 2026-10-05, CC4).** A
-//! target has no residual variance until a row with a prediction for it
+//! **The noise before the first residual (review 2026-10-05, CC4).** In
+//! units of the noise only an explicit `q` reads the noise, and this rule
+//! for it; the gain reads none. A target has no residual variance until a row with a prediction for it
 //! gives it a residual, and a prediction needs `min_weight` met and an
 //! earlier row of the target. Until then a row's noise is its own innovation
 //! squared, `R_j = e_j^2` with `e_j = y_j - z' b_j`, computed before the
@@ -276,7 +349,9 @@
 //! which is made before the row's target is seen.
 //!
 //! **The prior without `standardize` is `p0` times the first noise (CC4).**
-//! `P_j` starts unsized, all zero. The first row with a noise sets it to
+//! In units of the noise it is `p0` on each slope from the start, the
+//! intercept diffuse (above). In the form before, `P_j` starts unsized, all
+//! zero. The first row with a noise sets it to
 //! `P_0 = p0 R I`, with `R` that row's noise, and the row's gain reads it;
 //! that row adds no process noise. So `p0` is a ratio: at 1 the prior is as
 //! uncertain as one observation, the conjugate prior of a regression with an
@@ -288,8 +363,14 @@
 //! prediction by `c`, at any `p0`. A slot whose variance has decayed to
 //! exactly 0 through the reversion holds nothing, and is sized again.
 //!
-//! **One covariance for every target (`share_p`).** `P` is per target
-//! because the Riccati recursion depends on `R_j`. With `share_p` the filter
+//! **One covariance for every target (`share_p`).** In units of the noise
+//! `P`'s recursion reads no noise, so targets observed on the same rows carry
+//! the same `P`, and the shared filter predicts as the per-target ones do, to
+//! the bit; it parts from them only where a target is null on rows another
+//! is present on, whose rows the shared `P` takes too, and an explicit `q` is
+//! measured against the mean noise. Target `j`'s covariance is `σ²_j P`. In
+//! the form before, `P` is per target because the Riccati recursion depends
+//! on `R_j`. With `share_p` the filter
 //! keeps one `P` driven by the mean `sigma^2` over the targets that have one
 //! (docs/PLAN.md §4.4 [validate]), as it stands when the row arrives, summed
 //! in ascending order. A target with no residual variance yet has no
@@ -330,8 +411,8 @@
 //! where there were `m`. On docs/VALIDATION.md §4's two targets, the next
 //! minute's return and the next five minutes', the shared filter scored an
 //! R² of -0.0110 against -0.0168 on the first and -0.0880 against -0.0746 on
-//! the second. The default stays one `P` per target: the exact filter for
-//! each target under its own noise.
+//! the second, in the form before; in units of the noise the two score the
+//! same. The default stays one `P` per target.
 //!
 //! **Readiness (docs/PLAN.md task 116; docs/WARMUP-AND-CONVERGENCE.md
 //! §2.1).** The filter knows the estimation variance of each prediction
@@ -443,10 +524,23 @@ pub struct KalmanCfg {
     /// `obs_var`), which is how it is cross-checked against river.
     #[serde(default = "default_true")]
     pub standardize: bool,
+    /// Without `obs_var`, hold `P` in units of the noise, so the gain never
+    /// reads the noise estimate, and leave the intercept's prior diffuse (the
+    /// module doc, "The noise is a scale, not a weight"). Every model the
+    /// bank builds sets it; a state saved before it existed has none and
+    /// goes on as it was fitted, `P` absolute and the estimate in the gain
+    /// (docs/PLAN.md task 278). No effect with `obs_var`, whose `P` is the
+    /// same either way.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub noise_units: bool,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 fn default_revert() -> Vec<f64> {
@@ -902,6 +996,12 @@ impl Kalman {
             for i in 0..sized {
                 p_init[i * k + i] = cfg.p0 * r;
             }
+        } else if cfg.noise_units && !cfg.standardize {
+            // In units of the noise the prior needs no noise: `p0` on each
+            // slope now, the intercept left diffuse for its first row.
+            for i in off..k {
+                p_init[i * k + i] = cfg.p0;
+            }
         }
         let anchored = if cfg.standardize { k } else { 0 };
         let mut model = Self {
@@ -999,6 +1099,16 @@ impl Kalman {
                 }
                 match self.cfg.obs_var {
                     Some(r) => quad + r,
+                    // `P` in units of the noise: the target's own noise
+                    // scales it, shared or not (the module doc).
+                    None if self.cfg.noise_units => {
+                        let own = self.sig2[j];
+                        if own > 0.0 {
+                            own * (quad + 1.0)
+                        } else {
+                            f64::NAN
+                        }
+                    }
                     None if self.cfg.share_p => {
                         let mean = shared_noise(&mut Vec::new(), &self.sig2);
                         let own = self.sig2[j];
@@ -1119,6 +1229,51 @@ impl Kalman {
                 sigma2 * r * r
             };
         }
+    }
+
+    /// Whether `P` is held in units of the noise (the module doc): the
+    /// noise learned, under [`KalmanCfg::noise_units`].
+    fn units(&self) -> bool {
+        self.cfg.noise_units && self.cfg.obs_var.is_none()
+    }
+
+    /// The process noise `P` takes for a noise `sigma2`, in the units `P` is
+    /// held in, into `out`: [`Self::q_into`]'s variances, or in units of the
+    /// noise those over `sigma2` -- a derived `q` is `sigma2` times a
+    /// number, so that number; an explicit `q` over `sigma2`, and none where
+    /// there is no noise to measure it against.
+    fn q_held_into(&self, sigma2: f64, out: &mut [f64]) {
+        if !self.units() {
+            self.q_into(sigma2, out);
+        } else if self.cfg.q.is_none() {
+            self.q_into(1.0, out);
+        } else if sigma2 > 0.0 && sigma2.is_finite() {
+            self.q_into(sigma2, out);
+            for qi in out.iter_mut() {
+                *qi /= sigma2;
+            }
+        } else {
+            out.fill(0.0);
+        }
+    }
+
+    /// Whether covariance `pi`'s intercept is diffuse, waiting for its first
+    /// row (the module doc): in units of the noise, its row and column 0
+    /// until that row's exact step. Two writes would reach them meanwhile,
+    /// and are kept off: the process noise unstandardized, where every slot
+    /// takes it, on a first observed row after a gap; and a slope's prior
+    /// carried into an anchor another covariance's slopes have moved, its
+    /// cross terms with the intercept. Otherwise the step would find a small
+    /// variance there, and the intercept would start at 0 as a prior sure of
+    /// it.
+    fn open(&self, pi: usize) -> bool {
+        self.units() && self.cfg.fit_intercept && self.p[pi][0] == 0.0
+    }
+
+    /// A quadratic form in `P`, `z' P z` or a trace, over the noise `r`: in
+    /// units of the noise it already is.
+    fn per_noise(&self, quad: f64, r: f64) -> f64 {
+        if self.units() { quad } else { quad / r }
     }
 
     /// `[1, x]` standardized against the moments as they stand: the current
@@ -1556,15 +1711,19 @@ impl Kalman {
         let k = self.cfg.k_total();
         let off = usize::from(self.cfg.fit_intercept);
         let mut q = std::mem::take(&mut self.qbuf);
-        self.q_into(sigma2, &mut q);
+        self.q_held_into(sigma2, &mut q);
+        let open = self.open(pi);
         let gaps = self.gap_factors.of(&self.cfg, d);
         let p = &mut self.p[pi];
         let mut corner = 0.0;
         for i in 0..k {
             let qd = q[i] * gaps[i];
             if !self.cfg.standardize {
-                // The whole `P` is sized at once (the caller saw to it).
-                p[i * k + i] += qd;
+                // The whole `P` is sized at once (the caller saw to it), but
+                // for a diffuse intercept, which its first row sizes.
+                if !(open && i < off) {
+                    p[i * k + i] += qd;
+                }
                 continue;
             }
             if p[i * k + i] == 0.0 || qd == 0.0 {
@@ -1608,7 +1767,7 @@ impl Kalman {
         let k = self.cfg.k_total();
         let off = usize::from(self.cfg.fit_intercept);
         let mut q = vec![0.0; k];
-        self.q_into(noise, &mut q);
+        self.q_held_into(noise, &mut q);
         let live: Vec<bool> = (0..k).map(|i| self.is_live(i)).collect();
         let (mut a, mut c) = (vec![1.0; k], vec![0.0; k]);
         self.map_into(&live, &mut a, &mut c);
@@ -1638,8 +1797,10 @@ impl Kalman {
     /// whose scale is usable, defined in the current coordinates and
     /// carried into the anchor's (the module doc). A slot that holds nothing
     /// anywhere has its anchor set to the moments as they stand first, so it
-    /// takes its prior as it is.
-    fn size_slots(&mut self, pi: usize, noise: f64) {
+    /// takes its prior as it is. The intercept's too, unless `intercept` is
+    /// false: in units of the noise it is left diffuse for the first row
+    /// that observes its target (the module doc).
+    fn size_slots(&mut self, pi: usize, noise: f64, intercept: bool) {
         let v = self.cfg.p0 * noise;
         if !(v > 0.0 && v.is_finite()) {
             return;
@@ -1651,16 +1812,19 @@ impl Kalman {
                 continue;
             }
             if i < off {
-                self.p[pi][0] += v;
-                self.live[0] = true;
+                if intercept {
+                    self.p[pi][0] += v;
+                    self.live[0] = true;
+                }
                 continue;
             }
             if !self.live[i] {
                 self.anchor_slot_here(i);
             }
             let a = self.map_a[i];
+            let open = self.open(pi);
             let p = &mut self.p[pi];
-            if off == 1 {
+            if off == 1 && !open {
                 let cc = self.map_c[i] / a;
                 p[0] += cc * cc * v;
                 let o = -cc * v / a;
@@ -1673,14 +1837,22 @@ impl Kalman {
     }
 
     /// Whether covariance `pi` has lost its positive-definiteness where it
-    /// shows, on the diagonal: a variance below 0, or not a finite number.
-    /// O(k), which a row can afford where an eigensolve is not.
+    /// shows, on the diagonal: a variance below 0, or not a finite number;
+    /// or a variance of exactly 0 beside a covariance that is not, since
+    /// `|P_ij|² ≤ P_ii P_jj` holds of every positive semi-definite matrix.
+    /// An update at the input bound can round a slot's variance to 0 and
+    /// leave its row (docs/PLAN.md task 278, b32), and such a `P` read as
+    /// unsized before the transition and sized after it, whose coupling
+    /// writes the intercept's variance from those covariances: `predict`
+    /// withheld what `step` predicted. O(k), and O(k²) only on the rows a
+    /// variance is 0, which a row can afford where an eigensolve is not.
     fn lost_definiteness(&self, pi: usize) -> bool {
         let k = self.cfg.k_total();
         let p = &self.p[pi];
         (0..k).any(|i| {
             let v = p[i * k + i];
             !(v >= 0.0 && v.is_finite())
+                || (v == 0.0 && p[i * k..(i + 1) * k].iter().any(|c| *c != 0.0))
         })
     }
 
@@ -1692,13 +1864,23 @@ impl Kalman {
     /// its target sizes it as the first did.
     fn size_again(&mut self, pi: usize) {
         self.p[pi].fill(0.0);
+        if self.units() {
+            // In units of the noise the prior needs none: `p0` on every
+            // usable slot, the intercept's too, its level already in `b`.
+            if self.cfg.standardize {
+                self.size_slots(pi, 1.0, true);
+            } else {
+                self.size_whole(pi, self.cfg.p0);
+            }
+            return;
+        }
         let j = if self.cfg.share_p { 0 } else { pi };
         let r = self.readiness_noise(j);
         if r.is_nan() {
             return;
         }
         if self.cfg.standardize {
-            self.size_slots(pi, r);
+            self.size_slots(pi, r, true);
         } else {
             self.size_whole(pi, self.cfg.p0 * r);
         }
@@ -1781,7 +1963,7 @@ impl Kalman {
         }
         let z = self.standardized(x);
         let mut q = vec![0.0; k];
-        self.q_into(r, &mut q);
+        self.q_held_into(r, &mut q);
         let gap = self.elapsed[pi] + d_clock;
         let dd = gap.powi(2);
         let sized = |i: &usize| p[i * k + i] != 0.0;
@@ -1815,7 +1997,7 @@ impl Kalman {
             if self.is_unsized(pi) || r.is_nan() {
                 continue;
             }
-            *o = (1.0 + self.prior_quad(pi, x, d_clock, r) / r).sqrt();
+            *o = (1.0 + self.per_noise(self.prior_quad(pi, x, d_clock, r), r)).sqrt();
         }
     }
 
@@ -1924,7 +2106,13 @@ impl Kalman {
     /// Under `share_p`, target `j`'s covariance is the shared one times
     /// `σ²_j / σ̄²` (the module doc, task 211): that ratio, 1 with `obs_var`,
     /// unshared, or while the target has no residual variance.
+    /// In units of the noise, `P` is scaled by target `j`'s own noise, shared
+    /// or not, and NaN until it has one.
     fn own_noise_ratio(&self, j: usize) -> f64 {
+        if self.units() {
+            let own = self.sig2[j];
+            return if own > 0.0 { own } else { f64::NAN };
+        }
         if !self.cfg.share_p || self.cfg.obs_var.is_some() {
             return 1.0;
         }
@@ -2015,6 +2203,23 @@ fn shared_noise(buf: &mut Vec<f64>, sig2: &[f64]) -> f64 {
     }
 }
 
+/// The exact step of a prior diffuse in the intercept (Durbin and Koopman,
+/// *Time Series Analysis by State Space Methods*, §5.2), for a covariance
+/// whose intercept's row and column are 0: `P` the prior of the other slots,
+/// `pz = P z` (its intercept's entry 0, as `z_0 = 1`) and `s = z' P z + 1 /
+/// w`. The intercept's variance becomes `s` and its covariance with slot
+/// `i` `−(P z)_i`; the other slots' block is unchanged. That is the
+/// posterior of `b_0 = y − z_{1..}' b_{1..}` given the row, which the
+/// limit of `P_00 → ∞` in the ordinary update reaches; its gain is `e_0`.
+fn diffuse_step(p: &mut [f64], pz: &[f64], s: f64) {
+    let k = pz.len();
+    p[0] = s;
+    for i in 1..k {
+        p[i] = -pz[i];
+        p[i * k] = -pz[i];
+    }
+}
+
 /// `P <- P - g (P z)ᵀ`, once per pair and written to both halves, so `P`
 /// stays symmetric (see `Rls::step` for why that matters).
 fn take_the_row(p: &mut [f64], gain: &[f64], pz: &[f64]) {
@@ -2054,7 +2259,7 @@ impl OnlineModel for Kalman {
             }
             let diag = self.current_diagonal(pi);
             let trace: f64 = diag.iter().zip(&ez2).map(|(p, e)| p * e).sum();
-            *o = (1.0 + trace / r).sqrt();
+            *o = (1.0 + self.per_noise(trace, r)).sqrt();
         }
         true
     }
@@ -2216,7 +2421,8 @@ impl OnlineModel for Kalman {
         // ---- the squared innovations a standardized prior is sized from ----
         // Under `share_p` the row's squares over the targets it observes,
         // summed in ascending order, so the order of `targets` moves no bit.
-        if self.cfg.standardize && self.cfg.obs_var.is_none() {
+        // In units of the noise the prior reads no noise, and none is kept.
+        if self.cfg.standardize && self.cfg.obs_var.is_none() && !self.cfg.noise_units {
             let square = |j: usize| {
                 let e = obs(j)? - self.zb[j];
                 Some(e * e).filter(|e2| *e2 > 0.0 && e2.is_finite())
@@ -2260,9 +2466,15 @@ impl OnlineModel for Kalman {
             let sigma2 = self.noise[if self.cfg.share_p { 0 } else { pi }];
             if self.cfg.standardize {
                 self.add_process_noise(pi, sigma2, gap);
-                if let Some(r) = self.cfg.obs_var.or_else(|| self.basis[pi].noise()) {
-                    self.size_slots(pi, r);
+                if self.units() {
+                    // `p0` in units of the noise on each slope whose scale
+                    // is usable; the intercept stays diffuse for the update.
+                    self.size_slots(pi, 1.0, false);
+                } else if let Some(r) = self.cfg.obs_var.or_else(|| self.basis[pi].noise()) {
+                    self.size_slots(pi, r, true);
                 }
+            } else if self.units() {
+                self.add_process_noise(pi, sigma2, gap);
             } else if self.is_unsized(pi) {
                 // The first row with a noise sizes the prior, to `p0` times
                 // that noise, before its gain, and adds no process noise.
@@ -2278,6 +2490,14 @@ impl OnlineModel for Kalman {
         // module doc, task 204).
         let mut shared_pz = false;
         let mut shared_update = false;
+        // In units of the noise the gain reads no noise, `s = z' P z + 1 /
+        // w`, and a covariance whose intercept is unsized takes its first
+        // row as a diffuse prior's exact step (the module doc). Whether it
+        // is open is read before any target's update moves `P`.
+        let units = self.units();
+        let diffuse = units && self.cfg.fit_intercept;
+        let open_shared = diffuse && self.cfg.share_p && self.p[0][0] == 0.0;
+        let mut shared_s = f64::NAN;
         for (j, &pred_j) in pred.iter().enumerate() {
             let pi = if self.cfg.share_p { 0 } else { j };
             let Some(yj) = obs(j) else {
@@ -2286,6 +2506,8 @@ impl OnlineModel for Kalman {
                 continue;
             };
             let sigma2 = self.noise[j];
+            // Unshared, target `j`'s covariance moves only below.
+            let open = open_shared || (diffuse && !self.cfg.share_p && self.p[pi][0] == 0.0);
             // pz = P z
             if !shared_pz {
                 let p = &self.p[pi];
@@ -2300,8 +2522,9 @@ impl OnlineModel for Kalman {
                 shared_pz = self.cfg.share_p;
             }
             let zpz: f64 = self.zs.iter().zip(&self.pz).map(|(z, p)| z * p).sum();
-            let s_inn = zpz + sigma2 / weight;
-            let err = yj - self.zb[j];
+            let r_inn = if units { 1.0 } else { sigma2 };
+            let s_inn = zpz + r_inn / weight;
+            let mut err = yj - self.zb[j];
             // A standardized regressor can be ~1e200 when a feature at the
             // input bound follows a run at a tiny scale, and then `z P z` or
             // `z . beta` overflows. The row is skipped rather than let an
@@ -2309,15 +2532,28 @@ impl OnlineModel for Kalman {
             // later row would repair (docs/IMPROVEMENTS.md C2). So is a row
             // with no noise yet to weigh it against: at `R = 0` the update
             // would take it as exact and collapse `P` along `z` (CC4).
-            if sigma2 > 0.0 && s_inn > 0.0 && s_inn.is_finite() && err.is_finite() {
+            if r_inn > 0.0 && s_inn > 0.0 && s_inn.is_finite() && err.is_finite() {
+                if diffuse && (open || self.wj[j] == 0.0) {
+                    // The diffuse intercept's gain is `e_0`: it takes the
+                    // whole innovation, the level, and nothing else moves.
+                    // A target first seen after its shared covariance took
+                    // its first row is centred the same way.
+                    self.beta[j][0] += err;
+                    err = 0.0;
+                }
                 for i in 0..k {
                     self.gain[i] = self.pz[i] / s_inn;
                 }
-                for (b, g) in self.beta[j].iter_mut().zip(&self.gain) {
-                    *b += g * err;
+                if !open {
+                    for (b, g) in self.beta[j].iter_mut().zip(&self.gain) {
+                        *b += g * err;
+                    }
                 }
                 if self.cfg.share_p {
                     shared_update = true;
+                    shared_s = s_inn;
+                } else if open {
+                    diffuse_step(&mut self.p[pi], &self.pz, s_inn);
                 } else {
                     take_the_row(&mut self.p[pi], &self.gain, &self.pz);
                 }
@@ -2346,7 +2582,11 @@ impl OnlineModel for Kalman {
         // Every target that updated read the same `P z` and the same noise,
         // so the same gain: `P` takes the row once.
         if shared_update {
-            take_the_row(&mut self.p[0], &self.gain, &self.pz);
+            if open_shared {
+                diffuse_step(&mut self.p[0], &self.pz, shared_s);
+            } else {
+                take_the_row(&mut self.p[0], &self.gain, &self.pz);
+            }
         }
 
         // Standardization stats update last, so this row's z used the prior
@@ -2531,6 +2771,7 @@ mod tests {
 
     fn cfg(k: usize, m: usize, hl: Vec<f64>) -> KalmanCfg {
         KalmanCfg {
+            noise_units: false,
             n_features: k,
             n_targets: m,
             fit_intercept: true,
@@ -3055,6 +3296,7 @@ mod tests {
     fn unstandardized_with_no_process_noise_is_bayesian_regression() {
         let (p0, obs_var) = (10.0, 0.25);
         let mut m = Kalman::new(KalmanCfg {
+            noise_units: false,
             n_features: 2,
             n_targets: 1,
             fit_intercept: false,
@@ -3524,348 +3766,6 @@ mod tests {
         assert!(m.anchor_scale[1] < 1e-4, "{}", m.anchor_scale[1]);
     }
 
-    /// The standardized filter is its recursion, written from the module
-    /// doc with every moment from its definition (`the_filter_is_its_recursion`
-    /// holds the unstandardized one): the row standardized against the EW
-    /// means and variances of the rows before it, `z_i = (x_i − m_i) / s_i`
-    /// (`x_i / s_i`, the root mean square, through the origin), each a
-    /// weighted sum over the history with the weights aged by the decay; the
-    /// filter's recursion on `z` in those, the current, coordinates, with the
-    /// transition on every row and the process noise `Q D²` on each row that
-    /// observes the covariance's target, `D` the clock since the last; each
-    /// slot's prior `p0 R` on the first observed row its scale is usable, `R`
-    /// the mean squared innovation once three rows give it; and after every
-    /// row that moves the moments, the change of coordinates from the moments
-    /// before it to the moments after it, `A` with `A_00 = 1`, `A_0i = (m'_i −
-    /// m_i) / s_i`, `A_ii = s'_i / s_i`, applied as `b' = A b` and `P' = A P
-    /// Aᵀ` by matrix products -- task 206's re-map on every row, which the
-    /// anchored filter is to rounding (task 211). Two targets, one present
-    /// one row in three, weights other than 1 and 0, steps of 1 and 3, shared
-    /// and not -- shared, the noise is the mean residual variance over the
-    /// targets that have one (review round 5, A1) -- with and without an
-    /// intercept, and with slopes reverting at half-lives of their own. The
-    /// predictions agree to 1e-12 of their size.
-    #[test]
-    fn the_standardized_filter_is_its_recursion() {
-        let inf = f64::INFINITY;
-        for (fit_intercept, share, revert) in [
-            (true, false, vec![inf]),
-            (true, true, vec![inf]),
-            (false, false, vec![inf]),
-            (true, false, vec![inf, 40.0, 8.0]),
-            (true, true, vec![inf, 25.0, 60.0]),
-        ] {
-            let hq = 40.0;
-            let decay = Decay::Lam(0.9);
-            let mut c = cfg(2, 2, vec![hq]);
-            c.fit_intercept = fit_intercept;
-            c.share_p = share;
-            c.min_weight = 0.0;
-            c.decay = decay;
-            c.revert_half_life = revert.clone();
-            let mut m = Kalman::new(c.clone()).unwrap();
-            let off = usize::from(fit_intercept);
-            let k = 2 + off;
-            let n_p = if share { 1 } else { 2 };
-            let mut p = vec![vec![0.0f64; k * k]; n_p];
-            let mut b = vec![vec![0.0f64; k]; 2];
-            let (mut sig2, mut wsig, mut wj) = ([0.0f64; 2], [0.0f64; 2], [0.0f64; 2]);
-            let mut elapsed = vec![0.0f64; n_p];
-            // Per covariance: Σ w e², Σ w and the rows.
-            // Per covariance, the first three rows' mean squared
-            // innovation and weight (task 214).
-            let mut basis: Vec<Vec<(f64, f64)>> = vec![Vec::new(); n_p];
-            let mut history: Vec<([f64; 2], f64)> = Vec::new();
-            // The moments of the history, by their definition: `(m, s,
-            // usable)` per feature, `m = 0` through the origin.
-            let moments = |h: &[([f64; 2], f64)]| -> ([f64; 2], [f64; 2], [bool; 2]) {
-                let total: f64 = h.iter().map(|(_, w)| w).sum();
-                let (mut mean, mut scale, mut usable) = ([0.0; 2], [1.0; 2], [false; 2]);
-                if total <= 0.0 {
-                    return (mean, scale, usable);
-                }
-                for f in 0..2 {
-                    if fit_intercept {
-                        let mu = h.iter().map(|(x, w)| w * x[f]).sum::<f64>() / total;
-                        let var =
-                            h.iter().map(|(x, w)| w * (x[f] - mu).powi(2)).sum::<f64>() / total;
-                        mean[f] = mu;
-                        usable[f] = var > 0.0;
-                        scale[f] = if usable[f] { var.sqrt() } else { 1.0 };
-                    } else {
-                        let raw = h.iter().map(|(x, w)| w * x[f] * x[f]).sum::<f64>() / total;
-                        usable[f] = raw > 0.0;
-                        scale[f] = if usable[f] { raw.sqrt() } else { 1.0 };
-                    }
-                }
-                (mean, scale, usable)
-            };
-            let phi_of = |i: usize, d: f64| -> f64 {
-                let r = if revert.len() == 1 {
-                    revert[0]
-                } else {
-                    revert[i]
-                };
-                Decay::Halflife(r).factor(d)
-            };
-            let mut s = 211u64;
-            let mut checked = 0;
-            for i in 0..150 {
-                let x = [2.0 + lcg(&mut s), 0.3 * lcg(&mut s)];
-                let ys = [
-                    Some(0.5 + x[0] - 2.0 * x[1] + 0.2 * lcg(&mut s)),
-                    (i % 3 == 0).then(|| -x[0] + 3.0 * lcg(&mut s)),
-                ];
-                let w = if i % 9 == 5 {
-                    0.0
-                } else {
-                    0.5 + (lcg(&mut s) + 1.0)
-                };
-                let d = match i {
-                    0 => 0.0,
-                    _ if i % 7 == 2 => 3.0,
-                    _ => 1.0,
-                };
-                let lam = decay.factor(d);
-                for e in elapsed.iter_mut() {
-                    *e += d;
-                }
-                // The transition, in the current coordinates.
-                let phi: Vec<f64> = (0..k).map(|a| phi_of(a, d)).collect();
-                for bj in b.iter_mut() {
-                    for a in 0..k {
-                        bj[a] *= phi[a];
-                    }
-                }
-                for pp in p.iter_mut() {
-                    for a in 0..k {
-                        for bb in 0..k {
-                            pp[a * k + bb] *= phi[a] * phi[bb];
-                        }
-                    }
-                }
-                let (mean, scale, usable) = moments(&history);
-                let mut z = vec![1.0; k];
-                for f in 0..2 {
-                    z[off + f] = (x[f] - mean[f]) / scale[f];
-                }
-                let dotz = |v: &[f64]| -> f64 { (0..k).map(|a| z[a] * v[a]).sum() };
-                // A covariance not yet sized predicts nothing (task 270,
-                // review round 9 B-1).
-                let sized = |j: usize| {
-                    let pj = &p[if share { 0 } else { j }];
-                    (0..k).any(|a| pj[a * k + a] != 0.0)
-                };
-                let want: Vec<f64> = (0..2)
-                    .map(|j| {
-                        if wj[j] > 0.0 && sized(j) {
-                            dotz(&b[j])
-                        } else {
-                            f64::NAN
-                        }
-                    })
-                    .collect();
-                let got = m.step(&x, &ys, d, w).pred;
-                for j in 0..2 {
-                    assert_eq!(
-                        got[j].is_nan(),
-                        want[j].is_nan(),
-                        "{fit_intercept} {share} {revert:?}, row {i}"
-                    );
-                    if want[j].is_finite() {
-                        assert!(
-                            (got[j] - want[j]).abs() <= 1e-12 * want[j].abs().max(1.0),
-                            "intercept {fit_intercept}, share {share}, revert {revert:?}, row \
-                             {i}, target {j}: {} against {}",
-                            got[j],
-                            want[j]
-                        );
-                        checked += 1;
-                    }
-                }
-                // The filter on `z`, as `the_filter_is_its_recursion` writes
-                // it: a row of weight 0 observes nothing.
-                let obs: Vec<Option<f64>> = ys.iter().map(|y| y.filter(|_| w > 0.0)).collect();
-                let e2: Vec<Option<f64>> = (0..2)
-                    .map(|j| obs[j].map(|y| (y - dotz(&b[j])).powi(2)))
-                    .collect();
-                let seen: Vec<f64> = e2.iter().flatten().copied().collect();
-                let shared_first = if seen.is_empty() {
-                    0.0
-                } else {
-                    seen.iter().sum::<f64>() / seen.len() as f64
-                };
-                let have: Vec<f64> = sig2.iter().copied().filter(|v| *v > 0.0).collect();
-                let shared = if have.is_empty() {
-                    0.0
-                } else {
-                    have.iter().sum::<f64>() / have.len() as f64
-                };
-                let noise: Vec<f64> = (0..2)
-                    .map(|j| {
-                        let s2 = if share { shared } else { sig2[j] };
-                        if s2 > 0.0 {
-                            s2
-                        } else if share {
-                            shared_first
-                        } else {
-                            e2[j].unwrap_or(0.0)
-                        }
-                    })
-                    .collect();
-                // A row counts once, whatever the targets it observes.
-                for (pi, held) in basis.iter_mut().enumerate() {
-                    let mine: Vec<f64> = (0..2)
-                        .filter(|&j| share || j == pi)
-                        .filter_map(|j| e2[j].filter(|v| *v > 0.0))
-                        .collect();
-                    if !mine.is_empty() && held.len() < 3 {
-                        held.push((mine.iter().sum::<f64>() / mine.len() as f64, w));
-                    }
-                }
-                for pi in 0..n_p {
-                    let informs = if share {
-                        obs.iter().any(Option::is_some)
-                    } else {
-                        obs[pi].is_some()
-                    };
-                    if !informs {
-                        continue;
-                    }
-                    let gap = elapsed[pi];
-                    elapsed[pi] = 0.0;
-                    let q = noise[pi] * (std::f64::consts::LN_2 / hq).powi(2);
-                    for a in 0..k {
-                        // `D²`, or on a reverting slot `((1 − 2^(−D/r)) /
-                        // θ)²`, `θ = ln 2 / r` (task 214).
-                        let r = if revert.len() == 1 {
-                            revert[0]
-                        } else {
-                            revert[a]
-                        };
-                        let dd = if r.is_infinite() {
-                            gap * gap
-                        } else {
-                            let theta = std::f64::consts::LN_2 / r;
-                            ((1.0 - phi_of(a, gap)) / theta).powi(2)
-                        };
-                        if p[pi][a * k + a] != 0.0 {
-                            p[pi][a * k + a] += q * dd;
-                        }
-                    }
-                    if basis[pi].len() == 3 {
-                        // The weighted median: the value with less than
-                        // half the weight below it and at least half at or
-                        // below it, over the median of a chi-squared of one
-                        // degree, 0.4549364231195728.
-                        let held = &basis[pi];
-                        let total: f64 = held.iter().map(|(_, w)| w).sum();
-                        let below = |v: f64| -> f64 {
-                            held.iter().filter(|(u, _)| *u < v).map(|(_, w)| w).sum()
-                        };
-                        let at_or_below = |v: f64| -> f64 {
-                            held.iter().filter(|(u, _)| *u <= v).map(|(_, w)| w).sum()
-                        };
-                        let median = held
-                            .iter()
-                            .map(|(v, _)| *v)
-                            .filter(|&v| below(v) < 0.5 * total && at_or_below(v) >= 0.5 * total)
-                            .fold(f64::INFINITY, f64::min);
-                        let r = median / 0.4549364231195728;
-                        for a in 0..k {
-                            let ok = a < off || usable[a - off];
-                            if ok && p[pi][a * k + a] == 0.0 {
-                                p[pi][a * k + a] = r;
-                            }
-                        }
-                    }
-                }
-                let mut shared_row: Option<(Vec<f64>, f64)> = None;
-                for j in 0..2 {
-                    let pi = if share { 0 } else { j };
-                    let sigma2 = noise[j];
-                    let Some(y) = obs[j] else {
-                        wj[j] *= lam;
-                        wsig[j] *= lam;
-                        continue;
-                    };
-                    let pz: Vec<f64> = (0..k).map(|a| dotz(&p[pi][a * k..(a + 1) * k])).collect();
-                    let s_inn = dotz(&pz) + sigma2 / w;
-                    let err = y - dotz(&b[j]);
-                    if sigma2 > 0.0 {
-                        for a in 0..k {
-                            b[j][a] += pz[a] / s_inn * err;
-                        }
-                        if share {
-                            shared_row = Some((pz, s_inn));
-                        } else {
-                            for a in 0..k {
-                                for bb in 0..k {
-                                    p[pi][a * k + bb] -= pz[a] * pz[bb] / s_inn;
-                                }
-                            }
-                        }
-                    }
-                    let aged = lam * wsig[j];
-                    wsig[j] = aged;
-                    if want[j].is_finite() {
-                        let r = y - want[j];
-                        sig2[j] = (aged * sig2[j] + w * r * r) / (aged + w);
-                        wsig[j] = aged + w;
-                    }
-                    wj[j] = lam * wj[j] + w;
-                }
-                if let Some((pz, s_inn)) = shared_row {
-                    for a in 0..k {
-                        for bb in 0..k {
-                            p[0][a * k + bb] -= pz[a] * pz[bb] / s_inn;
-                        }
-                    }
-                }
-                // The moments learn the row, at its weight, and `b` and `P`
-                // follow them.
-                for (_, wh) in history.iter_mut() {
-                    *wh *= lam;
-                }
-                history.push((x, w));
-                if w > 0.0 {
-                    let (mean2, scale2, _) = moments(&history);
-                    let mut am = vec![0.0f64; k * k];
-                    am[0] = 1.0;
-                    for f in 0..2 {
-                        let a = off + f;
-                        am[a * k + a] = scale2[f] / scale[f];
-                        if fit_intercept {
-                            am[a] = (mean2[f] - mean[f]) / scale[f];
-                        }
-                    }
-                    for bj in b.iter_mut() {
-                        let old = bj.clone();
-                        for r in 0..k {
-                            bj[r] = (0..k).map(|cc| am[r * k + cc] * old[cc]).sum();
-                        }
-                    }
-                    for pp in p.iter_mut() {
-                        let mut ap = vec![0.0f64; k * k];
-                        for r in 0..k {
-                            for cc in 0..k {
-                                ap[r * k + cc] =
-                                    (0..k).map(|t| am[r * k + t] * pp[t * k + cc]).sum();
-                            }
-                        }
-                        for r in 0..k {
-                            for cc in 0..k {
-                                pp[r * k + cc] =
-                                    (0..k).map(|t| ap[r * k + t] * am[cc * k + t]).sum();
-                            }
-                        }
-                    }
-                }
-            }
-            assert!(checked > 250, "{checked} predictions checked");
-        }
-    }
-
     // ---- reversion (ENHANCEMENTS E41) ----
 
     fn revert_cfg(r: Vec<f64>) -> KalmanCfg {
@@ -4142,11 +4042,13 @@ mod tests {
     /// that did it in task 211 from getting here.
     #[test]
     fn a_covariance_that_loses_its_positive_diagonal_is_sized_again() {
-        for standardize in [true, false] {
+        // In units of the noise too (task 278), where it is sized at `p0`.
+        for (standardize, units) in [(true, false), (false, false), (true, true), (false, true)] {
             let mut c = cfg(2, 1, vec![100.0]);
             c.decay = Decay::Halflife(50.0);
             c.min_weight = 3.0;
             c.standardize = standardize;
+            c.noise_units = units;
             let mut m = Kalman::new(c).unwrap();
             let mut s = 5u64;
             let mut row = || {
@@ -4176,7 +4078,11 @@ mod tests {
                     "standardize {standardize}, row {i}: {v:?}"
                 );
                 if i == 0 && !standardize {
-                    let want = m.cfg.p0 * m.readiness_noise(0);
+                    let want = if units {
+                        m.cfg.p0
+                    } else {
+                        m.cfg.p0 * m.readiness_noise(0)
+                    };
                     assert!(
                         (0..k).all(|a| m.p[0][a * k + a] == want),
                         "{:?} against {want}",
@@ -4541,182 +4447,6 @@ mod tests {
         }
     }
 
-    /// The filter written from the module docs, unstandardized and without
-    /// reversion: per target, `R` and the `Q` from `half_life` are both the
-    /// EW residual variance, under `share_p` the mean over the targets that
-    /// have one (review round 5, A1), read once a row before any target's
-    /// update (review round 4, CC3); before
-    /// there is one, the row's own innovation squared, under `share_p` the
-    /// mean of the squares over the targets the row observes, and no noise
-    /// (no `Q`, no correction) where there is none (CC4); `P` is unsized, 0,
-    /// until a row has a noise, which sets it to `p0` times that noise, and
-    /// after that takes `Q D²` once on each row that observes its target
-    /// (any target, under `share_p`), `D` the clock since the last such row,
-    /// before the first target's update (task 211);
-    /// a target present at a positive weight corrects `b` and `P` by the gain
-    /// `P z / (zᵀ P z + R / w)`, under `share_p` every target from `P` as the
-    /// row found it and `P` once, after them (task 204); the residual
-    /// variance is the EW mean of the
-    /// squared out-of-sample errors, its weight ageing on every row. Two
-    /// targets, one present one row in three, weights other than 1, shared
-    /// and not (task 158).
-    #[test]
-    fn the_filter_is_its_recursion() {
-        for share in [true, false] {
-            let (h, hq) = (30.0, 50.0);
-            let mut c = cfg(2, 2, vec![hq]);
-            c.standardize = false;
-            c.share_p = share;
-            c.min_weight = 0.0;
-            c.decay = Decay::Halflife(h);
-            let mut m = Kalman::new(c).unwrap();
-            let k = 3;
-            let n_p = if share { 1 } else { 2 };
-            let p0 = 1.0;
-            let mut p = vec![vec![0.0f64; k * k]; n_p];
-            let mut b = [[0.0f64; 3]; 2];
-            let (mut sig2, mut wsig, mut wj) = ([0.0f64; 2], [0.0f64; 2], [0.0f64; 2]);
-            let mut elapsed = vec![0.0f64; n_p];
-            let mut s = 103u64;
-            for i in 0..150 {
-                let x = [lcg(&mut s), 1.0 + lcg(&mut s)];
-                let ys = [
-                    Some(0.5 + x[0] - 2.0 * x[1] + 0.2 * lcg(&mut s)),
-                    (i % 3 == 0).then(|| -x[0] + 3.0 * lcg(&mut s)),
-                ];
-                let w = 0.5 + (lcg(&mut s) + 1.0);
-                let d = if i == 0 { 0.0 } else { 1.0 };
-                for e in elapsed.iter_mut() {
-                    *e += d;
-                }
-                let lam = 0.5f64.powf(d / h);
-                let z = [1.0, x[0], x[1]];
-                let dotz = |v: &[f64]| -> f64 { (0..k).map(|a| z[a] * v[a]).sum() };
-                // A covariance not yet sized predicts nothing (task 270,
-                // review round 9 B-1).
-                let sized = |j: usize| {
-                    let pj = &p[if share { 0 } else { j }];
-                    (0..k).any(|a| pj[a * k + a] != 0.0)
-                };
-                let want: Vec<f64> = (0..2)
-                    .map(|j| {
-                        if wj[j] > 0.0 && sized(j) {
-                            dotz(&b[j])
-                        } else {
-                            f64::NAN
-                        }
-                    })
-                    .collect();
-                let got = m.step(&x, &ys, d, w).pred;
-                for j in 0..2 {
-                    assert_eq!(got[j].is_nan(), want[j].is_nan(), "share {share}, row {i}");
-                    if want[j].is_finite() {
-                        assert!(
-                            (got[j] - want[j]).abs() <= 1e-10 * want[j].abs().max(1.0),
-                            "share {share}, row {i}, target {j}: {} against {}",
-                            got[j],
-                            want[j]
-                        );
-                    }
-                }
-                // Each observed target's innovation squared, from the
-                // coefficients before the row's first update.
-                let e2: Vec<Option<f64>> = (0..2)
-                    .map(|j| ys[j].map(|y| (y - dotz(&b[j])).powi(2)))
-                    .collect();
-                let seen: Vec<f64> = e2.iter().flatten().copied().collect();
-                let shared_first = if seen.is_empty() {
-                    0.0
-                } else {
-                    seen.iter().sum::<f64>() / seen.len() as f64
-                };
-                // Under `share_p` every target's noise is the mean residual
-                // variance over the targets that have one, as the row
-                // arrives, read once, before any target's update moves one
-                // (review round 4, CC3; review round 5, A1): target 1 has
-                // none until its second present row, row 3.
-                let have: Vec<f64> = sig2.iter().copied().filter(|v| *v > 0.0).collect();
-                let shared = if have.is_empty() {
-                    0.0
-                } else {
-                    have.iter().sum::<f64>() / have.len() as f64
-                };
-                let mut shared_row: Option<(Vec<f64>, f64)> = None;
-                for j in 0..2 {
-                    let pi = if share { 0 } else { j };
-                    let s2 = if share { shared } else { sig2[j] };
-                    let sigma2 = if s2 > 0.0 {
-                        s2
-                    } else if share {
-                        shared_first
-                    } else {
-                        e2[j].unwrap_or(0.0)
-                    };
-                    let informs = if share {
-                        ys.iter().any(Option::is_some)
-                    } else {
-                        ys[j].is_some()
-                    };
-                    if (!share || j == 0) && informs {
-                        let dd = elapsed[pi] * elapsed[pi];
-                        elapsed[pi] = 0.0;
-                        if p[pi].iter().all(|v| *v == 0.0) {
-                            for a in 0..k {
-                                p[pi][a * k + a] = p0 * sigma2;
-                            }
-                        } else {
-                            let q = sigma2 * (std::f64::consts::LN_2 / hq).powi(2);
-                            for a in 0..k {
-                                p[pi][a * k + a] += q * dd;
-                            }
-                        }
-                    }
-                    let Some(y) = ys[j] else {
-                        wj[j] *= lam;
-                        wsig[j] *= lam;
-                        continue;
-                    };
-                    // Under `share_p` every target reads `P` as the row
-                    // found it: the shared update waits for the loop's end.
-                    let pz: Vec<f64> = (0..k).map(|a| dotz(&p[pi][a * k..(a + 1) * k])).collect();
-                    let s_inn = dotz(&pz) + sigma2 / w;
-                    let err = y - dotz(&b[j]);
-                    if sigma2 > 0.0 {
-                        for a in 0..k {
-                            b[j][a] += pz[a] / s_inn * err;
-                        }
-                        if share {
-                            shared_row = Some((pz, s_inn));
-                        } else {
-                            for a in 0..k {
-                                for bb in 0..k {
-                                    p[pi][a * k + bb] -= pz[a] * pz[bb] / s_inn;
-                                }
-                            }
-                        }
-                    }
-                    let aged = lam * wsig[j];
-                    wsig[j] = aged;
-                    if want[j].is_finite() {
-                        let r = y - want[j];
-                        sig2[j] = (aged * sig2[j] + w * r * r) / (aged + w);
-                        wsig[j] = aged + w;
-                    }
-                    wj[j] = lam * wj[j] + w;
-                }
-                // `P` takes the row once, if any target updated: every one
-                // read the same `P z` and the same noise (task 204).
-                if let Some((pz, s_inn)) = shared_row {
-                    for a in 0..k {
-                        for bb in 0..k {
-                            p[0][a * k + bb] -= pz[a] * pz[bb] / s_inn;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     /// A row of weight 0 learns nothing, the residual variance included:
     /// across every such row `σ²` keeps its bits, not `(a σ²) / a` (task
     /// 158).
@@ -4749,6 +4479,7 @@ mod tests {
     #[test]
     fn an_innovation_of_zero_or_a_target_not_a_number_corrects_nothing() {
         let mut m = Kalman::new(KalmanCfg {
+            noise_units: false,
             n_features: 1,
             n_targets: 1,
             fit_intercept: false,
@@ -5003,6 +4734,16 @@ mod tests {
         cases.push(("p0 = 1/4".into(), c.clone()));
         c.obs_var = Some(0.25);
         cases.push(("p0 = 1/4, obs_var given".into(), c));
+        // And each in units of the noise, the form the bank builds (task 278).
+        let units: Vec<(String, KalmanCfg)> = cases
+            .iter()
+            .map(|(name, c)| {
+                let mut c = c.clone();
+                c.noise_units = true;
+                (format!("{name}, in units of the noise"), c)
+            })
+            .collect();
+        cases.extend(units);
 
         for (name, base) in &cases {
             let (want, m1, learned) = run(base, 1.0);
@@ -5042,6 +4783,7 @@ mod tests {
     /// the filter the tests below start from.
     fn plain(p0: f64, half_life: f64, obs_var: Option<f64>) -> KalmanCfg {
         KalmanCfg {
+            noise_units: false,
             n_features: 1,
             n_targets: 1,
             fit_intercept: false,
@@ -5340,6 +5082,7 @@ mod tests {
     /// at `coef_half_life`, rows one clock unit apart.
     fn settled_readiness(n_feat: usize, coef_hl: f64) -> (f64, f64, f64) {
         let c = KalmanCfg {
+            noise_units: false,
             n_features: n_feat,
             n_targets: 1,
             fit_intercept: true,
@@ -5474,4 +5217,8 @@ mod tests {
     // Task 250's: the per-row paths that run faster, each against the form
     // it replaced, to the bit, and shown to run.
     mod per_row;
+    // The filter against its recursion written by hand, in both forms.
+    mod recursion;
+    // Task 278's: `P` in units of the noise, each against the form before.
+    mod noise_units;
 }
