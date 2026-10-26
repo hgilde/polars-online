@@ -2390,12 +2390,12 @@ n = 50
 [case."convergence.huber.breakdown_0_1_5000_slope_gap"]
 ideal = 0.0
 worst = 0.00209056
-p95 = 0.00178429
+p95 = 0.00163878
 n = 50
 
 [case."convergence.huber.breakdown_0_1_inf_slope_gap"]
 ideal = 0.0
-worst = 0.00294575
+worst = 0.00288426
 p95 = 0.00240245
 n = 50
 
@@ -2414,7 +2414,7 @@ n = 50
 [case."convergence.huber.cauchy_500_at_8000"]
 ideal = 0.0
 worst = 0.00501959
-p95 = 0.00403613
+p95 = 0.00392744
 n = 50
 
 [case."convergence.huber.cauchy_inf_at_8000"]
@@ -2534,7 +2534,7 @@ n = 50
 [case."convergence.huber.wild_inf_at_8000"]
 ideal = 0.0
 worst = 0.00367766
-p95 = 0.0026851
+p95 = 0.00274324
 n = 50
 
 [case."convergence.kalman.break_level_at_4"]
@@ -3086,13 +3086,13 @@ n = 50
 
 [case."convergence.quantile.break_slope_at_6"]
 ideal = 0.0
-worst = 0.0230516
-p95 = 0.0189353
+worst = 0.0220081
+p95 = 0.0182576
 n = 50
 
 [case."convergence.quantile.break_variance_at_12"]
 ideal = 0.0
-worst = 0.0649813
+worst = 0.0618823
 p95 = 0.0537994
 n = 50
 
@@ -3194,8 +3194,8 @@ n = 50
 
 [case."convergence.quantile.outliers_500_at_8000"]
 ideal = 0.0
-worst = 0.0112778
-p95 = 0.00939852
+worst = 0.0108
+p95 = 0.00912207
 n = 50
 
 [case."convergence.quantile.outliers_inf_at_8000"]
@@ -3206,14 +3206,14 @@ n = 50
 
 [case."convergence.quantile.shift_500_at_8000"]
 ideal = 0.0
-worst = 0.010751
+worst = 0.0112378
 p95 = 0.00911517
 n = 50
 
 [case."convergence.quantile.shift_inf_at_8000"]
 ideal = 0.0
 worst = 0.0607696
-p95 = 0.0588772
+p95 = 0.0605435
 n = 50
 
 [case."convergence.quantile.start_200_at_3200"]
@@ -3249,7 +3249,7 @@ n = 50
 [case."convergence.quantile.t2_500_at_8000"]
 ideal = 0.0
 worst = 0.0113286
-p95 = 0.00910158
+p95 = 0.00941013
 n = 50
 
 [case."convergence.quantile.t2_inf_at_8000"]
@@ -3260,7 +3260,7 @@ n = 50
 
 [case."convergence.quantile.wild_500_at_8000"]
 ideal = 0.0
-worst = 0.0108028
+worst = 0.0112524
 p95 = 0.00940628
 n = 50
 
@@ -3673,7 +3673,7 @@ n = 50
 
 [case."convergence.sgd_huber.breakdown_0_1_inf_slope_gap"]
 ideal = 0.0
-worst = 0.00594547
+worst = 0.00608734
 p95 = 0.00497225
 n = 50
 
@@ -4780,7 +4780,7 @@ n = 50
 [case."huber_scale.huber_sgd_cuts.huber_share_0_25_from_rlm_at_1_345"]
 ideal = 0.0
 worst = 0.00851048
-p95 = 0.00600652
+p95 = 0.00586479
 n = 50
 
 [case."huber_scale.huber_sgd_cuts.huber_share_0_25_from_rlm_at_2"]
@@ -4957,49 +4957,49 @@ n = 7
 
 [case."marginal_bin_huber.margbins_cuts.cut_0_8_spikes_0_05_at_1000"]
 ideal = 0.0
-worst = 0.00383212
-p95 = 0.00330418
+worst = 0.00470898
+p95 = 0.00314945
 n = 50
 
 [case."marginal_bin_huber.margbins_cuts.cut_0_8_spikes_0_05_at_2000"]
 ideal = 0.0
-worst = 0.00309346
-p95 = 0.00271153
+worst = 0.00294647
+p95 = 0.00262265
 n = 50
 
 [case."marginal_bin_huber.margbins_cuts.cut_0_8_spikes_0_05_at_20000"]
 ideal = 0.0
-worst = 0.000786368
-p95 = 0.000570971
+worst = 0.00070914
+p95 = 0.000644626
 n = 50
 
 [case."marginal_bin_huber.margbins_cuts.cut_0_8_spikes_0_12_at_1000"]
 ideal = 0.0
-worst = 0.00976594
+worst = 0.0112905
 p95 = 0.00875368
 n = 50
 
 [case."marginal_bin_huber.margbins_cuts.cut_0_8_spikes_0_12_at_2000"]
 ideal = 0.0
-worst = 0.00730882
-p95 = 0.00569779
+worst = 0.00784316
+p95 = 0.00498678
 n = 50
 
 [case."marginal_bin_huber.margbins_cuts.cut_0_8_spikes_0_12_at_20000"]
 ideal = 0.0
-worst = 0.00220437
-p95 = 0.0014452
+worst = 0.00230469
+p95 = 0.00153268
 n = 50
 
 [case."marginal_bin_huber.margbins_cuts.cut_2_5_spikes_0_05_at_1000"]
 ideal = 0.0
 worst = 0.0213518
-p95 = 0.0133229
+p95 = 0.0129638
 n = 50
 
 [case."marginal_bin_huber.margbins_cuts.cut_2_5_spikes_0_05_at_2000"]
 ideal = 0.0
-worst = 0.011565
+worst = 0.010811
 p95 = 0.0082513
 n = 50
 
@@ -5011,62 +5011,62 @@ n = 50
 
 [case."marginal_bin_huber.margbins_cuts.cut_2_5_spikes_0_12_at_1000"]
 ideal = 0.0
-worst = 0.090454
-p95 = 0.0664031
+worst = 0.0972582
+p95 = 0.0639105
 n = 50
 
 [case."marginal_bin_huber.margbins_cuts.cut_2_5_spikes_0_12_at_2000"]
 ideal = 0.0
 worst = 0.0700815
-p95 = 0.0547898
+p95 = 0.0568439
 n = 50
 
 [case."marginal_bin_huber.margbins_cuts.cut_2_5_spikes_0_12_at_20000"]
 ideal = 0.0
-worst = 0.0177428
+worst = 0.0181356
 p95 = 0.012388
 n = 50
 
 [case."marginal_bin_refit.margbins_spikes.spikes_0_05_at_1000"]
 ideal = 0.0
-worst = 0.00861521
-p95 = 0.00586103
+worst = 0.0105807
+p95 = 0.00552789
 n = 50
 
 [case."marginal_bin_refit.margbins_spikes.spikes_0_05_at_2000"]
 ideal = 0.0
-worst = 0.00519733
+worst = 0.00494108
 p95 = 0.00436723
 n = 50
 
 [case."marginal_bin_refit.margbins_spikes.spikes_0_05_at_20000"]
 ideal = 0.0
-worst = 0.00109656
+worst = 0.00127996
 p95 = 0.00102629
 n = 50
 
 [case."marginal_bin_refit.margbins_spikes.spikes_0_12_at_1000"]
 ideal = 0.0
-worst = 0.0168123
-p95 = 0.015112
+worst = 0.0177925
+p95 = 0.0174384
 n = 50
 
 [case."marginal_bin_refit.margbins_spikes.spikes_0_12_at_2000"]
 ideal = 0.0
-worst = 0.0145142
-p95 = 0.00999257
+worst = 0.015563
+p95 = 0.00967412
 n = 50
 
 [case."marginal_bin_refit.margbins_spikes.spikes_0_12_at_20000"]
 ideal = 0.0
-worst = 0.00402212
+worst = 0.00410806
 p95 = 0.00310895
 n = 50
 
 [case."marginal_bin_refit.margbins_spikes.spikes_0_2_at_1000"]
 ideal = 0.0
 worst = 0.149628
-p95 = 0.113553
+p95 = 0.117517
 n = 50
 
 [case."marginal_bin_refit.margbins_spikes.spikes_0_2_at_2000"]
@@ -5089,19 +5089,19 @@ n = 50
 
 [case."oracles.quantile_eps.eps_0_1_n_5000_from_the_smoothed_fit"]
 ideal = 0.0
-worst = 0.0257174
-p95 = 0.0210113
+worst = 0.0266451
+p95 = 0.0229652
 n = 50
 
 [case."oracles.quantile_eps.eps_0_1_n_80000_from_the_smoothed_fit"]
 ideal = 0.0
 worst = 0.00322326
-p95 = 0.00261585
+p95 = 0.00270255
 n = 50
 
 [case."oracles.quantile_eps.eps_0_5_n_20000_from_the_smoothed_fit"]
 ideal = 0.0
-worst = 0.0228789
+worst = 0.0218907
 p95 = 0.0141867
 n = 50
 
@@ -5131,14 +5131,14 @@ n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_5_n_20000_smoothed"]
 ideal = 0.0
-worst = 0.00105266
+worst = 0.000950647
 p95 = 0.000828853
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_5_n_20000_smoothed_in_se"]
 ideal = 0.0
-worst = 0.0496247
-p95 = 0.0392838
+worst = 0.0448157
+p95 = 0.0382609
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_5_n_5000_quantreg_se"]
@@ -5156,13 +5156,13 @@ n = 50
 [case."oracles.quantile_huge_ridge.tau_0_5_n_5000_smoothed"]
 ideal = 0.0
 worst = 0.00386346
-p95 = 0.0013687
+p95 = 0.00160432
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_5_n_5000_smoothed_in_se"]
 ideal = 0.0
 worst = 0.0944605
-p95 = 0.0319219
+p95 = 0.0358329
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_5_n_80000_quantreg_se"]
@@ -5179,14 +5179,14 @@ n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_5_n_80000_smoothed"]
 ideal = 0.0
-worst = 0.000371285
-p95 = 0.000260475
+worst = 0.000315694
+p95 = 0.000214196
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_5_n_80000_smoothed_in_se"]
 ideal = 0.0
-worst = 0.0343028
-p95 = 0.0240339
+worst = 0.0291668
+p95 = 0.0197638
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_20000_quantreg_se"]
@@ -5204,13 +5204,13 @@ n = 50
 [case."oracles.quantile_huge_ridge.tau_0_9_n_20000_smoothed"]
 ideal = 0.0
 worst = 0.00590518
-p95 = 0.00349495
+p95 = 0.00372258
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_20000_smoothed_in_se"]
 ideal = 0.0
 worst = 0.194434
-p95 = 0.112115
+p95 = 0.119417
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_5000_quantreg_se"]
@@ -5227,13 +5227,13 @@ n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_5000_smoothed"]
 ideal = 0.0
-worst = 0.0109744
+worst = 0.0115512
 p95 = 0.00953725
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_5000_smoothed_in_se"]
 ideal = 0.0
-worst = 0.18284
+worst = 0.192449
 p95 = 0.142263
 n = 50
 
@@ -5251,14 +5251,14 @@ n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_80000_smoothed"]
 ideal = 0.0
-worst = 0.00336629
-p95 = 0.00257944
+worst = 0.00367539
+p95 = 0.00250494
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_80000_smoothed_in_se"]
 ideal = 0.0
-worst = 0.209983
-p95 = 0.166429
+worst = 0.228592
+p95 = 0.161622
 n = 50
 
 [case."oracles.quantile_mixed_scales.tau_0_5_standardized_se"]
@@ -5511,3 +5511,267 @@ to = 0.0569778
 date = 2026-10-26
 reason = "quantile's residuals changed with its band drawn in the MAD of its residuals (D-Q) and its first rows refit to the converged fit (D-Q2), so the young CUSUM's size under the null moved from 0.0562 to 0.0570 against 0.05"
 changelog = "`quantile` draws its band in the MAD of its residuals"
+
+[[raised]]
+key = "convergence.huber.wild_inf_at_8000.p95"
+from = 0.0026851
+to = 0.00274324
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "convergence.quantile.shift_500_at_8000.worst"
+from = 0.010751
+to = 0.0112378
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "convergence.quantile.shift_inf_at_8000.p95"
+from = 0.0588772
+to = 0.0605435
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "convergence.quantile.t2_500_at_8000.p95"
+from = 0.00910158
+to = 0.00941013
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "convergence.quantile.wild_500_at_8000.worst"
+from = 0.0108028
+to = 0.0112524
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "convergence.sgd_huber.breakdown_0_1_inf_slope_gap.worst"
+from = 0.00594547
+to = 0.00608734
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "marginal_bin_huber.margbins_cuts.cut_0_8_spikes_0_05_at_1000.worst"
+from = 0.00383212
+to = 0.00470898
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "marginal_bin_huber.margbins_cuts.cut_0_8_spikes_0_05_at_20000.p95"
+from = 0.000570971
+to = 0.000644626
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "marginal_bin_huber.margbins_cuts.cut_0_8_spikes_0_12_at_1000.worst"
+from = 0.00976594
+to = 0.0112905
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "marginal_bin_huber.margbins_cuts.cut_0_8_spikes_0_12_at_2000.worst"
+from = 0.00730882
+to = 0.00784316
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "marginal_bin_huber.margbins_cuts.cut_0_8_spikes_0_12_at_20000.worst"
+from = 0.00220437
+to = 0.00230469
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "marginal_bin_huber.margbins_cuts.cut_0_8_spikes_0_12_at_20000.p95"
+from = 0.0014452
+to = 0.00153268
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "marginal_bin_huber.margbins_cuts.cut_2_5_spikes_0_12_at_1000.worst"
+from = 0.090454
+to = 0.0972582
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "marginal_bin_huber.margbins_cuts.cut_2_5_spikes_0_12_at_2000.p95"
+from = 0.0547898
+to = 0.0568439
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "marginal_bin_huber.margbins_cuts.cut_2_5_spikes_0_12_at_20000.worst"
+from = 0.0177428
+to = 0.0181356
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "marginal_bin_refit.margbins_spikes.spikes_0_05_at_1000.worst"
+from = 0.00861521
+to = 0.0105807
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "marginal_bin_refit.margbins_spikes.spikes_0_05_at_20000.worst"
+from = 0.00109656
+to = 0.00127996
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "marginal_bin_refit.margbins_spikes.spikes_0_12_at_1000.worst"
+from = 0.0168123
+to = 0.0177925
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "marginal_bin_refit.margbins_spikes.spikes_0_12_at_1000.p95"
+from = 0.015112
+to = 0.0174384
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "marginal_bin_refit.margbins_spikes.spikes_0_12_at_2000.worst"
+from = 0.0145142
+to = 0.015563
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "marginal_bin_refit.margbins_spikes.spikes_0_12_at_20000.worst"
+from = 0.00402212
+to = 0.00410806
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "marginal_bin_refit.margbins_spikes.spikes_0_2_at_1000.p95"
+from = 0.113553
+to = 0.117517
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "oracles.quantile_eps.eps_0_1_n_5000_from_the_smoothed_fit.worst"
+from = 0.0257174
+to = 0.0266451
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "oracles.quantile_eps.eps_0_1_n_5000_from_the_smoothed_fit.p95"
+from = 0.0210113
+to = 0.0229652
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "oracles.quantile_eps.eps_0_1_n_80000_from_the_smoothed_fit.p95"
+from = 0.00261585
+to = 0.00270255
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "oracles.quantile_huge_ridge.tau_0_5_n_5000_smoothed.p95"
+from = 0.0013687
+to = 0.00160432
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "oracles.quantile_huge_ridge.tau_0_5_n_5000_smoothed_in_se.p95"
+from = 0.0319219
+to = 0.0358329
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "oracles.quantile_huge_ridge.tau_0_9_n_20000_smoothed.p95"
+from = 0.00349495
+to = 0.00372258
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "oracles.quantile_huge_ridge.tau_0_9_n_20000_smoothed_in_se.p95"
+from = 0.112115
+to = 0.119417
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "oracles.quantile_huge_ridge.tau_0_9_n_5000_smoothed.worst"
+from = 0.0109744
+to = 0.0115512
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "oracles.quantile_huge_ridge.tau_0_9_n_5000_smoothed_in_se.worst"
+from = 0.18284
+to = 0.192449
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "oracles.quantile_huge_ridge.tau_0_9_n_80000_smoothed.worst"
+from = 0.00336629
+to = 0.00367539
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"
+
+[[raised]]
+key = "oracles.quantile_huge_ridge.tau_0_9_n_80000_smoothed_in_se.worst"
+from = 0.209983
+to = 0.228592
+date = 2026-10-26
+reason = "the rebuilt MAD sketch is anchored at the residuals' median size and quantile's refit descent test reads the loss's change, so the refit no longer reads the level; fits after a refit move within the sketch's resolution (task 278, qequiv; traced by reverting it, which returns every one of these cases under the ledger)"
+changelog = "`quantile`'s refit and every rebuilt robust scale no longer read the"

@@ -1650,7 +1650,6 @@ fn the_lag_moments_add_what_window_lags_says() {
         assert_eq!(got, want, "p = {p}, T = {t}, L = {l}, C = {cl}");
         // Under a window, the lagged sides' sums about the origin besides:
         // `L·T + L·p·T` more (task 280, phase 3).
-        let mut c = c;
         c.window = Some(50.0);
         let m = Marginal::new(c).unwrap();
         let got = crate::Footprint::footprint(&m.lag.as_ref().unwrap().moments());

@@ -22,14 +22,25 @@ returns.
   `raises` holds every increase in the file's history to a `[[raised]]`
   entry quoting this CHANGELOG. The Oracles workflow records every shard and
   checks the merged run in a final job, and runs weekly with the datasets
-  downloaded afresh. 21 groups (176 cases) in seven modules are registered.
+  downloaded afresh. It now holds every oracle grid: 59 groups and 755
+  cases (task 280).
 - A hash guard in the essentials gate (task 280): it hashes this library's
   outputs on each oracle group's inputs, rounded to 24 significant bits so
   another platform's last bits do not move it, or whole where the oracle
   agrees to round-off, in about 6 s. A moved hash names the groups and
   `uv run python scripts/oracles.py rerun`, which re-runs only those groups'
   grids and records the ledger and the hash if they pass; `scripts/quick.sh`
-  runs the guard for the groups a change can move.
+  runs the guard for the groups a change can move. It runs the 59 groups
+  in about 11 s.
+- Every oracle grid is in the ledger (task 280). Counts are held exactly,
+  not within the 2% tolerance; the NIST StRD and TCPD comparisons moved to
+  the grids' CI job; and five second opinions that ran on a single seed
+  gained seed-grid twins.
+- `solve_every=float("inf")` means never solve (task 278). Any finite value
+  from 1e18 means the same, since no stream reaches it on any clock (1e18
+  seconds is 3.2e10 years), so code that wrote `1e18` keeps its behaviour
+  and speed to the bit. The Gram guide, the README's hourly Grams and the
+  models guide's wide example now write `inf`.
 - `bin_refit_rows` and `refit_budget` on `marginal`, under
   `bin_stat="huber"` (task 278). `refit_budget` bounds the refit holds of a
   spec's groups, 256 MiB by default; past it a new group keeps the one pass,
@@ -50,6 +61,17 @@ returns.
 
 ### Changed
 
+- **An explicit solve cadence's first period solves by weight** (task 278):
+  until `solve_every` has passed, or `max_rows_between_solves` rows, the
+  model solves on the default weight-share schedule, then on the cadence
+  given. The first solve fell at the model's own floor and its few rows'
+  fit was held for the whole first period: with `solve_every=500` and
+  `min_weight=50`, the served error over the first 600 rows fell from
+  5.6e-4 to 3.1e-6, and on the validation data `solve_every=500`'s r² went
+  from −0.52 to −0.009. A state saved by 1.3.0 keeps the old rule.
+- The robust standard errors' docs state "larger out of sample" as a
+  tendency with its measured range: over 50 seeds the ratio was 0.990 to
+  1.034 for HC0 and 0.985 to 1.059 for HAC (task 280).
 - **`quantile` refits each target's first 500 learned rows to convergence
   by default (`quantile_refit_rows`; task 278, D-Q2), as `huber` does, under
   `refit_budget`.** Without decay its one pass kept the rows its warm-up
@@ -326,6 +348,22 @@ returns.
   278). They read 0.17 beside a null `corr`. `phi_x` and `phi_y`, which are
   fitted from them, are withheld on the same rows; `n_serial`, a count as
   `n_kish` is, stays. Learning and the state do not move.
+- `quantile`'s refit and every rebuilt robust scale no longer read the
+  target's level (task 278). The refit's descent test compared totals of
+  the loss rounded at the level, and now compares the loss's change; the
+  rebuilt MAD sketch was anchored at the first residual, and is now
+  anchored at the residuals' median size. Over 50 streams a level of 1e3,
+  1e6 or −1e9 moved `quantile`'s predictions by up to 4.5e7 times the
+  rounding the level allows, and a shifted feature by up to 1.1e5 times;
+  now at most 43 and 32. Fits after a refit move by up to 0.0066 of the
+  target's spread for `quantile` and 0.0007 for the Huber fits, within the
+  sketch's resolution.
+- `marginal`'s windowed lag correlations are taken about the window's own
+  means (task 280). They were up to 0.165 from statsmodels' `acf` of the
+  window's rows, with a lag-1 of 1.016, and read 22 after a level move; now
+  within 0.0068. A windowed snapshot with lags holds `2L·T + 2(L+C)·p·T`
+  doubles, up from `L·T + (L+2C)·p·T`. A windowed state saved before keeps
+  the old rule.
 - A captured `marginal(bin_stat="huber")` bin is freed by the refit of its
   first rows (task 278; see *Changed*).
 - `huber`, `sgd(loss="huber")`, `quantile` and `marginal(bin_stat="huber")`
@@ -623,6 +661,11 @@ returns.
 
 ### Performance
 
+- An explicit cadence's first period costs a wide model about 145 more
+  solves in a 256-row period, about 0.9 s at 1,000 features (task 278):
+  `scripts/wide_benchmark.py`'s "solve every 256" at 1,000 features goes
+  from 11.0k to 1.5k rows/s on its 2,000-row stream. `solve_every=inf` pays
+  none.
 - The bank's residual spread reads one extra prediction a row while a
   model's weight is below its `min_weight` floor, and each stream keeps
   about 16 more bytes (task 278).
