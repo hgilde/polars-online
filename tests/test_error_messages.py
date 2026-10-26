@@ -1312,7 +1312,8 @@ def test_a_count_past_its_width_is_named_in_python():
                 window_rows=10,
                 n_perm=2**21,
             ),
-            "n_perm must be <= 1048576, got 2097152",
+            "n_perm must be <= 1048576, got 2097152: the draws are held to take their "
+            "quantile, and each is a pass over both blocks",
         ),
         (
             po.spec.ewridge,

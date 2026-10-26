@@ -516,7 +516,12 @@ def corrchange(
     not make the null too liberal. It is not a sign-flip null, which a first
     reading of the literature suggests. Negating a whole row leaves every ``x
     x'`` and so every correlation matrix exactly where it was, so a sign-flip
-    null has no spread at all. The flag rate per row is not ``alpha`` here:
+    null has no spread at all. The quantile is drawn from the windows after a
+    row is reported, so the first report once the windows fill has no
+    critical value and cannot flag: ``crit`` is null there, and in force from
+    the next row. A ``change_action="reset"`` empties the windows and the
+    value in force with them, so the first report after the refill has none
+    either. The flag rate per row is not ``alpha`` here:
     two windows that slide by one row are almost the same windows, so a
     statistic above the quantile stays above it for a run of rows.
 

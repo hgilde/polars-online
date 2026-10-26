@@ -761,7 +761,7 @@ class TestRefusals:
             ({"precision_prior": 0.0}, "precision_prior must be finite and > 0"),
             ({"precision_prior": -1.0}, "precision_prior must be finite and > 0"),
             ({"features": ["x0", "x0"]}, "more than once"),
-            ({"features": ["x0", "y"]}, "both a target and a feature"),
+            ({"features": ["x0", "y"]}, "both a label and a feature"),
         ],
         ids=lambda v: next(iter(v)) if isinstance(v, dict) else v,
     )
@@ -1073,8 +1073,8 @@ def test_the_label_listed_as_a_feature_is_refused_by_name():
     with pytest.raises(
         ValueError,
         match=(
-            r'spec "m": "y" is both a target and a feature; a feature is read from the '
-            r"current row, so this would predict the target with itself \(use a lagged "
+            r'spec "m": "y" is both a label and a feature; a feature is read from the '
+            r"current row, so this would predict the label with itself \(use a lagged "
             r"copy of the column if you mean its past values\)"
         ),
     ):
