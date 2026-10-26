@@ -1039,3 +1039,426 @@ def test_quantiles_are_null_until_a_residual_and_span_extreme_levels():
     last = [out2["m"].struct.field(nm).to_list()[-1] for nm in names]
     assert all(np.isfinite(last)), last
     assert last[0] <= last[1] <= last[2], last
+
+
+# --- The residual layer held to its definitions across kinds (task 278, batch 23) ---
+#
+# Each field below is read from the bank's own residuals and predictions, so
+# what is held is the layer's arithmetic, not any model's fit: the
+# definition is written here in closed form over the rows before each row
+# (sums over explicit decayed weights), where the stream keeps a recursion.
+
+GAP_CAP = 6.0
+SESSION_GAP = 2.0
+
+
+def _layer_frame(n=600, seed=0, *, zero_targets=False):
+    """An irregular clock with capped gaps and session changes, uneven
+    weights with zeros, null targets now and then, and (with
+    ``zero_targets``) targets of exactly 0, which the hit rate leaves out."""
+    rng = np.random.default_rng(seed)
+    dt = rng.choice([0.5, 1.0, 1.5], size=n)
+    dt[0] = 0.0
+    dt[rng.choice(np.arange(1, n), 6, replace=False)] = 20.0  # past gap_cap
+    session = np.cumsum(np.isin(np.arange(n), rng.choice(np.arange(1, n), 5, replace=False)))
+    x0 = rng.standard_normal(n)
+    x1 = 1.0 + rng.standard_normal(n)
+    # AR(1) noise, so the autocorrelation has something to read.
+    u = np.zeros(n)
+    for i in range(1, n):
+        u[i] = 0.5 * u[i - 1] + rng.standard_normal()
+    y = 0.5 + 2.0 * x0 - x1 + 0.6 * u
+    if zero_targets:
+        y[rng.choice(n, n // 10, replace=False)] = 0.0
+    y[rng.choice(n, 12, replace=False)] = np.nan
+    w = rng.uniform(0.5, 1.5, n)
+    w[rng.choice(np.arange(1, n), n // 20, replace=False)] = 0.0
+    frame = {"t": np.cumsum(dt), "s": session, "x0": x0, "x1": x1, "y0": y, "w": w}
+    return pl.DataFrame(frame).with_columns(pl.col("y0").fill_nan(None))
+
+
+def _clock_and_runs(df):
+    """The clock the decay reads (each step capped at ``GAP_CAP``, a session
+    change's step ``SESSION_GAP``) and the run each row is in: a capped gap
+    or a session change starts a new one. Every row is accepted (no
+    feature is ever null here)."""
+    t, s = df["t"].to_numpy(), df["s"].to_numpy()
+    clock, run = np.zeros(len(t)), np.zeros(len(t), dtype=int)
+    for i in range(1, len(t)):
+        changed = s[i] != s[i - 1]
+        step = SESSION_GAP if changed else t[i] - t[i - 1]
+        cut = changed or step > GAP_CAP
+        clock[i] = clock[i - 1] + min(step, GAP_CAP)
+        run[i] = run[i - 1] + int(cut)
+    return clock, run
+
+
+def _layer_spec(kind, half_life=40.0, **kw):
+    d = dict(
+        targets=["y0"],
+        features=["x0", "x1"],
+        clock="t",
+        gap_cap=GAP_CAP,
+        session="s",
+        session_gap=SESSION_GAP,
+        weight="w",
+        half_life=half_life,
+        min_weight=5.0,
+    )
+    d.update(kw)
+    if kind == "holt":
+        d.pop("features")
+    if kind == "kalman":
+        # Its `min_weight` meets its learning in a way being changed
+        # elsewhere; nothing here reads the fit, so it keeps the default.
+        d.pop("min_weight")
+        d.setdefault("coef_half_life", 100.0)
+    if kind == "rls":
+        d.setdefault("delta", 1.0)
+    if kind == "sgd":
+        d.setdefault("learning_rate", 0.02)
+    if kind == "ewridge":
+        d.setdefault("max_rows_between_solves", 1)
+    return getattr(po.spec, kind)("m", **d)
+
+
+def _ew_autocorr(resid, w, clock, run, lag, half_life):
+    """The EW lag-``lag`` autocorrelation each row reads, by definition from
+    the residuals before it.
+
+    A *value* is a finite residual on a row of positive weight, each at unit
+    weight decayed on the clock, ``u_j = 2^(-(c - c_j) / h)``. Its mean
+    ``m`` and spread ``var = Σ u (x - m)² / Σ u`` are the values' weighted
+    ones. A value pairs with the value ``lag`` values back in its run; the
+    pair's product is ``(x_j - m_j)(x_p - m_{j-})``, ``m_j`` the mean with
+    ``x_j`` and ``m_{j-}`` the one before it (the variance's own Welford
+    centring), and ``cross`` is the pairs' mean of it at the same decayed
+    unit weights. The field is ``cross / var``, clamped to [-1, 1]; null
+    before the first pair or while ``var`` is 0."""
+    n = len(resid)
+    vals = np.flatnonzero(np.isfinite(resid) & (w > 0))
+    x, c = resid[vals], clock[vals]
+    m_after = np.array(
+        [
+            np.average(x[: k + 1], weights=0.5 ** ((c[k] - c[: k + 1]) / half_life))
+            for k in range(len(vals))
+        ]
+    )
+    m_before = np.r_[0.0, m_after[:-1]]
+    partner = np.full(len(vals), -1)
+    for k in range(lag, len(vals)):
+        # Runs only grow, so the value `lag` back shares the run exactly
+        # when every value between does.
+        if run[vals[k]] == run[vals[k - lag]]:
+            partner[k] = k - lag
+    out = np.full(n, np.nan)
+    for i in range(n):
+        have = np.flatnonzero(vals < i)
+        if have.size == 0:
+            continue
+        u = 0.5 ** ((clock[i] - c[have]) / half_life)
+        m = np.average(x[have], weights=u)
+        var = np.average((x[have] - m) ** 2, weights=u)
+        pairs = have[partner[have] >= 0]
+        if pairs.size == 0 or var <= 0.0:
+            continue
+        v = 0.5 ** ((clock[i] - c[pairs]) / half_life)
+        prod = (x[pairs] - m_after[pairs]) * (x[partner[pairs]] - m_before[pairs])
+        out[i] = np.clip(np.average(prod, weights=v) / var, -1.0, 1.0)
+    return out
+
+
+class TestAutocorrByDefinition:
+    """``autocorr_<slot>`` against :func:`_ew_autocorr` on every row, at three
+    lags, through capped gaps, session changes, zero weights and null
+    targets. Measured 2026-10-26: 1.0e-15 at most; the tolerance is 1e-12.
+
+    The row's weight does not enter: each value counts once, decayed, where
+    ``sigma`` and the quantiles weigh it by the row's weight (an observation
+    reported with this batch; the docs do not say either way)."""
+
+    @pytest.mark.parametrize("lag", [1, 2, 5])
+    def test_each_row_reads_the_pairs_before_it(self, lag):
+        df = _layer_frame(seed=21)
+        spec = _layer_spec("ewridge", emit_autocorr=True, resid_autocorr_lag=lag)
+        out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        clock, run = _clock_and_runs(df)
+        resid = out["resid_y0"].to_numpy().astype(float)
+        got = out["autocorr_y0"].to_numpy().astype(float)
+        want = _ew_autocorr(resid, df["w"].to_numpy(), clock, run, lag, 40.0)
+        assert (np.isnan(got) == np.isnan(want)).all(), "null pattern"
+        ok = np.isfinite(want)
+        assert ok.sum() > 500, ok.sum()
+        # The frame's runs: the pairs restart after each cut.
+        assert run.max() >= 8, run.max()
+        np.testing.assert_allclose(got[ok], want[ok], rtol=0, atol=1e-12)
+
+    def test_the_lag_reads_its_own_structure(self):
+        """Residuals of an AR(2) with no lag-1 term: lag 2 reads its 0.7,
+        lag 1 near 0 (activation: the lag takes effect). Measured
+        2026-10-26 at the last row: lag 1 -0.039, lag 2 0.690."""
+        rng = np.random.default_rng(5)
+        n = 6000
+        x = rng.standard_normal(n)
+        u = np.zeros(n)
+        for i in range(2, n):
+            u[i] = 0.7 * u[i - 2] + rng.standard_normal()
+        df = pl.DataFrame({"x0": x, "y0": 2.0 * x + u})
+        last = {}
+        for lag in (1, 2):
+            spec = po.spec.ewridge(
+                "m",
+                targets=["y0"],
+                features=["x0"],
+                half_life=1000.0,
+                min_weight=20.0,
+                emit_autocorr=True,
+                resid_autocorr_lag=lag,
+            )
+            out = po.ModelBank([spec]).fit_predict(df)
+            last[lag] = out["m"].struct.field("autocorr_y0").to_list()[-1]
+        assert abs(last[1]) < 0.15, last
+        assert 0.55 < last[2] < 0.85, last
+
+    def test_a_lag_longer_than_every_run_reads_null(self):
+        """Sessions of three rows: lag 2 pairs inside each, lag 5 never."""
+        rng = np.random.default_rng(6)
+        n = 300
+        x = rng.standard_normal(n)
+        df = pl.DataFrame({"x0": x, "y0": 2 * x + rng.standard_normal(n), "s": np.arange(n) // 3})
+        got = {}
+        for lag in (2, 5):
+            spec = po.spec.ewridge(
+                "m",
+                targets=["y0"],
+                features=["x0"],
+                half_life=100.0,
+                min_weight=5.0,
+                session="s",
+                session_gap=1.0,
+                emit_autocorr=True,
+                resid_autocorr_lag=lag,
+            )
+            got[lag] = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("autocorr_y0")
+        assert got[2].is_not_null().sum() > 250
+        assert got[5].is_null().all()
+
+
+def _ew_quantile_before(absr, w, clock, i, half_life, p):
+    seen = np.flatnonzero(np.isfinite(absr[:i]) & (w[:i] > 0))
+    if seen.size == 0:
+        return np.nan
+    weight = w[seen] * 0.5 ** ((clock[i] - clock[seen]) / half_life)
+    return _ew_quantile(absr[seen], weight, p)
+
+
+class TestResidQuantilesAcrossKinds:
+    """``abs_resid_q<p>_<slot>`` within the sketch's ``tanh(1/128)`` of the
+    exponentially weighted quantile of ``|resid|``, each residual at its
+    row's weight decayed on the capped clock at the model's half-life, on
+    four kinds beyond ``ewridge``; and the levels ordered on every row."""
+
+    LEVELS = [0.1, 0.5, 0.9]
+
+    @pytest.mark.parametrize("kind", ["rls", "kalman", "sgd", "holt"])
+    def test_each_level_is_the_weighted_ew_quantile(self, kind):
+        df = _layer_frame(seed=22)
+        spec = _layer_spec(kind, resid_quantiles=self.LEVELS)
+        out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        clock, _ = _clock_and_runs(df)
+        w = df["w"].to_numpy()
+        absr = np.abs(out["resid_y0"].to_numpy().astype(float))
+        qs = np.array([out[f"abs_resid_q{p}_y0"].to_numpy().astype(float) for p in self.LEVELS])
+        rows = np.flatnonzero(np.isfinite(qs[0]))
+        assert rows.size > 500, rows.size
+        for i in rows:
+            for li, p in enumerate(self.LEVELS):
+                want = _ew_quantile_before(absr, w, clock, i, 40.0, p)
+                assert abs(qs[li, i] - want) <= ALPHA * want * (1 + 1e-9), (kind, i, p)
+        # Ordered on every row, not only the last.
+        assert (np.diff(qs[:, rows], axis=0) >= 0).all()
+
+
+def _ew_metrics_before(pred, y, w, clock, i, half_life):
+    """``ic``, ``r2`` and ``hit_rate`` from the scored rows before row ``i``,
+    each at its weight decayed on the clock: the weighted correlation of
+    ``pred`` and ``y``; one less the weighted mean squared error over ``y``'s
+    weighted variance about its weighted mean; the weighted share of signs
+    hit among the rows with ``y != 0`` and ``pred != 0``."""
+    seen = np.flatnonzero(np.isfinite(pred[:i]) & np.isfinite(y[:i]) & (w[:i] > 0))
+    if seen.size < 2:
+        return np.nan, np.nan, np.nan
+    v = w[seen] * 0.5 ** ((clock[i] - clock[seen]) / half_life)
+    p, t = pred[seen], y[seen]
+    mp, mt = np.average(p, weights=v), np.average(t, weights=v)
+    cov = np.average((p - mp) * (t - mt), weights=v)
+    vp, vt = np.average((p - mp) ** 2, weights=v), np.average((t - mt) ** 2, weights=v)
+    ic = cov / np.sqrt(vp * vt)
+    r2 = 1.0 - np.average((t - p) ** 2, weights=v) / vt
+    signed = (t != 0) & (p != 0)
+    hit = np.average(np.sign(p[signed]) == np.sign(t[signed]), weights=v[signed])
+    return ic, r2, hit
+
+
+class TestMetricsByDefinition:
+    @pytest.mark.parametrize("kind", ["ewridge", "rls"])
+    def test_at_a_finite_half_life_each_metric_is_its_weighted_definition(self, kind):
+        """With weights, zeros among them, targets of exactly 0 and capped
+        gaps, at a half-life of 40 clock units. Measured 2026-10-26: 1.3e-15
+        at most on the three; the tolerance is 1e-12."""
+        df = _layer_frame(seed=23, zero_targets=True)
+        spec = _layer_spec(kind, emit_metrics=True)
+        out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        clock, _ = _clock_and_runs(df)
+        pred, y = out["pred_y0"].to_numpy().astype(float), df["y0"].to_numpy().astype(float)
+        w = df["w"].to_numpy()
+        got = {k: out[f"{k}_y0"].to_numpy().astype(float) for k in ("ic", "r2", "hit_rate")}
+        assert (y == 0).sum() > 50
+        checked = 0
+        for i in range(df.height):
+            want = _ew_metrics_before(pred, y, w, clock, i, 40.0)
+            if not np.isfinite(want[0]):
+                continue
+            for k, v in zip(("ic", "r2", "hit_rate"), want, strict=True):
+                assert got[k][i] == pytest.approx(v, abs=1e-12), (k, i)
+            checked += 1
+        assert checked > 500, checked
+
+    def test_run_once_the_last_row_is_the_batch_evaluator_exactly(self):
+        """No decay, unit weights: the last row's metrics read every scored
+        row before it, which is ``po.eval.metrics`` over those rows. Measured
+        2026-10-26: 4.4e-16 at most."""
+        rng = np.random.default_rng(24)
+        n = 3000
+        x = rng.standard_normal(n)
+        y = 2 * x + rng.standard_normal(n)
+        y[rng.choice(n, 200, replace=False)] = 0.0
+        df = pl.DataFrame({"x0": x, "y0": y})
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y0"],
+            features=["x0"],
+            half_life=float("inf"),
+            min_weight=20.0,
+            emit_metrics=True,
+        )
+        out = po.ModelBank([spec]).fit_predict(df)
+        last = out["m"].struct.unnest().row(n - 1, named=True)
+        batch = po.eval.metrics(out.head(n - 1), "m", targets=["y0"]).row(0, named=True)
+        for k in ("ic", "r2", "hit_rate"):
+            assert last[f"{k}_y0"] == pytest.approx(batch[k], rel=1e-12, abs=1e-14), k
+
+
+GRIDS = {
+    "rls": {"half_life": [15.0, 60.0, 400.0]},
+    "kalman": {"half_life": [15.0, 60.0, 400.0], "coef_half_life": 50.0},
+    "huber": {"half_life": [15.0, 60.0, 400.0], "max_rows_between_solves": 1},
+    "sgd": {"half_life": [15.0, 60.0, 400.0]},
+    "holt": {"half_life": [15.0, 60.0, 400.0]},
+}
+
+
+class TestSelectionAndAveragingAcrossKinds:
+    """``emit_selected`` and ``emit_averaged`` on half-life grids of five
+    kinds beyond ``ewridge``: the selected slot is the argmin of the slots'
+    ``sigma`` on the row, its prediction that slot's, and the average the
+    documented weights ``exp(-eta (sigma² / sigma²_best - 1))`` over the
+    slots with a prediction and a ``sigma``. Read from the bank's own
+    columns, so no model's fit is pinned."""
+
+    @pytest.mark.parametrize("kind", list(GRIDS))
+    def test_the_selection_is_the_argmin_and_the_average_its_formula(self, kind):
+        eta = 0.7
+        df = _layer_frame(seed=25)
+        spec = _layer_spec(
+            kind,
+            emit_sigma=True,
+            emit_selected=True,
+            emit_averaged=True,
+            average_eta=eta,
+            **GRIDS[kind],
+        )
+        out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        tags = [f"@h{h:g}" for h in GRIDS[kind]["half_life"]]
+        preds = np.array([out[f"pred_y0{t}"].to_numpy().astype(float) for t in tags])
+        sig = np.array([out[f"sigma_y0{t}"].to_numpy().astype(float) for t in tags])
+        names = out["selected_y0"].cast(pl.String).to_list()
+        chosen = out["pred_y0__selected"].to_numpy().astype(float)
+        avg = out["pred_y0__averaged"].to_numpy().astype(float)
+        full = np.isfinite(preds).all(axis=0) & np.isfinite(sig).all(axis=0)
+        assert full.sum() > 400, full.sum()
+        switched = set()
+        for i in np.flatnonzero(full):
+            best = tags[int(np.argmin(sig[:, i]))]
+            assert names[i] == best, (i, names[i], best)
+            assert chosen[i] == preds[tags.index(best), i], i
+            switched.add(best)
+            s2 = sig[:, i] ** 2
+            wts = np.exp(-eta * (s2 / s2.min() - 1.0))
+            assert avg[i] == pytest.approx(np.dot(wts, preds[:, i]) / wts.sum(), rel=1e-12), i
+        # More than one slot was best somewhere, so the argmin was tested.
+        assert len(switched) >= 2, switched
+
+    def test_the_average_moves_toward_the_selection_as_eta_grows(self):
+        """Two slots: ``averaged - selected = w_other (p_other - p_best)``
+        with ``w_other = 1 / (1 + exp(eta (r - 1)))``, ``r >= 1`` the other's
+        error over the best's, which cannot rise with ``eta``. So on every
+        row ``|averaged - selected|`` is non-increasing in ``eta``
+        (derived), here on a ``kalman`` grid of two half-lives."""
+        df = _layer_frame(seed=26)
+        gaps = []
+        for eta in (1e-3, 0.1, 1.0, 10.0, 100.0):
+            spec = _layer_spec(
+                "kalman",
+                half_life=[15.0, 400.0],
+                coef_half_life=50.0,
+                emit_selected=True,
+                emit_averaged=True,
+                average_eta=eta,
+            )
+            out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+            a = out["pred_y0__averaged"].to_numpy().astype(float)
+            s = out["pred_y0__selected"].to_numpy().astype(float)
+            gaps.append(np.abs(a - s))
+        gaps = np.array(gaps)
+        ok = np.isfinite(gaps).all(axis=0)
+        assert ok.sum() > 500
+        # Rounding of a sum of two terms: 1e-12 of the predictions' size.
+        assert (np.diff(gaps[:, ok], axis=0) <= 1e-12).all()
+        assert gaps[0, ok].mean() > 10 * gaps[-1, ok].mean()
+
+    def test_on_a_three_slot_grid_the_mean_gap_falls_with_eta(self):
+        """Three slots: per row the gap need not fall (the average can pass
+        the best on its way), but over the stream it does. Measured
+        2026-10-26 on this ``rls`` grid: 0.0708, 0.0703, 0.0657, 0.0361 and
+        0.0057 at eta 1e-3, 0.1, 1, 10 and 100."""
+        df = _layer_frame(seed=27)
+        means = []
+        for eta in (1e-3, 0.1, 1.0, 10.0, 100.0):
+            spec = _layer_spec(
+                "rls",
+                half_life=[15.0, 60.0, 400.0],
+                emit_selected=True,
+                emit_averaged=True,
+                average_eta=eta,
+            )
+            out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+            a = out["pred_y0__averaged"].to_numpy().astype(float)
+            s = out["pred_y0__selected"].to_numpy().astype(float)
+            means.append(np.nanmean(np.abs(a - s)))
+        assert all(b < a for a, b in zip(means, means[1:], strict=False)), means
+
+    @pytest.mark.parametrize("kind", ["rls", "sgd"])
+    def test_selection_and_average_survive_a_save_and_load(self, kind, tmp_path):
+        df = _layer_frame(seed=28)
+        spec = _layer_spec(kind, emit_selected=True, emit_averaged=True, **GRIDS[kind])
+        whole = po.ModelBank([spec]).fit_predict(df)
+        bank = po.ModelBank([spec])
+        head = bank.fit_predict(df.slice(0, 250))
+        bank.save(tmp_path / "s.state")
+        tail = po.ModelBank.load(tmp_path / "s.state", specs=[spec]).fit_predict(df.slice(250))
+        both = pl.concat([head, tail])["m"].struct.unnest()
+        one = whole["m"].struct.unnest()
+        for col in ("selected_y0", "pred_y0__selected", "pred_y0__averaged"):
+            assert both[col].is_not_null().sum() > 400, col
+            assert both[col].equals(one[col], null_equal=True), col
