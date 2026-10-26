@@ -149,7 +149,9 @@ def audit(
     usable; an audit counts it, which is the point. A restart, at a session
     gap set to ``"reset"`` or a step back past ``restart_after_step_back``,
     starts its runs and its clock steps over and keeps its counts: an audit
-    is a record of what the stream held, not a fit. A step back of the
+    is a record of what the stream held, not a fit. An audit records the
+    clock as fed, so a numeric ``session_gap`` changes none of its rows or
+    tables. A step back of the
     clock is refused, as for every spec: to count the steps back instead,
     set ``restart_after_step_back`` (``0`` restarts at each), and
     :meth:`~polars_online.ModelBank.summary`'s ``clock_backwards`` and

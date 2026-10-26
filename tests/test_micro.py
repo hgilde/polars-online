@@ -1102,3 +1102,333 @@ class TestTheCheckpointClock:
             self.clocked(prune_every=300.0)
         with pytest.raises(ValueError, match="prune_every must be finite and >= 0 clock units"):
             spec(prune_every=-1.0)
+
+
+# ------------------------------------------- the parameters (task 278, b22)
+
+
+def _micro_state(bank: po.ModelBank) -> dict:
+    """The model's exported state: one group, one instance."""
+    return json.loads(bank.write_json())["states"][0][0][1]["models"][0]["model"]["Micro"]
+
+
+def _differ(a: pl.DataFrame, b: pl.DataFrame) -> list[str]:
+    return [c for c in a.columns if not a[c].equals(b[c], null_equal=True)]
+
+
+class TestScaleFloor:
+    """``scale_floor``, the mirror of kmeans' ``TestScaleFloor``: a feature
+    held still for thirty half-lives, then moving again. The transcription
+    is the oracle bit for bit at every floor, and the floor binds only in
+    the quiet spell."""
+
+    QUIET = (1500, 4500)
+    PARAMS = dict(eps=0.3, half_life=100.0, min_weight=3.0)
+
+    @classmethod
+    def stream(cls):
+        X, _ = blobs(n=5000, k=3, p=3, seed=3)
+        X = X.copy()
+        X[cls.QUIET[0] : cls.QUIET[1], 2] = X[cls.QUIET[0], 2]
+        return X
+
+    @classmethod
+    def run(cls, floor):
+        s = spec(features=("x0", "x1", "x2"), scale_floor=floor, **cls.PARAMS)
+        return unnested(po.ModelBank([s]).fit_predict(frame(cls.stream())))
+
+    @pytest.mark.parametrize("floor", [0.0, 0.1, 1.0])
+    def test_the_transcription_is_the_oracle_at_every_floor(self, floor):
+        want = ref.micro_ref(self.stream().tolist(), scale_floor=floor, **self.PARAMS)
+        _same(self.run(floor), want, f"floor {floor}")
+        assert want["model"][0].n_pruned > 0, "the fixture never pruned a summary"
+
+    def test_the_floor_binds_only_in_the_quiet_spell(self):
+        dist = {f: self.run(f)["dist"].fill_null(-1.0).to_numpy() for f in (0.0, 0.1)}
+        start, end = self.QUIET
+        # The held feature's EW variance falls under a tenth of its long-run
+        # one (tracked at eight half-lives) once 2^(-7Q/8) < 0.1, about 3.8
+        # half-lives into the spell: measured 2026-10-25, the first row
+        # that differs is 1909, 4.1 half-lives in. Identical through three.
+        assert np.array_equal(dist[0.0][: start + 300], dist[0.1][: start + 300])
+        assert not np.array_equal(dist[0.0][start + 300 : end], dist[0.1][start + 300 : end])
+        # The row on which the feature moves again: unfloored, its weight
+        # grew as 2^Q over the spell, floored as 2^(Q/8) / scale_floor.
+        # Measured 2026-10-25: 8,674.7 against 12.4 on rows 4500-4509.
+        assert dist[0.0][end : end + 10].max() > 1000.0
+        assert dist[0.1][end : end + 10].max() < 25.0
+
+    def test_the_default_is_a_tenth(self):
+        default = unnested(
+            po.ModelBank([spec(features=("x0", "x1", "x2"), **self.PARAMS)]).fit_predict(
+                frame(self.stream())
+            )
+        )
+        assert _differ(default, self.run(0.1)) == []
+        assert "dist" in _differ(default, self.run(1.0))
+
+
+class TestThePruneSchedule:
+    """``prune_every`` and ``max_rows_between_prunes`` against each other.
+
+    Without a clock column the clock is the row's number, the first row
+    being 1, so the model's start is a row before its first row, as
+    ``coef_every`` counts. ``prune_every=n`` then first checkpoints on the
+    ``n``-th row, the row ``max_rows_between_prunes=n`` checkpoints on, and
+    both restart on the row that checkpointed: on the row clock the two are
+    the same schedule, as ``solve_every`` and ``max_rows_between_solves``
+    are, while every row learns. A zero-weight row is a row of the clock
+    and no row of the cap, so after one the clock checkpoints a row before
+    the cap.
+
+    Measured from the first row, whose step is 0, the clock once
+    checkpointed a row after the cap, the whole stream long, since
+    ``micro`` has no event at its start to restart both counters (task 278
+    b22, D13; fixed by the row clock's origin).
+    """
+
+    @staticmethod
+    def checkpoints(df: pl.DataFrame, **kw) -> list[int]:
+        """The rows a checkpoint ran on, read row by row from the exported
+        state: the learned-row counter is reset there and nowhere else."""
+        s = spec(eps=0.1, half_life=300.0, min_weight=3.0, weight="w", **kw)
+        bank = po.ModelBank([s])
+        rows, before = [], 0
+        for i in range(df.height):
+            bank.fit_predict(df.slice(i, 1))
+            after = _micro_state(bank)["rows_since_prune"]
+            if after == 0 and before + (df["w"][i] > 0.0) > 0:
+                rows.append(i)
+            before = after
+        return rows
+
+    @staticmethod
+    def stream(n=2000, lead=False):
+        X, _ = blobs(n=n, k=5, seed=2, scale=0.8, spread=6.0)
+        df = frame(X).with_columns(w=pl.lit(1.0))
+        if lead:
+            df = pl.concat([df.head(1).with_columns(w=pl.lit(0.0)), df])
+        return df
+
+    @staticmethod
+    def run(df: pl.DataFrame, **kw) -> pl.DataFrame:
+        s = spec(eps=0.1, half_life=300.0, min_weight=3.0, weight="w", **kw)
+        return unnested(po.ModelBank([s]).fit_predict(df))
+
+    def test_the_clock_checkpoints_on_the_learned_rows_cap(self):
+        df = self.stream(n=30)
+        assert self.checkpoints(df, prune_every=7) == [6, 13, 20, 27]
+        assert self.checkpoints(df, max_rows_between_prunes=7) == [6, 13, 20, 27]
+        assert self.checkpoints(df, prune_every=7, max_rows_between_prunes=7) == [6, 13, 20, 27]
+        # A zero-weight row in front is a row of the clock and none of the
+        # cap: the clock's first checkpoint comes a row before the cap's,
+        # and both then keep the same spacing.
+        lead = self.stream(n=30, lead=True)
+        assert self.checkpoints(lead, prune_every=7) == [6, 13, 20, 27]
+        assert self.checkpoints(lead, max_rows_between_prunes=7) == [7, 14, 21, 28]
+        assert self.checkpoints(lead, prune_every=7, max_rows_between_prunes=7) == [6, 13, 20, 27]
+
+    def test_on_the_row_clock_prune_every_is_its_row_cap(self):
+        df = self.stream()
+        for n in (7, 100):
+            assert (
+                _differ(self.run(df, prune_every=n), self.run(df, max_rows_between_prunes=n)) == []
+            ), n
+        # So prune_every=100 is the default, every 100 learned rows.
+        assert _differ(self.run(df, prune_every=100), self.run(df)) == []
+
+    def test_a_leading_zero_weight_row_is_a_row_of_the_clock_alone(self):
+        plain, lead = self.stream(), self.stream(lead=True)
+        for n in (7, 100):
+            # On the cap, the stream with it is the stream without it, on
+            # the learned rows: the zero-weight row learns nothing and is no
+            # row of the cap. It is one clock unit of age, which
+            # `settled_frac` alone reads.
+            assert _differ(
+                self.run(plain, max_rows_between_prunes=n),
+                self.run(lead, max_rows_between_prunes=n).slice(1),
+            ) == ["settled_frac"], n
+            # On the clock it moves every checkpoint a row earlier.
+            moved = _differ(
+                self.run(lead, prune_every=n), self.run(lead, max_rows_between_prunes=n)
+            )
+            assert {"cluster", "micro_id", "n_micro"} <= set(moved), n
+
+    def test_every_row_two_ways_and_the_default_spelled_out(self):
+        df = self.stream()
+        assert self.checkpoints(df.head(10), prune_every=0) == list(range(10))
+        assert self.checkpoints(df.head(10), max_rows_between_prunes=1) == list(range(10))
+        every_row = self.run(df, prune_every=0)
+        assert _differ(every_row, self.run(df, max_rows_between_prunes=1)) == []
+        default = self.run(df)
+        assert _differ(default, self.run(df, max_rows_between_prunes=100)) == []
+        assert "n_micro" in _differ(default, every_row)
+        assert self.checkpoints(df.head(205)) == [99, 199]
+
+    def test_the_row_cap_is_at_least_one(self):
+        with pytest.raises(ValueError, match="max_rows_between_prunes must be >= 1, got 0"):
+            spec(max_rows_between_prunes=0)
+        assert spec(max_rows_between_prunes=1)["model"]["max_rows_between_prunes"] == 1
+
+
+class TestTheParameters:
+    """The rest of the builder's own keywords: where each acts, and where
+    it must not."""
+
+    @staticmethod
+    def stream():
+        X, _ = blobs(n=2000, k=5, seed=2, scale=0.8, spread=6.0)
+        return X
+
+    @staticmethod
+    def run(X, **kw):
+        p = dict(eps=0.1, half_life=300.0, min_weight=3.0)
+        p.update(kw)
+        features = [f"x{i}" for i in range(X.shape[1])]
+        return unnested(po.ModelBank([spec(features=features, **p)]).fit_predict(frame(X)))
+
+    @pytest.mark.parametrize("link", [0.0, 2.0, 8.0, 100.0])
+    def test_macro_link_moves_the_labels_and_nothing_else(self, link):
+        # L decides which potential summaries share a label and nothing
+        # about the summaries themselves: admission, the nearest potential
+        # summary and its distance, ids, pruning and eviction never read it.
+        X = self.stream()
+        derived, given = self.run(X), self.run(X, macro_link=link)
+        moved = set(_differ(derived, given))
+        assert "cluster" in moved, "the fixture never relabelled a row"
+        assert moved <= {"cluster", "n_clusters", "coef"}, moved
+        if "coef" in moved:
+            # The coef blocks are [id, label, n, radius, c...]: only the
+            # label column may move.
+            for a, b in zip(derived["coef"], given["coef"], strict=True):
+                if a is not None:
+                    a6, b6 = np.array(a).reshape(-1, 6), np.array(b).reshape(-1, 6)
+                    assert np.array_equal(np.delete(a6, 1, 1), np.delete(b6, 1, 1))
+
+    def test_one_summary_at_most(self):
+        # Five blobs and room for one summary: a row the summary cannot
+        # take evicts it and opens its own. Held to the transcription.
+        X = self.stream()
+        p = dict(eps=0.1, half_life=300.0, min_weight=3.0, max_clusters=1)
+        out = self.run(X, max_clusters=1)
+        want = ref.micro_ref(X.tolist(), **p)
+        _same(out, want, "max_clusters 1")
+        assert want["model"][0].n_evicted > 1000, "the cap never evicted"
+        assert out["n_micro"].drop_nulls().max() == 1
+        assert out["n_clusters"].drop_nulls().max() <= 1
+        # One blob inside the bound (eps per standardized coordinate; the
+        # blob's RMS radius is about one): the one summary takes every row,
+        # is promoted and labels every row from then on, with no eviction.
+        one, _ = blobs(n=500, k=1, seed=4, scale=0.3)
+        bank = po.ModelBank([spec(eps=3.0, half_life=300.0, min_weight=3.0, max_clusters=1)])
+        got = unnested(bank.fit_predict(frame(one)))
+        assert _micro_state(bank)["n_evicted"] == 0
+        assert got["micro_id"].drop_nulls().unique().to_list() == [0]
+        first = got["cluster"].is_not_null().arg_max()
+        assert first < 10 and got["cluster"][first:].to_list() == [0] * (500 - first)
+        assert got["n_clusters"].drop_nulls().unique().to_list() == [1]
+
+    def test_the_defaults_spelled_out(self):
+        X = self.stream()
+        default = self.run(X)
+        for given, other in (
+            (dict(beta_mu=3.0), dict(beta_mu=6.0)),
+            (dict(max_clusters=200), dict(max_clusters=6)),
+            (dict(standardize=True), dict(standardize=False)),
+            (dict(scale_floor=0.1), dict(scale_floor=1.0)),
+            (dict(macro_link=None), dict(macro_link=2.0)),
+            (dict(max_rows_between_prunes=100), dict(max_rows_between_prunes=7)),
+        ):
+            assert _differ(default, self.run(X, **given)) == [], given
+            assert _differ(default, self.run(X, **other)) != [], other
+
+    @pytest.mark.parametrize(
+        ("kw", "msg"),
+        [
+            ({"beta_mu": float("inf")}, "beta_mu must be finite, got float inf"),
+            ({"macro_link": float("inf")}, "macro_link must be finite, got float inf"),
+            ({"scale_floor": float("inf")}, "scale_floor must be finite"),
+        ],
+        ids=lambda v: next(iter(v)) if isinstance(v, dict) else v,
+    )
+    def test_an_infinite_value_is_refused_by_name(self, kw, msg):
+        with pytest.raises(ValueError, match=msg):
+            po.ModelBank([spec(**kw)])
+
+    def test_the_smallest_values_run(self):
+        # The floors the refusals leave open, held to the transcription. A
+        # tiny beta_mu promotes every summary at birth, as beta_mu = 1 does
+        # (no Tp, no outlier pruning), so a row is an outlier exactly when
+        # it opens a summary; unlike 1, it prunes no potential summary.
+        X = self.stream()
+        tiny = self.run(X, beta_mu=1e-300, min_weight=0.0)
+        want = ref.micro_ref(X.tolist(), eps=0.1, half_life=300.0, min_weight=0.0, beta_mu=1e-300)
+        _same(tiny, want, "beta_mu 1e-300")
+        seen: set[int] = set()
+        for mid, outlier in zip(tiny["micro_id"], tiny["outlier"], strict=True):
+            if mid is not None:
+                assert outlier == (mid not in seen)
+                seen.add(mid)
+        assert want["model"][0].n_pruned == 0
+        assert (
+            ref.micro_ref(X.tolist(), eps=0.1, half_life=300.0, min_weight=3.0, beta_mu=1.0)[
+                "model"
+            ][0].n_pruned
+            > 0
+        )
+        for kw in (dict(macro_link=0.0), dict(scale_floor=0.0)):
+            p = dict(eps=0.1, half_life=300.0, min_weight=3.0, **kw)
+            _same(self.run(X, **kw), ref.micro_ref(X.tolist(), **p), str(kw))
+
+
+class TestScaleEquivariance:
+    """Under ``standardize`` a distance is in units of each feature's EW
+    standard deviation, so a change of each feature's units moves no
+    assignment. A power of two is exact in binary, so every output but
+    ``coef`` holds to the bit and the centres scale exactly; an affine
+    change holds the assignments, with the distance to rounding. Without
+    standardization the same change moves the assignments: the invariance
+    is the metric's."""
+
+    SCALE = np.array([2.0**10, 2.0**-7])
+
+    @staticmethod
+    def run(X, **kw):
+        p = dict(eps=0.1, half_life=300.0, min_weight=3.0)
+        p.update(kw)
+        return unnested(po.ModelBank([spec(**p)]).fit_predict(frame(X)))
+
+    def test_a_power_of_two_per_feature_is_exact(self):
+        X, _ = blobs(n=3000, k=4, seed=2, scale=0.8, spread=6.0)
+        base, scaled = self.run(X), self.run(X * self.SCALE)
+        assert _differ(base, scaled) == ["coef"]
+        for a, b in zip(base["coef"], scaled["coef"], strict=True):
+            assert (a is None) == (b is None)
+            if a is not None:
+                a6, b6 = np.array(a).reshape(-1, 6), np.array(b).reshape(-1, 6)
+                assert np.array_equal(a6[:, :4], b6[:, :4])  # id, label, n, radius
+                assert np.array_equal(a6[:, 4:] * self.SCALE, b6[:, 4:])
+
+    def test_an_affine_change_holds_the_assignments(self):
+        X, _ = blobs(n=3000, k=4, seed=2, scale=0.8, spread=6.0)
+        a, b = np.array([3.7, 0.013]), np.array([1e3, -42.0])
+        base, moved = self.run(X), self.run(X * a + b)
+        same = ("cluster", "micro_id", "outlier", "n_clusters", "n_micro", "weight_sum")
+        assert base.select(same).equals(moved.select(same), null_equal=True)
+        # Measured 2026-10-25: 9.6e-14 at most (the shift is some 45 of
+        # the blobs' spreads, so the centred sums lose that much).
+        diff = np.abs(base["dist"].to_numpy() - moved["dist"].to_numpy())
+        assert np.nanmax(diff) < 1e-10
+        last, last_moved = (np.array(c[-1]).reshape(-1, 6) for c in (base["coef"], moved["coef"]))
+        np.testing.assert_allclose(last[:, 4:] * a + b, last_moved[:, 4:], rtol=1e-12)
+
+    def test_without_standardization_the_units_count(self):
+        X, _ = blobs(n=3000, k=4, seed=2, scale=0.8, spread=6.0)
+        base = self.run(X, eps=0.5, standardize=False)
+        assert "cluster" in _differ(base, self.run(X * self.SCALE, eps=0.5, standardize=False))
+        # One scale for every feature, eps in the same units: exact again,
+        # with every distance scaled by it.
+        c = 2.0**6
+        uniform = self.run(X * c, eps=0.5 * c, standardize=False)
+        assert _differ(base, uniform) == ["dist", "coef"]
+        assert (uniform["dist"] == base["dist"] * c).all()

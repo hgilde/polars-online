@@ -348,3 +348,64 @@ class TestTheReader:
         for table in ("columns", "pairs", "clock"):
             empty, full = bank.audit(table=table), fed.audit(table=table)
             assert empty.is_empty() and empty.schema == full.schema
+
+
+class TestTheOptions:
+    """Task 278 (b29): ``pairs`` and ``distinct_cap`` through the spec."""
+
+    def test_pairs_leave_every_other_table_alone(self):
+        """``pairs=True`` adds a table and moves nothing in the others: the
+        columns, clock and pooled tables to the bit."""
+        frame = _frame()
+        plain = po.spec.audit("audit", columns=["a", "b", "c"], clock="t", gap_cap=10.0)
+        with_pairs, without = _fed(_spec(), frame), _fed(plain, frame)
+        for table in ("columns", "clock"):
+            assert with_pairs.audit(table=table).equals(without.audit(table=table)), table
+        assert with_pairs.audit(pooled=True).equals(without.audit(pooled=True))
+        assert with_pairs.audit(table="pairs").height == 3
+
+    @staticmethod
+    def _counted(cap: int | None, v: np.ndarray) -> dict:
+        kw = {} if cap is None else {"distinct_cap": cap}
+        bank = po.ModelBank([po.spec.audit("au", columns=["v"], **kw)])
+        bank.fit_predict(pl.DataFrame({"v": v}))
+        return bank.audit().row(0, named=True)
+
+    @pytest.mark.parametrize("cap", [1, 16, 256, None, 400, 401, 1024, 65_536])
+    def test_the_counts_are_exact_to_the_cap_and_bounded_past_it(self, cap):
+        """6,000 rows over 401 distinct values (each value's true count from
+        ``np.unique``). At a cap of 401 or more ``n_unique``, the top value,
+        its count, the next count, the median and the MAD are exact and
+        ``count_error`` is 0; at 400, one short, and below, ``n_unique`` is
+        null, ``count_error`` is above 0 and at most ``n / (cap + 1)``, and
+        the reported top count is short of its value's true count by at most
+        ``count_error`` (Misra-Gries). The default is 256. Caps 1 and 65,536,
+        the two ends, are taken."""
+        n = 6000
+        rng = np.random.default_rng(13)
+        v = rng.integers(0, 401, n).astype(float)
+        values, counts = np.unique(v, return_counts=True)
+        assert len(values) == 401
+        got = self._counted(cap, v)
+        if cap is None:
+            assert got == self._counted(256, v)
+            return
+        if cap >= 401:
+            order = np.argsort(-counts, kind="stable")
+            assert got["n_unique"] == 401 and got["count_error"] == 0
+            assert got["top_count"] == counts[order[0]]
+            assert counts[values == got["top_value"]][0] == counts[order[0]]
+            assert got["second_count"] == counts[order[1]]
+            assert got["median"] == np.median(v)
+            assert got["mad"] == np.median(np.abs(v - np.median(v)))
+            return
+        assert got["n_unique"] is None
+        assert 0 < got["count_error"] <= n / (cap + 1), got
+        if got["top_value"] is not None:
+            true = counts[values == got["top_value"]][0]
+            assert true - got["count_error"] <= got["top_count"] <= true, (got, true)
+            assert got["second_count"] <= got["top_count"]
+        # Past the cap the median comes from the digest, about 1% of the rows
+        # in rank.
+        rank = np.mean(v <= got["median"])
+        assert 0.49 <= rank <= 0.52, rank

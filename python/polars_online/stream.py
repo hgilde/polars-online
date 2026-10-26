@@ -816,8 +816,9 @@ def with_windows(
     ``session_gap="reset"`` there discards only what is still open.
     ``like=spec`` takes all of this from a spec instead, and with it the
     rule for the rows the spec learns from. A forward window over a row the
-    spec would skip (a null feature or weight) is null, as the model never
-    learns its target. These keywords are the call's, not output names: an
+    spec would skip (a feature or weight the spec cannot use: null, NaN,
+    infinite or past ``1e100`` in magnitude, each of which counts as null) is
+    null, as the model never learns its target. These keywords are the call's, not output names: an
     expression passed as ``session=...`` is refused. Name it with
     ``.alias()`` instead.
 

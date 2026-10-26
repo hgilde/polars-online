@@ -80,11 +80,15 @@ pub struct CheckCfg {
     /// The diagnostics' own Newey-West lags under a horizon, `0` without
     /// one ([`Spec::nw_lags`]; task 232 (3)).
     nw: usize,
-    /// The windowed CUSUM's and CUSUM of squares' null shares of their
-    /// plain variances ([`online_core::cusum_null_window`], [`online_core::cusum_null`]; task
-    /// 232 (4)).
-    cusum_null: f64,
-    cusum_sq_null: f64,
+    /// What the windowed CUSUM's null absorbs, `(window, h_fit)`, where the
+    /// fit takes part of every level it sums; `None` where the CUSUM keeps
+    /// the plain sum. With the breaks' memory `h_breaks`, its null's share
+    /// of the plain variance at each row follows from how far the sums have
+    /// filled ([`online_core::cusum_null_at`]), and the CUSUM of squares'
+    /// from its scale's ([`online_core::cusum_sq_null_at`]; task 232 (4),
+    /// task 278 D-B5).
+    cusum_absorber: Option<(f64, f64)>,
+    h_breaks: f64,
     /// A quantile fit's level: its calibration is a coverage and its CUSUM
     /// sums indicators (task 232 (6)).
     quantile: Option<f64>,
@@ -173,8 +177,8 @@ impl CheckCfg {
             ),
             lags: spec.robust_se_lags_or_default(),
             nw: spec.nw_lags(),
-            cusum_null: 1.0,
-            cusum_sq_null: 1.0,
+            cusum_absorber: None,
+            h_breaks: f64::INFINITY,
             quantile: spec.quantile_level(),
             combo_features,
             intercept: spec.fit_intercept || spec.k() == 0,
@@ -213,9 +217,9 @@ impl CheckCfg {
         // plain sum: over the share it read 0.98-1.51.
         let quantile_fit = matches!(spec.model, ModelKind::Quantile { .. });
         if (least_squares || quantile_fit) && spec.fit_intercept {
-            cfg.cusum_null = online_core::cusum_null_window(window, h_fit, h_breaks);
+            cfg.cusum_absorber = Some((window, h_fit));
         }
-        cfg.cusum_sq_null = online_core::cusum_null(h_breaks, h_breaks);
+        cfg.h_breaks = h_breaks;
         cfg
     }
 
@@ -489,8 +493,15 @@ impl Checks {
             let nc = cfg.combo_features.len().max(1);
             for (slot, b) in self.breaks.iter().enumerate() {
                 put(v, slot, rec.get(slot).and_then(|&r| b.studentized(r)));
-                put(v + 1, slot, b.cusum(cfg.cusum_null));
-                put(v + 2, slot, b.cusum_sq(cfg.cusum_sq_null));
+                // Each null's share as far as the sums have filled: a young
+                // sum is mostly its plain variance (task 278, D-B5).
+                let x = b.elapsed();
+                let share = cfg.cusum_absorber.map_or(1.0, |(window, h_fit)| {
+                    online_core::cusum_null_at(window, h_fit, cfg.h_breaks, x)
+                });
+                let sq_share = online_core::cusum_sq_null_at(cfg.h_breaks, x, b.scale_lead(x));
+                put(v + 1, slot, b.cusum(share));
+                put(v + 2, slot, b.cusum_sq(sq_share));
                 // Under a horizon the noise's variance is the long-run one,
                 // read from the slot's own studentized residuals -- on a
                 // quantile fit too, whose CUSUM sums indicators (review

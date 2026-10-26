@@ -513,3 +513,99 @@ fn a_save_between_two_events_resumes_where_the_unbroken_run_does() {
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }
+
+/// A row-clock case: a name, the model's JSON, its cadence's key and its
+/// row cap's, the spec's fields, the rest of the spec, and its event.
+type RowClockCase = (
+    &'static str,
+    &'static str,
+    (&'static str, &'static str),
+    &'static str,
+    &'static str,
+    Event,
+);
+
+/// Task 278, D13: without a clock column the clock is the row's number, the
+/// first row being 1, so a model's start is a row before its first row (as
+/// `coef_every` counts). A cadence of 7 units is then reached on the rows a
+/// cap of 7 learned rows is, the 7th, 14th, ... (0-based 6, 13, ...), and
+/// the two give the same output to the bit: `micro`'s checkpoints, which no
+/// event at the start restarts, and the regressions' solves while their
+/// first, at `min_weight`, has not come (here it never does). Counted from
+/// the first row, whose step is 0, each came a row after the cap's, the
+/// whole stream long. `ew_cov`'s first refresh, at `min_weight` 0, starts
+/// both counters, so it was the cap's before and is still: every 7th row
+/// from it. (`huber` and
+/// `quantile` keep the old phase until their cadence takes the row clock's
+/// start too.)
+#[test]
+fn on_the_row_clock_each_cadence_is_its_row_cap() {
+    let n = 60;
+    let t = Series::new("t".into(), (0..n as i64).collect::<Vec<_>>());
+    let df = frame(t, 5);
+    let cases: [RowClockCase; 4] = [
+        (
+            "ewridge",
+            r#""type": "ewridge", "ridge": 1e-6"#,
+            ("solve_every", "max_rows_between_solves"),
+            r#""targets": ["y"], "features": ["x"], "min_weight": 1e9, "half_life": 20.0,"#,
+            r#""max_rows_between_coefs": 1"#,
+            Event::Coef,
+        ),
+        (
+            "lasso",
+            r#""type": "lasso", "penalties": [0.01]"#,
+            ("solve_every", "max_rows_between_solves"),
+            r#""targets": ["y"], "features": ["x", "x2"], "min_weight": 1e9, "half_life": 20.0,"#,
+            r#""max_rows_between_coefs": 1"#,
+            Event::Coef,
+        ),
+        (
+            "micro",
+            r#""type": "micro", "eps": 1e-6, "max_clusters": 6000"#,
+            ("prune_every", "max_rows_between_prunes"),
+            r#""features": ["x", "x2"], "min_weight": 0.0, "half_life": 0.05,"#,
+            r#""coef_every": 0"#,
+            Event::Pruned,
+        ),
+        (
+            "ew_cov",
+            r#""type": "ew_cov", "stats": ["mean"], "pca": 1"#,
+            ("pca_every", "max_rows_between_pcas"),
+            r#""features": ["x", "x2"], "min_weight": 0.0, "half_life": 20.0"#,
+            "",
+            Event::Loadings,
+        ),
+    ];
+    for (name, model, (every_key, cap_key), fields, rest, event) in cases {
+        let make = |cadence: &str| -> Spec {
+            let text =
+                format!(r#"{{"name": "m", "model": {{{model}, {cadence}}}, {fields} {rest}}}"#);
+            serde_json::from_str(&text).unwrap_or_else(|e| panic!("{text}: {e}"))
+        };
+        let clock = run(
+            &make(&format!(r#""{every_key}": 7.0"#)),
+            &df.drop("t").unwrap(),
+            0,
+        );
+        let cap = run(
+            &make(&format!(r#""{every_key}": 1e18, "{cap_key}": 7"#)),
+            &df.drop("t").unwrap(),
+            0,
+        );
+        let got = events(&clock, event);
+        let want: Vec<usize> = (6..n - 1).step_by(7).collect();
+        let want = if event == Event::Loadings {
+            // The first refresh, the first row with a component to show,
+            // and every 7th row from it.
+            (got[0]..n - 1).step_by(7).collect()
+        } else {
+            want
+        };
+        assert_eq!(got, want, "{name}: the rows its cadence of 7 fired on");
+        assert!(
+            clock.equals_missing(&cap),
+            "{name}: the clock of 7 is the cap of 7"
+        );
+    }
+}

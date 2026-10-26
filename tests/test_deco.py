@@ -201,7 +201,8 @@ def dense_loglik(r, rho, blocks):
     of that; and with the libm moved, one row of the blocked stream whose
     matrix is singular to rounding (smallest eigenvalue 1.5e-16) came out
     positive definite to `slogdet`, and was compared: 0.88 apart, relative,
-    which the condition number of 2e16 says is no density at all."""
+    which the condition number of 2e16 says is no density at all. The
+    model reads no density there either since task 278 (`past_the_edge`)."""
     n = len(r)
     of = {i: bi for bi, b in enumerate(blocks) for i in b}
     k = len(blocks)
@@ -221,6 +222,34 @@ def dense_loglik(r, rho, blocks):
     q = r @ np.linalg.solve(m, r)
     scale = 0.5 * (n * np.log(2 * np.pi) + abs(logdet) + abs(q))
     return -0.5 * (n * np.log(2 * np.pi) + logdet + q), 64 * 2.0**-53 * np.linalg.cond(m) * scale
+
+
+def past_the_edge(rho, sizes):
+    """Whether block levels `rho` (within, then each pair) are past the edge
+    at which `deco` gives no density: the block-mean matrix `T` (`T_AA = 1 +
+    (n_A - 1) rho_AA`, `T_AB = sqrt(n_A n_B) rho_AB`, whose eigenvalues are
+    the dense `R`'s other than its `1 - rho_AA`) equilibrated to `H`, read
+    by numpy's `eigvalsh`. The model refuses where its factorization of
+    `H`'s scaling needs jitter, or where `3 K gamma_{3K+1} ||H^-1||_1 >= 1`
+    by an estimate that is never above `||H^-1||_1 <= sqrt(K) / lambda_min`.
+    So a refused row has `lambda_min(H) <= sqrt(K) / limit`, up to the
+    rounding of forming `H` and of `eigvalsh` (a few `K 2^-53`; 64 of them
+    allowed)."""
+    k = len(sizes)
+    t = np.eye(k)
+    p = k
+    for i in range(k):
+        t[i, i] = 1.0 + (sizes[i] - 1) * rho[i]
+    for i in range(k):
+        for j in range(i + 1, k):
+            t[i, j] = t[j, i] = np.sqrt(sizes[i] * sizes[j]) * rho[p]
+            p += 1
+    d = np.sqrt(np.diag(t))
+    h = t / np.outer(d, d)
+    u = 2.0**-53
+    m = (3 * k + 1) * u
+    limit = (1 - m) / (3 * k * m)
+    return np.linalg.eigvalsh(h).min() <= np.sqrt(k) / limit + 64 * k * u
 
 
 def test_loglik_is_the_dense_gaussian_density():
@@ -256,19 +285,23 @@ def test_the_blocked_loglik_is_the_dense_gaussian_density():
     rho = np.column_stack([out["rho_a"], out["rho_b"], out["rho_a_b"]])
     got = out["loglik"].to_numpy()
     checked = 0
+    past = []
     for i in range(len(got)):
         if not (np.isfinite(rho[i]).all() and np.isfinite(r[i]).all()):
             continue
-        # A dense matrix that is not positive definite has no density; the
-        # model clamps for the density and `slogdet` would refuse, so those
-        # rows are skipped rather than compared to nothing.
-        try:
-            want, bound = dense_loglik(r[i], rho[i], [[0, 1, 2], [3, 4]])
-        except AssertionError:
+        # A level matrix past the edge has no density (task 278): the model
+        # reads NaN there, and only there.
+        if np.isnan(got[i]):
+            assert past_the_edge(rho[i], [3, 2]), (i, rho[i])
+            past.append(i)
             continue
+        want, bound = dense_loglik(r[i], rho[i], [[0, 1, 2], [3, 4]])
         assert abs(got[i] - want) <= bound, (i, got[i], want, bound)
         checked += 1
     assert checked > 500
+    # Row 3, in the warm-up, is the one past the edge on this stream: its
+    # density read -6.2e12 before.
+    assert past == [3], past
 
 
 def test_one_block_of_everything_reproduces_the_unblocked_model():
@@ -564,3 +597,320 @@ def test_coef_is_the_level_after_the_row():
     live = np.isfinite(rho[1:]).all(axis=1)
     assert live.sum() > 700
     assert np.array_equal(coef[:-1][live], rho[1:][live])
+
+
+# --- task 278 (b29): the linear dynamics' own parameters ---------------------
+
+
+def _messy(n=1200, k=4, seed=3):
+    """A one-factor stream on an irregular clock with one gap far past the
+    cap, uneven row weights and a zero weight on every 23rd row."""
+    rng = np.random.default_rng(seed)
+    df = frame(n=n, k=k, rho=0.5, seed=seed)
+    t = np.cumsum(rng.uniform(0.5, 1.5, n))
+    t[n // 2 :] += 300.0
+    w = rng.uniform(0.25, 2.0, n)
+    w[7::23] = 0.0
+    return df.with_columns(t=pl.Series(t), w=pl.Series(w))
+
+
+MESSY = dict(clock="t", gap_cap=4.0, weight="w")
+
+
+def longhand(df, k, half_life, *, alpha=None, beta=None, t=None, w=None, gap_cap=np.inf):
+    """`deco`'s recursion written out, one block of `k` columns: the
+    standardiser (`EwDiag`) and the level `rho_bar` decay on the clock,
+    `lam = 2^(-min(dt, gap_cap) / half_life)`, and weigh each row by its
+    weight; under `"linear"` the level `rho` takes one step a row,
+    `(1 - alpha - beta) rho_bar' + alpha u + beta rho`, its `alpha u` term
+    unweighted, and a row of weight 0 leaves it where it was. Returns the
+    row's `u` and the level before the row, as the model emits them."""
+    x = df.select(cols(k)).to_numpy()
+    n = len(x)
+    w = np.ones(n) if w is None else np.asarray(w, float)
+    m = np.zeros(k)
+    c = np.zeros(k)
+    W = 0.0
+    bar, rho, wb = np.nan, np.nan, 0.0
+    us = np.full(n, np.nan)
+    rhos = np.full(n, np.nan)
+    for i in range(n):
+        d = 0.0 if (t is None or i == 0) else min(t[i] - t[i - 1], gap_cap)
+        lam = 2.0 ** (-d / half_life)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            r = np.where(c > 0.0, (x[i] - m) / np.sqrt(np.maximum(c, 0.0)), np.nan)
+        s1, s2 = r.sum(), (r * r).sum()
+        u = (s1 * s1 - s2) / ((k - 1) * s2)
+        us[i], rhos[i] = u, rho
+        if np.isfinite(u):
+            wb_new = lam * wb + w[i]
+            if wb_new > 0.0:
+                b = w[i] / wb_new
+                bar = u if not np.isfinite(bar) else bar + b * (u - bar)
+                if alpha is None:
+                    rho = bar
+                elif w[i] > 0.0:
+                    rho = (
+                        u
+                        if not np.isfinite(rho)
+                        else (1 - alpha - beta) * bar + alpha * u + beta * rho
+                    )
+            wb = wb_new
+        W_new = lam * W + w[i]
+        if W_new > 0.0:
+            a, b = lam * W / W_new, w[i] / W_new
+            dev = x[i] - m
+            c = a * c + a * b * dev * dev
+            m = m + b * dev
+        W = W_new
+    return us, rhos
+
+
+@pytest.mark.parametrize("messy", [False, True], ids=["plain", "clock_gap_weights"])
+def test_linear_at_alpha_and_beta_zero_is_ew_to_the_bit(messy):
+    """At `alpha = beta = 0` the linear recursion is `rho' = rho_bar'`, the
+    `"ew"` level itself: every field to the bit, on a plain stream and on one
+    with a capped gap, uneven weights and rows of weight 0 (probed
+    2026-10-25: bit-equal both ways)."""
+    df = _messy() if messy else frame(n=1200)
+    kw = dict(features=cols(4), half_life=50.0, min_weight=0.0, **(MESSY if messy else {}))
+    ew = run(po.spec.deco("d", **kw), df)
+    lin = run(po.spec.deco("d", dynamics="linear", alpha=0.0, beta=0.0, **kw), df)
+    assert ew.equals(lin, null_equal=True)
+    assert ew["rho"].drop_nulls().len() > 1100
+
+
+@pytest.mark.parametrize("dynamics", ["ew", "linear"])
+def test_the_recursion_with_weights_and_a_capped_gap_is_the_longhand_one(dynamics):
+    """The reference above, on a clock with a gap far past `gap_cap` and
+    weights with zeros: `rho_bar` decays across the gap by the capped step,
+    `rho`'s own terms take one row's step, and `alpha u` is not weighted.
+    The `"linear"` row is checked to read the gap: the same rows on a clock
+    without it part from it after the gap."""
+    df = _messy()
+    t, w = df["t"].to_numpy(), df["w"].to_numpy()
+    lin = dict(alpha=0.05, beta=0.9) if dynamics == "linear" else {}
+    spec = po.spec.deco(
+        "d", features=cols(4), half_life=50.0, min_weight=0.0, dynamics=dynamics, **lin, **MESSY
+    )
+    out = run(spec, df)
+    u, rho = longhand(df, 4, 50.0, t=t, w=w, gap_cap=4.0, **lin)
+    got_u, got_rho = out["u"].to_numpy(), out["rho"].to_numpy()
+    assert np.array_equal(np.isnan(got_u), np.isnan(u))
+    assert np.array_equal(np.isnan(got_rho), np.isnan(rho))
+    live = np.isfinite(rho)
+    assert live.sum() > 1100
+    assert np.allclose(got_u[live], u[live], rtol=0, atol=1e-12)
+    assert np.allclose(got_rho[live], rho[live], rtol=0, atol=1e-12)
+    # The gap reaches the level: on the same clock without it the longhand
+    # parts from the row after it.
+    half = df.height // 2
+    no_gap = t.copy()
+    no_gap[half:] -= 300.0
+    _, rho_no_gap = longhand(df, 4, 50.0, t=no_gap, w=w, gap_cap=4.0, **lin)
+    assert np.allclose(rho[: half + 1], rho_no_gap[: half + 1], rtol=0, atol=0, equal_nan=True)
+    # Measured 2026-10-25: 5.3e-4 at most under "linear", where the level
+    # sees the gap only through `(1 - alpha - beta) rho_bar`.
+    assert np.nanmax(np.abs(rho[half + 1 :] - rho_no_gap[half + 1 :])) > 1e-4
+
+
+def test_a_weight_scale_moves_no_linear_level():
+    """Under `"linear"` a weight reaches `rho` through `rho_bar`'s `w / W'`
+    alone, a ratio a common factor cancels from: every weight times 4, a
+    power of two so the ratio is exact, gives the same frame to the bit."""
+    df = _messy()
+    spec = po.spec.deco(
+        "d",
+        features=cols(4),
+        half_life=50.0,
+        min_weight=0.0,
+        dynamics="linear",
+        alpha=0.05,
+        beta=0.9,
+        **MESSY,
+    )
+    one = run(spec, df).drop("weight_sum", "settled_frac")
+    four = run(spec, df.with_columns(w=pl.col("w") * 4.0)).drop("weight_sum", "settled_frac")
+    assert one.equals(four, null_equal=True)
+
+
+def _rho_steps(alpha, beta, df):
+    spec = po.spec.deco(
+        "d",
+        features=cols(4),
+        half_life=100.0,
+        min_weight=0.0,
+        dynamics="linear",
+        alpha=alpha,
+        beta=beta,
+    )
+    return np.nanstd(np.diff(run(spec, df)["rho"].to_numpy()))
+
+
+def test_alpha_moves_the_level_more_and_beta_less():
+    """`alpha` is the weight on the row's estimate and `beta` the
+    persistence: the spread of `rho`'s row-to-row steps rises with `alpha`
+    at each `beta` and falls with `beta` at each `alpha`. Measured
+    2026-10-25 on this stream: 0.0126, 0.0226, 0.0338, 0.0511 over alpha at
+    beta 0, and 0.0338 down to 0.0213 over beta at alpha 0.05."""
+    df = frame(n=1200)
+    for beta in (0.0, 0.5, 0.9):
+        steps = [_rho_steps(a, beta, df) for a in (0.01, 0.03, 0.05, 0.08)]
+        assert np.all(np.diff(steps) > 0), (beta, steps)
+    for alpha in (0.0, 0.02, 0.05):
+        steps = [_rho_steps(alpha, b, df) for b in (0.0, 0.3, 0.6, 0.9, 0.94)]
+        assert np.all(np.diff(steps) < 0), (alpha, steps)
+
+
+def test_alpha_near_one_tracks_the_last_estimate_and_beta_near_one_freezes():
+    """The two corners, with bounds from the recursion rather than measured:
+    `u` and `rho_bar` both lie in `[-1/(k-1), 1]`, so at `alpha = 1 - e,
+    beta = 0` the level after a row is `u + e (rho_bar' - u)`, within `e k /
+    (k-1)` of that row's `u`; and at `alpha = 0, beta = 1 - e` a row moves
+    it by `e (rho_bar' - rho)`, at most `e k / (k-1)`. Rows of weight 1."""
+    k, e = 4, 1e-3
+    df = frame(n=1200, k=k)
+    bound = e * k / (k - 1) * (1 + 1e-12)
+    out = run(
+        po.spec.deco(
+            "d",
+            features=cols(k),
+            half_life=100.0,
+            min_weight=0.0,
+            dynamics="linear",
+            alpha=1 - e,
+            beta=0.0,
+        ),
+        df,
+    )
+    u, rho = out["u"].to_numpy(), out["rho"].to_numpy()
+    live = np.isfinite(rho[1:]) & np.isfinite(u[:-1])
+    assert live.sum() > 1100
+    gap = np.abs(rho[1:] - u[:-1])[live]
+    assert gap.max() <= bound and gap.max() > bound / 100, gap.max()
+    frozen = run(
+        po.spec.deco(
+            "d",
+            features=cols(k),
+            half_life=100.0,
+            min_weight=0.0,
+            dynamics="linear",
+            alpha=0.0,
+            beta=1 - e,
+        ),
+        df,
+    )["rho"].to_numpy()
+    step = np.abs(np.diff(frozen))
+    step = step[np.isfinite(step)]
+    assert step.size > 1100 and step.max() <= bound, step.max()
+
+
+@pytest.mark.parametrize(
+    ("alpha", "beta", "message"),
+    [
+        (0.25, 0.75, r"alpha \+ beta must be < 1 \(got 1\)"),
+        (float("nan"), 0.5, "alpha must not be NaN"),
+        (0.5, float("nan"), "beta must not be NaN"),
+        (-0.1, 0.5, "alpha and beta must be >= 0"),
+        (0.5, -0.1, "alpha and beta must be >= 0"),
+    ],
+)
+def test_the_linear_weights_are_bounded(alpha, beta, message):
+    """`alpha + beta` exactly 1 is refused (the intercept would vanish), as
+    is a NaN or a negative weight; the sum one ulp under 1 is the largest
+    legal one, and `alpha = beta = 0` the smallest."""
+    with pytest.raises(ValueError, match=message):
+        po.spec.deco(
+            "d", features=cols(4), half_life=HALFLIFE, dynamics="linear", alpha=alpha, beta=beta
+        )
+
+
+@pytest.mark.parametrize(("alpha", "beta"), [(0.5, 0.5 - 2.0**-53), (0.0, 0.0), (0.0, 0.999)])
+def test_the_edges_of_the_linear_weights_are_accepted_and_finite(alpha, beta):
+    assert alpha + beta < 1.0
+    spec = po.spec.deco(
+        "d",
+        features=cols(4),
+        half_life=HALFLIFE,
+        min_weight=0.0,
+        dynamics="linear",
+        alpha=alpha,
+        beta=beta,
+    )
+    rho = run(spec, frame(n=300))["rho"].to_numpy()
+    assert np.isfinite(rho[3:]).all()
+
+
+LINEAR = dict(dynamics="linear", alpha=0.05, beta=0.9)
+BLOCKS = dict(blocks={"p": ["x0", "x1"], "q": ["x2", "x3"]})
+
+
+@pytest.mark.parametrize(
+    "extra", [LINEAR, BLOCKS, {**LINEAR, **BLOCKS}], ids=["linear", "blocks", "linear_blocks"]
+)
+@pytest.mark.parametrize("size", [1, 7, 250, 800])
+def test_chunk_invariance_under_linear_and_blocks(extra, size):
+    """Hard rule 3 beyond the default spec, on the clocked, weighted stream:
+    every field but `coef`, whose cadence is the chunk's last row, to the
+    bit."""
+    df = _messy()
+    spec = po.spec.deco("d", features=cols(4), half_life=50.0, min_weight=0.0, **MESSY, **extra)
+    want = run(spec, df)
+    bank = po.ModelBank([spec])
+    got = pl.concat([bank.fit_predict(df[i : i + size]) for i in range(0, df.height, size)])[
+        "d"
+    ].struct.unnest()
+    assert want.drop("coef").equals(got.drop("coef"), null_equal=True)
+    assert want["coef"][-1].to_list() == got["coef"][-1].to_list()
+
+
+@pytest.mark.parametrize(
+    "extra", [LINEAR, BLOCKS, {**LINEAR, **BLOCKS}], ids=["linear", "blocks", "linear_blocks"]
+)
+@pytest.mark.parametrize("cut", [5, 601, 1111])
+def test_save_load_mid_stream_under_linear_and_blocks(extra, cut):
+    """A state saved mid-stream, one cut on each side of the gap, continues
+    to the bit; the rows after the cut are the whole run's, `coef` too."""
+    df = _messy()
+    spec = po.spec.deco("d", features=cols(4), half_life=50.0, min_weight=0.0, **MESSY, **extra)
+    want = run(spec, df)
+    bank = po.ModelBank([spec])
+    bank.fit_predict(df[:cut])
+    again = po.ModelBank.load_bytes(bank.save_bytes(), [spec])
+    assert want[cut:].equals(again.fit_predict(df[cut:])["d"].struct.unnest(), null_equal=True)
+
+
+def test_the_order_of_the_blocks_and_of_their_columns_moves_only_the_names():
+    """The blocks and the columns inside each listed in another order: each
+    `u` and `rho` to the bit under its own name (a pair is named in the
+    order the blocks are listed, so `rho_p_q` reads as `rho_q_p`). `loglik`
+    goes through a `K x K` factorization whose rows come in the blocks'
+    order, so it agrees within the conditioning bound `dense_loglik` gives
+    (task 273). A row whose level matrix is past the edge has no density in
+    either order (on this stream, row 3: smallest eigenvalue -1.5e-17, the
+    two orders' readings -2.3e8 and -2.6e12 until task 278 made both NaN)."""
+    df = frame(n=1200)
+    kw = dict(features=cols(4), half_life=100.0, min_weight=0.0)
+    a = run(po.spec.deco("d", blocks={"p": ["x0", "x1"], "q": ["x2", "x3"]}, **kw), df)
+    b = run(po.spec.deco("d", blocks={"q": ["x3", "x2"], "p": ["x1", "x0"]}, **kw), df)
+    renamed = b.rename({"u_q_p": "u_p_q", "rho_q_p": "rho_p_q"})
+    for col in ("u_p", "u_q", "u_p_q", "rho_p", "rho_q", "rho_p_q", "weight_sum"):
+        assert a[col].equals(renamed[col], null_equal=True), col
+    r = standardised(df)
+    rho = np.column_stack([a["rho_p"], a["rho_q"], a["rho_p_q"]])
+    la, lb = a["loglik"].to_numpy(), b["loglik"].to_numpy()
+    assert (np.isnan(la) == np.isnan(lb)).all(), np.flatnonzero(np.isnan(la) != np.isnan(lb))
+    checked = 0
+    past = []
+    for i in range(df.height):
+        if not (np.isfinite(rho[i]).all() and np.isfinite(r[i]).all()):
+            continue
+        if np.isnan(la[i]):
+            assert past_the_edge(rho[i], [2, 2]), (i, rho[i])
+            past.append(i)
+            continue
+        _, bound = dense_loglik(r[i], rho[i], [[0, 1], [2, 3]])
+        assert abs(la[i] - lb[i]) <= 2 * bound, (i, la[i], lb[i], bound)
+        checked += 1
+    assert checked > 1100
+    assert past == [3], past

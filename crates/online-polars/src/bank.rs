@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use online_core::{ClockCfg, Disorder};
+use online_core::{ClockCfg, Disorder, usable};
 use polars::chunked_array::builder::AnonymousOwnedListBuilder;
 use polars::prelude::*;
 use polars_arrow::array::{
@@ -263,9 +263,10 @@ pub(crate) fn session_hash(v: Option<&str>) -> u64 {
 /// P3): half the bytes, no per-value branch, and a memcpy instead of an
 /// element-wise walk for a null-free column. Sound because every consumer
 /// already collapses the two — a feature or weight is accepted only when it
-/// `is_finite()`, so null and NaN both skip the row, and a target is taken
-/// only when finite, so null and NaN are both "no target". The clock is the
-/// one column where null is an *error*, and that is checked at extraction.
+/// is `usable()` (finite, within `INPUT_BOUND`), so null and NaN both skip
+/// the row, and a target is taken only when usable, so null and NaN are both
+/// "no target". The clock is the one column where null is an *error*, and
+/// that is checked at extraction.
 struct SpecColumns {
     features: FeatureCols,
     targets: Vec<Vec<f64>>,
@@ -533,9 +534,7 @@ fn extract(
                         strict_binary: true,
                         ..
                     }
-                ) && let Some(j) = v
-                    .iter()
-                    .position(|f| f.is_finite() && *f != 0.0 && *f != 1.0)
+                ) && let Some(j) = v.iter().position(|&f| usable(f) && f != 0.0 && f != 1.0)
                 {
                     polars_bail!(ComputeError:
                         "spec {:?}: strict_binary target column {:?} has the value {} at \
@@ -551,7 +550,7 @@ fn extract(
                 // stood, `p - y` drove the prediction to the link's clamp.
                 // `-0.0` is not below zero: it is the count 0.
                 if matches!(&spec.model, ModelKind::Sgd { loss, .. } if loss.as_deref() == Some("poisson"))
-                    && let Some(j) = v.iter().position(|f| f.is_finite() && *f < 0.0)
+                    && let Some(j) = v.iter().position(|&f| usable(f) && f < 0.0)
                 {
                     polars_bail!(ComputeError:
                         "spec {:?}: target column {:?} has {} at row {}, and loss=\"poisson\" \
@@ -563,17 +562,19 @@ fn extract(
                 // `bocpd`'s hazard column rides in the targets slot and is
                 // not a target: it is a parameter, and a value the model
                 // cannot use makes the row report nulls and vanish from the
-                // posterior with nothing said. Null and non-finite mean
-                // "no value here" and fall back to `hazard`, as everywhere
-                // else; a finite one that is not a hazard is an error
-                // (docs/REVIEW-E54-E64.md B1).
+                // posterior with nothing said. Null and a value that is not
+                // usable (NaN, ±inf, past `INPUT_BOUND`) mean "no value here"
+                // and fall back to `hazard`, as everywhere else; a usable one
+                // that is not a hazard is an error (docs/REVIEW-E54-E64.md
+                // B1; past the bound since task 278, D-WB). The
+                // `strict_binary` and Poisson checks above read the same way.
                 if matches!(
                     spec.model,
                     ModelKind::Bocpd {
                         hazard_col: Some(_),
                         ..
                     }
-                ) && let Some(j) = v.iter().position(|f| f.is_finite() && *f <= 1.0)
+                ) && let Some(j) = v.iter().position(|&f| usable(f) && f <= 1.0)
                 {
                     polars_bail!(ComputeError:
                         "spec {:?}: hazard column {:?} has {} at row {}; a hazard is the \
@@ -677,10 +678,12 @@ fn extract(
                 // silently letting one through corrupts the accumulators (the EW
                 // count and the per-target cross moments disagree about whether the
                 // row happened). Non-finite weights are a different case, handled
-                // uniformly with non-finite features: they mean "no information for
-                // this row" and skip it (docs/PLAN.md §3), so only a *finite*
-                // negative weight is an error.
-                if let Some(j) = v.iter().position(|f| f.is_finite() && *f < 0.0) {
+                // uniformly with unusable features: NaN, ±inf and a magnitude past
+                // `INPUT_BOUND` mean "no information for this row" and skip it
+                // (docs/PLAN.md §3), so only a *usable* negative weight is an
+                // error. A finite one past the bound is missing too, as the
+                // README says: `-1e101` was refused here (task 278, D-WB).
+                if let Some(j) = v.iter().position(|&f| usable(f) && f < 0.0) {
                     polars_bail!(ComputeError:
                         "spec {:?}: weight column {:?} has a negative value ({}) at row {}; \
                          weights must be >= 0 (use null to skip a row)",
@@ -689,11 +692,10 @@ fn extract(
                 }
                 // `rcov` sums returns over a block; a fractional weight has
                 // no meaning there, so it takes a weight only as "this row
-                // is a return" or "this row is not" (E57).
+                // is a return" or "this row is not" (E57). A weight that is
+                // not usable is missing, as everywhere else (task 278, D-WB).
                 if matches!(spec.model, ModelKind::Rcov { .. })
-                    && let Some(j) = v
-                        .iter()
-                        .position(|f| f.is_finite() && *f != 0.0 && *f != 1.0)
+                    && let Some(j) = v.iter().position(|&f| usable(f) && f != 0.0 && f != 1.0)
                 {
                     polars_bail!(ComputeError:
                         "spec {:?}: weight column {:?} has {} at row {}; rcov takes 0 or 1 \

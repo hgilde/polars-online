@@ -638,6 +638,18 @@ pub trait OnlineModel: Sized {
     /// no edge to decide -- hence the default, which ignores it.
     fn stamp_next(&mut self, _stamp: crate::Stamp) {}
 
+    /// [`Self::stamp_next`] on a stream with no clock column, whose clock
+    /// is the row count: each row is one clock unit and the first row is 1,
+    /// so the model's start is a row before its first row, as the stream
+    /// counts `coef_every` (task 278, D13). A cadence counted from the start
+    /// on the stamps -- `micro`'s `prune_every`, `ewridge`'s `solve_every`
+    /// -- is then reached on the row its row cap is: `prune_every = n` on
+    /// the `n`-th row, as `max_rows_between_prunes = n`, not the row after.
+    /// A window reads the stamp as it reads any, hence the default.
+    fn stamp_next_on_rows(&mut self, stamp: crate::Stamp) {
+        self.stamp_next(stamp);
+    }
+
     /// Bound this model's window, if it has one ([`crate::WindowBudget`]).
     /// Configuration, not state: a caller sets it after building or
     /// restoring the model, and a model without a window ignores it --

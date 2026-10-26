@@ -13,6 +13,17 @@ returns.
 
 ### Changed
 
+- `po.eval.window_metrics` on a `Datetime` or `Date` clock makes the windows
+  Polars' `group_by_dynamic` makes of the same rows, reading `every` as
+  Polars reads it: nanoseconds to hours are elapsed time, so across a
+  change of a time zone's offset a `"5h"` window holds five hours and
+  `"24h"` holds 24; days, weeks, months, quarters and years follow the wall
+  calendar. Its windows' edges used to come from `dt.truncate` in local wall
+  time, so a `"5h"` window across a change held four hours and `"24h"` was
+  read as `"1d"`. A month, quarter or year (`"1mo"`, `"1q"`, `"1y"`) is now
+  taken on these clocks; a `Duration` clock, which has no calendar, still
+  refuses one. Naive `Datetime`, numeric and `Duration` clocks get the same
+  windows as before (task 278).
 - `withheld_reason` has a fifth value, `ill_conditioned`, appended after
   `below_warm_rows`, for a row predicted from a fit withheld because its
   normal equations kept no digit (task 278). Every existing name keeps its
@@ -93,8 +104,83 @@ returns.
   with NumPy reporting no AVX-512. The `OPENBLAS_L2_SIZE` setting is
   removed.
 
+### Deprecated
+
+- `theta` given beside `preavg_rows` to `po.spec.rcov` is deprecated: it has
+  no effect, because `preavg_rows` fixes the pre-averaging window, which is
+  all `theta` sets. It raises a `PolarsOnlineDeprecationWarning` naming the
+  caller's line and is accepted and ignored until the next major version
+  (task 278).
+
 ### Fixed
 
+- On a stream with no clock column, a cadence counted on the clock starts a
+  row before the first row, as `coef_every` does, so `X_every=n` and its row
+  cap `max_rows_between_X=n` give the same schedule (task 278, D13).
+  `micro`'s `prune_every=n` checkpointed one row after
+  `max_rows_between_prunes=n` for the whole stream -- with `prune_every=7`
+  on rows 7, 14, 21 and 28 (from 0) where the cap checkpointed on 6, 13, 20
+  and 27 -- so `prune_every=100` was not the default's every 100 learned
+  rows. `ewridge`'s and `lasso`'s `solve_every` had the same one-row offset
+  until their first solve at `min_weight`, seen in `coef` and
+  `support_coef`. Streams with a clock column are unchanged, and saved
+  states load and continue as before.
+- A weight or target of finite magnitude above `1e100` is read as missing,
+  as the README says, instead of being refused (task 278, D-WB): a weight
+  of `-1e101` was refused as "a negative value" on every model that takes a
+  weight, `±1e101` by `rcov` as neither 0 nor 1, a target of `±1e101` under
+  `strict_binary` and `-1e101` under `loss="poisson"`, and a `bocpd`
+  `hazard_col` value of `-1e101` as not above 1 rather than falling back to
+  `hazard`. Each check now reads only usable values; a usable value that
+  breaks its rule is still refused by row, at `±1e100` itself too.
+- `po.eval.diebold_mariano` and `po.eval.clark_west` with `half_life`, and
+  `po.eval.seqtest`, refuse a `name` the frame already has, naming the
+  column; Polars' `with_columns` used to replace that column -- the target,
+  or a spec's output -- without a word. With `half_life`, a frame holding a
+  column `dm_<target>` or `cw_<target>` had that column's values returned as
+  the statistic and lost the column, and a `name` spelled like one of the
+  functions' working columns returned no result column at all; both now give
+  the right statistic and keep the frame's columns (task 278).
+- `deco` with `blocks` reported a finite `loglik` on rows whose block
+  levels no correlation matrix holds, or holds only to rounding -- warm-up
+  rows where the levels rest on one or two rows. The value was meaningless
+  (-4.9e5 to -8.8e18) and depended on the order the blocks were listed in
+  (-2.3e8 in one order, -2.6e12 in the other on one stream). `loglik` is now
+  null where the `K x K` system the density solves factorizes only with a
+  shift on its diagonal, or where its condition passes the point at which
+  the solve's forward-error bound reaches 1 (`3K·γ_{3K+1}·‖H⁻¹‖₁ ≥ 1`).
+  Every other row's `loglik` is unchanged to the bit (218,872 rows over 183
+  test streams); one block is unaffected (task 278).
+- The refusal of an `ew_class` label listed among its features calls it the
+  label, not the target.
+- A negative `block_rows` or `preavg_rows` given to `po.spec.rcov` is
+  refused with the real floor -- 1 for `block_rows`, 2 (3 under `psd=False`)
+  for `preavg_rows` -- rather than ">= 0".
+- `po.spec.corrchange`'s refusal of `n_perm` above 2^20 says why: the draws
+  are held to take their quantile, and each is a pass over both blocks.
+- The docs now state that `ew_cov`'s `lag_corr` reads 0.0, not null, until a
+  group's `l`-th learned row; that `audit` records the clock as fed, so a
+  numeric `session_gap` changes nothing it counts; that `corrchange`'s window
+  kind cannot flag on its first report after the windows fill or refill;
+  that `hmm` with `transition_prior=0` and `learn=True` can lock out an
+  extremely separated state; and, in `po.stream.with_windows`'s `like=`,
+  that a skipped row is one whose feature or weight is null, NaN, infinite
+  or past 1e100 (task 278).
+- The windowed CUSUM and CUSUM of squares (`emit_breaks` with a memory)
+  are divided by their null's share of the plain variance as far as their
+  sums have filled, not by the filled share from the first row (task 278,
+  D-B5). A young sum holds little of what the fit's mean spreads a level
+  over, so its variance is nearly the plain sum's, and it read too wide
+  until its sums had filled their memory. On clean Gaussian streams beside
+  `ewridge` at a half-life of 200, the share of the first 150 rows after the
+  diagnostics' readiness past 1.96 fell from 6.5%-34% (`cusum`, memories 50
+  to 800) and 11%-16% (`cusum_sq`) to 6.1%-6.4% and 6.2%-6.7%; 300 to 600
+  rows in, from up to 23% and 15% to 5.0%-5.9%; filled, it is about 5% as
+  before. `sgd`'s CUSUM of squares read 15% there and now 6.1%. The share
+  is read from the sums' own weights, so no saved state changes; values
+  move only while the sums are young, by up to a factor of 0.71 on the
+  first row at the default memory, and once filled equal the old values to
+  the bit with unit weights and within 1e-6 under uneven weights.
 - `ewridge` withholds a fit whose normal equations are too nearly singular
   to keep a digit, and says so (task 278). Past a condition of `1/u` a
   Cholesky factorization does not always fail -- rounding can leave the
@@ -179,6 +265,10 @@ returns.
 
 ### Performance
 
+- `deco`'s blocked `loglik` check costs about 500 to 1,100 instructions a
+  row with 2 to 5 blocks, 3-5% of the row; one block pays nothing (task 278).
+- Reading the windowed CUSUMs' young share costs about 60-90 ns a slot and
+  row under `emit_breaks`, about 3% of such a row (task 278, D-B5).
 - `ewridge`'s condition estimate costs 4.3% at 5 features (135.9 -> 141.7
   ns a row), 7.6% at 20 (288.9 -> 311.0) and 1.8% for the 50-feature,
   10-target blocked case solving every 400 rows (556.1 -> 565.9), measured

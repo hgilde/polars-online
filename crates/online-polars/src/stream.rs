@@ -288,6 +288,12 @@ impl AnyModel {
         dispatch!(self, m => m.stamp_next(stamp))
     }
 
+    /// [`Self::stamp_next`] on a stream with no clock column
+    /// ([`OnlineModel::stamp_next_on_rows`], task 278, D13).
+    pub fn stamp_next_on_rows(&mut self, stamp: Stamp) {
+        dispatch!(self, m => m.stamp_next_on_rows(stamp))
+    }
+
     /// Bound the model's window ([`OnlineModel::set_window_budget`]).
     pub fn set_window_budget(&mut self, budget: Option<online_core::WindowBudget>) {
         dispatch!(self, m => m.set_window_budget(budget))
@@ -4537,6 +4543,8 @@ fn run_instance(
     reset_on_drift: bool,
 ) -> bool {
     let mut drift_seen = false;
+    // No clock column: the clock is the row count.
+    let row_clock = inst.spec.clock.is_none();
     let n_rows = inst.n_rows;
     let block = inst.n_slots * n_rows;
     // Whether `pred` is a probability against a 0/1 label rather than a
@@ -4711,8 +4719,14 @@ fn run_instance(
         if learn {
             // The row's stamp, for a window to key its snapshot by and
             // decide its edge from (task 175); decay reads `d_clock`.
+            // On the row clock, the model's start is a row before its
+            // first, as `coef_every`'s (`coef_origin`; task 278, D13).
             if let Some(stamp) = plan.stamp {
-                inst.model.get_mut().stamp_next(stamp);
+                if row_clock {
+                    inst.model.get_mut().stamp_next_on_rows(stamp);
+                } else {
+                    inst.model.get_mut().stamp_next(stamp);
+                }
             }
             // An audit counts the step as it elapsed, which no decay reads
             // (review 6, C-5: its largest step read `gap_cap`).
