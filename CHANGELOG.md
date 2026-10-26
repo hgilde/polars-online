@@ -93,8 +93,41 @@ returns.
   with NumPy reporting no AVX-512. The `OPENBLAS_L2_SIZE` setting is
   removed.
 
+### Deprecated
+
+- `theta` given beside `preavg_rows` to `po.spec.rcov` is deprecated: it has
+  no effect, because `preavg_rows` fixes the pre-averaging window, which is
+  all `theta` sets. It raises a `PolarsOnlineDeprecationWarning` naming the
+  caller's line and is accepted and ignored until the next major version
+  (task 278).
+
 ### Fixed
 
+- `deco` with `blocks` reported a finite `loglik` on rows whose block
+  levels no correlation matrix holds, or holds only to rounding -- warm-up
+  rows where the levels rest on one or two rows. The value was meaningless
+  (-4.9e5 to -8.8e18) and depended on the order the blocks were listed in
+  (-2.3e8 in one order, -2.6e12 in the other on one stream). `loglik` is now
+  null where the `K x K` system the density solves factorizes only with a
+  shift on its diagonal, or where its condition passes the point at which
+  the solve's forward-error bound reaches 1 (`3K·γ_{3K+1}·‖H⁻¹‖₁ ≥ 1`).
+  Every other row's `loglik` is unchanged to the bit (218,872 rows over 183
+  test streams); one block is unaffected (task 278).
+- The refusal of an `ew_class` label listed among its features calls it the
+  label, not the target.
+- A negative `block_rows` or `preavg_rows` given to `po.spec.rcov` is
+  refused with the real floor -- 1 for `block_rows`, 2 (3 under `psd=False`)
+  for `preavg_rows` -- rather than ">= 0".
+- `po.spec.corrchange`'s refusal of `n_perm` above 2^20 says why: the draws
+  are held to take their quantile, and each is a pass over both blocks.
+- The docs now state that `ew_cov`'s `lag_corr` reads 0.0, not null, until a
+  group's `l`-th learned row; that `audit` records the clock as fed, so a
+  numeric `session_gap` changes nothing it counts; that `corrchange`'s window
+  kind cannot flag on its first report after the windows fill or refill;
+  that `hmm` with `transition_prior=0` and `learn=True` can lock out an
+  extremely separated state; and, in `po.stream.with_windows`'s `like=`,
+  that a skipped row is one whose feature or weight is null, NaN, infinite
+  or past 1e100 (task 278).
 - The windowed CUSUM and CUSUM of squares (`emit_breaks` with a memory)
   are divided by their null's share of the plain variance as far as their
   sums have filled, not by the filled share from the first row (task 278,
@@ -194,6 +227,8 @@ returns.
 
 ### Performance
 
+- `deco`'s blocked `loglik` check costs about 500 to 1,100 instructions a
+  row with 2 to 5 blocks, 3-5% of the row; one block pays nothing (task 278).
 - Reading the windowed CUSUMs' young share costs about 60-90 ns a slot and
   row under `emit_breaks`, about 3% of such a row (task 278, D-B5).
 - `ewridge`'s condition estimate costs 4.3% at 5 features (135.9 -> 141.7
