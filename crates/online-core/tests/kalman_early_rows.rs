@@ -24,6 +24,7 @@ fn lcg(state: &mut u64) -> f64 {
 
 fn kalman(k: usize, decay: Decay, coef_half_life: f64, min_weight: f64) -> Kalman {
     Kalman::new(KalmanCfg {
+        noise_units: false,
         n_features: k,
         n_targets: 1,
         fit_intercept: true,

@@ -29,6 +29,19 @@ returns.
 
 ### Changed
 
+- `kalman`'s numbers move wherever the noise is learned (task 278): a step
+  in the truth is learned at `coef_half_life` (it was about 1.45 times
+  slower); `share_p` predicts exactly as the per-target filters where every
+  target is on every row; standardized, the first prediction comes on the
+  second observed row, not the fourth, and `below_warm_rows` appears only
+  without an intercept; `se_coef` and `pred_var` are null until a target has
+  a residual variance; a target at the input bound is forgotten at
+  `coef_half_life`. On the intraday returns of docs/VALIDATION.md, R² moved
+  from −0.059 to −0.070 one minute ahead and from −0.075 to −0.101 five
+  minutes ahead: the noise estimate in the gain had weighed each row by the
+  inverse of the noise, an accidental volatility weighting those returns
+  rewarded. `obs_var` is unchanged, and a state saved by an earlier release
+  goes on as it was fitted.
 - **`huber` and `sgd(loss="huber")` now refit each target's first 500 learned rows to convergence by default (`huber_refit_rows`; task 277).** Past 50 features the default is 10 rows a feature. Above 100 features it is off. A count you give is always used. This changes a default in a minor release, which the policy's row for a changed default does not allow. It was the maintainer's decision, as `huber_scale` was in 1.3.0.
   - **Why.** One pass weighs each row by the fit before it. The first fits are close to least squares, so a share of wild rows pulls them, and the scale learns the pulled fit's residuals. The cut is then drawn wide, and without decay the fit stays captured.
   - **Measured on `huber`.** The stream was `y = 1000 + 2x + 0.5ε`, with +50 on a share of the rows that have `x > 0`, no decay, and 40 seeds:
@@ -145,6 +158,25 @@ returns.
 
 ### Fixed
 
+- `kalman` with the noise learned (no `obs_var`) holds its covariance in
+  units of the noise, so its gain never reads the noise estimate, and its
+  intercept's prior is diffuse (task 278). The estimate in the gain weighed
+  each row by the inverse of the noise as it stood before the row, so a
+  burst of large residuals captured the fit: with no process noise, 20% of
+  the first 500 rows 50 too high held the slopes at [−25.5, 33.6] against
+  least squares' [4.1, −1.4] on the same rows (seed 31); after a change of
+  regime the fit stayed 45.7 of a 46 gap away, and Cauchy noise in the first
+  rows left it 658 off and growing. It is now Bayesian regression on the
+  same rows: over 50 seeds at 8,000 rows within 0.0103 of least squares with
+  outliers and 0.0284 with Cauchy noise. A level in the target also set the
+  noise and the prior through the first innovations (predictions 0.019-0.032
+  of the target's spread off the unshifted fit at a level of 1e4); every
+  prediction now moves by the level, to rounding.
+- A reverting `kalman` whose update at the input bound rounded a variance to
+  exactly 0 beside covariances that were not 0 kept that invalid
+  covariance, so `predict` withheld a row (NaN) that `step` predicted
+  (−1.5e82, on features and weights of 1e100). Such a covariance is now
+  sized again, as a negative variance is (task 278).
 - The builders of the thirteen kinds that fit no regression say that
   `fit_intercept`, which they accept, has nothing to act on (task 278).
 - **A captured `huber` or `sgd(loss="huber")` fit is freed by the refit of its first rows** (task 277). Before, a share of one-sided wild rows could hold a stream's one-pass fit far from the converged Huber fit for good (see *Changed*).
