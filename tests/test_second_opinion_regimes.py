@@ -40,6 +40,7 @@ import pytest
 from hmmlearn.hmm import GaussianHMM
 from scipy.stats import kstwobign
 
+import ledger
 import polars_online as po
 
 TIER = "mixed"
@@ -108,6 +109,17 @@ def hmm_run(s: dict[str, Any], cov: str) -> pl.DataFrame:
     )
     frame = pl.DataFrame({f: s["x"][:, i] for i, f in enumerate(features)}).with_columns(w=s["w"])
     return po.ModelBank([spec]).fit_predict(frame)["h"].struct.unnest()
+
+
+#: The ledger's inputs (tests/ledger.py): the filter's every field on ten
+#: seeds at every shape, where the grid reads fifty. The oracle agrees to
+#: round-off, so the hash keeps the doubles themselves.
+ledger.guard(
+    "hmm_shapes",
+    lambda: [hmm_run(hmm_stream(s, k), cov) for s in range(10) for cov, k in HMM_CASES],
+    oracles=["hmmlearn"],
+    bits=52,
+)
 
 
 def hmmlearn_model(s: dict[str, Any], cov: str) -> GaussianHMM:
@@ -221,6 +233,8 @@ class TestHmmIsHmmlearnsAtEveryShape:
             f"hmm: worst error {worst[0]:.2e} (seed {worst[4]}, case {worst[5]}), "
             f"95th percentile {np.quantile(errors, 0.95):.2e}"
         )
+        # Round-off: the ledger holds it at about twice the measured 1.85e-13.
+        ledger.record("hmm_shapes", "error", errors, floor=4e-13)
         moved = min(r[1] for r in rows)
         spread = min(r[2] for r in rows if r[5][0] != "full")
         zeros = min(r[3] for r in rows)
@@ -275,6 +289,18 @@ def bocpd_run(x: np.ndarray, w: np.ndarray, kappa0: float, offset: float) -> pl.
         weight="w",
     )
     return po.ModelBank([spec]).fit_predict(pl.DataFrame({"x": x, "w": w}))["b"].struct.unnest()
+
+
+ledger.guard(
+    "bocpd_priors",
+    lambda: [
+        bocpd_run(*bocpd_stream(s, offset), kappa0, offset)
+        for s in range(10)
+        for kappa0, offset in BOCPD_CASES
+    ],
+    oracles=["bayesian-changepoint-detection"],
+    bits=52,
+)
 
 
 def bocpd_errors(seed: int, kappa0: float, offset: float) -> float:
@@ -355,6 +381,8 @@ class TestBocpdIsThePackagesAtEveryPrecisionPrior:
             f"bocpd: worst error over its tolerance {worst[0]:.3f} (seed {worst[3]}, {worst[4]}), "
             f"95th percentile {np.quantile(ratios, 0.95):.3f}"
         )
+        # Round-off: held at about twice the measured 0.166 of the tolerance.
+        ledger.record("bocpd_priors", "error_over_tolerance", ratios, floor=0.35)
         moved = min(r[1] for r in rows)
         breaks = min(r[2] for r in rows)
         print(f"bocpd: least move from kappa0=1 {moved:.3f}, fewest breaks found {breaks}")

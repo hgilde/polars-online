@@ -53,6 +53,8 @@ scripts/gate.sh --serial                 # either tier in one process (the gate 
 scripts/clear_caches.sh --worktrees      # build caches: after each push wave, or under 100 GB free
 scripts/slot.sh take <branch> [<base>]   # a warm worktree slot for a task (give / list / overlap)
 scripts/budgets.py check|raises|apply    # performance and memory budgets (budgets.toml)
+scripts/oracles.py check|raises|apply    # the oracle ledger (oracles.toml): each grid's error only tightens
+uv run python scripts/oracles.py rerun   # the oracle grids whose hashes the gate's guard says moved
 ```
 
 Iterating (task 245; docs/TESTING.md, "Iterating" and "Caches and when to

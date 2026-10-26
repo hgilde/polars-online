@@ -49,6 +49,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+import ledger
 import polars_online as po
 
 TIER = "mixed"
@@ -829,6 +830,24 @@ def test_a_tiny_scale_target_gives_a_tiny_finite_radius():
 # streams on CI, with the margins measured.
 
 RATES = (0.005, 0.02, 0.05, 0.2, 1.0)
+COVERAGE_KINDS = ("gaussian", "shifting")
+
+
+def _band(df, rate):
+    """The interval's two ends on each row at ``rate``."""
+    out = _fit_large(df, rate=rate)
+    return field(out, "lo_y"), field(out, "hi_y")
+
+
+#: The ledger's inputs (tests/ledger.py): the interval at every rate on the
+#: first stream of each kind, where the grid reads fifty: 100,000 rows a
+#: fit, five fits a stream.
+ledger.guard(
+    "coverage_rates",
+    lambda: [
+        _band(_stream(kind, n=100_000, seed=0), rate) for kind in COVERAGE_KINDS for rate in RATES
+    ],
+)
 
 
 def _coverage_runs(kind, seed, n, rates=RATES):
@@ -838,8 +857,7 @@ def _coverage_runs(kind, seed, n, rates=RATES):
     y = df["y"].to_numpy()
     errs, misses = [], []
     for rate in rates:
-        out = _fit_large(df, rate=rate)
-        lo, hi = field(out, "lo_y"), field(out, "hi_y")
+        lo, hi = _band(df, rate)
         held = (y >= lo) & (y <= hi)
         errs.append(abs(held[np.isfinite(lo)].mean() - 0.9))
         at = 3 * n // 4
@@ -882,7 +900,7 @@ class TestTheKnobsOrder:
 
 
 @pytest.mark.oracle_grid(reason="50 streams of 100,000 rows at five rates, two kinds")
-@pytest.mark.parametrize("kind", ["gaussian", "shifting"])
+@pytest.mark.parametrize("kind", COVERAGE_KINDS)
 def test_over_fifty_streams_the_worst_error_falls_with_the_rate(kind):
     """The worst and the 95th percentile of 50 streams' |coverage − 0.9|
     fall with the rate, and (on the shifting stream) so do the worst misses
@@ -896,6 +914,11 @@ def test_over_fifty_streams_the_worst_error_falls_with_the_rate(kind):
     errs, misses = np.array(errs), np.array(misses)
     worst, p95 = errs.max(axis=0), np.quantile(errs, 0.95, axis=0)
     print(f"{kind}: worst {worst}, p95 {p95}")
+    for i, rate in enumerate(RATES):
+        tag = f"{rate:g}".replace(".", "p")
+        ledger.record("coverage_rates", f"{kind}_coverage_error_at_{tag}", errs[:, i])
+        if kind == "shifting":
+            ledger.record("coverage_rates", f"misses_after_the_shift_at_{tag}", misses[:, i])
     assert (np.diff(worst) < 0).all(), worst
     assert (np.diff(p95) < 0).all(), p95
     if kind == "shifting":

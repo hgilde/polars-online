@@ -29,6 +29,15 @@ How a path maps, first rule that applies:
 | `python/polars_online/<module>.py` | the test files named after the module |
 | any path | also the test files that name it, by path or by a distinctive file name |
 
+A model's source (a Rust crate the extension links, `python/polars_online`)
+and a test file that registers oracle groups also run the oracle ledger's
+hash guard (docs/TESTING.md, "The oracle ledger") for the groups they can
+move: those whose id names the module, or one of its `ALIASES`, as a word
+(`kmeans.rs` the `kmeans_*` groups, `spec_regimes.py` the `hmm_*`,
+`kmeans_*` and `micro_*` ones); a source module that names none, such as
+`solve.rs`, every group; a test file its own groups. Seconds, and a moved
+hash names the oracle runs the change needs.
+
 A test file is named after a module when its name, underscores dropped,
 starts with the module's (`ewcov.rs` runs `test_ew_cov.py` and
 `test_ew_cov_bias.py`); `ALIASES` holds the modules whose Python name is
@@ -87,6 +96,9 @@ PROFILE = ["--profile", "dev-wheel"]
 #: Past this many test files, pytest runs them in several processes.
 PARALLEL_FROM = 8
 
+#: The oracle ledger's hash guard, one test a group (`[<group id>]`).
+GUARD = "tests/test_oracle_ledger.py::TestTheHashGuard::test_our_outputs_on_the_cases_inputs_hold"
+
 #: File names too common to say which file a test means.
 GENERIC = {"lib.rs", "mod.rs", "main.rs", "tests.rs", "__init__.py", "Cargo.toml", "README.md"}
 
@@ -98,7 +110,13 @@ class Plan:
     crates: set[str] = field(default_factory=set)
     rebuild: bool = False
     tests: set[str] = field(default_factory=set)
+    guards: set[str] = field(default_factory=set)
     unmapped: list[str] = field(default_factory=list)
+
+    def pytest_args(self) -> list[str]:
+        """The test files, and the guard's groups unless its file runs whole."""
+        guards = [] if GUARD.split("::")[0] in self.tests else sorted(self.guards)
+        return sorted(self.tests) + [f"{GUARD}[{g}]" for g in guards]
 
 
 def _test_files() -> list[str]:
@@ -140,6 +158,30 @@ def naming(path: str) -> set[str]:
     return {t for t in _test_files() if t != path and any(n in _text(t) for n in needles)}
 
 
+_GUARD_CALL = re.compile(r"""^ledger\.guard\(\s*["']([a-z0-9_]+)["']""", re.M)
+
+
+def ledger_groups() -> dict[str, str]:
+    """Every oracle group's id and the test file that registers it, read
+    from the source as `tests/ledger.py`'s `registered_modules` reads it."""
+    out = {}
+    for test in _test_files():
+        short = Path(test).stem.removeprefix("test_")
+        for name in _GUARD_CALL.findall(_text(test)):
+            out[f"{short}.{name}"] = test
+    return out
+
+
+def guards_for(module: str) -> set[str]:
+    """The oracle groups a change to `module` can move: those whose id has
+    the module, or one of its aliases, as a word; every group when none
+    does."""
+    groups = ledger_groups()
+    words = {_flat(w) for w in [module.strip("_"), *ALIASES.get(module.strip("_"), [])] if w}
+    named = {g for g in groups if words & {_flat(t) for t in re.split(r"[._]", g)}}
+    return named or set(groups)
+
+
 def _module(parts: tuple[str, ...]) -> str | None:
     """The module a source path belongs to: its first part under `src/`,
     or the file's own stem; `None` for a crate's root."""
@@ -161,6 +203,7 @@ def _one(path: str) -> Plan:
     elif re.fullmatch(r"tests/test_\w+\.py", path):
         if (REPO / path).exists():
             out.tests.add(path)
+            out.guards.update(g for g, t in ledger_groups().items() if t == path)
     elif re.fullmatch(r"tests/\w+\.py", path):
         out.tests.update(importers(Path(path).stem))
     elif parts[:1] == ("crates",) and len(parts) > 2:
@@ -172,12 +215,15 @@ def _one(path: str) -> Plan:
             out.rebuild = True
         if in_source and (module := _module(parts)):
             out.tests.update(named_after(module))
+        if in_source and crate in IN_THE_EXTENSION:
+            out.guards.update(guards_for(_module(parts) or crate))
         if crate == "online-cli":
             out.tests.update(t for t in _test_files() if "online_cli" in _text(t))
     elif parts[:2] == ("python", "polars_online"):
         stem = Path(path).stem
         module = "polars_online" if stem in {"__init__", "_polars_online"} else stem
         out.tests.update(named_after(module))
+        out.guards.update(guards_for(module))
     if path in {"Cargo.toml", "Cargo.lock"}:
         out.crates.update(RUST_TESTED)
         out.rebuild = True
@@ -194,6 +240,7 @@ def plan(paths: list[str]) -> Plan:
         out.crates |= one.crates
         out.rebuild |= one.rebuild
         out.tests |= one.tests
+        out.guards |= one.guards
         if not (one.crates or one.rebuild or one.tests):
             out.unmapped.append(path)
     return out
@@ -245,6 +292,10 @@ def main() -> int:
     print(
         f"quick: {len(p.tests)} test files" + (": " + " ".join(sorted(p.tests)) if p.tests else "")
     )
+    if p.guards:
+        print(
+            f"quick: the oracle hash guard for {len(p.guards)} groups: {' '.join(sorted(p.guards))}"
+        )
     for path in p.unmapped:
         print(f"quick: no test maps to {path}; the essentials before the commit cover it")
     if args.dry_run:
@@ -259,11 +310,11 @@ def main() -> int:
         crates = [a for c in sorted(p.crates) for a in ("-p", c)]
         tier = ["--", "--include-ignored"] if args.extended else []
         steps.append(["cargo", "test", *crates, *tier])
-    if p.rebuild and p.tests:
+    if p.rebuild and (p.tests or p.guards):
         steps.append(
             ["uv", "run", "maturin", "develop", *PROFILE, "-m", "crates/online-py/Cargo.toml"]
         )
-    if p.tests:
+    if p.tests or p.guards:
         marks = (
             "not soak and not oracle_grid"
             if args.extended
@@ -279,7 +330,7 @@ def main() -> int:
                 check=True,
             ).stdout.strip()
             many = ["-n", workers, "--dist", "worksteal"]
-        steps.append(["uv", "run", "pytest", "-q", *many, "-m", marks, *sorted(p.tests)])
+        steps.append(["uv", "run", "pytest", "-q", *many, "-m", marks, *p.pytest_args()])
     for step in steps:
         print("quick: $ " + " ".join(step), flush=True)
         if subprocess.run(step, cwd=REPO, env=env, check=False).returncode:
