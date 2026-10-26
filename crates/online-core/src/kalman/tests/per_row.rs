@@ -39,6 +39,7 @@ fn stream(n: usize, regular: bool, seed: u64) -> Vec<([f64; K], f64, f64)> {
 
 fn cfg_with(revert: Vec<f64>, fit_intercept: bool, standardize: bool) -> KalmanCfg {
     KalmanCfg {
+        noise_units: false,
         n_features: K,
         n_targets: 1,
         fit_intercept,
