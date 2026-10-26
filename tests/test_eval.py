@@ -2,6 +2,7 @@
 
 import warnings
 from datetime import datetime, timedelta
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -746,50 +747,103 @@ def test_window_start_is_group_by_dynamics(two_specs, clock, every, polars_every
     assert mine.sort("group", clock).equals(want)
 
 
-def test_on_a_time_zone_the_buckets_are_dt_truncates():
-    """Pinned as it stands, and reported (task 278, b12): on a clock with a
-    time zone, ``window_metrics`` buckets by Polars' ``dt.truncate``, which
-    truncates in local wall time. A day (``"1d"``) is then the calendar day
-    -- 23 hours across the spring change, as ``group_by_dynamic("1d")``
-    has it -- and ``"24h"`` reads as ``"1d"``. An ``"5h"`` bucket across the
-    change spans 4 hours of elapsed time; ``group_by_dynamic("5h")`` keeps
-    5, and so does a spec's clock parameter. Measured 2026-10-25 on Polars
-    of this lock."""
-    t = pl.datetime_range(
-        datetime(2024, 3, 9, 20),
-        datetime(2024, 3, 11, 8),
-        "17m",
-        eager=True,
-        time_zone="America/New_York",
-    )
+#: Each zone's two changes of offset in 2024: spring forward and autumn back
+#: in the north, the reverse in Sydney.
+CHANGES = {
+    "America/New_York": (datetime(2024, 3, 10), datetime(2024, 11, 3)),
+    "Europe/London": (datetime(2024, 3, 31), datetime(2024, 10, 27)),
+    "Australia/Sydney": (datetime(2024, 4, 7), datetime(2024, 10, 6)),
+}
+
+
+def _zoned_fit(zone: str) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Rows every 17 minutes for two days around each of ``zone``'s changes
+    of offset, in two groups, the second starting 3 h 10 m later, so their
+    windows start apart. Returns the bank's output and its scored rows."""
+    parts = []
+    for change in CHANGES[zone]:
+        for key, late in (("a", timedelta(0)), ("b", timedelta(hours=3, minutes=10))):
+            t = pl.datetime_range(
+                change - timedelta(days=1) + late,
+                change + timedelta(days=1),
+                "17m",
+                eager=True,
+                time_zone="UTC",
+            ).dt.convert_time_zone(zone)
+            parts.append(pl.DataFrame({"t": t, "g": key}))
+    df = pl.concat(parts).sort("g", "t", maintain_order=True)
     rng = np.random.default_rng(3)
-    x = rng.standard_normal(t.len())
-    df = pl.DataFrame({"t": t, "x0": x, "y0": x + rng.standard_normal(t.len())})
-    spec = po.spec.ewridge("m", targets=["y0"], features=["x0"], half_life=50.0, min_weight=5.0)
+    x = rng.standard_normal(df.height)
+    df = df.with_columns(x0=pl.Series(x), y0=pl.Series(x + rng.standard_normal(df.height)))
+    spec = po.spec.ewridge(
+        "m", targets=["y0"], features=["x0"], half_life=50.0, min_weight=5.0, group="g"
+    )
     out = po.ModelBank([spec]).fit_predict(df)
     scored = out.filter(pl.col("m").struct.field("pred_y0").is_not_null())
+    return out, scored
 
-    def buckets(every: str) -> pl.DataFrame:
-        got = po.eval.window_metrics(out, "m", clock="t", every=every, min_samples=1)
-        return got.select(pl.col("window_start").alias("t"), pl.col("n").cast(pl.UInt32))
 
-    def dynamic(every: str) -> pl.DataFrame:
-        return (
-            scored.group_by_dynamic("t", every=every, closed="left", label="left")
-            .agg(n=pl.len())
-            .sort("t")
-        )
+def _dynamic(scored: pl.DataFrame, clock: str, every: Any) -> pl.DataFrame:
+    """Polars' own buckets: ``group_by_dynamic`` per group, closed and
+    labelled on the left, the count of rows in each."""
+    return (
+        scored.sort("g", clock, maintain_order=True)
+        .group_by_dynamic(clock, every=every, group_by="g", closed="left", label="left")
+        .agg(n=pl.len())
+        .sort("g", clock)
+    )
 
-    def truncated(every: str) -> pl.DataFrame:
-        return scored.group_by(pl.col("t").dt.truncate(every)).agg(n=pl.len()).sort("t")
 
-    assert buckets("1d").equals(dynamic("1d"))
-    assert buckets("24h").equals(buckets("1d"))
-    assert not buckets("24h").equals(dynamic("24h"))
-    assert buckets("5h").equals(truncated("5h"))
-    assert not buckets("5h").equals(dynamic("5h"))
-    spans = buckets("5h")["t"].diff().drop_nulls().unique().sort().to_list()
-    assert spans == [timedelta(hours=4), timedelta(hours=5)], spans
+def _ours(out: pl.DataFrame, clock: str, every: Any) -> pl.DataFrame:
+    got = po.eval.window_metrics(out, "m", clock=clock, every=every, group="g", min_samples=1)
+    return got.select("g", pl.col("window_start").alias(clock), pl.col("n").cast(pl.UInt32)).sort(
+        "g", clock
+    )
+
+
+@pytest.mark.parametrize("zone", list(CHANGES))
+def test_on_a_time_zone_the_windows_are_group_by_dynamics(zone):
+    """On a clock with a time zone the windows are Polars'
+    ``group_by_dynamic``'s across both changes of offset: an hour or a
+    minute is elapsed time (a ``"5h"`` window holds five hours either side
+    of a change, and ``"24h"`` is 24 of them), while a day, a week and a
+    month are the wall calendar's (a ``"1d"`` window on the day of a change
+    holds 23 or 25 hours). Until task 278 (b12) the edges came from
+    ``dt.truncate`` in wall time, so a ``"5h"`` window across a change held
+    four hours and ``"24h"`` read as ``"1d"``."""
+    out, scored = _zoned_fit(zone)
+    for every in ("90m", "5h", "24h", "1d", "1w", "1mo", timedelta(hours=5)):
+        assert _ours(out, "t", every).equals(_dynamic(scored, "t", every)), every
+    # A duration expression is a length of time: elapsed, as "24h".
+    assert _ours(out, "t", pl.duration(hours=24)).equals(_dynamic(scored, "t", "24h"))
+    # The two readings of a day differ here, so the test can tell them apart.
+    assert not _dynamic(scored, "t", "24h").equals(_dynamic(scored, "t", "1d"))
+    # Within each two days of rows (the months between them aside), every
+    # "5h" window starts five elapsed hours after the one before.
+    spans = _ours(out, "t", "5h").filter(pl.col("g") == "a")["t"].diff().drop_nulls()
+    spans = spans.filter(spans < timedelta(days=1))
+    assert spans.unique().to_list() == [timedelta(hours=5)], "an hour is elapsed time"
+
+
+def test_a_month_is_the_calendar_s_on_a_naive_and_a_date_clock(two_specs):
+    """A month or a year has no fixed length, so a spec refuses one; a
+    window can take it, as ``group_by_dynamic`` does, on a ``Datetime`` or
+    ``Date`` clock. A ``Duration`` clock has no calendar and refuses it."""
+    out, _ = two_specs
+    long = out.with_columns(
+        pl.col("dt") + pl.duration(days=pl.int_range(pl.len()) % 90),
+        day=(pl.col("dt") + pl.duration(days=pl.int_range(pl.len()) % 90)).dt.date(),
+    )
+    long = long.rename({"group": "g"}).rename({"a": "m"})
+    scored = long.filter(
+        pl.col("m").struct.field("pred_y0").is_not_null() & pl.col("y0").is_not_null()
+    )
+    for clock in ("dt", "day"):
+        for every in ("1mo", "1q", "2w"):
+            assert _ours(long, clock, every).equals(_dynamic(scored, clock, every)), (clock, every)
+    span = long.with_columns(span=pl.col("dt") - pl.datetime(2024, 1, 1))
+    with pytest.raises(ValueError, match="month has no fixed length"):
+        po.eval.window_metrics(span, "m", clock="span", every="1mo")
 
 
 def test_group_is_the_call_on_each_keys_rows(two_specs):

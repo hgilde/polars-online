@@ -255,19 +255,63 @@ def test_name_names_the_per_row_struct_and_the_batch_form_ignores_it(grid):
     assert po.eval.clark_west(grid, **nested, name="zz").equals(po.eval.clark_west(grid, **nested))
 
 
-def test_a_name_equal_to_an_input_column_replaces_that_column(grid):
-    """Measured 2026-10-25, and pinned as it stands: the result is ``df``
-    with the struct added by Polars' ``with_columns``, which replaces a
-    column of the same name in its place -- the target ``y``, or a spec's
-    own output struct -- and says nothing. (The working columns these tests
-    compute in are stepped around instead; see above.)"""
+@pytest.mark.parametrize("name", ["y", "big", "g"])
+def test_a_name_the_frame_already_has_is_refused(grid, name):
+    """The result is ``df`` with one struct column added; a ``name`` the
+    frame already has would replace that column -- the target, a spec's own
+    output -- with nothing said, so it is refused, naming the column. Until
+    task 278 (b12) Polars' ``with_columns`` replaced it."""
     sides = dict(a="big", b="small", a_suffix="@h50", b_suffix="@h50")
-    for name in ("y", "big"):
-        dm = po.eval.diebold_mariano(grid, **sides, half_life=40.0, name=name)
-        seq = po.eval.seqtest(grid, **sides, name=name)
-        for out, first in ((dm, "dm_y"), (seq, "log_e_a_y")):
-            assert out.columns == grid.columns
-            assert out.schema[name].fields[0].name == first  # type: ignore[union-attr]
+    nested = dict(big="big", small="small", big_suffix="@h50", small_suffix="@h50")
+    calls = {
+        "diebold_mariano": lambda: po.eval.diebold_mariano(
+            grid, **sides, half_life=40.0, name=name
+        ),
+        "clark_west": lambda: po.eval.clark_west(grid, **nested, half_life=40.0, name=name),
+        "seqtest": lambda: po.eval.seqtest(grid, **sides, name=name),
+    }
+    for who, call in calls.items():
+        with pytest.raises(
+            ValueError,
+            match=rf"^{who}: name {name!r} is a column of the frame already, and the result "
+            "would replace it; give the result a name the frame has not got",
+        ):
+            call()
+    # Without half_life the result is a table of its own, and name is not read.
+    assert po.eval.diebold_mariano(grid, **sides, name=name).height == 1
+
+
+def test_a_name_or_a_column_like_the_working_ones_is_kept(grid):
+    """The per-row forms compute in columns of their own (``__po_row``,
+    ``dm_<t>``, ``__po_seqtest_*``). A ``name`` spelled like one gets the
+    result under that name, and a frame holding a column ``dm_<t>`` keeps
+    it and still gets the right statistic. Until task 278 (b12) such a name
+    was dropped with the working columns, so the result had no struct at
+    all, and a frame's ``dm_y`` was read in place of the statistic (its
+    values came back in the struct) and lost, a stray ``dm_y_right`` left."""
+    sides = dict(a="big", b="small", a_suffix="@h50", b_suffix="@h50")
+    dm = po.eval.diebold_mariano(grid, **sides, half_life=40.0)["diebold_mariano"]
+    seq = po.eval.seqtest(grid, **sides)["seqtest"]
+    for name in ("__po_row", "dm_y", "__po_d"):
+        out = po.eval.diebold_mariano(grid, **sides, half_life=40.0, name=name)
+        assert out.columns == [*grid.columns, name]
+        assert out[name].equals(dm.alias(name))
+    for name in ("__po_seqtest_weight_sum", "__po_seqtest_s_0"):
+        out = po.eval.seqtest(grid, **sides, name=name)
+        assert out.columns == [*grid.columns, name]
+        assert out[name].equals(seq.alias(name))
+    held = grid.with_columns(dm_y=pl.lit(7.0), cw_y=pl.lit(8.0))
+    out = po.eval.diebold_mariano(held, **sides, half_life=40.0)
+    assert out.columns == [*held.columns, "diebold_mariano"]
+    assert out["diebold_mariano"].equals(dm)
+    assert out["dm_y"].unique().to_list() == [7.0]
+    cw = po.eval.clark_west(
+        held, big="big", small="small", big_suffix="@h50", small_suffix="@h50", half_life=40.0
+    )
+    want = po.eval.clark_west(
+        grid, big="big", small="small", big_suffix="@h50", small_suffix="@h50", half_life=40.0
+    )
+    assert cw["clark_west"].equals(want["clark_west"]) and cw["cw_y"].unique().to_list() == [8.0]
 
 
 def test_clark_west_min_samples_nulls_a_thin_key_and_moves_no_other_value(grid):

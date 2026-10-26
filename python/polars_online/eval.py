@@ -65,14 +65,15 @@ from __future__ import annotations
 
 import functools
 import math
+import re
 import warnings
 from collections.abc import Callable, Iterable, Sequence
+from datetime import timedelta
 from typing import Any
 
 import polars as pl
 
 from polars_online._duration import Duration, clock_nanoseconds
-from polars_online._polars_online import format_duration
 from polars_online._renamed import renamed_function, renamed_keywords
 from polars_online._warnings import PolarsOnlineDeprecationWarning
 
@@ -600,6 +601,72 @@ def metrics(
     return _thin(out, min_samples, keys)
 
 
+#: Polars' duration text, every unit it takes: ``mo``, ``q`` and ``y`` are
+#: the calendar's and have no fixed length.
+_EVERY_TEXT = re.compile(r"(?:\d+(?:ns|us|ms|s|m|h|d|w|mo|q|y))+")
+_CALENDAR_PART = re.compile(r"\d+(?:mo|q|y)")
+
+
+def _is_calendar(every: object) -> bool:
+    """Whether ``every`` is duration text with a month, quarter or year in
+    it, which no number of nanoseconds measures."""
+    return isinstance(every, str) and bool(_CALENDAR_PART.search(every.strip()))
+
+
+def _calendar_every(every: str, dtype: pl.DataType, clock: str) -> int:
+    """Check text with a calendar part, as ``group_by_dynamic`` would read
+    it on a ``Datetime`` or ``Date`` clock: Polars' grammar, at least one
+    unit above 0, and any fixed part a whole number of the column's steps.
+    Returns the fixed part's nanoseconds (0 for none)."""
+    text = every.strip()
+    if not _EVERY_TEXT.fullmatch(text) or not re.search(r"[1-9]", text):
+        msg = (
+            f"window_metrics: every {every!r} is not a duration above 0 in Polars' text, "
+            'such as "1mo", "1q" or "1y2w"'
+        )
+        raise ValueError(msg)
+    fixed = _CALENDAR_PART.sub("", text)
+    if fixed and re.search(r"[1-9]", fixed):
+        return int(clock_nanoseconds(fixed, dtype, "window_metrics", "every", clock) or 0)
+    return 0
+
+
+def _polars_every(every: Any, ns: int | None) -> str | timedelta:
+    """``every`` as ``group_by_dynamic`` takes it: text and a ``timedelta``
+    as given, so Polars reads them its own way (its ``d``, ``w``, ``mo``,
+    ``q`` and ``y`` follow the calendar; a ``timedelta``'s whole days are
+    days), and an expression as the nanoseconds it evaluates to, a length of
+    time."""
+    if isinstance(every, str):
+        return every.strip()
+    if isinstance(every, timedelta):
+        return every
+    return f"{ns}ns"
+
+
+def _dynamic_windows(
+    long: pl.DataFrame, clock: str, every: str | timedelta, keys: list[str]
+) -> pl.DataFrame:
+    """``long`` with each row's ``window_start``: the left edge of its window
+    in Polars' ``group_by_dynamic`` over ``keys``, closed and labelled on the
+    left, the windows starting where Polars starts them. A row with no clock
+    is in no window (its ``window_start`` is null)."""
+    idx = "__po_row"
+    while idx in long.columns:
+        idx = "_" + idx
+    long = long.with_row_index(idx)
+    starts = (
+        long.filter(pl.col(clock).is_not_null())
+        .select(*keys, clock, idx)
+        .sort(*keys, clock, maintain_order=True)
+        .group_by_dynamic(clock, every=every, group_by=keys, closed="left", label="left")
+        .agg(pl.col(idx))
+        .explode(idx)
+        .select(idx, pl.col(clock).alias("window_start"))
+    )
+    return long.join(starts, on=idx, how="left", maintain_order="left").drop(idx)
+
+
 @renamed_keywords("po.eval.window_metrics", _WINDOW)
 @_takes_spec("po.eval.window_metrics")
 def window_metrics(
@@ -615,20 +682,40 @@ def window_metrics(
 ) -> pl.DataFrame:
     """:func:`metrics` in tumbling windows of ``every`` clock units.
 
-    The windows do not overlap: each row falls in one, as in Polars'
-    ``group_by_dynamic(every=)``. Polars' ``rolling`` windows overlap, which
-    is why this is not ``rolling_metrics``, its name before 1.0.
+    The windows do not overlap: each row falls in one. Polars' ``rolling``
+    windows overlap, which is why this is not ``rolling_metrics``, its name
+    before 1.0.
 
     The columns are :func:`metrics`'s, per window, plus ``window_start``, the
-    left edge of each bucket (``floor(clock / every) * every``). ``spec``,
-    ``binary``, ``group``, ``min_samples`` and ``targets`` are
-    :func:`metrics`'s: a window with fewer than ``min_samples`` rows keeps its
-    row, with ``n`` read and the metrics null.
-    ``every`` is measured the way a spec's clock parameters are: a number for
-    a numeric clock, and a duration for a ``Datetime``, ``Date`` or
-    ``Duration`` one. ``window_start`` is of the clock's own dtype, an
-    integer clock's included, whose ``every`` must then be a whole number of
-    its units: a bucket's edges are values of the column.
+    left edge of each window. ``spec``, ``binary``, ``group``,
+    ``min_samples`` and ``targets`` are :func:`metrics`'s: a window with fewer
+    than ``min_samples`` rows keeps its row, with ``n`` read and the metrics
+    null. ``window_start`` is of the clock's own dtype.
+
+    The windows are those of Polars' ``group_by_dynamic(clock, every=every,
+    closed="left", label="left")`` over each key (slot, target and
+    ``group``), so a window here is the window Polars would make of the same
+    rows:
+
+    - On a numeric clock ``every`` is a number of its units, and a window
+      starts at ``floor(clock / every) * every``, as Polars' integer index
+      does (a float clock, which Polars does not window, is windowed the
+      same way). On an integer clock
+      ``every`` must be a whole number, so a window's edges are values of
+      the column.
+    - On a ``Datetime`` or ``Date`` clock ``every`` is a duration, read as
+      Polars reads one. Nanoseconds to hours (``"ns"`` ... ``"h"``) are
+      elapsed time: across a change of a time zone's offset a ``"5h"``
+      window still holds five hours, and ``"24h"`` is 24 of them. Days,
+      weeks, months, quarters and years (``"d"``, ``"w"``, ``"mo"``, ``"q"``,
+      ``"y"``) follow the wall calendar: ``"1d"`` runs from midnight to
+      midnight, 23 or 25 hours on the day of a change, and ``"1mo"`` is a
+      calendar month. A ``timedelta`` is read as Polars reads it, so its
+      whole days are calendar days; a ``pl.duration`` expression is the
+      length of time it evaluates to. A month has no fixed length, so a
+      spec's clock parameter refuses one, but a window takes it.
+    - On a ``Duration`` clock ``every`` is a length of time, with no
+      calendar, and a window starts at a whole number of ``every`` from 0.
 
     .. code-block:: python
 
@@ -640,8 +727,9 @@ def window_metrics(
     Raises as :func:`unpack` does, and:
 
     - ``ValueError`` for an ``every`` that is not finite and above 0, of the
-      wrong kind for the clock, or not a whole number on an integer clock,
-      and for a ``Time`` clock, which starts again at midnight;
+      wrong kind for the clock, not a whole number on an integer clock, or a
+      month, quarter or year on a ``Duration`` clock, and for a ``Time``
+      clock, which starts again at midnight;
     - ``TypeError`` for a ``clock`` column that is neither numeric nor
       temporal;
     - polars' ``ColumnNotFoundError`` for a ``clock`` or ``group`` column the
@@ -652,7 +740,11 @@ def window_metrics(
     if dtype is None:
         # Named before the window is checked against it (review R2, P9).
         raise pl.exceptions.ColumnNotFoundError(clock)
-    ns = clock_nanoseconds(every, dtype, "window_metrics", "every", clock)
+    ns: int | None
+    if isinstance(dtype, (pl.Datetime, pl.Date)) and isinstance(every, str) and _is_calendar(every):
+        ns = _calendar_every(every, dtype, clock)
+    else:
+        ns = clock_nanoseconds(every, dtype, "window_metrics", "every", clock)
     if ns is None and not every > 0:  # type: ignore[operator]
         msg = f"window_metrics: every must be > 0, got {every}"
         raise ValueError(msg)
@@ -687,11 +779,13 @@ def window_metrics(
             (pl.col(clock).dt.total_nanoseconds() // ns * ns).cast(pl.Duration("ns")).cast(dtype)
         )
     else:
-        start = pl.col(clock).dt.truncate(format_duration(ns))
+        start = None
     keys = ["slot", "target", *_group_keys(group), "window_start"]
-    long = _scored(
-        _unpack(df, written or spec_name, targets=targets, columns=[*keys, clock])
-    ).with_columns(start.alias("window_start"))
+    long = _scored(_unpack(df, written or spec_name, targets=targets, columns=[*keys, clock]))
+    if start is None:
+        long = _dynamic_windows(long, clock, _polars_every(every, ns), keys[:-1])
+    else:
+        long = long.with_columns(start.alias("window_start"))
     exprs = _metric_exprs(binary=_binary(binary, written), hit=not _no_hit(written))
     out = long.group_by(keys).agg(exprs).sort(keys)
     return _thin(out, min_samples, keys)
@@ -864,8 +958,9 @@ def seqtest(
 
     Raises:
 
-    - ``ValueError`` for ``a`` without ``b`` (or the reverse), for column
-      mode without ``targets``, for two specs that share no residual field,
+    - ``ValueError`` for a ``name`` the frame already has, whose column the
+      result would replace, for ``a`` without ``b`` (or the reverse), for
+      column mode without ``targets``, for two specs that share no residual field,
       and for a target one side has no residual for (naming the fields it
       does have);
     - ``KeyError`` for a spec the frame has not got;
@@ -874,6 +969,7 @@ def seqtest(
       ``group`` column the frame has not got.
     """
     _frame("po.eval.seqtest", df)
+    _check_name("seqtest", df, name)
     keys = _group_keys(group)
     if (a is None) != (b is None):
         msg = "seqtest: a and b go together; name both specs to compare them, or neither"
@@ -928,7 +1024,7 @@ def seqtest(
     # it), which failed every `group` at the declared floor (task 109's floor run,
     # 2026-09-27). The counts go into columns first, then the wealth reads
     # them; the arithmetic is the same.
-    taken = set(df.columns)
+    taken = {*df.columns, name}
 
     def temp(label: str) -> str:
         column = f"__po_seqtest_{label}"
@@ -1234,6 +1330,27 @@ def _paired_residuals(
     return out
 
 
+def _check_name(who: str, df: pl.DataFrame, name: str) -> None:
+    """Refuse a result ``name`` the frame already has: ``with_columns`` would
+    replace that column -- the target, a spec's output -- with nothing said."""
+    if name in df.columns:
+        msg = (
+            f"{who}: name {name!r} is a column of the frame already, and the result would "
+            "replace it; give the result a name the frame has not got"
+        )
+        raise ValueError(msg)
+
+
+def _free(taken: set[str], label: str) -> str:
+    """A working column's name that is in ``taken`` neither as the frame's
+    column nor as the result's name; added to ``taken``."""
+    column = f"__po_{label}"
+    while column in taken:
+        column = "_" + column
+    taken.add(column)
+    return column
+
+
 def _normal_sf(z: float | None) -> float | None:
     """``P(Z > z)`` for a standard normal ``Z``."""
     return None if z is None or math.isnan(z) else 0.5 * math.erfc(z / math.sqrt(2.0))
@@ -1299,11 +1416,13 @@ def _ew_test(
     """
     lam = 0.5 ** (1.0 / half_life)
     lam2 = lam * lam
-    idx = "__po_row"
-    while idx in df.columns:
-        idx = "_" + idx
+    # Working columns step around the frame's and the result's name, so a
+    # frame holding `dm_<t>` keeps it and a name spelled like one is kept.
+    taken = {*df.columns, name}
+    idx = _free(taken, "row")
     base = df.with_row_index(idx)
-    fields = []
+    fields: list[pl.Expr] = []
+    temps: list[str] = []
 
     def over(e: pl.Expr) -> pl.Expr:
         return e.over(keys) if keys else e
@@ -1317,9 +1436,7 @@ def _ew_test(
         return over(e.fill_null(0.0).ewm_mean(alpha=1.0 - lam2, adjust=True)) * w2
 
     for t, d in values.items():
-        col = "__po_d"
-        while col in base.columns:
-            col = "_" + col
+        col = _free(taken, "d")
         rows = base.select(idx, *keys, d.alias(col)).filter(pl.col(col).is_not_null())
         dd = pl.col(col)
         m = over(dd.ewm_mean(alpha=1.0 - lam, adjust=True))
@@ -1333,11 +1450,13 @@ def _ew_test(
             d_l = ew_sum2(has)
             weight = 1.0 - lag / (lags + 1.0)
             s = s + 2.0 * weight * lam**lag * (a_l - m * (b_l + c_l) + m * m * d_l)
-        value = pl.when(s > 0).then(m * w1 / s.sqrt()).alias(f"{stat}_{t}")
+        out_col = _free(taken, f"{stat}_{len(temps)}")
+        value = pl.when(s > 0).then(m * w1 / s.sqrt()).alias(out_col)
         got = rows.select(idx, value)
-        base = base.join(got, on=idx, how="left")
-        fields.append(f"{stat}_{t}")
-    return base.with_columns(pl.struct(fields).alias(name)).drop(idx, *fields)
+        base = base.join(got, on=idx, how="left", maintain_order="left")
+        fields.append(pl.col(out_col).alias(f"{stat}_{t}"))
+        temps.append(out_col)
+    return base.with_columns(pl.struct(fields).alias(name)).drop(idx, *temps)
 
 
 def _check_half_life(who: str, half_life: float) -> None:
@@ -1406,7 +1525,9 @@ def diebold_mariano(
 
     ``a``, ``b``, ``targets``, the suffixes and ``group`` are
     :func:`seqtest`'s, and raise as it raises. ``ValueError`` too for
-    ``lags`` below 0 and for a ``half_life`` that is not finite and above 0.
+    ``lags`` below 0, for a ``half_life`` that is not finite and above 0,
+    and, with ``half_life``, for a ``name`` the frame already has, whose
+    column the result would replace.
 
     .. code-block:: python
 
@@ -1425,6 +1546,7 @@ def diebold_mariano(
         raise ValueError(msg)
     if half_life is not None:
         _check_half_life("diebold_mariano", half_life)
+        _check_name("diebold_mariano", df, name)
         return _ew_test(df, values, keys, lags, half_life, "dm", name)
     out = _hac_test(df, values, keys, lags, "dm", min_samples)
     p = [
@@ -1496,6 +1618,7 @@ def clark_west(
         raise ValueError(msg)
     if half_life is not None:
         _check_half_life("clark_west", half_life)
+        _check_name("clark_west", df, name)
         return _ew_test(df, values, keys, lags, half_life, "cw", name)
     out = _hac_test(df, values, keys, lags, "cw", min_samples)
     return out.with_columns(
