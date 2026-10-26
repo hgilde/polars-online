@@ -411,6 +411,7 @@ fn sgd_cfg(loss: SgdLoss, n_targets: usize) -> SgdCfg {
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
         refit_rows: 0,
+        target_spread: false,
     }
 }
 
@@ -851,6 +852,53 @@ pub fn all() -> Vec<Case> {
                 huber_scale: online_core::HuberScale::Mad,
                 refit_rows: 10,
                 ..sgd_cfg(SgdLoss::Huber { delta: 1.5 }, 2)
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            40
+        ),
+        // The target's own units (schema 64, task 278: D1, D2, D8, D-S):
+        // the target's spread under the squared loss and the step gains
+        // under a shared rate, at a stable rate and at one past its bound,
+        // saved with the gate withholding, and under AdaGrad, which keeps
+        // the spread for its epsilon and no gains.
+        case!(
+            "sgd_spread",
+            "Sgd",
+            Sgd,
+            Sgd::new(SgdCfg {
+                schedule: LearningRate::InvScaling { power: 0.5 },
+                target_spread: true,
+                ..sgd_cfg(SgdLoss::Squared, 2)
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            40
+        ),
+        case!(
+            "sgd_unstable",
+            "Sgd",
+            Sgd,
+            Sgd::new(SgdCfg {
+                schedule: LearningRate::Constant,
+                learning_rate: 2.0,
+                target_spread: true,
+                ..sgd_cfg(SgdLoss::Squared, 2)
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            40
+        ),
+        case!(
+            "sgd_spread_adagrad",
+            "Sgd",
+            Sgd,
+            Sgd::new(SgdCfg {
+                target_spread: true,
+                ..sgd_cfg(SgdLoss::Squared, 2)
             })
             .unwrap(),
             K,

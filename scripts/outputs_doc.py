@@ -256,12 +256,14 @@ SHARED_FIELDS: list[tuple[str, str, str]] = [
     (
         "withheld_reason",
         "why the row's predictions are null: `below_min_settled_frac`, `below_min_weight`, "
-        "`above_max_error_inflation`, `below_warm_rows` or `ill_conditioned`. That order is "
-        "their precedence, so the first that applies is the one named. `below_warm_rows` is "
-        "the model's own warm-up, the rows `kmeans`, `hmm` and `bocpd` hold to seed themselves "
-        "from, and the rows `kalman` sizes a target's prior from. `ill_conditioned` is an "
-        "`ewridge` fit whose normal equations are too nearly singular for a solve to keep a "
-        "digit",
+        "`above_max_error_inflation`, `below_warm_rows`, `ill_conditioned` or `unstable_rate`. "
+        "That order is their precedence, so the first that applies is the one named. "
+        "`below_warm_rows` is the model's own warm-up, the rows `kmeans`, `hmm` and `bocpd` hold "
+        "to seed themselves from, and the rows `kalman` sizes a target's prior from. "
+        "`ill_conditioned` is an `ewridge` fit whose normal equations are too nearly singular "
+        "for a solve to keep a digit. `unstable_rate` is an `sgd` target whose learning rate is "
+        "past its stability bound: its recent steps' gains have a mean square above twice their "
+        "mean, so each step grows its own row's residual and the fit diverges",
         "where nothing was withheld",
     ),
     (
@@ -376,7 +378,7 @@ DTYPES: list[tuple[str, str]] = [
     ),
     (
         "`enum`",
-        "an `Enum` of its values, in their order: `withheld_reason`'s four, an `ew_class` "
+        "an `Enum` of its values, in their order: `withheld_reason`'s six, an `ew_class` "
         "spec's `classes` for `class`, a grid's slots for `selected_<t>`",
     ),
     ("`clock`", "the clock column's own type"),

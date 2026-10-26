@@ -29,10 +29,13 @@ defect this class exists for, and the tests hold the bits, not a tolerance.
 parameter, and the builder documents its units: ``lasso``'s penalties (its
 ``tol`` is relative to the target's spread, so it is not mapped),
 ``pa1``'s ``c``, ``kalman``'s ``obs_var`` (squared), ``ftrl``'s ``alpha``
-and ``beta``, ``sgd``'s ``clip_gradient`` (the squared loss's
-gradient is the residual times the feature) and its learning rate under the
-sign-valued losses (a step of ``lr * psi * z`` moves a coefficient by the
-rate whatever the target's scale). ``Y_SCALE`` builds every spec at a scale
+and ``beta``, and ``sgd``'s learning rate under the sign-valued losses (a
+step of ``lr * psi * z`` moves a coefficient by the rate whatever the
+target's scale) and under AdaGrad (a step of ``lr * g / sqrt(G)``, the
+same). ``sgd``'s ``clip_gradient`` and AdaGrad's epsilon are in units of
+the target's own spread under the squared and Huber losses, so they are not
+mapped (task 278, D1 and D2: they were constants in the target's units).
+``Y_SCALE`` builds every spec at a scale
 ``c`` with those parameters mapped, so the test checks the map as well as
 the arithmetic.
 
@@ -158,19 +161,16 @@ Y_SCALE: dict[str, Builder] = {
     "quantile_tail_standardized": lambda c, **kw: po.spec.quantile(
         "m", quantile=0.9, standardize=True, **_COMMON, **kw
     ),
-    # The squared loss's gradient is the residual times the feature: the
-    # clip is in the target's units (`TestKnownDefects` pins its default).
-    "sgd_squared": lambda c, **kw: po.spec.sgd(
-        "m", loss="squared", clip_gradient=1e3 * c, **_COMMON, **kw
-    ),
+    # The clip is in units of the target's spread, so the default is the
+    # same at every scale (task 278, D1).
+    "sgd_squared": lambda c, **kw: po.spec.sgd("m", loss="squared", **_COMMON, **kw),
     "sgd_inv_scaling": lambda c, **kw: po.spec.sgd(
-        "m",
-        loss="squared",
-        schedule="inv_scaling",
-        learning_rate=0.05,
-        clip_gradient=1e3 * c,
-        **_COMMON,
-        **kw,
+        "m", loss="squared", schedule="inv_scaling", learning_rate=0.05, **_COMMON, **kw
+    ),
+    # AdaGrad's step is the rate in the coefficient's units; its epsilon is
+    # in units of the target's spread (task 278, D2).
+    "sgd_adagrad": lambda c, **kw: po.spec.sgd(
+        "m", loss="squared", schedule="adagrad", learning_rate=0.1 * c, **_COMMON, **kw
     ),
     # A sign-valued loss's gradient has no target units, its step does: the
     # rate is the target over the feature squared.
@@ -189,9 +189,7 @@ Y_SCALE: dict[str, Builder] = {
     "holt": lambda c, **kw: po.spec.holt("m", targets=["y"], half_life=300.0, **kw),
     # With the refit of their first rows on (task 277).
     "huber": lambda c, **kw: po.spec.huber("m", **_COMMON, **kw),
-    "sgd_huber": lambda c, **kw: po.spec.sgd(
-        "m", loss="huber", clip_gradient=1e3 * c, **_COMMON, **kw
-    ),
+    "sgd_huber": lambda c, **kw: po.spec.sgd("m", loss="huber", **_COMMON, **kw),
 }
 
 #: Every diagnostic and gate a regression takes, switched on together, and
@@ -533,7 +531,8 @@ class TestRegressionShift:
       hyperplane `y = z . b`, so the difference of the two runs, less `c`,
       is projected too, `d' = (I - z z' / |z|^2) d`, and its norm never
       grows. `sgd`'s squared loss multiplies it by `I - lr * w * z z'`,
-      whose eigenvalues lie in `[-1, 1]` while `lr * w * |z|^2 <= 2`.
+      whose eigenvalues lie in `[-1, 1]` while `lr * w * |z|^2 <= 2`, from
+      the row its intercept's running-mean step gives way to the rate's.
     """
 
     def _bound(self, x: np.ndarray, y: np.ndarray, shifted: np.ndarray) -> float:
@@ -649,11 +648,19 @@ class TestRegressionShift:
             assert float(np.max(lr * np.sum(z * z, axis=1))) <= 2.0, "the contraction's premise"
         base = coefs(fit(spec, x, y))
         d = np.linalg.norm(coefs(fit(spec, x, y + z @ SHIFT)) - base - SHIFT, axis=1)
+        # `sgd`'s intercept takes the running mean's step while its gain
+        # `1 / n` is above the rate (task 278, D-S), which is no projection:
+        # the contraction holds from the first row past it, `n = 1 / lr`.
+        start = int(round(1 / lr)) - 1 if model == "sgd" else 0
+        d = d[start:]
         # Each step rounds a few times at the coefficients' magnitude.
-        slack = 16 * U * (np.linalg.norm(base, axis=1)[1:] + np.linalg.norm(SHIFT))
+        slack = 16 * U * (np.linalg.norm(base, axis=1)[start + 1 :] + np.linalg.norm(SHIFT))
         assert np.all(d[1:] <= d[:-1] + slack), model
         print(model, "distance to the shifted fit:", d[0], "->", d[-1])
-        assert d[-1] < d[0] / 3, "the contraction never acted"
+        # `sgd` from row 500, 57.0 off along the slowest direction of this
+        # unstandardized design (features at levels -2 and 4): 55.3 after
+        # the last 1,000 rows (measured 2026-10-26); `pa` 24 -> 0.16.
+        assert d[-1] < (0.99 if model == "sgd" else 1 / 3) * d[0], "the contraction never acted"
 
 
 #: A power of two per feature, from 1e-6 to 1e6, different for each so no
@@ -820,54 +827,40 @@ def worst_feature_shift_deviation(model: str, seed: int, n: int) -> float:
     return worst
 
 
-class TestKnownDefects:
-    """Constants in the target's units that this class found (task 278 (b),
-    2026-10-25), each pinned as it stands so that the fix flips the test
-    rather than passing it unnoticed. The equivariant configuration beside
-    each is held in `Y_SCALE`. When a defect is fixed, its test here
-    becomes the bitwise check of `TestPowerOfTwoTargetScale` for the
-    default configuration and moves there.
-    """
+class TestTheGradientsConstantsAreRelative:
+    """``sgd``'s ``clip_gradient`` and AdaGrad's epsilon are in units of the
+    target's own spread under the squared and Huber losses (task 278, D1 and
+    D2). Both were constants in the target's units, found by this class
+    (task 278 (b), 2026-10-25): at ``2^20`` the default clip of ``1e3`` bound
+    every gradient and the fit was off the unscaled one, scaled, by 0.59 to
+    6.5 of the target's spread on every row of the second half; at
+    ``2^-20`` AdaGrad's ``1e-8`` was about 1% of ``sqrt(G)`` and the fit
+    4.2e-4 of the spread off, with every unit-bearing parameter mapped. Each
+    is held here to the bit with the constant binding, which
+    ``TestPowerOfTwoTargetScale``'s default configurations do not show."""
 
-    def test_sgds_default_gradient_clip_is_in_the_targets_units(self):
-        # `sgd`'s docstring: "the squared and Huber losses fit a target scaled
-        # by c as the unscaled one, scaled by c". The default `clip_gradient`
-        # of 1e3 is in the target's units times the feature's, so a target
-        # in the millions has every gradient clipped and the fit is not the
-        # unscaled one scaled: on every row of the second half it is off by
-        # at least half the target's spread, 3.4 on average (seed 0, 2^20:
-        # 0.59 to 6.5).
+    def test_a_clip_that_binds_scales_to_the_bit(self):
         x, y = stream(0, N_FULL)
-        c = 2.0**20
-        spec = po.spec.sgd("m", loss="squared", **_COMMON)
-        p0 = floats(fit(spec, x, y)["pred_y"])
-        p1 = floats(fit(spec, x, y * c)["pred_y"])
-        off = np.abs(p1 - p0 * c)[N_FULL // 2 :] / (c * float(np.std(y)))
-        print("sgd at 2^20 with the default clip: off by", float(off.min()), "to", float(off.max()))
-        assert float(off.min()) > 0.5
-        assert float(off.mean()) > 2.0
+        for loss in ("squared", "huber"):
+            tight = po.spec.sgd("m", loss=loss, clip_gradient=0.5, **_COMMON)
+            free = po.spec.sgd("m", loss=loss, clip_gradient=float("inf"), **_COMMON)
+            base = fit(tight, x, y)
+            moved = np.nanmax(np.abs(floats(base["pred_y"]) - floats(fit(free, x, y)["pred_y"])))
+            print(f"{loss}: the clip at 0.5 of the target's spread moves a prediction {moved:.3g}")
+            assert moved > 1e-3, "the clip never bound"
+            for k in (-20, 20):
+                c = 2.0**k
+                assert_scaled(base, fit(tight, x, y * c), c, f"sgd {loss} clip 0.5 at 2^{k}")
 
-    def test_adagrads_epsilon_is_in_the_gradients_units(self):
-        # `lr / (sqrt(G_i) + 1e-8)`: the 1e-8 is in the gradient's units,
-        # so a target near 1e-6 has it at about 1% of `sqrt(G_i)`, and the
-        # fit is not the unscaled one scaled even with every unit-bearing
-        # parameter mapped (seed 0: 4e-4 of the spread at 2^-20, 4e-10 at
-        # 2^20).
+    def test_adagrads_epsilon_scales_to_the_bit(self):
         x, y = stream(0, N_FULL)
 
         def spec(c: float) -> dict[str, Any]:
             return po.spec.sgd(
-                "m",
-                loss="squared",
-                schedule="adagrad",
-                learning_rate=0.1 * c,
-                clip_gradient=1e3 * c,
-                **_COMMON,
+                "m", loss="squared", schedule="adagrad", learning_rate=0.1 * c, **_COMMON
             )
 
-        c = 2.0**-20
-        p0 = floats(fit(spec(1.0), x, y)["pred_y"])
-        p1 = floats(fit(spec(c), x, y * c)["pred_y"])
-        off = float(np.nanmax(np.abs(p1 - p0 * c))) / (c * float(np.std(y)))
-        print("adagrad at 2^-20: off by", off)
-        assert off > 1e-5
+        base = fit(spec(1.0), x, y)
+        for k in (-30, -20, 20, 30):
+            c = 2.0**k
+            assert_scaled(base, fit(spec(c), x, y * c), c, f"sgd adagrad at 2^{k}")

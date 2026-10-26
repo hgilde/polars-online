@@ -725,7 +725,7 @@ What the rules above did to the README's own text:
 | seventeen top-level sections, listed in a contents paragraph of sixteen links, with the twenty models flat | ten sections holding subsections, a contents table, and the models under four families | §2 |
 | three bullets comparing weight `0`, a null target and `predict`, each a paragraph | a table with one row per way, and a column each for scored, clock, fit, `weight_sum` and use | §7 |
 | a paragraph listing the readiness fields a model writes | a runnable block that fits a spec and reads each field, with a comment on each | §3 |
-| the withheld reasons as `below_min_settled_frac`, `above_max_error_inflation`, `below_min_weight` | the order `WITHHELD_REASONS` declares, which is their precedence: `below_min_settled_frac`, `below_min_weight`, `above_max_error_inflation`, `below_warm_rows`, `ill_conditioned` | §4 |
+| the withheld reasons as `below_min_settled_frac`, `above_max_error_inflation`, `below_min_weight` | the order `WITHHELD_REASONS` declares, which is their precedence: `below_min_settled_frac`, `below_min_weight`, `above_max_error_inflation`, `below_warm_rows`, `ill_conditioned`, `unstable_rate` | §4 |
 | *The order of the rows matters only when a model forgets* | *Row order matters when a model forgets … Without one, the models that solve or accumulate give the same answer in any order* | §4 |
 | *14 and 14 takes 2.6 s at a peak of 1.1 GB; 4 and 14 takes the same 2.6 s at 0.8 GB* | a table whose header says which number is which: Polars threads, bank threads, time, peak memory | §7 |
 | *Two things the comments cannot carry*, then both rules in one paragraph | two paragraphs, each led by its rule in bold | §5 |

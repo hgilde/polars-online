@@ -44,6 +44,7 @@ REASONS = {
     "below_min_weight",
     "below_warm_rows",
     "ill_conditioned",
+    "unstable_rate",
 }
 
 
