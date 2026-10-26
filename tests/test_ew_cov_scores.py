@@ -869,3 +869,193 @@ def test_pca_variance_scales_and_the_shares_are_invariant_at_a_tiny_scale():
     assert sum(st) == pytest.approx(1.0, abs=1e-9)
     for a, b in zip(v1, vt, strict=True):
         assert b == pytest.approx(a * 1e-200, rel=1e-6)
+
+
+# ------------------------------------------ task 278 (b29): the options' reach
+
+
+def _ew_quantile(d, weight, p):
+    """The exponentially weighted quantile: the smallest score whose
+    cumulative weight reaches ``p`` of the total."""
+    order = np.argsort(d, kind="stable")
+    cum = np.cumsum(weight[order])
+    return float(d[order][np.searchsorted(cum, p * cum[-1])])
+
+
+class TestMahalQuantilesUnderWeightsAndAClock:
+    """``mahal_q<p>`` promises the EW quantile of the past distances "at the
+    model's half-life and each row's weight": a past score ``j`` weighs
+    ``w_j * 2^(-(C - C_j) / half_life)``, ``C`` the clock summed in capped
+    steps, and a row of weight 0 is scored but joins no history. Held to
+    that within the sketch's ``tanh(1/128)``, on an irregular clock with a
+    gap past the cap and weights with zeros; and the reference is shown to
+    see both, by the rows where an unweighted or a row-clock reference is
+    further off than the bound."""
+
+    def test_the_quantiles_are_the_weighted_ew_ones_on_the_clock(self):
+        n, k, h, cap = 1500, 3, 40.0, 5.0
+        rng = np.random.default_rng(31)
+        X, _ = gaussian(n, k, 31)
+        X[n // 2 :] *= 3.0
+        steps = rng.exponential(1.0, n)
+        steps[n // 3] = 60.0  # one gap past the cap
+        steps[0] = 0.0
+        t = np.cumsum(steps)
+        w = rng.choice([0.0, 0.3, 1.0, 3.0], n, p=[0.1, 0.3, 0.3, 0.3])
+        s = spec(
+            k,
+            stats=["mahal"],
+            mahal_quantiles=[0.5, 0.9],
+            half_life=h,
+            clock="t",
+            gap_cap=cap,
+            weight="w",
+            min_weight=3.0,
+        )
+        out = po.ModelBank([s]).fit_predict(frame(X, t=t, w=w))
+        d = field(out, "mahal")
+        clock = np.cumsum(np.minimum(steps, cap))
+        alpha = math.tanh(1 / 128)
+        joined = np.isfinite(d) & (w > 0.0)
+        checked = unweighted_off = row_clock_off = 0
+        for i in range(60, n):
+            seen = np.flatnonzero(joined[:i])
+            decay = 2.0 ** (-(clock[i - 1] - clock[seen]) / h)
+            for p in (0.5, 0.9):
+                got = field(out, f"mahal_q{p}")[i]
+                want = _ew_quantile(d[seen], w[seen] * decay, p)
+                assert abs(got - want) <= alpha * want * (1 + 1e-9), (i, p, got, want)
+                checked += 1
+                plain = _ew_quantile(d[seen], decay, p)
+                unweighted_off += abs(got - plain) > alpha * plain * 1.01
+                rows = _ew_quantile(d[seen], w[seen] * 2.0 ** (-(i - 1 - seen) / h), p)
+                row_clock_off += abs(got - rows) > alpha * rows * 1.01
+        assert checked > 2800
+        # Measured 2026-10-25: 2,192 and 761 of the 2,880 readings.
+        assert unweighted_off > 100 and row_clock_off > 100, (unweighted_off, row_clock_off)
+
+
+class TestEverythingOnIsChunkAndResumeInvariant:
+    """Hard rule 3 with every option ``ew_cov`` keeps state for at once --
+    lags, mahal quantiles, a PCA on a clock cadence with a row cap,
+    ``partial_corr`` -- under weights with zeros, an irregular clock with
+    steps past the cap and a ``min_weight``: chunks of 1, 7 and 600 rows and
+    saves at rows 5 and 1001 (mid-cadence, mid-ring) give the whole run's
+    frame to the bit."""
+
+    @staticmethod
+    def _stream(n=2400, seed=5):
+        rng = np.random.default_rng(seed)
+        steps = rng.uniform(0.5, 1.5, n)
+        steps[np.arange(n) % 500 == 250] += 120.0
+        X, _ = gaussian(n, 3, seed)
+        w = rng.uniform(0.2, 2.0, n)
+        w[::31] = 0.0
+        return frame(X, t=np.cumsum(steps), w=w)
+
+    def test_chunks_and_saves(self):
+        df = self._stream()
+        s = po.spec.ew_cov(
+            "c",
+            features=["x0", "x1", "x2"],
+            stats=["mean", "var", "corr", "partial_corr", "mahal", "lag_corr"],
+            precision_prior=0.1,
+            lags=[1, 4],
+            mahal_quantiles=[0.5, 0.95],
+            pca=2,
+            pca_every=13.0,
+            max_rows_between_pcas=9,
+            clock="t",
+            gap_cap=50.0,
+            half_life=150.0,
+            weight="w",
+            min_weight=2.0,
+        )
+        whole = po.ModelBank([s]).fit_predict(df)
+        inner = whole["c"].struct.unnest()
+        for name in ("lag_corr_l4_x0_x1", "mahal_q0.95", "pc1_score", "partial_corr_x0_x2"):
+            assert inner[name].drop_nulls().drop_nans().len() > 2000, name
+        for size in (1, 7, 600):
+            bank = po.ModelBank([s])
+            many = pl.concat(
+                [bank.fit_predict(df.slice(o, size)) for o in range(0, df.height, size)]
+            )
+            assert many.equals(whole, null_equal=True), size
+        for cut in (5, 1001):
+            a = po.ModelBank([s])
+            head = a.fit_predict(df.head(cut))
+            b = po.ModelBank.load_bytes(a.save_bytes(), [s])
+            got = pl.concat([head, b.fit_predict(df.slice(cut))])
+            assert got.equals(whole, null_equal=True), cut
+
+
+class TestALargePrior:
+    """``P = (c (C + s prior I))^-1``. ``mahal = sqrt(d' P d)`` falls as the
+    prior grows, row by row (the metric grows in the Loewner order), and
+    tends to ``|d| / sqrt(c s prior)``, the ridge alone; ``partial_corr_ij =
+    -P_ij / sqrt(P_ii P_jj)`` tends to 0 as ``C_ij / (s prior)``, from
+    ``M^-1 ~ (I - C / (s prior)) / (s prior)``, ``c`` cancelling. Both at the
+    rate ``1 / prior``: measured 2026-10-25 at 3.8e-5 and 7.1e-5 relative at
+    a prior of 1e9, 3.8e-8 and 7.1e-8 at 1e12 (``replay`` gives ``d``,
+    ``C``, ``s`` and ``c``)."""
+
+    def test_the_distance_falls_with_the_prior_row_by_row(self):
+        n, k = 600, 3
+        X, _ = gaussian(n, k, 3)
+        runs = [
+            field(
+                po.ModelBank(
+                    [spec(k, precision_prior=prior, half_life=80.0, min_weight=3.0)]
+                ).fit_predict(frame(X)),
+                "mahal",
+            )
+            for prior in (1e-3, 1e-1, 10.0, 1e3)
+        ]
+        live = np.isfinite(runs[0])
+        assert live.sum() > 590
+        for small, big in zip(runs[:-1], runs[1:], strict=True):
+            assert (big[live] < small[live]).all()
+
+    def test_a_huge_prior_is_the_ridge_alone(self):
+        n, k, h = 600, 3, 80.0
+        X, _ = gaussian(n, k, 3)
+        lam = np.full(n, 2.0 ** (-1.0 / h))
+        lam[0] = 1.0
+        error = {}
+        for prior in (1e9, 1e12):
+            got = field(
+                po.ModelBank(
+                    [spec(k, precision_prior=prior, half_life=h, min_weight=3.0)]
+                ).fit_predict(frame(X)),
+                "mahal",
+            )
+            states = replay(X, lam, np.ones(n), prior=prior)
+            rel = []
+            for i in range(5, n):
+                m, c, scale, w_sum, factor = states[i]
+                want = np.linalg.norm(X[i] - m) / math.sqrt(factor * scale * prior)
+                rel.append(abs(got[i] / want - 1.0))
+            error[prior] = max(rel)
+        assert error[1e12] < 1e-6, error
+        assert 990.0 < error[1e9] / error[1e12] < 1010.0, error
+
+    def test_a_huge_prior_drives_the_partial_correlations_to_zero(self):
+        n, k, h = 600, 3, 80.0
+        X, _ = gaussian(n, k, 3)
+        lam = np.full(n, 2.0 ** (-1.0 / h))
+        lam[0] = 1.0
+        error = {}
+        for prior in (1e9, 1e12):
+            s = spec(k, stats=["partial_corr"], precision_prior=prior, half_life=h, min_weight=3.0)
+            out = po.ModelBank([s]).fit_predict(frame(X))
+            states = replay(X, lam, np.ones(n), prior=prior)
+            rel = []
+            for a, b in ((0, 1), (0, 2), (1, 2)):
+                got = field(out, f"partial_corr_x{a}_x{b}")
+                for i in range(5, n):
+                    m, c, scale, w_sum, factor = states[i]
+                    want = c[a, b] / (scale * prior)
+                    rel.append(abs(got[i] / want - 1.0))
+            error[prior] = max(rel)
+        assert error[1e12] < 1e-6, error
+        assert 990.0 < error[1e9] / error[1e12] < 1010.0, error

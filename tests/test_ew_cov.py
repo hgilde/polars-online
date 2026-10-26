@@ -631,6 +631,58 @@ class TestLaggedComoments:
         with pytest.raises(ValueError, match="lag_corr needs `lags`"):
             _spec(("x0", "x1"), stats=["lag_corr"])
 
+    def test_the_largest_lag_is_accepted_and_reads_zero_until_its_ring_fills(self):
+        """``lags`` allows up to 2^20 (2^20 + 1 is refused elsewhere). At that
+        lag on a 600-row stream no row has a partner, so ``C_l`` is ``a C_l``
+        from 0, and ``lag_corr`` is exactly 0 on every row the moments read;
+        the contemporaneous fields are the spec without lags to the bit, and
+        the saved state holds the rows seen, not the 2^20 the ring may reach
+        (measured 2026-10-25: 8,692 bytes against 2,718 at lag 4)."""
+        df = _df(n=600)
+        top = 2**20
+        lagged = _spec(("x0",), stats=["mean", "var", "lag_corr"], lags=[top], half_life=50.0)
+        plain = _spec(("x0",), stats=["mean", "var"], half_life=50.0)
+        bank = po.ModelBank([lagged])
+        out = bank.fit_predict(df)["c"].struct.unnest()
+        ref = po.ModelBank([plain]).fit_predict(df)["c"].struct.unnest()
+        assert out.drop(f"lag_corr_l{top}_x0_x0").equals(ref, null_equal=True)
+        corr = out[f"lag_corr_l{top}_x0_x0"].drop_nulls()
+        assert corr.len() > 590 and (corr == 0.0).all()
+        assert len(bank.save_bytes()) < 20_000
+
+    def test_the_largest_lag_is_the_unrolled_sum_once_its_ring_fills(self):
+        """The largest lag on a stream long enough to fill it: a sine of
+        period 1,024, which divides 2^20, in noise, at no decay and unit
+        weights. Unrolled, ``W_T C_l(T) = sum_t (W_(t-1) / W_t) (x_t -
+        m_(t-1)) (x_(t-l) - m_(t-1))`` over the rows ``t >= l``, with ``W_t
+        = t + 1`` and ``m_t`` the running mean: numpy's cumulative sum,
+        sharing nothing with the ring. ``lag_corr`` is 0 through row ``l``
+        and moves from row ``l + 1``, the first read after a row with a
+        partner."""
+        top = 2**20
+        n = top + 400
+        rng = np.random.default_rng(12)
+        t = np.arange(n)
+        x = np.sin(2 * np.pi * t / 1024) + 0.5 * rng.standard_normal(n) + 3.0
+        spec = _spec(("x0",), stats=["lag_corr"], lags=[top], min_weight=0.0)
+        bank = po.ModelBank([spec])
+        corr = (
+            bank.fit_predict(pl.DataFrame({"x0": x}))["c"]
+            .struct.field(f"lag_corr_l{top}_x0_x0")
+            .to_numpy()
+        )
+        assert (corr[2 : top + 1] == 0.0).all()
+        assert (corr[top + 1 :] != 0.0).all()
+        W = np.arange(1, n + 1, dtype=float)
+        m = np.cumsum(x) / W
+        rows = np.arange(top, n)
+        unrolled = np.sum(
+            W[rows - 1] / W[rows] * (x[rows] - m[rows - 1]) * (x[rows - top] - m[rows - 1])
+        )
+        g = bank.gram("c")[0]
+        np.testing.assert_allclose(g["lag_comoments"][0][0, 0], unrolled / W[-1], rtol=1e-9)
+        assert g["lag_comoments"][0][0, 0] > 1e-4, "nothing to compare"
+
     def test_the_closed_row_carries_the_lags(self):
         df = _df(n=200).with_columns(g=pl.int_range(pl.len()) // 100)
         spec = po.spec.ew_cov(
