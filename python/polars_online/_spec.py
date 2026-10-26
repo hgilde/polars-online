@@ -2768,8 +2768,9 @@ def ew_cov(
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
-    rest. Nothing residual-based applies, and each such switch is refused by
-    name: ``emit_sigma``, ``emit_metrics``, ``conformal``, drift and the rest.
+    rest. ``fit_intercept`` has nothing to act on, as there is no regression.
+    Nothing residual-based applies, and each such switch is refused by name:
+    ``emit_sigma``, ``emit_metrics``, ``conformal``, drift and the rest.
 
     .. rubric:: Output
 
@@ -3597,6 +3598,7 @@ def holt(
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the
     diagnostics and the rest, with the fields each diagnostic adds.
+    ``fit_intercept`` has nothing to act on: the level is the forecast's intercept.
 
     There is no seasonal term: a seasonal index is a ``group`` on the phase,
     which the bank already does.
@@ -3787,8 +3789,9 @@ def kmeans(
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
-    rest. Nothing residual-based applies, and each such switch is refused by
-    name: ``emit_sigma``, ``emit_metrics``, ``conformal``, drift and the rest.
+    rest. ``fit_intercept`` has nothing to act on, as there is no regression.
+    Nothing residual-based applies, and each such switch is refused by name:
+    ``emit_sigma``, ``emit_metrics``, ``conformal``, drift and the rest.
 
     .. rubric:: Output
 
@@ -3996,7 +3999,7 @@ def micro(
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
-    rest.
+    rest. ``fit_intercept`` has nothing to act on, as there is no regression.
 
     A row of weight ``w`` is admitted where a row of the mean weight would be
     and absorbed with its full weight, so a constant multiple of every weight
@@ -4188,8 +4191,9 @@ def ew_class(
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
-    rest. Nothing residual-based applies, and each such switch is refused by
-    name: ``emit_sigma``, ``emit_metrics``, ``conformal``, drift and the rest.
+    rest. ``fit_intercept`` has nothing to act on, as there is no regression.
+    Nothing residual-based applies, and each such switch is refused by name:
+    ``emit_sigma``, ``emit_metrics``, ``conformal``, drift and the rest.
 
     .. rubric:: Output
 
@@ -4329,7 +4333,7 @@ def seqtest(
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
-    rest.
+    rest. ``fit_intercept`` has nothing to act on, as there is no regression.
 
     A trial is a row, so ``weight`` is refused and there is no
     ``half_life``/``lam``: a process that forgot its losses would not be an
@@ -4931,7 +4935,7 @@ def deco(
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
-    rest.
+    rest. ``fit_intercept`` has nothing to act on, as there is no regression.
 
     ``half_life`` or ``lam`` is required: both the standardiser and the level
     decay on it.

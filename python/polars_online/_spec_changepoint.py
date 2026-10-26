@@ -250,7 +250,7 @@ def bocpd(
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
-    rest.
+    rest. ``fit_intercept`` has nothing to act on, as there is no regression.
 
     ``min_weight`` gates what is reported, never what is learned. A row whose
     predictive cannot be evaluated reports nulls and is counted in
@@ -593,7 +593,7 @@ def corrchange(
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
-    rest.
+    rest. ``fit_intercept`` has nothing to act on, as there is no regression.
 
     A row is always part of the statistic reported on it: the report comes
     before the update, which is what makes the flag out of sample. So a
