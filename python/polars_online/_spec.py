@@ -2048,18 +2048,20 @@ def kalman(
         D_j <- D_j + d                     the clock since P_j's last observation
         P_j <- P_j + Q * D_j ** 2, D_j <- 0                                 the drift, on a row
                                                                             that observes y_j
-        s    = z' P_j z + R_j / w
+        s    = z' P_j z + 1 / w
         k    = P_j z / s
         b_j <- b_j + k (y_j - z' b_j)
         P_j <- P_j - k z' P_j
 
-    ``Q`` is the process noise and ``R_j`` the observation noise, the target's
-    EW residual variance unless ``obs_var`` is given. That variance is per
-    target, and its weight ages on every row, a row with no prediction or with
-    weight 0 included. A row with no prediction, before ``min_weight``, still
-    moves the coefficients and adds to the target's weight; only the residual
-    variance learns nothing from it. A row of weight 0, or one whose target is
-    null, ages the target's weight and learns nothing for it.
+    ``P_j`` is held in units of the observation noise ``R_j``, so the
+    coefficients' covariance is ``R_j * P_j``, and ``Q`` is the process noise
+    in the same units. ``R_j`` is the target's EW residual variance, unless
+    given as ``obs_var``. That variance is per target, and its weight ages on
+    every row, a row with no prediction or with weight 0 included. A row with
+    no prediction, before ``min_weight``, still moves the coefficients and
+    adds to the target's weight; only the residual variance learns nothing
+    from it. A row of weight 0, or one whose target is null, ages the
+    target's weight and learns nothing for it.
 
     The drift is charged once, on the row that next observes the target, for
     the whole clock since the last one (``D_j``; under ``share_p`` any target's
@@ -2070,25 +2072,35 @@ def kalman(
     seen on every row: 270 clock units against 75, measured at the same
     ``coef_half_life``.
 
-    Until a target has a residual variance, each row takes its noise from its own
-    innovation, ``R_j = (y_j - z' b_j) ** 2``, computed before the update, so the
-    prediction stays out of sample. The process noise from ``coef_half_life``
-    reads the same number. The residual variance starts at the target's first
-    prediction. A row whose innovation is exactly 0 says nothing about the size
-    of the noise, and changes nothing. Under ``share_p``, until some target has a
-    residual variance, the noise is the mean of the squared innovations of the
-    targets the row observes. The prior is sized from the squared innovations
-    too (``p0`` below), so the filter never sees the target's units: scaling a
-    target by ``c`` scales its predictions by ``c``.
+    The noise is a scale, not a weight: the gain never reads the noise
+    estimate. The model's noise is one constant per target, and the prior
+    (``p0`` times it) and the drift (``(ln 2 * D / h) ** 2`` times it) are
+    multiples of it, so it cancels from the gain, and the estimate scales
+    only what is read out: ``pred_var``, ``se_coef`` and the readiness
+    gates. An estimate inside the gain weighs each row by the inverse of the
+    noise as it stood before the row, so a burst of large residuals inflates
+    it and the rows after count for less than the burst did. With no drift, a
+    fifth of the first 500 rows 50 too high held the slopes at ``[-25.5,
+    33.6]`` where least squares on the same rows gives ``[4.1, -1.4]``. The
+    residual variance starts at the target's first prediction. Neither the
+    gain nor the prior reads the target's units: scaling a target by ``c``
+    scales its predictions by ``c``. A state saved by a release before this
+    form goes on as it was fitted, with the estimate in the gain.
+
+    The intercept's prior is diffuse: the first row that observes the target
+    fills the intercept with its whole innovation, ``b_0 = y - z' b``, at a
+    variance of ``z' P z + 1 / w``, the limit of a prior that knows nothing of
+    the level. So a level in the target moves every prediction by the level,
+    to the rounding of a number of its size, from the first.
 
     .. rubric:: Parameters
 
     ``coef_half_life``
         How fast a coefficient may drift, as a half-life on the clock, on
         standardized features. An observation ``D`` clock units after the
-        target's last adds the process noise
-        ``sigma^2 * (ln 2 * D / h_i) ** 2``, which matches EW-RLS's
-        steady-state gain at that spacing. So the half-life is the same whether
+        target's last adds the process noise ``(ln 2 * D / h_i) ** 2`` in
+        units of the noise, which matches EW-RLS's steady-state gain at that
+        spacing. So the half-life is the same whether
         rows come every unit or every hundredth, and whether the target is seen
         on every row or one in ten, since the noise is charged for the whole
         clock since the target's last observation. That is each standardized
@@ -2097,9 +2109,9 @@ def kalman(
         ``lambda`` is learned with a memory of about ``h / sqrt(lambda)``
         (Ljung and Gunnarsson 1990), where EW-RLS forgets every direction at
         ``h``. At a correlation of 0.9 and ``h = 50`` the memories measured
-        37.5 and 160.5 clock units, against 36.3 and 158.1 predicted. With the
-        EW residual variance as ``R``, which a step in the truth inflates, a
-        step is learned about 1.45 times slower than with the true noise. A
+        37.5 and 160.5 clock units, against 36.3 and 158.1 predicted. The
+        gain reads no noise estimate, so a step in the truth is learned at
+        that memory however much it inflates the residual variance. A
         scalar, or one value per slot with the intercept first; ``inf`` pins
         that coefficient; every value above 0. Required unless ``q`` is given,
         and refused beside it. Not the spec's ``half_life``, which drives the
@@ -2122,39 +2134,36 @@ def kalman(
         so ``q_i`` is in the target's squared units per clock unit squared;
         without it, in the target's units over the feature's, squared, per
         clock unit squared. The intercept's is the target's squared units per
-        clock unit squared either way.
+        clock unit squared either way. Since ``P`` is held in units of the
+        noise, ``q`` is measured against the noise estimate, ``q_i / R_j``,
+        the one place the estimate reaches the gain. Before a target's first
+        residual the row's own squared innovation stands in for it, and a row
+        whose innovation is exactly 0 adds none.
     ``obs_var``
         A fixed observation noise, in place of the EW residual variance: the
         variance of the target about its prediction, in the target's squared
-        units, finite and above 0.
+        units, finite and above 0. It leaves the gain as it is and scales the
+        readouts; ``P`` is then absolute and starts at ``p0 * obs_var`` on
+        every coefficient, the intercept included.
     ``p0``
-        The prior variance of each coefficient, as a multiple of the noise: a
-        ratio, with no units under ``standardize``, where a coefficient and
-        the noise are both in the target's units. Without ``standardize`` a
-        slope's prior ``p0 * R`` carries its feature's units, so ``p0`` is in
-        one over the feature's squared units there.
-        Unstandardized, ``P_0 = p0 * R * I``, set on the target's first row
-        with a noise, from that row's noise, before its correction; until then
-        ``P`` is unsized, and no process noise is added to it. With ``obs_var``
-        given, ``P_0 = p0 * obs_var * I`` from the start, and with no process
-        noise the filter is the ridge regression with penalty ``1 / p0``.
-        Standardized, each coefficient's prior is ``p0 * R`` on the first row
-        that observes the target on which its feature's scale is usable (the
-        intercept's always is). ``R`` is then the weighted median of the first
-        three rows' squared innovations over 0.4549, the median of a
-        chi-squared of one degree, so it reads the noise variance as a mean
-        would. With ``obs_var``, ``R`` is ``obs_var``, and the intercept is
-        sized from the start. Until then the coefficient is 0 and takes no
-        correction, and with no slot sized the target is not predicted. A
-        median, so one wild row among the first three, a target
-        at the input bound, does not size the prior from itself: a prior sized
-        from such a row could leave ``P`` with a negative variance and the
-        filter stuck for good. One squared innovation falls below 1% of the
-        noise one time in twelve, and with no process noise a prior that small
-        pins the fit for good; the median of three, about one time in 120. A
-        covariance whose diagonal goes below 0 is sized again from the noise as
-        it stands. Default 1.0, a prior as uncertain as one observation; finite
-        and above 0.
+        The prior variance of each slope, in units of the noise: a ratio, with
+        no units under ``standardize``, where a coefficient and the noise are
+        both in the target's units. Without ``standardize`` a slope's prior
+        ``p0 * R`` carries its feature's units, so ``p0`` is in one over the
+        feature's squared units there. Unstandardized, each slope's prior is
+        ``p0`` from the start; standardized, on the first row that observes
+        the target on which its feature's scale is usable, and until then
+        the slope is 0 and takes no correction. The intercept's prior is
+        diffuse (above), so it needs neither ``p0`` nor a noise: with no
+        process noise the filter is least squares with the ridge ``1 / p0`` on
+        each slope and none on the intercept, the noise's estimate playing no
+        part. With no slot sized the target is not predicted, which with an
+        intercept no row after the first meets. With ``obs_var`` given,
+        ``P_0 = p0 * obs_var * I`` from the start, the intercept included,
+        and unstandardized, with no process noise, the filter is the ridge
+        regression with penalty ``1 / p0``. A covariance whose diagonal goes
+        below 0 is sized again at ``p0``. Default 1.0, a prior as uncertain as
+        one observation; finite and above 0.
     ``standardize``
         Run the filter on standardized features, so ``coef_half_life`` and ``p0``
         mean the same thing whatever the columns' scale; the reported coefficients
@@ -2224,38 +2233,21 @@ def kalman(
         included, being the same over a gap however it is cut. A prediction
         propagates the state by the same ``Phi`` over the row's clock gap.
     ``share_p``
-        Keep one ``P`` for every target, driven by the mean ``sigma^2`` over
-        the targets that have one, where by default ``P`` is per target because
-        the recursion depends on ``sigma^2_j``. A target with no residual
-        variance yet is left out of the mean, not counted as a noise of 0.
-        ``P``'s recursion never reads ``y``, so targets that share the noise
-        would each carry the same ``P``: every target observed on a row takes
-        its gain from ``P`` as the row finds it, and ``P`` takes the row once.
-        The order of the targets moves no prediction, and a target beside a
-        copy of itself present on the same rows predicts as it would alone. A
-        copy null on some of those rows moves nothing until it has a residual
-        variance; from then its variance, learned from fewer rows, enters the
-        mean. With a noise ``sigma^2_j`` of its own, a target's own filter
-        would keep ``P`` times ``sigma^2_j`` over the mean, and that is the
-        covariance its ``se_coef`` reads. Read off ``P`` as it stands, two
-        targets of noise 0.01 and 1 had standard errors 7.3 times too large and
-        1.39 times too small. Default ``False``: one ``P`` per target, the
-        exact filter for each target under its own noise.
-
-        When sharing helps. With a constant noise, ``P / sigma^2`` and the gain
-        never read ``sigma^2``, since the process noise is ``sigma^2`` times
-        ``(ln 2 / coef_half_life) ** 2``. So the shared filter and the
-        per-target ones part only through how the ``sigma^2_j`` paths move.
-        Sharing helps in three cases:
-
-        - the targets are related, so their noises move together;
-        - each target's own ``sigma^2_j`` is a noisy estimate from a short or
-          sparse history, which the mean over the targets smooths;
-        - the work matters: one ``k x k`` update a row serves every target.
-
-        On ``docs/VALIDATION.md`` section 4's two targets, the next minute's
-        return and the next five minutes', sharing scored R² -0.0110 against
-        -0.0168 on the first and -0.0880 against -0.0746 on the second.
+        Keep one ``P`` for every target, where by default each target has its
+        own. ``P``'s recursion reads neither the targets nor the noise (it is
+        held in units of the noise), so targets observed on the same rows
+        would each carry the same ``P``: one ``k x k`` update a row then serves
+        every target, and every prediction is the per-target filter's, to the
+        bit. Every target observed on a row takes its gain from ``P`` as the
+        row finds it, and ``P`` takes the row once, so the order of the
+        targets moves no prediction. Where a target is null on rows another is
+        present on, the shared ``P`` takes those rows too, and that target's
+        memory follows the others' rows; a target first seen after the
+        others has its intercept filled by its first innovation, as the
+        diffuse prior fills each target's. With an explicit ``q`` the shared
+        ``P`` measures it against the mean noise over the targets that have
+        one. A target's ``se_coef`` reads ``P`` times its own noise. Default
+        ``False``: one ``P`` per target.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the
@@ -2777,8 +2769,9 @@ def ew_cov(
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
-    rest. Nothing residual-based applies, and each such switch is refused by
-    name: ``emit_sigma``, ``emit_metrics``, ``conformal``, drift and the rest.
+    rest. ``fit_intercept`` has nothing to act on, as there is no regression.
+    Nothing residual-based applies, and each such switch is refused by name:
+    ``emit_sigma``, ``emit_metrics``, ``conformal``, drift and the rest.
 
     .. rubric:: Output
 
@@ -3748,8 +3741,9 @@ def kmeans(
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
-    rest. Nothing residual-based applies, and each such switch is refused by
-    name: ``emit_sigma``, ``emit_metrics``, ``conformal``, drift and the rest.
+    rest. ``fit_intercept`` has nothing to act on, as there is no regression.
+    Nothing residual-based applies, and each such switch is refused by name:
+    ``emit_sigma``, ``emit_metrics``, ``conformal``, drift and the rest.
 
     .. rubric:: Output
 
@@ -3957,7 +3951,7 @@ def micro(
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
-    rest.
+    rest. ``fit_intercept`` has nothing to act on, as there is no regression.
 
     A row of weight ``w`` is admitted where a row of the mean weight would be
     and absorbed with its full weight, so a constant multiple of every weight
@@ -4149,8 +4143,9 @@ def ew_class(
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
-    rest. Nothing residual-based applies, and each such switch is refused by
-    name: ``emit_sigma``, ``emit_metrics``, ``conformal``, drift and the rest.
+    rest. ``fit_intercept`` has nothing to act on, as there is no regression.
+    Nothing residual-based applies, and each such switch is refused by name:
+    ``emit_sigma``, ``emit_metrics``, ``conformal``, drift and the rest.
 
     .. rubric:: Output
 
@@ -4290,7 +4285,7 @@ def seqtest(
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
-    rest.
+    rest. ``fit_intercept`` has nothing to act on, as there is no regression.
 
     A trial is a row, so ``weight`` is refused and there is no
     ``half_life``/``lam``: a process that forgot its losses would not be an
@@ -4892,7 +4887,7 @@ def deco(
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
-    rest.
+    rest. ``fit_intercept`` has nothing to act on, as there is no regression.
 
     ``half_life`` or ``lam`` is required: both the standardiser and the level
     decay on it.

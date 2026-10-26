@@ -443,8 +443,12 @@ class TestDecimalTargetScale:
 
 #: The models whose intercept absorbs a level exactly in theory: the level
 #: reaches only the target's running mean (and the intercept recovered from
-#: it, `ybar - m . b`), or, for `pa` under its default standardization and
-#: `holt`, a level the first row sets.
+#: it, `ybar - m . b`), or, for `pa` under its default standardization,
+#: `holt` and `kalman`, a level the first row sets: `kalman`'s intercept has
+#: a diffuse prior, which its first row's innovation fills whole, and its
+#: gain reads no noise estimate (task 278 (b)'s K1: before, the level sized
+#: the noise and moved predictions by 0.03 of the spread thousands of rows
+#: on).
 LEVEL_EXACT = (
     "ewridge",
     "ewridge_standardized",
@@ -454,6 +458,7 @@ LEVEL_EXACT = (
     "quantile_tail_standardized",
     "pa",
     "holt",
+    "kalman",
 )
 
 #: A level `L` is carried in the target's running mean, which rounds a few
@@ -463,7 +468,8 @@ LEVEL_EXACT = (
 #: add a few roundings more, and `holt`'s trend takes the difference of two
 #: levels each carrying that error. Measured 2026-10-25 over 50 streams and
 #: `L` in 1e3, 1e6, -1e9: worst 16 (the mean-form models, seed 25), 7.3
-#: (`pa`), 49 (`holt`, seed 21; p95 47) units of `u * (|L| + max|y|)`.
+#: (`pa`), 49 (`holt`, seed 21; p95 47), 16.1 (`kalman`, seed 35) units of
+#: `u * (|L| + max|y|)`.
 LEVEL_FACTOR = 128.0
 
 

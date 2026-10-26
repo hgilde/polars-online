@@ -192,7 +192,7 @@ def hmm(
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
-    rest.
+    rest. ``fit_intercept`` has nothing to act on, as there is no regression.
 
     ``min_weight`` gates what is reported, never what is learned: a row
     below it moves the filter and shows nulls. A row whose state densities
@@ -401,7 +401,7 @@ def rcov(
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
-    rest.
+    rest. ``fit_intercept`` has nothing to act on, as there is no regression.
 
     ``weight`` is taken only as 0 or 1, since a sum over returns has no
     fractional row, and a zero-weight row advances the clock and enters no

@@ -73,16 +73,31 @@ def test_explicit_q_overrides_halflife():
     assert np.abs(pa[m] - pb[m]).max() > 1e-6
 
 
-def test_share_p_runs_and_differs_from_per_target():
+def test_share_p_is_each_targets_own_filter_when_every_target_is_on_every_row():
+    """``P`` is in units of the noise, so its recursion reads no target and
+    no noise (task 278): with every target on every row, one shared ``P`` is
+    each target's own, and the predictions are the per-target filters' to
+    the bit. With a target null on some rows the shared ``P`` takes rows
+    that target never saw, and its predictions part. (Before, one ``P`` driven by
+    the mean ``sigma^2`` parted from two driven by their own on every row.)"""
     df, _ = synthetic(seed=44, n_groups=1, n_rows=300, k=3, n_targets=2, null_frac=0.0)
     kw = dict(targets=["y0", "y1"])
     a = po.ModelBank([_spec(share_p=False, **kw)]).fit_predict(df)
     b = po.ModelBank([_spec(share_p=True, **kw)]).fit_predict(df)
-    # One P driven by the mean sigma^2 is not two driven by their own.
     for col in ("pred_y0", "pred_y1"):
         pa, pb = _pred(a, col), _pred(b, col)
-        m = np.isfinite(pa) & np.isfinite(pb)
-        assert m.sum() > 100 and np.abs(pa[m] - pb[m]).max() > 1e-6, col
+        assert np.isfinite(pa).sum() > 100, col
+        np.testing.assert_array_equal(pa, pb, err_msg=col)
+    y1 = df["y1"].to_numpy().copy()
+    y1[::4] = np.nan
+    gappy = df.with_columns(pl.Series("y1", y1))
+    a = po.ModelBank([_spec(share_p=False, **kw)]).fit_predict(gappy)
+    b = po.ModelBank([_spec(share_p=True, **kw)]).fit_predict(gappy)
+    # The target on every row is its own filter still; the gappy one parts.
+    np.testing.assert_array_equal(_pred(a, "pred_y0"), _pred(b, "pred_y0"))
+    pa, pb = _pred(a, "pred_y1"), _pred(b, "pred_y1")
+    m = np.isfinite(pa) & np.isfinite(pb)
+    assert m.sum() > 100 and np.abs(pa[m] - pb[m]).max() > 1e-6
 
 
 def test_out_of_sample_on_noise():
@@ -281,15 +296,18 @@ def test_a_short_history_fits_from_its_first_rows(half_life, floor):
     assert r2 > floor, r2
 
 
-def test_an_unsized_prior_predicts_nothing():
-    """Standardized without ``obs_var`` a target's prior is sized from its
-    first three observed rows; a row past ``min_weight`` before then -- a
-    weight of 3 a row meets a floor of 2 after one -- was predicted as
+def test_the_first_row_takes_the_level_and_no_prediction_is_zero():
+    """Standardized without ``obs_var`` a target's prior was sized from
+    its first three observed rows, and a row past ``min_weight`` before then
+    -- a weight of 3 a row meets a floor of 2 after one -- was predicted as
     ``0.0`` whatever the target's level, and that 0 seeded the residual
-    variance with the level squared (task 270, review round 9 B-1). Now
-    those rows are withheld as the filter's warm-up, no prediction is 0.0
-    on a target at 100, and the residual variance starts at the first
-    prediction: ``sigma`` on the row after it is that row's residual."""
+    variance with the level squared (task 270, review round 9 B-1). Since
+    task 278 the intercept's prior is diffuse and needs no noise: the first
+    row sizes it, taking the level whole, so the second row is predicted at
+    the first row's target (the slope waits for its feature's scale), no
+    prediction is 0.0 on a target at 100, and the residual variance starts
+    at the first prediction: ``sigma`` on the row after it is that row's
+    residual."""
     rng = np.random.default_rng(3)
     n = 300
     x = rng.standard_normal(n)
@@ -309,9 +327,11 @@ def test_an_unsized_prior_predicts_nothing():
     out = po.ModelBank([spec]).fit_predict(frame)["m"].struct.unnest()
     pred = out["pred_y"].to_numpy().astype(float)
     reason = out["withheld_reason"].cast(pl.String).to_list()
-    assert reason[:4] == ["below_min_weight", "below_warm_rows", "below_warm_rows", None]
-    assert np.isnan(pred[:3]).all() and np.isfinite(pred[3:]).all()
+    assert reason[:2] == ["below_min_weight", None]
+    assert "below_warm_rows" not in reason
+    assert np.isnan(pred[:1]).all() and np.isfinite(pred[1:]).all()
+    assert pred[1] == y[0]
     assert not (pred == 0.0).any()
     sigma = out["sigma_y"].to_numpy().astype(float)
-    assert np.isnan(sigma[:4]).all()
-    assert sigma[4] == pytest.approx(abs(y[3] - pred[3]), rel=1e-12)
+    assert np.isnan(sigma[:2]).all()
+    assert sigma[2] == pytest.approx(abs(y[1] - pred[1]), rel=1e-12)
