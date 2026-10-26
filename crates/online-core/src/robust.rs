@@ -1125,6 +1125,11 @@ impl Robust {
             self.solve_failures += 1;
             return;
         };
+        // A refit that took every pass is counted, as a seeding's Lloyd run
+        // stopped at its cap is (task 278): its fit stands, the last pass's.
+        if self.refit[j].status().ran_to_cap() {
+            self.solve_failures += 1;
+        }
         let scale = rebuild_scale(&rows, self.cfg.huber_scale, |i| {
             rows.y(i) - fitted(&b, rows.x(i), intercept)
         });

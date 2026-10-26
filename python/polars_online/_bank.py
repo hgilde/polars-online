@@ -2220,7 +2220,13 @@ class ModelBank:
 
         ``ewridge``, ``huber``, ``quantile``
             A solve that needed jitter, or failed at every jitter and kept the
-            previous fit, the standardized solve included.
+            previous fit, the standardized solve included. ``huber`` also counts
+            each target whose refit of its first rows took all 200 of its IRLS
+            passes: the fit of the last pass stands.
+        ``sgd(loss="huber")``
+            Each target whose refit of its first rows took all 200 of its IRLS
+            passes. Past about 20% of outliers on one side the refit converges
+            slowly: over 3,000 streams, 50 passes ran out on 142 and 200 on 6.
         ``lasso``
             A coordinate descent that ran out of ``max_iter`` sweeps before every
             coefficient moved less than ``tol``, one per target and path point.

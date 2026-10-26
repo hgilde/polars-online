@@ -329,3 +329,48 @@ fn a_session_restart_keeps_each_group_as_the_budget_left_it() {
     assert_eq!(resets, 4, "each group restarted once");
     assert_eq!(given_up(&bank), vec![0, 0, 2, 2]);
 }
+
+/// Task 278: a refit that takes every one of its 200 IRLS passes is counted
+/// in the bank's `solve_failures`, for `huber` and `sgd(loss="huber")`
+/// alike. The stream is `online_core`'s `slow_refit_stream(687)`, written
+/// out again here: 71 rows, a level added to 39% of the rows with `x > 0`,
+/// whose IRLS needs 880 passes.
+#[test]
+fn a_refit_that_runs_to_its_cap_is_a_solve_failure() {
+    let mut state: u64 = 688u64.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let mut rnd = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let n = 50 + (rnd() * 450.0) as usize;
+    let frac = rnd() * 0.45;
+    let level = (rnd() * 6.0 - 1.0).exp() * 3.0;
+    let (mut x, mut y) = (vec![], vec![]);
+    for _ in 0..n {
+        let a = rnd() * 2.0 - 1.0;
+        let e = (-2.0 * rnd().max(1e-300).ln()).sqrt() * (std::f64::consts::TAU * rnd()).cos();
+        let out = if rnd() < frac && a > 0.0 { level } else { 0.0 };
+        x.push(a);
+        y.push(1.0 + 2.0 * a + 0.5 * e + out);
+    }
+    assert_eq!(n, 71);
+    let df = df!("x" => x, "y" => y).unwrap();
+    for (model, extra) in [
+        ("huber", ""),
+        ("sgd", r#", "loss": "huber", "learning_rate": 0.05"#),
+    ] {
+        for (rows, want) in [(n, 1), (0, 0)] {
+            let text = format!(
+                r#"{{"name": "m", "model": {{"type": "{model}", "huber_refit_rows": {rows}{extra}}},
+                    "targets": ["y"], "features": ["x"], "half_life": "inf", "min_weight": 3.0}}"#
+            );
+            let spec: Spec = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{text}: {e}"));
+            let mut bank = Bank::new(vec![spec]).unwrap();
+            feed(&mut bank, &df, 13);
+            let got: u64 = bank.solve_failures()[0].iter().map(|(_, c)| c).sum();
+            assert_eq!(got, want, "{model} with huber_refit_rows = {rows}");
+        }
+    }
+}

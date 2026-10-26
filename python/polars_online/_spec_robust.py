@@ -128,7 +128,7 @@ def huber(
         s   = weighted median of |r_i| at v_i', over 0.6745  (root mean square under "rms")
         u_i = min(1, d * s / |r_i|)
         b   = the ridge solve of the rows at v_i * u_i
-        repeated until b moves by under 1e-10 of max|b|, or 50 passes
+        repeated until b moves by under 1e-10 of max|b|, or 200 passes
 
     The target's sums are then rebuilt from the rows at their converged
     weights, and ``s`` from the converged fit's residuals, and the stream goes
