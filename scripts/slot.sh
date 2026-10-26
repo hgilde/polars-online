@@ -7,6 +7,11 @@
 #                                            prints the slot's path
 #   scripts/slot.sh give <slot>              free it (a number or its path); refuses uncommitted work
 #   scripts/slot.sh list                     every slot, and who holds it
+#   scripts/slot.sh overlap [<branch>...]    the files two taken slots both touch, and the files
+#                                            main changed under each since its base: each is a
+#                                            merge conflict, and a gate run, waiting to happen.
+#                                            Branches named after the slots count as slots too
+#                                            (a branch about to be merged or dispatched).
 #
 # A fresh worktree starts from an empty target/: measured, 66 s for the Rust
 # tests, 241 s for the release wheel and 130 s for the dev wheel before any
@@ -33,7 +38,7 @@ locks="$common/slots"
 max="${POLARS_ONLINE_SLOTS:-4}"
 
 usage() {
-    echo "usage: scripts/slot.sh take <branch> [<base>] | give <slot> | list" >&2
+    echo "usage: scripts/slot.sh take <branch> [<base>] | give <slot> | list | overlap [<branch>...]" >&2
     exit 2
 }
 
@@ -113,6 +118,62 @@ case "$cmd" in
                 echo "$n not made yet"
             fi
         done
+        ;;
+    overlap)
+        # What each branch touches: its commits since its merge base with
+        # main, plus a slot's uncommitted files. Every file two branches both
+        # touch conflicts, or at least makes the later one merge main again
+        # and re-gate; so does a file main changed since the branch's base.
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        names=()
+        for n in $(seq 1 "$max"); do
+            [ -e "$locks/$n" ] || continue
+            dir="$(slot_dir "$n")"
+            [ -e "$dir/.git" ] || continue
+            name="slot$n:$(awk '{print $1}' "$locks/$n")"
+            base="$(git -C "$dir" merge-base main HEAD)"
+            { git -C "$dir" diff --name-only "$base" HEAD
+              git -C "$dir" status --porcelain | cut -c4-; } | sort -u > "$tmp/$n"
+            git -C "$main" diff --name-only "$base" main | sort -u > "$tmp/$n.main"
+            names+=("$n=$name")
+        done
+        shift
+        for b in "$@"; do
+            git -C "$main" rev-parse --verify --quiet "$b^{commit}" >/dev/null \
+                || { echo "slot: no branch $b" >&2; exit 2; }
+            base="$(git -C "$main" merge-base main "$b")"
+            key="b$(printf '%s' "$b" | tr -c 'A-Za-z0-9' '_')"
+            git -C "$main" diff --name-only "$base" "$b" | sort -u > "$tmp/$key"
+            git -C "$main" diff --name-only "$base" main | sort -u > "$tmp/$key.main"
+            names+=("$key=$b")
+        done
+        found=0
+        for entry in "${names[@]}"; do
+            k="${entry%%=*}"
+            shared="$(comm -12 "$tmp/$k" "$tmp/$k.main")"
+            if [ -n "$shared" ]; then
+                found=1
+                echo "${entry#*=} vs main (changed since its base):"
+                echo "$shared" | sed 's/^/    /'
+            fi
+        done
+        i=0
+        for a in "${names[@]}"; do
+            i=$((i + 1))
+            j=0
+            for b in "${names[@]}"; do
+                j=$((j + 1))
+                [ "$j" -gt "$i" ] || continue
+                shared="$(comm -12 "$tmp/${a%%=*}" "$tmp/${b%%=*}")"
+                if [ -n "$shared" ]; then
+                    found=1
+                    echo "${a#*=} vs ${b#*=} ($(echo "$shared" | wc -l | tr -d ' ') files):"
+                    echo "$shared" | sed 's/^/    /'
+                fi
+            done
+        done
+        [ "$found" = 1 ] || echo "no overlap"
         ;;
     *) usage ;;
 esac
