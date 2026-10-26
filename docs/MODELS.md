@@ -160,7 +160,13 @@ to keep a fit on every feature, name a set that holds them all, such as
 coefficients of its last solve. Under a finite half-life it solves once the
 weight learned since then reaches `ln 2 / 50` of the weight the fit holds:
 about 1.4 %, or every `half_life/50` of clock in steady state. To solve on
-the clock instead, give `solve_every` in clock units. `half_life=inf` and
+the clock instead, give `solve_every` in clock units. Until `solve_every`
+has passed since the stream's start, or `max_rows_between_solves` rows, the
+model solves by weight as it does by default, so a fit of its first few rows
+is not held for a whole period: with `solve_every=500` and `min_weight=50`,
+the error of the predictions it served in the first 600 rows fell from
+5.6e-4 to 3.1e-6 on five seeds of a five-feature stream at a half-life of
+1,000. `half_life=inf` and
 `lam=` solve on every row, so when the fit need not be current at every
 row, give them a `solve_every`. On 6M rows × 20 features from a parquet
 stream, `solve_every=1000` took 1.4 s instead of 10.7 s, with the
@@ -276,7 +282,9 @@ wide = po.spec.ewridge(
 | 2,000 | 5.9× |
 
 With a solve every 512 rows, each speed-up falls to about 4×, because the
-solve takes the same time either way. Blocking leaves `weight_sum`, the
+solve takes the same time either way. The cadence's first period, the first
+1,000 rows of `wide`, solves by weight as the default does, 233 times, each
+solve bringing `S` up to date first. Blocking leaves `weight_sum`, the
 timing of every prediction and chunk invariance unchanged, and the
 coefficients agree with the row-by-row fit to rounding.
 

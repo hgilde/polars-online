@@ -16,9 +16,15 @@
 //! model's first event, each next one is at the first row whose clock is at
 //! least the cadence past the last event's -- for a regression's solve, the
 //! first such row with weight, a row of weight 0 being clock alone (hard
-//! rule 9, docs/PLAN.md task 214). A regression's first solve and
-//! `ew_cov`'s first refresh are forced by `min_weight`, so they are read
-//! from the output; `micro` has none, and its clock runs from the first row.
+//! rule 9, docs/PLAN.md task 214). `ew_cov`'s first refresh is forced by
+//! `min_weight`, so it is read from the output; `micro` has none, and its
+//! clock runs from the first row. A regression's explicit cadence starts
+//! where its first period ends (task 278, "Default cadence first"): on the
+//! first row with weight whose clock is at least the cadence past the
+//! model's start -- the first row's, or on the row clock a row before it --
+//! and, before that, it solves on the default weight-share schedule, once
+//! the weight learned since its last solve reaches `ln 2 / 50` of the
+//! weight its fit holds ([`share_rows`], that schedule written out).
 //!
 //! The events are read from the output: a solve where `coef`, written on
 //! every row, changes; a refresh where the loadings in force change between
@@ -282,18 +288,61 @@ fn oracle(
 }
 
 /// The model's first event, which the cadence counts from: `micro`'s clock
-/// runs from the first row instead.
-fn first_event(got: &[usize], event: Event) -> Option<usize> {
+/// runs from the first row instead, and a regression's (`Event::Coef`) from
+/// the end of its first period ([`period_end`]), which the test passes in.
+fn first_event(got: &[usize], event: Event, end: usize) -> Option<usize> {
     match event {
         Event::Pruned => None,
-        _ => got.first().copied(),
+        Event::Coef => Some(end),
+        Event::Loadings => got.first().copied(),
+    }
+}
+
+/// Task 278, "Default cadence first": the row a regression's first period
+/// ends on, and its explicit cadence's first solve -- the first row with
+/// weight (`w`) at which `from_start(row)` says the cadence has passed
+/// since the model's start.
+fn period_end(w: &[f64], from_start: impl Fn(usize) -> bool) -> usize {
+    (0..w.len())
+        .find(|&i| w[i] > 0.0 && from_start(i))
+        .expect("the stream outlasts the first period")
+}
+
+/// The definition of the default weight-share schedule a regression's
+/// first period solves on (task 115 (b)), over rows `0..end` of weights `w`
+/// under the per-row decay factors `lam`: a row with weight solves once
+/// the weight learned since the last solve reaches `ln 2 / 50` of the
+/// weight held, both after the row.
+fn share_rows(w: &[f64], lam: impl Fn(usize) -> f64, end: usize) -> Vec<usize> {
+    let share = std::f64::consts::LN_2 / 50.0;
+    let (mut held, mut since, mut rows) = (0.0_f64, 0.0_f64, Vec::new());
+    for (i, &wi) in w.iter().enumerate().take(end) {
+        held = lam(i) * held + wi;
+        since += wi;
+        if wi > 0.0 && since >= share * held {
+            rows.push(i);
+            since = 0.0;
+        }
+    }
+    rows
+}
+
+/// The events of `event` the definition says: a regression's first
+/// period's solves on the default schedule (`share`, the rows before its
+/// end), then the cadence's (`explicit`, from the first event).
+fn with_first_period(event: Event, share: Vec<usize>, explicit: Vec<usize>) -> Vec<usize> {
+    match event {
+        Event::Coef => share.into_iter().chain(explicit).collect(),
+        _ => explicit,
     }
 }
 
 /// Task 180: on 1 ms `Datetime` rows, in each unit, every cadence of `"2s"`
 /// fires every 2,000th row after its first event, as the raw nanoseconds
 /// say. Summed in doubles each came a row late: 2001 rows apart, the first
-/// checkpoint at 2001.
+/// checkpoint at 2001. A regression's first event is the end of its first
+/// period, 2 s from the first row (task 278), and the solves before it are
+/// the default schedule's.
 #[test]
 #[ignore = "extended: a second or more (1.1 s)"]
 fn every_cadence_fires_every_two_thousand_rows_of_a_millisecond_clock() {
@@ -306,15 +355,21 @@ fn every_cadence_fires_every_two_thousand_rows_of_a_millisecond_clock() {
     ] {
         let (t, ns) = millisecond_rows(n, unit);
         let df = frame(t, 11);
+        let ones = vec![1.0; n];
+        let end = period_end(&ones, |i| {
+            i128::from(ns[i]) - i128::from(ns[0]) >= 2_000_000_000
+        });
+        assert_eq!(end, 2_000, "the first period: 2 s from the first row");
         for (name, ..) in CASES {
             let (spec, event) = spec(name, r#""2s""#, true);
             let got = events(&run(&spec, &df, 0), event);
-            let want = oracle(n, event, first_event(&got, event), |i, last| {
+            let want = oracle(n, event, first_event(&got, event, end), |i, last| {
                 i128::from(ns[i]) - i128::from(ns[last]) >= 2_000_000_000
             });
-            if got != want {
+            let all = with_first_period(event, share_rows(&ones, |_| 1.0, end), want.clone());
+            if got != all {
                 failures.push(format!(
-                    "{name} {unit:?}: fired {got:?}, the clock says {want:?}"
+                    "{name} {unit:?}: fired {got:?}, the clock says {all:?}"
                 ));
             }
             // The case is the claim: three events after the first, 2,000
@@ -377,17 +432,23 @@ fn a_number_clock_of_tenths_fires_by_one_subtraction_of_its_raw_values() {
     for (t, every, json) in [(&regular, 0.3, "0.3"), (&irregular, 1.3, "1.3")] {
         let n = t.len();
         let df = frame(Series::new("t".into(), t.clone()), 12);
+        let ones = vec![1.0; n];
+        let end = period_end(&ones, |i| t[i] - t[0] >= every);
         for (name, ..) in CASES {
             let (spec, event) = spec(name, json, false);
             let got = events(&run(&spec, &df, 0), event);
-            let first = first_event(&got, event);
+            let first = first_event(&got, event, end);
             let want = oracle(n, event, first, |i, last| t[i] - t[last] >= every);
-            if got != want {
+            let all = with_first_period(event, share_rows(&ones, |_| 1.0, end), want.clone());
+            if got != all {
                 failures.push(format!(
-                    "{name} under {every}: fired {got:?},\n  the clock says {want:?}"
+                    "{name} under {every}: fired {got:?},\n  the clock says {all:?}"
                 ));
             }
-            let parted = by_summed_steps(t, event, first, every) != want;
+            // The old rule's sums run from the first row up to a
+            // regression's first period's end too, as `micro`'s do.
+            let summed_from = if event == Event::Coef { None } else { first };
+            let parted = by_summed_steps(t, event, summed_from, every) != want;
             assert_eq!(parted, every == 1.3, "{name} under {every}: the case");
             if every == 0.3 {
                 let gaps: std::collections::BTreeSet<usize> =
@@ -433,19 +494,20 @@ fn a_solve_due_on_a_row_of_weight_zero_waits_for_the_next_row_with_weight() {
         let spec: Spec = serde_json::from_value(spec).unwrap();
         let whole = run(&spec, &df, 0);
         let got = events(&whole, event);
-        let want = oracle(n, event, first_event(&got, event), |i, last| {
+        let end = period_end(&w, |i| {
+            i128::from(ns[i]) - i128::from(ns[0]) >= 2_000_000_000
+        });
+        let want = oracle(n, event, first_event(&got, event, end), |i, last| {
             w[i] > 0.0 && i128::from(ns[i]) - i128::from(ns[last]) >= 2_000_000_000
         });
-        if got != want {
-            failures.push(format!("{name}: fired {got:?}, the clock says {want:?}"));
+        let all = with_first_period(event, share_rows(&w, |_| 1.0, end), want.clone());
+        if got != all {
+            failures.push(format!("{name}: fired {got:?}, the clock says {all:?}"));
         }
         // The case is the claim: the cadence reaches rows 2,000, 4,001 and
-        // 6,002, each of weight 0, and the solves wait a row for each. The
-        // robust fits and `lasso` first solve at their floor, a row per
-        // coefficient (row 1; task 278, D10), so their clock reaches row
-        // 2,001 itself, and waits on the other two.
-        let first = usize::from(matches!(name, "huber" | "quantile" | "lasso"));
-        assert_eq!(want, [first, 2_001, 4_002, 6_003], "{name}");
+        // 6,002, each of weight 0, and the solves wait a row for each -- the
+        // first period's end (task 278) among them.
+        assert_eq!(want, [2_001, 4_002, 6_003], "{name}");
         for size in [1, 7, 600] {
             let parts = run(&spec, &df, size);
             if !parts.equals_missing(&whole) {
@@ -467,10 +529,13 @@ fn the_events_do_not_depend_on_the_chunking() {
     for (name, ..) in CASES {
         let (spec, event) = spec(name, r#""2s""#, true);
         let whole = run(&spec, &df, 0);
-        assert_eq!(
-            events(&whole, event).len(),
-            3 - usize::from(event == Event::Pruned)
-        );
+        // A regression's events past its first period (task 278): the
+        // period's end at 2 s, and 4 s.
+        let seen = events(&whole, event)
+            .into_iter()
+            .filter(|&i| event != Event::Coef || i >= 2_000)
+            .count();
+        assert_eq!(seen, 3 - usize::from(event != Event::Loadings));
         for size in [1, 7, 37] {
             let parts = run(&spec, &df, size);
             assert!(parts.equals_missing(&whole), "{name}: chunks of {size}");
@@ -535,17 +600,18 @@ type RowClockCase = (
 /// `coef_every` counts). A cadence of 7 units is then reached on the rows a
 /// cap of 7 learned rows is, the 7th, 14th, ... (0-based 6, 13, ...), and
 /// the two give the same output to the bit: `micro`'s checkpoints, which no
-/// event at the start restarts. Counted from
+/// event at the start restarts, and since task 278's "Default cadence
+/// first" every regression's, whose first period ends on the 7th row
+/// either way and solves on the default schedule before it. Counted from
 /// the first row, whose step is 0, each came a row after the cap's, the
 /// whole stream long. `ew_cov`'s first refresh, at `min_weight` 0, starts
 /// both counters, so it was the cap's before and is still: every 7th row
 /// from it. `huber` and `quantile` took the row clock's start once task
-/// 277's refit, in the same file, had merged; the refit is off here. Their
-/// first solve is now their own floor, a row per coefficient, whatever
-/// `min_weight` says (task 278, D10), so theirs are every 7th row from it;
-/// so is `lasso`'s, from the row its target reaches that floor (the third
-/// here), and since task 278 `ewridge`'s, whose first solve waited for its
-/// `min_weight` (here never met) and now falls on that floor too.
+/// 277's refit, in the same file, had merged; the refit is off here. A
+/// regression's cadence counted from its first solve until task 278's
+/// "Default cadence first" (its own floor, a row per coefficient, since
+/// D10), every 7th row from it; its first period now ends on the 7th row
+/// whatever its `min_weight` (here never met).
 #[test]
 fn on_the_row_clock_each_cadence_is_its_row_cap() {
     let n = 60;
@@ -623,16 +689,16 @@ fn on_the_row_clock_each_cadence_is_its_row_cap() {
             // The first refresh, the first row with a component to show,
             // and every 7th row from it.
             (got[0]..n - 1).step_by(7).collect()
-        } else if matches!(name, "huber" | "quantile") {
-            // Their first solve is the model's floor, a row per coefficient
-            // (row 1 here), whatever `min_weight` says, and the cadence
-            // counts from it (task 278, D10).
-            (1..n - 1).step_by(7).collect()
-        } else if matches!(name, "lasso" | "ewridge") {
-            // The first solve on the third row, the floor's -- a row per
-            // coefficient, whatever `min_weight` says (task 278) -- and
-            // every 7th row from it.
-            (2..n - 1).step_by(7).collect()
+        } else if event == Event::Coef {
+            // A regression's first period ends on the 7th row too, where
+            // the cadence of 7 is first reached from the start, and solves
+            // on the default weight-share schedule before it (task 278,
+            // "Default cadence first"): at a half-life of 20 rows, on every
+            // row, the weight held never reaching fifty times a row's.
+            let lam = 0.5_f64.powf(1.0 / 20.0);
+            let share = share_rows(&[1.0; 6], |_| lam, 6);
+            assert_eq!(share, [0, 1, 2, 3, 4, 5], "{name}: the share's rows");
+            with_first_period(event, share, want)
         } else {
             want
         };

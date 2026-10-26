@@ -2,6 +2,7 @@
 
 import datetime as dt
 import json
+import math
 import warnings
 
 import numpy as np
@@ -816,12 +817,15 @@ class TestTheQuantilesOwnKeywords:
 class TestTheQuantileSolveEvery:
     """Task 278 (b07): ``solve_every`` through the bank, on a clock column
     whose steps are quarters (so every elapsed clock is exact, and a solve
-    falls on the edge itself 22 times in this stream). The fit is first
-    solved on the row its target has been present on a row per coefficient
-    (the third), whatever ``min_weight`` says (task 278, D10), then on the
+    falls on the edge itself 22 times in this stream). Until ``solve_every``
+    has passed since the first row, the first period, the fit is solved on
+    the default weight-share schedule (task 278, "Default cadence first"),
+    whatever ``min_weight`` says; the row it passes on solves, then each
     first row whose clock is at least ``solve_every`` past the last solve's,
     and the coefficients hold in between (the builder's docstring);
-    ``coef`` on every row shows each solve."""
+    ``coef`` on every row shows each solve. (Until then the fit was first
+    solved on the row its target had been present on a row per coefficient,
+    the third, and the cadence counted from it.)"""
 
     N, EVERY, MIN_WEIGHT = 600, 5.0, 3.0
 
@@ -863,12 +867,23 @@ class TestTheQuantileSolveEvery:
         moved = [
             i for i in range(self.N) if coef[i] is not None and (i == 0 or coef[i] != coef[i - 1])
         ]
-        # Three coefficients: the third row. `min_weight` moves none of it:
-        # the weight before the row after it, decayed, is still short of it.
-        first = 2
-        assert ws[first + 1] < self.MIN_WEIGHT
-        want, last = [first], first
-        for i in range(first + 1, self.N):
+        # The first period ends on the first row `EVERY` past the first's,
+        # and solves before it on the default weight-share schedule: once
+        # the weight learned since the last solve reaches ln 2 / 50 of the
+        # weight held, both after the row (every row, this early).
+        end = next(i for i in range(self.N) if t[i] - t[0] >= self.EVERY)
+        share, held, since = [], 0.0, 0.0
+        for i in range(end):
+            held = (0.5 ** ((t[i] - t[i - 1]) / 100.0) if i else 1.0) * held + 1.0
+            since += 1.0
+            if since >= math.log(2) / 50 * held:
+                share.append(i)
+                since = 0.0
+        # `min_weight` moves none of it: the period's first solves come
+        # before the weight reaches it.
+        assert ws[1] < self.MIN_WEIGHT and len(share) >= 3, (ws[:end], share)
+        want, last = [*share, end], end
+        for i in range(end + 1, self.N):
             if t[i] - t[last] >= self.EVERY:
                 want.append(i)
                 last = i
@@ -933,9 +948,12 @@ def test_on_the_row_clock_solve_every_is_its_row_cap(loss):
     being 1, so ``solve_every=n`` solves on the rows
     ``max_rows_between_solves=n`` does. Measured from the first row, whose
     step is 0, it solved a row later, the whole stream long, which ``coef``
-    showed (task 278, D13). The first solve is the model's floor, a row per
-    coefficient (row 2, three coefficients), whatever ``min_weight`` says
-    (1e9 here, never met; task 278, D10), and the cadence counts from it."""
+    showed (task 278, D13). The first period ends on the ``n``-th row,
+    whatever ``min_weight`` says (1e9 here, never met), and the model solves
+    on the default weight-share schedule before it -- every row at this
+    half-life (task 278, "Default cadence first"; until then the cadence
+    counted from the first solve, the floor of a row per coefficient, row
+    2)."""
     rng = np.random.default_rng(0)
     n = 60
     x = rng.standard_normal(n)
@@ -960,4 +978,4 @@ def test_on_the_row_clock_solve_every_is_its_row_cap(loss):
     clock = run(solve_every=7.0)
     assert clock.equals(run(solve_every=1e18, max_rows_between_solves=7), null_equal=True)
     c = clock["coef"].to_list()
-    assert [i for i in range(1, n) if c[i] != c[i - 1]] == list(range(2, n, 7))
+    assert [i for i in range(1, n) if c[i] != c[i - 1]] == [1, 2, 3, 4, 5, *range(6, n, 7)]

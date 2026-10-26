@@ -113,8 +113,16 @@ use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 /// `ewridge` case is that form, and re-saved writes the mark `false`, as
 /// the current case of the same name does, so each converts to the current
 /// bytes; the form a spec with a `min_weight` builds is the case
-/// `ewridge_output_only`. 64 gave `marginal(bin_stat =
-/// "huber")` its own refit of the first rows (task 278): a 63 state has no
+/// `ewridge_output_only`. 64 gave `ewridge`, `lasso`, `huber` and
+/// `quantile` `first_period_by_share` too (task 278, "Default cadence
+/// first"): a 61-63 state has none and loads as `false`, its explicit
+/// cadence counted from its first solve as it was fitted, and goes on to
+/// the bit; every kept case is that form, and re-saved writes the mark
+/// `false`, as the current case of the same name does, so each converts to
+/// the current bytes; the form a spec with an explicit `solve_every` builds
+/// is the cases `ewridge_first_period`, `lasso_first_period` and
+/// `huber_first_period`, saved inside the first period. 64 gave
+/// `marginal(bin_stat = "huber")` its own refit of the first rows (task 278): a 63 state has no
 /// `refit_rows` in its bins' cfg and no refit record, loads with
 /// `refit_rows = 0` and goes on to the bit as the one pass it was fitted
 /// in; the kept `marginal_bins` and `marginal_bins_huber` cases are that
@@ -1315,8 +1323,9 @@ fn the_gates_two_forms_are_written_and_act() {
 }
 
 /// `ewridge`'s `min_weight` withholding the output alone (schema 64,
-/// docs/PLAN.md task 278): `ewridge_output_only` writes the mark `true`, and
-/// every other `ewridge` case `false`, the form a state saved before it,
+/// docs/PLAN.md task 278): `ewridge_output_only` writes the mark `true` (as
+/// `ewridge_first_period`, the form a spec builds, does), and every other
+/// `ewridge` case `false`, the form a state saved before it,
 /// which has no mark, loads as: the residual variance and the first solve
 /// held back to `min_weight`. The fixture is saved where the gate withholds the
 /// continuation's first rows and lets out the rest; its variance folds the
@@ -1332,7 +1341,11 @@ fn ewridges_output_only_form_is_written_and_acts() {
     for f in frozen::ALL.iter().filter(|f| f.variant == "EwRidge") {
         let v = rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap();
         let got = at(&v, &mark).and_then(rmpv::Value::as_bool);
-        let want = Some(f.name == "ewridge_output_only");
+        // The first period's case is the form a spec builds, both marks.
+        let want = Some(matches!(
+            f.name,
+            "ewridge_output_only" | "ewridge_first_period"
+        ));
         assert_eq!(got, want, "{}: min_weight_output_only", f.name);
     }
     let f = frozen::ALL
@@ -1388,6 +1401,76 @@ fn ewridges_output_only_form_is_written_and_acts() {
     let (a, b) = (sig2(new.as_ref()), sig2(old.as_ref()));
     println!("sig2 with the mark {a}, without it {b}");
     assert_ne!(a, b, "the mark moved no residual variance");
+}
+
+/// An explicit cadence's first period on the default weight-share schedule
+/// (schema 64, task 278, "Default cadence first"): each `*_first_period`
+/// case writes the mark `true`, and every other case of its variant
+/// `false`, the form a state saved before it, which has no mark, loads as.
+/// Each is saved inside the period, which its continuation's row 42 ends:
+/// the period's solves move its predictions there, so the same state with
+/// the mark taken out goes on to other numbers, and the state it saves at
+/// the end has the mark cleared.
+#[test]
+fn the_first_periods_form_is_written_and_acts() {
+    if regenerating() {
+        return;
+    }
+    let forms = [
+        ("ewridge_first_period", "EwRidge"),
+        ("lasso_first_period", "Lasso"),
+        ("huber_first_period", "Robust"),
+    ];
+    for (_, variant) in forms {
+        let mark = ["model", variant, "first_period_by_share"];
+        for f in frozen::ALL.iter().filter(|f| f.variant == variant) {
+            let v = rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap();
+            let got = at(&v, &mark).and_then(rmpv::Value::as_bool);
+            let want = Some(forms.iter().any(|(name, _)| *name == f.name));
+            assert_eq!(got, want, "{}: first_period_by_share", f.name);
+        }
+    }
+    for (name, variant) in forms {
+        let f = frozen::ALL
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("{name}: no fixture; add the case and regenerate"));
+        let mut v = rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap();
+        let field =
+            ["model", variant, "first_period_by_share"]
+                .iter()
+                .try_fold(&mut v, |v, key| match v {
+                    rmpv::Value::Map(m) => m
+                        .iter_mut()
+                        .find(|(k, _)| k.as_str() == Some(key))
+                        .map(|(_, v)| v),
+                    _ => None,
+                });
+        *field.unwrap() = rmpv::Value::from(false);
+        let mut bytes = Vec::new();
+        rmpv::encode::write_value(&mut bytes, &v).unwrap();
+        let case = case_of(f);
+        let (mut new, mut old) = (
+            load(&case, &f.bytes()).unwrap(),
+            load(&case, &bytes).unwrap(),
+        );
+        let bits = |o: &Out| o.pred.iter().map(|p| p.to_bits()).collect::<Vec<_>>();
+        let mut moved = 0;
+        for (row, want) in f.rows().iter().zip(&f.outs()) {
+            let (a, b) = (new.step(row), old.step(row));
+            assert_eq!(bits(&a), bits(want), "{name}: the frozen continuation");
+            moved += usize::from(bits(&a) != bits(&b));
+        }
+        println!("{name}: the period's solves moved {moved} predictions");
+        assert!(moved > 0, "{name}: the mark moved no prediction");
+        let end = rmpv::decode::read_value(&mut named(&new.state()).as_slice()).unwrap();
+        let mark = at(&end, &["model", variant, "first_period_by_share"]);
+        assert_eq!(
+            mark.and_then(rmpv::Value::as_bool),
+            Some(false),
+            "{name}: the period ended on row 42 and cleared the mark"
+        );
+    }
 }
 
 /// `kalman`'s covariance in units of the noise (schema 64, docs/PLAN.md task

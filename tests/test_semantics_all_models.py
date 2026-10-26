@@ -131,17 +131,21 @@ class TestNullPolicy:
         if model in ("kalman", "sgd", "pa"):
             extra = {**extra, "standardize": False}
         df = frame(binary=model == "ftrl")
+        # Row 21: off the blocked variant's solves (rows 4, 8, ... since its
+        # first period ran on the default schedule, task 278), where a row
+        # of weight 0 would wait a row to solve and a null target would not.
+        row = 21
         y = df["y0"].to_list()
-        y[20] = None
+        y[row] = None
         out = run(model, extra, df.with_columns(y0=pl.Series(y, dtype=pl.Float64)), **CLOCKED)
-        assert slot(out, "resid_", model)[20] is None, "a null target has no residual"
+        assert slot(out, "resid_", model)[row] is None, "a null target has no residual"
         # Every model still emits a prediction for the row -- it is the update
         # that is skipped, not the prediction.
-        assert slot(out, "pred_", model)[20] is not None
+        assert slot(out, "pred_", model)[row] is not None
         w = df["w"].to_list()
-        w[20] = 0.0
+        w[row] = 0.0
         zero = run(model, extra, df.with_columns(w=pl.Series(w, dtype=pl.Float64)), **CLOCKED)
-        a, b = _fields(out).slice(21), _fields(zero).slice(21)
+        a, b = _fields(out).slice(row + 1), _fields(zero).slice(row + 1)
         assert a.drop("weight_sum").equals(b.drop("weight_sum"), null_equal=True)
         lam = 0.5 ** (1.0 / 200.0)  # the rows are one clock unit apart
         more = a["weight_sum"].to_numpy() - b["weight_sum"].to_numpy()
@@ -212,13 +216,15 @@ class TestWarmup:
         bounds" instead of returning null (IMPROVEMENTS U7)."""
         df = frame(binary=model == "ftrl")
         # The models that solve on a schedule report nothing until the first
-        # solve, which is the state this is about; delay it a few rows. The
-        # rest carry coefficients from row one and never had the problem.
-        delay = (
-            dict(solve_every=5.0, max_rows_between_solves=10_000)
-            if model in ("ewridge", "lasso", "huber", "quantile")
-            else {}
-        )
+        # solve, which is the state this is about; delay it a few rows, with
+        # rows of weight 0, which never solve. (A clock schedule did it until
+        # its first period solved on the default schedule, from the first row
+        # with weight; task 278.) The rest carry coefficients from row one
+        # and never had the problem.
+        scheduled = model in ("ewridge", "lasso", "huber", "quantile")
+        delay = dict(weight="w") if scheduled else {}
+        if scheduled:
+            df = df.with_columns(w=pl.Series([0.0] * 3 + [1.0] * (df.height - 3)))
         out = run(model, extra, df, min_weight=5.0, coef_every=1, **delay)
         fields = [f.name for f in out.schema["m"].fields if f.name.startswith("coef")]
         assert fields, f"{model}: no coef field"

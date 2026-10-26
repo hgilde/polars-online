@@ -467,6 +467,15 @@ pub struct EwRidge {
     /// shift [`Self::win`] (which says why it stays last).
     #[serde(default)]
     min_weight_output_only: bool,
+    /// Whether the explicit cadence's first period runs on the default
+    /// weight-share schedule ([`EwRidge::set_first_period_by_share`]; task
+    /// 278): set by a spec with a `solve_every` of its own, and cleared on
+    /// the row that period ends. Schema 64; `false` in a state written
+    /// before it, and in one of 64 saved before the rule, which go on with
+    /// the explicit cadence from their first solve, to the bit. Always
+    /// written, for the reason [`Self::min_weight_output_only`] gives.
+    #[serde(default)]
+    first_period_by_share: bool,
     /// The hard-cutoff window, when the spec asks for one (docs/PLAN.md §13).
     /// Absent otherwise, so an ordinary fit writes no ring.
     ///
@@ -566,6 +575,7 @@ impl EwRidge {
             keep_factor: false,
             target_min_weight: Vec::new(),
             min_weight_output_only: false,
+            first_period_by_share: false,
             factors: Factors::default(),
             cfg,
         })
@@ -597,6 +607,13 @@ impl EwRidge {
     /// before schema 64, both wait for `min_weight`.
     pub fn set_min_weight_output_only(&mut self, on: bool) {
         self.min_weight_output_only = on;
+    }
+
+    /// Whether the model is still in its explicit cadence's first period,
+    /// solving on the default weight-share schedule
+    /// ([`OnlineModel::set_first_period_by_share`]).
+    pub fn in_first_period(&self) -> bool {
+        self.first_period_by_share && self.cfg.solve_share.is_none()
     }
 
     /// The floor the model learns at ([`Self::set_min_weight_output_only`]):
@@ -1976,6 +1993,11 @@ impl OnlineModel for EwRidge {
         self.cfg.solve_share = share;
     }
 
+    fn set_first_period_by_share(&mut self, on: bool) {
+        self.first_period_by_share =
+            on && crate::since::explicit_cadence(self.cfg.solve_share, self.cfg.solve_every);
+    }
+
     fn solve_share(&self) -> Option<f64> {
         self.cfg.solve_share
     }
@@ -2314,9 +2336,21 @@ impl OnlineModel for EwRidge {
         // `refused_step` steps a row whose weight is not as a row of 0).
         self.rows_since_solve += 1;
         self.weight_since_solve += weight;
+        // The explicit cadence: the clock or the row cap since the last
+        // solve, or, in its first period, since the model's start. Not read
+        // under a weight share, whose rows it leaves as they were.
+        let explicit = self.cfg.solve_share.is_none()
+            && (self.cfg.solve_every <= 0.0
+                || self.since_solve.reached(self.cfg.solve_every)
+                || self.rows_since_solve >= self.cfg.max_rows_between_solves);
+        let first = self.in_first_period();
+        let by_share = |share: f64| self.weight_since_solve >= share * self.n_eff();
         let by_cadence = match self.cfg.solve_share {
-            Some(share) => self.weight_since_solve >= share * self.n_eff(),
-            None => self.cfg.solve_every <= 0.0 || self.since_solve.reached(self.cfg.solve_every),
+            Some(share) => by_share(share),
+            // Until the explicit cadence's first period has passed, the
+            // default schedule's solves too (task 278, "Default cadence
+            // first"; `crate::since::FirstPeriod`).
+            None => explicit || (first && by_share(crate::DEFAULT_SOLVE_SHARE)),
         };
         // A fresh model's first solve fires on the row its weight reaches
         // `min_weight`; so does a target's own, on the row its own weight
@@ -2329,7 +2363,14 @@ impl OnlineModel for EwRidge {
             || (self.beta.is_none() && self.n_eff() >= self.own_floor())
             || own_first;
         if due {
+            let period = crate::since::FirstPeriod::keep(
+                first && !explicit,
+                &self.since_solve,
+                self.rows_since_solve,
+            );
             self.solve();
+            self.first_period_by_share &= !(first && explicit);
+            period.put_back(&mut self.since_solve, &mut self.rows_since_solve);
         }
     }
 

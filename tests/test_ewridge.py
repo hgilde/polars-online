@@ -708,9 +708,11 @@ class TestTheRowClockSolveCadence:
     first row, whose step is 0, the clock solved a row after the cap until
     the first solve, and with a ``min_weight`` never met, which the first
     solve waited for, the whole stream long (task 278, D13), which ``coef``
-    and ``support_coef`` showed. The first solve, on the row the weight
-    reaches a row per unknown whatever ``min_weight`` says (task 278), is
-    the third row here, and both schedules count from it.
+    and ``support_coef`` showed. Both schedules' first period ends on that
+    ``n``-th row, and before it the model solves on the default weight-share
+    schedule (task 278, "Default cadence first"): at a half-life of 20 rows,
+    every row. (Until then both counted from the first solve, on the row the
+    weight reached a row per unknown, the third here.)
     """
 
     @staticmethod
@@ -736,11 +738,12 @@ class TestTheRowClockSolveCadence:
         clock = self.run(solve_every=7.0)
         cap = self.run(solve_every=1e18, max_rows_between_solves=7)
         assert clock.equals(cap, null_equal=True)
-        # The solves, seen where the fit the rows report moves: the first on
-        # the third row (0-based 2), then every 7th row from it.
+        # The solves, seen where the fit the rows report moves: every row of
+        # the first period, which ends on the 7th (0-based 6), then every 7th
+        # row from it.
         c = clock["support_coef"].to_list()
         moved = [i for i in range(1, len(c)) if c[i] != c[i - 1]]
-        assert moved == [2, 9, 16, 23, 30, 37, 44, 51, 58]
+        assert moved == [1, 2, 3, 4, 5, *range(6, 60, 7)]
 
 
 def _relation_frame(seed: int, n: int = 2000, gaps: bool = True) -> pl.DataFrame:

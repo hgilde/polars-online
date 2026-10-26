@@ -263,6 +263,10 @@ def lasso_paths_ref(
     if solve_every is None:
         solve_every = 0.0
     since_w = 0.0
+    # An explicit cadence's first period (task 278, "Default cadence first"):
+    # until its clock or row count from the start comes due, the default
+    # weight rule solves too, and its solves leave that clock and count.
+    in_first = share is None and solve_every > 0.0 and not min_weight_holds_learning
     if select_half_life is None:
         select_half_life = half_life
     max_rows = np.inf if max_rows_between_solves is None else max_rows_between_solves
@@ -452,13 +456,17 @@ def lasso_paths_ref(
         teaches = float(w[i]) > 0.0
         since_rows += int(teaches)
         since_w += max(float(w[i]), 0.0)
-        if share is not None:
+        explicit = share is None and (
+            solve_every <= 0.0 or since_clock >= solve_every or since_rows >= max_rows
+        )
+        if share is not None or in_first:
             ages = t_now - np.asarray(T)
             inside = keep(np.asarray(T), np.arange(len(T)), t_now)
             held = (np.asarray(Wr) * decay(ages, half_life))[inside].sum()
+        if share is not None:
             by_cadence = since_w >= share * held
         else:
-            by_cadence = solve_every <= 0.0 or since_clock >= solve_every
+            by_cadence = explicit or (in_first and since_w >= np.log(2.0) / 50.0 * held)
         cadence = teaches and (by_cadence or since_rows >= max_rows)
         reached = False
         if teaches and not min_weight_holds_learning:
@@ -487,7 +495,11 @@ def lasso_paths_ref(
         if cadence:
             fit = solve(t_now)
             solved[i] = True
-            since_clock, since_rows, since_w = 0.0, 0, 0.0
+            if in_first and not explicit:
+                since_w = 0.0
+            else:
+                since_clock, since_rows, since_w = 0.0, 0, 0.0
+                in_first = False
         if fit is not None:
             coef[i] = fit
 
@@ -705,6 +717,12 @@ def ewridge_paths_ref(
         return [], [], [], [], [], None, 0.0, 0
 
     fast, slow, T, Xr, Yr, fit, since_clock, since_rows = restart()
+    # An explicit cadence's first period (task 278, "Default cadence first"):
+    # until its clock or row count from the start comes due, the default
+    # weight rule solves too, and its solves leave that clock and count. A
+    # session reset starts a fresh model, and so a fresh period.
+    explicit_cadence = share is None and solve_every > 0.0
+    in_first = explicit_cadence
     # Each row's weight in each target's own accumulator: the Gram's, until a
     # blend normalises each over its own rows.
     fast_t: list[np.ndarray] = []
@@ -721,6 +739,7 @@ def ewridge_paths_ref(
             fast, slow, T, Xr, Yr, fit, since_clock, since_rows = restart()
             fast_t = []
             since_w = 0.0
+            in_first = explicit_cadence
             d = 0.0
         elif changed and session_gap is not None:
             d = min(float(session_gap), gap_cap)
@@ -778,17 +797,25 @@ def ewridge_paths_ref(
         since_rows += int(teaches)
         since_w += max(float(w[i]), 0.0)
         inside = within(t_last - np.asarray(T))
+        held = float(np.asarray(fast)[inside].sum())
+        explicit = share is None and (
+            solve_every <= 0.0 or since_clock >= solve_every or since_rows >= max_rows
+        )
         if share is not None:
-            by_cadence = since_w >= share * float(np.asarray(fast)[inside].sum())
+            by_cadence = since_w >= share * held
         else:
-            by_cadence = solve_every <= 0.0 or since_clock >= solve_every
+            by_cadence = explicit or (in_first and since_w >= np.log(2.0) / 50.0 * held)
         due = teaches and (by_cadence or since_rows >= max_rows)
         if teaches and not due and fit is None:
-            due = float(np.asarray(fast)[inside].sum()) >= floor
+            due = held >= floor
         if due:
             fit = solve()
             solved[i] = True
-            since_clock, since_rows, since_w = 0.0, 0, 0.0
+            if in_first and not explicit:
+                since_w = 0.0
+            else:
+                since_clock, since_rows, since_w = 0.0, 0, 0.0
+                in_first = False
         if fit is not None:
             coef[i] = fit
             has_fit[i] = True

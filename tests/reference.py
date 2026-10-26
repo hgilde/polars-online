@@ -462,7 +462,12 @@ def lasso_ref(
       half-life: a solve once the weight learned since the last reaches
       ``ln 2 / 50`` of the weight the fit holds (docs/PLAN.md task 115 (b));
       every row under an infinite one. ``max_rows_between_solves`` is off by
-      default.
+      default;
+    - given, ``solve_every`` starts with a first period (task 278, "Default
+      cadence first"): until its clock or ``max_rows_between_solves`` from
+      the start comes due, the weight rule solves too, at any half-life,
+      and its solves leave that clock and count; the row it comes due on
+      solves and starts them over.
 
     Feature null => the row is skipped. Nothing is scored or learned and it
     is not a row for the schedule. Its clock step folds into the next accepted
@@ -485,6 +490,10 @@ def lasso_ref(
         solve_every = 0.0
     max_rows = np.inf if max_rows_between_solves is None else max_rows_between_solves
     since_w = 0.0
+    # An explicit cadence's first period (task 278, "Default cadence first"):
+    # until its clock or row count from the start comes due, the default
+    # weight rule solves too, and its solves leave that clock and count.
+    in_first = share is None and solve_every > 0.0 and not min_weight_holds_learning
 
     pred = np.full((n, npath), np.nan)
     weight_sum = np.full(n, np.nan)
@@ -555,10 +564,13 @@ def lasso_ref(
         since_rows += int(teaches)
         rows_seen += int(teaches)
         since_w += max(w[i], 0.0)
+        explicit = share is None and (
+            solve_every <= 0.0 or since_clock >= solve_every or since_rows >= max_rows
+        )
         if share is not None:
             by_cadence = since_w >= share * w_sum
         else:
-            by_cadence = solve_every <= 0.0 or since_clock >= solve_every
+            by_cadence = explicit or (in_first and since_w >= np.log(2.0) / 50.0 * w_sum)
         if min_weight_holds_learning:
             first = fit is None and w_sum >= min_weight
         else:
@@ -571,7 +583,11 @@ def lasso_ref(
                 fit = solve(mean, raw, ry)
                 fitted = True
             solved[i] = True
-            since_clock, since_rows, since_w = 0.0, 0, 0.0
+            if in_first and not explicit:
+                since_w = 0.0
+            else:
+                since_clock, since_rows, since_w = 0.0, 0, 0.0
+                in_first = False
         if fit is not None:
             coef[i] = fit
 

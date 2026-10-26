@@ -591,10 +591,12 @@ fn coef_is_the_output_s_last_coef_per_group() {
 
     // `coef` does not wait for `min_weight` (5 here): the spec solves every
     // row, so after one row per group there is a fit, and `n_eff` is what
-    // says how little is behind it. Under a clock schedule the first row of
-    // a stream has not solved, and the row is `None`, as `coef` is; the
-    // default schedule solves it, all of its weight being new (docs/PLAN.md
-    // task 115 (b)).
+    // says how little is behind it. The default schedule solves the first
+    // row too, all of its weight being new (docs/PLAN.md task 115 (b)), and
+    // so does a clock schedule, whose first period runs on the default one
+    // (task 278, "Default cadence first"); where the first period is not
+    // so, a state written before the rule, its first row had not solved and
+    // the row was `None`, as `coef` was.
     let mut fresh = Bank::new(vec![spec_json("m", true)]).unwrap();
     fresh.fit_predict(&df.slice(0, 2)).unwrap();
     assert!(
@@ -616,11 +618,10 @@ fn coef_is_the_output_s_last_coef_per_group() {
     assert!(written.contains("\"solve_every\":10.0"), "{written}");
     let mut lazy = Bank::new(vec![lazy]).unwrap();
     lazy.fit_predict(&df.slice(0, 2)).unwrap();
-    assert!(
-        lazy.coef(0, None)
-            .unwrap()
-            .iter()
-            .all(|r| r.coef.is_none() && r.n_eff > 0.0)
+    assert_eq!(
+        lazy.coef(0, None).unwrap(),
+        fresh.coef(0, None).unwrap(),
+        "the clock schedule's first rows solve as the every-row one's do"
     );
 }
 
@@ -1243,10 +1244,12 @@ fn every_bank_reader_survives_a_held_block() {
             SortMultipleOptions::default().with_maintain_order(true),
         )
         .unwrap();
-    // g1's first solve falls where its weight reaches a row per unknown,
-    // 3, whatever its `min_weight` of 5 says (task 278), and flushes the
-    // block; 24 rows in, rows are held again.
-    let cut = 200 + 24;
+    // g1's first 30 rows with weight are its explicit cadence's first
+    // period, which solves on the default weight-share schedule, flushing
+    // the block at each solve (task 278, "Default cadence first"); the row
+    // cap of 30 then takes over, and 24 rows past the period, rows are held
+    // again.
+    let cut = 200 + 30 + 24;
     let (head, rest) = (df.slice(0, cut), df.slice(cut as i64, df.height() - cut));
 
     // Both groups are mid-block at the points that matter: g0 at its close
