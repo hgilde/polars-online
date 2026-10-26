@@ -16466,6 +16466,16 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       its selection errors from its own floor (a row per coefficient)
       ("Both output-only"; kalman at min_weight 50 was 100x off least
       squares on clean data).
+      *First period of an explicit cadence (the user, 2026-10-26, "Default
+      cadence first")*: with `min_weight` output-only, a model first solves at
+      its own floor, and an explicit long `solve_every` then held that fit a
+      whole period (`solve_every=500`, `min_weight=50`: served MSE over the
+      first 600 rows 1.89e-6 -> 1.58e-5). Until the first explicit period has
+      passed, the model solves on the default weight-share schedule; then the
+      explicit cadence takes over. Learning stays independent of
+      `min_weight`. (The "100x" kalman figure above did not reproduce:
+      `noise_units` had already removed it; the real move was through an
+      explicit `q`.)
 - [ ] 279. **Smaller build caches: no debug info for dependencies** -- the
       user, 2026-10-25 ("Why do agents take so much disk I though we shared
       caches", then "Yes"). Each worktree slot keeps its own `target/` (a
