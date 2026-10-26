@@ -699,7 +699,13 @@ penalized.** The slopes solve `(C + λI) b = c`, and the intercept is
 system is solved in correlation form, so one `λ` means the same whatever
 the columns' units. A grid of penalties rides one eigendecomposition:
 with `C = Q diag(e) Q'`, each penalty's slopes are
-`Q diag(1 / (e + λ)) Q' c`. To reproduce the coefficients a spec reports
+`Q diag(1 / (e + λ)) Q' c`. That holds where `C`'s diagonal is even, as in
+correlation form. An eigendecomposition is accurate only relative to the
+largest eigenvalue, so on columns of unequal scale `solve` scales `C` by
+its diagonal first, as a Cholesky solve in effect does, and the features'
+units then cost no digits. A uniform `λ` is not uniform on the scaled
+matrix, so there each penalty takes a solve of its own. To
+reproduce the coefficients a spec reports
 in `bank.coef()`, pass its `ridge` and `standardize`. `solve` does not
 reproduce a spec's `ridge_scale="sum"` or `coef_prior`, a ridge on a
 decaying scale and a prior other than zero. Read those fits from
@@ -948,11 +954,22 @@ descent for a grid of penalties:**
 
 **At a knot, LARS gives the lasso's coefficients exactly, and coordinate
 descent reaches them to its tolerance.** `lasso_path`'s `tol` bounds the
-largest move of a sweep. On a poorly conditioned Gram that says little
-about the distance from the solution: at a condition number of 1e8, a
-descent at `tol=1e-14` stopped with its intercept 0.48 from the knot's
-(`lars_path`'s
-reference). The descent follows Friedman, Hastie and Tibshirani (2010).
+largest move of a sweep, as a share of the target's spread: its standard
+deviation, read from the Gram's target moments, or its root mean square
+without an intercept. The standardized coefficients a sweep moves are in
+the target's units, so the rule has none: a target scaled by a power of
+two, with the penalties, gives the same path scaled, to the bit. On a poorly
+conditioned Gram the rule says little about the distance from the
+solution: at a condition number of 1e8, a descent at `tol=1e-14` stopped
+with its intercept 0.48 from the knot's (`lars_path`'s reference). The
+descent follows Friedman, Hastie and Tibshirani (2010).
+
+**A penalty whose descent runs out of sweeps is named in a warning.** Its
+row is where the descent stopped, and a `ReadinessWarning` lists each such
+penalty. A cyclic descent shrinks the error along two correlated columns by
+about `1 − 1/κ` a sweep, with `κ` the correlation matrix's condition
+number. So on columns that nearly repeat each other it needs about `κ`
+sweeps: raise `max_iter`, or take the knots from `lars_path`.
 
 The recipe walks the path on weeks 1 to 4 to its eighth active column,
 and checks coordinate descent at its knots. Then it chooses a penalty

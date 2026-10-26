@@ -43,6 +43,7 @@ REASONS = {
     "above_max_error_inflation",
     "below_min_weight",
     "below_warm_rows",
+    "ill_conditioned",
 }
 
 

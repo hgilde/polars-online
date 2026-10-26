@@ -392,6 +392,18 @@ impl AnyModel {
         }
     }
 
+    /// Whether a slot's fit is withheld because the system it was solved
+    /// from is past the condition at which a solve keeps a digit:
+    /// `ewridge`'s, whose normal equations can factorize past it
+    /// (`online_core::SpdFactor::carries_no_digit`). Every other model
+    /// solves nothing of the kind.
+    pub fn ill_conditioned(&self) -> bool {
+        match self {
+            AnyModel::EwRidge(m) => m.ill_conditioned(),
+            _ => false,
+        }
+    }
+
     /// What went wrong in a model's solves, counted (docs/PLAN.md §7):
     /// `ewridge` and `robust` count their jittered or failed factorizations,
     /// `lasso` its coordinate descents that ran out of sweeps, `ew_class` the
@@ -2094,18 +2106,22 @@ pub fn settled_weight(weight: f64, first: f64, settled: f64, steps: f64) -> f64 
 /// spells them: the code the row buffer carries (0 for none) and the name
 /// the output shows. The order is the precedence when several apply. A
 /// state's last row keeps the code, so a new reason takes the next one:
-/// the model's own warm-up (`warm_rows`) came last, and no model that has
-/// it has the noise gate before it.
-pub const WITHHELD_REASONS: [&str; 4] = [
+/// the model's own warm-up (`warm_rows`) came after the gates, and no model
+/// that has it has the noise gate before it; `ill_conditioned` came last
+/// (task 278, D4), and the noise gate reads a fit withheld for its
+/// condition as not a number, so it never names that fit in its place.
+pub const WITHHELD_REASONS: [&str; 5] = [
     "below_min_settled_frac",
     "below_min_weight",
     "above_max_error_inflation",
     "below_warm_rows",
+    "ill_conditioned",
 ];
 const REASON_SETTLED: u8 = 1;
 const REASON_MIN_PERIODS: u8 = 2;
 const REASON_INFLATION: u8 = 3;
 const REASON_WARM_ROWS: u8 = 4;
+const REASON_ILL_CONDITIONED: u8 = 5;
 
 /// The settled fraction at which a readiness notice judges a stream
 /// (docs/WARMUP-AND-CONVERGENCE.md §3): the one rule all three notices
@@ -4683,6 +4699,11 @@ fn run_instance(
         // row itself was still read by the unseeded model, and reports
         // nothing.
         let seeding = inst.model.get().seeding();
+        // So, for the same reason, is whether the fit this row is predicted
+        // from was withheld as too ill-conditioned to carry a digit: the
+        // step may solve again on this row, and the reason names the fit
+        // the prediction came from (task 278, D4).
+        let ill = inst.model.get().ill_conditioned();
 
         // The instance's kept step, its buffers reused (task 270, M-4); put
         // back at the end of the row.
@@ -4848,6 +4869,13 @@ fn run_instance(
         // sit above the floor for every row of it.
         if reason == 0 && seeding {
             reason = REASON_WARM_ROWS;
+        }
+        // A fit withheld because its system was past the condition at which
+        // a solve keeps a digit, where no gate above has withheld the row.
+        // The noise gate reads such a slot as not a number, so it does not
+        // claim it; the model's own null is then named for what it is.
+        if reason == 0 && ill {
+            reason = REASON_ILL_CONDITIONED;
         }
         // The noise gate has not been met: the stream has all but settled,
         // the gate has withheld every row for a further half-life, and the

@@ -171,6 +171,37 @@ system with a small jitter on the diagonal.** `bank.solve_failures()`
 counts the solves that needed it. A count above zero points at constant or
 collinear features, or too few rows for the features.
 
+**A system can factorize and still be too nearly singular for its solve to
+keep a digit, and then `ewridge` withholds the fit.** Rounding can leave a
+matrix past `1/u` in condition positive definite, `u = 2^-53`, and its
+coefficients then come out wrong by more than their own size. Two features
+equal to within `1e-11` of their spread gave slopes of -364.1 and 363.1 for a
+truth of 1 and -2. So each factorization that needed no jitter estimates the
+condition of the system with each column scaled by the root of its
+diagonal. That is what a Cholesky solve is accurate to, so the features'
+units do not enter. An upper bound from the factor settles most systems at
+the cost of one solve with it, and the rest take Hager and Higham's
+estimate, about four. Where it puts the solve's
+forward-error bound at 1 or more, no digit of the coefficients is promised:
+
+| | |
+|---|---|
+| the estimate | `‖H⁻¹‖₁`, `H = D⁻¹ A D⁻¹`, `D = diag(√a_ii)`, by Hager's method as LAPACK's `dlacn2` runs it |
+| the solve's backward error in `H` | at most `η = k γ_{3k+1}` an entry, `γ_m = m u / (1 − m u)` |
+| the forward-error bound | `2κη / (1 − κη)`, with `κη = k γ_{3k+1} ‖H⁻¹‖₁` |
+| withheld where | `3 k γ_{3k+1} ‖H⁻¹‖₁ ≥ 1`: at `k = 3` from `1.0e14`, at `k = 10` from `9.7e12`, at `k = 50` from `4.0e11` |
+
+A withheld fit has null `coef`, `support_coef` and predictions,
+`withheld_reason` reads `ill_conditioned`, and the solve is counted in
+`bank.solve_failures()`. The next solve inside the limit reports again.
+NIST's statistical reference datasets show where the limit falls. Their
+hardest designs that double precision can solve by the normal equations
+have correlation matrices conditioned at `2.7e6`, far inside it. `Filip`, a
+degree-10 polynomial at `1.5e16`, is past it, and is withheld. A ridge
+keeps a system inside the limit. So does `rls`, which rotates the design
+rather than squaring it and loses half as many digits: it keeps 7 of
+`Filip`'s.
+
 **To start from a belief that fades as data arrives, such as yesterday's
 fit, give it as `coef_prior` with `ridge_scale="sum"`.** The ridge then
 sits on the decaying sum scale, as `rls`'s does, and pulls every
@@ -422,7 +453,8 @@ It runs coordinate descent on the standardized sums, warm-started along the
 path and from one solve to the next. `C` is the features' correlation
 matrix, and `c_i` is feature `i`'s covariance with the target over the
 feature's standard deviation. For each penalty `l` in `penalties`, the
-sweep repeats until no coefficient moves by more than `tol`:
+sweep repeats until a sweep moves no coefficient by `tol·s_y` or more, with
+`s_y` the target's spread:
 
 ```
 ρ_i = c_i − Σ_{j≠i} C_ij β_j
@@ -433,9 +465,19 @@ After the sweeps the slopes are unscaled, and the intercept is `ȳ − m·β`,
 with `m` the features' means. The target is centred but not scaled, so the
 L1 threshold `l·l1_ratio` is in the target's units. So scale `penalties`
 with the target: for a pure lasso, a target ten times larger needs
-penalties ten times larger to zero the same coefficients. A descent that
-runs out of its `max_iter` sweeps is counted in `bank.solve_failures()`,
-so if that count is above zero, give a larger `max_iter`.
+penalties ten times larger to zero the same coefficients.
+
+**The stopping rule has no units.** The coefficients `β_i` the sweep moves
+are in the standardized coordinates, so they are in the target's units, and
+`tol` is compared with a move as a share of the target's spread `s_y`: its
+standard deviation over the rows the fit reads, or its root mean square
+without an intercept. So a target scaled by a power of two, with
+`penalties` scaled by the same factor, gives the same fit scaled, to the
+bit. A descent that runs out of its `max_iter` sweeps is counted in
+`bank.solve_failures()`, so if that count is above zero, give a larger
+`max_iter`. Columns that nearly repeat each other slow the descent most: it
+shrinks the error along such a pair by about `1 − 1/κ` a sweep, with `κ`
+the correlation matrix's condition number.
 
 ```python
 las = po.spec.lasso(

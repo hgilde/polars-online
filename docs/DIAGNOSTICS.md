@@ -1904,6 +1904,7 @@ prediction's `withheld_reason` names the gate that held it:
 | `min_weight` | `below_min_weight` |
 | `max_error_inflation` | `above_max_error_inflation` |
 | `warm_rows` (`kmeans`, `hmm`, `bocpd`): the rows a model learns from before it has seeded its centres, states or prior; `kalman`'s rows before a target's prior is sized | `below_warm_rows` |
+| none, the solve itself (`ewridge`): a fit whose normal equations are past the condition at which a solve keeps a digit, see [`ewridge`](MODELS.md#ewridge--ew-ridge-on-sufficient-statistics) | `ill_conditioned` |
 
 The reasons are listed in their order of precedence, which is the order
 `withheld_reason` reports them in. `max_error_inflation` is on by default

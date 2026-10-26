@@ -394,6 +394,12 @@ class ReadinessWarning(PolarsOnlineWarning, UserWarning):
     ``support_coef``); the warning is the once-only pointer to it. For a spec
     where the finding is intended,
     ``warnings.simplefilter("ignore", polars_online.ReadinessWarning)``.
+
+    Offline, :func:`polars_online.gram.lasso_path` raises it once per call
+    for the penalties whose coordinate descent ran out of its ``max_iter``
+    sweeps before it met its stopping rule, naming them: each such row is
+    where the descent stopped. The ``lasso`` model counts the same event in
+    :meth:`ModelBank.solve_failures`.
     """
 
 

@@ -425,3 +425,340 @@ def test_state_is_the_most_likely_under_the_predicted_probabilities():
     assert (live["state"].to_numpy() == pred.argmax(axis=1)).all()
     filt = live.select("filtered_state0", "filtered_state1").to_numpy()
     assert (pred.argmax(axis=1) != filt.argmax(axis=1)).sum() > 0
+
+
+# --- task 278 (b08): the parameters no third-party library computes. Each
+# shown taking effect where it should, and to rounding nowhere else; the
+# transition prior's formula itself is written by hand in the Rust tests
+# (`hmm.rs`, `the_transition_is_the_decayed_counts_plus_the_prior_written_by_hand`),
+# where `cargo mutants` sees it. -------------------------------------------
+
+GIVEN_MEANS = [-1.5, -1.5, 1.5, 1.5]
+GIVEN_COVS = [1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0]
+GIVEN_PI = [0.9, 0.1, 0.2, 0.8]
+PROBS = ("filtered_state0", "filtered_state1", "predicted_state0", "predicted_state1")
+
+
+def gap(a, b, cols=PROBS):
+    """The largest difference between two runs over `cols`, which must be
+    null on the same rows."""
+    worst = 0.0
+    for c in cols:
+        assert a[c].is_null().equals(b[c].is_null()), c
+        x, y = a[c].drop_nulls().to_numpy(), b[c].drop_nulls().to_numpy()
+        worst = max(worst, float(np.abs(x - y).max()))
+    return worst
+
+
+def given(**kw):
+    return {"means": GIVEN_MEANS, "covs": GIVEN_COVS, "transition": GIVEN_PI} | kw
+
+
+def test_transition_prior_takes_effect_where_the_counts_are_learned():
+    """Under ``learn=True`` the pseudo-count weighs against the learned
+    counts, so each value gives its own filter: measured 2026-10-25 against
+    the default 1, max |d p| 0.72 at 0, 0.12 at 0.3 and 0.063 at 5, and no
+    two of the four closer than that 0.063. Without learning there are no counts to weigh against,
+    and a row of ``Pi`` is ``tau K Pi0 / (tau K)``, the given matrix: every
+    value is the default's filter to rounding (2.2e-16 on the probabilities,
+    1.8e-15 on ``loglik``), 0 included."""
+    df = blobs(n=1500, run=60, seed=21)
+    runs = {tau: run(df, **given(transition_prior=tau)) for tau in (0.0, 0.3, 1.0, 5.0)}
+    taus = list(runs)
+    for i, a in enumerate(taus):
+        for b in taus[:i]:
+            assert gap(runs[a], runs[b]) > 1e-2, (a, b)
+    fixed = run(df, **given(learn=False))
+    for tau in (0.0, 0.3, 0.7, 3.0, 5.0, 1e12):
+        other = run(df, **given(learn=False, transition_prior=tau))
+        assert gap(fixed, other) <= 1e-15, tau
+        assert gap(fixed, other, ("loglik",)) <= 1e-14, tau
+
+
+def test_a_large_transition_prior_is_the_fixed_matrix_at_rate_one_over_tau():
+    """As ``tau`` grows the learned counts weigh nothing against it, and
+    ``Pi`` is the given matrix while the states go on learning: the limit is
+    ``tvtp`` with ``B = 0`` and ``A = log Pi``, which learns the states and no
+    count. The distance falls as ``1/tau`` (the counts, ~``n`` rows, over
+    ``tau K``): measured 2026-10-25 at 3.28e-4, 3.28e-7 and 3.28e-10 for
+    ``tau`` = 1e6, 1e9 and 1e12."""
+    df = blobs(n=1500, run=60, seed=21).with_columns(z=pl.lit(0.37))
+    log_pi = np.log(GIVEN_PI).tolist()
+    limit = run(
+        df,
+        means=GIVEN_MEANS,
+        covs=GIVEN_COVS,
+        exog_tvtp="z",
+        tvtp_coef=[log_pi, [0.0] * 4],
+        coef_every=0,
+    )
+    # Evidence the states learned in the limit run: they left where they
+    # were given.
+    assert np.abs(np.array(limit["coef"][-1].to_list()) - GIVEN_MEANS).max() > 0.3
+    gaps = [gap(limit, run(df, **given(transition_prior=tau))) for tau in (1e6, 1e9, 1e12)]
+    assert 1e-5 < gaps[0] < 1e-3, gaps
+    for wide, narrow in zip(gaps[:-1], gaps[1:], strict=True):
+        assert 500 < wide / narrow < 2000, gaps
+
+
+def test_tvtp_with_no_slope_is_the_given_transition():
+    """``softmax(log Pi + 0 z)`` is ``Pi``, so with the states fixed the
+    ``tvtp`` filter is the one given ``transition = Pi``, which the hmmlearn
+    oracle holds (``tests/test_second_opinion.py``): to 8.9e-16 measured
+    2026-10-25, whatever ``z`` is."""
+    df = blobs(n=1500, run=60, seed=21)
+    want = run(df, **given(learn=False))
+    log_pi = np.log(GIVEN_PI).tolist()
+    for z in (0.0, 0.37, -40.0):
+        got = run(
+            df.with_columns(z=pl.lit(z)),
+            means=GIVEN_MEANS,
+            covs=GIVEN_COVS,
+            learn=False,
+            exog_tvtp="z",
+            tvtp_coef=[log_pi, [0.0] * 4],
+        )
+        assert gap(want, got) <= 1e-14, z
+        assert gap(want, got, ("loglik",)) <= 1e-13, z
+
+
+@pytest.mark.parametrize("size", [1, 7, 600])
+def test_tvtp_is_chunk_and_save_invariant(size):
+    """Under ``tvtp``, learning the states from a warm-up, with a ``z`` that
+    moves: chunked at 1, 7 and 600 rows and saved inside the warm-up and
+    after it, the run is the one-chunk run."""
+    rng = np.random.default_rng(31)
+    df = blobs(n=900, run=60, seed=22).with_columns(z=rng.standard_normal(900))
+    kw = dict(
+        exog_tvtp="z", tvtp_coef=[[2.0, -2.0, -2.0, 2.0], [1.5, -1.5, -1.5, 1.5]], warm_rows=100
+    )
+    want = run(df, **kw).drop("coef")
+    bank = po.ModelBank([spec(**kw)])
+    parts = [bank.fit_predict(df[i : i + size]) for i in range(0, df.height, size)]
+    assert want.equals(pl.concat(parts)["h"].struct.unnest().drop("coef"))
+    for cut in (60, 450):
+        bank = po.ModelBank([spec(**kw)])
+        head = bank.fit_predict(df[:cut])["h"].struct.unnest().drop("coef")
+        again = po.ModelBank.load_bytes(bank.save_bytes(), [spec(**kw)])
+        tail = again.fit_predict(df[cut:])["h"].struct.unnest().drop("coef")
+        assert want.equals(pl.concat([head, tail])), cut
+
+
+def test_given_diagonal_covs_are_one_filter_in_every_shape():
+    """Equal diagonal ``covs``, fixed: the full matrix is diagonal, the
+    pooled one is each state's, so ``full``, ``tied`` and ``diag`` are one
+    filter, to 3.6e-15 measured 2026-10-25 (``loglik`` included). With
+    unequal diagonal ``covs`` the pooled matrix is neither state's, and
+    ``tied`` parts from the other two while ``diag`` still is ``full``."""
+    df = blobs(n=1500, run=60, seed=21)
+    cols = (*PROBS, "loglik")
+
+    def shapes(covs):
+        return {
+            c: run(
+                df,
+                means=GIVEN_MEANS,
+                covs=covs,
+                transition=GIVEN_PI,
+                learn=False,
+                covariance_type=c,
+            )
+            for c in ("full", "tied", "diag")
+        }
+
+    equal = shapes([1.0, 0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 2.0])
+    assert gap(equal["full"], equal["tied"], cols) <= 1e-13
+    assert gap(equal["full"], equal["diag"], cols) <= 1e-13
+    unequal = shapes([1.0, 0.0, 0.0, 2.0, 0.5, 0.0, 0.0, 3.0])
+    assert gap(unequal["full"], unequal["diag"], cols) <= 1e-13
+    assert gap(unequal["full"], unequal["tied"]) > 1e-2
+
+
+def test_learn_false_keeps_the_given_means_exactly():
+    """``learn=False`` holds the given states exactly: the ``coef`` written
+    on every row is the given means to the bit. Learning from the same start
+    moves them (to about -1.95 and 2.02 here) and the probabilities, by up
+    to 0.35."""
+    df = blobs(n=1500, run=60, seed=21)
+    held = run(df, **given(learn=False, coef_every=0))
+    assert held["coef"].null_count() == 0
+    assert all(c == GIVEN_MEANS for c in held["coef"].to_list())
+    moving = run(df, **given(coef_every=0))
+    assert np.abs(np.array(moving["coef"][-1].to_list()) - GIVEN_MEANS).max() > 0.3
+    assert gap(held, moving) > 0.1
+
+
+def three_blobs(n=300, seed=11):
+    """Three overlapping blobs in two columns, the labels drawn at random:
+    the four seeding rules each place the states differently here."""
+    rng = np.random.default_rng(seed)
+    centres = np.array([[-2.0, 0.0], [2.0, 0.0], [0.0, 2.5]])
+    x = centres[rng.integers(0, 3, n)] + rng.standard_normal((n, 2))
+    return pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]})
+
+
+def seeded_means(df, model, **kw):
+    """The centres or state means right after the seeding: the whole frame
+    is the warm-up, and at no decay the replay weighs every row as one."""
+    if model == "hmm":
+        s = po.spec.hmm("m", features=["x0", "x1"], n_components=3, precision_prior=1e-2, **kw)
+    else:
+        s = po.spec.kmeans("m", features=["x0", "x1"], n_clusters=3, standardize=False, **kw)
+    bank = po.ModelBank([s])
+    bank.fit_predict(df)
+    return np.array(bank.coef("m")["coef"].to_list())
+
+
+def test_each_seeding_rule_seeds_the_states_kmeans_seeds():
+    """The states are seeded by ``kmeans``' rules: for each ``init`` and
+    ``seed``, the state means after the warm-up are the centres ``kmeans``
+    places on the same rows (unstandardized, so both measure plain
+    distances), to 4.4e-16 measured 2026-10-25. ``kmeans`` seeds from the
+    rows within its far cut; ``farthest`` agreeing, which picks the row
+    furthest out, is the evidence no row was cut here. The rules disagree
+    with each other, ``k-means++`` moves with ``seed`` (four seeds, four
+    seedings), and ``lloyd`` reaches one optimum from its ten starts, the
+    states possibly relabelled."""
+    df = three_blobs()
+    kw = dict(half_life=float("inf"), warm_rows=df.height)
+    seen = {}
+    for rule in ("first", "farthest", "k-means++", "lloyd"):
+        for seed in (0, 1, 2, 5):
+            h = seeded_means(df, "hmm", init=rule, seed=seed, **kw)
+            k = seeded_means(df, "kmeans", init=rule, seed=seed, **kw)
+            assert np.abs(h - k).max() <= 1e-14, (rule, seed)
+            seen[rule, seed] = h
+    as_set = {key: sorted(map(tuple, np.round(v, 12).reshape(3, 2))) for key, v in seen.items()}
+    for rule in ("first", "farthest"):
+        assert all((seen[rule, s] == seen[rule, 0]).all() for s in (1, 2, 5)), rule
+    assert len({tuple(map(tuple, as_set["k-means++", s])) for s in (0, 1, 2, 5)}) == 4
+    assert all(as_set["lloyd", s] == as_set["lloyd", 0] for s in (1, 2, 5))
+    distinct = {
+        tuple(map(tuple, as_set[r, 0])) for r in ("first", "farthest", "k-means++", "lloyd")
+    }
+    assert len(distinct) == 4
+
+
+@pytest.mark.parametrize("rule", ["first", "farthest", "k-means++", "lloyd"])
+def test_seed_is_reproducible_none_is_zero_and_moves_only_the_drawn_rules(rule):
+    """The same ``seed`` gives the same run, ``None`` is 0, and the default
+    rule is ``lloyd``. ``k-means++`` and ``lloyd`` draw their starts from the
+    seed, so 0 and 5 seed differently (``lloyd`` here only in which state is
+    which); ``first`` and ``farthest`` draw nothing and do not move."""
+    df = blobs(n=600, run=50, seed=3)
+
+    def go(**kw):
+        return run(df, warm_rows=200, init=rule, **kw)
+
+    zero = go(seed=0)
+    assert zero.equals(go(seed=None))
+    assert go(seed=5).equals(go(seed=5))
+    if rule in ("first", "farthest"):
+        assert zero.equals(go(seed=5))
+    else:
+        assert not zero.equals(go(seed=5))
+    if rule == "lloyd":
+        default = (
+            po.ModelBank(
+                [
+                    po.spec.hmm(
+                        "h",
+                        features=["x0", "x1"],
+                        n_components=2,
+                        precision_prior=1e-2,
+                        half_life=1e9,
+                        warm_rows=200,
+                    )
+                ]
+            )
+            .fit_predict(df)["h"]
+            .struct.unnest()
+        )
+        assert default.equals(zero)
+
+
+def plain(df, **kw):
+    """An ``hmm`` with every seeding parameter at its default."""
+    s = po.spec.hmm(
+        "h", features=["x0", "x1"], n_components=2, precision_prior=1e-2, half_life=1e9, **kw
+    )
+    return po.ModelBank([s]).fit_predict(df)["h"].struct.unnest()
+
+
+def test_warm_rows_defaults_to_1000():
+    """The default buffer is 1,000 rows: the run is ``warm_rows=1000``'s,
+    the first 1,000 rows report null with ``below_warm_rows``, and row 1,000
+    is the first to report."""
+    df = blobs(n=1300, run=50, seed=4)
+    out = plain(df)
+    assert out.equals(plain(df, warm_rows=1000))
+    reported = out["filtered_state0"].is_not_null().to_numpy()
+    assert not reported[:1000].any() and reported[1000:].all()
+    assert (out["withheld_reason"][:1000] == "below_warm_rows").all()
+    assert out["withheld_reason"][1000:].null_count() == 300
+
+
+def test_warm_rows_defaults_to_n_components_above_1000():
+    """Past 1,000 states the default buffer is ``n_components`` rows, the
+    fewest that seed every state: 1,001 states report from row 1,001, and a
+    smaller ``warm_rows`` is refused."""
+    df = pl.DataFrame({"x0": np.random.default_rng(1).standard_normal(1010)})
+
+    def big(**kw):
+        return po.spec.hmm(
+            "h",
+            features=["x0"],
+            n_components=1001,
+            precision_prior=1e-2,
+            half_life=1e9,
+            init="first",
+            **kw,
+        )
+
+    out = po.ModelBank([big()]).fit_predict(df)["h"].struct.unnest()
+    reported = out["filtered_state0"].is_not_null().to_numpy()
+    assert not reported[:1001].any() and reported[1001:].all()
+    with pytest.raises(
+        ValueError, match=re.escape("warm_rows must be at least n_components (1001)")
+    ):
+        big(warm_rows=1000)
+
+
+def test_warm_rows_at_n_components_seeds_from_that_many_rows():
+    out = plain(blobs(n=300, run=30), warm_rows=2)
+    reported = out["filtered_state0"].is_not_null().to_numpy()
+    assert not reported[:2].any() and reported[2:].all()
+
+
+@pytest.mark.parametrize("size", [1, 7])
+def test_chunks_and_a_save_inside_the_warm_up(size):
+    """Cut inside the warm-up, where the rows wait in the buffer: chunked at
+    1 and 7 rows, and saved at row 120 of 200, the run is the one-chunk
+    run, the seeding included."""
+    df = blobs(n=400, run=40, seed=23)
+    want = run(df, warm_rows=200).drop("coef")
+    bank = po.ModelBank([spec(warm_rows=200)])
+    parts = [bank.fit_predict(df[i : min(i + size, 260)]) for i in range(0, 260, size)]
+    parts.append(bank.fit_predict(df[260:]))
+    assert want.equals(pl.concat(parts)["h"].struct.unnest().drop("coef"))
+    bank = po.ModelBank([spec(warm_rows=200)])
+    head = bank.fit_predict(df[:120])["h"].struct.unnest().drop("coef")
+    again = po.ModelBank.load_bytes(bank.save_bytes(), [spec(warm_rows=200)])
+    tail = again.fit_predict(df[120:])["h"].struct.unnest().drop("coef")
+    assert want.equals(pl.concat([head, tail]))
+
+
+def test_a_group_shorter_than_warm_rows_reports_null_throughout():
+    """Each group seeds from its own first ``warm_rows`` rows: at the
+    default 1,000, a group of 1,200 rows reports from its 1,001st, and one of
+    300 rows, interleaved with it, never seeds and reports null with
+    ``below_warm_rows`` on every row."""
+    long = blobs(n=1200, run=50, seed=24).with_columns(g=pl.lit("long"))
+    short = blobs(n=300, run=50, seed=25).with_columns(g=pl.lit("short"))
+    df = pl.concat([long[:300], short, long[300:]]).with_row_index("i")
+    out = df.select("i", "g").hstack(plain(df.drop("i"), group="g"))
+    s = out.filter(pl.col("g") == "short")
+    assert s["filtered_state0"].null_count() == 300
+    assert (s["withheld_reason"] == "below_warm_rows").all()
+    lg = out.filter(pl.col("g") == "long")["filtered_state0"].is_not_null().to_numpy()
+    assert not lg[:1000].any() and lg[1000:].all()

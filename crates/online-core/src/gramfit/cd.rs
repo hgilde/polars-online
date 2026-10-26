@@ -10,14 +10,68 @@
 //! b_i = soft(ρ_i, l₁) / (R_ii + l₂)          soft(v, t) = sign(v) · max(|v| − t, 0)
 //! ```
 //!
-//! over `i` in order, until no coefficient moves by `tol` or more in a sweep
-//! or `max_iter` sweeps have run. A column with `live[i]` false stays at 0.
-//! The sum runs over the coefficients that have been nonzero, in the order
-//! they became so: the others add exactly 0, so the sum is the full one's
-//! but for its order, at `O(nnz)` instead of `O(k)` a coordinate.
+//! over `i` in order, until no coefficient moves by `tol · s` or more in a
+//! sweep ([`sweep_tol`]), or a sweep moves none at all, or `max_iter` sweeps
+//! have run, which [`CdPath::unconverged`] says per penalty. A column with
+//! `live[i]` false stays at 0. The sum runs over the coefficients that have
+//! been nonzero, in the order they became so: the others add exactly 0, so
+//! the sum is the full one's but for its order, at `O(nnz)` instead of
+//! `O(k)` a coordinate.
 
-/// The coefficients at each penalty, `penalties.len() × k` row-major, in the
-/// basis of `R` (row-major `k × k`) and `d`.
+/// The path [`cd_path`] walked.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CdPath {
+    /// The coefficients at each penalty, `penalties.len() × k` row-major, in
+    /// the basis of `R` and `d`.
+    pub coefs: Vec<f64>,
+    /// Per penalty, whether its descent ran out of sweeps (`max_iter`)
+    /// before a sweep met the rule: its coefficients are where the descent
+    /// stopped.
+    pub unconverged: Vec<bool>,
+}
+
+/// The largest move a sweep may make and end the descent: `tol · s`, `s`
+/// the target's spread, so the rule is dimensionless (task 278, D3). The
+/// standardized coefficients `b_i = β_i s_i` are in the target's units, so
+/// `tol` compared with a move directly was in them too: a target near 1e-9
+/// met the default 1e-10 after a sweep, and one in the millions could not
+/// meet it above the coefficients' rounding.
+///
+/// `spread` is the target's from the moments the solve holds: its standard
+/// deviation with an intercept, its root mean square through the origin,
+/// where the problem is the uncentred one. NaN where the moments do not
+/// carry it. `s` is never below `max_i |d_i|`: `d_i` is the target's
+/// covariance with column `i` over that column's spread (or the uncentred
+/// moments' likewise), at most the target's spread by Cauchy–Schwarz, so
+/// the floor binds only by rounding or where `spread` is NaN, and the rule
+/// keeps the target's units there too.
+pub fn sweep_tol(tol: f64, spread: f64, d: &[f64]) -> f64 {
+    let largest = d.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    // `f64::max` keeps the number where one side is NaN.
+    tol * spread.max(largest)
+}
+
+/// The target's spread for [`sweep_tol`] from its variance and mean over
+/// the rows the fit reads: the standard deviation where the fit is centred
+/// (an intercept), the root mean square where it is not. A second moment
+/// below 0 (a window's subtraction, by rounding) or NaN (moments the caller
+/// does not have) reads 0, which leaves [`sweep_tol`]'s floor as the scale.
+pub fn target_spread(var: f64, mean: f64, centred: bool) -> f64 {
+    let second = if centred { var } else { var + mean * mean };
+    // `f64::max` reads a NaN as the other side: 0.
+    second.max(0.0).sqrt()
+}
+
+/// Whether a sweep whose largest move was `delta` ends the descent, at the
+/// [`sweep_tol`] `limit`: a move under it, or none at all, which a limit of
+/// 0 (a target with no spread, every `d_i` 0) still meets.
+pub(crate) fn settled(delta: f64, limit: f64) -> bool {
+    delta < limit || delta == 0.0
+}
+
+/// The path at each penalty in the basis of `R` (row-major `k × k`) and
+/// `d`, and which penalties ran out of sweeps. `spread` is the target's,
+/// for [`sweep_tol`].
 #[allow(clippy::too_many_arguments)]
 pub fn cd_path(
     r: &[f64],
@@ -28,17 +82,21 @@ pub fn cd_path(
     weights: &[f64],
     max_iter: usize,
     tol: f64,
-) -> Vec<f64> {
+    spread: f64,
+) -> CdPath {
     let k = d.len();
     debug_assert_eq!(r.len(), k * k);
     debug_assert_eq!(live.len(), k);
     debug_assert_eq!(weights.len(), k);
+    let limit = sweep_tol(tol, spread, d);
     let mut out = Vec::with_capacity(penalties.len() * k);
+    let mut unconverged = Vec::with_capacity(penalties.len());
     let mut b = vec![0.0; k];
     // Columns whose coefficient has been nonzero, in the order they became so.
     let mut seen = vec![false; k];
     let mut nz: Vec<usize> = Vec::new();
     for &lam in penalties {
+        let mut converged = false;
         for _ in 0..max_iter {
             let mut delta = 0.0f64;
             for i in 0..k {
@@ -59,13 +117,18 @@ pub fn cd_path(
                     nz.push(i);
                 }
             }
-            if delta < tol {
+            if settled(delta, limit) {
+                converged = true;
                 break;
             }
         }
+        unconverged.push(!converged);
         out.extend_from_slice(&b);
     }
-    out
+    CdPath {
+        coefs: out,
+        unconverged,
+    }
 }
 
 /// numpy's `sign`: `+0` at either zero, NaN at NaN. At `-0.0` it once

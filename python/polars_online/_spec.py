@@ -323,6 +323,11 @@ _AT_LEAST_ONE = frozenset(
         "max_rows_between_snapshots",
         "max_rows_between_pcas",
         "max_rows_between_prunes",
+        # rcov's: a jitter of 1 is none, and a stride of 1 every return; a
+        # negative one was told ">= 0", and 0 then refused (task 278, b11).
+        "jitter",
+        "noise_stride",
+        "iv_stride",
     }
 )
 
@@ -945,7 +950,35 @@ def ewridge(
     so a feature far from zero loses no precision. The solve is a Cholesky
     factorization: a near-singular system is retried with a small diagonal
     jitter, and a solve that needed one is counted in
-    :meth:`polars_online.ModelBank.solve_failures`. A prediction uses the
+    :meth:`polars_online.ModelBank.solve_failures`.
+
+    A system can also factorize and still be too nearly singular for its
+    solve to keep a digit: rounding can leave a matrix past ``1/u`` in
+    condition positive definite, and its coefficients then come out wrong by
+    more than their own size. So each factorization that needed no jitter
+    estimates the condition of the system with each column scaled by the
+    root of its diagonal, ``H = D^-1 A D^-1``, which is what a Cholesky solve
+    is accurate to, whatever the features' units. The estimate is
+    ``||H^-1||_1`` by Hager and Higham's method (LAPACK's ``dlacn2``), from
+    the factor in ``O(k^2)``. The factorization and solve are backward
+    stable with a backward error of at most ``k * gamma_{3k+1}`` in ``H``'s
+    entries, ``gamma_m = m u / (1 - m u)``, so the forward error of the
+    scaled coefficients is at most ``2 kappa eta / (1 - kappa eta)`` with
+    ``kappa eta = k * gamma_{3k+1} * ||H^-1||_1``. Where that bound reaches
+    1, no digit is promised:
+
+    .. code-block:: text
+
+        withheld where   3 * k * gamma_{3k+1} * ||H^-1||_1 >= 1
+        (k = 3: ||H^-1||_1 >= 1.0e14;  k = 10: 9.7e12;  k = 50: 4.0e11)
+
+    There the fit is withheld: ``coef``, ``support_coef`` and the
+    predictions are null, ``withheld_reason`` reads ``ill_conditioned``,
+    and the solve is counted in ``solve_failures``. The next solve whose
+    system is within the limit reports again. A ridge, ``standardize``
+    with a ridge, or fewer collinear features keep a system inside it;
+    ``rls``, which rotates the design rather than squaring it, loses half
+    as many digits to the same design. A prediction uses the
     coefficients of the last solve and the state before the row. A wide
     solve runs on the bank's threads, and its result is the same to the bit
     whatever their number (``POLARS_ONLINE_MAX_THREADS``, or the machine's
@@ -1799,8 +1832,9 @@ def lasso(
 
     For each penalty ``l`` in ``penalties``, with ``C`` the feature correlation
     matrix and ``c_i = cov(x_i, y) / s_i``, each feature's covariance with the
-    target over the feature's standard deviation. The descent runs until no
-    coefficient moves by more than ``tol``:
+    target over the feature's standard deviation. The descent runs until a
+    sweep moves no coefficient ``b_i`` by ``tol * s_y`` or more, ``s_y`` the
+    target's spread:
 
     .. code-block:: text
 
@@ -1841,19 +1875,29 @@ def lasso(
         The solve schedule, as for :func:`ewridge`.
     ``max_iter``, ``tol``
         Within a solve, the descent stops after ``max_iter`` sweeps (default
-        100, at least 1) or when no coefficient in the standardized
-        coordinates, ``b_i = beta_i * s_i``, moved by ``tol`` or more in a
-        sweep (default ``1e-10``, finite and above 0). A descent that runs out
-        of sweeps first is counted in
-        :meth:`polars_online.ModelBank.solve_failures`, one per target and path
-        point. :func:`polars_online.gram.lasso_path` runs the same descent with
-        ten times the sweeps by default, 1,000, because it starts its path
-        from zero. A solve here starts from the last solve's fit, which the
-        rows since then have moved only a little once the moments settle: on
-        15 features correlated at ``0.8 ** |i - j|``, solved on every row of
-        20,000 at seven penalties, 696 of the 140,000 descents ran out of their
-        100 sweeps, every one of them within the first 500 rows, where each row
-        still moves the fit far. 1,000 sweeps left 26 there.
+        100, at least 1), or after a sweep that moved no coefficient in the
+        standardized coordinates, ``b_i = beta_i * s_i``, by ``tol * s_y`` or
+        more (default ``1e-10``, finite and above 0), or moved none at all.
+        ``s_y`` is the target's spread over the rows the fit reads: its
+        standard deviation, or its root mean square without an intercept,
+        where the fit is not centred. The standardized coefficients are in
+        the target's units, so the rule has none: ``y`` and ``penalties``
+        scaled by a power of two give the same fit scaled, to the bit,
+        stopped on the same sweeps. A descent that runs out of sweeps first is
+        counted in :meth:`polars_online.ModelBank.solve_failures`, one per
+        target and path point. :func:`polars_online.gram.lasso_path` runs the
+        same descent with ten times the sweeps by default, 1,000, because it
+        starts its path from zero. A solve here starts its first path point
+        from the last solve's fit, which the rows since then have moved only a
+        little once the moments settle, and each later point from the one
+        before it. On 15 features correlated at ``0.8 ** |i - j|``, solved on
+        every row of 20,000 at seven penalties, 798 of the 140,000 descents
+        ran out of their 100 sweeps; 1,000 sweeps left 44, at 1% more sweeps
+        in all. A cyclic descent contracts the error along two correlated
+        columns by about ``1 - 1 / kappa`` a sweep, ``kappa`` the
+        correlation matrix's condition number, so where columns nearly repeat
+        each other most descents can run out: on 800 rows of two columns
+        0.1 apart (``kappa`` near 400) at a penalty of 0.001, 798 of 799.
     ``target_gaps``
         Which rows a target's feature correlations are taken over where the target
         is null on some: ``"own_rows"``, the default, or ``"pairwise"``, as for

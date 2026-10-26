@@ -2440,4 +2440,121 @@ mod tests {
             "nothing learned or filtered"
         );
     }
+
+    /// `Π = (λN + τₖₗ)/Σₗ(λN + τₖₗ)` written by hand from the counts `N`
+    /// the model keeps, `τₖₗ = τ·K·Π₀[k][l]` with a `transition` given and a
+    /// flat `τ` without, at `τ` = 0, 0.3 and 5 and `K` = 2 and 3 (task 278,
+    /// b08). The other tests run `τ = 1`, where a `τ` read as 1 passes, or
+    /// `τ = 0` with no counts, where every `τ` gives the same matrix. Three
+    /// reads each: the matrix as the counts stand, the predicted state of a
+    /// row after a gap (`p̃ = p·Π` from the counts that gap has aged), and the
+    /// counts that row leaves, `λN + w·ξ` with `ξₖₗ = pₖ·Πₖₗ·fₗ / Σ` from the
+    /// states' densities before the row. Each `τ` gives its own matrix.
+    #[test]
+    fn the_transition_is_the_decayed_counts_plus_the_prior_written_by_hand() {
+        let close = |got: &[f64], want: &[f64], tol: f64, what: &str| {
+            assert_eq!(got.len(), want.len(), "{what}");
+            for (i, (g, w)) in got.iter().zip(want).enumerate() {
+                assert!(
+                    (g - w).abs() <= tol * w.abs().max(1.0),
+                    "{what}[{i}]: {g} against {w}"
+                );
+            }
+        };
+        for k in [2usize, 3] {
+            let pi0: Vec<f64> = if k == 2 {
+                vec![0.85, 0.15, 0.3, 0.7]
+            } else {
+                vec![0.7, 0.2, 0.1, 0.25, 0.5, 0.25, 0.1, 0.3, 0.6]
+            };
+            for given in [false, true] {
+                let mut matrices: Vec<Vec<f64>> = Vec::new();
+                for tau in [0.0, 0.3, 5.0] {
+                    let c = HmmCfg {
+                        decay: Decay::Halflife(15.0),
+                        transition_prior: tau,
+                        transition: given.then(|| pi0.clone()),
+                        warm_rows: 40,
+                        seed_rule: SeedRule::Lloyd,
+                        ..cfg(2, k)
+                    };
+                    let prior = |r: usize, col: usize| {
+                        if given {
+                            tau * k as f64 * pi0[r * k + col]
+                        } else {
+                            tau
+                        }
+                    };
+                    let hand = |lam: f64, n: &[f64]| -> Vec<f64> {
+                        (0..k)
+                            .flat_map(|r| {
+                                let row: Vec<f64> = (0..k)
+                                    .map(|col| lam * n[r * k + col] + prior(r, col))
+                                    .collect();
+                                let z: f64 = row.iter().sum();
+                                assert!(z > 0.0, "row {r} of the counts has mass");
+                                row.into_iter().map(move |v| v / z)
+                            })
+                            .collect()
+                    };
+                    let mut m = Hmm::new(c.clone()).unwrap();
+                    let rows = stream(200, 29, 12);
+                    for (i, (x, _)) in rows.iter().enumerate() {
+                        m.step(x, &[], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+                    }
+                    let what = format!("k {k}, given {given}, tau {tau}");
+                    assert!(m.seeded(), "{what}");
+                    // Evidence the counts are there to be read: they hold
+                    // about a half-life's rows (21.6 at the limit of a
+                    // half-life of 15 rows). At `τ = 0` one row of them is
+                    // nearly empty, 3e-4: the chain learned on its first
+                    // row that the other state is unreachable (reported in
+                    // task 278, b08); the formula is read there all the same.
+                    let total: f64 = m.a.iter().sum();
+                    assert!(total > 10.0, "{what}: N holds {total}");
+                    close(&m.transition(), &hand(1.0, &m.a), 1e-15, &what);
+
+                    let gap = 3.0;
+                    let lam = c.decay.factor(gap);
+                    let pi = hand(lam, &m.a);
+                    let p = m.filtered().to_vec();
+                    let x = rows[5].0.clone();
+                    // The densities about the largest, which cancels in `ξ`'s
+                    // normalisation: a far state's own underflows to 0.
+                    let logf = m.log_densities(&x).unwrap();
+                    let top = logf.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                    let f: Vec<f64> = logf.iter().map(|v| (v - top).exp()).collect();
+                    let n_before = m.a.clone();
+                    let w = 0.7;
+                    let out = m.step(&x, &[], gap, w);
+                    let want_pred: Vec<f64> = (0..k)
+                        .map(|l| (0..k).map(|kk| p[kk] * pi[kk * k + l]).sum())
+                        .collect();
+                    close(&out.pred[k..2 * k], &want_pred, 1e-14, &what);
+                    let mut xi = vec![0.0; k * k];
+                    for kk in 0..k {
+                        for l in 0..k {
+                            xi[kk * k + l] = p[kk] * pi[kk * k + l] * f[l];
+                        }
+                    }
+                    let z: f64 = xi.iter().sum();
+                    let want_n: Vec<f64> = n_before
+                        .iter()
+                        .zip(&xi)
+                        .map(|(n, j)| lam * n + w * j / z)
+                        .collect();
+                    close(&m.a, &want_n, 1e-12, &what);
+                    matrices.push(m.transition());
+                }
+                for i in 0..matrices.len() {
+                    for j in 0..i {
+                        assert_ne!(
+                            matrices[i], matrices[j],
+                            "k {k}, given {given}: tau moved nothing"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

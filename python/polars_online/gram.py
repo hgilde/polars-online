@@ -62,11 +62,13 @@ from __future__ import annotations
 
 import math
 import operator
+import warnings
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, NotRequired, TypedDict
 
 from polars_online import _polars_online as _native
 from polars_online._bank import _check_threads
+from polars_online._frame import ReadinessWarning, _user_stacklevel
 from polars_online._renamed import renamed_keywords
 from polars_online._warnings import deprecated_keywords, forward_deprecated
 
@@ -981,10 +983,12 @@ def solve(
         The penalty, added to the co-moments, which are weighted means: a
         spec's ``ridge`` under its default ``ridge_scale = "mean"``, in the
         features' squared units unless ``standardize``. A sequence gives one
-        row of coefficients per value. The penalty is uniform in the basis
-        being solved, so a grid rides a single eigendecomposition. With ``V d
-        V'`` in hand every ridge is ``V diag(1/(d + r)) V' b``, so a grid of
-        fifty takes one factorization and fifty matrix products.
+        row of coefficients per value. Where the system's diagonal is even --
+        under ``standardize``, or columns of like scale -- a grid rides a
+        single eigendecomposition: with ``V d V'`` in hand every ridge is ``V
+        diag(1/(d + r)) V' b``, so a grid of fifty takes one factorization and
+        fifty matrix products. Where it is not, each ridge is solved on its
+        own (see *Accuracy* below).
     ``target``
         The target, by name or position among this Gram's ``targets``.
     ``features``
@@ -1025,6 +1029,23 @@ def solve(
     coefficients could be reported), and for a ``ridge`` that is not finite and at
     least 0, as a spec's ``ridge`` must be.
 
+    .. rubric:: Accuracy
+
+    The solve is accurate to the condition of the system with each column
+    scaled by the root of its diagonal, as the model's Cholesky is, so the
+    features' units do not enter: columns from ``1e-10`` to ``1e10`` are
+    solved as well as columns of unit scale. ``numpy.linalg.eigh`` is accurate
+    only relative to the largest eigenvalue, so the system is scaled that way
+    before it is decomposed, and the answer scaled back. A uniform ridge is
+    not uniform once the columns are scaled, so where the diagonal of ``C +
+    ridge * I`` spreads by more than a factor of 4, largest over smallest,
+    each ridge takes a solve of its own: an LU solve of the scaled system
+    for a ridge above 0, its eigendecomposition at 0. On columns from
+    ``1e-3`` to ``1e3`` in scale, a grid of fifty ridges took 1.4 ms at 50
+    columns and 8.4 ms at 200, three times the single decomposition's time,
+    and one ridge above 0 took less time than before (measured on an Apple
+    M4 Pro under load).
+
     See *A ridge and its t* in
     `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
     for the theory and a recipe that runs.
@@ -1063,14 +1084,75 @@ def solve(
         keep = list(range(len(slots)))
     if keep:
         kk = np.ix_(keep, keep)
-        d, v = np.linalg.eigh(a[kk] / np.outer(s[keep], s[keep]))
-        vb = v.T @ (b[keep] / s[keep])
         cols = [slots[i] for i in keep]
-        for i, r in enumerate(ridges):
-            out[i, cols] = (v @ (vb / (d + r))) / s[keep]
+        rows = _ridge_solves(np, a[kk] / np.outer(s[keep], s[keep]), b[keep] / s[keep], ridges)
+        out[:, cols] = rows / s[keep]
     if icept >= 0:
         out[:, icept] = np.nan if _is_within(g) else ybar - out[:, slots] @ m[slots]
     return out[0] if scalar else out
+
+
+#: How far apart a system's diagonal may be, largest over smallest, for a
+#: ridge to ride the eigendecomposition of the system as given. That
+#: decomposition's eigenvalues are accurate to ``u`` times the largest, which
+#: in the coordinates the solve is accurate in -- each column scaled by the
+#: root of its diagonal -- is a backward error up to this ratio times the
+#: equilibrated solve's: four costs at most two bits.
+_SHORTCUT_SPREAD = 4.0
+
+
+def _ridge_solves(np: Any, a: Any, b: Any, ridges: Any) -> Any:
+    """``(a + r I) x = b`` for each ridge ``r``, one row of ``x`` per ridge.
+
+    A solve of a symmetric positive definite system is accurate in the
+    coordinates that scale each column by the root of its diagonal: there
+    the system is the equilibrated ``H = E^-1 a E^-1`` with a diagonal of 1,
+    and its condition, not ``a``'s, is what the answer can lose. ``eigh``
+    finds eigenvalues accurate to ``u`` times the largest, so on ``a`` as
+    given, with columns from ``1e-10`` to ``1e10``, a small column's
+    eigenvalue (``1e-20``) is lost beside ``1e20``. So the eigendecomposition
+    is taken of ``H``, and scaled back: ``x = E^-1 V diag(1/d) V' E^-1 b``.
+
+    A uniform ridge on ``a`` is a diagonal ``r E^-2`` on ``H``, which ``H``'s
+    eigenvectors do not diagonalize, so one decomposition serves every ridge
+    only on ``a`` as given. That shortcut is kept where it is accurate: where
+    ``a + r I``'s diagonal spreads by no more than ``_SHORTCUT_SPREAD``,
+    largest over smallest, so that equilibrating would change little. There
+    ``x = V diag(1/(d + r)) V' b`` from ``a``'s own decomposition, taken once,
+    as before. Elsewhere each ridge is solved on its own equilibrated ``a +
+    r I``: by an LU solve where ``r > 0`` and the matrix is positive
+    definite, by its eigendecomposition at ``r = 0``, where the system may be
+    singular and the eigenvalues say so."""
+    k = len(b)
+    out = np.empty((len(ridges), k))
+    diag = np.clip(np.diag(a), 0.0, None)
+
+    def equilibrated(r: float) -> Any:
+        e = np.sqrt(diag + r)
+        e = np.where(e > 0.0, e, 1.0)
+        h = (a + r * np.eye(k)) / np.outer(e, e)
+        if r > 0.0:
+            # Positive definite: an LU solve, backward stable on it and a
+            # tenth of an eigendecomposition's work.
+            try:
+                return np.linalg.solve(h, b / e) / e
+            except np.linalg.LinAlgError:
+                pass
+        d, v = np.linalg.eigh(h)
+        return (v @ ((v.T @ (b / e)) / d)) / e
+
+    raw = None
+    for i, r in enumerate(ridges):
+        spread = (diag.max() + r) / (diag.min() + r) if diag.min() + r > 0.0 else np.inf
+        if spread <= _SHORTCUT_SPREAD:
+            if raw is None:
+                d, v = np.linalg.eigh(a)
+                raw = (d, v, v.T @ b)
+            d, v, vb = raw
+            out[i] = v @ (vb / (d + r))
+        else:
+            out[i] = equilibrated(float(r))
+    return out
 
 
 @renamed_keywords("po.gram.lasso_path", {"lambdas": "penalties"})
@@ -1129,17 +1211,36 @@ def lasso_path(
     ``target``, ``features``
         As for :func:`solve`.
     ``max_iter``, ``tol``
-        The descent's cap on sweeps and its stopping rule, a sweep's
-        largest move. ``tol`` is the model's, 1e-10: it costs the same as
-        1e-7 here (0.07 ms on 15 features at seven penalties) and lands
-        3e-10 from the converged path where 1e-7 landed 4e-7. ``max_iter``
-        is 1,000 where the model's is 100, since this path starts each
-        penalty from zero and the model starts each solve from its last fit.
+        The descent's cap on sweeps and its stopping rule. A sweep ends the
+        descent when it moves no standardized coefficient by ``tol * s``
+        or more, or moves none at all. ``s`` is the target's spread, read
+        from the Gram's target moments: its standard deviation with an
+        intercept, its root mean square through the origin. The
+        standardized coefficients are in the target's units, so the rule
+        has none: the target scaled by a power of two, with the penalties,
+        gives the same path scaled, to the bit, stopped on the same sweep. ``s`` is
+        never below the largest standardized cross-moment ``|d_i|``, which
+        cannot exceed the target's spread, so a Gram without target
+        moments has a scale too. ``tol`` is the model's, 1e-10. On 15
+        features at seven penalties it cost the same as 1e-7 (0.07 ms) and
+        landed 3e-10 from the converged path where 1e-7 landed 4e-7.
+        ``max_iter`` is 1,000 where the model's is 100, since this path
+        starts each penalty from zero and the model starts each solve from
+        its last fit.
 
     Returns an array of shape ``(len(penalties), k)`` over the Gram's columns,
     the intercept first when there is one. On a Gram pooled within parts
     (``merge(within=True)``) the intercept is ``nan``: such a Gram has an
     intercept per part and none of its own.
+
+    A penalty whose descent runs out of sweeps keeps its row where the
+    descent stopped, short of the rule, and a
+    :class:`~polars_online.ReadinessWarning` names each such penalty. A
+    cyclic descent contracts the error along two correlated columns by
+    about ``1 - 1 / kappa`` a sweep, ``kappa`` the correlation matrix's
+    condition number, so on columns that nearly repeat each other it needs
+    about ``kappa`` sweeps. Raise ``max_iter``, or take the knots exactly
+    from :func:`lars_path`.
 
     .. code-block:: python
 
@@ -1198,7 +1299,7 @@ def lasso_path(
     if not np.all(np.isfinite(pw) & (pw >= 0.0)):
         msg = f"lasso_path: penalty_weights must be finite and >= 0, got {pw.tolist()!r}"
         raise ValueError(msg)
-    flat = _native.gram_cd_path(
+    flat, unconverged = _native.gram_cd_path(
         _native_gram(np, g, icept),
         t,
         slots,
@@ -1209,6 +1310,20 @@ def lasso_path(
         int(max_iter),
         float(tol),
     )
+    short = [float(v) for v, u in zip(lams, unconverged, strict=True) if u]
+    if short:
+        # Counted and said (task 278, D6): the rows were returned as the
+        # descent left them with nothing to tell them apart.
+        warnings.warn(
+            ReadinessWarning(
+                f"lasso_path: the coordinate descent ran out of sweeps at {len(short)} of "
+                f"{len(lams)} penalties, {short}: after {max_iter} sweeps one still moved a "
+                "coefficient by tol times the target's spread or more, so those rows are where "
+                "it stopped, short of its stopping rule. Strongly correlated columns slow a "
+                "descent; raise max_iter, or take the path's knots exactly from lars_path"
+            ),
+            stacklevel=_user_stacklevel(),
+        )
     return np.asarray(flat, dtype=float).reshape(len(lams), k)
 
 

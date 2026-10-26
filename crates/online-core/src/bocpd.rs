@@ -3683,6 +3683,128 @@ mod tests {
         assert_eq!(run(wishart(None)), run(wishart(Some(5.0))));
     }
 
+    /// Task 278 (b21): the outputs of `c` over 300 rows of unit normals,
+    /// feature `i` shifting by `3 (i + 1)` at row 150.
+    fn shifted_run(c: BocpdCfg) -> Vec<Vec<f64>> {
+        let d = c.n_features;
+        let mut m = Bocpd::new(c).unwrap();
+        let mut n = Normals::new(29);
+        (0..300)
+            .map(|t| {
+                let x: Vec<f64> = (0..d)
+                    .map(|i| (if t < 150 { 0.0 } else { 3.0 }) * (i + 1) as f64 + n.normal())
+                    .collect();
+                m.step(&x, &[], 1.0, 1.0).pred
+            })
+            .collect()
+    }
+
+    /// `robust`'s tempering `(π(x)/π(mode))^β` is 1 at `β = 0`, which is
+    /// refused, so `diag` is its limit: the gap to `diag`'s posterior falls
+    /// linearly with `β`, the same slope at `1e-9`, `1e-6` and `1e-3` in
+    /// every float output, and `run_mode` never moves. Measured 2026-10-25:
+    /// worst `|Δ|/β` 1.55 (`p_change`), 265 (`run_mean`), 4.26 (`pred`),
+    /// 4.35 (`loglik`), each the same to 0.6% across the three, so 2% is
+    /// the bound; a power or a factor misplaced in the tempering breaks the
+    /// slope or the limit.
+    #[test]
+    fn a_vanishing_robust_beta_tends_to_the_plain_posterior_linearly() {
+        let at = |emission, robust_beta| {
+            shifted_run(BocpdCfg {
+                emission,
+                robust_beta,
+                prior_nu: Some(3.0),
+                ..cfg(1)
+            })
+        };
+        let plain = at(BocpdEmission::Diag, 0.0);
+        let slopes = |beta: f64| {
+            let tempered = at(BocpdEmission::Robust, beta);
+            let mut worst = [0.0f64; 5];
+            for (a, b) in plain.iter().zip(&tempered) {
+                assert_eq!(a[1], b[1], "run_mode moved at beta {beta}");
+                for k in [0, 2, 3, 4] {
+                    worst[k] = worst[k].max((a[k] - b[k]).abs() / beta);
+                }
+            }
+            worst
+        };
+        let (tiny, small, large) = (slopes(1e-9), slopes(1e-6), slopes(1e-3));
+        for k in [0, 2, 3, 4] {
+            assert!(tiny[k] > 0.0, "output {k}: beta 1e-9 moved nothing");
+            for other in [small[k], large[k]] {
+                assert!(
+                    (other / tiny[k] - 1.0).abs() < 0.02,
+                    "output {k}: slopes {} {} {}",
+                    tiny[k],
+                    small[k],
+                    large[k]
+                );
+            }
+        }
+    }
+
+    /// At one feature the normal-inverse-Wishart is the normal-inverse-gamma:
+    /// `gaussian` and `diag` are one model written two ways, with the same
+    /// default `ν₀` (`d + 2 = 3`). They agree to rounding, 1e-12 relative,
+    /// with the prior given and with it set by the warm-up; measured
+    /// 2026-10-25 through the bank: 1.2e-14 in `p_change`, 5.7e-12 in a
+    /// `run_mean` of hundreds.
+    #[test]
+    fn at_one_feature_the_gaussian_emission_is_the_diagonal_one() {
+        for (prior_mean, prior_scale, warm_rows) in [
+            (Some(vec![0.0]), Some(vec![1.0]), None),
+            (None, None, Some(5)),
+        ] {
+            let at = |emission| {
+                shifted_run(BocpdCfg {
+                    emission,
+                    prior_nu: None,
+                    prior_mean: prior_mean.clone(),
+                    prior_scale: prior_scale.clone(),
+                    warm_rows,
+                    ..cfg(1)
+                })
+            };
+            let (gaussian, diag) = (at(BocpdEmission::Gaussian), at(BocpdEmission::Diag));
+            for (t, (g, d)) in gaussian.iter().zip(&diag).enumerate() {
+                assert_eq!(g[1].is_nan(), d[1].is_nan());
+                for (k, (a, b)) in g.iter().zip(d).enumerate() {
+                    if a.is_nan() {
+                        continue;
+                    }
+                    assert!(
+                        (a - b).abs() <= 1e-12 * a.abs().max(1.0),
+                        "row {t} output {k}: {a} vs {b} (warm-up {warm_rows:?})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `diag` reads only the diagonal of a matrix `Ψ₀`, to the bit; under
+    /// `gaussian` the off-diagonals move the outputs.
+    #[test]
+    fn the_diagonal_emission_reads_only_the_diagonal_of_a_matrix_scale() {
+        let at = |emission, scale: Vec<f64>| {
+            shifted_run(BocpdCfg {
+                emission,
+                prior_nu: Some(5.0),
+                prior_scale: Some(scale),
+                ..cfg(2)
+            })
+        };
+        let (coupled, plain) = (vec![2.0, 0.5, 0.5, 3.0], vec![2.0, 0.0, 0.0, 3.0]);
+        assert_eq!(
+            at(BocpdEmission::Diag, coupled.clone()),
+            at(BocpdEmission::Diag, plain.clone())
+        );
+        assert_ne!(
+            at(BocpdEmission::Gaussian, coupled),
+            at(BocpdEmission::Gaussian, plain)
+        );
+    }
+
     /// A matrix `prior_scale` is held to symmetry cell by cell, each upper
     /// entry against its lower one, to `1e-12` of the larger plus `1e-12`.
     /// Of three columns, an asymmetry in `[1][2]` alone is found and named;

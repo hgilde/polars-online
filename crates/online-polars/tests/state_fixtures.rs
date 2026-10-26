@@ -777,15 +777,40 @@ fn same(what: &str, got: &DataFrame, want: &DataFrame, tol: f64) {
 }
 
 fn same_series(what: &str, got: &Series, want: &Series, tol: f64) {
+    // `withheld_reason`'s names only ever grow at the end -- the code a
+    // state's last row keeps is a name's position, so a new reason takes
+    // the next one (`WITHHELD_REASONS`; `ill_conditioned`, task 278 (d4)).
+    // So a frozen output's enum is a prefix of today's, and its values are
+    // compared by name.
+    if let (DataType::Enum(g, _), DataType::Enum(w, _)) = (got.dtype(), want.dtype()) {
+        let gc: Vec<&str> = g.categories().values_iter().collect();
+        let wc: Vec<&str> = w.categories().values_iter().collect();
+        assert!(
+            wc.len() <= gc.len() && gc[..wc.len()] == wc[..],
+            "{what}: the frozen names {wc:?} are not the start of {gc:?}"
+        );
+        let (gs, ws) = (
+            got.cast(&DataType::String).unwrap(),
+            want.cast(&DataType::String).unwrap(),
+        );
+        assert!(gs.equals_missing(&ws), "{what}: {gs:?} against {ws:?}");
+        return;
+    }
+    // A struct by its fields' names, each field then by its own dtype, so
+    // that an enum inside one is read by the rule above.
+    if let (DataType::Struct(gf), DataType::Struct(wf)) = (got.dtype(), want.dtype()) {
+        let names = |f: &[Field]| f.iter().map(|f| f.name().clone()).collect::<Vec<_>>();
+        assert_eq!(names(gf), names(wf), "{what}: fields");
+        assert_eq!(got.len(), want.len(), "{what}: length");
+        let (g, w) = (got.struct_().unwrap(), want.struct_().unwrap());
+        for (gf, wf) in g.fields_as_series().iter().zip(w.fields_as_series()) {
+            same_series(&format!("{what}.{}", wf.name()), gf, &wf, tol);
+        }
+        return;
+    }
     assert_eq!(got.dtype(), want.dtype(), "{what}: dtype");
     assert_eq!(got.len(), want.len(), "{what}: length");
     match want.dtype() {
-        DataType::Struct(_) => {
-            let (g, w) = (got.struct_().unwrap(), want.struct_().unwrap());
-            for (gf, wf) in g.fields_as_series().iter().zip(w.fields_as_series()) {
-                same_series(&format!("{what}.{}", wf.name()), gf, &wf, tol);
-            }
-        }
         DataType::List(inner) if **inner == DataType::Float64 => {
             let (g, w) = (got.list().unwrap(), want.list().unwrap());
             for i in 0..want.len() {

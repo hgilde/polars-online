@@ -103,6 +103,9 @@ pub struct LassoCfg {
     pub solve_share: Option<f64>,
     /// The coordinate descent's sweeps per solve, at least 1.
     pub max_iter: u32,
+    /// The descent's stopping rule: a sweep in which no standardized
+    /// coefficient moves by `tol` times the target's spread or more ends it
+    /// (`gramfit::sweep_tol`), so the rule is dimensionless.
     pub tol: f64,
     /// Which rows a target's Gram is taken over where the target is null on
     /// some (docs/PLAN.md task 81; [`TargetGaps`]): its own, the default, or
@@ -708,12 +711,18 @@ impl Lasso {
         // right-hand side, or the selection error. The selection error is
         // read where the path point is chosen, in `step`.
         let view = self.view();
-        let (grams, cross, wj) = match view.as_ref() {
-            Some(v) => (v.acc.grams.as_slice(), &v.acc.cross, &v.acc.wj),
+        let (grams, cross, wj, tm) = match view.as_ref() {
+            Some(v) => (
+                v.acc.grams.as_slice(),
+                &v.acc.cross,
+                &v.acc.wj,
+                v.acc.tm.as_ref(),
+            ),
             None => (
                 self.acc.grams.grams.as_slice(),
                 &self.acc.cross,
                 &self.acc.wj,
+                Some(&self.acc.tm),
             ),
         };
         let np = self.cfg.n_lambdas();
@@ -743,6 +752,16 @@ impl Lasso {
                     out[j] = vec![vec![f64::NAN; k_total]; np];
                     continue;
                 }
+                // The stopping rule's scale: the target's spread over the
+                // rows its Gram is read from, its standard deviation with an
+                // intercept and its root mean square through the origin
+                // (`gramfit::sweep_tol`; task 278, D3). None where a window's
+                // snapshot predates the target moments, which leaves the
+                // floor `max_i |d_i|`.
+                let spread = tm.map_or(0.0, |t| {
+                    crate::gramfit::target_spread(t.vars()[j], t.means()[j], self.cfg.fit_intercept)
+                });
+                let limit = crate::gramfit::sweep_tol(self.cfg.tol, spread, &d[jj]);
                 // Warm start from the previous solve's largest-penalty
                 // solution -- unless that was an empty window's NaN, which
                 // would poison the descent rather than start it.
@@ -794,7 +813,7 @@ impl Lasso {
                             max_delta = max_delta.max((newb - b[i]).abs());
                             b[i] = newb;
                         }
-                        if max_delta < self.cfg.tol {
+                        if crate::gramfit::settled(max_delta, limit) {
                             converged = true;
                             break;
                         }
@@ -1863,6 +1882,64 @@ mod tests {
             long.solve_failures, 0,
             "and enough sweeps converge them all"
         );
+    }
+
+    /// The stopping rule is dimensionless (task 278, D3): the target scaled
+    /// by `2^p`, the penalties with it, is the same fit scaled, to the bit,
+    /// and `solve_failures` counts the same cap hits -- with an intercept,
+    /// through the origin (the spread a root mean square) and under a
+    /// window. `tol` was compared with the move itself, in the target's
+    /// units: at `2^-30` the default stopped every descent a sweep or two
+    /// in, uncounted.
+    #[test]
+    fn the_fit_is_the_same_at_any_scale_of_the_target() {
+        let run = |c: f64, intercept: bool, window: Option<f64>| {
+            let mut cf = cfg(3, 1, vec![0.1 * c, 0.01 * c, 0.0]);
+            cf.fit_intercept = intercept;
+            cf.decay = Decay::Halflife(100.0);
+            cf.window = window;
+            cf.max_iter = 25;
+            cf.tol = 1e-10;
+            let mut m = Lasso::new(cf).unwrap();
+            let mut s = 7u64;
+            let mut preds = Vec::new();
+            for i in 0..300 {
+                let a = lcg(&mut s);
+                let x = vec![a + 0.5, a + 0.5 + 0.05 * lcg(&mut s), lcg(&mut s) - 1.0];
+                let y = 0.4 + 1.5 * x[0] - 0.75 * x[1] + 0.5 * x[2] + 0.3 * lcg(&mut s);
+                let step = m.step(&x, &[Some(y * c)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+                preds.extend(step.pred);
+            }
+            let coef: Vec<f64> = m
+                .coefficients()
+                .unwrap()
+                .iter()
+                .flatten()
+                .flatten()
+                .copied()
+                .collect();
+            (preds, coef, m.solve_failures)
+        };
+        for (intercept, window) in [(true, None), (false, None), (true, Some(80.0))] {
+            let (p0, b0, f0) = run(1.0, intercept, window);
+            assert!(f0 > 0, "{intercept} {window:?}: the cap's path ran");
+            assert!(b0.iter().any(|&v| v != 0.0));
+            for p in [-30, -20, 20, 30] {
+                let c = 2f64.powi(p);
+                let (p1, b1, f1) = run(c, intercept, window);
+                let what = format!("intercept {intercept}, window {window:?}, 2^{p}");
+                let scaled = |v: &[f64]| v.iter().map(|x| x * c).collect::<Vec<f64>>();
+                assert_eq!(f1, f0, "{what}: cap hits");
+                assert_eq!(b1, scaled(&b0), "{what}: coefficients");
+                assert_eq!(p1.len(), p0.len());
+                for (a, b) in p1.iter().zip(scaled(&p0)) {
+                    assert!(
+                        a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan()),
+                        "{what}"
+                    );
+                }
+            }
+        }
     }
 
     /// `predict`, `n_eff` and the selection read the window without the

@@ -12,6 +12,7 @@ truncation, what the robust emission actually buys, and the arithmetic of
 """
 
 import itertools
+import json
 from datetime import timedelta
 from math import expm1, inf, lgamma, log, pi
 
@@ -57,11 +58,14 @@ def longhand(x, hazard, k0=1.0, nu0=2.0, psi0=1.0):
     the next row in its run, so the slot pushed at the front holds nothing.
     """
     x = np.atleast_2d(np.asarray(x, dtype=float).T).T
-    h = 1.0 / hazard
+    # One hazard, or one per row (``hazard_col``): row ``t``'s own ``1/H_t``
+    # is the chance of a break after it, in that row's growth and changepoint
+    # steps.
+    hs = np.broadcast_to(1.0 / np.asarray(hazard, dtype=float), (len(x),))
     runs = [(0.0, np.zeros(x.shape[1]), np.zeros(x.shape[1]))]
     joint = np.array([1.0])
     posts, scores = [], []
-    for row in x:
+    for row, h in zip(x, hs, strict=True):
         pi = []
         for cnt, sx, ss in runs:
             kn, nun = k0 + cnt, nu0 + cnt
@@ -1205,3 +1209,289 @@ def test_a_constant_feature_does_not_break_the_prior():
         out = run(x, hazard=250.0)
         assert out["p_change"][10:].null_count() == 0, level
         assert any(abs(b - 200) <= 1 for b in breaks(out)), level
+
+
+# --- each parameter against a model it reduces to (task 278 (b21)) ------------
+
+
+def _p_change(posts):
+    """`P(r <= 1)` after each row, from the longhand's posteriors."""
+    return [p[0] + (p[1] if len(p) > 1 else 0.0) for p in posts]
+
+
+def _differ(a, b):
+    """The output columns of two runs that are not equal to the bit."""
+    return [c for c in a.columns if not a[c].equals(b[c])]
+
+
+@pytest.mark.parametrize("k0", [0.3, 5.0])
+def test_the_mean_precision_prior_is_the_longhand_at_any_weight(k0):
+    """``mean_precision_prior`` is ``kappa_0``, the prior mean's weight in
+    rows, against Algorithm 1 written out at the same ``k0``, below and above
+    the default 1. Measured 2026-10-25: ``loglik`` within 2.4e-14 and
+    ``p_change`` within 6.2e-15 at both, against 0.20 and 0.15 of
+    ``p_change`` from the default."""
+    x = np.concatenate([normals(60, 1), normals(60, 2, loc=3.0)])
+    kw = dict(
+        hazard=50.0,
+        mean_prior=[0.0],
+        degrees_of_freedom_prior=2.0,
+        covariance_prior=[1.0],
+        prune_below=0.0,
+    )
+    out = run(x, mean_precision_prior=k0, **kw)
+    posts, scores = longhand(x, 50.0, k0=k0)
+    # Tolerances (task 252 (b)): an oracle computed another way, through libm.
+    assert out["loglik"].to_list()[1:] == pytest.approx(list(scores[1:]), abs=1e-12)
+    assert out["p_change"].to_list()[1:] == pytest.approx(_p_change(posts)[1:], abs=1e-12)
+    assert out["run_mode"].to_list()[1:] == [int(np.argmax(p)) for p in posts][:-1]
+    default = run(x, **kw)
+    assert (out["p_change"] - default["p_change"]).abs().max() > 0.1, "k0 moved nothing"
+
+
+def test_a_vanishing_robust_beta_is_the_plain_posterior():
+    """``robust_beta`` at 0 is refused, so the untempered posterior -- the one
+    the longhand and ``bayesian_changepoint_detection`` hold -- is its limit:
+    at ``1e-12`` every output is within 1e-10 of it, and the gap is linear
+    in ``robust_beta``. Measured 2026-10-25: ``|d p_change| / beta`` 2.03,
+    2.05, 2.05 and 2.04 at 1e-12, 1e-9, 1e-6 and 1e-3; ``loglik``'s 10.6 at
+    each; ``run_mode`` identical throughout."""
+    x = np.concatenate([normals(150, 3), normals(150, 4, loc=3.0)])
+    kw = dict(mean_prior=[0.0], covariance_prior=[1.0], degrees_of_freedom_prior=3.0, hazard=100.0)
+    plain = run(x, **kw)
+
+    def gap(beta, col):
+        return (run(x, robust_beta=beta, **kw)[col] - plain[col]).abs().max()
+
+    for col in ("p_change", "pred_x0", "loglik"):
+        assert gap(1e-12, col) < 1e-10, col
+    for col in ("p_change", "loglik", "run_mean"):
+        small, large = gap(1e-6, col) / 1e-6, gap(1e-3, col) / 1e-3
+        assert small > 0.0 and abs(large / small - 1.0) < 0.02, (col, small, large)
+    assert run(x, robust_beta=1e-3, **kw)["run_mode"].equals(plain["run_mode"])
+
+
+def test_a_scalar_covariance_prior_is_that_multiple_of_the_identity():
+    """``[s]`` is ``s`` times the identity written out, to the bit, under
+    either emission; ``"diag"`` reads a matrix's diagonal alone, so its
+    off-diagonals change nothing; ``"full"`` reads them."""
+    rng = np.random.default_rng(5)
+    x = np.column_stack(
+        [
+            np.concatenate([normals(150, 3), normals(150, 4, loc=3.0)]),
+            np.concatenate([rng.normal(0, 1, 150), rng.normal(-2, 2, 150)]),
+        ]
+    )
+    kw = dict(mean_prior=[0.0, 0.0], degrees_of_freedom_prior=5.0, hazard=100.0)
+    for emission in ("full", "diag"):
+        scalar = run(x, covariance_type=emission, covariance_prior=[2.0], **kw)
+        matrix = run(x, covariance_type=emission, covariance_prior=[2.0, 0.0, 0.0, 2.0], **kw)
+        assert _differ(scalar, matrix) == [], emission
+    coupled, plain = [2.0, 0.5, 0.5, 3.0], [2.0, 0.0, 0.0, 3.0]
+    diag = [run(x, covariance_type="diag", covariance_prior=c, **kw) for c in (coupled, plain)]
+    assert _differ(*diag) == []
+    full = [run(x, covariance_type="full", covariance_prior=c, **kw) for c in (coupled, plain)]
+    assert "p_change" in _differ(*full)
+
+
+def test_at_one_feature_full_is_diag():
+    """At ``d = 1`` the normal-inverse-Wishart is the normal-inverse-gamma,
+    with the same default ``degrees_of_freedom_prior`` (``d + 2 = 3``):
+    ``"full"`` and ``"diag"`` are one model computed two ways, with the prior
+    given and with it set by the warm-up. Measured 2026-10-25: 1.2e-14 in
+    ``p_change``, 5.1e-14 in ``loglik``, 5.7e-12 in a ``run_mean`` of
+    hundreds, so 1e-12 relative is the bound."""
+    x = np.concatenate([normals(150, 3), normals(150, 4, loc=3.0)])
+    for kw in (dict(mean_prior=[0.0], covariance_prior=[1.0]), {}):
+        a = run(x, covariance_type="diag", hazard=100.0, prune_below=0.0, **kw)
+        b = run(x, covariance_type="full", hazard=100.0, prune_below=0.0, **kw)
+        assert a["run_mode"].equals(b["run_mode"])
+        for col in ("p_change", "run_mean", "pred_x0", "loglik"):
+            got, want = b[col].to_numpy(), a[col].to_numpy()
+            assert np.array_equal(np.isnan(got), np.isnan(want)), col
+            ok = ~np.isnan(want)
+            scale = np.maximum(np.abs(want[ok]), 1.0)
+            assert np.max(np.abs(got[ok] - want[ok]) / scale) < 1e-12, (col, kw)
+
+
+def test_the_default_degrees_of_freedom_are_the_smallest_with_a_mean():
+    """Left out, ``degrees_of_freedom_prior`` is 3 under ``"diag"`` whatever
+    ``d``, and ``d + 2`` under ``"full"``: the same run as the number written
+    out, to the bit, and not the run one above it."""
+    x0 = np.concatenate([normals(150, 3), normals(150, 4, loc=3.0)])
+    for d in (1, 2, 3):
+        x = np.column_stack([x0] + [normals(300, 10 + i) for i in range(d - 1)])
+        kw = dict(mean_prior=[0.0] * d, covariance_prior=[1.0], hazard=100.0)
+        for emission, nu in (("diag", 3.0), ("full", d + 2.0)):
+            left_out = run(x, covariance_type=emission, **kw)
+            written = run(x, covariance_type=emission, degrees_of_freedom_prior=nu, **kw)
+            above = run(x, covariance_type=emission, degrees_of_freedom_prior=nu + 1.0, **kw)
+            assert _differ(left_out, written) == [], (d, emission)
+            assert "p_change" in _differ(left_out, above), (d, emission)
+
+
+def test_a_prune_below_of_zero_is_the_smallest_prune():
+    """``prune_below = 0`` keeps every run, and so does ``1e-300``, below any
+    share of the mass a run of 300 rows reaches: the same run to the bit. The
+    default ``1e-6`` drops some."""
+    x = np.concatenate([normals(150, 3), normals(150, 4, loc=3.0)])
+    kw = dict(mean_prior=[0.0], covariance_prior=[1.0], degrees_of_freedom_prior=3.0, hazard=100.0)
+    exact = run(x, prune_below=0.0, **kw)
+    assert _differ(exact, run(x, prune_below=1e-300, **kw)) == []
+    assert "p_change" in _differ(exact, run(x, prune_below=1e-6, **kw))
+
+
+def test_a_max_run_past_the_stream_is_no_cap():
+    """A run of ``n`` rows never reaches a ``max_run`` of ``n + 1`` or more,
+    so every such cap is the same run as one of a billion, to the bit; half
+    the stream is a cap that binds. The smallest cap, 2, is taken and keeps
+    one run length beside the empty one."""
+    x = np.concatenate([normals(150, 3), normals(150, 4, loc=3.0)])
+    n = len(x)
+    kw = dict(
+        mean_prior=[0.0],
+        covariance_prior=[1.0],
+        degrees_of_freedom_prior=3.0,
+        hazard=100.0,
+        prune_below=0.0,
+    )
+    huge = run(x, max_run=10**9, **kw)
+    for cap in (n + 1, n + 2, 10**6):
+        assert _differ(run(x, max_run=cap, **kw), huge) == [], cap
+    assert "run_mode" in _differ(run(x, max_run=n // 2, **kw), huge)
+    assert run(x, max_run=2, **kw)["run_mode"].max() == 1
+
+
+def _data_prior(bank):
+    """The prior the warm-up set, read from the bank's state."""
+
+    def find(o):
+        if isinstance(o, dict):
+            if "Bocpd" in o:
+                return o["Bocpd"]["data_prior"]
+            o = list(o.values())
+        if isinstance(o, list):
+            for v in o:
+                got = find(v)
+                if got is not None:
+                    return got
+        return None
+
+    return find(json.loads(bank.write_json(pretty=False)))
+
+
+@pytest.mark.parametrize("emission", ["full", "diag"])
+def test_the_prior_from_the_first_rows_is_numpys_weighted_covariance(emission):
+    """Where a prior is left out, the first ``warm_rows`` learned rows set it:
+    their weighted mean, ``numpy.average``, and ``numpy.cov(aweights=)``, its
+    diagonal under ``"diag"``. A row of weight 0 is not one of them. Two rows
+    of two features are rank one, not positive definite, so ``"full"`` takes
+    their diagonal. And the held rows are then read as rows of a model given
+    that prior from the start: from the first reported row on, every output
+    is the run given the state's prior, to the bit, with either prior or
+    both left out. Measured 2026-10-25: mean within 8.9e-16 at a level of 5,
+    covariance within 4.4e-16 relative."""
+    rng = np.random.default_rng(3)
+    n = 200
+    x = rng.normal(size=(n, 2)) * [1.0, 3.0] + [5.0, -2.0]
+    x[:, 1] += 0.6 * x[:, 0]
+    w = rng.uniform(0.2, 2.0, n)
+    w[3] = 0.0
+    df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "w": w})
+    base = dict(features=["x0", "x1"], weight="w", covariance_type=emission)
+
+    def fit(**kw):
+        bank = po.ModelBank([po.spec.bocpd("b", **base, **kw)])
+        return bank, bank.fit_predict(df)["b"].struct.unnest()
+
+    for k in (2, 3, 7):
+        bank, out = fit(warm_rows=k)
+        prior = _data_prior(bank)
+        held = np.flatnonzero(w > 0)[:k]
+        mean = np.average(x[held], axis=0, weights=w[held])
+        cov = np.cov(x[held].T, aweights=w[held])
+        if emission == "diag" or k == 2:
+            cov = np.diag(np.diag(cov))
+        # Tolerance (task 252 (b)): numpy sums in another order.
+        assert np.array(prior["mean"]) == pytest.approx(mean, rel=1e-14, abs=1e-14), k
+        got = np.array(prior["scale"]).reshape(2, 2)
+        assert np.max(np.abs(got - cov)) < 1e-14 * np.max(np.abs(cov)), (k, got, cov)
+        first = int(held[-1]) + 1
+        assert out["p_change"].is_not_null().arg_max() == first, k
+        _, given = fit(mean_prior=prior["mean"], covariance_prior=prior["scale"])
+        assert _differ(out[first:], given[first:]) == [], k
+        # One prior given: the warm-up still sets the other.
+        mean_given, out = fit(warm_rows=k, mean_prior=[1.0, 2.0])
+        _, given = fit(mean_prior=[1.0, 2.0], covariance_prior=_data_prior(mean_given)["scale"])
+        assert _differ(out[first:], given[first:]) == [], k
+        scale_given, out = fit(warm_rows=k, covariance_prior=[2.0])
+        _, given = fit(mean_prior=_data_prior(scale_given)["mean"], covariance_prior=[2.0])
+        assert _differ(out[first:], given[first:]) == [], k
+
+
+def test_a_switching_hazard_column_is_the_longhand_with_that_hazard_per_row():
+    """``hazard_col`` against Algorithm 1 with row ``t``'s own ``H_t``, a
+    column switching between 400 and 8 every 15 rows. Measured 2026-10-25:
+    ``loglik`` within 2.3e-14 and ``p_change`` within 5.9e-15; the same
+    longhand with the column shifted a row, ``H_{t-1}``, is 0.16 away, and a
+    constant 400 is 0.48 away, so the bound sees which row's hazard is read."""
+    x = np.concatenate([normals(60, 1), normals(60, 2, loc=3.0)])
+    h = np.where(np.arange(120) % 30 < 15, 400.0, 8.0)
+    out = run(
+        x,
+        hazard_col="h",
+        h=h,
+        mean_prior=[0.0],
+        degrees_of_freedom_prior=2.0,
+        covariance_prior=[1.0],
+        prune_below=0.0,
+    )
+    posts, scores = longhand(x, h)
+    # Tolerances (task 252 (b)): an oracle computed another way, through libm.
+    assert out["loglik"].to_list()[1:] == pytest.approx(list(scores[1:]), abs=1e-12)
+    assert out["p_change"].to_list()[1:] == pytest.approx(_p_change(posts)[1:], abs=1e-12)
+    assert out["run_mode"].to_list()[1:] == [int(np.argmax(p)) for p in posts][:-1]
+    shifted, _ = longhand(x, np.roll(h, 1))
+    late = np.abs(np.array(_p_change(shifted)[1:]) - out["p_change"].to_numpy()[1:])
+    assert late.max() > 0.1
+
+
+def test_chunks_of_1_7_and_600_with_a_hazard_column_and_weights():
+    """Hard rule 3 on what this batch's parameters touch: a switching hazard
+    column, row weights with zeros (one inside the warm-up), the warm-up
+    itself, and all three emissions, fed whole, a row at a time, and in
+    chunks of 7 and 600, and across a reload past the warm-up."""
+    rng = np.random.default_rng(8)
+    n = 800
+    x = np.column_stack(
+        [
+            rng.normal(size=n) + 3.0 * ((np.arange(n) // 250) % 2),
+            rng.normal(size=n) - 2.0 * ((np.arange(n) // 400) % 2),
+        ]
+    )
+    w = rng.uniform(0.5, 2.0, n)
+    w[[2, 50, 600]] = 0.0
+    df = pl.DataFrame(
+        {
+            "x0": x[:, 0],
+            "x1": x[:, 1],
+            "w": w,
+            "h": np.where(np.arange(n) % 100 < 50, 300.0, 20.0),
+        }
+    )
+    common = dict(features=["x0", "x1"], weight="w", hazard_col="h", warm_rows=6)
+    specs = [
+        po.spec.bocpd("diag", **common),
+        po.spec.bocpd("full", covariance_type="full", **common),
+        po.spec.bocpd("robust", robust_beta=0.1, max_run=200, **common),
+    ]
+    whole = po.ModelBank(specs).fit_predict(df)
+    assert whole["diag"].struct.field("p_change").null_count() == 7  # six held, one weightless
+    for size in (1, 7, 600):
+        bank = po.ModelBank(specs)
+        parts = [bank.fit_predict(df.slice(i, size)) for i in range(0, n, size)]
+        assert pl.concat(parts).equals(whole), size
+    warm = po.ModelBank(specs)
+    first = warm.fit_predict(df[:450])
+    second = po.ModelBank.load_bytes(warm.save_bytes()).fit_predict(df[450:])
+    assert pl.concat([first, second]).equals(whole)

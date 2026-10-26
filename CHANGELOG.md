@@ -13,6 +13,18 @@ returns.
 
 ### Changed
 
+- `withheld_reason` has a fifth value, `ill_conditioned`, appended after
+  `below_warm_rows`, for a row predicted from a fit withheld because its
+  normal equations kept no digit (task 278). Every existing name keeps its
+  position, so a saved state's last row reads as it did. The noise gate
+  reads such a fit's error inflation as not a number and does not name the
+  row in its place.
+- `po.gram.solve` with a grid of ridges rides one eigendecomposition only
+  where the system's diagonal spreads by 4 or less (under `standardize`, or
+  columns of like scale); elsewhere each ridge takes its own solve of the
+  scaled system: on columns from 1e-3 to 1e3 a grid of fifty took 1.4 ms at
+  50 columns and 8.4 ms at 200, against 0.45 and 2.7, and a single ridge
+  above 0 takes less time than before (task 278).
 - `init="k-means++"`, and the starts of `init="lloyd"`, are greedy
   k-means++, scikit-learn's rule: each centre after the first is the best of
   `2 + ⌊ln k⌋` candidates by the inertia it leaves (task 278). On Fränti's
@@ -83,6 +95,50 @@ returns.
 
 ### Fixed
 
+- `ewridge` withholds a fit whose normal equations are too nearly singular
+  to keep a digit, and says so (task 278). Past a condition of `1/u` a
+  Cholesky factorization does not always fail -- rounding can leave the
+  matrix positive definite -- and the coefficients then came out wrong by
+  more than their own size with nothing said: two features equal to within
+  `1e-11` of their spread gave slopes of -364.1 and 363.1 for a truth of 1
+  and -2, silently on 19 of 40 seeds, and NIST's Filip kept no correct
+  digit. Each factorization that needs no jitter now estimates `‖H⁻¹‖₁` of
+  the system scaled by its diagonal (Hager and Higham's estimator, LAPACK's
+  `dlacn2`, from the factor in `O(k²)`, behind a comparison-matrix bound
+  that settles most systems at one solve's cost); where the solve's
+  forward-error bound reaches 1, `3 k γ_{3k+1} ‖H⁻¹‖₁ ≥ 1`, the fit is
+  withheld -- `coef`, `support_coef` and the predictions null -- and counted
+  in `solve_failures`. NIST's solvable designs sit seven orders of magnitude
+  inside the limit, and every other solve is unchanged to the bit.
+- `po.gram.solve(standardize=False)` is accurate whatever the features'
+  units (task 278): it diagonalized the raw Gram with `eigh`, whose
+  eigenvalues are accurate only relative to the largest, so features from
+  1e-10 to 1e10 put the coefficients off by up to 8.9 times their size and
+  NIST's Longley kept 6.4 digits; the system is now scaled by its diagonal
+  first (9.4e-14 at most, 12.0 digits on Longley).
+- A negative `jitter`, `noise_stride` or `iv_stride` given to
+  `po.spec.rcov` is refused as needing to be at least 1, the real floor; it
+  was refused as needing to be at least 0, and then 0 was refused as well
+  (task 278).
+- `lasso`'s `tol` was in the target's units (task 278): the coordinate
+  descent stopped when no standardized coefficient moved by `tol`, and those
+  coefficients are in the target's units, so a target near 1e-9 met the
+  default after a sweep with no descent counted unconverged (0.20 of the
+  target's spread off at y×2^-30, 1e-3 at 2^-20) and a target in the
+  millions could not meet it above its rounding. A sweep now ends the descent
+  when no coefficient moves by `tol` times the target's spread (its standard
+  deviation, or its root mean square without an intercept): a target and
+  penalties scaled by a power of two give the same fit scaled, to the bit,
+  with the same `solve_failures`. `po.gram.lasso_path` follows the same rule.
+  Outputs move only where the target's spread is not 1, by at most 7.8e-10
+  in a prediction or coefficient on the release probe. A `lasso` state saved
+  by 1.0-1.3 loads and goes on within 1e-9 of this build's own, not to the
+  bit.
+- `po.gram.lasso_path` returned a penalty whose descent ran out of its
+  `max_iter` sweeps with nothing to say so (at a condition of 4e8 and a
+  penalty of 0.001, 5 and 1,000 sweeps both left a KKT violation of 7.8e-9
+  against the rule's 2e-10); it now raises a `ReadinessWarning` naming each
+  such penalty (task 278).
 - `kmeans` and `hmm`: the default seeding, `init="lloyd"`, runs Lloyd's
   passes from each of its ten starts until no row changes centre, at most
   300 passes, where it stopped after ten wherever they had reached (task
@@ -123,6 +179,11 @@ returns.
 
 ### Performance
 
+- `ewridge`'s condition estimate costs 4.3% at 5 features (135.9 -> 141.7
+  ns a row), 7.6% at 20 (288.9 -> 311.0) and 1.8% for the 50-feature,
+  10-target blocked case solving every 400 rows (556.1 -> 565.9), measured
+  natively, best of seven runs interleaved with the previous build (task
+  278).
 - Seeding with `init="lloyd"` at 500 rows, 8 centres and 400 features
   takes 56 ms on separated blobs (from 97) and 91 ms on overlapping ones
   (from 98); `init="k-means++"` takes 3.6 ms there, from 1.9 (task 278).

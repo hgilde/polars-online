@@ -117,14 +117,6 @@ why = """they differ only at `rho == -l1`, where the mutant's `(rho + l1) / \
 denom` is +0 divided by a positive denominator: the 0 the original gives"""
 
 [[equivalent]]
-file = "crates/online-core/src/lasso.rs"
-function = "Lasso::solve"
-mutation = "replace < with <="
-line_has = "if max_delta < self.cfg.tol {"
-why = """they differ only when a sweep's largest step equals the tolerance \
-exactly, a floating-point coincidence no input can be built to reach"""
-
-[[equivalent]]
 file = "crates/online-core/src/gaps.rs"
 function = "Cross::learn"
 mutation = "replace + with -"
@@ -1264,7 +1256,7 @@ would also excuse that one if it ever survived"""
 file = "crates/online-core/src/ewridge.rs"
 function = "EwRidge::inflation_into"
 mutation = "replace > with >="
-line_has = "let slot = j * nc + c;\n                if n > 0.0"
+line_has = "if n > 0.0\n                    && let Some(bound) = self.ready.edf_bound_at(slot)"
 why = """at `n = 0` the bound's ratio `sqrt(1 + bound/0)` is infinite (or NaN at \
 a bound of 0), never below `limit`, so the arm it lets in falls through to \
 the exact ratio, as the original does"""
@@ -2408,3 +2400,12 @@ mutation = "replace > with >="
 line_has = ".is_some_and(|b| self.buckets.len() > Self::one_level_buckets(b))"
 why = """at exactly one level's band, `len = 2·64·band + 1`, the sketch fits \
 its band, and `kept` returns its own extent: nothing folds"""
+
+[[equivalent]]
+file = "crates/online-core/src/solve/condition.rs"
+function = "SpdFactor::comparison_bound"
+mutation = "replace > with >="
+line_has = "let largest = |m: f64, v: f64| if v > m || v.is_nan() { v } else { m };"
+why = """at `v == m` both branches return the same double (neither is a \
+signed zero: every `z` and `w` entry is a positive quotient), and a NaN \
+takes the second test either way"""
