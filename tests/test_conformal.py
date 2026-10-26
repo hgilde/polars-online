@@ -631,9 +631,13 @@ class TestValidation:
 
 class TestRowSemantics:
     def test_null_until_the_radius_exists(self):
-        """Prediction first (`min_weight`), then a residual, then a sigma,
-        then a radius: the interval appears two rows after the first
-        residual, and `coverage` one row after that."""
+        """Prediction first (`min_weight`), with a residual, then a radius:
+        the interval appears one row after the first residual the bank
+        reports, and `coverage` one row after that. The `sigma` the radius
+        starts from is there already, the spread having folded the
+        predictions `min_weight` withheld, which a gate withholds from the
+        output alone (task 278, batch 17; until then the interval waited a
+        row more, for a `sigma` from the first reported residual)."""
         out = po.ModelBank([_spec(min_weight=20.0)]).fit_predict(_small())
         pred, lo, cov = (
             out["m"].struct.field(k).to_list() for k in ("pred_y0", "lo_y0", "coverage_y0")
@@ -641,7 +645,7 @@ class TestRowSemantics:
         first_pred = next(i for i, v in enumerate(pred) if v is not None)
         first_lo = next(i for i, v in enumerate(lo) if v is not None)
         first_cov = next(i for i, v in enumerate(cov) if v is not None)
-        assert first_lo == first_pred + 2
+        assert first_lo == first_pred + 1
         assert first_cov == first_lo + 1
         assert all(v is None for v in lo[:first_lo])
 
@@ -796,7 +800,9 @@ class TestStreamContract:
         next_pred = d + 1 + int(np.argmax(np.isfinite(pred[d + 1 :])))
         next_lo = d + 1 + int(np.argmax(np.isfinite(lo[d + 1 :])))
         assert next_pred > d + 5, "the reset model waits for min_weight again"
-        assert next_lo == next_pred + 2, "and the radius restarts with it"
+        # The spread restarts with the model and folds its predictions while
+        # `min_weight` withholds them, so the radius starts a row after them.
+        assert next_lo == next_pred + 1, "and the radius restarts with it"
 
 
 def test_a_tiny_scale_target_gives_a_tiny_finite_radius():

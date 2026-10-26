@@ -612,6 +612,32 @@ pub trait OnlineModel: Sized {
         self.predict(x, d_clock)
     }
 
+    /// [`Self::predict_with`] as the same model built with `min_weight =
+    /// floor` and no target's own floor gives it, from the state as it
+    /// stands: at `floor = 0`, the model's own prediction for the row, which
+    /// its floor withholds from the output and nothing else. A bank folds it
+    /// into the statistics that rank and scale its slots, so that a floor,
+    /// which withholds output only, does not move them (task 278, batch
+    /// 17). The floor is set for the read and put back, so the model is left
+    /// as it was, to the bit.
+    ///
+    /// `tests/model_contract.rs` holds every model that predicts a target
+    /// to it: on every row, the twin built with `min_weight = floor` and fed
+    /// the same rows predicts this, to the bit. The default is
+    /// `predict_with`, right for a model with no floor, and kept by the
+    /// models whose output a bank forms no residual from (the unsupervised
+    /// ones, `ew_class`, `seqtest`, `marginal`).
+    fn predict_with_floor(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        floor: f64,
+    ) -> Step {
+        let _ = floor;
+        self.predict_with(x, y, d_clock)
+    }
+
     /// Drop whatever this model keeps that is indexed by *rows back* -- a
     /// ring of past feature vectors, a partially filled window -- because
     /// the rows behind it are no longer adjacent to the next one

@@ -489,6 +489,21 @@ impl OnlineModel for Ftrl {
         }
     }
 
+    /// The prediction at another `min_weight` floor, set for the read and
+    /// put back ([`OnlineModel::predict_with_floor`]).
+    fn predict_with_floor(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        floor: f64,
+    ) -> Step {
+        let floor = std::mem::replace(&mut self.cfg.min_weight, floor);
+        let out = OnlineModel::predict_with(self, x, y, d_clock);
+        self.cfg.min_weight = floor;
+        out
+    }
+
     /// The row scored from the fit as the last row that taught each target
     /// left it: a row that teaches nothing does not move it, so the clock
     /// since does not either (the module docs).

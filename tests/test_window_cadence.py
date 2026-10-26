@@ -378,12 +378,17 @@ class TestTheWindowIsTheDefinitions:
         takes the model's cadence, so its boundary is the fit's: the EW root
         mean square of the out-of-sample residuals from that boundary on, each
         at its row's weight. On every row's boundary instead it is other
-        numbers, so the cadence is what the test reads."""
+        numbers, so the cadence is what the test reads. The residuals are
+        each slot's own, those the noise gate withholds included (a gate
+        withholds output only: task 278, batch 17): the same spec's with the
+        gate off."""
         steps = stream_steps()
         df = frame(steps)
-        out = run(ridge(snapshot_every="1m", max_rows_between_snapshots=25, emit_sigma=True), df)
+        kw = dict(snapshot_every="1m", max_rows_between_snapshots=25, emit_sigma=True)
+        out = run(ridge(**kw), df)
+        own = run(ridge(**kw, max_error_inflation=float("inf")), df)
         clock = model_clock(steps)
-        w, r = df["w"].to_numpy(), out["resid_y"].to_numpy()
+        w, r = df["w"].to_numpy(), own["resid_y"].to_numpy()
 
         def sigma(snaps: list[int]) -> np.ndarray:
             got = np.full(len(steps), np.nan)

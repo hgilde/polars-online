@@ -350,7 +350,14 @@ class TestWindowedSpread:
         resid = self._field(out, spec, "resid_y")
         sigma = self._field(out, spec, "sigma_y")
         z = self._field(out, spec, "zscore_y")
-        ok = np.isfinite(resid)
+        # The spread folds each slot's own residuals, the ones a readiness
+        # gate withholds included (task 278, batch 17): those the same spec
+        # reports with no gate.
+        free_spec = self._spec(kind, **({"min_weight": 0.0} if kind == "lasso" else {}))
+        if kind == "ewridge":
+            free_spec = self._spec(kind, max_error_inflation=float("inf"))
+        own = self._field(po.ModelBank([free_spec]).fit_predict(df), free_spec, "resid_y")
+        ok = np.isfinite(own)
         checked = 0
         for i in range(1, len(resid)):
             # Row i is scored against the rows learned before it, inside the
@@ -361,9 +368,9 @@ class TestWindowedSpread:
                 assert not np.isfinite(sigma[i]), i
                 continue
             w = 0.5 ** (ages[keep] / self.H)
-            want = np.sqrt(np.sum(w * resid[:i][keep] ** 2) / np.sum(w))
+            want = np.sqrt(np.sum(w * own[:i][keep] ** 2) / np.sum(w))
             assert sigma[i] == pytest.approx(want, rel=1e-9), (kind, i)
-            if ok[i]:
+            if np.isfinite(resid[i]):
                 assert z[i] == pytest.approx(resid[i] / want, rel=1e-9), (kind, i)
             checked += 1
         assert checked > 400
@@ -970,9 +977,21 @@ class TestLabelDelayFoldsWhatWasScored:
         # Every prediction the frame carries is river's delayed prediction.
         np.testing.assert_allclose(pred[scored], want[scored], rtol=1e-12, atol=1e-12)
         # sigma at row t is read before row t, after the rows released as it
-        # arrived: every row at least `delay` behind it.
+        # arrived: every row at least `delay` behind it. Of each row, the
+        # residual of the prediction it was scored with, whether or not the
+        # noise gate withheld it (a gate withholds output only: task 278,
+        # batch 17) -- the residuals of the same spec with the gate off, its
+        # predictions river's too.
+        free = po.ModelBank([self._spec(max_error_inflation=float("inf"))]).fit_predict(df)
+        free = free["m"].struct.unnest()
+        own = free["resid_y"].to_numpy()
+        held = np.isfinite(own) & ~np.isfinite(resid)
+        assert held.sum() > 0, "the gate withheld scored rows the spread folds"
+        np.testing.assert_allclose(
+            free["pred_y"].to_numpy()[held], want[held], rtol=1e-12, atol=1e-12
+        )
         for t in range(3 * self.DELAY, n, 7):
-            matured = resid[: t - self.DELAY + 1]
+            matured = own[: t - self.DELAY + 1]
             matured = matured[np.isfinite(matured)]
             assert sigma[t] ** 2 == pytest.approx(np.mean(matured**2), rel=1e-9), t
 

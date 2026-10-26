@@ -3676,6 +3676,241 @@ fn holt_predict_is_the_step() {
     predict_is_the_step_without_the_step(|| Holt::new(holt_cfg()).unwrap(), 2, false);
 }
 
+// ---------------------------------------------------------------------------
+// The prediction at a lower floor is the lower floor's twin's (task 278, batch 17).
+// ---------------------------------------------------------------------------
+
+/// `predict_with_floor(.., floor)` on a model built with a higher
+/// `min_weight` floor (and, where the model keeps one, each target's own) is,
+/// on every row of the stream `predict_is_the_step_without_the_step` reads --
+/// missing targets, zero-weight and uneven rows, clock gaps -- the prediction
+/// of its twin built with `min_weight = floor` and fed the same rows, to the
+/// bit: `min_weight` withholds the output alone, so below the higher floor
+/// the two are one model. The read leaves the gated model's state as it
+/// was, byte for byte. And it is evidence only where the higher floor
+/// withheld something: the gated model's own `predict_with` must be NaN
+/// where the twin's is a number on some rows, and on every one of those
+/// this read is that number.
+fn the_read_at_a_lower_floor_is_its_twin<M: OnlineModel>(
+    gated: impl Fn() -> M,
+    lower: impl Fn(f64) -> M,
+    targets: usize,
+    binary: bool,
+) {
+    for floor in [0.0, 4.0] {
+        the_read_at_a_lower_floor_is_its_twin_at(&gated, &lower, floor, targets, binary);
+    }
+}
+
+fn the_read_at_a_lower_floor_is_its_twin_at<M: OnlineModel>(
+    gated: &impl Fn() -> M,
+    lower: &impl Fn(f64) -> M,
+    floor: f64,
+    targets: usize,
+    binary: bool,
+) {
+    let (mut g, mut f) = (gated(), lower(floor));
+    let kind = g.state().model.kind();
+    let mut s = 20261026u64;
+    let (mut withheld, mut read) = (0usize, 0usize);
+    for i in 0..400 {
+        let x: Vec<f64> = (0..K).map(|_| lcg(&mut s) * 3.0).collect();
+        let y: Vec<Option<f64>> = (0..targets)
+            .map(|j| {
+                if lcg(&mut s) > 0.8 {
+                    return None;
+                }
+                let lin = 0.5 * (j as f64 + 1.0) + x[0] - 0.5 * x[1] + 0.1 * lcg(&mut s);
+                Some(if binary { f64::from(lin > 0.5) } else { lin })
+            })
+            .collect();
+        let u = lcg(&mut s);
+        let w = if u < -0.9 {
+            0.0
+        } else if u < -0.5 {
+            0.5
+        } else if u > 0.7 {
+            2.0
+        } else {
+            1.0
+        };
+        // A gap of 25 every so often takes the weight back under the floor.
+        let d = match (i, lcg(&mut s)) {
+            (0, _) => 0.0,
+            (_, v) if v > 0.97 => 25.0,
+            (_, v) if v > 0.8 => 3.0,
+            _ => 1.0,
+        };
+        let before = state_bytes(&g);
+        let past = g.predict_with_floor(&x, &y, d, floor);
+        assert!(
+            state_bytes(&g) == before,
+            "{kind} at {floor}: row {i}: the read at a lower floor moved the state"
+        );
+        let twin = f.predict_with(&x, &y, d);
+        assert!(
+            same_bits(&past, &twin),
+            "{kind} at {floor}: row {i}: read {past:?}, the twin {twin:?}"
+        );
+        let output = g.predict_with(&x, &y, d);
+        for (slot, (o, t)) in output.pred.iter().zip(&twin.pred).enumerate() {
+            if o.is_nan() && t.is_finite() {
+                withheld += 1;
+                read += usize::from(past.pred[slot].is_finite());
+            }
+        }
+        g.step(&x, &y, d, w);
+        f.step(&x, &y, d, w);
+    }
+    assert!(
+        withheld > 10 && read == withheld,
+        "{kind} at {floor}: the floor withheld {withheld} slots the twin reports, {read} of them read"
+    );
+}
+
+/// The floor the gated model is built with: past the cfgs' 3, so it
+/// withholds rows the model's own warm-up does not, and comes back after
+/// each long gap; the reads are at 0 and at 4, between.
+const FLOOR: f64 = 12.0;
+
+#[test]
+fn the_read_at_a_lower_floor_is_its_twin_for_every_model_with_a_residual() {
+    let at = |floor: f64| {
+        let mut c = ewridge_cfg();
+        c.min_weight = floor;
+        c
+    };
+    the_read_at_a_lower_floor_is_its_twin(
+        || EwRidge::new(at(FLOOR)).unwrap(),
+        |f| EwRidge::new(at(f)).unwrap(),
+        2,
+        false,
+    );
+    // Each target's own floor beside the shared one.
+    the_read_at_a_lower_floor_is_its_twin(
+        || {
+            let mut m = EwRidge::new(at(FLOOR)).unwrap();
+            m.set_target_min_weight(vec![FLOOR, 2.0 * FLOOR]).unwrap();
+            m
+        },
+        |f| EwRidge::new(at(f)).unwrap(),
+        2,
+        false,
+    );
+    let at = |floor: f64| {
+        let mut c = rls_cfg();
+        c.min_weight = floor;
+        c
+    };
+    the_read_at_a_lower_floor_is_its_twin(
+        || Rls::new(at(FLOOR)).unwrap(),
+        |f| Rls::new(at(f)).unwrap(),
+        2,
+        false,
+    );
+    let at = |floor: f64, own: Vec<f64>| {
+        let mut c = lasso_cfg();
+        c.min_weight = floor;
+        c.target_min_weight = own;
+        c
+    };
+    the_read_at_a_lower_floor_is_its_twin(
+        || Lasso::new(at(FLOOR, Vec::new())).unwrap(),
+        |f| Lasso::new(at(f, Vec::new())).unwrap(),
+        1,
+        false,
+    );
+    the_read_at_a_lower_floor_is_its_twin(
+        || Lasso::new(at(FLOOR, vec![2.0 * FLOOR])).unwrap(),
+        |f| Lasso::new(at(f, Vec::new())).unwrap(),
+        1,
+        false,
+    );
+    let at = |floor: f64| {
+        let mut c = kalman_cfg();
+        c.min_weight = floor;
+        c
+    };
+    the_read_at_a_lower_floor_is_its_twin(
+        || Kalman::new(at(FLOOR)).unwrap(),
+        |f| Kalman::new(at(f)).unwrap(),
+        2,
+        false,
+    );
+    for loss in ROBUST_LOSSES {
+        let at = |floor: f64| {
+            let mut c = robust_cfg(loss);
+            c.min_weight = floor;
+            c
+        };
+        the_read_at_a_lower_floor_is_its_twin(
+            || Robust::new(at(FLOOR)).unwrap(),
+            |f| Robust::new(at(f)).unwrap(),
+            2,
+            false,
+        );
+        the_read_at_a_lower_floor_is_its_twin(
+            || {
+                let mut m = Robust::new(at(FLOOR)).unwrap();
+                m.set_target_min_weight(vec![2.0 * FLOOR, FLOOR]).unwrap();
+                m
+            },
+            |f| Robust::new(at(f)).unwrap(),
+            2,
+            false,
+        );
+    }
+    let at = |floor: f64| {
+        let mut c = ftrl_cfg();
+        c.min_weight = floor;
+        c
+    };
+    the_read_at_a_lower_floor_is_its_twin(
+        || Ftrl::new(at(FLOOR)).unwrap(),
+        |f| Ftrl::new(at(f)).unwrap(),
+        2,
+        false,
+    );
+    for logistic in [false, true] {
+        let at = |floor: f64| {
+            let mut c = sgd_cfg();
+            c.min_weight = floor;
+            if logistic {
+                c.loss = SgdLoss::Logistic;
+            }
+            c
+        };
+        the_read_at_a_lower_floor_is_its_twin(
+            || Sgd::new(at(FLOOR)).unwrap(),
+            |f| Sgd::new(at(f)).unwrap(),
+            2,
+            logistic,
+        );
+    }
+    let at = |floor: f64| {
+        let mut c = pa_cfg();
+        c.min_weight = floor;
+        c
+    };
+    the_read_at_a_lower_floor_is_its_twin(
+        || Pa::new(at(FLOOR)).unwrap(),
+        |f| Pa::new(at(f)).unwrap(),
+        2,
+        false,
+    );
+    let at = |floor: f64| {
+        let mut c = holt_cfg();
+        c.min_weight = floor;
+        c
+    };
+    the_read_at_a_lower_floor_is_its_twin(
+        || Holt::new(at(FLOOR)).unwrap(),
+        |f| Holt::new(at(f)).unwrap(),
+        2,
+        false,
+    );
+}
+
 #[test]
 fn seqtest_predict_is_the_step() {
     predict_is_the_step_without_the_step(|| SeqTest::new(seqtest_cfg()).unwrap(), 2, false);

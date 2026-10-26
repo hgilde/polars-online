@@ -717,7 +717,33 @@ impl EwAutoCorr {
     /// the standard simplification for a stationary series and keeps the result
     /// in [−1, 1] by construction.
     pub fn update(&mut self, x: f64, lam: f64) {
-        if !x.is_finite() {
+        self.update_weighted(x, 1.0, lam);
+    }
+
+    /// One observation of weight `w > 0` with decay factor `lam`: the
+    /// weighted form of [`Self::update`], which is this at `w = 1`, to the
+    /// bit. Each value weighs the mean and the variance by `w`, and the pair
+    /// it closes -- it and the value `lag` back -- weighs the cross moment by
+    /// `w` too, the pair being folded at this value, as a row's weight
+    /// weighs every term it brings to `sigma`. With `v_t = w_t · Π λ` the
+    /// decayed weights,
+    ///
+    /// ```text
+    /// W   = Σ v_t                     mean = Σ v_t x_t / W
+    /// var = Σ v_t (x_t − mean)² / W   (exact: the weighted Welford step)
+    /// W_c = Σ_pairs v_t               cross ≈ Σ_pairs v_t (x_t − m)(x_{t−lag} − m) / W_c
+    /// ```
+    ///
+    /// the cross moment's `m` being the mean as each pair met it (task 278,
+    /// batch 17: the bank's residual autocorrelation gave each residual a
+    /// weight of 1 while `sigma`, the residual quantiles and the metrics
+    /// weighed it by the row's).
+    ///
+    /// A value of no usable weight (`w <= 0`, or not finite) is a step with no
+    /// value, as one that is not a number is: it ages the weights and is
+    /// no partner (hard rule 9; the bank passes none).
+    pub fn update_weighted(&mut self, x: f64, w: f64, lam: f64) {
+        if !x.is_finite() || !(w > 0.0 && w.is_finite()) {
             self.age(lam);
             return;
         }
@@ -726,15 +752,15 @@ impl EwAutoCorr {
         }
         self.buf.push_back(x);
 
-        let w_new = lam * self.w + 1.0;
-        let (a, b) = (lam * self.w / w_new, 1.0 / w_new);
+        let w_new = lam * self.w + w;
+        let (a, b) = (lam * self.w / w_new, w / w_new);
         let d = crate::comp::dev(x, self.mean, self.mean_lo);
         self.var = a * self.var + a * b * d * d;
         if self.buf.len() == self.lag + 1 {
             // `a d` is `x` about the mean it joins; the partner is about the
             // mean before it, as the variance's Welford step has it.
-            let wp_new = lam * self.w_pairs + 1.0;
-            let (ap, bp) = (lam * self.w_pairs / wp_new, 1.0 / wp_new);
+            let wp_new = lam * self.w_pairs + w;
+            let (ap, bp) = (lam * self.w_pairs / wp_new, w / wp_new);
             let lagged = crate::comp::dev(self.buf[0], self.mean, self.mean_lo);
             self.cross = ap * self.cross + a * bp * d * lagged;
             self.w_pairs = wp_new;
@@ -1354,6 +1380,141 @@ mod tests {
         }
         ac.update(7.0, 0.9);
         assert_ne!(ac.cross, 0.0, "the first pair, (7, 1), is a co-moment");
+    }
+
+    /// Task 278, batch 17: at weight 1 the weighted update is the plain one
+    /// to the bit, every field, through ages, lag breaks and a value that
+    /// is not a number; and a value of no weight is a step with no value.
+    #[test]
+    fn the_weighted_autocorr_at_weight_one_is_the_plain_one_to_the_bit() {
+        let (mut plain, mut weighted) = (EwAutoCorr::new(2).unwrap(), EwAutoCorr::new(2).unwrap());
+        let mut s = 71u64;
+        let mut prev = 0.0;
+        for i in 0..2000 {
+            prev = 0.6 * prev + (lcg(&mut s) - 0.5);
+            let x = if i % 97 == 5 { f64::NAN } else { prev };
+            let lam = if i % 13 == 0 { 0.9 } else { 0.995 };
+            if i % 211 == 7 {
+                plain.clear_lags();
+                weighted.clear_lags();
+            }
+            if i % 7 == 3 {
+                plain.age(lam);
+                weighted.age(lam);
+                continue;
+            }
+            plain.update(x, lam);
+            weighted.update_weighted(x, 1.0, lam);
+            assert_eq!(
+                rmp_serde::to_vec(&plain).unwrap(),
+                rmp_serde::to_vec(&weighted).unwrap(),
+                "row {i}"
+            );
+        }
+        for w in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let (mut aged, mut fed) = (weighted.clone(), weighted.clone());
+            aged.age(0.97);
+            fed.update_weighted(1.5, w, 0.97);
+            assert_eq!(fed, aged, "w = {w}");
+        }
+    }
+
+    /// The weighted update against its definition, computed in batch from
+    /// the values and their decayed weights `v_t = w_t · λ^(n−1−t)`: the
+    /// mean and the variance exactly (the weighted Welford step is the
+    /// batch formula; 1e-12 relative), and the lag-1 autocorrelation within
+    /// 3e-3 of `Σ v_t (x_t − μ)(x_{t−1} − μ) / Σ v_t` over the pairs, by the
+    /// final mean, divided by the variance -- the recursion takes each pair
+    /// about the mean as it met it, whose drift is the gap (measured
+    /// 2026-10-26: 1.8e-3; the plain update on the same series is 6.5e-5
+    /// from its own definition, its sample twice the weighted one's, whose
+    /// light blocks barely count). The series alternates two regimes in blocks of
+    /// 200: weight 1 at `phi = +0.8`, weight 0.01 at `phi = -0.8`. Weighed,
+    /// the estimate is the heavy regime's, near +0.8; the plain update,
+    /// every value at weight 1, puts it near 0.
+    #[test]
+    fn the_weighted_autocorr_is_its_definition_and_not_the_plain_one() {
+        let lam: f64 = 0.999;
+        let (n, mut s, mut prev) = (6000usize, 79u64, 0.0);
+        let (mut xs, mut ws) = (Vec::with_capacity(n), Vec::with_capacity(n));
+        for t in 0..n {
+            let heavy = (t / 200) % 2 == 0;
+            let phi = if heavy { 0.8 } else { -0.8 };
+            prev = phi * prev + (lcg(&mut s) - 0.5);
+            xs.push(prev);
+            ws.push(if heavy { 1.0 } else { 0.01 });
+        }
+        let (mut weighted, mut plain) = (EwAutoCorr::new(1).unwrap(), EwAutoCorr::new(1).unwrap());
+        for t in 0..n {
+            weighted.update_weighted(xs[t], ws[t], if t == 0 { 1.0 } else { lam });
+            plain.update(xs[t], if t == 0 { 1.0 } else { lam });
+        }
+        let v: Vec<f64> = (0..n)
+            .map(|t| ws[t] * lam.powi(i32::try_from(n - 1 - t).unwrap()))
+            .collect();
+        let big_w: f64 = v.iter().sum();
+        let mean = v.iter().zip(&xs).map(|(v, x)| v * x).sum::<f64>() / big_w;
+        let var = v
+            .iter()
+            .zip(&xs)
+            .map(|(v, x)| v * (x - mean) * (x - mean))
+            .sum::<f64>()
+            / big_w;
+        let w_pairs: f64 = v[1..].iter().sum();
+        let cross = (1..n)
+            .map(|t| v[t] * (xs[t] - mean) * (xs[t - 1] - mean))
+            .sum::<f64>()
+            / w_pairs;
+        assert!(
+            (weighted.w - big_w).abs() <= 1e-12 * big_w,
+            "{} vs {big_w}",
+            weighted.w
+        );
+        assert!(
+            (weighted.mean + weighted.mean_lo - mean).abs() <= 1e-12 * var.sqrt(),
+            "mean {} vs {mean}",
+            weighted.mean
+        );
+        assert!(
+            (weighted.var - var).abs() <= 1e-12 * var,
+            "var {} vs {var}",
+            weighted.var
+        );
+        let (got, want) = (weighted.get().unwrap(), cross / var);
+        assert!(
+            (got - want).abs() < 3e-3,
+            "{got} vs the definition's {want}"
+        );
+        let unweighted = plain.get().unwrap();
+        assert!(
+            want > 0.6 && unweighted.abs() < 0.3,
+            "weighed {want}, plain {unweighted}: the weights must matter here"
+        );
+    }
+
+    /// A weight is a ratio: every weight scaled by the same factor leaves
+    /// the estimate where it was.
+    #[test]
+    fn scaling_every_weight_leaves_the_weighted_autocorr() {
+        let mut s = 83u64;
+        let mut prev = 0.0;
+        let rows: Vec<(f64, f64)> = (0..3000)
+            .map(|_| {
+                prev = 0.5 * prev + (lcg(&mut s) - 0.5);
+                (prev, 0.5 + 0.5 * lcg(&mut s).abs())
+            })
+            .collect();
+        let at = |c: f64| {
+            let mut ac = EwAutoCorr::new(3).unwrap();
+            for &(x, w) in &rows {
+                ac.update_weighted(x, c * w, 0.995);
+            }
+            ac.get().unwrap()
+        };
+        let base = at(1.0);
+        for c in [1e-6, 3.0, 1e6] {
+            assert!((at(c) - base).abs() < 1e-12, "x{c}: {} vs {base}", at(c));
+        }
     }
 
     #[test]

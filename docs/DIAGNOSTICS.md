@@ -2039,8 +2039,16 @@ its row, so it can be served with the row's prediction.
 
 `sigma`'s weight ages on every row the model sees, a row with no
 prediction or with weight 0 included, so it forgets across a gap as the
-clock says. Under a `window_size` it is the window's, as the fit is. Each
-of these costs under 25 ns a row, and the ten linear models take them.
+clock says. Under a `window_size` it is the window's, as the fit is. It
+folds the residuals of the predictions a readiness gate withholds too. A
+gate withholds output only, so `sigma` -- and `zscore`, the drift
+detector's scale, the ranking of `emit_selected` and `emit_averaged`, and
+the conformal radius's start -- is the same whatever `min_weight`,
+`min_settled_frac` or `max_error_inflation` says, and it can be a number
+on a row whose prediction is withheld. On `ewridge` it reads none below
+the model's own floor of a row per unknown, where the system has fewer
+rows than unknowns. Each of these costs under 25 ns a row, and the ten
+linear models take them.
 
 ### Conformal intervals
 
@@ -2235,7 +2243,7 @@ joint: calibration slope 0.80, wald 8.3
   x2       coef -0.011, t    -2.0 by se_coef and   -0.2 by se_coef_hac
   x3       coef +0.258, t   +57.3 by se_coef and   +6.1 by se_coef_hac
 both: calibration slope 0.84, wald 5.4
-  resid_A  coef -0.446, t  -105.2 by se_coef and  -15.6 by se_coef_hac
+  resid_A  coef -0.446, t  -104.3 by se_coef and  -15.6 by se_coef_hac
   x1       coef +0.029, t    +6.8 by se_coef and   +0.7 by se_coef_hac
   x2       coef -0.083, t   -15.8 by se_coef and   -1.7 by se_coef_hac
   x3       coef +0.021, t    +5.1 by se_coef and   +0.5 by se_coef_hac

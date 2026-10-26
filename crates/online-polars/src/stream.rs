@@ -275,6 +275,19 @@ impl AnyModel {
         dispatch!(self, m => m.predict_with(x, y, d_clock))
     }
 
+    /// [`Self::predict`] at another `min_weight` floor, set for the read and
+    /// put back ([`OnlineModel::predict_with_floor`]): the prediction a
+    /// floor withholds from the output, which the residual spread folds.
+    pub fn predict_with_floor(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        floor: f64,
+    ) -> online_core::Step {
+        dispatch!(self, m => m.predict_with_floor(x, y, d_clock, floor))
+    }
+
     /// Drop the row-lagged state ([`OnlineModel::clear_lags`]); a no-op for
     /// a model that keeps none.
     pub fn clear_lags(&mut self) {
@@ -1384,248 +1397,8 @@ pub fn combos(spec: &Spec) -> Vec<Combo> {
     }
 }
 
-/// The clock column's type, kept per spec so that `scored_clock` and
-/// `learned_clock` (docs/PLAN.md task 152) come out as the column came in:
-/// a `Datetime` in its own unit and zone, a `Date`, a `Duration`, an
-/// integer in its own width (task 200), a float for any other number clock,
-/// and the group's row index as an integer with none.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum ClockDtype {
-    Rows,
-    Numeric,
-    Date,
-    Datetime {
-        unit: ClockUnit,
-        tz: Option<String>,
-    },
-    Duration {
-        unit: ClockUnit,
-    },
-    /// An integer clock up to 64 bits wide, held in integers (task 200).
-    Int(IntWidth),
-}
-
-/// An integer clock column's dtype (docs/PLAN.md task 200).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum IntWidth {
-    I8,
-    I16,
-    I32,
-    I64,
-    U8,
-    U16,
-    U32,
-    U64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum ClockUnit {
-    Ms,
-    Us,
-    Ns,
-}
-
-impl ClockDtype {
-    /// From the spec's clock column as the chunk holds it: `dtype` is the
-    /// column's when it is temporal, `None` otherwise.
-    pub fn of(has_clock: bool, dtype: Option<&polars::prelude::DataType>) -> Self {
-        use polars::prelude::{DataType as D, TimeUnit as T};
-        let unit = |u: &T| match u {
-            T::Milliseconds => ClockUnit::Ms,
-            T::Microseconds => ClockUnit::Us,
-            T::Nanoseconds => ClockUnit::Ns,
-        };
-        let width = |d: &D| {
-            Some(match d {
-                D::Int8 => IntWidth::I8,
-                D::Int16 => IntWidth::I16,
-                D::Int32 => IntWidth::I32,
-                D::Int64 => IntWidth::I64,
-                D::UInt8 => IntWidth::U8,
-                D::UInt16 => IntWidth::U16,
-                D::UInt32 => IntWidth::U32,
-                D::UInt64 => IntWidth::U64,
-                _ => return None,
-            })
-        };
-        match (has_clock, dtype) {
-            (false, _) => Self::Rows,
-            (true, Some(d)) if width(d).is_some() => Self::Int(width(d).expect("matched")),
-            (true, Some(D::Date)) => Self::Date,
-            (true, Some(D::Datetime(u, tz))) => Self::Datetime {
-                unit: unit(u),
-                tz: tz.as_ref().map(|z| z.to_string()),
-            },
-            (true, Some(D::Duration(u))) => Self::Duration { unit: unit(u) },
-            (true, _) => Self::Numeric,
-        }
-    }
-
-    /// Nanoseconds in one unit of the column.
-    fn ns_per_unit(&self) -> i64 {
-        match self {
-            Self::Date => 86_400 * 1_000_000_000,
-            Self::Datetime { unit, .. } | Self::Duration { unit } => match unit {
-                ClockUnit::Ms => 1_000_000,
-                ClockUnit::Us => 1_000,
-                ClockUnit::Ns => 1,
-            },
-            Self::Rows | Self::Numeric | Self::Int(_) => 1,
-        }
-    }
-
-    /// Whether a chunk whose clock column is `now` reads its steps another
-    /// way than this dtype, which the bank kept from its first chunk (task
-    /// 200): an integer clock's steps are taken in integers and a float
-    /// clock's in doubles, so a stream reads one or the other for its life;
-    /// and an integer clock's fields come out in its width, which a wider
-    /// column would not fit. A temporal clock is read in nanoseconds
-    /// whatever its unit, and a spec's clock parameters keep it temporal.
-    pub fn conflicts(&self, now: &ClockDtype) -> bool {
-        match (self, now) {
-            (Self::Int(a), Self::Int(b)) => a != b,
-            (Self::Int(_), Self::Numeric) | (Self::Numeric, Self::Int(_)) => true,
-            _ => false,
-        }
-    }
-
-    /// The column's type as polars names it: what [`Self::array`] makes.
-    pub fn dtype(&self) -> polars::prelude::DataType {
-        use polars::prelude::{DataType as D, TimeUnit as T};
-        let unit = |u: &ClockUnit| match u {
-            ClockUnit::Ms => T::Milliseconds,
-            ClockUnit::Us => T::Microseconds,
-            ClockUnit::Ns => T::Nanoseconds,
-        };
-        match self {
-            Self::Rows => D::Int64,
-            Self::Numeric => D::Float64,
-            Self::Int(w) => match w {
-                IntWidth::I8 => D::Int8,
-                IntWidth::I16 => D::Int16,
-                IntWidth::I32 => D::Int32,
-                IntWidth::I64 => D::Int64,
-                IntWidth::U8 => D::UInt8,
-                IntWidth::U16 => D::UInt16,
-                IntWidth::U32 => D::UInt32,
-                IntWidth::U64 => D::UInt64,
-            },
-            Self::Date => D::Date,
-            // A zone polars gave the column is one it reads back.
-            Self::Datetime { unit: u, tz } => D::Datetime(
-                unit(u),
-                polars::prelude::TimeZone::opt_try_new(tz.clone())
-                    .ok()
-                    .flatten(),
-            ),
-            Self::Duration { unit: u } => D::Duration(unit(u)),
-        }
-    }
-
-    /// A frame's clock column of `values` (review round 4, N18): in the
-    /// clock column's own dtype, exactly, as `scored_clock` is -- a
-    /// `Datetime` in its unit and zone, a `Date`, a `Duration`, an integer
-    /// in its own width (task 200), a `Float64` for any other number clock
-    /// -- and a `Float64` of nulls where there is no clock column (`Rows`)
-    /// or no chunk has said what it is (`None`).
-    pub fn column(
-        dtype: Option<&ClockDtype>,
-        name: &str,
-        values: &[Option<ClockValue>],
-    ) -> polars::prelude::PolarsResult<polars::prelude::Column> {
-        use polars::prelude::{Column, Series};
-        match dtype {
-            Some(d) if *d != Self::Rows => Ok(Column::from(Series::from_arrow(
-                name.into(),
-                d.array(values),
-            )?)),
-            _ => Ok(Column::new(
-                name.into(),
-                values
-                    .iter()
-                    .map(|c| c.map(ClockValue::seconds))
-                    .collect::<Vec<Option<f64>>>(),
-            )),
-        }
-    }
-
-    /// The values as an Arrow array of the column's type, null where `None`.
-    pub fn array(&self, values: &[Option<ClockValue>]) -> Box<dyn polars_arrow::array::Array> {
-        use polars_arrow::array::PrimitiveArray;
-        use polars_arrow::datatypes::{ArrowDataType, TimeUnit as AT};
-        let au = |u: &ClockUnit| match u {
-            ClockUnit::Ms => AT::Millisecond,
-            ClockUnit::Us => AT::Microsecond,
-            ClockUnit::Ns => AT::Nanosecond,
-        };
-        let per = self.ns_per_unit();
-        let ns = |c: Option<ClockValue>| match c {
-            Some(ClockValue::Ns(n)) => Some(n / per),
-            _ => None,
-        };
-        // An integer clock's values in its width: each came from a column
-        // of it, the bank refusing another width (`Self::conflicts`), so
-        // none is out of its range; one that were would be null, not wrapped.
-        fn ints<T>(values: &[Option<ClockValue>]) -> Box<dyn polars_arrow::array::Array>
-        where
-            T: polars_arrow::types::NativeType + TryFrom<i64>,
-        {
-            let v: Vec<Option<T>> = values
-                .iter()
-                .map(|c| match c {
-                    Some(ClockValue::I64(x)) => T::try_from(*x).ok(),
-                    _ => None,
-                })
-                .collect();
-            Box::new(PrimitiveArray::<T>::from(v))
-        }
-        match self {
-            Self::Numeric => {
-                let v: Vec<Option<f64>> = values
-                    .iter()
-                    .map(|c| match c {
-                        Some(ClockValue::F64(x)) => Some(*x),
-                        _ => None,
-                    })
-                    .collect();
-                Box::new(PrimitiveArray::<f64>::from(v))
-            }
-            Self::Int(w) => match w {
-                IntWidth::I8 => ints::<i8>(values),
-                IntWidth::I16 => ints::<i16>(values),
-                IntWidth::I32 => ints::<i32>(values),
-                IntWidth::I64 => ints::<i64>(values),
-                IntWidth::U8 => ints::<u8>(values),
-                IntWidth::U16 => ints::<u16>(values),
-                IntWidth::U32 => ints::<u32>(values),
-                IntWidth::U64 => ints::<u64>(values),
-            },
-            Self::Rows => {
-                let v: Vec<Option<i64>> = values
-                    .iter()
-                    .map(|c| match c {
-                        Some(ClockValue::F64(x)) => Some(*x as i64),
-                        _ => None,
-                    })
-                    .collect();
-                Box::new(PrimitiveArray::<i64>::from(v))
-            }
-            Self::Date => {
-                let v: Vec<Option<i32>> = values.iter().map(|c| ns(*c).map(|d| d as i32)).collect();
-                Box::new(PrimitiveArray::<i32>::from(v).to(ArrowDataType::Date32))
-            }
-            Self::Datetime { unit, tz } => {
-                let v: Vec<Option<i64>> = values.iter().map(|c| ns(*c)).collect();
-                let dt = ArrowDataType::Timestamp(au(unit), tz.clone().map(Into::into));
-                Box::new(PrimitiveArray::<i64>::from(v).to(dt))
-            }
-            Self::Duration { unit } => {
-                let v: Vec<Option<i64>> = values.iter().map(|c| ns(*c)).collect();
-                Box::new(PrimitiveArray::<i64>::from(v).to(ArrowDataType::Duration(au(unit))))
-            }
-        }
-    }
-}
+mod clock_dtype;
+pub use clock_dtype::{ClockDtype, ClockUnit};
 
 /// A break's events while they wait in the `embargo` buffer: a session
 /// change, the long-run blend it asks for, and a gap past `gap_cap`
@@ -1900,6 +1673,25 @@ pub struct Persisted {
     /// saves the bytes it did.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub refit_over_budget: bool,
+    /// Whether the residual spread (`resid_var`, `resid_w`, and its ring)
+    /// folds each slot's own prediction on the rows a readiness gate
+    /// withholds (task 278, batch 17): `sigma`, `zscore`, the ranking of
+    /// `emit_selected` and `emit_averaged` and the drift detector's scale
+    /// read it, and a gate withholds output only, so it must not move
+    /// them. A stream a spec builds sets it where the spec forms a
+    /// residual. Schema 64; `false` in a file written before it, which
+    /// goes on folding only the residuals it reports, to the bit; not
+    /// written while `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ungated_spread: bool,
+    /// Whether the residual autocorrelation weighs each residual by its
+    /// row's weight, as `sigma`, the residual quantiles and the metrics do
+    /// (task 278, batch 17; `EwAutoCorr::update_weighted`). A stream a spec
+    /// builds sets it under `emit_autocorr`. Schema 64; `false` in a file
+    /// written before it, which goes on weighing each residual 1, to the
+    /// bit; not written while `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub weighted_autocorr: bool,
     /// Per model instance, the clock the rows held under `embargo` have
     /// covered and the model has not decayed by yet, which `settled_frac`
     /// adds (`Instance::pending_clock`). Kept, not rebuilt at each chunk:
@@ -2644,224 +2436,44 @@ fn step_n_eff_below(n_eff: f64, min_weight: &[f64], target: usize) -> bool {
     min_weight.get(target).is_some_and(|t| n_eff < *t)
 }
 
+/// The floor a model is read at on a row its `min_weight` may withhold
+/// ([`Persisted::ungated_spread`]): the floor the model keeps with no
+/// `min_weight` given. That is 0 for every model but `ewridge`, whose own
+/// floor is then a row per unknown (`build_bare`): below it its system has
+/// fewer rows than unknowns, and the spec with no `min_weight` reports
+/// nothing there, the noise gate being its readiness gate. An explicit
+/// `min_weight` below that lowers the model's own floor, so the read is at
+/// the lower of the two, and a `min_weight` above a row per unknown
+/// withholds what the spec without one reports and nothing else. The floor
+/// counts weight, as the model's does.
+fn read_floor(spec: &Spec, min_weight: &[f64]) -> f64 {
+    match spec.model {
+        ModelKind::EwRidge { .. } => {
+            let own = (spec.k() + usize::from(spec.fit_intercept)) as f64;
+            min_weight.iter().copied().fold(own, f64::min)
+        }
+        _ => 0.0,
+    }
+}
+
+/// Keep each slot's prediction as the step gave it, once, before the first
+/// readiness gate withholds any of it, where the spread folds the
+/// predictions a gate withholds ([`Persisted::ungated_spread`]).
+#[inline]
+fn keep_ungated(keep: bool, kept: &mut bool, ungated: &mut Vec<f64>, pred: &[f64]) {
+    if keep && !*kept {
+        ungated.clear();
+        ungated.extend_from_slice(pred);
+        *kept = true;
+    }
+}
+
 mod chunk_out;
 use chunk_out::Buffers;
 pub use chunk_out::ChunkOut;
 
-/// One row of a [`ChunkOut`], as a value: the output-struct fields of the
-/// last row a stream learned from, kept with its state so that a bank loaded
-/// from a file reports the diagnostics as they stood -- `pred`, `resid`,
-/// `sigma`, the metrics, the residual quantiles, `n_eff`, `coef`, ... --
-/// without the output frame (docs/PLAN.md task 34). Every field is the
-/// chunk's buffer with `n_rows = 1`, so the row goes out through
-/// [`LastRow::take`] and back in through [`LastRow::to_chunk`] by the one
-/// layout `assemble` reads, and a value it holds is the value the output
-/// row had, to the bit.
-///
-/// Every float vector here is annotated for the JSON export
-/// ([`online_core::humanfloat`]): these are *diagnostics*, and `NaN` is an
-/// ordinary value among them -- an unsupervised model has no `pred` or
-/// `resid`, and `sigma` is `NaN` until the warm-up ends -- so this is the
-/// struct that loses the most to a naive encoding. The msgpack the state
-/// file uses is unchanged.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct LastRow {
-    #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
-    pub pred: Vec<f64>,
-    #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
-    pub resid: Vec<f64>,
-    #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
-    pub sigma: Vec<f64>,
-    #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
-    pub zscore: Vec<f64>,
-    #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
-    pub autocorr: Vec<f64>,
-    #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
-    pub metrics: Vec<f64>,
-    #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
-    pub conformal: Vec<f64>,
-    /// Task 221's values; empty, and not written, without them.
-    #[serde(
-        default,
-        skip_serializing_if = "Vec::is_empty",
-        with = "online_core::humanfloat::vec_f64_or_tag"
-    )]
-    pub checks: Vec<f64>,
-    /// Task 221 (g)'s feature health; empty, and not written, without it.
-    #[serde(
-        default,
-        skip_serializing_if = "Vec::is_empty",
-        with = "online_core::humanfloat::vec_f64_or_tag"
-    )]
-    pub health: Vec<f64>,
-    #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
-    pub resid_q: Vec<f64>,
-    pub drift: Vec<bool>,
-    /// One each under `emit_clocks`, else empty (task 152).
-    #[serde(default)]
-    pub scored_clock: Vec<Option<ClockValue>>,
-    #[serde(default)]
-    pub learned_clock: Vec<Option<ClockValue>>,
-    #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
-    pub n_eff: Vec<f64>,
-    #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
-    pub lam_selected: Vec<f64>,
-    /// A slot no solve has fit is NaN (review round 4, CC1), as is the mean
-    /// of an `ew_class` class no row has carried, so the export tags them.
-    #[serde(with = "online_core::humanfloat::vec_opt_vec_f64_or_tag")]
-    pub coef: Vec<Option<Vec<f64>>>,
-    #[serde(default, with = "online_core::humanfloat::vec_f64_or_tag")]
-    pub settled: Vec<f64>,
-    #[serde(default)]
-    pub reason: Vec<u8>,
-    #[serde(default, with = "online_core::humanfloat::vec_f64_or_tag")]
-    pub inflation: Vec<f64>,
-    /// The intercept's share is NaN by definition, so the export tags it.
-    #[serde(default, with = "online_core::humanfloat::vec_opt_vec_f64_or_tag")]
-    pub support_coef: Vec<Option<Vec<f64>>>,
-    /// Under `emit_se_coef` (task 116): NaN where nothing is estimated.
-    #[serde(default, with = "online_core::humanfloat::vec_opt_vec_f64_or_tag")]
-    pub se_coef: Vec<Option<Vec<f64>>>,
-    /// Under `emit_robust_se` (task 221 (c)), each instance's, `None` on a
-    /// row that was not a `coef` row and where none is switched on.
-    #[serde(default, with = "online_core::humanfloat::vec_opt_vec_f64_or_tag")]
-    pub se_coef_hc0: Vec<Option<Vec<f64>>>,
-    #[serde(default, with = "online_core::humanfloat::vec_opt_vec_f64_or_tag")]
-    pub se_coef_hac: Vec<Option<Vec<f64>>>,
-}
-
-/// Row `ri` of a buffer of `n_rows` rows: in every `ChunkOut` buffer the row
-/// is the innermost index, whatever the outer product (`ChunkOut::at`, and
-/// the model-major blocks of `metrics`, `conformal` and `resid_q`), so the
-/// row's values are the elements `g * n_rows + ri`.
-fn take_row<T: Copy>(dst: &mut Vec<T>, src: &[T], n_rows: usize, ri: usize) {
-    dst.clear();
-    dst.extend(src.iter().skip(ri).step_by(n_rows.max(1)));
-}
-
-/// Row `ri` of a `coef`-like buffer, one list per instance, cloned into the
-/// lists `dst` already holds, so a list of the same length as the last is
-/// copied into its memory rather than allocated (task 270, G-1).
-fn take_list_row(dst: &mut Vec<Option<Vec<f64>>>, src: &[Vec<Option<Vec<f64>>>], ri: usize) {
-    dst.truncate(src.len());
-    for (d, s) in dst.iter_mut().zip(src) {
-        d.clone_from(&s[ri]);
-    }
-    let have = dst.len();
-    dst.extend(src[have..].iter().map(|s| s[ri].clone()));
-}
-
-impl LastRow {
-    /// Overwrite with row `ri` of `out`, reusing the vectors.
-    pub fn take(&mut self, out: &ChunkOut, ri: usize) {
-        let n = out.processed.len();
-        debug_assert!(ri < n && out.processed[ri]);
-        take_row(&mut self.pred, &out.pred, n, ri);
-        take_row(&mut self.resid, &out.resid, n, ri);
-        take_row(&mut self.sigma, &out.sigma, n, ri);
-        take_row(&mut self.zscore, &out.zscore, n, ri);
-        take_row(&mut self.autocorr, &out.autocorr, n, ri);
-        take_row(&mut self.metrics, &out.metrics, n, ri);
-        take_row(&mut self.conformal, &out.conformal, n, ri);
-        take_row(&mut self.checks, &out.checks, n, ri);
-        take_row(&mut self.health, &out.health, n, ri);
-        take_row(&mut self.resid_q, &out.resid_q, n, ri);
-        take_row(&mut self.drift, &out.drift, n, ri);
-        take_row(&mut self.n_eff, &out.n_eff, n, ri);
-        take_row(&mut self.scored_clock, &out.scored_clock, n, ri);
-        take_row(&mut self.learned_clock, &out.learned_clock, n, ri);
-        take_row(&mut self.lam_selected, &out.lam_selected, n, ri);
-        take_list_row(&mut self.coef, &out.coef, ri);
-        take_row(&mut self.settled, &out.settled, n, ri);
-        take_row(&mut self.reason, &out.reason, n, ri);
-        take_row(&mut self.inflation, &out.inflation, n, ri);
-        take_list_row(&mut self.support_coef, &out.support_coef, ri);
-        take_list_row(&mut self.se_coef, &out.se_coef, ri);
-        take_list_row(&mut self.se_coef_hc0, &out.se_coef_hc0, ri);
-        take_list_row(&mut self.se_coef_hac, &out.se_coef_hac, ri);
-    }
-
-    /// A one-row chunk at absolute row `row`, marked processed, for
-    /// `assemble`. `Err` when the row is not the shape `spec` writes with
-    /// `n_models` instances of `n_slots` slots -- a state file that does not
-    /// belong to its spec.
-    pub fn to_chunk(
-        &self,
-        spec: &Spec,
-        n_models: usize,
-        n_slots: usize,
-        row: usize,
-    ) -> Result<ChunkOut, String> {
-        let mut out = ChunkOut::new(spec, n_models, n_slots, 1);
-        let same = [
-            out.pred.len() == self.pred.len(),
-            out.resid.len() == self.resid.len(),
-            out.sigma.len() == self.sigma.len(),
-            out.zscore.len() == self.zscore.len(),
-            out.autocorr.len() == self.autocorr.len(),
-            out.metrics.len() == self.metrics.len(),
-            out.conformal.len() == self.conformal.len(),
-            out.checks.len() == self.checks.len(),
-            out.health.len() == self.health.len(),
-            out.resid_q.len() == self.resid_q.len(),
-            out.drift.len() == self.drift.len(),
-            out.n_eff.len() == self.n_eff.len(),
-            out.lam_selected.len() == self.lam_selected.len(),
-            out.coef.len() == self.coef.len(),
-            out.settled.len() == self.settled.len(),
-            out.reason.len() == self.reason.len(),
-            out.inflation.len() == self.inflation.len(),
-            out.support_coef.len() == self.support_coef.len(),
-            out.se_coef.len() == self.se_coef.len(),
-            out.se_coef_hc0.len() == self.se_coef_hc0.len(),
-            out.se_coef_hac.len() == self.se_coef_hac.len(),
-            out.scored_clock.len() == self.scored_clock.len(),
-            out.learned_clock.len() == self.learned_clock.len(),
-        ];
-        if same.contains(&false) {
-            return Err(format!(
-                "saved last row of spec {:?} has the wrong shape for its spec",
-                spec.name
-            ));
-        }
-        out.rows.push(row);
-        out.processed[0] = true;
-        out.pred.clone_from(&self.pred);
-        out.resid.clone_from(&self.resid);
-        out.sigma.clone_from(&self.sigma);
-        out.zscore.clone_from(&self.zscore);
-        out.autocorr.clone_from(&self.autocorr);
-        out.metrics.clone_from(&self.metrics);
-        out.conformal.clone_from(&self.conformal);
-        out.checks.clone_from(&self.checks);
-        out.health.clone_from(&self.health);
-        out.resid_q.clone_from(&self.resid_q);
-        out.drift.clone_from(&self.drift);
-        out.n_eff.clone_from(&self.n_eff);
-        out.lam_selected.clone_from(&self.lam_selected);
-        out.scored_clock.clone_from(&self.scored_clock);
-        out.learned_clock.clone_from(&self.learned_clock);
-        for (dst, src) in out.coef.iter_mut().zip(&self.coef) {
-            dst[0].clone_from(src);
-        }
-        out.settled.clone_from(&self.settled);
-        out.reason.clone_from(&self.reason);
-        out.inflation.clone_from(&self.inflation);
-        for (dst, src) in out.support_coef.iter_mut().zip(&self.support_coef) {
-            dst[0].clone_from(src);
-        }
-        for (dst, src) in out.se_coef.iter_mut().zip(&self.se_coef) {
-            dst[0].clone_from(src);
-        }
-        for (dst, src) in out.se_coef_hc0.iter_mut().zip(&self.se_coef_hc0) {
-            dst[0].clone_from(src);
-        }
-        for (dst, src) in out.se_coef_hac.iter_mut().zip(&self.se_coef_hac) {
-            dst[0].clone_from(src);
-        }
-        Ok(out)
-    }
-}
+mod last_row;
+pub use last_row::LastRow;
 
 impl Stream {
     pub fn new(spec: &Spec) -> Result<Self, String> {
@@ -2929,6 +2541,8 @@ impl Stream {
                 decay_time: vec![0.0; instances],
                 restarted: vec![false; instances],
                 refit_over_budget: false,
+                ungated_spread: !spec.model.predicts_no_target(),
+                weighted_autocorr: spec.emit_autocorr,
                 // Only a delay ever holds rows: without one there is no
                 // clock to keep, and none is written.
                 pending_clock: if embargo.is_some() {
@@ -3089,6 +2703,8 @@ impl Stream {
         } else {
             p.resid_var = fresh.resid_var.clone();
             p.resid_w = fresh.resid_w.clone();
+            // A spread that starts over starts on this build's rule.
+            p.ungated_spread = fresh.ungated_spread;
         }
         // A spread's ring, where the spec still keeps one. A file written
         // before it existed (S1) leaves the fresh one, so for one window the
@@ -3118,6 +2734,10 @@ impl Stream {
             &fresh.resid_q,
             |s, l| s.levels() == l.levels() && s.has_shape(),
         )?;
+        // An autocorrelation that starts over starts on this build's rule.
+        if p.autocorr.len() != fresh.autocorr.len() {
+            p.weighted_autocorr = fresh.weighted_autocorr;
+        }
         take_diag(
             "autocorrelations",
             &mut p.autocorr,
@@ -3744,6 +3364,8 @@ impl Stream {
             pending_clock: &mut self.persisted.pending_clock,
             notified: &mut self.persisted.notified,
             refit_over_budget: self.persisted.refit_over_budget,
+            ungated_spread: self.persisted.ungated_spread,
+            weighted_autocorr: self.persisted.weighted_autocorr,
         };
         let mut insts = build_instances(
             spec,
@@ -4070,6 +3692,8 @@ impl Stream {
             pending_clock: &mut pending_clock,
             notified: &mut notified,
             refit_over_budget: self.persisted.refit_over_budget,
+            ungated_spread: self.persisted.ungated_spread,
+            weighted_autocorr: self.persisted.weighted_autocorr,
         };
         let models = models.iter().map(|(_, m)| ModelRef::Score(m));
         let rings = self
@@ -4124,6 +3748,17 @@ impl ModelRef<'_> {
             ModelRef::Score(_) => unreachable!("a scoring instance never updates its model"),
         }
     }
+
+    /// The model, where the instance learns: what a read that sets the
+    /// model's floor aside for a moment needs
+    /// ([`AnyModel::predict_with_floor`]). A scoring instance folds
+    /// nothing and keeps nothing, so it never reads past a floor.
+    fn learning(&mut self) -> Option<&mut AnyModel> {
+        match self {
+            ModelRef::Learn(m) => Some(m),
+            ModelRef::Score(_) => None,
+        }
+    }
 }
 
 /// How an instance reaches its spread's ring (S1): exclusively, to learn,
@@ -4168,6 +3803,9 @@ struct Diagnostics<'a> {
     pending_clock: &'a mut [f64],
     notified: &'a mut [Notified],
     refit_over_budget: bool,
+    /// [`Persisted::ungated_spread`] and [`Persisted::weighted_autocorr`].
+    ungated_spread: bool,
+    weighted_autocorr: bool,
 }
 
 /// Split per-instance state and output into disjoint pieces, so instances
@@ -4290,6 +3928,8 @@ fn build_instances<'a>(
                 restarted: restarted.next().expect("one per instance"),
                 notified: notified.next().expect("one per instance"),
                 refit_over_budget: diag.refit_over_budget,
+                ungated_spread: diag.ungated_spread,
+                weighted_autocorr: diag.weighted_autocorr,
                 // None without an embargo, which keeps no held rows' clock.
                 pending_clock: pending_clock.next(),
             }
@@ -4428,6 +4068,12 @@ pub struct Scratch {
     /// ([`OnlineModel::step_into`]) allocates no `pred` a row (task 270,
     /// M-4). Taken for the row and put back after it.
     step: online_core::Step,
+    /// Each slot's own prediction before a readiness gate withheld it,
+    /// and its residual, which the spread folds
+    /// ([`Persisted::ungated_spread`]); filled only on a row a gate
+    /// withholds something on.
+    ungated: Vec<f64>,
+    r_spread: Vec<f64>,
 }
 
 /// One model instance's state and its disjoint slice of the chunk output.
@@ -4501,6 +4147,10 @@ struct Instance<'a> {
     /// Whether the group's refits were given up past the spec's
     /// `refit_budget` ([`Persisted::refit_over_budget`]).
     refit_over_budget: bool,
+    /// [`Persisted::ungated_spread`] and [`Persisted::weighted_autocorr`]:
+    /// the rules this stream's spread and autocorrelation learn by.
+    ungated_spread: bool,
+    weighted_autocorr: bool,
     /// Clock the rows held under `embargo` have covered and the models
     /// have not yet decayed by: added as a row is buffered, taken back as it
     /// is released. `settled_frac` counts it, so a scored row reads what the
@@ -4810,6 +4460,46 @@ fn run_instance(
         // (task 278, D8).
         let unstable = inst.model.get().unstable_targets();
 
+        // The residual spread folds each slot's own prediction, whether or
+        // not a readiness gate withholds it from the output
+        // ([`Persisted::ungated_spread`]; task 278, batch 17): a gate
+        // withholds output only, and the spread ranks the slots for
+        // `emit_selected` and `emit_averaged` and scales `sigma`, `zscore`
+        // and the drift detector. The bank's own gates fill the step's
+        // prediction after it, so it is kept as the step gave it
+        // ([`keep_ungated`]); the model's `min_weight` floor withholds
+        // inside the model, so on a row it may withhold the model is first
+        // read below it, before the step, as the same model with no
+        // `min_weight` predicts ([`AnyModel::predict_with_floor`] at
+        // [`read_floor`]). That is a second read only while the weight --
+        // each target's own, where the model keeps one, else the shared --
+        // is short of the highest floor: the warm-up and the rows after a
+        // long gap. A row released from the `embargo` buffer folds what its
+        // score kept instead.
+        let keep =
+            inst.ungated_spread && inst.residuals && plan.direct() && (learn || plan.buffered);
+        let mut kept = false;
+        if keep {
+            let top = min_weight.iter().copied().fold(0.0, f64::max);
+            if top > 0.0 {
+                let short = if own_weights {
+                    sc.tn.iter().any(|&w| w < top)
+                } else {
+                    inst.model.get().n_eff() < top
+                };
+                if short {
+                    let floor = read_floor(inst.spec, min_weight);
+                    if let Some(m) = inst.model.learning() {
+                        let d = if learn { d_clock } else { score_d };
+                        let past = m.predict_with_floor(xs, &sc.ys, d, floor);
+                        sc.ungated.clear();
+                        sc.ungated.extend_from_slice(&past.pred);
+                        kept = true;
+                    }
+                }
+            }
+        }
+
         // The instance's kept step, its buffers reused (task 270, M-4); put
         // back at the end of the row.
         let mut step = std::mem::take(&mut sc.step);
@@ -4861,6 +4551,7 @@ fn run_instance(
         let mut reason = 0u8;
         let min_settled = inst.spec.min_settled_frac_or_default();
         if min_settled > 0.0 && settled.is_finite() && settled < min_settled {
+            keep_ungated(keep, &mut kept, &mut sc.ungated, &step.pred);
             step.pred.fill(f64::NAN);
             reason = REASON_SETTLED;
         }
@@ -4877,6 +4568,18 @@ fn run_instance(
         // The first target whose floor has withheld every row for that long,
         // the ceiling its weight tops out at, and the weight it reads.
         let mut unmet_floor: Option<(usize, f64, f64)> = None;
+        if keep && !kept {
+            let below = (0..step.pred.len().div_ceil(nc)).any(|tj| {
+                let weight = match sc.tn.get(tj) {
+                    Some(&w) if own_weights => w,
+                    _ => step.n_eff,
+                };
+                step_n_eff_below(weight, min_weight, tj)
+            });
+            if below {
+                keep_ungated(keep, &mut kept, &mut sc.ungated, &step.pred);
+            }
+        }
         for (tj, group) in step.pred.chunks_mut(nc).enumerate() {
             let weight = match sc.tn.get(tj) {
                 Some(&w) if own_weights => w,
@@ -4963,6 +4666,9 @@ fn run_instance(
         // the model's own null, not this gate's.
         let mut gate_withheld = false;
         if has_infl && max_infl.is_finite() {
+            if keep && !kept && sc.infl.iter().take(step.pred.len()).any(|&r| r >= max_infl) {
+                keep_ungated(keep, &mut kept, &mut sc.ungated, &step.pred);
+            }
             for (slot, p) in step.pred.iter_mut().enumerate() {
                 if sc.infl.get(slot).is_some_and(|&r| r >= max_infl) {
                     *p = f64::NAN;
@@ -5109,20 +4815,36 @@ fn run_instance(
             if has_row_infl {
                 record.extend_from_slice(&sc.row_infl);
             }
+            // And, where a gate withheld the score, each slot's own
+            // prediction, last, which the spread folds at the release
+            // ([`Persisted::ungated_spread`]): a record a gate withheld
+            // nothing from is the length it always was.
+            if kept {
+                record.extend_from_slice(&sc.ungated);
+            }
             inst.score_pred.push_back(record);
         } else if !plan.direct() {
             let n = step.pred.len();
             let conformal = inst.conformal.is_some();
             let parts = 1 + usize::from(conformal) + usize::from(has_row_infl);
             match inst.score_pred.pop_front() {
-                Some(p) if p.len() == parts * n => {
+                Some(p)
+                    if p.len() == parts * n
+                        || (inst.ungated_spread && p.len() == (parts + 1) * n) =>
+                {
                     step.pred.copy_from_slice(&p[..n]);
                     if conformal {
                         shown_radius = Some(p[n..2 * n].to_vec());
                     }
                     if has_row_infl {
                         sc.row_infl.clear();
-                        sc.row_infl.extend_from_slice(&p[(parts - 1) * n..]);
+                        sc.row_infl
+                            .extend_from_slice(&p[(parts - 1) * n..parts * n]);
+                    }
+                    if p.len() > parts * n {
+                        sc.ungated.clear();
+                        sc.ungated.extend_from_slice(&p[parts * n..]);
+                        kept = true;
                     }
                 }
                 // No record of the score: fold nothing rather than the
@@ -5178,6 +4900,20 @@ fn run_instance(
             if learn {
                 // The spread as the row finds it, before its own residual,
                 // keyed by the stamp the model's window was (task 175).
+                // Each slot's own residual where a gate withheld the
+                // prediction ([`Persisted::ungated_spread`]), the reported
+                // one where none did.
+                if kept {
+                    sc.r_spread.clear();
+                    for (tj, group) in sc.ungated.chunks(nc).enumerate() {
+                        let yj = sc.ys.get(tj).copied().flatten();
+                        sc.r_spread.extend(group.iter().map(|p| match yj {
+                            Some(yj) if p.is_finite() => yj - p,
+                            _ => f64::NAN,
+                        }));
+                    }
+                }
+                let spread_r = if kept { &sc.r_spread } else { &sc.r };
                 if let Some(ring) = inst.resid_win.as_mut() {
                     // And counts the slots whose residual the row folds at
                     // a positive weight (task 217).
@@ -5186,10 +4922,10 @@ fn run_instance(
                         plan.stamp,
                         lam,
                         (inst.resid_w.as_slice(), inst.resid_var.as_slice()),
-                        (sc.r.as_slice(), w),
+                        (spread_r.as_slice(), w),
                     );
                 }
-                for (slot, &rv) in sc.r.iter().enumerate() {
+                for (slot, &rv) in spread_r.iter().enumerate() {
                     if rv.is_finite() {
                         let w_new = lam * inst.resid_w[slot] + w;
                         if w_new > 0.0 {
@@ -5290,7 +5026,14 @@ fn run_instance(
                 // still ages it (task 146).
                 if learn {
                     if w > 0.0 && sc.r[slot].is_finite() {
-                        est.update(sc.r[slot], lam);
+                        // At the row's weight, as `sigma` and the
+                        // quantiles take it; at 1 in a file written before
+                        // schema 64 ([`Persisted::weighted_autocorr`]).
+                        if inst.weighted_autocorr {
+                            est.update_weighted(sc.r[slot], w, lam);
+                        } else {
+                            est.update(sc.r[slot], lam);
+                        }
                     } else {
                         est.age(lam);
                     }

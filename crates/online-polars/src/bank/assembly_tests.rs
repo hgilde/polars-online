@@ -695,10 +695,31 @@ fn hold_to_references(
             && g.kind == f.kind
             && (&f.target, &f.instance) == (&g.target, &g.instance)
     };
+    // And two `coverage` columns whose slots' intervals differ: the share
+    // of rows each interval held is the same where the two slots hit and
+    // miss on the same rows, as two path points of nearly one fit do once
+    // their radii start from the same spread (task 278, batch 17: `lasso`'s
+    // 0.05 and 0 over 600 rows). Their `lo` columns tell a buffer read
+    // twice from a coincidence.
+    let lo_of = |f: &crate::FieldMeta| {
+        let name = f.field.replacen("coverage_", "lo_", 1);
+        meta.iter().position(|g| g.field == name)
+    };
+    let coincide = |i: usize, j: usize| {
+        meta[i].kind == "coverage"
+            && meta[j].kind == "coverage"
+            && match (lo_of(&meta[i]), lo_of(&meta[j])) {
+                (Some(a), Some(b)) => {
+                    !same_field(full.values()[a].as_ref(), full.values()[b].as_ref())
+                }
+                _ => false,
+            }
+    };
     let mut dup = vec![];
     for (a, &i) in float.iter().enumerate() {
         for &j in &float[a + 1..] {
             if !twins(&meta[i], &meta[j])
+                && !coincide(i, j)
                 && same_field(full.values()[i].as_ref(), full.values()[j].as_ref())
             {
                 dup.push(format!(

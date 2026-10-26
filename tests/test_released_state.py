@@ -212,6 +212,27 @@ DECLARED: dict[tuple[str, str], str] = {
             "sgd_huber_mad",
         )
     },
+    # Task 278, batch 17 (the next release's Fixed): a stream a spec builds
+    # folds into its residual spread each slot's own prediction on the rows
+    # a readiness gate withholds, and weighs its residual autocorrelation by
+    # the row's weight. A file of a release has neither flag and goes on
+    # folding only the residuals it reported, each autocorrelation residual
+    # at 1, where this build's own bank runs the new rules: `sigma` and
+    # `zscore` 1e-3 to 6e-3 apart at the split here, the conformal interval
+    # that starts from `sigma` 1.4 to 12 (of `1 + |v|`), `autocorr` 0.1 to
+    # 0.2; no prediction moves.
+    **{
+        (name, "1.3.0"): "the next release, Fixed: a readiness gate no longer moves the "
+        "residual spread, and the residual autocorrelation weighs each residual by its row"
+        for name in (
+            "ridge_diag",
+            "full_ewridge",
+            "full_rls",
+            "full_quantile",
+            "full_ftrl",
+            "full_pa",
+        )
+    },
 }
 
 #: The releases from 1.0, whose files load and go on; and this build, whose
