@@ -5585,6 +5585,36 @@ fn solve_every_measures_the_stamps_it_is_handed() {
     }
 }
 
+/// Task 278, D13: on the row clock the model's start is a row before its
+/// first row, so before the first solve at `min_weight` (here never met)
+/// `solve_every = 7` solves on the 7th, 14th, ... row (0-based 6, 13, ...),
+/// as `max_rows_between_solves = 7` does. Stamped as a clock column's rows,
+/// whose start is the first row, the clock's come a row later.
+#[test]
+fn on_the_row_clock_solve_every_is_its_row_cap() {
+    let solves = |every: f64, cap: u32, on_rows: bool| {
+        let mut c = cfg(1, 1);
+        c.min_weight = 1e9;
+        c.solve_every = every;
+        c.max_rows_between_solves = cap;
+        let mut m = EwRidge::new(c).unwrap();
+        crate::since::events_on_the_row_clock(30, |i, stamp, d| {
+            if on_rows {
+                m.stamp_next_on_rows(stamp);
+            } else {
+                m.stamp_next(stamp);
+            }
+            let x = (i % 7) as f64;
+            m.step(&[x], &[Some(1.0 + 2.0 * x)], d, 1.0);
+            m.rows_since_solve == 0
+        })
+    };
+    let rows = [6, 13, 20, 27];
+    assert_eq!(solves(7.0, u32::MAX, true), rows);
+    assert_eq!(solves(1e18, 7, true), rows);
+    assert_eq!(solves(7.0, u32::MAX, false), [7, 14, 21, 28]);
+}
+
 /// Under a blocked Gram a row of weight 0 is held in the block as it is, to
 /// be merged with the rest. A row with a value that is not usable is a row
 /// of weight 0 by the rule every model keeps (`OnlineModel`, task 183), and

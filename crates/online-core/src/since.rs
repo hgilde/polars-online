@@ -140,6 +140,21 @@ pub(crate) fn events_on_millisecond_rows(
         .collect()
 }
 
+/// For a model's own test (task 278, D13): rows `0..n` on the row clock --
+/// row `i` stamped `Raw(i, 0)`, a step of 1 after a first of 0, as the
+/// stream stamps a stream with no clock column -- through `step(row, stamp,
+/// d_clock)`, which hands the stamp, steps the model and says whether the
+/// row was an event; the rows that were.
+#[cfg(test)]
+pub(crate) fn events_on_the_row_clock(
+    n: usize,
+    mut step: impl FnMut(usize, Stamp, f64) -> bool,
+) -> Vec<usize> {
+    (0..n)
+        .filter(|&i| step(i, Stamp::Raw(i as f64, 0.0), if i == 0 { 0.0 } else { 1.0 }))
+        .collect()
+}
+
 /// `stamp` moved back by `d` clock units: where the clock stood `d` before
 /// it. Exact at `d = 0`, the stamp itself, which is the case of a stream
 /// whose first row is learned; past a skipped first row, the stamp of the
@@ -198,7 +213,13 @@ mod tests {
     #[test]
     fn pca_every_measures_the_stamps_it_is_handed() {
         use crate::{Decay, EwCovCfg, EwCovModel, OnlineModel};
-        for (stamped, want) in [(true, [1, 2001, 4001]), (false, [1, 2002, 4003])] {
+        // `ew_cov` takes a row-clock stamp through the trait's default
+        // (task 278, D13), as any stamp: its first refresh starts the clock.
+        for (stamped, on_rows, want) in [
+            (true, false, [1, 2001, 4001]),
+            (true, true, [1, 2001, 4001]),
+            (false, false, [1, 2002, 4003]),
+        ] {
             let mut m = EwCovModel::new(EwCovCfg {
                 bias: false,
                 n_features: 2,
@@ -220,8 +241,10 @@ mod tests {
             // which only a refresh moves (its score is the row's own).
             let mut frozen: Vec<Vec<u64>> = Vec::new();
             events_on_millisecond_rows(4_100, stamped, |i, stamp, d| {
-                if let Some(s) = stamp {
-                    m.stamp_next(s);
+                match stamp {
+                    Some(s) if on_rows => m.stamp_next_on_rows(s),
+                    Some(s) => m.stamp_next(s),
+                    None => {}
                 }
                 let a = ((i * 37) % 101) as f64 / 101.0;
                 let x = [a, 2.0 * a + ((i * 11) % 7) as f64 / 70.0];
@@ -232,7 +255,7 @@ mod tests {
             let got: Vec<usize> = (0..frozen.len() - 1)
                 .filter(|&t| frozen[t] != frozen[t + 1])
                 .collect();
-            assert_eq!(got, want, "stamped: {stamped}");
+            assert_eq!(got, want, "stamped: {stamped}, on rows: {on_rows}");
         }
     }
 
