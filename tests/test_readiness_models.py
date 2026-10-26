@@ -475,9 +475,10 @@ class TestSeCoef:
         same ``se_coef``, run once and under a memory, with weights.
         ``ewridge``'s noise gate (``max_error_inflation``, default ``√2``)
         withholds its first rows where ``rls``'s, off by default, does not;
-        it is opened so both score the same rows. Measured 2026-10-26:
-        ``se_coef`` 4.3e-15 relative at most, ``coef`` 7.5e-15, ``pred``
-        2.8e-14 absolute."""
+        it is opened so both score the same rows. Measured 2026-10-26 over
+        the four cases: ``se_coef`` 4.3e-15 relative at most, ``coef``
+        2.1e-13 (the first rows at ``delta = 1e-3``), ``pred`` 2.1e-14
+        absolute."""
         df = frame(400)
         common: dict[str, Any] = dict(
             targets=["y"],

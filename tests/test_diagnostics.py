@@ -1147,10 +1147,9 @@ def _ew_autocorr(resid, w, clock, run, lag, half_life):
     m_before = np.r_[0.0, m_after[:-1]]
     partner = np.full(len(vals), -1)
     for k in range(lag, len(vals)):
-        if (
-            run[vals[k]] == run[vals[k - lag]]
-            and (run[vals[k - lag : k + 1]] == run[vals[k]]).all()
-        ):
+        # Runs only grow, so the value `lag` back shares the run exactly
+        # when every value between does.
+        if run[vals[k]] == run[vals[k - lag]]:
             partner[k] = k - lag
     out = np.full(n, np.nan)
     for i in range(n):
