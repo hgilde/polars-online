@@ -306,6 +306,22 @@ returns.
 
 ### Fixed
 
+- `bocpd`'s prior from its first rows under `covariance="full"` is decided
+  the same on every platform (task 281). From no more rows than features
+  the scatter is singular in exact arithmetic, and whether it kept its
+  off-diagonals was decided by whether a factorization of it as formed
+  succeeded -- a rounding the platform's kernel decided: on x86, where the
+  fused kernel rounded the last pivot to +2.1e-15, two rows of two features
+  kept an off-diagonal of −4.05 that arm64 dropped. It now takes the
+  diagonal from `d` rows or fewer, and beyond that checks the matrix with a
+  plain Cholesky whose pivot floor is its own rounding (`γ_{d+1}·a_ii`), the
+  same answer on every IEEE platform.
+- The residuals' skewness (`emit_tails`, and everything derived from it)
+  keeps its bits when the target is scaled by a power of two on every
+  platform (task 281). It read `m_2^{3/2}` through the platform's `pow`,
+  which glibc and Windows' runtime round to within an ulp but not exactly,
+  so about one row in 1,700 moved by an ulp under a scale of `2^±20`; it is
+  now `m_2·√m_2`, two correctly rounded operations, and cheaper.
 - A readiness gate no longer moves the residual spread the bank keeps per
   slot, which `sigma`, `zscore`, the drift detector's scale, the ranking of
   `emit_selected` and the weights of `emit_averaged` read (task 278). It
