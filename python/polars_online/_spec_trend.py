@@ -82,6 +82,7 @@ def holt(
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the
     diagnostics and the rest, with the fields each diagnostic adds.
+    ``fit_intercept`` has nothing to act on: the level is the forecast's intercept.
 
     There is no seasonal term: a seasonal index is a ``group`` on the phase,
     which the bank already does.
