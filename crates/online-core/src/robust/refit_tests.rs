@@ -318,7 +318,7 @@ fn the_refit_passes_are_not_solve_failures() {
 /// Task 278: a refit that takes every one of its IRLS passes is counted in
 /// `solve_failures`, as a seeding's Lloyd run stopped at its cap is. The
 /// stream (`slow_refit_stream(687)`: 71 rows, a level added to 39% of the
-/// rows with `x > 0`) needs 880 passes to meet the rule, so it runs to the
+/// rows with `x > 0`) needs 428 passes to meet the rule, so it runs to the
 /// cap of 200; the stream of trial 0 converges well inside it and counts
 /// nothing.
 #[test]

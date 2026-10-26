@@ -35,9 +35,9 @@ the iteration                               its stopping rule and cap    a cap h
                                             halvings                      a double's
                                                                           exponents span
                                                                           2,098 halvings
-``huber``'s and ``sgd(loss="huber")``'s     no coefficient moves by more  counted in
-refit of each target's first rows           than 1e-10 of ``max|beta|``;  ``solve_failures``
-                                            200 IRLS passes
+``huber``'s and ``sgd(loss="huber")``'s     no row's fit moves by more    counted in
+refit of each target's first rows           than 1e-10 of the residual    ``solve_failures``
+                                            scale; 200 IRLS passes
 ==========================================  ===========================  =========
 
 Until task 278's fixes (D3, D6 and D7), the lasso's rule compared the move
@@ -464,8 +464,8 @@ def slow_refit_stream(trial: int) -> pl.DataFrame:
 
 class TestHuberRefit:
     """The refit of each target's first rows, ``huber``'s and
-    ``sgd(loss="huber")``'s: IRLS until no coefficient moves by more than
-    1e-10 of ``max|beta|``, at most 200 passes, and a refit that takes all
+    ``sgd(loss="huber")``'s: IRLS until no row's fit moves by more than
+    1e-10 of the residual scale, at most 200 passes, and a refit that takes all
     200 counted in ``solve_failures`` (task 278). Trial 687's stream runs to
     the cap; trial 0's converges inside it; the refit off counts nothing."""
 

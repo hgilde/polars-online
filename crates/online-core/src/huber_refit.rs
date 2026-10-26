@@ -35,8 +35,10 @@
 //! β   = argmin Σ v_i u_i (y_i − z_i'β)²      the model's own solve
 //! ```
 //!
-//! until no coefficient moves by more than [`REFIT_TOL`] of `max|β|`,
-//! or [`REFIT_PASSES`] passes. That is statsmodels' `RLM` loop with the
+//! until no buffered row's fitted value `z_i'β` moves by more than
+//! [`REFIT_TOL`] of the pass's scale `s` (past the rounding of the fitted
+//! values, [`REFIT_ROUNDING`]), or [`REFIT_PASSES`] passes ([`converged`]
+//! says why the rule is in those units). That is statsmodels' `RLM` loop with the
 //! MAD's scale (`scale_est = "mad"`, centred at 0), weighted by the decay.
 //! Then the residual scale is rebuilt from the converged fit's residuals
 //! `y_i − z_i'β`, at the rows' raw weights and aged on the scale's own
@@ -59,19 +61,27 @@ use crate::{EwQuantile, SpdFactor};
 /// `solve_failures`, as `kmeans`' and `hmm`'s seeding counts a Lloyd run
 /// stopped at its cap (docs/PLAN.md task 278). Measured over 3,000 streams
 /// of 50-500 rows, `y = 1 + 2x + 0.5e` with a level added to up to 45% of
-/// the rows with `x > 0` (the tests' `slow_refit_stream`): 50 passes ran
-/// out on 142 (none below 20% of the rows), 200 on 6 (all past 39%, beyond
-/// the breakdown); every one converged on its own, the slowest in 880
-/// passes. A pass is one weighted solve of the buffer, so the cap costs only
+/// the rows with `x > 0` (the tests' `slow_refit_stream`), `sgd`'s IRLS
+/// at a cut of 1.345 without decay: 50 passes ran out on 149 (none below
+/// 20% of the rows), 200 on 9 (all past 39%, beyond the breakdown); every
+/// one converged on its own, the slowest in 897 passes (`huber`'s own: 127,
+/// 8 and 428). Under the stop relative to `max|β|` that [`converged`]
+/// replaced it was 142, 6 and 880 (task 278's follow-ups, 2026-10-26). A pass is one weighted solve of the buffer, so the cap costs only
 /// where a refit does not converge: a spec with fewer rows than
 /// coefficients, whose refit is the ridge's fit and never meets the rule,
 /// pays 200 passes once a target (8.7 s at 1,000 features and 200 rows,
 /// where 50 took 1.9 s).
 pub const REFIT_PASSES: usize = 200;
 
-/// A refit has converged when no coefficient moved by more than this,
-/// relative to `max|β|`.
+/// A refit has converged when no buffered row's fitted value moved by more
+/// than this, relative to the pass's residual scale ([`converged`]).
 pub const REFIT_TOL: f64 = 1e-10;
+
+/// The move a converged pass may still make in a fitted value by rounding
+/// alone: this times the fitted value's terms `Σ_j |z_ij β_j|` at its
+/// largest ([`converged`]), a few hundred units in the last place of the
+/// fitted values' level.
+pub const REFIT_ROUNDING: f64 = 256.0 * f64::EPSILON;
 
 /// The least of a spec's default `huber_refit_rows` ([`default_refit_rows`]).
 /// Measured at 20% one-sided outliers over 40 seeds: 200 rows left 18 of 40
@@ -620,7 +630,9 @@ pub(crate) fn huber_location(y: &[f64], v: &[f64], cut: f64, toward: f64) -> Opt
 /// them: from the weighted mean, each pass reads the scale
 /// `s = wmedian(|y − m|; vs) / Φ⁻¹(3/4)` and moves `m` to the M-location at
 /// the cut `δs` ([`huber_location`]), until `m` moves by no more than
-/// [`REFIT_TOL`] of `max(|m|, s)`, or [`REFIT_PASSES`] passes. Each pass
+/// [`REFIT_TOL`] of `s`, past the rounding of `m` ([`REFIT_ROUNDING`] of
+/// `|m|`; [`converged`]'s rule for one coefficient), or [`REFIT_PASSES`]
+/// passes. Each pass
 /// solves the location exactly where `RLM` takes one reweighted step, so
 /// the fixed point is `RLM`'s and is reached in fewer passes. `y` sorted
 /// ascending; `v` the fit's weights and `vs` the scale's. Where a pass's
@@ -642,7 +654,7 @@ pub(crate) fn location_refit(y: &[f64], v: &[f64], vs: &[f64], delta: f64) -> Op
         let next = huber_location(y, v, delta * s, m)?;
         let moved = (next - m).abs();
         m = next;
-        if moved <= REFIT_TOL * m.abs().max(s) {
+        if moved <= REFIT_TOL * s + REFIT_ROUNDING * m.abs() {
             break;
         }
     }
@@ -708,21 +720,59 @@ pub(crate) fn huber_weights(absr: &[f64], s: Option<f64>, delta: f64, u: &mut [f
     }
 }
 
-/// Whether a pass has converged: no coefficient moved by more than
-/// [`REFIT_TOL`] of `max|β|`, or none moved at all. Relative alone, so a
-/// target scaled by a power of two takes the same passes and its fit is
+/// Whether a pass from `before` to `after` has converged: no buffered row's
+/// fitted value moved by more than [`REFIT_TOL`] of the pass's residual
+/// scale `s`, past the rounding of the fitted values,
+///
+/// ```text
+/// max_i |z_i'(β' − β)|  ≤  REFIT_TOL · s  +  REFIT_ROUNDING · max_i Σ_j |z_ij β'_j|
+/// ```
+///
+/// That is each coefficient against its own scale, in standardized units:
+/// a slope moving by `Δβ_j` moves the fitted values by `Δβ_j` times its
+/// feature's spread, and the rule holds that to a share of the residual
+/// scale, the precision the rows give the fit; the intercept is held to the
+/// same share of `s` directly. Nothing in it reads the target's level, so a
+/// level added to every target stops the slopes where it would without it.
+/// A rule relative to `max|β|` read the level through the intercept: at a
+/// level of `1e3` a slope stopped once it moved by under `1e-7`, and its
+/// error grew with the level. Nor does it read a coefficient that is
+/// poorly determined: two near-collinear features trade weight along a
+/// direction the fitted values do not see, and the rule waits only for the
+/// fit. The second term is what rounding alone can leave moving: a fitted
+/// value's terms are summed in floating point, and a few hundred units in
+/// the last place of their size is a move no further pass removes. Without
+/// a scale (`None`, every residual 0) the rule is that term alone; a pass
+/// that moved nothing has converged. Every term scales with the target, so
+/// a target scaled by a power of two takes the same passes and its fit is
 /// the same fit scaled, to the bit.
-pub(crate) fn converged(before: Option<&[f64]>, after: &[f64]) -> bool {
+pub(crate) fn converged(
+    rows: &Rows<'_>,
+    intercept: bool,
+    before: Option<&[f64]>,
+    after: &[f64],
+    scale: Option<f64>,
+) -> bool {
     let Some(before) = before else {
         return false;
     };
-    let moved = before
-        .iter()
-        .zip(after)
-        .map(|(p, q)| (p - q).abs())
-        .fold(0.0, f64::max);
-    let size = after.iter().map(|q| q.abs()).fold(0.0, f64::max);
-    moved <= REFIT_TOL * size
+    let step: Vec<f64> = after.iter().zip(before).map(|(q, p)| q - p).collect();
+    let (mut moved, mut size) = (0.0_f64, 0.0_f64);
+    for i in 0..rows.len() {
+        let x = rows.x(i);
+        moved = moved.max(fitted(&step, x, intercept).abs());
+        let (head, slopes) = if intercept {
+            (after[0].abs(), &after[1..])
+        } else {
+            (0.0, after)
+        };
+        let terms = slopes
+            .iter()
+            .zip(x)
+            .fold(head, |acc, (b, xi)| acc + (b * xi).abs());
+        size = size.max(terms);
+    }
+    moved <= REFIT_TOL * scale.unwrap_or(0.0) + REFIT_ROUNDING * size
 }
 
 /// A target's residual scale rebuilt from the converged fit's residuals.
@@ -874,14 +924,15 @@ pub(crate) fn irls(
         for (i, a) in absr.iter_mut().enumerate() {
             *a = (rows.y(i) - fitted(&beta, rows.x(i), intercept)).abs();
         }
-        huber_weights(&absr, scale_of(kind, &absr, &vs), delta, &mut u);
+        let scale = scale_of(kind, &absr, &vs);
+        huber_weights(&absr, scale, delta, &mut u);
         for ((t, &vi), &ui) in wt.iter_mut().zip(&v).zip(&u) {
             *t = vi * ui;
         }
         let Some(next) = wls(rows, &wt, intercept, ridge, &penalty) else {
             break;
         };
-        let done = converged(Some(&beta), &next);
+        let done = converged(rows, intercept, Some(&beta), &next, scale);
         beta = next;
         if done {
             break;
@@ -1350,6 +1401,93 @@ mod tests {
         assert_eq!(huber_location(&y, &[1.0; 4], 1.0, f64::NAN), Some(50.0));
         let two = huber_location(&[1.0, 51.0], &[1.0; 2], 3.1, 0.5).unwrap();
         assert!((two - 4.1).abs() < 1e-12, "{two}");
+    }
+
+    /// The stop reads each coefficient against the residual scale through
+    /// the fitted values, not against `max|β|` (task 278's follow-ups): the
+    /// same slope move is refused at a level of 0 and of `1e3` alike, where
+    /// the old rule took `1e-8` at `1e3`; the intercept is held to the scale
+    /// directly; a coefficient the rows do not see -- a feature that is 0 on
+    /// every row -- may move freely; without a scale only rounding is left,
+    /// and a level of `1e6` may move by a few hundred units in its last
+    /// place.
+    #[test]
+    fn the_stop_reads_the_fit_against_the_scale_not_the_level() {
+        let mut b = RefitBuf::new();
+        for i in 0..21u32 {
+            let x = f64::from(i) / 10.0 - 1.0;
+            b.learn(&[x, 0.0], 0.0, 1.0, 1.0, 1.0, 99);
+        }
+        let (rows, ages) = b.take();
+        let r = Rows::new(&rows, &ages, 2);
+        let s = Some(0.5);
+        for level in [0.0, 1e3, -1e3] {
+            let before = [level + 1.0, 2.0, 0.0];
+            let moved = |d: [f64; 3]| [before[0] + d[0], before[1] + d[1], before[2] + d[2]];
+            // A slope move of 1e-8 is 2e-8 of the scale: refused at any level.
+            assert!(
+                !converged(&r, true, Some(&before), &moved([0.0, 1e-8, 0.0]), s),
+                "{level}"
+            );
+            assert!(
+                converged(&r, true, Some(&before), &moved([0.0, 1e-11, 0.0]), s),
+                "{level}"
+            );
+            // The intercept against the scale: 1e-11 is 2e-11 of it.
+            assert!(
+                converged(&r, true, Some(&before), &moved([1e-11, 0.0, 0.0]), s),
+                "{level}"
+            );
+            assert!(
+                !converged(&r, true, Some(&before), &moved([1e-9, 0.0, 0.0]), s),
+                "{level}"
+            );
+            // The second feature is 0 on every row: no fit sees its slope.
+            assert!(
+                converged(&r, true, Some(&before), &moved([0.0, 0.0, 5.0]), s),
+                "{level}"
+            );
+        }
+        // Without a scale a move must be rounding: 100 units in the last
+        // place of a fit of 1e6 is, 1e-6 is not; nothing moved has converged.
+        let far = [1e6, 2.0, 0.0];
+        let ulps = |n: f64| [far[0] + n * 1e6 * f64::EPSILON, far[1], far[2]];
+        assert!(converged(&r, true, Some(&far), &ulps(100.0), None));
+        assert!(!converged(
+            &r,
+            true,
+            Some(&far),
+            &[far[0] + 1e-6, 2.0, 0.0],
+            None
+        ));
+        assert!(converged(&r, true, Some(&far), &far, None));
+        // The first pass has nothing to compare with; without an intercept
+        // the slopes alone make the fit.
+        assert!(!converged(&r, true, None, &far, s));
+        assert!(!converged(
+            &r,
+            false,
+            Some(&[2.0, 0.0]),
+            &[2.0 + 1e-8, 0.0],
+            s
+        ));
+        assert!(converged(
+            &r,
+            false,
+            Some(&[2.0, 0.0]),
+            &[2.0 + 1e-11, 0.0],
+            s
+        ));
+        // The location's rule is the same for its one coefficient: at a
+        // level of 1e3 the joint fixed point moves with the level, to
+        // rounding, and takes the same passes.
+        let y = location_rows();
+        let v = vec![1.0; y.len()];
+        let (m0, p0) = location_refit(&y, &v, &v, 1.345).unwrap();
+        let shifted: Vec<f64> = y.iter().map(|yi| yi + 1e3).collect();
+        let (m1, p1) = location_refit(&shifted, &v, &v, 1.345).unwrap();
+        assert!((m1 - 1e3 - m0).abs() <= 1e-12, "{m0} against {m1}");
+        assert_eq!(p0, p1);
     }
 
     #[test]

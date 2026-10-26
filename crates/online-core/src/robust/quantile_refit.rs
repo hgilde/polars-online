@@ -42,10 +42,13 @@
 //! majorizer's step instead, every row a least-squares row at weight `v_i`
 //! and target `z_i'β + 2h·ρ_h'(r_i)` (`ρ_h` has curvature at most `1/2h`),
 //! which moves every prediction toward its row by up to the band's width.
-//! The passes run until the full step moves no coefficient by more than
-//! [`crate::huber_refit::REFIT_TOL`] of `max|β|`, or
-//! [`REFIT_PASSES`]; one that takes them all is counted in the model's
-//! `solve_failures`, as `huber`'s refit is.
+//! The passes run until the full step moves no buffered row's fitted value
+//! by more than [`crate::huber_refit::REFIT_TOL`] of the pass's scale `s`,
+//! past the fitted values' rounding (`huber`'s rule,
+//! [`crate::huber_refit::converged`]), or until no step along it lowers `F`
+//! past `F`'s rounding (`Robust::damped`), or [`REFIT_PASSES`]; one that
+//! takes them all is counted in the model's `solve_failures`, as `huber`'s
+//! refit is.
 //!
 //! Then the target's sums are rebuilt at the converged fit -- each row as
 //! the stream takes it, scored by that fit at its band -- and the scale
@@ -89,8 +92,9 @@ fn count_pass(_i: usize) {
     });
 }
 
-/// Halvings of a Newton step before the refit takes the shortest one tried:
-/// `2^-40` of a step no smaller than the rounding of `F`.
+/// Halvings of a Newton step before the refit reads it as one that does
+/// not lower `F` ([`Robust::damped`]): `2^-40` of a step no smaller than
+/// the rounding of `F`.
 const MAX_HALVINGS: u32 = 40;
 
 /// `ρ_h(r)`, the check loss at level `tau` convolved with a uniform kernel
@@ -150,11 +154,13 @@ impl Robust {
         let (mut passes, mut solved) = (0u32, false);
         for _ in 0..REFIT_PASSES {
             passes += 1;
+            let mut scale = None;
             let pass = match &beta {
                 None => Pass::LeastSquares,
                 Some(b) => match self.band_at(&rows, b, &vs, width, &mut r) {
                     None => Pass::LeastSquares,
                     Some(h) => {
+                        scale = Some(h / width);
                         let inside: f64 = (0..n)
                             .filter(|&i| r[i].abs() < h)
                             .map(|i| v[i] / rows.w(i))
@@ -201,12 +207,18 @@ impl Robust {
                 break;
             };
             solved = true;
-            let done = converged(beta.as_deref(), &next);
-            beta = Some(match (pass, beta.take()) {
-                (Pass::Newton(h), Some(b)) if !done => self.damped(j, &rows, &v, &b, next, h, tau),
-                _ => next,
-            });
-            if done {
+            let done = converged(&rows, intercept, beta.as_deref(), &next, scale);
+            let (fit, stalled) = match (pass, beta.take()) {
+                (Pass::Newton(h), Some(b)) if !done => {
+                    match self.damped(j, &rows, &v, &b, next, h, tau) {
+                        Some(c) => (c, false),
+                        None => (b, true),
+                    }
+                }
+                (_, _) => (next, false),
+            };
+            beta = Some(fit);
+            if done || stalled {
                 break;
             }
         }
@@ -273,6 +285,15 @@ impl Robust {
     /// rounding: `next` itself where the full step does not. The sums are
     /// the Newton pass's, which give `F`'s penalty its band weight and
     /// scales.
+    ///
+    /// `None` where the full step raises `F` past its rounding and no
+    /// shorter step along it lowers `F` at all: `b` is then `F`'s minimum to
+    /// the rounding of `F`, the fit stands and the refit has converged. A
+    /// Newton direction of a convex `F` lowers it near `b` unless `F`'s
+    /// slope along it is lost in that rounding, which is where a target far
+    /// from 0 leaves it: at a level of `1e6` each residual is rounded to
+    /// `1e-10`, and the step that rounding leaves can stay a few hundred
+    /// units in the last place of the fitted values, pass after pass.
     #[allow(clippy::too_many_arguments)]
     fn damped(
         &self,
@@ -283,7 +304,7 @@ impl Robust {
         next: Vec<f64>,
         h: f64,
         tau: f64,
-    ) -> Vec<f64> {
+    ) -> Option<Vec<f64>> {
         let intercept = self.cfg.fit_intercept;
         let (s, keep) = self.band_scales(j);
         let pen_weight = self.wj[j] * self.cfg.ridge / (4.0 * h);
@@ -305,7 +326,7 @@ impl Robust {
         let (f0, size) = objective(b);
         let slack = 64.0 * f64::EPSILON * size;
         if objective(&next).0 <= f0 + slack {
-            return next;
+            return Some(next);
         }
         count_pass(3);
         let mut t = 1.0;
@@ -315,11 +336,12 @@ impl Robust {
             for ((o, &p), &q) in out.iter_mut().zip(b).zip(&next) {
                 *o = p + t * (q - p);
             }
-            if objective(&out).0 <= f0 + slack {
-                break;
+            let f = objective(&out).0;
+            if f <= f0 + slack {
+                return (f < f0).then_some(out);
             }
         }
-        out
+        None
     }
 }
 

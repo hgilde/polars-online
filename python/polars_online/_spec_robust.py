@@ -133,7 +133,7 @@ def huber(
         s   = weighted median of |r_i| at v_i', over 0.6745  (root mean square under "rms")
         u_i = min(1, d * s / |r_i|)
         b   = the ridge solve of the rows at v_i * u_i
-        repeated until b moves by under 1e-10 of max|b|, or 200 passes
+        repeated until no row's fit z_i'b moves by over 1e-10 of s, or 200 passes
 
     The target's sums are then rebuilt from the rows at their converged
     weights, and ``s`` from the converged fit's residuals, and the stream goes
@@ -503,8 +503,9 @@ def quantile(
     measure the curvature at the pass's fit and not at the next. A band of
     fewer rows than coefficients has no curvature to step on, and such a pass
     moves every prediction toward its row by at most the band's width
-    instead. The passes stop when the step moves no coefficient by more than
-    1e-10 of the largest, or after 200.
+    instead. The passes stop when the step moves no row's fit ``z_i'b`` by
+    more than 1e-10 of ``s``, beyond the rounding of a fit that size, or when
+    no step along it lowers ``F`` past its rounding, or after 200.
 
     The target's sums are then rebuilt as the stream takes each row scored
     by the converged fit at its band, ``s`` is rebuilt from that fit's

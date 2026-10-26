@@ -152,7 +152,7 @@ def sgd(
         b   = weighted least squares of the rows at v_i
         r_i = y_i - z_i'b,  s = weighted median of |r_i| at v_i', over 0.6745
         b   = weighted least squares at v_i * min(1, delta * s / |r_i|)
-        repeated until b moves by under 1e-10 of max|b|, or 200 passes
+        repeated until no row's fit z_i'b moves by over 1e-10 of s, or 200 passes
 
     with a ridge of 1e-6 on the mean-form system, and ``l2`` as the steps
     apply it: a penalty of ``l2 * s_i^2`` on each slope (``s_i`` the

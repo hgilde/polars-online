@@ -266,13 +266,16 @@ class TestArithmetic:
 class TestMinSettledFrac:
     """``min_settled_frac`` withholds what ``marginal`` reports while the
     stream is less settled than it, as ``min_weight`` does: the table's
-    ``corr``, ``beta``, ``t_stat``, ``t_stat_serial`` and split, at the
+    ``corr``, ``beta``, ``t_stat``, ``t_stat_serial``, lag correlations (task
+    278's follow-ups) and split, at the
     fraction the next row would read, ``1 - 2 ** (-T / half_life)`` over the
     ``T`` clock units the decay has covered. It was accepted and did nothing:
     10 rows at a half-life of 50 read the same table with or without 0.9
     (task 278, the user's decision of 2026-10-25)."""
 
     GATED = ["corr", "beta", "t_stat", "t_stat_serial", "split_gain", "split_at", "split_gain_t"]
+    # The lag correlations, withheld element by element: a list of nulls.
+    GATED_LISTS = ["lag_corr_xx", "lag_corr_yy", "lag_corr_xy", "lag_corr_yx"]
 
     def kw(self, **extra):
         # Lags with a serial rule and bins, so every gated column is there.
@@ -296,7 +299,7 @@ class TestMinSettledFrac:
             gated.fit_predict(df.head(rows))
             plain.fit_predict(df.head(rows))
             got, want = gated.marginal("m"), plain.marginal("m")
-            rest = [c for c in want.columns if c not in self.GATED]
+            rest = [c for c in want.columns if c not in self.GATED + self.GATED_LISTS]
             # The moments are reported either way, and the gate moves no
             # learning: every column it leaves is the ungated run's.
             assert got.select(rest).equals(want.select(rest)), rows
@@ -304,6 +307,9 @@ class TestMinSettledFrac:
                 assert got.select(self.GATED).null_count().sum_horizontal().item() == (
                     len(self.GATED) * got.height
                 ), rows
+                every_null = pl.col(self.GATED_LISTS).list.eval(pl.element().is_null()).list.all()
+                assert got.select(every_null).to_numpy().all(), rows
+                assert not want.select(every_null).to_numpy().any(), rows
                 # The ungated table has the numbers the gate withholds.
                 assert (
                     want.select("corr", "beta", "split_gain").null_count().sum_horizontal().item()
@@ -326,6 +332,10 @@ class TestMinSettledFrac:
         for col in self.GATED:
             a, b = got[f"pair_{col}"].to_list()
             assert all(v is None for v in a), col
+            assert b == want[f"pair_{col}"][1].to_list(), col
+        for col in self.GATED_LISTS:
+            a, b = got[f"pair_{col}"].to_list()
+            assert all(v is None for lag in a for v in lag), col
             assert b == want[f"pair_{col}"][1].to_list(), col
         assert got["pair_cov"].equals(want["pair_cov"])
         assert all(v is not None for v in want["pair_corr"][0].to_list())
