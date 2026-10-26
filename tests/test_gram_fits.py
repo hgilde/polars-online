@@ -10,6 +10,9 @@ opinions on both paths are in ``tests/test_second_opinion.py``
 
 from __future__ import annotations
 
+import itertools
+import re
+import warnings
 from typing import Any
 
 import numpy as np
@@ -770,3 +773,322 @@ class TestCompactGram:
         bank = self.bank()
         with pytest.raises(ValueError, match=match):
             bank.gram("m", **kw)
+
+
+# ------------------------------------------------- task 278 (b12): the paths' own keywords
+
+
+def grouped_grams(seed: int = 15, k: int = 6) -> list[dict[str, Any]]:
+    """Four Grams of one spec, one per group, two targets each."""
+    df = stream(seed=seed, k=k).with_columns(grp=pl.int_range(pl.len()) % 4)
+    spec = po.spec.ewridge(
+        "m",
+        targets=["y", "y2"],
+        features=[f"x{i}" for i in range(k)],
+        lam=1.0,
+        group="grp",
+        min_weight=5.0,
+    )
+    bank = po.ModelBank([spec])
+    bank.fit_predict(df)
+    return bank.gram("m")
+
+
+def same_path(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    return (
+        np.array_equal(a["coef"], b["coef"])
+        and np.array_equal(a["penalties"], b["penalties"])
+        and a["active"] == b["active"]
+        and a["stop"] == b["stop"]
+    )
+
+
+class TestLarsPathsTakeLarsPathsArguments:
+    """``lars_paths`` runs ``lars_path`` per Gram and target, so each
+    keyword it passes on means what it means there, to the bit. No test
+    passed ``penalty_weights`` or ``features`` to ``lars_paths`` before."""
+
+    @pytest.mark.parametrize(
+        "kw",
+        [
+            dict(penalty_weights=[0.5, 1.0, 2.0, 1.0, 1.0, 3.0]),
+            dict(features=["x3", "x0", "x5"]),
+            dict(features=["x4", "x1"], penalty_weights=[2.0, 0.25], max_active=1),
+            dict(penalty_weights=[1.0, 4.0, 1.0, 1.0, 0.5, 1.0], max_iter=3),
+        ],
+        ids=["weights", "features", "both", "weights,max_iter"],
+    )
+    def test_each_gram_and_target_is_its_lars_path(self, kw):
+        grams = grouped_grams()
+        many = pg.lars_paths(grams, **kw)
+        plain = pg.lars_paths(grams)
+        for g, per, unweighted in zip(grams, many, plain, strict=True):
+            for t, path, bare in zip(["y", "y2"], per, unweighted, strict=True):
+                assert same_path(path, pg.lars_path(g, target=t, **kw))
+                # The keyword took effect: the path is not the plain one.
+                assert not same_path(path, bare)
+
+    def test_its_refusals_are_lars_paths(self):
+        grams = grouped_grams()
+        with pytest.raises(ValueError, match="use lasso_path for it"):
+            pg.lars_paths(grams, penalty_weights=[1.0, 0.0, 1.0, 1.0, 1.0, 1.0])
+        with pytest.raises(ValueError, match="one entry per feature"):
+            pg.lars_paths(grams, penalty_weights=[1.0])
+
+
+def leaving_gram(seed: int = 0) -> dict[str, Any]:
+    """A design whose columns mix their signs, so that columns leave the
+    path (the lasso modification): ``TestLarsPathIsSklearns``' rows, with
+    four to seven knots where one leaves on these seeds."""
+    rng = np.random.default_rng(seed)
+    k = 10
+    mix = np.eye(k) + rng.standard_normal((k, k))
+    x = rng.standard_normal((200, k)) @ mix + 5.0
+    y = x @ rng.standard_normal(k) + 1.0 + 2.0 * rng.standard_normal(200)
+    df = pl.DataFrame({f"x{i}": x[:, i] for i in range(k)}).with_columns(y=pl.Series(y))
+    return gram(df)
+
+
+class TestAStoppedLarsPathIsAPrefix:
+    """Stopping a LARS path early changes nothing it has already walked:
+    each knot is computed from the ones before it alone, so the path that
+    stops after ``max_iter`` knots or at ``max_active`` columns is the full
+    path's first rows, to the bit, and a limit past the path's end is the
+    full path. Held on every limit, on a path where columns leave."""
+
+    @pytest.mark.parametrize("make", ["stream", "leaving"])
+    def test_every_max_iter_and_max_active_is_a_prefix(self, make):
+        g = gram(stream(seed=9, k=8)) if make == "stream" else leaving_gram(0)
+        full = pg.lars_path(g)
+        knots = len(full["penalties"])
+        sets = full["active"]
+        leaves = sum(len(b) < len(a) for a, b in zip(sets, sets[1:], strict=False))
+        print(f"{make}: {knots} knots, {leaves} where a column leaves")
+        assert full["stop"] == "end"
+        if make == "leaving":
+            assert leaves > 0, "the lasso modification did not run"
+        for max_iter in range(1, knots + 3):
+            p = pg.lars_path(g, max_iter=max_iter)
+            n = len(p["penalties"])
+            assert n == min(max_iter + 1, knots), max_iter
+            assert p["stop"] == ("end" if max_iter + 1 >= knots else "max_iter"), max_iter
+            assert np.array_equal(p["penalties"], full["penalties"][:n])
+            assert np.array_equal(p["coef"], full["coef"][:n])
+            assert p["active"] == sets[:n]
+        widest = max(len(a) for a in sets)
+        for max_active in range(1, widest + 2):
+            p = pg.lars_path(g, max_active=max_active)
+            n = len(p["penalties"])
+            assert np.array_equal(p["penalties"], full["penalties"][:n])
+            assert np.array_equal(p["coef"], full["coef"][:n])
+            assert p["active"] == sets[:n]
+            if max_active > widest:
+                assert same_path(p, full)
+            else:
+                assert p["stop"] == "max_active"
+                assert len(p["active"][-1]) >= max_active
+                assert all(len(a) < max_active for a in p["active"][:-1])
+
+    def test_lars_paths_stops_each_path_the_same_way(self):
+        grams = grouped_grams()
+        full = pg.lars_paths(grams)
+        for max_iter in (1, 2, 4, 50):
+            for per, whole in zip(pg.lars_paths(grams, max_iter=max_iter), full, strict=True):
+                for p, f in zip(per, whole, strict=True):
+                    n = len(p["penalties"])
+                    assert n == min(max_iter + 1, len(f["penalties"]))
+                    assert np.array_equal(p["coef"], f["coef"][:n])
+
+
+def rows_system(df: pl.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    """The lasso's problem written from the rows (unit weights, as the
+    Gram's ``lam=1`` accumulator holds them), not from the Gram: ``C`` the
+    features' correlation matrix, ``d_i = cov(x_i, y) / s_i``, ``s`` their
+    population spreads and the target's spread. The objective is
+    ``b'Cb / 2 - d'b + l |b|_1`` over the standardized ``b = coef * s``."""
+    x = df.select(sorted(c for c in df.columns if c.startswith("x"))).to_numpy()
+    y = df["y"].to_numpy()
+    m = x.mean(0)
+    s = np.sqrt(((x - m) ** 2).mean(0))
+    zs = (x - m) / s
+    return zs.T @ zs / len(y), zs.T @ (y - y.mean()) / len(y), s, float(np.std(y))
+
+
+def kkt_violation(c: np.ndarray, d: np.ndarray, lam: float, b: np.ndarray) -> np.ndarray:
+    """Each coordinate's distance from its KKT condition: ``|g_i + l
+    sign(b_i)|`` where ``b_i`` is not 0, ``max(|g_i| - l, 0)`` where it is,
+    ``g = C b - d``."""
+    g = c @ b - d
+    return np.where(b != 0, np.abs(g + lam * np.sign(b)), np.maximum(np.abs(g) - lam, 0.0))
+
+
+def gamma(m: int) -> float:
+    """Higham's ``gamma_m = m u / (1 - m u)``."""
+    u = 2.0**-53
+    return m * u / (1.0 - m * u)
+
+
+def certificate(
+    c: np.ndarray, d: np.ndarray, lam: float, b: np.ndarray, tol: float, s_y: float, n: int
+) -> np.ndarray:
+    """What a descent that met its stopping rule certifies, per coordinate.
+    The last sweep moved no coordinate by ``tol * s_y`` or more, and
+    coordinate ``i`` met its own condition when it was set, so the moves of
+    the others since bound its violation by ``tol * s_y * sum_j |C_ij|``.
+    The rest is the rounding of the Gram's moments against these from the
+    rows: ``8 gamma(4n)`` of the terms' sizes."""
+    bound = tol * s_y * np.abs(c).sum(1)
+    return bound + 8 * gamma(4 * n) * (np.abs(c) @ np.abs(b) + np.abs(d) + lam)
+
+
+def short_penalties(caught: list[warnings.WarningMessage]) -> list[float]:
+    """The penalties a ``ReadinessWarning`` names as out of sweeps."""
+    said = [str(w.message) for w in caught if issubclass(w.category, po.ReadinessWarning)]
+    assert len(said) <= 1, said
+    if not said:
+        return []
+    listed = re.search(r"penalties, \[([^\]]*)\]", said[0])
+    assert listed, said[0]
+    return [float(v) for v in listed.group(1).split(",")]
+
+
+def path_and_warnings(g, penalties, **kw) -> tuple[np.ndarray, list[float]]:
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        path = pg.lasso_path(g, penalties, **kw)
+    return path, short_penalties(caught)
+
+
+class TestLassoPathsStoppingRule:
+    """``lasso_path``'s ``tol`` and ``max_iter`` -- the coordinate descent's
+    stopping rule and its cap -- against the problem written from the rows.
+    No test showed a loose ``tol`` changing the answer before (every one
+    tightened it), nor what a binding ``max_iter`` leaves; the warning that
+    names a penalty out of sweeps has its own test in
+    ``test_convergence_iterations.py``."""
+
+    @pytest.mark.parametrize("seed", [0, 1, 2])
+    def test_every_tol_meets_its_certificate_and_a_tighter_one_lands_nearer(self, seed):
+        df = stream(seed=seed, k=6)
+        g = gram(df)
+        c, d, s, s_y = rows_system(df)
+        ref = pg.lasso_path(g, PENALTIES, tol=1e-15, max_iter=1_000_000)
+        dists = []
+        for tol in [1e-1, 1e-2, 1e-3, 1e-4, 1e-6, 1e-8, 1e-10, 1e-12]:
+            path, short = path_and_warnings(g, PENALTIES, tol=tol)
+            assert short == [], (tol, short)
+            for row, lam in zip(path, PENALTIES, strict=True):
+                b = row[1:] * s
+                v = kkt_violation(c, d, lam, b)
+                assert np.all(v <= certificate(c, d, lam, b, tol, s_y, df.height)), (tol, lam)
+            dists.append(np.abs(path - ref).max())
+        print(f"seed {seed}: distance from the converged path by tol {dists}")
+        # Measured 2026-10-25 on seeds 0-2: 4.1e-2..4.4e-2 at tol 1e-1 down to
+        # 5.1e-13..5.9e-13 at 1e-12, falling at every step. The descent's
+        # path does not depend on tol; a smaller one only stops it on a
+        # later sweep, so the distance shrinks with it here.
+        assert all(a >= b for a, b in zip(dists, dists[1:], strict=False)), dists
+        assert dists[0] > 1e-2 and dists[-1] < 1e-11, dists
+
+    @pytest.mark.parametrize("seed", [0, 1, 2])
+    def test_a_binding_max_iter_is_named_and_every_other_penalty_met_its_rule(self, seed):
+        df = stream(seed=seed, k=6)
+        g = gram(df)
+        c, d, s, s_y = rows_system(df)
+        ref = pg.lasso_path(g, PENALTIES, tol=1e-15, max_iter=1_000_000)
+        counts, dists, over = [], [], 0.0
+        for max_iter in [1, 2, 3, 5, 10, 20, 1000]:
+            path, short = path_and_warnings(g, PENALTIES, max_iter=max_iter)
+            assert set(short) <= set(PENALTIES)
+            for row, lam in zip(path, PENALTIES, strict=True):
+                b = row[1:] * s
+                v = kkt_violation(c, d, lam, b)
+                ok = np.all(v <= certificate(c, d, lam, b, 1e-10, s_y, df.height))
+                # A penalty not named stopped by the rule, so it holds the
+                # rule's certificate.
+                assert ok or lam in short, (max_iter, lam)
+                if max_iter == 1 and lam in short:
+                    over = max(over, float(v.max()))
+            counts.append(len(short))
+            dists.append(np.abs(path - ref).max())
+        print(f"seed {seed}: penalties named {counts}, distance {dists}, one sweep's KKT {over}")
+        # The hard path: one sweep names every penalty and leaves them off
+        # their certificate (measured 2026-10-25: 8 of 8 named, the
+        # violation above 1e-3); 1,000 sweeps name none.
+        assert counts[0] == len(PENALTIES) and over > 1e-3
+        assert counts[-1] == 0
+        assert all(a >= b for a, b in zip(counts, counts[1:], strict=False)), counts
+        # Measured 2026-10-25 on seeds 0-2: 8.5e-2..9.1e-2 after one sweep,
+        # 4.0e-8..2.8e-7 after ten, 3.8e-11..4.5e-11 once the rule stops it.
+        assert all(a >= b for a, b in zip(dists, dists[1:], strict=False)), dists
+
+    @pytest.mark.parametrize("lam", [0.2, 0.02])
+    def test_one_penalty_s_objective_never_rises_with_another_sweep(self, lam):
+        """Cyclic coordinate descent minimizes the objective exactly along
+        each coordinate in turn, so no sweep raises it: from the same start
+        (zero, one penalty) the row after ``j + 1`` sweeps is no worse than
+        after ``j``. ``tol=1e-300`` keeps the rule from stopping any sooner
+        than a sweep that moves nothing, so a call runs out of sweeps, and
+        says so, until the descent stands still. The slack is the rounding
+        of the Gram's moments against these from the rows."""
+        df = stream(seed=0, k=6)
+        g = gram(df)
+        c, d, s, _ = rows_system(df)
+        objs, slack = [], []
+        for max_iter in range(1, 40):
+            path, short = path_and_warnings(g, [lam], max_iter=max_iter, tol=1e-300)
+            # Measured 2026-10-25: still moving after five sweeps.
+            assert short == [lam] if max_iter <= 5 else short in ([], [lam])
+            b = path[0, 1:] * s
+            objs.append(0.5 * b @ c @ b - d @ b + lam * np.abs(b).sum())
+            terms = 0.5 * np.abs(b) @ np.abs(c) @ np.abs(b) + np.abs(d) @ np.abs(b)
+            slack.append(8 * gamma(4 * df.height) * (terms + lam * np.abs(b).sum()))
+        rises = np.diff(objs)
+        print(f"objective {objs[0]:.6f} -> {objs[-1]:.6f}, largest rise {rises.max():.1e}")
+        assert objs[0] - objs[-1] > 1e-3, "the sweeps did not descend"
+        assert np.all(rises <= np.array(slack[1:])), rises.max()
+
+    def test_weights_times_a_power_of_two_are_the_penalties_times_it(self):
+        """Each column's penalty is ``l * pw_i``, so doubling every weight is
+        doubling every penalty, to the bit: a power of two scales each
+        product exactly, and the stopping rule reads neither."""
+        g = gram(stream(seed=3, k=5))
+        w = np.array([1.0, 0.0, 2.0, 0.5, 3.0])
+        pens = np.array(PENALTIES)
+        for c in (0.25, 2.0, 8.0):
+            a = pg.lasso_path(g, list(pens), penalty_weights=list(w * c))
+            b = pg.lasso_path(g, list(pens * c), penalty_weights=list(w))
+            assert np.array_equal(a, b), c
+        assert not np.array_equal(
+            pg.lasso_path(g, PENALTIES, penalty_weights=list(w)), pg.lasso_path(g, PENALTIES)
+        )
+
+
+class TestMergeOrder:
+    """``merge`` pools its parts' moments; the result is the same Gram in
+    any order, to rounding, and each fit from it the same fit. Associativity
+    of the within merge had a test; the order of the parts had none.
+    Measured 2026-10-25 over all 120 orders of five blocks: the moments
+    within ``3.2e-16`` of ``1 + |value|``, the weights equal to the bit, the
+    solve within ``1.2e-15``; held at ``4 gamma(5)`` (2.2e-15) and ``1e-14``."""
+
+    MOMENTS = ("means", "comoments", "cross_moments", "cross_centered", "target_vars")
+
+    @pytest.mark.parametrize("within", [False, True])
+    @pytest.mark.parametrize("gaps", [False, True])
+    def test_every_order_of_the_parts_is_the_same_gram(self, within, gaps):
+        grams = blocks(n_blocks=5, seed=20, gaps=gaps)
+        base = pg.merge(grams, within=within)
+        fit = pg.solve(base, target="y2")
+        for order in itertools.permutations(range(5)):
+            m = pg.merge([grams[i] for i in order], within=within)
+            assert m["columns"] == base["columns"] and m["targets"] == base["targets"]
+            assert np.array_equal(m["weight_sum"], base["weight_sum"])
+            for key in self.MOMENTS:
+                a = np.asarray(base[key], dtype=float)
+                b = np.asarray(m[key], dtype=float)
+                assert np.all(np.abs(a - b) <= 4 * gamma(5) * (1.0 + np.abs(a))), (order, key)
+            got = pg.solve(m, target="y2")
+            ok = ~np.isnan(fit)
+            assert np.array_equal(np.isnan(got), ~ok)
+            assert np.abs(got[ok] - fit[ok]).max() <= 1e-14 * (1.0 + np.abs(fit[ok]).max())
