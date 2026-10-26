@@ -4,9 +4,10 @@ no seed (docs/PLAN.md task 278; the harness is ``tests/convergence.py``).
 ``tests/test_convergence.py`` runs a representative cell in the essentials
 and 50 seeds at 20,000 rows in the extended tier. This sweeps 200 seeds at
 50,000 rows, with and without decay, and is deselected from every run but
-the weekly leak-check workflow's ``pytest -m soak``. Every default cell
-fails today on the defect ``test_convergence.BREAKDOWN_DEFECTS`` states,
-and is marked so; the narrow band's 5% cell holds.
+the weekly leak-check workflow's ``pytest -m soak``. A cell that fails on
+a defect is marked with ``test_convergence.BREAKDOWN_DEFECTS``' reason;
+none is since the band was drawn in the MAD (task 278, D-Q), where in the
+root mean square every default cell was captured.
 
 A seed is *captured* when its slope ends more than 0.05 from the robust
 oracle's on the same rows: task 277's threshold, at which one online Huber
