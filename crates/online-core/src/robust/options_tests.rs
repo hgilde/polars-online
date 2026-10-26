@@ -34,6 +34,8 @@ fn huber(k: usize, m: usize) -> RobustCfg {
         ridge_scale: false,
         emit_scale: false,
         refit_rows: 0,
+        mad_anchor: false,
+        min_weight_holds_learning: false,
     }
 }
 
@@ -89,12 +91,19 @@ fn each_set_is_weighed_by_the_largest_sets_residual() {
         ("all".to_string(), vec![0, 1, 2]),
         ("two".to_string(), vec![2, 1]),
     ];
+    // Every prediction the fit learns from is reported, so the reference
+    // reads the residuals the model weighed its rows by.
     let mut with_sets = Robust::new(RobustCfg {
         feature_sets: sets.clone(),
+        min_weight: 0.0,
         ..huber(3, 2)
     })
     .unwrap();
-    let mut plain = Robust::new(huber(3, 2)).unwrap();
+    let mut plain = Robust::new(RobustCfg {
+        min_weight: 0.0,
+        ..huber(3, 2)
+    })
+    .unwrap();
     assert_eq!(with_sets.cfg().weighing_set(), 1);
     assert_eq!(with_sets.n_outputs(), 6);
     let decay = Decay::Halflife(150.0);
@@ -470,19 +479,34 @@ fn the_emitted_scale_is_the_cuts_and_reads_no_row_its_own() {
         assert!(set > 1100, "{scale:?}: {set}");
         // A wild target on the row: its own scale is unmoved, the next
         // row's is.
+        // Under the MAD the wild row moves the median by its weight, which
+        // can stay inside the sketch's bucket (`tanh(1/128)` wide), so the
+        // evidence it entered is the sketch itself.
         let (x, mut y, d, w) = row(600, &mut s);
         let mut wild = m.clone();
         let tame = scales(&m.step(&x, &y, d, w));
         y[0] = Some(1e6);
         assert_eq!(scales(&wild.step(&x, &y, d, w)), tame, "{scale:?}");
+        if scale == HuberScale::Mad {
+            assert_ne!(
+                m.mad_sketch()[0],
+                wild.mad_sketch()[0],
+                "the wild residual enters the sketch"
+            );
+        }
         let (x, y, d, w) = row(601, &mut s);
         let (a, b) = (
             scales(&m.step(&x, &y, d, w)),
             scales(&wild.step(&x, &y, d, w)),
         );
+        let moved = if scale == HuberScale::Mad {
+            b[0] >= a[0]
+        } else {
+            b[0] > a[0]
+        };
         assert!(
-            b[0] > a[0],
-            "{scale:?}: the wild residual enters the next row's scale"
+            moved,
+            "{scale:?}: the wild residual enters the next row's scale: {a:?} {b:?}"
         );
     }
 }

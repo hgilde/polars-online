@@ -3,6 +3,8 @@ solved every row, which is the same estimator (docs/PLAN.md section 4.2)."""
 
 import numpy as np
 import polars as pl
+import pytest
+import statsmodels.api as sm
 
 import polars_online as po
 from data import synthetic
@@ -141,3 +143,63 @@ class TestRls:
         row = out.row(3, named=True)["m"]
         assert row["pred_y0"] is not None
         assert row["resid_y0"] is None
+
+
+class TestDeltaLimits:
+    """``delta``'s two limits without decay (task 278, batch 27). The fit
+    after ``W`` weight solves ``(X' W X + delta I) b = X' W y + delta b_0``,
+    ``b_0`` the ``coef_prior``: as ``delta -> 0`` it is weighted least
+    squares (statsmodels' ``WLS``), and as ``delta`` grows it stays at
+    ``b_0``, each at the rate ``delta`` (or ``1 / delta``) while the double
+    can still tell the two terms apart."""
+
+    @staticmethod
+    def frame(seed: int = 278, n: int = 2000) -> pl.DataFrame:
+        rng = np.random.default_rng(seed)
+        x = rng.standard_normal((n, 3)) * [1.0, 2.0, 0.5] + [0.5, -1.0, 3.0]
+        y = 1.0 + x @ np.array([2.0, -1.0, 0.5]) + rng.standard_normal(n)
+        w = rng.uniform(0.5, 1.5, n)
+        w[::37] = 0.0
+        return pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "y": y, "w": w})
+
+    @staticmethod
+    def last_coef(df: pl.DataFrame, **kw) -> np.ndarray:
+        spec = po.spec.rls(
+            "m",
+            targets=["y"],
+            features=["x0", "x1", "x2"],
+            weight="w",
+            half_life=float("inf"),
+            min_weight=10.0,
+            **kw,
+        )
+        bank = po.ModelBank([spec], threads=1)
+        bank.fit_predict(df)
+        return bank.coef("m")["coef"].to_numpy()
+
+    def test_as_delta_goes_to_zero_rls_is_weighted_least_squares(self):
+        """Measured 2026-10-26: 2.1e-5 and 2.1e-8 off ``WLS`` at ``delta``
+        1e-3 and 1e-6 -- the rate ``delta`` -- and under 1e-12 at 1e-12,
+        where the rounding takes over."""
+        df = self.frame()
+        x = sm.add_constant(df.select("x0", "x1", "x2").to_numpy())
+        wls = sm.WLS(df["y"].to_numpy(), x, weights=df["w"].to_numpy()).fit().params
+        errs = {d: float(np.max(np.abs(self.last_coef(df, delta=d) - wls))) for d in (1e-3, 1e-6)}
+        print({k: f"{v:.3g}" for k, v in errs.items()})
+        assert 5e2 < errs[1e-3] / errs[1e-6] < 2e3, errs
+        assert np.max(np.abs(self.last_coef(df, delta=1e-12) - wls)) < 1e-12
+
+    @pytest.mark.parametrize("prior", [None, [1.0, 7.0, 8.0, 6.0]], ids=["zeros", "given"])
+    def test_as_delta_grows_the_fit_stays_at_its_prior(self, prior):
+        """Measured 2026-10-26: the coefficients 2.5e-2 and 2.5e-6 off the
+        default zeros at ``delta`` 1e6 and 1e10, 6.2e-2 and 6.3e-6 off a given
+        prior."""
+        df = self.frame()
+        b0 = np.zeros(4) if prior is None else np.array(prior)
+        kw = {} if prior is None else {"coef_prior": [prior]}
+        errs = {
+            d: float(np.max(np.abs(self.last_coef(df, delta=d, **kw) - b0))) for d in (1e6, 1e10)
+        }
+        print({k: f"{v:.3g}" for k, v in errs.items()})
+        assert errs[1e10] < 1e-5
+        assert 5e3 < errs[1e6] / errs[1e10] < 2e4, errs

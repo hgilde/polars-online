@@ -739,9 +739,10 @@ pub(crate) struct Rebuilt {
 pub(crate) fn rebuild_scale(
     rows: &Rows<'_>,
     kind: HuberScale,
+    anchored: bool,
     resid: impl Fn(usize) -> f64,
 ) -> Rebuilt {
-    let mut mad = mad_sketches(kind, 1).pop();
+    let mut mad = mad_sketches(kind, anchored, 1).pop();
     let (mut sig2, mut wsig) = (0.0, 0.0);
     for e in rows.events() {
         match e {
@@ -1154,17 +1155,17 @@ mod tests {
         let (rows, ages) = (b.rows.clone(), b.ages.clone());
         let r = Rows::new(&rows, &ages, 1);
         let resid = |i: usize| if i == 0 { 2.0 } else { -1.0 };
-        let rms = rebuild_scale(&r, HuberScale::Rms, resid);
+        let rms = rebuild_scale(&r, HuberScale::Rms, false, resid);
         assert_eq!(rms.wsig, 2.125);
         assert_eq!(rms.sig2, (0.125 * 4.0 + 2.0 * 1.0) / 2.125);
         assert!(rms.mad.is_none());
-        let mad = rebuild_scale(&r, HuberScale::Mad, resid);
+        let mad = rebuild_scale(&r, HuberScale::Mad, false, resid);
         assert_eq!((mad.wsig, mad.sig2), (rms.wsig, rms.sig2));
         let q = mad.mad.expect("a sketch under the MAD");
         // |e| of 2 at weight 0.125 and 1 at weight 2: the median is 1.
         assert!((q.get(0).unwrap() - 1.0).abs() < 0.01, "{:?}", q.get(0));
         // A residual that is not finite leaves the scale as it was.
-        let inf = rebuild_scale(&r, HuberScale::Rms, |i| {
+        let inf = rebuild_scale(&r, HuberScale::Rms, false, |i| {
             if i == 0 { 2.0 } else { f64::INFINITY }
         });
         assert_eq!((inf.wsig, inf.sig2), (0.125, 4.0));

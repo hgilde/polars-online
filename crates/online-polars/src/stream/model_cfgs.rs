@@ -548,6 +548,11 @@ pub fn huber_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 online_core::default_refit_rows(spec.k())
             },
         ),
+        // Each MAD sketch in units of its first residual, so the scale
+        // moves with a rescaled target to rounding; a state written
+        // without it loads with it off.
+        mad_anchor: true,
+        min_weight_holds_learning: false,
     };
     let mut m = Robust::new(cfg)?;
     // Each target's own threshold, for its own first solve (S9b).
@@ -616,14 +621,18 @@ pub fn quantile_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
         solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
         quantile_eps: quantile_eps.unwrap_or(0.2),
-        // The band is drawn in the EW root mean square, on the
-        // model's clock (task 271 leaves the quantile fit as it was).
-        huber_scale: HuberScale::Rms,
+        // The band is drawn in the residuals' MAD, on the model's clock:
+        // the RMS let the wild rows widen the band drawn to bound their
+        // pull (task 278, D-Q).
+        huber_scale: HuberScale::Mad,
         huber_scale_decay: None,
         feature_sets: Vec::new(),
         ridge_scale: false,
         emit_scale: false,
         refit_rows: 0,
+        // No sketch under the RMS band; anchored once a sketch is kept.
+        mad_anchor: true,
+        min_weight_holds_learning: false,
     };
     let mut m = Robust::new(cfg)?;
     // Each target's own threshold, for its own first solve (S9b).
@@ -721,10 +730,13 @@ pub fn sgd_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             SgdLoss::Huber { .. } => huber_refit_rows.unwrap_or(0),
             _ => 0,
         },
+        min_weight_holds_learning: false,
         // The target's own units and the unstable rate's gate (task 278:
         // D1, D2, D8, D-S), always on from a spec; a state written before
         // them loads with them off.
         target_spread: true,
+        // `huber`'s anchored MAD sketch under the Huber loss.
+        mad_anchor: true,
     };
     Ok(AnyModel::Sgd(Box::new(Sgd::new(cfg)?)))
 }

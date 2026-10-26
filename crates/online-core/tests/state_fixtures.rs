@@ -1083,6 +1083,72 @@ fn the_bins_refit_is_written_holding_and_done() {
     assert_eq!(parts(&off.bytes()), (0, false, 0, 0), "marginal_bins_huber");
 }
 
+/// The gate's two forms and the quantile band's scale (schema 64,
+/// docs/PLAN.md task 278, D10 and D-Q): every case a state written before
+/// 64 converts to says `min_weight` held learning back (`true`, the field
+/// such a state lacks), and the forms since -- the refit cases and
+/// `quantile_mad` -- say it withholds the output alone (`false`), the
+/// robust ones each holding the floor's count of its targets' first rows.
+/// `quantile_mad` draws its band in the MAD, a sketch of `|e|` a target and
+/// each holding residuals; `quantile` in the RMS, with none.
+#[test]
+fn the_gates_forms_and_the_quantile_scale_are_written() {
+    if regenerating() {
+        return;
+    }
+    let decode = |name: &str| {
+        let f = frozen::ALL.iter().find(|f| f.name == name).unwrap();
+        rmpv::decode::read_value(&mut &f.bytes()[..]).unwrap()
+    };
+    for (name, variant, holds) in [
+        ("huber", "Robust", true),
+        ("huber_mad", "Robust", true),
+        ("quantile", "Robust", true),
+        ("sgd_huber", "Sgd", true),
+        ("sgd_huber_mad", "Sgd", true),
+        ("huber_refit", "Robust", false),
+        ("huber_refit_done", "Robust", false),
+        ("quantile_mad", "Robust", false),
+        ("sgd_huber_refit", "Sgd", false),
+        ("sgd_huber_refit_done", "Sgd", false),
+        ("sgd_spread", "Sgd", false),
+        ("sgd_unstable", "Sgd", false),
+        ("sgd_spread_adagrad", "Sgd", false),
+    ] {
+        let v = decode(name);
+        let got = at(&v, &["model", variant, "cfg", "min_weight_holds_learning"])
+            .and_then(rmpv::Value::as_bool);
+        assert_eq!(got, Some(holds), "{name}: cfg.min_weight_holds_learning");
+        // The robust floor's counts: one a target, each at the floor by the
+        // save, under the form since; none under the old.
+        if variant == "Robust" {
+            let seen = at(&v, &["model", variant, "seen"])
+                .and_then(rmpv::Value::as_array)
+                .map_or(0, |a| {
+                    assert!(
+                        a.iter().all(|c| c.as_u64().is_some_and(|c| c > 0)),
+                        "{name}"
+                    );
+                    a.len()
+                });
+            assert_eq!(seen, if holds { 0 } else { 2 }, "{name}: seen");
+        }
+    }
+    for (name, scale, sketches) in [("quantile", "rms", 0), ("quantile_mad", "mad", 2)] {
+        let v = decode(name);
+        let got = at(&v, &["model", "Robust", "cfg", "huber_scale"]).and_then(rmpv::Value::as_str);
+        assert_eq!(got, Some(scale), "{name}: cfg.huber_scale");
+        let mad = at(&v, &["model", "Robust", "mad"])
+            .and_then(rmpv::Value::as_array)
+            .unwrap_or_else(|| panic!("{name}: mad"));
+        assert_eq!(mad.len(), sketches, "{name}: a sketch a target");
+        assert!(
+            mad.iter().all(|q| held(q) > 0),
+            "{name}: each sketch holds residuals"
+        );
+    }
+}
+
 /// `sgd`'s target-spread forms (schema 64, docs/PLAN.md task 278: D1, D2,
 /// D8, D-S): `sgd_spread` keeps each target's spread under the squared loss,
 /// its step gains and its level, every one holding a number; `sgd_unstable`
@@ -1407,4 +1473,75 @@ fn regenerate_when_asked() {
     }
     writeln!(index, "];").unwrap();
     std::fs::write(dir.join("index.rs"), index).unwrap();
+}
+
+/// The anchored MAD sketches' forms (schema 64, task 278, the user's
+/// 2026-10-26): `huber_mad_anchored`, `sgd_huber_mad_anchored` and
+/// `marginal_bins_huber_anchored` and `quantile_mad` set the flag and hold every sketch's
+/// anchor at a positive value, the first residual's; `huber_mad_awaiting`
+/// is saved before any residual, every anchor 0, awaiting its first. The
+/// cases without the flag write it `false` and keep no anchor, the form a
+/// state saved before it goes on in.
+#[test]
+fn the_anchored_sketch_forms_are_written() {
+    if regenerating() {
+        return;
+    }
+    let decoded = |name: &str| -> rmpv::Value {
+        let f = frozen::ALL
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("{name}: no fixture; add the case and regenerate"));
+        rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap()
+    };
+    let robust = ["model", "Robust"];
+    let sgd = ["model", "Sgd"];
+    let bins = ["model", "Marginal", "bins", "hist", "scales"];
+    let robust_cfg = ["model", "Robust", "cfg"];
+    let sgd_cfg = ["model", "Sgd", "cfg"];
+    let bins_cfg = ["model", "Marginal", "cfg", "bins"];
+    // (case, where its sketches are, where its flag is, whether it is set,
+    // the anchors: None for none, Some(true) set, Some(false) awaiting)
+    type Form<'a> = (&'a str, &'a [&'a str], &'a [&'a str], bool, Option<bool>);
+    let cases: [Form; 8] = [
+        ("huber_mad_anchored", &robust, &robust_cfg, true, Some(true)),
+        ("quantile_mad", &robust, &robust_cfg, true, Some(true)),
+        (
+            "huber_mad_awaiting",
+            &robust,
+            &robust_cfg,
+            true,
+            Some(false),
+        ),
+        ("sgd_huber_mad_anchored", &sgd, &sgd_cfg, true, Some(true)),
+        (
+            "marginal_bins_huber_anchored",
+            &bins,
+            &bins_cfg,
+            true,
+            Some(true),
+        ),
+        ("huber_mad", &robust, &robust_cfg, false, None),
+        ("sgd_huber_mad", &sgd, &sgd_cfg, false, None),
+        ("marginal_bins_huber", &bins, &bins_cfg, false, None),
+    ];
+    for (name, place, flag_at, flag, anchors) in cases {
+        let v = decoded(name);
+        let path: Vec<&str> = flag_at.iter().copied().chain(["mad_anchor"]).collect();
+        let got = at(&v, &path).and_then(rmpv::Value::as_bool);
+        assert_eq!(got, Some(flag), "{name}: cfg.mad_anchor");
+        let path: Vec<&str> = place.iter().copied().chain(["mad"]).collect();
+        let sketches = at(&v, &path)
+            .and_then(rmpv::Value::as_array)
+            .unwrap_or_else(|| panic!("{name}: no sketches"));
+        assert_eq!(sketches.len(), 2, "{name}: a sketch a target");
+        for q in sketches {
+            let a = at(q, &["anchor"]).and_then(rmpv::Value::as_f64);
+            match anchors {
+                None => assert_eq!(a, None, "{name}: an anchor without the flag"),
+                Some(true) => assert!(a.is_some_and(|a| a > 0.0), "{name}: anchor {a:?}"),
+                Some(false) => assert_eq!(a, Some(0.0), "{name}: awaiting"),
+            }
+        }
+    }
 }

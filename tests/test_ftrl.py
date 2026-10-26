@@ -6,8 +6,9 @@ import pytest
 
 import polars_online as po
 from data import synthetic
+from reference import ftrl_ref
 
-TIER = "essential"
+TIER = "mixed"
 
 
 def _pred(out, col="pred_y0"):
@@ -138,6 +139,83 @@ def test_strict_binary_refuses_a_target_other_than_0_or_1():
     assert bank.save_bytes() == before, "the refused chunk touched the bank"
     fixed = df.with_columns(y0=pl.when(pl.col("y0") == 0.5).then(None).otherwise(pl.col("y0")))
     assert _pred(bank.fit_predict(fixed)).size == 4
+
+
+class TestStrictBinaryEdges:
+    """``strict_binary``'s edges (task 278, batch 18): where nothing is
+    refused it is the default to the bit, ``-0.0`` is the label 0, a NaN
+    label is a null, and the label is checked whatever the row's weight."""
+
+    def test_on_labels_of_zero_and_one_it_is_the_default(self):
+        df = _binary_df(n=2000).with_columns(
+            y0=pl.when(pl.int_range(pl.len()) % 9 == 4).then(None).otherwise(pl.col("y0"))
+        )
+        assert df["y0"].null_count() > 200
+        strict = po.ModelBank([_spec(strict_binary=True)]).fit_predict(df)
+        assert strict.equals(po.ModelBank([_spec()]).fit_predict(df), null_equal=True)
+
+    def test_negative_zero_is_the_label_zero_and_nan_is_a_null(self):
+        df = _binary_df(n=2000)
+        signed = df.with_columns(y0=pl.when(pl.col("y0") == 0.0).then(-0.0).otherwise(pl.col("y0")))
+        assert np.signbit(signed["y0"].to_numpy()).sum() > 500
+        spec = _spec(strict_binary=True)
+        out = po.ModelBank([spec]).fit_predict(signed)["m"]
+        assert out.equals(po.ModelBank([spec]).fit_predict(df)["m"], null_equal=True)
+        nan = df.with_columns(y0=pl.when(pl.col("x1") > 1.5).then(np.nan).otherwise(pl.col("y0")))
+        null = nan.with_columns(pl.col("y0").fill_nan(None))
+        assert null["y0"].null_count() > 50
+        got = po.ModelBank([spec]).fit_predict(nan)["m"]
+        assert got.equals(po.ModelBank([spec]).fit_predict(null)["m"], null_equal=True)
+
+    def test_a_zero_weight_row_with_a_bad_label_is_refused_too(self):
+        """The check reads the label, not the weight: a row of weight 0
+        learns nothing, yet a label of 0.5 on it refuses the chunk, and the
+        message says to null it. Pinned as the decision it is."""
+        df = _binary_df(n=200).with_columns(
+            w=pl.when(pl.int_range(pl.len()) == 17).then(0.0).otherwise(1.0),
+            y0=pl.when(pl.int_range(pl.len()) == 17).then(0.5).otherwise(pl.col("y0")),
+        )
+        bank = po.ModelBank([_spec(strict_binary=True, weight="w")])
+        before = bank.save_bytes()
+        with pytest.raises(ValueError, match=r"has the value 0.5 at row 17.*null the rows"):
+            bank.fit_predict(df)
+        assert bank.save_bytes() == before
+
+
+@pytest.mark.parametrize("fit_intercept", [True, False], ids=["intercept", "no-intercept"])
+@pytest.mark.parametrize("half_life", [float("inf"), 200.0], ids=["no-decay", "half_life"])
+@pytest.mark.parametrize("loss", ["logistic", "squared"])
+def test_no_smoothing_no_penalty_and_a_zero_weight_first_row_stay_finite(
+    loss, half_life, fit_intercept
+):
+    """``beta = l1 = l2 = 0`` leaves a coordinate's rate ``sqrt(n_i) /
+    alpha``, 0 until the coordinate first sees a gradient (hard rule 9): a
+    zero-weight first row, a feature that is 0 for its first 50 rows and a
+    hundred zero weights later must leave every prediction and coefficient
+    finite, and the fit ``ftrl_ref``'s, written from the docstring (task
+    278, batch 18). Measured 2026-10-26: at most 2.7e-15 from it."""
+    rng = np.random.default_rng(3)
+    n = 3000
+    x = rng.standard_normal((n, 2))
+    x[:50, 1] = 0.0
+    w = np.ones(n)
+    w[0] = 0.0
+    w[rng.choice(np.arange(1, n), 100, replace=False)] = 0.0
+    eta = 0.5 + 1.5 * x[:, 0] - x[:, 1]
+    if loss == "logistic":
+        y = (rng.random(n) < 1.0 / (1.0 + np.exp(-eta))).astype(float)
+    else:
+        y = eta + 0.3 * rng.standard_normal(n)
+    df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y0": y, "w": w})
+    kw = dict(half_life=half_life, beta=0.0, l1=0.0, l2=0.0, loss=loss, min_weight=0.0)
+    spec = _spec(weight="w", fit_intercept=fit_intercept, coef_every=1, **kw)
+    out = po.ModelBank([spec]).fit_predict(df)
+    pred = _pred(out)
+    coef = np.array(out["m"].struct.field("coef").to_list(), float)
+    assert np.isfinite(pred).all() and np.isfinite(coef).all()
+    assert (coef[:, -1] != 0.0).sum() > n - 100, "the late feature never learned"
+    ref = ftrl_ref(x, y[:, None], np.ones(n), w, fit_intercept=fit_intercept, **kw)["pred"][:, 0]
+    assert np.max(np.abs(pred - ref) / (1.0 + np.abs(ref))) < 1e-12
 
 
 def test_bad_config_rejected():
@@ -277,3 +355,61 @@ def test_a_feature_scale_is_the_parameters_scaled_without_an_intercept(loss):
     qb = _pred(po.ModelBank([_spec(**kw, **scaled)]).fit_predict(wide))
     both = np.isfinite(qa) & np.isfinite(qb)
     assert np.max(np.abs(qa[both] - qb[both])) > 1e-3
+
+
+# The penalties each move the fit one way (task 278, batch 18). Three seeds
+# in the essentials, seventeen more in the extended tier; each assertion
+# holds on every seed.
+SEEDS = [0, 1, 2] + [
+    pytest.param(seed, marks=pytest.mark.extended(reason="the monotone grids' further seeds"))
+    for seed in range(3, 20)
+]
+
+
+def _logistic(seed: int, n: int = 4000, noise_features: int = 0) -> tuple[pl.DataFrame, list]:
+    """Two informative features and ``noise_features`` that are not."""
+    rng = np.random.default_rng(seed)
+    x = rng.standard_normal((n, 2 + noise_features))
+    eta = 0.25 + 1.5 * x[:, 0] - 0.5 * x[:, 1]
+    frame = {f"x{i}": x[:, i] for i in range(x.shape[1])}
+    frame["y0"] = (rng.random(n) < 1.0 / (1.0 + np.exp(-eta))).astype(float)
+    return pl.DataFrame(frame), [f"x{i}" for i in range(x.shape[1])]
+
+
+def _every_coef(df, features, **kw) -> np.ndarray:
+    spec = _spec(features=features, half_life=float("inf"), min_weight=0.0, coef_every=1, **kw)
+    out = po.ModelBank([spec]).fit_predict(df)["m"]
+    return np.array(out.struct.field("coef").to_list(), float)
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_a_larger_l1_zeroes_more_coefficients(seed):
+    """A coordinate whose accumulated evidence ``|z_i|`` is at most ``l1``
+    is exactly 0, so the count of exact zeros never falls as ``l1`` rises:
+    none at 0 past the first rows, and most of the three noise features'
+    entries at 10. Counted over the slopes of rows 100 to 4,000. Measured
+    2026-10-26 on 20 seeds: 0, 56-161, 606-1,556 and 4,113-10,026."""
+    df, features = _logistic(seed, noise_features=3)
+    zeros = []
+    for l1 in (0.0, 0.1, 1.0, 10.0):
+        coef = _every_coef(df, features, l1=l1)
+        zeros.append(int((coef[100:, 1:] == 0.0).sum()))
+    assert zeros[0] == 0, zeros
+    assert (np.diff(zeros) > 0).all(), zeros
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_a_larger_l2_shrinks_every_coefficient(seed):
+    """``l2`` adds to every coordinate's rate, so the fit is pulled harder
+    to 0: each slope's mean magnitude over the last 2,000 rows falls as
+    ``l2`` rises over 0, 1, 10, 100 and 1,000. Measured 2026-10-26 on 20
+    seeds: the first slope from 1.27-1.49 to 0.46-0.51, every step down at
+    least 0.17% of the magnitude before it (the smallest, from 0 to 1)."""
+    df, features = _logistic(seed)
+    magnitude = np.array(
+        [
+            np.abs(_every_coef(df, features, l2=l2)[-2000:, 1:]).mean(axis=0)
+            for l2 in (0, 1, 10, 100, 1000)
+        ]
+    )
+    assert (np.diff(magnitude, axis=0) < 0).all(), magnitude

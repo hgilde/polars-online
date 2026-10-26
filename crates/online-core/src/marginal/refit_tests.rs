@@ -61,6 +61,7 @@ fn model(edges: Option<Vec<Vec<f64>>>, warm: usize, refit: u32, h: f64) -> Margi
         stat: crate::BinStat::Huber { delta: 1.345 },
         refit_rows: refit,
         budget_mib: None,
+        mad_anchor: true,
     }));
     Marginal::new(c).unwrap()
 }

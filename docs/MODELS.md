@@ -865,6 +865,19 @@ The median is read from a quantile sketch kept per target, within 0.78% of
 the exact weighted median. Each scale learns a residual at the row's own
 weight, not at its Huber weight, and ages on every row.
 
+The sketch keeps each residual in units of the target's first one, so
+rescaling the target rescales the fit to rounding. Its buckets are fixed
+in the residual's own units, and only a power of two maps them onto
+themselves. Kept in those units, a target in grams instead of kilograms
+regrouped residuals across bucket edges and moved the median by up to a
+bucket, 1.6%. Over 50 streams of 1,500 rows with heavy-tailed noise and a
+half-life of 300 rows, predictions moved by up to 0.4% of the target's
+spread at scales of 1e±3 and 1e±6. In the first residual's units they move
+by at most 3e-12 of the spread, under the 2e-11 the fit's own rounding
+allows. The read costs a division more a row, about 2 ns per target. A
+state saved before this change keeps its fixed buckets and continues as it
+was.
+
 The sketch's buckets span at most 16 octaves around the median, a factor
 of 65,536. A residual beyond them is folded into the outermost bucket on
 its side, its weight kept, so a wild residual of `1e200` costs no more
@@ -1051,8 +1064,20 @@ median breaks too, and every estimator that reads only residuals does.
 before its first residual, or while every residual so far is exactly zero
 (under `"mad"`, while half the weight is on such residuals): there is
 nothing to judge an outlier against. `quantile` has no band to draw there,
-and takes least-squares rows. `quantile`'s `σ` is always the root mean
-square, on the model's clock: it sets the width of the band, not a weight.
+and takes least-squares rows. `quantile`'s `σ` is always the MAD, on the
+model's clock: it sets the width of the band, not a weight. In the root
+mean square, wild rows widened the band drawn to bound their pull: at 5%
+of the rows lifted by a hundred noise deviations on one side of `x`, every
+one of 50 streams of 20,000 rows ended more than 0.05 from statsmodels'
+`QuantReg` on the same rows (the worst 0.098 at 5%, 0.98 at 20%); in the
+MAD none did (the worst 0.006 at 5%, 0.026 at 20%).
+
+**`min_weight` withholds the output alone.** On a row it withholds, both
+models still learn from the prediction the fit made: the scale takes its
+residual and `huber` its weight, so the fit is the same at any
+`min_weight`. A target's first prediction, reported or learned from, waits
+instead for its own first row per coefficient, the models' floor, since a
+fit of fewer rows than unknowns is the ridge's alone.
 
 ```python
 hub = po.spec.huber("hub", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=600.0,
@@ -1096,7 +1121,7 @@ land close but not equal, for three reasons:
 | reason | applies to |
 |---|---|
 | each row's weight was set by the fit before it | both; for `huber`, each row after its target's first `huber_refit_rows` |
-| `σ` is an exponentially weighted median, read from a sketch, where a batch fit takes the median of the final residuals | `huber` |
+| `σ` is an exponentially weighted median, read from a sketch, where a batch fit takes the median of the final residuals | both |
 | the check loss is smoothed over the band | `quantile` |
 
 ### `sgd` — stochastic gradient descent

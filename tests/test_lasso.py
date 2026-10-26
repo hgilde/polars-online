@@ -233,3 +233,151 @@ def test_on_the_row_clock_solve_every_is_its_row_cap():
     assert clock.equals(run(solve_every=1e18, max_rows_between_solves=7), null_equal=True)
     c = clock["coef"].to_list()
     assert [i for i in range(1, n) if c[i] != c[i - 1]] == [6, 13, 20, 27, 34, 41, 48, 55]
+
+
+# ---- the keywords against each other (task 278, batch 27) ----
+
+
+def _relations_frame(seed: int = 278, n: int = 2000) -> pl.DataFrame:
+    """Three features of unlike scales and means, a slope that changes half
+    way, a second target null where ``x0`` is high, uneven weights with a
+    zero on the first row and every 37th, and a clock that is the row
+    number."""
+    rng = np.random.default_rng(seed)
+    t = np.arange(n, dtype=float)
+    x = rng.standard_normal((n, 3)) * [1.0, 2.0, 0.5] + [0.5, -1.0, 3.0]
+    beta = np.array([2.0, -1.0, 0.5])
+    y = 1.0 + x @ beta + np.where(t < n / 2, 0.0, 1.5) * x[:, 0] + rng.standard_normal(n)
+    z = 0.5 - x @ beta[::-1] + rng.standard_normal(n)
+    z[x[:, 0] > 1.2] = np.nan
+    w = rng.uniform(0.5, 1.5, n)
+    w[::37] = 0.0
+    return pl.DataFrame(
+        {"t": t, "x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "y": y, "w": w}
+        | {"z": pl.Series(z).fill_nan(None)}
+    )
+
+
+_REL = dict(
+    targets=["y", "z"],
+    features=["x0", "x1", "x2"],
+    clock="t",
+    gap_cap=1e9,
+    weight="w",
+    half_life=200.0,
+    min_weight=10.0,
+    coef_every=0,
+    max_rows_between_solves=1,
+)
+#: A descent run to the double's rounding, so two routes to one optimum can
+#: be compared at a bound far under the default rule's.
+_TIGHT = dict(tol=1e-14, max_iter=100_000)
+
+
+def _rel_run(build, df, **kw) -> tuple[pl.DataFrame, po.ModelBank]:
+    bank = po.ModelBank([build("m", **{**_REL, **kw})], threads=1)
+    return bank.fit_predict(df).unnest("m"), bank
+
+
+def _diff(a: pl.Series, b: pl.Series) -> float:
+    pa, pb = a.to_numpy().astype(float), b.to_numpy().astype(float)
+    np.testing.assert_array_equal(np.isnan(pa), np.isnan(pb))
+    assert np.isfinite(pa).sum() > 1500
+    return float(np.nanmax(np.abs(pa - pb)))
+
+
+@pytest.mark.parametrize("penalty", [0.5, 0.05])
+def test_an_elastic_net_with_no_l1_is_the_standardized_ridge(penalty):
+    """``l1_ratio=0`` leaves the penalty ``l |b|^2 / 2`` on the standardized
+    slopes, which is ``ewridge(standardize=True, ridge=l)``: the descent
+    reaches the ridge's closed form. Measured 2026-10-26 at ``tol=1e-14``:
+    5.3e-15 and 2.0e-14 apart in a prediction for the two penalties, no
+    descent short of its rule; held to 1e-12."""
+    df = _relations_frame()
+    net, bank = _rel_run(po.spec.lasso, df, penalties=[penalty], l1_ratio=0.0, **_TIGHT)
+    ridge, _ = _rel_run(po.spec.ewridge, df, ridge=penalty, standardize=True)
+    assert int(bank.solve_failures()["solve_failures"].sum()) == 0
+    for t in ("y", "z"):
+        d = _diff(net[f"pred_{t}"], ridge[f"pred_{t}"])
+        print(f"l1_ratio 0 at {penalty}, {t}: {d:.3g}")
+        assert d < 1e-12, t
+
+
+@pytest.mark.parametrize("l1_ratio", [1.0, 0.5])
+def test_a_path_point_is_the_lone_penalty(l1_ratio):
+    """Each point of the path is its own fit from the same sums. The first
+    point's descent starts where a lone spec's does, so it is that spec, to
+    the bit; a later one warm-starts from the point before it, so it
+    reaches the same optimum by another route: 3.4e-14 (lasso) and 3.6e-14
+    (elastic net) apart at ``tol=1e-14``, measured 2026-10-26; held to
+    1e-12."""
+    df = _relations_frame()
+    kw = dict(l1_ratio=l1_ratio, **_TIGHT)
+    path, _ = _rel_run(po.spec.lasso, df, penalties=[0.5, 0.05], **kw)
+    first, _ = _rel_run(po.spec.lasso, df, penalties=[0.5], **kw)
+    later, _ = _rel_run(po.spec.lasso, df, penalties=[0.05], **kw)
+    for t in ("y", "z"):
+        assert path[f"pred_{t}__p0.5"].equals(first[f"pred_{t}"]), t
+        d = _diff(path[f"pred_{t}__p0.05"], later[f"pred_{t}"])
+        print(f"l1_ratio {l1_ratio}, {t}: the later point {d:.3g} from its lone spec")
+        assert d < 1e-12, t
+    # The two points are two fits.
+    assert _diff(path["pred_y__p0.5"], path["pred_y__p0.05"]) > 1e-3
+
+
+def test_one_sweep_is_a_failure_for_each_target_point_and_solve():
+    """``max_iter=1`` with a ``tol`` no move can be under: every descent that
+    moves a coefficient runs out of sweeps, and ``solve_failures`` counts
+    one per target and path point, in each group. On this stream every
+    coefficient clears at every point, so on each row whose solve moved the
+    fit (``coef`` holds every target's every point) all of them moved: the
+    count is targets x points x those rows, per group. A group's first row
+    runs no descent (one row gives no slope), so its fit is not counted."""
+    rng = np.random.default_rng(0)
+    n = 400
+    a, b, c = rng.normal(size=(3, n))
+    x = np.column_stack([2.0 + a, 2.0 + a + 0.3 * b, -1.0 + c])
+    df = pl.DataFrame(
+        {"x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "g": np.arange(n) % 2}
+        | {
+            "y": 0.7 + x @ np.array([1.0, -2.0, 0.5]) + 0.1 * rng.normal(size=n),
+            "z": -0.3 + x @ np.array([0.5, 1.0, -1.0]) + 0.1 * rng.normal(size=n),
+        }
+    )
+    points = [0.01, 0.001, 0.0]
+    spec = po.spec.lasso(
+        "m",
+        targets=["y", "z"],
+        features=["x0", "x1", "x2"],
+        penalties=points,
+        half_life=float("inf"),
+        max_iter=1,
+        tol=1e-300,
+        group="g",
+        coef_every=0,
+    )
+    bank = po.ModelBank([spec], threads=1)
+    out = bank.fit_predict(df).unnest("m")
+    got = dict(bank.solve_failures().select("group", "solve_failures").iter_rows())
+    for g in (0, 1):
+        coef = out.filter(pl.col("g") == g)["coef"].to_list()
+        moved = sum(
+            1
+            for i, cf in enumerate(coef[1:], start=1)
+            if cf is not None and (coef[i - 1] is None or cf != coef[i - 1])
+        )
+        print(f"group {g}: {moved} solves moved the fit, {got[str(g)]} counted")
+        assert moved > n // 2 - 5
+        assert got[str(g)] == 2 * len(points) * moved, g
+
+
+def test_select_half_life_given_as_the_half_life_is_the_default():
+    """The selection's memory defaults to the model's half-life: naming it
+    is the same model, to the bit; another memory chooses otherwise."""
+    df = _relations_frame()
+    path = [0.5, 0.05, 0.0]
+    default, _ = _rel_run(po.spec.lasso, df, penalties=path)
+    named, _ = _rel_run(po.spec.lasso, df, penalties=path, select_half_life=200.0)
+    assert default.equals(named, null_equal=True)
+    other, _ = _rel_run(po.spec.lasso, df, penalties=path, select_half_life=20.0)
+    assert not other["penalty_selected_y"].equals(default["penalty_selected_y"])

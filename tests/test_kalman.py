@@ -1,8 +1,12 @@
 """Task 11: Kalman / random-walk-beta (docs/PLAN.md section 4.4)."""
 
+import math
+import warnings
+
 import numpy as np
 import polars as pl
 import pytest
+import statsmodels.api as sm
 
 import polars_online as po
 from data import synthetic
@@ -335,3 +339,183 @@ def test_the_first_row_takes_the_level_and_no_prediction_is_zero():
     sigma = out["sigma_y"].to_numpy().astype(float)
     assert np.isnan(sigma[:2]).all()
     assert sigma[2] == pytest.approx(abs(y[1] - pred[1]), rel=1e-12)
+
+
+# ---- the parameters' spellings and limits (task 278, batch 27) ----
+
+
+def _relations_frame(seed: int = 278, n: int = 2000) -> pl.DataFrame:
+    """Three features of unlike scales and means, a slope that changes half
+    way, a second target null where ``x0`` is high, uneven weights with a
+    zero on the first row and every 37th, and a clock that is the row
+    number."""
+    rng = np.random.default_rng(seed)
+    t = np.arange(n, dtype=float)
+    x = rng.standard_normal((n, 3)) * [1.0, 2.0, 0.5] + [0.5, -1.0, 3.0]
+    beta = np.array([2.0, -1.0, 0.5])
+    y = 1.0 + x @ beta + np.where(t < n / 2, 0.0, 1.5) * x[:, 0] + rng.standard_normal(n)
+    z = 0.5 - x @ beta[::-1] + rng.standard_normal(n)
+    z[x[:, 0] > 1.2] = np.nan
+    w = rng.uniform(0.5, 1.5, n)
+    w[::37] = 0.0
+    return pl.DataFrame(
+        {"t": t, "x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "y": y, "w": w}
+        | {"z": pl.Series(z).fill_nan(None)}
+    )
+
+
+_RF = ["x0", "x1", "x2"]
+
+
+def _run(df: pl.DataFrame, **kw) -> tuple[pl.DataFrame, po.ModelBank]:
+    base = dict(
+        targets=["y"],
+        features=_RF,
+        clock="t",
+        gap_cap=1e9,
+        weight="w",
+        half_life=200.0,
+        min_weight=10.0,
+        coef_every=0,
+    )
+    bank = po.ModelBank([po.spec.kalman("m", **{**base, **kw})], threads=1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", po.ReadinessWarning)
+        return bank.fit_predict(df).unnest("m"), bank
+
+
+def _last_coef(bank: po.ModelBank) -> np.ndarray:
+    return bank.coef("m")["coef"].to_numpy()
+
+
+@pytest.mark.parametrize("standardize", [True, False])
+def test_coef_half_life_is_q_spelled_against_a_fixed_noise(standardize):
+    """With ``obs_var=v`` the covariance is absolute, and ``coef_half_life
+    = h`` adds ``v (ln 2 D / h)^2`` a row: the ``q`` of ``v (ln 2 / h)^2`` on
+    every slot. The two spellings are one filter, to the bit. With the noise
+    learned they are not: ``q`` is then measured against the noise estimate,
+    which the half-life never reads (0.12 apart here, measured 2026-10-26)."""
+    df = _relations_frame()
+    h, v = 100.0, 2.0
+    by_h, _ = _run(df, coef_half_life=h, obs_var=v, standardize=standardize)
+    by_q, _ = _run(df, q=[v * (math.log(2) / h) ** 2] * 4, obs_var=v, standardize=standardize)
+    assert by_h["pred_y"].is_not_null().sum() > 1900
+    assert by_h.equals(by_q, null_equal=True)
+    learned_h, _ = _run(df, coef_half_life=h, standardize=standardize)
+    learned_q, _ = _run(df, q=[(math.log(2) / h) ** 2] * 4, standardize=standardize)
+    assert not learned_h["pred_y"].equals(learned_q["pred_y"])
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{}, {"revert_half_life": 300.0}, {"targets": ["y", "z"], "share_p": True}],
+    ids=["plain", "revert", "share_p"],
+)
+def test_a_scalar_coef_half_life_is_the_list_that_spells_it(extra):
+    """A scalar is every slot's half-life, the intercept's included: the
+    same filter as the list of four, to the bit, beside a reversion and on
+    a shared ``P`` over two targets with gaps."""
+    df = _relations_frame()
+    scalar, _ = _run(df, coef_half_life=100.0, **extra)
+    listed, _ = _run(df, coef_half_life=[100.0] * 4, **extra)
+    assert scalar.equals(listed, null_equal=True)
+    # A list that differs in one slot is another filter.
+    other, _ = _run(df, coef_half_life=[100.0, 100.0, 30.0, 100.0], **extra)
+    assert not other["pred_y"].equals(scalar["pred_y"])
+
+
+@pytest.mark.parametrize("p0", [0.5, 4.0])
+def test_with_no_drift_and_a_fixed_noise_the_filter_is_rls(p0):
+    """``q = 0``, ``obs_var`` fixed and ``standardize=False``: the filter is
+    Bayesian linear regression from ``P_0 = p0 obs_var I``, the intercept
+    included, so its mean is the ridge fit with penalty ``1 / p0`` on every
+    coefficient -- ``rls(delta=1/p0)`` without decay. The two compute it
+    apart (a covariance update against a solve), so they agree to rounding:
+    5.2e-14 in a prediction and 2.5e-14 in a coefficient, measured
+    2026-10-26. The noise only scales ``P``, so another ``obs_var`` moves no
+    prediction beyond rounding either (1.4e-14). Both at ``min_weight=0``,
+    so every row from the second learned one is compared."""
+    df = _relations_frame()
+    kw = dict(half_life=float("inf"), min_weight=0.0)
+    filt, _ = _run(df, q=[0.0] * 4, obs_var=1.0, p0=p0, standardize=False, **kw)
+    rls = (
+        po.ModelBank(
+            [
+                po.spec.rls(
+                    "m",
+                    targets=["y"],
+                    features=_RF,
+                    clock="t",
+                    gap_cap=1e9,
+                    weight="w",
+                    coef_every=0,
+                    delta=1.0 / p0,
+                    **kw,
+                )
+            ],
+            threads=1,
+        )
+        .fit_predict(df)
+        .unnest("m")
+    )
+    a, b = filt["pred_y"].to_numpy().astype(float), rls["pred_y"].to_numpy().astype(float)
+    np.testing.assert_array_equal(np.isnan(a), np.isnan(b))
+    assert np.isfinite(a).sum() >= df.height - 2
+    np.testing.assert_allclose(a, b, rtol=0.0, atol=1e-12)
+    assert filt["weight_sum"].equals(rls["weight_sum"])
+    ca = np.array(filt["coef"].to_list(), dtype=float)
+    cb = np.array(rls["coef"].to_list(), dtype=float)
+    np.testing.assert_allclose(ca, cb, rtol=0.0, atol=1e-12)
+    noisier, _ = _run(df, q=[0.0] * 4, obs_var=7.0, p0=p0, standardize=False, **kw)
+    np.testing.assert_allclose(noisier["pred_y"].to_numpy().astype(float), a, atol=1e-12)
+
+
+@pytest.mark.parametrize("noise", [{"obs_var": 1.0}, {}], ids=["fixed noise", "learned noise"])
+def test_with_no_drift_a_vague_prior_is_least_squares(noise):
+    """``q = 0``, ``standardize=False``: the prior is a ridge of ``1 / p0``
+    (in units of the noise), so as ``p0`` grows the filter's last fit goes
+    to weighted least squares on every row -- statsmodels' ``WLS`` -- at the
+    rate ``1 / p0``. Measured 2026-10-26: 1.8e-6 off at ``p0 = 1e4`` and
+    1.8e-8 at ``1e6`` with the noise fixed, 4.0e-7 and 4.2e-9 learned. A
+    covariance-form filter loses digits to a huge prior (4.2e-6 off at
+    ``p0 = 1e12``), so the limit is read where the ridge still dominates
+    the rounding."""
+    df = _relations_frame()
+    x = sm.add_constant(df.select(_RF).to_numpy())
+    wls = sm.WLS(df["y"].to_numpy(), x, weights=df["w"].to_numpy()).fit().params
+    errs = {}
+    for p0 in (1e2, 1e4, 1e6):
+        _, bank = _run(df, q=[0.0] * 4, p0=p0, standardize=False, half_life=float("inf"), **noise)
+        errs[p0] = float(np.max(np.abs(_last_coef(bank) - wls)))
+    print({k: f"{v:.3g}" for k, v in errs.items()})
+    assert errs[1e6] < 1e-6
+    # The rate: each factor of 100 in p0 takes a factor of about 100 off.
+    for lo, hi in ((1e2, 1e4), (1e4, 1e6)):
+        assert 50.0 < errs[lo] / errs[hi] < 200.0, errs
+
+
+def test_with_no_drift_a_tight_prior_holds_the_coefficients():
+    """``q = 0``, ``standardize=False``, ``p0 -> 0``. With ``obs_var`` the
+    prior covers the intercept too, so every coefficient is held at 0, each
+    in proportion to ``p0``. With the noise learned the intercept's prior is
+    diffuse: the slopes are held at 0 and the intercept is least squares on
+    a constant, the weighted mean of ``y``. Measured 2026-10-26 at ``p0 =
+    1e-8`` and ``1e-12``: coefficients at most 2.8e-4 and 2.8e-8 (fixed
+    noise); slopes 7.6e-5 and 7.6e-9, the intercept 9.9e-5 and 1e-8 from the
+    mean (learned)."""
+    df = _relations_frame()
+    ybar = float(np.average(df["y"].to_numpy(), weights=df["w"].to_numpy()))
+    kw = dict(q=[0.0] * 4, standardize=False, half_life=float("inf"))
+    fixed = {}
+    learned = {}
+    for p0 in (1e-8, 1e-12):
+        _, bank = _run(df, p0=p0, obs_var=1.0, **kw)
+        fixed[p0] = float(np.max(np.abs(_last_coef(bank))))
+        _, bank = _run(df, p0=p0, **kw)
+        c = _last_coef(bank)
+        learned[p0] = (float(np.max(np.abs(c[1:]))), abs(float(c[0]) - ybar))
+    print("fixed:", fixed, "learned:", learned)
+    assert fixed[1e-12] < 1e-6 and 5e3 < fixed[1e-8] / fixed[1e-12] < 2e4
+    (s8, i8), (s12, i12) = learned[1e-8], learned[1e-12]
+    assert s12 < 1e-6 and 5e3 < s8 / s12 < 2e4
+    assert i12 < 1e-6 and 5e3 < i8 / i12 < 2e4

@@ -113,6 +113,7 @@ fn main() {
                 stat: online_core::BinStat::Mean,
                 refit_rows: 0,
                 budget_mib: None,
+                mad_anchor: false,
             })
         }),
         feature_moments: online_core::FeatureMomentLayout::PerTarget,

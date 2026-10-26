@@ -1071,10 +1071,16 @@ class EwMedian:
     the first bucket, ascending, at which the cumulative weight reaches half
     the total. A value below the smallest normal float counts as 0; a weight
     of 0 or a value that is not finite adds nothing. The core keeps the decay
-    as one factor beside the buckets; here each bucket is multiplied."""
+    as one factor beside the buckets; here each bucket is multiplied.
 
-    def __init__(self) -> None:
+    Anchored, as every sketch a spec builds is (task 278), a value is
+    bucketed in units of the first value that counts -- a positive normal
+    float at a weight above 0 -- ``v / a`` capped at the largest float, and
+    the median read is ``a`` times the bucket's representative."""
+
+    def __init__(self, anchored: bool = True) -> None:
         self.w: dict[int | None, float] = {}
+        self.anchor: float | None = 0.0 if anchored else None
 
     def age(self, lam: float) -> None:
         for key in self.w:
@@ -1083,6 +1089,10 @@ class EwMedian:
     def add(self, v: float, weight: float) -> None:
         if not (v >= 0.0 and math.isfinite(v) and weight > 0.0 and math.isfinite(weight)):
             return
+        if self.anchor is not None and v >= sys.float_info.min:
+            if self.anchor == 0.0:
+                self.anchor = v
+            v = min(v / self.anchor, sys.float_info.max)
         key = None if v < sys.float_info.min else _sketch_bucket(v)
         self.w[key] = self.w.get(key, 0.0) + weight
 
@@ -1094,7 +1104,10 @@ class EwMedian:
         for key in sorted(self.w, key=lambda k: -math.inf if k is None else k):
             acc += self.w[key]
             if acc >= 0.5 * total:
-                return 0.0 if key is None else _sketch_representative(key)
+                if key is None:
+                    return 0.0
+                q = _sketch_representative(key)
+                return q * self.anchor if self.anchor else q
         return None
 
     def scale(self) -> float | None:
@@ -1131,7 +1144,13 @@ def robust_ref(
     :class:`EwMedian` of ``|e|`` over ``Φ⁻¹(3/4)`` per target, fed and aged as
     ``sigma2_j`` is, or ``"rms"``, ``sqrt(sigma2_j)``; both age on
     ``huber_scale_half_life``, the model's ``half_life`` unless given (task
-    271). The quantile band reads ``sigma2_j`` on the model's clock.
+    271). The quantile band reads the same MAD, on the model's clock (task
+    278, D-Q).
+
+    ``min_weight`` withholds the output alone: the model's own prediction,
+    from the fit solved after every row from the first, is what its
+    statistics fold, from the row its target has been present on a row per
+    coefficient with weight, the model's own floor, on (task 278, D10).
 
     Both losses read each row's *prior* residual, so both stay out-of-sample;
     what they do with it is :func:`_row_update`'s. Because the weights are per
@@ -1187,6 +1206,9 @@ def robust_ref(
             # The same rows counted one each: what the warm-up and the band's
             # floor read (task 147).
             "nobs": np.zeros(m),
+            # The rows with weight each target was present on, to the
+            # model's floor of a row per coefficient.
+            "seen": np.zeros(m),
             "sig2": np.zeros(m),
             "wsig": np.zeros(m),
             "mad": [EwMedian() for _ in range(m)],
@@ -1209,19 +1231,20 @@ def robust_ref(
         st["pending"] = 0.0
         lam = 0.5 ** (d / half_life)
         lam_s = lam if huber_scale_half_life is None else 0.5 ** (d / huber_scale_half_life)
-        mad = loss == "huber" and huber_scale == "mad"
+        mad = loss == "quantile" or huber_scale == "mad"
 
         weight_sum[i] = st["w_raw"]
-        ready = st["w_raw"] >= min_weight and st["beta"] is not None
-        # The model's own prediction, which its own statistics fold; what is
-        # emitted waits, besides, for each target's own weight (review
-        # 2026-09-12, S2) -- a gate on the output, not on the model.
+        ready = st["w_raw"] >= min_weight
+        # The model's own prediction, which its own statistics fold whatever
+        # `min_weight` says; what is emitted waits for the weight, and for
+        # each target's own (review 2026-09-12, S2) -- a gate on the output,
+        # not on the model.
         p_own = np.full(m, np.nan)
-        if ready:
+        if st["beta"] is not None:
             for j in range(m):
-                if st["wj"][j] > 0.0:
+                if st["wj"][j] >= np.finfo(float).tiny and st["seen"][j] >= kt:
                     p_own[j] = z @ st["beta"][j]
-                    if st["wobs"][j] >= min_weight:
+                    if ready and st["wobs"][j] >= min_weight:
                         pred[i, j] = p_own[j]
                         if not np.isnan(Y[i, j]):
                             resid[i, j] = Y[i, j] - pred[i, j]
@@ -1241,6 +1264,8 @@ def robust_ref(
                 continue
             st["wobs"][j] = present + (w[i] if w[i] > 0.0 else 0.0)
             st["nobs"][j] = rows + (1.0 if w[i] > 0.0 else 0.0)
+            if w[i] > 0.0:
+                st["seen"][j] = min(st["seen"][j] + 1.0, kt)
             # The residual scale exists once it is finite and above 0.
             s2 = st["sig2"][j]
             scale = float(np.sqrt(s2)) if 0.0 < s2 < np.inf else None

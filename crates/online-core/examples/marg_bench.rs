@@ -119,6 +119,7 @@ fn main() {
                     },
                     refit_rows: 0,
                     budget_mib: None,
+                    mad_anchor: false,
                 })
             }),
             feature_moments: match get("moments") {

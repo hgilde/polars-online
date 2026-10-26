@@ -32,7 +32,9 @@ fn cfg(refit_rows: u32, standardize: bool, schedule: LearningRate, decay: Decay)
         huber_scale: crate::HuberScale::Mad,
         huber_scale_decay: None,
         refit_rows,
+        min_weight_holds_learning: false,
         target_spread: false,
+        mad_anchor: false,
     }
 }
 
