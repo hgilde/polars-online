@@ -13,6 +13,23 @@ returns.
 
 ### Added
 
+- The oracle ledger, `oracles.toml`: each oracle grid's error against its
+  third-party oracle or known truth -- the worst seed's value and the 95th
+  percentile's, with the oracle library's version (task 280). It only
+  tightens, as `budgets.toml` does for speed: `scripts/oracles.py check`
+  fails a case more than 2% past its number, fails one more than 2% under it
+  naming the number to tighten to, and fails when an oracle's version moves;
+  `raises` holds every increase in the file's history to a `[[raised]]`
+  entry quoting this CHANGELOG. The Oracles workflow records every shard and
+  checks the merged run in a final job, and runs weekly with the datasets
+  downloaded afresh. 21 groups (176 cases) in seven modules are registered.
+- A hash guard in the essentials gate (task 280): it hashes this library's
+  outputs on each oracle group's inputs, rounded to 24 significant bits so
+  another platform's last bits do not move it, or whole where the oracle
+  agrees to round-off, in about 6 s. A moved hash names the groups and
+  `uv run python scripts/oracles.py rerun`, which re-runs only those groups'
+  grids and records the ledger and the hash if they pass; `scripts/quick.sh`
+  runs the guard for the groups a change can move.
 - `bin_refit_rows` and `refit_budget` on `marginal`, under
   `bin_stat="huber"` (task 278). `refit_budget` bounds the refit holds of a
   spec's groups, 256 MiB by default; past it a new group keeps the one pass,

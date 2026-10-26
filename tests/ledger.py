@@ -66,6 +66,8 @@ ZERO_BELOW = 2.0**-40
 #: its grids record (``tests/test_oracle_ledger.py`` holds the list to the
 #: modules).
 PENDING = {
+    "test_marginal_bin_refit": "phase 2: merged after the ledger was built",
+    "test_huber_scale": "phase 2: its huber_delta grid merged beside the ledger",
     "test_convergence": "phase 2: after task 278's D-Q batches, which re-measure its quantile grid",
     "test_oracles": "phase 2: after task 278's D-Q batches, which re-measure its quantile grids",
     "test_convergence_iterations": (
