@@ -657,6 +657,76 @@ class TestStandardizedOtherLosses:
         assert bound > 20, f"a slope sat on a bound on {bound} rows only"
 
 
+#: The Huber scale's settings ``TestSgd`` and ``TestStandardized`` leave at
+#: their defaults (task 278, batch 19): the root mean square, and the MAD
+#: with a memory of its own, shorter than the fit's or none.
+SCALES = [
+    ({"huber_scale": "rms"}, "rms"),
+    ({"huber_scale_half_life": 20.0}, "mad, half-life 20"),
+    ({"huber_scale_half_life": float("inf")}, "mad, no decay"),
+]
+
+
+class TestSgdHuberScale:
+    """``sgd(loss="huber")``'s cut drawn in each scale ``sgd_ref`` writes
+    out, on the raw features and under ``standardize``, under every
+    schedule, held row by row (task 278, batch 19). The reference is the
+    one-pass recursion, so the refit of the first rows is off
+    (``_one_pass``): it is held to statsmodels' converged fit in
+    ``test_huber_refit.py``, and a refit written into ``sgd_ref`` would be
+    the library's own iteration as its oracle. Each setting moves the
+    predictions from the default scale's run (printed: measured 2026-10-26,
+    by 0.054 to 0.35 over these cases), so the case is one the scale
+    decides; a cut of 0.3 scales binds on most rows."""
+
+    @pytest.mark.parametrize("standardize", [False, True], ids=["raw", "standardized"])
+    @pytest.mark.parametrize(
+        ("schedule", "rate"),
+        _rest(SCHEDULES, lambda p: p[0] == "constant"),
+        ids=[s for s, _ in SCHEDULES],
+    )
+    @pytest.mark.parametrize(("scale", "name"), SCALES, ids=[n for _, n in SCALES])
+    def test_every_scale(self, scale, name, schedule, rate, standardize):
+        df = _scaled(_stream(5)) if standardize else _stream(3)
+        x, y, dc, w = _inputs(df)
+        kw = {"loss": "huber", "schedule": schedule, "half_life": 50.0, "min_weight": 5.0}
+        kw |= {"huber_delta": 0.3, "l2": 0.01 if standardize else 0.0} | rate
+
+        def bank(**extra):
+            spec = po.spec.sgd(
+                "m",
+                targets=TARGETS,
+                features=FEATURES,
+                clock="t",
+                gap_cap=MAX_DCLOCK,
+                weight="w",
+                coef_every=0,
+                standardize=standardize,
+                **kw,
+                **extra,
+                **_one_pass("huber"),
+            )
+            return po.ModelBank([spec]).fit_predict(df)["m"]
+
+        out = bank(**scale)
+        ref = sgd_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, standardize=standardize, **kw, **scale)
+        _held(out, ref, y)
+        default = bank()
+        moved = max(
+            float(
+                np.nanmax(
+                    np.abs(
+                        out.struct.field(f"pred_{t}").to_numpy().astype(float)
+                        - default.struct.field(f"pred_{t}").to_numpy().astype(float)
+                    )
+                )
+            )
+            for t in TARGETS
+        )
+        print(f"{name}: the predictions moved by {moved:.3g} from the default scale's")
+        assert moved > 0.01, moved
+
+
 class TestHolt:
     @pytest.mark.parametrize(
         ("kw", "dup"),
