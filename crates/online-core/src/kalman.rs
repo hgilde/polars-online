@@ -325,11 +325,22 @@
 //! prediction past the first rows (0.87 before). Features scaled by a power
 //! of two predict the same to the bit: no row reads a raw `x`.
 //!
+//! **`min_weight` withholds the output alone (docs/PLAN.md task 278,
+//! D10).** The residual variance `σ²` learns from the filter's own
+//! prediction on every row it predicts, whether or not `min_weight` lets
+//! that prediction out, so the fit -- `b`, `P` and `σ²` -- is the same at
+//! any `min_weight`. The gate held learning back too: a withheld row taught
+//! `σ²` nothing, and an explicit `q`, which in units of the noise is read
+//! over `σ²`, followed the rows the gate let through (a slope 0.0064 off
+//! the ungated fit's at 2,000 rows, `q = 1e-6` on each slot and
+//! `min_weight` 50, worst of 50 seeds). A state written before schema 64
+//! goes on that way ([`KalmanCfg::min_weight_holds_learning`]).
+//!
 //! **The noise before the first residual (review 2026-10-05, CC4).** In
 //! units of the noise only an explicit `q` reads the noise, and this rule
 //! for it; the gain reads none. A target has no residual variance until a row with a prediction for it
-//! gives it a residual, and a prediction needs `min_weight` met and an
-//! earlier row of the target. Until then a row's noise is its own innovation
+//! gives it a residual, and a prediction needs an earlier row of the target
+//! and its covariance sized. Until then a row's noise is its own innovation
 //! squared, `R_j = e_j^2` with `e_j = y_j - z' b_j`, computed before the
 //! update and so out of sample, as the prediction is. The `sigma^2` the
 //! process noise is derived from is the same number. On the row that gives
@@ -524,6 +535,18 @@ pub struct KalmanCfg {
     /// `obs_var`), which is how it is cross-checked against river.
     #[serde(default = "default_true")]
     pub standardize: bool,
+    /// Whether `min_weight` holds learning back as well as the output, as
+    /// it did before schema 64: a row it withheld had no prediction, so its
+    /// residual taught the residual variance `σ²` nothing, and an explicit
+    /// `q`, which in units of the noise is read over `σ²`, and a covariance
+    /// sized again from the noise followed it. A spec builds `false`:
+    /// `min_weight` withholds the output alone, `σ²` learns from the
+    /// prediction the filter makes on every row it predicts, and the fit is
+    /// the same at any `min_weight` (the module doc). A state written before
+    /// schema 64 has no such field and was fitted the old way, so it loads
+    /// as `true` and goes on to the bit.
+    #[serde(default = "gate_held_learning_before_64")]
+    pub min_weight_holds_learning: bool,
     /// Without `obs_var`, hold `P` in units of the noise, so the gain never
     /// reads the noise estimate, and leave the intercept's prior diffuse (the
     /// module doc, "The noise is a scale, not a weight"). Every model the
@@ -536,6 +559,14 @@ pub struct KalmanCfg {
 }
 
 fn default_true() -> bool {
+    true
+}
+
+/// What a configuration written before schema 64, which had no
+/// [`KalmanCfg::min_weight_holds_learning`], was fitted with: a gate that
+/// held learning back too. It must go on as one, to the bit (CLAUDE.md hard
+/// rule 5).
+fn gate_held_learning_before_64() -> bool {
     true
 }
 
@@ -1590,7 +1621,8 @@ impl Kalman {
     /// level, and it would seed the residual variance with the level
     /// squared (review round 9, B-1; docs/PLAN.md task 270): standardized
     /// without `obs_var` the slots wait for three observed rows, which a
-    /// weight column or a lowered `min_weight` lets a row get past.
+    /// weight column lets a row get past, and which the filter's own
+    /// prediction, made whatever `min_weight` says, meets on every row.
     fn predicts(&self, j: usize) -> bool {
         let pi = if self.cfg.share_p { 0 } else { j };
         self.wj[j] > 0.0 && !self.is_unsized(pi)
@@ -2356,10 +2388,15 @@ impl OnlineModel for Kalman {
         for (zb, b) in self.zb.iter_mut().zip(&self.beta) {
             *zb = self.zs.iter().zip(b).map(|(z, b)| z * b).sum();
         }
+        // The filter's own prediction, which its residual variance learns
+        // from: on every row it predicts, whatever `min_weight` says, which
+        // withholds the output alone (task 278, D10). A state written
+        // before schema 64 learns from the output's, which the gate held
+        // back (`KalmanCfg::min_weight_holds_learning`).
         let n_eff = self.stats.n_eff();
         let ready = n_eff >= self.cfg.min_weight;
         let mut pred = vec![f64::NAN; m];
-        if ready {
+        if ready || !self.cfg.min_weight_holds_learning {
             for (j, p) in pred.iter_mut().enumerate() {
                 if self.predicts(j) {
                     *p = a_number_or_none(self.zb[j]);
@@ -2561,9 +2598,10 @@ impl OnlineModel for Kalman {
             // EW residual variance from the out-of-sample prediction. Its
             // weight ages on every row, this one included, and the row adds
             // its squared residual when it has a prediction to measure one
-            // from: a row with no prediction -- `min_weight` unmet after a
-            // clock gap -- aged nothing, so `σ²` forgot less across it than
-            // across a null (N6). The update is skipped when it would not be
+            // from: a row with no prediction -- the covariance not yet
+            // sized, or, in a state written before schema 64, `min_weight`
+            // unmet after a clock gap -- aged nothing, so `σ²` forgot less
+            // across it than across a null (N6). The update is skipped when it would not be
             // finite: `sig2` feeds the process noise, and an `inf` there puts
             // `inf` on the diagonal of `P` and a NaN in every later gain.
             let aged = lam * self.wsig[j];
@@ -2610,6 +2648,10 @@ impl OnlineModel for Kalman {
             }
         }
 
+        // `min_weight` withholds the output; the filter learned from it.
+        if !ready {
+            pred.fill(f64::NAN);
+        }
         Step {
             pred,
             n_eff,
@@ -2771,6 +2813,7 @@ mod tests {
 
     fn cfg(k: usize, m: usize, hl: Vec<f64>) -> KalmanCfg {
         KalmanCfg {
+            min_weight_holds_learning: false,
             noise_units: false,
             n_features: k,
             n_targets: m,
@@ -3209,36 +3252,54 @@ mod tests {
         );
     }
 
+    /// The prediction it learns from is the filter's own, made on every row
+    /// whatever `min_weight` says -- a twin at `min_weight` 0 reports it --
+    /// and, with the gate holding learning back (a state written before
+    /// schema 64; task 278, D10), the one the gate lets out.
     #[test]
     fn residual_variance_is_the_ew_mean_of_squared_out_of_sample_errors() {
-        let mut c = cfg(1, 1, vec![f64::INFINITY]);
-        c.decay = Decay::Halflife(25.0);
-        c.min_weight = 3.0;
-        c.standardize = false;
-        c.obs_var = Some(0.5);
-        let mut m = Kalman::new(c).unwrap();
+        for holds in [false, true] {
+            let mut c = cfg(1, 1, vec![f64::INFINITY]);
+            c.decay = Decay::Halflife(25.0);
+            c.min_weight = 3.0;
+            c.standardize = false;
+            c.obs_var = Some(0.5);
+            c.min_weight_holds_learning = holds;
+            let mut m = Kalman::new(c.clone()).unwrap();
+            let mut twin = Kalman::new(KalmanCfg {
+                min_weight: 0.0,
+                ..c
+            })
+            .unwrap();
 
-        let (mut want, mut wsig) = (0.0, 0.0);
-        let mut s = 83u64;
-        for i in 0..120 {
-            let x = [lcg(&mut s)];
-            let y = 2.0 * x[0] + 0.3 * lcg(&mut s);
-            let d = if i == 0 { 0.0 } else { 1.0 };
-            let lam = 0.5f64.powf(d / 25.0);
-            let p = m.step(&x, &[Some(y)], d, 1.0).pred[0];
-            if p.is_finite() {
-                let resid = y - p;
-                let ws_new = lam * wsig + 1.0;
-                want = (lam * wsig * want + resid * resid) / ws_new;
-                wsig = ws_new;
+            let (mut want, mut wsig, mut withheld) = (0.0, 0.0, 0);
+            let mut s = 83u64;
+            for i in 0..120 {
+                let x = [lcg(&mut s)];
+                let y = 2.0 * x[0] + 0.3 * lcg(&mut s);
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                let lam = 0.5f64.powf(d / 25.0);
+                let shown = m.step(&x, &[Some(y)], d, 1.0).pred[0];
+                let own = twin.step(&x, &[Some(y)], d, 1.0).pred[0];
+                if own.is_finite() && !shown.is_finite() {
+                    withheld += 1;
+                }
+                let p = if holds { shown } else { own };
+                if p.is_finite() {
+                    let resid = y - p;
+                    let ws_new = lam * wsig + 1.0;
+                    want = (lam * wsig * want + resid * resid) / ws_new;
+                    wsig = ws_new;
+                }
+                assert!(
+                    (m.sigma2()[0] - want).abs() < 1e-12,
+                    "holds {holds}, row {i}: {} vs {want}",
+                    m.sigma2()[0]
+                );
             }
-            assert!(
-                (m.sigma2()[0] - want).abs() < 1e-12,
-                "row {i}: {} vs {want}",
-                m.sigma2()[0]
-            );
+            assert!(wsig > 30.0 && want > 0.0);
+            assert!(withheld >= 1, "the gate withheld a prediction");
         }
-        assert!(wsig > 30.0 && want > 0.0);
     }
 
     /// The same mean across rows with no prediction: after a clock gap
@@ -3246,11 +3307,14 @@ mod tests {
     /// no prediction. They add nothing, and age `σ²`'s weight as every row
     /// does; they aged nothing, so `σ²` -- which sets `R` and `Q` -- forgot
     /// less across them than the clock says (N6, found beside review
-    /// 2026-09-12 S13).
+    /// 2026-09-12 S13). Rows `min_weight` withholds are no such rows unless
+    /// the gate holds learning back, as in a state written before schema
+    /// 64 (task 278, D10): the filter predicts on them for its own use.
     #[test]
     fn the_residual_variance_ages_across_rows_with_no_prediction() {
         let hl = 25.0;
         let mut c = cfg(1, 1, vec![f64::INFINITY]);
+        c.min_weight_holds_learning = true;
         c.decay = Decay::Halflife(hl);
         c.min_weight = 3.0;
         c.standardize = false;
@@ -3296,6 +3360,7 @@ mod tests {
     fn unstandardized_with_no_process_noise_is_bayesian_regression() {
         let (p0, obs_var) = (10.0, 0.25);
         let mut m = Kalman::new(KalmanCfg {
+            min_weight_holds_learning: false,
             noise_units: false,
             n_features: 2,
             n_targets: 1,
@@ -4479,6 +4544,7 @@ mod tests {
     #[test]
     fn an_innovation_of_zero_or_a_target_not_a_number_corrects_nothing() {
         let mut m = Kalman::new(KalmanCfg {
+            min_weight_holds_learning: false,
             noise_units: false,
             n_features: 1,
             n_targets: 1,
@@ -4744,10 +4810,26 @@ mod tests {
             })
             .collect();
         cases.extend(units);
+        // And each with `min_weight` holding learning back, as a state
+        // written before schema 64 does (task 278, D10): the noise waits
+        // for the first prediction the gate lets out, so the warm-up's
+        // noise, the row's own innovation, runs for longer.
+        let held: Vec<(String, KalmanCfg)> = cases
+            .iter()
+            .map(|(name, c)| {
+                let mut c = c.clone();
+                c.min_weight_holds_learning = true;
+                (format!("{name}, the gate holding learning back"), c)
+            })
+            .collect();
+        cases.extend(held);
 
         for (name, base) in &cases {
             let (want, m1, learned) = run(base, 1.0);
-            assert!(learned >= 4, "{name}: the warm-up was learned from");
+            // The rows before a residual variance: the filter's own sizing
+            // rows, and under the old gate the rows it withheld.
+            let warm = if base.min_weight_holds_learning { 4 } else { 1 };
+            assert!(learned >= warm, "{name}: the warm-up was learned from");
             let first = (0..want.len()).find(|&i| want[i][0].is_finite()).unwrap();
             assert!(first > 3, "{name}: the first prediction follows the gap");
             for c in [2f64.powi(20), 2f64.powi(-20)] {
@@ -4783,6 +4865,7 @@ mod tests {
     /// the filter the tests below start from.
     fn plain(p0: f64, half_life: f64, obs_var: Option<f64>) -> KalmanCfg {
         KalmanCfg {
+            min_weight_holds_learning: false,
             noise_units: false,
             n_features: 1,
             n_targets: 1,
@@ -5004,9 +5087,14 @@ mod tests {
             }
             m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
         }
-        // `min_weight` 10 holds the first predictions back, and the noise
-        // waits for the first residual, after them.
-        assert!(finite_from.is_some_and(|i| i >= 10), "{finite_from:?}");
+        // The noise waits for the first residual, which the filter's own
+        // prediction gives once its covariance is sized: before `min_weight`
+        // 10 lets a prediction out, which withholds the output alone (task
+        // 278, D10).
+        assert!(
+            finite_from.is_some_and(|i| (3..10).contains(&i)),
+            "{finite_from:?}"
+        );
     }
 
     /// Under `share_p` every target reads the one `P` and the mean noise:
@@ -5082,6 +5170,7 @@ mod tests {
     /// at `coef_half_life`, rows one clock unit apart.
     fn settled_readiness(n_feat: usize, coef_hl: f64) -> (f64, f64, f64) {
         let c = KalmanCfg {
+            min_weight_holds_learning: false,
             noise_units: false,
             n_features: n_feat,
             n_targets: 1,

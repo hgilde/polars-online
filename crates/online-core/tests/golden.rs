@@ -211,6 +211,10 @@ fn huber_origin_standardized_golden() {
 #[test]
 fn kalman_plain_golden() {
     let mut m = Kalman::new(KalmanCfg {
+        // The form a state saved before schema 64 goes on in: `P` absolute
+        // and `min_weight` holding learning back, as `tests/reference.py`'s
+        // `kalman_ref` has it (task 278, D10).
+        min_weight_holds_learning: true,
         noise_units: false,
         n_features: 2,
         n_targets: 1,
@@ -247,6 +251,10 @@ fn rls_golden() {
 #[test]
 fn kalman_golden() {
     let mut m = Kalman::new(KalmanCfg {
+        // The form a state saved before schema 64 goes on in: `P` absolute
+        // and `min_weight` holding learning back, as `tests/reference.py`'s
+        // `kalman_ref` has it (task 278, D10).
+        min_weight_holds_learning: true,
         noise_units: false,
         n_features: 2,
         n_targets: 1,
@@ -270,6 +278,10 @@ fn kalman_golden() {
 #[test]
 fn kalman_revert_golden() {
     let mut m = Kalman::new(KalmanCfg {
+        // The form a state saved before schema 64 goes on in: `P` absolute
+        // and `min_weight` holding learning back, as `tests/reference.py`'s
+        // `kalman_ref` has it (task 278, D10).
+        min_weight_holds_learning: true,
         noise_units: false,
         n_features: 2,
         n_targets: 1,
@@ -291,6 +303,7 @@ fn kalman_revert_golden() {
 #[test]
 fn lasso_golden() {
     let mut m = Lasso::new(LassoCfg {
+        min_weight_holds_learning: false,
         n_features: 2,
         n_targets: 1,
         fit_intercept: true,
@@ -1156,6 +1169,7 @@ fn ewridge_paths_golden() {
 #[test]
 fn lasso_windowed_golden() {
     let cfg = || LassoCfg {
+        min_weight_holds_learning: false,
         n_features: 2,
         n_targets: 1,
         fit_intercept: true,
@@ -1220,6 +1234,10 @@ fn lasso_windowed_golden() {
 #[test]
 fn kalman_noise_golden() {
     let cfg = || KalmanCfg {
+        // The form a state saved before schema 64 goes on in: `P` absolute
+        // and `min_weight` holding learning back, as `tests/reference.py`'s
+        // `kalman_ref` has it (task 278, D10).
+        min_weight_holds_learning: true,
         noise_units: false,
         n_features: 2,
         n_targets: 1,

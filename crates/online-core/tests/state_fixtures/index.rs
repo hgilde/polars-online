@@ -28,6 +28,9 @@ pub mod lasso {
 pub mod lasso_window {
     include!("lasso_window.rs");
 }
+pub mod lasso_floor {
+    include!("lasso_floor.rs");
+}
 pub mod kalman {
     include!("kalman.rs");
 }
@@ -36,6 +39,9 @@ pub mod kalman_gap {
 }
 pub mod kalman_noise_units {
     include!("kalman_noise_units.rs");
+}
+pub mod kalman_output_only {
+    include!("kalman_output_only.rs");
 }
 pub mod huber {
     include!("huber.rs");
@@ -183,9 +189,11 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &rls::FIXTURE,
     &lasso::FIXTURE,
     &lasso_window::FIXTURE,
+    &lasso_floor::FIXTURE,
     &kalman::FIXTURE,
     &kalman_gap::FIXTURE,
     &kalman_noise_units::FIXTURE,
+    &kalman_output_only::FIXTURE,
     &huber::FIXTURE,
     &huber_mad::FIXTURE,
     &huber_sets::FIXTURE,

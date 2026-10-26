@@ -818,9 +818,15 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 l1_ratio: l1_ratio.unwrap_or(1.0),
                 select_half_life: select_half_life.as_ref().map(Span::value),
                 min_weight: spec.min_periods_or_default(),
-                // Each target's own, which its selection counts errors
-                // from, as this layer gates its output (CA3).
+                // Each target's own, which a state written before schema 64
+                // counted its selection's errors from (CA3); this layer
+                // gates the output on it either way.
                 target_min_weight: spec.min_periods_per_target(),
+                // `min_weight` withholds the output alone: the selection
+                // scores every row from the model's floor, a row per
+                // coefficient (task 278, D10); a state saved before keeps
+                // its own.
+                min_weight_holds_learning: false,
                 solve_every: solve_every
                     .as_ref()
                     .map_or_else(|| spec.solve_every_default(decay), Span::value),
@@ -859,6 +865,10 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 p0: p0.unwrap_or(1.0),
                 share_p: *share_p,
                 min_weight: spec.min_periods_or_default(),
+                // `min_weight` withholds the output alone: the residual
+                // variance learns from every row the filter predicts (task
+                // 278, D10); a state saved before keeps its own.
+                min_weight_holds_learning: false,
                 revert_half_life: revert_half_life
                     .as_ref()
                     .map_or_else(|| vec![f64::INFINITY], SpanList::to_vec),

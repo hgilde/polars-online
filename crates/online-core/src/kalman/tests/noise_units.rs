@@ -28,6 +28,7 @@ fn rows(n: usize, burst: usize, seed: u64) -> Vec<([f64; 2], f64, f64)> {
 
 fn unstandardized(units: bool) -> KalmanCfg {
     KalmanCfg {
+        min_weight_holds_learning: false,
         noise_units: units,
         n_features: 2,
         n_targets: 1,
@@ -141,6 +142,7 @@ fn the_first_row_takes_the_diffuse_intercepts_exact_step() {
 
 fn drifting(units: bool, share: bool, m: usize) -> KalmanCfg {
     KalmanCfg {
+        min_weight_holds_learning: false,
         noise_units: units,
         n_features: 2,
         n_targets: m,

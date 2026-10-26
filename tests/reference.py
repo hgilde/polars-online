@@ -362,6 +362,42 @@ def _enet_descent(
     raise RuntimeError(f"coordinate descent did not settle to {tol} in {max_sweeps} sweeps")
 
 
+def _enet_exact(C: np.ndarray, c: np.ndarray, l1: float, l2: float) -> np.ndarray:
+    """The minimiser of ``1/2 b'Cb - c'b + l1 |b|_1 + l2/2 |b|^2`` read off
+    its optimality conditions, for a problem too ill-conditioned for a
+    descent from zero to settle (``C + l2 I`` positive definite, so the
+    minimiser is unique). For each active set ``S`` and sign pattern ``s`` on
+    it, ``(C_SS + l2 I) b_S = c_S - l1 s``; the minimiser is the one whose
+    ``b_S`` has the signs ``s`` and whose inactive coordinates satisfy
+    ``|c_i - C_iS b_S| <= l1``. ``3^k`` patterns, so for the few features
+    the tests use. Of the patterns that meet the conditions to rounding, the
+    one with the least objective."""
+    import itertools
+
+    k = len(c)
+    best, best_obj = None, np.inf
+    for pattern in itertools.product((-1, 0, 1), repeat=k):
+        sgn = np.asarray(pattern, dtype=float)
+        act = np.flatnonzero(sgn != 0)
+        b = np.zeros(k)
+        if act.size:
+            A = C[np.ix_(act, act)] + l2 * np.eye(act.size)
+            b[act] = np.linalg.solve(A, c[act] - l1 * sgn[act])
+            if np.any(np.sign(b[act]) != sgn[act]):
+                continue
+        g = c - C @ b - l2 * b
+        idle = np.flatnonzero(sgn == 0)
+        scale = 1e-9 * (1.0 + np.abs(c).max())
+        if idle.size and np.any(np.abs(g[idle]) > l1 + scale):
+            continue
+        obj = 0.5 * b @ C @ b - c @ b + l1 * np.abs(b).sum() + 0.5 * l2 * b @ b
+        if obj < best_obj:
+            best, best_obj = b, obj
+    if best is None:
+        raise RuntimeError("no sign pattern meets the lasso's optimality conditions")
+    return best
+
+
 def lasso_ref(
     X: np.ndarray,
     y: np.ndarray,
@@ -375,6 +411,7 @@ def lasso_ref(
     max_rows_between_solves: int | None = None,
     gap_cap: float = np.inf,
     tol: float = 1e-14,
+    min_weight_holds_learning: bool = False,
 ) -> dict[str, np.ndarray]:
     """Lasso / elastic-net path oracle (docs/PLAN.md section 4.3), one target
     with no nulls, written from the objective rather than ported.
@@ -413,8 +450,11 @@ def lasso_ref(
     - after the row is learned, a solve runs when the clock since the last one
       has reached ``solve_every`` (the capped step counts, so a gap of at
       least ``solve_every`` forces one). One also runs when
-      ``max_rows_between_solves`` rows have gone by since it, or when there
-      has been none yet and the weight has reached ``min_weight``. A
+      ``max_rows_between_solves`` rows have gone by since it, or on the row
+      the target's rows of positive weight reach ``k + 1``, the model's
+      floor; with ``min_weight_holds_learning``
+      (the form a state saved before task 278 goes on in), when there has
+      been none yet and the weight has reached ``min_weight``. A
       zero-weight row is clock alone (hard rule 9): it never solves and is no
       row of the cap, so a solve due on it waits for the next row with weight
       (docs/PLAN.md task 214);
@@ -480,6 +520,7 @@ def lasso_ref(
     # the moments that hold its history.
     fitted = False
     since_clock, since_rows, pending = 0.0, 0, 0.0
+    rows_seen = 0
     for i in range(n):
         if np.isnan(X[i]).any():
             pending += dclock[i]
@@ -512,12 +553,17 @@ def lasso_ref(
         since_clock += d
         teaches = w[i] > 0.0
         since_rows += int(teaches)
+        rows_seen += int(teaches)
         since_w += max(w[i], 0.0)
         if share is not None:
             by_cadence = since_w >= share * w_sum
         else:
             by_cadence = solve_every <= 0.0 or since_clock >= solve_every
-        due = by_cadence or since_rows >= max_rows or (fit is None and w_sum >= min_weight)
+        if min_weight_holds_learning:
+            first = fit is None and w_sum >= min_weight
+        else:
+            first = teaches and rows_seen == kt
+        due = by_cadence or since_rows >= max_rows or first
         if teaches and due:
             if w_sum <= 0.0 and not fitted:
                 fit = np.full((npath, kt), np.nan)
@@ -590,9 +636,17 @@ def kalman_ref(
     standardize: bool = True,
     gap_cap: float = np.inf,
     noise_units: bool = True,
+    min_weight_holds_learning: bool | None = None,
 ) -> dict[str, np.ndarray]:
     """Kalman / random-walk-beta oracle (docs/PLAN.md section 4.4), written
     from `kalman.rs`'s module doc (task 211).
+
+    ``min_weight_holds_learning`` (task 278, D10): ``False``, the form the
+    bank builds, makes ``min_weight`` a gate on the output alone -- the
+    residual variance learns from the filter's own prediction on every row it
+    predicts; ``True``, the form a state saved before goes on in, learns it
+    only from the predictions the gate lets out. ``None`` pairs it with
+    ``noise_units`` as the two forms come: ``not noise_units``.
 
     ``noise_units`` (task 278, the form the bank builds) holds ``P`` in units
     of the noise when ``obs_var`` is not given: the gain is ``P z / (z' P z
@@ -635,7 +689,8 @@ def kalman_ref(
     - innovation variance is ``z' P z + sigma2 / w`` (row weight scales the
       observation precision);
     - ``sigma2_j`` is the EW variance of the *out-of-sample* residual, updated
-      only on rows where a prediction was emitted. Its weight ages on every
+      only on rows where the filter predicted (where ``min_weight`` holds
+      learning back, where a prediction was emitted). Its weight ages on every
       row the filter sees: a null target and a zero weight (review
       2026-09-12, S9), and a row with a target, a weight and no prediction,
       such as one after rows of weight 0 have taken the weight under
@@ -705,6 +760,7 @@ def kalman_ref(
     coef = np.full((n, m, kt), np.nan)
 
     units = noise_units and obs_var is None
+    holds = (not noise_units) if min_weight_holds_learning is None else min_weight_holds_learning
 
     def init():
         if units:
@@ -775,15 +831,17 @@ def kalman_ref(
 
         weight_sum[i] = st["W"]
         ready = st["W"] >= min_weight
-        # The model's own prediction, which its own statistics fold; what is
-        # emitted waits, besides, for each target's own weight (review
-        # 2026-09-12, S2) -- a gate on the output, not on the model.
+        # The model's own prediction, which its own statistics fold -- on
+        # every row, or where `min_weight` holds learning back, on the rows
+        # it lets out; what is emitted waits for `min_weight` and, besides,
+        # for each target's own weight (review 2026-09-12, S2) -- a gate on
+        # the output, not on the model.
         p_own = np.full(m, np.nan)
-        if ready:
+        if ready or not holds:
             for j in range(m):
                 if st["wj"][j] > 0.0 and np.diag(st["P"][0 if share_p else j]).any():
                     p_own[j] = zs @ st["beta"][j]
-                    if st["wj"][j] >= min_weight:
+                    if ready and st["wj"][j] >= min_weight:
                         pred[i, j] = p_own[j]
                         if not np.isnan(Y[i, j]):
                             resid[i, j] = Y[i, j] - pred[i, j]

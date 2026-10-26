@@ -29,11 +29,10 @@ not compared, and ``pred``/``resid`` are compared on the rows both runs
 score, a null allowed only where that run's gate withheld the row.
 Everything a gate could only move by touching the fit -- ``coef``,
 ``support_coef``, ``weight_sum``, ``settled_frac``, ``penalty_selected_*``
--- is compared on every row: a gate never moves learning. Two kinds
-document an exception for ``min_weight`` and are held to it
-(``MIN_WEIGHT_LEARNS``: ``kalman``'s noise and ``lasso``'s selection learn
-only from the rows it lets through); ``quantile``'s is a defect, a strict
-xfail (``DEFECTS``).
+-- is compared on every row: a gate never moves learning, ``min_weight``
+in every kind (``kalman``'s noise and ``lasso``'s selection learned only
+from the rows it let through, documented exceptions until task 278, D10);
+``quantile``'s is a defect, a strict xfail (``DEFECTS``).
 
 Each case prints and asserts evidence that it took effect, so no case
 compares two identical runs: a switch writes at least one non-null value
@@ -393,24 +392,8 @@ def _diagnostic_fields(out: pl.DataFrame, fit: list[str]) -> dict[str, tuple]:
     return {n: _bits(out[n]) for n in out.columns if n not in fit}
 
 
-#: Where ``min_weight`` reaches into learning, as its kind documents, and the
-#: fit fields that therefore move. ``kalman``: "a row with no prediction,
-#: before ``min_weight``, still moves the coefficients ...; only the residual
-#: variance learns nothing from it", and that variance is the noise ``R`` in
-#: the gain, so every coefficient after it moves. ``lasso``: "a target's
-#: errors count from the row where its own weight reaches its own
-#: ``min_weight``", and ``penalty_selected`` is ranked on those errors. Both
-#: are held here to move (the evidence the exception is still what the
-#: docstring says), and every other fit field to the gate's promise.
-MIN_WEIGHT_LEARNS: dict[str, tuple[str, ...]] = {
-    "kalman": ("coef", "pred_", "resid_"),
-    "lasso": ("penalty_selected_",),
-}
-
-
 #: The pairs where a switch moves a fit field and nothing documents it: each
-#: a defect, a strict xfail running the real assertion until it is fixed or
-#: documented (then into ``MIN_WEIGHT_LEARNS``).
+#: a defect, a strict xfail running the real assertion until it is fixed.
 DEFECTS: dict[tuple[str, str], str] = {
     ("quantile", "min_weight=50"): (
         "quantile: min_weight moves coef (first at row 13 on `rows`, 0.0038 against "
@@ -499,17 +482,7 @@ def test_a_diagnostic_never_moves_the_fit(kind: str, variant: str, name: str) ->
 def _assert_a_gate_withholds_only(
     kind: str, case: Case, base: pl.DataFrame, out: pl.DataFrame, fit: list[str], what: str
 ) -> None:
-    exempt = MIN_WEIGHT_LEARNS.get(kind, ()) if "min_weight" in case.kw else ()
-    moves = [n for n in fit if n.startswith(exempt)] if exempt else []
-    if exempt:
-        moved = [n for n in moves if _bits(base[n]) != _bits(out[n])]
-        print(f"{what}: as {kind}'s docstring says, min_weight moves {moved}")
-        assert moved, f"{what}: min_weight no longer moves {exempt}: update MIN_WEIGHT_LEARNS"
-    learned = [
-        n
-        for n in fit
-        if (_stem(n) in LEARNED or n.startswith("penalty_selected_")) and n not in moves
-    ]
+    learned = [n for n in fit if _stem(n) in LEARNED or n.startswith("penalty_selected_")]
     assert_same(base, out, learned, what)
     a, b = _withheld(base), _withheld(out)
     print(f"{what}: withheld {int(a.sum())} rows without the gate, {int(b.sum())} with it")
@@ -518,7 +491,7 @@ def _assert_a_gate_withholds_only(
     # runs or null in one; a null only where that run's gate withheld the
     # row. A row can be withheld for one target and not another (each
     # target's own `min_weight`), so a value beside a withheld row is legal.
-    for n in (m for m in fit if m.startswith(("pred_", "resid_")) and m not in moves):
+    for n in (m for m in fit if m.startswith(("pred_", "resid_"))):
         x, y = base[n], out[n]
         both = x.is_not_null() & y.is_not_null()
         assert _bits(x.filter(both)) == _bits(y.filter(both)), (

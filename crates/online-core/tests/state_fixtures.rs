@@ -100,7 +100,13 @@ use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 /// fitted in, `P` absolute and the noise estimate in the gain, and goes on
 /// to the bit; the kept `kalman` and `kalman_gap` cases are that form, so
 /// each converts to the current bytes exactly, and the new form is the
-/// case `kalman_noise_units`, saved with its intercepts still diffuse.
+/// case `kalman_noise_units`, saved with its intercepts still diffuse. 64
+/// gave `kalman` and `lasso` `min_weight_holds_learning` too (task 278,
+/// D10): a 61-63 state has none and loads as `true`, the gate holding
+/// learning back as it was fitted, and goes on as before; the kept cases
+/// are that form, so each converts to the current bytes as it did, and the
+/// form a spec builds, the gate withholding the output alone, is the cases
+/// `kalman_output_only` and `lasso_floor`.
 ///
 /// The windowed cases convert otherwise since the running products
 /// (schema 63 before its release, docs/PLAN.md task 275): a ring saved
@@ -1068,6 +1074,80 @@ fn the_target_spread_forms_are_written() {
             withheld,
             "{name}: {preds:?}"
         );
+    }
+}
+
+/// `min_weight`'s two forms in `kalman` and `lasso` (schema 64,
+/// docs/PLAN.md task 278, D10): every case a state written before 64
+/// converts to says it held learning back (`true`, the field such a state
+/// lacks), and `kalman_output_only` and `lasso_floor` say it withholds the
+/// output alone (`false`). Each of those two is saved where the gate
+/// withholds the continuation's first rows and lets out the rest, and the
+/// rows it withholds are learned from: flipped to the old form, the same
+/// state goes on to other numbers (the explicit `q`, read over the residual
+/// variance, carries `kalman`'s into its predictions; `lasso`'s selection
+/// reports its own).
+#[test]
+fn the_gates_two_forms_are_written_and_act() {
+    if regenerating() {
+        return;
+    }
+    let decode = |name: &str| {
+        let f = frozen::ALL.iter().find(|f| f.name == name).unwrap();
+        (f, rmpv::decode::read_value(&mut &f.bytes()[..]).unwrap())
+    };
+    for (name, variant, holds) in [
+        ("kalman", "Kalman", true),
+        ("kalman_gap", "Kalman", true),
+        ("kalman_noise_units", "Kalman", true),
+        ("kalman_output_only", "Kalman", false),
+        ("lasso", "Lasso", true),
+        ("lasso_window", "Lasso", true),
+        ("lasso_floor", "Lasso", false),
+    ] {
+        let (f, mut v) = decode(name);
+        let path = ["model", variant, "cfg", "min_weight_holds_learning"];
+        let got = at(&v, &path).and_then(rmpv::Value::as_bool);
+        assert_eq!(got, Some(holds), "{name}: cfg.min_weight_holds_learning");
+        if holds {
+            continue;
+        }
+        let outs = f.outs();
+        let withheld = outs.iter().filter(|o| o.pred.iter().all(|p| p.is_nan())).count();
+        let shown = outs.iter().filter(|o| o.pred.iter().all(|p| p.is_finite())).count();
+        assert!(
+            withheld >= 1 && shown >= 1,
+            "{name}: the continuation withholds {withheld} rows and shows {shown}"
+        );
+        // The same state in the old form.
+        let field = path.iter().try_fold(&mut v, |v, key| match v {
+            rmpv::Value::Map(m) => m
+                .iter_mut()
+                .find(|(k, _)| k.as_str() == Some(key))
+                .map(|(_, v)| v),
+            _ => None,
+        });
+        *field.unwrap() = rmpv::Value::from(true);
+        let mut bytes = Vec::new();
+        rmpv::encode::write_value(&mut bytes, &v).unwrap();
+        let mut old = load(&case_of(f), &bytes).unwrap();
+        let moved = f
+            .rows()
+            .iter()
+            .zip(&outs)
+            .filter(|(row, want)| {
+                let got = old.step(row);
+                let bits = |o: &Out| {
+                    o.pred
+                        .iter()
+                        .chain(&o.extra)
+                        .map(|v| v.to_bits())
+                        .collect::<Vec<_>>()
+                };
+                bits(&got) != bits(want)
+            })
+            .count();
+        assert!(moved > 0, "{name}: the gate's form moves nothing");
     }
 }
 

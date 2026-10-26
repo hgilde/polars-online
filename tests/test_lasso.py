@@ -102,7 +102,14 @@ def test_an_infinite_select_halflife_selects_on_the_plain_mean():
     y = np.where(np.arange(n) < 300, 1.5 * x[:, 0], 0.0) + rng.standard_normal(n)
     df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "y0": y})
     path = [1.0, 0.1, 0.0]
-    out = po.ModelBank([_spec(path, select_half_life=float("inf"))]).fit_predict(df)["m"]
+    # `min_weight` that lets out the rows from the model's floor, four rows
+    # (a row per coefficient), from which the selection counts whatever
+    # `min_weight` says: the rows the output scores are then the rows the
+    # selection does.
+    # (3.5, as the decay of a half-life of 1e9 leaves four rows' weight
+    # short of 4.)
+    spec = _spec(path, select_half_life=float("inf"), min_weight=3.5)
+    out = po.ModelBank([spec]).fit_predict(df)["m"]
     resid = np.array(
         [out.struct.field(f"resid_y0__p{lab}").to_numpy() for lab in ("1", "0.1", "0")], float
     )
@@ -142,12 +149,15 @@ def test_path_must_be_decreasing():
         _spec([0.1, 1.0])
 
 
-class TestEachTargetsSelectionCountsFromItsOwnMinWeight:
-    """A target's ``penalty_selected`` counts its errors from the row where its
-    own weight reaches its own ``min_weight`` (review 2026-10-05, CA3). They
-    counted from the model's first prediction, which the list's smallest
-    threshold gates, so one target's choice moved with another's threshold:
-    ``[0, 60]`` and ``[60, 60]`` chose apart for ``y1`` on 84 rows from row 60."""
+class TestEachTargetsSelectionCountsFromTheFloor:
+    """A target's ``penalty_selected`` counts its errors from the row the fit
+    holds a row of it per coefficient, the model's floor, whatever
+    ``min_weight`` says: the gate withholds the output alone (task 278, D10).
+    They counted from the row where its own weight reached its own
+    ``min_weight`` (review 2026-10-05, CA3), and before that from the model's
+    first prediction, which the list's smallest threshold gates, so one
+    target's choice moved with another's threshold: ``[0, 60]`` and ``[60,
+    60]`` chose apart for ``y1`` on 84 rows from row 60."""
 
     @staticmethod
     def _out(min_weight) -> pl.DataFrame:
@@ -179,23 +189,28 @@ class TestEachTargetsSelectionCountsFromItsOwnMinWeight:
         a, b = (
             self._out(mw)["penalty_selected_y1"].to_numpy() for mw in ([0.0, 60.0], [60.0, 60.0])
         )
-        wrong = np.flatnonzero(a != b)
+        wrong = np.flatnonzero((a != b) & ~(np.isnan(a) & np.isnan(b)))
         assert wrong.size == 0, f"{wrong.size} rows differ, the first {wrong[:5]}"
-        assert len(set(a[60:])) > 1, "the choice never moves, so this compares nothing"
+        # From the floor's row, 4, where its errors start to count.
+        low = self._out([0.0, 0.0])["penalty_selected_y1"].to_numpy()
+        assert len(set(low[4:])) > 1, "the choice never moves, so this compares nothing"
 
-    def test_a_list_moves_only_the_targets_above_its_minimum(self):
-        listed, low = self._out([0.0, 60.0]), self._out([0.0, 0.0])
-        # `y0`'s threshold is the list's minimum both times: nothing of it
-        # moves, and the model's predictions are the same ones throughout.
-        assert listed["penalty_selected_y0"].equals(low["penalty_selected_y0"])
-        shown = listed["pred_y1__p0"].is_not_null()
-        for c in (c for c in listed.columns if c.startswith("pred_")):
-            got, want = listed[c], low[c]
-            if c.startswith("pred_y1"):
-                got, want = got.filter(shown), want.filter(shown)
-            assert got.equals(want), c
-        # `y1`'s is above it, so its choice moves.
-        assert not listed["penalty_selected_y1"].equals(low["penalty_selected_y1"])
+    def test_no_threshold_moves_a_choice_or_a_prediction_it_shows(self):
+        low = self._out([0.0, 0.0])
+        for mw in ([0.0, 60.0], [60.0, 60.0], 200.0):
+            gated = self._out(mw)
+            for j in ("y0", "y1"):
+                col = f"penalty_selected_{j}"
+                assert gated[col].equals(low[col], null_equal=True), (mw, col)
+            # A prediction the gate lets out is the ungated one, and it
+            # withholds rows the selection scored.
+            withheld = 0
+            for c in (c for c in gated.columns if c.startswith("pred_")):
+                shown = gated[c].is_not_null()
+                withheld += int((~shown & low[c].is_not_null()).sum())
+                assert gated[c].filter(shown).equals(low[c].filter(shown)), (mw, c)
+            assert withheld > 0, f"{mw}: the gate withheld nothing"
+        assert len(set(low["penalty_selected_y1"].to_list()[4:])) > 1, "the choice moves"
 
     def test_a_scalar_and_a_list_of_equal_values_agree(self):
         assert self._out(30.0).equals(self._out([30.0, 30.0]), null_equal=True)
@@ -203,8 +218,10 @@ class TestEachTargetsSelectionCountsFromItsOwnMinWeight:
 
 def test_on_the_row_clock_solve_every_is_its_row_cap():
     """Without a clock column the clock is the row's number, the first row
-    being 1, so before the first solve at ``min_weight`` (here never met)
-    ``solve_every=n`` solves on the rows ``max_rows_between_solves=n`` does.
+    being 1, so ``solve_every=n`` solves on the rows
+    ``max_rows_between_solves=n`` does, every ``n``-th row from the first
+    solve, on the third row, where the target reaches the floor of a row per
+    coefficient (task 278, D10; ``min_weight`` withholds the output alone).
     Measured from the first row, whose step is 0, it solved a row later, the
     whole stream long, which ``coef`` showed (task 278, D13)."""
     import warnings
@@ -232,4 +249,4 @@ def test_on_the_row_clock_solve_every_is_its_row_cap():
     clock = run(solve_every=7.0)
     assert clock.equals(run(solve_every=1e18, max_rows_between_solves=7), null_equal=True)
     c = clock["coef"].to_list()
-    assert [i for i in range(1, n) if c[i] != c[i - 1]] == [6, 13, 20, 27, 34, 41, 48, 55]
+    assert [i for i in range(1, n) if c[i] != c[i - 1]] == [2, 9, 16, 23, 30, 37, 44, 51, 58]
