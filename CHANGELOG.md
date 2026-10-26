@@ -50,6 +50,28 @@ returns.
 
 ### Changed
 
+- **`quantile` refits each target's first 500 learned rows to convergence
+  by default (`quantile_refit_rows`; task 278, D-Q2), as `huber` does, under
+  `refit_budget`.** Without decay its one pass kept the rows its warm-up
+  took as least squares (three a coefficient), and those its first bands
+  held, in its sums at full weight, where a batch fit reads wild ones as
+  outliers whose pull the band bounds; they left only by dilution. The
+  refit fits those rows to the minimum of the smoothed check loss at the
+  band their own residuals' MAD draws (damped Newton passes; the
+  majorizer's step where the band holds fewer rows than coefficients; at
+  most 200 passes, a refit at the cap counted in `solve_failures`), then
+  rebuilds the sums at that fit and the scale from its residuals. Over 50
+  streams of 8,000 rows without decay, as the worst stream's gap to
+  statsmodels' `QuantReg`: a fifth of the first 500 rows wild 0.038 ->
+  0.0085, the first three targets 1e4 off 0.22 -> 0.0053, t(2) noise 0.0078
+  -> 0.0058, Cauchy 0.0175 -> 0.0058; a shift of every one of the first 500
+  rows, which no refit of those rows can see, 0.093 -> 0.061. The default
+  count is `max(500, 10·features)`, off above 100 features; a count given is
+  taken from three rows a coefficient up. It costs 0.09 to 2.3 ms once for 1
+  to 50 features and 500 to 1,000 rows, the rows after it cost what they
+  did, and each target holds `(features + 4)·8` bytes a row until it runs.
+  `quantile_refit_rows=0` turns it off. A state saved before it loads with
+  it off and goes on to the bit.
 - **`marginal(bin_stat="huber")` refits its first rows to convergence by
   default (`bin_refit_rows`; task 278).** One pass weighs each row against
   the location and scale before it, so a share of spikes in the first rows
@@ -253,6 +275,28 @@ returns.
 
 ### Fixed
 
+- A readiness gate no longer moves the residual spread the bank keeps per
+  slot, which `sigma`, `zscore`, the drift detector's scale, the ranking of
+  `emit_selected` and the weights of `emit_averaged` read (task 278). It
+  folded only the residuals the bank reported, so `min_weight`,
+  `min_settled_frac` or `max_error_inflation` changed which slot
+  `pred_<t>__selected` took (on a half-life grid of 20 and 200,
+  `min_weight=10` moved the selected prediction from row 53). It now folds
+  each slot's own prediction on the rows a gate withholds as well -- read
+  before the row's update and, under `embargo`, kept with the held row's
+  score -- so with and without any gate the spread is the same to the bit
+  (`ewridge` reads none below its own floor of a row per unknown unless
+  `min_weight` sets that floor lower). `sigma` can therefore be a number on
+  a row whose prediction is withheld, and the conformal interval starts a
+  row sooner; over 3,000 rows `sigma` moves up to 19% (of 1+|v|) in the
+  first rows and under 2e-4 after 1,000. A state saved before 1.4.0 keeps
+  the old rule.
+- `autocorr_<slot>` weighs each residual, and the lag pair it closes, by
+  the row's weight, as `sigma`, the residual quantiles and the metrics
+  already do; it gave every residual a weight of 1 (task 278). On a stream
+  alternating weight-1 rows with residuals at AR(+0.8) and weight-0.02 rows
+  at AR(−0.8), the field now ends at 0.75 where it read −0.08. At equal
+  weights nothing moves. A state saved before 1.4.0 keeps the unit weights.
 - A captured `marginal(bin_stat="huber")` bin is freed by the refit of its
   first rows (task 278; see *Changed*).
 - `huber`, `sgd(loss="huber")`, `quantile` and `marginal(bin_stat="huber")`
@@ -550,6 +594,9 @@ returns.
 
 ### Performance
 
+- The bank's residual spread reads one extra prediction a row while a
+  model's weight is below its `min_weight` floor, and each stream keeps
+  about 16 more bytes (task 278).
 - The anchored sketch adds one division a row per target (a sketch's add
   and read 9.6 to 11.6 ns; `huber` at 20 features within noise, 166.4 to
   166.8 ns a row) and 16 bytes per sketch (task 278).
