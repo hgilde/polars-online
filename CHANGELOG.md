@@ -11,8 +11,39 @@ returns.
 
 ## [Unreleased]
 
+### Added
+
+- **`huber_refit_rows`, on `huber` and on `sgd(loss="huber")`**: the learned rows after which each target's first rows are refit to their converged Huber fit, once (task 277). The scale is rebuilt from the converged fit's residuals. The default is described under *Changed*, and `0` turns the refit off.
+  - The refit runs after the row's own prediction, so predictions stay out of sample.
+  - It moves only its own target's fit. `weight_sum` and `min_weight` do not move.
+  - It costs 0.06 to 7.2 ms once, for 1 to 50 features and 200 to 1,000 rows.
+  - A target present on fewer than about one row in five, under an irregular clock, gives its refit up and keeps its one-pass fit.
+- **`refit_budget`, on `huber` and on `sgd(loss="huber")`**: a bound in MiB on the refit buffers of all of a spec's groups together. The default is 256, and `inf` means no bound (task 277).
+  - **Reservation.** Each new group reserves `(features + 20) · 8` bytes a target for each row of the count when it first appears. That is the most its buffers can hold.
+  - **Past the bound.** The group that would cross the bound gives its refit up and keeps its one-pass fit, and so does every new group after it.
+  - **Reporting.** A notice says so once, and `summary()`'s new `refit_given_up` column counts the targets.
+  - **Deterministic.** A reservation lasts for the life of the bank and is saved with it. So which groups refit does not depend on the chunking, on the order the groups run in, or on a save and load.
+  - **Cost.** Once the bound is reached, no later group refits, even after the first groups' buffers are freed.
+  - **Example.** At 20 features and 500 rows a target reserves 160 KB, so 256 MiB refits the first 1,677 targets.
+  - **Refused** at 0 or below, and beside an `sgd` loss other than `"huber"`.
+
 ### Changed
 
+- **`huber` and `sgd(loss="huber")` now refit each target's first 500 learned rows to convergence by default (`huber_refit_rows`; task 277).** Past 50 features the default is 10 rows a feature. Above 100 features it is off. A count you give is always used. This changes a default in a minor release, which the policy's row for a changed default does not allow. It was the maintainer's decision, as `huber_scale` was in 1.3.0.
+  - **Why.** One pass weighs each row by the fit before it. The first fits are close to least squares, so a share of wild rows pulls them, and the scale learns the pulled fit's residuals. The cut is then drawn wide, and without decay the fit stays captured.
+  - **Measured on `huber`.** The stream was `y = 1000 + 2x + 0.5ε`, with +50 on a share of the rows that have `x > 0`, no decay, and 40 seeds:
+    - Over 20,000 rows at 10, 12.5, 15 and 20% outliers, 6, 13, 15 and 25 streams ended more than 0.05 in slope from statsmodels' converged `RLM`. The worst were 0.19, 0.43, 1.08 and 4.3 away. With the refit, 0, 0, 0 and 4 did (worst 0.004, 0.007, 0.012 and 0.14).
+    - Over 2,000 rows at 20%, 10 streams ended more than 0.05 away with the default, 1 of them more than 0.25. That compares with 29 without the refit, 18 at 200 rows and 3 at `huber_refit_rows=1000`.
+  - **Measured on `sgd`.** Over 2,000 rows at 10 to 20% outliers, all 40 streams ended more than 0.25 away. With the refit, none did. Over 20,000 rows at 20%, all 40 did, and with the refit none.
+  - **Size of the move.** The test stream had 2,000 rows, two targets and 12.5% outliers. On it, 1,450 and 1,358 of 1,997 predictions move.
+    - The largest move is 7.3 for `huber`, where a captured target is freed.
+    - For `sgd` the largest moves are 4.1 and 1.0.
+  - **The way back.** **`huber_refit_rows=0` restores 1.3.0's numbers exactly.**
+  - **Old states and banks.** A state saved by 1.0 to 1.3 loads with the refit off and continues exactly as before. A bank saved then keeps its groups that way. A group it first sees after the load refits under the default, and so does a group a drift reset restarts.
+  - **Where it is off.** The refit is off by default, and refused when asked for, under `ridge_scale="sum"` and under an infinite `huber_delta`.
+  - **Memory.** Each target holds its rows until the refit runs: `(features + 4) · 8` bytes a learned row, about 20 KB a target at one feature. A group shorter than the count holds its rows to the end, bounded by `refit_budget` (below). Measured over 5,000 groups of 150 rows, with two targets and 20 features:
+    - with no bound, peak resident memory was 87 KB a group more than with the refit off, and the saved state 63 KB more;
+    - under the default bound only the first 838 groups refit, which cost 89 MiB more in all.
 - `po.eval.window_metrics` on a `Datetime` or `Date` clock makes the windows
   Polars' `group_by_dynamic` makes of the same rows, reading `every` as
   Polars reads it: nanoseconds to hours are elapsed time, so across a
@@ -114,6 +145,7 @@ returns.
 
 ### Fixed
 
+- **A captured `huber` or `sgd(loss="huber")` fit is freed by the refit of its first rows** (task 277). Before, a share of one-sided wild rows could hold a stream's one-pass fit far from the converged Huber fit for good (see *Changed*).
 - A formula target's saved state is the same bytes whatever the layout of
   the input's text columns in memory (task 278). A session or text column
   read from parquet carried a data buffer its inline values did not need,
@@ -289,6 +321,15 @@ returns.
 
 ### Performance
 
+- **The refit's buffers, and the bound on them** (task 277). Measured with 150-row groups, two targets and 20 features, fed from parquet. Each cell gives peak resident memory after the fit, then the saved state:
+
+| groups | refit off | default (256 MiB) | `refit_budget=inf` |
+|---|---|---|---|
+| 5,000 | 660 / 126 MiB | 749 / 178 MiB | 1,084 / 435 MiB |
+| 20,000 | 1,625 / 502 MiB | 1,641 / 556 MiB | 3,161 / 1,741 MiB |
+
+  - The 20,000-group figures are the median of three runs, which spread by up to 130 MiB.
+  - A row after the refit costs what it did, within 2%.
 - `deco`'s blocked `loglik` check costs about 500 to 1,100 instructions a
   row with 2 to 5 blocks, 3-5% of the row; one block pays nothing (task 278).
 - Reading the windowed CUSUMs' young share costs about 60-90 ns a slot and
