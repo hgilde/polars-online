@@ -198,6 +198,18 @@ returns.
 
 ### Fixed
 
+- `huber`, `sgd(loss="huber")`, `quantile` and `marginal(bin_stat="huber")`
+  rescale with the target at any factor (task 278). A decimal factor, such
+  as grams for kilograms, moved the robust scale by up to 1.6%: its sketch
+  has fixed buckets, and only a power of two maps them onto themselves. The
+  sketch now keeps each residual in units of the first one it takes. Over 50
+  streams of 1,500 rows at scales of 1e±3 and 1e±6, the worst prediction
+  moved by 3.9e-3 of the target's spread for `huber`, 4.3e-3 for `sgd` and up
+  to 0.044 for `quantile`; now 1.6e-12, 3.0e-12 and 3.4e-12, where the fit's
+  own rounding allows 2e-11. Powers of two stay exact to the bit, and the
+  scale stays within 0.78% of the exact weighted median. A state saved
+  before this change keeps its fixed buckets and continues to the bit;
+  outputs at any scale move by up to the sketch's resolution.
 - `huber` and `sgd(loss="huber")` count a refit of a target's first rows
   that takes every one of its IRLS passes in `solve_failures`, as `kmeans`
   and `hmm` count a seeding run stopped at its cap; before, nothing said so
@@ -481,6 +493,9 @@ returns.
 
 ### Performance
 
+- The anchored sketch adds one division a row per target (a sketch's add
+  and read 9.6 to 11.6 ns; `huber` at 20 features within noise, 166.4 to
+  166.8 ns a row) and 16 bytes per sketch (task 278).
 - `quantile` keeps a sketch of `|e|` per target for its band's scale: about
   5% more time a row at 20 features (0.60 to 0.63 ms per 1,000 rows,
   measured natively), and about 9 KB more state per target (task 278).
