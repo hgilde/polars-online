@@ -141,6 +141,7 @@ fn robust_cfg(loss: RobustLoss, standardize: bool) -> RobustCfg {
         ridge_scale: false,
         emit_scale: false,
         refit_rows: 0,
+        mad_anchor: false,
         min_weight_holds_learning: false,
     }
 }
@@ -388,6 +389,7 @@ fn sgd_golden() {
         refit_rows: 0,
         min_weight_holds_learning: false,
         target_spread: false,
+        mad_anchor: false,
     })
     .unwrap();
     check("sgd", &signature(&mut m, 0), GOLDEN_SGD);
@@ -415,6 +417,7 @@ fn sgd_squared_golden() {
         refit_rows: 0,
         min_weight_holds_learning: false,
         target_spread: false,
+        mad_anchor: false,
     })
     .unwrap();
     check("sgd_squared", &signature(&mut m, 0), GOLDEN_SGD_SQUARED);
@@ -466,6 +469,7 @@ fn sgd_simplex_golden() {
         refit_rows: 0,
         min_weight_holds_learning: false,
         target_spread: false,
+        mad_anchor: false,
     })
     .unwrap();
     check("sgd_simplex", &signature(&mut m, 0), GOLDEN_SGD_SIMPLEX);
@@ -1473,6 +1477,7 @@ fn marginal_paths_golden() {
             warm_rows: 10,
             stat: online_core::BinStat::Mean,
             budget_mib: None,
+            mad_anchor: false,
         })),
         ..cfg()
     })

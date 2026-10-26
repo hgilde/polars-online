@@ -70,6 +70,7 @@ fn main() {
                             refit_rows: 0,
                             min_weight_holds_learning: false,
                             target_spread: false,
+                            mad_anchor: false,
                         };
                         let mut model = Sgd::new(cfg).unwrap();
                         let mut acc = 0u64;

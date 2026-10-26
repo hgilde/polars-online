@@ -37,6 +37,7 @@ fn cfg(scale: crate::HuberScale, refit_rows: u32, holds: bool) -> SgdCfg {
         // The target's own units and the unstable rate's gate, as a spec
         // builds them: the scale's learning composes with both.
         target_spread: true,
+        mad_anchor: false,
     }
 }
 

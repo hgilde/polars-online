@@ -34,6 +34,7 @@ fn base(delta: f64, decay: Decay, refit_rows: u32) -> RobustCfg {
         ridge_scale: false,
         emit_scale: false,
         refit_rows,
+        mad_anchor: false,
         min_weight_holds_learning: false,
     }
 }

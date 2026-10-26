@@ -1071,10 +1071,16 @@ class EwMedian:
     the first bucket, ascending, at which the cumulative weight reaches half
     the total. A value below the smallest normal float counts as 0; a weight
     of 0 or a value that is not finite adds nothing. The core keeps the decay
-    as one factor beside the buckets; here each bucket is multiplied."""
+    as one factor beside the buckets; here each bucket is multiplied.
 
-    def __init__(self) -> None:
+    Anchored, as every sketch a spec builds is (task 278), a value is
+    bucketed in units of the first value that counts -- a positive normal
+    float at a weight above 0 -- ``v / a`` capped at the largest float, and
+    the median read is ``a`` times the bucket's representative."""
+
+    def __init__(self, anchored: bool = True) -> None:
         self.w: dict[int | None, float] = {}
+        self.anchor: float | None = 0.0 if anchored else None
 
     def age(self, lam: float) -> None:
         for key in self.w:
@@ -1083,6 +1089,10 @@ class EwMedian:
     def add(self, v: float, weight: float) -> None:
         if not (v >= 0.0 and math.isfinite(v) and weight > 0.0 and math.isfinite(weight)):
             return
+        if self.anchor is not None and v >= sys.float_info.min:
+            if self.anchor == 0.0:
+                self.anchor = v
+            v = min(v / self.anchor, sys.float_info.max)
         key = None if v < sys.float_info.min else _sketch_bucket(v)
         self.w[key] = self.w.get(key, 0.0) + weight
 
@@ -1094,7 +1104,10 @@ class EwMedian:
         for key in sorted(self.w, key=lambda k: -math.inf if k is None else k):
             acc += self.w[key]
             if acc >= 0.5 * total:
-                return 0.0 if key is None else _sketch_representative(key)
+                if key is None:
+                    return 0.0
+                q = _sketch_representative(key)
+                return q * self.anchor if self.anchor else q
         return None
 
     def scale(self) -> float | None:
