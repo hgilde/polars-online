@@ -29,6 +29,23 @@ returns.
 
 ### Changed
 
+- `withheld_reason` has a sixth value, `unstable_rate`, appended after
+  `ill_conditioned` (task 278, D8).
+- Every `sgd` fit with an intercept under an identity link moves (the
+  intercept's level rule); under `"rms"`, `sgd(loss="huber")` is no longer
+  the squared loss at a level (median slope 2.557 against 3.751 on the
+  documented stream). A state saved by 1.3.0 loads with the old rules and
+  goes on to the bit (task 278).
+- `corrchange(kind="window")` refuses an `n_perm` too small to ever flag at
+  its `alpha` -- fewer than `ceil(1/alpha) − 1` draws (99 at alpha 0.01) --
+  and names the smallest that can; a fixed `crit` is not affected (task
+  278).
+- `kmeans` refuses a `dead_frac` of 0.5 or more (it was refused only from
+  1): a re-placed centre starts at half the weight of the cluster it is
+  split from, so from 0.5 a centre split from a cluster at an equal share
+  starts at the dead floor and each check re-places it again. Over 50
+  streams with a check every 25 rows none cascaded at 0.45, 3 at 0.5, 29 at
+  0.6 and all 50 at 0.9 (task 278).
 - `kalman`'s numbers move wherever the noise is learned (task 278): a step
   in the truth is learned at `coef_half_life` (it was about 1.45 times
   slower); `share_p` predicts exactly as the per-target filters where every
@@ -158,6 +175,79 @@ returns.
 
 ### Fixed
 
+- `holt`'s level no longer drifts by its first observation's error (task
+  278, D-H). Its level and trend each gained `1/n`, which pinned the trend
+  to the first observation, `(l − y₁)/(t − t₁)`, and the level, adding the
+  trend every row, carried that observation's error times `ln n`: without
+  decay it was 11 off a flat series at 40,000 rows (the worst of 50 seeds,
+  noise 0.5), and at `half_life=10000` 6.3 off at 10,000 rows. Each row now
+  takes the larger of the textbook gains and the exact gains of the
+  weighted least-squares line through every observation so far: without
+  decay `holt` is that line, matching statsmodels' `WLS` to 1e-15 where
+  1.3.0 was up to 3.4 off; under a half-life the warm-up is the line fit,
+  and once the textbook gains are larger, after a few half-lives, the fit is
+  statsmodels' `Holt` as before, to 1e-12. `trend_half_life=inf` is the line
+  fit's slope. A state saved by an earlier version goes on with the textbook
+  gains it was fitted under.
+- Under an `embargo`, a row held for its label is scored over the clock
+  since the newest row the model learned -- the held rows' steps and its
+  own, capped at `gap_cap` as one gap -- as a bank fed only the matured rows
+  scores it with `predict`; it was scored over its own clock step, as if it
+  sat one step after the last learned row (task 278, D11). `predict` against
+  a bank still holding rows reads the same clock. This moves `holt`'s
+  forecast (it extrapolates the trend across the whole gap; up to 11 on a
+  probe whose target spreads about 2.5), `hmm`'s `predicted_state` and
+  `loglik` (up to 0.014 and 0.022), `micro`'s `micro_id` and `outlier` (15
+  and 11 of 400 rows), `sgd`'s and `pa`'s predictions while their scaler
+  warms up (19 rows, up to 0.18), and `kalman`'s `error_inflation` and its
+  `max_error_inflation` gate (up to 0.086). Every other kind's score reads
+  no clock step and is unchanged, as is every spec without an `embargo`.
+- `corrchange(kind="window")`'s permutation test is the standard one, so its
+  size never exceeds `alpha` (task 278): a report flags when fewer than
+  `floor(alpha·(n_perm+1))` draws reach its statistic, counting the
+  observed statistic as one more draw, an exact size of that count over
+  `n_perm + 1` (1/21 = 0.0476 at 20 draws and alpha 0.05, 0.0498 at the
+  default 200). The old critical value, the `ceil((1−alpha)·n_perm)`-th
+  draw, had a size of 0.0952 at 20 draws and alpha 0.05, and 0.0476 at alpha
+  0.01, nearly five times alpha. Over 200 iid streams the measured rate is
+  within 1.4 standard errors of the new level at every alpha tested. A
+  loaded state keeps its critical value until the next redraw. On
+  REGIMES.md's break study the window detector's false alarms fall from
+  53.67 to 44.70 per 1000 quiet rows, with a median delay of 30 rows
+  instead of 25.
+- `sgd`'s `clip_gradient` and AdaGrad's epsilon are in units of the
+  target's own spread under the squared and Huber losses (`clip_gradient ×
+  s_y`, no clip before the target has a spread; `1e-8 × s_y`), so a target
+  scaled by a power of two fits as the unscaled one, scaled, to the bit. As
+  constants in the target's units, the default clip bound every gradient of
+  a target in the millions (its fit up to 8.25 of the target's spread off
+  the unscaled one, scaled, over 50 streams), and AdaGrad's epsilon left a
+  target near 1e-6 off by 6.4e-4 of its spread (task 278, D1, D2).
+- `sgd` takes a target's level into its intercept: under an identity link
+  with an intercept, the intercept takes the running mean's step in place
+  of its gradient's while that gain is the larger (and over the first 22
+  rows), and the first learned row's whole residual. A level now costs
+  rounding: at a level of 1,000 the worst of 50 streams went from 2.49 off
+  least squares after 8,000 rows to 0.0077, and the quantile loss at a level
+  of 3 from 0.21 to 0.043; 200-row groups at a level of 10 scored R² 0.44
+  where they scored −47,000 (task 278, D-S).
+- `sgd` at a learning rate past its stability bound no longer diverges
+  quietly: each target keeps its recent steps' gains `q = lr·(w·c·|z|² +
+  l2)`, and while the mean of `q²` exceeds twice the mean of `q` its
+  predictions are withheld as `unstable_rate`, with a notice. At a constant
+  rate of 0.5 on five standardized features the last 1,000 of 20,000 rows
+  had served an error 40,000 times the target's variance with nothing said
+  (task 278, D8).
+- `hmm`'s `transition_prior` docs say the prior pulls harder than its
+  pseudo-count (at 10 and 4,000 rows the matrix is 0.088 from the truth at
+  the 95th percentile, against 0.006 from the pseudo-counts alone, because
+  the counts are read through the matrix being learned; still consistent:
+  0.035 / 0.016 / 0.0066 at 4,000 / 16,000 / 64,000 rows at the default),
+  and that the lockout at 0 shows at only 3 sd separation (7 of 50
+  streams). `bocpd`'s `robust_beta` states its trade over 50 streams with a
+  four-sigma shift: all found within 6 rows at 0.1; all at 0.15, worst 16
+  rows late; 38 of 50 at 0.2, worst 120 late; one at 0.3; none at 0.5
+  (task 278).
 - `kalman` with the noise learned (no `obs_var`) holds its covariance in
   units of the noise, so its gain never reads the noise estimate, and its
   intercept's prior is diffuse (task 278). The estimate in the gain weighed
@@ -355,6 +445,12 @@ returns.
 
 ### Performance
 
+- `sgd`'s step keeps each target's spread, step gains and level: about 3-5%
+  more a row (about 5 ns at 20 features, about 100 ns at 1,000, measured
+  natively), the cost of the clip in the target's units, the level rule and
+  the unstable-rate gate (task 278).
+- `holt`'s step also updates the line fit's three sums, a few operations a
+  row; no change measurable at the bank (task 278).
 - **The refit's buffers, and the bound on them** (task 277). Measured with 150-row groups, two targets and 20 features, fed from parquet. Each cell gives peak resident memory after the fit, then the saved state:
 
 | groups | refit off | default (256 MiB) | `refit_budget=inf` |
