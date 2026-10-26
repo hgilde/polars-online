@@ -246,6 +246,25 @@ def test_the_ring_clears_on_a_capped_gap_and_a_session_change():
     assert run(sess, session="s", session_gap=1.0) != plain, "so does a session change"
 
 
+def test_the_lag_correlations_are_withheld_below_min_weight():
+    """Below ``min_weight`` every lag correlation is null, as ``corr`` is:
+    at 3 rows under a floor of 5 the table read ``corr`` null beside a
+    ``lag_corr_xx`` of 0.17 (task 278's follow-ups). The gate withholds and
+    learns nothing: the same rows without a floor give the lag correlations
+    it withheld, and past the floor the two tables are the same."""
+    df = stream(n=40, seed=5)
+    lags = ("lag_corr_xx", "lag_corr_yy", "lag_corr_xy", "lag_corr_yx")
+    kw = dict(lags=[1, 2], serial_rule="truncated")
+    gated, free = pairs(df.head(3), min_weight=5.0, **kw), pairs(df.head(3), min_weight=0.0, **kw)
+    assert gated["corr"] is None and free["corr"] is not None
+    for key in lags:
+        assert gated[key] == [None, None], key
+        assert free[key][0] is not None, key
+    for key in ("weight_sum", "cov", "n_serial", "phi_x"):
+        assert gated[key] == free[key], key
+    assert pairs(df, min_weight=5.0, **kw) == pairs(df, min_weight=0.0, **kw)
+
+
 def test_lag_moments_hold_across_null_targets():
     """The promise in ``marglag.rs``: a target absent for a run of rows
     leaves every lagged correlation where it was, as the pair moments are

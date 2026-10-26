@@ -685,19 +685,6 @@ class TestHuberSolveEvery:
             assert pl.concat([head, tail]).equals(whole, null_equal=True), cut
 
 
-#: Task 278 (b19), a defect: the refit's stopping rule reads the
-#: coefficients in the caller's units (`huber_refit::converged`: no
-#: coefficient moved by more than 1e-10 of `max|beta|`), so a feature in
-#: small units, whose coefficient is large, loosens the rule for every other
-#: coefficient and the refit stops a pass earlier or later. The fit after the
-#: refit then differs from the unscaled run's by up to 3.7e-8 of a prediction
-#: (x0 times 2^-10, measured 2026-10-26), where the one pass is exact.
-REFIT_UNITS = pytest.mark.xfail(
-    strict=True,
-    reason="task 278 (b19): the refit's convergence rule is in the features' units",
-)
-
-
 class TestPowersOfTwo:
     """Scaling ``x0`` by ``2^k`` is exact, and so is every step of the fit
     that reads it under correlation form (the ridge is dimensionless there)
@@ -755,8 +742,11 @@ class TestPowersOfTwo:
         assert int(np.argmax(np.cumsum(df["w"].to_numpy() > 0) >= 500)) == 549
         self.check(df.head(549), standardize=True)
 
-    @REFIT_UNITS
     def test_and_so_after_the_refit(self):
-        """From the refit's row, its coefficients, and from the next row its
-        predictions, part (``REFIT_UNITS``)."""
+        """And past it, to the bit. The refit stops once no row's fitted
+        value moves by more than 1e-10 of the residual scale, and a fitted
+        value does not read a feature's units. Until task 278's follow-ups it
+        stopped on the coefficients against ``max|beta|``, so a feature in
+        small units, its coefficient large, loosened the stop for the others:
+        3.7e-8 of a prediction apart at ``x0`` times 2^-10 (task 278, b19)."""
         self.check(_frame(), standardize=True)

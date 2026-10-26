@@ -948,7 +948,7 @@ v_i = w_i · λ_{i+1} ⋯ λ_n                 each buffered row's weight, decay
 r_i = y_i − z_i·β                         against the last pass's fit (the first pass: the online fit)
 σ   = weighted median of |r_i| at v_i', over 0.6745       (the weighted root mean square under "rms")
 u_i = min(1, δσ / |r_i|)
-β   = the ridge solve of the rows at v_i · u_i            repeated until β moves by under 1e-10 of max|β|, or 200 passes
+β   = the ridge solve of the rows at v_i · u_i            repeated until no row's fit z_i·β moves by over 1e-10 of σ, or 200 passes
 ```
 
 It then rebuilds the target's sums from the rows at their converged
@@ -1013,7 +1013,7 @@ cap of 200 passes, about 9 s once at 1,000 features (2 s at 500), which
 `solve_failures` counts. The cap was 50 passes, about 2 s at 1,000
 features; 200 is where the slow refits of heavy one-sided outliers end:
 over 3,000 streams of 50 to 500 rows with up to 45% of the rows on one side
-moved by a level, 50 passes ran out on 142 and 200 on 6, all six past 39%.
+moved by a level, 50 passes ran out on 149 and 200 on 9, all nine past 39%.
 
 **`refit_budget` bounds the buffers of all a spec's groups together: 256
 MiB by default, or `inf` for no bound.** Each new group reserves, when it

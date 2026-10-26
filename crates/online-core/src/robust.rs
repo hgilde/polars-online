@@ -1287,17 +1287,14 @@ impl Robust {
         let (mut passes, mut solved) = (0, false);
         for _ in 0..REFIT_PASSES {
             passes += 1;
+            let mut scale = None;
             match &beta {
                 Some(b) => {
                     for (i, a) in absr.iter_mut().enumerate() {
                         *a = (rows.y(i) - fitted(b, rows.x(i), intercept)).abs();
                     }
-                    huber_weights(
-                        &absr,
-                        scale_of(self.cfg.huber_scale, &absr, &vs),
-                        delta,
-                        &mut u,
-                    );
+                    scale = scale_of(self.cfg.huber_scale, &absr, &vs);
+                    huber_weights(&absr, scale, delta, &mut u);
                 }
                 None => u.fill(1.0),
             }
@@ -1311,7 +1308,7 @@ impl Robust {
                 break;
             };
             solved = true;
-            let done = converged(beta.as_deref(), &next);
+            let done = converged(&rows, intercept, beta.as_deref(), &next, scale);
             beta = Some(next);
             if done {
                 break;

@@ -37,8 +37,8 @@
 //! moments; and from them `corr = S_xy / √(S_xx·S_yy)`, `beta = S_xy /
 //! S_xx` (the slope of `y` on `x`) and `t = corr·√((n_kish − 2) / (1 −
 //! corr²))`, the t-statistic of the correlation at Kish's `n`. `corr`, `beta`
-//! and `t` are NaN while `W_t < min_weight`; the moments are always
-//! reported. The t is descriptive: the rows of a stream are rarely
+//! and `t` -- and under `lags` the lag correlations -- are NaN while
+//! `W_t < min_weight`; the moments are always reported. The t is descriptive: the rows of a stream are rarely
 //! independent, and nothing here pretends otherwise.
 //!
 //! # Shared feature moments
@@ -332,7 +332,8 @@ pub struct Pair {
     /// Each is the lagged covariance over the two contemporaneous standard
     /// deviations, as `ew_cov`'s `lag_corr` is, and like it **not clamped**:
     /// a lagged correlation is not bounded by one in finite samples, and
-    /// clamping would hide that. The serial correction guards itself.
+    /// clamping would hide that. The serial correction guards itself. Each
+    /// is NaN below `min_weight`, as `corr` is; `n_serial` still reads them.
     pub lag_corr_xx: Vec<f64>,
     pub lag_corr_yy: Vec<f64>,
     pub lag_corr_xy: Vec<f64>,
@@ -1217,7 +1218,11 @@ impl Marginal {
                 }
             }
         };
-        let (corr, beta, t_stat) = if n_eff >= self.cfg.min_weight[t] {
+        // `min_weight`'s gate: below it the statistics read off the pair --
+        // the correlation, its slope and t, the lag correlations and the
+        // split -- are withheld, and the moments reported.
+        let enough = n_eff >= self.cfg.min_weight[t];
+        let (corr, beta, t_stat) = if enough {
             // The same product of the same two roots `ew_cov` takes, so the
             // correlations agree to the bit.
             let d = var_x.sqrt() * var_y.sqrt();
@@ -1297,6 +1302,19 @@ impl Marginal {
                     }
                 }
             }
+            // Withheld below `min_weight` as `corr` is, after the serial
+            // count has read them: `n_serial` is a count, reported as
+            // `n_kish` is (task 278's follow-ups).
+            if !enough {
+                for v in lag_corr_xx
+                    .iter_mut()
+                    .chain(&mut lag_corr_yy)
+                    .chain(&mut lag_corr_xy)
+                    .chain(&mut lag_corr_yx)
+                {
+                    *v = f64::NAN;
+                }
+            }
         }
         // The binned view of the same pair. Gated by `min_weight` like the
         // linear statistics, since it answers the same question.
@@ -1310,9 +1328,7 @@ impl Marginal {
                 bin_mean_y.push(b.mean_y);
                 bin_var_y.push(b.var_y);
             }
-            if n_eff >= self.cfg.min_weight[t]
-                && let Some(split) = hist.best_split(t, j)
-            {
+            if enough && let Some(split) = hist.best_split(t, j) {
                 split_gain = split.gain;
                 split_at = split.at;
                 // Serial dependence, when it was measured, deflates this

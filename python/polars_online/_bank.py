@@ -1634,7 +1634,7 @@ class ModelBank:
             nor Gaussian. Null until ``weight_sum`` reaches the target's ``min_weight``,
             null while the stream is less settled than ``min_settled_frac``, and null
             where undefined (a constant column, ``n_kish <= 2``). Both gates withhold
-            ``t_stat_serial`` and the split columns too.
+            ``t_stat_serial``, the ``lag_corr_*`` columns and the split columns too.
 
         With ``lags``, four more list columns and four numbers:
 
@@ -1643,7 +1643,8 @@ class ModelBank:
             ``ew_cov``, a lagged moment starts at 0 and takes its first product when
             a learned row has one ``l`` rows back, so each of the four lag columns
             reads 0.0, not null, at a lag ``l`` while a group has learned no more
-            than ``l`` rows.
+            than ``l`` rows and ``weight_sum`` has reached ``min_weight``. Below
+            ``min_weight`` each is null, as ``corr`` is.
         ``lag_corr_xy``, ``lag_corr_yx``
             The feature now against the target ``l`` rows back, and the target now
             against the feature ``l`` rows back, at each of ``cross_lags`` (every lag
@@ -2230,7 +2231,7 @@ class ModelBank:
         ``sgd(loss="huber")``
             Each target whose refit of its first rows took all 200 of its IRLS
             passes. Past about 20% of outliers on one side the refit converges
-            slowly: over 3,000 streams, 50 passes ran out on 142 and 200 on 6.
+            slowly: over 3,000 streams, 50 passes ran out on 149 and 200 on 9.
         ``lasso``
             A coordinate descent that ran out of ``max_iter`` sweeps before every
             coefficient moved less than ``tol``, one per target and path point.

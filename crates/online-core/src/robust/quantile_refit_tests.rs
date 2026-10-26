@@ -335,26 +335,67 @@ fn a_count_inside_the_warm_up_is_refused() {
 }
 
 /// Over 3,000 short streams with a level added to up to 45% of the rows on
-/// one side (`slow_refit_stream`, which takes `huber`'s IRLS up to 880
-/// passes), no refit runs to its cap: the most passes taken were 19.
+/// one side (`slow_refit_stream`, which takes `huber`'s IRLS up to 428
+/// passes), no refit runs to its cap: the most passes taken were 19. Nor
+/// on the first 1,000 of them moved to a level of `1e6`, where a step's
+/// rounding can stay above the stop pass after pass and the refit ends on
+/// a step that no longer lowers its loss (task 278's follow-ups): 15 at
+/// most, where without that end 368 of the 1,000 ran to the cap.
 #[test]
 fn the_refit_converges_on_hard_short_streams() {
     let mut most = 0;
-    for trial in 0..3000 {
+    let streams = (0..3000)
+        .map(|t| (t, 0.0))
+        .chain((0..1000).map(|t| (t, 1e6)));
+    for (trial, level) in streams {
         let rows = crate::huber_refit::slow_refit_stream(trial);
         let mut c = base(0.5, Decay::Lam(1.0), rows.len() as u32);
         c.n_features = 1;
         let mut m = Robust::new(c).unwrap();
         for (x, y) in &rows {
-            m.step(&[*x], &[Some(*y)], 1.0, 1.0);
+            m.step(&[*x], &[Some(*y + level)], 1.0, 1.0);
         }
         let st = m.refit_status()[0];
         assert!(
             st.done && !st.failed && !st.ran_to_cap(),
-            "trial {trial}: {st:?}"
+            "trial {trial} at {level}: {st:?}"
         );
-        assert_eq!(m.solve_failures, 0, "trial {trial}");
+        assert_eq!(m.solve_failures, 0, "trial {trial} at {level}");
         most = most.max(st.passes);
     }
     assert!(most <= 40, "{most}");
+}
+
+/// The refit's stop reads no level (task 278's follow-ups): the same rows
+/// moved to `±1e3` refit to the fit at 0 moved by the level, the slopes to
+/// `1e-13` and the intercept to its last places, in the same passes. The
+/// stop relative to `max|β|` left the slopes `1.2e-11` apart at `1e3`, and
+/// the intercept `2.0e-11`.
+#[test]
+fn a_level_does_not_loosen_the_refit() {
+    let n = 400;
+    let data = stream(n, 7, 3, 1, false);
+    let fit = |level: f64| {
+        let shifted: Vec<Row> = data
+            .iter()
+            .map(|(x, y, w)| (*x, vec![y[0].map(|v| v + level)], *w))
+            .collect();
+        let mut m = Robust::new(base(0.75, Decay::Lam(1.0), n as u32)).unwrap();
+        run(&mut m, &shifted);
+        let st = m.refit_status()[0];
+        assert!(st.done && !st.ran_to_cap(), "{level}: {st:?}");
+        (m.coefficients().unwrap()[0].clone(), st.passes)
+    };
+    let (at0, p0) = fit(0.0);
+    for level in [1e3, -1e3] {
+        let (b, p) = fit(level);
+        assert!(
+            (b[0] - level - at0[0]).abs() <= 1e-11,
+            "{level}: {b:?} against {at0:?}"
+        );
+        for (q, r) in b[1..].iter().zip(&at0[1..]) {
+            assert!((q - r).abs() <= 1e-13, "{level}: {b:?} against {at0:?}");
+        }
+        assert_eq!(p, p0, "{level}");
+    }
 }

@@ -3993,7 +3993,8 @@ def marginal(
         the same statistic ``ew_cov(lags=)`` computes, to the bit. As there, a
         lagged moment starts at 0 and takes its first product when a learned row
         has one ``l`` rows back, so each lag reads 0.0, not null, while a group
-        has learned no more than ``l`` rows.
+        has learned no more than ``l`` rows. Below ``min_weight`` the lag
+        correlations are null, as ``corr`` is.
 
         ``cross_lags`` keeps the two cross-correlations at fewer lags:
         strictly increasing, each one of ``lags``, and ``[]`` for none, which

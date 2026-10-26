@@ -2956,7 +2956,7 @@ class TestQuantileIsQuantReg:
         are the whole level -- and the least-squares rows before it, which
         the first rows are. The fit is ``QuantReg``'s, 0.011 off at 0.25 and
         0.010 at 0.75 measured, and the fit of the same rows at 0, shifted by
-        the level, to 5.8e-15."""
+        the level, to rounding, with the refit of the first rows on or off."""
         import statsmodels.api as sm
 
         x, y = self._rows(20_000)
@@ -2967,16 +2967,18 @@ class TestQuantileIsQuantReg:
         want = np.asarray(sm.QuantReg(y_level, z).fit(q=tau).params)
         assert np.max(np.abs(got - want)) <= 0.03, (got, want)
         # The one pass is the fit of the same rows at 0, shifted by the
-        # level, to rounding. The refit of the first rows (task 278, D-Q2)
-        # stops once a pass moves no coefficient by more than 1e-10 of the
-        # largest, here the level's intercept, so with it on the shift holds
-        # to that stop: 2.4e-10 measured at 0.75 (2026-10-26).
+        # level, to rounding: 1.1e-13 measured, the intercept's last place.
+        # So is the refit of the first rows (task 278, D-Q2), whose stop
+        # reads each coefficient against the residual scale, not the level:
+        # 3.1e-15 and 7.8e-16 measured at 0.25 and 0.75, where a stop
+        # relative to the largest coefficient -- the level's intercept --
+        # left 2.3e-12 and 2.4e-10 (2026-10-26, task 278's follow-ups).
         off = dict(half_life=float("inf"), quantile_refit_rows=0)
         one_pass = self._fit(x, y_level, tau, **off)
         at_zero = self._fit(x, y, tau, **off) + np.array([level, 0.0, 0.0])
         np.testing.assert_allclose(one_pass, at_zero, rtol=0.0, atol=1e-11)
         at_zero = self._fit(x, y, tau, half_life=float("inf")) + np.array([level, 0.0, 0.0])
-        np.testing.assert_allclose(got, at_zero, rtol=0.0, atol=1e-10 * abs(level))
+        np.testing.assert_allclose(got, at_zero, rtol=0.0, atol=1e-11)
 
     def test_it_is_the_batch_smoothed_fit_at_the_same_bandwidth(self):
         """The estimator the stream approximates, computed by hand: Newton to
