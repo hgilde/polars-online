@@ -1670,6 +1670,13 @@ pub(crate) struct AccSnap {
 }
 
 impl AccSnap {
+    /// Per target, the rows of positive weight it was present on before the
+    /// snapshot's row ([`Cross`]'s count): a window holds the live count
+    /// less this, exactly (docs/PLAN.md task 217).
+    pub(crate) fn rows_of_targets(&self) -> &[u64] {
+        &self.cross.nj
+    }
+
     /// Whether a snapshot is of `n_targets` targets over `k` slots, as the
     /// live accumulators must be ([`Acc::has_shape`]): every Gram's moments
     /// at the width with a weight a subtraction can read, each target
@@ -2609,6 +2616,7 @@ mod tests {
         };
         let lasso = |gaps: TargetGaps| {
             Lasso::new(LassoCfg {
+                min_weight_holds_learning: false,
                 n_features: 2,
                 n_targets: 2,
                 fit_intercept: true,
@@ -2714,6 +2722,7 @@ mod tests {
         })
         .unwrap();
         let lasso = crate::Lasso::new(crate::LassoCfg {
+            min_weight_holds_learning: false,
             n_features: 2,
             n_targets: 2,
             fit_intercept: true,

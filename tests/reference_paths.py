@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from reference import EwMedian, _enet_descent
+from reference import EwMedian, _enet_descent, _enet_exact
 
 
 def _within(horizon: float, closed: str):
@@ -160,6 +160,7 @@ def lasso_paths_ref(
     fit_intercept: bool = True,
     target_gaps: str = "own_rows",
     tol: float = 1e-14,
+    min_weight_holds_learning: bool = False,
 ) -> dict[str, np.ndarray]:
     """The ``lasso`` builder's path over several targets, null targets,
     ``target_gaps``, ``window_size``, ``fit_intercept=False`` and
@@ -218,19 +219,28 @@ def lasso_paths_ref(
     the fit holds under a finite half-life, docs/PLAN.md task 115 (b); every row
     for an infinite one), when
     ``max_rows_between_solves`` rows have gone by, or when there has been
-    none yet and ``weight_sum`` has reached ``min_weight``. That last rule is
-    written for one target and one threshold; with several the reference
-    raises if it is ever the one that decides, so a test must let the cadence
-    solve first.
+    on the row that brings a target's rows of positive weight inside the fit
+    (the window as that row sees it) to ``kt``, the model's floor of a row
+    per coefficient. With ``min_weight_holds_learning``
+    (the form a state saved before task 278 goes on in) the last rule is
+    instead: when there has been none yet and ``weight_sum`` has reached
+    ``min_weight``. That rule is written for one target and one threshold;
+    with several the reference raises if it is ever the one that decides, so
+    a test must let the cadence solve first.
 
     **``lam_selected``.** Per target, the path point with the least weighted
     sum of squared out-of-sample errors so far, each at ``w * 0.5 ** (age /
     select_half_life)`` (default the half-life) and, under a window, inside it
-    -- as it stood before the row. The errors are those of the predictions
-    ``pred`` shows, on the rows the target is present: from the row where the
-    target's own weight reaches its own ``min_weight``, so a row its threshold
-    withholds adds none, whatever the other targets' thresholds (review
-    2026-10-05, CA3). NaN where there is no error yet, and where the best two
+    -- as it stood before the row. The errors are those of the model's own
+    predictions, whatever ``min_weight`` withholds of them, on the rows the
+    target is present: from the row the target has ``kt`` rows of positive
+    weight before it, inside the window under one (task 278, D10). With
+    ``min_weight_holds_learning``, those of the predictions ``pred`` shows:
+    from the row where the target's own weight reaches its own
+    ``min_weight``, so a row its threshold withholds adds none, whatever the
+    other targets' thresholds (review 2026-10-05, CA3). Either way an error
+    read off a fit the reference does not hold raises. NaN where there is no
+    error yet, and where the best two
     are within 1e-9 of each other (a tie is not something to hold a library
     to).
 
@@ -283,12 +293,18 @@ def lasso_paths_ref(
     def decay(ages: np.ndarray, h: float) -> np.ndarray:
         return np.ones_like(ages) if np.isinf(h) else 0.5 ** (ages / h)
 
-    def solve_one(xg, omg, xo, yo, omo) -> np.ndarray:
+    def solve_one(xg, omg, xo, yo, omo) -> tuple[np.ndarray, np.ndarray]:
         """One target's path: the Gram's rows ``xg`` at ``omg``, the target's
-        own rows ``xo``, ``yo`` at ``omo``."""
+        own rows ``xo``, ``yo`` at ``omo``. And the same path for the
+        selection, which scores the model's own predictions from the floor's
+        row on (task 278, D10), where the first solves are too ill-conditioned
+        for the descent from zero to hold: a problem whose ``C + l2 I`` is
+        positive definite is read off its optimality conditions there
+        (:func:`reference._enet_exact`)."""
         fit = np.full((npath, kt), np.nan)
+        sel = np.full((npath, kt), np.nan)
         if omo.sum() <= 0.0:
-            return fit
+            return fit, sel
         if fit_intercept:
             mg = _weighted_mean(xg, omg)
             cov = (omg[:, None, None] * np.einsum("ri,rj->rij", xg - mg, xg - mg)).sum(
@@ -315,13 +331,21 @@ def lasso_paths_ref(
         for p, lam in enumerate(path):
             l1, l2 = lam * l1_ratio, lam * (1.0 - l1_ratio)
             if floor + l2 < 1e-2:
+                if floor + l2 <= 1e-12:
+                    continue
+                b = np.zeros(k)
+                b[kept] = _enet_exact(C, c, l1, l2) / s
+                sel[p, off:] = b
+                if fit_intercept:
+                    sel[p, 0] = ybar - mo @ b
                 continue
             b = np.zeros(k)
             b[kept] = _enet_descent(C, c, l1, l2, tol) / s
             fit[p, off:] = b
             if fit_intercept:
                 fit[p, 0] = ybar - mo @ b
-        return fit
+            sel[p] = fit[p]
+        return fit, sel
 
     def solve(t_now: float) -> np.ndarray:
         ta, wa, xa, ya = (np.asarray(v) for v in (T, Wr, Xr, Yr))
@@ -332,8 +356,10 @@ def lasso_paths_ref(
         for j in range(m):
             own = inside & ~np.isnan(ya[:, j])
             gram = own if target_gaps == "own_rows" else inside
-            fit[j] = solve_one(xa[gram], om[gram], xa[own], ya[own, j], om[own])
+            fit[j], fit_sel[j] = solve_one(xa[gram], om[gram], xa[own], ya[own, j], om[own])
         return fit
+
+    fit_sel = np.full((m, npath, kt), np.nan)
 
     # The rows learned so far, and the errors each target has been scored by.
     T: list[float] = []
@@ -345,6 +371,7 @@ def lasso_paths_ref(
     fit = None
     t_last, pending = 0.0, 0.0
     since_clock, since_rows, since_w = 0.0, 0, 0.0
+    own_pred = np.full((m, npath), np.nan)
     for i in range(n):
         if np.isnan(X[i]).any():
             pending += dclock[i]
@@ -353,6 +380,7 @@ def lasso_paths_ref(
         pending = 0.0
         t_now = (t_last + d) if T else 0.0
         z = np.concatenate(([1.0], X[i])) if fit_intercept else X[i]
+        own_pred[:] = np.nan
 
         # ---- before the row: every weight is seen from the last accepted row ----
         if T:
@@ -377,6 +405,21 @@ def lasso_paths_ref(
                         f"row {i}, target {j} is scored with a fit the reference does not hold"
                     )
                 pred[i, j] = p
+            if not min_weight_holds_learning:
+                # The model's own prediction, which the selection scores
+                # from the floor's row whatever `min_weight` withholds.
+                rows_in = 0
+                if T:
+                    tt, ww, yy = np.asarray(T), np.asarray(Wr), np.asarray(Yr)[:, j]
+                    mine = keep(tt, np.arange(len(T)), t_last) & (ww > 0.0) & ~np.isnan(yy)
+                    rows_in = int(mine.sum())
+                scored = fit is not None and w_target[i, j] > 0.0 and rows_in >= kt
+                own_pred[j] = fit_sel[j] @ z if scored else np.nan
+                if scored and np.isnan(own_pred[j]).any() and not np.isnan(Y[i, j]):
+                    raise ValueError(
+                        f"row {i}, target {j}: the selection scores a fit the reference "
+                        "does not hold"
+                    )
             if errs[j]:
                 te, we, ee, re = (np.asarray(v) for v in zip(*errs[j], strict=True))
                 ages_e = t_last - te
@@ -395,9 +438,10 @@ def lasso_paths_ref(
         if ring is not None:
             ring.learn(len(T) - 1, t_now)
         for j in range(m):
-            if np.isnan(pred[i, j]).any() or np.isnan(Y[i, j]) or not w[i] > 0.0:
+            scored = pred[i, j] if min_weight_holds_learning else own_pred[j]
+            if np.isnan(scored).any() or np.isnan(Y[i, j]) or not w[i] > 0.0:
                 continue
-            errs[j].append((t_now, float(w[i]), Y[i, j] - pred[i, j], len(T) - 1))
+            errs[j].append((t_now, float(w[i]), Y[i, j] - scored, len(T) - 1))
         t_last = t_now
 
         # ---- solve, on the schedule ----
@@ -416,7 +460,20 @@ def lasso_paths_ref(
         else:
             by_cadence = solve_every <= 0.0 or since_clock >= solve_every
         cadence = teaches and (by_cadence or since_rows >= max_rows)
-        if teaches and not cadence and fit is None:
+        reached = False
+        if teaches and not min_weight_holds_learning:
+            # The row brings a target's rows of positive weight inside the
+            # fit (the window as this row sees it) to the floor.
+            tt, ww = np.asarray(T), np.asarray(Wr)
+            inside_now = keep(tt, np.arange(len(T)), t_now) & (ww > 0.0)
+            yy = np.asarray(Yr)
+            reached = any(
+                not np.isnan(Y[i, j]) and int((inside_now & ~np.isnan(yy[:, j])).sum()) == kt
+                for j in range(m)
+            )
+        if not min_weight_holds_learning:
+            cadence = cadence or reached
+        elif teaches and not cadence and fit is None:
             ages = t_now - np.asarray(T)
             inside = keep(np.asarray(T), np.arange(len(T)), t_now)
             weight = (np.asarray(Wr) * decay(ages, half_life))[inside].sum()

@@ -51,7 +51,7 @@ import pytest
 
 import polars_online as po
 
-TIER = "essential"
+TIER = "mixed"
 
 # --- the oracle ----------------------------------------------------------------
 
@@ -813,3 +813,91 @@ def test_a_tiny_scale_target_gives_a_tiny_finite_radius():
     wt = width(tiny)
     assert np.isfinite(wt[20:]).all()
     assert 1e-101 < wt[-1] < 1e-98, wt[-1]
+
+
+# --- 4. the knobs' order (task 278, batch 23) --------------------------------------
+#
+# Telescoping the recursion gives, with unit weights and steps
+# `η_t = rate · sigma_t`, `|Σ sigma_t (err_t − α)| ≤ (B + max η) / rate`: the
+# sigma-weighted miss rate is held to the level by a bound that falls like
+# one over the rate. So a larger rate keeps the whole run's coverage nearer
+# the level, and after the scale moves it brings the radius back sooner, at
+# the price of a radius that moves more from row to row. A larger coverage
+# asks for a wider interval. None of the three is a theorem row by row or
+# stream by stream (a single stream's error can tick up a little between
+# two rates); each is held over a stream's whole run, at the worst of many
+# streams on CI, with the margins measured.
+
+RATES = (0.005, 0.02, 0.05, 0.2, 1.0)
+
+
+def _coverage_runs(kind, seed, n, rates=RATES):
+    """For each rate: the whole run's |coverage − 0.9| and the miss rate in
+    the 500 rows after the noise triples (the shifting stream's 3n/4)."""
+    df = _stream(kind, n=n, seed=seed)
+    y = df["y"].to_numpy()
+    errs, misses = [], []
+    for rate in rates:
+        out = _fit_large(df, rate=rate)
+        lo, hi = field(out, "lo_y"), field(out, "hi_y")
+        held = (y >= lo) & (y <= hi)
+        errs.append(abs(held[np.isfinite(lo)].mean() - 0.9))
+        at = 3 * n // 4
+        misses.append(1.0 - held[at : at + 500].mean())
+    return np.array(errs), np.array(misses)
+
+
+class TestTheKnobsOrder:
+    def test_a_larger_rate_holds_the_coverage_nearer_and_recovers_sooner(self):
+        """One stream of 20,000 rows. Measured 2026-10-26 at rates 0.005,
+        0.05 and 1: |coverage − 0.9| 0.029, 0.0052, 0.00057; misses in the
+        500 rows after the shift 0.18, 0.12, 0.10."""
+        errs, misses = _coverage_runs("shifting", 0, 20_000, rates=(0.005, 0.05, 1.0))
+        assert (np.diff(errs) < 0).all(), errs
+        assert (np.diff(misses) < 0).all(), misses
+
+    def test_a_larger_coverage_draws_a_wider_interval(self):
+        """The median radius at each level, on fat-tailed residuals.
+        Measured 2026-10-26: 0.24, 0.52, 0.77 and 2.23 at 0.5, 0.8, 0.9 and
+        0.99; each level's radius is the rows' |resid| quantile there."""
+        df = _stream("fat_tailed", n=20_000)
+        medians = []
+        for level in (0.5, 0.8, 0.9, 0.99):
+            out = _fit_large(df, coverage=level)
+            medians.append(np.nanmedian((field(out, "hi_y") - field(out, "lo_y")) / 2))
+        assert all(b > 1.3 * a for a, b in zip(medians, medians[1:], strict=False)), medians
+
+    def test_survives_save_load_at_a_rate_and_level_of_its_own(self, tmp_path):
+        df = messy(n=1000, seed=10)
+        spec = build("rls", {"delta": 1.0}, conformal=0.8, conformal_rate=0.3)
+        whole = po.ModelBank([spec]).fit_predict(df)
+        bank = po.ModelBank([spec])
+        head = bank.fit_predict(df.slice(0, 437))
+        bank.save(tmp_path / "state.msgpack")
+        tail = po.ModelBank.load(tmp_path / "state.msgpack", [spec]).fit_predict(df.slice(437))
+        got = pl.concat([head, tail])
+        for k in ("lo_y0", "hi_y0", "coverage_y0"):
+            assert np.isfinite(field(got, k)).sum() > 800, k
+            np.testing.assert_array_equal(field(got, k), field(whole, k), err_msg=k)
+
+
+@pytest.mark.oracle_grid(reason="50 streams of 100,000 rows at five rates, two kinds")
+@pytest.mark.parametrize("kind", ["gaussian", "shifting"])
+def test_over_fifty_streams_the_worst_error_falls_with_the_rate(kind):
+    """The worst and the 95th percentile of 50 streams' |coverage − 0.9|
+    fall with the rate, and (on the shifting stream) so do the worst misses
+    in the 500 rows after the noise triples. Measured 2026-10-26 over the
+    50, worst |coverage − 0.9| at the five rates: gaussian 7.9e-3, 1.9e-3,
+    7.0e-4, 1.8e-4, 9.3e-5 (95th percentile 4.6e-3 to 8.3e-5); shifting
+    8.0e-3, 3.0e-3, 1.6e-3, 5.7e-4, 1.9e-4; worst misses after the shift
+    0.50, 0.34, 0.23, 0.14, 0.11. A single stream's error is not always in
+    order (3 of 16 streams ticked up between two rates)."""
+    errs, misses = zip(*(_coverage_runs(kind, seed, 100_000) for seed in range(50)), strict=True)
+    errs, misses = np.array(errs), np.array(misses)
+    worst, p95 = errs.max(axis=0), np.quantile(errs, 0.95, axis=0)
+    print(f"{kind}: worst {worst}, p95 {p95}")
+    assert (np.diff(worst) < 0).all(), worst
+    assert (np.diff(p95) < 0).all(), p95
+    if kind == "shifting":
+        print(f"misses after the shift: worst {misses.max(axis=0)}")
+        assert (np.diff(misses.max(axis=0)) < 0).all(), misses.max(axis=0)

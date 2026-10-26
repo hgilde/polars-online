@@ -39,10 +39,12 @@ MAX_DCLOCK = 6.0
 TOL = 1e-13
 
 
-def _capped_clock(df: pl.DataFrame) -> np.ndarray:
+def _capped_clock(df: pl.DataFrame, features: bool = True) -> np.ndarray:
     """The clock the decay reads, NaN on a skipped row: each step capped at
-    ``gap_cap``, a skipped row's folded into the next accepted row's."""
-    t, skipped = df["t"].to_numpy(), df["x1"].is_null().to_numpy()
+    ``gap_cap``, a skipped row's folded into the next accepted row's. A
+    model with no features (``holt``) skips no row for a null ``x1``."""
+    t = df["t"].to_numpy()
+    skipped = df["x1"].is_null().to_numpy() if features else np.zeros(len(t), bool)
     clock = np.full(len(t), np.nan)
     at, pending, started = 0.0, 0.0, False
     for i in range(len(t)):
@@ -88,6 +90,26 @@ def _spec(model, half_life):
         return po.spec.lasso("m", penalties=[0.1, 0.0], **kw)
     if model == "huber":
         return po.spec.huber("m", **kw)
+    if model == "rls":
+        # ``rls`` learns only from a row with every target (its documented
+        # null policy), so on this stream its targets' weight tops out near
+        # 9.4: the floor is lowered to keep 150 scored rows of each.
+        kw["min_weight"] = [5.0, 5.0, 5.0]
+        return po.spec.rls("m", delta=1.0, **kw)
+    if model == "kalman":
+        # No `min_weight`: how it meets kalman's learning is being changed
+        # elsewhere, and the spread's recursion does not depend on it.
+        kw.pop("min_weight")
+        return po.spec.kalman("m", coef_half_life=100.0, **kw)
+    if model == "quantile":
+        return po.spec.quantile("m", quantile=0.5, **kw)
+    if model == "pa":
+        return po.spec.pa("m", **kw)
+    if model == "ftrl":
+        return po.spec.ftrl("m", loss="squared", **kw)
+    if model == "holt":
+        kw.pop("features")
+        return po.spec.holt("m", **kw)
     return po.spec.sgd("m", learning_rate=0.02, **kw)
 
 
@@ -95,15 +117,39 @@ def _spec(model, half_life):
 @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
 @pytest.mark.parametrize(
     ("model", "half_life"),
-    [("ewridge", 30.0), ("ewridge", [20.0, 60.0]), ("lasso", 30.0), ("huber", 30.0), ("sgd", 30.0)],
-    ids=["ewridge", "ewridge-half_life-grid", "lasso", "huber", "sgd"],
+    [
+        ("ewridge", 30.0),
+        ("ewridge", [20.0, 60.0]),
+        ("lasso", 30.0),
+        ("huber", 30.0),
+        ("sgd", 30.0),
+        ("rls", 30.0),
+        ("kalman", 30.0),
+        ("quantile", 30.0),
+        ("pa", 30.0),
+        ("ftrl", 30.0),
+        ("holt", 30.0),
+    ],
+    ids=[
+        "ewridge",
+        "ewridge-half_life-grid",
+        "lasso",
+        "huber",
+        "sgd",
+        "rls",
+        "kalman",
+        "quantile",
+        "pa",
+        "ftrl",
+        "holt",
+    ],
 )
 def test_sigma_is_the_ew_rms_of_the_residuals_before_the_row(model, half_life):
     df = _stream(61)
     spec = _spec(model, half_life)
     out = po.ModelBank([spec]).fit_predict(df)["m"]
     index = po.spec.output_index(spec)
-    clock, w = _capped_clock(df), df["w"].to_numpy()
+    clock, w = _capped_clock(df, features=model != "holt"), df["w"].to_numpy()
     slots = index.filter(pl.col("kind") == "sigma")
     assert slots.height >= 3
     for row in slots.iter_rows(named=True):

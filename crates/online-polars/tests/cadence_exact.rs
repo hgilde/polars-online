@@ -440,10 +440,10 @@ fn a_solve_due_on_a_row_of_weight_zero_waits_for_the_next_row_with_weight() {
         }
         // The case is the claim: the cadence reaches rows 2,000, 4,001 and
         // 6,002, each of weight 0, and the solves wait a row for each. The
-        // robust fits first solve at their floor, a row per coefficient (row
-        // 1; task 278, D10), so their clock reaches row 2,001 itself, and
-        // waits on the other two.
-        let first = usize::from(matches!(name, "huber" | "quantile"));
+        // robust fits and `lasso` first solve at their floor, a row per
+        // coefficient (row 1; task 278, D10), so their clock reaches row
+        // 2,001 itself, and waits on the other two.
+        let first = usize::from(matches!(name, "huber" | "quantile" | "lasso"));
         assert_eq!(want, [first, 2_001, 4_002, 6_003], "{name}");
         for size in [1, 7, 600] {
             let parts = run(&spec, &df, size);
@@ -534,15 +534,17 @@ type RowClockCase = (
 /// `coef_every` counts). A cadence of 7 units is then reached on the rows a
 /// cap of 7 learned rows is, the 7th, 14th, ... (0-based 6, 13, ...), and
 /// the two give the same output to the bit: `micro`'s checkpoints, which no
-/// event at the start restarts, and the regressions' solves while their
-/// first, at `min_weight`, has not come (here it never does). Counted from
+/// event at the start restarts, and `ewridge`'s solves while its first, at
+/// `min_weight`, has not come (here it never does). Counted from
 /// the first row, whose step is 0, each came a row after the cap's, the
 /// whole stream long. `ew_cov`'s first refresh, at `min_weight` 0, starts
 /// both counters, so it was the cap's before and is still: every 7th row
 /// from it. `huber` and `quantile` took the row clock's start once task
 /// 277's refit, in the same file, had merged; the refit is off here. Their
 /// first solve is now their own floor, a row per coefficient, whatever
-/// `min_weight` says (task 278, D10), so theirs are every 7th row from it.
+/// `min_weight` says (task 278, D10), so theirs are every 7th row from it;
+/// so is `lasso`'s, from the row its target reaches that floor (the third
+/// here).
 #[test]
 fn on_the_row_clock_each_cadence_is_its_row_cap() {
     let n = 60;
@@ -625,6 +627,10 @@ fn on_the_row_clock_each_cadence_is_its_row_cap() {
             // (row 1 here), whatever `min_weight` says, and the cadence
             // counts from it (task 278, D10).
             (1..n - 1).step_by(7).collect()
+        } else if name == "lasso" {
+            // The first solve on the third row, the floor's, and every 7th
+            // row from it.
+            (2..n - 1).step_by(7).collect()
         } else {
             want
         };

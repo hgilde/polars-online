@@ -521,17 +521,21 @@ class TestLassoPredPath:
         about every ``half_life / 50`` = 2 clock units in steady state."""
         self._compare(self._stream(33), l1_ratio=1.0, half_life=100.0, min_weight=20.0)
 
-    def test_the_first_solve_is_forced_when_min_periods_is_reached(self):
-        """The clock cadence is out of reach and the row cap is 40. So the
-        first solve is the forced one at ``min_weight``, and every row up to
-        the next solve is scored with it."""
+    def test_the_first_solve_is_forced_when_the_floor_is_reached(self):
+        """The clock cadence is out of reach and the row cap is 20. So the
+        first solve is the forced one on the row the target reaches the
+        model's floor, a row per coefficient, whatever ``min_weight`` says
+        (task 278, D10), and the cap counts from it: every solve after, and
+        so every scored row's fit, falls where that first one puts it. (A
+        fit of the floor's five rows is not unique enough for the reference
+        to hold, so ``min_weight`` scores no row with it.)"""
         self._compare(
             self._stream(34),
             l1_ratio=1.0,
             half_life=40.0,
             min_weight=25.0,
             solve_every=1e9,
-            max_rows_between_solves=40,
+            max_rows_between_solves=20,
         )
 
     def test_an_infinite_halflife_solves_after_every_row(self):
