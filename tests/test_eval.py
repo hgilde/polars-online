@@ -1,5 +1,8 @@
 """Task 12: the evaluation harness (docs/PLAN.md section 8)."""
 
+import warnings
+from datetime import datetime, timedelta
+
 import numpy as np
 import polars as pl
 import pytest
@@ -619,3 +622,207 @@ def test_a_score_carries_only_the_columns_it_reads(monkeypatch):
     for name, frame in got.items():
         assert frame.height > 0, name
         assert frame.equals(want[name], null_equal=True), name
+
+
+# -------------------- task 278 (b12): the metrics family against its own parts
+
+
+def _two_spec_fit() -> tuple[pl.DataFrame, list[dict]]:
+    """Two specs (one a ridge grid) over three groups with a few missing
+    targets, and a clock in three dtypes: ``t`` (float), ``ti`` (an
+    integer, 1000 per unit of ``t``) and ``dt`` (a naive ``Datetime``, 37
+    s per unit)."""
+    df, _ = synthetic(seed=51, n_groups=3, n_rows=400, k=3, null_frac=0.05)
+    df = df.with_columns(
+        ti=(pl.col("t") * 1000).cast(pl.Int64),
+        dt=pl.datetime(2024, 3, 9, 20) + pl.duration(seconds=pl.col("t") * 37.0),
+    )
+    common = dict(
+        targets=["y0"],
+        features=["x0", "x1", "x2"],
+        half_life=200.0,
+        clock="t",
+        gap_cap=50.0,
+        group="group",
+        min_weight=10.0,
+    )
+    specs = [
+        po.spec.ewridge("a", ridge=1e-6, **common),
+        po.spec.ewridge("b", ridge=[1.0, 10.0], **common),
+    ]
+    with warnings.catch_warnings():
+        # The heavy ridge leaves a coefficient mostly prior, which is said.
+        warnings.simplefilter("ignore", po.ReadinessWarning)
+        out = po.ModelBank(specs).fit_predict(df)
+    return out, specs
+
+
+@pytest.fixture(scope="module")
+def two_specs():
+    return _two_spec_fit()
+
+
+SCORING = [
+    dict(),
+    dict(group="group"),
+    dict(group="group", min_samples=320),
+    dict(group=["group"], binary=True, min_samples=1),
+]
+
+
+@pytest.mark.parametrize("kw", SCORING, ids=lambda kw: ",".join(kw) or "plain")
+def test_compare_specs_is_each_specs_metrics_stacked(two_specs, kw):
+    """``compare_specs`` passes ``group``, ``min_samples`` and ``binary`` to
+    ``metrics`` for each spec: the table is theirs stacked under a ``spec``
+    column, to the bit. ``min_samples=320`` sits between the groups'
+    counts (310, 311 and 327), so it nulls some rows and not others."""
+    out, specs = two_specs
+    got = po.eval.compare_specs(out, specs, **kw)
+    want = pl.concat(
+        po.eval.metrics(out, s, **kw).with_columns(spec=pl.lit(s["name"])).select(got.columns)
+        for s in specs
+    )
+    assert got.equals(want)
+    if "min_samples" in kw and kw["min_samples"] > 1:
+        nulled = got["r2"].is_null()
+        assert nulled.any() and not nulled.all(), got["n"].to_list()
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [dict(min_samples=40), dict(min_samples=40, binary=True)],
+    ids=["plain", "binary"],
+)
+def test_each_window_is_metrics_on_its_rows(two_specs, kw):
+    """Each ``window_metrics`` row is ``metrics`` on the rows of its key
+    whose clock lies in ``[window_start, window_start + every)``, to the
+    bit, with ``binary`` and ``min_samples`` passed through: the windows
+    hold 22 to 54 scored rows, so 40 nulls some of them."""
+    out, _ = two_specs
+    every = 500.0
+    got = po.eval.window_metrics(out, "b", clock="t", every=every, group="group", **kw)
+    assert got.height > 20
+    # One group's windows (sixteen), to keep the test cheap; group is held
+    # to filtered calls below.
+    for row in got.filter(pl.col("group") == "g1").iter_rows(named=True):
+        start = row["window_start"]
+        rows = out.filter(
+            (pl.col("group") == row["group"])
+            & (pl.col("t") >= start)
+            & (pl.col("t") < start + every)
+        )
+        want = po.eval.metrics(rows, "b", group="group", **kw).filter(pl.col("slot") == row["slot"])
+        want = want.with_columns(window_start=pl.lit(start)).select(got.columns)
+        assert want.equals(pl.DataFrame([row], schema=got.schema)), row
+    nulled = got["mse"].is_null()
+    assert nulled.any() and not nulled.all(), "min_samples did not bind on some windows"
+
+
+@pytest.mark.parametrize(
+    ("clock", "every", "polars_every"),
+    [
+        ("ti", 300_000, "300000i"),
+        ("dt", "1h", "1h"),
+        ("dt", "7m", "7m"),
+        ("dt", "1d", "1d"),
+    ],
+)
+def test_window_start_is_group_by_dynamics(two_specs, clock, every, polars_every):
+    """``window_start`` and ``n`` are Polars' ``group_by_dynamic`` buckets
+    (left-closed, labelled on the left) over the scored rows, per group, on
+    an integer clock and a naive ``Datetime`` one."""
+    out, _ = two_specs
+    got = po.eval.window_metrics(out, "a", clock=clock, every=every, group="group", min_samples=1)
+    scored = out.filter(
+        pl.col("a").struct.field("pred_y0").is_not_null() & pl.col("y0").is_not_null()
+    )
+    want = (
+        scored.sort("group", clock)
+        .group_by_dynamic(clock, every=polars_every, group_by="group", closed="left", label="left")
+        .agg(n=pl.len())
+        .sort("group", clock)
+    )
+    mine = got.select("group", pl.col("window_start").alias(clock), pl.col("n").cast(pl.UInt32))
+    assert mine.sort("group", clock).equals(want)
+
+
+def test_on_a_time_zone_the_buckets_are_dt_truncates():
+    """Pinned as it stands, and reported (task 278, b12): on a clock with a
+    time zone, ``window_metrics`` buckets by Polars' ``dt.truncate``, which
+    truncates in local wall time. A day (``"1d"``) is then the calendar day
+    -- 23 hours across the spring change, as ``group_by_dynamic("1d")``
+    has it -- and ``"24h"`` reads as ``"1d"``. An ``"5h"`` bucket across the
+    change spans 4 hours of elapsed time; ``group_by_dynamic("5h")`` keeps
+    5, and so does a spec's clock parameter. Measured 2026-10-25 on Polars
+    of this lock."""
+    t = pl.datetime_range(
+        datetime(2024, 3, 9, 20),
+        datetime(2024, 3, 11, 8),
+        "17m",
+        eager=True,
+        time_zone="America/New_York",
+    )
+    rng = np.random.default_rng(3)
+    x = rng.standard_normal(t.len())
+    df = pl.DataFrame({"t": t, "x0": x, "y0": x + rng.standard_normal(t.len())})
+    spec = po.spec.ewridge("m", targets=["y0"], features=["x0"], half_life=50.0, min_weight=5.0)
+    out = po.ModelBank([spec]).fit_predict(df)
+    scored = out.filter(pl.col("m").struct.field("pred_y0").is_not_null())
+
+    def buckets(every: str) -> pl.DataFrame:
+        got = po.eval.window_metrics(out, "m", clock="t", every=every, min_samples=1)
+        return got.select(pl.col("window_start").alias("t"), pl.col("n").cast(pl.UInt32))
+
+    def dynamic(every: str) -> pl.DataFrame:
+        return (
+            scored.group_by_dynamic("t", every=every, closed="left", label="left")
+            .agg(n=pl.len())
+            .sort("t")
+        )
+
+    def truncated(every: str) -> pl.DataFrame:
+        return scored.group_by(pl.col("t").dt.truncate(every)).agg(n=pl.len()).sort("t")
+
+    assert buckets("1d").equals(dynamic("1d"))
+    assert buckets("24h").equals(buckets("1d"))
+    assert not buckets("24h").equals(dynamic("24h"))
+    assert buckets("5h").equals(truncated("5h"))
+    assert not buckets("5h").equals(dynamic("5h"))
+    spans = buckets("5h")["t"].diff().drop_nulls().unique().sort().to_list()
+    assert spans == [timedelta(hours=4), timedelta(hours=5)], spans
+
+
+def test_group_is_the_call_on_each_keys_rows(two_specs):
+    """``group`` runs the same computation per key: each key's rows of
+    ``metrics``, ``window_metrics``, ``compare_specs`` and ``seqtest`` are
+    the call on the frame filtered to that key, to the bit. So are
+    ``diebold_mariano``'s and ``clark_west``'s but for the last bits of a
+    mean: Polars sums a ``group_by`` aggregate and a whole column in
+    different orders (measured 2026-10-25: one ulp in ``mean`` and the
+    statistic, 3e-14 relative in a ``p_value`` of 1.7e-31, whose relative
+    error is the statistic's times its square, 136 here)."""
+    out, specs = two_specs
+    exact = (
+        lambda f, **kw: po.eval.metrics(f, "a", **kw),
+        lambda f, **kw: po.eval.window_metrics(f, "a", clock="t", every=500.0, **kw),
+        lambda f, **kw: po.eval.compare_specs(f, specs, **kw),
+    )
+    tests = (
+        lambda f, **kw: po.eval.diebold_mariano(f, a="a", b="b", b_suffix="__r10", lags=2, **kw),
+        lambda f, **kw: po.eval.clark_west(f, big="a", small="b", small_suffix="__r1", **kw),
+    )
+    for key in ("g0", "g1", "g2"):
+        rows = out.filter(pl.col("group") == key)
+        mine = pl.col("group") == key
+        for fn in (*exact, *tests):
+            grouped = fn(out, group="group", min_samples=5).filter(mine).drop("group")
+            alone = fn(rows, min_samples=5)
+            assert grouped.height > 0
+            if fn in exact:
+                assert grouped.equals(alone)
+            else:
+                assert grouped.select("target", "n").equals(alone.select("target", "n"))
+                for col in grouped.columns[2:]:
+                    np.testing.assert_allclose(grouped[col], alone[col], rtol=1e-12, atol=0)
+        seq = po.eval.seqtest(out, a="a", b="b", b_suffix="__r10", group="group").filter(mine)
+        assert seq.equals(po.eval.seqtest(rows, a="a", b="b", b_suffix="__r10"))
