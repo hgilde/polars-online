@@ -3994,7 +3994,8 @@ def marginal(
         lagged moment starts at 0 and takes its first product when a learned row
         has one ``l`` rows back, so each lag reads 0.0, not null, while a group
         has learned no more than ``l`` rows. Below ``min_weight`` the lag
-        correlations are null, as ``corr`` is.
+        correlations are null, as ``corr`` is, and so are ``phi_x`` and
+        ``phi_y``, which are fitted from them.
 
         ``cross_lags`` keeps the two cross-correlations at fewer lags:
         strictly increasing, each one of ``lags``, and ``[]`` for none, which
@@ -4309,9 +4310,10 @@ def marginal(
     are refused by name. A column may not be both a target and a feature.
     ``min_weight`` defaults to 3: two rows give a correlation of ±1 whatever
     the data, three the first one with content. Below a target's
-    ``min_weight`` its pairs' ``corr``, ``beta``, ``t_stat``, ``t_stat_serial``
-    and split are null, and so are every pair's while the stream is less
-    settled than ``min_settled_frac``; the moments are reported either way.
+    ``min_weight`` its pairs' ``corr``, ``beta``, ``t_stat``, ``t_stat_serial``,
+    lag correlations, ``phi_x`` and ``phi_y`` and split are null, and so are
+    every pair's while the stream is less settled than ``min_settled_frac``;
+    the moments and ``n_serial`` are reported either way.
 
     .. rubric:: Output
 

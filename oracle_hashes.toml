@@ -4,17 +4,17 @@
 # recomputes each in the gate; a moved hash names the groups to re-run.
 # Never edit by hand.
 [meta]
-platform = "darwin-arm64-py3.12"
+platform = "darwin-arm64-py3.14"
 
 [hashes]
-"conformal.coverage_rates" = "2efb99c86da6542eb4bf3b3dafa0345a7491db7eefa6670fb9724ddc3cbaa227"
+"conformal.coverage_rates" = "313014f0135578867a1121387504222363ae4fd248dccf12aa3b843e8819b40e"
 "corrchange.n_perm" = "d0f0c7b33a13997de50dbbc6910a96cceed08ae46da8f510295a0d05780c4450"
 "learning_rate.constant_rate" = "e8114f1470837c4bcf19b8f3e266cf84e1a07273b6284674fa74e9748ee2450b"
 "learning_rate.libsvm_passes" = "6a6c475c30c403cfd7d6636046d1a6cd7179ef0cfae6b3141245ba14d4a4461c"
 "learning_rate.pa_noisy" = "2bd43d458287370f11c6ccd0bd0295a9d903a782d473c058c9261973f3bcac67"
 "learning_rate.schedules" = "2cfc7ee01481d36b04a42c9558d2e84a3a0d15082a8af3625b96da34d535bd77"
 "online_diagnostics.breaks_memory" = "114e7b90be69815475a7f7e3ac83c8cfb6657f18e9e0dec8a38016fd0f923ee0"
-"online_diagnostics.cusum_size" = "ca074b749aaedad5b0d807e8032f6a507c440426621e952d0d5df3fdfe1b75bc"
+"online_diagnostics.cusum_size" = "23c9fc7246e2f64cc6614cfb091645912182aa7f2881901686486a3f66547552"
 "second_opinion_gram.lasso_weights" = "d09c43fa05ddb6f4281603d4fdb02d295f104e7fd06780925cadd45bb37e72ab"
 "second_opinion_gram.ridge" = "06c3570cdf69ab3106d7f4e4216a0e8130e13fe625f54576cb9dae311900535f"
 "second_opinion_regimes.bocpd_priors" = "425b4003a35e0415ae5400f65ec2723f9bbbc747f12d9db73fd306670aa4af1f"

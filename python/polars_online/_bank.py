@@ -1634,7 +1634,8 @@ class ModelBank:
             nor Gaussian. Null until ``weight_sum`` reaches the target's ``min_weight``,
             null while the stream is less settled than ``min_settled_frac``, and null
             where undefined (a constant column, ``n_kish <= 2``). Both gates withhold
-            ``t_stat_serial``, the ``lag_corr_*`` columns and the split columns too.
+            ``t_stat_serial``, the ``lag_corr_*`` columns, ``phi_x`` and ``phi_y``
+            and the split columns too; ``n_serial``, a count as ``n_kish`` is, stays.
 
         With ``lags``, four more list columns and four numbers:
 
@@ -1661,7 +1662,9 @@ class ModelBank:
             statistic against it. Null without ``serial_rule``.
         ``phi_x``, ``phi_y``
             The per-row decays fitted under ``serial_rule = "geometric"``; null
-            otherwise, and null when fewer than two kept lags are positive.
+            otherwise, and null when fewer than two kept lags are positive. They
+            are fitted from the lag correlations, so both gates withhold them where
+            they withhold those.
 
         With ``bins`` or ``bin_edges``, the nonlinear view. These columns are present
         whenever the spec asked for bins, holding empty lists and nulls until the

@@ -237,32 +237,32 @@ dataset = ""
 
 [case."conformal.coverage_rates.gaussian_coverage_error_at_0p005"]
 ideal = 0.0
-worst = 0.00791882
-p95 = 0.00538824
+worst = 0.00491908
+p95 = 0.00462902
 n = 50
 
 [case."conformal.coverage_rates.gaussian_coverage_error_at_0p02"]
 ideal = 0.0
-worst = 0.00191744
-p95 = 0.0012973
+worst = 0.00110824
+p95 = 0.00101822
 n = 50
 
 [case."conformal.coverage_rates.gaussian_coverage_error_at_0p05"]
 ideal = 0.0
-worst = 0.00069716
-p95 = 0.000467107
+worst = 0.000358079
+p95 = 0.00031807
 n = 50
 
 [case."conformal.coverage_rates.gaussian_coverage_error_at_0p2"]
 ideal = 0.0
-worst = 0.000183042
-p95 = 0.000163037
+worst = 0.000102022
+p95 = 7.20158e-05
 n = 50
 
 [case."conformal.coverage_rates.gaussian_coverage_error_at_1"]
 ideal = 0.0
-worst = 9.30214e-05
-p95 = 8.30191e-05
+worst = 6.20136e-05
+p95 = 6.20136e-05
 n = 50
 
 [case."conformal.coverage_rates.misses_after_the_shift_at_0p005"]
@@ -297,32 +297,32 @@ n = 50
 
 [case."conformal.coverage_rates.shifting_coverage_error_at_0p005"]
 ideal = 0.0
-worst = 0.00802485
-p95 = 0.00797483
+worst = 0.00537318
+p95 = 0.00504311
 n = 50
 
 [case."conformal.coverage_rates.shifting_coverage_error_at_0p02"]
 ideal = 0.0
-worst = 0.00297368
-p95 = 0.00291367
+worst = 0.00231251
+p95 = 0.00220248
 n = 50
 
 [case."conformal.coverage_rates.shifting_coverage_error_at_0p05"]
 ideal = 0.0
-worst = 0.00155336
-p95 = 0.00149334
+worst = 0.00129228
+p95 = 0.00121227
 n = 50
 
 [case."conformal.coverage_rates.shifting_coverage_error_at_0p2"]
 ideal = 0.0
-worst = 0.000573132
-p95 = 0.000553127
+worst = 0.000482106
+p95 = 0.000472104
 n = 50
 
 [case."conformal.coverage_rates.shifting_coverage_error_at_1"]
 ideal = 0.0
-worst = 0.000193044
-p95 = 0.000183042
+worst = 0.000172038
+p95 = 0.000162036
 n = 50
 
 [case."corrchange.n_perm.crit_error_at_20"]
@@ -837,8 +837,8 @@ n = 12
 
 [case."online_diagnostics.cusum_size.quantile_cusum_sq_y_300_to_600"]
 ideal = 0.05
-worst = 0.0604667
-p95 = 0.0604667
+worst = 0.0602222
+p95 = 0.0602222
 n = 12
 
 [case."online_diagnostics.cusum_size.quantile_cusum_sq_y_steady"]
@@ -849,8 +849,8 @@ n = 12
 
 [case."online_diagnostics.cusum_size.quantile_cusum_sq_y_young"]
 ideal = 0.05
-worst = 0.0632021
-p95 = 0.0632021
+worst = 0.0627045
+p95 = 0.0627045
 n = 12
 
 [case."online_diagnostics.cusum_size.quantile_cusum_y_300_to_600"]
@@ -867,8 +867,8 @@ n = 12
 
 [case."online_diagnostics.cusum_size.quantile_cusum_y_young"]
 ideal = 0.05
-worst = 0.0562
-p95 = 0.0562
+worst = 0.0569778
+p95 = 0.0569778
 n = 12
 
 [case."online_diagnostics.cusum_size.rls_cusum_sq_y_300_to_600"]
@@ -1296,3 +1296,19 @@ p95 = 1.98825
 n = 950
 
 # --- raises
+
+[[raised]]
+key = "online_diagnostics.cusum_size.quantile_cusum_y_young.worst"
+from = 0.0562
+to = 0.0569778
+date = 2026-10-26
+reason = "quantile's residuals changed with its band drawn in the MAD of its residuals (D-Q) and its first rows refit to the converged fit (D-Q2), so the young CUSUM's size under the null moved from 0.0562 to 0.0570 against 0.05"
+changelog = "`quantile` draws its band in the MAD of its residuals"
+
+[[raised]]
+key = "online_diagnostics.cusum_size.quantile_cusum_y_young.p95"
+from = 0.0562
+to = 0.0569778
+date = 2026-10-26
+reason = "quantile's residuals changed with its band drawn in the MAD of its residuals (D-Q) and its first rows refit to the converged fit (D-Q2), so the young CUSUM's size under the null moved from 0.0562 to 0.0570 against 0.05"
+changelog = "`quantile` draws its band in the MAD of its residuals"

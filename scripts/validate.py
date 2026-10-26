@@ -212,7 +212,12 @@ def main() -> None:
         + f"\n\n**Result:** lowest MSE at divisor {best['divisor']} "
         f"(mse {best['mse']:.6g}). The default, a solve once the weight learned "
         f"since the last reaches `ln 2 / 50` of the weight the fit holds: "
-        f"mse {default['mse']:.6g}, r2 {default['r2']:.6g}, ic {default['ic']:.6g}.",
+        f"mse {default['mse']:.6g}, r2 {default['r2']:.6g}, ic {default['ic']:.6g}"
+        + (", below every clock schedule's" if default["mse"] < best["mse"] else "")
+        + ". A clock schedule's first solve falls at the model's own floor, a "
+        "row per unknown, since `min_weight` withholds the output alone; so at the "
+        "longest cadences the fit of those first few rows is held for the whole "
+        "first period, which is what the small divisors pay for.",
     )
 
     # ---- 2. standardize default ----

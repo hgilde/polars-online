@@ -790,8 +790,8 @@ fn run_buffers(
 }
 
 /// Pair `(t, j)` of a `marginal` instance as its table reports it: with
-/// `corr`, `beta`, `t_stat`, `t_stat_serial`, the lag correlations and the
-/// split withheld while the
+/// `corr`, `beta`, `t_stat`, `t_stat_serial`, the lag correlations, their
+/// fitted decays `phi_x`/`phi_y` and the split withheld while the
 /// stream is less settled than `min_settled_frac` (`unsettled`), as the core
 /// withholds them below `min_weight` (task 278, the user's decision of
 /// 2026-10-25). The moments are reported either way, as under `min_weight`.
@@ -811,6 +811,8 @@ fn gated_pair(
         p.split_at = f64::NAN;
         p.split_gain_t = f64::NAN;
         // As `corr` is (task 278's follow-ups); `n_serial` is a count.
+        // The fitted decays are estimated from the lag correlations, so
+        // they go with them.
         for v in p
             .lag_corr_xx
             .iter_mut()
@@ -820,6 +822,8 @@ fn gated_pair(
         {
             *v = f64::NAN;
         }
+        p.phi_x = f64::NAN;
+        p.phi_y = f64::NAN;
     }
     p
 }

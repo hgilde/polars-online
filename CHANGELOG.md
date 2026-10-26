@@ -299,6 +299,33 @@ returns.
   alternating weight-1 rows with residuals at AR(+0.8) and weight-0.02 rows
   at AR(−0.8), the field now ends at 0.75 where it read −0.08. At equal
   weights nothing moves. A state saved before 1.4.0 keeps the unit weights.
+- `min_weight` withholds `ewridge`'s output alone, as it does in `huber`,
+  `quantile`, `sgd`, `kalman` and `lasso` (task 278). Its residual variance
+  learns from its own prediction at its own floor on the rows the gate
+  withholds, and its first solve falls on that floor. Under `solve_every`
+  or `max_rows_between_solves`, a `min_weight` of 30 had moved `coef` from
+  row 3 to the end of a 200-row stream, by up to 0.68. An `ewridge` state is
+  about 30 bytes larger. A state saved before 1.4.0 keeps the old rule.
+- The drift detector reads the residuals of withheld predictions, as
+  `sigma` does, so no readiness gate hides a break (task 278). Under
+  `drift_action="reset"`, `min_weight=40` missed a break: the resets fell
+  at rows 301, 450 and 601 where they belong at 301, 450, 520 and 600, and
+  the fit moved from row 521. A detection can now be flagged on a row whose
+  prediction is withheld. A state saved before 1.4.0 keeps the old rule.
+- The refit of the first rows (`huber`, `sgd(loss="huber")`, `quantile` and
+  `marginal(bin_stat="huber")`) stops by each coefficient's effect, against
+  the residual scale, not by the largest coefficient (task 278). At a level
+  of 1e3 the largest was the intercept, so the slopes stopped loosely: the
+  fits at level 0 and at 1e3 were 2.4e-10 apart, and are now 7.8e-16. A
+  power-of-two scale of a feature now gives the same fit after the refit,
+  to the bit. `quantile`'s refit also stops when no step along Newton's
+  direction lowers its loss. The cap of 200 passes is reached on 8 and 9 of
+  3,000 streams, all past 39% outliers, where it was 5 and 6.
+- `marginal`'s `lag_corr_*` are null below `min_weight` and while the stream
+  is less settled than `min_settled_frac`, exactly where `corr` is (task
+  278). They read 0.17 beside a null `corr`. `phi_x` and `phi_y`, which are
+  fitted from them, are withheld on the same rows; `n_serial`, a count as
+  `n_kish` is, stays. Learning and the state do not move.
 - A captured `marginal(bin_stat="huber")` bin is freed by the refit of its
   first rows (task 278; see *Changed*).
 - `huber`, `sgd(loss="huber")`, `quantile` and `marginal(bin_stat="huber")`

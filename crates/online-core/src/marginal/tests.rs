@@ -4948,8 +4948,9 @@ fn held_rows_carry_judges_under_huber_alone() {
 /// `min_weight` on exactly the rows `corr` is, and the gate is an output
 /// gate alone. Beside a model with no floor, fed the same rows, every lag
 /// correlation is NaN while `corr` is and the other model's, to the bit,
-/// once it is not; the moments, `n_serial` and `phi` are the same on every
-/// row, and so is the state.
+/// once it is not; so are `phi_x` and `phi_y`, which are estimated from them
+/// (wave 3). The moments and `n_serial` are the same on every row, and so is
+/// the state.
 #[test]
 fn the_lag_correlations_are_withheld_where_corr_is() {
     let mut c = cfg(2, 2);
@@ -4960,7 +4961,7 @@ fn the_lag_correlations_are_withheld_where_corr_is() {
     let mut gated = Marginal::new(c).unwrap();
     let mut seed = 5u64;
     let (mut x, mut y) = ([0.0_f64; 2], [0.0_f64; 2]);
-    let (mut withheld, mut shown, mut finite) = (0, 0, 0);
+    let (mut withheld, mut shown, mut finite, mut phis) = (0, 0, 0, 0);
     for i in 0..30 {
         for v in x.iter_mut() {
             *v = 0.6 * *v + lcg(&mut seed);
@@ -4989,20 +4990,22 @@ fn the_lag_correlations_are_withheld_where_corr_is() {
                         assert!(a.iter().all(|v| v.is_nan()), "row {i}, ({t}, {j}): {a:?}");
                         finite += b.iter().filter(|v| v.is_finite()).count();
                     }
+                    assert!(g.phi_x.is_nan() && g.phi_y.is_nan(), "row {i}, ({t}, {j})");
+                    phis += [f.phi_x, f.phi_y].iter().filter(|v| v.is_finite()).count();
                 } else {
                     shown += 1;
                     assert_eq!(g.corr.to_bits(), f.corr.to_bits(), "row {i}");
                     for (a, b) in lags {
                         assert_eq!(bits(a), bits(b), "row {i}, ({t}, {j})");
                     }
+                    assert_eq!(g.phi_x.to_bits(), f.phi_x.to_bits(), "row {i}");
+                    assert_eq!(g.phi_y.to_bits(), f.phi_y.to_bits(), "row {i}");
                 }
                 for (a, b) in [
                     (g.n_eff, f.n_eff),
                     (g.cov, f.cov),
                     (g.var_x, f.var_x),
                     (g.n_serial, f.n_serial),
-                    (g.phi_x, f.phi_x),
-                    (g.phi_y, f.phi_y),
                 ] {
                     assert_eq!(a.to_bits(), b.to_bits(), "row {i}, ({t}, {j})");
                 }
@@ -5012,8 +5015,8 @@ fn the_lag_correlations_are_withheld_where_corr_is() {
     // Both sides of the gate were reached, each target's at its own floor,
     // and a withheld row had lag correlations to withhold.
     assert!(
-        withheld > 8 && shown > 8 && finite > 8,
-        "{withheld} withheld, {shown} shown, {finite} lag correlations withheld"
+        withheld > 8 && shown > 8 && finite > 8 && phis > 0,
+        "{withheld} withheld, {shown} shown, {finite} lag correlations and {phis} decays withheld"
     );
     let mut same = gated.clone();
     same.cfg.min_weight = vec![0.0; 2];

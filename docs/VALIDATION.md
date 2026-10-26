@@ -26,14 +26,14 @@ Solving every `half_life/d` clock units, half_life = 500.0, on `y0`. All schedul
 
 | divisor | n | r2 | ic | hit_rate | mse |
 |---|---|---|---|---|---|
-| 1 | 14283 | -0.0727934 | 0.00594082 | 0.498025 | 1.23526e-06 |
-| 5 | 14283 | -0.0180442 | 0.0219514 | 0.498095 | 1.17222e-06 |
-| 10 | 14283 | -0.0161021 | 0.00593309 | 0.497743 | 1.16998e-06 |
-| 50 | 14283 | -0.00936753 | 0.0232117 | 0.497602 | 1.16223e-06 |
+| 1 | 14283 | -0.522154 | -0.000772566 | 0.497037 | 1.75267e-06 |
+| 5 | 14283 | -0.0519795 | 0.00131862 | 0.499295 | 1.21129e-06 |
+| 10 | 14283 | -0.017367 | 0.00325659 | 0.497602 | 1.17144e-06 |
+| 50 | 14283 | -0.0323458 | -0.0335883 | 0.49866 | 1.18869e-06 |
 | 200 | 14283 | -0.0520132 | -0.0812793 | 0.497884 | 1.21133e-06 |
 | 1000 | 14283 | -0.0646675 | -0.120803 | 0.496614 | 1.2259e-06 |
 
-**Result:** lowest MSE at divisor 50 (mse 1.16223e-06). The default, a solve once the weight learned since the last reaches `ln 2 / 50` of the weight the fit holds: mse 1.16848e-06, r2 -0.0147959, ic -0.00132871.
+**Result:** lowest MSE at divisor 10 (mse 1.17144e-06). The default, a solve once the weight learned since the last reaches `ln 2 / 50` of the weight the fit holds: mse 1.16848e-06, r2 -0.0147959, ic -0.00132871, below every clock schedule's. A clock schedule's first solve falls at the model's own floor, a row per unknown, since `min_weight` withholds the output alone; so at the longest cadences the fit of those first few rows is held for the whole first period, which is what the small divisors pay for.
 
 ## 2. `standardize` default (false for ridge, true for lasso)
 

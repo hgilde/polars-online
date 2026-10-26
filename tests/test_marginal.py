@@ -273,7 +273,17 @@ class TestMinSettledFrac:
     10 rows at a half-life of 50 read the same table with or without 0.9
     (task 278, the user's decision of 2026-10-25)."""
 
-    GATED = ["corr", "beta", "t_stat", "t_stat_serial", "split_gain", "split_at", "split_gain_t"]
+    GATED = [
+        "corr",
+        "beta",
+        "t_stat",
+        "t_stat_serial",
+        "phi_x",
+        "phi_y",
+        "split_gain",
+        "split_at",
+        "split_gain_t",
+    ]
     # The lag correlations, withheld element by element: a list of nulls.
     GATED_LISTS = ["lag_corr_xx", "lag_corr_yy", "lag_corr_xy", "lag_corr_yx"]
 

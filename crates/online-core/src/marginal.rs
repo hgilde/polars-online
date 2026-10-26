@@ -1304,7 +1304,8 @@ impl Marginal {
             }
             // Withheld below `min_weight` as `corr` is, after the serial
             // count has read them: `n_serial` is a count, reported as
-            // `n_kish` is (task 278's follow-ups).
+            // `n_kish` is (task 278's follow-ups). The fitted decays go
+            // with them, since they are estimated from them (wave 3).
             if !enough {
                 for v in lag_corr_xx
                     .iter_mut()
@@ -1314,6 +1315,8 @@ impl Marginal {
                 {
                     *v = f64::NAN;
                 }
+                phi_x = f64::NAN;
+                phi_y = f64::NAN;
             }
         }
         // The binned view of the same pair. Gated by `min_weight` like the

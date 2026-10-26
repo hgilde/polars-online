@@ -260,9 +260,37 @@ def test_the_lag_correlations_are_withheld_below_min_weight():
     for key in lags:
         assert gated[key] == [None, None], key
         assert free[key][0] is not None, key
-    for key in ("weight_sum", "cov", "n_serial", "phi_x"):
+    for key in ("weight_sum", "cov", "n_serial"):
         assert gated[key] == free[key], key
     assert pairs(df, min_weight=5.0, **kw) == pairs(df, min_weight=0.0, **kw)
+
+
+def test_the_fitted_decays_are_withheld_with_the_lag_correlations():
+    """``phi_x`` and ``phi_y`` are fitted from the lag correlations, so they
+    are null on exactly the rows those are, below ``min_weight`` and while
+    the stream is less settled than ``min_settled_frac``; ``n_serial`` is a
+    count, as ``n_kish`` is, and stays (wave 3 of task 278). The gate is an
+    output gate: past it the tables are the same, so nothing it withheld
+    moved what the model learned."""
+    df = stream(n=200, seed=5)
+    kw = dict(lags=[1, 2], serial_rule="geometric")
+    # At 30 rows both decays are fitted (two positive lags each), short of
+    # a floor of 40 and of the half-settled 51st row at a half-life of 50.
+    for head, gate in (
+        (30, dict(min_weight=40.0)),
+        (30, dict(half_life=50.0, min_settled_frac=0.5)),
+    ):
+        free_kw = {k: v for k, v in gate.items() if k != "min_settled_frac"}
+        if "min_weight" in free_kw:
+            free_kw["min_weight"] = 0.0
+        gated = pairs(df.head(head), **kw, **gate)
+        free = pairs(df.head(head), **kw, **free_kw)
+        assert gated["corr"] is None and gated["lag_corr_xx"] == [None, None], gate
+        # Activation: the ungated table has the decays the gate withholds.
+        assert free["phi_x"] is not None and free["phi_y"] is not None, gate
+        assert gated["phi_x"] is None and gated["phi_y"] is None, gate
+        assert gated["n_serial"] == free["n_serial"] and gated["n_serial"] is not None, gate
+        assert pairs(df, **kw, **gate) == pairs(df, **kw, **free_kw), gate
 
 
 def test_lag_moments_hold_across_null_targets():

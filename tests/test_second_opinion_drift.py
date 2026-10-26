@@ -57,8 +57,8 @@ def _spec(kind: str, **kw):
         min_weight=5.0,
         emit_sigma=True,
         emit_drift=True,
-        **kw,
     )
+    common.update(kw)
     if kind == "holt":
         return po.spec.holt("m", **common)
     if kind == "rls":
@@ -81,8 +81,14 @@ def test_the_drift_column_is_rivers_page_hinkley(kind, delta, threshold):
 
     df = _frame()
     out = _fit(kind, df, drift_delta=delta, drift_threshold=threshold)
-    resid, sigma = out["resid_y"].to_numpy(), out["sigma_y"].to_numpy()
+    # The detector reads the residual of each prediction `min_weight`
+    # withholds, as `sigma` does (task 278, the gates batch): the run with no
+    # floor reports those residuals, and its flags are the gated run's.
+    free = _fit(kind, df, drift_delta=delta, drift_threshold=threshold, min_weight=0.0)
+    assert out["resid_y"].null_count() > free["resid_y"].null_count(), "the gate withheld rows"
+    resid, sigma = free["resid_y"].to_numpy(), free["sigma_y"].to_numpy()
     flags = out["drift_y"].fill_null(False).to_numpy()
+    assert (flags == free["drift_y"].fill_null(False).to_numpy()).all()
     w = df["w"].to_numpy()
     ph = river_drift.PageHinkley(
         min_instances=0, delta=delta, threshold=threshold, alpha=1.0, mode="up"
