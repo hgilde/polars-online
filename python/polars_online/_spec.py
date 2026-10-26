@@ -372,6 +372,7 @@ _U32 = frozenset(
         "split_merge_every_rows",
         "huber_refit_rows",
         "bin_refit_rows",
+        "quantile_refit_rows",
     }
 )
 
@@ -2177,8 +2178,11 @@ def kalman(
         ``P_0 = p0 * obs_var * I`` from the start, the intercept included,
         and unstandardized, with no process noise, the filter is the ridge
         regression with penalty ``1 / p0``. A covariance whose diagonal goes
-        below 0 is sized again at ``p0``. Default 1.0, a prior as uncertain as
-        one observation; finite and above 0.
+        below 0 is sized again at ``p0``. The covariance form loses digits at
+        a huge prior: as a stand-in for least squares it was 4.2e-6 off at
+        ``p0=1e12``, against 3.4e-10 at 1e8, so keep ``p0`` well below 1e10.
+        Default 1.0, a prior as uncertain as one observation; finite and above
+        0.
     ``standardize``
         Run the filter on standardized features, so ``coef_half_life`` and ``p0``
         mean the same thing whatever the columns' scale; the reported coefficients
@@ -3982,7 +3986,10 @@ def marginal(
         its own. There the target ``l`` rows back is built partly from the
         feature's newest ``l`` rows, so a feature built from the same news
         shows ``lag_corr_xy`` above ``corr`` however it is sampled. The pair is
-        the same statistic ``ew_cov(lags=)`` computes, to the bit.
+        the same statistic ``ew_cov(lags=)`` computes, to the bit. As there, a
+        lagged moment starts at 0 and takes its first product when a learned row
+        has one ``l`` rows back, so each lag reads 0.0, not null, while a group
+        has learned no more than ``l`` rows.
 
         ``cross_lags`` keeps the two cross-correlations at fewer lags:
         strictly increasing, each one of ``lags``, and ``[]`` for none, which
@@ -4172,10 +4179,13 @@ def marginal(
         are then mostly spikes has its location among them, rightly for those
         rows, and the rows after it bring it back only slowly. At 20% spikes,
         12.5 rows a bin left 6 of 50 streams half a scale off after 20,000
-        rows, and 31 rows a bin left none. ``0`` turns the refit off, and is
-        the one pass alone. Under ``"mean"``, or ``bin_huber_delta=inf``,
-        there is nothing to refit, so the default is 0, and either key given
-        is refused.
+        rows, and 31 rows a bin left none. These figures are at the default
+        cut, ``bin_huber_delta=1.345``. A wider cut converges more slowly: at
+        2.5 with 12% spikes, the worst of 50 streams was 0.30 scales off after
+        1,000 rows with the refit, against 1.25 without it. ``0`` turns the
+        refit off, and is the one pass alone. Under ``"mean"``, or
+        ``bin_huber_delta=inf``, there is nothing to refit, so the default is
+        0, and either key given is refused.
 
         With learned edges the warm-up already holds its rows: the refit runs
         when the edges are fixed, over every held row, if the count is within

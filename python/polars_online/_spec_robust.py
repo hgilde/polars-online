@@ -249,8 +249,11 @@ def huber(
         20,000 rows at 20% one-sided outliers, 50 rows left 14 of 40 streams more than
         0.05 from ``RLM``, 200 and 500 left 4 and 1,000 left 2; over 2,000 rows, 200
         left 18, 500 left 10 and 1,000 left 3. A group shorter than the count never
-        refits, and holds its rows to the end. ``0`` turns the refit off, which gives
-        the numbers of the releases before it, to the bit. A target's rows are held
+        refits, and holds its rows to the end. ``0`` turns the refit off. Under
+        ``huber_scale="rms"`` that gives the numbers of the releases before it; under
+        the MAD they differ by the sketch's anchor, by up to a bucket of the sketch,
+        since the sketch now keeps each residual in units of the first. A state saved
+        before the refit existed goes on to the bit. A target's rows are held
         until its refit: ``(features + 4) * 8`` bytes a learned row, and 32 bytes a run
         of rows that only aged it (its value null or its weight 0), one run for such
         rows in a row at one clock step. Past 4 runs a learned row of the count, as on

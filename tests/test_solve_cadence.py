@@ -28,7 +28,8 @@ MODELS = [
     # The refit moves a target's fit on its own row, off the cadence held
     # here (task 277).
     ("huber", {"huber_refit_rows": 0}),
-    ("quantile", {"quantile": 0.5}),
+    # The same for quantile's refit, on by default since task 278 (D-Q2).
+    ("quantile", {"quantile": 0.5, "quantile_refit_rows": 0}),
 ]
 
 

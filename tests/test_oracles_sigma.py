@@ -104,12 +104,12 @@ def _spec(model, half_life, *, gated=True):
         # ``rls`` learns only from a row with every target (its documented
         # null policy), so on this stream its targets' weight tops out near
         # 9.4: the floor is lowered to keep 150 scored rows of each.
-        kw["min_weight"] = [5.0, 5.0, 5.0]
+        if gated:
+            kw["min_weight"] = [5.0, 5.0, 5.0]
         return po.spec.rls("m", delta=1.0, **kw)
     if model == "kalman":
-        # No `min_weight`: how it meets kalman's learning is being changed
-        # elsewhere, and the spread's recursion does not depend on it.
-        kw.pop("min_weight")
+        # `min_weight` withholds kalman's output alone (task 278, D10), so
+        # the ungated run's residuals are the gated run's own predictions'.
         return po.spec.kalman("m", coef_half_life=100.0, **kw)
     if model == "quantile":
         return po.spec.quantile("m", quantile=0.5, **kw)

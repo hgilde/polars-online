@@ -7,8 +7,10 @@ Held here: the refit lands on statsmodels' converged ``RLM`` on the same rows
 (the third-party oracle), it removes the capture it is there for, chunk
 invariance (hard rule 3), a save and a load before, at and after the refit,
 the weight it reports (hard rule 8), ``0`` restoring the run without it, and
-the refusals. That ``0`` gives 1.3.0's numbers to the bit is held against the
-released wheel in ``tests/test_released_state.py``."""
+the refusals. That a state 1.3.0 saved goes on to the bit, and that ``0`` gives
+1.3.0's numbers to the bit under ``huber_scale="rms"`` (under the MAD the anchored
+sketch moves them, task 278), is held against the released wheel in
+``tests/test_released_state.py``."""
 
 from __future__ import annotations
 

@@ -1150,21 +1150,22 @@ def _ew_autocorr(resid, w, clock, run, lag, half_life):
     """The EW lag-``lag`` autocorrelation each row reads, by definition from
     the residuals before it.
 
-    A *value* is a finite residual on a row of positive weight, each at unit
-    weight decayed on the clock, ``u_j = 2^(-(c - c_j) / h)``. Its mean
+    A *value* is a finite residual on a row of positive weight ``w_j``, at
+    that weight decayed on the clock, ``u_j = w_j 2^(-(c - c_j) / h)`` (task
+    278, batch 17: it was at unit weight, ``w_j`` left out). Its mean
     ``m`` and spread ``var = Σ u (x - m)² / Σ u`` are the values' weighted
     ones. A value pairs with the value ``lag`` values back in its run; the
     pair's product is ``(x_j - m_j)(x_p - m_{j-})``, ``m_j`` the mean with
     ``x_j`` and ``m_{j-}`` the one before it (the variance's own Welford
-    centring), and ``cross`` is the pairs' mean of it at the same decayed
-    unit weights. The field is ``cross / var``, clamped to [-1, 1]; null
+    centring), and ``cross`` is the pairs' mean of it at the later value's
+    decayed weight. The field is ``cross / var``, clamped to [-1, 1]; null
     before the first pair or while ``var`` is 0."""
     n = len(resid)
     vals = np.flatnonzero(np.isfinite(resid) & (w > 0))
-    x, c = resid[vals], clock[vals]
+    x, c, wv = resid[vals], clock[vals], w[vals]
     m_after = np.array(
         [
-            np.average(x[: k + 1], weights=0.5 ** ((c[k] - c[: k + 1]) / half_life))
+            np.average(x[: k + 1], weights=wv[: k + 1] * 0.5 ** ((c[k] - c[: k + 1]) / half_life))
             for k in range(len(vals))
         ]
     )
@@ -1180,13 +1181,13 @@ def _ew_autocorr(resid, w, clock, run, lag, half_life):
         have = np.flatnonzero(vals < i)
         if have.size == 0:
             continue
-        u = 0.5 ** ((clock[i] - c[have]) / half_life)
+        u = wv[have] * 0.5 ** ((clock[i] - c[have]) / half_life)
         m = np.average(x[have], weights=u)
         var = np.average((x[have] - m) ** 2, weights=u)
         pairs = have[partner[have] >= 0]
         if pairs.size == 0 or var <= 0.0:
             continue
-        v = 0.5 ** ((clock[i] - c[pairs]) / half_life)
+        v = wv[pairs] * 0.5 ** ((clock[i] - c[pairs]) / half_life)
         prod = (x[pairs] - m_after[pairs]) * (x[partner[pairs]] - m_before[pairs])
         out[i] = np.clip(np.average(prod, weights=v) / var, -1.0, 1.0)
     return out
@@ -1197,9 +1198,9 @@ class TestAutocorrByDefinition:
     lags, through capped gaps, session changes, zero weights and null
     targets. Measured 2026-10-26: 1.0e-15 at most; the tolerance is 1e-12.
 
-    The row's weight does not enter: each value counts once, decayed, where
-    ``sigma`` and the quantiles weigh it by the row's weight (an observation
-    reported with this batch; the docs do not say either way)."""
+    Each value is weighed by its row's weight, decayed, as ``sigma`` and the
+    quantiles weigh it (task 278, batch 17; this class was written when each
+    value counted once)."""
 
     @pytest.mark.parametrize("lag", [1, 2, 5])
     def test_each_row_reads_the_pairs_before_it(self, lag):

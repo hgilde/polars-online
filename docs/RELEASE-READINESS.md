@@ -1102,8 +1102,10 @@ with the default, 1 of them more than 0.25, where 29 were without it and
 MiB by default, bounds the buffers of all a spec's groups together: past it
 a new group keeps its one-pass fit, which a notice and `summary()` say. The capture measured with and without it is
 in [MODELS.md](MODELS.md#huber--quantile--robust-regression).
-`huber_refit_rows=0` is the way back: it restores the earlier numbers to
-the bit. A state saved before the refit existed loads with it off and goes
+`huber_refit_rows=0` turns the refit off. Under `huber_scale="mad"`, the
+default, the numbers still move from 1.3.0's by the same release's anchored
+MAD sketch, by up to a bucket of the sketch; under `"rms"`, which keeps no
+sketch, they are 1.3.0's. A state saved before the refit existed loads with it off and goes
 on as it did, and so does each group restored from a bank saved then. A
 group that bank first sees after the load, or one a drift reset starts
 over, is built from the spec, so it refits at 500 rows: one bank then holds

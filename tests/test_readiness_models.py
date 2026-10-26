@@ -478,14 +478,22 @@ class TestSeCoef:
         it is opened so both score the same rows. Measured 2026-10-26 over
         the four cases: ``se_coef`` 4.3e-15 relative at most, ``coef``
         2.1e-13 (the first rows at ``delta = 1e-3``), ``pred`` 2.1e-14
-        absolute."""
+        absolute.
+
+        ``min_weight`` is 0: since task 278's batch 17 the spread folds each
+        slot's own prediction on the rows a readiness gate withholds, and
+        ``rls`` has one from its prior on every row where ``ewridge`` has none
+        before its first solve, which waits for ``min_weight``. At
+        ``min_weight=3`` the two spreads part from those rows on (``sigma``
+        0.41 to 0.94 apart, ``se_coef`` 5% to 21%), by that rule, not by the
+        fit."""
         df = frame(400)
         common: dict[str, Any] = dict(
             targets=["y"],
             features=["x0", "x1"],
             half_life=half_life,
             weight="w",
-            min_weight=3.0,
+            min_weight=0.0,
             emit_se_coef=True,
             emit_sigma=True,
             coef_every=1,

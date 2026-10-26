@@ -84,7 +84,9 @@ returns.
   each target's location and MAD scale are refit jointly, the scale is
   rebuilt, and each bin's location is solved exactly at the rebuilt cut. The
   default is `max(500, 30 · bins)` (a bin needs about 30 rows at the
-  refit); `0` restores 1.3.0's numbers exactly. `bin_n`, `weight_sum` and
+  refit); `0` turns it off, and the bins then move from 1.3.0's only by
+  this release's anchored MAD sketch (2.0e-3 in `bin_var_y`, 7.5e-5 in
+  `bin_mean_y` on 3,000 rows with 12% spikes). `bin_n`, `weight_sum` and
   every pair moment do not move; `bin_mean_y`, `bin_var_y` and the split
   columns do (up to 3.5 scales in `bin_mean_y` on captured streams, 0.007 on
   clean ones). With learned edges the warm-up's held rows are refit when the
@@ -168,7 +170,7 @@ returns.
   - **Size of the move.** The test stream had 2,000 rows, two targets and 12.5% outliers. On it, 1,450 and 1,358 of 1,997 predictions move.
     - The largest move is 7.3 for `huber`, where a captured target is freed.
     - For `sgd` the largest moves are 4.1 and 1.0.
-  - **The way back.** **`huber_refit_rows=0` restores 1.3.0's numbers exactly for `huber`;** `sgd(loss="huber")` also moves by this release's `sgd` fixes (its clip and epsilon in the target's spread, its level rule), so it does not return to 1.3.0's numbers.
+  - **The way back.** **`huber_refit_rows=0` turns the refit off.** It does not return `huber` to 1.3.0's numbers: they also move by this release's other `huber` changes, the anchored MAD sketch (by up to the sketch's resolution; see *Fixed*) and, away from the default `min_weight` on unit weights, its first rows under `min_weight`. Under `huber_scale="rms"`, which keeps no sketch, the test stream gave 1.3.0's numbers to the bit. `sgd(loss="huber")` also moves by this release's `sgd` fixes (its clip and epsilon in the target's spread, its level rule). A state saved by 1.3.0 continues to the bit.
   - **Old states and banks.** A state saved by 1.0 to 1.3 loads with the refit off and continues exactly as before. A bank saved then keeps its groups that way. A group it first sees after the load refits under the default, and so does a group a drift reset restarts.
   - **Where it is off.** The refit is off by default, and refused when asked for, under `ridge_scale="sum"` and under an infinite `huber_delta`.
   - **Memory.** Each target holds its rows until the refit runs: `(features + 4) · 8` bytes a learned row, about 20 KB a target at one feature. A group shorter than the count holds its rows to the end, bounded by `refit_budget` (below). Measured over 5,000 groups of 150 rows, with two targets and 20 features:

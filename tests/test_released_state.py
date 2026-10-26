@@ -233,6 +233,22 @@ DECLARED: dict[tuple[str, str], str] = {
             "full_pa",
         )
     },
+    # Task 278, the anchored sketch (the next release's Fixed): the MAD's
+    # sketch keeps each residual in units of the first one it takes, where
+    # 1.3.0's buckets were fixed. A file of 1.3.0 keeps its fixed buckets and
+    # goes on as it was fitted, where this build's own bank anchors its
+    # sketch: `huber` (the MAD by default) and `huber_mad` 9.5e-4 to 1.4e-3
+    # apart in their predictions here, `huber_rms`, which keeps no sketch,
+    # to the bit. `full_huber` moves by the sketch and by batch 17's entry
+    # above as well (its `autocorr` 0.12 to 0.19).
+    **{
+        (name, "1.3.0"): "the next release, Fixed: the robust scale's sketch keeps each "
+        "residual in units of the first one it takes, so it rescales with the target"
+        for name in ("huber", "huber_mad")
+    },
+    ("full_huber", "1.3.0"): "the next release, Fixed: the robust scale's sketch keeps each "
+    "residual in units of the first one it takes; and a readiness gate no longer moves the "
+    "residual spread, and the residual autocorrelation weighs each residual by its row",
 }
 
 #: The releases from 1.0, whose files load and go on; and this build, whose
@@ -508,8 +524,11 @@ def test_a_change_against_the_policy_is_on_the_policy_page():
         )
 
 
-#: The last release without the Huber refit (task 277): `huber_refit_rows = 0`
-#: is its `huber` and `sgd(loss="huber")`, to the bit.
+#: The last release without the Huber refit (task 277). A `huber` or
+#: `sgd(loss="huber")` state it saved goes on here to the bit; a fresh
+#: `huber_refit_rows = 0` is its `huber` to the bit only where no MAD sketch
+#: is kept (`huber_scale = "rms"`), since the next release anchors that
+#: sketch (task 278).
 BEFORE_REFIT = "1.3.0"
 
 _REFIT_SCRIPT = """
@@ -523,20 +542,33 @@ pl.concat(frames, how="horizontal").write_parquet(out)
 
 
 def test_no_refit_is_the_release_before_it_to_the_bit(tmp_path):
-    """``huber_refit_rows = 0`` turns off the refit 1.4.0 put on by default,
-    and gives back the numbers of the release before it, every field to the
-    bit: ``huber`` under both scales and with feature sets, on 2,000 rows of
-    two targets at a level of 1,000 with 12.5% one-sided outliers, nulls and
-    zero weights, where the default's refit runs on both targets and moves
-    each (the activation check below). ``sgd``'s Huber loss under each
-    schedule is held to the activation check alone: task 278's sgd group
-    (D1, D2, D-S: the clip, AdaGrad's epsilon and the intercept in the
-    target's own spread and level) moved its steps after the refit merged,
-    so with the refit off it no longer gives 1.3.0's numbers."""
+    """``huber_refit_rows = 0`` turns off the refit 1.4.0 put on by default.
+    On 2,000 rows of two targets at a level of 1,000 with 12.5% one-sided
+    outliers, nulls and zero weights, where the default's refit runs on both
+    targets and moves each (the activation check below):
+
+    - **a state 1.3.0 saved goes on to the bit**, every spec: ``huber`` under
+      both scales and with feature sets, and ``sgd``'s Huber loss under each
+      schedule, saved by 1.3.0 at row 1,000 and loaded here, reports what
+      1.3.0's own run reports on the rows after it. The file has no
+      ``huber_refit_rows`` and loads with the refit off, so it never refits
+      rows its stream has passed; it keeps 1.3.0's fixed sketch buckets and
+      the ``sgd`` steps it was fitted with.
+    - **a fresh ``huber_refit_rows = 0`` is 1.3.0's ``huber`` to the bit
+      under ``huber_scale = "rms"``**, which keeps no MAD sketch. Under the
+      MAD, the default, it parts from 1.3.0 by the sketch's anchor (task 278:
+      the sketch keeps each residual in units of the first one it takes,
+      where 1.3.0's buckets were fixed), by less than a sketch bucket moves a
+      prediction; 6.0e-5 of ``1 + |v|`` here at the level of 1,000, 1.6e-3
+      on the second target.
+    - ``sgd``'s Huber loss is held fresh to the activation check alone: task
+      278's sgd group (D1, D2, D-S: the clip, AdaGrad's epsilon and the
+      intercept in the target's own spread and level) moved its steps, so
+      with the refit off it does not give 1.3.0's numbers."""
     if not _online():
         pytest.skip("offline: the released wheel cannot be downloaded")
     rng = np.random.default_rng(12)
-    n = 2000
+    n, half = 2000, 1000
     x = rng.standard_normal(n)
     z = rng.standard_normal(n)
     y0 = 1000.0 + 2.0 * x - z + 0.5 * rng.standard_normal(n)
@@ -548,6 +580,8 @@ def test_no_refit_is_the_release_before_it_to_the_bit(tmp_path):
     )
     data = tmp_path / "rows.parquet"
     df.write_parquet(data)
+    head = tmp_path / "head.parquet"
+    df.head(half).write_parquet(head)
     c = dict(targets=["y0", "y1"], features=["x", "z"], half_life=float("inf"), weight="w")
     released = [
         po.spec.huber("h_mad", **c),
@@ -559,18 +593,20 @@ def test_no_refit_is_the_release_before_it_to_the_bit(tmp_path):
         ],
     ]
     out = tmp_path / "released.parquet"
-    subprocess.run(
-        [
-            str(compare.released_python(BEFORE_REFIT)),
-            "-I",
-            "-c",
-            _REFIT_SCRIPT,
-            json.dumps(released),
-            str(data),
-            str(out),
-        ],
-        check=True,
-    )
+    saved = tmp_path / "bank.state"
+    for script, rows, to in ((_REFIT_SCRIPT, data, out), (_SAVE_SCRIPT, head, saved)):
+        subprocess.run(
+            [
+                str(compare.released_python(BEFORE_REFIT)),
+                "-I",
+                "-c",
+                script,
+                json.dumps(released),
+                str(rows),
+                str(to),
+            ],
+            check=True,
+        )
     then = pl.read_parquet(out)
 
     def run(rows: int | None) -> pl.DataFrame:
@@ -590,8 +626,26 @@ def test_no_refit_is_the_release_before_it_to_the_bit(tmp_path):
             pl.col(c).struct.unnest().name.prefix(f"{c}.") for c in frame.columns
         ).with_columns(pl.col(pl.Enum).cast(pl.String))
 
-    huber = [s["name"] for s in released if s["model"]["type"] == "huber"]
-    assert plain(run(0).select(huber)).equals(plain(then.select(huber)), null_equal=True)
+    # A state 1.3.0 saved goes on to the bit, every spec, past the 500 rows
+    # the default would refit at.
+    names = [s["name"] for s in released]
+    resumed = po.ModelBank.load(saved, specs=released).fit_predict(df.slice(half))
+    assert plain(resumed.select(names)).equals(
+        plain(then.slice(half).select(names)), null_equal=True
+    )
+
+    off = run(0)
+    assert plain(off.select("h_rms")).equals(plain(then.select("h_rms")), null_equal=True)
+    for name in ("h_mad", "h_sets"):
+        # The anchor moved it (activation), and by no more than a bucket of
+        # the sketch moves a prediction.
+        assert not off[name].equals(then[name], null_equal=True), name
+        got, want = _floats(off.select(name)), _floats(then.select(name))
+        for field in (f for f in want if ".pred_" in f):
+            u, v = got[field], want[field]
+            np.testing.assert_array_equal(np.isnan(u), np.isnan(v), err_msg=field)
+            ok = np.isfinite(v)
+            assert (np.abs(u[ok] - v[ok]) / (1 + np.abs(v[ok]))).max() < 1e-2, field
     moved = run(None)
     for s in released:
         assert not moved[s["name"]].equals(then[s["name"]], null_equal=True), s["name"]
@@ -612,10 +666,12 @@ def test_a_bank_of_the_release_before_the_refit_resumes_without_it_in_its_groups
     """A bank 1.3.0 saved holds `huber` groups fitted without the refit, and
     its file has no `huber_refit_rows`: loaded here, each restored group goes
     on as 1.3.0 did -- its state says the refit is off, so it never refits
-    rows its stream has passed -- to the bit, past 500 rows; a group the bank
-    first sees after the load is built from the spec, whose default refits
-    at 500 rows, as a fresh bank's does. One bank, two rules: the restored
-    groups' and the new one's."""
+    rows its stream has passed, and it keeps 1.3.0's fixed sketch buckets --
+    to the bit against 1.3.0's own continuation, past 500 rows; a group the
+    bank first sees after the load is built from the spec, whose default
+    refits at 500 rows, as a fresh bank's does. One bank, two rules: the
+    restored groups' and the new one's. (A bank of this build with the refit
+    off is not 1.3.0's: its MAD sketch is anchored, task 278.)"""
     if not _online():
         pytest.skip("offline: the released wheel cannot be downloaded")
     rng = np.random.default_rng(21)
@@ -636,27 +692,39 @@ def test_a_bank_of_the_release_before_the_refit_resumes_without_it_in_its_groups
     c = dict(targets=["y"], features=["x"], group="g", clock="t", gap_cap=10.0)
     spec = po.spec.huber("m", half_life=float("inf"), **c)
     saved = tmp_path / "bank.state"
-    subprocess.run(
-        [
-            str(compare.released_python(BEFORE_REFIT)),
-            "-I",
-            "-c",
-            _SAVE_SCRIPT,
-            json.dumps([spec]),
-            str(data),
-            str(saved),
-        ],
-        check=True,
-    )
+    whole = tmp_path / "whole.parquet"
+    pl.concat([head, tail]).write_parquet(whole)
+    went_on = tmp_path / "went_on.parquet"
+    for script, rows, to in ((_SAVE_SCRIPT, data, saved), (_REFIT_SCRIPT, whole, went_on)):
+        subprocess.run(
+            [
+                str(compare.released_python(BEFORE_REFIT)),
+                "-I",
+                "-c",
+                script,
+                json.dumps([spec]),
+                str(rows),
+                str(to),
+            ],
+            check=True,
+        )
+    # 1.3.0's own run over both parts, its rows after the save.
+    then = pl.read_parquet(went_on).with_columns(g=pl.concat([head, tail])["g"]).slice(head.height)
     resumed = po.ModelBank.load(saved, specs=[spec]).fit_predict(tail)
     off = {**spec, "model": {**spec["model"], "huber_refit_rows": 0}}
     one_pass = po.ModelBank([off])
     one_pass.fit_predict(head)
     restored = one_pass.fit_predict(tail)
     fresh_c = po.ModelBank([spec]).fit_predict(tail.filter(pl.col("g") == "c"))
+
+    def plain(frame: pl.DataFrame) -> pl.DataFrame:
+        # `withheld_reason`'s Enum gained categories after the release (task
+        # 278); its values are compared, as strings.
+        return frame["m"].struct.unnest().with_columns(pl.col(pl.Enum).cast(pl.String))
+
     for g in ("a", "b"):
-        mine = resumed.filter(pl.col("g") == g)["m"]
-        assert mine.equals(restored.filter(pl.col("g") == g)["m"], null_equal=True), g
+        mine = plain(resumed.filter(pl.col("g") == g))
+        assert mine.equals(plain(then.filter(pl.col("g") == g)), null_equal=True), g
     new = resumed.filter(pl.col("g") == "c")["m"]
     assert new.equals(fresh_c["m"], null_equal=True)
     # The new group's refit ran: it parts from the one pass after its 500th row.

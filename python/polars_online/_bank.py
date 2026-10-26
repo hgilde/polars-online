@@ -1639,7 +1639,11 @@ class ModelBank:
         With ``lags``, four more list columns and four numbers:
 
         ``lag_corr_xx``, ``lag_corr_yy``
-            Each series' own autocorrelation at the configured lags.
+            Each series' own autocorrelation at the configured lags. As in
+            ``ew_cov``, a lagged moment starts at 0 and takes its first product when
+            a learned row has one ``l`` rows back, so each of the four lag columns
+            reads 0.0, not null, at a lag ``l`` while a group has learned no more
+            than ``l`` rows.
         ``lag_corr_xy``, ``lag_corr_yx``
             The feature now against the target ``l`` rows back, and the target now
             against the feature ``l`` rows back, at each of ``cross_lags`` (every lag

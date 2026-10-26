@@ -4252,8 +4252,10 @@ captured. At one-sided wild rows on an eighth of 20,000 rows, 13 of 40
 none with the refit. The refit fits each target's first 500 learned rows
 to convergence, once (10 a feature from 51 features, and off above 100),
 and rebuilds the scale from that fit's residuals.
-`huber_refit_rows=0` restores the earlier numbers to the bit. A state
-saved before it loads with the refit off, while a group a resumed bank
+`huber_refit_rows=0` turns the refit off. Under the default MAD scale
+the numbers still move from 1.3.0's by the same release's anchored sketch,
+by up to one of its buckets. A state saved before it loads with the refit
+off and goes on to the bit, while a group a resumed bank
 first sees after the load, or one a drift reset starts over, refits under
 the default. The CHANGELOG declares the move with its size, and MODELS.md
 gives the capture measured with and without the refit. The same release

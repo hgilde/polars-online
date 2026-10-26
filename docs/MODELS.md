@@ -980,8 +980,11 @@ from 15 and 26 of 40 to 0 and 2. At 20% wild rows, 40% of those with `x`
 above 0, a first window of 200 rows can itself be captured, and one of 500
 rows now and then; 1,000 rows holds there. Over 20,000 rows 200 rows left
 the same 4 streams at 20% as 500 do, the worst by 0.18; over 2,000 rows the
-table shows what the longer default buys. `huber_refit_rows=0` turns the refit off,
-and gives `huber` the numbers of the releases before it, to the bit; `sgd`'s
+table shows what the longer default buys. `huber_refit_rows=0` turns the refit off.
+Under `huber_scale="rms"` it gives `huber` the numbers of the releases before it,
+to the bit; under the MAD, the default, they move by up to a bucket of the MAD's
+sketch, which now keeps each residual in units of the first one it takes. A state
+saved before the refit existed goes on to the bit. `sgd`'s
 steps have changed since (its clip, AdaGrad's epsilon and its intercept read the
 target's own spread and level), so for it the refit off is the one-pass fit of
 today's steps.
@@ -1105,10 +1108,13 @@ med = po.spec.quantile("med", targets=["y"], features=["x0", "x1"], clock="t", g
 **`huber_delta`'s default, 1.345, is the cut at which Huber's estimator is
 95% as efficient as least squares when the errors are normal.**
 statsmodels' `HuberT` takes 1.345 and scikit-learn's `HuberRegressor`
-1.35. `huber_delta=inf` cuts nothing, which is least squares. To reproduce
-the numbers of a version before the refit existed (1.3.0 and earlier), give
-`huber_refit_rows=0`; before `huber_scale` existed (1.2.0 and earlier),
-give `huber_scale="rms"` as well.
+1.35. `huber_delta=inf` cuts nothing, which is least squares. To come
+close to the numbers of a version before the refit existed (1.3.0 and
+earlier), give `huber_refit_rows=0`: under the MAD they still move by up to
+a bucket of its sketch, which now keeps each residual in units of the first
+one it takes. Before `huber_scale` existed (1.2.0 and earlier), give
+`huber_scale="rms"` as well, which keeps no sketch. A state saved by an
+earlier version goes on to the bit.
 
 **The band's rows, those with `|e| < h`, give the Newton step its
 curvature.** So a much smaller `quantile_eps` narrows the band and slows
@@ -2339,8 +2345,11 @@ worst of 50 streams, in the target's scales:
 A bin needs about 30 rows at the refit: one whose rows are then mostly
 spikes has its location among them, rightly for those rows, and the rows
 after bring it back only slowly. At 20% spikes, 12.5 rows a bin left 6 of
-50 streams half a scale off after 20,000 rows, and 31 left none. The refit
-runs once, in about 1 ms at 10 features, 13 ms at 1,000 and 110 ms at
+50 streams half a scale off after 20,000 rows, and 31 left none. These
+figures are at the default cut, `bin_huber_delta=1.345`. A wider cut
+converges more slowly: at 2.5 with 12% spikes, the worst of 50 streams was
+0.30 scales off after 1,000 rows with the refit, against 1.25 without it.
+The refit runs once, in about 1 ms at 10 features, 13 ms at 1,000 and 110 ms at
 10,000 over 500 rows; a row after it costs what it did.
 
 **The one pass lands on the converged batch estimate.** Against

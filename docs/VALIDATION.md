@@ -22,18 +22,18 @@ The clock is the row count: a row is a minute, and every number in clock units b
 
 ## 1. Solve schedule (`solve_every` default = by weight, half_life/50 in steady state) [validate]
 
-Solving every `half_life/d` clock units, half_life = 500.0, on `y0`. All schedules share one accumulator, so this is a free experiment (0.05s for 7 schedules).
+Solving every `half_life/d` clock units, half_life = 500.0, on `y0`. All schedules share one accumulator, so this is a free experiment (0.03s for 7 schedules).
 
 | divisor | n | r2 | ic | hit_rate | mse |
 |---|---|---|---|---|---|
 | 1 | 14283 | -0.0727934 | 0.00594082 | 0.498025 | 1.23526e-06 |
 | 5 | 14283 | -0.0180442 | 0.0219514 | 0.498095 | 1.17222e-06 |
-| 10 | 14283 | -0.0103518 | 0.0290077 | 0.497178 | 1.16336e-06 |
-| 50 | 14283 | -0.00865016 | 0.0322924 | 0.497602 | 1.1614e-06 |
-| 200 | 14283 | -0.0203975 | -0.00584028 | 0.497672 | 1.17493e-06 |
+| 10 | 14283 | -0.0161021 | 0.00593309 | 0.497743 | 1.16998e-06 |
+| 50 | 14283 | -0.00936753 | 0.0232117 | 0.497602 | 1.16223e-06 |
+| 200 | 14283 | -0.0520132 | -0.0812793 | 0.497884 | 1.21133e-06 |
 | 1000 | 14283 | -0.0646675 | -0.120803 | 0.496614 | 1.2259e-06 |
 
-**Result:** lowest MSE at divisor 50 (mse 1.1614e-06). The default, a solve once the weight learned since the last reaches `ln 2 / 50` of the weight the fit holds: mse 1.16848e-06, r2 -0.0147959, ic -0.00132871.
+**Result:** lowest MSE at divisor 50 (mse 1.16223e-06). The default, a solve once the weight learned since the last reaches `ln 2 / 50` of the weight the fit holds: mse 1.16848e-06, r2 -0.0147959, ic -0.00132871.
 
 ## 2. `standardize` default (false for ridge, true for lasso)
 
@@ -51,7 +51,7 @@ Lasso path [0.01, 0.001, 0.0001, 0.0]. `l1_ratio` = 1 is pure lasso; below 1 the
 | l1_100 | pred_y0__p0.0001 | 14283 | -0.00368412 | -0.0144557 | 1.15568e-06 |
 | l1_100 | pred_y0__p0.001 | 14283 | -0.00088852 | -0.0124867 | 1.15246e-06 |
 | l1_100 | pred_y0__p0.01 | 14283 | -0.00088852 | -0.0124867 | 1.15246e-06 |
-| l1_50 | pred_y0__p0.0001 | 14283 | -0.00616189 | -0.00495869 | 1.15854e-06 |
+| l1_50 | pred_y0__p0.0001 | 14283 | -0.00616189 | -0.00495868 | 1.15854e-06 |
 | l1_50 | pred_y0__p0.001 | 14283 | -0.00088852 | -0.0124867 | 1.15246e-06 |
 | l1_50 | pred_y0__p0.01 | 14283 | -0.00088852 | -0.0124867 | 1.15246e-06 |
 | l1_10 | pred_y0__p0.0001 | 14283 | -0.0111905 | 0.00125633 | 1.16433e-06 |
@@ -60,7 +60,7 @@ Lasso path [0.01, 0.001, 0.0001, 0.0]. `l1_ratio` = 1 is pure lasso; below 1 the
 
 ## 4. Kalman `share_p` approximation [validate]
 
-Two targets (['y0', 'y1']) with very different noise levels; one spec holds both, so both wait the longer embargo. `P` is held in units of the noise, so with both targets on every row the shared `P` is each target's own and the two specs score the same: sharing saves work and changes no prediction. Both specs run in 0.13s total.
+Two targets (['y0', 'y1']) with very different noise levels; one spec holds both, so both wait the longer embargo. `P` is held in units of the noise, so with both targets on every row the shared `P` is each target's own and the two specs score the same: sharing saves work and changes no prediction. Both specs run in 0.01s total.
 
 | spec | slot | target | n | r2 | ic | mse |
 |---|---|---|---|---|---|---|
@@ -79,7 +79,7 @@ Each target under its own embargo, every model at the same memory (*How the runs
 | ewridge_every_row | pred_y0 | y0 | 14283 | -0.0646675 | -0.120803 | 0.496614 | 1.2259e-06 |
 | rls | pred_y0 | y0 | 14283 | -0.0644381 | -0.120948 | 0.496543 | 1.22564e-06 |
 | kalman | pred_y0 | y0 | 14283 | -0.0699008 | -0.127431 | 0.494568 | 1.23193e-06 |
-| lasso | pred_y0__p0 | y0 | 14283 | -0.0147995 | -0.00132935 | 0.499083 | 1.16848e-06 |
+| lasso | pred_y0__p0 | y0 | 14283 | -0.0147995 | -0.00132934 | 0.499083 | 1.16848e-06 |
 | lasso | pred_y0__p0.0001 | y0 | 14283 | -0.00368412 | -0.0144557 | 0.504374 | 1.15568e-06 |
 | lasso | pred_y0__p0.001 | y0 | 14283 | -0.00088852 | -0.0124867 | 0.500071 | 1.15246e-06 |
 | ewridge | pred_y1 | y1 | 14279 | -0.052132 | -0.00735021 | 0.495413 | 5.21755e-06 |

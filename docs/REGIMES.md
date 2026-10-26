@@ -140,7 +140,7 @@ the streams switch.
 
 | how it was started | mean share in the true state | worst seed |
 |---|---|---|
-| seeded from the rows (`warm_rows`), learning | 0.568 | 0.537 |
+| seeded from the rows (`warm_rows`), learning | 0.553 | 0.506 |
 | true covariances, filter only | 0.979 | 0.966 |
 | true covariances, and go on learning | 0.948 | 0.897 |
 | true covariances, filter only, `precision_prior` = 1.0 | 0.580 | 0.521 |
@@ -151,8 +151,8 @@ mean of zero, so k-means finds two directions. The learned state means
 reach 0.64 in absolute value, where the truth is zero. That is the largest
 absolute mean per seed, averaged over the eight. The score counts the 500
 rows before seeding, which report nothing, as the true state. Over the 3499
-rows after seeding the share is about half: (0.568 × 3999 − 500) / 3499 ≈
-0.51. So a regime that lives in the covariance needs the covariances to
+rows after seeding the share is about half: (0.553 × 3999 − 500) / 3499 ≈
+0.49. So a regime that lives in the covariance needs the covariances to
 start from, or a feature in which the regime is a shift in location.
 
 **A ridge as large as the data's variance halves every correlation.** In
@@ -191,7 +191,7 @@ which agrees with either state within a row or two.
 
 | how it was started | mean share in the true state | worst seed | median rows to hold the new state | longest | switches never held |
 |---|---|---|---|---|---|
-| seeded from the rows (`warm_rows`), learning | 0.457 | 0.450 | - | - | 24 of 24 |
+| seeded from the rows (`warm_rows`), learning | 0.456 | 0.450 | - | - | 24 of 24 |
 | true covariances, filter only | 0.992 | 0.989 | 12 | 32 | 0 of 24 |
 | true covariances, and go on learning | 0.972 | 0.898 | 10 | 294 | 0 of 24 |
 

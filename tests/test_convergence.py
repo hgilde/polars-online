@@ -1109,7 +1109,9 @@ def test_breakdown_essential():
 # itself captured in some seeds (below). Re-measured at the 500-row default
 # (2026-10-25): still none at 5% to 15% (the worst 0.0128 for huber, 0.0144
 # for sgd, at 15% without decay); at 20% 8 and 5 of 50 for huber, 6 and 5
-# for sgd, where 200 rows left 16, 12, 15 and 10.
+# for sgd, where 200 rows left 16, 12, 15 and 10. Re-measured 2026-10-26 on
+# task 278's wave-2 build: the same counts, the worst 0.853 and 0.587 for
+# huber, 0.811 and 0.532 for sgd, all seed 21.
 _HUBER_20 = (
     "defect (task 277): at 20% wild rows, 40% of those with x0 above 0, the refit of "
     "the first 500 rows is itself captured in some seeds, from the captured online fit "
@@ -1117,10 +1119,10 @@ _HUBER_20 = (
     "huber_refit_rows=1000 leaves fewer (MODELS.md)"
 )
 HUBER_BREAKDOWN_DEFECTS: dict[tuple[str, float, float], str] = {
-    ("huber", 0.20, cv.INF): _HUBER_20.format(8, "0.913", 30),
-    ("huber", 0.20, 5000.0): _HUBER_20.format(5, "0.769", 21),
-    ("sgd:huber", 0.20, cv.INF): _HUBER_20.format(6, "0.862", 30),
-    ("sgd:huber", 0.20, 5000.0): _HUBER_20.format(5, "0.703", 21),
+    ("huber", 0.20, cv.INF): _HUBER_20.format(8, "0.853", 21),
+    ("huber", 0.20, 5000.0): _HUBER_20.format(5, "0.587", 21),
+    ("sgd:huber", 0.20, cv.INF): _HUBER_20.format(6, "0.811", 21),
+    ("sgd:huber", 0.20, 5000.0): _HUBER_20.format(5, "0.532", 21),
 }
 
 
