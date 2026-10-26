@@ -128,6 +128,10 @@ runs both tiers, but a plain `cargo test` skips the extended Rust tests
    61-63 continues within 1e-9 relative, not to the bit (the stopping rule
    became relative to the target's spread), and still loads and re-saves the
    same bytes.
+   A fourth, the user's (2026-10-25, task 278): a diagnosed state of schema
+   61-63 continues to the current values in its windowed `cusum_*` and
+   `cusum_sq_*` fields while their sums are young (their null's share is now
+   read at the sums' age); every other field continues to the bit.
 6. No `unsafe` in `online-core`. f64 everywhere.
 7. Commit after each completed task in `docs/PLAN.md`, with the task number in the message.
 8. **`n_eff` -- the models' accessor, emitted as `weight_sum` -- means the same thing in
