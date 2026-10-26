@@ -390,6 +390,70 @@ impl Breaks {
         let var = r * (excess * self.s2 + 2.0 * self.bartlett(&self.p2));
         (excess > 0.0 && var > 0.0).then(|| (self.z2 - self.s1) / var.sqrt())
     }
+
+    /// How far the studentized residuals' sums have filled their memory:
+    /// `x = κ T`, the decay since the first of them, `κ = ln 2 / h` at the
+    /// sums' memory (task 278, D-B5). The sums' own weights tell it, free of
+    /// the weights' scale and the rows' rate: `S1 = Σ ω` decays at `κ` and
+    /// `Σ ω_s` (`w4`) at `κ / 4`, over the same rows, so in continuous time
+    /// at a steady rate their ratio is
+    ///
+    /// ```text
+    /// S1 / Σ ω_s = (1 − p⁴) / (4 (1 − p)) = (1 + p)(1 + p²) / 4,    p = e^{−κ T / 4}
+    /// ```
+    ///
+    /// 1 at the first row and 1/4 once filled. `p` is the cubic's root on
+    /// `[0, 1]`, found by Newton's method from 1 (the cubic is convex and
+    /// rising there, so the steps fall monotonically onto it), and `x = −4
+    /// ln p`. On discrete rows a filled ratio sits a little above 1/4:
+    /// with a step's decay `λ` it is `(1 − λ^{1/4}) / (1 − λ)`, which
+    /// reads `p ≈ 0.75 / K`, `K = S1² / S2` the sums' Kish size (`2 / (1 −
+    /// λ)` filled). A `p` within twice that of 0 is below the reading's
+    /// resolution, and reads as filled: `inf`, where the shares are their
+    /// steady forms to the bit. Under uneven weights the ratio is a
+    /// weighted one, which the last rows' weights move: with weights `1 ±
+    /// 0.5` it read within 10% of the rows' age, and long filled a `q =
+    /// e^{−x}` near `4e-8`, not `inf`. A long gap ages `S1` past the ratio's 1/4,
+    /// which also reads as filled. 0 before the first row and with nothing
+    /// decaying (run once, where `S1 = Σ ω_s`).
+    pub fn elapsed(&self) -> f64 {
+        // `w4 ≥ S1` over the same rows: 4 at a single row, NaN before any.
+        let target = 4.0 * self.s1 / self.w4;
+        if target >= 4.0 || target.is_nan() {
+            return 0.0;
+        }
+        if target <= 1.0 {
+            return f64::INFINITY;
+        }
+        let mut p = 1.0f64;
+        for _ in 0..100 {
+            let f = ((p + 1.0) * p + 1.0) * p + 1.0 - target;
+            let next = p - f / ((3.0 * p + 2.0) * p + 1.0);
+            if next >= p || next.is_nan() {
+                break;
+            }
+            p = next;
+        }
+        if p <= 1.5 * self.s2 / (self.s1 * self.s1) {
+            return f64::INFINITY;
+        }
+        -4.0 * p.ln()
+    }
+
+    /// The scale's lead on the sums at `elapsed` ([`Self::elapsed`]), `D =
+    /// q (1 − c)`, which [`cusum_sq_null_at`] reads: `q = e^{−x}` the sums'
+    /// unfilled share and `c = e^{−κ τ}` the scale's when the sums began, `τ`
+    /// earlier (it waits for [`SCALE_ROWS`] rows of Kish's size). The
+    /// scale's `Σ ω` (`v1`) has filled `N = 1 − c q` where the sums' has
+    /// filled `1 − q`, so `N = (1 − q) v1 / S1` and `D = N − (1 − q)`,
+    /// held to `[0, q]`. 0 where `elapsed` is not a positive finite time.
+    pub fn scale_lead(&self, elapsed: f64) -> f64 {
+        if !(elapsed > 0.0 && elapsed.is_finite() && self.s1 > 0.0) {
+            return 0.0;
+        }
+        let (q, m) = ((-elapsed).exp(), -(-elapsed).exp_m1());
+        (m * self.v1 / self.s1 - m).clamp(0.0, q)
+    }
 }
 
 /// The share of a windowed CUSUM's plain variance its null has (task 232
@@ -522,6 +586,176 @@ fn d_absorbed(u: f64) -> f64 {
     }
     let q = (-u).exp();
     q / u - (1.0 - q) / (u * u)
+}
+
+/// The share of a windowed CUSUM's plain variance its null has after its
+/// sums have run for `elapsed`, `x = κ_c T` ([`Breaks::elapsed`]), beside a
+/// fit that has (task 278, D-B5). [`cusum_null`] and [`cusum_null_window`]
+/// are its limit as the sums fill; a sum of a few rows is all but its plain
+/// variance, since the fit's mean absorbs a level over the fit's memory,
+/// of which those rows hold little. Divided by the filled share from its
+/// first row, the CUSUM passed 1.96 on 13% to 34% of the 150 rows after the
+/// diagnostics' readiness on clean streams beside `ewridge` at a half-life
+/// of 200, by memory from 200 to 800, and on 6.6% to 23% still 300 to 600
+/// rows in.
+///
+/// The fit has run long before the sums (the diagnostics wait for it to
+/// settle), so its residual is stationary, `e_t = ε_t − ∫ g(y) ε_{t−y} dy`,
+/// with autocovariance `δ(d) + K(|d|)`, `K = −g + g ⋆ g` (`(g ⋆ g)(d) = ∫
+/// g(y) g(y + d) dy`). The sums began `T` ago, with weights `ω(x) = e^{−κ_c
+/// x}` on `[0, T]`, so
+///
+/// ```text
+/// Var Z = ∫_0^T ω² + 2 ∫_0^T K(d) ∫_0^{T−d} ω(x) ω(x + d) dx dd
+/// r(T)  = 1 + 2 (J(κ_c) − e^{−2x} J(−κ_c)) / (1 − e^{−2x}),    J(s) = ∫_0^{min(T, W)} K(d) e^{−s d} dd
+/// ```
+///
+/// over the plain `∫_0^T ω² = (1 − e^{−2x}) / (2 κ_c)`; `r(0) = 1`, and
+/// `r(∞) = 1 + 2 J(κ_c)` over the fit's whole support, the steady form.
+/// Beside an exponential fit (`g = κ_m e^{−κ_m y}`, `K = −(κ_m/2) e^{−κ_m
+/// d}`), with `β = κ_m / κ_c = h_c / h_m` and `F(a) = (1 − e^{−a}) / a`,
+///
+/// ```text
+/// r(x) = h_m / (h_m + h_c) + (2 h_c / (h_m + h_c)) x e^{−(1 + min(1, β)) x} F(|1 − β| x) / (1 − e^{−2x})
+/// ```
+///
+/// Beside a window of `W` (`u = κ_c W`, `v = κ_m W`, `ℓ = min(T, W) / W`),
+/// with no decay `K(d) = −d / W²` and `J(±κ_c) = −ℓ² H(±u ℓ)`, `H(a) = ∫_0^1
+/// t e^{−a t} dt`; cut from a decay, with `C = v / (1 − e^{−v})`,
+///
+/// ```text
+/// J(±κ_c) = −C ℓ F((v ± u) ℓ) + (C² ℓ / (2v)) (F((v ± u) ℓ) − e^{−2v} F((±u − v) ℓ))
+/// ```
+///
+/// which at `ℓ = 1`, `T → ∞`, is [`cusum_null_window`]'s closed form. The
+/// steady share is that function's own, and the transient is added to it,
+/// so a filled sum reads it to the bit. Every exponential is formed with its
+/// exponent at most 0. `elapsed` of 0 (or below) reads 1, the plain sum;
+/// `inf` the steady share.
+pub fn cusum_null_at(window: f64, fit_half_life: f64, own_half_life: f64, elapsed: f64) -> f64 {
+    let steady = cusum_null_window(window, fit_half_life, own_half_life);
+    if !own_half_life.is_finite() || elapsed.is_nan() || elapsed == f64::INFINITY {
+        return steady;
+    }
+    if elapsed <= 0.0 {
+        return 1.0;
+    }
+    let x = elapsed;
+    let p = -(-2.0 * x).exp_m1();
+    if !(window.is_finite() && window > 0.0) {
+        if !fit_half_life.is_finite() {
+            return steady;
+        }
+        let beta = own_half_life / fit_half_life;
+        let lead = 2.0 * own_half_life / (fit_half_life + own_half_life);
+        let decay = (-(1.0 + beta.min(1.0)) * x).exp();
+        return steady + lead * x * decay * absorbed((1.0 - beta).abs() * x) / p;
+    }
+    let ln2 = std::f64::consts::LN_2;
+    let u = ln2 / own_half_life * window;
+    let v = ln2 / fit_half_life * window;
+    let l = (x / u).min(1.0);
+    let e2 = (-2.0 * x).exp();
+    let j_full = window_j(u, v, 1.0, 1.0, 0.0);
+    let head = if l < 1.0 {
+        window_j(u, v, l, 1.0, 0.0) - j_full
+    } else {
+        0.0
+    };
+    steady + 2.0 * (head + e2 * j_full - window_j(u, v, l, -1.0, 2.0 * x)) / p
+}
+
+/// `e^{−scale} J(σ κ_c)` beside a window, `J` over `ℓ` of it
+/// ([`cusum_null_at`]), `σ = ±1`, `scale` 0 where `σ = 1`; `v` below `1e-8`
+/// reads the window with no decay, as [`cusum_null_window`] does.
+fn window_j(u: f64, v: f64, l: f64, sigma: f64, scale: f64) -> f64 {
+    let y = u * l;
+    if v < 1e-8 {
+        // `J(κ_c)` is read unscaled: `scale` is 0 there.
+        let h = if sigma > 0.0 {
+            -d_absorbed(y)
+        } else {
+            scaled_h_neg(y, scale)
+        };
+        return -l * l * h;
+    }
+    let c = v / -(-v).exp_m1();
+    let near = scaled_absorbed((v + sigma * u) * l, scale);
+    let far = scaled_absorbed((sigma * u - v) * l, scale + 2.0 * v);
+    -c * l * near + c * c * l / (2.0 * v) * (near - far)
+}
+
+/// `e^{−scale} F(a)`, `F(a) = (1 − e^{−a}) / a`, for an `a` of either sign
+/// and a `scale` at least `−a`, so no exponential overflows.
+fn scaled_absorbed(a: f64, scale: f64) -> f64 {
+    if a >= 0.0 {
+        return (-scale).exp() * absorbed(a);
+    }
+    let y = -a;
+    if y <= 1.0 {
+        (-scale).exp() * y.exp_m1() / y
+    } else {
+        ((y - scale).exp() - (-scale).exp()) / y
+    }
+}
+
+/// `e^{−scale} H(−y)`, `H(−y) = ∫_0^1 t e^{y t} dt = (1 + e^y (y − 1)) /
+/// y²`, by its series `Σ_{n≥0} y^n / (n! (n + 2))` below 0.1, where the
+/// closed form cancels; `y ≤ scale`, so no exponential overflows.
+fn scaled_h_neg(y: f64, scale: f64) -> f64 {
+    if y < 0.1 {
+        let (mut sum, mut pow, mut fact) = (0.0, 1.0, 1.0);
+        for n in 0..14 {
+            if n > 0 {
+                fact *= f64::from(n);
+            }
+            sum += pow / (fact * f64::from(n + 2));
+            pow *= y;
+        }
+        return (-scale).exp() * sum;
+    }
+    ((-scale).exp() + (y - scale).exp() * (y - 1.0)) / (y * y)
+}
+
+/// The share of the CUSUM of squares' plain variance its null has after
+/// its sums have run for `elapsed` ([`Breaks::elapsed`]), the scale having
+/// led them by `lead` ([`Breaks::scale_lead`]) (task 278, D-B5): 1/2 once
+/// filled ([`cusum_null`] at its own memory), 1 run once. Divided by 1/2
+/// from its first row, the CUSUM of squares passed 1.96 on 12% to 18% of
+/// the 150 rows after the diagnostics' readiness on clean streams, by
+/// memory from 50 to 800, beside `ewridge`, `rls` and `sgd` alike.
+///
+/// `z² − 1` is, to first order, `(v² − s²) / σ²`: the square's shock less
+/// the scale's weighted mean of those before it, at the sums' rate `κ`.
+/// The scale began `τ` before the sums, so its weights on the shocks
+/// before row `t` are `κ e^{−κ y} / N(t)` on `[0, t + τ]`, `N(t) = 1 −
+/// c e^{−κ t}`, `c = e^{−κ τ}`. Two rows' residuals then covary by `−(κ/2)
+/// e^{−κ (t − t')} N(t') / N(t)`, and the sum over `[0, T]`, against its
+/// plain `(1 − q²) / (2κ)`, `q = e^{−κ T}`, has the share
+///
+/// ```text
+/// r₂ = 1/2 + (q − D) / (1 + q) + D² ln(N / D) / (1 − q²),    D = q (1 − c),  N = N(T) = D + 1 − q
+/// ```
+///
+/// 1 at `T = 0` and 1/2 + `q² κ T / (1 − q²)` beside a scale long filled
+/// (`c = 0`). A filled sum reads 1/2 to the bit where its transient is
+/// below half its last place, and `inf` reads it outright.
+pub fn cusum_sq_null_at(own_half_life: f64, elapsed: f64, lead: f64) -> f64 {
+    let steady = cusum_null(own_half_life, own_half_life);
+    if !own_half_life.is_finite() || elapsed.is_nan() || elapsed == f64::INFINITY {
+        return steady;
+    }
+    if elapsed <= 0.0 {
+        return 1.0;
+    }
+    let (q, m) = ((-elapsed).exp(), -(-elapsed).exp_m1());
+    let d = lead.clamp(0.0, q);
+    let tail = if d > 0.0 {
+        d * d * (m / d).ln_1p() / (m * (1.0 + q))
+    } else {
+        0.0
+    };
+    steady + (q - d) / (1.0 + q) + tail
 }
 
 /// The fast and slow fits of one target, and the sums their difference's
@@ -1284,6 +1518,363 @@ mod tests {
         assert_eq!(cusum_null_window(0.0, 50.0, 80.0), cusum_null(50.0, 80.0));
         assert_eq!(cusum_null_window(100.0, 50.0, inf), 1.0);
         assert_eq!(cusum_null_window(100.0, inf, inf), 1.0);
+    }
+
+    /// Composite Simpson's rule over `[lo, hi]` in `n` (even) intervals.
+    fn simpson(f: &dyn Fn(f64) -> f64, lo: f64, hi: f64, n: usize) -> f64 {
+        if hi <= lo {
+            return 0.0;
+        }
+        let h = (hi - lo) / n as f64;
+        let inner: f64 = (1..n)
+            .map(|i| f(lo + i as f64 * h) * if i % 2 == 1 { 4.0 } else { 2.0 })
+            .sum();
+        (f(lo) + f(hi) + inner) * h / 3.0
+    }
+
+    /// Simpson's rule over `[lo, hi]` in segments of at most `step`, eight
+    /// intervals each: the integrands below change on the scale of the
+    /// shortest memory, which `step` is a fraction of.
+    fn simpson_by(f: &dyn Fn(f64) -> f64, lo: f64, hi: f64, step: f64) -> f64 {
+        if hi <= lo {
+            return 0.0;
+        }
+        let n = ((hi - lo) / step).ceil().max(1.0) as usize;
+        let h = (hi - lo) / n as f64;
+        (0..n)
+            .map(|i| simpson(f, lo + i as f64 * h, lo + (i + 1) as f64 * h, 8))
+            .sum()
+    }
+
+    /// A young CUSUM's null share by its definition (task 278, D-B5): the
+    /// sums began `T` ago with weights `ω(x) = e^{−κ x}`; the shock at `t`
+    /// enters them with `c(t) = ω(T − t) 1{t ≥ 0} − ∫ ω(T − s) k(s, t) ds`
+    /// over the rows `s` in `(max(t, 0), upper(t)]` whose residual absorbed
+    /// it, `k(s, t)` the absorber's weight on it; the share is `∫ c²` over
+    /// the plain `∫_0^T ω²`. Simpson's rule on each piece between the kinks
+    /// `pieces` (from the earliest shock that matters to `T`), in segments
+    /// of at most `step`.
+    fn share_by_definition(
+        kappa: f64,
+        t_end: f64,
+        kernel: &dyn Fn(f64, f64) -> f64,
+        upper: &dyn Fn(f64) -> f64,
+        pieces: &[f64],
+        step: f64,
+    ) -> f64 {
+        let om = |x: f64| (-kappa * x).exp();
+        // A piece holds the shocks the sums take themselves where it lies
+        // at or past 0: `c` jumps there, so each piece reads its own side.
+        let c = |t: f64, summed: bool| {
+            let own = if summed { om(t_end - t) } else { 0.0 };
+            let lo = t.max(0.0);
+            own - simpson_by(&|s| om(t_end - s) * kernel(s, t), lo, upper(t), step)
+        };
+        let num: f64 = pieces
+            .windows(2)
+            .map(|p| simpson_by(&|t| c(t, p[0] >= 0.0).powi(2), p[0], p[1], step))
+            .sum();
+        num / (-(-2.0 * kappa * t_end).exp_m1() / (2.0 * kappa))
+    }
+
+    /// Beside an exponential fit, the share from the sums' first row on is
+    /// its definition's ([`share_by_definition`], the fit's residual
+    /// stationary): 1 at `T = 0`, `h_m / (h_m + h_c)` filled, at short,
+    /// equal and long CUSUM memories; `inf` reads the steady share to the
+    /// bit, and so does a sum long filled, its transient below half its last
+    /// place.
+    #[test]
+    fn a_young_cusums_null_share_is_its_absorption() {
+        let ln2 = std::f64::consts::LN_2;
+        let inf = f64::INFINITY;
+        for (hm, hc) in [(200.0, 200.0), (200.0, 800.0), (200.0, 50.0), (37.0, 91.0)] {
+            let (km, kc) = (ln2 / hm, ln2 / hc);
+            let kernel = |s: f64, t: f64| km * (-km * (s - t)).exp();
+            for frac in [0.01, 0.1, 0.5, 1.0, 3.0, 10.0] {
+                let t_end = frac * hc;
+                let want = share_by_definition(
+                    kc,
+                    t_end,
+                    &kernel,
+                    &|_| t_end,
+                    &[-20.0 * hm, 0.0, t_end],
+                    hm.min(hc) / 4.0,
+                );
+                let got = cusum_null_at(inf, hm, hc, kc * t_end);
+                assert!(
+                    (got - want).abs() < 1e-6,
+                    "{hm} {hc} {t_end}: {got} vs {want}"
+                );
+            }
+            let steady = cusum_null(hm, hc);
+            assert_eq!(cusum_null_at(inf, hm, hc, inf), steady);
+            assert_eq!(cusum_null_at(inf, hm, hc, 0.0), 1.0);
+            assert_eq!(cusum_null_at(inf, hm, hc, 800.0), steady);
+            assert!(cusum_null_at(inf, hm, hc, 1e-300) > 1.0 - 1e-15);
+            assert_eq!(cusum_null_at(inf, hm, hc, f64::NAN), steady);
+            // A window of 0 is no window, as in the steady form.
+            for x in [0.3, 2.0] {
+                assert_eq!(cusum_null_at(0.0, hm, hc, x), cusum_null_at(inf, hm, hc, x));
+            }
+        }
+        // Equal memories, where `F(|1 − β| x)` is `F(0)`, lie on the same
+        // curve as their neighbours.
+        let (a, b) = (
+            cusum_null_at(inf, 100.0, 100.0, 1.3),
+            cusum_null_at(inf, 100.0 * (1.0 + 1e-9), 100.0, 1.3),
+        );
+        assert!((a - b).abs() < 1e-8, "{a} vs {b}");
+        // Nothing forgets: the fit absorbs nothing, the run-once sums are
+        // plain.
+        assert_eq!(cusum_null_at(inf, inf, 50.0, 0.7), 1.0);
+        assert_eq!(cusum_null_at(inf, 50.0, inf, 0.7), 1.0);
+    }
+
+    /// Beside a window, with no decay, a decay much longer than the window,
+    /// one beside it and one much shorter, the young share is its
+    /// definition's from inside the window's first span to long past it,
+    /// and meets the steady form ([`cusum_null_window`]) to the bit once
+    /// filled; it is continuous where the sums' age passes the window.
+    #[test]
+    fn a_young_windows_cusum_null_share_is_its_absorption() {
+        let ln2 = std::f64::consts::LN_2;
+        let inf = f64::INFINITY;
+        for w in [12.0f64, 100.0] {
+            for hm in [inf, 5.0 * w, w, 0.1 * w] {
+                let km = ln2 / hm;
+                let norm = if hm.is_finite() {
+                    km / -(-km * w).exp_m1()
+                } else {
+                    1.0 / w
+                };
+                // The window's support, `(t, t + W]`, is `upper`'s.
+                let kernel = |s: f64, t: f64| norm * (-km * (s - t)).exp();
+                for hc in [w / 20.0, w / 3.0, 4.0 * w] {
+                    let kc = ln2 / hc;
+                    for frac in [0.05, 0.5, 1.0, 2.5] {
+                        let t_end = frac * w;
+                        let mut pieces = vec![-w, t_end - w, 0.0, t_end];
+                        pieces.sort_by(f64::total_cmp);
+                        let want = share_by_definition(
+                            kc,
+                            t_end,
+                            &kernel,
+                            &|t| (t + w).min(t_end),
+                            &pieces,
+                            hm.min(hc).min(w) / 4.0,
+                        );
+                        let got = cusum_null_at(w, hm, hc, kc * t_end);
+                        assert!(
+                            (got - want).abs() < 1e-6 * want.max(0.05),
+                            "{w} {hm} {hc} {t_end}: {got} vs {want}"
+                        );
+                    }
+                    let steady = cusum_null_window(w, hm, hc);
+                    assert_eq!(cusum_null_at(w, hm, hc, inf), steady);
+                    assert_eq!(cusum_null_at(w, hm, hc, 0.0), 1.0);
+                    let x_w = kc * w;
+                    let (lo, hi) = (
+                        cusum_null_at(w, hm, hc, x_w * (1.0 - 1e-12)),
+                        cusum_null_at(w, hm, hc, x_w * (1.0 + 1e-12)),
+                    );
+                    assert!((lo - hi).abs() < 1e-9, "{w} {hm} {hc}: {lo} vs {hi}");
+                }
+            }
+        }
+        // Long filled, the transient is below the steady share's last place.
+        assert_eq!(
+            cusum_null_at(400.0, 200.0, 200.0, 26.6),
+            cusum_null_window(400.0, 200.0, 200.0)
+        );
+        // Rates far apart, where an exponential of `(u − v) ℓ` alone would
+        // overflow, read finite shares in `[0, 1]`.
+        for (w, hm, hc, x) in [
+            (1_000.0, 1_000.0, 0.5, 5.0),
+            (1_000.0, 1_000.0, 0.5, 2_000.0),
+            (1e5, 1.0, 50.0, 3.0),
+            (1e5, 1.0, 50.0, 900.0),
+            (1.0, 1e7, 1e4, 1e-5),
+        ] {
+            let r = cusum_null_at(w, hm, hc, x);
+            assert!(
+                r.is_finite() && (0.0..=1.0).contains(&r),
+                "{w} {hm} {hc} {x}: {r}"
+            );
+        }
+    }
+
+    /// The CUSUM of squares' young share by its definition: the scale, at
+    /// the sums' own memory, began `τ` before them and absorbs each shock
+    /// before a row with its weight then, `κ e^{−κ (s − t)} / N(s)`, `N(s) =
+    /// 1 − e^{−κ (s + τ)}`. 1 at `T = 0` and 1/2 filled, for a scale a few
+    /// rows ahead and one long filled (`c = 0`); `inf` reads 1/2 to the bit.
+    #[test]
+    fn a_young_cusum_of_squares_share_is_its_scales_absorption() {
+        let ln2 = std::f64::consts::LN_2;
+        for hc in [50.0, 200.0] {
+            let kc = ln2 / hc;
+            for tau in [10.0, 0.5 * hc, 1e4 * hc] {
+                let kernel =
+                    |s: f64, t: f64| kc * (-kc * (s - t)).exp() / -(-kc * (s + tau)).exp_m1();
+                for frac in [0.02, 0.2, 1.0, 3.0] {
+                    let t_end = frac * hc;
+                    let lo = -tau.min(20.0 * hc);
+                    let want = share_by_definition(
+                        kc,
+                        t_end,
+                        &kernel,
+                        &|_| t_end,
+                        &[lo, 0.0, t_end],
+                        hc.min(tau) / 4.0,
+                    );
+                    let x = kc * t_end;
+                    let lead = (-x).exp() * -(-kc * tau).exp_m1();
+                    let got = cusum_sq_null_at(hc, x, lead);
+                    assert!(
+                        (got - want).abs() < 1e-6,
+                        "{hc} {tau} {t_end}: {got} vs {want}"
+                    );
+                }
+            }
+            assert_eq!(cusum_sq_null_at(hc, f64::INFINITY, 0.3), 0.5);
+            assert_eq!(cusum_sq_null_at(hc, 0.0, 0.3), 1.0);
+            assert_eq!(cusum_sq_null_at(hc, 800.0, 0.0), 0.5);
+            // A lead past the sums' unfilled share is held to it.
+            assert_eq!(
+                cusum_sq_null_at(hc, 2.0, 5.0),
+                cusum_sq_null_at(hc, 2.0, (-2.0f64).exp())
+            );
+        }
+        assert_eq!(cusum_sq_null_at(f64::INFINITY, 1.0, 0.1), 1.0);
+        assert_eq!(cusum_sq_null_at(50.0, f64::NAN, 0.1), 0.5);
+    }
+
+    /// `e^{−s} H(−y) = e^{−s} ∫_0^1 t e^{y t} dt` by its definition
+    /// (Simpson's rule), on both sides of the series' edge at 0.1, where the
+    /// closed form would cancel, and far past it, where the series would
+    /// not converge in its terms.
+    #[test]
+    fn the_windows_scaled_moment_is_its_integral() {
+        for (y, scale) in [
+            (1e-4, 0.0),
+            (0.05, 0.3),
+            (0.0999, 0.0),
+            (0.1, 0.0),
+            (0.7, 1.0),
+            (6.9, 13.8),
+            (30.0, 40.0),
+        ] {
+            let want = simpson(&|t: f64| t * (y * t - scale).exp(), 0.0, 1.0, 4_000);
+            let got = scaled_h_neg(y, scale);
+            // Simpson's rule read 2e-11 off the closed form at `y = 30`, which
+            // 40-digit arithmetic gives to its last bit. The series past its
+            // edge, or the closed form below it, part by far more.
+            assert!(
+                (got - want).abs() < 1e-10 * want,
+                "{y} {scale}: {got} vs {want}"
+            );
+        }
+    }
+
+    /// The sums' age is read off their own weights: rows at unit steps and
+    /// weights at half-lives of 50 and 200 -- within 1% of `κ` times the
+    /// rows scored less one, from the first rows to six half-lives in --
+    /// and uneven weights, within 10% (4% from the 50th row); filled (`inf`)
+    /// once the reading is below its resolution with unit weights (with
+    /// uneven ones, within `1e-6` of it), and after a gap long enough to
+    /// age the sums past it; 0 before any row and run once. The scale's lead is `q (1 − c)`, `c =
+    /// e^{−κ τ}` for the `τ` rows it read before the first studentized
+    /// residual, to within a row's decay.
+    #[test]
+    fn the_sums_age_is_read_off_their_weights() {
+        let ln2 = std::f64::consts::LN_2;
+        assert_eq!(Breaks::new().elapsed(), 0.0);
+        for (h, uneven) in [(50.0, false), (200.0, false), (200.0, true)] {
+            let lam = 0.5f64.powf(1.0 / h);
+            let kc = ln2 / h;
+            let mut b = Breaks::new();
+            let mut s = 7u64;
+            let (mut scored, mut ahead, mut max_err) = (0usize, 0usize, 0.0f64);
+            let mut max_late = 0.0f64;
+            for i in 0..(60.0 * h) as usize {
+                let v = lcg(&mut s) * 3.0;
+                let w = if uneven { 1.0 + lcg(&mut s) } else { 1.0 };
+                b.update(v, lam, w, None);
+                if b.s1 > 0.0 {
+                    scored += 1;
+                } else {
+                    ahead += 1;
+                }
+                if scored == 1 {
+                    assert_eq!(b.elapsed(), 0.0, "{h}: one row is no age");
+                }
+                let x = b.elapsed();
+                if scored >= 2 && (scored as f64) < 6.0 * h {
+                    let want = kc * (scored - 1) as f64;
+                    let err = (x - want).abs() / want.max(kc * 10.0);
+                    max_err = max_err.max(err);
+                    if scored >= 50 {
+                        max_late = max_late.max(err);
+                    }
+                    if scored as f64 == 2.0 * h {
+                        let q = (-x).exp();
+                        let lead = q * -(-kc * ahead as f64).exp_m1();
+                        let got = b.scale_lead(x);
+                        // On discrete rows the sums' age is read as their
+                        // rows less one, the scale's to within a row of it:
+                        // a row's decay, `κ q`, on `N` and so on the lead.
+                        assert!(
+                            (got - lead).abs() < 2.0 * kc * q,
+                            "{h} {i}: {got} vs {lead}"
+                        );
+                    }
+                }
+            }
+            // Measured 2026-10-25: 0.69% at 50 and 0.17% at 200 with unit
+            // weights; with weights `1 ± 0.5` the ratio is a weighted one,
+            // 7.5% over the first rows and 2.9% from the 50th.
+            let (all, late) = if uneven { (0.1, 0.04) } else { (0.01, 0.01) };
+            assert!(
+                max_err < all && max_late < late,
+                "{h} {uneven}: {max_err} {max_late}"
+            );
+            // Filled: below the reading's resolution with unit weights. With
+            // uneven ones the ratio is a weighted one, which the last rows'
+            // weights move: 60 half-lives in it read `q = e^{−x}` of 4.2e-8
+            // (2026-10-25), a share within that of its steady form.
+            if uneven {
+                assert!((-b.elapsed()).exp() < 1e-6, "{h}: {}", b.elapsed());
+            } else {
+                assert_eq!(b.elapsed(), f64::INFINITY, "{h}: filled");
+            }
+            assert_eq!(b.scale_lead(f64::INFINITY), 0.0);
+            // Young again after a restart, then a gap of many half-lives.
+            let mut young = Breaks::new();
+            for _ in 0..(h as usize) {
+                young.update(lcg(&mut s), lam, 1.0, None);
+            }
+            assert!(young.elapsed().is_finite());
+            young.age(lam.powf(20.0 * h));
+            assert_eq!(young.elapsed(), f64::INFINITY);
+        }
+        // A scale that read far heavier rows before the sums began leads
+        // them by more than the sums' unfilled share, and is held to it,
+        // `D = q = e^{−x}`.
+        let (mut heavy, mut s) = (Breaks::new(), 5u64);
+        let lam = 0.5f64.powf(1.0 / 200.0);
+        for i in 0..60 {
+            let w = if heavy.s1 > 0.0 { 1.0 } else { 100.0 };
+            heavy.update(lcg(&mut s) + 0.01 * f64::from(i), lam, w, None);
+        }
+        let x = heavy.elapsed();
+        assert!(x > 0.0 && x.is_finite() && heavy.v1 > 5.0 * heavy.s1, "{x}");
+        assert_eq!(heavy.scale_lead(x), (-x).exp());
+        let (mut once, mut s) = (Breaks::new(), 3u64);
+        for _ in 0..50 {
+            once.update(lcg(&mut s), 1.0, 1.0, None);
+        }
+        assert!(once.s1 > 0.0);
+        assert_eq!(once.elapsed(), 0.0);
     }
 
     /// A zero weight, the first included, and a `v` that is not a number
