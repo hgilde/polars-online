@@ -62,8 +62,8 @@ Documented exceptions, each held to its own form rather than skipped:
 
 Essentials: ``ew_cov``, ``kmeans`` and ``marginal`` (moments with a clock,
 a warm-up and seeding, and a state read from a table). Extended: every
-other kind, ``huber`` among them with the refit of its first rows on
-(task 277), which restarts with the model.
+other kind, ``huber`` and ``sgd(loss="huber")`` among them with the refit of
+their first rows on (task 277), which restarts with the model.
 """
 
 from __future__ import annotations
@@ -95,7 +95,10 @@ SESSIONS = (150, 280)
 GAP_CAP = 50.0
 
 ESSENTIAL = ("ew_cov", "kmeans", "marginal")
-KINDS = sorted(MINIMAL)
+#: Legs beyond each builder as ``MINIMAL`` builds it: a leg's builder and its
+#: keywords. ``sgd``'s Huber loss, with the refit of its first rows on.
+LEGS: dict[str, tuple[str, dict[str, Any]]] = {"sgd_huber": ("sgd", {"loss": "huber"})}
+KINDS = sorted([*MINIMAL, *LEGS])
 #: The kinds the regressions' own sweeps never ran ``group`` on.
 OTHER_KINDS = sorted(
     {
@@ -170,8 +173,10 @@ def stepped(kind: str) -> pl.DataFrame:
 
 
 def spec(kind: str, **kw: Any) -> dict:
+    builder, leg = LEGS.get(kind, (kind, {}))
     a: dict[str, Any] = {"targets": ["y"], "features": ["x0", "x1"], "half_life": 50.0}
-    a.update(MINIMAL[kind])
+    a.update(MINIMAL[builder])
+    a.update(leg)
     if kind in ("kmeans", "hmm"):
         # Seeded inside the stream, so a restart has a warm-up to redo.
         a["warm_rows"] = 20
@@ -179,7 +184,7 @@ def spec(kind: str, **kw: Any) -> dict:
         a["block_rows"] = 50
     a.update(kw)
     a = {k: v for k, v in a.items() if v is not None}
-    build = getattr(po.spec, kind)
+    build = getattr(po.spec, builder)
     try:
         # Every row a coefficient row, so `coef` is compared on each.
         return build("m", coef_every=0, **a)
@@ -576,5 +581,5 @@ def test_a_group_is_a_separate_bank(kind):
 
 
 def test_every_kind_is_swept():
-    assert set(KINDS) == set(MINIMAL)
+    assert set(KINDS) == set(MINIMAL) | set(LEGS)
     assert set(OTHER_KINDS) <= set(KINDS)

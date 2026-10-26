@@ -152,7 +152,7 @@ def sgd(
         b   = weighted least squares of the rows at v_i
         r_i = y_i - z_i'b,  s = weighted median of |r_i| at v_i', over 0.6745
         b   = weighted least squares at v_i * min(1, delta * s / |r_i|)
-        repeated until b moves by under 1e-10 of max|b|, or 50 passes
+        repeated until b moves by under 1e-10 of max|b|, or 200 passes
 
     with a ridge of 1e-6 on the mean-form system, and ``l2`` as the steps
     apply it: a penalty of ``l2 * s_i^2`` on each slope (``s_i`` the
@@ -266,8 +266,8 @@ def sgd(
         The learned rows after which each target's first rows are refit to their
         converged Huber fit, once (the rubric above). Default ``max(500, 10 *
         features)`` under ``loss = "huber"`` up to 100 features, and off above 100;
-        a count given is always taken. ``0`` turns the refit off, which gives the
-        numbers of the releases before it, to the bit. A target's rows are held until
+        a count given is always taken. ``0`` turns the refit off, leaving the one-pass
+        fit of the steps above. A target's rows are held until
         its refit: ``(features + 4) * 8`` bytes a learned row, and 32 bytes a run of
         rows that only aged it (its value null or its weight 0), one run for such rows
         in a row at one clock step. Past 4 runs a learned row of the count, as on a

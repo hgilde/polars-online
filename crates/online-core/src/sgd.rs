@@ -906,6 +906,16 @@ impl Sgd {
         self.refit.iter().map(RefitBuf::status).collect()
     }
 
+    /// The targets whose refit took every one of its passes
+    /// ([`crate::RefitStatus::ran_to_cap`]): what a bank reports as this
+    /// model's `solve_failures`, as `huber` counts the same.
+    pub fn solve_failures(&self) -> u64 {
+        self.refit
+            .iter()
+            .filter(|r| r.status().ran_to_cap())
+            .count() as u64
+    }
+
     /// Give every target's refit up before it begins, past the spec's
     /// `refit_budget` ([`SgdCfg::refit_rows`]): a bank does this to a
     /// group whose reservation the budget cannot take, and to the models

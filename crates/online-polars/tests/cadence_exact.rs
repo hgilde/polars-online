@@ -535,15 +535,14 @@ type RowClockCase = (
 /// the first row, whose step is 0, each came a row after the cap's, the
 /// whole stream long. `ew_cov`'s first refresh, at `min_weight` 0, starts
 /// both counters, so it was the cap's before and is still: every 7th row
-/// from it. (`huber` and
-/// `quantile` keep the old phase until their cadence takes the row clock's
-/// start too.)
+/// from it. `huber` and `quantile` took the row clock's start once task
+/// 277's refit, in the same file, had merged; the refit is off here.
 #[test]
 fn on_the_row_clock_each_cadence_is_its_row_cap() {
     let n = 60;
     let t = Series::new("t".into(), (0..n as i64).collect::<Vec<_>>());
     let df = frame(t, 5);
-    let cases: [RowClockCase; 4] = [
+    let cases: [RowClockCase; 6] = [
         (
             "ewridge",
             r#""type": "ewridge", "ridge": 1e-6"#,
@@ -557,6 +556,22 @@ fn on_the_row_clock_each_cadence_is_its_row_cap() {
             r#""type": "lasso", "penalties": [0.01]"#,
             ("solve_every", "max_rows_between_solves"),
             r#""targets": ["y"], "features": ["x", "x2"], "min_weight": 1e9, "half_life": 20.0,"#,
+            r#""max_rows_between_coefs": 1"#,
+            Event::Coef,
+        ),
+        (
+            "huber",
+            r#""type": "huber", "huber_refit_rows": 0"#,
+            ("solve_every", "max_rows_between_solves"),
+            r#""targets": ["y"], "features": ["x"], "min_weight": 1e9, "half_life": 20.0,"#,
+            r#""max_rows_between_coefs": 1"#,
+            Event::Coef,
+        ),
+        (
+            "quantile",
+            r#""type": "quantile", "quantile": 0.5"#,
+            ("solve_every", "max_rows_between_solves"),
+            r#""targets": ["y"], "features": ["x"], "min_weight": 1e9, "half_life": 20.0,"#,
             r#""max_rows_between_coefs": 1"#,
             Event::Coef,
         ),
