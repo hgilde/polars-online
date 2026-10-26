@@ -1,0 +1,30 @@
+# The hash of this library's outputs on each oracle group's inputs, written
+# by `uv run python scripts/oracles.py rerun` after the group's oracle grids
+# passed (docs/TESTING.md, "The oracle ledger"). tests/test_oracle_ledger.py
+# recomputes each in the gate; a moved hash names the groups to re-run.
+# Never edit by hand.
+[meta]
+platform = "darwin-arm64-py3.12"
+
+[hashes]
+"conformal.coverage_rates" = "2efb99c86da6542eb4bf3b3dafa0345a7491db7eefa6670fb9724ddc3cbaa227"
+"corrchange.n_perm" = "d0f0c7b33a13997de50dbbc6910a96cceed08ae46da8f510295a0d05780c4450"
+"learning_rate.constant_rate" = "e8114f1470837c4bcf19b8f3e266cf84e1a07273b6284674fa74e9748ee2450b"
+"learning_rate.libsvm_passes" = "6a6c475c30c403cfd7d6636046d1a6cd7179ef0cfae6b3141245ba14d4a4461c"
+"learning_rate.pa_noisy" = "2bd43d458287370f11c6ccd0bd0295a9d903a782d473c058c9261973f3bcac67"
+"learning_rate.schedules" = "2cfc7ee01481d36b04a42c9558d2e84a3a0d15082a8af3625b96da34d535bd77"
+"online_diagnostics.breaks_memory" = "114e7b90be69815475a7f7e3ac83c8cfb6657f18e9e0dec8a38016fd0f923ee0"
+"online_diagnostics.cusum_size" = "ca074b749aaedad5b0d807e8032f6a507c440426621e952d0d5df3fdfe1b75bc"
+"second_opinion_gram.lasso_weights" = "d09c43fa05ddb6f4281603d4fdb02d295f104e7fd06780925cadd45bb37e72ab"
+"second_opinion_gram.ridge" = "06c3570cdf69ab3106d7f4e4216a0e8130e13fe625f54576cb9dae311900535f"
+"second_opinion_regimes.bocpd_priors" = "425b4003a35e0415ae5400f65ec2723f9bbbc747f12d9db73fd306670aa4af1f"
+"second_opinion_regimes.hmm_shapes" = "87ee6199dc6dbb1a69ee37135a48667eed4df9e6425aab985c58d77973efcdfc"
+"truth_recovery.bocpd_shift" = "ac5347c4d808c55585782588fd160fcd2d38b67835d180d38f3f8a149b6e2701"
+"truth_recovery.corrchange_break" = "d37c0d2fbbb32e2ae26b538783d29f6b129f46ec15703fe93b192a745a448976"
+"truth_recovery.deco_level" = "4f0bc660031d75f154fd3558cc5eb42ceb7330629bfc4a5b37b602c2a6a7129a"
+"truth_recovery.hmm_regimes" = "f1e1ddc799d5869d69ba20614bd29764a957c06b747f2092d7c805d5f2922e68"
+"truth_recovery.kmeans_blobs" = "cab9262444c69c4d03e0f8593db07eed119767e06ba8b2362c5ec86fee321fb4"
+"truth_recovery.kmeans_franti" = "4226a62ff98747d3457c0fd380cff5861234db1c3632b7401de5a76c736da547"
+"truth_recovery.micro_blobs" = "c32529607fe4db4394ebdd9d412b9875eddccd8be8dfa7f21ae4372fb38d05f1"
+"truth_recovery.micro_franti" = "0ee16b91de69b063b447b72773f0aba0a404ead1adde9858a8b4b0e614340b7b"
+"truth_recovery.rcov_plain" = "de5a9221d8c6991f4ada5bf015c11dfcd94cc3e31de8719d6a9a6a5784e9ce73"

@@ -325,6 +325,25 @@ def test_quick_names_what_it_cannot_map():
     assert plan.unmapped == [page] and not plan.tests
 
 
+def test_quick_runs_the_oracle_hash_guard_for_the_groups_a_change_can_move():
+    """A model's source runs the guard for the groups whose id names it; a
+    source module that names none, every group; a test file, its own; a
+    page, none."""
+    quick = _load("quick")
+    groups = set(quick.ledger_groups())
+    kmeans = quick.plan(["crates/online-core/src/kmeans.rs"]).guards
+    assert kmeans and all("kmeans" in g for g in kmeans), kmeans
+    assert quick.plan(["python/polars_online/spec_regimes.py"]).guards >= kmeans
+    assert quick.plan(["crates/online-core/src/solve.rs"]).guards == groups
+    own = quick.plan(["tests/test_truth_recovery.py"]).guards
+    assert own and all(g.startswith("truth_recovery.") for g in own), own
+    assert not quick.plan(["docs/TESTING.md"]).guards
+    args = quick.plan(["crates/online-core/src/kmeans.rs"]).pytest_args()
+    assert f"{quick.GUARD}[truth_recovery.kmeans_blobs]" in args, args
+    whole = quick.plan(["crates/online-core/src/kmeans.rs", "tests/test_oracle_ledger.py"])
+    assert not [a for a in whole.pytest_args() if "::" in a], "its file runs whole"
+
+
 def test_quick_is_not_the_gate():
     """It says so when it passes, so a green loop is not read as a check."""
     text = (REPO / "scripts" / "quick.py").read_text(encoding="utf-8")

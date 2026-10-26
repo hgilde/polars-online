@@ -563,7 +563,7 @@ many steps." A push never rides on the essentials, whatever they said.
 | each commit while a task is in progress | `./scripts/gate.sh` | the essentials |
 | before every push, always | `./scripts/gate.sh --extended` | everything |
 | every push and pull request | `ci.yml` on Linux, macOS and Windows | everything but the oracle grids, and the essentials nowhere |
-| every push to `main`, and on dispatch | `oracles.yml`, sharded across parallel jobs on Linux | the oracle grids (`-m oracle_grid`) |
+| every push to `main`, weekly, and on dispatch | `oracles.yml`, sharded across parallel jobs on Linux | the oracle grids (`-m oracle_grid`), each case held to the oracle ledger ([The oracle ledger](#the-oracle-ledger)) |
 | before a release | `release.yml`, which runs `ci.yml` | everything |
 | on their schedules | `polars-canary.yml`; `mutants.yml` | everything; every Rust test, the ignored ones included |
 
@@ -646,6 +646,156 @@ creeps into the essentials shows where they run. CI runs only the full tier,
 which every push runs anyway, so it spends no minutes timing the
 essentials (the user, 2026-10-08). Each test
 that moved gives its reason in its mark.
+
+### The oracle ledger
+
+**Each oracle grid's actual error is committed, and it only tightens.** A
+grid's assertion is the measurement with headroom, often half as much
+again. A change that moves a model's error against its oracle from 0.19 to
+0.27 passes a bound of 0.3, and the next change's move from 0.27 to 0.29
+passes it too. Each step looks harmless against the bound, and together
+they drift far. So `oracles.toml`, the ledger, holds each case's error as
+measured. Every run is held to those fixed numbers, never to the run
+before, as `budgets.toml` holds the speed. The user set the aim on
+2026-10-25: "a way not to drift from all the oracles and data sets for
+every parameter test", without more long tests in the gate.
+
+| file | holds |
+|---|---|
+| `oracles.toml` | each case's worst value and 95th-percentile value, each group's oracle libraries at the versions measured, its tests and its dataset, and the `[[raised]]` entries |
+| `oracle_hashes.toml` | a hash of this library's outputs on each group's inputs, with the platform it was written on |
+| `tests/ledger.py` | `ledger.guard` and `ledger.record`, the two calls a grid makes, and the hash |
+| `scripts/oracles.py` | `check`, `apply`, `raises` and `rerun` |
+| `tests/test_oracle_ledger.py` | the hash guard, and the rules: the ledger well formed, every grid of a registered module recording, every module with a grid registered or listed as waiting |
+
+**A grid registers in two calls.** At module level, `ledger.guard` names
+a group, the libraries whose answer it takes as given (distribution names,
+as `uv.lock` spells them), its dataset, and a callable that returns this
+library's outputs on the group's inputs, with no oracle in it. In the test,
+`ledger.record` takes each quantity the grid bounds, one value a seed:
+
+```python
+ledger.guard("kmeans_blobs", lambda: [fit_kmeans(blobs(s)[0], 5) for s in SEEDS],
+             oracles=["scikit-learn", "scipy"])
+...
+ledger.record("kmeans_blobs", "raw_ari", aris, ideal=1.0)
+```
+
+A group's id is the module's name without `test_`, a dot and the name:
+`truth_recovery.kmeans_blobs`. With `POLARS_ONLINE_ORACLES_OUT` naming a
+directory, `record` appends what it measured there as JSON lines, one file
+a process, so pytest-xdist's workers do not share one. Without it, `record`
+checks its arguments and writes nothing.
+
+**A case is judged by its gap from its ideal.** The gap is `|value -
+ideal|`: the ideal is 0 for an error and 1 for a score such as an ARI, a
+share or an F1. The ledger keeps the value of the seed with the largest gap
+and of the seed at the nearest-rank 95th percentile, both in the test's own
+units. `check` fails on four things:
+
+| verdict | when | what to do |
+|---|---|---|
+| past the ledger | a gap more than the tolerance, 2%, past the ledger's | find what moved it; if it buys something worth having, raise the number with a `[[raised]]` entry |
+| tighten | a gap more than 2% under the ledger's | `python scripts/oracles.py apply measured.json`, so the gain is kept |
+| version | an oracle library at another version than the ledger's | `apply`, once the numbers held on it |
+| not measured | a case of the ledger that a complete run did not record | a skip (offline), or a `record` call gone |
+
+A case new to the ledger is reported and fails nothing. The grids are
+deterministic, so one platform reads the same numbers on every run. The 2%
+absorbs the other platform's last bits in a statistical case. A count is
+held exactly: one row more of delay on the worst seed is a regression. A
+case whose oracle agrees to round-off carries a `floor`, the gap below
+which a difference counts as round-off. Each such floor is about twice the
+measured error, since another processor's arithmetic moves a round-off
+error by about that much.
+
+**A raise needs its reason and a CHANGELOG line.** `scripts/oracles.py
+raises` reads every committed version of `oracles.toml` and fails on any
+number that moved away from its ideal without a `[[raised]]` entry. A wider
+`tolerance` or `floor` counts too. The entry names the key, the old and new
+value, the date, the reason, and a `changelog` text the CHANGELOG contains.
+A worse error against an oracle is a *Changed* or *Fixed* matter, so any
+section serves. `apply` never raises a number.
+
+**CI runs the grids and the check.** Each of `oracles.yml`'s twelve shards
+records its cases and marks itself finished only when every test passed.
+The last job, `the oracle ledger`, needs no project environment: the script
+uses the standard library alone. It merges the shards and runs `raises`,
+then `check` with `--expect-shards 12`. A missing case fails only when every
+shard finished, since a failed shard already fails the run. It uploads
+`measured.json` for `apply`. Every push to `main` runs every case, so a bump
+of an oracle library in `uv.lock` is measured on the push that carries it.
+The weekly run measures everything when nothing was pushed. It downloads
+each dataset afresh rather than reading the cache, so a set that changed at
+its source is measured too.
+
+**The gate keeps a cheap guard instead of the grids.** For each group,
+`tests/test_oracle_ledger.py` calls the group's callable and hashes this
+library's outputs, with the source of the tests that record the group. Each
+test brings with it every module-level helper and constant it reaches by
+name, its docstrings dropped. The hash is compared with
+`oracle_hashes.toml`, and the group's installed oracle versions with the
+ledger's. While both hold, the comparison still holds: the oracle's answer
+is fixed by its pinned version, the inputs by the hash, the test by its
+source. When either moves, the test fails naming the groups and one
+command:
+
+```
+uv run python scripts/oracles.py rerun            # every group whose hash or versions moved
+uv run python scripts/oracles.py rerun <group>    # those named
+```
+
+`rerun` runs those groups' oracle grids with recording on. It fails if a
+test fails, or if a case is past the ledger or was not measured. Otherwise
+it applies the run to the ledger (new cases, tightened numbers, versions)
+and writes the groups' hashes. So a hash changes only after a passing run
+of its oracles. The twenty-one groups registered so far ran their grids
+in two minutes here (2026-10-26, eight processes, at a load of 10 to 25 on
+14 cores). A group whose callable is cheap hashes every seed of its grid.
+One that is not hashes the first seeds' or streams' every output field,
+which any change to the model's arithmetic moves as it moves the rest.
+
+**The guard costs seconds.** Measured 2026-10-26 on this machine, at a
+load of 11 to 14 on 14 cores: the twenty-one groups' callables took 4.7 s
+in one process, the slowest 0.73 s, and the guard's tests 6.0 s run
+serially, imports included. The gate spreads them over its workers.
+
+**The hash survives the last bits and catches a real change.** Each float
+is rounded to 24 significant bits, a float32's mantissa, about 6e-8
+relative. Values under 2^-40 of their array's largest are set to 0 first,
+since round-off about zero has no stable sign or exponent. Swapping the
+platform's math library for the pure-Rust `libm` crate moved 102 of the
+release comparison's 1,299 output fields, by at most 1.7e-11 relative
+(measured 2026-10-24; [The math library's last
+bits](#the-math-librarys-last-bits)). So a value lands on the other side
+of a rounding boundary with a chance of about 3e-4 at that worst, and of
+about 2e-8 for the usual 1e-15: across a group's hundred thousand values,
+about one hash in five hundred. Rounding to bits rather than
+to decimal places puts the boundaries at odd multiples of 2^-25 relative,
+never at 1.0, 0.5 or a power of ten, where exact values sit. A statistical
+case's gap moves by its 2% only when the outputs move by far more than the
+quantum. A group whose oracle agrees to round-off cannot be hashed at a
+precision another platform shares, since its errors are the last bits. It
+keeps every bit (`bits=52`), so a change the ledger would see moves its
+hash. Measured 2026-10-26 by changing `hmm`'s ridge and rebuilding: 1e-6
+larger moved the one `bits=52` group that fits `hmm` and no other hash,
+since the 24-bit group's states and means moved by less than its quantum;
+1e-3 larger moved both `hmm` groups and none of the other nineteen.
+
+**The guard enforces where its hashes were written, off CI.** That is the
+system, the processor and Python's minor version, since `ast.unparse`
+may write a test's source differently on another Python. CI runs the
+grids themselves on every push, so there, and on any other platform, a
+moved hash is a warning in the job summary. Those warnings show whether
+one set of hashes serves every platform.
+
+**`scripts/quick.sh` runs the guard for what a branch changed.** A model's
+source moves the groups whose id names the module, or one of its aliases,
+as a word: `kmeans.rs` the `kmeans_*` groups. A source module that names
+none, such as `solve.rs`, moves every group. A test file moves its own
+groups. The modules with a grid that do not register yet are listed in
+`tests/ledger.py`'s `PENDING`, each with the reason it waits, and the rules
+test fails when one is in neither.
 
 ### Iterating
 
@@ -899,7 +1049,7 @@ own schedule:
 | before every push, always | `./scripts/gate.sh --extended` | the same checks with every test but the oracle grids |
 | every push to `main` and pull request | `ci.yml` | the suite on Linux at Python 3.12, 3.13 and 3.14, on macOS at 3.12 and 3.14, and on two Windows builds, Server 2025 and Server 2022, at 3.12 and 3.14, each leg first printing the machine it ran on ([The machines and the CPU paths](#the-machines-and-the-cpu-paths)); on Linux, the format, lint, type and documentation checks (`cargo fmt`, `clippy`, `ruff`, `mypy` and Sphinx); the release comparison's outputs against the newest release's, bit for bit, as a report; the Python coverage, as a report |
 | every push to `main` and pull request | `mutants.yml` | mutation testing of the lines the change touched in `online-core` and `online-polars/src/span.rs`, in a shard for every thirty mutants the change lists, with one report. The report fails on a mutant no test catches, unless `scripts/mutants_equivalent.toml` lists it |
-| every push to `main`, and by hand | `oracles.yml` | the oracle grids (`-m oracle_grid`): the convergence, learning-rate, truth-recovery and long-run grids against third-party batch fits and downloaded datasets, in twelve shards dealt round-robin over the tests (`--oracle-shard`), on Linux; no local run takes them ([Two tiers](#two-tiers)) |
+| every push to `main`, weekly, and by hand | `oracles.yml` | the oracle grids (`-m oracle_grid`): the convergence, learning-rate, truth-recovery and long-run grids against third-party batch fits and downloaded datasets, in twelve shards dealt round-robin over the tests (`--oracle-shard`), on Linux; no local run takes them ([Two tiers](#two-tiers)). A last job holds every case each shard recorded to the oracle ledger; the weekly run downloads the datasets afresh ([The oracle ledger](#the-oracle-ledger)) |
 | every push to `main` but a docs-only one | `benchmark.yml` | throughput, into the job summary and an artifact, never gating |
 | every release | `release.yml` | the whole of `ci.yml`; a state written on macOS and continued on Windows and Linux; the suite on the newest Polars the range admits, on the floor of the range and on the newest NumPy, all blocking; the suite on the next Polars major and on NumPy's next release candidate, both advisory |
 | weekly | `ci.yml`, `polars-canary.yml`, `leakcheck.yml`, `benchmark.yml`, `mutants.yml`, `msrv.yml`, `advisories.yml`, `cpu-paths.yml` | the suite again; the suite on the newest py-polars, release candidates included, and on NumPy's next release candidate; the leak check across the boundary with Polars, on Linux and macOS, its control included, and the soak tests; throughput; mutation testing of all of `online-core`, as a report; `cargo check` of the workspace on the Rust its `rust-version` declares; both lock files against OSV's published advisories (`scripts/advisories.py`), failing on a vulnerability in a crate the wheel or the command line links and reporting the rest; on Windows, the numeric tests down each CPU path in turn, under Intel SDE and with OpenBLAS's and NumPy's paths pinned ([The machines and the CPU paths](#the-machines-and-the-cpu-paths)) |

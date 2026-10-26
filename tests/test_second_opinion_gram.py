@@ -20,6 +20,7 @@ import polars as pl
 import pytest
 from sklearn.linear_model import Ridge, enet_path
 
+import ledger
 import polars_online as po
 
 TIER = "mixed"
@@ -68,6 +69,26 @@ CASES = [
 ]
 
 
+def ridge_solve(
+    seed: int, half_life: float, fit_intercept: bool, ridge: float, std: bool
+) -> tuple[dict[str, Any], np.ndarray]:
+    """One seed's Gram and ``solve``'s coefficients on it."""
+    x, y = ridge_rows(seed)
+    g = gram_of(x, y, half_life, fit_intercept)
+    return g, np.asarray(po.gram.solve(g, ridge=ridge, standardize=std))
+
+
+#: The ledger's inputs (tests/ledger.py): ``solve`` on ten seeds at every
+#: case, where the grid reads fifty. The oracle agrees to round-off, so the
+#: hash keeps the doubles themselves.
+ledger.guard(
+    "ridge",
+    lambda: [ridge_solve(s, *case)[1] for s in range(10) for case in CASES],
+    oracles=["scikit-learn", "numpy"],
+    bits=52,
+)
+
+
 def check_solve(seed: int, half_life: float, fit_intercept: bool, ridge: float, std: bool) -> float:
     """``solve(g, ridge, standardize)`` against ``Ridge`` on the rows, and
     the error over its bound: at most 1 passes.
@@ -88,8 +109,7 @@ def check_solve(seed: int, half_life: float, fit_intercept: bool, ridge: float, 
     slopes' error times the means, plus its own rounding."""
     x, y = ridge_rows(seed)
     n, k = x.shape
-    g = gram_of(x, y, half_life, fit_intercept)
-    ours = np.asarray(po.gram.solve(g, ridge=ridge, standardize=std))
+    g, ours = ridge_solve(seed, half_life, fit_intercept, ridge, std)
     v = np.ones(n) if np.isinf(half_life) else 0.5 ** ((n - 1 - np.arange(n)) / half_life)
     mu = np.average(x, axis=0, weights=v) if fit_intercept else np.zeros(k)
     xc = x - mu
@@ -131,8 +151,12 @@ class TestSolveIsSklearnsRidge:
 
     @pytest.mark.oracle_grid(reason="50 seeds x 24 cases, each a bank and a Ridge fit")
     def test_fifty_seeds(self):
-        worst = max((check_solve(seed, *case), seed, case) for seed in range(50) for case in CASES)
+        rows = [(check_solve(seed, *case), seed, case) for seed in range(50) for case in CASES]
+        worst = max(rows)
         print(f"worst error over its bound {worst[0]:.3f} (seed {worst[1]}, case {worst[2]})")
+        # Round-off, which another platform's arithmetic moves: the ledger
+        # holds it at twice the measured 0.19, under the bound's 1.
+        ledger.record("ridge", "error_over_bound", [r[0] for r in rows], floor=0.4)
         assert worst[0] <= 1.0, worst
 
 
@@ -151,6 +175,28 @@ def lasso_rows(seed: int, n: int = 200, k: int = 10) -> tuple[np.ndarray, np.nda
 PENALTIES = [0.8, 0.4, 0.2, 0.1, 0.05, 0.01]
 
 
+def path_weights(seed: int, k: int = 10) -> np.ndarray:
+    return np.random.default_rng(1000 + seed).uniform(0.25, 4.0, k)
+
+
+def weighted_paths(seed: int) -> tuple[dict[str, Any], np.ndarray, np.ndarray]:
+    """One seed's Gram, ``lasso_path`` on it with the seed's
+    ``penalty_weights``, and without them."""
+    x, y = lasso_rows(seed)
+    g = gram_of(x, y, float("inf"), True)
+    kw = dict(tol=1e-14, max_iter=100_000)
+    ours = po.gram.lasso_path(g, PENALTIES, penalty_weights=list(path_weights(seed)), **kw)
+    return g, np.asarray(ours), np.asarray(po.gram.lasso_path(g, PENALTIES, **kw))
+
+
+ledger.guard(
+    "lasso_weights",
+    lambda: [weighted_paths(s)[1:] for s in range(50)],
+    oracles=["scikit-learn"],
+    bits=52,
+)
+
+
 def weighted_path_error(seed: int) -> tuple[float, float]:
     """``lasso_path`` with ``penalty_weights`` against ``enet_path`` on the
     standardized columns divided by the weights, and how far the weights
@@ -165,17 +211,14 @@ def weighted_path_error(seed: int) -> tuple[float, float]:
     arithmetic."""
     x, y = lasso_rows(seed)
     k = x.shape[1]
-    w = np.random.default_rng(1000 + seed).uniform(0.25, 4.0, k)
-    g = gram_of(x, y, float("inf"), True)
+    w = path_weights(seed, k)
+    g, ours, plain = weighted_paths(seed)
     sd = x.std(axis=0)
     xs = (x - x.mean(axis=0)) / sd
     _, coefs, _ = enet_path(
         xs / w, y - y.mean(), l1_ratio=1.0, alphas=PENALTIES, tol=1e-14, max_iter=100_000
     )
-    kw = dict(tol=1e-14, max_iter=100_000)
-    ours = po.gram.lasso_path(g, PENALTIES, penalty_weights=list(w), **kw)
     want = (coefs / w[:, None]).T
-    plain = po.gram.lasso_path(g, PENALTIES, **kw)
     return float(np.abs(ours[:, 1:] * sd - want).max()), float(np.abs(ours - plain).max())
 
 
@@ -196,5 +239,7 @@ class TestLassoPathsWeightsAreEnetPathOnRescaledColumns:
         errs = [weighted_path_error(seed) for seed in range(50)]
         worst = max(range(50), key=lambda s: errs[s][0])
         print(f"worst {errs[worst][0]:.1e} at seed {worst}")
+        # Round-off: held at about twice the measured 1.8e-11.
+        ledger.record("lasso_weights", "error", [e for e, _ in errs], floor=4e-11)
         assert all(moved > 1.0 for _, moved in errs)
         assert errs[worst][0] <= 1e-10

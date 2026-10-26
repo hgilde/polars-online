@@ -18,6 +18,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+import ledger
 import polars_online as po
 
 TIER = "mixed"
@@ -721,6 +722,35 @@ def test_n_perm_tightens_the_critical_value_around_its_limit():
     assert spread[20] > 4 * spread[2000], spread
 
 
+N_PERM_W, N_PERM_K = 50, 3
+N_PERM_SIZES = (20, 200, 2_000, 20_000)
+
+
+def n_perm_crits(n_perm: int, seeds: range) -> np.ndarray:
+    """The critical value each seed draws at ``n_perm`` on the grid's pool,
+    where its first window closes."""
+    w, k = N_PERM_W, N_PERM_K
+    df = pair(2 * w + 1, 0.4, seed=280, k=k)
+    cols = [f"x{i}" for i in range(k)]
+    specs = [
+        po.spec.corrchange(
+            f"s{s}", features=cols, kind="window", window_rows=w, n_perm=n_perm, seed=s
+        )
+        for s in seeds
+    ]
+    out = po.ModelBank(specs).fit_predict(df)
+    return np.array([out[f"s{s}"].struct.field("crit")[2 * w] for s in seeds])
+
+
+#: The ledger's inputs (tests/ledger.py): thirty seeds' critical values at
+#: every size, where the grid draws a hundred.
+ledger.guard(
+    "n_perm",
+    lambda: [n_perm_crits(n, range(30)) for n in N_PERM_SIZES],
+    oracles=["numpy"],
+)
+
+
 @pytest.mark.oracle_grid(reason="100 seeds at four sizes of n_perm, and 400,000 reference draws")
 def test_n_perm_converges_at_the_rate_of_an_empirical_quantile():
     """The critical value is the empirical ``1 - alpha`` quantile of
@@ -739,9 +769,8 @@ def test_n_perm_converges_at_the_rate_of_an_empirical_quantile():
     0.168 / 0.098; 2,000, 0.038 / 0.028; 20,000, 0.017 / 0.0090 -- a slope
     of -0.52 at the 95th percentile from 200 to 20,000.
     """
-    w, k, alpha = 50, 3, 0.05
+    w, k, alpha = N_PERM_W, N_PERM_K, 0.05
     df = pair(2 * w + 1, 0.4, seed=280, k=k)
-    cols = [f"x{i}" for i in range(k)]
     pool = df.to_numpy()[: 2 * w]
     iu = np.triu_indices(k, 1)
     rng = np.random.default_rng(278)
@@ -755,17 +784,10 @@ def test_n_perm_converges_at_the_rate_of_an_empirical_quantile():
 
     seeds = range(100)
     worst, p95 = {}, {}
-    for n in (20, 200, 2_000, 20_000):
-        specs = [
-            po.spec.corrchange(
-                f"s{s}", features=cols, kind="window", window_rows=w, n_perm=n, seed=s
-            )
-            for s in seeds
-        ]
-        out = po.ModelBank(specs).fit_predict(df)
-        crit = np.array([out[f"s{s}"].struct.field("crit")[2 * w] for s in seeds])
-        err = np.abs(crit - limit)
+    for n in N_PERM_SIZES:
+        err = np.abs(n_perm_crits(n, seeds) - limit)
         worst[n], p95[n] = float(err.max()), float(np.quantile(err, 0.95))
+        ledger.record("n_perm", f"crit_error_at_{n}", err)
     print(f"limit {limit:.4f}; worst {worst}; p95 {p95}")
     # The rate: 100x the draws, a tenth of the error, at the tail; a
     # slope of -0.35 or steeper on a log-log line through 200 and 20,000.

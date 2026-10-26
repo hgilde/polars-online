@@ -381,4 +381,4 @@ def test_the_oracle_workflow_runs_every_shard_of_the_grids():
     assert "-m oracle_grid" in run, run
     assert f"--oracle-shard ${{{{ matrix.shard }}}}/{n}" in run, run
     assert f"of {n}" in job["name"], job["name"]
-    assert set(wf[True] if True in wf else wf["on"]) == {"push", "workflow_dispatch"}
+    assert set(wf[True] if True in wf else wf["on"]) == {"push", "schedule", "workflow_dispatch"}

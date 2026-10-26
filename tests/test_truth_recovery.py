@@ -31,6 +31,7 @@ from scipy.optimize import linear_sum_assignment
 from sklearn.cluster import KMeans
 from sklearn.metrics import adjusted_rand_score
 
+import ledger
 import polars_online as po
 from polars_online import sim
 from public_benchmarks import franti_or_skip, tcpd_or_skip
@@ -99,6 +100,17 @@ def _blob_scores(seed: int, **kw) -> tuple[float, float]:
     return adjusted_rand_score(label, got), float(d[r, c].max())
 
 
+#: The ledger's inputs (tests/ledger.py): this library's fits on the grids'
+#: own streams, here and beside each grid below.
+ledger.guard(
+    "kmeans_blobs",
+    lambda: [
+        fit_kmeans(blobs(s)[0], BLOB_K, standardize=sd) for s in SEEDS for sd in (False, True)
+    ],
+    oracles=["scikit-learn", "scipy"],
+)
+
+
 def test_kmeans_recovers_separated_blobs():
     """The essential case: three seeds, the metric in the features' units."""
     for seed in range(3):
@@ -123,8 +135,26 @@ def test_kmeans_recovers_separated_blobs_on_the_worst_seed():
         f"standardized: ARI worst {std[:, 0].min():.4f} (seed {std[:, 0].argmin()}), "
         f"centre err worst {std[:, 1].max():.3f}"
     )
+    ledger.record("kmeans_blobs", "raw_ari", raw[:, 0], ideal=1.0)
+    ledger.record("kmeans_blobs", "raw_centre_error", raw[:, 1])
+    ledger.record("kmeans_blobs", "standardized_ari", std[:, 0], ideal=1.0)
+    ledger.record("kmeans_blobs", "standardized_centre_error", std[:, 1])
     assert raw[:, 0].min() > 0.99 and raw[:, 1].max() < 0.3
     assert std[:, 0].min() > 0.9 and std[:, 1].max() < 0.5
+
+
+def micro_blobs(seed: int) -> pl.DataFrame:
+    """``micro`` at ``eps = 0.1`` over one seed's blobs: each row's cluster
+    and whether it is an outlier, read after the pass."""
+    names = [f"x{j}" for j in range(BLOB_P)]
+    x, _, _ = blobs(seed)
+    df = pl.DataFrame({n: x[:, j] for j, n in enumerate(names)})
+    bank = po.ModelBank([po.spec.micro("m", features=names, eps=0.1, half_life=INF)])
+    bank.fit(df)
+    return bank.predict(df).unnest("m").select("cluster", "outlier")
+
+
+ledger.guard("micro_blobs", lambda: [micro_blobs(s) for s in SEEDS], oracles=["scikit-learn"])
 
 
 @pytest.mark.oracle_grid(reason="50 seeds of 3,000 rows")
@@ -134,14 +164,10 @@ def test_micro_finds_separated_blobs_on_the_worst_seed():
     worst of 50 (seed 7): ARI 0.776, from 4 to 7 clusters linked, at most
     8.2% outliers; 5% of seeds below 0.889. Bounds 0.7, 0.85 at the 5th
     percentile, 12% outliers."""
-    names = [f"x{j}" for j in range(BLOB_P)]
     scores = []
     for s in SEEDS:
-        x, label, _ = blobs(s)
-        df = pl.DataFrame({n: x[:, j] for j, n in enumerate(names)})
-        bank = po.ModelBank([po.spec.micro("m", features=names, eps=0.1, half_life=INF)])
-        bank.fit(df)
-        out = bank.predict(df).unnest("m")
+        _, label, _ = blobs(s)
+        out = micro_blobs(s)
         scores.append(
             (
                 adjusted_rand_score(label, out["cluster"].fill_null(-1).to_numpy()),
@@ -153,6 +179,8 @@ def test_micro_finds_separated_blobs_on_the_worst_seed():
         f"micro: ARI worst {a[:, 0].min():.4f} p05 {np.quantile(a[:, 0], 0.05):.4f}, "
         f"outliers {a[:, 1].max():.3f}"
     )
+    ledger.record("micro_blobs", "ari", a[:, 0], ideal=1.0)
+    ledger.record("micro_blobs", "outlier_share", a[:, 1])
     assert a[:, 0].min() > 0.7
     assert np.quantile(a[:, 0], 0.05) > 0.85
     assert a[:, 1].max() < 0.12
@@ -183,6 +211,28 @@ FRANTI = {
     # 0.871 -> 0.913; CI 4 in 50 -> 3 in 44; 1.71x -> 1.50x, median 1.104
     "a3": (0.87, 3, 1.65),
 }
+
+
+def franti_order(points: np.ndarray, seed: int) -> np.ndarray:
+    return np.random.default_rng(seed).permutation(len(points))
+
+
+#: The first three orderings of each set: the fits are the slow part here
+#: (A3's 7,500 rows at 50 clusters), and seven sets of three cover every
+#: path the fifty take.
+ledger.guard(
+    "kmeans_franti",
+    lambda: {
+        name: [
+            fit_kmeans(p, len(t), franti_order(p, s))
+            for p, _, t in [franti_or_skip(name)]
+            for s in range(3)
+        ]
+        for name in sorted(FRANTI)
+    },
+    oracles=["scikit-learn"],
+    dataset="franti:" + ",".join(sorted(FRANTI)),
+)
 
 
 @pytest.mark.oracle_grid(reason="the network, and 50 orderings of each of seven sets")
@@ -217,8 +267,7 @@ def test_kmeans_on_frantis_benchmark_by_the_worst_ordering(name):
         )
     rows = []
     for s in SEEDS:
-        order = np.random.default_rng(s).permutation(len(points))
-        centres, got = fit_kmeans(points, k, order)
+        centres, got = fit_kmeans(points, k, franti_order(points, s))
         rows.append(
             (
                 adjusted_rand_score(label, got),
@@ -233,10 +282,32 @@ def test_kmeans_on_frantis_benchmark_by_the_worst_ordering(name):
         f"inertia/oracle worst {a[:, 2].max():.3f} "
         f"median {np.median(a[:, 2]):.3f}"
     )
+    ledger.record("kmeans_franti", f"{name}_ari", a[:, 0], ideal=1.0)
+    ledger.record("kmeans_franti", f"{name}_centroid_index", a[:, 1])
+    ledger.record("kmeans_franti", f"{name}_inertia_ratio", a[:, 2], ideal=1.0)
     assert a[:, 0].min() >= min_ari
     assert a[:, 1].max() <= max_ci
     assert a[:, 2].max() <= max_ratio
     assert a[:, 2].min() >= 1 - 1e-9, "below the batch optimum: the oracle is wrong"
+
+
+def micro_s1(points: np.ndarray, seed: int) -> pl.DataFrame:
+    """``micro`` at ``eps = 0.02`` after one pass over S1 in one ordering:
+    each point's cluster and whether it is an outlier, in the set's order."""
+    order = franti_order(points, seed)
+    df = pl.DataFrame({"x0": points[order, 0], "x1": points[order, 1]})
+    bank = po.ModelBank([po.spec.micro("m", features=["x0", "x1"], eps=0.02, half_life=INF)])
+    bank.fit(df)
+    out = bank.predict(pl.DataFrame({"x0": points[:, 0], "x1": points[:, 1]})).unnest("m")
+    return out.select("cluster", "outlier")
+
+
+ledger.guard(
+    "micro_franti",
+    lambda: [micro_s1(franti_or_skip("s1")[0], s) for s in range(10)],
+    oracles=["scikit-learn"],
+    dataset="franti:s1",
+)
 
 
 @pytest.mark.oracle_grid(reason="the network, and 50 orderings")
@@ -250,11 +321,7 @@ def test_micro_on_s1_by_the_worst_ordering():
     points, label, _ = franti_or_skip("s1")
     rows = []
     for s in SEEDS:
-        order = np.random.default_rng(s).permutation(len(points))
-        df = pl.DataFrame({"x0": points[order, 0], "x1": points[order, 1]})
-        bank = po.ModelBank([po.spec.micro("m", features=["x0", "x1"], eps=0.02, half_life=INF)])
-        bank.fit(df)
-        out = bank.predict(pl.DataFrame({"x0": points[:, 0], "x1": points[:, 1]})).unnest("m")
+        out = micro_s1(points, s)
         rows.append(
             (
                 adjusted_rand_score(label, out["cluster"].fill_null(-1).to_numpy()),
@@ -263,6 +330,8 @@ def test_micro_on_s1_by_the_worst_ordering():
         )
     a = np.array(rows)
     print(f"micro s1: ARI worst {a[:, 0].min():.4f}, outliers worst {a[:, 1].max():.3f}")
+    ledger.record("micro_franti", "s1_ari", a[:, 0], ideal=1.0)
+    ledger.record("micro_franti", "s1_outlier_share", a[:, 1])
     assert a[:, 0].min() > 0.9
     assert a[:, 1].max() < 0.5
 
@@ -296,6 +365,18 @@ def _matched(a: np.ndarray, b: np.ndarray) -> float:
     return min(float(np.abs(a[list(p)] - b).max()) for p in itertools.permutations(range(len(b))))
 
 
+def hmm_fit(x: np.ndarray, **kw) -> tuple[np.ndarray, np.ndarray]:
+    """``hmm``'s filtered state on each row (-1 where null) and its learned
+    means after the pass."""
+    spec = po.spec.hmm(
+        "h", features=["x0", "x1"], n_components=HMM_K, precision_prior=0.01, half_life=INF, **kw
+    )
+    bank = po.ModelBank([spec])
+    out = bank.fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]})).unnest("h")
+    means = bank.coef("h")["coef"].to_numpy().reshape(HMM_K, 2)
+    return out["state"].fill_null(-1).to_numpy(), means
+
+
 def hmm_scores(seed: int, n: int, oracle: bool = True, **kw) -> tuple[float, float, float]:
     """The share of rows after the warm-up in their true state (the better
     labelling of the states), and the largest error of a learned mean
@@ -304,18 +385,12 @@ def hmm_scores(seed: int, n: int, oracle: bool = True, **kw) -> tuple[float, flo
     from hmmlearn.hmm import GaussianHMM
 
     x, state = regimes(seed, n)
-    spec = po.spec.hmm(
-        "h", features=["x0", "x1"], n_components=HMM_K, precision_prior=0.01, half_life=INF, **kw
-    )
-    bank = po.ModelBank([spec])
-    out = bank.fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]})).unnest("h")
-    got = out["state"].fill_null(-1).to_numpy()
+    got, means = hmm_fit(x, **kw)
     after = slice(kw.get("warm_rows", HMM_WARM_ROWS), n)
     share = max(
         float(np.mean(np.array(p)[got[after]] == state[after]))
         for p in itertools.permutations(range(HMM_K))
     )
-    means = bank.coef("h")["coef"].to_numpy().reshape(HMM_K, 2)
     if not oracle:
         return share, _matched(means, HMM_MEANS), float("nan")
     # The oracle: Baum-Welch to convergence from k-means centres, which on
@@ -339,6 +414,14 @@ def test_hmm_recovers_location_regimes():
     assert share > 0.93 and truth < 0.25, (share, truth)
 
 
+#: Ten seeds of the fifty: 10 ms a seed.
+ledger.guard(
+    "hmm_regimes",
+    lambda: [hmm_fit(regimes(s, 5_000)[0], warm_rows=2_000) for s in range(10)],
+    oracles=["hmmlearn", "scikit-learn"],
+)
+
+
 @pytest.mark.oracle_grid(reason="50 seeds of 5,000 rows, each with a Baum-Welch fit")
 def test_hmm_recovers_location_regimes_on_the_worst_seed():
     """Seeded from 2,000 rows, which hold every regime. Measured over 50
@@ -351,6 +434,9 @@ def test_hmm_recovers_location_regimes_on_the_worst_seed():
         f"hmm: share worst {a[:, 0].min():.4f} (seed {a[:, 0].argmin()}), means vs truth worst "
         f"{a[:, 1].max():.3f}, vs Baum-Welch worst {a[:, 2].max():.3f}"
     )
+    ledger.record("hmm_regimes", "share_in_true_state", a[:, 0], ideal=1.0)
+    ledger.record("hmm_regimes", "means_from_truth", a[:, 1])
+    ledger.record("hmm_regimes", "means_from_baum_welch", a[:, 2])
     assert a[:, 0].min() > 0.92
     assert a[:, 1].max() < 0.35
     assert a[:, 2].max() < 0.3
@@ -378,12 +464,17 @@ def test_hmm_at_its_default_warm_up_recovers_sticky_regimes():
 # --- bocpd ------------------------------------------------------------------------
 
 
+def bocpd_out(x: np.ndarray, **kw) -> pl.DataFrame:
+    """``bocpd``'s every field on each row of ``x``."""
+    spec = po.spec.bocpd("b", features=["x"], **kw)
+    return po.ModelBank([spec]).fit_predict(pl.DataFrame({"x": x})).unnest("b")
+
+
 def bocpd_starts(x: np.ndarray, **kw) -> tuple[list[int], list[int | None]]:
     """The rows on which ``bocpd``'s dated start of the current run jumps
     forward by more than 5 rows (an alarm), and each row's dated start,
     ``t - run_mode``."""
-    spec = po.spec.bocpd("b", features=["x"], **kw)
-    out = po.ModelBank([spec]).fit_predict(pl.DataFrame({"x": x})).unnest("b")
+    out = bocpd_out(x, **kw)
     began = [None if m is None else i - m for i, m in enumerate(out["run_mode"].to_list())]
     alarms = [
         i
@@ -391,6 +482,15 @@ def bocpd_starts(x: np.ndarray, **kw) -> tuple[list[int], list[int | None]]:
         if began[i] is not None and began[i - 1] is not None and began[i] - began[i - 1] > 5
     ]
     return alarms, began
+
+
+def bocpd_streams(seed: int, delta: float) -> tuple[np.ndarray, np.ndarray]:
+    """``bocpd_break``'s two streams: the shift of ``delta`` at row 500 of
+    1,000, and the quiet 1,000 drawn after it."""
+    rng = np.random.default_rng(seed)
+    x = rng.standard_normal(1_000)
+    x[500:] += delta
+    return x, rng.standard_normal(1_000)
 
 
 def bocpd_break(seed: int, delta: float) -> tuple[int | None, int | None, int]:
@@ -403,13 +503,9 @@ def bocpd_break(seed: int, delta: float) -> tuple[int | None, int | None, int]:
     (row 501) dates the run from row 473 and the next row from 500; at 1
     sd, seed 30's dates it from 501, then from row 0 for 25 rows, then from
     487."""
-    rng = np.random.default_rng(seed)
-    x = rng.standard_normal(1_000)
-    x[500:] += delta
+    x, quiet = bocpd_streams(seed, delta)
     alarms, began = bocpd_starts(x, hazard=250.0)
-    false = sum(1 for a in alarms if a < 500) + len(
-        bocpd_starts(rng.standard_normal(1_000), hazard=250.0)[0]
-    )
+    false = sum(1 for a in alarms if a < 500) + len(bocpd_starts(quiet, hazard=250.0)[0])
     after = [a for a in alarms if a >= 500]
     if not after:
         return None, None, false
@@ -431,6 +527,22 @@ def test_bocpd_finds_a_large_mean_shift():
 BOCPD_BOUNDS = {1.0: (100, 30, 0.95), 2.0: (20, 4, 1.0), 3.0: (12, 3, 1.0)}
 
 
+#: Every field on three seeds' streams at each shift, where the grid reads
+#: the dated starts on fifty: a run of 1,000 rows costs 17 ms, the posterior
+#: over run lengths growing with the run, so fifty seeds would take five
+#: seconds of the gate; any change to the recursion moves the posterior's
+#: fields on the first seeds as on the rest.
+ledger.guard(
+    "bocpd_shift",
+    lambda: [
+        bocpd_out(x, hazard=250.0)
+        for d in sorted(BOCPD_BOUNDS)
+        for s in range(3)
+        for x in bocpd_streams(s, d)
+    ],
+)
+
+
 @pytest.mark.oracle_grid(reason="50 seeds of 2,000 rows at three shifts")
 @pytest.mark.parametrize("delta", sorted(BOCPD_BOUNDS))
 def test_bocpd_finds_every_mean_shift_and_dates_it(delta):
@@ -444,6 +556,10 @@ def test_bocpd_finds_every_mean_shift_and_dates_it(delta):
         f"dated worst {max(dated)} p95 {np.quantile(dated, 0.95):.0f}, "
         f"false alarms {false} in {len(rows) * 1500} quiet rows"
     )
+    tag = f"{delta:g}sd"
+    ledger.record("bocpd_shift", f"delay_{tag}", delays)
+    ledger.record("bocpd_shift", f"dating_error_{tag}", dated)
+    ledger.record("bocpd_shift", f"false_alarms_{tag}", false)
     max_delay, max_dated, q = BOCPD_BOUNDS[delta]
     assert not missed, missed
     assert max(delays) <= max_delay
@@ -544,6 +660,18 @@ def test_corrchange_flags_a_correlation_break():
     assert len(after) and after[0] - 999 <= 100, after[:3]
 
 
+#: Every field on ten seeds, broken and quiet, where the grid reads the
+#: flags on fifty: the permutation test costs 10 ms a stream.
+ledger.guard(
+    "corrchange_break",
+    lambda: [
+        po.ModelBank([WINDOW]).fit_predict(corr_stream(1_000 + s, broken)).unnest("w")
+        for s in range(10)
+        for broken in (False, True)
+    ],
+)
+
+
 @pytest.mark.oracle_grid(reason="50 seeds of 2,000 rows, broken and quiet")
 def test_corrchange_flags_every_break_and_holds_its_size():
     """The window test at ``alpha = 0.05``. Measured over 50 seeds: no break
@@ -562,12 +690,42 @@ def test_corrchange_flags_every_break_and_holds_its_size():
         f"corrchange: delay worst {max(d for d in delays if d is not None)}, "
         f"quiet mean {np.mean(quiet):.4f}, worst {max(quiet):.4f}"
     )
+    ledger.record("corrchange_break", "delay", [d for d in delays if d is not None])
+    ledger.record("corrchange_break", "quiet_share_flagged", quiet)
+    ledger.record("corrchange_break", "quiet_share_flagged_mean", np.mean(quiet))
     assert not missed, missed
     assert max(delays) <= 120
     assert np.mean(quiet) < 0.07 and max(quiet) < 0.2
 
 
 # --- deco ---------------------------------------------------------------------------
+
+DECO_M = 5
+
+
+def deco_rho(seed: int) -> tuple[np.ndarray, np.ndarray]:
+    """``deco``'s ``rho`` on each row of one seed's stream, five series whose
+    equicorrelation alternates 0.2 / 0.6 every 1,200 rows, and each row's
+    true state."""
+    feats = [f"x{i}" for i in range(DECO_M)]
+    out = sim.regimes(
+        DECO_M,
+        states=[0.2, 0.6],
+        transition=[[0.0, 1.0], [1.0, 0.0]],
+        durations=[3, 3],
+        n_blocks=12,
+        rows_per_block=400,
+        seed=2_000 + seed,
+    )
+    rets = out["rows"].select(pl.col([f"x_{i + 1}" for i in range(DECO_M)]).diff()).drop_nulls()
+    df = rets.rename({f"x_{i + 1}": f"x{i}" for i in range(DECO_M)})
+    want = np.asarray(out["truth_rows"]["state"].to_list()[1:], dtype=int)
+    rho = po.ModelBank([po.spec.deco("d", features=feats, half_life=100.0)]).fit_predict(df)
+    return rho.unnest("d")["rho"].to_numpy().astype(float), want
+
+
+#: Ten seeds of the fifty: 13 ms a seed.
+ledger.guard("deco_level", lambda: [deco_rho(s) for s in range(10)])
 
 
 @pytest.mark.parametrize(
@@ -590,24 +748,9 @@ def test_deco_level_settles_low_and_moves_at_its_half_life(seeds):
     the midpoint median 95, 95th percentile 147, worst 206, none missed.
     Bounds: the bands 0.05-0.2 and 0.28-0.48, the median within 70-130 rows
     and the worst 300. The essentials run three of the seeds."""
-    m = 5
-    feats = [f"x{i}" for i in range(m)]
     low, high, delays = [], [], []
     for s in seeds:
-        out = sim.regimes(
-            m,
-            states=[0.2, 0.6],
-            transition=[[0.0, 1.0], [1.0, 0.0]],
-            durations=[3, 3],
-            n_blocks=12,
-            rows_per_block=400,
-            seed=2_000 + s,
-        )
-        rets = out["rows"].select(pl.col([f"x_{i + 1}" for i in range(m)]).diff()).drop_nulls()
-        df = rets.rename({f"x_{i + 1}": f"x{i}" for i in range(m)})
-        want = np.asarray(out["truth_rows"]["state"].to_list()[1:], dtype=int)
-        rho = po.ModelBank([po.spec.deco("d", features=feats, half_life=100.0)]).fit_predict(df)
-        rho = rho.unnest("d")["rho"].to_numpy().astype(float)
+        rho, want = deco_rho(s)
         cuts = np.flatnonzero(np.diff(want)) + 1
         segments = list(zip(np.r_[0, cuts], np.r_[cuts, len(want)], strict=True))
         settled = {0: [], 1: []}
@@ -624,12 +767,56 @@ def test_deco_level_settles_low_and_moves_at_its_half_life(seeds):
         f"deco: low {min(low):.3f}-{max(low):.3f}, high {min(high):.3f}-{max(high):.3f}, "
         f"delay median {np.median(delays):.0f} worst {max(delays)}"
     )
+    if len(seeds) == len(SEEDS):
+        ledger.record("deco_level", "settled_at_0_2", low, ideal=0.2)
+        ledger.record("deco_level", "settled_at_0_6", high, ideal=0.6)
+        ledger.record("deco_level", "rows_to_midpoint", delays)
+        ledger.record("deco_level", "rows_to_midpoint_median", np.median(delays))
     assert min(low) > 0.05 and max(low) < 0.2
     assert min(high) > 0.28 and max(high) < 0.48
     assert 70 <= np.median(delays) <= 130 and max(delays) <= 300
 
 
 # --- rcov ---------------------------------------------------------------------------
+
+
+def rcov_blocks(seed: int) -> tuple[pl.DataFrame, dict[int, float], dict[int, int]]:
+    """``rcov``'s closed blocks on one seed's stream of two series, 20 blocks
+    of 2,000 rows, each block's correlation drawn from 0.3 and 0.8: the
+    closed groups, each block's true correlation and its rows."""
+    out = sim.regimes(
+        2,
+        states=[0.3, 0.8],
+        transition=[[0.5, 0.5], [0.5, 0.5]],
+        n_blocks=20,
+        rows_per_block=2_000,
+        seed=3_000 + seed,
+    )
+    truth = {
+        int(b): c[1]
+        for b, c in zip(out["truth_blocks"]["block"], out["truth_blocks"]["corr"], strict=True)
+    }
+    rows = out["rows"].with_columns(block=out["truth_rows"]["block"])
+    rets = (
+        rows.with_columns(pl.col("x_1", "x_2").diff().over("block"))
+        .drop_nulls(["x_1", "x_2"])
+        .select(pl.col("x_1").alias("x0"), pl.col("x_2").alias("x1"), "block")
+    )
+    sizes = {int(b): n for b, n in rets.group_by("block").len().iter_rows()}
+    bank = po.ModelBank(
+        [
+            po.spec.rcov(
+                "r", features=["x0", "x1"], group="block", group_close="monotone", kind="plain"
+            )
+        ]
+    )
+    bank.fit_predict(rets)
+    return bank.closed_groups(), truth, sizes
+
+
+#: Every closed block's every field on five seeds, where the grid reads the
+#: correlations on fifty: a seed's 40,000 rows cost 90 ms.
+ledger.guard("rcov_plain", lambda: [rcov_blocks(s)[0] for s in range(5)])
 
 
 @pytest.mark.oracle_grid(reason="50 seeds of 20 blocks of 2,000 rows")
@@ -644,34 +831,7 @@ def test_rcov_plain_matches_each_blocks_correlation():
     error 4.5."""
     errors, z = [], []
     for s in SEEDS:
-        out = sim.regimes(
-            2,
-            states=[0.3, 0.8],
-            transition=[[0.5, 0.5], [0.5, 0.5]],
-            n_blocks=20,
-            rows_per_block=2_000,
-            seed=3_000 + s,
-        )
-        truth = {
-            int(b): c[1]
-            for b, c in zip(out["truth_blocks"]["block"], out["truth_blocks"]["corr"], strict=True)
-        }
-        rows = out["rows"].with_columns(block=out["truth_rows"]["block"])
-        rets = (
-            rows.with_columns(pl.col("x_1", "x_2").diff().over("block"))
-            .drop_nulls(["x_1", "x_2"])
-            .select(pl.col("x_1").alias("x0"), pl.col("x_2").alias("x1"), "block")
-        )
-        sizes = {int(b): n for b, n in rets.group_by("block").len().iter_rows()}
-        bank = po.ModelBank(
-            [
-                po.spec.rcov(
-                    "r", features=["x0", "x1"], group="block", group_close="monotone", kind="plain"
-                )
-            ]
-        )
-        bank.fit_predict(rets)
-        closed = bank.closed_groups()
+        closed, truth, sizes = rcov_blocks(s)
         for b, rc in zip(closed["group"].to_list(), closed["rcorr"].to_list(), strict=True):
             rho = truth[int(b)]
             errors.append(rc[1] - rho)
@@ -681,6 +841,9 @@ def test_rcov_plain_matches_each_blocks_correlation():
         f"rcov: {len(e)} blocks, bias {e.mean():+.4f}, worst {np.abs(e).max():.4f}, "
         f"worst z {z.max():.2f}"
     )
+    ledger.record("rcov_plain", "error", e)
+    ledger.record("rcov_plain", "bias", e.mean())
+    ledger.record("rcov_plain", "standardized_error", z)
     assert len(e) == 50 * 19
     assert abs(e.mean()) < 0.005
     assert z.max() < 4.5

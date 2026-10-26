@@ -42,6 +42,7 @@ import pytest
 import statsmodels.api as sm
 from sklearn.linear_model import LinearRegression, LogisticRegression, PoissonRegressor
 
+import ledger
 import polars_online as po
 from public_benchmarks import libsvm_or_skip
 
@@ -208,6 +209,24 @@ SCHEDULES: dict[str, tuple[dict, str, float, tuple[float, float]]] = {
 }
 
 
+def slug(name: str) -> str:
+    """A schedule's or a case's name as a ledger case's: ``sgd quantile 0.9
+    inv_scaling`` is ``sgd_quantile_0p9_inv_scaling``."""
+    return name.replace(" ", "_").replace(".", "p")
+
+
+#: The ledger's inputs (tests/ledger.py): the coefficients at every mark on
+#: the first two seeds of each schedule, where the grid reads fifty.
+ledger.guard(
+    "schedules",
+    lambda: {
+        name: [coefficients(spec, *stream(s, MARKS[-1], kind), MARKS) for s in range(2)]
+        for name, (spec, kind, _, _) in sorted(SCHEDULES.items())
+    },
+    oracles=["scikit-learn", "statsmodels"],
+)
+
+
 def worst_excess(spec: dict, kind: str, tau: float, seeds, marks=MARKS) -> np.ndarray:
     """Each mark's excess, a row a seed."""
     rows = []
@@ -233,9 +252,28 @@ def test_each_schedule_keeps_lowering_the_worst_seeds_excess_loss(name):
     worst = ex.max(axis=0)
     p95 = np.quantile(ex, 0.95, axis=0)
     print(f"{name}: worst {worst}, p95 {p95}, worst seeds {ex.argmax(axis=0)}")
+    for i, mark in enumerate(MARKS):
+        ledger.record("schedules", f"{slug(name)}_at_{mark}", ex[:, i])
     assert (ex > -1e-9).all(), "an online fit below the batch optimum: the oracle is wrong"
     assert worst[1] * f1 <= worst[0], (worst, f1)
     assert worst[2] * f2 <= worst[1], (worst, f2)
+
+
+CONSTANT_RATE = 0.01
+CONSTANT_MARKS = [100, 3_000, 10_000, 30_000, 100_000]
+
+ledger.guard(
+    "constant_rate",
+    lambda: [
+        coefficients(
+            _sgd(learning_rate=CONSTANT_RATE),
+            *stream(s, CONSTANT_MARKS[-1], "squared"),
+            CONSTANT_MARKS,
+        )
+        for s in range(3)
+    ],
+    oracles=["scikit-learn"],
+)
 
 
 @pytest.mark.oracle_grid(reason="50 seeds of 100,000 rows, each with batch optima")
@@ -247,12 +285,15 @@ def test_a_constant_rate_falls_to_its_plateau_and_holds_it():
     7.5e-2, 6.8e-2 and 9.0e-2 at 3e3 to 1e5 rows, the median 2.4e-2 to
     2.9e-2; at 100 rows the worst 7.0. Bounds: the worst four times the
     plateau, the median at 1e5 twice it."""
-    lr = 0.01
+    lr = CONSTANT_RATE
     plateau = lr * (K + 1) * 1.0 / 2
-    marks = [100, 3_000, 10_000, 30_000, 100_000]
+    marks = CONSTANT_MARKS
     ex = worst_excess(_sgd(learning_rate=lr), "squared", 0.5, SEEDS, marks)
     worst = ex.max(axis=0)
     print(f"constant: worst {worst}, median {np.median(ex, axis=0)}")
+    for i, mark in enumerate(marks):
+        ledger.record("constant_rate", f"excess_at_{mark}", ex[:, i])
+    ledger.record("constant_rate", "median_excess_at_100000", np.median(ex[:, -1]))
     assert worst[0] > 10 * plateau, "the first rows should be far from the plateau"
     assert (worst[1:] < 4 * plateau).all(), worst
     # It holds the plateau rather than drifting off it.
@@ -309,6 +350,22 @@ def test_pa_reaches_a_realizable_target():
         assert ex[1] < 1e-2 * np.var(y), (mode, ex)
 
 
+PA_MARKS = [10_000, 100_000]
+PA_SPECS = {
+    "default_c": po.spec.pa("m", targets=["y"], features=FEATURES, half_life=INF),
+    "c_0p01": po.spec.pa("m", targets=["y"], features=FEATURES, half_life=INF, c=0.01),
+}
+
+ledger.guard(
+    "pa_noisy",
+    lambda: {
+        name: [coefficients(spec, *stream(s, PA_MARKS[-1], "squared"), PA_MARKS) for s in range(3)]
+        for name, spec in sorted(PA_SPECS.items())
+    },
+    oracles=["scikit-learn"],
+)
+
+
 @pytest.mark.oracle_grid(reason="50 seeds of 100,000 rows, each with batch optima")
 def test_pas_excess_on_a_noisy_target_holds_where_c_sets_it():
     """On a noisy target PA has no rate to anneal, so its excess does not fall
@@ -317,22 +374,13 @@ def test_pas_excess_on_a_noisy_target_holds_where_c_sets_it():
     ``pa1`` at the default ``c`` 3.1 and 3.9 noise variances, flat with the
     rows; at ``c = 0.01``, 0.083 and 0.092. Bounds 8, and a quarter of the
     default's."""
-    marks = [10_000, 100_000]
-    big = worst_excess(
-        po.spec.pa("m", targets=["y"], features=FEATURES, half_life=INF),
-        "squared",
-        0.5,
-        SEEDS,
-        marks,
-    )
-    small = worst_excess(
-        po.spec.pa("m", targets=["y"], features=FEATURES, half_life=INF, c=0.01),
-        "squared",
-        0.5,
-        SEEDS,
-        marks,
-    )
+    marks = PA_MARKS
+    big = worst_excess(PA_SPECS["default_c"], "squared", 0.5, SEEDS, marks)
+    small = worst_excess(PA_SPECS["c_0p01"], "squared", 0.5, SEEDS, marks)
     print(f"pa1 default c: worst {big.max(0)}; c = 0.01: worst {small.max(0)}")
+    for name, ex in (("default_c", big), ("c_0p01", small)):
+        for i, mark in enumerate(marks):
+            ledger.record("pa_noisy", f"{name}_excess_at_{mark}", ex[:, i])
     assert (big.max(0) < 8.0).all(), big.max(0)
     assert small.max(0)[-1] < big.max(0)[-1] / 4, (small.max(0), big.max(0))
 
@@ -351,21 +399,17 @@ def _passes(spec: dict, x, y, order, epochs: int) -> list[np.ndarray]:
     return out
 
 
-@pytest.mark.oracle_grid(reason="the network, and four passes over a LIBSVM set in ten orders")
-@pytest.mark.parametrize(
-    "case",
-    ["abalone sgd inv_scaling", "abalone sgd adagrad", "abalone ftrl", "a9a ftrl", "a9a sgd"],
-)
-def test_passes_over_a_libsvm_set_keep_lowering_the_worst_orders_excess(case):
-    """Four passes over the whole set, in each of ten shuffled orders; after
-    each pass the excess over scikit-learn's batch optimum on the whole set.
-    The worst order's excess falls with every pass. Measured worst over the
-    ten orders: abalone ``inv_scaling`` 0.45, 0.37, 0.33, 0.30; AdaGrad
-    0.38, 0.26, 0.21, 0.18; FTRL 3.42, 3.06, 2.84, 2.67 (its default rate
-    takes an unscaled target at a level of 10 slowly: after four passes its
-    mean squared error is 1.55 times the optimum's 4.83); a9a FTRL 4.0e-3,
-    2.4e-3, 1.8e-3, 1.5e-3; ``sgd`` logistic ``inv_scaling`` 9.6e-3,
-    5.8e-3, 4.2e-3, 3.4e-3."""
+LIBSVM_CASES = [
+    "abalone sgd inv_scaling",
+    "abalone sgd adagrad",
+    "abalone ftrl",
+    "a9a ftrl",
+    "a9a sgd",
+]
+
+
+def libsvm_case(case: str) -> tuple[np.ndarray, np.ndarray, str, dict]:
+    """A case's set, its loss and its spec."""
     data, model = case.split(" ", 1)
     if data == "abalone":
         x, y = libsvm_or_skip("regression/abalone", 8)
@@ -397,18 +441,50 @@ def test_passes_over_a_libsvm_set_keep_lowering_the_worst_orders_excess(case):
         )
     else:
         spec = po.spec.sgd("m", targets=["y"], features=names, half_life=INF, **specs[model])
+    return x, y, kind, spec
+
+
+def libsvm_order(n: int, seed: int) -> np.ndarray:
+    return np.random.default_rng(seed).permutation(n)
+
+
+#: The first of the ten orders of each case: 0.4 s.
+ledger.guard(
+    "libsvm_passes",
+    lambda: {
+        case: [_passes(spec, x, y, libsvm_order(len(y), s), 4) for s in range(1)]
+        for case in LIBSVM_CASES
+        for x, y, _, spec in [libsvm_case(case)]
+    },
+    oracles=["scikit-learn"],
+    dataset="libsvm:regression/abalone,binary/a9a",
+)
+
+
+@pytest.mark.oracle_grid(reason="the network, and four passes over a LIBSVM set in ten orders")
+@pytest.mark.parametrize("case", LIBSVM_CASES)
+def test_passes_over_a_libsvm_set_keep_lowering_the_worst_orders_excess(case):
+    """Four passes over the whole set, in each of ten shuffled orders; after
+    each pass the excess over scikit-learn's batch optimum on the whole set.
+    The worst order's excess falls with every pass. Measured worst over the
+    ten orders: abalone ``inv_scaling`` 0.45, 0.37, 0.33, 0.30; AdaGrad
+    0.38, 0.26, 0.21, 0.18; FTRL 3.42, 3.06, 2.84, 2.67 (its default rate
+    takes an unscaled target at a level of 10 slowly: after four passes its
+    mean squared error is 1.55 times the optimum's 4.83); a9a FTRL 4.0e-3,
+    2.4e-3, 1.8e-3, 1.5e-3; ``sgd`` logistic ``inv_scaling`` 9.6e-3,
+    5.8e-3, 4.2e-3, 3.4e-3."""
+    x, y, kind, spec = libsvm_case(case)
     best = _loss(kind, optimum(kind, x, y), x, y)
     ex = np.array(
         [
-            [
-                _loss(kind, c, x, y) - best
-                for c in _passes(spec, x, y, np.random.default_rng(s).permutation(len(y)), 4)
-            ]
+            [_loss(kind, c, x, y) - best for c in _passes(spec, x, y, libsvm_order(len(y), s), 4)]
             for s in range(10)
         ]
     )
     worst = ex.max(axis=0)
     print(f"{case}: worst by pass {worst}, median {np.median(ex, axis=0)}")
+    for i in range(ex.shape[1]):
+        ledger.record("libsvm_passes", f"{slug(case)}_pass_{i + 1}", ex[:, i])
     assert (ex > -1e-9).all(), ex.min()
     assert (np.diff(worst) < 0).all(), worst
 

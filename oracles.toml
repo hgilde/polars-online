@@ -1,0 +1,1298 @@
+# The oracle ledger: each case's error against its oracle, which only
+# tightens (docs/TESTING.md, "The oracle ledger"; scripts/oracles.py).
+#
+# The heavy grids against a third-party oracle (`pytest -m oracle_grid`) run
+# on CI, not in the gate. Each case here is one quantity a grid bounds,
+# recorded by `ledger.record` in the test (tests/ledger.py): the value of the
+# worst seed and of the seed at the nearest-rank 95th percentile, both in
+# the test's own units, judged by their gap from `ideal` (0 for an error, 1
+# for a score such as an ARI, a share or an F1). Each group names the tests
+# that record it, the oracle libraries whose answer it takes as given at the
+# versions it was measured on, and its dataset.
+#
+# - A gap past the ledger's by more than the tolerance fails. Find what moved
+#   it. If that is the price of a change worth having, raise the number with
+#   a [[raised]] entry at the end of this file (the key, the old and new
+#   value, the date, the reason) and a `changelog` text the CHANGELOG
+#   contains; `scripts/oracles.py raises` holds every increase in this
+#   file's git history to both. A wider tolerance or floor is a raise too.
+# - A gap under the ledger's by more than the tolerance fails as well,
+#   naming the number to tighten to, so the change that made the gain keeps
+#   it (`scripts/oracles.py apply` on the run's measured.json writes it).
+# - An oracle library whose version moved fails until `apply` records the
+#   version the numbers held on.
+# - A case with no numbers yet is reported and fails nothing.
+#
+# `floor` on a case is a gap below which differences are round-off: a gap
+# under it counts as it. oracle_hashes.toml, beside this file, holds the
+# hash of this library's outputs on each group's inputs, which the gate
+# checks in seconds; `uv run python scripts/oracles.py rerun` re-runs the
+# groups whose hashes moved and records both files.
+
+[meta]
+# A share of a case's gap. The grids are deterministic, so a run on one
+# platform reads the same numbers every time; what 2% absorbs is another
+# platform's last bits in a statistical case. A count is held exactly.
+tolerance = 0.02
+# Where the numbers were measured (`rerun`, on a developer's Mac). CI's
+# Oracles workflow checks them on linux-x86_64; a case another platform
+# reads past the tolerance is raised with that reason, or the ledger is
+# re-based on CI's measured.json and this names its platform.
+platform = "darwin-arm64"
+
+[group."truth_recovery.bocpd_shift"]
+tests = [
+    "tests/test_truth_recovery.py::test_bocpd_finds_every_mean_shift_and_dates_it[1.0]",
+    "tests/test_truth_recovery.py::test_bocpd_finds_every_mean_shift_and_dates_it[2.0]",
+    "tests/test_truth_recovery.py::test_bocpd_finds_every_mean_shift_and_dates_it[3.0]",
+]
+oracles = {}
+dataset = ""
+
+
+[group."truth_recovery.corrchange_break"]
+tests = [
+    "tests/test_truth_recovery.py::test_corrchange_flags_every_break_and_holds_its_size",
+]
+oracles = {}
+dataset = ""
+
+
+[group."truth_recovery.deco_level"]
+tests = [
+    "tests/test_truth_recovery.py::test_deco_level_settles_low_and_moves_at_its_half_life[50 seeds]",
+]
+oracles = {}
+dataset = ""
+
+
+[group."truth_recovery.hmm_regimes"]
+tests = [
+    "tests/test_truth_recovery.py::test_hmm_recovers_location_regimes_on_the_worst_seed",
+]
+oracles = { "hmmlearn" = "0.3.3", "scikit-learn" = "1.9.1" }
+dataset = ""
+
+
+[group."truth_recovery.kmeans_blobs"]
+tests = [
+    "tests/test_truth_recovery.py::test_kmeans_recovers_separated_blobs_on_the_worst_seed",
+]
+oracles = { "scikit-learn" = "1.9.1", "scipy" = "1.18.1" }
+dataset = ""
+
+
+[group."truth_recovery.kmeans_franti"]
+tests = [
+    "tests/test_truth_recovery.py::test_kmeans_on_frantis_benchmark_by_the_worst_ordering[a1]",
+    "tests/test_truth_recovery.py::test_kmeans_on_frantis_benchmark_by_the_worst_ordering[a2]",
+    "tests/test_truth_recovery.py::test_kmeans_on_frantis_benchmark_by_the_worst_ordering[a3]",
+    "tests/test_truth_recovery.py::test_kmeans_on_frantis_benchmark_by_the_worst_ordering[s1]",
+    "tests/test_truth_recovery.py::test_kmeans_on_frantis_benchmark_by_the_worst_ordering[s2]",
+    "tests/test_truth_recovery.py::test_kmeans_on_frantis_benchmark_by_the_worst_ordering[s3]",
+    "tests/test_truth_recovery.py::test_kmeans_on_frantis_benchmark_by_the_worst_ordering[s4]",
+]
+oracles = { "scikit-learn" = "1.9.1" }
+dataset = "franti:a1,a2,a3,s1,s2,s3,s4"
+
+
+[group."truth_recovery.micro_blobs"]
+tests = [
+    "tests/test_truth_recovery.py::test_micro_finds_separated_blobs_on_the_worst_seed",
+]
+oracles = { "scikit-learn" = "1.9.1" }
+dataset = ""
+
+
+[group."truth_recovery.micro_franti"]
+tests = [
+    "tests/test_truth_recovery.py::test_micro_on_s1_by_the_worst_ordering",
+]
+oracles = { "scikit-learn" = "1.9.1" }
+dataset = "franti:s1"
+
+
+[group."truth_recovery.rcov_plain"]
+tests = [
+    "tests/test_truth_recovery.py::test_rcov_plain_matches_each_blocks_correlation",
+]
+oracles = {}
+dataset = ""
+
+
+[group."conformal.coverage_rates"]
+tests = [
+    "tests/test_conformal.py::test_over_fifty_streams_the_worst_error_falls_with_the_rate[gaussian]",
+    "tests/test_conformal.py::test_over_fifty_streams_the_worst_error_falls_with_the_rate[shifting]",
+]
+oracles = {}
+dataset = ""
+
+
+[group."corrchange.n_perm"]
+tests = [
+    "tests/test_corrchange.py::test_n_perm_converges_at_the_rate_of_an_empirical_quantile",
+]
+oracles = { "numpy" = "2.5.2" }
+dataset = ""
+
+
+[group."second_opinion_gram.lasso_weights"]
+tests = [
+    "tests/test_second_opinion_gram.py::TestLassoPathsWeightsAreEnetPathOnRescaledColumns::test_fifty_seeds",
+]
+oracles = { "scikit-learn" = "1.9.1" }
+dataset = ""
+
+
+[group."second_opinion_gram.ridge"]
+tests = [
+    "tests/test_second_opinion_gram.py::TestSolveIsSklearnsRidge::test_fifty_seeds",
+]
+oracles = { "numpy" = "2.5.2", "scikit-learn" = "1.9.1" }
+dataset = ""
+
+
+[group."second_opinion_regimes.bocpd_priors"]
+tests = [
+    "tests/test_second_opinion_regimes.py::TestBocpdIsThePackagesAtEveryPrecisionPrior::test_fifty_seeds",
+]
+oracles = { "bayesian-changepoint-detection" = "0.2.dev1" }
+dataset = ""
+
+
+[group."second_opinion_regimes.hmm_shapes"]
+tests = [
+    "tests/test_second_opinion_regimes.py::TestHmmIsHmmlearnsAtEveryShape::test_fifty_seeds",
+]
+oracles = { "hmmlearn" = "0.3.3" }
+dataset = ""
+
+
+[group."learning_rate.constant_rate"]
+tests = [
+    "tests/test_learning_rate.py::test_a_constant_rate_falls_to_its_plateau_and_holds_it",
+]
+oracles = { "scikit-learn" = "1.9.1" }
+dataset = ""
+
+
+[group."learning_rate.libsvm_passes"]
+tests = [
+    "tests/test_learning_rate.py::test_passes_over_a_libsvm_set_keep_lowering_the_worst_orders_excess[a9a ftrl]",
+    "tests/test_learning_rate.py::test_passes_over_a_libsvm_set_keep_lowering_the_worst_orders_excess[a9a sgd]",
+    "tests/test_learning_rate.py::test_passes_over_a_libsvm_set_keep_lowering_the_worst_orders_excess[abalone ftrl]",
+    "tests/test_learning_rate.py::test_passes_over_a_libsvm_set_keep_lowering_the_worst_orders_excess[abalone sgd adagrad]",
+    "tests/test_learning_rate.py::test_passes_over_a_libsvm_set_keep_lowering_the_worst_orders_excess[abalone sgd inv_scaling]",
+]
+oracles = { "scikit-learn" = "1.9.1" }
+dataset = "libsvm:regression/abalone,binary/a9a"
+
+
+[group."learning_rate.pa_noisy"]
+tests = [
+    "tests/test_learning_rate.py::test_pas_excess_on_a_noisy_target_holds_where_c_sets_it",
+]
+oracles = { "scikit-learn" = "1.9.1" }
+dataset = ""
+
+
+[group."learning_rate.schedules"]
+tests = [
+    "tests/test_learning_rate.py::test_each_schedule_keeps_lowering_the_worst_seeds_excess_loss[ftrl logistic]",
+    "tests/test_learning_rate.py::test_each_schedule_keeps_lowering_the_worst_seeds_excess_loss[ftrl squared]",
+    "tests/test_learning_rate.py::test_each_schedule_keeps_lowering_the_worst_seeds_excess_loss[sgd adagrad]",
+    "tests/test_learning_rate.py::test_each_schedule_keeps_lowering_the_worst_seeds_excess_loss[sgd huber inv_scaling]",
+    "tests/test_learning_rate.py::test_each_schedule_keeps_lowering_the_worst_seeds_excess_loss[sgd inv_scaling]",
+    "tests/test_learning_rate.py::test_each_schedule_keeps_lowering_the_worst_seeds_excess_loss[sgd logistic inv_scaling]",
+    "tests/test_learning_rate.py::test_each_schedule_keeps_lowering_the_worst_seeds_excess_loss[sgd poisson adagrad]",
+    "tests/test_learning_rate.py::test_each_schedule_keeps_lowering_the_worst_seeds_excess_loss[sgd quantile 0.9 inv_scaling]",
+    "tests/test_learning_rate.py::test_each_schedule_keeps_lowering_the_worst_seeds_excess_loss[sgd quantile inv_scaling]",
+]
+oracles = { "scikit-learn" = "1.9.1", "statsmodels" = "0.15.0" }
+dataset = ""
+
+
+[group."online_diagnostics.breaks_memory"]
+tests = [
+    "tests/test_online_diagnostics.py::test_a_longer_breaks_memory_finds_an_intercept_break_later",
+]
+oracles = {}
+dataset = ""
+
+
+[group."online_diagnostics.cusum_size"]
+tests = [
+    "tests/test_online_diagnostics.py::test_a_windowed_cusum_is_near_its_size_at_every_age[ewridge]",
+    "tests/test_online_diagnostics.py::test_a_windowed_cusum_is_near_its_size_at_every_age[kalman]",
+    "tests/test_online_diagnostics.py::test_a_windowed_cusum_is_near_its_size_at_every_age[lasso]",
+    "tests/test_online_diagnostics.py::test_a_windowed_cusum_is_near_its_size_at_every_age[quantile]",
+    "tests/test_online_diagnostics.py::test_a_windowed_cusum_is_near_its_size_at_every_age[rls]",
+    "tests/test_online_diagnostics.py::test_a_windowed_cusum_is_near_its_size_at_every_age[sgd]",
+    "tests/test_online_diagnostics.py::test_a_windowed_cusum_is_near_its_size_at_every_age[window]",
+]
+oracles = {}
+dataset = ""
+
+
+[case."conformal.coverage_rates.gaussian_coverage_error_at_0p005"]
+ideal = 0.0
+worst = 0.00791882
+p95 = 0.00538824
+n = 50
+
+[case."conformal.coverage_rates.gaussian_coverage_error_at_0p02"]
+ideal = 0.0
+worst = 0.00191744
+p95 = 0.0012973
+n = 50
+
+[case."conformal.coverage_rates.gaussian_coverage_error_at_0p05"]
+ideal = 0.0
+worst = 0.00069716
+p95 = 0.000467107
+n = 50
+
+[case."conformal.coverage_rates.gaussian_coverage_error_at_0p2"]
+ideal = 0.0
+worst = 0.000183042
+p95 = 0.000163037
+n = 50
+
+[case."conformal.coverage_rates.gaussian_coverage_error_at_1"]
+ideal = 0.0
+worst = 9.30214e-05
+p95 = 8.30191e-05
+n = 50
+
+[case."conformal.coverage_rates.misses_after_the_shift_at_0p005"]
+ideal = 0.0
+worst = 0.502
+p95 = 0.494
+n = 50
+
+[case."conformal.coverage_rates.misses_after_the_shift_at_0p02"]
+ideal = 0.0
+worst = 0.342
+p95 = 0.324
+n = 50
+
+[case."conformal.coverage_rates.misses_after_the_shift_at_0p05"]
+ideal = 0.0
+worst = 0.226
+p95 = 0.22
+n = 50
+
+[case."conformal.coverage_rates.misses_after_the_shift_at_0p2"]
+ideal = 0.0
+worst = 0.142
+p95 = 0.14
+n = 50
+
+[case."conformal.coverage_rates.misses_after_the_shift_at_1"]
+ideal = 0.0
+worst = 0.11
+p95 = 0.11
+n = 50
+
+[case."conformal.coverage_rates.shifting_coverage_error_at_0p005"]
+ideal = 0.0
+worst = 0.00802485
+p95 = 0.00797483
+n = 50
+
+[case."conformal.coverage_rates.shifting_coverage_error_at_0p02"]
+ideal = 0.0
+worst = 0.00297368
+p95 = 0.00291367
+n = 50
+
+[case."conformal.coverage_rates.shifting_coverage_error_at_0p05"]
+ideal = 0.0
+worst = 0.00155336
+p95 = 0.00149334
+n = 50
+
+[case."conformal.coverage_rates.shifting_coverage_error_at_0p2"]
+ideal = 0.0
+worst = 0.000573132
+p95 = 0.000553127
+n = 50
+
+[case."conformal.coverage_rates.shifting_coverage_error_at_1"]
+ideal = 0.0
+worst = 0.000193044
+p95 = 0.000183042
+n = 50
+
+[case."corrchange.n_perm.crit_error_at_20"]
+ideal = 0.0
+worst = 0.575856
+p95 = 0.319728
+n = 100
+
+[case."corrchange.n_perm.crit_error_at_200"]
+ideal = 0.0
+worst = 0.167572
+p95 = 0.0970894
+n = 100
+
+[case."corrchange.n_perm.crit_error_at_2000"]
+ideal = 0.0
+worst = 0.0379665
+p95 = 0.0282154
+n = 100
+
+[case."corrchange.n_perm.crit_error_at_20000"]
+ideal = 0.0
+worst = 0.0166479
+p95 = 0.00893663
+n = 100
+
+[case."learning_rate.constant_rate.excess_at_100"]
+ideal = 0.0
+worst = 5.66923
+p95 = 5.08886
+n = 50
+
+[case."learning_rate.constant_rate.excess_at_10000"]
+ideal = 0.0
+worst = 0.0754524
+p95 = 0.0674975
+n = 50
+
+[case."learning_rate.constant_rate.excess_at_100000"]
+ideal = 0.0
+worst = 0.090113
+p95 = 0.0687995
+n = 50
+
+[case."learning_rate.constant_rate.excess_at_3000"]
+ideal = 0.0
+worst = 0.0792215
+p95 = 0.0580402
+n = 50
+
+[case."learning_rate.constant_rate.excess_at_30000"]
+ideal = 0.0
+worst = 0.068404
+p95 = 0.0657157
+n = 50
+
+[case."learning_rate.constant_rate.median_excess_at_100000"]
+ideal = 0.0
+worst = 0.0259907
+p95 = 0.0259907
+n = 1
+
+[case."learning_rate.libsvm_passes.a9a_ftrl_pass_1"]
+ideal = 0.0
+worst = 0.00400017
+p95 = 0.00400017
+n = 10
+
+[case."learning_rate.libsvm_passes.a9a_ftrl_pass_2"]
+ideal = 0.0
+worst = 0.00237725
+p95 = 0.00237725
+n = 10
+
+[case."learning_rate.libsvm_passes.a9a_ftrl_pass_3"]
+ideal = 0.0
+worst = 0.00179757
+p95 = 0.00179757
+n = 10
+
+[case."learning_rate.libsvm_passes.a9a_ftrl_pass_4"]
+ideal = 0.0
+worst = 0.00148952
+p95 = 0.00148952
+n = 10
+
+[case."learning_rate.libsvm_passes.a9a_sgd_pass_1"]
+ideal = 0.0
+worst = 0.00963039
+p95 = 0.00963039
+n = 10
+
+[case."learning_rate.libsvm_passes.a9a_sgd_pass_2"]
+ideal = 0.0
+worst = 0.00582332
+p95 = 0.00582332
+n = 10
+
+[case."learning_rate.libsvm_passes.a9a_sgd_pass_3"]
+ideal = 0.0
+worst = 0.00423661
+p95 = 0.00423661
+n = 10
+
+[case."learning_rate.libsvm_passes.a9a_sgd_pass_4"]
+ideal = 0.0
+worst = 0.00335537
+p95 = 0.00335537
+n = 10
+
+[case."learning_rate.libsvm_passes.abalone_ftrl_pass_1"]
+ideal = 0.0
+worst = 3.41786
+p95 = 3.41786
+n = 10
+
+[case."learning_rate.libsvm_passes.abalone_ftrl_pass_2"]
+ideal = 0.0
+worst = 3.05761
+p95 = 3.05761
+n = 10
+
+[case."learning_rate.libsvm_passes.abalone_ftrl_pass_3"]
+ideal = 0.0
+worst = 2.83585
+p95 = 2.83585
+n = 10
+
+[case."learning_rate.libsvm_passes.abalone_ftrl_pass_4"]
+ideal = 0.0
+worst = 2.67015
+p95 = 2.67015
+n = 10
+
+[case."learning_rate.libsvm_passes.abalone_sgd_adagrad_pass_1"]
+ideal = 0.0
+worst = 0.379445
+p95 = 0.379445
+n = 10
+
+[case."learning_rate.libsvm_passes.abalone_sgd_adagrad_pass_2"]
+ideal = 0.0
+worst = 0.262658
+p95 = 0.262658
+n = 10
+
+[case."learning_rate.libsvm_passes.abalone_sgd_adagrad_pass_3"]
+ideal = 0.0
+worst = 0.207419
+p95 = 0.207419
+n = 10
+
+[case."learning_rate.libsvm_passes.abalone_sgd_adagrad_pass_4"]
+ideal = 0.0
+worst = 0.173727
+p95 = 0.173727
+n = 10
+
+[case."learning_rate.libsvm_passes.abalone_sgd_inv_scaling_pass_1"]
+ideal = 0.0
+worst = 0.397802
+p95 = 0.397802
+n = 10
+
+[case."learning_rate.libsvm_passes.abalone_sgd_inv_scaling_pass_2"]
+ideal = 0.0
+worst = 0.36907
+p95 = 0.36907
+n = 10
+
+[case."learning_rate.libsvm_passes.abalone_sgd_inv_scaling_pass_3"]
+ideal = 0.0
+worst = 0.330394
+p95 = 0.330394
+n = 10
+
+[case."learning_rate.libsvm_passes.abalone_sgd_inv_scaling_pass_4"]
+ideal = 0.0
+worst = 0.295159
+p95 = 0.295159
+n = 10
+
+[case."learning_rate.pa_noisy.c_0p01_excess_at_10000"]
+ideal = 0.0
+worst = 0.0831888
+p95 = 0.0740825
+n = 50
+
+[case."learning_rate.pa_noisy.c_0p01_excess_at_100000"]
+ideal = 0.0
+worst = 0.0918949
+p95 = 0.0884883
+n = 50
+
+[case."learning_rate.pa_noisy.default_c_excess_at_10000"]
+ideal = 0.0
+worst = 3.14754
+p95 = 2.23681
+n = 50
+
+[case."learning_rate.pa_noisy.default_c_excess_at_100000"]
+ideal = 0.0
+worst = 3.89156
+p95 = 2.63697
+n = 50
+
+[case."learning_rate.schedules.ftrl_logistic_at_1000"]
+ideal = 0.0
+worst = 0.0183232
+p95 = 0.00797208
+n = 50
+
+[case."learning_rate.schedules.ftrl_logistic_at_10000"]
+ideal = 0.0
+worst = 0.00257828
+p95 = 0.00211386
+n = 50
+
+[case."learning_rate.schedules.ftrl_logistic_at_100000"]
+ideal = 0.0
+worst = 0.00103315
+p95 = 0.000954161
+n = 50
+
+[case."learning_rate.schedules.ftrl_squared_at_1000"]
+ideal = 0.0
+worst = 0.536776
+p95 = 0.345553
+n = 50
+
+[case."learning_rate.schedules.ftrl_squared_at_10000"]
+ideal = 0.0
+worst = 0.019687
+p95 = 0.0143239
+n = 50
+
+[case."learning_rate.schedules.ftrl_squared_at_100000"]
+ideal = 0.0
+worst = 0.00638635
+p95 = 0.00402569
+n = 50
+
+[case."learning_rate.schedules.sgd_adagrad_at_1000"]
+ideal = 0.0
+worst = 0.0769476
+p95 = 0.0706887
+n = 50
+
+[case."learning_rate.schedules.sgd_adagrad_at_10000"]
+ideal = 0.0
+worst = 0.0326993
+p95 = 0.0293203
+n = 50
+
+[case."learning_rate.schedules.sgd_adagrad_at_100000"]
+ideal = 0.0
+worst = 0.0111803
+p95 = 0.00983671
+n = 50
+
+[case."learning_rate.schedules.sgd_huber_inv_scaling_at_1000"]
+ideal = 0.0
+worst = 0.0465629
+p95 = 0.0311399
+n = 50
+
+[case."learning_rate.schedules.sgd_huber_inv_scaling_at_10000"]
+ideal = 0.0
+worst = 0.0124904
+p95 = 0.0100572
+n = 50
+
+[case."learning_rate.schedules.sgd_huber_inv_scaling_at_100000"]
+ideal = 0.0
+worst = 0.00477877
+p95 = 0.00363641
+n = 50
+
+[case."learning_rate.schedules.sgd_inv_scaling_at_1000"]
+ideal = 0.0
+worst = 0.110469
+p95 = 0.0953769
+n = 50
+
+[case."learning_rate.schedules.sgd_inv_scaling_at_10000"]
+ideal = 0.0
+worst = 0.03441
+p95 = 0.0309182
+n = 50
+
+[case."learning_rate.schedules.sgd_inv_scaling_at_100000"]
+ideal = 0.0
+worst = 0.0112251
+p95 = 0.00995721
+n = 50
+
+[case."learning_rate.schedules.sgd_logistic_inv_scaling_at_1000"]
+ideal = 0.0
+worst = 0.00504297
+p95 = 0.00368735
+n = 50
+
+[case."learning_rate.schedules.sgd_logistic_inv_scaling_at_10000"]
+ideal = 0.0
+worst = 0.00187755
+p95 = 0.00155736
+n = 50
+
+[case."learning_rate.schedules.sgd_logistic_inv_scaling_at_100000"]
+ideal = 0.0
+worst = 0.000942282
+p95 = 0.000715092
+n = 50
+
+[case."learning_rate.schedules.sgd_poisson_adagrad_at_1000"]
+ideal = 0.0
+worst = 0.00819767
+p95 = 0.00695767
+n = 50
+
+[case."learning_rate.schedules.sgd_poisson_adagrad_at_10000"]
+ideal = 0.0
+worst = 0.00513516
+p95 = 0.00419932
+n = 50
+
+[case."learning_rate.schedules.sgd_poisson_adagrad_at_100000"]
+ideal = 0.0
+worst = 0.00183424
+p95 = 0.00157529
+n = 50
+
+[case."learning_rate.schedules.sgd_quantile_0p9_inv_scaling_at_1000"]
+ideal = 0.0
+worst = 0.0307295
+p95 = 0.0297867
+n = 50
+
+[case."learning_rate.schedules.sgd_quantile_0p9_inv_scaling_at_10000"]
+ideal = 0.0
+worst = 0.00146736
+p95 = 0.00123721
+n = 50
+
+[case."learning_rate.schedules.sgd_quantile_0p9_inv_scaling_at_100000"]
+ideal = 0.0
+worst = 0.000490733
+p95 = 0.00035155
+n = 50
+
+[case."learning_rate.schedules.sgd_quantile_inv_scaling_at_1000"]
+ideal = 0.0
+worst = 0.0129842
+p95 = 0.0103876
+n = 50
+
+[case."learning_rate.schedules.sgd_quantile_inv_scaling_at_10000"]
+ideal = 0.0
+worst = 0.00412455
+p95 = 0.00359374
+n = 50
+
+[case."learning_rate.schedules.sgd_quantile_inv_scaling_at_100000"]
+ideal = 0.0
+worst = 0.00256265
+p95 = 0.00124279
+n = 50
+
+[case."online_diagnostics.breaks_memory.delay_at_100"]
+ideal = 0.0
+worst = 47.0
+p95 = 40.0
+n = 200
+
+[case."online_diagnostics.breaks_memory.delay_at_200"]
+ideal = 0.0
+worst = 54.0
+p95 = 48.0
+n = 200
+
+[case."online_diagnostics.breaks_memory.delay_at_25"]
+ideal = 0.0
+worst = 41.0
+p95 = 29.0
+n = 200
+
+[case."online_diagnostics.breaks_memory.delay_at_400"]
+ideal = 0.0
+worst = 63.0
+p95 = 52.0
+n = 200
+
+[case."online_diagnostics.breaks_memory.delay_at_50"]
+ideal = 0.0
+worst = 46.0
+p95 = 33.0
+n = 200
+
+[case."online_diagnostics.breaks_memory.delay_at_inf"]
+ideal = 0.0
+worst = 333.0
+p95 = 277.0
+n = 200
+
+[case."online_diagnostics.cusum_size.ewridge_cusum_sq_y_300_to_600"]
+ideal = 0.05
+worst = 0.0619778
+p95 = 0.0619778
+n = 12
+
+[case."online_diagnostics.cusum_size.ewridge_cusum_sq_y_steady"]
+ideal = 0.05
+worst = 0.0601468
+p95 = 0.0601468
+n = 12
+
+[case."online_diagnostics.cusum_size.ewridge_cusum_sq_y_young"]
+ideal = 0.05
+worst = 0.0639388
+p95 = 0.0639388
+n = 12
+
+[case."online_diagnostics.cusum_size.ewridge_cusum_y_300_to_600"]
+ideal = 0.05
+worst = 0.05898889
+p95 = 0.05898889
+n = 12
+
+[case."online_diagnostics.cusum_size.ewridge_cusum_y_steady"]
+ideal = 0.05
+worst = 0.05455833
+p95 = 0.05455833
+n = 12
+
+[case."online_diagnostics.cusum_size.ewridge_cusum_y_young"]
+ideal = 0.05
+worst = 0.05653333
+p95 = 0.05653333
+n = 12
+
+[case."online_diagnostics.cusum_size.kalman_cusum_sq_y_300_to_600"]
+ideal = 0.05
+worst = 0.0621222
+p95 = 0.0621222
+n = 12
+
+[case."online_diagnostics.cusum_size.kalman_cusum_sq_y_steady"]
+ideal = 0.05
+worst = 0.05994465
+p95 = 0.05994465
+n = 12
+
+[case."online_diagnostics.cusum_size.kalman_cusum_sq_y_young"]
+ideal = 0.05
+worst = 0.0642241
+p95 = 0.0642241
+n = 12
+
+[case."online_diagnostics.cusum_size.kalman_cusum_y_300_to_600"]
+ideal = 0.05
+worst = 0.0422
+p95 = 0.0422
+n = 12
+
+[case."online_diagnostics.cusum_size.kalman_cusum_y_steady"]
+ideal = 0.05
+worst = 0.04577083
+p95 = 0.04577083
+n = 12
+
+[case."online_diagnostics.cusum_size.kalman_cusum_y_young"]
+ideal = 0.05
+worst = 0.05557778
+p95 = 0.05557778
+n = 12
+
+[case."online_diagnostics.cusum_size.lasso_cusum_sq_y_300_to_600"]
+ideal = 0.05
+worst = 0.0617778
+p95 = 0.0617778
+n = 12
+
+[case."online_diagnostics.cusum_size.lasso_cusum_sq_y_steady"]
+ideal = 0.05
+worst = 0.0602739
+p95 = 0.0602739
+n = 12
+
+[case."online_diagnostics.cusum_size.lasso_cusum_sq_y_young"]
+ideal = 0.05
+worst = 0.0639614
+p95 = 0.0639614
+n = 12
+
+[case."online_diagnostics.cusum_size.lasso_cusum_y_300_to_600"]
+ideal = 0.05
+worst = 0.05898889
+p95 = 0.05898889
+n = 12
+
+[case."online_diagnostics.cusum_size.lasso_cusum_y_steady"]
+ideal = 0.05
+worst = 0.05457708
+p95 = 0.05457708
+n = 12
+
+[case."online_diagnostics.cusum_size.lasso_cusum_y_young"]
+ideal = 0.05
+worst = 0.05666667
+p95 = 0.05666667
+n = 12
+
+[case."online_diagnostics.cusum_size.quantile_cusum_sq_y_300_to_600"]
+ideal = 0.05
+worst = 0.0604667
+p95 = 0.0604667
+n = 12
+
+[case."online_diagnostics.cusum_size.quantile_cusum_sq_y_steady"]
+ideal = 0.05
+worst = 0.0608122
+p95 = 0.0608122
+n = 12
+
+[case."online_diagnostics.cusum_size.quantile_cusum_sq_y_young"]
+ideal = 0.05
+worst = 0.0632021
+p95 = 0.0632021
+n = 12
+
+[case."online_diagnostics.cusum_size.quantile_cusum_y_300_to_600"]
+ideal = 0.05
+worst = 0.0654333
+p95 = 0.0654333
+n = 12
+
+[case."online_diagnostics.cusum_size.quantile_cusum_y_steady"]
+ideal = 0.05
+worst = 0.0825521
+p95 = 0.0825521
+n = 12
+
+[case."online_diagnostics.cusum_size.quantile_cusum_y_young"]
+ideal = 0.05
+worst = 0.0562
+p95 = 0.0562
+n = 12
+
+[case."online_diagnostics.cusum_size.rls_cusum_sq_y_300_to_600"]
+ideal = 0.05
+worst = 0.0617556
+p95 = 0.0617556
+n = 12
+
+[case."online_diagnostics.cusum_size.rls_cusum_sq_y_steady"]
+ideal = 0.05
+worst = 0.0600384
+p95 = 0.0600384
+n = 12
+
+[case."online_diagnostics.cusum_size.rls_cusum_sq_y_young"]
+ideal = 0.05
+worst = 0.0641972
+p95 = 0.0641972
+n = 12
+
+[case."online_diagnostics.cusum_size.rls_cusum_y_300_to_600"]
+ideal = 0.05
+worst = 0.05748889
+p95 = 0.05748889
+n = 12
+
+[case."online_diagnostics.cusum_size.rls_cusum_y_steady"]
+ideal = 0.05
+worst = 0.04575417
+p95 = 0.04575417
+n = 12
+
+[case."online_diagnostics.cusum_size.rls_cusum_y_young"]
+ideal = 0.05
+worst = 0.05546667
+p95 = 0.05546667
+n = 12
+
+[case."online_diagnostics.cusum_size.sgd_cusum_sq_y_300_to_600"]
+ideal = 0.05
+worst = 0.05932222
+p95 = 0.05932222
+n = 12
+
+[case."online_diagnostics.cusum_size.sgd_cusum_sq_y_steady"]
+ideal = 0.05
+worst = 0.0607524
+p95 = 0.0607524
+n = 12
+
+[case."online_diagnostics.cusum_size.sgd_cusum_sq_y_young"]
+ideal = 0.05
+worst = 0.0624929
+p95 = 0.0624929
+n = 12
+
+[case."online_diagnostics.cusum_size.window_cusum_sq_y_300_to_600"]
+ideal = 0.05
+worst = 0.04214444
+p95 = 0.04214444
+n = 12
+
+[case."online_diagnostics.cusum_size.window_cusum_sq_y_steady"]
+ideal = 0.05
+worst = 0.0536
+p95 = 0.0536
+n = 12
+
+[case."online_diagnostics.cusum_size.window_cusum_sq_y_young"]
+ideal = 0.05
+worst = 0.065573
+p95 = 0.065573
+n = 12
+
+[case."online_diagnostics.cusum_size.window_cusum_y_300_to_600"]
+ideal = 0.05
+worst = 0.0644778
+p95 = 0.0644778
+n = 12
+
+[case."online_diagnostics.cusum_size.window_cusum_y_steady"]
+ideal = 0.05
+worst = 0.05421667
+p95 = 0.05421667
+n = 12
+
+[case."online_diagnostics.cusum_size.window_cusum_y_young"]
+ideal = 0.05
+worst = 0.0608667
+p95 = 0.0608667
+n = 12
+
+[case."second_opinion_gram.lasso_weights.error"]
+ideal = 0.0
+worst = 1.8162e-11
+p95 = 1.27143e-12
+n = 50
+floor = 4e-11
+
+[case."second_opinion_gram.ridge.error_over_bound"]
+ideal = 0.0
+worst = 0.187255
+p95 = 0.014828
+n = 1200
+floor = 0.4
+
+[case."second_opinion_regimes.bocpd_priors.error_over_tolerance"]
+ideal = 0.0
+worst = 0.165736
+p95 = 0.108816
+n = 200
+floor = 0.35
+
+[case."second_opinion_regimes.hmm_shapes.error"]
+ideal = 0.0
+worst = 1.84852e-13
+p95 = 1.16129e-13
+n = 300
+floor = 4e-13
+
+[case."truth_recovery.bocpd_shift.dating_error_1sd"]
+ideal = 0.0
+worst = 495.0
+p95 = 16.0
+n = 50
+
+[case."truth_recovery.bocpd_shift.dating_error_2sd"]
+ideal = 0.0
+worst = 2.0
+p95 = 2.0
+n = 50
+
+[case."truth_recovery.bocpd_shift.dating_error_3sd"]
+ideal = 0.0
+worst = 1.0
+p95 = 1.0
+n = 50
+
+[case."truth_recovery.bocpd_shift.delay_1sd"]
+ideal = 0.0
+worst = 63.0
+p95 = 38.0
+n = 50
+
+[case."truth_recovery.bocpd_shift.delay_2sd"]
+ideal = 0.0
+worst = 10.0
+p95 = 9.0
+n = 50
+
+[case."truth_recovery.bocpd_shift.delay_3sd"]
+ideal = 0.0
+worst = 6.0
+p95 = 5.0
+n = 50
+
+[case."truth_recovery.bocpd_shift.false_alarms_1sd"]
+ideal = 0.0
+worst = 140.0
+p95 = 140.0
+n = 1
+
+[case."truth_recovery.bocpd_shift.false_alarms_2sd"]
+ideal = 0.0
+worst = 140.0
+p95 = 140.0
+n = 1
+
+[case."truth_recovery.bocpd_shift.false_alarms_3sd"]
+ideal = 0.0
+worst = 140.0
+p95 = 140.0
+n = 1
+
+[case."truth_recovery.corrchange_break.delay"]
+ideal = 0.0
+worst = 81.0
+p95 = 63.0
+n = 50
+
+[case."truth_recovery.corrchange_break.quiet_share_flagged"]
+ideal = 0.0
+worst = 0.098049
+p95 = 0.094047
+n = 50
+
+[case."truth_recovery.corrchange_break.quiet_share_flagged_mean"]
+ideal = 0.0
+worst = 0.0443122
+p95 = 0.0443122
+n = 1
+
+[case."truth_recovery.deco_level.rows_to_midpoint"]
+ideal = 0.0
+worst = 206.0
+p95 = 147.0
+n = 150
+
+[case."truth_recovery.deco_level.rows_to_midpoint_median"]
+ideal = 0.0
+worst = 95.0
+p95 = 95.0
+n = 1
+
+[case."truth_recovery.deco_level.settled_at_0_2"]
+ideal = 0.2
+worst = 0.085866
+p95 = 0.1041657
+n = 100
+
+[case."truth_recovery.deco_level.settled_at_0_6"]
+ideal = 0.6
+worst = 0.320823
+p95 = 0.34728
+n = 100
+
+[case."truth_recovery.hmm_regimes.means_from_baum_welch"]
+ideal = 0.0
+worst = 0.205612
+p95 = 0.135922
+n = 50
+
+[case."truth_recovery.hmm_regimes.means_from_truth"]
+ideal = 0.0
+worst = 0.251325
+p95 = 0.147158
+n = 50
+
+[case."truth_recovery.hmm_regimes.share_in_true_state"]
+ideal = 1.0
+worst = 0.945
+p95 = 0.9466667
+n = 50
+
+[case."truth_recovery.kmeans_blobs.raw_ari"]
+ideal = 1.0
+worst = 0.99751044
+p95 = 0.999134439
+n = 50
+
+[case."truth_recovery.kmeans_blobs.raw_centre_error"]
+ideal = 0.0
+worst = 0.163466
+p95 = 0.146546
+n = 50
+
+[case."truth_recovery.kmeans_blobs.standardized_ari"]
+ideal = 1.0
+worst = 0.9484032
+p95 = 0.99137731
+n = 50
+
+[case."truth_recovery.kmeans_blobs.standardized_centre_error"]
+ideal = 0.0
+worst = 0.30717
+p95 = 0.143823
+n = 50
+
+[case."truth_recovery.kmeans_franti.a1_ari"]
+ideal = 1.0
+worst = 0.864643
+p95 = 0.875414
+n = 50
+
+[case."truth_recovery.kmeans_franti.a1_centroid_index"]
+ideal = 0.0
+worst = 1.0
+p95 = 1.0
+n = 50
+
+[case."truth_recovery.kmeans_franti.a1_inertia_ratio"]
+ideal = 1.0
+worst = 1.299689
+p95 = 1.293684
+n = 50
+
+[case."truth_recovery.kmeans_franti.a2_ari"]
+ideal = 1.0
+worst = 0.9289026
+p95 = 0.9306879
+n = 50
+
+[case."truth_recovery.kmeans_franti.a2_centroid_index"]
+ideal = 0.0
+worst = 1.0
+p95 = 1.0
+n = 50
+
+[case."truth_recovery.kmeans_franti.a2_inertia_ratio"]
+ideal = 1.0
+worst = 1.23926
+p95 = 1.155061
+n = 50
+
+[case."truth_recovery.kmeans_franti.a3_ari"]
+ideal = 1.0
+worst = 0.9127203
+p95 = 0.9382585
+n = 50
+
+[case."truth_recovery.kmeans_franti.a3_centroid_index"]
+ideal = 0.0
+worst = 3.0
+p95 = 2.0
+n = 50
+
+[case."truth_recovery.kmeans_franti.a3_inertia_ratio"]
+ideal = 1.0
+worst = 1.498823
+p95 = 1.275229
+n = 50
+
+[case."truth_recovery.kmeans_franti.s1_ari"]
+ideal = 1.0
+worst = 0.9855126
+p95 = 0.9855126
+n = 50
+
+[case."truth_recovery.kmeans_franti.s1_centroid_index"]
+ideal = 0.0
+worst = 0.0
+p95 = 0.0
+n = 50
+
+[case."truth_recovery.kmeans_franti.s1_inertia_ratio"]
+ideal = 1.0
+worst = 1.00106925
+p95 = 1.00104115
+n = 50
+
+[case."truth_recovery.kmeans_franti.s2_ari"]
+ideal = 1.0
+worst = 0.9363841
+p95 = 0.9367469
+n = 50
+
+[case."truth_recovery.kmeans_franti.s2_centroid_index"]
+ideal = 0.0
+worst = 0.0
+p95 = 0.0
+n = 50
+
+[case."truth_recovery.kmeans_franti.s2_inertia_ratio"]
+ideal = 1.0
+worst = 1.00138819
+p95 = 1.00126444
+n = 50
+
+[case."truth_recovery.kmeans_franti.s3_ari"]
+ideal = 1.0
+worst = 0.672425
+p95 = 0.723465
+n = 50
+
+[case."truth_recovery.kmeans_franti.s3_centroid_index"]
+ideal = 0.0
+worst = 1.0
+p95 = 0.0
+n = 50
+
+[case."truth_recovery.kmeans_franti.s3_inertia_ratio"]
+ideal = 1.0
+worst = 1.12221
+p95 = 1.00928613
+n = 50
+
+[case."truth_recovery.kmeans_franti.s4_ari"]
+ideal = 1.0
+worst = 0.59408
+p95 = 0.599477
+n = 50
+
+[case."truth_recovery.kmeans_franti.s4_centroid_index"]
+ideal = 0.0
+worst = 1.0
+p95 = 1.0
+n = 50
+
+[case."truth_recovery.kmeans_franti.s4_inertia_ratio"]
+ideal = 1.0
+worst = 1.0869506
+p95 = 1.0690517
+n = 50
+
+[case."truth_recovery.micro_blobs.ari"]
+ideal = 1.0
+worst = 0.775841
+p95 = 0.802041
+n = 50
+
+[case."truth_recovery.micro_blobs.outlier_share"]
+ideal = 0.0
+worst = 0.0823333
+p95 = 0.0456667
+n = 50
+
+[case."truth_recovery.micro_franti.s1_ari"]
+ideal = 1.0
+worst = 0.9371681
+p95 = 0.9557441
+n = 50
+
+[case."truth_recovery.micro_franti.s1_outlier_share"]
+ideal = 0.0
+worst = 0.4448
+p95 = 0.442
+n = 50
+
+[case."truth_recovery.rcov_plain.bias"]
+ideal = 0.0
+worst = 0.000730897
+p95 = 0.000730897
+n = 1
+
+[case."truth_recovery.rcov_plain.error"]
+ideal = 0.0
+worst = 0.0568331
+p95 = 0.0335257
+n = 950
+
+[case."truth_recovery.rcov_plain.standardized_error"]
+ideal = 0.0
+worst = 3.20301
+p95 = 1.98825
+n = 950
+
+# --- raises

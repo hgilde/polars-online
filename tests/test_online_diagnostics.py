@@ -16,6 +16,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+import ledger
 import polars_online as po
 
 TIER = "mixed"
@@ -1621,6 +1622,49 @@ def test_box_pierce_at_a_memory_of_its_own():
         assert out["ljung_box_y"][t] == pytest.approx(want, rel=1e-9), t
 
 
+BREAK_MEMORIES = (25.0, 50.0, 100.0, 200.0, 400.0, float("inf"))
+BREAK_GROUPS, BREAK_ROWS, BREAK_AT = 200, 3_600, 3_000
+
+
+def break_streams() -> pl.DataFrame:
+    """200 streams of 3,600 rows, an intercept break of one noise sd at row
+    3,000 of each."""
+    groups, n, at = BREAK_GROUPS, BREAK_ROWS, BREAK_AT
+    rng = np.random.default_rng(2780)
+    x = rng.normal(size=(groups * n, 2))
+    level = 0.5 + 1.0 * (np.tile(np.arange(n), groups) >= at)
+    y = level + x @ np.array([1.0, -1.0]) + rng.normal(size=groups * n)
+    return pl.DataFrame(
+        {"g": np.repeat(np.arange(groups), n), "x0": x[:, 0], "x1": x[:, 1], "y": y}
+    )
+
+
+def break_cusum(df: pl.DataFrame, memory: float) -> np.ndarray:
+    """The CUSUM beside a fit at 200 on each stream, a row a stream."""
+    spec = po.spec.ewridge(
+        "m",
+        targets=["y"],
+        features=["x0", "x1"],
+        half_life=200.0,
+        group="g",
+        min_weight=10.0,
+        emit_breaks=True,
+        breaks_half_life=memory,
+    )
+    out = po.ModelBank([spec]).fit_predict(df)
+    c = out["m"].struct.field("cusum_y").fill_null(0.0).fill_nan(0.0).to_numpy()
+    return c.reshape(df["g"].n_unique(), -1)
+
+
+#: The ledger's inputs (tests/ledger.py): the first ten of the 200 streams,
+#: which the group key keeps apart, so each is the grid's own, at every
+#: memory.
+ledger.guard(
+    "breaks_memory",
+    lambda: [break_cusum(break_streams().filter(pl.col("g") < 10), m) for m in BREAK_MEMORIES],
+)
+
+
 @pytest.mark.oracle_grid(reason="200 streams at six memories, read by their tails")
 def test_a_longer_breaks_memory_finds_an_intercept_break_later():
     """An intercept break of one noise sd, 2,100 rows into the CUSUM's
@@ -1630,31 +1674,16 @@ def test_a_longer_breaks_memory_finds_an_intercept_break_later():
     goes undetected. Measured 2026-10-25 (90th / 95th / worst, rows): 26 /
     29 / 41 at 25, 32 / 33 / 46 at 50, 36 / 40 / 47 at 100, 42 / 48 / 54
     at 200, 50 / 52 / 63 at 400, 261 / 277 / 333 run once."""
-    groups, n, at = 200, 3_600, 3_000
-    rng = np.random.default_rng(2780)
-    x = rng.normal(size=(groups * n, 2))
-    level = 0.5 + 1.0 * (np.tile(np.arange(n), groups) >= at)
-    y = level + x @ np.array([1.0, -1.0]) + rng.normal(size=groups * n)
-    df = pl.DataFrame({"g": np.repeat(np.arange(groups), n), "x0": x[:, 0], "x1": x[:, 1], "y": y})
+    at = BREAK_AT
+    df = break_streams()
     tails = []
-    for memory in (25.0, 50.0, 100.0, 200.0, 400.0, float("inf")):
-        spec = po.spec.ewridge(
-            "m",
-            targets=["y"],
-            features=["x0", "x1"],
-            half_life=200.0,
-            group="g",
-            min_weight=10.0,
-            emit_breaks=True,
-            breaks_half_life=memory,
-        )
-        out = po.ModelBank([spec]).fit_predict(df)
-        c = out["m"].struct.field("cusum_y").fill_null(0.0).fill_nan(0.0).to_numpy()
-        hit = np.abs(c.reshape(groups, n)[:, at:]) > 3.0
+    for memory in BREAK_MEMORIES:
+        hit = np.abs(break_cusum(df, memory)[:, at:]) > 3.0
         assert hit.any(axis=1).all(), (memory, (~hit.any(axis=1)).sum())
         delay = hit.argmax(axis=1)
         tails.append(np.quantile(delay, [0.9, 0.95, 1.0]))
         print(memory, tails[-1])
+        ledger.record("breaks_memory", f"delay_at_{memory:g}", delay)
     tails = np.array(tails)
     assert (np.diff(tails, axis=0) > 0).all(), tails
 
@@ -1805,11 +1834,45 @@ def test_a_young_windowed_cusum_reads_its_shares_definition(memory):
         assert (z1 / got[first + k]) ** 2 / s2 > 0.99, k
 
 
+SIZE_MODELS = ["ewridge", "rls", "lasso", "kalman", "quantile", "window", "sgd"]
+SIZE_MEMORIES = (50.0, 200.0, 400.0, 800.0)
+
+
+def size_out(model: str, df: pl.DataFrame, memory: float) -> pl.DataFrame:
+    """``model``'s every field beside a fit at 200 on the clean streams, its
+    breaks at ``memory``."""
+    kw: dict = {
+        "lasso": {"penalties": [0.001]},
+        "kalman": {"coef_half_life": 200.0},
+        "quantile": {"quantile": 0.5},
+        "window": {"window_size": 400.0},
+    }.get(model, {})
+    builder = getattr(po.spec, "ewridge" if model == "window" else model)
+    spec = builder(
+        "m",
+        targets=["y"],
+        features=["x0", "x1"],
+        half_life=200.0,
+        group="g",
+        min_weight=10.0,
+        emit_breaks=True,
+        breaks_half_life=memory,
+        **kw,
+    )
+    return _run(df, spec)
+
+
+def size_guard(df: pl.DataFrame) -> dict[str, list[pl.DataFrame]]:
+    return {model: [size_out(model, df, m) for m in SIZE_MEMORIES] for model in SIZE_MODELS}
+
+
+#: The first of seed 0's 300 streams, kept apart by the group key, at
+#: every memory, beside each fit.
+ledger.guard("cusum_size", lambda: size_guard(_clean(300, 7_200, 2_780).filter(pl.col("g") < 1)))
+
+
 @pytest.mark.oracle_grid(reason="300 streams x 3 seeds at four memories beside seven fits")
-@pytest.mark.parametrize(
-    "model",
-    ["ewridge", "rls", "lasso", "kalman", "quantile", "window", "sgd"],
-)
+@pytest.mark.parametrize("model", SIZE_MODELS)
 def test_a_windowed_cusum_is_near_its_size_at_every_age(model):
     """On 3 seeds of 300 clean streams of 7,200 rows beside a fit at a
     half-life of 200, at breaks memories of 50, 200, 400 and 800, the worst
@@ -1828,32 +1891,15 @@ def test_a_windowed_cusum_is_near_its_size_at_every_age(model):
     sum, which its learning rate leaves conservative (`|cusum| > 3` finds
     fewer of its breaks), and is held only to its CUSUM of squares;
     `quantile` at its median."""
-    kw: dict = {
-        "lasso": {"penalties": [0.001]},
-        "kalman": {"coef_half_life": 200.0},
-        "quantile": {"quantile": 0.5},
-        "window": {"window_size": 400.0},
-    }.get(model, {})
-    builder = getattr(po.spec, "ewridge" if model == "window" else model)
     groups, n = 300, 7_200
     segments = {"young": (0, 150), "300-600": (300, 600), "steady": (4_700, 6_300)}
     fields = ["cusum_sq_y"] if model == "sgd" else ["cusum_y", "cusum_sq_y"]
     worst: dict = {}
+    sizes: dict = {}
     for seed in range(3):
         df = _clean(groups, n, 2_780 + seed)
-        for memory in (50.0, 200.0, 400.0, 800.0):
-            spec = builder(
-                "m",
-                targets=["y"],
-                features=["x0", "x1"],
-                half_life=200.0,
-                group="g",
-                min_weight=10.0,
-                emit_breaks=True,
-                breaks_half_life=memory,
-                **kw,
-            )
-            out = _run(df, spec)
+        for memory in SIZE_MEMORIES:
+            out = size_out(model, df, memory)
             for field in fields:
                 c = out[field].to_numpy().astype(float).reshape(groups, n)
                 first = np.isfinite(c).argmax(axis=1)
@@ -1864,6 +1910,12 @@ def test_a_windowed_cusum_is_near_its_size_at_every_age(model):
                     size = float(np.mean(np.abs(v) > 1.96))
                     key = (memory, field, name)
                     worst[key] = max(worst.get(key, 0.0), size)
+                    sizes.setdefault((field, name), []).append(size)
+    # Each field's share at each age, over the memories and seeds, by its
+    # distance from the 5% it should read.
+    for (field, name), values in sorted(sizes.items()):
+        case = f"{model}_{field}_{name.replace('-', '_to_')}"
+        ledger.record("cusum_size", case, values, ideal=0.05)
     for (memory, field, name), size in worst.items():
         bound = 0.10 if (model, memory, field) == ("quantile", 800.0, "cusum_y") else 0.085
         assert size <= bound, (model, memory, field, name, size)
