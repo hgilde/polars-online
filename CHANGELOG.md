@@ -13,6 +13,17 @@ returns.
 
 ### Changed
 
+- `po.eval.window_metrics` on a `Datetime` or `Date` clock makes the windows
+  Polars' `group_by_dynamic` makes of the same rows, reading `every` as
+  Polars reads it: nanoseconds to hours are elapsed time, so across a
+  change of a time zone's offset a `"5h"` window holds five hours and
+  `"24h"` holds 24; days, weeks, months, quarters and years follow the wall
+  calendar. Its windows' edges used to come from `dt.truncate` in local wall
+  time, so a `"5h"` window across a change held four hours and `"24h"` was
+  read as `"1d"`. A month, quarter or year (`"1mo"`, `"1q"`, `"1y"`) is now
+  taken on these clocks; a `Duration` clock, which has no calendar, still
+  refuses one. Naive `Datetime`, numeric and `Duration` clocks get the same
+  windows as before (task 278).
 - `withheld_reason` has a fifth value, `ill_conditioned`, appended after
   `below_warm_rows`, for a row predicted from a fit withheld because its
   normal equations kept no digit (task 278). Every existing name keeps its
@@ -103,6 +114,14 @@ returns.
 
 ### Fixed
 
+- `po.eval.diebold_mariano` and `po.eval.clark_west` with `half_life`, and
+  `po.eval.seqtest`, refuse a `name` the frame already has, naming the
+  column; Polars' `with_columns` used to replace that column -- the target,
+  or a spec's output -- without a word. With `half_life`, a frame holding a
+  column `dm_<target>` or `cw_<target>` had that column's values returned as
+  the statistic and lost the column, and a `name` spelled like one of the
+  functions' working columns returned no result column at all; both now give
+  the right statistic and keep the frame's columns (task 278).
 - `deco` with `blocks` reported a finite `loglik` on rows whose block
   levels no correlation matrix holds, or holds only to rounding -- warm-up
   rows where the levels rest on one or two rows. The value was meaningless
