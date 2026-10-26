@@ -791,10 +791,10 @@ CASES: list[Case] = [
     ),
 ]
 
-#: Task 277 changes ``huber`` and ``sgd(loss="huber")`` (a converged
-#: warm-up refit, schema 64); until it merges they are not asserted here.
-#: Registering them is the one line ``CASES += AFTER_TASK_277``. Measured on
-#: main at 7bfc72b9 (2026-10-25): both already agree with the bank to the bit.
+#: Task 277 changed ``huber`` and ``sgd(loss="huber")`` (a converged
+#: warm-up refit, schema 64, with ``huber_refit_rows`` and ``refit_budget``);
+#: registered since it merged (task 278 (ff): the coverage test listed the
+#: two new keys as unused).
 AFTER_TASK_277: list[Case] = [
     Case(
         "huber",
@@ -813,6 +813,8 @@ AFTER_TASK_277: list[Case] = [
         ),
     ),
     Case("huber2", "huber", full2(max_rows_between_solves=4, ridge_scale="sum")),
+    # The refit is refused beside ridge_scale "sum", so a case of its own.
+    Case("huber3", "huber", full(huber_refit_rows=40, refit_budget=8)),
     Case(
         "sgd_huber",
         "sgd",
@@ -822,16 +824,15 @@ AFTER_TASK_277: list[Case] = [
             huber_scale="rms",
             huber_scale_half_life=40.0,
             learning_rate=0.01,
+            huber_refit_rows=40,
+            refit_budget=8,
         ),
     ),
 ]
-#: What waits for task 277: a kind by name, or a (kind, model key) pair.
-WAITING = {
-    "huber",
-    ("sgd", "huber_delta"),
-    ("sgd", "huber_scale"),
-    ("sgd", "huber_scale_half_life"),
-}
+CASES += AFTER_TASK_277
+#: What waits for a change in flight: a kind by name, or a (kind, model key)
+#: pair. Empty since task 277 merged.
+WAITING: set[str | tuple[str, str]] = set()
 
 
 # ---------------------------------------------------------------- comparing
@@ -1053,7 +1054,7 @@ def test_every_kind_and_key_is_covered():
     assert set(kinds) <= constructors, set(kinds) - constructors
     assert {c for c in constructors - helpers if c in kinds} == set(kinds)
     used: dict[str, set[str]] = {}
-    for c in CASES + AFTER_TASK_277:
+    for c in CASES:
         used.setdefault(c.builder, set()).update(c.kw)
     missing = []
     for kind, model_keys in sorted(kinds.items()):
