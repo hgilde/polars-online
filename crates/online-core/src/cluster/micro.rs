@@ -740,6 +740,13 @@ impl OnlineModel for Micro {
         self.since_prune.stamp_next(stamp);
     }
 
+    /// On the row clock the checkpoint's cadence counts from a row before
+    /// the first, so `prune_every = n` checkpoints on the row
+    /// `max_rows_between_prunes = n` does (task 278, D13).
+    fn stamp_next_on_rows(&mut self, stamp: crate::Stamp) {
+        self.since_prune.stamp_next_on_rows(stamp);
+    }
+
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
         // A value that is not usable, by the rule every model keeps
         // (`OnlineModel`): a feature or a weight past the input bound was
