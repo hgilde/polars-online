@@ -378,6 +378,16 @@ pub struct SgdCfg {
     /// was fitted without a refit, so it loads as 0 and goes on as it was.
     #[serde(default)]
     pub refit_rows: u32,
+    /// Whether `min_weight` holds the Huber scale's learning back as well
+    /// as the output, as it did before schema 64: a row it withheld had no
+    /// prediction, so its residual taught the scale nothing. A spec builds
+    /// `false`: the scale learns from the prediction the fit made, whether
+    /// or not `min_weight` withholds it, so a fit is the same with any
+    /// `min_weight`. A state written before schema 64 has no such field
+    /// and loads as `true`, going on to the bit
+    /// ([`crate::RobustCfg::gate_held_learning_before_64`]).
+    #[serde(default = "crate::RobustCfg::gate_held_learning_before_64")]
+    pub min_weight_holds_learning: bool,
     /// Whether the fit is drawn in the target's own units and gates an
     /// unstable rate (the module docs, *The target's own units* and *A
     /// rate past its stability bound*): the squared and Huber losses'
@@ -1736,9 +1746,15 @@ impl OnlineModel for Sgd {
             let Some(yj) = self.label(yj) else { continue };
             let d = self.dloss(p, yj, scale);
             // The row's own residual joins `s²` afterwards, from the
-            // prediction the row reports, as `huber`'s does: a row with no
-            // prediction (`min_weight` unmet) adds nothing.
-            if !self.sig2.is_empty() && predicted && p.is_finite() {
+            // prediction the fit made, as `huber`'s does, whether or not
+            // `min_weight` withholds it from the output, and whether or not
+            // the unstable rate's gate does. A state written before schema
+            // 64 learns only from a row `min_weight` lets through, so a row
+            // that gate withheld adds nothing there
+            // (`SgdCfg::min_weight_holds_learning`; docs/PLAN.md task 278,
+            // D10).
+            let scored = predicted || !self.cfg.min_weight_holds_learning;
+            if !self.sig2.is_empty() && scored && p.is_finite() {
                 let resid = yj - p;
                 let ws_new = self.wsig[j] + weight;
                 let s2 = (self.wsig[j] * self.sig2[j] + weight * resid * resid) / ws_new;
@@ -2061,6 +2077,7 @@ mod tests {
             huber_scale: crate::HuberScale::Rms,
             huber_scale_decay: None,
             refit_rows: 0,
+            min_weight_holds_learning: false,
             target_spread: false,
             mad_anchor: false,
         }
@@ -3660,7 +3677,9 @@ mod tests {
     /// `[3.8900811448866905, 0.6435315190771895, 4.854641183478482]`
     /// (squared), the digests `0x95a9_bba1_2435_1e24` and
     /// `0x5948_2068_29a3_3663`; `tests/reference_paths.py`'s `sgd_ref` under
-    /// `standardize`, on this stream, gives the new picks to 6e-16.
+    /// `standardize`, on this stream, gives the new picks to 6e-16. Under
+    /// the gate that held the scale's learning back, as every fit did then
+    /// and a state written before schema 64 goes on (task 278, D10).
     #[test]
     fn the_huber_and_squared_losses_did_not_move() {
         let run = |loss: SgdLoss| {
@@ -3669,6 +3688,7 @@ mod tests {
             cf.decay = Decay::Lam(0.9914);
             cf.learning_rate = 0.05;
             cf.min_weight = 3.0;
+            cf.min_weight_holds_learning = true;
             let mut m = Sgd::new(cf).unwrap();
             let mut s = 17u64;
             let mut h = 0xcbf2_9ce4_8422_2325u64;
@@ -3830,49 +3850,65 @@ mod tests {
     /// rows that carried the target, a weight above 0 and a prediction
     /// (the module docs): held to that mean from its definition, every
     /// qualifying row's weight aged by the clock since it, over irregular
-    /// steps and weights, null targets, zero weights and the rows before
-    /// `min_weight`, which add nothing.
+    /// steps and weights, null targets and zero weights. The rows before
+    /// `min_weight` add their residuals from the prediction the fit made,
+    /// which a twin at `min_weight = 0` reports (task 278, D10); under the
+    /// gate that held learning back (a state written before schema 64) they
+    /// add nothing.
     #[test]
     fn the_residual_variance_is_the_ew_mean_of_the_squared_residuals() {
-        let mut c = cfg(2, SgdLoss::Huber { delta: 1.345 });
-        c.decay = Decay::Halflife(20.0);
-        c.min_weight = 3.0;
-        let mut m = Sgd::new(c.clone()).unwrap();
-        let mut seen: Vec<(f64, f64)> = Vec::new();
-        let mut s = 7u64;
-        for i in 0..200 {
-            let x = [lcg(&mut s), lcg(&mut s)];
-            let y = (i % 9 != 4).then(|| 1.0 + x[0] - 2.0 * x[1] + 0.2 * lcg(&mut s));
-            let w = if i % 13 == 6 {
-                0.0
-            } else {
-                0.5 + lcg(&mut s).abs()
-            };
-            let d = if i == 0 { 0.0 } else { 1.0 + lcg(&mut s).abs() };
-            let lam = c.decay.factor(d);
-            let p = m.step(&x, &[y], d, w).pred[0];
-            for (_, wi) in seen.iter_mut() {
-                *wi *= lam;
+        for holds in [false, true] {
+            let mut c = cfg(2, SgdLoss::Huber { delta: 1.345 });
+            c.decay = Decay::Halflife(20.0);
+            c.min_weight = 3.0;
+            c.min_weight_holds_learning = holds;
+            let mut m = Sgd::new(c.clone()).unwrap();
+            let mut twin = Sgd::new(SgdCfg {
+                min_weight: 0.0,
+                ..c.clone()
+            })
+            .unwrap();
+            let mut seen: Vec<(f64, f64)> = Vec::new();
+            let mut withheld = 0;
+            let mut s = 7u64;
+            for i in 0..200 {
+                let x = [lcg(&mut s), lcg(&mut s)];
+                let y = (i % 9 != 4).then(|| 1.0 + x[0] - 2.0 * x[1] + 0.2 * lcg(&mut s));
+                let w = if i % 13 == 6 {
+                    0.0
+                } else {
+                    0.5 + lcg(&mut s).abs()
+                };
+                let d = if i == 0 { 0.0 } else { 1.0 + lcg(&mut s).abs() };
+                let lam = c.decay.factor(d);
+                let out = m.step(&x, &[y], d, w).pred[0];
+                let own = twin.step(&x, &[y], d, w).pred[0];
+                withheld += usize::from(out.is_nan() && own.is_finite());
+                let p = if holds { out } else { own };
+                for (_, wi) in seen.iter_mut() {
+                    *wi *= lam;
+                }
+                if let Some(yv) = y
+                    && w > 0.0
+                    && p.is_finite()
+                {
+                    seen.push(((yv - p) * (yv - p), w));
+                }
+                let total: f64 = seen.iter().map(|(_, wi)| wi).sum();
+                let want = if total > 0.0 {
+                    seen.iter().map(|(r2, wi)| r2 * wi).sum::<f64>() / total
+                } else {
+                    0.0
+                };
+                let got = m.sigma2()[0];
+                assert!(
+                    (got - want).abs() <= 1e-12 * want,
+                    "holds {holds}, row {i}: s² {got} against {want}"
+                );
             }
-            if let Some(yv) = y
-                && w > 0.0
-                && p.is_finite()
-            {
-                seen.push(((yv - p) * (yv - p), w));
-            }
-            let total: f64 = seen.iter().map(|(_, wi)| wi).sum();
-            let want = if total > 0.0 {
-                seen.iter().map(|(r2, wi)| r2 * wi).sum::<f64>() / total
-            } else {
-                0.0
-            };
-            let got = m.sigma2()[0];
-            assert!(
-                (got - want).abs() <= 1e-12 * want,
-                "row {i}: s² {got} against {want}"
-            );
+            assert!(seen.len() > 150, "{} rows taught it", seen.len());
+            assert!(withheld >= 2, "the gate withheld rows the fit predicted");
         }
-        assert!(seen.len() > 150, "{} rows taught it", seen.len());
     }
 
     /// Under `epsilon_insensitive` the tube's unit is its definition:
@@ -4070,6 +4106,8 @@ mod tests {
         c.n_targets = 2;
         c.decay = Decay::Lam(0.98);
         c.huber_scale = crate::HuberScale::Mad;
+        // Every prediction the scale learns from is reported.
+        c.min_weight = 0.0;
         let mut m = Sgd::new(c).unwrap();
         let mut kept: [Vec<(f64, f64)>; 2] = [Vec::new(), Vec::new()];
         let mut s = 41u64;
@@ -4146,6 +4184,10 @@ mod tests {
 #[cfg(test)]
 #[path = "sgd/refit_tests.rs"]
 mod refit_tests;
+
+#[cfg(test)]
+#[path = "sgd/gate_tests.rs"]
+mod gate_tests;
 
 #[cfg(test)]
 #[path = "sgd/target_spread_tests.rs"]

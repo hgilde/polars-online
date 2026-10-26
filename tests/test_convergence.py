@@ -339,10 +339,12 @@ START_AS_FRESH = {"pa"}
 #: Cells that fail on a defect: the reason, with its measurement.
 START_DEFECTS: dict[tuple[str, float], str] = {
     ("quantile", cv.INF): (
-        "defect (task 278 (a)): quantile's band is drawn in the root mean square of its "
-        "residuals, which without decay keeps the other regime's residuals for good: 0.137 "
-        "off the batch fit of every row at 32,000 rows (seed 41), against 0.00275 from a "
-        "fresh start"
+        "defect (task 278 (a), D-Q2): quantile without decay keeps the other regime's rows "
+        "in its mean-form sums at the weight they were learned at (least-squares rows in "
+        "its warm-up and its band), where the batch fit of every row reads them as "
+        "outliers; nothing but dilution takes them out: 0.142 off at 32,000 rows (seed 36), "
+        "against 0.00254 from a fresh start (2026-10-26, the band in the MAD; 0.137 in the "
+        "RMS before)"
     ),
 }
 
@@ -563,6 +565,9 @@ ADVERSE: dict[str, dict[tuple[str, float], float]] = {
     # 0.0129 and 0.0258, beside 0.0129 clean.
     "quantile": {
         ("t2", INF): 0.024,
+        # Measured 0.0178 (seed 45) on 2026-10-26, the band in the MAD (task
+        # 278, D-Q): in the RMS it was 0.143, a defect.
+        ("cauchy", INF): 0.024,
         ("outliers", 500.0): 0.02,
         ("wild", 500.0): 0.055,
         ("shift", 500.0): 0.02,
@@ -618,17 +623,17 @@ ADVERSE: dict[str, dict[tuple[str, float], float]] = {
     },
 }
 
-_QUANTILE_RMS = (
-    "defect (task 278 (a)): quantile's band is drawn in the root mean square of its "
-    "residuals, which without decay keeps the first rows' wild residuals for good, so the "
-    "band stays wide, the rows inside it are least-squares rows, and a wild row's step "
-    "grows with the scale: measured {} at 8,000 rows, three times its clean worst 0.024"
+_QUANTILE_KEPT = (
+    "defect (task 278 (a), D-Q2): quantile without decay keeps the rows its warm-up "
+    "took as least-squares rows (three a coefficient), and those its first bands held, in "
+    "its mean-form sums at full weight, where the batch fit reads them as outliers; "
+    "they leave only by dilution, as 1/n: measured {} at 8,000 rows (2026-10-26, the "
+    "band in the MAD), against a bound of three times its clean worst, 0.024"
 )
 ADVERSE_DEFECTS: dict[tuple[str, str, float], str] = {
-    ("quantile", "outliers", INF): _QUANTILE_RMS.format("0.165 (seed 1)"),
-    ("quantile", "wild", INF): _QUANTILE_RMS.format("4.08 (seed 47)"),
-    ("quantile", "shift", INF): _QUANTILE_RMS.format("0.097 (seed 18)"),
-    ("quantile", "cauchy", INF): _QUANTILE_RMS.format("0.143 (seed 36)"),
+    ("quantile", "outliers", INF): _QUANTILE_KEPT.format("0.038 (seed 21; 0.165 in the RMS)"),
+    ("quantile", "wild", INF): _QUANTILE_KEPT.format("0.20 (seed 33; 4.08 in the RMS)"),
+    ("quantile", "shift", INF): _QUANTILE_KEPT.format("0.093 (seed 34; 0.097 in the RMS)"),
     **{
         (key, "outliers", INF): (
             "defect (task 277): 20% wild rows in the first 500 rows, 40% of those with x0 "
@@ -1034,29 +1039,21 @@ def test_reconvergence_essential():
 
 BREAKDOWN_SHARES = (0.05, 0.10, 0.15, 0.20)
 BREAKDOWN_HALF_LIVES = (cv.INF, 5000.0)
-#: Measured 2026-10-25, 50 seeds at 20,000 rows: every seed captured at
-#: every share, without decay and at a half-life of 5,000 alike, the worst
-#: slope gap below; least squares, for scale, is pulled by about 2 at 5%.
-_MEASURED = {
-    (0.05, cv.INF): "0.098 (seed 39)",
-    (0.10, cv.INF): "0.285 (seed 41)",
-    (0.15, cv.INF): "0.567 (seed 47)",
-    (0.20, cv.INF): "0.980 (seed 31)",
-    (0.05, 5000.0): "0.094 (seed 39)",
-    (0.10, 5000.0): "0.279 (seed 29)",
-    (0.15, 5000.0): "0.573 (seed 45)",
-    (0.20, 5000.0): "0.987 (seed 8)",
-}
-BREAKDOWN_DEFECTS: dict[tuple[float, float], str] = {
-    cell: (
-        "defect (task 278 (a)): quantile draws its band in the root mean square of its "
-        "residuals, which the wild rows inflate (about 11 at 5% against a noise of 0.5), so "
-        "the band of 0.2 of it holds every clean row as a least-squares row and gives each "
-        "wild row a pull of the band's width: all 50 seeds captured, the worst slope "
-        f"{worst} from QuantReg's, the same at 80,000 rows as at 20,000"
-    )
-    for cell, worst in _MEASURED.items()
-}
+#: Measured 2026-10-26, 50 seeds at 20,000 rows, the band in the MAD (task
+#: 278, D-Q): no seed captured at any share, without decay or at a
+#: half-life of 5,000, the worst slope gap 0.0059 / 0.0068 / 0.0095 / 0.026
+#: at 5 / 10 / 15 / 20% without decay (seeds 31, 25, 36, 14) and 0.0041 /
+#: 0.0050 / 0.0069 / 0.012 at the half-life. In the RMS every seed was
+#: captured at every share (the worst 0.098 at 5%, 0.98 at 20%): the wild
+#: rows inflated the scale to about 11 against a noise of 0.5, the band held
+#: every clean row as a least-squares row and gave each wild row a pull of
+#: its width. Least squares, for scale, is pulled by about 2 at 5%.
+#: Re-measured with the sketch anchored (task 278, 2026-10-26): still none
+#: captured, the worst 0.0062 / 0.0075 / 0.0095 / 0.026 without decay and
+#: 0.0041 / 0.0049 / 0.0074 / 0.012 at the half-life; the Huber fits' grid
+#: below moved by at most 1.5e-4 in its worst gaps, its capture counts not
+#: at all.
+BREAKDOWN_DEFECTS: dict[tuple[float, float], str] = {}
 
 
 def _breakdown_params() -> list:
@@ -1079,18 +1076,13 @@ def test_quantile_is_never_captured_short_of_breakdown(share, half_life):
 
 
 def test_breakdown_essential():
-    """The representative cell, where the class holds today: a band ten times
-    narrower than the default (``quantile_eps = 0.02``) at 5% wild rows, ten
-    seeds. Measured 2026-10-25 over 50 seeds: none captured, the worst slope
-    gap 0.026 (seed 39); at 10% 12 of 50 were, and at 15% all, since the
-    root mean square scale still widens the band (the defect above)."""
-    narrow = dataclasses.replace(
-        cv.REGISTRY["quantile"],
-        build=cv._spec("quantile", quantile=0.5, solve_every=0.0, quantile_eps=0.02),
-    )
-    captured, t, wild = cv.captures(narrow, 0.05, 10, 20_000, cv.INF)
-    print(f"quantile, quantile_eps 0.02, 5% wild: {captured}/10; {t}")
-    assert wild > 500
+    """The representative cell: ``quantile`` at its defaults at 10% wild
+    rows, ten seeds. Measured 2026-10-26 over 50 seeds: none captured, the
+    worst slope gap 0.0068 (seed 25); in the root mean square scale, before
+    the band was drawn in the MAD, all 50 were (the worst 0.285)."""
+    captured, t, wild = cv.captures(cv.REGISTRY["quantile"], 0.10, 10, 20_000, cv.INF)
+    print(f"quantile, 10% wild: {captured}/10; {t}")
+    assert wild > 1000
     assert captured == 0, t
 
 

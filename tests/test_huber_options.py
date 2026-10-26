@@ -81,12 +81,15 @@ class TestFeatureSets:
             )
 
     def test_a_largest_set_short_of_every_feature_needs_the_same_min_weight(self):
-        """The largest set is the plain fit of its features to the bit when
-        it is every feature, or under one ``min_weight``: the default counts
-        every feature of the spec, a coefficient each with the intercept, so
-        a largest set short of them predicts later than a ``huber`` on its
-        features alone, its first Huber weights and scale differ, and the
-        two part until the decay forgets those rows (task 272 (e), R5-1)."""
+        """The largest set is the plain fit of its features to the bit: the
+        model's own floor counts the largest set's coefficients, and
+        ``min_weight`` withholds the output alone (task 278, D10). Under one
+        ``min_weight`` every field is the same; under each spec's default,
+        which counts every feature of the spec, a coefficient each with the
+        intercept, the wider spec withholds more rows, and the rows both
+        report are the same. Before, the gate held learning back too, so
+        the two parted until the decay forgot the first rows (task 272 (e),
+        R5-1)."""
         df = _frame()
         base = {k: v for k, v in COMMON.items() if k != "features"}
         sets = {"a": ["x0", "x1"], "b": ["x2"]}
@@ -102,14 +105,16 @@ class TestFeatureSets:
         for t in ("y0", "y1"):
             for a, b in ((f"pred_{t}__a", f"pred_{t}"), (f"huber_scale_{t}", f"huber_scale_{t}")):
                 assert np.array_equal(_field(wide, a), _field(alone, b), equal_nan=True), (t, a)
+        # Under each spec's default the wider one withholds more rows, and
+        # its gate withholds the output alone (task 278, D10): wherever both
+        # report, the same bits.
         wide, alone = pair()
         a, b = _field(wide, "pred_y0__a"), _field(alone, "pred_y0")
         first = lambda v: int(np.nonzero(np.isfinite(v))[0][0])  # noqa: E731
         assert first(a) > first(b), "the wider spec's default waits for more weight"
-        gap = np.abs(a - b)[first(a) :]
-        early, late = np.nanmax(gap[:50]), np.nanmax(gap[-200:])
-        assert early > 1e-3, early
-        assert late < early / 100, (early, late)
+        both = np.isfinite(a) & np.isfinite(b)
+        assert both.sum() > 500
+        assert np.array_equal(a[both], b[both])
 
     def test_each_set_is_weighed_by_the_largest_sets_residual(self):
         """A smaller set's fit is the weighted ridge fit of its features at
@@ -123,7 +128,11 @@ class TestFeatureSets:
         c.pop("coef_every")
         sets = {"one": ["x1"], "all": FEATURES}
         # The recursion below is the one pass: the refit (task 277) is off.
-        hub = dict(huber_scale="rms", huber_delta=1.345, ridge=1e-4, huber_refit_rows=0)
+        # Every prediction the fit learns from is reported: min_weight 0
+        # (it withholds the output alone, task 278, D10).
+        hub = dict(
+            huber_scale="rms", huber_delta=1.345, ridge=1e-4, huber_refit_rows=0, min_weight=0.0
+        )
         out = po.ModelBank([po.spec.huber("m", feature_sets=sets, **hub, **c)]).fit_predict(df)
         plain = po.ModelBank([po.spec.huber("m", **hub, **c)]).fit_predict(df)
         pred = _field(plain, "pred_y0")

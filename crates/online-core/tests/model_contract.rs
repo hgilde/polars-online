@@ -406,6 +406,7 @@ fn robust_cfg(loss: RobustLoss) -> RobustCfg {
         emit_scale: false,
         refit_rows: 0,
         mad_anchor: false,
+        min_weight_holds_learning: false,
     }
 }
 
@@ -477,6 +478,7 @@ fn sgd_cfg() -> SgdCfg {
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
         refit_rows: 0,
+        min_weight_holds_learning: false,
         target_spread: false,
         mad_anchor: false,
     }

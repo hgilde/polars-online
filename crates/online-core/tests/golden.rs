@@ -142,6 +142,7 @@ fn robust_cfg(loss: RobustLoss, standardize: bool) -> RobustCfg {
         emit_scale: false,
         refit_rows: 0,
         mad_anchor: false,
+        min_weight_holds_learning: false,
     }
 }
 
@@ -386,6 +387,7 @@ fn sgd_golden() {
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
         refit_rows: 0,
+        min_weight_holds_learning: false,
         target_spread: false,
         mad_anchor: false,
     })
@@ -413,6 +415,7 @@ fn sgd_squared_golden() {
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
         refit_rows: 0,
+        min_weight_holds_learning: false,
         target_spread: false,
         mad_anchor: false,
     })
@@ -464,6 +467,7 @@ fn sgd_simplex_golden() {
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
         refit_rows: 0,
+        min_weight_holds_learning: false,
         target_spread: false,
         mad_anchor: false,
     })
@@ -1603,9 +1607,9 @@ const GOLDEN_EW_RIDGE_ORIGIN_STD: &[f64] = &[
     -0.31464368574465446,
 ];
 const GOLDEN_HUBER_ORIGIN_STD: &[f64] = &[
-    -0.06544791008639866,
-    1.924195894463372,
-    -0.31922560537078165,
+    -0.06606160896249036,
+    1.9278207732957797,
+    -0.3195028239242011,
 ];
 // The three `kalman` signatures, regenerated 2026-10-06 (review 2026-10-05,
 // CC4): before a target's first residual its noise is the row's innovation
@@ -1667,11 +1671,7 @@ const GOLDEN_LASSO: &[f64] = &[
     2.1511829817060866,
     -0.06380197762074491,
 ];
-const GOLDEN_HUBER: &[f64] = &[
-    0.24786900553362573,
-    2.2047028651324143,
-    -0.06446675716780813,
-];
+const GOLDEN_HUBER: &[f64] = &[0.2431909931355622, 2.2046451423295514, -0.06491242691901175];
 // Regenerated 2026-09-26 (review, G2): the quantile nudge is bounded by the
 // row's leverage, which binds on this stream's early rows; the three values
 // moved by 1.4e-3, 1.3e-3 and 4e-4 of themselves, and the QuantReg oracles
@@ -1680,7 +1680,7 @@ const GOLDEN_HUBER: &[f64] = &[
 // Gram's diagonal; the early rows' band Gram is not diagonal, so the bound
 // they bind moved, and the three values by 5.1e-4, 4.6e-4 and 1.5e-3 of
 // themselves. The QuantReg oracles hold.
-const GOLDEN_QUANTILE: &[f64] = &[0.25710455741995175, 2.226788224665792, -0.02104718549249386];
+const GOLDEN_QUANTILE: &[f64] = &[0.2569661845683642, 2.2264188014755097, -0.02100641074469728];
 // Regenerated for the code review's C24 (2026-09-15), this and the next:
 // under a half-life the proximal term is a decayed sum of its own, where `n`
 // was decayed inside its square root and every coefficient shrank.
@@ -1717,9 +1717,9 @@ const GOLDEN_FTRL: &[f64] = &[0.4937166166955374, 0.5893822512193234, 0.45266254
 // -9.140859901712872e-5, 0.9626546015542387 and -0.09404195296589056, and
 // `sgd_ref` with the new rate gives the new ones to 1.2e-16.
 const GOLDEN_SGD: &[f64] = &[
-    -0.00016259422228694087,
-    0.9721184635694746,
-    -0.09328251505787867,
+    -0.038104258384859244,
+    0.9538283159665557,
+    -0.1118003974730884,
 ];
 const GOLDEN_SGD_SQUARED: &[f64] = &[
     0.31727038792368356,

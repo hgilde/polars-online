@@ -400,6 +400,7 @@ fn a_standardized_huber_keeps_the_slope_it_learned() {
         emit_scale: false,
         refit_rows: 0,
         mad_anchor: false,
+        min_weight_holds_learning: false,
     };
     holds(
         "huber",
@@ -474,6 +475,7 @@ fn sgd_predicts_the_same_at_every_level() {
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
         refit_rows: 0,
+        min_weight_holds_learning: false,
         target_spread: false,
         mad_anchor: false,
     };
@@ -690,6 +692,7 @@ fn a_held_target_leaves_no_slope_on_a_moving_feature() {
         emit_scale: false,
         refit_rows: 0,
         mad_anchor: false,
+        min_weight_holds_learning: false,
     };
     slopes_decay(
         "huber",
@@ -810,6 +813,7 @@ fn without_decay_a_stopped_feature_keeps_its_slope() {
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
         refit_rows: 0,
+        min_weight_holds_learning: false,
         target_spread: false,
         mad_anchor: false,
     };
@@ -922,6 +926,7 @@ fn a_state_saved_mid_hold_resumes_to_the_bit() {
             emit_scale: false,
             refit_rows: 0,
             mad_anchor: false,
+            min_weight_holds_learning: false,
         })
         .unwrap()
     });
@@ -961,6 +966,7 @@ fn a_state_saved_mid_hold_resumes_to_the_bit() {
             huber_scale: online_core::HuberScale::Rms,
             huber_scale_decay: None,
             refit_rows: 0,
+            min_weight_holds_learning: false,
             target_spread: false,
             mad_anchor: false,
         })
@@ -1145,6 +1151,7 @@ fn a_row_of_no_weight_moves_no_mean() {
             emit_scale: false,
             refit_rows: 0,
             mad_anchor: false,
+            min_weight_holds_learning: false,
         })
         .unwrap()
     });
@@ -1184,6 +1191,7 @@ fn a_row_of_no_weight_moves_no_mean() {
             huber_scale: online_core::HuberScale::Rms,
             huber_scale_decay: None,
             refit_rows: 0,
+            min_weight_holds_learning: false,
             target_spread: false,
             mad_anchor: false,
         })
@@ -1663,6 +1671,7 @@ fn quantile_cfg() -> RobustCfg {
         emit_scale: false,
         refit_rows: 0,
         mad_anchor: false,
+        min_weight_holds_learning: false,
     }
 }
 

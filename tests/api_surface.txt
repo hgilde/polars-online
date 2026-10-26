@@ -654,8 +654,10 @@
     model.huber_scale = "mad"
     model.huber_scale_decay = null
     model.loss.huber.delta = 1.345
+    model.mad_anchor = true
     model.max_rows_between_solves = 4294967295
     model.min_weight = 2.0
+    model.min_weight_holds_learning = false
     model.n_features = 1
     model.n_targets = 1
     model.quantile_eps = 0.001
@@ -815,11 +817,13 @@
     model.emit_scale = false
     model.feature_sets = []
     model.fit_intercept = true
-    model.huber_scale = "rms"
+    model.huber_scale = "mad"
     model.huber_scale_decay = null
     model.loss.quantile.tau = 0.5
+    model.mad_anchor = true
     model.max_rows_between_solves = 4294967295
     model.min_weight = 2.0
+    model.min_weight_holds_learning = false
     model.n_features = 1
     model.n_targets = 1
     model.quantile_eps = 0.2
@@ -901,7 +905,9 @@
     model.l2 = 0.0
     model.learning_rate = 0.01
     model.loss = "squared"
+    model.mad_anchor = true
     model.min_weight = 2.0
+    model.min_weight_holds_learning = false
     model.n_features = 1
     model.n_targets = 1
     model.refit_rows = 0
@@ -957,6 +963,7 @@
   marginal(bins=4, features=['x0'], half_life=50.0, targets=['y']), the lines that differ from marginal's:
     derived.bin_budget = 256.0
     model.bins.edges = null
+    model.bins.mad_anchor = true
     model.bins.n_bins = 4
     model.bins.rule = "quantile"
     model.bins.stat = "mean"

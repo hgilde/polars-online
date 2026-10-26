@@ -57,10 +57,11 @@ only as fast as its own dynamics forget the start, which
 The tables are plain dictionaries of builders so that they fold into the
 convergence harness's registry (one entry per model, its classes listed).
 ``huber`` and ``sgd(loss="huber")`` are in ``Y_SCALE`` with the refit of
-their first rows on (task 277); their MAD sketches keep ``|e|`` in units of
+their first rows on (task 277), and the ``quantile`` fits, whose band the
+same MAD draws (task 278, D-Q); their MAD sketches keep ``|e|`` in units of
 the first, so a decimal scale moves them by rounding too (task 278: on the
-fixed buckets it moved them by a bucket's resolution, up to 4e-3 of the
-target's spread).
+fixed buckets it moved the Huber fits by up to 4e-3 of the target's
+spread, and the quantile fits by up to 0.044).
 """
 
 from __future__ import annotations

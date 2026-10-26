@@ -3164,6 +3164,9 @@ class TestTheMadScaleIsNumpysWeightedMedian:
             half_life=cls.HALF_LIFE,
             emit_huber_scale=True,
             huber_refit_rows=0,
+            # Every residual the scale learns from is a prediction emitted:
+            # `min_weight` withholds the output alone.
+            min_weight=0.0,
         )
         out = po.ModelBank([spec]).fit_predict(pl.DataFrame({"x": x, "y": y}))
         return out.unnest("h")
