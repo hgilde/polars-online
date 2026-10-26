@@ -16287,7 +16287,7 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       `marginal(bin_stat="huber")`, captured by the same mechanism (2,000
       rows at 12%: 13 of 40 seeds with a bin more than 0.1 scale off, worst
       4.1), fixed in 1.4.0 too.
-- [ ] 278. **Convergence tests of every kind, before 1.4.0** -- the user,
+- [x] 278. **Convergence tests of every kind, before 1.4.0** -- the user,
       2026-10-25: "What additional tests should we do to catch all kinds of
       convergence issues", then "Do them all before 1.4". Task 277's capture
       was invisible to medians (0.001 at 12.5% while 13 of 40 seeds were
@@ -16498,7 +16498,7 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       slot's `target/` is cleared when its task is given back whenever free
       disk is under 100 GB, and `cargo-sweep` between tasks is to be weighed
       beside it. After the task 277/278 wave, so no slot rebuilds mid-task.
-- [ ] 280. **An oracle ledger: no drift from the oracles and datasets, no
+- [x] 280. **An oracle ledger: no drift from the oracles and datasets, no
       longer gate** -- the user, 2026-10-25: "After all the fixes we need a
       way not to drift from all the oracles and data sets for every
       parameter test. But we do not want to run more very long tests in the
@@ -16519,3 +16519,22 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       selection runs a changed model's cases only. (4) A weekly full sweep,
       and any bump of an oracle library or dataset in `uv.lock` re-runs
       everything.
+      *Done 2026-10-26*: `oracles.toml` (59 groups, 755 cases; counts held
+      exactly), `scripts/oracles.py check|apply|raises|rerun`, the Oracles
+      workflow's ledger job and weekly sweep, the gate's hash guard (~11 s);
+      NIST StRD and TCPD in the grids' CI job; seed-grid twins of five
+      single-seed second opinions. Open until the first CI run: whether Linux
+      and Windows share the macOS hashes.
+- [ ] 281. **Task 278's follow-ups, after 1.4.0** -- recorded 2026-10-26.
+      (1) The stream's own anchored MAD sketch is anchored at its first
+      residual, so with the refit off a tiny first residual carries the
+      level's rounding into the scale (none of 50 streams hit it; the refit,
+      on by default, re-anchors at the residuals' median size); an anchoring
+      rule over a few values needs state. (2) `refresh_time(pairs=True)` with
+      a `head(n)` ending among one tick's pairs loses the rest of that tick
+      on resume (documented, pinned); keeping them is a layout change. (3)
+      `kalman`'s covariance form loses digits at a huge prior (4.2e-6 off
+      least squares at `p0=1e12`; documented): a square-root or Joseph form.
+      (4) The fixture index and shared test-case registry generated rather
+      than appended to, so new fixtures stop conflicting between branches.
+      (5) `spec.rs` sits at 249.9 KB of the 250 KB cap: split a seam.
