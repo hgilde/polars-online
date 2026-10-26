@@ -189,6 +189,7 @@ def audit(
     The stream parameters are in :mod:`polars_online.spec`: ``clock``,
     ``gap_cap`` (required with a ``clock``, as for every spec, and the line
     a gap is counted at), ``group``, ``session`` and the rest.
+    ``fit_intercept`` has nothing to act on, as there is no regression.
     ``half_life`` and ``lam`` are refused, since nothing decays. So is
     ``weight``, since a value is a value whatever its row weighs: to audit a
     weight column, list it in ``columns``. (The Rust model takes a weight
