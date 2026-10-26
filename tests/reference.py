@@ -1131,7 +1131,13 @@ def robust_ref(
     :class:`EwMedian` of ``|e|`` over ``Φ⁻¹(3/4)`` per target, fed and aged as
     ``sigma2_j`` is, or ``"rms"``, ``sqrt(sigma2_j)``; both age on
     ``huber_scale_half_life``, the model's ``half_life`` unless given (task
-    271). The quantile band reads ``sigma2_j`` on the model's clock.
+    271). The quantile band reads the same MAD, on the model's clock (task
+    278, D-Q).
+
+    ``min_weight`` withholds the output alone: the model's own prediction,
+    from the fit solved after every row from the first, is what its
+    statistics fold, from the row its target has been present on a row per
+    coefficient with weight, the model's own floor, on (task 278, D10).
 
     Both losses read each row's *prior* residual, so both stay out-of-sample;
     what they do with it is :func:`_row_update`'s. Because the weights are per
@@ -1187,6 +1193,9 @@ def robust_ref(
             # The same rows counted one each: what the warm-up and the band's
             # floor read (task 147).
             "nobs": np.zeros(m),
+            # The rows with weight each target was present on, to the
+            # model's floor of a row per coefficient.
+            "seen": np.zeros(m),
             "sig2": np.zeros(m),
             "wsig": np.zeros(m),
             "mad": [EwMedian() for _ in range(m)],
@@ -1209,19 +1218,20 @@ def robust_ref(
         st["pending"] = 0.0
         lam = 0.5 ** (d / half_life)
         lam_s = lam if huber_scale_half_life is None else 0.5 ** (d / huber_scale_half_life)
-        mad = loss == "huber" and huber_scale == "mad"
+        mad = loss == "quantile" or huber_scale == "mad"
 
         weight_sum[i] = st["w_raw"]
-        ready = st["w_raw"] >= min_weight and st["beta"] is not None
-        # The model's own prediction, which its own statistics fold; what is
-        # emitted waits, besides, for each target's own weight (review
-        # 2026-09-12, S2) -- a gate on the output, not on the model.
+        ready = st["w_raw"] >= min_weight
+        # The model's own prediction, which its own statistics fold whatever
+        # `min_weight` says; what is emitted waits for the weight, and for
+        # each target's own (review 2026-09-12, S2) -- a gate on the output,
+        # not on the model.
         p_own = np.full(m, np.nan)
-        if ready:
+        if st["beta"] is not None:
             for j in range(m):
-                if st["wj"][j] > 0.0:
+                if st["wj"][j] >= np.finfo(float).tiny and st["seen"][j] >= kt:
                     p_own[j] = z @ st["beta"][j]
-                    if st["wobs"][j] >= min_weight:
+                    if ready and st["wobs"][j] >= min_weight:
                         pred[i, j] = p_own[j]
                         if not np.isnan(Y[i, j]):
                             resid[i, j] = Y[i, j] - pred[i, j]
@@ -1241,6 +1251,8 @@ def robust_ref(
                 continue
             st["wobs"][j] = present + (w[i] if w[i] > 0.0 else 0.0)
             st["nobs"][j] = rows + (1.0 if w[i] > 0.0 else 0.0)
+            if w[i] > 0.0:
+                st["seen"][j] = min(st["seen"][j] + 1.0, kt)
             # The residual scale exists once it is finite and above 0.
             s2 = st["sig2"][j]
             scale = float(np.sqrt(s2)) if 0.0 < s2 < np.inf else None

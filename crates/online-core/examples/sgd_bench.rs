@@ -34,6 +34,7 @@ fn cfg(k: usize, scale: bool, schedule: LearningRate, l2: f64) -> SgdCfg {
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
         refit_rows: 0,
+        min_weight_holds_learning: false,
         target_spread: false,
     }
 }

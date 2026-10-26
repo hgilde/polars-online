@@ -554,7 +554,13 @@ def switched_signature() -> dict[str, float | str | None]:
 #: inside the warm-up of a half-life of 25, are the line fit's, where the
 #: weighted means pinned the trend to the first observation; ``holt.rs``'s
 #: ``reference`` holds the step to its definition, ``tests/test_second_opinion.py``
-#: to statsmodels' ``WLS`` and ``Holt``; nothing else moved.
+#: to statsmodels' ``WLS`` and ``Holt``; nothing else moved. Task 278 (D-Q,
+#: D10; 2026-10-26) moved 8, ``huber``'s and ``quantile``'s at rows 60 and
+#: 119: ``quantile`` draws its band in the MAD, and ``min_weight`` withholds
+#: their output alone, the fit learning from its own prediction from the
+#: row its target holds a row per coefficient. The largest move 8.5e-3 of
+#: ``1 + |v|`` (``quantile.pred_y0@60``); ``robust_ref`` holds both to every
+#: row (``tests/test_oracles.py``); nothing else moved.
 GOLDEN: dict[str, float | str | None] = {
     "ridge.pred_y0__r0.000001@25": -4.684371132566456,
     "ridge.pred_y0__r0.000001@60": -0.25563207972202284,
@@ -662,11 +668,11 @@ GOLDEN: dict[str, float | str | None] = {
     "lasso.penalty_selected_y0@60": 0.0,
     "lasso.penalty_selected_y0@119": 0.0,
     "huber.pred_y0@25": -4.684375830329454,
-    "huber.pred_y0@60": -0.2539548816049366,
-    "huber.pred_y0@119": -0.1595742266777896,
+    "huber.pred_y0@60": -0.25293946135032397,
+    "huber.pred_y0@119": -0.15958072404404175,
     "huber.resid_y0@25": -0.16722999390526194,
-    "huber.resid_y0@60": -0.21808624721214132,
-    "huber.resid_y0@119": 0.10887545571956075,
+    "huber.resid_y0@60": -0.21910166746675397,
+    "huber.resid_y0@119": 0.10888195308581292,
     "huber.weight_sum@25": 7.999488060097996,
     "huber.weight_sum@60": 12.473100285951407,
     "huber.weight_sum@119": 15.110060335371337,
@@ -677,11 +683,11 @@ GOLDEN: dict[str, float | str | None] = {
     "huber.withheld_reason@60": None,
     "huber.withheld_reason@119": None,
     "quantile.pred_y0@25": -4.684375830329454,
-    "quantile.pred_y0@60": -0.23984991107486686,
-    "quantile.pred_y0@119": -0.112730473020879,
+    "quantile.pred_y0@60": -0.2293427926658813,
+    "quantile.pred_y0@119": -0.10882890982485736,
     "quantile.resid_y0@25": -0.16722999390526194,
-    "quantile.resid_y0@60": -0.23219121774221108,
-    "quantile.resid_y0@119": 0.06203170206265017,
+    "quantile.resid_y0@60": -0.24269833615119663,
+    "quantile.resid_y0@119": 0.05813013886662853,
     "quantile.weight_sum@25": 7.999488060097996,
     "quantile.weight_sum@60": 12.473100285951407,
     "quantile.weight_sum@119": 15.110060335371337,
