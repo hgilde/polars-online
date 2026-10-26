@@ -1048,6 +1048,11 @@ BREAKDOWN_HALF_LIVES = (cv.INF, 5000.0)
 #: rows inflated the scale to about 11 against a noise of 0.5, the band held
 #: every clean row as a least-squares row and gave each wild row a pull of
 #: its width. Least squares, for scale, is pulled by about 2 at 5%.
+#: Re-measured with the sketch anchored (task 278, 2026-10-26): still none
+#: captured, the worst 0.0062 / 0.0075 / 0.0095 / 0.026 without decay and
+#: 0.0041 / 0.0049 / 0.0074 / 0.012 at the half-life; the Huber fits' grid
+#: below moved by at most 1.5e-4 in its worst gaps, its capture counts not
+#: at all.
 BREAKDOWN_DEFECTS: dict[tuple[float, float], str] = {}
 
 

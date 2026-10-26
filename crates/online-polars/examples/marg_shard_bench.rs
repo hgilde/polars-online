@@ -112,6 +112,7 @@ fn main() {
                 warm_rows: num("warm", 200),
                 stat: online_core::BinStat::Mean,
                 budget_mib: None,
+                mad_anchor: false,
             })
         }),
         feature_moments: online_core::FeatureMomentLayout::PerTarget,

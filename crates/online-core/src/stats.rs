@@ -89,6 +89,27 @@ pub const MAX_BAND_OCTAVES: u32 = 2048;
 /// of it. (A rescale sums the end buckets in another grouping than the
 /// unbounded sketch's walk does, so a level whose share of the total falls
 /// within a rounding of a bucket's edge can read the next bucket.)
+///
+/// **The anchor.** The bucket edges are fixed points of `log2 v`'s
+/// piecewise-linear interpolation, which only a power of two maps onto
+/// itself. So values scaled by any other factor `c` regroup across the
+/// edges, and the quantile read moves by up to a bucket, `1.6%`, where it
+/// should move by `c`. No read of the buckets alone can avoid this: with a
+/// single value `v`, a read is a function of `v`'s bucket, a step function
+/// whose steps sit at the edges, while `c` times it has its steps at the
+/// edges over `c`. Reading within the bucket does not avoid it either: near
+/// a median of a few hundred rows' weight a bucket holds one or two values,
+/// and one value crossing an edge moves half that bucket's weight. An
+/// anchored sketch ([`EwQuantile::anchored`]) instead buckets `v / a`, where
+/// `a` is the first value it takes at a weight above 0 and above the
+/// smallest normal float, and reads `a` times the bucket's representative.
+/// Scaled by `c`, every ratio is the same to a rounding of the division, so
+/// every value lands in the same bucket unless its ratio is within a
+/// rounding of an edge, and the read is `c` times the unscaled one to
+/// rounding. A power of two divides out exactly, so the read stays bitwise
+/// `c` times there, as unanchored. The bound `α` holds as it is: the read is
+/// within `α` of the quantile of the ratios, times `a`. A division and a
+/// multiplication, with no libm result in the state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EwQuantile {
     /// The levels reported, each in (0, 1).
@@ -112,6 +133,15 @@ pub struct EwQuantile {
     /// Last, so the array encoding of a sketch without it is unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     band: Option<u32>,
+    /// An anchored sketch's anchor ([`EwQuantile`]'s "The anchor"): `None`
+    /// buckets each value as it is, every sketch saved without the field;
+    /// `Some(0.0)` buckets in units of the first value it takes, which has
+    /// not come; `Some(a)` buckets `v / a`. Only a bounded sketch is
+    /// anchored, so the field is present only where `band` is, and the
+    /// array encoding never reads it in `band`'s place: the two skip
+    /// together, the anchor last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    anchor: Option<f64>,
 }
 
 impl EwQuantile {
@@ -135,6 +165,7 @@ impl EwQuantile {
             at: vec![None; n],
             below: vec![0.0; n],
             band: None,
+            anchor: None,
         }
     }
 
@@ -151,10 +182,25 @@ impl EwQuantile {
         Ok(q)
     }
 
+    /// A bounded sketch that buckets its values in units of the first it
+    /// takes ([`EwQuantile`]'s "The anchor"), so its quantiles scale with
+    /// the values to rounding at any factor.
+    pub fn anchored(levels: &[f64], octaves: u32) -> Result<Self, String> {
+        let mut q = Self::bounded(levels, octaves)?;
+        q.anchor = Some(0.0);
+        Ok(q)
+    }
+
     /// The octaves a bounded sketch keeps either side of its levels'
     /// buckets; `None` for an unbounded one.
     pub fn band(&self) -> Option<u32> {
         self.band
+    }
+
+    /// An anchored sketch's anchor: `Some(0.0)` before its first value,
+    /// `Some(a)` after; `None` for a sketch that buckets values as they are.
+    pub fn anchor(&self) -> Option<f64> {
+        self.anchor
     }
 
     /// Whether a restored sketch can be read and added to: a pointer and a
@@ -190,6 +236,9 @@ impl EwQuantile {
             && self
                 .band
                 .is_none_or(|k| (1..=MAX_BAND_OCTAVES).contains(&k))
+            && self.anchor.is_none_or(|a| {
+                self.band.is_some() && (a == 0.0 || (a >= f64::MIN_POSITIVE && a.is_finite()))
+            })
     }
 
     /// The levels this sketch reports, in the order [`EwQuantile::get`]
@@ -431,6 +480,7 @@ impl EwQuantile {
             return;
         }
         let s = w / self.scale;
+        let v = self.in_anchor_units(v);
         let at = if v < f64::MIN_POSITIVE {
             self.zero += s;
             None
@@ -479,6 +529,27 @@ impl EwQuantile {
         }
     }
 
+    /// `v` in the units the buckets are kept in: itself unanchored, and
+    /// over the anchor anchored, the anchor first set to `v` if this is the
+    /// first value that counts. A value below the smallest normal float
+    /// counts as 0 and sets nothing, as does one the caller does not add (a
+    /// weight of 0, hard rule 9); a ratio past the largest float counts in
+    /// the top bucket, and one below the smallest normal as 0.
+    fn in_anchor_units(&mut self, v: f64) -> f64 {
+        match self.anchor {
+            Some(a) if v >= f64::MIN_POSITIVE => {
+                let a = if a > 0.0 {
+                    a
+                } else {
+                    self.anchor = Some(v);
+                    v
+                };
+                (v / a).min(f64::MAX)
+            }
+            _ => v,
+        }
+    }
+
     /// Room for `more` buckets. A bounded sketch takes exactly that, so it
     /// allocates no more buckets than its band spans, which is what a memory
     /// budget counts for it ([`Self::one_level_buckets`]): grown as a vector
@@ -520,18 +591,24 @@ impl EwQuantile {
         if self.total <= 0.0 || self.total.is_nan() {
             return None;
         }
-        Some(match self.at[l] {
+        let q = match self.at[l] {
             None => 0.0,
             Some(k) => Self::representative(k),
+        };
+        Some(match self.anchor {
+            Some(a) if a > 0.0 => q * a,
+            _ => q,
         })
     }
 
     /// Back to no weight, at the same levels: valid, since `new` checked
     /// them and a restore holds a sketch to [`Self::has_shape`].
     pub fn reset(&mut self) {
-        let band = self.band;
+        let (band, anchored) = (self.band, self.anchor.is_some());
         *self = Self::empty(std::mem::take(&mut self.levels));
         self.band = band;
+        // An anchored sketch waits for its next first value.
+        self.anchor = anchored.then_some(0.0);
     }
 
     /// The bytes this sketch takes, its fields and what each vector has
@@ -1596,6 +1673,9 @@ mod tests {
 
 #[cfg(test)]
 mod band_tests;
+
+#[cfg(test)]
+mod anchor_tests;
 
 #[cfg(test)]
 mod metric_tests {

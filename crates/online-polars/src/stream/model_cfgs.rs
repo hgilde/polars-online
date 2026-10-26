@@ -548,6 +548,10 @@ pub fn huber_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 online_core::default_refit_rows(spec.k())
             },
         ),
+        // Each MAD sketch in units of its first residual, so the scale
+        // moves with a rescaled target to rounding; a state written
+        // without it loads with it off.
+        mad_anchor: true,
         min_weight_holds_learning: false,
     };
     let mut m = Robust::new(cfg)?;
@@ -626,6 +630,8 @@ pub fn quantile_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         ridge_scale: false,
         emit_scale: false,
         refit_rows: 0,
+        // No sketch under the RMS band; anchored once a sketch is kept.
+        mad_anchor: true,
         min_weight_holds_learning: false,
     };
     let mut m = Robust::new(cfg)?;
@@ -729,6 +735,8 @@ pub fn sgd_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         // D1, D2, D8, D-S), always on from a spec; a state written before
         // them loads with them off.
         target_spread: true,
+        // `huber`'s anchored MAD sketch under the Huber loss.
+        mad_anchor: true,
     };
     Ok(AnyModel::Sgd(Box::new(Sgd::new(cfg)?)))
 }
