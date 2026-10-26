@@ -1171,26 +1171,20 @@ class TestScaleFloor:
 class TestThePruneSchedule:
     """``prune_every`` and ``max_rows_between_prunes`` against each other.
 
-    The clock is measured from the stream's first row, whose step is 0;
-    without a clock column the clock is the row's number, counted from 0.
-    So ``prune_every=n`` first checkpoints when ``n`` units have passed,
-    on the row after the ``n``-th, while ``max_rows_between_prunes=n``
-    checkpoints on the ``n``-th learned row; after the first, both restart
-    on the row that checkpointed and keep the same spacing, one row apart.
-    A zero-weight row in front moves the clock's origin one row back, which
-    is the whole of the phase.
+    Without a clock column the clock is the row's number, the first row
+    being 1, so the model's start is a row before its first row, as
+    ``coef_every`` counts. ``prune_every=n`` then first checkpoints on the
+    ``n``-th row, the row ``max_rows_between_prunes=n`` checkpoints on, and
+    both restart on the row that checkpointed: on the row clock the two are
+    the same schedule, as ``solve_every`` and ``max_rows_between_solves``
+    are, while every row learns. A zero-weight row is a row of the clock
+    and no row of the cap, so after one the clock checkpoints a row before
+    the cap.
 
-    That is a defect (task 278 b22, D13), pinned here as today's behaviour
-    with the intended equivalence a strict xfail: the docstring schedules
-    the checkpoint "as ``solve_every`` and ``max_rows_between_solves``
-    schedule a regression's solve", and on the row clock every other
-    cadence's ``X_every=n`` is its row cap ``max_rows_between_X=n`` --
-    ``coef_every`` by its origin one row before the first, ``ewridge``'s
-    solves and ``ew_cov``'s components because their first event, at the
-    start, restarts both counters. ``micro`` has no event at the start, so
-    its phase lasts the whole stream, and ``prune_every=100`` is not the
-    default's every 100 learned rows. The fix belongs to the clock's origin
-    on the row clock (the stream's, as ``coef_every``'s), not to the model.
+    Measured from the first row, whose step is 0, the clock once
+    checkpointed a row after the cap, the whole stream long, since
+    ``micro`` has no event at its start to restart both counters (task 278
+    b22, D13; fixed by the row clock's origin).
     """
 
     @staticmethod
@@ -1221,55 +1215,44 @@ class TestThePruneSchedule:
         s = spec(eps=0.1, half_life=300.0, min_weight=3.0, weight="w", **kw)
         return unnested(po.ModelBank([s]).fit_predict(df))
 
-    def test_the_clock_checkpoints_a_row_after_the_learned_rows(self):
-        # Today's behaviour (D13).
+    def test_the_clock_checkpoints_on_the_learned_rows_cap(self):
         df = self.stream(n=30)
-        assert self.checkpoints(df, prune_every=7) == [7, 14, 21, 28]
+        assert self.checkpoints(df, prune_every=7) == [6, 13, 20, 27]
         assert self.checkpoints(df, max_rows_between_prunes=7) == [6, 13, 20, 27]
-        # Both given: whichever comes first, so the learned rows'.
         assert self.checkpoints(df, prune_every=7, max_rows_between_prunes=7) == [6, 13, 20, 27]
-        # A zero-weight row in front: the same rows for both.
+        # A zero-weight row in front is a row of the clock and none of the
+        # cap: the clock's first checkpoint comes a row before the cap's,
+        # and both then keep the same spacing.
         lead = self.stream(n=30, lead=True)
-        assert self.checkpoints(lead, prune_every=7) == [7, 14, 21, 28]
+        assert self.checkpoints(lead, prune_every=7) == [6, 13, 20, 27]
         assert self.checkpoints(lead, max_rows_between_prunes=7) == [7, 14, 21, 28]
+        assert self.checkpoints(lead, prune_every=7, max_rows_between_prunes=7) == [6, 13, 20, 27]
 
-    def test_a_leading_zero_weight_row_makes_the_two_equal(self):
-        # Today's behaviour (D13): the phase is the first row's step of 0.
-        plain, lead = self.stream(), self.stream(lead=True)
-        for n in (7, 100):
-            # Without it they differ in every field the checkpoint reaches.
-            moved = _differ(
-                self.run(plain, prune_every=n), self.run(plain, max_rows_between_prunes=n)
-            )
-            assert {"cluster", "micro_id", "n_micro"} <= set(moved), n
-            # With it, identical.
-            assert (
-                _differ(self.run(lead, prune_every=n), self.run(lead, max_rows_between_prunes=n))
-                == []
-            ), n
-            # And the stream without it, on the learned rows, is the stream
-            # with it on the clock: the zero-weight row learns nothing. It
-            # is one clock unit of age, which `settled_frac` alone reads.
-            assert _differ(
-                self.run(plain, max_rows_between_prunes=n), self.run(lead, prune_every=n).slice(1)
-            ) == ["settled_frac"], n
-        # So prune_every=100 is the default (every 100 learned rows) exactly
-        # when a zero-weight row leads.
-        assert _differ(self.run(lead, prune_every=100), self.run(lead)) == []
-        assert _differ(self.run(plain, prune_every=100), self.run(plain)) != []
-
-    @pytest.mark.xfail(
-        strict=True,
-        reason="D13 (task 278 b22): on the row clock prune_every=n checkpoints a row after "
-        "max_rows_between_prunes=n, where every other cadence equals its row cap",
-    )
     def test_on_the_row_clock_prune_every_is_its_row_cap(self):
         df = self.stream()
         for n in (7, 100):
             assert (
                 _differ(self.run(df, prune_every=n), self.run(df, max_rows_between_prunes=n)) == []
-            )
+            ), n
+        # So prune_every=100 is the default, every 100 learned rows.
         assert _differ(self.run(df, prune_every=100), self.run(df)) == []
+
+    def test_a_leading_zero_weight_row_is_a_row_of_the_clock_alone(self):
+        plain, lead = self.stream(), self.stream(lead=True)
+        for n in (7, 100):
+            # On the cap, the stream with it is the stream without it, on
+            # the learned rows: the zero-weight row learns nothing and is no
+            # row of the cap. It is one clock unit of age, which
+            # `settled_frac` alone reads.
+            assert _differ(
+                self.run(plain, max_rows_between_prunes=n),
+                self.run(lead, max_rows_between_prunes=n).slice(1),
+            ) == ["settled_frac"], n
+            # On the clock it moves every checkpoint a row earlier.
+            moved = _differ(
+                self.run(lead, prune_every=n), self.run(lead, max_rows_between_prunes=n)
+            )
+            assert {"cluster", "micro_id", "n_micro"} <= set(moved), n
 
     def test_every_row_two_ways_and_the_default_spelled_out(self):
         df = self.stream()

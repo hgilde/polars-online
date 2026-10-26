@@ -37,7 +37,8 @@ pub(crate) struct Since {
     /// before the first, the model's start -- its first stamped row's stamp
     /// less that row's own step ([`back_by`]), which in a stream is the
     /// row's stamp whenever the stream's first row is learned, its step
-    /// being 0. `None` until a stamped row.
+    /// being 0; on the row clock, one row before that
+    /// ([`Self::stamp_next_on_rows`]). `None` until a stamped row.
     from: Option<Stamp>,
     /// The stamp of the row last stepped, `None` where it had none: what an
     /// event at that row starts the clock from, and an event between two
@@ -51,6 +52,11 @@ pub(crate) struct Since {
     /// nothing is pending between two rows.
     #[serde(skip)]
     next: Option<Stamp>,
+    /// Whether the next row's stamp is on the row clock
+    /// ([`Self::stamp_next_on_rows`]), which [`Self::step`] takes with it.
+    /// Never state, as `next` is not.
+    #[serde(skip)]
+    next_on_rows: bool,
 }
 
 impl Since {
@@ -58,6 +64,20 @@ impl Since {
     /// [`Self::step`] to take.
     pub(crate) fn stamp_next(&mut self, stamp: Stamp) {
         self.next = Some(stamp);
+        self.next_on_rows = false;
+    }
+
+    /// [`Self::stamp_next`] on the row clock, a stream with no clock column,
+    /// where each row is one clock unit and the first row is 1: the model's
+    /// start is a row before its first row, as `coef_every` counts it
+    /// (task 278, D13). So, before the first event, a cadence of `n` units
+    /// is reached on the `n`-th row, the row a cap of `n` rows reaches,
+    /// where measured from the first row, whose step is 0, it was reached a
+    /// row later, and that phase lasted the whole stream for a model with no
+    /// event at its start (`micro`'s checkpoints).
+    pub(crate) fn stamp_next_on_rows(&mut self, stamp: Stamp) {
+        self.next = Some(stamp);
+        self.next_on_rows = true;
     }
 
     /// One row stepped, `d_clock` after the last, at the stamp
@@ -65,8 +85,11 @@ impl Since {
     pub(crate) fn step(&mut self, d_clock: f64) {
         self.summed += d_clock;
         self.last = self.next.take();
+        let on_rows = std::mem::take(&mut self.next_on_rows);
         if let (None, Some(now)) = (self.from, self.last) {
-            self.from = Some(back_by(now, self.summed));
+            // On the row clock the start is one row further back.
+            let lead = if on_rows { 1.0 } else { 0.0 };
+            self.from = Some(back_by(now, self.summed + lead));
         }
     }
 
@@ -114,6 +137,21 @@ pub(crate) fn events_on_millisecond_rows(
             let stamp = stamped.then(|| Stamp::Ns(i as i128 * 1_000_000));
             step(i, stamp, if i == 0 { 0.0 } else { ms })
         })
+        .collect()
+}
+
+/// For a model's own test (task 278, D13): rows `0..n` on the row clock --
+/// row `i` stamped `Raw(i, 0)`, a step of 1 after a first of 0, as the
+/// stream stamps a stream with no clock column -- through `step(row, stamp,
+/// d_clock)`, which hands the stamp, steps the model and says whether the
+/// row was an event; the rows that were.
+#[cfg(test)]
+pub(crate) fn events_on_the_row_clock(
+    n: usize,
+    mut step: impl FnMut(usize, Stamp, f64) -> bool,
+) -> Vec<usize> {
+    (0..n)
+        .filter(|&i| step(i, Stamp::Raw(i as f64, 0.0), if i == 0 { 0.0 } else { 1.0 }))
         .collect()
 }
 
@@ -175,7 +213,13 @@ mod tests {
     #[test]
     fn pca_every_measures_the_stamps_it_is_handed() {
         use crate::{Decay, EwCovCfg, EwCovModel, OnlineModel};
-        for (stamped, want) in [(true, [1, 2001, 4001]), (false, [1, 2002, 4003])] {
+        // `ew_cov` takes a row-clock stamp through the trait's default
+        // (task 278, D13), as any stamp: its first refresh starts the clock.
+        for (stamped, on_rows, want) in [
+            (true, false, [1, 2001, 4001]),
+            (true, true, [1, 2001, 4001]),
+            (false, false, [1, 2002, 4003]),
+        ] {
             let mut m = EwCovModel::new(EwCovCfg {
                 bias: false,
                 n_features: 2,
@@ -197,8 +241,10 @@ mod tests {
             // which only a refresh moves (its score is the row's own).
             let mut frozen: Vec<Vec<u64>> = Vec::new();
             events_on_millisecond_rows(4_100, stamped, |i, stamp, d| {
-                if let Some(s) = stamp {
-                    m.stamp_next(s);
+                match stamp {
+                    Some(s) if on_rows => m.stamp_next_on_rows(s),
+                    Some(s) => m.stamp_next(s),
+                    None => {}
                 }
                 let a = ((i * 37) % 101) as f64 / 101.0;
                 let x = [a, 2.0 * a + ((i * 11) % 7) as f64 / 70.0];
@@ -209,7 +255,7 @@ mod tests {
             let got: Vec<usize> = (0..frozen.len() - 1)
                 .filter(|&t| frozen[t] != frozen[t + 1])
                 .collect();
-            assert_eq!(got, want, "stamped: {stamped}");
+            assert_eq!(got, want, "stamped: {stamped}, on rows: {on_rows}");
         }
     }
 
@@ -306,6 +352,58 @@ mod tests {
             back_by(Stamp::Ns(MS), f64::INFINITY),
             Stamp::Raw(f64::NEG_INFINITY, 0.0)
         );
+    }
+
+    /// Task 278, D13: on the row clock (stamps `Raw(i, 0)`, steps of 1 after
+    /// a first of 0) the start is a row before the first, so a cadence of
+    /// `n` fires on the `n`-th, `2n`-th, ... row, the rows a cap of `n` rows
+    /// reaches (0-based `n - 1`, `2n - 1`, ...); stamped as any clock, the
+    /// row after. Past a skipped first row the start is still a row before
+    /// the stream's first: a cadence of 3 is reached on the third row
+    /// counted from it, skipped rows included, as `coef_every` counts.
+    #[test]
+    fn on_the_row_clock_the_start_is_a_row_before_the_first() {
+        let rows = |on_rows: bool, n: usize, every: f64| {
+            let mut since = Since::default();
+            let mut got = Vec::new();
+            for i in 0..n {
+                let stamp = Stamp::Raw(i as f64, 0.0);
+                if on_rows {
+                    since.stamp_next_on_rows(stamp);
+                } else {
+                    since.stamp_next(stamp);
+                }
+                since.step(if i == 0 { 0.0 } else { 1.0 });
+                if since.reached(every) {
+                    got.push(i);
+                    since.restart();
+                }
+            }
+            got
+        };
+        assert_eq!(rows(true, 30, 7.0), [6, 13, 20, 27]);
+        assert_eq!(rows(false, 30, 7.0), [7, 14, 21, 28], "a clock's start");
+        assert_eq!(rows(true, 5, 1.0), [0, 1, 2, 3, 4]);
+        // The first row skipped: the second, stamped 1, folds its step in.
+        let mut since = Since::default();
+        since.stamp_next_on_rows(Stamp::Raw(1.0, 0.0));
+        since.step(1.0);
+        assert_eq!(
+            since.from,
+            Some(Stamp::Raw(1.0, 2.0)),
+            "the row before row 0"
+        );
+        assert!(!since.reached(3.0));
+        since.stamp_next_on_rows(Stamp::Raw(2.0, 0.0));
+        since.step(1.0);
+        assert!(since.reached(3.0) && !since.reached(3.0 + 1e-9));
+        // The mark is the next row's alone: a later row's leaves the start.
+        since.restart();
+        since.stamp_next_on_rows(Stamp::Raw(3.0, 0.0));
+        since.step(1.0);
+        assert_eq!(since.from, Some(Stamp::Raw(2.0, 0.0)));
+        assert!(since.reached(1.0) && !since.reached(1.0 + 1e-9));
+        assert!(!since.next_on_rows, "taken by the step");
     }
 
     /// An event between two rows -- `ewridge`'s solve after a blend --
