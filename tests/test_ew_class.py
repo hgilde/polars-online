@@ -37,7 +37,7 @@ import pytest
 import polars_online as po
 import reference
 
-TIER = "essential"
+TIER = "mixed"
 
 SHAPES = ["full", "tied", "diag"]
 NAMES = np.array(["a", "b", "c", "d"])
@@ -887,3 +887,271 @@ def test_a_class_seen_once_still_scores_finite_posteriors():
     live = np.isfinite(p).all(axis=1)
     assert live.sum() > 1500
     assert np.abs(p[live].sum(axis=1) - 1.0).max() < 1e-9
+
+
+# ------------------------------------- task 278 (b29): the options' relations
+
+
+def _limit(lab, w, t, *, half_life, gap_cap, n_classes, k, covariance, prior):
+    """The posteriors as ``precision_prior`` grows without bound, from the
+    class weights and prior scales alone. Each class's ridge
+    ``prior * s_c`` then swamps its co-moments and its distance, so
+
+        tied:        M = prior * sum_c pi_c s_c I is shared,  p_c = pi_c
+        full, diag:  ln det M_c = k ln(prior s_c),           p_c ∝ pi_c s_c^(-k/2)
+
+    with ``pi_c = n_c / sum n`` and ``s_c`` the class's prior scale: 1 on
+    its first learned row and times ``lam n_c / (lam n_c + w)`` on each
+    learned row after, so ``1 / n_c`` with no decay. Under full and diag a
+    class's ridge fades with its own count, which is why the limit is not
+    the class share there. Returns the posteriors read before each row."""
+    n = len(lab)
+    nn = np.zeros(n_classes)
+    s = np.ones(n_classes)
+    out = np.full((n, n_classes), np.nan)
+    for i in range(n):
+        d = 0.0 if i == 0 else min(t[i] - t[i - 1], gap_cap)
+        lam = 1.0 if math.isinf(half_life) else 2.0 ** (-d / half_life)
+        seen = nn > 0.0
+        if seen.any():
+            if covariance == "tied":
+                p = np.where(seen, nn, 0.0)
+            else:
+                ell = np.full(n_classes, -np.inf)
+                ell[seen] = np.log(nn[seen]) - 0.5 * k * np.log(prior * s[seen])
+                p = np.exp(ell - ell.max())
+            out[i] = p / p.sum()
+        for c in range(n_classes):
+            learns = lab[i] == c and w[i] > 0.0
+            w_new = lam * nn[c] + (w[i] if learns else 0.0)
+            if learns and w_new > 0.0:
+                a = lam * nn[c] / w_new
+                s[c] = 1.0 if a <= 0.0 else s[c] * a
+            nn[c] = w_new
+    return out
+
+
+class TestALargePriorIsItsLimit:
+    """D15 of task 278's inventory, pinned as the documented behaviour: the
+    ridge is scaled by each class's own fading scale, so a huge prior drives
+    ``tied`` to the class shares and ``full``/``diag`` to the shares times
+    ``s_c^(-k/2)``. The distance to the limit falls as ``1 / prior`` (the
+    rate is checked, not only the end), measured 2026-10-25 over three
+    classes, k = 2 and 3, 2,000 rows: at a prior of 1e12 at most 2.4e-9
+    with no decay and 3.1e-6 under a half-life of 150 on an irregular clock
+    with weights, zero weights and null labels (there ``s_c`` decays by the
+    rows each class waits through, so the ridge is weaker); at 1e10 100
+    times that, to within 0.06% in all twelve cases."""
+
+    @pytest.mark.parametrize("covariance", SHAPES)
+    @pytest.mark.parametrize("k", [2, 3])
+    @pytest.mark.parametrize("decayed", [False, True], ids=["no_decay", "decayed"])
+    def test_the_posteriors_tend_to_the_limit_at_the_rate_one_over_the_prior(
+        self, covariance, k, decayed
+    ):
+        n = 2000
+        rng = np.random.default_rng(40 + k)
+        X = rng.standard_normal((n, k))
+        lab = rng.choice(3, size=n, p=[0.2, 0.3, 0.5])
+        X[lab == 1] += 1.0
+        X[lab == 2] -= 0.5
+        if decayed:
+            labels = [None if i % 13 == 0 else int(v) for i, v in enumerate(lab)]
+            w = rng.uniform(0.2, 2.0, n)
+            w[::17] = 0.0
+            t = np.cumsum(rng.uniform(0.5, 1.5, n))
+            t[1000:] += 40.0
+            stream = dict(clock="t", gap_cap=10.0, weight="w", half_life=150.0)
+            half_life = 150.0
+        else:
+            labels = [int(v) for v in lab]
+            w = np.ones(n)
+            t = np.arange(n, dtype=float)
+            stream = dict(half_life=float("inf"))
+            half_life = math.inf
+        df = frame(X, [0] * n, w=w, t=t).with_columns(
+            y=pl.Series([None if v is None else "abc"[v] for v in labels], dtype=pl.String)
+        )
+        feats = [f"x{i}" for i in range(k)]
+        errors = {}
+        for prior in (1e10, 1e12):
+            s = spec(
+                features=feats,
+                covariance_type=covariance,
+                precision_prior=prior,
+                min_weight=0.0,
+                **stream,
+            )
+            got = unnested(po.ModelBank([s]).fit_predict(df))
+            p = np.column_stack([got[f"p_{c}"].to_numpy().astype(float) for c in "abc"])
+            want = _limit(
+                labels,
+                w,
+                t,
+                half_life=half_life,
+                gap_cap=10.0,
+                n_classes=3,
+                k=k,
+                covariance=covariance,
+                prior=prior,
+            )
+            live = np.isfinite(want).all(axis=1) & np.isfinite(p).all(axis=1)
+            assert live.sum() > 1900
+            errors[prior] = float(np.abs(p[live] - want[live]).max())
+        assert errors[1e12] < (2e-5 if decayed else 1e-8), errors
+        assert 99.0 < errors[1e10] / errors[1e12] < 101.0, errors
+        if covariance != "tied":
+            # And that limit is not the class share, by far.
+            share = _limit(
+                labels,
+                w,
+                t,
+                half_life=half_life,
+                gap_cap=10.0,
+                n_classes=3,
+                k=k,
+                covariance="tied",
+                prior=1e12,
+            )
+            live = np.isfinite(share).all(axis=1) & np.isfinite(p).all(axis=1)
+            assert np.abs(p[live] - share[live]).max() > 0.05
+
+
+class TestThePermutedClassesPermuteThePosteriors:
+    """Listing the classes in another order relabels the fields and nothing
+    else. Under ``full`` and ``diag`` with two classes every sum over the
+    classes is one addition, which commutes, so the posteriors match to the
+    bit. ``tied`` pools ``pi_c C_c`` and then ``pi_c ridge_c`` on the
+    diagonal class by class, so its sum groups differently in another order;
+    and with three classes the normalising sum adds in another order too.
+    Those are held within rounding: measured 2026-10-25 at most 8.3e-16
+    apart (3.75 ulps of 1), with the class called the same on every row."""
+
+    @pytest.mark.parametrize("covariance", ["full", "diag"])
+    def test_two_classes_to_the_bit(self, covariance):
+        X, lab = gaussians(1500, means=[[0.0, 0.0], [1.5, 0.5]], covs=THREE["covs"][:2], seed=41)
+        df = frame(X, lab, null_every=11)
+        kw = dict(covariance_type=covariance, precision_prior=0.5, min_weight=1.0)
+        ab = unnested(po.ModelBank([spec(classes=("a", "b"), **kw)]).fit_predict(df))
+        ba = unnested(po.ModelBank([spec(classes=("b", "a"), **kw)]).fit_predict(df))
+        for c in "ab":
+            assert ab[f"p_{c}"].equals(ba[f"p_{c}"], null_equal=True), c
+        assert ab["class"].cast(pl.String).equals(ba["class"].cast(pl.String), null_equal=True)
+        assert ab["p_a"].drop_nulls().len() > 1400
+
+    @pytest.mark.parametrize(
+        ("covariance", "order"),
+        [("tied", ("b", "a"))]
+        + [(c, o) for c in SHAPES for o in [("c", "a", "b"), ("b", "c", "a"), ("c", "b", "a")]],
+    )
+    def test_within_rounding(self, covariance, order):
+        if len(order) == 2:
+            X, lab = gaussians(
+                1500, means=[[0.0, 0.0], [1.5, 0.5]], covs=THREE["covs"][:2], seed=41
+            )
+            base_classes = ("a", "b")
+        else:
+            X, lab = gaussians(1500, seed=42, **THREE)
+            base_classes = ("a", "b", "c")
+        df = frame(X, lab, null_every=11)
+        kw = dict(covariance_type=covariance, precision_prior=0.5, min_weight=1.0)
+        base = unnested(po.ModelBank([spec(classes=base_classes, **kw)]).fit_predict(df))
+        perm = unnested(po.ModelBank([spec(classes=order, **kw)]).fit_predict(df))
+        for c in base_classes:
+            a, b = base[f"p_{c}"].to_numpy(), perm[f"p_{c}"].to_numpy()
+            assert np.array_equal(np.isnan(a), np.isnan(b)), c
+            live = np.isfinite(a)
+            assert live.sum() > 1400
+            assert np.abs(a[live] - b[live]).max() <= 4e-15, c
+        assert base["class"].cast(pl.String).equals(perm["class"].cast(pl.String), null_equal=True)
+
+
+def test_the_label_listed_as_a_feature_is_refused_by_name():
+    """The label is the model's target, and a feature is read from the
+    current row, so a label among the features would score a row with its
+    own class."""
+    with pytest.raises(
+        ValueError,
+        match=(
+            r'spec "m": "y" is both a target and a feature; a feature is read from the '
+            r"current row, so this would predict the target with itself \(use a lagged "
+            r"copy of the column if you mean its past values\)"
+        ),
+    ):
+        spec(features=("x0", "y"))
+
+
+def _invariance_frame(n=1200, seed=5):
+    """Three classes, ten percent of the labels null, uneven weights with a
+    zero on every 31st row, an irregular clock with steps past the cap."""
+    rng = np.random.default_rng(seed)
+    steps = rng.uniform(0.5, 1.5, n)
+    steps[np.arange(n) % 400 == 200] += 80.0
+    t = np.cumsum(steps)
+    X = rng.standard_normal((n, 3))
+    lab = np.where(
+        X[:, 0] - 0.3 * X[:, 2] + rng.normal(0, 0.7, n) > 0,
+        "a",
+        np.where(rng.random(n) < 0.5, "b", "c"),
+    )
+    lab = np.where(rng.random(n) < 0.1, None, lab)
+    w = rng.uniform(0.2, 2.0, n)
+    w[::31] = 0.0
+    return pl.DataFrame({"t": t, "x0": X[:, 0], "x1": X[:, 1], "x2": X[:, 2], "y": lab, "w": w})
+
+
+INVARIANCE_CASES = {
+    "plain": {},
+    "window": dict(window_size=300.0),
+    "window_cadence": dict(
+        window_size=300.0, snapshot_every=20.0, max_rows_between_snapshots=15, closed="both"
+    ),
+}
+
+
+def _invariance(covariance, extra):
+    """Hard rule 3 and a mid-stream save, every field but ``coef`` (emitted on
+    each chunk's last row) to the bit: chunks of 1, 7 and 600 rows, and saves
+    at rows 5 and 611. ``full`` keeps a Cholesky factor per class,
+    refactored only for the class a row teaches, which a chunk or a resume
+    must not disturb; the windowed forms keep a ring per class."""
+    df = _invariance_frame()
+    s = spec(
+        features=("x0", "x1", "x2"),
+        covariance_type=covariance,
+        precision_prior=0.5,
+        clock="t",
+        gap_cap=50.0,
+        half_life=150.0,
+        min_weight=2.0,
+        weight="w",
+        **extra,
+    )
+
+    def fields(out):
+        return unnested(out).drop("coef", "support_coef", strict=False)
+
+    whole = fields(po.ModelBank([s]).fit_predict(df))
+    assert whole["class"].null_count() < 150 and whole["weight_sum"].n_unique() > 1000
+    for size in (1, 7, 600):
+        bank = po.ModelBank([s])
+        many = pl.concat([bank.fit_predict(df.slice(o, size)) for o in range(0, df.height, size)])
+        assert fields(many).equals(whole, null_equal=True), size
+    for cut in (5, 611):
+        a = po.ModelBank([s])
+        head = a.fit_predict(df.head(cut))
+        b = po.ModelBank.load_bytes(a.save_bytes(), [s])
+        got = fields(pl.concat([head, b.fit_predict(df.slice(cut))]))
+        assert got.equals(whole, null_equal=True), cut
+
+
+@pytest.mark.parametrize("extra", INVARIANCE_CASES.values(), ids=INVARIANCE_CASES.keys())
+def test_full_covariance_chunk_invariance_and_save_load(extra):
+    _invariance("full", extra)
+
+
+@pytest.mark.extended(reason="the tied and diag shapes beside full's essential cases")
+@pytest.mark.parametrize("extra", INVARIANCE_CASES.values(), ids=INVARIANCE_CASES.keys())
+@pytest.mark.parametrize("covariance", ["tied", "diag"])
+def test_every_shape_chunk_invariance_and_save_load(covariance, extra):
+    _invariance(covariance, extra)

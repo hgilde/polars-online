@@ -2904,3 +2904,327 @@ def test_every_clock_refusal_is_said_in_the_calls_own_words(case: str) -> None:
     with pytest.raises(kind) as exc:
         po.stream.with_windows(df, y=po.increment("x"), **kw)
     assert str(exc.value) == says
+
+
+# --------------------------------------------------------------------------
+# Relations every operator keeps (task 278, batch 24): no library computes
+# most of these operators' windowed and forward forms, so each parameter is
+# held to what it must keep -- which rows ``partial`` cuts, the mirror of a
+# window looking ahead, the limits of ``window_size`` and ``half_life``,
+# ``min_samples`` and ``closed`` acting only where they say, and the clock's
+# units. Each relation's essential case is one seed under ``closed="right"``
+# over every operator; the extended tier runs every ``closed`` on three seeds.
+
+#: The six operators looking back and the four looking ahead, by the names
+#: the failure messages carry.
+_BACK = ("mean", "sum", "rate", "quantile", "var", "std")
+_AHEAD = ("ahead_mean", "ahead_sum", "ahead_rate", "ahead_quantile")
+
+#: ``closed`` looking ahead is ``_FLIP[closed]`` looking back over the
+#: reversed stream: a row's own stamp is the near end either way.
+_FLIP = {"right": "left", "left": "right", "both": "both", "none": "none"}
+
+#: A level no window's weights meet exactly. On steps of multiples of 0.5
+#: every weight is a power of ``2 ** (1/8)``, and no share of such weights is
+#: ``1 / pi``: ``q W`` is never one of the cumulative weights, so a weight's
+#: last bit never moves the quantile (``test_ewm_quantile.py`` shows a level
+#: that is such a share, and the tie it meets).
+_Q = 1 / math.pi
+
+#: The window, the half-life and the gap cap of the relation streams. Their
+#: steps are multiples of 0.5, so no two rows are ever 7.3 apart: no row sits
+#: on a window's far edge, and no relation below depends on a tie there.
+_RW, _RH, _RCAP = 7.3, 4.0, 10.0
+
+
+def _rel_op(name: str, input: str | pl.Expr = "x", *, quantile: float = _Q, **kw: Any) -> pl.Expr:
+    """The operator ``name`` names, ``ahead_`` for ``reverse=True``."""
+    stat = name.removeprefix("ahead_")
+    if stat != name:
+        kw["reverse"] = True
+    if stat == "quantile":
+        return po.ewm_quantile(input, quantile=quantile, **kw)
+    fn: Any = getattr(po, f"ewm_{stat}")
+    return fn(input, **kw)
+
+
+def _rel_stream(seed: int, n: int = 240, *, cuts: bool = True) -> pl.DataFrame:
+    """Steps of 0, 0.5, 1, 2 and 3 (repeated stamps, bursts and quiet
+    stretches), values with a tenth null, a row index ``i``; with ``cuts``,
+    a gap past the cap at row ``n // 3`` and a session change at row
+    ``2n // 3``, so three stretches start where windows are cut."""
+    rng = np.random.default_rng(seed)
+    steps = rng.choice([0.0, 0.5, 1.0, 1.0, 2.0, 3.0], n)
+    if cuts:
+        steps[n // 3] = 50.0
+    x = rng.normal(size=n) * 3 + 1
+    x[rng.random(n) < 0.1] = np.nan
+    df = pl.DataFrame({"i": np.arange(n), "t": np.cumsum(steps), "x": x})
+    df = df.with_columns(pl.col("x").fill_nan(None))
+    if cuts:
+        df = df.with_columns(s=pl.Series(["a"] * (2 * n // 3) + ["b"] * (n - 2 * n // 3)))
+    return df
+
+
+def _rel_run(df: pl.DataFrame, exprs: dict[str, pl.Expr], **kw: Any) -> pl.DataFrame:
+    policy: dict[str, Any] = {"clock": "t", "gap_cap": _RCAP}
+    if "s" in df.columns:
+        policy["session"] = "s"
+    return po.stream.with_windows(df, **exprs, **(policy | kw))
+
+
+def _stretches(df: pl.DataFrame) -> list[int]:
+    """Each row's stretch: a new one after a step past the cap or at a
+    session change."""
+    t, s = df["t"].to_list(), (df["s"] if "s" in df.columns else df["i"] * 0).to_list()
+    out = [0]
+    for i in range(1, df.height):
+        out.append(out[-1] + (t[i] - t[i - 1] > _RCAP or s[i] != s[i - 1]))
+    return out
+
+
+def _cut_rows(df: pl.DataFrame, ahead: bool) -> set[int]:
+    """The rows whose window a cut shortens, by hand. Looking back: the
+    window reaches before its stretch's first row (the stream's own start
+    included). Looking ahead: a later stretch begins while the window is
+    open, no row of its own stretch past its far edge; the last stretch's
+    are the input's end's, unresolved rather than cut."""
+    t, k = df["t"].to_list(), _stretches(df)
+    first = {s: t[k.index(s)] for s in set(k)}
+    if not ahead:
+        return {i for i in range(df.height) if t[i] - first[k[i]] < _RW}
+    last = {s: max(t[i] for i in range(df.height) if k[i] == s) for s in set(k)}
+    return {i for i in range(df.height) if k[i] != k[-1] and last[k[i]] - t[i] < _RW}
+
+
+_REL_EXTENDED = pytest.mark.extended(reason="a grid: every closed on three seeds, ~1 s a case")
+
+
+def _rel_grid() -> list[Any]:
+    """``(closed, seed)``: ``("right", 1)`` in the essentials, the rest
+    extended."""
+    return [
+        pytest.param(closed, seed, marks=() if (closed, seed) == ("right", 1) else _REL_EXTENDED)
+        for closed in ("right", "left", "both", "none")
+        for seed in (1, 2, 3)
+    ]
+
+
+def _rel_close(got: list[Any], want: list[Any], what: str, *, exact: bool, tol: float) -> None:
+    """Bit for bit when ``exact``; else ``assert_close`` at ``tol``."""
+    if exact:
+        assert got == want, what
+    else:
+        assert_close(got, want, what, tol=tol)
+
+
+@pytest.mark.parametrize(("closed", "seed"), _rel_grid())
+def test_partial_keeps_nulls_or_drops_exactly_the_cut_windows(closed: str, seed: int) -> None:
+    """``partial`` acts on every operator, the variance, the standard
+    deviation and the quantile included, and only on the windows a cut
+    shortens: ``"drop"`` removes exactly the rows found by hand, ``"null"``
+    nulls each of them, ``"keep"`` gives a value on some of them, and on
+    every other row the three give the same bits."""
+    df = _rel_stream(seed)
+    kw = {"half_life": _RH, "window_size": _RW, "closed": closed}
+    for ahead, names in ((False, _BACK), (True, _AHEAD)):
+        cut = _cut_rows(df, ahead)
+        assert len(cut) >= 6, (ahead, sorted(cut))
+        both = _rel_run(
+            df,
+            {f"{n}_keep": _rel_op(n, partial="keep", **kw) for n in names}
+            | {f"{n}_null": _rel_op(n, partial="null", **kw) for n in names},
+        )
+        for name in names:
+            keep, null = both[f"{name}_keep"].to_list(), both[f"{name}_null"].to_list()
+            dropped = _rel_run(df, {"y": _rel_op(name, partial="drop", **kw)})
+            left = dropped["i"].to_list()
+            assert set(range(df.height)) - set(left) == cut, name
+            assert dropped["y"].to_list() == [null[i] for i in left], name
+            assert [keep[i] for i in left] == [null[i] for i in left], name
+            assert all(null[i] is None for i in cut), name
+            kept = sum(keep[i] is not None for i in cut)
+            assert kept >= 3, f"{name}: keep gave {kept} cut windows a value"
+
+
+@pytest.mark.parametrize(("closed", "seed"), _rel_grid())
+def test_a_window_looking_ahead_is_the_mirror_of_one_looking_back(closed: str, seed: int) -> None:
+    """Looking ahead under ``closed`` is looking back under its flip, on the
+    stream reversed with its clock negated: the rate and the quantile, which
+    no test held to it, and the mean and the sum under every ``closed``. On
+    each row whose window ahead has closed the two agree, the quantile to
+    the bit; the rest are the rows less than a window from the end, found
+    by hand. The others within 1e-12 of the larger of 1 and the value:
+    measured 2026-10-25 over every closed on seeds 1-3, 4.5e-14 at worst
+    (the mean), from the reversed clock's own rounding."""
+    df = _rel_stream(seed, cuts=False)
+    last = df["t"][-1]
+    mirror = df.reverse().with_columns(t=last - pl.col("t"))
+    kw = {"half_life": _RH, "window_size": _RW}
+    stats = ("mean", "sum", "rate", "quantile")
+    ahead = _rel_run(df, {s: _rel_op(f"ahead_{s}", closed=closed, **kw) for s in stats})
+    back = _rel_run(mirror, {s: _rel_op(s, closed=_FLIP[closed], **kw) for s in stats}).reverse()
+    t = df["t"].to_list()
+    open_at_end = {i for i in range(df.height) if last - t[i] < _RW}
+    for s in stats:
+        got = ahead[s].to_list()
+        assert {i for i, v in enumerate(got) if v is None} == open_at_end | {
+            i for i, v in enumerate(back[s].to_list()) if v is None
+        }, s
+        rows = [i for i, v in enumerate(got) if v is not None]
+        assert len(rows) > 180, (s, len(rows))
+        _rel_close(
+            [got[i] for i in rows],
+            [back[s][i] for i in rows],
+            s,
+            exact=s == "quantile",
+            tol=1e-12,
+        )
+
+
+@pytest.mark.parametrize(("closed", "seed"), _rel_grid())
+def test_no_window_is_a_window_longer_than_the_stream(closed: str, seed: int) -> None:
+    """``window_size=None`` is the running form: a window of 1e6 on a stream
+    that spans a few hundred gives the same values and the same nulls,
+    every one of its windows cut by the stream's start, the gap or the
+    session change and kept, as a backward window is by default. The
+    quantile to the bit, the rest within 1e-12 of the larger of 1 and the
+    value (measured 2026-10-25 over the grid: 2.2e-15 at worst)."""
+    df = _rel_stream(seed)
+    assert df["t"][-1] < 1e4
+    kw = {"half_life": _RH, "closed": closed}
+    running = _rel_run(df, {n: _rel_op(n, **kw) for n in _BACK})
+    huge = _rel_run(df, {n: _rel_op(n, window_size=1e6, **kw) for n in _BACK})
+    for n in _BACK:
+        assert running[n].null_count() < 30, n
+        _rel_close(huge[n].to_list(), running[n].to_list(), n, exact=n == "quantile", tol=1e-12)
+
+
+@pytest.mark.parametrize(("closed", "seed"), _rel_grid())
+def test_min_samples_nulls_exactly_the_windows_with_fewer_values(closed: str, seed: int) -> None:
+    """Raising ``min_samples`` only adds nulls, at exactly the rows whose
+    window holds fewer values -- counted by the same window's even sum of
+    ones, which skips the null rows -- and never moves a value it leaves:
+    the bits at ``min_samples=1`` stay. So the null rows nest as it grows,
+    and each operator gains nulls between 1 and 8."""
+    df = _rel_stream(seed)
+    kw = {"half_life": _RH, "window_size": _RW, "closed": closed}
+    one = pl.col("x") * 0.0 + 1.0
+    count = _rel_run(
+        df,
+        {
+            "back": po.ewm_sum(one, half_life=math.inf, window_size=_RW, closed=closed),
+            "ahead": po.ewm_sum(
+                one, half_life=math.inf, window_size=_RW, closed=closed, reverse=True
+            ),
+        },
+    )
+    for name in _BACK + _AHEAD:
+        n = count["ahead" if name.startswith("ahead_") else "back"].to_list()
+        outs = _rel_run(df, {f"k{k}": _rel_op(name, min_samples=k, **kw) for k in (1, 2, 3, 5, 8)})
+        base = outs["k1"].to_list()
+        for k in (2, 3, 5, 8):
+            got = outs[f"k{k}"].to_list()
+            want = [
+                None if v is None or c is None or c < k else v for v, c in zip(base, n, strict=True)
+            ]
+            assert got == want, (name, k)
+        assert outs["k8"].null_count() > outs["k1"].null_count() + 20, name
+
+
+@pytest.mark.parametrize(
+    "seed", [1, pytest.param(2, marks=_REL_EXTENDED), pytest.param(3, marks=_REL_EXTENDED)]
+)
+def test_closed_moves_a_window_only_at_its_edges(seed: int) -> None:
+    """With no row on a window's far edge, two ``closed`` that differ only
+    there give the same bits: looking back ``"right"`` is ``"both"`` and
+    ``"left"`` is ``"none"``; looking ahead ``"right"`` is ``"none"`` and
+    ``"left"`` is ``"both"``. The near end is the row's own stamp, so
+    ``"right"`` and ``"left"`` differ on most rows: ``closed`` acts there."""
+    df = _rel_stream(seed)
+    t = df["t"].to_numpy()
+    assert np.abs(np.abs(t[:, None] - t[None, :]) - _RW).min() >= 0.2
+    kw = {"half_life": _RH, "window_size": _RW}
+    out = _rel_run(
+        df,
+        {
+            f"{n}_{c}": _rel_op(n, closed=c, **kw)
+            for n in _BACK + _AHEAD
+            for c in ("right", "left", "both", "none")
+        },
+    )
+    for n in _BACK + _AHEAD:
+        same = (
+            [("right", "none"), ("left", "both")]
+            if n.startswith("ahead_")
+            else [
+                ("right", "both"),
+                ("left", "none"),
+            ]
+        )
+        for a, b in same:
+            assert out[f"{n}_{a}"].to_list() == out[f"{n}_{b}"].to_list(), (n, a, b)
+        moved = sum(
+            u != v
+            for u, v in zip(out[f"{n}_right"].to_list(), out[f"{n}_left"].to_list(), strict=True)
+        )
+        assert moved > df.height // 2, (n, moved)
+
+
+@pytest.mark.parametrize(("closed", "seed"), _rel_grid())
+def test_a_half_life_of_1e17_is_the_even_window(closed: str, seed: int) -> None:
+    """``half_life=1e17`` tends to ``inf``, the evenly weighted window, for
+    the rate, the variance, the standard deviation and the quantile, looking
+    back and ahead, as the mean was held to before: the same nulls, the
+    quantile to the bit, the rest within 1e-12 (measured 2026-10-25: 2.5e-15
+    at worst). The decay at 1e17 is under 1e-14 of a weight, so the far
+    half-life's mass, by ``expm1``, is the window's span."""
+    df = _rel_stream(seed)
+    names = ("rate", "var", "std", "quantile", "ahead_rate", "ahead_quantile")
+    kw = {"window_size": _RW, "closed": closed}
+    far = _rel_run(df, {n: _rel_op(n, half_life=1e17, **kw) for n in names})
+    even = _rel_run(df, {n: _rel_op(n, half_life=math.inf, **kw) for n in names})
+    for n in names:
+        assert even[n].null_count() < df.height // 3, n
+        _rel_close(far[n].to_list(), even[n].to_list(), n, exact=n.endswith("quantile"), tol=1e-12)
+
+
+@pytest.mark.parametrize(("closed", "seed"), _rel_grid())
+def test_a_clock_in_other_units_scales_only_the_rate(closed: str, seed: int) -> None:
+    """The clock, ``half_life``, ``window_size`` and ``gap_cap`` all times
+    ``c`` leave every operator's value where it was and divide the rate by
+    ``c``, a quantity per unit of clock. By a power of 2 every decay,
+    every edge and every mass scales exactly, so the bits do too. By 1000
+    (seconds to milliseconds) and 1/60 (seconds to minutes) the scaled clock
+    is itself rounded, by about 1e-16 of the stream's age, about 350, which
+    is 1e-16 x 350 / 0.5 = 7e-14 of the shortest span a rate divides by:
+    within 1e-11 of the larger of 1 and the value (measured 2026-10-25 over
+    the grid: 5e-13 at worst, the rate; 9e-14 for the rest), the quantile
+    to the bit."""
+    df = _rel_stream(seed)
+    names = _BACK + _AHEAD
+    base = _rel_run(
+        df, {n: _rel_op(n, half_life=_RH, window_size=_RW, closed=closed) for n in names}
+    )
+    for c in (4.0, 0.125, 1000.0, 1 / 60):
+        scaled = _rel_run(
+            df.with_columns(t=pl.col("t") * c),
+            {n: _rel_op(n, half_life=_RH * c, window_size=_RW * c, closed=closed) for n in names},
+            gap_cap=_RCAP * c,
+        )
+        for n in names:
+            want = base[n].to_list()
+            if n.endswith("rate"):
+                want = [None if v is None else v / c for v in want]
+            exact = c in (4.0, 0.125) or n.endswith("quantile")
+            _rel_close(scaled[n].to_list(), want, f"{n} at c = {c}", exact=exact, tol=1e-11)
+
+
+def test_reverse_must_be_a_bool() -> None:
+    """A ``reverse`` that is not a bool is refused by name, on each operator
+    that looks ahead (the variance and the standard deviation do not)."""
+    for name in ("mean", "sum", "rate", "quantile"):
+        extra: dict[str, Any] = {"quantile": 0.5} if name == "quantile" else {}
+        with pytest.raises(TypeError) as exc:
+            getattr(po, f"ewm_{name}")("x", half_life=1.0, window_size=2.0, reverse=1, **extra)
+        assert str(exc.value) == f"po.ewm_{name}: reverse must be a bool, got int"

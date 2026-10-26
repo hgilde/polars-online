@@ -26,7 +26,7 @@ from statsmodels.robust.scale import mad
 
 import polars_online as po
 
-TIER = "essential"
+TIER = "mixed"
 
 #: The sketch's relative accuracy: ``tanh(1 / 128)``.
 ALPHA = math.tanh(1 / 128)
@@ -320,3 +320,100 @@ def test_a_quantile_looking_ahead_is_a_target_the_bank_learns_as_its_column() ->
     by_column = po.ModelBank([by_col]).fit_predict(column)["c"].struct.field("pred_fwd_med")
     assert by_expr.drop_nulls().len() > 300
     assert by_expr.equals(by_column)
+
+
+# --------------------------------------------------------------------------
+# The level and the input's scale and sign (task 278, batch 24): relations
+# no oracle is needed for, each exact because of how the buckets are laid.
+
+#: ``(closed, seed)``: ``("right", 7)`` in the essentials, the rest extended.
+_GRID = [
+    pytest.param(
+        closed,
+        seed,
+        marks=()
+        if (closed, seed) == ("right", 7)
+        else pytest.mark.extended(reason="a grid: every closed on three seeds"),
+    )
+    for closed in ("right", "left", "both", "none")
+    for seed in (7, 8, 9)
+]
+
+#: The levels, ``1/pi`` among them, and their mirrors ``1 - q``.
+LEVELS = (0.01, 0.1, 0.25, 1 / math.pi, 0.5, 0.75, 0.9, 0.99)
+
+
+def _levels(df: pl.DataFrame, input: Any, qs: Any, *, closed: str, ahead: bool) -> list[list[Any]]:
+    """Each level's column, one call, looking back or ahead."""
+    kw: dict[str, Any] = {"half_life": 4.0, "window_size": 9.0, "closed": closed}
+    out = po.stream.with_windows(
+        df,
+        **{
+            f"q{j}": po.ewm_quantile(input, quantile=q, **kw, reverse=ahead)
+            for j, q in enumerate(qs)
+        },
+        **CLOCK,
+    )
+    return [out[f"q{j}"].to_list() for j in range(len(qs))]
+
+
+@pytest.mark.parametrize(("closed", "seed"), _GRID)
+def test_the_quantile_is_monotone_in_its_level(closed: str, seed: int) -> None:
+    """A higher level never gives a lower value, on any row, looking back or
+    ahead, with no allowance for the sketch: every level reads the same
+    window's buckets, and the bucket a higher level lands in is at or above
+    a lower one's. The same rows are null at every level."""
+    df = stream(400, seed)
+    for ahead in (False, True):
+        cols = _levels(df, "x", LEVELS, closed=closed, ahead=ahead)
+        for lo, hi, a, b in zip(LEVELS, LEVELS[1:], cols, cols[1:], strict=False):
+            assert [v is None for v in a] == [v is None for v in b], (ahead, lo, hi)
+            assert all(u is None or u <= v for u, v in zip(a, b, strict=True)), (ahead, lo, hi)
+        # The levels do spread: the 0.01 and the 0.99 differ on most rows.
+        spread = sum(u != v for u, v in zip(cols[0], cols[-1], strict=True) if u is not None)
+        assert spread > 250, (ahead, spread)
+
+
+@pytest.mark.parametrize(("closed", "seed"), _GRID)
+def test_the_quantile_scales_with_its_input_and_mirrors_with_its_sign(
+    closed: str, seed: int
+) -> None:
+    """``Q_q(c x) = c Q_q(x)`` for ``c > 0`` and ``Q_q(-x) = -Q_{1-q}(x)``.
+
+    A bucket is ``floor(64 (e + m - 1))`` of ``|x| = m 2^e``, and a negative
+    value goes by its magnitude's bucket, so a power of 2 moves every value
+    a whole number of octaves and a sign flip mirrors the buckets: both to
+    the bit. Any other ``c`` re-buckets the values, each answer within
+    ``ALPHA`` of the exact quantile, which scales exactly, so the two
+    within ``2 ALPHA`` of each other (measured 2026-10-25: 0.0128 at worst
+    against 0.0156). The sign holds to the bit only where no cumulative
+    weight is exactly ``(1 - q) W``: at such a tie the inverted cdf takes
+    the lower value either way, so at ``q = 0.5`` a window ahead holding two
+    rows of one stamp, each half the weight, gives ``a`` for ``[a, b]`` and
+    ``-b`` for ``[-b, -a]`` (seed 7, row 178, as numpy's ``inverted_cdf``
+    gives too). On these steps, multiples of 0.5, every weight is a power
+    of ``2 ** (1/8)``, so a level such as ``1 / sqrt(2)`` is a share of
+    them as well (seed 8, ``closed="left"``, row 116: the two sides took
+    the two neighbours of the tie). The levels here are from ``pi`` and
+    ``e``, which no such share meets."""
+    df = stream(400, seed)
+    qs = (1 / (3 * math.pi), 1 / math.pi, 1 / math.e, 2 / math.e)
+    for ahead in (False, True):
+        kw = {"closed": closed, "ahead": ahead}
+        base = _levels(df, "x", qs, **kw)
+        assert sum(v is not None for v in base[0]) > 300
+        for c in (2.0, 0.25, 2.0**40, 2.0**-30, 3.0, 1e-6, 1e6):
+            for q, a, b in zip(qs, base, _levels(df, pl.col("x") * c, qs, **kw), strict=True):
+                assert [v is None for v in a] == [v is None for v in b], (ahead, c, q)
+                pairs = [(u, v) for u, v in zip(a, b, strict=True) if u is not None]
+                if math.log2(c).is_integer():
+                    assert all(v == c * u for u, v in pairs), (ahead, c, q)
+                else:
+                    assert all(abs(v - c * u) <= 2 * ALPHA * abs(c * u) for u, v in pairs), (
+                        ahead,
+                        c,
+                        q,
+                    )
+        mirrored = _levels(df, -pl.col("x"), [1 - q for q in qs], **kw)
+        for q, a, b in zip(qs, base, mirrored, strict=True):
+            assert [None if v is None else -v for v in b] == a, (ahead, q)
