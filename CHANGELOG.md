@@ -114,6 +114,14 @@ returns.
 
 ### Fixed
 
+- A weight or target of finite magnitude above `1e100` is read as missing,
+  as the README says, instead of being refused (task 278, D-WB): a weight
+  of `-1e101` was refused as "a negative value" on every model that takes a
+  weight, `±1e101` by `rcov` as neither 0 nor 1, a target of `±1e101` under
+  `strict_binary` and `-1e101` under `loss="poisson"`, and a `bocpd`
+  `hazard_col` value of `-1e101` as not above 1 rather than falling back to
+  `hazard`. Each check now reads only usable values; a usable value that
+  breaks its rule is still refused by row, at `±1e100` itself too.
 - `po.eval.diebold_mariano` and `po.eval.clark_west` with `half_life`, and
   `po.eval.seqtest`, refuse a `name` the frame already has, naming the
   column; Polars' `with_columns` used to replace that column -- the target,
