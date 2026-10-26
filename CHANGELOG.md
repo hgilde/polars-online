@@ -114,6 +114,12 @@ returns.
 
 ### Fixed
 
+- `po.stream.refresh_time`'s docstring lists the `group` and `keep`
+  columns and their places in the `pairs=True` output (group first, keep
+  last; `a` is the pair's series listed first in `names`), and says plainly
+  that when a `.head(n)` ends among the points one tick completes for
+  several pairs, the points it leaves out are returned neither by the slice
+  nor by a run resumed after that tick (task 278).
 - On a stream with no clock column, a cadence counted on the clock starts a
   row before the first row, as `coef_every` does, so `X_every=n` and its row
   cap `max_rows_between_X=n` give the same schedule (task 278, D13).
