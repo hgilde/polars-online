@@ -7,7 +7,7 @@ import pytest
 import polars_online as po
 from conftest import run_online
 
-TIER = "essential"
+TIER = "mixed"
 
 
 def _spec(**kw):
@@ -53,6 +53,18 @@ def test_an_infinite_c_is_the_unbounded_mode(mode):
     _, bounded = _fit(df, mode=mode, c=float("inf"))
     _, unbounded = _fit(df, mode="pa")
     assert bounded.equals(unbounded, null_equal=True)
+
+
+@pytest.mark.parametrize("mode", ["pa1", "pa2"])
+def test_a_cap_of_1e300_is_no_cap(mode):
+    """With the intercept's 1 in it ``s = |z|^2 >= 1``, so ``l / s`` is far
+    below ``1e300`` and ``1 / (2e300)`` vanishes beside ``s``: a finite
+    ``c`` that large is ``c = inf``, which is mode ``"pa"``, to the bit
+    (task 278, batch 18)."""
+    df = _linear(noise=0.3)
+    _, huge = _fit(df, mode=mode, c=1e300)
+    _, unbounded = _fit(df, mode="pa")
+    assert huge.equals(unbounded, null_equal=True)
 
 
 def test_no_learning_rate_is_needed():
@@ -533,3 +545,64 @@ def test_a_moving_level_the_docstring_states():
     read_back = np.r_[0.0, y[:-1] + change[1:] - y[1:]]
     assert _within_from(read_back) < 50
     assert np.sqrt(np.mean(read_back[800:1600] ** 2)) < 1.0
+
+
+# The parameters each move the fit one way (task 278, batch 18). Three seeds
+# in the essentials, seventeen more in the extended tier; each assertion
+# holds on every seed.
+SEEDS = [0, 1, 2] + [
+    pytest.param(seed, marks=pytest.mark.extended(reason="the monotone grids' further seeds"))
+    for seed in range(3, 20)
+]
+
+
+def _every_coef(df, **kw) -> np.ndarray:
+    out = po.ModelBank([_spec(coef_every=1, standardize=False, **kw)]).fit_predict(df)
+    rows = out["m"].struct.field("coef").to_list()
+    return np.array([[np.nan] * len(rows[-1]) if r is None else r for r in rows], float)
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_pa1s_step_is_capped_at_c_on_every_row(seed):
+    """On the raw features, at unit weight, row ``i``'s step moves its own
+    prediction by ``tau_i * s_i``, ``s_i = |z_i|^2``, and ``pa1``'s ``tau_i
+    = min(c, l_i / s_i)``: ``tau_i <= c`` on every row, with the coefficients
+    read before and after the row (they do not decay). The largest step
+    rises with ``c``: at 0.01, 0.1 and 1 the cap binds (on 3,691-3,745,
+    2,386-2,499 and 48-75 of 4,000 rows over 20 seeds, measured 2026-10-26)
+    and the largest step is ``c``; at 10 it never binds, the largest
+    unbounded step being 1.53-2.16, so the fit is mode ``"pa"``'s to the
+    bit."""
+    df = _linear(n=4000, seed=seed, noise=0.5)
+    x = df.select("x0", "x1").to_numpy()
+    z = np.column_stack([np.ones(len(x)), x])
+    largest = []
+    for c in (0.01, 0.1, 1.0, 10.0):
+        coef = _every_coef(df, mode="pa1", c=c, eps=0.01)
+        before = np.vstack([np.zeros(coef.shape[1]), coef[:-1]])
+        tau = np.abs(((coef - before) * z).sum(axis=1)) / (z * z).sum(axis=1)
+        assert (tau <= c * (1.0 + 1e-12)).all(), (c, tau.max())
+        largest.append(tau.max())
+        if c <= 1.0:
+            assert tau.max() == pytest.approx(c, rel=1e-12), "the cap never bound"
+            assert (tau >= c * (1.0 - 1e-12)).sum() >= 10
+    assert (np.diff(largest) > 0).all(), largest
+    assert largest[-1] < 10.0
+    assert (_every_coef(df, mode="pa1", c=10.0) == _every_coef(df, mode="pa")).all()
+
+
+@pytest.mark.parametrize("mode", ["pa1", "pa2"])
+@pytest.mark.parametrize("seed", SEEDS)
+def test_a_wider_band_moves_the_fit_on_fewer_rows(seed, mode):
+    """Inside ``eps * sigma`` the loss is 0 and the row moves nothing; at
+    ``eps = 0`` every row moves the fit. Counted from row 100, past the
+    warm-up of ``sigma``. Measured 2026-10-26 on 20 seeds: 3,899,
+    3,009-3,183, 444-636, 5-22 and 0-8 of 3,899 rows under either mode."""
+    df = _linear(n=4000, seed=seed, noise=0.5)
+    moved = []
+    for eps in (0.0, 0.1, 0.5, 1.0, 2.0):
+        coef = _every_coef(df, mode=mode, eps=eps)
+        moved.append(int((np.diff(coef[100:], axis=0) != 0.0).any(axis=1).sum()))
+    assert moved[0] == df.height - 101, moved
+    assert (np.diff(moved) <= 0).all(), moved
+    assert moved[2] < moved[0] // 2, moved

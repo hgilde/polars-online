@@ -1,5 +1,7 @@
 """E25: Holt's linear trend method — the no-features forecasting baseline."""
 
+import math
+
 import numpy as np
 import polars as pl
 import pytest
@@ -198,3 +200,39 @@ def test_bad_config_rejected():
 def test_other_models_still_require_features():
     with pytest.raises(ValueError, match="features must be non-empty"):
         po.spec.ewridge("m", targets=["y0"], features=[], half_life=10.0)
+
+
+@pytest.mark.parametrize("half_life", [5.0, 50.0, 1e9])
+def test_the_default_trend_half_life_is_four_level_half_lives(half_life):
+    """Unset, the trend forgets at four times the level's half-life: the
+    same model as ``trend_half_life = 4 * half_life`` given, to the bit, on
+    an irregular clock with uneven weights; a trend memory a part in a
+    thousand longer is another model (task 278, batch 27)."""
+    rng = np.random.default_rng(3)
+    n = 2000
+    t = np.cumsum(rng.uniform(0.2, 2.0, n))
+    y = 3.0 + 0.5 * t + 0.3 * np.cumsum(rng.standard_normal(n))
+    df = pl.DataFrame({"t": t, "y0": y, "w": rng.uniform(0.5, 1.5, n)})
+    kw = dict(weight="w", half_life=half_life)
+    default = _run(df, **kw)
+    given = _run(df, trend_half_life=4.0 * half_life, **kw)
+    assert default.equals(given, null_equal=True)
+    longer = _run(df, trend_half_life=4.004 * half_life, **kw)
+    assert not longer["m"].struct.field("pred_y0").equals(default["m"].struct.field("pred_y0"))
+
+
+def test_the_default_trend_half_life_follows_lam_and_inf():
+    """Under ``lam`` the level's half-life is ``-ln 2 / ln lam`` rows, and
+    the trend's default is four of them; under ``half_life=inf`` it is
+    ``inf``. Each is the spelled-out model, to the bit."""
+    df = _trending(n=600, step=1.0)
+    lam = 0.98
+    kw = dict(targets=["y0"], min_weight=3.0, coef_every=0)
+    by_lam = po.ModelBank([po.spec.holt("m", lam=lam, **kw)]).fit_predict(df)
+    spelled = po.ModelBank(
+        [po.spec.holt("m", lam=lam, trend_half_life=4.0 * -math.log(2) / math.log(lam), **kw)]
+    ).fit_predict(df)
+    assert by_lam.equals(spelled, null_equal=True)
+    inf = float("inf")
+    by_inf = _run(df, half_life=inf)
+    assert by_inf.equals(_run(df, half_life=inf, trend_half_life=inf), null_equal=True)

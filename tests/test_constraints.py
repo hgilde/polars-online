@@ -808,6 +808,30 @@ def _clocked(**kw):
 
 
 class TestEdgeCases:
+    @pytest.mark.parametrize("standardize", [True, False], ids=["standardized", "raw"])
+    @pytest.mark.parametrize(
+        ("builder", "extra"),
+        [(_sgd, {}), (_sgd, {"loss": "quantile", "quantile": 0.7}), (_pa, {})],
+        ids=["sgd", "sgd-quantile", "pa"],
+    )
+    @pytest.mark.parametrize(
+        "bounds",
+        [dict(coef_min=-1e6, coef_max=1e6), dict(coef_min=[-1e6, -INF, -5e5], coef_max=1e6)],
+        ids=["scalar", "per-feature"],
+    )
+    def test_bounds_that_never_bind_are_no_bounds(self, builder, extra, bounds, standardize):
+        """Finite bounds far from every slope leave the projection nothing
+        to move: the unconstrained fit to the bit, on the raw features and
+        on the standardized ones, where the bounds are scaled into the
+        scaler's coordinates before its warm-up ends (task 278, batch 18).
+        Only infinite bounds were held to it."""
+        X, y, t, w = _stream(1500, 3, seed=21, truth=[0.4, -0.3, 0.2])
+        kw = _clocked(standardize=standardize, **extra)
+        plain = po.ModelBank([builder("m", **kw)]).fit_predict(_frame(X, y, t, w))
+        slack = po.ModelBank([builder("m", **bounds, **kw)]).fit_predict(_frame(X, y, t, w))
+        assert slack.equals(plain, null_equal=True)
+        assert np.abs(_coefs(plain)[-1, 1:]).min() > 0.05, "the fit never moved"
+
     def test_a_pinned_slope_is_exact_on_every_row(self):
         X, y, t, w = _stream(2000, 3, seed=7, truth=[0.4, 0.3, -0.2], missing=False)
         spec = _sgd("m", coef_min=[0.7, -INF, -INF], coef_max=[0.7, INF, INF], **_base())

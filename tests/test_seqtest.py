@@ -493,6 +493,31 @@ class TestTheComparison:
         )
         assert unnested(po.ModelBank([grid, both]).fit_predict(df), "c")["wins_a_y"][-1] > 1000
 
+    def test_b_suffix_picks_the_grid_instance(self):
+        """``b_suffix`` is ``a_suffix`` on the other side: ``b="grid"`` at
+        ``"__r0.5@h400"`` is the comparison against the plain spec at that
+        instance, to the bit, alone and beside an ``a_suffix`` (task 278,
+        batch 27)."""
+        df = regression(3000, seed=22)
+        common = dict(targets=["y"], features=["x0", "x1"], min_weight=5.0)
+        grid = po.spec.ewridge("grid", half_life=[20.0, 400.0], ridge=[1e-6, 0.5], **common)
+        fast = po.spec.ewridge("fast", half_life=20.0, ridge=0.5, **common)
+        slow = po.spec.ewridge("slow", half_life=400.0, ridge=0.5, **common)
+        picked = po.spec.seqtest("c", targets=["y"], a="fast", b="grid", b_suffix="__r0.5@h400")
+        want = po.spec.seqtest("c", targets=["y"], a="fast", b="slow")
+        got = unnested(po.ModelBank([grid, fast, picked]).fit_predict(df), "c")
+        assert got.equals(
+            unnested(po.ModelBank([fast, slow, want]).fit_predict(df), "c"), null_equal=True
+        )
+        both = po.spec.seqtest(
+            "c", targets=["y"], a="grid", a_suffix="__r0.5@h20", b="grid", b_suffix="__r0.5@h400"
+        )
+        assert unnested(po.ModelBank([grid, both]).fit_predict(df), "c").equals(got)
+        # Another instance is another comparison.
+        other = po.spec.seqtest("c", targets=["y"], a="fast", b="grid", b_suffix="__r0.000001@h400")
+        moved = unnested(po.ModelBank([grid, fast, other]).fit_predict(df), "c")
+        assert not moved["log_e_a_y"].equals(got["log_e_a_y"])
+
     def test_a_row_either_side_sits_out_is_no_trial(self):
         df = regression(2000, seed=23, null_every=9)
         common = dict(targets=["y"], features=["x0", "x1"])
