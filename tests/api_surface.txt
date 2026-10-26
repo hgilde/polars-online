@@ -682,6 +682,7 @@
     model.min_weight = 2.0
     model.n_features = 1
     model.n_targets = 1
+    model.noise_units = true
     model.obs_var = null
     model.p0 = 1.0
     model.q = null

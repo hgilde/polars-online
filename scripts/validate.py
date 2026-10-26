@@ -273,9 +273,11 @@ def main() -> None:
     share_elapsed = time.perf_counter() - t0
     section(
         "4. Kalman `share_p` approximation [validate]",
-        f"Two targets ({targets}) with very different noise levels, so the "
-        f"shared-P approximation is doing real work; one spec holds both, so both "
-        f"wait the longer embargo. Both specs run in {share_elapsed:.2f}s total.\n\n"
+        f"Two targets ({targets}) with very different noise levels; one spec holds "
+        f"both, so both wait the longer embargo. `P` is held in units of the noise, "
+        f"so with both targets on every row the shared `P` is each target's own and "
+        f"the two specs score the same: sharing saves work and changes no "
+        f"prediction. Both specs run in {share_elapsed:.2f}s total.\n\n"
         + table(res, ["spec", "slot", "target", "n", "r2", "ic", "mse"]),
     )
 

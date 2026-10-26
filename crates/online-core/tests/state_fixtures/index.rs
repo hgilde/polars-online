@@ -34,6 +34,9 @@ pub mod kalman {
 pub mod kalman_gap {
     include!("kalman_gap.rs");
 }
+pub mod kalman_noise_units {
+    include!("kalman_noise_units.rs");
+}
 pub mod huber {
     include!("huber.rs");
 }
@@ -173,6 +176,7 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &lasso_window::FIXTURE,
     &kalman::FIXTURE,
     &kalman_gap::FIXTURE,
+    &kalman_noise_units::FIXTURE,
     &huber::FIXTURE,
     &huber_mad::FIXTURE,
     &huber_sets::FIXTURE,

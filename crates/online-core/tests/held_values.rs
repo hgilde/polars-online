@@ -421,6 +421,7 @@ fn a_standardized_huber_keeps_the_slope_it_learned() {
 #[test]
 fn kalman_predicts_the_same_at_every_level() {
     let cfg = KalmanCfg {
+        noise_units: false,
         n_features: 3,
         n_targets: 1,
         fit_intercept: true,
@@ -924,6 +925,7 @@ fn a_state_saved_mid_hold_resumes_to_the_bit() {
     });
     resumes("kalman", || {
         Kalman::new(KalmanCfg {
+            noise_units: false,
             n_features: 3,
             n_targets: 1,
             fit_intercept: true,
@@ -1144,6 +1146,7 @@ fn a_row_of_no_weight_moves_no_mean() {
     });
     no_weight_moves_nothing("kalman", || {
         Kalman::new(KalmanCfg {
+            noise_units: false,
             n_features: 3,
             n_targets: 1,
             fit_intercept: true,
