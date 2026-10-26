@@ -13,7 +13,7 @@
 # HuberT weights, the scale the weighted median of |r| over 0.6745).
 #
 #   uv run python scripts/huber/m6_refit_capture.py --model huber --rows 20000
-#   uv run python scripts/huber/m6_refit_capture.py --model sgd --rows 2000 --refit 0,200,1000
+#   uv run python scripts/huber/m6_refit_capture.py --model sgd --rows 2000 --refit 0,200,500
 #   uv run python scripts/huber/m6_refit_capture.py --scale rms --shares 0.05,0.125
 import argparse
 import warnings
@@ -80,7 +80,7 @@ p.add_argument("--model", default="huber", choices=["huber", "sgd"])
 p.add_argument("--rows", type=int, default=20_000)
 p.add_argument("--seeds", type=int, default=40)
 p.add_argument("--half-life", type=float, default=float("inf"))
-p.add_argument("--refit", default="0,200,1000")
+p.add_argument("--refit", default="0,500,1000")
 p.add_argument("--scale", default="mad", choices=["mad", "rms"])
 p.add_argument("--shares", default="0.05,0.10,0.125,0.15,0.20")
 a = p.parse_args()

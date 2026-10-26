@@ -44,8 +44,10 @@ impl WindowBudgetSpec {
     }
 }
 
+mod checks;
 pub(crate) mod diagnostics;
 mod limits;
+use checks::*;
 mod names;
 mod readiness;
 
@@ -100,66 +102,9 @@ pub fn num_label(v: f64) -> String {
 /// The words a Huber scale takes, the default first (docs/PLAN.md task 271).
 pub const HUBER_SCALES: [&str; 2] = ["mad", "rms"];
 
-/// `huber_scale` one of [`HUBER_SCALES`] and `huber_scale_half_life` above
-/// 0, `"inf"` included (no forgetting), as `trend_half_life` is held.
-fn check_huber_scale(
-    name: &str,
-    scale: Option<&str>,
-    half_life: Option<&Span>,
-) -> Result<(), String> {
-    if let Some(w) = scale
-        && !HUBER_SCALES.contains(&w)
-    {
-        return Err(spec_words_refusal(name, "huber_scale", &HUBER_SCALES, w));
-    }
-    if let Some(h) = half_life.filter(|h| h.value() <= 0.0 || h.value().is_nan()) {
-        return Err(format!(
-            "spec {name:?}: huber_scale_half_life must be > 0 (\"inf\" forgets no residual), got {h}"
-        ));
-    }
-    Ok(())
-}
-
-fn positive(v: f64) -> bool {
-    v > 0.0
-}
-
-fn non_negative(v: f64) -> bool {
-    v >= 0.0
-}
-
-/// The first value that appears twice in a grid, if any. Grid entries become
-/// field-name suffixes, so a repeated value is always a mistake. Compared
-/// as numbers, so `-0.0` repeats `0.0`: bit by bit the two were two
-/// instances of one model (review 2026-10-06, PC10).
-fn first_duplicate(vals: &[f64]) -> Option<f64> {
-    vals.iter()
-        .enumerate()
-        .find(|(i, v)| vals[..*i].iter().any(|u| u == *v))
-        .map(|(_, v)| *v)
-}
-
-/// `ridge` for the IRLS models: finite and non-negative (zero is plain least
-/// squares).
-fn check_ridge(name: &str, ridge: Option<f64>) -> Result<(), String> {
-    if let Some(r) = ridge.filter(|r| !non_negative(*r) || !r.is_finite()) {
-        return Err(format!(
-            "spec {name:?}: ridge must be finite and >= 0, got {r}"
-        ));
-    }
-    Ok(())
-}
-
-/// `solve_every`: clock units between solves; zero solves every row. A
-/// negative value silently meant "every row" too, NaN meant "never".
-fn check_solve_every(name: &str, v: Option<&Span>) -> Result<(), String> {
-    if let Some(v) = v.filter(|v| !non_negative(v.value()) || !v.value().is_finite()) {
-        return Err(format!(
-            "spec {name:?}: solve_every must be finite and >= 0 (0 solves every row), got {v}"
-        ));
-    }
-    Ok(())
-}
+/// The MiB a spec's groups' Huber refit buffers may reserve by default
+/// (docs/PLAN.md task 277): `window_budget`'s default, 256.
+pub const REFIT_BUDGET_MIB: f64 = 256.0;
 
 impl Serialize for Num {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
@@ -716,10 +661,15 @@ pub enum ModelKind {
         emit_huber_scale: bool,
         /// Each target's first rows refit to convergence, once
         /// (`RobustCfg::refit_rows`, docs/PLAN.md task 277): absent is
-        /// `DEFAULT_REFIT_ROWS`, 0 is off. Skipped when absent, so a spec
+        /// `default_refit_rows(k)`, 0 is off. Skipped when absent, so a spec
         /// written before it serializes as it did.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         huber_refit_rows: Option<u32>,
+        /// The MiB the refit buffers of all this spec's groups may reserve
+        /// (`Bank`, docs/PLAN.md task 277): absent is 256, `inf` no bound.
+        /// Skipped when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        refit_budget: Option<Num>,
     },
     /// Quantile regression at level `quantile` (docs/PLAN.md §4.5).
     Quantile {
@@ -870,10 +820,14 @@ pub enum ModelKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         huber_scale_half_life: Option<Span>,
         /// `huber`'s refit of each target's first rows (docs/PLAN.md task
-        /// 277): absent is `DEFAULT_REFIT_ROWS` under `loss = "huber"`, 0
+        /// 277): absent is `default_refit_rows(k)` under `loss = "huber"`, 0
         /// is off. Refused under any other loss. Skipped when absent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         huber_refit_rows: Option<u32>,
+        /// `huber`'s `refit_budget`, under `loss = "huber"`; refused under
+        /// any other loss. Skipped when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        refit_budget: Option<Num>,
         #[serde(default)]
         quantile: Option<f64>,
         /// Half-width of the insensitive tube, in units of the target's
@@ -1790,6 +1744,21 @@ impl ModelKind {
     /// The budget a model's window runs under: the spec's, or refuse past
     /// 256 MiB where it names none (`online_core::WindowBudget::DEFAULT`).
     /// `None` without a window.
+    /// The MiB a spec's groups' Huber refit buffers may reserve in a bank
+    /// (docs/PLAN.md task 277): `refit_budget`, 256 by default, `None` for
+    /// no bound (`inf`) or a kind without the refit.
+    pub fn refit_budget_mib(&self) -> Option<f64> {
+        let given = match self {
+            ModelKind::Huber { refit_budget, .. } => refit_budget,
+            ModelKind::Sgd {
+                refit_budget, loss, ..
+            } if loss.as_deref() == Some("huber") => refit_budget,
+            _ => return None,
+        };
+        let mib = given.map_or(REFIT_BUDGET_MIB, |n| n.0);
+        mib.is_finite().then_some(mib)
+    }
+
     pub fn window_budget(&self) -> Option<online_core::WindowBudget> {
         let (window, budget) = self.window_parts()?;
         window.map(|_| {
@@ -4218,6 +4187,7 @@ impl Spec {
                 huber_scale,
                 huber_scale_half_life,
                 huber_refit_rows,
+                refit_budget,
                 quantile,
                 eps,
                 learning_rate,
@@ -4231,6 +4201,7 @@ impl Spec {
                     huber_scale.as_deref(),
                     huber_scale_half_life.as_ref(),
                 )?;
+                check_refit_budget(&self.name, *refit_budget)?;
                 if let Some(l) = loss {
                     const OK: [&str; 6] = [
                         "squared",
@@ -4290,6 +4261,13 @@ impl Spec {
                     (
                         "huber_refit_rows",
                         huber_refit_rows.is_some(),
+                        "loss",
+                        "huber",
+                        loss,
+                    ),
+                    (
+                        "refit_budget",
+                        refit_budget.is_some(),
                         "loss",
                         "huber",
                         loss,
@@ -4987,6 +4965,7 @@ impl Spec {
                 ridge,
                 solve_every,
                 feature_sets,
+                refit_budget,
                 ..
             } => {
                 if let Some(d) = huber_delta.filter(|d| !positive(d.0)) {
@@ -5003,6 +4982,7 @@ impl Spec {
                 check_ridge(&self.name, *ridge)?;
                 check_solve_every(&self.name, solve_every.as_ref())?;
                 check_feature_sets(&self.name, &self.features, feature_sets.as_deref())?;
+                check_refit_budget(&self.name, *refit_budget)?;
             }
             ModelKind::Quantile {
                 quantile,
@@ -5286,56 +5266,6 @@ impl Spec {
         }
         Ok(())
     }
-}
-
-/// `feature_sets`' entries, `ewridge`'s and `huber`'s alike: at least one
-/// set, each named once, none empty, each naming columns of `features`,
-/// each once.
-fn check_feature_sets(
-    spec: &str,
-    features: &[String],
-    feature_sets: Option<&[(String, Vec<String>)]>,
-) -> Result<(), String> {
-    let Some(fs) = feature_sets else {
-        return Ok(());
-    };
-    // `[]` is every feature, one set, to the model, and no slot at all to
-    // the field names, which rendered none for a model emitting one per
-    // ridge (review 2026-09-12, V23).
-    if fs.is_empty() {
-        return Err(format!(
-            "spec {spec:?}: feature_sets names no set; leave it out to fit every feature"
-        ));
-    }
-    let mut names = std::collections::HashSet::new();
-    for (name, cols) in fs {
-        // A name twice renders two slots under one field name, which only
-        // the bank's tripwire caught (S7).
-        if !names.insert(name.as_str()) {
-            return Err(format!(
-                "spec {spec:?}: feature_sets names {name:?} more than once"
-            ));
-        }
-        if cols.is_empty() {
-            return Err(format!("spec {spec:?}: feature set {name:?} is empty"));
-        }
-        let mut seen = std::collections::HashSet::new();
-        for c in cols {
-            if !features.contains(c) {
-                return Err(format!(
-                    "spec {spec:?}: feature set {name:?} references unknown feature {c:?}"
-                ));
-            }
-            // A column twice split its coefficient across two identical
-            // slots, without a word (S7).
-            if !seen.insert(c.as_str()) {
-                return Err(format!(
-                    "spec {spec:?}: feature set {name:?} lists {c:?} more than once"
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

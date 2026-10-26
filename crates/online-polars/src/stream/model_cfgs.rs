@@ -506,6 +506,7 @@ pub fn huber_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         ridge_scale: _,
         emit_huber_scale,
         huber_refit_rows,
+        refit_budget: _,
     } = &spec.model
     else {
         return Err("not a huber spec".into());
@@ -544,7 +545,7 @@ pub fn huber_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             if huber_ridge_scale_sum(spec) || huber_delta.is_some_and(|d| d.0.is_infinite()) {
                 0
             } else {
-                online_core::DEFAULT_REFIT_ROWS
+                online_core::default_refit_rows(spec.k())
             },
         ),
     };
@@ -638,6 +639,7 @@ pub fn sgd_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         huber_scale,
         huber_scale_half_life,
         huber_refit_rows,
+        refit_budget: _,
         quantile,
         eps,
         learning_rate,
@@ -714,7 +716,7 @@ pub fn sgd_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         // refit for.
         refit_rows: match loss {
             SgdLoss::Huber { delta } if delta.is_finite() => {
-                huber_refit_rows.unwrap_or(online_core::DEFAULT_REFIT_ROWS)
+                huber_refit_rows.unwrap_or_else(|| online_core::default_refit_rows(spec.k()))
             }
             SgdLoss::Huber { .. } => huber_refit_rows.unwrap_or(0),
             _ => 0,
@@ -726,7 +728,7 @@ pub fn sgd_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
 #[cfg(test)]
 mod refit_tests {
     //! The refit's default (docs/PLAN.md task 277): on at
-    //! `DEFAULT_REFIT_ROWS` for `huber` and `sgd(loss = "huber")`, off
+    //! `default_refit_rows(k)` for `huber` and `sgd(loss = "huber")`, off
     //! where the refit does not apply -- the sum-scale prior, an infinite
     //! cut, another loss -- and as given where given, refused there.
     use super::*;
@@ -760,7 +762,7 @@ mod refit_tests {
 
     #[test]
     fn the_refit_is_on_by_default_where_it_applies() {
-        let on = online_core::DEFAULT_REFIT_ROWS;
+        let on = online_core::default_refit_rows(1);
         assert_eq!(huber(""), Ok(on));
         assert_eq!(huber("huber_refit_rows = 7"), Ok(7));
         assert_eq!(huber("huber_refit_rows = 0"), Ok(0));

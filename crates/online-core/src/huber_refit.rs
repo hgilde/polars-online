@@ -59,10 +59,26 @@ pub const REFIT_PASSES: usize = 50;
 /// relative to `max|β|`.
 pub const REFIT_TOL: f64 = 1e-10;
 
-/// A spec's default `huber_refit_rows`: measured, 200 rows took the
-/// captured streams from 13 and 25 of 40 to 0 and 4 at 12.5% and 20%
-/// outliers, where 50 rows still left 14 of 40 at 20% (the module docs).
-pub const DEFAULT_REFIT_ROWS: u32 = 200;
+/// The least of a spec's default `huber_refit_rows` ([`default_refit_rows`]).
+/// Measured at 20% one-sided outliers over 40 seeds: 200 rows left 18 of 40
+/// streams of 2,000 rows more than 0.05 in slope from statsmodels' `RLM`,
+/// 500 left 10 and 1,000 left 3 (the user's choice, 2026-10-25: "500").
+pub const DEFAULT_REFIT_ROWS: u32 = 500;
+
+/// The most features a spec refits its first rows for by default: past it a
+/// refit of `10 · features` rows runs for seconds a target, and of fewer
+/// rows than coefficients is the ridge's fit, not the robust one.
+pub const DEFAULT_REFIT_MAX_FEATURES: usize = 100;
+
+/// A spec's default `huber_refit_rows` for `n_features` features:
+/// `max(500, 10 · n_features)` up to [`DEFAULT_REFIT_MAX_FEATURES`], and 0
+/// -- off -- past it (an explicit count is always taken).
+pub fn default_refit_rows(n_features: usize) -> u32 {
+    if n_features > DEFAULT_REFIT_MAX_FEATURES {
+        return 0;
+    }
+    DEFAULT_REFIT_ROWS.max(10 * n_features as u32)
+}
 
 /// A buffer holds at most this many ageing runs per learned row its refit
 /// waits for (`refit_rows`): past it the refit of that target is given up
@@ -92,6 +108,19 @@ pub struct RefitStatus {
     pub abandoned: bool,
     /// Ran, and no pass solved: the one-pass fit stands.
     pub failed: bool,
+    /// Given up before it began, past its spec's `refit_budget`
+    /// ([`refit_reservation`]).
+    pub over_budget: bool,
+}
+
+/// The bytes one target's refit buffer can hold at most: `refit_rows`
+/// learned rows of `n_features + 4` numbers, and [`REFIT_RUNS_PER_ROW`]
+/// ageing runs of 4 numbers a learned row, 8 bytes each -- what a bank
+/// reserves against a spec's `refit_budget` for it, its contents, not the
+/// allocator's slack. 0 when the refit is off.
+pub fn refit_reservation(n_features: usize, refit_rows: u32) -> usize {
+    let n = refit_rows as usize;
+    8 * n * (n_features + 4 + 4 * REFIT_RUNS_PER_ROW as usize)
 }
 
 /// One target's refit buffer, from the first row it learned: the learned
@@ -113,6 +142,7 @@ pub(crate) struct RefitBuf {
     passes: u32,
     abandoned: bool,
     failed: bool,
+    over_budget: bool,
 }
 
 impl RefitBuf {
@@ -125,6 +155,7 @@ impl RefitBuf {
             passes: 0,
             abandoned: false,
             failed: false,
+            over_budget: false,
         }
     }
 
@@ -150,6 +181,18 @@ impl RefitBuf {
             passes: self.passes,
             abandoned: self.abandoned,
             failed: self.failed,
+            over_budget: self.over_budget,
+        }
+    }
+
+    /// Give the refit up before it begins, past the spec's `refit_budget`:
+    /// done, empty, and marked. A buffer already done is left as it is.
+    pub(crate) fn give_up_over_budget(&mut self) {
+        if !self.done {
+            self.done = true;
+            self.over_budget = true;
+            self.rows = Vec::new();
+            self.ages = Vec::new();
         }
     }
 
@@ -187,6 +230,11 @@ impl RefitBuf {
     ) -> bool {
         if self.done {
             return false;
+        }
+        if self.rows.is_empty() {
+            // Held at its full size from the first row, so it never grows
+            // past what a bank reserves for it ([`refit_reservation`]).
+            self.rows.reserve_exact(cap as usize * (x.len() + 4));
         }
         self.rows.extend_from_slice(x);
         self.rows.extend_from_slice(&[y, w, lam, lam_s]);
@@ -263,7 +311,12 @@ impl RefitBuf {
                 last = a[3];
                 ok
             });
-        rows_fit && ages_fit && !self.abandoned && !self.failed && self.passes == 0
+        rows_fit
+            && ages_fit
+            && !self.abandoned
+            && !self.failed
+            && !self.over_budget
+            && self.passes == 0
     }
 }
 
@@ -653,6 +706,58 @@ pub(crate) fn irls(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The default count: 500 rows, ten a feature past 50 features, none
+    /// above 100. And the reservation: the rows and their four runs each,
+    /// `8 * rows * (features + 20)` bytes.
+    #[test]
+    fn the_default_count_scales_with_the_features_and_stops_past_100() {
+        assert_eq!(default_refit_rows(0), 500);
+        assert_eq!(default_refit_rows(1), 500);
+        assert_eq!(default_refit_rows(50), 500);
+        assert_eq!(default_refit_rows(51), 510);
+        assert_eq!(default_refit_rows(99), 990);
+        assert_eq!(default_refit_rows(100), 1000);
+        assert_eq!(default_refit_rows(101), 0);
+        assert_eq!(refit_reservation(20, 500), 160_000);
+        assert_eq!(refit_reservation(1, 50), 8 * 50 * 21);
+        assert_eq!(refit_reservation(3, 0), 0);
+    }
+
+    /// A buffer is held at its full size from its first row, so it never
+    /// grows past the reservation; given up to the budget it is done,
+    /// empty and marked, and one already done is left as it was; a refit
+    /// that no pass solved is marked failed.
+    #[test]
+    fn a_buffer_is_sized_once_given_up_whole_and_marked_when_it_fails() {
+        let mut b = RefitBuf::new();
+        assert!(!b.learn(&[1.0, 2.0, 3.0], 4.0, 1.0, 1.0, 1.0, 50));
+        assert!(b.rows.capacity() >= 50 * 7, "{}", b.rows.capacity());
+        b.age(0.5, 0.5, 50);
+        assert!(b.held() > 0 && b.open());
+        b.give_up_over_budget();
+        let s = b.status();
+        assert!(
+            s.done && s.over_budget && !s.abandoned && !s.failed,
+            "{s:?}"
+        );
+        assert_eq!((b.held(), b.rows.capacity(), b.ages.capacity()), (0, 0, 0));
+        assert!(!b.open());
+        assert!(!b.learn(&[1.0, 2.0, 3.0], 4.0, 1.0, 1.0, 1.0, 50));
+        assert_eq!(b.status().learned, 1);
+
+        let mut done = RefitBuf::new();
+        assert!(done.learn(&[1.0], 2.0, 1.0, 1.0, 1.0, 1));
+        done.done = true;
+        done.give_up_over_budget();
+        assert!(!done.status().over_budget);
+        assert_eq!(done.held(), 5, "a buffer already done keeps what it held");
+
+        let mut failed = RefitBuf::new();
+        assert!(!failed.status().failed);
+        failed.fail();
+        assert!(failed.status().failed);
+    }
 
     #[test]
     fn the_weighted_median_is_the_halfway_point_of_the_weight() {

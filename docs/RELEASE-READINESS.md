@@ -1083,7 +1083,7 @@ slopes measured under each scale are in
 `huber_scale="rms"` is the way back: it restores the earlier numbers to the
 bit, and a state saved under the old default loads under it.
 
-In the release after 1.3.0, `huber_refit_rows` was turned on, at 200, by
+In the release after 1.3.0, `huber_refit_rows` was turned on, at 500, by
 the maintainer's decision. The CHANGELOG declares the move with its size.
 One pass weighs each row by the fit before it, and the first fits are close
 to least squares, so a share of wild rows pulls them, and the scale learns
@@ -1092,18 +1092,21 @@ weight, and without decay the fit stays captured. A median over a few
 streams hides it: over 20,000 rows with an eighth of them wild, the median
 stream was within 0.002 of statsmodels' converged fit, and 13 of 40 streams
 were more than 0.05 from it, the worst by 0.43. The refit fits each
-target's first 200 learned rows to convergence, once, and rebuilds the
-scale from that fit's residuals. Over 20,000 rows no stream of the 40 was
+target's first 500 learned rows to convergence, once (10 a feature from 51
+features, and off above 100, where a target's rows would pass 0.8 MB), and
+rebuilds the scale from that fit's residuals. Over 20,000 rows no stream of the 40 was
 then more than 0.05 away up to 15% wild rows, and 4 at 20%. Over 2,000 rows
-the tail is longer: at 20% wild rows 18 of 40 stayed more than 0.05 away
-with the default, 5 of them more than 0.25, where 29 were without it, and
-`huber_refit_rows=1000` left 3. The capture measured with and without it is
+the tail is longer: at 20% wild rows 10 of 40 stayed more than 0.05 away
+with the default, 1 of them more than 0.25, where 29 were without it and
+200 rows left 18, and `huber_refit_rows=1000` left 3. `refit_budget`, 256
+MiB by default, bounds the buffers of all a spec's groups together: past it
+a new group keeps its one-pass fit, which a notice and `summary()` say. The capture measured with and without it is
 in [MODELS.md](MODELS.md#huber--quantile--robust-regression).
 `huber_refit_rows=0` is the way back: it restores the earlier numbers to
 the bit. A state saved before the refit existed loads with it off and goes
 on as it did, and so does each group restored from a bank saved then. A
 group that bank first sees after the load, or one a drift reset starts
-over, is built from the spec, so it refits at 200 rows: one bank then holds
+over, is built from the spec, so it refits at 500 rows: one bank then holds
 groups under both rules, until `huber_refit_rows` is given in the spec.
 
 **From 1.0, a rename is a deprecation, not a refusal.**

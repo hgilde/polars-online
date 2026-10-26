@@ -741,6 +741,25 @@ impl Sgd {
         self.refit.iter().map(RefitBuf::status).collect()
     }
 
+    /// Give every target's refit up before it begins, past the spec's
+    /// `refit_budget` ([`SgdCfg::refit_rows`]): a bank does this to a
+    /// group whose reservation the budget cannot take, and to the models
+    /// a reset rebuilds for it.
+    pub fn refit_give_up(&mut self) {
+        self.refit
+            .iter_mut()
+            .for_each(RefitBuf::give_up_over_budget);
+    }
+
+    /// The bytes this model's refit buffers can hold at most
+    /// ([`crate::refit_reservation`] a target), 0 with the refit off.
+    pub fn refit_reservation(&self) -> usize {
+        if self.refit.is_empty() {
+            return 0;
+        }
+        self.cfg.n_targets * crate::refit_reservation(self.cfg.n_features, self.cfg.refit_rows)
+    }
+
     /// Per target, the sketch of `|e|` the MAD scale is read from, under
     /// `huber_scale = "mad"`; empty otherwise.
     pub fn mad_sketch(&self) -> &[crate::EwQuantile] {

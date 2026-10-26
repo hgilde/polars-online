@@ -253,9 +253,10 @@ _SKIPPED_WHEN_ABSENT: dict[str, frozenset[str]] = {
             "ridge_scale",
             "emit_huber_scale",
             "huber_refit_rows",
+            "refit_budget",
         }
     ),
-    "sgd": frozenset({"huber_scale", "huber_scale_half_life", "huber_refit_rows"}),
+    "sgd": frozenset({"huber_scale", "huber_scale_half_life", "huber_refit_rows", "refit_budget"}),
     "ew_cov": frozenset({"gram_threads"}),
     "marginal": frozenset(
         {
@@ -2793,6 +2794,7 @@ def sgd(
     huber_scale: Literal["mad", "rms"] | None = None,
     huber_scale_half_life: float | Duration | None = None,
     huber_refit_rows: int | None = None,
+    refit_budget: float | None = None,
     quantile: float | None = None,
     eps: float | None = None,
     learning_rate: float | None = None,
@@ -2890,8 +2892,8 @@ def sgd(
     loss and 2.013 under ``"mad"`` (2.016 with ``huber_refit_rows = 0``).
     The refit takes the first residuals out of ``"rms"`` too, but the
     outliers still inflate it: over 40 seeds at 5% every stream stayed more
-    than 0.25 from statsmodels' converged ``RLM`` under ``"rms"``, with the
-    refit or without it. Inside the tube
+    than 0.05 from statsmodels' converged ``RLM`` under ``"rms"``, and 36 of
+    40 more than 0.25 with the refit, where all 40 were without it. Inside the tube
     the gradient is zero. On a target at 1,000 with a spread of 2, the first residuals put the
     residual's std near 1,000, so a tube of ``eps = 0.1`` drawn in it would be
     about 100 wide and hold every row. Without decay it would never narrow,
@@ -2932,8 +2934,8 @@ def sgd(
     make the next steps throw the fit off. ``inv_scaling`` reads the weight,
     which the refit does not move. Over 2,000 rows with the refit, 2 of the
     40 streams at 10% were more than 0.05 from ``RLM``, the worst by 0.075,
-    and at 20% 16, 4 of them more than 0.25 (1,000 rows of refit: 8, none).
-    Over 20,000 rows at 20% the 40 of 40 captured streams became 23 more
+    and at 20% 8, none more than 0.25 (200 rows of refit: 16, 4 of them).
+    Over 20,000 rows at 20% the 40 of 40 captured streams became 24 more
     than 0.05 and none more than 0.25. A constant learning rate's own wander
     is about 0.03 at every share.
 
@@ -2967,17 +2969,26 @@ def sgd(
         shorter.
     ``huber_refit_rows``
         The learned rows after which each target's first rows are refit to their
-        converged Huber fit, once (the rubric above). Default 200 under ``loss =
-        "huber"``; ``0`` turns the refit off, which gives the numbers of the releases
-        before it, to the bit. A target's rows are held until its refit: ``(features +
-        4) * 8`` bytes a learned row, and 32 bytes a run of rows that only aged it (its
-        value null or its weight 0), one run for such rows in a row at one clock step.
-        Past 4 runs a learned row of the count, as on a target present on fewer than
-        about one row in five under an irregular clock, the target gives its refit up
-        and keeps its one-pass fit. The refit takes 0.06 to 7.2 ms once, for 1 to 50
-        features and 200 to 1,000 rows (an Apple M4 Pro under other load, best of 9).
-        Off by default, and refused when given, beside an infinite ``huber_delta``, the
-        squared loss. ``loss = "huber"`` only; refused beside another loss.
+        converged Huber fit, once (the rubric above). Default ``max(500, 10 *
+        features)`` under ``loss = "huber"`` up to 100 features, and off above 100;
+        a count given is always taken. ``0`` turns the refit off, which gives the
+        numbers of the releases before it, to the bit. A target's rows are held until
+        its refit: ``(features + 4) * 8`` bytes a learned row, and 32 bytes a run of
+        rows that only aged it (its value null or its weight 0), one run for such rows
+        in a row at one clock step. Past 4 runs a learned row of the count, as on a
+        target present on fewer than about one row in five under an irregular clock,
+        the target gives its refit up and keeps its one-pass fit. The refit takes 0.06
+        to 7.2 ms once, for 1 to 50 features and 200 to 1,000 rows (an Apple M4 Pro
+        under other load, best of 9). Off by default, and refused when given, beside
+        an infinite ``huber_delta``, the squared loss. ``loss = "huber"`` only;
+        refused beside another loss.
+    ``refit_budget``
+        A bound in MiB on the refit buffers of all the spec's groups together, as for
+        :func:`huber`: above 0, or ``inf`` for none; default 256. Each new group
+        reserves ``(features + 20) * 8`` bytes a target for each row of the count when
+        it first appears, and the group that would cross the bound, and every new group
+        after it, keeps its one-pass fit, with a notice and ``summary()``'s
+        ``refit_given_up``. ``loss = "huber"`` only; refused beside another loss.
     ``quantile``
         The level for ``loss = "quantile"``, in ``(0, 1)``; required for it.
     ``eps``
@@ -3192,6 +3203,7 @@ def sgd(
         "huber_scale": huber_scale,
         "huber_scale_half_life": huber_scale_half_life,
         "huber_refit_rows": huber_refit_rows,
+        "refit_budget": refit_budget,
         "quantile": quantile,
         "eps": eps,
         "learning_rate": learning_rate,
@@ -3216,6 +3228,7 @@ def sgd(
         ("huber_scale", huber_scale, "loss", "huber", loss),
         ("huber_scale_half_life", huber_scale_half_life, "loss", "huber", loss),
         ("huber_refit_rows", huber_refit_rows, "loss", "huber", loss),
+        ("refit_budget", refit_budget, "loss", "huber", loss),
         ("quantile", quantile, "loss", "quantile", loss),
         ("eps", eps, "loss", "epsilon_insensitive", loss),
         ("power", power, "schedule", "inv_scaling", schedule),

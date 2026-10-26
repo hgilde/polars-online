@@ -317,3 +317,24 @@ is captured by the same mechanism and has no refit: over 40 seeds in 16
 bins, 13 of 40 streams of 2,000 rows at 12% spikes had a bin more than 0.1
 of the scale from statsmodels' M-location (7 more than 0.5), and 18 of 40
 streams of 20,000 rows at 20%.
+
+**The user's decisions on the review (2026-10-25).** The default count is
+500, scaling as `max(500, 10·k)` up to 100 features and off above 100; a
+count given is always taken. At one feature that is the table's 500 column:
+over 2,000 rows at 20% it leaves 10 (1) `huber` streams where 200 left 18
+(5), and 8 (0) `sgd` streams where 200 left 16 (4); over 20,000 rows it
+changes nothing that 200 did not already fix. A per-spec `refit_budget`,
+256 MiB by default, bounds the buffers of all a spec's groups: each new
+group reserves `8·rows·(k + 20)` bytes a target when it first appears, in
+first-appearance order, keeps the reservation for the bank's life and saves
+it with the bank, so admission is the same under any chunking; the group
+that would cross the bound and every later new group give their refits up
+(a notice once, `summary()`'s `refit_given_up`). Measured with 150-row
+groups, two targets and 20 features, fed from parquet (peak RSS after the
+fit; the saved state; at 20,000 groups the median of three runs, which
+spread by up to 130 MiB):
+
+| groups | refit off | default (256 MiB) | `refit_budget=inf` |
+|---|---|---|---|
+| 5,000 | 660 MiB; 126 MiB | 749 MiB; 178 MiB; 8,324 of 10,000 targets given up | 1,084 MiB; 435 MiB |
+| 20,000 | 1,625 MiB; 502 MiB | 1,641 MiB; 556 MiB; 38,324 of 40,000 given up | 3,161 MiB; 1,741 MiB |

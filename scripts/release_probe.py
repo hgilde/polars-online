@@ -226,7 +226,7 @@ WORKLOAD: list[tuple[str, str, dict, list[str]]] = [
         dict(FIT, learning_rate=0.01, loss="huber", huber_scale="mad"),
         [],
     ),
-    # Task 277's refit of the first rows, on by default at 200 rows, which
+    # Task 277's refit of the first rows, on by default at 500 rows, which
     # no group of this stream reaches: at 90 each group's buffer is part
     # full at the half and its refit runs in the second. A release without
     # `huber_refit_rows` refuses them: not comparable.

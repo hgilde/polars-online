@@ -40,6 +40,9 @@ SUMMARY_SCHEMA = {
     "clock_backwards": pl.Int64,
     "resets": pl.Int64,
     "solve_failures": pl.Int64,
+    # The targets that gave the refit of their first rows up to the
+    # spec's `refit_budget` (task 277).
+    "refit_given_up": pl.Int64,
     # The readiness statistics (docs/WARMUP-AND-CONVERGENCE.md §3).
     "settled_frac": pl.Float64,
     "weight_sum_settled": pl.Float64,

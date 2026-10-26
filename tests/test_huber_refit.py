@@ -12,6 +12,8 @@ released wheel in ``tests/test_released_state.py``."""
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import polars as pl
 import pytest
@@ -63,7 +65,7 @@ def test_the_refit_is_statsmodels_converged_fit_on_the_buffer(kind, share):
 
 @pytest.mark.parametrize(
     ("kind", "rows", "seed", "before", "after"),
-    [("huber", 20_000, 110, 0.4261, 0.0035), ("sgd", 2_000, 101, 1.1057, 0.0124)],
+    [("huber", 20_000, 110, 0.4261, 0.0025), ("sgd", 2_000, 101, 1.1057, 0.0120)],
 )
 def test_the_refit_frees_a_captured_stream(kind, rows, seed, before, after):
     """The capture the refit is there for (the module doc of
@@ -143,15 +145,17 @@ def _without_refit(spec: dict, rows: int | None) -> dict:
 @pytest.mark.parametrize("spec", _specs(), ids=IDS)
 def test_the_refit_moves_the_fit_after_its_row_and_not_the_weight(spec):
     """The activation check: with the refit on, the predictions part from the
-    run without it only after a target's buffer fills -- its 200th learned
+    run without it only after a target's buffer fills -- here its 200th learned
     row -- and the weight the bank reports and gates on does not move (hard
-    rule 8). The default is 200 rows, so a spec that does not name it is the
-    spec at 200."""
+    rule 8). The default at one feature is 500 rows, so a spec that does not
+    name it is the spec at 500."""
     df = _frame()
     on = po.ModelBank([spec]).fit_predict(df)["m"]
     off = po.ModelBank([_without_refit(spec, 0)]).fit_predict(df)["m"]
     default = po.ModelBank([_without_refit(spec, None)]).fit_predict(df)["m"]
-    assert default.equals(on, null_equal=True)
+    at_500 = po.ModelBank([_without_refit(spec, 500)]).fit_predict(df)["m"]
+    assert default.equals(at_500, null_equal=True)
+    assert not default.equals(on, null_equal=True), "500 rows refit after 200"
     assert on.struct.field("weight_sum").equals(off.struct.field("weight_sum"))
     learned = df.with_row_index("i").filter(
         pl.col("y0").is_not_null() & pl.col("y0").is_finite() & (pl.col("w") > 0)
@@ -223,3 +227,87 @@ def test_the_largest_feature_set_is_the_refit_huber_on_its_features():
     assert a.equals(b, null_equal=True)
     off = po.ModelBank([{**plain, "model": {**plain["model"], "huber_refit_rows": 0}}])
     assert not off.fit_predict(df)["m"].struct.field("pred_y").equals(b, null_equal=True)
+
+
+def test_the_default_count_grows_with_the_features_and_stops_above_100():
+    """The default count is ``max(500, 10 * features)`` up to 100 features
+    and none above: at 60 features the spec that does not name it is the
+    spec at 600, which parts from the one at 500; at 101 it is the spec with
+    the refit off, to the bit. A count given is taken at any width."""
+    rng = np.random.default_rng(5)
+
+    def frame(k: int, n: int) -> tuple[pl.DataFrame, list[str]]:
+        X = rng.standard_normal((n, k))
+        y = 1000.0 + X @ np.linspace(1.0, 2.0, k) + 0.5 * rng.standard_normal(n)
+        y[(rng.random(n) < 0.25) & (X[:, 0] > 0)] += 50.0
+        names = [f"x{i}" for i in range(k)]
+        return pl.DataFrame({**{c: X[:, i] for i, c in enumerate(names)}, "y": y}), names
+
+    def preds(df: pl.DataFrame, names: list[str], **kw) -> pl.Series:
+        spec = po.spec.huber("m", targets=["y"], features=names, half_life=INF, **kw)
+        return po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y")
+
+    df, names = frame(60, 700)
+    default = preds(df, names)
+    assert default.equals(preds(df, names, huber_refit_rows=600), null_equal=True)
+    assert not default.equals(preds(df, names, huber_refit_rows=500), null_equal=True)
+    assert not default.equals(preds(df, names, huber_refit_rows=0), null_equal=True)
+    df, names = frame(101, 260)
+    default = preds(df, names)
+    assert default.equals(preds(df, names, huber_refit_rows=0), null_equal=True)
+    given = preds(df, names, huber_refit_rows=200)
+    assert not given.equals(default, null_equal=True), "a count given is taken above 100"
+
+
+@pytest.mark.parametrize("kind", ["huber", "sgd"])
+def test_the_refit_budget_gives_up_the_later_groups_and_counts_them(kind):
+    """``refit_budget`` bounds the buffers of all the spec's groups: each new
+    group reserves ``(features + 20) * 8`` bytes a target for each row of the
+    count when it first appears. At 50 rows, one feature and two targets that
+    is 16,800 bytes a group, so 0.05 MiB holds three groups' buffers; the
+    fourth to appear and every later one keep their one-pass fits, one
+    notice says so, and ``summary()`` counts their targets. Each admitted
+    group is the group a bank with no bound fits, to the bit, and each
+    given-up group the group with the refit off."""
+    rng = np.random.default_rng(6)
+    groups, rows = 8, 120
+    n = groups * rows
+    x = rng.standard_normal(n)
+    df = pl.DataFrame(
+        {
+            "g": np.tile(np.arange(groups), rows).astype(str),
+            "x": x,
+            "y": 10.0 + 2.0 * x + 0.5 * rng.standard_normal(n) + 8.0 * (rng.random(n) < 0.1),
+            "z": -x + rng.standard_normal(n),
+        }
+    )
+    build = po.spec.huber if kind == "huber" else po.spec.sgd
+    loss = {} if kind == "huber" else {"loss": "huber"}
+    c = dict(targets=["y", "z"], features=["x"], group="g", half_life=INF, coef_every=0, **loss)
+
+    def bank(**kw) -> tuple[po.ModelBank, pl.DataFrame, list[str]]:
+        b = po.ModelBank([build("m", huber_refit_rows=50, **c, **kw)])
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            out = b.fit_predict(df)
+        return b, out, [str(w.message) for w in caught if "refit_budget" in str(w.message)]
+
+    bounded, out, notices = bank(refit_budget=0.05)
+    free, out_free, none = bank(refit_budget=INF)
+    out_off = po.ModelBank([build("m", huber_refit_rows=0, **c)]).fit_predict(df)
+    assert len(notices) == 1 and 'at group "3"' in notices[0], notices
+    assert none == []
+    given = dict(bounded.summary().select("group", "refit_given_up").iter_rows())
+    assert given == {str(g): (0 if g < 3 else 2) for g in range(groups)}, given
+    assert set(free.summary()["refit_given_up"]) == {0}
+    for g in range(groups):
+        mine = out.filter(pl.col("g") == str(g))["m"]
+        like = (out_free if g < 3 else out_off).filter(pl.col("g") == str(g))["m"]
+        assert mine.equals(like, null_equal=True), g
+    with pytest.raises(ValueError, match="refit_budget must be > 0 MiB"):
+        po.ModelBank([build("m", refit_budget=0.0, **c)])
+
+
+def test_the_refit_budget_is_refused_beside_another_loss():
+    with pytest.raises(ValueError, match='refit_budget is for loss "huber"'):
+        po.spec.sgd("s", targets=["y"], features=["x"], half_life=INF, refit_budget=10.0)

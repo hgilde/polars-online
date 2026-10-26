@@ -516,14 +516,14 @@ def test_a_bank_of_the_release_before_the_refit_resumes_without_it_in_its_groups
     """A bank 1.3.0 saved holds `huber` groups fitted without the refit, and
     its file has no `huber_refit_rows`: loaded here, each restored group goes
     on as 1.3.0 did -- its state says the refit is off, so it never refits
-    rows its stream has passed -- to the bit, past 200 rows; a group the bank
+    rows its stream has passed -- to the bit, past 500 rows; a group the bank
     first sees after the load is built from the spec, whose default refits
-    at 200 rows, as a fresh bank's does. One bank, two rules: the restored
+    at 500 rows, as a fresh bank's does. One bank, two rules: the restored
     groups' and the new one's."""
     if not _online():
         pytest.skip("offline: the released wheel cannot be downloaded")
     rng = np.random.default_rng(21)
-    first, second = 150, 300
+    first, second = 150, 600
 
     def rows(groups: list[str], n: int, t0: float) -> pl.DataFrame:
         k = len(groups) * n
@@ -563,8 +563,8 @@ def test_a_bank_of_the_release_before_the_refit_resumes_without_it_in_its_groups
         assert mine.equals(restored.filter(pl.col("g") == g)["m"], null_equal=True), g
     new = resumed.filter(pl.col("g") == "c")["m"]
     assert new.equals(fresh_c["m"], null_equal=True)
-    # The new group's refit ran: it parts from the one pass after its 200th row.
+    # The new group's refit ran: it parts from the one pass after its 500th row.
     p = new.struct.field("pred_y").to_numpy()
     q = restored.filter(pl.col("g") == "c")["m"].struct.field("pred_y").to_numpy()
     differ = np.flatnonzero(~((p == q) | (np.isnan(p) & np.isnan(q))))
-    assert differ.size and differ[0] >= 200, differ[:3]
+    assert differ.size and differ[0] >= 500, differ[:3]

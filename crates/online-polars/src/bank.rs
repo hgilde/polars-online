@@ -1153,7 +1153,13 @@ fn process<'s>(
                 if seg > 0 {
                     // The span before this row is finished.
                     closed.extend(close_rows(si, spec, key, stream, idx[start]));
+                    let over = stream.refit_over_budget();
                     *stream = Stream::new(spec).expect("the spec built this stream once");
+                    // The group's reservation is the one it was given when
+                    // the bank first saw it (`reserve_refits`).
+                    if over {
+                        stream.refit_give_up();
+                    }
                 }
                 // Configuration, not state: set on every segment, a fresh
                 // stream's too. The same bits at any count.
@@ -1587,6 +1593,50 @@ pub(crate) fn clock_amount(spec: &Spec, v: f64) -> String {
 }
 
 /// Drop the streams a refused chunk materialized, `(spec index, key)` each.
+/// A new group's Huber refit buffers against its spec's `refit_budget`
+/// (docs/PLAN.md task 277): reserve the most they can hold
+/// ([`Stream::refit_reservation`]), or, where that would pass the budget,
+/// give the group's refits up, count it in `summary()`'s
+/// `refit_given_up`, and raise the notice once a bank.
+fn reserve_refits(
+    spec: &Spec,
+    key: &GroupKey,
+    stream: &mut Stream,
+    reserved: &mut f64,
+    noticed: &mut bool,
+    notices: &mut Vec<String>,
+) {
+    let need = stream.refit_reservation() as f64;
+    let Some(budget) = spec.model.refit_budget_mib() else {
+        return;
+    };
+    if need == 0.0 {
+        return;
+    }
+    let bytes = budget * 1024.0 * 1024.0;
+    if *reserved + need <= bytes {
+        *reserved += need;
+        return;
+    }
+    stream.refit_give_up();
+    if !*noticed {
+        *noticed = true;
+        let group = key
+            .0
+            .as_deref()
+            .map_or(String::new(), |g| format!(" at group {g:?}"));
+        notices.push(format!(
+            "spec {:?}: the Huber refit buffers of its groups reached refit_budget = {budget} \
+             MiB{group}, {:.0} KB a group: that group's refits and those of every later new \
+             group are given up, and their one-pass fits stand (summary()'s refit_given_up \
+             counts them). To refit more groups, raise refit_budget (MiB, or inf for no \
+             bound), or lower huber_refit_rows, which sets each target's buffer",
+            spec.name,
+            need / 1024.0
+        ));
+    }
+}
+
 fn forget(states: &mut [HashMap<GroupKey, Stream>], fresh: &[(usize, GroupKey)]) {
     for (si, key) in fresh {
         states[*si].remove(key);
@@ -2747,6 +2797,12 @@ struct BankFile {
     /// Skipped when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     resolvers: SavedResolvers,
+    /// `(spec index, bytes)`: the Huber refit buffers each spec's groups
+    /// have reserved against its `refit_budget` (docs/PLAN.md task 277),
+    /// for the specs that reserved any. Skipped when empty, so no other
+    /// file's bytes move.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    refit_reserved: Vec<(usize, f64)>,
 }
 
 pub struct Bank {
@@ -2817,6 +2873,18 @@ pub struct Bank {
     /// that keeps no prediction takes any embargo
     /// ([`Self::fit_predict_arrow_with`]).
     short_embargo: Vec<Option<String>>,
+    /// Per spec, the bytes its groups' Huber refit buffers have reserved
+    /// against its `refit_budget` (docs/PLAN.md task 277): each group as
+    /// the bank first sees it, in the order its rows first arrive, reserves
+    /// the most its buffers can hold, or, once that would pass the budget,
+    /// gives its refits up. A reservation is kept for the bank's life, so
+    /// which groups refit depends on that order alone, whatever the
+    /// chunking (hard rule 3), and the buffers never hold more than the
+    /// budget. State.
+    refit_reserved: Vec<f64>,
+    /// Per spec, whether the notice of a group's refits given up past the
+    /// budget has been raised; once a bank. Not state.
+    refit_noticed: Vec<bool>,
 }
 
 /// Everything `assemble` needs that follows from the `Spec` alone.
@@ -2980,6 +3048,7 @@ impl Bank {
         let high_water = specs.iter().map(|_| None).collect();
         let key_dtypes = vec![[None, None]; specs.len()];
         let clock_dtypes = vec![None; specs.len()];
+        let n_specs = specs.len();
         // A formula target's window must close before any row it covers is
         // scored from a state that learned it (docs/PLAN.md task 104): the
         // embargo covers the longest forward window, or `fit_predict`
@@ -3037,6 +3106,8 @@ impl Bank {
             threads: crate::pool::Threads::default(),
             notices,
             spares: Spares::default(),
+            refit_reserved: vec![0.0; n_specs],
+            refit_noticed: vec![false; n_specs],
         })
     }
 
@@ -3589,6 +3660,7 @@ impl Bank {
                     last_clock: stream.persisted.clock.last_clock(),
                     summary: stream.summary(),
                     solve_failures: stream.solve_failures(),
+                    refit_given_up: stream.refits_given_up(),
                     readiness: Some(stream.readiness(&self.specs[spec])),
                     fits: !self.specs[spec].model.reads_every_row(),
                 }
@@ -3979,13 +4051,23 @@ impl Bank {
         // `fresh` remembers which, so that a refused chunk can take them
         // away again.
         let mut fresh: Vec<(usize, GroupKey)> = Vec::new();
+        // The reservations as they stood, for a refused chunk to restore.
+        let reserved_before = self.refit_reserved.clone();
         for (si, spec) in self.specs.iter().enumerate() {
+            // In the order the group's rows first arrive (`group_indices`).
             for (key, _) in &groups[si] {
                 if !self.states[si].contains_key(key) {
-                    self.states[si].insert(
-                        key.clone(),
-                        Stream::new(spec).map_err(|e| polars_err!(ComputeError: "{}", e))?,
+                    let mut stream =
+                        Stream::new(spec).map_err(|e| polars_err!(ComputeError: "{}", e))?;
+                    reserve_refits(
+                        spec,
+                        key,
+                        &mut stream,
+                        &mut self.refit_reserved[si],
+                        &mut self.refit_noticed[si],
+                        &mut self.notices,
                     );
+                    self.states[si].insert(key.clone(), stream);
                     fresh.push((si, key.clone()));
                 }
             }
@@ -4041,6 +4123,7 @@ impl Bank {
         if let Err(e) = checked {
             drop(work);
             forget(&mut self.states, &fresh);
+            self.refit_reserved.clone_from(&reserved_before);
             return Err(e);
         }
 
@@ -4073,6 +4156,7 @@ impl Bank {
                 Err(e) => {
                     drop(work);
                     forget(&mut self.states, &fresh);
+                    self.refit_reserved.clone_from(&reserved_before);
                     return Err(e);
                 }
             }
@@ -4119,6 +4203,7 @@ impl Bank {
                 self.resolvers = snapshot;
             }
             forget(&mut self.states, &fresh);
+            self.refit_reserved.clone_from(&reserved_before);
             return Err(e);
         }
 
@@ -4174,6 +4259,7 @@ impl Bank {
                     self.resolvers = snapshot;
                 }
                 forget(&mut self.states, &fresh);
+                self.refit_reserved.clone_from(&reserved_before);
                 return Err(e);
             }
         }
@@ -4215,6 +4301,7 @@ impl Bank {
                 Err(e) => {
                     drop(work2);
                     forget(&mut self.states, &fresh);
+                    self.refit_reserved.clone_from(&reserved_before);
                     self.broken = Some(e.to_string());
                     return Err(e);
                 }
@@ -4263,6 +4350,7 @@ impl Bank {
                     Ok(o) => per_spec_rows[si].push(o),
                     Err(e) => {
                         forget(&mut self.states, &fresh);
+                        self.refit_reserved.clone_from(&reserved_before);
                         self.broken = Some(e.to_string());
                         return Err(e);
                     }
@@ -4593,6 +4681,13 @@ impl Bank {
         }
         Ok(BankFile {
             resolvers,
+            refit_reserved: self
+                .refit_reserved
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| **b > 0.0)
+                .map(|(si, b)| (si, *b))
+                .collect(),
             magic: BANK_MAGIC.to_string(),
             format_version: format_version_for(&self.specs),
             rows_fed: self.rows_fed,
@@ -4810,6 +4905,7 @@ impl Bank {
                 specs.len()
             ));
         }
+        let specs_len = specs.len();
         let mut bank = Bank::new(specs)?;
         // The caller's spec may write a half-life grid another way, `"600s"`
         // for `"10m"`: the same instances, a duration being its length, under
@@ -4887,6 +4983,21 @@ impl Bank {
             if let Some(slot) = bank.resolvers.get_mut(*si) {
                 for (key, bytes) in groups {
                     slot.saved.insert(key.clone(), bytes.clone());
+                }
+            }
+        }
+        // The refit reservations (docs/PLAN.md task 277): one a spec, of the
+        // caller's specs; a file written before them reserved nothing, as
+        // its groups hold no buffer.
+        for &(si, bytes) in &file.refit_reserved {
+            match bank.refit_reserved.get_mut(si) {
+                Some(slot) if bytes.is_finite() && bytes >= 0.0 => *slot = bytes,
+                _ => {
+                    return Err(format!(
+                        "bank state file is damaged: its refit reservation names spec {si} \
+                         with {bytes} bytes, and it has {} specs",
+                        specs_len
+                    ));
                 }
             }
         }

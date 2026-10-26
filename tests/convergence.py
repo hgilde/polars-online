@@ -657,7 +657,7 @@ def _registrations() -> list[Registration]:
             oracle=huber_oracle(),
             classes=frozenset({1, 2, 3, 4, 5}),
             limit="the converged batch Huber fit with the MAD scale on the same weighted rows "
-            "(statsmodels' RLM loop): the refit of the first 200 learned rows lands on it, and "
+            "(statsmodels' RLM loop): the refit of the first 500 learned rows lands on it, and "
             "each row after it is weighed once, by the fit before it, so the one pass converges "
             "to it on a stationary stream",
             robust=True,
@@ -671,7 +671,7 @@ def _registrations() -> list[Registration]:
             oracle=huber_oracle(),
             classes=frozenset({1, 2, 3, 4, 5}),
             limit="the converged batch Huber fit with the MAD scale, at 1/sqrt(n) under "
-            "inv_scaling with power 1: the refit of the first 200 learned rows sets the "
+            "inv_scaling with power 1: the refit of the first 500 learned rows sets the "
             "coefficients to that fit of those rows, and the steps go on from there",
             robust=True,
             other=OTHER_LINEAR,

@@ -130,13 +130,21 @@ CONSISTENCY: dict[str, tuple[float, float | None]] = {
     # Measured 0.028 and -0.77; 0.051 and -0.65.
     "ftrl:squared": (0.05, -0.6),
     "ftrl:logistic": (0.1, -0.5),
-    # The refit of the first 200 rows lands on the batch fit of those rows,
+    # The refit of the first 500 rows lands on the batch fit of those rows,
     # and each row after is weighed by the fit before it: the one pass's gap
-    # to the batch fit of every row falls as 1/sqrt(n). Measured 0.0016 and
-    # -0.49 (huber); 0.00394 and -0.50 (sgd at power 1, rate 2).
+    # to the batch fit of every row falls as 1/sqrt(n), read from the cut
+    # after the refit's (RATE_FROM). Measured at the 500-row default
+    # (2026-10-25): 0.00171 and -0.40 over 2,000..32,000 (huber); 0.00413
+    # and -0.43 (sgd at power 1, rate 2).
     "huber": (0.0025, -0.35),
     "sgd:huber": (0.006, -0.35),
 }
+
+#: The cut a registration's rate is read from, where the first cut is not
+#: yet the one pass's: the Huber fits refit their first 500 rows, so at 500
+#: rows the gap is the refit's tolerance (3e-4 for both, measured), not a
+#: point on the 1/sqrt(n) the rows after it follow (task 277).
+RATE_FROM = {"huber": 2000, "sgd:huber": 2000}
 
 #: Registrations whose class 1 is a test of its own below.
 CONSISTENCY_ELSEWHERE = {"pa": "test_pa_wanders_in_a_neighbourhood_set_by_c", "holt": "test_holt"}
@@ -156,7 +164,8 @@ def test_consistency(key):
     worst = p.worst()
     assert worst[-1] <= end, f"worst seed {p.to_oracle[CUTS[-1]]}"
     if steepest is not None:
-        r = cv.rate(CUTS, worst)
+        first = CUTS.index(RATE_FROM.get(key, CUTS[0]))
+        r = cv.rate(CUTS[first:], worst[first:])
         print(f"  rate of the worst seed's gap: {r:.2f} (bound {steepest})")
         assert r <= steepest
     else:
@@ -324,8 +333,9 @@ START_RATE: dict[str, float] = {
     # A loaded state's refit has run, on the other regime's rows: the one
     # pass keeps those rows in its sums at the weights they were learned at,
     # where the batch fit of every row reads them as outliers, so the gap to
-    # this stream's own fit falls as the rows after it outweigh them: -0.67
-    # (45.8 to 2.78) and, for sgd's steps, -1.02 (45.7 to 0.652).
+    # this stream's own fit falls as the rows after it outweigh them: -0.71
+    # (2.72 at 32,000 rows) and, for sgd's steps, -1.05 (0.651), measured at
+    # the 500-row default (2026-10-25; -0.67 and -1.02 at 200).
     "huber": -0.5,
     "sgd:huber": -0.7,
 }
@@ -605,14 +615,14 @@ ADVERSE: dict[str, dict[tuple[str, float], float]] = {
         ("cauchy", INF): 32.0,
         **{(kind, 500.0): 1.35 for kind in cv.ADVERSITIES},
     },
-    # A robust fit with the refit of its first 200 rows. Measured without
-    # decay 0.00354 (wild), 0.0045 (t2) and 0.00656 (cauchy), beside 0.00316
-    # clean; a shift of every one of the first 500 rows is no outlier among
-    # them, so the refit keeps them and the one pass lets them go as 1/n
-    # (6.0 at 2,000 rows, 1.25 at 8,000). Under a half-life every kind
-    # 0.00497 to 0.00504, beside 0.00501 clean. sgd, at power 1: 0.00709,
-    # 0.00916, 0.00991 and the shift 0.238 (4.17 at 2,000); under a
-    # half-life 0.0163 to 0.0164, its clean 0.0163.
+    # A robust fit with the refit of its first 500 rows. Measured at that
+    # default (2026-10-25) without decay 0.00367 (wild), 0.00361 (t2) and
+    # 0.00509 (cauchy), beside 0.0034 clean; a shift of every one of the
+    # first 500 rows is no outlier among them, so the refit keeps them and
+    # the one pass lets them go as 1/n (5.97 at 2,000 rows, 1.24 at 8,000).
+    # Under a half-life every kind 0.00497 to 0.00501, beside 0.00501 clean.
+    # sgd, at power 1: 0.00693, 0.00792, 0.00827 and the shift 0.239 (4.17
+    # at 2,000); under a half-life 0.0163 to 0.0164, its clean 0.0163.
     "huber": {
         ("wild", INF): 0.0055,
         ("shift", INF): 1.9,
@@ -653,12 +663,12 @@ ADVERSE_DEFECTS: dict[tuple[str, str, float], str] = {
     **{
         (key, "outliers", INF): (
             "defect (task 277): 20% wild rows in the first 500 rows, 40% of those with x0 "
-            "above 0, capture the refit of the first 200 rows itself, which starts from the "
+            "above 0, capture the refit of the first 500 rows itself, which starts from the "
             "captured online fit; without decay the one pass then keeps the captured rows "
-            f"(measured {m} at 8,000 rows, seed 30, against 0.0032 clean); the class 4 "
+            f"(measured {m} at 8,000 rows, seed 30, against {c} clean); the class 4 "
             "cells at 20% are the same"
         )
-        for key, m in (("huber", "0.54"), ("sgd:huber", "0.331"))
+        for key, m, c in (("huber", "0.158", "0.0034"), ("sgd:huber", "0.149", "0.0068"))
     },
 }
 
@@ -1019,19 +1029,22 @@ def test_breakdown_essential():
 # fit with the MAD scale on the same rows. Measured 2026-10-25, 50 seeds at
 # 20,000 rows: no seed captured at 5%, 10% or 15%, with or without decay
 # (the worst 0.0175 for huber, 0.0208 for sgd, at 15% without decay); at
-# 20%, 40% of the rows with x0 above 0, the refit of the first 200 rows is
-# itself captured in some seeds (below).
+# 20%, 40% of the rows with x0 above 0, the refit of the first rows is
+# itself captured in some seeds (below). Re-measured at the 500-row default
+# (2026-10-25): still none at 5% to 15% (the worst 0.0128 for huber, 0.0144
+# for sgd, at 15% without decay); at 20% 8 and 5 of 50 for huber, 6 and 5
+# for sgd, where 200 rows left 16, 12, 15 and 10.
 _HUBER_20 = (
     "defect (task 277): at 20% wild rows, 40% of those with x0 above 0, the refit of "
-    "the first 200 rows is itself captured in some seeds, from the captured online fit "
-    "it starts from: {}/50 captured, the worst slope {} off (seed 30); "
+    "the first 500 rows is itself captured in some seeds, from the captured online fit "
+    "it starts from: {}/50 captured, the worst slope {} off (seed {}); "
     "huber_refit_rows=1000 leaves fewer (MODELS.md)"
 )
 HUBER_BREAKDOWN_DEFECTS: dict[tuple[str, float, float], str] = {
-    ("huber", 0.20, cv.INF): _HUBER_20.format(16, "4.17"),
-    ("huber", 0.20, 5000.0): _HUBER_20.format(12, "3.08"),
-    ("sgd:huber", 0.20, cv.INF): _HUBER_20.format(15, "3.35"),
-    ("sgd:huber", 0.20, 5000.0): _HUBER_20.format(10, "2.26"),
+    ("huber", 0.20, cv.INF): _HUBER_20.format(8, "0.913", 30),
+    ("huber", 0.20, 5000.0): _HUBER_20.format(5, "0.769", 21),
+    ("sgd:huber", 0.20, cv.INF): _HUBER_20.format(6, "0.862", 30),
+    ("sgd:huber", 0.20, 5000.0): _HUBER_20.format(5, "0.703", 21),
 }
 
 

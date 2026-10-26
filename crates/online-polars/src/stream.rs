@@ -235,6 +235,36 @@ impl AnyModel {
         }
     }
 
+    /// The bytes the model's Huber refit buffers can hold at most
+    /// (`refit_reservation`, docs/PLAN.md task 277): 0 for a model without
+    /// the refit.
+    pub fn refit_reservation(&self) -> usize {
+        match self {
+            AnyModel::Robust(m) => m.refit_reservation(),
+            AnyModel::Sgd(m) => m.refit_reservation(),
+            _ => 0,
+        }
+    }
+
+    /// Give the model's refits up, past its spec's `refit_budget`; a no-op
+    /// for a model without the refit.
+    pub fn refit_give_up(&mut self) {
+        match self {
+            AnyModel::Robust(m) => m.refit_give_up(),
+            AnyModel::Sgd(m) => m.refit_give_up(),
+            _ => {}
+        }
+    }
+
+    /// How each target's refit stands; empty for a model without it.
+    pub fn refit_status(&self) -> Vec<online_core::RefitStatus> {
+        match self {
+            AnyModel::Robust(m) => m.refit_status(),
+            AnyModel::Sgd(m) => m.refit_status(),
+            _ => Vec::new(),
+        }
+    }
+
     /// The step's answer without the step
     /// ([`OnlineModel::predict_with`]). `y` is passed because two models
     /// read a number out of the targets slot -- `bocpd`'s hazard column and
@@ -1812,6 +1842,14 @@ pub struct Persisted {
     /// for every instance.
     #[serde(default)]
     pub restarted: Vec<bool>,
+    /// Whether the bank gave this group's Huber refits up, past its spec's
+    /// `refit_budget` (docs/PLAN.md task 277): the models a reset rebuilds
+    /// give theirs up too, so the group never holds a buffer the bank did
+    /// not reserve for it. Schema 64; `false` in a file written before it,
+    /// and not written while `false`, so a stream that never met the budget
+    /// saves the bytes it did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub refit_over_budget: bool,
     /// Per model instance, the clock the rows held under `embargo` have
     /// covered and the model has not decayed by yet, which `settled_frac`
     /// adds (`Instance::pending_clock`). Kept, not rebuilt at each chunk:
@@ -2290,6 +2328,36 @@ impl Stream {
     }
 
     /// Summed over this stream's model instances (one per half-life).
+    /// The bytes this group's Huber refit buffers can hold at most, over
+    /// its model instances: what a bank reserves against the spec's
+    /// `refit_budget` (docs/PLAN.md task 277).
+    pub fn refit_reservation(&self) -> usize {
+        self.models.iter().map(|(_, m)| m.refit_reservation()).sum()
+    }
+
+    /// Give this group's Huber refits up, past its spec's `refit_budget`:
+    /// every model's, and those a reset rebuilds later.
+    pub fn refit_give_up(&mut self) {
+        self.persisted.refit_over_budget = true;
+        self.models.iter_mut().for_each(|(_, m)| m.refit_give_up());
+    }
+
+    /// Whether the bank gave this group's refits up past the budget.
+    pub fn refit_over_budget(&self) -> bool {
+        self.persisted.refit_over_budget
+    }
+
+    /// The targets, over the model instances, whose Huber refit was given
+    /// up: past the spec's `refit_budget`, or past the cap on a buffer's
+    /// ageing runs.
+    pub fn refits_given_up(&self) -> u64 {
+        self.models
+            .iter()
+            .flat_map(|(_, m)| m.refit_status())
+            .filter(|r| r.over_budget || r.abandoned)
+            .count() as u64
+    }
+
     pub fn solve_failures(&self) -> u64 {
         self.models.iter().map(|(_, m)| m.solve_failures()).sum()
     }
@@ -2771,6 +2839,7 @@ impl Stream {
                 summary: Some(DataSummary::new(spec)),
                 decay_time: vec![0.0; instances],
                 restarted: vec![false; instances],
+                refit_over_budget: false,
                 // Only a delay ever holds rows: without one there is no
                 // clock to keep, and none is written.
                 pending_clock: if embargo.is_some() {
@@ -3585,6 +3654,7 @@ impl Stream {
             restarted: &mut self.persisted.restarted,
             pending_clock: &mut self.persisted.pending_clock,
             notified: &mut self.persisted.notified,
+            refit_over_budget: self.persisted.refit_over_budget,
         };
         let mut insts = build_instances(
             spec,
@@ -3910,6 +3980,7 @@ impl Stream {
             restarted: &mut restarted,
             pending_clock: &mut pending_clock,
             notified: &mut notified,
+            refit_over_budget: self.persisted.refit_over_budget,
         };
         let models = models.iter().map(|(_, m)| ModelRef::Score(m));
         let rings = self
@@ -4007,6 +4078,7 @@ struct Diagnostics<'a> {
     restarted: &'a mut [bool],
     pending_clock: &'a mut [f64],
     notified: &'a mut [Notified],
+    refit_over_budget: bool,
 }
 
 /// Split per-instance state and output into disjoint pieces, so instances
@@ -4128,6 +4200,7 @@ fn build_instances<'a>(
                 decay_time: decay_time.next().expect("one per instance"),
                 restarted: restarted.next().expect("one per instance"),
                 notified: notified.next().expect("one per instance"),
+                refit_over_budget: diag.refit_over_budget,
                 // None without an embargo, which keeps no held rows' clock.
                 pending_clock: pending_clock.next(),
             }
@@ -4336,6 +4409,9 @@ struct Instance<'a> {
     shards: usize,
     /// The readiness notices this instance has raised, and the ones pending.
     notified: &'a mut Notified,
+    /// Whether the group's refits were given up past the spec's
+    /// `refit_budget` ([`Persisted::refit_over_budget`]).
+    refit_over_budget: bool,
     /// Clock the rows held under `embargo` have covered and the models
     /// have not yet decayed by: added as a row is buffered, taken back as it
     /// is released. `settled_frac` counts it, so a scored row reads what the
@@ -4361,6 +4437,11 @@ impl Instance<'_> {
         // This instance alone, at its own decay: `build_models` built every
         // instance of the grid to keep one (review 2026-09-12, P2).
         *self.model.get_mut() = build_one(spec, self.decay).expect("spec was already validated");
+        // The bank reserved no refit buffers for a group it gave them up
+        // for, and a rebuilt model must not hold one (docs/PLAN.md task 277).
+        if self.refit_over_budget {
+            self.model.get_mut().refit_give_up();
+        }
         self.resid_var.iter_mut().for_each(|v| *v = 0.0);
         self.resid_w.iter_mut().for_each(|v| *v = 0.0);
         // A rebuilt model has seen no decay: it settles from here. The

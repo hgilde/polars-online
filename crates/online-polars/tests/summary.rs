@@ -384,6 +384,7 @@ fn summary_and_describe_are_the_frame_s_numbers() {
                 "clock_backwards",
                 "resets",
                 "solve_failures",
+                "refit_given_up",
                 // The readiness statistics (docs/WARMUP-AND-CONVERGENCE.md §3).
                 "settled_frac",
                 "weight_sum_settled",
@@ -706,7 +707,7 @@ fn predict_moves_nothing_and_an_unseen_group_or_empty_bank_is_empty() {
     let empty = Bank::new(specs).unwrap();
     let s = empty.summary(0, None).unwrap();
     assert_eq!(s.height(), 0);
-    assert_eq!(s.width(), 20);
+    assert_eq!(s.width(), 21);
     let d = empty.describe(0, None).unwrap();
     assert_eq!(d.height(), 0);
     assert_eq!(d.width(), 9);

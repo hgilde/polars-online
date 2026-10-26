@@ -368,7 +368,7 @@ fn case_spec(id: &str) -> (Value, Shape) {
             fit(json!({"type": "huber", "ridge_scale": "sum"}), 20),
             Shape::Linear,
         ),
-        // The default refit runs in the warm-up's first 200 rows, outside
+        // The default refit runs in the warm-up's first 500 rows, outside
         // every block; here it holds 2,500 rows and runs on the block's
         // 500th, so the block pays for it once (docs/PLAN.md task 277).
         "huber_k20_refit" => (
