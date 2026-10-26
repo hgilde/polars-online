@@ -1140,11 +1140,47 @@ step, with `z = [1, x]` and `β` in the caller's units under
 
 ```
 eta = zᵀβ        p = link(eta)        d = dL/d eta
-g₀ = d·w         gᵢ = d·zᵢ·w + l2·βᵢ     each clipped to ±clip_gradient; the intercept takes no l2
+g₀ = d·w         gᵢ = d·zᵢ·w + l2·βᵢ     each clipped to ±clip_gradient·u; the intercept takes no l2
 βᵢ -= lrᵢ·gᵢ     lrᵢ = learning_rate                           schedule="constant"
                      = learning_rate/(1 + λ·weight_sum)^power  schedule="inv_scaling"
-                     = learning_rate/(√Gᵢ + 1e-8)              schedule="adagrad"
+                     = learning_rate/(√Gᵢ + 1e-8·u)            schedule="adagrad"
 ```
+
+`u` is the unit the gradient is in: `s_y`, the target's own spread (below),
+under `squared` and `huber`, whose gradient is in the target's units, with
+no clip before the target has one; 1 under the other losses, whose gradient
+is a sign, a count's residual or a probability's. So the clip and the
+epsilon mean the same at every scale of the target: in the target's units,
+the default clip bound every gradient of a target in the millions, and its
+fit was 0.59 to 6.5 of the target's spread off the unscaled one, scaled.
+
+**The intercept takes the running mean's step while it is the larger.** The
+coefficients start at 0, so the first residuals are the target's level, and
+left to the steps it moved every slope by about the rate times the level:
+2.49 off least squares after 8,000 rows at a level of 1,000 on the worst of
+50 streams, against 0.0096 at a level of 0. Under an identity link (every
+loss but `poisson` and `logistic`) with an intercept, with `W` the
+target's learned weight (undecayed, the row's in it) and `a = w/W`, the
+intercept's step is the running mean's, `−a·d` for `squared` and `huber`
+while `a` is above the rate or the rows number at most 22 by Kish's count,
+`a·(y − p)` for the sign-valued losses while they do, and the target's first
+row puts its whole residual there and moves nothing else. Now a level costs
+rounding (0.0077 at either level), and a target with no level loses
+nothing measurable.
+
+**A rate past its stability bound is withheld.** A step multiplies its own
+row's residual by `1 − q`, `q = learning_rate·(w·c·|z|² + l2)` with `c` the
+loss's curvature at the prediction (1 for `squared` and inside the Huber
+cut, 0 beyond it, `p` for `poisson`, `p·(1 − p)` for `logistic`), so the fit
+diverges in mean square once `E[q²] > 2·E[q]`. Each target keeps both sums
+over its recent steps (each decayed by `2^(−1/100)` a row), and while the
+squares' passes twice the gains' its predictions are withheld as
+`unstable_rate`, with a notice; the fit learns every row as before. On five
+standardized normal features the bound on a constant rate is 0.261; at 0.5
+the fit had diverged until `clip_gradient` held it, its error 50,000 times
+the target's variance, with nothing said. `inv_scaling` from a rate past
+the bound is withheld on its first rows only. `adagrad` and the sign-valued
+losses take steps that cannot grow, and are never withheld.
 
 `λ` is the row's decay, so `λ·weight_sum` is the weight before the row
 decayed to it, and `Gᵢ` is decayed by it too. A row of weight 0 in between
@@ -1197,29 +1233,29 @@ the moments instead, a half-life of 10 put the slope at 3.03 for a truth of
 2 at R² 0.978. Held in the caller's units, it is 2.02.
 
 **The cut reads the residuals and the tube does not, because the fit starts
-from zero.** Its first residuals are the target's whole level. Beyond the
+from zero.** A residual's spread can carry the target's level. Beyond the
 cut the gradient is clipped, not zero, so a cut those residuals widen still
 lets every row teach, and the median scale leaves them behind once the fit
-has the level. The root mean square does not: without decay the first
-residuals stay in it, the cut stays wider than every later residual, and the
-Huber loss is the squared loss, until the refit below rebuilds the scale
-from the converged fit's residuals. On `y = 1000 + 2x + 0.5ε` with a row 50
-too high on 5% of the rows, all with `x` above 0, and no decay, the median
-slope over five seeds is 3.751 under the squared loss, 2.016 under the
-default `"mad"` with `huber_refit_rows=0`, and 2.013 with the default
-refit. The refit rebuilds `"rms"` from its converged fit's residuals too,
-which takes the first residuals out of it, but the outliers still inflate
-it: over 40 seeds at 5% wild rows every stream stayed more than 0.05 from
-`RLM` under `"rms"`, and 36 of them more than 0.25 with the refit (a median
-gap of 0.60) where all 40 were without it (1.85). Inside the tube the gradient is zero. A tube drawn in
+has the level. The intercept takes the level from the first row (above), so
+the root mean square no longer keeps it, but the outliers still inflate it.
+On `y = 1000 + 2x + 0.5ε` with a row 50 too high on 5% of the rows, all
+with `x` above 0, and no decay, the median slope over five seeds is 3.751
+under the squared loss, 2.557 under `"rms"` and 2.013 under the default
+`"mad"`, with the refit below or without it. Over 40 seeds of 20,000 rows at
+5% wild rows every stream stayed more than 0.05 from `RLM` under `"rms"`,
+and 36 of them more than 0.25 (a median gap of 0.60), with the refit or
+without it; before the intercept took the level, all 40 were without it
+(1.85). Inside the tube the gradient is zero. A tube drawn in
 the residuals' spread on a target at 1,000 with a spread of 2 was about 100
 wide and held every row, and without decay it never narrowed.
 
 **`sgd`'s Huber loss refits each target's first 500 learned rows to
-convergence, as `huber` does.** Its first steps start from zero, so the
-outliers capture it as they capture `huber`'s first solves, and more often:
-over 2,000 rows at 10% wild rows, every one of 40 streams ended more than
-0.25 in slope from statsmodels' `RLM`. On the row a target's count of
+convergence, as `huber` does.** Its first steps start from zero slopes, so
+the outliers capture it as they capture `huber`'s first solves: over 2,000
+rows at 20% wild rows, 28 of 40 streams ended more than 0.05 in slope from
+statsmodels' `RLM` in one pass, the worst by 3.6 (at 10%, 4 of them, the
+worst by 0.069; all 40 more than 0.25 off before the intercept took the
+level from the first row). On the row a target's count of
 learned rows reaches `huber_refit_rows`, the converged Huber fit of those
 rows replaces its coefficients, and its scale `s` is rebuilt from that
 fit's residuals. The fit is `huber`'s iteration (in its section), started
@@ -1286,8 +1322,9 @@ the noise in noise variances:
 | 0.99998 | 0.20 | 24 (0.7 to 214) | 0.81 | 17 (3.4 to 30) |
 
 The sign-valued step moves the fit's level by the rate on each row of
-weight 1, so at the default rate of 0.01 a target at a level of 1,000 is
-100,000 rows away.
+weight 1, so at the default rate of 0.01 a target that moves by 1,000 is
+100,000 rows from its new level. Its first level, the first learned row
+sets.
 
 **Under `loss="poisson"`, keep `clip_gradient`, `1e3` by default,** because
 through the log link one large count would make the next gradient

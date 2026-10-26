@@ -1013,6 +1013,64 @@ fn the_refit_is_written_part_full_and_done() {
     }
 }
 
+/// `sgd`'s target-spread forms (schema 64, docs/PLAN.md task 278: D1, D2,
+/// D8, D-S): `sgd_spread` keeps each target's spread under the squared loss,
+/// its step gains and its level, every one holding a number; `sgd_unstable`
+/// is saved with its gate withholding, so its continuation reads the gains
+/// from the file and withholds every row; `sgd_spread_adagrad` keeps the
+/// spread and the level and no gains, AdaGrad's step being bounded. The
+/// cases without the flag write none of them.
+#[test]
+fn the_target_spread_forms_are_written() {
+    if regenerating() {
+        return;
+    }
+    let decoded = |name: &str| -> rmpv::Value {
+        let f = frozen::ALL.iter().find(|f| f.name == name).unwrap();
+        rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap()
+    };
+    let field = |name: &str, key: &str| -> rmpv::Value {
+        at(&decoded(name), &["model", "Sgd", key])
+            .cloned()
+            .unwrap_or_else(|| panic!("{name}: no {key}"))
+    };
+    let len = |v: &rmpv::Value| v.as_array().map_or(0, Vec::len);
+    for name in ["sgd_spread", "sgd_unstable", "sgd_spread_adagrad"] {
+        let on = at(&decoded(name), &["model", "Sgd", "cfg", "target_spread"])
+            .and_then(rmpv::Value::as_bool);
+        assert_eq!(on, Some(true), "{name}: cfg.target_spread");
+        for key in ["spread", "level"] {
+            assert_eq!(len(&field(name, key)), 2, "{name}: {key}, one a target");
+            assert!(held(&field(name, key)) > 0, "{name}: {key} holds nothing");
+        }
+    }
+    for name in ["sgd_spread", "sgd_unstable"] {
+        assert_eq!(len(&field(name, "gain")), 2, "{name}: gains, one a target");
+        assert!(
+            held(&field(name, "gain")) > 0,
+            "{name}: the gains hold nothing"
+        );
+    }
+    assert_eq!(len(&field("sgd_spread_adagrad", "gain")), 0);
+    for name in ["sgd", "sgd_huber", "sgd_logistic"] {
+        for key in ["gain", "level"] {
+            assert_eq!(len(&field(name, key)), 0, "{name}: {key} without the flag");
+        }
+    }
+    // The gate: the stable case predicts after its save, the unstable one
+    // withholds every row, read from the gains in the file.
+    for (name, withheld) in [("sgd_spread", false), ("sgd_unstable", true)] {
+        let f = frozen::ALL.iter().find(|f| f.name == name).unwrap();
+        let mut m = load(&case_of(f), &f.bytes()).unwrap();
+        let preds: Vec<f64> = f.rows().iter().flat_map(|r| m.step(r).pred).collect();
+        assert_eq!(
+            preds.iter().all(|p| p.is_nan()),
+            withheld,
+            "{name}: {preds:?}"
+        );
+    }
+}
+
 /// `kalman`'s covariance in units of the noise (schema 64, docs/PLAN.md task
 /// 278): `kalman_noise_units` names the form in its cfg and is saved with
 /// every covariance's intercept still diffuse -- its row and column 0 --

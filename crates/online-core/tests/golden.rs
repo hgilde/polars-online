@@ -385,6 +385,7 @@ fn sgd_golden() {
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
         refit_rows: 0,
+        target_spread: false,
     })
     .unwrap();
     check("sgd", &signature(&mut m, 0), GOLDEN_SGD);
@@ -410,6 +411,7 @@ fn sgd_squared_golden() {
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
         refit_rows: 0,
+        target_spread: false,
     })
     .unwrap();
     check("sgd_squared", &signature(&mut m, 0), GOLDEN_SGD_SQUARED);
@@ -459,6 +461,7 @@ fn sgd_simplex_golden() {
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
         refit_rows: 0,
+        target_spread: false,
     })
     .unwrap();
     check("sgd_simplex", &signature(&mut m, 0), GOLDEN_SGD_SIMPLEX);

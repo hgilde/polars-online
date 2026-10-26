@@ -85,6 +85,15 @@ pub mod sgd_huber_refit {
 pub mod sgd_huber_refit_done {
     include!("sgd_huber_refit_done.rs");
 }
+pub mod sgd_spread {
+    include!("sgd_spread.rs");
+}
+pub mod sgd_unstable {
+    include!("sgd_unstable.rs");
+}
+pub mod sgd_spread_adagrad {
+    include!("sgd_spread_adagrad.rs");
+}
 pub mod sgd_eps {
     include!("sgd_eps.rs");
 }
@@ -193,6 +202,9 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &sgd_huber_mad::FIXTURE,
     &sgd_huber_refit::FIXTURE,
     &sgd_huber_refit_done::FIXTURE,
+    &sgd_spread::FIXTURE,
+    &sgd_unstable::FIXTURE,
+    &sgd_spread_adagrad::FIXTURE,
     &sgd_eps::FIXTURE,
     &sgd_logistic::FIXTURE,
     &pa::FIXTURE,

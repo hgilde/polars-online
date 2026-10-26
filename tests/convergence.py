@@ -508,9 +508,10 @@ def _registrations() -> list[Registration]:
             classes=lin,
             limit="least squares, at 1/sqrt(n) under inv_scaling with power 1 and a rate past "
             "the smallest curvature's 1/2; at a constant rate a neighbourhood of it that "
-            "shrinks with the rate and not with n. clip_gradient (1e3) caps a step at the rate "
-            "times 1e3, so a level of L is learned at that pace: at 1e6 under lr / (1 + n) "
-            "never (measured 9.8e5 off after 8,000 rows), and class 2 adds a level of 1e3",
+            "shrinks with the rate and not with n. The intercept takes the running mean's "
+            "step while it is the larger, so a level costs rounding (it was learned at the "
+            "rate times the clip, 9.8e5 off a level of 1e6 after 8,000 rows), and class 2 "
+            "adds a level of 1e3",
             other=OTHER_LINEAR,
             level=1e3,
         ),
@@ -533,11 +534,10 @@ def _registrations() -> list[Registration]:
             stream=_laplace,
             oracle=quantreg(0.5),
             classes=frozenset({1, 2, 5}),
-            limit="QuantReg's fit, at 1/sqrt(n) under inv_scaling with power 1; a step moves "
-            "the level by at most half the rate a row (the gradient is 1/2 in size), and the "
-            "rates sum to lr ln(n), so a level of L is out of reach until lr ln(n) / 2 passes "
-            "it (measured 2.87 off a level of 10 at 8,000 rows, where it is 9): class 2 adds "
-            "a level of 3",
+            limit="QuantReg's fit, at 1/sqrt(n) under inv_scaling with power 1; the first 22 "
+            "rows' intercept is their residuals' running mean, so it starts at the level (2.87 "
+            "off a level of 10 at 8,000 rows before, where the rates' sum lr ln(n) / 2 is 9), "
+            "and a step then moves it by at most half the rate a row: class 2 adds a level of 3",
             other={**OTHER_LINEAR, "level": 5.0},
             level=3.0,
         ),
@@ -557,8 +557,9 @@ def _registrations() -> list[Registration]:
             oracle=insensitive(0.01),
             classes=frozenset({1, 2, 5}),
             limit="the batch epsilon-insensitive fit (scipy's HiGHS on its linear programme), "
-            "at 1/sqrt(n) under inv_scaling with power 1; a step moves the level by at most "
-            "the rate a row, so a level of L waits for lr ln(n) to pass it: class 2 adds 3",
+            "at 1/sqrt(n) under inv_scaling with power 1; the first 22 rows' intercept is their "
+            "residuals' running mean, so it starts at the level, and a step then moves it by at "
+            "most the rate a row: class 2 adds 3",
             other={**OTHER_LINEAR, "level": 5.0},
             level=3.0,
         ),

@@ -317,6 +317,7 @@ class TestAccumulateOnly:
             "above_max_error_inflation",
             "below_warm_rows",
             "ill_conditioned",
+            "unstable_rate",
         ]
         assert out.schema["c"] == pl.Struct(
             {

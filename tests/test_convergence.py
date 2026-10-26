@@ -409,20 +409,13 @@ def test_start_essential():
 #: 0, plus 1e-13 of the level, the rounding of a fit that carries it (measured
 #: 2026-10-25: rls at 1e6, 1.6e-8 against 3e-14 at level 0, about 130 ulps of
 #: the intercept; ewridge 1.2e-10, one ulp). 8,000 rows, no decay, 50 seeds.
-_SGD_LEVEL = (
-    "defect (task 278 (a)): sgd does not centre its target, so at a level L its first "
-    "steps move every coefficient by about the rate times L, and under inv_scaling the "
-    "slopes come back only at the schedule's pace: {}"
-)
-LEVEL_DEFECTS: dict[str, str] = {
-    "sgd:squared": _SGD_LEVEL.format(
-        "2.49 off least squares at 8,000 rows at a level of 1e3 (seed 26), against 0.0096 "
-        "at level 0"
-    ),
-    "sgd:quantile": _SGD_LEVEL.format(
-        "0.206 off QuantReg at 8,000 rows at a level of 3 (seed 32), against 0.042 at level 0"
-    ),
-}
+#: ``sgd``'s intercept takes the running mean's step while it is the larger
+#: (task 278, D-S), so a level never passes through the slopes' steps: it
+#: was 2.49 off least squares at a level of 1e3 (seed 26, against 0.0096 at
+#: level 0) and, under the quantile loss, 0.206 at a level of 3 (seed 32,
+#: against 0.042); after it 0.0077 (seed 27) and 0.043 (seed 3) at either
+#: level (measured 2026-10-26, 50 seeds).
+LEVEL_DEFECTS: dict[str, str] = {}
 
 
 def _level_params() -> list:

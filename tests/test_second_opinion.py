@@ -4161,7 +4161,16 @@ class TestSgdIsScikitLearnsSgd:
     units, so the epsilon-insensitive loss is held at ``eps = 0`` -- the sign of the
     residual, which is the step's whole shape outside a tube -- and the
     clamp to ``sgd_ref``. Ours steps on the raw features here, as
-    scikit-learn's ``partial_fit`` does."""
+    scikit-learn's ``partial_fit`` does.
+
+    One rule has no scikit-learn twin and is written into its loop by its
+    definition (task 278, D-S): a regression's intercept takes the running
+    mean's step, ``(w / W) * (y - p)`` with ``W`` the weight learned so far,
+    in place of its gradient's while that gain is the larger or Kish's count
+    of the rows is at most 22 (the count alone for the sign-valued loss), and
+    on the first row that step alone. scikit-learn's ``partial_fit`` steps,
+    then its intercept is set to the one before plus that step (and its
+    slopes put back, on the first row)."""
 
     TOL = 1e-12
     LR = 0.02
@@ -4192,11 +4201,21 @@ class TestSgdIsScikitLearnsSgd:
         return out.field(f"pred_{target}").to_numpy().astype(float)
 
     @staticmethod
-    def sklearns(est: Any, frame: pl.DataFrame, target: str, weighted: bool) -> np.ndarray:
+    def sklearns(
+        est: Any,
+        frame: pl.DataFrame,
+        target: str,
+        weighted: bool,
+        level: str | None = None,
+        rate: Any = None,
+    ) -> np.ndarray:
+        """``level``: ``"squared"`` or ``"sign"``, the intercept's level rule
+        (the class docstring); ``rate(i)`` the shared rate on row ``i``."""
         x = frame.select("x0", "x1").to_numpy()
         y, w = frame[target].to_numpy(), frame["w"].to_numpy()
         classifier = hasattr(est, "predict_proba")
         pred = np.full(len(y), 0.5 if classifier else 0.0)
+        lw = lw2 = 0.0
         for i in range(len(y)):
             row = x[i : i + 1]
             if i:
@@ -4204,7 +4223,20 @@ class TestSgdIsScikitLearnsSgd:
             kw: dict[str, Any] = {"sample_weight": [w[i]]} if weighted else {}
             if classifier:
                 kw["classes"] = [0.0, 1.0]
+            wi = w[i] if weighted else 1.0
+            before = (np.copy(est.coef_), float(est.intercept_[0])) if i else None
             est.partial_fit(row, y[i : i + 1], **kw)
+            if level is None:
+                continue
+            lw, lw2 = lw + wi, lw2 + wi * wi
+            a = wi / lw
+            step = a * (y[i] - pred[i])
+            young = lw * lw / lw2 <= 22.0
+            if before is None:
+                est.coef_ = np.zeros_like(est.coef_)
+                est.intercept_ = np.array([step])
+            elif young or (level == "squared" and a > rate(i)):
+                est.intercept_ = np.array([before[1] + step])
         return pred
 
     @pytest.mark.parametrize("weighted", [False, True], ids=["unit weights", "weighted"])
@@ -4247,7 +4279,8 @@ class TestSgdIsScikitLearnsSgd:
         else:
             got = self.ours(frame, "yb", weighted, loss=loss, learning_rate=self.LR)
             est, target = SGDClassifier(loss="log_loss", **sk), "yb"
-        want = self.sklearns(est, frame, target, weighted)
+        rule = {"squared": "squared", "epsilon_insensitive": "sign"}.get(loss)
+        want = self.sklearns(est, frame, target, weighted, rule, lambda i: self.LR)
         np.testing.assert_allclose(got, want, rtol=self.TOL, atol=1e-15 * _magnitude(level))
 
     def test_inv_scaling_at_unit_weights_is_scikit_learns_invscaling(self):
@@ -4271,7 +4304,8 @@ class TestSgdIsScikitLearnsSgd:
             power_t=0.5,
             shuffle=False,
         )
-        want = self.sklearns(est, frame, "y", False)
+        # The weight before row `i` is `i` at unit weights, undecayed.
+        want = self.sklearns(est, frame, "y", False, "squared", lambda i: 0.1 / (1.0 + i) ** 0.5)
         np.testing.assert_allclose(got, want, rtol=self.TOL, atol=1e-15)
 
     def test_a_slip_in_the_mapping_misses(self):
