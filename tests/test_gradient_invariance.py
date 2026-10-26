@@ -32,10 +32,6 @@ reload (a re-save is the same bytes) and after the reloaded bank finishes.
 Each check prints its evidence that the hard path ran: the save inside the
 warm-up is inside it by the state's own count, and the box binds.
 
-``sgd(loss="huber")`` waits for task 277, which rebuilds its warm-up and its
-scale: its legs are built (`AFTER_TASK_277`) and registering them is the one
-line that names it.
-
 The grid is extended (CI runs it on every leg, ``scripts/gate.sh
 --extended`` before every push); one case per model is in the essentials.
 Every case's id starts with its model, so ``-k sgd`` and the like take one
@@ -67,9 +63,10 @@ WARMUP_ROWS = 22.0
 
 #: The grid's tier. Not `oracle_grid`, CI's sharded job for heavy grids
 #: against a third-party library: nothing here is an oracle, and the whole
-#: grid took 7.4 s in one process here (114 cells, 2026-10-26). The extended
-#: tier runs it on each of CI's legs, so every platform's arithmetic is cut
-#: every way, which one sharded Linux job would not do. Each id leads with its
+#: grid took 7.4 s in one process here (114 cells, 2026-10-26; with
+#: ``sgd(loss="huber")``'s 18, 17.8 s at a load of 29). The extended tier
+#: runs it on each of CI's legs, so every platform's arithmetic is cut every
+#: way, which one sharded Linux job would not do. Each id leads with its
 #: model, so ``-k sgd``, ``-k pa-`` and ``-k ftrl`` split it by model.
 GRID = pytest.mark.extended(reason="a grid: every loss, schedule, mode and constraint, cut 6 ways")
 
@@ -80,11 +77,7 @@ LOSSES = {
     "epsilon_insensitive": ("linear", {"eps": 0.2}),
     "poisson": ("poisson", {}),
     "logistic": ("logistic", {}),
-}
-#: The loss waiting for task 277. Registering it is one line:
-#: ``LOSSES.update(AFTER_TASK_277)``; `test_the_waiting_legs_build` holds
-#: that each builds today.
-AFTER_TASK_277 = {
+    # Registered once task 277's refit of each target's first rows merged.
     "huber": ("linear", {"huber_delta": 0.3}),
 }
 SCHEDULES = {
@@ -122,10 +115,8 @@ COMMON = dict(
 )
 
 
-def _sgd(
-    loss: str, schedule: str, standardize: bool, variant: str, losses=None
-) -> tuple[dict, str, bool]:
-    kind, extra = (losses or LOSSES)[loss]
+def _sgd(loss: str, schedule: str, standardize: bool, variant: str) -> tuple[dict, str, bool]:
+    kind, extra = LOSSES[loss]
     spec = po.spec.sgd(
         "m",
         loss=loss,
@@ -170,8 +161,6 @@ def _cells(losses: dict) -> list[tuple[str, tuple]]:
                 for v in VARIANTS:
                     cid = f"sgd-{loss}-{schedule}-{_std(std)}-{v}"
                     cells.append((cid, ("sgd", loss, schedule, std, v)))
-    if losses is AFTER_TASK_277:
-        return cells
     for mode in MODES:
         for std in (True, False):
             for v in VARIANTS:
@@ -334,17 +323,6 @@ def test_chunks_and_saves_give_one_run(cell):
         bound = _binds(want)
         print(f"{cell}: {bound} slopes on the box's edge")
         assert bound > 0, "the box never binds"
-
-
-def test_the_waiting_legs_build():
-    """Each loss waiting for task 277 builds under every schedule today, so
-    registering it is the one line `AFTER_TASK_277` names."""
-    cells = _cells(AFTER_TASK_277)
-    assert len(cells) == 18 * len(AFTER_TASK_277)
-    for loss in AFTER_TASK_277:
-        assert loss not in LOSSES
-    for _, (_, loss, schedule, std, variant) in cells:
-        _sgd(loss, schedule, std, variant, losses=AFTER_TASK_277)
 
 
 def test_the_splits_are_where_they_say():

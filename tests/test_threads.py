@@ -21,9 +21,9 @@ Every kind is held to the same bits (task 278, batch 31): each builder as
 weight, at one thread, four and the process's pool -- every output field,
 every table read from the bank, and the saved state. Run on CI under each
 OS's pool, as part of the extended tier; ``kmeans`` is the essentials' case.
-``huber`` and ``sgd``'s Huber loss wait for task 277, which changes their
-warm-up; their legs build and run today. That the comparison compares work
-spread over several threads is read from the CPU time each thread accrues.
+``huber`` and ``sgd``'s Huber loss run with the refit of their first rows on
+(task 277). That the comparison compares work spread over several threads is
+read from the CPU time each thread accrues.
 """
 
 from __future__ import annotations

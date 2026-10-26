@@ -35,14 +35,24 @@ the iteration                               its stopping rule and cap    a cap h
                                             halvings                      a double's
                                                                           exponents span
                                                                           2,098 halvings
-``huber``'s and ``sgd(loss="huber")``'s     task 277's, registered when   --
-warm-up refit                               it lands
+``huber``'s and ``sgd(loss="huber")``'s     no coefficient moves by more  not said:
+refit of each target's first rows           than 1e-10 of ``max|beta|``;  the passes
+                                            50 IRLS passes                stay in the
+                                                                          state
 ==========================================  ===========================  =========
 
 Until task 278's fixes (D3, D6 and D7), the lasso's rule compared the move
 with ``tol`` itself, in the target's units, ``gram.lasso_path``'s cap hits
 were silent, and the ``lloyd`` seeding ran ten passes with no rule and no
 count.
+
+The refit's cap hits are silent: registered once task 277 merged, and
+reported, not yet fixed (2026-10-26). Over 3,000 streams of 50-500 rows,
+``y = 1 + 2x + 0.5 e`` with a level added to a share of the rows with
+``x > 0``, the 50 passes ran out on 1 of 1,294 streams below 20% of the
+rows, and on 148 of 1,706 from 20% to 45% (75 of 324 at 40-45%); run on,
+the first six met the rule after 51-111 passes, moving their coefficients
+less than 4e-10 a pass at the cap: slow, not lost.
 """
 
 from __future__ import annotations

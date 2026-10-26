@@ -1767,6 +1767,12 @@ impl OnlineModel for Robust {
         self.since_solve.stamp_next(stamp);
     }
 
+    /// On the row clock the solve cadence counts from a row before the
+    /// first, as `max_rows_between_solves` does (task 278, D13).
+    fn stamp_next_on_rows(&mut self, stamp: crate::Stamp) {
+        self.since_solve.stamp_next_on_rows(stamp);
+    }
+
     /// Each coefficient's data share from the last solve, per target
     /// (docs/WARMUP-AND-CONVERGENCE.md §2.2): `None` before the first solve.
     fn support_coef(&self) -> Option<Vec<Vec<f64>>> {
@@ -3369,6 +3375,43 @@ mod tests {
                     });
                 assert_eq!(got, want, "{loss:?}, stamped: {stamped}");
             }
+        }
+    }
+
+    /// Task 278, D13: on the row clock the model's start is a row before
+    /// its first row, so before the first solve at `min_weight` (here never
+    /// met) `solve_every = 7` solves on the rows `max_rows_between_solves =
+    /// 7` does (0-based 6, 13, ...), for both losses. Stamped as a clock
+    /// column's rows, whose start is the first row, the clock's come a row
+    /// later.
+    #[test]
+    fn on_the_row_clock_solve_every_is_its_row_cap() {
+        let losses = [
+            RobustLoss::Huber { delta: 1.0 },
+            RobustLoss::Quantile { tau: 0.5 },
+        ];
+        for loss in losses {
+            let solves = |every: f64, cap: u32, on_rows: bool| {
+                let mut c = cfg(1, 1, loss);
+                c.min_weight = 1e9;
+                c.solve_every = every;
+                c.max_rows_between_solves = cap;
+                let mut m = Robust::new(c).unwrap();
+                crate::since::events_on_the_row_clock(30, |i, stamp, d| {
+                    if on_rows {
+                        m.stamp_next_on_rows(stamp);
+                    } else {
+                        m.stamp_next(stamp);
+                    }
+                    let x = (i % 7) as f64;
+                    m.step(&[x], &[Some(1.0 + 2.0 * x)], d, 1.0);
+                    m.rows_since_solve == 0
+                })
+            };
+            let rows = [6, 13, 20, 27];
+            assert_eq!(solves(7.0, u32::MAX, true), rows, "{loss:?}");
+            assert_eq!(solves(1e18, 7, true), rows, "{loss:?}");
+            assert_eq!(solves(7.0, u32::MAX, false), [7, 14, 21, 28], "{loss:?}");
         }
     }
 

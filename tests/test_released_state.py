@@ -151,6 +151,27 @@ DECLARED: dict[tuple[str, str], str] = {
             "ew_class_window",
         )
     },
+    # Task 278, D7 and F3 (the next release's Fixed and Changed): `hmm`'s
+    # default seeding runs Lloyd's passes to a fixed point from greedy
+    # k-means++ starts. On the probe's rows it finds the same two means and
+    # numbers them the other way round (and in their last bits), so this
+    # build's own bank reads each state under the other's number (9.9e-1 in
+    # `filtered_state*` here). A file seeded by a release goes on exactly as
+    # that release did (measured against 1.3.0's own continuation, every
+    # value equal), as the entry says a state saved after seeding does.
+    ("hmm", "1.3.0"): "the next release, Fixed: `kmeans` and `hmm` seed with Lloyd's "
+    "passes to a fixed point, and may number their states differently",
+    # Task 278, D3 (the next release's Fixed, and rule 5's third exception,
+    # the user's): `lasso`'s `tol` is relative to the target's spread, so a
+    # file saved by 1.0-1.3 goes on within 1e-9 of this build's own, not to
+    # the bit (2.0e-10 at most here, in `full_lasso`'s diagnostics; 1.0e-11
+    # in `lasso_window`'s predictions, which 1.2.0 and older move by the
+    # window entry above too).
+    **{
+        (name, "1.3.0"): "the next release, Fixed: `lasso`'s `tol` is relative to the "
+        "target's spread"
+        for name in ("full_lasso", "lasso_window")
+    },
 }
 
 #: The releases from 1.0, whose files load and go on; and this build, whose

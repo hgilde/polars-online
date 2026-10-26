@@ -17,7 +17,7 @@ the whole frame in one call, so this is chunk invariance through the command
 line too), the thread count, the output layout and the output format.
 
 ``test_every_kind_and_key_is_covered`` keeps the cases honest: every kind
-the TOML takes has a case or is waiting, every model key is used by a case
+the TOML takes has a case, every model key is used by a case
 of its kind, and every ``[[specs]]`` key is used by a case of each kind or
 refused by that kind.
 """
@@ -791,11 +791,9 @@ CASES: list[Case] = [
     ),
 ]
 
-#: Task 277 changes ``huber`` and ``sgd(loss="huber")`` (a converged
-#: warm-up refit, schema 64); until it merges they are not asserted here.
-#: Registering them is the one line ``CASES += AFTER_TASK_277``. Measured on
-#: main at 7bfc72b9 (2026-10-25): both already agree with the bank to the bit.
-AFTER_TASK_277: list[Case] = [
+#: ``huber`` and ``sgd(loss="huber")``, registered once task 277's refit of
+#: each target's first rows (schema 64) merged.
+CASES += [
     Case(
         "huber",
         "huber",
@@ -810,9 +808,14 @@ AFTER_TASK_277: list[Case] = [
             solve_every=3.0,
             feature_sets={"a": ["x0"], "b": ["x1", "x2"]},
             emit_huber_scale=True,
+            # Each group's first 100 learned rows refit, inside the budget.
+            huber_refit_rows=100,
+            refit_budget=1.0,
         ),
     ),
     Case("huber2", "huber", full2(max_rows_between_solves=4, ridge_scale="sum")),
+    # A budget below one group's buffer: every refit is given up.
+    Case("huber3", "huber", full2(huber_refit_rows=50, refit_budget=0.001)),
     Case(
         "sgd_huber",
         "sgd",
@@ -822,16 +825,11 @@ AFTER_TASK_277: list[Case] = [
             huber_scale="rms",
             huber_scale_half_life=40.0,
             learning_rate=0.01,
+            huber_refit_rows=80,
+            refit_budget=4.0,
         ),
     ),
 ]
-#: What waits for task 277: a kind by name, or a (kind, model key) pair.
-WAITING = {
-    "huber",
-    ("sgd", "huber_delta"),
-    ("sgd", "huber_scale"),
-    ("sgd", "huber_scale_half_life"),
-}
 
 
 # ---------------------------------------------------------------- comparing
@@ -1053,18 +1051,14 @@ def test_every_kind_and_key_is_covered():
     assert set(kinds) <= constructors, set(kinds) - constructors
     assert {c for c in constructors - helpers if c in kinds} == set(kinds)
     used: dict[str, set[str]] = {}
-    for c in CASES + AFTER_TASK_277:
+    for c in CASES:
         used.setdefault(c.builder, set()).update(c.kw)
     missing = []
     for kind, model_keys in sorted(kinds.items()):
-        if kind in WAITING:
-            continue
         if kind not in used:
             missing.append(f"{kind}: no case")
             continue
-        missing += [
-            f"{kind}.{k}" for k in model_keys if k not in used[kind] and (kind, k) not in WAITING
-        ]
+        missing += [f"{kind}.{k}" for k in model_keys if k not in used[kind]]
         first = next(c for c in CASES if c.builder == kind)
         for k in keys:
             if k in ("name", "model") or k in used[kind]:
