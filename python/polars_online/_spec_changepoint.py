@@ -129,10 +129,10 @@ def bocpd(
         Read a per-row hazard from a column instead, declared in the targets
         slot the way a weight is. The value at a row is the expected rows
         between changepoints as of that row: ``1 / value`` is the chance of a
-        break after the row, between it and the next. A null or non-finite
-        value falls back to ``hazard``; a value of 1 or less is an error
-        naming the row. A duration ``hazard`` puts its chance before each
-        row, so the two are refused together.
+        break after the row, between it and the next. A null, NaN, ±inf or
+        magnitude above ``1e100`` falls back to ``hazard``; any other value
+        of 1 or less is an error naming the row. A duration ``hazard`` puts
+        its chance before each row, so the two are refused together.
         :meth:`polars_online.ModelBank.predict` reads the column too.
     ``covariance_type``
         The covariance each run's predictive keeps, scikit-learn's words, both

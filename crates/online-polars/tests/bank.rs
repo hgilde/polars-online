@@ -1852,3 +1852,143 @@ fn a_renewed_run_buffer_is_a_new_one() {
         assert_eq!(image(&out), image(&ChunkOut::new(b, mb, sb, rows_b)));
     }
 }
+
+/// A weight or target past the input bound is missing, as the README says of
+/// a feature, a target or a weight ("NaN, ±inf and any magnitude above 1e100
+/// count as null"): the row gives the outputs and the state a null there
+/// gives. The bank's value checks -- a weight's sign, `rcov`'s 0 or 1, a
+/// `strict_binary` label, a Poisson count, a `bocpd` hazard above 1 -- read
+/// only the usable values, so none refuses a value it would skip; each still
+/// refuses a usable value, at the bound itself too. They read every finite
+/// value, and refused `-1e101` as a negative weight on every kind (task 278,
+/// D-WB).
+#[test]
+fn a_value_past_the_input_bound_is_missing_to_every_value_check() {
+    use online_core::INPUT_BOUND;
+    let n = 12;
+    // `col` is the column the check reads, `others` fills the rest.
+    let frame = |col: &str, v: Option<f64>| -> DataFrame {
+        let x0: Vec<f64> = (0..n).map(|i| (i as f64 * 0.7).sin()).collect();
+        let x1: Vec<f64> = (0..n).map(|i| (i as f64 * 1.3).cos()).collect();
+        let mut cols = vec![
+            Column::new("x0".into(), x0),
+            Column::new("x1".into(), x1),
+            Column::new("g".into(), (0..n as i64).map(|i| i / 4).collect::<Vec<_>>()),
+        ];
+        for (name, base) in [("y", None), ("w", Some(1.0)), ("h", Some(50.0))] {
+            let mut c: Vec<Option<f64>> = (0..n)
+                .map(|i| Some(base.unwrap_or((i % 2) as f64)))
+                .collect();
+            if name == col {
+                c[8] = v;
+            }
+            cols.push(Column::new(name.into(), c));
+        }
+        DataFrame::new(n, cols).unwrap()
+    };
+    let spec = |json: &str| -> Spec { serde_json::from_str(json).unwrap() };
+    let weighted = r#"{"name": "m", "model": {"type": "ewridge", "ridge": 1e-6},
+        "targets": ["y"], "features": ["x0", "x1"], "half_life": 50.0, "weight": "w"}"#;
+    let rcov = r#"{"name": "m", "model": {"type": "rcov", "block_rows": 100},
+        "features": ["x0", "x1"], "weight": "w", "group": "g", "group_close": "monotone"}"#;
+    let binary = r#"{"name": "m", "model": {"type": "sgd", "loss": "logistic",
+        "strict_binary": true}, "targets": ["y"], "features": ["x0", "x1"], "half_life": 50.0}"#;
+    let poisson = r#"{"name": "m", "model": {"type": "sgd", "loss": "poisson"},
+        "targets": ["y"], "features": ["x0", "x1"], "half_life": 50.0}"#;
+    let hazard = r#"{"name": "m", "model": {"type": "bocpd", "hazard_col": "h"},
+        "targets": ["h"], "features": ["x0", "x1"]}"#;
+    /// A check: the column it reads, the values it must read as missing,
+    /// the usable values it must refuse, and words of the refusal.
+    struct Check<'a> {
+        json: &'a str,
+        col: &'a str,
+        missing: &'a [f64],
+        refused: &'a [f64],
+        why: &'a str,
+    }
+    let cases = [
+        Check {
+            json: weighted,
+            col: "w",
+            missing: &[-1e101, 1e101, f64::NEG_INFINITY],
+            refused: &[-1.0, -INPUT_BOUND],
+            why: "negative value",
+        },
+        Check {
+            json: rcov,
+            col: "w",
+            missing: &[-1e101, 1e101, f64::INFINITY],
+            refused: &[0.5, 2.0, INPUT_BOUND],
+            why: "rcov takes 0 or 1",
+        },
+        Check {
+            json: binary,
+            col: "y",
+            missing: &[-1e101, 1e101],
+            refused: &[2.0, -INPUT_BOUND, INPUT_BOUND],
+            why: "neither 0 nor 1",
+        },
+        Check {
+            json: poisson,
+            col: "y",
+            missing: &[-1e101, f64::NEG_INFINITY],
+            refused: &[-1.0, -INPUT_BOUND],
+            why: "never negative",
+        },
+        Check {
+            json: hazard,
+            col: "h",
+            missing: &[-1e101, 1e101, f64::NEG_INFINITY],
+            refused: &[1.0, -INPUT_BOUND],
+            why: "must be > 1",
+        },
+    ];
+    for Check {
+        json,
+        col,
+        missing,
+        refused,
+        why,
+    } in cases
+    {
+        let run = |v: Option<f64>| {
+            let mut bank = Bank::new(vec![spec(json)]).unwrap();
+            let out = bank.fit_predict(&frame(col, v));
+            out.map(|o| (o, bank.save_bytes().unwrap()))
+        };
+        let (null_out, null_state) = run(None).unwrap();
+        // The comparison sees the row: the column's own value there is not
+        // the null's state.
+        let base = match col {
+            "w" => 1.0,
+            "h" => 50.0,
+            _ => 0.0,
+        };
+        assert!(
+            run(Some(base)).unwrap().1 != null_state,
+            "row 8's {col} moves nothing under {json}"
+        );
+        for &v in missing {
+            let (out, state) = run(Some(v)).unwrap_or_else(|e| panic!("{col}={v:e}: {e}"));
+            assert_eq!(out.len(), null_out.len());
+            for (a, b) in out.iter().zip(&null_out) {
+                assert!(
+                    a.as_materialized_series()
+                        .equals_missing(b.as_materialized_series()),
+                    "{col}={v:e} is not the null's output under {json}"
+                );
+            }
+            assert!(
+                state == null_state,
+                "{col}={v:e} is not the null's state under {json}"
+            );
+        }
+        for &v in refused {
+            let err = run(Some(v)).map(|_| ()).unwrap_err().to_string();
+            assert!(
+                err.contains(why) && err.contains("at row 8"),
+                "{col}={v:e}: {err}"
+            );
+        }
+    }
+}
