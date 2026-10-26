@@ -667,12 +667,25 @@ class TestHuberSolveEvery:
         assert refit_row not in want
         extra = [] if refit == 0 else [refit_row]
         assert moved == sorted(want + extra)
-        # Each prediction is the coefficients the row before reported.
+        # Each prediction is the coefficients the row before reported:
+        # `b0 + x0*b1 + x1*b2`, added left to right with each product
+        # rounded, as the library adds it (Rust fuses no multiply into an
+        # add). Not numpy's `z @ b`: its BLAS chooses the order and whether
+        # to fuse, and on x86 OpenBLAS fused every row, an FMA chain that
+        # moved 307 of 796 predictions by up to 1.8e-15, one product's
+        # rounding (234 ulps of a sum that cancels near zero).
         pred = out["pred_y"].to_numpy()
         z = np.column_stack([np.ones(self.N), df["x0"].to_numpy(), df["x1"].to_numpy()])
         rows = [i for i in range(1, self.N) if coef[i - 1] is not None and np.isfinite(pred[i])]
         assert len(rows) > self.N - 10
-        want_pred = np.array([z[i] @ np.array(coef[i - 1]) for i in rows])
+
+        def unfused(zi, b):
+            total = 0.0
+            for zj, bj in zip(zi.tolist(), b, strict=True):
+                total = total + zj * bj
+            return total
+
+        want_pred = np.array([unfused(z[i], coef[i - 1]) for i in rows])
         np.testing.assert_array_equal(pred[rows], want_pred)
 
     def test_zero_is_every_row(self):

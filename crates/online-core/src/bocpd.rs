@@ -562,7 +562,8 @@ impl DataPrior {
     /// spread of a value known to `2^-26` of its level, or of 1 below a
     /// level of 1. A predictive of no spread has no density, and every row
     /// after it failed. Under `gaussian` a covariance that is not positive
-    /// definite with that floor -- collinear features -- gives its diagonal.
+    /// definite with that floor -- collinear features, or no more rows than
+    /// features -- gives its diagonal.
     fn of(rows: &[WarmRow], d: usize, full: bool) -> Self {
         let top = rows.iter().map(|r| r.weight).fold(0.0, f64::max);
         let w: Vec<f64> = rows.iter().map(|r| r.weight / top).collect();
@@ -601,7 +602,18 @@ impl DataPrior {
                 scale[i * d + i] = 2f64.powi(-52) * (mean[i] * mean[i]).max(1.0);
             }
         }
-        if full && !matches!(SpdFactor::of(&scale, d), Some(f) if f.attempts() == 0) {
+        // `d` rows or fewer deviate from their mean in at most `d - 1`
+        // directions, so their scatter is singular in exact arithmetic, and
+        // forming it leaves it a rounding to either side: two rows of two
+        // features (`test_bocpd.py`) left a determinant of +1.7e-15 at a
+        // scale of 16. Whether a Cholesky factorization of that succeeds is
+        // then up to the order of its roundings, which faer's x86 and
+        // aarch64 kernels do not share: the last pivot came out +2.1e-15
+        // with an FMA on x86 and 0 as `a11 - a01²/a00`, so x86 kept the
+        // off-diagonal where aarch64 took the diagonal. The row count
+        // decides that case, and [`definite`] the rest the same way on every
+        // platform.
+        if full && !(rows.len() > d && definite(&scale, d)) {
             for i in 0..d {
                 for j in 0..d {
                     if i != j {
@@ -612,6 +624,42 @@ impl DataPrior {
         }
         Self { mean, scale }
     }
+}
+
+/// Whether the symmetric `a` (row-major `d×d`) is positive definite past
+/// working precision: its Cholesky factorization, in plain scalar arithmetic
+/// in a fixed order, has every pivot `L_ii²` above `γ_{d+1}·a_ii`, with
+/// `γ_m = m·u / (1 − m·u)` and `u = 2⁻⁵³`. The computed factor is the exact
+/// factor of `a + Δa` with `|Δa| ≤ γ_{d+1}·|L||Lᵀ|` (Higham, *Accuracy and
+/// Stability of Numerical Algorithms*, Theorem 10.3), whose diagonal is
+/// `γ_{d+1}·a_ii`, so a pivot under that is one the rounding alone can make
+/// or unmake: the matrix is singular to working precision. Scalar `+ − × ÷`
+/// and `sqrt` are correctly rounded and Rust fuses none of them, so the
+/// answer is the same on every IEEE platform, where a factorization by
+/// faer's runtime-dispatched kernels is not.
+fn definite(a: &[f64], d: usize) -> bool {
+    let u = f64::EPSILON / 2.0;
+    let m = (d + 1) as f64;
+    let gamma = m * u / (1.0 - m * u);
+    let mut l = vec![0.0; d * d];
+    for i in 0..d {
+        for j in 0..=i {
+            let mut s = a[i * d + j];
+            for p in 0..j {
+                s -= l[i * d + p] * l[j * d + p];
+            }
+            if i == j {
+                // Not above the floor, or not a number.
+                if s.partial_cmp(&(gamma * a[i * d + i])) != Some(std::cmp::Ordering::Greater) {
+                    return false;
+                }
+                l[i * d + i] = s.sqrt();
+            } else {
+                l[i * d + j] = s / l[j * d + j];
+            }
+        }
+    }
+    true
 }
 
 /// A learned row the warm-up holds until the prior is set, to be read then:
@@ -1638,6 +1686,57 @@ impl Bocpd {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The prior from `d` rows or fewer is diagonal under `gaussian`: they
+    /// span at most `d - 1` directions, so their scatter is singular, and a
+    /// factorization of it as formed succeeded or failed by the order of its
+    /// roundings. faer's x86 kernel kept the off-diagonal there that its
+    /// aarch64 kernel dropped (`test_bocpd.py`, two rows of two features).
+    /// Rows that span keep their covariance, mirrored to the bit.
+    #[test]
+    fn a_prior_from_no_more_rows_than_features_is_diagonal_on_every_platform() {
+        let mut st = 11u64;
+        let mut next = || {
+            st = st
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (st >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut row = |d: usize| WarmRow {
+            x: (0..d).map(|_| 5.0 + 3.0 * next()).collect(),
+            hazard: None,
+            d_clock: 1.0,
+            weight: 0.2 + 1.8 * next(),
+        };
+        for d in [2usize, 3] {
+            for n in 2..=d {
+                for set in 0..500 {
+                    let rows: Vec<WarmRow> = (0..n).map(|_| row(d)).collect();
+                    let p = DataPrior::of(&rows, d, true);
+                    for i in 0..d {
+                        for j in (0..d).filter(|&j| j != i) {
+                            assert_eq!(p.scale[i * d + j], 0.0, "d {d}, {n} rows, set {set}");
+                        }
+                        assert!(p.scale[i * d + i] > 0.0);
+                    }
+                }
+            }
+        }
+        // Twenty rows of two features that move together: full, symmetric.
+        let rows: Vec<WarmRow> = (0..20)
+            .map(|_| {
+                let mut r = row(2);
+                r.x[1] += 0.6 * r.x[0];
+                r
+            })
+            .collect();
+        let p = DataPrior::of(&rows, 2, true);
+        assert!(
+            p.scale[1] > 0.0 && p.scale[1] == p.scale[2],
+            "{:?}",
+            p.scale
+        );
+    }
 
     /// A log-joint without its run is refused, where it loaded and panicked
     /// on the first `step` (review 2026-09-18, B3).

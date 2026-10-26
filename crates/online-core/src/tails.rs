@@ -113,9 +113,16 @@ impl Tails {
         Some((m2, m3, m4))
     }
 
-    /// The skewness, `m_3 / m_2^{3/2}`.
+    /// The skewness, `m_3 / m_2^{3/2}`, with `m_2^{3/2}` as `m_2·√m_2`: two
+    /// correctly rounded operations, so a target scaled by `2^k` scales
+    /// `m_2` by `2^{2k}`, `m_3` and the denominator by `2^{3k}`, and leaves
+    /// the skewness to the bit. `m_2.powf(1.5)` is the platform's `pow`,
+    /// which glibc and `ucrtbase.dll` round to within an ulp but not
+    /// correctly: `pow(c²·m, 1.5) ≠ c³·pow(m, 1.5)` for 236 of 400,000
+    /// arguments under glibc 2.39 at `c = 2^±20`, and one row a run of
+    /// `kalman`, `lasso` or `quantile_median` then left its units by an ulp.
     pub fn skew(&self) -> Option<f64> {
-        self.moments().map(|(m2, m3, _)| m3 / m2.powf(1.5))
+        self.moments().map(|(m2, m3, _)| m3 / (m2 * m2.sqrt()))
     }
 
     /// The excess kurtosis, `m_4 / m_2² − 3`.
@@ -182,6 +189,31 @@ mod tests {
         }
         assert!(t.skew().unwrap() > 0.5, "a skewed stream");
         assert!(t.has_shape());
+    }
+
+    /// A target scaled by a power of two leaves the skewness and the
+    /// kurtosis to the bit: the moments scale exactly, and `m_2^{3/2}` is
+    /// `m_2·√m_2`. As `m_2.powf(1.5)`, the platform's `pow`, about one row
+    /// in 1,700 came out an ulp off under glibc 2.39
+    /// (`test_convergence_equivariance.py`).
+    #[test]
+    fn the_shape_keeps_its_bits_under_a_power_of_two_scale() {
+        let mut st = 5u64;
+        for c in [2f64.powi(-20), 2f64.powi(20), 0.125, 8.0] {
+            let (mut a, mut b) = (Tails::new(), Tails::new());
+            for i in 0..20_000 {
+                let u = lcg(&mut st) + 0.5;
+                let v = 3.0 + if i % 3 == 0 { -1.0 } else { 4.0 } * u * u * u;
+                let w = 0.5 + lcg(&mut st) + 0.5;
+                a.update(v, 0.999, w);
+                b.update(v * c, 0.999, w);
+                if let (Some(sa), Some(sb)) = (a.skew(), b.skew()) {
+                    assert_eq!(sa.to_bits(), sb.to_bits(), "skew, row {i}, scale {c}");
+                    let (ka, kb) = (a.kurtosis().unwrap(), b.kurtosis().unwrap());
+                    assert_eq!(ka.to_bits(), kb.to_bits(), "kurtosis, row {i}, scale {c}");
+                }
+            }
+        }
     }
 
     /// A first residual far from the rest -- a bad first print -- leaves the
