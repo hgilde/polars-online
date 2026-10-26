@@ -97,6 +97,12 @@ const REGENERATE: &str = "PRINT_STATE_FIXTURES=1 cargo test -p online-polars --t
 /// and `sgd(loss = "huber")` the refit of each target's first rows
 /// (docs/PLAN.md task 277): no bank fixture holds either model, so each
 /// converts to the current bytes exactly, the windowed ones as above.
+/// Since task 278 a spec's `quantile` draws its band in the MAD and its
+/// `min_weight` holds back no learning (D-Q, D10), and `bank_diagnosed`
+/// holds a quantile fit: a kept one loads in the old form (the RMS, the
+/// gate holding learning back) and goes on in it to the bit, so the current
+/// fixture's fit is set to that form before its first row
+/// ([`kept_quantile`]) and the kept ones convert to its bytes exactly.
 macro_rules! previous {
     ($($schema:literal),* $(,)?) => {
         const PREVIOUS: &[u32] = &[$($schema),*];
@@ -456,12 +462,63 @@ fn bank_run(bytes: &[u8], input: &DataFrame) -> Ran {
 
 fn diagnosed_first() -> (Vec<u8>, DataFrame) {
     let df = frame();
-    let mut bank = Bank::new(diagnosed_specs()).unwrap();
+    let mut fresh = Bank::new(diagnosed_specs()).unwrap();
+    // An empty chunk makes each stream, its models unfed.
+    fresh.fit_predict(&df.slice(0, 0)).unwrap();
+    let mut bank = Bank::load_bytes(
+        &kept_quantile(&fresh.save_bytes().unwrap()),
+        Some(&diagnosed_specs()),
+    )
+    .unwrap();
     bank.fit_predict(&df.slice(0, SPLIT)).unwrap();
     (
         bank.save_bytes().unwrap(),
         df.slice(SPLIT as i64, N - SPLIT),
     )
+}
+
+/// `bank_diagnosed`'s quantile fit in the form a state written before
+/// schema 64 holds, set before its first row: its band drawn in the RMS
+/// and `min_weight` holding its learning back (docs/PLAN.md task 278, D-Q
+/// and D10), where a spec builds the MAD and a gate on the output alone.
+/// So the kept fixtures of this kind, which load in that form, go on to
+/// this fixture's numbers and convert to its bytes; the model's form since
+/// is frozen by the core's `quantile_mad` fixture.
+fn kept_quantile(bytes: &[u8]) -> Vec<u8> {
+    use rmpv::Value;
+    fn key<'a>(m: &'a mut [(Value, Value)], k: &str) -> Option<&'a mut Value> {
+        m.iter_mut()
+            .find(|(n, _)| n.as_str() == Some(k))
+            .map(|(_, v)| v)
+    }
+    fn walk(v: &mut Value, found: &mut usize) {
+        match v {
+            Value::Map(m) => {
+                if let Some(Value::Map(robust)) = key(m, "Robust") {
+                    let Some(Value::Map(cfg)) = key(robust, "cfg") else {
+                        panic!("a robust state without its cfg")
+                    };
+                    *key(cfg, "huber_scale").expect("huber_scale") = Value::from("rms");
+                    *key(cfg, "min_weight_holds_learning").expect("the gate's form") =
+                        Value::from(true);
+                    *key(robust, "mad").expect("mad") = Value::Array(Vec::new());
+                    *key(robust, "seen").expect("the floor's counts") = Value::Array(Vec::new());
+                    *found += 1;
+                    return;
+                }
+                m.iter_mut().for_each(|(_, v)| walk(v, found));
+            }
+            Value::Array(a) => a.iter_mut().for_each(|v| walk(v, found)),
+            _ => {}
+        }
+    }
+    let mut v = rmpv::decode::read_value(&mut &bytes[..]).unwrap();
+    let mut found = 0;
+    walk(&mut v, &mut found);
+    assert_eq!(found, 1, "bank_diagnosed holds one quantile fit");
+    let mut out = Vec::new();
+    rmpv::encode::write_value(&mut out, &v).unwrap();
+    out
 }
 
 fn diagnosed_run(bytes: &[u8], input: &DataFrame) -> Ran {

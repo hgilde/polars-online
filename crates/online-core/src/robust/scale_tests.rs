@@ -33,6 +33,7 @@ fn base(loss: RobustLoss) -> RobustCfg {
         ridge_scale: false,
         emit_scale: false,
         refit_rows: 0,
+        min_weight_holds_learning: false,
     }
 }
 
@@ -89,11 +90,20 @@ fn digest(cfg: RobustCfg) -> (u64, Vec<f64>) {
 /// weight stays near `1/(1 − 0.9914)`, below the `55.9 k` where 0.2 takes
 /// over), so the digest held Apple's `powf` (docs/PLAN.md task 273). The
 /// digest at 0.65 was taken on `b418fc3` too.
+///
+/// Both under the gate that held learning back, as every fit did then and
+/// as a state written before schema 64 goes on (task 278, D10): the stream's
+/// first rows sit below `min_weight = 3`, where the gate since leaves the
+/// fit learning.
 #[test]
 fn the_rms_scale_and_the_quantile_band_did_not_move() {
-    let huber = digest(base(RobustLoss::Huber { delta: 1.345 }));
+    let huber = digest(RobustCfg {
+        min_weight_holds_learning: true,
+        ..base(RobustLoss::Huber { delta: 1.345 })
+    });
     let quantile = digest(RobustCfg {
         quantile_eps: 0.65,
+        min_weight_holds_learning: true,
         ..base(RobustLoss::Quantile { tau: 0.7 })
     });
     println!("huber {huber:x?}\nquantile {quantile:x?}");
@@ -237,6 +247,7 @@ fn sgd_cfg(loss: crate::SgdLoss, scale: HuberScale) -> crate::SgdCfg {
         huber_scale: scale,
         huber_scale_decay: None,
         refit_rows: 0,
+        min_weight_holds_learning: false,
     }
 }
 
@@ -324,6 +335,8 @@ fn the_mad_scale_is_the_ew_median_within_the_sketchs_accuracy() {
     let mut cfg = huber_cfg(HuberScale::Mad);
     cfg.decay = Decay::Lam(0.99);
     cfg.huber_scale_decay = Some(Decay::Lam(0.97));
+    // Every prediction the fit learns from is reported: none withheld.
+    cfg.min_weight = 0.0;
     let mut m = Robust::new(cfg).unwrap();
     let rows = contaminated(3000, 0.10, 13);
     let mut kept: Vec<(f64, f64)> = Vec::new();
@@ -409,15 +422,17 @@ fn the_scales_memory_defaults_to_the_models() {
     }
 }
 
-/// What each configuration refuses: a scale of Huber's on a quantile fit
-/// or on an `sgd` loss other than Huber's, and a scale memory a decay
-/// refuses.
+/// What each configuration refuses: a scale memory of its own on a
+/// quantile fit, whose band reads either scale on the model's clock (task
+/// 278, D-Q), a scale of Huber's on an `sgd` loss other than Huber's, and a
+/// scale memory a decay refuses.
 #[test]
 fn the_scale_is_huber_s_alone() {
     let mut q = base(RobustLoss::Quantile { tau: 0.5 });
-    q.huber_scale = HuberScale::Mad;
-    assert!(Robust::new(q.clone()).unwrap_err().contains("huber_scale"));
-    q.huber_scale = HuberScale::Rms;
+    for scale in [HuberScale::Mad, HuberScale::Rms] {
+        q.huber_scale = scale;
+        assert!(Robust::new(q.clone()).is_ok(), "{scale:?}");
+    }
     q.huber_scale_decay = Some(Decay::Lam(0.9));
     assert!(
         Robust::new(q)
@@ -561,4 +576,59 @@ fn a_scales_word_is_its_saved_name() {
         assert_eq!(format!("\"{}\"", s.word()), saved);
     }
     assert_eq!(HuberScale::Mad.word(), "mad");
+}
+
+/// A quantile fit's band is drawn in the MAD (docs/PLAN.md task 278,
+/// D-Q): the scale the band reads before each row is the EW median of
+/// `|e|` over `Φ⁻¹(3/4)` within the sketch's accuracy, read from the
+/// model's own residuals, and at 10% one-sided wild rows (lifted by 50,
+/// against a noise of sd 0.5) it stays at the clean rows' width where the
+/// RMS widens with every wild row. The fit's distance from statsmodels'
+/// `QuantReg` on the same rows is `tests/test_convergence.py`'s, over 50
+/// seeds.
+#[test]
+fn the_quantile_band_is_drawn_in_the_mad() {
+    let rows = contaminated(20_000, 0.10, 21);
+    let run = |scale: HuberScale| {
+        let mut m = Robust::new(RobustCfg {
+            loss: RobustLoss::Quantile { tau: 0.5 },
+            min_weight: 0.0,
+            ..huber_cfg(scale)
+        })
+        .unwrap();
+        let mut kept: Vec<f64> = Vec::new();
+        let mut worst = 0.0f64;
+        for (i, &(x, y)) in rows.iter().enumerate() {
+            if scale == HuberScale::Mad
+                && i % 997 == 0
+                && let Some(got) = m.residual_scale(0)
+            {
+                let mut sorted = kept.clone();
+                sorted.sort_by(f64::total_cmp);
+                // The smallest |e| whose count reaches half, as the
+                // sketch's median reads it, at unit weights and no decay.
+                let want = sorted[sorted.len().div_ceil(2) - 1] / NORMAL_Q3;
+                worst = worst.max((got - want).abs() / want);
+            }
+            let p = m
+                .step(&[x], &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0)
+                .pred[0];
+            if p.is_finite() {
+                kept.push((y - p).abs());
+            }
+        }
+        (
+            m.coefficients().unwrap()[0][1],
+            m.residual_scale(0).unwrap(),
+            worst,
+        )
+    };
+    let (mad, s_mad, worst) = run(HuberScale::Mad);
+    let (rms, s_rms, _) = run(HuberScale::Rms);
+    println!("slope: mad {mad} rms {rms}; scale: mad {s_mad} rms {s_rms}; sketch {worst:e}");
+    assert!(
+        worst <= crate::EW_QUANTILE_ALPHA * (1.0 + 1e-9),
+        "{worst:e}"
+    );
+    assert!(s_mad < 1.0 && s_rms > 10.0, "{s_mad} {s_rms}");
 }

@@ -54,7 +54,8 @@ only as fast as its own dynamics forget the start, which
 The tables are plain dictionaries of builders so that they fold into the
 convergence harness's registry (one entry per model, its classes listed).
 ``huber`` and ``sgd(loss="huber")`` are in ``Y_SCALE`` with the refit of
-their first rows on (task 277); a decimal scale moves them by their MAD
+their first rows on (task 277); a decimal scale moves them, and the
+``quantile`` fits whose band the same MAD draws (task 278, D-Q), by the
 sketch's resolution, not by rounding (``DECIMAL_SKETCH``).
 """
 
@@ -396,15 +397,23 @@ def worst_decimal_deviation(model: str, seed: int, n: int, scales) -> tuple[floa
     return worst, DECIMAL_FACTOR * N_EFF * U * float(np.max(np.abs(y))) / sd
 
 
-#: Where a decimal scale is more than rounding: the Huber fits' MAD sketch
-#: keeps |e| in buckets an octave apart, so a scale that is not a power of
-#: two moves a residual across a bucket's edge and the scale by that
-#: bucket's resolution. Measured bitwise exact under `2^±20`, and up to
+#: Where a decimal scale is more than rounding: the robust fits' MAD sketch
+#: keeps |e| in buckets of fixed edges, 64 an octave, so a scale that is not
+#: a power of two moves a residual across a bucket's edge and the scale by
+#: that bucket's resolution. Measured bitwise exact under `2^±20`, and up to
 #: 4.9e-4 (huber) and 4.7e-4 (sgd) of the target's spread at 1e±6, with the
-#: refit of the first rows on as without it (2026-10-25).
+#: refit of the first rows on as without it (2026-10-25). The quantile band
+#: is drawn in the same sketch since task 278 (D-Q), and a row inside the
+#: band or outside it is a step apart, so the band's edge moving by the
+#: resolution moves the fit further: over 50 streams at 1e-6 / 1e-3 / 1e3 /
+#: 1e6 the worst 0.034 (``quantile_median``, seed 37; p95 0.011) and 0.044
+#: (``quantile_tail_standardized``, seed 39; p95 0.031) of the target's
+#: spread, about half the fit's own sampling spread at this half-life
+#: (2026-10-26). In the root mean square both were rounding.
 DECIMAL_SKETCH = (
-    "the MAD sketch's octave buckets: a decimal scale moves a residual across a "
-    "bucket's edge, up to 5e-4 of the target's spread (measured), its resolution"
+    "the MAD sketch's buckets: a decimal scale moves a residual across a bucket's "
+    "edge, up to 5e-4 of the target's spread for the Huber fits and 0.044 for the "
+    "quantile band (measured), its resolution"
 )
 
 
@@ -414,7 +423,7 @@ def _decimal_params() -> list:
             m,
             marks=(
                 (pytest.mark.xfail(strict=True, raises=AssertionError, reason=DECIMAL_SKETCH),)
-                if m in ("huber", "sgd_huber")
+                if m in ("huber", "sgd_huber") or m.startswith("quantile")
                 else ()
             ),
         )

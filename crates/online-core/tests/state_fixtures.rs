@@ -991,6 +991,69 @@ fn the_refit_is_written_part_full_and_done() {
     }
 }
 
+/// The gate's two forms and the quantile band's scale (schema 64,
+/// docs/PLAN.md task 278, D10 and D-Q): every case a state written before
+/// 64 converts to says `min_weight` held learning back (`true`, the field
+/// such a state lacks), and the forms since -- the refit cases and
+/// `quantile_mad` -- say it withholds the output alone (`false`), the
+/// robust ones each holding the floor's count of its targets' first rows.
+/// `quantile_mad` draws its band in the MAD, a sketch of `|e|` a target and
+/// each holding residuals; `quantile` in the RMS, with none.
+#[test]
+fn the_gates_forms_and_the_quantile_scale_are_written() {
+    if regenerating() {
+        return;
+    }
+    let decode = |name: &str| {
+        let f = frozen::ALL.iter().find(|f| f.name == name).unwrap();
+        rmpv::decode::read_value(&mut &f.bytes()[..]).unwrap()
+    };
+    for (name, variant, holds) in [
+        ("huber", "Robust", true),
+        ("huber_mad", "Robust", true),
+        ("quantile", "Robust", true),
+        ("sgd_huber", "Sgd", true),
+        ("sgd_huber_mad", "Sgd", true),
+        ("huber_refit", "Robust", false),
+        ("huber_refit_done", "Robust", false),
+        ("quantile_mad", "Robust", false),
+        ("sgd_huber_refit", "Sgd", false),
+        ("sgd_huber_refit_done", "Sgd", false),
+    ] {
+        let v = decode(name);
+        let got = at(&v, &["model", variant, "cfg", "min_weight_holds_learning"])
+            .and_then(rmpv::Value::as_bool);
+        assert_eq!(got, Some(holds), "{name}: cfg.min_weight_holds_learning");
+        // The robust floor's counts: one a target, each at the floor by the
+        // save, under the form since; none under the old.
+        if variant == "Robust" {
+            let seen = at(&v, &["model", variant, "seen"])
+                .and_then(rmpv::Value::as_array)
+                .map_or(0, |a| {
+                    assert!(
+                        a.iter().all(|c| c.as_u64().is_some_and(|c| c > 0)),
+                        "{name}"
+                    );
+                    a.len()
+                });
+            assert_eq!(seen, if holds { 0 } else { 2 }, "{name}: seen");
+        }
+    }
+    for (name, scale, sketches) in [("quantile", "rms", 0), ("quantile_mad", "mad", 2)] {
+        let v = decode(name);
+        let got = at(&v, &["model", "Robust", "cfg", "huber_scale"]).and_then(rmpv::Value::as_str);
+        assert_eq!(got, Some(scale), "{name}: cfg.huber_scale");
+        let mad = at(&v, &["model", "Robust", "mad"])
+            .and_then(rmpv::Value::as_array)
+            .unwrap_or_else(|| panic!("{name}: mad"));
+        assert_eq!(mad.len(), sketches, "{name}: a sketch a target");
+        assert!(
+            mad.iter().all(|q| held(q) > 0),
+            "{name}: each sketch holds residuals"
+        );
+    }
+}
+
 /// `audit`'s counters in both of their forms (schema 54, docs/PLAN.md task
 /// 223 (b)): a summary past the cap, with decrements, and exact counts below
 /// it. Integers, which [`held`] does not count, so read here.

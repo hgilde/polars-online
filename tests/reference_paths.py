@@ -1313,7 +1313,9 @@ def sgd_ref(
                 "quantile": float(yj < p[j]) - quantile,
                 "epsilon_insensitive": 0.0 if abs(e) <= tube else float(np.sign(e)),
             }[loss]
-            if np.isfinite(pred[i, j]):
+            # The scale learns from the prediction the fit made, whether or
+            # not `min_weight` withholds it from the output (task 278, D10).
+            if np.isfinite(p[j]):
                 sig2[j] = (wsig[j] * sig2[j] + w[i] * e * e) / (wsig[j] + w[i])
                 wsig[j] += w[i]
                 mads[j].add(abs(e), w[i])

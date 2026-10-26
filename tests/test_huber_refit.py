@@ -65,7 +65,7 @@ def test_the_refit_is_statsmodels_converged_fit_on_the_buffer(kind, share):
 
 @pytest.mark.parametrize(
     ("kind", "rows", "seed", "before", "after"),
-    [("huber", 20_000, 110, 0.4261, 0.0025), ("sgd", 2_000, 101, 1.1057, 0.0120)],
+    [("huber", 20_000, 110, 0.4261, 0.0025), ("sgd", 2_000, 101, 1.1108, 0.0120)],
 )
 def test_the_refit_frees_a_captured_stream(kind, rows, seed, before, after):
     """The capture the refit is there for (the module doc of

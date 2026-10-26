@@ -45,6 +45,11 @@ fn sgd(loss: SgdLoss, fit_intercept: bool, constraint: Option<Constraint>) -> Sg
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
         refit_rows: 0,
+        // The gate that held the scale's learning back, as the builds these
+        // digests were printed on did (the Huber case's first rows sit below
+        // `min_weight`; docs/PLAN.md task 278, D10): the switch is what is
+        // held here, and it reads no gate.
+        min_weight_holds_learning: true,
     }
 }
 

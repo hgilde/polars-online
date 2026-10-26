@@ -3218,7 +3218,10 @@ def sgd(
     ``min_weight`` counts the rows the target was present on, at their raw
     weights, decayed, where ``weight_sum`` counts every row, so rows with a
     null target do not warm up coefficients they never moved. A label
-    ``strict_binary`` refuses is not one of them.
+    ``strict_binary`` refuses is not one of them. It withholds the output
+    alone: under ``loss = "huber"`` the residual scale learns from the
+    prediction the fit made on a row the gate withholds, from the first row,
+    so the fit is the same at any ``min_weight``.
 
     .. rubric:: Output
 
