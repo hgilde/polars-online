@@ -1670,26 +1670,56 @@ print(f"with_x predicts closer at the 5% level from row {passed.arg_true()[0]}")
 ```text
 with_x: sigma_y at the last row 1.14
 naive: sigma_y at the last row 2.21
-with_x predicts closer at the 5% level from row 10
+with_x predicts closer at the 5% level from row 15
 ```
 
-Level and trend, `l` and `b`, are weighted means of what each row observes
-and what the model forecast, with `W` and `V` the weight each has gathered.
-`s` is the clock since the target was last observed, this row's step
-included. So a row with a null target or weight 0 leaves the level and
-trend where they were, and its step goes into the next observation's `s`:
+Each row moves the level `l` and the trend `b` by a gain times the forecast
+error `e = y − pred`. `s` is the clock since the target was last observed,
+this row's step included. So a row with a null target or weight 0 leaves
+the level and trend where they were, and its step goes into the next
+observation's `s`. A row takes the larger of two gains, on the level and on
+the slope:
 
 ```
 λ_l = 0.5^(s/half_life)                        λ_b = 0.5^(s/trend_half_life)
-pred = l + b·s
-l'   = (λ_l·W·pred + w·y)/(λ_l·W + w)          W' = λ_l·W + w
-b'   = (λ_b·V·b + w·(l' − l)/s)/(λ_b·V + w)    V' = λ_b·V + w
+pred = l + b·s                                 e = y − pred
+textbook:  g_t = w/(λ_l·W + w)                 W' = λ_l·W + w
+           h_t = w/(λ_b·V + w) · g/s           V' = λ_b·V + w     (s > 0)
+line fit:  S0' = S0 + w     ā' = S0·(ā + s)/S0'     Q' = Q + S0·w·(ā + s)²/S0'
+           g_f = w·(1/S0' + ā'²/Q')            h_f = w·ā'/Q'
+l' = pred + g·e     g = max(g_f, g_t)
+b' = b + h·e        h = max(h_f, h_t)
 ```
 
-A target's first observation sets `l = y` and `W = w`, predicts nothing,
-and starts the trend at 0. The gains `w/(λW + w)` start at 1 and fall to
-the textbook's fixed `1 − λ` as the weight saturates. So a new series is
-followed sooner, and from there the fit is statsmodels' `Holt`.
+**The textbook gains are weighted means'.** `W` and `V` are the weight the
+level and the trend have gathered, so a row at weight `w` counts `w` times.
+Where they win, the level is the weighted mean of the forecast and the row,
+and the trend the weighted mean of `b` and the slope the level moved at.
+Once the weight saturates they are the textbook's fixed `1 − λ`.
+
+**The line fit's gains are the weighted least-squares line's,** fitted
+through every observation so far on the clock and read at the last. `S0` is
+its weight, `ā` the observations' weighted mean age and `Q` the spread of
+their ages about it, none decayed. With every observation at one clock
+(`Q = 0`), no slope is determined: `g_f = w/S0'` and `h_f = 0`.
+
+**Without decay, `holt` is the weighted line fit,** whatever the weights
+and the clock, since an infinite half-life's fixed gain `1 − λ` is 0:
+statsmodels' `WLS` on `(1, t)` agrees to 1e-15. Under a half-life the line
+fit's gains fall as `1/n` and `1/n²` while the textbook's settle. After a
+warm-up of a few half-lives every row takes the textbook's, and from there
+the fit is statsmodels' `Holt`: to 1e-12 from row 745 at half-lives of 6
+and 25. Gains of `1/n` on both level and trend, without the line fit, pinned
+the trend to the first observation. The level then carried that
+observation's error times `ln n`: 11 off a flat series after 40,000 rows
+without decay, and 6.3 after 10,000 rows at `half_life=10000`, the worst of
+50 seeds at a noise of 0.5. The line fit's worst was 0.010 and 0.026, the
+weighted least squares' own.
+
+A target's first observation sets `l = y`, predicts nothing, and starts the
+trend at 0. A row at the last row's clock is a second observation the level
+takes in: the textbook trend holds, since a move over no clock has no
+slope, and the line fit's slope moves by its own gain.
 
 ```python
 baseline = po.spec.holt(
@@ -1705,7 +1735,8 @@ clock,** so on an irregular clock it extrapolates the right distance.
 
 **The level forgets at the spec's `half_life`, as every model's decay
 does.** `level_half_life` is refused, with a message naming `half_life`. To
-make the trend the whole history's drift, give `trend_half_life=inf`.
+make the trend the whole history's drift, the line fit's slope, give
+`trend_half_life=inf`.
 
 **For a flat forecast, give `trend=False`:** simple exponential smoothing,
 whose level is the target's exponentially weighted mean. It holds the

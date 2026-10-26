@@ -646,8 +646,9 @@ def _registrations() -> list[Registration]:
             stream=trend,
             oracle=trend_oracle,
             classes=frozenset({1, 2, 5}),
-            limit="under a finite half-life a tracking filter, Holt's textbook recursion, with "
-            "no bias on a straight line; without decay meant to be the whole history's trend",
+            limit="under a finite half-life a tracking filter, Holt's textbook recursion once "
+            "warmed up, with no bias on a straight line; without decay the weighted "
+            "least-squares line through every observation",
             other=OTHER_TREND,
         ),
         Registration(

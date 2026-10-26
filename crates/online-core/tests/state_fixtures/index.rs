@@ -100,6 +100,9 @@ pub mod pa_warming {
 pub mod holt {
     include!("holt.rs");
 }
+pub mod holt_inf {
+    include!("holt_inf.rs");
+}
 pub mod kmeans_warming {
     include!("kmeans_warming.rs");
 }
@@ -195,6 +198,7 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &pa::FIXTURE,
     &pa_warming::FIXTURE,
     &holt::FIXTURE,
+    &holt_inf::FIXTURE,
     &kmeans_warming::FIXTURE,
     &kmeans::FIXTURE,
     &micro::FIXTURE,
