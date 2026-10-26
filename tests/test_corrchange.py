@@ -732,10 +732,12 @@ def test_n_perm_converges_at_the_rate_of_an_empirical_quantile():
     NumPy (the statistic from ``np.corrcoef``'s definition, the quantile
     ``inverted_cdf``, which is the empirical quantile's definition), good to
     about 0.002: two reference seeds differ by 0.0023. Judged by the worst of
-    100 seeds and the 95th percentile, at each size. Measured (2026-10-25),
-    worst / p95: 20 draws 0.261 / 0.215 (biased low: the 19th of 20); 200,
-    0.128 / 0.094; 2,000, 0.039 / 0.029; 20,000, 0.017 / 0.0092 -- a slope
-    of -0.50 at the 95th percentile from 200 to 20,000.
+    100 seeds and the 95th percentile, at each size. Measured (2026-10-26,
+    the critical value the ``floor(alpha (n_perm + 1))``-th largest draw),
+    worst / p95: 20 draws 0.576 / 0.320 (biased high: the largest of 20,
+    where the old rule's 19th of 20 gave 0.261 / 0.215, biased low); 200,
+    0.168 / 0.098; 2,000, 0.038 / 0.028; 20,000, 0.017 / 0.0090 -- a slope
+    of -0.52 at the 95th percentile from 200 to 20,000.
     """
     w, k, alpha = 50, 3, 0.05
     df = pair(2 * w + 1, 0.4, seed=280, k=k)
@@ -833,7 +835,8 @@ def test_alpha_nests_the_flags():
     window = three_regimes()
     for frame, kw in (
         (spans, {"window_rows": 100, "alpha_adjust": "none"}),
-        (window, {**WINDOW, "permute_every_rows": 5}),
+        # 999 draws, so 0.001 can flag: fewer than ceil(1/alpha) - 1 is refused.
+        (window, {**WINDOW, "permute_every_rows": 5, "n_perm": 999}),
     ):
         flags, crits = [], []
         for alpha in (0.001, 0.01, 0.05, 0.2, 0.5):
@@ -1028,7 +1031,13 @@ def test_reset_under_the_permutation_quantile():
         assert reset["since_flag"][f + 2 * w] == 2 * w, f
         fresh = run(df[f + 1 : nxt + 1], **kw)
         assert fresh["stat"].equals(reset["stat"][f + 1 : nxt + 1]), f
-        assert fresh["since_flag"].equals(reset["since_flag"][f + 1 : nxt + 1]), f
+        # `since_flag` agrees until either flags: the critical values are
+        # other draws, so the two need not flag on the same row (measured
+        # 2026-10-26: after the flag at 593 the fresh bank flags 5 rows
+        # before the reset one does).
+        hits = fresh["flag"].fill_null(False).arg_true()
+        upto = int(hits[0]) if len(hits) else nxt - f
+        assert fresh["since_flag"][:upto].equals(reset["since_flag"][f + 1 : f + 1 + upto]), f
         a, b = fresh["crit"].to_numpy(), reset["crit"][f + 1 : nxt + 1].to_numpy()
         live = np.isfinite(a)
         assert np.array_equal(live, np.isfinite(b)), f

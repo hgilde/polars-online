@@ -12,8 +12,10 @@ judged by the worst seed and the 95th percentile, never a median:
   ``dead_frac`` of 0.5 or more re-placed it again at once (found here, and
   now refused from 0.5, with 0.45 held to one re-placement).
 - ``corrchange`` (``kind="window"``): the permutation test's size on spans
-  that do not overlap is the exact permutation level ``(n_perm + 1 - q) /
-  (n_perm + 1)``, ``q = ceil((1 - alpha) n_perm)``, over 200 seeds.
+  that do not overlap is the exact permutation level ``floor(alpha (n_perm +
+  1)) / (n_perm + 1)``, at most ``alpha``, over 200 seeds (it was ``(n_perm +
+  1 - q) / (n_perm + 1)``, ``q = ceil((1 - alpha) n_perm)``, above ``alpha``:
+  found here and fixed).
 - ``bocpd``: ``robust_beta`` trades a forgiven outlier against a detected
   shift, over 50 seeds.
 - ``hmm``: the learned transition matrix recovers the truth at every
@@ -269,13 +271,17 @@ def test_below_half_a_share_a_centre_is_re_placed_once(dead_frac, every):
 # --- corrchange: the window kind's permutation size ---------------------------
 #
 # The critical value is the q-th smallest of n_perm statistics of the pooled
-# rows shuffled between the two windows, q = ceil((1 - alpha) n_perm), and a
-# report flags when its statistic is above it. On rows that are exchangeable
-# (iid, one correlation throughout) the observed split is one more draw of
-# the same distribution, so it exceeds the q-th smallest of n_perm draws with
-# probability exactly (n_perm + 1 - q) / (n_perm + 1): the permutation test's
-# level, which is alpha only up to that rounding (0.0952 at alpha 0.05 and
-# 20 draws; 0.0476 at alpha 0.01 and 20 draws). Blocks of rows permute an
+# rows shuffled between the two windows, q = n_perm + 1 - m with m =
+# floor(alpha (n_perm + 1)), and a report flags when its statistic is above
+# it: the standard permutation test, p = (1 + #{T_b >= T}) / (n_perm + 1) <=
+# alpha. On rows that are exchangeable (iid, one correlation throughout) the
+# observed split is one more draw of the same distribution, so it exceeds the
+# q-th smallest of n_perm draws with probability exactly m / (n_perm + 1) <=
+# alpha: 1/21 = 0.0476 at alpha 0.05 and 20 draws, 0.0498 at 200. Before
+# task 278 (ff) q was ceil((1 - alpha) n_perm), whose level (n_perm + 1 - q)
+# / (n_perm + 1) was above alpha (0.0952 at alpha 0.05 and 20 draws; 0.0476
+# at alpha 0.01, nearly five times it); alpha 0.01 at 20 draws, where m is
+# 0 and nothing could flag, is refused now. Blocks of rows permute an
 # iid stream exchangeably too. Two windows that slide by a row share all but
 # one row, so the trials are the reports on spans that do not overlap: with
 # `permute_every_rows = 2 w` a fresh value is drawn, from the previous row's
@@ -298,9 +304,8 @@ def binomial_upper(n: int, p: float, tail_mass: float) -> int:
 
 
 def level(alpha: float, n_perm: int) -> float:
-    """The permutation test's exact level (above)."""
-    q = math.ceil((1.0 - alpha) * n_perm)
-    return (n_perm + 1 - q) / (n_perm + 1)
+    """The permutation test's exact level (above), at most ``alpha``."""
+    return math.floor(alpha * (n_perm + 1)) / (n_perm + 1)
 
 
 def null_spans(seeds: range) -> pl.DataFrame:
@@ -353,35 +358,58 @@ def cc_holds(counts: np.ndarray, alpha: float, n_perm: int, seeds: int) -> str:
     bound = binomial_upper(CC_SPANS, want, 0.001 / seeds)
     line = (
         f"alpha {alpha}, n_perm {n_perm}: level {want:.4f}, pooled {pooled:.4f} "
-        f"({(pooled - want) / se:+.2f} se); a seed's flags worst {worst:.0f}/{CC_SPANS} "
-        f"(bound {bound}), p95 {p95:.1f}"
+        f"({(pooled - want) / se:+.2f} se; {(pooled - alpha) / se:+.2f} se from alpha); "
+        f"a seed's flags worst {worst:.0f}/{CC_SPANS} (bound {bound}), p95 {p95:.1f}"
     )
+    assert 0 < want <= alpha, line
     assert abs(pooled - want) < 4 * se, line
+    # The size is alpha's at most: the pooled rate no more than 4 se above.
+    assert pooled - alpha < 4 * se, line
     assert worst <= bound, line
     return line
 
 
 def test_the_window_permutation_size_is_its_exact_level_twenty_seeds():
     """The essentials' case: 20 seeds of 40 spans at the smallest ``n_perm``,
-    whose level at 0.05 is 2/21 = 0.0952. Measured 2026-10-26: 0.0900
-    pooled over these 20 seeds (-0.5 se), 0.1006 over 200 (+1.6 se)."""
+    whose level at 0.05 is 1/21 = 0.0476 (2/21 = 0.0952 under the old rule).
+    Measured 2026-10-26: 0.0338 pooled over these 20 seeds (-1.8 se), 0.0475
+    over 200 (-0.05 se)."""
     counts = span_flags(range(20), (0.05,), 20, 1)[0.05]
     print(cc_holds(counts, 0.05, 20, 20))
+
+
+@pytest.mark.parametrize(("alpha", "fewest"), [(0.01, 99), (0.02, 49), (0.04, 24)])
+def test_too_few_draws_to_flag_at_alpha_are_refused_with_the_fewest_that_can(alpha, fewest):
+    """At 20 draws and alpha 0.01, ``floor(0.01 * 21)`` is 0: no statistic
+    could ever flag (the old rule flagged at 0.0476 there). Refused, naming
+    ``ceil(1 / alpha) - 1``; one draw fewer is refused and that many runs."""
+    kw = dict(features=["x0", "x1"], kind="window", window_rows=CC_W, alpha=alpha)
+    for n in (20, fewest - 1):
+        with pytest.raises(ValueError, match=f"give n_perm of at least {fewest}, or a fixed crit"):
+            po.ModelBank([po.spec.corrchange("m", n_perm=n, **kw)])
+    po.ModelBank([po.spec.corrchange("m", n_perm=fewest, **kw)])
+    po.ModelBank([po.spec.corrchange("m", n_perm=20, crit=0.5, **kw)])
+
+
+#: The levels each `n_perm` is held at: alpha 0.01 needs 99 draws at least.
+CC_ALPHAS = {20: (0.05, 0.2), 200: (0.01, 0.05, 0.2)}
 
 
 @pytest.mark.soak
 @pytest.mark.parametrize("n_perm, perm_block", [(20, 1), (200, 1), (200, 5)])
 def test_the_window_permutation_size_is_its_exact_level(n_perm, perm_block):
-    """200 seeds of 40 spans each, at three levels. Measured 2026-10-26 at
-    200 draws in blocks of 1: pooled 0.0150 / 0.0551 / 0.2042 against the
-    levels 0.0149 / 0.0547 / 0.2040 (within 0.2 standard errors), a seed's
-    worst 3 / 8 / 16 flags of 40 against the bounds 6 / 11 / 21; in blocks
-    of 5, pooled 0.0149 / 0.0583 / 0.2061 (+1.4 se at most), worst 3 / 8 /
-    17; at 20 draws, levels 0.0476 / 0.0952 / 0.2381 -- nearly five times
-    ``alpha`` at 0.01 -- pooled 0.0475 / 0.1006 / 0.2424 (+1.6 se at most),
-    worst 6 / 9 / 17 against 10 / 14 / 23."""
+    """200 seeds of 40 spans each, at each level ``CC_ALPHAS`` gives.
+    Measured 2026-10-26, after the fix: at 200 draws in blocks of 1, pooled
+    0.0095 / 0.0510 / 0.1994 against the levels 0.0100 / 0.0498 / 0.1990
+    (within 0.5 standard errors), a seed's worst 3 / 8 / 15 flags of 40
+    against the bounds 5 / 10 / 20; in blocks of 5, pooled 0.0091 / 0.0530 /
+    0.2016 (+1.3 se at most; +1.2 se above alpha at 0.05), worst 3 / 8 / 17;
+    at 20 draws, levels 0.0476 / 0.1905, pooled 0.0475 / 0.1955 (+1.1 se at
+    most), worst 6 / 15 against 10 / 20. Before it, at 20 draws, the levels
+    were 0.0476 / 0.0952 / 0.2381 at alpha 0.01 / 0.05 / 0.2 -- nearly five
+    times ``alpha`` at 0.01 -- and pooled 0.0475 / 0.1006 / 0.2424."""
     seeds = range(200)
-    alphas = (0.01, 0.05, 0.2)
+    alphas = CC_ALPHAS[n_perm]
     counts = span_flags(seeds, alphas, n_perm, perm_block)
     for a in alphas:
         print(f"block {perm_block}: " + cc_holds(counts[a], a, n_perm, len(seeds)))
