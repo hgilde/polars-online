@@ -209,6 +209,9 @@ what = "quantile, the median, 20 features, half-life 1000: AnyModel::step_into, 
 budget = 15595496
 release = 15678333
 
+[instructions.quantile_refit]
+what = "quantile, the median, 20 features, half-life 1000, the refit of the first 2,500 rows on the block's 500th row: AnyModel::step_into, into one kept Step"
+
 [instructions.ftrl]
 what = "ftrl, 20 features, logistic loss, half-life 1000: AnyModel::step_into, into one kept Step"
 budget = 3696553

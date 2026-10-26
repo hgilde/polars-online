@@ -257,6 +257,7 @@ _SKIPPED_WHEN_ABSENT: dict[str, frozenset[str]] = {
         }
     ),
     "sgd": frozenset({"huber_scale", "huber_scale_half_life", "huber_refit_rows", "refit_budget"}),
+    "quantile": frozenset({"quantile_refit_rows", "refit_budget"}),
     "ew_cov": frozenset({"gram_threads"}),
     "marginal": frozenset(
         {

@@ -145,14 +145,18 @@ fn zero_weight_rows_neither_count_nor_move_the_refit() {
     assert_eq!(bits(&kept), bits(&b));
 }
 
-/// The setting is Huber's alone, and not beside the sum-scale prior.
+/// The setting is refused under an infinite cut and beside the sum-scale
+/// prior; a quantile fit takes it from the warm-up's three rows a
+/// coefficient up (`quantile_refit_tests`, task 278, D-Q2).
 #[test]
-fn the_refit_is_refused_off_huber() {
+fn the_refit_is_refused_where_it_does_not_apply() {
     assert!(Robust::new(base(f64::INFINITY, Decay::Lam(1.0), 10)).is_err());
     assert!(Robust::new(base(f64::INFINITY, Decay::Lam(1.0), 0)).is_ok());
     let mut q = base(1.345, Decay::Lam(1.0), 10);
     q.loss = RobustLoss::Quantile { tau: 0.5 };
     q.huber_scale = HuberScale::Rms;
+    assert!(Robust::new(q.clone()).is_ok());
+    q.refit_rows = 8;
     assert!(Robust::new(q).is_err());
     let mut s = base(1.345, Decay::Lam(1.0), 10);
     s.ridge_scale = true;

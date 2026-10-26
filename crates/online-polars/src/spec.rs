@@ -691,6 +691,16 @@ pub enum ModelKind {
         /// (`online_core::robust`'s module docs).
         #[serde(default)]
         quantile_eps: Option<f64>,
+        /// Each target's first rows refit to the converged smoothed
+        /// check-loss fit, once (`RobustCfg::refit_rows`, docs/PLAN.md task
+        /// 278, D-Q2): absent is `default_refit_rows(k)`, 0 is off. Skipped
+        /// when absent, so a spec written before it serializes as it did.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        quantile_refit_rows: Option<u32>,
+        /// `huber`'s `refit_budget`, for the quantile refit's buffers.
+        /// Skipped when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        refit_budget: Option<Num>,
     },
     /// Online logistic regression via FTRL-proximal (docs/PLAN.md §4.6).
     /// `pred` is a probability; `resid = y - p`.
@@ -1758,7 +1768,9 @@ impl ModelKind {
     /// no bound (`inf`) or a kind without the refit.
     pub fn refit_budget_mib(&self) -> Option<f64> {
         let given = match self {
-            ModelKind::Huber { refit_budget, .. } => refit_budget,
+            ModelKind::Huber { refit_budget, .. } | ModelKind::Quantile { refit_budget, .. } => {
+                refit_budget
+            }
             ModelKind::Sgd {
                 refit_budget, loss, ..
             } if loss.as_deref() == Some("huber") => refit_budget,
@@ -5019,8 +5031,10 @@ impl Spec {
                 quantile_eps,
                 ridge,
                 solve_every,
+                refit_budget,
                 ..
             } => {
+                check_refit_budget(&self.name, *refit_budget)?;
                 if !(0.0 < *quantile && *quantile < 1.0) {
                     return Err(format!(
                         "spec {:?}: quantile must be in (0, 1), got {quantile}",

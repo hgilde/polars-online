@@ -420,6 +420,10 @@ class TestTheQuantileFitsDefinition:
             quantile_eps=self.EPS,
             ridge=self.RIDGE,
             coef_every=1,
+            # The one pass's rules: the refit of the first rows rebuilds the
+            # sums at the converged fit, held to its own definition in
+            # `tests/test_quantile_refit.py` (task 278, D-Q2).
+            quantile_refit_rows=0,
         )
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y0": y})
         out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
@@ -795,13 +799,16 @@ class TestTheQuantilesOwnKeywords:
         0.1606``: ``quantile_eps`` at 0.05 and at 0.15 draw the same band on
         every row, and the output is the same to the bit. At 0.17 the band
         is wider once the window has filled, and the fit moves (by 0.12 on
-        seed 3, measured 2026-10-25). Without a half-life the floor falls to
-        0, and 0.05 and 0.15 part."""
+        seed 3, measured 2026-10-25; by 0.046 with the refit of the first
+        rows, task 278, D-Q2, measured 2026-10-26: the refit draws its band
+        at the floor of its 500 rows, decayed, which is above 0.17, so the
+        two start from one fit). Without a half-life the floor falls to 0,
+        and 0.05 and 0.15 part (0.096)."""
         df = self.stream()
         low, under = (self.run(df, half_life=200.0, quantile_eps=e) for e in (0.05, 0.15))
         assert low.equals(under, null_equal=True)
         above = self.run(df, half_life=200.0, quantile_eps=0.17)
-        assert np.nanmax(np.abs(_pred_of(above) - _pred_of(low))) > 0.05
+        assert np.nanmax(np.abs(_pred_of(above) - _pred_of(low))) > 0.02
         a, b = (self.run(df, half_life=float("inf"), quantile_eps=e) for e in (0.05, 0.15))
         assert np.nanmax(np.abs(_pred_of(a) - _pred_of(b))) > 0.05
 
@@ -834,6 +841,9 @@ class TestTheQuantileSolveEvery:
             "half_life": 100.0,
             "min_weight": cls.MIN_WEIGHT,
             "solve_every": cls.EVERY,
+            # The refit moves the fit on its own row, off the cadence this
+            # class holds (task 278, D-Q2), so it is off here.
+            "quantile_refit_rows": 0,
             **kw,
         }
         return po.spec.quantile(

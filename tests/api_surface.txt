@@ -357,6 +357,8 @@
     solve_every = None
     max_rows_between_solves = None
     quantile_eps = None
+    quantile_refit_rows = None
+    refit_budget = None
     common
   rcov:
     name
@@ -831,7 +833,7 @@
     model.n_features = 1
     model.n_targets = 1
     model.quantile_eps = 0.2
-    model.refit_rows = 0
+    model.refit_rows = 500
     model.ridge = 1e-06
     model.ridge_scale = false
     model.solve_every = 1.0
@@ -2536,7 +2538,7 @@
     marginal: bin_budget, bin_edges, bin_huber_delta, bin_refit_rows, bin_rule, bin_stat, bin_warm_rows, bins, closed, cross_lags, feature_moments, lags, max_rows_between_snapshots, refit_budget, serial_rule, shards, snapshot_every, window_budget, window_lags, window_size
     micro: beta_mu, eps, macro_link, max_clusters, max_rows_between_prunes, prune_every, scale_floor, standardize
     pa: c, coef_max, coef_min, coef_sum, eps, mode, standardize
-    quantile: max_rows_between_solves, quantile, quantile_eps, ridge, solve_every, standardize
+    quantile: max_rows_between_solves, quantile, quantile_eps, quantile_refit_rows, refit_budget, ridge, solve_every, standardize
     rcov: bandwidth, block_rows, iv_stride, jitter, kernel, kind, max_bandwidth, noise_stride, preavg_rows, psd, theta
     rls: coef_prior, delta
     seqtest: a, a_suffix, b, b_suffix

@@ -602,6 +602,8 @@ pub fn quantile_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         solve_every,
         max_rows_between_solves,
         quantile_eps,
+        quantile_refit_rows,
+        refit_budget: _,
     } = &spec.model
     else {
         return Err("not a quantile spec".into());
@@ -629,7 +631,11 @@ pub fn quantile_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         feature_sets: Vec::new(),
         ridge_scale: false,
         emit_scale: false,
-        refit_rows: 0,
+        // On by default, at `huber`'s count: the rows the warm-up took as
+        // least squares and the first bands held refit to the converged
+        // fit, once (task 278, D-Q2).
+        refit_rows: quantile_refit_rows
+            .unwrap_or_else(|| online_core::default_refit_rows(spec.k())),
         // No sketch under the RMS band; anchored once a sketch is kept.
         mad_anchor: true,
         min_weight_holds_learning: false,
@@ -792,5 +798,22 @@ mod refit_tests {
         assert!(sgd("loss = \"huber\"\nhuber_delta = inf\nhuber_refit_rows = 7").is_err());
         assert_eq!(sgd(""), Ok(0));
         assert_eq!(sgd("loss = \"quantile\"\nquantile = 0.5"), Ok(0));
+        // `quantile`'s (task 278, D-Q2): on at the same count, as given
+        // where given, and refused inside the warm-up's three rows a
+        // coefficient (6 here, with the intercept).
+        assert_eq!(quantile(""), Ok(on));
+        assert_eq!(quantile("quantile_refit_rows = 0"), Ok(0));
+        assert_eq!(quantile("quantile_refit_rows = 6"), Ok(6));
+        assert!(quantile("quantile_refit_rows = 5").is_err());
+    }
+
+    fn quantile(model: &str) -> Result<u32, String> {
+        match quantile_model(
+            &spec(&format!("type = \"quantile\"\nquantile = 0.5\n{model}")),
+            Decay::Halflife(10.0),
+        )? {
+            AnyModel::Robust(m) => Ok(m.cfg().refit_rows),
+            _ => unreachable!(),
+        }
     }
 }

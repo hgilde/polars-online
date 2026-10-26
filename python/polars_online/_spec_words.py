@@ -153,6 +153,7 @@ _INF_OK: dict[str, frozenset[str]] = {
             "refit_budget",
         }
     ),
+    "quantile": frozenset({"refit_budget"}),
     "pa": frozenset({"c", "coef_min", "coef_max"}),
     "holt": frozenset({"trend_half_life"}),
     # No bound on the bins' memory (docs/PLAN.md task 131).

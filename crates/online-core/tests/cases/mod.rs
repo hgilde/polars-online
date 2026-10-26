@@ -868,6 +868,43 @@ pub fn all() -> Vec<Case> {
             Targets::Linear(2),
             40
         ),
+        // The quantile refit of each target's first rows (schema 64,
+        // docs/PLAN.md task 278, D-Q2): saved with its buffers part full,
+        // the refit falling in the continuation, and saved after it, the
+        // sums rebuilt at the converged fit and the scale from its
+        // residuals; both in the form a spec writes.
+        case!(
+            "quantile_refit",
+            "Robust",
+            Robust,
+            Robust::new(RobustCfg {
+                huber_scale: online_core::HuberScale::Mad,
+                min_weight_holds_learning: false,
+                mad_anchor: true,
+                refit_rows: 40,
+                ..robust_cfg(RobustLoss::Quantile { tau: 0.75 })
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            40
+        ),
+        case!(
+            "quantile_refit_done",
+            "Robust",
+            Robust,
+            Robust::new(RobustCfg {
+                huber_scale: online_core::HuberScale::Mad,
+                min_weight_holds_learning: false,
+                mad_anchor: true,
+                refit_rows: 20,
+                ..robust_cfg(RobustLoss::Quantile { tau: 0.75 })
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            40
+        ),
         case!(
             "ftrl",
             "Ftrl",

@@ -377,6 +377,8 @@ def quantile(
     solve_every: float | Duration | None = None,
     max_rows_between_solves: int | None = None,
     quantile_eps: float | None = None,
+    quantile_refit_rows: int | None = None,
+    refit_budget: float | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Quantile regression at level ``quantile``: the fit that a share ``tau`` of the
@@ -465,6 +467,52 @@ def quantile(
     An ``s`` taken as 1 there would draw the band past the warm-up in the
     target's own units, and throw a target in millionths far off.
 
+    .. rubric:: The refit of the first rows
+
+    One pass takes each row as the fit before it sees it, and without decay
+    a row stays in the sums as it was taken, at full weight. The warm-up's
+    rows are least-squares rows, and so are the rows inside a band drawn
+    around a fit that wild rows have pulled. So wild targets in the first
+    rows keep pulling, where a batch fit reads them as outliers whose pull
+    the band's width bounds, and they leave only as the rows after them
+    outweigh them. Over 50 streams of 8,000 rows with no decay, three targets
+    1e4 off at the start left the worst stream 0.22 from statsmodels'
+    ``QuantReg`` on the same rows, and wild targets on a fifth of the first
+    500 rows left it 0.038 off. So on the row a target's count of learned
+    rows reaches ``quantile_refit_rows``, those rows are refit to the minimum
+    of the smoothed check loss at the band the stream would draw:
+
+    .. code-block:: text
+
+        v_i  = w_i * (the decay factors of the rows after i)
+        r_i  = y_i - z_i'b                       against the pass's fit
+        s    = weighted median of |r_i| at v_i, over 0.6745
+        h    = s * max(quantile_eps, (k / n) ** 0.4)
+        F(b) = sum_i v_i rho_h(r_i) + the ridge's penalty
+        rho_h(r) = r**2 / (4h) + (tau - 1/2) r + h/4   if |r| < h
+                 = tau * r  or  (tau - 1) * r           otherwise
+
+    ``rho_h`` is the check loss smoothed by the uniform kernel, the loss each
+    row's step is taken on. Each pass is a Newton step of ``F``: the rows
+    inside the band are least-squares rows at target ``y + 2h (tau - 1/2)``,
+    and each row outside adds ``w * 2h * psi(r) * z``, with no cap. A step
+    that would raise ``F`` is halved until it does not, since the band's rows
+    measure the curvature at the pass's fit and not at the next. A band of
+    fewer rows than coefficients has no curvature to step on, and such a pass
+    moves every prediction toward its row by at most the band's width
+    instead. The passes stop when the step moves no coefficient by more than
+    1e-10 of the largest, or after 200.
+
+    The target's sums are then rebuilt as the stream takes each row scored
+    by the converged fit at its band, ``s`` is rebuilt from that fit's
+    residuals, and the stream goes on online. With the refit, the same
+    streams ended at most 0.0053 and 0.0085 off, beside 0.0052 from a clean
+    start. A shift of every one of the first rows is no outlier among them,
+    so the refit keeps them, and they leave as before: a shift of 20 in the
+    first 500 rows was 0.061 off at 8,000 rows, where it was 0.093. The
+    refit runs after the row's own prediction and moves its own target's fit
+    alone.
+
     .. rubric:: Parameters
 
     ``quantile``
@@ -473,6 +521,31 @@ def quantile(
         The band's half-width in units of ``s``, finite and above 0. Default
         0.2, at which the band holds about a sixth of the rows of normal noise
         at the median and a seventh at the 0.9 quantile.
+    ``quantile_refit_rows``
+        The learned rows (each of positive weight, with its target) after
+        which each target's first rows are refit to convergence, once (the
+        rubric above). Default ``max(500, 10 * features)`` up to 100
+        features, and off above 100; a count given is always taken, from
+        three rows a coefficient up, the rows the warm-up takes as least
+        squares. ``0`` turns the refit off. A group shorter than the count
+        never refits and holds its rows to the end: ``(features + 4) * 8``
+        bytes a learned row, and 32 bytes a run of rows that only aged the
+        target (its value null or its weight 0). Past 4 runs a learned row of
+        the count, as on a target present on fewer than about one row in five
+        under an irregular clock, the target gives its refit up and keeps its
+        one-pass fit. A buffer whose rows, counted one each and decayed, are
+        still fewer than the warm-up's is left as the stream built it. The
+        refit takes 0.09 to 2.3 ms once, for 1 to 50 features and 500 to
+        1,000 rows (an Apple M4 Pro under other load, best of 9), and the
+        rows after it cost what they did.
+    ``refit_budget``
+        A bound in MiB on the refit buffers of all the spec's groups
+        together, above 0, or ``inf`` for none; default 256. As for
+        :func:`huber`: each new group reserves ``(features + 20) * 8`` bytes a
+        target for each row of the count when it first appears, and keeps it
+        for the life of the bank; the group that would cross the bound, and
+        every new group after it, keeps its one-pass fit, a notice says so
+        once, and ``summary()``'s ``refit_given_up`` counts the targets.
     ``ridge``, ``standardize``, ``solve_every``, ``max_rows_between_solves``
         As for :func:`ewridge`: the penalty (default ``1e-6``, finite and at
         least 0), correlation-form solving, and the solve schedule. ``ridge``
@@ -542,5 +615,10 @@ def quantile(
         "solve_every": solve_every,
         "max_rows_between_solves": max_rows_between_solves,
         "quantile_eps": quantile_eps,
+        "quantile_refit_rows": quantile_refit_rows,
+        "refit_budget": refit_budget,
     }
+    # Written only when given: the Rust spec skips them when absent.
+    skipped = _SKIPPED_WHEN_ABSENT["quantile"]
+    model = {k: v for k, v in model.items() if v is not None or k not in skipped}
     return _common(name, model, targets=targets, features=features, **common)

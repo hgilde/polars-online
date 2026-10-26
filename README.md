@@ -4256,7 +4256,13 @@ and rebuilds the scale from that fit's residuals.
 saved before it loads with the refit off, while a group a resumed bank
 first sees after the load, or one a drift reset starts over, refits under
 the default. The CHANGELOG declares the move with its size, and MODELS.md
-gives the capture measured with and without the refit.
+gives the capture measured with and without the refit. The same release
+turned on `quantile`'s refit of its first rows, `quantile_refit_rows`, at
+the same count: without decay its one pass kept the rows its warm-up took
+as least squares in its sums at full weight, and three wild first targets
+left the worst of 50 streams 0.22 from statsmodels' `QuantReg` after 8,000
+rows, against 0.0053 with the refit. `quantile_refit_rows=0` turns it off,
+and a state saved before it loads with it off.
 
 **A spec parameter renamed after 1.0 is forwarded by a table, and any
 other renamed name by a forwarding of its own.** The table reads a spec

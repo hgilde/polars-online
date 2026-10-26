@@ -1,6 +1,8 @@
 //! The Huber refit: each target's first rows refit to convergence, once,
 //! for `huber` ([`crate::Robust`]) and `sgd(loss = "huber")` ([`crate::Sgd`])
-//! (docs/HUBER.md §3; docs/PLAN.md task 277).
+//! (docs/HUBER.md §3; docs/PLAN.md task 277). `quantile`'s refit, the
+//! smoothed check loss's in place of IRLS, reads its buffers and rebuilds
+//! its scale here too (`robust::quantile_refit`, task 278, D-Q2).
 //!
 //! **Why.** A stream weights each row once, by its residual against the fit
 //! before it. Over the first rows that fit is close to least squares, so a

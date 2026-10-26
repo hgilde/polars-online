@@ -1628,17 +1628,17 @@ fn reserve_refits(
             .as_deref()
             .map_or(String::new(), |g| format!(" at group {g:?}"));
         notices.push(format!(
-            "spec {:?}: the Huber refit buffers of its groups reached refit_budget = {budget} \
+            "spec {:?}: the refit buffers of its groups reached refit_budget = {budget} \
              MiB{group}, {:.0} KB a group: that group's refits and those of every later new \
              group are given up, and their one-pass fits stand (summary()'s refit_given_up \
              counts them). To refit more groups, raise refit_budget (MiB, or inf for no \
              bound), or lower {rows}, the rows a buffer holds",
             spec.name,
             need / 1024.0,
-            rows = if matches!(spec.model, crate::ModelKind::Marginal { .. }) {
-                "bin_refit_rows"
-            } else {
-                "huber_refit_rows"
+            rows = match spec.model {
+                crate::ModelKind::Marginal { .. } => "bin_refit_rows",
+                crate::ModelKind::Quantile { .. } => "quantile_refit_rows",
+                _ => "huber_refit_rows",
             },
         ));
     }
