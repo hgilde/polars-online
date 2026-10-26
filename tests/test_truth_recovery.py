@@ -283,7 +283,7 @@ def test_kmeans_on_frantis_benchmark_by_the_worst_ordering(name):
         f"median {np.median(a[:, 2]):.3f}"
     )
     ledger.record("kmeans_franti", f"{name}_ari", a[:, 0], ideal=1.0)
-    ledger.record("kmeans_franti", f"{name}_centroid_index", a[:, 1])
+    ledger.record("kmeans_franti", f"{name}_centroid_index", a[:, 1], exact=True)
     ledger.record("kmeans_franti", f"{name}_inertia_ratio", a[:, 2], ideal=1.0)
     assert a[:, 0].min() >= min_ari
     assert a[:, 1].max() <= max_ci
@@ -557,9 +557,9 @@ def test_bocpd_finds_every_mean_shift_and_dates_it(delta):
         f"false alarms {false} in {len(rows) * 1500} quiet rows"
     )
     tag = f"{delta:g}sd"
-    ledger.record("bocpd_shift", f"delay_{tag}", delays)
-    ledger.record("bocpd_shift", f"dating_error_{tag}", dated)
-    ledger.record("bocpd_shift", f"false_alarms_{tag}", false)
+    ledger.record("bocpd_shift", f"delay_{tag}", delays, exact=True)
+    ledger.record("bocpd_shift", f"dating_error_{tag}", dated, exact=True)
+    ledger.record("bocpd_shift", f"false_alarms_{tag}", false, exact=True)
     max_delay, max_dated, q = BOCPD_BOUNDS[delta]
     assert not missed, missed
     assert max(delays) <= max_delay
@@ -608,7 +608,17 @@ def tcpd_f1(predicted: list[int], annotations: dict[str, list[int]], margin: int
     return 0.0 if precision + recall == 0 else 2 * precision * recall / (precision + recall)
 
 
-@pytest.mark.extended(reason="the network: TCPD's annotated series")
+#: Every field on each series. The bounds sit 0.05 under the measured F1,
+#: so a change could lose most of that without failing: the ledger holds
+#: each series' F1 as measured.
+ledger.guard(
+    "bocpd_tcpd",
+    lambda: [bocpd_out(tcpd_or_skip(name)[0], hazard=250.0) for name in sorted(TCPD)],
+    dataset="tcpd:" + ",".join(sorted(TCPD)),
+)
+
+
+@pytest.mark.oracle_grid(reason="the network: TCPD's annotated series, each F1 held to the ledger")
 @pytest.mark.parametrize("name", sorted(TCPD))
 def test_bocpd_on_tcpd_series(name):
     x, annotations = tcpd_or_skip(name)
@@ -616,6 +626,7 @@ def test_bocpd_on_tcpd_series(name):
     found = sorted({began[a] for a in alarms if began[a] is not None})
     score = tcpd_f1(found, annotations)
     print(f"{name}: F1 {score:.3f}, found {found}")
+    ledger.record("bocpd_tcpd", f"{name}_f1", score, ideal=1.0)
     assert score >= TCPD[name], (score, found)
 
 
@@ -690,7 +701,7 @@ def test_corrchange_flags_every_break_and_holds_its_size():
         f"corrchange: delay worst {max(d for d in delays if d is not None)}, "
         f"quiet mean {np.mean(quiet):.4f}, worst {max(quiet):.4f}"
     )
-    ledger.record("corrchange_break", "delay", [d for d in delays if d is not None])
+    ledger.record("corrchange_break", "delay", [d for d in delays if d is not None], exact=True)
     ledger.record("corrchange_break", "quiet_share_flagged", quiet)
     ledger.record("corrchange_break", "quiet_share_flagged_mean", np.mean(quiet))
     assert not missed, missed
@@ -770,7 +781,7 @@ def test_deco_level_settles_low_and_moves_at_its_half_life(seeds):
     if len(seeds) == len(SEEDS):
         ledger.record("deco_level", "settled_at_0_2", low, ideal=0.2)
         ledger.record("deco_level", "settled_at_0_6", high, ideal=0.6)
-        ledger.record("deco_level", "rows_to_midpoint", delays)
+        ledger.record("deco_level", "rows_to_midpoint", delays, exact=True)
         ledger.record("deco_level", "rows_to_midpoint_median", np.median(delays))
     assert min(low) > 0.05 and max(low) < 0.2
     assert min(high) > 0.28 and max(high) < 0.48

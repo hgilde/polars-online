@@ -46,6 +46,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+import ledger
 import polars_online as po
 import polars_online.gram as gram
 from data import STRD_LINEAR, nist_strd_linear_or_skip
@@ -150,7 +151,96 @@ def _strd_specs(k: int, intercept: bool) -> dict[str, dict[str, Any]]:
 STRD_SOLVABLE = tuple(n for n in STRD_LINEAR if n != "Filip")
 
 
-@pytest.mark.extended(reason="the network: NIST's datasets, downloaded once and cached")
+# The oracle ledger (tests/ledger.py): each solve's bound is the theory's,
+# up to six hundred times the error it reaches, so a change could lose two
+# digits without failing. The ledger holds each error as measured; they are
+# rounding, so each has a floor, twice the error measured (2026-10-26, macOS
+# arm64), and the group's hash keeps every bit.
+
+#: Each case's floor.
+NIST_FLOORS: dict[str, float] = {
+    "filip_rls": 1.1e-07,
+    "longley_ewridge": 9.7e-13,
+    "longley_ewridge_standardized": 9.1e-13,
+    "longley_gram_standardized": 6.5e-13,
+    "longley_gram_unstandardized": 6.5e-13,
+    "longley_rls": 1.3e-12,
+    "noint1_ewridge": 3.9e-15,
+    "noint1_ewridge_standardized": 4.3e-15,
+    "noint1_gram_standardized": 4.3e-15,
+    "noint1_gram_unstandardized": 3.9e-15,
+    "noint1_rls": 2.6e-15,
+    "noint2_ewridge": 9.2e-16,
+    "noint2_ewridge_standardized": 3.1e-16,
+    "noint2_gram_standardized": 6.2e-16,
+    "noint2_gram_unstandardized": 6.2e-16,
+    "noint2_rls": 6.2e-16,
+    "norris_ewridge": 9.4e-15,
+    "norris_ewridge_standardized": 8.9e-15,
+    "norris_gram_standardized": 9.4e-15,
+    "norris_gram_unstandardized": 8.9e-15,
+    "norris_rls": 9.4e-15,
+    "pontius_ewridge": 2.5e-14,
+    "pontius_ewridge_standardized": 4.2e-14,
+    "pontius_gram_standardized": 3.1e-14,
+    "pontius_gram_unstandardized": 3.1e-14,
+    "pontius_rls": 1.9e-15,
+    "wampler1_ewridge": 2e-10,
+    "wampler1_ewridge_standardized": 3.2e-10,
+    "wampler1_gram_standardized": 2.4e-10,
+    "wampler1_gram_unstandardized": 2.4e-10,
+    "wampler1_rls": 1.2e-14,
+    "wampler2_ewridge": 1.9e-10,
+    "wampler2_ewridge_standardized": 3.1e-10,
+    "wampler2_gram_standardized": 2.1e-10,
+    "wampler2_gram_unstandardized": 2.1e-10,
+    "wampler2_rls": 1.3e-13,
+    "wampler3_ewridge": 2.4e-10,
+    "wampler3_ewridge_standardized": 3.6e-10,
+    "wampler3_gram_standardized": 3.9e-10,
+    "wampler3_gram_unstandardized": 3.9e-10,
+    "wampler3_rls": 1.8e-13,
+    "wampler4_ewridge": 2e-10,
+    "wampler4_ewridge_standardized": 3.2e-10,
+    "wampler4_gram_standardized": 2.4e-10,
+    "wampler4_gram_unstandardized": 2.4e-10,
+    "wampler4_rls": 1.5e-11,
+    "wampler5_ewridge": 1.7e-10,
+    "wampler5_ewridge_standardized": 2.7e-11,
+    "wampler5_gram_standardized": 5.2e-11,
+    "wampler5_gram_unstandardized": 5.2e-11,
+    "wampler5_rls": 1.5e-09,
+}
+
+
+def _record_nist(case: str, err: float) -> None:
+    ledger.record("nist_ewridge_rls_gram", case, err, floor=NIST_FLOORS.get(case, 0.0))
+
+
+def nist_outputs(name: str) -> dict:
+    """Every field of each spec on one NIST set, and the Gram's solves."""
+    d = nist_strd_linear_or_skip(name)
+    x, y, icpt = d["x"], d["y"], d["intercept"]
+    out = {}
+    for model, spec in _strd_specs(x.shape[1], icpt).items():
+        out[model], bank = fit(spec, x, y)
+        if model == "ewridge":
+            g = bank.gram("m")[0]
+            out["gram"] = [gram.solve(g, ridge=0.0, standardize=z) for z in (True, False)]
+    return out
+
+
+ledger.guard(
+    "nist_ewridge_rls_gram",
+    lambda: [nist_outputs(name) for name in STRD_LINEAR],
+    dataset="nist:" + ",".join(STRD_LINEAR),
+    bits=52,
+)
+
+
+@pytest.mark.oracle_grid(
+    reason="the network: NIST's datasets, each solve's error held to the ledger"
+)
 class TestNistLinearRegression:
     """Each solve against NIST's certified coefficients, within the bound
     its method derives (the module docstring). What each reached, measured
@@ -195,6 +285,7 @@ class TestNistLinearRegression:
             coef = last_coef(out)
             err = standardized_error(coef, want, s, icpt)
             print(f"{name} {model}: LRE {lre(coef, want):.1f}, error {err:.1e}, bound {bound:.1e}")
+            _record_nist(f"{name.lower()}_{model}", err)
             assert err <= bound, (name, model, err, bound)
 
     @pytest.mark.parametrize("name", STRD_SOLVABLE)
@@ -214,6 +305,7 @@ class TestNistLinearRegression:
         # the Cholesky's (Higham, Section 8 and LAPACK's `dsyevd`), well
         # inside the rows' `4 n` here.
         bound = forward_bound(kappa_c, gamma(4 * n + 3 * k + 1 + d["degree"] + 4 * k))
+        _record_nist(f"{name.lower()}_gram_standardized", err)
         assert err <= bound, (name, err, bound)
 
     @pytest.mark.parametrize("name", STRD_SOLVABLE)
@@ -232,6 +324,7 @@ class TestNistLinearRegression:
         eta = gamma(6 * (k + 1) * n + d["degree"])
         bound = 4.0 * (kappa_x + kappa_x**2 * tan) * eta
         print(f"{name} rls: LRE {lre(coef, want):.1f}, error {err:.1e}, bound {bound:.1e}")
+        _record_nist(f"{name.lower()}_rls", err)
         assert err <= bound, (name, err, bound)
         assert solve_failures(bank) == 0
 
@@ -247,6 +340,7 @@ class TestNistLinearRegression:
         out, _ = fit(_strd_specs(x.shape[1], True)["rls"], x, y)
         err = standardized_error(last_coef(out), want, s, True)
         print(f"Filip rls: LRE {lre(last_coef(out), want):.1f}, error {err:.1e}")
+        _record_nist("filip_rls", err)
         assert err <= 1e-6
 
 
@@ -562,7 +656,9 @@ class TestGramSolveScales:
             want = scipy.linalg.solve(m / np.outer(e, e), b / e, assume_a="pos") / e
             np.testing.assert_allclose(grid[i][1:], want, rtol=1e-11, err_msg=str(r))
 
-    @pytest.mark.extended(reason="the network: NIST's datasets, downloaded once and cached")
+    @pytest.mark.oracle_grid(
+        reason="the network: NIST's datasets, each solve's error held to the ledger"
+    )
     @pytest.mark.parametrize("name", STRD_SOLVABLE)
     def test_the_gram_solve_unstandardized_reaches_the_bound(self, name):
         # As `test_the_gram_solve_reaches_the_bound_standardized`, on the
@@ -577,4 +673,5 @@ class TestGramSolveScales:
         coef = np.asarray(gram.solve(bank.gram("m")[0], ridge=0.0)).ravel()
         err = standardized_error(coef, want, s, icpt)
         bound = forward_bound(kappa_c, gamma(4 * n + 3 * k + 1 + d["degree"] + 4 * k))
+        _record_nist(f"{name.lower()}_gram_unstandardized", err)
         assert err <= bound, (name, err, bound)

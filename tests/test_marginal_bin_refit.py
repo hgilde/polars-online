@@ -27,6 +27,7 @@ import pytest
 import statsmodels.api as sm
 from statsmodels.robust.norms import HuberT
 
+import ledger
 import polars_online as po
 from polars_online import _polars_online as native
 from polars_online import _spec
@@ -267,6 +268,21 @@ _GRID_BOUNDS = {
 }
 
 
+#: The oracle ledger's inputs (tests/ledger.py): the bins and their edges at
+#: the grid's first two cuts on its first two seeds, with the refit and
+#: without it, at each share of spikes.
+ledger.guard(
+    "margbins_spikes",
+    lambda: [
+        locations(stream(2_000, frac, seed), [1_000, 2_000], **kw)
+        for frac in sorted(_GRID_BOUNDS)
+        for seed in (100, 101)
+        for kw in ({}, {"bin_refit_rows": 0})
+    ],
+    oracles=["statsmodels"],
+)
+
+
 @pytest.mark.oracle_grid(reason="a grid of 50 seeds against statsmodels' RLM")
 @pytest.mark.parametrize("frac", sorted(_GRID_BOUNDS))
 def test_no_seed_of_fifty_stays_captured(frac):
@@ -276,13 +292,18 @@ def test_no_seed_of_fifty_stays_captured(frac):
     endpoint. The same seeds without the refit are held captured, so the
     grid shows the path it guards was taken."""
     cuts = sorted(_GRID_BOUNDS[frac])
-    worst = dict.fromkeys(cuts, 0.0)
-    worst_off = 0.0
+    by_cut: dict[int, list[float]] = {n: [] for n in cuts}
+    off = []
     for seed in range(100, 150):
         df = stream(cuts[-1], frac, seed)
         for n, g in gaps(df, cuts).items():
-            worst[n] = max(worst[n], g)
-        worst_off = max(worst_off, gaps(df, [1_000], bin_refit_rows=0)[1_000])
+            by_cut[n].append(g)
+        off.append(gaps(df, [1_000], bin_refit_rows=0)[1_000])
+    worst = {n: max(g) for n, g in by_cut.items()}
+    worst_off = max(off)
+    for n in cuts:
+        tag = f"{frac:g}".replace(".", "_")
+        ledger.record("margbins_spikes", f"spikes_{tag}_at_{n}", by_cut[n])
     for n in cuts:
         assert worst[n] <= _GRID_BOUNDS[frac][n], f"{frac:.0%} at {n}: {worst}"
     assert worst[20_000] < worst[2_000], worst

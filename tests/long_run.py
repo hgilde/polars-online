@@ -30,6 +30,14 @@ function of the row count):
 The 64 half-lives: a row older than that carries ``2^-64`` of the newest
 row's weight, below a double's rounding of the sum, so the truncated sum
 is the full one to the precision compared.
+
+Every case takes ``oracle``. With ``oracle=False`` it feeds the same rows to
+the same checkpoints and returns what the bank read there, ``(rows, ...)``,
+without the recomputation: the outputs the oracle ledger's hash guard holds
+(``tests/ledger.py``), in milliseconds at a few thousand rows, where the
+recomputation from scratch is the slow half. With ``oracle=True``, the
+default and the soak's, it returns the errors as before, from the same
+reads.
 """
 
 from __future__ import annotations
@@ -71,7 +79,7 @@ def _rel(got: float, want: float) -> float:
 # ew_cov: NumAcc4 cycled
 
 
-def numacc_cycled(values: np.ndarray, rows: int) -> list[tuple[int, float, float]]:
+def numacc_cycled(values: np.ndarray, rows: int, oracle: bool = True) -> list:
     """``ew_cov`` at ``half_life = inf`` over ``values`` repeated to ``rows``
     rows. At each checkpoint (a whole number of cycles) the mean and the
     sample standard deviation (``bias=False``, Bessel's ``n - 1``) against
@@ -80,9 +88,10 @@ def numacc_cycled(values: np.ndarray, rows: int) -> list[tuple[int, float, float
     deviations is the cycle's times the cycles. Returns ``(rows, mean's
     relative error, std's relative error)``."""
     n0 = len(values)
-    exact = [Fraction(v) for v in values]
-    mean = sum(exact) / n0
-    ss = sum((e - mean) ** 2 for e in exact)
+    if oracle:
+        exact = [Fraction(v) for v in values]
+        mean = sum(exact) / n0
+        ss = sum((e - mean) ** 2 for e in exact)
     spec = po.spec.ew_cov("c", features=["x"], half_life=float("inf"), stats=["mean", "std"])
     bank = po.ModelBank([spec])
     per_chunk = max(1, CHUNK // n0)
@@ -98,6 +107,9 @@ def numacc_cycled(values: np.ndarray, rows: int) -> list[tuple[int, float, float
         # The fields are read before the row: the next row reads all `fed`.
         probe = bank.predict(pl.DataFrame({"x": values[:1]})).unnest("c")
         m_got, s_got = probe["mean_x"][0], probe["std_x"][0]
+        if not oracle:
+            out.append((fed, m_got, s_got))
+            continue
         cycles = fed // n0
         sd = math.sqrt(ss * cycles / (fed - 1))
         out.append((fed, float(abs(Fraction(m_got) - mean) / mean), _rel(s_got, sd)))
@@ -178,8 +190,12 @@ def _slopes(bank: po.ModelBank) -> np.ndarray:
 
 
 def ew_cov_decayed(
-    rows: int, half_life: float = 50.0, window: float | None = None, seed: int = 0
-) -> list[tuple[int, float, float]]:
+    rows: int,
+    half_life: float = 50.0,
+    window: float | None = None,
+    seed: int = 0,
+    oracle: bool = True,
+) -> list:
     """``ew_cov`` over one feature at a level of 1e6 on an irregular clock,
     decayed (and windowed when ``window``), against the weighted mean and
     variance of the rows the state should hold, recomputed with ``fsum``.
@@ -196,10 +212,12 @@ def ew_cov_decayed(
         **kw,
     )
     bank = po.ModelBank([spec])
-    keep = int(64 * half_life * 1.5) + 100
+    keep = int(64 * half_life * 1.5) + 100 if oracle else 1
 
     def read(fed, frame, nxt):
         out = bank.predict(nxt).unnest("c")
+        if not oracle:
+            return fed, out["mean_x0"][0], out["std_x0"][0]
         t = frame["t"].to_numpy()
         x = frame["x0"].to_numpy()
         now = t[-1]
@@ -229,7 +247,7 @@ def ew_cov_decayed(
 BETA = np.array([2.0, -0.5, 0.25])
 
 
-def ewridge_no_decay(rows: int, seed: int = 0) -> list[tuple[int, float]]:
+def ewridge_no_decay(rows: int, seed: int = 0, oracle: bool = True) -> list:
     """``ewridge`` with no decay and no ridge over three features at a level of
     100, against the least-squares fit of every row so far: the centred
     cross-products accumulated per chunk in ``math.fsum``, solved by NumPy.
@@ -265,6 +283,10 @@ def ewridge_no_decay(rows: int, seed: int = 0) -> list[tuple[int, float]]:
                 continue
             start = mark - fed
             bank.fit_predict(piece)
+            if not oracle:
+                if mark in mark_iter:
+                    out.append((fed + start, _slopes(bank)))
+                continue
             z = piece.select("x0", "x1", "x2").to_numpy() - level
             y = piece["y"].to_numpy() - level
             for i in range(k):
@@ -290,7 +312,9 @@ def ewridge_no_decay(rows: int, seed: int = 0) -> list[tuple[int, float]]:
     return out
 
 
-def ewridge_decayed(rows: int, half_life: float = 200.0, seed: int = 0) -> list[tuple[int, float]]:
+def ewridge_decayed(
+    rows: int, half_life: float = 200.0, seed: int = 0, oracle: bool = True
+) -> list:
     """``ewridge`` at a finite half-life on an irregular clock, against
     statsmodels' WLS on the last 64 half-lives at their decayed weights.
     Returns ``(rows, the largest relative error of a slope)``."""
@@ -306,10 +330,12 @@ def ewridge_decayed(rows: int, half_life: float = 200.0, seed: int = 0) -> list[
         max_rows_between_solves=1,
     )
     bank = po.ModelBank([spec])
-    keep = int(64 * half_life * 1.5) + 100
+    keep = int(64 * half_life * 1.5) + 100 if oracle else 1
 
     def read(fed, frame, nxt):
         coef = _slopes(bank)
+        if not oracle:
+            return fed, coef
         t = frame["t"].to_numpy()
         w = _decayed_weights(t, t[-1], half_life)
         x = sm.add_constant(frame.select("x0", "x1", "x2").to_numpy() - level)
@@ -344,12 +370,12 @@ def _kalman_p(bank: po.ModelBank) -> np.ndarray:
     return p.reshape(k, k)
 
 
-def kalman_p(rows: int, seed: int = 0) -> list[tuple[int, float, float]]:
+def kalman_p(rows: int, seed: int = 0, oracle: bool = True) -> list:
     """``kalman`` with drifting coefficients on a stationary stream. At each
     checkpoint ``P`` (the first target's) from the state: returns ``(rows,
     the smallest eigenvalue, the largest)``, numpy's ``eigvalsh`` on the
     symmetrised matrix, with the asymmetry checked by the caller through the
-    ratio of the two."""
+    ratio of the two (``oracle=False``: ``(rows, P)``, no eigenvalues)."""
     spec = po.spec.kalman(
         "m",
         targets=["y"],
@@ -364,6 +390,8 @@ def kalman_p(rows: int, seed: int = 0) -> list[tuple[int, float, float]]:
 
     def read(fed, frame, nxt):
         p = _kalman_p(bank)
+        if not oracle:
+            return fed, p
         asym = float(np.max(np.abs(p - p.T)) / np.max(np.abs(p)))
         ev = np.linalg.eigvalsh((p + p.T) / 2)
         return fed, float(ev[0]), float(ev[-1]), asym
@@ -376,7 +404,9 @@ def kalman_p(rows: int, seed: int = 0) -> list[tuple[int, float, float]]:
 # The clock
 
 
-def clock_steady_state(rows: int, temporal: bool, half_life_rows: float = 1_000.0) -> list:
+def clock_steady_state(
+    rows: int, temporal: bool, half_life_rows: float = 1_000.0, oracle: bool = True
+) -> list:
     """``ew_cov``'s ``weight_sum`` over ``rows`` evenly spaced rows, one
     millisecond apart, against the weight recomputed from scratch,
     ``sum_i 2^(-(t_last - t_i)/h)`` over the last 64 half-lives in ``fsum``.
@@ -423,7 +453,9 @@ def clock_steady_state(rows: int, temporal: bool, half_life_rows: float = 1_000.
         ws = got["weight_sum"].to_numpy()
         both = np.concatenate([tail, secs])
         for m in marks:
-            if fed <= m < fed + n:
+            if fed <= m < fed + n and not oracle:
+                out.append((m, ws[m - fed]))
+            elif fed <= m < fed + n:
                 # Row m reads the m rows before it, the last of them row m - 1.
                 j = len(tail) + (m - fed)  # row m's index in `both`
                 seen = both[max(0, j - keep) : j]

@@ -790,6 +790,9 @@ class Tail:
     q95: float
     median: float
     n: int
+    #: Every seed's value, in the seeds' order: what the oracle ledger
+    #: records (``tests/ledger.py``).
+    values: tuple[float, ...] = field(default=(), repr=False, compare=False)
 
     def __str__(self) -> str:
         return (
@@ -803,7 +806,14 @@ def tail(by_seed: dict[int, float]) -> Tail:
     order = list(by_seed)
     v = np.array([by_seed[s] for s in order])
     i = int(np.argmax(v))
-    return Tail(float(v[i]), order[i], float(np.quantile(v, 0.95)), float(np.median(v)), len(v))
+    return Tail(
+        float(v[i]),
+        order[i],
+        float(np.quantile(v, 0.95)),
+        float(np.median(v)),
+        len(v),
+        tuple(float(x) for x in v),
+    )
 
 
 def rate(xs: Sequence[float], errors: Sequence[float]) -> float:

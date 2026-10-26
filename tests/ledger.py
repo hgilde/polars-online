@@ -62,23 +62,9 @@ BITS = 24
 ZERO_BELOW = 2.0**-40
 
 #: The modules with an ``oracle_grid`` test that do not register yet, each
-#: with why: the second phase of the ledger. A module leaves this list when
-#: its grids record (``tests/test_oracle_ledger.py`` holds the list to the
-#: modules).
-PENDING = {
-    "test_marginal_bin_refit": "phase 2: merged after the ledger was built",
-    "test_huber_scale": "phase 2: its huber_delta grid merged beside the ledger",
-    "test_marginal_bin_huber": "phase 2: merged beside the ledger",
-    "test_convergence": "phase 2: after task 278's D-Q batches, which re-measure its quantile grid",
-    "test_oracles": "phase 2: after task 278's D-Q batches, which re-measure its quantile grids",
-    "test_convergence_iterations": (
-        "phase 2: it bounds counts of descents and passes, which want a case per count"
-    ),
-    "test_long_run": (
-        "phase 2: the outputs and their recomputation share tests/long_run.py's checkpoint "
-        "loop with the soak, which the guard needs split"
-    ),
-}
+#: with why (``tests/test_oracle_ledger.py`` holds the list to the modules).
+#: Empty: every module with a grid registers.
+PENDING: dict[str, str] = {}
 
 
 @dataclass
@@ -157,18 +143,30 @@ def summarize(values: Any, ideal: float = 0.0) -> tuple[float, float, int]:
 
 
 def record(
-    name: str, case: str, values: Any, *, ideal: float = 0.0, floor: float = 0.0
+    name: str,
+    case: str,
+    values: Any,
+    *,
+    ideal: float = 0.0,
+    floor: float = 0.0,
+    exact: bool = False,
 ) -> tuple[float, float]:
     """Record one quantity a grid bounds, one value a seed (or one value):
     its worst and its 95th percentile by the gap ``|value - ideal|``, which
     it returns. ``floor`` is a gap below which differences are round-off:
-    a gap under it counts as it."""
+    a gap under it counts as it. ``exact`` marks a count -- rows of delay,
+    cap hits, alarms -- which the ledger holds with no tolerance: one more
+    on the worst seed is a regression, however large the count."""
     gid = group_id(_module_name(), name)
     group = GROUPS.get(gid)
     if group is None:
         raise ValueError(f"{gid}: no ledger.guard registers its inputs in this module")
     if not re.fullmatch(r"[a-z0-9_]+", case):
         raise ValueError(f"a case's name is lower case, digits and _: {case!r}")
+    if exact:
+        v = np.asarray(values, dtype=float)
+        if floor or not np.array_equal(v, np.round(v)):
+            raise ValueError(f"{gid}.{case}: an exact case is a count, whole and with no floor")
     worst, p95, n = summarize(values, ideal)
     out = os.environ.get(OUT_VARIABLE)
     if out:
@@ -183,6 +181,7 @@ def record(
             "n": n,
             "ideal": float(ideal),
             "floor": float(floor),
+            **({"tolerance": 0.0} if exact else {}),
             "test": nodeid,
             "oracles": versions(group.oracles),
             "dataset": group.dataset,

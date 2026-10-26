@@ -687,6 +687,15 @@ directory, `record` appends what it measured there as JSON lines, one file
 a process, so pytest-xdist's workers do not share one. Without it, `record`
 checks its arguments and writes nothing.
 
+**A test that records carries the `oracle_grid` mark.** `rerun` and CI run
+nothing else, and a case of the ledger that CI's complete run did not
+measure fails its check. So a single deterministic case whose bound has
+room to drift in joins the grids' tier to be held: NIST's certified
+regressions, whose bounds are the theory's and sit up to six hundred times
+above the error each solve reaches, and TCPD's annotated series, whose F1
+bounds sit 0.05 under the measured. The gate holds their outputs by the
+hash instead.
+
 **A case is judged by its gap from its ideal.** The gap is `|value -
 ideal|`: the ideal is 0 for an error and 1 for a score such as an ARI, a
 share or an F1. The ledger keeps the value of the seed with the largest gap
@@ -703,8 +712,10 @@ units. `check` fails on four things:
 A case new to the ledger is reported and fails nothing. The grids are
 deterministic, so one platform reads the same numbers on every run. The 2%
 absorbs the other platform's last bits in a statistical case. A count is
-held exactly: one row more of delay on the worst seed is a regression. A
-case whose oracle agrees to round-off carries a `floor`, the gap below
+held exactly: one row more of delay on the worst seed is a regression.
+Two per cent of a count under 50 is less than one, but of a delay of 333
+rows it is six, so a grid records a count with `exact=True`, and the case
+carries a `tolerance` of 0. A case whose oracle agrees to round-off carries a `floor`, the gap below
 which a difference counts as round-off. Each such floor is about twice the
 measured error, since another processor's arithmetic moves a round-off
 error by about that much.
@@ -749,16 +760,20 @@ uv run python scripts/oracles.py rerun <group>    # those named
 test fails, or if a case is past the ledger or was not measured. Otherwise
 it applies the run to the ledger (new cases, tightened numbers, versions)
 and writes the groups' hashes. So a hash changes only after a passing run
-of its oracles. The twenty-one groups registered so far ran their grids
-in two minutes here (2026-10-26, eight processes, at a load of 10 to 25 on
-14 cores). A group whose callable is cheap hashes every seed of its grid.
-One that is not hashes the first seeds' or streams' every output field,
-which any change to the model's arithmetic moves as it moves the rest.
+of its oracles. Fifty-four groups in sixteen modules hold 731 cases. A
+`rerun` of 38 of them, the convergence grids among them, took 10.6 minutes
+here (2026-10-26, eight processes, at a load of 5 to 35 on 14 cores); the
+first 21 groups' grids took two. A group whose callable is cheap hashes
+every seed of its grid. One that is not hashes the first seeds' or
+streams' every output field, which any change to the model's arithmetic
+moves as it moves the rest. The convergence groups, one a registration,
+run the first seed of each scenario its grids run, at 2,000 rows.
 
 **The guard costs seconds.** Measured 2026-10-26 on this machine, at a
-load of 11 to 14 on 14 cores: the twenty-one groups' callables took 4.7 s
-in one process, the slowest 0.73 s, and the guard's tests 6.0 s run
-serially, imports included. The gate spreads them over its workers.
+load of about 6 on 14 cores: the 54 groups' callables took 5.8 s in one
+process, the slowest 0.69 s, and the guard's tests 8.6 s run serially,
+imports included. The first 21 groups' took 4.7 s and 6.0 s. The gate
+spreads them over its workers.
 
 **The hash survives the last bits and catches a real change.** Each float
 is rounded to 24 significant bits, a float32's mantissa, about 6e-8
@@ -793,9 +808,11 @@ one set of hashes serves every platform.
 source moves the groups whose id names the module, or one of its aliases,
 as a word: `kmeans.rs` the `kmeans_*` groups. A source module that names
 none, such as `solve.rs`, moves every group. A test file moves its own
-groups. The modules with a grid that do not register yet are listed in
-`tests/ledger.py`'s `PENDING`, each with the reason it waits, and the rules
-test fails when one is in neither.
+groups. Every module with a grid registers. One that could not yet would
+be listed in `tests/ledger.py`'s `PENDING` with the reason it waits, and
+the rules test fails when a module with a grid is in neither. The rules
+test finds a grid by its mark on the test, its class or a parameter,
+directly or through a module-level name such as `marks=_GRID`.
 
 ### Iterating
 

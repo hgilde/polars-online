@@ -132,19 +132,35 @@ def _is_grid_mark(node: ast.AST) -> bool:
 
 def _grid_tests(tree: ast.Module) -> list[ast.FunctionDef]:
     """The test functions a module marks for the grid tier: on the function,
-    its class, or one of its parameters."""
+    its class, or one of its parameters -- directly, or through a
+    module-level name the decorator reaches (``marks=_GRID``, or a function
+    that builds the parameters with it)."""
     out = []
+    top: dict[str, list[ast.stmt]] = {}
+    for stmt in tree.body:
+        for name in ledger._defines(stmt):
+            top.setdefault(name, []).append(stmt)
+
+    def marks(node: ast.AST, seen: set[str]) -> bool:
+        for n in ast.walk(node):
+            if _is_grid_mark(n):
+                return True
+            if isinstance(n, ast.Name) and n.id in top and n.id not in seen:
+                seen.add(n.id)
+                if any(marks(s, seen) for s in top[n.id]):
+                    return True
+        return False
 
     def visit(body: list[ast.stmt], inherited: bool) -> None:
         for node in body:
             if isinstance(node, ast.ClassDef):
                 visit(node.body, inherited or any(_is_grid_mark(d) for d in node.decorator_list))
-            elif isinstance(node, ast.FunctionDef) and node.name.startswith("test"):
-                marked = inherited or any(
-                    _is_grid_mark(n) for d in node.decorator_list for n in ast.walk(d)
-                )
-                if marked:
-                    out.append(node)
+            elif (
+                isinstance(node, ast.FunctionDef)
+                and node.name.startswith("test")
+                and (inherited or any(marks(d, set()) for d in node.decorator_list))
+            ):
+                out.append(node)
 
     module_mark = any(
         _is_grid_mark(n)
@@ -343,6 +359,32 @@ class TestTheRules:
         assert oracles.check_file(doc, "- the price of a change worth having") == []
         assert oracles.check_file(doc, "nothing")[0].endswith("'worth having'")
         assert isinstance(doc["raised"][0]["date"], dt.date)
+
+    def test_a_count_is_held_exactly_however_large(self):
+        # 2% of a delay of 333 rows is 6.7 rows; a count holds to the row.
+        count = '[case."m.g.delay"]\nideal = 0.0\nworst = 333.0\np95 = 277.0\nn = 200\n'
+        doc = tomllib.loads(
+            SMALL.replace("# --- raises", count + "tolerance = 0.0\n\n# --- raises")
+        )
+        assert _status(doc, _m("m.g.delay", 334.0, 277.0))["m.g.delay.worst"] == "over"
+        assert _status(doc, _m("m.g.delay", 332.0, 277.0))["m.g.delay.worst"] == "under"
+        assert set(_status(doc, _m("m.g.delay", 333.0, 277.0)).values()) == {"ok"}
+        loose = tomllib.loads(SMALL.replace("# --- raises", count + "\n# --- raises"))
+        assert _status(loose, _m("m.g.delay", 339.0, 277.0))["m.g.delay.worst"] == "ok"
+        # The test's mark holds it before the ledger carries it, and `apply`
+        # writes it: on a new case, and on one the test now says is a count.
+        marked = {**_m("m.g.delay", 334.0, 277.0), "tolerance": 0.0}
+        assert _status(loose, marked)["m.g.delay.worst"] == "over"
+        cases = {
+            "m.g.new": {**_m("m.g.new", 70.0, 60.0), "tolerance": 0.0},
+            "m.g.err": {**_m("m.g.err", 0.1, 0.05), "tolerance": 0.0},
+        }
+        groups = {"m.g": {"oracles": {"scikit-learn": "1.9.1"}, "dataset": "", "tests": []}}
+        verdicts = oracles.judge_all(self.doc, cases, groups)
+        text, _ = oracles.apply(SMALL, self.doc, cases, groups, verdicts)
+        new = tomllib.loads(text)["case"]
+        assert new["m.g.new"]["tolerance"] == 0.0 and new["m.g.err"]["tolerance"] == 0.0
+        assert oracles.check_history([("a" * 40, SMALL)], text) == [], "a tightening"
 
     def test_records_are_the_worst_seed_and_the_nearest_rank_p95(self):
         values = np.r_[np.arange(1, 101) / 100.0]

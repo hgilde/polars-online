@@ -22,6 +22,7 @@ import statsmodels.api as sm
 from statsmodels.robust import norms
 from statsmodels.robust.scale import mad
 
+import ledger
 import polars_online as po
 
 TIER = "mixed"
@@ -365,6 +366,30 @@ _CUT_GRID = {
 }
 
 
+def cut_locations(df: pl.DataFrame, delta: float, cuts: list[int]) -> dict[int, np.ndarray]:
+    """`bin_mean_y` at the cut `delta` after each row count in `cuts`."""
+    bank = po.ModelBank([spec(bin_huber_delta=delta)])
+    out, start = {}, 0
+    for n in cuts:
+        bank.fit_predict(df.slice(start, n - start))
+        start = n
+        out[n] = np.asarray(bank.marginal("m").row(0, named=True)["bin_mean_y"], dtype=float)
+    return out
+
+
+#: The oracle ledger's inputs (tests/ledger.py): the bins at the grid's
+#: first two cuts on its first two seeds, at each cut and share.
+ledger.guard(
+    "margbins_cuts",
+    lambda: [
+        cut_locations(stream(2_000, frac, seed), delta, [1_000, 2_000])
+        for delta, frac in sorted(_CUT_GRID)
+        for seed in (100, 101)
+    ],
+    oracles=["statsmodels"],
+)
+
+
 @pytest.mark.oracle_grid(reason="a grid of 50 seeds against statsmodels' RLM at two cuts")
 @pytest.mark.parametrize(("delta", "frac"), sorted(_CUT_GRID))
 def test_no_seed_of_fifty_strays_from_statsmodels_at_its_cut(delta, frac):
@@ -374,17 +399,16 @@ def test_no_seed_of_fifty_strays_from_statsmodels_at_its_cut(delta, frac):
     the endpoint."""
     bounds = _CUT_GRID[(delta, frac)]
     cuts = sorted(bounds)
-    worst = dict.fromkeys(cuts, 0.0)
+    by_cut: dict[int, list[float]] = {n: [] for n in cuts}
     for seed in range(100, 150):
         df = stream(cuts[-1], frac, seed)
-        bank = po.ModelBank([spec(bin_huber_delta=delta)])
-        start = 0
-        for n in cuts:
-            bank.fit_predict(df.slice(start, n - start))
-            start = n
-            got = np.asarray(bank.marginal("m").row(0, named=True)["bin_mean_y"], dtype=float)
+        for n, got in cut_locations(df, delta, cuts).items():
             want, s = joint_locations(df.head(n), delta)
-            worst[n] = max(worst[n], float(np.max(np.abs(got - want))) / s)
+            by_cut[n].append(float(np.max(np.abs(got - want))) / s)
+    worst = {n: max(g) for n, g in by_cut.items()}
+    for n in cuts:
+        tag = f"cut_{delta:g}_spikes_{frac:g}_at_{n}".replace(".", "_")
+        ledger.record("margbins_cuts", tag, by_cut[n])
     for n in cuts:
         assert worst[n] <= bounds[n], f"{delta}, {frac:.0%} at {n}: {worst}"
     assert worst[20_000] < worst[2_000], worst

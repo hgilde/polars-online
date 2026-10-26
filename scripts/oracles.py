@@ -17,7 +17,8 @@ file's git history to. A gap below the ledger's by more than the tolerance
 fails too, naming the number to tighten to, so the change that made the
 gain keeps it (``apply`` writes it). An oracle library whose version moved
 fails until ``apply`` records it. A case with no numbers yet is reported
-and fails nothing.
+and fails nothing. A count (``ledger.record(..., exact=True)``) carries a
+``tolerance`` of 0: one more is past the ledger, one fewer asks to tighten.
 
     python scripts/oracles.py check RECORDS... [--expect-shards N] [--measured OUT.json]
     python scripts/oracles.py apply RECORDS...
@@ -153,6 +154,10 @@ def judge_case(case: str, measured: dict, entry: dict | None, tol: float) -> lis
             )
         ]
     tol = float(entry.get("tolerance", tol))
+    if "tolerance" in measured:
+        # A count (`ledger.record(..., exact=True)`) is held exactly even
+        # before `apply` has written its tolerance into the ledger.
+        tol = min(tol, float(measured["tolerance"]))
     ideal = float(entry.get("ideal", 0.0))
     if abs(float(measured.get("ideal", 0.0)) - ideal) > 0:
         return [
@@ -448,6 +453,8 @@ def apply(
             }
             if m.get("floor"):
                 values["floor"] = m["floor"]
+            if "tolerance" in m:
+                values["tolerance"] = m["tolerance"]
             text = _set_table(text, header, values)
             done.append(f"{case}: worst {_fmt(m['worst'])}, p95 {_fmt(m['p95'])} (new)")
             continue
@@ -459,6 +466,11 @@ def apply(
                 done.append(f"{case}.{f}: tightened to {_fmt(m[f])}")
         if entry.get("n") != m["n"]:
             values["n"] = m["n"]
+        if "tolerance" in m and float(entry.get("tolerance", 1.0)) > m["tolerance"]:
+            # A case the test now says is a count: a narrower tolerance, so
+            # a tightening, which `apply` may write.
+            values["tolerance"] = m["tolerance"]
+            done.append(f"{case}: held exactly, a count")
         if values:
             text = _set_table(text, header, values)
     tomllib.loads(text)

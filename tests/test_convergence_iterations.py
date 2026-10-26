@@ -65,6 +65,7 @@ import polars as pl
 import pytest
 from sklearn.linear_model import Lasso
 
+import ledger
 import polars_online as po
 import polars_online.gram as gram
 import reference_cluster as ref
@@ -186,6 +187,25 @@ GRID = [
 ]
 
 
+#: The ledger's floor on a converged descent's KKT violation over its
+#: certificate: twice the worst measured over `GRID` (2026-10-26), where the
+#: violation is rounding.
+LASSO_KKT_FLOOR = 0.0025
+
+#: The oracle ledger's inputs (tests/ledger.py): the last solve's
+#: coefficients and its count at every point of the grid at the defaults
+#: (`max_iter` 100); the strict points run up to 100,000 sweeps a row.
+ledger.guard(
+    "lasso_descent",
+    lambda: [
+        lasso_case(eps, lam, max_iter, tol)["b"]
+        for eps, lam, max_iter, tol in GRID
+        if max_iter == 100
+    ],
+    bits=52,
+)
+
+
 class TestLassoDescent:
     """The descent stops when a sweep moves no standardized coefficient by
     more than `tol` times the target's spread, or after `max_iter` sweeps,
@@ -246,7 +266,14 @@ class TestLassoDescent:
 
     @pytest.mark.oracle_grid(reason="a grid: 32 descents and scikit-learn beside each")
     def test_every_descent_of_the_grid_meets_its_rule_or_is_counted(self):
-        counted = [self.check(*point)["counted"] for point in GRID]
+        cases = [self.check(*point) for point in GRID]
+        counted = [c["counted"] for c in cases]
+        # A count is held exactly: one more descent at its cap is a
+        # regression; a descent that stopped by its rule, by how far inside
+        # its certificate it stopped.
+        ledger.record("lasso_descent", "descents_at_the_cap", sum(counted), exact=True)
+        within = [float(np.max(c["kkt"] / c["bound"])) for c in cases if not c["counted"]]
+        ledger.record("lasso_descent", "kkt_over_certificate", within, floor=LASSO_KKT_FLOOR)
         assert 0 < sum(counted) < len(GRID), "both paths ran"
 
     @pytest.mark.parametrize("eps, lam", [(1e-2, 0.01), (1e-3, 0.1), (1e-4, 0.01)])
@@ -300,6 +327,31 @@ def eight_blobs(seed: int, n: int = 500) -> np.ndarray:
     return centres[rng.integers(0, 8, n)] + rng.normal(size=(n, 2))
 
 
+def lloyd_fit(seed: int) -> np.ndarray:
+    """``kmeans``' centres, its default ``lloyd`` seeding, on one seed's
+    eight overlapping blobs: the library's half of the Lloyd grid."""
+    x = eight_blobs(seed)
+    x = x[((x - x.mean(0)) ** 2).sum(1) <= 0.8 * 5.0 * ((x - x.mean(0)) ** 2).sum(1).mean()]
+    spec = po.spec.kmeans(
+        "m",
+        features=["x0", "x1"],
+        n_clusters=8,
+        half_life=float("inf"),
+        warm_rows=len(x),
+        seed=seed,
+        split_merge=0.0,
+        standardize=False,
+    )
+    bank = po.ModelBank([spec])
+    bank.fit(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]}))
+    return bank.coef()["coef"].to_numpy()
+
+
+#: The oracle ledger's inputs: the library's seeding on ten of the grid's
+#: fifty seeds (the reference is Python, a second each).
+ledger.guard("kmeans_lloyd", lambda: [lloyd_fit(seed) for seed in range(10)])
+
+
 class TestLloydSeeding:
     """``init = "lloyd"``, the default seeding of ``kmeans`` and the one
     ``hmm`` shares, runs each of its ten greedy k-means++ starts to a fixed
@@ -346,6 +398,9 @@ class TestLloydSeeding:
             f"lloyd: {short} of {seeds} short of a fixed point, {hits} runs at the cap; "
             f"{at_ten} of {10 * seeds} runs short at ten passes"
         )
+        if seeds == 50:
+            ledger.record("kmeans_lloyd", "reference_short_of_a_fixed_point", short, exact=True)
+            ledger.record("kmeans_lloyd", "reference_runs_at_the_cap", hits, exact=True)
         assert at_ten > 0, "ten passes reached every fixed point: the case is not slow"
         assert short == 0
         assert hits == 0
@@ -384,6 +439,8 @@ class TestLloydSeeding:
             again = ((x[:, None] - means[None]) ** 2).sum(-1).argmin(1)
             moved.append(int((again != label).sum()))
         print(f"the library: rows one more pass moves, by seed: {moved}")
+        if seeds == 50:
+            ledger.record("kmeans_lloyd", "rows_one_more_pass_moves", moved, exact=True)
         assert max(moved) == 0
 
 

@@ -696,36 +696,42 @@ ideal = 0.0
 worst = 47.0
 p95 = 40.0
 n = 200
+tolerance = 0.0
 
 [case."online_diagnostics.breaks_memory.delay_at_200"]
 ideal = 0.0
 worst = 54.0
 p95 = 48.0
 n = 200
+tolerance = 0.0
 
 [case."online_diagnostics.breaks_memory.delay_at_25"]
 ideal = 0.0
 worst = 41.0
 p95 = 29.0
 n = 200
+tolerance = 0.0
 
 [case."online_diagnostics.breaks_memory.delay_at_400"]
 ideal = 0.0
 worst = 63.0
 p95 = 52.0
 n = 200
+tolerance = 0.0
 
 [case."online_diagnostics.breaks_memory.delay_at_50"]
 ideal = 0.0
 worst = 46.0
 p95 = 33.0
 n = 200
+tolerance = 0.0
 
 [case."online_diagnostics.breaks_memory.delay_at_inf"]
 ideal = 0.0
 worst = 333.0
 p95 = 277.0
 n = 200
+tolerance = 0.0
 
 [case."online_diagnostics.cusum_size.ewridge_cusum_sq_y_300_to_600"]
 ideal = 0.05
@@ -994,60 +1000,70 @@ ideal = 0.0
 worst = 495.0
 p95 = 16.0
 n = 50
+tolerance = 0.0
 
 [case."truth_recovery.bocpd_shift.dating_error_2sd"]
 ideal = 0.0
 worst = 2.0
 p95 = 2.0
 n = 50
+tolerance = 0.0
 
 [case."truth_recovery.bocpd_shift.dating_error_3sd"]
 ideal = 0.0
 worst = 1.0
 p95 = 1.0
 n = 50
+tolerance = 0.0
 
 [case."truth_recovery.bocpd_shift.delay_1sd"]
 ideal = 0.0
 worst = 63.0
 p95 = 38.0
 n = 50
+tolerance = 0.0
 
 [case."truth_recovery.bocpd_shift.delay_2sd"]
 ideal = 0.0
 worst = 10.0
 p95 = 9.0
 n = 50
+tolerance = 0.0
 
 [case."truth_recovery.bocpd_shift.delay_3sd"]
 ideal = 0.0
 worst = 6.0
 p95 = 5.0
 n = 50
+tolerance = 0.0
 
 [case."truth_recovery.bocpd_shift.false_alarms_1sd"]
 ideal = 0.0
 worst = 140.0
 p95 = 140.0
 n = 1
+tolerance = 0.0
 
 [case."truth_recovery.bocpd_shift.false_alarms_2sd"]
 ideal = 0.0
 worst = 140.0
 p95 = 140.0
 n = 1
+tolerance = 0.0
 
 [case."truth_recovery.bocpd_shift.false_alarms_3sd"]
 ideal = 0.0
 worst = 140.0
 p95 = 140.0
 n = 1
+tolerance = 0.0
 
 [case."truth_recovery.corrchange_break.delay"]
 ideal = 0.0
 worst = 81.0
 p95 = 63.0
 n = 50
+tolerance = 0.0
 
 [case."truth_recovery.corrchange_break.quiet_share_flagged"]
 ideal = 0.0
@@ -1066,6 +1082,7 @@ ideal = 0.0
 worst = 206.0
 p95 = 147.0
 n = 150
+tolerance = 0.0
 
 [case."truth_recovery.deco_level.rows_to_midpoint_median"]
 ideal = 0.0
@@ -1138,6 +1155,7 @@ ideal = 0.0
 worst = 1.0
 p95 = 1.0
 n = 50
+tolerance = 0.0
 
 [case."truth_recovery.kmeans_franti.a1_inertia_ratio"]
 ideal = 1.0
@@ -1156,6 +1174,7 @@ ideal = 0.0
 worst = 1.0
 p95 = 1.0
 n = 50
+tolerance = 0.0
 
 [case."truth_recovery.kmeans_franti.a2_inertia_ratio"]
 ideal = 1.0
@@ -1174,6 +1193,7 @@ ideal = 0.0
 worst = 3.0
 p95 = 2.0
 n = 50
+tolerance = 0.0
 
 [case."truth_recovery.kmeans_franti.a3_inertia_ratio"]
 ideal = 1.0
@@ -1192,6 +1212,7 @@ ideal = 0.0
 worst = 0.0
 p95 = 0.0
 n = 50
+tolerance = 0.0
 
 [case."truth_recovery.kmeans_franti.s1_inertia_ratio"]
 ideal = 1.0
@@ -1210,6 +1231,7 @@ ideal = 0.0
 worst = 0.0
 p95 = 0.0
 n = 50
+tolerance = 0.0
 
 [case."truth_recovery.kmeans_franti.s2_inertia_ratio"]
 ideal = 1.0
@@ -1228,6 +1250,7 @@ ideal = 0.0
 worst = 1.0
 p95 = 0.0
 n = 50
+tolerance = 0.0
 
 [case."truth_recovery.kmeans_franti.s3_inertia_ratio"]
 ideal = 1.0
@@ -1246,6 +1269,7 @@ ideal = 0.0
 worst = 1.0
 p95 = 1.0
 n = 50
+tolerance = 0.0
 
 [case."truth_recovery.kmeans_franti.s4_inertia_ratio"]
 ideal = 1.0
@@ -1294,6 +1318,3996 @@ ideal = 0.0
 worst = 3.20301
 p95 = 1.98825
 n = 950
+
+[group."convergence.ewridge"]
+tests = [
+    "tests/test_convergence.py::test_consistency[ewridge]",
+    "tests/test_convergence.py::test_front_loaded_adversity[ewridge-cauchy-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[ewridge-cauchy-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[ewridge-outliers-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[ewridge-outliers-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[ewridge-shift-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[ewridge-shift-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[ewridge-t2-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[ewridge-t2-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[ewridge-wild-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[ewridge-wild-inf]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[ewridge-level]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[ewridge-regime]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[ewridge-slope]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[ewridge-variance]",
+    "tests/test_convergence.py::test_start_at_a_large_level[ewridge]",
+    "tests/test_convergence.py::test_start_from_an_extreme_prior[ewridge]",
+    "tests/test_convergence.py::test_start_from_another_regime[ewridge-200]",
+    "tests/test_convergence.py::test_start_from_another_regime[ewridge-inf]",
+]
+oracles = { "scikit-learn" = "1.9.1", "statsmodels" = "0.15.0" }
+dataset = ""
+
+[group."convergence.ftrl_logistic"]
+tests = [
+    "tests/test_convergence.py::test_consistency[ftrl:logistic]",
+    "tests/test_convergence.py::test_ftrl_follows_a_break_at_the_pace_of_its_steps",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[ftrl:logistic-level]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[ftrl:logistic-regime]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[ftrl:logistic-slope]",
+    "tests/test_convergence.py::test_start_from_another_regime[ftrl:logistic-200]",
+    "tests/test_convergence.py::test_start_from_another_regime[ftrl:logistic-inf]",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = ""
+
+[group."convergence.ftrl_squared"]
+tests = [
+    "tests/test_convergence.py::test_consistency[ftrl:squared]",
+    "tests/test_convergence.py::test_ftrl_follows_a_break_at_the_pace_of_its_steps",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[ftrl:squared-level]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[ftrl:squared-regime]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[ftrl:squared-slope]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[ftrl:squared-variance]",
+    "tests/test_convergence.py::test_start_at_a_large_level[ftrl:squared]",
+    "tests/test_convergence.py::test_start_from_another_regime[ftrl:squared-200]",
+    "tests/test_convergence.py::test_start_from_another_regime[ftrl:squared-inf]",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = ""
+
+[group."convergence.holt"]
+tests = [
+    "tests/test_convergence.py::test_consistency[holt]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[holt-level]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[holt-regime]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[holt-slope]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[holt-variance]",
+    "tests/test_convergence.py::test_start_at_a_large_level[holt]",
+    "tests/test_convergence.py::test_start_from_another_regime[holt-200]",
+    "tests/test_convergence.py::test_start_from_another_regime[holt-inf]",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = ""
+
+[group."convergence.huber"]
+tests = [
+    "tests/test_convergence.py::test_consistency[huber]",
+    "tests/test_convergence.py::test_front_loaded_adversity[huber-cauchy-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[huber-cauchy-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[huber-outliers-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[huber-outliers-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[huber-shift-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[huber-shift-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[huber-t2-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[huber-t2-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[huber-wild-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[huber-wild-inf]",
+    "tests/test_convergence.py::test_huber_is_never_captured_short_of_breakdown[huber-10%-5000]",
+    "tests/test_convergence.py::test_huber_is_never_captured_short_of_breakdown[huber-10%-inf]",
+    "tests/test_convergence.py::test_huber_is_never_captured_short_of_breakdown[huber-15%-5000]",
+    "tests/test_convergence.py::test_huber_is_never_captured_short_of_breakdown[huber-15%-inf]",
+    "tests/test_convergence.py::test_huber_is_never_captured_short_of_breakdown[huber-20%-5000]",
+    "tests/test_convergence.py::test_huber_is_never_captured_short_of_breakdown[huber-20%-inf]",
+    "tests/test_convergence.py::test_huber_is_never_captured_short_of_breakdown[huber-5%-5000]",
+    "tests/test_convergence.py::test_huber_is_never_captured_short_of_breakdown[huber-5%-inf]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[huber-level]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[huber-regime]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[huber-slope]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[huber-variance]",
+    "tests/test_convergence.py::test_start_at_a_large_level[huber]",
+    "tests/test_convergence.py::test_start_from_another_regime[huber-200]",
+    "tests/test_convergence.py::test_start_from_another_regime[huber-inf]",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = ""
+
+[group."convergence.kalman"]
+tests = [
+    "tests/test_convergence.py::test_consistency[kalman]",
+    "tests/test_convergence.py::test_front_loaded_adversity[kalman-cauchy-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[kalman-cauchy-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[kalman-outliers-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[kalman-outliers-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[kalman-shift-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[kalman-shift-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[kalman-t2-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[kalman-t2-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[kalman-wild-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[kalman-wild-inf]",
+    "tests/test_convergence.py::test_kalman_reaches_the_oracle_at_a_level_as_at_zero",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[kalman-level]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[kalman-regime]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[kalman-slope]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[kalman-variance]",
+    "tests/test_convergence.py::test_start_at_a_large_level[kalman]",
+    "tests/test_convergence.py::test_start_from_another_regime[kalman-200]",
+    "tests/test_convergence.py::test_start_from_another_regime[kalman-inf]",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = ""
+
+[group."convergence.lasso"]
+tests = [
+    "tests/test_convergence.py::test_consistency[lasso]",
+    "tests/test_convergence.py::test_front_loaded_adversity[lasso-cauchy-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[lasso-cauchy-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[lasso-outliers-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[lasso-outliers-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[lasso-shift-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[lasso-shift-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[lasso-t2-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[lasso-t2-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[lasso-wild-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[lasso-wild-inf]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[lasso-level]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[lasso-regime]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[lasso-slope]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[lasso-variance]",
+    "tests/test_convergence.py::test_start_at_a_large_level[lasso]",
+    "tests/test_convergence.py::test_start_from_another_regime[lasso-200]",
+    "tests/test_convergence.py::test_start_from_another_regime[lasso-inf]",
+]
+oracles = { "scikit-learn" = "1.9.1" }
+dataset = ""
+
+[group."convergence.pa"]
+tests = [
+    "tests/test_convergence.py::test_front_loaded_adversity[pa-cauchy-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[pa-cauchy-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[pa-outliers-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[pa-outliers-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[pa-shift-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[pa-shift-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[pa-t2-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[pa-t2-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[pa-wild-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[pa-wild-inf]",
+    "tests/test_convergence.py::test_pa_wanders_in_a_neighbourhood_set_by_c",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[pa-level]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[pa-regime]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[pa-slope]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[pa-variance]",
+    "tests/test_convergence.py::test_start_at_a_large_level[pa]",
+    "tests/test_convergence.py::test_start_from_another_regime[pa-200]",
+    "tests/test_convergence.py::test_start_from_another_regime[pa-inf]",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = ""
+
+[group."convergence.quantile"]
+tests = [
+    "tests/test_convergence.py::test_consistency[quantile]",
+    "tests/test_convergence.py::test_front_loaded_adversity[quantile-cauchy-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[quantile-cauchy-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[quantile-outliers-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[quantile-outliers-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[quantile-shift-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[quantile-shift-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[quantile-t2-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[quantile-t2-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[quantile-wild-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[quantile-wild-inf]",
+    "tests/test_convergence.py::test_quantile_is_never_captured_short_of_breakdown[10%-5000]",
+    "tests/test_convergence.py::test_quantile_is_never_captured_short_of_breakdown[10%-inf]",
+    "tests/test_convergence.py::test_quantile_is_never_captured_short_of_breakdown[15%-5000]",
+    "tests/test_convergence.py::test_quantile_is_never_captured_short_of_breakdown[15%-inf]",
+    "tests/test_convergence.py::test_quantile_is_never_captured_short_of_breakdown[20%-5000]",
+    "tests/test_convergence.py::test_quantile_is_never_captured_short_of_breakdown[20%-inf]",
+    "tests/test_convergence.py::test_quantile_is_never_captured_short_of_breakdown[5%-5000]",
+    "tests/test_convergence.py::test_quantile_is_never_captured_short_of_breakdown[5%-inf]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[quantile-level]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[quantile-regime]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[quantile-slope]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[quantile-variance]",
+    "tests/test_convergence.py::test_start_at_a_large_level[quantile]",
+    "tests/test_convergence.py::test_start_from_another_regime[quantile-200]",
+    "tests/test_convergence.py::test_start_from_another_regime[quantile-inf]",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = ""
+
+[group."convergence.quantile_robust_sets"]
+tests = [
+    "tests/test_convergence.py::test_quantile_on_the_classic_robust_datasets_outliers_first[hbk]",
+    "tests/test_convergence.py::test_quantile_on_the_classic_robust_datasets_outliers_first[stackloss]",
+    "tests/test_convergence.py::test_quantile_on_the_classic_robust_datasets_outliers_first[starsCYG]",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = "rdatasets:datasets/stackloss,robustbase/starsCYG,robustbase/hbk"
+
+[group."convergence.rls"]
+tests = [
+    "tests/test_convergence.py::test_consistency[rls]",
+    "tests/test_convergence.py::test_front_loaded_adversity[rls-cauchy-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[rls-cauchy-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[rls-outliers-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[rls-outliers-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[rls-shift-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[rls-shift-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[rls-t2-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[rls-t2-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[rls-wild-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[rls-wild-inf]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[rls-level]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[rls-regime]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[rls-slope]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[rls-variance]",
+    "tests/test_convergence.py::test_start_at_a_large_level[rls]",
+    "tests/test_convergence.py::test_start_from_an_extreme_prior[rls]",
+    "tests/test_convergence.py::test_start_from_another_regime[rls-200]",
+    "tests/test_convergence.py::test_start_from_another_regime[rls-inf]",
+]
+oracles = { "scikit-learn" = "1.9.1", "statsmodels" = "0.15.0" }
+dataset = ""
+
+[group."convergence.sgd_epsilon_insensitive"]
+tests = [
+    "tests/test_convergence.py::test_consistency[sgd:epsilon_insensitive]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[sgd:epsilon_insensitive-level]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[sgd:epsilon_insensitive-regime]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[sgd:epsilon_insensitive-slope]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[sgd:epsilon_insensitive-variance]",
+    "tests/test_convergence.py::test_start_at_a_large_level[sgd:epsilon_insensitive]",
+    "tests/test_convergence.py::test_start_from_another_regime[sgd:epsilon_insensitive-200]",
+    "tests/test_convergence.py::test_start_from_another_regime[sgd:epsilon_insensitive-inf]",
+]
+oracles = { "scipy" = "1.18.1" }
+dataset = ""
+
+[group."convergence.sgd_huber"]
+tests = [
+    "tests/test_convergence.py::test_consistency[sgd:huber]",
+    "tests/test_convergence.py::test_front_loaded_adversity[sgd:huber-cauchy-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[sgd:huber-cauchy-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[sgd:huber-outliers-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[sgd:huber-outliers-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[sgd:huber-shift-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[sgd:huber-shift-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[sgd:huber-t2-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[sgd:huber-t2-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[sgd:huber-wild-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[sgd:huber-wild-inf]",
+    "tests/test_convergence.py::test_huber_is_never_captured_short_of_breakdown[sgd:huber-10%-5000]",
+    "tests/test_convergence.py::test_huber_is_never_captured_short_of_breakdown[sgd:huber-10%-inf]",
+    "tests/test_convergence.py::test_huber_is_never_captured_short_of_breakdown[sgd:huber-15%-5000]",
+    "tests/test_convergence.py::test_huber_is_never_captured_short_of_breakdown[sgd:huber-15%-inf]",
+    "tests/test_convergence.py::test_huber_is_never_captured_short_of_breakdown[sgd:huber-20%-5000]",
+    "tests/test_convergence.py::test_huber_is_never_captured_short_of_breakdown[sgd:huber-20%-inf]",
+    "tests/test_convergence.py::test_huber_is_never_captured_short_of_breakdown[sgd:huber-5%-5000]",
+    "tests/test_convergence.py::test_huber_is_never_captured_short_of_breakdown[sgd:huber-5%-inf]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[sgd:huber-level]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[sgd:huber-regime]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[sgd:huber-slope]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[sgd:huber-variance]",
+    "tests/test_convergence.py::test_start_at_a_large_level[sgd:huber]",
+    "tests/test_convergence.py::test_start_from_another_regime[sgd:huber-200]",
+    "tests/test_convergence.py::test_start_from_another_regime[sgd:huber-inf]",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = ""
+
+[group."convergence.sgd_logistic"]
+tests = [
+    "tests/test_convergence.py::test_consistency[sgd:logistic]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[sgd:logistic-level]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[sgd:logistic-regime]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[sgd:logistic-slope]",
+    "tests/test_convergence.py::test_start_from_another_regime[sgd:logistic-200]",
+    "tests/test_convergence.py::test_start_from_another_regime[sgd:logistic-inf]",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = ""
+
+[group."convergence.sgd_poisson"]
+tests = [
+    "tests/test_convergence.py::test_consistency[sgd:poisson]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[sgd:poisson-level]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[sgd:poisson-regime]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[sgd:poisson-slope]",
+    "tests/test_convergence.py::test_start_from_another_regime[sgd:poisson-200]",
+    "tests/test_convergence.py::test_start_from_another_regime[sgd:poisson-inf]",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = ""
+
+[group."convergence.sgd_quantile"]
+tests = [
+    "tests/test_convergence.py::test_consistency[sgd:quantile]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[sgd:quantile-level]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[sgd:quantile-regime]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[sgd:quantile-slope]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[sgd:quantile-variance]",
+    "tests/test_convergence.py::test_start_at_a_large_level[sgd:quantile]",
+    "tests/test_convergence.py::test_start_from_another_regime[sgd:quantile-200]",
+    "tests/test_convergence.py::test_start_from_another_regime[sgd:quantile-inf]",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = ""
+
+[group."convergence.sgd_rates"]
+tests = [
+    "tests/test_convergence.py::test_a_constant_rate_settles_in_a_neighbourhood_and_a_power_sets_the_rate",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = ""
+
+[group."convergence.sgd_squared"]
+tests = [
+    "tests/test_convergence.py::test_consistency[sgd:squared]",
+    "tests/test_convergence.py::test_front_loaded_adversity[sgd:squared-cauchy-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[sgd:squared-cauchy-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[sgd:squared-outliers-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[sgd:squared-outliers-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[sgd:squared-shift-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[sgd:squared-shift-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[sgd:squared-t2-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[sgd:squared-t2-inf]",
+    "tests/test_convergence.py::test_front_loaded_adversity[sgd:squared-wild-500]",
+    "tests/test_convergence.py::test_front_loaded_adversity[sgd:squared-wild-inf]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[sgd:squared-level]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[sgd:squared-regime]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[sgd:squared-slope]",
+    "tests/test_convergence.py::test_reconvergence_after_a_break[sgd:squared-variance]",
+    "tests/test_convergence.py::test_start_at_a_large_level[sgd:squared]",
+    "tests/test_convergence.py::test_start_from_another_regime[sgd:squared-200]",
+    "tests/test_convergence.py::test_start_from_another_regime[sgd:squared-inf]",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = ""
+
+[group."convergence_conditioning.nist_ewridge_rls_gram"]
+tests = [
+    "tests/test_convergence_conditioning.py::TestGramSolveScales::test_the_gram_solve_unstandardized_reaches_the_bound[Longley]",
+    "tests/test_convergence_conditioning.py::TestGramSolveScales::test_the_gram_solve_unstandardized_reaches_the_bound[NoInt1]",
+    "tests/test_convergence_conditioning.py::TestGramSolveScales::test_the_gram_solve_unstandardized_reaches_the_bound[NoInt2]",
+    "tests/test_convergence_conditioning.py::TestGramSolveScales::test_the_gram_solve_unstandardized_reaches_the_bound[Norris]",
+    "tests/test_convergence_conditioning.py::TestGramSolveScales::test_the_gram_solve_unstandardized_reaches_the_bound[Pontius]",
+    "tests/test_convergence_conditioning.py::TestGramSolveScales::test_the_gram_solve_unstandardized_reaches_the_bound[Wampler1]",
+    "tests/test_convergence_conditioning.py::TestGramSolveScales::test_the_gram_solve_unstandardized_reaches_the_bound[Wampler2]",
+    "tests/test_convergence_conditioning.py::TestGramSolveScales::test_the_gram_solve_unstandardized_reaches_the_bound[Wampler3]",
+    "tests/test_convergence_conditioning.py::TestGramSolveScales::test_the_gram_solve_unstandardized_reaches_the_bound[Wampler4]",
+    "tests/test_convergence_conditioning.py::TestGramSolveScales::test_the_gram_solve_unstandardized_reaches_the_bound[Wampler5]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_filip_is_solved_by_rotations_where_the_normal_equations_carry_nothing",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_gram_solve_reaches_the_bound_standardized[Longley]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_gram_solve_reaches_the_bound_standardized[NoInt1]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_gram_solve_reaches_the_bound_standardized[NoInt2]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_gram_solve_reaches_the_bound_standardized[Norris]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_gram_solve_reaches_the_bound_standardized[Pontius]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_gram_solve_reaches_the_bound_standardized[Wampler1]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_gram_solve_reaches_the_bound_standardized[Wampler2]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_gram_solve_reaches_the_bound_standardized[Wampler3]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_gram_solve_reaches_the_bound_standardized[Wampler4]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_gram_solve_reaches_the_bound_standardized[Wampler5]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_normal_equations_reach_their_bound[Longley]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_normal_equations_reach_their_bound[NoInt1]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_normal_equations_reach_their_bound[NoInt2]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_normal_equations_reach_their_bound[Norris]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_normal_equations_reach_their_bound[Pontius]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_normal_equations_reach_their_bound[Wampler1]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_normal_equations_reach_their_bound[Wampler2]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_normal_equations_reach_their_bound[Wampler3]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_normal_equations_reach_their_bound[Wampler4]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_normal_equations_reach_their_bound[Wampler5]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_rotations_reach_their_bound[Longley]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_rotations_reach_their_bound[NoInt1]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_rotations_reach_their_bound[NoInt2]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_rotations_reach_their_bound[Norris]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_rotations_reach_their_bound[Pontius]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_rotations_reach_their_bound[Wampler1]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_rotations_reach_their_bound[Wampler2]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_rotations_reach_their_bound[Wampler3]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_rotations_reach_their_bound[Wampler4]",
+    "tests/test_convergence_conditioning.py::TestNistLinearRegression::test_the_rotations_reach_their_bound[Wampler5]",
+]
+oracles = {}
+dataset = "nist:Norris,Pontius,NoInt1,NoInt2,Filip,Longley,Wampler1,Wampler2,Wampler3,Wampler4,Wampler5"
+
+[group."convergence_iterations.kmeans_lloyd"]
+tests = [
+    "tests/test_convergence_iterations.py::TestLloydSeeding::test_the_lloyd_seeding_ends_at_a_fixed_point[50]",
+]
+oracles = {}
+dataset = ""
+
+[group."convergence_iterations.lasso_descent"]
+tests = [
+    "tests/test_convergence_iterations.py::TestLassoDescent::test_every_descent_of_the_grid_meets_its_rule_or_is_counted",
+]
+oracles = {}
+dataset = ""
+
+[group."huber_scale.huber_sgd_cuts"]
+tests = [
+    "tests/test_huber_scale.py::test_the_cuts_bias_over_fifty_seeds",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = ""
+
+[group."long_run.clock_weight"]
+tests = [
+    "tests/test_long_run.py::test_a_million_rows_do_not_drift[float]",
+    "tests/test_long_run.py::test_a_million_rows_do_not_drift[temporal]",
+]
+oracles = {}
+dataset = ""
+
+[group."long_run.ewcov_drift"]
+tests = [
+    "tests/test_long_run.py::test_a_million_rows_do_not_drift[decayed]",
+    "tests/test_long_run.py::test_a_million_rows_do_not_drift[windowed]",
+    "tests/test_long_run.py::test_the_window_discards_what_it_should",
+]
+oracles = {}
+dataset = ""
+
+[group."long_run.ewcov_numacc4"]
+tests = [
+    "tests/test_long_run.py::test_numacc4_cycled_a_million_rows_does_not_drift",
+]
+oracles = {}
+dataset = "nist:NumAcc4"
+
+[group."long_run.ewridge_drift"]
+tests = [
+    "tests/test_long_run.py::test_a_million_rows_do_not_drift[decayed_ridge]",
+    "tests/test_long_run.py::test_a_million_rows_do_not_drift[no_decay]",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = ""
+
+[group."long_run.kalman_p"]
+tests = [
+    "tests/test_long_run.py::test_kalman_p_stays_positive_definite_and_bounded",
+]
+oracles = {}
+dataset = ""
+
+[group."marginal_bin_huber.margbins_cuts"]
+tests = [
+    "tests/test_marginal_bin_huber.py::test_no_seed_of_fifty_strays_from_statsmodels_at_its_cut[0.8-0.05]",
+    "tests/test_marginal_bin_huber.py::test_no_seed_of_fifty_strays_from_statsmodels_at_its_cut[0.8-0.12]",
+    "tests/test_marginal_bin_huber.py::test_no_seed_of_fifty_strays_from_statsmodels_at_its_cut[2.5-0.05]",
+    "tests/test_marginal_bin_huber.py::test_no_seed_of_fifty_strays_from_statsmodels_at_its_cut[2.5-0.12]",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = ""
+
+[group."marginal_bin_refit.margbins_spikes"]
+tests = [
+    "tests/test_marginal_bin_refit.py::test_no_seed_of_fifty_stays_captured[0.05]",
+    "tests/test_marginal_bin_refit.py::test_no_seed_of_fifty_stays_captured[0.12]",
+    "tests/test_marginal_bin_refit.py::test_no_seed_of_fifty_stays_captured[0.2]",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = ""
+
+[group."oracles.quantile_eps"]
+tests = [
+    "tests/test_oracles.py::TestRobustOracles::test_quantile_eps_over_fifty_seeds[0.1]",
+    "tests/test_oracles.py::TestRobustOracles::test_quantile_eps_over_fifty_seeds[0.5]",
+]
+oracles = {}
+dataset = ""
+
+[group."oracles.quantile_huge_ridge"]
+tests = [
+    "tests/test_oracles.py::TestRobustOracles::test_a_huge_ridge_over_fifty_seeds[0.5]",
+    "tests/test_oracles.py::TestRobustOracles::test_a_huge_ridge_over_fifty_seeds[0.9]",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = ""
+
+[group."oracles.quantile_mixed_scales"]
+tests = [
+    "tests/test_oracles.py::TestRobustOracles::test_standardized_on_mixed_scales_over_fifty_seeds[0.5]",
+    "tests/test_oracles.py::TestRobustOracles::test_standardized_on_mixed_scales_over_fifty_seeds[0.9]",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = ""
+
+[group."truth_recovery.bocpd_tcpd"]
+tests = [
+    "tests/test_truth_recovery.py::test_bocpd_on_tcpd_series[nile]",
+    "tests/test_truth_recovery.py::test_bocpd_on_tcpd_series[quality_control_1]",
+    "tests/test_truth_recovery.py::test_bocpd_on_tcpd_series[quality_control_2]",
+    "tests/test_truth_recovery.py::test_bocpd_on_tcpd_series[quality_control_3]",
+    "tests/test_truth_recovery.py::test_bocpd_on_tcpd_series[run_log]",
+    "tests/test_truth_recovery.py::test_bocpd_on_tcpd_series[well_log]",
+]
+oracles = {}
+dataset = "tcpd:nile,quality_control_1,quality_control_2,quality_control_3,run_log,well_log"
+
+[case."convergence.ewridge.break_level_at_1"]
+ideal = 0.0
+worst = 2.62013e-14
+p95 = 2.53131e-14
+n = 50
+floor = 5.3e-14
+
+[case."convergence.ewridge.break_regime_at_1"]
+ideal = 0.0
+worst = 2.34479e-13
+p95 = 2.30926e-13
+n = 50
+floor = 4.7e-13
+
+[case."convergence.ewridge.break_slope_at_1"]
+ideal = 0.0
+worst = 1.77636e-14
+p95 = 1.11022e-14
+n = 50
+floor = 3.6e-14
+
+[case."convergence.ewridge.break_variance_at_1"]
+ideal = 0.0
+worst = 1.11022e-14
+p95 = 5.55112e-15
+n = 50
+floor = 2.3e-14
+
+[case."convergence.ewridge.cauchy_500_at_8000"]
+ideal = 0.0
+worst = 1.22125e-14
+p95 = 8.88178e-15
+n = 50
+floor = 2.5e-14
+
+[case."convergence.ewridge.cauchy_inf_at_8000"]
+ideal = 0.0
+worst = 5.07511e-14
+p95 = 2.93099e-14
+n = 50
+floor = 1.1e-13
+
+[case."convergence.ewridge.consistency_at_2000"]
+ideal = 0.0
+worst = 1.9984e-14
+p95 = 1.68754e-14
+n = 50
+floor = 4e-14
+
+[case."convergence.ewridge.consistency_at_32000"]
+ideal = 0.0
+worst = 5.81757e-14
+p95 = 5.32907e-14
+n = 50
+floor = 1.2e-13
+
+[case."convergence.ewridge.consistency_at_500"]
+ideal = 0.0
+worst = 8.43769e-15
+p95 = 7.10543e-15
+n = 50
+floor = 1.7e-14
+
+[case."convergence.ewridge.consistency_at_8000"]
+ideal = 0.0
+worst = 2.9976e-14
+p95 = 2.13163e-14
+n = 50
+floor = 6e-14
+
+[case."convergence.ewridge.large_level_at_8000"]
+ideal = 0.0
+worst = 1.16415e-10
+p95 = 1.16415e-10
+n = 50
+floor = 2.4e-10
+
+[case."convergence.ewridge.level_zero_at_8000"]
+ideal = 0.0
+worst = 3.5083e-14
+p95 = 2.70894e-14
+n = 50
+floor = 7.1e-14
+
+[case."convergence.ewridge.outliers_500_at_8000"]
+ideal = 0.0
+worst = 1.13243e-14
+p95 = 8.32667e-15
+n = 50
+floor = 2.3e-14
+
+[case."convergence.ewridge.outliers_inf_at_8000"]
+ideal = 0.0
+worst = 4.61853e-14
+p95 = 3.90799e-14
+n = 50
+floor = 9.3e-14
+
+[case."convergence.ewridge.prior_200_at_200"]
+ideal = 0.0
+worst = 7.46695e-10
+p95 = 6.1118e-10
+n = 20
+floor = 1.5e-09
+
+[case."convergence.ewridge.prior_200_at_2000"]
+ideal = 0.0
+worst = 8.0012e-10
+p95 = 7.35347e-10
+n = 20
+floor = 1.7e-09
+
+[case."convergence.ewridge.prior_200_at_6000"]
+ideal = 0.0
+worst = 7.48884e-10
+p95 = 7.23915e-10
+n = 20
+floor = 1.5e-09
+
+[case."convergence.ewridge.prior_200_at_8000"]
+ideal = 0.0
+worst = 7.11159e-10
+p95 = 6.16657e-10
+n = 20
+floor = 1.5e-09
+
+[case."convergence.ewridge.prior_200_truth_at_8000"]
+ideal = 0.0
+worst = 7.54075e-09
+p95 = 7.19594e-09
+n = 20
+
+[case."convergence.ewridge.prior_inf_at_2000"]
+ideal = 0.0
+worst = 1.03159e-09
+p95 = 7.48855e-10
+n = 20
+floor = 2.1e-09
+
+[case."convergence.ewridge.prior_inf_at_32000"]
+ideal = 0.0
+worst = 3.10663e-09
+p95 = 2.99505e-09
+n = 20
+floor = 6.3e-09
+
+[case."convergence.ewridge.prior_inf_at_500"]
+ideal = 0.0
+worst = 8.17636e-10
+p95 = 6.4847e-10
+n = 20
+floor = 1.7e-09
+
+[case."convergence.ewridge.prior_inf_at_8000"]
+ideal = 0.0
+worst = 1.16614e-09
+p95 = 1.1209e-09
+n = 20
+floor = 2.4e-09
+
+[case."convergence.ewridge.prior_inf_truth_at_2000"]
+ideal = 0.0
+worst = 1080.15
+p95 = 1052.1
+n = 20
+
+[case."convergence.ewridge.prior_inf_truth_at_32000"]
+ideal = 0.0
+worst = 63.9582
+p95 = 63.6463
+n = 20
+
+[case."convergence.ewridge.prior_inf_truth_at_500"]
+ideal = 0.0
+worst = 4754.12
+p95 = 4688.12
+n = 20
+
+[case."convergence.ewridge.prior_inf_truth_at_8000"]
+ideal = 0.0
+worst = 261.189
+p95 = 258.462
+n = 20
+
+[case."convergence.ewridge.shift_500_at_8000"]
+ideal = 0.0
+worst = 1.39888e-14
+p95 = 1.11022e-14
+n = 50
+floor = 2.8e-14
+
+[case."convergence.ewridge.shift_inf_at_8000"]
+ideal = 0.0
+worst = 2.95319e-14
+p95 = 2.22045e-14
+n = 50
+floor = 6e-14
+
+[case."convergence.ewridge.start_200_at_3200"]
+ideal = 0.0
+worst = 6.66134e-15
+p95 = 5.77316e-15
+n = 50
+floor = 1.4e-14
+
+[case."convergence.ewridge.start_inf_at_32000"]
+ideal = 0.0
+worst = 8.61533e-14
+p95 = 4.37428e-14
+n = 50
+floor = 1.8e-13
+
+[case."convergence.ewridge.t2_500_at_8000"]
+ideal = 0.0
+worst = 1.24345e-14
+p95 = 9.54792e-15
+n = 50
+floor = 2.5e-14
+
+[case."convergence.ewridge.t2_inf_at_8000"]
+ideal = 0.0
+worst = 2.64233e-14
+p95 = 2.35367e-14
+n = 50
+floor = 5.3e-14
+
+[case."convergence.ewridge.wild_500_at_8000"]
+ideal = 0.0
+worst = 1.06581e-14
+p95 = 9.54792e-15
+n = 50
+floor = 2.2e-14
+
+[case."convergence.ewridge.wild_inf_at_8000"]
+ideal = 0.0
+worst = 1.0747e-13
+p95 = 6.75016e-14
+n = 50
+floor = 2.2e-13
+
+[case."convergence.ftrl_logistic.break_level_at_12"]
+ideal = 0.0
+worst = 0.560122
+p95 = 0.496679
+n = 50
+
+[case."convergence.ftrl_logistic.break_regime_at_12"]
+ideal = 0.0
+worst = 1.15588
+p95 = 1.14619
+n = 50
+
+[case."convergence.ftrl_logistic.break_slope_at_12"]
+ideal = 0.0
+worst = 1.0017
+p95 = 0.9268
+n = 50
+
+[case."convergence.ftrl_logistic.consistency_at_2000"]
+ideal = 0.0
+worst = 0.291807
+p95 = 0.266022
+n = 50
+
+[case."convergence.ftrl_logistic.consistency_at_32000"]
+ideal = 0.0
+worst = 0.0506793
+p95 = 0.0452126
+n = 50
+
+[case."convergence.ftrl_logistic.consistency_at_500"]
+ideal = 0.0
+worst = 0.66664
+p95 = 0.627947
+n = 50
+
+[case."convergence.ftrl_logistic.consistency_at_8000"]
+ideal = 0.0
+worst = 0.0825849
+p95 = 0.0784116
+n = 50
+
+[case."convergence.ftrl_logistic.start_200_at_3200"]
+ideal = 0.0
+worst = 0.450107
+p95 = 0.404064
+n = 50
+
+[case."convergence.ftrl_logistic.start_inf_truth_at_2000"]
+ideal = 0.0
+worst = 1.03262
+p95 = 0.986065
+n = 50
+
+[case."convergence.ftrl_logistic.start_inf_truth_at_32000"]
+ideal = 0.0
+worst = 0.0526464
+p95 = 0.0512647
+n = 50
+
+[case."convergence.ftrl_logistic.start_inf_truth_at_500"]
+ideal = 0.0
+worst = 1.95525
+p95 = 1.92457
+n = 50
+
+[case."convergence.ftrl_logistic.start_inf_truth_at_8000"]
+ideal = 0.0
+worst = 0.267514
+p95 = 0.264534
+n = 50
+
+[case."convergence.ftrl_logistic.weak_prior_regime_at_12"]
+ideal = 0.0
+worst = 0.494585
+p95 = 0.455416
+n = 50
+
+[case."convergence.ftrl_logistic.weak_prior_slope_at_12"]
+ideal = 0.0
+worst = 0.294986
+p95 = 0.232425
+n = 50
+
+[case."convergence.ftrl_squared.alpha_1_regime_at_8"]
+ideal = 0.0
+worst = 0.763313
+p95 = 0.555482
+n = 50
+
+[case."convergence.ftrl_squared.break_level_at_12"]
+ideal = 0.0
+worst = 0.313545
+p95 = 0.275361
+n = 50
+
+[case."convergence.ftrl_squared.break_regime_at_12"]
+ideal = 0.0
+worst = 19.867
+p95 = 19.8309
+n = 50
+
+[case."convergence.ftrl_squared.break_slope_at_12"]
+ideal = 0.0
+worst = 0.244464
+p95 = 0.224074
+n = 50
+
+[case."convergence.ftrl_squared.break_variance_at_12"]
+ideal = 0.0
+worst = 0.20255
+p95 = 0.183406
+n = 50
+
+[case."convergence.ftrl_squared.consistency_at_2000"]
+ideal = 0.0
+worst = 0.111041
+p95 = 0.104088
+n = 50
+
+[case."convergence.ftrl_squared.consistency_at_32000"]
+ideal = 0.0
+worst = 0.0281955
+p95 = 0.0265597
+n = 50
+
+[case."convergence.ftrl_squared.consistency_at_500"]
+ideal = 0.0
+worst = 0.725092
+p95 = 0.669566
+n = 50
+
+[case."convergence.ftrl_squared.consistency_at_8000"]
+ideal = 0.0
+worst = 0.0411467
+p95 = 0.0347973
+n = 50
+
+[case."convergence.ftrl_squared.large_level_at_8000"]
+ideal = 0.0
+worst = 0.0667701
+p95 = 0.0640359
+n = 50
+
+[case."convergence.ftrl_squared.level_zero_at_8000"]
+ideal = 0.0
+worst = 0.0391043
+p95 = 0.0343663
+n = 50
+
+[case."convergence.ftrl_squared.regime_closed_over_pace"]
+ideal = 1.0
+worst = 0.9220571
+p95 = 0.9220571
+n = 1
+
+[case."convergence.ftrl_squared.start_200_at_3200"]
+ideal = 0.0
+worst = 0.24297
+p95 = 0.186427
+n = 50
+
+[case."convergence.ftrl_squared.start_inf_truth_at_2000"]
+ideal = 0.0
+worst = 6.73263
+p95 = 6.72921
+n = 50
+
+[case."convergence.ftrl_squared.start_inf_truth_at_32000"]
+ideal = 0.0
+worst = 1.48004
+p95 = 1.47873
+n = 50
+
+[case."convergence.ftrl_squared.start_inf_truth_at_500"]
+ideal = 0.0
+worst = 7.31194
+p95 = 7.30066
+n = 50
+
+[case."convergence.ftrl_squared.start_inf_truth_at_8000"]
+ideal = 0.0
+worst = 4.92652
+p95 = 4.91671
+n = 50
+
+[case."convergence.holt.break_level_at_12"]
+ideal = 0.0
+worst = 0.267089
+p95 = 0.260101
+n = 50
+
+[case."convergence.holt.break_regime_at_12"]
+ideal = 0.0
+worst = 4.8783
+p95 = 4.87131
+n = 50
+
+[case."convergence.holt.break_slope_at_12"]
+ideal = 0.0
+worst = 0.743882
+p95 = 0.738736
+n = 50
+
+[case."convergence.holt.break_variance_at_12"]
+ideal = 0.0
+worst = 0.127058
+p95 = 0.118997
+n = 50
+
+[case."convergence.holt.consistency_at_2000"]
+ideal = 0.0
+worst = 4.61853e-14
+p95 = 4.26326e-14
+n = 50
+floor = 9.3e-14
+
+[case."convergence.holt.consistency_at_32000"]
+ideal = 0.0
+worst = 3.41061e-12
+p95 = 2.55795e-12
+n = 50
+floor = 6.9e-12
+
+[case."convergence.holt.consistency_at_500"]
+ideal = 0.0
+worst = 1.77636e-14
+p95 = 1.06581e-14
+n = 50
+floor = 3.6e-14
+
+[case."convergence.holt.consistency_at_8000"]
+ideal = 0.0
+worst = 3.55271e-13
+p95 = 2.70006e-13
+n = 50
+floor = 7.2e-13
+
+[case."convergence.holt.large_level_at_8000"]
+ideal = 0.0
+worst = 4.07454e-09
+p95 = 3.14321e-09
+n = 50
+floor = 8.2e-09
+
+[case."convergence.holt.level_zero_at_8000"]
+ideal = 0.0
+worst = 3.55271e-13
+p95 = 2.70006e-13
+n = 50
+floor = 7.2e-13
+
+[case."convergence.holt.start_200_at_3200"]
+ideal = 0.0
+worst = 0.533886
+p95 = 0.522475
+n = 50
+
+[case."convergence.holt.start_inf_at_32000"]
+ideal = 0.0
+worst = 3.29692e-12
+p95 = 2.72848e-12
+n = 50
+floor = 6.6e-12
+
+[case."convergence.huber.break_level_at_8"]
+ideal = 0.0
+worst = 0.0266175
+p95 = 0.0259698
+n = 50
+
+[case."convergence.huber.break_regime_at_12"]
+ideal = 0.0
+worst = 0.0183451
+p95 = 0.0176392
+n = 50
+
+[case."convergence.huber.break_slope_at_8"]
+ideal = 0.0
+worst = 0.0112588
+p95 = 0.0102363
+n = 50
+
+[case."convergence.huber.break_variance_at_12"]
+ideal = 0.0
+worst = 0.0306654
+p95 = 0.0246094
+n = 50
+
+[case."convergence.huber.breakdown_0_05_5000_slope_gap"]
+ideal = 0.0
+worst = 0.00135238
+p95 = 0.00127491
+n = 50
+
+[case."convergence.huber.breakdown_0_05_inf_slope_gap"]
+ideal = 0.0
+worst = 0.00198027
+p95 = 0.00154603
+n = 50
+
+[case."convergence.huber.breakdown_0_15_5000_slope_gap"]
+ideal = 0.0
+worst = 0.00429354
+p95 = 0.00373347
+n = 50
+
+[case."convergence.huber.breakdown_0_15_inf_slope_gap"]
+ideal = 0.0
+worst = 0.012692
+p95 = 0.00738828
+n = 50
+
+[case."convergence.huber.breakdown_0_1_5000_slope_gap"]
+ideal = 0.0
+worst = 0.00209056
+p95 = 0.00178429
+n = 50
+
+[case."convergence.huber.breakdown_0_1_inf_slope_gap"]
+ideal = 0.0
+worst = 0.00294575
+p95 = 0.00240245
+n = 50
+
+[case."convergence.huber.breakdown_0_2_5000_slope_gap"]
+ideal = 0.0
+worst = 0.587191
+p95 = 0.142201
+n = 50
+
+[case."convergence.huber.breakdown_0_2_inf_slope_gap"]
+ideal = 0.0
+worst = 0.852577
+p95 = 0.248949
+n = 50
+
+[case."convergence.huber.cauchy_500_at_8000"]
+ideal = 0.0
+worst = 0.00501959
+p95 = 0.00403613
+n = 50
+
+[case."convergence.huber.cauchy_inf_at_8000"]
+ideal = 0.0
+worst = 0.00508048
+p95 = 0.00476977
+n = 50
+
+[case."convergence.huber.consistency_at_2000"]
+ideal = 0.0
+worst = 0.00511345
+p95 = 0.00395504
+n = 50
+
+[case."convergence.huber.consistency_at_32000"]
+ideal = 0.0
+worst = 0.00169483
+p95 = 0.00136098
+n = 50
+
+[case."convergence.huber.consistency_at_500"]
+ideal = 0.0
+worst = 0.000293896
+p95 = 0.000183238
+n = 50
+
+[case."convergence.huber.consistency_at_8000"]
+ideal = 0.0
+worst = 0.00264253
+p95 = 0.00223272
+n = 50
+
+[case."convergence.huber.large_level_at_8000"]
+ideal = 0.0
+worst = 0.00342625
+p95 = 0.00263545
+n = 50
+
+[case."convergence.huber.level_zero_at_8000"]
+ideal = 0.0
+worst = 0.00342481
+p95 = 0.0026345
+n = 50
+
+[case."convergence.huber.outliers_500_at_8000"]
+ideal = 0.0
+worst = 0.00501408
+p95 = 0.0040139
+n = 50
+
+[case."convergence.huber.outliers_inf_at_8000"]
+ideal = 0.0
+worst = 0.0575841
+p95 = 0.0405456
+n = 50
+
+[case."convergence.huber.shift_500_at_8000"]
+ideal = 0.0
+worst = 0.00511058
+p95 = 0.00406659
+n = 50
+
+[case."convergence.huber.shift_inf_at_8000"]
+ideal = 0.0
+worst = 1.24489
+p95 = 1.23193
+n = 50
+
+[case."convergence.huber.start_200_at_3200"]
+ideal = 0.0
+worst = 0.00891122
+p95 = 0.00702008
+n = 50
+
+[case."convergence.huber.start_inf_truth_at_2000"]
+ideal = 0.0
+worst = 44.7586
+p95 = 44.7397
+n = 50
+
+[case."convergence.huber.start_inf_truth_at_32000"]
+ideal = 0.0
+worst = 2.77667
+p95 = 2.77438
+n = 50
+
+[case."convergence.huber.start_inf_truth_at_500"]
+ideal = 0.0
+worst = 45.8487
+p95 = 45.8373
+n = 50
+
+[case."convergence.huber.start_inf_truth_at_8000"]
+ideal = 0.0
+worst = 11.1282
+p95 = 11.1237
+n = 50
+
+[case."convergence.huber.t2_500_at_8000"]
+ideal = 0.0
+worst = 0.00499525
+p95 = 0.00403727
+n = 50
+
+[case."convergence.huber.t2_inf_at_8000"]
+ideal = 0.0
+worst = 0.00363376
+p95 = 0.00344599
+n = 50
+
+[case."convergence.huber.wild_500_at_8000"]
+ideal = 0.0
+worst = 0.00503592
+p95 = 0.00399905
+n = 50
+
+[case."convergence.huber.wild_inf_at_8000"]
+ideal = 0.0
+worst = 0.00367766
+p95 = 0.0026851
+n = 50
+
+[case."convergence.kalman.break_level_at_4"]
+ideal = 0.0
+worst = 0.0221273
+p95 = 0.018713
+n = 50
+
+[case."convergence.kalman.break_regime_at_12"]
+ideal = 0.0
+worst = 0.0273502
+p95 = 0.0229668
+n = 50
+
+[case."convergence.kalman.break_slope_at_8"]
+ideal = 0.0
+worst = 0.0209694
+p95 = 0.0181803
+n = 50
+
+[case."convergence.kalman.break_variance_at_12"]
+ideal = 0.0
+worst = 0.0472426
+p95 = 0.0425316
+n = 50
+
+[case."convergence.kalman.cauchy_500_at_8000"]
+ideal = 0.0
+worst = 0.0682237
+p95 = 0.0103563
+n = 50
+
+[case."convergence.kalman.cauchy_inf_at_8000"]
+ideal = 0.0
+worst = 0.0283966
+p95 = 0.00186231
+n = 50
+
+[case."convergence.kalman.consistency_at_2000"]
+ideal = 0.0
+worst = 0.00860569
+p95 = 0.00308728
+n = 50
+
+[case."convergence.kalman.consistency_at_32000"]
+ideal = 0.0
+worst = 0.000510485
+p95 = 0.000192322
+n = 50
+
+[case."convergence.kalman.consistency_at_500"]
+ideal = 0.0
+worst = 0.0343459
+p95 = 0.0118776
+n = 50
+
+[case."convergence.kalman.consistency_at_8000"]
+ideal = 0.0
+worst = 0.00205114
+p95 = 0.000769729
+n = 50
+
+[case."convergence.kalman.k1_level_at_1000"]
+ideal = 0.0
+worst = 0.0149873
+p95 = 0.0130735
+n = 50
+
+[case."convergence.kalman.k1_level_at_12000"]
+ideal = 0.0
+worst = 0.0126336
+p95 = 0.0115398
+n = 50
+
+[case."convergence.kalman.k1_level_at_2000"]
+ideal = 0.0
+worst = 0.0125874
+p95 = 0.0107425
+n = 50
+
+[case."convergence.kalman.k1_level_at_4000"]
+ideal = 0.0
+worst = 0.0121034
+p95 = 0.0102408
+n = 50
+
+[case."convergence.kalman.k1_level_at_8000"]
+ideal = 0.0
+worst = 0.013575
+p95 = 0.0114254
+n = 50
+
+[case."convergence.kalman.k1_prediction_units"]
+ideal = 0.0
+worst = 22.8292
+p95 = 21.7917
+n = 50
+floor = 46.0
+
+[case."convergence.kalman.large_level_at_8000"]
+ideal = 0.0
+worst = 0.00187808
+p95 = 0.000810445
+n = 50
+
+[case."convergence.kalman.level_inf_at_2000"]
+ideal = 0.0
+worst = 0.00860569
+p95 = 0.00308728
+n = 50
+
+[case."convergence.kalman.level_inf_at_32000"]
+ideal = 0.0
+worst = 0.000510485
+p95 = 0.000192322
+n = 50
+
+[case."convergence.kalman.level_inf_at_500"]
+ideal = 0.0
+worst = 0.0343459
+p95 = 0.0118776
+n = 50
+
+[case."convergence.kalman.level_inf_at_8000"]
+ideal = 0.0
+worst = 0.00205114
+p95 = 0.000769729
+n = 50
+
+[case."convergence.kalman.level_zero_at_8000"]
+ideal = 0.0
+worst = 0.00187808
+p95 = 0.000810445
+n = 50
+
+[case."convergence.kalman.outliers_500_at_8000"]
+ideal = 0.0
+worst = 0.00881071
+p95 = 0.00747963
+n = 50
+
+[case."convergence.kalman.outliers_inf_at_8000"]
+ideal = 0.0
+worst = 0.0103475
+p95 = 0.00914589
+n = 50
+
+[case."convergence.kalman.shift_500_at_8000"]
+ideal = 0.0
+worst = 0.00744158
+p95 = 0.00671162
+n = 50
+
+[case."convergence.kalman.shift_inf_at_8000"]
+ideal = 0.0
+worst = 0.00184604
+p95 = 0.000816762
+n = 50
+
+[case."convergence.kalman.start_200_at_3200"]
+ideal = 0.0
+worst = 0.0129017
+p95 = 0.00966646
+n = 50
+
+[case."convergence.kalman.start_inf_at_32000"]
+ideal = 0.0
+worst = 0.00103779
+p95 = 0.000863271
+n = 50
+
+[case."convergence.kalman.t2_500_at_8000"]
+ideal = 0.0
+worst = 0.00743508
+p95 = 0.00664959
+n = 50
+
+[case."convergence.kalman.t2_inf_at_8000"]
+ideal = 0.0
+worst = 0.00190122
+p95 = 0.000849617
+n = 50
+
+[case."convergence.kalman.wild_500_at_8000"]
+ideal = 0.0
+worst = 0.0279871
+p95 = 0.0258657
+n = 50
+
+[case."convergence.kalman.wild_inf_at_8000"]
+ideal = 0.0
+worst = 0.00247563
+p95 = 0.0011918
+n = 50
+
+[case."convergence.lasso.break_level_at_1"]
+ideal = 0.0
+worst = 1.32127e-10
+p95 = 1.11684e-10
+n = 50
+floor = 2.7e-10
+
+[case."convergence.lasso.break_regime_at_1"]
+ideal = 0.0
+worst = 8.31475e-10
+p95 = 6.85355e-10
+n = 50
+floor = 1.7e-09
+
+[case."convergence.lasso.break_slope_at_1"]
+ideal = 0.0
+worst = 9.22786e-11
+p95 = 8.19633e-11
+n = 50
+floor = 1.9e-10
+
+[case."convergence.lasso.break_variance_at_1"]
+ideal = 0.0
+worst = 9.29969e-11
+p95 = 7.22258e-11
+n = 50
+floor = 1.9e-10
+
+[case."convergence.lasso.cauchy_500_at_8000"]
+ideal = 0.0
+worst = 0.32595
+p95 = 0.286709
+n = 50
+
+[case."convergence.lasso.cauchy_inf_at_8000"]
+ideal = 0.0
+worst = 0.324346
+p95 = 0.322021
+n = 50
+
+[case."convergence.lasso.consistency_at_2000"]
+ideal = 0.0
+worst = 6.05671e-11
+p95 = 5.89773e-11
+n = 50
+floor = 1.3e-10
+
+[case."convergence.lasso.consistency_at_32000"]
+ideal = 0.0
+worst = 5.81764e-11
+p95 = 5.69997e-11
+n = 50
+floor = 1.2e-10
+
+[case."convergence.lasso.consistency_at_500"]
+ideal = 0.0
+worst = 6.77844e-11
+p95 = 5.25355e-11
+n = 50
+floor = 1.4e-10
+
+[case."convergence.lasso.consistency_at_8000"]
+ideal = 0.0
+worst = 6.09037e-11
+p95 = 5.8761e-11
+n = 50
+floor = 1.3e-10
+
+[case."convergence.lasso.large_level_at_8000"]
+ideal = 0.0
+worst = 2.32831e-10
+p95 = 2.32831e-10
+n = 50
+floor = 4.7e-10
+
+[case."convergence.lasso.level_zero_at_8000"]
+ideal = 0.0
+worst = 5.93252e-11
+p95 = 5.53004e-11
+n = 50
+floor = 1.2e-10
+
+[case."convergence.lasso.outliers_500_at_8000"]
+ideal = 0.0
+worst = 0.311509
+p95 = 0.28638
+n = 50
+
+[case."convergence.lasso.outliers_inf_at_8000"]
+ideal = 0.0
+worst = 0.326029
+p95 = 0.294963
+n = 50
+
+[case."convergence.lasso.shift_500_at_8000"]
+ideal = 0.0
+worst = 0.311521
+p95 = 0.286051
+n = 50
+
+[case."convergence.lasso.shift_inf_at_8000"]
+ideal = 0.0
+worst = 0.338811
+p95 = 0.299553
+n = 50
+
+[case."convergence.lasso.start_200_at_3200"]
+ideal = 0.0
+worst = 6.7786e-11
+p95 = 6.0677e-11
+n = 50
+floor = 1.4e-10
+
+[case."convergence.lasso.start_inf_at_32000"]
+ideal = 0.0
+worst = 3.57509e-10
+p95 = 3.37293e-10
+n = 50
+floor = 7.2e-10
+
+[case."convergence.lasso.t2_500_at_8000"]
+ideal = 0.0
+worst = 0.311711
+p95 = 0.28673
+n = 50
+
+[case."convergence.lasso.t2_inf_at_8000"]
+ideal = 0.0
+worst = 0.316908
+p95 = 0.310938
+n = 50
+
+[case."convergence.lasso.wild_500_at_8000"]
+ideal = 0.0
+worst = 0.334525
+p95 = 0.300715
+n = 50
+
+[case."convergence.lasso.wild_inf_at_8000"]
+ideal = 0.0
+worst = 0.319565
+p95 = 0.311096
+n = 50
+
+[case."convergence.pa.break_level_at_12"]
+ideal = 0.0
+worst = 0.880456
+p95 = 0.779871
+n = 50
+
+[case."convergence.pa.break_regime_at_12"]
+ideal = 0.0
+worst = 0.862045
+p95 = 0.76697
+n = 50
+
+[case."convergence.pa.break_slope_at_12"]
+ideal = 0.0
+worst = 0.870388
+p95 = 0.779554
+n = 50
+
+[case."convergence.pa.break_variance_at_12"]
+ideal = 0.0
+worst = 2.13208
+p95 = 1.92696
+n = 50
+
+[case."convergence.pa.c_0_01_truth_at_2000"]
+ideal = 0.0
+worst = 0.156909
+p95 = 0.131475
+n = 50
+
+[case."convergence.pa.c_0_01_truth_at_32000"]
+ideal = 0.0
+worst = 0.13616
+p95 = 0.131629
+n = 50
+
+[case."convergence.pa.c_0_01_truth_at_8000"]
+ideal = 0.0
+worst = 0.175512
+p95 = 0.13194
+n = 50
+
+[case."convergence.pa.c_0_1_truth_at_2000"]
+ideal = 0.0
+worst = 0.582197
+p95 = 0.377401
+n = 50
+
+[case."convergence.pa.c_0_1_truth_at_32000"]
+ideal = 0.0
+worst = 0.368409
+p95 = 0.350414
+n = 50
+
+[case."convergence.pa.c_0_1_truth_at_8000"]
+ideal = 0.0
+worst = 0.4164
+p95 = 0.353825
+n = 50
+
+[case."convergence.pa.c_1_truth_at_2000"]
+ideal = 0.0
+worst = 0.931815
+p95 = 0.862984
+n = 50
+
+[case."convergence.pa.c_1_truth_at_32000"]
+ideal = 0.0
+worst = 0.792497
+p95 = 0.723565
+n = 50
+
+[case."convergence.pa.c_1_truth_at_8000"]
+ideal = 0.0
+worst = 0.94873
+p95 = 0.794617
+n = 50
+
+[case."convergence.pa.cauchy_500_at_8000"]
+ideal = 0.0
+worst = 0.889409
+p95 = 0.87978
+n = 50
+
+[case."convergence.pa.cauchy_inf_at_2000"]
+ideal = 0.0
+worst = 85.0156
+p95 = 2.9301
+n = 50
+
+[case."convergence.pa.cauchy_inf_at_8000"]
+ideal = 0.0
+worst = 21.2706
+p95 = 0.864824
+n = 50
+
+[case."convergence.pa.large_level_at_8000"]
+ideal = 0.0
+worst = 0.890622
+p95 = 0.869113
+n = 50
+
+[case."convergence.pa.level_zero_at_8000"]
+ideal = 0.0
+worst = 0.890622
+p95 = 0.869113
+n = 50
+
+[case."convergence.pa.outliers_500_at_8000"]
+ideal = 0.0
+worst = 0.88957
+p95 = 0.880722
+n = 50
+
+[case."convergence.pa.outliers_inf_at_2000"]
+ideal = 0.0
+worst = 4.07103
+p95 = 3.20941
+n = 50
+
+[case."convergence.pa.outliers_inf_at_8000"]
+ideal = 0.0
+worst = 1.57987
+p95 = 1.46417
+n = 50
+
+[case."convergence.pa.shift_500_at_8000"]
+ideal = 0.0
+worst = 0.889703
+p95 = 0.880868
+n = 50
+
+[case."convergence.pa.shift_inf_at_2000"]
+ideal = 0.0
+worst = 6.18978
+p95 = 5.57534
+n = 50
+
+[case."convergence.pa.shift_inf_at_8000"]
+ideal = 0.0
+worst = 2.0943
+p95 = 2.09106
+n = 50
+
+[case."convergence.pa.start_200_at_3200"]
+ideal = 0.0
+worst = 0.82672
+p95 = 0.713902
+n = 50
+
+[case."convergence.pa.start_inf_clean_at_32000"]
+ideal = 0.0
+worst = 0.79335
+p95 = 0.727838
+n = 50
+
+[case."convergence.pa.start_inf_truth_at_32000"]
+ideal = 0.0
+worst = 0.679922
+p95 = 0.656349
+n = 50
+
+[case."convergence.pa.t2_500_at_8000"]
+ideal = 0.0
+worst = 0.88941
+p95 = 0.880586
+n = 50
+
+[case."convergence.pa.t2_inf_at_2000"]
+ideal = 0.0
+worst = 1.2463
+p95 = 0.886516
+n = 50
+
+[case."convergence.pa.t2_inf_at_8000"]
+ideal = 0.0
+worst = 0.888718
+p95 = 0.868543
+n = 50
+
+[case."convergence.pa.wild_500_at_8000"]
+ideal = 0.0
+worst = 0.880135
+p95 = 0.863054
+n = 50
+
+[case."convergence.pa.wild_inf_at_2000"]
+ideal = 0.0
+worst = 22.9577
+p95 = 21.6793
+n = 50
+
+[case."convergence.pa.wild_inf_at_8000"]
+ideal = 0.0
+worst = 5.59492
+p95 = 5.2584
+n = 50
+
+[case."convergence.quantile.break_level_at_6"]
+ideal = 0.0
+worst = 0.0189586
+p95 = 0.0180399
+n = 50
+
+[case."convergence.quantile.break_regime_at_8"]
+ideal = 0.0
+worst = 0.0211705
+p95 = 0.0188017
+n = 50
+
+[case."convergence.quantile.break_slope_at_6"]
+ideal = 0.0
+worst = 0.0230516
+p95 = 0.0189353
+n = 50
+
+[case."convergence.quantile.break_variance_at_12"]
+ideal = 0.0
+worst = 0.0649813
+p95 = 0.0537994
+n = 50
+
+[case."convergence.quantile.breakdown_0_05_5000_slope_gap"]
+ideal = 0.0
+worst = 0.00408993
+p95 = 0.00326763
+n = 50
+
+[case."convergence.quantile.breakdown_0_05_inf_slope_gap"]
+ideal = 0.0
+worst = 0.00426534
+p95 = 0.00331039
+n = 50
+
+[case."convergence.quantile.breakdown_0_15_5000_slope_gap"]
+ideal = 0.0
+worst = 0.00600277
+p95 = 0.00580163
+n = 50
+
+[case."convergence.quantile.breakdown_0_15_inf_slope_gap"]
+ideal = 0.0
+worst = 0.00646911
+p95 = 0.00610296
+n = 50
+
+[case."convergence.quantile.breakdown_0_1_5000_slope_gap"]
+ideal = 0.0
+worst = 0.00491483
+p95 = 0.00396276
+n = 50
+
+[case."convergence.quantile.breakdown_0_1_inf_slope_gap"]
+ideal = 0.0
+worst = 0.00433522
+p95 = 0.0042555
+n = 50
+
+[case."convergence.quantile.breakdown_0_2_5000_slope_gap"]
+ideal = 0.0
+worst = 0.0109106
+p95 = 0.00881734
+n = 50
+
+[case."convergence.quantile.breakdown_0_2_inf_slope_gap"]
+ideal = 0.0
+worst = 0.0087825
+p95 = 0.00790717
+n = 50
+
+[case."convergence.quantile.cauchy_500_at_8000"]
+ideal = 0.0
+worst = 0.0112643
+p95 = 0.00911986
+n = 50
+
+[case."convergence.quantile.cauchy_inf_at_8000"]
+ideal = 0.0
+worst = 0.00583633
+p95 = 0.00490933
+n = 50
+
+[case."convergence.quantile.consistency_at_2000"]
+ideal = 0.0
+worst = 0.0110838
+p95 = 0.00708015
+n = 50
+
+[case."convergence.quantile.consistency_at_32000"]
+ideal = 0.0
+worst = 0.0022436
+p95 = 0.00205023
+n = 50
+
+[case."convergence.quantile.consistency_at_500"]
+ideal = 0.0
+worst = 0.0224135
+p95 = 0.0167603
+n = 50
+
+[case."convergence.quantile.consistency_at_8000"]
+ideal = 0.0
+worst = 0.0048523
+p95 = 0.00430994
+n = 50
+
+[case."convergence.quantile.large_level_at_8000"]
+ideal = 0.0
+worst = 0.00519311
+p95 = 0.00409626
+n = 50
+
+[case."convergence.quantile.level_zero_at_8000"]
+ideal = 0.0
+worst = 0.00519309
+p95 = 0.00409626
+n = 50
+
+[case."convergence.quantile.outliers_500_at_8000"]
+ideal = 0.0
+worst = 0.0112778
+p95 = 0.00939852
+n = 50
+
+[case."convergence.quantile.outliers_inf_at_8000"]
+ideal = 0.0
+worst = 0.00846415
+p95 = 0.00626368
+n = 50
+
+[case."convergence.quantile.shift_500_at_8000"]
+ideal = 0.0
+worst = 0.010751
+p95 = 0.00911517
+n = 50
+
+[case."convergence.quantile.shift_inf_at_8000"]
+ideal = 0.0
+worst = 0.0607696
+p95 = 0.0588772
+n = 50
+
+[case."convergence.quantile.start_200_at_3200"]
+ideal = 0.0
+worst = 0.0225457
+p95 = 0.0178194
+n = 50
+
+[case."convergence.quantile.start_inf_truth_at_2000"]
+ideal = 0.0
+worst = 44.7913
+p95 = 44.7635
+n = 50
+
+[case."convergence.quantile.start_inf_truth_at_32000"]
+ideal = 0.0
+worst = 0.156435
+p95 = 0.149148
+n = 50
+
+[case."convergence.quantile.start_inf_truth_at_500"]
+ideal = 0.0
+worst = 45.9088
+p95 = 45.8789
+n = 50
+
+[case."convergence.quantile.start_inf_truth_at_8000"]
+ideal = 0.0
+worst = 0.636728
+p95 = 0.608421
+n = 50
+
+[case."convergence.quantile.t2_500_at_8000"]
+ideal = 0.0
+worst = 0.0113286
+p95 = 0.00910158
+n = 50
+
+[case."convergence.quantile.t2_inf_at_8000"]
+ideal = 0.0
+worst = 0.00575149
+p95 = 0.00494357
+n = 50
+
+[case."convergence.quantile.wild_500_at_8000"]
+ideal = 0.0
+worst = 0.0108028
+p95 = 0.00940628
+n = 50
+
+[case."convergence.quantile.wild_inf_at_8000"]
+ideal = 0.0
+worst = 0.0052841
+p95 = 0.00419535
+n = 50
+
+[case."convergence.quantile_robust_sets.hbk_excess"]
+ideal = 0.0
+worst = 0.00206747
+p95 = 0.00206747
+n = 3
+
+[case."convergence.quantile_robust_sets.stackloss_excess"]
+ideal = 0.0
+worst = 0.00725158
+p95 = 0.00725158
+n = 3
+
+[case."convergence.quantile_robust_sets.starscyg_excess"]
+ideal = 0.0
+worst = 0.00118169
+p95 = 0.00118169
+n = 3
+
+[case."convergence.rls.break_level_at_1"]
+ideal = 0.0
+worst = 8.88178e-15
+p95 = 8.88178e-15
+n = 50
+floor = 1.8e-14
+
+[case."convergence.rls.break_regime_at_1"]
+ideal = 0.0
+worst = 5.68434e-14
+p95 = 4.61853e-14
+n = 50
+floor = 1.2e-13
+
+[case."convergence.rls.break_slope_at_1"]
+ideal = 0.0
+worst = 1.15463e-14
+p95 = 1.06581e-14
+n = 50
+floor = 2.4e-14
+
+[case."convergence.rls.break_variance_at_1"]
+ideal = 0.0
+worst = 1.13243e-14
+p95 = 7.99361e-15
+n = 50
+floor = 2.3e-14
+
+[case."convergence.rls.cauchy_500_at_8000"]
+ideal = 0.0
+worst = 1.19904e-14
+p95 = 1.06581e-14
+n = 50
+floor = 2.4e-14
+
+[case."convergence.rls.cauchy_inf_at_8000"]
+ideal = 0.0
+worst = 2.77112e-13
+p95 = 3.44169e-14
+n = 50
+floor = 5.6e-13
+
+[case."convergence.rls.consistency_at_2000"]
+ideal = 0.0
+worst = 1.39888e-14
+p95 = 1.06581e-14
+n = 50
+floor = 2.8e-14
+
+[case."convergence.rls.consistency_at_32000"]
+ideal = 0.0
+worst = 9.50351e-14
+p95 = 5.19584e-14
+n = 50
+floor = 2e-13
+
+[case."convergence.rls.consistency_at_500"]
+ideal = 0.0
+worst = 7.99361e-15
+p95 = 7.54952e-15
+n = 50
+floor = 1.6e-14
+
+[case."convergence.rls.consistency_at_8000"]
+ideal = 0.0
+worst = 3.9746e-14
+p95 = 2.88658e-14
+n = 50
+floor = 8e-14
+
+[case."convergence.rls.large_level_at_8000"]
+ideal = 0.0
+worst = 1.59489e-08
+p95 = 1.28057e-08
+n = 50
+
+[case."convergence.rls.level_zero_at_8000"]
+ideal = 0.0
+worst = 2.95319e-14
+p95 = 2.66454e-14
+n = 50
+floor = 6e-14
+
+[case."convergence.rls.outliers_500_at_8000"]
+ideal = 0.0
+worst = 1.17684e-14
+p95 = 1.04361e-14
+n = 50
+floor = 2.4e-14
+
+[case."convergence.rls.outliers_inf_at_8000"]
+ideal = 0.0
+worst = 3.95239e-14
+p95 = 3.41949e-14
+n = 50
+floor = 8e-14
+
+[case."convergence.rls.prior_200_at_200"]
+ideal = 0.0
+worst = 7.24867e-10
+p95 = 5.96629e-10
+n = 20
+floor = 1.5e-09
+
+[case."convergence.rls.prior_200_at_2000"]
+ideal = 0.0
+worst = 8.00854e-10
+p95 = 7.3611e-10
+n = 20
+floor = 1.7e-09
+
+[case."convergence.rls.prior_200_at_6000"]
+ideal = 0.0
+worst = 7.48879e-10
+p95 = 7.23916e-10
+n = 20
+floor = 1.5e-09
+
+[case."convergence.rls.prior_200_at_8000"]
+ideal = 0.0
+worst = 7.11157e-10
+p95 = 6.16663e-10
+n = 20
+floor = 1.5e-09
+
+[case."convergence.rls.prior_200_truth_at_8000"]
+ideal = 0.0
+worst = 7.54075e-09
+p95 = 7.19594e-09
+n = 20
+
+[case."convergence.rls.prior_inf_at_2000"]
+ideal = 0.0
+worst = 1.03319e-09
+p95 = 7.53744e-10
+n = 20
+floor = 2.1e-09
+
+[case."convergence.rls.prior_inf_at_32000"]
+ideal = 0.0
+worst = 3.10838e-09
+p95 = 2.99477e-09
+n = 20
+floor = 6.3e-09
+
+[case."convergence.rls.prior_inf_at_500"]
+ideal = 0.0
+worst = 8.22183e-10
+p95 = 6.43922e-10
+n = 20
+floor = 1.7e-09
+
+[case."convergence.rls.prior_inf_at_8000"]
+ideal = 0.0
+worst = 1.16768e-09
+p95 = 1.1251e-09
+n = 20
+floor = 2.4e-09
+
+[case."convergence.rls.prior_inf_truth_at_2000"]
+ideal = 0.0
+worst = 1080.15
+p95 = 1052.1
+n = 20
+
+[case."convergence.rls.prior_inf_truth_at_32000"]
+ideal = 0.0
+worst = 63.9582
+p95 = 63.6463
+n = 20
+
+[case."convergence.rls.prior_inf_truth_at_500"]
+ideal = 0.0
+worst = 4754.12
+p95 = 4688.12
+n = 20
+
+[case."convergence.rls.prior_inf_truth_at_8000"]
+ideal = 0.0
+worst = 261.189
+p95 = 258.462
+n = 20
+
+[case."convergence.rls.shift_500_at_8000"]
+ideal = 0.0
+worst = 1.19904e-14
+p95 = 1.02141e-14
+n = 50
+floor = 2.4e-14
+
+[case."convergence.rls.shift_inf_at_8000"]
+ideal = 0.0
+worst = 4.08562e-14
+p95 = 3.4639e-14
+n = 50
+floor = 8.2e-14
+
+[case."convergence.rls.start_200_at_3200"]
+ideal = 0.0
+worst = 1.06581e-14
+p95 = 7.10543e-15
+n = 50
+floor = 2.2e-14
+
+[case."convergence.rls.start_inf_at_32000"]
+ideal = 0.0
+worst = 8.17124e-14
+p95 = 7.19425e-14
+n = 50
+floor = 1.7e-13
+
+[case."convergence.rls.t2_500_at_8000"]
+ideal = 0.0
+worst = 1.42109e-14
+p95 = 9.10383e-15
+n = 50
+floor = 2.9e-14
+
+[case."convergence.rls.t2_inf_at_8000"]
+ideal = 0.0
+worst = 3.10862e-14
+p95 = 3.08642e-14
+n = 50
+floor = 6.3e-14
+
+[case."convergence.rls.wild_500_at_8000"]
+ideal = 0.0
+worst = 1.28786e-14
+p95 = 1.08802e-14
+n = 50
+floor = 2.6e-14
+
+[case."convergence.rls.wild_inf_at_8000"]
+ideal = 0.0
+worst = 8.61533e-14
+p95 = 7.4607e-14
+n = 50
+floor = 1.8e-13
+
+[case."convergence.sgd_epsilon_insensitive.break_level_at_8"]
+ideal = 0.0
+worst = 0.0678142
+p95 = 0.0657814
+n = 50
+
+[case."convergence.sgd_epsilon_insensitive.break_regime_at_12"]
+ideal = 0.0
+worst = 0.0791146
+p95 = 0.0692039
+n = 50
+
+[case."convergence.sgd_epsilon_insensitive.break_slope_at_8"]
+ideal = 0.0
+worst = 0.0719897
+p95 = 0.0686168
+n = 50
+
+[case."convergence.sgd_epsilon_insensitive.break_variance_at_12"]
+ideal = 0.0
+worst = 0.130153
+p95 = 0.121074
+n = 50
+
+[case."convergence.sgd_epsilon_insensitive.consistency_at_2000"]
+ideal = 0.0
+worst = 0.0391423
+p95 = 0.0320276
+n = 50
+
+[case."convergence.sgd_epsilon_insensitive.consistency_at_32000"]
+ideal = 0.0
+worst = 0.00765865
+p95 = 0.00618854
+n = 50
+
+[case."convergence.sgd_epsilon_insensitive.consistency_at_500"]
+ideal = 0.0
+worst = 0.0873278
+p95 = 0.0717266
+n = 50
+
+[case."convergence.sgd_epsilon_insensitive.consistency_at_8000"]
+ideal = 0.0
+worst = 0.0161435
+p95 = 0.013702
+n = 50
+
+[case."convergence.sgd_epsilon_insensitive.large_level_at_8000"]
+ideal = 0.0
+worst = 0.0174462
+p95 = 0.0149982
+n = 50
+
+[case."convergence.sgd_epsilon_insensitive.level_zero_at_8000"]
+ideal = 0.0
+worst = 0.0174462
+p95 = 0.0149982
+n = 50
+
+[case."convergence.sgd_epsilon_insensitive.start_200_at_3200"]
+ideal = 0.0
+worst = 0.0845456
+p95 = 0.074393
+n = 50
+
+[case."convergence.sgd_epsilon_insensitive.start_inf_truth_at_2000"]
+ideal = 0.0
+worst = 4.37939
+p95 = 4.36356
+n = 50
+
+[case."convergence.sgd_epsilon_insensitive.start_inf_truth_at_32000"]
+ideal = 0.0
+worst = 2.46908
+p95 = 2.45695
+n = 50
+
+[case."convergence.sgd_epsilon_insensitive.start_inf_truth_at_500"]
+ideal = 0.0
+worst = 4.82948
+p95 = 4.82447
+n = 50
+
+[case."convergence.sgd_epsilon_insensitive.start_inf_truth_at_8000"]
+ideal = 0.0
+worst = 3.52233
+p95 = 3.50714
+n = 50
+
+[case."convergence.sgd_huber.break_level_at_8"]
+ideal = 0.0
+worst = 0.0251957
+p95 = 0.0202088
+n = 50
+
+[case."convergence.sgd_huber.break_regime_at_12"]
+ideal = 0.0
+worst = 0.0324616
+p95 = 0.0223472
+n = 50
+
+[case."convergence.sgd_huber.break_slope_at_8"]
+ideal = 0.0
+worst = 0.0246671
+p95 = 0.022866
+n = 50
+
+[case."convergence.sgd_huber.break_variance_at_12"]
+ideal = 0.0
+worst = 0.12903
+p95 = 0.0819975
+n = 50
+
+[case."convergence.sgd_huber.breakdown_0_05_5000_slope_gap"]
+ideal = 0.0
+worst = 0.00581043
+p95 = 0.00470319
+n = 50
+
+[case."convergence.sgd_huber.breakdown_0_05_inf_slope_gap"]
+ideal = 0.0
+worst = 0.00491031
+p95 = 0.00397468
+n = 50
+
+[case."convergence.sgd_huber.breakdown_0_15_5000_slope_gap"]
+ideal = 0.0
+worst = 0.00815593
+p95 = 0.00678022
+n = 50
+
+[case."convergence.sgd_huber.breakdown_0_15_inf_slope_gap"]
+ideal = 0.0
+worst = 0.0143204
+p95 = 0.00905044
+n = 50
+
+[case."convergence.sgd_huber.breakdown_0_1_5000_slope_gap"]
+ideal = 0.0
+worst = 0.007609
+p95 = 0.00657535
+n = 50
+
+[case."convergence.sgd_huber.breakdown_0_1_inf_slope_gap"]
+ideal = 0.0
+worst = 0.00594547
+p95 = 0.00497225
+n = 50
+
+[case."convergence.sgd_huber.breakdown_0_2_5000_slope_gap"]
+ideal = 0.0
+worst = 0.532284
+p95 = 0.109438
+n = 50
+
+[case."convergence.sgd_huber.breakdown_0_2_inf_slope_gap"]
+ideal = 0.0
+worst = 0.811474
+p95 = 0.206757
+n = 50
+
+[case."convergence.sgd_huber.cauchy_500_at_8000"]
+ideal = 0.0
+worst = 0.0163953
+p95 = 0.0140098
+n = 50
+
+[case."convergence.sgd_huber.cauchy_inf_at_8000"]
+ideal = 0.0
+worst = 0.00825923
+p95 = 0.00772594
+n = 50
+
+[case."convergence.sgd_huber.consistency_at_2000"]
+ideal = 0.0
+worst = 0.0135329
+p95 = 0.0120991
+n = 50
+
+[case."convergence.sgd_huber.consistency_at_32000"]
+ideal = 0.0
+worst = 0.0041557
+p95 = 0.00331381
+n = 50
+
+[case."convergence.sgd_huber.consistency_at_500"]
+ideal = 0.0
+worst = 0.000293896
+p95 = 0.000183238
+n = 50
+
+[case."convergence.sgd_huber.consistency_at_8000"]
+ideal = 0.0
+worst = 0.00701873
+p95 = 0.00606165
+n = 50
+
+[case."convergence.sgd_huber.large_level_at_8000"]
+ideal = 0.0
+worst = 0.00678894
+p95 = 0.0057419
+n = 50
+
+[case."convergence.sgd_huber.level_zero_at_8000"]
+ideal = 0.0
+worst = 0.00678894
+p95 = 0.0057419
+n = 50
+
+[case."convergence.sgd_huber.outliers_500_at_8000"]
+ideal = 0.0
+worst = 0.0163887
+p95 = 0.0140712
+n = 50
+
+[case."convergence.sgd_huber.outliers_inf_at_8000"]
+ideal = 0.0
+worst = 0.0697917
+p95 = 0.0363717
+n = 50
+
+[case."convergence.sgd_huber.shift_500_at_8000"]
+ideal = 0.0
+worst = 0.0163759
+p95 = 0.0141234
+n = 50
+
+[case."convergence.sgd_huber.shift_inf_at_8000"]
+ideal = 0.0
+worst = 0.238701
+p95 = 0.236789
+n = 50
+
+[case."convergence.sgd_huber.start_200_at_3200"]
+ideal = 0.0
+worst = 0.0328615
+p95 = 0.0269253
+n = 50
+
+[case."convergence.sgd_huber.start_inf_truth_at_2000"]
+ideal = 0.0
+worst = 44.445
+p95 = 44.4256
+n = 50
+
+[case."convergence.sgd_huber.start_inf_truth_at_32000"]
+ideal = 0.0
+worst = 0.651706
+p95 = 0.640528
+n = 50
+
+[case."convergence.sgd_huber.start_inf_truth_at_500"]
+ideal = 0.0
+worst = 45.6993
+p95 = 45.6948
+n = 50
+
+[case."convergence.sgd_huber.start_inf_truth_at_8000"]
+ideal = 0.0
+worst = 7.16887
+p95 = 7.14321
+n = 50
+
+[case."convergence.sgd_huber.t2_500_at_8000"]
+ideal = 0.0
+worst = 0.0163238
+p95 = 0.0140269
+n = 50
+
+[case."convergence.sgd_huber.t2_inf_at_8000"]
+ideal = 0.0
+worst = 0.00789735
+p95 = 0.00673854
+n = 50
+
+[case."convergence.sgd_huber.wild_500_at_8000"]
+ideal = 0.0
+worst = 0.0165159
+p95 = 0.0140516
+n = 50
+
+[case."convergence.sgd_huber.wild_inf_at_8000"]
+ideal = 0.0
+worst = 0.00692375
+p95 = 0.00593071
+n = 50
+
+[case."convergence.sgd_logistic.break_level_at_12"]
+ideal = 0.0
+worst = 0.190388
+p95 = 0.149269
+n = 50
+
+[case."convergence.sgd_logistic.break_regime_at_12"]
+ideal = 0.0
+worst = 0.333947
+p95 = 0.30413
+n = 50
+
+[case."convergence.sgd_logistic.break_slope_at_12"]
+ideal = 0.0
+worst = 0.22094
+p95 = 0.160984
+n = 50
+
+[case."convergence.sgd_logistic.consistency_at_2000"]
+ideal = 0.0
+worst = 1.73621
+p95 = 1.21217
+n = 50
+
+[case."convergence.sgd_logistic.consistency_at_32000"]
+ideal = 0.0
+worst = 0.31677
+p95 = 0.232624
+n = 50
+
+[case."convergence.sgd_logistic.consistency_at_500"]
+ideal = 0.0
+worst = 2.56825
+p95 = 2.06819
+n = 50
+
+[case."convergence.sgd_logistic.consistency_at_8000"]
+ideal = 0.0
+worst = 0.801228
+p95 = 0.563158
+n = 50
+
+[case."convergence.sgd_logistic.start_200_at_3200"]
+ideal = 0.0
+worst = 0.170236
+p95 = 0.166351
+n = 50
+
+[case."convergence.sgd_logistic.start_inf_truth_at_2000"]
+ideal = 0.0
+worst = 2.97241
+p95 = 2.7122
+n = 50
+
+[case."convergence.sgd_logistic.start_inf_truth_at_32000"]
+ideal = 0.0
+worst = 0.338397
+p95 = 0.336551
+n = 50
+
+[case."convergence.sgd_logistic.start_inf_truth_at_500"]
+ideal = 0.0
+worst = 4.32459
+p95 = 4.23716
+n = 50
+
+[case."convergence.sgd_logistic.start_inf_truth_at_8000"]
+ideal = 0.0
+worst = 1.11498
+p95 = 1.08714
+n = 50
+
+[case."convergence.sgd_poisson.break_level_at_8"]
+ideal = 0.0
+worst = 0.0332433
+p95 = 0.0281411
+n = 50
+
+[case."convergence.sgd_poisson.break_regime_at_12"]
+ideal = 0.0
+worst = 0.51043
+p95 = 0.442555
+n = 50
+
+[case."convergence.sgd_poisson.break_slope_at_6"]
+ideal = 0.0
+worst = 0.107507
+p95 = 0.0873017
+n = 50
+
+[case."convergence.sgd_poisson.consistency_at_2000"]
+ideal = 0.0
+worst = 0.305498
+p95 = 0.103888
+n = 50
+
+[case."convergence.sgd_poisson.consistency_at_32000"]
+ideal = 0.0
+worst = 0.0964295
+p95 = 0.0315511
+n = 50
+
+[case."convergence.sgd_poisson.consistency_at_500"]
+ideal = 0.0
+worst = 0.425606
+p95 = 0.171839
+n = 50
+
+[case."convergence.sgd_poisson.consistency_at_8000"]
+ideal = 0.0
+worst = 0.166823
+p95 = 0.0528737
+n = 50
+
+[case."convergence.sgd_poisson.start_200_at_3200"]
+ideal = 0.0
+worst = 0.0545315
+p95 = 0.0315622
+n = 50
+
+[case."convergence.sgd_poisson.start_inf_truth_at_2000"]
+ideal = 0.0
+worst = 1.08273
+p95 = 0.954529
+n = 50
+
+[case."convergence.sgd_poisson.start_inf_truth_at_32000"]
+ideal = 0.0
+worst = 0.432967
+p95 = 0.346088
+n = 50
+
+[case."convergence.sgd_poisson.start_inf_truth_at_500"]
+ideal = 0.0
+worst = 1.37642
+p95 = 1.26398
+n = 50
+
+[case."convergence.sgd_poisson.start_inf_truth_at_8000"]
+ideal = 0.0
+worst = 0.659048
+p95 = 0.579324
+n = 50
+
+[case."convergence.sgd_quantile.break_level_at_12"]
+ideal = 0.0
+worst = 0.0397286
+p95 = 0.031926
+n = 50
+
+[case."convergence.sgd_quantile.break_regime_at_12"]
+ideal = 0.0
+worst = 1.53472
+p95 = 1.48465
+n = 50
+
+[case."convergence.sgd_quantile.break_slope_at_12"]
+ideal = 0.0
+worst = 0.0350817
+p95 = 0.0345888
+n = 50
+
+[case."convergence.sgd_quantile.break_variance_at_12"]
+ideal = 0.0
+worst = 0.200683
+p95 = 0.185356
+n = 50
+
+[case."convergence.sgd_quantile.consistency_at_2000"]
+ideal = 0.0
+worst = 0.242075
+p95 = 0.114906
+n = 50
+
+[case."convergence.sgd_quantile.consistency_at_32000"]
+ideal = 0.0
+worst = 0.0200004
+p95 = 0.0109955
+n = 50
+
+[case."convergence.sgd_quantile.consistency_at_500"]
+ideal = 0.0
+worst = 0.525263
+p95 = 0.278177
+n = 50
+
+[case."convergence.sgd_quantile.consistency_at_8000"]
+ideal = 0.0
+worst = 0.0769567
+p95 = 0.0395978
+n = 50
+
+[case."convergence.sgd_quantile.large_level_at_8000"]
+ideal = 0.0
+worst = 0.042653
+p95 = 0.027637
+n = 50
+
+[case."convergence.sgd_quantile.level_zero_at_8000"]
+ideal = 0.0
+worst = 0.042653
+p95 = 0.027637
+n = 50
+
+[case."convergence.sgd_quantile.start_200_at_3200"]
+ideal = 0.0
+worst = 0.620478
+p95 = 0.597572
+n = 50
+
+[case."convergence.sgd_quantile.start_inf_truth_at_2000"]
+ideal = 0.0
+worst = 4.62621
+p95 = 4.55073
+n = 50
+
+[case."convergence.sgd_quantile.start_inf_truth_at_32000"]
+ideal = 0.0
+worst = 3.60783
+p95 = 3.50532
+n = 50
+
+[case."convergence.sgd_quantile.start_inf_truth_at_500"]
+ideal = 0.0
+worst = 4.86216
+p95 = 4.74648
+n = 50
+
+[case."convergence.sgd_quantile.start_inf_truth_at_8000"]
+ideal = 0.0
+worst = 4.17849
+p95 = 4.08494
+n = 50
+
+[case."convergence.sgd_rates.constant_0_01_at_2000"]
+ideal = 0.0
+worst = 0.0916779
+p95 = 0.0806422
+n = 50
+
+[case."convergence.sgd_rates.constant_0_01_at_32000"]
+ideal = 0.0
+worst = 0.0963494
+p95 = 0.0764079
+n = 50
+
+[case."convergence.sgd_rates.constant_0_01_at_8000"]
+ideal = 0.0
+worst = 0.0946005
+p95 = 0.0803946
+n = 50
+
+[case."convergence.sgd_rates.constant_0_04_at_2000"]
+ideal = 0.0
+worst = 0.197934
+p95 = 0.183474
+n = 50
+
+[case."convergence.sgd_rates.constant_0_04_at_32000"]
+ideal = 0.0
+worst = 0.209412
+p95 = 0.16881
+n = 50
+
+[case."convergence.sgd_rates.constant_0_04_at_8000"]
+ideal = 0.0
+worst = 0.186993
+p95 = 0.150812
+n = 50
+
+[case."convergence.sgd_rates.quantile_power_0_5_at_2000"]
+ideal = 0.0
+worst = 0.13471
+p95 = 0.0908481
+n = 50
+
+[case."convergence.sgd_rates.quantile_power_0_5_at_32000"]
+ideal = 0.0
+worst = 0.0558645
+p95 = 0.0515399
+n = 50
+
+[case."convergence.sgd_rates.quantile_power_0_5_at_500"]
+ideal = 0.0
+worst = 0.149401
+p95 = 0.142518
+n = 50
+
+[case."convergence.sgd_rates.quantile_power_0_5_at_8000"]
+ideal = 0.0
+worst = 0.0755933
+p95 = 0.0616824
+n = 50
+
+[case."convergence.sgd_squared.break_level_at_12"]
+ideal = 0.0
+worst = 0.0383898
+p95 = 0.0275857
+n = 50
+
+[case."convergence.sgd_squared.break_regime_at_12"]
+ideal = 0.0
+worst = 0.0377508
+p95 = 0.0318611
+n = 50
+
+[case."convergence.sgd_squared.break_slope_at_8"]
+ideal = 0.0
+worst = 0.0333043
+p95 = 0.0288302
+n = 50
+
+[case."convergence.sgd_squared.break_variance_at_12"]
+ideal = 0.0
+worst = 0.158512
+p95 = 0.105412
+n = 50
+
+[case."convergence.sgd_squared.cauchy_500_at_8000"]
+ideal = 0.0
+worst = 0.019944
+p95 = 0.0170086
+n = 50
+
+[case."convergence.sgd_squared.cauchy_inf_at_2000"]
+ideal = 0.0
+worst = 83.3559
+p95 = 2.01689
+n = 50
+
+[case."convergence.sgd_squared.cauchy_inf_at_8000"]
+ideal = 0.0
+worst = 20.0259
+p95 = 0.572501
+n = 50
+
+[case."convergence.sgd_squared.consistency_at_2000"]
+ideal = 0.0
+worst = 0.028896
+p95 = 0.0182088
+n = 50
+
+[case."convergence.sgd_squared.consistency_at_32000"]
+ideal = 0.0
+worst = 0.00370495
+p95 = 0.00352847
+n = 50
+
+[case."convergence.sgd_squared.consistency_at_500"]
+ideal = 0.0
+worst = 0.0784736
+p95 = 0.0660432
+n = 50
+
+[case."convergence.sgd_squared.consistency_at_8000"]
+ideal = 0.0
+worst = 0.00797237
+p95 = 0.00688701
+n = 50
+
+[case."convergence.sgd_squared.large_level_at_8000"]
+ideal = 0.0
+worst = 0.00773999
+p95 = 0.00711583
+n = 50
+
+[case."convergence.sgd_squared.level_zero_at_8000"]
+ideal = 0.0
+worst = 0.00773999
+p95 = 0.00711583
+n = 50
+
+[case."convergence.sgd_squared.outliers_500_at_8000"]
+ideal = 0.0
+worst = 0.020183
+p95 = 0.0165591
+n = 50
+
+[case."convergence.sgd_squared.outliers_inf_at_2000"]
+ideal = 0.0
+worst = 2.3291
+p95 = 2.22063
+n = 50
+
+[case."convergence.sgd_squared.outliers_inf_at_8000"]
+ideal = 0.0
+worst = 0.73444
+p95 = 0.685007
+n = 50
+
+[case."convergence.sgd_squared.shift_500_at_8000"]
+ideal = 0.0
+worst = 0.0203203
+p95 = 0.0164066
+n = 50
+
+[case."convergence.sgd_squared.shift_inf_at_2000"]
+ideal = 0.0
+worst = 3.76548
+p95 = 3.76502
+n = 50
+
+[case."convergence.sgd_squared.shift_inf_at_8000"]
+ideal = 0.0
+worst = 1.18
+p95 = 1.17832
+n = 50
+
+[case."convergence.sgd_squared.start_200_at_3200"]
+ideal = 0.0
+worst = 0.0464708
+p95 = 0.0324128
+n = 50
+
+[case."convergence.sgd_squared.start_inf_truth_at_2000"]
+ideal = 0.0
+worst = 11.5947
+p95 = 11.5669
+n = 50
+
+[case."convergence.sgd_squared.start_inf_truth_at_32000"]
+ideal = 0.0
+worst = 0.360348
+p95 = 0.320717
+n = 50
+
+[case."convergence.sgd_squared.start_inf_truth_at_500"]
+ideal = 0.0
+worst = 29.5551
+p95 = 29.5482
+n = 50
+
+[case."convergence.sgd_squared.start_inf_truth_at_8000"]
+ideal = 0.0
+worst = 1.86295
+p95 = 1.85737
+n = 50
+
+[case."convergence.sgd_squared.t2_500_at_8000"]
+ideal = 0.0
+worst = 0.0200145
+p95 = 0.0167122
+n = 50
+
+[case."convergence.sgd_squared.t2_inf_at_2000"]
+ideal = 0.0
+worst = 0.0730613
+p95 = 0.0338774
+n = 50
+
+[case."convergence.sgd_squared.t2_inf_at_8000"]
+ideal = 0.0
+worst = 0.0236151
+p95 = 0.0127899
+n = 50
+
+[case."convergence.sgd_squared.wild_500_at_8000"]
+ideal = 0.0
+worst = 0.0206435
+p95 = 0.0164519
+n = 50
+
+[case."convergence.sgd_squared.wild_inf_at_2000"]
+ideal = 0.0
+worst = 18.7262
+p95 = 17.1762
+n = 50
+
+[case."convergence.sgd_squared.wild_inf_at_8000"]
+ideal = 0.0
+worst = 4.9441
+p95 = 4.43232
+n = 50
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.filip_rls"]
+ideal = 0.0
+worst = 5.00452e-08
+p95 = 5.00452e-08
+n = 1
+floor = 1.1e-07
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.longley_ewridge"]
+ideal = 0.0
+worst = 4.82864e-13
+p95 = 4.82864e-13
+n = 1
+floor = 9.7e-13
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.longley_ewridge_standardized"]
+ideal = 0.0
+worst = 4.51328e-13
+p95 = 4.51328e-13
+n = 1
+floor = 9.1e-13
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.longley_gram_standardized"]
+ideal = 0.0
+worst = 3.22458e-13
+p95 = 3.22458e-13
+n = 1
+floor = 6.5e-13
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.longley_gram_unstandardized"]
+ideal = 0.0
+worst = 3.22458e-13
+p95 = 3.22458e-13
+n = 1
+floor = 6.5e-13
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.longley_rls"]
+ideal = 0.0
+worst = 6.4801e-13
+p95 = 6.4801e-13
+n = 1
+floor = 1.3e-12
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.noint1_ewridge"]
+ideal = 0.0
+worst = 1.92675e-15
+p95 = 1.92675e-15
+n = 1
+floor = 3.9e-15
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.noint1_ewridge_standardized"]
+ideal = 0.0
+worst = 2.14083e-15
+p95 = 2.14083e-15
+n = 1
+floor = 4.3e-15
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.noint1_gram_standardized"]
+ideal = 0.0
+worst = 2.14083e-15
+p95 = 2.14083e-15
+n = 1
+floor = 4.3e-15
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.noint1_gram_unstandardized"]
+ideal = 0.0
+worst = 1.92675e-15
+p95 = 1.92675e-15
+n = 1
+floor = 3.9e-15
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.noint1_rls"]
+ideal = 0.0
+worst = 1.2845e-15
+p95 = 1.2845e-15
+n = 1
+floor = 2.6e-15
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.noint2_ewridge"]
+ideal = 0.0
+worst = 4.57967e-16
+p95 = 4.57967e-16
+n = 1
+floor = 9.2e-16
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.noint2_ewridge_standardized"]
+ideal = 0.0
+worst = 1.52656e-16
+p95 = 1.52656e-16
+n = 1
+floor = 3.1e-16
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.noint2_gram_standardized"]
+ideal = 0.0
+worst = 3.05311e-16
+p95 = 3.05311e-16
+n = 1
+floor = 6.2e-16
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.noint2_gram_unstandardized"]
+ideal = 0.0
+worst = 3.05311e-16
+p95 = 3.05311e-16
+n = 1
+floor = 6.2e-16
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.noint2_rls"]
+ideal = 0.0
+worst = 3.05311e-16
+p95 = 3.05311e-16
+n = 1
+floor = 6.2e-16
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.norris_ewridge"]
+ideal = 0.0
+worst = 4.65309e-15
+p95 = 4.65309e-15
+n = 1
+floor = 9.4e-15
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.norris_ewridge_standardized"]
+ideal = 0.0
+worst = 4.43151e-15
+p95 = 4.43151e-15
+n = 1
+floor = 8.9e-15
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.norris_gram_standardized"]
+ideal = 0.0
+worst = 4.65309e-15
+p95 = 4.65309e-15
+n = 1
+floor = 9.4e-15
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.norris_gram_unstandardized"]
+ideal = 0.0
+worst = 4.43151e-15
+p95 = 4.43151e-15
+n = 1
+floor = 8.9e-15
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.norris_rls"]
+ideal = 0.0
+worst = 4.65309e-15
+p95 = 4.65309e-15
+n = 1
+floor = 9.4e-15
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.pontius_ewridge"]
+ideal = 0.0
+worst = 1.23559e-14
+p95 = 1.23559e-14
+n = 1
+floor = 2.5e-14
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.pontius_ewridge_standardized"]
+ideal = 0.0
+worst = 2.06996e-14
+p95 = 2.06996e-14
+n = 1
+floor = 4.2e-14
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.pontius_gram_standardized"]
+ideal = 0.0
+worst = 1.53942e-14
+p95 = 1.53942e-14
+n = 1
+floor = 3.1e-14
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.pontius_gram_unstandardized"]
+ideal = 0.0
+worst = 1.53942e-14
+p95 = 1.53942e-14
+n = 1
+floor = 3.1e-14
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.pontius_rls"]
+ideal = 0.0
+worst = 9.33007e-16
+p95 = 9.33007e-16
+n = 1
+floor = 1.9e-15
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.wampler1_ewridge"]
+ideal = 0.0
+worst = 9.57769e-11
+p95 = 9.57769e-11
+n = 1
+floor = 2e-10
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.wampler1_ewridge_standardized"]
+ideal = 0.0
+worst = 1.57918e-10
+p95 = 1.57918e-10
+n = 1
+floor = 3.2e-10
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.wampler1_gram_standardized"]
+ideal = 0.0
+worst = 1.19333e-10
+p95 = 1.19333e-10
+n = 1
+floor = 2.4e-10
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.wampler1_gram_unstandardized"]
+ideal = 0.0
+worst = 1.19333e-10
+p95 = 1.19333e-10
+n = 1
+floor = 2.4e-10
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.wampler1_rls"]
+ideal = 0.0
+worst = 5.78118e-15
+p95 = 5.78118e-15
+n = 1
+floor = 1.2e-14
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.wampler2_ewridge"]
+ideal = 0.0
+worst = 9.49536e-11
+p95 = 9.49536e-11
+n = 1
+floor = 1.9e-10
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.wampler2_ewridge_standardized"]
+ideal = 0.0
+worst = 1.52965e-10
+p95 = 1.52965e-10
+n = 1
+floor = 3.1e-10
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.wampler2_gram_standardized"]
+ideal = 0.0
+worst = 1.0333e-10
+p95 = 1.0333e-10
+n = 1
+floor = 2.1e-10
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.wampler2_gram_unstandardized"]
+ideal = 0.0
+worst = 1.0333e-10
+p95 = 1.0333e-10
+n = 1
+floor = 2.1e-10
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.wampler2_rls"]
+ideal = 0.0
+worst = 6.14742e-14
+p95 = 6.14742e-14
+n = 1
+floor = 1.3e-13
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.wampler3_ewridge"]
+ideal = 0.0
+worst = 1.18576e-10
+p95 = 1.18576e-10
+n = 1
+floor = 2.4e-10
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.wampler3_ewridge_standardized"]
+ideal = 0.0
+worst = 1.79058e-10
+p95 = 1.79058e-10
+n = 1
+floor = 3.6e-10
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.wampler3_gram_standardized"]
+ideal = 0.0
+worst = 1.91866e-10
+p95 = 1.91866e-10
+n = 1
+floor = 3.9e-10
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.wampler3_gram_unstandardized"]
+ideal = 0.0
+worst = 1.91866e-10
+p95 = 1.91866e-10
+n = 1
+floor = 3.9e-10
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.wampler3_rls"]
+ideal = 0.0
+worst = 8.95565e-14
+p95 = 8.95565e-14
+n = 1
+floor = 1.8e-13
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.wampler4_ewridge"]
+ideal = 0.0
+worst = 9.57769e-11
+p95 = 9.57769e-11
+n = 1
+floor = 2e-10
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.wampler4_ewridge_standardized"]
+ideal = 0.0
+worst = 1.57918e-10
+p95 = 1.57918e-10
+n = 1
+floor = 3.2e-10
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.wampler4_gram_standardized"]
+ideal = 0.0
+worst = 1.19333e-10
+p95 = 1.19333e-10
+n = 1
+floor = 2.4e-10
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.wampler4_gram_unstandardized"]
+ideal = 0.0
+worst = 1.19333e-10
+p95 = 1.19333e-10
+n = 1
+floor = 2.4e-10
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.wampler4_rls"]
+ideal = 0.0
+worst = 7.11486e-12
+p95 = 7.11486e-12
+n = 1
+floor = 1.5e-11
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.wampler5_ewridge"]
+ideal = 0.0
+worst = 8.49881e-11
+p95 = 8.49881e-11
+n = 1
+floor = 1.7e-10
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.wampler5_ewridge_standardized"]
+ideal = 0.0
+worst = 1.32396e-11
+p95 = 1.32396e-11
+n = 1
+floor = 2.7e-11
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.wampler5_gram_standardized"]
+ideal = 0.0
+worst = 2.57351e-11
+p95 = 2.57351e-11
+n = 1
+floor = 5.2e-11
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.wampler5_gram_unstandardized"]
+ideal = 0.0
+worst = 2.57351e-11
+p95 = 2.57351e-11
+n = 1
+floor = 5.2e-11
+
+[case."convergence_conditioning.nist_ewridge_rls_gram.wampler5_rls"]
+ideal = 0.0
+worst = 7.13463e-10
+p95 = 7.13463e-10
+n = 1
+floor = 1.5e-09
+
+[case."convergence_iterations.kmeans_lloyd.reference_runs_at_the_cap"]
+ideal = 0.0
+worst = 0.0
+p95 = 0.0
+n = 1
+tolerance = 0.0
+
+[case."convergence_iterations.kmeans_lloyd.reference_short_of_a_fixed_point"]
+ideal = 0.0
+worst = 0.0
+p95 = 0.0
+n = 1
+tolerance = 0.0
+
+[case."convergence_iterations.kmeans_lloyd.rows_one_more_pass_moves"]
+ideal = 0.0
+worst = 0.0
+p95 = 0.0
+n = 50
+tolerance = 0.0
+
+[case."convergence_iterations.lasso_descent.descents_at_the_cap"]
+ideal = 0.0
+worst = 15.0
+p95 = 15.0
+n = 1
+tolerance = 0.0
+
+[case."convergence_iterations.lasso_descent.kkt_over_certificate"]
+ideal = 0.0
+worst = 0.00121621
+p95 = 0.00121621
+n = 17
+floor = 0.0025
+
+[case."huber_scale.huber_sgd_cuts.huber_share_0_1_bias_at_1"]
+ideal = 0.0
+worst = 0.0572637
+p95 = 0.0463705
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.huber_share_0_1_bias_at_1_345"]
+ideal = 0.0
+worst = 0.058966
+p95 = 0.0506623
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.huber_share_0_1_bias_at_2"]
+ideal = 0.0
+worst = 0.0693668
+p95 = 0.0619401
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.huber_share_0_1_bias_at_4"]
+ideal = 0.0
+worst = 0.121687
+p95 = 0.11831
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.huber_share_0_1_bias_at_8"]
+ideal = 0.0
+worst = 2.07609
+p95 = 0.539633
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.huber_share_0_1_bias_at_inf"]
+ideal = 0.0
+worst = 2.2421
+p95 = 2.17287
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.huber_share_0_1_from_rlm_at_1"]
+ideal = 0.0
+worst = 0.00616059
+p95 = 0.0039663
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.huber_share_0_1_from_rlm_at_1_345"]
+ideal = 0.0
+worst = 0.00431656
+p95 = 0.00210619
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.huber_share_0_1_from_rlm_at_2"]
+ideal = 0.0
+worst = 0.00217469
+p95 = 0.00154685
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.huber_share_0_25_bias_at_1"]
+ideal = 0.0
+worst = 0.136326
+p95 = 0.12738
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.huber_share_0_25_bias_at_1_345"]
+ideal = 0.0
+worst = 0.153531
+p95 = 0.145383
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.huber_share_0_25_bias_at_2"]
+ideal = 0.0
+worst = 0.234614
+p95 = 0.205645
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.huber_share_0_25_bias_at_4"]
+ideal = 0.0
+worst = 5.33528
+p95 = 5.15264
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.huber_share_0_25_bias_at_8"]
+ideal = 0.0
+worst = 5.47189
+p95 = 5.31476
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.huber_share_0_25_bias_at_inf"]
+ideal = 0.0
+worst = 5.47189
+p95 = 5.31476
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.huber_share_0_25_from_rlm_at_1"]
+ideal = 0.0
+worst = 0.0078606
+p95 = 0.0062309
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.huber_share_0_25_from_rlm_at_1_345"]
+ideal = 0.0
+worst = 0.00851048
+p95 = 0.00600652
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.huber_share_0_25_from_rlm_at_2"]
+ideal = 0.0
+worst = 0.0236196
+p95 = 0.0160581
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.sgd_share_0_1_bias_at_1"]
+ideal = 0.0
+worst = 0.0857812
+p95 = 0.0818309
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.sgd_share_0_1_bias_at_1_345"]
+ideal = 0.0
+worst = 0.102098
+p95 = 0.0919973
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.sgd_share_0_1_bias_at_2"]
+ideal = 0.0
+worst = 0.134728
+p95 = 0.111124
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.sgd_share_0_1_bias_at_4"]
+ideal = 0.0
+worst = 0.224034
+p95 = 0.2066
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.sgd_share_0_1_bias_at_8"]
+ideal = 0.0
+worst = 1.06248
+p95 = 0.676983
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.sgd_share_0_1_bias_at_inf"]
+ideal = 0.0
+worst = 3.70376
+p95 = 3.5104
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.sgd_share_0_25_bias_at_1"]
+ideal = 0.0
+worst = 0.184506
+p95 = 0.17412
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.sgd_share_0_25_bias_at_1_345"]
+ideal = 0.0
+worst = 0.212312
+p95 = 0.196434
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.sgd_share_0_25_bias_at_2"]
+ideal = 0.0
+worst = 0.294783
+p95 = 0.26698
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.sgd_share_0_25_bias_at_4"]
+ideal = 0.0
+worst = 6.99003
+p95 = 6.71121
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.sgd_share_0_25_bias_at_8"]
+ideal = 0.0
+worst = 7.16645
+p95 = 6.94696
+n = 50
+
+[case."huber_scale.huber_sgd_cuts.sgd_share_0_25_bias_at_inf"]
+ideal = 0.0
+worst = 7.16645
+p95 = 6.94696
+n = 50
+
+[case."long_run.clock_weight.float_weight_sum_error"]
+ideal = 0.0
+worst = 4.45864e-14
+p95 = 4.45864e-14
+n = 10
+floor = 9e-14
+
+[case."long_run.clock_weight.temporal_weight_sum_error"]
+ideal = 0.0
+worst = 1.3691e-13
+p95 = 1.3691e-13
+n = 10
+floor = 2.8e-13
+
+[case."long_run.ewcov_drift.decayed_mean_error"]
+ideal = 0.0
+worst = 1.16415e-16
+p95 = 1.16415e-16
+n = 10
+floor = 2.4e-16
+
+[case."long_run.ewcov_drift.decayed_sd_error"]
+ideal = 0.0
+worst = 5.78174e-16
+p95 = 5.78174e-16
+n = 10
+floor = 1.2e-15
+
+[case."long_run.ewcov_drift.window_weight_share"]
+ideal = 0.0
+worst = 0.898261
+p95 = 0.898261
+n = 1
+
+[case."long_run.ewcov_drift.windowed_mean_error"]
+ideal = 0.0
+worst = 2.32831e-16
+p95 = 2.32831e-16
+n = 10
+floor = 4.7e-16
+
+[case."long_run.ewcov_drift.windowed_sd_error"]
+ideal = 0.0
+worst = 1.99581e-12
+p95 = 1.99581e-12
+n = 10
+floor = 4e-12
+
+[case."long_run.ewcov_numacc4.mean_error"]
+ideal = 0.0
+worst = 9.30392e-17
+p95 = 9.30392e-17
+n = 7
+floor = 1.9e-16
+
+[case."long_run.ewcov_numacc4.sd_error"]
+ideal = 0.0
+worst = 1.69394e-14
+p95 = 1.69394e-14
+n = 7
+floor = 3.4e-14
+
+[case."long_run.ewridge_drift.decayed_ridge_slope_error"]
+ideal = 0.0
+worst = 9.50788e-15
+p95 = 9.50788e-15
+n = 10
+floor = 2e-14
+
+[case."long_run.ewridge_drift.no_decay_slope_error"]
+ideal = 0.0
+worst = 7.83807e-14
+p95 = 7.83807e-14
+n = 10
+floor = 1.6e-13
+
+[case."long_run.kalman_p.asymmetry"]
+ideal = 0.0
+worst = 0.0
+p95 = 0.0
+n = 10
+
+[case."long_run.kalman_p.largest_eigenvalue_drift"]
+ideal = 0.0
+worst = 0.10421
+p95 = 0.10421
+n = 7
+
+[case."long_run.kalman_p.smallest_eigenvalue_drift"]
+ideal = 0.0
+worst = 0.0723306
+p95 = 0.0723306
+n = 7
+
+[case."marginal_bin_huber.margbins_cuts.cut_0_8_spikes_0_05_at_1000"]
+ideal = 0.0
+worst = 0.00383212
+p95 = 0.00330418
+n = 50
+
+[case."marginal_bin_huber.margbins_cuts.cut_0_8_spikes_0_05_at_2000"]
+ideal = 0.0
+worst = 0.00309346
+p95 = 0.00271153
+n = 50
+
+[case."marginal_bin_huber.margbins_cuts.cut_0_8_spikes_0_05_at_20000"]
+ideal = 0.0
+worst = 0.000786368
+p95 = 0.000570971
+n = 50
+
+[case."marginal_bin_huber.margbins_cuts.cut_0_8_spikes_0_12_at_1000"]
+ideal = 0.0
+worst = 0.00976594
+p95 = 0.00875368
+n = 50
+
+[case."marginal_bin_huber.margbins_cuts.cut_0_8_spikes_0_12_at_2000"]
+ideal = 0.0
+worst = 0.00730882
+p95 = 0.00569779
+n = 50
+
+[case."marginal_bin_huber.margbins_cuts.cut_0_8_spikes_0_12_at_20000"]
+ideal = 0.0
+worst = 0.00220437
+p95 = 0.0014452
+n = 50
+
+[case."marginal_bin_huber.margbins_cuts.cut_2_5_spikes_0_05_at_1000"]
+ideal = 0.0
+worst = 0.0213518
+p95 = 0.0133229
+n = 50
+
+[case."marginal_bin_huber.margbins_cuts.cut_2_5_spikes_0_05_at_2000"]
+ideal = 0.0
+worst = 0.011565
+p95 = 0.0082513
+n = 50
+
+[case."marginal_bin_huber.margbins_cuts.cut_2_5_spikes_0_05_at_20000"]
+ideal = 0.0
+worst = 0.00234429
+p95 = 0.00204468
+n = 50
+
+[case."marginal_bin_huber.margbins_cuts.cut_2_5_spikes_0_12_at_1000"]
+ideal = 0.0
+worst = 0.090454
+p95 = 0.0664031
+n = 50
+
+[case."marginal_bin_huber.margbins_cuts.cut_2_5_spikes_0_12_at_2000"]
+ideal = 0.0
+worst = 0.0700815
+p95 = 0.0547898
+n = 50
+
+[case."marginal_bin_huber.margbins_cuts.cut_2_5_spikes_0_12_at_20000"]
+ideal = 0.0
+worst = 0.0177428
+p95 = 0.012388
+n = 50
+
+[case."marginal_bin_refit.margbins_spikes.spikes_0_05_at_1000"]
+ideal = 0.0
+worst = 0.00861521
+p95 = 0.00586103
+n = 50
+
+[case."marginal_bin_refit.margbins_spikes.spikes_0_05_at_2000"]
+ideal = 0.0
+worst = 0.00519733
+p95 = 0.00436723
+n = 50
+
+[case."marginal_bin_refit.margbins_spikes.spikes_0_05_at_20000"]
+ideal = 0.0
+worst = 0.00109656
+p95 = 0.00102629
+n = 50
+
+[case."marginal_bin_refit.margbins_spikes.spikes_0_12_at_1000"]
+ideal = 0.0
+worst = 0.0168123
+p95 = 0.015112
+n = 50
+
+[case."marginal_bin_refit.margbins_spikes.spikes_0_12_at_2000"]
+ideal = 0.0
+worst = 0.0145142
+p95 = 0.00999257
+n = 50
+
+[case."marginal_bin_refit.margbins_spikes.spikes_0_12_at_20000"]
+ideal = 0.0
+worst = 0.00402212
+p95 = 0.00310895
+n = 50
+
+[case."marginal_bin_refit.margbins_spikes.spikes_0_2_at_1000"]
+ideal = 0.0
+worst = 0.149628
+p95 = 0.113553
+n = 50
+
+[case."marginal_bin_refit.margbins_spikes.spikes_0_2_at_2000"]
+ideal = 0.0
+worst = 0.140487
+p95 = 0.100583
+n = 50
+
+[case."marginal_bin_refit.margbins_spikes.spikes_0_2_at_20000"]
+ideal = 0.0
+worst = 0.0576099
+p95 = 0.0401774
+n = 50
+
+[case."oracles.quantile_eps.eps_0_1_n_20000_from_the_smoothed_fit"]
+ideal = 0.0
+worst = 0.0119768
+p95 = 0.00872981
+n = 50
+
+[case."oracles.quantile_eps.eps_0_1_n_5000_from_the_smoothed_fit"]
+ideal = 0.0
+worst = 0.0257174
+p95 = 0.0210113
+n = 50
+
+[case."oracles.quantile_eps.eps_0_1_n_80000_from_the_smoothed_fit"]
+ideal = 0.0
+worst = 0.00322326
+p95 = 0.00261585
+n = 50
+
+[case."oracles.quantile_eps.eps_0_5_n_20000_from_the_smoothed_fit"]
+ideal = 0.0
+worst = 0.0228789
+p95 = 0.0141867
+n = 50
+
+[case."oracles.quantile_eps.eps_0_5_n_5000_from_the_smoothed_fit"]
+ideal = 0.0
+worst = 0.0467681
+p95 = 0.0347838
+n = 50
+
+[case."oracles.quantile_eps.eps_0_5_n_80000_from_the_smoothed_fit"]
+ideal = 0.0
+worst = 0.0111974
+p95 = 0.00674067
+n = 50
+
+[case."oracles.quantile_huge_ridge.tau_0_5_n_20000_quantreg_se"]
+ideal = 0.0
+worst = 0.449624
+p95 = 0.37904
+n = 50
+
+[case."oracles.quantile_huge_ridge.tau_0_5_n_20000_slopes"]
+ideal = 0.0
+worst = 2.07364e-09
+p95 = 2.05269e-09
+n = 50
+
+[case."oracles.quantile_huge_ridge.tau_0_5_n_20000_smoothed"]
+ideal = 0.0
+worst = 0.00105266
+p95 = 0.000828853
+n = 50
+
+[case."oracles.quantile_huge_ridge.tau_0_5_n_20000_smoothed_in_se"]
+ideal = 0.0
+worst = 0.0496247
+p95 = 0.0392838
+n = 50
+
+[case."oracles.quantile_huge_ridge.tau_0_5_n_5000_quantreg_se"]
+ideal = 0.0
+worst = 0.655404
+p95 = 0.534743
+n = 50
+
+[case."oracles.quantile_huge_ridge.tau_0_5_n_5000_slopes"]
+ideal = 0.0
+worst = 2.18858e-09
+p95 = 2.16589e-09
+n = 50
+
+[case."oracles.quantile_huge_ridge.tau_0_5_n_5000_smoothed"]
+ideal = 0.0
+worst = 0.00386346
+p95 = 0.0013687
+n = 50
+
+[case."oracles.quantile_huge_ridge.tau_0_5_n_5000_smoothed_in_se"]
+ideal = 0.0
+worst = 0.0944605
+p95 = 0.0319219
+n = 50
+
+[case."oracles.quantile_huge_ridge.tau_0_5_n_80000_quantreg_se"]
+ideal = 0.0
+worst = 0.618648
+p95 = 0.55649
+n = 50
+
+[case."oracles.quantile_huge_ridge.tau_0_5_n_80000_slopes"]
+ideal = 0.0
+worst = 2.05636e-09
+p95 = 2.03757e-09
+n = 50
+
+[case."oracles.quantile_huge_ridge.tau_0_5_n_80000_smoothed"]
+ideal = 0.0
+worst = 0.000371285
+p95 = 0.000260475
+n = 50
+
+[case."oracles.quantile_huge_ridge.tau_0_5_n_80000_smoothed_in_se"]
+ideal = 0.0
+worst = 0.0343028
+p95 = 0.0240339
+n = 50
+
+[case."oracles.quantile_huge_ridge.tau_0_9_n_20000_quantreg_se"]
+ideal = 0.0
+worst = 3.94075
+p95 = 3.33191
+n = 50
+
+[case."oracles.quantile_huge_ridge.tau_0_9_n_20000_slopes"]
+ideal = 0.0
+worst = 2.15154e-09
+p95 = 2.10939e-09
+n = 50
+
+[case."oracles.quantile_huge_ridge.tau_0_9_n_20000_smoothed"]
+ideal = 0.0
+worst = 0.00590518
+p95 = 0.00349495
+n = 50
+
+[case."oracles.quantile_huge_ridge.tau_0_9_n_20000_smoothed_in_se"]
+ideal = 0.0
+worst = 0.194434
+p95 = 0.112115
+n = 50
+
+[case."oracles.quantile_huge_ridge.tau_0_9_n_5000_quantreg_se"]
+ideal = 0.0
+worst = 2.01421
+p95 = 1.9209
+n = 50
+
+[case."oracles.quantile_huge_ridge.tau_0_9_n_5000_slopes"]
+ideal = 0.0
+worst = 2.35305e-09
+p95 = 2.26783e-09
+n = 50
+
+[case."oracles.quantile_huge_ridge.tau_0_9_n_5000_smoothed"]
+ideal = 0.0
+worst = 0.0109744
+p95 = 0.00953725
+n = 50
+
+[case."oracles.quantile_huge_ridge.tau_0_9_n_5000_smoothed_in_se"]
+ideal = 0.0
+worst = 0.18284
+p95 = 0.142263
+n = 50
+
+[case."oracles.quantile_huge_ridge.tau_0_9_n_80000_quantreg_se"]
+ideal = 0.0
+worst = 6.26389
+p95 = 6.08802
+n = 50
+
+[case."oracles.quantile_huge_ridge.tau_0_9_n_80000_slopes"]
+ideal = 0.0
+worst = 2.07394e-09
+p95 = 2.03794e-09
+n = 50
+
+[case."oracles.quantile_huge_ridge.tau_0_9_n_80000_smoothed"]
+ideal = 0.0
+worst = 0.00336629
+p95 = 0.00257944
+n = 50
+
+[case."oracles.quantile_huge_ridge.tau_0_9_n_80000_smoothed_in_se"]
+ideal = 0.0
+worst = 0.209983
+p95 = 0.166429
+n = 50
+
+[case."oracles.quantile_mixed_scales.tau_0_5_standardized_se"]
+ideal = 0.0
+worst = 0.958061
+p95 = 0.850014
+n = 50
+
+[case."oracles.quantile_mixed_scales.tau_0_9_standardized_se"]
+ideal = 0.0
+worst = 2.61499
+p95 = 2.37978
+n = 50
+
+[case."truth_recovery.bocpd_tcpd.nile_f1"]
+ideal = 1.0
+worst = 1.0
+p95 = 1.0
+n = 1
+
+[case."truth_recovery.bocpd_tcpd.quality_control_1_f1"]
+ideal = 1.0
+worst = 0.571429
+p95 = 0.571429
+n = 1
+
+[case."truth_recovery.bocpd_tcpd.quality_control_2_f1"]
+ideal = 1.0
+worst = 1.0
+p95 = 1.0
+n = 1
+
+[case."truth_recovery.bocpd_tcpd.quality_control_3_f1"]
+ideal = 1.0
+worst = 0.666667
+p95 = 0.666667
+n = 1
+
+[case."truth_recovery.bocpd_tcpd.run_log_f1"]
+ideal = 1.0
+worst = 0.989899
+p95 = 0.989899
+n = 1
+
+[case."truth_recovery.bocpd_tcpd.well_log_f1"]
+ideal = 1.0
+worst = 0.786891
+p95 = 0.786891
+n = 1
 
 # --- raises
 
