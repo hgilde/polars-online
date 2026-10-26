@@ -489,3 +489,141 @@ def test_a_timely_feature_beats_corr_one_row_on_against_a_forward_target():
     assert m["lag_corr_xy"][1] == pytest.approx(shared * (1 - a + lam), abs=tol)
     # The feature one or two rows back shares nothing with the target now.
     assert max(abs(v) for v in m["lag_corr_yx"]) < tol
+
+
+# --- task 278 (b28): the serial factor by hand, windowed lags, the ceiling ----
+
+
+def geometric_by_hand(lags: list[int], rho: list[float]) -> float | None:
+    """The docstring's fit: `rho(l) = phi^l` by least squares on `log rho`
+    over the kept lags with `rho > 0`, a line through the origin in `l`, so
+    `log phi = sum(l log rho) / sum(l^2)`; none from fewer than two."""
+    used = [(lag, r) for lag, r in zip(lags, rho, strict=True) if r is not None and r > 0]
+    if len(used) < 2:
+        return None
+    return math.exp(sum(lag * math.log(r) for lag, r in used) / sum(lag * lag for lag, _ in used))
+
+
+@pytest.mark.parametrize(
+    ("seed", "phi_x", "phi_y", "lags"),
+    [
+        (5, 0.9, 0.8, LAGS),
+        # A long lag whose estimate is noise: some are negative and left out.
+        (6, 0.5, 0.3, [1, 2, 3, 5, 8, 13, 40]),
+        (7, 0.95, 0.2, [1, 4, 9, 30]),
+    ],
+)
+def test_the_geometric_factor_is_its_definition_on_the_reported_lags(seed, phi_x, phi_y, lags):
+    """From the reported `lag_corr_xx` and `lag_corr_yy` alone: `phi_x` and
+    `phi_y` by the fit, the factor `1 + 2 p / (1 - p)` at `p = phi_x phi_y`,
+    `n_serial = n_kish / factor` and `t_stat_serial` the `t` at that count,
+    to 1e-12 (`log` and `exp` may round differently by platform)."""
+    row = pairs(
+        stream(n=3000, seed=seed, phi_x=phi_x, phi_y=phi_y),
+        serial_rule="geometric",
+        lags=lags,
+        half_life=500.0,
+    )
+    px = geometric_by_hand(lags, row["lag_corr_xx"])
+    py = geometric_by_hand(lags, row["lag_corr_yy"])
+    assert px is not None and py is not None
+    assert row["phi_x"] == pytest.approx(px, rel=1e-12)
+    assert row["phi_y"] == pytest.approx(py, rel=1e-12)
+    p = px * py
+    n_serial = row["n_kish"] / (1.0 + 2.0 * p / (1.0 - p))
+    assert row["n_serial"] == pytest.approx(n_serial, rel=1e-12)
+    c = row["corr"]
+    assert row["t_stat_serial"] == pytest.approx(
+        c * math.sqrt((n_serial - 2.0) / (1.0 - c * c)), rel=1e-12
+    )
+    if seed == 6:
+        assert min(row["lag_corr_yy"]) < 0, "a lag the fit leaves out"
+
+
+def test_the_geometric_factor_says_nothing_from_fewer_than_two_positive_lags():
+    """A series that alternates in sign has a negative autocorrelation at
+    every odd lag: over lags 1, 3 and 5 no lag is positive, so its `phi` is
+    null and so are `n_serial` and `t_stat_serial`; the other's `phi` is
+    still its fit."""
+    df = stream(n=3000, seed=8, phi_x=-0.7, phi_y=0.8)
+    row = pairs(df, serial_rule="geometric", lags=[1, 3, 5])
+    assert max(row["lag_corr_xx"]) < 0, row["lag_corr_xx"]
+    assert row["phi_x"] is None
+    assert row["n_serial"] is None and row["t_stat_serial"] is None
+    assert row["phi_y"] == pytest.approx(
+        geometric_by_hand([1, 3, 5], row["lag_corr_yy"]), rel=1e-12
+    )
+
+
+WINDOWED_LAGS = dict(
+    window_size=150.0,
+    window_lags=True,
+    max_rows_between_snapshots=10,
+    lags=[1, 2, 5],
+    cross_lags=[1],
+    serial_rule="bartlett",
+)
+
+
+def test_windowed_lags_are_the_same_in_one_chunk_or_many_and_across_a_save(tmp_path):
+    """`window_lags=True` keeps each snapshot's lag moments too: fed in 1, 7
+    or 600 chunks, or saved mid-window (between two snapshots) and loaded,
+    every row's struct and every column of the table are the same, to the
+    bit, through `eventful`'s weights, nulls, session change and capped gap.
+    The window is live: the table is not the unwindowed one."""
+    df = eventful()
+    s = po.spec.marginal("m", targets=["y"], features=["x"], **{**EVENTS, **WINDOWED_LAGS})
+    ref = po.ModelBank([s])
+    out = ref.fit_predict(df)
+    want = ref.marginal("m")
+    for chunks in (7, 600):
+        bank = po.ModelBank([s])
+        size = -(-df.height // chunks)
+        got = pl.concat([bank.fit_predict(df.slice(i, size)) for i in range(0, df.height, size)])
+        assert got.equals(out, null_equal=True), chunks
+        assert bank.marginal("m").equals(want, null_equal=True), chunks
+    bank = po.ModelBank([s])
+    first = bank.fit_predict(df[:455])
+    bank.save(tmp_path / "w.state")
+    resumed = po.ModelBank.load(tmp_path / "w.state")
+    second = resumed.fit_predict(df[455:])
+    assert pl.concat([first, second]).equals(out, null_equal=True)
+    assert resumed.marginal("m").equals(want, null_equal=True)
+    unwindowed = po.ModelBank(
+        [po.spec.marginal("m", targets=["y"], features=["x"], lags=[1, 2, 5], **EVENTS)]
+    )
+    unwindowed.fit_predict(df)
+    full = unwindowed.marginal("m").row(0, named=True)
+    mine = want.row(0, named=True)
+    assert mine["weight_sum"] < full["weight_sum"]
+    assert mine["lag_corr_xx"] != full["lag_corr_xx"]
+
+
+def test_the_deepest_lag_on_a_short_stream():
+    """`lags=[2**20]`, the ceiling, on 300 rows: no row has a partner that
+    far back, so every lagged correlation reads 0.0 (not null, as
+    `ew_cov(lags=)` does: its moments start at 0 and take a first product
+    only then), `n_serial` is `n_kish` under the truncated rule (the factor
+    is 1) and null under the geometric (no lag is positive). The ring holds
+    the rows learned, not the lag's reach: the saved state is the size of a
+    bank whose deepest lag is the stream's length, to a few bytes (the
+    lag's own integer)."""
+    df = stream(n=300, seed=21)
+    deep = pairs(df, lags=[2**20], serial_rule="truncated")
+    for key in ("lag_corr_xx", "lag_corr_yy", "lag_corr_xy", "lag_corr_yx"):
+        assert deep[key] == [0.0], key
+    assert deep["n_serial"] == deep["n_kish"]
+    geometric = pairs(df, lags=[2**19, 2**20], serial_rule="geometric")
+    assert geometric["phi_x"] is None and geometric["n_serial"] is None
+
+    def state(lag: int) -> bytes:
+        bank = po.ModelBank(
+            [po.spec.marginal("m", targets=["y"], features=["x"], half_life=50.0, lags=[lag])]
+        )
+        bank.fit_predict(df)
+        return bank.save_bytes()
+
+    assert abs(len(state(2**20)) - len(state(300))) <= 8
+    assert len(state(2**20)) < len(state(1)) + 300 * 40, (
+        "about 20 bytes a held row (measured 2026-10-26)"
+    )

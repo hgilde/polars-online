@@ -522,3 +522,138 @@ def test_the_columns_are_there_before_any_row_and_for_a_group_never_seen():
         c for c in want if c not in ("lag_corr_xy", "lag_corr_yx")
     ]
     assert none.specs[0]["model"]["cross_lags"] == []
+
+
+# --- the learned edges, end to end, against the rule on the first N rows ------
+#
+# Task 278 (b28): the unit tests in margbins.rs hold `edges_from` itself; these
+# hold what the bank reports to the rule applied to the rows it says it learns
+# the edges from -- the first `bin_warm_rows` learned rows (rows of positive
+# weight; a null target still counts, its feature is real).
+
+
+def edges_by_the_rule(rule: str, bins: int, x: np.ndarray, w: np.ndarray) -> list[float]:
+    """The docstring's two rules, written out on `(value, weight)` pairs.
+
+    "fixed": `bins` equal widths between the smallest and largest value,
+    the interior points `np.linspace` gives. "quantile": the edges placed one
+    at a time, each closing a bin of the weight still unassigned divided
+    among the bins still to come; an edge at the first unassigned value
+    would close an empty bin (a point mass at the front), so it moves up to
+    the next value above it, and the bin takes the whole mass. Either way an
+    edge at or below the smallest value, or a repeat, is dropped."""
+    keep = np.isfinite(x) & np.isfinite(w) & (w > 0)
+    order = np.argsort(x[keep], kind="stable")
+    v, wt = x[keep][order], w[keep][order]
+    if len(v) < 2:
+        return []
+    if rule == "fixed":
+        edges = list(np.linspace(v[0], v[-1], bins + 1)[1:-1])
+    else:
+        cum = np.cumsum(wt)  # left to right, as a running sum is
+        edges, start = [], 0
+        for remaining in range(bins, 1, -1):
+            base = cum[start - 1] if start else 0.0
+            share = (cum[-1] - base) / remaining
+            if not share > 0:
+                break
+            i = start + int(np.count_nonzero(cum[start:] - base <= share))
+            if i >= len(v):
+                break
+            edge = v[i]
+            if not edge > v[start]:
+                above = v[i:][v[i:] > edge]
+                if len(above) == 0:
+                    break
+                edge = above[0]
+            edges.append(float(edge))
+            start += int(np.count_nonzero(v[start:] < edge))
+    out: list[float] = []
+    for e in edges:
+        if (not out or e != out[-1]) and e > v[0]:
+            out.append(float(e))
+    return out
+
+
+def narrow_then_wide(n: int = 3000, seed: int = 20) -> pl.DataFrame:
+    """A feature within +-0.3 for the first 100 rows and +-1 after, unequal
+    weights with every ninth row at zero, every fifth target null; the
+    100th and the 1,000th learned rows each hold the largest value of the
+    rows up to them and the row after each the smallest, so a count off by
+    one row either way moves the fixed edges."""
+    rng = np.random.default_rng(seed)
+    w = rng.uniform(0.2, 2.0, n)
+    w[::9] = 0.0
+    learned = np.cumsum(w > 0)
+    x = rng.uniform(-1.0, 1.0, n) * np.where(learned <= 100, 0.3, 1.0)
+    for count, top in [(100, 0.31), (101, -0.32), (1000, 1.01), (1001, -1.02)]:
+        x[int(np.searchsorted(learned, count))] = top
+    y = np.where(x > 0.1, 1.0, 0.0) + 0.2 * rng.standard_normal(n)
+    y[::5] = np.nan
+    return pl.DataFrame({"t": np.arange(n, dtype=float), "x": x, "y": y, "w": w})
+
+
+def first_learned(df: pl.DataFrame, count: int) -> tuple[np.ndarray, np.ndarray]:
+    w = df["w"].to_numpy()
+    rows = np.flatnonzero(w > 0)[:count]
+    return df["x"].to_numpy()[rows], w[rows]
+
+
+@pytest.mark.parametrize("warm", [100, 1000])
+def test_fixed_edges_are_linspace_of_the_first_learned_rows(warm):
+    """`bin_rule="fixed"`: the edges are `np.linspace(min, max, bins + 1)`'s
+    interior over the first `bin_warm_rows` learned rows -- the endpoints,
+    not only the equal widths -- to the bit (both are `lo + width * k`).
+    The rows after them are wider, and the last held row is the largest, so
+    the edges say which rows were held."""
+    df = narrow_then_wide()
+    got = list(pairs(df, bins=5, bin_rule="fixed", bin_warm_rows=warm, weight="w")["bin_edges"])
+    x, w = first_learned(df, warm)
+    assert got == edges_by_the_rule("fixed", 5, x, w)
+    assert got[-1] < x.max() and got[0] > x.min()
+    # One row short of the count, or one past it, gives other edges.
+    for other in (warm - 1, warm + 1):
+        assert got != edges_by_the_rule("fixed", 5, *first_learned(df, other)), other
+
+
+@pytest.mark.parametrize("bins", [4, 8, 16])
+def test_quantile_edges_are_the_rule_on_the_first_learned_rows(bins):
+    """`bin_rule="quantile"` on a weighted feature with ties and a point
+    mass at 0 on 30% of the rows: the reported edges are the rule's on the
+    first 700 learned rows, to the bit, and the point mass opens a bin of
+    its own (0 is an edge)."""
+    rng = np.random.default_rng(1)
+    n = 3000
+    x = rng.uniform(-1.0, 1.0, n)
+    x[rng.random(n) < 0.3] = 0.0
+    x = np.round(x, 2)
+    w = rng.uniform(0.0, 2.0, n)
+    w[::11] = 0.0
+    df = pl.DataFrame(
+        {"t": np.arange(n, dtype=float), "x": x, "y": x + 0.2 * rng.standard_normal(n), "w": w}
+    )
+    got = list(pairs(df, bins=bins, bin_warm_rows=700, weight="w", half_life=50.0)["bin_edges"])
+    want = edges_by_the_rule("quantile", bins, *first_learned(df, 700))
+    assert got == want
+    assert 0.0 in got, got
+    # Read over the first 700 rows, zero weights and all, it is not.
+    assert got != edges_by_the_rule("quantile", bins, x[:700], np.ones(700))
+
+
+def test_bin_warm_rows_moves_the_edges_to_its_own_rows():
+    """The count is where the edges come from, not only how long the wait
+    is: on a feature narrower over its first rows, 100 and 1,000 learned
+    rows give different edges, each the rule's on its own rows. One learned
+    row before the count nothing is binned, and on it the edges exist."""
+    df = narrow_then_wide()
+    got = {}
+    for warm in (100, 1000):
+        got[warm] = list(pairs(df, bins=4, bin_warm_rows=warm, weight="w")["bin_edges"])
+        assert got[warm] == edges_by_the_rule("quantile", 4, *first_learned(df, warm)), warm
+    assert max(np.abs(got[100])) < 0.31 < max(np.abs(got[1000])), got
+    learned = np.cumsum(df["w"].to_numpy() > 0)
+    at = int(np.searchsorted(learned, 100))  # the row that is the 100th learned row
+    before = pairs(df.head(at), bins=4, bin_warm_rows=100, weight="w")
+    on = pairs(df.head(at + 1), bins=4, bin_warm_rows=100, weight="w")
+    assert list(before["bin_edges"]) == [] and before["split_gain"] is None
+    assert list(on["bin_edges"]) == got[100]
