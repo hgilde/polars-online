@@ -343,3 +343,23 @@ fn a_refit_that_runs_to_its_cap_is_counted() {
         assert_eq!(m.solve_failures, u64::from(capped), "trial {trial}");
     }
 }
+
+/// A bank gives a group's refits up past their budget: every target's
+/// buffer is let go before it begins, marked over budget, and the rows that
+/// would have filled it pass without a refit. The reservation is the
+/// targets' buffers at their full size, `n_targets · refit_reservation`, 0
+/// with the refit off (task 281, mutants).
+#[test]
+fn a_refit_given_up_and_its_reservation() {
+    let mut m = Robust::new(base(1.345, Decay::Lam(1.0), 60)).unwrap();
+    assert_eq!(m.refit_reservation(), 2 * crate::refit_reservation(2, 60));
+    assert!(m.refit_reservation() > crate::refit_reservation(2, 60));
+    run(&mut m, &rows(10, false));
+    m.refit_give_up();
+    run(&mut m, &rows(100, false));
+    for st in m.refit_status() {
+        assert!(st.done && st.over_budget && st.passes == 0, "{st:?}");
+    }
+    let off = Robust::new(base(1.345, Decay::Lam(1.0), 0)).unwrap();
+    assert_eq!(off.refit_reservation(), 0);
+}

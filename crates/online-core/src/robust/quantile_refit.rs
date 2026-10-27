@@ -186,17 +186,9 @@ impl Robust {
                 Pass::Newton(h) => {
                     self.replay_rows(j, &rows, &mut z, |i| stream_row(&rows, &r, i, h, tau));
                 }
-                Pass::Majorize(h) => self.replay_rows(j, &rows, &mut z, |i| {
-                    let step = if r[i].abs() < h {
-                        r[i] + 2.0 * h * (tau - 0.5)
-                    } else {
-                        2.0 * h * psi(r[i], tau)
-                    };
-                    RowUpdate::Fit {
-                        w: rows.w(i),
-                        target: rows.y(i) - r[i] + step,
-                    }
-                }),
+                Pass::Majorize(h) => {
+                    self.replay_rows(j, &rows, &mut z, |i| majorizer_row(&rows, &r, i, h, tau));
+                }
             }
             let next = if intercept {
                 self.solve_centred(k, j, 0)
@@ -398,6 +390,22 @@ fn check_change(r: f64, d: f64, h: f64, tau: f64) -> (f64, f64) {
     }
 }
 
+/// Row `i` in the majorizer's step from a fit whose residuals are `r`, at
+/// the band `h`: a least-squares row at its weight and the target `z'β +
+/// 2h·ρ_h'(r)`, `ρ_h'(r) = r/2h + τ − ½` inside the band and `ψ(r)` outside
+/// it (the module docs).
+fn majorizer_row(rows: &Rows<'_>, r: &[f64], i: usize, h: f64, tau: f64) -> RowUpdate {
+    let step = if r[i].abs() < h {
+        r[i] + 2.0 * h * (tau - 0.5)
+    } else {
+        2.0 * h * psi(r[i], tau)
+    };
+    RowUpdate::Fit {
+        w: rows.w(i),
+        target: rows.y(i) - r[i] + step,
+    }
+}
+
 /// Row `i` as the stream takes it against a fit whose residuals are `r`, at
 /// the band `h`: inside it a least-squares row at target `y + 2h(τ − ½)`,
 /// outside it a nudge `w · 2h · ψ(r)` (the module docs of `robust`).
@@ -413,3 +421,7 @@ fn stream_row(rows: &Rows<'_>, r: &[f64], i: usize, h: f64, tau: f64) -> RowUpda
         }
     }
 }
+
+#[cfg(test)]
+#[path = "quantile_refit_unit_tests.rs"]
+mod unit_tests;
