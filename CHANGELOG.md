@@ -684,6 +684,13 @@ returns.
 
 ### Performance
 
+- `drift_action="reset"` restarting a stream as a fresh bank from the next
+  row costs a few instructions a row in the bank's loop (task 278): counted
+  with Valgrind, 6 a row on the cheapest model's bank path, +0.74% on a
+  `seqtest` bank and +0.09% on a formula target.
+- Scoring a held row over the clock since the newest learned row costs
+  about 9 instructions a row in the bank's loop (task 278, D11): counted
+  with Valgrind, +0.44% on a `seqtest` bank and +0.16% on a formula target.
 - An explicit cadence's first period costs a wide model about 145 more
   solves in a 256-row period, about 0.9 s at 1,000 features (task 278):
   `scripts/wide_benchmark.py`'s "solve every 256" at 1,000 features goes

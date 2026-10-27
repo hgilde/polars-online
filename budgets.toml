@@ -175,7 +175,7 @@ release = 218029
 
 [instructions.bank_seqtest]
 what = "Bank::fit_predict of one frame, seqtest: every per-row step of the bank around the cheapest model"
-budget = 2013107
+budget = 2077057
 release = 1980599
 
 [instructions.bank_ewridge_k5]
@@ -274,7 +274,7 @@ release = 21569026
 
 [instructions.formula_target_held1k]
 what = "Bank::fit_predict of one frame, ewridge with 5 features, its target the mean of y0 over the next 1,250 clock units (about 1,000 rows) and an embargo of the same span: about a thousand rows held behind each"
-budget = 15425396
+budget = 15746898
 release = 15117355
 
 [instructions.window_ewm_mean_w10k]
@@ -1392,3 +1392,19 @@ key = "instructions.kmeans"
 version = "1.3.0"
 reason = "-25.4% since 1.2.0 (4,299,477 -> 3,205,518), a gain: a learned row's nearest centre is searched once instead of twice, and the step writes into a kept Step instead of allocating its prediction vector; the case now counts that kept step"
 changelog = "`kmeans` searches for a learned row's nearest centre once instead of twice"
+
+[[raised]]
+key = "instructions.bank_seqtest"
+from = 2013107
+to = 2077057
+date = 2026-10-27
+reason = "the rest of CI's count, now traced exactly: Valgrind (Callgrind Ir, gungraun 0.20.0, x86-64 Linux) at the baseline 52a4077a and each of the 42 merges since that touch crates/, two runs each agreeing to 94 instructions: +2.52% in all, the named steps carrying all but +164 of it -- the residual spread folding withheld predictions (task 278, b17) +1.27% (26 a row in run_instance); drift_action=reset as a fresh bank (task 278, b03) +0.74% (6 a row, the clocks' loop after the instances); ewridge's condition estimate and its stream edit (task 278, D4) +0.52%; a held row scored over the clock since the newest learned row (task 278, D11) +0.44% (9 a row); the gates branch -0.39%; the sgd group -0.10%; D13 +0.10%; the Huber refit -0.09%. The earlier native trace's 'build-to-build spread' was the drift reset's and D11's per-row work, which arm64's layout noise hid"
+changelog = "`drift_action=\"reset\"` restarting a stream as a fresh bank from the next"
+
+[[raised]]
+key = "instructions.formula_target_held1k"
+from = 15425396
+to = 15746898
+date = 2026-10-27
+reason = "the rest of CI's count, now traced exactly: Valgrind (Callgrind Ir, gungraun 0.20.0, x86-64 Linux) at 52a4077a and each of the 42 merges since that touch crates/, two runs agreeing to 571 instructions (polars' randomly seeded hashing): +3.73% in all, the named steps carrying all but +347 -- the residual spread folding withheld predictions (task 278, b17) +1.99% (run_instance, the ungated buffer's realloc, predict_with_floor reads); ewridge's condition estimate (task 278, D4) +1.61% (carries_no_digit, inflation_into); the gates branch, ewridge's own floor in step_into, +0.32%; D11 +0.16%; the drift reset (b03) +0.09%; the first period +0.03%; D13 +0.02%; the sgd group -0.04%; the Huber refit (task 277) -0.46%, which is glibc's heap left in another state (the same 1,042 posix_memalign calls, cholesky_seq's subtree 68,123 -> 8,558), not work removed"
+changelog = "Scoring a held row over the clock since the newest learned row costs"
