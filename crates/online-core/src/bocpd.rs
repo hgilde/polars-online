@@ -1738,6 +1738,112 @@ mod tests {
         );
     }
 
+    /// `d×d` with the leading `d − 1` block `16·I` and the last row `4·c`,
+    /// last diagonal 4. Its factor is exact up to the last pivot -- `L_pp =
+    /// 4`, `L_{d−1,p} = 4c_p/4 = c_p` -- so the last pivot is `4 − c₀² − c₁²
+    /// − …`, subtracted in that order, with the floor `γ_{d+1}·4`.
+    fn bordered(c: &[f64]) -> Vec<f64> {
+        let d = c.len() + 1;
+        let mut a = vec![0.0; d * d];
+        for p in 0..d - 1 {
+            a[p * d + p] = 16.0;
+            a[(d - 1) * d + p] = 4.0 * c[p];
+            a[p * d + d - 1] = 4.0 * c[p];
+        }
+        a[d * d - 1] = 4.0;
+        a
+    }
+
+    /// [`definite`] against pivots placed exactly about its floor
+    /// `γ_{d+1}·a_ii`, for `d` = 1 to 4. With `u = 2⁻⁵³`, `c₀ = 2 − 2ju` has
+    /// `fl(c₀²) = 4 − 8ju` (the `4j²u²` left over is far under half the
+    /// spacing `4u` below 4), so `4 − c₀²` is `8ju` exactly (Sterbenz), and
+    /// `c = 2⁻²⁶` or `2⁻²⁵` take off `2u` or `8u` more, exactly. The floor
+    /// is `γ_{d+1}·4 = 4(d+1)u·(1 + (d+1)u + …)`, so a last pivot of
+    /// exactly `4(d+1)u` is just under it, and `24u` with `d = 3` is above
+    /// it and under twice it. The second column (`d ≥ 3`) makes the inner
+    /// loop and the off-diagonal division count. The oracle confirms each
+    /// of these is singular to working precision -- its smallest eigenvalue
+    /// within its own error of the floor -- so the pivot decides; the
+    /// matrices well clear of the floor it confirms definite or not.
+    #[test]
+    fn definite_decides_at_the_rounding_floor() {
+        use crate::oracle::{eigen_error, gamma};
+        let u = f64::EPSILON / 2.0;
+        let (c25, c26) = (1.0 / (1u64 << 25) as f64, 1.0 / (1u64 << 26) as f64);
+        // (c, the last pivot in units of u, definite?)
+        let near: Vec<(Vec<f64>, f64, bool)> = vec![
+            (vec![2.0 - 2.0 * u], 8.0, false),
+            (vec![2.0 - 4.0 * u], 16.0, true),
+            (vec![2.0 - 6.0 * u, c25], 16.0, false),
+            (vec![2.0 - 8.0 * u, c25], 24.0, true),
+            (vec![2.0 - 6.0 * u, c26, c26], 20.0, false),
+            (vec![2.0 - 8.0 * u, c26, c26], 28.0, true),
+        ];
+        for (c, units, want) in &near {
+            let d = c.len() + 1;
+            let a = bordered(c);
+            let floor = gamma(d + 1) * 4.0;
+            let (values, errors) = eigen_error(&a);
+            assert!(
+                values[0].abs() <= 2.0 * floor + errors[0],
+                "d {d}: λ {:e} ± {:e} is not singular to working precision",
+                values[0],
+                errors[0]
+            );
+            assert!(*units * u < 2.0 * floor, "d {d}");
+            assert_eq!(definite(&a, d), *want, "d {d}, last pivot {units}u");
+        }
+
+        // A last pivot between `4·(d+1)u` and the floor `4γ_{d+1}`, which
+        // differ by `4(d+1)²u²`: `d = 3`, `c₁ = 2⁻²⁵(1 − 2⁻⁵²)` takes off
+        // `fl(c₁²) = 8u(1 − 2⁻⁵¹)`, leaving `16u(1 + 2⁻⁵²)`, exactly, under
+        // `fl(4·γ₄) = 16u(1 + 2⁻⁵¹)`. A floor of `4·4u` or less lets it
+        // through.
+        let a = bordered(&[2.0 - 6.0 * u, c25 * (1.0 - f64::EPSILON)]);
+        assert!(
+            !definite(&a, 3),
+            "a pivot of 16u(1 + 2⁻⁵²) is under the floor"
+        );
+
+        // d = 1: the pivot is a₀₀, the floor γ₂·a₀₀ below it when it is
+        // positive.
+        assert!(definite(&[4.0], 1));
+        assert!(definite(&[1e-300], 1));
+        assert!(!definite(&[0.0], 1));
+        assert!(!definite(&[-1.0], 1));
+        assert!(!definite(&[f64::NAN], 1));
+
+        // Positive definite, every pivot needed: `L·Lᵀ` with a full lower
+        // `L` of small integers and halves, formed exactly.
+        let l = [
+            [2.0, 0.0, 0.0, 0.0],
+            [1.0, 3.0, 0.0, 0.0],
+            [-1.0, 2.0, 1.0, 0.0],
+            [0.5, -1.0, 1.0, 2.0],
+        ];
+        let a: Vec<f64> = (0..16)
+            .map(|k| (0..4).map(|p| l[k / 4][p] * l[k % 4][p]).sum())
+            .collect();
+        let (values, errors) = eigen_error(&a);
+        assert!(values[0] - errors[0] > gamma(5) * 16.0, "{values:?}");
+        assert!(definite(&a, 4));
+        // ... and each leading block of it, at its own `d`.
+        for d in 1..4 {
+            let sub: Vec<f64> = (0..d * d).map(|k| a[(k / d) * 4 + k % d]).collect();
+            assert!(definite(&sub, d), "d {d}");
+        }
+
+        // A pivot that fails before the last: the leading 2×2 of each is
+        // singular or indefinite, the last diagonal large.
+        let singular = [4.0, 2.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0, 9.0];
+        let indefinite = [1.0, 2.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0, 9.0];
+        let (values, errors) = eigen_error(&indefinite);
+        assert!(values[0] + errors[0] < 0.0, "{values:?}");
+        assert!(!definite(&singular, 3));
+        assert!(!definite(&indefinite, 3));
+    }
+
     /// A log-joint without its run is refused, where it loaded and panicked
     /// on the first `step` (review 2026-09-18, B3).
     #[test]

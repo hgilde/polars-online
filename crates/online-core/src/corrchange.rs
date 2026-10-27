@@ -2842,6 +2842,63 @@ mod tests {
         }
         assert_eq!(min_perm(1e-7), None);
         assert_eq!(min_perm(1.0 / (MAX_PERM as f64 + 1.0)), Some(MAX_PERM));
+        // Just under `1/k`, `1/alpha` rounds to `k` and the closed form
+        // starts at `k − 1`, where `alpha·k` rounds below 1: the fewest
+        // draws are then `k`, settled on the predicate itself.
+        let mut settled = 0;
+        for k in 2..2000usize {
+            let alpha = f64::from_bits((1.0 / k as f64).to_bits() - 1);
+            let b = min_perm(alpha).unwrap();
+            assert!(perm_rejections(alpha, b) >= 1, "{alpha}");
+            assert_eq!(perm_rejections(alpha, b - 1), 0, "{alpha}");
+            if b > ((1.0 / alpha).ceil() as usize).saturating_sub(1) {
+                settled += 1;
+            }
+        }
+        // That the closed form fell short is what was tested, not assumed.
+        assert!(settled > 100, "{settled}");
+    }
+
+    /// At a level that is exactly the tail at `x0`, the critical value is
+    /// not past `x0`: the bisection's predicate is strict (`P(sup|B| > x) >
+    /// alpha` below the quantile), so the bracket closes on `[prev(x0),
+    /// x0]` and its midpoint rounds to one of them, `prev(x0)` when `x0`'s
+    /// last bit is odd. Taken on the survival series (a level below 1 %)
+    /// and on the theta series (above 99 %); each `x0` is the first
+    /// odd double from a start where the series falls strictly over its
+    /// neighbours, and on the theta series where `1 − alpha` is the
+    /// series' value exactly.
+    #[test]
+    fn a_level_met_exactly_at_x0_puts_the_quantile_at_or_below_it() {
+        let next = |x: f64| f64::from_bits(x.to_bits() + 1);
+        let prev = |x: f64| f64::from_bits(x.to_bits() - 1);
+        let odd = |x: f64| x.to_bits() & 1 == 1;
+        let mut x0 = next(2.0);
+        while !(odd(x0)
+            && kolmogorov_sf(prev(x0)) > kolmogorov_sf(x0)
+            && kolmogorov_sf(x0) > kolmogorov_sf(next(x0)))
+        {
+            x0 = next(x0);
+        }
+        let alpha = kolmogorov_sf(x0);
+        assert!(alpha < KOLMOGOROV_TAIL);
+        let q = kolmogorov_quantile(alpha);
+        assert!(q <= x0 && q >= prev(x0), "{q} against {x0}");
+
+        let mut x0 = next(0.4);
+        let exact = |f: f64| 1.0 - (1.0 - f) == f;
+        let theta = kolmogorov_cdf_theta;
+        while !(odd(x0)
+            && exact(theta(x0))
+            && theta(prev(x0)) < theta(x0)
+            && theta(x0) < theta(next(x0)))
+        {
+            x0 = next(x0);
+        }
+        let alpha = 1.0 - theta(x0);
+        assert!(alpha > 1.0 - KOLMOGOROV_TAIL && 1.0 - alpha == theta(x0));
+        let q = kolmogorov_quantile(alpha);
+        assert!(q <= x0 && q >= prev(x0), "{q} against {x0}");
     }
 
     /// An `n_perm` too small for `alpha` can never flag, and is refused by
