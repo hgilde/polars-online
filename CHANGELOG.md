@@ -68,6 +68,8 @@ returns.
 
 ### Changed
 
+- A spec with neither `half_life` nor `lam` is refused with a message that
+  now also says how to ask for no decay: `half_life = inf`.
 - **An explicit solve cadence's first period solves by weight** (task 278):
   until `solve_every` has passed, or `max_rows_between_solves` rows, the
   model solves on the default weight-share schedule, then on the cadence

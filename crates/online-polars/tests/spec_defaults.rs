@@ -345,4 +345,5 @@ fn a_spec_the_bank_refuses_resolves_to_its_refusal() {
     .unwrap();
     let err = online_polars::resolved_defaults(&spec).unwrap_err();
     assert!(err.contains("one of half_life/lam is required"), "{err}");
+    assert!(err.contains("half_life = inf for no decay"), "{err}");
 }

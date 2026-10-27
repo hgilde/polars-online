@@ -3060,7 +3060,7 @@ impl Spec {
                     Ok(vec![(String::new(), Decay::Halflife(f64::INFINITY))])
                 }
                 _ => Err(format!(
-                    "spec {:?}: one of half_life/lam is required",
+                    "spec {:?}: one of half_life/lam is required (half_life = inf for no decay)",
                     self.name
                 )),
             },
