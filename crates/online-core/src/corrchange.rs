@@ -2873,28 +2873,28 @@ mod tests {
         let next = |x: f64| f64::from_bits(x.to_bits() + 1);
         let prev = |x: f64| f64::from_bits(x.to_bits() - 1);
         let odd = |x: f64| x.to_bits() & 1 == 1;
-        let mut x0 = next(2.0);
-        while !(odd(x0)
-            && kolmogorov_sf(prev(x0)) > kolmogorov_sf(x0)
-            && kolmogorov_sf(x0) > kolmogorov_sf(next(x0)))
-        {
-            x0 = next(x0);
-        }
+        // Searched over a bounded run of doubles, so a series that fails
+        // the condition fails the test rather than hang it.
+        let from = |start: f64| (1..100_000u64).map(move |k| f64::from_bits(start.to_bits() + k));
+        let x0 = from(2.0)
+            .find(|&x| {
+                odd(x)
+                    && kolmogorov_sf(prev(x)) > kolmogorov_sf(x)
+                    && kolmogorov_sf(x) > kolmogorov_sf(next(x))
+            })
+            .expect("no odd double near 2 where the survival series falls strictly");
         let alpha = kolmogorov_sf(x0);
         assert!(alpha < KOLMOGOROV_TAIL);
         let q = kolmogorov_quantile(alpha);
         assert!(q <= x0 && q >= prev(x0), "{q} against {x0}");
 
-        let mut x0 = next(0.4);
         let exact = |f: f64| 1.0 - (1.0 - f) == f;
         let theta = kolmogorov_cdf_theta;
-        while !(odd(x0)
-            && exact(theta(x0))
-            && theta(prev(x0)) < theta(x0)
-            && theta(x0) < theta(next(x0)))
-        {
-            x0 = next(x0);
-        }
+        let x0 = from(0.4)
+            .find(|&x| {
+                odd(x) && exact(theta(x)) && theta(prev(x)) < theta(x) && theta(x) < theta(next(x))
+            })
+            .expect("no odd double near 0.4 where the theta series rises strictly to a 1 - alpha");
         let alpha = 1.0 - theta(x0);
         assert!(alpha > 1.0 - KOLMOGOROV_TAIL && 1.0 - alpha == theta(x0));
         let q = kolmogorov_quantile(alpha);
