@@ -68,8 +68,10 @@ class TestEveryJobIsBounded:
     #: Jobs allowed past two hours on any OS while the repository is public,
     #: and held to two hours if it is private again: CI's test matrix, whose
     #: Windows legs' Rust build took 33 to 78 minutes from a warm cache on
-    #: 2026-10-13, and one was cancelled at 120 after its tests had passed.
-    LONGER_WHILE_PUBLIC = {("ci.yml", "test"): 180}
+    #: 2026-10-13, and one was cancelled at 120 after its tests had passed;
+    #: `windows-2022`'s two-thread legs took 2.4 to 2.9 hours by 2026-10-28,
+    #: and one was cancelled at 180 two minutes short of passing.
+    LONGER_WHILE_PUBLIC = {("ci.yml", "test"): 300}
 
     @pytest.mark.parametrize("name", sorted(ALL))
     def test_every_job_has_a_timeout(self, name):
