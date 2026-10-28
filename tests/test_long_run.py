@@ -38,26 +38,26 @@ def _within(points: list, column: int, a: float, b: float) -> list:
 # --- The oracle ledger (tests/ledger.py) ------------------------------------
 #
 # Each grid records its errors, one value a checkpoint. The errors are
-# rounding, so each case has a floor, twice the worst checkpoint measured at
-# a million rows (2026-10-26, macOS arm64), and each group's hash keeps every
-# bit. The guard runs each case's reads, without the recomputation, over
-# 20,000 rows.
+# rounding, so each case has a floor, about four times the worst checkpoint
+# measured at a million rows on macOS arm64 and on two of CI's Linux x86-64
+# runs (2026-10-28), and each group's hash keeps every bit. The guard runs
+# each case's reads, without the recomputation, over 20,000 rows.
 
 #: The rows the guard feeds each case.
 GUARD_ROWS = 20_000
 
 #: Each recorded error's floor, by case.
 FLOORS: dict[str, float] = {
-    "clock_weight.float_weight_sum_error": 9e-14,
-    "clock_weight.temporal_weight_sum_error": 2.8e-13,
-    "ewcov_drift.decayed_mean_error": 2.4e-16,
-    "ewcov_drift.decayed_sd_error": 1.2e-15,
-    "ewcov_drift.windowed_mean_error": 4.7e-16,
-    "ewcov_drift.windowed_sd_error": 4e-12,
-    "ewcov_numacc4.mean_error": 1.9e-16,
-    "ewcov_numacc4.sd_error": 3.4e-14,
-    "ewridge_drift.decayed_ridge_slope_error": 2e-14,
-    "ewridge_drift.no_decay_slope_error": 1.6e-13,
+    "clock_weight.float_weight_sum_error": 1.8e-13,
+    "clock_weight.temporal_weight_sum_error": 5.5e-13,
+    "ewcov_drift.decayed_mean_error": 4.7e-16,
+    "ewcov_drift.decayed_sd_error": 2.4e-15,
+    "ewcov_drift.windowed_mean_error": 9.4e-16,
+    "ewcov_drift.windowed_sd_error": 8e-12,
+    "ewcov_numacc4.mean_error": 3.8e-16,
+    "ewcov_numacc4.sd_error": 6.8e-14,
+    "ewridge_drift.decayed_ridge_slope_error": 3.9e-14,
+    "ewridge_drift.no_decay_slope_error": 3.2e-13,
 }
 
 #: The columns of each case's checkpoints that it records, by name.

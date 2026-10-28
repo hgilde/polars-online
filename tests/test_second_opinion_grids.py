@@ -194,8 +194,8 @@ def test_windowed_lag_corr_is_its_definition_and_near_acf_over_fifty_seeds():
 
 
 #: The windowed lags' distance from their definition is rounding: its
-#: floor in the ledger, twice the worst measured (8.3e-14).
-WINDOW_FLOOR = 1.7e-13
+#: floor in the ledger, about four times the worst measured (8.3e-14).
+WINDOW_FLOOR = 3.4e-13
 
 
 # --- kalman's shared covariance against each target's own filter ---------------

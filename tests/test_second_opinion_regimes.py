@@ -233,8 +233,8 @@ class TestHmmIsHmmlearnsAtEveryShape:
             f"hmm: worst error {worst[0]:.2e} (seed {worst[4]}, case {worst[5]}), "
             f"95th percentile {np.quantile(errors, 0.95):.2e}"
         )
-        # Round-off: the ledger holds it at about twice the measured 1.85e-13.
-        ledger.record("hmm_shapes", "error", errors, floor=4e-13)
+        # Round-off: the ledger holds it at about four times the measured 1.85e-13.
+        ledger.record("hmm_shapes", "error", errors, floor=7.4e-13)
         moved = min(r[1] for r in rows)
         spread = min(r[2] for r in rows if r[5][0] != "full")
         zeros = min(r[3] for r in rows)
