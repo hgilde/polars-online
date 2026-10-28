@@ -532,14 +532,14 @@ fn a_band_of_a_row_a_coefficient_takes_the_newton_step() {
 
 /// A fit no row of which lies inside its band -- targets of +1 and −1 in
 /// pairs of rows with the same features, so the smoothed loss is flat
-/// wherever every fitted value is within `1 − h` of 0, the band, `0.37`
-/// wide here, holds no row there, and the refit stops where it starts --
-/// rebuilds sums with no weight to step the nudges over: they are dropped,
-/// as the stream drops a nudge with no weight in the band, and the sums
-/// stay numbers (task 281, mutants). The sums' weight is then 0 and the
-/// next row is predicted from no fit: task 281 reported it, undecided.
+/// wherever every fitted value is within `1 − h` of 0, and the band, `0.37`
+/// wide here, holds no row there -- is rebuilt as the majorizer's rows,
+/// as a pass with such a band is: the target keeps its rows' weight and
+/// predicts the next row, as the stream without the refit does. Rebuilt as
+/// the stream takes each row, every row a nudge, the sums had no weight and
+/// the next row no prediction (task 281).
 #[test]
-fn nudges_with_no_row_in_the_band_are_dropped() {
+fn a_band_with_no_row_keeps_the_targets_weight() {
     let n = 100;
     let data: Vec<Row> = (0..n)
         .map(|i| {
@@ -551,11 +551,33 @@ fn nudges_with_no_row_in_the_band_are_dropped() {
             (x, vec![Some(if i % 2 == 0 { 1.0 } else { -1.0 })], 1.0)
         })
         .collect();
-    let mut m = Robust::new(base(0.5, Decay::Lam(1.0), n)).unwrap();
-    run(&mut m, &data);
-    assert!(m.refit_status()[0].done);
-    assert_eq!(m.wj[0], 0.0, "no row in the band");
-    assert!(m.ybar[0].is_finite() && m.cross[0].iter().all(|c| c.is_finite()));
+    let mut on = Robust::new(base(0.5, Decay::Lam(1.0), n)).unwrap();
+    let mut off = Robust::new(base(0.5, Decay::Lam(1.0), 0)).unwrap();
+    run(&mut on, &data);
+    run(&mut off, &data);
+    let st = on.refit_status()[0];
+    assert!(st.done && st.passes > 0 && !st.failed, "{st:?}");
+    // The premise: the converged fit's band holds no row.
+    let b = on.coefficients().unwrap()[0].clone();
+    let fitted = |x: &[f64; 2]| b[0] + b[1] * x[0] + b[2] * x[1];
+    assert!(
+        data.iter()
+            .all(|(x, y, _)| (y[0].unwrap() - fitted(x)).abs() > 0.5)
+    );
+    assert!(
+        on.wj[0] > 0.0 && off.wj[0] > 0.0,
+        "{} {}",
+        on.wj[0],
+        off.wj[0]
+    );
+    assert!(on.ybar[0].is_finite() && on.cross[0].iter().all(|c| c.is_finite()));
+    let x = [0.1, 0.1];
+    let (p_on, p_off) = (on.predict(&x, 1.0).pred, off.predict(&x, 1.0).pred);
+    assert!(
+        p_on[0].is_finite() && p_off[0].is_finite(),
+        "{p_on:?} {p_off:?}"
+    );
+    assert!(p_on[0].abs() < 1.0, "a median of ±1 pairs: {p_on:?}");
 }
 
 /// A refit that takes every pass is counted once in `solve_failures`, on
