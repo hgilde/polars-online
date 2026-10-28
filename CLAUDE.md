@@ -70,7 +70,14 @@ and the re-gates of conflicting merges were the agents' two bottlenecks).
 `scripts/gate.sh` takes one of two machine-wide tokens and waits for one
 (`POLARS_ONLINE_GATES`). The full tier runs, always, before every push on
 the exact sha.
-Run at most about four agents at once on this machine. A worker gets a
+Run at most two building agents at once on this machine, each with
+`CARGO_BUILD_JOBS=6`, pytest at `-n 4` and the gate at `GATE_WORKERS=4`;
+a local `cargo mutants` runs alone, under `.claude/coord/mutants.lock`;
+check `uptime` first and wait above a load of about 20 (docs/TESTING.md,
+"At most two agents": four parallel mutants runs at a load of 88 panicked
+the Mac twice, 2026-10-27/28). Coordination files -- briefs, the queue,
+the worker rules, survivor lists -- live in `.claude/coord/` (locally
+excluded), never under `/tmp`, which a restart empties. A worker gets a
 worktree slot, not a fresh worktree (task 248; docs/TESTING.md, "Worktree
 slots"): the coordinator runs `scripts/slot.sh take <branch> main`, starts
 the worker without `isolation`, told to work only in that path, and runs

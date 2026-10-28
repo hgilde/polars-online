@@ -24,7 +24,9 @@
 # artifacts.
 #
 # Slots live under .claude/slots/<n>, at most POLARS_ONLINE_SLOTS of them
-# (default 4, the number of agents this machine runs at once). Who holds a
+# (default 4). A slot stays warm between tasks, so there are more slots than
+# agents building: at most two build at once (docs/TESTING.md, "At most two
+# agents"). Who holds a
 # slot is a file in the repository's common git directory, so it never
 # shows in a slot's `git status`. `clear_caches.sh --worktrees` keeps the
 # slots' target/ unless it is given --slots.

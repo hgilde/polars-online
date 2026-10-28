@@ -984,11 +984,34 @@ reader sees no file or the whole one. The released versions' environments,
 which `scripts/compare_release.py` builds, are built under a per-process
 name and renamed the same way.
 
-**About four agents can build at once on this machine.** Each worktree
-has its own `target/` and compiles Polars there: 66 s for the Rust tests
-and 130 s for the `dev-wheel` extension, from nothing, at a load near 5.
-Eight agents at once, with the other user's jobs, have driven the load to
-31 on 14 cores, where every build and test run slows in proportion.
+**At most two agents build at once on this machine, each held to six build
+jobs and four test processes.** Each worktree has its own `target/` and
+compiles Polars there, which takes 66 s for the Rust tests and 130 s for the
+`dev-wheel` extension from nothing, at a load near 5. More agents do not
+finish sooner, and past a point they bring the machine down:
+
+| what ran at once | load on 14 cores | what happened |
+|---|---|---|
+| eight agents, with the other user's jobs | 31 | every build and test slowed in proportion |
+| five essentials gates | 78 | gates of about 300 s took 500 to 2,000 s |
+| four `cargo mutants --in-diff` runs | 88, for hours | the kernel panicked (`watchdog timeout: no checkins from watchdogd in 90 seconds`) and the Mac restarted |
+| three agents resumed straight after that restart | | the same panic, eight hours later |
+
+A `cargo mutants` run builds and tests every mutant, each time with every
+core, so two at once already saturate the machine. So, on this machine:
+- **Two agents at most.** One is the default when their work is builds and
+  tests rather than reading and writing.
+- **Each agent exports `CARGO_BUILD_JOBS=6`.** It runs pytest at `-n 4` at
+  most, and the gate at `GATE_WORKERS=4`.
+- **A local `cargo mutants --in-diff` runs alone.** It takes the lock
+  directory `.claude/coord/mutants.lock` (`mkdir` it, `rmdir` it after), and
+  any other waits. CI's changed-lines pass on the push checks the same lines
+  on GitHub's machines, so a local run is the exception.
+- **Check `uptime` before starting a build.** Wait while the 1-minute load is
+  above about 20.
+- **After a crash, look before resuming.** Read
+  `/Library/Logs/DiagnosticReports/panic-full-*` for the cause, and remove a
+  stale `mutants.lock` that a killed run left.
 
 **A compiler cache does not speed up a new worktree, so it is off unless
 asked for.** sccache, turned on with `POLARS_ONLINE_SCCACHE=1` in
@@ -1037,8 +1060,10 @@ gate builds it, once a commit; the inner loop builds `dev-wheel`.
 package's path relative to the workspace root, so two checkouts building
 into one `target/` overwrite each other's artifacts, and a gate can then
 test another checkout's binary. There are at most four slots
-(`POLARS_ONLINE_SLOTS`), the number of agents this machine runs at once,
-each about 28 GB of builds and 0.9 GB of environment. `take` refuses a
+(`POLARS_ONLINE_SLOTS`), each about 28 GB of builds and 0.9 GB of
+environment. A slot stays warm between tasks whether or not an agent is
+building in it, so there are more slots than agents running: at most two
+build at once (above). `take` refuses a
 slot with uncommitted work, and so does `give`. `take` also refuses a
 branch another worktree has checked out and names that worktree: `git
 checkout -B` would move the slot onto it, and a commit in either worktree
