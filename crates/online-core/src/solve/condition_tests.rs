@@ -488,3 +488,26 @@ fn the_methods_pieces_are_dlacn2s() {
     alternating(&mut x);
     assert_eq!(x, [1.0, -1.25, 1.5, -1.75, 2.0]);
 }
+
+/// Task 281 (mutants): the iteration stops where the estimate stops
+/// growing, as `dlacn2` does, even with the signs not repeating and the
+/// estimate short of `‖B‖₁` -- the method's estimate is a lower bound, not
+/// the norm. On this symmetric (indefinite) `B` of small integers, every
+/// product exact on any machine, the first two products read 3, the column
+/// they pick reads 3 again, and the method ends at 3, where its column 1
+/// holds `‖B‖₁ = 7` and going on would have found it.
+#[test]
+fn the_iteration_ends_where_the_estimate_stops_growing() {
+    let k = 3;
+    let b = [-2.0, 0.0, 1.0, 0.0, -5.0, -2.0, 1.0, -2.0, 2.0];
+    let (want, ended, alt) = reference(&b, k);
+    assert_eq!((want, ended, alt), (3.0, Ended::StoppedGrowing, false));
+    let mut work = vec![0.0; 2 * k];
+    let got = norm1_estimate(k, &mut work, |x| {
+        let y: Vec<f64> = (0..k)
+            .map(|i| (0..k).map(|j| b[i * k + j] * x[j]).sum())
+            .collect();
+        x.copy_from_slice(&y);
+    });
+    assert_eq!(got, want);
+}

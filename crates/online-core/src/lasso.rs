@@ -3604,4 +3604,70 @@ mod tests {
         let win = windowed.win.as_ref().expect("windowed");
         assert_eq!(win.snaps.next_at(win.clock, 1.0).stamp, stamp);
     }
+
+    /// Task 281 (mutants), where the gate holds learning back (a state
+    /// written before schema 64) and no cadence solves: a target that
+    /// joins late is first solved on the row its own weight, `λ·W_j + w`
+    /// with the row in, first reaches its own threshold -- not a row
+    /// before, not a row after, and not until then. `y1` is present on every
+    /// other row from row 4 at weight 1 with no decay, so its weight
+    /// reaches 6 on its sixth row, row 14; `y0`, on every row with a
+    /// threshold of 2, is solved on row 1, before `y1` has a row.
+    #[test]
+    fn a_late_targets_first_solve_falls_where_its_own_weight_reaches_its_own() {
+        use crate::OnlineModel;
+        let mut c = cfg(1, 2, vec![0.0]);
+        c.min_weight_holds_learning = true;
+        c.min_weight = 2.0;
+        c.target_min_weight = vec![2.0, 6.0];
+        c.solve_every = 1e18;
+        c.max_rows_between_solves = u32::MAX;
+        let mut m = Lasso::new(c).unwrap();
+        let mut s = 5u64;
+        let fitted = |m: &Lasso, j: usize| {
+            m.coefficients()
+                .is_some_and(|b| b[j].iter().flatten().all(|v| !v.is_nan()))
+        };
+        let (mut first0, mut first1) = (None, None);
+        for i in 0..30 {
+            let x = [lcg(&mut s)];
+            let y0 = 1.0 + 2.0 * x[0] + 0.1 * lcg(&mut s);
+            let y1 = (i >= 4 && i % 2 == 0).then(|| -1.0 + x[0] + 0.1 * lcg(&mut s));
+            m.step(&x, &[Some(y0), y1], 1.0, 1.0);
+            if first0.is_none() && fitted(&m, 0) {
+                first0 = Some(i);
+            }
+            if first1.is_none() && fitted(&m, 1) {
+                first1 = Some(i);
+            }
+        }
+        assert_eq!((first0, first1), (Some(1), Some(14)));
+    }
+
+    /// Task 281 (mutants): where the gate holds learning back, a fresh
+    /// model's first solve falls on the row its weight -- every row's --
+    /// reaches `min_weight`, even where no target's own weight has: the one
+    /// target, present on every other row, holds two rows of its own when
+    /// the model holds three.
+    #[test]
+    fn under_the_held_gate_a_fresh_models_first_solve_reads_the_models_weight() {
+        let mut c = cfg(1, 1, vec![0.0]);
+        c.min_weight_holds_learning = true;
+        c.min_weight = 3.0;
+        c.solve_every = 1e18;
+        c.max_rows_between_solves = u32::MAX;
+        let mut m = Lasso::new(c).unwrap();
+        let mut s = 5u64;
+        let mut solves = Vec::new();
+        for i in 0..8 {
+            let x = [lcg(&mut s)];
+            let y = (i % 2 == 0).then(|| 1.0 + 2.0 * x[0] + 0.1 * lcg(&mut s));
+            m.step(&x, &[y], 1.0, 1.0);
+            if m.rows_since_solve == 0 {
+                solves.push(i);
+            }
+        }
+        assert_eq!(m.acc.wj[0], 4.0);
+        assert_eq!(solves.first(), Some(&2), "{solves:?}");
+    }
 }

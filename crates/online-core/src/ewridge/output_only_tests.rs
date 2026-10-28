@@ -224,3 +224,36 @@ fn the_noise_is_the_ew_mean_square_of_the_floors_residuals() {
         );
     }
 }
+
+/// Task 281 (mutants), under a window: the gated model's residual variance
+/// and its weight are still the model's at its own floor, to the bit. The
+/// floor's read was made after the window's snapshot ring had moved to the
+/// row's clock, so it read the window's weight at the new clock, which the
+/// model at the floor never reads: under a 12-unit window at `min_weight`
+/// 15, which withholds every row, `sig2` parted from the floor's.
+#[test]
+fn under_a_window_min_weight_moves_not_the_noise() {
+    let rows = rows();
+    let own = (K + 1) as f64;
+    for (window, every) in [(30.0, Some(5.0)), (12.0, None)] {
+        let at = |mw: f64| EwRidgeCfg {
+            window: Some(window),
+            window_every: every,
+            ..cfg(mw, 0.0, 1)
+        };
+        let (free, free_m) = run(EwRidge::new(at(own)).unwrap(), &rows);
+        for mw in [own, 8.0, 15.0] {
+            let what = format!("window {window}, every {every:?}, min_weight {mw}");
+            let (out, m) = run(gated(at(mw)), &rows);
+            let withheld = out
+                .iter()
+                .zip(&free)
+                .flat_map(|(a, b)| a.pred.iter().zip(&b.pred))
+                .filter(|(p, q)| p.is_nan() && q.is_finite())
+                .count();
+            println!("{what}: withheld {withheld}");
+            assert_eq!(bits(&m.sig2), bits(&free_m.sig2), "{what}: sig2");
+            assert_eq!(bits(&m.wsig), bits(&free_m.wsig), "{what}: wsig");
+        }
+    }
+}

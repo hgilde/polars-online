@@ -2253,6 +2253,27 @@ impl OnlineModel for EwRidge {
 
         // ---- predict (state before this row's update) ----
         self.predict_into(x, d_clock, out);
+        // Where `min_weight` withholds the row's prediction and the model's
+        // own floor is lower ([`Self::set_min_weight_output_only`]), the
+        // variance folds the prediction at that floor: the one the model
+        // keeps with no `min_weight` above it makes, read from the same
+        // state (task 278). A second read only on those rows -- the
+        // warm-up, and the rows after a long gap.
+        // Read here, before the update: a window's snapshot ring moves to
+        // the row's clock below, and a read after it took the window's
+        // weight at the new clock, which the model at the floor never
+        // reads, so `sig2` parted from that model's under a window
+        // (task 281, the ewridge `step_into` survivors).
+        let floor = self.own_floor();
+        let below = if floor < self.cfg.min_weight && out.n_eff < self.cfg.min_weight {
+            let gate = std::mem::replace(&mut self.cfg.min_weight, floor);
+            let mut at = Step::default();
+            self.predict_into(x, d_clock, &mut at);
+            self.cfg.min_weight = gate;
+            Some(at.pred)
+        } else {
+            None
+        };
 
         // ---- update ----
         // The slow twin sees the same rows under its own, longer half-life.
@@ -2278,22 +2299,6 @@ impl OnlineModel for EwRidge {
                     sig2: self.sig2.clone(),
                 });
         }
-        // Where `min_weight` withholds the row's prediction and the model's
-        // own floor is lower ([`Self::set_min_weight_output_only`]), the
-        // variance folds the prediction at that floor: the one the model
-        // keeps with no `min_weight` above it makes, read from the same
-        // state (task 278). A second read only on those rows -- the
-        // warm-up, and the rows after a long gap.
-        let floor = self.own_floor();
-        let below = if floor < self.cfg.min_weight && out.n_eff < self.cfg.min_weight {
-            let gate = std::mem::replace(&mut self.cfg.min_weight, floor);
-            let mut at = Step::default();
-            self.predict_into(x, d_clock, &mut at);
-            self.cfg.min_weight = gate;
-            Some(at.pred)
-        } else {
-            None
-        };
         let pred = below.as_deref().unwrap_or(&out.pred);
         // EW residual variance from the primary (first-combo) pred. Its
         // weight ages on every row, and a row with a target, a weight and a
