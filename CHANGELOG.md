@@ -28,7 +28,11 @@ returns.
   such as `rerun` on a Mac, is held to 5% and writes none of its numbers.
   A case whose oracle agrees to round-off has a floor of twice the larger
   of macOS arm64's and Linux's error, since Linux x86-64 rounds some of
-  those cases up to 3.7 times differently. CI fetches every dataset the
+  those cases up to 3.7 times differently; those floors are now about four
+  times the largest error across two CI runs and macOS, since GitHub's
+  runners vary in CPU and faer picks its SIMD kernel by the CPU at run time,
+  so two Linux runs of the same code read such a case up to 7 times apart.
+  CI fetches every dataset the
   ledger names in one job before the grids run, and fails naming any it
   cannot get, so no grid skips as offline (task 281).
 - A hash guard in the essentials gate (task 280): it hashes this library's
@@ -324,6 +328,28 @@ returns.
   which glibc and Windows' runtime round to within an ulp but not exactly,
   so about one row in 1,700 moved by an ulp under a scale of `2^±20`; it is
   now `m_2·√m_2`, two correctly rounded operations, and cheaper.
+- `huber` and `marginal`'s Huber location could land far from the root of
+  its estimating equation when some rows lay many orders of magnitude beyond
+  the cut: sums carried past those rows kept a rounding of their size. With
+  a band 1e-3 wide and three rows at 1e16 to 1e17, the location sat 5e16
+  from a cluster at 0.002. Each breakpoint's value is now read afresh, every
+  term clipped to the cut, so such rows leave no rounding behind; elsewhere
+  the location is unchanged to the bit (task 281).
+- A `quantile` refit whose converged fit left fewer than one row a
+  coefficient inside its band rebuilt the target's sums with no weight: the
+  next row had no prediction and the stream started again from new rows, its
+  buffered history lost (seen with targets of ±1 in pairs). Such a refit now
+  rebuilds the sums from every buffered row at its weight, as the refit's
+  own passes do with such a band (task 281).
+- Under a `window_size`, `ewridge` with a `min_weight` above its own floor
+  folds into its residual variance the prediction the model at that floor
+  makes; it read the window's weight after the window had moved to the row's
+  clock, so its `sig2` parted from that model's (task 281).
+- Two `quantile` tests no longer fail on windows-2022, whose `exp2` differs
+  in its last bits: the power-of-two claim for the plain solve at
+  `ridge = 0` starts at the third row, since the second row's rank-1 system
+  takes a jitter in the features' units, and the plain-against-correlation
+  bound is 1e-12 (task 281).
 - A readiness gate no longer moves the residual spread the bank keeps per
   slot, which `sigma`, `zscore`, the drift detector's scale, the ranking of
   `emit_selected` and the weights of `emit_averaged` read (task 278). It

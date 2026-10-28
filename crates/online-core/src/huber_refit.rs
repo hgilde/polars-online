@@ -140,7 +140,9 @@ const EXACT_RUN: u64 = 1 << 16;
 /// [`crate::Sgd::refit_status`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RefitStatus {
-    /// The learned rows it holds while it waits; its count once it ran.
+    /// The learned rows it holds while it waits. Once it ran, `huber`'s and
+    /// `sgd`'s refits keep that count, and `marginal`'s bins report 0, their
+    /// rows freed.
     pub learned: u32,
     /// Whether the refit has run, or was given up.
     pub done: bool,
