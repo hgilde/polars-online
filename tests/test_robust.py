@@ -703,7 +703,16 @@ class TestTheQuantilesOwnKeywords:
         """The two relations above, judged by the worst of seeds 0-49: the
         slope norm falls at every tenfold step of the ridge under both
         half-lives, and at ``ridge = 0`` correlation form is the plain solve
-        within the bound below, features of mixed scales included."""
+        within the bound below, features of mixed scales included.
+
+        The two forms round differently, and the gap is the rounding of the
+        first few hundred rows' solves, whose systems of a handful of rows
+        are the worst conditioned; it falls to ``1e-16`` by row 500. Which
+        rounding they take follows the decay's last bit, the platform's
+        ``exp2``: 9.2e-14 here (macOS, 2026-10-27), and 2.1e-13 to 3.75e-13
+        with ``exp2`` moved one to three ulps either way. Windows-2022's
+        UCRT gave 3.749852472164254e-13, the +2-ulp figure to the last
+        digit. The bound leaves under three times the largest."""
         failures, worst = [], 0.0
         for seed in range(50):
             for half_life in (float("inf"), 500.0):
@@ -726,7 +735,7 @@ class TestTheQuantilesOwnKeywords:
                 worst = max(worst, float(np.nanmax(np.abs(a - b)) / np.nanmax(np.abs(a))))
         assert not failures, failures
         print(f"ridge 0, correlation form against plain: worst {worst:.3g} of the largest pred")
-        assert worst <= 1e-13, worst
+        assert worst <= 1e-12, worst
 
     @pytest.mark.parametrize("scales", [(1.0, 1.0), (1e-3, 1e3)], ids=["unit", "mixed"])
     def test_at_ridge_0_standardizing_is_the_plain_solve(self, scales):
@@ -771,18 +780,60 @@ class TestTheQuantilesOwnKeywords:
         """Scaling ``x0`` by ``2^k`` is exact, and so is every step of the
         fit that reads it under correlation form (the ridge is
         dimensionless there) or with no ridge: every field to the bit, and
-        ``x0``'s coefficient divided by ``2^k`` to the bit."""
+        ``x0``'s coefficient divided by ``2^k`` to the bit.
+
+        But one step under the plain solve at ``ridge = 0``: a factorization
+        that fails retries with ``eps * trace / k`` on the diagonal, a ridge
+        in the features' squared units. The second row's centred system has
+        rank 1, so its last pivot is rounding, of either sign; where it is
+        not positive the jitter picks one of the fits that pass through
+        both rows, and the pick moves with ``x0``'s units, in that row's
+        ``coef`` and ``support_coef``. Nothing reads it: the row's
+        prediction is withheld and the next solve starts from the sums.
+        Which sign the pivot takes follows the decay's last bit, the
+        platform's ``exp2``: seed 3 needs no jitter here (macOS, glibc and
+        windows-2025) and needed it on windows-2022, where one ulp up of
+        ``exp2`` reproduces it; over seeds 0-39 at five half-lives it fired
+        on 107 of 200 streams (macOS, 2026-10-27). From the third row the
+        system has full rank, far from a failed pivot, and every field is
+        exact there whatever the platform's ``exp2``."""
         df = self.stream()
         base = self.run(df, standardize=standardize, ridge=ridge)
-        coef = np.array(base["coef"].to_list())
+        # The rows whose system may have a failed pivot: the first two, under
+        # the plain solve (the docstring).
+        first = 0 if standardize else 2
+        coef = np.array(base["coef"].to_list())[first:]
         for k in (10, -10, 30):
             out = self.run(
                 df.with_columns(pl.col("x0") * 2.0**k), standardize=standardize, ridge=ridge
             )
-            got = np.array(out["coef"].to_list())
-            assert out.drop("coef", "x0").equals(base.drop("coef", "x0"), null_equal=True), k
+            got = np.array(out["coef"].to_list())[first:]
+            assert (
+                out[first:]
+                .drop("coef", "x0")
+                .equals(base[first:].drop("coef", "x0"), null_equal=True)
+            ), k
             np.testing.assert_array_equal(got[:, 1] * 2.0**k, coef[:, 1], err_msg=f"k = {k}")
             np.testing.assert_array_equal(got[:, [0, 2]], coef[:, [0, 2]], err_msg=f"k = {k}")
+            # The rows left out are withheld either way: nothing is predicted
+            # from a fit the jitter picked.
+            assert out["pred_y"][:first].is_null().all(), k
+            assert base["pred_y"][:first].is_null().all(), k
+
+    def test_a_jittered_plain_solve_has_the_features_units(self):
+        """The exception above, pinned: without decay seed 3's second-row
+        system needs the jitter on every platform (no ``exp2`` is called),
+        and scaling ``x0`` by ``2^10`` moves that row's coefficients and
+        data shares, and no other row's field."""
+        df = self.stream()
+        kw = {"ridge": 0.0, "half_life": float("inf")}
+        base = self.run(df, **kw)
+        out = self.run(df.with_columns(pl.col("x0") * 2.0**10), **kw)
+        assert out[2:].drop("coef", "x0").equals(base[2:].drop("coef", "x0"), null_equal=True)
+        assert out[0].drop("x0").equals(base[0].drop("x0"), null_equal=True)
+        a, b = base["support_coef"][1].to_list(), out["support_coef"][1].to_list()
+        assert abs(a[1] - b[1]) > 0.1, (a, b)
+        assert out["pred_y"][:2].is_null().all() and base["pred_y"][:2].is_null().all()
 
     def test_without_standardizing_a_ridge_has_units(self):
         """The contrast: under the plain solve a ridge of 1 is in squared

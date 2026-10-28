@@ -51,8 +51,10 @@
 //! refit is.
 //!
 //! Then the target's sums are rebuilt at the converged fit -- each row as
-//! the stream takes it, scored by that fit at its band -- and the scale
-//! from its residuals, and the stream goes on online. A buffer the stream
+//! the stream takes it, scored by that fit at its band, or, where the band
+//! holds fewer than one row a coefficient, as the majorizer's step takes it,
+//! every row at its weight, so the sums keep a weight and solve to that fit
+//! -- and the scale from its residuals, and the stream goes on online. A buffer the stream
 //! still learns as least squares, its rows counted one each and decayed
 //! short of the warm-up's three a coefficient (a half-life shorter than
 //! the stream's warm-up), is left as the stream built it.
@@ -186,17 +188,9 @@ impl Robust {
                 Pass::Newton(h) => {
                     self.replay_rows(j, &rows, &mut z, |i| stream_row(&rows, &r, i, h, tau));
                 }
-                Pass::Majorize(h) => self.replay_rows(j, &rows, &mut z, |i| {
-                    let step = if r[i].abs() < h {
-                        r[i] + 2.0 * h * (tau - 0.5)
-                    } else {
-                        2.0 * h * psi(r[i], tau)
-                    };
-                    RowUpdate::Fit {
-                        w: rows.w(i),
-                        target: rows.y(i) - r[i] + step,
-                    }
-                }),
+                Pass::Majorize(h) => {
+                    self.replay_rows(j, &rows, &mut z, |i| majorizer_row(&rows, &r, i, h, tau));
+                }
             }
             let next = if intercept {
                 self.solve_centred(k, j, 0)
@@ -235,9 +229,24 @@ impl Robust {
             self.solve_failures += 1;
         }
         // The sums as the stream takes each row scored by the converged fit
-        // at its band, and the scale from its residuals.
+        // at its band, and the scale from its residuals. A band of fewer
+        // than one row a coefficient is the majorizer's, as in a pass: the
+        // stream's rows would leave it no weight -- a band holding no row
+        // left the sums at weight 0 and the next row without a fit (task
+        // 281) -- where the majorizer's hold every row at its weight and
+        // solve to the converged fit.
         match self.band_at(&rows, &b, &vs, width, &mut r) {
-            Some(h) => self.replay_rows(j, &rows, &mut z, |i| stream_row(&rows, &r, i, h, tau)),
+            Some(h) => {
+                let inside: f64 = (0..n)
+                    .filter(|&i| r[i].abs() < h)
+                    .map(|i| v[i] / rows.w(i))
+                    .sum();
+                if inside < kf {
+                    self.replay_rows(j, &rows, &mut z, |i| majorizer_row(&rows, &r, i, h, tau));
+                } else {
+                    self.replay_rows(j, &rows, &mut z, |i| stream_row(&rows, &r, i, h, tau));
+                }
+            }
             None => self.replay_rows(j, &rows, &mut z, |i| RowUpdate::Fit {
                 w: rows.w(i),
                 target: rows.y(i),
@@ -398,6 +407,22 @@ fn check_change(r: f64, d: f64, h: f64, tau: f64) -> (f64, f64) {
     }
 }
 
+/// Row `i` in the majorizer's step from a fit whose residuals are `r`, at
+/// the band `h`: a least-squares row at its weight and the target `z'β +
+/// 2h·ρ_h'(r)`, `ρ_h'(r) = r/2h + τ − ½` inside the band and `ψ(r)` outside
+/// it (the module docs).
+fn majorizer_row(rows: &Rows<'_>, r: &[f64], i: usize, h: f64, tau: f64) -> RowUpdate {
+    let step = if r[i].abs() < h {
+        r[i] + 2.0 * h * (tau - 0.5)
+    } else {
+        2.0 * h * psi(r[i], tau)
+    };
+    RowUpdate::Fit {
+        w: rows.w(i),
+        target: rows.y(i) - r[i] + step,
+    }
+}
+
 /// Row `i` as the stream takes it against a fit whose residuals are `r`, at
 /// the band `h`: inside it a least-squares row at target `y + 2h(τ − ½)`,
 /// outside it a nudge `w · 2h · ψ(r)` (the module docs of `robust`).
@@ -413,3 +438,7 @@ fn stream_row(rows: &Rows<'_>, r: &[f64], i: usize, h: f64, tau: f64) -> RowUpda
         }
     }
 }
+
+#[cfg(test)]
+#[path = "quantile_refit_unit_tests.rs"]
+mod unit_tests;

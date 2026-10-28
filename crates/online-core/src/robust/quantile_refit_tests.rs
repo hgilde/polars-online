@@ -450,3 +450,175 @@ fn a_far_level_moves_the_refit_by_rounding_alone() {
     println!("worst: {worst} units");
     assert!(over.is_empty(), "{over:#?}");
 }
+
+/// The warm-up's bound is three rows a coefficient, counted one each and
+/// decayed: at a count of nine rows without decay -- exactly the bound, two
+/// features and an intercept -- the refit runs; at twenty rows decayed by
+/// 0.88 a row, `(1 − 0.88²⁰)/0.12 = 7.69` of them, under the bound but past
+/// three rows plus a coefficient each, it leaves the buffer as the stream
+/// built it (task 281, mutants).
+#[test]
+fn the_warm_ups_bound_is_three_rows_a_coefficient() {
+    let at = |decay: Decay, rows: u32| {
+        let mut m = Robust::new(base(0.5, decay, rows)).unwrap();
+        run(&mut m, &stream(rows as usize + 5, 12, 0, 1, false));
+        m.refit_status()[0]
+    };
+    let nine = at(Decay::Lam(1.0), 9);
+    assert!(nine.done && nine.passes > 0, "{nine:?}");
+    let decayed = at(Decay::Lam(0.88), 20);
+    assert!(decayed.done && decayed.passes == 0, "{decayed:?}");
+}
+
+/// The band's rows are counted one each, not by weight: a stream at weight
+/// 0.1 a row takes Newton steps, as the stream at weight 1 does, where its
+/// weights summed would leave the band short of a row a coefficient and
+/// take the majorizer's (task 281, mutants).
+#[test]
+fn the_bands_rows_are_counted_one_each() {
+    let n = 300;
+    let kinds_at = |w: f64| {
+        let data: Vec<Row> = stream(n, 13, 0, 1, false)
+            .into_iter()
+            .map(|(x, y, _)| (x, y, w))
+            .collect();
+        reset_kinds();
+        let mut m = Robust::new(base(0.5, Decay::Lam(1.0), n as u32)).unwrap();
+        run(&mut m, &data);
+        assert!(m.refit_status()[0].done);
+        kinds()
+    };
+    for w in [1.0, 0.1] {
+        let k = kinds_at(w);
+        assert!(k[1] > 0 && k[2] == 0, "{w}: {k:?}");
+    }
+}
+
+/// A band holding exactly a row a coefficient has the curvature for a
+/// Newton step, and takes it: from a fit of 0 on nine rows whose residuals'
+/// sizes are 0.1, 0.2, 0.3, 0.96, 1, 1.1, 1.2, 1.3 and 1.4, the band is
+/// `0.6444 · 1/Φ⁻¹(3/4) = 0.9554` wide and holds three rows (task 281,
+/// mutants).
+#[test]
+fn a_band_of_a_row_a_coefficient_takes_the_newton_step() {
+    let r = [0.1, -0.2, 0.3, -0.96, 1.0, -1.1, 1.2, -1.3, 1.4];
+    let x = [
+        [0.5, -0.1],
+        [-0.4, 0.7],
+        [0.2, 0.3],
+        [0.9, -0.8],
+        [-0.6, -0.5],
+        [0.1, 0.9],
+        [-0.9, 0.2],
+        [0.7, 0.6],
+        [-0.2, -0.9],
+    ];
+    let mut c = base(0.5, Decay::Lam(1.0), 9);
+    c.solve_every = f64::INFINITY;
+    let mut m = Robust::new(c).unwrap();
+    for i in 0..8 {
+        m.step(&x[i], &[Some(r[i])], 1.0, 1.0);
+    }
+    if let Some(b) = m.beta.as_mut() {
+        b[0].fill(0.0);
+    }
+    reset_kinds();
+    m.step(&x[8], &[Some(r[8])], 1.0, 1.0);
+    let st = m.refit_status()[0];
+    assert!(st.done && st.passes > 0, "{st:?}");
+    assert_eq!(kinds()[2], 0, "{:?}", kinds());
+    assert!(kinds()[1] > 0, "{:?}", kinds());
+}
+
+/// A fit no row of which lies inside its band -- targets of +1 and −1 in
+/// pairs of rows with the same features, so the smoothed loss is flat
+/// wherever every fitted value is within `1 − h` of 0, and the band, `0.37`
+/// wide here, holds no row there -- is rebuilt as the majorizer's rows,
+/// as a pass with such a band is: the target keeps its rows' weight and
+/// predicts the next row, as the stream without the refit does. Rebuilt as
+/// the stream takes each row, every row a nudge, the sums had no weight and
+/// the next row no prediction (task 281).
+#[test]
+fn a_band_with_no_row_keeps_the_targets_weight() {
+    let n = 100;
+    let data: Vec<Row> = (0..n)
+        .map(|i| {
+            let k = i / 2;
+            let x = [
+                f64::from(k % 10) / 10.0 - 0.45,
+                f64::from(k % 7) / 7.0 - 0.43,
+            ];
+            (x, vec![Some(if i % 2 == 0 { 1.0 } else { -1.0 })], 1.0)
+        })
+        .collect();
+    let mut on = Robust::new(base(0.5, Decay::Lam(1.0), n)).unwrap();
+    let mut off = Robust::new(base(0.5, Decay::Lam(1.0), 0)).unwrap();
+    run(&mut on, &data);
+    run(&mut off, &data);
+    let st = on.refit_status()[0];
+    assert!(st.done && st.passes > 0 && !st.failed, "{st:?}");
+    // The premise: the converged fit's band holds no row.
+    let b = on.coefficients().unwrap()[0].clone();
+    let fitted = |x: &[f64; 2]| b[0] + b[1] * x[0] + b[2] * x[1];
+    assert!(
+        data.iter()
+            .all(|(x, y, _)| (y[0].unwrap() - fitted(x)).abs() > 0.5)
+    );
+    assert!(
+        on.wj[0] > 0.0 && off.wj[0] > 0.0,
+        "{} {}",
+        on.wj[0],
+        off.wj[0]
+    );
+    assert!(on.ybar[0].is_finite() && on.cross[0].iter().all(|c| c.is_finite()));
+    let x = [0.1, 0.1];
+    let (p_on, p_off) = (on.predict(&x, 1.0).pred, off.predict(&x, 1.0).pred);
+    assert!(
+        p_on[0].is_finite() && p_off[0].is_finite(),
+        "{p_on:?} {p_off:?}"
+    );
+    assert!(p_on[0].abs() < 1.0, "a median of ±1 pairs: {p_on:?}");
+}
+
+/// A refit that takes every pass is counted once in `solve_failures`, on
+/// its row, over what the model without the refit counts there, and its
+/// last pass's fit stands: 16 rows with four targets 30 off, `τ = 0.75` and
+/// `quantile_eps = 1e-3`, found by a search over short streams (task 281,
+/// mutants), which do not settle in the 200 passes.
+#[test]
+fn a_refit_that_runs_to_its_cap_is_counted_once() {
+    let rows = [
+        (0.861098701750727, 3.1475333096309686),
+        (0.6664494252134896, 2.031214985879759),
+        (0.9524682482377222, 0.7155630121703367),
+        (-0.09280079788583251, 0.802322542552432),
+        (0.7200361619605207, -0.056208739995097456),
+        (-0.7924813270775997, 29.657911970641145),
+        (-0.8891777654448711, -0.9511709878836129),
+        (0.3360907396076267, 32.140838396357466),
+        (-0.7808990340251272, -0.7056600423896854),
+        (0.32538334264844093, -1.5390300862280992),
+        (0.2670157442329868, 1.9396440664778627),
+        (0.38218516486505805, 1.7507086468196766),
+        (-0.6225324232431733, -0.6389818620568497),
+        (0.3665882440091026, 31.0243119047125),
+        (0.7391180132036732, 32.08472075046633),
+        (0.22566527521606128, 1.1855941179582279),
+    ];
+    let mut c = base(0.75, Decay::Lam(1.0), 0);
+    c.quantile_eps = 1e-3;
+    c.n_features = 1;
+    let mut off = Robust::new(c.clone()).unwrap();
+    c.refit_rows = rows.len() as u32;
+    let mut on = Robust::new(c).unwrap();
+    for (i, (x, y)) in rows.iter().enumerate() {
+        on.step(&[*x], &[Some(*y)], 1.0, 1.0);
+        off.step(&[*x], &[Some(*y)], 1.0, 1.0);
+        if i + 1 < rows.len() {
+            assert_eq!(on.solve_failures, off.solve_failures, "row {i}");
+        }
+    }
+    let st = on.refit_status()[0];
+    assert!(st.done && st.ran_to_cap() && !st.failed, "{st:?}");
+    assert_eq!(on.solve_failures, off.solve_failures + 1);
+}

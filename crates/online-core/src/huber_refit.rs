@@ -519,14 +519,15 @@ impl<'a> Rows<'a> {
 /// `g(m) = Σ v_i ψ_c(y_i − m)`, `ψ_c(e) = max(−c, min(c, e))`, found
 /// exactly rather than iterated ([`crate::Marginal`]'s bins, docs/PLAN.md
 /// task 278). `y` is sorted ascending. `g` is continuous, non-increasing and
-/// linear between the breakpoints `y_i ± c`, so one sweep up the merged
-/// breakpoints finds where it crosses a level, on that segment's line
-/// `c·(C₊ − C₋) + Σ_in v_i y_i − Σ_in v_i · m`, with `C₊`, `C₋` the weight
-/// above and below the band and the sums over the rows inside it. The sums
-/// are formed afresh for the segment's rows, not carried through the
-/// sweep's additions and subtractions, and the values are taken from the
-/// middle row, so a target at `10⁶` with a spread of `10⁻²` keeps its
-/// digits.
+/// linear between the breakpoints `y_i ± c`, so a binary search over the
+/// merged breakpoints finds the segment where it crosses a level, and the
+/// root is on that segment's line `c·(C₊ − C₋) + Σ_in v_i y_i − Σ_in v_i ·
+/// m`, with `C₊`, `C₋` the weight above and below the band and the sums over
+/// the rows inside it. `g` at each breakpoint and the segment's sums are
+/// formed afresh, every term of `g` clipped to the cut, so rows far beyond
+/// the band leave no rounding of their own size in them; and the values are
+/// taken from the middle row, so a target at `10⁶` with a spread of `10⁻²`
+/// keeps its digits.
 ///
 /// The roots are where `g` crosses `+τ` and `−τ`, `τ` a rounding's worth
 /// of `c·Σv`: the root itself, to that rounding, where `g` falls through 0,
@@ -550,8 +551,9 @@ pub(crate) fn huber_location(y: &[f64], v: &[f64], cut: f64, toward: f64) -> Opt
         return Some(at + s / total);
     }
     // `m` with `g(m) = level` on the line of the segment whose rows inside
-    // the band are those of `guess`, the sums formed afresh.
-    let line = |guess: f64, level: f64| -> f64 {
+    // the band are those of `guess`, the sums formed afresh; `None` where
+    // no row is inside, `g` flat there.
+    let line = |guess: f64, level: f64| -> Option<f64> {
         let (mut a, mut b, mut net) = (0.0, 0.0, 0.0);
         for &i in &rows {
             let e = d(i) - guess;
@@ -564,54 +566,65 @@ pub(crate) fn huber_location(y: &[f64], v: &[f64], cut: f64, toward: f64) -> Opt
                 b += v[i] * d(i);
             }
         }
-        if a > 0.0 {
-            (cut * net + b - level) / a
-        } else {
-            guess
-        }
+        (a > 0.0).then(|| (cut * net + b - level) / a)
     };
-    // The least `m` with `g(m) <= level`: sweep `m` upward, row `i`
-    // entering the band at `d_i − c` and leaving it at `d_i + c`, both
-    // ascending in `i`.
-    let cross = |level: f64| -> f64 {
-        let (mut above, mut below, mut a, mut b) = (total, 0.0, 0.0, 0.0);
-        let (mut enter, mut leave) = (0usize, 0usize);
-        let mut prev = f64::NEG_INFINITY;
-        let n = rows.len();
-        while leave < n {
-            let next_in = (enter < n).then(|| d(rows[enter]) - cut);
-            let next_out = d(rows[leave]) + cut;
-            let (x, entering) = match next_in {
-                Some(e) if e <= next_out => (e, true),
-                _ => (next_out, false),
-            };
-            if cut * (above - below) + b - a * x <= level {
-                if a <= 0.0 {
-                    // Flat on `[prev, x]`, so it crossed at `prev` (to
-                    // rounding).
-                    return if prev.is_finite() { prev } else { x };
-                }
-                let guess = ((cut * (above - below) + b - level) / a).clamp(prev, x);
-                return line(guess, level).clamp(prev, x);
-            }
-            if entering {
-                let i = rows[enter];
-                above -= v[i];
-                a += v[i];
-                b += v[i] * d(i);
+    // The breakpoints, ascending: row `i` enters the band at `d_i − c` and
+    // leaves it at `d_i + c`, both ascending in `i`.
+    let n = rows.len();
+    let mut points = Vec::with_capacity(2 * n);
+    let (mut enter, mut leave) = (0usize, 0usize);
+    while leave < n {
+        let next_out = d(rows[leave]) + cut;
+        match (enter < n).then(|| d(rows[enter]) - cut) {
+            Some(e) if e <= next_out => {
+                points.push(e);
                 enter += 1;
-            } else {
-                let i = rows[leave];
-                a -= v[i];
-                b -= v[i] * d(i);
-                below += v[i];
+            }
+            _ => {
+                points.push(next_out);
                 leave += 1;
             }
-            prev = x;
         }
-        // At the last breakpoint `g` is `−c·Σv`, below any level here;
-        // rounding can leave it a hair above.
-        prev
+    }
+    // `g` at a breakpoint, read afresh, each term clipped to the cut, so
+    // its rounding is the cut's however far the rows lie: sums carried up
+    // the breakpoints through the entries and exits of rows `1e16` away
+    // rounded at a few units, where `g` is `c` a row, and read the root
+    // `5e16` from a cluster whose band was `1e-3` wide (task 281).
+    let g = |m: f64| -> f64 {
+        rows.iter()
+            .map(|&i| v[i] * (d(i) - m).clamp(-cut, cut))
+            .sum()
+    };
+    // The least `m` with `g(m) <= level`: the first breakpoint at which `g`
+    // is at most the level -- `g` does not rise, so a binary search -- and
+    // on the segment before it the line through its rows. At the last
+    // breakpoint `g` is `−c·Σv`, below any level here.
+    let cross = |level: f64| -> f64 {
+        let k = points.partition_point(|&x| g(x) > level);
+        let Some(&x) = points.get(k) else {
+            return points[points.len() - 1];
+        };
+        let prev = k.checked_sub(1).map_or(f64::NEG_INFINITY, |p| points[p]);
+        let mid = if prev.is_finite() {
+            0.5 * (prev + x)
+        } else {
+            x
+        };
+        // Flat along it, `g` above the level at its lower end and not at its
+        // upper: a band narrower than the rounding of its row, `d_i ± c` one
+        // double, where `g` steps down at an end -- at `prev` if the segment
+        // is at most the level, at `x` if not.
+        line(mid, level).map_or_else(
+            || {
+                if prev.is_finite() && g(mid) <= level {
+                    prev
+                } else {
+                    x
+                }
+            },
+            |m| m.clamp(prev, x),
+        )
     };
     let tau = 64.0 * f64::EPSILON * cut * total;
     let (lo, hi) = (cross(tau), cross(-tau));
@@ -1563,5 +1576,178 @@ mod tests {
         assert_eq!(u, [1.0, 0.5, 1.0]);
         huber_weights(&[1.0, 4.0, 0.0], None, 2.0, &mut u);
         assert_eq!(u, [1.0, 1.0, 1.0]);
+    }
+
+    /// `g(m) = Σ v ψ_c(y − m)` evaluated afresh: the estimating equation the
+    /// location solves, sharing no sum with the sweep.
+    fn estimating(y: &[f64], v: &[f64], c: f64, m: f64) -> f64 {
+        y.iter()
+            .zip(v)
+            .map(|(yi, vi)| vi * (yi - m).clamp(-c, c))
+            .sum()
+    }
+
+    /// Bisection on `g` over `[lo, hi]`, 200 halvings: the root to the last
+    /// bit where `g` falls through 0.
+    fn bisect(y: &[f64], v: &[f64], c: f64, (mut lo, mut hi): (f64, f64)) -> f64 {
+        for _ in 0..200 {
+            let mid = 0.5 * (lo + hi);
+            if estimating(y, v, c, mid) > 0.0 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        0.5 * (lo + hi)
+    }
+
+    /// The sweep carries its sums through additions and subtractions, and a
+    /// far cluster that enters the band and leaves it below the root leaves
+    /// a rounding of its own size behind: `1e9` a row is `1e-7` of residue.
+    /// The segment's line is formed afresh (task 281, mutants), so the root
+    /// is bisection's to rounding of the near rows, not of the far ones.
+    #[test]
+    fn a_far_cluster_leaves_no_rounding_in_the_location() {
+        let mut y = vec![-1e9 + 0.1, -1e9 + 0.37, -1e9 + 0.71, -1e9 + 0.93];
+        y.extend([0.05, 0.13, 0.29, 0.41, 0.47, 0.62, 0.83]);
+        let v = [1.3, 0.7, 1.1, 0.9, 1.0, 0.6, 1.4, 0.8, 1.2, 1.0, 0.5];
+        for c in [0.5, 1.0, 3.0] {
+            let m = huber_location(&y, &v, c, f64::NAN).unwrap();
+            let root = bisect(&y, &v, c, (-10.0, 10.0));
+            assert!((m - root).abs() <= 1e-14, "cut {c}: {m} against {root}");
+            assert!(estimating(&y, &v, c, m).abs() <= 1e-13, "cut {c}");
+        }
+    }
+
+    /// The roots are where `g` crosses `±τ`, `τ = 64 ε c Σv`: with every row
+    /// inside a cut of `1e12` the line is `g(m) = Σv (ȳ − m)`, so the least
+    /// root is `ȳ − τ/Σv = ȳ − 64 ε c` and the greatest `ȳ + 64 ε c`, and a
+    /// `toward` far below or above takes the one nearest it; at `Σv = 4`
+    /// the interval is a weight's worth, not its square or its inverse.
+    #[test]
+    fn the_roots_are_where_g_crosses_a_rounding_of_its_scale() {
+        let y = [0.25, 0.5, 1.0, 2.25];
+        let v = [1.0; 4];
+        let c = 1e12;
+        let mean = 1.0;
+        let half = 64.0 * f64::EPSILON * c;
+        let low = huber_location(&y, &v, c, -1e6).unwrap();
+        let high = huber_location(&y, &v, c, 1e6).unwrap();
+        assert!((low - (mean - half)).abs() <= 1e-9 * half, "{low}");
+        assert!((high - (mean + half)).abs() <= 1e-9 * half, "{high}");
+        // The middle where `toward` is not a number, and `toward` itself
+        // inside the interval.
+        assert_eq!(
+            huber_location(&y, &v, c, f64::NAN),
+            Some(0.5 * (low + high))
+        );
+        assert_eq!(huber_location(&y, &v, c, 1.0 + 1e-3), Some(1.0 + 1e-3));
+    }
+
+    /// Rows `1e16` apart at a cut of `1e-3`, each band narrower than its
+    /// row's rounding, `y_i ± c` one double, so `g` steps at each row: the
+    /// root is the top row, which carries more than half the weight. Read
+    /// from sums carried up the breakpoints it was `2.1e16` from it
+    /// (task 281's search, which found this case), and an earlier form of
+    /// the search read past its last breakpoint.
+    #[test]
+    fn bands_narrower_than_their_rows_rounding_step_g_at_each_row() {
+        let y = [
+            -1.822164633079547e16,
+            -8166305640259041.0,
+            2.439867804361081e16,
+        ];
+        let v = [0.835622537224729, 1.051623972756464, 2.280822064161749];
+        let m = huber_location(&y, &v, 1e-3, f64::NAN).unwrap();
+        assert!((m - y[2]).abs() <= 8.0, "{m}");
+    }
+
+    /// Rows `1e16` to `1e17` from a cluster whose band is `1e-3` wide: the
+    /// sweep's sums, carried through those rows' entries and exits, round
+    /// at a few units where `g` itself is `1e-3` a row, and the location
+    /// they read sat `5e16` from the cluster (found by the search behind
+    /// the test above, task 281). Each breakpoint's `g` is read afresh,
+    /// each term clipped to the cut, so the root is bisection's.
+    #[test]
+    fn rows_far_beyond_the_cut_leave_the_root_in_the_cluster() {
+        let mut y = vec![
+            -1.0054330951384432e17,
+            -3.0483978458765236e16,
+            5.677624234228088e16,
+        ];
+        y.extend([
+            0.00034, 0.00173, 0.00176, 0.00180, 0.00195, 0.00211, 0.00298, 0.00635, 0.00663,
+            0.00856,
+        ]);
+        y.sort_by(f64::total_cmp);
+        let v = [
+            0.9, 1.1, 0.7, 1.3, 0.6, 1.0, 1.2, 0.8, 0.5, 1.4, 0.9, 1.1, 0.75,
+        ];
+        for c in [1e-3, 2e-3] {
+            let m = huber_location(&y, &v, c, f64::NAN).unwrap();
+            let root = bisect(&y, &v, c, (-1.0, 1.0));
+            assert!((m - root).abs() <= 1e-12, "cut {c}: {m} against {root}");
+        }
+    }
+
+    /// The joint location and scale scale with the rows, to the stop's
+    /// tolerance of the scale: the rows at `1e-6`, at `1e6`, and moved so
+    /// the fixed point sits at 0 (statsmodels' digits as in
+    /// `the_location_is_statsmodels_m_location`), where the stop's rounding
+    /// term reads `|m|` near 0 and must not loosen it.
+    #[test]
+    fn the_joint_location_scales_and_shifts_with_its_rows() {
+        let at = 0.114_025_456_454_290_82;
+        let y = location_rows();
+        let v = vec![1.0; y.len()];
+        for k in [1e-6, 1e6] {
+            let scaled: Vec<f64> = y.iter().map(|yi| yi * k).collect();
+            let (m, _) = location_refit(&scaled, &v, &v, 1.345).unwrap();
+            assert!((m / k - at).abs() <= 1e-9, "{k}: {}", m / k);
+        }
+        let moved: Vec<f64> = y.iter().map(|yi| yi - at).collect();
+        let (m, _) = location_refit(&moved, &v, &v, 1.345).unwrap();
+        assert!(m.abs() <= 1e-9, "{m}");
+    }
+
+    /// Without an intercept the rounding term's size is the slopes' terms
+    /// alone: a fit of `1e6` on a feature reaching `±1` may move by a few
+    /// hundred units in its last place, and not by `1e-6`.
+    #[test]
+    fn the_stop_reads_the_slopes_terms_through_the_origin() {
+        let mut b = RefitBuf::new();
+        for i in 0..21u32 {
+            b.learn(&[f64::from(i) / 10.0 - 1.0], 0.0, 1.0, 1.0, 1.0, 99);
+        }
+        let (rows, ages) = b.take();
+        let r = Rows::new(&rows, &ages, 1);
+        let far = [1e6];
+        assert!(converged(
+            &r,
+            false,
+            Some(&far),
+            &[1e6 + 100.0 * 1e6 * f64::EPSILON],
+            None
+        ));
+        assert!(!converged(&r, false, Some(&far), &[1e6 + 1e-6], None));
+    }
+
+    /// Weighted least squares at a level of `1e6` in the feature and twice
+    /// that in the target, on rows of the line `y = 1 + 2x`: the centred
+    /// sums cancel the level, so the slope is 2 to the rounding of the
+    /// rows' values, where centring either side by its mean added rather
+    /// than taken away leaves a term of the level times the rounding of
+    /// `Σ w (x − x̄)`.
+    #[test]
+    fn weighted_least_squares_is_centred_at_a_level() {
+        let mut b = RefitBuf::new();
+        let xs = [1e6 + 0.1, 1e6 + 0.7, 1e6 + 0.3, 1e6 + 0.45];
+        for &x in &xs {
+            b.learn(&[x], 1.0 + 2.0 * x, 1.0, 1.0, 1.0, 9);
+        }
+        let (rows, ages) = b.take();
+        let r = Rows::new(&rows, &ages, 1);
+        let fit = wls(&r, &[1.0, 3.0, 0.7, 1.9], true, 0.0, &[0.0]).unwrap();
+        assert!((fit[1] - 2.0).abs() <= 1e-8, "{fit:?}");
     }
 }

@@ -280,3 +280,54 @@ fn the_floors_counts_are_state_and_a_damaged_one_is_refused() {
     held.step(&[0.1, 1.0], &[Some(1.0), None], 0.0, 1.0);
     assert!(held.seen.is_empty(), "the old gate keeps no floor");
 }
+
+/// Under the gate that held learning back, a fresh model's first solve
+/// falls on the row its weight reaches `min_weight`, whatever each
+/// target's own `min_weight` asks of its own first solve: at 3 and 10, the
+/// fit is there from the fourth row, six rows before either target's
+/// weight reaches 10 (task 281, mutants).
+#[test]
+fn under_the_old_gate_the_first_solve_waits_for_the_models_weight_alone() {
+    let mut c = cfg(RobustLoss::Huber { delta: 1.345 }, HuberScale::Mad, 0);
+    c.min_weight_holds_learning = true;
+    c.max_rows_between_solves = u32::MAX;
+    let mut m = Robust::new(c).unwrap();
+    m.set_target_min_weight(vec![10.0, 10.0]).unwrap();
+    let mut s = 4u64;
+    let mut first = None;
+    for i in 0..9 {
+        let x = [lcg(&mut s), lcg(&mut s)];
+        m.step(&x, &[Some(1.0 + x[0]), Some(x[1])], 1.0, 1.0);
+        if first.is_none() && m.coefficients().is_some() {
+            first = Some((i, m.n_eff()));
+        }
+    }
+    let (row, w) = first.expect("a solve before either target's own weight");
+    assert!((3.0..4.0).contains(&w) && row == 3, "row {row}, weight {w}");
+}
+
+/// Under the gate that held learning back there is no floor, and a target
+/// whose weight has decayed to exactly 0 -- a gap of `10⁵` clock units at
+/// a half-life of 40, the target absent there -- predicts nothing until it
+/// learns again, though its last fit stands (task 281, mutants).
+#[test]
+fn under_the_old_gate_a_target_decayed_to_nothing_predicts_nothing() {
+    let mut c = cfg(RobustLoss::Huber { delta: 1.345 }, HuberScale::Mad, 0);
+    c.min_weight_holds_learning = true;
+    c.min_weight = 0.0;
+    let mut m = Robust::new(c).unwrap();
+    let mut s = 6u64;
+    let mut row = |m: &mut Robust, both: bool, d: f64| {
+        let x = [lcg(&mut s), lcg(&mut s)];
+        let y = [Some(1.0 + x[0]), both.then_some(x[1] - 2.0)];
+        m.step(&x, &y, d, 1.0)
+    };
+    for _ in 0..30 {
+        row(&mut m, true, 1.0);
+    }
+    row(&mut m, false, 1e5);
+    assert_eq!(m.wj[1], 0.0, "the gap forgets the absent target");
+    assert!(m.coefficients().unwrap()[1].iter().all(|b| b.is_finite()));
+    let p = m.predict(&[0.2, -0.4], 1.0).pred;
+    assert!(p[0].is_finite() && p[1].is_nan(), "{p:?}");
+}
