@@ -622,3 +622,25 @@ fn a_refit_that_runs_to_its_cap_is_counted_once() {
     assert!(st.done && st.ran_to_cap() && !st.failed, "{st:?}");
     assert_eq!(on.solve_failures, off.solve_failures + 1);
 }
+
+/// The converged fit's band is counted as a pass's is, one row each and
+/// at least a row a coefficient for the stream's rows: nine rows (seed 8,
+/// found by a search over short streams) whose converged fit's band holds
+/// exactly three, a row for each of the intercept and two slopes, are
+/// rebuilt as the stream takes each row, so the target's weight is those
+/// three rows' alone -- at a weight of 1 or 0.5 a row -- where the
+/// majorizer's would hold all nine (task 281, mutants).
+#[test]
+fn a_converged_band_of_a_row_a_coefficient_is_rebuilt_as_the_stream() {
+    for w in [1.0, 0.5] {
+        let data: Vec<Row> = stream(9, 8, 0, 1, false)
+            .into_iter()
+            .map(|(x, y, _)| (x, y, w))
+            .collect();
+        let mut m = Robust::new(base(0.5, Decay::Lam(1.0), 9)).unwrap();
+        run(&mut m, &data);
+        let st = m.refit_status()[0];
+        assert!(st.done && st.passes > 0 && !st.failed, "{w}: {st:?}");
+        assert_eq!(m.wj[0], 3.0 * w, "{w}");
+    }
+}

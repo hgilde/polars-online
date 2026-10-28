@@ -622,6 +622,21 @@ times the width"""
 [[tolerated]]
 file = "crates/online-core/src/robust/quantile_refit.rs"
 function = "Robust::refit_quantile"
+mutation = "replace < with <="
+line_has = """                let inside: f64 = (0..n)
+                    .filter(|&i| r[i].abs() < h)"""
+columns = [45]
+kind = "tie"
+why = """the converged fit's count of the band's rows, the pass's twin above: \
+they part only at a residual exactly the band's half-width, `|r_i| = h`, a \
+continuous statistic against the scale times the width. The count's other \
+mutants are caught: a band of exactly a row a coefficient is rebuilt as \
+the stream, its rows counted one each \
+(`a_converged_band_of_a_row_a_coefficient_is_rebuilt_as_the_stream`)"""
+
+[[tolerated]]
+file = "crates/online-core/src/robust/quantile_refit.rs"
+function = "Robust::refit_quantile"
 mutation = "replace match guard !done with true"
 line_has = "(Pass::Newton(h), Some(b)) if !done => {"
 kind = "below-error"

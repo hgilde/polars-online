@@ -601,7 +601,10 @@ pub(crate) fn huber_location(y: &[f64], v: &[f64], cut: f64, toward: f64) -> Opt
     // The least `m` with `g(m) <= level`: the first breakpoint at which `g`
     // is at most the level -- `g` does not rise, so a binary search -- and
     // on the segment before it the line through its rows. At the last
-    // breakpoint `g` is `−c·Σv`, below any level here.
+    // breakpoint `g` is `−c·Σv`, below any level here, unless a row's band
+    // edges round to the row itself: its term is then 0 there, and `g` is
+    // the other rows' alone, which can be above `−τ` when they weigh little.
+    // The last breakpoint is then the root (task 281, mutants).
     let cross = |level: f64| -> f64 {
         let k = points.partition_point(|&x| g(x) > level);
         let Some(&x) = points.get(k) else {
@@ -1662,6 +1665,37 @@ mod tests {
         let v = [0.835622537224729, 1.051623972756464, 2.280822064161749];
         let m = huber_location(&y, &v, 1e-3, f64::NAN).unwrap();
         assert!((m - y[2]).abs() <= 8.0, "{m}");
+    }
+
+    /// `g` flat at exactly `+τ` between two bands, `τ = 64 ε c Σv`: the
+    /// weights `1 − 2⁻⁴⁶` and `1 + 2⁻⁴⁶` sum to 2, their difference at a
+    /// cut of 1 is `2⁻⁴⁵`, which is `τ`, every number exact. The least root
+    /// is the first breakpoint at which `g` is at most `τ`, where the flat
+    /// stretch begins, a cut above the lower row: the search stops at a
+    /// breakpoint where `g` equals the level, not at the first below it, a
+    /// cut below the upper row (task 281, mutants).
+    #[test]
+    fn a_flat_stretch_at_the_level_starts_the_roots() {
+        let tiny = 2f64.powi(-46);
+        let (y, v) = ([0.0, 10.0], [1.0 - tiny, 1.0 + tiny]);
+        assert_eq!(64.0 * f64::EPSILON * (v[0] + v[1]), v[1] - v[0]);
+        assert_eq!(estimating(&y, &v, 1.0, 5.0), v[1] - v[0]);
+        assert_eq!(huber_location(&y, &v, 1.0, -100.0), Some(1.0));
+    }
+
+    /// A last breakpoint at which `g` is still above `−τ`: the top row
+    /// carries all but `2e-20` of the weight and sits `1e16` above the
+    /// others, so its band's edges `1e16 ± 1e-3` round to the row itself,
+    /// its term is 0 there, and `g` at the last breakpoint is the light
+    /// rows' `−2e-23`, above `−τ = −1.4e-17`. The greatest root is then
+    /// that breakpoint, and the location the heavy row (task 281, mutants).
+    #[test]
+    fn a_last_breakpoint_above_the_level_is_the_greatest_root() {
+        let (y, v) = ([0.0, 0.0, 1e16], [1e-20, 1e-20, 1.0]);
+        for toward in [f64::NAN, 2e16] {
+            let m = huber_location(&y, &v, 1e-3, toward).unwrap();
+            assert_eq!(m, 1e16, "{toward}");
+        }
     }
 
     /// Rows `1e16` to `1e17` from a cluster whose band is `1e-3` wide: the
