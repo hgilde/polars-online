@@ -485,3 +485,202 @@ fn the_intercept_takes_the_running_means_step_while_it_is_the_larger() {
         assert!(by_mean > 20 && by_rate > 100, "{what}: both steps ran");
     }
 }
+
+/// Task 281 (mutants): each step gain, by hand, as a number rather than
+/// the gate's verdict alone: `q = lr·(w·c·|z̃|² + l2)` with `z̃ = [1, x]`
+/// and `c` the loss's curvature at the row's prediction -- 1 under the
+/// squared loss, 1 inside the Huber cut and 0 outside it, `p` under the
+/// Poisson link, `p(1 − p)` under the logistic -- the sums decayed by
+/// `2^(-1/100)` a stepped row. The weights are uneven and `l2` is not 0,
+/// so the curvature, the weight, the row's length and the ridge each move
+/// `q` on their own.
+#[test]
+fn each_step_gain_is_the_rate_times_the_curvature_along_the_row() {
+    let rows = rows(400, 0.0);
+    let cases = [
+        ("squared", SgdLoss::Squared),
+        ("huber", SgdLoss::Huber { delta: 1.345 }),
+        ("poisson", SgdLoss::Poisson),
+        ("logistic", SgdLoss::Logistic),
+    ];
+    for (what, loss) in cases {
+        let c = SgdCfg {
+            standardize: false,
+            l2: 0.01,
+            min_weight: 0.0,
+            ..cfg(loss, LearningRate::Constant, 0.002)
+        };
+        let lr = c.learning_rate;
+        let mut m = Sgd::new(c.clone()).unwrap();
+        let (mut q1, mut q2) = (0.0f64, 0.0f64);
+        let (mut learned, mut inside, mut outside) = (0usize, 0usize, 0usize);
+        let mut s = 17u64;
+        for (i, (x, y)) in rows.iter().enumerate() {
+            // A target each loss teaches from: a count, a label, or the
+            // stream's own.
+            let y = match loss {
+                SgdLoss::Poisson => (y.abs() / 4.0).floor(),
+                SgdLoss::Logistic => f64::from(*y > 10.0),
+                _ => *y,
+            };
+            let w = 0.5 + lcg(&mut s).abs();
+            let first = m.level.first().is_some_and(|lv| lv.w == 0.0);
+            let p = m.link(dot(&m.beta[0], 1, x));
+            let scale = m.scale(0);
+            m.step(x, &[Some(y)], 1.0, w);
+            // The level's first row takes the whole residual and nothing
+            // else: no step, no gain.
+            if first {
+                continue;
+            }
+            let curvature = match loss {
+                SgdLoss::Squared => 1.0,
+                SgdLoss::Huber { delta } => {
+                    let within = scale.is_none_or(|sc| (p - y).abs() <= delta * sc);
+                    if within {
+                        inside += 1;
+                    } else {
+                        outside += 1;
+                    }
+                    f64::from(within)
+                }
+                SgdLoss::Poisson => p,
+                SgdLoss::Logistic => p * (1.0 - p),
+                _ => unreachable!(),
+            };
+            let zz = 1.0 + x.iter().map(|v| v * v).sum::<f64>();
+            let q = lr * (w * curvature * zz + c.l2);
+            q1 = GAIN_DECAY * q1 + q;
+            q2 = GAIN_DECAY * q2 + q * q;
+            learned += 1;
+            let g = m.gain[0];
+            let close = |a: f64, b: f64| (a - b).abs() <= 1e-12 * b.abs();
+            assert!(
+                close(g.q, q1) && close(g.q2, q2),
+                "{what}, row {i}: the gains {g:?}, by hand ({q1}, {q2})"
+            );
+        }
+        assert!(learned > 390, "{what}: {learned} rows stepped");
+        if matches!(loss, SgdLoss::Huber { .. }) {
+            assert!(
+                inside > 100 && outside > 5,
+                "{what}: {inside} rows inside the cut, {outside} outside"
+            );
+        }
+    }
+}
+
+/// Task 281 (mutants): at a running mean's gain exactly the rate, past the
+/// warm-up, the rate's step is taken, not the mean's: the mean takes over
+/// only while its gain is the larger. Every weight 2 and a rate of `1/32`:
+/// the 32nd learned row's gain `2 / 64` is the rate to the bit, Kish's
+/// count 32 is past 22, and the two steps part, `−d/32` against
+/// `−lr·(d·w) = −d/16`. Rows whose features are 0, so the intercept is the
+/// whole fit.
+#[test]
+fn at_a_gain_equal_to_the_rate_the_rate_steps() {
+    let x = [0.0; 3];
+    let lr = 1.0 / 32.0;
+    let mut m = Sgd::new(SgdCfg {
+        standardize: false,
+        min_weight: 0.0,
+        clip_gradient: f64::INFINITY,
+        ..cfg(SgdLoss::Squared, LearningRate::Constant, lr)
+    })
+    .unwrap();
+    let mut s = 9u64;
+    let mut b0 = 0.0f64;
+    for n in 1..=40u32 {
+        let y = 40.0 + 3.0 * lcg(&mut s);
+        let p = m.step(&x, &[Some(y)], 1.0, 2.0).pred[0];
+        let d = p - y;
+        let gain = 2.0 / (2.0 * f64::from(n));
+        if n == 1 {
+            b0 = y;
+        } else if n <= 22 || gain > lr {
+            b0 += -gain * d;
+        } else {
+            b0 += -(lr * (d * 2.0));
+        }
+        if n == 32 {
+            assert_eq!(gain, lr, "the tie is exact");
+        }
+        assert_eq!(m.coefficients()[0][0].to_bits(), b0.to_bits(), "row {n}");
+    }
+}
+
+/// Task 281 (mutants): a weight so small that its square underflows to 0
+/// leaves `Σw²` at 0, and Kish's count is then read as 0 -- the level still
+/// warming up -- not `0/0`: the intercept takes the running mean's step,
+/// `−(w/Σw)·d`, where a NaN count would hand the row to the rate, whose
+/// step at such a weight is nothing.
+#[test]
+fn a_weight_whose_square_underflows_counts_as_a_young_level() {
+    let x = [0.0; 3];
+    let w = 1e-170;
+    let mut m = Sgd::new(SgdCfg {
+        standardize: false,
+        min_weight: 0.0,
+        // A rate above every gain here, so the count alone keeps the
+        // level warm.
+        ..cfg(SgdLoss::Squared, LearningRate::Constant, 0.9)
+    })
+    .unwrap();
+    let mut b0 = 0.0f64;
+    let mut w_sum = 0.0f64;
+    for (n, y) in [40.0, 44.0, 38.0, 41.0].into_iter().enumerate() {
+        let p = m.step(&x, &[Some(y)], 1.0, w).pred[0];
+        w_sum += w;
+        if n == 0 {
+            b0 = y;
+        } else {
+            b0 += -(w / w_sum) * (p - y);
+        }
+        assert_eq!(m.level[0].w2, 0.0, "the square underflowed");
+        assert_eq!(m.coefficients()[0][0].to_bits(), b0.to_bits(), "row {n}");
+    }
+}
+
+/// Task 281 (mutants): `unstable_targets` is each target's own verdict: a
+/// target at a rate past its bound and one that never learned (its target
+/// always null) read `[true, false]`; a fresh model `[false, false]`; a
+/// model that keeps no gains (AdaGrad's per-slot rate) nothing.
+#[test]
+fn each_target_has_its_own_verdict() {
+    let rows = rows(300, 0.0);
+    let mut m = Sgd::new(SgdCfg {
+        n_targets: 2,
+        standardize: false,
+        ..cfg(SgdLoss::Squared, LearningRate::Constant, 0.15)
+    })
+    .unwrap();
+    assert_eq!(m.unstable_targets(), vec![false, false]);
+    for (x, y) in &rows {
+        m.step(x, &[Some(*y), None], 1.0, 1.0);
+    }
+    assert_eq!(m.unstable_targets(), vec![true, false]);
+    assert!(m.unstable());
+    let ada = Sgd::new(cfg(SgdLoss::Squared, LearningRate::AdaGrad, 0.1)).unwrap();
+    assert!(ada.unstable_targets().is_empty());
+}
+
+/// Task 281 (mutants): AdaGrad's step is 0 where its denominator is: under
+/// `target_spread` the epsilon is 0 before the target has a spread, and a
+/// gradient below `1e-162` has a square that underflows to 0, so the
+/// first row's slope steps nothing, where `lr / 0 · g` would make it
+/// infinite.
+#[test]
+fn adagrads_step_is_nothing_where_its_denominator_is_zero() {
+    let mut m = Sgd::new(SgdCfg {
+        n_features: 1,
+        fit_intercept: false,
+        standardize: false,
+        min_weight: 0.0,
+        ..cfg(SgdLoss::Squared, LearningRate::AdaGrad, 0.1)
+    })
+    .unwrap();
+    assert_eq!(m.unit(0), 0.0, "no spread yet: the epsilon is 0");
+    m.step(&[1.0], &[Some(1e-170)], 1.0, 1.0);
+    assert_eq!(m.g2[0][0], 0.0, "the gradient's square underflowed");
+    assert_eq!(m.coefficients()[0], vec![0.0]);
+}

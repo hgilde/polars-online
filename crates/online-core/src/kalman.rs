@@ -5323,6 +5323,28 @@ mod tests {
     mod per_row;
     // The filter against its recursion written by hand, in both forms.
     mod recursion;
+    /// Task 281 (mutants): a covariance has lost its definiteness where a
+    /// variance is below 0 or not a number, or is exactly 0 beside a
+    /// covariance of its own row that is not, `|P_ij|² ≤ P_ii P_jj` being
+    /// false there -- whichever slot's row it is, the first's included.
+    #[test]
+    fn a_zero_variance_beside_a_covariance_is_lost_definiteness_in_any_row() {
+        let mut m = Kalman::new(cfg(1, 1, vec![f64::INFINITY])).unwrap();
+        assert_eq!(m.cfg.k_total(), 2);
+        for (p, lost) in [
+            ([0.0, 0.5, 0.5, 1.0], true),
+            ([1.0, 0.5, 0.5, 0.0], true),
+            ([-1e-300, 0.0, 0.0, 1.0], true),
+            ([1.0, 0.0, 0.0, f64::NAN], true),
+            ([0.0, 0.0, 0.0, 1.0], false),
+            ([1.0, 0.0, 0.0, 0.0], false),
+            ([1.0, 0.2, 0.2, 1.0], false),
+        ] {
+            m.p[0] = p.to_vec();
+            assert_eq!(m.lost_definiteness(0), lost, "{p:?}");
+        }
+    }
+
     // Task 278's: `P` in units of the noise, each against the form before.
     mod noise_units;
 }

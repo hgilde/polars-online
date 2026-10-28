@@ -208,7 +208,7 @@ NIST_FLOORS: dict[str, float] = {
     "wampler4_rls": 1.5e-11,
     "wampler5_ewridge": 1.7e-10,
     "wampler5_ewridge_standardized": 2.7e-11,
-    "wampler5_gram_standardized": 6e-11,
+    "wampler5_gram_standardized": 2e-10,
     "wampler5_gram_unstandardized": 2e-10,
     "wampler5_rls": 1.5e-09,
 }

@@ -1865,14 +1865,14 @@ impl OnlineModel for Sgd {
                 }
             };
             let slopes_ok = slopes_usable(&beta[off..], z, d, weight, l2, clip, lr_row.is_none());
-            if (off == 1 && !usable((d * 1.0 * weight).clamp(-clip, clip))) || !slopes_ok {
+            if (off == 1 && !usable((d * weight).clamp(-clip, clip))) || !slopes_ok {
                 continue;
             }
             // The intercept's step: its gradient's at the row's rate or
             // AdaGrad's, whose sum learns the gradient either way, or in its
             // place the level's while that is the larger.
             if off == 1 {
-                let g = (d * 1.0 * weight).clamp(-clip, clip);
+                let g = (d * weight).clamp(-clip, clip);
                 let step = match lr_row {
                     Some(lr) => -(lr * g),
                     None => {

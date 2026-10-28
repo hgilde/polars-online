@@ -1463,4 +1463,65 @@ mod tests {
         .unwrap_err();
         assert_eq!(e, "holt: n_targets must be >= 1");
     }
+
+    /// Task 281 (mutants): with every observation at one clock the line
+    /// fit's spread `Q` is 0 and its slope not determined: the level is
+    /// the observations' weighted mean and the trend does not move, nor
+    /// does the trend's weight, which counts only moves over some clock.
+    /// Under a finite level half-life the line fit's gain `w/S0` ties the
+    /// textbook's `w/(λW + w)` here (λ = 1, `W = S0`), and at a tie the
+    /// textbook's weighted mean stands, `(W·p + w·y)/(W + w)` to the bit;
+    /// under an infinite one there is no textbook gain, and the level is
+    /// the line fit's, `p + (w/S0)·(y − p)`.
+    #[test]
+    fn observations_at_one_clock_give_their_weighted_mean_and_no_slope() {
+        for level in [10.0, f64::INFINITY] {
+            let mut m = Holt::new(cfg(level, 20.0)).unwrap();
+            let mut s = 21u64;
+            let (mut lvl, mut w_sum) = (0.0f64, 0.0f64);
+            let mut parted = 0;
+            for i in 0..12 {
+                let y = 5.0 + 3.0 * lcg(&mut s);
+                let w = 0.5 + lcg(&mut s).abs();
+                m.step(&[], &[Some(y)], 0.0, w);
+                if i == 0 {
+                    lvl = y;
+                } else {
+                    let mean = (w_sum * lvl + w * y) / (w_sum + w);
+                    let line = lvl + w / (w_sum + w) * (y - lvl);
+                    parted += usize::from(mean.to_bits() != line.to_bits());
+                    lvl = if level.is_finite() { mean } else { line };
+                }
+                w_sum += w;
+                assert_eq!(m.level()[0].to_bits(), lvl.to_bits(), "{level}, row {i}");
+                assert_eq!(m.trend()[0], 0.0, "{level}, row {i}");
+                assert_eq!(m.w_trend[0], 0.0, "{level}, row {i}");
+            }
+            assert!(parted > 0, "{level}: the two forms never parted");
+        }
+    }
+
+    /// Task 281 (mutants): on a target's second observation, `s` after its
+    /// first and at the same weight, the line fit's slope gain `h = 1/s`
+    /// ties the textbook trend's `w/(0 + w) · g/s` with `g = 1`, and at a
+    /// tie the textbook's slope stands: `(level − previous)/s`, to the bit,
+    /// where the line's step `h·(y − p)` rounds otherwise on these values.
+    /// The trend's weight is then the row's.
+    #[test]
+    fn at_a_tie_of_the_slope_gains_the_textbook_slope_stands() {
+        let (y0, y1, s) = (2.119, 2.136, 3.0);
+        let mut m = Holt::new(cfg(10.0, 20.0)).unwrap();
+        m.step(&[], &[Some(y0)], 0.0, 1.0);
+        m.step(&[], &[Some(y1)], s, 1.0);
+        let level = m.level()[0];
+        let textbook = (level - y0) / s;
+        let line = (1.5f64 / 4.5) * (y1 - y0);
+        assert_ne!(
+            textbook.to_bits(),
+            line.to_bits(),
+            "the two forms part here"
+        );
+        assert_eq!(m.trend()[0].to_bits(), textbook.to_bits());
+        assert_eq!(m.w_trend[0], 1.0);
+    }
 }

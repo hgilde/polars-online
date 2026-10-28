@@ -3293,6 +3293,60 @@ mod tests {
         assert_eq!(kmeanspp(&buf, &w, k, &mw, &mut SplitMix64::new(3)), want);
     }
 
+    /// Task 281 (mutants): at an exact tie of potential between two
+    /// distinct candidates the first drawn is kept. Integer points
+    /// symmetric about 0 at weight 1 make every potential an exact sum, so
+    /// a first centre at 0 leaves `−3` and `3` (and `−1` and `1`) leaving
+    /// the same potential to the bit; over 60 seeds the greedy draw meets
+    /// such ties, and keeps the earlier candidate each time, as the written
+    /// out rule does.
+    #[test]
+    fn at_a_tie_of_potential_greedy_kmeanspp_keeps_the_first_candidate() {
+        let buf: Vec<Vec<f64>> = [0.0, -1.0, 1.0, -3.0, 3.0, 0.0]
+            .iter()
+            .map(|&v| vec![v])
+            .collect();
+        let w = vec![1.0; buf.len()];
+        let mw = [1.0];
+        let k = 2;
+        let mut ties = 0;
+        for seed in 0..60 {
+            let mut rng = SplitMix64::new(seed);
+            let first = rng.choice(&w);
+            let mut want = vec![buf[first].clone()];
+            let dd: Vec<f64> = buf.iter().map(|z| dist2(&buf[first], z, &mw)).collect();
+            let pr: Vec<f64> = dd.iter().zip(&w).map(|(d, wi)| wi * d).collect();
+            let cands: Vec<(f64, usize)> = (0..local_trials(k))
+                .map(|_| {
+                    let c = rng.choice(&pr);
+                    let pot = buf
+                        .iter()
+                        .zip(&dd)
+                        .zip(&w)
+                        .map(|((z, &d), wi)| wi * d.min(dist2(&buf[c], z, &mw)))
+                        .sum::<f64>();
+                    (pot, c)
+                })
+                .collect();
+            let best = (0..cands.len())
+                .min_by(|&a, &b| cands[a].0.total_cmp(&cands[b].0).then(a.cmp(&b)))
+                .unwrap();
+            ties += usize::from(
+                cands
+                    .iter()
+                    .skip(best + 1)
+                    .any(|&(p, c)| p == cands[best].0 && buf[c] != buf[cands[best].1]),
+            );
+            want.push(buf[cands[best].1].clone());
+            assert_eq!(
+                kmeanspp(&buf, &w, k, &mw, &mut SplitMix64::new(seed)),
+                want,
+                "seed {seed}"
+            );
+        }
+        assert!(ties > 0, "no seed drew two distinct candidates at a tie");
+    }
+
     /// A `lloyd` seeding whose runs stop at the cap counts each of them in
     /// `solve_failures`, which the state keeps; one that reaches its fixed
     /// point counts nothing and leaves the field out of the state, so a

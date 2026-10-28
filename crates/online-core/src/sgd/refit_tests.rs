@@ -366,3 +366,30 @@ fn a_refit_that_runs_to_its_cap_is_counted() {
         assert_eq!(m.solve_failures(), u64::from(capped), "trial {trial}");
     }
 }
+
+/// Task 281 (mutants): the bytes the refit can hold are every target's
+/// buffer, `n_targets` times one target's at most, and nothing with the
+/// refit off; giving the refit up before it begins marks every target's
+/// done, over its budget, holding nothing.
+#[test]
+fn the_reservation_is_every_targets_and_a_give_up_empties_each() {
+    let c = cfg(30, false, LearningRate::Constant, Decay::Halflife(50.0));
+    let mut m = Sgd::new(c.clone()).unwrap();
+    assert_eq!(
+        m.refit_reservation(),
+        c.n_targets * crate::refit_reservation(c.n_features, 30)
+    );
+    assert_eq!(
+        Sgd::new(cfg(0, false, LearningRate::Constant, Decay::Halflife(50.0)))
+            .unwrap()
+            .refit_reservation(),
+        0
+    );
+    run(&mut m, &rows(10, false));
+    assert!(m.refit_status().iter().all(|s| !s.done && s.learned > 0));
+    m.refit_give_up();
+    for s in m.refit_status() {
+        assert!(s.done && s.over_budget && s.passes == 0, "{s:?}");
+    }
+    assert!(m.refit.iter().all(|r| r.held() == 0));
+}

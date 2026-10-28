@@ -646,6 +646,28 @@ fn kmeans() {
     assert!(r.roundtrips);
 }
 
+/// Task 281 (mutants): outside the crate's own tests the `lloyd` rule's runs
+/// are held to their full cap, 300 passes, which three blobs reach their
+/// fixed point well within: a seeding counts no run stopped at the cap.
+/// (A cap of one pass stops every run short: its first pass assigns every
+/// row.)
+#[test]
+fn a_lloyd_seeding_of_three_blobs_runs_each_start_to_its_fixed_point() {
+    let mut m = KMeans::new(KMeansCfg {
+        warm_rows: 60,
+        ..kmeans_cfg()
+    })
+    .unwrap();
+    let mut s = 7u64;
+    for i in 0..80 {
+        let c = [[0.0, 0.0], [5.0, 1.0], [1.0, 6.0]][i % 3];
+        let x = [c[0] + lcg(&mut s), c[1] + lcg(&mut s)];
+        m.step(&x, &[], 1.0, 1.0);
+    }
+    assert!(m.seeded());
+    assert_eq!(m.solve_failures, 0);
+}
+
 fn micro_cfg() -> MicroCfg {
     // eps and beta_mu sized for a 20-half-life window over the harness's
     // uniform rows: a summary must reach beta_mu before it decays back.
@@ -3909,6 +3931,38 @@ fn the_read_at_a_lower_floor_is_its_twin_for_every_model_with_a_residual() {
         2,
         false,
     );
+}
+
+/// Task 281 (mutants): a model with no floor of its own keeps the default
+/// `predict_with_floor`, which is its `predict_with` whatever the floor: the
+/// same answer to the bit, read on rows where it predicts something.
+fn the_default_read_at_a_floor_is_the_plain_read<M: OnlineModel>(mut m: M, targets: usize) {
+    let kind = m.state().model.kind();
+    let mut s = 20261027u64;
+    let mut read = 0usize;
+    for i in 0..200 {
+        let x: Vec<f64> = (0..K).map(|_| lcg(&mut s) * 3.0).collect();
+        let y: Vec<Option<f64>> = (0..targets)
+            .map(|j| Some(0.5 * (j as f64 + 1.0) + x[0] - 0.5 * x[1] + 0.1 * lcg(&mut s)))
+            .collect();
+        let d = if i == 0 { 0.0 } else { 1.0 };
+        for floor in [0.0, 4.0] {
+            let at = m.predict_with_floor(&x, &y, d, floor);
+            let plain = m.predict_with(&x, &y, d);
+            assert!(
+                same_bits(&at, &plain),
+                "{kind}: row {i}, floor {floor}: {at:?} against {plain:?}"
+            );
+            read += usize::from(at.pred.iter().any(|v| v.is_finite()));
+        }
+        m.step(&x, &y, d, 1.0);
+    }
+    assert!(read > 100, "{kind}: {read} reads predicted something");
+}
+
+#[test]
+fn a_model_with_no_floor_reads_at_a_floor_as_it_reads() {
+    the_default_read_at_a_floor_is_the_plain_read(SeqTest::new(seqtest_cfg()).unwrap(), 2);
 }
 
 #[test]
