@@ -62,6 +62,7 @@ The words this ledger uses:
 | second opinion | another library's computation of the same quantity, held beside the model's in `tests/test_second_opinion.py` (the diagnostics' in `tests/test_second_opinion_diagnostics.py`, split from it when it grew past 250 KB) or `tests/test_river.py` |
 | mutant | one small change `cargo mutants` makes to the source, such as a flipped operator or a function body replaced with a constant, before it reruns the tests. A mutant is *caught* when some test fails, and *missed*, a survivor, when every test still passes (`scripts/mutants.sh`) |
 | equivalent mutant | a mutant that no test can kill: on every input the code can receive, the mutated line computes what the original does |
+| tolerated mutant | a mutant that differs from the original only at an exact tie or by less than the computation's own error, so no test a correct implementation passes can kill it; listed apart, not as equivalent ([Mutation survivors](#mutation-survivors)) |
 | IC | the correlation of prediction with target, `po.eval`'s `ic` |
 | P1, P2, P3 | in an entry's P column, its priority: **P1** makes good a promise the library states, such as a hard rule or one of the eight test classes, or covers a found defect; **P2** is meaningful new assurance; **P3** is infrastructure |
 | P1–P11 elsewhere | the performance items of `docs/PERFORMANCE.md` §3 |
@@ -723,8 +724,12 @@ Two per cent of a count under 50 is less than one, but of a delay of 333
 rows it is six, so a grid records a count with `exact=True`, and the case
 carries a `tolerance` of 0. A case whose oracle agrees to round-off carries
 a `floor`, the gap below which a difference counts as round-off; a gap
-under it is judged as the floor. Each floor is twice the larger of the
-errors measured on macOS arm64 and on CI's Linux x86-64.
+under it is judged as the floor. Each floor is about four times the
+largest error measured on macOS arm64 and on two of CI's Linux x86-64
+runs. Two runs are needed because GitHub's runners vary in CPU and faer
+picks its SIMD kernel by the CPU at run time: the same code read some
+round-off cases up to 7 times apart on two Linux runs (2026-10-26 and
+2026-10-27).
 
 **The numbers are CI's, measured on Linux x86-64.** `[meta] platform`
 names the platform, and `check` judges every push there, so the whole 2%
@@ -1494,15 +1499,15 @@ other thin spot on 2026-08-30 at 75%, is at 98%.
 2026-09-24.** `mutants.yml` runs `cargo mutants` over the changed lines of
 `online-core` and `online-polars/src/span.rs`, on every push to `main` and
 every pull request. It fails on a survivor that
-`scripts/mutants_equivalent.toml` does not list. That file holds 258
-entries (2026-10-25), each an equivalent mutant -- a few
+`scripts/mutants_equivalent.toml` does not list. That file holds 291
+entries (2026-10-28), each an equivalent mutant -- a few
 name two that share a line -- with the reason no input can tell it from
 the original. The weekly pass over all of `online-core`, 11,138 mutants on
 2026-10-03, reports its survivors without failing on them.
 
 **A survivor a test could tell apart only by a difference no caller can act
 on is tolerated, and listed apart** (2026-10-05).
-`scripts/mutants_tolerated.toml` names 57, in 53 entries, each with its kind
+`scripts/mutants_tolerated.toml` names 71, in 66 entries, each with its kind
 and the measured size of the difference, or the loop it makes endless. The report shows them by kind and
 fails on none of them, in either job. The kinds:
 
@@ -1519,6 +1524,26 @@ fails on none of them, in either job. The kinds:
 An entry matches as an equivalent does. It may name the `columns` it covers
 or take in the line before, so it cannot cover a twin that a test catches,
 on the same line or in the same function.
+
+**A tie or a difference below the computation's own error is tolerated, not
+equivalent.** An equivalent mutant computes what the original does on every
+input. A tie mutant does not: at `|r| = h` exactly, `<` and `<=` send the row
+to different arms. But the two arms agree there in exact arithmetic, because
+the function is continuous at its own breakpoint, so the original's choice
+of arm is a convention, not a fact about the answer. A test that told the two
+apart would hold the code to one side of a boundary the specification leaves
+open, and an implementation that took the other side would be just as
+correct and fail it. And the input that reaches the tie is an exact equality
+of two continuous statistics, a residual against a scale times a width,
+which no stream of real data can be built to hit. A below-error mutant is the
+same argument in size rather than position: the original is only correct to
+within its own rounding or stopping bound, so any test must allow that bound,
+and a mutant that lands inside it passes every test the original passes. A
+test tight enough to fail the mutant would fail a correct implementation that
+rounded differently, such as the same code on another CPU's kernels. Each
+such entry gives its `kind`, the reason, and for `below-error` the measured
+size of the difference against the bound, so the claim can be checked, and
+the report lists them by kind rather than hiding them.
 
 **Equivalent mutants are left alone deliberately: no test can kill them.**
 Two from the first passes show the kind. Flipping `Ftrl::weight`'s

@@ -586,3 +586,161 @@ kind = "loop"
 why = """`i` starts at 0 and `0 * 4` is 0, so the four-row pass repeats the \
 block's first four rows for ever on any block of four rows or more: \
 nothing leaves the loop for a test to read before the time limit"""
+
+[[tolerated]]
+file = "crates/online-core/src/huber_refit.rs"
+function = "huber_location"
+mutation = "replace > with >="
+line_has = "            if e > cut {"
+kind = "tie"
+why = """the segment's line is read at the segment's midpoint, between two \
+consecutive breakpoints, where no row's band edge lies: a row at `d_i − mid \
+= c` exactly needs the midpoint on a breakpoint, which only a segment of \
+length 0 has, and there the root is clamped to that one point whichever \
+side the row is counted on"""
+
+[[tolerated]]
+file = "crates/online-core/src/huber_refit.rs"
+function = "huber_location"
+mutation = "replace < with <="
+line_has = "            } else if e < -cut {"
+kind = "tie"
+why = """as `e > cut` above: `d_i − mid = −c` exactly only at a segment of \
+length 0, whose root is its one point"""
+
+[[tolerated]]
+file = "crates/online-core/src/robust/quantile_refit.rs"
+function = "Robust::refit_quantile"
+mutation = "replace < with <="
+line_has = "                            .filter(|&i| r[i].abs() < h)"
+kind = "tie"
+why = """the band's count of rows in a pass (the converged fit's count, \
+indented less, is a separate line): they part only at a residual exactly the \
+band's half-width, `|r_i| = h`, a continuous statistic against the scale \
+times the width"""
+
+[[tolerated]]
+file = "crates/online-core/src/robust/quantile_refit.rs"
+function = "Robust::refit_quantile"
+mutation = "replace match guard !done with true"
+line_has = "(Pass::Newton(h), Some(b)) if !done => {"
+kind = "below-error"
+why = """on the pass the stop accepts, the mutant also damps the step: a \
+step that moves no fitted value by more than `1e-10` of the scale, which \
+lowers `F` or raises it within `F`'s rounding, so `damped` returns it \
+whole. Measured over 120 streams (seeds 200-239 at `τ` 0.5, 0.9 and 0.25, \
+400 rows, refit at 300): 0 of 48,000 predictions moved"""
+
+[[tolerated]]
+file = "crates/online-core/src/robust/quantile_refit.rs"
+function = "majorizer_row"
+mutation = "replace < with <="
+line_has = "    let step = if r[i].abs() < h {"
+kind = "tie"
+why = """at `|r| = h` the two arms are the same target in real arithmetic, \
+`r + 2h(τ − ½) = 2hτ` at `r = h` and `2h(τ − 1)` at `r = −h`, `2hψ(r)` \
+either way; they part only at a residual exactly the band's half-width, \
+and then by its rounding"""
+
+[[tolerated]]
+file = "crates/online-core/src/robust/quantile_refit.rs"
+function = "smoothed_check"
+mutation = "replace < with <="
+line_has = "    if r.abs() < h {"
+kind = "tie"
+why = """at `|r| = h` both arms are `τh` (or `(τ − 1)h` at `r = −h`) in real arithmetic, the loss being continuous there; they part only at a residual exactly the band's half-width, and then by rounding."""
+
+[[tolerated]]
+file = "crates/online-core/src/robust/quantile_refit.rs"
+function = "stream_row"
+mutation = "replace < with <="
+line_has = "    if r[i].abs() < h {"
+kind = "tie"
+why = """a row at `|r| = h` exactly, a residual against the scale times the width, is a band row or a nudge; the two part nowhere else."""
+
+[[tolerated]]
+file = "crates/online-core/src/huber_refit.rs"
+function = "huber_location"
+mutation = "replace > with >="
+line_has = "        (a > 0.0).then(|| (cut * net + b - level) / a)"
+kind = "tie"
+why = """with no row inside the band at the segment's midpoint `a = 0`, and \
+the mutant divides `c·net − level` by it: `+inf` clamps to the segment's \
+upper end and `−inf` to its lower end, which is the flat rule's choice, \
+since `g` there is `c·net`; they part only at `c·net = level` exactly, \
+where the mutant's `0/0` is not a number"""
+
+[[tolerated]]
+file = "crates/online-core/src/margbins.rs"
+function = "MarginalBins::refit"
+mutation = "replace > with >="
+line_has = "&& v[i] > 0.0"
+kind = "tie"
+why = """the mutant lets a held row whose decayed weight `v_i` is 0 into the \
+rebuilt scale's sketch, at its raw weight, before the rows that count. \
+`v_i` is 0 only where the decay since the row is below `2^-1074` of its \
+weight. With a decay of 0 the sketch ages by 0 at that step, which empties \
+it to its fresh state, anchor kept. Otherwise the row's weight, against \
+the newest row's, falls below `PRUNE` within a few steps, and rescaling \
+drops it at either end of the sketch. While its weight still held the \
+median it could pull the band toward itself and clamp the rows just after \
+it, but those rows weigh within a few steps' decay of `2^-1074` against \
+the newest too. What stays inside the sketch shifts a pointer only where \
+the cumulative weight meets half the total exactly. \
+`a_row_decayed_to_nothing_takes_no_part_in_the_refit` holds the location \
+and cut to the bit under a `1e12` first row, and passes on the mutant"""
+
+[[tolerated]]
+file = "crates/online-core/src/breaks.rs"
+function = "Breaks::elapsed"
+mutation = "replace * with +"
+line_has = "let next = p - f / ((3.0 * p + 2.0) * p + 1.0);"
+columns = [38, 49]
+kind = "below-error"
+why = """a wrong Newton derivative, `(3 + p + 2)p + 1` or `(3p + 2) + p + 1`, \
+overestimates `f'` on `[0, 1]`, so the steps still fall monotonically onto \
+the same root, only linearly, and stop where the computed `f` reaches its \
+rounding floor. The code's root is good only to `Δp = 4u·t/f'(p)` (it \
+evaluates `1 + p + p² + p³ − t` near `t`), and `x` to `4Δp/p`: measured on \
+4,000 levels of `[1, 4]` and both ends to `1e-14`, the original lands at \
+0.77 of that bound from the cancellation-free bisection's root, these at \
+0.57 and 0.60 (`the_sums_age_is_the_cubics_root` allows 2; the `3 / p` \
+twin lands at 326 and is caught)"""
+
+[[tolerated]]
+file = "crates/online-core/src/breaks.rs"
+function = "Breaks::elapsed"
+mutation = "replace || with &&"
+line_has = "if next >= p || next.is_nan() {"
+kind = "below-error"
+why = """the loop then never breaks and runs its 100 steps: past the root a \
+Newton step moves `p` within the computed `f`'s rounding floor, so `p` \
+wanders by a few ulps there; measured as above, 0.62 of the bound against \
+the original's 0.77 (`next` is never NaN: `f' ≥ 1` on `[0, 1]`)"""
+
+[[tolerated]]
+file = "crates/online-core/src/breaks.rs"
+function = "window_j"
+mutation = "replace < with <="
+line_has = """
+    let y = u * l;
+    if v < 1e-8 {"""
+kind = "below-error"
+why = """at `v = 1e-8` exactly the no-decay form is read in place of the \
+general one, which is the switch's purpose: the general form subtracts \
+`near − far` and divides by `2v`, losing `u/v` of itself and more at small \
+`ℓ`. Measured at `v = 1e-8` over `u` in {1e-3 .. 5}, `ℓ` in {0.1, 0.5, 1}, \
+both signs: the two differ by at most 3.1e-7 relative, where the exact \
+difference of the functions is `O(v) = 1e-8`, so the gap is the general \
+form's own rounding at the switch"""
+
+[[tolerated]]
+file = "crates/online-core/src/breaks.rs"
+function = "scaled_h_neg"
+mutation = "replace < with <="
+line_has = "if y < 0.1 {"
+kind = "below-error"
+why = """at `y = 0.1` exactly the series (14 terms, truncation under `1e-25`) \
+is read in place of the closed form `(1 + e^y (y − 1))/y²`, which cancels \
+there: the two differ by 1.0e-14 to 5.0e-14 relative (scale 0.1, 1, 5), \
+the closed form's own rounding"""

@@ -3,7 +3,9 @@
 # out of the survivors it reports and fails on.
 #
 # Each entry names the file, the function, the mutation as cargo-mutants
-# spells it, and code the mutated line must contain. So an entry follows its
+# spells it, and code the mutated line must contain, and, where a line holds
+# the same operator twice and only some of them are equivalent, the
+# `columns` the mutation may sit at. So an entry follows its
 # line when code above it moves, and lapses when the line itself changes;
 # tests/test_mutants_report.py checks that every entry still finds its line.
 # Add one only with the reason no input can tell the two apart
@@ -1243,16 +1245,6 @@ line_has = "let scale = if crate::variance_is_usable(v, v + mean * mean) {"
 why = "as above: the second argument of `variance_is_usable` is ignored"
 
 [[equivalent]]
-file = "crates/online-core/src/sgd.rs"
-function = "<impl OnlineModel for Sgd>::step"
-mutation = "replace * with /"
-line_has = "let g = (d * 1.0 * weight).clamp(-clip, clip);"
-why = """on the first `*` only (column 36, in both the constant-rate and the \
-AdaGrad arm): `d / 1.0` is `d * 1.0`, both `d` exactly. The second `*`'s \
-`/` divides by the weight and is caught; this entry names the line, so it \
-would also excuse that one if it ever survived"""
-
-[[equivalent]]
 file = "crates/online-core/src/ewridge.rs"
 function = "EwRidge::inflation_into"
 mutation = "replace > with >="
@@ -2071,16 +2063,6 @@ why = """a sign is 1.0 or -1.0, and `λ / ±1` is `λ · ±1` to the bit \
 # survivor there got a test; its timeouts are in scripts/mutants_tolerated.toml.
 
 [[equivalent]]
-file = "crates/online-core/src/sgd.rs"
-function = "<impl OnlineModel for Sgd>::step"
-mutation = "replace * with /"
-line_has = "if (off == 1 && !usable((d * 1.0 * weight).clamp(-clip, clip))) || !slopes_ok {"
-why = """at the intercept's `d * 1.0`: `d / 1.0` is `d` to the bit, as \
-`d * 1.0` is, for every double, a NaN, an infinity and a signed zero \
-included. The line's other `/`, at `* weight`, is caught \
-(`a_step_refuses_a_row_by_the_intercept_alone`)"""
-
-[[equivalent]]
 file = "crates/online-core/src/pa.rs"
 function = "<impl OnlineModel for Pa>::step"
 mutation = "replace * with /"
@@ -2409,3 +2391,381 @@ line_has = "let largest = |m: f64, v: f64| if v > m || v.is_nan() { v } else { m
 why = """at `v == m` both branches return the same double (neither is a \
 signed zero: every `z` and `w` entry is a positive quotient), and a NaN \
 takes the second test either way"""
+
+[[equivalent]]
+file = "crates/online-core/src/robust.rs"
+function = "Robust::refit_target"
+mutation = "replace += with *="
+line_has = "self.refit[j].fail();\n            self.solve_failures += 1;"
+why = """the line runs only when no pass's solve factorizes, and every rung of \
+the jitter ladder fails only on a band system with an entry that is not a \
+finite number: the last adds `1e-3 · trace/k` to a positive semidefinite \
+matrix whose rounding is `ε·k` of its largest entry. A row past \
+`INPUT_BOUND` (1e100) is refused before it reaches the sums, and within it \
+the mean-form Gram's entries are at most `(2e100)²`, so no input reaches \
+the line"""
+
+[[equivalent]]
+file = "crates/online-core/src/robust.rs"
+function = "Robust::refit_target"
+mutation = "replace += with -="
+line_has = "self.refit[j].fail();\n            self.solve_failures += 1;"
+why = """as `*=` on the same line: the line runs only when no rung of the \
+jitter ladder factorizes a band system, which inputs within `INPUT_BOUND` \
+cannot make"""
+
+[[equivalent]]
+file = "crates/online-core/src/robust/quantile_refit.rs"
+function = "Robust::refit_quantile"
+mutation = "replace += with *="
+line_has = "self.refit[j].fail();\n            self.solve_failures += 1;"
+why = """as `huber`'s refit's: the line runs only when the first pass's solve \
+fails at every jitter rung, which needs a band system that is not finite, \
+and rows past `INPUT_BOUND` are refused before they reach the sums"""
+
+[[equivalent]]
+file = "crates/online-core/src/robust/quantile_refit.rs"
+function = "Robust::refit_quantile"
+mutation = "replace += with -="
+line_has = "self.refit[j].fail();\n            self.solve_failures += 1;"
+why = """as `*=` on the same line: unreachable for inputs within `INPUT_BOUND`"""
+
+[[equivalent]]
+file = "crates/online-core/src/robust/quantile_refit.rs"
+function = "check_change"
+mutation = "replace > with >="
+line_has = "        } else if e > 0.0 {"
+why = """the branch runs where `|e| >= h`, and `h > 0` (a positive finite \
+scale times a width of at least `quantile_eps > 0`), so `e = 0` reaches it \
+only if `h` underflows to 0. There, with `r` or `r − d` at 0, the change \
+is `−d·τ` against the difference of two losses whose zero term is a signed \
+zero (and likewise below): the value and the size agree, a zero's sign \
+aside, which a sum and an absolute value do not read"""
+
+[[equivalent]]
+file = "crates/online-core/src/robust/quantile_refit.rs"
+function = "smoothed_check"
+mutation = "replace > with >="
+line_has = "    } else if r > 0.0 {"
+why = """as `check_change`'s: the branch runs where `|r| >= h > 0`, so `r = 0` reaches it only if `h` underflows to 0, and there both arms give a zero, `τ·0` and `(τ − 1)·0`, of opposite signs, which every caller adds or takes the size of alike."""
+
+[[equivalent]]
+file = "crates/online-core/src/sgd.rs"
+function = "<impl OnlineModel for Sgd>::step_into"
+mutation = "replace > with >="
+line_has = "let along = if c > 0.0 { weight * c * zz } else { 0.0 };"
+why = """the curvature `c` is never below 0 (1, 0 or 1 under Huber, `p = \
+e^η >= e^−30` under Poisson, `p(1 − p)` with `p` in [0, 1] under the \
+logistic, 0 under the sign-valued losses) and never NaN (`p` is finite: \
+`beta` keeps only finite steps), so the two differ only at `c = 0`, where \
+`weight · 0 · zz` is +0, the else branch's 0: the weight is finite and \
+positive here, and `zz = off + |z̃|²` is finite. Every feature is within \
+the input bound 1e100, and the scaler admits the row at unit weight, so a \
+standardized feature is at most `√(W + 1)` deviations out (or the raw \
+deviation, at most 2e100, where its variance is not usable): no square \
+overflows"""
+
+[[equivalent]]
+file = "crates/online-core/src/lasso.rs"
+function = "Lasso::reaches_floor"
+mutation = "replace > with >="
+line_has = "if !(weight > 0.0 && weight.is_finite()) {"
+why = """the only weight the two parts on is 0 (a weight reaching the model \
+is finite and >= 0: `refused_step` steps any other as a row of 0), and on \
+a zero-weight row `step` returns before it reads `own_first`, the only use \
+of this answer"""
+
+[[equivalent]]
+file = "crates/online-core/src/lasso.rs"
+function = "Lasso::reaches_floor"
+mutation = "replace && with ||"
+line_has = "if !(weight > 0.0 && weight.is_finite()) {"
+why = """`weight > 0 || finite` is true for every weight that reaches the model \
+(finite, >= 0), so the guard lets a zero weight through where it returned \
+false; on a zero-weight row `step` returns before it reads `own_first`, \
+the only use of this answer"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewridge.rs"
+function = "<impl OnlineModel for EwRidge>::step_into"
+mutation = "replace < with <="
+line_has = "let below = if floor < self.cfg.min_weight && out.n_eff < self.cfg.min_weight {"
+why = """both `<`: the second read is `predict_into` on the state the first \
+read saw, before the row's update, with the gate at the floor. At \
+`floor = min_weight` it is the first read again; at `n_eff = min_weight` \
+the gate passes at either threshold, and `predict_into` reads the \
+threshold only as `n_eff >= min_weight`. Either way it returns the first \
+read's predictions to the bit, and `pred` is the same"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewridge.rs"
+function = "<impl OnlineModel for EwRidge>::step_into"
+mutation = "replace && with ||"
+line_has = "let below = if floor < self.cfg.min_weight && out.n_eff < self.cfg.min_weight {"
+why = """the extra rows the second read runs on are those with `floor = \
+min_weight` (the same read again) or with `n_eff >= min_weight`, where the \
+gate passes at the floor too; `predict_into` on the unchanged state, \
+before the row's update, reads the threshold only as `n_eff >= \
+min_weight`, so it returns the first read's predictions to the bit"""
+
+[[equivalent]]
+file = "crates/online-core/src/solve/condition.rs"
+function = "SpdFactor::comparison_bound"
+mutation = "replace > with >="
+line_has = "let largest = |m: f64, v: f64| if v > m || v.is_nan() { v } else { m };"
+why = """at `v = m` both branches are the same number; every entry folded is \
+positive or NaN (`d` is positive, the factor's diagonal positive and the \
+sums of absolute values non-negative), so the two cannot be +0 and −0, and \
+a NaN takes the first branch either way"""
+
+[[equivalent]]
+file = "crates/online-core/src/solve/condition.rs"
+function = "norm1_estimate"
+mutation = "replace == with !="
+line_has = "let repeated = x.iter().zip(signs.iter()).all(|(&v, &s)| sign(v) == s);"
+why = """the two differ only where the signs repeat, or where every sign \
+flips, and in both the estimate is already taken and the next step ends \
+the run with it unchanged. Signs repeated and the run going on: the signs \
+are rewritten as they were, their product is the one the current column \
+was chosen from, so the same column is chosen and the run ends on \
+`|x[previous]| = |x[j]|`. Every sign flipped and the run stopping where it \
+went on: going on, the product of the negated signs is the negated product \
+(rounding to nearest is symmetric under negation, and `apply` is linear), \
+so it chooses the same column and ends the same way. A Python replay of the \
+method over 200,000 random symmetric matrices of orders 2 to 5, integer \
+and real, found no difference"""
+
+[[equivalent]]
+file = "crates/online-core/src/cluster/kmeans.rs"
+function = "kmeanspp"
+mutation = "replace < with <="
+line_has = "cand[i] = if q < dd[i] { q } else { dd[i] };"
+why = """the minimum of `q` and `dd[i]`: at `q = dd[i]` both branches are the \
+same number, never +0 against −0 (squared distances are sums of products \
+of a square and a positive weight, so +0 at least, and `dd` starts at \
+infinity and takes only such values); with either NaN both forms take \
+`dd[i]`"""
+
+# The same guard in the held gate's twin of `reaches_floor`.
+
+[[equivalent]]
+file = "crates/online-core/src/lasso.rs"
+function = "Lasso::own_first_solve"
+mutation = "replace > with >="
+line_has = "if !(weight > 0.0 && weight.is_finite()) {"
+why = """the only weight the two parts on is 0 (a weight reaching the model \
+is finite and >= 0: `refused_step` steps any other as a row of 0), and on \
+a zero-weight row `step` returns before it reads `own_first`, the only use \
+of this answer"""
+
+[[equivalent]]
+file = "crates/online-core/src/lasso.rs"
+function = "Lasso::own_first_solve"
+mutation = "replace && with ||"
+line_has = "if !(weight > 0.0 && weight.is_finite()) {"
+why = """`weight > 0 || finite` is true for every weight that reaches the model \
+(finite, >= 0), so the guard lets a zero weight through where it returned \
+false; on a zero-weight row `step` returns before it reads `own_first`, \
+the only use of this answer"""
+
+[[equivalent]]
+file = "crates/online-core/src/margbins.rs"
+function = "MarginalBins::refit"
+mutation = "replace > with >="
+line_has = """order.extend((0..n).filter(|&i| {
+                v[i] > 0.0"""
+why = """a held row has a positive finite raw weight, so `v_i` is 0 only where \
+its decay to now underflowed or a step's decay was 0. Let such a row into \
+`order` and every reader still passes it by: `huber_location`, \
+`weighted_median` (the anchor and `scale_of`) take only entries of \
+positive weight, the sketch's loop below tests `v[i] > 0.0` on its own, \
+and its share of the target's robust weight and of each cell's `Ω` and \
+`M2` is `units_i = 0/scale = 0` times a finite number. Where it is the \
+only row of a cell, `huber_location` gives `None` and the cell is left, \
+as an empty range leaves it"""
+
+[[equivalent]]
+file = "crates/online-core/src/margbins.rs"
+function = "MarginalBins::refit"
+mutation = "replace > with >="
+line_has = "let weigh = |e: f64| if e.abs() > cut { cut / e.abs() } else { 1.0 };"
+why = """`cut` is `delta·s` with `s` from `mad_scale`, which is positive and \
+finite, or it is infinite; `e` is a difference of two finite values. At \
+`|e| = cut` the clipped branch gives `cut/|e| = 1.0` exactly, the other \
+branch's value"""
+
+[[equivalent]]
+file = "crates/online-core/src/stats.rs"
+function = "EwQuantile::get"
+mutation = "replace match guard a > 0.0 with true"
+line_has = "Some(a) if a > 0.0 => q * a,"
+why = """an anchor is 0 only while the sketch waits for its first positive \
+normal value; until then every value it took counts in the zero bucket, \
+so it holds no bucket (`has_shape` refuses a restored sketch that does), \
+every pointer is at the zero bucket and `q = 0`, and `0 * 0 = 0 = q`. Any \
+other anchor is a positive normal float, where the guard holds either way"""
+
+[[equivalent]]
+file = "crates/online-core/src/stats.rs"
+function = "EwQuantile::get"
+mutation = "replace > with >="
+line_has = "Some(a) if a > 0.0 => q * a,"
+why = "as the guard's `true` mutant: the two part only at an anchor of 0, where `q = 0`"
+
+[[equivalent]]
+file = "crates/online-core/src/breaks.rs"
+function = "Breaks::scale_lead"
+mutation = "replace > with >="
+line_has = "if !(elapsed > 0.0 && elapsed.is_finite() && self.s1 > 0.0) {"
+columns = [22]
+why = """let through at `elapsed = 0` (or -0), with `S1 > 0`, the body takes \
+`q = 1` and `m = -expm1(-0) = ±0`, and `(m·v1)/S1 − m` is `±0·v1/S1 ∓ 0 = \
++0` (`v1` a finite sum of weights, the product formed before the division), \
+which the clamp to `[0, 1]` returns as the guard's 0"""
+
+[[equivalent]]
+file = "crates/online-core/src/breaks.rs"
+function = "cusum_null_at"
+mutation = "replace < with <="
+line_has = "let head = if l < 1.0 {"
+why = """at `l = 1` the branch computes `window_j(u, v, 1, 1, 0) − j_full`, \
+and `j_full` is the same call with the same arguments, so the head is \
+exactly the other branch's 0"""
+
+[[equivalent]]
+file = "crates/online-core/src/breaks.rs"
+function = "window_j"
+mutation = "replace > with >="
+line_has = "let h = if sigma > 0.0 {"
+why = """`sigma` is ±1 at every call (`cusum_null_at` passes the literals \
+`1.0` and `-1.0`), never 0, where alone `>` and `>=` part"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "kolmogorov_sf"
+mutation = "replace * with /"
+line_has = "if term <= 0.25 * f64::EPSILON * sum {"
+columns = [40]
+why = """the stopping rule `term ≤ ε/4·sum` becomes `term ≤ ε/(4·sum)`, which \
+can only stop the sum earlier. `kolmogorov_quantile` reads the series only \
+inside its bisection on `[0, 20]` at levels below 1 %, whose midpoints are \
+never below 1.25 (`P(sup|B| > 1.25) = 0.087`, so every midpoint below the \
+quantile 1.63 moves `lo` up). There `term_{k+1}/term_k = e^{−2(2k+1)x²} ≤ \
+e^{−9.4}`, and the earlier stop happens only once `term_k ≤ ε/(4·sum)`, \
+`sum ≈ e^{−2x²}`: for `k = 1` that needs `x ≥ 3.06`, and leaves out \
+`term₂/sum ≤ e^{−56}`; for `k = 2`, `x ≥ 1.93`, leaving out `term₃/sum ≤ \
+e^{−59}`; each far under the half ulp (`2⁻⁵⁴`) that could move a bit of \
+the sum. Bit-for-bit on 2,000,001 points of `[0.001, 25]`, the two part only \
+below `x = 0.078`, which the bisection never reads"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "kolmogorov_cdf_theta"
+mutation = "replace * with /"
+line_has = "if term <= 0.25 * f64::EPSILON * sum {"
+columns = [40]
+why = """as for `kolmogorov_sf`: the rule can only stop earlier. Read on `(0, \
+1]`, where `a = π²/(8x²) ≥ 1.23` and `term_{k+1}/term_k ≤ e^{−8a} ≤ 5e-5`; \
+the early stop after term `k` needs `term_k² ≤ ε/4` roughly, so `a ≥ 18.7` \
+for `k = 1`, leaving out `term₂/term₁ = e^{−8a} < e^{−149}`; once `exp` \
+underflows both rules see `0 ≤ …` and stop together. Bit-for-bit equal on \
+2,000,001 points of `[1e-4, 1.5]`"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "min_perm"
+mutation = "replace / with %"
+line_has = "let mut b = ((1.0 / alpha).ceil() as usize)"
+why = """only the start moves: `1 % alpha` is in `[0, alpha)`, so the start is \
+0, and the second loop climbs from 0 to the smallest `b` with \
+`perm_rejections ≥ 1`, which is the answer from any start not above it \
+(`perm_rejections` rises with `b`); at most `MAX_PERM` cheap steps"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "min_perm"
+mutation = "replace / with *"
+line_has = "let mut b = ((1.0 / alpha).ceil() as usize)"
+why = """`⌈alpha⌉ − 1 = 0` for `alpha` in `(0, 1)`, the only levels that reach \
+here (`validate`; the Bonferroni share is smaller still): the start is 0 \
+and the second loop climbs to the answer, as for `%`"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "min_perm"
+mutation = "replace > with <"
+line_has = "while b > 0 && perm_rejections(alpha, b - 1) >= 1 {"
+columns = [13]
+why = """the first loop's body never runs for an `alpha` in `(0, 1)`: the start \
+`⌈fl(1/α)⌉ − 1` is never above the answer `B`. Above it would need \
+`fl(1/α) > k = B + 1`, so `1/α ≥ k + ulp(k)/2` and `α·k ≤ 1/(1 + δ)`, `δ = \
+ulp(k)/(2k)`, while `fl(α·k) ≥ 1` needs `α·k ≥ 1 − u/2`; `δ − u/2 ≥ \
+2⁻⁵⁴/(2k − 1) ≥ 2⁻⁷⁵` for `k ≤ 2²⁰`, far above the `u²/4` that would \
+close the gap. (Checked too for `1/k` and its two neighbours, `k` up to \
+200,000: never above, 36,914 times below.) So `b > 0 && P` is false at its \
+first test through `P`, and `b < 0 && P` is false too"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "min_perm"
+mutation = "replace > with =="
+line_has = "while b > 0 && perm_rejections(alpha, b - 1) >= 1 {"
+columns = [13]
+why = """the start is at least 1 for `alpha < 1` (`1/α > 1`), so `b == 0` is \
+false and the loop does not run, as the original's does not (the body \
+never runs: see `replace > with <`)"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "min_perm"
+mutation = "replace > with >="
+line_has = "while b > 0 && perm_rejections(alpha, b - 1) >= 1 {"
+columns = [13]
+why = """the start is at least 1 for `alpha < 1`, and the body never runs (see \
+`replace > with <`), so `b` is never 0 at the test"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "min_perm"
+mutation = "replace - with +"
+line_has = "while b > 0 && perm_rejections(alpha, b - 1) >= 1 {"
+columns = [45]
+why = """the start is at most the answer `B`, so `perm_rejections(b + 1) ≥ 1` \
+holds there or the start is `B − 1` and it holds too: the loop walks `b` \
+down to 0, and the second loop walks it back up to `B`, the same answer by \
+a longer road (at most `2·MAX_PERM` cheap steps)"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "min_perm"
+mutation = "replace - with /"
+line_has = "while b > 0 && perm_rejections(alpha, b - 1) >= 1 {"
+columns = [45]
+why = """`b / 1 = b`: from a start at `B` the loop steps once to `B − 1`, \
+where `perm_rejections` is 0, and the second loop steps back to `B`; from \
+`B − 1` it does not run and the second loop steps to `B`"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "min_perm"
+mutation = "replace >= with <"
+line_has = "while b > 0 && perm_rejections(alpha, b - 1) >= 1 {"
+columns = [50]
+why = """every `b` up to the start, at most `B`, has `perm_rejections(b − 1) = \
+0 < 1`, so the loop walks `b` down to 0 and the second loop back up to `B`"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "min_perm"
+mutation = "replace -= with +="
+line_has = "        b -= 1;"
+why = """the first loop's body never runs for an `alpha` in `(0, 1)` (see \
+`replace > with <`)"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "min_perm"
+mutation = "replace -= with /="
+line_has = "        b -= 1;"
+why = """the first loop's body never runs for an `alpha` in `(0, 1)` (see \
+`replace > with <`)"""

@@ -37,7 +37,8 @@ def test_every_equivalent_still_finds_its_line():
     entries = report_mod.load_equivalents()
     assert entries, "the list is empty"
     for e in entries:
-        assert set(e) == {"file", "function", "mutation", "line_has", "why"}, e
+        assert {"file", "function", "mutation", "line_has", "why"} <= set(e), e
+        assert set(e) <= {"file", "function", "mutation", "line_has", "why", "columns"}, e
         # cargo-mutants' two kinds: an operator or a body replaced, and a match
         # arm or an operator deleted (task 158 named the first `delete`).
         assert re.fullmatch(r"replace .+ with .+|delete .+", e["mutation"]), e["mutation"]
@@ -46,6 +47,13 @@ def test_every_equivalent_still_finds_its_line():
         # A generic function is `fn name<'a>(`, so the name ends at `<` or `(`.
         name = re.escape(e["function"].rsplit("::", 1)[-1])
         assert re.search(rf"\bfn {name}\s*[<(]", source), e["function"]
+        if "columns" in e:
+            # As a tolerated entry's: each column holds the operator replaced.
+            end = source.index(e["line_has"]) + len(e["line_has"])
+            line = source[source.rfind("\n", 0, end) + 1 : source.find("\n", end)]
+            operator = e["mutation"].split()[1]
+            for column in e["columns"]:
+                assert line[column - 1 :].startswith(operator), (e["line_has"], column)
 
 
 #: The reasons `scripts/mutants_tolerated.toml`'s header gives for keeping a
