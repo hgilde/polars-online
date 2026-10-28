@@ -1776,6 +1776,65 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_sums_age_is_the_cubics_root() {
+        // `elapsed` solves `1 + p + p² + p³ = 4·S1/w4` for `p = e^{−x/4}`
+        // by Newton's method. Held to the root found by bisection on the
+        // cancellation-free form `p(1 + p(1 + p)) = t − 1` (`t − 1` is
+        // exact for `t` in `[1, 4]`), within what the code's own form can
+        // give: it evaluates `… + 1 − t` near `t`, a rounding of up to
+        // `4u·t`, so its root is good to `Δp = 4u·t / f'(p)` (plus the last
+        // bits of `p`), and `x = −4 ln p` to `4Δp/p`; twice that is allowed.
+        let u = f64::EPSILON / 2.0;
+        let root = |t: f64| {
+            let c = t - 1.0;
+            let (mut lo, mut hi) = (0.0f64, 1.0f64);
+            loop {
+                let m = 0.5 * (lo + hi);
+                if m <= lo || m >= hi {
+                    return m;
+                }
+                if m * (1.0 + m * (1.0 + m)) > c {
+                    hi = m;
+                } else {
+                    lo = m;
+                }
+            }
+        };
+        let mut ts: Vec<f64> = (1..400).map(|k| 1.0 + 3.0 * f64::from(k) / 400.0).collect();
+        for e in 1..13 {
+            ts.push(1.0 + 10f64.powi(-e));
+            ts.push(4.0 - 10f64.powi(-e));
+        }
+        for t in ts {
+            // `S1 / w4 = t / 4`, both exact; no `S2`, so no reading is
+            // below the resolution.
+            let b = Breaks {
+                s1: t / 4.0,
+                w4: 1.0,
+                ..Breaks::default()
+            };
+            let p = root(t);
+            let dp = 4.0 * u * t / ((3.0 * p + 2.0) * p + 1.0) + 2.0 * u * p;
+            let want = -4.0 * p.ln();
+            let got = b.elapsed();
+            assert!(
+                (got - want).abs() <= 2.0 * 4.0 * dp / p,
+                "t = {t}: {got} against {want}"
+            );
+        }
+    }
+
+    /// The scale's lead is 0 wherever the sums have no weight, at any age:
+    /// `S1 = 0` leaves `v1 / S1` undefined.
+    #[test]
+    fn no_sums_no_lead() {
+        let b = Breaks::new();
+        for x in [0.5, 1.0, 10.0] {
+            assert_eq!(b.scale_lead(x), 0.0, "{x}");
+        }
+    }
+
     /// The sums' age is read off their own weights: rows at unit steps and
     /// weights at half-lives of 50 and 200 -- within 1% of `κ` times the
     /// rows scored less one, from the first rows to six half-lives in --
