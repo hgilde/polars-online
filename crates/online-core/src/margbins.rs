@@ -753,6 +753,16 @@ impl MarginalBins {
         )
     }
 
+    /// Cell `(t, j, b)`'s clipped second moment `M2`, and target `t`'s
+    /// robust weight and location, in the stream's units: what the refit's
+    /// tests read beside [`Self::cell_and_cut`].
+    #[cfg(test)]
+    pub(crate) fn m2_and_target(&self, t: usize, j: usize, b: usize) -> (f64, f64, f64) {
+        let i = self.at(t, j).start + b;
+        let sc = self.scales.as_ref().expect("a Huber histogram");
+        (self.m2[i] * self.scale, sc.w[t] * self.scale, sc.m[t])
+    }
+
     /// The bytes this histogram's buffers take, as each vector reports its
     /// allocation: what [`histogram_bytes`] must count.
     #[cfg(test)]
@@ -1299,7 +1309,9 @@ impl MarginalBins {
                 for b in 0..nb {
                     let r = counts[b]..counts[b + 1];
                     let cell = block + self.off[j] + b;
-                    if r.is_empty() || self.w[cell] <= 0.0 {
+                    // A cell no row reached has no location to give, which
+                    // `huber_location` says by `None`.
+                    if self.w[cell] <= 0.0 {
                         continue;
                     }
                     let Some(loc) =
@@ -3109,6 +3121,29 @@ mod tests {
             for good in [1e-9, 1.0, f64::INFINITY] {
                 assert!(spec(good).validate(1, 1).is_ok(), "{good}");
             }
+            // The refit is of Huber locations at a finite cut (task 281):
+            // asked for under the mean or an infinite delta, it is refused;
+            // off, every statistic is taken.
+            let refit = |stat, refit_rows| BinCfg {
+                stat,
+                refit_rows,
+                ..spec(1.0)
+            };
+            for stat in [
+                BinStat::Mean,
+                BinStat::Huber {
+                    delta: f64::INFINITY,
+                },
+            ] {
+                let e = refit(stat, 1).validate(1, 1).unwrap_err();
+                assert!(e.contains("bin_refit_rows applies only"), "{stat:?}: {e}");
+                assert!(refit(stat, 0).validate(1, 1).is_ok(), "{stat:?}");
+            }
+            assert!(
+                refit(BinStat::Huber { delta: 1.0 }, 1)
+                    .validate(1, 1)
+                    .is_ok()
+            );
         }
 
         /// Deviations whose span widens a bucket at a time: up, and both

@@ -1628,6 +1628,159 @@ fn a_windowed_lag_correlation_is_centred_at_the_windows_own_mean() {
     }
 }
 
+/// Task 281: the window's own lag correlations of every target, where
+/// the second is missing on every fourth row, so its lagged sides' sums
+/// are not the first's. `lag_corr_xx` and `lag_corr_yx` lag the feature,
+/// which every learned row carries, so about the target's own rows they
+/// are exact: `Σ w (a − m_a)(x_{i−ℓ} − m_x) / Σ w` over the target's rows
+/// inside the window, `m` its pair's window means.
+#[test]
+#[allow(clippy::needless_range_loop)]
+fn every_targets_windowed_lag_correlation_is_its_own_rows() {
+    let (hl, window, n) = (30.0, 50.0, 300usize);
+    let lam = 0.5f64.powf(1.0 / hl);
+    let u = n - 1 - window as usize;
+    let mut c = cfg(2, 2);
+    c.decay = Decay::Halflife(hl);
+    c.lags = vec![1, 3];
+    c.min_weight = vec![0.0; 2];
+    c.window = Some(window);
+    let mut m = Marginal::new(c).unwrap();
+    crate::OnlineModel::set_window_closed(&mut m, crate::WindowClosed::Both);
+    let mut s = 29u64;
+    let (mut xs, mut ys) = (Vec::new(), Vec::new());
+    for i in 0..n {
+        let level = if i >= u { 5.0 } else { 0.0 };
+        let x = [level + lcg(&mut s), 1000.0 - level + lcg(&mut s)];
+        let y = [
+            Some(-2.0 * level + 0.5 * x[1] + lcg(&mut s)),
+            (i % 4 != 1).then(|| 3.0 * level - x[0] + lcg(&mut s)),
+        ];
+        let d = if i == 0 { 0.0 } else { 1.0 };
+        m.step(&x, &y, d, 1.0);
+        xs.push(x);
+        ys.push(y);
+    }
+    let close = |a: f64, b: f64| (a - b).abs() <= 1e-9 * b.abs().max(1.0);
+    for t in 0..2 {
+        let rows: Vec<usize> = (u..n).filter(|&i| ys[i][t].is_some()).collect();
+        let w = |i: usize| lam.powi((n - 1 - i) as i32);
+        let sw: f64 = rows.iter().map(|&i| w(i)).sum();
+        let y = |i: usize| ys[i][t].unwrap();
+        for j in 0..2 {
+            let pair = m.pair(t, j);
+            // About the first row inside, so the sums keep their digits.
+            let (x0, y0) = (xs[rows[0]][j], y(rows[0]));
+            let mx = x0 + rows.iter().map(|&i| w(i) * (xs[i][j] - x0)).sum::<f64>() / sw;
+            let my = y0 + rows.iter().map(|&i| w(i) * (y(i) - y0)).sum::<f64>() / sw;
+            assert!(
+                close(pair.mean_x, mx),
+                "t{t} j{j}: {} against {mx}",
+                pair.mean_x
+            );
+            let sd = (pair.var_x.sqrt(), pair.var_y.sqrt());
+            for (li, l) in [1usize, 3].into_iter().enumerate() {
+                let xx = rows
+                    .iter()
+                    .map(|&i| w(i) * (xs[i][j] - mx) * (xs[i - l][j] - mx))
+                    .sum::<f64>()
+                    / sw;
+                let yx = rows
+                    .iter()
+                    .map(|&i| w(i) * (y(i) - my) * (xs[i - l][j] - mx))
+                    .sum::<f64>()
+                    / sw;
+                let (got_xx, got_yx) = (pair.lag_corr_xx[li], pair.lag_corr_yx[li]);
+                let (want_xx, want_yx) = (xx / (sd.0 * sd.0), yx / (sd.0 * sd.1));
+                assert!(
+                    close(got_xx, want_xx),
+                    "t{t} j{j} lag {l}: xx {got_xx} against {want_xx}"
+                );
+                assert!(
+                    close(got_yx, want_yx),
+                    "t{t} j{j} lag {l}: yx {got_yx} against {want_yx}"
+                );
+            }
+        }
+    }
+}
+
+/// Task 281: a target far from 0 keeps its windowed lag autocorrelation.
+/// Its lag moments are taken about the target's first value. About 0, the
+/// raw moment `E[y·y_{i−ℓ}]` of a target at `1e6` with a spread of about 1
+/// is `1e12`, and taking the window's mean back out of it leaves about
+/// `1e-4` of noise. About the first value it reads within `1e-6` of the
+/// definition, taken about the window's first row.
+#[test]
+fn a_target_far_from_zero_keeps_its_windowed_lag_autocorrelation() {
+    let (hl, window, n) = (30.0, 50.0, 300usize);
+    let lam = 0.5f64.powf(1.0 / hl);
+    let u = n - 1 - window as usize;
+    let mut c = cfg(1, 1);
+    c.decay = Decay::Halflife(hl);
+    c.lags = vec![1, 3];
+    c.min_weight = vec![0.0];
+    c.window = Some(window);
+    let mut m = Marginal::new(c).unwrap();
+    crate::OnlineModel::set_window_closed(&mut m, crate::WindowClosed::Both);
+    let mut s = 37u64;
+    let mut ys = Vec::new();
+    let mut ar = 0.0;
+    for i in 0..n {
+        let level = if i >= u { 5.0 } else { 0.0 };
+        ar = 0.6 * ar + lcg(&mut s);
+        let y = 1e6 + level + ar;
+        let d = if i == 0 { 0.0 } else { 1.0 };
+        m.step(&[lcg(&mut s)], &[Some(y)], d, 1.0);
+        ys.push(y);
+    }
+    let w = |i: usize| lam.powi((n - 1 - i) as i32);
+    let sw: f64 = (u..n).map(w).sum();
+    let y0 = ys[u];
+    let my = y0 + (u..n).map(|i| w(i) * (ys[i] - y0)).sum::<f64>() / sw;
+    let pair = m.pair(0, 0);
+    for (li, l) in [1usize, 3].into_iter().enumerate() {
+        let yy = (u..n)
+            .map(|i| w(i) * (ys[i] - my) * (ys[i - l] - my))
+            .sum::<f64>()
+            / sw;
+        let (got, want) = (pair.lag_corr_yy[li], yy / pair.var_y);
+        assert!((got - want).abs() <= 1e-6, "lag {l}: {got} against {want}");
+    }
+}
+
+/// Task 281: a windowed state with lags, saved to bytes and restored,
+/// goes on as the model it was saved from, to the bit. The bytes carry the
+/// origin but not its buffer of zeros, which the next learned row sizes.
+#[test]
+fn a_windowed_lag_state_restored_from_bytes_goes_on_to_the_bit() {
+    use crate::OnlineModel;
+    let mut c = cfg(3, 2);
+    c.lags = vec![1, 2];
+    c.window = Some(15.0);
+    let mut whole = Marginal::new(c).unwrap();
+    let mut s = 31u64;
+    let row = |s: &mut u64| {
+        let x = [lcg(s), 5.0 + lcg(s), lcg(s)];
+        let y = [Some(x[0] + lcg(s)), (lcg(s) > 0.0).then(|| x[1] * 2.0)];
+        (x, y)
+    };
+    for i in 0..30 {
+        let (x, y) = row(&mut s);
+        OnlineModel::step(&mut whole, &x, &y, step_clock(i), 1.0);
+    }
+    let bytes = rmp_serde::to_vec(&whole.state()).unwrap();
+    let mut back = Marginal::restore(&rmp_serde::from_slice(&bytes).unwrap()).unwrap();
+    for i in 30..60 {
+        let (x, y) = row(&mut s);
+        let a = OnlineModel::step(&mut whole, &x, &y, step_clock(i), 1.0);
+        let b = OnlineModel::step(&mut back, &x, &y, step_clock(i), 1.0);
+        assert_eq!(a.n_eff.to_bits(), b.n_eff.to_bits(), "row {i}");
+    }
+    assert!(state_bytes(&back) == state_bytes(&whole));
+    assert!(back.pair(1, 2).lag_corr_xx[0].is_finite());
+}
+
 /// What the lag moments add to a window's snapshot (docs/PLAN.md task
 /// 137): `L·T + (L + 2C)·p·T` doubles and the width without a window, and
 /// with one the lagged sides' sums, `2L·T + 2(L + C)·p·T`, as `window_lags`
@@ -2821,6 +2974,16 @@ fn shard_cfgs(p: usize) -> Vec<(&'static str, MarginalCfg)> {
             with(&|c| {
                 c.window = Some(25.0);
                 c.max_rows_between_snapshots = Some(3);
+            }),
+        ),
+        // Lags under a window, its batches more than one row (task 281):
+        // a held row's lagged sides read the rows before it in the batch.
+        (
+            "window every 3 with lags",
+            with(&|c| {
+                c.window = Some(25.0);
+                c.max_rows_between_snapshots = Some(3);
+                c.lags = vec![1, 3];
             }),
         ),
         // On the clock, alone and with a row cap (docs/PLAN.md task 162):

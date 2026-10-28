@@ -254,3 +254,46 @@ fn a_restored_anchor_must_be_one_the_sketch_could_set() {
     unbounded.anchor = Some(0.0);
     assert!(!unbounded.has_shape(), "an anchor without a band");
 }
+
+/// Task 281: a sketch still awaiting its anchor has taken no positive
+/// normal value, so it holds no bucket: a state that says otherwise read
+/// its buckets in raw units and bucketed the next value in the anchor's,
+/// and is refused. Its median is then the zero bucket's 0, whatever it is
+/// multiplied by.
+#[test]
+fn a_restored_sketch_awaiting_its_anchor_holds_no_bucket() {
+    let mut z = anchored();
+    z.add(0.0, 2.0);
+    assert!(z.has_shape());
+    assert_eq!(z.get(0), Some(0.0));
+    let mut set = anchored();
+    set.add(3.0, 1.0);
+    set.add(5.0, 1.0);
+    assert!(set.has_shape());
+    set.anchor = Some(0.0);
+    assert!(!set.has_shape(), "awaiting, with buckets");
+}
+
+/// Task 281: `anchor_at` anchors only a sketch that awaits its anchor, and
+/// only at a positive normal float; it leaves an unanchored sketch
+/// unanchored and a set anchor where it is.
+#[test]
+fn anchor_at_sets_only_an_awaiting_anchor_to_a_positive_normal() {
+    for bad in [0.0, -1.0, f64::MIN_POSITIVE / 2.0, f64::INFINITY, f64::NAN] {
+        let mut q = anchored();
+        q.anchor_at(bad);
+        assert_eq!(q.anchor(), Some(0.0), "{bad}");
+    }
+    let mut q = anchored();
+    q.anchor_at(f64::MIN_POSITIVE);
+    assert_eq!(q.anchor(), Some(f64::MIN_POSITIVE));
+    q.anchor_at(2.0);
+    assert_eq!(q.anchor(), Some(f64::MIN_POSITIVE), "a set anchor stays");
+    let mut taken = anchored();
+    taken.add(0.5, 1.0);
+    taken.anchor_at(2.0);
+    assert_eq!(taken.anchor(), Some(0.5), "the first value's anchor stays");
+    let mut plain = EwQuantile::bounded(&[0.5], 8).unwrap();
+    plain.anchor_at(2.0);
+    assert_eq!(plain.anchor(), None, "an unanchored sketch stays one");
+}
