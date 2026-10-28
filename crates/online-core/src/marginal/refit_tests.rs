@@ -201,6 +201,12 @@ fn learned_edges_refit_at_the_freeze_or_hold_on() {
         assert_eq!(frozen, n >= 40, "row {i}");
         assert_eq!(at_freeze.refit_status()[0].done, n >= 40, "row {i}");
         assert_eq!(later.refit_status()[0].done, n >= 90, "row {i}");
+        // The warm-up's rows are its own hold, which the refit's count
+        // does not read until the edges are fixed (task 281).
+        if n < 40 {
+            assert_eq!(at_freeze.refit_status()[0].learned, 0, "row {i}");
+            assert_eq!(later.refit_status()[0].learned, 0, "row {i}");
+        }
         if (40..90).contains(&n) {
             assert_eq!(
                 later.bins.as_ref().unwrap().held.len(),
@@ -348,4 +354,193 @@ fn a_level_moves_the_refits_scale_by_rounding() {
         println!("{level}: {moved:e}");
         assert!(moved <= 1e-8, "{level}: {moved:e}");
     }
+}
+
+/// Task 281: under decay, the refit's rows weigh what the stream has left
+/// of them -- each its raw weight times every step's decay since,
+/// `v_i = w_i·λ^(n − i)`, a row of weight 0 carrying its step's decay to
+/// the next -- and in those weights each cell's location is a root of
+/// `Σ v_i ψ_c(y_i − m)`, its `Ω` and `M2` the rows' Huber weights and
+/// clipped squares, and the target's own robust weight the Huber weights
+/// of all its rows about its location. Held against the definitions.
+#[test]
+fn under_decay_the_refit_weighs_the_rows_as_the_stream_left_them() {
+    let data = rows(80);
+    let h = 20.0;
+    let lam = Decay::Halflife(h).factor(1.0);
+    let mut m = model(given(), 2, 60, h);
+    let mut at = None;
+    for (i, (x, y, w)) in data.iter().enumerate() {
+        m.step(x, y, 1.0, *w);
+        if m.refit_status()[0].done {
+            at = Some(i);
+            break;
+        }
+    }
+    let at = at.expect("the refit ran");
+    let seen: Vec<Row> = data[..=at]
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.2 > 0.0)
+        .map(|(i, (x, y, w))| (x.clone(), y.clone(), w * lam.powi((at - i) as i32)))
+        .collect();
+    assert_eq!(seen.len(), 60);
+    let near = |a: f64, b: f64, scale: f64, what: &str| {
+        assert!((a - b).abs() <= 1e-9 * scale, "{what}: {a} against {b}");
+    };
+    let hist = m.bins.as_ref().unwrap().hist.as_ref().unwrap();
+    let mut clipped = 0;
+    for t in 0..2 {
+        let cut = hist.cell_and_cut(t, 0, 0).3;
+        assert!(cut.is_finite() && cut > 0.0, "{cut}");
+        let weigh = |e: f64| (cut / e.abs()).min(1.0);
+        let (_, tw, loc_t) = hist.m2_and_target(t, 0, 0);
+        let mine: Vec<(f64, f64)> = seen
+            .iter()
+            .filter_map(|(_, y, v)| y[t].map(|yv| (yv, *v)))
+            .collect();
+        let total_t: f64 = mine.iter().map(|(_, v)| v).sum();
+        let want_tw: f64 = mine.iter().map(|(y, v)| v * weigh(y - loc_t)).sum();
+        near(
+            tw,
+            want_tw,
+            total_t,
+            &format!("t{t}: the target's robust weight"),
+        );
+        clipped += mine.iter().filter(|(y, _)| (y - loc_t).abs() > cut).count();
+        for j in 0..3 {
+            for b in 0..4 {
+                let (w_cell, loc, om_cell, _) = hist.cell_and_cut(t, j, b);
+                let (m2_cell, _, _) = hist.m2_and_target(t, j, b);
+                let here: Vec<(f64, f64)> = seen
+                    .iter()
+                    .filter(|(x, _, _)| crate::MarginalBins::bin_of(hist.edges(j), x[j]) == Some(b))
+                    .filter_map(|(_, y, v)| y[t].map(|yv| (yv, *v)))
+                    .collect();
+                if here.is_empty() {
+                    continue;
+                }
+                let what = format!("t{t} j{j} b{b}");
+                let total: f64 = here.iter().map(|(_, v)| v).sum();
+                let g: f64 = here
+                    .iter()
+                    .map(|(y, v)| v * (y - loc).clamp(-cut, cut))
+                    .sum();
+                assert!(g.abs() <= 1e-9 * total * cut, "{what}: g = {g}");
+                near(w_cell, total, total, &format!("{what}: W"));
+                let om: f64 = here.iter().map(|(y, v)| v * weigh(y - loc)).sum();
+                near(om_cell, om, total, &format!("{what}: Ω"));
+                let m2: f64 = here
+                    .iter()
+                    .map(|(y, v)| v * (y - loc).abs().min(cut).powi(2))
+                    .sum();
+                near(m2_cell, m2, total * cut * cut, &format!("{what}: M2"));
+            }
+        }
+    }
+    assert!(clipped > 0, "no row was clipped");
+}
+
+/// Task 281: a held row whose weight has decayed to nothing by the refit
+/// -- a half-life of a hundredth of a step, so the first of twelve rows
+/// weighs `2^-1100`, which no double holds -- takes no part in it: the
+/// target's location and cut are the same to the bit whatever its value,
+/// here a target of `1e12`, a million times the rest.
+#[test]
+fn a_row_decayed_to_nothing_takes_no_part_in_the_refit() {
+    let refit = |first: f64| {
+        let mut m = model(given(), 2, 12, 0.01);
+        for (i, (x, y, _)) in rows(12).into_iter().enumerate() {
+            let y = if i == 0 { vec![Some(first), y[1]] } else { y };
+            m.step(&x, &y, 1.0, 1.0);
+        }
+        assert!(m.refit_status()[0].done);
+        let hist = m.bins.as_ref().unwrap().hist.as_ref().unwrap();
+        (hist.cell_and_cut(0, 0, 0).3, hist.m2_and_target(0, 0, 0).2)
+    };
+    let (cut, loc) = refit(0.3);
+    assert!(cut.is_finite() && cut > 0.0, "{cut}");
+    let (far_cut, far_loc) = refit(1e12);
+    assert_eq!(far_cut.to_bits(), cut.to_bits(), "{far_cut} against {cut}");
+    assert_eq!(far_loc.to_bits(), loc.to_bits());
+}
+
+/// Task 281: the model's `solve_failures` counts the targets whose refit
+/// ran to its pass cap, and no other.
+#[test]
+fn solve_failures_count_the_targets_whose_refit_ran_to_the_cap() {
+    use crate::huber_refit::REFIT_PASSES;
+    let cap = REFIT_PASSES as u32;
+    let mut m = model(given(), 2, 60, 80.0);
+    assert_eq!(m.solve_failures(), 0, "before the refit");
+    for (passes, want) in [
+        (vec![3, 7], 0),
+        (vec![cap, 7], 1),
+        (vec![3, cap], 1),
+        (vec![cap, cap], 2),
+    ] {
+        let b = m.bins.as_mut().unwrap();
+        b.refit.done = true;
+        b.refit.passes = passes.clone();
+        assert_eq!(m.solve_failures(), want, "{passes:?}");
+    }
+}
+
+/// Task 281: rows held beside fixed edges number fewer than the refit's
+/// count, since the refit runs on the row that reaches it: a state holding
+/// exactly the count is refused, and one fewer loads.
+#[test]
+fn a_restored_hold_of_exactly_the_count_is_refused() {
+    use crate::{ModelState, StateError};
+    let data = rows(40);
+    let mut m = model(given(), 2, 60, 80.0);
+    for (x, y, w) in &data {
+        m.step(x, y, 1.0, *w);
+    }
+    let held = m.bins.as_ref().unwrap().held.len();
+    assert!(held > 0 && !m.refit_status()[0].done);
+    let with_count = |count: usize| {
+        let mut s = m.state();
+        let ModelState::Marginal(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.cfg.bins.as_mut().unwrap().refit_rows = count as u32;
+        Marginal::restore(&s)
+    };
+    assert!(matches!(with_count(held), Err(StateError::Invalid(_))));
+    assert!(with_count(held + 1).is_ok());
+}
+
+/// Task 281: the refit's hold grows by doubling up to its count, as the
+/// warm-up's does: a short hold holds about its rows, never more than
+/// twice, a long one reallocates a handful of times, and the full hold is
+/// its count exactly, which is what its reservation counts.
+#[test]
+fn the_refits_hold_grows_by_doubling_to_its_count() {
+    let count = 37;
+    let mut m = model(given(), 2, count as u32, 80.0);
+    let (mut caps, mut held) = (vec![0usize], 0);
+    for (x, y, w) in rows(200) {
+        if w > 0.0 && held == count - 1 {
+            break;
+        }
+        m.step(&x, &y, 1.0, w);
+        let hold = &m.bins.as_ref().unwrap().held;
+        held = hold.len();
+        assert!(
+            hold.capacity() <= (2 * held).max(4),
+            "{held}: {}",
+            hold.capacity()
+        );
+        if caps.last() != Some(&hold.capacity()) {
+            caps.push(hold.capacity());
+        }
+    }
+    assert_eq!(held, count - 1);
+    assert_eq!(caps.last(), Some(&count), "{caps:?}");
+    assert!(
+        caps.len() <= 6,
+        "reallocated {} times: {caps:?}",
+        caps.len() - 1
+    );
 }

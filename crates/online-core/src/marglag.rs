@@ -1597,4 +1597,83 @@ mod tests {
             assert_eq!(e, "marginal: lags must not be empty");
         }
     }
+
+    /// Two origins are equal where their values, which are set, and the
+    /// lagged sides' sums are; the `zeros` buffer, which a state does not
+    /// carry, is not compared. Each compared field, changed alone, makes
+    /// them differ (task 281).
+    #[test]
+    fn origins_are_equal_by_every_field_but_the_buffer() {
+        let mut o = LagOrigin::new(2, 2, 2);
+        o.x = vec![1.0, 2.0];
+        o.y = vec![3.0, 4.0];
+        o.x_set = vec![true, false];
+        o.y_set = vec![false, true];
+        o.bx[1][3] = 0.5;
+        o.by[0][1] = -0.25;
+        let mut same = o.clone();
+        same.zeros.clear();
+        assert!(o == same, "the buffer is not compared");
+        type Edit = (&'static str, fn(&mut LagOrigin));
+        let edits: [Edit; 6] = [
+            ("x", |o| o.x[0] = 9.0),
+            ("y", |o| o.y[1] = 9.0),
+            ("x_set", |o| o.x_set[1] = true),
+            ("y_set", |o| o.y_set[0] = true),
+            ("bx", |o| o.bx[1][3] = 0.75),
+            ("by", |o| o.by[0][1] = 0.0),
+        ];
+        for (what, edit) in edits {
+            let mut other = o.clone();
+            edit(&mut other);
+            assert!(o != other, "{what} differs");
+        }
+    }
+
+    /// A windowed state's origin must hold its features, targets and lags
+    /// too: one corruption per condition its shape check reads, each
+    /// refused alone (task 281).
+    #[test]
+    fn a_lag_state_whose_origin_is_of_another_shape_is_refused() {
+        let (p, t, lags) = (3, 2, vec![1usize, 4]);
+        let good = || {
+            let mut m = MarginalLags::with_origin(p, t, lags.clone(), None, false, true).unwrap();
+            m.fix_origin(&[1.0, 2.0, 3.0], &[Some(1.0), None]);
+            m.push(&[1.0, 2.0, 3.0], &[Some(1.0), None]);
+            m
+        };
+        assert!(good().has_shape(p, t, &lags, None));
+        type Edit = (&'static str, fn(&mut LagOrigin));
+        let edits: [Edit; 8] = [
+            ("a feature short in x", |o| {
+                o.x.pop();
+            }),
+            ("a feature short in x_set", |o| {
+                o.x_set.pop();
+            }),
+            ("a target short in y", |o| {
+                o.y.pop();
+            }),
+            ("a target short in y_set", |o| {
+                o.y_set.pop();
+            }),
+            ("a lag short in bx", |o| {
+                o.bx.pop();
+            }),
+            ("a pair short in bx", |o| {
+                o.bx[1].pop();
+            }),
+            ("a lag short in by", |o| {
+                o.by.pop();
+            }),
+            ("a target short in by", |o| {
+                o.by[0].pop();
+            }),
+        ];
+        for (what, edit) in edits {
+            let mut m = good();
+            edit(m.origin.as_mut().unwrap());
+            assert!(!m.has_shape(p, t, &lags, None), "{what}");
+        }
+    }
 }

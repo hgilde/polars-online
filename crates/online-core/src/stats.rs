@@ -253,8 +253,12 @@ impl EwQuantile {
             && self
                 .band
                 .is_none_or(|k| (1..=MAX_BAND_OCTAVES).contains(&k))
+            // An anchor still awaited has bucketed nothing: the first
+            // positive normal value sets it before it is bucketed.
             && self.anchor.is_none_or(|a| {
-                self.band.is_some() && (a == 0.0 || (a >= f64::MIN_POSITIVE && a.is_finite()))
+                self.band.is_some()
+                    && ((a == 0.0 && self.buckets.is_empty())
+                        || (a >= f64::MIN_POSITIVE && a.is_finite()))
             })
     }
 
