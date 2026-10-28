@@ -1669,8 +1669,10 @@ fn every_targets_windowed_lag_correlation_is_its_own_rows() {
         let y = |i: usize| ys[i][t].unwrap();
         for j in 0..2 {
             let pair = m.pair(t, j);
-            let mx = rows.iter().map(|&i| w(i) * xs[i][j]).sum::<f64>() / sw;
-            let my = rows.iter().map(|&i| w(i) * y(i)).sum::<f64>() / sw;
+            // About the first row inside, so the sums keep their digits.
+            let (x0, y0) = (xs[rows[0]][j], y(rows[0]));
+            let mx = x0 + rows.iter().map(|&i| w(i) * (xs[i][j] - x0)).sum::<f64>() / sw;
+            let my = y0 + rows.iter().map(|&i| w(i) * (y(i) - y0)).sum::<f64>() / sw;
             assert!(
                 close(pair.mean_x, mx),
                 "t{t} j{j}: {} against {mx}",
@@ -1700,6 +1702,50 @@ fn every_targets_windowed_lag_correlation_is_its_own_rows() {
                 );
             }
         }
+    }
+}
+
+/// Task 281: a target far from 0 keeps its windowed lag autocorrelation.
+/// Its lag moments are taken about the target's first value. About 0, the
+/// raw moment `E[y·y_{i−ℓ}]` of a target at `1e6` with a spread of about 1
+/// is `1e12`, and taking the window's mean back out of it leaves about
+/// `1e-4` of noise. About the first value it reads within `1e-6` of the
+/// definition, taken about the window's first row.
+#[test]
+fn a_target_far_from_zero_keeps_its_windowed_lag_autocorrelation() {
+    let (hl, window, n) = (30.0, 50.0, 300usize);
+    let lam = 0.5f64.powf(1.0 / hl);
+    let u = n - 1 - window as usize;
+    let mut c = cfg(1, 1);
+    c.decay = Decay::Halflife(hl);
+    c.lags = vec![1, 3];
+    c.min_weight = vec![0.0];
+    c.window = Some(window);
+    let mut m = Marginal::new(c).unwrap();
+    crate::OnlineModel::set_window_closed(&mut m, crate::WindowClosed::Both);
+    let mut s = 37u64;
+    let mut ys = Vec::new();
+    let mut ar = 0.0;
+    for i in 0..n {
+        let level = if i >= u { 5.0 } else { 0.0 };
+        ar = 0.6 * ar + lcg(&mut s);
+        let y = 1e6 + level + ar;
+        let d = if i == 0 { 0.0 } else { 1.0 };
+        m.step(&[lcg(&mut s)], &[Some(y)], d, 1.0);
+        ys.push(y);
+    }
+    let w = |i: usize| lam.powi((n - 1 - i) as i32);
+    let sw: f64 = (u..n).map(w).sum();
+    let y0 = ys[u];
+    let my = y0 + (u..n).map(|i| w(i) * (ys[i] - y0)).sum::<f64>() / sw;
+    let pair = m.pair(0, 0);
+    for (li, l) in [1usize, 3].into_iter().enumerate() {
+        let yy = (u..n)
+            .map(|i| w(i) * (ys[i] - my) * (ys[i - l] - my))
+            .sum::<f64>()
+            / sw;
+        let (got, want) = (pair.lag_corr_yy[li], yy / pair.var_y);
+        assert!((got - want).abs() <= 1e-6, "lag {l}: {got} against {want}");
     }
 }
 
