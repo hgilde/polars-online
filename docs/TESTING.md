@@ -1532,7 +1532,7 @@ the original. The weekly pass over all of `online-core`, 11,138 mutants on
 
 **A survivor a test could tell apart only by a difference no caller can act
 on is tolerated, and listed apart** (2026-10-05).
-`scripts/mutants_tolerated.toml` names 71, in 66 entries, each with its kind
+`scripts/mutants_tolerated.toml` names 72, in 67 entries, each with its kind
 and the measured size of the difference, or the loop it makes endless. The report shows them by kind and
 fails on none of them, in either job. The kinds:
 
