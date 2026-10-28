@@ -32,6 +32,11 @@ returns.
   times the largest error across two CI runs and macOS, since GitHub's
   runners vary in CPU and faer picks its SIMD kernel by the CPU at run time,
   so two Linux runs of the same code read such a case up to 7 times apart.
+  A case that moves with the runner's CPU has its own tolerance: the
+  standardized quantile fit's worst seed at the median, on mixed scales,
+  reads 0.930 or 0.959 from one CI run of the same code to the next (a
+  near-tie in the refit's pivot that the kernel's rounding decides), so it
+  is held to 6%, twice that spread, not the file's 2%.
   CI fetches every dataset the
   ledger names in one job before the grids run, and fails naming any it
   cannot get, so no grid skips as offline (task 281).

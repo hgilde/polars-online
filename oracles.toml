@@ -5277,6 +5277,7 @@ ideal = 0.0
 worst = 0.930223
 p95 = 0.855667
 n = 50
+tolerance = 0.06
 
 [case."oracles.quantile_mixed_scales.tau_0_9_standardized_se"]
 ideal = 0.0
@@ -7281,3 +7282,11 @@ to = 7.4e-13
 date = 2026-10-28
 reason = "a round-off case: GitHub's Linux runners vary in CPU and faer picks its SIMD kernel by the CPU at run time, so the same code reads such cases 2 to 7 times apart from one CI run to the next; the floor is about four times the largest error measured across both CI runs and macOS (run 40364575712 (f4f6fa5e) 1.85e-13, run 40469534166 (c02e0afd) 1.85e-13, macOS arm64 1.85e-13)"
 changelog = "A case whose oracle agrees to round-off has a floor"
+
+[[raised]]
+key = "oracles.quantile_mixed_scales.tau_0_5_standardized_se.tolerance"
+from = 0.02
+to = 0.06
+date = 2026-10-28
+reason = "a case that moves with the runner's CPU: five CI runs of the same code read the worst seed at 0.930223 (runs 40364575712, 40469534166, 40681623263, 40710283328) or 0.958523 (run 40742093527, e1072236, whose only change from a02ae59c was a workflow timeout), 3.0% apart; the quantile refit meets a near-tie at a pivot that faer's runtime-chosen SIMD kernel decides; 6% is twice that spread"
+changelog = "A case that moves with the runner's CPU has its own tolerance"
