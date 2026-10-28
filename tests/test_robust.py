@@ -808,8 +808,10 @@ class TestTheQuantilesOwnKeywords:
                 df.with_columns(pl.col("x0") * 2.0**k), standardize=standardize, ridge=ridge
             )
             got = np.array(out["coef"].to_list())[first:]
-            assert out[first:].drop("coef", "x0").equals(
-                base[first:].drop("coef", "x0"), null_equal=True
+            assert (
+                out[first:]
+                .drop("coef", "x0")
+                .equals(base[first:].drop("coef", "x0"), null_equal=True)
             ), k
             np.testing.assert_array_equal(got[:, 1] * 2.0**k, coef[:, 1], err_msg=f"k = {k}")
             np.testing.assert_array_equal(got[:, [0, 2]], coef[:, [0, 2]], err_msg=f"k = {k}")
