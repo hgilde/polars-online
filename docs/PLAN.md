@@ -16538,3 +16538,22 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       (4) The fixture index and shared test-case registry generated rather
       than appended to, so new fixtures stop conflicting between branches.
       (5) `spec.rs` sits at 249.9 KB of the 250 KB cap: split a seam.
+
+- [ ] 282. **Review round 10's fixes, before 1.4.0** -- the user, 2026-10-28:
+      "Review the 1.4 changes theory and code". Nine read-only reviewers over
+      `v1.3.0..main` (92d5bd41..f36a4a6c), code and theory (§26). Theory
+      clean everywhere; 1 high, 7 medium, 32 low. Decisions, the user's
+      (2026-10-28): the six 20%-outlier strict xfails are reclassified as a
+      documented bound (assert the measured capture share, a Known issue),
+      not fixed; the `unstable_rate` gate bounds each row's `q` before it
+      enters the sums AND derives its memory from the fit (the model's decay
+      or the rate's relearning time) rather than the 100-row constant --
+      "consider whether the 100 row half-life is fitting the library features
+      to the test data". Four slot workers, two at a time: W1 sgd + the Huber
+      refit (H1 the refit ridge under standardize, M1 the gate), W2 robust +
+      linear + regimes + diagnostics (M2 the one-coefficient returning
+      target), W3 the stream and bank (M3 the reset under an embargo) + the
+      xfail reclassification, W4 the ledger's enforceability (M4, M5), the
+      released-state continuation test (M6), the readiness policy (M7) and
+      the documents. `.claude/coord/review10/FINDINGS.md` is the list.
+
