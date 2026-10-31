@@ -15,6 +15,14 @@ saves the bank under the spec's name instead, for
 this build loads them and goes on:
 
     python scripts/release_probe.py --states DIR MANIFEST.json
+
+With ``--resume``, a build loads the files ``--states`` wrote, each with
+its spec as that build makes it, fits the second half of the stream and
+writes what it reports there, and the tables ``tables`` reads, to
+``<OUT>/<name>.<table>.parquet``: a released build's own continuation of its
+own files, which ``tests/test_released_state.py`` holds this build's to:
+
+    python scripts/release_probe.py --resume DIR OUT NAME...
 """
 
 from __future__ import annotations
@@ -694,8 +702,42 @@ def states(out_dir: str, manifest_path: str) -> None:
         json.dump(manifest, fh, indent=1)
 
 
+def tables(bank: po.ModelBank, name: str) -> dict[str, pl.DataFrame]:
+    """What a model keeps and a row does not show: the rows a closed group
+    emits, the coefficients where the kind has them, and ``marginal``'s pairs
+    table where it has them."""
+    out = {"closed": bank.closed_groups()}
+    try:
+        out["coef"] = bank.coef(name)
+    except ValueError as e:  # a kind without coefficients refuses by name
+        if "coef" not in str(e):
+            raise
+    if name == "marginal":
+        out["marginal"] = bank.marginal(name)
+    return out
+
+
+def resume(states_dir: str, out_dir: str, names: list[str]) -> None:
+    """Each named file ``states`` wrote, loaded with its spec as this build
+    makes it, and fitted on the second half of `stream()`: its rows to
+    ``<out_dir>/<name>.rows.parquet`` and each of ``tables`` beside them."""
+    warnings.simplefilter("ignore")
+    second = stream().slice(HALF)
+    work = {name: (builder, kw, reads) for name, builder, kw, reads in WORKLOAD}
+    for name in names:
+        reads = work[name][2]
+        specs = [build(work[r][0], r, work[r][1]) for r in reads]
+        specs.append(build(work[name][0], name, work[name][1]))
+        bank = po.ModelBank.load(f"{states_dir}/{name}.state", specs=specs)
+        bank.fit_predict(second).select(name).write_parquet(f"{out_dir}/{name}.rows.parquet")
+        for table, frame in tables(bank, name).items():
+            frame.write_parquet(f"{out_dir}/{name}.{table}.parquet")
+
+
 if __name__ == "__main__":
     if sys.argv[1] == "--states":
         states(sys.argv[2], sys.argv[3])
+    elif sys.argv[1] == "--resume":
+        resume(sys.argv[2], sys.argv[3], sys.argv[4:])
     else:
         main(sys.argv[1], sys.argv[2])

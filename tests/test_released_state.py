@@ -21,7 +21,9 @@ both halves, and every float, the closed groups, the coefficients and
 on the states this build writes itself, so the harness exists, and has run,
 before the first release that must honour it. Every float goes on to the
 bit, as the release comparison holds its outputs; a spec a CHANGELOG entry
-moved since the release is named in ``DECLARED``, with the entry.
+moved since the release is named in ``DECLARED``, with the entry, and goes
+on as the release itself goes on from the same file, run under the
+release's own wheel (``test_a_moved_spec_goes_on_as_its_release_did``).
 
 Until 2026-09-28 the loading test held 0.11.1's files (schema 17) bit for
 bit and 0.10.0's (schema 14) within 2.2e-13; the pre-1.0 waiver (the user,
@@ -107,7 +109,8 @@ def _buildable(version: str) -> list[str]:
 #: The specs whose numbers a CHANGELOG entry declares moved since a release,
 #: ``(spec, the newest release whose files it moves) -> the entry``. A file
 #: of that release or an older one goes on from its own numbers, not this
-#: build's, so its continuation is held to loading and running alone. Every
+#: build's: `test_a_moved_spec_goes_on_as_its_release_did` holds it to the
+#: release's own continuation instead. Every
 #: other spec of every 1.x release goes on to the bit: measured on
 #: 2026-10-23, 68 specs of 1.0.0, 1.0.1, 1.1.0 and 1.2.0, every gap 0 but
 #: these.
@@ -289,6 +292,17 @@ def _online() -> bool:
     return True
 
 
+#: Each build's states, written once a module run: the loading test and the
+#: continuation test read the same files.
+_SAVED: dict[str, tuple[dict, Path]] = {}
+
+
+def _saved(version: str, factory: pytest.TempPathFactory) -> tuple[dict, Path]:
+    if version not in _SAVED:
+        _SAVED[version] = _states(version, factory.mktemp("states"))
+    return _SAVED[version]
+
+
 def _states(version: str, out: Path) -> tuple[dict, Path]:
     """The workload's states as ``version`` writes them, and its manifest."""
     manifest = out / "manifest.json"
@@ -325,7 +339,7 @@ def refused(request, tmp_path_factory):
 def loaded(request, tmp_path_factory):
     """A release from 1.0, or this build: its version, manifest, states."""
     version = request.param
-    manifest, out = _states(version, tmp_path_factory.mktemp("states-loaded"))
+    manifest, out = _saved(version, tmp_path_factory)
     return version, manifest, out
 
 
@@ -409,17 +423,10 @@ def _worst_gap(got: pl.DataFrame, want: pl.DataFrame) -> float:
 
 
 def _tables(bank: po.ModelBank, name: str) -> list[pl.DataFrame]:
-    """What a model keeps and a row does not show: the rows a closed group
-    emits, the coefficients where the kind has them (the rest refuse by
-    name), and ``marginal``'s pairs table."""
-    out = [bank.closed_groups()]
-    try:
-        out.append(bank.coef(name))
-    except ValueError as e:
-        assert "coef" in str(e) or "coefficients" in str(e), e
-    if name == "marginal":
-        out.append(bank.marginal(name))
-    return out
+    """What a model keeps and a row does not show (``probe.tables``): the
+    rows a closed group emits, the coefficients where the kind has them (the
+    rest refuse by name), and ``marginal``'s pairs table."""
+    return list(probe.tables(bank, name).values())
 
 
 def test_a_released_state_loads_and_goes_on_as_this_builds_own(loaded):
@@ -432,11 +439,11 @@ def test_a_released_state_loads_and_goes_on_as_this_builds_own(loaded):
     # Every file goes on to the bit, as the release comparison holds the
     # outputs (review round 9, J-5: a bound of 1e-12 was described as the
     # comparison's, which allows nothing). A spec a CHANGELOG entry moved
-    # since the release is named in `DECLARED`, and held to having loaded
-    # and run: its rows withheld may move too (task 278's `kalman`).
-    moved = set()
-    if version != THIS_BUILD:
-        moved = {n for (n, since), _ in DECLARED.items() if _version(version) <= _version(since)}
+    # since the release is named in `DECLARED`, and held here to its row
+    # count, since its rows withheld may move too (task 278's `kalman`);
+    # `test_a_moved_spec_goes_on_as_its_release_did` holds every field of it
+    # to the release's own continuation.
+    moved = _moved(version)
     gaps = {}
     for name, _, _, reads in probe.WORKLOAD:
         if name not in manifest["saved"]:
@@ -460,10 +467,265 @@ def test_a_released_state_loads_and_goes_on_as_this_builds_own(loaded):
     assert not wrong, wrong
 
 
+def _moved(version: str) -> set[str]:
+    """The specs a CHANGELOG entry moved since ``version``: its files go on
+    from their own numbers, not this build's."""
+    if version == THIS_BUILD:
+        return set()
+    return {n for (n, since), _ in DECLARED.items() if _version(version) <= _version(since)}
+
+
+#: The releases whose moved specs go on as the release itself goes on from
+#: the same file, run under its own wheel: every release whose files load.
+#: The CHANGELOG says so of each entry in `DECLARED`: `sgd` loads with the
+#: old rules and goes on to the bit, `kalman` goes on as it was fitted,
+#: `holt` with the textbook gains, the residual spread folding only the
+#: residuals it reported, `hmm` exactly as that release did, `huber`'s
+#: sketch with its fixed buckets, a Huber file of 1.2.0 on the scale it was
+#: fitted with. Measured 2026-10-31: every field of every moved spec of the
+#: five to the bit but those `WITHIN`, `ROUNDED`, `YOUNG` and `RESETS` name.
+RESUMED = [v for v in RELEASES if _major(v) >= 1]
+
+#: The golden pipeline's tolerance, the library's bound for a move within
+#: rounding (`tests/test_golden_pipeline.py`).
+GOLDEN = 1e-12
+
+#: Where a moved spec's file goes on within a tolerance of its release's own
+#: continuation, not to the bit, relative to ``1 + |v|``, as `DECLARED` is
+#: keyed: ``(spec, the newest release whose files it covers)``.
+#: - `lasso`'s `tol` is relative to the target's spread since 1.3.0, and a
+#:   state of an earlier schema goes on within 1e-9 (CLAUDE.md rule 5's third
+#:   exception): 6.8e-10 at most here.
+#: - A windowed file of 1.2.0 or older recorded no per-row decay factors,
+#:   so once a snapshot taken after its load is the window's edge it goes on
+#:   within the golden tolerance (rule 5's first exception): 2.9e-15 here.
+#: - A blocked `ewridge`'s target cross-moments moved in their last bits in
+#:   1.1.0: a file of 1.0.x goes on within rounding, 8.3e-16 here.
+WITHIN: dict[tuple[str, str], float] = {
+    ("full_lasso", "1.3.0"): 1e-9,
+    ("lasso_window", "1.3.0"): 1e-9,
+    **{
+        (name, "1.2.0"): GOLDEN
+        for name in ("ridge_window", "ridge_both", "marginal_window", "lasso_window")
+    },
+    ("ew_class_window", "1.2.0"): GOLDEN,
+    ("ridge_blocked", "1.0.1"): GOLDEN,
+}
+
+
+def _within(name: str, version: str) -> float:
+    """The widest tolerance `WITHIN` gives ``name`` for a file of ``version``."""
+    found = [
+        t for (n, since), t in WITHIN.items() if n == name and _version(version) <= _version(since)
+    ]
+    return max(found, default=0.0)
+
+
+#: A diagnosed state of schema 61-63 goes on to this build's values in its
+#: windowed `cusum_*` and `cusum_sq_*` fields while their sums are young:
+#: their null's share is read at the sums' age (CLAUDE.md rule 5's fourth
+#: exception). Those fields are held to their nulls alone; every other field
+#: of a diagnosed spec goes on to the bit.
+YOUNG = ("cusum_",)
+
+#: The fields whose arithmetic changed since 1.3.0 within rounding, by the
+#: CHANGELOG's Fixed entry: the residuals' skewness reads `m_2·√m_2`, two
+#: correctly rounded operations, where it read the platform's `pow`. They
+#: and the Jarque-Bera statistic built on them move by an ulp or two (4e-16
+#: of `1 + |v|` at most here), in every spec that emits its tails.
+ROUNDED = (("skew_", "jarque_bera_"), 1e-15)
+
+#: A spec whose drift detector resets the model, by its flag: from the row
+#: after one that fires, every field is what a fresh bank fed those rows
+#: returns (the CHANGELOG's Fixed entry, "starts the model over exactly"),
+#: so a file goes on as its release did up to its first reset, and as a
+#: fresh bank of this build after it.
+RESETS = {"ridge_reset": "drift_y"}
+
+
+def _plain(frame: pl.DataFrame) -> pl.DataFrame:
+    """A frame's struct columns opened, an Enum as its values: a release's
+    `withheld_reason` has fewer categories, and its rows compare by value."""
+    out = frame.select(
+        pl.col(c).struct.unnest().name.prefix(f"{c}.") if frame[c].dtype == pl.Struct else pl.col(c)
+        for c in frame.columns
+    )
+    return out.with_columns(pl.col(pl.Enum, pl.Categorical).cast(pl.String))
+
+
+def _gaps(u: pl.Series, v: pl.Series) -> tuple[np.ndarray, np.ndarray]:
+    """Each row's gap between two float columns or float lists, relative to
+    ``1 + |v|`` (0 where they agree to the bit, NaN against NaN and null
+    against null included; inf where their nulls, NaNs or lengths part), and
+    whether the row agrees to the bit."""
+    if isinstance(v.dtype, pl.List) or isinstance(u.dtype, pl.List):
+        pairs = list(zip(u.to_list(), v.to_list(), strict=True))
+    else:
+        pairs = [([a], [b]) for a, b in zip(u.to_list(), v.to_list(), strict=True)]
+    gap = np.zeros(len(pairs))
+    exact = np.ones(len(pairs), dtype=bool)
+    for i, (x, y) in enumerate(pairs):
+        if (x is None) != (y is None) or (x is not None and len(x) != len(y)):
+            gap[i], exact[i] = np.inf, False
+            continue
+        if x is None:
+            continue
+        a = np.array(_flatten(x), dtype=float)
+        b = np.array(_flatten(y), dtype=float)
+        nan_a, nan_b = np.isnan(a), np.isnan(b)
+        if (nan_a != nan_b).any():
+            gap[i], exact[i] = np.inf, False
+            continue
+        ok = ~nan_b
+        exact[i] = bool((a[ok] == b[ok]).all())
+        if ok.any():
+            gap[i] = float((np.abs(a[ok] - b[ok]) / (1 + np.abs(b[ok]))).max())
+    return gap, exact
+
+
+def _differences(
+    got: pl.DataFrame,
+    want: pl.DataFrame,
+    *,
+    within: float = 0.0,
+    young: tuple[str, ...] = (),
+    against: str = "the release's",
+) -> list[str]:
+    """Where ``got`` parts from ``want``, field by field: the first row, both
+    values, how many rows and the largest gap relative to ``1 + |v|``. Every
+    field ``want`` reports is compared; floats to the bit, or within
+    ``within``; a field starting with one of ``young`` by its nulls alone."""
+    got, want = _plain(got), _plain(want)
+    if got.height != want.height:
+        return [f"{got.height} rows against {against} {want.height}"]
+    lost = sorted(set(want.columns) - set(got.columns))
+    if lost:
+        return [f"{against} fields {lost} are gone"]
+    out = []
+    for c in want.columns:
+        u, v = got[c], want[c]
+        floats = any(
+            d.is_float() or (isinstance(d, pl.List) and d.inner.is_float())
+            for d in (u.dtype, v.dtype)
+        )
+        if floats:
+            gap, exact = _gaps(u, v)
+            field = c.split(".", 1)[-1]
+            if young and field.startswith(young):
+                bad = gap == np.inf
+            else:
+                tol = max(within, ROUNDED[1]) if field.startswith(ROUNDED[0]) else within
+                bad = ~exact & ~(gap <= tol)
+        else:
+            gap, bad = None, ~(u.eq_missing(v).to_numpy())
+        if bad.any():
+            row = int(np.flatnonzero(bad)[0])
+            size = f"{int(bad.sum())} rows"
+            if gap is not None:
+                size += f", the largest gap {float(gap[bad].max()):.1e} of 1 + |v|"
+            out.append(f"{c} at row {row}: {u[row]!r} against {against} {v[row]!r} ({size})")
+    return out
+
+
+@pytest.fixture(scope="module", params=RESUMED)
+def resumed(request, tmp_path_factory):
+    """A release's moved specs: its files, and what the release reports on
+    the second half of the stream from each, run under its own wheel."""
+    version = request.param
+    manifest, states = _saved(version, tmp_path_factory)
+    names = sorted(_moved(version) & set(manifest["saved"]))
+    out = tmp_path_factory.mktemp(f"resumed-{version}")
+    subprocess.run(
+        [
+            str(compare.released_python(version)),
+            "-I",
+            str(REPO / "scripts" / "release_probe.py"),
+            "--resume",
+            str(states),
+            str(out),
+            *names,
+        ],
+        check=True,
+    )
+    return version, names, states, out
+
+
+def _after_reset(rows: pl.DataFrame, second: pl.DataFrame, name: str, flag: str) -> np.ndarray:
+    """Each row after its group's first reset in ``rows``."""
+    fired = rows[name].struct.field(flag).fill_null(False).to_numpy().astype(bool)
+    groups = second["g"].to_numpy()
+    after = np.zeros(len(fired), dtype=bool)
+    for g in np.unique(groups):
+        at = np.flatnonzero((groups == g) & fired)
+        if at.size:
+            after |= (groups == g) & (np.arange(len(fired)) > at[0])
+    return after
+
+
+def _fresh(spec: list[dict], second: pl.DataFrame, after: np.ndarray, name: str) -> pl.DataFrame:
+    """A fresh bank's rows on each group's rows after its first reset, in
+    the stream's order."""
+    rows = second.with_row_index("_at").filter(pl.Series(after))
+    parts = [
+        po.ModelBank(spec).fit_predict(rows.filter(pl.col("g") == g)).select("_at", name)
+        for g in rows["g"].unique(maintain_order=True)
+    ]
+    return pl.concat(parts).sort("_at").drop("_at")
+
+
+def test_a_moved_spec_goes_on_as_its_release_did(resumed):
+    """A spec a CHANGELOG entry moved since a release: this build loads the
+    release's file and goes on as the release itself goes on from it, every
+    field of every row and of the tables `probe.tables` reads, to the bit,
+    run under the release's own wheel (`WITHIN`, `ROUNDED`, `YOUNG` and
+    `RESETS` name the declared exceptions). `withheld_reason` compares by value, since this
+    build's Enum has categories the release's has not."""
+    version, names, states, out = resumed
+    assert names, f"{version}: no spec of its moved since"
+    built = {name: probe.build(b, name, kw) for name, b, kw, _ in probe.WORKLOAD}
+    work = {name: reads for name, _, _, reads in probe.WORKLOAD}
+    second = probe.stream().slice(probe.HALF)
+    wrong: dict[str, list[str]] = {}
+    used = {"young": 0, "reset": 0}
+    for name in names:
+        specs = [built[r] for r in work[name]] + [built[name]]
+        bank = po.ModelBank.load(states / f"{name}.state", specs=specs)
+        got = {"rows": bank.fit_predict(second).select(name), **probe.tables(bank, name)}
+        rule = dict(within=_within(name, version), young=YOUNG if name.startswith("full_") else ())
+        for table in sorted(p.name.split(".")[-2] for p in out.glob(f"{name}.*.parquet")):
+            want = pl.read_parquet(out / f"{name}.{table}.parquet")
+            if table not in got:
+                wrong[f"{name}.{table}"] = ["not reported by this build"]
+                continue
+            mine = got[table]
+            if table == "rows" and name in RESETS:
+                after = _after_reset(mine, second, name, RESETS[name])
+                assert after.any(), f"{name}: no reset fired in the second half"
+                used["reset"] += 1
+                fresh = _fresh(specs, second, after, name)
+                wrong[f"{name}.rows after its resets"] = _differences(
+                    mine.filter(pl.Series(after)), fresh, against="a fresh bank's"
+                )
+                mine, want = mine.filter(pl.Series(~after)), want.filter(pl.Series(~after))
+            wrong[f"{name}.{table}"] = _differences(mine, want, **rule)
+            if rule["young"] and _differences(mine, want, within=rule["within"]):
+                used["young"] += 1
+        # The rows were compared: the release wrote them, all of them.
+        assert pl.read_parquet(out / f"{name}.rows.parquet").height == second.height, name
+    # The exceptions were used: the comparisons they excuse ran, and moved.
+    assert used["reset"] == len(set(RESETS) & set(names)) and used["young"], used
+    wrong = {k: v for k, v in wrong.items() if v}
+    assert not wrong, "\n".join(f"{k}: {line}" for k, v in sorted(wrong.items()) for line in v)
+
+
 def test_every_declared_move_names_a_spec_and_a_release():
     names = {name for name, *_ in probe.WORKLOAD}
     for (name, since), why in DECLARED.items():
         assert name in names and since in RELEASES and why, (name, since, why)
+    # A tolerance excuses only a declared move, of the same releases' files.
+    for (name, since), tol in WITHIN.items():
+        assert (name, since) in DECLARED and 0 < tol <= 1e-9, (name, since, tol)
+    assert set(RESETS) <= {n for n, _ in DECLARED}
 
 
 def test_the_policy_page_lists_every_release_the_test_holds():
