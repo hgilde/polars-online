@@ -282,13 +282,25 @@ pub const MAX_PERM: usize = 1 << 20;
 /// it flags when fewer than `m` draws reach `T`: `T` above the `(B + 1 −
 /// m)`-th smallest draw. On exchangeable rows the observed statistic is one
 /// more draw of the same law, its rank among the `B + 1` uniform, so the
-/// size is `m / (B + 1) ≤ alpha`, exactly. One product is rounded, so a
-/// level that is a multiple of `1 / (B + 1)` lands on it. At 0 no
-/// statistic can flag.
+/// size is `m / (B + 1) ≤ alpha`. A level given as a multiple of `1 / (B +
+/// 1)` lands on it: the product is nudged up by four units of rounding
+/// before its floor, since a decimal level is rounded to a double and the
+/// product rounded again, either of which can leave it just under the
+/// whole number it stands for -- `0.29 · 100` is `28.999999999999996`, and
+/// so is `0.145 · 200`, which flagged with 28 draws reaching `T` where the
+/// level allows 29 (size 0.28 and 0.14). A level within that nudge under a
+/// multiple reads as the multiple, a size past it by four units of
+/// rounding at most. At 0 no statistic can flag.
 pub fn perm_rejections(alpha: f64, draws: usize) -> usize {
-    // `alpha < 1`, so the product is below `draws + 1`: at most `draws`.
-    (alpha * (draws as f64 + 1.0)).floor() as usize
+    // `alpha < 1`, so the product is below `draws + 1` by more than the
+    // nudge (`draws ≤ MAX_PERM`, `alpha ≤ 1 − u`): at most `draws`.
+    let product = alpha * (draws as f64 + 1.0);
+    (product * (1.0 + 4.0 * PERM_ROUNDING)).floor() as usize
 }
+
+/// The unit roundoff of a double, `2⁻⁵³`: [`perm_rejections`]'s nudge is
+/// four of it.
+const PERM_ROUNDING: f64 = f64::EPSILON / 2.0;
 
 /// The fewest draws at which the window test can flag at `alpha`: the
 /// smallest `B` with [`perm_rejections`]`(alpha, B) ≥ 1`, which is
@@ -2814,7 +2826,9 @@ mod tests {
     /// is `⌈1/alpha⌉ − 1`.
     #[test]
     fn the_permutation_size_is_at_most_alpha_and_the_fewest_draws_can_flag() {
-        for alpha in [0.001, 0.01, 0.03, 0.05, 0.1, 0.2, 0.5, 0.9] {
+        for alpha in [
+            0.001, 0.01, 0.03, 0.05, 0.1, 0.145, 0.2, 0.285, 0.29, 0.5, 0.9,
+        ] {
             for b in 1..=3000 {
                 let m = perm_rejections(alpha, b);
                 assert!(m <= b, "{alpha} {b}");
@@ -2829,6 +2843,22 @@ mod tests {
         assert_eq!(perm_rejections(0.05, 199), 10);
         assert_eq!(perm_rejections(0.01, 98), 0);
         assert_eq!(perm_rejections(0.01, 99), 1);
+        // Levels whose product rounds under the whole number it stands for
+        // land on it (review round 10, S6-2): each read one fewer.
+        assert_eq!(0.29 * 100.0, 28.999999999999996, "the fixture");
+        assert_eq!(perm_rejections(0.29, 99), 29);
+        assert_eq!(perm_rejections(0.145, 199), 29);
+        assert_eq!(perm_rejections(0.285, 199), 57);
+        // At every whole count of hundredths and thousandths, a level that
+        // is a multiple of `1/(B + 1)` is its size.
+        for b in [99usize, 199, 999] {
+            for i in 1..=b {
+                let alpha: f64 = format!("{}", i as f64 / (b + 1) as f64).parse().unwrap();
+                if alpha < 1.0 && ((alpha * (b + 1) as f64) - i as f64).abs() < 1e-9 {
+                    assert_eq!(perm_rejections(alpha, b), i, "{alpha} at {b}");
+                }
+            }
+        }
         for (alpha, want) in [
             (0.05, 19),
             (0.01, 99),
@@ -2842,17 +2872,21 @@ mod tests {
         }
         assert_eq!(min_perm(1e-7), None);
         assert_eq!(min_perm(1.0 / (MAX_PERM as f64 + 1.0)), Some(MAX_PERM));
-        // Just under `1/k`, `1/alpha` rounds to `k` and the closed form
-        // starts at `k − 1`, where `alpha·k` rounds below 1: the fewest
-        // draws are then `k`, settled on the predicate itself.
+        // Within a few units of rounding of `1/k`, `1/alpha` rounds to `k`
+        // or past it while `alpha·k` lands on 1 or not by the nudge, so the
+        // closed form can start a draw off the fewest, either way: settled
+        // on the predicate itself.
         let mut settled = 0;
         for k in 2..2000usize {
-            let alpha = f64::from_bits((1.0 / k as f64).to_bits() - 1);
-            let b = min_perm(alpha).unwrap();
-            assert!(perm_rejections(alpha, b) >= 1, "{alpha}");
-            assert_eq!(perm_rejections(alpha, b - 1), 0, "{alpha}");
-            if b > ((1.0 / alpha).ceil() as usize).saturating_sub(1) {
-                settled += 1;
+            for ulps in -8i64..=8 {
+                let bits = (1.0 / k as f64).to_bits() as i64 + ulps;
+                let alpha = f64::from_bits(bits as u64);
+                let b = min_perm(alpha).unwrap();
+                assert!(perm_rejections(alpha, b) >= 1, "{alpha}");
+                assert_eq!(perm_rejections(alpha, b - 1), 0, "{alpha}");
+                if b != ((1.0 / alpha).ceil() as usize).saturating_sub(1) {
+                    settled += 1;
+                }
             }
         }
         // That the closed form fell short is what was tested, not assumed.
