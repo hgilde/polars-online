@@ -997,10 +997,14 @@ def ewridge(
     A system can also factorize and still be too nearly singular for its
     solve to keep a digit: rounding can leave a matrix past ``1/u`` in
     condition positive definite, and its coefficients then come out wrong by
-    more than their own size. So each factorization that needed no jitter
-    estimates the condition of the system with each column scaled by the
-    root of its diagonal, ``H = D^-1 A D^-1``, which is what a Cholesky solve
-    is accurate to, whatever the features' units. The estimate is
+    more than their own size. So each factorization estimates the condition
+    of the system with each column scaled by the root of its diagonal,
+    ``H = D^-1 A D^-1``, which is what a Cholesky solve is accurate to,
+    whatever the features' units; one that needed a jitter ``delta`` on the
+    diagonal is judged as the system it solves, ``A + delta I``, whose
+    ``||H^-1||_1`` the first rung (``delta`` at ``1e-12`` of the mean
+    diagonal) leaves near ``1e12``, past the limit from about 30
+    coefficients. The estimate is
     ``||H^-1||_1`` by Hager and Higham's method (LAPACK's ``dlacn2``), from
     the factor in ``O(k^2)``. The factorization and solve are backward
     stable with a backward error of at most ``k * gamma_{3k+1}`` in ``H``'s
@@ -1958,10 +1962,12 @@ def lasso(
         before it. On 15 features correlated at ``0.8 ** |i - j|``, solved on
         every row of 20,000 at seven penalties, 798 of the 140,000 descents
         ran out of their 100 sweeps; 1,000 sweeps left 44, at 1% more sweeps
-        in all. A cyclic descent contracts the error along two correlated
-        columns by about ``1 - 1 / kappa`` a sweep, ``kappa`` the
-        correlation matrix's condition number, so where columns nearly repeat
-        each other most descents can run out: on 800 rows of two columns
+        in all. A cyclic descent contracts the error along two columns of
+        correlation ``rho`` by ``rho**2`` a sweep, about ``1 - 4 / kappa``
+        with ``kappa = (1 + rho) / (1 - rho)`` their correlation matrix's
+        condition number, so each e-fold takes about ``kappa / 4`` sweeps,
+        and where columns nearly repeat each other most descents can run
+        out: on 800 rows of two columns
         0.1 apart (``kappa`` near 400) at a penalty of 0.001, 798 of 799.
     ``target_gaps``
         Which rows a target's feature correlations are taken over where the target
@@ -2731,10 +2737,13 @@ def ew_cov(
         ``"lag_corr"`` to ``stats`` to write ``lag_corr_l<l>_<a>_<b>`` =
         ``C_l[a,b] / sqrt(C_0[a,a] * C_0[b,b])`` per lag and ordered pair, the
         auto terms included. That is ``k²`` slots a lag, since a lagged
-        matrix is not symmetric. ``C_l`` starts at 0 and takes its first
-        product when a learned row has one ``l`` rows back, so ``lag_corr``
-        reads 0.0, not null, until then: through the ``l``-th learned row of
-        a group, wherever ``min_weight`` lets those rows through. Or read
+        matrix is not symmetric. A group's first two rows read it null: the
+        weight before them is under two rows, and ``min_weight`` is floored
+        at 2, since one row has no variance to divide by (under a decay the
+        third row's weight can be under 2 as well). ``C_l`` starts at 0 and
+        takes its first product when a learned row has one ``l`` rows back,
+        so after those rows ``lag_corr`` reads 0.0, not null, while the group
+        has learned no more than ``l`` rows before the row. Or read
         ``lags`` and ``lag_comoments`` (an ``(L, k, k)`` array) from
         :meth:`polars_online.ModelBank.gram`.
     ``gram_threads``

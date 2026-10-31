@@ -107,7 +107,7 @@ returns.
   -> 0.0058, Cauchy 0.0175 -> 0.0058; a shift of every one of the first 500
   rows, which no refit of those rows can see, 0.093 -> 0.061. The default
   count is `max(500, 10·features)`, off above 100 features; a count given is
-  taken from three rows a coefficient up. It costs 0.09 to 2.3 ms once for 1
+  taken, and one below three rows a coefficient is refused. It costs 0.09 to 2.3 ms once for 1
   to 50 features and 500 to 1,000 rows, the rows after it cost what they
   did, and each target holds `(features + 4)·8` bytes a row until it runs.
   `quantile_refit_rows=0` turns it off. A state saved before it loads with
@@ -182,10 +182,11 @@ returns.
   its `alpha` -- fewer than `ceil(1/alpha) − 1` draws (99 at alpha 0.01) --
   and names the smallest that can; a fixed `crit` is not affected (task
   278).
-- `kmeans` refuses a `dead_frac` of 0.5 or more (it was refused only from
-  1): a re-placed centre starts at half the weight of the cluster it is
-  split from, so from 0.5 a centre split from a cluster at an equal share
-  starts at the dead floor and each check re-places it again. Over 50
+- `kmeans` refuses a `dead_frac` of 0.5 or more, which it took. From 1 it
+  called a centre dead at every check; and a re-placed centre starts at half
+  the weight of the cluster it is split from, so from 0.5 a centre split
+  from a cluster at an equal share starts at the dead floor and each check
+  re-places it again. Over 50
   streams with a check every 25 rows none cascaded at 0.45, 3 at 0.5, 29 at
   0.6 and all 50 at 0.9 (task 278).
 - `kalman`'s numbers move wherever the noise is learned (task 278): a step
@@ -493,11 +494,14 @@ returns.
   `max_error_inflation` gate (up to 0.086). Every other kind's score reads
   no clock step and is unchanged, as is every spec without an `embargo`.
 - `corrchange(kind="window")`'s permutation test is the standard one, so its
-  size never exceeds `alpha` (task 278): a report flags when fewer than
+  size is about `alpha` (task 278): a report flags when fewer than
   `floor(alpha·(n_perm+1))` draws reach its statistic, counting the
-  observed statistic as one more draw, an exact size of that count over
-  `n_perm + 1` (1/21 = 0.0476 at 20 draws and alpha 0.05, 0.0498 at the
-  default 200). The old critical value, the `ceil((1−alpha)·n_perm)`-th
+  observed statistic as one more draw, so a report tested against draws of
+  its own windows has a size of that count over `n_perm + 1`, at most
+  `alpha` (1/21 = 0.0476 at 20 draws and alpha 0.05, 0.0498 at the default
+  200). The critical value is drawn after a report and held for
+  `permute_every_rows` reports, so the size is near that, not held to it:
+  5.1% measured at alpha 0.05 and 200 draws. The old critical value, the `ceil((1−alpha)·n_perm)`-th
   draw, had a size of 0.0952 at 20 draws and alpha 0.05, and 0.0476 at alpha
   0.01, nearly five times alpha. Over 200 iid streams the measured rate is
   within 1.4 standard errors of the new level at every alpha tested. A
@@ -638,8 +642,10 @@ returns.
   for `preavg_rows` -- rather than ">= 0".
 - `po.spec.corrchange`'s refusal of `n_perm` above 2^20 says why: the draws
   are held to take their quantile, and each is a pass over both blocks.
-- The docs now state that `ew_cov`'s `lag_corr` reads 0.0, not null, until a
-  group's `l`-th learned row; that `audit` records the clock as fed, so a
+- The docs now state that `ew_cov`'s `lag_corr` reads null on a group's
+  first two rows (one row has no variance, and `min_weight` is floored at
+  2), then 0.0, not null, while the group has learned no more than `l` rows;
+  that `audit` records the clock as fed, so a
   numeric `session_gap` changes nothing it counts; that `corrchange`'s window
   kind cannot flag on its first report after the windows fill or refill;
   that `hmm` with `transition_prior=0` and `learn=True` can lock out an
@@ -720,8 +726,8 @@ returns.
   278): `min_weight=inf`, which withheld every row for good while the model
   kept learning; a `marginal` `bin_edges` that gives no feature an edge, such
   as `[[]]` (one feature without edges beside others that have them is still
-  taken, and reports a single bin); a `kmeans` `dead_frac` of 1 or more,
-  which called a centre dead at every check; `emit_averaged` with one slot
+  taken, and reports a single bin); a `kmeans` `dead_frac` of 0.5 or more
+  (its entry above has why); `emit_averaged` with one slot
   per target, as `emit_selected` already was; a `corrchange` `bandwidth`
   above `window_rows`, which adds no lag and drives the long-run variance
   toward 0 (on independent noise the statistic's median went from 1.8 at 20
@@ -803,7 +809,11 @@ returns.
   `sgd(loss="huber")`, to the bit (task 281).
 - Seeding with `init="lloyd"` at 500 rows, 8 centres and 400 features
   takes 56 ms on separated blobs (from 97) and 91 ms on overlapping ones
-  (from 98); `init="k-means++"` takes 3.6 ms there, from 1.9 (task 278).
+  (from 98). `init="k-means++"`, now greedy (four candidates a centre at 8
+  centres), places its centres in 2.8 ms there, where plain k-means++ placed
+  them in 0.8 ms, and its seeding row, the placement and the replay of the
+  500 rows, takes 3.9 ms (medians of one native run, 2026-10-31; task 278,
+  re-timed in task 282).
 
 ## [1.3.0] — 2026-10-24
 

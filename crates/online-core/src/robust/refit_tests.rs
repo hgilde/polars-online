@@ -160,7 +160,29 @@ fn the_refit_is_refused_where_it_does_not_apply() {
     assert!(Robust::new(q).is_err());
     let mut s = base(1.345, Decay::Lam(1.0), 10);
     s.ridge_scale = true;
-    assert!(Robust::new(s).is_err());
+    let e = Robust::new(s).unwrap_err();
+    assert!(e.contains("huber_refit_rows is for huber"), "{e}");
+    // A quantile fit's refusals name its own key (review round 10, S2-5).
+    let mut q = base(1.345, Decay::Lam(1.0), 10);
+    q.loss = RobustLoss::Quantile { tau: 0.5 };
+    q.huber_scale = HuberScale::Rms;
+    q.ridge_scale = true;
+    let e = Robust::new(q.clone()).unwrap_err();
+    assert!(
+        e.starts_with("quantile: quantile_refit_rows is not for beside ridge_scale"),
+        "{e}"
+    );
+    q.ridge_scale = false;
+    let mut m = Robust::new(q).unwrap();
+    run(&mut m, &rows(5, false));
+    m.refit.pop();
+    match Robust::restore(&m.state()) {
+        Err(StateError::Invalid(e)) => assert!(
+            e.ends_with("the refit's buffers do not match quantile_refit_rows"),
+            "{e}"
+        ),
+        other => panic!("{other:?}"),
+    }
 }
 
 /// On the row a target's buffer fills only that target's fit moves: the

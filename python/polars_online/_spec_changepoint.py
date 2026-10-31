@@ -519,9 +519,14 @@ def corrchange(
     A report flags when fewer than ``floor(alpha * (n_perm + 1))`` draws reach
     its statistic. That is the standard permutation test, which counts the
     observed statistic as one more draw: on rows the null makes exchangeable
-    its rank among the ``n_perm + 1`` is uniform, so the test's size is that
-    count over ``n_perm + 1``, never above ``alpha``. At alpha 0.05 it is
-    0.0476 at 20 draws and 0.0498 at the default 200. Fewer than ``ceil(1 /
+    its rank among the ``n_perm + 1`` is uniform, so a test of a report
+    against draws of its own windows has a size of that count over ``n_perm
+    + 1``, at most ``alpha``: at alpha 0.05, 0.0476 at 20 draws and 0.0498 at
+    the default 200. The size here is about that, not exactly it: the
+    critical value is drawn from the windows after a report and held for
+    ``permute_every_rows`` reports, so each later report is compared with
+    draws of windows a few rows older than its own. Over 200 streams of iid
+    rows at alpha 0.05 and 200 draws, 5.1% of non-overlapping spans flagged. Fewer than ``ceil(1 /
     alpha) - 1`` draws could never flag, so such an ``n_perm`` is refused: at
     alpha 0.01, 99 draws at least.
     The draws are in blocks of ``perm_block``, so that serial dependence does

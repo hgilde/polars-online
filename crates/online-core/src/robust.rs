@@ -593,16 +593,28 @@ impl RobustCfg {
         if self.n_features == 0 || self.n_targets == 0 {
             return Err("n_features and n_targets must be >= 1".into());
         }
-        if self.refit_rows > 0
-            && (self.ridge_scale
-                || matches!(self.loss, RobustLoss::Huber { delta } if !delta.is_finite()))
-        {
-            return Err(format!(
-                "{kind}: huber_refit_rows is for huber with a finite huber_delta, and not \
-                 beside ridge_scale \"sum\": an infinite cut is least squares, with no \
-                 outliers to refit for, and the sum-scale prior ages with every row before \
-                 the first, which a refit of the buffered rows does not hold"
-            ));
+        // The refit's key names the kind's: a quantile state's message
+        // named huber's (review round 10, S2-5).
+        if self.refit_rows > 0 {
+            match self.loss {
+                RobustLoss::Huber { delta } if self.ridge_scale || !delta.is_finite() => {
+                    return Err(format!(
+                        "{kind}: huber_refit_rows is for huber with a finite huber_delta, \
+                         and not beside ridge_scale \"sum\": an infinite cut is least \
+                         squares, with no outliers to refit for, and the sum-scale prior \
+                         ages with every row before the first, which a refit of the \
+                         buffered rows does not hold"
+                    ));
+                }
+                RobustLoss::Quantile { .. } if self.ridge_scale => {
+                    return Err(format!(
+                        "{kind}: quantile_refit_rows is not for beside ridge_scale \"sum\": \
+                         the sum-scale prior ages with every row before the first, which a \
+                         refit of the buffered rows does not hold"
+                    ));
+                }
+                _ => {}
+            }
         }
         // A quantile fit's refit is of rows past the warm-up: the stream
         // takes its first three rows a coefficient as least squares, and a
@@ -1064,12 +1076,25 @@ impl Robust {
     /// it, `lam·W + w` there as in the update below.
     ///
     /// `floor` is the model's floor ([`RobustCfg::floor`]), read once a row.
+    ///
+    /// The count it reads is the row's own, after the reset the update
+    /// makes where the target's history is gone (forgotten on this row, or
+    /// aged to nothing while it was absent): the schedule is decided before
+    /// the targets learn the row, and read the count before the reset, so a
+    /// returning target under a floor of one coefficient (one feature, no
+    /// intercept) found `seen >= floor` on its next row and predicted, and
+    /// learned from, its pre-gap fit until the cadence solved -- never under
+    /// `solve_every = inf` (review round 10, S2-1).
     fn own_solve(&self, j: usize, present: bool, lam: f64, weight: f64, floor: u32) -> bool {
         if !present || !(weight > 0.0 && weight.is_finite()) {
             return false;
         }
         if !self.cfg.min_weight_holds_learning {
-            return self.seen.get(j).is_some_and(|&n| n + 1 == floor);
+            return self.seen.get(j).is_some_and(|&n| {
+                let lam_t = crate::gaps::decay_into(lam, self.wobs[j], weight);
+                let n = if lam_t * self.wobs[j] == 0.0 { 0 } else { n };
+                n + 1 == floor
+            });
         }
         let t = crate::model::min_weight_of(&self.target_min_weight, self.cfg.min_weight, j);
         let reached = |w: f64| w >= t && w > 0.0;
@@ -2540,7 +2565,7 @@ impl OnlineModel for Robust {
                 };
                 if !refit_fits {
                     return Err(StateError::Invalid(format!(
-                        "{kind}: the refit's buffers do not match huber_refit_rows"
+                        "{kind}: the refit's buffers do not match {kind}_refit_rows"
                     )));
                 }
                 // The floor's counts: one a target, none above the floor,

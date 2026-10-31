@@ -145,6 +145,9 @@ pub enum Targets {
     /// The same, null on every row before the second number: a model that
     /// has seen its features and none of its targets.
     LinearFrom(usize, usize),
+    /// The same, the first target on every row and the others null on
+    /// every row before the second number: a target that joins late.
+    JoiningFrom(usize, usize),
     /// One 0/1 target.
     Binary,
     /// One class label in `0..n`.
@@ -204,6 +207,12 @@ impl Case {
                     Targets::LinearFrom(t, first) => (0..t)
                         .map(|j| {
                             (!null && i >= first)
+                                .then_some(signal * (1.0 + j as f64) + noise - j as f64)
+                        })
+                        .collect(),
+                    Targets::JoiningFrom(t, first) => (0..t)
+                        .map(|j| {
+                            (!null && (j == 0 || i >= first))
                                 .then_some(signal * (1.0 + j as f64) + noise - j as f64)
                         })
                         .collect(),
@@ -833,6 +842,26 @@ pub fn all() -> Vec<Case> {
             K,
             Targets::Linear(2),
             40
+        ),
+        // A target short of the model's floor, a row per coefficient (three
+        // here): the second target joins on row 20 and the state is saved
+        // after it, its count at 1 of 3 and the first's at 3 (review round
+        // 10, S2-3). The continuation's next rows with it each solve the fit
+        // for its sake until it reaches the floor (`Robust::own_solve`).
+        case!(
+            "huber_joining",
+            "Robust",
+            Robust,
+            Robust::new(RobustCfg {
+                min_weight_holds_learning: false,
+                solve_every: f64::INFINITY,
+                max_rows_between_solves: u32::MAX,
+                ..robust_cfg(RobustLoss::Huber { delta: 1.5 })
+            })
+            .unwrap(),
+            K,
+            Targets::JoiningFrom(2, 20),
+            21
         ),
         // The MAD's sketch of `|e|` per target and the scale's own memory
         // (schema 63, docs/PLAN.md task 271); `huber` is the RMS's form.

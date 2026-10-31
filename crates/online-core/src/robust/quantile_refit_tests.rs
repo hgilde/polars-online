@@ -132,57 +132,94 @@ fn the_refit_fires_on_its_count_and_moves_its_own_target_alone() {
 /// at the band its own residuals draw (the module docs of
 /// `quantile_refit`): one Newton step of that loss from the fit, solved by
 /// `crate::oracle`'s LU on the raw system written from the definition,
-/// returns the fit, at two levels, with and without decay.
+/// returns the fit, at two levels, with and without decay, at no ridge and
+/// at a ridge of 1e-3. The band's scale is drawn here by hand -- the
+/// weighted median of `|r|` (the lower middle: sorted, the first value at
+/// which the cumulative weight reaches half), over `Φ⁻¹(3/4)` as a literal
+/// -- not by the implementation's helpers (review round 10, S2-2). The
+/// ridge enters as `F`'s penalty, `½ (W_h λ / 2h) |β|²` on the slopes
+/// (`standardize` off, `D = 1`), `W_h` the band rows' weight: the Newton
+/// system then carries `W_h λ` on the slopes' diagonal, and a step that
+/// leaves it out moves the fit, which is the evidence the ridge is read.
 #[test]
 fn the_refit_is_the_smoothed_check_losss_stationary_point() {
-    for (tau, lam) in [(0.5, 1.0), (0.8, 1.0), (0.5, 0.995), (0.8, 0.995)] {
-        let n = 300;
-        let data = stream(n, 11, 5, 1, false);
-        let mut c = base(tau, Decay::Lam(lam), n as u32);
-        c.ridge = 0.0;
-        let mut m = Robust::new(c).unwrap();
-        run(&mut m, &data);
-        let st = m.refit_status()[0];
-        assert!(st.done && st.passes > 0 && !st.ran_to_cap(), "{st:?}");
-        let fit = m.coefficients().unwrap()[0].clone();
-        // The rows' weights decayed to the last, and counted one each.
-        let v: Vec<f64> = (0..n).map(|i| lam.powi((n - 1 - i) as i32)).collect();
-        let count: f64 = v.iter().sum();
-        let z = |i: usize| [1.0, data[i].0[0], data[i].0[1]];
-        let y = |i: usize| data[i].1[0].unwrap();
-        let r: Vec<f64> = (0..n)
-            .map(|i| y(i) - z(i).iter().zip(&fit).map(|(a, b)| a * b).sum::<f64>())
-            .collect();
-        let absr: Vec<f64> = r.iter().map(|e| e.abs()).collect();
-        let s = crate::huber_refit::weighted_median(&absr, &v) / NORMAL_Q3;
-        let h = s * 0.2f64.max((3.0 / count).powf(0.4));
-        let (mut a, mut b) = (vec![0.0; 9], vec![0.0; 3]);
-        for i in 0..n {
-            let zi = z(i);
-            if r[i].abs() < h {
-                for p in 0..3 {
-                    for q in 0..3 {
-                        a[p * 3 + q] += v[i] * zi[p] * zi[q];
-                    }
-                    b[p] += v[i] * zi[p] * (y(i) + 2.0 * h * (tau - 0.5));
-                }
-            } else {
-                let psi = if r[i] > 0.0 { tau } else { tau - 1.0 };
-                for p in 0..3 {
-                    b[p] += v[i] * zi[p] * 2.0 * h * psi;
-                }
+    // `Φ⁻¹(3/4)`, scipy's `norm.ppf(0.75)`.
+    const Q3: f64 = 0.674_489_750_196_081_7;
+    let median = |a: &[f64], v: &[f64]| -> f64 {
+        let mut pairs: Vec<(f64, f64)> = a.iter().copied().zip(v.iter().copied()).collect();
+        pairs.sort_by(|p, q| p.0.partial_cmp(&q.0).unwrap());
+        let half = 0.5 * v.iter().sum::<f64>();
+        let mut cum = 0.0;
+        for (value, weight) in pairs {
+            cum += weight;
+            if cum >= half {
+                return value;
             }
         }
-        let step = crate::oracle::solve(&a, &b);
-        let size = fit.iter().fold(0.0f64, |m, v| m.max(v.abs()));
-        let moved = step
-            .iter()
-            .zip(&fit)
-            .fold(0.0f64, |m, (p, q)| m.max((p - q).abs()));
-        assert!(
-            moved <= 1e-9 * size,
-            "tau {tau}, lam {lam}: {fit:?} -> {step:?}"
-        );
+        unreachable!("the weights sum to their total")
+    };
+    for ridge in [0.0, 1e-3] {
+        for (tau, lam) in [(0.5, 1.0), (0.8, 1.0), (0.5, 0.995), (0.8, 0.995)] {
+            let n = 300;
+            let data = stream(n, 11, 5, 1, false);
+            let mut c = base(tau, Decay::Lam(lam), n as u32);
+            c.ridge = ridge;
+            let mut m = Robust::new(c).unwrap();
+            run(&mut m, &data);
+            let st = m.refit_status()[0];
+            assert!(st.done && st.passes > 0 && !st.ran_to_cap(), "{st:?}");
+            let fit = m.coefficients().unwrap()[0].clone();
+            // The rows' weights decayed to the last, and counted one each.
+            let v: Vec<f64> = (0..n).map(|i| lam.powi((n - 1 - i) as i32)).collect();
+            let count: f64 = v.iter().sum();
+            let z = |i: usize| [1.0, data[i].0[0], data[i].0[1]];
+            let y = |i: usize| data[i].1[0].unwrap();
+            let r: Vec<f64> = (0..n)
+                .map(|i| y(i) - z(i).iter().zip(&fit).map(|(a, b)| a * b).sum::<f64>())
+                .collect();
+            let absr: Vec<f64> = r.iter().map(|e| e.abs()).collect();
+            let s = median(&absr, &v) / Q3;
+            let h = s * 0.2f64.max((3.0 / count).powf(0.4));
+            let (mut a, mut b) = (vec![0.0; 9], vec![0.0; 3]);
+            let mut band_weight = 0.0;
+            for i in 0..n {
+                let zi = z(i);
+                if r[i].abs() < h {
+                    band_weight += v[i];
+                    for p in 0..3 {
+                        for q in 0..3 {
+                            a[p * 3 + q] += v[i] * zi[p] * zi[q];
+                        }
+                        b[p] += v[i] * zi[p] * (y(i) + 2.0 * h * (tau - 0.5));
+                    }
+                } else {
+                    let psi = if r[i] > 0.0 { tau } else { tau - 1.0 };
+                    for p in 0..3 {
+                        b[p] += v[i] * zi[p] * 2.0 * h * psi;
+                    }
+                }
+            }
+            let unpenalized = crate::oracle::solve(&a, &b);
+            for p in 1..3 {
+                a[p * 3 + p] += band_weight * ridge;
+            }
+            let step = crate::oracle::solve(&a, &b);
+            let size = fit.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+            let apart = |c: &[f64]| {
+                c.iter()
+                    .zip(&fit)
+                    .fold(0.0f64, |m, (p, q)| m.max((p - q).abs()))
+            };
+            let what = format!("ridge {ridge}, tau {tau}, lam {lam}");
+            assert!(apart(&step) <= 1e-9 * size, "{what}: {fit:?} -> {step:?}");
+            if ridge > 0.0 {
+                assert!(
+                    apart(&unpenalized) > 1e-6 * size,
+                    "{what}: the ridge moves the fit, {}",
+                    apart(&unpenalized)
+                );
+            }
+        }
     }
 }
 

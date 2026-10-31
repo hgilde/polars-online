@@ -463,9 +463,8 @@ pub struct EwRidge {
     /// weight reaches that floor, so the state is the same at any
     /// `min_weight` above it. A spec that gives `min_weight` sets it. Schema
     /// 64; `false` in a state written before it, which goes on holding both
-    /// back to `min_weight`, to the bit. Always written: the compact
-    /// encoding writes a struct as an array, so a field skipped here would
-    /// shift [`Self::win`] (which says why it stays last).
+    /// back to `min_weight`, to the bit. Always written ([`Self::win`] says
+    /// what the encoding does with a field that skips).
     #[serde(default)]
     min_weight_output_only: bool,
     /// Whether the explicit cadence's first period runs on the default
@@ -480,11 +479,16 @@ pub struct EwRidge {
     /// The hard-cutoff window, when the spec asks for one (docs/PLAN.md §13).
     /// Absent otherwise, so an ordinary fit writes no ring.
     ///
-    /// **Last, and it must stay last.** The compact msgpack encoding writes a
-    /// struct as an *array*, so a `skip_serializing_if` field anywhere but the
-    /// end shifts every field after it when it is absent, and the state loads
-    /// as garbage -- "invalid type: boolean, expected f64" is what that looks
-    /// like. `state_roundtrip_continues_identically` catches it.
+    /// **The encoding.** A state file is written with
+    /// `rmp_serde::to_vec_named`, which writes a struct as a map: its fields
+    /// are read back by name, and `skip_serializing_if` decides only whether
+    /// this key is written, so where a field sits does not move the file's
+    /// layout (review round 10, S4-1; the v63 fixtures open with field-name
+    /// keys). Kept last all the same: the compact encoding, `rmp_serde::to_vec`,
+    /// writes a struct as an array, positionally, and some round-trip tests
+    /// here (`state_roundtrip_continues_identically`) use it, where a field
+    /// that skips anywhere but the end shifts the fields after it -- "invalid
+    /// type: boolean, expected f64" is what that looks like.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     win: Option<Windowed>,
     // scratch buffers (serialized for simplicity; tiny)

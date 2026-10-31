@@ -185,17 +185,20 @@ keep a digit, and then `ewridge` withholds the fit.** Rounding can leave a
 matrix past `1/u` in condition positive definite, `u = 2^-53`, and its
 coefficients then come out wrong by more than their own size. Two features
 equal to within `1e-11` of their spread gave slopes of -364.1 and 363.1 for a
-truth of 1 and -2. So each factorization that needed no jitter estimates the
-condition of the system with each column scaled by the root of its
-diagonal. That is what a Cholesky solve is accurate to, so the features'
-units do not enter. An upper bound from the factor settles most systems at
+truth of 1 and -2. So each factorization estimates the condition of the
+system with each column scaled by the root of its diagonal. That is what a
+Cholesky solve is accurate to, so the features' units do not enter. A
+factorization that needed jitter is judged as the system it solves, `A + δI`:
+the first rung's `δ`, `1e-12` of the mean diagonal, leaves `‖H⁻¹‖₁` near
+`1e12` on a design with a column of no variance of its own, past the limit
+from about 30 coefficients. An upper bound from the factor settles most systems at
 the cost of one solve with it, and the rest take Hager and Higham's
 estimate, about four. Where it puts the solve's
 forward-error bound at 1 or more, no digit of the coefficients is promised:
 
 | | |
 |---|---|
-| the estimate | `‖H⁻¹‖₁`, `H = D⁻¹ A D⁻¹`, `D = diag(√a_ii)`, by Hager's method as LAPACK's `dlacn2` runs it |
+| the estimate | `‖H⁻¹‖₁`, `H = D⁻¹ (A + δI) D⁻¹`, `D = diag(√(a_ii + δ))`, `δ` the jitter (0 where none was needed), by Hager's method as LAPACK's `dlacn2` runs it |
 | the solve's backward error in `H` | at most `η = k γ_{3k+1}` an entry, `γ_m = m u / (1 − m u)` |
 | the forward-error bound | `2κη / (1 − κη)`, with `κη = k γ_{3k+1} ‖H⁻¹‖₁` |
 | withheld where | `3 k γ_{3k+1} ‖H⁻¹‖₁ ≥ 1`: at `k = 3` from `1.0e14`, at `k = 10` from `9.7e12`, at `k = 50` from `4.0e11` |
@@ -486,8 +489,9 @@ without an intercept. So a target scaled by a power of two, with
 bit. A descent that runs out of its `max_iter` sweeps is counted in
 `bank.solve_failures()`, so if that count is above zero, give a larger
 `max_iter`. Columns that nearly repeat each other slow the descent most: it
-shrinks the error along such a pair by about `1 − 1/κ` a sweep, with `κ`
-the correlation matrix's condition number.
+shrinks the error along a pair of correlation `ρ` by `ρ²` a sweep, about
+`1 − 4/κ` with `κ = (1 + ρ)/(1 − ρ)` their correlation matrix's condition
+number, so each e-fold of the error takes about `κ/4` sweeps.
 
 ```python
 las = po.spec.lasso(
@@ -1157,8 +1161,11 @@ that loss: the rows inside the band are least-squares rows at target
 that would raise the loss is halved until it does not. A band of fewer rows
 than coefficients has no curvature to step on; such a pass moves each
 prediction toward its row by at most the band's width instead. The sums are
-then rebuilt as the stream takes each row scored by the converged fit, `σ`
-from its residuals, and the stream goes on online. Measured over 50 streams of
+then rebuilt as the stream takes each row scored by the converged fit, or,
+where the converged band holds fewer rows than coefficients, as the
+majorizer's step takes it, every row a least-squares row at its weight, so
+the sums keep a weight and solve to that fit; `σ` is rebuilt from its
+residuals, and the stream goes on online. Measured over 50 streams of
 8,000 rows of `y = 1 + 2x₀ − x₁ + 0.5·Laplace`, no decay, as the worst
 stream's largest coefficient gap to statsmodels' `QuantReg` on the same rows:
 
@@ -1177,8 +1184,8 @@ as before, faster than `1/n`. A state loaded from another regime has
 refit its first rows there, and the same holds of its rows. The refit's
 cost, its buffer, the count's default and `refit_budget` are `huber`'s
 (below); it takes 0.09 to 2.3 ms once, for 1 to 50 features and 500 to
-1,000 rows, and a count is taken from three rows a coefficient up, the
-rows the warm-up takes as least squares.
+1,000 rows. A count given is taken, but one below three rows a
+coefficient, the rows the warm-up takes as least squares, is refused.
 
 **Both models' one pass is held to numpy references of its own recursion
 within 1e-14, and `huber`'s refit to statsmodels' `RLM` on the same rows
@@ -1911,8 +1918,12 @@ clock,** so on an irregular clock it extrapolates the right distance.
 
 **The level forgets at the spec's `half_life`, as every model's decay
 does.** `level_half_life` is refused, with a message naming `half_life`. To
-make the trend the whole history's drift, the line fit's slope, give
-`trend_half_life=inf`.
+make the trend the whole history's drift, give `trend_half_life=inf`: the
+slope then takes the line fit's gain, and is the weighted least-squares
+slope exactly when the level does not decay either (`half_life=inf`).
+Beside a finite level half-life the slope learns from errors against a level
+that forgets, and lands near the line fit's slope: 0.2% to 1% of it off at a
+level half-life of 5 over 3,000 rows of a line in noise.
 
 **For a flat forecast, give `trend=False`:** simple exponential smoothing,
 whose level is the target's exponentially weighted mean. It holds the
@@ -2923,8 +2934,12 @@ optimal inertia, where it ended 1.26 to 1.35 times it.
 The seeding is paid once by each group's stream. With the default 500 rows
 and 8 centres it took 56 ms at 400 features on separated blobs, where a start
 reaches its fixed point in a few passes, and 91 ms on overlapping ones; 1.9
-ms at 20 features; and `init="k-means++"` took 3.6 ms at 400 (one thread,
-the load average about 110, 2026-10-25). A bank of many groups at many
+ms at 20 features (one thread, the load average about 110, 2026-10-25).
+At 400 features `init="k-means++"`'s greedy draw, four candidates a centre
+at 8 centres, places the centres in 2.8 ms, where plain k-means++, one
+candidate, places them in 0.8 ms; its seeding row, the placement and the
+replay of the 500 rows, takes 3.9 ms (medians over 200 and 40 runs in one
+native process, the load average under 15, 2026-10-31). A bank of many groups at many
 features pays it per group: 10,000 groups at 400 features spend up to a
 quarter of an hour seeding.
 
@@ -3465,12 +3480,17 @@ windows, redrawn every `permute_every_rows` rows. The shuffles move blocks of
 null too liberal. To skip the permutations, give `crit=` as a fixed
 threshold. The same `seed` gives the same critical values.
 
-**The window test's size is at most `alpha`.** A report flags when fewer
+**The window test's size is about `alpha`.** A report flags when fewer
 than `floor(alpha * (n_perm + 1))` shuffles reach its statistic. That counts
 the observed split as one more shuffle, so on rows with no change its rank
-is uniform among `n_perm + 1`. Over 200 streams of iid rows, at `alpha` 0.05
-and the default 200 shuffles, 5.1% of non-overlapping spans flagged, against
-an exact size of 4.98%. Fewer than `ceil(1/alpha) - 1` shuffles could never
+among `n_perm + 1` shuffles of its own windows is uniform, and that test's
+size, the count over `n_perm + 1`, is at most `alpha`: 4.98% at `alpha` 0.05
+and the default 200 shuffles. The critical value is drawn from the windows
+after a report, though, and held for `permute_every_rows` reports, so each
+later report is compared with shuffles of windows a few rows older than its
+own, and the size is near that figure rather than held to it. Over 200
+streams of iid rows, at `alpha` 0.05 and 200 shuffles, 5.1% of
+non-overlapping spans flagged. Fewer than `ceil(1/alpha) - 1` shuffles could never
 flag, so such an `n_perm` is refused: 99 at least at `alpha` 0.01.
 
 **Count a run of the window kind's flags as one change.** Two windows that

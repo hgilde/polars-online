@@ -61,6 +61,9 @@ pub mod huber {
 pub mod huber_first_period {
     include!("huber_first_period.rs");
 }
+pub mod huber_joining {
+    include!("huber_joining.rs");
+}
 pub mod huber_mad {
     include!("huber_mad.rs");
 }
@@ -245,6 +248,7 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &kalman_output_only::FIXTURE,
     &huber::FIXTURE,
     &huber_first_period::FIXTURE,
+    &huber_joining::FIXTURE,
     &huber_mad::FIXTURE,
     &huber_mad_anchored::FIXTURE,
     &huber_mad_awaiting::FIXTURE,

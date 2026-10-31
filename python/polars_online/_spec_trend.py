@@ -99,8 +99,12 @@ def holt(
 
     ``trend_half_life``
         How fast the trend forgets, in clock units, above 0. Default four times
-        the level's half-life; ``inf`` is the whole history's drift, the line
-        fit's slope, not a trend pinned at zero.
+        the level's half-life; ``inf`` is the whole history's drift, not a
+        trend pinned at zero: the line fit's gain on the slope, which is the
+        weighted least-squares slope exactly only when the level does not
+        decay either. Beside a finite level half-life the slope learns from
+        errors against a level that forgets, and lands near the line fit's:
+        0.2% to 1% of it off at a level half-life of 5 over 3,000 rows.
     ``trend``
         ``False`` fits the level alone: the trend is held at zero and the
         forecast is flat, which is simple exponential smoothing. The level is

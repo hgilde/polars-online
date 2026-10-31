@@ -511,8 +511,11 @@ def quantile(
     no step along it lowers ``F`` past its rounding, or after 200.
 
     The target's sums are then rebuilt as the stream takes each row scored
-    by the converged fit at its band, ``s`` is rebuilt from that fit's
-    residuals, and the stream goes on online. With the refit, the same
+    by the converged fit at its band -- or, where that band holds fewer rows
+    than coefficients, as the majorizer's step takes it, every row a
+    least-squares row at its weight, so the sums keep a weight and solve to
+    that fit -- ``s`` is rebuilt from that fit's residuals, and the stream
+    goes on online. With the refit, the same
     streams ended at most 0.0053 and 0.0085 off, beside 0.0052 from a clean
     start. A shift of every one of the first rows is no outlier among them,
     so the refit keeps them, and they leave as before: a shift of 20 in the
@@ -532,9 +535,9 @@ def quantile(
         The learned rows (each of positive weight, with its target) after
         which each target's first rows are refit to convergence, once (the
         rubric above). Default ``max(500, 10 * features)`` up to 100
-        features, and off above 100; a count given is always taken, from
-        three rows a coefficient up, the rows the warm-up takes as least
-        squares, to ``2 ** 20``, since the rows are held from the first.
+        features, and off above 100. A count given is taken up to ``2 ** 20``,
+        since the rows are held from the first, but one below three rows a
+        coefficient, the rows the warm-up takes as least squares, is refused.
         ``0`` turns the refit off. A group shorter than the count
         never refits and holds its rows to the end: ``(features + 4) * 8``
         bytes a learned row, and 32 bytes a run of rows that only aged the
