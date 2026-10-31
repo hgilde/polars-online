@@ -325,6 +325,24 @@ def test_quick_names_what_it_cannot_map():
     assert plan.unmapped == [page] and not plan.tests
 
 
+def test_quick_runs_the_banks_state_tests_for_a_models_source():
+    """A bank fixture freezes every model's state, so a change to a model's
+    source in `online-core` can move `online-polars`' state tests while every
+    `online-core` test passes (an `sgd` change moved `bank_refit` and the loop
+    passed). Its source runs them; its own tests do not, and a run of
+    `online-polars` whole needs no target besides."""
+    quick = _load("quick")
+    want = {("online-polars", t) for t in quick.STATE_TESTS}
+    assert ("online-polars", "state_fixtures") in want
+    for target in want:
+        assert (REPO / "crates" / target[0] / "tests" / f"{target[1]}.rs").exists(), target
+    assert quick.plan(["crates/online-core/src/sgd.rs"]).targets == want
+    assert quick.plan(["crates/online-core/src/solve/condition.rs"]).targets == want
+    assert not quick.plan(["crates/online-core/tests/golden.rs"]).targets
+    both = quick.plan(["crates/online-core/src/sgd.rs", "crates/online-polars/src/bank.rs"])
+    assert both.crates == {"online-core", "online-polars"} and not both.targets
+
+
 def test_quick_runs_the_oracle_hash_guard_for_the_groups_a_change_can_move():
     """A model's source runs the guard for the groups whose id names it; a
     source module that names none, every group; a test file, its own; a

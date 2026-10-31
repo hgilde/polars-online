@@ -885,8 +885,10 @@ pub struct Bocpd {
     /// The mean weight of the rows learned from, and their count: a row
     /// teaches at its weight over this mean, so a weight's scale moves
     /// nothing (docs/PLAN.md task 147). Nothing here decays, so neither
-    /// does this. Ahead of `solve_failures`, which a positional encoding
-    /// skips when it is zero.
+    /// does this. Ahead of `solve_failures`, which skips when it is zero: a
+    /// state file is a map read by name, where the order does not matter,
+    /// but the compact, positional encoding some round-trip tests use needs
+    /// a skipping field last.
     #[serde(default)]
     w_mean: f64,
     #[serde(default)]

@@ -45,7 +45,7 @@ The steps at a glance:
 | [9](#step-9--_specpy-and-specpy) | `python/polars_online/_spec.py`, `spec.py` | the builder | `test_every_rust_kind_has_exactly_one_builder`, and the checks in the step |
 | [10](#step-10--testsapi_surfacetxt) | `tests/api_surface.txt` | the regenerated snapshot | `test_api_surface_matches_the_snapshot`; `test_the_api_snapshot_pins_every_models_output_fields` |
 | [11](#step-11--teststest_modelpy) | `tests/test_<model>.py` | the Python-side oracle | `test_every_builder_has_a_per_model_test_file` |
-| [12](#step-12--per-model-sweeps) | four sweep lists, and `tests/convergence.py` | one entry each; a model that predicts a target registers its convergence: a known-truth stream, a third-party oracle and its classes | `test_the_sweeps_cover_every_regression_model`; `test_every_regression_registers_its_convergence` |
+| [12](#step-12--per-model-sweeps) | four sweep lists, and `tests/convergence.py` | one entry each; a model that predicts a target registers its convergence: a known-truth stream, a third-party oracle and its classes; a grid against an oracle registers with the oracle ledger | `test_the_sweeps_cover_every_regression_model`; `test_every_regression_registers_its_convergence`; `test_every_module_with_a_grid_registers_or_is_pending` |
 | [13](#step-13--teststest_model_registrypy) | `tests/test_model_registry.py` | the `MINIMAL` entry | `test_minimal_names_every_builder` |
 | [14](#step-14--teststest_golden_pipelinepy) | `tests/test_golden_pipeline.py` | a spec in `specs()`, and its lines in `GOLDEN` | `test_the_golden_pipeline_pins_every_model` |
 | [15](#step-15--docsmodelsmd-and-readmemd) | `docs/MODELS.md`, `README.md`, `docs/OUTPUTS.md`, `llms.txt` | the model's heading, its row and its API links; its family and field meanings in the OUTPUTS generator; the model count | `test_the_models_page_documents_every_model`, the `test_api_links` pair, the `test_outputs_doc` trio, `test_it_says_how_many_models_there_are` |
@@ -106,6 +106,7 @@ Each such case overrides a method, and each has its check:
 | steps a row so cheaply that a heap allocation is a large share of it, as `seqtest`, `pa`, `sgd`, `ewridge`, `ew_cov` and `kmeans` do | **`step_into`**, writing every slot of `pred`, `n_eff` and `extra` into the caller's `Step` whatever it held, with `step` written as `step_into` into a new `Step`. The bank steps every model through `step_into`, into one `Step` kept per model instance, so the override saves the `pred` vector `step` allocates a row; the trait's default goes through `step` | `predict_is_the_step_without_the_step` in `tests/model_contract.rs`, which steps a twin through `step_into` on a buffer left with another row's answer and holds its answer and state to `step`'s bits, and `refuses_unusable_values`; `crates/online-bench/tests/allocations.rs` for the count a row |
 | counts a value that is not usable rather than refusing it, as `audit` does | no `refused_step`; its kind in `model_contract.rs`'s `COUNTS_UNUSABLE`, which `refuses_unusable_values` passes by; an arm in `ModelKind::reads_every_row` (`spec.rs`), so the stream hands it every row, and one in `Instance::reset` (`stream.rs`) if a restart must not rebuild it | the model's own tests of each kind of value; `crates/online-polars/tests/audit.rs` for the rows the stream hands it |
 | solves on a schedule, as `ewridge`, `lasso`, `huber` and `quantile` do | **`set_solve_share`** and **`solve_share`**, reaching the cfg's `solve_share`. The spec's default share goes into the cfg when the model is built, and the stream calls `set_solve_share` with the spec's share on every model it restores (`crates/online-polars/src/stream.rs`), so a state saved before the rule runs at the spec's cadence | `exactly_the_scheduled_solvers_report_a_solve_share` in `tests/model_contract.rs`, which names the four, and to which it is added |
+| refits its first rows to convergence, as `huber`, `sgd`'s Huber loss, `quantile` and `marginal(bin_stat="huber")` do | a buffer of its first learned rows and a `RefitStatus` a target ([`huber_refit.rs`](../crates/online-core/src/huber_refit.rs)), and: a default count beside **`default_refit_rows`** and `default_bin_refit_rows`, with `0` for off; its buffer's bytes through **`refit_reservation`**, against which an arm in **`ModelKind::refit_budget_mib`** (`spec.rs`) bounds a spec's groups under `refit_budget`; arms in `AnyModel::refit_status` and `refit_give_up` (`stream.rs`), which `summary()`'s `refit_given_up` and the budget's notice read; a refit at its pass cap counted in `solve_failures`, and named by `ModelBank.check`'s wording for its kind (`python/polars_online/_check.py`, the `solve_failures` finding); a state saved before the refit loading with it off | **no check**: `refit_status`, `refit_give_up` and `refit_budget_mib` end in a catch-all, so a model left out never refits under the budget and reports nothing. Its own test file holds it, as `tests/test_huber_refit.py` and `tests/test_quantile_refit.py` do: the converged fit against a third-party one on the buffer, one chunk or many, a bank saved before, at and after the refit, the activation (the fit moves only after the buffer fills), and the budget giving up the later groups, which `tests/test_summary.py`'s column list pins |
 | reports the readiness statistics: effective degrees of freedom, each coefficient's data share, a row's leverage | **`error_inflation_into`**, **`error_inflation_gate_into`** (where a bound may stand in below the gate's limit), **`row_error_inflation_into`** and **`support_coef`** (the README's [*Warm-up*](../README.md#warm-up) says what each gates). Which models report them is the table of predicates under [What a model reads for the diagnostics](#what-a-model-reads-for-the-diagnostics), and `Spec::validate` refuses the parameters that read them for every other model, so a new one that reports them is added there | `a_model_without_the_optional_statistics_reports_none_of_them` (`model.rs`) for the defaults; `tests/readiness.rs` for `ewridge` |
 
 **Row-lagged state.** The stream calls `clear_lags` on a session change and on
@@ -600,6 +601,42 @@ from a table in the test, with the measurement it came from. A model that
 cannot register yet goes into `PENDING` or `NOT_REGISTERED`, with the
 reason.
 
+**A grid that compares the model with a third-party oracle over many
+seeds is held to the oracle ledger** ([TESTING.md, "The oracle
+ledger"](TESTING.md#the-oracle-ledger)), so its error only tightens. The
+test carries `@pytest.mark.oracle_grid`, the module registers the group's
+inputs at module level with `ledger.guard(name, outputs, oracles=[...])`,
+and the test records each quantity it bounds with `ledger.record(name,
+case, values, ideal=...)`, one value a seed. Name the group after the
+source module it tests, as `kmeans_blobs` is `kmeans.rs`'s: `scripts/quick.sh`
+runs the hash guard for the groups whose id names a changed module, so a
+group named otherwise is not run when that module changes. Then `uv run
+python scripts/oracles.py rerun <group>` runs the grid, writes its cases to
+`oracles.toml` and its hash to `oracle_hashes.toml`; CI's first run on
+Linux writes the numbers the ledger holds. A module with a grid that
+cannot register yet goes into `tests/ledger.py`'s `PENDING`, with the
+reason.
+
+**Check:** `tests/test_oracle_ledger.py`:
+`test_every_module_with_a_grid_registers_or_is_pending` fails for a module
+with an `oracle_grid` test that neither registers nor is pending,
+`test_every_grid_of_a_registered_module_records` for a grid of a registered
+module that records nothing, and the hash guard,
+`TestTheHashGuard::test_our_outputs_on_the_cases_inputs_hold`, for a group
+with no hash or no case in the ledger (it fails on the platform the hashes
+were written on, and reports elsewhere). The group's naming has **no
+check**.
+
+**A clustering or changepoint model's own keywords get worst-seed grids**
+in `tests/test_family_f_grids.py`, as `kmeans`' dead rule, `corrchange`'s
+permutation size, `bocpd`'s `robust_beta` and `hmm`'s transition prior
+have: each relation the docstring states, derived where it can be and
+measured over 50 seeds where it cannot, held to the worst seed. **A model
+whose state accumulates over the whole stream gets a long-run case** in
+`tests/test_long_run.py`'s `CASES`, which `tests/test_long_run_soak.py`
+runs a hundred times longer, at 1e8 rows, weekly. Neither file has a list
+held to the registered models: **no check**.
+
 A regression also goes into `python/polars_online/_check.py`'s
 `_REGRESSIONS`, which `ModelBank.check` reads for `few_rows`. If it does not
 centre its features, measure the level and the spread ratio at which its
@@ -696,6 +733,7 @@ tiers"](TESTING.md#two-tiers)).
 | **a new output field** on every model | `FieldMeta` in `crates/online-polars/src/bank.rs` carries the name and dtype; the emit flag goes on `Spec`, in `CommonKwargs` in `python/polars_online/_kwargs.py`, and in `_common`'s signature and the dict it builds | `test_portability::test_exact_field_names_for_a_grid_spec`, plus the API snapshot |
 | **a new clock-policy parameter** | the `ClockPolicy` in `crates/online-polars/src/spec.rs`, and `with_windows`' signatures beside the spec's; a renamed one goes into `_RENAMED` in `_spec.py`, which `name_renamed` reports | the rename tests (`tests/test_renames.py`), and the API snapshot |
 | **a new kind of input column**, beyond features, targets and the weight | `DataSummary::layout` and `feed_row` in `crates/online-polars/src/summary.rs` decide which columns `describe()` lists, and in what order; `Bank::describe`'s `keep` decides which get moments | `tests/summary.rs` pins the frame's column names, and compares every statistic to an oracle computed over the frame, so a column the summary does not know is a failing count there |
+| **a new `withheld_reason`**, a gate that withholds a row's predictions | its name at the end of `WITHHELD_REASONS` in `crates/online-polars/src/stream.rs`, and its `REASON_*` code after the last: the list is append-only, because a state's last row keeps the code, and the order is the precedence when two gates withhold one row. Then its four spelled-out lists: `output_fields`' docstring in `python/polars_online/spec.py`, the `withheld_reason` line in `scripts/outputs_doc.py` (regenerate `docs/OUTPUTS.md`), the README's readiness table and `docs/DIAGNOSTICS.md`'s gate table | `test_portability`'s `REASON_DTYPE`, the dtype every model's field is held to, and `test_readiness`'s `REASONS`, against which each row's reason is read; the state fixtures, whose last rows keep the codes; the four lists in the docs have **no check** |
 | **a new parameter** on one model | the `Cfg` field and its validation in `new` (step 1), the `ModelKind` field with `#[serde(default)]` (step 6), the `build_one` default (step 7), the builder keyword (step 9), the snapshot (step 10); if `inf` means something for it, `_INF_OK` (step 9) | the inf-table test catches the Python half; the compiler catches the Rust half |
 
 **A spec field changes the bytes of every bank file**, since each carries

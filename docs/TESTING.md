@@ -708,7 +708,7 @@ seeds, and are now held to their definition to rounding.
 ideal|`: the ideal is 0 for an error and 1 for a score such as an ARI, a
 share or an F1. The ledger keeps the value of the seed with the largest gap
 and of the seed at the nearest-rank 95th percentile, both in the test's own
-units. `check` fails on four things:
+units. `check` fails on five things:
 
 | verdict | when | what to do |
 |---|---|---|
@@ -716,6 +716,13 @@ units. `check` fails on four things:
 | tighten | a gap more than 2% under the ledger's | `python scripts/oracles.py apply measured.json`, so the gain is kept |
 | version | an oracle library at another version than the ledger's | `apply`, once the numbers held on it |
 | not measured | a case of the ledger that a complete run did not record | a skip (offline), or a `record` call gone |
+| fewer values | a case measured over fewer values than the ledger's `n`: its worst seed over fewer seeds is no gain, so a grid cut short cannot read as a tightening | restore the seeds; cutting them is a `[[raised]]` entry for the case's `n` |
+
+A case is also past the ledger, whole, when the test's `ideal` is not the
+ledger's or its `floor=` is wider than the ledger's: the ledger's floor
+alone judges, and a wider one is a raise. `apply` writes nothing of such
+a case, nor of one with fewer values; it writes the test's floor only for
+a case new to the ledger.
 
 A case new to the ledger is reported and fails nothing. The grids are
 deterministic, so one platform reads the same numbers on every run. A count
@@ -752,12 +759,20 @@ that moves `platform` may move each number by up to the tolerance under a
 move, or a wider floor, still needs its own `[[raised]]` entry.
 
 **A raise needs its reason and a CHANGELOG line.** `scripts/oracles.py
-raises` reads every committed version of `oracles.toml` and fails on any
-number that moved away from its ideal without a `[[raised]]` entry. A wider
-`tolerance` or `floor` counts too. The entry names the key, the old and new
-value, the date, the reason, and a `changelog` text the CHANGELOG contains.
-A worse error against an oracle is a *Changed* or *Fixed* matter, so any
-section serves. `apply` never raises a number.
+raises` reads every committed version of `oracles.toml` on `main`'s first
+parents (a merge's result is one version, so the dates of a branch's
+commits cannot reorder them) and fails on any number that moved away from
+its ideal without a `[[raised]]` entry. A wider `tolerance` or `floor`
+counts too: a case with no `floor` has 0 and one with no `tolerance` the
+file's, so adding either is a raise. So does a case's `ideal` moved either
+way, since moving it to the measured value would read as a tightening, and
+a smaller `n`. The entry names the key, the old and new value, the date,
+the reason, and a `changelog` text the CHANGELOG contains. A worse error
+against an oracle is a *Changed* or *Fixed* matter, so any section serves.
+A number the history holds and the file no longer has -- a case or group
+dropped or renamed -- fails until a `[[retired]]` entry names it (a case's
+key or a group's), with the date and the reason. `apply` never raises a
+number.
 
 **CI runs the grids and the check.** Each of `oracles.yml`'s twelve shards
 records its cases and marks itself finished only when every test passed.
@@ -800,7 +815,11 @@ uv run python scripts/oracles.py rerun <group>    # those named
 test fails, or if a case is past the ledger or was not measured. Otherwise
 it applies the run to the ledger (new cases, versions, and on the ledger's
 own platform tightened numbers) and writes the groups' hashes. So a hash changes only after a passing run
-of its oracles. Fifty-nine groups in seventeen modules hold 755 cases. A
+of its oracles. The hash file holds one platform's hashes, and a `rerun`
+on another platform rewrites that platform; so it refuses unless every
+group is re-run, since the hashes it kept would be the other platform's
+and the guard, where they were written, would report a moved hash instead
+of failing on it. Fifty-nine groups in sixteen modules hold 755 cases. A
 `rerun` of 38 of them, the convergence grids among them, took 10.6 minutes
 here (2026-10-26, eight processes, at a load of 5 to 35 on 14 cores); the
 first 21 groups' grids took two. A group whose callable is cheap hashes
@@ -912,7 +931,10 @@ and nothing else.** It reads the paths from `git diff` against the
 merge-base with `main`, with uncommitted edits and new files included. A
 Rust source change runs that crate's `cargo test` and rebuilds the
 extension before pytest, which would otherwise test the old binary. A
-Python module runs the test files named after it, and any path runs the
+model's source in `online-core` also runs `online-polars`' state fixture
+and portability tests, since a bank's frozen fixture holds every model's
+state and moves with a model's arithmetic while every `online-core` test
+passes. A Python module runs the test files named after it, and any path runs the
 test files that name it. `--dry-run` prints the plan without running it.
 Its verdict says it covers the mapped tests only, because a change can
 break a test the map does not reach.
@@ -1524,8 +1546,8 @@ other thin spot on 2026-08-30 at 75%, is at 98%.
 2026-09-24.** `mutants.yml` runs `cargo mutants` over the changed lines of
 `online-core` and `online-polars/src/span.rs`, on every push to `main` and
 every pull request. It fails on a survivor that
-`scripts/mutants_equivalent.toml` does not list. That file holds 291
-entries (2026-10-28), each an equivalent mutant -- a few
+`scripts/mutants_equivalent.toml` does not list. That file holds 290
+entries (2026-10-31), each an equivalent mutant -- a few
 name two that share a line -- with the reason no input can tell it from
 the original. The weekly pass over all of `online-core`, 11,138 mutants on
 2026-10-03, reports its survivors without failing on them.

@@ -102,6 +102,19 @@ def test_no_mutant_is_both_equivalent_and_tolerated():
     assert not both, both
 
 
+def test_each_list_names_a_mutant_once():
+    """An entry written twice -- two reasons for one mutant -- leaves a reader
+    to wonder which one holds, and one of them can go stale unseen. A mutant
+    is its file, function, mutation, line and columns."""
+    for entries in (report_mod.load_equivalents(), report_mod.load_tolerated()):
+        keys = [
+            (e["file"], e["function"], e["mutation"], e["line_has"], tuple(e.get("columns", [])))
+            for e in entries
+        ]
+        twice = sorted({k for k in keys if keys.count(k) > 1})
+        assert not twice, twice
+
+
 def _run(tmp_path: Path, missed: list[tuple[str, int, str]]) -> Path:
     """A mutants.out with a caught mutant and the given missed ones."""
 

@@ -115,8 +115,10 @@ pub struct EwClassCfg {
     /// `"shared"` do not factorize per class and are unaffected.
     ///
     /// **Last, with `window_every` and `max_rows_between_snapshots`, and
-    /// they must stay last**: the compact msgpack encoding writes a struct
-    /// as an array, so only the last, the row cap, skips when absent.
+    /// they must stay last for the compact encoding**: a state file is a map
+    /// read by name (`rmp_serde::to_vec_named`), but the compact encoding
+    /// some round-trip tests use writes a struct as an array, so only the
+    /// last, the row cap, skips when absent.
     #[serde(default)]
     pub window: Option<f64>,
     /// Clock units between the window's snapshots, `0` every row; with

@@ -40,10 +40,18 @@ returns.
   CI fetches every dataset the
   ledger names in one job before the grids run, and fails naming any it
   cannot get, so no grid skips as offline (task 281).
+  Every number a case carries now only tightens, not its worst and 95th
+  percentile alone (task 282): the test's `floor=` is checked against the
+  ledger's instead of widening it; a case tolerance added or widened, an
+  `ideal` moved either way, and an `n` cut (a grid over fewer seeds, which
+  `check` fails and `apply` will not write) each need a `[[raised]]`
+  entry; a case or group dropped or renamed needs a `[[retired]]` entry;
+  `raises` reads `main`'s versions in their merge order; and a `rerun` on
+  another platform than the hashes' re-runs every group.
 - A hash guard in the essentials gate (task 280): it hashes this library's
   outputs on each oracle group's inputs, rounded to 24 significant bits so
   another platform's last bits do not move it, or whole where the oracle
-  agrees to round-off, in about 6 s. A moved hash names the groups and
+  agrees to round-off. A moved hash names the groups and
   `uv run python scripts/oracles.py rerun`, which re-runs only those groups'
   grids and records the ledger and the hash if they pass; `scripts/quick.sh`
   runs the guard for the groups a change can move. It runs the 59 groups
@@ -545,8 +553,8 @@ returns.
   l2)`, and while the mean of `q²` exceeds twice the mean of `q` its
   predictions are withheld as `unstable_rate`, with a notice. At a constant
   rate of 0.5 on five standardized features the last 1,000 of 20,000 rows
-  had served an error 40,000 times the target's variance with nothing said
-  (task 278, D8). Each gain after a target's first enters the sums bounded
+  had served an error 36,000 times the target's variance with nothing said
+  (1.3.0's wheel, re-measured on that stream; task 278, D8). Each gain after a target's first enters the sums bounded
   at the larger of 2 and four times their running mean, so one wide row
   after the first cannot hold the output: whole, one row at 100 times a
   feature's spread withheld the next 1,075

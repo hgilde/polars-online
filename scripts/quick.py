@@ -24,6 +24,7 @@ How a path maps, first rule that applies:
 | `tests/conftest.py`, `tests/tiers.py`, `tests/_site/*` | every test file |
 | another `tests/*.py` helper | the test files that import it |
 | `crates/<crate>/src/<module>...` | the crate's `cargo test`, a rebuild, the files named after it |
+| `crates/online-core/src/...` | also `online-polars`' state tests (`STATE_TESTS`) |
 | `crates/<crate>/tests/...` | the crate's `cargo test` |
 | `crates/online-cli/...` | also the test files that run the CLI |
 | `python/polars_online/<module>.py` | the test files named after the module |
@@ -89,6 +90,12 @@ ALIASES = {
     "stats": ["eval"],
 }
 
+#: The `online-polars` test targets that hold every model's state: a bank
+#: fixture, frozen bytes, embeds each `online-core` model's state, so a
+#: change to a model's source can move them while every `online-core` test
+#: passes.
+STATE_TESTS = ("state_fixtures", "state_portability")
+
 #: The extension's build in the loop: release's numbers, built in a
 #: fraction of its time (Cargo.toml, `[profile.dev-wheel]`).
 PROFILE = ["--profile", "dev-wheel"]
@@ -108,6 +115,8 @@ class Plan:
     """What to run for a set of changed paths."""
 
     crates: set[str] = field(default_factory=set)
+    #: Single test targets, as `(crate, target)`, of a crate not run whole.
+    targets: set[tuple[str, str]] = field(default_factory=set)
     rebuild: bool = False
     tests: set[str] = field(default_factory=set)
     guards: set[str] = field(default_factory=set)
@@ -210,6 +219,8 @@ def _one(path: str) -> Plan:
         crate = parts[1]
         if crate in RUST_TESTED:
             out.crates.add(crate)
+        if crate == "online-core" and "src" in parts:
+            out.targets.update(("online-polars", t) for t in STATE_TESTS)
         in_source = "src" in parts or parts[-1] in {"Cargo.toml", "build.rs"}
         if in_source and crate in IN_THE_EXTENSION:
             out.rebuild = True
@@ -237,12 +248,15 @@ def plan(paths: list[str]) -> Plan:
     out = Plan()
     for path in paths:
         one = _one(path)
+        if not (one.crates or one.rebuild or one.tests):
+            out.unmapped.append(path)
         out.crates |= one.crates
+        out.targets |= one.targets
         out.rebuild |= one.rebuild
         out.tests |= one.tests
         out.guards |= one.guards
-        if not (one.crates or one.rebuild or one.tests):
-            out.unmapped.append(path)
+    # A crate run whole runs its targets already.
+    out.targets = {(c, t) for c, t in out.targets if c not in out.crates}
     return out
 
 
@@ -287,6 +301,8 @@ def main() -> int:
     print(f"quick: {len(paths)} changed paths")
     for crate in sorted(p.crates):
         print(f"quick: cargo test -p {crate}")
+    for crate, target in sorted(p.targets):
+        print(f"quick: cargo test -p {crate} --test {target}")
     if p.rebuild:
         print("quick: rebuild the extension")
     print(
@@ -306,10 +322,13 @@ def main() -> int:
         env.setdefault("HYPOTHESIS_PROFILE", "essential")
         env.setdefault("PROPTEST_CASES", "32")
     steps: list[list[str]] = []
+    tier = ["--", "--include-ignored"] if args.extended else []
     if p.crates:
         crates = [a for c in sorted(p.crates) for a in ("-p", c)]
-        tier = ["--", "--include-ignored"] if args.extended else []
         steps.append(["cargo", "test", *crates, *tier])
+    for crate in sorted({c for c, _ in p.targets}):
+        targets = [a for c, t in sorted(p.targets) if c == crate for a in ("--test", t)]
+        steps.append(["cargo", "test", "-p", crate, *targets, *tier])
     if p.rebuild and (p.tests or p.guards):
         steps.append(
             ["uv", "run", "maturin", "develop", *PROFILE, "-m", "crates/online-py/Cargo.toml"]

@@ -678,10 +678,13 @@ pub(crate) struct Acc {
     scratch: Scratch,
     /// Under `gram_block_rows`, each target's values on the rows its Gram
     /// holds, waiting for the block's merge ([`Held`]; docs/PLAN.md task
-    /// 257). Schema 62. **Last, and it must stay last**: it is written only
-    /// while a block holds a target's rows, and the compact encoding is
-    /// positional, so a field that skips anywhere but the end slides the
-    /// fields after it.
+    /// 257). Schema 62. Written only while a block holds a target's rows. A
+    /// state file is written with `rmp_serde::to_vec_named`, a map read back
+    /// by name, so where a skipped field sits does not move the file. Kept
+    /// last for the compact encoding, `rmp_serde::to_vec`, which some
+    /// round-trip tests use (`tests/state_encoding.rs`): it writes a struct
+    /// as an array, positionally, and there a field that skips anywhere but
+    /// the end slides the fields after it.
     #[serde(default, skip_serializing_if = "Held::is_empty")]
     pub(crate) held: Held,
 }
@@ -1664,7 +1667,9 @@ pub(crate) struct AccSnap {
     /// The target moments, `3·T` doubles beside a Gram's `k²` (docs/PLAN.md
     /// task 136), so the Gram export under a window reports the window's
     /// target means, variances and Kish counts. `None` in a snapshot written
-    /// before them, and last, so the positional encoding reads one.
+    /// before them: a state file is a map read by name, which reads the
+    /// absent key as `None`; and last, so the compact, positional encoding
+    /// some round-trip tests use reads one too.
     #[serde(default)]
     pub(crate) tm: Option<TargetMoments>,
 }

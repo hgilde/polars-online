@@ -225,8 +225,10 @@ pub struct EwCov {
     /// an effective size that is wrong by the length of the history. Such a
     /// state keeps reporting `None`, which is the honest answer.
     ///
-    /// Written even when `None` (as nil): the compact encoding is positional,
-    /// and a field that skips anywhere but last slides the fields after it
+    /// Written even when `None` (as nil). A state file is a map read by name
+    /// (`rmp_serde::to_vec_named`), where a skipped field moves nothing; the
+    /// compact encoding some round-trip tests use is positional, and there a
+    /// field that skips anywhere but last slides the fields after it
     /// (`crates/online-core/tests/state_encoding.rs`). `pending` is the one
     /// that skips, and it is last.
     #[serde(default)]
@@ -297,9 +299,12 @@ pub struct EwCov {
     /// schedule, and a model emitting per-row statistics would flush every
     /// row for nothing (docs/PLAN.md task 71).
     ///
-    /// **Last, and it must stay last.** The compact msgpack encoding writes a
+    /// **Last, and it must stay last for the compact encoding.** A state
+    /// file is written with `rmp_serde::to_vec_named`, a map read back by
+    /// name, so where a field sits does not move the file. The compact
+    /// encoding some round-trip tests use, `rmp_serde::to_vec`, writes a
     /// struct as a bare array, so a `skip_serializing_if` field anywhere else
-    /// slides everything after it: put here first, this decoded
+    /// slides everything after it there: put here first, this decoded
     /// `precision_scale`'s float into `Pending`'s slot and broke six
     /// round-trip tests (`crates/online-core/tests/state_encoding.rs` states
     /// the rule).
@@ -1441,9 +1446,10 @@ pub struct EwCovCfg {
     /// exponential -- this is not a flat window. Absent for the ordinary
     /// accumulator, which is what every state written before task 63 has.
     ///
-    /// **Last, with `window_every` and `max_rows_between_snapshots`**: the
-    /// compact encoding is positional, so only the row cap, the last, skips
-    /// when absent, and these two are written as nil.
+    /// **Last, with `window_every` and `max_rows_between_snapshots`**: a
+    /// state file is a map read by name, but the compact encoding some
+    /// round-trip tests use is positional, so only the row cap, the last,
+    /// skips when absent, and these two are written as nil.
     #[serde(default)]
     pub window: Option<f64>,
     /// Clock units between the snapshots the window is computed from, as
@@ -1722,11 +1728,12 @@ pub struct EwCovModel {
     /// of the last refresh, the decayed clock held exactly (task 180).
     since_pca: Since,
     /// Lagged cross-moments, when the spec asks for lags (E56). Written as
-    /// `nil` when absent: the compact encoding is positional, so at most one
+    /// `nil` when absent. A state file is a map read by name; the compact
+    /// encoding some round-trip tests use is positional, so there at most one
     /// field may be skipped and it must be the last, which is `win`. With
     /// both skipped, a windowed model without lags decoded its window into
-    /// this slot (review 2026-09-18, B6; the byte change rides on
-    /// `SCHEMA_VERSION` 11).
+    /// this slot in that encoding (review 2026-09-18, B6; the byte change
+    /// rides on `SCHEMA_VERSION` 11).
     #[serde(default)]
     lag: Option<crate::EwLagCov>,
     /// The hard-cutoff window, when the spec asks for one (docs/PLAN.md §13).
@@ -1736,7 +1743,7 @@ pub struct EwCovModel {
     win: Option<Windowed>,
     /// The features' standard deviations a row's correlations divide by,
     /// kept so a step allocates nothing (task 270, M-4): not state, and
-    /// written nowhere, so the positional encoding above is unchanged.
+    /// written nowhere, so neither encoding changes.
     #[serde(skip)]
     std: Scratch,
 }

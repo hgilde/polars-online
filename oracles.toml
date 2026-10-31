@@ -15,7 +15,17 @@
 #   a [[raised]] entry at the end of this file (the key, the old and new
 #   value, the date, the reason) and a `changelog` text the CHANGELOG
 #   contains; `scripts/oracles.py raises` holds every increase in this
-#   file's git history to both. A wider tolerance or floor is a raise too.
+#   file's git history to both. A wider tolerance or floor is a raise too
+#   (a case with no `floor` has 0, one with no `tolerance` the file's), and
+#   the test's own `floor=` is checked against the case's, never replaces it.
+# - A case's `ideal` moves only with a [[raised]] entry (`key` ending
+#   `.ideal`, `from` and `to` the two ideals): moved to the measured value,
+#   the gap would read as a tightening. Its `n`, the seeds its numbers
+#   summarize, falls only with one too: a run with fewer values than the
+#   ledger's fails, and `apply` writes nothing of it.
+# - A case or group dropped or renamed leaves its numbers in the history: a
+#   [[retired]] entry (its `key`, a case's or a group's; the `date`; the
+#   `reason`) says why, after the raises.
 # - A gap under the ledger's by more than the tolerance fails as well,
 #   naming the number to tighten to, so the change that made the gain keeps
 #   it (`scripts/oracles.py apply` on the run's measured.json writes it).
