@@ -16540,7 +16540,7 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       than appended to, so new fixtures stop conflicting between branches.
       (5) `spec.rs` sits at 249.9 KB of the 250 KB cap: split a seam.
 
-- [ ] 282. **Review round 10's fixes, before 1.4.0** -- the user, 2026-10-28:
+- [x] 282. **Review round 10's fixes, before 1.4.0** -- the user, 2026-10-28:
       "Review the 1.4 changes theory and code". Nine read-only reviewers over
       `v1.3.0..main` (92d5bd41..f36a4a6c), code and theory (§26). Theory
       clean everywhere; 1 high, 7 medium, 32 low. Decisions, the user's
@@ -16557,4 +16557,26 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       xfail reclassification, W4 the ledger's enforceability (M4, M5), the
       released-state continuation test (M6), the readiness policy (M7) and
       the documents. `.claude/coord/review10/FINDINGS.md` is the list.
+      *Built 2026-10-31* in four slot branches merged on `integration` (one
+      essentials gate PASS at a44f3498): W1 H1 (the sgd refit's ridge is
+      `1e-6 s_i^2` under standardize; the b19 strict xfail gone), M1 (each
+      gain bounded at max(2, 4 x the running mean); the 100-row memory KEPT,
+      measured: the fit's own memory, a handful of rows near the bound, made
+      the verdict noise -- 6-11% of a stable rate's rows withheld, a third
+      to a half of a diverging one's served; the reason is the sample size
+      of an expectation, now in the docs), S3-5/6/7, S1-2/3/4, S9-3; W2 M2
+      (the floor solve on the post-reset count), S4-4 (a jittered factor
+      judged as A + delta*I), S6-2, S2-2..6, S4-1..3, S5-1, S6-3/4, S9-6; W3
+      M3 (the reset marked under an embargo; `front_cut`, `d_fresh`), S7-2..5,
+      S7-7/8, the six 20%-outlier cells a documented bound (Known issues);
+      W4 M4/M5 (the ledger: floor, tolerance, ideal, `[[retired]]`, `fewer`),
+      M6 (every moved spec of every 1.x release held to its release's own
+      continuation; the young CUSUM rows held to an exact rescaling by a
+      share in (filled, 1]), M7 (five changed defaults in RELEASE-READINESS;
+      a 1.3.0 hmm state saved mid-warm-up keeps its 50), S8-6..9, S9-1/4/5,
+      Q1 (quick maps an online-core change to the bank fixtures), Q2 (36,000).
+      Open, the user's decision: N1 -- the quantile refit runs to its pass cap
+      at ridge >= 1e-2 (6/40 at 1e-2, 35/40 at 1e-1; 0/40 at the default),
+      the penalty's weight W_h/4h re-read from each pass's fit, so each pass
+      descends a different F (`.claude/coord/review10/FINDINGS.md`, N1).
 
