@@ -16579,4 +16579,13 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       at ridge >= 1e-2 (6/40 at 1e-2, 35/40 at 1e-1; 0/40 at the default),
       the penalty's weight W_h/4h re-read from each pass's fit, so each pass
       descends a different F (`.claude/coord/review10/FINDINGS.md`, N1).
+      Inner/outer (h and W_h held within a solve) was built and failed on a
+      held-out grid (W5, not merged). DECIDED 2026-10-31, the user ("Your
+      reco"): option 1. Quantile's penalty is weighed by the target's total
+      decayed weight W, not the band's W_h, in the stream's solve and the
+      refit alike (the band diagonal carries lambda*W/W_h). That is
+      sklearn's QuantileRegressor (alpha*sum w) and conquer's form. W does
+      not move with beta, and h (a weighted MAD) is continuous in it, so
+      the refit's F is continuous. States before schema 64 keep the old
+      rule. Building as W6 (`task-282-n1b`).
 
