@@ -16599,3 +16599,12 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       unchanged (CHANGELOG); N1 stays open after 1.4. The W5/W6 patches are
       in `.claude/coord/review10/`.
 
+- [ ] 283. **One refit buffer a group, shared by its targets** (ENHANCEMENTS
+      E76) -- the user, 2026-10-31: "Measure just the first and do it if
+      works keep the other two as ideas" (E77 spill to disk, E78 rewind
+      through the Polars API: ideas only). Today each target's refit buffer
+      keeps its own copy of the feature row. Measure the memory used and
+      reserved, and the speed, for 1/3/10 targets with aligned and sparse
+      targets, then build it if it saves without slowing the row or the
+      refit past the budgets' tolerance. States before the change keep
+      their per-target buffers and continue to the bit (rule 5).
