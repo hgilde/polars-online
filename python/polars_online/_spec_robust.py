@@ -245,7 +245,8 @@ def huber(
         The learned rows (each of positive weight, with its target) after which each
         target's first rows are refit to convergence, once (the rubric above). Default
         ``max(500, 10 * features)`` up to 100 features, and off above 100, where the
-        rows a target holds would pass 0.8 MB; a count given is always taken. Over
+        rows a target holds would pass 0.8 MB; a count given is always taken, up to
+        ``2 ** 20``, since the rows are held from the first. Over
         20,000 rows at 20% one-sided outliers, 50 rows left 14 of 40 streams more than
         0.05 from ``RLM``, 200 and 500 left 4 and 1,000 left 2; over 2,000 rows, 200
         left 18, 500 left 10 and 1,000 left 3. A group shorter than the count never
@@ -267,14 +268,16 @@ def huber(
         A bound in MiB on the refit buffers of all the spec's groups together, above
         0, or ``inf`` for none. Default 256. Each new group reserves the most its
         targets' buffers can hold when it first appears, ``(features + 20) * 8`` bytes
-        a target for each row of the count (the row and its 4 runs), and keeps it
+        a target of each model instance (a half-life grid reserves once per value) for
+        each row of the count (the row and its 4 runs), and keeps it
         for the life of the bank, so which groups refit depends neither on the chunking
         nor on the order the groups run in. The group that would cross the bound, and
         every new group after it, gives its refit up and keeps its one-pass fit: a
-        notice says so once, and ``summary()``'s ``refit_given_up`` counts the targets.
-        A group's reservation is not handed back when its refit frees its buffer, so
-        once the bound is reached no later group refits. At 20 features and 500 rows a
-        target reserves 160 KB, and 256 MiB refits the first 1,677 targets.
+        notice says so once, and ``summary()``'s ``refit_given_up`` counts the targets
+        of each instance. A group's reservation is not handed back when its refit frees
+        its buffer, so once the bound is reached no later group refits. At 20 features
+        and 500 rows a target reserves 160 KB, and 256 MiB refits the first 1,677
+        targets.
     ``emit_huber_scale``
         Emit ``huber_scale_<t>``, each target's residual scale ``s`` as the
         row's cut reads it: after the row's decay and before the row's own
@@ -531,7 +534,8 @@ def quantile(
         rubric above). Default ``max(500, 10 * features)`` up to 100
         features, and off above 100; a count given is always taken, from
         three rows a coefficient up, the rows the warm-up takes as least
-        squares. ``0`` turns the refit off. A group shorter than the count
+        squares, to ``2 ** 20``, since the rows are held from the first.
+        ``0`` turns the refit off. A group shorter than the count
         never refits and holds its rows to the end: ``(features + 4) * 8``
         bytes a learned row, and 32 bytes a run of rows that only aged the
         target (its value null or its weight 0). Past 4 runs a learned row of
@@ -546,10 +550,12 @@ def quantile(
         A bound in MiB on the refit buffers of all the spec's groups
         together, above 0, or ``inf`` for none; default 256. As for
         :func:`huber`: each new group reserves ``(features + 20) * 8`` bytes a
-        target for each row of the count when it first appears, and keeps it
+        target of each model instance (a half-life grid reserves once per
+        value) for each row of the count when it first appears, and keeps it
         for the life of the bank; the group that would cross the bound, and
         every new group after it, keeps its one-pass fit, a notice says so
-        once, and ``summary()``'s ``refit_given_up`` counts the targets.
+        once, and ``summary()``'s ``refit_given_up`` counts the targets of
+        each instance.
     ``ridge``, ``standardize``, ``solve_every``, ``max_rows_between_solves``
         As for :func:`ewridge`: the penalty (default ``1e-6``, finite and at
         least 0), correlation-form solving, and the solve schedule. ``ridge``

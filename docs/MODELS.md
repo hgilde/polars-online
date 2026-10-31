@@ -1028,10 +1028,11 @@ moved by a level, 50 passes ran out on 149 and 200 on 9, all nine past 39%.
 **`refit_budget` bounds the buffers of all a spec's groups together: 256
 MiB by default, or `inf` for no bound.** Each new group reserves, when it
 first appears, the most its targets' buffers can hold: `(features + 20) · 8`
-bytes a target for each row of `huber_refit_rows`, the row and its four
-runs. The group that would cross the bound, and every new group after it,
+bytes a target of each model instance (a half-life grid reserves once per
+value) for each row of `huber_refit_rows`, the row and its four runs. The group that would cross the bound, and every new group after it,
 gives its refit up and keeps its one-pass fit; a notice says so once, and
-`summary()`'s `refit_given_up` counts the targets. A reservation lasts the
+`summary()`'s `refit_given_up` counts the targets of each instance. A
+reservation lasts the
 bank's life, even after the refit frees the buffer, and is saved with the
 bank, so which groups refit depends neither on the chunking nor on the order
 the groups run in, nor on a save and load between them. The price is that
@@ -1261,7 +1262,9 @@ left to the steps it moved every slope by about the rate times the level:
 loss but `poisson` and `logistic`) with an intercept, with `W` the
 target's learned weight (undecayed, the row's in it) and `a = w/W`, the
 intercept's step is the running mean's, `−a·d` for `squared` and `huber`
-while `a` is above the rate or the rows number at most 22 by Kish's count,
+while `a` is above the row's rate (the rate as it has fallen under
+`inv_scaling`; under `adagrad`, which has no shared rate, the warm-up alone)
+or the rows number at most 22 by Kish's count,
 `a·(y − p)` for the sign-valued losses while they do, and the target's first
 row puts its whole residual there and moves nothing else. Now a level costs
 rounding (0.0077 at either level), and a target with no level loses
@@ -1271,15 +1274,48 @@ nothing measurable.
 row's residual by `1 − q`, `q = learning_rate·(w·c·|z|² + l2)` with `c` the
 loss's curvature at the prediction (1 for `squared` and inside the Huber
 cut, 0 beyond it, `p` for `poisson`, `p·(1 − p)` for `logistic`), so the fit
-diverges in mean square once `E[q²] > 2·E[q]`. Each target keeps both sums
-over its recent steps (each decayed by `2^(−1/100)` a row), and while the
-squares' passes twice the gains' its predictions are withheld as
-`unstable_rate`, with a notice; the fit learns every row as before. On five
-standardized normal features the bound on a constant rate is 0.261; at 0.5
-the fit had diverged until `clip_gradient` held it, its error 50,000 times
-the target's variance, with nothing said. `inv_scaling` from a rate past
-the bound is withheld on its first rows only. `adagrad` and the sign-valued
+diverges in mean square once `E[q²] > 2·E[q]`, the one-row mean-square
+contraction `E[(1 − q)²] < 1` failing. Each target keeps both sums over its
+recent steps (each decayed by `2^(−1/100)` a row), and while the squares'
+passes twice the gains' its predictions are withheld as `unstable_rate`,
+with a notice; the fit learns every row as before. On five standardized
+normal features the bound on a constant rate is 0.261; at 0.5 the fit had
+diverged until `clip_gradient` held it, its error 50,000 times the
+target's variance, with nothing said. `inv_scaling` from a rate past the
+bound is withheld on its first rows only. `adagrad` and the sign-valued
 losses take steps that cannot grow, and are never withheld.
+
+**One wide row cannot hold the output.** Each gain after a target's first
+enters the sums bounded, at most the larger of 2 and four times the running
+mean before it; the first has no mean to be wide against and enters whole,
+and a gain of 0 (a row the loss is flat at, with no `l2`) says nothing of
+the rate and is left out. A gain
+of 2 leaves its row's residual where it was and adds nothing to the margin
+`Σ(q² − 2q)`, so while the mean is below 1/2 no single row moves the verdict
+toward unstable, and above it a row moves it by at most `16m² − 8m`. Whole,
+one row at 100 times a feature's spread held a stable rate's output for
+1,075 rows (raw features, a rate of 0.01), and one at 10,000 times for
+3,736. A rate whose every gain is high still passes: the mean, and the
+bound with it, rises fourfold a row. The price is a stream whose gains
+average below 1/2 and pass 2 on a few rows only, which is not withheld for
+them.
+
+**The memory is a count of rows, because the verdict is an estimate.** It
+estimates an expectation from a sample of the rate's rows, and the error of
+a ratio of two means of `N` gains is about `CV(q)/√N`, set by the spread of
+`|z|²` -- the rows' -- not by the rate or the decay. On standardized normal
+features the spread is widest at one feature. There, at a half-life of 100
+stepped rows, a constant rate at 0.9 times the bound was withheld on 0.9% of
+its rows and one at 1.2 times on 99%; at five and twenty features, none at
+0.9 and all at 1.1 (the recursion on gains drawn from such rows). The fit's
+own memory, about `k / mean(q)` rows for a coefficient, is a handful of rows
+near the bound, too few to estimate from: as the gate's memory it withheld
+6-11% of a stable rate's rows (0.77 times the bound) and served a third to
+a half of a diverging one's (1.15 times). The model's decay ages the
+target's weight and AdaGrad's sums, not the coefficients, so it is no
+memory of the rate either. A rate raised past the bound after 2,000 stable
+rows was withheld from 68 rows later at 1.9 times the bound and 201 at 1.15
+times.
 
 `λ` is the row's decay, so `λ·weight_sum` is the weight before the row
 decayed to it, and `Gᵢ` is decayed by it too. A row of weight 0 in between
@@ -1359,8 +1395,12 @@ learned rows reaches `huber_refit_rows`, the converged Huber fit of those
 rows replaces its coefficients, and its scale `s` is rebuilt from that
 fit's residuals. The fit is `huber`'s iteration (in its section), started
 from the rows' weighted least squares, as statsmodels starts, with a ridge
-of 1e-6 on the mean-form system. It leaves out `l2`, a penalty on the
-steps, which the steps after it apply. The coefficients are set in the
+of 1e-6 on the mean-form system, on the standardized slopes under
+`standardize` (`1e-6·sᵢ²` in the caller's units) as `huber`'s is, so the
+refit is `huber(standardize=True)`'s converged fit and a feature's
+power-of-two scale changes only its coefficient. The fit takes `l2` as the
+steps apply it, a penalty on each standardized slope once a row, and the
+steps after the refit go on applying it. The coefficients are set in the
 coordinates the fit is held in: the caller's units, or, while the scaler
 still warms up, the coordinates of its moments as they stand, so that they
 read out as the fit. A constraint projects the fit as it projects a step.

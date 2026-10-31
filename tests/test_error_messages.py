@@ -26,6 +26,12 @@ TIER = "essential"
 INF = float("inf")
 BASE = dict(targets=["y"], features=["x0"], half_life=10.0)
 
+#: Why a refit's row count has a ceiling, as the builder says it.
+REFIT_ROWS_WHY = (
+    "the refit's buffer is held at its full size, (features + 4) * 8 bytes a row, from a "
+    "target's first learned row, so the count sizes an allocation before any row is seen"
+)
+
 
 def _df(n: int = 50) -> pl.DataFrame:
     return pl.DataFrame(
@@ -1319,19 +1325,50 @@ def test_a_count_past_its_width_is_named_in_python():
             dict(emit_autocorr=True, resid_autocorr_lag=2**21),
             "resid_autocorr_lag must be <= 1048576, got 2097152",
         ),
+        (
+            po.spec.huber,
+            dict(huber_refit_rows=2**32 - 1, refit_budget=float("inf")),
+            f"huber_refit_rows must be <= 1048576, got 4294967295: {REFIT_ROWS_WHY}",
+        ),
+        (
+            po.spec.sgd,
+            dict(loss="huber", huber_refit_rows=2**20 + 1),
+            f"huber_refit_rows must be <= 1048576, got 1048577: {REFIT_ROWS_WHY}",
+        ),
+        (
+            po.spec.quantile,
+            dict(quantile=0.5, quantile_refit_rows=2**20 + 1),
+            f"quantile_refit_rows must be <= 1048576, got 1048577: {REFIT_ROWS_WHY}",
+        ),
     ],
-    ids=["marginal.lags", "ew_cov.lags", "corrchange.n_perm", "resid_autocorr_lag"],
+    ids=[
+        "marginal.lags",
+        "ew_cov.lags",
+        "corrchange.n_perm",
+        "resid_autocorr_lag",
+        "huber.huber_refit_rows",
+        "sgd.huber_refit_rows",
+        "quantile.quantile_refit_rows",
+    ],
 )
 def test_a_count_that_sizes_memory_has_a_ceiling(builder, kw, msg):
     """A lag sizes a ring before the first row, and ``n_perm`` the draws held
     for a quantile: ``marginal(lags=[2**62])`` raised ``PanicException:
     capacity overflow`` inside the builder, and ``lags=[10**11]`` reserved 2.4
-    TB (review 2026-10-06, CD10). The builder says so; so does the Rust side,
-    from a dict, in its own words."""
+    TB (review 2026-10-06, CD10). A refit's buffer is held whole from a
+    target's first learned row: ``huber_refit_rows=2**32 - 1`` beside
+    ``refit_budget=inf`` reserved 172 GB and aborted (task 282, S1-3). The
+    builder says so; so does the Rust side, from a dict, in its own words."""
     merged = {k: v for k, v in {**BASE, **kw}.items() if v is not None}
     with pytest.raises(ValueError, match=re.escape(f'spec "m": {msg}')):
         builder("m", **merged)
-    legal = {"lags": [1], "n_perm": 200, "resid_autocorr_lag": 1}
+    legal = {
+        "lags": [1],
+        "n_perm": 200,
+        "resid_autocorr_lag": 1,
+        "huber_refit_rows": 2**20,
+        "quantile_refit_rows": 2**20,
+    }
     key = next(k for k in legal if k in kw)
     spec = builder("m", **{**merged, key: legal[key]})
     where = spec if key in spec else spec["model"]

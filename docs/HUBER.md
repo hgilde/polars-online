@@ -329,7 +329,8 @@ over 2,000 rows at 20% it leaves 10 (1) `huber` streams where 200 left 18
 (5), and 8 (0) `sgd` streams where 200 left 16 (4); over 20,000 rows it
 changes nothing that 200 did not already fix. A per-spec `refit_budget`,
 256 MiB by default, bounds the buffers of all a spec's groups: each new
-group reserves `8·rows·(k + 20)` bytes a target when it first appears, in
+group reserves `8·rows·(k + 20)` bytes a target of each model instance (a
+half-life grid reserves once per value) when it first appears, in
 first-appearance order, keeps the reservation for the bank's life and saves
 it with the bank, so admission is the same under any chunking; the group
 that would cross the bound and every later new group give their refits up

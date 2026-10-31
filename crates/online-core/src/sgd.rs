@@ -177,8 +177,10 @@
 //! the intercept takes the running mean's step in place of its gradient's,
 //! in whichever coordinates it is held (its `z̃` is 1 in each): `−a · d`
 //! under the squared and Huber losses, the residual (clipped at the cut),
-//! while `a` is above the rate or Kish's count of the rows, `W² / Σw²`, is
-//! at most 22 ([`crate::WARMUP_ROWS`], the scaler's); `a · (y − p)` under
+//! while `a` is above the row's rate (under `inv_scaling` the rate as it
+//! has fallen; AdaGrad has no shared rate, so there the warm-up alone) or
+//! Kish's count of the rows, `W² / Σw²`, is at most 22
+//! ([`crate::WARMUP_ROWS`], the scaler's); `a · (y − p)` under
 //! the sign-valued losses, whose gradient is not in the target's units,
 //! while the count is. On the target's first learned row that is its whole
 //! residual and nothing else moves. AdaGrad's sum learns the intercept's
@@ -194,16 +196,30 @@
 //! (1 for the squared loss and inside the Huber cut, 0 beyond it, `p` for
 //! Poisson, `p (1 − p)` for logistic), so the residual shrinks in mean
 //! square while `E[(1 − q)²] < 1`, that is `E[q²] < 2·E[q]`. Each target
-//! keeps `Σρ^k q` and `Σρ^k q²` over its stepped rows, `ρ = 2^(−1/100)`,
-//! and while the second passes twice the first its predictions are
-//! withheld, from the state before the row, by `step` and `predict` alike;
-//! the fit learns every row as before, so the gate is the output's alone.
-//! On standardized normal features the rule is LMS's mean-square bound,
-//! `lr < 2 (p + 1) / (p² + 4p + 1)` with an intercept: 0.261 at five
-//! features, where the measured edge was 0.25-0.3. Without it, a constant
-//! rate past the bound diverged until the clip held it, finite and wrong
-//! (the last 1,000 of 20,000 rows' error 5e4 times the target's variance at
-//! 0.5), with no notice. AdaGrad's step moves a slot at most the rate a
+//! keeps `Σρ^k q̂`, `Σρ^k q̂²` and `Σρ^k` over its stepped rows, `ρ =
+//! 2^(−1/100)`, each gain after the first bounded as it enters, `q̂ =
+//! min(q, max(2, 4·m))` with `m` the running mean before it (a gain of 0,
+//! a row the loss is flat at, says nothing of the rate and is left out),
+//! and while the second sum passes
+//! twice the first its predictions are withheld, from the state before the
+//! row, by `step` and `predict` alike; the fit learns every row as before,
+//! so the gate is the output's alone. The bound keeps one wide row from
+//! holding the output: a gain at 2 leaves its row's residual where it was
+//! and adds nothing to the margin `Σ(q̂² − 2q̂)`, so while the mean is below
+//! 1/2 no single row moves the verdict toward unstable, and above it a row
+//! moves it by at most `16m² − 8m`; a rate whose every gain is high still
+//! passes, the mean rising fourfold a row to meet it. The price: a stream
+//! whose gains average below 1/2 and pass 2 on a few rows only is not
+//! withheld for those rows, though the one-row rule calls it unstable. The memory is a
+//! count of stepped rows because the verdict is an estimate of an
+//! expectation, whose error is set by the spread of the gains, not by the
+//! rate or the decay ([`GAIN_DECAY`]). The rule is the one-row mean-square
+//! contraction `E[(1 − q)²] < 1`; on standardized normal features with an
+//! intercept it bounds a constant rate at `2 (p + 1) / (p² + 4p + 1)`,
+//! 0.261 at five features, where the measured edge was 0.25-0.3. Without
+//! the gate, a constant rate past the bound diverged until the clip held
+//! it, finite and wrong (the last 1,000 of 20,000 rows' error 5e4 times the
+//! target's variance at 0.5), with no notice. AdaGrad's step moves a slot at most the rate a
 //! row, and the quantile and epsilon-insensitive steps are a sign times the
 //! rate: neither can grow, and none is gated.
 
@@ -373,7 +389,9 @@ pub struct SgdCfg {
     /// Each target's first `refit_rows` learned rows refit to the converged
     /// Huber fit, once ([`crate::huber_refit`]): the coefficients set to it
     /// and the residual scale rebuilt from its residuals, a spec's
-    /// `huber_refit_rows`, 200 by default under the Huber loss; 0 is off.
+    /// `huber_refit_rows`, by default `max(500, 10 · features)` under the
+    /// Huber loss up to 100 features and off above
+    /// ([`crate::default_refit_rows`]); 0 is off.
     /// Huber only. A state written before schema 64 has no such field and
     /// was fitted without a refit, so it loads as 0 and goes on as it was.
     #[serde(default)]
@@ -412,16 +430,64 @@ pub struct SgdCfg {
 /// stepped row, a half-life of 100 of them, written out so that no
 /// platform's `exp2` sets a persisted bit (CLAUDE.md, no libm in the
 /// state).
+///
+/// A count of rows, not the fit's own memory, because the gate estimates
+/// an expectation: whether `E[q²] < 2·E[q]` for the rate as it stands,
+/// from a sample of its rows. The ratio of two means of `N` gains has a
+/// relative error of about `CV(q)/√N`, and `CV(q)` -- the spread of
+/// `|z̃|²` -- is a property of the rows, not of the rate or the decay: on
+/// standardized normal features it is `√(2p)/(p + 1)`, widest at one
+/// feature (0.71). At this memory the gate withheld 0.9% of the rows of a
+/// constant rate at 0.9 times the bound and 99% at 1.2 times at one
+/// feature, and none at 0.9 and all at 1.1 at five and at twenty (the
+/// recursion on 12,000 rows' gains drawn from standardized normal rows;
+/// 25 rows' memory withheld 7% at 0.9 times at one feature and 87% at 1.2
+/// times). The fit's own memory -- about `k / mean(q)` rows for a
+/// coefficient, `1 / mean(q)` along the row -- is a handful of rows near
+/// the bound, and as the gate's memory left the verdict to the last few
+/// rows' spread: it withheld 6-11% of a stable rate's rows (0.77 times the
+/// bound, five features) and served 33-52% of a diverging one's (1.15
+/// times). The model's decay ages the target's weight and AdaGrad's sums,
+/// not the coefficients, so it is no memory of the rate either. A rate
+/// that changes is followed within about two half-lives: a constant rate
+/// raised past the bound after 2,000 stable rows was withheld from 68 rows
+/// later at 1.9 times the bound and 201 at 1.15 times; and a wide row
+/// cannot hold the output for long, since each gain is bounded before it
+/// enters ([`GAIN_BOUND`]).
 const GAIN_DECAY: f64 = 0.993_092_495_437_035_9;
 
 /// The largest step gain a [`StepGain`] takes in: its square stays finite,
 /// and a larger one is unstable by any measure.
 const GAIN_CAP: f64 = 1e150;
 
+/// The bound on each step gain as it enters a [`StepGain`]'s sums: the
+/// larger of [`NEUTRAL_GAIN`] and `GAIN_BOUND` times the running mean of
+/// the gains before it. One wide row -- a feature far outside its spread,
+/// a weight far above the rest -- has a gain many times the others', and
+/// whole it carried the sums past the bound by itself and held them there
+/// while its square faded: on raw features at a rate of 0.01, 1,075 rows
+/// after one row at 100 times a feature's spread and 3,736 at 1e4 (three
+/// features, 6,000 rows after it), and about 99,000 by the recursion where
+/// a gain that is not a number entered as the cap. Bounded, the same probe withholds none. A row moves the
+/// margin `Σ(q̂² − 2q̂)` by at most `16m² − 8m` at a mean `m` above 1/2,
+/// and below it not toward unstable at all; and a rate whose every row's
+/// gain is high still passes the bound, the mean rising fourfold a row to
+/// meet it.
+const GAIN_BOUND: f64 = 4.0;
+
+/// The gain at which a step leaves its own row's residual where it was,
+/// `(1 − q)² = 1`: a row at it adds `q² − 2q = 0` to the gate's margin, so
+/// a gain bounded at it never moves the verdict. It is the bound's floor,
+/// so a gain beside a mean below `1/2` can only leave the verdict where it
+/// was or take it toward stable.
+const NEUTRAL_GAIN: f64 = 2.0;
+
 /// Per target, the recent steps' gains `q = lr·(w·c·|z̃|² + l2)`, `c` the
 /// loss's curvature at the row's prediction, as sums decayed by
-/// [`GAIN_DECAY`] a stepped row: `q` and `q²` ([`SgdCfg::target_spread`];
-/// the module docs). A step multiplies its own row's residual by `1 − q`,
+/// [`GAIN_DECAY`] a stepped row: `q` and `q²`, and the rows' weight `n`, so
+/// that `q / n` is their mean ([`SgdCfg::target_spread`]; the module docs).
+/// Each gain after the first enters bounded, `q̂ = min(q, max(2, 4·q/n))`
+/// ([`GAIN_BOUND`]); the first, with no mean to be wide against, whole. A step multiplies its own row's residual by `1 − q`,
 /// so the residual shrinks in mean square while `E[(1 − q)²] < 1`, that is
 /// `E[q²] < 2·E[q]`; past it the fit diverges, and the target is
 /// [`StepGain::unstable`].
@@ -429,6 +495,7 @@ const GAIN_CAP: f64 = 1e150;
 pub(crate) struct StepGain {
     q: f64,
     q2: f64,
+    n: f64,
 }
 
 /// Per target, the weight of the rows its level has been learned from,
@@ -457,14 +524,36 @@ impl Level {
 }
 
 impl StepGain {
-    fn learn(&mut self, q: f64) {
-        let q = if q.is_nan() {
-            GAIN_CAP
+    /// The gain `q` bounded as it enters the sums ([`GAIN_BOUND`]): at most
+    /// the larger of 2 and four times the running mean before it, and at
+    /// most [`GAIN_CAP`]. The first gain has no mean to be wide against and
+    /// enters whole, at most the cap. A gain that is not a number is taken
+    /// at the bound (`f64::min` returns the other operand).
+    fn bounded(&self, q: f64) -> f64 {
+        if self.n > 0.0 {
+            q.min(NEUTRAL_GAIN.max(GAIN_BOUND * self.q / self.n))
+                .min(GAIN_CAP)
         } else {
             q.min(GAIN_CAP)
-        };
+        }
+    }
+
+    /// A gain of 0 -- a row the loss is flat at (beyond the Huber cut, a
+    /// saturated logistic) with no `l2` -- leaves the sums alone: its step
+    /// neither contracts nor grows its own row's residual, so it says
+    /// nothing of the rate, and counted in `n` it would pull the mean, and
+    /// with it the bound, down. A fit thrown so far that every row is past
+    /// the cut would then dilute its own verdict to the floor of 2, which
+    /// moves nothing, while the rows that still step with a curvature, each
+    /// at a gain far past 2, are the evidence the rate diverges.
+    fn learn(&mut self, q: f64) {
+        if q == 0.0 {
+            return;
+        }
+        let q = self.bounded(q);
         self.q = GAIN_DECAY * self.q + q;
         self.q2 = GAIN_DECAY * self.q2 + q * q;
+        self.n = GAIN_DECAY * self.n + 1.0;
     }
 
     /// The recent gains' mean square above twice their mean: the step
@@ -477,7 +566,14 @@ impl StepGain {
 
 /// The ridge on the mean-form system an `sgd` refit solves
 /// ([`crate::huber_refit::irls`]): `huber`'s default, so that the refit
-/// is the converged fit `huber` reaches on the same rows.
+/// is the converged fit `huber` reaches on the same rows. Like `huber`'s, it
+/// is on the slopes the fit is drawn in: under `standardize` the
+/// standardized slope `β_i = s_i b_i`, so in the caller's units `1e-6 · s_i²`
+/// on slope `i`'s diagonal, as `huber` divides its Gram by `s_i s_j` before
+/// adding it. A ridge of `1e-6` in the caller's units shrank a feature whose
+/// spread is near `1e-3` to about half its slope, and one near `1e-4` to a
+/// hundredth (2 read 0.022), and a feature's power-of-two scale moved the
+/// fit after the refit.
 const REFIT_RIDGE: f64 = 1e-6;
 
 impl SgdCfg {
@@ -647,6 +743,11 @@ pub struct Sgd {
     /// Which targets stepped this row (only kept under a constraint).
     #[serde(skip)]
     learned: Vec<bool>,
+    /// Per target, the label a row taught it with, while a refit buffer is
+    /// open ([`SgdCfg::refit_rows`]); empty otherwise. Held here, taken for
+    /// the row and put back, so that a row allocates nothing for it.
+    #[serde(skip)]
+    taught: Vec<Option<f64>>,
 }
 
 /// The layout `Sgd` loads, checked on the way in: what the cfg asks for,
@@ -782,6 +883,7 @@ impl TryFrom<SgdV3> for Sgd {
             rawbuf: vec![],
             pbuf: crate::constraint::Scratch::default(),
             learned: Vec::new(),
+            taught: Vec::new(),
         })
     }
 }
@@ -840,6 +942,7 @@ impl Sgd {
             rawbuf: vec![0.0; k],
             pbuf: crate::constraint::Scratch::default(),
             learned: Vec::new(),
+            taught: Vec::new(),
             cfg,
         })
     }
@@ -1148,6 +1251,18 @@ impl Sgd {
         true
     }
 
+    /// Target `j` took its step: its level's weight with the row in it
+    /// becomes its own, and the step's gain joins the unstable rate's sums
+    /// ([`StepGain`]). Neither moves for a row the step refused.
+    fn took_step(&mut self, j: usize, level: Option<Level>, gain: Option<f64>) {
+        if let Some(lv) = level {
+            self.level[j] = lv;
+        }
+        if let Some(q) = gain {
+            self.gain[j].learn(q);
+        }
+    }
+
     /// The refit of target `j` ([`SgdCfg::refit_rows`],
     /// [`crate::huber_refit`]): the converged Huber fit of its buffered
     /// rows, by IRLS from their weighted least-squares fit, in the caller's
@@ -1173,20 +1288,21 @@ impl Sgd {
         let rows = Rows::new(&buf, &ages, self.cfg.n_features);
         // `l2` is a penalty on the standardized slope `β_i = s_i b_i` a step
         // applies once a row, so in the caller's units it is `l2 · s_i²`
-        // a row; without a scaler `s_i` is 1.
+        // a row; and the ridge, on the same slope, is `REFIT_RIDGE · s_i²`.
+        // Without a scaler `s_i` is 1.
         let s: Vec<f64> = match &self.scaler {
             Some(sc) => scales_of(sc, off)[off..].to_vec(),
             None => vec![1.0; self.cfg.n_features],
         };
         let l2: Vec<f64> = s.iter().map(|si| self.cfg.l2 * si * si).collect();
-        let Some((fit, passes)) = huber_refit::irls(
-            &rows,
-            intercept,
-            delta,
-            self.cfg.huber_scale,
-            REFIT_RIDGE,
-            &l2,
-        ) else {
+        let ridge: Vec<f64> = if self.scaler.is_some() {
+            s.iter().map(|si| REFIT_RIDGE * si * si).collect()
+        } else {
+            vec![REFIT_RIDGE; self.cfg.n_features]
+        };
+        let Some((fit, passes)) =
+            huber_refit::irls(&rows, intercept, delta, self.cfg.huber_scale, &ridge, &l2)
+        else {
             // No pass solved: the one-pass fit stands, and the refit says so.
             self.refit[j].fail();
             return;
@@ -1693,12 +1809,14 @@ impl OnlineModel for Sgd {
         };
         // Per target, the label a row taught it with, while a refit buffer
         // is open (`SgdCfg::refit_rows`); empty otherwise, which costs a
-        // row nothing once every refit has run.
-        let mut taught: Vec<Option<f64>> = if self.refit.iter().any(RefitBuf::open) {
-            vec![None; m]
-        } else {
-            Vec::new()
-        };
+        // row nothing once every refit has run. The model's own scratch,
+        // taken for the row and put back after the refits, so that its
+        // capacity is kept and a row allocates nothing.
+        let mut taught = std::mem::take(&mut self.taught);
+        taught.clear();
+        if self.refit.iter().any(RefitBuf::open) {
+            taught.resize(m, None);
+        }
         for j in 0..m {
             let eta = if reads_z {
                 dot(&self.beta[j], off, &self.zbuf[off..])
@@ -1778,9 +1896,17 @@ impl OnlineModel for Sgd {
             // target's first learned row that is the whole residual and
             // nothing else moves, so the level never passes through the
             // slopes' steps (the module docs).
+            // Both the level's weight and the step's gain are learned only
+            // where the row's step is taken: a row refused below for a
+            // gradient that is not a finite number teaches nothing, and
+            // counted in either it would move the level's warm-up and its
+            // gain, or enter the unstable rate's sums, for a step that never
+            // happened.
             let mut level_step = None;
-            if let Some(lv) = self.level.get_mut(j) {
+            let mut level_next = None;
+            if let Some(&lv) = self.level.get(j) {
                 let first = lv.w == 0.0;
+                let mut lv = lv;
                 lv.learn(weight);
                 let gain = weight / lv.w;
                 // The squared and Huber losses' gradient is the residual
@@ -1799,12 +1925,14 @@ impl OnlineModel for Sgd {
                     let b0 = self.beta[j][0] + step;
                     if b0.is_finite() {
                         self.beta[j][0] = b0;
+                        self.level[j] = lv;
                         if let Some(t) = taught.get_mut(j) {
                             *t = Some(yj);
                         }
                     }
                     continue;
                 }
+                level_next = Some(lv);
                 if warm && step.is_finite() {
                     level_step = Some(step);
                 }
@@ -1813,21 +1941,25 @@ impl OnlineModel for Sgd {
             // with `c` the loss's curvature at the prediction: the rate
             // past its stability bound shows in their mean square
             // (`StepGain`). `l2` shrinks each slope by `1 − lr·l2` besides.
-            if let (Some(g), Some(lr)) = (self.gain.get_mut(j), lr_row) {
-                let c = match self.cfg.loss {
-                    SgdLoss::Squared => 1.0,
-                    SgdLoss::Huber { .. } => f64::from(d == p - yj),
-                    SgdLoss::Poisson => p,
-                    SgdLoss::Logistic => p * (1.0 - p),
-                    SgdLoss::Quantile { .. } | SgdLoss::EpsilonInsensitive { .. } => 0.0,
-                };
-                let along = if c > 0.0 { weight * c * zz } else { 0.0 };
-                g.learn(lr * (along + l2));
-            }
+            let step_gain = match (self.gain.is_empty(), lr_row) {
+                (false, Some(lr)) => {
+                    let c = match self.cfg.loss {
+                        SgdLoss::Squared => 1.0,
+                        SgdLoss::Huber { .. } => f64::from(d == p - yj),
+                        SgdLoss::Poisson => p,
+                        SgdLoss::Logistic => p * (1.0 - p),
+                        SgdLoss::Quantile { .. } | SgdLoss::EpsilonInsensitive { .. } => 0.0,
+                    };
+                    let along = if c > 0.0 { weight * c * zz } else { 0.0 };
+                    Some(lr * (along + l2))
+                }
+                _ => None,
+            };
             if held {
                 // The step in the row's coordinates, mapped into the
                 // caller's units by the row's map, and projected there.
                 if self.step_mapped(j, d, weight, lr_row, (clip, ada_eps), level_step) {
+                    self.took_step(j, level_next, step_gain);
                     if let Some(t) = taught.get_mut(j) {
                         *t = Some(yj);
                     }
@@ -1902,6 +2034,7 @@ impl OnlineModel for Sgd {
             if let Some(l) = self.learned.get_mut(j) {
                 *l = true;
             }
+            self.took_step(j, level_next, step_gain);
             if let Some(t) = taught.get_mut(j) {
                 *t = Some(yj);
             }
@@ -1961,6 +2094,7 @@ impl OnlineModel for Sgd {
                 }
             }
         }
+        self.taught = taught;
         self.w_sum = lam * self.w_sum + weight;
         // A label `strict_binary` refuses, or a negative count, carries no
         // weight for its target, as in `ftrl`: it taught nothing.

@@ -73,6 +73,16 @@ use crate::{EwQuantile, SpdFactor};
 /// where 50 took 1.9 s).
 pub const REFIT_PASSES: usize = 200;
 
+/// The most rows a refit of the first rows buffers (a spec's
+/// `huber_refit_rows`, `quantile_refit_rows`): 2^20. A buffer is held at
+/// its full size from a target's first learned row, `(features + 4) · 8`
+/// bytes a row, so the count sizes an allocation before any row is seen:
+/// with `refit_budget = inf`, which bounds nothing, `2^32 − 1` rows of one
+/// feature reserved 172 GB and aborted the process. 2^20 rows are 40 MiB a
+/// target at one feature, the ceiling the spec layer's other counts that
+/// size an allocation keep (a lag, `n_perm`); it refuses more by name.
+pub const MAX_REFIT_ROWS: u32 = 1 << 20;
+
 /// A refit has converged when no buffered row's fitted value moved by more
 /// than this, relative to the pass's residual scale ([`converged`]).
 pub const REFIT_TOL: f64 = 1e-10;
@@ -864,16 +874,18 @@ pub(crate) fn rebuild_scale(
 
 /// Weighted least squares over the buffered rows at weights `wt`, in mean
 /// form: with an intercept the centred Gram over the features, plus on its
-/// diagonal `ridge` and each slope's `penalty` over the total weight, and the
-/// intercept `ȳ − m'β`; without one the raw Gram plus the same. `penalty`
-/// is a penalty's whole mass, `Σ_i c_i · l2_j`, which the mean form divides
-/// by `Σ_i wt_i`. `None` without weight, or when the factor fails at every
-/// jitter.
+/// diagonal each slope's `ridge` and its `penalty` over the total weight, and
+/// the intercept `ȳ − m'β`; without one the raw Gram plus the same. `ridge`
+/// is on the mean-form system, in the slope's own units (the caller scales
+/// it by `s_j²` under a scaler, so that it is a ridge on the standardized
+/// slope); `penalty` is a penalty's whole mass, `Σ_i c_i · l2_j`, which the
+/// mean form divides by `Σ_i wt_i`. `None` without weight, or when the
+/// factor fails at every jitter.
 fn wls(
     rows: &Rows<'_>,
     wt: &[f64],
     intercept: bool,
-    ridge: f64,
+    ridge: &[f64],
     penalty: &[f64],
 ) -> Option<Vec<f64>> {
     let nf = rows.nf;
@@ -916,7 +928,7 @@ fn wls(
         for q in 0..nf {
             a[p * nf + q] /= total;
         }
-        a[p * nf + p] += ridge + penalty[p] / total;
+        a[p * nf + p] += ridge[p] + penalty[p] / total;
     }
     let slopes = SpdFactor::of(&a, nf)?.solve(&b, nf, 1);
     let fit: Vec<f64> = if intercept {
@@ -942,7 +954,7 @@ pub(crate) fn irls(
     intercept: bool,
     delta: f64,
     kind: HuberScale,
-    ridge: f64,
+    ridge: &[f64],
     l2: &[f64],
 ) -> Option<(Vec<f64>, u32)> {
     let n = rows.len();
@@ -1311,23 +1323,23 @@ mod tests {
     fn weighted_least_squares_takes_a_penalty_and_needs_weight() {
         let (rows, ages) = two_rows();
         let r = Rows::new(&rows, &ages, 1);
-        let fit = wls(&r, &[1.0, 3.0], true, 0.0, &[0.0]).unwrap();
+        let fit = wls(&r, &[1.0, 3.0], true, &[0.0], &[0.0]).unwrap();
         assert!(
             (fit[0] - 1.0).abs() < 1e-12 && (fit[1] - 2.0).abs() < 1e-12,
             "{fit:?}"
         );
-        let origin = wls(&r, &[1.0, 1.0], false, 0.0, &[0.0]).unwrap();
+        let origin = wls(&r, &[1.0, 1.0], false, &[0.0], &[0.0]).unwrap();
         assert!((origin[0] - 3.0).abs() < 1e-12, "{origin:?}");
         // Centred at equal weights the variance is 0.25 and the covariance
         // 0.5: a mass of 0.5 over a weight of 2 doubles the variance.
-        let shrunk = wls(&r, &[1.0, 1.0], true, 0.0, &[0.5]).unwrap();
+        let shrunk = wls(&r, &[1.0, 1.0], true, &[0.0], &[0.5]).unwrap();
         assert!(
             (shrunk[1] - 1.0).abs() < 1e-12 && (shrunk[0] - 1.5).abs() < 1e-12,
             "{shrunk:?}"
         );
-        assert_eq!(wls(&r, &[0.0, 0.0], true, 0.0, &[0.0]), None);
-        assert_eq!(wls(&r, &[0.0, 0.0], false, 1e-6, &[0.0]), None);
-        assert_eq!(wls(&r, &[f64::INFINITY, 1.0], true, 0.0, &[0.0]), None);
+        assert_eq!(wls(&r, &[0.0, 0.0], true, &[0.0], &[0.0]), None);
+        assert_eq!(wls(&r, &[0.0, 0.0], false, &[1e-6], &[0.0]), None);
+        assert_eq!(wls(&r, &[f64::INFINITY, 1.0], true, &[0.0], &[0.0]), None);
     }
 
     /// statsmodels' `RLM(y, [1, x], M=HuberT(1.345)).fit(scale_est="mad",
@@ -1348,7 +1360,7 @@ mod tests {
         }
         let (rows, ages) = b.take();
         let r = Rows::new(&rows, &ages, 1);
-        let (fit, passes) = irls(&r, true, 1.345, HuberScale::Mad, 0.0, &[0.0]).unwrap();
+        let (fit, passes) = irls(&r, true, 1.345, HuberScale::Mad, &[0.0], &[0.0]).unwrap();
         assert!((fit[0] - 3.132_054_975_780_772_3).abs() < 1e-9, "{fit:?}");
         assert!((fit[1] - 2.349_409_968_761_233_5).abs() < 1e-9, "{fit:?}");
         assert!(passes > 2 && passes < REFIT_PASSES as u32, "{passes}");
@@ -1783,7 +1795,7 @@ mod tests {
         }
         let (rows, ages) = b.take();
         let r = Rows::new(&rows, &ages, 1);
-        let fit = wls(&r, &[1.0, 3.0, 0.7, 1.9], true, 0.0, &[0.0]).unwrap();
+        let fit = wls(&r, &[1.0, 3.0, 0.7, 1.9], true, &[0.0], &[0.0]).unwrap();
         assert!((fit[1] - 2.0).abs() <= 1e-8, "{fit:?}");
     }
 }

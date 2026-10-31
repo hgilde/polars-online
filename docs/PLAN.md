@@ -16362,8 +16362,9 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       and withhold and count above a threshold, a new `withheld_reason`; D5
       `gram.solve(standardize=False)` rescales the Gram by its diagonal
       before `eigh`; D1 `sgd`'s `clip_gradient` measured in the residual
-      scale's units; D2 AdaGrad's epsilon relative; D3 `lasso`'s `tol`
-      relative to the target's spread (and `gram.lasso_path`'s); D6
+      scale's units (as built, in `s_y`, the target's EW spread, not the
+      residual scale; task 282, S3-2); D2 AdaGrad's epsilon relative; D3
+      `lasso`'s `tol` relative to the target's spread (and `gram.lasso_path`'s); D6
       `gram.lasso_path` counts and warns on its sweep cap; D7 `kmeans`/`hmm`
       seeding iterates to a fixed point under a cap and counts cap hits; K1
       `kalman`'s noise estimate inflated while the intercept absorbs a large

@@ -379,21 +379,6 @@ class TestTheSgdInfiniteCut:
             )
 
 
-#: Task 278 (b19), a defect: `sgd`'s refit solves its buffered rows in the
-#: caller's units with a fixed ridge of 1e-6 on the mean-form system
-#: (`sgd.rs`, `REFIT_RIDGE`), whatever `standardize` says, so the ridge is
-#: in the features' squared units. A feature whose variance is near 1e-6 (a
-#: return in fractions with a spread of 1e-3) has its slope shrunk to about
-#: half in the refit, and the steps after it start from there: with `x`
-#: times 2^-10 the predictions part from the unscaled run's from the row
-#: after each target's refit, by up to 1.8 on `y0` (at 1,000, slope 2) and
-#: 2.9 on `y1` (slope -3), measured 2026-10-26, where the one pass is exact.
-SGD_REFIT_RIDGE = pytest.mark.xfail(
-    strict=True,
-    reason="task 278 (b19): sgd's refit ridge is in the features' units under standardize",
-)
-
-
 class TestSgdPowersOfTwo:
     """``sgd`` standardizes its features by default, so scaling ``x`` by
     ``2^k`` changes nothing but its coefficient, divided by ``2^k``: the
@@ -431,8 +416,12 @@ class TestSgdPowersOfTwo:
         assert int(np.argmax(np.cumsum(df["w"].to_numpy() > 0) >= 500)) == 549
         self.check(df.head(549))
 
-    @SGD_REFIT_RIDGE
     def test_and_so_after_the_refit(self):
+        """And past it, to the bit: the refit's ridge is on the standardized
+        slopes, ``1e-6 * s_i**2`` in the caller's units, as ``huber``'s is.
+        Until task 282 (H1) it was ``1e-6`` in the caller's units, so with
+        ``x`` times 2^-10 the predictions parted from the row after each
+        target's refit, by up to 2.9 (task 278, b19)."""
         self.check(_frame())
 
 

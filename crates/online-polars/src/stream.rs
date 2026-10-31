@@ -1849,7 +1849,8 @@ pub struct Notified {
 /// its stability bound (task 278, D8): what the gate reads, and the ways
 /// out.
 fn unstable_rate_notice(spec: &Spec, target: &str) -> String {
-    // `E[q²] < 2·E[q]` at unit weight, no `l2` and the squared loss, on
+    // The one-row mean-square contraction `E[(1 − q)²] < 1`, that is
+    // `E[q²] < 2·E[q]`, at unit weight, no `l2` and the squared loss, on
     // `p` standardized normal columns: `|z̃|²` is `χ²_p`, or `1 + χ²_p` with
     // the intercept's 1, whose first two moments give the bound.
     let p = spec.k() as f64;
@@ -1862,8 +1863,10 @@ fn unstable_rate_notice(spec: &Spec, target: &str) -> String {
         "the learning rate is past its stability bound for target {target:?}: a step \
          multiplies its own row's residual by 1 - q, q = learning_rate * (weight * c * \
          |z|^2 + l2) with c the loss's curvature, and over the recent steps the mean of q^2 \
-         passed twice the mean of q, so the fit diverges in mean square. Its predictions are \
-         withheld (withheld_reason \"unstable_rate\") while that holds. Lower learning_rate \
+         passed twice the mean of q (each q bounded at the larger of 2 and four times their \
+         running mean, so one wide row moves it only a bounded amount), so the fit diverges \
+         in mean square. Its predictions are withheld (withheld_reason \"unstable_rate\") \
+         while that holds. Lower learning_rate \
          (standardized, {} independent normal features put a constant rate's bound at \
          {bound:.3}), or use schedule = \"inv_scaling\", which lowers it row by row, or \
          \"adagrad\"",

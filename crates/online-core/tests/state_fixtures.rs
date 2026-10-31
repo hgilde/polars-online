@@ -1201,7 +1201,8 @@ fn the_gates_forms_and_the_quantile_scale_are_written() {
 
 /// `sgd`'s target-spread forms (schema 64, docs/PLAN.md task 278: D1, D2,
 /// D8, D-S): `sgd_spread` keeps each target's spread under the squared loss,
-/// its step gains and its level, every one holding a number; `sgd_unstable`
+/// its step gains (with their rows' weight, task 282 M1) and its level,
+/// every one holding a number; `sgd_unstable`
 /// is saved with its gate withholding, so its continuation reads the gains
 /// from the file and withholds every row; `sgd_spread_adagrad` keeps the
 /// spread and the level and no gains, AdaGrad's step being bounded. The
@@ -1236,6 +1237,12 @@ fn the_target_spread_forms_are_written() {
             held(&field(name, "gain")) > 0,
             "{name}: the gains hold nothing"
         );
+        // Each target's gains carry their rows' weight, `n`, beside the two
+        // sums: the running mean each gain is bounded by.
+        for g in field(name, "gain").as_array().unwrap() {
+            let n = at(g, &["n"]).and_then(rmpv::Value::as_f64);
+            assert!(n.is_some_and(|n| n > 1.0), "{name}: gain {g}");
+        }
     }
     assert_eq!(len(&field("sgd_spread_adagrad", "gain")), 0);
     for name in ["sgd", "sgd_huber", "sgd_logistic"] {

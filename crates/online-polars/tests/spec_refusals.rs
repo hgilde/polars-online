@@ -824,3 +824,37 @@ fn a_target_table_with_nothing_to_name_is_refused() {
     let e = parse(r#"[{"name": "", "formula": ["col", "y"]}]"#);
     assert!(e.contains("formula target: name must not be empty"), "{e}");
 }
+
+/// A refit's buffer is held at its full size from a target's first learned
+/// row, so `huber_refit_rows` and `quantile_refit_rows` size an allocation
+/// before any row: past 2^20 each is refused by name with the value, where
+/// `2^32 - 1` beside `refit_budget = inf` reserved 172 GB and aborted. 2^20
+/// itself is accepted.
+#[test]
+fn a_refit_row_count_past_the_ceiling_is_refused_by_name() {
+    for (model, key) in [
+        (r#"{"type": "huber""#, "huber_refit_rows"),
+        (r#"{"type": "sgd", "loss": "huber""#, "huber_refit_rows"),
+        (
+            r#"{"type": "quantile", "quantile": 0.5"#,
+            "quantile_refit_rows",
+        ),
+    ] {
+        refused(
+            &sup(&format!(r#"{model}, "{key}": 1048577}}"#), ""),
+            &[
+                &format!("{key} must be at most 1048576 (2^20)"),
+                "got 1048577",
+                "sizes an allocation",
+            ],
+        );
+        refused(
+            &sup(
+                &format!(r#"{model}, "{key}": 4294967295, "refit_budget": "inf"}}"#),
+                "",
+            ),
+            &[&format!("{key} must be at most 1048576"), "got 4294967295"],
+        );
+        accepted(&sup(&format!(r#"{model}, "{key}": 1048576}}"#), ""));
+    }
+}

@@ -778,5 +778,9 @@ class TestPowersOfTwo:
         value does not read a feature's units. Until task 278's follow-ups it
         stopped on the coefficients against ``max|beta|``, so a feature in
         small units, its coefficient large, loosened the stop for the others:
-        3.7e-8 of a prediction apart at ``x0`` times 2^-10 (task 278, b19)."""
+        3.7e-8 of a prediction apart at ``x0`` times 2^-10 (task 278, b19).
+        b19's other half, ``sgd``'s refit ridge in the caller's units under
+        ``standardize``, is fixed too (task 282, H1), and
+        ``test_huber_scale.py``'s ``TestSgdPowersOfTwo`` holds it past the
+        refit."""
         self.check(_frame(), standardize=True)

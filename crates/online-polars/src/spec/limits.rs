@@ -27,6 +27,35 @@ impl Spec {
                 self.name
             ));
         }
+        // A refit's buffer is held at its full size from a target's first
+        // learned row, so its count sizes an allocation before any row is
+        // seen, and `refit_budget = inf` bounds nothing: `2^32 − 1` rows
+        // reserved 172 GB at one feature and aborted the process
+        // (`online_core::MAX_REFIT_ROWS`).
+        let refit_rows = match &self.model {
+            ModelKind::Huber {
+                huber_refit_rows, ..
+            }
+            | ModelKind::Sgd {
+                huber_refit_rows, ..
+            } => Some(("huber_refit_rows", *huber_refit_rows)),
+            ModelKind::Quantile {
+                quantile_refit_rows,
+                ..
+            } => Some(("quantile_refit_rows", *quantile_refit_rows)),
+            _ => None,
+        };
+        if let Some((key, Some(rows))) = refit_rows
+            && rows > online_core::MAX_REFIT_ROWS
+        {
+            return Err(format!(
+                "spec {:?}: {key} must be at most {} (2^20), got {rows}: the refit's buffer \
+                 is held at its full size, (features + 4) * 8 bytes a row, from a target's \
+                 first learned row, so the count sizes an allocation before any row is seen",
+                self.name,
+                online_core::MAX_REFIT_ROWS
+            ));
+        }
         match &self.model {
             // The dead rule halves the source cluster and gives the freed
             // centre the other half, so with the source at an equal share

@@ -338,7 +338,12 @@ class TestSgd:
 
 GATED = [
     ("squared", "linear", {}, 6.0),
-    ("huber", "linear", {"huber_delta": 0.3}, 4.0),
+    # At 4 (task 278's rate) a cut of 0.3 leaves few rows inside it, and the
+    # rows beyond it, whose gain is the ridge's alone, hold the running mean
+    # down, so the bound on each gain (four times that mean, task 282 M1)
+    # keeps the few from tripping the gate: the documented tail of a rate
+    # past the bound on a few rows only. At 8 they trip it.
+    ("huber", "linear", {"huber_delta": 0.3}, 8.0),
     ("poisson", "poisson", {}, 1.0),
     ("logistic", "logistic", {}, 8.0),
 ]
@@ -349,10 +354,12 @@ class TestTheUnstableRate:
     held to the rule ``sgd_ref`` writes out: each stepped row's gain ``q =
     lr * (w * c * |z|^2 + l2)``, ``c`` the loss's curvature at the
     prediction, summed with its square under a decay of ``2^(-1/100)`` a
-    row, and a target's prediction withheld while the squares' sum passes
-    twice the gains'. ``inv_scaling`` from a rate past the bound withholds
-    the first rows and releases the rest as the rate falls: both are held,
-    and printed as the evidence the gate ran."""
+    row (a gain of 0 left out, each after the first bounded at the larger
+    of 2 and four times the running mean), and a target's prediction
+    withheld while the squares' sum passes twice the gains'. ``inv_scaling``
+    from a rate past the bound withholds the first rows and releases the
+    rest as the rate falls: both are held, and printed as the evidence the
+    gate ran."""
 
     @pytest.mark.parametrize(("loss", "kind", "extra", "rate"), GATED, ids=[g[0] for g in GATED])
     def test_the_gate_withholds_while_the_gains_say_so(self, loss, kind, extra, rate):
