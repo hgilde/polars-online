@@ -1156,6 +1156,7 @@ fn the_gates_forms_and_the_quantile_scale_are_written() {
         ("sgd_huber_mad", "Sgd", true),
         ("huber_refit", "Robust", false),
         ("huber_refit_done", "Robust", false),
+        ("huber_joining", "Robust", false),
         ("quantile_mad", "Robust", false),
         ("quantile_refit", "Robust", false),
         ("quantile_refit_done", "Robust", false),
@@ -1169,19 +1170,27 @@ fn the_gates_forms_and_the_quantile_scale_are_written() {
         let got = at(&v, &["model", variant, "cfg", "min_weight_holds_learning"])
             .and_then(rmpv::Value::as_bool);
         assert_eq!(got, Some(holds), "{name}: cfg.min_weight_holds_learning");
-        // The robust floor's counts: one a target, each at the floor by the
-        // save, under the form since; none under the old.
+        // The robust floor's counts: one a target under the form since,
+        // none under the old. Each is above 0 by the save, and at the floor
+        // (a row per coefficient: two features and the intercept) but in
+        // `huber_joining`, whose second target joined on the row before the
+        // save and holds one row of the three: the form a count below the
+        // floor takes (review round 10, S2-3).
         if variant == "Robust" {
-            let seen = at(&v, &["model", variant, "seen"])
+            let counts: Vec<u64> = at(&v, &["model", variant, "seen"])
                 .and_then(rmpv::Value::as_array)
-                .map_or(0, |a| {
-                    assert!(
-                        a.iter().all(|c| c.as_u64().is_some_and(|c| c > 0)),
-                        "{name}"
-                    );
-                    a.len()
+                .map_or(Vec::new(), |a| {
+                    a.iter()
+                        .map(|c| c.as_u64().unwrap_or_else(|| panic!("{name}: {c}")))
+                        .collect()
                 });
-            assert_eq!(seen, if holds { 0 } else { 2 }, "{name}: seen");
+            assert_eq!(counts.len(), if holds { 0 } else { 2 }, "{name}: seen");
+            let want: &[u64] = match (holds, name) {
+                (true, _) => &[],
+                (false, "huber_joining") => &[3, 1],
+                (false, _) => &[3, 3],
+            };
+            assert_eq!(counts, want, "{name}: seen");
         }
     }
     for (name, scale, sketches) in [("quantile", "rms", 0), ("quantile_mad", "mad", 2)] {
