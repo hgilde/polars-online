@@ -53,7 +53,11 @@
 //! a few half-lives every row takes the textbook's for good, and statsmodels'
 //! `Holt` agrees with the model from there; before, the warm-up is the line
 //! fit, never slower than the textbook. `trend_half_life = inf` is the whole
-//! history's drift, the line fit's slope. A row at the last row's clock (`s =
+//! history's drift: the line fit's gain on the slope, and the weighted
+//! least-squares slope exactly only when the level does not decay either --
+//! beside a finite level half-life the slope learns from errors against a
+//! level that forgets, and lands near the line fit's, 2.2e-3 to 1.0e-2 of it
+//! off at a level half-life of 5 (review round 10, S4-2). A row at the last row's clock (`s =
 //! 0`) is a second observation the level takes in; the textbook trend holds,
 //! since a move over no clock has no slope, and the line fit's moves by its
 //! own gain, as a least-squares slope does.
@@ -1264,6 +1268,43 @@ mod tests {
             "trend {trend} vs {}",
             fit[1]
         );
+    }
+
+    /// `trend_half_life = inf` beside a finite level half-life takes the
+    /// line fit's gain on the slope, but the slope it reaches is the whole
+    /// history's weighted least-squares slope only approximately: the level
+    /// it corrects against forgets at its own half-life, so the forecast
+    /// errors the slope learns from are not the line fit's residuals. At a
+    /// level half-life of 5, over 3,000 rows of a line in noise, the trend
+    /// was 2.2e-3 to 1.0e-2 of the slope off that line fit's on three seeds
+    /// (the reviewer read 9.6e-3 on a stream of its own), not the 1e-10 it
+    /// is within when the level does not decay either (`an_infinite_halflife_is_the_weighted_line_fit`; review round
+    /// 10, S4-2).
+    #[test]
+    fn an_infinite_trend_half_life_beside_a_finite_level_is_near_the_line_fit() {
+        use crate::oracle::{solve, sum};
+        let mut gaps = Vec::new();
+        for seed in [29u64, 30, 31] {
+            let mut m = Holt::new(cfg(5.0, f64::INFINITY)).unwrap();
+            let mut st = seed;
+            let mut rows = Vec::new();
+            for i in 0..3000 {
+                let t = i as f64;
+                let y = 2.0 + 0.3 * t + 0.7 * lcg(&mut st);
+                m.step(&[], &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+                rows.push((t, y));
+            }
+            let t_last = rows.last().unwrap().0;
+            let a = |f: &dyn Fn(f64) -> f64| sum(rows.iter().map(|r| f(r.0 - t_last)));
+            let b = |f: &dyn Fn(f64) -> f64| sum(rows.iter().map(|r| r.1 * f(r.0 - t_last)));
+            let (s0, s1, s2) = (a(&|_| 1.0), a(&|t| t), a(&|t| t * t));
+            let fit = solve(&[s0, s1, s1, s2], &[b(&|_| 1.0), b(&|t| t)]);
+            gaps.push(((m.trend()[0] - fit[1]) / fit[1]).abs());
+        }
+        println!("relative gaps to the line fit's slope: {gaps:?}");
+        let worst = gaps.iter().fold(0.0f64, |m, g| m.max(*g));
+        assert!(worst > 1e-6, "near, not exact: {gaps:?}");
+        assert!(worst < 3e-2, "about 1e-2: {gaps:?}");
     }
 
     /// The defect itself (task 278, D-H): a flat series whose first

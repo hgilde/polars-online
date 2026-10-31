@@ -967,10 +967,12 @@ descent follows Friedman, Hastie and Tibshirani (2010).
 
 **A penalty whose descent runs out of sweeps is named in a warning.** Its
 row is where the descent stopped, and a `ReadinessWarning` lists each such
-penalty. A cyclic descent shrinks the error along two correlated columns by
-about `1 − 1/κ` a sweep, with `κ` the correlation matrix's condition
-number. So on columns that nearly repeat each other it needs about `κ`
-sweeps: raise `max_iter`, or take the knots from `lars_path`.
+penalty. A cyclic descent shrinks the error along two columns of
+correlation `ρ` by `ρ²` a sweep. Their correlation matrix's condition number
+is `κ = (1 + ρ)/(1 − ρ)`, so `ρ² = ((κ − 1)/(κ + 1))²`, about `1 − 4/κ`, and
+each e-fold of the error takes about `κ/4` sweeps. On columns that nearly
+repeat each other that is many: raise `max_iter`, or take the knots from
+`lars_path`.
 
 The recipe walks the path on weeks 1 to 4 to its eighth active column,
 and checks coordinate descent at its knots. Then it chooses a penalty

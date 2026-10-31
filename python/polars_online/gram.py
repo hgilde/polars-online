@@ -1236,11 +1236,13 @@ def lasso_path(
     A penalty whose descent runs out of sweeps keeps its row where the
     descent stopped, short of the rule, and a
     :class:`~polars_online.ReadinessWarning` names each such penalty. A
-    cyclic descent contracts the error along two correlated columns by
-    about ``1 - 1 / kappa`` a sweep, ``kappa`` the correlation matrix's
-    condition number, so on columns that nearly repeat each other it needs
-    about ``kappa`` sweeps. Raise ``max_iter``, or take the knots exactly
-    from :func:`lars_path`.
+    cyclic descent contracts the error along two columns of correlation
+    ``rho`` by ``rho**2`` a sweep. Their correlation matrix's condition
+    number is ``kappa = (1 + rho) / (1 - rho)``, so ``rho**2 = ((kappa - 1)
+    / (kappa + 1))**2``, about ``1 - 4 / kappa``, and each e-fold of the
+    error takes about ``kappa / 4`` sweeps: many, on columns that nearly
+    repeat each other. Raise ``max_iter``, or take the knots exactly from
+    :func:`lars_path`.
 
     .. code-block:: python
 

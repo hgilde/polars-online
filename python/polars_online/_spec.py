@@ -1953,10 +1953,12 @@ def lasso(
         before it. On 15 features correlated at ``0.8 ** |i - j|``, solved on
         every row of 20,000 at seven penalties, 798 of the 140,000 descents
         ran out of their 100 sweeps; 1,000 sweeps left 44, at 1% more sweeps
-        in all. A cyclic descent contracts the error along two correlated
-        columns by about ``1 - 1 / kappa`` a sweep, ``kappa`` the
-        correlation matrix's condition number, so where columns nearly repeat
-        each other most descents can run out: on 800 rows of two columns
+        in all. A cyclic descent contracts the error along two columns of
+        correlation ``rho`` by ``rho**2`` a sweep, about ``1 - 4 / kappa``
+        with ``kappa = (1 + rho) / (1 - rho)`` their correlation matrix's
+        condition number, so each e-fold takes about ``kappa / 4`` sweeps,
+        and where columns nearly repeat each other most descents can run
+        out: on 800 rows of two columns
         0.1 apart (``kappa`` near 400) at a penalty of 0.001, 798 of 799.
     ``target_gaps``
         Which rows a target's feature correlations are taken over where the target

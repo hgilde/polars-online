@@ -489,8 +489,9 @@ without an intercept. So a target scaled by a power of two, with
 bit. A descent that runs out of its `max_iter` sweeps is counted in
 `bank.solve_failures()`, so if that count is above zero, give a larger
 `max_iter`. Columns that nearly repeat each other slow the descent most: it
-shrinks the error along such a pair by about `1 − 1/κ` a sweep, with `κ`
-the correlation matrix's condition number.
+shrinks the error along a pair of correlation `ρ` by `ρ²` a sweep, about
+`1 − 4/κ` with `κ = (1 + ρ)/(1 − ρ)` their correlation matrix's condition
+number, so each e-fold of the error takes about `κ/4` sweeps.
 
 ```python
 las = po.spec.lasso(
@@ -1877,8 +1878,12 @@ clock,** so on an irregular clock it extrapolates the right distance.
 
 **The level forgets at the spec's `half_life`, as every model's decay
 does.** `level_half_life` is refused, with a message naming `half_life`. To
-make the trend the whole history's drift, the line fit's slope, give
-`trend_half_life=inf`.
+make the trend the whole history's drift, give `trend_half_life=inf`: the
+slope then takes the line fit's gain, and is the weighted least-squares
+slope exactly when the level does not decay either (`half_life=inf`).
+Beside a finite level half-life the slope learns from errors against a level
+that forgets, and lands near the line fit's slope: 0.2% to 1% of it off at a
+level half-life of 5 over 3,000 rows of a line in noise.
 
 **For a flat forecast, give `trend=False`:** simple exponential smoothing,
 whose level is the target's exponentially weighted mean. It holds the

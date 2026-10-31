@@ -142,7 +142,8 @@ pub struct LassoCfg {
     /// that floor, and the fit and the choice are the same at any
     /// `min_weight`. A state written before schema 64 has no such field and
     /// was fitted the old way, so it loads as `true` and goes on to the bit.
-    /// Not last: [`Self::window`] says why.
+    /// Always written ([`Self::window`] says what the encoding does with a
+    /// field that skips).
     #[serde(default = "gate_held_learning_before_64")]
     pub min_weight_holds_learning: bool,
     /// Clock units of history the path is fitted from, with a **hard** cutoff:
@@ -151,10 +152,16 @@ pub struct LassoCfg {
     /// error follows the same window, so the chosen `lambda` is chosen on the
     /// rows the fit uses.
     ///
-    /// **Last, with `window_every` and `max_rows_between_snapshots`, and
-    /// they must stay last**: the compact msgpack encoding writes a struct
-    /// as an array, so a `skip_serializing_if` field anywhere else shifts
-    /// the fields after it. Only the row cap skips.
+    /// **The encoding.** A state file is written with
+    /// `rmp_serde::to_vec_named`, a struct as a map: fields are read back by
+    /// name, and `skip_serializing_if` decides only whether a key is
+    /// written, so where a field sits does not move the file's layout
+    /// (review round 10, S4-1). This one, `window_every` and
+    /// `max_rows_between_snapshots` are kept last all the same, and only the
+    /// row cap skips: the compact encoding, `rmp_serde::to_vec`, writes a
+    /// struct as an array, positionally, and the round-trip tests here use
+    /// it, where a field that skips anywhere but the end shifts the fields
+    /// after it.
     #[serde(default)]
     pub window: Option<f64>,
     /// Clock units between the window's snapshots, `0` every row; with
