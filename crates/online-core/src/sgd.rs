@@ -218,7 +218,7 @@
 //! intercept it bounds a constant rate at `2 (p + 1) / (p² + 4p + 1)`,
 //! 0.261 at five features, where the measured edge was 0.25-0.3. Without
 //! the gate, a constant rate past the bound diverged until the clip held
-//! it, finite and wrong (the last 1,000 of 20,000 rows' error 5e4 times the
+//! it, finite and wrong (the last 1,000 of 20,000 rows' error 3.6e4 times the
 //! target's variance at 0.5), with no notice. AdaGrad's step moves a slot at most the rate a
 //! row, and the quantile and epsilon-insensitive steps are a sign times the
 //! rate: neither can grow, and none is gated.

@@ -550,7 +550,7 @@ def test_a_constant_rate_too_large_fails_loudly(rate):
 @pytest.mark.parametrize("rate", [0.5, 2.0, 100.0])
 def test_a_constant_rate_past_its_bound_is_withheld_with_a_notice(rate):
     """What ``sgd`` does past the bound (task 278, D8; it was quiet: at 0.5
-    the last 1,000 rows' error was 5e4 times the target's variance, the clip
+    the last 1,000 rows' error was 3.6e4 times the target's variance, the clip
     holding the fit finite and wrong). A step multiplies its own row's
     residual by ``1 - q``, ``q = lr * w * |z|^2`` here, so the fit diverges in
     mean square once ``E[q^2] > 2 E[q]``: on five standardized normal

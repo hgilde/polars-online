@@ -1293,7 +1293,7 @@ recent steps (each decayed by `2^(−1/100)` a row), and while the squares'
 passes twice the gains' its predictions are withheld as `unstable_rate`,
 with a notice; the fit learns every row as before. On five standardized
 normal features the bound on a constant rate is 0.261; at 0.5 the fit had
-diverged until `clip_gradient` held it, its error 50,000 times the
+diverged until `clip_gradient` held it, its error 36,000 times the
 target's variance, with nothing said. `inv_scaling` from a rate past the
 bound is withheld on its first rows only. `adagrad` and the sign-valued
 losses take steps that cannot grow, and are never withheld.

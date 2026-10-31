@@ -243,7 +243,7 @@ def sgd(
     features: 0.261 at five, where a measured fit stayed put at 0.25 and
     diverged at 0.3. Past it the fit diverged until ``clip_gradient`` held
     it, finite and wrong: at 0.5 the last 1,000 of 20,000 rows' error was
-    50,000 times the target's variance, and nothing said so.
+    36,000 times the target's variance, and nothing said so.
 
     The memory, a half-life of 100 stepped rows, is a count of rows because
     the verdict estimates an expectation from a sample of the rate's rows.
