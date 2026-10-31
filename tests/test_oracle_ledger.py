@@ -413,14 +413,14 @@ class TestTheRules:
         doc = tomllib.loads(
             SMALL.replace("# --- raises", count + "tolerance = 0.0\n\n# --- raises")
         )
-        assert _status(doc, _m("m.g.delay", 334.0, 277.0))["m.g.delay.worst"] == "over"
-        assert _status(doc, _m("m.g.delay", 332.0, 277.0))["m.g.delay.worst"] == "under"
-        assert set(_status(doc, _m("m.g.delay", 333.0, 277.0)).values()) == {"ok"}
+        assert _status(doc, _m("m.g.delay", 334.0, 277.0, n=200))["m.g.delay.worst"] == "over"
+        assert _status(doc, _m("m.g.delay", 332.0, 277.0, n=200))["m.g.delay.worst"] == "under"
+        assert set(_status(doc, _m("m.g.delay", 333.0, 277.0, n=200)).values()) == {"ok"}
         loose = tomllib.loads(SMALL.replace("# --- raises", count + "\n# --- raises"))
-        assert _status(loose, _m("m.g.delay", 339.0, 277.0))["m.g.delay.worst"] == "ok"
+        assert _status(loose, _m("m.g.delay", 339.0, 277.0, n=200))["m.g.delay.worst"] == "ok"
         # The test's mark holds it before the ledger carries it, and `apply`
         # writes it: on a new case, and on one the test now says is a count.
-        marked = {**_m("m.g.delay", 334.0, 277.0), "tolerance": 0.0}
+        marked = {**_m("m.g.delay", 334.0, 277.0, n=200), "tolerance": 0.0}
         assert _status(loose, marked)["m.g.delay.worst"] == "over"
         cases = {
             "m.g.new": {**_m("m.g.new", 70.0, 60.0), "tolerance": 0.0},
@@ -449,7 +449,7 @@ class TestTheRules:
         doc = tomllib.loads(
             SMALL.replace("# --- raises", count + "tolerance = 0.0\n\n# --- raises")
         )
-        delay = {**_m("m.g.delay", 334.0, 277.0), "platform": "darwin-arm64"}
+        delay = {**_m("m.g.delay", 334.0, 277.0, n=200), "platform": "darwin-arm64"}
         assert _status(doc, delay)["m.g.delay.worst"] == "over"
         # `apply` keeps none of it: no tightening, and a new case without numbers.
         cases = {
@@ -493,6 +493,146 @@ class TestTheRules:
         doc = tomllib.loads(moved + entry)
         assert oracles.check_file(doc, "- measured on Linux") == []
         assert oracles.check_file(doc, "nothing")[0].endswith("'on Linux'")
+
+    def test_the_tests_floor_is_checked_against_the_ledgers_and_never_widens_it(self):
+        # The ledger's floor of 1e-12 judges: a test asking for 1e-11 fails,
+        # where it would have lifted the gap of 9e-12 to its floor and passed.
+        wide = {**_m("m.g.tiny", 9e-12, 1e-16), "floor": 1e-11}
+        assert _status(self.doc, wide) == {"m.g.tiny": "over"}
+        narrow = {**_m("m.g.tiny", 9e-13, 1e-16), "floor": 1e-13}
+        assert set(_status(self.doc, narrow).values()) == {"ok"}
+        # `apply` writes nothing of it; a new case takes the test's floor.
+        cases = {"m.g.tiny": wide, "m.g.new": {**_m("m.g.new", 1e-14, 1e-15), "floor": 1e-11}}
+        groups = {"m.g": {"oracles": {"scikit-learn": "1.9.1"}, "dataset": "", "tests": []}}
+        verdicts = oracles.judge_all(self.doc, cases, groups)
+        new = tomllib.loads(oracles.apply(SMALL, self.doc, cases, groups, verdicts)[0])["case"]
+        assert new["m.g.tiny"] == self.doc["case"]["m.g.tiny"]
+        assert new["m.g.new"]["floor"] == 1e-11
+
+    def test_a_case_tolerance_added_or_widened_needs_an_entry(self):
+        # A case with no tolerance has the file's: one of its own above it is
+        # a raise, and so is a wider one; a narrower one is a tightening.
+        own = SMALL.replace("p95 = 0.05\nn = 50\n", "p95 = 0.05\nn = 50\ntolerance = 0.06\n")
+        errors = oracles.check_history([("a" * 40, SMALL)], own)
+        assert errors == [
+            "working tree: m.g.err.tolerance: 0.02 -> 0.06 with no [[raised]] entry for it"
+        ]
+        entry = (
+            '\n[[raised]]\nkey = "m.g.err.tolerance"\nfrom = 0.02\nto = 0.06\n'
+            'date = 2026-10-28\nreason = "it moves with the runner\'s CPU"\n'
+            'changelog = "the runner"\n'
+        )
+        assert oracles.check_history([("a" * 40, SMALL)], own + entry) == []
+        assert oracles.check_file(tomllib.loads(own + entry), "- the runner") == []
+        wider = own.replace("tolerance = 0.06", "tolerance = 0.08")
+        assert oracles.check_history([("a" * 40, own + entry)], wider + entry)
+        count = own.replace("tolerance = 0.06", "tolerance = 0.0")
+        assert oracles.check_history([("a" * 40, own + entry)], count + entry) == []
+        # Raising the file's tolerance is the file's raise alone.
+        both = SMALL.replace("tolerance = 0.02", "tolerance = 0.03")
+        errors = oracles.check_history([("a" * 40, SMALL)], both)
+        assert len(errors) == 1 and "working tree: tolerance: 0.02 -> 0.03" in errors[0]
+        # A case's tolerance is a share from 0 to below 0.5.
+        for bad in ("0.5", "-0.01"):
+            doc = tomllib.loads(own.replace("tolerance = 0.06", f"tolerance = {bad}"))
+            assert any("m.g.err.tolerance" in e for e in oracles.check_file(doc, "")), bad
+
+    def test_an_ideal_moved_either_way_needs_an_entry(self):
+        # The ideal moved to the measured worst would make the gap 0, a
+        # tightening by every other rule.
+        for ideal in ("-0.1", "0.1"):
+            moved = SMALL.replace("ideal = 0.0\nworst = 0.1\n", f"ideal = {ideal}\nworst = 0.1\n")
+            errors = oracles.check_history([("a" * 40, SMALL)], moved)
+            assert any(f"m.g.err.ideal: 0 -> {ideal}" in e for e in errors), errors
+        entry = (
+            '\n[[raised]]\nkey = "m.g.err.ideal"\nfrom = 0.0\nto = 0.1\ndate = 2026-10-31\n'
+            'reason = "the test now measures the error from its bias"\nchangelog = "its bias"\n'
+        )
+        assert oracles.check_history([("a" * 40, SMALL)], moved + entry) == []
+        assert not [
+            e for e in oracles.check_file(tomllib.loads(moved + entry), "- its bias") if "[[" in e
+        ]
+        same = entry.replace("to = 0.1", "to = 0.0")
+        doc = tomllib.loads(SMALL + same)
+        assert "asks no more of the ledger" in oracles.check_file(doc, "- its bias")[0]
+
+    def test_a_case_or_group_dropped_needs_a_retired_entry(self):
+        start = SMALL.index('[case."m.g.ari"]')
+        dropped = SMALL[:start] + SMALL[SMALL.index('[case."m.g.tiny"]') :]
+        errors = oracles.check_history([("a" * 40, SMALL)], dropped)
+        assert errors and all("m.g.ari." in e and "[[retired]]" in e for e in errors), errors
+        assert {e.split(":")[0].rsplit(".", 1)[1] for e in errors} == {
+            "worst",
+            "p95",
+            "floor",
+            "tolerance",
+            "ideal",
+            "n",
+        }
+        retired = '\n[[retired]]\nkey = "m.g.ari"\ndate = 2026-10-31\nreason = "{}"\n'
+        why = "renamed to m.g.score with its test"
+        assert oracles.check_history([("a" * 40, SMALL)], dropped + retired.format(why)) == []
+        assert oracles.check_file(tomllib.loads(dropped + retired.format(why)), "") == []
+        # A group's key retires its every case; a retired key still in the
+        # file, or a reason of a word or two, is refused.
+        group = retired.replace('"m.g.ari"', '"m.g"').format(why)
+        assert oracles.check_history([("a" * 40, SMALL)], dropped + group) == []
+        assert "still has it" in oracles.check_file(tomllib.loads(dropped + group), "")[0]
+        short = oracles.check_file(tomllib.loads(dropped + retired.format("renamed")), "")
+        assert "says too little" in short[0]
+        # A raise the case took before it was dropped stays as history.
+        raised = SMALL.replace("worst = 0.9\n", "worst = 0.85\n")
+        entry = (
+            '\n[[raised]]\nkey = "m.g.ari.worst"\nfrom = 0.9\nto = 0.85\ndate = 2026-10-26\n'
+            'reason = "the price of a change worth having"\nchangelog = "worth having"\n'
+        )
+        history = [("a" * 40, SMALL), ("b" * 40, raised + entry)]
+        final = dropped + entry + retired.format(why)
+        assert oracles.check_history(history, final) == []
+        assert oracles.check_file(tomllib.loads(final), "- worth having") == []
+
+    def test_fewer_values_than_the_ledgers_fail_and_apply_writes_none_of_them(self):
+        # 40 seeds of the 50 the ledger summarized: a lower worst is no gain.
+        fewer = _m("m.g.err", 0.09, 0.04, n=40)
+        assert _status(self.doc, fewer) == {"m.g.err": "fewer"}
+        assert _status(self.doc, {**fewer, "platform": "darwin-arm64"}) == {"m.g.err": "fewer"}
+        cases = {"m.g.err": fewer}
+        groups = {"m.g": {"oracles": {"scikit-learn": "1.9.1"}, "dataset": "", "tests": []}}
+        verdicts = oracles.judge_all(self.doc, cases, groups)
+        assert [v.failed for v in verdicts] == [True]
+        text, done = oracles.apply(SMALL, self.doc, cases, groups, verdicts)
+        assert tomllib.loads(text)["case"]["m.g.err"] == self.doc["case"]["m.g.err"]
+        assert not done
+        # More values are written.
+        more = {"m.g.err": _m("m.g.err", 0.1, 0.05, n=60)}
+        verdicts = oracles.judge_all(self.doc, more, groups)
+        text, _ = oracles.apply(SMALL, self.doc, more, groups, verdicts)
+        assert tomllib.loads(text)["case"]["m.g.err"]["n"] == 60
+        # In the file's history, a count cut by hand needs an entry.
+        cut = SMALL.replace("p95 = 0.05\nn = 50\n", "p95 = 0.05\nn = 40\n")
+        errors = oracles.check_history([("a" * 40, SMALL)], cut)
+        assert errors == ["working tree: m.g.err.n: 50 -> 40 with no [[raised]] entry for it"]
+
+    def test_the_history_is_mains_first_parents(self, monkeypatch):
+        calls = []
+
+        def git(*args: str) -> str:
+            calls.append(args)
+            return "false" if args[0] == "rev-parse" else ""
+
+        monkeypatch.setattr(oracles, "_git", git)
+        oracles.history()
+        assert calls[1][:3] == ("log", "--first-parent", "--reverse"), calls
+
+    def test_a_rerun_on_another_platform_reruns_every_group(self, tmp_path, monkeypatch):
+        hashes = tmp_path / "hashes.toml"
+        hashes.write_text('[meta]\nplatform = "darwin-arm64"\n\n[hashes]\n', encoding="utf-8")
+        monkeypatch.setattr(oracles, "HASHES", hashes)
+        found = {g: {"platform": "linux-x86_64"} for g in ("m.a", "m.b")}
+        assert "re-runs every group (1 not chosen: m.b)" in oracles._other_platform(found, ["m.a"])
+        assert oracles._other_platform(found, ["m.a", "m.b"]) == ""
+        here = {g: {"platform": "darwin-arm64"} for g in ("m.a", "m.b")}
+        assert oracles._other_platform(here, ["m.a"]) == ""
 
     def test_records_are_the_worst_seed_and_the_nearest_rank_p95(self):
         values = np.r_[np.arange(1, 101) / 100.0]

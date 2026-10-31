@@ -2384,15 +2384,6 @@ why = """at exactly one level's band, `len = 2·64·band + 1`, the sketch fits \
 its band, and `kept` returns its own extent: nothing folds"""
 
 [[equivalent]]
-file = "crates/online-core/src/solve/condition.rs"
-function = "SpdFactor::comparison_bound"
-mutation = "replace > with >="
-line_has = "let largest = |m: f64, v: f64| if v > m || v.is_nan() { v } else { m };"
-why = """at `v == m` both branches return the same double (neither is a \
-signed zero: every `z` and `w` entry is a positive quotient), and a NaN \
-takes the second test either way"""
-
-[[equivalent]]
 file = "crates/online-core/src/robust.rs"
 function = "Robust::refit_target"
 mutation = "replace += with *="
