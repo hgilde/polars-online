@@ -16599,7 +16599,7 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       unchanged (CHANGELOG); N1 stays open after 1.4. The W5/W6 patches are
       in `.claude/coord/review10/`.
 
-- [ ] 283. **One refit buffer a group, shared by its targets** (ENHANCEMENTS
+- [x] 283. **One refit buffer a group, shared by its targets** (ENHANCEMENTS
       E76) -- the user, 2026-10-31: "Measure just the first and do it if
       works keep the other two as ideas" (E77 spill to disk, E78 rewind
       through the Polars API: ideas only). Today each target's refit buffer
@@ -16608,3 +16608,10 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       targets, then build it if it saves without slowing the row or the
       refit past the budgets' tolerance. States before the change keep
       their per-target buffers and continue to the bit (rule 5).
+      *Measured 2026-10-31 (W7), not built: it misses the bar.* Aligned
+      targets save 62% at m=3 and 84% at m=10 (f=20). Sparse targets save
+      nothing at m=3, disjoint ones cost 2% more, and a refit reading through
+      the row index is 12-14% slower; the reservation cannot shrink, and
+      charging per row breaks chunk invariance (parallel spec x group tasks).
+      The refit buffer is new in 1.4 (absent at v1.3.0), so no released
+      state carries one. Details in ENHANCEMENTS E76.
