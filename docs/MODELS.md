@@ -1028,10 +1028,11 @@ moved by a level, 50 passes ran out on 149 and 200 on 9, all nine past 39%.
 **`refit_budget` bounds the buffers of all a spec's groups together: 256
 MiB by default, or `inf` for no bound.** Each new group reserves, when it
 first appears, the most its targets' buffers can hold: `(features + 20) · 8`
-bytes a target for each row of `huber_refit_rows`, the row and its four
-runs. The group that would cross the bound, and every new group after it,
+bytes a target of each model instance (a half-life grid reserves once per
+value) for each row of `huber_refit_rows`, the row and its four runs. The group that would cross the bound, and every new group after it,
 gives its refit up and keeps its one-pass fit; a notice says so once, and
-`summary()`'s `refit_given_up` counts the targets. A reservation lasts the
+`summary()`'s `refit_given_up` counts the targets of each instance. A
+reservation lasts the
 bank's life, even after the refit frees the buffer, and is saved with the
 bank, so which groups refit depends neither on the chunking nor on the order
 the groups run in, nor on a save and load between them. The price is that
@@ -1261,7 +1262,9 @@ left to the steps it moved every slope by about the rate times the level:
 loss but `poisson` and `logistic`) with an intercept, with `W` the
 target's learned weight (undecayed, the row's in it) and `a = w/W`, the
 intercept's step is the running mean's, `−a·d` for `squared` and `huber`
-while `a` is above the rate or the rows number at most 22 by Kish's count,
+while `a` is above the row's rate (the rate as it has fallen under
+`inv_scaling`; under `adagrad`, which has no shared rate, the warm-up alone)
+or the rows number at most 22 by Kish's count,
 `a·(y − p)` for the sign-valued losses while they do, and the target's first
 row puts its whole residual there and moves nothing else. Now a level costs
 rounding (0.0077 at either level), and a target with no level loses
@@ -1392,8 +1395,12 @@ learned rows reaches `huber_refit_rows`, the converged Huber fit of those
 rows replaces its coefficients, and its scale `s` is rebuilt from that
 fit's residuals. The fit is `huber`'s iteration (in its section), started
 from the rows' weighted least squares, as statsmodels starts, with a ridge
-of 1e-6 on the mean-form system. It leaves out `l2`, a penalty on the
-steps, which the steps after it apply. The coefficients are set in the
+of 1e-6 on the mean-form system, on the standardized slopes under
+`standardize` (`1e-6·sᵢ²` in the caller's units) as `huber`'s is, so the
+refit is `huber(standardize=True)`'s converged fit and a feature's
+power-of-two scale changes only its coefficient. The fit takes `l2` as the
+steps apply it, a penalty on each standardized slope once a row, and the
+steps after the refit go on applying it. The coefficients are set in the
 coordinates the fit is held in: the caller's units, or, while the scaler
 still warms up, the coordinates of its moments as they stand, so that they
 read out as the fit. A constraint projects the fit as it projects a step.

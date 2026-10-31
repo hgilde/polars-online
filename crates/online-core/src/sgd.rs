@@ -177,8 +177,10 @@
 //! the intercept takes the running mean's step in place of its gradient's,
 //! in whichever coordinates it is held (its `z̃` is 1 in each): `−a · d`
 //! under the squared and Huber losses, the residual (clipped at the cut),
-//! while `a` is above the rate or Kish's count of the rows, `W² / Σw²`, is
-//! at most 22 ([`crate::WARMUP_ROWS`], the scaler's); `a · (y − p)` under
+//! while `a` is above the row's rate (under `inv_scaling` the rate as it
+//! has fallen; AdaGrad has no shared rate, so there the warm-up alone) or
+//! Kish's count of the rows, `W² / Σw²`, is at most 22
+//! ([`crate::WARMUP_ROWS`], the scaler's); `a · (y − p)` under
 //! the sign-valued losses, whose gradient is not in the target's units,
 //! while the count is. On the target's first learned row that is its whole
 //! residual and nothing else moves. AdaGrad's sum learns the intercept's
@@ -387,7 +389,9 @@ pub struct SgdCfg {
     /// Each target's first `refit_rows` learned rows refit to the converged
     /// Huber fit, once ([`crate::huber_refit`]): the coefficients set to it
     /// and the residual scale rebuilt from its residuals, a spec's
-    /// `huber_refit_rows`, 200 by default under the Huber loss; 0 is off.
+    /// `huber_refit_rows`, by default `max(500, 10 · features)` under the
+    /// Huber loss up to 100 features and off above
+    /// ([`crate::default_refit_rows`]); 0 is off.
     /// Huber only. A state written before schema 64 has no such field and
     /// was fitted without a refit, so it loads as 0 and goes on as it was.
     #[serde(default)]

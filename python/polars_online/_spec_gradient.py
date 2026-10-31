@@ -190,9 +190,12 @@ def sgd(
     .. code-block:: text
 
         W = the target's learned weight, undecayed, this row's in it;  a = w / W
-        squared, huber:  b_0 += -a * d        while a > learning_rate, or n <= 22
+        squared, huber:  b_0 += -a * d        while a > the row's rate, or n <= 22
         quantile, epsilon_insensitive:  b_0 += a * (y - p)        while n <= 22
 
+    The row's rate is ``learning_rate`` under ``"constant"`` and the rate as
+    it has fallen under ``"inv_scaling"``; ``"adagrad"`` has no rate shared by
+    the slots, so there the level's step is taken over the warm-up alone.
     ``d`` the loss's gradient (the residual, clipped at the Huber cut), ``n``
     Kish's count of the rows, ``W ** 2 / sum(w ** 2)``, and 22 the count the
     scaler warms up over (``standardize``). The sign-valued losses' gradient
@@ -306,8 +309,9 @@ def sgd(
     ``refit_budget``
         A bound in MiB on the refit buffers of all the spec's groups together, as for
         :func:`huber`: above 0, or ``inf`` for none; default 256. Each new group
-        reserves ``(features + 20) * 8`` bytes a target for each row of the count when
-        it first appears, and the group that would cross the bound, and every new group
+        reserves ``(features + 20) * 8`` bytes a target of each model instance (a
+        half-life grid reserves once per value) for each row of the count when it
+        first appears, and the group that would cross the bound, and every new group
         after it, keeps its one-pass fit, with a notice and ``summary()``'s
         ``refit_given_up``. ``loss = "huber"`` only; refused beside another loss.
     ``quantile``

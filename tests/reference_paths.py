@@ -1352,8 +1352,11 @@ def sgd_ref(
     logistic), each stepped row adds ``q = lr * (w * c * |z|^2 + l2)``
     (``z`` the row the step is taken on, the intercept's 1 in it, ``q`` at
     most ``1e150``) to ``Q1 = rho * Q1 + q`` and ``Q2 = rho * Q2 + q^2``,
-    ``rho = 2^(-1/100)``, and a target's prediction is null while ``Q2 > 2
-    Q1`` (read before the row). Off, the releases before it."""
+    ``rho = 2^(-1/100)``, with ``N = rho * N + 1`` their weight: a gain of 0
+    is left out, and each after the first is bounded at ``max(2, 4 * Q1 /
+    N)`` before it enters (task 282, M1). A target's prediction is null
+    while ``Q2 > 2 Q1`` (read before the row). Off, the releases before
+    it."""
     n, k = X.shape
     m = Y.shape[1]
     kt = k + 1 if fit_intercept else k
@@ -1368,7 +1371,7 @@ def sgd_ref(
     gains = (
         target_spread and schedule != "adagrad" and loss not in ("quantile", "epsilon_insensitive")
     )
-    q1, q2 = np.zeros(m), np.zeros(m)
+    q1, q2, qn = np.zeros(m), np.zeros(m), np.zeros(m)
     rho = 0.9930924954370359
     if box is not None:
         ones = np.ones(k)
@@ -1481,9 +1484,17 @@ def sgd_ref(
                     "logistic": p[j] * (1.0 - p[j]),
                 }[loss]
                 along = w[i] * c * float(z @ z) if c > 0.0 else 0.0
-                q = min(lr * (along + l2), 1e150)
-                q1[j] = rho * q1[j] + q
-                q2[j] = rho * q2[j] + q * q
+                q = lr * (along + l2)
+                # A gain of 0 says nothing of the rate and is left out; each
+                # after the first is bounded at the larger of 2 and four
+                # times the running mean before it (task 282, M1).
+                if q != 0.0:
+                    if qn[j] > 0.0:
+                        q = min(q, max(2.0, 4.0 * q1[j] / qn[j]))
+                    q = min(q, 1e150)
+                    q1[j] = rho * q1[j] + q
+                    q2[j] = rho * q2[j] + q * q
+                    qn[j] = rho * qn[j] + 1.0
             delta = -lr * g
             if level_step is not None:
                 delta[0] = level_step

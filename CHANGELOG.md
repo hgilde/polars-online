@@ -67,9 +67,9 @@ returns.
   - It costs 0.06 to 7.2 ms once, for 1 to 50 features and 200 to 1,000 rows.
   - A target present on fewer than about one row in five, under an irregular clock, gives its refit up and keeps its one-pass fit.
 - **`refit_budget`, on `huber` and on `sgd(loss="huber")`**: a bound in MiB on the refit buffers of all of a spec's groups together. The default is 256, and `inf` means no bound (task 277).
-  - **Reservation.** Each new group reserves `(features + 20) · 8` bytes a target for each row of the count when it first appears. That is the most its buffers can hold.
+  - **Reservation.** Each new group reserves `(features + 20) · 8` bytes a target of each model instance (a half-life grid reserves once per value) for each row of the count when it first appears. That is the most its buffers can hold.
   - **Past the bound.** The group that would cross the bound gives its refit up and keeps its one-pass fit, and so does every new group after it.
-  - **Reporting.** A notice says so once, and `summary()`'s new `refit_given_up` column counts the targets.
+  - **Reporting.** A notice says so once, and `summary()`'s new `refit_given_up` column counts the targets of each instance.
   - **Deterministic.** A reservation lasts for the life of the bank and is saved with it. So which groups refit does not depend on the chunking, on the order the groups run in, or on a save and load.
   - **Cost.** Once the bound is reached, no later group refits, even after the first groups' buffers are freed.
   - **Example.** At 20 features and 500 rows a target reserves 160 KB, so 256 MiB refits the first 1,677 targets.
@@ -317,6 +317,11 @@ returns.
 
 ### Fixed
 
+- `huber_refit_rows` and `quantile_refit_rows` are refused past 2^20, with
+  the reason (task 282, S1-3). A refit's buffer is held at its full size
+  from a target's first learned row, so beside `refit_budget=inf`, which
+  bounds nothing, `huber_refit_rows=2**32 - 1` reserved 172 GB at one
+  feature and aborted the process.
 - `sgd(loss="huber")`'s refit of the first rows puts its ridge of 1e-6 on
   the standardized slopes under `standardize`, the default, as `huber`'s
   does: `1e-6 · s_i²` in the features' own units, `s_i` a feature's
@@ -408,7 +413,8 @@ returns.
   power-of-two scale of a feature now gives the same fit after the refit,
   to the bit. `quantile`'s refit also stops when no step along Newton's
   direction lowers its loss. The cap of 200 passes is reached on 8 and 9 of
-  3,000 streams, all past 39% outliers, where it was 5 and 6.
+  3,000 streams (`huber`'s and `sgd`'s), all past 39% outliers, where it was
+  5 and 6.
 - `marginal`'s `lag_corr_*` are null below `min_weight` and while the stream
   is less settled than `min_settled_frac`, exactly where `corr` is (task
   278). They read 0.17 beside a null `corr`. `phi_x` and `phi_y`, which are
@@ -448,10 +454,13 @@ returns.
   that takes every one of its IRLS passes in `solve_failures`, as `kmeans`
   and `hmm` count a seeding run stopped at its cap; before, nothing said so
   (task 278). The cap rises from 50 passes to 200: over 3,000 streams of 50
-  to 500 rows with a level added to up to 45% of the rows with x > 0, 50
-  passes ran out on 142 streams (none below 20% of the rows) and 200 run out
-  on 6 (all past 39%); each converges if run on, the slowest after 880
-  passes. A refit that converges is unchanged. A spec with fewer rows than
+  to 500 rows with a level added to up to 45% of the rows with x > 0,
+  `sgd`'s IRLS at a cut of 1.345 without decay ran out of 50 passes on 149
+  streams (none below 20% of the rows) and of 200 on 9 (all past 39%); each
+  converges if run on, the slowest after 897 passes (`huber`'s own: 127, 8
+  and 428). Those are under the stopping rule by each coefficient's effect
+  (its own entry); under the rule it replaced they were 142, 6 and 880. A
+  refit that converges is unchanged. A spec with fewer rows than
   coefficients, whose refit is the ridge's fit and never meets the rule,
   now takes 200 passes once per target (8.7 s at 1,000 features and 200
   rows, where 50 passes took 1.9 s). `check()` names the refit when it
@@ -520,8 +529,8 @@ returns.
   had served an error 40,000 times the target's variance with nothing said
   (task 278, D8). Each gain after a target's first enters the sums bounded
   at the larger of 2 and four times their running mean, so one wide row
-  after the first cannot hold the output:
-  whole, one row at 100 times a feature's spread withheld the next 1,075
+  after the first cannot hold the output: whole, one row at 100 times a
+  feature's spread withheld the next 1,075
   rows of a stable rate (3,736 at 10,000 times), and now withholds none; a
   rate whose every gain is high still trips the gate (task 282, M1). The
   sums' memory stays a half-life of 100 stepped rows, a count of rows
