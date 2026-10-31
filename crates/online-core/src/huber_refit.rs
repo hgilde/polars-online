@@ -909,17 +909,25 @@ fn wls(
     }
     let mut a = vec![0.0; nf * nf];
     let mut b = vec![0.0; nf];
+    // The row centred once, so that the Gram's inner loop reads two slices
+    // and subtracts nothing: centred inside it, the loop kept `x`, `mx` and
+    // `a` live beside `wls`'s other slices, and on x86-64 the pointer to
+    // `mx` was spilled and reloaded on each element (2% of the refit's
+    // instructions under Valgrind). The products are the same, `(w·d_p)·d_q`.
+    let mut d = vec![0.0; nf];
     for (i, &w) in wt.iter().enumerate() {
         if w == 0.0 {
             continue;
         }
-        let x = rows.x(i);
+        for ((d, &x), &m) in d.iter_mut().zip(rows.x(i)).zip(&mx) {
+            *d = x - m;
+        }
         let dy = rows.y(i) - my;
-        for p in 0..nf {
-            let dp = x[p] - mx[p];
-            b[p] += w * dp * dy;
-            for q in 0..nf {
-                a[p * nf + q] += w * dp * (x[q] - mx[q]);
+        for ((a_p, b_p), &dp) in a.chunks_exact_mut(nf.max(1)).zip(&mut b).zip(&d) {
+            let wdp = w * dp;
+            *b_p += wdp * dy;
+            for (a, &dq) in a_p.iter_mut().zip(&d) {
+                *a += wdp * dq;
             }
         }
     }

@@ -871,6 +871,11 @@ returns.
   counts it as. Under an `embargo` a held row keeps 8 more bytes in memory
   (saved only when nonzero), and with `drift_action="reset"` a chunk keeps
   16 bytes a row more while it runs.
+- The refit's weighted least squares, which `sgd(loss="huber")` runs at
+  each IRLS pass, centres each row once before its Gram, not once per
+  product (task 282): the same products to the bit. The per-slope ridge
+  had cost it 2.1% under Valgrind on x86-64, all of it a pointer the
+  centring loop spilled to the stack and reloaded on each element.
 
 ### Known issues
 
