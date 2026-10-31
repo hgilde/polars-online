@@ -16599,7 +16599,7 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       unchanged (CHANGELOG); N1 stays open after 1.4. The W5/W6 patches are
       in `.claude/coord/review10/`.
 
-- [x] 283. **One refit buffer a group, shared by its targets** (ENHANCEMENTS
+- [ ] 283. **One refit buffer a group, shared by its targets** (ENHANCEMENTS
       E76) -- the user, 2026-10-31: "Measure just the first and do it if
       works keep the other two as ideas" (E77 spill to disk, E78 rewind
       through the Polars API: ideas only). Today each target's refit buffer
