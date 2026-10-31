@@ -374,3 +374,48 @@ fn a_refit_that_runs_to_its_cap_is_a_solve_failure() {
         }
     }
 }
+
+/// A chunk refused after its new groups reserved their buffers takes the
+/// once-a-bank notice back with them: the groups are forgotten, so the
+/// notice naming one, and the flag that it was raised, go too (review round
+/// 10, S7-5). Here the chunk's groups 62 to 99 cross the budget at 62, and
+/// a row of group 0 that steps its clock back refuses the chunk; nothing is
+/// noticed, and the chunk fed again without that row names group 62.
+#[test]
+fn a_refused_chunk_takes_its_refit_notice_back() {
+    let df = frame(100, 1);
+    let t: Vec<f64> = (0..100).map(|i| i as f64).collect();
+    let df = df.hstack(&[Series::new("t".into(), t).into()]).unwrap();
+    let text = r#"{"name": "m", "model": {"type": "huber", "huber_refit_rows": 50, "refit_budget": 1.0},
+        "targets": ["y", "z"], "features": ["x"], "group": "g", "clock": "t", "gap_cap": 1000.0,
+        "half_life": "inf", "coef_every": 0}"#;
+    let s: Spec = serde_json::from_str(text).unwrap();
+    let mut bank = Bank::new(vec![s]).unwrap();
+    bank.fit_predict(&df.slice(0, 62)).unwrap();
+    assert!(
+        bank.take_notices()
+            .iter()
+            .all(|n| !n.contains("refit_budget"))
+    );
+    let back =
+        df!("g" => [0i64], "x" => [0.1], "y" => [1000.0], "z" => [0.0], "t" => [-1.0]).unwrap();
+    let mut refused = df.slice(62, 38);
+    refused.vstack_mut(&back).unwrap();
+    let e = bank
+        .fit_predict(&refused)
+        .expect_err("the step back is refused");
+    assert!(e.to_string().contains("clock"), "{e}");
+    let notices = bank.take_notices();
+    assert!(
+        notices.iter().all(|n| !n.contains("refit_budget")),
+        "a notice of a forgotten group: {notices:?}"
+    );
+    bank.fit_predict(&df.slice(62, 38)).unwrap();
+    let notices = bank.take_notices();
+    let refit: Vec<&String> = notices
+        .iter()
+        .filter(|n| n.contains("refit_budget"))
+        .collect();
+    assert_eq!(refit.len(), 1, "{notices:?}");
+    assert!(refit[0].contains("at group \"62\""), "{}", refit[0]);
+}

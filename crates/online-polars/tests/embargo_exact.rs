@@ -707,9 +707,13 @@ fn a_formula_target_under_an_embargo_equal_to_its_window_on_both_paths() {
 /// late. The oracle is the definition, `1 - 2^(-T/h)` with `T` the clock
 /// the decay has covered: on a row-count clock `T = r - 1` before row `r`
 /// (the first row decays by nothing), and after a reset at row `R` the
-/// rebuilt model has covered none of it while the `E - 1` rows held there
-/// have covered `E - 1`, so `T = j + E - 1` at row `R + j`. A grid of
-/// half-lives resets every instance together; one instance resets itself.
+/// rebuilt model is a fresh bank fed the rows after the one that fired,
+/// `R - E`: it has covered none of the clock, and the `E - 1` rows held
+/// there have covered `E - 2`, the first of them a fresh stream's first
+/// row, which steps by nothing (review round 10, S7-1: the held clock
+/// counted that row's step from the row that fired, `E - 1`). So `T = j +
+/// E - 2` at row `R + j`. A grid of half-lives resets every instance
+/// together; one instance resets itself.
 #[test]
 #[ignore = "extended: a second or more (1.8 s)"]
 fn after_a_drift_reset_settled_frac_keeps_the_held_rows_clock() {
@@ -781,7 +785,7 @@ fn after_a_drift_reset_settled_frac_keeps_the_held_rows_clock() {
                     at(row, (row - 1) as f64);
                 }
                 for row in reset..end {
-                    at(row, (row - reset + embargo - 1) as f64);
+                    at(row, (row - reset + embargo - 2) as f64);
                 }
             }
         }

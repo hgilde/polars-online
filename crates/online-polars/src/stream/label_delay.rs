@@ -30,6 +30,15 @@ pub struct PendingRow {
     pub arrived: Option<Stamp>,
     /// The delta the row arrived with, replayed when it is released.
     pub d_clock: f64,
+    /// The step the row reads as a fresh stream's first accepted row,
+    /// that stream begun right after the accepted row before it
+    /// (`RowPlan::d_fresh`): what an instance a drift reset restarted
+    /// learns the row with when it is the first held row after the one
+    /// that fired. Nonzero only for a row after skipped rows under
+    /// `drift_action = "reset"`, and written only then, so no other
+    /// state's bytes move. Schema 64.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub d_fresh: f64,
     /// The row's stamp, its decayed clock held exactly, which a window keys
     /// the row's snapshot by when it is released (docs/PLAN.md task 175).
     #[serde(default)]
@@ -66,6 +75,10 @@ pub struct PendingRow {
 
 fn yes() -> bool {
     true
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
 }
 
 impl Stream {
@@ -134,9 +147,17 @@ impl Stream {
         features: &FeatureRows,
         targets: &[Vec<f64>],
         formulas: Option<FormulaTargets<'_>>,
+        // Where to keep each scored row's `Stream::front_cut`, by its `ri`,
+        // for a stream whose drift resets restart instances it may score
+        // for; `None` elsewhere.
+        mut front_cuts: Option<&mut Vec<Option<f64>>>,
     ) -> Vec<PendingRow> {
         if embargo.is_none() && formulas.is_none() {
             return Vec::new();
+        }
+        if let Some(cuts) = front_cuts.as_deref_mut() {
+            cuts.clear();
+            cuts.resize(plans.len(), None);
         }
         let mut released: Vec<PendingRow> = Vec::new();
         let mut out: Vec<RowPlan> = Vec::with_capacity(plans.len());
@@ -154,6 +175,7 @@ impl Stream {
             i: usize::MAX,
             pending: slot,
             d_clock: row.d_clock,
+            d_fresh: row.d_fresh,
             elapsed_step: row.d_clock,
             stamp: row.stamp,
             clock: row.clock,
@@ -246,9 +268,15 @@ impl Stream {
             // elapsed clock and the break before it.
             let i = plan.i;
             resolved += usize::from(formulas.is_none());
+            // What a restarted instance's fresh bank does not count of the
+            // rows held ahead of this one (`Stream::front_cut`).
+            if let Some(cuts) = front_cuts.as_deref_mut() {
+                cuts[plan.ri] = pending.front().map(|r| r.d_clock - r.d_fresh);
+            }
             pending.push_back(PendingRow {
                 arrived: elapsed[plan.ri],
                 d_clock: plan.d_clock,
+                d_fresh: plan.d_fresh,
                 stamp: plan.stamp,
                 w: plan.w,
                 xs: features.row(i).to_vec(),

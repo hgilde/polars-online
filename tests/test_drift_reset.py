@@ -273,3 +273,66 @@ def test_the_refit_starts_over_after_a_reset(name, df, tmp_path):
         a.save(path)
         b = po.ModelBank.load(path, specs=[s], threads=1)
         assert_frame_equal(pl.concat([head, run(b, df.slice(cut))]), one, check_exact=True)
+
+
+#: The fields that hold what the model has learned, and the clocks: the
+#: ones a reset under an ``embargo`` must make a fresh bank's. The rows held
+#: when the detector fired were scored by the model before the reset, and
+#: their residual diagnostics fold those scores as each is released, since a
+#: residual is read against the prediction its row was shown; a fresh bank
+#: scored them itself. ``settled_frac`` adds the held rows' clock, a running
+#: sum whose last bit still carries the rows before the reset.
+LEARNED_FIELDS = (
+    "pred",
+    "weight_sum",
+    "withheld_reason",
+    "penalty_selected",
+    "coef",
+    "scored_clock",
+    "learned_clock",
+)
+
+EMBARGO = 3.0
+
+
+def embargo_fire(out: pl.DataFrame, df: pl.DataFrame) -> tuple[int, int]:
+    """The first output row a detector fired on under the embargo, and the
+    released row it fired on: of the rows released there, the last unless the
+    row shows that one learned by the rebuilt model, then the one before."""
+    t = first_fire(out)
+    c = df["t"].to_numpy()
+    released = [j for j in range(t) if c[t] - c[j] >= EMBARGO and c[t - 1] - c[j] < EMBARGO]
+    assert released, f"no row released at {t}"
+    shown = out["learned_clock"][t]
+    if shown is None:
+        return t, released[-1]
+    assert shown == c[released[-1]] and len(released) == 2, (t, released, shown)
+    return t, released[0]
+
+
+@pytest.mark.parametrize("name", KINDS)
+def test_under_an_embargo_a_reset_is_a_fresh_bank_from_the_next_row(name, df):
+    """Under an ``embargo`` the detection fires as a held row ``r`` is
+    released, at output row ``t``, and the rows held behind it teach the
+    rebuilt model: the first of them reads the step a fresh bank's first row
+    reads, 0, not its step from ``r``. It read that step, and ``rls`` at
+    ``delta = 100`` predicted up to 1.1e-2 away from a fresh bank fed
+    ``r + 1, ...`` (a slope break, ``half_life`` 200). From ``t`` on, the
+    model's own fields equal that fresh bank's, to the bit; through 7
+    chunks and a chunk ending on ``t`` too."""
+    s = {**spec(name), "embargo": EMBARGO}
+    one = run(po.ModelBank([s], threads=1), df)
+    t, r = embargo_fire(one, df)
+    print(f"fired on released row {r}, flagged on row {t}")
+    fresh = run(po.ModelBank([s], threads=1), df.slice(r + 1))
+    keep = [c for c in one.columns if c.startswith(LEARNED_FIELDS)]
+    assert all(any(c.startswith(f) for c in keep) for f in ("pred", "coef")), keep
+    assert_frame_equal(
+        one.slice(t).select(keep), fresh.slice(t - r - 1).select(keep), check_exact=True
+    )
+    for edges in ([0, t + 1, df.height], np.linspace(0, df.height, 8).astype(int)):
+        bank = po.ModelBank([s], threads=1)
+        many = pl.concat(
+            [run(bank, df.slice(a, b - a)) for a, b in zip(edges[:-1], edges[1:], strict=True)]
+        )
+        assert_frame_equal(many, one, check_exact=True)

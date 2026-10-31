@@ -1659,6 +1659,23 @@ fn reserve_refits(
     }
 }
 
+/// What a chunk's new groups moved of the refit budget's bookkeeping, as it
+/// stood before them ([`reserve_refits`]), for a refused chunk to put back.
+struct RefitsBefore {
+    reserved: Vec<f64>,
+    noticed: Vec<bool>,
+    /// The notices waiting before the chunk, which stay.
+    notices: usize,
+}
+
+impl RefitsBefore {
+    fn restore(&self, reserved: &mut Vec<f64>, noticed: &mut Vec<bool>, notices: &mut Vec<String>) {
+        reserved.clone_from(&self.reserved);
+        noticed.clone_from(&self.noticed);
+        notices.truncate(self.notices);
+    }
+}
+
 fn forget(states: &mut [HashMap<GroupKey, Stream>], fresh: &[(usize, GroupKey)]) {
     for (si, key) in fresh {
         states[*si].remove(key);
@@ -4073,8 +4090,16 @@ impl Bank {
         // `fresh` remembers which, so that a refused chunk can take them
         // away again.
         let mut fresh: Vec<(usize, GroupKey)> = Vec::new();
-        // The reservations as they stood, for a refused chunk to restore.
-        let reserved_before = self.refit_reserved.clone();
+        // The reservations as they stood, the once-a-bank notice's flags and
+        // the notices waiting, for a refused chunk to restore: the groups it
+        // created are forgotten, and a notice naming one, or a flag that
+        // kept the next chunk's crossing group from being named, outlived
+        // them (review round 10, S7-5).
+        let refits_before = RefitsBefore {
+            reserved: self.refit_reserved.clone(),
+            noticed: self.refit_noticed.clone(),
+            notices: self.notices.len(),
+        };
         for (si, spec) in self.specs.iter().enumerate() {
             // In the order the group's rows first arrive (`group_indices`).
             for (key, _) in &groups[si] {
@@ -4145,7 +4170,11 @@ impl Bank {
         if let Err(e) = checked {
             drop(work);
             forget(&mut self.states, &fresh);
-            self.refit_reserved.clone_from(&reserved_before);
+            refits_before.restore(
+                &mut self.refit_reserved,
+                &mut self.refit_noticed,
+                &mut self.notices,
+            );
             return Err(e);
         }
 
@@ -4178,7 +4207,11 @@ impl Bank {
                 Err(e) => {
                     drop(work);
                     forget(&mut self.states, &fresh);
-                    self.refit_reserved.clone_from(&reserved_before);
+                    refits_before.restore(
+                        &mut self.refit_reserved,
+                        &mut self.refit_noticed,
+                        &mut self.notices,
+                    );
                     return Err(e);
                 }
             }
@@ -4225,7 +4258,11 @@ impl Bank {
                 self.resolvers = snapshot;
             }
             forget(&mut self.states, &fresh);
-            self.refit_reserved.clone_from(&reserved_before);
+            refits_before.restore(
+                &mut self.refit_reserved,
+                &mut self.refit_noticed,
+                &mut self.notices,
+            );
             return Err(e);
         }
 
@@ -4281,7 +4318,11 @@ impl Bank {
                     self.resolvers = snapshot;
                 }
                 forget(&mut self.states, &fresh);
-                self.refit_reserved.clone_from(&reserved_before);
+                refits_before.restore(
+                    &mut self.refit_reserved,
+                    &mut self.refit_noticed,
+                    &mut self.notices,
+                );
                 return Err(e);
             }
         }
@@ -4323,7 +4364,11 @@ impl Bank {
                 Err(e) => {
                     drop(work2);
                     forget(&mut self.states, &fresh);
-                    self.refit_reserved.clone_from(&reserved_before);
+                    refits_before.restore(
+                        &mut self.refit_reserved,
+                        &mut self.refit_noticed,
+                        &mut self.notices,
+                    );
                     self.broken = Some(e.to_string());
                     return Err(e);
                 }
@@ -4372,7 +4417,11 @@ impl Bank {
                     Ok(o) => per_spec_rows[si].push(o),
                     Err(e) => {
                         forget(&mut self.states, &fresh);
-                        self.refit_reserved.clone_from(&reserved_before);
+                        refits_before.restore(
+                            &mut self.refit_reserved,
+                            &mut self.refit_noticed,
+                            &mut self.notices,
+                        );
                         self.broken = Some(e.to_string());
                         return Err(e);
                     }

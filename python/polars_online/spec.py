@@ -662,8 +662,15 @@ The diagnostics add, per slot:
        makes, every field. That row reads a clock step of 0, as a fresh
        stream's first row does, so nothing the rebuilt model holds -- a
        prior, a covariance, the settled clock -- decays by the step before
-       it. (Under an ``embargo`` the rows still held are kept and taught to
-       the rebuilt model as they are released.) The detector reads the
+       it; after skipped rows it reads the step from the first of them, as
+       a fresh stream that began there would. Under an ``embargo`` the
+       detection fires as a held row is released. The rows held behind it
+       are kept and taught to the rebuilt model as they are released, the
+       first at that same fresh step, so the model's own fields -- ``pred``,
+       ``coef``, ``weight_sum`` -- are a fresh bank's fed the rows after
+       the one that fired. Their residuals are read against the
+       predictions those rows were shown, made before the reset, so the
+       residual diagnostics are not that fresh bank's. The detector reads the
        residuals of the predictions a readiness gate withholds too, as
        ``sigma`` does, and can flag a row whose prediction is withheld: a
        gate withholds output only, so no ``min_weight``,
