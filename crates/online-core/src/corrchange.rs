@@ -59,8 +59,13 @@
 //! pooled rows between them, in blocks of `perm_block` so that serially
 //! dependent rows do not make it too liberal. A report flags when fewer than
 //! `⌊alpha·(B + 1)⌋` of the `B` draws reach its statistic: the standard
-//! permutation test, whose size is that count over `B + 1`, at most `alpha`
-//! ([`perm_rejections`]). Too few draws to flag at all are refused.
+//! permutation test, whose size against draws of a report's own windows is
+//! that count over `B + 1`, at most `alpha` ([`perm_rejections`]). The
+//! critical value is drawn after a report and held for
+//! `permute_every_rows` reports, so a later report meets draws of windows a
+//! few rows older than its own, and the size is about `alpha`, not held to
+//! it (5.1% measured at alpha 0.05 and 200 draws; review round 10, S6-3).
+//! Too few draws to flag at all are refused.
 
 use std::collections::VecDeque;
 

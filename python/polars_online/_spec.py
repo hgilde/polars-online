@@ -2728,10 +2728,13 @@ def ew_cov(
         ``"lag_corr"`` to ``stats`` to write ``lag_corr_l<l>_<a>_<b>`` =
         ``C_l[a,b] / sqrt(C_0[a,a] * C_0[b,b])`` per lag and ordered pair, the
         auto terms included. That is ``k²`` slots a lag, since a lagged
-        matrix is not symmetric. ``C_l`` starts at 0 and takes its first
-        product when a learned row has one ``l`` rows back, so ``lag_corr``
-        reads 0.0, not null, until then: through the ``l``-th learned row of
-        a group, wherever ``min_weight`` lets those rows through. Or read
+        matrix is not symmetric. A group's first two rows read it null: the
+        weight before them is under two rows, and ``min_weight`` is floored
+        at 2, since one row has no variance to divide by (under a decay the
+        third row's weight can be under 2 as well). ``C_l`` starts at 0 and
+        takes its first product when a learned row has one ``l`` rows back,
+        so after those rows ``lag_corr`` reads 0.0, not null, while the group
+        has learned no more than ``l`` rows before the row. Or read
         ``lags`` and ``lag_comoments`` (an ``(L, k, k)`` array) from
         :meth:`polars_online.ModelBank.gram`.
     ``gram_threads``

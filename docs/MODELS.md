@@ -3436,12 +3436,17 @@ windows, redrawn every `permute_every_rows` rows. The shuffles move blocks of
 null too liberal. To skip the permutations, give `crit=` as a fixed
 threshold. The same `seed` gives the same critical values.
 
-**The window test's size is at most `alpha`.** A report flags when fewer
+**The window test's size is about `alpha`.** A report flags when fewer
 than `floor(alpha * (n_perm + 1))` shuffles reach its statistic. That counts
 the observed split as one more shuffle, so on rows with no change its rank
-is uniform among `n_perm + 1`. Over 200 streams of iid rows, at `alpha` 0.05
-and the default 200 shuffles, 5.1% of non-overlapping spans flagged, against
-an exact size of 4.98%. Fewer than `ceil(1/alpha) - 1` shuffles could never
+among `n_perm + 1` shuffles of its own windows is uniform, and that test's
+size, the count over `n_perm + 1`, is at most `alpha`: 4.98% at `alpha` 0.05
+and the default 200 shuffles. The critical value is drawn from the windows
+after a report, though, and held for `permute_every_rows` reports, so each
+later report is compared with shuffles of windows a few rows older than its
+own, and the size is near that figure rather than held to it. Over 200
+streams of iid rows, at `alpha` 0.05 and 200 shuffles, 5.1% of
+non-overlapping spans flagged. Fewer than `ceil(1/alpha) - 1` shuffles could never
 flag, so such an `n_perm` is refused: 99 at least at `alpha` 0.01.
 
 **Count a run of the window kind's flags as one change.** Two windows that
