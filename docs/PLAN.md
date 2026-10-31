@@ -16624,3 +16624,10 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       sparse/disjoint targets, and +2-4.4% on a small refit at 10 targets.
       The user: build it, held to an end-to-end bar (no budget case past
       2%; new 3- and 10-target cases within 1% end to end), before 1.4.
+- [ ] 284. **Pay less for the per-row drift since 1.3.0** -- the user,
+      2026-10-31: "Look for more efficient implementations of the ones that
+      drift". CI's Valgrind since 1.3.0: `sgd` +16.8% (+512 instructions a
+      row), `sgd_huber` +14.7% (+515), `holt` +17.6% (+102); every case on
+      the shared bank path is flat. Account for each added per-row cost and
+      build only bit-identical cheaper forms (W9); what remains is signed
+      off with what it buys.
