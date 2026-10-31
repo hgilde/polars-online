@@ -873,9 +873,10 @@ returns.
   16 bytes a row more while it runs.
 - The refit's weighted least squares, which `sgd(loss="huber")` runs at
   each IRLS pass, centres each row once before its Gram, not once per
-  product (task 282): the same products to the bit. The per-slope ridge
-  had cost it 2.1% under Valgrind on x86-64, all of it a pointer the
-  centring loop spilled to the stack and reloaded on each element.
+  product (task 282): the same products to the bit, and 40% fewer
+  instructions on the refit's benchmark under Valgrind on x86-64 (112.3M
+  to 67.8M). The per-slope ridge had cost it 2.1%, all of it a pointer
+  the centring loop spilled to the stack and reloaded on each element.
 
 ### Known issues
 
