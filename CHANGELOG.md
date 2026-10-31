@@ -781,7 +781,11 @@ returns.
   `sgd(loss="huber")`, to the bit (task 281).
 - Seeding with `init="lloyd"` at 500 rows, 8 centres and 400 features
   takes 56 ms on separated blobs (from 97) and 91 ms on overlapping ones
-  (from 98); `init="k-means++"` takes 3.6 ms there, from 1.9 (task 278).
+  (from 98). `init="k-means++"`, now greedy (four candidates a centre at 8
+  centres), places its centres in 2.8 ms there, where plain k-means++ placed
+  them in 0.8 ms, and its seeding row, the placement and the replay of the
+  500 rows, takes 3.9 ms (medians of one native run, 2026-10-31; task 278,
+  re-timed in task 282).
 
 ## [1.3.0] — 2026-10-24
 

@@ -2894,8 +2894,12 @@ optimal inertia, where it ended 1.26 to 1.35 times it.
 The seeding is paid once by each group's stream. With the default 500 rows
 and 8 centres it took 56 ms at 400 features on separated blobs, where a start
 reaches its fixed point in a few passes, and 91 ms on overlapping ones; 1.9
-ms at 20 features; and `init="k-means++"` took 3.6 ms at 400 (one thread,
-the load average about 110, 2026-10-25). A bank of many groups at many
+ms at 20 features (one thread, the load average about 110, 2026-10-25).
+At 400 features `init="k-means++"`'s greedy draw, four candidates a centre
+at 8 centres, places the centres in 2.8 ms, where plain k-means++, one
+candidate, places them in 0.8 ms; its seeding row, the placement and the
+replay of the 500 rows, takes 3.9 ms (medians over 200 and 40 runs in one
+native process, the load average under 15, 2026-10-31). A bank of many groups at many
 features pays it per group: 10,000 groups at 400 features spend up to a
 quarter of an hour seeding.
 
