@@ -16615,3 +16615,12 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       charging per row breaks chunk invariance (parallel spec x group tasks).
       The refit buffer is new in 1.4 (absent at v1.3.0), so no released
       state carries one. Details in ENHANCEMENTS E76.
+      *Second attempt 2026-10-31 (W8), approved to build:* one store a
+      group in blocks of R/8 rows, a membership mask a row, each target's y
+      in learned order, one shared list of ageing runs, and the target's rows
+      gathered into today's layout at its refit (fits bit for bit). Memory
+      used is 4-89% lower and the reservation 3-42% lower in every case;
+      one target is unchanged. Costs: +2.5-4.7 ns a row buffering at 3
+      sparse/disjoint targets, and +2-4.4% on a small refit at 10 targets.
+      The user: build it, held to an end-to-end bar (no budget case past
+      2%; new 3- and 10-target cases within 1% end to end), before 1.4.
