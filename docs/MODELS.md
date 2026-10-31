@@ -1159,8 +1159,11 @@ that loss: the rows inside the band are least-squares rows at target
 that would raise the loss is halved until it does not. A band of fewer rows
 than coefficients has no curvature to step on; such a pass moves each
 prediction toward its row by at most the band's width instead. The sums are
-then rebuilt as the stream takes each row scored by the converged fit, `σ`
-from its residuals, and the stream goes on online. Measured over 50 streams of
+then rebuilt as the stream takes each row scored by the converged fit, or,
+where the converged band holds fewer rows than coefficients, as the
+majorizer's step takes it, every row a least-squares row at its weight, so
+the sums keep a weight and solve to that fit; `σ` is rebuilt from its
+residuals, and the stream goes on online. Measured over 50 streams of
 8,000 rows of `y = 1 + 2x₀ − x₁ + 0.5·Laplace`, no decay, as the worst
 stream's largest coefficient gap to statsmodels' `QuantReg` on the same rows:
 
@@ -1179,8 +1182,8 @@ as before, faster than `1/n`. A state loaded from another regime has
 refit its first rows there, and the same holds of its rows. The refit's
 cost, its buffer, the count's default and `refit_budget` are `huber`'s
 (below); it takes 0.09 to 2.3 ms once, for 1 to 50 features and 500 to
-1,000 rows, and a count is taken from three rows a coefficient up, the
-rows the warm-up takes as least squares.
+1,000 rows. A count given is taken, but one below three rows a
+coefficient, the rows the warm-up takes as least squares, is refused.
 
 **Both models' one pass is held to numpy references of its own recursion
 within 1e-14, and `huber`'s refit to statsmodels' `RLM` on the same rows

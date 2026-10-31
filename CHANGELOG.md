@@ -107,7 +107,7 @@ returns.
   -> 0.0058, Cauchy 0.0175 -> 0.0058; a shift of every one of the first 500
   rows, which no refit of those rows can see, 0.093 -> 0.061. The default
   count is `max(500, 10·features)`, off above 100 features; a count given is
-  taken from three rows a coefficient up. It costs 0.09 to 2.3 ms once for 1
+  taken, and one below three rows a coefficient is refused. It costs 0.09 to 2.3 ms once for 1
   to 50 features and 500 to 1,000 rows, the rows after it cost what they
   did, and each target holds `(features + 4)·8` bytes a row until it runs.
   `quantile_refit_rows=0` turns it off. A state saved before it loads with

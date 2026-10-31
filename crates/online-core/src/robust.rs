@@ -593,16 +593,28 @@ impl RobustCfg {
         if self.n_features == 0 || self.n_targets == 0 {
             return Err("n_features and n_targets must be >= 1".into());
         }
-        if self.refit_rows > 0
-            && (self.ridge_scale
-                || matches!(self.loss, RobustLoss::Huber { delta } if !delta.is_finite()))
-        {
-            return Err(format!(
-                "{kind}: huber_refit_rows is for huber with a finite huber_delta, and not \
-                 beside ridge_scale \"sum\": an infinite cut is least squares, with no \
-                 outliers to refit for, and the sum-scale prior ages with every row before \
-                 the first, which a refit of the buffered rows does not hold"
-            ));
+        // The refit's key names the kind's: a quantile state's message
+        // named huber's (review round 10, S2-5).
+        if self.refit_rows > 0 {
+            match self.loss {
+                RobustLoss::Huber { delta } if self.ridge_scale || !delta.is_finite() => {
+                    return Err(format!(
+                        "{kind}: huber_refit_rows is for huber with a finite huber_delta, \
+                         and not beside ridge_scale \"sum\": an infinite cut is least \
+                         squares, with no outliers to refit for, and the sum-scale prior \
+                         ages with every row before the first, which a refit of the \
+                         buffered rows does not hold"
+                    ));
+                }
+                RobustLoss::Quantile { .. } if self.ridge_scale => {
+                    return Err(format!(
+                        "{kind}: quantile_refit_rows is not for beside ridge_scale \"sum\": \
+                         the sum-scale prior ages with every row before the first, which a \
+                         refit of the buffered rows does not hold"
+                    ));
+                }
+                _ => {}
+            }
         }
         // A quantile fit's refit is of rows past the warm-up: the stream
         // takes its first three rows a coefficient as least squares, and a
@@ -2553,7 +2565,7 @@ impl OnlineModel for Robust {
                 };
                 if !refit_fits {
                     return Err(StateError::Invalid(format!(
-                        "{kind}: the refit's buffers do not match huber_refit_rows"
+                        "{kind}: the refit's buffers do not match {kind}_refit_rows"
                     )));
                 }
                 // The floor's counts: one a target, none above the floor,
