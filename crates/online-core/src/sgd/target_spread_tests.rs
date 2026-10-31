@@ -799,3 +799,30 @@ fn a_rate_past_the_bound_trips_within_two_half_lives() {
         "{withheld} withheld from row {first}"
     );
 }
+
+/// A row whose step is refused, for a gradient that is not a finite number,
+/// teaches nothing: not the coefficients, and not the level's weight or the
+/// unstable rate's sums either, which learn only where the step is taken.
+/// Without a clip, a row at `x = 1e100` whose prediction is already near
+/// `1e298` has a slope gradient of `inf`; the row before it, whose step was
+/// taken, moved the level and the gains, so both paths are live.
+#[test]
+fn a_refused_step_moves_neither_the_level_nor_the_gains() {
+    let mut m = Sgd::new(SgdCfg {
+        standardize: false,
+        min_weight: 0.0,
+        clip_gradient: f64::INFINITY,
+        ..cfg(SgdLoss::Squared, LearningRate::Constant, 0.01)
+    })
+    .unwrap();
+    m.step(&[1.0, 1.0, 1.0], &[Some(1.0)], 1.0, 1.0);
+    let (level, gain) = (m.level[0], m.gain[0]);
+    m.step(&[1e100, 0.0, 0.0], &[Some(1e100)], 1.0, 1.0);
+    assert_ne!(m.level[0], level, "the taken step's level");
+    assert_ne!(m.gain[0], gain, "the taken step's gain");
+    let (beta, level, gain) = (m.beta.clone(), m.level[0], m.gain[0]);
+    m.step(&[1e100, 0.0, 0.0], &[Some(0.0)], 1.0, 1.0);
+    assert_eq!(m.beta, beta, "the refused row moved the fit");
+    assert_eq!(m.level[0], level, "the refused row moved the level");
+    assert_eq!(m.gain[0], gain, "the refused row entered the gains");
+}

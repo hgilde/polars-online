@@ -739,6 +739,11 @@ pub struct Sgd {
     /// Which targets stepped this row (only kept under a constraint).
     #[serde(skip)]
     learned: Vec<bool>,
+    /// Per target, the label a row taught it with, while a refit buffer is
+    /// open ([`SgdCfg::refit_rows`]); empty otherwise. Held here, taken for
+    /// the row and put back, so that a row allocates nothing for it.
+    #[serde(skip)]
+    taught: Vec<Option<f64>>,
 }
 
 /// The layout `Sgd` loads, checked on the way in: what the cfg asks for,
@@ -874,6 +879,7 @@ impl TryFrom<SgdV3> for Sgd {
             rawbuf: vec![],
             pbuf: crate::constraint::Scratch::default(),
             learned: Vec::new(),
+            taught: Vec::new(),
         })
     }
 }
@@ -932,6 +938,7 @@ impl Sgd {
             rawbuf: vec![0.0; k],
             pbuf: crate::constraint::Scratch::default(),
             learned: Vec::new(),
+            taught: Vec::new(),
             cfg,
         })
     }
@@ -1238,6 +1245,18 @@ impl Sgd {
             sums.copy_from_slice(gbuf);
         }
         true
+    }
+
+    /// Target `j` took its step: its level's weight with the row in it
+    /// becomes its own, and the step's gain joins the unstable rate's sums
+    /// ([`StepGain`]). Neither moves for a row the step refused.
+    fn took_step(&mut self, j: usize, level: Option<Level>, gain: Option<f64>) {
+        if let Some(lv) = level {
+            self.level[j] = lv;
+        }
+        if let Some(q) = gain {
+            self.gain[j].learn(q);
+        }
     }
 
     /// The refit of target `j` ([`SgdCfg::refit_rows`],
@@ -1786,12 +1805,14 @@ impl OnlineModel for Sgd {
         };
         // Per target, the label a row taught it with, while a refit buffer
         // is open (`SgdCfg::refit_rows`); empty otherwise, which costs a
-        // row nothing once every refit has run.
-        let mut taught: Vec<Option<f64>> = if self.refit.iter().any(RefitBuf::open) {
-            vec![None; m]
-        } else {
-            Vec::new()
-        };
+        // row nothing once every refit has run. The model's own scratch,
+        // taken for the row and put back after the refits, so that its
+        // capacity is kept and a row allocates nothing.
+        let mut taught = std::mem::take(&mut self.taught);
+        taught.clear();
+        if self.refit.iter().any(RefitBuf::open) {
+            taught.resize(m, None);
+        }
         for j in 0..m {
             let eta = if reads_z {
                 dot(&self.beta[j], off, &self.zbuf[off..])
@@ -1871,9 +1892,17 @@ impl OnlineModel for Sgd {
             // target's first learned row that is the whole residual and
             // nothing else moves, so the level never passes through the
             // slopes' steps (the module docs).
+            // Both the level's weight and the step's gain are learned only
+            // where the row's step is taken: a row refused below for a
+            // gradient that is not a finite number teaches nothing, and
+            // counted in either it would move the level's warm-up and its
+            // gain, or enter the unstable rate's sums, for a step that never
+            // happened.
             let mut level_step = None;
-            if let Some(lv) = self.level.get_mut(j) {
+            let mut level_next = None;
+            if let Some(&lv) = self.level.get(j) {
                 let first = lv.w == 0.0;
+                let mut lv = lv;
                 lv.learn(weight);
                 let gain = weight / lv.w;
                 // The squared and Huber losses' gradient is the residual
@@ -1892,12 +1921,14 @@ impl OnlineModel for Sgd {
                     let b0 = self.beta[j][0] + step;
                     if b0.is_finite() {
                         self.beta[j][0] = b0;
+                        self.level[j] = lv;
                         if let Some(t) = taught.get_mut(j) {
                             *t = Some(yj);
                         }
                     }
                     continue;
                 }
+                level_next = Some(lv);
                 if warm && step.is_finite() {
                     level_step = Some(step);
                 }
@@ -1906,21 +1937,25 @@ impl OnlineModel for Sgd {
             // with `c` the loss's curvature at the prediction: the rate
             // past its stability bound shows in their mean square
             // (`StepGain`). `l2` shrinks each slope by `1 − lr·l2` besides.
-            if let (Some(g), Some(lr)) = (self.gain.get_mut(j), lr_row) {
-                let c = match self.cfg.loss {
-                    SgdLoss::Squared => 1.0,
-                    SgdLoss::Huber { .. } => f64::from(d == p - yj),
-                    SgdLoss::Poisson => p,
-                    SgdLoss::Logistic => p * (1.0 - p),
-                    SgdLoss::Quantile { .. } | SgdLoss::EpsilonInsensitive { .. } => 0.0,
-                };
-                let along = if c > 0.0 { weight * c * zz } else { 0.0 };
-                g.learn(lr * (along + l2));
-            }
+            let step_gain = match (self.gain.is_empty(), lr_row) {
+                (false, Some(lr)) => {
+                    let c = match self.cfg.loss {
+                        SgdLoss::Squared => 1.0,
+                        SgdLoss::Huber { .. } => f64::from(d == p - yj),
+                        SgdLoss::Poisson => p,
+                        SgdLoss::Logistic => p * (1.0 - p),
+                        SgdLoss::Quantile { .. } | SgdLoss::EpsilonInsensitive { .. } => 0.0,
+                    };
+                    let along = if c > 0.0 { weight * c * zz } else { 0.0 };
+                    Some(lr * (along + l2))
+                }
+                _ => None,
+            };
             if held {
                 // The step in the row's coordinates, mapped into the
                 // caller's units by the row's map, and projected there.
                 if self.step_mapped(j, d, weight, lr_row, (clip, ada_eps), level_step) {
+                    self.took_step(j, level_next, step_gain);
                     if let Some(t) = taught.get_mut(j) {
                         *t = Some(yj);
                     }
@@ -1995,6 +2030,7 @@ impl OnlineModel for Sgd {
             if let Some(l) = self.learned.get_mut(j) {
                 *l = true;
             }
+            self.took_step(j, level_next, step_gain);
             if let Some(t) = taught.get_mut(j) {
                 *t = Some(yj);
             }
@@ -2054,6 +2090,7 @@ impl OnlineModel for Sgd {
                 }
             }
         }
+        self.taught = taught;
         self.w_sum = lam * self.w_sum + weight;
         // A label `strict_binary` refuses, or a negative count, carries no
         // weight for its target, as in `ftrl`: it taught nothing.

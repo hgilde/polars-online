@@ -291,7 +291,8 @@ def sgd(
         The learned rows after which each target's first rows are refit to their
         converged Huber fit, once (the rubric above). Default ``max(500, 10 *
         features)`` under ``loss = "huber"`` up to 100 features, and off above 100;
-        a count given is always taken. ``0`` turns the refit off, leaving the one-pass
+        a count given is always taken, up to ``2 ** 20``, since the rows are held
+        from the first. ``0`` turns the refit off, leaving the one-pass
         fit of the steps above. A target's rows are held until
         its refit: ``(features + 4) * 8`` bytes a learned row, and 32 bytes a run of
         rows that only aged it (its value null or its weight 0), one run for such rows

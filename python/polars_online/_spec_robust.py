@@ -245,7 +245,8 @@ def huber(
         The learned rows (each of positive weight, with its target) after which each
         target's first rows are refit to convergence, once (the rubric above). Default
         ``max(500, 10 * features)`` up to 100 features, and off above 100, where the
-        rows a target holds would pass 0.8 MB; a count given is always taken. Over
+        rows a target holds would pass 0.8 MB; a count given is always taken, up to
+        ``2 ** 20``, since the rows are held from the first. Over
         20,000 rows at 20% one-sided outliers, 50 rows left 14 of 40 streams more than
         0.05 from ``RLM``, 200 and 500 left 4 and 1,000 left 2; over 2,000 rows, 200
         left 18, 500 left 10 and 1,000 left 3. A group shorter than the count never
@@ -531,7 +532,8 @@ def quantile(
         rubric above). Default ``max(500, 10 * features)`` up to 100
         features, and off above 100; a count given is always taken, from
         three rows a coefficient up, the rows the warm-up takes as least
-        squares. ``0`` turns the refit off. A group shorter than the count
+        squares, to ``2 ** 20``, since the rows are held from the first.
+        ``0`` turns the refit off. A group shorter than the count
         never refits and holds its rows to the end: ``(features + 4) * 8``
         bytes a learned row, and 32 bytes a run of rows that only aged the
         target (its value null or its weight 0). Past 4 runs a learned row of

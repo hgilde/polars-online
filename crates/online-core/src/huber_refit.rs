@@ -73,6 +73,16 @@ use crate::{EwQuantile, SpdFactor};
 /// where 50 took 1.9 s).
 pub const REFIT_PASSES: usize = 200;
 
+/// The most rows a refit of the first rows buffers (a spec's
+/// `huber_refit_rows`, `quantile_refit_rows`): 2^20. A buffer is held at
+/// its full size from a target's first learned row, `(features + 4) · 8`
+/// bytes a row, so the count sizes an allocation before any row is seen:
+/// with `refit_budget = inf`, which bounds nothing, `2^32 − 1` rows of one
+/// feature reserved 172 GB and aborted the process. 2^20 rows are 40 MiB a
+/// target at one feature, the ceiling the spec layer's other counts that
+/// size an allocation keep (a lag, `n_perm`); it refuses more by name.
+pub const MAX_REFIT_ROWS: u32 = 1 << 20;
+
 /// A refit has converged when no buffered row's fitted value moved by more
 /// than this, relative to the pass's residual scale ([`converged`]).
 pub const REFIT_TOL: f64 = 1e-10;
