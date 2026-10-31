@@ -331,3 +331,56 @@ fn under_the_old_gate_a_target_decayed_to_nothing_predicts_nothing() {
     let p = m.predict(&[0.2, -0.4], 1.0).pred;
     assert!(p[0].is_finite() && p[1].is_nan(), "{p:?}");
 }
+
+/// A target that returns after its history is forgotten solves on the
+/// row it reaches the floor again, under a floor of one coefficient as
+/// under two: one feature, two targets, the second `5x` for ten rows,
+/// absent 44,000 rows at a half-life of 40 (its weight aged to nothing),
+/// then `-5x`, under `solve_every = inf` and no row cap. Its predictions
+/// after the return read a fit of its returning rows, within a tenth of
+/// the slope by its third row. The schedule read the floor's count before
+/// the update reset it, so with no intercept (floor 1) the next row found
+/// the count at the floor and predicted the pre-gap slope, `+4.93`,
+/// `+6.94`, `+6.27` ..., on every later row, learning from it until a
+/// cadence solve that never came (review round 10, S2-1).
+#[test]
+fn a_returning_target_solves_on_the_floor_whatever_the_floor() {
+    for intercept in [false, true] {
+        let c = RobustCfg {
+            n_features: 1,
+            fit_intercept: intercept,
+            min_weight: 0.0,
+            max_rows_between_solves: u32::MAX,
+            ..cfg(RobustLoss::Huber { delta: 1.345 }, HuberScale::Mad, 0)
+        };
+        let mut m = Robust::new(c).unwrap();
+        let mut s = 9u64;
+        let mut preds = Vec::new();
+        for i in 0..44_030 {
+            let x = [0.5 + lcg(&mut s).abs()];
+            let y1 = if i < 10 {
+                Some(5.0 * x[0])
+            } else if i < 44_010 {
+                None
+            } else {
+                Some(-5.0 * x[0])
+            };
+            let p = m.step(&x, &[Some(1.0 + x[0]), y1], 1.0, 1.0).pred;
+            if i >= 44_010 {
+                preds.push(p[1] / x[0]);
+            }
+        }
+        println!("intercept {intercept}: slopes after the return {preds:?}");
+        let floor = usize::from(intercept) + 1;
+        for (i, slope) in preds.iter().enumerate() {
+            if i < floor {
+                assert!(slope.is_nan(), "intercept {intercept}, row {i}: {slope}");
+            } else {
+                assert!(
+                    (slope + 5.0).abs() < 0.5,
+                    "intercept {intercept}, row {i}: slope {slope}"
+                );
+            }
+        }
+    }
+}
