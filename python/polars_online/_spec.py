@@ -988,10 +988,14 @@ def ewridge(
     A system can also factorize and still be too nearly singular for its
     solve to keep a digit: rounding can leave a matrix past ``1/u`` in
     condition positive definite, and its coefficients then come out wrong by
-    more than their own size. So each factorization that needed no jitter
-    estimates the condition of the system with each column scaled by the
-    root of its diagonal, ``H = D^-1 A D^-1``, which is what a Cholesky solve
-    is accurate to, whatever the features' units. The estimate is
+    more than their own size. So each factorization estimates the condition
+    of the system with each column scaled by the root of its diagonal,
+    ``H = D^-1 A D^-1``, which is what a Cholesky solve is accurate to,
+    whatever the features' units; one that needed a jitter ``delta`` on the
+    diagonal is judged as the system it solves, ``A + delta I``, whose
+    ``||H^-1||_1`` the first rung (``delta`` at ``1e-12`` of the mean
+    diagonal) leaves near ``1e12``, past the limit from about 30
+    coefficients. The estimate is
     ``||H^-1||_1`` by Hager and Higham's method (LAPACK's ``dlacn2``), from
     the factor in ``O(k^2)``. The factorization and solve are backward
     stable with a backward error of at most ``k * gamma_{3k+1}`` in ``H``'s

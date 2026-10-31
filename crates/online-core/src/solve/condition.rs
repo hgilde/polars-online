@@ -74,9 +74,19 @@
 //! `1e-11` and `1e-13` read at least `0.028` (`k = 3`, limit `0.011`; 7,545
 //! solves over 20 streams of 800 rows, their first ten rows left out).
 //!
-//! A factor that needed jitter is not judged here: it factors `A + δI`, a
-//! ridge the solver chose with `δ` at least `1e-12` of the mean diagonal,
-//! which bounds its condition, and its solve is already counted as a failure.
+//! **A factor that needed jitter** factors `A + δI`, a ridge the solver
+//! chose with `δ` at least `1e-12` of the mean diagonal, and is judged as
+//! the system it solves: `H = D⁻¹ (A + δI) D⁻¹` with `D = diag(√(a_ii + δ))`.
+//! The ridge bounds that condition, but not inside the limit at every
+//! order. On a matrix whose factorization fails as given -- one with a
+//! direction of no variance, its smallest eigenvalue 0 to rounding -- the
+//! first rung's `δ`, `1e-12` of the mean diagonal, leaves `‖H⁻¹‖₂` near
+//! `1e12`, and `‖H⁻¹‖₁` at least that and up to `k` times it. The limit is
+//! `1.7e12` at `k = 24`, below `1e12` from `k = 32` and `4.0e11` at `k = 50`,
+//! so a first-rung solve can be past it from the twenties, and is from the
+//! thirties. Such a solve was served unjudged, its jitter counted as a
+//! failure; it is refused now, as a factor past the limit that needed none
+//! is.
 
 use super::SpdFactor;
 
@@ -92,9 +102,10 @@ const ITMAX: usize = 5;
 const STACK: usize = 32;
 
 impl SpdFactor {
-    /// `‖H⁻¹‖₁`, estimated, for `H = D⁻¹ A D⁻¹` the equilibrated matrix of
-    /// the `A` this factor holds (row-major `k*k`, as factorized: the factor
-    /// must have needed no jitter), with `D = diag(√a_ii)`. A lower bound,
+    /// `‖H⁻¹‖₁`, estimated, for `H = D⁻¹ (A + δI) D⁻¹` the equilibrated
+    /// matrix of the system this factor holds, `A` row-major `k*k` as given
+    /// to the factorization and `δ` its jitter ([`Self::jitter`], 0 for a
+    /// factor that needed none), with `D = diag(√(a_ii + δ))`. A lower bound,
     /// usually exact (the module docs). Infinite where a product overflows
     /// or is not a number, which only a matrix as good as singular gives:
     /// `H`'s entries are at most 1 in size.
@@ -104,7 +115,8 @@ impl SpdFactor {
         })
     }
 
-    /// Run `f` with `D`'s diagonal, `√a_ii`, and a working space of `2k`,
+    /// Run `f` with `D`'s diagonal, `√(a_ii + δ)` (`δ` the jitter, 0 where
+    /// none was needed: the same bits as `√a_ii`), and a working space of `2k`,
     /// on the stack up to [`STACK`] columns; infinite where the factor's
     /// columns cannot be read as slices.
     fn with_work(&self, a: &[f64], f: impl FnOnce(&Self, &[f64], &mut [f64]) -> f64) -> f64 {
@@ -123,7 +135,7 @@ impl SpdFactor {
         };
         let (d, work) = buf.split_at_mut(k);
         for (i, di) in d.iter_mut().enumerate() {
-            *di = a[i * k + i].sqrt();
+            *di = (a[i * k + i] + self.jitter).sqrt();
         }
         f(self, d, work)
     }
@@ -212,14 +224,11 @@ impl SpdFactor {
     /// Whether this factor's system is past the condition at which its
     /// solve's forward-error bound reaches 1, so that no digit of the
     /// solution is guaranteed: `3 k γ_{3k+1} ‖H⁻¹‖₁ ≥ 1` (the module docs
-    /// derive it). `a` is the matrix factorized, row-major. `false` for a
-    /// factor that needed jitter, whose solve is already counted. The
-    /// comparison bound decides where it is inside the limit; the estimate
-    /// decides the rest.
+    /// derive it). `a` is the matrix given to the factorization, row-major;
+    /// a factor that needed jitter is judged as the `A + δI` it holds (the
+    /// module docs). The comparison bound decides where it is inside the
+    /// limit; the estimate decides the rest.
     pub fn carries_no_digit(&self, a: &[f64]) -> bool {
-        if self.attempts() != 0 {
-            return false;
-        }
         let limit = digit_limit(self.order());
         let norm = self.judged_norm(a, limit);
         // An estimate that is NaN is refused, as one past the limit is.

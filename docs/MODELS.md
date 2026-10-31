@@ -185,17 +185,20 @@ keep a digit, and then `ewridge` withholds the fit.** Rounding can leave a
 matrix past `1/u` in condition positive definite, `u = 2^-53`, and its
 coefficients then come out wrong by more than their own size. Two features
 equal to within `1e-11` of their spread gave slopes of -364.1 and 363.1 for a
-truth of 1 and -2. So each factorization that needed no jitter estimates the
-condition of the system with each column scaled by the root of its
-diagonal. That is what a Cholesky solve is accurate to, so the features'
-units do not enter. An upper bound from the factor settles most systems at
+truth of 1 and -2. So each factorization estimates the condition of the
+system with each column scaled by the root of its diagonal. That is what a
+Cholesky solve is accurate to, so the features' units do not enter. A
+factorization that needed jitter is judged as the system it solves, `A + δI`:
+the first rung's `δ`, `1e-12` of the mean diagonal, leaves `‖H⁻¹‖₁` near
+`1e12` on a design with a column of no variance of its own, past the limit
+from about 30 coefficients. An upper bound from the factor settles most systems at
 the cost of one solve with it, and the rest take Hager and Higham's
 estimate, about four. Where it puts the solve's
 forward-error bound at 1 or more, no digit of the coefficients is promised:
 
 | | |
 |---|---|
-| the estimate | `‖H⁻¹‖₁`, `H = D⁻¹ A D⁻¹`, `D = diag(√a_ii)`, by Hager's method as LAPACK's `dlacn2` runs it |
+| the estimate | `‖H⁻¹‖₁`, `H = D⁻¹ (A + δI) D⁻¹`, `D = diag(√(a_ii + δ))`, `δ` the jitter (0 where none was needed), by Hager's method as LAPACK's `dlacn2` runs it |
 | the solve's backward error in `H` | at most `η = k γ_{3k+1}` an entry, `γ_m = m u / (1 − m u)` |
 | the forward-error bound | `2κη / (1 − κη)`, with `κη = k γ_{3k+1} ‖H⁻¹‖₁` |
 | withheld where | `3 k γ_{3k+1} ‖H⁻¹‖₁ ≥ 1`: at `k = 3` from `1.0e14`, at `k = 10` from `9.7e12`, at `k = 50` from `4.0e11` |

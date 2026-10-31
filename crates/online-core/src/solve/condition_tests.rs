@@ -168,14 +168,25 @@ fn the_alternating_vector_catches_a_matrix_that_fools_the_iteration() {
     assert!(f.carries_no_digit(&a));
 }
 
-/// A factor that needed jitter is never judged: it factors `A + δI`, and
-/// its solve is counted already. One that factorized as given and is past
-/// the limit is refused, and so is one whose estimate is not a number.
+/// A factor that needed jitter is judged as the `A + δI` it holds: at
+/// `k = 2` the first rung's `‖H⁻¹‖₁`, `1/(1 − c)` at the correlation
+/// `c = 1/(1 + δ)` it leaves, near `1/δ = 1e12`, is inside the
+/// limit (`1/(42u)`, `2.1e14`), and the solve is served. One that
+/// factorized as given and is past the limit is refused, and so is one
+/// whose estimate is not a number.
 #[test]
-fn a_jittered_factor_is_not_judged_and_a_singular_one_is() {
+fn a_jittered_factor_is_judged_as_the_matrix_it_holds() {
     let singular = [1.0, 1.0, 1.0, 1.0];
     let f = SpdFactor::of(&singular, 2).expect("a jitter rescues it");
-    assert!(f.attempts() > 0);
+    assert_eq!(f.attempts(), 1);
+    let est = f.equilibrated_inverse_norm(&singular);
+    let delta = f.jitter();
+    let held = [1.0 + delta, 1.0, 1.0, 1.0 + delta];
+    let want = exact(&held, 2);
+    assert!(
+        (est / want - 1.0).abs() < 1e-3 && (9e11..1.1e12).contains(&est),
+        "{est:e} of {want:e}"
+    );
     assert!(!f.carries_no_digit(&singular));
     // A correlation of `1 − 2⁻⁵⁰`: positive definite in floating point,
     // with `‖H⁻¹‖₁` near `2⁵⁰`, past the limit at `k = 2` (`1/(42u)`).
@@ -510,4 +521,71 @@ fn the_iteration_ends_where_the_estimate_stops_growing() {
         x.copy_from_slice(&y);
     });
     assert_eq!(got, want);
+}
+
+/// A first-rung jittered solve at `k = 50` is past the limit, and refused:
+/// a correlation matrix of 60 rows of 40 independent columns, the other 10
+/// sums of them, so that 10 directions carry no variance and its
+/// factorization as given fails. The first rung's `δ = 1e-12` leaves
+/// `‖H⁻¹‖₁` past `1e12`, against the limit's `4.0e11`; the estimate reads
+/// the oracle's `‖H⁻¹‖₁` of `A + δI`. It was served, unjudged, before
+/// (review round 10, S4-4).
+#[test]
+fn a_first_rung_jittered_solve_past_the_limit_is_refused() {
+    let k = 50;
+    let n = 60;
+    let mut s = 50u64;
+    let mut found = 0;
+    for _ in 0..20 {
+        let rows: Vec<Vec<f64>> = (0..n)
+            .map(|_| {
+                let mut x: Vec<f64> = (0..40).map(|_| draw(&mut s)).collect();
+                for j in 0..10 {
+                    let v = x[j] + x[j + 10] - x[j + 20];
+                    x.push(v);
+                }
+                x
+            })
+            .collect();
+        let mean: Vec<f64> = (0..k)
+            .map(|j| rows.iter().map(|r| r[j]).sum::<f64>() / n as f64)
+            .collect();
+        let mut a = vec![0.0; k * k];
+        for i in 0..k {
+            for j in 0..k {
+                a[i * k + j] = rows
+                    .iter()
+                    .map(|r| (r[i] - mean[i]) * (r[j] - mean[j]))
+                    .sum::<f64>();
+            }
+        }
+        let d: Vec<f64> = (0..k).map(|i| a[i * k + i].sqrt()).collect();
+        for p in 0..k * k {
+            a[p] /= d[p / k] * d[p % k];
+        }
+        for i in 0..k {
+            a[i * k + i] = 1.0;
+        }
+        let Some(f) = SpdFactor::of(&a, k) else {
+            continue;
+        };
+        if f.attempts() != 1 {
+            continue;
+        }
+        found += 1;
+        let mut held = a.clone();
+        for i in 0..k {
+            held[i * k + i] += f.jitter();
+        }
+        let want = exact(&held, k);
+        let est = f.equilibrated_inverse_norm(&a);
+        println!("jitter {:e}: estimate {est:e}, oracle {want:e}", f.jitter());
+        assert!(
+            est >= want / 3.0 && est <= want * 1.01,
+            "{est:e} of {want:e}"
+        );
+        assert!(want > 1e12 && digit_limit(k) < 4.1e11, "{want:e}");
+        assert!(f.carries_no_digit(&a), "{est:e}");
+    }
+    assert!(found >= 10, "first-rung factors {found} of 20");
 }
