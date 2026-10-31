@@ -522,11 +522,45 @@ def _within(name: str, version: str) -> float:
 
 
 #: A diagnosed state of schema 61-63 goes on to this build's values in its
-#: windowed `cusum_*` and `cusum_sq_*` fields while their sums are young:
-#: their null's share is read at the sums' age (CLAUDE.md rule 5's fourth
-#: exception). Those fields are held to their nulls alone; every other field
-#: of a diagnosed spec goes on to the bit.
-YOUNG = ("cusum_",)
+#: windowed `cusum_*` and `cusum_sq_*` fields while their sums are young
+#: (CLAUDE.md rule 5's fourth exception): each is its sum over the square
+#: root of its null's share of the plain variance, which this build reads at
+#: the sums' age, `r(x)`, where a release read the filled share `r(inf)` at
+#: every age. So where a young field parts from the release's, the two are
+#: one sum read at two shares, `got / release = sqrt(r(inf) / r(x))`, and the
+#: share it implies, `r(x) = r(inf) (release / got)²`, lies above the filled
+#: one and at most 1 (the plain sum's, `x = 0`). The filled shares, by field
+#: prefix: the CUSUM of squares' 1/2 (`cusum_null` at its own memory) in every
+#: diagnosed spec; the CUSUM's `h_m / (h_m + h_c)` beside a fit that absorbs
+#: a level, least squares or a quantile fit with an intercept, 1/2 here, its
+#: fit's and its own memory being one; the other fits' CUSUM keeps the plain
+#: sum, share 1 at every age, so it has no young form and goes on to the bit
+#: (checks.rs, `cusum_absorber`). Measured 2026-10-31 on every 1.x release:
+#: every such difference implies a share in `(1/2, 1]`; `full_holt`'s, on the
+#: second half's rows 179-199 only, are its CUSUM of squares' first rows --
+#: its diagnostics wait for the trend's memory to settle, the spread for
+#: Kish's 10 rows, so its sums begin there, aged 0 to 0.5 (`q = e^{-x}` 1 to
+#: 0.61), and the release divided them by 1/2 from their first row.
+YOUNG_SQ = {"cusum_sq_": 0.5}
+YOUNG = {**YOUNG_SQ, "cusum_": 0.5}
+#: The diagnosed specs whose fit absorbs a level, so whose CUSUM is young too.
+ABSORBS = {"full_ewridge", "full_rls", "full_lasso", "full_kalman", "full_quantile"}
+
+
+def _young_rows(u: pl.Series, v: pl.Series, filled: float) -> tuple[np.ndarray, np.ndarray]:
+    """The rows where a young field ``u`` parts from the release's ``v`` as
+    one sum read at a younger share, and the rows where it parts otherwise:
+    a null against a number, a sign, or an implied share outside
+    ``(filled, 1]``."""
+    a = u.cast(pl.Float64).to_numpy()
+    b = v.cast(pl.Float64).to_numpy()
+    nan_a, nan_b = np.isnan(a), np.isnan(b)
+    differ = ~nan_a & ~nan_b & (a != b)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        share = filled * (b / a) ** 2
+    explained = differ & (a * b > 0) & (share > filled) & (share <= 1.0 + 1e-12)
+    return explained, (nan_a != nan_b) | (differ & ~explained)
+
 
 #: The fields whose arithmetic changed since 1.3.0 within rounding, by the
 #: CHANGELOG's Fixed entry: the residuals' skewness reads `m_2·√m_2`, two
@@ -588,13 +622,16 @@ def _differences(
     want: pl.DataFrame,
     *,
     within: float = 0.0,
-    young: tuple[str, ...] = (),
+    young: dict[str, float] | None = None,
     against: str = "the release's",
+    counted: dict[str, int] | None = None,
 ) -> list[str]:
     """Where ``got`` parts from ``want``, field by field: the first row, both
     values, how many rows and the largest gap relative to ``1 + |v|``. Every
     field ``want`` reports is compared; floats to the bit, or within
-    ``within``; a field starting with one of ``young`` by its nulls alone."""
+    ``within``; a field starting with a prefix of ``young`` to the bit but
+    on rows where it is the release's sum read at a younger share than the
+    prefix's filled one (`YOUNG`), which ``counted["young"]`` counts."""
     got, want = _plain(got), _plain(want)
     if got.height != want.height:
         return [f"{got.height} rows against {against} {want.height}"]
@@ -611,8 +648,14 @@ def _differences(
         if floats:
             gap, exact = _gaps(u, v)
             field = c.split(".", 1)[-1]
-            if young and field.startswith(young):
-                bad = gap == np.inf
+            prefix = next((p for p in young or {} if field.startswith(p)), None)
+            if prefix is not None:
+                explained, bad = _young_rows(u, v, (young or {})[prefix])
+                # The spec's own tolerance holds here too (`lasso`'s 1e-9
+                # moves the sums the share divides).
+                bad &= ~(gap <= within)
+                if counted is not None:
+                    counted["young"] = counted.get("young", 0) + int(explained.sum())
             else:
                 tol = max(within, ROUNDED[1]) if field.startswith(ROUNDED[0]) else within
                 bad = ~exact & ~(gap <= tol)
@@ -686,12 +729,13 @@ def test_a_moved_spec_goes_on_as_its_release_did(resumed):
     work = {name: reads for name, _, _, reads in probe.WORKLOAD}
     second = probe.stream().slice(probe.HALF)
     wrong: dict[str, list[str]] = {}
-    used = {"young": 0, "reset": 0}
+    used: dict[str, int] = {"young": 0, "reset": 0}
     for name in names:
         specs = [built[r] for r in work[name]] + [built[name]]
         bank = po.ModelBank.load(states / f"{name}.state", specs=specs)
         got = {"rows": bank.fit_predict(second).select(name), **probe.tables(bank, name)}
-        rule = dict(within=_within(name, version), young=YOUNG if name.startswith("full_") else ())
+        young = (YOUNG if name in ABSORBS else YOUNG_SQ) if name.startswith("full_") else None
+        rule = dict(within=_within(name, version), young=young)
         for table in sorted(p.name.split(".")[-2] for p in out.glob(f"{name}.*.parquet")):
             want = pl.read_parquet(out / f"{name}.{table}.parquet")
             if table not in got:
@@ -707,15 +751,36 @@ def test_a_moved_spec_goes_on_as_its_release_did(resumed):
                     mine.filter(pl.Series(after)), fresh, against="a fresh bank's"
                 )
                 mine, want = mine.filter(pl.Series(~after)), want.filter(pl.Series(~after))
-            wrong[f"{name}.{table}"] = _differences(mine, want, **rule)
-            if rule["young"] and _differences(mine, want, within=rule["within"]):
-                used["young"] += 1
+            wrong[f"{name}.{table}"] = _differences(mine, want, counted=used, **rule)
         # The rows were compared: the release wrote them, all of them.
         assert pl.read_parquet(out / f"{name}.rows.parquet").height == second.height, name
     # The exceptions were used: the comparisons they excuse ran, and moved.
     assert used["reset"] == len(set(RESETS) & set(names)) and used["young"], used
     wrong = {k: v for k, v in wrong.items() if v}
     assert not wrong, "\n".join(f"{k}: {line}" for k, v in sorted(wrong.items()) for line in v)
+
+
+def test_a_young_field_parts_only_as_the_same_sum_at_a_younger_share():
+    """`_young_rows` excuses a row only where this build's value is the
+    release's sum over the square root of a share above the filled one and
+    at most 1: the filled share itself, a value further from 0 than the
+    release's, a flipped sign and a null against a number are each refused."""
+    rel = pl.Series([1.0, -2.0, 3.0, 4.0, 5.0, None, 6.0, 7.0])
+    got = pl.Series(
+        [
+            1.0,  # the filled share: equal
+            -2.0 * np.sqrt(0.5 / 0.8),  # a share of 0.8
+            3.0 * np.sqrt(0.5),  # the plain sum, share 1
+            4.0 * np.sqrt(0.5 / 1.2),  # a share above 1
+            5.5,  # further from 0: a share below the filled one
+            1.0,  # a number where the release has none
+            -6.0,  # the sign flipped
+            None,  # none where the release has one
+        ]
+    )
+    explained, bad = _young_rows(got, rel, 0.5)
+    assert explained.tolist() == [False, True, True, False, False, False, False, False]
+    assert bad.tolist() == [False, False, False, True, True, True, True, True]
 
 
 def test_every_declared_move_names_a_spec_and_a_release():
