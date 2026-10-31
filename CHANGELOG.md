@@ -811,6 +811,17 @@ returns.
   (saved only when nonzero), and with `drift_action="reset"` a chunk keeps
   16 bytes a row more while it runs.
 
+### Known issues
+
+- **At 20% one-sided wild rows, `huber` and `sgd(loss="huber")` stay
+  captured in some streams.** That is the edge of Huber's breakdown: the
+  wild rows, all on one side of `x`, are 40% of the rows there, and the
+  refit of each target's first rows weighs every row by its residual from
+  the one-pass fit those rows have already pulled. Over 50 streams of
+  20,000 rows the default `huber_refit_rows=500` leaves 5 to 8 captured,
+  the worst slope 0.85 off; at 15% none is. A longer first window,
+  `huber_refit_rows=1000`, leaves fewer (task 282).
+
 ## [1.3.0] — 2026-10-24
 
 ### Added

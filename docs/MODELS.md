@@ -988,7 +988,13 @@ why five seeds did not show the captured ones. With a half-life of 5,000
 rows over 20,000 rows, the refit took the captured streams at 15% and 20%
 from 15 and 26 of 40 to 0 and 2. At 20% wild rows, 40% of those with `x`
 above 0, a first window of 200 rows can itself be captured, and one of 500
-rows now and then; 1,000 rows holds there. Over 20,000 rows 200 rows left
+rows now and then; 1,000 rows holds there. That is the edge of Huber's
+breakdown, not a fault to be fixed: the wild rows are 40% of the rows on
+their side of `x`, and the refit weighs each row by its residual from the
+one-pass fit they have already pulled, so over 50 streams of 20,000 rows
+the default leaves 5 to 8 captured, for `huber` and `sgd(loss="huber")`
+alike, the worst slope 0.85 off; at 15% none is, and a first window of
+1,000 rows leaves fewer. Over 20,000 rows 200 rows left
 the same 4 streams at 20% as 500 do, the worst by 0.18; over 2,000 rows the
 table shows what the longer default buys. `huber_refit_rows=0` turns the refit off.
 Under `huber_scale="rms"` it gives `huber` the numbers of the releases before it,
