@@ -19,6 +19,12 @@ pub mod bank_refit {
 pub mod bank_gated {
     include!("bank_gated.rs");
 }
+pub mod bank_reset_held {
+    include!("bank_reset_held.rs");
+}
+pub mod bank_unstable {
+    include!("bank_unstable.rs");
+}
 pub mod with_windows {
     include!("with_windows.rs");
 }
@@ -43,6 +49,8 @@ pub const ALL: &[&crate::Fixture] = &[
     &bank_reset::FIXTURE,
     &bank_refit::FIXTURE,
     &bank_gated::FIXTURE,
+    &bank_reset_held::FIXTURE,
+    &bank_unstable::FIXTURE,
     &with_windows::FIXTURE,
     &with_windows_int::FIXTURE,
     &with_windows_quantile::FIXTURE,

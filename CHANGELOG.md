@@ -745,6 +745,30 @@ returns.
   residuals a row early (`calibration_slope` up to 0.86 apart on `kalman`
   with a mean-reverting slot). `learned_clock` on that row showed the clock
   of the row that fired; it is null, as documented.
+- `drift_action="reset"` under an `embargo` starts the model over exactly
+  too (task 282). The detection fires as a held row is released,
+  and the first held row behind it read its clock step from the row that
+  fired, so the rebuilt model decayed by it: `rls` at `delta=100` predicted
+  up to 1.1e-2 away from a fresh bank fed the rows after the one that fired
+  (a slope break, `half_life=200`, an embargo of three steps). It reads 0
+  now, and the rows scored before it is released read the held rows' clock
+  without that step, so `pred`, `coef`, `weight_sum` and `settled_frac` are
+  the fresh bank's. The residual diagnostics still read the scores the held
+  rows were shown, which the model before the reset made. A row that
+  releases the row that fired and the one after it shows the second's clock
+  in `learned_clock`, where it was null.
+- After a drift reset, a skipped row right after the one that fired left
+  the next row at a clock step of 0; a fresh bank fed those rows steps it
+  from the skipped row, and so does the stream now. The row after a clock
+  reset on a skipped row read a step of 0 too, where it steps from that row
+  (task 282).
+- A chunk refused after one of its new groups crossed `refit_budget` took
+  back the groups and their reservations but not the notice naming that
+  group: `notices()` named a group the bank had forgotten, and the group
+  that crossed the budget in the next chunk was never named (task 282).
+- After a reset, the notices that a `min_weight` or `max_error_inflation`
+  is not met bound the rounding of the weight they project from by the rows
+  the rebuilt model has learned, not by every row of the stream (task 282).
 - `po.stream.with_windows` refuses a `session_gap` without `session` and a
   `restart_after_step_back` without `clock`, as a spec does; each was
   accepted before and did nothing (task 278).
@@ -814,6 +838,27 @@ returns.
   them in 0.8 ms, and its seeding row, the placement and the replay of the
   500 rows, takes 3.9 ms (medians of one native run, 2026-10-31; task 278,
   re-timed in task 282).
+- Under `drift_action="reset"`, which rows show a null `learned_clock` is
+  read from the rows the instances restarted at, one comparison a row; each
+  learned row read every slot's drift flag at its output row, a pass over
+  the slots of every instance (task 282). The step a fresh stream
+  reads after skipped rows costs one more clock step on each skipped row
+  under `drift_action="reset"`, and each row's plan in a chunk carries 8
+  more bytes, 128 from 120, still the 16 doubles a learning run's length
+  counts it as. Under an `embargo` a held row keeps 8 more bytes in memory
+  (saved only when nonzero), and with `drift_action="reset"` a chunk keeps
+  16 bytes a row more while it runs.
+
+### Known issues
+
+- **At 20% one-sided wild rows, `huber` and `sgd(loss="huber")` stay
+  captured in some streams.** That is the edge of Huber's breakdown: the
+  wild rows, all on one side of `x`, are 40% of the rows there, and the
+  refit of each target's first rows weighs every row by its residual from
+  the one-pass fit those rows have already pulled. Over 50 streams of
+  20,000 rows the default `huber_refit_rows=500` leaves 5 to 8 captured,
+  the worst slope 0.85 off; at 15% none is. A longer first window,
+  `huber_refit_rows=1000`, leaves fewer (task 282).
 
 ## [1.3.0] — 2026-10-24
 

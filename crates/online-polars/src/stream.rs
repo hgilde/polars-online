@@ -1698,12 +1698,16 @@ pub struct Persisted {
     /// written before it existed.
     #[serde(default)]
     pub decay_time: Vec<f64>,
-    /// Per model instance, whether it was restarted (a drift reset without
-    /// an `embargo`) and has learned no row since: its next accepted row
-    /// reads a step of 0, as a fresh stream's first row does
-    /// (`Instance::reset`, `run_instance`). Schema 64 (docs/PLAN.md task
-    /// 277); a file written before it holds none, which loads as `false`
-    /// for every instance.
+    /// Per model instance, whether it was restarted and has learned no row
+    /// since: the next row it learns reads the step a fresh stream's first
+    /// accepted row does, 0 unless rows were skipped before it
+    /// (`RowPlan::d_fresh`), and under an `embargo` a row it scores reads the
+    /// held rows' clock as that fresh stream does (`Stream::front_cut`;
+    /// `Instance::reset`, `run_instance`). Set by a drift reset, with or
+    /// without an `embargo` (review round 10, S7-1), and by a clock reset,
+    /// whose own row's step is 0. Schema 64 (docs/PLAN.md task 277); a file
+    /// written before it holds none, which loads as `false` for every
+    /// instance.
     #[serde(default)]
     pub restarted: Vec<bool>,
     /// Whether the bank gave this group's Huber refits up, past its spec's
@@ -1801,6 +1805,17 @@ pub struct Persisted {
     /// spec without one writes the bytes it did.
     #[serde(default, skip_serializing_if = "CoefCadence::is_unset")]
     pub coef_cadence: CoefCadence,
+    /// The clock a fresh stream begun at the first row skipped since the
+    /// last accepted one would keep, while such rows run: what a drift
+    /// reset's next accepted row steps by when rows were skipped in between
+    /// (`RowPlan::d_fresh`). A fresh bank fed the rows after the one that
+    /// fired starts its clock at the first of them, accepted or not: a
+    /// skipped first row reads no step, sets the clock the next row steps
+    /// from and folds the steps of the skipped rows after it. Kept only
+    /// under `drift_action = "reset"`, and only between a skipped row and
+    /// the next accepted one, so no other state's bytes move. Schema 64.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_fold: Option<ClockState>,
 }
 
 /// [`Persisted::score_pred`] holds nothing worth writing.
@@ -1843,6 +1858,14 @@ pub struct Notified {
     /// that never met it keeps its bytes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unstable: bool,
+    /// The rows the instance has learned since a reset restarted it, `None`
+    /// before any: what bounds the rounding of the weight the "not met"
+    /// notices project from ([`settled_weight`]), in place of the stream's
+    /// accepted rows, through most of which the rebuilt model's weight was
+    /// never carried (review round 10, S7-7). Schema 64; written only once
+    /// set, so a state never restarted keeps its bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub learned_since_restart: Option<u64>,
 }
 
 /// The notice of an `sgd` target withheld because its learning rate is past
@@ -2257,9 +2280,45 @@ impl Stream {
             return false;
         };
         let time = self.persisted.decay_time.get(i).copied().unwrap_or(0.0);
-        let held = self.persisted.pending_clock.get(i).copied().unwrap_or(0.0);
-        let settled = settled_frac(decay, time + held);
+        let settled = settled_frac(decay, time + self.held_clock(i));
         settled.is_finite() && settled < min_settled
+    }
+
+    /// Whether a drift detection restarts this stream's models: its spec
+    /// says `drift_action = "reset"` and it keeps the detectors.
+    fn resets_on_drift(&self, spec: &Spec) -> bool {
+        !self.persisted.drift.is_empty() && spec.drift_action.as_deref() == Some("reset")
+    }
+
+    /// The part of the clock of the rows held under `embargo` that a fresh
+    /// bank fed the rows after a drift reset's row never sees: the first
+    /// held row's `d_clock`, its step from the row that fired, less its
+    /// `d_fresh`, the step it reads as that fresh bank's first accepted
+    /// row. What an instance restarted since that row arrived takes out of
+    /// the held clock for a row it scores after every row held now; `None`
+    /// where no row is held, so that the row scored is the first such an
+    /// instance will learn.
+    fn front_cut(&self) -> Option<f64> {
+        self.persisted
+            .pending
+            .front()
+            .map(|r| r.d_clock - r.d_fresh)
+    }
+
+    /// The clock the rows held under `embargo` have covered, as instance
+    /// `i`'s next row reads it: the held rows' summed steps, or, for an
+    /// instance restarted since the first of them arrived, those a fresh
+    /// bank fed the rows after the restart reads -- the first held row's
+    /// step from the row that fired taken out ([`Self::front_cut`]),
+    /// none while no row is held.
+    fn held_clock(&self, i: usize) -> f64 {
+        let held = self.persisted.pending_clock.get(i).copied().unwrap_or(0.0);
+        if self.persisted.pending_clock.is_empty()
+            || !self.persisted.restarted.get(i).copied().unwrap_or(false)
+        {
+            return held;
+        }
+        self.front_cut().map_or(0.0, |cut| held - cut)
     }
 
     /// Summed over this stream's model instances (one per half-life).
@@ -2320,7 +2379,7 @@ impl Stream {
         // rows' alone, the clock its weight has settled on, or the ceiling
         // pairs a weight with a fraction it has not reached (review round 5,
         // C1).
-        let held = self.persisted.pending_clock.first().copied().unwrap_or(0.0);
+        let held = self.held_clock(0);
         let settled = decay.map_or(f64::NAN, |d| settled_frac(d, decay_time + held));
         let learned = decay.map_or(f64::NAN, |d| settled_frac(d, decay_time));
         let model = self.models.first().map(|(_, m)| m);
@@ -2615,6 +2674,7 @@ impl Stream {
                     .collect(),
                 last_session: None,
                 coef_cadence: CoefCadence::default(),
+                restart_fold: None,
             },
             min_weight: gate_floors(spec),
             models,
@@ -2912,6 +2972,12 @@ impl Stream {
         if let Some(summary) = &p.summary {
             summary.validate(spec, p.rows_seen)?;
         }
+        // The fresh stream's clock serves a drift reset alone: a state saved
+        // under a spec that reset on drift, loaded under one that does not,
+        // has none to keep.
+        if !(spec.drift_action.as_deref() == Some("reset") && !p.drift.is_empty()) {
+            p.restart_fold = None;
+        }
         stream.persisted = p;
         Ok(stream)
     }
@@ -3027,6 +3093,10 @@ impl Stream {
     ) -> Result<Scheduled, ClockRefusal> {
         let n_rows = rows.len();
         let mut clock_state = self.persisted.clock.clone();
+        // The fresh stream's clock a drift reset's next row steps by
+        // (`RowPlan::d_fresh`), only where a detection restarts the models.
+        let fresh_steps = self.resets_on_drift(spec);
+        let mut restart_fold = self.persisted.restart_fold.clone();
         let mut rows_seen = self.persisted.rows_seen;
         let mut fed = self.persisted.fed;
         let coef_plan = CoefPlan::of(spec);
@@ -3065,6 +3135,24 @@ impl Stream {
             if let Some(raw) = adv.backwards {
                 return Err(ClockRefusal::new(raw, row, adv.disorder, c, prev));
             }
+            // The step this row reads as a fresh stream's first accepted row,
+            // that stream begun right after the last accepted row: none
+            // where that row was the one before, else the clock of a fresh
+            // stream whose first row was the first skipped since, which
+            // reads no step there and folds the skipped rows after it.
+            let d_fresh = if !fresh_steps {
+                0.0
+            } else if accept {
+                restart_fold.take().map_or(0.0, |mut f| {
+                    f.advance_stamped(cfg, &self.exact_caps, c, session.map(|s| s[i]), true)
+                        .d_clock
+                })
+            } else {
+                restart_fold
+                    .get_or_insert_with(ClockState::new)
+                    .advance_stamped(cfg, &self.exact_caps, c, session.map(|s| s[i]), false);
+                0.0
+            };
             // Saturating, as every count the bank keeps (task 160, PA2).
             if accept {
                 rows_seen = rows_seen.saturating_add(1);
@@ -3090,6 +3178,7 @@ impl Stream {
                 i,
                 pending: usize::MAX,
                 d_clock: adv.d_clock,
+                d_fresh,
                 elapsed_step: adv.elapsed,
                 stamp: adv.stamp,
                 clock: shown,
@@ -3112,6 +3201,7 @@ impl Stream {
         }
         Ok(Scheduled {
             clock: clock_state,
+            restart_fold,
             rows_seen,
             fed,
             coef_cadence,
@@ -3185,6 +3275,7 @@ impl Stream {
             features,
             targets,
             formulas,
+            None,
         );
         // A reset rebuilds each instance's model and its residual ring, as
         // `Instance::reset` does, so their shadows start empty.
@@ -3295,6 +3386,7 @@ impl Stream {
         // the stream exactly as it was.
         let Scheduled {
             clock: clock_state,
+            restart_fold,
             rows_seen,
             fed,
             coef_cadence,
@@ -3317,6 +3409,7 @@ impl Stream {
         }
 
         self.persisted.clock = clock_state;
+        self.persisted.restart_fold = restart_fold;
         let rows_before = self.persisted.rows_seen;
         self.persisted.rows_seen = rows_seen;
         self.persisted.fed = fed;
@@ -3357,6 +3450,11 @@ impl Stream {
         // Rewrites the plan list into (release, ..., score this row) order,
         // and hands the released rows' values out beside it. Release depends
         // on the rows alone, so chunking cannot move a single one.
+        // What a restarted instance takes out of the held rows' clock for
+        // each row scored (`Stream::front_cut`), kept where a drift
+        // detection restarts the models under an `embargo`.
+        let mut front_cuts: Vec<Option<f64>> = Vec::new();
+        let keep_cuts = self.embargo.is_some() && self.resets_on_drift(spec);
         let released = Self::apply_label_delay(
             self.embargo,
             &mut self.persisted.pending,
@@ -3366,6 +3464,7 @@ impl Stream {
             features,
             targets,
             formulas,
+            keep_cuts.then_some(&mut front_cuts),
         );
 
         // A released row whose formula target resolved with a value, and
@@ -3438,6 +3537,9 @@ impl Stream {
             n_rows,
             rows_before,
         );
+        // The plans, by position, after which a drift detection restarted
+        // the models, in order.
+        let mut fired: Vec<usize> = Vec::new();
         if coupled && insts.len() > 1 {
             for pi in 0..plans.len() {
                 let mut seen = false;
@@ -3452,10 +3554,13 @@ impl Stream {
                         &released,
                         &min_weight,
                         false,
+                        None,
+                        &front_cuts,
                     );
                 }
                 if seen {
                     insts.iter_mut().for_each(Instance::reset);
+                    fired.push(pi);
                 }
             }
         } else if insts.len() > 1 {
@@ -3471,6 +3576,8 @@ impl Stream {
                     &released,
                     &min_weight,
                     false,
+                    None,
+                    &front_cuts,
                 );
             });
         } else if let Some(inst) = insts.first_mut() {
@@ -3484,6 +3591,8 @@ impl Stream {
                 &released,
                 &min_weight,
                 drift_resets,
+                Some(&mut fired),
+                &front_cuts,
             );
         }
         drop(insts);
@@ -3496,16 +3605,15 @@ impl Stream {
         // clock reset at its own row, a drift reset after the row that
         // fired, which only the instances above know -- so this runs after
         // them. The rebuilt model has learned from nothing, so the next row
-        // shows none, as a fresh bank's first row does (task 278). A
-        // detection is flagged on the row being output (`drift_ri`); every
-        // row learned at that output row that may have fired clears after
-        // its own lesson, so the last of them leaves it cleared.
-        let fired = |plan: &RowPlan| {
-            drift_resets
-                && plan.drift_ri != usize::MAX
-                && out.drift.chunks(n_rows.max(1)).any(|c| c[plan.drift_ri])
-        };
-        for plan in &plans {
+        // shows none, as a fresh bank's first row does (task 278). The
+        // instances above recorded the plans that fired, in order, so the
+        // test is one comparison a row; a row released after the one that
+        // fired, at the same output row, was learned by the rebuilt model
+        // and shows (review round 10, S7-2 and S7-8: the flags of every
+        // slot at the output row were read for each plan, and nulled the
+        // rows released after the one that fired too).
+        let mut fired = fired.into_iter().peekable();
+        for (pi, plan) in plans.iter().enumerate() {
             if plan.reset {
                 self.persisted.last_learned = None;
             }
@@ -3513,8 +3621,9 @@ impl Stream {
                 out.scored_clock[plan.ri] = plan.clock;
                 out.learned_clock[plan.ri] = self.persisted.last_learned;
             }
+            let restarted_here = fired.next_if_eq(&pi).is_some();
             if plan.accept && plan.learn && plan.w > 0.0 {
-                self.persisted.last_learned = if fired(plan) {
+                self.persisted.last_learned = if restarted_here {
                     None
                 } else if plan.direct() {
                     plan.clock
@@ -3599,6 +3708,14 @@ impl Stream {
                 i,
                 pending: usize::MAX,
                 d_clock: adv.d_clock,
+                // The step from the last learned row as a restarted
+                // instance's fresh bank reads it: none, or the clock since
+                // the first row skipped after the last accepted one.
+                d_fresh: self.persisted.restart_fold.as_ref().map_or(0.0, |f| {
+                    f.clone()
+                        .advance_scoring(cfg, clock.map(|c| c.at(i)), session.map(|s| s[i]))
+                        .d_clock
+                }),
                 elapsed_step: adv.d_clock,
                 // Scored, never learned: no window moves, no row is held.
                 stamp: None,
@@ -3756,6 +3873,12 @@ impl Stream {
             weighted_autocorr: self.persisted.weighted_autocorr,
             ungated_drift: self.persisted.ungated_drift,
         };
+        // Every row scored sits after every row held now.
+        let front_cuts: Vec<Option<f64>> = if self.embargo.is_some() && self.resets_on_drift(spec) {
+            vec![self.front_cut(); n_rows]
+        } else {
+            Vec::new()
+        };
         let models = models.iter().map(|(_, m)| ModelRef::Score(m));
         let rings = self
             .persisted
@@ -3776,10 +3899,30 @@ impl Stream {
         if insts.len() > 1 {
             use rayon::prelude::*;
             insts.par_iter_mut().for_each(|inst| {
-                run_instance(inst, plans, features, targets, &[], &self.min_weight, false);
+                run_instance(
+                    inst,
+                    plans,
+                    features,
+                    targets,
+                    &[],
+                    &self.min_weight,
+                    false,
+                    None,
+                    &front_cuts,
+                );
             });
         } else if let Some(inst) = insts.first_mut() {
-            run_instance(inst, plans, features, targets, &[], &self.min_weight, false);
+            run_instance(
+                inst,
+                plans,
+                features,
+                targets,
+                &[],
+                &self.min_weight,
+                false,
+                None,
+                &front_cuts,
+            );
         }
     }
 }
@@ -4031,6 +4174,7 @@ pub fn marginal_shards(spec: &Spec, model: &AnyModel) -> usize {
 /// after the rows, for the caller to commit, and the plan of each row.
 struct Scheduled {
     clock: ClockState,
+    restart_fold: Option<ClockState>,
     rows_seen: u64,
     fed: u64,
     coef_cadence: CoefCadence,
@@ -4054,6 +4198,16 @@ struct RowPlan {
     /// for a row read from the columns.
     pending: usize,
     d_clock: f64,
+    /// The step this row reads as the first accepted row of a stream begun
+    /// right after the previous accepted row: 0 where that row was the one
+    /// before it; after skipped rows, the step from the first of them, the
+    /// clock a fresh stream keeps over its skipped first rows
+    /// ([`Persisted::restart_fold`]). What an instance a drift reset
+    /// restarted reads in place of `d_clock`, since a fresh bank fed the
+    /// rows after the one that fired starts there ([`Persisted::restarted`]).
+    /// Computed only under `drift_action = "reset"`; 0 elsewhere, where
+    /// only a clock reset restarts an instance, at a row whose step is 0.
+    d_fresh: f64,
     /// The time that passed since the previous accepted row, uncapped
     /// ([`online_core::ClockAdvance::elapsed`]): what an `audit` counts a
     /// step as (review 6, C-5), where every model decays by `d_clock`, the
@@ -4227,6 +4381,13 @@ struct Instance<'a> {
     pending_clock: Option<&'a mut f64>,
 }
 
+/// The steps a weight an instance reads may have been carried through,
+/// which [`settled_weight`] bounds its rounding by: the stream's accepted
+/// rows `steps`, or the rows learned since a restart.
+fn rounding_steps(steps: u64, notified: &Notified) -> f64 {
+    notified.learned_since_restart.unwrap_or(steps) as f64
+}
+
 impl Instance<'_> {
     /// Restart this instance: the same thing a clock reset or a drift break
     /// does, applied to one instance rather than the whole stream.
@@ -4254,20 +4415,30 @@ impl Instance<'_> {
         // drift reset keeps them, and each teaches the rebuilt model as it
         // is released, its delta moving from the held clock to the decay
         // time as any held row's does, so the held clock stays as it stands
-        // -- the kept rows' summed `d_clock`, which the rebuilt model will
-        // decay by. Zeroed here, each release took back a delta the reset
-        // had never added, and `settled_frac` left the held rows out for
-        // the rest of the stream (review round 4, PB1). A clock reset drops
-        // the rows, and the held clock with them (`run_instance`).
+        // -- the kept rows' summed `d_clock`. Zeroed here, each release took
+        // back a delta the reset had never added, and `settled_frac` left
+        // the held rows out for the rest of the stream (review round 4,
+        // PB1). A clock reset drops the rows, and the held clock with them
+        // (`run_instance`).
         //
-        // Without an `embargo` the restart is marked ([`Persisted::restarted`]):
-        // the next accepted row reads a step of 0, as a fresh stream's first
-        // row does, and its learning clears the mark (`run_instance`). The
-        // mark is state, so it crosses a chunk boundary and a save with the
-        // rebuilt model. Under an `embargo` the held rows carry their own
-        // steps into the rebuilt model, so nothing is marked.
+        // The restart is marked ([`Persisted::restarted`]): the next row the
+        // instance learns reads the step a fresh stream begun after the row
+        // that fired reads there ([`RowPlan::d_fresh`]) -- 0, as a fresh
+        // stream's first row, unless rows were skipped in between -- and
+        // its learning clears the mark (`run_instance`). Under an `embargo`
+        // that row is the first held one, whose own step from the row that
+        // fired the held clock goes on counting until it is released; a row
+        // scored meanwhile reads the held clock without it
+        // ([`Stream::front_cut`]). Unmarked under an `embargo`, the first
+        // held row decayed the rebuilt model by that step, and `rls` after
+        // a slope break predicted up to 1.1e-2 away from a fresh bank
+        // (review round 10, S7-1). The mark is state, so it crosses a chunk
+        // boundary and a save with the rebuilt model.
         *self.decay_time = 0.0;
-        *self.restarted = self.pending_clock.is_none();
+        *self.restarted = true;
+        // The rows the rebuilt model has learned, which bound its rounding
+        // from here ([`Notified::learned_since_restart`]).
+        self.notified.learned_since_restart = Some(0);
         self.notified.restart_waits();
         if let Some(ring) = self.resid_win.as_mut() {
             *ring.get_mut() = resid_window(spec)
@@ -4324,6 +4495,17 @@ fn run_instance(
     // *at the row that fired*, not at the end of the chunk, or the rest of the
     // chunk keeps learning from the regime the detector just rejected.
     reset_on_drift: bool,
+    // Where a reset at the row that fired is recorded, by the plan's
+    // position in `plans`: the rows learned after it in the same output row
+    // were learned by the rebuilt model (`Stream::process_chunk`).
+    mut fired: Option<&mut Vec<usize>>,
+    // For each row only scored under an `embargo`, by its `ri`, the
+    // `Stream::front_cut` of the rows held when it was scored: what a
+    // restarted instance takes out of the held clock. Kept only where a
+    // drift detection restarts the models, and empty elsewhere, where only
+    // a clock reset restarts an instance: it drops every held row, and its
+    // own row and every row after it step as a fresh bank's would.
+    front_cuts: &[Option<f64>],
 ) -> bool {
     let mut drift_seen = false;
     // No clock column: the clock is the row count.
@@ -4365,7 +4547,7 @@ fn run_instance(
             .expect("spec was already validated")
             .gap_cap
     });
-    for plan in plans {
+    for (pi, plan) in plans.iter().enumerate() {
         if plan.reset {
             inst.reset();
             // The stream dropped its waiting rows at this row, skipped or
@@ -4374,6 +4556,13 @@ fn run_instance(
             inst.score_pred.clear();
             if let Some(c) = inst.pending_clock.as_deref_mut() {
                 *c = 0.0;
+            }
+            // A clock reset restarts the clock's own fold at its row, so a
+            // skipped one leaves the next accepted row stepping from it, as
+            // a fresh stream's skipped first row does: nothing left for the
+            // mark to take out (review round 10, S7-3).
+            if !plan.accept {
+                *inst.restarted = false;
             }
         } else {
             if plan.blend {
@@ -4408,18 +4597,36 @@ fn run_instance(
         if plan.direct() {
             inst.steps = inst.steps.saturating_add(1);
         }
-        // The first row a restarted instance reads is a fresh stream's first
-        // row: a step of 0, so nothing the rebuilt instance holds decays on
-        // it -- `rls`'s prior `delta I`, `kalman`'s `P0` and its process
-        // noise, a cadence's start, the settled clock. The row's own step
-        // belonged to the history the restart dropped. A clock reset's row
-        // has a step of 0 already; a drift reset's next row did not, and
-        // `rls` after one predicted up to 0.017 away from a fresh bank
-        // (task 278). Every use of the step below reads this one.
-        let restarted = *inst.restarted;
-        let d_clock = if restarted { 0.0 } else { plan.d_clock };
         let (i, ri, w) = (plan.i, plan.ri, plan.w);
         let (emit, learn) = (plan.emit, plan.learn);
+        if learn && let Some(n) = inst.notified.learned_since_restart.as_mut() {
+            *n = n.saturating_add(1);
+        }
+        // The first row a restarted instance learns is a fresh stream's
+        // first accepted row: a step of 0, so nothing the rebuilt instance
+        // holds decays on it -- `rls`'s prior `delta I`, `kalman`'s `P0` and
+        // its process noise, a cadence's start, the settled clock -- or,
+        // after skipped rows, the step from the first of them
+        // ([`RowPlan::d_fresh`]). The step from the row that fired belonged
+        // to the history the restart dropped. A clock reset's row has a step
+        // of 0 already; a drift reset's next row did not, and `rls` after
+        // one predicted up to 0.017 away from a fresh bank (task 278). Under
+        // an `embargo` the held rows' clock is read as that fresh bank's too
+        // ([`Stream::held_clock`]): the first held row's step from the row
+        // that fired is taken out of it, and while no row is held the row
+        // scored is the first. Every use of the step below reads this one.
+        let restarted = *inst.restarted;
+        let held_raw = inst.pending_clock.as_deref().copied().unwrap_or(0.0);
+        let (d_clock, held) = match (restarted, held_cap.is_some(), learn) {
+            (false, ..) => (plan.d_clock, held_raw),
+            (true, false, _) => (plan.d_fresh, held_raw),
+            (true, true, true) => (plan.d_fresh, held_raw - (plan.d_clock - plan.d_fresh)),
+            (true, true, false) => match front_cuts.get(ri) {
+                Some(Some(cut)) => (plan.d_clock, held_raw - cut),
+                Some(None) => (plan.d_fresh, 0.0),
+                None => (plan.d_clock, held_raw),
+            },
+        };
         let sc = &mut *inst.scratch;
         sc.ys.clear();
         // The features go to the model as the chunk holds them: one
@@ -4451,7 +4658,6 @@ fn run_instance(
         // 140); `summary` reads the exact one. A gate that is off -- every
         // model's but `ewridge`'s unless set (task 116) -- reads nothing:
         // `kalman`'s is `O(k²)` a row, paid only where it is used.
-        let held = inst.pending_clock.as_deref().copied().unwrap_or(0.0);
         let settled = settled_frac(inst.decay, *inst.decay_time + held);
         // The step a row is scored over: the clock since the last row the
         // model learned, as a bank fed only the matured rows scores it. A
@@ -4665,7 +4871,12 @@ fn run_instance(
                 && inst.notified.floor_withheld_for(tj, below, judged, now) >= half
                 && unmet_floor.is_none()
             {
-                let ceiling = settled_weight(weight, w, learned, inst.steps as f64);
+                let ceiling = settled_weight(
+                    weight,
+                    w,
+                    learned,
+                    rounding_steps(inst.steps, inst.notified),
+                );
                 if ceiling < min_weight[tj] {
                     unmet_floor = Some((tj, ceiling, weight));
                 }
@@ -4804,7 +5015,7 @@ fn run_instance(
                     settled: learned,
                     weight: step.n_eff,
                     row_weight: w,
-                    steps: inst.steps as f64,
+                    steps: rounding_steps(inst.steps, inst.notified),
                 })
                 .filter(|u| u.stays_shut(inst.spec));
         if let Some(unmet) = unmet {
@@ -4828,15 +5039,16 @@ fn run_instance(
             } else {
                 // Infinite: the model has not solved, its weight short of the
                 // floor its first solve needs, which no ratio can loosen.
-                let tops =
-                    projected_figure(settled_weight(step.n_eff, w, learned, inst.steps as f64))
-                        .map_or_else(
-                            || {
-                                "the rows so far are too uneven to project the weight it settles at"
-                                    .into()
-                            },
-                            |f| format!("at the row rate seen so far its weight tops out near {f}"),
-                        );
+                let tops = projected_figure(settled_weight(
+                    step.n_eff,
+                    w,
+                    learned,
+                    rounding_steps(inst.steps, inst.notified),
+                ))
+                .map_or_else(
+                    || "the rows so far are too uneven to project the weight it settles at".into(),
+                    |f| format!("at the row rate seen so far its weight tops out near {f}"),
+                );
                 format!(
                     "max_error_inflation = {max_infl:.3} has not been met on any row for a \
                      half-life since the stream settled (it is {:.0}% settled): {tops}, below \
@@ -5217,12 +5429,10 @@ fn run_instance(
         // the delta it decayed by: a capped gap counts as the cap (§8). A
         // row held under `embargo` parks its delta until its release
         // replays it.
+        // A restart zeroed it, so a restarted instance's first row leaves it
+        // at that row's fresh step.
         if learn {
-            *inst.decay_time = if restarted {
-                0.0
-            } else {
-                *inst.decay_time + d_clock
-            };
+            *inst.decay_time += d_clock;
             *inst.restarted = false;
         }
         if let Some(c) = inst.pending_clock.as_deref_mut() {
@@ -5340,6 +5550,9 @@ fn run_instance(
         }
         if reset_on_drift && row_drift {
             inst.reset();
+            if let Some(f) = fired.as_deref_mut() {
+                f.push(pi);
+            }
         }
         inst.scratch.step = step;
     }
@@ -5355,100 +5568,4 @@ fn run_instance(
 mod clock_check_tests;
 
 #[cfg(test)]
-mod projected_figure_tests {
-    use super::{projected_figure, settled_frac, settled_weight};
-    use online_core::Decay;
-
-    /// A notice gives a projected weight only when it is a positive, finite
-    /// number, in four decimals in the everyday range and four significant
-    /// figures outside it (task 208: a sparse target read "-0.0000", a heavy
-    /// row a ninety-digit negative).
-    #[test]
-    fn a_projection_is_printed_only_when_it_is_a_positive_weight() {
-        for bad in [
-            0.0,
-            -0.0,
-            -1e-9,
-            -2.4e88,
-            f64::NAN,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-        ] {
-            assert_eq!(projected_figure(bad), None, "{bad}");
-        }
-        assert_eq!(projected_figure(7.725).as_deref(), Some("7.7250"));
-        assert_eq!(projected_figure(1e-3).as_deref(), Some("0.0010"));
-        assert_eq!(projected_figure(3e-7).as_deref(), Some("3.0000e-7"));
-        assert_eq!(projected_figure(1e90).as_deref(), Some("1.0000e90"));
-        assert_eq!(projected_figure(999_999.0).as_deref(), Some("999999.0000"));
-        assert_eq!(projected_figure(1e6).as_deref(), Some("1.0000e6"));
-    }
-
-    /// `x` moved by `k` ulp: a libm that rounds the other way, or a step
-    /// further off.
-    fn nudged(x: f64, k: i64) -> f64 {
-        f64::from_bits((x.to_bits() as i64 + k) as u64)
-    }
-
-    /// Task 273: a target present on the first row alone, at half-life 5,
-    /// read 28 rows on. Its weight is that row's, decayed: `W = λ²⁸` by 28
-    /// multiplies, and `1 − s` is the same `2^(−28/5)` from one `exp2`, so
-    /// `W − w₁(1 − s)` is 0 and the computed one is their roundings. With
-    /// the wheel's `exp2` 1 ulp high it came out +5.7e-17, and the notice
-    /// advised lowering `min_weight` below "5.6858e-17"; on macOS's libm it
-    /// came out at or below 0, and the notice gave no figure. Within its
-    /// rounding the difference is 0 on every libm, here moved by up to 2
-    /// ulp either way.
-    #[test]
-    fn a_difference_within_its_rounding_projects_no_ceiling() {
-        for k in [-2, -1, 0, 1, 2] {
-            let lam = nudged((-1.0f64 / 5.0).exp2(), k);
-            let mut weight = 1.0;
-            for _ in 0..28 {
-                weight *= lam;
-            }
-            let settled = 1.0 - nudged((-28.0f64 / 5.0).exp2(), k);
-            let ceiling = settled_weight(weight, 1.0, settled, 29.0);
-            assert_eq!(
-                ceiling,
-                0.0,
-                "k = {k}: {weight:e} against {:e}",
-                1.0 - settled
-            );
-            assert_eq!(projected_figure(ceiling), None, "k = {k}");
-        }
-        // The same by literals, no libm: `W` one ulp above `1 − s`.
-        let settled = 0.98;
-        let weight = nudged(1.0 - settled, 1);
-        assert_eq!(settled_weight(weight, 1.0, settled, 1.0), 0.0);
-    }
-
-    /// The rounding band does not swallow a real ceiling, however small: a
-    /// regular stream of rows weighing 1e-9, one clock unit apart at
-    /// half-life 5, tops out at `w/(1 − 2^(−1/5)) = 7.725e-9`, which the
-    /// projection reads from the second row on (the doc above).
-    #[test]
-    fn a_small_real_ceiling_keeps_its_figure() {
-        let (w1, h) = (1e-9, 5.0);
-        let lam = (-1.0f64 / h).exp2();
-        let want = w1 / (1.0 - lam);
-        let mut weight = 0.0;
-        for n in 1..=60 {
-            weight = lam * weight + w1;
-            if n < 2 {
-                continue;
-            }
-            let settled = settled_frac(Decay::Halflife(h), (n - 1) as f64);
-            let ceiling = settled_weight(weight, w1, settled, n as f64);
-            assert!(
-                (ceiling - want).abs() <= 1e-12 * want,
-                "row {n}: {ceiling:e}"
-            );
-            assert_eq!(
-                projected_figure(ceiling).as_deref(),
-                Some("7.7250e-9"),
-                "row {n}"
-            );
-        }
-    }
-}
+mod projected_figure_tests;

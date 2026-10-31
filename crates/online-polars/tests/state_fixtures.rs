@@ -808,11 +808,103 @@ fn refit_run(bytes: &[u8], input: &DataFrame) -> Ran {
 }
 
 fn reset_run(bytes: &[u8], input: &DataFrame) -> Ran {
-    let mut bank = Bank::load_bytes(bytes, Some(&reset_specs()))?;
+    bank_run_of(&reset_specs(), bytes, input)
+}
+
+/// A bank of `specs` loaded from `bytes` and fed `input`.
+fn bank_run_of(specs: &[Spec], bytes: &[u8], input: &DataFrame) -> Ran {
+    let mut bank = Bank::load_bytes(bytes, Some(specs))?;
     let again = bank.save_bytes()?;
     let cols = bank.fit_predict(input).map_err(|e| e.to_string())?;
     let out = DataFrame::new(input.height(), cols).map_err(|e| e.to_string())?;
     Ok((again, vec![("fit_predict".into(), out)]))
+}
+
+/// The spec of the seventh bank file, `bank_reset_held`: `bank_reset`'s,
+/// under an `embargo`, on a stream with skipped rows (review round 10,
+/// S7-1 and S7-3): a held row after a skipped one carries the step it reads
+/// as a fresh stream's first, and a chunk that ends on a skipped row keeps
+/// the clock a fresh stream begun there would.
+fn reset_held_specs() -> Vec<Spec> {
+    [
+        r#"{"name": "reset", "model": {"type": "rls"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "gap_cap": 10.0, "half_life": 100.0, "min_weight": 10.0, "emit_drift": true, "drift_threshold": 20.0, "drift_action": "reset", "embargo": 3.0, "emit_clocks": true}"#,
+    ]
+    .iter()
+    .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))
+    .collect()
+}
+
+/// `bank_reset`'s stream with `x0` null on rows 20 and 23 of every 25.
+fn reset_held_frame() -> DataFrame {
+    let df = reset_frame();
+    let x0: Vec<Option<f64>> = df
+        .column("x0")
+        .unwrap()
+        .f64()
+        .unwrap()
+        .iter()
+        .enumerate()
+        .map(|(i, v)| v.filter(|_| !matches!(i % 25, 20 | 23)))
+        .collect();
+    let mut out = df.clone();
+    out.with_column(Series::new("x0".into(), x0).into())
+        .unwrap();
+    out
+}
+
+/// Saved on the first skipped row of the 23rd kind after the detection:
+/// the rows held then include the one after row 20's skip.
+fn reset_held_first() -> (Vec<u8>, DataFrame) {
+    let df = reset_held_frame();
+    let mut probe = Bank::new(reset_held_specs()).unwrap();
+    let cols = probe.fit_predict(&df).unwrap();
+    let out = DataFrame::new(df.height(), cols).unwrap();
+    let drift = out
+        .column("reset")
+        .unwrap()
+        .struct_()
+        .unwrap()
+        .field_by_name("drift_y")
+        .unwrap();
+    let fired = (0..df.height())
+        .find(|&i| drift.bool().unwrap().get(i) == Some(true))
+        .expect("the detector fires");
+    let save = (fired..).find(|i| i % 25 == 23).unwrap();
+    assert!(save + 20 < RESET_N, "rows after the save to continue on");
+    let mut bank = Bank::new(reset_held_specs()).unwrap();
+    bank.fit_predict(&df.slice(0, save + 1)).unwrap();
+    (bank.save_bytes().unwrap(), df.slice((save + 1) as i64, 20))
+}
+
+fn reset_held_run(bytes: &[u8], input: &DataFrame) -> Ran {
+    bank_run_of(&reset_held_specs(), bytes, input)
+}
+
+/// The spec of the eighth bank file, `bank_unstable`: an `sgd` at a
+/// constant rate past its stability bound on two features (task 278, D8),
+/// whose instance has said so (`Notified::unstable`; review round 10,
+/// S7-4).
+fn unstable_specs() -> Vec<Spec> {
+    [
+        r#"{"name": "unstable", "model": {"type": "sgd", "learning_rate": 0.5}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "gap_cap": 10.0, "half_life": 60.0}"#,
+    ]
+    .iter()
+    .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))
+    .collect()
+}
+
+fn unstable_first() -> (Vec<u8>, DataFrame) {
+    let df = frame();
+    let mut bank = Bank::new(unstable_specs()).unwrap();
+    bank.fit_predict(&df.slice(0, SPLIT)).unwrap();
+    (
+        bank.save_bytes().unwrap(),
+        df.slice(SPLIT as i64, N - SPLIT),
+    )
+}
+
+fn unstable_run(bytes: &[u8], input: &DataFrame) -> Ran {
+    bank_run_of(&unstable_specs(), bytes, input)
 }
 
 fn windows_first_of(config: WindowsConfig, input: DataFrame) -> (Vec<u8>, DataFrame) {
@@ -916,6 +1008,16 @@ fn kinds() -> Vec<Kind> {
             name: "bank_gated",
             first: gated_first,
             run: gated_run,
+        },
+        Kind {
+            name: "bank_reset_held",
+            first: reset_held_first,
+            run: reset_held_run,
+        },
+        Kind {
+            name: "bank_unstable",
+            first: unstable_first,
+            run: unstable_run,
         },
         Kind {
             name: "with_windows",
@@ -1432,6 +1534,25 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
         }),
         ("bank_reset", "the drift detector's flag", |p, v| {
             p.ends_with(".ungated_drift") && v.as_bool() == Some(true)
+        }),
+        // Schema 64 (review round 10): the rows a restarted instance has
+        // learned, which bound its notices' rounding (S7-7); under a drift
+        // reset, the clock a fresh stream begun at a skipped row keeps, and
+        // a held row's step as that stream's first (S7-3); and an `sgd`
+        // instance that has said its rate is past its bound (S7-4).
+        ("bank_reset", "the rows learned since a restart", |p, v| {
+            p.ends_with(".learned_since_restart") && v.as_u64().is_some()
+        }),
+        ("bank_reset_held", "a fresh stream's clock", |p, _| {
+            p.contains(".restart_fold.")
+        }),
+        ("bank_reset_held", "a held row's fresh step", |p, v| {
+            p.contains(".pending.")
+                && p.ends_with(".d_fresh")
+                && v.as_f64().is_some_and(|f| f > 0.0)
+        }),
+        ("bank_unstable", "an unstable rate said", |p, v| {
+            p.contains(".notified.") && p.ends_with(".unstable") && v.as_bool() == Some(true)
         }),
         (
             "bank_gated",
