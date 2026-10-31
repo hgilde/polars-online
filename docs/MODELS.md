@@ -1271,15 +1271,48 @@ nothing measurable.
 row's residual by `1 − q`, `q = learning_rate·(w·c·|z|² + l2)` with `c` the
 loss's curvature at the prediction (1 for `squared` and inside the Huber
 cut, 0 beyond it, `p` for `poisson`, `p·(1 − p)` for `logistic`), so the fit
-diverges in mean square once `E[q²] > 2·E[q]`. Each target keeps both sums
-over its recent steps (each decayed by `2^(−1/100)` a row), and while the
-squares' passes twice the gains' its predictions are withheld as
-`unstable_rate`, with a notice; the fit learns every row as before. On five
-standardized normal features the bound on a constant rate is 0.261; at 0.5
-the fit had diverged until `clip_gradient` held it, its error 50,000 times
-the target's variance, with nothing said. `inv_scaling` from a rate past
-the bound is withheld on its first rows only. `adagrad` and the sign-valued
+diverges in mean square once `E[q²] > 2·E[q]`, the one-row mean-square
+contraction `E[(1 − q)²] < 1` failing. Each target keeps both sums over its
+recent steps (each decayed by `2^(−1/100)` a row), and while the squares'
+passes twice the gains' its predictions are withheld as `unstable_rate`,
+with a notice; the fit learns every row as before. On five standardized
+normal features the bound on a constant rate is 0.261; at 0.5 the fit had
+diverged until `clip_gradient` held it, its error 50,000 times the
+target's variance, with nothing said. `inv_scaling` from a rate past the
+bound is withheld on its first rows only. `adagrad` and the sign-valued
 losses take steps that cannot grow, and are never withheld.
+
+**One wide row cannot hold the output.** Each gain after a target's first
+enters the sums bounded, at most the larger of 2 and four times the running
+mean before it; the first has no mean to be wide against and enters whole,
+and a gain of 0 (a row the loss is flat at, with no `l2`) says nothing of
+the rate and is left out. A gain
+of 2 leaves its row's residual where it was and adds nothing to the margin
+`Σ(q² − 2q)`, so while the mean is below 1/2 no single row moves the verdict
+toward unstable, and above it a row moves it by at most `16m² − 8m`. Whole,
+one row at 100 times a feature's spread held a stable rate's output for
+1,075 rows (raw features, a rate of 0.01), and one at 10,000 times for
+3,736. A rate whose every gain is high still passes: the mean, and the
+bound with it, rises fourfold a row. The price is a stream whose gains
+average below 1/2 and pass 2 on a few rows only, which is not withheld for
+them.
+
+**The memory is a count of rows, because the verdict is an estimate.** It
+estimates an expectation from a sample of the rate's rows, and the error of
+a ratio of two means of `N` gains is about `CV(q)/√N`, set by the spread of
+`|z|²` -- the rows' -- not by the rate or the decay. On standardized normal
+features the spread is widest at one feature. There, at a half-life of 100
+stepped rows, a constant rate at 0.9 times the bound was withheld on 0.9% of
+its rows and one at 1.2 times on 99%; at five and twenty features, none at
+0.9 and all at 1.1 (the recursion on gains drawn from such rows). The fit's
+own memory, about `k / mean(q)` rows for a coefficient, is a handful of rows
+near the bound, too few to estimate from: as the gate's memory it withheld
+6-11% of a stable rate's rows (0.77 times the bound) and served a third to
+a half of a diverging one's (1.15 times). The model's decay ages the
+target's weight and AdaGrad's sums, not the coefficients, so it is no
+memory of the rate either. A rate raised past the bound after 2,000 stable
+rows was withheld from 68 rows later at 1.9 times the bound and 201 at 1.15
+times.
 
 `λ` is the row's decay, so `λ·weight_sum` is the weight before the row
 decayed to it, and `Gᵢ` is decayed by it too. A row of weight 0 in between

@@ -270,7 +270,7 @@ fn the_gate_reads_the_step_gains_mean_square_against_their_mean() {
             ..cfg(SgdLoss::Squared, schedule, lr)
         };
         let mut m = Sgd::new(c.clone()).unwrap();
-        let (mut q1, mut q2, mut w_sum) = (0.0f64, 0.0f64, 0.0f64);
+        let (mut q1, mut q2, mut n, mut w_sum) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
         let mut withheld = 0;
         let mut released_after = false;
         for (i, (x, y)) in rows.iter().enumerate() {
@@ -293,9 +293,17 @@ fn the_gate_reads_the_step_gains_mean_square_against_their_mean() {
                 };
                 if i > 0 {
                     let zz = 1.0 + x.iter().map(|v| v * v).sum::<f64>();
+                    // Bounded as it enters: at most the larger of 2 and
+                    // four times the mean before it; the first whole.
                     let q = lr_row * (zz + c.l2);
+                    let q = if n > 0.0 {
+                        q.min(f64::max(2.0, 4.0 * q1 / n))
+                    } else {
+                        q
+                    };
                     q1 = GAIN_DECAY * q1 + q;
                     q2 = GAIN_DECAY * q2 + q * q;
+                    n = GAIN_DECAY * n + 1.0;
                 }
                 w_sum = lam * w_sum + 1.0;
                 q2 > 2.0 * q1
@@ -331,7 +339,11 @@ fn the_gate_moves_nothing_the_fit_learns() {
     );
     let mut free = Sgd::new(c.clone()).unwrap();
     let mut gated = Sgd::new(c).unwrap();
-    gated.gain[0] = StepGain { q: 0.0, q2: 1e300 };
+    gated.gain[0] = StepGain {
+        q: 0.0,
+        q2: 1e300,
+        n: 1.0,
+    };
     let mut withheld = 0;
     for (x, y) in &rows {
         let a = free.step(x, &[Some(*y)], 1.0, 1.0).pred[0];
@@ -512,7 +524,7 @@ fn each_step_gain_is_the_rate_times_the_curvature_along_the_row() {
         };
         let lr = c.learning_rate;
         let mut m = Sgd::new(c.clone()).unwrap();
-        let (mut q1, mut q2) = (0.0f64, 0.0f64);
+        let (mut q1, mut q2, mut n) = (0.0f64, 0.0f64, 0.0f64);
         let (mut learned, mut inside, mut outside) = (0usize, 0usize, 0usize);
         let mut s = 17u64;
         for (i, (x, y)) in rows.iter().enumerate() {
@@ -550,14 +562,20 @@ fn each_step_gain_is_the_rate_times_the_curvature_along_the_row() {
             };
             let zz = 1.0 + x.iter().map(|v| v * v).sum::<f64>();
             let q = lr * (w * curvature * zz + c.l2);
+            let q = if n > 0.0 {
+                q.min(f64::max(2.0, 4.0 * q1 / n))
+            } else {
+                q
+            };
             q1 = GAIN_DECAY * q1 + q;
             q2 = GAIN_DECAY * q2 + q * q;
+            n = GAIN_DECAY * n + 1.0;
             learned += 1;
             let g = m.gain[0];
             let close = |a: f64, b: f64| (a - b).abs() <= 1e-12 * b.abs();
             assert!(
-                close(g.q, q1) && close(g.q2, q2),
-                "{what}, row {i}: the gains {g:?}, by hand ({q1}, {q2})"
+                close(g.q, q1) && close(g.q2, q2) && g.n.to_bits() == n.to_bits(),
+                "{what}, row {i}: the gains {g:?}, by hand ({q1}, {q2}, {n})"
             );
         }
         assert!(learned > 390, "{what}: {learned} rows stepped");
@@ -683,4 +701,101 @@ fn adagrads_step_is_nothing_where_its_denominator_is_zero() {
     m.step(&[1.0], &[Some(1e-170)], 1.0, 1.0);
     assert_eq!(m.g2[0][0], 0.0, "the gradient's square underflowed");
     assert_eq!(m.coefficients()[0], vec![0.0]);
+}
+
+/// The gate's verdict under the recursion without the bound: `q` and `q²`
+/// whole, at most [`GAIN_CAP`], over `qs`; the rows withheld from `from`.
+fn unbounded_withheld(qs: &[f64], from: usize) -> usize {
+    let (mut q1, mut q2) = (0.0f64, 0.0f64);
+    let mut withheld = 0;
+    for (i, &q) in qs.iter().enumerate() {
+        withheld += usize::from(i >= from && q2 > 2.0 * q1);
+        let q = q.min(GAIN_CAP);
+        q1 = GAIN_DECAY * q1 + q;
+        q2 = GAIN_DECAY * q2 + q * q;
+    }
+    withheld
+}
+
+/// One wide row cannot hold the output: its gain enters bounded at the
+/// larger of 2 and four times the running mean, and a gain at 2 adds
+/// `q² − 2q = 0` to the margin. On raw features at a stable rate, a row
+/// whose first feature is 100 or 1e4, after 300 or 1,000 rows, withholds no
+/// row after it; whole, its gain held the output for hundreds to thousands
+/// of rows (the recursion without the bound, on the same gains, is the
+/// evidence the row is wide enough to). The first gain has no mean to be
+/// wide against and enters whole: as the first stepped row (the first
+/// learned row sets the level and steps nothing) the same row withholds as
+/// the unbounded recursion does.
+#[test]
+fn a_wide_row_moves_the_verdict_by_a_bounded_amount() {
+    let base = rows(4000, 0.0);
+    for spike in [100.0, 1e4] {
+        for at in [1usize, 300, 1000] {
+            let c = SgdCfg {
+                standardize: false,
+                min_weight: 0.0,
+                ..cfg(SgdLoss::Squared, LearningRate::Constant, 0.002)
+            };
+            let mut m = Sgd::new(c).unwrap();
+            let mut qs = Vec::new();
+            let mut withheld = 0;
+            for (i, (x, y)) in base.iter().enumerate() {
+                let mut x = *x;
+                if i == at {
+                    x[0] = spike;
+                }
+                let first = m.level[0].w == 0.0;
+                let pred = m.step(&x, &[Some(*y)], 1.0, 1.0).pred[0];
+                withheld += usize::from(i > at && pred.is_nan());
+                if !first {
+                    qs.push(0.002 * (1.0 + x.iter().map(|v| v * v).sum::<f64>()));
+                }
+            }
+            let whole = unbounded_withheld(&qs, at);
+            println!("spike {spike} at {at}: {withheld} withheld, {whole} unbounded");
+            assert!(whole > 300, "spike {spike} at {at}: {whole} rows unbounded");
+            if at == 1 {
+                assert_eq!(
+                    withheld, whole,
+                    "spike {spike}: the first gain enters whole"
+                );
+            } else {
+                assert_eq!(withheld, 0, "spike {spike} at row {at}");
+            }
+        }
+    }
+}
+
+/// A rate that passes the bound mid-stream is withheld within two of the
+/// gate's half-lives (100 stepped rows each): raw features scaled by 5
+/// from row 2,000 put a stable rate's gains (about 0.1) past 2, and the
+/// gate trips within 200 rows of it and withholds nearly every row after.
+#[test]
+fn a_rate_past_the_bound_trips_within_two_half_lives() {
+    let base = rows(3000, 0.0);
+    let c = SgdCfg {
+        standardize: false,
+        min_weight: 0.0,
+        ..cfg(SgdLoss::Squared, LearningRate::Constant, 0.005)
+    };
+    let mut m = Sgd::new(c).unwrap();
+    let mut first = None;
+    let mut withheld = 0;
+    for (i, (x, y)) in base.iter().enumerate() {
+        let x = if i >= 2000 { x.map(|v| 5.0 * v) } else { *x };
+        let pred = m.step(&x, &[Some(*y)], 1.0, 1.0).pred[0];
+        if pred.is_nan() {
+            assert!(i >= 2000, "row {i} withheld at the stable rate");
+            first.get_or_insert(i);
+            withheld += 1;
+        }
+    }
+    let first = first.expect("the gate tripped");
+    println!("tripped {} rows after; {withheld} withheld", first - 2000);
+    assert!(first - 2000 <= 200, "tripped {} rows after", first - 2000);
+    assert!(
+        withheld >= 3000 - first - 50,
+        "{withheld} withheld from row {first}"
+    );
 }

@@ -518,7 +518,16 @@ returns.
   predictions are withheld as `unstable_rate`, with a notice. At a constant
   rate of 0.5 on five standardized features the last 1,000 of 20,000 rows
   had served an error 40,000 times the target's variance with nothing said
-  (task 278, D8).
+  (task 278, D8). Each gain after a target's first enters the sums bounded
+  at the larger of 2 and four times their running mean, so one wide row
+  after the first cannot hold the output:
+  whole, one row at 100 times a feature's spread withheld the next 1,075
+  rows of a stable rate (3,736 at 10,000 times), and now withholds none; a
+  rate whose every gain is high still trips the gate (task 282, M1). The
+  sums' memory stays a half-life of 100 stepped rows, a count of rows
+  because the verdict estimates an expectation from the rate's rows: the
+  fit's own memory, a handful of rows near the bound, withheld 6-11% of a
+  stable rate's rows and served a third to a half of a diverging one's.
 - `hmm`'s `transition_prior` docs say the prior pulls harder than its
   pseudo-count (at 10 and 4,000 rows the matrix is 0.088 from the truth at
   the 95th percentile, against 0.006 from the pseudo-counts alone, because

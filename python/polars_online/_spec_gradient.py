@@ -220,19 +220,44 @@ def sgd(
     over its stepped rows, each decayed by ``2 ** (-1/100)`` a row, and while
     the squares' sum is above twice the gains' its predictions are withheld,
     with ``withheld_reason`` ``unstable_rate`` and a notice the first time.
-    The fit learns every row as before. On standardized independent normal
-    features the rule is least mean squares' bound on a constant rate,
-    ``2 * (k + 1) / (k ** 2 + 4 * k + 1)`` for ``k`` features with an
-    intercept: 0.261 at five, where a measured fit stayed put at 0.25 and
+    The fit learns every row as before. Each gain after a target's first
+    enters the sums bounded, at most the larger of 2 and four times the
+    running mean before it; the first has no mean to be wide against and
+    enters whole, and a gain of 0 (a row the loss is flat at, with no
+    ``l2``) says nothing of the rate and is left out. A gain
+    of 2 leaves its row's residual where it was, so one wide row (a feature
+    far outside its spread, a weight far above the rest) moves the verdict
+    by a bounded amount, and not at all while the mean is below 1/2. Whole,
+    one row at 100 times a feature's spread held a stable rate's output for
+    about 1,000 rows. A rate whose every gain is high still passes the bound:
+    the mean rises fourfold a row to meet it. The price is a stream whose
+    gains average below 1/2 and pass 2 on a few rows only: it is not
+    withheld for them.
+
+    The rule is the one-row mean-square contraction ``E[(1 - q)^2] < 1``. On
+    standardized independent normal features with an intercept it bounds a
+    constant rate at ``2 * (k + 1) / (k ** 2 + 4 * k + 1)`` for ``k``
+    features: 0.261 at five, where a measured fit stayed put at 0.25 and
     diverged at 0.3. Past it the fit diverged until ``clip_gradient`` held
     it, finite and wrong: at 0.5 the last 1,000 of 20,000 rows' error was
-    50,000 times the target's variance, and nothing said so. ``"inv_scaling"``
-    from a rate past the bound is withheld on its first rows and released as
-    the rate falls, once the large gains of those rows have faded from the
-    sums, whose half-life is 100 stepped rows. ``"adagrad"`` moves a
-    coefficient at most the rate a row, and the quantile and
-    epsilon-insensitive steps are a sign times the rate, so none of them is
-    gated.
+    50,000 times the target's variance, and nothing said so.
+
+    The memory, a half-life of 100 stepped rows, is a count of rows because
+    the verdict estimates an expectation from a sample of the rate's rows.
+    Its error is set by the spread of the gains, which is the rows', not the
+    rate's or the decay's. At this memory a constant rate at 0.9 times the
+    bound was withheld on 0.9% of its rows and one at 1.2 times on 99%, at
+    one feature, where the gains spread most; at five and at twenty features
+    none at 0.9 and all at 1.1. The fit's own memory, about ``k / mean(q)``
+    rows, is a handful of rows near the bound, too few to estimate from: as
+    the gate's memory it withheld 6-11% of a stable rate's rows and served a
+    third to a half of a diverging one's. A rate raised past the bound after
+    2,000 stable rows was withheld from 68 to 201 rows later.
+    ``"inv_scaling"`` from a rate past the bound is withheld on its first rows
+    and released as the rate falls, once the large gains of those rows have
+    faded from the sums. ``"adagrad"`` moves a coefficient at most the rate
+    a row, and the quantile and epsilon-insensitive steps are a sign times
+    the rate, so none of them is gated.
 
     .. rubric:: Parameters
 
