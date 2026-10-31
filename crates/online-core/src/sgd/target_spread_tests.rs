@@ -325,6 +325,37 @@ fn the_gate_reads_the_step_gains_mean_square_against_their_mean() {
     }
 }
 
+/// Each gain after the first enters bounded at the larger of 2 and four
+/// times the running mean before it, `q̂ = min(q, max(2, 4·Σq/n))`: at a
+/// mean of 1 a gain of 10 enters as 4, and at a mean of a quarter a gain of
+/// 3 enters as the floor, 2. The first enters whole, at most the cap; one
+/// that is not a number enters at the bound; a gain of 0 leaves the sums
+/// alone.
+#[test]
+fn each_gain_enters_bounded_by_four_times_the_mean_before_it() {
+    let at = |q: f64, n: f64| StepGain { q, q2: q * q, n };
+    assert_eq!(at(1.0, 1.0).bounded(10.0), 4.0);
+    assert_eq!(at(3.0, 2.0).bounded(10.0), 6.0);
+    assert_eq!(at(1.0, 1.0).bounded(3.0), 3.0);
+    assert_eq!(at(0.25, 1.0).bounded(3.0), 2.0);
+    assert_eq!(at(0.25, 1.0).bounded(1.5), 1.5);
+    assert_eq!(at(0.25, 1.0).bounded(f64::NAN), 2.0);
+    assert_eq!(StepGain::default().bounded(10.0), 10.0);
+    assert_eq!(StepGain::default().bounded(1e300), GAIN_CAP);
+    let mut g = at(1.0, 1.0);
+    g.learn(0.0);
+    assert_eq!(g, at(1.0, 1.0));
+    g.learn(10.0);
+    assert_eq!(
+        g,
+        StepGain {
+            q: GAIN_DECAY + 4.0,
+            q2: GAIN_DECAY + 16.0,
+            n: GAIN_DECAY + 1.0,
+        }
+    );
+}
+
 /// The gate is the output's alone: a model whose gains are forced past the
 /// bound learns every row as one whose gains are not -- the coefficients,
 /// the residual scale and its sketch, the target's spread -- and only its

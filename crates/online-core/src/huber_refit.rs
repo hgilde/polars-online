@@ -1035,6 +1035,10 @@ mod tests {
         assert_eq!(refit_reservation(20, 500), 160_000);
         assert_eq!(refit_reservation(1, 50), 8 * 50 * 21);
         assert_eq!(refit_reservation(3, 0), 0);
+        // The ceiling a spec's count is refused past: 2^20 rows, the
+        // learned rows alone 40 MiB a target at one feature.
+        assert_eq!(MAX_REFIT_ROWS, 1_048_576);
+        assert_eq!(MAX_REFIT_ROWS as usize * (1 + 4) * 8, 40 << 20);
         // The bins': 30 rows a bin of the widest feature, at least 500.
         assert_eq!(default_bin_refit_rows(1), 500);
         assert_eq!(default_bin_refit_rows(16), 500);

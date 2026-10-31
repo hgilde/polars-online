@@ -342,10 +342,21 @@ fn under_the_old_gate_a_target_decayed_to_nothing_predicts_nothing() {
 /// the update reset it, so with no intercept (floor 1) the next row found
 /// the count at the floor and predicted the pre-gap slope, `+4.93`,
 /// `+6.94`, `+6.27` ..., on every later row, learning from it until a
-/// cadence solve that never came (review round 10, S2-1).
+/// cadence solve that never came (review round 10, S2-1). The history is
+/// gone where the update finds it so, `λ_t·w == 0`: a per-row decay leaves
+/// a subnormal weight, which the row then forgets (`λ_t = 0`), but one
+/// clock step of a million while the target is absent (25,000 half-lives,
+/// `λ = 0`) leaves a weight of exactly 0 under the next row's `λ_t > 0`,
+/// and the schedule must read the same product (a quotient `λ_t / 0` there
+/// kept the count and missed the solve).
 #[test]
 fn a_returning_target_solves_on_the_floor_whatever_the_floor() {
-    for intercept in [false, true] {
+    for (intercept, gap, jump) in [
+        (false, 44_000, 1.0),
+        (true, 44_000, 1.0),
+        (false, 2, 1e6),
+        (true, 2, 1e6),
+    ] {
         let c = RobustCfg {
             n_features: 1,
             fit_intercept: intercept,
@@ -356,21 +367,23 @@ fn a_returning_target_solves_on_the_floor_whatever_the_floor() {
         let mut m = Robust::new(c).unwrap();
         let mut s = 9u64;
         let mut preds = Vec::new();
-        for i in 0..44_030 {
+        let back = 10 + gap;
+        for i in 0..back + 20 {
             let x = [0.5 + lcg(&mut s).abs()];
             let y1 = if i < 10 {
                 Some(5.0 * x[0])
-            } else if i < 44_010 {
+            } else if i < back {
                 None
             } else {
                 Some(-5.0 * x[0])
             };
-            let p = m.step(&x, &[Some(1.0 + x[0]), y1], 1.0, 1.0).pred;
-            if i >= 44_010 {
+            let d = if i + 1 == back { jump } else { 1.0 };
+            let p = m.step(&x, &[Some(1.0 + x[0]), y1], d, 1.0).pred;
+            if i >= back {
                 preds.push(p[1] / x[0]);
             }
         }
-        println!("intercept {intercept}: slopes after the return {preds:?}");
+        println!("intercept {intercept}, gap {gap}: slopes after the return {preds:?}");
         let floor = usize::from(intercept) + 1;
         for (i, slope) in preds.iter().enumerate() {
             if i < floor {

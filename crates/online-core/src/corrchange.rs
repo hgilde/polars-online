@@ -2854,6 +2854,17 @@ mod tests {
         assert_eq!(perm_rejections(0.29, 99), 29);
         assert_eq!(perm_rejections(0.145, 199), 29);
         assert_eq!(perm_rejections(0.285, 199), 57);
+        // The nudge is four units of rounding, `4·2⁻⁵³`, and no wider: at
+        // a power-of-two `B + 1` the product is exact, so a level three
+        // units under a multiple reads as it, and one five under does not.
+        let u = PERM_ROUNDING;
+        assert_eq!(u, 2f64.powi(-53));
+        for k in 0..=10 {
+            let b = (1usize << k) - 1;
+            let over = (b + 1) as f64;
+            assert_eq!(perm_rejections((1.0 - 3.0 * u) / over, b), 1, "{b}");
+            assert_eq!(perm_rejections((1.0 - 5.0 * u) / over, b), 0, "{b}");
+        }
         // At every whole count of hundredths and thousandths, a level that
         // is a multiple of `1/(B + 1)` is its size.
         for b in [99usize, 199, 999] {
