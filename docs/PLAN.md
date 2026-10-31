@@ -16587,5 +16587,15 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       sklearn's QuantileRegressor (alpha*sum w) and conquer's form. W does
       not move with beta, and h (a weighted MAD) is continuous in it, so
       the refit's F is continuous. States before schema 64 keep the old
-      rule. Building as W6 (`task-282-n1b`).
+      rule. Built as W6 (`task-282-n1b`): converged refits agree with scipy
+      to 1.4e-9, and caps fell 2522->453 at 1e-1 and 614->0 at 1, but they did
+      not end. The rest are 2-cycles of h (a weighted MAD re-read each pass),
+      15/5760 even at the default ridge, and W2's probe rose 6->20/40 at 1e-2.
+      Variant P (h and the penalty held at the stream's own values at the
+      refit row) ends the cycling but fits wild first rows worse than no
+      refit (2.86 off QuantReg at tau 0.8, vs 1.58 without the refit and
+      0.0075 for main): the stream's scale there is 15-88x inflated.
+      DECIDED 2026-10-31, the user: a Known issue for 1.4, main's refit
+      unchanged (CHANGELOG); N1 stays open after 1.4. The W5/W6 patches are
+      in `.claude/coord/review10/`.
 

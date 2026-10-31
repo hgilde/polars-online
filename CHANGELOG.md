@@ -887,6 +887,19 @@ returns.
   20,000 rows the default `huber_refit_rows=500` leaves 5 to 8 captured,
   the worst slope 0.85 off; at 15% none is. A longer first window,
   `huber_refit_rows=1000`, leaves fewer (task 282).
+- **`quantile`'s refit can stop at its pass cap without settling.** Each
+  pass re-reads the band's half-width from that pass's fit, and the pair
+  can alternate between two values a few percent apart, the band trading
+  a handful of rows. The fit stays within the span of that alternation and
+  the refit is counted in `solve_failures`. Its fits match statsmodels'
+  `QuantReg` on the same rows: 0.002 at τ = 0.5 and 0.008 at τ = 0.8 with
+  wild first rows, against 0.16 and 1.6 without the refit. Of 5,760
+  held-out streams, 15 reach the cap at the default ridge. At an explicit
+  ridge the count is 85 at 1e-3, 695 at 1e-2, 2,522 at 1e-1 and 614 at 1,
+  where the band's weight in the penalty moves with the band as well. The
+  fit then wanders by up to 1.4 residual scales at 1e-1 (median 0.13).
+  Holding the half-width at the stream's own scale settles every pass but
+  fits wild first rows worse than no refit, so it was not taken (task 282).
 
 ## [1.3.0] — 2026-10-24
 
