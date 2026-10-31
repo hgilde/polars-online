@@ -290,8 +290,8 @@ pub use window::{
 /// - 12: the clock state drops the three fields the two 0.8.x disorder rules
 ///   kept -- the inferred session's start and the typical-step estimate with
 ///   its weight -- now that one rule, `min_backwards_jump` against
-///   `gap_cap`, needs no state (2026-09-20). A field removed from a
-///   positional layout is a layout change; no loader for 11.
+///   `gap_cap`, needs no state (2026-09-20). A field removed is a layout
+///   change; no loader for 11.
 /// - 13: the readiness statistics (docs/WARMUP-AND-CONVERGENCE.md, 2026-09-21).
 ///   `ewridge` keeps what its last solve left for them -- the effective
 ///   degrees of freedom and each coefficient's data share per slot, and,
@@ -419,9 +419,10 @@ pub use window::{
 ///   older than 27 by number. The models' own states are unchanged.
 /// - 28 (2026-10-06, task 161): `ew_cov`'s configuration carries
 ///   `pca_every` in clock units and `max_rows_between_pca`, and its state
-///   the clock since the last refresh. The compact encoding is positional,
-///   so an `ew_cov` state from before 28 does not decode; the bank refuses
-///   a file older than 28 by number, and pre-1.0 no loader is written.
+///   the clock since the last refresh. `since_pca` became `rows_since_pca`,
+///   a field with no default, so an `ew_cov` state from before 28 does not
+///   decode; the bank refuses a file older than 28 by number, and pre-1.0
+///   no loader is written.
 ///   Every other model's state from 14 on still loads.
 /// - 29 (2026-10-06, task 163): `micro`'s configuration carries
 ///   `prune_every` in clock units and `max_rows_between_prunes`, and its

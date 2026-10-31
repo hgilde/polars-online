@@ -1064,7 +1064,7 @@ silently:
 | a default or a meaning changed, or a stable name removed | minor, with a CHANGELOG entry saying what moved and by how much | major, with the same entry |
 | a change to an unstable part | minor | minor, with a CHANGELOG entry |
 
-**Two defaults have changed in a minor release, against the table's row
+**Five defaults have changed in a minor release, against the table's row
 for a changed default.** In the release after 1.2.0, `huber_scale` moved from
 `"rms"` to `"mad"`, by the maintainer's decision. It is the scale `huber`
 and `sgd(loss="huber")` draw their cut in, and the CHANGELOG declares the
@@ -1116,7 +1116,26 @@ kept the rows its warm-up took as least squares, and those its first bands
 held, in its sums at full weight: three wild first targets left the worst
 of 50 streams 0.22 from statsmodels' `QuantReg` after 8,000 rows, and 0.0053
 with the refit. `quantile_refit_rows=0` turns it off, and a state saved
-before it loads with it off and goes on as it did.
+before it loads with it off and goes on as it did. So did
+`marginal(bin_stat="huber")`'s, `bin_refit_rows`, at `max(500, 30 · bins)`
+rows: one pass lets spikes in the first rows pull the bins' locations, and
+without decay they stay captured. On 16 bins with 12% of the rows spikes of
+about 20 scales, the worst of 50 streams was 1.3 target scales from
+statsmodels' M-location after 2,000 rows, and 0.015 with the refit. `bin_refit_rows=0` turns it off, and a state saved by 1.0 to 1.3
+loads with it off and goes on as it did.
+
+In the same release `hmm`'s `warm_rows` moved from 50 rows to 1,000 (or
+`n_components` where that is more), by the maintainer's decision. The
+seeding places the states where the buffered rows are, and 50 rows hold one
+or two regimes: on three regimes lasting about 50 rows each, the worst of
+50 seeds put 0.46 of the rows in their true state, and puts 0.95 at 1,000.
+The price is the wait: each group's first 1,000 rows report null while the
+buffer holds them, and a group with fewer rows never seeds.
+`warm_rows=50` is the way back to the old count; the same release's
+seeding, Lloyd's passes run to a fixed point, may still place or number
+the states differently. A state saved by 1.3.0 after seeding goes on as
+that release did, to the bit. One saved before seeding keeps the count it
+was saved with, so it seeds at its 50th row, by the new seeding.
 
 **From 1.0, a rename is a deprecation, not a refusal.**
 `polars_online.PolarsOnlineDeprecationWarning`, a `DeprecationWarning`,

@@ -132,9 +132,11 @@ pub struct MarginalCfg {
     /// Inside the window the weights are still exponential.
     ///
     /// **Last, with `window_every` and `max_rows_between_snapshots`, and
-    /// they must stay last**: the compact msgpack encoding writes a struct
-    /// as an array, so a `skip_serializing_if` field anywhere else shifts
-    /// what follows it. Only the row cap, the last, skips.
+    /// they must stay last for the compact encoding**: a state file is a map
+    /// read by name (`rmp_serde::to_vec_named`), but the compact encoding
+    /// some round-trip tests use writes a struct as an array, so there a
+    /// `skip_serializing_if` field anywhere else shifts what follows it.
+    /// Only the row cap, the last, skips.
     #[serde(default)]
     pub window: Option<f64>,
     /// Clock units between the window's snapshots, `0` every row; with

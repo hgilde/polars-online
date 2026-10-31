@@ -242,9 +242,10 @@ mod tests {
         );
     }
 
-    /// A state written before the flag is two positional fields; the third
-    /// reads as `false` -- tracking, the side that is always right -- from
-    /// a compact array of two (review 2026-09-26, B missing 5).
+    /// In the compact encoding (the round-trip tests'; a state file is a map
+    /// read by name), a state written before the flag is two positional
+    /// fields; the third reads as `false` -- tracking, the side that is
+    /// always right -- from an array of two (review 2026-09-26, B missing 5).
     #[test]
     fn a_compact_state_without_the_flag_reads_as_on() {
         #[derive(Serialize)]

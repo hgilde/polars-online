@@ -705,7 +705,8 @@ pub struct Snapshots<S> {
     /// by about `d·e` ulps over `d` rows. Empty before the first learned
     /// row, and in a state saved before it, whose snapshots carry none and
     /// are decayed forward by the summed clock as they were. Last of the
-    /// written fields: the compact encoding is positional.
+    /// written fields: a state file is a map read by name, but the compact
+    /// encoding some round-trip tests use is positional.
     #[serde(default)]
     decay: Products,
     /// The budget, and a refusing budget's overrun: configuration the caller
@@ -1102,7 +1103,8 @@ pub struct Moments {
     #[serde(default)]
     pub rows: Option<u64>,
     /// The Kish sum, where the accumulator keeps one. Last, and the only
-    /// skipped field: the compact encoding is positional, and a snapshot
+    /// skipped field: a state file is a map read by name, but the compact
+    /// encoding some round-trip tests use is positional, and there a snapshot
     /// without it decoded `m` into this slot (review 2026-09-18, B7; no
     /// model writes one today, `EwCov::new` starts `q_sum` at `Some(0)`,
     /// so this is the rule kept rather than a failure seen; the byte change

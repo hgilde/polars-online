@@ -1167,8 +1167,9 @@ mod tests {
         );
     }
 
-    /// A state written before `cross_lags` existed is nine positional
-    /// fields; the tenth reads as `None` from a compact array of nine,
+    /// In the compact encoding (the round-trip tests'; a state file is a map
+    /// read by name), a state written before `cross_lags` existed is nine
+    /// positional fields; the tenth reads as `None` from an array of nine,
     /// serde's rule for a defaulted trailing field, pinned here (review
     /// 2026-09-26, B missing 5).
     #[test]
