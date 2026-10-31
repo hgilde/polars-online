@@ -77,7 +77,10 @@ fn bits(p: &[Vec<f64>]) -> Vec<Vec<u64>> {
 /// tenth learned row, while the scaler still warms up (its count reaches 22
 /// later), the standardized model's coefficients read out as the plain
 /// model's, both being the converged fit of the same rows; and the one
-/// refit after the switch, at 40, likewise.
+/// refit after the switch, at 40, likewise. The two differ by their ridges
+/// alone: the standardized model's is `1e-6` on the standardized slopes,
+/// `1e-6 · s_i²` in the caller's units, with `s_i` near 0.58 here, so the
+/// fits part by a few parts in 1e5 and no more.
 #[test]
 fn the_refit_reads_out_as_the_fit_whatever_the_scaler_holds() {
     for at in [10, 40] {
@@ -93,7 +96,7 @@ fn the_refit_reads_out_as_the_fit_whatever_the_scaler_holds() {
         let (ca, cb) = (a.coefficients(), b.coefficients());
         for (p, q) in ca[1].iter().zip(&cb[1]) {
             assert!(
-                (p - q).abs() < 1e-9 * (1.0 + q.abs()),
+                (p - q).abs() < 5e-5 * (1.0 + q.abs()),
                 "{at}: {ca:?} {cb:?}"
             );
         }
@@ -392,4 +395,65 @@ fn the_reservation_is_every_targets_and_a_give_up_empties_each() {
         assert!(s.done && s.over_budget && s.passes == 0, "{s:?}");
     }
     assert!(m.refit.iter().all(|r| r.held() == 0));
+}
+
+/// Two features in units `c`, `x_i = c · u_i` with `u_i` uniform on
+/// `[-1, 1]`, and two targets on them with slopes `(2, -1)` and `(-3, 0.5)`
+/// in `u`: rows at unit weight, every target on every row.
+fn scaled_rows(n: usize, c: f64) -> Vec<Row> {
+    let mut s = 23u64;
+    (0..n)
+        .map(|_| {
+            let u = [lcg(&mut s), lcg(&mut s)];
+            let y0 = 3.0 + 2.0 * u[0] - u[1] + 0.3 * lcg(&mut s);
+            let y1 = -1.0 - 3.0 * u[0] + 0.5 * u[1] + 0.3 * lcg(&mut s);
+            ([c * u[0], c * u[1]], [Some(y0), Some(y1)], 1.0)
+        })
+        .collect()
+}
+
+/// Under `standardize` the refit's ridge is on the standardized slope, as
+/// `huber`'s is: `1e-6 · s_i²` in the caller's units. At a feature spread
+/// near `1e-4` a ridge of `1e-6` in the caller's units shrank slope 2 (in
+/// the spread's units) to 0.022; now the refit recovers it, and a feature
+/// scaled by a power of two changes only its coefficient, to the bit,
+/// through the refit and the steps after it.
+#[test]
+fn the_refit_ridge_is_on_the_standardized_slope() {
+    let n = 40usize;
+    let fit = |c: f64| {
+        let data = scaled_rows(2 * n, c);
+        let mut m = Sgd::new(cfg(n as u32, true, LearningRate::Constant, Decay::Lam(1.0))).unwrap();
+        let mut at_refit = None;
+        let pred = data
+            .iter()
+            .map(|(x, y, w)| {
+                let p = m.step(x, y, 1.0, *w).pred;
+                if at_refit.is_none() && !m.refit[0].open() {
+                    at_refit = Some(m.coefficients());
+                }
+                p
+            })
+            .collect::<Vec<_>>();
+        (pred, at_refit.expect("the refit ran"), m.coefficients())
+    };
+    // The spread of `u` is about 0.58, so `x`'s is about 5.8e-5.
+    let (_, refit, _) = fit(1e-4);
+    let slopes = [refit[0][1] * 1e-4, refit[0][2] * 1e-4];
+    assert!(
+        (slopes[0] - 2.0).abs() < 0.2 && (slopes[1] + 1.0).abs() < 0.2,
+        "the refit's slopes in u: {slopes:?}"
+    );
+    let (base, base_refit, base_end) = fit(1.0);
+    let k = 2f64.powi(-14);
+    let (pred, refit, end) = fit(k);
+    assert_eq!(bits(&pred), bits(&base), "the predictions");
+    for (a, b) in [(&refit, &base_refit), (&end, &base_end)] {
+        for (ca, cb) in a.iter().zip(b) {
+            assert_eq!(ca[0].to_bits(), cb[0].to_bits(), "the intercept");
+            for (p, q) in ca[1..].iter().zip(&cb[1..]) {
+                assert_eq!((p * k).to_bits(), q.to_bits(), "{a:?} {b:?}");
+            }
+        }
+    }
 }

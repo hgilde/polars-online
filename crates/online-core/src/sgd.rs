@@ -477,7 +477,14 @@ impl StepGain {
 
 /// The ridge on the mean-form system an `sgd` refit solves
 /// ([`crate::huber_refit::irls`]): `huber`'s default, so that the refit
-/// is the converged fit `huber` reaches on the same rows.
+/// is the converged fit `huber` reaches on the same rows. Like `huber`'s, it
+/// is on the slopes the fit is drawn in: under `standardize` the
+/// standardized slope `β_i = s_i b_i`, so in the caller's units `1e-6 · s_i²`
+/// on slope `i`'s diagonal, as `huber` divides its Gram by `s_i s_j` before
+/// adding it. A ridge of `1e-6` in the caller's units shrank a feature whose
+/// spread is near `1e-3` to about half its slope, and one near `1e-4` to a
+/// hundredth (2 read 0.022), and a feature's power-of-two scale moved the
+/// fit after the refit.
 const REFIT_RIDGE: f64 = 1e-6;
 
 impl SgdCfg {
@@ -1173,20 +1180,21 @@ impl Sgd {
         let rows = Rows::new(&buf, &ages, self.cfg.n_features);
         // `l2` is a penalty on the standardized slope `β_i = s_i b_i` a step
         // applies once a row, so in the caller's units it is `l2 · s_i²`
-        // a row; without a scaler `s_i` is 1.
+        // a row; and the ridge, on the same slope, is `REFIT_RIDGE · s_i²`.
+        // Without a scaler `s_i` is 1.
         let s: Vec<f64> = match &self.scaler {
             Some(sc) => scales_of(sc, off)[off..].to_vec(),
             None => vec![1.0; self.cfg.n_features],
         };
         let l2: Vec<f64> = s.iter().map(|si| self.cfg.l2 * si * si).collect();
-        let Some((fit, passes)) = huber_refit::irls(
-            &rows,
-            intercept,
-            delta,
-            self.cfg.huber_scale,
-            REFIT_RIDGE,
-            &l2,
-        ) else {
+        let ridge: Vec<f64> = if self.scaler.is_some() {
+            s.iter().map(|si| REFIT_RIDGE * si * si).collect()
+        } else {
+            vec![REFIT_RIDGE; self.cfg.n_features]
+        };
+        let Some((fit, passes)) =
+            huber_refit::irls(&rows, intercept, delta, self.cfg.huber_scale, &ridge, &l2)
+        else {
             // No pass solved: the one-pass fit stands, and the refit says so.
             self.refit[j].fail();
             return;

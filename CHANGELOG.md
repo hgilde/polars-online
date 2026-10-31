@@ -317,6 +317,16 @@ returns.
 
 ### Fixed
 
+- `sgd(loss="huber")`'s refit of the first rows puts its ridge of 1e-6 on
+  the standardized slopes under `standardize`, the default, as `huber`'s
+  does: `1e-6 · s_i²` in the features' own units, `s_i` a feature's
+  spread (task 282, H1). It was 1e-6 in the features' own units, so a
+  feature whose spread is near 1e-3 had its slope shrunk to about half in
+  the refit, and one near 1e-4 to a hundredth (a slope of 2 in the
+  spread's units read 0.022), and the steps after the refit started from
+  there. The refit is now `huber(standardize=True)`'s converged fit of the
+  same rows. Without `standardize` the ridge is 1e-6 in the features' own
+  units, as before.
 - `bocpd`'s prior from its first rows under `covariance="full"` is decided
   the same on every platform (task 281). From no more rows than features
   the scatter is singular in exact arithmetic, and whether it kept its
