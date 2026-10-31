@@ -318,6 +318,21 @@ returns.
 
 ### Fixed
 
+- `huber` and `quantile`: a target that returns after its history is
+  forgotten, under a floor of one coefficient (one feature, no intercept),
+  solves on the row it reaches the floor again. It read and learned from
+  its fit from before the gap until the cadence's next solve, and never
+  solved again under `solve_every=inf` (task 282).
+- `ewridge` judges a factorization that needed jitter as the `A + δI` it
+  solves. A first-rung jittered solve past the digit limit, which a fit of
+  about 30 coefficients or more can reach, was served unjudged; it is now
+  withheld as `ill_conditioned` (task 282).
+- `corrchange(kind="window")` lands a level that is a multiple of
+  `1/(n_perm + 1)` on it. At 0.29 with 99 draws, and at 0.145 or 0.285 with
+  199, the rounded product allowed one draw fewer than the level (sizes
+  0.28, 0.14 and 0.28) (task 282).
+- A `quantile` state's refusals name `quantile_refit_rows`, not
+  `huber_refit_rows` (task 282).
 - `huber_refit_rows` and `quantile_refit_rows` are refused past 2^20, with
   the reason (task 282, S1-3). A refit's buffer is held at its full size
   from a target's first learned row, so beside `refit_budget=inf`, which
