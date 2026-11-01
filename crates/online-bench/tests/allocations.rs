@@ -279,3 +279,18 @@ fn the_cheap_models_step_into_a_kept_buffer_without_allocating() {
         );
     }
 }
+
+/// `bocpd` keeps its row's working space -- the prior read for the row,
+/// each run's log predictive and weight, the posterior, the mixture, the
+/// new log joint -- and the runs `prune` drops, each the next row's empty
+/// run (task 292): 16 allocations a row under the diagonal emission, and
+/// none now. Under the full covariance each run's predictive formed its
+/// mean, its scale and the row's deviation, and solved for the quadratic
+/// form in a matrix and a vector of its own; what is left is the factor of
+/// each run's scale, one a run, which the solve module allocates.
+#[test]
+fn bocpd_keeps_its_rows_working_space() {
+    for (id, bound, before) in [("bocpd", 0.0, 16.0), ("bocpd_full", 21.24, 72.63)] {
+        check(id, case_per_row(id, true), bound, before);
+    }
+}

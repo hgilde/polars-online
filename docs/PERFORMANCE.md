@@ -284,7 +284,11 @@ of line to stderr:**
 
 **The lines are written for a person, so their words and fields are not
 promised: a minor release may change them.** The variable turns them on at
-`1` and at no other value, as `POLARS_ONLINE_WARN_UNSTABLE` does.
+`1` and at no other value, as `POLARS_ONLINE_WARN_UNSTABLE` does. It is
+read once, at a process's first chunk, so set it before the process starts:
+set or cleared later, it changes nothing until the next process. A read of
+the environment costs in proportion to its size, and one a chunk moved the
+budgets' instruction counts with whatever else the environment held.
 
 A profile says where inside `process` the time goes, and the wall clock
 says how much: §13 has the recipe. [CONTRIBUTING.md](../CONTRIBUTING.md)

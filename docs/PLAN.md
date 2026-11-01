@@ -16748,12 +16748,16 @@ Ordering below: bit-identical first (no fixture moves, no user decision), then w
   - Predictions move by up to 5.2e-13 relative (median ~1e-15), state ≤ 8e-14 after 100,000 rows; declared in the CHANGELOG with its size.
   - Port the VM's patch (bc70321d) exactly; regenerate the fixtures.
   - Add a test that pins holt's arithmetic: the frozen fixtures passed on the changed code. Use a libm-free stream, e.g. steps at a whole number of half-lives.
-- [ ] 292. **VM proposals P1, P4, P7, P8 (bit-identical)**
+- [x] 292. **VM proposals P1, P4, P7, P8 (bit-identical)**
   - P1, rcov's `emit` (rcov.rs:780-782): each lag's k×k block taken once, `chunks_exact_mut(k).zip(&y)`. The hot loop is 30 instructions of index work around a 4-element multiply-add; −40 to −60% expected.
   - P4, bocpd's `read_into`/`learn`: keep the per-row scratch (152 allocations a row; the allocator is 39% of bocpd_full).
   - P7, `FeatureRows::fill` (online-polars rows.rs:495): skip `resize`'s zero-fill where every slot is written after (`memset` is 30% of bank_ewridge_k5_groups' count).
   - P8, bench determinism: build rayon's pool in sgd_huber_refit's setup, and read `timing_on`'s flag once, unless a test toggles it in-process. The count jitter (±0.01%) is the pool built inside the block and `getenv`, and predates task 287.
   - Worker W13.
+  - Done (W13), bit-identical: the budget cases' digest (checksum, predicted count, the serialized state; the bank's output values and saved bytes) is unchanged on all 39 model and bank cases, and no fixture moved. Native arm64 counts, base → after: rcov 86.4M → 78.2M (−9.4%; wall −17%), bocpd 24.9M → 12.0M (−52%; wall −47%), bocpd_full 67.8M → 37.5M (−45%; wall −50%), bank_ewridge_k5_groups 26.6M → 24.5M (−8.1%; wall −13%); the other bank cases and sgd_huber_refit within native noise (±1.5%). CI's Valgrind decides.
+  - P7's 8.2k Ir a row was not `resize` (a one-row group's buffer is 40 bytes) but the 8 KiB tile scratch zeroed on every copy: it is now a thread's, kept, never cleared (each column writes every row of the tile before the group is read back; `a_copy_reads_nothing_the_last_left_in_the_scratch`). A narrow copy also stopped allocating its two per-column vectors.
+  - P4: bocpd allocates 0 a row (16 before), bocpd_full 21.24 (72.63; `bocpd_keeps_its_rows_working_space`): what is left is each run's factor in `solve.rs`, left alone while task 293 changes that file.
+  - P8: `timing_on` is read once a process (`OnceLock`): no test sets the variable in-process (the CLI's tests run a process each), and `docs/PERFORMANCE.md` says to set it before the process starts.
 - [ ] 293. **VM proposals P3, P5, P6 (bit-identical)**
   - P3, `EwCovModel::predict_into` (ewcov.rs:2143-2163): size `out` once and write each pair into its slot, in place of a capacity-checked `push` through a spilled stack slot; ew_cov −20 to −25%, bank_ew_cov_wide_t1 −15 to −20%.
   - P6, `ewcov::rank_one_rows` (ewcov.rs:64-72): update the symmetric matrix's lower triangle only, with readers taking it from there. The saved state must stay byte-identical (mirror on serialization or keep the layout); ewridge_k20 −12 to −14%, also the refits.

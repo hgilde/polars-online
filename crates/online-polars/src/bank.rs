@@ -4038,8 +4038,9 @@ impl Bank {
         clock_dtypes: &[Option<crate::stream::ClockDtype>],
         key_dtypes: &[[Option<KeyDtype>; 2]],
     ) -> PolarsResult<Vec<StructArray>> {
-        // Section timings to stderr under POLARS_ONLINE_TIMING=1; costs two
-        // env reads per chunk. This is how docs/PERFORMANCE.md's numbers are made.
+        // Section timings to stderr under POLARS_ONLINE_TIMING=1, read from
+        // the environment once a process. This is how docs/PERFORMANCE.md's
+        // numbers are made.
         let timing = crate::timing::timing_on();
         let t0 = std::time::Instant::now();
         let n = chunk.height();

@@ -776,9 +776,13 @@ impl Rcov {
                 self.fin.len().checked_sub(h).map(|i| &self.fin[i])
             };
             let Some(past) = past else { continue };
-            let block = h * k * k;
-            for (i, &yi) in y.iter().enumerate() {
-                let row = &mut self.gamma[block + i * k..block + (i + 1) * k];
+            // The lag's `k×k` block taken once and walked a row at a time:
+            // the same products added in the same order as indexing each
+            // row of `gamma` afresh, without its bounds and the check of
+            // each row against `past` (task 292).
+            let block = &mut self.gamma[h * k * k..(h + 1) * k * k];
+            let past = &past[..k];
+            for (row, &yi) in block.chunks_exact_mut(k).zip(&y) {
                 for (g, &pj) in row.iter_mut().zip(past) {
                     *g += yi * pj;
                 }
