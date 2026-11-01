@@ -501,7 +501,15 @@ GOLDEN = 1e-12
 #:   within the golden tolerance (rule 5's first exception): 2.9e-15 here.
 #: - A blocked `ewridge`'s target cross-moments moved in their last bits in
 #:   1.1.0: a file of 1.0.x goes on within rounding, 8.3e-16 here.
+#: - `holt` divides once into each denominator on its row-to-row chain and
+#:   multiplies by the reciprocal since task 291a, so a file of any release
+#:   goes on within rounding (CLAUDE.md rule 5's fifth exception): its
+#:   predictions by about 2e-16, and the diagnostics derived from many rows,
+#:   which amplify a last bit (the calibration's Wald, Ramsey's RESET), by up
+#:   to 2.0e-13 here, inside the golden tolerance.
 WITHIN: dict[tuple[str, str], float] = {
+    ("full_holt", "1.3.0"): GOLDEN,
+    ("holt", "1.3.0"): GOLDEN,
     ("full_lasso", "1.3.0"): 1e-9,
     ("lasso_window", "1.3.0"): 1e-9,
     **{

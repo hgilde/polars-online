@@ -152,8 +152,9 @@ runs both tiers, but a plain `cargo test` skips the extended Rust tests
    read at the sums' age); every other field continues to the bit.
    A fifth, the user's (2026-10-26, task 278): a `holt` state of schema
    61-63 loads with no line fit and continues with the textbook gains it
-   was fitted under, within 1e-14 (to the bit until task 291a's kept
-   reciprocals, the user's, 2026-11-01); its re-saved bytes cannot be the current
+   was fitted under, within 1e-14 in its predictions and state, and its
+   diagnostics derived over many rows within the golden 1e-12 (to the bit
+   until task 291a's kept reciprocals, the user's, 2026-11-01); its re-saved bytes cannot be the current
    fixture's (which carries the line fit), so it is held, beside `kmeans`,
    to re-saving bytes that load back the same.
 6. No `unsafe` in `online-core`. f64 everywhere.
