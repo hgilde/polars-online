@@ -16624,6 +16624,17 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       sparse/disjoint targets, and +2-4.4% on a small refit at 10 targets.
       The user: build it, held to an end-to-end bar (no budget case past
       2%; new 3- and 10-target cases within 1% end to end), before 1.4.
+      *Built 2026-10-31 (W8, `task-283b-shared-refit` a1f6e092 + 9eca7b8c,
+      slot 1, WIP):* reservation 17-26% lower at f=20 (the budget test admits
+      86 groups where it admitted 62), fits bit for bit, fixtures
+      regenerated. It misses the bar: 7 of 12 new cases are +1.2-2.2% in
+      time, and instructions are +0.3-1.25% (three sparse cases over 1%).
+      Single-target `sgd_huber` (layout unchanged) runs 18.8% slower in
+      time at +0.96% instructions, cause unproven (alignment suspected).
+      DECIDED, the user: hold. Finish after task 284 (W9, also sgd's
+      per-row path): rebase, find the sgd_huber slowdown (VM Callgrind and
+      x86 timing), re-measure, and merge only if single-target sgd is
+      unchanged and the multi-target cases are within 1% in CI's counts.
 - [ ] 284. **Pay less for the per-row drift since 1.3.0** -- the user,
       2026-10-31: "Look for more efficient implementations of the ones that
       drift". CI's Valgrind since 1.3.0: `sgd` +16.8% (+512 instructions a
