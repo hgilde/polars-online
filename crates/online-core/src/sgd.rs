@@ -1661,8 +1661,8 @@ const DOT_LANES: usize = 8;
 /// folded pairwise, and the intercept's coefficient -- its `z` is the
 /// constant 1 -- added last. Always inlined: a step calls it twice a
 /// target (the prediction, and the row's squared length for the step
-/// gains), and the call and its length checks were about a tenth of a
-/// 20-feature row's instructions beside the sum itself (task 284).
+/// gains), and out of line the call and its length checks were 2.5% of
+/// a 20-feature row's instructions (task 284).
 #[inline(always)]
 fn dot(beta: &[f64], off: usize, z: &[f64]) -> f64 {
     let b = &beta[off..];
