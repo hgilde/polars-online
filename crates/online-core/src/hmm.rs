@@ -583,10 +583,27 @@ impl Hmm {
     /// the transition counts as they are read: `1` from the step, which has
     /// aged them already, and the row's decay from `predict`, which may not.
     fn read(&self, x: &[f64], exog: Option<f64>, lam: f64) -> (Vec<f64>, Option<Update>) {
+        let mut out = Vec::new();
+        let update = self.read_into(x, exog, lam, &mut out);
+        (out, update)
+    }
+
+    /// [`Self::read`], the outputs written over `out`.
+    fn read_into(
+        &self,
+        x: &[f64],
+        exog: Option<f64>,
+        lam: f64,
+        out: &mut Vec<f64>,
+    ) -> Option<Update> {
         let k = self.cfg.k;
-        let nan = vec![f64::NAN; Self::n_outputs_for(k)];
+        let nan = |out: &mut Vec<f64>| {
+            out.clear();
+            out.resize(Self::n_outputs_for(k), f64::NAN);
+        };
         if !self.seeded {
-            return (nan, None);
+            nan(out);
+            return None;
         }
         let pi = self.transition_at(exog, lam);
         // `p̃ₗ = Σₖ pₖ Πₖₗ`.
@@ -597,7 +614,8 @@ impl Hmm {
             }
         }
         let Some(logf) = self.log_densities(x) else {
-            return (nan, None);
+            nan(out);
+            return None;
         };
         // `ln Σ p̃ f` about the maximum, so a very small density does not
         // underflow to `-inf` before the sum.
@@ -612,7 +630,8 @@ impl Hmm {
             .collect();
         let top = ell.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         if !top.is_finite() {
-            return (nan, None);
+            nan(out);
+            return None;
         }
         let exps: Vec<f64> = ell.iter().map(|v| (v - top).exp()).collect();
         let z: f64 = exps.iter().sum();
@@ -624,7 +643,7 @@ impl Hmm {
                 best = l;
             }
         }
-        let mut out = Vec::with_capacity(Self::n_outputs_for(k));
+        out.clear();
         out.extend_from_slice(&self.p);
         out.extend_from_slice(&pred);
         out.push(best as f64);
@@ -636,9 +655,9 @@ impl Hmm {
         // `n_eff` plateaued below `min_weight` never learned at all
         // (docs/REVIEW-E54-E64.md H1).
         if self.n_eff < self.cfg.min_weight {
-            return (nan, Some((post, logf, pi)));
+            nan(out);
         }
-        (out, Some((post, logf, pi)))
+        Some((post, logf, pi))
     }
 
     /// Seed the states from the buffer, `kmeans`' recipe: choose centres
@@ -699,13 +718,21 @@ impl Hmm {
 }
 
 impl crate::OnlineModel for Hmm {
-    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
+    fn step_into(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        out: &mut crate::Step,
+    ) {
         // A value that is not usable, by the rule every model keeps
         // (`OnlineModel`): learned as a row of weight 0, which counts no
         // failure, takes no warm-up row and moves no `p`; an exogenous value
         // that is not usable is absent (docs/PLAN.md task 183).
         if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
-            return refused;
+            *out = refused;
+            return;
         }
         self.ensure_factors();
         let lam = self.cfg.decay.factor(d_clock);
@@ -722,12 +749,9 @@ impl crate::OnlineModel for Hmm {
         if self.cfg.learn {
             self.a.iter_mut().for_each(|v| *v *= lam);
         }
-        let (pred, extra) = self.read(x, self.exog_of(y), 1.0);
-        let out = crate::Step {
-            pred,
-            n_eff: self.n_eff,
-            extra: None,
-        };
+        let extra = self.read_into(x, self.exog_of(y), 1.0, &mut out.pred);
+        out.n_eff = self.n_eff;
+        out.extra = None;
         // The warm-up rows age as `n_eff` does, so the states the replay seeds
         // weigh what `n_eff` does; replayed at their raw weights, a state
         // began heavier than its rows' age warranted and its ridge weaker
@@ -747,7 +771,7 @@ impl crate::OnlineModel for Hmm {
                 self.age_states(x, lam);
                 self.factors.clear();
             }
-            return out;
+            return;
         }
         let before = self.n_eff;
         self.n_eff = lam * before + weight;
@@ -759,7 +783,7 @@ impl crate::OnlineModel for Hmm {
             if self.buffer.len() >= self.cfg.warm_rows {
                 self.seed();
             }
-            return out;
+            return;
         }
         let Some((post, logf, pi)) = extra else {
             // A state's factorization failed, or a density was not finite --
@@ -776,7 +800,7 @@ impl crate::OnlineModel for Hmm {
                 self.age_states(x, lam);
                 self.factors.clear();
             }
-            return out;
+            return;
         };
         if self.cfg.learn {
             let k = self.cfg.k;
@@ -813,7 +837,6 @@ impl crate::OnlineModel for Hmm {
             self.factors.clear();
         }
         self.p = post;
-        out
     }
 
     fn predict(&self, x: &[f64], d_clock: f64) -> crate::Step {

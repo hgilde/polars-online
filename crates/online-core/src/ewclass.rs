@@ -442,7 +442,8 @@ impl EwClass {
         m
     }
 
-    /// `[class, p_0, .., p_{C-1}]` for `x` from the current state; NaN
+    /// `[class, p_0, .., p_{C-1}]` for `x` from the current state, written
+    /// over `out` (the step's kept buffer, or `predict`'s new one); NaN
     /// throughout before `min_weight`, before any labelled row, on a
     /// non-finite `x`, when a covariance cannot be factorized, and when a
     /// class's score is not a number. Only the factorization is counted
@@ -458,12 +459,16 @@ impl EwClass {
         valid: bool,
         solve_failed: &mut bool,
         mut factors: Option<&mut Factors>,
-    ) -> Vec<f64> {
+        out: &mut Vec<f64>,
+    ) {
         let nc = self.cfg.n_classes;
         let k = self.cfg.n_features;
-        let nan = || vec![f64::NAN; 1 + nc];
+        let nan = |out: &mut Vec<f64>| {
+            out.clear();
+            out.resize(1 + nc, f64::NAN);
+        };
         if !valid || self.n_eff() < self.cfg.min_weight {
-            return nan();
+            return nan(out);
         }
         // Under a `window`, every class is scored on its truncated moments.
         let view = self.view();
@@ -474,7 +479,7 @@ impl EwClass {
         let weights: Vec<f64> = classes.iter().map(EwCov::n_eff).collect();
         let total: f64 = weights.iter().sum();
         if total <= 0.0 || total.is_nan() {
-            return nan();
+            return nan(out);
         }
         // ln π_c − ½ ln det M_c − ½ q_c per class; −∞ where n_c = 0.
         let mut ell = vec![f64::NEG_INFINITY; nc];
@@ -507,7 +512,7 @@ impl EwClass {
                         }
                         None => {
                             *solve_failed = true;
-                            return nan();
+                            return nan(out);
                         }
                     }
                 }
@@ -541,7 +546,7 @@ impl EwClass {
                     }
                     None => {
                         *solve_failed = true;
-                        return nan();
+                        return nan(out);
                     }
                 }
             }
@@ -570,7 +575,7 @@ impl EwClass {
         // does: the comparisons below pass over a NaN, and the class was
         // reported beside posteriors that were not numbers.
         if ell.iter().any(|l| l.is_nan()) {
-            return nan();
+            return nan(out);
         }
         // Softmax about the maximum; the first maximum is the class.
         let mut best = 0;
@@ -580,17 +585,16 @@ impl EwClass {
             }
         }
         if !ell[best].is_finite() {
-            return nan();
+            return nan(out);
         }
         let top = ell[best];
-        let mut out = Vec::with_capacity(1 + nc);
+        out.clear();
         out.push(best as f64);
         let mut z = 0.0;
         for &l in &ell {
             z += (l - top).exp();
         }
         out.extend(ell.iter().map(|&l| (l - top).exp() / z));
-        out
     }
 }
 
@@ -633,19 +637,27 @@ impl OnlineModel for EwClass {
         }))
     }
 
-    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+    fn step_into(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        out: &mut Step,
+    ) {
         // A value that is not usable, by the rule every model keeps
         // (`OnlineModel`): a feature or a weight past the input bound was
         // learned (a label that is not usable was never a class).
         if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
-            return refused;
+            *out = refused;
+            return;
         }
         let lam = self.cfg.decay.factor(d_clock);
         let n_before = self.n_eff();
         let valid = x.iter().all(|v| v.is_finite());
         let mut failed = false;
         let mut factors = std::mem::take(&mut self.factors);
-        let pred = self.score(x, valid, &mut failed, Some(&mut factors));
+        self.score(x, valid, &mut failed, Some(&mut factors), &mut out.pred);
         self.factors = factors;
         if failed {
             self.solve_failures += 1;
@@ -683,11 +695,8 @@ impl OnlineModel for EwClass {
             }
         }
         self.n_eff = lam * self.n_eff + if learn { weight } else { 0.0 };
-        Step {
-            pred,
-            n_eff: n_before,
-            extra: None,
-        }
+        out.n_eff = n_before;
+        out.extra = None;
     }
 
     fn predict(&self, x: &[f64], d_clock: f64) -> Step {
@@ -696,8 +705,10 @@ impl OnlineModel for EwClass {
         }
         let valid = x.iter().all(|v| v.is_finite());
         let mut failed = false;
+        let mut pred = Vec::new();
+        self.score(x, valid, &mut failed, None, &mut pred);
         Step {
-            pred: self.score(x, valid, &mut failed, None),
+            pred,
             n_eff: self.n_eff(),
             extra: None,
         }

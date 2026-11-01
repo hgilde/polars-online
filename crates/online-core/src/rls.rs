@@ -204,6 +204,24 @@ pub struct Rls {
 }
 
 impl Rls {
+    /// `predict`'s answer for a row whose features are usable, written
+    /// over `out`: the step reads it before the update into the caller's
+    /// buffer.
+    fn predict_into(&self, x: &[f64], out: &mut Step) {
+        let pred = &mut out.pred;
+        pred.clear();
+        pred.resize(self.cfg.n_targets, f64::NAN);
+        if self.seen {
+            for ((p, beta), w) in pred.iter_mut().zip(&self.beta).zip(&self.w_target) {
+                if *w >= self.cfg.min_weight {
+                    *p = dot_aug(beta, x, self.cfg.fit_intercept);
+                }
+            }
+        }
+        out.n_eff = self.w_sum;
+        out.extra = None;
+    }
+
     pub fn new(cfg: RlsCfg) -> Result<Self, String> {
         cfg.validate()?;
         let k = cfg.k_total();
@@ -384,11 +402,19 @@ impl OnlineModel for Rls {
         ]))
     }
 
-    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+    fn step_into(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        out: &mut Step,
+    ) {
         // A value that is not usable, by the rule every model keeps
         // (`OnlineModel`).
         if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
-            return refused;
+            *out = refused;
+            return;
         }
         self.ensure_buffers();
         let k = self.cfg.k_total();
@@ -402,7 +428,7 @@ impl OnlineModel for Rls {
         }
 
         // ---- predict (state before the update) ----
-        let out = self.predict(x, d_clock);
+        self.predict_into(x, out);
 
         // ---- decay ----
         // A <- lam A, b <- lam b  =>  R <- sqrt(lam) R, u <- sqrt(lam) u. The
@@ -479,7 +505,6 @@ impl OnlineModel for Rls {
             self.solve();
             self.seen = true;
         }
-        out
     }
 
     /// The prediction at another `min_weight` floor, set for the read and
@@ -501,20 +526,9 @@ impl OnlineModel for Rls {
         if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
             return refused;
         }
-        let n_eff = self.w_sum;
-        let mut pred = vec![f64::NAN; self.cfg.n_targets];
-        if self.seen {
-            for ((p, beta), w) in pred.iter_mut().zip(&self.beta).zip(&self.w_target) {
-                if *w >= self.cfg.min_weight {
-                    *p = dot_aug(beta, x, self.cfg.fit_intercept);
-                }
-            }
-        }
-        Step {
-            pred,
-            n_eff,
-            extra: None,
-        }
+        let mut out = Step::default();
+        self.predict_into(x, &mut out);
+        out
     }
 
     fn state(&self) -> State {

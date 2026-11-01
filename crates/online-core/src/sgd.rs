@@ -1692,12 +1692,6 @@ impl OnlineModel for Sgd {
         true
     }
 
-    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
-        let mut out = Step::default();
-        self.step_into(x, y, d_clock, weight, &mut out);
-        out
-    }
-
     /// The step, into the caller's buffer (task 270, M-4).
     fn step_into(
         &mut self,

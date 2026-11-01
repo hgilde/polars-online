@@ -636,6 +636,20 @@ impl Lasso {
     /// the fit's own prediction, which the selection scores where the gate
     /// withholds the output alone ([`LassoCfg::min_weight_holds_learning`]).
     fn predict_with(&self, x: &[f64], weights: Option<&(f64, Vec<f64>)>, gated: bool) -> Step {
+        let mut out = Step::default();
+        self.predict_with_into(x, weights, gated, &mut out);
+        out
+    }
+
+    /// [`Self::predict_with`], written over `out`: its `pred` and its
+    /// `lam_selected`, where it holds one, are reused.
+    fn predict_with_into(
+        &self,
+        x: &[f64],
+        weights: Option<&(f64, Vec<f64>)>,
+        gated: bool,
+        out: &mut Step,
+    ) {
         let (m, np) = (self.cfg.n_targets, self.cfg.n_lambdas());
         // Under a `window`, the `n_eff` reported and gated on is the weight
         // inside it, as `EwRidge::predict` reports it (review 2026-09-12, C9).
@@ -645,7 +659,9 @@ impl Lasso {
             Some((w, wj)) => (*w, wj.as_slice()),
             None => (self.acc.cross.w, self.acc.wj.as_slice()),
         };
-        let mut pred = vec![f64::NAN; m * np];
+        let pred = &mut out.pred;
+        pred.clear();
+        pred.resize(m * np, f64::NAN);
         if let (true, Some(beta)) = (!gated || n_eff >= self.cfg.min_weight, &self.beta) {
             for j in 0..m {
                 if wj[j] > 0.0 {
@@ -655,12 +671,18 @@ impl Lasso {
                 }
             }
         }
-        Step {
-            pred,
-            n_eff,
-            extra: Some(Extra::Lasso {
-                lam_selected: self.lam_selected(),
-            }),
+        out.n_eff = n_eff;
+        let selected = self.sel_idx.iter().map(|&i| self.cfg.lasso_path[i]);
+        match &mut out.extra {
+            Some(Extra::Lasso { lam_selected }) => {
+                lam_selected.clear();
+                lam_selected.extend(selected);
+            }
+            extra => {
+                *extra = Some(Extra::Lasso {
+                    lam_selected: selected.collect(),
+                });
+            }
         }
     }
 
@@ -1066,13 +1088,21 @@ impl OnlineModel for Lasso {
         true
     }
 
-    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+    fn step_into(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        out: &mut Step,
+    ) {
         // A value that is not usable, by the rule every model keeps
         // (`OnlineModel`), `lam_selected` NaN with the slots: a feature that
         // is not a number reached the Gram through the zero-weight update's
         // `0 · d` (docs/PLAN.md task 183).
         if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
-            return refused;
+            *out = refused;
+            return;
         }
         let m = self.cfg.n_targets;
         let np = self.cfg.n_lambdas();
@@ -1112,7 +1142,7 @@ impl OnlineModel for Lasso {
         // schema 64 (`LassoCfg::min_weight_holds_learning`; task 278, D10).
         let holds = self.cfg.min_weight_holds_learning;
         let weights = self.window_weights();
-        let mut out = self.predict_with(x, weights.as_ref(), holds);
+        self.predict_with_into(x, weights.as_ref(), holds, out);
         let withheld = out.n_eff < self.cfg.min_weight;
         let pred = &out.pred;
         // Each target's own weight before the row, inside the window under
@@ -1232,7 +1262,7 @@ impl OnlineModel for Lasso {
             out.pred.fill(f64::NAN);
         }
         if weight <= 0.0 {
-            return out;
+            return;
         }
         // A weight here is usable, finite and `>= 0` (`OnlineModel::step`;
         // `refused_step` steps a row whose weight is not as a row of 0).
@@ -1275,7 +1305,6 @@ impl OnlineModel for Lasso {
             self.first_period_by_share &= !(first && explicit);
             period.put_back(&mut self.since_solve, &mut self.rows_since_solve);
         }
-        out
     }
 
     /// The prediction at another `min_weight` floor, set for the read and

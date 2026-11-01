@@ -463,21 +463,27 @@ impl Deco {
     /// What [`crate::OnlineModel::predict`] reports for the row whose sums
     /// are `row`: its outputs, once the weight reaches `min_weight`.
     fn step_of(&self, row: &Row) -> crate::Step {
-        let n_eff = self.diag.n_eff();
-        let pred = if n_eff >= self.cfg.min_weight {
-            self.read_row(row)
-        } else {
-            vec![f64::NAN; Self::n_outputs_for(self.blocks.len())]
-        };
-        crate::Step {
-            pred,
-            n_eff,
-            extra: None,
-        }
+        let mut out = crate::Step::default();
+        self.step_of_into(row, &mut out);
+        out
     }
 
-    /// The row's outputs, from its sums ([`Self::row`]).
-    fn read_row(&self, row: &Row) -> Vec<f64> {
+    /// [`Self::step_of`], written over `out`.
+    fn step_of_into(&self, row: &Row, out: &mut crate::Step) {
+        let n_eff = self.diag.n_eff();
+        if n_eff >= self.cfg.min_weight {
+            self.read_row(row, &mut out.pred);
+        } else {
+            out.pred.clear();
+            out.pred
+                .resize(Self::n_outputs_for(self.blocks.len()), f64::NAN);
+        }
+        out.n_eff = n_eff;
+        out.extra = None;
+    }
+
+    /// The row's outputs, from its sums ([`Self::row`]), written over `out`.
+    fn read_row(&self, row: &Row, out: &mut Vec<f64>) {
         let Row { s1, s2, ok, u } = row;
         // The density is over every column, so a row with one that has no
         // standardised value has none (task 115 (h)).
@@ -486,11 +492,10 @@ impl Deco {
         } else {
             f64::NAN
         };
-        let mut out = Vec::with_capacity(Self::n_outputs_for(self.blocks.len()));
+        out.clear();
         out.extend_from_slice(u);
         out.extend_from_slice(&self.rho);
         out.push(loglik);
-        out
     }
 }
 
@@ -509,19 +514,27 @@ fn n_values(k: usize) -> usize {
 }
 
 impl crate::OnlineModel for Deco {
-    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
+    fn step_into(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        out: &mut crate::Step,
+    ) {
         // A value that is not usable, by the rule every model keeps
         // (`OnlineModel`): nothing reported, and learned as a row of weight
         // 0, so the standardiser reads no moment from it (the module docs).
         if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
-            return refused;
+            *out = refused;
+            return;
         }
         // Read before the update: `u`, `rho` and `loglik` are all as of the
         // state before this row, which is what makes them usable as features
         // for the same row. The row's estimates are the ones it then learns
         // from, standardised once (task 270, D-6).
         let row = self.row(x);
-        let out = self.step_of(&row);
+        self.step_of_into(&row, out);
         let lam = self.cfg.decay.factor(d_clock);
         if weight >= 0.0 {
             // Each value learns from its own estimate, where the row has one
@@ -529,7 +542,6 @@ impl crate::OnlineModel for Deco {
             self.advance(&row.u, lam, weight);
         }
         self.diag.update(x, lam, weight);
-        out
     }
 
     fn predict(&self, x: &[f64], d_clock: f64) -> crate::Step {

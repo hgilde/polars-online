@@ -559,21 +559,30 @@ fn refuse_reading_with<M: OnlineModel>(m: &M, x: &[f64], y: &[Option<f64>], d_cl
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub trait OnlineModel: Sized {
-    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step;
+    /// One row: the [`Step`] predicted before the row's update, then the
+    /// update. The step into a new [`Step`] ([`Self::step_into`]), which a
+    /// model does not override.
+    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+        let mut out = Step::default();
+        self.step_into(x, y, d_clock, weight, &mut out);
+        out
+    }
 
     /// [`Self::step`], its [`Step`] written into `out` in place of a new
     /// one: every slot of `pred` (resized to the row's slot count), `n_eff`
     /// and `extra`, whatever `out` held before. A caller that keeps one
     /// `Step` across rows -- the bank does, one per model instance -- reuses
-    /// its `pred` buffer, where `step` allocates a new one a row: a heap
-    /// allocation, which is a large share of the cheapest models' row. The
-    /// numbers
-    /// and the state are `step`'s to the bit, which `tests/model_contract.rs`
+    /// its buffers, `pred` and any `extra`'s, where a new `Step` a row is a
+    /// heap allocation and a free a row: on Linux, a third of the cheapest
+    /// model's row (`holt`'s, 250 of its 679 instructions). The numbers and
+    /// the state are `step`'s to the bit, which `tests/model_contract.rs`
     /// holds for every model on a buffer left with another row's values.
     ///
-    /// The default goes through `step`, and allocates as it does; a model
-    /// whose step is cheap enough for the allocation to matter overrides it
-    /// and writes `step` as this into a new `Step`.
+    /// Every model implements this, and `step` is provided from it, so no
+    /// model's row allocates its answer: a model writes into `out.pred`
+    /// (`clear` and `resize`, or its own fill), sets `out.n_eff`, and
+    /// reuses `out.extra`'s vector where the variant it emits is already
+    /// there.
     fn step_into(
         &mut self,
         x: &[f64],
@@ -581,9 +590,7 @@ pub trait OnlineModel: Sized {
         d_clock: f64,
         weight: f64,
         out: &mut Step,
-    ) {
-        *out = self.step(x, y, d_clock, weight);
-    }
+    );
     /// The [`Step`] that [`Self::step`] would return for this row, without
     /// the update: the same `pred`, the same `n_eff`, the same `extra`, and
     /// the state untouched. `d_clock` is the clock elapsed since the last
@@ -915,8 +922,8 @@ mod tests {
     fn the_noise_gates_default_is_the_exact_statistic() {
         struct Inflated;
         impl OnlineModel for Inflated {
-            fn step(&mut self, x: &[f64], _: &[Option<f64>], d: f64, _: f64) -> Step {
-                self.predict(x, d)
+            fn step_into(&mut self, x: &[f64], _: &[Option<f64>], d: f64, _: f64, out: &mut Step) {
+                *out = self.predict(x, d);
             }
             fn predict(&self, _: &[f64], _: f64) -> Step {
                 Step {
