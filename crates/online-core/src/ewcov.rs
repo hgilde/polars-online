@@ -58,17 +58,71 @@ pub fn variance_is_usable(var: f64, _raw_second_moment: f64) -> bool {
     var > 0.0 && var.is_finite()
 }
 
+/// Below this many features, on x86-64, the serial rank-one step updates
+/// whole rows of the storage, upper entries too ([`rank_one_whole_rows`]);
+/// from it up, and on every other target, the lower triangle's rows alone
+/// ([`rank_one_lower_rows`]). A lower row is `i + 1` entries long, so at a
+/// few features each row is mostly the vector loop's prologue and tail.
+/// The loop timed alone, lower rows' time over whole rows' (task 295, P10):
+/// on x86-64 (the VM) 1.04-1.37 at 2-8 features (1.33-1.37 at 4),
+/// 0.90-1.06 at 10-12, 0.85-0.90 at 16-20, 0.72 at 32; on arm64 (an
+/// Apple M-series core) about 1 at 2 features, 0.69-0.95 at 3-7, 11-15
+/// and 17-20, and above 1 only where whole rows fill the vector loop's
+/// unrolled width: 1.41 at 8, 1.16 at 9, 1.04-1.07 at 10, 1.06-1.15 at 16,
+/// about 1 at 24, 0.85-0.90 at 32. Whole rows at
+/// 2-9 features on arm64 made `ewridge` at 5 features 3.4% slower, so
+/// there the lower rows stay at every width. `None`: never whole rows.
+#[cfg(target_arch = "x86_64")]
+const WHOLE_ROWS_BELOW: Option<usize> = Some(10);
+#[cfg(not(target_arch = "x86_64"))]
+const WHOLE_ROWS_BELOW: Option<usize> = None;
+
+/// Whether the serial rank-one step at `k` features takes whole rows
+/// ([`WHOLE_ROWS_BELOW`]).
+#[inline]
+fn whole_rows(k: usize) -> bool {
+    WHOLE_ROWS_BELOW.is_some_and(|below| k < below)
+}
+
 /// The co-moments' rank-one step on one thread, `c_ij = a·c_ij + (a·b·d_i)·d_j`
-/// row by row over the lower triangle, `j ≤ i` ([`LowerTriangle`]):
-/// [`EwCov::update`]'s serial path, the same expression per entry as its
-/// threaded one. Out of line, so the loop is compiled on its own rather than
-/// inside `update` beside the threaded branch, where it ran 21% slower than
-/// 0.13.0's identical loop at `k = 20` (task 250).
-#[inline(never)]
+/// over the lower triangle, `j ≤ i` ([`LowerTriangle`]): [`EwCov::update`]'s
+/// serial path, the same expression per lower entry as its threaded one,
+/// by whole rows or by the lower rows ([`whole_rows`]). Each lower entry is
+/// the same number either way, and only the lower triangle is read,
+/// compared or saved, so the choice moves no bit of a prediction or a
+/// state.
+#[inline]
 fn rank_one_rows(c: &mut [f64], k: usize, d: &[f64], a: f64, b: f64) {
+    if whole_rows(k) {
+        rank_one_whole_rows(c, k, d, a, b);
+    } else {
+        rank_one_lower_rows(c, k, d, a, b);
+    }
+}
+
+/// [`rank_one_rows`] row by row over the lower triangle. Out of line, so the
+/// loop is compiled on its own rather than inside `update` beside the
+/// threaded branch, where it ran 21% slower than 0.13.0's identical loop at
+/// `k = 20` (task 250).
+#[inline(never)]
+fn rank_one_lower_rows(c: &mut [f64], k: usize, d: &[f64], a: f64, b: f64) {
     for i in 0..k {
         let ab_di = a * b * d[i];
         let row = &mut c[i * k..=i * k + i];
+        for (cj, &dj) in row.iter_mut().zip(d.iter()) {
+            *cj = a * *cj + ab_di * dj;
+        }
+    }
+}
+
+/// [`rank_one_rows`] over whole rows of the storage: each lower entry gets
+/// [`rank_one_lower_rows`]' expression, and each upper entry one that no
+/// read uses ([`LowerTriangle`]). Out of line, as that one.
+#[inline(never)]
+fn rank_one_whole_rows(c: &mut [f64], k: usize, d: &[f64], a: f64, b: f64) {
+    for i in 0..k {
+        let ab_di = a * b * d[i];
+        let row = &mut c[i * k..(i + 1) * k];
         for (cj, &dj) in row.iter_mut().zip(d.iter()) {
             *cj = a * *cj + ab_di * dj;
         }

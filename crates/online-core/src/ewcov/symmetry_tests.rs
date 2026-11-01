@@ -195,3 +195,89 @@ fn the_two_triangles_read_as_one() {
         }
     }
 }
+
+/// The serial step's two forms (task 295, P10): whole rows below x86-64's
+/// threshold, the lower rows from it up and on every other target. At that
+/// threshold and one below it, and at a few features, on every target,
+/// over one stream, `EwCov::update` and both forms run directly leave the
+/// same lower triangle to the bit, equal matrices and the same state bytes;
+/// and the storage shows which form `update` took -- whole rows, whose
+/// upper entries moved, or the lower rows, whose upper entries stayed 0.
+#[test]
+fn whole_rows_and_lower_rows_leave_the_same_state() {
+    let mut widths = vec![2usize, 4, 9, 10];
+    widths.extend(WHOLE_ROWS_BELOW.map(|t| [t - 1, t]).into_iter().flatten());
+    for k in widths {
+        let mut s = 29 + k as u64;
+        let mut cov = EwCov::new(k);
+        let (mut whole, mut lower) = (vec![0.0; k * k], vec![0.0; k * k]);
+        for _ in 0..2_000 {
+            let x: Vec<f64> = (0..k).map(|j| j as f64 + lcg(&mut s)).collect();
+            let w = 1.0 + 0.5 * lcg(&mut s);
+            let lam = 0.98;
+            // The same `a`, `b` and deviations `update` forms.
+            let w_new = lam * cov.n_eff() + w;
+            let (a, b) = (lam * cov.n_eff() / w_new, w / w_new);
+            let d: Vec<f64> = (0..k).map(|i| cov.deviation(i, x[i])).collect();
+            rank_one_whole_rows(&mut whole, k, &d, a, b);
+            rank_one_lower_rows(&mut lower, k, &d, a, b);
+            cov.update(&x, lam, w);
+        }
+        let kept = cov.comoments().lower();
+        for i in 0..k {
+            for j in 0..=i {
+                let ij = i * k + j;
+                assert_eq!(
+                    whole[ij].to_bits(),
+                    lower[ij].to_bits(),
+                    "k = {k}: ({i}, {j})"
+                );
+                assert_eq!(
+                    kept[ij].to_bits(),
+                    lower[ij].to_bits(),
+                    "k = {k}: update ({i}, {j})"
+                );
+            }
+        }
+        let upper = |c: &[f64]| {
+            (0..k)
+                .flat_map(|i| (i + 1..k).map(move |j| c[i * k + j]))
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            upper(&whole).iter().all(|&v| v != 0.0),
+            "k = {k}: whole rows wrote the upper"
+        );
+        assert!(
+            upper(&lower).iter().all(|&v| v == 0.0),
+            "k = {k}: lower rows left it"
+        );
+        let took = if whole_rows(k) { &whole } else { &lower };
+        assert_eq!(upper(kept), upper(took), "k = {k}: the form update took");
+        // As matrices and as state: the same.
+        let as_matrix = |c: &[f64]| {
+            let mut m = LowerTriangle::zeros(k);
+            m.copy_from(c);
+            m
+        };
+        let (mw, ml) = (as_matrix(&whole), as_matrix(&lower));
+        assert_eq!(mw, ml, "k = {k}");
+        assert_eq!(format!("{mw:?}"), format!("{ml:?}"), "k = {k}");
+        assert_eq!(
+            rmp_serde::to_vec_named(&mw).unwrap(),
+            rmp_serde::to_vec_named(&ml).unwrap(),
+            "k = {k}: the matrix's bytes"
+        );
+        let bytes = rmp_serde::to_vec_named(&cov).unwrap();
+        for (form, c) in [("whole", &whole), ("lower", &lower)] {
+            let mut twin = cov.clone();
+            twin.c.copy_from(c);
+            assert_eq!(twin, cov, "k = {k}: {form}");
+            assert_eq!(
+                rmp_serde::to_vec_named(&twin).unwrap(),
+                bytes,
+                "k = {k}: {form}'s state bytes"
+            );
+        }
+    }
+}
