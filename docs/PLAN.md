@@ -16767,3 +16767,10 @@ Ordering below: bit-identical first (no fixture moves, no user decision), then w
 - [ ] 290 follows 291a: port the VM's AVX2 `standardize_row` patch (artifact H91pgCKWPzWcxge1JBehgM, local commit 52e0afa3).
   - pulp V3 runtime dispatch; the scalar loop below 12 features and off x86-64; bit-identical.
   - sgd −10.6%, pa −10.9% native.
+- [ ] 294. **P6: every EwCov's co-moment matrix as one symmetric lower triangle**
+  - The user's decision, 2026-11-01: "Take P6".
+  - Today each entry and its mirror round apart, by up to 9.1e-14. Update the lower triangle only, read upper entries through the mirror, and save the matrix mirrored, so the schema stays.
+  - Every solve's predictions stay bit for bit. ew_cov's covariances and correlations and lasso move by up to ~1e-13, measured and declared, and the fixtures holding an EwCov are regenerated.
+  - Prototype gains: huber_k20 −9.5%, huber_k20_refit −16.7%, ewridge_k20 −8.3%.
+  - Then P2 (the refit's moments as a blocked Gram, rounding-changing) goes to the user with numbers.
+  - Worker W16.
