@@ -632,14 +632,6 @@ pub struct ModelRun {
 /// The setup of a model case: the model the spec builds, stepped through
 /// the warm-up rows.
 pub fn model_setup(id: &str) -> ModelRun {
-    // Rayon's global pool, which a solve asks for its size, built here
-    // rather than by the first solve of the block: `sgd_huber_refit`'s first
-    // is its refit, inside the block, where building the pool read the
-    // environment (at a cost that grows with its size) and spawned the
-    // pool's threads, whose allocations moved the heap the block then ran
-    // on. Its count moved by about 0.01% with the size of the process's
-    // environment (task 292, P8).
-    rayon::current_num_threads();
     let spec = spec(id);
     let mut built = build_models(&spec).unwrap_or_else(|e| panic!("{id}: {e}"));
     assert_eq!(built.len(), 1, "{id}: one instance");
@@ -650,6 +642,17 @@ pub fn model_setup(id: &str) -> ModelRun {
         let (x, y, d) = rows.row(i);
         model.step_into(x, y, d, 1.0, &mut step);
     }
+    // Rayon's global pool, which a solve asks for its size, built here at
+    // the latest rather than by the first solve of the block:
+    // `sgd_huber_refit`'s first is its refit, inside the block, where
+    // building the pool read the environment (at a cost that grows with its
+    // size) and spawned the pool's threads, whose allocations moved the heap
+    // the block then ran on, about 0.01% with the size of the process's
+    // environment (task 292, P8). After the warm-up, not before the model:
+    // a case whose warm-up already built it keeps the heap it had, where
+    // building it first laid the heap out in another order (the VM's
+    // measurement, variant A).
+    rayon::current_num_threads();
     ModelRun { model, rows, step }
 }
 

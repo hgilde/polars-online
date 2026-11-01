@@ -315,6 +315,21 @@ returns.
   fires; proven on an AMD EPYC 9V74 runner, all 2,345 oracle tests passing
   with NumPy reporting no AVX-512. The `OPENBLAS_L2_SIZE` setting is
   removed.
+- The co-moment matrix every `EwCov` keeps is now exactly symmetric: it is
+  stored as its lower triangle, and an upper entry reads its mirror, where
+  the update used to round the two apart (task 294). `ew_cov`'s
+  covariances and correlations move by at most 3e-16 of `1 + |x|`, about
+  4e-16 at the scale `√(var_i·var_j)`; a covariance near zero between
+  independent features can move by up to 2.7e-8 of itself over 100,000
+  rows. `lasso`'s predictions move by up to 2e-15 of `1 + |pred|`. The
+  diagnostics read from a co-moment matrix's cross terms move by up to
+  1.1e-13 (`calibration_*`), 3.9e-14 (`ramsey_reset_*`), 1.1e-14
+  (`break_wald_*`), 9e-16 (`breusch_pagan_*`) and 3e-16 (`ic_*`) of
+  `1 + |v|`, and the exported Gram's `comoments` is now symmetric. A
+  `marginal` pair's `cov` and `corr` now agree with a two-column `ew_cov`'s
+  within a few roundings, where they were equal to the bit; its means and
+  variances still are. Every other model's predictions are unchanged, bit
+  for bit, and states saved by 1.x load and continue within these bounds.
 - `holt` divides into each denominator on its row-to-row chain once and
   multiplies by the reciprocal, so its numbers move within rounding (task
   291a). Predictions differ by up to 5.2e-13 relative, on a prediction near
@@ -955,6 +970,18 @@ returns.
   from 12 features on x86-64 CPUs that have it, with the same bits as
   before (task 290): 10.6% (`sgd`) and 10.9% (`pa`) faster, measured on
   x86-64. Other CPUs and narrower rows are unchanged.
+- The co-moment update every `EwCov` makes does `k(k+1)/2` entries where it
+  did `k²`, and `ew_cov` reads its pairs four columns at a time (task 294).
+  On arm64, natively: `huber` at 20 features takes 8% fewer instructions
+  and 7.6% less time, its refit 14.7% less time, `ewridge` at 20 features
+  3.5% less, `ew_cov` with lags 5.6% less, and `ew_cov` 10% fewer
+  instructions (its correlations' divisions bound its time).
+- The instruction-count benchmarks build rayon's thread pool at the end of
+  each model case's warm-up, outside the measured block, so a case's count
+  no longer moves with the size of the process's environment (task 292).
+  `corrchange` with a monitored span counts 1.7% more through glibc's
+  multi-threaded allocator, its process now running threads as a
+  production one does; the model's work is unchanged.
 
 ### Known issues
 
