@@ -58,17 +58,71 @@ pub fn variance_is_usable(var: f64, _raw_second_moment: f64) -> bool {
     var > 0.0 && var.is_finite()
 }
 
+/// Below this many features, on x86-64, the serial rank-one step updates
+/// whole rows of the storage, upper entries too ([`rank_one_whole_rows`]);
+/// from it up, and on every other target, the lower triangle's rows alone
+/// ([`rank_one_lower_rows`]). A lower row is `i + 1` entries long, so at a
+/// few features each row is mostly the vector loop's prologue and tail.
+/// The loop timed alone, lower rows' time over whole rows' (task 295, P10):
+/// on x86-64 (the VM) 1.04-1.37 at 2-8 features (1.33-1.37 at 4),
+/// 0.90-1.06 at 10-12, 0.85-0.90 at 16-20, 0.72 at 32; on arm64 (an
+/// Apple M-series core) about 1 at 2 features, 0.69-0.95 at 3-7, 11-15
+/// and 17-20, and above 1 only where whole rows fill the vector loop's
+/// unrolled width: 1.41 at 8, 1.16 at 9, 1.04-1.07 at 10, 1.06-1.15 at 16,
+/// about 1 at 24, 0.85-0.90 at 32. Whole rows at
+/// 2-9 features on arm64 made `ewridge` at 5 features 3.4% slower, so
+/// there the lower rows stay at every width. `None`: never whole rows.
+#[cfg(target_arch = "x86_64")]
+const WHOLE_ROWS_BELOW: Option<usize> = Some(10);
+#[cfg(not(target_arch = "x86_64"))]
+const WHOLE_ROWS_BELOW: Option<usize> = None;
+
+/// Whether the serial rank-one step at `k` features takes whole rows
+/// ([`WHOLE_ROWS_BELOW`]).
+#[inline]
+fn whole_rows(k: usize) -> bool {
+    WHOLE_ROWS_BELOW.is_some_and(|below| k < below)
+}
+
 /// The co-moments' rank-one step on one thread, `c_ij = a·c_ij + (a·b·d_i)·d_j`
-/// row by row over the lower triangle, `j ≤ i` ([`LowerTriangle`]):
-/// [`EwCov::update`]'s serial path, the same expression per entry as its
-/// threaded one. Out of line, so the loop is compiled on its own rather than
-/// inside `update` beside the threaded branch, where it ran 21% slower than
-/// 0.13.0's identical loop at `k = 20` (task 250).
-#[inline(never)]
+/// over the lower triangle, `j ≤ i` ([`LowerTriangle`]): [`EwCov::update`]'s
+/// serial path, the same expression per lower entry as its threaded one,
+/// by whole rows or by the lower rows ([`whole_rows`]). Each lower entry is
+/// the same number either way, and only the lower triangle is read,
+/// compared or saved, so the choice moves no bit of a prediction or a
+/// state.
+#[inline]
 fn rank_one_rows(c: &mut [f64], k: usize, d: &[f64], a: f64, b: f64) {
+    if whole_rows(k) {
+        rank_one_whole_rows(c, k, d, a, b);
+    } else {
+        rank_one_lower_rows(c, k, d, a, b);
+    }
+}
+
+/// [`rank_one_rows`] row by row over the lower triangle. Out of line, so the
+/// loop is compiled on its own rather than inside `update` beside the
+/// threaded branch, where it ran 21% slower than 0.13.0's identical loop at
+/// `k = 20` (task 250).
+#[inline(never)]
+fn rank_one_lower_rows(c: &mut [f64], k: usize, d: &[f64], a: f64, b: f64) {
     for i in 0..k {
         let ab_di = a * b * d[i];
         let row = &mut c[i * k..=i * k + i];
+        for (cj, &dj) in row.iter_mut().zip(d.iter()) {
+            *cj = a * *cj + ab_di * dj;
+        }
+    }
+}
+
+/// [`rank_one_rows`] over whole rows of the storage: each lower entry gets
+/// [`rank_one_lower_rows`]' expression, and each upper entry one that no
+/// read uses ([`LowerTriangle`]). Out of line, as that one.
+#[inline(never)]
+fn rank_one_whole_rows(c: &mut [f64], k: usize, d: &[f64], a: f64, b: f64) {
+    for i in 0..k {
+        let ab_di = a * b * d[i];
+        let row = &mut c[i * k..(i + 1) * k];
         for (cj, &dj) in row.iter_mut().zip(d.iter()) {
             *cj = a * *cj + ab_di * dj;
         }
@@ -1774,13 +1828,17 @@ struct Windowed {
     snaps: crate::Snapshots<crate::Moments>,
 }
 
-/// `n` new slots at the end of `out`, for the caller to write in place:
-/// one resize for a statistic's pairs, where a `push` a pair checked the
-/// capacity each time.
-fn slots(out: &mut Vec<f64>, n: usize) -> &mut [f64] {
-    let start = out.len();
-    out.resize(start + n, 0.0);
-    &mut out[start..]
+/// The next `n` slots of the row's output, for the caller to write whole:
+/// `rest` keeps the slots after them. The output is sized once and every
+/// slot written by index, so no slot is filled twice: a zero-fill of each
+/// statistic's slots before the writes, where the writes are in a function
+/// the compiler does not see through (`LowerTriangle::upper_rows_map`), was
+/// a `memset` on every row: 5-12% of `ew_cov`'s sampled cycles on arm64,
+/// and 6% of its time at 20 features (task 295).
+fn slots<'a>(rest: &mut &'a mut [f64], n: usize) -> &'a mut [f64] {
+    let (head, tail) = std::mem::take(rest).split_at_mut(n);
+    *rest = tail;
+    head
 }
 
 impl EwCovModel {
@@ -2145,8 +2203,14 @@ impl EwCovModel {
     /// for the standard deviations the correlations divide by.
     fn read_into(&self, cov: &EwCov, x: &[f64], out: &mut Vec<f64>, std: &mut Vec<f64>) {
         let k = self.cfg.n_features;
-        out.clear();
-        out.reserve(self.cfg.n_outputs());
+        // Sized to the row's slots, which a stream keeps from row to row, so
+        // from the second row on this moves nothing; every slot is then
+        // written below, whatever `out` held.
+        let n = self.cfg.n_outputs();
+        if out.len() != n {
+            out.resize(n, 0.0);
+        }
+        let mut rest = out.as_mut_slice();
         // `bias`'s factor on every second moment, 1 under `bias`, where the
         // multiplication is exact. The correlations read the co-moments as
         // kept: the factor cancels from them.
@@ -2160,12 +2224,24 @@ impl EwCovModel {
             .flatten();
         for stat in &self.cfg.stats {
             match stat {
-                EwCovStat::Mean => (0..k).for_each(|i| out.push(cov.mean(i))),
-                EwCovStat::Var => (0..k).for_each(|i| out.push(scale * cov.var(i))),
-                EwCovStat::Std => (0..k).for_each(|i| out.push((scale * cov.var(i)).sqrt())),
+                EwCovStat::Mean => {
+                    for (i, o) in slots(&mut rest, k).iter_mut().enumerate() {
+                        *o = cov.mean(i);
+                    }
+                }
+                EwCovStat::Var => {
+                    for (i, o) in slots(&mut rest, k).iter_mut().enumerate() {
+                        *o = scale * cov.var(i);
+                    }
+                }
+                EwCovStat::Std => {
+                    for (i, o) in slots(&mut rest, k).iter_mut().enumerate() {
+                        *o = (scale * cov.var(i)).sqrt();
+                    }
+                }
                 EwCovStat::Cov => {
                     // Pair `(i, j)`, `j > i`, is the lower entry `(j, i)`.
-                    let dst = slots(out, k * (k - 1) / 2);
+                    let dst = slots(&mut rest, k * (k - 1) / 2);
                     cov.comoments().upper_rows_map(k, dst, |_, _, v| scale * v);
                 }
                 EwCovStat::Corr => {
@@ -2180,7 +2256,7 @@ impl EwCovModel {
                     // numbers, in the same order.
                     std.clear();
                     std.extend((0..k).map(|i| cov.var(i).sqrt()));
-                    let dst = slots(out, k * (k - 1) / 2);
+                    let dst = slots(&mut rest, k * (k - 1) / 2);
                     let sd = &*std;
                     cov.comoments().upper_rows_map(k, dst, |i, j, cij| {
                         let d = sd[i] * sd[j];
@@ -2192,22 +2268,25 @@ impl EwCovModel {
                     });
                 }
                 EwCovStat::PartialCorr => {
+                    let mut dst = slots(&mut rest, k * (k - 1) / 2).iter_mut();
                     for i in 0..k {
-                        for j in (i + 1)..k {
-                            out.push(match &precision {
+                        for (j, o) in ((i + 1)..k).zip(dst.by_ref()) {
+                            *o = match &precision {
                                 Some(p) => partial_corr(p, k, i, j),
                                 None => f64::NAN,
-                            });
+                            };
                         }
                     }
                 }
                 // From the precision in hand where the partial correlations
                 // asked for it: the same matrix factorized again was a
                 // second `k³` a row (task 270, A-2).
-                EwCovStat::Mahal => out.push(match &precision {
-                    Some(p) => Self::mahal_by(cov, x, p, scale),
-                    None => Self::mahal_of(cov, x, scale),
-                }),
+                EwCovStat::Mahal => {
+                    slots(&mut rest, 1)[0] = match &precision {
+                        Some(p) => Self::mahal_by(cov, x, p, scale),
+                        None => Self::mahal_of(cov, x, scale),
+                    }
+                }
                 EwCovStat::LagCorr => {
                     // `C_l[a,b] / sqrt(C_0[a,a] * C_0[b,b])`: the lagged
                     // covariance over the contemporaneous standard
@@ -2217,45 +2296,55 @@ impl EwCovModel {
                     // and clamping would hide that.
                     std.clear();
                     std.extend((0..k).map(|i| cov.var(i).sqrt()));
+                    let dst = slots(&mut rest, self.cfg.lags.len() * k * k);
                     match &self.lag {
                         Some(lag) => {
+                            // `restore` holds the lags to the cfg's.
+                            let mut dst = dst.iter_mut();
                             for li in 0..lag.lags().len() {
                                 for a in 0..k {
-                                    for b in 0..k {
+                                    for (b, o) in (0..k).zip(dst.by_ref()) {
                                         let d = std[a] * std[b];
-                                        out.push(if d > 0.0 {
+                                        *o = if d > 0.0 {
                                             lag.get(li, a, b) / d
                                         } else {
                                             f64::NAN
-                                        });
+                                        };
                                     }
                                 }
                             }
                         }
-                        None => {
-                            out.extend(std::iter::repeat_n(f64::NAN, self.cfg.lags.len() * k * k))
-                        }
+                        None => dst.fill(f64::NAN),
                     }
                 }
             }
         }
         if let Some(q) = &self.mahal_q {
-            for l in 0..q.levels().len() {
-                out.push(q.get(l).unwrap_or(f64::NAN));
+            // `restore` holds the sketch's levels to the cfg's.
+            let dst = slots(&mut rest, q.levels().len());
+            for (l, o) in dst.iter_mut().enumerate() {
+                *o = q.get(l).unwrap_or(f64::NAN);
             }
         }
         if self.cfg.pca > 0 {
+            let dst = slots(&mut rest, self.cfg.pca * (k + 3));
             match &self.pca {
                 Some(p) => {
-                    for j in 0..p.r() {
+                    // A component per `k + 3` slots. The model refreshes all
+                    // `pca` of them at once; a loaded state may hold fewer,
+                    // and their slots are NaN, where the row was short.
+                    let mut comps = dst.chunks_exact_mut(k + 3);
+                    for (j, o) in (0..p.r()).zip(comps.by_ref()) {
                         let v = &p.loadings[j * k..(j + 1) * k];
-                        out.push(p.eig[j]);
-                        out.push(if p.trace > 0.0 {
+                        let (head, tail) = o.split_at_mut(2);
+                        head[0] = p.eig[j];
+                        head[1] = if p.trace > 0.0 {
                             p.eig[j] / p.trace
                         } else {
                             f64::NAN
-                        });
-                        out.extend_from_slice(v);
+                        };
+                        let (load, score_at) = tail.split_at_mut(k);
+                        load.copy_from_slice(v);
                         // The row's coordinate along the component, about the
                         // current mean: loadings frozen, centre live.
                         let score = v
@@ -2263,12 +2352,14 @@ impl EwCovModel {
                             .zip(x)
                             .enumerate()
                             .fold(0.0, |acc, (i, (vi, xi))| acc + vi * cov.deviation(i, *xi));
-                        out.push(score);
+                        score_at[0] = score;
                     }
+                    comps.for_each(|o| o.fill(f64::NAN));
                 }
-                None => out.extend(std::iter::repeat_n(f64::NAN, self.cfg.pca * (k + 3))),
+                None => dst.fill(f64::NAN),
             }
         }
+        debug_assert!(rest.is_empty(), "every slot is written");
     }
 
     /// [`crate::OnlineModel::predict`], into the caller's buffer: what
