@@ -694,6 +694,28 @@ pub(crate) fn fitted(beta: &[f64], x: &[f64], intercept: bool) -> f64 {
     crate::solve::dot_aug(beta, x, intercept)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The weighted medians over unequal weights on this thread that the
+    /// selection decided, and that fell back to the sorted walk: what a
+    /// test reads to see which path ran, since both give the same value.
+    pub(crate) static MEDIAN_PATHS: std::cell::Cell<[u32; 2]> =
+        const { std::cell::Cell::new([0; 2]) };
+}
+
+/// Count a weighted median over unequal weights decided by the selection
+/// (`0`) or by the sorted walk (`1`) in `MEDIAN_PATHS`; nothing outside
+/// tests.
+#[inline]
+fn count_median(_path: usize) {
+    #[cfg(test)]
+    MEDIAN_PATHS.with(|c| {
+        let mut v = c.get();
+        v[_path] += 1;
+        c.set(v);
+    });
+}
+
 /// The weighted median of `a` at weights `v`: the smallest value at which
 /// the cumulative weight reaches half the total, over the entries of
 /// positive weight, both sums taken in the values' sorted order
@@ -763,9 +785,11 @@ pub(crate) fn weighted_median(a: &[f64], v: &[f64]) -> f64 {
             && below < half - margin
             && upto >= half + margin
         {
+            count_median(0);
             return from_total_key(key);
         }
     }
+    count_median(1);
     weighted_median_sorted(a, v)
 }
 
@@ -2151,6 +2175,155 @@ mod tests {
         }
         // Both of the selection's paths ran, many times over.
         assert!(selected > 5_000 && equal > 1_000, "{selected} {equal}");
+    }
+
+    /// The weighted median through [`weighted_median`], with the paths it
+    /// took on this thread: `(value, [selected, sorted])`.
+    fn median_and_path(a: &[f64], v: &[f64]) -> (f64, [u32; 2]) {
+        MEDIAN_PATHS.with(|c| c.set([0; 2]));
+        let m = weighted_median(a, v);
+        (m, MEDIAN_PATHS.with(std::cell::Cell::get))
+    }
+
+    /// Mutants of 1b7e5178: a selection that fails, or whose sums cannot be
+    /// trusted, falls back to the sort, so the value stays right and only
+    /// the path shows it. On ordinary inputs -- distinct values at decayed
+    /// weights, from 2 to 600 rows, in random, ascending and descending
+    /// order, totals from 1e-9 to 1e9 -- every median is the selection's,
+    /// the sort never runs, and the value is the sorted walk's to the bit.
+    /// Ascending and descending rows are where a pivot taken from the ends
+    /// alone needs a partition a row and runs out of its 64.
+    #[test]
+    fn on_ordinary_rows_the_selection_decides_and_the_sort_never_runs() {
+        let mut g = 11u64;
+        let mut next = move || {
+            g = g
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (g >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut calls = 0;
+        for trial in 0..600usize {
+            let n = 2 + (trial * 7919) % 599;
+            let scale = [1e-9, 1e-3, 1.0, 1e3, 1e9][trial % 5];
+            let mut a: Vec<f64> = (0..n).map(|_| next() * 10.0 - 3.0).collect();
+            match trial % 3 {
+                1 => a.sort_by(f64::total_cmp),
+                2 => a.sort_by(|p, q| q.total_cmp(p)),
+                _ => {}
+            }
+            let lam = 0.999 - 0.1 * next();
+            let v: Vec<f64> = (0..n)
+                .map(|i| scale * lam.powi(i as i32) * (0.5 + next()))
+                .collect();
+            let (m, paths) = median_and_path(&a, &v);
+            assert_eq!(paths, [1, 0], "trial {trial}, n = {n}: the paths");
+            assert_eq!(
+                m.to_bits(),
+                weighted_median_sorted(&a, &v).to_bits(),
+                "trial {trial}, n = {n}"
+            );
+            calls += 1;
+        }
+        assert_eq!(calls, 600);
+    }
+
+    /// The margin's edges, on 256 rows whose weights are whole multiples of
+    /// `2^-50` summing to 1: every partial sum is exact in any order, so
+    /// the selection's sums are the walk's and both answers are the same,
+    /// and only the margin decides which path gives it. At 256 rows the
+    /// margin `4(n + 256)·ε·total` is `2^-41` exactly. The value's weight
+    /// below (`B`) and up to it (`U`) placed at, within and past the
+    /// margin about half: the selection stands only where `B < 1/2 −
+    /// 2^-41` and `U ≥ 1/2 + 2^-41`. A margin a quarter or less of this
+    /// one, one 256 times as wide, either comparison loosened or made
+    /// inclusive at the edge, each takes the other path on one of these.
+    #[test]
+    fn the_selection_stands_only_past_its_margin() {
+        let g = std::cell::Cell::new(3u64);
+        let next = || {
+            g.set(
+                g.get()
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407),
+            );
+            g.get() >> 11
+        };
+        let unit = 2f64.powi(-50);
+        let margin = 2f64.powi(-41);
+        // Split `sum` (a multiple of `unit`) into `count` positive
+        // multiples of `unit`, unequal.
+        let split = |sum: f64, count: usize| -> Vec<f64> {
+            let total = (sum / unit) as u64;
+            let mut cuts: Vec<u64> = (1..count).map(|_| 1 + next() % (total - 1)).collect();
+            cuts.sort_unstable();
+            cuts.dedup();
+            assert_eq!(cuts.len(), count - 1, "distinct cuts");
+            let mut prev = 0;
+            let mut parts: Vec<f64> = cuts
+                .iter()
+                .chain([&total])
+                .map(|&c| {
+                    let p = (c - prev) as f64 * unit;
+                    prev = c;
+                    p
+                })
+                .collect();
+            parts.rotate_left((next() % count as u64) as usize);
+            parts
+        };
+        // `(below, own weight)` of the value 128 among 0..256, the
+        // selection's verdict, and what the case is.
+        let cases = [
+            (0.5 - margin, 2.0 * margin, false, "below at the margin"),
+            (0.5 - margin / 2.0, 2.0 * margin, false, "below within it"),
+            (0.5 - 2.0 * margin, 4.0 * margin, true, "both just past it"),
+            (0.25, 0.25, false, "up to it at half"),
+            (
+                0.5 - 2.0 * margin,
+                2.0 * margin + margin / 2.0,
+                false,
+                "up to it within",
+            ),
+            (
+                0.5 - 2.0 * margin,
+                3.0 * margin,
+                true,
+                "up to it at the margin",
+            ),
+        ];
+        for (below, own, selected, what) in cases {
+            let mut v = split(below, 128);
+            v.push(own);
+            v.extend(split(1.0 - below - own, 127));
+            let mut rows: Vec<(f64, f64)> = (0..256).map(|i| (i as f64, v[i])).collect();
+            for i in (1..rows.len()).rev() {
+                rows.swap(i, (next() % (i as u64 + 1)) as usize);
+            }
+            let (a, v): (Vec<f64>, Vec<f64>) = rows.into_iter().unzip();
+            assert_eq!(v.iter().sum::<f64>(), 1.0, "{what}: the total");
+            let (m, paths) = median_and_path(&a, &v);
+            assert_eq!(m, 128.0, "{what}");
+            let want = if selected { [1, 0] } else { [0, 1] };
+            assert_eq!(paths, want, "{what}: the path");
+        }
+    }
+
+    /// A total near the bottom of the range, where halving it rounds: the
+    /// walk decides, not the selection, though the selection would find the
+    /// same value on these rows (`the_selected_weighted_median_is_the_sorted_walks`
+    /// holds its subnormal weights to the value). Ordinary rows otherwise.
+    #[test]
+    fn on_a_total_near_the_bottom_of_the_range_the_sort_decides() {
+        for scale in [1e-210, 1e-300, 1e-310] {
+            let a: Vec<f64> = (0..40).map(|i| f64::from((i * 17) % 40)).collect();
+            let v: Vec<f64> = (0..40)
+                .map(|i| scale * (1.0 + (f64::from(i) * 0.7311).fract()))
+                .collect();
+            let (m, paths) = median_and_path(&a, &v);
+            assert_eq!(paths, [0, 1], "{scale:e}: the path");
+            assert_eq!(m.to_bits(), weighted_median_sorted(&a, &v).to_bits());
+        }
     }
 
     /// The order key is `total_cmp`'s order, and goes back to the bits.

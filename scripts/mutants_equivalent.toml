@@ -2769,3 +2769,19 @@ line_has = "Some(v) if v.is_finite() && weight > 0.0 => self.0[j].update_one(v, 
 why = """at weight 0 the guard's two arms agree: `update_one(v, lam, 0)` and \
 `update_one(0.0, lam, 0)` both age the weight by `lam` and skip the moments \
 (`b = 0`), whatever `v` is (`a_row_of_no_weight_learns_nothing_whatever_its_value`)"""
+
+# The mutants of 1b7e5178 no test can catch (the rest are killed by tests:
+# huber_refit.rs's selection paths, stats.rs's table, robust.rs's `false`).
+
+[[equivalent]]
+file = "crates/online-core/src/robust.rs"
+function = "<impl OnlineModel for Robust>::step_into"
+mutation = "replace match guard emit with true"
+line_has = "Some(crate::Extra::Huber { scale }) if emit => scale,"
+why = """the guard decides only whether a `Huber` buffer the caller's `Step` \
+brought is kept when `emit` is false: kept, nothing writes it (each write \
+is under `if emit`) and the row ends with `out.extra = emit.then_some(..)`, \
+`None`, dropping it, as the original drops it at the `take` -- the same \
+output and the same allocations (`Vec::new()` allocates nothing). The \
+`false` twin allocates a vector of scales a row and is caught \
+(`huber_reports_its_scales_into_the_kept_buffer`)"""
