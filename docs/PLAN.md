@@ -16697,16 +16697,21 @@ Ordering below: bit-identical first (no fixture moves, no user decision), then w
   - **One `exp2` where the level and trend half-lives are equal:** one call, both factors. Bit-identical, and it costs nothing on an irregular clock, unlike task 285's memo. 84 Ir a row.
   - **Measure in time as well as instructions:** holt's gap is latency, not count.
   - **Report the remaining chain divisions** for Phase D.
-- [ ] 287. **The refit's Gram, half of it**
+- [x] 287. **The refit's Gram, half of it**
   - The factorization reads only the lower triangle (`solve.rs` `factorize`, `Mat::from_fn` with `i ≥ j`). So `huber_refit::wls` can accumulate `a[p][q]` for `q ≤ p` alone, with the same `(w·d_p)·d_q`. That is bit-identical for everything the factor reads, and about half the Gram's flops: the Gram is most of `sgd_huber_refit` (67.8M).
   - Same check for every other place that builds a system only for `SpdFactor::of`. Each is bit-identical only where nothing else reads the upper triangle; verify per site.
   - **The weighted median by selection** (`select_nth_unstable_by` plus a weighted walk), not a full sort, where it returns the same element. Equal keys must resolve the same way.
-- [ ] 288. **sgd after task 284: the spills, and the Huber scale**
+- [x] 288. **sgd after task 284: the spills, and the Huber scale**
   - Re-count stack loads and stores in `Sgd::step_into` (the VM's instruction-mix method: 87 → 170 stack loads a row since 1.3.0). If spills remain, pass `step_mapped` one prepared struct, or keep it out of line.
   - Cheapen `EwQuantile::add/get` (470 Ir a row, 11.7% of sgd_huber; also huber, quantile and the MAD scales) without changing a bit.
 
 **Phase B: breakdowns before building (one VM run)**
 
+  *Built 2026-11-01:* task 287 (W12): the Gram by 4x4 register blocks over its lower triangle; the median by selection with the sort as fallback inside a proven margin; band_system, solve_sum and bocpd's full Σ lower-triangle only. Task 288 (W11): EwQuantile's bucket from the float bits and the representative from a table (no floor, no division); `add`'s guard tested once; step_mapped out of line. Both are bit for bit over 38 to 48 digests.
+  Task 286 (W11), measured and not merged:
+  - branch-free take_line is −27-29% in the coin-flip regime, but +11% settled and +54% on a regular-clock warm-up (arm64); the VM times it on x86 (V2.3);
+  - one exp2 for equal half-lives does not pay (the default is trend = 4 × level);
+  - holt's latency (+27% time on −10% instructions vs 1.3.0, VM V1) goes to task 291 with the VM's reciprocal measurement (V5).
 - [ ] 289. **A VM performance page for the next tier and the largest cases**, with the same method as 3RonHo8trZ8CQvGWRez3CN: native time, a cost map by area, the instruction mix and the branch simulation.
   - The next tier of drift since 1.3.0: quantile (+6.4% instructions, +7.9% time), ewridge_k20/k5 (+5%, +8% time), bank_ewridge_k5 (+7.5%), bank_seqtest (+5.9%), formula_target_held1k (+5.4%).
   - The largest absolute cases: bank_ew_cov_wide_t1 (166M), corrchange_window_w100 (108M), huber_k20_refit (94M), rcov (91M), quantile_refit (62M), ew_class (50M).

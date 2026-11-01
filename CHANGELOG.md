@@ -897,6 +897,23 @@ returns.
   `micro` 19%, `ftrl` 11%, `deco` and `lasso` about 10%, and `huber`,
   `quantile`, `rls`, `bocpd` and `hmm` 6-7%. The costliest models move
   under 1%.
+- The robust refits cost less, bit for bit (task 287). `sgd`'s Huber
+  refit builds its weighted least-squares system in register blocks over
+  its lower triangle, the only part the factorization reads. The refits'
+  weighted median scale is found by selection, not a sort: the sort is
+  kept for values within its rounding of half the weight. `huber`,
+  `quantile` and `bocpd` (full covariance) build only the lower triangle
+  of the systems they factorize. On arm64, natively: `sgd`'s refit takes
+  52% fewer instructions and 42% less time at 20 features, `quantile`'s
+  refit 10% and `huber`'s 5%, and a `huber` or `quantile` row 3-5%.
+- `EwQuantile`, the sketch behind every MAD scale, the Huber cut of
+  `huber` and `sgd`, `quantile` and `ewm_quantile`, reads a value's bucket
+  off its float bits and a bucket's representative from a 64-entry table,
+  bit for bit (task 288). Neither step uses `floor` (a library call on
+  baseline x86-64) or a division, and both sat on the chain from the
+  scale to the step. `sgd`'s per-feature step in the caller's units runs
+  out of line, with no register spills. On arm64, natively: `sgd` with
+  Huber loss is 16% faster, `marginal` with Huber bins 14%, and `sgd` 3%.
 
 ### Known issues
 
