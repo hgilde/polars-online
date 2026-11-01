@@ -16719,7 +16719,7 @@ Ordering below: bit-identical first (no fixture moves, no user decision), then w
 
 **Phase C: wider vectors with runtime dispatch (bit-identical by construction, measure first)**
 
-- [ ] 290. **SIMD past SSE2 for the per-feature loops:** `standardize_row` (22% of sgd), the scaler's `EwDiag` update with its compensated sums (10%), and the step's slope loop.
+- [x] 290. **SIMD past SSE2 for the per-feature loops:** `standardize_row` (22% of sgd), the scaler's `EwDiag` update with its compensated sums (10%), and the step's slope loop.
   - Each feature is an independent lane, so AVX2 lanes doing the same IEEE operations in the same order, with no FMA, are bit-identical to the scalar path.
   - Use `pulp` (already linked through faer; a safe API, so rule 6 holds), with the SSE2 path as the cfg-guarded fallback the platform rule requires. LLVM would not auto-vectorize these on baseline x86-64 (task 284's attempt).
   - The CPU-paths CI legs must run both paths. CI's Valgrind counts the AVX2 path, so budgets move.
@@ -16743,7 +16743,7 @@ Ordering below: bit-identical first (no fixture moves, no user decision), then w
   - The coordinator reads it every 20 minutes, or sooner when the user sends a comment on it to Claude.
   - The VM profiles the whole suite (V3, which widens task 289), prototypes the AVX2 path (V4, task 290), and proposes optimizations with evidence. Accepted proposals become PLAN tasks that workers build, under the usual bit-identity and fixture rules.
 - **Task 283, the shared refit store, resumes after Phase A,** rebased: its single-target sgd_huber time anomaly (+18.8% at +0.96% instructions) gets the same VM timing method before anything merges.
-- [ ] 291a. **holt: kept reciprocals with the branch-free `take_line` (R+S)**
+- [x] 291a. **holt: kept reciprocals with the branch-free `take_line` (R+S)**
   - The user took it (2026-11-01): holt goes from 11.5% slower than v1.3.0 to 14% faster (VM V5: −19 to −23% when the branch is a coin flip, −4% settled, +7% in a regular-clock warm-up).
   - Predictions move by up to 5.2e-13 relative (median ~1e-15), state ≤ 8e-14 after 100,000 rows; declared in the CHANGELOG with its size.
   - Port the VM's patch (bc70321d) exactly; regenerate the fixtures.
@@ -16764,7 +16764,7 @@ Ordering below: bit-identical first (no fixture moves, no user decision), then w
   - P5, ew_class and quantile: reuse the small solves' workspace (45 and 10 allocations a row), only where the same factorization runs.
   - P2, the refit's moments re-formed as a blocked Gram, changes rounding: held for the user after P6 is measured.
   - Worker W14.
-- [ ] 290 follows 291a: port the VM's AVX2 `standardize_row` patch (artifact H91pgCKWPzWcxge1JBehgM, local commit 52e0afa3).
+- [x] 290 follows 291a: port the VM's AVX2 `standardize_row` patch (artifact H91pgCKWPzWcxge1JBehgM, local commit 52e0afa3).
   - pulp V3 runtime dispatch; the scalar loop below 12 features and off x86-64; bit-identical.
   - sgd −10.6%, pa −10.9% native.
 - [ ] 294. **P6: every EwCov's co-moment matrix as one symmetric lower triangle**
@@ -16776,3 +16776,7 @@ Ordering below: bit-identical first (no fixture moves, no user decision), then w
   - Worker W16.
   - *2026-11-01, W16's measurement:* an old ew_cov state cannot continue to the bit (its upper triangle was rounded apart). It moves by at most 4.9e-16 by |Δ|/(1+|x|), and re-saves the current bytes exactly; lasso stays inside 1e-9. The user: record a sixth rule-5 exception (an ew_cov state of schema 61-63 continues within 1e-15) and build it.
   - Filling the upper triangle every row is out (+20-24% on huber_k20): keep the lower triangle only and route readers through it (lower only: huber_k20 −8.8%, ewridge_k20 −7.8%, ew_cov −4.5%).
+  *291a and 290 built 2026-11-01 (W15, merged):*
+  - holt: the patch as measured; the two oracles rewritten; `the_arithmetic_is_pinned_to_the_bit` on a libm-free stream (every step a whole number of half-lives) fails on the division forms. holt and holt_inf fixtures regenerated, `convergence.holt` hash rerun. Old holt states continue within 1e-14: the user amended rule 5's fifth exception.
+  - AVX2 standardize_row via pulp, cfg-guarded; the lanes test runs on CI's x86 legs and the CPU-paths SDE legs.
+  - 47 of the 52 survivors of 1b7e5178 killed or equivalent; bocpd.rs:1074's two are left.

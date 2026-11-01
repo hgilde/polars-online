@@ -315,6 +315,13 @@ returns.
   fires; proven on an AMD EPYC 9V74 runner, all 2,345 oracle tests passing
   with NumPy reporting no AVX-512. The `OPENBLAS_L2_SIZE` setting is
   removed.
+- `holt` divides into each denominator on its row-to-row chain once and
+  multiplies by the reciprocal, so its numbers move within rounding (task
+  291a). Predictions differ by up to 5.2e-13 relative, on a prediction near
+  zero, and by about 1e-15 at the median, a few units in the last place.
+  The state moves by at most 8e-14 after 100,000 rows. A state saved
+  before the line fit still goes on with the textbook gains, within 1e-14
+  of its former values.
 - `POLARS_ONLINE_TIMING` (and the old name's notice) is read once, when a
   process first needs it, so setting it later in that process has no
   effect: set it before the process starts (task 292).
@@ -938,6 +945,16 @@ returns.
   allocated 15, and is 23% faster at three classes and 20 features; `hmm`
   is 12% faster, `deco` 11%, `bocpd` with full covariance 6%, `quantile`
   4%, on arm64, natively.
+- `holt` is faster: its divisions on the row-to-row chain are now
+  multiplications by kept reciprocals, and the choice of trend gain is
+  branch-free (task 291a). On x86-64 it is 19-23% faster where that choice
+  is a coin flip from row to row, 4% faster once settled, 7% slower in a
+  regular clock's warm-up, and 14% faster than 1.3.0. On an Apple M-series
+  core the budget case runs 45% faster.
+- `sgd` and `pa` standardize their features four at a time in AVX2 lanes,
+  from 12 features on x86-64 CPUs that have it, with the same bits as
+  before (task 290): 10.6% (`sgd`) and 10.9% (`pa`) faster, measured on
+  x86-64. Other CPUs and narrower rows are unchanged.
 
 ### Known issues
 
