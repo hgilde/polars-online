@@ -169,6 +169,7 @@ impl EwDiag {
     /// [`EwCov::update`]: a negative weight is a caller's bug (debug assert,
     /// no-op in release), and a row that leaves the total weight at zero
     /// changes nothing (hard rule 9).
+    #[inline]
     pub fn update(&mut self, x: &[f64], lam: f64, w: f64) {
         debug_assert_eq!(x.len(), self.k);
         debug_assert!(
