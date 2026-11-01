@@ -16743,3 +16743,23 @@ Ordering below: bit-identical first (no fixture moves, no user decision), then w
   - The coordinator reads it every 20 minutes, or sooner when the user sends a comment on it to Claude.
   - The VM profiles the whole suite (V3, which widens task 289), prototypes the AVX2 path (V4, task 290), and proposes optimizations with evidence. Accepted proposals become PLAN tasks that workers build, under the usual bit-identity and fixture rules.
 - **Task 283, the shared refit store, resumes after Phase A,** rebased: its single-target sgd_huber time anomaly (+18.8% at +0.96% instructions) gets the same VM timing method before anything merges.
+- [ ] 291a. **holt: kept reciprocals with the branch-free `take_line` (R+S)**
+  - The user took it (2026-11-01): holt goes from 11.5% slower than v1.3.0 to 14% faster (VM V5: −19 to −23% when the branch is a coin flip, −4% settled, +7% in a regular-clock warm-up).
+  - Predictions move by up to 5.2e-13 relative (median ~1e-15), state ≤ 8e-14 after 100,000 rows; declared in the CHANGELOG with its size.
+  - Port the VM's patch (bc70321d) exactly; regenerate the fixtures.
+  - Add a test that pins holt's arithmetic: the frozen fixtures passed on the changed code. Use a libm-free stream, e.g. steps at a whole number of half-lives.
+- [ ] 292. **VM proposals P1, P4, P7, P8 (bit-identical)**
+  - P1, rcov's `emit` (rcov.rs:780-782): each lag's k×k block taken once, `chunks_exact_mut(k).zip(&y)`. The hot loop is 30 instructions of index work around a 4-element multiply-add; −40 to −60% expected.
+  - P4, bocpd's `read_into`/`learn`: keep the per-row scratch (152 allocations a row; the allocator is 39% of bocpd_full).
+  - P7, `FeatureRows::fill` (online-polars rows.rs:495): skip `resize`'s zero-fill where every slot is written after (`memset` is 30% of bank_ewridge_k5_groups' count).
+  - P8, bench determinism: build rayon's pool in sgd_huber_refit's setup, and read `timing_on`'s flag once, unless a test toggles it in-process. The count jitter (±0.01%) is the pool built inside the block and `getenv`, and predates task 287.
+  - Worker W13.
+- [ ] 293. **VM proposals P3, P5, P6 (bit-identical)**
+  - P3, `EwCovModel::predict_into` (ewcov.rs:2143-2163): size `out` once and write each pair into its slot, in place of a capacity-checked `push` through a spilled stack slot; ew_cov −20 to −25%, bank_ew_cov_wide_t1 −15 to −20%.
+  - P6, `ewcov::rank_one_rows` (ewcov.rs:64-72): update the symmetric matrix's lower triangle only, with readers taking it from there. The saved state must stay byte-identical (mirror on serialization or keep the layout); ewridge_k20 −12 to −14%, also the refits.
+  - P5, ew_class and quantile: reuse the small solves' workspace (45 and 10 allocations a row), only where the same factorization runs.
+  - P2, the refit's moments re-formed as a blocked Gram, changes rounding: held for the user after P6 is measured.
+  - Worker W14.
+- [ ] 290 follows 291a: port the VM's AVX2 `standardize_row` patch (artifact H91pgCKWPzWcxge1JBehgM, local commit 52e0afa3).
+  - pulp V3 runtime dispatch; the scalar loop below 12 features and off x86-64; bit-identical.
+  - sgd −10.6%, pa −10.9% native.
