@@ -125,7 +125,7 @@ release = 433958
 
 [instructions.bocpd]
 what = "bocpd, 4 features, diagonal, max_run 200, prune below 1e-6: AnyModel::step_into, into one kept Step"
-budget = 15086598
+budget = 13237033
 release = 15479823
 
 [instructions.kmeans]
@@ -145,7 +145,7 @@ release = 18736994
 
 [instructions.ew_cov]
 what = "ew_cov, 20 features, mean, std and corr: AnyModel::step_into, into one kept Step"
-budget = 13610026
+budget = 10673026
 release = 13825026
 
 [instructions.lasso_k20]
@@ -190,12 +190,12 @@ release = 11517941
 
 [instructions.bank_ewridge_k5_groups]
 what = "Bank::fit_predict of one frame of 1,000 groups, one row each, ewridge with 5 features and a solve every 4 rows, on a pool of one thread"
-budget = 27197600
+budget = 18667399
 release = 26990984
 
 [instructions.bank_ew_cov_wide_t1]
 what = "Bank::fit_predict of one frame of 8,192 rows, ew_cov's 230 statistics, on a pool of one thread: each run copied into the output as it ends, after the next is learned"
-budget = 165212393
+budget = 139749987
 release = 164895853
 
 # Added with the review of 2026-10-23 (task 270 (e)): no budget until CI's
@@ -239,22 +239,22 @@ release = 3814326
 
 [instructions.ew_class]
 what = "ew_class, 20 features, 3 classes, full covariance, precision prior 1: AnyModel::step_into, into one kept Step"
-budget = 50463039
+budget = 45190259
 release = 50438883
 
 [instructions.deco]
 what = "deco, 20 features, ew dynamics: AnyModel::step_into, into one kept Step"
-budget = 7065026
+budget = 6764026
 release = 7250026
 
 [instructions.hmm]
 what = "hmm, 4 features, 2 states, full covariance, precision prior 1: AnyModel::step_into, into one kept Step"
-budget = 13913026
+budget = 13311026
 release = 14309026
 
 [instructions.rcov]
 what = "rcov, 4 features, kernel, the rows a block takes in: AnyModel::step_into, into one kept Step"
-budget = 91282062
+budget = 71666026
 release = 91282062
 
 [instructions.audit_continuous]
@@ -264,12 +264,12 @@ release = 952261
 
 [instructions.bocpd_full]
 what = "bocpd, 4 features, full covariance, max_run 200, prune below 1e-6: AnyModel::step_into, into one kept Step"
-budget = 30032063
+budget = 22025419
 release = 31220323
 
 [instructions.ew_cov_lags]
 what = "ew_cov, 20 features, mean and cov, lags 1-5: AnyModel::step_into, into one kept Step"
-budget = 21396026
+budget = 19014026
 release = 21569026
 
 [instructions.formula_target_held1k]
