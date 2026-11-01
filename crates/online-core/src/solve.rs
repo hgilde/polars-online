@@ -142,17 +142,28 @@ fn cholesky_seq(a: MatMut<'_, f64>) -> Result<(), llt::factor::LltError> {
 /// `X ← A⁻¹ X` from the lower factor `L` of `A`: the two triangular solves
 /// `faer`'s `Llt::solve_in_place` makes, sequential, on bands of the
 /// right-hand sides fixed by their count ([`col_parts`]), the bands on the
-/// pool's threads. One band below 256 right-hand sides.
+/// pool's threads. One band below 256 right-hand sides, solved where it is:
+/// the call [`spread`] makes on a list of one band, without the list, which
+/// was an allocation on every solve -- one a row of each quadratic form
+/// `ew_class` and a quantile nudge read.
 fn solve_in_place(l: &Mat<f64>, rhs: MatMut<'_, f64>) {
     let l = l.as_ref();
+    if rhs.ncols() < 2 * TILE {
+        return solve_band(l, rhs);
+    }
     spread(col_parts(rhs, TILE), rayon::current_num_threads(), |band| {
-        let mut mem = MemBuffer::new(llt::solve::solve_in_place_scratch::<f64>(
-            l.nrows(),
-            band.ncols(),
-            Par::Seq,
-        ));
-        llt::solve::solve_in_place_with_conj(l, Conj::No, band, Par::Seq, MemStack::new(&mut mem));
+        solve_band(l, band)
     });
+}
+
+/// One band of [`solve_in_place`]: faer's two triangular solves, sequential.
+fn solve_band(l: MatRef<'_, f64>, band: MatMut<'_, f64>) {
+    let mut mem = MemBuffer::new(llt::solve::solve_in_place_scratch::<f64>(
+        l.nrows(),
+        band.ncols(),
+        Par::Seq,
+    ));
+    llt::solve::solve_in_place_with_conj(l, Conj::No, band, Par::Seq, MemStack::new(&mut mem));
 }
 
 /// The parallel degree [`self_adjoint_eigen`] is called at, fixed. faer
