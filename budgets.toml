@@ -145,7 +145,7 @@ release = 18736994
 
 [instructions.ew_cov]
 what = "ew_cov, 20 features, mean, std and corr: AnyModel::step_into, into one kept Step"
-budget = 9832026
+budget = 9312026
 release = 13825026
 
 [instructions.lasso_k20]
@@ -195,7 +195,7 @@ release = 26990984
 
 [instructions.bank_ew_cov_wide_t1]
 what = "Bank::fit_predict of one frame of 8,192 rows, ew_cov's 230 statistics, on a pool of one thread: each run copied into the output as it ends, after the next is learned"
-budget = 132811018
+budget = 128551176
 release = 164895853
 
 # Added with the review of 2026-10-23 (task 270 (e)): no budget until CI's
@@ -269,7 +269,7 @@ release = 31220323
 
 [instructions.ew_cov_lags]
 what = "ew_cov, 20 features, mean and cov, lags 1-5: AnyModel::step_into, into one kept Step"
-budget = 18322026
+budget = 17906026
 release = 21569026
 
 [instructions.formula_target_held1k]
