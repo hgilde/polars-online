@@ -183,7 +183,7 @@ use crate::huber_refit::{
 };
 use crate::model::{Fit, ModelState, OnlineModel, State, StateError, Step, check_schema};
 use crate::since::Since;
-use crate::solve::{QuadWork, dot_aug};
+use crate::solve::{CholWork, QuadWork, dot_aug};
 use crate::{Decay, EwCov, EwQuantile, SpdFactor};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -730,7 +730,7 @@ impl RobustCfg {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Robust {
     cfg: RobustCfg,
     /// One accumulator per target (the robust weights are per target).
@@ -840,6 +840,141 @@ pub struct Robust {
     /// A nudge's working space ([`NudgeScratch`]). Not state.
     #[serde(skip)]
     nudge: NudgeScratch,
+    /// A solve's working space ([`SolveScratch`]). Not state.
+    #[serde(skip)]
+    scratch: SolveScratch,
+}
+
+/// Every field as `derive(Debug)` writes it, but the solves' working space,
+/// which is no part of the model ([`SolveScratch`]): a model's `Debug`, and
+/// a state's, which holds the model, read the same whatever its buffers
+/// hold. The destructuring names every field, so a new one is written here
+/// or left out on purpose.
+impl std::fmt::Debug for Robust {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            cfg,
+            cov,
+            wj,
+            wobs,
+            nobs,
+            cross,
+            ybar,
+            sig2,
+            wsig,
+            w_raw,
+            beta,
+            since_solve,
+            rows_since_solve,
+            weight_since_solve,
+            solve_failures,
+            ybar_lo,
+            systems,
+            target_min_weight,
+            support,
+            mad,
+            refit,
+            seen,
+            first_period_by_share,
+            zbuf,
+            nudge,
+            scratch: _,
+        } = self;
+        f.debug_struct("Robust")
+            .field("cfg", cfg)
+            .field("cov", cov)
+            .field("wj", wj)
+            .field("wobs", wobs)
+            .field("nobs", nobs)
+            .field("cross", cross)
+            .field("ybar", ybar)
+            .field("sig2", sig2)
+            .field("wsig", wsig)
+            .field("w_raw", w_raw)
+            .field("beta", beta)
+            .field("since_solve", since_solve)
+            .field("rows_since_solve", rows_since_solve)
+            .field("weight_since_solve", weight_since_solve)
+            .field("solve_failures", solve_failures)
+            .field("ybar_lo", ybar_lo)
+            .field("systems", systems)
+            .field("target_min_weight", target_min_weight)
+            .field("support", support)
+            .field("mad", mad)
+            .field("refit", refit)
+            .field("seen", seen)
+            .field("first_period_by_share", first_period_by_share)
+            .field("zbuf", zbuf)
+            .field("nudge", nudge)
+            .finish()
+    }
+}
+
+/// A solve's working space, kept between solves so that a solve allocates
+/// nothing it would drop (task 297): the band system's scales, kept columns
+/// and matrix ([`Robust::band_system_into`]), the coefficient slots a
+/// solve's data shares go to, faer's scratch for the factorization, the
+/// right-hand sides' columns and the spare factors, one of each order a
+/// solve has needed, the coefficient table the next solve fills (the one
+/// before the last), and the lists of the band system a quantile fit's band
+/// row last dropped, for its next nudge to build one in
+/// ([`Robust::nudge_movement`]). Each is written in full before it is read,
+/// so a solve gives the bits one that made them afresh gave: that was about
+/// a dozen allocations a solve, whose cost moved with the heap's layout
+/// from one process to the next. A spare factor of the solve's order is
+/// written over and handed to the data shares, and the factor they held
+/// comes back as a spare, so one of each order is kept besides the ones the
+/// shares hold. Not state: neither serialized, compared nor shown, and a
+/// copy holds its own. [`Robust::settle_readiness`] drops it with the
+/// factors the shares held, so a stream at rest keeps the memory it kept
+/// before.
+#[derive(Clone, Default)]
+struct SolveScratch {
+    s: Vec<f64>,
+    keep: Vec<usize>,
+    a: Vec<f64>,
+    to: Vec<usize>,
+    chol: CholWork,
+    cols: Vec<QuadWork>,
+    spares: Vec<SpdFactor>,
+    beta: Vec<Vec<f64>>,
+    band: Option<BandSystem>,
+}
+
+impl SolveScratch {
+    /// A spare factor of order `k`, if one is kept.
+    fn spare(&mut self, k: usize) -> Option<SpdFactor> {
+        let i = self.spares.iter().position(|f| f.order() == k)?;
+        Some(self.spares.swap_remove(i))
+    }
+
+    /// Keep `f`, a factor its holder has done with, as a spare, unless one
+    /// of its order is kept already.
+    fn give(&mut self, f: SpdFactor) {
+        if self.spares.iter().all(|g| g.order() != f.order()) {
+            self.spares.push(f);
+        }
+    }
+}
+
+/// The right-hand side's column for a system of order `k` among `cols`
+/// ([`SolveScratch`]): one kept per order, as each feature set's system has
+/// its own.
+fn col_of(cols: &mut Vec<QuadWork>, k: usize) -> &mut QuadWork {
+    let i = match cols.iter().position(|c| c.order() == Some(k)) {
+        Some(i) => i,
+        None => {
+            cols.push(QuadWork::default());
+            cols.len() - 1
+        }
+    };
+    &mut cols[i]
+}
+
+impl PartialEq for SolveScratch {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 /// The row's augmented values, `[1, x]` with an intercept and `x` through
@@ -934,6 +1069,12 @@ impl PendingShares {
         })
     }
 }
+
+/// What a slot's solve leaves beside the coefficients it writes: the factor
+/// of the system it solved and the `λ` its data shares read -- the ridge
+/// plus the factor's jitter -- with the coefficient slots the shares go to
+/// in [`SolveScratch`]'s `to`; `None` where no column was kept.
+type Solved = Option<(SpdFactor, f64)>;
 
 /// Each target's data shares (`support_coef`): the ones stored, and per
 /// target the last solve's while nothing has read them. A save writes the
@@ -1034,6 +1175,7 @@ impl Robust {
             // (docs/PLAN.md task 278, D-Q).
             mad: mad_sketches(cfg.huber_scale, cfg.mad_anchor, m),
             nudge: NudgeScratch::default(),
+            scratch: SolveScratch::default(),
             refit: RefitBuf::per_target(cfg.refit_rows, m),
             seen: if cfg.min_weight_holds_learning {
                 Vec::new()
@@ -1389,14 +1531,22 @@ impl Robust {
                 None => u.fill(1.0),
             }
             self.replay(j, &rows, &u, &mut z);
-            let next = if intercept {
-                self.solve_centred(k, j, c)
+            let mut next = vec![0.0; k];
+            let mut sc = std::mem::take(&mut self.scratch);
+            let pass = if intercept {
+                self.solve_centred(&mut sc, k, j, c, &mut next)
             } else {
-                self.solve_through_origin(k, j, c)
+                self.solve_through_origin(&mut sc, j, c, &mut next)
             };
-            let Some((next, _)) = next else {
+            // The passes read no data shares: the factor is a spare.
+            let Some(shares) = pass else {
+                self.scratch = sc;
                 break;
             };
+            if let Some((f, _)) = shares {
+                sc.give(f);
+            }
+            self.scratch = sc;
             solved = true;
             let done = converged(&rows, intercept, beta.as_deref(), &next, scale);
             beta = Some(next);
@@ -1424,10 +1574,22 @@ impl Robust {
         if let Some(q) = scale.mad {
             self.mad[j] = q;
         }
+        self.resolve_target(j, fitted_before);
+    }
+
+    /// Target `j`'s slots solved again after its refit rebuilt its sums,
+    /// where a solve had fit it (`fitted_before`), every other slot as it
+    /// stood: [`Self::solve_target`] into a copy of the fit, written into
+    /// the table before the last.
+    fn resolve_target(&mut self, j: usize, fitted_before: bool) {
         if fitted_before && let Some(prev) = self.beta.take() {
-            let mut out: Vec<Vec<f64>> = prev.to_vec();
-            self.solve_target(j, Some(prev.as_slice()), &mut out);
+            let mut sc = std::mem::take(&mut self.scratch);
+            let mut out = std::mem::take(&mut sc.beta);
+            out.clone_from(&prev.0);
+            self.solve_target(&mut sc, j, Some(prev.as_slice()), &mut out);
             self.beta = Some(Fit(out));
+            sc.beta = prev.0;
+            self.scratch = sc;
         }
     }
 
@@ -1582,23 +1744,39 @@ impl Robust {
         // One slot per target and feature set, target-major
         // ([`RobustCfg::feature_sets`]), each solved from its target's sums.
         let nc = self.cfg.n_sets();
-        let mut beta = vec![vec![f64::NAN; k]; self.cfg.n_targets * nc];
+        let mut sc = std::mem::take(&mut self.scratch);
+        // Every slot NaN to begin with, in the table before the last.
+        let mut beta = std::mem::take(&mut sc.beta);
+        beta.resize_with(self.cfg.n_targets * nc, Vec::new);
+        for b in &mut beta {
+            b.clear();
+            b.resize(k, f64::NAN);
+        }
         let prev = self.beta.take();
         for j in 0..self.cfg.n_targets {
-            self.solve_target(j, prev.as_deref().map(Vec::as_slice), &mut beta);
+            self.solve_target(&mut sc, j, prev.as_deref().map(Vec::as_slice), &mut beta);
         }
         self.beta = Some(Fit(beta));
+        sc.beta = prev.map(|p| p.0).unwrap_or_default();
+        self.scratch = sc;
         self.since_solve.restart();
         self.rows_since_solve = 0;
         self.weight_since_solve = 0.0;
     }
 
     /// Target `j`'s slots solved into `beta`, one per feature set, each from
-    /// the target's sums ([`Self::solve`]'s loop body): `prev` is the fit
-    /// before, which a slot whose solve fails keeps, and which says whether
-    /// a slot with no weight has a fit to keep solving. The data shares move
-    /// in place, slot by slot, as the fit does.
-    fn solve_target(&mut self, j: usize, prev: Option<&[Vec<f64>]>, beta: &mut [Vec<f64>]) {
+    /// the target's sums ([`Self::solve`]'s loop body), in `sc`'s working
+    /// space: `prev` is the fit before, which a slot whose solve fails keeps,
+    /// and which says whether a slot with no weight has a fit to keep
+    /// solving. The data shares move in place, slot by slot, as the fit
+    /// does.
+    fn solve_target(
+        &mut self,
+        sc: &mut SolveScratch,
+        j: usize,
+        prev: Option<&[Vec<f64>]>,
+        beta: &mut [Vec<f64>],
+    ) {
         let k = self.cfg.k_total();
         let nc = self.cfg.n_sets();
         self.support.shape(self.cfg.n_targets * nc, k);
@@ -1613,36 +1791,80 @@ impl Robust {
             // the previous fit kept. It returned through `?` before the
             // count (review 2026-09-12, S13).
             let solved = if self.cfg.ridge_scale {
-                self.solve_sum(k, j, c)
+                self.solve_sum(sc, k, j, c, &mut beta[slot])
             } else if self.cfg.fit_intercept {
-                self.solve_centred(k, j, c)
+                self.solve_centred(sc, k, j, c, &mut beta[slot])
             } else {
-                self.solve_through_origin(k, j, c)
+                self.solve_through_origin(sc, j, c, &mut beta[slot])
             };
             match solved {
-                Some((sol, shares)) => {
-                    beta[slot] = sol;
-                    match shares {
-                        Some(p) => self.support.pending[slot] = Some(p),
-                        None => {
-                            // No column kept: nothing to invert, every
-                            // slope 0.
-                            self.support.pending[slot] = None;
-                            PendingShares::fill_base(
-                                &mut self.support.stored[slot],
-                                self.cfg.fit_intercept,
-                                self.cfg.set_of(c),
-                            );
-                        }
+                Some(Some((f, lam))) => self.keep_shares(sc, slot, f, lam, k, c),
+                Some(None) => {
+                    // No column kept: nothing to invert, every slope 0.
+                    if let Some(p) = self.support.pending[slot].take() {
+                        sc.give(p.factor);
                     }
+                    PendingShares::fill_base(
+                        &mut self.support.stored[slot],
+                        self.cfg.fit_intercept,
+                        self.cfg.set_of(c),
+                    );
                 }
                 None => {
                     self.solve_failures += 1;
                     if let Some(prev) = prev {
-                        beta[slot] = prev[slot].clone();
+                        beta[slot].clone_from(&prev[slot]);
                     }
                     // The previous fit is kept, and its shares with it.
                 }
+            }
+        }
+    }
+
+    /// Slot `slot`'s data shares, to be taken when something reads them
+    /// ([`PendingShares`]): of the system `f` factorizes, `λ` the ridge plus
+    /// the jitter the factor needed, since that is what it carries, and the
+    /// coefficient slot each kept column's share goes to in `sc.to`. Written
+    /// into the slot's pending shares where it holds some, whose factor goes
+    /// back to `sc` as a spare: the same shares as new ones, without their
+    /// lists.
+    fn keep_shares(
+        &mut self,
+        sc: &mut SolveScratch,
+        slot: usize,
+        f: SpdFactor,
+        lam: f64,
+        k: usize,
+        c: usize,
+    ) {
+        let set = self.cfg.set_of(c);
+        let intercept = self.cfg.fit_intercept;
+        match &mut self.support.pending[slot] {
+            Some(p) => {
+                sc.give(std::mem::replace(&mut p.factor, f));
+                p.lam = lam;
+                p.to.clone_from(&sc.to);
+                p.k = k;
+                p.intercept = intercept;
+                match (set, &mut p.set) {
+                    (Some(set), Some(held)) => {
+                        held.clear();
+                        held.extend_from_slice(set);
+                    }
+                    (set, held) => *held = set.map(<[usize]>::to_vec),
+                }
+                p.shares = OnceLock::new();
+            }
+            empty => {
+                *empty = Some(PendingShares {
+                    factor: f,
+                    lam,
+                    to: sc.to.clone(),
+                    k,
+                    intercept,
+                    set: set.map(<[usize]>::to_vec),
+                    shares: OnceLock::new(),
+                });
             }
         }
     }
@@ -1658,34 +1880,42 @@ impl Robust {
     /// anything on the way (S2). `None` when every jitter failed.
     fn solve_centred(
         &mut self,
+        sc: &mut SolveScratch,
         k: usize,
         j: usize,
         c: usize,
-    ) -> Option<(Vec<f64>, Option<PendingShares>)> {
+        out: &mut [f64],
+    ) -> Option<Solved> {
         let kf = k - 1;
-        let (asub, keep, s) = self.band_system(j, c);
-        let kk = keep.len();
-        let mut out = vec![0.0; k];
-        let mut shares = None;
+        self.band_system_into(j, c, sc);
+        let kk = sc.keep.len();
         let mut jitter = 0u32;
-        let mut factor = None;
+        let mut solved = None;
         if kk > 0 {
-            let bsub: Vec<f64> = keep.iter().map(|&i| self.cross[j][i + 1] / s[i]).collect();
             // The factor's own solve is `solve_spd`'s, to the bit; it is kept
             // for the nudges that follow (`Self::nudge_movement`).
-            let Some(f) = SpdFactor::of(&asub, kk) else {
+            let spare = sc.spare(kk);
+            let Some(f) = SpdFactor::of_in(&sc.a, kk, spare, &mut sc.chol) else {
                 *self.systems.slot(self.cfg.n_targets, j) = None;
                 return None;
             };
-            let sol = f.solve(&bsub, kk, 1);
-            jitter = f.attempts();
+            out.fill(0.0);
+            let (keep, s, cross) = (&sc.keep, &sc.s, &self.cross[j]);
+            let sol = f.solve_one(col_of(&mut sc.cols, kk), |i2| {
+                cross[keep[i2] + 1] / s[keep[i2]]
+            });
             for (i2, &i) in keep.iter().enumerate() {
                 out[i + 1] = sol[i2] / s[i];
             }
-            let (pending, kept) =
-                self.pending_shares(f, keep.iter().map(|&i| i + 1).collect(), k, c);
-            shares = Some(pending);
-            factor = kept;
+            jitter = f.attempts();
+            sc.to.clear();
+            sc.to.extend(sc.keep.iter().map(|&i| i + 1));
+            self.keep_band_system(j, sc, Some(&f));
+            let lam = self.cfg.ridge + f.jitter();
+            solved = Some((f, lam));
+        } else {
+            out.fill(0.0);
+            self.keep_band_system(j, sc, None);
         }
         let cov = &self.cov[j];
         let mut b0 = self.ybar[j];
@@ -1694,36 +1924,7 @@ impl Robust {
         }
         out[0] = b0;
         self.solve_failures += u64::from(jitter);
-        self.keep_band_system(j, BandSystem { factor, keep, s });
-        Some((out, shares))
-    }
-
-    /// The data shares of the system `f` factorizes, to be taken when
-    /// something reads them ([`PendingShares`]): `λ` the ridge plus the
-    /// jitter the factor needed, since that is what it carries, and the
-    /// coefficient slot each kept column's share goes to. The factor moves
-    /// into them; a quantile fit, whose nudges read it as well
-    /// ([`BandSystem`]), gets a copy back, and a Huber fit, which keeps no
-    /// band system, none -- a copy a solve it would only have dropped.
-    fn pending_shares(
-        &self,
-        f: SpdFactor,
-        to: Vec<usize>,
-        k: usize,
-        c: usize,
-    ) -> (PendingShares, Option<SpdFactor>) {
-        let kept = matches!(self.cfg.loss, RobustLoss::Quantile { .. }).then(|| f.clone());
-        let lam = self.cfg.ridge + f.jitter();
-        let pending = PendingShares {
-            factor: f,
-            lam,
-            to,
-            k,
-            intercept: self.cfg.fit_intercept,
-            set: self.cfg.set_of(c).map(<[usize]>::to_vec),
-            shares: OnceLock::new(),
-        };
-        (pending, kept)
+        Some(solved)
     }
 
     /// Take the data shares of every solve nothing has read yet, and drop
@@ -1732,6 +1933,9 @@ impl Robust {
     /// the ones a read would have given.
     pub fn settle_readiness(&mut self) {
         self.support.settle();
+        // The solves' working space holds spare factors as large as the
+        // ones just dropped: a stream at rest keeps neither.
+        self.scratch = SolveScratch::default();
     }
 
     /// Targets whose data shares still hold the factor of the solve they
@@ -1741,11 +1945,29 @@ impl Robust {
     }
 
     /// Keep target `j`'s band system from its solve for the nudges that
-    /// follow. Only a quantile fit nudges, so only a quantile fit keeps
-    /// one; a Huber fit's would be state that nothing reads (task 170).
-    fn keep_band_system(&mut self, j: usize, sys: BandSystem) {
-        let kept = matches!(self.cfg.loss, RobustLoss::Quantile { .. }).then_some(sys);
-        *self.systems.slot(self.cfg.n_targets, j) = kept;
+    /// follow: the kept columns and scales in `sc`, and a copy of the
+    /// solve's factor, `None` where no column was kept. Only a quantile fit
+    /// nudges, so only a quantile fit keeps one; a Huber fit's would be
+    /// state that nothing reads (task 170). The system is written into the
+    /// one the target holds, where it holds one, and a factor into its
+    /// factor of the same order: the same system as a new one.
+    fn keep_band_system(&mut self, j: usize, sc: &SolveScratch, factor: Option<&SpdFactor>) {
+        let slot = self.systems.slot(self.cfg.n_targets, j);
+        if !matches!(self.cfg.loss, RobustLoss::Quantile { .. }) {
+            *slot = None;
+            return;
+        }
+        let sys = slot.get_or_insert_with(|| BandSystem {
+            factor: None,
+            keep: Vec::new(),
+            s: Vec::new(),
+        });
+        sys.keep.clone_from(&sc.keep);
+        sys.s.clone_from(&sc.s);
+        match (factor, &mut sys.factor) {
+            (Some(f), Some(held)) => held.clone_from(f),
+            (f, held) => *held = f.cloned(),
+        }
     }
 
     /// Whether the band systems a state holds fit the model (task 170):
@@ -1791,28 +2013,31 @@ impl Robust {
     }
 
     /// Target `j`'s band system as its solve factorizes it, from the band
-    /// Gram as it stands: `A` row-major over the kept columns, the columns
-    /// kept and their scales. With an intercept, the centred Gram over the
-    /// features (column `i` is slot `i + 1`), scaled by the centred
-    /// deviations under `standardize` and keeping the columns whose variance
-    /// is usable; through the origin, the raw Gram over every slot, scaled
-    /// by the raw second moments under `standardize` and keeping the columns
-    /// with one. The ridge is on `A`'s diagonal either way. Under feature
-    /// sets, set `c`'s columns alone (a quantile fit has none, and its
-    /// nudges pass 0).
-    fn band_system(&self, j: usize, c: usize) -> (Vec<f64>, Vec<usize>, Vec<f64>) {
+    /// Gram as it stands, written into `sc`: `A` row-major over the kept
+    /// columns into `sc.a`, the columns kept into `sc.keep` and their scales
+    /// into `sc.s`. With an intercept, the centred Gram over the features
+    /// (column `i` is slot `i + 1`), scaled by the centred deviations under
+    /// `standardize` and keeping the columns whose variance is usable;
+    /// through the origin, the raw Gram over every slot, scaled by the raw
+    /// second moments under `standardize` and keeping the columns with one.
+    /// The ridge is on `A`'s diagonal either way. Under feature sets, set
+    /// `c`'s columns alone (a quantile fit has none, and its nudges pass 0).
+    /// `A`'s lower triangle alone: the strict upper is left as it stands,
+    /// zeros in a new buffer and whatever the last system left in a kept
+    /// one, since each caller hands the system to [`SpdFactor::of_in`],
+    /// which reads nothing else, and keeps the factor, never the system.
+    fn band_system_into(&self, j: usize, c: usize, sc: &mut SolveScratch) {
         let cov = &self.cov[j];
-        let (s, mut keep) = self.band_scales(j);
+        self.band_scales_into(j, &mut sc.s, &mut sc.keep);
         if let Some(set) = self.cfg.set_of(c) {
-            keep.retain(|i| set.contains(i));
+            sc.keep.retain(|i| set.contains(i));
         }
         // Read straight from the Gram, where the centred block was copied
         // out first, one allocation and `k²` copies a system (task 170).
-        // Its lower triangle alone, the strict upper left 0: each caller
-        // hands the system to `SpdFactor::of`, which reads nothing else,
-        // and keeps the factor, never the system (task 287).
+        // Its lower triangle alone (task 287).
+        let (a, keep, s) = (&mut sc.a, &sc.keep, &sc.s);
         let kk = keep.len();
-        let mut asub = vec![0.0; kk * kk];
+        a.resize(kk * kk, 0.0);
         for (i2, &i) in keep.iter().enumerate() {
             for (j2, &jj) in keep[..=i2].iter().enumerate() {
                 let g = if self.cfg.fit_intercept {
@@ -1820,49 +2045,61 @@ impl Robust {
                 } else {
                     cov.raw(i, jj)
                 };
-                asub[i2 * kk + j2] = g / (s[i] * s[jj]);
+                a[i2 * kk + j2] = g / (s[i] * s[jj]);
             }
-            asub[i2 * kk + i2] += self.cfg.ridge;
+            a[i2 * kk + i2] += self.cfg.ridge;
         }
-        (asub, keep, s)
+    }
+
+    /// [`Self::band_system_into`] into new lists: `A`, the kept columns and
+    /// their scales.
+    #[cfg(test)]
+    fn band_system(&self, j: usize, c: usize) -> (Vec<f64>, Vec<usize>, Vec<f64>) {
+        let mut sc = SolveScratch::default();
+        self.band_system_into(j, c, &mut sc);
+        (sc.a, sc.keep, sc.s)
     }
 
     /// Target `j`'s band system's scales and kept columns, from the band
-    /// Gram as it stands ([`Self::band_system`]): with an intercept, the
+    /// Gram as it stands ([`Self::band_system_into`]): with an intercept, the
     /// centred deviations of the features under `standardize`, keeping the
     /// columns whose variance is usable; through the origin, the raw second
     /// moments' roots under `standardize`, keeping the columns with one;
     /// unstandardized, scales of 1 and every column. One rule for the
     /// system a nudge builds and the one a band row moves.
     fn band_scales(&self, j: usize) -> (Vec<f64>, Vec<usize>) {
+        let (mut s, mut keep) = (Vec::new(), Vec::new());
+        self.band_scales_into(j, &mut s, &mut keep);
+        (s, keep)
+    }
+
+    /// [`Self::band_scales`] written into `s` and `keep`.
+    fn band_scales_into(&self, j: usize, s: &mut Vec<f64>, keep: &mut Vec<usize>) {
         let k = self.cfg.k_total();
         let cov = &self.cov[j];
+        s.clear();
+        keep.clear();
         if self.cfg.fit_intercept {
             let kf = k - 1;
             if self.cfg.standardize {
-                let s = (0..kf)
-                    .map(|i| cov.cov(i + 1, i + 1).max(0.0).sqrt())
-                    .collect();
-                let keep = (0..kf)
-                    .filter(|&i| {
-                        let var = cov.cov(i + 1, i + 1);
-                        crate::variance_is_usable(var, cov.raw(i + 1, i + 1))
-                    })
-                    .collect();
-                (s, keep)
+                s.extend((0..kf).map(|i| cov.cov(i + 1, i + 1).max(0.0).sqrt()));
+                keep.extend((0..kf).filter(|&i| {
+                    let var = cov.cov(i + 1, i + 1);
+                    crate::variance_is_usable(var, cov.raw(i + 1, i + 1))
+                }));
             } else {
-                (vec![1.0; kf], (0..kf).collect())
+                s.resize(kf, 1.0);
+                keep.extend(0..kf);
             }
         } else {
-            let s: Vec<f64> = if self.cfg.standardize {
-                (0..k).map(|i| cov.raw(i, i).max(0.0).sqrt()).collect()
+            if self.cfg.standardize {
+                s.extend((0..k).map(|i| cov.raw(i, i).max(0.0).sqrt()));
             } else {
-                vec![1.0; k]
-            };
+                s.resize(k, 1.0);
+            }
             // No centering here, so no cancellation: any strictly positive raw
             // moment is usable.
-            let keep = (0..k).filter(|&i| s[i] > 0.0).collect();
-            (s, keep)
+            keep.extend((0..k).filter(|&i| s[i] > 0.0));
         }
     }
 
@@ -1870,7 +2107,7 @@ impl Robust {
     /// solve, the row in `zbuf`: `1 + uᵀA⁻¹u` with an intercept, `u` the
     /// row's centred deviations over the kept columns, scaled, and `uᵀA⁻¹u`
     /// through the origin, `u` its scaled values -- the row's full leverage
-    /// against the solve's own system (`Self::band_system`), ridge included,
+    /// against the solve's own system (`Self::band_system_into`), ridge included,
     /// so a step bounded by it moves the row by no more than the bound. The
     /// diagonal's `Σ dᵢ²/vᵢ` read a row at (+1, −1) against features
     /// correlated at 0.999 at about 2, where its full leverage is about
@@ -1888,17 +2125,32 @@ impl Robust {
     fn nudge_movement(&mut self, j: usize) -> f64 {
         let n = self.cfg.n_targets;
         if self.systems.slot(n, j).is_none() {
-            let (a, keep, s) = self.band_system(j, 0);
-            let kk = keep.len();
+            // Built in the solves' working space, into the lists of the
+            // system a band row last dropped and a spare factor of its
+            // order where there are ones (`Self::move_band_system`).
+            let mut sc = std::mem::take(&mut self.scratch);
+            self.band_system_into(j, 0, &mut sc);
+            let kk = sc.keep.len();
             let factor = if kk > 0 {
-                let Some(f) = SpdFactor::of(&a, kk) else {
+                let spare = sc.spare(kk);
+                let Some(f) = SpdFactor::of_in(&sc.a, kk, spare, &mut sc.chol) else {
+                    self.scratch = sc;
                     return f64::INFINITY;
                 };
                 Some(f)
             } else {
                 None
             };
-            *self.systems.slot(n, j) = Some(BandSystem { factor, keep, s });
+            let mut sys = sc.band.take().unwrap_or_else(|| BandSystem {
+                factor: None,
+                keep: Vec::new(),
+                s: Vec::new(),
+            });
+            sys.factor = factor;
+            sys.keep.clone_from(&sc.keep);
+            sys.s.clone_from(&sc.s);
+            *self.systems.slot(n, j) = Some(sys);
+            self.scratch = sc;
         }
         let sys = self.systems.0[j]
             .as_ref()
@@ -2007,7 +2259,14 @@ impl Robust {
             sys.factor = Some(factor);
             Some(sys)
         });
-        *self.systems.slot(n, j) = moved;
+        // A system the row dropped is the next build's: its factor a spare,
+        // its lists the next system's.
+        if let Some(mut old) = std::mem::replace(self.systems.slot(n, j), moved) {
+            if let Some(f) = old.factor.take() {
+                self.scratch.give(f);
+            }
+            self.scratch.band = Some(old);
+        }
     }
 
     /// The solve under `ridge_scale` (`RobustCfg::ridge_scale`): RLS's
@@ -2020,55 +2279,49 @@ impl Robust {
     /// `None` when every jitter failed.
     fn solve_sum(
         &mut self,
+        sc: &mut SolveScratch,
         k: usize,
         j: usize,
         c: usize,
-    ) -> Option<(Vec<f64>, Option<PendingShares>)> {
+        out: &mut [f64],
+    ) -> Option<Solved> {
         let cov = &self.cov[j];
         let w = cov.n_eff();
         let prior = cov.prior_scale() * self.cfg.ridge;
         let off = usize::from(self.cfg.fit_intercept);
-        let keep: Vec<usize> = (0..k)
-            .filter(|&i| {
-                i < off
-                    || self
-                        .cfg
-                        .set_of(c)
-                        .is_none_or(|set| set.contains(&(i - off)))
-            })
-            .collect();
-        let kk = keep.len();
-        // The lower triangle alone, as `Self::band_system` builds its own.
-        let mut a = vec![0.0; kk * kk];
-        for (p, &i) in keep.iter().enumerate() {
-            for (q, &jj) in keep[..=p].iter().enumerate() {
-                a[p * kk + q] = w * cov.raw(i, jj);
+        let set = self.cfg.set_of(c);
+        sc.keep.clear();
+        sc.keep
+            .extend((0..k).filter(|&i| i < off || set.is_none_or(|set| set.contains(&(i - off)))));
+        let kk = sc.keep.len();
+        {
+            // The lower triangle alone, as `Self::band_system_into` builds
+            // its own.
+            let (a, keep) = (&mut sc.a, &sc.keep);
+            a.resize(kk * kk, 0.0);
+            for (p, &i) in keep.iter().enumerate() {
+                for (q, &jj) in keep[..=p].iter().enumerate() {
+                    a[p * kk + q] = w * cov.raw(i, jj);
+                }
+                a[p * kk + p] += prior;
             }
-            a[p * kk + p] += prior;
         }
         let ybar = self.ybar[j];
-        let b: Vec<f64> = keep
-            .iter()
-            .map(|&i| w * (self.cross[j][i] + cov.mean(i) * ybar))
-            .collect();
-        let f = SpdFactor::of(&a, kk)?;
-        let sol = f.solve(&b, kk, 1);
+        let spare = sc.spare(kk);
+        let f = SpdFactor::of_in(&sc.a, kk, spare, &mut sc.chol)?;
+        let (keep, cross) = (&sc.keep, &self.cross[j]);
+        let sol = f.solve_one(col_of(&mut sc.cols, kk), |p| {
+            let i = keep[p];
+            w * (cross[i] + cov.mean(i) * ybar)
+        });
         self.solve_failures += u64::from(f.attempts());
-        let mut out = vec![0.0; k];
+        out.fill(0.0);
         for (p, &i) in keep.iter().enumerate() {
             out[i] = sol[p];
         }
+        sc.to.clone_from(&sc.keep);
         let lam = prior + f.jitter();
-        let pending = PendingShares {
-            factor: f,
-            lam,
-            to: keep,
-            k,
-            intercept: self.cfg.fit_intercept,
-            set: self.cfg.set_of(c).map(<[usize]>::to_vec),
-            shares: OnceLock::new(),
-        };
-        Some((out, Some(pending)))
+        Some(Some((f, lam)))
     }
 
     /// The solve through the origin, on the raw system: every slot is a
@@ -2083,40 +2336,45 @@ impl Robust {
     /// 2026-09-12, C11). `None` when every jitter failed.
     fn solve_through_origin(
         &mut self,
-        k: usize,
+        sc: &mut SolveScratch,
         j: usize,
         c: usize,
-    ) -> Option<(Vec<f64>, Option<PendingShares>)> {
-        let cov = &self.cov[j];
+        out: &mut [f64],
+    ) -> Option<Solved> {
         let ybar = self.ybar[j];
-        let b: Vec<f64> = (0..k)
-            .map(|i| self.cross[j][i] + cov.mean(i) * ybar)
-            .collect();
-        let (asub, keep, s) = self.band_system(j, c);
-        let kk = keep.len();
-        let mut out = vec![0.0; k];
-        let mut shares = None;
+        self.band_system_into(j, c, sc);
+        let kk = sc.keep.len();
         let mut jitter = 0u32;
-        let mut factor = None;
+        let mut solved = None;
         if kk > 0 {
-            let bsub: Vec<f64> = keep.iter().map(|&i| b[i] / s[i]).collect();
             // Kept for the nudges that follow, as in `Self::solve_centred`.
-            let Some(f) = SpdFactor::of(&asub, kk) else {
+            let spare = sc.spare(kk);
+            let Some(f) = SpdFactor::of_in(&sc.a, kk, spare, &mut sc.chol) else {
                 *self.systems.slot(self.cfg.n_targets, j) = None;
                 return None;
             };
-            let sol = f.solve(&bsub, kk, 1);
-            jitter = f.attempts();
+            out.fill(0.0);
+            // The right-hand side is the uncentred `E[z·y] = c + m·ȳ`, each
+            // entry scaled as it is formed.
+            let (keep, s, cross, cov) = (&sc.keep, &sc.s, &self.cross[j], &self.cov[j]);
+            let sol = f.solve_one(col_of(&mut sc.cols, kk), |i2| {
+                let i = keep[i2];
+                (cross[i] + cov.mean(i) * ybar) / s[i]
+            });
             for (i2, &i) in keep.iter().enumerate() {
                 out[i] = sol[i2] / s[i];
             }
-            let (pending, kept) = self.pending_shares(f, keep.clone(), k, c);
-            shares = Some(pending);
-            factor = kept;
+            jitter = f.attempts();
+            sc.to.clone_from(&sc.keep);
+            self.keep_band_system(j, sc, Some(&f));
+            let lam = self.cfg.ridge + f.jitter();
+            solved = Some((f, lam));
+        } else {
+            out.fill(0.0);
+            self.keep_band_system(j, sc, None);
         }
         self.solve_failures += u64::from(jitter);
-        self.keep_band_system(j, BandSystem { factor, keep, s });
-        Some((out, shares))
+        Some(solved)
     }
 }
 

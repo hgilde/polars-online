@@ -18,7 +18,7 @@ use std::cmp::Ordering;
 use std::sync::OnceLock;
 
 use faer::Conj;
-use faer::dyn_stack::{MemBuffer, MemStack};
+use faer::dyn_stack::{MemBuffer, MemStack, StackReq};
 use faer::linalg::cholesky::llt;
 use faer::prelude::*;
 use faer::reborrow::{Reborrow, ReborrowMut};
@@ -46,26 +46,88 @@ const JITTER: [f64; 5] = [0.0, 1e-12, 1e-9, 1e-6, 1e-3];
 /// [`SpdFactor::updated`] can move it in place, which `faer`'s `Llt` does
 /// not allow.
 fn factorize(a: &[f64], k: usize) -> Option<(Mat<f64>, u32, f64)> {
+    let mut l = Mat::new();
+    let (attempts, jitter) = factorize_into(a, k, &mut l, &mut CholWork::default())?;
+    Some((l, attempts, jitter))
+}
+
+/// [`factorize`] into `l`, a matrix the caller keeps, with faer's scratch
+/// in `work`: `L` and the attempts and jitter it returns, to the bit, since
+/// each rung writes every entry `Mat::from_fn` would and factorizes the
+/// same matrix in place. A matrix of another order is made afresh, as
+/// [`factorize`] makes its own (a kept one of the same order has the layout
+/// a fresh one has, its columns at the same stride). `None` if every rung
+/// fails, `l` left holding the last rung's attempt.
+fn factorize_into(
+    a: &[f64],
+    k: usize,
+    l: &mut Mat<f64>,
+    work: &mut CholWork,
+) -> Option<(u32, f64)> {
     debug_assert_eq!(a.len(), k * k);
     let trace: f64 = (0..k).map(|i| a[i * k + i]).sum();
     let base = if trace > 0.0 { trace / k as f64 } else { 1.0 };
     let threads = rayon::current_num_threads();
     for (attempts, &eps) in JITTER.iter().enumerate() {
         let jitter = base * eps;
-        let mut l = Mat::from_fn(k, k, |i, j| match i.cmp(&j) {
+        let entry = |i: usize, j: usize| match i.cmp(&j) {
             Ordering::Less => 0.0,
             _ => a[i * k + j] + if i == j { jitter } else { 0.0 },
-        });
-        if cholesky_in_place(l.as_mut(), threads, (LEAF, TILE)).is_ok() {
+        };
+        if l.nrows() == k && l.ncols() == k {
+            for j in 0..k {
+                for (i, v) in l.col_as_slice_mut(j).iter_mut().enumerate() {
+                    *v = entry(i, j);
+                }
+            }
+        } else {
+            *l = Mat::from_fn(k, k, entry);
+        }
+        if cholesky_in_place(l.as_mut(), threads, (LEAF, TILE), work).is_ok() {
             for j in 1..k {
                 for i in 0..j {
                     l[(i, j)] = 0.0;
                 }
             }
-            return Some((l, attempts as u32, jitter));
+            return Some((attempts as u32, jitter));
         }
     }
     None
+}
+
+/// faer's scratch for [`cholesky_seq`], kept between factorizations by a
+/// caller that factorizes often ([`SpdFactor::of_in`]): made on first use,
+/// and made again only for a larger requirement than the one it holds.
+/// Each call writes the scratch before reading it. It holds nothing a
+/// caller reads, so a copy is empty and it shows nothing.
+#[derive(Default)]
+pub(crate) struct CholWork(Option<(MemBuffer, StackReq)>);
+
+impl CholWork {
+    /// A stack of at least `req`, the kept one where it is large enough.
+    fn stack(&mut self, req: StackReq) -> &mut MemStack {
+        if self
+            .0
+            .as_ref()
+            .is_none_or(|(_, held)| held.or(req) != *held)
+        {
+            self.0 = Some((MemBuffer::new(req), req));
+        }
+        let (mem, _) = self.0.as_mut().expect("the buffer is made above");
+        MemStack::new(mem)
+    }
+}
+
+impl Clone for CholWork {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl std::fmt::Debug for CholWork {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CholWork")
+    }
 }
 
 /// Above this order faer's Cholesky blocks; at or below it, one call.
@@ -89,17 +151,18 @@ fn cholesky_in_place(
     mut a: MatMut<'_, f64>,
     threads: usize,
     cut: (usize, usize),
+    work: &mut CholWork,
 ) -> Result<(), llt::factor::LltError> {
     let n = a.nrows();
     if n <= RECURSION_THRESHOLD {
-        return cholesky_seq(a);
+        return cholesky_seq(a, work);
     }
     let bs = (n.next_power_of_two() / 2).min(BLOCK);
     let mut j = 0;
     while j < n {
         let b = bs.min(n - j);
         let (mut a00, _, mut a10, a11) = a.rb_mut().get_mut(j.., j..).split_at_mut(b, b);
-        cholesky_seq(a00.rb_mut()).map_err(|e| match e {
+        cholesky_seq(a00.rb_mut(), work).map_err(|e| match e {
             llt::factor::LltError::NonPositivePivot { index } => {
                 llt::factor::LltError::NonPositivePivot { index: j + index }
             }
@@ -122,21 +185,15 @@ fn cholesky_in_place(
     Ok(())
 }
 
-/// faer's own Cholesky of `a`, sequential.
-fn cholesky_seq(a: MatMut<'_, f64>) -> Result<(), llt::factor::LltError> {
-    let mut mem = MemBuffer::new(llt::factor::cholesky_in_place_scratch::<f64>(
+/// faer's own Cholesky of `a`, sequential, its scratch in `work`.
+fn cholesky_seq(a: MatMut<'_, f64>, work: &mut CholWork) -> Result<(), llt::factor::LltError> {
+    let stack = work.stack(llt::factor::cholesky_in_place_scratch::<f64>(
         a.nrows(),
         Par::Seq,
         Default::default(),
     ));
-    llt::factor::cholesky_in_place(
-        a,
-        Default::default(),
-        Par::Seq,
-        MemStack::new(&mut mem),
-        Default::default(),
-    )
-    .map(|_| ())
+    llt::factor::cholesky_in_place(a, Default::default(), Par::Seq, stack, Default::default())
+        .map(|_| ())
 }
 
 /// `X ← A⁻¹ X` from the lower factor `L` of `A`: the two triangular solves
@@ -240,7 +297,7 @@ pub fn solve_spd(a: &[f64], b: &[f64], k: usize, m: usize) -> Option<(Vec<f64>, 
 /// lower triangle, its jitter rung and its moves, and read back as the same
 /// factor, never factorized again (`SpdFactorState`), so a model restored
 /// from it reads the factor the saved model held.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(into = "SpdFactorState", try_from = "SpdFactorState")]
 pub struct SpdFactor {
     /// `L`, lower triangular with a positive diagonal and zeros above it:
@@ -280,7 +337,23 @@ impl SpdFactor {
 
     /// Factorize `A` (row-major `k*k`), or `None` if every jitter fails.
     pub fn of(a: &[f64], k: usize) -> Option<Self> {
-        let (l, attempts, jitter) = factorize(a, k)?;
+        Self::of_in(a, k, None, &mut CholWork::default())
+    }
+
+    /// [`Self::of`], to the bit, written into `spare`'s matrix where there
+    /// is one -- a factor its owner has done with, whose entries, jitter and
+    /// moves are all overwritten -- and with faer's scratch in `work`: a
+    /// caller that factorizes on a schedule keeps both and allocates nothing
+    /// for a factor of an order it has held before. `None` if every jitter
+    /// fails, and the spare is spent.
+    pub(crate) fn of_in(
+        a: &[f64],
+        k: usize,
+        spare: Option<Self>,
+        work: &mut CholWork,
+    ) -> Option<Self> {
+        let mut l = spare.map_or_else(Mat::new, |f| f.l);
+        let (attempts, jitter) = factorize_into(a, k, &mut l, work)?;
         Some(Self {
             l,
             log_det: OnceLock::new(),
@@ -451,6 +524,25 @@ impl SpdFactor {
         out
     }
 
+    /// `A⁻¹ b` for one right-hand side, `b_i = rhs(i)` over the factor's
+    /// order: [`Self::solve`]'s `solve(b, k, 1)` to the bit -- the same
+    /// column, solved by the same two triangular solves -- but solved in
+    /// `work`'s column, kept between calls ([`QuadWork`]), and read from it,
+    /// where `solve` allocates a matrix and a vector for each. A caller that
+    /// solves on a schedule allocates nothing for it.
+    pub(crate) fn solve_one<'w>(
+        &self,
+        work: &'w mut QuadWork,
+        mut rhs: impl FnMut(usize) -> f64,
+    ) -> &'w [f64] {
+        let x = work.column(self.l.nrows());
+        for (i, v) in x.col_as_slice_mut(0).iter_mut().enumerate() {
+            *v = rhs(i);
+        }
+        solve_in_place(&self.l, x.as_mut());
+        x.col_as_slice(0)
+    }
+
     /// The diagonal of `A⁻¹`: `k` solves against the identity, `O(k³)` --
     /// the order of the factorization itself, so on a solve schedule and
     /// never per row. What a coefficient's data share, `1 − λ (A⁻¹)_jj`,
@@ -544,10 +636,7 @@ impl SpdFactor {
     pub(crate) fn quad_form(&self, d: &[f64], work: &mut QuadWork) -> f64 {
         let k = self.l.nrows();
         debug_assert_eq!(d.len(), k);
-        if work.0.as_ref().is_none_or(|x| x.nrows() != k) {
-            work.0 = Some(Mat::zeros(k, 1));
-        }
-        let x = work.0.as_mut().expect("the column is made above");
+        let x = work.column(k);
         for (i, &di) in d.iter().enumerate() {
             x[(i, 0)] = di;
         }
@@ -557,6 +646,34 @@ impl SpdFactor {
             acc += di * x[(i, 0)];
         }
         clamp_rounding(acc)
+    }
+}
+
+/// A copy is the same factor; `clone_from` writes it into the matrix the
+/// target holds where that is of the same order, so an owner that keeps a
+/// copy of each new factor ([`crate::Robust`]'s band systems) allocates
+/// nothing for it.
+impl Clone for SpdFactor {
+    fn clone(&self) -> Self {
+        Self {
+            l: self.l.clone(),
+            log_det: self.log_det.clone(),
+            attempts: self.attempts,
+            jitter: self.jitter,
+            moves: self.moves,
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        if self.l.nrows() == source.l.nrows() && self.l.ncols() == source.l.ncols() {
+            self.l.copy_from(&source.l);
+        } else {
+            self.l = source.l.clone();
+        }
+        self.log_det = source.log_det.clone();
+        self.attempts = source.attempts;
+        self.jitter = source.jitter;
+        self.moves = source.moves;
     }
 }
 
@@ -586,6 +703,22 @@ pub(crate) fn clamp_rounding(v: f64) -> f64 {
 /// caller reads between calls.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct QuadWork(Option<Mat<f64>>);
+
+impl QuadWork {
+    /// The order of the kept column, `None` before the first call.
+    pub(crate) fn order(&self) -> Option<usize> {
+        self.0.as_ref().map(Mat::nrows)
+    }
+
+    /// The column, of `k` rows: the kept one, or a new one where the kept
+    /// one is of another order.
+    fn column(&mut self, k: usize) -> &mut Mat<f64> {
+        if self.0.as_ref().is_none_or(|x| x.nrows() != k) {
+            self.0 = Some(Mat::zeros(k, 1));
+        }
+        self.0.as_mut().expect("the column is made above")
+    }
+}
 
 /// Two factors are equal when they are one matrix with one history: the
 /// same entries of `L`, jitter and moves. `ln det` is a cache of the

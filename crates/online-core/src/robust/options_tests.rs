@@ -626,3 +626,154 @@ fn a_column_with_no_data_has_no_share_under_the_sum_scale() {
     assert!(share[1] > 0.99 && share[1] <= 1.0, "{share:?}");
     assert!(share[2] < 1e-9, "the empty column: {share:?}");
 }
+
+/// The solves' working space holds nothing a solve reads (task 297): a
+/// model that solves in another model's buffers -- other orders, other
+/// numbers, swapped in before every row -- and drops them every seventh row
+/// with its pending data shares (`settle_readiness`) predicts, fits and
+/// saves what the model that kept its own does, to the bit. Under feature
+/// sets of three orders, the sum scale, through the origin standardized, a
+/// refit of each loss, and a quantile fit whose band rows drop its band system (a ridge)
+/// or move it (none).
+#[test]
+fn a_solve_in_any_working_space_gives_the_same_bits() {
+    let sets = vec![
+        ("one".to_string(), vec![0]),
+        ("all".to_string(), vec![0, 1, 2]),
+        ("two".to_string(), vec![2, 1]),
+    ];
+    let quantile = RobustLoss::Quantile { tau: 0.3 };
+    let cases: Vec<(&str, RobustCfg)> = vec![
+        (
+            "sets",
+            RobustCfg {
+                feature_sets: sets,
+                standardize: true,
+                ..huber(3, 2)
+            },
+        ),
+        (
+            "sum",
+            RobustCfg {
+                ridge_scale: true,
+                ..huber(3, 2)
+            },
+        ),
+        (
+            "origin",
+            RobustCfg {
+                fit_intercept: false,
+                standardize: true,
+                ..huber(3, 2)
+            },
+        ),
+        (
+            "refit",
+            RobustCfg {
+                refit_rows: 40,
+                ..huber(3, 2)
+            },
+        ),
+        (
+            "quantile",
+            RobustCfg {
+                loss: quantile,
+                standardize: true,
+                huber_scale_decay: None,
+                ..huber(3, 2)
+            },
+        ),
+        (
+            "quantile, no ridge",
+            RobustCfg {
+                loss: quantile,
+                ridge: 0.0,
+                huber_scale_decay: None,
+                solve_every: 20.0,
+                max_rows_between_solves: 100,
+                ..huber(3, 2)
+            },
+        ),
+        (
+            "quantile refit",
+            RobustCfg {
+                loss: quantile,
+                refit_rows: 60,
+                huber_scale_decay: None,
+                ..huber(3, 2)
+            },
+        ),
+    ];
+    for (name, cfg) in cases {
+        let mut own = Robust::new(cfg.clone()).unwrap();
+        let mut lent = Robust::new(cfg).unwrap();
+        // A model of other orders whose buffers `lent` works in.
+        let mut other = Robust::new(RobustCfg {
+            feature_sets: vec![("a".into(), vec![4, 1]), ("all".into(), (0..5).collect())],
+            ..huber(5, 1)
+        })
+        .unwrap();
+        let (mut s, mut t) = (5u64, 9u64);
+        let (mut a, mut b) = (Step::default(), Step::default());
+        let (mut spares, mut bands, mut solves, mut moved) = (0, 0, 0, 0);
+        for i in 0..400 {
+            let (x, y, d, w) = row(i, &mut s);
+            let ox: Vec<f64> = (0..5).map(|_| lcg(&mut t)).collect();
+            other.step(&ox, &[Some(ox[0] - ox[3] + lcg(&mut t))], d, 1.0);
+            std::mem::swap(&mut lent.scratch, &mut other.scratch);
+            spares += usize::from(!lent.scratch.spares.is_empty());
+            bands += usize::from(lent.scratch.band.is_some());
+            if i % 7 == 3 {
+                lent.settle_readiness();
+            }
+            let before = own.rows_since_solve;
+            own.step_into(&x, &y, d, w, &mut a);
+            lent.step_into(&x, &y, d, w, &mut b);
+            solves += usize::from(own.rows_since_solve <= before);
+            moved += usize::from(
+                own.systems
+                    .0
+                    .iter()
+                    .flatten()
+                    .any(|sys| sys.factor.as_ref().is_some_and(|f| f.moves() > 0)),
+            );
+            let bits = |v: &[f64]| v.iter().map(|p| p.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&a.pred), bits(&b.pred), "{name}, row {i}");
+            assert_eq!(a.n_eff.to_bits(), b.n_eff.to_bits(), "{name}, row {i}");
+        }
+        let coef = |m: &Robust| -> Vec<u64> {
+            m.coefficients()
+                .unwrap()
+                .iter()
+                .flatten()
+                .map(|v| v.to_bits())
+                .collect()
+        };
+        assert_eq!(coef(&own), coef(&lent), "{name}");
+        // Equal, and the same bytes saved: `lent` settled its data shares,
+        // which `Debug` shows apart from pending ones.
+        assert!(own == lent, "{name}");
+        assert_eq!(
+            rmp_serde::to_vec(&own.state()).unwrap(),
+            rmp_serde::to_vec(&lent.state()).unwrap(),
+            "{name}"
+        );
+        // Each case solved in borrowed buffers that held spare factors; a
+        // quantile fit's nudges built systems into dropped ones' lists.
+        eprintln!(
+            "{name}: {solves} solves, {spares} rows lent spares, {bands} a spare system, \
+             {moved} a moved one"
+        );
+        assert!(solves >= 16 && spares > 100, "{name}: {solves}, {spares}");
+        if name == "quantile" {
+            assert!(bands > 100, "{name}: {bands}");
+        }
+        if name == "quantile, no ridge" {
+            assert!(moved > 100, "{name}: {moved}");
+        }
+        if name.contains("refit") {
+            let st = own.refit_status();
+            assert!(st.iter().all(|r| r.done && r.passes > 0), "{name}: {st:?}");
+        }
+    }
+}
