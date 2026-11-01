@@ -97,10 +97,11 @@ impl TargetSpread {
     /// One row for target `j`: its weight aged by `lam`, and `y` learned at
     /// the row's weight where the row carries the target with a weight
     /// above 0. Otherwise only the weight ages.
+    #[inline]
     pub(crate) fn update(&mut self, j: usize, y: Option<f64>, lam: f64, weight: f64) {
         match y {
-            Some(v) if v.is_finite() && weight > 0.0 => self.0[j].update(&[v], lam, weight),
-            _ => self.0[j].update(&[0.0], lam, 0.0),
+            Some(v) if v.is_finite() && weight > 0.0 => self.0[j].update_one(v, lam, weight),
+            _ => self.0[j].update_one(0.0, lam, 0.0),
         }
     }
 }

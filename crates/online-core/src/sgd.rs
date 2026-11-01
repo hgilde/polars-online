@@ -1200,7 +1200,11 @@ impl Sgd {
             gbuf,
             ..
         } = self;
-        let b = &mut beta[j];
+        // Every slice cut to the coefficients' length, so that the loop
+        // below indexes each without a bounds check.
+        let b = beta[j].as_mut_slice();
+        let n = b.len();
+        let (zs, ss, ms, ds) = (&zbuf[..n], &sbuf[..n], &mbuf[..n], &mut dbuf[..n]);
         let sums: &[f64] = g2.get(j).map_or(&[], |v| v.as_slice());
         // `Δβ` for slot `i` from its gradient, its new AdaGrad sum into
         // `gbuf`; `None` where the gradient is not usable.
@@ -1218,17 +1222,27 @@ impl Sgd {
             }
         };
         let mut shift = 0.0;
-        for i in off..b.len() {
-            let g = (d * zbuf[i] * weight + l2 * (sbuf[i] * b[i])).clamp(-clip, clip);
-            let Some(step) = delta(i, g) else {
-                return false;
+        for i in off..n {
+            let g = (d * zs[i] * weight + l2 * (ss[i] * b[i])).clamp(-clip, clip);
+            let step = match lr_row {
+                // No test of `g` itself at a shared rate: a `g` that is not
+                // finite leaves `−lr·g` infinite or NaN whatever `lr`, and
+                // so `Δb` whatever the scale and `b + Δb` whatever `b`,
+                // which the test below refuses on the same slot.
+                Some(lr) => -(lr * g),
+                None => {
+                    let Some(step) = delta(i, g) else {
+                        return false;
+                    };
+                    step
+                }
             };
-            let db = step / sbuf[i];
+            let db = step / ss[i];
             if !(b[i] + db).is_finite() {
                 return false;
             }
-            dbuf[i] = db;
-            shift += mbuf[i] * db;
+            ds[i] = db;
+            shift += ms[i] * db;
         }
         if off == 1 {
             // The level's step in place of the gradient's while it is the
@@ -1240,9 +1254,9 @@ impl Sgd {
             if !(b[0] + db).is_finite() {
                 return false;
             }
-            dbuf[0] = db;
+            ds[0] = db;
         }
-        for (bi, di) in b.iter_mut().zip(dbuf.iter()) {
+        for (bi, di) in b.iter_mut().zip(ds.iter()) {
             *bi += di;
         }
         if let Some(sums) = g2.get_mut(j) {
@@ -1607,8 +1621,15 @@ pub(crate) fn standardize_row(
     scale: &mut [f64],
 ) {
     let inc = sc.including(scaler_decay(sc, lam, 1.0));
-    for (i, &xi) in x.iter().enumerate() {
-        let (m, v, dev) = inc.moments(off + i, xi);
+    // Every slice cut to the row's length first, so that the loop indexes
+    // each without a bounds check: six a feature, a third of the loop.
+    let n = x.len();
+    let (hi, lo, c) = sc.parts();
+    let (hi, lo, c) = (&hi[off..off + n], &lo[off..off + n], &c[off..off + n]);
+    let (z, mean, scale) = (&mut z[..n], &mut mean[..n], &mut scale[..n]);
+    for i in 0..n {
+        let xi = x[i];
+        let (m, v, dev) = inc.moments_of(hi[i], lo[i], c[i], xi);
         if off == 0 {
             let raw = v + m * m;
             z[i] = if raw > 0.0 { xi / raw.sqrt() } else { xi };
@@ -1638,8 +1659,11 @@ const DOT_LANES: usize = 8;
 /// `beta · [1, z]`: `z` against the feature coefficients in [`DOT_LANES`]
 /// interleaved partial sums (slot `i` into sum `i % DOT_LANES`), the sums
 /// folded pairwise, and the intercept's coefficient -- its `z` is the
-/// constant 1 -- added last.
-#[inline]
+/// constant 1 -- added last. Always inlined: a step calls it twice a
+/// target (the prediction, and the row's squared length for the step
+/// gains), and out of line the call and its length checks were 2.5% of
+/// a 20-feature row's instructions (task 284).
+#[inline(always)]
 fn dot(beta: &[f64], off: usize, z: &[f64]) -> f64 {
     let b = &beta[off..];
     debug_assert_eq!(b.len(), z.len());

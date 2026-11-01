@@ -211,6 +211,41 @@ impl EwDiag {
         }
         self.w_sum = w_new;
     }
+
+    /// [`Self::update`] of a one-slot accumulator with the row `[x]`, the
+    /// same arithmetic in the same order, without the loop across slots
+    /// that a slice of one costs a row (a target's own spread,
+    /// [`crate::spread`]).
+    #[inline]
+    pub(crate) fn update_one(&mut self, x: f64, lam: f64, w: f64) {
+        debug_assert_eq!(self.k, 1);
+        debug_assert!(
+            w >= 0.0,
+            "EwDiag::update requires a non-negative weight, got {w}"
+        );
+        if w < 0.0 {
+            return;
+        }
+        let w_new = lam * self.w_sum + w;
+        if w_new <= 0.0 {
+            self.w_sum = w_new;
+            return;
+        }
+        let a = lam * self.w_sum / w_new;
+        let b = w / w_new;
+        if b > 0.0
+            && let (Some(ci), Some(mi), Some(lo)) = (
+                self.c.first_mut(),
+                self.m.first_mut(),
+                self.m_lo.first_mut(),
+            )
+        {
+            let d = crate::comp::dev(x, *mi, *lo);
+            *ci = a * *ci + a * b * d * d;
+            crate::comp::add(mi, lo, b * d);
+        }
+        self.w_sum = w_new;
+    }
 }
 
 /// [`EwDiag::including`]: the accumulator plus one row at unit weight, one
@@ -232,10 +267,18 @@ impl Including<'_> {
     /// would round.
     #[inline]
     pub fn moments(&self, i: usize, x: f64) -> (f64, f64, f64) {
-        let lo = self.sc.m_lo[i];
-        let d = crate::comp::dev(x, self.sc.m[i], lo);
-        let c = self.a * self.sc.c[i] + self.a * self.b * d * d;
-        let (mut hi, mut lo) = (self.sc.m[i], lo);
+        self.moments_of(self.sc.m[i], self.sc.m_lo[i], self.sc.c[i], x)
+    }
+
+    /// [`Self::moments`] from the slot's own parts as [`EwDiag::parts`]
+    /// gives them -- its mean's pair `(hi, lo)` and its centred moment `c`
+    /// -- for a caller that runs a loop across slices of them, where an
+    /// index into each of the three vectors was a bounds check a slot.
+    #[inline]
+    pub(crate) fn moments_of(&self, hi: f64, lo: f64, c: f64, x: f64) -> (f64, f64, f64) {
+        let d = crate::comp::dev(x, hi, lo);
+        let c = self.a * c + self.a * self.b * d * d;
+        let (mut hi, mut lo) = (hi, lo);
         crate::comp::add(&mut hi, &mut lo, self.b * d);
         (
             hi,
