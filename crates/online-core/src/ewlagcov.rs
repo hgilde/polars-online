@@ -214,8 +214,11 @@ impl EwLagCov {
         let (now, then) = (&mut self.now.0, &mut self.then.0);
         now.clear();
         now.extend((0..k).map(|i| a * b * dev(i, x[i])));
-        then.clear();
-        then.resize(k, 0.0);
+        // Sized once: each lag that has a past row writes all `k` before
+        // reading any, so a zero-fill here was a `memset` every row.
+        if then.len() != k {
+            then.resize(k, 0.0);
+        }
         for (li, &lag) in self.lags.iter().enumerate() {
             let block = &mut self.c[li * k * k..(li + 1) * k * k];
             match self.ring.len().checked_sub(lag).map(|i| &self.ring[i]) {
