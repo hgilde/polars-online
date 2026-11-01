@@ -101,12 +101,12 @@ budget = 93770043
 
 [instructions.sgd]
 what = "sgd, 20 features, squared loss, learning rate 0.01, standardized: AnyModel::step_into, into one kept Step"
-budget = 3519026
+budget = 2942026
 release = 3053026
 
 [instructions.sgd_huber]
 what = "sgd, 20 features, Huber loss in the MAD scale, learning rate 0.01, standardized: AnyModel::step_into, into one kept Step"
-budget = 3971398
+budget = 3410420
 release = 3501863
 
 [instructions.sgd_huber_refit]
@@ -115,7 +115,7 @@ budget = 67785003
 
 [instructions.pa]
 what = "pa, 20 features, standardized: AnyModel::step_into, into one kept Step"
-budget = 2739988
+budget = 2556010
 release = 2739988
 
 [instructions.seqtest]
