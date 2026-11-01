@@ -877,6 +877,15 @@ returns.
   instructions on the refit's benchmark under Valgrind on x86-64 (112.3M
   to 67.8M). The per-slope ridge had cost it 2.1%, all of it a pointer
   the centring loop spilled to the stack and reloaded on each element.
+- `sgd` steps a row in fewer instructions, bit for bit (task 284): its
+  per-feature loops index without bounds checks, a slope's gradient is no
+  longer tested apart from the coefficient it makes at a shared rate (a
+  gradient that is not finite makes that coefficient not finite, which is
+  refused on the same slot), and the target spread's update and the dot
+  product are inlined. On arm64, natively, over the 1,000-row budget
+  block: 17% fewer instructions under the squared loss (98 to 83 µs) and
+  15% fewer under Huber's. `pa`, which shares the spread's update, takes
+  5% fewer.
 
 ### Known issues
 

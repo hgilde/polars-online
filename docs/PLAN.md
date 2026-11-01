@@ -16635,10 +16635,17 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       per-row path): rebase, find the sgd_huber slowdown (VM Callgrind and
       x86 timing), re-measure, and merge only if single-target sgd is
       unchanged and the multi-target cases are within 1% in CI's counts.
-- [ ] 284. **Pay less for the per-row drift since 1.3.0** -- the user,
+- [x] 284. **Pay less for the per-row drift since 1.3.0** -- the user,
       2026-10-31: "Look for more efficient implementations of the ones that
       drift". CI's Valgrind since 1.3.0: `sgd` +16.8% (+512 instructions a
       row), `sgd_huber` +14.7% (+515), `holt` +17.6% (+102); every case on
       the shared bank path is flat. Account for each added per-row cost and
       build only bit-identical cheaper forms (W9); what remains is signed
       off with what it buys.
+      *Built 2026-10-31 (W9, merged):* bit-identical. Slices cut to length
+      in `standardize_row` and `step_mapped` (x86 loop 80 -> 48 -> 28-33
+      instructions a feature), no separate gradient test at a shared rate,
+      `TargetSpread::update` and `dot` inlined: arm64 sgd -17%, sgd_huber
+      -15%, pa -5%. CI's Valgrind decides the x86 figures (tighten on the
+      push). holt's +102 a row is the line fit's own arithmetic: it needs
+      a `[[signoff]]` at the release.
