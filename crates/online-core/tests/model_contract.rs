@@ -3057,7 +3057,7 @@ fn step_into_is_step_on_a_stream<M: OnlineModel>(
 /// so a model that reuses its own variant's vector meets it stale as well
 /// as the other's (task 285).
 fn stale_step(which: usize) -> Step {
-    let extra = if which % 2 == 0 {
+    let extra = if which.is_multiple_of(2) {
         Extra::Lasso {
             lam_selected: vec![0.5; 3],
         }
