@@ -16692,7 +16692,7 @@ Ordering below: bit-identical first (no fixture moves, no user decision), then w
 
 **Phase A: bit-identical, build now (each held to the digests, fixtures, contract, chunk invariance)**
 
-- [ ] 286. **holt's row-to-row chain**
+- [x] 286. **holt's row-to-row chain** *(closed 2026-11-01, measured, not taken: on x86 the VM timed the branch-free `take_line` at −1 to −6% in the coin-flip regime and +13 to +31% where the branch is predictable, because holt is bound by its division chain and the select adds the textbook divisions to every row. One `exp2` for equal half-lives does not pay either (the default is trend = 4 × level). holt's latency goes to task 291.)*
   - **Branch-free `take_line`:** a select over both candidate trend updates. The same arithmetic, so bit-identical. 0.54 mispredictions a row ≈ 9 cycles, about 3 ns of 53.
   - **One `exp2` where the level and trend half-lives are equal:** one call, both factors. Bit-identical, and it costs nothing on an irregular clock, unlike task 285's memo. 84 Ir a row.
   - **Measure in time as well as instructions:** holt's gap is latency, not count.
