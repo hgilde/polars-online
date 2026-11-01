@@ -45,7 +45,7 @@ use serde::{Deserialize, Serialize};
 use crate::clock::Decay;
 use crate::ewcov::EwCov;
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
-use crate::solve::{SpdFactor, quad_forms_logdet};
+use crate::solve::{QuadWork, SpdFactor, quad_forms_logdet};
 
 /// The shape of the class covariance matrices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -187,19 +187,22 @@ impl PartialEq for Factors {
 }
 
 impl Factors {
-    /// The factor for class `c`, computing and keeping it when stale.
+    /// The factor for class `c`, computing and keeping it when stale, from
+    /// the matrix `matrix` writes into `buf`.
     fn get(
         &mut self,
         c: usize,
         n_classes: usize,
-        matrix: impl FnOnce() -> Vec<f64>,
+        buf: &mut Vec<f64>,
+        matrix: impl FnOnce(&mut Vec<f64>),
         k: usize,
     ) -> Option<&SpdFactor> {
         if self.0.len() != n_classes {
             self.0 = vec![Cached::Stale; n_classes];
         }
         if matches!(self.0[c], Cached::Stale) {
-            self.0[c] = match SpdFactor::of(&matrix(), k) {
+            matrix(buf);
+            self.0[c] = match SpdFactor::of(buf, k) {
                 Some(f) => Cached::Ready(f),
                 None => Cached::Failed,
             };
@@ -234,6 +237,27 @@ impl Factors {
     }
 }
 
+/// The buffers a row's scores are formed in, kept between rows: the class
+/// weights, the class scores, the row's deviations, the matrix a stale
+/// class factorizes and the quadratic form's column. Scratch, not state:
+/// each is written in full before it is read, so it is neither serialized
+/// nor compared. Formed afresh, they were 13 allocations of a row's 15 at
+/// three classes and twenty features.
+#[derive(Debug, Clone, Default)]
+struct ScoreWork {
+    weights: Vec<f64>,
+    ell: Vec<f64>,
+    delta: Vec<f64>,
+    matrix: Vec<f64>,
+    quad: QuadWork,
+}
+
+impl PartialEq for ScoreWork {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
 /// Class-conditional Gaussian classifier; see the [module docs](self).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EwClass {
@@ -253,6 +277,9 @@ pub struct EwClass {
     /// The `full` shape's per-class factors between rows; see [`Factors`].
     #[serde(skip)]
     factors: Factors,
+    /// The step's buffers between rows; see [`ScoreWork`].
+    #[serde(skip)]
+    work: ScoreWork,
 }
 
 /// The window's clock and the snapshots it subtracts.
@@ -306,6 +333,7 @@ impl EwClass {
             solve_failures: 0,
             win,
             factors: Factors::default(),
+            work: ScoreWork::default(),
         })
     }
 
@@ -432,14 +460,14 @@ impl EwClass {
     /// the mean the row was measured from came from the window -- and paid a
     /// factorization per class per row, under a window, to factorize the wrong
     /// matrix (review 2026-09-12, C12). `shared` and `diagonal` read the view.
-    fn class_matrix(&self, cov: &EwCov) -> Vec<f64> {
+    fn class_matrix(&self, cov: &EwCov, m: &mut Vec<f64>) {
         let k = self.cfg.n_features;
-        let mut m = cov.comoments().to_vec();
+        m.clear();
+        m.extend_from_slice(cov.comoments());
         let ridge = self.cfg.precision_prior * cov.precision_scale();
         for i in 0..k {
             m[i * k + i] += ridge;
         }
-        m
     }
 
     /// `[class, p_0, .., p_{C-1}]` for `x` from the current state, written
@@ -453,14 +481,23 @@ impl EwClass {
     /// `factors` is the `full` shape's cache of class factors: `step` hands
     /// its own in and gets the stale ones rebuilt; `predict` has only `&self`
     /// and reads whatever is ready, factorizing the rest without keeping it.
+    /// `work` is the buffers the scores are formed in ([`ScoreWork`]).
     fn score(
         &self,
         x: &[f64],
         valid: bool,
         solve_failed: &mut bool,
         mut factors: Option<&mut Factors>,
+        work: &mut ScoreWork,
         out: &mut Vec<f64>,
     ) {
+        let ScoreWork {
+            weights,
+            ell,
+            delta,
+            matrix,
+            quad,
+        } = work;
         let nc = self.cfg.n_classes;
         let k = self.cfg.n_features;
         let nan = |out: &mut Vec<f64>| {
@@ -476,16 +513,19 @@ impl EwClass {
             Some(v) => v,
             None => &self.classes,
         };
-        let weights: Vec<f64> = classes.iter().map(EwCov::n_eff).collect();
+        weights.clear();
+        weights.extend(classes.iter().map(EwCov::n_eff));
         let total: f64 = weights.iter().sum();
         if total <= 0.0 || total.is_nan() {
             return nan(out);
         }
         // ln π_c − ½ ln det M_c − ½ q_c per class; −∞ where n_c = 0.
-        let mut ell = vec![f64::NEG_INFINITY; nc];
+        ell.clear();
+        ell.resize(nc, f64::NEG_INFINITY);
         match self.cfg.covariance {
             Covariance::Full => {
-                let mut delta = vec![0.0; k];
+                delta.clear();
+                delta.resize(k, 0.0);
                 for c in 0..nc {
                     if weights[c] <= 0.0 {
                         continue;
@@ -495,20 +535,24 @@ impl EwClass {
                         *d = cov.deviation(i, xi);
                     }
                     let fresh;
+                    let fill = |m: &mut Vec<f64>| self.class_matrix(cov, m);
                     let factor = match factors.as_deref_mut() {
-                        Some(cache) => cache.get(c, nc, || self.class_matrix(cov), k),
+                        Some(cache) => cache.get(c, nc, matrix, fill, k),
                         None => match self.factors.peek(c) {
                             Some(f) => Some(f),
                             None => {
-                                fresh = SpdFactor::of(&self.class_matrix(cov), k);
+                                fill(matrix);
+                                fresh = SpdFactor::of(matrix, k);
                                 fresh.as_ref()
                             }
                         },
                     };
                     match factor {
                         Some(f) => {
-                            let q = f.quad_forms(&delta, k, 1);
-                            ell[c] = (weights[c] / total).ln() - 0.5 * f.log_det() - 0.5 * q[0];
+                            // `quad_forms(delta, k, 1)[0]` to the bit, in
+                            // the kept column.
+                            let q = f.quad_form(delta, quad);
+                            ell[c] = (weights[c] / total).ln() - 0.5 * f.log_det() - 0.5 * q;
                         }
                         None => {
                             *solve_failed = true;
@@ -591,7 +635,7 @@ impl EwClass {
         out.clear();
         out.push(best as f64);
         let mut z = 0.0;
-        for &l in &ell {
+        for &l in ell.iter() {
             z += (l - top).exp();
         }
         out.extend(ell.iter().map(|&l| (l - top).exp() / z));
@@ -657,8 +701,17 @@ impl OnlineModel for EwClass {
         let valid = x.iter().all(|v| v.is_finite());
         let mut failed = false;
         let mut factors = std::mem::take(&mut self.factors);
-        self.score(x, valid, &mut failed, Some(&mut factors), &mut out.pred);
+        let mut work = std::mem::take(&mut self.work);
+        self.score(
+            x,
+            valid,
+            &mut failed,
+            Some(&mut factors),
+            &mut work,
+            &mut out.pred,
+        );
         self.factors = factors;
+        self.work = work;
         if failed {
             self.solve_failures += 1;
         }
@@ -706,7 +759,8 @@ impl OnlineModel for EwClass {
         let valid = x.iter().all(|v| v.is_finite());
         let mut failed = false;
         let mut pred = Vec::new();
-        self.score(x, valid, &mut failed, None, &mut pred);
+        let mut work = ScoreWork::default();
+        self.score(x, valid, &mut failed, None, &mut work, &mut pred);
         Step {
             pred,
             n_eff: self.n_eff(),

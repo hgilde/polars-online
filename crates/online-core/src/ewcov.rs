@@ -1760,6 +1760,15 @@ struct Windowed {
     snaps: crate::Snapshots<crate::Moments>,
 }
 
+/// `n` new slots at the end of `out`, for the caller to write in place:
+/// one resize for a statistic's pairs, where a `push` a pair checked the
+/// capacity each time.
+fn slots(out: &mut Vec<f64>, n: usize) -> &mut [f64] {
+    let start = out.len();
+    out.resize(start + n, 0.0);
+    &mut out[start..]
+}
+
 impl EwCovModel {
     pub fn new(cfg: EwCovCfg) -> Result<Self, String> {
         cfg.validate()?;
@@ -2140,10 +2149,14 @@ impl EwCovModel {
                 EwCovStat::Var => (0..k).for_each(|i| out.push(scale * cov.var(i))),
                 EwCovStat::Std => (0..k).for_each(|i| out.push((scale * cov.var(i)).sqrt())),
                 EwCovStat::Cov => {
+                    let c = cov.comoments();
+                    let mut dst = slots(out, k * (k - 1) / 2);
                     for i in 0..k {
-                        for j in (i + 1)..k {
-                            out.push(scale * cov.cov(i, j));
+                        let (row, rest) = std::mem::take(&mut dst).split_at_mut(k - 1 - i);
+                        for (o, &cij) in row.iter_mut().zip(&c[i * k + i + 1..(i + 1) * k]) {
+                            *o = scale * cij;
                         }
+                        dst = rest;
                     }
                 }
                 EwCovStat::Corr => {
@@ -2151,17 +2164,28 @@ impl EwCovModel {
                     // `sqrt` was 80% of `ew_cov`'s row (docs/PERFORMANCE.md
                     // §13). Same product of the same two roots, so the
                     // correlations are bit-identical.
+                    // Each pair written into its slot, along row `i`'s
+                    // upper part and the roots after `i`'s: a `push` per
+                    // pair checked the capacity and went through a stack
+                    // slot, 36 instructions a pair. The same quotient of
+                    // the same numbers, in the same order.
                     std.clear();
                     std.extend((0..k).map(|i| cov.var(i).sqrt()));
+                    let c = cov.comoments();
+                    let mut dst = slots(out, k * (k - 1) / 2);
                     for i in 0..k {
-                        for j in (i + 1)..k {
-                            let d = std[i] * std[j];
-                            out.push(if d > 0.0 {
-                                (cov.cov(i, j) / d).clamp(-1.0, 1.0)
+                        let (row, rest) = std::mem::take(&mut dst).split_at_mut(k - 1 - i);
+                        let si = std[i];
+                        let pairs = c[i * k + i + 1..(i + 1) * k].iter().zip(&std[i + 1..]);
+                        for (o, (&cij, &sj)) in row.iter_mut().zip(pairs) {
+                            let d = si * sj;
+                            *o = if d > 0.0 {
+                                (cij / d).clamp(-1.0, 1.0)
                             } else {
                                 f64::NAN
-                            });
+                            };
                         }
+                        dst = rest;
                     }
                 }
                 EwCovStat::PartialCorr => {

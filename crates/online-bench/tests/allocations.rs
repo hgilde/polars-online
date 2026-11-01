@@ -164,7 +164,7 @@ fn deco_standardises_a_row_once() {
         20,
         0,
     );
-    check("deco m=20", got, 14.0, 19.0);
+    check("deco m=20", got, 13.0, 19.0);
 }
 
 /// `hmm` built `Π` twice on a learning row, a vector a matrix row each time
@@ -177,7 +177,7 @@ fn hmm_builds_its_transition_matrix_once_a_row() {
         4,
         0,
     );
-    check("hmm K=2 d=4", got, 26.0, 29.0);
+    check("hmm K=2 d=4", got, 24.0, 29.0);
 }
 
 /// `lasso` copied each target's selection errors a row to take their
@@ -257,8 +257,8 @@ fn the_cheap_models_step_into_a_kept_buffer_without_allocating() {
         ("pa", 0.0, 1.0, 1.0),
         ("kmeans", 0.0, 1.0, 1.0),
         ("ew_cov", 0.0, 1.0, 2.0),
-        ("ewridge_k5", 1.48, 2.48, 2.48),
-        ("ewridge_k20", 1.48, 2.48, 2.48),
+        ("ewridge_k5", 1.42, 2.42, 2.48),
+        ("ewridge_k20", 1.42, 2.42, 2.48),
         ("sgd", 0.0, 1.0, 1.0),
         ("sgd_huber", 0.0, 1.0, 1.0),
         ("holt", 0.0, 1.0, 1.0),
@@ -266,7 +266,7 @@ fn the_cheap_models_step_into_a_kept_buffer_without_allocating() {
         ("rls", 0.0, 1.0, 1.0),
         ("kalman", 0.0, 1.0, 1.0),
         ("micro", 0.05, 1.05, 1.05),
-        ("huber_k20", 0.77, 1.77, 1.77),
+        ("huber_k20", 0.71, 1.71, 1.77),
         ("lasso_k20", 0.77, 2.77, 2.77),
     ] {
         let (step, into) = (case_per_row(id, false), case_per_row(id, true));
@@ -277,5 +277,26 @@ fn the_cheap_models_step_into_a_kept_buffer_without_allocating() {
             into + 1.0 <= step + 1e-9,
             "{id}: step_into {into} a row, step {step}: not one fewer"
         );
+    }
+}
+
+/// `ew_class` formed its class weights, its class scores, the row's
+/// deviations, the matrix a stale class factorizes and each quadratic
+/// form's column anew on every row, and every solve made a list of its one
+/// band of right-hand sides (task 293): kept buffers now, and what is left
+/// is the learned class's new factor, its matrix and faer's scratch.
+/// `quantile` kept its nudge's column already; its solves' lists went the
+/// same way, and what is left is the band systems it builds again and its
+/// scheduled solves. Counted over each bench case's own measured block, as
+/// the bank steps it, whose labels name classes; this file's rows name
+/// none, and a class with no row scores nothing.
+#[test]
+fn ew_class_and_quantile_keep_their_buffers_between_rows() {
+    for (id, bound, before) in [("ew_class", 2.0, 15.0), ("quantile", 1.49, 2.40)] {
+        let mut run = online_bench::model_setup(id);
+        let start = calls();
+        std::hint::black_box(online_bench::polars_online_budget_model_rows(&mut run));
+        let got = (calls() - start) as f64 / online_bench::ROWS as f64;
+        check(id, got, bound, before);
     }
 }
