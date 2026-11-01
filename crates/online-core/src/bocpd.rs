@@ -1184,20 +1184,22 @@ impl Bocpd {
         if self.full() {
             let mun: Vec<f64> = (0..d).map(|i| self.run_mean_at(run, mu0, i)).collect();
             // `Ψₙ = Ψ₀ + S + (κ₀n/κₙ)(x̄ − μ₀)(x̄ − μ₀)'`, every term centred.
-            let mut psi = psi0.to_vec();
-            for i in 0..d {
-                for j in 0..d {
-                    let g = k0 * run.n / kn * (run.mean[i] - mu0[i]) * (run.mean[j] - mu0[j]);
-                    psi[i * d + j] += run.m2[i * d + j] + g;
-                }
-            }
+            // Its lower triangle alone, scaled to `Σ`: the factor reads
+            // nothing else, and nothing else reads `Σ` (task 287). The
+            // strict upper triangle keeps `Ψ₀`'s entries, unread.
             let dof = nun - d as f64 + 1.0;
             if dof <= 0.0 {
                 return None;
             }
             let scale = (kn + 1.0) / (kn * dof);
-            let mut sigma = psi;
-            sigma.iter_mut().for_each(|v| *v *= scale);
+            let mut sigma = psi0.to_vec();
+            for i in 0..d {
+                for j in 0..=i {
+                    let g = k0 * run.n / kn * (run.mean[i] - mu0[i]) * (run.mean[j] - mu0[j]);
+                    let psi = sigma[i * d + j] + (run.m2[i * d + j] + g);
+                    sigma[i * d + j] = psi * scale;
+                }
+            }
             let f = SpdFactor::of(&sigma, d)?;
             let delta: Vec<f64> = x.iter().zip(&mun).map(|(a, b)| a - b).collect();
             // A row that is not a number has no density. `step` and

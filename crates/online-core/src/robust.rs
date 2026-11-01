@@ -1808,10 +1808,13 @@ impl Robust {
         }
         // Read straight from the Gram, where the centred block was copied
         // out first, one allocation and `k²` copies a system (task 170).
+        // Its lower triangle alone, the strict upper left 0: each caller
+        // hands the system to `SpdFactor::of`, which reads nothing else,
+        // and keeps the factor, never the system (task 287).
         let kk = keep.len();
         let mut asub = vec![0.0; kk * kk];
         for (i2, &i) in keep.iter().enumerate() {
-            for (j2, &jj) in keep.iter().enumerate() {
+            for (j2, &jj) in keep[..=i2].iter().enumerate() {
                 let g = if self.cfg.fit_intercept {
                     cov.cov(i + 1, jj + 1)
                 } else {
@@ -2035,9 +2038,10 @@ impl Robust {
             })
             .collect();
         let kk = keep.len();
+        // The lower triangle alone, as `Self::band_system` builds its own.
         let mut a = vec![0.0; kk * kk];
         for (p, &i) in keep.iter().enumerate() {
-            for (q, &jj) in keep.iter().enumerate() {
+            for (q, &jj) in keep[..=p].iter().enumerate() {
                 a[p * kk + q] = w * cov.raw(i, jj);
             }
             a[p * kk + p] += prior;

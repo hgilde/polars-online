@@ -696,12 +696,84 @@ pub(crate) fn fitted(beta: &[f64], x: &[f64], intercept: bool) -> f64 {
 
 /// The weighted median of `a` at weights `v`: the smallest value at which
 /// the cumulative weight reaches half the total, over the entries of
-/// positive weight. NaN when there is none. At an even count of equal
-/// weights that is the lower of the two middles, where numpy and
-/// statsmodels take their mean: the two differ by half the gap between the
-/// middle residuals, a few in 10,000 of the scale at 200 rows of normal
-/// noise.
+/// positive weight, both sums taken in the values' sorted order
+/// ([`weighted_median_sorted`], the definition). NaN when there is none.
+/// At an even count of equal weights that is the lower of the two middles,
+/// where numpy and statsmodels take their mean: the two differ by half the
+/// gap between the middle residuals, a few in 10,000 of the scale at 200
+/// rows of normal noise.
+///
+/// It is found by selection, in linear expected time, not by a sort, and
+/// it is the sorted walk's value to the bit:
+///
+/// - where every weight is the same, every partial sum is the same sum of
+///   copies, in any order, so the walk's position is counted exactly and
+///   that order statistic selected;
+/// - otherwise a weighted selection proposes a value, and it stands only
+///   where the weight below it and the weight up to it are each off half
+///   the total by more than a margin past any rounding the sums can carry.
+///   Each of them -- the selection's, and the walk's in sorted order -- is
+///   a sum of nonnegative terms rounded at most `n + 192` times (the
+///   entries, and three combinations in each of at most 64 partitions),
+///   each rounding off by at most `u = ε/2` of the total, so the walk's
+///   running sum and half its total are each within `(n + 192)·u` of the
+///   true values, and the selection's within as much of those; the margin
+///   is `8(n + 256)·u` of the total, more than the three together. Past
+///   it, the walk crosses half at the same value. Anywhere closer -- a
+///   mass at exactly half among unequal weights -- or on a total that is
+///   not finite or is near the bottom of the range (where halving rounds),
+///   the walk itself decides.
+///
+/// Equal values are one value to the bit, so how ties among them fall in
+/// either order never changes the answer. At 2,500 rows on an M-series
+/// core the sort took 24 µs; the selection takes 5 at equal weights and
+/// 11 at decayed ones.
 pub(crate) fn weighted_median(a: &[f64], v: &[f64]) -> f64 {
+    let mut e: Vec<(u64, f64)> = Vec::with_capacity(a.len());
+    let (mut total, mut equal) = (0.0, true);
+    for (&x, &w) in a.iter().zip(v) {
+        if w > 0.0 {
+            equal &= e.first().is_none_or(|&(_, w0)| w == w0);
+            total += w;
+            e.push((total_key(x), w));
+        }
+    }
+    let n = e.len();
+    let Some(&(_, w0)) = e.first() else {
+        return f64::NAN;
+    };
+    if equal {
+        // `total` is the sum of `n` copies of `w0`, as the walk's is.
+        let half = 0.5 * total;
+        let (mut cum, mut m) = (w0, 0);
+        while cum < half {
+            m += 1;
+            if m == n {
+                return f64::NAN;
+            }
+            cum += w0;
+        }
+        let (_, &mut (key, _), _) = e.select_nth_unstable_by_key(m, |&(k, _)| k);
+        return from_total_key(key);
+    }
+    if total.is_finite() && total >= 1e-200 {
+        let half = 0.5 * total;
+        let margin = 4.0 * (n + 256) as f64 * f64::EPSILON * total;
+        if let Some((key, below, upto)) = weighted_select(&mut e, half)
+            && below < half - margin
+            && upto >= half + margin
+        {
+            return from_total_key(key);
+        }
+    }
+    weighted_median_sorted(a, v)
+}
+
+/// The weighted median by the sorted walk: the entries of positive weight
+/// sorted by value, their total summed in that order, and the first value
+/// whose running sum reaches half of it. [`weighted_median`]'s definition,
+/// and its answer wherever its selection cannot be sure of the walk's.
+pub(crate) fn weighted_median_sorted(a: &[f64], v: &[f64]) -> f64 {
     let mut idx: Vec<usize> = (0..a.len()).filter(|&i| v[i] > 0.0).collect();
     idx.sort_by(|&p, &q| a[p].total_cmp(&a[q]));
     let total: f64 = idx.iter().map(|&i| v[i]).sum();
@@ -713,6 +785,70 @@ pub(crate) fn weighted_median(a: &[f64], v: &[f64]) -> f64 {
         }
     }
     f64::NAN
+}
+
+/// `x`'s place in [`f64::total_cmp`]'s order, as an unsigned integer
+/// ordered the same: the magnitude bits of a negative flipped, as
+/// `total_cmp` flips them, and the sign bit flipped to order the signed
+/// result as unsigned.
+fn total_key(x: f64) -> u64 {
+    let b = x.to_bits();
+    let neg = ((b as i64) >> 63) as u64;
+    (b ^ (neg >> 1)) ^ (1 << 63)
+}
+
+/// The value whose [`total_key`] is `k`, to the bit.
+fn from_total_key(k: u64) -> f64 {
+    let b = k ^ (1 << 63);
+    let neg = ((b as i64) >> 63) as u64;
+    f64::from_bits(b ^ (neg >> 1))
+}
+
+/// The key at which a weighted selection over `e` (`(key, weight)`,
+/// reordered in place) finds the running weight reaching `half`, with the
+/// weight below that key and the weight up to it, as its own sums found
+/// them: three-way partitions about a median of three, keeping the side
+/// the crossing is on. `None` where those sums leave no side to keep, or
+/// after 64 partitions (a run of poor pivots); the caller then sorts.
+fn weighted_select(e: &mut [(u64, f64)], half: f64) -> Option<(u64, f64, f64)> {
+    let (mut lo, mut hi) = (0, e.len());
+    let mut below = 0.0;
+    for _ in 0..64 {
+        if lo >= hi {
+            return None;
+        }
+        let s = &mut e[lo..hi];
+        let last = s.len() - 1;
+        let (p0, p1, p2) = (s[0].0, s[last / 2].0, s[last].0);
+        let pivot = p0.max(p1).min(p0.min(p1).max(p2));
+        let (mut lt, mut i, mut gt) = (0, 0, s.len());
+        let (mut wl, mut we) = (0.0, 0.0);
+        while i < gt {
+            let k = s[i].0;
+            if k < pivot {
+                wl += s[i].1;
+                s.swap(i, lt);
+                lt += 1;
+                i += 1;
+            } else if k > pivot {
+                gt -= 1;
+                s.swap(i, gt);
+            } else {
+                we += s[i].1;
+                i += 1;
+            }
+        }
+        let (to, through) = (below + wl, below + wl + we);
+        if to >= half {
+            hi = lo + lt;
+        } else if through >= half {
+            return Some((pivot, to, through));
+        } else {
+            below = through;
+            lo += gt;
+        }
+    }
+    None
 }
 
 /// The scale a pass draws its cut in, from the residuals' sizes at the
@@ -907,33 +1043,10 @@ fn wls(
         mx.iter_mut().for_each(|m| *m /= total);
         my /= total;
     }
-    let mut a = vec![0.0; nf * nf];
-    let mut b = vec![0.0; nf];
-    // The row centred once, so that the Gram's inner loop reads two slices
-    // and subtracts nothing: centred inside it, the loop kept `x`, `mx` and
-    // `a` live beside `wls`'s other slices, and on x86-64 the pointer to
-    // `mx` was spilled and reloaded on each element (2% of the refit's
-    // instructions under Valgrind). The products are the same, `(w·d_p)·d_q`.
-    let mut d = vec![0.0; nf];
-    for (i, &w) in wt.iter().enumerate() {
-        if w == 0.0 {
-            continue;
-        }
-        for ((d, &x), &m) in d.iter_mut().zip(rows.x(i)).zip(&mx) {
-            *d = x - m;
-        }
-        let dy = rows.y(i) - my;
-        for ((a_p, b_p), &dp) in a.chunks_exact_mut(nf.max(1)).zip(&mut b).zip(&d) {
-            let wdp = w * dp;
-            *b_p += wdp * dy;
-            for (a, &dq) in a_p.iter_mut().zip(&d) {
-                *a += wdp * dq;
-            }
-        }
-    }
+    let (mut a, mut b) = gram_lower(rows, wt, &mx, my);
     for p in 0..nf {
         b[p] /= total;
-        for q in 0..nf {
+        for q in 0..=p {
             a[p * nf + q] /= total;
         }
         a[p * nf + p] += ridge[p] + penalty[p] / total;
@@ -946,6 +1059,88 @@ fn wls(
         slopes
     };
     fit.iter().all(|v| v.is_finite()).then_some(fit)
+}
+
+/// Rows a chunk of [`gram_lower`] centres at once.
+const GRAM_CHUNK: usize = 64;
+
+/// The lower triangle of `wls`'s Gram, `a_pq = Σ_i (w_i·d_ip)·d_iq` for
+/// `q <= p`, row-major `nf × nf` with the strict upper triangle 0, and its
+/// right-hand side `b_p = Σ_i (w_i·d_ip)·dy_i`: `d_i = x_i − m` the row
+/// centred at `mx`, `dy_i = y_i − my`, over the rows of nonzero weight.
+/// Neither is yet divided by the total weight.
+///
+/// The factor reads the lower triangle alone ([`SpdFactor::of`] copies it
+/// over zeros), and nothing else reads `a`, so the upper triangle is not
+/// built. Every entry is summed over the rows in their order, from 0, one
+/// product `(w·d_p)·d_q` at a time, as a loop over the rows updating every
+/// entry sums it, so the fit is that loop's to the bit. Only the order of
+/// the work across entries differs: the rows are centred and weighted
+/// [`GRAM_CHUNK`] at a time into small buffers padded to a multiple of 4
+/// columns (zeros past `nf`, which touch only the padding), and each 4 × 4
+/// block on or below the diagonal runs down the chunk with its 16 sums in
+/// registers. The row-by-row loop loaded and stored every entry of the
+/// Gram for every row, and at 20 features and 2,500 rows took 130 µs on
+/// an M-series core, where this takes 57; building only its lower
+/// triangle took 128, the short rows' scalar tails eating the products
+/// saved.
+fn gram_lower(rows: &Rows<'_>, wt: &[f64], mx: &[f64], my: f64) -> (Vec<f64>, Vec<f64>) {
+    let nf = rows.nf;
+    let nb = nf.div_ceil(4);
+    let ns = nb * 4;
+    let mut a = vec![0.0; ns * ns];
+    let mut b = vec![0.0; nf];
+    let mut dm = vec![0.0; GRAM_CHUNK * ns];
+    let mut wdm = vec![0.0; GRAM_CHUNK * ns];
+    let mut rows_left = wt.iter().enumerate().filter(|&(_, &w)| w != 0.0).peekable();
+    while rows_left.peek().is_some() {
+        let mut r = 0;
+        for (i, &w) in rows_left.by_ref().take(GRAM_CHUNK) {
+            let dy = rows.y(i) - my;
+            let d_row = &mut dm[r * ns..r * ns + nf];
+            let wd_row = &mut wdm[r * ns..r * ns + nf];
+            for ((((d, wd), b), &x), &m) in d_row
+                .iter_mut()
+                .zip(wd_row.iter_mut())
+                .zip(b.iter_mut())
+                .zip(rows.x(i))
+                .zip(mx)
+            {
+                *d = x - m;
+                *wd = w * *d;
+                *b += *wd * dy;
+            }
+            r += 1;
+        }
+        for pb in 0..nb {
+            for qb in 0..=pb {
+                let mut acc = [[0.0_f64; 4]; 4];
+                for (k, acc_k) in acc.iter_mut().enumerate() {
+                    acc_k.copy_from_slice(&a[(pb * 4 + k) * ns + qb * 4..][..4]);
+                }
+                for (wd, d) in wdm.chunks_exact(ns).zip(dm.chunks_exact(ns)).take(r) {
+                    let wd = &wd[pb * 4..pb * 4 + 4];
+                    let d = &d[qb * 4..qb * 4 + 4];
+                    for (acc_k, &wd_k) in acc.iter_mut().zip(wd) {
+                        for (s, &d_l) in acc_k.iter_mut().zip(d) {
+                            *s += wd_k * d_l;
+                        }
+                    }
+                }
+                for (k, acc_k) in acc.iter().enumerate() {
+                    a[(pb * 4 + k) * ns + qb * 4..][..4].copy_from_slice(acc_k);
+                }
+            }
+        }
+    }
+    // Row `p` from `p·ns` to `p·nf`, its strict upper triangle (the blocks'
+    // spill past the diagonal) cleared, and the padding dropped.
+    for p in 0..nf {
+        a.copy_within(p * ns..p * ns + p + 1, p * nf);
+        a[p * nf + p + 1..p * nf + nf].fill(0.0);
+    }
+    a.truncate(nf * nf);
+    (a, b)
 }
 
 /// The refit of a model without sums of its own (`sgd`): IRLS over the
@@ -1809,5 +2004,177 @@ mod tests {
         let r = Rows::new(&rows, &ages, 1);
         let fit = wls(&r, &[1.0, 3.0, 0.7, 1.9], true, &[0.0], &[0.0]).unwrap();
         assert!((fit[1] - 2.0).abs() <= 1e-8, "{fit:?}");
+    }
+
+    /// The Gram by blocks is the row-by-row loop's to the bit, entry for
+    /// entry of the lower triangle and the right-hand side, its strict
+    /// upper triangle 0: every feature count from 0 to 9 (the blocks'
+    /// edges and padding), more rows than a chunk with a partial last one,
+    /// rows of weight 0 among them (skipped, as the loop skips them), a
+    /// row of weight NaN (kept, as the loop keeps it), and features and
+    /// targets far from their means.
+    #[test]
+    fn the_blocked_gram_is_the_row_by_row_loop() {
+        let mut g = 11u64;
+        let mut next = move || {
+            g = g
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (g >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for nf in 0..10 {
+            for n in [1, 3, GRAM_CHUNK, 2 * GRAM_CHUNK + 5] {
+                let mut buf = Vec::new();
+                for _ in 0..n {
+                    buf.extend((0..nf).map(|_| 1e3 * next() - 400.0));
+                    buf.extend([5.0 * next() + 1e4, 1.0, 1.0, 1.0]);
+                }
+                let rows = Rows::new(&buf, &[], nf);
+                let mut wt: Vec<f64> = (0..n)
+                    .map(|i| if i % 7 == 3 { 0.0 } else { 0.1 + next() })
+                    .collect();
+                if nf == 4 && n > 3 {
+                    wt[2] = f64::NAN;
+                }
+                let mx: Vec<f64> = (0..nf).map(|_| 100.0 * next()).collect();
+                let my = 1e4 + next();
+                let (a, b) = gram_lower(&rows, &wt, &mx, my);
+                let (mut ea, mut eb) = (vec![0.0; nf * nf], vec![0.0; nf]);
+                let mut d = vec![0.0; nf];
+                for (i, &w) in wt.iter().enumerate() {
+                    if w == 0.0 {
+                        continue;
+                    }
+                    for q in 0..nf {
+                        d[q] = rows.x(i)[q] - mx[q];
+                    }
+                    let dy = rows.y(i) - my;
+                    for p in 0..nf {
+                        let wdp = w * d[p];
+                        eb[p] += wdp * dy;
+                        for q in 0..nf {
+                            ea[p * nf + q] += wdp * d[q];
+                        }
+                    }
+                }
+                let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                assert_eq!(bits(&b), bits(&eb), "nf {nf}, n {n}");
+                assert_eq!(a.len(), nf * nf);
+                for p in 0..nf {
+                    for q in 0..nf {
+                        let want = if q <= p { ea[p * nf + q] } else { 0.0 };
+                        assert_eq!(
+                            a[p * nf + q].to_bits(),
+                            want.to_bits(),
+                            "nf {nf}, n {n}, ({p}, {q})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The weighted median by selection is the sorted walk's value to the
+    /// bit ([`weighted_median_sorted`], the definition) on inputs made to
+    /// part them: values drawn from a few (ties), signed zeros, infinities
+    /// and NaNs of both signs; weights of 0, negative and NaN (left out),
+    /// all equal (an exact half at every even count), drawn from a few
+    /// powers of two (exact sums, so masses at exactly half), spread over
+    /// thirty orders of magnitude, subnormal, and past the double's range
+    /// in total; one row, none, and up to 300.
+    #[test]
+    fn the_selected_weighted_median_is_the_sorted_walks() {
+        let mut g = 5u64;
+        let mut next = move || {
+            g = g
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            g >> 11
+        };
+        let specials = [
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+            -f64::NAN,
+            f64::MIN_POSITIVE,
+            5e-324,
+            f64::MAX,
+        ];
+        let (mut selected, mut equal) = (0, 0);
+        for trial in 0..20_000u64 {
+            let n = match trial % 5 {
+                0 => (next() % 4) as usize,
+                1 => (next() % 12) as usize,
+                _ => (next() % 300) as usize,
+            };
+            let values = trial / 5 % 4;
+            let a: Vec<f64> = (0..n)
+                .map(|_| match values {
+                    0 => (next() % 5) as f64,
+                    1 => specials[(next() % specials.len() as u64) as usize],
+                    2 => (next() as f64 / (1u64 << 53) as f64 - 0.5) * 1e3,
+                    _ => [-2.5, 0.0, 3.0][(next() % 3) as usize],
+                })
+                .collect();
+            let weights = trial / 20 % 7;
+            let v: Vec<f64> = (0..n)
+                .map(|_| {
+                    let u = next();
+                    match weights {
+                        0 => 1.0,
+                        1 => [0.0, 0.5, 1.0, 2.0, 4.0][(u % 5) as usize],
+                        2 => [0.0, -1.0, f64::NAN, 1.0, 3.0][(u % 5) as usize],
+                        3 => 10f64.powi((u % 31) as i32 - 15),
+                        4 => 5e-324 * (u % 4) as f64,
+                        5 => f64::MAX / [1.0, 2.0, 3.0][(u % 3) as usize],
+                        _ => 0.1 + (u as f64 / (1u64 << 53) as f64),
+                    }
+                })
+                .collect();
+            let fast = weighted_median(&a, &v);
+            let slow = weighted_median_sorted(&a, &v);
+            assert_eq!(
+                fast.to_bits(),
+                slow.to_bits(),
+                "trial {trial}: {a:?} at {v:?}: {fast} against {slow}"
+            );
+            let live: Vec<f64> = v.iter().copied().filter(|&w| w > 0.0).collect();
+            if live.len() > 1 && live.iter().all(|&w| w == live[0]) {
+                equal += 1;
+            } else if live.len() > 1 {
+                selected += 1;
+            }
+        }
+        // Both of the selection's paths ran, many times over.
+        assert!(selected > 5_000 && equal > 1_000, "{selected} {equal}");
+    }
+
+    /// The order key is `total_cmp`'s order, and goes back to the bits.
+    #[test]
+    fn the_order_key_is_total_cmps_order() {
+        let xs = [
+            f64::NEG_INFINITY,
+            -f64::MAX,
+            -1.0,
+            -5e-324,
+            -0.0,
+            0.0,
+            5e-324,
+            1.0,
+            f64::MAX,
+            f64::INFINITY,
+            f64::NAN,
+            -f64::NAN,
+        ];
+        for &x in &xs {
+            assert_eq!(from_total_key(total_key(x)).to_bits(), x.to_bits());
+            for &y in &xs {
+                assert_eq!(total_key(x).cmp(&total_key(y)), x.total_cmp(&y), "{x} {y}");
+            }
+        }
     }
 }
