@@ -995,6 +995,21 @@ returns.
   function's alignment held fixed, and within code-layout noise in the
   default build. Rows narrower than 8 slots run as before. Other CPUs run
   the same machine code as before.
+- `huber` and `quantile` solves stop allocating their working space: the
+  band system, the right-hand side, the factor's matrix, the
+  factorization's scratch, the data shares' lists and the coefficient
+  table are kept and reused from one solve to the next, and a quantile
+  fit's nudges rebuild their band system in the same buffers, with the
+  same bits as before (task 297). Allocations a row fall from 0.83 to 0 on
+  a 20-feature `huber`, from 2.55 to 0 under three feature sets, and from
+  1.48 to 0.08 on `quantile`. On arm64, natively, by best block in both
+  the default and an aligned code layout: `huber` under three feature sets
+  30% less time, `huber` at 20 features 7-10% less, `quantile` 6-14% less.
+  The allocator's cost per call had varied with the heap's layout from one
+  process to the next, which is why two runs of one binary differed by
+  0.5% in instructions on the feature-set case; that spread is gone. A
+  model keeps one spare factor of each order between solves, about
+  `k² · 8` bytes each, and drops them when a chunk ends.
 - The instruction-count benchmarks build rayon's thread pool at the end of
   each model case's warm-up, outside the measured block, so a case's count
   no longer moves with the size of the process's environment (task 292).
