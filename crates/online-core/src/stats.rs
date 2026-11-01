@@ -533,7 +533,9 @@ impl EwQuantile {
 
     /// One value `v >= 0` at weight `w > 0`; anything else is not seen.
     pub fn add(&mut self, v: f64, w: f64) {
-        if !(v >= 0.0 && v.is_finite() && w > 0.0 && w.is_finite()) {
+        // Both finite where the larger is: each is a number at least 0 by
+        // then, so one test of the two in place of a test of each.
+        if !(v >= 0.0 && w > 0.0 && v.max(w).is_finite()) {
             return;
         }
         let s = w / self.scale;
@@ -1192,6 +1194,15 @@ mod tests {
             (f64::NAN, 1.0),
             (-1.0, 1.0),
             (f64::INFINITY, 1.0),
+            // The weight's own refusals, and both at once (task 288: one
+            // test of the larger in place of a test of each).
+            (1.0, f64::INFINITY),
+            (1.0, f64::NAN),
+            (1.0, -1.0),
+            (f64::INFINITY, f64::INFINITY),
+            (f64::NAN, f64::NAN),
+            (f64::MAX, f64::INFINITY),
+            (f64::INFINITY, f64::MAX),
         ] {
             q.add(v, w);
             assert_eq!(q.get(0), None, "({v}, {w}) is not seen");
