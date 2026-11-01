@@ -1178,7 +1178,13 @@ impl Sgd {
     /// teaches nothing, as before the switch, and so does one any of whose
     /// coefficients the step would make infinite -- `Δβ_i / s_i` for a
     /// feature of all but no spread. `false` then.
-    #[inline]
+    ///
+    /// Out of line, so its loop has the registers to itself: inlined into
+    /// `step_into`, whose frame holds the whole row's state, the loop read
+    /// the weight and the rate from the stack and reloaded a pointer on
+    /// every feature (task 288: x86-64's loop 29 instructions with three
+    /// stack reads, 28 with none; `step_into`'s frame 728 bytes to 648).
+    #[inline(never)]
     fn step_mapped(
         &mut self,
         j: usize,
