@@ -315,6 +315,9 @@ returns.
   fires; proven on an AMD EPYC 9V74 runner, all 2,345 oracle tests passing
   with NumPy reporting no AVX-512. The `OPENBLAS_L2_SIZE` setting is
   removed.
+- `POLARS_ONLINE_TIMING` (and the old name's notice) is read once, when a
+  process first needs it, so setting it later in that process has no
+  effect: set it before the process starts (task 292).
 
 ### Deprecated
 
@@ -914,6 +917,27 @@ returns.
   scale to the step. `sgd`'s per-feature step in the caller's units runs
   out of line, with no register spills. On arm64, natively: `sgd` with
   Huber loss is 16% faster, `marginal` with Huber bins 14%, and `sgd` 3%.
+- `bocpd` reuses its per-row working space and the runs it prunes, bit for
+  bit (task 292). A row allocates nothing under the diagonal emission (16
+  allocations before) and one factor per run under
+  `covariance_type="full"` (about 72 before): about 50% fewer instructions
+  and 50% less time on both budget cases, on arm64, natively.
+- `rcov`'s kernel estimator walks each lag's block once, adding the same
+  products in the same order (task 292): 9% fewer instructions and 17% less
+  time on arm64.
+- Copying features into rows no longer zeroes an 8 KiB scratch on every
+  copy (task 292). A grouped bank copies one row per group, so
+  `bank_ewridge_k5_groups` takes 8% fewer instructions and 13% less time.
+- `ew_cov` writes its covariances and correlations into slots sized once
+  a row, bit for bit (task 293): 19% fewer instructions at 20 features, 8%
+  with lags (11% less time), and 13% on the 20-feature wide bank, on arm64,
+  natively. There the correlations' divisions bound the row's time.
+- Every solve with fewer than 256 right-hand sides runs without building a
+  list of one band, and `ew_class` keeps its scoring buffers between rows,
+  bit for bit (task 293). `ew_class` allocates twice a row where it
+  allocated 15, and is 23% faster at three classes and 20 features; `hmm`
+  is 12% faster, `deco` 11%, `bocpd` with full covariance 6%, `quantile`
+  4%, on arm64, natively.
 
 ### Known issues
 
