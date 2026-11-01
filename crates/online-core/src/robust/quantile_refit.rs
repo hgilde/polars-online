@@ -192,14 +192,22 @@ impl Robust {
                     self.replay_rows(j, &rows, &mut z, |i| majorizer_row(&rows, &r, i, h, tau));
                 }
             }
-            let next = if intercept {
-                self.solve_centred(k, j, 0)
+            let mut next = vec![0.0; k];
+            let mut sc = std::mem::take(&mut self.scratch);
+            let solved_pass = if intercept {
+                self.solve_centred(&mut sc, k, j, 0, &mut next)
             } else {
-                self.solve_through_origin(k, j, 0)
+                self.solve_through_origin(&mut sc, j, 0, &mut next)
             };
-            let Some((next, _)) = next else {
+            // The passes read no data shares: the factor is a spare.
+            let Some(shares) = solved_pass else {
+                self.scratch = sc;
                 break;
             };
+            if let Some((f, _)) = shares {
+                sc.give(f);
+            }
+            self.scratch = sc;
             solved = true;
             let done = converged(&rows, intercept, beta.as_deref(), &next, scale);
             let (fit, stalled) = match (pass, beta.take()) {
@@ -263,11 +271,7 @@ impl Robust {
         // The band system the passes kept is of the sums before the last
         // replay: the next solve or nudge builds it again.
         *self.systems.slot(self.cfg.n_targets, j) = None;
-        if fitted_before && let Some(prev) = self.beta.take() {
-            let mut out: Vec<Vec<f64>> = prev.to_vec();
-            self.solve_target(j, Some(prev.as_slice()), &mut out);
-            self.beta = Some(crate::model::Fit(out));
-        }
+        self.resolve_target(j, fitted_before);
     }
 
     /// The band's half-width at fit `b`, the residuals written into `r`:

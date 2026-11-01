@@ -269,7 +269,8 @@ fn case_per_row(id: &str, into: bool) -> f64 {
 /// a sketch of `|e|` aged and fed each row. Then every model's step was
 /// written into the caller's `Step` (task 285): `holt`, `ftrl`, `rls` and
 /// `kalman` allocate nothing a row, `micro` its rare new summary, `huber`
-/// what its solves do, and `lasso` its solves without its `pred` and
+/// what its solves do -- nothing, since they keep their working space
+/// (task 297) -- and `lasso` its solves without its `pred` and
 /// `lam_selected`, two fewer. Each row: the bound through `step_into`, the
 /// bound through `step`, and `step`'s count before the change.
 #[test]
@@ -288,7 +289,7 @@ fn the_cheap_models_step_into_a_kept_buffer_without_allocating() {
         ("rls", 0.0, 1.0, 1.0),
         ("kalman", 0.0, 1.0, 1.0),
         ("micro", 0.05, 1.05, 1.05),
-        ("huber_k20", 0.71, 1.71, 1.77),
+        ("huber_k20", 0.0, 1.0, 1.77),
         ("lasso_k20", 0.77, 2.77, 2.77),
     ] {
         let (step, into) = (case_per_row(id, false), case_per_row(id, true));
@@ -323,13 +324,44 @@ fn bocpd_keeps_its_rows_working_space() {
 /// band of right-hand sides (task 293): kept buffers now, and what is left
 /// is the learned class's new factor, its matrix and faer's scratch.
 /// `quantile` kept its nudge's column already; its solves' lists went the
-/// same way, and what is left is the band systems it builds again and its
-/// scheduled solves. Counted over each bench case's own measured block, as
+/// same way, and then its solves' and its nudges' band systems and factors
+/// (task 297): what is left is a system's first build after a refit or a
+/// save drops one. Counted over each bench case's own measured block, as
 /// the bank steps it, whose labels name classes; this file's rows name
 /// none, and a class with no row scores nothing.
 #[test]
 fn ew_class_and_quantile_keep_their_buffers_between_rows() {
-    for (id, bound, before) in [("ew_class", 2.0, 15.0), ("quantile", 1.49, 2.40)] {
+    for (id, bound, before) in [("ew_class", 2.0, 15.0), ("quantile", 0.08, 2.40)] {
+        let mut run = online_bench::model_setup(id);
+        let start = calls();
+        std::hint::black_box(online_bench::polars_online_budget_model_rows(&mut run));
+        let got = (calls() - start) as f64 / online_bench::ROWS as f64;
+        check(id, got, bound, before);
+    }
+}
+
+/// `huber`'s solves formed their band system -- its scales, kept columns
+/// and matrix -- the right-hand side, the factor's matrix and faer's
+/// scratch for it, the solution, the coefficients and the data shares'
+/// lists anew at every solve, and the coefficient table at every solve
+/// (task 297): about 12 allocations a solve, 16 a row under three feature
+/// sets, whose cost moved with the heap's layout from one process to the
+/// next. They are kept between solves now, a spare factor of each order
+/// written over and handed to the data shares, whose factor comes back as
+/// the next spare. Counted over each bench case's own measured block, as
+/// the bank steps it; the refit's block holds its one refit, whose passes
+/// still make their own coefficient vectors and row buffers. A quantile
+/// fit's solves go the same way.
+#[test]
+fn huber_keeps_its_solves_working_space() {
+    for (id, bound, before) in [
+        ("huber_k20", 0.001, 0.83),
+        ("huber_k20_sets", 0.001, 2.55),
+        ("huber_k20_sum", 0.001, 0.90),
+        ("huber_k20_refit", 0.11, 1.02),
+        ("quantile", 0.08, 1.48),
+        ("quantile_refit", 0.253, 1.77),
+    ] {
         let mut run = online_bench::model_setup(id);
         let start = calls();
         std::hint::black_box(online_bench::polars_online_budget_model_rows(&mut run));
