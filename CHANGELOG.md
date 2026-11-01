@@ -976,6 +976,16 @@ returns.
   and 7.6% less time, its refit 14.7% less time, `ewridge` at 20 features
   3.5% less, `ew_cov` with lags 5.6% less, and `ew_cov` 10% fewer
   instructions (its correlations' divisions bound its time).
+- `ew_cov` sizes each row's output once and writes every statistic into
+  its slots, where it zero-filled them first, with the same bits as before
+  (task 295). On arm64, natively, `ew_cov` at 20 features takes 7.9% less
+  time, `ew_cov` with lags 3.0% less, and the 20-feature wide bank 4.6%
+  less; the zero-fill was a real memset on x86-64 too.
+- On x86-64, the co-moment update every `EwCov` makes covers whole rows
+  again below 10 features, where a lower-triangle row is too short to fill
+  the vector loop, with the same bits as before (task 295). Other CPUs keep
+  the lower-triangle rows, which measured as fast or faster at those widths
+  on arm64.
 - The instruction-count benchmarks build rayon's thread pool at the end of
   each model case's warm-up, outside the measured block, so a case's count
   no longer moves with the size of the process's environment (task 292).
