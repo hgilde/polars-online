@@ -375,16 +375,28 @@ impl OnlineModel for Holt {
                 // the line fit's slope is then the whole history's drift.
                 let textbook = s > 0.0 && (line.is_none() || self.cfg.trend_half_life.is_finite());
                 let held_b = lam_b * self.w_trend[j];
-                let take_line = match line {
-                    Some((_, h)) => !textbook || h > weight / (held_b + weight) * level_gain / s,
-                    None => false,
+                let trend = self.trend[j];
+                let level = self.level[j];
+                let by_textbook = || {
+                    let slope = (level - prev_level) / s;
+                    (held_b * trend + weight * slope) / (held_b + weight)
                 };
-                if take_line {
-                    self.trend[j] += line.map_or(0.0, |(_, h)| h) * error;
-                } else if textbook {
-                    let slope = (self.level[j] - prev_level) / s;
-                    self.trend[j] = (held_b * self.trend[j] + weight * slope) / (held_b + weight);
-                }
+                self.trend[j] = match (line, textbook) {
+                    // Both gains are on offer: both trends are formed and
+                    // the larger gain's kept by a select, not a branch.
+                    // Which is the larger flips with the row's clock step,
+                    // near a coin flip from row to row while the line fit
+                    // is young, and a mispredicted branch on the chain each
+                    // row waits on cost the step a quarter of its time.
+                    (Some((_, h)), true) => std::hint::select_unpredictable(
+                        h > weight / (held_b + weight) * level_gain / s,
+                        trend + h * error,
+                        by_textbook(),
+                    ),
+                    (Some((_, h)), false) => trend + h * error,
+                    (None, true) => by_textbook(),
+                    (None, false) => trend,
+                };
                 if s > 0.0 {
                     self.w_trend[j] = held_b + weight;
                 }
@@ -477,6 +489,7 @@ impl OnlineModel for Holt {
         0
     }
 }
+
 
 #[cfg(test)]
 mod tests {
