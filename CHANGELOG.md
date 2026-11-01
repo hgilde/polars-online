@@ -986,6 +986,14 @@ returns.
   the vector loop, with the same bits as before (task 295). Other CPUs keep
   the lower-triangle rows, which measured as fast or faster at those widths
   on arm64.
+- On x86-64 CPUs with AVX2, the exponentially weighted means and variances
+  behind `sgd`'s and `pa`'s standardizing update four slots at a time from
+  8 slots, and `sgd(loss="huber")`'s refit sums its Gram four entries at a
+  time, both with the same bits as before (task 296). Measured on x86-64:
+  `sgd` takes 5.5% fewer instructions, and at the 25th percentile of time
+  `sgd` is 2.6% faster, `sgd(loss="huber")` 2.3% and `pa` 3.3%; the refit
+  case takes 14.9% fewer instructions and 15.6% less time. Other CPUs run
+  the same machine code as before.
 - The instruction-count benchmarks build rayon's thread pool at the end of
   each model case's warm-up, outside the measured block, so a case's count
   no longer moves with the size of the process's environment (task 292).
