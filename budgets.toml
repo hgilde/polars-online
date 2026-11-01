@@ -67,37 +67,37 @@ rss = 0.30
 
 [instructions.ewridge_k5]
 what = "ewridge, 5 features, 1 target, half-life 1000: AnyModel::step_into, into one kept Step"
-budget = 2949476
+budget = 2852332
 release = 2805466
 
 [instructions.ewridge_k20]
 what = "ewridge, 20 features, 1 target, half-life 1000: AnyModel::step_into, into one kept Step"
-budget = 8375323
+budget = 7841554
 release = 7947283
 
 [instructions.ewridge_gram_t10]
 what = "ewridge, 50 features, 10 targets, gram_block_rows 64, pairwise, a solve every 400: AnyModel::step_into, into one kept Step, the targets folded into the block's merge"
-budget = 13923740
+budget = 13568091
 release = 13715304
 
 [instructions.huber_k20]
 what = "huber, 20 features, 1 target, half-life 1000, the MAD scale: AnyModel::step_into, into one kept Step"
-budget = 7309384
+budget = 6698569
 release = 7833126
 
 [instructions.huber_k20_sets]
 what = "huber, 20 features, 1 target, half-life 1000, the MAD scale, feature sets of 5, 10 and 20 features: AnyModel::step_into, into one kept Step"
-budget = 9544747
+budget = 8901190
 release = 10123658
 
 [instructions.huber_k20_sum]
 what = "huber, 20 features, 1 target, half-life 1000, the MAD scale, ridge_scale sum: AnyModel::step_into, into one kept Step"
-budget = 7619367
+budget = 7027803
 release = 8242907
 
 [instructions.huber_k20_refit]
 what = "huber, 20 features, 1 target, half-life 1000, the MAD scale, the refit of the first 2,500 rows on the block's 500th row: AnyModel::step_into, into one kept Step"
-budget = 87958383
+budget = 74710877
 
 [instructions.sgd]
 what = "sgd, 20 features, squared loss, learning rate 0.01, standardized: AnyModel::step_into, into one kept Step"
@@ -145,12 +145,12 @@ release = 18736994
 
 [instructions.ew_cov]
 what = "ew_cov, 20 features, mean, std and corr: AnyModel::step_into, into one kept Step"
-budget = 10673026
+budget = 9832026
 release = 13825026
 
 [instructions.lasso_k20]
 what = "lasso, 20 features, 1 target, half-life 1000, penalties 0.1, 0.01 and 0, the default cadence: AnyModel::step_into, into one kept Step"
-budget = 12486191
+budget = 11975839
 release = 12879135
 
 [instructions.corrchange_monitor_w2500]
@@ -195,7 +195,7 @@ release = 26990984
 
 [instructions.bank_ew_cov_wide_t1]
 what = "Bank::fit_predict of one frame of 8,192 rows, ew_cov's 230 statistics, on a pool of one thread: each run copied into the output as it ends, after the next is learned"
-budget = 139749987
+budget = 132811018
 release = 164895853
 
 # Added with the review of 2026-10-23 (task 270 (e)): no budget until CI's
@@ -213,7 +213,7 @@ release = 15678333
 
 [instructions.quantile_refit]
 what = "quantile, the median, 20 features, half-life 1000, the refit of the first 2,500 rows on the block's 500th row: AnyModel::step_into, into one kept Step"
-budget = 54786239
+budget = 52040081
 
 [instructions.ftrl]
 what = "ftrl, 20 features, logistic loss, half-life 1000: AnyModel::step_into, into one kept Step"
@@ -269,7 +269,7 @@ release = 31220323
 
 [instructions.ew_cov_lags]
 what = "ew_cov, 20 features, mean and cov, lags 1-5: AnyModel::step_into, into one kept Step"
-budget = 19014026
+budget = 18322026
 release = 21569026
 
 [instructions.formula_target_held1k]
