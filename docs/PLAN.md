@@ -16649,3 +16649,15 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       -15%, pa -5%. CI's Valgrind decides the x86 figures (tighten on the
       push). holt's +102 a row is the line fit's own arithmetic: it needs
       a `[[signoff]]` at the release.
+- [ ] 285. **No per-row allocation: every model writes into the bank's
+      kept `Step`** -- from the user's VM Callgrind of the drift (2026-10-31):
+      about 250 of holt's 679 instructions a row are `vec![NAN; m]` plus
+      malloc/free, because `OnlineModel::step_into`'s default is `*out =
+      self.step(..)`. Fifteen models lack their own `step_into` (audit,
+      bocpd, micro, corrchange, deco, ewclass, ftrl, hmm, holt, kalman,
+      lasso, marginal, rcov, rls, robust). Implement it for each,
+      bit-identical, and consider flipping the trait's default; measure
+      holt's and `Decay::factor`'s per-row exp2 cache (never persisted).
+      The VM also confirmed task 284's targets: sgd's step_mapped loop +4
+      instructions a feature (register spills, +80 a row), the second dot
+      (+125), TargetSpread::update (+70). W10.
