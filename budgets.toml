@@ -82,22 +82,22 @@ release = 13715304
 
 [instructions.huber_k20]
 what = "huber, 20 features, 1 target, half-life 1000, the MAD scale: AnyModel::step_into, into one kept Step"
-budget = 8048480
+budget = 7309384
 release = 7833126
 
 [instructions.huber_k20_sets]
 what = "huber, 20 features, 1 target, half-life 1000, the MAD scale, feature sets of 5, 10 and 20 features: AnyModel::step_into, into one kept Step"
-budget = 10480393
+budget = 9544747
 release = 10123658
 
 [instructions.huber_k20_sum]
 what = "huber, 20 features, 1 target, half-life 1000, the MAD scale, ridge_scale sum: AnyModel::step_into, into one kept Step"
-budget = 8244317
+budget = 7619367
 release = 8242907
 
 [instructions.huber_k20_refit]
 what = "huber, 20 features, 1 target, half-life 1000, the MAD scale, the refit of the first 2,500 rows on the block's 500th row: AnyModel::step_into, into one kept Step"
-budget = 93770043
+budget = 87958383
 
 [instructions.sgd]
 what = "sgd, 20 features, squared loss, learning rate 0.01, standardized: AnyModel::step_into, into one kept Step"
@@ -106,12 +106,12 @@ release = 3053026
 
 [instructions.sgd_huber]
 what = "sgd, 20 features, Huber loss in the MAD scale, learning rate 0.01, standardized: AnyModel::step_into, into one kept Step"
-budget = 3410420
+budget = 3269534
 release = 3501863
 
 [instructions.sgd_huber_refit]
 what = "sgd, 20 features, Huber loss in the MAD scale, learning rate 0.01, standardized, the refit of the first 2,500 rows on the block's 500th row: AnyModel::step_into, into one kept Step"
-budget = 67785003
+budget = 36060037
 
 [instructions.pa]
 what = "pa, 20 features, standardized: AnyModel::step_into, into one kept Step"
@@ -120,12 +120,12 @@ release = 2739988
 
 [instructions.seqtest]
 what = "seqtest on one column's sign: AnyModel::step_into, into one kept Step"
-budget = 433958
+budget = 418958
 release = 433958
 
 [instructions.bocpd]
 what = "bocpd, 4 features, diagonal, max_run 200, prune below 1e-6: AnyModel::step_into, into one kept Step"
-budget = 15465737
+budget = 15086598
 release = 15479823
 
 [instructions.kmeans]
@@ -135,7 +135,7 @@ release = 3205518
 
 [instructions.micro]
 what = "micro, 4 features, eps 1: AnyModel::step_into, into one kept Step"
-budget = 1954237
+budget = 1808214
 release = 1969224
 
 [instructions.kalman]
@@ -150,12 +150,12 @@ release = 13825026
 
 [instructions.lasso_k20]
 what = "lasso, 20 features, 1 target, half-life 1000, penalties 0.1, 0.01 and 0, the default cadence: AnyModel::step_into, into one kept Step"
-budget = 12879135
+budget = 12486191
 release = 12879135
 
 [instructions.corrchange_monitor_w2500]
 what = "corrchange monitor, 4 features (6 pairs), a span of 2,500 rows closing once in the block: AnyModel::step"
-budget = 5985448
+budget = 5780535
 release = 5985416
 
 [instructions.corrchange_window_w100]
@@ -203,26 +203,26 @@ release = 164895853
 
 [instructions.rls]
 what = "rls, 20 features, delta 1, half-life 1000: AnyModel::step_into, into one kept Step"
-budget = 9048026
+budget = 8770026
 release = 9047026
 
 [instructions.quantile]
 what = "quantile, the median, 20 features, half-life 1000: AnyModel::step_into, into one kept Step"
-budget = 16742239
+budget = 15457687
 release = 15678333
 
 [instructions.quantile_refit]
 what = "quantile, the median, 20 features, half-life 1000, the refit of the first 2,500 rows on the block's 500th row: AnyModel::step_into, into one kept Step"
-budget = 62209473
+budget = 54786239
 
 [instructions.ftrl]
 what = "ftrl, 20 features, logistic loss, half-life 1000: AnyModel::step_into, into one kept Step"
-budget = 3696553
+budget = 3512553
 release = 3696553
 
 [instructions.holt]
 what = "holt, level and trend of one column, half-life 1000: AnyModel::step_into, into one kept Step"
-budget = 678581
+budget = 516581
 release = 577026
 
 [instructions.marginal]
@@ -230,11 +230,11 @@ what = "marginal, 20 features against one target, half-life 1000: AnyModel::step
 
 # Task 272 (c): no budget until CI's first count, which
 # `scripts/budgets.py apply` writes.
-budget = 859026
+budget = 831026
 release = 862026
 [instructions.marginal_bins_huber]
 what = "marginal, 20 features against one target, four given bins a feature under bin_stat huber, half-life 1000: AnyModel::step_into, into one kept Step"
-budget = 3805301
+budget = 3693873
 release = 3814326
 
 [instructions.ew_class]
@@ -244,12 +244,12 @@ release = 50438883
 
 [instructions.deco]
 what = "deco, 20 features, ew dynamics: AnyModel::step_into, into one kept Step"
-budget = 7250026
+budget = 7065026
 release = 7250026
 
 [instructions.hmm]
 what = "hmm, 4 features, 2 states, full covariance, precision prior 1: AnyModel::step_into, into one kept Step"
-budget = 14309026
+budget = 13913026
 release = 14309026
 
 [instructions.rcov]
@@ -259,12 +259,12 @@ release = 91282062
 
 [instructions.audit_continuous]
 what = "audit, one continuous column, 256 counters: AnyModel::step_into, into one kept Step, past the cap on nearly every row"
-budget = 952249
+budget = 915265
 release = 952261
 
 [instructions.bocpd_full]
 what = "bocpd, 4 features, full covariance, max_run 200, prune below 1e-6: AnyModel::step_into, into one kept Step"
-budget = 31220882
+budget = 30032063
 release = 31220323
 
 [instructions.ew_cov_lags]
