@@ -16794,3 +16794,13 @@ Ordering below: bit-identical first (no fixture moves, no user decision), then w
   - P6 cut ew_cov's instructions by 10% but slowed it 2.7% on arm64 (507 → 520 µs a block). Instruments put a new `_platform_memset` at 12% of its cycles, and IPC fell from 4.53 to 4.05.
   - Cause: P3's `slots()` grows `out` with `resize(n, 0.0)` and then overwrites every slot. LLVM removed the dead zero-fill while the writes sat in the same function; P6 moved them into `upper_rows_map`, and the fill became a real memset every row.
   - Fix: size `out` once and write every slot by index; sweep the other per-row `resize(.., 0.0)` sites. Bit-identical. Worker W17.
+  - The VM (V9) found no ew_cov slowdown on x86 (−6.3% min, 10/10 rounds). Its memset is in both builds there, because x86's LLVM never dropped the fill, so the fix saves it on x86 too.
+  - P10, added to this task: hmm is +3.1% at p25 on x86 after P6 (+22,000 Ir). At its width, `rank_one_rows`' lower rows are 1-4 entries long, all prologue and tail. The VM timed the loop alone: lower/full is 1.04-1.37 from 2 to 8 features, and lower wins from about 12. Below a named threshold, update whole rows as before P6: each lower entry keeps its expression, and the upper entries are never read and are mirrored over on save, so this is bit-identical. Its value is chosen on arm64 and confirmed on x86.
+- [ ] 296. **The VM's two AVX2 kernels: the scaler's `EwDiag::update` and the refit's Gram blocks (V8)**
+  - The user's VM prototyped both on c1975c43 and found each bit-identical to the scalar code (exchange V8, accepted as D3). On x86-64 under Valgrind:
+    - `EwDiag::update` in lanes from 8 slots: sgd −5.46% instructions; time at p25 sgd −2.6%, sgd_huber −2.3%, pa −3.3%.
+    - The Gram's 4×4 blocks (task 287) in lanes at every width: sgd_huber_refit −14.89% instructions, −15.6% time.
+  - The VM's caveats:
+    - sgd_huber read +6% slower in the Gram build with identical instructions, a layout effect.
+    - The scalar loop below 8 slots ran 11-14% slower at 2-3 slots.
+  - Both are `cfg(target_arch = "x86_64")` branches through pulp's runtime V3 check; the scalar path stays on arm64 and older x86. The Gram patch moves the scalar blocks into their own function, which arm64 compiles too, so under the user's rule arm64 is timed as well as x86. Worker W18, after task 295.
