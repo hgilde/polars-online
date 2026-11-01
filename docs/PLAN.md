@@ -16731,4 +16731,10 @@ Ordering below: bit-identical first (no fixture moves, no user decision), then w
 
 **Process**
 - **Time, not only instructions:** instruction budgets miss latency (holt: +17.6% counted, +52% timed). The release step that benchmarks HEAD against the last release's cached wheel already times the bank. Add a per-model native timing of the budget cases against the last release (the VM page's harness: ABBA rounds, minimum and p25) to the release checklist, and to each performance task's report.
+- **The VM is a standing performance lab** (the user, 2026-10-31: "Use the vm not only to analyze inflation between releases but to generally improve performance").
+  - The user's Linux x86-64 VM, the hardware CI counts on, has Valgrind/Callgrind and llvm-mca.
+  - It reads code only from GitHub. Unpushed commits go to `vm/*` branches, which trigger no workflow.
+  - The two sessions talk through one artifact, https://claude.ai/artifact/3RonHo8trZ8CQvGWRez3CN: requests V*, replies R-V*, proposals P*, a one-line log, the page kept small and long reports in separate artifacts.
+  - The coordinator reads it every 20 minutes, or sooner when the user sends a comment on it to Claude.
+  - The VM profiles the whole suite (V3, which widens task 289), prototypes the AVX2 path (V4, task 290), and proposes optimizations with evidence. Accepted proposals become PLAN tasks that workers build, under the usual bit-identity and fixture rules.
 - **Task 283, the shared refit store, resumes after Phase A,** rebased: its single-target sgd_huber time anomaly (+18.8% at +0.96% instructions) gets the same VM timing method before anything merges.
