@@ -1095,7 +1095,9 @@ pub const EMPTY_FRACTION: f64 = 1e-12;
 pub struct Moments {
     pub w: f64,
     pub m: Vec<f64>,
-    pub c: Vec<f64>,
+    /// The co-moments, as the accumulator keeps them: their lower triangle,
+    /// written whole, mirrored ([`crate::LowerTriangle`]).
+    pub c: crate::LowerTriangle,
     /// The accumulator's count of learned rows when the snapshot was taken:
     /// the first learned row inside the window is the next one, which a
     /// held slot's run must have started at or before (`crate::Runs`).
@@ -1122,7 +1124,7 @@ impl Moments {
             w: cov.n_eff() * lam,
             q: cov.q_sum().map(|q| q * lam * lam),
             m: cov.means().to_vec(),
-            c: cov.comoments().to_vec(),
+            c: cov.comoments().clone(),
             rows: Some(cov.rows_learned()),
         }
     }
@@ -1152,7 +1154,7 @@ impl Footprint for Moments {
     fn footprint(&self) -> usize {
         // The weight, the row count and the second weight sum, and the two
         // vectors.
-        3 * std::mem::size_of::<f64>() + floats(&self.m) + floats(&self.c)
+        3 * std::mem::size_of::<f64>() + floats(&self.m) + floats(self.c.lower())
     }
 }
 
@@ -1232,13 +1234,15 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
     let (ratio, g) = (w_old / w, w_now / w);
     let d: Vec<f64> = (0..k).map(|i| old.m[i] - cov.mean(i)).collect();
     let mut mean: Vec<f64> = (0..k).map(|i| cov.mean(i) - ratio * d[i]).collect();
-    let c_now = cov.comoments();
+    // The lower triangles alone: both matrices keep no other
+    // ([`crate::LowerTriangle`]), and `set_moments` reads no other.
+    let (c_now, c_old) = (cov.comoments().lower(), old.c.lower());
     let mut cen = vec![0.0; k * k];
     let mut unresolved = vec![false; k];
     for i in 0..k {
-        for j in 0..k {
+        for j in 0..=i {
             let ij = i * k + j;
-            cen[ij] = g * c_now[ij] - ratio * old.c[ij] - ratio * g * d[i] * d[j];
+            cen[ij] = g * c_now[ij] - ratio * c_old[ij] - ratio * g * d[i] * d[j];
         }
         // What is left to lose is a difference of positives; a variance it
         // takes a hair below zero is zero (review V3), and one that is not a
@@ -1256,7 +1260,7 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
         // factor of two at most, inside the 64 (and a bound no test could
         // hold that term to, the mutants of 2026-09-27 showed). Its
         // rounding through `d`, the means' at the level, does (task 217).
-        let terms = g * c_now[ii] + ratio * old.c[ii];
+        let terms = g * c_now[ii] + ratio * c_old[ii];
         let level = ratio * g * d[i].abs() * (cov.mean(i).abs() + old.m[i].abs());
         unresolved[i] = cen[ii] <= rounding_floor(terms + level);
     }
@@ -1695,7 +1699,7 @@ mod tests {
             let old = Moments {
                 w: 2.0,
                 m: vec![4.0],
-                c: vec![3.0 - 3.0 * m * unit],
+                c: vec![3.0 - 3.0 * m * unit].into(),
                 rows: None,
                 q: None,
             };
@@ -1793,14 +1797,14 @@ mod tests {
                         let (w_now, w_old) = (cov.n_eff(), f * old.w);
                         let w = w_now - w_old;
                         let (ratio, g) = (w_old / w, w_now / w);
-                        let c = cov.comoments();
+                        let (c, c_old) = (cov.comoments().lower(), old.c.lower());
                         for i in 0..2 {
                             let ii = i * 2 + i;
                             let d = old.m[i] - cov.mean(i);
                             let cen = crate::solve::clamp_rounding(
-                                g * c[ii] - ratio * old.c[ii] - ratio * g * d * d,
+                                g * c[ii] - ratio * c_old[ii] - ratio * g * d * d,
                             );
-                            let terms = g * c[ii] + ratio * old.c[ii];
+                            let terms = g * c[ii] + ratio * c_old[ii];
                             let level_part =
                                 ratio * g * d.abs() * (cov.mean(i).abs() + old.m[i].abs());
                             if cen > 64.0 * f64::EPSILON * terms {
@@ -2948,7 +2952,7 @@ mod tests {
         let snap = Moments {
             w: 3.0,
             m: vec![1.0, -2.0],
-            c: vec![4.0, 0.5, 0.5, 9.0],
+            c: vec![4.0, 0.5, 0.5, 9.0].into(),
             rows: Some(7),
             q: Some(2.5),
         };
@@ -3019,12 +3023,12 @@ mod tests {
             }
             let mut old = Moments::of(&first, 1.0);
             if broken == "live" {
-                let (m, mut c) = (cov.means().to_vec(), cov.comoments().to_vec());
+                let (m, mut c) = (cov.means().to_vec(), cov.comoments().to_full());
                 c[0] = f64::NAN;
                 let (w, q) = (cov.n_eff(), cov.q_sum());
                 cov.set_moments(&m, &c, w, q);
             } else {
-                old.c[0] = f64::NAN;
+                old.c.lower_mut()[0] = f64::NAN;
             }
             let cut = truncated(&cov, &old, 1.0).expect("the window holds weight");
             assert!(cut.var(0).is_nan(), "{broken}: {}", cut.var(0));

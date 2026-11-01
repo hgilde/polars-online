@@ -125,7 +125,7 @@ fn only_the_pool_bounds_the_threads_that_multiply() {
             c.update(r, 0.999, 1.0);
         }
         c.flush();
-        assert!(c.comoments()[k * k - 1] > 0.0);
+        assert!(c.comoments().get(k, k - 1, k - 1) > 0.0);
     });
     assert_eq!(
         update, 1,

@@ -2114,8 +2114,10 @@ moments = bank.gram("lagged")[0]   # the same numbers from the state: "lags", an
 
 Reach for `marginal` to screen thousands of features against a few targets.
 It keeps the exponentially weighted moments of each (feature, target) pair on
-its own, with `ew_cov`'s arithmetic, so a pair's `corr` equals a two-column
-`ew_cov`'s to the bit. For `p` features and `T` targets that takes O(p·T)
+its own, with `ew_cov`'s arithmetic, so a pair's means and variances equal a
+two-column `ew_cov`'s to the bit, and its `cov` and `corr` agree within a few
+roundings: the pair rounds each row's product as `(a·b·dx)·dy`, while `ew_cov`,
+which keeps one triangle of its symmetric matrix, rounds it as `(a·b·dy)·dx`. For `p` features and `T` targets that takes O(p·T)
 time per row, where one `ew_cov` over all the columns would take
 O((p + T)²). Each row writes only `weight_sum`, and `bank.marginal()` reads
 the pairs from the state as a table after the run.

@@ -50,6 +50,7 @@ fn run(k: usize, block: usize, threads: usize, xs: &[f64], warm: usize) -> (f64,
 fn same_bits(a: &EwCov, b: &EwCov) -> bool {
     let bits = |c: &EwCov| -> Vec<u64> {
         c.comoments()
+            .to_full()
             .iter()
             .chain(c.means())
             .map(|v| v.to_bits())
@@ -94,6 +95,7 @@ fn main() {
                 // The moments' bits, for a build-to-build comparison.
                 let h = one
                     .comoments()
+                    .to_full()
                     .iter()
                     .chain(one.means())
                     .fold(0xcbf29ce484222325u64, |h, v| {

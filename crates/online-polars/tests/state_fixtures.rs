@@ -1060,9 +1060,20 @@ fn kind_of(f: &Fixture) -> Kind {
 /// numbers within `tol` of each other relative to `1 + |want|` (the same
 /// bits at 0; a NaN on both sides agrees), and every other value equal.
 fn same(what: &str, got: &DataFrame, want: &DataFrame, tol: f64) {
+    same_within(what, got, want, tol, &[]);
+}
+
+/// [`same`], with each column or struct field under a name `within` lists
+/// -- a spec's struct column -- held to `tol` or that name's bound, if
+/// larger ([`CONTINUES_WITHIN`]).
+fn same_within(what: &str, got: &DataFrame, want: &DataFrame, tol: f64, within: &[(&str, f64)]) {
     assert_eq!(got.shape(), want.shape(), "{what}: shape");
     for (g, w) in got.columns().iter().zip(want.columns()) {
         assert_eq!(g.name(), w.name(), "{what}: column names");
+        let tol = within
+            .iter()
+            .find(|(n, _)| *n == w.name().as_str())
+            .map_or(tol, |&(_, b)| tol.max(b));
         same_series(
             &format!("{what}.{}", w.name()),
             g.as_materialized_series(),
@@ -1354,15 +1365,22 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
                 assert_eq!(name, frozen_name, "{what}");
                 let want = moved_since(&from_ipc(want), &from_ipc(now));
                 if windowed {
-                    same(
+                    same_within(
                         &format!("{what}: {name}, the first row"),
                         &got.slice(0, 1),
                         &want.slice(0, 1),
                         tol,
+                        CONTINUES_WITHIN,
                     );
                 }
                 let tol = if windowed { tol.max(TOL) } else { tol };
-                same(&format!("{what}: {name}"), got, &want, tol);
+                same_within(
+                    &format!("{what}: {name}"),
+                    got,
+                    &want,
+                    tol,
+                    CONTINUES_WITHIN,
+                );
             }
         }
     }
@@ -1377,6 +1395,32 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
 /// their sums have filled, where it was the filled share from the first
 /// row.
 const MOVED_SINCE: &[&str] = &["cusum_"];
+
+/// The specs whose outputs a later change moved within a bound while their
+/// state converts exactly, each with the bound, by the golden measure
+/// `|got − frozen| ≤ bound·(1 + |frozen|)`: the kept bank fixtures' `ew_cov`
+/// specs (rule 5's sixth exception, the user's, 2026-11-01, task 294). The
+/// co-moment matrix is kept as its lower triangle, so a covariance or
+/// correlation of pair `(i, j)`, `i < j`, reads entry `(j, i)`, where the
+/// frozen frames read entry `(i, j)`, rounded apart from it; the state
+/// loads as its lower triangle mirrored, the triangle every build computed
+/// alike, and saves the current fixture's bytes. A closed group's
+/// `comoments`, the matrix's upper triangle row by row, moves alike (1.3e-17
+/// here), as do the `diagnosed` spec's specification, calibration and break
+/// tests, which solve from one triangle of such a matrix and read their
+/// cross terms from the other: held to the golden tolerance, as the rule
+/// says (`breusch_pagan_y` moved by 4.4e-16 and `ramsey_reset_y` by 7.7e-17
+/// on the first row, measured 2026-11-01; the rows after it are the
+/// window's, held to the golden tolerance already).
+const CONTINUES_WITHIN: &[(&str, f64)] = &[
+    ("comoments", 1e-15),
+    ("diagnosed", TOL),
+    ("closing", 1e-15),
+    ("windowed", 1e-15),
+    ("uint_clock", 1e-15),
+    ("sessioned", 1e-15),
+    ("components", 1e-15),
+];
 
 /// `kept`, a kept fixture's frozen frame, with the struct fields that
 /// [`MOVED_SINCE`] names taken from `now`, the current fixture's frame of

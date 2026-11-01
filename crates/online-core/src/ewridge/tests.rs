@@ -5812,7 +5812,10 @@ fn gram_threads_moves_no_bit() {
         }
         let (parts, _) = m.gram_parts();
         assert!(parts.len() >= 2, "own_rows split no Gram off");
-        let grams: Vec<Vec<u64>> = parts.iter().map(|p| bits(p.cov.comoments())).collect();
+        let grams: Vec<Vec<u64>> = parts
+            .iter()
+            .map(|p| bits(&p.cov.comoments().to_full()))
+            .collect();
         let coef: Vec<Vec<u64>> = m.coefficients().unwrap().iter().map(|b| bits(b)).collect();
         (preds, grams, coef)
     };

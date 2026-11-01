@@ -1145,9 +1145,10 @@ pub enum ModelKind {
     /// per row but `n_eff`; the pairs are read from the bank as a long frame
     /// (`ModelBank.marginal`), each with its correlation, the slope of the
     /// target on the feature, Kish's effective sample size and the
-    /// t-statistic of the correlation at that size. A pair's correlation
-    /// is the one an `ew_cov` over the two columns reports, to the bit. A
-    /// null target ages that target's pairs and moves nothing else; a
+    /// t-statistic of the correlation at that size. A pair's moments are
+    /// an `ew_cov`'s over the two columns: the means and variances to the
+    /// bit, the covariance and correlation within a few roundings. A null
+    /// target ages that target's pairs and moves nothing else; a
     /// null feature drops the row for every pair, as everywhere.
     /// `half_life`/`lam`, `weight`, `clock` and `min_weight` are the spec's;
     /// the lags, the bins, the window and the shards below are its own.

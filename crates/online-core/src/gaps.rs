@@ -571,10 +571,12 @@ impl Grams {
                 .map(|i| af * fast.mean(i) + as_ * slow.mean(i))
                 .collect();
             let delta: Vec<f64> = (0..k).map(|i| fast.mean(i) - slow.mean(i)).collect();
-            let (cf, cs) = (fast.comoments(), slow.comoments());
+            // The lower triangle alone, which is all an `EwCov` keeps
+            // (`LowerTriangle`): its upper one is not read.
+            let (cf, cs) = (fast.comoments().lower(), slow.comoments().lower());
             let mut c = vec![0.0; k * k];
             for i in 0..k {
-                for j in 0..k {
+                for j in 0..=i {
                     let ij = i * k + j;
                     c[ij] = af * cf[ij] + as_ * cs[ij] + af * as_ * delta[i] * delta[j];
                 }
@@ -2013,7 +2015,7 @@ mod tests {
                     .iter()
                     .map(|r| r.2 * (r.0[i] - want.m[i]) * (r.0[k] - want.m[k]))
                     .sum();
-                let got = gram.comoments()[i * 2 + k];
+                let got = gram.comoments().to_full()[i * 2 + k];
                 assert!(
                     close(got, pool, tol),
                     "the Gram's C[{i}][{k}]: {got} against {pool}"

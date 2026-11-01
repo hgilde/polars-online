@@ -3997,8 +3997,12 @@ def marginal(
         m'  = m + b * (value - m)                     for m_y and each m_x[t,j]
 
     The deviations are from the means before the row. The arithmetic is
-    ``ew_cov``'s, so a pair's ``corr`` equals the ``corr`` an ``ew_cov`` over
-    the two columns reports, to the bit. A null target ages that target
+    ``ew_cov``'s, so a pair's means and variances equal those an ``ew_cov``
+    over the two columns reports, to the bit, and its ``cov`` and ``corr``
+    agree with that ``ew_cov``'s within a few roundings: the pair rounds each
+    row's product as ``(a * b * (x_j - m_x)) * (y_t - m_y)``, and ``ew_cov``,
+    which keeps one triangle of its symmetric matrix, multiplies the other
+    way round. A null target ages that target
     (``W_t *= lam``, ``Q_t *= lam^2``) and learns nothing for it; a null
     feature skips the row, as everywhere.
 

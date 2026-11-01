@@ -1387,7 +1387,7 @@ mod tests {
             ("het's Σω²", &|s| {
                 let (m, c, w) = (
                     s.het.means().to_vec(),
-                    s.het.comoments().to_vec(),
+                    s.het.comoments().to_full(),
                     s.het.n_eff(),
                 );
                 s.het.set_moments(&m, &c, w, None);
@@ -1395,7 +1395,7 @@ mod tests {
             ("reset's Σω²", &|s| {
                 let (m, c, w) = (
                     s.reset.means().to_vec(),
-                    s.reset.comoments().to_vec(),
+                    s.reset.comoments().to_full(),
                     s.reset.n_eff(),
                 );
                 s.reset.set_moments(&m, &c, w, None);

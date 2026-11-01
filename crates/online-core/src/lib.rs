@@ -144,7 +144,8 @@ pub use deco::{Deco, DecoCfg, DecoDynamics};
 pub use drift::PageHinkley;
 pub use ewclass::{Covariance, EwClass, EwClassCfg};
 pub use ewcov::{
-    EwCov, EwCovCfg, EwCovModel, EwCovStat, Pca, TargetMoments, partial_corr, variance_is_usable,
+    EwCov, EwCovCfg, EwCovModel, EwCovStat, LowerTriangle, Pca, TargetMoments, partial_corr,
+    variance_is_usable,
 };
 pub use ewdiag::{EwDiag, Including};
 pub use ewlagcov::{EwLagCov, MAX_LAG, check_lag_ceiling};

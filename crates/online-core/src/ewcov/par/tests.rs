@@ -68,7 +68,9 @@ impl Case {
     }
 
     /// The merge as `EwCov::flush` made it before task 225: four passes
-    /// over `C`, the product one faer call on the whole triangle.
+    /// over `C`, the product one faer call on the whole triangle. The last
+    /// pass, the mirror into the upper triangle, went with task 294: the
+    /// matrix is kept as its lower triangle.
     fn whole(&self) -> Vec<f64> {
         let (k, m) = (self.k, self.merge());
         let mut c = self.c.clone();
@@ -94,11 +96,6 @@ impl Case {
                 c[i * k + j] += m.bi[i] * m.big[j] - m.wi[i] * m.delta[j];
             }
         }
-        for i in 0..k {
-            for j in 0..i {
-                c[j * k + i] = c[i * k + j];
-            }
-        }
         c
     }
 }
@@ -119,7 +116,7 @@ fn pool(n: usize) -> rayon::ThreadPool {
 const FINE: (usize, usize) = (16, 8);
 
 #[test]
-fn every_entry_is_in_one_piece_and_mirrored_once() {
+fn every_lower_entry_is_in_one_piece() {
     for (k, cut) in [
         (1, FINE),
         (16, FINE),
@@ -133,33 +130,33 @@ fn every_entry_is_in_one_piece_and_mirrored_once() {
         let found = pieces(MatMut::from_row_major_slice_mut(&mut owner, k, k), cut);
         let n_pieces = found.len();
         for p in found {
-            // Each piece marks its lower entries by their own index, and its
-            // mirror tile by the same, so a mark that lands in the wrong
-            // place shows.
+            // Each piece marks the lower entries it writes, so a mark that
+            // lands in the wrong place shows. The upper triangle is not
+            // kept (`LowerTriangle`), and no piece writes it.
             match p {
                 Piece::Diag(blk, o) => {
                     for i in 0..blk.nrows() {
-                        for j in 0..blk.nrows() {
+                        for j in 0..=i {
                             hits[(o + i) * k + o + j] += 1;
                         }
                     }
                 }
-                Piece::Tile(low, up, r0, c0) => {
-                    assert_eq!((low.nrows(), low.ncols()), (up.ncols(), up.nrows()));
+                Piece::Tile(low, r0, c0) => {
                     for i in 0..low.nrows() {
                         for j in 0..low.ncols() {
                             assert!(r0 + i > c0 + j, "a tile entry above the diagonal");
                             hits[(r0 + i) * k + c0 + j] += 1;
-                            hits[(c0 + j) * k + r0 + i] += 1;
                         }
                     }
                 }
             }
         }
-        assert!(
-            hits.iter().all(|&h| h == 1),
-            "k = {k}: an entry covered other than once"
-        );
+        for i in 0..k {
+            for j in 0..k {
+                let want = u32::from(j <= i);
+                assert_eq!(hits[i * k + j], want, "k = {k}: entry ({i}, {j})");
+            }
+        }
         // The cut is live: past one leaf there is more than one piece.
         assert_eq!(n_pieces == 1, k <= cut.0, "k = {k}: {n_pieces} pieces");
     }
@@ -224,7 +221,7 @@ fn the_pieces_are_the_single_product_on_every_architecture() {
 
 /// Each entry of the merge, `C·scale + α·DᵀD + (bᵢ·Bⱼ − wᵢ·Δⱼ)`, within
 /// its bound of [`crate::oracle::dot3`]'s exactly rounded value (task 258),
-/// and the upper triangle the lower's mirror, bit for bit. The bound is
+/// and the upper triangle not written (task 294). The bound is
 /// `crate::pieces`' oracle tests' for the product, `2n + 2` roundings on
 /// any term's path, and four more around it -- the scale, and the two
 /// products, the difference and the sum of the corrections -- so
@@ -279,7 +276,13 @@ fn the_merge_is_the_oracles_within_its_bound() {
                                  {g:e}, the oracle {w:e}, off by {:e} past {bound:e}",
                                 (g - w).abs()
                             );
-                            assert_eq!(got[j * k + i].to_bits(), g.to_bits(), "mirror ({j}, {i})");
+                            if j < i {
+                                assert_eq!(
+                                    got[j * k + i].to_bits(),
+                                    case.c[j * k + i].to_bits(),
+                                    "upper ({j}, {i}) written"
+                                );
+                            }
                         }
                     }
                 }
@@ -386,7 +389,7 @@ fn stream(k: usize, block: usize, threads: usize) -> EwCov {
 }
 
 fn moment_bits(c: &EwCov) -> Vec<u64> {
-    let mut out = bits(c.comoments());
+    let mut out = bits(&c.comoments().to_full());
     out.extend(bits(c.means()));
     out.push(c.n_eff().to_bits());
     out.push(c.n_kish().unwrap_or(f64::NAN).to_bits());

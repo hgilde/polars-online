@@ -27,7 +27,10 @@ use crate::Runs;
 use crate::since::Since;
 use serde::{Deserialize, Serialize};
 
+mod lower;
 mod par;
+
+pub use lower::LowerTriangle;
 
 /// Is a centered variance large enough to standardize by, given the raw second
 /// moment it was computed from?
@@ -56,15 +59,16 @@ pub fn variance_is_usable(var: f64, _raw_second_moment: f64) -> bool {
 }
 
 /// The co-moments' rank-one step on one thread, `c_ij = a·c_ij + (a·b·d_i)·d_j`
-/// row by row: [`EwCov::update`]'s serial path, the same expression per entry
-/// as its threaded one. Out of line, so the loop is compiled on its own
-/// rather than inside `update` beside the threaded branch, where it ran 21%
-/// slower than 0.13.0's identical loop at `k = 20` (task 250).
+/// row by row over the lower triangle, `j ≤ i` ([`LowerTriangle`]):
+/// [`EwCov::update`]'s serial path, the same expression per entry as its
+/// threaded one. Out of line, so the loop is compiled on its own rather than
+/// inside `update` beside the threaded branch, where it ran 21% slower than
+/// 0.13.0's identical loop at `k = 20` (task 250).
 #[inline(never)]
 fn rank_one_rows(c: &mut [f64], k: usize, d: &[f64], a: f64, b: f64) {
     for i in 0..k {
         let ab_di = a * b * d[i];
-        let row = &mut c[i * k..(i + 1) * k];
+        let row = &mut c[i * k..=i * k + i];
         for (cj, &dj) in row.iter_mut().zip(d.iter()) {
             *cj = a * *cj + ab_di * dj;
         }
@@ -237,8 +241,10 @@ pub struct EwCov {
     prior_scale: f64,
     /// EW mean vector, length `k`.
     m: Vec<f64>,
-    /// EW **centered** co-moments, row-major `k*k`.
-    c: Vec<f64>,
+    /// EW **centered** co-moments, row-major `k*k`, kept as their lower
+    /// triangle: symmetric by construction, and written whole, mirrored, to
+    /// the state file ([`LowerTriangle`]; docs/PLAN.md task 294).
+    c: LowerTriangle,
     /// Prior strength for the precision matrix `M⁻¹ = (C + s·prior·I)⁻¹`
     /// (docs/PLAN.md §4.7); `0` when none is wanted.
     ///
@@ -320,7 +326,7 @@ impl EwCov {
             q_sum: Some(0.0),
             prior_scale: 1.0,
             m: vec![0.0; k],
-            c: vec![0.0; k * k],
+            c: LowerTriangle::zeros(k),
             dev: Scratch(Vec::with_capacity(k)),
             precision_prior: 0.0,
             precision_scale: 1.0,
@@ -393,7 +399,8 @@ impl EwCov {
     /// An accumulator standing at the given weight, means and **centred**
     /// co-moments, rather than at zero: the state a caller who already has
     /// the moments wants to filter with (`hmm`'s `means`/`covs`, a state
-    /// lifted out of a fitted `ew_class`).
+    /// lifted out of a fitted `ew_class`). `comoments` is row-major `k*k`, and
+    /// only its lower triangle is read ([`LowerTriangle`]).
     ///
     /// The decaying prior scale starts at 1, as it does for a fresh
     /// accumulator, so the ridge behaves as if this were the first row.
@@ -418,7 +425,7 @@ impl EwCov {
         let mut ew = Self::with_precision_prior(k, prior)?;
         ew.w_sum = w_sum;
         ew.m.copy_from_slice(means);
-        ew.c.copy_from_slice(comoments);
+        ew.c.copy_from(comoments);
         Ok(ew)
     }
 
@@ -466,7 +473,7 @@ impl EwCov {
             return None;
         }
         let k = self.k;
-        let mut m = self.c.clone();
+        let mut m = self.c.to_full();
         let mut eye = vec![0.0; k * k];
         for i in 0..k {
             m[i * k + i] += self.precision_prior * self.precision_scale;
@@ -562,21 +569,25 @@ impl EwCov {
             !self.has_pending(),
             "EwCov: read the moments with a block still pending; call `flush()` first"
         );
-        self.c[i * self.k + j] + self.m[i] * self.m[j]
+        self.c.get(self.k, i, j) + self.m[i] * self.m[j]
     }
 
-    /// Centered covariance, held directly.
+    /// Centered covariance, held directly, read from the lower triangle
+    /// whichever way round `(i, j)` is asked for.
     #[inline]
     pub fn cov(&self, i: usize, j: usize) -> f64 {
         debug_assert!(
             !self.has_pending(),
             "EwCov: read the moments with a block still pending; call `flush()` first"
         );
-        self.c[i * self.k + j]
+        self.c.get(self.k, i, j)
     }
 
-    /// The full centered co-moment matrix, row-major `k*k` — the EW analogue
-    /// of the centered `X'X / n`.
+    /// The centered co-moment matrix, `k*k` — the EW analogue of the
+    /// centered `X'X / n` -- kept as its lower triangle: read an entry with
+    /// [`LowerTriangle::get`], hand a factorization that reads the lower
+    /// triangle [`LowerTriangle::lower`], and take a whole symmetric matrix
+    /// with [`LowerTriangle::to_full`].
     ///
     /// This is the accumulator every solve reads, exposed so a caller can do
     /// something *other than* our solve with it: a custom penalty, an
@@ -584,7 +595,7 @@ impl EwCov {
     /// orthogonal matching pursuit — none of which needs a second pass over
     /// data that was never materialized (docs/ENHANCEMENTS.md E30).
     #[inline]
-    pub fn comoments(&self) -> &[f64] {
+    pub fn comoments(&self) -> &LowerTriangle {
         debug_assert!(
             !self.has_pending(),
             "EwCov: read the moments with a block still pending; call `flush()` first"
@@ -593,7 +604,7 @@ impl EwCov {
     }
 
     /// The EW mean vector, length `k`. Pairs with [`Self::comoments`]: the
-    /// uncentered second moment is `c[i*k+j] + m[i]*m[j]`.
+    /// uncentered second moment is `c_ij + m[i]*m[j]` ([`Self::raw`]).
     pub fn means(&self) -> &[f64] {
         debug_assert!(
             !self.has_pending(),
@@ -938,9 +949,10 @@ impl EwCov {
             .collect();
         let big: Vec<f64> = d_hi.iter().zip(&delta).map(|(h, d)| h + d).collect();
 
-        // C' on the lower triangle: scale the history, add the product,
-        // then the two rank-1 corrections, then mirror -- each entry in that
-        // order, one piece of the triangle at a time (`par::merge_lower`).
+        // C' on the lower triangle, which is all that is kept
+        // ([`LowerTriangle`]): scale the history, add the product, then the
+        // two rank-1 corrections -- each entry in that order, one piece of
+        // the triangle at a time (`par::merge_lower`).
         let within = u_sum / w_new;
         let between = between_share(w_a, u_sum, w_new);
         let wi: Vec<f64> = delta.iter().map(|&di| within * di).collect();
@@ -954,7 +966,7 @@ impl EwCov {
             delta: &delta,
         };
         par::merge_lower(
-            &mut self.c,
+            self.c.lower_mut(),
             k,
             x.as_slice(),
             n,
@@ -1055,14 +1067,14 @@ impl EwCov {
             // The same expression per entry, rows split across threads
             // ([`Self::set_threads`]).
             let d = &*d;
-            par::rows(&mut self.c, k, workers, |i, row| {
+            par::rows(self.c.lower_mut(), k, workers, |i, row| {
                 let ab_di = a * b * d[i];
-                for (cj, &dj) in row.iter_mut().zip(d.iter()) {
+                for (cj, &dj) in row[..=i].iter_mut().zip(d.iter()) {
                     *cj = a * *cj + ab_di * dj;
                 }
             });
         } else {
-            rank_one_rows(&mut self.c, k, d, a, b);
+            rank_one_rows(self.c.lower_mut(), k, d, a, b);
         }
         // The precision prior decays with the co-moments. `a == 0` only on
         // the very first observation, when the whole history is discarded and
@@ -1080,7 +1092,9 @@ impl EwCov {
 
     /// Overwrite the moments directly. Used when two accumulators are mixed
     /// (see `EwRidge::blend_toward_long_run`); the caller is responsible for
-    /// the mixture being a valid set of weighted moments.
+    /// the mixture being a valid set of weighted moments. `centered` is a
+    /// whole row-major `k*k` matrix of which only the lower triangle is read
+    /// ([`LowerTriangle`]): a caller may fill that alone.
     pub fn set_moments(&mut self, mean: &[f64], centered: &[f64], w_sum: f64, q_sum: Option<f64>) {
         // Held rows are centred on the mean that was current when they were
         // held, and their merge reads `w_sum`. Replacing all three underneath
@@ -1092,7 +1106,7 @@ impl EwCov {
         debug_assert_eq!(centered.len(), self.k * self.k);
         self.m.copy_from_slice(mean);
         self.m_lo = vec![0.0; self.k];
-        self.c.copy_from_slice(centered);
+        self.c.copy_from(centered);
         self.w_sum = w_sum;
         self.q_sum = q_sum;
         // New moments stand for rows the runs never saw (a blend with the
@@ -1956,7 +1970,8 @@ impl EwCovModel {
             .enumerate()
             .map(|(i, &xi)| cov.deviation(i, xi))
             .collect();
-        let mut m = cov.comoments().to_vec();
+        // The lower triangle, which `solve_spd` reads.
+        let mut m = cov.comoments().lower().to_vec();
         let ridge = cov.precision_prior * cov.precision_scale;
         for i in 0..k {
             m[i * k + i] += ridge;
@@ -1989,7 +2004,7 @@ impl EwCovModel {
             let view = self.view();
             let scale = self.second_moment_scale(&view);
             Pca::of(
-                view.comoments(),
+                &view.comoments().to_full(),
                 self.cfg.n_features,
                 self.cfg.pca,
                 self.pca.as_ref(),
@@ -2149,44 +2164,32 @@ impl EwCovModel {
                 EwCovStat::Var => (0..k).for_each(|i| out.push(scale * cov.var(i))),
                 EwCovStat::Std => (0..k).for_each(|i| out.push((scale * cov.var(i)).sqrt())),
                 EwCovStat::Cov => {
-                    let c = cov.comoments();
-                    let mut dst = slots(out, k * (k - 1) / 2);
-                    for i in 0..k {
-                        let (row, rest) = std::mem::take(&mut dst).split_at_mut(k - 1 - i);
-                        for (o, &cij) in row.iter_mut().zip(&c[i * k + i + 1..(i + 1) * k]) {
-                            *o = scale * cij;
-                        }
-                        dst = rest;
-                    }
+                    // Pair `(i, j)`, `j > i`, is the lower entry `(j, i)`.
+                    let dst = slots(out, k * (k - 1) / 2);
+                    cov.comoments().upper_rows_map(k, dst, |_, _, v| scale * v);
                 }
                 EwCovStat::Corr => {
                     // `k` square roots, not `k(k-1)`: at k = 20 the pairwise
                     // `sqrt` was 80% of `ew_cov`'s row (docs/PERFORMANCE.md
                     // §13). Same product of the same two roots, so the
                     // correlations are bit-identical.
-                    // Each pair written into its slot, along row `i`'s
-                    // upper part and the roots after `i`'s: a `push` per
-                    // pair checked the capacity and went through a stack
-                    // slot, 36 instructions a pair. The same quotient of
-                    // the same numbers, in the same order.
+                    // Each pair written into its slot (a `push` per pair
+                    // checked the capacity and went through a stack slot,
+                    // 36 instructions a pair), from the lower entry
+                    // `(j, i)`, as `Cov`. The same quotient of the same
+                    // numbers, in the same order.
                     std.clear();
                     std.extend((0..k).map(|i| cov.var(i).sqrt()));
-                    let c = cov.comoments();
-                    let mut dst = slots(out, k * (k - 1) / 2);
-                    for i in 0..k {
-                        let (row, rest) = std::mem::take(&mut dst).split_at_mut(k - 1 - i);
-                        let si = std[i];
-                        let pairs = c[i * k + i + 1..(i + 1) * k].iter().zip(&std[i + 1..]);
-                        for (o, (&cij, &sj)) in row.iter_mut().zip(pairs) {
-                            let d = si * sj;
-                            *o = if d > 0.0 {
-                                (cij / d).clamp(-1.0, 1.0)
-                            } else {
-                                f64::NAN
-                            };
+                    let dst = slots(out, k * (k - 1) / 2);
+                    let sd = &*std;
+                    cov.comoments().upper_rows_map(k, dst, |i, j, cij| {
+                        let d = sd[i] * sd[j];
+                        if d > 0.0 {
+                            (cij / d).clamp(-1.0, 1.0)
+                        } else {
+                            f64::NAN
                         }
-                        dst = rest;
-                    }
+                    });
                 }
                 EwCovStat::PartialCorr => {
                     for i in 0..k {
@@ -4764,47 +4767,6 @@ mod tests {
         assert_eq!(a.n_eff().to_bits(), b.n_eff().to_bits());
     }
 
-    /// The co-moment matrix is symmetric to the eye but **not** to the bit:
-    /// `c[i][j]` is `((a*b)*d_i)*d_j` and `c[j][i]` is `((a*b)*d_j)*d_i`,
-    /// which round differently. E48 proposed mirroring one triangle onto the
-    /// other and called it bit-identical; this is why it is not
-    /// (docs/PERFORMANCE.md section 14). Kept as a test so the next person to
-    /// reach for that shortcut finds the reason it was not taken.
-    #[test]
-    fn the_two_triangles_are_equal_but_not_bit_equal() {
-        let mut ew = EwCov::new(6);
-        let mut s = 11u64;
-        for _ in 0..200 {
-            let x: Vec<f64> = (0..6)
-                .map(|_| {
-                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
-                    100.0 + ((s >> 11) as f64) / ((1u64 << 53) as f64)
-                })
-                .collect();
-            ew.update(&x, 0.99, 1.0);
-        }
-        let mut differing = 0;
-        for i in 0..6 {
-            for j in (i + 1)..6 {
-                let (u, l) = (ew.cov(i, j), ew.cov(j, i));
-                assert!(
-                    (u - l).abs() < 1e-9 * u.abs().max(1.0),
-                    "not symmetric at all"
-                );
-                if u.to_bits() != l.to_bits() {
-                    differing += 1;
-                }
-            }
-        }
-        assert!(
-            differing > 0,
-            "if the triangles ever become bit-equal, E48's mirror is back on \
-             the table -- but check docs/PERFORMANCE.md section 14 first: it \
-             measured 49% to 107% *slower*, because the mirror store walks a \
-             new cache line per element"
-        );
-    }
-
     #[test]
     fn serde_roundtrip() {
         let mut ew = EwCov::new(2);
@@ -5055,7 +5017,12 @@ mod tests {
             }
             // The residue enters the co-moments' corrections too, where a
             // wrong sign is 1e-9 of them.
-            for (b, p) in blocked.comoments().iter().zip(per_row.comoments()) {
+            for (b, p) in blocked
+                .comoments()
+                .to_full()
+                .iter()
+                .zip(per_row.comoments().to_full())
+            {
                 assert!(
                     (b - p).abs() <= 1e-12 * (1.0 + p.abs()),
                     "row {i}: co-moment {b} against the per-row {p}"
@@ -5302,7 +5269,7 @@ mod tests {
             ew.update(&[1.0, 2.0], 0.9, 1.0);
         }
         assert_eq!(ew.held_from(0, 1), Some(1.0));
-        let (m, c) = (ew.means().to_vec(), ew.comoments().to_vec());
+        let (m, c) = (ew.means().to_vec(), ew.comoments().to_full());
         ew.set_moments(&m, &c, ew.n_eff(), ew.q_sum());
         assert!(!ew.runs.is_known(2), "forgotten");
         assert_eq!(ew.held_from(0, u64::MAX), None);
@@ -5817,3 +5784,6 @@ mod refusal_tests;
 
 #[cfg(test)]
 mod path_tests;
+
+#[cfg(test)]
+mod symmetry_tests;
