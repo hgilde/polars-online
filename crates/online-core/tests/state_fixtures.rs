@@ -160,7 +160,8 @@ use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 /// The `holt` case converts otherwise since task 278 (D-H, schema 64 before
 /// its release): a state of schema 61-63 keeps no line fit, so it loads
 /// without one and goes on with the textbook gains alone, the recursion it
-/// was fitted under, to the bit. The current set's `holt` was fitted with
+/// was fitted under -- to the bit until task 291a moved their rounding,
+/// within [`MOVED`]'s bound since. The current set's `holt` was fitted with
 /// the line fit, so a kept state's bytes are not its, and it is held to
 /// saving bytes that load back to the same, as `kmeans` is.
 ///
@@ -214,7 +215,14 @@ previous![61, 62, 63];
 ///   5.8e-11 (`lasso`) and 1.7e-11 (`lasso_window`) of `1 + |pred|`,
 ///   measured 2026-10-25 on both kept sets; the bound is 17 times the
 ///   larger.
-const MOVED: &[(&str, f64)] = &[("lasso", 1e-9), ("lasso_window", 1e-9)];
+/// - `holt`: the recursion divides into each denominator once and keeps
+///   the reciprocal to multiply by (task 291a, the user's, 2026-11-01), so
+///   the textbook gains a state of schema 61-63 goes on with round
+///   otherwise in their last bits. On these rows that moved the
+///   predictions by at most 7.5e-17 of `1 + |pred|` (2.3e-16 relative),
+///   measured 2026-11-01 on all three kept sets; the bound is 133 times
+///   that.
+const MOVED: &[(&str, f64)] = &[("lasso", 1e-9), ("lasso_window", 1e-9), ("holt", 1e-14)];
 
 /// How far a continuation may part from the one frozen, on a platform other
 /// than the writer's: the golden files' tolerance (`tests/golden.rs`).
