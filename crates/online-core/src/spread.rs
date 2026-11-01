@@ -117,6 +117,23 @@ mod tests {
         ((*state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
     }
 
+    /// A target that is not a finite number teaches the spread nothing,
+    /// whatever the row's weight: the spread ages as it does for a null.
+    #[test]
+    fn a_target_that_is_not_finite_ages_the_spread_as_a_null() {
+        let mut s = 3u64;
+        let mut learned = TargetSpread::new(1);
+        for _ in 0..20 {
+            learned.update(0, Some(1.0 + lcg(&mut s)), 0.9, 1.0);
+        }
+        for y in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let (mut got, mut null) = (learned.clone(), learned.clone());
+            got.update(0, Some(y), 0.9, 1.0);
+            null.update(0, None, 0.9, 1.0);
+            assert_eq!(got, null, "{y}");
+        }
+    }
+
     /// The spread is its definition: the EW variance of the target around
     /// its EW mean, `Σ ωᵢ (yᵢ − m)² / Σ ωᵢ` with `m = Σ ωᵢ yᵢ / Σ ωᵢ`,
     /// rebuilt from the whole history at every row, two passes over it, `ωᵢ`

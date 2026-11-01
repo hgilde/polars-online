@@ -300,6 +300,24 @@ mod tests {
         ((*state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
     }
 
+    /// A row of no weight leaves the moments as they were, whatever its
+    /// value, and only the weight ages (hard rule 9): `update_one` as
+    /// `update` does.
+    #[test]
+    fn a_row_of_no_weight_learns_nothing_whatever_its_value() {
+        let mut base = EwDiag::new(1);
+        base.update(&[0.7], 1.0, 1.0);
+        base.update(&[-0.2], 0.9, 1.0);
+        for x in [f64::NAN, f64::INFINITY, 1e300, 0.0] {
+            let (mut one, mut many) = (base.clone(), base.clone());
+            one.update_one(x, 0.9, 0.0);
+            many.update(&[x], 0.9, 0.0);
+            assert_eq!(one, many, "{x}");
+            assert_eq!(one.mean(0).to_bits(), base.mean(0).to_bits(), "{x}");
+            assert_eq!(one.var(0).to_bits(), base.var(0).to_bits(), "{x}");
+        }
+    }
+
     /// A stream with offsets and scales that differ by orders of magnitude,
     /// zero-weight rows (including the first), varying decay and a pure
     /// zero-weight run — everything `kalman` and `sgd` can feed it.

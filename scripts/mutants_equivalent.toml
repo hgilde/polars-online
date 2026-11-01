@@ -2760,3 +2760,12 @@ mutation = "replace -= with /="
 line_has = "        b -= 1;"
 why = """the first loop's body never runs for an `alpha` in `(0, 1)` (see \
 `replace > with <`)"""
+
+[[equivalent]]
+file = "crates/online-core/src/spread.rs"
+function = "TargetSpread::update"
+mutation = "replace > with >="
+line_has = "Some(v) if v.is_finite() && weight > 0.0 => self.0[j].update_one(v, lam, weight),"
+why = """at weight 0 the guard's two arms agree: `update_one(v, lam, 0)` and \
+`update_one(0.0, lam, 0)` both age the weight by `lam` and skip the moments \
+(`b = 0`), whatever `v` is (`a_row_of_no_weight_learns_nothing_whatever_its_value`)"""
