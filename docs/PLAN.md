@@ -16789,3 +16789,8 @@ Ordering below: bit-identical first (no fixture moves, no user decision), then w
   - holt: the patch as measured; the two oracles rewritten; `the_arithmetic_is_pinned_to_the_bit` on a libm-free stream (every step a whole number of half-lives) fails on the division forms. holt and holt_inf fixtures regenerated, `convergence.holt` hash rerun. Old holt states continue within 1e-14: the user amended rule 5's fifth exception.
   - AVX2 standardize_row via pulp, cfg-guarded; the lanes test runs on CI's x86 legs and the CPU-paths SDE legs.
   - 47 of the 52 survivors of 1b7e5178 killed or equivalent; bocpd.rs:1074's two are left.
+- [ ] 295. **ew_cov's per-row zero-fill, an arm64 regression from task 294**
+  - The user's rule, 2026-11-01: "Always be sure you are not making changes on one platform that produce worse results on another." Every performance change is timed on arm64 natively (`.claude/coord/perf-harness`, and Instruments' `polars-cpu-counters` / `polars-cpu-guided` templates via `xctrace`) and on x86-64 (the VM, CI's Valgrind), and a case slower on either beyond noise is a defect.
+  - P6 cut ew_cov's instructions by 10% but slowed it 2.7% on arm64 (507 → 520 µs a block). Instruments put a new `_platform_memset` at 12% of its cycles, and IPC fell from 4.53 to 4.05.
+  - Cause: P3's `slots()` grows `out` with `resize(n, 0.0)` and then overwrites every slot. LLVM removed the dead zero-fill while the writes sat in the same function; P6 moved them into `upper_rows_map`, and the fill became a real memset every row.
+  - Fix: size `out` once and write every slot by index; sweep the other per-row `resize(.., 0.0)` sites. Bit-identical. Worker W17.
