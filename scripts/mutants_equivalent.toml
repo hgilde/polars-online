@@ -155,7 +155,7 @@ why = """it adds the features with no scale, whose warm start is then \
 
 [[equivalent]]
 file = "crates/online-core/src/lasso.rs"
-function = "<impl OnlineModel for Lasso>::step"
+function = "<impl OnlineModel for Lasso>::step_into"
 mutation = "replace != with =="
 line_has = "if self.zbuf.len() != self.cfg.k_total() {"
 why = """`new` and `restore` both size the buffer at `k_total`, so the branch \
@@ -231,28 +231,28 @@ why = """the mutant never breaks here and the search below breaks instead: `shar
 
 [[equivalent]]
 file = "crates/online-core/src/pa.rs"
-function = "<impl OnlineModel for Pa>::step"
+function = "<impl OnlineModel for Pa>::step_into"
 mutation = "replace * with /"
 line_has = "let step = tau * err.signum();"
 why = """`err.signum()` is ±1 here (an `err` of 0 has no loss, `eps >= 0` being validated, and NaN cannot reach the line, `y` and `p` being finite), and dividing by ±1 is multiplying by it, exactly"""
 
 [[equivalent]]
 file = "crates/online-core/src/seqtest.rs"
-function = "<impl OnlineModel for SeqTest>::step"
+function = "<impl OnlineModel for SeqTest>::step_into"
 mutation = "replace * with /"
 line_has = "self.log_e_pos[j] += (lam_pos * s).ln_1p();"
 why = """`s` is the target's sign, ±1 (a zero continues above), and `x / ±1` is `x * ±1` exactly"""
 
 [[equivalent]]
 file = "crates/online-core/src/seqtest.rs"
-function = "<impl OnlineModel for SeqTest>::step"
+function = "<impl OnlineModel for SeqTest>::step_into"
 mutation = "replace * with /"
 line_has = "self.log_e_neg[j] += (-lam_neg * s).ln_1p();"
 why = """as the line above: `s` is ±1, and `x / ±1` is `x * ±1` exactly"""
 
 [[equivalent]]
 file = "crates/online-core/src/seqtest.rs"
-function = "<impl OnlineModel for SeqTest>::step"
+function = "<impl OnlineModel for SeqTest>::step_into"
 mutation = "replace > with >="
 line_has = "if s > 0.0 {"
 why = """`s` is ±1, never 0 (a zero target continues above), so `>` and `>=` agree"""
@@ -378,7 +378,7 @@ vacuously, and no number reads it"""
 
 [[equivalent]]
 file = "crates/online-core/src/marginal.rs"
-function = "<impl OnlineModel for Marginal>::step"
+function = "<impl OnlineModel for Marginal>::step_into"
 mutation = "replace > with >="
 line_has = "if self.defer.n > 0 {"
 why = """a flush with nothing held changes no state: `flush_rows` only frees \
@@ -465,7 +465,7 @@ them all"""
 
 [[equivalent]]
 file = "crates/online-core/src/bocpd.rs"
-function = "<impl crate::OnlineModel for Bocpd>::step"
+function = "<impl crate::OnlineModel for Bocpd>::step_into"
 mutation = "replace > with >="
 line_has = "let (rel, w_mean, w_rows) = if weight > 0.0 {"
 why = """at weight 0 the mutant's relative weight feeds only the update, \
@@ -778,7 +778,7 @@ the 0 the original gives"""
 
 [[equivalent]]
 file = "crates/online-core/src/rls.rs"
-function = "<impl OnlineModel for Rls>::step"
+function = "<impl OnlineModel for Rls>::step_into"
 mutation = "replace > with >="
 line_has = "                    if !(rho > 0.0 && rho.is_finite()) {"
 why = """the inner check, after `hypot`: `zi` is not 0 there (a zero entry \
@@ -838,7 +838,7 @@ and its quadratic form over the empty row is 0, as no factor's is (task \
 
 [[equivalent]]
 file = "crates/online-core/src/robust.rs"
-function = "<impl OnlineModel for Robust>::step"
+function = "<impl OnlineModel for Robust>::step_into"
 mutation = "replace > with >="
 line_has = "let aged_rows = if present > 0.0 {"
 why = """`present`, the target's rows decayed at their weights, rounds to 0 \
@@ -850,7 +850,7 @@ WARM_ROWS·k`, before it reads `aged_rows`"""
 
 [[equivalent]]
 file = "crates/online-core/src/robust.rs"
-function = "<impl OnlineModel for Robust>::step"
+function = "<impl OnlineModel for Robust>::step_into"
 mutation = "replace > with >="
 line_has = "let step = if raw.abs() > most {"
 why = """at `|raw| = most` both arms give the same double: `most.copysign(raw)` \
@@ -858,7 +858,7 @@ is `raw`"""
 
 [[equivalent]]
 file = "crates/online-core/src/corrchange.rs"
-function = "<impl crate::OnlineModel for CorrChange>::step"
+function = "<impl crate::OnlineModel for CorrChange>::step_into"
 mutation = "replace * with +"
 line_has = "} else if self.cfg.crit.is_none() && self.ring.len() >= 2 * w {"
 why = """below 2w rows the ring has not been full since it was last emptied, \
@@ -868,7 +868,7 @@ guard): the value stays `None` and `since_perm` 0, as without the calls"""
 
 [[equivalent]]
 file = "crates/online-core/src/corrchange.rs"
-function = "<impl crate::OnlineModel for CorrChange>::step"
+function = "<impl crate::OnlineModel for CorrChange>::step_into"
 mutation = "replace * with /"
 line_has = "} else if self.cfg.crit.is_none() && self.ring.len() >= 2 * w {"
 why = """`2 / w` is 0, so the mutant calls `permutation_crit` from the first \
@@ -1326,7 +1326,7 @@ window zeroes an unresolved row); faer's eigenvalues of the zero matrix are \
 
 [[equivalent]]
 file = "crates/online-core/src/ewcov.rs"
-function = "<impl crate::OnlineModel for EwCovModel>::step"
+function = "<impl crate::OnlineModel for EwCovModel>::step_into"
 mutation = "replace && with ||"
 line_has = "if score.is_finite() && weight > 0.0 {"
 why = """`EwQuantile::add` sees nothing that is not a finite value at a positive, \
@@ -1334,7 +1334,7 @@ finite weight, so the calls the mutant adds are the no-op skipping them is"""
 
 [[equivalent]]
 file = "crates/online-core/src/ewcov.rs"
-function = "<impl crate::OnlineModel for EwCovModel>::step"
+function = "<impl crate::OnlineModel for EwCovModel>::step_into"
 mutation = "replace > with >="
 line_has = "if score.is_finite() && weight > 0.0 {"
 why = """as above: `EwQuantile::add` ignores a weight of 0"""
@@ -1570,7 +1570,7 @@ Every pair `a < b` is written as before"""
 
 [[equivalent]]
 file = "crates/online-core/src/pa.rs"
-function = "<impl OnlineModel for Pa>::step"
+function = "<impl OnlineModel for Pa>::step_into"
 mutation = "replace match guard held with true"
 line_has = "Some(sc) if held => standardize_row("
 why = """before the switch the mutant forms `z` with `standardize_row` \
@@ -1678,7 +1678,7 @@ the line is false either way"""
 
 [[equivalent]]
 file = "crates/online-core/src/kalman.rs"
-function = "<impl OnlineModel for Kalman>::step"
+function = "<impl OnlineModel for Kalman>::step_into"
 mutation = "replace > with >="
 line_has = "if n > 0.0 {"
 why = """`n` counts the row's squares; at `n = 0` there are none, their sum \
@@ -1880,7 +1880,7 @@ mutant's `max(0, d.max_step)` is `d.max_step`, `d`'s steps being `>= 0`"""
 
 [[equivalent]]
 file = "crates/online-core/src/audit.rs"
-function = "<impl OnlineModel for Audit>::step"
+function = "<impl OnlineModel for Audit>::step_into"
 mutation = "replace > with >="
 line_has = "if weight.abs() <= INPUT_BOUND && weight > 0.0 {"
 why = """the mutant adds a weight of `±0` to `n_eff`, which is `>= 0`, and \
@@ -2064,7 +2064,7 @@ why = """a sign is 1.0 or -1.0, and `λ / ±1` is `λ · ±1` to the bit \
 
 [[equivalent]]
 file = "crates/online-core/src/pa.rs"
-function = "<impl OnlineModel for Pa>::step"
+function = "<impl OnlineModel for Pa>::step_into"
 mutation = "replace * with /"
 line_has = """for (b, z) in b0.iter_mut().zip(head) {
                 *b += step * z;"""

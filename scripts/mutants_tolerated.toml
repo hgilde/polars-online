@@ -260,7 +260,7 @@ just above stops a test build first"""
 
 [[tolerated]]
 file = "crates/online-core/src/robust.rs"
-function = "<impl OnlineModel for Robust>::step"
+function = "<impl OnlineModel for Robust>::step_into"
 mutation = "replace && with ||"
 line_has = "if nudge.is_finite() && aged > 0.0 {"
 kind = "input-bound"
@@ -269,7 +269,7 @@ past the input bound"""
 
 [[tolerated]]
 file = "crates/online-core/src/robust.rs"
-function = "<impl OnlineModel for Robust>::step"
+function = "<impl OnlineModel for Robust>::step_into"
 mutation = "replace > with >="
 line_has = "if nudge.is_finite() && aged > 0.0 {"
 kind = "input-bound"
