@@ -4839,6 +4839,42 @@ mod tests {
         }
     }
 
+    /// A row of no weight in the warm-up learns nothing, and its clock step
+    /// is carried, whole, to the next row it buffers: under
+    /// `hazard_on_clock`, where a step sets the hazard, a stream with such a
+    /// row (steps 3 then 2) reads as the same stream with the two steps
+    /// joined (5), to the bit, through the warm-up and after it.
+    #[test]
+    fn a_row_of_no_weight_in_the_warm_up_carries_its_clock_step() {
+        let c = BocpdCfg {
+            warm_rows: Some(3),
+            hazard_on_clock: true,
+            ..from_the_data(1, BocpdEmission::Diag)
+        };
+        let after = [4.0, 2.5, 6.0, 1.5, 3.5];
+        let run = |rows: &[(f64, f64, f64)]| {
+            let mut m = Bocpd::new(c.clone()).unwrap();
+            for &(x, d, w) in rows {
+                m.step(&[x], &[], d, w);
+            }
+            after
+                .iter()
+                .flat_map(|&x| m.step(&[x], &[], 1.0, 1.0).pred)
+                .map(f64::to_bits)
+                .collect::<Vec<_>>()
+        };
+        let with_gap = run(&[
+            (1.0, 1.0, 1.0),
+            (9.0, 3.0, 0.0),
+            (2.0, 2.0, 1.0),
+            (3.0, 1.0, 1.0),
+        ]);
+        let joined = run(&[(1.0, 1.0, 1.0), (2.0, 5.0, 1.0), (3.0, 1.0, 1.0)]);
+        assert_eq!(with_gap, joined);
+        let unjoined = run(&[(1.0, 1.0, 1.0), (2.0, 2.0, 1.0), (3.0, 1.0, 1.0)]);
+        assert_ne!(with_gap, unjoined, "the step must matter here");
+    }
+
     /// `warm_rows` is refused where it reads no row -- beside both priors --
     /// and below 2, where there is no variance to take, and past the
     /// buffer's budget.
