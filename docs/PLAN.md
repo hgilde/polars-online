@@ -16668,3 +16668,67 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       ftrl -11%, deco/lasso -10%, huber/quantile/rls/bocpd/hmm -6-7%. The
       holt and `Decay::factor` exp2 memo was measured and not built: +5%
       (+22 a row) on an irregular clock.
+
+## 26. Performance plan, from the VM analyses (2026-10-31)
+
+Evidence: the user's three Linux VM reports.
+- **The refit bisect** (artifact Sbc47fyMNLqjkNRcAuJXZz).
+- **The growth breakdown** of sgd, sgd_huber and holt by function and line (DGCWop9Q8g4J8uhqpRw7Ny).
+- **The performance page** (3RonHo8trZ8CQvGWRez3CN): native time against instructions on all 31 model cases, a cost map by area, Callgrind's cache and branch simulation, the dynamic instruction mix, llvm-mca on the hot loop, feature scaling 1-80, and the whole suite against budgets.
+
+Plus tasks 284/285's native measurements and CI's counts.
+
+What the evidence says:
+1. **Instructions are not time.** holt grew 17.6% in instructions but 52% in time (35 → 53 ns a row): its new divisions sit on the dependency chain carried from row to row (5 → 10 a row), and its `take_line` branch mispredicts on 535 of 1,000 rows. sgd grew 16.8% in instructions but 11% in time, because its new work overlaps.
+2. **The cases are compute- and latency-bound.** The working set fits in L1 (about 3 L1 misses a row, no last-level misses).
+3. **The largest remaining costs are older than 1.4.**
+   - sgd: the per-feature update loop is 33% (since cut by task 284), `standardize_row` 22%, and the scaler's EwDiag update 10%. The last two are vectorized only two lanes wide (SSE2, baseline x86-64).
+   - sgd_huber: the Huber scale (`EwQuantile`) is 11.7%.
+   - holt: before task 285, 28% went to allocating a `Step` a row (task 285 removes it).
+   - The refits: wls's Gram build dominates `sgd_huber_refit`.
+4. **Only sgd, sgd_huber, holt, ewridge_k20 and quantile slowed beyond noise in time.** Elsewhere time tracks instructions.
+
+Ordering below: bit-identical first (no fixture moves, no user decision), then what needs a measurement campaign, then what moves numbers within rounding (the user's call, declared in the CHANGELOG with its size, as a minor version allows).
+
+**Phase A: bit-identical, build now (each held to the digests, fixtures, contract, chunk invariance)**
+
+- [ ] 286. **holt's row-to-row chain**
+  - **Branch-free `take_line`:** a select over both candidate trend updates. The same arithmetic, so bit-identical. 0.54 mispredictions a row ≈ 9 cycles, about 3 ns of 53.
+  - **One `exp2` where the level and trend half-lives are equal:** one call, both factors. Bit-identical, and it costs nothing on an irregular clock, unlike task 285's memo. 84 Ir a row.
+  - **Measure in time as well as instructions:** holt's gap is latency, not count.
+  - **Report the remaining chain divisions** for Phase D.
+- [ ] 287. **The refit's Gram, half of it**
+  - The factorization reads only the lower triangle (`solve.rs` `factorize`, `Mat::from_fn` with `i ≥ j`). So `huber_refit::wls` can accumulate `a[p][q]` for `q ≤ p` alone, with the same `(w·d_p)·d_q`. That is bit-identical for everything the factor reads, and about half the Gram's flops: the Gram is most of `sgd_huber_refit` (67.8M).
+  - Same check for every other place that builds a system only for `SpdFactor::of`. Each is bit-identical only where nothing else reads the upper triangle; verify per site.
+  - **The weighted median by selection** (`select_nth_unstable_by` plus a weighted walk), not a full sort, where it returns the same element. Equal keys must resolve the same way.
+- [ ] 288. **sgd after task 284: the spills, and the Huber scale**
+  - Re-count stack loads and stores in `Sgd::step_into` (the VM's instruction-mix method: 87 → 170 stack loads a row since 1.3.0). If spills remain, pass `step_mapped` one prepared struct, or keep it out of line.
+  - Cheapen `EwQuantile::add/get` (470 Ir a row, 11.7% of sgd_huber; also huber, quantile and the MAD scales) without changing a bit.
+
+**Phase B: breakdowns before building (one VM run)**
+
+- [ ] 289. **A VM performance page for the next tier and the largest cases**, with the same method as 3RonHo8trZ8CQvGWRez3CN: native time, a cost map by area, the instruction mix and the branch simulation.
+  - The next tier of drift since 1.3.0: quantile (+6.4% instructions, +7.9% time), ewridge_k20/k5 (+5%, +8% time), bank_ewridge_k5 (+7.5%), bank_seqtest (+5.9%), formula_target_held1k (+5.4%).
+  - The largest absolute cases: bank_ew_cov_wide_t1 (166M), corrchange_window_w100 (108M), huber_k20_refit (94M), rcov (91M), quantile_refit (62M), ew_class (50M).
+  - Run it at main after tasks 285-288, so it measures what is left. Its findings become the next build wave, ranked as Phase A was.
+
+**Phase C: wider vectors with runtime dispatch (bit-identical by construction, measure first)**
+
+- [ ] 290. **SIMD past SSE2 for the per-feature loops:** `standardize_row` (22% of sgd), the scaler's `EwDiag` update with its compensated sums (10%), and the step's slope loop.
+  - Each feature is an independent lane, so AVX2 lanes doing the same IEEE operations in the same order, with no FMA, are bit-identical to the scalar path.
+  - Use `pulp` (already linked through faer; a safe API, so rule 6 holds), with the SSE2 path as the cfg-guarded fallback the platform rule requires. LLVM would not auto-vectorize these on baseline x86-64 (task 284's attempt).
+  - The CPU-paths CI legs must run both paths. CI's Valgrind counts the AVX2 path, so budgets move.
+  - Prototype `standardize_row` alone, measure native time and Valgrind counts, and build the rest only if it pays.
+
+**Phase D: moves numbers within rounding (the user's decision, before any build)**
+
+- [ ] 291. Measured candidates that change last bits, each with its size, for the user to choose:
+  - holt's chain divisions as kept reciprocals: 2-3 divisions off the chain, ≈ 10-15 ns of 53.
+  - |z̃|² folded into `standardize_row`'s loop: ≈ 100 Ir a row of sgd at 20 features.
+  - The refit's Gram through faer's SIMD matmul.
+
+  Each needs the fixtures regenerated and a CHANGELOG line stating the size of the move. Not built without the user's word.
+
+**Process**
+- **Time, not only instructions:** instruction budgets miss latency (holt: +17.6% counted, +52% timed). The release step that benchmarks HEAD against the last release's cached wheel already times the bank. Add a per-model native timing of the budget cases against the last release (the VM page's harness: ABBA rounds, minimum and p25) to the release checklist, and to each performance task's report.
+- **Task 283, the shared refit store, resumes after Phase A,** rebased: its single-target sgd_huber time anomaly (+18.8% at +0.96% instructions) gets the same VM timing method before anything merges.
