@@ -27,6 +27,27 @@ const BINS: f64 = 64.0;
 /// 0.78%.
 pub const EW_QUANTILE_ALPHA: f64 = 0.007_812_341_058_161_014;
 
+/// Per place `r` of a bucket in its octave, [`EwQuantile`]'s representative
+/// of it over the octave's power of two: `lo · 2/(1 + lo/hi)` with the
+/// bucket's bounds `lo = 1 + r/64` and `hi = 1 + (r + 1)/64` in the octave's
+/// units, as the representative is formed from the bounds themselves. A
+/// bound in octave `e` is one of these times `2^e` exactly; the ratio of two
+/// is the ratio of these, exactly, so it rounds to the same bits (the top
+/// bucket's `hi`, `2^(e+1)`, is `2` here); and a product by `2^e` is exact
+/// between normal floats, so the representative is the entry times `2^e`,
+/// to the bit, in every octave of positive normal floats.
+const REPRESENTATIVE: [f64; 64] = {
+    let mut t = [0.0; 64];
+    let mut r = 0;
+    while r < 64 {
+        let lo = 1.0 + r as f64 / BINS;
+        let hi = 1.0 + (r + 1) as f64 / BINS;
+        t[r] = lo * (2.0 / (1.0 + lo / hi));
+        r += 1;
+    }
+    t
+};
+
 /// The decay a sketch takes before its buckets are rescaled to it.
 const RENORM: f64 = 5.421_010_862_427_522e-20; // 2^-64
 
@@ -282,15 +303,15 @@ impl EwQuantile {
         Self::representative(k)
     }
 
-    /// The bucket of a positive normal value.
+    /// The bucket of a positive normal value: `64 e + ⌊64 m⌋` for `v = (1 +
+    /// m)·2^e`, not `⌊64 (e + m)⌋`, which would round `m` off at a large `e`
+    /// and carry a value just under a power of two into the next octave --
+    /// past the top one at `f64::MAX`. `⌊64 m⌋` is the mantissa's top six
+    /// bits, so the index is the eleven exponent bits and those six read as
+    /// one integer, less the bias's 64 · 1023: no float arithmetic, and no
+    /// `floor`, a library call on baseline x86-64.
     fn index(v: f64) -> i32 {
-        let bits = v.to_bits();
-        let e = ((bits >> 52) & 0x7ff) as i32 - 1023;
-        let m = (bits & ((1u64 << 52) - 1)) as f64 / (1u64 << 52) as f64;
-        // `64 e + ⌊64 m⌋`, not `⌊64 (e + m)⌋`: the sum would round `m` off at
-        // a large `e`, and carry a value just under a power of two into the
-        // next octave -- past the top one at `f64::MAX`.
-        64 * e + (m * BINS).floor() as i32
+        ((v.to_bits() >> 46) & 0x1_ffff) as i32 - 64 * 1023
     }
 
     /// `2^(y)` interpolated as [`EwQuantile::index`] reads it, `y = e + m − 1`.
@@ -305,9 +326,24 @@ impl EwQuantile {
     }
 
     /// The value reported for bucket `k`, `2 lo hi / (lo + hi)` of its
-    /// bounds; the top bucket's upper bound is `2^1024`, so the ratio is
-    /// taken an octave down, where both are finite.
+    /// bounds, as [`Self::representative_of_bounds`] forms it: within the
+    /// positive normal octaves, [`REPRESENTATIVE`]'s entry for the bucket's
+    /// place in its octave times the octave's power of two, the same bits
+    /// (the table says why) without two `floor` calls and two divisions.
     fn representative(k: i32) -> f64 {
+        let e = k >> 6;
+        if (-1022..=1023).contains(&e) {
+            REPRESENTATIVE[(k & 63) as usize] * f64::from_bits(((e + 1023) as u64) << 52)
+        } else {
+            Self::representative_of_bounds(k)
+        }
+    }
+
+    /// The value reported for bucket `k` from its bounds, `2 lo hi / (lo +
+    /// hi)` as `lo · 2/(1 + lo/hi)`; the top bucket's upper bound is
+    /// `2^1024`, so the ratio is taken an octave down, where both are
+    /// finite.
+    fn representative_of_bounds(k: i32) -> f64 {
         let (y0, y1) = (f64::from(k) / BINS, f64::from(k + 1) / BINS);
         let lo = Self::value_at(y0);
         let hi = Self::value_at(y1);
@@ -995,6 +1031,74 @@ mod tests {
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
         (*state >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    /// The bucket read off the bits is the one the float arithmetic gave
+    /// before (task 288), `64 e + ⌊64 m⌋` with `m` the mantissa as a
+    /// fraction, for floats of every kind: normal, subnormal, zero, the
+    /// infinities, NaN, negative, and a million drawn bit patterns.
+    #[test]
+    fn the_index_off_the_bits_is_the_arithmetic_one() {
+        let by_arithmetic = |v: f64| {
+            let bits = v.to_bits();
+            let e = ((bits >> 52) & 0x7ff) as i32 - 1023;
+            let m = (bits & ((1u64 << 52) - 1)) as f64 / (1u64 << 52) as f64;
+            64 * e + (m * BINS).floor() as i32
+        };
+        let mut values = vec![
+            0.0,
+            -0.0,
+            f64::MIN_POSITIVE,
+            f64::MIN_POSITIVE / 3.0,
+            f64::MAX,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+            1.0,
+            1.5,
+            2.0 - f64::EPSILON,
+            -3.25,
+        ];
+        let mut g = 0x9e37_79b9_7f4a_7c15_u64;
+        for _ in 0..1_000_000 {
+            g ^= g << 13;
+            g ^= g >> 7;
+            g ^= g << 17;
+            values.push(f64::from_bits(g));
+        }
+        for v in values {
+            assert_eq!(
+                EwQuantile::index(v),
+                by_arithmetic(v),
+                "{v:e} ({:#x})",
+                v.to_bits()
+            );
+        }
+    }
+
+    /// The representative from the table is the one formed from the
+    /// bucket's bounds, to the bit, for every bucket a positive normal float
+    /// lands in and an octave past each end, where the bounds alone form it
+    /// (task 288).
+    #[test]
+    fn the_representative_from_the_table_is_the_one_from_the_bounds() {
+        let (lo, hi) = (
+            EwQuantile::index(f64::MIN_POSITIVE),
+            EwQuantile::index(f64::MAX),
+        );
+        assert_eq!((lo, hi), (-64 * 1022, 64 * 1024 - 1));
+        for k in lo - 64..=hi + 64 {
+            let (got, want) = (
+                EwQuantile::representative(k),
+                EwQuantile::representative_of_bounds(k),
+            );
+            assert_eq!(
+                got.to_bits(),
+                want.to_bits(),
+                "bucket {k}: {got:e} against {want:e}"
+            );
+        }
+        assert!(EwQuantile::representative(hi).is_finite());
     }
 
     /// The exponentially weighted quantile by its definition, from every
