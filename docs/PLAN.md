@@ -16774,3 +16774,5 @@ Ordering below: bit-identical first (no fixture moves, no user decision), then w
   - Prototype gains: huber_k20 −9.5%, huber_k20_refit −16.7%, ewridge_k20 −8.3%.
   - Then P2 (the refit's moments as a blocked Gram, rounding-changing) goes to the user with numbers.
   - Worker W16.
+  - *2026-11-01, W16's measurement:* an old ew_cov state cannot continue to the bit (its upper triangle was rounded apart). It moves by at most 4.9e-16 by |Δ|/(1+|x|), and re-saves the current bytes exactly; lasso stays inside 1e-9. The user: record a sixth rule-5 exception (an ew_cov state of schema 61-63 continues within 1e-15) and build it.
+  - Filling the upper triangle every row is out (+20-24% on huber_k20): keep the lower triangle only and route readers through it (lower only: huber_k20 −8.8%, ewridge_k20 −7.8%, ew_cov −4.5%).
