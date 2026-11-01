@@ -1289,25 +1289,6 @@ why = """`v` is a unit eigenvector, so its largest-magnitude entry is never 0"""
 [[equivalent]]
 file = "crates/online-core/src/ewcov.rs"
 function = "EwCovModel::read"
-mutation = "replace * with /"
-line_has = "self.cfg.lags.len() * k * k))"
-why = """both `*`: the arm runs only with no lagged accumulator, which a model \
-has only when its cfg has no lags (`new` builds one for any, `restore` adds \
-one), so `lags.len()` is 0 and every form of the product is 0"""
-
-[[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
-function = "EwCovModel::read"
-mutation = "replace * with +"
-line_has = "self.cfg.lags.len() * k * k))"
-why = """both `*`: as above the arm runs only for a cfg without lags, and a cfg \
-with `lag_corr` and no lags is refused by `validate`, so `lag_corr` never \
-reaches the arm (a hand-made state with such a cfg would; `restore` does \
-not re-validate the cfg)"""
-
-[[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
-function = "EwCovModel::read"
 mutation = "replace > with >="
 line_has = "if self.cfg.pca > 0 {"
 why = """with `pca = 0` there are no components: `refresh_pca` runs only when \
@@ -1318,7 +1299,7 @@ arm pushes `0 · (k + 3)` NaNs or the components of an empty set"""
 file = "crates/online-core/src/ewcov.rs"
 function = "EwCovModel::read"
 mutation = "replace > with >="
-line_has = "out.push(if p.trace > 0.0 {"
+line_has = "head[1] = if p.trace > 0.0 {"
 why = """a co-moment matrix with trace 0 has no variance, which leaves it all \
 zeros (each co-moment's product underflows with the two squares, and the \
 window zeroes an unresolved row); faer's eigenvalues of the zero matrix are \
