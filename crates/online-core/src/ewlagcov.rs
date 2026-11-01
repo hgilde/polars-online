@@ -21,8 +21,8 @@
 //! ```
 //!
 //! Centring **both** legs at the pre-row mean is the choice that makes
-//! `ℓ = 0` coincide with [`EwCov`]'s own co-moments to the bit, and a unit
-//! test says so. The alternative -- each leg against the mean as it stood
+//! `ℓ = 0` coincide with [`EwCov`]'s own co-moments to the bit -- on their
+//! lower triangle, the one `EwCov` keeps -- and a unit test says so. The alternative -- each leg against the mean as it stood
 //! when that row arrived -- is a different statistic, and one that cannot be
 //! computed from a ring of raw rows.
 //!
@@ -287,8 +287,10 @@ mod tests {
     }
 
     /// Lag 0 -- the row paired with itself -- reproduces `EwCov`'s own
-    /// co-moments **to the bit**. That is the guard on "both legs against
-    /// the pre-row mean": any other centring gives a different matrix here.
+    /// co-moments **to the bit** on the lower triangle, the one `EwCov`
+    /// keeps (its upper one is the lower's mirror, where lag 0's is rounded
+    /// on its own). That is the guard on "both legs against the pre-row
+    /// mean": any other centring gives a different matrix here.
     ///
     /// `new` refuses lag 0, so the ring is primed with the current row and
     /// lag 1 reads it back, which is the same arithmetic. At a level of 1e8
@@ -314,7 +316,16 @@ mod tests {
                 lag.update(x, (cov.means(), cov.means_lo()), cov.n_eff(), lam, w);
                 cov.update(x, lam, w);
             }
-            assert_eq!(lag.comoments(), cov.comoments(), "at a level of {level}");
+            let (lc, c) = (lag.comoments(), cov.comoments());
+            for i in 0..k {
+                for j in 0..=i {
+                    assert_eq!(
+                        lc[i * k + j].to_bits(),
+                        c.get(k, i, j).to_bits(),
+                        "({i}, {j}) at a level of {level}"
+                    );
+                }
+            }
         }
     }
 

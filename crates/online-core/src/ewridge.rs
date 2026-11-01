@@ -1132,7 +1132,7 @@ impl EwRidge {
                     }
                     if keep_factor {
                         ready.systems[at] = Some(System {
-                            a: solved.a,
+                            a: solved.a.into(),
                             z: solved.keep.iter().map(|&p| zidx[p]).collect(),
                             s: solved.s,
                             mean: solved.mean,
@@ -1526,7 +1526,7 @@ impl EwRidge {
                     s.as_ref().and_then(|s| {
                         let kk = s.z.len();
                         (s.a.len() == kk * kk)
-                            .then(|| SpdFactor::of(&s.a, kk))
+                            .then(|| SpdFactor::of(s.a.lower(), kk))
                             .flatten()
                     })
                 })
@@ -1736,8 +1736,11 @@ impl Solved {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct System {
     /// Row-major `kk × kk`, the jitter excluded; the factor is rebuilt from
-    /// it on load.
-    a: Vec<f64>,
+    /// it on load. Symmetric, and kept as its lower triangle, the one the
+    /// factorization reads: a system a build before task 294 saved, its
+    /// upper triangle read from the co-moments' own, loads as its lower
+    /// triangle mirrored, as the co-moments do ([`crate::LowerTriangle`]).
+    a: crate::LowerTriangle,
     /// The accumulator index (`z` slot) of each kept column.
     z: Vec<usize>,
     /// The scale each kept column is divided by, and the mean subtracted.

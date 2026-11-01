@@ -173,6 +173,17 @@ use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 /// the cases and their bound, and holds an unwindowed one's converted
 /// state to the current fixture's field for field, its floats within the
 /// bound.
+///
+/// The `ew_cov` cases continue otherwise since task 294 (rule 5's sixth
+/// exception, the user's, 2026-11-01): an accumulator's co-moment matrix is
+/// kept as its lower triangle, where a build before updated it whole, each
+/// entry `(a·b·d_i)·d_j` and its mirror `(a·b·d_j)·d_i` rounded apart. A
+/// state of schema 61-63 loads as its lower triangle, mirrored -- the
+/// triangle every build computed alike -- so it re-saves the current
+/// fixture's bytes exactly, but an output read from the upper triangle,
+/// a covariance or a correlation, reads the mirror where the frozen
+/// continuation read the entry rounded on its own; [`CONTINUES_WITHIN`]
+/// lists the cases and their bound.
 macro_rules! previous {
     ($($schema:literal),* $(,)?) => {
         const PREVIOUS: &[u32] = &[$($schema),*];
@@ -215,6 +226,20 @@ previous![61, 62, 63];
 ///   measured 2026-10-25 on both kept sets; the bound is 17 times the
 ///   larger.
 const MOVED: &[(&str, f64)] = &[("lasso", 1e-9), ("lasso_window", 1e-9)];
+
+/// The cases whose state converts exactly but whose continuation a later
+/// change moved, each with how far it may part from a previous set's
+/// frozen one by [`agree`]'s measure: unlike a [`MOVED`] case, its
+/// converted state is still held to the current fixture's bytes.
+///
+/// - `ew_cov`, `ew_cov_window`: the co-moment matrix is kept as its lower
+///   triangle (task 294), so a covariance or correlation of pair `(i, j)`,
+///   `i < j`, reads entry `(j, i)`, where the frozen continuation read
+///   entry `(i, j)`, rounded apart from it. On these rows that moved the
+///   outputs by at most 1.9e-16 (`ew_cov`) and 7.1e-16 (`ew_cov_window`)
+///   of `1 + |out|`, from the first row after the load, measured
+///   2026-11-01 on all three kept sets; the bound is the user's, 1e-15.
+const CONTINUES_WITHIN: &[(&str, f64)] = &[("ew_cov", 1e-15), ("ew_cov_window", 1e-15)];
 
 /// How far a continuation may part from the one frozen, on a platform other
 /// than the writer's: the golden files' tolerance (`tests/golden.rs`).
@@ -462,6 +487,10 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
             );
             let windowed = holds_a_window(&f.bytes());
             let moved = MOVED.iter().find(|(n, _)| *n == f.name).map(|&(_, b)| b);
+            let within = CONTINUES_WITHIN
+                .iter()
+                .find(|(n, _)| *n == f.name)
+                .map(|&(_, b)| b);
             // Seeded by the `lloyd` rule before task 278 (plain k-means++
             // starts, ten Lloyd passes): the rule since finds the same
             // centres in another order (the doc above `previous!`).
@@ -527,6 +556,7 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
                 // build's in their last bits, as a fresh run's do.
                 let tol = if windowed && i > 0 { tol.max(TOL) } else { tol };
                 let tol = moved.map_or(tol, |b| tol.max(b));
+                let tol = within.map_or(tol, |b| tol.max(b));
                 let got = m.step(row);
                 same_out(&format!("{what}, row {i} after the save"), &got, &want, tol);
             }

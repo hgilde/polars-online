@@ -463,7 +463,8 @@ impl EwClass {
     fn class_matrix(&self, cov: &EwCov, m: &mut Vec<f64>) {
         let k = self.cfg.n_features;
         m.clear();
-        m.extend_from_slice(cov.comoments());
+        // The lower triangle is what the factorization reads (`SpdFactor::of`).
+        m.extend_from_slice(cov.comoments().lower());
         let ridge = self.cfg.precision_prior * cov.precision_scale();
         for i in 0..k {
             m[i * k + i] += ridge;
@@ -569,8 +570,12 @@ impl EwClass {
                 for &c in &seen {
                     let pi = weights[c] / total;
                     let ridge = self.ridge(c);
-                    for (mij, cij) in m.iter_mut().zip(classes[c].comoments()) {
-                        *mij += pi * cij;
+                    // The lower triangle, which the factorization reads.
+                    let cl = classes[c].comoments().lower();
+                    for i in 0..k {
+                        for j in 0..=i {
+                            m[i * k + j] += pi * cl[i * k + j];
+                        }
                     }
                     for i in 0..k {
                         m[i * k + i] += pi * ridge;
@@ -1540,8 +1545,8 @@ mod tests {
             shared.step(&x1, &[Some(1.0)], 1.0, 1.0);
         }
         assert!(close(
-            full.class_cov(0).comoments(),
-            full.class_cov(1).comoments(),
+            &full.class_cov(0).comoments().to_full(),
+            &full.class_cov(1).comoments().to_full(),
             1e-12
         ));
         for _ in 0..50 {
@@ -2178,7 +2183,10 @@ mod tests {
         m.step(&[0.0], &[Some(0.0)], 0.0, 1.0);
         m.step(&[1.0], &[Some(0.0)], 1.0, 1.0);
         let cov = m.class_cov(0);
-        assert_eq!(cov.comoments()[0] + 1.5 * cov.precision_scale(), 1.0);
+        assert_eq!(
+            cov.comoments().to_full()[0] + 1.5 * cov.precision_scale(),
+            1.0
+        );
         let p = m.predict(&[0.3], 1.0).pred;
         assert_eq!(p, vec![0.0, 1.0, 0.0]);
     }
@@ -2240,7 +2248,7 @@ mod tests {
     /// there, and every model refuses those now (task 183).
     fn place(m: &mut EwClass, c: usize, mean: &[f64], comoments: Option<&[f64]>) {
         let cov = &mut m.classes[c];
-        let held = cov.comoments().to_vec();
+        let held = cov.comoments().to_full();
         let (w, q) = (cov.n_eff(), cov.q_sum());
         cov.set_moments(mean, comoments.unwrap_or(&held), w, q);
         m.factors.invalidate_all();
@@ -2255,7 +2263,11 @@ mod tests {
         m.step(&[-1.0, -1.0], &[Some(0.0)], 1.0, 1.0);
         place(&mut m, 0, &[0.0, 0.0], Some(&[f64::INFINITY; 4]));
         assert!(
-            m.class_cov(0).comoments().iter().all(|v| v.is_infinite()),
+            m.class_cov(0)
+                .comoments()
+                .to_full()
+                .iter()
+                .all(|v| v.is_infinite()),
             "{:?}",
             m.class_cov(0).comoments()
         );

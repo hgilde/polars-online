@@ -483,7 +483,7 @@ def _moved(version: str) -> set[str]:
 #: residuals it reported, `hmm` exactly as that release did, `huber`'s
 #: sketch with its fixed buckets, a Huber file of 1.2.0 on the scale it was
 #: fitted with. Measured 2026-10-31: every field of every moved spec of the
-#: five to the bit but those `WITHIN`, `ROUNDED`, `YOUNG` and `RESETS` name.
+#: five to the bit but those `WITHIN`, `ROUNDED`, `UPPER_READ`, `YOUNG` and `RESETS` name.
 RESUMED = [v for v in RELEASES if _major(v) >= 1]
 
 #: The golden pipeline's tolerance, the library's bound for a move within
@@ -568,6 +568,18 @@ def _young_rows(u: pl.Series, v: pl.Series, filled: float) -> tuple[np.ndarray, 
 #: and the Jarque-Bera statistic built on them move by an ulp or two (4e-16
 #: of `1 + |v|` at most here), in every spec that emits its tails.
 ROUNDED = (("skew_", "jarque_bera_"), 1e-15)
+
+#: The diagnostics read from a co-moment matrix's upper triangle, by the
+#: CHANGELOG's Changed entry (CLAUDE.md rule 5's sixth exception): every
+#: `EwCov` keeps its matrix as the lower triangle and reads an upper entry as
+#: its mirror, rounded apart from the entry a release kept on its own. The
+#: specification, calibration and break tests and the information
+#: coefficient each solve from one triangle and read their cross terms from
+#: the other, so they part from every release's by rounding, in every
+#: diagnosed spec. Measured 2026-11-01 on every 1.x release, of `1 + |v|`:
+#: `calibration_*` 1.1e-13, `ramsey_reset_*` 3.9e-14, `break_wald_*`
+#: 1.1e-14, `breusch_pagan_*` 8.8e-16, `ic_*` 2.7e-16.
+UPPER_READ = (("calibration_", "ramsey_reset_", "break_wald_", "breusch_pagan_", "ic_"), GOLDEN)
 
 #: A spec whose drift detector resets the model, by its flag: from the row
 #: after one that fires, every field is what a fresh bank fed those rows
@@ -658,6 +670,8 @@ def _differences(
                     counted["young"] = counted.get("young", 0) + int(explained.sum())
             else:
                 tol = max(within, ROUNDED[1]) if field.startswith(ROUNDED[0]) else within
+                if field.startswith(UPPER_READ[0]):
+                    tol = max(tol, UPPER_READ[1])
                 bad = ~exact & ~(gap <= tol)
         else:
             gap, bad = None, ~(u.eq_missing(v).to_numpy())
@@ -720,9 +734,10 @@ def test_a_moved_spec_goes_on_as_its_release_did(resumed):
     """A spec a CHANGELOG entry moved since a release: this build loads the
     release's file and goes on as the release itself goes on from it, every
     field of every row and of the tables `probe.tables` reads, to the bit,
-    run under the release's own wheel (`WITHIN`, `ROUNDED`, `YOUNG` and
-    `RESETS` name the declared exceptions). `withheld_reason` compares by value, since this
-    build's Enum has categories the release's has not."""
+    run under the release's own wheel (`WITHIN`, `ROUNDED`, `UPPER_READ`,
+    `YOUNG` and `RESETS` name the declared exceptions). `withheld_reason`
+    compares by value, since this build's Enum has categories the release's
+    has not."""
     version, names, states, out = resumed
     assert names, f"{version}: no spec of its moved since"
     built = {name: probe.build(b, name, kw) for name, b, kw, _ in probe.WORKLOAD}

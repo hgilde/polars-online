@@ -155,6 +155,15 @@ runs both tiers, but a plain `cargo test` skips the extended Rust tests
    gains it was fitted under; its re-saved bytes cannot be the current
    fixture's (which carries the line fit), so it is held, beside `kmeans`,
    to re-saving bytes that load back the same.
+   A sixth, the user's (2026-11-01, task 294): the co-moment matrix every
+   `EwCov` keeps is now stored as its lower triangle and read through its
+   mirror, so a state of schema 61-63 continues within rounding, not to the
+   bit, where it read an upper entry: an `ew_cov` state's covariances and
+   correlations within 1e-15 by |Δ|/(1+|x|), and a diagnosed state's
+   specification, calibration, break and `ic` statistics (and a closed
+   group's exported `comoments`) within the golden 1e-12; every prediction
+   continues to the bit, `lasso` stays inside its own 1e-9, and each state
+   still re-saves the current fixture's bytes exactly.
 6. No `unsafe` in `online-core`. f64 everywhere.
 7. Commit after each completed task in `docs/PLAN.md`, with the task number in the message.
 8. **`n_eff` -- the models' accessor, emitted as `weight_sum` -- means the same thing in

@@ -210,7 +210,7 @@ fn a_product_allocates_a_bounded_amount_on_each_thread() {
             c.update(r, 0.999, 1.0);
         }
         c.flush();
-        assert!(c.comoments()[k * k - 1] > 0.0);
+        assert!(c.comoments().get(k, k - 1, k - 1) > 0.0);
     });
     check("EwCov k=700, gram_block_rows 256, gram_threads 4", &got);
 

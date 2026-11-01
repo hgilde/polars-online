@@ -46,9 +46,8 @@ pub(crate) const TILE: usize = 128;
 pub(crate) enum Piece<'a> {
     /// A diagonal block at `o`, its lower triangle with the diagonal.
     Diag(MatMut<'a, f64>, usize),
-    /// A tile of a bottom-left rectangle at rows `r0`, columns `c0`, and
-    /// the tile of the upper triangle it is mirrored into.
-    Tile(MatMut<'a, f64>, MatMut<'a, f64>, usize, usize),
+    /// A tile of a bottom-left rectangle at rows `r0`, columns `c0`.
+    Tile(MatMut<'a, f64>, usize, usize),
 }
 
 /// The pieces of the square `c`, cut by `(leaf, tile)`.
@@ -66,8 +65,8 @@ fn plan<'a>(dst: MatMut<'a, f64>, o: usize, cut: (usize, usize), out: &mut Vec<P
     }
     // faer's split: the first half is `s / 2` rows.
     let h = s / 2;
-    let (tl, tr, bl, br) = dst.split_at_mut(h, h);
-    tiles(bl, tr, o + h, o, cut.1, out);
+    let (tl, _, bl, br) = dst.split_at_mut(h, h);
+    tiles(bl, o + h, o, cut.1, out);
     plan(tl, o, cut, out);
     plan(br, o + h, cut, out);
 }
@@ -82,29 +81,20 @@ fn first_part(len: usize, tile: usize) -> Option<usize> {
     (parts > 1).then(|| len.div_ceil(parts))
 }
 
-/// `low` is the rectangle at rows `r0`, columns `c0`; `up` is its mirror,
-/// at rows `c0`, columns `r0`. Cut both alike ([`first_part`]).
-fn tiles<'a>(
-    low: MatMut<'a, f64>,
-    up: MatMut<'a, f64>,
-    r0: usize,
-    c0: usize,
-    tile: usize,
-    out: &mut Vec<Piece<'a>>,
-) {
+/// `low` is the rectangle at rows `r0`, columns `c0`, cut by
+/// [`first_part`].
+fn tiles<'a>(low: MatMut<'a, f64>, r0: usize, c0: usize, tile: usize, out: &mut Vec<Piece<'a>>) {
     let (rows, cols) = (low.nrows(), low.ncols());
     if let Some(first) = first_part(rows, tile) {
         let (la, lb) = low.split_at_row_mut(first);
-        let (ua, ub) = up.split_at_col_mut(first);
-        tiles(la, ua, r0, c0, tile, out);
-        tiles(lb, ub, r0 + first, c0, tile, out);
+        tiles(la, r0, c0, tile, out);
+        tiles(lb, r0 + first, c0, tile, out);
     } else if let Some(first) = first_part(cols, tile) {
         let (la, lb) = low.split_at_col_mut(first);
-        let (ua, ub) = up.split_at_row_mut(first);
-        tiles(la, ua, r0, c0, tile, out);
-        tiles(lb, ub, r0, c0 + first, tile, out);
+        tiles(la, r0, c0, tile, out);
+        tiles(lb, r0, c0 + first, tile, out);
     } else {
-        out.push(Piece::Tile(low, up, r0, c0));
+        out.push(Piece::Tile(low, r0, c0));
     }
 }
 
@@ -148,7 +138,7 @@ pub(crate) fn syrk_lower_cut(
                 Par::Seq,
             );
         }
-        Piece::Tile(low, _, r0, c0) => {
+        Piece::Tile(low, r0, c0) => {
             let (rows, cols) = (low.nrows(), low.ncols());
             gemm(
                 low,
@@ -214,7 +204,7 @@ mod tests {
                 .into_iter()
                 .map(|p| match p {
                     Piece::Diag(b, _) => (b.nrows(), b.ncols(), true),
-                    Piece::Tile(b, _, _, _) => (b.nrows(), b.ncols(), false),
+                    Piece::Tile(b, _, _) => (b.nrows(), b.ncols(), false),
                 })
                 .collect()
         };

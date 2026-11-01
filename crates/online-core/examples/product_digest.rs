@@ -72,7 +72,7 @@ fn main() {
                     c.flush();
                     c
                 });
-                let h = digest(c.comoments().iter().chain(c.means()));
+                let h = digest(c.comoments().to_full().iter().chain(c.means()));
                 println!("ewcov k={k} block={block} threads={t} {h:016x}");
             }
         }

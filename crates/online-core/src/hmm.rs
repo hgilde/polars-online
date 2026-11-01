@@ -473,9 +473,11 @@ impl Hmm {
         self.cfg.precision_prior * self.states[s].precision_scale()
     }
 
+    /// `C_s + r_s I`'s lower triangle, which the factorization reads
+    /// (`SpdFactor::of`); the upper one holds no meaning.
     fn state_matrix(&self, s: usize) -> Vec<f64> {
         let d = self.cfg.n_features;
-        let mut m = self.states[s].comoments().to_vec();
+        let mut m = self.states[s].comoments().lower().to_vec();
         let r = self.ridge(s);
         for i in 0..d {
             m[i * d + i] += r;
@@ -520,8 +522,12 @@ impl Hmm {
                     } else {
                         1.0 / k as f64
                     };
-                    for (mij, cij) in m.iter_mut().zip(self.states[s].comoments()) {
-                        *mij += pi * cij;
+                    // The lower triangle, which the factorization reads.
+                    let cl = self.states[s].comoments().lower();
+                    for i in 0..d {
+                        for j in 0..=i {
+                            m[i * d + j] += pi * cl[i * d + j];
+                        }
                     }
                     for i in 0..d {
                         m[i * d + i] += pi * self.ridge(s);
@@ -1149,7 +1155,7 @@ mod tests {
             .flat_map(|c| cls.class_cov(c).means().to_vec())
             .collect();
         let covs: Vec<f64> = (0..2)
-            .flat_map(|c| cls.class_cov(c).comoments().to_vec())
+            .flat_map(|c| cls.class_cov(c).comoments().to_full())
             .collect();
         let build = |precision_prior: f64| {
             Hmm::new(HmmCfg {
@@ -1220,7 +1226,7 @@ mod tests {
                 } else {
                     0.5
                 };
-                for (j, c) in state.comoments().iter().enumerate() {
+                for (j, c) in state.comoments().to_full().iter().enumerate() {
                     shared[j] += pi * c;
                 }
                 shared[0] += pi * m.ridge(s);
@@ -1237,7 +1243,7 @@ mod tests {
                     }
                     Covariance::Shared => crate::oracle::gaussian_log_density(&shared, &dv),
                     Covariance::Full => {
-                        let mut mat = state.comoments().to_vec();
+                        let mut mat = state.comoments().to_full();
                         mat[0] += r;
                         mat[3] += r;
                         crate::oracle::gaussian_log_density(&mat, &dv)
@@ -1267,7 +1273,7 @@ mod tests {
                             + crate::oracle::gaussian_log_density_error(&shared, &dv)
                     }
                     Covariance::Full => {
-                        let mut mat = state.comoments().to_vec();
+                        let mut mat = state.comoments().to_full();
                         mat[0] += r;
                         mat[3] += r;
                         crate::oracle::cholesky_log_density_error(&mat, &dv)
@@ -2061,7 +2067,7 @@ mod tests {
             let mut pool = vec![0.0; 4];
             for (s, state) in m.states.iter().enumerate() {
                 let pi = if total > 0.0 { weights[s] / total } else { 0.5 };
-                for (p, c) in pool.iter_mut().zip(state.comoments()) {
+                for (p, c) in pool.iter_mut().zip(state.comoments().to_full()) {
                     *p += pi * c;
                 }
                 pool[0] += pi * m.ridge(s);
@@ -2086,7 +2092,7 @@ mod tests {
             let mut pool = vec![0.0; 4];
             for (t, state) in m.states.iter().enumerate() {
                 let pi = if total > 0.0 { weights[t] / total } else { 0.5 };
-                for (p, c) in pool.iter_mut().zip(state.comoments()) {
+                for (p, c) in pool.iter_mut().zip(state.comoments().to_full()) {
                     *p += pi * c;
                 }
                 pool[0] += pi * m.ridge(t);

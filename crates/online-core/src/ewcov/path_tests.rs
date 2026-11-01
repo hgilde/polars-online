@@ -120,7 +120,7 @@ fn a_damaged_held_block_is_dropped_at_the_merge() {
     let mut ew = EwCov::new(2);
     ew.update(&[1.0, 2.0], 1.0, 1.0);
     ew.update(&[3.0, 1.0], 1.0, 1.0);
-    let (m0, c0) = (ew.means().to_vec(), ew.comoments().to_vec());
+    let (m0, c0) = (ew.means().to_vec(), ew.comoments().to_full());
     ew.set_block_rows(4);
     ew.update(&[5.0, -1.0], 1.0, 1.0);
     ew.update(&[7.0, 0.0], 1.0, 1.0);
@@ -138,6 +138,6 @@ fn a_damaged_held_block_is_dropped_at_the_merge() {
         damaged.flush();
         assert!(!damaged.has_pending(), "{what}");
         assert_eq!(damaged.means(), m0.as_slice(), "{what}");
-        assert_eq!(damaged.comoments(), c0.as_slice(), "{what}");
+        assert_eq!(damaged.comoments().to_full(), c0, "{what}");
     }
 }

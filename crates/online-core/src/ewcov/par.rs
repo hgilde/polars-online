@@ -12,15 +12,17 @@
 //! thread count.
 //!
 //! The rest of a merge is per entry -- the history's scale before the
-//! product, the two rank-1 corrections after it, the mirror into the upper
-//! triangle -- and runs inside the same piece, while its tile is in cache:
-//! one pass over `C` where there were four. Each entry still takes the
-//! same operations in the same order.
+//! product, the two rank-1 corrections after it -- and runs inside the same
+//! piece, while its tile is in cache: one pass over `C` where there were
+//! four. Each entry still takes the same operations in the same order. Only
+//! the lower triangle is written: the matrix is kept as it
+//! ([`super::LowerTriangle`]), so the mirror into the upper one each merge
+//! once ended with is gone (task 294).
 
 use crate::pieces::{LEAF, Piece, TILE, pieces, spread};
 use faer::linalg::matmul::matmul as gemm;
 use faer::linalg::matmul::triangular::{BlockStructure, matmul as tri};
-use faer::reborrow::{Reborrow, ReborrowMut};
+use faer::reborrow::ReborrowMut;
 use faer::{Accum, MatMut, MatRef, Par};
 #[cfg(test)]
 use std::sync::Mutex;
@@ -36,7 +38,7 @@ pub(crate) const PAR_MIN_ENTRIES: usize = 1 << 19;
 
 /// What a merge does to each lower entry `C[i][j]` around the product:
 /// `C·scale`, then the product's `+ alpha·Σ dᵢdⱼ`, then
-/// `+ (bi[i]·big[j] − wi[i]·delta[j])`, then the mirror `C[j][i] = C[i][j]`.
+/// `+ (bi[i]·big[j] − wi[i]·delta[j])`. The upper triangle is not written.
 pub(crate) struct Merge<'a> {
     pub(crate) scale: f64,
     pub(crate) alpha: f64,
@@ -113,14 +115,8 @@ fn run(p: Piece<'_>, d: MatRef<'_, f64>, m: &Merge<'_>) {
                     *cj += bi * gj - wi * dj;
                 }
             }
-            for i in 1..s {
-                for j in 0..i {
-                    let v = blk[(i, j)];
-                    blk[(j, i)] = v;
-                }
-            }
         }
-        Piece::Tile(mut low, mut up, r0, c0) => {
+        Piece::Tile(mut low, r0, c0) => {
             let (rows, cols) = (low.nrows(), low.ncols());
             for i in 0..rows {
                 for cj in row(low.rb_mut(), i).iter_mut() {
@@ -143,14 +139,14 @@ fn run(p: Piece<'_>, d: MatRef<'_, f64>, m: &Merge<'_>) {
                     *cj += bi * gj - wi * dj;
                 }
             }
-            up.copy_from(low.rb().transpose());
         }
     }
 }
 
 /// `f(i, row)` for each row of the row-major `k`-wide matrix `c`, on
 /// `threads` threads: each takes whole bands of rows, so an entry's
-/// arithmetic is the same whichever thread runs it.
+/// arithmetic is the same whichever thread runs it. `row` is the whole row;
+/// the rank-1 update writes its lower part, `..=i`.
 pub(crate) fn rows(c: &mut [f64], k: usize, threads: usize, f: impl Fn(usize, &mut [f64]) + Sync) {
     if k == 0 {
         return;

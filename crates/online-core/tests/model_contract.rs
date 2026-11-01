@@ -4237,7 +4237,13 @@ fn hmm_recovers_from_bounded_extremes() {
     // Every state's moments are finite, and the model goes on filtering.
     for s in 0..2 {
         assert!(m.state_cov(s).means().iter().all(|v| v.is_finite()));
-        assert!(m.state_cov(s).comoments().iter().all(|v| v.is_finite()));
+        assert!(
+            m.state_cov(s)
+                .comoments()
+                .to_full()
+                .iter()
+                .all(|v| v.is_finite())
+        );
     }
     // **A known limitation, and the reason this is not a twin test.** A
     // bounded-extreme row is captured by whichever state wins it, and that

@@ -70,7 +70,7 @@ fn run(rows: &[(Vec<f64>, f64, f64)], k: usize, block: usize) -> EwCov {
 fn assert_moments_close(seq: &EwCov, blk: &EwCov, what: &str) {
     let k = seq.k;
     let scale = (0..k)
-        .map(|i| seq.c[i * k + i].abs())
+        .map(|i| seq.c.to_full()[i * k + i].abs())
         .fold(0.0f64, f64::max)
         .max(1e-300);
     let magnitude = seq.m.iter().fold(0.0f64, |a, b| a.max(b.abs()));
@@ -84,7 +84,7 @@ fn assert_moments_close(seq: &EwCov, blk: &EwCov, what: &str) {
         );
     }
     for i in 0..k * k {
-        let (a, b) = (seq.c[i], blk.c[i]);
+        let (a, b) = (seq.c.to_full()[i], blk.c.to_full()[i]);
         assert!(
             (a - b).abs() <= tol * a.abs().max(scale),
             "c[{i}] {a} vs {b}: {:.2e} of the scale {scale:.3e}, tol {tol:.1e}, {what}",
@@ -205,9 +205,9 @@ fn a_history_all_but_gone_leaves_nothing_to_cancel() {
         let blk = run(&rows, k, 8);
         let what = format!("gap_lam={gap_lam:e} offset={offset:e}");
         assert_scalars_equal(&seq, &blk, &what);
-        let scale = seq.c[0].max(seq.c[3]);
+        let scale = seq.c.to_full()[0].max(seq.c.to_full()[3]);
         for i in 0..k * k {
-            let (a, b) = (seq.c[i], blk.c[i]);
+            let (a, b) = (seq.c.to_full()[i], blk.c.to_full()[i]);
             assert!(
                 (a - b).abs() <= 1e-8 * scale,
                 "c[{i}] {a} vs {b}: {:.2e} of the variance, {what}",
@@ -573,7 +573,7 @@ fn replacing_the_moments_mid_block_leaves_no_row_behind() {
     assert!(!blk.has_pending(), "set_moments must not leave rows held");
     assert_eq!(blk.w_sum, 3.0, "and the caller's weight is what stands");
     assert_eq!(blk.means(), &m);
-    assert_eq!(blk.comoments(), &c);
+    assert_eq!(blk.comoments().to_full(), c);
     assert_scalars_equal(&seq, &blk, "at set_moments");
     // ...and rows after it merge against the caller's state, not the old
     // one: the same as the rank-1 path from that state on.
@@ -656,8 +656,8 @@ fn a_block_whose_mean_rounds_takes_the_residue_back_out() {
     let blk = run(&rows, 1, 2);
     let seq = run(&rows, 1, 0);
     assert_eq!(1.0 + 1.5 * e, 1.0 + 2.0 * e, "the block's mean rounds");
-    assert_eq!(blk.c[0], (1.5 * e) * (1.5 * e));
-    assert_eq!(seq.c[0], blk.c[0]);
+    assert_eq!(blk.c.to_full()[0], (1.5 * e) * (1.5 * e));
+    assert_eq!(seq.c.to_full()[0], blk.c.to_full()[0]);
 }
 
 /// A row of weight 0 opening a block, at `1e100` against rows at `1e7`,
@@ -715,7 +715,7 @@ fn a_weight_whose_square_leaves_the_doubles_merges_a_block() {
             .collect();
         let seq = run(&rows, 2, 0);
         assert!(
-            seq.c.iter().all(|c| c.is_finite() && *c != 0.0),
+            seq.c.to_full().iter().all(|c| c.is_finite() && *c != 0.0),
             "{w:e}: row by row"
         );
         for block in [3usize, 8] {

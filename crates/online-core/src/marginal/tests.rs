@@ -1918,10 +1918,14 @@ fn matches_the_longhand_moments_with_weights_gaps_and_a_missing_target() {
 }
 
 #[test]
-fn a_pair_is_the_ew_cov_of_the_two_columns_to_the_bit() {
+fn a_pair_is_the_ew_cov_of_the_two_columns() {
     // `ew_cov` over `[x_j, y]` and the pair `(j, 0)` here, fed the same
-    // rows: the same recursion in the same order gives the same bits --
-    // moments, and the correlation.
+    // rows: the same recursion in the same order gives the same bits in
+    // the weights, means and variances. The covariance is one rounding
+    // apart a row: the pair forms each row's product as `(a·b·d_x)·d_y`,
+    // and `ew_cov` reads its covariance from the lower triangle it keeps,
+    // `(a·b·d_y)·d_x` (task 294), so the two agree within a few roundings
+    // of the spread, and the correlation within as many of 1.
     let mut m = Marginal::new(cfg(2, 1)).unwrap();
     let mut covs = [EwCov::new(2), EwCov::new(2)];
     let mut full = EwCovModel::new(EwCovCfg {
@@ -1955,8 +1959,9 @@ fn a_pair_is_the_ew_cov_of_the_two_columns_to_the_bit() {
         // The ew_cov reference is read *before* the row too.
         let corr_ref = full.step(&[x[0], y], &[], d, w).pred[0];
         let before = m.pair(0, 0);
-        if i > 0 {
-            assert_eq!(before.corr.to_bits(), corr_ref.to_bits(), "row {i}");
+        if i > 0 && !corr_ref.is_nan() {
+            let off = (before.corr - corr_ref).abs();
+            assert!(off <= 8.0 * f64::EPSILON, "row {i}: {off:e}");
         }
         m.step(&x, &[Some(y)], d, w);
         for (j, c) in covs.iter_mut().enumerate() {
@@ -1970,7 +1975,11 @@ fn a_pair_is_the_ew_cov_of_the_two_columns_to_the_bit() {
         assert_eq!(p.mean_y.to_bits(), c.mean(1).to_bits());
         assert_eq!(p.var_x.to_bits(), c.var(0).to_bits());
         assert_eq!(p.var_y.to_bits(), c.var(1).to_bits());
-        assert_eq!(p.cov.to_bits(), c.cov(0, 1).to_bits());
+        let off = (p.cov - c.cov(0, 1)).abs();
+        assert!(
+            off <= 8.0 * f64::EPSILON * (c.var(0) * c.var(1)).sqrt(),
+            "{off:e}"
+        );
     }
 }
 

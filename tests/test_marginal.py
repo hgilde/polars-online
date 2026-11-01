@@ -4,7 +4,8 @@ kept in the state and read back as a frame.
 Not a regression: nothing is emitted per row but `weight_sum`. The pairs are the
 product, so this file holds `ModelBank.marginal()` to a from-scratch numpy
 oracle, to `ew_cov` (a pair is the two-column `ew_cov` under `bias=True`, the
-population form a pair keeps, to the bit) and to the
+population form a pair keeps: its means and variances to the bit, its `cov` and
+`corr` within a few roundings, `ROUNDINGS`) and to the
 shared contract -- chunk invariance, save/load, groups, the half-life grid,
 null and zero-weight rows -- on every surface that runs a spec.
 """
@@ -18,6 +19,12 @@ import pytest
 import polars_online as po
 
 TIER = "essential"
+
+#: How far a pair's `cov` (over the spread `sqrt(var_x * var_y)`) and `corr`
+#: may part from a two-column `ew_cov`'s: a few roundings. The pair rounds each
+#: row's product as `(a * b * dx) * dy`; `ew_cov` keeps one triangle of its
+#: symmetric matrix, which rounds it as `(a * b * dy) * dx`.
+ROUNDINGS = 8 * np.finfo(float).eps
 
 PAIR_FIELDS = [
     "weight_sum",
@@ -185,7 +192,7 @@ class TestArithmetic:
         assert n_eff_by_target["y1"] < n_eff_by_target["y0"]
         assert got.select(pl.col(PAIR_FIELDS).is_nan().any()).sum_horizontal().item() == 0
 
-    def test_a_pair_is_the_ew_cov_of_its_two_columns_to_the_bit(self):
+    def test_a_pair_is_the_ew_cov_of_its_two_columns(self):
         df = frame(n=600, weights=True, clock=True, seed=2)
         common = dict(weight="w", clock="t", gap_cap=10.0, half_life=40.0, min_weight=5.0)
         # `ew_cov` reports before each row; the pair is read after the last
@@ -202,12 +209,13 @@ class TestArithmetic:
                 pair = got.filter((pl.col("feature") == f) & (pl.col("target") == t)).row(
                     0, named=True
                 )
-                assert pair["corr"] == last[f"corr_{f}_{t}"]
+                assert abs(pair["corr"] - last[f"corr_{f}_{t}"]) <= ROUNDINGS
                 assert pair["mean_x"] == last[f"mean_{f}"]
                 assert pair["mean_y"] == last[f"mean_{t}"]
                 assert pair["var_x"] == last[f"var_{f}"]
                 assert pair["var_y"] == last[f"var_{t}"]
-                assert pair["cov"] == last[f"cov_{f}_{t}"]
+                spread = (pair["var_x"] * pair["var_y"]) ** 0.5
+                assert abs(pair["cov"] - last[f"cov_{f}_{t}"]) <= ROUNDINGS * spread
 
     def test_kish_size_of_unit_weights_tends_to_the_closed_form(self):
         df = frame(n=3000, seed=3)
@@ -545,7 +553,7 @@ class TestPlumbing:
         assert runs[0].equals(runs[1]) and runs[0].equals(runs[2])
 
 
-def test_a_wide_pair_set_matches_ew_cov_to_the_bit():
+def test_a_wide_pair_set_matches_ew_cov():
     """The pair layout at p = 12 features x m = 3 targets -- 36 pair slots,
     indexed t * p + j -- against `ew_cov` on a sample of pairs (review
     2026-09-18, phase 4)."""
@@ -562,7 +570,7 @@ def test_a_wide_pair_set_matches_ew_cov_to_the_bit():
         )
         last = po.ModelBank([cov]).fit_predict(df)["c"].to_list()[-1]
         pair = got.filter((pl.col("feature") == f) & (pl.col("target") == t)).row(0, named=True)
-        assert pair["corr"] == last[f"corr_{f}_{t}"], (f, t)
+        assert abs(pair["corr"] - last[f"corr_{f}_{t}"]) <= ROUNDINGS, (f, t)
         assert pair["var_x"] == last[f"var_{f}"], (f, t)
         assert pair["mean_y"] == last[f"mean_{t}"], (f, t)
 
