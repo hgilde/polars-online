@@ -989,10 +989,11 @@ returns.
 - On x86-64 CPUs with AVX2, the exponentially weighted means and variances
   behind `sgd`'s and `pa`'s standardizing update four slots at a time from
   8 slots, and `sgd(loss="huber")`'s refit sums its Gram four entries at a
-  time, both with the same bits as before (task 296). Measured on x86-64:
-  `sgd` takes 5.5% fewer instructions, and at the 25th percentile of time
-  `sgd` is 2.6% faster, `sgd(loss="huber")` 2.3% and `pa` 3.3%; the refit
-  case takes 14.9% fewer instructions and 15.6% less time. Other CPUs run
+  time, both with the same bits as before (task 296). Measured on x86-64
+  at the 25th percentile of time: the refit case is 16.6% faster, `pa`
+  7.2% and `sgd` 4.6%; `sgd(loss="huber")` is 3.6% faster with each
+  function's alignment held fixed, and within code-layout noise in the
+  default build. Rows narrower than 8 slots run as before. Other CPUs run
   the same machine code as before.
 - The instruction-count benchmarks build rayon's thread pool at the end of
   each model case's warm-up, outside the measured block, so a case's count
