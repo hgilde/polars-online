@@ -1288,16 +1288,16 @@ why = """`v` is a unit eigenvector, so its largest-magnitude entry is never 0"""
 
 [[equivalent]]
 file = "crates/online-core/src/ewcov.rs"
-function = "EwCovModel::read"
+function = "EwCovModel::read_into"
 mutation = "replace > with >="
 line_has = "if self.cfg.pca > 0 {"
 why = """with `pca = 0` there are no components: `refresh_pca` runs only when \
 `pca > 0` and `restore` refuses a component the cfg does not ask for, so the \
-arm pushes `0 · (k + 3)` NaNs or the components of an empty set"""
+arm writes `0 · (k + 3)` NaNs or the components of an empty set"""
 
 [[equivalent]]
 file = "crates/online-core/src/ewcov.rs"
-function = "EwCovModel::read"
+function = "EwCovModel::read_into"
 mutation = "replace > with >="
 line_has = "head[1] = if p.trace > 0.0 {"
 why = """a co-moment matrix with trace 0 has no variance, which leaves it all \

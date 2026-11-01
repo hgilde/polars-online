@@ -3097,6 +3097,39 @@ fn every_statistic_is_as_wide_as_the_cfg_says() {
     }
 }
 
+/// The partial correlations fill their slots pair by pair, `(0,1), (0,2),
+/// …, (k−2,k−1)`, each the pair's value from the precision the row is
+/// predicted with (the moments before its update): a slot shifted by one
+/// pair, or a diagonal read as a pair, reads another pair's number.
+#[test]
+fn the_partial_correlations_fill_their_slots_in_pair_order() {
+    use crate::OnlineModel;
+    let k = 4;
+    let mut c = model_cfg(k, vec![EwCovStat::PartialCorr]);
+    c.precision_prior = Some(1e-3);
+    c.min_weight = 0.0;
+    let mut m = EwCovModel::new(c).unwrap();
+    let mut s = 977u64;
+    let mut checked = 0;
+    for row in 0..40 {
+        let x: Vec<f64> = (0..k).map(|_| lcg(&mut s)).collect();
+        let before = m.cov.precision();
+        let out = m.step(&x, &[], 1.0, 1.0).pred;
+        assert_eq!(out.len(), k * (k - 1) / 2, "row {row}");
+        let Some(p) = before else { continue };
+        let want: Vec<f64> = (0..k)
+            .flat_map(|i| (i + 1..k).map(move |j| (i, j)))
+            .map(|(i, j)| partial_corr(&p, k, i, j))
+            .collect();
+        assert!(want.iter().all(|v| v.is_finite()), "row {row}: {want:?}");
+        for (slot, (got, want)) in out.iter().zip(&want).enumerate() {
+            assert_eq!(got.to_bits(), want.to_bits(), "row {row}, slot {slot}");
+        }
+        checked += 1;
+    }
+    assert!(checked >= 30, "only {checked} rows had a precision");
+}
+
 /// A column whose variance underflows to 0 has no lagged correlation,
 /// even where its lagged co-moment with a wide partner does not
 /// underflow: deviations near `1e-170` square to 0, while their product

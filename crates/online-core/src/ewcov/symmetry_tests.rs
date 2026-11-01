@@ -252,7 +252,12 @@ fn whole_rows_and_lower_rows_leave_the_same_state() {
             upper(&lower).iter().all(|&v| v == 0.0),
             "k = {k}: lower rows left it"
         );
-        let took = if whole_rows(k) { &whole } else { &lower };
+        // The form each target takes, written out rather than read from
+        // `whole_rows`, so a change to the rule fails here (x86-64: whole
+        // rows below 10 features; every other target: lower rows).
+        let expect_whole = cfg!(target_arch = "x86_64") && k < 10;
+        assert_eq!(whole_rows(k), expect_whole, "k = {k}: the rule");
+        let took = if expect_whole { &whole } else { &lower };
         assert_eq!(upper(kept), upper(took), "k = {k}: the form update took");
         // As matrices and as state: the same.
         let as_matrix = |c: &[f64]| {
