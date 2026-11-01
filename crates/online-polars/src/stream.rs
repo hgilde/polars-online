@@ -4282,9 +4282,10 @@ pub struct Scratch {
     /// Each slot's recursive residual, `resid / error_inflation`, under
     /// `emit_breaks` (docs/PLAN.md task 221 (b)).
     z: Vec<f64>,
-    /// The row's step, kept so a model that writes it in place
-    /// ([`OnlineModel::step_into`]) allocates no `pred` a row (task 270,
-    /// M-4). Taken for the row and put back after it.
+    /// The row's step, kept so the model, which writes it in place
+    /// ([`OnlineModel::step_into`]), allocates no `pred` a row (task 270,
+    /// M-4; every model since task 285). Taken for the row and put back
+    /// after it.
     step: online_core::Step,
     /// Each slot's own prediction before a readiness gate withheld it,
     /// and its residual, which the spread folds

@@ -284,11 +284,19 @@ impl OnlineModel for Holt {
         true
     }
 
-    fn step(&mut self, _x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+    fn step_into(
+        &mut self,
+        _x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        out: &mut Step,
+    ) {
         // A target or a weight that is not usable, by the rule every model
         // keeps (`OnlineModel`); Holt reads no features.
         if let Some(refused) = crate::model::refused_step(self, &[], y, d_clock, weight) {
-            return refused;
+            *out = refused;
+            return;
         }
         let m = self.cfg.n_targets;
         // The decays for a target observed on the previous row, where `s` is
@@ -297,7 +305,9 @@ impl OnlineModel for Holt {
 
         let n_eff = self.w_sum;
         let ready = n_eff >= self.cfg.min_weight;
-        let mut pred = vec![f64::NAN; m];
+        let pred = &mut out.pred;
+        pred.clear();
+        pred.resize(m, f64::NAN);
         for j in 0..m {
             let yj = y[j].filter(|v| v.is_finite() && weight > 0.0);
             if !self.seen[j] {
@@ -382,12 +392,8 @@ impl OnlineModel for Holt {
             self.since[j] = 0.0;
         }
         self.w_sum = self.w_sum * row_decays.0 + weight;
-
-        Step {
-            pred,
-            n_eff,
-            extra: None,
-        }
+        out.n_eff = n_eff;
+        out.extra = None;
     }
 
     /// The prediction at another `min_weight` floor, set for the read and

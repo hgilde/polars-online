@@ -1307,8 +1307,18 @@ impl OnlineModel for Audit {
     /// Count the row: every column's value, the pairs' and the clock's step.
     /// The weight goes into `n_eff` alone, and a value that is not usable is
     /// counted, not refused (the module's doc).
-    fn step(&mut self, x: &[f64], _y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
-        let out = self.predict(x, d_clock);
+    fn step_into(
+        &mut self,
+        x: &[f64],
+        _y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        out: &mut Step,
+    ) {
+        // `predict`'s answer, read before the row: no slots, and the weight.
+        out.pred.clear();
+        out.n_eff = self.n_eff;
+        out.extra = None;
         let cap = self.cfg.distinct_cap;
         if !self.fresh && d_clock.is_finite() && d_clock >= 0.0 {
             self.step_clock(d_clock);
@@ -1337,7 +1347,6 @@ impl OnlineModel for Audit {
             self.n_eff += weight;
         }
         self.fresh = false;
-        out
     }
 
     fn predict(&self, _x: &[f64], _d_clock: f64) -> Step {

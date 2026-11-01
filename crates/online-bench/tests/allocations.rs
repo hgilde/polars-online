@@ -8,7 +8,7 @@
 //! of `AnyModel::step`. The returned `Step` owns its `pred` (and `lasso`'s
 //! `lam_selected`), which is one allocation a row the trait asks for and
 //! these bounds include; the bank steps through `AnyModel::step_into`
-//! instead, into one kept `Step`, which the models it matters for fill in
+//! instead, into one kept `Step`, which every model fills in
 //! place (M-4, the last test). Each bound is the count the fix leaves; the
 //! count before it is beside it, so a bound that loosens says what came
 //! back.
@@ -244,9 +244,12 @@ fn case_per_row(id: &str, into: bool) -> f64 {
 /// at the default weight-share cadence), one allocation fewer than `step`.
 /// `sgd` joined them once task 271's rewrite of its Huber scale had landed
 /// (task 270 (h)), under its squared loss and under Huber's, whose scale is
-/// a sketch of `|e|` aged and fed each row. Each row: the bound through
-/// `step_into`, the bound through `step`, and `step`'s count before the
-/// change.
+/// a sketch of `|e|` aged and fed each row. Then every model's step was
+/// written into the caller's `Step` (task 285): `holt`, `ftrl`, `rls` and
+/// `kalman` allocate nothing a row, `micro` its rare new summary, `huber`
+/// what its solves do, and `lasso` its solves without its `pred` and
+/// `lam_selected`, two fewer. Each row: the bound through `step_into`, the
+/// bound through `step`, and `step`'s count before the change.
 #[test]
 fn the_cheap_models_step_into_a_kept_buffer_without_allocating() {
     for (id, into_bound, step_bound, before) in [
@@ -258,12 +261,20 @@ fn the_cheap_models_step_into_a_kept_buffer_without_allocating() {
         ("ewridge_k20", 1.48, 2.48, 2.48),
         ("sgd", 0.0, 1.0, 1.0),
         ("sgd_huber", 0.0, 1.0, 1.0),
+        ("holt", 0.0, 1.0, 1.0),
+        ("ftrl", 0.0, 1.0, 1.0),
+        ("rls", 0.0, 1.0, 1.0),
+        ("kalman", 0.0, 1.0, 1.0),
+        ("micro", 0.05, 1.05, 1.05),
+        ("huber_k20", 0.77, 1.77, 1.77),
+        ("lasso_k20", 0.77, 2.77, 2.77),
     ] {
         let (step, into) = (case_per_row(id, false), case_per_row(id, true));
         check(&format!("{id} through step_into"), into, into_bound, before);
         check(&format!("{id} through step"), step, step_bound, before);
+        // Counts over `ROWS`, compared within their rounding.
         assert!(
-            into <= step - 1.0,
+            into + 1.0 <= step + 1e-9,
             "{id}: step_into {into} a row, step {step}: not one fewer"
         );
     }

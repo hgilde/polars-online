@@ -2335,12 +2335,20 @@ impl OnlineModel for Kalman {
         Some(crate::CoefVariance::Absolute(per))
     }
 
-    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+    fn step_into(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        out: &mut Step,
+    ) {
         // A value that is not usable, by the rule every model keeps
         // (`OnlineModel`): a feature that is not a number reached the
         // standardiser's moments (docs/PLAN.md task 183).
         if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
-            return refused;
+            *out = refused;
+            return;
         }
         self.ensure_buffers();
         let k = self.cfg.k_total();
@@ -2395,7 +2403,9 @@ impl OnlineModel for Kalman {
         // back (`KalmanCfg::min_weight_holds_learning`).
         let n_eff = self.stats.n_eff();
         let ready = n_eff >= self.cfg.min_weight;
-        let mut pred = vec![f64::NAN; m];
+        let pred = &mut out.pred;
+        pred.clear();
+        pred.resize(m, f64::NAN);
         if ready || !self.cfg.min_weight_holds_learning {
             for (j, p) in pred.iter_mut().enumerate() {
                 if self.predicts(j) {
@@ -2652,11 +2662,8 @@ impl OnlineModel for Kalman {
         if !ready {
             pred.fill(f64::NAN);
         }
-        Step {
-            pred,
-            n_eff,
-            extra: None,
-        }
+        out.n_eff = n_eff;
+        out.extra = None;
     }
 
     /// The prediction at another `min_weight` floor, set for the read and

@@ -1057,15 +1057,22 @@ impl Bocpd {
     /// all and they are read, in order, as rows of a model that had it from
     /// the start, as `hmm` replays its warm-up into its states. A row of no
     /// weight learns nothing: its step joins the next row's.
-    fn hold(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
-        let out = crate::Step {
-            pred: vec![f64::NAN; Self::n_outputs_for(self.cfg.n_features)],
-            n_eff: self.n_eff,
-            extra: None,
-        };
+    fn hold(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        out: &mut crate::Step,
+    ) {
+        out.pred.clear();
+        out.pred
+            .resize(Self::n_outputs_for(self.cfg.n_features), f64::NAN);
+        out.n_eff = self.n_eff;
+        out.extra = None;
         if weight <= 0.0 {
             self.warm_gap += d_clock;
-            return out;
+            return;
         }
         self.warm.push(WarmRow {
             x: x.to_vec(),
@@ -1086,6 +1093,8 @@ impl Bocpd {
             // What the rows learn is counted as they are read, failures
             // left out, as on any row.
             self.n_eff = 0.0;
+            // What the replayed rows report is not reported.
+            let mut replayed = crate::Step::default();
             for r in &rows {
                 let hazard = [r.hazard];
                 let y: &[Option<f64>] = if self.cfg.hazard_from_row {
@@ -1093,10 +1102,9 @@ impl Bocpd {
                 } else {
                     &[]
                 };
-                self.learn(&r.x, y, r.d_clock, r.weight);
+                self.learn(&r.x, y, r.d_clock, r.weight, &mut replayed);
             }
         }
-        out
     }
 
     /// A row of weight `w > 0` against the mean weight of the rows learned
@@ -1295,12 +1303,31 @@ impl Bocpd {
         joint: &[f64],
         next: Option<Branches>,
         rel: f64,
-        mut cache: Option<&mut GammaCache>,
+        cache: Option<&mut GammaCache>,
     ) -> (Vec<f64>, Option<Update>) {
+        let mut out = Vec::new();
+        let update = self.read_into(x, joint, next, rel, cache, &mut out);
+        (out, update)
+    }
+
+    /// [`Self::read`], the reported row written over `out`.
+    fn read_into(
+        &self,
+        x: &[f64],
+        joint: &[f64],
+        next: Option<Branches>,
+        rel: f64,
+        mut cache: Option<&mut GammaCache>,
+        out: &mut Vec<f64>,
+    ) -> Option<Update> {
         let d = self.cfg.n_features;
-        let nan = vec![f64::NAN; Self::n_outputs_for(d)];
+        let nan = |out: &mut Vec<f64>| {
+            out.clear();
+            out.resize(Self::n_outputs_for(d), f64::NAN);
+        };
         let Some(next) = next else {
-            return (nan, None);
+            nan(out);
+            return None;
         };
         let r = self.runs.len();
         let mut logpi = Vec::with_capacity(r);
@@ -1309,7 +1336,8 @@ impl Bocpd {
         for run in &self.runs {
             let Some((lp, mode)) = self.log_predictive(run, x, &mu0, &psi0, cache.as_deref_mut())
             else {
-                return (nan, None);
+                nan(out);
+                return None;
             };
             logpi.push(lp);
             weights.push(if self.cfg.emission == BocpdEmission::Robust {
@@ -1381,9 +1409,10 @@ impl Bocpd {
         let new = grow(&weights);
         let z = log_sum_exp(&new);
         if !z.is_finite() {
-            return (nan, None);
+            nan(out);
+            return None;
         }
-        let mut out = Vec::with_capacity(Self::n_outputs_for(d));
+        out.clear();
         // `P(rₜ ≤ 1)`: see the note above the emission enum. Under a per-row
         // hazard `r = 0` alone is exactly the hazard; on the clock it holds
         // nothing, and this is the chance that the row began a run.
@@ -1407,9 +1436,9 @@ impl Bocpd {
             (grow(&scaled), scaled, None)
         };
         if self.n_eff < self.cfg.min_weight {
-            return (nan, Some(update));
+            nan(out);
         }
-        (out, Some(update))
+        Some(update)
     }
 
     /// Drop the runs below `prune_below` and fold the runs at the length cap.
@@ -1504,19 +1533,27 @@ impl Bocpd {
 }
 
 impl crate::OnlineModel for Bocpd {
-    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
+    fn step_into(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        out: &mut crate::Step,
+    ) {
         // A value that is not usable, by the rule every model keeps
         // (`OnlineModel`): learned as a row of weight 0 -- on the clock its
         // step's chance applies, and nothing is counted, neither in `n_eff`
         // nor as a failure -- and a hazard that is not usable is absent
         // (the module docs; docs/PLAN.md task 183).
         if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
-            return refused;
+            *out = refused;
+            return;
         }
         if self.warming() {
-            return self.hold(x, y, d_clock, weight);
+            return self.hold(x, y, d_clock, weight, out);
         }
-        self.learn(x, y, d_clock, weight)
+        self.learn(x, y, d_clock, weight, out);
     }
 
     /// Never told the row's hazard column, so a per-row hazard read from
@@ -1613,7 +1650,14 @@ impl Bocpd {
     /// A row read against the prior as it stands and learned (Algorithm 1;
     /// the module docs): every row once the prior is set, and the warm-up's
     /// rows when it is.
-    fn learn(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
+    fn learn(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        out: &mut crate::Step,
+    ) {
         // A row of no weight is scored as a row of the mean weight would be.
         let (rel, w_mean, w_rows) = if weight > 0.0 {
             self.relative(weight)
@@ -1624,13 +1668,10 @@ impl Bocpd {
         let joint = moved.as_deref().unwrap_or(self.logjoint.as_slice());
         // The gamma cache, out of `self` while `read` borrows it.
         let mut gammas = std::mem::take(&mut self.gammas);
-        let (pred, extra) = self.read(x, joint, next, rel, Some(&mut gammas));
+        let extra = self.read_into(x, joint, next, rel, Some(&mut gammas), &mut out.pred);
         self.gammas = gammas;
-        let out = crate::Step {
-            pred,
-            n_eff: self.n_eff,
-            extra: None,
-        };
+        out.n_eff = self.n_eff;
+        out.extra = None;
         if weight <= 0.0 {
             // Advance the clock and learn nothing: no run sees the row, and
             // nothing here decays, so `n_eff` -- the accumulated weight --
@@ -1640,7 +1681,7 @@ impl Bocpd {
             if let Some(moved) = moved {
                 self.logjoint = moved;
             }
-            return out;
+            return;
         }
         let Some((new, weights, z)) = extra else {
             // The predictive could not be evaluated: the row reports nulls
@@ -1659,7 +1700,7 @@ impl Bocpd {
             if let Some(moved) = moved {
                 self.logjoint = moved;
             }
-            return out;
+            return;
         };
         self.n_eff += weight;
         (self.w_mean, self.w_rows) = (w_mean, w_rows);
@@ -1681,7 +1722,6 @@ impl Bocpd {
         }
         self.logjoint = new;
         self.prune(z);
-        out
     }
 }
 

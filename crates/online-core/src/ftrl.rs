@@ -427,11 +427,19 @@ impl OnlineModel for Ftrl {
         true
     }
 
-    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+    fn step_into(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        out: &mut Step,
+    ) {
         // A value that is not usable, by the rule every model keeps
         // (`OnlineModel`).
         if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
-            return refused;
+            *out = refused;
+            return;
         }
         self.ensure_buffers();
         let k = self.cfg.k_total();
@@ -457,7 +465,9 @@ impl OnlineModel for Ftrl {
         // Each target's `min_weight` reads its own weight.
         let n_eff = self.w_sum;
 
-        let mut pred = vec![f64::NAN; m];
+        let pred = &mut out.pred;
+        pred.clear();
+        pred.resize(m, f64::NAN);
         let pen = self.penalties();
         for j in 0..m {
             // Proximal weights from the state before this row's update.
@@ -482,11 +492,8 @@ impl OnlineModel for Ftrl {
             self.w_target[j] = lam * self.w_target[j] + if taught { weight } else { 0.0 };
         }
         self.w_sum = lam * self.w_sum + weight;
-        Step {
-            pred,
-            n_eff,
-            extra: None,
-        }
+        out.n_eff = n_eff;
+        out.extra = None;
     }
 
     /// The prediction at another `min_weight` floor, set for the read and

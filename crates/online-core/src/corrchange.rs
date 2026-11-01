@@ -1243,15 +1243,23 @@ impl CorrChange {
     /// it flags. That is the reading `predict` has to give too, since
     /// `predict` does not know the weight (docs/REVIEW-E54-E64.md CC2).
     fn read(&self, x: &[f64]) -> Vec<f64> {
-        let mut pred = vec![f64::NAN; Self::n_outputs_for()];
+        let mut pred = Vec::new();
+        self.read_into(x, &mut pred);
+        pred
+    }
+
+    /// [`Self::read`], written over `pred`.
+    fn read_into(&self, x: &[f64], pred: &mut Vec<f64>) {
+        pred.clear();
+        pred.resize(Self::n_outputs_for(), f64::NAN);
         let Some(row) = self.ring_row(x) else {
-            return pred;
+            return;
         };
         let since = self.since_flag.unwrap_or(0) + 1;
         match self.cfg.kind {
             CorrChangeKind::Monitor => {
                 if self.ring.len() + 1 < self.cfg.span_rows {
-                    return pred;
+                    return;
                 }
                 let mut rows: Vec<Vec<f64>> = self.ring.iter().cloned().collect();
                 rows.push(row);
@@ -1285,7 +1293,7 @@ impl CorrChange {
                 let w = self.cfg.span_rows;
                 let held = self.ring.len();
                 if held + 1 < 2 * w {
-                    return pred;
+                    return;
                 }
                 let skip = held + 1 - 2 * w;
                 let ring = &self.ring;
@@ -1308,10 +1316,10 @@ impl CorrChange {
             }
             CorrChangeKind::Sequential => {
                 let Some(mon) = &self.monitoring else {
-                    return pred;
+                    return;
                 };
                 if mon.rows.is_empty() {
-                    return pred;
+                    return;
                 }
                 let (stat, at) = self.sequential_stat(mon, &row);
                 let crit = self.seq_crit;
@@ -1325,20 +1333,30 @@ impl CorrChange {
                 }
             }
         }
-        pred
     }
 }
 
 impl crate::OnlineModel for CorrChange {
-    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
+    fn step_into(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        out: &mut crate::Step,
+    ) {
         // A value that is not usable, by the rule every model keeps
         // (`OnlineModel`): a row with a weight was counted in `n_eff`, and
         // fed to the scalar statistic's moments, whatever its features
         // held (docs/PLAN.md task 183).
         if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
-            return refused;
+            *out = refused;
+            return;
         }
-        let out = self.predict(x, d_clock);
+        // `predict`'s answer, read before the row: `x` is usable here.
+        self.read_into(x, &mut out.pred);
+        out.n_eff = self.n_eff;
+        out.extra = None;
         let lam = self.cfg.decay.factor(d_clock);
         if weight <= 0.0 {
             // Hard rule 8: `n_eff` is the accumulated weight before the
@@ -1348,14 +1366,14 @@ impl crate::OnlineModel for CorrChange {
             if self.cfg.scalar {
                 self.diag.update(x, lam, 0.0);
             }
-            return out;
+            return;
         }
         let row = self.ring_row(x);
         if self.cfg.scalar {
             self.diag.update(x, lam, weight);
         }
         self.n_eff = lam * self.n_eff + weight;
-        let Some(row) = row else { return out };
+        let Some(row) = row else { return };
         self.since_flag = Some(self.since_flag.unwrap_or(0) + 1);
         let flagged = out.pred[2] == 1.0;
         if flagged {
@@ -1397,7 +1415,6 @@ impl crate::OnlineModel for CorrChange {
                 }
             }
         }
-        out
     }
 
     fn predict(&self, x: &[f64], d_clock: f64) -> crate::Step {

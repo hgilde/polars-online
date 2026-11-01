@@ -2705,7 +2705,14 @@ impl OnlineModel for Marginal {
         }))
     }
 
-    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+    fn step_into(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        out: &mut Step,
+    ) {
         // Rows held for a sharded flush were learned first: this row
         // follows them (`Marginal::step_sharded`).
         if self.defer.n > 0 {
@@ -2718,9 +2725,13 @@ impl OnlineModel for Marginal {
         // of weight 0 takes no ring slot and no bin warm-up row, so neither
         // does a refused row.
         if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
-            return refused;
+            *out = refused;
+            return;
         }
-        let out = self.predict(x, d_clock);
+        // `predict`'s answer, read before the row: no slots, and the weight.
+        out.pred.clear();
+        out.n_eff = self.n_eff();
+        out.extra = None;
         let lam = self.cfg.decay.factor(d_clock);
         self.offer_snapshot(d_clock, lam);
         if self.lag.is_some() {
@@ -2744,7 +2755,6 @@ impl OnlineModel for Marginal {
         {
             lag.push(x, y);
         }
-        out
     }
 
     /// No prediction slots: the step reports `n_eff` and nothing else --

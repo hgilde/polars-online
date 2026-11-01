@@ -1129,13 +1129,21 @@ impl Robust {
     ///
     /// `floor` is the model's floor ([`RobustCfg::floor`]), read once a row.
     fn slot_predictions(&self, x: &[f64], floor: u32) -> Vec<f64> {
+        let mut pred = Vec::new();
+        self.slot_predictions_into(x, floor, &mut pred);
+        pred
+    }
+
+    /// [`Self::slot_predictions`], written over `pred`.
+    fn slot_predictions_into(&self, x: &[f64], floor: u32, pred: &mut Vec<f64>) {
         let nc = self.cfg.n_sets();
         let least = if self.cfg.min_weight_holds_learning {
             0.0
         } else {
             f64::MIN_POSITIVE
         };
-        let mut pred = vec![f64::NAN; self.cfg.n_targets * nc];
+        pred.clear();
+        pred.resize(self.cfg.n_targets * nc, f64::NAN);
         if let Some(beta) = &self.beta {
             for (slot, p) in pred.iter_mut().enumerate() {
                 let j = slot / nc;
@@ -1146,7 +1154,6 @@ impl Robust {
                 }
             }
         }
-        pred
     }
 
     /// [`OnlineModel::predict`] with the model's floor given, as the step
@@ -1169,6 +1176,19 @@ impl Robust {
                 .collect(),
         });
         Step { pred, n_eff, extra }
+    }
+
+    /// [`Self::predict_at`]'s `pred` and `n_eff` for a row whose features
+    /// are usable, written over `out`; the step sets `extra` itself.
+    fn predict_at_into(&self, x: &[f64], floor: u32, out: &mut Step) {
+        if self.withheld() {
+            out.pred.clear();
+            out.pred
+                .resize(self.cfg.n_targets * self.cfg.n_sets(), f64::NAN);
+        } else {
+            self.slot_predictions_into(x, floor, &mut out.pred);
+        }
+        out.n_eff = self.w_raw;
     }
 
     pub fn sigma2(&self) -> &[f64] {
@@ -2134,7 +2154,14 @@ impl OnlineModel for Robust {
         true
     }
 
-    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+    fn step_into(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        out: &mut Step,
+    ) {
         // A value that is not usable, by the rule every model keeps
         // (`OnlineModel`): learned as a row of weight 0, so counted nowhere,
         // `n_eff` and the target's present weight included. A feature that
@@ -2142,7 +2169,8 @@ impl OnlineModel for Robust {
         // no finite prediction, and was learned there (task 182, which then
         // refused it in that arm but counted it).
         if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
-            return refused;
+            *out = refused;
+            return;
         }
         let m = self.cfg.n_targets;
         let k = self.cfg.k_total();
@@ -2171,7 +2199,7 @@ impl OnlineModel for Robust {
         let floor = self.cfg.floor_at(weighing);
 
         // ---- predict (state before the update) ----
-        let mut out = self.predict_at(x, d_clock, floor);
+        self.predict_at_into(x, floor, out);
         // The fit learns from the prediction it makes, whether or not
         // `min_weight` withholds it from the output; only a state written
         // before schema 64 learns from the output's
@@ -2182,8 +2210,16 @@ impl OnlineModel for Robust {
         let pred = own.as_deref().unwrap_or(&out.pred);
         // Each target's scale as this row's cut reads it, after its decay
         // and before its residual (`RobustCfg::emit_scale`).
+        // The buffer `out` brought, where it holds one.
         let emit = self.cfg.emit_scale;
-        let mut seen = if emit { vec![f64::NAN; m] } else { Vec::new() };
+        let mut seen = match out.extra.take() {
+            Some(crate::Extra::Huber { scale }) if emit => scale,
+            _ => Vec::new(),
+        };
+        if emit {
+            seen.clear();
+            seen.resize(m, f64::NAN);
+        }
 
         // ---- the solve schedule, decided before the targets learn the row:
         // it reads nothing they move, and a band row whose system the solve
@@ -2455,10 +2491,7 @@ impl OnlineModel for Robust {
         for &j in &refits {
             self.refit_target(j);
         }
-        if emit {
-            out.extra = Some(crate::Extra::Huber { scale: seen });
-        }
-        out
+        out.extra = emit.then_some(crate::Extra::Huber { scale: seen });
     }
 
     /// The prediction at another `min_weight` floor, set for the read and

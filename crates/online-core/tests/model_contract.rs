@@ -2650,7 +2650,7 @@ fn predict_is_the_step_without_the_step<M: OnlineModel + Clone>(
         let step = m.step(&x, &y, d, w);
         same_step(kind, i, &p, &step);
         if i % 3 == 0 {
-            kept = stale_step();
+            kept = stale_step(i / 3);
         }
         twin.step_into(&x, &y, d, w, &mut kept);
         assert!(
@@ -2971,10 +2971,14 @@ fn same_number(u: f64, v: f64) -> bool {
 /// Two steps that report the same thing to the bit, NaN for NaN: every
 /// slot, `n_eff` and `extra`.
 fn same_bits(a: &Step, b: &Step) -> bool {
+    let same = |u: &[f64], v: &[f64]| {
+        u.len() == v.len() && u.iter().zip(v).all(|(p, q)| same_number(*p, *q))
+    };
     let extra = match (&a.extra, &b.extra) {
         (Some(Extra::Lasso { lam_selected: u }), Some(Extra::Lasso { lam_selected: v })) => {
-            u.len() == v.len() && u.iter().zip(v).all(|(p, q)| same_number(*p, *q))
+            same(u, v)
         }
+        (Some(Extra::Huber { scale: u }), Some(Extra::Huber { scale: v })) => same(u, v),
         (u, v) => u == v,
     };
     a.pred.len() == b.pred.len()
@@ -3028,7 +3032,7 @@ fn step_into_is_step_on_a_stream<M: OnlineModel>(
         };
         let step = m.step(&x, &y, d, w);
         if i % 3 == 0 {
-            kept = stale_step();
+            kept = stale_step(i / 3);
         }
         twin.step_into(&x, &y, d, w, &mut kept);
         assert!(
@@ -3048,14 +3052,24 @@ fn step_into_is_step_on_a_stream<M: OnlineModel>(
 }
 
 /// A buffer holding another row's answer, of the wrong length and with an
-/// `extra`, for [`OnlineModel::step_into`] to overwrite whole.
-fn stale_step() -> Step {
+/// `extra` of the wrong length, for [`OnlineModel::step_into`] to overwrite
+/// whole: `lasso`'s variant for an even `which`, `huber`'s for an odd one,
+/// so a model that reuses its own variant's vector meets it stale as well
+/// as the other's (task 285).
+fn stale_step(which: usize) -> Step {
+    let extra = if which % 2 == 0 {
+        Extra::Lasso {
+            lam_selected: vec![0.5; 3],
+        }
+    } else {
+        Extra::Huber {
+            scale: vec![-1.5; 5],
+        }
+    };
     Step {
         pred: vec![7.25; 13],
         n_eff: -3.5,
-        extra: Some(Extra::Lasso {
-            lam_selected: vec![0.5; 3],
-        }),
+        extra: Some(extra),
     }
 }
 
@@ -3069,7 +3083,7 @@ fn step_into_is_step<M: OnlineModel + Clone>(
 ) {
     let (mut a, mut b) = (m.clone(), m.clone());
     let want = a.step(x, y, d, w);
-    let mut got = stale_step();
+    let mut got = stale_step(0);
     b.step_into(x, y, d, w, &mut got);
     assert!(
         same_bits(&got, &want),
@@ -3355,6 +3369,24 @@ fn robust_predict_is_the_step() {
         let mut cfg = huber_mad_cfg();
         cfg.standardize = standardize;
         predict_is_the_step_without_the_step(move || Robust::new(cfg.clone()).unwrap(), 2, false);
+    }
+}
+
+/// `huber` with its scale emitted, in both scales, with and without a
+/// scaler: the step into a kept buffer reuses the `Extra::Huber` vector it
+/// left there, and meets it stale and of the wrong length, and still
+/// reports `step`'s bits and leaves its state (task 285).
+#[test]
+fn robust_step_into_is_step_with_the_emitted_scale() {
+    for base in [robust_cfg(ROBUST_LOSSES[0]), huber_mad_cfg()] {
+        for standardize in [false, true] {
+            let cfg = RobustCfg {
+                emit_scale: true,
+                standardize,
+                ..base.clone()
+            };
+            step_into_is_step_on_a_stream(move || Robust::new(cfg.clone()).unwrap(), 2, false);
+        }
     }
 }
 

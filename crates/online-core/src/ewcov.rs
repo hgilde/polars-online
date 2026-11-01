@@ -2317,12 +2317,6 @@ impl crate::OnlineModel for EwCovModel {
         }))
     }
 
-    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
-        let mut out = crate::Step::default();
-        self.step_into(x, y, d_clock, weight, &mut out);
-        out
-    }
-
     /// The step, into the caller's buffer (task 270, M-4).
     fn step_into(
         &mut self,

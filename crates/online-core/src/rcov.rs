@@ -1101,22 +1101,32 @@ fn clip_psd(cov: &[f64], k: usize) -> Option<(Vec<f64>, bool)> {
 }
 
 impl crate::OnlineModel for Rcov {
-    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
+    fn step_into(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        out: &mut crate::Step,
+    ) {
         // A value that is not usable, by the rule every model keeps
         // (`OnlineModel`): a row with a weight was a return of the block,
         // whatever its features held, and a NaN in the sums never leaves
         // them (docs/PLAN.md task 183).
         if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
-            return refused;
+            *out = refused;
+            return;
         }
-        let out = self.predict(x, d_clock);
+        // `predict`'s answer, read before the row: no slots, and the weight.
+        out.pred.clear();
+        out.n_eff = self.w_sum;
+        out.extra = None;
         // A zero-weight row advances the clock and is not a return of the
         // block: it enters no accumulator and no ring.
         if weight > 0.0 {
             self.push(x);
             self.w_sum += 1.0;
         }
-        out
     }
 
     fn predict(&self, _x: &[f64], _d_clock: f64) -> crate::Step {

@@ -491,7 +491,15 @@ impl Micro {
     /// The six outputs: `cluster`, `dist`, `micro_id`, `outlier`,
     /// `n_clusters`, `n_micro`; all NaN when not ready.
     fn score(&self, dec: Option<&Decision>, n_eff: f64) -> Vec<f64> {
-        let mut pred = vec![f64::NAN; 6];
+        let mut pred = Vec::new();
+        self.score_into(dec, n_eff, &mut pred);
+        pred
+    }
+
+    /// [`Self::score`], written over `pred`.
+    fn score_into(&self, dec: Option<&Decision>, n_eff: f64, pred: &mut Vec<f64>) {
+        pred.clear();
+        pred.resize(6, f64::NAN);
         if let Some(dec) = dec.filter(|_| n_eff >= self.cfg.min_weight) {
             if let Some((jp, d)) = dec.nearest_potential {
                 pred[0] = self.mc[jp].label as f64;
@@ -505,7 +513,6 @@ impl Micro {
             pred[4] = self.n_clusters as f64;
             pred[5] = self.mc.len() as f64;
         }
-        pred
     }
 
     fn learn_row(&mut self, z: &[f64], w: f64, dec: &Decision) {
@@ -747,12 +754,20 @@ impl OnlineModel for Micro {
         self.since_prune.stamp_next_on_rows(stamp);
     }
 
-    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+    fn step_into(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        out: &mut Step,
+    ) {
         // A value that is not usable, by the rule every model keeps
         // (`OnlineModel`): a feature or a weight past the input bound was
         // learned, the feature as a summary of its own.
         if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
-            return refused;
+            *out = refused;
+            return;
         }
         let (lam, lam_long) = self.factors.of(self.cfg.decay, d_clock);
         let n_before = self.moments.w;
@@ -770,7 +785,7 @@ impl OnlineModel for Micro {
         // Decided once, as a row of the mean weight, and read before
         // anything moves.
         let dec = valid.then(|| self.decide(x, 1.0));
-        let pred = self.score(dec.as_ref(), n_before);
+        self.score_into(dec.as_ref(), n_before, &mut out.pred);
 
         if let Some(dec) = dec.filter(|_| learn) {
             self.w_rows += 1.0;
@@ -795,12 +810,8 @@ impl OnlineModel for Micro {
         }
         self.moments
             .metric(self.cfg.standardize, self.cfg.scale_floor, &mut self.mw);
-
-        Step {
-            pred,
-            n_eff: n_before,
-            extra: None,
-        }
+        out.n_eff = n_before;
+        out.extra = None;
     }
 
     fn predict(&self, x: &[f64], d_clock: f64) -> Step {
