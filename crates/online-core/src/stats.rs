@@ -48,6 +48,14 @@ const REPRESENTATIVE: [f64; 64] = {
     t
 };
 
+#[cfg(test)]
+thread_local! {
+    /// The representatives on this thread formed from a bucket's bounds,
+    /// not read from [`REPRESENTATIVE`]: the two are the same bits, so only
+    /// this shows which ran.
+    static FROM_BOUNDS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 /// The decay a sketch takes before its buckets are rescaled to it.
 const RENORM: f64 = 5.421_010_862_427_522e-20; // 2^-64
 
@@ -335,6 +343,8 @@ impl EwQuantile {
         if (-1022..=1023).contains(&e) {
             REPRESENTATIVE[(k & 63) as usize] * f64::from_bits(((e + 1023) as u64) << 52)
         } else {
+            #[cfg(test)]
+            FROM_BOUNDS.with(|c| c.set(c.get() + 1));
             Self::representative_of_bounds(k)
         }
     }
@@ -1101,6 +1111,30 @@ mod tests {
             );
         }
         assert!(EwQuantile::representative(hi).is_finite());
+    }
+
+    /// Mutants of 1b7e5178: the table and the bounds give the same bits, so
+    /// only the path tells which ran. Every bucket a positive normal float
+    /// lands in reads the table, all 130,944 of them (2,046 octaves of 64),
+    /// and only the octave past each end forms its representative from the
+    /// bounds.
+    #[test]
+    fn every_normal_bucket_reads_the_table() {
+        let (lo, hi) = (
+            EwQuantile::index(f64::MIN_POSITIVE),
+            EwQuantile::index(f64::MAX),
+        );
+        let from_bounds = |ks: std::ops::RangeInclusive<i32>| {
+            FROM_BOUNDS.with(|c| c.set(0));
+            for k in ks {
+                std::hint::black_box(EwQuantile::representative(k));
+            }
+            FROM_BOUNDS.with(std::cell::Cell::get)
+        };
+        assert_eq!(from_bounds(lo..=hi), 0, "a normal bucket from its bounds");
+        assert_eq!(hi - lo + 1, 2046 * 64);
+        assert_eq!(from_bounds(lo - 64..=lo - 1), 64, "the octave below");
+        assert_eq!(from_bounds(hi + 1..=hi + 64), 64, "the octave above");
     }
 
     /// The exponentially weighted quantile by its definition, from every

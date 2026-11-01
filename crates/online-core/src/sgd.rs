@@ -1633,6 +1633,57 @@ pub(crate) fn standardize_row(
     let (hi, lo, c) = sc.parts();
     let (hi, lo, c) = (&hi[off..off + n], &lo[off..off + n], &c[off..off + n]);
     let (z, mean, scale) = (&mut z[..n], &mut mean[..n], &mut scale[..n]);
+    // Four features a step in AVX2's 256-bit lanes where the CPU has them
+    // (pulp's check at run time, and its safe calls: no `unsafe` here), the
+    // loop below everywhere else: on x86-64 without AVX2, on any other
+    // architecture, and below `LANES_FROM` features. Baseline x86-64 has
+    // only SSE2's two lanes, and the compiler does not vectorize this loop
+    // even into those. Each feature is its own lane and runs `moments_of`'s
+    // operations in the same order, each rounded once as IEEE 754 rounds
+    // it, with no fused multiply-add, so the two paths agree to the bit.
+    #[cfg(target_arch = "x86_64")]
+    if n >= LANES_FROM
+        && let Some(simd) = x86_v3()
+    {
+        let (a, b) = inc.weights();
+        pulp::Simd::vectorize(
+            simd,
+            StandardizeLanes {
+                off,
+                a,
+                b,
+                x,
+                hi,
+                lo,
+                c,
+                z,
+                mean,
+                scale,
+            },
+        );
+        return;
+    }
+    standardize_scalar(&inc, off, x, hi, lo, c, z, mean, scale);
+}
+
+/// [`standardize_row`]'s loop, one feature at a time: the fallback where no
+/// vector unit is dispatched to, and the reference the lanes are held to.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+pub(crate) fn standardize_scalar(
+    inc: &crate::ewdiag::Including<'_>,
+    off: usize,
+    x: &[f64],
+    hi: &[f64],
+    lo: &[f64],
+    c: &[f64],
+    z: &mut [f64],
+    mean: &mut [f64],
+    scale: &mut [f64],
+) {
+    let n = x.len();
+    let (hi, lo, c) = (&hi[..n], &lo[..n], &c[..n]);
+    let (z, mean, scale) = (&mut z[..n], &mut mean[..n], &mut scale[..n]);
     for i in 0..n {
         let xi = x[i];
         let (m, v, dev) = inc.moments_of(hi[i], lo[i], c[i], xi);
@@ -1651,6 +1702,130 @@ pub(crate) fn standardize_row(
         z[i] = dev / s;
         mean[i] = m;
         scale[i] = s;
+    }
+}
+
+/// The width from which [`standardize_row`] takes the vector lanes: below
+/// it the dispatch and the features past the last full vector cost more
+/// than the lanes save. Measured on x86-64 (Linux, an AVX2 CPU), the time
+/// of sgd's whole row with the lanes against the loop alone: +4 to +10% at
+/// 2 to 6 features, even at 8 to 12, −7% at 16, −11% at 20 and −15% at 80.
+#[cfg(target_arch = "x86_64")]
+const LANES_FROM: usize = 12;
+
+/// AVX2 (with the rest of x86-64-v3) where this CPU has it, looked up once:
+/// pulp's own check of the CPU's feature flags, safe to call, its answer
+/// kept for every later row.
+#[cfg(target_arch = "x86_64")]
+fn x86_v3() -> Option<pulp::x86::V3> {
+    static V3: std::sync::OnceLock<Option<pulp::x86::V3>> = std::sync::OnceLock::new();
+    *V3.get_or_init(pulp::x86::V3::try_new)
+}
+
+/// [`standardize_row`] across vector lanes: [`crate::ewdiag::Including::moments_of`]
+/// and the scale's choice, operation for operation, a lane a feature.
+#[cfg(target_arch = "x86_64")]
+struct StandardizeLanes<'a> {
+    off: usize,
+    a: f64,
+    b: f64,
+    x: &'a [f64],
+    hi: &'a [f64],
+    lo: &'a [f64],
+    c: &'a [f64],
+    z: &'a mut [f64],
+    mean: &'a mut [f64],
+    scale: &'a mut [f64],
+}
+
+#[cfg(target_arch = "x86_64")]
+impl pulp::WithSimd for StandardizeLanes<'_> {
+    type Output = ();
+
+    #[inline(always)]
+    fn with_simd<S: pulp::Simd>(self, simd: S) -> Self::Output {
+        let Self {
+            off,
+            a,
+            b,
+            x,
+            hi,
+            lo,
+            c,
+            z,
+            mean,
+            scale,
+        } = self;
+        let ab = a * b;
+        let (xv, xt) = S::as_simd_f64s(x);
+        let (hv, ht) = S::as_simd_f64s(hi);
+        let (lv, lt) = S::as_simd_f64s(lo);
+        let (cv, ct) = S::as_simd_f64s(c);
+        let (zv, zt) = S::as_mut_simd_f64s(z);
+        let (mv, mt) = S::as_mut_simd_f64s(mean);
+        let (sv, st) = S::as_mut_simd_f64s(scale);
+        let (va, vb, vab) = (simd.splat_f64s(a), simd.splat_f64s(b), simd.splat_f64s(ab));
+        let (zero, one) = (simd.splat_f64s(0.0), simd.splat_f64s(1.0));
+        let inf = simd.splat_f64s(f64::INFINITY);
+        for i in 0..xv.len() {
+            let xi = xv[i];
+            // `moments_of`: d, the centred moment, Kahan's step of the mean.
+            let d = simd.sub_f64s(simd.sub_f64s(xi, hv[i]), lv[i]);
+            let c2 = simd.add_f64s(
+                simd.mul_f64s(va, cv[i]),
+                simd.mul_f64s(simd.mul_f64s(vab, d), d),
+            );
+            let y = simd.add_f64s(simd.mul_f64s(vb, d), lv[i]);
+            let t = simd.add_f64s(hv[i], y);
+            let lo2 = simd.sub_f64s(y, simd.sub_f64s(t, hv[i]));
+            let m = t;
+            // `clamp_rounding`: 0 where `c2 <= 0`, NaN kept.
+            let v = simd.select_f64s(simd.less_than_or_equal_f64s(c2, zero), zero, c2);
+            let dev = simd.sub_f64s(simd.sub_f64s(xi, m), lo2);
+            if off == 0 {
+                let raw = simd.add_f64s(v, simd.mul_f64s(m, m));
+                let pos = simd.greater_than_f64s(raw, zero);
+                let r = simd.sqrt_f64s(raw);
+                zv[i] = simd.select_f64s(pos, simd.div_f64s(xi, r), xi);
+                mv[i] = zero;
+                sv[i] = simd.select_f64s(pos, r, one);
+            } else {
+                // `variance_is_usable`: `v > 0` and finite.
+                let usable = simd.and_m64s(
+                    simd.greater_than_f64s(v, zero),
+                    simd.less_than_f64s(simd.abs_f64s(v), inf),
+                );
+                let s = simd.select_f64s(usable, simd.sqrt_f64s(v), one);
+                zv[i] = simd.div_f64s(dev, s);
+                mv[i] = m;
+                sv[i] = s;
+            }
+        }
+        // The features past the last full vector, one at a time.
+        for i in 0..xt.len() {
+            let xi = xt[i];
+            let d = crate::comp::dev(xi, ht[i], lt[i]);
+            let c2 = a * ct[i] + a * b * d * d;
+            let (mut h2, mut l2) = (ht[i], lt[i]);
+            crate::comp::add(&mut h2, &mut l2, b * d);
+            let v = crate::solve::clamp_rounding(c2);
+            let dev = crate::comp::dev(xi, h2, l2);
+            if off == 0 {
+                let raw = v + h2 * h2;
+                zt[i] = if raw > 0.0 { xi / raw.sqrt() } else { xi };
+                mt[i] = 0.0;
+                st[i] = if raw > 0.0 { raw.sqrt() } else { 1.0 };
+            } else {
+                let s = if crate::variance_is_usable(v, v + h2 * h2) {
+                    v.sqrt()
+                } else {
+                    1.0
+                };
+                zt[i] = dev / s;
+                mt[i] = h2;
+                st[i] = s;
+            }
+        }
     }
 }
 
@@ -2224,6 +2399,90 @@ impl OnlineModel for Sgd {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The dispatched `standardize_row` (AVX2 lanes where the CPU has them)
+    /// against the scalar loop, to the bit: random scalers and rows at every
+    /// width up to 37 (each remainder of a vector), with and without an
+    /// intercept, features held constant (no spread), and wide magnitudes.
+    /// On an x86-64 CPU with AVX2 the lanes run from `LANES_FROM` features;
+    /// elsewhere -- without AVX2, or on another architecture, such as an
+    /// arm64 Mac -- the dispatch takes the loop, and the test holds the loop
+    /// to itself.
+    #[test]
+    fn standardize_row_lanes_match_the_scalar_loop_to_the_bit() {
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let same = |a: f64, b: f64| a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan());
+        let mut checked = 0usize;
+        for k in 1..=37usize {
+            for off in [0usize, 1] {
+                for trial in 0..6 {
+                    let slots = k + off;
+                    let mut sc = EwDiag::new(slots);
+                    let scale_mag = [1e-6, 1.0, 1e6][trial % 3];
+                    let rows = 3 + (next() * 40.0) as usize;
+                    for r in 0..rows {
+                        let x: Vec<f64> = (0..slots)
+                            .map(|j| {
+                                if j % 5 == 3 && trial >= 3 {
+                                    2.5
+                                } else {
+                                    scale_mag * (next() * 2.0 - 1.0) + j as f64
+                                }
+                            })
+                            .collect();
+                        let w = if r % 7 == 6 { 0.0 } else { 0.5 + next() };
+                        sc.update(&x, 0.9 + 0.1 * next(), w);
+                    }
+                    let x: Vec<f64> = (0..k)
+                        .map(|j| {
+                            if j % 5 == 3 && trial >= 3 {
+                                2.5
+                            } else {
+                                scale_mag * (next() * 2.0 - 1.0)
+                            }
+                        })
+                        .collect();
+                    let lam = 0.95;
+                    let (mut z1, mut m1, mut s1) = (vec![0.0; k], vec![0.0; k], vec![0.0; k]);
+                    standardize_row(&sc, off, &x, lam, &mut z1, &mut m1, &mut s1);
+                    let inc = sc.including(scaler_decay(&sc, lam, 1.0));
+                    let (hi, lo, c) = sc.parts();
+                    let (mut z2, mut m2, mut s2) = (vec![0.0; k], vec![0.0; k], vec![0.0; k]);
+                    standardize_scalar(
+                        &inc,
+                        off,
+                        &x,
+                        &hi[off..off + k],
+                        &lo[off..off + k],
+                        &c[off..off + k],
+                        &mut z2,
+                        &mut m2,
+                        &mut s2,
+                    );
+                    for i in 0..k {
+                        assert!(
+                            same(z1[i], z2[i]) && same(m1[i], m2[i]) && same(s1[i], s2[i]),
+                            "k={k} off={off} trial={trial} i={i}: z {:?}/{:?} m {:?}/{:?} s {:?}/{:?}",
+                            z1[i],
+                            z2[i],
+                            m1[i],
+                            m2[i],
+                            s1[i],
+                            s2[i]
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 4000, "{checked}");
+    }
 
     fn lcg(state: &mut u64) -> f64 {
         *state = state

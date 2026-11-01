@@ -154,6 +154,28 @@ fn ew_cov_with_lags_allocates_no_more_than_without() {
     check("ew_cov k=20, lags 1..5", with, without, without + 3.0);
 }
 
+/// `huber` under `emit_huber_scale` reports each target's scale a row, into
+/// the vector the kept `Step` brings back from the row before (task 285),
+/// so stepped into one buffer it allocates no more a row than without the
+/// scales; a new vector of scales would be one more a row (the mutants of
+/// 1b7e5178, the guard on reusing it).
+#[test]
+fn huber_reports_its_scales_into_the_kept_buffer() {
+    let spec = |emit: bool| {
+        json!({"name": "m", "model": {"type": "huber", "emit_huber_scale": emit},
+               "targets": ["y0", "y1"], "features": names("x", 20), "clock": "t",
+               "half_life": 1000.0, "gap_cap": 100.0, "min_weight": 20.0})
+    };
+    let without = per_row_with(spec(false), 20, 2, true);
+    let with = per_row_with(spec(true), 20, 2, true);
+    check(
+        "huber k=20, two targets, scales emitted",
+        with,
+        without,
+        without + 1.0,
+    );
+}
+
 /// `deco` standardised the row and formed its block sums twice, once to
 /// report and once to learn (D-6).
 #[test]

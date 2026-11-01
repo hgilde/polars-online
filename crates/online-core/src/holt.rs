@@ -211,15 +211,23 @@ impl Holt {
         let s0 = self.fit_weight[j];
         let aged = self.fit_age[j] + s;
         let s0_new = s0 + w;
-        let age = s0 * aged / s0_new;
-        let spread = self.fit_spread[j] + s0 * w * aged * aged / s0_new;
+        // Each denominator is divided into once and its reciprocal
+        // multiplied by after: these values feed the next row's, so every
+        // division here sits on the chain one row waits on the last for,
+        // and a division takes several times a multiplication's latency.
+        // `w > 0` on any row that learns, so `s0_new > 0` and `r0` is
+        // finite; `rs` is formed only where `spread > 0`.
+        let r0 = 1.0 / s0_new;
+        let age = s0 * aged * r0;
+        let spread = self.fit_spread[j] + s0 * w * aged * aged * r0;
         self.fit_weight[j] = s0_new;
         self.fit_age[j] = age;
         self.fit_spread[j] = spread;
         if spread > 0.0 {
-            (w * (1.0 / s0_new + age * age / spread), w * age / spread)
+            let rs = 1.0 / spread;
+            (w * (r0 + age * age * rs), w * age * rs)
         } else {
-            (w / s0_new, 0.0)
+            (w * r0, 0.0)
         }
     }
 
@@ -352,8 +360,12 @@ impl OnlineModel for Holt {
             // no denominator is 0 (hard rule 9). An infinite half-life has
             // no textbook gain to give: its fixed gain `1 − λ` is 0, and the
             // line fit is the whole history's.
+            // `rh` is the reciprocal of the weighted mean's denominator,
+            // kept to multiply by, as in `line_fit_gains`: one division on
+            // the row-to-row chain in place of two.
             let held = lam_l * self.w_level[j];
-            let gain = weight / (held + weight);
+            let rh = 1.0 / (held + weight);
+            let gain = weight * rh;
             let prev_level = self.level[j];
             let error = yj - p;
             let level_gain = match line {
@@ -362,7 +374,7 @@ impl OnlineModel for Holt {
                     g
                 }
                 _ => {
-                    self.level[j] = (held * p + weight * yj) / (held + weight);
+                    self.level[j] = (held * p + weight * yj) * rh;
                     gain
                 }
             };
@@ -375,16 +387,38 @@ impl OnlineModel for Holt {
                 // the line fit's slope is then the whole history's drift.
                 let textbook = s > 0.0 && (line.is_none() || self.cfg.trend_half_life.is_finite());
                 let held_b = lam_b * self.w_trend[j];
-                let take_line = match line {
-                    Some((_, h)) => !textbook || h > weight / (held_b + weight) * level_gain / s,
-                    None => false,
+                // The reciprocals of the trend's denominator and of the
+                // clock step, each divided into once. `ri = 1/s` is infinite
+                // only at `s = 0`, where `textbook` is false, so neither
+                // the comparison nor `by_textbook` below reads it.
+                let rb = 1.0 / (held_b + weight);
+                let ri = 1.0 / s;
+                let trend = self.trend[j];
+                let level = self.level[j];
+                let by_textbook = || {
+                    let slope = (level - prev_level) * ri;
+                    (held_b * trend + weight * slope) * rb
                 };
-                if take_line {
-                    self.trend[j] += line.map_or(0.0, |(_, h)| h) * error;
-                } else if textbook {
-                    let slope = (self.level[j] - prev_level) / s;
-                    self.trend[j] = (held_b * self.trend[j] + weight * slope) / (held_b + weight);
-                }
+                self.trend[j] = match (line, textbook) {
+                    // Both gains are on offer: both trends are formed and
+                    // the larger gain's is kept by a select, not a branch.
+                    // Which gain is the larger turns on the row's clock
+                    // step and on how young the line fit is, so while the
+                    // fit is young it changes from row to row about as
+                    // often as a coin flip, and a branch on it is
+                    // mispredicted about half the time. Each miss stalls
+                    // the chain the next row waits on; the select costs
+                    // the textbook arm's few operations on every row
+                    // instead, which overlap the rest of the row.
+                    (Some((_, h)), true) => std::hint::select_unpredictable(
+                        h > weight * rb * level_gain * ri,
+                        trend + h * error,
+                        by_textbook(),
+                    ),
+                    (Some((_, h)), false) => trend + h * error,
+                    (None, true) => by_textbook(),
+                    (None, false) => trend,
+                };
                 if s > 0.0 {
                     self.w_trend[j] = held_b + weight;
                 }
@@ -1361,8 +1395,9 @@ mod tests {
 
     /// A state saved before the line fit (schema 63 and earlier) has none,
     /// and goes on with the textbook gains alone, the recursion it was
-    /// fitted under (hard rule 5; the kept fixtures hold it to the bit): a
-    /// row the line fit would have taken does not reach it.
+    /// fitted under (hard rule 5; the kept fixtures hold it within 1e-14,
+    /// its rounding moved by the reciprocals the recursion keeps): a row
+    /// the line fit would have taken does not reach it.
     #[test]
     fn a_state_saved_before_the_line_fit_goes_on_with_the_textbook_gains() {
         let ds = [0.0, 1.0, 0.25, 7.0, 1.0, 1.0, 0.5, 13.0, 2.0, 1.0, 1.0, 3.0];
@@ -1378,7 +1413,7 @@ mod tests {
             for (i, ((&y, &d), &w)) in ys.iter().zip(&ds).zip(&ws).enumerate() {
                 let p = m.step(&[], &[y], d, w).pred[0];
                 // The decays here run through `powf`, the model's through
-                // `exp2`; the kept fixtures hold the bits (state_fixtures).
+                // `exp2`; the kept fixtures hold the rest (state_fixtures).
                 assert!(
                     (p - want[i]).abs() <= 1e-13 * (1.0 + want[i].abs())
                         || (p.is_nan() && want[i].is_nan()),
@@ -1517,9 +1552,11 @@ mod tests {
     /// does the trend's weight, which counts only moves over some clock.
     /// Under a finite level half-life the line fit's gain `w/S0` ties the
     /// textbook's `w/(λW + w)` here (λ = 1, `W = S0`), and at a tie the
-    /// textbook's weighted mean stands, `(W·p + w·y)/(W + w)` to the bit;
-    /// under an infinite one there is no textbook gain, and the level is
-    /// the line fit's, `p + (w/S0)·(y − p)`.
+    /// textbook's weighted mean stands, `(W·p + w·y)·(1/(W + w))` to the
+    /// bit; under an infinite one there is no textbook gain, and the level
+    /// is the line fit's, `p + w·(1/S0)·(y − p)`. Each denominator is
+    /// divided into once and its reciprocal multiplied by, as the model
+    /// forms them.
     #[test]
     fn observations_at_one_clock_give_their_weighted_mean_and_no_slope() {
         for level in [10.0, f64::INFINITY] {
@@ -1534,8 +1571,8 @@ mod tests {
                 if i == 0 {
                     lvl = y;
                 } else {
-                    let mean = (w_sum * lvl + w * y) / (w_sum + w);
-                    let line = lvl + w / (w_sum + w) * (y - lvl);
+                    let mean = (w_sum * lvl + w * y) * (1.0 / (w_sum + w));
+                    let line = lvl + w * (1.0 / (w_sum + w)) * (y - lvl);
                     parted += usize::from(mean.to_bits() != line.to_bits());
                     lvl = if level.is_finite() { mean } else { line };
                 }
@@ -1551,18 +1588,24 @@ mod tests {
     /// Task 281 (mutants): on a target's second observation, `s` after its
     /// first and at the same weight, the line fit's slope gain `h = 1/s`
     /// ties the textbook trend's `w/(0 + w) · g/s` with `g = 1`, and at a
-    /// tie the textbook's slope stands: `(level − previous)/s`, to the bit,
-    /// where the line's step `h·(y − p)` rounds otherwise on these values.
-    /// The trend's weight is then the row's.
+    /// tie the textbook's slope stands: `(level − previous)·(1/s)`, to the
+    /// bit, where the line's step `h·(y − p)` rounds otherwise on these
+    /// values. The trend's weight is then the row's. (Task 291a: with the
+    /// reciprocals kept, `h = (s/2)·(1/(s²/2))` and the textbook's
+    /// `1·(1/s)` are the same double at `s = 3`, so the forms part only
+    /// where `(y0 + (y1 − y0)) − y0` rounds away from `y1 − y0`: these
+    /// values, one pair in 160,000 of a grid of two- and three-place ones.)
     #[test]
     fn at_a_tie_of_the_slope_gains_the_textbook_slope_stands() {
-        let (y0, y1, s) = (2.119, 2.136, 3.0);
+        let (y0, y1, s) = (0.09, 0.34, 3.0);
         let mut m = Holt::new(cfg(10.0, 20.0)).unwrap();
         m.step(&[], &[Some(y0)], 0.0, 1.0);
         m.step(&[], &[Some(y1)], s, 1.0);
         let level = m.level()[0];
-        let textbook = (level - y0) / s;
-        let line = (1.5f64 / 4.5) * (y1 - y0);
+        let textbook = (level - y0) * (1.0 / s);
+        let h = (s * 0.5) * (1.0 / (s * s * 0.5));
+        assert_eq!(h.to_bits(), (1.0 / s).to_bits(), "the gains tie");
+        let line = h * (y1 - y0);
         assert_ne!(
             textbook.to_bits(),
             line.to_bits(),
@@ -1570,5 +1613,130 @@ mod tests {
         );
         assert_eq!(m.trend()[0].to_bits(), textbook.to_bits());
         assert_eq!(m.w_trend[0], 1.0);
+    }
+
+    /// Every prediction, level and trend of a 400-row stream digested
+    /// (FNV-1a over the bits, NaN folded to one pattern), and four picks,
+    /// held to the bit. The fixtures and the oracle tests above hold the
+    /// model to its definition within rounding, or on rows whose last bits
+    /// happen to agree, so a change of the arithmetic's form -- a division
+    /// written as a reciprocal kept and multiplied by -- passes them. This
+    /// test catches it.
+    ///
+    /// No library's rounding is on the path, so the bits are every
+    /// platform's: each clock step is a whole number of each half-life, so
+    /// every decay `2^(-s/h)` is an exact power of two, which any `exp2`
+    /// returns exactly, where at other arguments glibc's and Apple's differ
+    /// in the last bit. Three models: finite half-lives, an infinite level
+    /// half-life (the line fit's level, the trend choosing between its
+    /// gains), and an infinite trend half-life (the line fit's slope on
+    /// every row). Under decays of a half or less a row, the line fit's
+    /// slope gain is the larger only while a target's fit is young, or on a
+    /// light row after a heavy one, whose textbook gain the heavy row's held
+    /// weight shrinks: so targets start every 40 rows and the weights
+    /// alternate heavy and light (the select took the line fit's trend on
+    /// 60 rows of the two models that choose, the textbook's on 3,088). A
+    /// zero weight every 23 rows, rows at one clock, and nulls, across which
+    /// a target's clock runs on.
+    #[test]
+    fn the_arithmetic_is_pinned_to_the_bit() {
+        const N: usize = 8;
+        let run = |level: f64, trend: f64| {
+            let mut m = Holt::new(HoltCfg {
+                n_targets: N,
+                level_half_life: level,
+                trend_half_life: trend,
+                min_weight: 0.25,
+                trend: true,
+            })
+            .unwrap();
+            let mut s = 29u64;
+            let mut h = 0xcbf2_9ce4_8422_2325u64;
+            let mut fold = |v: f64| {
+                let b = if v.is_nan() {
+                    0x7ff8_0000_0000_0000
+                } else {
+                    v.to_bits()
+                };
+                for byte in b.to_le_bytes() {
+                    h = (h ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+                }
+            };
+            let mut got = Vec::new();
+            for i in 0..400usize {
+                let d = match i {
+                    0 => 0.0,
+                    _ if i % 11 == 5 => 0.0,
+                    _ => [2.0, 4.0, 2.0, 6.0][i % 4],
+                };
+                let t = i as f64;
+                let y: Vec<Option<f64>> = (0..N)
+                    .map(|j| {
+                        let v = 3.0 * j as f64 + (0.05 + 0.1 * j as f64) * t + lcg(&mut s);
+                        (i >= 40 * j && (i + j) % 7 != 2).then_some(v)
+                    })
+                    .collect();
+                let w = if i % 23 == 9 {
+                    0.0
+                } else if i % 2 == 0 {
+                    40.0 + lcg(&mut s).abs()
+                } else {
+                    0.5 + lcg(&mut s).abs()
+                };
+                let out = m.step(&[], &y, d, w);
+                for v in out.pred.iter().chain(m.level()).chain(m.trend()) {
+                    fold(*v);
+                }
+                fold(out.n_eff);
+                if i == 399 {
+                    got.extend(out.pred[..4].iter().copied());
+                }
+            }
+            (h, got)
+        };
+        let finite = run(1.0, 2.0);
+        let line_level = run(f64::INFINITY, 2.0);
+        let line_trend = run(1.0, f64::INFINITY);
+        println!("finite {finite:x?}\nline_level {line_level:x?}\nline_trend {line_trend:x?}");
+        let bits = |v: &[f64]| v.iter().map(|p| p.to_bits()).collect::<Vec<_>>();
+        let want = [
+            (
+                0xd5e4_f9e3_229f_e96f_u64,
+                [
+                    0x4034_6a48_2656_6dda_u64,
+                    0x404e_b926_46ed_cfd4,
+                    0x405a_c556_48da_f6d5,
+                    0x4061_984f_589c_ae42,
+                ],
+            ),
+            (
+                0x1016_03b8_5ea3_3ea8,
+                [
+                    0x4034_397f_9f7f_1d5a,
+                    0x4050_01f1_612c_849b,
+                    0x405b_391f_b64f_a4c8,
+                    0x4062_b4c0_b017_d1c6,
+                ],
+            ),
+            (
+                0xba56_7b60_4d4a_fee1,
+                [
+                    0x4033_ff43_ab3f_7f16,
+                    0x404f_0691_7a50_e8bb,
+                    0x405a_a84c_586f_bc41,
+                    0x4062_a869_923a_1638,
+                ],
+            ),
+        ];
+        for ((name, got), (h, picks)) in [
+            ("finite", finite),
+            ("line_level", line_level),
+            ("line_trend", line_trend),
+        ]
+        .into_iter()
+        .zip(want)
+        {
+            assert_eq!((got.0, bits(&got.1)), (h, picks.to_vec()), "{name}");
+        }
     }
 }
