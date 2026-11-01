@@ -192,6 +192,25 @@ impl EwDiag {
         // Weighted Welford, as `EwCov::update` writes its diagonal: the
         // deviation is against the OLD mean, and the expression
         // `a * c + a * b * d * d` is kept in that order so the bits agree.
+        //
+        // Four slots a step in AVX2's 256-bit lanes where the CPU has them
+        // (pulp's check at run time, and its safe calls: no `unsafe` here),
+        // from `UPDATE_LANES_FROM` slots; the loop below everywhere else: on
+        // x86-64 without AVX2, on any other architecture, below the width,
+        // and on a row of no weight. Each slot is its own lane and runs the
+        // loop's operations in the same order, each rounded once, with no
+        // fused multiply-add, so the two paths agree to the bit.
+        //
+        // The wide rows leave by a tail call (`update_in_lanes`, which also
+        // makes the CPU's check): with the call to pulp written here, the
+        // narrow rows the loop takes paid for a stack frame, three saved
+        // registers and the lanes' arguments on every row, 11-14% of the
+        // update at 2 and 3 slots on x86-64.
+        #[cfg(target_arch = "x86_64")]
+        if update_takes_lanes(b, x.len()) {
+            self.w_sum = w_new;
+            return self.update_in_lanes(x, a, b);
+        }
         let slots = self
             .c
             .iter_mut()
@@ -204,6 +223,54 @@ impl EwDiag {
         // `sgd`'s standardizing from vectorizing.
         if b > 0.0 {
             for (((ci, mi), lo), &xi) in slots.zip(x) {
+                let d = crate::comp::dev(xi, *mi, *lo);
+                *ci = a * *ci + a * b * d * d;
+                crate::comp::add(mi, lo, b * d);
+            }
+        }
+        self.w_sum = w_new;
+    }
+
+    /// [`Self::update`]'s moments across vector lanes, a lane a slot, with
+    /// the weights `a` and `b` it computed for the row: AVX2's four where
+    /// this CPU has them (pulp's check, made once), and one at a time where
+    /// it has not, which is the loop's arithmetic in the loop's order.
+    #[cfg(target_arch = "x86_64")]
+    #[inline(never)]
+    fn update_in_lanes(&mut self, x: &[f64], a: f64, b: f64) {
+        let lanes = UpdateLanes {
+            a,
+            b,
+            x,
+            c: &mut self.c,
+            m: &mut self.m,
+            lo: &mut self.m_lo,
+        };
+        match crate::sgd::x86_v3() {
+            Some(simd) => pulp::Simd::vectorize(simd, lanes),
+            None => pulp::Simd::vectorize(pulp::Scalar::new(), lanes),
+        }
+    }
+
+    /// [`Self::update`]'s loop alone, one slot at a time, whatever the CPU:
+    /// the reference the lanes are held to.
+    #[cfg(test)]
+    pub(crate) fn update_scalar(&mut self, x: &[f64], lam: f64, w: f64) {
+        let w_new = lam * self.w_sum + w;
+        if w < 0.0 || w_new <= 0.0 {
+            self.w_sum = w_new;
+            return;
+        }
+        let a = lam * self.w_sum / w_new;
+        let b = w / w_new;
+        if b > 0.0 {
+            for (((ci, mi), lo), &xi) in self
+                .c
+                .iter_mut()
+                .zip(self.m.iter_mut())
+                .zip(self.m_lo.iter_mut())
+                .zip(x)
+            {
                 let d = crate::comp::dev(xi, *mi, *lo);
                 *ci = a * *ci + a * b * d * d;
                 crate::comp::add(mi, lo, b * d);
@@ -245,6 +312,74 @@ impl EwDiag {
             crate::comp::add(mi, lo, b * d);
         }
         self.w_sum = w_new;
+    }
+}
+
+/// The width from which [`EwDiag::update`] takes the vector lanes: below it
+/// the dispatch and the slots past the last full vector cost more than the
+/// lanes save. Measured on x86-64 (Linux, an AVX2 CPU), the update alone
+/// against the loop: +6 to +23% at 6 and 7 slots, about even at 4 and 5,
+/// −25% at 8, −7% at 10 (two slots past the last full vector), −25 to −35%
+/// at 12 to 24 and −40 to −45% from 32.
+#[cfg(target_arch = "x86_64")]
+const UPDATE_LANES_FROM: usize = 8;
+
+/// Whether [`EwDiag::update`] asks for the lanes for a row of `n` slots
+/// whose new point weighs `b`: from [`UPDATE_LANES_FROM`] slots, and only
+/// when there is a step to take. The CPU decides how many
+/// ([`EwDiag::update_in_lanes`]).
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn update_takes_lanes(b: f64, n: usize) -> bool {
+    b > 0.0 && n >= UPDATE_LANES_FROM
+}
+
+/// [`EwDiag::update`]'s loop across vector lanes, a lane a slot.
+#[cfg(target_arch = "x86_64")]
+struct UpdateLanes<'a> {
+    a: f64,
+    b: f64,
+    x: &'a [f64],
+    c: &'a mut [f64],
+    m: &'a mut [f64],
+    lo: &'a mut [f64],
+}
+
+#[cfg(target_arch = "x86_64")]
+impl pulp::WithSimd for UpdateLanes<'_> {
+    type Output = ();
+
+    #[inline(always)]
+    fn with_simd<S: pulp::Simd>(self, simd: S) -> Self::Output {
+        let Self { a, b, x, c, m, lo } = self;
+        let n = x.len();
+        let (c, m, lo) = (&mut c[..n], &mut m[..n], &mut lo[..n]);
+        let (xv, xt) = S::as_simd_f64s(x);
+        let (cv, ct) = S::as_mut_simd_f64s(c);
+        let (mv, mt) = S::as_mut_simd_f64s(m);
+        let (lv, lt) = S::as_mut_simd_f64s(lo);
+        let ab = a * b;
+        let (va, vb, vab) = (simd.splat_f64s(a), simd.splat_f64s(b), simd.splat_f64s(ab));
+        for i in 0..xv.len() {
+            let (hi, l) = (mv[i], lv[i]);
+            // `comp::dev`: (x - hi) - lo.
+            let d = simd.sub_f64s(simd.sub_f64s(xv[i], hi), l);
+            // a * c + ((a * b) * d) * d
+            cv[i] = simd.add_f64s(
+                simd.mul_f64s(va, cv[i]),
+                simd.mul_f64s(simd.mul_f64s(vab, d), d),
+            );
+            // `comp::add(hi, lo, b * d)`: Kahan's step of the mean.
+            let y = simd.add_f64s(simd.mul_f64s(vb, d), l);
+            let t = simd.add_f64s(hi, y);
+            lv[i] = simd.sub_f64s(y, simd.sub_f64s(t, hi));
+            mv[i] = t;
+        }
+        for (((ci, mi), l), &xi) in ct.iter_mut().zip(mt.iter_mut()).zip(lt.iter_mut()).zip(xt) {
+            let d = crate::comp::dev(xi, *mi, *l);
+            *ci = a * *ci + ab * d * d;
+            crate::comp::add(mi, l, b * d);
+        }
     }
 }
 
@@ -301,6 +436,75 @@ impl Including<'_> {
 mod tests {
     use super::*;
     use crate::EwCov;
+
+    /// The update through the lanes (on an x86-64 CPU with AVX2) and the
+    /// scalar loop leave the same bits in every moment, at every width
+    /// around the dispatch threshold and each lane remainder, over rows
+    /// whose magnitudes span many binades, with zero-weight rows (the first
+    /// of a stream among them) and every kind of decay the models use.
+    /// Elsewhere -- without AVX2, or on another architecture, such as an
+    /// arm64 Mac -- the dispatch takes the loop, and the test holds the loop
+    /// to itself.
+    #[test]
+    fn update_lanes_match_the_scalar_loop_to_the_bit() {
+        let mut s = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut draw = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            (s >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let bits = |e: &EwDiag| {
+            (
+                e.w_sum.to_bits(),
+                e.m.iter().map(|q| q.to_bits()).collect::<Vec<_>>(),
+                e.c.iter().map(|q| q.to_bits()).collect::<Vec<_>>(),
+                e.m_lo.iter().map(|q| q.to_bits()).collect::<Vec<_>>(),
+            )
+        };
+        for k in 1..=40 {
+            for &lam in &[1.0, 0.999, 0.9, 0.5] {
+                let (mut v, mut r) = (EwDiag::new(k), EwDiag::new(k));
+                for row in 0..400 {
+                    let scale = 10f64.powi((draw() * 9.0) as i32 - 3);
+                    let x: Vec<f64> = (0..k)
+                        .map(|i| (draw() - 0.5) * scale + if i % 3 == 0 { 1e6 } else { 0.0 })
+                        .collect();
+                    let w = if row == 0 || row % 17 == 5 {
+                        0.0
+                    } else {
+                        0.25 + draw()
+                    };
+                    v.update(&x, lam, w);
+                    r.update_scalar(&x, lam, w);
+                    assert_eq!(bits(&v), bits(&r), "k = {k}, lam = {lam}, row {row}");
+                }
+            }
+        }
+    }
+
+    /// The lanes are taken from `UPDATE_LANES_FROM` slots and not one
+    /// below, and never for a row of no weight (whose loop is skipped). The
+    /// update in lanes moves every slot's moments, on every x86-64 CPU (on
+    /// one lane at a time without AVX2), and leaves the weight to the caller.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn update_takes_the_lanes_from_their_width_with_a_step_to_take() {
+        assert!(!update_takes_lanes(0.5, UPDATE_LANES_FROM - 1));
+        assert!(update_takes_lanes(0.5, UPDATE_LANES_FROM));
+        assert!(update_takes_lanes(1.0, 40));
+        assert!(!update_takes_lanes(0.0, UPDATE_LANES_FROM));
+        assert!(!update_takes_lanes(0.0, 40));
+        for n in [UPDATE_LANES_FROM, UPDATE_LANES_FROM + 3] {
+            let mut e = EwDiag::new(n);
+            e.update_in_lanes(&vec![2.0; n], 0.0, 1.0);
+            // From an empty accumulator at `a = 0`, `b = 1`: the mean is the
+            // row, and its centred moment 0.
+            assert!(e.m.iter().all(|&m| m == 2.0), "{n}: {:?}", e.m);
+            assert!(e.c.iter().all(|&c| c == 0.0), "{n}: {:?}", e.c);
+            assert_eq!(e.w_sum, 0.0, "{n}: the weight is the caller's to set");
+        }
+    }
 
     fn lcg(state: &mut u64) -> f64 {
         *state = state

@@ -1717,7 +1717,7 @@ const LANES_FROM: usize = 12;
 /// pulp's own check of the CPU's feature flags, safe to call, its answer
 /// kept for every later row.
 #[cfg(target_arch = "x86_64")]
-fn x86_v3() -> Option<pulp::x86::V3> {
+pub(crate) fn x86_v3() -> Option<pulp::x86::V3> {
     static V3: std::sync::OnceLock<Option<pulp::x86::V3>> = std::sync::OnceLock::new();
     *V3.get_or_init(pulp::x86::V3::try_new)
 }

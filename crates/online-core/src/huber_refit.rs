@@ -1136,6 +1136,17 @@ fn gram_lower(rows: &Rows<'_>, wt: &[f64], mx: &[f64], my: f64) -> (Vec<f64>, Ve
             }
             r += 1;
         }
+        // In AVX2's lanes where the CPU has them; the scalar blocks below
+        // everywhere else. The blocks stay written out here rather than in
+        // a function of their own: moved into one, they compiled on arm64
+        // to other registers and four more instructions, every function
+        // after them moved by 16 bytes, and `pa` and `huber`, whose code
+        // was the same, ran 1-2% slower. As they are, arm64's machine code
+        // is the same as it was without the lanes, byte for byte.
+        #[cfg(target_arch = "x86_64")]
+        if gram_blocks_lanes(&mut a, &dm, &wdm, ns, r) {
+            continue;
+        }
         for pb in 0..nb {
             for qb in 0..=pb {
                 let mut acc = [[0.0_f64; 4]; 4];
@@ -1165,6 +1176,90 @@ fn gram_lower(rows: &Rows<'_>, wt: &[f64], mx: &[f64], my: f64) -> (Vec<f64>, Ve
     }
     a.truncate(nf * nf);
     (a, b)
+}
+
+/// [`gram_lower`]'s 4 × 4 blocks on or below the diagonal, over the first
+/// `r` rows of a chunk (`a[p][q] += wd_p · d_q`, the rows in their order),
+/// in AVX2's lanes where this CPU has them (pulp's check at run time, and
+/// its safe calls: no `unsafe` here) and from [`GRAM_LANES_FROM`] padded
+/// columns: whether it took them. Where it did not, nothing is added, and
+/// the caller runs the scalar blocks.
+#[cfg(target_arch = "x86_64")]
+fn gram_blocks_lanes(a: &mut [f64], dm: &[f64], wdm: &[f64], ns: usize, r: usize) -> bool {
+    let Some(simd) = gram_lanes(ns) else {
+        return false;
+    };
+    pulp::Simd::vectorize(simd, GramLanes { a, dm, wdm, ns, r });
+    true
+}
+
+/// The padded width from which [`gram_lower`]'s blocks take the lanes:
+/// every width there is, since a padded width is a multiple of 4. Measured
+/// on x86-64 (Linux, an AVX2 CPU), the blocks of 2,560 rows against the
+/// scalar blocks: −39% at 4 padded columns, −47 to −53% from 8 to 48.
+#[cfg(target_arch = "x86_64")]
+const GRAM_LANES_FROM: usize = 4;
+
+/// The lanes [`gram_blocks_lanes`] takes at `ns` padded columns: AVX2's
+/// where this CPU has them, from [`GRAM_LANES_FROM`].
+#[cfg(target_arch = "x86_64")]
+fn gram_lanes(ns: usize) -> Option<pulp::x86::V3> {
+    if ns >= GRAM_LANES_FROM {
+        crate::sgd::x86_v3()
+    } else {
+        None
+    }
+}
+
+/// The scalar blocks with each block's four rows of sums in four vectors:
+/// a row's `wd_p` broadcast, times the row's four `d_q`, added to the sums.
+/// Each lane is one entry of the block, summed over the rows in their
+/// order, one product and one sum at a time, with no fused multiply-add:
+/// the scalar blocks' arithmetic to the bit.
+#[cfg(target_arch = "x86_64")]
+struct GramLanes<'a> {
+    a: &'a mut [f64],
+    dm: &'a [f64],
+    wdm: &'a [f64],
+    ns: usize,
+    r: usize,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl pulp::WithSimd for GramLanes<'_> {
+    type Output = ();
+
+    #[inline(always)]
+    fn with_simd<S: pulp::Simd>(self, simd: S) -> Self::Output {
+        let Self { a, dm, wdm, ns, r } = self;
+        // Only AVX2's four lanes reach here (`gram_lanes`): a block's row
+        // of four sums is one vector.
+        debug_assert_eq!(S::F64_LANES, 4);
+        let one = |v: &[f64]| S::as_simd_f64s(v).0[0];
+        let nb = ns / 4;
+        for pb in 0..nb {
+            for qb in 0..=pb {
+                let at = |k: usize| (pb * 4 + k) * ns + qb * 4;
+                let (mut s0, mut s1, mut s2, mut s3) = (
+                    one(&a[at(0)..at(0) + 4]),
+                    one(&a[at(1)..at(1) + 4]),
+                    one(&a[at(2)..at(2) + 4]),
+                    one(&a[at(3)..at(3) + 4]),
+                );
+                for (wd, d) in wdm.chunks_exact(ns).zip(dm.chunks_exact(ns)).take(r) {
+                    let wd = &wd[pb * 4..pb * 4 + 4];
+                    let d = one(&d[qb * 4..qb * 4 + 4]);
+                    s0 = simd.add_f64s(s0, simd.mul_f64s(simd.splat_f64s(wd[0]), d));
+                    s1 = simd.add_f64s(s1, simd.mul_f64s(simd.splat_f64s(wd[1]), d));
+                    s2 = simd.add_f64s(s2, simd.mul_f64s(simd.splat_f64s(wd[2]), d));
+                    s3 = simd.add_f64s(s3, simd.mul_f64s(simd.splat_f64s(wd[3]), d));
+                }
+                for (k, s) in [s0, s1, s2, s3].into_iter().enumerate() {
+                    S::as_mut_simd_f64s(&mut a[at(k)..at(k) + 4]).0[0] = s;
+                }
+            }
+        }
+    }
 }
 
 /// The refit of a model without sums of its own (`sgd`): IRLS over the
@@ -1246,6 +1341,95 @@ pub(crate) fn slow_refit_stream(trial: u64) -> Vec<(f64, f64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`gram_lower`]'s scalar blocks as a function, the same loop, for the
+    /// lanes to be held to (`the_blocked_gram_is_the_row_by_row_loop` holds
+    /// `gram_lower`'s own, through whichever path it takes).
+    fn gram_blocks_scalar(a: &mut [f64], dm: &[f64], wdm: &[f64], ns: usize, r: usize) {
+        let nb = ns / 4;
+        for pb in 0..nb {
+            for qb in 0..=pb {
+                let mut acc = [[0.0_f64; 4]; 4];
+                for (k, acc_k) in acc.iter_mut().enumerate() {
+                    acc_k.copy_from_slice(&a[(pb * 4 + k) * ns + qb * 4..][..4]);
+                }
+                for (wd, d) in wdm.chunks_exact(ns).zip(dm.chunks_exact(ns)).take(r) {
+                    let wd = &wd[pb * 4..pb * 4 + 4];
+                    let d = &d[qb * 4..qb * 4 + 4];
+                    for (acc_k, &wd_k) in acc.iter_mut().zip(wd) {
+                        for (s, &d_l) in acc_k.iter_mut().zip(d) {
+                            *s += wd_k * d_l;
+                        }
+                    }
+                }
+                for (k, acc_k) in acc.iter().enumerate() {
+                    a[(pb * 4 + k) * ns + qb * 4..][..4].copy_from_slice(acc_k);
+                }
+            }
+        }
+    }
+
+    /// The blocks as [`gram_lower`] dispatches them: the lanes where this
+    /// CPU has them, the scalar blocks where it has not.
+    fn gram_blocks(a: &mut [f64], dm: &[f64], wdm: &[f64], ns: usize, r: usize) {
+        #[cfg(target_arch = "x86_64")]
+        if gram_blocks_lanes(a, dm, wdm, ns, r) {
+            return;
+        }
+        gram_blocks_scalar(a, dm, wdm, ns, r);
+    }
+
+    /// The Gram's blocks through the lanes (on an x86-64 CPU with AVX2) and
+    /// the scalar blocks leave the same bits, at every padded width from 4
+    /// to 48, over chunks of 1 to 64 rows whose values span many binades,
+    /// added onto sums already there. Elsewhere -- without AVX2, or on
+    /// another architecture, such as an arm64 Mac -- the dispatch takes the
+    /// scalar blocks, and the test holds them to themselves.
+    #[test]
+    fn gram_lanes_match_the_scalar_blocks_to_the_bit() {
+        let mut s = 0x2545_f491_4f6c_dd1d_u64;
+        let mut draw = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            (s >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        for ns in (4..=48).step_by(4) {
+            for r in [1, 2, 3, 7, 33, 64] {
+                let dm: Vec<f64> = (0..GRAM_CHUNK * ns)
+                    .map(|i| draw() * 10f64.powi((i % 9) as i32 - 4))
+                    .collect();
+                let wdm: Vec<f64> = (0..GRAM_CHUNK * ns)
+                    .map(|i| draw() * 10f64.powi((i % 7) as i32 - 3))
+                    .collect();
+                let start: Vec<f64> = (0..ns * ns).map(|_| draw()).collect();
+                let (mut x, mut y) = (start.clone(), start);
+                gram_blocks(&mut x, &dm, &wdm, ns, r);
+                gram_blocks_scalar(&mut y, &dm, &wdm, ns, r);
+                let bits = |v: &[f64]| v.iter().map(|q| q.to_bits()).collect::<Vec<_>>();
+                assert_eq!(bits(&x), bits(&y), "ns = {ns}, r = {r}");
+            }
+        }
+    }
+
+    /// The lanes at every padded width from `GRAM_LANES_FROM`, and not one
+    /// below, where this CPU has AVX2; nowhere where it has not. Where they
+    /// are not taken, nothing is added.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn gram_takes_the_lanes_from_their_width() {
+        let avx2 = crate::sgd::x86_v3().is_some();
+        assert!(gram_lanes(GRAM_LANES_FROM - 1).is_none());
+        assert!(gram_lanes(0).is_none());
+        assert_eq!(gram_lanes(GRAM_LANES_FROM).is_some(), avx2);
+        assert_eq!(gram_lanes(48).is_some(), avx2);
+        let (dm, wdm) = (vec![1.0; GRAM_CHUNK * 8], vec![2.0; GRAM_CHUNK * 8]);
+        let mut a = vec![0.5; 64];
+        assert_eq!(gram_blocks_lanes(&mut a, &dm, &wdm, 8, 3), avx2);
+        let want = if avx2 { 0.5 + 3.0 * 2.0 } else { 0.5 };
+        assert_eq!(a[5 * 8 + 1], want, "an entry below the diagonal");
+        assert_eq!(a[4], 0.5, "an entry above the diagonal's blocks");
+    }
 
     /// The default count: 500 rows, ten a feature past 50 features, none
     /// above 100. And the reservation: the rows and their four runs each,
