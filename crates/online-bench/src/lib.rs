@@ -632,6 +632,14 @@ pub struct ModelRun {
 /// The setup of a model case: the model the spec builds, stepped through
 /// the warm-up rows.
 pub fn model_setup(id: &str) -> ModelRun {
+    // Rayon's global pool, which a solve asks for its size, built here
+    // rather than by the first solve of the block: `sgd_huber_refit`'s first
+    // is its refit, inside the block, where building the pool read the
+    // environment (at a cost that grows with its size) and spawned the
+    // pool's threads, whose allocations moved the heap the block then ran
+    // on. Its count moved by about 0.01% with the size of the process's
+    // environment (task 292, P8).
+    rayon::current_num_threads();
     let spec = spec(id);
     let mut built = build_models(&spec).unwrap_or_else(|e| panic!("{id}: {e}"));
     assert_eq!(built.len(), 1, "{id}: one instance");

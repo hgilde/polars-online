@@ -215,7 +215,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::solve::SpdFactor;
+use crate::solve::{QuadWork, SpdFactor};
 
 /// **Why the reported changepoint probability is `P(r ≤ 1)` and not
 /// `P(r = 0)`.**
@@ -357,8 +357,16 @@ impl BocpdCfg {
 
     /// `Ψ₀` as a `d×d` matrix.
     pub fn psi0(&self) -> Vec<f64> {
+        let mut m = Vec::new();
+        self.psi0_into(&mut m);
+        m
+    }
+
+    /// [`Self::psi0`], written over `m`.
+    fn psi0_into(&self, m: &mut Vec<f64>) {
         let d = self.n_features;
-        let mut m = vec![0.0; d * d];
+        m.clear();
+        m.resize(d * d, 0.0);
         match &self.prior_scale {
             Some(v) if v.len() == d * d => m.copy_from_slice(v),
             Some(v) if v.len() == 1 => {
@@ -372,7 +380,6 @@ impl BocpdCfg {
                 }
             }
         }
-        m
     }
 
     pub fn mu0(&self) -> Vec<f64> {
@@ -713,6 +720,22 @@ impl Run {
         }
     }
 
+    /// The run [`Self::new`] makes, in this run's buffers: a run dropped
+    /// from the front of the posterior, kept to be the next row's empty run
+    /// (task 292).
+    fn reset(&mut self, d: usize, full: bool) {
+        self.len = 0.0;
+        self.n = 0.0;
+        for (v, len) in [
+            (&mut self.mean, d),
+            (&mut self.m2, if full { d * d } else { d }),
+            (&mut self.mean_lo, d),
+        ] {
+            v.clear();
+            v.resize(len, 0.0);
+        }
+    }
+
     /// The weighted Welford step: the deviation from the old mean enters the
     /// scatter at weight `w·n/n'` -- `w·(x − x̄)(x − x̄')'`, since `x − x̄' =
     /// (n/n')·(x − x̄)` -- and the mean then moves by `w/n'` of it. A row at
@@ -820,12 +843,44 @@ fn is_false(v: &bool) -> bool {
 /// The normalised run-length posterior of a log joint, shortest run first:
 /// uniform where the joint has no finite total.
 fn posterior_of(joint: &[f64]) -> Vec<f64> {
+    let mut out = Vec::new();
+    posterior_into(joint, &mut out);
+    out
+}
+
+/// [`posterior_of`], written over `out`.
+fn posterior_into(joint: &[f64], out: &mut Vec<f64>) {
+    out.clear();
     let z = log_sum_exp(joint);
     if !z.is_finite() {
         let k = joint.len();
-        return vec![1.0 / k as f64; k];
+        out.resize(k, 1.0 / k as f64);
+        return;
     }
-    joint.iter().map(|l| (l - z).exp()).collect()
+    out.extend(joint.iter().map(|l| (l - z).exp()));
+}
+
+/// The new log joint of Algorithm 1 into `new` -- growth into `r+1`,
+/// changepoint into 0 -- each run taking the row's log predictive `logpi`
+/// at its weight in `weights`; `cp` holds the changepoint terms.
+fn grow_into(
+    joint: &[f64],
+    logpi: &[f64],
+    weights: &[f64],
+    next: Branches,
+    new: &mut Vec<f64>,
+    cp: &mut Vec<f64>,
+) {
+    let r = logpi.len();
+    new.clear();
+    new.resize(r + 1, f64::NEG_INFINITY);
+    cp.clear();
+    for i in 0..r {
+        let base = joint[i] + weights[i] * logpi[i];
+        new[i + 1] = base + next.ln_grow;
+        cp.push(base + next.ln_break);
+    }
+    new[0] = log_sum_exp(cp);
 }
 
 /// A chance of a break, as the recursion reads it: `ln H` into the empty
@@ -872,6 +927,62 @@ impl Branches {
 /// take again (task 250).
 type Update = (Vec<f64>, Vec<f64>, Option<f64>);
 
+/// A row's working space, kept on the model between rows so a row
+/// allocates nothing for it (task 292: a full covariance's runs took about
+/// 150 allocations a row, a third of the row's time in the allocator). Not
+/// state: a state file carries none of it, a clone or a restored model
+/// starts empty, and [`PartialEq`] ignores it. Each buffer is written
+/// before it is read, on every row.
+#[derive(Debug, Default)]
+struct Work {
+    /// The prior's mean and scale, as [`Bocpd::mu0`] and [`Bocpd::psi0`].
+    mu0: Vec<f64>,
+    psi0: Vec<f64>,
+    /// Per run: the row's log predictive, and the weight it enters with.
+    logpi: Vec<f64>,
+    weights: Vec<f64>,
+    /// The pre-row run posterior, the most probable run's mean, the mixed
+    /// deviations from it, and the mixture's terms.
+    pre: Vec<f64>,
+    anchor: Vec<f64>,
+    mixed: Vec<f64>,
+    mix: Vec<f64>,
+    /// The new log joint [`grow_into`] writes, and its changepoint terms.
+    new: Vec<f64>,
+    cp: Vec<f64>,
+    /// One run's predictive under `gaussian`.
+    run: RunWork,
+    /// Which runs [`Bocpd::prune`] keeps.
+    keep: Vec<bool>,
+    /// Runs dropped from the posterior, each the next row's empty run in
+    /// turn ([`Run::reset`]). Runs and these together never outnumber the
+    /// most runs the posterior has held, plus one.
+    spare: Vec<Run>,
+}
+
+impl Clone for Work {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for Work {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+/// One run's working space for the full covariance's predictive: the run's
+/// posterior mean, the scale `Σ` factorized, the row's deviation from the
+/// mean, and the solve's column.
+#[derive(Debug, Default)]
+struct RunWork {
+    mun: Vec<f64>,
+    sigma: Vec<f64>,
+    delta: Vec<f64>,
+    quad: QuadWork,
+}
+
 /// Bayesian online changepoint detection; see the module docs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Bocpd {
@@ -916,6 +1027,9 @@ pub struct Bocpd {
     /// of freedom they were taken at (task 250). Not state.
     #[serde(skip)]
     gammas: GammaCache,
+    /// A row's working space (task 292). Not state.
+    #[serde(skip)]
+    work: Work,
 }
 
 /// The Student-t predictive's gamma terms, `ln Γ((ν+a)/2) − ln Γ(ν/2)`:
@@ -1014,6 +1128,7 @@ impl Bocpd {
             n_eff: 0.0,
             solve_failures: 0,
             gammas: GammaCache::default(),
+            work: Work::default(),
             w_mean: 0.0,
             w_rows: 0.0,
             data_prior: None,
@@ -1043,6 +1158,27 @@ impl Bocpd {
         match (&self.cfg.prior_scale, &self.data_prior) {
             (None, Some(p)) => p.scale.clone(),
             _ => self.cfg.psi0(),
+        }
+    }
+
+    /// [`Self::mu0`], written over `out`.
+    fn mu0_into(&self, out: &mut Vec<f64>) {
+        out.clear();
+        match (&self.cfg.prior_mean, &self.data_prior) {
+            (None, Some(p)) => out.extend_from_slice(&p.mean),
+            (Some(m), _) => out.extend_from_slice(m),
+            (None, None) => out.resize(self.cfg.n_features, 0.0),
+        }
+    }
+
+    /// [`Self::psi0`], written over `out`.
+    fn psi0_into(&self, out: &mut Vec<f64>) {
+        match (&self.cfg.prior_scale, &self.data_prior) {
+            (None, Some(p)) => {
+                out.clear();
+                out.extend_from_slice(&p.scale);
+            }
+            _ => self.cfg.psi0_into(out),
         }
     }
 
@@ -1147,7 +1283,9 @@ impl Bocpd {
 
     /// One run's posterior mean, `(κ₀μ₀ + n·x̄)/κₙ`, written from the prior's
     /// side, `μ₀ + (n/κₙ)(x̄ − μ₀)`, so a run with no rows is the prior's mean
-    /// to the bit.
+    /// to the bit. The tests read it whole; the model reads it a coordinate
+    /// at a time ([`Self::run_mean_at`]).
+    #[cfg(test)]
     fn run_mean_of(&self, run: &Run) -> Vec<f64> {
         let mu0 = self.mu0();
         (0..mu0.len())
@@ -1155,9 +1293,11 @@ impl Bocpd {
             .collect()
     }
 
-    /// Coordinate `i` of [`Self::run_mean_of`], against the prior's mean
-    /// `mu0` the caller read once: the same expression, without a vector per
-    /// run per row (task 250).
+    /// Coordinate `i` of one run's posterior mean, `(κ₀μ₀ + n·x̄)/κₙ`,
+    /// written from the prior's side, `μ₀ + (n/κₙ)(x̄ − μ₀)`, so a run with
+    /// no rows is the prior's mean to the bit; against the prior's mean
+    /// `mu0` the caller read once, without a vector per run per row (task
+    /// 250).
     #[inline]
     fn run_mean_at(&self, run: &Run, mu0: &[f64], i: usize) -> f64 {
         let kn = self.cfg.prior_kappa + run.n;
@@ -1176,13 +1316,16 @@ impl Bocpd {
         mu0: &[f64],
         psi0: &[f64],
         cache: Option<&mut GammaCache>,
+        work: &mut RunWork,
     ) -> Option<(f64, f64)> {
         let d = self.cfg.n_features;
         let (k0, nu0) = (self.cfg.prior_kappa, self.cfg.nu0());
         let kn = k0 + run.n;
         let nun = nu0 + run.n;
         if self.full() {
-            let mun: Vec<f64> = (0..d).map(|i| self.run_mean_at(run, mu0, i)).collect();
+            let mun = &mut work.mun;
+            mun.clear();
+            mun.extend((0..d).map(|i| self.run_mean_at(run, mu0, i)));
             // `Ψₙ = Ψ₀ + S + (κ₀n/κₙ)(x̄ − μ₀)(x̄ − μ₀)'`, every term centred.
             // Its lower triangle alone, scaled to `Σ`: the factor reads
             // nothing else, and nothing else reads `Σ` (task 287). The
@@ -1192,7 +1335,9 @@ impl Bocpd {
                 return None;
             }
             let scale = (kn + 1.0) / (kn * dof);
-            let mut sigma = psi0.to_vec();
+            let sigma = &mut work.sigma;
+            sigma.clear();
+            sigma.extend_from_slice(psi0);
             for i in 0..d {
                 for j in 0..=i {
                     let g = k0 * run.n / kn * (run.mean[i] - mu0[i]) * (run.mean[j] - mu0[j]);
@@ -1200,8 +1345,10 @@ impl Bocpd {
                     sigma[i * d + j] = psi * scale;
                 }
             }
-            let f = SpdFactor::of(&sigma, d)?;
-            let delta: Vec<f64> = x.iter().zip(&mun).map(|(a, b)| a - b).collect();
+            let f = SpdFactor::of(sigma, d)?;
+            let delta = &mut work.delta;
+            delta.clear();
+            delta.extend(x.iter().zip(mun.iter()).map(|(a, b)| a - b));
             // A row that is not a number has no density. `step` and
             // `predict_with` refuse one before it gets here (`OnlineModel`,
             // task 183); the check stays beside the form, whose clamp once
@@ -1212,7 +1359,8 @@ impl Bocpd {
             if delta.iter().any(|v| v.is_nan()) {
                 return None;
             }
-            let q = f.quad_forms(&delta, d, 1)[0];
+            // `quad_forms(delta, d, 1)[0]` to the bit, in a kept column.
+            let q = f.quad_form(delta, &mut work.quad);
             let df = d as f64;
             // `(Γ − Γ) − ..` as the expression groups, so the cached
             // difference is the same value (task 250).
@@ -1308,11 +1456,18 @@ impl Bocpd {
         cache: Option<&mut GammaCache>,
     ) -> (Vec<f64>, Option<Update>) {
         let mut out = Vec::new();
-        let update = self.read_into(x, joint, next, rel, cache, &mut out);
+        let mut work = Work::default();
+        let update = self
+            .read_into(x, joint, next, rel, cache, &mut work, &mut out)
+            .map(|z| (work.new, work.weights, z));
         (out, update)
     }
 
-    /// [`Self::read`], the reported row written over `out`.
+    /// [`Self::read`], the reported row written over `out` and the update
+    /// left in `work`: the new log joint in `work.new` and the per-run
+    /// weights in `work.weights`. `Some` of the joint's `log_sum_exp`, where
+    /// it was taken, for a row the update takes; `None` refuses the row.
+    #[allow(clippy::too_many_arguments)]
     fn read_into(
         &self,
         x: &[f64],
@@ -1320,8 +1475,9 @@ impl Bocpd {
         next: Option<Branches>,
         rel: f64,
         mut cache: Option<&mut GammaCache>,
+        work: &mut Work,
         out: &mut Vec<f64>,
-    ) -> Option<Update> {
+    ) -> Option<Option<f64>> {
         let d = self.cfg.n_features;
         let nan = |out: &mut Vec<f64>| {
             out.clear();
@@ -1332,11 +1488,27 @@ impl Bocpd {
             return None;
         };
         let r = self.runs.len();
-        let mut logpi = Vec::with_capacity(r);
-        let mut weights = Vec::with_capacity(r);
-        let (mu0, psi0) = (self.mu0(), self.psi0());
+        let Work {
+            mu0,
+            psi0,
+            logpi,
+            weights,
+            pre,
+            anchor,
+            mixed,
+            mix,
+            new,
+            cp,
+            run: run_work,
+            ..
+        } = work;
+        logpi.clear();
+        weights.clear();
+        self.mu0_into(mu0);
+        self.psi0_into(psi0);
         for run in &self.runs {
-            let Some((lp, mode)) = self.log_predictive(run, x, &mu0, &psi0, cache.as_deref_mut())
+            let Some((lp, mode)) =
+                self.log_predictive(run, x, mu0, psi0, cache.as_deref_mut(), run_work)
             else {
                 nan(out);
                 return None;
@@ -1350,7 +1522,7 @@ impl Bocpd {
         }
         // The pre-row run posterior, which `run_mode`, `run_mean` and the
         // predictive mean are read from.
-        let pre = posterior_of(joint);
+        posterior_into(joint, pre);
         let mut mode_at = 0;
         for i in 1..r {
             if pre[i] > pre[mode_at] {
@@ -1366,26 +1538,27 @@ impl Bocpd {
         // 1 only to its rounding, and that times each `mᵣ` was the level's
         // share of it, 2.3e-13 of a feature at 1e12 (1,040 of its rounding
         // steps); against `m*` it is a share of the runs' spread
-        // (docs/PLAN.md task 215, D3).
-        let anchor = self.run_mean_of(&self.runs[mode_at]);
-        let mut mixed = vec![0.0; d];
+        // (docs/PLAN.md task 215, D3). The anchor is `run_mean_of` the most
+        // probable run, against the prior's mean read once above.
+        anchor.clear();
+        anchor.extend((0..mu0.len()).map(|i| self.run_mean_at(&self.runs[mode_at], mu0, i)));
+        mixed.clear();
+        mixed.resize(d, 0.0);
         for (i, run) in self.runs.iter().enumerate() {
-            for (f, (o, a)) in mixed.iter_mut().zip(&anchor).enumerate() {
-                *o += pre[i] * (self.run_mean_at(run, &mu0, f) - a);
+            for (f, (o, a)) in mixed.iter_mut().zip(anchor.iter()).enumerate() {
+                *o += pre[i] * (self.run_mean_at(run, mu0, f) - a);
             }
         }
-        let pred: Vec<f64> = anchor.iter().zip(&mixed).map(|(a, o)| a + o).collect();
         // `ln Σ p̃ᵣ πᵣ`, the row's log predictive density.
-        let mix: Vec<f64> = (0..r)
-            .map(|i| {
-                if pre[i] > 0.0 {
-                    pre[i].ln() + logpi[i]
-                } else {
-                    f64::NEG_INFINITY
-                }
-            })
-            .collect();
-        let logscore = log_sum_exp(&mix);
+        mix.clear();
+        mix.extend((0..r).map(|i| {
+            if pre[i] > 0.0 {
+                pre[i].ln() + logpi[i]
+            } else {
+                f64::NEG_INFINITY
+            }
+        }));
+        let logscore = log_sum_exp(mix);
         // Algorithm 1: growth into `r+1`, changepoint into 0. Under
         // `robust` the message the row passes is the *tempered* likelihood
         // `πᵣ^{w(x)}`, with the same weight that tempers what the run
@@ -1393,23 +1566,13 @@ impl Bocpd {
         // every joint by about 1, and the posterior does not move. That is
         // the robustness -- one wild row must not be a changepoint -- and
         // it is the same generalised-Bayes weight in both places.
-        let grow = |weights: &[f64]| {
-            let mut new = vec![f64::NEG_INFINITY; r + 1];
-            let mut cp = Vec::with_capacity(r);
-            for i in 0..r {
-                let base = joint[i] + weights[i] * logpi[i];
-                new[i + 1] = base + next.ln_grow;
-                cp.push(base + next.ln_break);
-            }
-            new[0] = log_sum_exp(&cp);
-            new
-        };
+        //
         // What the row reports is read as a row of the stream's mean weight,
         // which is what `predict`, never told a weight, can say (the model
         // contract); what it teaches is at its own weight against that mean,
         // `rel` (task 147), in the runs and in the recursion alike.
-        let new = grow(&weights);
-        let z = log_sum_exp(&new);
+        grow_into(joint, logpi, weights, next, new, cp);
+        let z = log_sum_exp(new);
         if !z.is_finite() {
             nan(out);
             return None;
@@ -1426,16 +1589,19 @@ impl Bocpd {
         out.push((short - z).exp());
         out.push(self.runs[mode_at].len);
         out.push(run_mean);
-        out.extend_from_slice(&pred);
+        out.extend(anchor.iter().zip(mixed.iter()).map(|(a, o)| a + o));
         out.push(logscore);
         // `min_weight` gates what is *reported*, never what is learned: a
         // gated row still moves the posterior, as it does in every other
         // model here.
         let update = if rel == 1.0 {
-            (new, weights, Some(z))
+            Some(z)
         } else {
-            let scaled: Vec<f64> = weights.iter().map(|w| rel * w).collect();
-            (grow(&scaled), scaled, None)
+            for w in weights.iter_mut() {
+                *w *= rel;
+            }
+            grow_into(joint, logpi, weights, next, new, cp);
+            None
         };
         if self.n_eff < self.cfg.min_weight {
             nan(out);
@@ -1461,27 +1627,32 @@ impl Bocpd {
         if !z.is_finite() {
             return;
         }
+        // The runs dropped go to the working space, each to be a later
+        // row's empty run (task 292).
+        let mut work = std::mem::take(&mut self.work);
         if self.cfg.prune_below > 0.0 {
-            let keep: Vec<bool> = self
-                .logjoint
-                .iter()
-                .map(|l| (l - z).exp() >= self.cfg.prune_below)
-                .collect();
+            let keep = &mut work.keep;
+            keep.clear();
+            keep.extend(
+                self.logjoint
+                    .iter()
+                    .map(|l| (l - z).exp() >= self.cfg.prune_below),
+            );
             // Never drop everything, and never drop `r = 0`: it is the
             // branch a changepoint arrives on.
             if keep.iter().any(|k| *k) {
-                let mut i = 0;
-                self.runs.retain(|_| {
-                    let k = keep[i] || i == 0;
-                    i += 1;
-                    k
-                });
-                let mut i = 0;
-                self.logjoint.retain(|_| {
-                    let k = keep[i] || i == 0;
-                    i += 1;
-                    k
-                });
+                // The kept runs moved to the front in their order, as
+                // `retain` keeps them, and the rest dropped from the end.
+                let mut at = 0;
+                for (i, &k) in keep.iter().enumerate() {
+                    if k || i == 0 {
+                        self.runs.swap(at, i);
+                        self.logjoint[at] = self.logjoint[i];
+                        at += 1;
+                    }
+                }
+                work.spare.extend(self.runs.drain(at..));
+                self.logjoint.truncate(at);
             }
         }
         // Fold every run that has reached `max_run - 1` rows into the one of
@@ -1526,11 +1697,12 @@ impl Bocpd {
                 }
             }
             self.runs.swap(kept, heaviest);
-            self.runs.truncate(kept + 1);
+            work.spare.extend(self.runs.drain(kept + 1..));
             self.runs[kept].shrink_to(cap);
             self.logjoint.truncate(kept + 1);
             self.logjoint[kept] = tail;
         }
+        self.work = work;
     }
 }
 
@@ -1668,9 +1840,19 @@ impl Bocpd {
         };
         let (moved, next) = self.before_row(y, d_clock);
         let joint = moved.as_deref().unwrap_or(self.logjoint.as_slice());
-        // The gamma cache, out of `self` while `read` borrows it.
+        // The gamma cache and the working space, out of `self` while `read`
+        // borrows it.
         let mut gammas = std::mem::take(&mut self.gammas);
-        let extra = self.read_into(x, joint, next, rel, Some(&mut gammas), &mut out.pred);
+        let mut work = std::mem::take(&mut self.work);
+        let extra = self.read_into(
+            x,
+            joint,
+            next,
+            rel,
+            Some(&mut gammas),
+            &mut work,
+            &mut out.pred,
+        );
         self.gammas = gammas;
         out.n_eff = self.n_eff;
         out.extra = None;
@@ -1683,9 +1865,10 @@ impl Bocpd {
             if let Some(moved) = moved {
                 self.logjoint = moved;
             }
+            self.work = work;
             return;
         }
-        let Some((new, weights, z)) = extra else {
+        let Some(z) = extra else {
             // The predictive could not be evaluated: the row reports nulls
             // and no run sees it. A usable row that fails -- a run's
             // covariance no factorization takes, a usable hazard at or below
@@ -1702,6 +1885,7 @@ impl Bocpd {
             if let Some(moved) = moved {
                 self.logjoint = moved;
             }
+            self.work = work;
             return;
         };
         self.n_eff += weight;
@@ -1718,11 +1902,24 @@ impl Bocpd {
         // Each run takes the row where it stands, and the empty run goes in
         // front: the same steps on the same statistics as on a copy of each
         // run, without the copies (task 250).
-        self.runs.insert(0, Run::new(self.cfg.n_features, full));
-        for (run, &w) in self.runs[1..].iter_mut().zip(&weights) {
+        // The empty run is one `prune` dropped, where it kept one: the run
+        // `Run::new` makes, in its buffers (task 292).
+        let d = self.cfg.n_features;
+        let empty = match work.spare.pop() {
+            Some(mut run) => {
+                run.reset(d, full);
+                run
+            }
+            None => Run::new(d, full),
+        };
+        self.runs.insert(0, empty);
+        for (run, &w) in self.runs[1..].iter_mut().zip(&work.weights) {
             run.add(x, w, full);
         }
-        self.logjoint = new;
+        // The new joint takes the old one's place, and the old one's buffer
+        // is the next row's to write.
+        std::mem::swap(&mut self.logjoint, &mut work.new);
+        self.work = work;
         self.prune(z);
     }
 }

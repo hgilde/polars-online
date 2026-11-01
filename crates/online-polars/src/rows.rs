@@ -188,6 +188,16 @@ const _: () = assert!(GROUP == 8);
 /// The tile's scratch: a row tile's values for one group of columns.
 type Scratch = [[f64; GROUP]; ROW_TILE];
 
+thread_local! {
+    /// A thread's scratch for the copies it makes on its own (task 292).
+    /// Zeroing a fresh one, 8 KiB, was most of a run of one row's copy, and
+    /// a grouped bank copies a run of one row a group. What a copy leaves in
+    /// it is never read by the next: [`by_groups`] has each column of a
+    /// group write every row of the tile it then reads back.
+    static SCRATCH: std::cell::RefCell<Scratch> =
+        const { std::cell::RefCell::new([[0.0; GROUP]; ROW_TILE]) };
+}
+
 /// A column's values as one slice of `f64` or of `f32` with no null among
 /// them, which the transpose copies a row at a time; `Other` for every
 /// other column, copied through the scratch.
@@ -479,7 +489,10 @@ impl FeatureRows {
 
     /// Positions `start..start + len` of `cols`, the gather of `layout` folded
     /// into the transpose. Every value of the buffer is written, so a buffer
-    /// reused at the same size is not cleared first.
+    /// reused at the same size is not cleared first. Neither is the scratch:
+    /// each column [`Source::put`]s every row of the tile into its slot of the
+    /// group before the group is copied out, so no value a previous copy left
+    /// there is read.
     fn fill<C: Source>(
         &mut self,
         cols: &[C],
@@ -498,14 +511,16 @@ impl FeatureRows {
         }
         // Past `WIDE` features, each column once as a plain slice where it
         // is one, and the runs of consecutive columns of one kind; below it,
-        // every column goes through the scratch.
-        let plain: Vec<Plain<'_>> = if k > WIDE {
+        // every column goes through the scratch, as one run, and nothing is
+        // allocated to say so.
+        let wide = k > WIDE;
+        let plain: Vec<Plain<'_>> = if wide {
             cols.iter().map(Source::plain).collect()
         } else {
-            vec![Plain::Other; k]
+            Vec::new()
         };
         let mut runs: Vec<(usize, usize)> = Vec::new();
-        for c in 0..k {
+        for c in 0..if wide { k } else { 0 } {
             match runs.last_mut() {
                 Some((_, end)) if plain[*end - 1].kind() == plain[c].kind() => *end = c + 1,
                 _ => runs.push((c, c + 1)),
@@ -517,6 +532,10 @@ impl FeatureRows {
             let j0 = start + t * ROW_TILE;
             let rows = tile.len() / k;
             let scratch = &mut scratch[..rows];
+            if !wide {
+                by_groups(tile, k, j0, layout, 0, cols, scratch);
+                return;
+            }
             for &(a, b) in &runs {
                 match plain[a] {
                     Plain::F64(_) => by_rows(tile, k, j0, layout, a, &plain[a..b], |p| match p {
@@ -539,11 +558,18 @@ impl FeatureRows {
                 .enumerate()
                 .for_each_init(|| [[0.0; GROUP]; ROW_TILE], fill);
         } else {
-            let mut scratch: Scratch = [[0.0; GROUP]; ROW_TILE];
-            self.data
-                .chunks_mut(ROW_TILE * k)
-                .enumerate()
-                .for_each(|tile| fill(&mut scratch, tile));
+            let data = &mut self.data;
+            let mut serial = |scratch: &mut Scratch| {
+                data.chunks_mut(ROW_TILE * k)
+                    .enumerate()
+                    .for_each(|tile| fill(scratch, tile));
+            };
+            SCRATCH.with(|cell| match cell.try_borrow_mut() {
+                Ok(mut scratch) => serial(&mut scratch),
+                // Not reached: nothing a copy calls copies again. A scratch
+                // of its own all the same, rather than a panic.
+                Err(_) => serial(&mut [[0.0; GROUP]; ROW_TILE]),
+            });
         }
     }
 
@@ -839,6 +865,40 @@ mod tests {
                         }
                         assert_eq!(fc.usable_at(i), online_core::all_usable(rows.row(i)));
                     }
+                }
+            }
+        }
+    }
+
+    /// The thread's scratch is not cleared between copies (task 292): a
+    /// copy of a whole tile of eight columns of one stream, then a run of
+    /// one row and of a few rows of another, with nulls and through a
+    /// layout, reads none of what the first left there.
+    #[test]
+    fn a_copy_reads_nothing_the_last_left_in_the_scratch() {
+        let n = ROW_TILE;
+        let big = feature_cols(GROUP, n, None, false);
+        let mut rows = FeatureRows::default();
+        big.rows_into(&mut rows, 0, n);
+        assert_eq!(
+            rows.row(n - 1)[GROUP - 1],
+            ((GROUP - 1) * 100_000 + n - 1) as f64
+        );
+        let vals: Vec<Option<f64>> = (0..6)
+            .map(|i| (i % 2 == 0).then_some(-(i as f64)))
+            .collect();
+        let s = polars::prelude::Series::new("x".into(), vals.clone());
+        let a = s.f64().unwrap().downcast_iter().next().unwrap().clone();
+        let cols: Vec<FeatureCol> = (0..5).map(|_| FeatureCol::f64(&a)).collect();
+        let perm = vec![5, 4, 3, 2, 1, 0];
+        let small = FeatureCols::new(cols, 6, Some(perm.clone()), false);
+        for (start, len) in [(0, 1), (1, 5)] {
+            big.rows_into(&mut rows, 0, n);
+            small.rows_into(&mut rows, start, len);
+            for i in start..start + len {
+                let want = vals[perm[i]].unwrap_or(online_core::NULL);
+                for got in rows.row(i) {
+                    assert_eq!(got.to_bits(), want.to_bits(), "row {i}");
                 }
             }
         }

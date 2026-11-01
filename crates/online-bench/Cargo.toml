@@ -17,6 +17,9 @@ publish = false
 [dependencies]
 online-polars.workspace = true
 polars.workspace = true
+# `model_setup` builds rayon's global pool before the measured block
+# (task 292, P8); rayon is already linked, through online-core.
+rayon.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
