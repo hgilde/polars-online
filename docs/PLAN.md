@@ -16776,6 +16776,10 @@ Ordering below: bit-identical first (no fixture moves, no user decision), then w
   - Worker W16.
   - *2026-11-01, W16's measurement:* an old ew_cov state cannot continue to the bit (its upper triangle was rounded apart). It moves by at most 4.9e-16 by |Δ|/(1+|x|), and re-saves the current bytes exactly; lasso stays inside 1e-9. The user: record a sixth rule-5 exception (an ew_cov state of schema 61-63 continues within 1e-15) and build it.
   - Filling the upper triangle every row is out (+20-24% on huber_k20): keep the lower triangle only and route readers through it (lower only: huber_k20 −8.8%, ewridge_k20 −7.8%, ew_cov −4.5%).
+  - *2026-11-01, W16's second stop, the user's decisions:*
+    - The diagnosed specs' small EwCovs read upper entries on their right-hand sides, so calibration (≤1.1e-13 of 1+|v|), RESET (3.9e-14), break Wald (1.1e-14), Breusch-Pagan and ic move in every model's diagnostics, predictions untouched. The user: widen the sixth exception to them within the golden 1e-12.
+    - marginal's pair product is formed in the other order, so it now matches ew_cov within 8ε, not to the bit. The user: keep marginal's numbers and change the claim.
+    - A covariance near zero moves by up to 2.7e-8 relative over 100,000 rows (about 4e-16 at the scale √(var_i·var_j)).
   *291a and 290 built 2026-11-01 (W15, merged):*
   - holt: the patch as measured; the two oracles rewritten; `the_arithmetic_is_pinned_to_the_bit` on a libm-free stream (every step a whole number of half-lives) fails on the division forms. holt and holt_inf fixtures regenerated, `convergence.holt` hash rerun. Old holt states continue within 1e-14: the user amended rule 5's fifth exception.
   - AVX2 standardize_row via pulp, cfg-guarded; the lanes test runs on CI's x86 legs and the CPU-paths SDE legs.
