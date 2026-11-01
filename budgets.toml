@@ -1256,14 +1256,14 @@ darwin = { budget = 159.3594, release = 161.4844 }
 linux = { budget = 161.3399, release = 161.4454 }
 
 [rss.ewridge_window]
-windows = { budget = 155.0938, release = 150.1915 }
+windows = { budget = 141.629, release = 150.1915 }
 darwin = { budget = 165.7657, release = 160.8907 }
 linux = { budget = 215.918, release = 214.5899 }
 
 [rss.bocpd_runs]
 windows = { budget = 17.043, release = 17.2383 }
 darwin = { budget = 18.25, release = 18.5625 }
-linux = { budget = 27.5196, release = 27.6016 }
+linux = { budget = 25.1485, release = 27.6016 }
 
 # --- raises and sign-offs -------------------------------------------------------
 [[raised]]
