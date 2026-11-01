@@ -101,12 +101,12 @@ budget = 87958383
 
 [instructions.sgd]
 what = "sgd, 20 features, squared loss, learning rate 0.01, standardized: AnyModel::step_into, into one kept Step"
-budget = 2942026
+budget = 2674026
 release = 3053026
 
 [instructions.sgd_huber]
 what = "sgd, 20 features, Huber loss in the MAD scale, learning rate 0.01, standardized: AnyModel::step_into, into one kept Step"
-budget = 3269534
+budget = 3008534
 release = 3501863
 
 [instructions.sgd_huber_refit]
@@ -115,7 +115,7 @@ budget = 36060037
 
 [instructions.pa]
 what = "pa, 20 features, standardized: AnyModel::step_into, into one kept Step"
-budget = 2556010
+budget = 2280010
 release = 2739988
 
 [instructions.seqtest]
@@ -222,7 +222,7 @@ release = 3696553
 
 [instructions.holt]
 what = "holt, level and trend of one column, half-life 1000: AnyModel::step_into, into one kept Step"
-budget = 516581
+budget = 535026
 release = 577026
 
 [instructions.marginal]
@@ -1408,3 +1408,11 @@ to = 15746898
 date = 2026-10-27
 reason = "the rest of CI's count, now traced exactly: Valgrind (Callgrind Ir, gungraun 0.20.0, x86-64 Linux) at 52a4077a and each of the 42 merges since that touch crates/, two runs agreeing to 571 instructions (polars' randomly seeded hashing): +3.73% in all, the named steps carrying all but +347 -- the residual spread folding withheld predictions (task 278, b17) +1.99% (run_instance, the ungated buffer's realloc, predict_with_floor reads); ewridge's condition estimate (task 278, D4) +1.61% (carries_no_digit, inflation_into); the gates branch, ewridge's own floor in step_into, +0.32%; D11 +0.16%; the drift reset (b03) +0.09%; the first period +0.03%; D13 +0.02%; the sgd group -0.04%; the Huber refit (task 277) -0.46%, which is glibc's heap left in another state (the same 1,042 posix_memalign calls, cholesky_seq's subtree 68,123 -> 8,558), not work removed"
 changelog = "Scoring a held row over the clock since the newest learned row costs"
+
+[[raised]]
+key = "instructions.holt"
+from = 516581
+to = 535026
+date = 2026-11-01
+reason = "task 291a, the user's decision: holt's carried divisions became multiplications by kept reciprocals, and its choice of trend gain a branch-free select that forms both candidate trends every row. That adds about 18 instructions a row (two reciprocals, both arms of the select; the VM's Callgrind: holt's step 353.6 -> 372.0 Ir a row) to take 4 divisions off the row-to-row chain (11 -> 7) and remove a branch mispredicted on 535 of 1,000 rows: on x86-64, 19-23% less time where that choice is a coin flip, 14% less than 1.3.0, at +3.6% instructions"
+changelog = "`holt` is faster: its divisions on the row-to-row chain are now"
