@@ -886,6 +886,17 @@ returns.
   block: 17% fewer instructions under the squared loss (98 to 83 µs) and
   15% fewer under Huber's. `pa`, which shares the spread's update, takes
   5% fewer.
+- Every model steps a row into the bank's kept buffer, bit for bit
+  (task 285). `OnlineModel::step_into` is now the method a model
+  implements, with `step` provided from it, so no model allocates its
+  answer a row. Fifteen did, a heap allocation and a free a row: `holt`,
+  `ftrl`, `rls`, `kalman`, `micro`, `lasso` (its `lam_selected` too),
+  `huber`/`quantile`, `bocpd`, `hmm`, `deco`, `corrchange`, `ew_class`,
+  `audit`, `marginal` and `rcov`. On arm64, natively, over the 1,000-row
+  budget block: `holt` takes 48% fewer instructions (32 to 22 µs),
+  `micro` 19%, `ftrl` 11%, `deco` and `lasso` about 10%, and `huber`,
+  `quantile`, `rls`, `bocpd` and `hmm` 6-7%. The costliest models move
+  under 1%.
 
 ### Known issues
 

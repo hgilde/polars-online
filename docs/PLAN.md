@@ -16649,7 +16649,7 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       -15%, pa -5%. CI's Valgrind decides the x86 figures (tighten on the
       push). holt's +102 a row is the line fit's own arithmetic: it needs
       a `[[signoff]]` at the release.
-- [ ] 285. **No per-row allocation: every model writes into the bank's
+- [x] 285. **No per-row allocation: every model writes into the bank's
       kept `Step`** -- from the user's VM Callgrind of the drift (2026-10-31):
       about 250 of holt's 679 instructions a row are `vec![NAN; m]` plus
       malloc/free, because `OnlineModel::step_into`'s default is `*out =
@@ -16661,3 +16661,10 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       The VM also confirmed task 284's targets: sgd's step_mapped loop +4
       instructions a feature (register spills, +80 a row), the second dot
       (+125), TargetSpread::update (+70). W10.
+      *Built 2026-10-31 (W10, merged):* the trait flipped (`step_into`
+      required, `step` provided); fifteen models write into `out`; bit for
+      bit over 34 budget digests and the contract's stale-buffer test (now
+      both `Extra` variants, wrong lengths). arm64: holt -48%, micro -19%,
+      ftrl -11%, deco/lasso -10%, huber/quantile/rls/bocpd/hmm -6-7%. The
+      holt and `Decay::factor` exp2 memo was measured and not built: +5%
+      (+22 a row) on an irregular clock.
