@@ -26,7 +26,8 @@ faer.workspace = true
 # workspace Cargo.toml, task 258). All four are faer's own dependencies,
 # already linked; nothing new is linked (CLAUDE.md rule 12). A test names
 # `libm` for a stream that is the same bits on every platform (task 273,
-# `gramfit/lars_tie_tests.rs`); the library calls none of it.
+# `gramfit/lars_tie_tests.rs`); the library calls none of it. `pulp` is
+# named too, by `sgd::standardize_row`'s AVX2 lanes on x86-64 (task 290).
 faer-traits.workspace = true
 pulp.workspace = true
 nano-gemm.workspace = true

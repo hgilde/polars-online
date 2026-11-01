@@ -260,6 +260,15 @@ pub struct Including<'a> {
 }
 
 impl Including<'_> {
+    /// The two weights of the admitted row, `(a, b)`, for a caller that runs
+    /// [`Self::moments_of`]'s recursion across lanes of a vector: only
+    /// `sgd`'s AVX2 lanes, on x86-64.
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    pub(crate) fn weights(&self) -> (f64, f64) {
+        (self.a, self.b)
+    }
+
     /// `(mean, var, dev)` of slot `i` with `x` admitted: `update`'s recursion
     /// for the slot, the variance floored at zero as [`EwDiag::var`] floors
     /// it, and `x`'s deviation from the mean it leaves, the pair's
