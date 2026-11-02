@@ -3,7 +3,8 @@
 //! semidefinite to within `γ_{2n+1}` of their trace, `n` the rows of
 //! positive weight; its bound on `‖H⁻¹‖₁` against `crate::oracle`'s LU
 //! inverse and on Hager's estimate; and its decision at the edges, against
-//! the long way's.
+//! the long way's; each edge of its rule to the bit; and why the range of
+//! the diagonal it reads has a floor.
 
 use super::*;
 use crate::EwCov;
@@ -218,13 +219,18 @@ fn exact(a: &[f64], k: usize, delta: f64) -> f64 {
         .fold(0.0, f64::max)
 }
 
+/// The slack `ĝ` of item 5, written out: `(2n + 5) u T + (3k + 1) u (T +
+/// kδ) + u (2t + δ)`.
+fn slack_of(a: &[f64], k: usize, rows: u64, delta: f64) -> f64 {
+    let (t, tr, kf, n) = (top(a, k), trace(a, k), k as f64, rows as f64);
+    (2.0 * n + 5.0) * UNIT * tr
+        + (3.0 * kf + 1.0) * UNIT * (tr + kf * delta)
+        + UNIT * (2.0 * t + delta)
+}
+
 /// The shortcut's slack test, item 5 written out: `1.25 ĝ ≤ (ρ + δ)/2`.
 fn slack_holds(a: &[f64], k: usize, ridge: f64, rows: u64, delta: f64) -> bool {
-    let (t, tr, kf, n) = (top(a, k), trace(a, k), k as f64, rows as f64);
-    let g = (2.0 * n + 5.0) * UNIT * tr
-        + (3.0 * kf + 1.0) * UNIT * (tr + kf * delta)
-        + UNIT * (2.0 * t + delta);
-    1.25 * g <= 0.5 * (ridge + delta)
+    1.25 * slack_of(a, k, rows, delta) <= 0.5 * (ridge + delta)
 }
 
 /// Items 1 to 5 against the oracle. Over orders from 2 to 60, ridges from
@@ -486,4 +492,239 @@ fn a_thousand_features_settle_by_the_ridge_and_spread_ones_do_not() {
         }
         assert_eq!(read, 40);
     }
+}
+
+// Each edge of the shortcut's rule, to the bit, and why the range has a
+// floor (docs/PLAN.md task 310: the survivors of 946deee7's changed lines).
+
+/// Two rows of three features at `scale` (a power of two, so the
+/// co-moments are the unit scale's times `scale²` exactly): `C` is rank
+/// one, its largest variance between a half and nine tenths of `scale²`.
+fn two_rows(scale: f64) -> EwCov {
+    let mut cov = EwCov::new(3);
+    for x in [[1.0, 0.25, -0.5], [-0.6, 0.7, 0.3]] {
+        let x: Vec<f64> = x.iter().map(|v| v * scale).collect();
+        cov.update(&x, 1.0, 1.0);
+    }
+    cov
+}
+
+/// The range of `t = max a_ii` the shortcut reads (the module docs: inside
+/// `2⁻⁴⁰⁰` to `2⁴⁰⁰` nothing the estimate forms overflows, and an
+/// underflow's error is far under a rounding), at both ends to the bit. On
+/// two rows scaled by `2^±200`, `C`'s largest variance is in `[t/2, t)` of
+/// the end `t`, so a ridge of `t − c_max` is exact (Sterbenz) and makes `t`
+/// the system's largest diagonal entry: settled at the end, left one double
+/// outside it. The ridge is a tenth of `t` and more, so the bound and the
+/// slack are far inside theirs, and the long way refuses none of them.
+#[test]
+fn the_diagonal_s_range_is_held_at_both_ends() {
+    let k = 3;
+    let lowest = f64::from_bits((1023 - 400) << 52);
+    let highest = f64::from_bits((1023 + 400) << 52);
+    let below = f64::from_bits(lowest.to_bits() - 1);
+    let above = f64::from_bits(highest.to_bits() + 1);
+    for (end, outside, scale) in [
+        (lowest, below, 2f64.powi(-200)),
+        (highest, above, 2f64.powi(200)),
+    ] {
+        let cov = two_rows(scale);
+        let c = comoments(&cov);
+        let c_max = top(&c, k);
+        assert!(
+            c_max >= 0.5 * end && c_max <= 0.9 * end,
+            "{c_max:e} {end:e}"
+        );
+        for (t, settles) in [(end, true), (outside, false)] {
+            let ridge = t - c_max;
+            let a = system(&cov, k, ridge, false).unwrap();
+            assert_eq!(top(&a, k), t, "the diagonal's largest entry is the end");
+            let (got, long, _) = sides(&a, k, OverMoments::live(ridge, cov.rows_learned()));
+            assert_eq!(got, settles, "t {t:e}");
+            assert!(!long, "t {t:e}");
+        }
+    }
+}
+
+/// The rows' bound at its edge (item 2: `(2n + 6) u` at most `1/100`). With
+/// a ridge ten times `C`'s trace the slack holds at any count the bound
+/// allows, so the shortcut settles the system at the largest count it
+/// allows and leaves it one row after; counting more rows than built the
+/// moments only widens the slack. And at none: a Gram that took only rows of
+/// weight 0 is exactly 0, its system `ρI`, which the ridge settles.
+#[test]
+fn the_rows_bound_is_held_at_its_edge_and_at_no_rows() {
+    let k = 3;
+    let cov = two_rows(1.0);
+    let ridge = 10.0 * trace(&comoments(&cov), k);
+    let a = system(&cov, k, ridge, false).unwrap();
+    let allowed = |n: u64| (2.0 * n as f64 + 6.0) * UNIT <= 0.01;
+    let (mut lo, mut hi) = (0u64, 1u64 << 50);
+    assert!(allowed(lo) && !allowed(hi));
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if allowed(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    for (n, settles) in [(lo, true), (hi, false)] {
+        let (got, long, _) = sides(&a, k, OverMoments::live(ridge, n));
+        assert_eq!(got, settles, "rows {n}");
+        assert!(!long, "rows {n}");
+    }
+    let mut empty = EwCov::new(k);
+    empty.update(&[1.0, 2.0, 3.0], 1.0, 0.0);
+    assert_eq!(empty.rows_learned(), 0);
+    let a = system(&empty, k, 1e-6, false).unwrap();
+    assert!(
+        a.iter()
+            .enumerate()
+            .all(|(p, &v)| v == if p % (k + 1) == 0 { 1e-6 } else { 0.0 })
+    );
+    let (got, long, _) = sides(&a, k, OverMoments::live(1e-6, 0));
+    assert!(got && !long);
+}
+
+/// No ridge, no shortcut: the premise is `A = C + ρI` with `ρ > 0`. A
+/// rank-one `C` (two rows of three features) as its own system fails to
+/// factorize and takes the first rung's jitter, which alone would hold it
+/// inside the limit: under the least positive ridge, which leaves the
+/// system's bits as they are, the shortcut settles it; under a ridge of 0
+/// (or −0) it leaves it to the long way, which does not refuse it either.
+#[test]
+fn without_a_ridge_the_long_way_decides() {
+    let k = 3;
+    let cov = two_rows(1.0);
+    let a = system(&cov, k, 0.0, false).unwrap();
+    assert_eq!(system(&cov, k, f64::from_bits(1), false).unwrap(), a);
+    let f = SpdFactor::of(&a, k).unwrap();
+    assert!(f.attempts() > 0 && f.jitter() > 0.0, "needed jitter");
+    let rows = cov.rows_learned();
+    for (ridge, settles) in [(f64::from_bits(1), true), (0.0, false), (-0.0, false)] {
+        let over = OverMoments::live(ridge, rows);
+        assert_eq!(f.ridge_settles(&a, over), settles, "ridge {ridge:e}");
+        assert!(!f.carries_no_digit_over(&a, Some(over)), "ridge {ridge:e}");
+    }
+    assert!(!f.carries_no_digit(&a));
+}
+
+/// Item 5 written out, the decision `ridge_holds` makes over `a`'s diagonal
+/// with `rows` rows and the jitter `delta`, in its own order of operations.
+fn item_five(a: &[f64], k: usize, ridge: f64, rows: u64, delta: f64) -> bool {
+    let bound = 2.0 * (k as f64).sqrt() * (top(a, k) + delta) / (ridge + delta);
+    slack_holds(a, k, ridge, rows, delta) && bound < digit_limit(k)
+}
+
+/// Item 5 at each of its edges, to the bit (its terms' rounding is
+/// `ridge_holds`'s alone, so a test can pin it). Over the ridge, by
+/// bisection of the doubles' bits, the smallest ridge `ridge_holds` settles
+/// is the smallest item 5 written out settles: at the slack's edge (a
+/// thousand rows, where the slack decides; the bound there is near `5e12`,
+/// under the limit's `1e14`) and at the bound's (two rows, where the slack
+/// is a fifth of the ridge), each with no jitter and with a jitter of 0.95
+/// of the edge's `ρ + δ`, which leaves the ridge a twentieth of it, so that
+/// a term of the slack or the bound in `δ`, or the slack's `(3k + 1) u T`
+/// against `3k u T`, moves the edge by many doubles. At the slack's edge
+/// `1.25 ĝ` and `(ρ + δ)/2` are the same double -- `ĝ` does not move over a
+/// double of ridge, while `(ρ + δ)/2` takes every double in its binade --
+/// and the tie is settled, as `≤` says.
+#[test]
+fn item_five_decides_at_each_edge_to_the_bit() {
+    let k = 3;
+    let cov = two_rows(1.0);
+    let c = comoments(&cov);
+    let kf = k as f64;
+    let read = |ridge: f64| system(&cov, k, ridge, false).unwrap();
+    for (rows, near, slack_edge) in [
+        (
+            1_000u64,
+            2.5 * (2.0 * 1e3 + 5.0 + 3.0 * kf + 1.0) * UNIT * trace(&c, k),
+            true,
+        ),
+        (2, 2.0 * kf.sqrt() * top(&c, k) / digit_limit(k), false),
+    ] {
+        for share in [0.0, 0.95] {
+            let delta = share * near;
+            let what = format!("rows {rows} delta {delta:e}");
+            let holds = |ridge: f64| {
+                let a = read(ridge);
+                let diag = (0..k).map(|i| a[i * k + i]);
+                ridge_holds(diag, k, OverMoments::live(ridge, rows), delta)
+            };
+            let (mut lo, mut hi) = ((1e-3 * near).to_bits(), (4.0 * near).to_bits());
+            assert!(
+                !holds(f64::from_bits(lo)) && holds(f64::from_bits(hi)),
+                "{what}"
+            );
+            while hi - lo > 1 {
+                let mid = lo + (hi - lo) / 2;
+                if holds(f64::from_bits(mid)) {
+                    hi = mid;
+                } else {
+                    lo = mid;
+                }
+            }
+            let (edge, under) = (f64::from_bits(hi), f64::from_bits(lo));
+            assert!(item_five(&read(edge), k, edge, rows, delta), "{what}");
+            assert!(!item_five(&read(under), k, under, rows, delta), "{what}");
+            let g = slack_of(&read(edge), k, rows, delta);
+            assert_eq!(1.25 * g == 0.5 * (edge + delta), slack_edge, "{what}");
+        }
+    }
+}
+
+/// Why the range has a floor. Under `2⁻¹⁰²²` the co-moments are subnormal,
+/// and a product's rounding is absolute, half of `2⁻¹⁰⁷⁴` whatever its
+/// size, where the slack counts rounding relative to the trace: two rows of
+/// three features at `2⁻⁵¹²`, then rows at the running mean of weight
+/// `2⁻⁴⁶`, each rounding `a·c_ij` to the subnormals' grid, so that a ridge
+/// of a few units of `2⁻¹⁰⁷⁴` leaves `A` positive definite by a fraction of
+/// one. The factor succeeds as given; the slack and the bound hold, so
+/// without the range's floor item 5 would settle the system; the estimate
+/// refuses it, past the limit. The shortcut leaves every one of them to the
+/// estimate, so the answer is the long way's.
+#[test]
+fn under_the_range_subnormal_moments_are_left_to_the_estimate() {
+    let k = 3;
+    let lowest = f64::from_bits((1023 - 400) << 52);
+    let (mut tried, mut refused) = (0, 0);
+    for seed in 0..100u64 {
+        let mut s = seed + 3133;
+        let mut cov = EwCov::new(k);
+        for _ in 0..2 {
+            let x: Vec<f64> = (0..k).map(|_| draw(&mut s) * 2f64.powi(-512)).collect();
+            cov.update(&x, 1.0, 1.0);
+        }
+        for _ in 0..19 {
+            let x = cov.means().to_vec();
+            cov.update(&x, 1.0, 2f64.powi(-46));
+        }
+        let rows = cov.rows_learned();
+        for units in 1..16u64 {
+            let ridge = f64::from_bits(units);
+            let a = system(&cov, k, ridge, false).unwrap();
+            assert!(top(&a, k) < 2f64.powi(-1022) && top(&a, k) < lowest);
+            let Some(f) = SpdFactor::of(&a, k) else {
+                continue;
+            };
+            if f.attempts() > 0 {
+                continue;
+            }
+            tried += 1;
+            let over = OverMoments::live(ridge, rows);
+            let long = f.carries_no_digit(&a);
+            assert!(
+                !f.ridge_settles(&a, over),
+                "seed {seed} ridge {units} units"
+            );
+            assert_eq!(f.carries_no_digit_over(&a, Some(over)), long, "seed {seed}");
+            if long && item_five(&a, k, ridge, rows, 0.0) {
+                refused += 1;
+            }
+        }
+    }
+    eprintln!("tried {tried}, refused where item 5 alone would settle {refused}");
+    assert!(tried > 900 && refused >= 5, "{tried} {refused}");
 }
