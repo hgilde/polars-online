@@ -27,9 +27,11 @@ use crate::Runs;
 use crate::since::Since;
 use serde::{Deserialize, Serialize};
 
+mod held;
 mod lower;
 mod par;
 
+pub(crate) use held::HeldSteps;
 pub use lower::LowerTriangle;
 
 /// Is a centered variance large enough to standardize by, given the raw second
@@ -129,6 +131,40 @@ fn rank_one_whole_rows(c: &mut [f64], k: usize, d: &[f64], a: f64, b: f64) {
     }
 }
 
+/// How [`EwCov::update_by`] takes the co-moments' rank-one step: at once
+/// ([`EachRow`], every update but a replay's) or held for a blocked merge
+/// ([`HeldSteps`]). A type parameter, so [`EwCov::update`] decides
+/// nothing about it per row.
+pub(crate) trait CoStep {
+    fn rank_one(&mut self, c: &mut [f64], k: usize, d: &[f64], a: f64, b: f64, threads: Threads);
+}
+
+/// The rank-one step taken as the row arrives: on one thread by
+/// [`rank_one_rows`], or the same expression per entry with the rows
+/// split across threads ([`EwCov::set_threads`]).
+pub(crate) struct EachRow;
+
+impl CoStep for EachRow {
+    #[inline(always)]
+    fn rank_one(&mut self, c: &mut [f64], k: usize, d: &[f64], a: f64, b: f64, threads: Threads) {
+        let workers = if threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {
+            threads.workers()
+        } else {
+            1
+        };
+        if workers > 1 {
+            par::rows(c, k, workers, |i, row| {
+                let ab_di = a * b * d[i];
+                for (cj, &dj) in row[..=i].iter_mut().zip(d.iter()) {
+                    *cj = a * *cj + ab_di * dj;
+                }
+            });
+        } else {
+            rank_one_rows(c, k, d, a, b);
+        }
+    }
+}
+
 /// A reusable row buffer that is not state: two accumulators with the same
 /// moments are the same accumulator whatever is left in their scratch, and a
 /// state file carries none of it.
@@ -146,7 +182,7 @@ impl PartialEq for Scratch {
 /// accumulators with the same moments are the same accumulator whatever
 /// threads each runs on, so [`PartialEq`] ignores it. One by default.
 #[derive(Debug, Clone, Copy)]
-struct Threads(usize);
+pub(crate) struct Threads(usize);
 
 impl Default for Threads {
     fn default() -> Self {
@@ -1058,6 +1094,44 @@ impl EwCov {
     /// a full block brings, or the held rows a decay that takes the whole
     /// history merges before it.
     pub(crate) fn update_riding<R: Rider>(&mut self, x: &[f64], lam: f64, w: f64, rider: &mut R) {
+        self.update_by(x, lam, w, rider, &mut EachRow);
+    }
+
+    /// [`Self::update`] with the co-moments' rank-one step held in `held`
+    /// rather than taken ([`HeldSteps`]): every other number the row moves --
+    /// the means, the weights, the prior's scale -- moves now, and the
+    /// co-moments are behind until [`Self::merge_held`]. For an owner that
+    /// replays many rows and reads the co-moments only after the last (the
+    /// robust refit's passes); nothing may read them in between. On an
+    /// accumulator that blocks its rows ([`Self::set_block_rows`]), whose
+    /// merge reads the co-moments, the held steps are merged first and the
+    /// row is an ordinary [`Self::update`].
+    pub(crate) fn update_held(&mut self, x: &[f64], lam: f64, w: f64, held: &mut HeldSteps) {
+        if self.pending.block_rows > 0 {
+            self.merge_held(held);
+            return self.update(x, lam, w);
+        }
+        self.update_by(x, lam, w, &mut NoRider, held);
+    }
+
+    /// The co-moments brought up to date with every step [`Self::update_held`]
+    /// held, each entry's in the rows' order, to the bit of the rows taken
+    /// one by one ([`HeldSteps`]).
+    pub(crate) fn merge_held(&mut self, held: &mut HeldSteps) {
+        held.merge_into(self.c.lower_mut(), self.k);
+    }
+
+    /// [`Self::update_riding`], the co-moments' rank-one step taken by
+    /// `step` ([`CoStep`]): at once ([`EachRow`]) or held ([`HeldSteps`]).
+    #[inline(always)]
+    fn update_by<R: Rider, S: CoStep>(
+        &mut self,
+        x: &[f64],
+        lam: f64,
+        w: f64,
+        rider: &mut R,
+        step: &mut S,
+    ) {
         debug_assert_eq!(x.len(), self.k);
         debug_assert!(
             w >= 0.0,
@@ -1112,24 +1186,7 @@ impl EwCov {
                 .zip(&self.m_lo)
                 .map(|((&xi, &mi), &li)| crate::comp::dev(xi, mi, li)),
         );
-        let workers = if self.threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {
-            self.threads.workers()
-        } else {
-            1
-        };
-        if workers > 1 {
-            // The same expression per entry, rows split across threads
-            // ([`Self::set_threads`]).
-            let d = &*d;
-            par::rows(self.c.lower_mut(), k, workers, |i, row| {
-                let ab_di = a * b * d[i];
-                for (cj, &dj) in row[..=i].iter_mut().zip(d.iter()) {
-                    *cj = a * *cj + ab_di * dj;
-                }
-            });
-        } else {
-            rank_one_rows(self.c.lower_mut(), k, d, a, b);
-        }
+        step.rank_one(self.c.lower_mut(), k, d, a, b, self.threads);
         // The precision prior decays with the co-moments. `a == 0` only on
         // the very first observation, when the whole history is discarded and
         // the centered co-moments are exactly zero: the prior starts over.
