@@ -177,7 +177,9 @@ fn huber_reports_its_scales_into_the_kept_buffer() {
 }
 
 /// `deco` standardised the row and formed its block sums twice, once to
-/// report and once to learn (D-6).
+/// report and once to learn (D-6): 19 allocations a row, 13 after. Its
+/// density's matrix, factor and faer's scratch are kept since (task 298):
+/// three fewer.
 #[test]
 fn deco_standardises_a_row_once() {
     let got = per_row(
@@ -186,11 +188,13 @@ fn deco_standardises_a_row_once() {
         20,
         0,
     );
-    check("deco m=20", got, 13.0, 19.0);
+    check("deco m=20", got, 10.0, 19.0);
 }
 
 /// `hmm` built `Π` twice on a learning row, a vector a matrix row each time
-/// (D-7).
+/// (D-7): 29 allocations a row, 24 after. Its states' factors, their
+/// matrices, faer's scratch and the list of factors are kept since (task
+/// 298): seven fewer.
 #[test]
 fn hmm_builds_its_transition_matrix_once_a_row() {
     let got = per_row(
@@ -199,7 +203,7 @@ fn hmm_builds_its_transition_matrix_once_a_row() {
         4,
         0,
     );
-    check("hmm K=2 d=4", got, 24.0, 29.0);
+    check("hmm K=2 d=4", got, 17.0, 29.0);
 }
 
 /// `lasso` copied each target's selection errors a row to take their
@@ -309,11 +313,12 @@ fn the_cheap_models_step_into_a_kept_buffer_without_allocating() {
 /// run (task 292): 16 allocations a row under the diagonal emission, and
 /// none now. Under the full covariance each run's predictive formed its
 /// mean, its scale and the row's deviation, and solved for the quadratic
-/// form in a matrix and a vector of its own; what is left is the factor of
-/// each run's scale, one a run, which the solve module allocates.
+/// form in a matrix and a vector of its own; what was left, 21.24 a row,
+/// was the factor of each run's scale, a matrix and faer's scratch made for
+/// every run, which is written over the last run's now (task 298).
 #[test]
 fn bocpd_keeps_its_rows_working_space() {
-    for (id, bound, before) in [("bocpd", 0.0, 16.0), ("bocpd_full", 21.24, 72.63)] {
+    for (id, bound, before) in [("bocpd", 0.0, 16.0), ("bocpd_full", 0.0, 72.63)] {
         check(id, case_per_row(id, true), bound, before);
     }
 }
@@ -321,8 +326,10 @@ fn bocpd_keeps_its_rows_working_space() {
 /// `ew_class` formed its class weights, its class scores, the row's
 /// deviations, the matrix a stale class factorizes and each quadratic
 /// form's column anew on every row, and every solve made a list of its one
-/// band of right-hand sides (task 293): kept buffers now, and what is left
-/// is the learned class's new factor, its matrix and faer's scratch.
+/// band of right-hand sides (task 293): kept buffers now, and what was
+/// left, 2 a row, was the learned class's new factor, its matrix and
+/// faer's scratch, which is written over the factor the class dropped now
+/// (task 298).
 /// `quantile` kept its nudge's column already; its solves' lists went the
 /// same way, and then its solves' and its nudges' band systems and factors
 /// (task 297): what is left is a system's first build after a refit or a
@@ -331,7 +338,7 @@ fn bocpd_keeps_its_rows_working_space() {
 /// none, and a class with no row scores nothing.
 #[test]
 fn ew_class_and_quantile_keep_their_buffers_between_rows() {
-    for (id, bound, before) in [("ew_class", 2.0, 15.0), ("quantile", 0.08, 2.40)] {
+    for (id, bound, before) in [("ew_class", 0.0, 15.0), ("quantile", 0.08, 2.40)] {
         let mut run = online_bench::model_setup(id);
         let start = calls();
         std::hint::black_box(online_bench::polars_online_budget_model_rows(&mut run));
@@ -362,6 +369,24 @@ fn huber_keeps_its_solves_working_space() {
         ("quantile", 0.08, 1.48),
         ("quantile_refit", 0.253, 1.77),
     ] {
+        let mut run = online_bench::model_setup(id);
+        let start = calls();
+        std::hint::black_box(online_bench::polars_online_budget_model_rows(&mut run));
+        let got = (calls() - start) as f64 / online_bench::ROWS as f64;
+        check(id, got, bound, before);
+    }
+}
+
+/// `hmm` factorized each state's matrix anew on every learned row, and
+/// `deco` its block matrix `S` on every row: a new factor's matrix, faer's
+/// scratch for it and the matrix it read, each made and dropped (task 298).
+/// The dropped factors are kept and written over now, with the scratch and
+/// the matrix: `hmm`'s two states' three allocations each, and the list
+/// its factors are held in, and `deco`'s three. Counted over each bench
+/// case's own measured block, as the bank steps it.
+#[test]
+fn hmm_and_deco_keep_their_factors_working_space() {
+    for (id, bound, before) in [("hmm", 15.0, 22.0), ("deco", 9.0, 12.0)] {
         let mut run = online_bench::model_setup(id);
         let start = calls();
         std::hint::black_box(online_bench::polars_online_budget_model_rows(&mut run));

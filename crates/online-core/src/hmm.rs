@@ -66,7 +66,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::cluster::kmeans::seed_centres;
-use crate::solve::{SpdFactor, quad_forms_logdet};
+use crate::solve::{FactorWork, SpdFactor, quad_forms_logdet};
 use crate::{Covariance, Decay, EwCov, SeedRule};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -234,8 +234,22 @@ type Update = (Vec<f64>, Vec<f64>, Vec<f64>);
 /// compared. The same cache `ew_class` keeps (docs/PERFORMANCE.md §13); the
 /// win is the `learn = false` scorer, which never changes a state and so
 /// factorizes each state once rather than on every row (review 2026-09-18).
-#[derive(Debug, Clone, Default)]
-struct Factors(Vec<Option<SpdFactor>>);
+///
+/// Beside the factors it keeps the working space their rebuilding needs
+/// (task 298): a learned row drops every factor and the next row builds
+/// each again, so the dropped factors are kept and written over, with
+/// faer's scratch ([`FactorWork`]), beside the state matrix the
+/// factorization reads, where each was made afresh on every
+/// factorization. Each is written in full before it is read, so a factor
+/// is the one [`SpdFactor::of`] gives, to the bit. The working space is
+/// shown by no `Debug` (a state's digest reads the model's), and a copy
+/// keeps none of the dropped factors ([`FactorWork`]'s copy is empty).
+#[derive(Clone, Default)]
+struct Factors {
+    held: Vec<Option<SpdFactor>>,
+    work: FactorWork,
+    matrix: Vec<f64>,
+}
 
 impl PartialEq for Factors {
     fn eq(&self, _: &Self) -> bool {
@@ -243,24 +257,37 @@ impl PartialEq for Factors {
     }
 }
 
+/// The factors, as `derive(Debug)` wrote the cache when it held them alone:
+/// the working space is not shown.
+impl std::fmt::Debug for Factors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Factors").field(&self.held).finish()
+    }
+}
+
 impl Factors {
     /// The ready factor for state `s`, or `None` if it must be built.
     fn peek(&self, s: usize) -> Option<&SpdFactor> {
-        self.0.get(s).and_then(Option::as_ref)
+        self.held.get(s).and_then(Option::as_ref)
     }
 
-    /// Store state `s`'s factor, sizing the cache to `k` states first.
+    /// Store state `s`'s factor, sizing the cache to `k` states first, in
+    /// the list it kept.
     fn set(&mut self, s: usize, k: usize, f: Option<SpdFactor>) {
-        if self.0.len() != k {
-            self.0 = vec![None; k];
+        if self.held.len() != k {
+            self.held.clear();
+            self.held.resize_with(k, || None);
         }
-        self.0[s] = f;
+        self.held[s] = f;
     }
 
     /// Drop every factor; the next `ensure_factors` rebuilds, so a stale
-    /// factor is never read.
+    /// factor is never read. The factors are kept for it to write over:
+    /// as many as the cache held, so never more than one a state.
     fn clear(&mut self) {
-        self.0.clear();
+        for f in self.held.drain(..).flatten() {
+            self.work.give(f);
+        }
     }
 }
 
@@ -352,10 +379,19 @@ impl Hmm {
             return;
         }
         let (k, d) = (self.cfg.k, self.cfg.n_features);
-        for s in 0..k {
-            if self.factors.peek(s).is_none() {
-                let m = self.state_matrix(s);
-                self.factors.set(s, k, SpdFactor::of(&m, d));
+        let Self {
+            cfg,
+            states,
+            factors,
+            ..
+        } = self;
+        for (s, cov) in states.iter().enumerate() {
+            if factors.peek(s).is_none() {
+                // Formed and factorized in the cache's working space: the
+                // factor `SpdFactor::of` gives of the same matrix, to the bit.
+                Self::matrix_of(cfg, cov, &mut factors.matrix);
+                let f = factors.work.factor(&factors.matrix, d);
+                factors.set(s, k, f);
             }
         }
     }
@@ -476,13 +512,26 @@ impl Hmm {
     /// `C_s + r_s I`'s lower triangle, which the factorization reads
     /// (`SpdFactor::of`); the upper one holds no meaning.
     fn state_matrix(&self, s: usize) -> Vec<f64> {
-        let d = self.cfg.n_features;
-        let mut m = self.states[s].comoments().lower().to_vec();
-        let r = self.ridge(s);
+        let mut m = Vec::new();
+        self.state_matrix_into(s, &mut m);
+        m
+    }
+
+    /// [`Self::state_matrix`], written over `m`.
+    fn state_matrix_into(&self, s: usize, m: &mut Vec<f64>) {
+        Self::matrix_of(&self.cfg, &self.states[s], m);
+    }
+
+    /// The state matrix of the state whose accumulator is `cov`, written
+    /// over `m`: its ridge is [`Self::ridge`]'s.
+    fn matrix_of(cfg: &HmmCfg, cov: &EwCov, m: &mut Vec<f64>) {
+        let d = cfg.n_features;
+        m.clear();
+        m.extend_from_slice(cov.comoments().lower());
+        let r = cfg.precision_prior * cov.precision_scale();
         for i in 0..d {
             m[i * d + i] += r;
         }
-        m
     }
 
     /// `ln fₗ` per state, or `None` when a factorization failed or a density
@@ -2397,6 +2446,37 @@ mod tests {
         let back = Hmm::restore(&rmp_serde::from_slice(&bytes).unwrap()).unwrap();
         assert!(back.factors.peek(0).is_none(), "and not written");
         assert_eq!(back, scorer);
+    }
+
+    /// The factors rebuilt in the cache's kept working space -- the factors
+    /// a learned row dropped, faer's scratch and the state matrix -- are the
+    /// ones a cache built afresh gives, to the bit: every output of every
+    /// row, a zero-weight row's among them, and the state's `Debug`, which
+    /// shows none of the working space (task 298). The kept model writes
+    /// over a dropped factor on every learned row once seeded.
+    #[test]
+    fn factors_rebuilt_in_the_kept_working_space_are_the_fresh_ones() {
+        let mut kept = Hmm::new(cfg(2, 3)).unwrap();
+        let mut fresh = kept.clone();
+        let mut written_over = 0;
+        for (i, (x, _)) in stream(400, 7, 30).iter().enumerate() {
+            let w = if i % 37 == 5 { 0.0 } else { 1.0 };
+            fresh.factors.work = FactorWork::default();
+            fresh.factors.matrix = Vec::new();
+            written_over += usize::from(kept.factors.work.kept() == 3);
+            let a = kept.step(x, &[], 1.0, w);
+            let b = fresh.step(x, &[], 1.0, w);
+            let bits = |v: &[f64]| v.iter().map(|p| p.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&a.pred), bits(&b.pred), "row {i}");
+            assert_eq!(a.n_eff.to_bits(), b.n_eff.to_bits(), "row {i}");
+        }
+        assert!(kept.seeded && written_over > 300, "{written_over}");
+        assert_eq!(
+            format!("{:?}", kept.state()),
+            format!("{:?}", fresh.state())
+        );
+        let shown = format!("{kept:?}");
+        assert!(shown.contains("factors: Factors(") && !shown.contains("FactorWork"));
     }
 
     /// The factor cache is the `full` shape's, built once the states are

@@ -45,7 +45,7 @@ use serde::{Deserialize, Serialize};
 use crate::clock::Decay;
 use crate::ewcov::EwCov;
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
-use crate::solve::{QuadWork, SpdFactor, quad_forms_logdet};
+use crate::solve::{FactorWork, QuadWork, SpdFactor, quad_forms_logdet};
 
 /// The shape of the class covariance matrices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -177,8 +177,27 @@ enum Cached {
 /// Per-class [`Cached`] factors. Derived state: a pure function of the
 /// class accumulators, so it is neither serialized (rebuilt on demand after
 /// a load) nor compared.
-#[derive(Debug, Clone, Default)]
-struct Factors(Vec<Cached>);
+///
+/// Beside them, the factors the learned rows dropped, written over by the
+/// next factorization with faer's scratch ([`FactorWork`]; task 298: a
+/// factor's matrix and its scratch were made for each learned row and
+/// dropped by the next that class learned). A factor is
+/// [`SpdFactor::of`]'s, to the bit. The working space is shown by no
+/// `Debug` (a state's digest reads the model's), and a copy holds its own,
+/// empty.
+#[derive(Clone, Default)]
+struct Factors {
+    slots: Vec<Cached>,
+    work: FactorWork,
+}
+
+/// The factors, as `derive(Debug)` wrote the cache when it held them alone:
+/// the working space is not shown.
+impl std::fmt::Debug for Factors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Factors").field(&self.slots).finish()
+    }
+}
 
 impl PartialEq for Factors {
     fn eq(&self, _: &Self) -> bool {
@@ -197,17 +216,17 @@ impl Factors {
         matrix: impl FnOnce(&mut Vec<f64>),
         k: usize,
     ) -> Option<&SpdFactor> {
-        if self.0.len() != n_classes {
-            self.0 = vec![Cached::Stale; n_classes];
+        if self.slots.len() != n_classes {
+            self.slots = vec![Cached::Stale; n_classes];
         }
-        if matches!(self.0[c], Cached::Stale) {
+        if matches!(self.slots[c], Cached::Stale) {
             matrix(buf);
-            self.0[c] = match SpdFactor::of(buf, k) {
+            self.slots[c] = match self.work.factor(buf, k) {
                 Some(f) => Cached::Ready(f),
                 None => Cached::Failed,
             };
         }
-        match &self.0[c] {
+        match &self.slots[c] {
             Cached::Ready(f) => Some(f),
             _ => None,
         }
@@ -216,23 +235,27 @@ impl Factors {
     /// The factor for class `c` if it is ready; `None` when stale or failed,
     /// without computing anything.
     fn peek(&self, c: usize) -> Option<&SpdFactor> {
-        match self.0.get(c) {
+        match self.slots.get(c) {
             Some(Cached::Ready(f)) => Some(f),
             _ => None,
         }
     }
 
+    /// Class `c`'s factor is stale; a ready one is kept to be written
+    /// over, so no more are kept than there are classes.
     fn invalidate(&mut self, c: usize) {
-        if let Some(slot) = self.0.get_mut(c) {
-            *slot = Cached::Stale;
+        if let Some(slot) = self.slots.get_mut(c)
+            && let Cached::Ready(f) = std::mem::replace(slot, Cached::Stale)
+        {
+            self.work.give(f);
         }
     }
 
     /// Every class's factor at once: what a `window` needs, since its
     /// truncated covariance moves on every row.
     fn invalidate_all(&mut self) {
-        for slot in self.0.iter_mut() {
-            *slot = Cached::Stale;
+        for c in 0..self.slots.len() {
+            self.invalidate(c);
         }
     }
 }
@@ -1028,6 +1051,41 @@ mod tests {
                 assert_eq!(cov.cov(0, 1), 0.0, "{covariance:?}, class {class}");
                 assert!(cov.var(0) > 0.0, "{covariance:?}, class {class}");
             }
+        }
+    }
+
+    /// The factors built in the cache's kept working space -- the factors
+    /// the learned rows dropped, and faer's scratch -- are the ones a cache
+    /// built afresh gives, to the bit: every output of every row, without a
+    /// window and under one, which drops every factor on every row, and the
+    /// state's `Debug`, which shows none of the working space (task 298).
+    /// The kept model writes over a dropped factor on most learned rows.
+    #[test]
+    fn factors_built_in_the_kept_working_space_are_the_fresh_ones() {
+        for window in [None, Some(30.0)] {
+            let c = EwClassCfg {
+                window,
+                ..cfg(3, 3, Covariance::Full)
+            };
+            let mut kept = EwClass::new(c).unwrap();
+            let mut fresh = kept.clone();
+            let mut written_over = 0;
+            for (i, r) in stream(500, 3, 3, 17).iter().enumerate() {
+                fresh.factors.work = FactorWork::default();
+                written_over += usize::from(kept.factors.work.kept() > 0);
+                let y = [r.label.map(|c| c as f64)];
+                let a = kept.step(&r.x, &y, r.d, r.w);
+                let b = fresh.step(&r.x, &y, r.d, r.w);
+                let bits = |v: &[f64]| v.iter().map(|p| p.to_bits()).collect::<Vec<_>>();
+                assert_eq!(bits(&a.pred), bits(&b.pred), "window {window:?}, row {i}");
+            }
+            assert!(written_over > 250, "window {window:?}: {written_over}");
+            assert_eq!(
+                format!("{:?}", kept.state()),
+                format!("{:?}", fresh.state())
+            );
+            let shown = format!("{kept:?}");
+            assert!(shown.contains("factors: Factors(") && !shown.contains("FactorWork"));
         }
     }
 
