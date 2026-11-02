@@ -1100,10 +1100,17 @@ returns.
   from a file rebuilds the bound at its first merge from the matrix itself
   and takes the long way until its decay has worn the loaded history below
   the ridge.
-  The bound's merge forms no subnormal number: its two underflow terms,
-  near `2⁻¹⁰⁷⁴`, are absorbed into a `2⁻¹⁰⁰⁰` floor instead of being
-  multiplied out, since on x86-64 each operation on a subnormal can take a
-  microcode assist of about 100 cycles.
+  The bound's merge forms no subnormal number. Its two underflow terms,
+  near `2⁻¹⁰⁷⁴`, are absorbed into a `2⁻¹⁰⁰⁰` floor where they are
+  negligible, and the choice between 0 and the term falls on one of its
+  factors rather than on the product: compiled without a branch, a choice
+  of the whole product formed a subnormal on every feature of every merge
+  and discarded it, and on x86-64 each such operation takes a microcode
+  assist of about 100 cycles. That had made a blocked fit with 10
+  features about 4% slower on x86-64; it is now level with the fit
+  before the bound (p25 −0.5% and −0.8% over ten heap layouts, in the
+  default and an aligned code layout), and arm64, which runs subnormals
+  at full speed, is unchanged.
 - The bank's loop copies less a row, with the same bits as before (task
   309): a stream lends its fresh clock (kept for `drift_action="reset"`)
   to each chunk's schedule rather than copying it and storing it back,
