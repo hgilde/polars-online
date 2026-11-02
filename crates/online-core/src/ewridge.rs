@@ -59,7 +59,7 @@ use serde::{Deserialize, Serialize};
 use crate::gaps::{Acc, AccSnap, AccView, Cross, gram_parts};
 use crate::model::{Fit, ModelState, OnlineModel, State, StateError, Step, check_schema};
 use crate::since::Since;
-use crate::solve::{SpdFactor, dot_aug};
+use crate::solve::{FactorWork, SpdFactor, dot_aug};
 use crate::{Decay, EwCov, GramPart, TargetGaps, TargetMoments};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -904,7 +904,11 @@ impl EwRidge {
         ready.support.resize(m * nc, vec![f64::NAN; k_total]);
         ready.system_of.resize(m * nc, usize::MAX);
         ready.pending.resize(m * nc, None);
-        let mut factors = std::mem::take(&mut self.factors).0;
+        let Factors {
+            kept: mut factors,
+            work,
+        } = std::mem::take(&mut self.factors);
+        let mut work = work.unwrap_or_default();
         let keep_factor = self.keep_factor;
         // With a `window`, the fit is solved from the truncated accumulators:
         // no row older than the window is in a Gram at all. Without one, and
@@ -917,10 +921,15 @@ impl EwRidge {
             // `support_coef` beside a fit of NaN (review round 4, CA1).
             self.beta = Some(Fit(vec![vec![f64::NAN; k_total]; m * nc]));
             for slot in 0..m * nc {
-                ready.clear(slot);
+                ready.clear(slot, &mut work);
             }
+            // Nothing pending: the next settle will not look at the spares.
+            work.drop_spares();
             self.ready = ready;
-            self.factors = Factors(factors);
+            self.factors = Factors {
+                kept: factors,
+                work: Some(work),
+            };
             self.since_solve.restart();
             self.rows_since_solve = 0;
             self.weight_since_solve = 0.0;
@@ -967,7 +976,7 @@ impl EwRidge {
                 if ridge == 0.0 && cov.n_eff() <= 0.0 {
                     for &j in &readers {
                         beta[j * nc + ci].fill(f64::NAN);
-                        ready.clear(j * nc + ci);
+                        ready.clear(j * nc + ci, &mut work);
                     }
                     continue;
                 }
@@ -975,7 +984,7 @@ impl EwRidge {
                 let kc = zidx.len();
 
                 let solved: Option<Solved> = if centred {
-                    self.solve_centred(cov, cross, &readers, &mut failures, &zidx, ridge)
+                    self.solve_centred(cov, cross, &readers, &mut failures, &mut work, &zidx, ridge)
                 } else {
                     // Gather the sub-block of S and the per-target rhs.
                     let mut a = vec![0.0; kc * kc];
@@ -1017,9 +1026,11 @@ impl EwRidge {
                         }
                         // The system is on the sum scale, so a row form
                         // against it is scaled back by `W` (see `System`).
-                        Self::run_solve(&mut failures, &a, &b, kc, mr).map(|(sol, factor, ill)| {
-                            Solved::raw(sol, factor, a, kc, ps * ridge, w, ill)
-                        })
+                        Self::run_solve(&mut failures, &mut work, &a, &b, kc, mr).map(
+                            |(sol, factor, ill)| {
+                                Solved::raw(sol, factor, a, kc, ps * ridge, w, ill)
+                            },
+                        )
                     } else if !self.cfg.standardize {
                         // Through the origin every slot is a slope, and every
                         // slot is penalized.
@@ -1036,13 +1047,14 @@ impl EwRidge {
                                 }
                             }
                         }
-                        Self::run_solve(&mut failures, &a, &b, kc, mr).map(|(sol, factor, ill)| {
-                            Solved::raw(sol, factor, a, kc, ridge, 1.0, ill)
-                        })
+                        Self::run_solve(&mut failures, &mut work, &a, &b, kc, mr).map(
+                            |(sol, factor, ill)| Solved::raw(sol, factor, a, kc, ridge, 1.0, ill),
+                        )
                     } else {
                         Self::solve_scaled_through_origin(
                             cov,
                             &mut failures,
+                            &mut work,
                             &zidx,
                             &b,
                             &readers,
@@ -1064,12 +1076,17 @@ impl EwRidge {
                     for &j in &readers {
                         let slot = j * nc + ci;
                         beta[slot].fill(f64::NAN);
-                        ready.clear(slot);
+                        ready.clear(slot, &mut work);
                         ready.system_of[slot] = at;
                     }
                     if keep_factor {
                         ready.systems[at] = None;
-                        factors[at] = None;
+                        if let Some(old) = factors[at].take() {
+                            work.give(old);
+                        }
+                    }
+                    if let Some(f) = solved.and_then(|s| s.factor) {
+                        work.give(f);
                     }
                 } else if let Some(mut solved) = solved {
                     for (jj, &j) in readers.iter().enumerate() {
@@ -1100,7 +1117,11 @@ impl EwRidge {
                     }
                     let edf0 = if solved.centred { 1.0 } else { 0.0 };
                     let factor = solved.factor.take();
-                    let kept = if keep_factor { factor.clone() } else { None };
+                    let kept = if keep_factor {
+                        factor.as_ref().map(|f| work.copy(f))
+                    } else {
+                        None
+                    };
                     let pending = factor.map(|factor| {
                         let lam = solved.shift + factor.jitter();
                         Arc::new(Pending {
@@ -1121,11 +1142,11 @@ impl EwRidge {
                     for &j in &readers {
                         let slot = j * nc + ci;
                         match &pending {
-                            Some(p) => ready.pending[slot] = Some(Arc::clone(p)),
+                            Some(p) => ready.set_pending(slot, Some(Arc::clone(p)), &mut work),
                             None => {
                                 ready.edf[slot] = edf0;
                                 ready.support[slot].clone_from(&sup0);
-                                ready.pending[slot] = None;
+                                ready.set_pending(slot, None, &mut work);
                             }
                         }
                         ready.system_of[slot] = at;
@@ -1139,7 +1160,9 @@ impl EwRidge {
                             centred: solved.centred,
                             scale: solved.scale,
                         });
-                        factors[at] = kept;
+                        if let Some(old) = std::mem::replace(&mut factors[at], kept) {
+                            work.give(old);
+                        }
                     }
                 } else if let Some(prev) = &self.beta {
                     // Total failure even with jitter: keep the previous
@@ -1187,17 +1210,24 @@ impl EwRidge {
                     continue;
                 }
                 beta[slot].fill(f64::NAN);
-                ready.clear(slot);
+                ready.clear(slot, &mut work);
             }
         }
         if !keep_factor {
             ready.systems.clear();
             factors.clear();
         }
+        // Nothing pending: the next settle will not look at the spares.
+        if !ready.has_pending() {
+            work.drop_spares();
+        }
         self.solve_failures += failures;
         self.beta = Some(Fit(beta));
         self.ready = ready;
-        self.factors = Factors(factors);
+        self.factors = Factors {
+            kept: factors,
+            work: Some(work),
+        };
         self.since_solve.restart();
         self.rows_since_solve = 0;
         self.weight_since_solve = 0.0;
@@ -1216,12 +1246,13 @@ impl EwRidge {
     /// bit: the estimate reads the factor and changes nothing.
     fn run_solve(
         failures: &mut u64,
+        work: &mut FactorWork,
         a: &[f64],
         b: &[f64],
         k: usize,
         m: usize,
     ) -> Option<(Vec<f64>, SpdFactor, bool)> {
-        match SpdFactor::of(a, k) {
+        match work.factor(a, k) {
             Some(f) => {
                 *failures += u64::from(f.attempts());
                 if f.carries_no_digit(a) {
@@ -1252,6 +1283,7 @@ impl EwRidge {
     fn solve_scaled_through_origin(
         cov: &EwCov,
         failures: &mut u64,
+        work: &mut FactorWork,
         zidx: &[usize],
         b: &[f64],
         readers: &[usize],
@@ -1297,7 +1329,7 @@ impl EwRidge {
                 }
             }
         }
-        let (sol, factor, ill) = Self::run_solve(failures, &asub, &bsub, kk, m)?;
+        let (sol, factor, ill) = Self::run_solve(failures, work, &asub, &bsub, kk, m)?;
         let mut out = vec![0.0; kc * m];
         for j in 0..m {
             for (i2, &i) in keep.iter().enumerate() {
@@ -1335,12 +1367,14 @@ impl EwRidge {
     /// Gram from the live accumulator while its right-hand side came from the
     /// view, so a windowed fit mixed two histories and the window's guarantee
     /// failed silently (review 2026-09-12, C1).
+    #[allow(clippy::too_many_arguments)]
     fn solve_centred(
         &self,
         cov: &EwCov,
         cross: &Cross,
         readers: &[usize],
         failures: &mut u64,
+        work: &mut FactorWork,
         zidx: &[usize],
         ridge: f64,
     ) -> Option<Solved> {
@@ -1408,7 +1442,7 @@ impl EwRidge {
                     }
                 }
             }
-            let (sol, factor, past) = Self::run_solve(failures, &asub, &bsub, kk, mr)?;
+            let (sol, factor, past) = Self::run_solve(failures, work, &asub, &bsub, kk, mr)?;
             ill = past;
             for jj in 0..mr {
                 for (i2, &i) in keep.iter().enumerate() {
@@ -1467,7 +1501,7 @@ impl EwRidge {
         self.keep_factor = on;
         if !on {
             self.ready.systems.clear();
-            self.factors.0.clear();
+            self.factors.kept.clear();
         }
     }
 
@@ -1518,20 +1552,24 @@ impl EwRidge {
     /// factorization is deterministic, so a loaded model reads the same
     /// leverage the saved one did.
     fn refactor(&mut self) {
-        self.factors = Factors(
-            self.ready
-                .systems
-                .iter()
-                .map(|s| {
-                    s.as_ref().and_then(|s| {
-                        let kk = s.z.len();
-                        (s.a.len() == kk * kk)
-                            .then(|| SpdFactor::of(s.a.lower(), kk))
-                            .flatten()
-                    })
+        let Factors { kept, work } = &mut self.factors;
+        let work = work.get_or_insert_with(Box::default);
+        for old in std::mem::take(kept).into_iter().flatten() {
+            work.give(old);
+        }
+        *kept = self
+            .ready
+            .systems
+            .iter()
+            .map(|s| {
+                s.as_ref().and_then(|s| {
+                    let kk = s.z.len();
+                    (s.a.len() == kk * kk)
+                        .then(|| work.factor(s.a.lower(), kk))
+                        .flatten()
                 })
-                .collect(),
-        );
+            })
+            .collect();
     }
 
     /// Output slot `slot`'s kept system and, where it has a column, the
@@ -1549,7 +1587,7 @@ impl EwRidge {
         if sys.z.is_empty() {
             return Some((sys, None));
         }
-        let factor = self.factors.0.get(at)?.as_ref()?;
+        let factor = self.factors.kept.get(at)?.as_ref()?;
         Some((sys, Some(factor)))
     }
 
@@ -1623,7 +1661,23 @@ impl EwRidge {
     /// factor is held only while its stream runs. The values are the ones a
     /// read would have given.
     pub fn settle_readiness(&mut self) {
+        // With nothing pending no solve has run since the last settle, and
+        // a solve that leaves nothing pending keeps no spare (`solve`), so
+        // there is nothing to do and the model's cold fields stay cold: one
+        // read of them per group per chunk is what a chunk of one row a
+        // group, which solves nothing, would pay here.
+        if !self.ready.has_pending() {
+            return;
+        }
         self.ready.settle();
+        // The solves' working space holds spare factors as large as the
+        // ones just dropped: a stream at rest keeps neither. Its scratch,
+        // small, and the box it is kept in stay: a group's stream settles
+        // at the end of each of its chunks, and with a row or two a group a
+        // chunk would make both again at nearly every solve.
+        if let Some(work) = self.factors.work.as_mut() {
+            work.drop_spares();
+        }
     }
 
     /// Slots whose readiness shares still hold the factor of the solve they
@@ -1879,11 +1933,22 @@ impl Readiness {
     /// Slot `s` has no fit, so no shares and no system: what a combo
     /// skipped for no weight (review 2026-10-05, CA6), an empty window
     /// (review round 4, CA1) and a target with no row (CC1) leave.
-    fn clear(&mut self, s: usize) {
+    fn clear(&mut self, s: usize, work: &mut FactorWork) {
         self.edf[s] = f64::NAN;
         self.support[s].fill(f64::NAN);
-        self.pending[s] = None;
+        self.set_pending(s, None, work);
         self.system_of[s] = usize::MAX;
+    }
+
+    /// Slot `s`'s pending solve becomes `p`. The factor the one it replaces
+    /// waited on, once no other slot holds it, is kept in `work` for a
+    /// later solve to write over.
+    fn set_pending(&mut self, s: usize, p: Option<Arc<Pending>>, work: &mut FactorWork) {
+        if let Some(old) = std::mem::replace(&mut self.pending[s], p)
+            && let Ok(old) = Arc::try_unwrap(old)
+        {
+            work.give(old.factor);
+        }
     }
 
     /// Take every pending solve's shares into the stored ones and drop the
@@ -1951,8 +2016,42 @@ fn settled_view(r: &Readiness) -> Cow<'_, Readiness> {
 /// The kept factors, one per entry of `Readiness::systems`. Not state: a
 /// deterministic function of the systems, rebuilt on load, and no part of
 /// what two models are compared on.
-#[derive(Debug, Clone, Default)]
-struct Factors(Vec<Option<SpdFactor>>);
+///
+/// Beside them, the solves' working space ([`FactorWork`]): faer's scratch,
+/// and the factors the solves have done with -- a pending solve's that the
+/// next solve of its slots replaced, a kept one the next replaced -- each
+/// written over by a later factorization of its order. A solve made a
+/// factor's matrix and faer's scratch afresh and dropped them a solve
+/// later, at every solve (task 301). A factor is [`SpdFactor::of`]'s, to
+/// the bit. The working space is shown by no `Debug` (a state's digest
+/// reads the model's), a copy holds none, and
+/// [`EwRidge::settle_readiness`] drops its factors with the pending ones,
+/// keeping the scratch. Boxed,
+/// and made at the first solve: held inline it made every model the
+/// working space's size larger, solving or not.
+#[derive(Default)]
+struct Factors {
+    kept: Vec<Option<SpdFactor>>,
+    work: Option<Box<FactorWork>>,
+}
+
+/// The factors; the working space is not copied.
+impl Clone for Factors {
+    fn clone(&self) -> Self {
+        Self {
+            kept: self.kept.clone(),
+            work: None,
+        }
+    }
+}
+
+/// The factors, as `derive(Debug)` wrote them when they were held alone:
+/// the working space is not shown.
+impl std::fmt::Debug for Factors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Factors").field(&self.kept).finish()
+    }
+}
 
 impl PartialEq for Factors {
     fn eq(&self, _: &Self) -> bool {
@@ -2501,3 +2600,6 @@ mod condition_tests;
 
 #[cfg(test)]
 mod output_only_tests;
+
+#[cfg(test)]
+mod factor_work_tests;
