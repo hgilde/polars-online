@@ -179,7 +179,8 @@ fn huber_reports_its_scales_into_the_kept_buffer() {
 /// `deco` standardised the row and formed its block sums twice, once to
 /// report and once to learn (D-6): 19 allocations a row, 13 after. Its
 /// density's matrix, factor and faer's scratch are kept since (task 298):
-/// three fewer.
+/// three fewer. Its density's quadratic form solves in a kept column, and
+/// the row's own vectors are kept (task 304): what is left is the `Step`.
 #[test]
 fn deco_standardises_a_row_once() {
     let got = per_row(
@@ -188,13 +189,15 @@ fn deco_standardises_a_row_once() {
         20,
         0,
     );
-    check("deco m=20", got, 10.0, 19.0);
+    check("deco m=20", got, 1.0, 19.0);
 }
 
 /// `hmm` built `Π` twice on a learning row, a vector a matrix row each time
 /// (D-7): 29 allocations a row, 24 after. Its states' factors, their
 /// matrices, faer's scratch and the list of factors are kept since (task
-/// 298): seven fewer.
+/// 298): seven fewer. Each state's quadratic form solves in a kept column,
+/// and the row's own vectors are kept (task 304): what is left is the `Step`'s `pred`,
+/// a vector and its one growth, which the bank's kept `Step` does not pay.
 #[test]
 fn hmm_builds_its_transition_matrix_once_a_row() {
     let got = per_row(
@@ -203,7 +206,7 @@ fn hmm_builds_its_transition_matrix_once_a_row() {
         4,
         0,
     );
-    check("hmm K=2 d=4", got, 17.0, 29.0);
+    check("hmm K=2 d=4", got, 2.0, 29.0);
 }
 
 /// `lasso` copied each target's selection errors a row to take their
@@ -387,11 +390,13 @@ fn huber_keeps_its_solves_working_space() {
 /// scratch for it and the matrix it read, each made and dropped (task 298).
 /// The dropped factors are kept and written over now, with the scratch and
 /// the matrix: `hmm`'s two states' three allocations each, and the list
-/// its factors are held in, and `deco`'s three. Counted over each bench
-/// case's own measured block, as the bank steps it.
+/// its factors are held in, and `deco`'s three. Then each quadratic form, a
+/// matrix and a vector a form, went to a kept column, and each row's own
+/// vectors with them, so neither allocates a row (task 304). Counted over
+/// each bench case's own measured block, as the bank steps it.
 #[test]
 fn hmm_and_deco_keep_their_factors_working_space() {
-    for (id, bound, before) in [("hmm", 15.0, 22.0), ("deco", 9.0, 12.0)] {
+    for (id, bound, before) in [("hmm", 0.0, 22.0), ("deco", 0.0, 12.0)] {
         let mut run = online_bench::model_setup(id);
         let start = calls();
         std::hint::black_box(online_bench::polars_online_budget_model_rows(&mut run));
@@ -420,5 +425,63 @@ fn ewridge_keeps_its_solves_working_space() {
         std::hint::black_box(online_bench::polars_online_budget_model_rows(&mut run));
         let got = (calls() - start) as f64 / online_bench::ROWS as f64;
         check(id, got, bound, before);
+    }
+}
+
+/// `ewridge`'s noise gate made a list of each Gram's Kish size on every read
+/// (task 304): one allocation a row on the bank's gate, two under a formula
+/// target. With no window the live accumulators are read where they stand,
+/// and the gate allocates nothing. Past the first solve, so it reads a size.
+#[test]
+fn ewridge_reads_its_kish_sizes_in_place() {
+    let run = online_bench::model_setup("ewridge_k5");
+    let mut out = Vec::new();
+    assert!(run.model.error_inflation_into(&mut out));
+    assert!(
+        out.iter().all(|v| v.is_finite()),
+        "the gate reads a size: {out:?}"
+    );
+    let start = calls();
+    for _ in 0..ROWS {
+        run.model.error_inflation_into(&mut out);
+    }
+    let got = (calls() - start) as f64 / ROWS as f64;
+    check("ewridge_k5's noise gate", got, 0.0, 1.0);
+}
+
+/// `corrchange` copied the row twice a row, one copy dropped, and its monitor
+/// copied every ring row at the span's close, whose 2,500 rows close once in
+/// its case's block (task 304): 4,508 allocations a block. The row is read
+/// where it is, copied only to enter the ring, and the span's rows are read
+/// where they are, through one list of them. Counted over each bench case's
+/// own measured block, as the bank steps it.
+#[test]
+fn corrchange_reads_its_rows_where_they_are() {
+    for (id, bound, before) in [
+        ("corrchange_monitor_w2500", 1.008, 4.508),
+        ("corrchange_window_w100", 3.812, 4.812),
+    ] {
+        let mut run = online_bench::model_setup(id);
+        let start = calls();
+        std::hint::black_box(online_bench::polars_online_budget_model_rows(&mut run));
+        let got = (calls() - start) as f64 / online_bench::ROWS as f64;
+        check(id, got, bound, before);
+    }
+}
+
+/// The window operators dropped a group's list of pending rows each time they
+/// were resolved, and the next row's push made it again (task 304): 1 of about
+/// 1.4 allocations a row, on the thread that feeds. What is left is the feed's
+/// lazy queries' and output's, per block. Counted over each bench case's own
+/// measured block, on this thread: a query's pool threads count on their own.
+#[test]
+fn the_window_operators_keep_their_pending_list() {
+    for id in online_bench::WINDOW_CASES {
+        let mut run = online_bench::windows_setup(id);
+        let start = calls();
+        let out = std::hint::black_box(online_bench::polars_online_budget_windows_rows(&mut run));
+        let got = (calls() - start) as f64 / online_bench::ROWS as f64;
+        drop(out);
+        check(id, got, 0.6, 1.42);
     }
 }

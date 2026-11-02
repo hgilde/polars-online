@@ -66,7 +66,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::cluster::kmeans::seed_centres;
-use crate::solve::{FactorWork, SpdFactor, quad_forms_logdet};
+use crate::solve::{FactorWork, QuadWork, SpdFactor, quad_forms_logdet};
 use crate::{Covariance, Decay, EwCov, SeedRule};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -222,11 +222,36 @@ impl HmmCfg {
     }
 }
 
-/// What [`Hmm::read`] hands the update: the filtered posterior after the
-/// row, the per-state log densities the transition counts need, and the `Π`
-/// the row read, which the counts' joint is formed from (task 270, D-7:
-/// built again for the update, it was the same matrix to the bit).
-type Update = (Vec<f64>, Vec<f64>, Vec<f64>);
+/// A row's working space, kept between rows (task 304): 11 of the 15
+/// allocations a learned row of two states made afresh, the last four being
+/// the forms' columns before them. Every vector is written in full before it
+/// is read, so a row reads as it would from new ones, to the bit. Beside the
+/// scratch it holds what [`Hmm::read_into`] hands the update: the filtered
+/// posterior after the row, the per-state log densities the transition
+/// counts need, and the `Π` the row read, which the counts' joint is formed
+/// from (task 270, D-7: built again for the update, it was the same matrix
+/// to the bit).
+#[derive(Default)]
+struct RowWork {
+    /// `Π`, `K*K` row-major.
+    pi: Vec<f64>,
+    /// `p̃`, the state probabilities before the row's density.
+    pred: Vec<f64>,
+    /// `ln fₗ` per state.
+    logf: Vec<f64>,
+    /// The filtered posterior; it changes places with the model's `p`.
+    post: Vec<f64>,
+    /// A transition row before it is normalised, or `ln p̃ₗfₗ`.
+    terms: Vec<f64>,
+    /// The exponentials of `terms`, or of the densities about their largest.
+    exps: Vec<f64>,
+    /// The filtered joint of consecutive states, `K*K` row-major.
+    joint: Vec<f64>,
+    /// The row's deviation from a state's mean.
+    delta: Vec<f64>,
+    /// The column a state's quadratic form is solved in.
+    quad: QuadWork,
+}
 
 /// Per-state Cholesky factors for the `full` shape: built on demand and
 /// dropped whenever a state changes. Derived state -- a pure function of the
@@ -243,12 +268,24 @@ type Update = (Vec<f64>, Vec<f64>, Vec<f64>);
 /// factorization. Each is written in full before it is read, so a factor
 /// is the one [`SpdFactor::of`] gives, to the bit. The working space is
 /// shown by no `Debug` (a state's digest reads the model's), and a copy
-/// keeps none of the dropped factors ([`FactorWork`]'s copy is empty).
-#[derive(Clone, Default)]
+/// keeps none of it.
+#[derive(Default)]
 struct Factors {
     held: Vec<Option<SpdFactor>>,
     work: FactorWork,
     matrix: Vec<f64>,
+    /// Boxed so that taking it for a row moves a pointer, not nine vectors.
+    row: Option<Box<RowWork>>,
+}
+
+/// The factors; a copy keeps no working space.
+impl Clone for Factors {
+    fn clone(&self) -> Self {
+        Self {
+            held: self.held.clone(),
+            ..Self::default()
+        }
+    }
 }
 
 impl PartialEq for Factors {
@@ -451,12 +488,19 @@ impl Hmm {
     /// row's `lam` without ageing them, by the same product, so the two agree
     /// to the bit. `1` reads the counts as they stand.
     fn transition_aged(&self, lam: f64) -> Vec<f64> {
+        let mut out = Vec::new();
+        self.transition_aged_into(lam, &mut out, &mut Vec::new());
+        out
+    }
+
+    /// [`Self::transition_aged`], written over `out`, each row formed in `row`.
+    fn transition_aged_into(&self, lam: f64, out: &mut Vec<f64>, row: &mut Vec<f64>) {
         let k = self.cfg.k;
-        let mut out = vec![0.0; k * k];
+        out.clear();
+        out.resize(k * k, 0.0);
         for r in 0..k {
-            let row: Vec<f64> = (0..k)
-                .map(|c| lam * self.a[r * k + c] + self.prior(r, c))
-                .collect();
+            row.clear();
+            row.extend((0..k).map(|c| lam * self.a[r * k + c] + self.prior(r, c)));
             let z: f64 = row.iter().sum();
             for (c, v) in row.iter().enumerate() {
                 out[r * k + c] = if z > 0.0 {
@@ -472,7 +516,6 @@ impl Hmm {
                 };
             }
         }
-        out
     }
 
     /// The exogenous value rides in `y[0]` when `tvtp` is configured: the
@@ -486,23 +529,37 @@ impl Hmm {
 
     /// `Π(t)` from the exogenous value, when `tvtp` is configured; else the
     /// counts' matrix with the counts aged by `lam` ([`Self::transition_aged`]).
+    #[cfg(test)]
     fn transition_at(&self, exog: Option<f64>, lam: f64) -> Vec<f64> {
+        let mut work = RowWork::default();
+        self.transition_at_into(exog, lam, &mut work);
+        work.pi
+    }
+
+    /// [`Self::transition_at`], written over the working space's `pi`.
+    fn transition_at_into(&self, exog: Option<f64>, lam: f64, work: &mut RowWork) {
         let k = self.cfg.k;
+        let RowWork {
+            pi, terms, exps, ..
+        } = work;
         let Some((a, b)) = &self.cfg.tvtp else {
-            return self.transition_aged(lam);
+            self.transition_aged_into(lam, pi, terms);
+            return;
         };
         let z = exog.filter(|v| v.is_finite()).unwrap_or(0.0);
-        let mut out = vec![0.0; k * k];
+        pi.clear();
+        pi.resize(k * k, 0.0);
         for r in 0..k {
-            let ell: Vec<f64> = (0..k).map(|c| a[r * k + c] + b[r * k + c] * z).collect();
-            let top = ell.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            let exps: Vec<f64> = ell.iter().map(|v| (v - top).exp()).collect();
+            terms.clear();
+            terms.extend((0..k).map(|c| a[r * k + c] + b[r * k + c] * z));
+            let top = terms.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            exps.clear();
+            exps.extend(terms.iter().map(|v| (v - top).exp()));
             let sum: f64 = exps.iter().sum();
             for (c, e) in exps.iter().enumerate() {
-                out[r * k + c] = e / sum;
+                pi[r * k + c] = e / sum;
             }
         }
-        out
     }
 
     fn ridge(&self, s: usize) -> f64 {
@@ -540,10 +597,25 @@ impl Hmm {
     ///
     /// The Gaussian constant `−(d/2)·ln 2π` is included, so `loglik` is a
     /// density and not a density up to a constant.
+    #[cfg(test)]
     fn log_densities(&self, x: &[f64]) -> Option<Vec<f64>> {
+        let mut work = RowWork::default();
+        self.log_densities_into(x, &mut work).then_some(work.logf)
+    }
+
+    /// [`Self::log_densities`], written over the working space's `logf`:
+    /// whether there is a density.
+    fn log_densities_into(&self, x: &[f64], work: &mut RowWork) -> bool {
         let (k, d) = (self.cfg.k, self.cfg.n_features);
         let base = -0.5 * d as f64 * std::f64::consts::TAU.ln();
-        let mut out = vec![f64::NEG_INFINITY; k];
+        let RowWork {
+            logf: out,
+            delta,
+            quad,
+            ..
+        } = work;
+        out.clear();
+        out.resize(k, f64::NEG_INFINITY);
         match self.cfg.covariance {
             Covariance::Diagonal => {
                 for (s, o) in out.iter_mut().enumerate() {
@@ -588,13 +660,16 @@ impl Hmm {
                         deltas[s * d + i] = state.deviation(i, xi);
                     }
                 }
-                let (q, log_det, _) = quad_forms_logdet(&m, &deltas, d, k)?;
+                let Some((q, log_det, _)) = quad_forms_logdet(&m, &deltas, d, k) else {
+                    return false;
+                };
                 for (s, o) in out.iter_mut().enumerate() {
                     *o = base - 0.5 * log_det - 0.5 * q[s];
                 }
             }
             Covariance::Full => {
-                let mut delta = vec![0.0; d];
+                delta.clear();
+                delta.resize(d, 0.0);
                 for (s, o) in out.iter_mut().enumerate() {
                     let cov = &self.states[s];
                     for (i, (dv, &xi)) in delta.iter_mut().zip(x).enumerate() {
@@ -608,15 +683,19 @@ impl Hmm {
                     let f = match self.factors.peek(s) {
                         Some(f) => f,
                         None => {
-                            built = SpdFactor::of(&self.state_matrix(s), d)?;
+                            let Some(f) = SpdFactor::of(&self.state_matrix(s), d) else {
+                                return false;
+                            };
+                            built = f;
                             &built
                         }
                     };
-                    *o = base - 0.5 * f.log_det() - 0.5 * f.quad_forms(&delta, d, 1)[0];
+                    // `quad_forms(delta, d, 1)[0]` to the bit, in a kept column.
+                    *o = base - 0.5 * f.log_det() - 0.5 * f.quad_form(delta, quad);
                 }
             }
         }
-        out.iter().all(|v| v.is_finite()).then_some(out)
+        out.iter().all(|v| v.is_finite())
     }
 
     /// Output slot labels in emission order: `filtered_state<k>`,
@@ -633,24 +712,25 @@ impl Hmm {
         2 * k + 2
     }
 
-    /// The row's outputs, and the pieces the update needs: the filtered
-    /// posterior after this row and the per-state log densities. `lam` ages
-    /// the transition counts as they are read: `1` from the step, which has
-    /// aged them already, and the row's decay from `predict`, which may not.
-    fn read(&self, x: &[f64], exog: Option<f64>, lam: f64) -> (Vec<f64>, Option<Update>) {
+    /// The row's outputs. `lam` ages the transition counts as they are read:
+    /// `1` from the step, which has aged them already, and the row's decay
+    /// from `predict`, which may not.
+    fn read(&self, x: &[f64], exog: Option<f64>, lam: f64) -> Vec<f64> {
         let mut out = Vec::new();
-        let update = self.read_into(x, exog, lam, &mut out);
-        (out, update)
+        self.read_into(x, exog, lam, &mut out, &mut RowWork::default());
+        out
     }
 
-    /// [`Self::read`], the outputs written over `out`.
+    /// [`Self::read`], the outputs written over `out`: whether `work` now
+    /// holds what the update needs ([`RowWork`]).
     fn read_into(
         &self,
         x: &[f64],
         exog: Option<f64>,
         lam: f64,
         out: &mut Vec<f64>,
-    ) -> Option<Update> {
+        work: &mut RowWork,
+    ) -> bool {
         let k = self.cfg.k;
         let nan = |out: &mut Vec<f64>| {
             out.clear();
@@ -658,40 +738,51 @@ impl Hmm {
         };
         if !self.seeded {
             nan(out);
-            return None;
+            return false;
         }
-        let pi = self.transition_at(exog, lam);
+        self.transition_at_into(exog, lam, work);
+        if !self.log_densities_into(x, work) {
+            nan(out);
+            return false;
+        }
+        let RowWork {
+            pi,
+            pred,
+            logf,
+            post,
+            terms,
+            exps,
+            ..
+        } = work;
         // `p̃ₗ = Σₖ pₖ Πₖₗ`.
-        let mut pred = vec![0.0; k];
+        pred.clear();
+        pred.resize(k, 0.0);
         for (kk, &pk) in self.p.iter().enumerate() {
             for (l, o) in pred.iter_mut().enumerate() {
                 *o += pk * pi[kk * k + l];
             }
         }
-        let Some(logf) = self.log_densities(x) else {
-            nan(out);
-            return None;
-        };
         // `ln Σ p̃ f` about the maximum, so a very small density does not
         // underflow to `-inf` before the sum.
-        let ell: Vec<f64> = (0..k)
-            .map(|l| {
-                if pred[l] > 0.0 {
-                    pred[l].ln() + logf[l]
-                } else {
-                    f64::NEG_INFINITY
-                }
-            })
-            .collect();
-        let top = ell.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        terms.clear();
+        terms.extend((0..k).map(|l| {
+            if pred[l] > 0.0 {
+                pred[l].ln() + logf[l]
+            } else {
+                f64::NEG_INFINITY
+            }
+        }));
+        let top = terms.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         if !top.is_finite() {
             nan(out);
-            return None;
+            return false;
         }
-        let exps: Vec<f64> = ell.iter().map(|v| (v - top).exp()).collect();
+        exps.clear();
+        exps.extend(terms.iter().map(|v| (v - top).exp()));
         let z: f64 = exps.iter().sum();
         let loglik = top + z.ln();
-        let post: Vec<f64> = exps.iter().map(|e| e / z).collect();
+        post.clear();
+        post.extend(exps.iter().map(|e| e / z));
         let mut best = 0;
         for l in 1..k {
             if pred[l] > pred[best] {
@@ -700,7 +791,7 @@ impl Hmm {
         }
         out.clear();
         out.extend_from_slice(&self.p);
-        out.extend_from_slice(&pred);
+        out.extend_from_slice(pred);
         out.push(best as f64);
         out.push(loglik);
         // `min_weight` gates what is *reported*, never what is learned: a
@@ -712,7 +803,7 @@ impl Hmm {
         if self.n_eff < self.cfg.min_weight {
             nan(out);
         }
-        Some((post, logf, pi))
+        true
     }
 
     /// Seed the states from the buffer, `kmeans`' recipe: choose centres
@@ -770,25 +861,17 @@ impl Hmm {
             s.update(x, lam, 0.0);
         }
     }
-}
 
-impl crate::OnlineModel for Hmm {
-    fn step_into(
+    /// A usable row's step, in the working space ([`RowWork`]).
+    fn step_in(
         &mut self,
         x: &[f64],
         y: &[Option<f64>],
         d_clock: f64,
         weight: f64,
         out: &mut crate::Step,
+        work: &mut RowWork,
     ) {
-        // A value that is not usable, by the rule every model keeps
-        // (`OnlineModel`): learned as a row of weight 0, which counts no
-        // failure, takes no warm-up row and moves no `p`; an exogenous value
-        // that is not usable is absent (docs/PLAN.md task 183).
-        if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
-            *out = refused;
-            return;
-        }
         self.ensure_factors();
         let lam = self.cfg.decay.factor(d_clock);
         // The chain as the row's clock leaves it: the counts decay over the
@@ -804,7 +887,7 @@ impl crate::OnlineModel for Hmm {
         if self.cfg.learn {
             self.a.iter_mut().for_each(|v| *v *= lam);
         }
-        let extra = self.read_into(x, self.exog_of(y), 1.0, &mut out.pred);
+        let read = self.read_into(x, self.exog_of(y), 1.0, &mut out.pred, work);
         out.n_eff = self.n_eff;
         out.extra = None;
         // The warm-up rows age as `n_eff` does, so the states the replay seeds
@@ -840,7 +923,7 @@ impl crate::OnlineModel for Hmm {
             }
             return;
         }
-        let Some((post, logf, pi)) = extra else {
+        if !read {
             // A state's factorization failed, or a density was not finite --
             // a quadratic form overflowing against a state of tiny spread --
             // so the row cannot be scored or learned: a usable row that fails
@@ -856,7 +939,7 @@ impl crate::OnlineModel for Hmm {
                 self.factors.clear();
             }
             return;
-        };
+        }
         if self.cfg.learn {
             let k = self.cfg.k;
             // The filtered joint of consecutive states, from the *pre-row*
@@ -871,9 +954,18 @@ impl crate::OnlineModel for Hmm {
                 // density is astronomically small makes `exp(logf[l] −
                 // logf[0])` overflow the other way, and the counts go to
                 // NaN. The reference cancels in the normalisation.
+                let RowWork {
+                    pi,
+                    logf,
+                    exps: scaled,
+                    joint,
+                    ..
+                } = &mut *work;
                 let top = logf.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-                let scaled: Vec<f64> = logf.iter().map(|v| (v - top).exp()).collect();
-                let mut joint = vec![0.0; k * k];
+                scaled.clear();
+                scaled.extend(logf.iter().map(|v| (v - top).exp()));
+                joint.clear();
+                joint.resize(k * k, 0.0);
                 let mut z = 0.0;
                 for kk in 0..k {
                     for l in 0..k {
@@ -882,16 +974,41 @@ impl crate::OnlineModel for Hmm {
                         z += v;
                     }
                 }
-                for (a, j) in self.a.iter_mut().zip(&joint) {
+                for (a, j) in self.a.iter_mut().zip(joint.iter()) {
                     *a += if z > 0.0 { weight * j / z } else { 0.0 };
                 }
             }
             for (s, cov) in self.states.iter_mut().enumerate() {
-                cov.update(x, lam, weight * post[s]);
+                cov.update(x, lam, weight * work.post[s]);
             }
             self.factors.clear();
         }
-        self.p = post;
+        // The posterior is the next row's `p`, and the `p` it replaces the
+        // next row's buffer.
+        std::mem::swap(&mut self.p, &mut work.post);
+    }
+}
+
+impl crate::OnlineModel for Hmm {
+    fn step_into(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        out: &mut crate::Step,
+    ) {
+        // A value that is not usable, by the rule every model keeps
+        // (`OnlineModel`): learned as a row of weight 0, which counts no
+        // failure, takes no warm-up row and moves no `p`; an exogenous value
+        // that is not usable is absent (docs/PLAN.md task 183).
+        if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
+            *out = refused;
+            return;
+        }
+        let mut work = self.factors.row.take().unwrap_or_default();
+        self.step_in(x, y, d_clock, weight, out, &mut work);
+        self.factors.row = Some(work);
     }
 
     fn predict(&self, x: &[f64], d_clock: f64) -> crate::Step {
@@ -900,7 +1017,7 @@ impl crate::OnlineModel for Hmm {
         }
         let exog = self.cfg.tvtp.as_ref().map(|_| 0.0);
         crate::Step {
-            pred: self.read(x, exog, self.counts_lam(d_clock)).0,
+            pred: self.read(x, exog, self.counts_lam(d_clock)),
             n_eff: self.n_eff,
             extra: None,
         }
@@ -915,7 +1032,7 @@ impl crate::OnlineModel for Hmm {
             return refused;
         }
         crate::Step {
-            pred: self.read(x, self.exog_of(y), self.counts_lam(d_clock)).0,
+            pred: self.read(x, self.exog_of(y), self.counts_lam(d_clock)),
             n_eff: self.n_eff,
             extra: None,
         }
@@ -2463,6 +2580,7 @@ mod tests {
             let w = if i % 37 == 5 { 0.0 } else { 1.0 };
             fresh.factors.work = FactorWork::default();
             fresh.factors.matrix = Vec::new();
+            fresh.factors.row = None;
             written_over += usize::from(kept.factors.work.kept() == 3);
             let a = kept.step(x, &[], 1.0, w);
             let b = fresh.step(x, &[], 1.0, w);

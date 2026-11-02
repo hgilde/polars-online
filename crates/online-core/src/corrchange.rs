@@ -643,19 +643,21 @@ impl CorrChange {
     }
 
     /// The sample correlation of `rows[..n]` for the pair `(a, b)`.
-    fn corr_of(rows: &[Vec<f64>], n: usize, a: usize, b: usize) -> f64 {
+    fn corr_of<R: AsRef<[f64]>>(rows: &[R], n: usize, a: usize, b: usize) -> f64 {
         if n < 2 {
             return f64::NAN;
         }
         let nf = n as f64;
         let (mut sa, mut sb) = (0.0, 0.0);
         for r in &rows[..n] {
+            let r = r.as_ref();
             sa += r[a];
             sb += r[b];
         }
         let (ma, mb) = (sa / nf, sb / nf);
         let (mut vaa, mut vbb, mut vab) = (0.0, 0.0, 0.0);
         for r in &rows[..n] {
+            let r = r.as_ref();
             let (da, db) = (r[a] - ma, r[b] - mb);
             vaa += da * da;
             vbb += db * db;
@@ -670,7 +672,7 @@ impl CorrChange {
     /// of `ξ_t = x̃_t ỹ_t − (ρ̂/2)(x̃_t² + ỹ_t²)`, the rows centred at the
     /// span's means and scaled by its standard deviations (the module docs
     /// derive it from the five raw moments).
-    fn long_run_sd(rows: &[Vec<f64>], a: usize, b: usize, gamma: usize) -> f64 {
+    fn long_run_sd<R: AsRef<[f64]>>(rows: &[R], a: usize, b: usize, gamma: usize) -> f64 {
         let t = rows.len();
         if t < 4 {
             return f64::NAN;
@@ -682,17 +684,20 @@ impl CorrChange {
         // term in `ξ` would otherwise carry (1e-10 of `D̂` at a level of 1e8).
         let (mut mx, mut my) = (0.0, 0.0);
         for r in rows {
+            let r = r.as_ref();
             mx += r[a];
             my += r[b];
         }
         let (mx, my) = (mx / tf, my / tf);
         let (mut mx_lo, mut my_lo) = (0.0, 0.0);
         for r in rows {
+            let r = r.as_ref();
             mx_lo += r[a] - mx;
             my_lo += r[b] - my;
         }
         let (mx_lo, my_lo) = (mx_lo / tf, my_lo / tf);
-        let dev = |r: &Vec<f64>| {
+        let dev = |r: &R| {
+            let r = r.as_ref();
             (
                 crate::comp::dev(r[a], mx, mx_lo),
                 crate::comp::dev(r[b], my, my_lo),
@@ -760,13 +765,13 @@ impl CorrChange {
     }
 
     /// [`Self::scalar_stat`], and the `j` its maximum is attained at.
-    fn scalar_stat_at(&self, rows: &[Vec<f64>]) -> (f64, usize) {
+    fn scalar_stat_at<R: AsRef<[f64]>>(&self, rows: &[R]) -> (f64, usize) {
         let t = rows.len();
         if t < 4 {
             return (f64::NAN, 0);
         }
         let tf = t as f64;
-        let u: Vec<f64> = rows.iter().map(|r| r[0]).collect();
+        let u: Vec<f64> = rows.iter().map(|r| r.as_ref()[0]).collect();
         let mean = u.iter().sum::<f64>() / tf;
         let gamma = self
             .cfg
@@ -823,7 +828,7 @@ impl CorrChange {
     /// [`Self::monitor_stat`], and the `j` its maximum is attained at: the
     /// last row before the change, as Wied & Galeano (2013, Eq. 8) date a
     /// change from the same CUSUM.
-    fn monitor_stat_at(&self, rows: &[Vec<f64>], a: usize, b: usize) -> (f64, usize) {
+    fn monitor_stat_at<R: AsRef<[f64]>>(&self, rows: &[R], a: usize, b: usize) -> (f64, usize) {
         let t = rows.len();
         let gamma = self
             .cfg
@@ -851,6 +856,7 @@ impl CorrChange {
         let (ca, cb) = Self::span_means(rows, a, b);
         let (mut ma, mut mb, mut saa, mut sbb, mut sab) = (0.0, 0.0, 0.0, 0.0, 0.0);
         for (i, r) in rows.iter().enumerate() {
+            let r = r.as_ref();
             let j = i + 1;
             let jf = j as f64;
             let (xa, xb) = (r[a] - ca, r[b] - cb);
@@ -881,10 +887,11 @@ impl CorrChange {
 
     /// The span's means of columns `a` and `b`: what [`Self::monitor_stat_at`]
     /// takes its rows about.
-    fn span_means(rows: &[Vec<f64>], a: usize, b: usize) -> (f64, f64) {
+    fn span_means<R: AsRef<[f64]>>(rows: &[R], a: usize, b: usize) -> (f64, f64) {
         let tf = rows.len() as f64;
         let (mut sa, mut sb) = (0.0, 0.0);
         for r in rows {
+            let r = r.as_ref();
             sa += r[a];
             sb += r[b];
         }
@@ -1217,14 +1224,19 @@ impl CorrChange {
     }
 
     /// The row as the ring would hold it, or `None` when the standardiser
-    /// cannot yet make one (`scalar` before the first variances).
-    fn ring_row(&self, x: &[f64]) -> Option<Vec<f64>> {
+    /// cannot yet make one (`scalar` before the first variances): `x` itself,
+    /// or its one-column form in `one`. A row is read this way and copied
+    /// only to enter the ring.
+    fn ring_row<'a>(&self, x: &'a [f64], one: &'a mut [f64; 1]) -> Option<&'a [f64]> {
         if !self.cfg.scalar {
-            return Some(x.to_vec());
+            return Some(x);
         }
         let u = self.scalarise(x);
         // A one-column ring: the CUSUM is over `u` itself.
-        u.is_finite().then(|| vec![u])
+        u.is_finite().then(|| {
+            one[0] = u;
+            &one[..]
+        })
     }
 
     /// What this row produces, from the state as it stands: nothing except
@@ -1252,7 +1264,8 @@ impl CorrChange {
     fn read_into(&self, x: &[f64], pred: &mut Vec<f64>) {
         pred.clear();
         pred.resize(Self::n_outputs_for(), f64::NAN);
-        let Some(row) = self.ring_row(x) else {
+        let mut one = [0.0];
+        let Some(row) = self.ring_row(x, &mut one) else {
             return;
         };
         let since = self.since_flag.unwrap_or(0) + 1;
@@ -1261,8 +1274,14 @@ impl CorrChange {
                 if self.ring.len() + 1 < self.cfg.span_rows {
                     return;
                 }
-                let mut rows: Vec<Vec<f64>> = self.ring.iter().cloned().collect();
-                rows.push(row);
+                // The span's rows read where they are, the ring's and this
+                // one, where each ring row was copied at every close.
+                let rows: Vec<&[f64]> = self
+                    .ring
+                    .iter()
+                    .map(Vec::as_slice)
+                    .chain(std::iter::once(row))
+                    .collect();
                 let (mut stat, mut at) = (f64::NAN, 0);
                 if self.cfg.scalar {
                     (stat, at) = self.scalar_stat_at(&rows);
@@ -1299,7 +1318,7 @@ impl CorrChange {
                 let ring = &self.ring;
                 let stat = self.window_stat_by(2 * w, |i| {
                     let i = skip + i;
-                    if i < held { &ring[i] } else { &row }
+                    if i < held { &ring[i] } else { row }
                 });
                 // The value **in force**: a redraw happens after the row is
                 // reported, so `predict` and `step` see the same one.
@@ -1321,7 +1340,7 @@ impl CorrChange {
                 if mon.rows.is_empty() {
                     return;
                 }
-                let (stat, at) = self.sequential_stat(mon, &row);
+                let (stat, at) = self.sequential_stat(mon, row);
                 let crit = self.seq_crit;
                 let flag = stat.is_finite() && crit.is_finite() && stat > crit;
                 pred[0] = stat;
@@ -1368,7 +1387,8 @@ impl crate::OnlineModel for CorrChange {
             }
             return;
         }
-        let row = self.ring_row(x);
+        let mut one = [0.0];
+        let row = self.ring_row(x, &mut one).map(<[f64]>::to_vec);
         if self.cfg.scalar {
             self.diag.update(x, lam, weight);
         }
@@ -4235,7 +4255,7 @@ mod tests {
         m.step(&[-1.0, -1.0], &[], 1.0, 1.0);
         assert!(m.scalarise(&[0.5, -0.25]).is_finite());
         assert!(m.scalarise(&[0.0, 0.0]).is_nan());
-        assert!(m.ring_row(&[0.0, 0.0]).is_none());
+        assert!(m.ring_row(&[0.0, 0.0], &mut [0.0]).is_none());
         let out = m.predict(&[0.0, 0.0], 1.0);
         assert!(out.pred.iter().all(|v| v.is_nan()), "{out:?}");
     }
