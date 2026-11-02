@@ -34,6 +34,11 @@ pub const ROWS: usize = 1_000;
 pub const MODEL_CASES: &[&str] = &[
     "ewridge_k5",
     "ewridge_k20",
+    // A wide fit, 200 features on the default schedule: each solve's
+    // factorization, its condition check and its rank-one updates at the
+    // width where the k² and k³ work is the row's cost (docs/PLAN.md task
+    // 306).
+    "ewridge_k200",
     "ewridge_gram_t10",
     "huber_k20",
     "huber_k20_sets",
@@ -336,6 +341,10 @@ fn case_spec(id: &str) -> (Value, Shape) {
             (s, Shape::Linear)
         }
         "ewridge_k20" => (fit(json!({"type": "ewridge"}), 20), Shape::Linear),
+        // `min_weight` 200, crossed about 220 rows in at this clock's
+        // steps: the warm-up's 2,000 rows are past it, so the block solves
+        // and predicts on the default weight-share schedule.
+        "ewridge_k200" => (fit(json!({"type": "ewridge"}), 200), Shape::Linear),
         // The target the mean of `y0` over the next 1,250 clock units
         // (about 1,000 rows), resolved by the bank's own window core, each
         // row learned once its window has closed and an embargo of the

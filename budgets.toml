@@ -75,6 +75,9 @@ what = "ewridge, 20 features, 1 target, half-life 1000: AnyModel::step_into, int
 budget = 7841554
 release = 7947283
 
+[instructions.ewridge_k200]
+what = "ewridge, 200 features, 1 target, half-life 1000, min_weight 200, the default schedule: AnyModel::step_into, into one kept Step"
+
 [instructions.ewridge_gram_t10]
 what = "ewridge, 50 features, 10 targets, gram_block_rows 64, pairwise, a solve every 400: AnyModel::step_into, into one kept Step, the targets folded into the block's merge"
 budget = 13568091
