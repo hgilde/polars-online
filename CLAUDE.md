@@ -108,6 +108,21 @@ runs both tiers, but a plain `cargo test` skips the extended Rust tests
 (`#[ignore = "extended: ..."]`), so the full Rust run is `cargo test --
 --include-ignored`.
 
+Polling from a cloud VM session (the performance VM, which watches an
+exchange page; the user, 2026-11-02, after a restart silently ended a
+10-minute watch). `CronCreate` / `/loop` jobs live in the session's
+process and die when the container restarts, with no notice. A poll that
+must survive a restart uses the claude-code-remote `send_later` tool: a
+one-shot scheduled task bound to this session, stored server-side. Chain
+it: each message says "first re-arm: call `send_later` again with
+`delay_minutes` N and this same message", then does the check, so the
+chain never has a gap. After any resume, run `list_triggers` and confirm
+exactly one pending link (re-arm if none; delete extras). A due message
+waits until the current turn ends, so put long jobs (builds, Valgrind,
+timing) in background shells and keep turns short, or the poll slips.
+Background shells and their output do not survive a restart either:
+write results to files in the scratchpad, not only to a shell's output.
+
 ## Hard rules
 
 1. **Tests download or generate their own data.** No data files in the repo, ever.
