@@ -307,11 +307,6 @@ pub fn perm_rejections(alpha: f64, draws: usize) -> usize {
 /// four of it.
 const PERM_ROUNDING: f64 = f64::EPSILON / 2.0;
 
-/// The widths whose row deviations the window's correlations hold on the
-/// stack (`CorrChange::window_corr`); wider ones take a buffer of their own
-/// a window.
-const DEV_STACK: usize = 16;
-
 /// The fewest draws at which the window test can flag at `alpha`: the
 /// smallest `B` with [`perm_rejections`]`(alpha, B) ≥ 1`, which is
 /// `⌈1/alpha⌉ − 1`; `None` past [`MAX_PERM`].
@@ -1134,30 +1129,26 @@ impl CorrChange {
             }
         }
         mean.iter_mut().for_each(|m| *m /= wf);
-        // Each row's deviations, taken once rather than once a pair, on the
-        // stack up to `DEV_STACK` features: the pairs then run over slices,
-        // unchecked. Each sum adds the same terms in the same order.
-        let mut stack = [0.0f64; DEV_STACK];
-        let mut heap = Vec::new();
-        let dr: &mut [f64] = if d <= DEV_STACK {
-            &mut stack[..d]
-        } else {
-            heap.resize(d, 0.0);
-            &mut heap
-        };
+        // The pairs over slices of the row, the means and the sums, so no
+        // entry is indexed and checked; each sum adds the same terms in the
+        // same order. Taking each row's deviations once into a buffer first
+        // cost 13-14% on arm64 (an Apple M-series core, both code layouts)
+        // where it saved 10% on x86-64; this form saved 9% and 6% on arm64.
         for i in 0..w {
-            for ((v, x), m) in dr.iter_mut().zip(row(i)).zip(mean.iter()) {
-                *v = x - m;
-            }
+            let r = &row(i)[..d];
             let mut p = 0;
             for a in 0..d {
-                let da = dr[a];
+                let da = r[a] - mean[a];
                 ss[a] += da * da;
-                let rest = &dr[a + 1..];
-                for (c, &db) in corr[p..p + rest.len()].iter_mut().zip(rest) {
-                    *c += da * db;
+                let rest = d - a - 1;
+                for ((c, &rb), &mb) in corr[p..p + rest]
+                    .iter_mut()
+                    .zip(&r[a + 1..])
+                    .zip(&mean[a + 1..])
+                {
+                    *c += da * (rb - mb);
                 }
-                p += rest.len();
+                p += rest;
             }
         }
         let mut p = 0;
@@ -4002,17 +3993,15 @@ mod tests {
         assert!((line + 1.0).abs() < 1e-12, "{line}");
     }
 
-    /// The pairs read each row's deviations from a buffer taken once a row
-    /// (the VM's P16, task 306), on the stack to `DEV_STACK` features and
-    /// in a buffer of their own past it: at widths on both sides of the
-    /// line, every pair's correlation is still [`CorrChange::corr_of`]'s to
-    /// the bit, and each mean and sum of squared deviations is the plain
-    /// sum's.
+    /// The pairs run over slices of each row, the means and the sums (the
+    /// VM's P16, task 306): at widths from 2 to 40, every pair's correlation
+    /// is still [`CorrChange::corr_of`]'s to the bit, and each mean and sum
+    /// of squared deviations is the plain sum's.
     #[test]
     fn a_windows_correlations_are_each_pairs_own_at_every_width() {
         let w = 30usize;
         let mut n = Normals::new(306);
-        for d in [2usize, 5, DEV_STACK, DEV_STACK + 1, 40] {
+        for d in [2usize, 3, 5, 16, 17, 40] {
             let rows: Vec<Vec<f64>> = (0..w)
                 .map(|_| {
                     let base = n.normal();
