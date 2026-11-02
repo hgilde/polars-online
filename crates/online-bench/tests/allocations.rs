@@ -448,3 +448,40 @@ fn ewridge_reads_its_kish_sizes_in_place() {
     let got = (calls() - start) as f64 / ROWS as f64;
     check("ewridge_k5's noise gate", got, 0.0, 1.0);
 }
+
+/// `corrchange` copied the row twice a row, one copy dropped, and its monitor
+/// copied every ring row at the span's close, whose 2,500 rows close once in
+/// its case's block (task 304): 4,508 allocations a block. The row is read
+/// where it is, copied only to enter the ring, and the span's rows are read
+/// where they are, through one list of them. Counted over each bench case's
+/// own measured block, as the bank steps it.
+#[test]
+fn corrchange_reads_its_rows_where_they_are() {
+    for (id, bound, before) in [
+        ("corrchange_monitor_w2500", 1.008, 4.508),
+        ("corrchange_window_w100", 3.812, 4.812),
+    ] {
+        let mut run = online_bench::model_setup(id);
+        let start = calls();
+        std::hint::black_box(online_bench::polars_online_budget_model_rows(&mut run));
+        let got = (calls() - start) as f64 / online_bench::ROWS as f64;
+        check(id, got, bound, before);
+    }
+}
+
+/// The window operators dropped a group's list of pending rows each time they
+/// were resolved, and the next row's push made it again (task 304): 1 of about
+/// 1.4 allocations a row, on the thread that feeds. What is left is the feed's
+/// lazy queries' and output's, per block. Counted over each bench case's own
+/// measured block, on this thread: a query's pool threads count on their own.
+#[test]
+fn the_window_operators_keep_their_pending_list() {
+    for id in online_bench::WINDOW_CASES {
+        let mut run = online_bench::windows_setup(id);
+        let start = calls();
+        let out = std::hint::black_box(online_bench::polars_online_budget_windows_rows(&mut run));
+        let got = (calls() - start) as f64 / online_bench::ROWS as f64;
+        drop(out);
+        check(id, got, 0.6, 1.42);
+    }
+}
