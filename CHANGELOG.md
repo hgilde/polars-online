@@ -1010,6 +1010,19 @@ returns.
   0.5% in instructions on the feature-set case; that spread is gone. A
   model keeps one spare factor of each order between solves, about
   `k² · 8` bytes each, and drops them when a chunk ends.
+- `hmm`, `deco`, `ew_class` and `bocpd` under the full covariance keep the
+  working space of the factorizations they run on every row: a factor a
+  row has finished with is written over by the next one of its order, and
+  the factorization's scratch (for `hmm` and `deco`, also the matrix it
+  reads) is kept where it used to be made and dropped, with the same bits
+  as before (task 298). Allocations a row: `hmm` 22 → 15, `deco` 12 → 9,
+  `ew_class` 2 → 0, `bocpd` under the full covariance 21 → 0. On arm64,
+  natively, by best block in both the default and an aligned code layout:
+  `hmm` 29% less time, `deco` 27% less, `bocpd` under the full covariance
+  30-33% less, `ew_class` 5-6% less. A factorization by a caller that
+  keeps no working space (`ewridge`'s solves, the refits, the diagnostics'
+  tests) costs what it did before `huber`'s solves kept theirs. `deco` and
+  `bocpd` keep one extra factor each, about `k² · 8` bytes.
 - The instruction-count benchmarks build rayon's thread pool at the end of
   each model case's warm-up, outside the measured block, so a case's count
   no longer moves with the size of the process's environment (task 292).
