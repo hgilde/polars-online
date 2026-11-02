@@ -3077,12 +3077,6 @@ impl Stream {
     /// never on the models, so the window budget's pre-pass
     /// ([`Self::window_prepass`]) replays the schedule the run will follow. A
     /// step back the policy refuses is handed back for the caller to name.
-    ///
-    /// `restart_fold` is the caller's copy of [`Persisted::restart_fold`],
-    /// advanced in place, and read only where a drift detection restarts
-    /// the models: elsewhere the caller lends a `None` and keeps the
-    /// stream's own, which no row there moves (task 309: the copy was
-    /// cloned and carried back for every chunk of every group).
     #[allow(clippy::too_many_arguments)]
     fn schedule(
         &self,
@@ -3389,15 +3383,11 @@ impl Stream {
 
         // ---- pass 1: the clock schedule, models untouched ----
         // On a copy of the clock, committed below, so a refused row leaves
-        // the stream exactly as it was. The fresh stream's clock is copied
-        // only where a drift detection restarts the models, the one place
-        // the schedule moves it; elsewhere the stream keeps its own.
+        // the stream exactly as it was; the fresh clock, under a drift reset.
         let fresh_steps = self.resets_on_drift(spec);
-        let mut restart_fold = if fresh_steps {
-            self.persisted.restart_fold.clone()
-        } else {
-            None
-        };
+        let mut restart_fold = fresh_steps
+            .then(|| self.persisted.restart_fold.clone())
+            .flatten();
         let Scheduled {
             clock: clock_state,
             rows_seen,
@@ -4791,8 +4781,7 @@ fn run_instance(
             }
         }
 
-        // The instance's kept step, its buffers reused in place (task 270,
-        // M-4; task 309: borrowed, not taken out and put back each row).
+        // The instance's kept step, its buffers reused (task 270, M-4).
         let step = &mut sc.step;
         if learn {
             // The row's stamp, for a window to key its snapshot by and
