@@ -2372,7 +2372,6 @@ impl Windows {
             return;
         }
         let (tau, off, form) = (g.tau, g.off, g.form);
-        let pending = std::mem::take(&mut g.pending);
         for (ki, k) in self.kernels.iter().enumerate() {
             if k.direction != Direction::Backward || !k.closed.near(Direction::Backward) {
                 continue;
@@ -2393,7 +2392,7 @@ impl Windows {
                 )
             );
             let complete = k.window_size.is_none_or(|w| tau >= w);
-            for &seq in &pending {
+            for &seq in &g.pending {
                 let held = Held {
                     first: self.held_first,
                     n_outputs: self.n_outputs,
@@ -2403,10 +2402,13 @@ impl Windows {
                 write_backward(&self.ops, m, seq, &g.stamp_values[ki], complete, held);
             }
         }
-        for &seq in &pending {
+        for &seq in &g.pending {
             let r = usize::try_from(seq - self.held_first).expect("a pending row is held");
             self.held_meta[r].open -= 1;
         }
+        // Emptied, not taken: a stamp's rows wait here on every row of a
+        // clock, and the next row's push would make the list again.
+        g.pending.clear();
     }
 
     /// End every group's open windows `how`; every group starts its windows
