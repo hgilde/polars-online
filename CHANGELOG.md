@@ -1100,6 +1100,23 @@ returns.
   from a file rebuilds the bound at its first merge from the matrix itself
   and takes the long way until its decay has worn the loaded history below
   the ridge.
+  The bound's merge forms no subnormal number: its two underflow terms,
+  near `2⁻¹⁰⁷⁴`, are absorbed into a `2⁻¹⁰⁰⁰` floor instead of being
+  multiplied out. On x86-64 each operation on a subnormal takes a
+  microcode assist of about 100 cycles, which had made a blocked fit with
+  10 features about 4% slower than without the bound (arm64 runs
+  subnormals at full speed).
+- The bank's loop copies less a row, with the same bits as before (task
+  309): a stream lends its fresh clock (kept for `drift_action="reset"`)
+  to each chunk's schedule rather than copying it and storing it back,
+  and copies it only where a drift detection restarts the models; and an
+  instance keeps its row's output buffer in place rather than taking it
+  out and putting it back each row. On arm64, by p25 in both the default
+  and an aligned code layout: a grouped `seqtest` bank 1-3% less time, a
+  grouped `ewridge` bank 0.4-3.6% less, an ungrouped `seqtest` or
+  `ewridge` bank and a formula target 0.1-1.0% less. On x86-64 the
+  grouped banks take 1-2% fewer instructions and an ungrouped `seqtest`
+  bank 1.6% fewer.
 - The instruction-count benchmarks build rayon's thread pool at the end of
   each model case's warm-up, outside the measured block, so a case's count
   no longer moves with the size of the process's environment (task 292).
