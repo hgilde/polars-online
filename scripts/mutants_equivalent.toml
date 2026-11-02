@@ -2915,3 +2915,88 @@ why = """at `p̃ₗ = 0` the mutant takes `ln 0 + ln fₗ = −∞ + ln fₗ`, w
 `log_densities_into` returned false otherwise and the row was refused \
 above; `p̃ₗ = Σ pₖ Πₖₗ` is a sum of products of probabilities, never \
 negative, and `−0.0` gives `ln(−0.0) = −∞` too"""
+
+# Task 310 (docs/PLAN.md): the survivors of 946deee7's changed lines in
+# `ridge_holds`. The order's bound: past `(3k + 1) u = 1/100`, k is about
+# 3.0e13, and there the limit is below 1 while the shortcut's bound is
+# at least about `2 √k`, so the last comparison declines whatever the
+# guard does.
+
+[[equivalent]]
+file = "crates/online-core/src/solve/condition.rs"
+function = "ridge_holds"
+mutation = "replace || with &&"
+line_has = "if k == 0 || (3.0 * order + 1.0) * U > 0.01 {"
+why = """the guard declines at `k = 0` and from `(3k + 1) u > 1/100`, k past \
+3.0e13, and nothing reaches it at either. At `k = 0` the diagonal is empty, \
+its largest entry 0, under the range's `2⁻⁴⁰⁰`, which declines. Past 3.0e13 \
+`digit_limit(k) = (1 − m)/(3k m)`, `m = (3k + 1) u ≥ 1/100`, is below \
+`33/k < 1`, while the bound `2 √k (t + δ)/(ρ + δ)` is at least `2 √k · \
+min(1, t/ρ)`: every diagonal entry is the ridge plus `C`'s, nonnegative for \
+a live Gram (each term of `c_ii` is), 1 standardized, and at least `−Ê ≥ \
+−0.4 (ρ + δ)` for a merged one once its slack holds (item 6), so `t + δ ≥ \
+0.6 (ρ + δ)` and the bound is past 1 -- the last comparison declines; and a `k × k` \
+system of that order is 7e27 bytes"""
+
+[[equivalent]]
+file = "crates/online-core/src/solve/condition.rs"
+function = "ridge_holds"
+mutation = "replace * with +"
+line_has = "if k == 0 || (3.0 * order + 1.0) * U > 0.01 {"
+columns = [23]
+why = """as `replace || with &&` on this line: the guard moves to `k` past \
+9.0e13, where the last comparison declines as it does past 3.0e13"""
+
+[[equivalent]]
+file = "crates/online-core/src/solve/condition.rs"
+function = "ridge_holds"
+mutation = "replace * with /"
+line_has = "if k == 0 || (3.0 * order + 1.0) * U > 0.01 {"
+columns = [23]
+why = """as `replace || with &&` on this line: `(3/k + 1) u` is at most `4u` \
+for `k ≥ 1` (infinite at `k = 0`, which `k == 0` declines first), so the \
+guard declines nothing, and past 3.0e13 the last comparison does"""
+
+[[equivalent]]
+file = "crates/online-core/src/solve/condition.rs"
+function = "ridge_holds"
+mutation = "replace + with *"
+line_has = "if k == 0 || (3.0 * order + 1.0) * U > 0.01 {"
+why = """as `replace || with &&` on this line: `3k u` moves the guard by \
+one order, at 3.0e13, where the last comparison declines either way"""
+
+[[equivalent]]
+file = "crates/online-core/src/solve/condition.rs"
+function = "ridge_holds"
+mutation = "replace + with -"
+line_has = "if k == 0 || (3.0 * order + 1.0) * U > 0.01 {"
+why = """as `replace + with *` on this line: the guard moves by one order, \
+at 3.0e13"""
+
+[[equivalent]]
+file = "crates/online-core/src/solve/condition.rs"
+function = "ridge_holds"
+mutation = "replace > with =="
+line_has = "if k == 0 || (3.0 * order + 1.0) * U > 0.01 {"
+why = """as `replace || with &&` on this line: the guard declines nothing \
+(`>=` below says it is never equal), and past 3.0e13 the last comparison \
+does"""
+
+[[equivalent]]
+file = "crates/online-core/src/solve/condition.rs"
+function = "ridge_holds"
+mutation = "replace > with >="
+line_has = "if k == 0 || (3.0 * order + 1.0) * U > 0.01 {"
+why = """the two differ only where `(3k + 1) u` is exactly the double 0.01, \
+and it never is: `3k + 1` is an integer, exact or rounded to one, and `u = \
+2⁻⁵³` scales it exactly, so the product is an integer times `2⁻⁵³`; 0.01 is \
+an odd 53-bit integer times `2⁻⁵⁹`, which no integer times `2⁻⁵³` is"""
+
+[[equivalent]]
+file = "crates/online-core/src/solve/condition.rs"
+function = "ridge_holds"
+mutation = "replace > with >="
+line_has = "Behind::Rows(rows) if (2.0 * rows as f64 + 6.0) * U > 0.01 => return false,"
+why = """as `replace > with >=` on the order's guard above: `(2n + 6) u` is \
+an integer times `2⁻⁵³`, and 0.01 an odd integer times `2⁻⁵⁹`, so the two \
+are never equal"""
