@@ -2580,6 +2580,7 @@ mod tests {
             let w = if i % 37 == 5 { 0.0 } else { 1.0 };
             fresh.factors.work = FactorWork::default();
             fresh.factors.matrix = Vec::new();
+            fresh.factors.row = None;
             written_over += usize::from(kept.factors.work.kept() == 3);
             let a = kept.step(x, &[], 1.0, w);
             let b = fresh.step(x, &[], 1.0, w);
