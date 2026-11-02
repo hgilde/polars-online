@@ -4329,7 +4329,7 @@ fn window_kish_and_spread_are_the_rows_inside(closed: crate::WindowClosed) {
         let (ws, wq) = kept
             .iter()
             .fold((0.0, 0.0), |(a, b), (w, _)| (a + w, b + w * w));
-        let kish = m.gram_kish()[0].expect("a window with rows in it");
+        let kish = m.gram_kish().of(0).expect("a window with rows in it");
         assert!(
             (kish - ws * ws / wq).abs() <= 1e-8 * kish,
             "row {i}: {kish} against {}",
@@ -5400,7 +5400,7 @@ fn the_gate_bound_is_the_largest_edf_ratio_and_only_below_the_limit() {
             assert_eq!(bound, 4.0);
             stood_in += 1;
             // At the bound's own ratio, the exact one.
-            let n = m.gram_kish()[0].unwrap();
+            let n = m.gram_kish().of(0).unwrap();
             let at = (1.0 + bound / n).sqrt();
             m.error_inflation_gate_into(&[], 1.0, &mut gate, at);
             m.error_inflation_into(&mut exact);
@@ -5440,13 +5440,13 @@ fn a_kish_count_of_zero_reads_an_infinite_ratio() {
     let mut m = EwRidge::new(c).unwrap();
     m.step(&[0.0], &[Some(1.0)], 0.0, 1.0);
     let mut i = 0;
-    while m.gram_kish()[0] != Some(0.0) {
+    while m.gram_kish().of(0) != Some(0.0) {
         m.step(&[0.0], &[Some(1.0)], 1.0, 0.0);
         i += 1;
         assert!(
             i < 20_000,
             "Kish's count never reached 0: {:?}",
-            m.gram_kish()
+            m.gram_kish().of(0)
         );
     }
     assert_eq!(m.ready.edf_at(0), 0.0, "a fit of no degrees of freedom");

@@ -422,3 +422,24 @@ fn ewridge_keeps_its_solves_working_space() {
         check(id, got, bound, before);
     }
 }
+
+/// `ewridge`'s noise gate made a list of each Gram's Kish size on every read
+/// (task 304): one allocation a row on the bank's gate, two under a formula
+/// target. With no window the live accumulators are read where they stand,
+/// and the gate allocates nothing. Past the first solve, so it reads a size.
+#[test]
+fn ewridge_reads_its_kish_sizes_in_place() {
+    let run = online_bench::model_setup("ewridge_k5");
+    let mut out = Vec::new();
+    assert!(run.model.error_inflation_into(&mut out));
+    assert!(
+        out.iter().all(|v| v.is_finite()),
+        "the gate reads a size: {out:?}"
+    );
+    let start = calls();
+    for _ in 0..ROWS {
+        run.model.error_inflation_into(&mut out);
+    }
+    let got = (calls() - start) as f64 / ROWS as f64;
+    check("ewridge_k5's noise gate", got, 0.0, 1.0);
+}

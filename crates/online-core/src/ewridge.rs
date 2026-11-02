@@ -1594,12 +1594,17 @@ impl EwRidge {
     /// Kish's effective sample size behind each Gram, as it stands before
     /// the row: the window's where there is one, the live accumulator's
     /// otherwise. `None` for a Gram with no weight, or with no Kish sum.
-    fn gram_kish(&self) -> Vec<Option<f64>> {
+    /// The live accumulators are read where they stand, so a model with no
+    /// window makes no list for it: the bank's gate reads this on every row.
+    fn gram_kish(&self) -> GramKish<'_> {
         let windowed = self.win.as_ref().and_then(|win| {
             let (f, old) = win.snaps.cut(win.clock, self.cfg.decay, 0)?;
             self.acc.window_kish(&old.acc, f)
         });
-        windowed.unwrap_or_else(|| self.acc.grams.grams.iter().map(EwCov::n_kish).collect())
+        match windowed {
+            Some(sizes) => GramKish::Window(sizes),
+            None => GramKish::Live(&self.acc.grams.grams),
+        }
     }
 
     /// `sqrt(1 + edf / n_kish)` per slot, as it stands before the row
@@ -1625,7 +1630,7 @@ impl EwRidge {
         }
         let kish = self.gram_kish();
         for j in 0..m {
-            let Some(n) = kish.get(self.acc.grams.of[j]).copied().flatten() else {
+            let Some(n) = kish.of(self.acc.grams.of[j]) else {
                 continue;
             };
             for c in 0..nc {
@@ -2059,6 +2064,25 @@ impl PartialEq for Factors {
     }
 }
 
+/// Kish's size behind each Gram ([`EwRidge::gram_kish`]): the window's, a
+/// list the window's subtraction makes, or the live accumulators', read
+/// where they stand.
+enum GramKish<'a> {
+    Window(Vec<Option<f64>>),
+    Live(&'a [EwCov]),
+}
+
+impl GramKish<'_> {
+    /// Gram `g`'s size; `None` for a Gram with no weight, or no Kish sum.
+    #[inline]
+    fn of(&self, g: usize) -> Option<f64> {
+        match self {
+            Self::Window(sizes) => sizes.get(g).copied().flatten(),
+            Self::Live(grams) => grams.get(g).and_then(EwCov::n_kish),
+        }
+    }
+}
+
 impl EwRidge {
     /// [`OnlineModel::predict`], into the caller's buffer: what `step`
     /// reports, read before the row (task 270, M-4).
@@ -2223,7 +2247,7 @@ impl OnlineModel for EwRidge {
         let kish = self.gram_kish();
         let mut v = Vec::new();
         for j in 0..m {
-            let Some(n) = kish.get(self.acc.grams.of[j]).copied().flatten() else {
+            let Some(n) = kish.of(self.acc.grams.of[j]) else {
                 continue;
             };
             if n <= 0.0 {
@@ -2283,7 +2307,7 @@ impl OnlineModel for EwRidge {
         let kish = self.gram_kish();
         let mut out = vec![vec![f64::NAN; k]; m * nc];
         for j in 0..m {
-            let Some(n) = kish.get(self.acc.grams.of[j]).copied().flatten() else {
+            let Some(n) = kish.of(self.acc.grams.of[j]) else {
                 continue;
             };
             if n.is_nan() || n <= 0.0 {
