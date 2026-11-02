@@ -1102,10 +1102,8 @@ returns.
   the ridge.
   The bound's merge forms no subnormal number: its two underflow terms,
   near `2⁻¹⁰⁷⁴`, are absorbed into a `2⁻¹⁰⁰⁰` floor instead of being
-  multiplied out. On x86-64 each operation on a subnormal takes a
-  microcode assist of about 100 cycles, which had made a blocked fit with
-  10 features about 4% slower than without the bound (arm64 runs
-  subnormals at full speed).
+  multiplied out, since on x86-64 each operation on a subnormal can take a
+  microcode assist of about 100 cycles.
 - The bank's loop copies less a row, with the same bits as before (task
   309): a stream lends its fresh clock (kept for `drift_action="reset"`)
   to each chunk's schedule rather than copying it and storing it back,
