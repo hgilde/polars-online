@@ -1023,6 +1023,25 @@ returns.
   keeps no working space (`ewridge`'s solves, the refits, the diagnostics'
   tests) costs what it did before `huber`'s solves kept theirs. `deco` and
   `bocpd` keep one extra factor each, about `k² · 8` bytes.
+- `ewridge` keeps the working space of its solves: a factor the next solve
+  replaces is written over by a later factorization of its order, and the
+  factorization's scratch is kept where it used to be made and dropped,
+  with the same bits as before (task 301). Two fewer allocations a solve:
+  1.66 → 1.52 a row at the default cadence. On arm64, natively, by best
+  block in both the default and an aligned code layout: `ewridge` at 5
+  features about 6-9% less time, at 20 features about 3-5% less, and a bank
+  over it 2-4% less. A factorization's matrix is no longer built out of
+  line. A model keeps one spare factor per system while a chunk runs, about
+  `k² · 8` bytes each, and drops them when the chunk ends; a model stepped
+  directly, with no bank to end a chunk, keeps them.
+- A `huber` or `quantile` model's refit of its first rows now rebuilds its
+  co-moments at each pass in register blocks rather than one row at a time,
+  with the same numbers to the bit (task 300). A 2,500-row refit at 20
+  features ran 12-16% faster on an Apple M-series core, and a quantile
+  fit's 3.5-5% faster. On x86-64 the blocks use AVX2 where the CPU has it,
+  and otherwise the row-by-row update. Each pass also reuses the vector of
+  the fit it replaced and walks the buffered history in place, which
+  removes 15 allocations from a `huber` refit and 9 from a quantile fit's.
 - The instruction-count benchmarks build rayon's thread pool at the end of
   each model case's warm-up, outside the measured block, so a case's count
   no longer moves with the size of the process's environment (task 292).

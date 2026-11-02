@@ -1869,9 +1869,9 @@ why = """the mutant adds a weight of `±0` to `n_eff`, which is `>= 0`, and \
 
 [[equivalent]]
 file = "crates/online-core/src/ewcov.rs"
-function = "EwCov::update"
+function = "<impl CoStep for EachRow>::rank_one"
 mutation = "replace > with <"
-line_has = "if self.threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
+line_has = "let workers = if threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
 why = """the guard only picks between `par::rows` and the loop below it, \
 which run the same expression on each entry in the same order: which \
 branch runs decides whether rows leave the calling thread, never a bit \
@@ -1881,41 +1881,41 @@ branch runs decides whether rows leave the calling thread, never a bit \
 
 [[equivalent]]
 file = "crates/online-core/src/ewcov.rs"
-function = "EwCov::update"
+function = "<impl CoStep for EachRow>::rank_one"
 mutation = "replace > with >="
-line_has = "if self.threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
+line_has = "let workers = if threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
 why = """as `replace > with <` here: at one thread `par::rows` makes one band \
 and runs it in order on the calling thread, the loop's arithmetic"""
 
 [[equivalent]]
 file = "crates/online-core/src/ewcov.rs"
-function = "EwCov::update"
+function = "<impl CoStep for EachRow>::rank_one"
 mutation = "replace && with ||"
-line_has = "if self.threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
+line_has = "let workers = if threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
 why = """as `replace > with <` here: either branch, the same bits; at one \
 thread `par::rows` runs its one band in order"""
 
 [[equivalent]]
 file = "crates/online-core/src/ewcov.rs"
-function = "EwCov::update"
+function = "<impl CoStep for EachRow>::rank_one"
 mutation = "replace * with +"
-line_has = "if self.threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
+line_has = "let workers = if threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
 why = """as `replace > with <` here: the size only moves the floor at which \
 rows leave the calling thread, and either branch gives the same bits"""
 
 [[equivalent]]
 file = "crates/online-core/src/ewcov.rs"
-function = "EwCov::update"
+function = "<impl CoStep for EachRow>::rank_one"
 mutation = "replace * with /"
-line_has = "if self.threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
+line_has = "let workers = if threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
 why = """as `replace * with +` here (`k / k` is 1, below the floor, so the \
 loop always runs: the same bits)"""
 
 [[equivalent]]
 file = "crates/online-core/src/ewcov.rs"
-function = "EwCov::update"
+function = "<impl CoStep for EachRow>::rank_one"
 mutation = "replace >= with <"
-line_has = "if self.threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
+line_has = "let workers = if threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
 why = """as `replace > with <` here: the mutant sends the narrow matrices to \
 `par::rows` and the wide ones to the loop, slower each way and the same \
 bits"""
