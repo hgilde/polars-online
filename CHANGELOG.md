@@ -1081,6 +1081,25 @@ returns.
 - `corrchange`'s window test runs each window's pairs over slices of the
   row, the means and the sums, in the same order: 6-9% less time a block
   on arm64 and 1-2% on x86-64 (task 306).
+- A blocked `ewridge` fit (`gram_block_rows`) settles its condition check
+  from the ridge in `k` reads, as a fit that updates its Gram row by row
+  already did, where it ran the comparison bound and Hager's estimate on
+  every solve (about five serial `k²` passes) (task 308). A blocked Gram's
+  merge subtracts the residue of the block's rounded mean, a rounding no
+  bound read from the matrix covers: a row of weight `1e-46` at `1e20`
+  opening each block leaves the merged co-moments indefinite by `1.3e-7`
+  where the row-by-row bound allows `1e-13`. So each merge now keeps, in
+  `O(k)`, a bound on what its rounding left (per feature, beside the Gram,
+  not in the state file), and the shortcut reads it. Every decision is the
+  estimate's, and every output is unchanged to the bit. Ratio to 1.3.0's
+  rate on one and four threads: a 4-block fit at 64 features 0.81 and 0.83
+  → 0.95 and 0.93 on arm64, 0.75 and 0.69 → 0.85 and 0.91 on x86-64; a
+  256-feature blocked fit past its first 2,000 rows 0.89 and 0.79 → 1.01
+  and 1.03 on arm64, 0.91 and 0.82 → 0.96 and 1.01 on x86-64. The bound
+  costs 0.4 µs a merge at 200 features and 2.2 µs at 1,000. A model loaded
+  from a file rebuilds the bound at its first merge from the matrix itself
+  and takes the long way until its decay has worn the loaded history below
+  the ridge.
 - The instruction-count benchmarks build rayon's thread pool at the end of
   each model case's warm-up, outside the measured block, so a case's count
   no longer moves with the size of the process's environment (task 292).
