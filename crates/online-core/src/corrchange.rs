@@ -307,6 +307,11 @@ pub fn perm_rejections(alpha: f64, draws: usize) -> usize {
 /// four of it.
 const PERM_ROUNDING: f64 = f64::EPSILON / 2.0;
 
+/// The widths whose row deviations the window's correlations hold on the
+/// stack (`CorrChange::window_corr`); wider ones take a buffer of their own
+/// a window.
+const DEV_STACK: usize = 16;
+
 /// The fewest draws at which the window test can flag at `alpha`: the
 /// smallest `B` with [`perm_rejections`]`(alpha, B) ≥ 1`, which is
 /// `⌈1/alpha⌉ − 1`; `None` past [`MAX_PERM`].
@@ -1129,16 +1134,30 @@ impl CorrChange {
             }
         }
         mean.iter_mut().for_each(|m| *m /= wf);
+        // Each row's deviations, taken once rather than once a pair, on the
+        // stack up to `DEV_STACK` features: the pairs then run over slices,
+        // unchecked. Each sum adds the same terms in the same order.
+        let mut stack = [0.0f64; DEV_STACK];
+        let mut heap = Vec::new();
+        let dr: &mut [f64] = if d <= DEV_STACK {
+            &mut stack[..d]
+        } else {
+            heap.resize(d, 0.0);
+            &mut heap
+        };
         for i in 0..w {
-            let r = row(i);
+            for ((v, x), m) in dr.iter_mut().zip(row(i)).zip(mean.iter()) {
+                *v = x - m;
+            }
             let mut p = 0;
             for a in 0..d {
-                let da = r[a] - mean[a];
+                let da = dr[a];
                 ss[a] += da * da;
-                for b in (a + 1)..d {
-                    corr[p] += da * (r[b] - mean[b]);
-                    p += 1;
+                let rest = &dr[a + 1..];
+                for (c, &db) in corr[p..p + rest.len()].iter_mut().zip(rest) {
+                    *c += da * db;
                 }
+                p += rest.len();
             }
         }
         let mut p = 0;
@@ -3981,6 +4000,54 @@ mod tests {
         assert!(tiny[6].is_nan() && tiny[7].is_finite());
         let line = m.window_corr(w, |i| &windows[2][i])[6];
         assert!((line + 1.0).abs() < 1e-12, "{line}");
+    }
+
+    /// The pairs read each row's deviations from a buffer taken once a row
+    /// (the VM's P16, task 306), on the stack to `DEV_STACK` features and
+    /// in a buffer of their own past it: at widths on both sides of the
+    /// line, every pair's correlation is still [`CorrChange::corr_of`]'s to
+    /// the bit, and each mean and sum of squared deviations is the plain
+    /// sum's.
+    #[test]
+    fn a_windows_correlations_are_each_pairs_own_at_every_width() {
+        let w = 30usize;
+        let mut n = Normals::new(306);
+        for d in [2usize, 5, DEV_STACK, DEV_STACK + 1, 40] {
+            let rows: Vec<Vec<f64>> = (0..w)
+                .map(|_| {
+                    let base = n.normal();
+                    (0..d)
+                        .map(|j| 2.0 + 0.3 * base + n.normal() * (1.0 + j as f64))
+                        .collect()
+                })
+                .collect();
+            let m = CorrChange::new(CorrChangeCfg {
+                span_rows: w,
+                crit: Some(0.5),
+                ..cfg(d, CorrChangeKind::Window)
+            })
+            .unwrap();
+            let got = m.window_corr(w, |i| &rows[i]);
+            assert_eq!(got.len(), 2 * d + d * (d - 1) / 2, "d {d}");
+            let mut p = 2 * d;
+            for a in 0..d {
+                let mean = rows.iter().fold(0.0, |s, r| s + r[a]) / w as f64;
+                assert_eq!(got[a].to_bits(), mean.to_bits(), "d {d}: mean {a}");
+                let ss = rows
+                    .iter()
+                    .fold(0.0, |s, r| s + (r[a] - mean) * (r[a] - mean));
+                assert_eq!(got[d + a].to_bits(), ss.to_bits(), "d {d}: squares {a}");
+                for b in a + 1..d {
+                    let want = CorrChange::corr_of(&rows, w, a, b);
+                    assert!(
+                        same(got[p], want),
+                        "d {d}, ({a}, {b}): {} vs {want}",
+                        got[p]
+                    );
+                    p += 1;
+                }
+            }
+        }
     }
 
     /// A window in which one pair has no correlation (a column constant in
