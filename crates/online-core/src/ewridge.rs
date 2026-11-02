@@ -59,7 +59,7 @@ use serde::{Deserialize, Serialize};
 use crate::gaps::{Acc, AccSnap, AccView, Cross, gram_parts};
 use crate::model::{Fit, ModelState, OnlineModel, State, StateError, Step, check_schema};
 use crate::since::Since;
-use crate::solve::{FactorWork, SpdFactor, dot_aug};
+use crate::solve::{FactorWork, OverMoments, SpdFactor, dot_aug};
 use crate::{Decay, EwCov, GramPart, TargetGaps, TargetMoments};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -953,6 +953,14 @@ impl EwRidge {
         // One system per Gram, for the targets that read it.
         for (g, cov) in grams.iter().enumerate() {
             let readers = self.acc.grams.readers(g);
+            // The rows behind a Gram the centred solve may read as a ridge
+            // over semidefinite co-moments: a live one, built row by row
+            // since it was empty -- not a window's truncation, not a
+            // blocked Gram's merges, not one `session_shrink`'s blend
+            // rewrites (the condition module's docs, *The ridge's
+            // shortcut*).
+            let live_rows = (view.is_none() && self.slow.is_none() && cov.block_rows() == 0)
+                .then(|| cov.rows_learned());
             let mr = readers.len();
             let r: Vec<Vec<f64>> = if centred {
                 Vec::new()
@@ -984,7 +992,16 @@ impl EwRidge {
                 let kc = zidx.len();
 
                 let solved: Option<Solved> = if centred {
-                    self.solve_centred(cov, cross, &readers, &mut failures, &mut work, &zidx, ridge)
+                    self.solve_centred(
+                        cov,
+                        cross,
+                        &readers,
+                        &mut failures,
+                        &mut work,
+                        &zidx,
+                        ridge,
+                        live_rows,
+                    )
                 } else {
                     // Gather the sub-block of S and the per-target rhs.
                     let mut a = vec![0.0; kc * kc];
@@ -1026,7 +1043,7 @@ impl EwRidge {
                         }
                         // The system is on the sum scale, so a row form
                         // against it is scaled back by `W` (see `System`).
-                        Self::run_solve(&mut failures, &mut work, &a, &b, kc, mr).map(
+                        Self::run_solve(&mut failures, &mut work, &a, &b, kc, mr, None).map(
                             |(sol, factor, ill)| {
                                 Solved::raw(sol, factor, a, kc, ps * ridge, w, ill)
                             },
@@ -1047,7 +1064,7 @@ impl EwRidge {
                                 }
                             }
                         }
-                        Self::run_solve(&mut failures, &mut work, &a, &b, kc, mr).map(
+                        Self::run_solve(&mut failures, &mut work, &a, &b, kc, mr, None).map(
                             |(sol, factor, ill)| Solved::raw(sol, factor, a, kc, ridge, 1.0, ill),
                         )
                     } else {
@@ -1243,7 +1260,11 @@ impl EwRidge {
     /// not solved: it is counted as a failure, the solution is NaN, and the
     /// flag that comes back says so, so the caller withholds the fit
     /// (docs/PLAN.md task 278, D4). Every other solve is untouched, to the
-    /// bit: the estimate reads the factor and changes nothing.
+    /// bit: the estimate reads the factor and changes nothing. `over` is
+    /// what the centred solve knows of a live Gram's system, which lets a
+    /// ridge settle the condition in `k` reads with the same answer
+    /// ([`SpdFactor::carries_no_digit_over`]); `None` elsewhere.
+    #[allow(clippy::too_many_arguments)]
     fn run_solve(
         failures: &mut u64,
         work: &mut FactorWork,
@@ -1251,11 +1272,12 @@ impl EwRidge {
         b: &[f64],
         k: usize,
         m: usize,
+        over: Option<OverMoments>,
     ) -> Option<(Vec<f64>, SpdFactor, bool)> {
         match work.factor(a, k) {
             Some(f) => {
                 *failures += u64::from(f.attempts());
-                if f.carries_no_digit(a) {
+                if f.carries_no_digit_over(a, over) {
                     *failures += 1;
                     return Some((vec![f64::NAN; k * m], f, true));
                 }
@@ -1329,7 +1351,7 @@ impl EwRidge {
                 }
             }
         }
-        let (sol, factor, ill) = Self::run_solve(failures, work, &asub, &bsub, kk, m)?;
+        let (sol, factor, ill) = Self::run_solve(failures, work, &asub, &bsub, kk, m, None)?;
         let mut out = vec![0.0; kc * m];
         for j in 0..m {
             for (i2, &i) in keep.iter().enumerate() {
@@ -1377,6 +1399,7 @@ impl EwRidge {
         work: &mut FactorWork,
         zidx: &[usize],
         ridge: f64,
+        live_rows: Option<u64>,
     ) -> Option<Solved> {
         // Feature slots are 1..kc; slot 0 is the intercept.
         let kc = zidx.len();
@@ -1442,7 +1465,11 @@ impl EwRidge {
                     }
                 }
             }
-            let (sol, factor, past) = Self::run_solve(failures, work, &asub, &bsub, kk, mr)?;
+            // A live Gram's system is a ridge over its co-moments, which
+            // their rows bound (`OverMoments`); a window's or a blocked
+            // Gram's is not known to be, and goes the long way.
+            let over = live_rows.map(|rows| OverMoments { ridge, rows });
+            let (sol, factor, past) = Self::run_solve(failures, work, &asub, &bsub, kk, mr, over)?;
             ill = past;
             for jj in 0..mr {
                 for (i2, &i) in keep.iter().enumerate() {

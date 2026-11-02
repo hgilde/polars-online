@@ -252,3 +252,145 @@ fn only_the_withheld_systems_slots_are_withheld() {
     }
     assert!(withheld[0] > 20 && withheld[1] > 20, "{withheld:?}");
 }
+
+/// A configuration of `k` features for the ridge's shortcut (task 306): a
+/// ridge of `1e-6` (the default), a half-life of 200 rows, a solve every
+/// row.
+fn wide(k: usize) -> EwRidgeCfg {
+    EwRidgeCfg {
+        n_features: k,
+        ridge: vec![1e-6],
+        decay: Decay::Halflife(200.0),
+        ..cfg(1e-6)
+    }
+}
+
+/// What a stream left on every row, to the bit: predictions, the fit, the
+/// withheld flag and the failures; and how many solves the ridge's
+/// shortcut settled on the way.
+fn bits(cfg: &EwRidgeCfg, rows: usize, scale: f64, off: bool) -> (Vec<u64>, u64) {
+    use crate::solve::condition_switches::{SHORTCUT_OFF, SHORTCUTS};
+    let k = cfg.n_features;
+    let mut model = EwRidge::new(cfg.clone()).unwrap();
+    let mut s = 306u64 + k as u64;
+    SHORTCUT_OFF.with(|c| c.set(off));
+    let before = SHORTCUTS.with(std::cell::Cell::get);
+    let mut out = Vec::new();
+    for i in 0..rows {
+        let x: Vec<f64> = (0..k).map(|_| scale * (1.0 + lcg(&mut s))).collect();
+        let y = 0.3
+            + x.iter()
+                .enumerate()
+                .map(|(j, v)| v / (j + 1) as f64)
+                .sum::<f64>()
+            + 0.1 * lcg(&mut s);
+        let p = model.predict(&x, 1.0);
+        out.extend(p.pred.iter().map(|v| v.to_bits()));
+        model.step(&x, &[Some(y)], f64::from(u8::from(i > 0)), 1.0);
+        out.push(u64::from(model.ill_conditioned()));
+        out.push(model.solve_failures);
+        if let Some(c) = model.coefficients() {
+            out.extend(c.iter().flatten().map(|v| v.to_bits()));
+        }
+    }
+    let settled = SHORTCUTS.with(std::cell::Cell::get) - before;
+    SHORTCUT_OFF.with(|c| c.set(false));
+    (out, settled)
+}
+
+/// The ridge's shortcut fires on a live Gram's centred solves and changes
+/// nothing: forty features, a solve every row, unscaled and standardized,
+/// read every row to the bit with the shortcut and with it off (the long
+/// way on every solve), and settling nearly every solve; under a window,
+/// the solves before the first row leaves it. Where it must not run -- a
+/// window's truncated Gram, a blocked Gram, `session_shrink`'s twin, the raw
+/// normal equations of `ridge_scale` and of a fit through the origin -- it
+/// settles none, and where the ridge does not hold the system inside the
+/// limit (features of spread 1,000 against a ridge of `1e-6`), none past
+/// the first row:
+/// the estimate decides those, as before.
+#[test]
+fn the_ridge_settles_a_live_grams_solves_to_the_same_bits() {
+    let k = 40;
+    let rows = 120;
+    let base = wide(k);
+    // How many of the solves each case settles, at least and at most.
+    let all = (rows - 5, rows);
+    let none = (0, 0);
+    let cases: Vec<(&str, EwRidgeCfg, f64, (usize, usize))> = vec![
+        ("default", base.clone(), 1.0, all),
+        (
+            "standardized",
+            EwRidgeCfg {
+                standardize: true,
+                ..base.clone()
+            },
+            1.0,
+            all,
+        ),
+        // Until a row leaves the window the fit reads the live Gram, and
+        // the shortcut settles those solves (the first 60 rows); from then
+        // on the window's truncation, none.
+        (
+            "window",
+            EwRidgeCfg {
+                window: Some(60.0),
+                ..base.clone()
+            },
+            1.0,
+            (50, 61),
+        ),
+        (
+            "blocked",
+            EwRidgeCfg {
+                gram_block_rows: 8,
+                solve_every: 4.0,
+                max_rows_between_solves: 4,
+                ..base.clone()
+            },
+            1.0,
+            none,
+        ),
+        (
+            "session_shrink",
+            EwRidgeCfg {
+                session_shrink: Some(0.5),
+                long_half_life: Some(800.0),
+                ..base.clone()
+            },
+            1.0,
+            none,
+        ),
+        (
+            "ridge_scale",
+            EwRidgeCfg {
+                ridge_scale: true,
+                ..base.clone()
+            },
+            1.0,
+            none,
+        ),
+        (
+            "through the origin",
+            EwRidgeCfg {
+                fit_intercept: false,
+                ..base.clone()
+            },
+            1.0,
+            none,
+        ),
+        // The first row's alone, where `C` is still 0 and `A` is the ridge.
+        ("spread 1,000", base.clone(), 1000.0, (1, 1)),
+    ];
+    for (name, cfg, scale, (least, most)) in cases {
+        let (on, settled) = bits(&cfg, rows, scale, false);
+        let (off, none) = bits(&cfg, rows, scale, true);
+        assert_eq!(none, 0, "{name}: switched off");
+        assert!(on == off, "{name}: the shortcut moved a bit");
+        let settled = settled as usize;
+        assert!(
+            (least..=most).contains(&settled),
+            "{name}: {settled} of {rows} settled"
+        );
+    }
+}

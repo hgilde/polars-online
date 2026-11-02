@@ -87,6 +87,102 @@
 //! thirties. Such a solve was served unjudged, its jitter counted as a
 //! failure; it is refused now, as a factor past the limit that needed none
 //! is.
+//!
+//! **The ridge's shortcut.** A solve whose matrix is known to be a ridge
+//! over a semidefinite matrix -- `A = C + ρI`, `C` the centred co-moments,
+//! `ρ > 0` -- is decided in `k` reads where the ridge alone holds it inside
+//! the limit ([`SpdFactor::carries_no_digit_over`]). The comparison bound
+//! does not settle wide systems: at a thousand features it read `1e14` to
+//! `1e59` against a limit of `1e9` on every solve of a default fit, so each
+//! paid for the bound and the estimate, about five serial `k²` passes. The
+//! shortcut answers "not refused" only where the estimate itself, as
+//! computed, is below the limit, so it decides as the long way does,
+//! always; anywhere else the long way runs. The argument, with `u = 2⁻⁵³`,
+//! `γ_m = m u / (1 − m u)`, `n` the rows of positive weight behind `C`,
+//! `T = Σ a_ii` and `t = max a_ii` (the system's diagonal, ridge included,
+//! before any jitter), and `δ` the factor's jitter:
+//!
+//! 1. *`C` is semidefinite to within its rounding, by an amount that grows
+//!    with `n`.* An [`crate::EwCov`] row takes `c_ij ← a c_ij + (a b δ_i)
+//!    δ_j`, `a, ab ≥ 0`. In exact arithmetic on the same computed `a`, `ab`
+//!    and `δ` that recursion sums rank-one terms with nonnegative weights,
+//!    `C* = Σ_t α_t δ_t δ_tᵀ`, semidefinite. In floating point a term takes
+//!    three roundings at its own row and two (`a·c`, the sum) at each later
+//!    one, so `c_ij = Σ_t α_t δ_ti δ_tj (1 + θ_t)` with `|θ_t| ≤ γ_{2n+1}`
+//!    (Higham, Lemma 3.1), and `|C − C*| ≤ γ_{2n+1} M` entrywise, `M = Σ_t
+//!    α_t |δ_t||δ_t|ᵀ`. `M` is semidefinite with `C*`'s diagonal, so `‖C −
+//!    C*‖₂ ≤ ‖ |C − C*| ‖₂ ≤ γ_{2n+1} ‖M‖₂ ≤ γ_{2n+1} tr C*`: `λ_min(C) ≥
+//!    −γ_{2n+1} tr C*`. A row of weight 0 rounds nothing (`a = 1` and `b =
+//!    0` exactly), so `n` counts the rows of positive weight,
+//!    [`crate::EwCov::rows_learned`]. The count is the stream's, not the
+//!    weight `W`'s: rows of small weight at the mean round `a·c_ij` on
+//!    every row while `W` stands still, and the entries' relative errors
+//!    walk apart for as long as the stream runs (a test drives a rank-one
+//!    `C` past any slack proportional to `W`).
+//! 2. *The system as formed.* `A`'s off-diagonal entries are `C`'s, or with
+//!    `standardize` `c_ij / (s_i s_j)` with `s_i = √c_ii` (four roundings),
+//!    and its diagonal takes `ρ` with one more. So `A = S⁻¹ C* S⁻¹ + ρI +
+//!    G`, `S = diag(√c_ii)` or `I`, and `‖G‖₂ ≤ γ_{2n+5} tr(S⁻¹ M S⁻¹) + u
+//!    t/(1 − u)` (Lemma 3.3 joins the two `γ`). Either way `tr(S⁻¹ M S⁻¹)
+//!    ≤ T / ((1 − γ_5)(1 − γ_{2n+1}))`: unscaled, `tr M = tr C* ≤ tr C / (1
+//!    − γ_{2n+1})` (every term of a diagonal entry is nonnegative) and `tr C
+//!    ≤ T/(1 − u)`; standardized, each `M_ii / c_ii ≤ 1/(1 − γ_{2n+1})` and
+//!    `k ≤ T/(1 − γ_5)`. A factor that needed jitter holds `A + δI`, its
+//!    diagonal rounded once more: `λ_min(A + δI) ≥ ρ + δ − g₁`, `g₁ ≤ 1.05
+//!    ((2n + 5) u T + u (2t + δ))` once `(2n + 6) u` and `(3k + 1) u` are at
+//!    most `1/100`, which the shortcut requires, and which puts every `γ_m`
+//!    here within `1.0102 m u` and every `1/(1 − γ)` within `1.0103`.
+//! 3. *The factor and its solves.* Whatever order faer sums in, with or
+//!    without fused multiply-adds, the computed factor `L̂` and the two
+//!    triangular solves give each product with `H⁻¹` as the exact solution
+//!    of `(A + δI + ΔA) z = b`, `|ΔA| ≤ γ_{3k+1} |L̂||L̂ᵀ|` (Higham, Lemma
+//!    8.4 and Theorem 10.4), and `‖ |L̂||L̂ᵀ| ‖₂ ≤ ‖L̂‖_F² = Σ_i (L̂L̂ᵀ)_ii ≤
+//!    (T + kδ)(1 + u)/(1 − γ_{k+1})`. So `σ_min(A + δI + ΔA) ≥ μ = ρ + δ −
+//!    g`, `g = g₁ + g₂`, `g₂ ≤ 1.05 (3k + 1) u (T + kδ)`.
+//! 4. *The estimate.* In exact arithmetic each candidate Hager's method
+//!    keeps is `‖H⁻¹ v‖₁ / ‖v‖₁ ≤ ‖H⁻¹‖₁` (the estimate's docs). As
+//!    computed, each is a product of item 3 -- scaled by `D` before and
+//!    after, `D`'s entries `√(a_ii + δ)` rounded -- whose 1-norm, summed,
+//!    is divided by its vector's: `1`, `1`, or `3k/2` for the alternating
+//!    vector, whose product's norm is taken times `2/(3k)`. With `‖D X D‖₁
+//!    ≤ √k ‖D X D‖₂ ≤ √k (t + δ) ‖X‖₂`, every candidate, and so the
+//!    estimate, is at most `(1 + γ_{k+8}) √k (t + δ) / μ`: nine roundings
+//!    of the scaling, the vectors and the division, `k − 1` of the sum.
+//! 5. *The test.* With `ĝ` the slack `(2n + 5) u T + (3k + 1) u (T + kδ) +
+//!    u (2t + δ)` computed from the summed diagonal -- at least `g / 1.05`,
+//!    its few roundings and the sum's `γ_{k−1}` taken in -- the shortcut
+//!    requires `1.25 ĝ ≤ (ρ + δ)/2`. Then `g < 0.43 (ρ + δ)`,
+//!    `μ > 0.57 (ρ + δ)`, and every candidate is below
+//!    `1.78 √k (t + δ)/(ρ + δ)`. So where `2 √k (t + δ)/(ρ + δ)`, computed
+//!    in five roundings, is below the limit, the estimate is below it too,
+//!    the long way would not refuse the system, and the shortcut does not.
+//!
+//! Every step assumes Higham's model, no overflow and no underflow
+//! (§2.2). Overflow cannot have happened: `A`'s entries are finite where
+//! its factorization succeeded (a non-finite entry makes a pivot NaN or
+//! `−∞`, which faer refuses), and an overflow in `C`'s history stays
+//! (an infinity times an `a` in `(0, 1]` stays one, times 0 is NaN). The
+//! shortcut requires `2⁻⁴⁰⁰ ≤ t ≤ 2⁴⁰⁰`; with the test passed, every
+//! number the estimate forms then lies within `2^±900`, and an underflow's
+//! absolute error, `2⁻¹⁰⁷⁴`, falls hundreds of binades under a rounding of
+//! the result. Two things are not covered. An underflowing product in
+//! `C`'s history, `ab·δ_i` below `2⁻¹⁰²²`, then multiplied by a `δ_j` past
+//! about `1e150`, leaves an absolute error the current matrix cannot
+//! bound. And a state file edited by hand can hold any matrix at all.
+//!
+//! Which systems take it: [`crate::EwRidge`]'s centred solve, where `C` is
+//! a live Gram built row by row since it was empty. Not a window's
+//! truncated Gram, a difference of two accumulators whose rounding is
+//! relative to each of them rather than to their difference; not a
+//! blocked Gram (`gram_block_rows`), whose merge subtracts `U δδᵀ` for
+//! the residue of the block's rounded mean, a rounding relative to the
+//! block's scatter about that mean that the current matrix cannot bound;
+//! and not beside `session_shrink`'s twin, whose blend rewrites `C`
+//! outside the row count. The raw normal equations -- `ridge_scale =
+//! "sum"`, and fits without an intercept -- are formed another way (the
+//! means' outer product added back, the intercept's column in the
+//! system, under `ridge_scale` a penalty on the sum scale), and this
+//! argument is not made for them: they take the long way.
 
 use super::SpdFactor;
 
@@ -251,6 +347,117 @@ impl SpdFactor {
     }
 }
 
+/// What a solve knows of its matrix besides the entries: that it is
+/// `C + ridge·I`, `C` the centred co-moments of a live Gram that `rows`
+/// rows of positive weight built one by one since it was empty, or its
+/// standardized form (the module docs, *The ridge's shortcut*, say which
+/// systems qualify and why).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct OverMoments {
+    /// The ridge added to the diagonal.
+    pub(crate) ridge: f64,
+    /// The rows of positive weight behind the co-moments
+    /// ([`crate::EwCov::rows_learned`]).
+    pub(crate) rows: u64,
+}
+
+/// The largest `t = max a_ii` the shortcut reads, `2⁴⁰⁰`, and the smallest,
+/// `2⁻⁴⁰⁰` (the module docs: inside them nothing the estimate forms
+/// overflows, and an underflow's error is far under a rounding).
+const TOP_MAX: f64 = f64::from_bits((1023 + 400) << 52);
+const TOP_MIN: f64 = f64::from_bits((1023 - 400) << 52);
+
+impl SpdFactor {
+    /// [`Self::carries_no_digit`], taking the shortcut where `over` says the
+    /// system is a ridge over semidefinite co-moments and the ridge alone
+    /// holds it inside the limit: `k` reads of the diagonal, against the
+    /// bound's and the estimate's `k²` passes. The answer is always the
+    /// long way's (the module docs prove it).
+    pub(crate) fn carries_no_digit_over(&self, a: &[f64], over: Option<OverMoments>) -> bool {
+        if over.is_some_and(|o| self.ridge_settles(a, o)) {
+            count_shortcut();
+            return false;
+        }
+        self.carries_no_digit(a)
+    }
+
+    /// Whether the ridge alone puts this factor's system inside the limit
+    /// (the module docs, *The ridge's shortcut*, items 1 to 5): `(2n + 6) u`
+    /// and `(3k + 1) u` at most `1/100`, `t = max a_ii` within
+    /// `2^±400`, the slack `ĝ` at most `(ρ + δ)/2.5`, and `2 √k (t + δ)/(ρ +
+    /// δ)` below the limit. `false` says only that the long way decides.
+    pub(crate) fn ridge_settles(&self, a: &[f64], over: OverMoments) -> bool {
+        let k = self.order();
+        debug_assert_eq!(a.len(), k * k);
+        // The long way reads an unreadable factor as past the limit.
+        if (0..k).any(|j| self.l.col(j).try_as_col_major().is_none()) {
+            return false;
+        }
+        ridge_holds((0..k).map(|i| a[i * k + i]), k, over, self.jitter)
+    }
+}
+
+/// [`SpdFactor::ridge_settles`] from the system's diagonal `diag` (its `k`
+/// entries as factorized, before the jitter `delta`): the module docs,
+/// *The ridge's shortcut*, item 5, and the range it needs.
+pub(crate) fn ridge_holds(
+    diag: impl Iterator<Item = f64>,
+    k: usize,
+    over: OverMoments,
+    delta: f64,
+) -> bool {
+    #[cfg(test)]
+    if SHORTCUT_OFF.with(std::cell::Cell::get) {
+        return false;
+    }
+    let (order, rows) = (k as f64, over.rows as f64);
+    if k == 0 || (2.0 * rows + 6.0) * U > 0.01 || (3.0 * order + 1.0) * U > 0.01 {
+        return false;
+    }
+    let (mut trace, mut top) = (0.0f64, 0.0f64);
+    for v in diag {
+        trace += v;
+        top = top.max(v);
+    }
+    let rho = over.ridge;
+    // A NaN or an infinity in the diagonal leaves the trace one.
+    if !(rho > 0.0 && trace.is_finite() && (TOP_MIN..=TOP_MAX).contains(&top)) {
+        return false;
+    }
+    let shift = rho + delta;
+    let slack = (2.0 * rows + 5.0) * U * trace
+        + (3.0 * order + 1.0) * U * (trace + order * delta)
+        + U * (2.0 * top + delta);
+    // Every term is finite here, so `>` refuses what `≤` would not pass.
+    if 1.25 * slack > 0.5 * shift {
+        return false;
+    }
+    2.0 * order.sqrt() * (top + delta) / shift < digit_limit(k)
+}
+
+#[cfg(test)]
+pub(crate) use switches::{SHORTCUT_OFF, SHORTCUTS};
+
+#[cfg(test)]
+mod switches {
+    thread_local! {
+        /// The solves on this thread the ridge's shortcut decided: what a test
+        /// reads to see that it ran, since its answer is the long way's.
+        pub(crate) static SHORTCUTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+        /// Set, the shortcut never fires on this thread: what a test sets to
+        /// run the long way on the same stream and compare.
+        pub(crate) static SHORTCUT_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+}
+
+/// Count a solve the shortcut decided in [`SHORTCUTS`]; nothing outside
+/// tests.
+#[inline]
+fn count_shortcut() {
+    #[cfg(test)]
+    SHORTCUTS.with(|c| c.set(c.get() + 1));
+}
+
 /// The `‖H⁻¹‖₁` at which an order-`k` solve keeps no digit: `1 / (3 k
 /// γ_{3k+1})`, `γ_m = m u / (1 − m u)` (the module docs derive it). 0, so
 /// that every system is refused, at an order whose `γ` is no bound, which no
@@ -358,3 +565,7 @@ fn alternating(x: &mut [f64]) {
 #[cfg(test)]
 #[path = "condition_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "ridge_tests.rs"]
+mod ridge_tests;

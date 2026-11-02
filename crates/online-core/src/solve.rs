@@ -1009,6 +1009,11 @@ pub(crate) fn dot_aug(beta: &[f64], x: &[f64], fit_intercept: bool) -> f64 {
 }
 
 mod condition;
+pub(crate) use condition::OverMoments;
+#[cfg(test)]
+pub(crate) mod condition_switches {
+    pub(crate) use super::condition::{SHORTCUT_OFF, SHORTCUTS};
+}
 
 #[cfg(test)]
 mod pool_tests;
