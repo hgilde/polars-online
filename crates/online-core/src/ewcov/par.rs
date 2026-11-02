@@ -144,7 +144,7 @@ fn run(p: Piece<'_>, d: MatRef<'_, f64>, m: &Merge<'_>) {
 }
 
 /// `f(i, row)` for each row of the row-major `k`-wide matrix `c`, on
-/// `threads` threads: each takes whole bands of rows, so an entry's
+/// `threads` threads: each takes a band of whole rows, so an entry's
 /// arithmetic is the same whichever thread runs it. `row` is the whole row;
 /// the rank-1 update writes its lower part, `..=i`.
 pub(crate) fn rows(c: &mut [f64], k: usize, threads: usize, f: impl Fn(usize, &mut [f64]) + Sync) {
@@ -152,13 +152,38 @@ pub(crate) fn rows(c: &mut [f64], k: usize, threads: usize, f: impl Fn(usize, &m
         return;
     }
     let n_rows = c.len() / k;
-    let band = n_rows.div_ceil(threads.max(1)).max(1);
-    let bands: Vec<(usize, &mut [f64])> = c.chunks_mut(band * k).enumerate().collect();
-    spread(bands, threads, |(b, rows)| {
+    let threads = threads.max(1);
+    let mut bands: Vec<(usize, &mut [f64])> = Vec::with_capacity(threads);
+    let mut rest = c;
+    let mut at = 0;
+    for b in 1..=threads {
+        let end = band_end(n_rows, threads, b).clamp(at, n_rows);
+        let (head, tail) = rest.split_at_mut((end - at) * k);
+        if !head.is_empty() {
+            bands.push((at, head));
+        }
+        rest = tail;
+        at = end;
+    }
+    spread(bands, threads, |(start, rows)| {
         for (r, row) in rows.chunks_mut(k).enumerate() {
-            f(b * band + r, row);
+            f(start + r, row);
         }
     });
+}
+
+/// Where band `b` of `threads` (from 1) ends among `n_rows` rows, for
+/// [`rows`]. Row `i` writes its lower `i + 1` entries, so the first `r`
+/// rows hold about `r²/2` of them, and bands cut at `n·√(b/t)` take equal
+/// work; bands of equal rows gave the last one 7/16 of it at four threads.
+/// The last band ends at the last row. Which band holds a row says only
+/// which thread runs it: an entry is the same expression on any.
+fn band_end(n_rows: usize, threads: usize, b: usize) -> usize {
+    if b >= threads {
+        return n_rows;
+    }
+    let share = (b as f64 / threads as f64).sqrt();
+    (n_rows as f64 * share).round() as usize
 }
 
 #[cfg(test)]
