@@ -195,8 +195,9 @@ fn deco_standardises_a_row_once() {
 /// `hmm` built `Π` twice on a learning row, a vector a matrix row each time
 /// (D-7): 29 allocations a row, 24 after. Its states' factors, their
 /// matrices, faer's scratch and the list of factors are kept since (task
-/// 298): seven fewer. Each state's quadratic form solves in a kept column
-/// (task 304): four fewer.
+/// 298): seven fewer. Each state's quadratic form solves in a kept column,
+/// and the row's own vectors are kept (task 304): what is left is the `Step`'s `pred`,
+/// a vector and its one growth, which the bank's kept `Step` does not pay.
 #[test]
 fn hmm_builds_its_transition_matrix_once_a_row() {
     let got = per_row(
@@ -205,7 +206,7 @@ fn hmm_builds_its_transition_matrix_once_a_row() {
         4,
         0,
     );
-    check("hmm K=2 d=4", got, 13.0, 29.0);
+    check("hmm K=2 d=4", got, 2.0, 29.0);
 }
 
 /// `lasso` copied each target's selection errors a row to take their
@@ -390,11 +391,12 @@ fn huber_keeps_its_solves_working_space() {
 /// The dropped factors are kept and written over now, with the scratch and
 /// the matrix: `hmm`'s two states' three allocations each, and the list
 /// its factors are held in, and `deco`'s three. Then each quadratic form, a
-/// matrix and a vector a form, went to a kept column (task 304). Counted
-/// over each bench case's own measured block, as the bank steps it.
+/// matrix and a vector a form, went to a kept column, and `hmm`'s row's own
+/// vectors with them, so it allocates nothing a row (task 304). Counted over
+/// each bench case's own measured block, as the bank steps it.
 #[test]
 fn hmm_and_deco_keep_their_factors_working_space() {
-    for (id, bound, before) in [("hmm", 11.0, 22.0), ("deco", 7.0, 12.0)] {
+    for (id, bound, before) in [("hmm", 0.0, 22.0), ("deco", 7.0, 12.0)] {
         let mut run = online_bench::model_setup(id);
         let start = calls();
         std::hint::black_box(online_bench::polars_online_budget_model_rows(&mut run));
