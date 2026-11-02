@@ -277,7 +277,11 @@
 //!    `2⁷²` or not a number, that term is formed and summed as written --
 //!    `η ν_i` is then a normal number, and `τ` comes from two scalings by
 //!    `√η = 2⁻⁵³⁷`, exact where they are normal -- so `e` is forgotten
-//!    wherever it was when both were always formed. The rest is computed in
+//!    wherever it was when both were always formed. Where a term is left
+//!    out, its last factor is 0 instead (`√η` times `ν_i ≥ 5`, or `spread ≥
+//!    1`, is normal, and times 0 it is +0): a choice between the term and 0
+//!    compiled without a branch would form the term on every merge, and
+//!    discard it. The rest is computed in
 //!    about thirty roundings of nonnegative terms, taken in, with the `1 +
 //!    u` above, by a factor `1 + 2⁻⁴⁶`, and `2⁻¹⁰⁰⁰` is added for any of
 //!    them that underflowed (each product is ordered so that nothing past

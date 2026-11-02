@@ -12,11 +12,16 @@
 //! is rebuilt.
 //!
 //! An ordinary merge forms no subnormal number here (item 8, last
-//! paragraph): x86-64 takes each subnormal operand or result through a
-//! microcode assist of about a hundred cycles, which made a blocked fit
-//! about 4% slower there on the same instructions when the two terms built
-//! on `η` were formed as products. A test build counts any product or
-//! quotient here that reads or makes one (`SUBNORMALS`).
+//! paragraph), not even one it throws away: x86-64 takes each subnormal
+//! operand or result through a microcode assist of about a hundred cycles,
+//! which made a blocked fit about 4% slower there on the same instructions
+//! while the two terms built on `η` were formed as products. Where a term
+//! is left out, a factor of it is chosen to be 0, rather than the term
+//! chosen to be 0: the compiler makes a choice between two numbers into a
+//! select without a branch, which computes both arms, so a term's arm was
+//! formed, a subnormal, on every feature of every merge, and discarded. No
+//! product or quotient here sits in an arm, and a test build counts any
+//! that reads or makes a subnormal (`SUBNORMALS`).
 
 use super::LowerTriangle;
 
@@ -139,21 +144,12 @@ impl MergeBound {
         let (sigma, alpha, beta, omega) = (s.scale, s.alpha, s.between, s.within);
         let ratio = over(n, s.u_sum);
         let spread = ratio + 1.0 + ratio.sqrt();
-        // The residue's `7 ω τ²/ε = η² r`, `τ = η τ_n`: left to the second
-        // `FLOOR` where `r` is finite, and so at most `2⁻¹¹²⁴`. Where it is
-        // not, `τ` is formed, `2η` times `spread` in two scalings, the
-        // first exact, and the term as before, which forgets `e` where it is
-        // not finite either (the module docs, item 8).
+        // The residue's `7 ω τ²/ε`, `τ = η τ_n`, from `r = 7 ω τ_n²/ε`
+        // ([`residue_term`]).
         let tau_n = 2.0 * spread;
-        let r = times(times(times(7.0 / eps, omega), tau_n), tau_n);
-        let residue = if r.is_finite() {
-            0.0
-        } else {
-            let tau = spread * ROOT_ETA * (2.0 * ROOT_ETA);
-            // Every factor is nonnegative; the order keeps a large factor
-            // from multiplying an underflowed product.
-            7.0 / eps * omega * tau * tau
-        };
+        let lead = times(7.0 / eps, omega);
+        let r = times(times(lead, tau_n), tau_n);
+        let residue = residue_term(lead, r, spread);
         let rows = times(n, 4.0 + alpha);
         let grow = 1.0 + eps;
         let shrink = 1.0 / (1.0 - 10.0 * eps);
@@ -168,15 +164,9 @@ impl MergeBound {
             } else {
                 cii.max(0.0)
             };
-            // The underflows' `η ν_i`: left to the second `FLOOR` while the
-            // computed `ν_i` is at most `2⁷²`; past it, or where it is not a
-            // number, formed in two exact scalings by `√η`, a normal number.
+            // The underflows' `η ν_i` ([`underflows`]).
             let nu = (1.0 + g) * (1.0 + g) + (1.0 + h) * (1.0 + h) + 3.0 + rows;
-            let under = if nu <= UNDER_MAX {
-                0.0
-            } else {
-                times(times(nu, ROOT_ETA), ROOT_ETA)
-            };
+            let under = underflows(nu);
             // Every term is nonnegative; each product's order keeps a
             // large factor from multiplying an underflowed one.
             let sum = times(times(*ei, sigma), grow)
@@ -192,6 +182,46 @@ impl MergeBound {
             self.forget();
         }
     }
+}
+
+/// The residue's term `7 ω τ²/ε = η² r`, `τ = η τ_n`, from `lead = 7 ω/ε`
+/// and `r = 7 ω τ_n²/ε` as [`MergeBound::merged`] computed them: left to
+/// the second `FLOOR` where `r` is finite, and so at most `2⁻¹¹²⁴`. Where
+/// it is not, `τ` is formed, `2η` times `spread` in two scalings, the first
+/// exact, and the term as written, which forgets `e` where it is not finite
+/// either (the module docs, item 8).
+///
+/// The choice is of the factors, not of the term: a choice compiled without
+/// a branch computes both of its arms, and an arm that formed `τ` would form
+/// a subnormal on every merge to throw it away. Where `r` is finite, so is
+/// `spread` (`lead` is at least `7` times the smallest normal), and `√(n/Û)`
+/// is a number, so `spread` is at least 1: `τ` is +0, and so is the term,
+/// whatever the sign of `lead`.
+#[inline(always)]
+fn residue_term(lead: f64, r: f64, spread: f64) -> f64 {
+    let (lead, second) = if r.is_finite() {
+        (0.0, 0.0)
+    } else {
+        (lead, 2.0 * ROOT_ETA)
+    };
+    let tau = times(times(spread, ROOT_ETA), second);
+    // Every factor is nonnegative; the order keeps a large factor from
+    // multiplying an underflowed product.
+    times(times(lead, tau), tau)
+}
+
+/// The underflows' term `η ν_i`: left to the second `FLOOR` while the
+/// computed `ν_i` is at most `2⁷²`; past it, or where it is not a number,
+/// formed in two exact scalings by `√η`, a normal number.
+///
+/// The choice is of the second scaling, not of the term, for
+/// [`residue_term`]'s reason, and here it is once a feature: `ν_i` is at
+/// least 5 or not a number, so `ν_i √η` is normal or not finite, and 0
+/// times it is +0, the term's arm before.
+#[inline(always)]
+fn underflows(nu: f64) -> f64 {
+    let second = if nu <= UNDER_MAX { 0.0 } else { ROOT_ETA };
+    times(times(nu, ROOT_ETA), second)
 }
 
 /// `a b`. A test build counts it in `SUBNORMALS` where it reads or makes a
@@ -231,3 +261,6 @@ thread_local! {
     /// test reads to see that an ordinary merge forms none.
     pub(crate) static SUBNORMALS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
+
+#[cfg(test)]
+mod tests;
