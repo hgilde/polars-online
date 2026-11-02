@@ -1129,16 +1129,26 @@ impl CorrChange {
             }
         }
         mean.iter_mut().for_each(|m| *m /= wf);
+        // The pairs over slices of the row, the means and the sums, so no
+        // entry is indexed and checked; each sum adds the same terms in the
+        // same order. Taking each row's deviations once into a buffer first
+        // cost 13-14% on arm64 (an Apple M-series core, both code layouts)
+        // where it saved 10% on x86-64; this form saved 9% and 6% on arm64.
         for i in 0..w {
-            let r = row(i);
+            let r = &row(i)[..d];
             let mut p = 0;
             for a in 0..d {
                 let da = r[a] - mean[a];
                 ss[a] += da * da;
-                for b in (a + 1)..d {
-                    corr[p] += da * (r[b] - mean[b]);
-                    p += 1;
+                let rest = d - a - 1;
+                for ((c, &rb), &mb) in corr[p..p + rest]
+                    .iter_mut()
+                    .zip(&r[a + 1..])
+                    .zip(&mean[a + 1..])
+                {
+                    *c += da * (rb - mb);
                 }
+                p += rest;
             }
         }
         let mut p = 0;
@@ -3981,6 +3991,52 @@ mod tests {
         assert!(tiny[6].is_nan() && tiny[7].is_finite());
         let line = m.window_corr(w, |i| &windows[2][i])[6];
         assert!((line + 1.0).abs() < 1e-12, "{line}");
+    }
+
+    /// The pairs run over slices of each row, the means and the sums (the
+    /// VM's P16, task 306): at widths from 2 to 40, every pair's correlation
+    /// is still [`CorrChange::corr_of`]'s to the bit, and each mean and sum
+    /// of squared deviations is the plain sum's.
+    #[test]
+    fn a_windows_correlations_are_each_pairs_own_at_every_width() {
+        let w = 30usize;
+        let mut n = Normals::new(306);
+        for d in [2usize, 3, 5, 16, 17, 40] {
+            let rows: Vec<Vec<f64>> = (0..w)
+                .map(|_| {
+                    let base = n.normal();
+                    (0..d)
+                        .map(|j| 2.0 + 0.3 * base + n.normal() * (1.0 + j as f64))
+                        .collect()
+                })
+                .collect();
+            let m = CorrChange::new(CorrChangeCfg {
+                span_rows: w,
+                crit: Some(0.5),
+                ..cfg(d, CorrChangeKind::Window)
+            })
+            .unwrap();
+            let got = m.window_corr(w, |i| &rows[i]);
+            assert_eq!(got.len(), 2 * d + d * (d - 1) / 2, "d {d}");
+            let mut p = 2 * d;
+            for a in 0..d {
+                let mean = rows.iter().fold(0.0, |s, r| s + r[a]) / w as f64;
+                assert_eq!(got[a].to_bits(), mean.to_bits(), "d {d}: mean {a}");
+                let ss = rows
+                    .iter()
+                    .fold(0.0, |s, r| s + (r[a] - mean) * (r[a] - mean));
+                assert_eq!(got[d + a].to_bits(), ss.to_bits(), "d {d}: squares {a}");
+                for b in a + 1..d {
+                    let want = CorrChange::corr_of(&rows, w, a, b);
+                    assert!(
+                        same(got[p], want),
+                        "d {d}, ({a}, {b}): {} vs {want}",
+                        got[p]
+                    );
+                    p += 1;
+                }
+            }
+        }
     }
 
     /// A window in which one pair has no correlation (a column constant in

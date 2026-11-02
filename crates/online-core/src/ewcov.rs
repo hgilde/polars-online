@@ -122,9 +122,11 @@ fn rank_one_lower_rows(c: &mut [f64], k: usize, d: &[f64], a: f64, b: f64) {
 /// read uses ([`LowerTriangle`]). Out of line, as that one.
 #[inline(never)]
 fn rank_one_whole_rows(c: &mut [f64], k: usize, d: &[f64], a: f64, b: f64) {
-    for i in 0..k {
-        let ab_di = a * b * d[i];
-        let row = &mut c[i * k..(i + 1) * k];
+    // The rows as chunks and `d`'s entries beside them, so neither is
+    // indexed and checked a row. A chunk of 0 panics; at `k = 0` there is
+    // no row, and `max(1)` takes none from an empty slice.
+    for (row, &di) in c[..k * k].chunks_exact_mut(k.max(1)).zip(&d[..k]) {
+        let ab_di = a * b * di;
         for (cj, &dj) in row.iter_mut().zip(d.iter()) {
             *cj = a * *cj + ab_di * dj;
         }

@@ -286,3 +286,17 @@ fn whole_rows_and_lower_rows_leave_the_same_state() {
         }
     }
 }
+
+/// Whole rows at no feature and at one: the rows are taken as chunks of
+/// `k`, and a chunk of 0 panics, so `k = 0` asks for chunks of 1 from an
+/// empty slice and takes none; at `k = 1` the one entry is the lower
+/// rows' to the bit.
+#[test]
+fn whole_rows_at_no_feature_and_one() {
+    rank_one_whole_rows(&mut [], 0, &[], 0.5, 0.5);
+    let (mut whole, mut lower) = ([0.75f64], [0.75f64]);
+    rank_one_whole_rows(&mut whole, 1, &[0.3], 0.9, 0.1);
+    rank_one_lower_rows(&mut lower, 1, &[0.3], 0.9, 0.1);
+    assert_eq!(whole[0].to_bits(), lower[0].to_bits());
+    assert_eq!(whole[0], 0.9 * 0.75 + 0.9 * 0.1 * 0.3 * 0.3);
+}

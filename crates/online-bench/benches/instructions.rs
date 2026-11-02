@@ -43,6 +43,7 @@ fn counted_from(entry: &str) -> LibraryBenchmarkConfig {
 #[library_benchmark(config = counted_from("polars_online_budget_model_rows"))]
 #[bench::ewridge_k5(args = ("ewridge_k5"), setup = model_setup)]
 #[bench::ewridge_k20(args = ("ewridge_k20"), setup = model_setup)]
+#[bench::ewridge_k200(args = ("ewridge_k200"), setup = model_setup)]
 #[bench::ewridge_gram_t10(args = ("ewridge_gram_t10"), setup = model_setup)]
 #[bench::huber_k20(args = ("huber_k20"), setup = model_setup)]
 #[bench::huber_k20_sets(args = ("huber_k20_sets"), setup = model_setup)]

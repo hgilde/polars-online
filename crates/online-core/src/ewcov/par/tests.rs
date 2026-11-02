@@ -484,3 +484,34 @@ fn rows_hands_each_row_once_and_none_of_no_columns() {
         assert_eq!(c, want, "{threads} threads");
     }
 }
+
+/// The bands share the rank-one update's lower entries: at every width
+/// and thread count each band ends after the one before and the last at
+/// the last row, and no band holds more than an equal share of the
+/// entries and one row's (rounding the cut to a row moves at most one).
+/// Bands of equal rows gave the last of four bands 7/16 of them (task 306,
+/// the prototype W26 timed as A).
+#[test]
+fn the_bands_take_equal_work() {
+    for n in 1..=300usize {
+        let total = n * (n + 1) / 2;
+        for t in 1..=9usize {
+            let mut at = 0;
+            for b in 1..=t {
+                let end = band_end(n, t, b).clamp(at, n);
+                let work = end * (end + 1) / 2 - at * (at + 1) / 2;
+                assert!(
+                    work <= total.div_ceil(t) + n,
+                    "n {n}, {t} threads, band {b}: {work} of {total}"
+                );
+                at = end;
+            }
+            assert_eq!(at, n, "n {n}, {t} threads");
+        }
+    }
+    // The 7/16 the equal rows gave the last band at four threads, now a
+    // quarter to within a row.
+    let n = 1_000;
+    let last = n * (n + 1) / 2 - band_end(n, 4, 3) * (band_end(n, 4, 3) + 1) / 2;
+    assert!(last <= n * (n + 1) / 8 + n, "{last}");
+}
