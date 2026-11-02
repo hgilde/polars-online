@@ -3077,6 +3077,12 @@ impl Stream {
     /// never on the models, so the window budget's pre-pass
     /// ([`Self::window_prepass`]) replays the schedule the run will follow. A
     /// step back the policy refuses is handed back for the caller to name.
+    ///
+    /// `restart_fold` is the caller's copy of [`Persisted::restart_fold`],
+    /// advanced in place, and read only where a drift detection restarts
+    /// the models: elsewhere the caller lends a `None` and keeps the
+    /// stream's own, which no row there moves (task 309: the copy was
+    /// cloned and carried back for every chunk of every group).
     #[allow(clippy::too_many_arguments)]
     fn schedule(
         &self,
@@ -3090,13 +3096,13 @@ impl Stream {
         base: usize,
         coef_at: Option<usize>,
         keep_elapsed: bool,
+        restart_fold: &mut Option<ClockState>,
     ) -> Result<Scheduled, ClockRefusal> {
         let n_rows = rows.len();
         let mut clock_state = self.persisted.clock.clone();
         // The fresh stream's clock a drift reset's next row steps by
         // (`RowPlan::d_fresh`), only where a detection restarts the models.
         let fresh_steps = self.resets_on_drift(spec);
-        let mut restart_fold = self.persisted.restart_fold.clone();
         let mut rows_seen = self.persisted.rows_seen;
         let mut fed = self.persisted.fed;
         let coef_plan = CoefPlan::of(spec);
@@ -3201,7 +3207,6 @@ impl Stream {
         }
         Ok(Scheduled {
             clock: clock_state,
-            restart_fold,
             rows_seen,
             fed,
             coef_cadence,
@@ -3262,6 +3267,7 @@ impl Stream {
                 base,
                 None,
                 self.embargo.is_some() || formulas.is_some(),
+                &mut self.persisted.restart_fold.clone(),
             )
             .ok()?;
         let mut pending = self.persisted.pending.clone();
@@ -3383,10 +3389,17 @@ impl Stream {
 
         // ---- pass 1: the clock schedule, models untouched ----
         // On a copy of the clock, committed below, so a refused row leaves
-        // the stream exactly as it was.
+        // the stream exactly as it was. The fresh stream's clock is copied
+        // only where a drift detection restarts the models, the one place
+        // the schedule moves it; elsewhere the stream keeps its own.
+        let fresh_steps = self.resets_on_drift(spec);
+        let mut restart_fold = if fresh_steps {
+            self.persisted.restart_fold.clone()
+        } else {
+            None
+        };
         let Scheduled {
             clock: clock_state,
-            restart_fold,
             rows_seen,
             fed,
             coef_cadence,
@@ -3403,13 +3416,16 @@ impl Stream {
             base,
             coef_at,
             self.embargo.is_some() || formulas.is_some(),
+            &mut restart_fold,
         )?;
         for plan in plans.iter().filter(|p| p.accept) {
             out.processed[plan.ri] = true;
         }
 
         self.persisted.clock = clock_state;
-        self.persisted.restart_fold = restart_fold;
+        if fresh_steps {
+            self.persisted.restart_fold = restart_fold;
+        }
         let rows_before = self.persisted.rows_seen;
         self.persisted.rows_seen = rows_seen;
         self.persisted.fed = fed;
@@ -4174,7 +4190,6 @@ pub fn marginal_shards(spec: &Spec, model: &AnyModel) -> usize {
 /// after the rows, for the caller to commit, and the plan of each row.
 struct Scheduled {
     clock: ClockState,
-    restart_fold: Option<ClockState>,
     rows_seen: u64,
     fed: u64,
     coef_cadence: CoefCadence,
