@@ -648,6 +648,13 @@ impl SpdFactor {
         self.l.nrows()
     }
 
+    /// Where `L`'s entries are stored: which matrix a factor was written
+    /// into, for a test of a working space's reuse.
+    #[cfg(test)]
+    pub(crate) fn storage(&self) -> *const f64 {
+        self.l.as_ptr()
+    }
+
     /// Solve `A X = B` from the kept factor, `B` column-major `k x m`, the
     /// answer laid out the same way: the numbers [`solve_spd`] gives, to the
     /// bit, since both are this factor's two triangular solves.
@@ -1950,8 +1957,88 @@ mod tests {
         // order 2, and the last made it again.
         assert_eq!((over, jittered), (6, 1));
         assert_eq!(work.kept(), 5, "one of each order: 3, 5, 1, 70, 2");
-        // It shows none of what it keeps, and a copy keeps none of it.
+        // It shows none of what it keeps, and a copy keeps none of it; two
+        // are equal whatever they keep (task 307).
         assert_eq!(format!("{work:?}"), "FactorWork");
         assert_eq!(work.clone().kept(), 0);
+        assert!(work == FactorWork::default());
+        assert_eq!(format!("{:?}", CholWork::default()), "CholWork");
+    }
+
+    /// A factor of an order already held is written into the matrix that
+    /// holds it, never a new one: by [`FactorWork::factor`] over a kept
+    /// factor, and by `clone_from` over a factor of the source's order --
+    /// the same storage, holding the fresh factor's bits. One of another
+    /// order is made afresh, as it must be, and is the source to the bit
+    /// all the same (task 307: the size checks that choose between the two
+    /// went untested, since either way gives the same numbers).
+    #[test]
+    fn a_factor_of_a_held_order_is_written_into_the_held_matrix() {
+        let mut s = 307u64;
+        let mut work = FactorWork::default();
+        let bits = |f: &SpdFactor| -> Vec<u64> {
+            let k = f.order();
+            (0..k * k)
+                .map(|ij| f.l[(ij % k, ij / k)].to_bits())
+                .collect()
+        };
+        // Below and above the order at which the factorization blocks.
+        for k in [1usize, 3, 70] {
+            let first = work.factor(&spd(k, 1e3, &mut s), k).unwrap();
+            let held = first.l.as_ptr();
+            work.give(first);
+            let a = spd(k, 1e6, &mut s);
+            let got = work.factor(&a, k).unwrap();
+            assert_eq!(got.l.as_ptr(), held, "k {k}: written over the kept one");
+            assert_eq!(bits(&got), bits(&SpdFactor::of(&a, k).unwrap()), "k {k}");
+
+            let source = SpdFactor::of(&spd(k, 1e2, &mut s), k).unwrap();
+            let mut copy = got.clone();
+            let storage = copy.l.as_ptr();
+            assert_ne!(storage, source.l.as_ptr());
+            copy.clone_from(&source);
+            assert_eq!(
+                copy.l.as_ptr(),
+                storage,
+                "k {k}: copied into its own matrix"
+            );
+            assert!(copy == source, "k {k}");
+            assert_eq!(bits(&copy), bits(&source), "k {k}");
+            // A copy over a factor of another order takes the source's.
+            let mut other = SpdFactor::of(&spd(k + 1, 1e2, &mut s), k + 1).unwrap();
+            other.clone_from(&source);
+            assert!(other == source, "k {k}");
+            assert_eq!(bits(&other), bits(&source), "k {k}");
+        }
+    }
+
+    /// A system's strict upper triangle is never read: each rung's matrix
+    /// is its lower triangle over zeros, and a caller that leaves the upper
+    /// triangle holding anything -- a band system written into a kept
+    /// buffer leaves the last system's there -- gets the factor of the
+    /// symmetric matrix, to the bit (task 307).
+    #[test]
+    fn a_systems_strict_upper_triangle_is_never_read() {
+        let mut s = 3071u64;
+        let mut work = FactorWork::default();
+        for k in [2usize, 5, 70] {
+            for a in [spd(k, 1e4, &mut s), vec![1.0; k * k]] {
+                let mut junk = a.clone();
+                for i in 0..k {
+                    for j in i + 1..k {
+                        junk[i * k + j] = if (i + j) % 2 == 0 { f64::NAN } else { -1e300 };
+                    }
+                }
+                let want = SpdFactor::of(&a, k).unwrap();
+                for got in [
+                    SpdFactor::of(&junk, k).unwrap(),
+                    work.factor(&junk, k).unwrap(),
+                ] {
+                    assert!(got == want, "k {k}");
+                    assert_eq!(got.log_det().to_bits(), want.log_det().to_bits(), "k {k}");
+                    work.give(got);
+                }
+            }
+        }
     }
 }

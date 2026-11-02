@@ -759,3 +759,37 @@ why = """at `y = 0.1` exactly the series (14 terms, truncation under `1e-25`) \
 is read in place of the closed form `(1 + e^y (y − 1))/y²`, which cancels \
 there: the two differ by 1.0e-14 to 5.0e-14 relative (scale 0.1, 1, 5), \
 the closed form's own rounding"""
+
+# The timeouts of 7b9f9df7 (task 307): each an endless loop.
+
+[[tolerated]]
+file = "crates/online-core/src/ewcov/held.rs"
+function = "HeldSteps::row_block"
+mutation = "replace += with *="
+line_has = "qb += 2;"
+kind = "loop"
+why = """`qb` starts at 0 and `0 · 2` is 0: from the second row block on \
+(`k > 4`), where the first tile is a wide one, the loop takes the same \
+tile for ever"""
+
+[[tolerated]]
+file = "crates/online-core/src/ewcov/held.rs"
+function = "<impl pulp::WithSimd for HeldLanes<'_>>::with_simd"
+mutation = "replace += with *="
+line_has = "qb += if wide { 2 } else { 1 };"
+kind = "loop"
+why = """as `HeldSteps::row_block`'s: `qb` starts at 0 and stays there, at \
+every width, since the first block's one tile (`qb = pb = 0`) multiplies \
+it by 1"""
+
+[[tolerated]]
+file = "crates/online-core/src/solve.rs"
+function = "cholesky_in_place"
+mutation = "replace <= with >"
+line_has = "if n <= RECURSION_THRESHOLD {"
+kind = "loop"
+why = """a matrix of order 64 or less goes to the blocked loop, whose block \
+`n.next_power_of_two() / 2` is 0 at order 1: the loop factorizes an empty \
+block and steps by 0 for ever. Every suite factorizes an order-1 matrix; \
+above order 64 the mutant calls faer's own sequential factorization, the \
+same bits on aarch64"""

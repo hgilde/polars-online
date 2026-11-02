@@ -1054,6 +1054,42 @@ mod tests {
         }
     }
 
+    /// Under a `window` a class's factor is good for one row: the window's
+    /// truncated covariance moves on every row, the classes that learned
+    /// nothing included, so a model whose cache is emptied before each row
+    /// -- every factor taken afresh from the moments as they stand -- gives
+    /// every output to the bit (task 307: a cache that kept the classes'
+    /// factors across rows read them a row stale).
+    #[test]
+    fn under_a_window_no_factor_outlives_its_row() {
+        let c = EwClassCfg {
+            window: Some(30.0),
+            ..cfg(3, 3, Covariance::Full)
+        };
+        let mut m = EwClass::new(c).unwrap();
+        let mut windowed = 0;
+        for (i, r) in stream(300, 3, 3, 29).iter().enumerate() {
+            let mut cold = m.clone();
+            cold.factors = Factors::default();
+            let y = [r.label.map(|c| c as f64)];
+            let a = m.step(&r.x, &y, r.d, r.w);
+            let b = cold.step(&r.x, &y, r.d, r.w);
+            let bits = |v: &[f64]| v.iter().map(|p| p.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&a.pred), bits(&b.pred), "row {i}");
+            let probe = [0.3, -0.2, 0.1];
+            assert_eq!(
+                bits(&m.predict(&probe, 1.0).pred),
+                bits(&cold.predict(&probe, 1.0).pred),
+                "row {i}: predict"
+            );
+            windowed += usize::from(m.view().is_some() && a.pred[0].is_finite());
+        }
+        assert!(
+            windowed > 200,
+            "{windowed} rows scored on a truncated window"
+        );
+    }
+
     /// The factors built in the cache's kept working space -- the factors
     /// the learned rows dropped, and faer's scratch -- are the ones a cache
     /// built afresh gives, to the bit: every output of every row, without a
