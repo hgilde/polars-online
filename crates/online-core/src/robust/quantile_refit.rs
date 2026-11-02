@@ -154,6 +154,8 @@ impl Robust {
         // fit, as in `huber`'s refit.
         let failures = self.solve_failures;
         let (mut passes, mut solved) = (0u32, false);
+        // The fit a pass replaced, whose vector the next pass writes over.
+        let mut spare = Vec::new();
         for _ in 0..REFIT_PASSES {
             passes += 1;
             let mut scale = None;
@@ -192,7 +194,9 @@ impl Robust {
                     self.replay_rows(j, &rows, &mut z, |i| majorizer_row(&rows, &r, i, h, tau));
                 }
             }
-            let mut next = vec![0.0; k];
+            let mut next = std::mem::take(&mut spare);
+            next.clear();
+            next.resize(k, 0.0);
             let mut sc = std::mem::take(&mut self.scratch);
             let solved_pass = if intercept {
                 self.solve_centred(&mut sc, k, j, 0, &mut next)
@@ -217,7 +221,12 @@ impl Robust {
                         None => (b, true),
                     }
                 }
-                (_, _) => (next, false),
+                (_, old) => {
+                    if let Some(old) = old {
+                        spare = old;
+                    }
+                    (next, false)
+                }
             };
             beta = Some(fit);
             if done || stalled {

@@ -178,6 +178,7 @@ use serde::{Deserialize, Serialize};
 
 use std::sync::OnceLock;
 
+use crate::ewcov::HeldSteps;
 use crate::huber_refit::{
     Event, REFIT_PASSES, RefitBuf, Rows, converged, fitted, huber_weights, rebuild_scale, scale_of,
 };
@@ -918,7 +919,8 @@ impl std::fmt::Debug for Robust {
 /// solve has needed, the coefficient table the next solve fills (the one
 /// before the last), and the lists of the band system a quantile fit's band
 /// row last dropped, for its next nudge to build one in
-/// ([`Robust::nudge_movement`]). Each is written in full before it is read,
+/// ([`Robust::nudge_movement`]), and a refit replay's held co-moment steps
+/// ([`HeldSteps`]). Each is written in full before it is read,
 /// so a solve gives the bits one that made them afresh gave: that was about
 /// a dozen allocations a solve, whose cost moved with the heap's layout
 /// from one process to the next. A spare factor of the solve's order is
@@ -939,6 +941,7 @@ struct SolveScratch {
     spares: Vec<SpdFactor>,
     beta: Vec<Vec<f64>>,
     band: Option<BandSystem>,
+    held: HeldSteps,
 }
 
 impl SolveScratch {
@@ -1517,6 +1520,8 @@ impl Robust {
         // solves counts once.
         let failures = self.solve_failures;
         let (mut passes, mut solved) = (0, false);
+        // The fit a pass replaced, whose vector the next pass writes over.
+        let mut spare = Vec::new();
         for _ in 0..REFIT_PASSES {
             passes += 1;
             let mut scale = None;
@@ -1531,7 +1536,9 @@ impl Robust {
                 None => u.fill(1.0),
             }
             self.replay(j, &rows, &u, &mut z);
-            let mut next = vec![0.0; k];
+            let mut next = std::mem::take(&mut spare);
+            next.clear();
+            next.resize(k, 0.0);
             let mut sc = std::mem::take(&mut self.scratch);
             let pass = if intercept {
                 self.solve_centred(&mut sc, k, j, c, &mut next)
@@ -1549,7 +1556,9 @@ impl Robust {
             self.scratch = sc;
             solved = true;
             let done = converged(&rows, intercept, beta.as_deref(), &next, scale);
-            beta = Some(next);
+            if let Some(old) = beta.replace(next) {
+                spare = old;
+            }
             if done {
                 break;
             }
@@ -1637,6 +1646,10 @@ impl Robust {
         // The nudges' sums, `Σ nudge_i` and `Σ nudge_i · z_i` decayed to the
         // row, `None` until the first.
         let mut nudged: Option<(f64, Vec<f64>)> = None;
+        // The co-moments' steps are held and taken in blocks, to the bit of
+        // taking each as its row arrives: nothing here reads the co-moments
+        // before the last row ([`HeldSteps`]).
+        let mut held = std::mem::take(&mut self.scratch.held);
         let fill = |z: &mut [f64], x: &[f64]| {
             if intercept {
                 z[0] = 1.0;
@@ -1645,7 +1658,7 @@ impl Robust {
                 z.copy_from_slice(x);
             }
         };
-        for e in rows.events() {
+        for e in rows.events_iter() {
             let i = match e {
                 Event::Age { lam, count, .. } => {
                     let (cov, wj) = (&mut self.cov[j], &mut self.wj[j]);
@@ -1702,9 +1715,11 @@ impl Robust {
                 *ci = a * *ci + ab_dy * cov.deviation(i2, zi);
             }
             crate::comp::add(&mut self.ybar[j], &mut self.ybar_lo[j], bb * dy);
-            self.cov[j].update(z, lam, w);
+            self.cov[j].update_held(z, lam, w, &mut held);
             self.wj[j] = wj_new;
         }
+        self.cov[j].merge_held(&mut held);
+        self.scratch.held = held;
         // The nudges over the band's weight, centred: `ȳ += P₀/wj` and
         // `c_i += (P_i − P₀·m_i)/wj`, `P₀ = Σ nudge_i` and `P = Σ nudge_i·z_i`,
         // `m` the means (the module docs' nudge, summed). Without a row in the band

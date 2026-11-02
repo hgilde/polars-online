@@ -126,7 +126,7 @@ fn per_row_with(value: Value, k: usize, m: usize, into: bool) -> f64 {
 }
 
 fn check(what: &str, got: f64, bound: f64, before: f64) {
-    eprintln!("{what}: {got:.2} allocations a row (bound {bound}, {before} before the fix)");
+    eprintln!("{what}: {got:.3} allocations a row (bound {bound}, {before} before the fix)");
     assert!(
         got <= bound,
         "{what}: {got} allocations a row, past {bound}"
@@ -357,17 +357,20 @@ fn ew_class_and_quantile_keep_their_buffers_between_rows() {
 /// written over and handed to the data shares, whose factor comes back as
 /// the next spare. Counted over each bench case's own measured block, as
 /// the bank steps it; the refit's block holds its one refit, whose passes
-/// still make their own coefficient vectors and row buffers. A quantile
-/// fit's solves go the same way.
+/// still make their own row buffers. Each pass made its coefficient vector
+/// and a list of the buffer's history to replay as well, until a pass took
+/// over the vector of the fit it replaced and the replay walked the history
+/// in place (task 300): 110 a refit block to 95, 253 to 244 for a quantile
+/// fit's. A quantile fit's solves go the same way.
 #[test]
 fn huber_keeps_its_solves_working_space() {
     for (id, bound, before) in [
         ("huber_k20", 0.001, 0.83),
         ("huber_k20_sets", 0.001, 2.55),
         ("huber_k20_sum", 0.001, 0.90),
-        ("huber_k20_refit", 0.11, 1.02),
+        ("huber_k20_refit", 0.095, 1.02),
         ("quantile", 0.08, 1.48),
-        ("quantile_refit", 0.253, 1.77),
+        ("quantile_refit", 0.244, 1.77),
     ] {
         let mut run = online_bench::model_setup(id);
         let start = calls();

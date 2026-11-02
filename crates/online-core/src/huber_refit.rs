@@ -426,6 +426,39 @@ impl Event {
     }
 }
 
+/// [`Rows::events_iter`]: the next learned row, after every ageing run
+/// whose count of learned rows before it has been reached, and the runs
+/// after the last row at the end.
+pub(crate) struct Events<'r, 'a> {
+    rows: &'r Rows<'a>,
+    next_row: usize,
+    next_run: usize,
+}
+
+impl Iterator for Events<'_, '_> {
+    type Item = Event;
+
+    fn next(&mut self) -> Option<Event> {
+        let runs = self.rows.ages.as_chunks::<4>().0;
+        let n = self.rows.len();
+        // A run's last number is the learned rows before it.
+        if let Some(a) = runs.get(self.next_run)
+            && (self.next_row >= n || a[3] as usize <= self.next_row)
+        {
+            self.next_run += 1;
+            return Some(Event::Age {
+                lam: a[0],
+                lam_s: a[1],
+                count: a[2] as u64,
+            });
+        }
+        (self.next_row < n).then(|| {
+            self.next_row += 1;
+            Event::Row(self.next_row - 1)
+        })
+    }
+}
+
 /// A refit buffer's rows and runs, read: learned row `i`'s features, target,
 /// raw weight and factors, and the history in order ([`RefitBuf`]).
 pub(crate) struct Rows<'a> {
@@ -467,6 +500,16 @@ impl<'a> Rows<'a> {
 
     pub(crate) fn lam_s(&self, i: usize) -> f64 {
         self.row(i)[self.nf + 3]
+    }
+
+    /// [`Self::events`] one at a time, in the same order, allocating
+    /// nothing: for a replay, which walks the history once a pass.
+    pub(crate) fn events_iter(&self) -> Events<'_, 'a> {
+        Events {
+            rows: self,
+            next_row: 0,
+            next_run: 0,
+        }
     }
 
     /// The history in the order the stream took it: each learned row after
@@ -1554,6 +1597,31 @@ mod tests {
             !b.learn(&[1.0], 1.0, 1.0, 1.0, 1.0, 2),
             "a done buffer takes nothing"
         );
+    }
+
+    /// The replay's events, one at a time, are the history's, in order:
+    /// runs before the first row, between rows, several at one place, and
+    /// after the last row.
+    #[test]
+    fn the_events_one_at_a_time_are_the_historys() {
+        let nf = 2;
+        let rows: Vec<f64> = (0..5 * (nf + 4)).map(|i| i as f64).collect();
+        let run = |count: f64, before: f64| [0.5, 0.25, count, before];
+        let cases: Vec<Vec<[f64; 4]>> = vec![
+            vec![],
+            vec![run(2.0, 0.0)],
+            vec![run(1.0, 1.0), run(3.0, 1.0), run(2.0, 4.0)],
+            vec![run(1.0, 0.0), run(7.0, 2.0), run(2.0, 5.0), run(4.0, 5.0)],
+            vec![run(9.0, 5.0)],
+        ];
+        for runs in cases {
+            let ages: Vec<f64> = runs.iter().flatten().copied().collect();
+            let r = Rows::new(&rows, &ages, nf);
+            assert_eq!(r.len(), 5);
+            let each: Vec<Event> = r.events_iter().collect();
+            assert_eq!(each, r.events(), "{runs:?}");
+            assert_eq!(each.len(), 5 + runs.len());
+        }
     }
 
     /// A restored buffer must be one the configuration writes.
