@@ -29,7 +29,7 @@
 # it, the image it ran on and the harness that counted it, so all three are
 # pinned. Changing one re-measures every case: a raise or a tightening like
 # any other, in the same change.
-toolchain = "1.99.0"
+toolchain = "1.99.1"
 runner = "ubuntu-24.04"
 gungraun = "0.20.0"
 # The rows each instruction case counts (`ROWS` in crates/online-bench).
