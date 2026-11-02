@@ -123,7 +123,7 @@ impl MergeBound {
         // from multiplying an underflowed product (the module docs).
         let residue_floor = 7.0 / eps * omega * tau * tau;
         let rows = n * (4.0 + alpha);
-        let grow = sigma * (1.0 + eps);
+        let grow = 1.0 + eps;
         let shrink = 1.0 / (1.0 - 10.0 * eps);
         let lower = c.lower();
         let mut finite = true;
@@ -136,7 +136,7 @@ impl MergeBound {
                 cii.max(0.0)
             };
             let under = ((1.0 + g) * (1.0 + g) + (1.0 + h) * (1.0 + h) + 3.0 + rows) * ETA;
-            let sum = *ei * grow
+            let sum = *ei * sigma * grow
                 + 10.0 * eps * cii
                 + 22.0 * eps * (omega * (h * h))
                 + eps * (beta * (g * g))
