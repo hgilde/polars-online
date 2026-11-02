@@ -30,6 +30,8 @@ use serde::{Deserialize, Serialize};
 mod held;
 mod lower;
 mod merge_bound;
+#[cfg(test)]
+pub(crate) use merge_bound::SUBNORMALS as MERGE_SUBNORMALS;
 mod par;
 
 pub(crate) use held::HeldSteps;

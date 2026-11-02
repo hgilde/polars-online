@@ -442,6 +442,7 @@ fn the_bound_is_rebuilt_where_it_is_not_known() {
 fn a_thousand_blocked_features_settle_by_the_ridge_and_spread_ones_do_not() {
     let (k, block) = (1000, 256);
     let lam = 0.5f64.powf(1.0 / 1000.0);
+    let tiny = subnormals();
     for (scale, settles) in [(1.0, true), (100.0, false)] {
         let mut s = 1000u64;
         let mut cov = EwCov::new(k);
@@ -464,4 +465,55 @@ fn a_thousand_blocked_features_settle_by_the_ridge_and_spread_ones_do_not() {
         }
         assert_eq!(read, 7);
     }
+    assert_eq!(
+        subnormals() - tiny,
+        0,
+        "subnormal products in the merges' bound"
+    );
+}
+
+/// The merges' subnormal products, counted on this thread
+/// ([`crate::ewcov::MERGE_SUBNORMALS`]).
+fn subnormals() -> u64 {
+    crate::ewcov::MERGE_SUBNORMALS.with(std::cell::Cell::get)
+}
+
+/// An ordinary merge forms no subnormal number (item 8): over every test
+/// stream, and one at a level of `1e12` -- whose first merge's `ν_i`, near
+/// `g_i² = 1e24`, is past `2⁷²`, so that its `η ν_i` is formed, a normal
+/// number -- no product or quotient of the bound's update reads or makes a
+/// subnormal number or underflows to 0, and the solve's `e_i / c_ii` is
+/// normal. On a stream of weights `1e-160`, whose `r` overflows, the
+/// residue's term is formed as written, and the bound is known and holds,
+/// as it did when that term was always formed.
+#[test]
+fn an_ordinary_merge_forms_no_subnormal_number() {
+    let before = subnormals();
+    let mut covs = streams();
+    let mut level = EwCov::new(5);
+    level.set_block_rows(16);
+    let mut s = 1012u64;
+    for _ in 0..200 {
+        let x: Vec<f64> = (0..5).map(|_| 1e12 + draw(&mut s)).collect();
+        level.update(&x, 0.99, 1.0);
+    }
+    level.flush();
+    covs.push((level, "level 1e12".into()));
+    assert_eq!(subnormals() - before, 0);
+    for (cov, what) in &covs {
+        let k = cov.k();
+        let (c, e) = moments(cov);
+        for i in 0..k {
+            assert!(e[i].is_normal(), "{what}: e {i} {:e}", e[i]);
+            let q = e[i] / c[i * k + i];
+            assert!(
+                q.is_normal() || c[i * k + i] <= 0.0,
+                "{what}: e/c {i} {q:e}"
+            );
+        }
+    }
+    let tiny = stream(4, Design::Free, 0.99, &[1e-160], 16, 160);
+    let (c, e) = moments(&tiny);
+    let kept: f64 = e.iter().sum();
+    assert!(-lowest(&c) <= kept, "{:e} past {kept:e}", lowest(&c));
 }

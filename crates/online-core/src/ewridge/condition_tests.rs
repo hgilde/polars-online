@@ -426,7 +426,8 @@ fn the_ridge_settles_a_live_grams_solves_to_the_same_bits() {
 /// two equal to within `1e-11`, and with `shifted` every block opened by a
 /// row of weight `1e-46` at `1e20` -- the row its mean is summed about, so
 /// that each merge subtracts a residue of about `1e5` against a spread of 1
-/// (task 308).
+/// (task 308). No ordinary merge's bound may form a subnormal number on
+/// the way.
 fn blocked_bits(
     cfg: &EwRidgeCfg,
     rows: usize,
@@ -441,6 +442,7 @@ fn blocked_bits(
     let mut s = 308u64 + k as u64;
     SHORTCUT_OFF.with(|c| c.set(off));
     let before = SHORTCUTS.with(std::cell::Cell::get);
+    let tiny = crate::ewcov::MERGE_SUBNORMALS.with(std::cell::Cell::get);
     let mut out = Vec::new();
     for i in 0..rows {
         let mut x: Vec<f64> = (0..k).map(|_| scale * 3f64.sqrt() * lcg(&mut s)).collect();
@@ -464,6 +466,20 @@ fn blocked_bits(
     }
     let settled = SHORTCUTS.with(std::cell::Cell::get) - before;
     SHORTCUT_OFF.with(|c| c.set(false));
+    // No ordinary merge formed a subnormal number (the condition module's
+    // docs, item 8). A shifted stream's first row is merged alone, so the
+    // next merge's history weighs `1e-46` against 16 rows, and its `σ e_i`,
+    // `σ` near `6e-48`, underflows on each of the Gram's `k + 1` columns
+    // (the target's too): no ordinary merge, and the only one.
+    let tiny = crate::ewcov::MERGE_SUBNORMALS.with(std::cell::Cell::get) - tiny;
+    if shifted {
+        assert!(
+            tiny <= k as u64 + 1,
+            "subnormal products in the merges' bound: {tiny}"
+        );
+    } else {
+        assert_eq!(tiny, 0, "subnormal products in the merges' bound");
+    }
     (out, settled)
 }
 

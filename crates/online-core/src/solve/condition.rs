@@ -264,11 +264,32 @@
 //!             + η ((1 + |g_i|)² + (1 + h_i)² + 3 + n (4 + α)) ) / (1 − 10 ε),
 //!    ```
 //!
-//!    `c'_ii⁺ = max(c'_ii, 0)`. It is computed in about thirty roundings of
-//!    nonnegative terms, taken in, with the `1 + u` above, by a factor `1 +
-//!    2⁻⁴⁶`, and `2⁻¹⁰⁰⁰` is added for any of them that underflowed (each
-//!    product is ordered so that nothing past `ω ≤ 1 + γ_{2n}` and the
-//!    final factors multiplies it after). A merge outside the argument --
+//!    `c'_ii⁺ = max(c'_ii, 0)`, and `ν_i` the sum `η` multiplies. Two
+//!    terms are of the size of `η`, and an ordinary merge does not form
+//!    them: x86-64 takes each subnormal operand or result through a
+//!    microcode assist of about a hundred cycles. With `τ = η τ_n` and `r`
+//!    the computed `7 ω τ_n²/ε`, the residue's term is at most `η² r (1 +
+//!    γ₁₂)`, under `2⁻¹¹²³` wherever `r` is finite (below `2¹⁰²⁴`); and
+//!    while the computed `ν_i` is at most `2⁷²`, the underflows' is at most
+//!    `η ν_i (1 + γ₈) < 1.001 · 2⁻¹⁰⁰²`. Divided by `1 − 10 ε ≥ 0.99`, the
+//!    two are under `0.26 · 2⁻¹⁰⁰⁰`, and a second `2⁻¹⁰⁰⁰`, added last, after
+//!    the factors, takes them in. Where `r` is not finite, or `ν_i` is past
+//!    `2⁷²` or not a number, that term is formed and summed as written --
+//!    `η ν_i` is then a normal number, and `τ` comes from two scalings by
+//!    `√η = 2⁻⁵³⁷`, exact where they are normal -- so `e` is forgotten
+//!    wherever it was when both were always formed. The rest is computed in
+//!    about thirty roundings of nonnegative terms, taken in, with the `1 +
+//!    u` above, by a factor `1 + 2⁻⁴⁶`, and `2⁻¹⁰⁰⁰` is added for any of
+//!    them that underflowed (each product is ordered so that nothing past
+//!    `ω ≤ 1 + γ_{2n}` and the final factors multiplies it after); the two
+//!    additions of `2⁻¹⁰⁰⁰` round by at most `u` of the result each, inside
+//!    the same factor. On ordinary data those products read and make only
+//!    normal numbers and exact zeros: `e_i` is at least `2⁻⁹⁹⁹` after a
+//!    merge, so `σ e_i` is normal while `σ` is 0 or past `2⁻²³`, and `ε
+//!    c'_ii`, `ω h_i²` and `β g_i²` while the variances, residues and means'
+//!    differences are 0 or far inside the double's range (a test counts
+//!    every product and quotient of the update and finds none on its
+//!    streams). A merge outside the argument --
 //!    rows weighted by their shares (`W'` below `2⁻¹⁰²⁴`), `α` under
 //!    `2⁻⁹⁰⁰`, `ω` or `Û` not a normal double, `ε` past `1/1000`, or a bound
 //!    that is not finite -- leaves `e` unknown, for the next merge to start
