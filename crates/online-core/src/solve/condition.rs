@@ -171,18 +171,120 @@
 //! bound. And a state file edited by hand can hold any matrix at all.
 //!
 //! Which systems take it: [`crate::EwRidge`]'s centred solve, where `C` is
-//! a live Gram built row by row since it was empty. Not a window's
-//! truncated Gram, a difference of two accumulators whose rounding is
-//! relative to each of them rather than to their difference; not a
-//! blocked Gram (`gram_block_rows`), whose merge subtracts `U δδᵀ` for
-//! the residue of the block's rounded mean, a rounding relative to the
-//! block's scatter about that mean that the current matrix cannot bound;
+//! a live Gram built row by row since it was empty, or a blocked Gram
+//! (`gram_block_rows`) whose merges carried the bound of items 6 to 9. Not
+//! a window's truncated Gram, a difference of two accumulators whose
+//! rounding is relative to each of them rather than to their difference;
 //! and not beside `session_shrink`'s twin, whose blend rewrites `C`
 //! outside the row count. The raw normal equations -- `ridge_scale =
 //! "sum"`, and fits without an intercept -- are formed another way (the
 //! means' outer product added back, the intercept's column in the
 //! system, under `ridge_scale` a penalty on the sum scale), and this
 //! argument is not made for them: they take the long way.
+//!
+//! **A blocked Gram's bound.** A blocked Gram changes `C` only by merging
+//! a block of `n` held rows ([`crate::EwCov::flush`]), and that rounding is
+//! not relative to the result: the merge subtracts `ω δ̂δ̂ᵀ` for the residue
+//! `δ̂` of the block's rounded mean, and the residue is relative to the
+//! rows' distance from the row the mean was summed about, which a row of
+//! small weight and large value, taken as that row, makes as large as it
+//! likes against the block's own scatter. So the bound is not read from
+//! `C`; it is kept beside it, `k` numbers that each merge updates in `O(k)`
+//! and that no state file holds. Items 1 to 5 then hold with item 1's
+//! premise replaced by item 6, and item 2's `(2n + 5) u T` by item 9's.
+//! With gradual underflow -- a product or quotient that underflows is off
+//! by at most `η = 2⁻¹⁰⁷⁴`, a sum by nothing (Higham, §2.2) -- and `ε =
+//! γ_{4n+32}`, at most `1/1000`:
+//!
+//! 6. *What is kept.* `C = C* + E`, `C*` semidefinite, and `|E| ≤ M`
+//!    entrywise, `M` a sum of terms `v vᵀ` with `v ≥ 0` -- nonnegative and
+//!    semidefinite -- whose diagonal `e` is kept. Then `|c*_ij| ≤ √(c*_ii
+//!    c*_jj)`, `c*_ii ≤ c_ii + e_i`, and for any positive diagonal `S`,
+//!    `‖S⁻¹ E S⁻¹‖₂ ≤ ‖S⁻¹ M S⁻¹‖₂ ≤ tr(S⁻¹ M S⁻¹) = Σ_i e_i / s_i²` (a
+//!    nonnegative matrix's norm bounds that of any it majorizes, and a
+//!    semidefinite one's trace bounds its norm), on any principal
+//!    submatrix too.
+//! 7. *Where it starts.* Where `e` is not known -- an accumulator new, read
+//!    from a file, its moments set, or stepped another way -- the next merge
+//!    starts from `C* = 0` and `E = C`: `|c_ij| ≤ min(r_i, r_j) ≤ √(r_i
+//!    r_j)`, `r_i = maxⱼ |c_ij|`, so `e_i = r_i`. That is exactly 0 for a
+//!    new accumulator. For a loaded one it is the whole matrix, which the
+//!    merges' `σ` then decay (item 8): the shortcut returns once the ridge
+//!    outweighs what is left of it, after about `log₂(k t/ρ)` half-lives
+//!    under a decay, and in practice not at all without one. It holds of any
+//!    matrix, a state file edited by hand too.
+//! 8. *A merge.* An entry is `c'_ij = fl(fl(σ c_ij) + α Σ_r d_ri d_rj) +
+//!    fl(fl(b_i g_j) − fl(w_i δ̂_j))`, the sum in whatever order faer takes
+//!    it: `σ = W_A/W'`, `α = 1/W'`, `β = W_A U/W'²` and `ω = U/W'` as
+//!    computed, `d_r = p_r a_r` the block's rows (`a_r = x_r − m_B` and
+//!    `p_r = √u_r`, each as computed), `g` the means' difference, `δ̂` the
+//!    residue, `b_i = β g_i` and `w_i = ω δ̂_i`. The new target is
+//!
+//!    ```text
+//!    C*' = σ C* + α Σ_r (d_r − p_r c)(d_r − p_r c)ᵀ + β g gᵀ
+//!        = σ C* + α DᵀD − α P c cᵀ + β g gᵀ,    c = Σ_r p_r d_r / P,  P = Σ_r p_r²,
+//!    ```
+//!
+//!    exact in the computed `σ, α, β, d_r, p_r, g`: semidefinite, every term
+//!    of its diagonal nonnegative. A product of the sum takes at most `n + 3`
+//!    roundings, `σ c_ij` `n + 2`, each correction four (Lemma 3.1, fused
+//!    multiply-adds or not), so `E' = σ E + σ C∘Θ₁ + α Σ_r (d_r d_rᵀ)∘Θ_r +
+//!    β ggᵀ∘Θ₂ − ω δ̂δ̂ᵀ∘Θ₃ + (α P c cᵀ − ω δ̂δ̂ᵀ) + N`, every `|Θ| ≤ ε` and
+//!    `N` the underflows. With `h = |δ̂|` and `Q_i = α Σ_r d_ri²`, the parts'
+//!    majorants have diagonals:
+//!    - `σ e_i`, and `ε σ (c*_ii + e_i) ≤ ε c*'_ii + ε σ e_i` (item 6);
+//!    - `ε Q_i`, `ε β g_i²` and `ε ω h_i²`;
+//!    - the residue's. With `f = δ̂ − c`, `φ = |f|` and `κ = α P/ω`,
+//!      `|κ − 1| ≤ γ_{n+3}`: `α P c cᵀ − ω δ̂δ̂ᵀ = ω ((κ − 1) c cᵀ − c fᵀ − f
+//!      cᵀ − f fᵀ)`, at most `ω (ε (h + φ)(h + φ)ᵀ + (√ε h + φ/√ε)(√ε h +
+//!      φ/√ε)ᵀ + 3 φφᵀ)` entrywise, a diagonal of at most `ω (4 ε h_i² + 3
+//!      φ_i²/ε)`. Both `δ̂_i` and `c_i` are the mean `Σ_r u_r a_ri / U` to
+//!      within `γ_{2n}` and `γ_8` of `ā_i = Σ_r u_r |a_ri| / U` (a sum and a
+//!      quotient; `p_r d_ri = u_r a_ri (1 + θ₃)` and `P = Σ_r u_r (1 +
+//!      θ₂)`), Cauchy–Schwarz gives `ā_i ≤ (1 + γ₅) √(Σ_r d_ri²/U)`, and
+//!      `Σ_r d_ri²/U ≤ (1 + γ_{n+1}) Q_i/ω`; the underflows added, `φ_i ≤ ε
+//!      √(Q_i/ω) + τ` with `τ = 2η (n/Û + 1 + √(n/Û))`, `Û` the computed
+//!      `U`. So `3 ω φ_i²/ε ≤ 6 ε Q_i + 6 ω τ²/ε`;
+//!    - the underflows'. `η` for `σ c_ij`; for the sum, the products and
+//!      any scaling by `α` of one of their factors or of a partial sum, at
+//!      most `n η (2 + α + R_i + R_j)`, `R_i = max_r |d_ri|`, `R_i² ≤
+//!      Q_i/α`, under `n η ((2 + α) 1 1ᵀ + (1 + R)(1 + R)ᵀ)`; for the
+//!      corrections, `η (1 + |g|)` and `η (1 + h)` against their partners,
+//!      and `η` each. A diagonal of `η ((1 + |g_i|)² + (1 + h_i)² + 3 + n (4
+//!      + α)) + 2 n η Q_i/α`, the first part's `1 + u` aside.
+//!
+//!    `Q_i` is not kept; the target bounds it: `Q_i = (α Σ_r (d_r − p_r
+//!    c)(d_r − p_r c)ᵀ)_ii + κ ω c_i² ≤ c*'_ii + κ ω (h_i + φ_i)²`, so
+//!    `Q_i ≤ 1.001 c*'_ii + 2.03 ω h_i² + 4.05 ω τ²`. With `α ≥ 2⁻⁹⁰⁰` the
+//!    underflows' `2 n η/α` is under `ε`, so `Q_i`'s coefficient is at most
+//!    `8 ε`; and `c*'_ii ≤ c'_ii + e'_i` (item 6). Then
+//!
+//!    ```text
+//!    e'_i ≤ ( σ (1 + ε) e_i + 10 ε c'_ii⁺ + 22 ε ω h_i² + ε β g_i² + 7 ω τ²/ε
+//!             + η ((1 + |g_i|)² + (1 + h_i)² + 3 + n (4 + α)) ) / (1 − 10 ε),
+//!    ```
+//!
+//!    `c'_ii⁺ = max(c'_ii, 0)`. It is computed in about thirty roundings of
+//!    nonnegative terms, taken in, with the `1 + u` above, by a factor `1 +
+//!    2⁻⁴⁶`, and `2⁻¹⁰⁰⁰` is added for any of them that underflowed (each
+//!    product is ordered so that nothing past `ω ≤ 1 + γ_{2n}` and the
+//!    final factors multiplies it after). A merge outside the argument --
+//!    rows weighted by their shares (`W'` below `2⁻¹⁰²⁴`), `α` under
+//!    `2⁻⁹⁰⁰`, `ω` or `Û` not a normal double, `ε` past `1/1000`, or a bound
+//!    that is not finite -- leaves `e` unknown, for the next merge to start
+//!    again (item 7). A merge adds about `10 ε c'_ii` and decays the rest by
+//!    `σ`: under a half-life of `L` rows `e_i` settles near `10 ε c_ii L/(n
+//!    ln 2)`, and with no decay it grows with the merges, as item 1's slack
+//!    grows with the rows.
+//! 9. *The system.* Unscaled, `A`'s off-diagonal entries are `C`'s, so `G =
+//!    E` and the diagonal's rounding: `‖G‖₂ ≤ Ê + u t/(1 − u)`, `Ê = Σ_i e_i`
+//!    over the system's features. Standardized, `a_ij = c_ij (1 + θ)/(s_i
+//!    s_j)`, `|θ| ≤ γ₅` with `ρ`'s rounding on the diagonal, `S =
+//!    diag(√c_ii)`, so `‖G‖₂ ≤ Ê + γ₅ ‖S⁻¹ |C| S⁻¹‖₂ + u ρ ≤ Ê + γ₅ (k + 2
+//!    Ê) + u ρ` (item 6), `Ê = Σ_i e_i / c_ii`, and `k ≤ T/(1 − γ₅)`. Either
+//!    way, with `Ê` as computed (a sum, and a quotient each), `g₁ ≤ 1.05 (Ê +
+//!    5 u T + u (2t + δ))`, and items 3 to 5 go through with `ĝ = Ê + 5 u T
+//!    + (3k + 1) u (T + kδ) + u (2t + δ)`.
 
 use super::SpdFactor;
 
@@ -348,17 +450,47 @@ impl SpdFactor {
 }
 
 /// What a solve knows of its matrix besides the entries: that it is
-/// `C + ridge·I`, `C` the centred co-moments of a live Gram that `rows`
-/// rows of positive weight built one by one since it was empty, or its
-/// standardized form (the module docs, *The ridge's shortcut*, say which
-/// systems qualify and why).
+/// `C + ridge·I`, or its standardized form, with `C` the centred co-moments
+/// and their rounding bounded by what is `behind` them (the module docs,
+/// *The ridge's shortcut*, say which systems qualify and why).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OverMoments {
     /// The ridge added to the diagonal.
     pub(crate) ridge: f64,
-    /// The rows of positive weight behind the co-moments
-    /// ([`crate::EwCov::rows_learned`]).
-    pub(crate) rows: u64,
+    /// What bounds `C`'s rounding.
+    pub(crate) behind: Behind,
+}
+
+/// What bounds the co-moments' rounding in a ridge's system.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Behind {
+    /// A live Gram that this many rows of positive weight built one by one
+    /// since it was empty ([`crate::EwCov::rows_learned`]; the module docs,
+    /// item 1).
+    Rows(u64),
+    /// A blocked Gram's kept bound, read over the system's features: `Ê =
+    /// Σ e_i`, or `Σ e_i / c_ii` standardized (the module docs, items 6 to
+    /// 9).
+    Merged(f64),
+}
+
+impl OverMoments {
+    /// A ridge over a live Gram of `rows` rows of positive weight.
+    pub(crate) fn live(ridge: f64, rows: u64) -> Self {
+        Self {
+            ridge,
+            behind: Behind::Rows(rows),
+        }
+    }
+
+    /// A ridge over a blocked Gram whose kept bound reads `e_hat` over the
+    /// system.
+    pub(crate) fn merged(ridge: f64, e_hat: f64) -> Self {
+        Self {
+            ridge,
+            behind: Behind::Merged(e_hat),
+        }
+    }
 }
 
 /// The largest `t = max a_ii` the shortcut reads, `2⁴⁰⁰`, and the smallest,
@@ -382,10 +514,11 @@ impl SpdFactor {
     }
 
     /// Whether the ridge alone puts this factor's system inside the limit
-    /// (the module docs, *The ridge's shortcut*, items 1 to 5): `(2n + 6) u`
-    /// and `(3k + 1) u` at most `1/100`, `t = max a_ii` within
-    /// `2^±400`, the slack `ĝ` at most `(ρ + δ)/2.5`, and `2 √k (t + δ)/(ρ +
-    /// δ)` below the limit. `false` says only that the long way decides.
+    /// (the module docs, *The ridge's shortcut*, items 1 to 5, and 9 for a
+    /// blocked Gram): `(2n + 6) u` (for a live Gram) and `(3k + 1) u` at
+    /// most `1/100`, `t = max a_ii` within `2^±400`, the slack `ĝ` at most
+    /// `(ρ + δ)/2.5`, and `2 √k (t + δ)/(ρ + δ)` below the limit. `false`
+    /// says only that the long way decides.
     pub(crate) fn ridge_settles(&self, a: &[f64], over: OverMoments) -> bool {
         let k = self.order();
         debug_assert_eq!(a.len(), k * k);
@@ -410,9 +543,15 @@ pub(crate) fn ridge_holds(
     if SHORTCUT_OFF.with(std::cell::Cell::get) {
         return false;
     }
-    let (order, rows) = (k as f64, over.rows as f64);
-    if k == 0 || (2.0 * rows + 6.0) * U > 0.01 || (3.0 * order + 1.0) * U > 0.01 {
+    let order = k as f64;
+    if k == 0 || (3.0 * order + 1.0) * U > 0.01 {
         return false;
+    }
+    match over.behind {
+        Behind::Rows(rows) if (2.0 * rows as f64 + 6.0) * U > 0.01 => return false,
+        // A bound that is not a finite nonnegative number is none.
+        Behind::Merged(e_hat) if !(e_hat >= 0.0 && e_hat.is_finite()) => return false,
+        _ => {}
     }
     let (mut trace, mut top) = (0.0f64, 0.0f64);
     for v in diag {
@@ -425,9 +564,13 @@ pub(crate) fn ridge_holds(
         return false;
     }
     let shift = rho + delta;
-    let slack = (2.0 * rows + 5.0) * U * trace
-        + (3.0 * order + 1.0) * U * (trace + order * delta)
-        + U * (2.0 * top + delta);
+    // Item 2's bound on the co-moments' rounding, or item 9's.
+    let history = match over.behind {
+        Behind::Rows(rows) => (2.0 * rows as f64 + 5.0) * U * trace,
+        Behind::Merged(e_hat) => e_hat + 5.0 * U * trace,
+    };
+    let slack =
+        history + (3.0 * order + 1.0) * U * (trace + order * delta) + U * (2.0 * top + delta);
     // Every term is finite here, so `>` refuses what `≤` would not pass.
     if 1.25 * slack > 0.5 * shift {
         return false;
@@ -569,3 +712,7 @@ mod tests;
 #[cfg(test)]
 #[path = "ridge_tests.rs"]
 mod ridge_tests;
+
+#[cfg(test)]
+#[path = "blocked_tests.rs"]
+mod blocked_tests;

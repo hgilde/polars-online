@@ -133,10 +133,7 @@ fn a_ridge_over_walked_moments_is_left_to_the_estimate() {
             by_weight_settles(&a, k, ridge, cov.n_eff(), &f),
             "k {k} seed {seed}: a weight's slack would have served it"
         );
-        let over = OverMoments {
-            ridge,
-            rows: cov.rows_learned(),
-        };
+        let over = OverMoments::live(ridge, cov.rows_learned());
         assert!(!f.ridge_settles(&a, over), "k {k} seed {seed}");
         assert!(f.carries_no_digit_over(&a, Some(over)), "k {k} seed {seed}");
         checked += 1;
@@ -272,7 +269,7 @@ fn the_ridge_bounds_the_inverse_norm_from_above() {
                             format!("k {k} {design:?} lam {lam} ridge {ridge:e} std {standardize}");
                         let f = SpdFactor::of(&a, k).expect("a ridge factorizes");
                         let delta = f.jitter();
-                        let over = OverMoments { ridge, rows: n };
+                        let over = OverMoments::live(ridge, n);
                         let long = f.carries_no_digit(&a);
                         refused += usize::from(long);
                         if slack_holds(&a, k, ridge, n, delta) {
@@ -345,7 +342,7 @@ fn edge_ridge(c: &[f64], k: usize, rows: u64, standardize: bool) -> f64 {
             a[i * k + i] += rho;
         }
         let f = SpdFactor::of(&a, k).expect("factorizes");
-        f.ridge_settles(&a, OverMoments { ridge: rho, rows })
+        f.ridge_settles(&a, OverMoments::live(rho, rows))
     };
     // Around where it crosses, `2 √k t_C / limit` (`t_C` the largest of
     // `C`'s diagonal, 1 standardized): far enough above `C`'s rounding that
@@ -393,7 +390,7 @@ fn at_the_edge_the_decision_is_the_estimates() {
         let limit = digit_limit(k);
         for (ridge, settles) in [(rho, true), (below, false)] {
             let a = system(&cov, k, ridge, standardize).unwrap();
-            let (got, long, est) = sides(&a, k, OverMoments { ridge, rows });
+            let (got, long, est) = sides(&a, k, OverMoments::live(ridge, rows));
             assert_eq!(got, settles, "std {standardize} ridge {ridge:e}");
             assert!(!long, "std {standardize} ridge {ridge:e}: {est:e}");
             assert!(
@@ -406,7 +403,7 @@ fn at_the_edge_the_decision_is_the_estimates() {
         // The slack's edge, at a ridge well inside the limit's.
         let ridge = 8.0 * rho;
         let a = system(&cov, k, ridge, standardize).unwrap();
-        let holds = |n: u64| sides(&a, k, OverMoments { ridge, rows: n }).0;
+        let holds = |n: u64| sides(&a, k, OverMoments::live(ridge, n)).0;
         let (mut lo, mut hi) = (rows, 1u64 << 40);
         assert!(holds(lo) && !holds(hi));
         while hi - lo > 1 {
@@ -419,7 +416,7 @@ fn at_the_edge_the_decision_is_the_estimates() {
         }
         assert!(slack_holds(&a, k, ridge, lo, 0.0) && !slack_holds(&a, k, ridge, hi, 0.0));
         for n in [lo, hi] {
-            let (_, long, _) = sides(&a, k, OverMoments { ridge, rows: n });
+            let (_, long, _) = sides(&a, k, OverMoments::live(ridge, n));
             assert!(!long, "std {standardize} rows {n}");
         }
     }
@@ -447,10 +444,7 @@ fn a_jittered_factor_is_judged_with_its_jitter() {
         let a = system(&cov, k, ridge, false).unwrap();
         let f = SpdFactor::of(&a, k).unwrap();
         assert!(f.attempts() > 0 && f.jitter() > 0.0, "k {k}: needed jitter");
-        let over = OverMoments {
-            ridge,
-            rows: cov.rows_learned(),
-        };
+        let over = OverMoments::live(ridge, cov.rows_learned());
         assert_eq!(f.ridge_settles(&a, over), settles, "k {k}");
         assert_eq!(f.carries_no_digit(&a), !settles, "k {k}");
         assert_eq!(f.carries_no_digit_over(&a, Some(over)), !settles, "k {k}");
@@ -481,10 +475,7 @@ fn a_thousand_features_settle_by_the_ridge_and_spread_ones_do_not() {
             cov.update(&x, lam, 1.0);
             if r % 50 == 49 {
                 let diag = (0..k).map(|i| cov.cov(i, i) + 1e-6);
-                let over = OverMoments {
-                    ridge: 1e-6,
-                    rows: cov.rows_learned(),
-                };
+                let over = OverMoments::live(1e-6, cov.rows_learned());
                 assert_eq!(
                     ridge_holds(diag, k, over, 0.0),
                     settles,

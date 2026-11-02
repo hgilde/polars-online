@@ -953,14 +953,13 @@ impl EwRidge {
         // One system per Gram, for the targets that read it.
         for (g, cov) in grams.iter().enumerate() {
             let readers = self.acc.grams.readers(g);
-            // The rows behind a Gram the centred solve may read as a ridge
-            // over semidefinite co-moments: a live one, built row by row
-            // since it was empty -- not a window's truncation, not a
-            // blocked Gram's merges, not one `session_shrink`'s blend
+            // Whether the centred solve may read this Gram's system as a
+            // ridge over semidefinite co-moments: a live one, built row by
+            // row since it was empty or merged block by block -- not a
+            // window's truncation, not one `session_shrink`'s blend
             // rewrites (the condition module's docs, *The ridge's
             // shortcut*).
-            let live_rows = (view.is_none() && self.slow.is_none() && cov.block_rows() == 0)
-                .then(|| cov.rows_learned());
+            let over_moments = view.is_none() && self.slow.is_none();
             let mr = readers.len();
             let r: Vec<Vec<f64>> = if centred {
                 Vec::new()
@@ -1000,7 +999,7 @@ impl EwRidge {
                         &mut work,
                         &zidx,
                         ridge,
-                        live_rows,
+                        over_moments,
                     )
                 } else {
                     // Gather the sub-block of S and the per-target rhs.
@@ -1399,7 +1398,7 @@ impl EwRidge {
         work: &mut FactorWork,
         zidx: &[usize],
         ridge: f64,
-        live_rows: Option<u64>,
+        over_moments: bool,
     ) -> Option<Solved> {
         // Feature slots are 1..kc; slot 0 is the intercept.
         let kc = zidx.len();
@@ -1465,10 +1464,35 @@ impl EwRidge {
                     }
                 }
             }
-            // A live Gram's system is a ridge over its co-moments, which
-            // their rows bound (`OverMoments`); a window's or a blocked
-            // Gram's is not known to be, and goes the long way.
-            let over = live_rows.map(|rows| OverMoments { ridge, rows });
+            // A live Gram's system is a ridge over its co-moments, whose
+            // rounding their rows bound, or a blocked Gram's merges' kept
+            // bound (`OverMoments`); a window's is not known to be, and goes
+            // the long way.
+            let over = if !over_moments {
+                None
+            } else if cov.block_rows() == 0 {
+                Some(OverMoments::live(ridge, cov.rows_learned()))
+            } else {
+                cov.merge_rounding().and_then(|e| {
+                    // `Ê` over the system's features: `Σ e_i`, or `Σ e_i /
+                    // c_ii` on the standardized scale, where `S =
+                    // diag(√c_ii)` (the condition module's docs, item 9).
+                    let mut e_hat = 0.0;
+                    for &i in &keep {
+                        let z = zidx[i + 1];
+                        e_hat += if standardize {
+                            let v = var(i);
+                            if v.is_nan() || v <= 0.0 {
+                                return None;
+                            }
+                            e[z] / v
+                        } else {
+                            e[z]
+                        };
+                    }
+                    Some(OverMoments::merged(ridge, e_hat))
+                })
+            };
             let (sol, factor, past) = Self::run_solve(failures, work, &asub, &bsub, kk, mr, over)?;
             ill = past;
             for jj in 0..mr {
