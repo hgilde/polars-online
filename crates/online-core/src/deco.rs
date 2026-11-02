@@ -116,7 +116,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::solve::FactorWork;
+use crate::solve::{FactorWork, QuadWork};
 use crate::{Decay, EwDiag};
 
 /// How the equicorrelation level moves.
@@ -296,6 +296,7 @@ impl std::fmt::Debug for Deco {
 struct DecoWork {
     s: Vec<f64>,
     factor: FactorWork,
+    quad: QuadWork,
 }
 
 impl Clone for DecoWork {
@@ -484,7 +485,8 @@ impl Deco {
             return f64::NAN;
         }
         let yy: f64 = y.iter().map(|v| v * v).sum();
-        let sinv = f.quad_forms(&y, k, 1)[0];
+        // `quad_forms(y, k, 1)[0]` to the bit, in a kept column.
+        let sinv = f.quad_form(&y, &mut work.quad);
         log_det += f.log_det();
         work.factor.give(f);
         quad += sinv - yy;

@@ -66,7 +66,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::cluster::kmeans::seed_centres;
-use crate::solve::{FactorWork, SpdFactor, quad_forms_logdet};
+use crate::solve::{FactorWork, QuadWork, SpdFactor, quad_forms_logdet};
 use crate::{Covariance, Decay, EwCov, SeedRule};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -249,6 +249,8 @@ struct Factors {
     held: Vec<Option<SpdFactor>>,
     work: FactorWork,
     matrix: Vec<f64>,
+    /// The column a state's quadratic form is solved in.
+    quad: QuadWork,
 }
 
 impl PartialEq for Factors {
@@ -540,7 +542,7 @@ impl Hmm {
     ///
     /// The Gaussian constant `−(d/2)·ln 2π` is included, so `loglik` is a
     /// density and not a density up to a constant.
-    fn log_densities(&self, x: &[f64]) -> Option<Vec<f64>> {
+    fn log_densities(&self, x: &[f64], quad: &mut QuadWork) -> Option<Vec<f64>> {
         let (k, d) = (self.cfg.k, self.cfg.n_features);
         let base = -0.5 * d as f64 * std::f64::consts::TAU.ln();
         let mut out = vec![f64::NEG_INFINITY; k];
@@ -612,7 +614,8 @@ impl Hmm {
                             &built
                         }
                     };
-                    *o = base - 0.5 * f.log_det() - 0.5 * f.quad_forms(&delta, d, 1)[0];
+                    // `quad_forms(delta, d, 1)[0]` to the bit, in a kept column.
+                    *o = base - 0.5 * f.log_det() - 0.5 * f.quad_form(&delta, quad);
                 }
             }
         }
@@ -639,7 +642,7 @@ impl Hmm {
     /// aged them already, and the row's decay from `predict`, which may not.
     fn read(&self, x: &[f64], exog: Option<f64>, lam: f64) -> (Vec<f64>, Option<Update>) {
         let mut out = Vec::new();
-        let update = self.read_into(x, exog, lam, &mut out);
+        let update = self.read_into(x, exog, lam, &mut out, &mut QuadWork::default());
         (out, update)
     }
 
@@ -650,6 +653,7 @@ impl Hmm {
         exog: Option<f64>,
         lam: f64,
         out: &mut Vec<f64>,
+        quad: &mut QuadWork,
     ) -> Option<Update> {
         let k = self.cfg.k;
         let nan = |out: &mut Vec<f64>| {
@@ -668,7 +672,7 @@ impl Hmm {
                 *o += pk * pi[kk * k + l];
             }
         }
-        let Some(logf) = self.log_densities(x) else {
+        let Some(logf) = self.log_densities(x, quad) else {
             nan(out);
             return None;
         };
@@ -804,7 +808,9 @@ impl crate::OnlineModel for Hmm {
         if self.cfg.learn {
             self.a.iter_mut().for_each(|v| *v *= lam);
         }
-        let extra = self.read_into(x, self.exog_of(y), 1.0, &mut out.pred);
+        let mut quad = std::mem::take(&mut self.factors.quad);
+        let extra = self.read_into(x, self.exog_of(y), 1.0, &mut out.pred, &mut quad);
+        self.factors.quad = quad;
         out.n_eff = self.n_eff;
         out.extra = None;
         // The warm-up rows age as `n_eff` does, so the states the replay seeds
@@ -1265,7 +1271,7 @@ mod tests {
                 ..cfg(d, k)
             })
             .unwrap();
-            let got = m.log_densities(&x).unwrap();
+            let got = m.log_densities(&x, &mut QuadWork::default()).unwrap();
             let base = -0.5 * d as f64 * std::f64::consts::TAU.ln();
             let total: f64 = m.states.iter().map(EwCov::n_eff).sum();
             let mut shared = vec![0.0; 4];
@@ -2157,14 +2163,14 @@ mod tests {
             (w[0] - w[1]).abs() > 0.1 * (w[0] + w[1]),
             "the weights are unequal: {w:?}"
         );
-        let (got, expect) = (m.log_densities(&x).unwrap(), want(&m));
+        let (got, expect) = (m.log_densities(&x, &mut QuadWork::default()).unwrap(), want(&m));
         for s in 0..2 {
             crate::oracle::assert_within(got[s], expect[s], bound(&m, s), "pooled density");
         }
         // A gap of two thousand half-lives: every state's weight is 0.
         m.step(&x, &[], 2000.0, 0.0);
         assert!(m.states.iter().all(|s| s.n_eff() == 0.0));
-        let (got, expect) = (m.log_densities(&x).unwrap(), want(&m));
+        let (got, expect) = (m.log_densities(&x, &mut QuadWork::default()).unwrap(), want(&m));
         for s in 0..2 {
             crate::oracle::assert_within(got[s], expect[s], bound(&m, s), "pooled density");
         }
@@ -2361,7 +2367,7 @@ mod tests {
     fn a_row_far_from_every_state_still_adds_its_weight_to_the_counts() {
         let mut m = Hmm::new(given(cfg(2, 2))).unwrap();
         let x = [40.0, 40.0];
-        let logf = m.log_densities(&x).unwrap();
+        let logf = m.log_densities(&x, &mut QuadWork::default()).unwrap();
         assert!(logf.iter().all(|l| l.exp() == 0.0), "{logf:?}");
         let before: f64 = m.a.iter().sum();
         let out = m.step(&x, &[], 1.0, 0.7);
@@ -2392,7 +2398,7 @@ mod tests {
         // Far on the second state's side: its density is the larger by more
         // than a double spans, and `p̃` gives it nothing.
         let x = [80.0, 80.0];
-        let logf = m.log_densities(&x).unwrap();
+        let logf = m.log_densities(&x, &mut QuadWork::default()).unwrap();
         assert!((logf[0] - logf[1]).exp() == 0.0, "{logf:?}");
         let a = m.a.clone();
         let out = m.step(&x, &[], 1.0, 1.0);
@@ -2630,7 +2636,7 @@ mod tests {
                     let x = rows[5].0.clone();
                     // The densities about the largest, which cancels in `ξ`'s
                     // normalisation: a far state's own underflows to 0.
-                    let logf = m.log_densities(&x).unwrap();
+                    let logf = m.log_densities(&x, &mut QuadWork::default()).unwrap();
                     let top = logf.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
                     let f: Vec<f64> = logf.iter().map(|v| (v - top).exp()).collect();
                     let n_before = m.a.clone();
