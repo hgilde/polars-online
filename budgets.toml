@@ -1256,7 +1256,7 @@ linux = { budget = 140.7852, release = 135.6055 }
 
 [rss.predict_wide]
 windows = { budget = 153.168, release = 153.2891 }
-darwin = { budget = 159.3594, release = 161.4844 }
+darwin = { budget = 146.7969, release = 161.4844 }
 linux = { budget = 161.3399, release = 161.4454 }
 
 [rss.ewridge_window]
