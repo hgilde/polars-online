@@ -116,7 +116,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Decay, EwDiag, SpdFactor};
+use crate::solve::FactorWork;
+use crate::{Decay, EwDiag};
 
 /// How the equicorrelation level moves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,7 +231,7 @@ impl DecoCfg {
 }
 
 /// Engle–Kelly dynamic equicorrelation; see the module docs.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Deco {
     cfg: DecoCfg,
     /// The standardiser: pre-row means and variances of the features.
@@ -252,6 +253,61 @@ pub struct Deco {
     /// task 101), so the identity `Deco::advance` states holds. One per
     /// value, as `rho_bar` is.
     rho_bar_lo: Vec<f64>,
+    /// The density's working space ([`DecoWork`]). Not state.
+    #[serde(skip)]
+    work: DecoWork,
+}
+
+/// Every field as `derive(Debug)` writes it, but the density's working
+/// space, which is no part of the model ([`DecoWork`]): a model's `Debug`,
+/// and a state's, which holds the model, read the same whatever it holds.
+/// The destructuring names every field, so a new one is written here or
+/// left out on purpose.
+impl std::fmt::Debug for Deco {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            cfg,
+            diag,
+            blocks,
+            rho,
+            rho_bar,
+            rho_w,
+            rho_bar_lo,
+            work: _,
+        } = self;
+        f.debug_struct("Deco")
+            .field("cfg", cfg)
+            .field("diag", diag)
+            .field("blocks", blocks)
+            .field("rho", rho)
+            .field("rho_bar", rho_bar)
+            .field("rho_w", rho_w)
+            .field("rho_bar_lo", rho_bar_lo)
+            .finish()
+    }
+}
+
+/// The working space of a learned row's density, kept between rows (task
+/// 298): the `K x K` matrix `S` and its factor, with faer's scratch
+/// ([`FactorWork`]), which every row made afresh and dropped. `S` is written
+/// in full and the factor is [`crate::SpdFactor::of`]'s, to the bit. Not state:
+/// neither serialized, compared nor shown, and a copy holds its own, empty.
+#[derive(Default)]
+struct DecoWork {
+    s: Vec<f64>,
+    factor: FactorWork,
+}
+
+impl Clone for DecoWork {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for DecoWork {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 impl Deco {
@@ -268,6 +324,7 @@ impl Deco {
             rho_bar: vec![f64::NAN; m],
             rho_w: vec![0.0; m],
             rho_bar_lo: vec![0.0; m],
+            work: DecoWork::default(),
         })
     }
 
@@ -363,8 +420,8 @@ impl Deco {
     /// module docs for the block algebra; `NaN` when `rho` is, when the
     /// `K × K` matrix `S` does not factorize as given or is past the
     /// condition at which its solve keeps no digit, or when the density is
-    /// past the double's range.
-    fn loglik(&self, rho: &[f64], s1: &[f64], s2: &[f64]) -> f64 {
+    /// past the double's range. `S` and its factor are formed in `work`.
+    fn loglik_in(&self, rho: &[f64], s1: &[f64], s2: &[f64], work: &mut DecoWork) -> f64 {
         let k = self.blocks.len();
         if rho.iter().any(|v| !v.is_finite()) {
             return f64::NAN;
@@ -390,7 +447,9 @@ impl Deco {
         }
         // `S = I + N^{1/2} P N^{1/2}`, symmetric and positive definite when
         // `R` is; one `K x K` Cholesky where a dense form would need `n x n`.
-        let mut s = vec![0.0; k * k];
+        let s = &mut work.s;
+        s.clear();
+        s.resize(k * k, 0.0);
         for i in 0..k {
             s[i * k + i] = 1.0 + sqrt_n[i] * clamp(rho[i], self.blocks[i].len() as f64) * sqrt_n[i];
         }
@@ -404,7 +463,7 @@ impl Deco {
                 s[j * k + i] = s[i * k + j];
             }
         }
-        let Some(f) = SpdFactor::of(&s, k) else {
+        let Some(f) = work.factor.factor(s, k) else {
             return f64::NAN;
         };
         // Past the edge, no density (task 278): a factor that needed jitter
@@ -420,12 +479,14 @@ impl Deco {
         // `1 x 1` `S` is positive (the clamp keeps `1 + (n - 1)ρ` so) and its
         // own equilibration, of condition 1, and the unblocked model's rows
         // pay nothing for a test it always passes.
-        if k != 1 && (f.attempts() != 0 || f.carries_no_digit(&s)) {
+        if k != 1 && (f.attempts() != 0 || f.carries_no_digit(s)) {
+            work.factor.give(f);
             return f64::NAN;
         }
         let yy: f64 = y.iter().map(|v| v * v).sum();
         let sinv = f.quad_forms(&y, k, 1)[0];
         log_det += f.log_det();
+        work.factor.give(f);
         quad += sinv - yy;
         // TAU is 2 pi, so `TAU.ln()` is the `ln 2 pi` of the density.
         let ll = -0.5 * (n_total * std::f64::consts::TAU.ln() + log_det + quad);
@@ -464,15 +525,15 @@ impl Deco {
     /// are `row`: its outputs, once the weight reaches `min_weight`.
     fn step_of(&self, row: &Row) -> crate::Step {
         let mut out = crate::Step::default();
-        self.step_of_into(row, &mut out);
+        self.step_of_into(row, &mut out, &mut DecoWork::default());
         out
     }
 
-    /// [`Self::step_of`], written over `out`.
-    fn step_of_into(&self, row: &Row, out: &mut crate::Step) {
+    /// [`Self::step_of`], written over `out`, its density formed in `work`.
+    fn step_of_into(&self, row: &Row, out: &mut crate::Step, work: &mut DecoWork) {
         let n_eff = self.diag.n_eff();
         if n_eff >= self.cfg.min_weight {
-            self.read_row(row, &mut out.pred);
+            self.read_row(row, &mut out.pred, work);
         } else {
             out.pred.clear();
             out.pred
@@ -483,12 +544,12 @@ impl Deco {
     }
 
     /// The row's outputs, from its sums ([`Self::row`]), written over `out`.
-    fn read_row(&self, row: &Row, out: &mut Vec<f64>) {
+    fn read_row(&self, row: &Row, out: &mut Vec<f64>, work: &mut DecoWork) {
         let Row { s1, s2, ok, u } = row;
         // The density is over every column, so a row with one that has no
         // standardised value has none (task 115 (h)).
         let loglik = if *ok {
-            self.loglik(&self.rho, s1, s2)
+            self.loglik_in(&self.rho, s1, s2, work)
         } else {
             f64::NAN
         };
@@ -534,7 +595,9 @@ impl crate::OnlineModel for Deco {
         // for the same row. The row's estimates are the ones it then learns
         // from, standardised once (task 270, D-6).
         let row = self.row(x);
-        self.step_of_into(&row, out);
+        let mut work = std::mem::take(&mut self.work);
+        self.step_of_into(&row, out, &mut work);
+        self.work = work;
         let lam = self.cfg.decay.factor(d_clock);
         if weight >= 0.0 {
             // Each value learns from its own estimate, where the row has one
@@ -676,6 +739,53 @@ impl Deco {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SpdFactor;
+
+    impl Deco {
+        /// [`Deco::loglik_in`] in a working space of its own.
+        fn loglik(&self, rho: &[f64], s1: &[f64], s2: &[f64]) -> f64 {
+            self.loglik_in(rho, s1, s2, &mut DecoWork::default())
+        }
+    }
+
+    /// The density formed in the model's kept working space -- `S`, its
+    /// factor and faer's scratch -- is the one formed afresh, to the bit:
+    /// every output of every row, unblocked and over three blocks, and the
+    /// state's `Debug`, which shows none of it (task 298). The kept model
+    /// writes over the last row's factor once the density is read.
+    #[test]
+    fn the_density_formed_in_the_kept_working_space_is_the_fresh_one() {
+        for blocked in [false, true] {
+            let mut c = cfg(6);
+            if blocked {
+                c.blocks = vec![vec![0, 1], vec![2, 3], vec![4, 5]];
+            }
+            let mut kept = Deco::new(c).unwrap();
+            let mut fresh = kept.clone();
+            let (mut written_over, mut finite) = (0, 0);
+            for (i, x) in stream(300, 6, 0.4, 11).iter().enumerate() {
+                let w = if i % 37 == 5 { 0.0 } else { 1.0 };
+                fresh.work = DecoWork::default();
+                written_over += kept.work.factor.kept();
+                let a = kept.step(x, &[], 1.0, w);
+                let b = fresh.step(x, &[], 1.0, w);
+                let bits = |v: &[f64]| v.iter().map(|p| p.to_bits()).collect::<Vec<_>>();
+                assert_eq!(bits(&a.pred), bits(&b.pred), "blocked {blocked}, row {i}");
+                finite += usize::from(a.pred.last().is_some_and(|v| v.is_finite()));
+            }
+            assert!(
+                written_over > 250 && finite > 250,
+                "{written_over}, {finite}"
+            );
+            assert_eq!(
+                format!("{:?}", kept.state()),
+                format!("{:?}", fresh.state())
+            );
+            let shown = format!("{kept:?}");
+            assert!(shown.starts_with("Deco { cfg: ") && shown.contains(", rho_bar_lo: "));
+            assert!(!shown.contains("work"), "{shown}");
+        }
+    }
 
     /// A state whose vectors are not the cfg's is refused, where it loaded
     /// and panicked on the first `step` (review 2026-09-18, B3).

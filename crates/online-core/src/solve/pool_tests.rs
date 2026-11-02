@@ -174,10 +174,9 @@ fn the_cut_factor_is_faers_own_on_every_architecture() {
     let factor = |k: usize, cut: (usize, usize), seq: bool| -> Vec<f64> {
         let mut l = lower(k);
         if seq {
-            cholesky_seq(l.as_mut(), &mut CholWork::default()).expect("positive definite");
+            cholesky_seq(l.as_mut(), None).expect("positive definite");
         } else {
-            cholesky_in_place(l.as_mut(), 4, cut, &mut CholWork::default())
-                .expect("positive definite");
+            cholesky_in_place(l.as_mut(), 4, cut, None).expect("positive definite");
         }
         (0..k)
             .flat_map(|i| (0..=i).map(move |j| (i, j)))
@@ -213,8 +212,8 @@ fn a_failed_pivot_is_named_as_faer_names_it() {
     let mut a = lower(k);
     a[(90, 90)] = -1.0;
     let mut seq = a.clone();
-    let want = cholesky_seq(seq.as_mut(), &mut CholWork::default()).unwrap_err();
-    let got = cholesky_in_place(a.as_mut(), 4, (LEAF, TILE), &mut CholWork::default()).unwrap_err();
+    let want = cholesky_seq(seq.as_mut(), None).unwrap_err();
+    let got = cholesky_in_place(a.as_mut(), 4, (LEAF, TILE), None).unwrap_err();
     let index = |e: llt::factor::LltError| match e {
         llt::factor::LltError::NonPositivePivot { index } => index,
     };
@@ -254,8 +253,7 @@ fn lower_bits(l: &Mat<f64>) -> Vec<u64> {
 
 fn factor_bits(k: usize, threads: usize, cut: (usize, usize)) -> Vec<u64> {
     let mut l = lower(k);
-    cholesky_in_place(l.as_mut(), threads, cut, &mut CholWork::default())
-        .expect("positive definite");
+    cholesky_in_place(l.as_mut(), threads, cut, None).expect("positive definite");
     lower_bits(&l)
 }
 
@@ -265,6 +263,6 @@ fn factor_bits(k: usize, threads: usize, cut: (usize, usize)) -> Vec<u64> {
 #[cfg(not(target_arch = "x86_64"))]
 fn seq_bits(k: usize) -> Vec<u64> {
     let mut l = lower(k);
-    cholesky_seq(l.as_mut(), &mut CholWork::default()).expect("positive definite");
+    cholesky_seq(l.as_mut(), None).expect("positive definite");
     lower_bits(&l)
 }

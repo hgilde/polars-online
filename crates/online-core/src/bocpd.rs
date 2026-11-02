@@ -215,7 +215,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::solve::{QuadWork, SpdFactor};
+use crate::solve::{FactorWork, QuadWork, SpdFactor};
 
 /// **Why the reported changepoint probability is `P(r ≤ 1)` and not
 /// `P(r = 0)`.**
@@ -974,13 +974,42 @@ impl PartialEq for Work {
 
 /// One run's working space for the full covariance's predictive: the run's
 /// posterior mean, the scale `Σ` factorized, the row's deviation from the
-/// mean, and the solve's column.
-#[derive(Debug, Default)]
+/// mean, and the solve's column; and `Σ`'s factor, written over by the next
+/// run's, with faer's scratch (task 298: a factor's matrix and its scratch
+/// were made and dropped for every run of every row). The factor is
+/// [`SpdFactor::of`]'s, to the bit. Boxed, and made on the full
+/// covariance's first predictive: held inline it made the working space
+/// every row takes and puts back larger, and the diagonal emission, which
+/// never factorizes, ran 1.2% more instructions a row for it.
+#[derive(Default)]
 struct RunWork {
     mun: Vec<f64>,
     sigma: Vec<f64>,
     delta: Vec<f64>,
     quad: QuadWork,
+    factor: Option<Box<FactorWork>>,
+}
+
+/// Every field as `derive(Debug)` wrote it before the factor's working
+/// space joined them, which is not shown: a model's `Debug`, and a
+/// state's, read the same whatever it holds. The destructuring names every
+/// field, so a new one is written here or left out on purpose.
+impl std::fmt::Debug for RunWork {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            mun,
+            sigma,
+            delta,
+            quad,
+            factor: _,
+        } = self;
+        f.debug_struct("RunWork")
+            .field("mun", mun)
+            .field("sigma", sigma)
+            .field("delta", delta)
+            .field("quad", quad)
+            .finish()
+    }
 }
 
 /// Bayesian online changepoint detection; see the module docs.
@@ -1345,7 +1374,8 @@ impl Bocpd {
                     sigma[i * d + j] = psi * scale;
                 }
             }
-            let f = SpdFactor::of(sigma, d)?;
+            let factors = work.factor.get_or_insert_with(Box::default);
+            let f = factors.factor(sigma, d)?;
             let delta = &mut work.delta;
             delta.clear();
             delta.extend(x.iter().zip(mun.iter()).map(|(a, b)| a - b));
@@ -1357,6 +1387,7 @@ impl Bocpd {
             // rather than leave it to how `log_sum_exp`'s `f64::max` reads a
             // NaN density.
             if delta.iter().any(|v| v.is_nan()) {
+                factors.give(f);
                 return None;
             }
             // `quad_forms(delta, d, 1)[0]` to the bit, in a kept column.
@@ -1369,6 +1400,7 @@ impl Bocpd {
                 None => gamma_diff(dof, df),
             };
             let base = gammas - 0.5 * df * (dof * std::f64::consts::PI).ln() - 0.5 * f.log_det();
+            factors.give(f);
             Some((base - 0.5 * (dof + df) * (1.0 + q / dof).ln(), base))
         } else {
             // Per feature, a normal-inverse-gamma: `t_{νₙ}` with scale²
@@ -3099,6 +3131,46 @@ mod tests {
             joint = new.iter().map(|v| v / z).collect();
         }
         assert!(worst < 1e-6, "p_change missed the longhand by {worst}");
+    }
+
+    /// The full covariance's factors written over in the kept working
+    /// space are the ones made afresh, to the bit: every output of every
+    /// row, across a change, and the state's `Debug`, which shows none of it
+    /// (task 298). Every run after the first writes over the last one's.
+    #[test]
+    fn the_gaussian_factors_written_over_are_the_fresh_ones() {
+        let c = BocpdCfg {
+            emission: BocpdEmission::Gaussian,
+            prior_nu: Some(5.0),
+            prune_below: 1e-6,
+            ..cfg(3)
+        };
+        let mut kept = Bocpd::new(c).unwrap();
+        let mut fresh = kept.clone();
+        let mut n = Normals::new(31);
+        let (mut written_over, mut finite) = (0, 0);
+        for t in 0..400 {
+            let shift = if t < 200 { 0.0 } else { 4.0 };
+            let f = n.normal();
+            let x: Vec<f64> = (0..3).map(|_| shift + 0.7 * f + 0.7 * n.normal()).collect();
+            fresh.work = Work::default();
+            written_over += kept.work.run.factor.as_ref().map_or(0, |f| f.kept());
+            let a = kept.step(&x, &[], 1.0, 1.0);
+            let b = fresh.step(&x, &[], 1.0, 1.0);
+            let bits = |v: &[f64]| v.iter().map(|p| p.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&a.pred), bits(&b.pred), "row {t}");
+            finite += usize::from(a.pred.iter().all(|v| v.is_finite()));
+        }
+        assert!(
+            written_over > 350 && finite > 350,
+            "{written_over}, {finite}"
+        );
+        assert_eq!(
+            format!("{:?}", kept.state()),
+            format!("{:?}", fresh.state())
+        );
+        let shown = format!("{kept:?}");
+        assert!(shown.contains("run: RunWork { mun: ") && !shown.contains("FactorWork"));
     }
 
     /// `the_gaussian_emission_runs_on_several_columns` shifted to `1e8`, the
