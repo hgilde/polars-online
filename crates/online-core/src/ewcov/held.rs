@@ -6,17 +6,6 @@ use super::{CoStep, Threads};
 /// Rows a [`HeldSteps`] holds before it takes their steps.
 const HELD_ROWS: usize = 64;
 
-/// Whether a tile spans two column blocks, 4 × 8, where two fit: 32 sums,
-/// sixteen of aarch64's 32 vector registers, enough independent sums to
-/// keep its pipes busy where a 4 × 4 tile's 16 waited on their own
-/// products. x86-64's baseline has 16 vector registers of two lanes, which
-/// 32 sums would fill before the row's operands, so there the tiles stay
-/// 4 × 4.
-#[cfg(not(target_arch = "x86_64"))]
-const WIDE: bool = true;
-#[cfg(target_arch = "x86_64")]
-const WIDE: bool = false;
-
 /// The co-moments' rank-one steps of the rows an owner replays, held and
 /// taken [`HELD_ROWS`] at a time ([`super::EwCov::update_held`]).
 ///
@@ -27,9 +16,11 @@ const WIDE: bool = false;
 /// products `(a_t·b_t)·d_ti`, and the triangle is walked in tiles of four
 /// of its rows (fewer in the last) by four or eight columns, on or below
 /// the diagonal, each tile's entries kept in registers while it runs down
-/// the held rows, and stored once. Every entry takes each row's step in
-/// the rows' order, with the same expression -- one product
-/// for `a_t·c_ij`, one for the update, one sum, no fused multiply-add --
+/// the held rows, and stored once (in AVX2's lanes on x86-64, and row by
+/// row on an x86-64 CPU without them: [`Self::take`]). Every entry takes
+/// each row's step in the rows' order, with the same expression -- one
+/// product for `a_t·c_ij`, one for the update, one sum, no fused
+/// multiply-add --
 /// so each entry is the number the row-by-row steps give, to the bit; only
 /// the order of the work across entries differs. The steps are written on
 /// a copy of the triangle padded to a multiple of 4 columns, whose padding
@@ -40,7 +31,7 @@ const WIDE: bool = false;
 /// coefficients 129 µs row by row, 106 in 4 × 4 tiles over every padded
 /// row, 81 as here (the last block's padding rows left out, 4 × 8 tiles);
 /// 50% less at 16 and 20, 28% at 5. A `huber` refit of 2,500 rows at 20
-/// features ran 13-17% faster, a quantile fit's 4-5%.
+/// features ran 12-16% faster, a quantile fit's 3.5-5%.
 #[derive(Clone, Default)]
 pub(crate) struct HeldSteps {
     /// The features the buffers are shaped for, and that padded to a
@@ -90,30 +81,62 @@ impl HeldSteps {
         (c, a, d, abd)
     }
 
-    /// Take the held rows' steps on the padded copy, row block by row
-    /// block: four rows of the triangle at a time, and the last block's
-    /// rows past `k` left out; across a block, two column blocks at a time
-    /// ([`WIDE`]) while two fit at or below the diagonal block, then one.
+    /// Take the held rows' steps on the padded copy. In tiles
+    /// ([`Self::tile`]) where the CPU's vector registers hold a tile:
+    /// aarch64's 32 always, x86-64's 16 where it has AVX2's four lanes
+    /// ([`HeldLanes`]); on an x86-64 CPU without them, whose 16 registers of
+    /// two lanes a tile's sums and operands overflow, row by row
+    /// ([`Self::take_rows`]).
     fn take(&mut self) {
-        let k = self.k;
+        #[cfg(target_arch = "x86_64")]
+        match crate::sgd::x86_v3() {
+            Some(simd) => {
+                let (k, ks, n) = (self.k, self.ks, self.rows);
+                let (c, a, d, abd) = self.parts();
+                pulp::Simd::vectorize(
+                    simd,
+                    HeldLanes {
+                        c,
+                        a: &a[..n],
+                        d,
+                        abd,
+                        k,
+                        ks,
+                    },
+                );
+            }
+            None => self.take_rows(),
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        self.take_tiles();
+        self.rows = 0;
+    }
+
+    /// The held rows' steps in tiles, row block by row block
+    /// ([`Self::row_block`]).
+    #[cfg(any(not(target_arch = "x86_64"), test))]
+    fn take_tiles(&mut self) {
         for pb in 0..self.ks / 4 {
-            match k - pb * 4 {
+            match self.k - pb * 4 {
                 1 => self.row_block::<1>(pb),
                 2 => self.row_block::<2>(pb),
                 3 => self.row_block::<3>(pb),
                 _ => self.row_block::<4>(pb),
             }
         }
-        self.rows = 0;
     }
 
-    /// Row block `pb`'s tiles, its `R` rows each across the columns up to
-    /// and including the diagonal block.
+    /// Row block `pb`'s tiles: its `R` rows (four, or the last block's rows
+    /// below `k`), two column blocks at a time while two fit at or below
+    /// the diagonal block, then one. A 4 × 8 tile's 32 sums are 16 of
+    /// aarch64's 32 vector registers, enough independent sums to keep its
+    /// pipes busy where a 4 × 4 tile's 16 waited on their own products.
+    #[cfg(any(not(target_arch = "x86_64"), test))]
     #[inline(always)]
     fn row_block<const R: usize>(&mut self, pb: usize) {
         let mut qb = 0;
         while qb <= pb {
-            if WIDE && qb < pb {
+            if qb < pb {
                 self.tile::<R, 8>(pb, qb);
                 qb += 2;
             } else {
@@ -125,6 +148,7 @@ impl HeldSteps {
 
     /// The `R × C` tile at rows `4·pb..`, columns `4·qb..`, its entries in
     /// registers down the held rows in their order.
+    #[cfg(any(not(target_arch = "x86_64"), test))]
     #[inline(always)]
     fn tile<const R: usize, const C: usize>(&mut self, pb: usize, qb: usize) {
         let (ks, n) = (self.ks, self.rows);
@@ -152,6 +176,25 @@ impl HeldSteps {
         }
     }
 
+    /// The held rows' steps row by row, each lower entry's expression as
+    /// [`super::rank_one_rows`] takes it: x86-64 without AVX2.
+    #[cfg(any(target_arch = "x86_64", test))]
+    fn take_rows(&mut self) {
+        let (k, ks, n) = (self.k, self.ks, self.rows);
+        let (c, a, d, abd) = self.parts();
+        for ((&at, d), abd) in a[..n]
+            .iter()
+            .zip(d.chunks_exact(ks))
+            .zip(abd.chunks_exact(ks))
+        {
+            for (i, &e) in abd[..k].iter().enumerate() {
+                for (cj, &dj) in c[i * ks..=i * ks + i].iter_mut().zip(d) {
+                    *cj = at * *cj + e * dj;
+                }
+            }
+        }
+    }
+
     /// Take every held step and write the lower triangle back into `c`,
     /// `k × k`; nothing when no step is held.
     pub(crate) fn merge_into(&mut self, c: &mut [f64], k: usize) {
@@ -165,6 +208,109 @@ impl HeldSteps {
             c[i * k..=i * k + i].copy_from_slice(&cp[i * ks..=i * ks + i]);
         }
         self.open = false;
+    }
+}
+
+/// [`HeldSteps::take`] in AVX2's four lanes: [`HeldSteps::row_block`]'s
+/// tiles, each tile row's four or eight sums in one or two vectors (eight
+/// of the 16 registers at most), a held row's `a_t` and `(a_t·b_t)·d_ti`
+/// broadcast, and each lane `a_t·s + e·d`, one product, the other, one
+/// sum, no fused multiply-add: the tiles' arithmetic to the bit. Through
+/// pulp's checked dispatch, with no `unsafe` here.
+#[cfg(target_arch = "x86_64")]
+struct HeldLanes<'a> {
+    c: &'a mut [f64],
+    a: &'a [f64],
+    d: &'a [f64],
+    abd: &'a [f64],
+    k: usize,
+    ks: usize,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl pulp::WithSimd for HeldLanes<'_> {
+    type Output = ();
+
+    #[inline(always)]
+    fn with_simd<S: pulp::Simd>(self, simd: S) -> Self::Output {
+        // Only AVX2's four lanes reach here (`crate::sgd::x86_v3`).
+        debug_assert_eq!(S::F64_LANES, 4);
+        let Self {
+            c,
+            a,
+            d,
+            abd,
+            k,
+            ks,
+        } = self;
+        for pb in 0..ks / 4 {
+            let mut qb = 0;
+            while qb <= pb {
+                let wide = qb < pb;
+                let t = Tile { pb, qb, ks };
+                match (k - pb * 4, wide) {
+                    (1, true) => lanes_tile::<S, 1, 2>(simd, c, a, d, abd, t),
+                    (2, true) => lanes_tile::<S, 2, 2>(simd, c, a, d, abd, t),
+                    (3, true) => lanes_tile::<S, 3, 2>(simd, c, a, d, abd, t),
+                    (_, true) => lanes_tile::<S, 4, 2>(simd, c, a, d, abd, t),
+                    (1, false) => lanes_tile::<S, 1, 1>(simd, c, a, d, abd, t),
+                    (2, false) => lanes_tile::<S, 2, 1>(simd, c, a, d, abd, t),
+                    (3, false) => lanes_tile::<S, 3, 1>(simd, c, a, d, abd, t),
+                    (_, false) => lanes_tile::<S, 4, 1>(simd, c, a, d, abd, t),
+                }
+                qb += if wide { 2 } else { 1 };
+            }
+        }
+    }
+}
+
+/// Where a tile sits: row block `pb`, column block `qb`, in a padded
+/// matrix `ks` wide.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
+struct Tile {
+    pb: usize,
+    qb: usize,
+    ks: usize,
+}
+
+/// One `R × 4V` tile of [`HeldLanes`], `V` vectors a tile row.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn lanes_tile<S: pulp::Simd, const R: usize, const V: usize>(
+    simd: S,
+    c: &mut [f64],
+    a: &[f64],
+    d: &[f64],
+    abd: &[f64],
+    Tile { pb, qb, ks }: Tile,
+) {
+    let (p0, q0) = (pb * 4, qb * 4);
+    let load = |v: &[f64]| S::as_simd_f64s(&v[..4]).0[0];
+    let mut acc = [[simd.splat_f64s(0.0); V]; R];
+    for (r, acc_r) in acc.iter_mut().enumerate() {
+        for (v, s) in acc_r.iter_mut().enumerate() {
+            *s = load(&c[(p0 + r) * ks + q0 + 4 * v..]);
+        }
+    }
+    for ((&at, abd), d) in a.iter().zip(abd.chunks_exact(ks)).zip(d.chunks_exact(ks)) {
+        let at = simd.splat_f64s(at);
+        let mut dv = [simd.splat_f64s(0.0); V];
+        for (v, x) in dv.iter_mut().enumerate() {
+            *x = load(&d[q0 + 4 * v..]);
+        }
+        for (acc_r, &e) in acc.iter_mut().zip(&abd[p0..p0 + R]) {
+            let e = simd.splat_f64s(e);
+            for (s, &x) in acc_r.iter_mut().zip(&dv) {
+                *s = simd.add_f64s(simd.mul_f64s(at, *s), simd.mul_f64s(e, x));
+            }
+        }
+    }
+    for (r, acc_r) in acc.iter().enumerate() {
+        for (v, s) in acc_r.iter().enumerate() {
+            let at = (p0 + r) * ks + q0 + 4 * v;
+            S::as_mut_simd_f64s(&mut c[at..at + 4]).0[0] = *s;
+        }
     }
 }
 
@@ -274,6 +420,45 @@ mod tests {
             }
         }
         assert_eq!(checked, 18 * 6 * 3);
+    }
+
+    /// The tiles, the row-by-row steps and whichever this CPU takes (AVX2's
+    /// lanes on x86-64 where it has them) are each the row-by-row update's
+    /// numbers, at widths on and off a multiple of 4 and holds of a few
+    /// rows to a full one.
+    #[test]
+    fn every_way_of_taking_the_steps_is_the_same() {
+        let mut checked = 0;
+        for k in [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 17, 21, 24, 27] {
+            for n in [1, 3, 30, 63] {
+                let rows = stream(k, n, k as u64 * 31 + n as u64);
+                let mut each = EwCov::new(k).without_runs();
+                let mut cov = EwCov::new(k).without_runs();
+                let mut held = HeldSteps::default();
+                for (x, lam, w) in &rows {
+                    each.update(x, *lam, *w);
+                    cov.update_held(x, *lam, *w, &mut held);
+                }
+                let ways: [fn(&mut HeldSteps); 3] =
+                    [HeldSteps::take, HeldSteps::take_tiles, HeldSteps::take_rows];
+                for take in ways {
+                    let mut h = held.clone();
+                    let mut c = cov.clone();
+                    if h.open {
+                        take(&mut h);
+                        let ks = h.ks;
+                        let (cp, ..) = h.parts();
+                        let lower = c.c.lower_mut();
+                        for i in 0..k {
+                            lower[i * k..=i * k + i].copy_from_slice(&cp[i * ks..=i * ks + i]);
+                        }
+                    }
+                    assert_eq!(bits(&each), bits(&c), "k {k}, n {n}");
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 16 * 4 * 3);
     }
 
     #[test]
