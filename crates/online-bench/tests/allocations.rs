@@ -267,7 +267,9 @@ fn case_per_row(id: &str, into: bool) -> f64 {
 /// second, which the model now keeps, so its `step` allocates one fewer too.
 /// Stepped into one kept buffer, as the bank steps them, the five allocate
 /// nothing a row but `ewridge`'s solves (a solve every 17 rows or so here,
-/// at the default weight-share cadence), one allocation fewer than `step`.
+/// at the default weight-share cadence), one allocation fewer than `step`;
+/// two fewer a solve since its solves keep their factors' working space
+/// (task 301).
 /// `sgd` joined them once task 271's rewrite of its Huber scale had landed
 /// (task 270 (h)), under its squared loss and under Huber's, whose scale is
 /// a sketch of `|e|` aged and fed each row. Then every model's step was
@@ -284,8 +286,8 @@ fn the_cheap_models_step_into_a_kept_buffer_without_allocating() {
         ("pa", 0.0, 1.0, 1.0),
         ("kmeans", 0.0, 1.0, 1.0),
         ("ew_cov", 0.0, 1.0, 2.0),
-        ("ewridge_k5", 1.42, 2.42, 2.48),
-        ("ewridge_k20", 1.42, 2.42, 2.48),
+        ("ewridge_k5", 1.30, 2.30, 2.48),
+        ("ewridge_k20", 1.30, 2.30, 2.48),
         ("sgd", 0.0, 1.0, 1.0),
         ("sgd_huber", 0.0, 1.0, 1.0),
         ("holt", 0.0, 1.0, 1.0),
@@ -387,6 +389,29 @@ fn huber_keeps_its_solves_working_space() {
 #[test]
 fn hmm_and_deco_keep_their_factors_working_space() {
     for (id, bound, before) in [("hmm", 15.0, 22.0), ("deco", 9.0, 12.0)] {
+        let mut run = online_bench::model_setup(id);
+        let start = calls();
+        std::hint::black_box(online_bench::polars_online_budget_model_rows(&mut run));
+        let got = (calls() - start) as f64 / online_bench::ROWS as f64;
+        check(id, got, bound, before);
+    }
+}
+
+/// `ewridge`'s solves made the factor's matrix and faer's scratch for it
+/// afresh at every solve, and dropped the factor the last solve's data
+/// shares held (task 301): two allocations a solve, 69 solves in the
+/// `ewridge_k5` and `ewridge_k20` blocks at the default weight-share
+/// cadence and 3 in `ewridge_gram_t10`'s. The factors the solves have done
+/// with are kept and written over now, with the scratch; what is left is
+/// the rest of each solve's working lists. Counted over each bench case's
+/// own measured block, as the bank steps it.
+#[test]
+fn ewridge_keeps_its_solves_working_space() {
+    for (id, bound, before) in [
+        ("ewridge_k5", 1.518, 1.656),
+        ("ewridge_k20", 1.518, 1.656),
+        ("ewridge_gram_t10", 1.241, 1.247),
+    ] {
         let mut run = online_bench::model_setup(id);
         let start = calls();
         std::hint::black_box(online_bench::polars_online_budget_model_rows(&mut run));

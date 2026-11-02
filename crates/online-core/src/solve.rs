@@ -47,12 +47,14 @@ const JITTER: [f64; 5] = [0.0, 1e-12, 1e-9, 1e-6, 1e-3];
 /// not allow.
 fn factorize(a: &[f64], k: usize) -> Option<(Mat<f64>, u32, f64)> {
     let threads = rayon::current_num_threads();
-    ladder(a, k, |jitter| {
-        let mut l = Mat::from_fn(k, k, rung_entry(a, k, jitter));
-        cholesky_in_place(l.as_mut(), threads, (LEAF, TILE), None).ok()?;
-        clear_upper(&mut l);
-        Some(l)
-    })
+    for (attempts, jitter) in rungs(a, k) {
+        let mut l = Mat::from_fn(k, k, move |i, j| rung_entry(a, k, jitter, i, j));
+        if cholesky_in_place(l.as_mut(), threads, (LEAF, TILE), None).is_ok() {
+            clear_upper(&mut l);
+            return Some((l, attempts, jitter));
+        }
+    }
+    None
 }
 
 /// [`factorize`] into `l`, a matrix the caller keeps, with faer's scratch
@@ -67,7 +69,7 @@ fn factorize(a: &[f64], k: usize) -> Option<(Mat<f64>, u32, f64)> {
 /// rung, rather than calling this with new ones: through this, a caller
 /// that kept neither ran 113 instructions more a row in `hmm` and 56 in
 /// `deco` on x86, and timed 2-16% slower there (task 298). The two share
-/// the ladder ([`ladder`]) and each rung's entries.
+/// the ladder ([`rungs`]) and each rung's entries.
 fn factorize_into(
     a: &[f64],
     k: usize,
@@ -75,47 +77,54 @@ fn factorize_into(
     work: &mut CholWork,
 ) -> Option<(u32, f64)> {
     let threads = rayon::current_num_threads();
-    let ((), attempts, jitter) = ladder(a, k, |jitter| {
-        let entry = rung_entry(a, k, jitter);
+    for (attempts, jitter) in rungs(a, k) {
         if l.nrows() == k && l.ncols() == k {
             for j in 0..k {
                 for (i, v) in l.col_as_slice_mut(j).iter_mut().enumerate() {
-                    *v = entry(i, j);
+                    *v = rung_entry(a, k, jitter, i, j);
                 }
             }
         } else {
-            *l = Mat::from_fn(k, k, entry);
+            *l = Mat::from_fn(k, k, move |i, j| rung_entry(a, k, jitter, i, j));
         }
-        cholesky_in_place(l.as_mut(), threads, (LEAF, TILE), Some(&mut *work)).ok()?;
-        clear_upper(l);
-        Some(())
-    })?;
-    Some((attempts, jitter))
-}
-
-/// The ladder [`factorize`] and [`factorize_into`] climb: `rung(jitter)`
-/// for `jitter = eps · trace/k` (`trace/k` read as 1 where the trace is not
-/// positive), for each `eps` in [`JITTER`] in turn, until a rung gives its
-/// factor; then that, the rungs it took and its jitter.
-#[inline(always)]
-fn ladder<T>(a: &[f64], k: usize, mut rung: impl FnMut(f64) -> Option<T>) -> Option<(T, u32, f64)> {
-    debug_assert_eq!(a.len(), k * k);
-    let trace: f64 = (0..k).map(|i| a[i * k + i]).sum();
-    let base = if trace > 0.0 { trace / k as f64 } else { 1.0 };
-    for (attempts, &eps) in JITTER.iter().enumerate() {
-        let jitter = base * eps;
-        if let Some(t) = rung(jitter) {
-            return Some((t, attempts as u32, jitter));
+        if cholesky_in_place(l.as_mut(), threads, (LEAF, TILE), Some(&mut *work)).is_ok() {
+            clear_upper(l);
+            return Some((attempts, jitter));
         }
     }
     None
 }
 
+/// The ladder [`factorize`] and [`factorize_into`] climb: the attempts so
+/// far and the jitter `eps · trace/k` (`trace/k` read as 1 where the trace
+/// is not positive) for each `eps` in [`JITTER`] in turn; each caller
+/// factorizes rung after rung until one gives its factor, so the rung is
+/// compiled in the caller's own loop. It was a function handed each rung
+/// as a closure, and the closure compiled out of line
+/// (`factorize::{closure#0}`), its matrix built by an out-of-line
+/// `Mat::from_fn` beside it: on x86 that was 12,558 instructions more a
+/// bench block in `ewridge_k5` and 62,652 in `ewridge_k20`, which went
+/// through `factorize` then (task 301). Each rung's `Mat::from_fn` takes
+/// `a`, `k` and the jitter by value (`move`): by reference, their addresses
+/// passed to that call kept them in memory, and `factorize_into`'s loop
+/// read `k` and the jitter back from the stack for every entry, 0.6% more
+/// instructions in `ew_class`'s block on arm64.
+#[inline(always)]
+fn rungs(a: &[f64], k: usize) -> impl Iterator<Item = (u32, f64)> {
+    debug_assert_eq!(a.len(), k * k);
+    let trace: f64 = (0..k).map(|i| a[i * k + i]).sum();
+    let base = if trace > 0.0 { trace / k as f64 } else { 1.0 };
+    JITTER
+        .iter()
+        .enumerate()
+        .map(move |(attempts, &eps)| (attempts as u32, base * eps))
+}
+
 /// Entry `(i, j)` of a rung's matrix: `A`'s lower triangle, `jitter` added
 /// to the diagonal, over zeros.
 #[inline(always)]
-fn rung_entry(a: &[f64], k: usize, jitter: f64) -> impl Fn(usize, usize) -> f64 + '_ {
-    move |i, j| match i.cmp(&j) {
+fn rung_entry(a: &[f64], k: usize, jitter: f64, i: usize, j: usize) -> f64 {
+    match i.cmp(&j) {
         Ordering::Less => 0.0,
         _ => a[i * k + j] + if i == j { jitter } else { 0.0 },
     }
@@ -169,9 +178,9 @@ impl std::fmt::Debug for CholWork {
 
 /// The working space of a caller that factorizes on every row and drops
 /// each factor soon after ([`crate::Hmm`]'s and [`crate::EwClass`]'s factor
-/// caches, [`crate::Deco`]'s block matrix, [`crate::Bocpd`]'s runs): faer's
-/// scratch ([`CholWork`]) and the factors it has done
-/// with, each written over by a later factorization of its order
+/// caches, [`crate::Deco`]'s block matrix, [`crate::Bocpd`]'s runs,
+/// [`crate::EwRidge`]'s solves): faer's scratch ([`CholWork`]) and the
+/// factors it has done with, each written over by a later factorization of its order
 /// ([`SpdFactor::of_in`]), so a factor of an order it has held allocates
 /// nothing. A factor is [`SpdFactor::of`]'s, to the bit. It holds nothing a
 /// caller reads: a copy is empty, two are equal, and it shows nothing. The
@@ -186,18 +195,41 @@ impl FactorWork {
     /// [`SpdFactor::of`] of `a` (row-major `k*k`), written over a kept
     /// factor of order `k` where there is one.
     pub(crate) fn factor(&mut self, a: &[f64], k: usize) -> Option<SpdFactor> {
-        let spare = self
-            .spares
+        let spare = self.spare(k);
+        SpdFactor::of_in(a, k, spare, &mut self.chol)
+    }
+
+    /// A copy of `f`, written over a kept factor of its order where there
+    /// is one: `f.clone()`, to the bit.
+    pub(crate) fn copy(&mut self, f: &SpdFactor) -> SpdFactor {
+        match self.spare(f.order()) {
+            Some(mut spare) => {
+                spare.clone_from(f);
+                spare
+            }
+            None => f.clone(),
+        }
+    }
+
+    /// A kept factor of order `k`, taken out of the working space.
+    fn spare(&mut self, k: usize) -> Option<SpdFactor> {
+        self.spares
             .iter()
             .position(|f| f.order() == k)
-            .map(|i| self.spares.swap_remove(i));
-        SpdFactor::of_in(a, k, spare, &mut self.chol)
+            .map(|i| self.spares.swap_remove(i))
     }
 
     /// Keep `f`, a factor its holder has done with, for a later
     /// [`Self::factor`] to write over.
     pub(crate) fn give(&mut self, f: SpdFactor) {
         self.spares.push(f);
+    }
+
+    /// Drop the kept factors, keeping faer's scratch: what a holder at rest
+    /// does, whose factors are as large as the ones it held, while the
+    /// scratch is small and its next factorization would make it again.
+    pub(crate) fn drop_spares(&mut self) {
+        self.spares = Vec::new();
     }
 
     /// How many factors are kept to be written over.
