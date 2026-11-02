@@ -3090,13 +3090,13 @@ impl Stream {
         base: usize,
         coef_at: Option<usize>,
         keep_elapsed: bool,
+        restart_fold: &mut Option<ClockState>,
     ) -> Result<Scheduled, ClockRefusal> {
         let n_rows = rows.len();
         let mut clock_state = self.persisted.clock.clone();
         // The fresh stream's clock a drift reset's next row steps by
         // (`RowPlan::d_fresh`), only where a detection restarts the models.
         let fresh_steps = self.resets_on_drift(spec);
-        let mut restart_fold = self.persisted.restart_fold.clone();
         let mut rows_seen = self.persisted.rows_seen;
         let mut fed = self.persisted.fed;
         let coef_plan = CoefPlan::of(spec);
@@ -3201,7 +3201,6 @@ impl Stream {
         }
         Ok(Scheduled {
             clock: clock_state,
-            restart_fold,
             rows_seen,
             fed,
             coef_cadence,
@@ -3262,6 +3261,7 @@ impl Stream {
                 base,
                 None,
                 self.embargo.is_some() || formulas.is_some(),
+                &mut self.persisted.restart_fold.clone(),
             )
             .ok()?;
         let mut pending = self.persisted.pending.clone();
@@ -3383,10 +3383,13 @@ impl Stream {
 
         // ---- pass 1: the clock schedule, models untouched ----
         // On a copy of the clock, committed below, so a refused row leaves
-        // the stream exactly as it was.
+        // the stream exactly as it was; the fresh clock, under a drift reset.
+        let fresh_steps = self.resets_on_drift(spec);
+        let mut restart_fold = fresh_steps
+            .then(|| self.persisted.restart_fold.clone())
+            .flatten();
         let Scheduled {
             clock: clock_state,
-            restart_fold,
             rows_seen,
             fed,
             coef_cadence,
@@ -3403,13 +3406,16 @@ impl Stream {
             base,
             coef_at,
             self.embargo.is_some() || formulas.is_some(),
+            &mut restart_fold,
         )?;
         for plan in plans.iter().filter(|p| p.accept) {
             out.processed[plan.ri] = true;
         }
 
         self.persisted.clock = clock_state;
-        self.persisted.restart_fold = restart_fold;
+        if fresh_steps {
+            self.persisted.restart_fold = restart_fold;
+        }
         let rows_before = self.persisted.rows_seen;
         self.persisted.rows_seen = rows_seen;
         self.persisted.fed = fed;
@@ -4174,7 +4180,6 @@ pub fn marginal_shards(spec: &Spec, model: &AnyModel) -> usize {
 /// after the rows, for the caller to commit, and the plan of each row.
 struct Scheduled {
     clock: ClockState,
-    restart_fold: Option<ClockState>,
     rows_seen: u64,
     fed: u64,
     coef_cadence: CoefCadence,
@@ -4776,9 +4781,8 @@ fn run_instance(
             }
         }
 
-        // The instance's kept step, its buffers reused (task 270, M-4); put
-        // back at the end of the row.
-        let mut step = std::mem::take(&mut sc.step);
+        // The instance's kept step, its buffers reused (task 270, M-4).
+        let step = &mut sc.step;
         if learn {
             // The row's stamp, for a window to key its snapshot by and
             // decide its edge from (task 175); decay reads `d_clock`.
@@ -4800,9 +4804,9 @@ fn run_instance(
             };
             inst.model
                 .get_mut()
-                .step_sharded_into(xs, &sc.ys, step_d, w, inst.shards, &mut step);
+                .step_sharded_into(xs, &sc.ys, step_d, w, inst.shards, step);
         } else {
-            step = inst.model.get().predict(xs, &sc.ys, score_d);
+            *step = inst.model.get().predict(xs, &sc.ys, score_d);
         }
         let n_slots = step.pred.len();
         // `ew_cov` has no targets; its slots are statistics, so every one
@@ -5555,7 +5559,6 @@ fn run_instance(
                 f.push(pi);
             }
         }
-        inst.scratch.step = step;
     }
     // Rows a sharded `marginal` held are learned before the run ends:
     // nothing outside a run reads a model with rows held.

@@ -455,6 +455,51 @@ fn a_skipped_row_after_a_reset_starts_the_fresh_clock() {
     }
 }
 
+/// A chunk refused for a step back, arriving while the fresh clock holds a
+/// skipped row, leaves that clock as it was: the refused chunk's own
+/// skipped row does not fold into it, so the next accepted row still steps
+/// from the row skipped before (task 309: the schedule now advances a copy
+/// lent to it, committed only when the chunk is accepted). Every field
+/// after the refusal equals the run that never saw the refused chunk, to
+/// the bit, and the bank's saved bytes are the same before and after it.
+#[test]
+fn a_refused_chunk_leaves_the_fresh_clock_as_it_was() {
+    let df = frame();
+    let s = spec(r#"{"type": "rls", "delta": 100.0}"#, "200.0");
+    let t = first_fire(&feed(&mut Bank::new(vec![s.clone()]).unwrap(), &df, &[]));
+    let gapped = skip_row(&df, t + 1);
+    let one = feed(&mut Bank::new(vec![s.clone()]).unwrap(), &gapped, &[]);
+    let c = clock(&df);
+    // The bank as it stands after the skipped row: its fresh clock holds it.
+    let mut a = Bank::new(vec![s.clone()]).unwrap();
+    feed(&mut a, &gapped.slice(0, t + 2), &[]);
+    let before = a.save_bytes().unwrap();
+    // A skipped row later than the one held, then a step back the default
+    // policy refuses: the whole chunk is refused.
+    let late = (c[t + 1] + c[t + 2]) / 2.0;
+    let bad = df!(
+        "t" => [late, c[0] - 1.0],
+        "x0" => [None, Some(0.5)],
+        "x1" => [0.5, 0.5],
+        "y" => [0.5, 0.5]
+    )
+    .unwrap();
+    assert!(
+        a.fit_predict(&bad).is_err(),
+        "the step back was not refused"
+    );
+    assert_eq!(
+        a.save_bytes().unwrap(),
+        before,
+        "a refused chunk moved the state"
+    );
+    let tail = feed(&mut a, &gapped.slice(t as i64 + 2, N - t - 2), &[]);
+    assert_tail_same(&one, t + 2, &tail, "after a refused chunk");
+    // The evidence that a moved fresh clock would show: the next accepted
+    // row steps from the skipped row, by more than from the refused one.
+    assert!(c[t + 2] - c[t + 1] > 0.4, "the step under test is not 0");
+}
+
 /// A clock jump releases the row that fired and the row after it at one
 /// output row: the rebuilt model learned the second, so the row shows its
 /// clock in `learned_clock`, as the fresh bank fed the rows after the one
