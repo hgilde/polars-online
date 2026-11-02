@@ -1042,6 +1042,18 @@ returns.
   and otherwise the row-by-row update. Each pass also reuses the vector of
   the fit it replaced and walks the buffered history in place, which
   removes 15 allocations from a `huber` refit and 9 from a quantile fit's.
+- `hmm` and `deco` keep their row's working vectors and allocate nothing a
+  row (15 and 9 allocations before), `corrchange`'s monitor reads its
+  span's rows where they are and copies a row once, the window operators
+  keep each group's list of pending rows, and `ewridge`'s noise gate reads
+  Kish's sizes without making a list, with the same bits as before (task
+  304). Natively, by p25 in both the default and an aligned code layout:
+  `hmm` 41% less time on arm64 and 32-36% less on x86-64, `deco` 54% and
+  52% less, `corrchange`'s span-closing block 18% and 24-26% less, a
+  bank over `ewridge` 3% and 2-3% less. The window operators feed 4-7%
+  faster on arm64; on x86-64 they gain 5-6% in an aligned layout and are
+  level in the default one. A window group keeps its pending list's
+  capacity between rows, about 32 bytes.
 - The instruction-count benchmarks build rayon's thread pool at the end of
   each model case's warm-up, outside the measured block, so a case's count
   no longer moves with the size of the process's environment (task 292).
