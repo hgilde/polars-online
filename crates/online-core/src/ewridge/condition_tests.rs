@@ -302,13 +302,15 @@ fn bits(cfg: &EwRidgeCfg, rows: usize, scale: f64, off: bool) -> (Vec<u64>, u64)
 /// nothing: forty features, a solve every row, unscaled and standardized,
 /// read every row to the bit with the shortcut and with it off (the long
 /// way on every solve), and settling nearly every solve; under a window,
-/// the solves before the first row leaves it. Where it must not run -- a
-/// window's truncated Gram, a blocked Gram, `session_shrink`'s twin, the raw
-/// normal equations of `ridge_scale` and of a fit through the origin -- it
-/// settles none, and where the ridge does not hold the system inside the
-/// limit (features of spread 1,000 against a ridge of `1e-6`), none past
-/// the first row:
-/// the estimate decides those, as before.
+/// the solves before the first row leaves it; on a blocked Gram (a solve
+/// every fourth row, blocks of eight), every one of its thirty solves (all but the first,
+/// standardized, which has no system yet), by
+/// the merges' kept bound (task 308). Where it must not run -- a window's
+/// truncated Gram, `session_shrink`'s twin, the raw normal equations of
+/// `ridge_scale` and of a fit through the origin -- it settles none, and
+/// where the ridge does not hold the system inside the limit (features of
+/// spread 1,000 against a ridge of `1e-6`), none past the first row: the
+/// estimate decides those, as before.
 #[test]
 fn the_ridge_settles_a_live_grams_solves_to_the_same_bits() {
     let k = 40;
@@ -349,7 +351,31 @@ fn the_ridge_settles_a_live_grams_solves_to_the_same_bits() {
                 ..base.clone()
             },
             1.0,
-            none,
+            (30, 30),
+        ),
+        (
+            "blocked, standardized",
+            EwRidgeCfg {
+                gram_block_rows: 8,
+                solve_every: 4.0,
+                max_rows_between_solves: 4,
+                standardize: true,
+                ..base.clone()
+            },
+            1.0,
+            (29, 30),
+        ),
+        // The blocked Gram's first solve alone, where `C` is still 0.
+        (
+            "blocked, spread 1,000",
+            EwRidgeCfg {
+                gram_block_rows: 8,
+                solve_every: 4.0,
+                max_rows_between_solves: 4,
+                ..base.clone()
+            },
+            1000.0,
+            (1, 1),
         ),
         (
             "session_shrink",
@@ -391,6 +417,109 @@ fn the_ridge_settles_a_live_grams_solves_to_the_same_bits() {
         assert!(
             (least..=most).contains(&settled),
             "{name}: {settled} of {rows} settled"
+        );
+    }
+}
+
+/// What a blocked fit left on every row, to the bit, and how many solves
+/// the ridge's shortcut settled: `k` features of spread `scale`, the first
+/// two equal to within `1e-11`, and with `shifted` every block opened by a
+/// row of weight `1e-46` at `1e20` -- the row its mean is summed about, so
+/// that each merge subtracts a residue of about `1e5` against a spread of 1
+/// (task 308).
+fn blocked_bits(
+    cfg: &EwRidgeCfg,
+    rows: usize,
+    scale: f64,
+    shifted: bool,
+    off: bool,
+) -> (Vec<u64>, u64) {
+    use crate::solve::condition_switches::{SHORTCUT_OFF, SHORTCUTS};
+    let k = cfg.n_features;
+    let block = cfg.gram_block_rows;
+    let mut model = EwRidge::new(cfg.clone()).unwrap();
+    let mut s = 308u64 + k as u64;
+    SHORTCUT_OFF.with(|c| c.set(off));
+    let before = SHORTCUTS.with(std::cell::Cell::get);
+    let mut out = Vec::new();
+    for i in 0..rows {
+        let mut x: Vec<f64> = (0..k).map(|_| scale * 3f64.sqrt() * lcg(&mut s)).collect();
+        x[1] = x[0] + 1e-11 * lcg(&mut s);
+        let mut w = 1.0;
+        if shifted && i % block == 0 {
+            x.iter_mut()
+                .for_each(|v| *v = 1e20 * (1.0 + 0.01 * lcg(&mut s)));
+            x[1] = x[0];
+            w = 1e-46;
+        }
+        let y = 0.3 + x[0] - 0.5 * x[2] + 0.1 * lcg(&mut s);
+        let p = model.predict(&x, 1.0);
+        out.extend(p.pred.iter().map(|v| v.to_bits()));
+        model.step(&x, &[Some(y)], 1.0, w);
+        out.push(u64::from(model.ill_conditioned()));
+        out.push(model.solve_failures);
+        if let Some(c) = model.coefficients() {
+            out.extend(c.iter().flatten().map(|v| v.to_bits()));
+        }
+    }
+    let settled = SHORTCUTS.with(std::cell::Cell::get) - before;
+    SHORTCUT_OFF.with(|c| c.set(false));
+    (out, settled)
+}
+
+/// A blocked fit of `k` features: blocks of `block` rows, a solve every
+/// `block` rows, a half-life of `half_life` rows and a ridge of `1e-6`.
+fn blocked(k: usize, block: usize, half_life: f64, standardize: bool) -> EwRidgeCfg {
+    EwRidgeCfg {
+        n_features: k,
+        ridge: vec![1e-6],
+        decay: Decay::Halflife(half_life),
+        gram_block_rows: block,
+        solve_every: block as f64,
+        max_rows_between_solves: block as u32,
+        standardize,
+        ..cfg(1e-6)
+    }
+}
+
+/// On a blocked Gram the shortcut changes nothing, on the streams built to
+/// break a bound read from the matrix too: twelve features, the first two
+/// equal to within `1e-11`, blocks of sixteen, with and without each block
+/// opened by a row of weight `1e-46` at `1e20`, unscaled and standardized,
+/// read every row to the bit with the shortcut on and off. It settles
+/// solves on every one of them: the kept bound reads the residues the
+/// shifted rows leave, about `22 ε ω h²` a merge, and the ridge still
+/// outweighs it.
+#[test]
+fn a_blocked_grams_shortcut_moves_no_bit() {
+    for shifted in [false, true] {
+        for standardize in [false, true] {
+            let cfg = blocked(12, 16, 200.0, standardize);
+            let (on, settled) = blocked_bits(&cfg, 480, 1.0, shifted, false);
+            let (off, none) = blocked_bits(&cfg, 480, 1.0, shifted, true);
+            let what = format!("shifted {shifted} std {standardize}");
+            assert_eq!(none, 0, "{what}: switched off");
+            assert!(on == off, "{what}: the shortcut moved a bit");
+            eprintln!("{what}: settled {settled} of 30");
+            assert!(settled >= 25, "{what}: settled {settled} of 30");
+        }
+    }
+}
+
+/// Activation on G4's shape: two hundred unit-variance features, blocks of
+/// 64 and a solve every 64 rows, a half-life of 1,000 rows and the default
+/// ridge of `1e-6`, over one group's 2,000 rows. The ridge settles every
+/// solve once the first block has merged; at a spread of 100 (variances
+/// near `1e4`) it settles none past the first, where `C` is still 0.
+#[test]
+fn a_blocked_fit_of_two_hundred_features_settles_by_the_ridge() {
+    let cfg = blocked(200, 64, 1000.0, false);
+    for (scale, least, most) in [(1.0, 30, 32), (100.0, 0, 1)] {
+        let (_, settled) = blocked_bits(&cfg, 2000, scale, false, false);
+        eprintln!("scale {scale}: settled {settled}");
+        assert!(
+            (least..=most).contains(&settled),
+            "scale {scale}: {settled}"
         );
     }
 }

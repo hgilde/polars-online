@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 
 mod held;
 mod lower;
+mod merge_bound;
 mod par;
 
 pub(crate) use held::HeldSteps;
@@ -356,6 +357,13 @@ pub struct EwCov {
     /// still compares equal to the one that wrote it.
     #[serde(skip)]
     dev: Scratch,
+    /// A blocked Gram's merges' rounding, bounded as they happen
+    /// ([`merge_bound::MergeBound`]; docs/PLAN.md task 308): what lets the
+    /// ridge's shortcut read a blocked Gram's system. Not state: serde skips
+    /// it, [`PartialEq`] ignores it, and a loaded accumulator rebuilds it at
+    /// its next merge from the matrix itself.
+    #[serde(skip)]
+    merged: merge_bound::MergeBound,
     /// Decaying scale `s` on that prior. It must decay by the *same* factor
     /// `a` the co-moments do, not by `lam`, so that `M` stays a fixed multiple
     /// of what it would be with a constant prior:
@@ -420,6 +428,7 @@ impl EwCov {
             m: vec![0.0; k],
             c: LowerTriangle::zeros(k),
             dev: Scratch(Vec::with_capacity(k)),
+            merged: merge_bound::MergeBound::default(),
             precision_prior: 0.0,
             precision_scale: 1.0,
             threads: Threads::default(),
@@ -762,6 +771,23 @@ impl EwCov {
     pub fn set_block_rows(&mut self, block_rows: usize) {
         self.flush();
         self.pending.block_rows = block_rows;
+        // The moments may have moved by rank-one steps the bound never saw;
+        // the next merge rebuilds it from the matrix.
+        self.merged.forget();
+    }
+
+    /// Per feature, a bound on the rounding a blocked accumulator's merges
+    /// left in its co-moments: `C = C* + E`, `C*` semidefinite, `|E| ≤ M`
+    /// entrywise for a nonnegative semidefinite `M` whose diagonal this is
+    /// (the condition module's docs, *A blocked Gram's bound*). `None`
+    /// unless blocking is on, nothing is pending, and the bound is known --
+    /// it is not after a load, a blend or a switch of blocking, until the
+    /// next merge.
+    pub(crate) fn merge_rounding(&self) -> Option<&[f64]> {
+        if self.pending.block_rows == 0 || self.has_pending() {
+            return None;
+        }
+        self.merged.get(self.k)
     }
 
     pub fn block_rows(&self) -> usize {
@@ -1049,6 +1075,9 @@ impl EwCov {
         let between = between_share(w_a, u_sum, w_new);
         let wi: Vec<f64> = delta.iter().map(|&di| within * di).collect();
         let bi: Vec<f64> = big.iter().map(|&gi| between * gi).collect();
+        // The bound, rebuilt from the matrix where it is not known, before
+        // the merge moves it.
+        self.merged.open(&self.c, k);
         let merge = par::Merge {
             scale: w_a / w_new,
             alpha: if shares { 1.0 } else { inv_w },
@@ -1064,6 +1093,21 @@ impl EwCov {
             n,
             &merge,
             self.threads.workers(),
+        );
+        self.merged.merged(
+            &self.c,
+            k,
+            &merge_bound::MergeStep {
+                n,
+                scale: merge.scale,
+                alpha: merge.alpha,
+                between,
+                within,
+                u_sum,
+                big: &big,
+                delta: &delta,
+                shares,
+            },
         );
         let share = u_sum / w_new;
         for ((i, mi), lo) in self.m.iter_mut().enumerate().zip(self.m_lo.iter_mut()) {
@@ -1120,6 +1164,9 @@ impl EwCov {
     /// held, each entry's in the rows' order, to the bit of the rows taken
     /// one by one ([`HeldSteps`]).
     pub(crate) fn merge_held(&mut self, held: &mut HeldSteps) {
+        if held.is_open() {
+            self.merged.forget();
+        }
         held.merge_into(self.c.lower_mut(), self.k);
     }
 
@@ -1220,6 +1267,7 @@ impl EwCov {
         self.m.copy_from_slice(mean);
         self.m_lo = vec![0.0; self.k];
         self.c.copy_from(centered);
+        self.merged.forget();
         self.w_sum = w_sum;
         self.q_sum = q_sum;
         // New moments stand for rows the runs never saw (a blend with the

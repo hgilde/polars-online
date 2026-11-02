@@ -195,6 +195,11 @@ impl HeldSteps {
         }
     }
 
+    /// Whether a step is held that [`Self::merge_into`] would write.
+    pub(crate) fn is_open(&self) -> bool {
+        self.open
+    }
+
     /// Take every held step and write the lower triangle back into `c`,
     /// `k × k`; nothing when no step is held.
     pub(crate) fn merge_into(&mut self, c: &mut [f64], k: usize) {
