@@ -1759,6 +1759,75 @@ mod tests {
         assert!((leaning[2] - 0.5).abs() < 1e-12, "row 1 does not move");
     }
 
+    /// `Π(z) = softmax(A + B·z)` row by row at three states, each entry
+    /// held to the softmax written out here (task 307: every test of
+    /// `tvtp` ran at two states, where `k + k` and `k * k` agree), and a
+    /// step reads it: its predicted states are `pΠ`.
+    #[test]
+    fn tvtp_is_the_rows_softmax_at_three_states() {
+        let a = vec![0.0, 1.0, -1.0, 0.5, 0.0, 0.25, -2.0, 0.0, 1.5];
+        let b = vec![1.0, 0.0, -0.5, 0.0, 2.0, 0.0, 0.25, -1.0, 0.0];
+        let m = Hmm::new(HmmCfg {
+            learn: false,
+            means: Some(vec![-3.0, -3.0, 0.0, 0.0, 3.0, 3.0]),
+            covs: Some(vec![
+                1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0,
+            ]),
+            tvtp: Some((a.clone(), b.clone())),
+            ..cfg(2, 3)
+        })
+        .unwrap();
+        for z in [0.0, 0.7, -1.3] {
+            let pi = m.transition_at(Some(z), 1.0);
+            assert_eq!(pi.len(), 9);
+            for r in 0..3 {
+                let e: Vec<f64> = (0..3)
+                    .map(|c| (a[r * 3 + c] + b[r * 3 + c] * z).exp())
+                    .collect();
+                let total: f64 = e.iter().sum();
+                for c in 0..3 {
+                    let want = e[c] / total;
+                    let got = pi[r * 3 + c];
+                    assert!(
+                        (got - want).abs() <= 1e-15,
+                        "z {z}, ({r}, {c}): {got} vs {want}"
+                    );
+                }
+            }
+        }
+        let mut stepped = m.clone();
+        let p = stepped.p.clone();
+        let pi = m.transition_at(Some(0.7), 1.0);
+        let out = stepped.step(&[0.1, -0.2], &[Some(0.7)], 1.0, 1.0);
+        for l in 0..3 {
+            let want: f64 = (0..3).map(|kk| p[kk] * pi[kk * 3 + l]).sum();
+            assert!(
+                (out.pred[3 + l] - want).abs() <= 1e-15,
+                "state {l}: {:?}",
+                out.pred
+            );
+        }
+    }
+
+    /// A copy keeps the factors the cache holds, so a scorer copied keeps
+    /// what it factorized, and none of the working space (task 307).
+    #[test]
+    fn a_copy_keeps_the_factors_and_no_working_space() {
+        let mut scorer = Hmm::new(given(HmmCfg {
+            learn: false,
+            ..cfg(2, 2)
+        }))
+        .unwrap();
+        scorer.step(&[0.1, 0.2], &[], 1.0, 1.0);
+        assert!(scorer.factors.row.is_some() && !scorer.factors.matrix.is_empty());
+        let copy = scorer.clone();
+        assert_eq!(copy.factors.held.len(), 2);
+        assert_eq!(copy.factors.held, scorer.factors.held);
+        assert!(copy.factors.held.iter().all(Option::is_some));
+        assert!(copy.factors.row.is_none() && copy.factors.matrix.is_empty());
+        assert_eq!(copy.factors.work.kept(), 0);
+    }
+
     #[test]
     fn the_labels_and_slot_count_follow_k() {
         assert_eq!(

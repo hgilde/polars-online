@@ -777,3 +777,157 @@ fn a_solve_in_any_working_space_gives_the_same_bits() {
         }
     }
 }
+
+/// A solve writes over the working space it keeps (task 307): the factor
+/// it makes goes into a spare of its order and the factor the data shares
+/// held comes back as one, so once both targets hold shares a solve leaves
+/// the same matrices it found -- the spares and the shares' factors, at the
+/// same addresses -- and allocates none; it keeps one right-hand side's
+/// column, of its system's order, and at most one spare of each order. A
+/// quantile fit's band rows hand back the factor of the band system they
+/// drop, beside the spare a solve left, and that one is not kept twice.
+/// The scratch shows in no `Debug`. The test before this one holds that
+/// the scratch changes no bit; this, that it is the one written over,
+/// which the bits cannot tell.
+#[test]
+fn a_solve_writes_over_the_matrices_its_working_space_keeps() {
+    let quantile = RobustLoss::Quantile { tau: 0.3 };
+    let cases: Vec<(&str, RobustCfg, usize)> = vec![
+        ("centred", huber(3, 2), 3),
+        (
+            "origin",
+            RobustCfg {
+                fit_intercept: false,
+                ..huber(3, 2)
+            },
+            3,
+        ),
+        (
+            "sum",
+            RobustCfg {
+                ridge_scale: true,
+                ..huber(3, 2)
+            },
+            4,
+        ),
+        (
+            "quantile",
+            RobustCfg {
+                loss: quantile,
+                huber_scale_decay: None,
+                solve_every: 20.0,
+                max_rows_between_solves: 100,
+                ..huber(3, 2)
+            },
+            3,
+        ),
+    ];
+    for (name, cfg, order) in cases {
+        let mut m = Robust::new(cfg).unwrap();
+        let held = |m: &Robust| -> Vec<usize> {
+            let mut at: Vec<usize> = m
+                .scratch
+                .spares
+                .iter()
+                .chain(m.support.pending.iter().flatten().map(|p| &p.factor))
+                .map(|f| f.storage() as usize)
+                .collect();
+            at.sort_unstable();
+            at
+        };
+        let mut s = 31u64;
+        let (mut written_over, mut dropped) = (0, 0);
+        for i in 0..400 {
+            let (x, y, d, w) = row(i, &mut s);
+            let before = held(&m);
+            let (rows, systems) = (m.rows_since_solve, m.systems.0.iter().flatten().count());
+            m.step(&x, &y, d, w);
+            let solved = m.rows_since_solve <= rows;
+            dropped += usize::from(m.systems.0.iter().flatten().count() < systems);
+            if solved && !name.starts_with("quantile") && before.len() == 3 {
+                assert_eq!(held(&m), before, "{name}, row {i}: a factor was allocated");
+                written_over += 1;
+            }
+            let mut orders: Vec<usize> = m.scratch.spares.iter().map(SpdFactor::order).collect();
+            orders.sort_unstable();
+            orders.dedup();
+            assert_eq!(
+                orders.len(),
+                m.scratch.spares.len(),
+                "{name}, row {i}: {orders:?}"
+            );
+            assert!(m.scratch.cols.len() <= 1, "{name}, row {i}");
+        }
+        assert_eq!(m.scratch.cols.len(), 1, "{name}: one column kept");
+        assert_eq!(m.scratch.cols[0].order(), Some(order), "{name}");
+        if name.starts_with("quantile") {
+            assert!(dropped > 20, "{name}: {dropped} band systems dropped");
+        } else {
+            assert!(written_over > 300, "{name}: {written_over}");
+        }
+        let shown = format!("{m:?}");
+        assert!(
+            shown.starts_with("Robust { cfg: RobustCfg {") && shown.contains("nudge: NudgeScratch"),
+            "{name}: {shown}"
+        );
+        assert!(
+            !shown.contains("scratch:") && !shown.contains("spares"),
+            "{name}"
+        );
+    }
+}
+
+/// As under the sum scale, through the origin and on the centred system: a
+/// feature that is 0 on every row is a column the solve keeps (nothing is
+/// standardized) whose row of the system is the jitter `ε` alone, so its
+/// share `1 − λ (A⁻¹)_jj` is `1 − ε/ε = 0` with `λ` the ridge, 0, plus the
+/// jitter the factor took; the other column's share is its own, under 1
+/// and near it. The shares read `λ` as that sum (task 307: through the
+/// origin its sign went unchecked).
+#[test]
+fn a_column_with_no_data_has_no_share_through_the_origin_or_centred() {
+    for intercept in [false, true] {
+        let mut m = Robust::new(RobustCfg {
+            loss: RobustLoss::Huber {
+                delta: f64::INFINITY,
+            },
+            ridge: 0.0,
+            fit_intercept: intercept,
+            min_weight: 0.0,
+            ..huber(2, 1)
+        })
+        .unwrap();
+        let mut s = 17u64;
+        let mut solved = 0;
+        for i in 0..60 {
+            let x = [lcg(&mut s), 0.0];
+            let before = m.solve_failures;
+            m.step(
+                &x,
+                &[Some(2.0 - x[0] + 0.01 * lcg(&mut s))],
+                f64::from(u8::from(i > 0)),
+                1.0,
+            );
+            if m.coefficients()
+                .is_some_and(|b| b[0].iter().all(|v| v.is_finite()))
+            {
+                solved += 1;
+                assert!(m.solve_failures > before, "row {i}: a solve takes a rung");
+            }
+        }
+        assert!(solved > 50, "intercept {intercept}: {solved}");
+        let shares = m.support_coef().unwrap();
+        let share = &shares[0];
+        let (x0, empty) = if intercept {
+            assert!(share[0].is_nan(), "the intercept's is no share");
+            (share[1], share[2])
+        } else {
+            (share[0], share[1])
+        };
+        assert!(x0 > 0.99 && x0 <= 1.0, "intercept {intercept}: {share:?}");
+        assert!(
+            empty.abs() < 1e-9,
+            "intercept {intercept}, the empty column: {share:?}"
+        );
+    }
+}

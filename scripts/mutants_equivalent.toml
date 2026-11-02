@@ -797,44 +797,16 @@ alike"""
 
 [[equivalent]]
 file = "crates/online-core/src/robust.rs"
-function = "Robust::band_scales"
+function = "Robust::band_scales_into"
 mutation = "replace + with *"
 line_has = "crate::variance_is_usable(var, cov.raw(i + 1, i + 1))"
 why = """as `EwRidge::solve_centred`'s: both mutants are inside the second \
 argument, which `variance_is_usable` ignores; `cov.raw(i * 1, ..)` is still \
 in range. The line moved here from `Robust::solve_centred` (task 160, TC1b), \
-then from `Robust::band_system`, which tested a copy of the Gram; the first \
-argument, `var`, is read on the line above, whose mutants three tests \
+then from `Robust::band_system`, which tested a copy of the Gram, and \
+into `Robust::band_scales_into` with the solves' kept lists (task 297); the \
+first argument, `var`, is read on the line above, whose mutants three tests \
 catch (task 170)"""
-
-[[equivalent]]
-file = "crates/online-core/src/robust.rs"
-function = "Robust::solve_centred"
-mutation = "replace > with >="
-line_has = "if kk > 0 {"
-why = """with no usable feature the mutant solves the empty system: \
-`SpdFactor::of` of a 0×0 matrix factors at the first rung with no jitter and \
-solves to an empty solution, so nothing is written and nothing counted, and \
-the empty factor it keeps reads a nudge's movement as 1, as no factor does"""
-
-[[equivalent]]
-file = "crates/online-core/src/robust.rs"
-function = "Robust::solve_through_origin"
-mutation = "replace > with >="
-line_has = "if kk > 0 {"
-why = """as `Robust::solve_centred`'s: `SpdFactor::of` of a 0×0 matrix factors \
-with no jitter and solves to an empty solution, and the empty factor it \
-keeps reads a movement of 0 through the origin, as no factor does"""
-
-[[equivalent]]
-file = "crates/online-core/src/robust.rs"
-function = "Robust::nudge_movement"
-mutation = "replace > with >="
-line_has = "let factor = if kk > 0 {"
-why = """as `Robust::solve_centred`'s: with no column kept the mutant keeps the \
-factor of the 0×0 system, which `SpdFactor::of` makes at the first rung, \
-and its quadratic form over the empty row is 0, as no factor's is (task \
-160, TC1b)"""
 
 [[equivalent]]
 file = "crates/online-core/src/robust.rs"
@@ -1921,6 +1893,25 @@ why = """as `replace > with <` here: the mutant sends the narrow matrices to \
 bits"""
 
 [[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "<impl CoStep for EachRow>::rank_one"
+mutation = "replace > with =="
+line_has = "let workers = if threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
+why = """as `replace > with <` here: at one thread the mutant asks \
+`threads.workers()`, which is 1 there, and above one it takes 1 itself, so \
+the loop always runs: the same bits (task 307)"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "<impl CoStep for EachRow>::rank_one"
+mutation = "replace > with <"
+line_has = "if workers > 1 {"
+why = """`workers` is at least 1 (`Threads::workers` takes `max(1)`), so the \
+mutant always takes `rank_one_rows`, whose lower entries are `par::rows`' \
+expression in the same order: the same bits, on one thread \
+(`an_accumulator_has_the_same_bits_at_every_thread_count`; task 307)"""
+
+[[equivalent]]
 file = "crates/online-core/src/ewcov/par.rs"
 function = "rows"
 mutation = "replace / with %"
@@ -2766,3 +2757,161 @@ is under `if emit`) and the row ends with `out.extra = emit.then_some(..)`, \
 output and the same allocations (`Vec::new()` allocates nothing). The \
 `false` twin allocates a vector of scales a row and is caught \
 (`huber_reports_its_scales_into_the_kept_buffer`)"""
+
+# The mutants of 7b9f9df7 and db5e559b no test can catch (task 307; the
+# rest are killed by tests in solve.rs, robust's options and unit tests,
+# ewcov/held.rs, ewridge's tests, ewclass.rs and hmm.rs).
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov/held.rs"
+function = "HeldSteps::take_tiles"
+mutation = "replace - with +"
+line_has = "match self.k - pb * 4 {"
+why = """the arm only picks `R`, the rows a tile of the block takes, and the \
+mutant's `k + 4·pb` is never below the block's rows: a tile of more rows \
+takes the padding rows below `k` too, which hold zeros (`d` and \
+`(a·b)·d` padded with zeros, the padded copy opened at zero), stay zero \
+(`a·0 + 0·d`), and are never copied back (`merge_into` copies rows below \
+`k`); every entry below `k` takes the same expression in the same order, \
+so the same bits, a little slower"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov/held.rs"
+function = "HeldSteps::take_tiles"
+mutation = "replace * with +"
+line_has = "match self.k - pb * 4 {"
+why = """as `replace - with +` here: `k − pb + 4` is never below the block's \
+rows `k − 4·pb` (and never wraps, `pb < k`), so a tile takes padding rows \
+at most, which stay zero and are not copied back"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov/held.rs"
+function = "HeldSteps::take_tiles"
+mutation = "replace * with /"
+line_has = "match self.k - pb * 4 {"
+why = """as `replace - with +` here: `k − pb/4` is never below `k − 4·pb`; it \
+is 1 to 3 only where `k` is (`pb = 0`), so a tile takes padding rows at \
+most"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov/held.rs"
+function = "HeldSteps::take_tiles"
+mutation = "delete match arm 1"
+line_has = "1 => self.row_block::<1>(pb),"
+why = """the last block's one row is taken in a tile of four, its other three \
+the padding rows, which hold zeros, stay zero and are not copied back \
+(`replace - with +` here): the same bits"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov/held.rs"
+function = "HeldSteps::take_tiles"
+mutation = "delete match arm 2"
+line_has = "2 => self.row_block::<2>(pb),"
+why = """as `delete match arm 1` here: two rows in a tile of four, the other \
+two padding"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov/held.rs"
+function = "HeldSteps::take_tiles"
+mutation = "delete match arm 3"
+line_has = "3 => self.row_block::<3>(pb),"
+why = """as `delete match arm 1` here: three rows in a tile of four, the other \
+padding"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov/held.rs"
+function = "HeldSteps::row_block"
+mutation = "replace < with >"
+line_has = "if qb < pb {"
+why = """`qb ≤ pb` in the loop, so the mutant never takes the 4 × 8 tile and \
+walks the block in 4 × 4 tiles, one column block at a time: each entry \
+takes the same expression down the held rows in the same order, so the \
+same bits, where the wide tile only keeps more sums in registers"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov/held.rs"
+function = "<impl pulp::WithSimd for HeldLanes<'_>>::with_simd"
+mutation = "replace < with >"
+line_has = "let wide = qb < pb;"
+why = """as `HeldSteps::row_block`'s: never wide, so every tile is one vector \
+of four columns a row, and each entry takes the same expression in the \
+same order"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov/held.rs"
+function = "<impl pulp::WithSimd for HeldLanes<'_>>::with_simd"
+mutation = "replace - with +"
+line_has = "match (k - pb * 4, wide) {"
+why = """as `HeldSteps::take_tiles`'s: the rows a tile takes are never fewer \
+than the block's, and the padding rows it takes besides stay zero and \
+are not copied back"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov/held.rs"
+function = "<impl pulp::WithSimd for HeldLanes<'_>>::with_simd"
+mutation = "replace * with +"
+line_has = "match (k - pb * 4, wide) {"
+why = """as `HeldSteps::take_tiles`'s `replace * with +`: `k − pb + 4` is \
+never below the block's rows"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov/held.rs"
+function = "<impl pulp::WithSimd for HeldLanes<'_>>::with_simd"
+mutation = "replace * with /"
+line_has = "match (k - pb * 4, wide) {"
+why = """as `HeldSteps::take_tiles`'s `replace * with /`: `k − pb/4` is never \
+below the block's rows"""
+
+[[equivalent]]
+file = "crates/online-core/src/solve.rs"
+function = "factorize_into"
+mutation = "replace && with ||"
+line_has = "if l.nrows() == k && l.ncols() == k {"
+why = """the matrix is a factor's `L` or a new one, always square, so its two \
+sizes are both `k` or neither is, and `||` decides as `&&` does (its two \
+`==` mutants write a held matrix afresh, and \
+`a_factor_of_a_held_order_is_written_into_the_held_matrix` catches them)"""
+
+[[equivalent]]
+file = "crates/online-core/src/solve.rs"
+function = "<impl Clone for SpdFactor>::clone_from"
+mutation = "replace && with ||"
+line_has = "if self.l.nrows() == source.l.nrows() && self.l.ncols() == source.l.ncols() {"
+why = """as `factorize_into`'s: both factors' `L` are square, so the two size \
+checks agree"""
+
+[[equivalent]]
+file = "crates/online-core/src/solve.rs"
+function = "rung_entry"
+mutation = "delete match arm Ordering::Less"
+line_has = "Ordering::Less => 0.0,"
+why = """above the diagonal the mutant copies `A`'s upper entry where the \
+original writes 0: faer's Cholesky reads the lower triangle alone, and \
+`clear_upper` zeroes the strict upper triangle of the factor it returns, so \
+the factor is the same bits even with NaN and `-1e300` there \
+(`a_systems_strict_upper_triangle_is_never_read`, which the mutant passes)"""
+
+[[equivalent]]
+file = "crates/online-core/src/solve.rs"
+function = "<impl Clone for CholWork>::clone"
+mutation = "replace <impl Clone for CholWork>::clone -> Self with Default::default()"
+line_has = "Self::default()"
+why = "the body is `Self::default()` already: a copy of faer's scratch is empty by design"
+
+[[equivalent]]
+file = "crates/online-core/src/solve.rs"
+function = "<impl Clone for FactorWork>::clone"
+mutation = "replace <impl Clone for FactorWork>::clone -> Self with Default::default()"
+line_has = "Self::default()"
+why = "the body is `Self::default()` already: a copy of the working space keeps none of it by design"
+
+[[equivalent]]
+file = "crates/online-core/src/hmm.rs"
+function = "Hmm::read_into"
+mutation = "replace > with >="
+line_has = "if pred[l] > 0.0 {"
+why = """at `p̃ₗ = 0` the mutant takes `ln 0 + ln fₗ = −∞ + ln fₗ`, which is \
+`−∞`, the other arm's value: every `ln fₗ` is finite here, as \
+`log_densities_into` returned false otherwise and the row was refused \
+above; `p̃ₗ = Σ pₖ Πₖₗ` is a sum of products of probabilities, never \
+negative, and `−0.0` gives `ln(−0.0) = −∞` too"""

@@ -425,17 +425,27 @@ mod tests {
     /// The tiles, the row-by-row steps and whichever this CPU takes (AVX2's
     /// lanes on x86-64 where it has them) are each the row-by-row update's
     /// numbers, at widths on and off a multiple of 4 and holds of a few
-    /// rows to a full one.
+    /// rows to a full one, from co-moments a head of rows has moved: from
+    /// an empty accumulator every tile starts from zeros, wherever it is
+    /// read from, and on x86-64 nothing else takes the tiles (task 307).
     #[test]
     fn every_way_of_taking_the_steps_is_the_same() {
         let mut checked = 0;
         for k in [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 17, 21, 24, 27] {
             for n in [1, 3, 30, 63] {
-                let rows = stream(k, n, k as u64 * 31 + n as u64);
+                let rows = stream(k, n + 7, k as u64 * 31 + n as u64);
+                let (head, rows) = rows.split_at(7);
                 let mut each = EwCov::new(k).without_runs();
-                let mut cov = EwCov::new(k).without_runs();
+                for (x, lam, w) in head {
+                    each.update(x, *lam, *w);
+                }
+                assert!(
+                    (0..k).all(|i| each.comoments().get(k, i, 0) != 0.0),
+                    "k {k}, n {n}: the head moved every row of the co-moments"
+                );
+                let mut cov = each.clone();
                 let mut held = HeldSteps::default();
-                for (x, lam, w) in &rows {
+                for (x, lam, w) in rows {
                     each.update(x, *lam, *w);
                     cov.update_held(x, *lam, *w, &mut held);
                 }
@@ -497,6 +507,78 @@ mod tests {
         for (x, lam, w) in &rows {
             each.update(x, *lam, *w);
             held_cov.update_held(x, *lam, *w, &mut held);
+        }
+        held_cov.merge_held(&mut held);
+        each.flush();
+        held_cov.flush();
+        assert_eq!(bits(&each), bits(&held_cov));
+    }
+
+    /// The steps are held, not taken: after each row the co-moments stand
+    /// where the hold opened, the means and weights have moved, and the
+    /// hold counts the row, until the `HELD_ROWS`-th takes them all into
+    /// the padded copy; the merge brings the co-moments to the row-by-row
+    /// numbers (task 307: the bits alone cannot tell a hold that takes its
+    /// steps a row at a time, or never holds them, from one that holds).
+    #[test]
+    fn the_steps_are_held_until_a_full_hold_or_the_merge() {
+        let k = 5;
+        let rows = stream(k, 3 * HELD_ROWS / 2, 41);
+        let (head, rows) = rows.split_at(HELD_ROWS / 4);
+        let mut each = EwCov::new(k).without_runs();
+        for (x, lam, w) in head {
+            each.update(x, *lam, *w);
+        }
+        let mut cov = each.clone();
+        let opened = bits(&cov)[1..].to_vec();
+        let comoments = |c: &EwCov| -> Vec<u64> {
+            (0..k * k)
+                .map(|ij| c.comoments().get(k, ij / k, ij % k).to_bits())
+                .collect()
+        };
+        let at_open = comoments(&cov);
+        let mut held = HeldSteps::default();
+        for (t, (x, lam, w)) in rows.iter().enumerate() {
+            each.update(x, *lam, *w);
+            cov.update_held(x, *lam, *w, &mut held);
+            assert_eq!(
+                comoments(&cov),
+                at_open,
+                "row {t}: the co-moments are behind"
+            );
+            assert_eq!(cov.n_eff().to_bits(), each.n_eff().to_bits(), "row {t}");
+            assert!(held.open, "row {t}");
+            assert_eq!(held.rows, (t + 1) % HELD_ROWS, "row {t}: rows held");
+        }
+        assert_ne!(bits(&cov)[1..], opened[..], "the means moved");
+        cov.merge_held(&mut held);
+        assert!(!held.open);
+        assert_eq!(bits(&each), bits(&cov));
+    }
+
+    /// Steps held on an accumulator that then blocks its rows are merged
+    /// before the first row the block takes, as `update_held` says: the
+    /// block's merge reads the co-moments, and held steps under it would be
+    /// left out of it, then written back over it by their own merge (task
+    /// 307).
+    #[test]
+    fn steps_held_before_the_accumulator_blocks_are_merged_first() {
+        let k = 6;
+        let rows = stream(k, 150, 13);
+        let mut each = EwCov::new(k).without_runs();
+        let mut held_cov = each.clone();
+        let mut held = HeldSteps::default();
+        for (t, (x, lam, w)) in rows.iter().enumerate() {
+            if t == 40 {
+                each.set_block_rows(16);
+                held_cov.set_block_rows(16);
+                assert!(held.open && held.rows > 0, "steps are held as it blocks");
+            }
+            each.update(x, *lam, *w);
+            held_cov.update_held(x, *lam, *w, &mut held);
+            if t >= 40 {
+                assert!(!held.open, "row {t}: merged, and nothing held since");
+            }
         }
         held_cov.merge_held(&mut held);
         each.flush();

@@ -3322,3 +3322,52 @@ fn a_target_whose_weight_has_decayed_to_nothing_predicts_nothing() {
     assert!(p.pred[0].is_finite(), "{:?}", p.pred);
     assert!(p.pred[1].is_nan(), "{:?}", p.pred);
 }
+
+/// A quantile fit with no usable column -- every feature 0 through the
+/// origin, or held at one value on the centred system, standardized --
+/// keeps a band system with no column and no factor, from its solves and
+/// from the nudges that build one after a band row drops it, and its state
+/// loads back as the model at every row: a system with no column that held
+/// a factor, of the empty matrix, would be refused on load as not of its
+/// columns (task 307).
+#[test]
+fn a_band_system_with_no_column_holds_no_factor_and_loads_back() {
+    use crate::OnlineModel;
+    for intercept in [false, true] {
+        let mut m = Robust::new(RobustCfg {
+            fit_intercept: intercept,
+            standardize: true,
+            min_weight: 0.0,
+            solve_every: 20.0,
+            max_rows_between_solves: 100,
+            ..cfg(2, 1, RobustLoss::Quantile { tau: 0.4 })
+        })
+        .unwrap();
+        let mut s = 3077u64;
+        let (mut built, mut empty) = (0, 0);
+        for i in 0..200 {
+            let x = if intercept { [3.0, -1.0] } else { [0.0, 0.0] };
+            let had = m.systems.0.iter().flatten().count();
+            m.step(
+                &x,
+                &[Some(lcg(&mut s))],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+            let back = Robust::restore(&m.state()).unwrap_or_else(|e| panic!("row {i}: {e:?}"));
+            assert_eq!(back, m, "intercept {intercept}, row {i}");
+            for sys in m.systems.0.iter().flatten() {
+                assert!(
+                    sys.keep.is_empty() && sys.factor.is_none(),
+                    "row {i}: {sys:?}"
+                );
+                empty += 1;
+            }
+            built += usize::from(had == 0 && m.systems.0.iter().flatten().count() > 0);
+        }
+        assert!(
+            empty > 100 && built > 5,
+            "intercept {intercept}: {empty}, {built}"
+        );
+    }
+}

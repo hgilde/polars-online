@@ -5254,6 +5254,92 @@ fn an_empty_window_reports_no_shares() {
     assert_eq!(rows, [f64::INFINITY], "no system to read a row against");
 }
 
+/// [`an_empty_window_reports_no_shares`] at two ridges, so two combos a
+/// target, and two targets: every slot of the empty window's solve is
+/// cleared, not the first `m` alone or none (task 307).
+#[test]
+fn an_empty_window_clears_the_shares_of_every_combo() {
+    let mut c = cfg(1, 2);
+    c.ridge = vec![1e-8, 1e-2];
+    c.decay = Decay::Halflife(20.0);
+    c.window = Some(10.0);
+    c.min_weight = 0.0;
+    let mut m = EwRidge::new(c).unwrap();
+    let mut s = 307u64;
+    for i in 0..40 {
+        let x = [lcg(&mut s)];
+        let y = [
+            Some(2.0 * x[0] + 0.1 * lcg(&mut s)),
+            Some(-x[0] + lcg(&mut s)),
+        ];
+        m.step(&x, &y, if i == 0 { 0.0 } else { 1.0 }, 1.0);
+    }
+    let before = m.support_coef().expect("solved");
+    assert_eq!(before.len(), 4, "a slot per target and ridge");
+    assert!(
+        before.iter().all(|sh| sh[1].is_finite()),
+        "the case needs a share in every slot: {before:?}"
+    );
+    let x = [lcg(&mut s)];
+    m.step(&x, &[Some(x[0]), Some(x[0])], 101.0, 0.0);
+    assert_eq!(m.n_eff(), 0.0, "the window is empty");
+    m.solve();
+    let shares = m.support_coef().unwrap();
+    for (slot, sh) in shares.iter().enumerate() {
+        assert!(sh.iter().all(|v| v.is_nan()), "slot {slot}: {shares:?}");
+    }
+    assert_eq!(m.pending_readiness(), 0);
+}
+
+/// A copy of a model keeps the factors its solves left (task 307): a
+/// model's factors are rebuilt only on load, so a copy without them --
+/// the state a stream saves in memory is one -- would read no row's
+/// leverage, infinity, until its next solve, where the model it was copied
+/// from reads it. The working space is not copied.
+#[test]
+fn a_copy_keeps_the_kept_factors_and_reads_each_rows_leverage() {
+    let mut c = cfg(3, 1);
+    c.solve_every = 1e9;
+    c.max_rows_between_solves = 50;
+    let mut m = EwRidge::new(c).unwrap();
+    m.set_keep_factor(true);
+    let mut s = 3071u64;
+    let row = |s: &mut u64| -> [f64; 3] { [lcg(s), lcg(s), lcg(s)] };
+    for i in 0..60 {
+        let x = row(&mut s);
+        m.step(
+            &x,
+            &[Some(x[0] - x[2] + lcg(&mut s))],
+            if i == 0 { 0.0 } else { 1.0 },
+            1.0,
+        );
+    }
+    assert!(
+        m.factors.kept.iter().flatten().count() > 0,
+        "the case needs a factor"
+    );
+    assert!(m.factors.work.is_some(), "the case needs a working space");
+    let copy = m.clone();
+    assert!(
+        copy.factors.work.is_none(),
+        "the working space is not copied"
+    );
+    for _ in 0..5 {
+        let x = row(&mut s);
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        assert!(OnlineModel::row_error_inflation_into(&m, &x, 1.0, &mut a));
+        assert!(OnlineModel::row_error_inflation_into(
+            &copy, &x, 1.0, &mut b
+        ));
+        assert!(a.iter().all(|v| v.is_finite()), "{a:?}");
+        assert_eq!(
+            a.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            b.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+    }
+    assert_eq!(copy.factors.kept, m.factors.kept);
+}
+
 /// A kept system carries no Gram index: `System.gram` was written at every
 /// solve and read nowhere (review round 4, CA11), so it left the state at
 /// schema 38.
