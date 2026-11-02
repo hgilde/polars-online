@@ -67,16 +67,17 @@ rss = 0.30
 
 [instructions.ewridge_k5]
 what = "ewridge, 5 features, 1 target, half-life 1000: AnyModel::step_into, into one kept Step"
-budget = 2852332
+budget = 2764561
 release = 2805466
 
 [instructions.ewridge_k20]
 what = "ewridge, 20 features, 1 target, half-life 1000: AnyModel::step_into, into one kept Step"
-budget = 7841554
+budget = 7405668
 release = 7947283
 
 [instructions.ewridge_k200]
 what = "ewridge, 200 features, 1 target, half-life 1000, min_weight 200, the default schedule: AnyModel::step_into, into one kept Step"
+budget = 320449457
 
 [instructions.ewridge_gram_t10]
 what = "ewridge, 50 features, 10 targets, gram_block_rows 64, pairwise, a solve every 400: AnyModel::step_into, into one kept Step, the targets folded into the block's merge"
@@ -163,7 +164,7 @@ release = 5985416
 
 [instructions.corrchange_window_w100]
 what = "corrchange window, 4 features, two windows of 100 rows, 100 permutations redrawn every 250 rows: AnyModel::step"
-budget = 107969440
+budget = 100557079
 release = 107969941
 
 [instructions.clock_float]
@@ -183,7 +184,7 @@ release = 1980599
 
 [instructions.bank_ewridge_k5]
 what = "Bank::fit_predict of one frame, ewridge with 5 features"
-budget = 5968841
+budget = 5845523
 release = 5785175
 
 [instructions.bank_seqtest_groups]
@@ -277,7 +278,7 @@ release = 21569026
 
 [instructions.formula_target_held1k]
 what = "Bank::fit_predict of one frame, ewridge with 5 features, its target the mean of y0 over the next 1,250 clock units (about 1,000 rows) and an embargo of the same span: about a thousand rows held behind each"
-budget = 15746898
+budget = 15326132
 release = 15117355
 
 [instructions.window_ewm_mean_w10k]
