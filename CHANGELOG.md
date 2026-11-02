@@ -1054,6 +1054,33 @@ returns.
   faster on arm64; on x86-64 they gain 5-6% in an aligned layout and are
   level in the default one. A window group keeps its pending list's
   capacity between rows, about 32 bytes.
+- Wide `ewridge` fits run at 1.3.0's speed again (task 306). Every solve
+  checks that its system still keeps a digit, and at 1,000 features the
+  check's cheap screen never settled, so every solve also ran Hager's
+  condition estimate: about five serial passes over a k² matrix, 19% of
+  a default fit's time on one thread and 35% on four (2,000 rows, arm64).
+  Where the system is a ridge over the live co-moments and the ridge
+  alone keeps it inside the limit, the check is now decided from the
+  diagonal, with a slack for the co-moments' rounding that grows with the
+  rows learned, and gives the same answer the estimate would. A default
+  1,000-feature fit runs at 1.04 and 1.01 times 1.3.0's rate on one and
+  four threads on arm64 (it was 0.84 and 0.66), and 1.00 and 0.86 on
+  x86-64 (it was 0.77 and 0.67); past its first 2,000 rows, 1.12 and 1.04
+  on arm64, 1.05 and 0.96 on x86-64. On x86-64 the rest at four threads is
+  the solve's own factorization, which runs on one thread as it did in
+  1.3.0. Blocked co-moments (`gram_block_rows`), a window once a row has
+  left it, `session_shrink`, `ridge_scale="sum"` and fits without an
+  intercept keep the full check. `ewridge` at 5, 20 and 200 features takes
+  4-9% less time a block on arm64, and 2-5% less on x86-64.
+- The threaded rank-one update of wide co-moments (from 725 features, more
+  than one thread) cuts its rows into bands of equal work, not equal
+  rows: about 2% on a 1,000-feature fit at four threads (task 306).
+- On x86-64 the whole-row rank-one update of narrow co-moments takes its
+  rows as slices, without index checks: `ewridge` at 5 features 3.1% less
+  time a block (task 306).
+- `corrchange`'s window test runs each window's pairs over slices of the
+  row, the means and the sums, in the same order: 6-9% less time a block
+  on arm64 and 1-2% on x86-64 (task 306).
 - The instruction-count benchmarks build rayon's thread pool at the end of
   each model case's warm-up, outside the measured block, so a case's count
   no longer moves with the size of the process's environment (task 292).

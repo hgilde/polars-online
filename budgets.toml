@@ -85,22 +85,22 @@ release = 13715304
 
 [instructions.huber_k20]
 what = "huber, 20 features, 1 target, half-life 1000, the MAD scale: AnyModel::step_into, into one kept Step"
-budget = 6698569
+budget = 6202789
 release = 7833126
 
 [instructions.huber_k20_sets]
 what = "huber, 20 features, 1 target, half-life 1000, the MAD scale, feature sets of 5, 10 and 20 features: AnyModel::step_into, into one kept Step"
-budget = 8901190
+budget = 8002718
 release = 10123658
 
 [instructions.huber_k20_sum]
 what = "huber, 20 features, 1 target, half-life 1000, the MAD scale, ridge_scale sum: AnyModel::step_into, into one kept Step"
-budget = 7027803
+budget = 6395189
 release = 8242907
 
 [instructions.huber_k20_refit]
 what = "huber, 20 features, 1 target, half-life 1000, the MAD scale, the refit of the first 2,500 rows on the block's 500th row: AnyModel::step_into, into one kept Step"
-budget = 74710877
+budget = 46955773
 
 [instructions.sgd]
 what = "sgd, 20 features, squared loss, learning rate 0.01, standardized: AnyModel::step_into, into one kept Step"
@@ -158,7 +158,7 @@ release = 12879135
 
 [instructions.corrchange_monitor_w2500]
 what = "corrchange monitor, 4 features (6 pairs), a span of 2,500 rows closing once in the block: AnyModel::step"
-budget = 5878980
+budget = 4606713
 release = 5985416
 
 [instructions.corrchange_window_w100]
@@ -183,7 +183,7 @@ release = 1980599
 
 [instructions.bank_ewridge_k5]
 what = "Bank::fit_predict of one frame, ewridge with 5 features"
-budget = 6213818
+budget = 5968841
 release = 5785175
 
 [instructions.bank_seqtest_groups]
@@ -211,12 +211,12 @@ release = 9047026
 
 [instructions.quantile]
 what = "quantile, the median, 20 features, half-life 1000: AnyModel::step_into, into one kept Step"
-budget = 15457687
+budget = 14262785
 release = 15678333
 
 [instructions.quantile_refit]
 what = "quantile, the median, 20 features, half-life 1000, the refit of the first 2,500 rows on the block's 500th row: AnyModel::step_into, into one kept Step"
-budget = 52040081
+budget = 45636328
 
 [instructions.ftrl]
 what = "ftrl, 20 features, logistic loss, half-life 1000: AnyModel::step_into, into one kept Step"
@@ -242,17 +242,17 @@ release = 3814326
 
 [instructions.ew_class]
 what = "ew_class, 20 features, 3 classes, full covariance, precision prior 1: AnyModel::step_into, into one kept Step"
-budget = 45190259
+budget = 43907578
 release = 50438883
 
 [instructions.deco]
 what = "deco, 20 features, ew dynamics: AnyModel::step_into, into one kept Step"
-budget = 6764026
+budget = 3508026
 release = 7250026
 
 [instructions.hmm]
 what = "hmm, 4 features, 2 states, full covariance, precision prior 1: AnyModel::step_into, into one kept Step"
-budget = 13311026
+budget = 8379026
 release = 14309026
 
 [instructions.rcov]
@@ -267,7 +267,7 @@ release = 952261
 
 [instructions.bocpd_full]
 what = "bocpd, 4 features, full covariance, max_run 200, prune below 1e-6: AnyModel::step_into, into one kept Step"
-budget = 22025419
+budget = 20529631
 release = 31220323
 
 [instructions.ew_cov_lags]
@@ -292,12 +292,12 @@ release = 12426581
 
 [instructions.window_ewm_quantile_w10k]
 what = "WindowsRun::feed of one frame, ewm_quantile at 0.5 over a window of 12,500 clock units (about 10,000 rows), half-life 1000, inside the stream's first window: the sketches walked an octave at a time on every row"
-budget = 16337168
+budget = 15987621
 release = 16337168
 
 [instructions.window_ewm_quantile_running]
 what = "WindowsRun::feed of one frame, ewm_quantile at 0.5 of abs(x0) with no window, half-life 1000: the running sketch an EW-MAD reads, one value added and the sketch walked on every row"
-budget = 13555761
+budget = 13216462
 release = 13555730
 
 # --- memory ----------------------------------------------------------------------
