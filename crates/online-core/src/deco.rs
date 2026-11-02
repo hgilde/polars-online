@@ -253,13 +253,13 @@ pub struct Deco {
     /// task 101), so the identity `Deco::advance` states holds. One per
     /// value, as `rho_bar` is.
     rho_bar_lo: Vec<f64>,
-    /// The density's working space ([`DecoWork`]). Not state.
+    /// The row's working space ([`RowWork`]). Not state.
     #[serde(skip)]
-    work: DecoWork,
+    work: RowWork,
 }
 
-/// Every field as `derive(Debug)` writes it, but the density's working
-/// space, which is no part of the model ([`DecoWork`]): a model's `Debug`,
+/// Every field as `derive(Debug)` writes it, but the row's working space,
+/// which is no part of the model ([`RowWork`]): a model's `Debug`,
 /// and a state's, which holds the model, read the same whatever it holds.
 /// The destructuring names every field, so a new one is written here or
 /// left out on purpose.
@@ -289,23 +289,33 @@ impl std::fmt::Debug for Deco {
 
 /// The working space of a learned row's density, kept between rows (task
 /// 298): the `K x K` matrix `S` and its factor, with faer's scratch
-/// ([`FactorWork`]), which every row made afresh and dropped. `S` is written
-/// in full and the factor is [`crate::SpdFactor::of`]'s, to the bit. Not state:
-/// neither serialized, compared nor shown, and a copy holds its own, empty.
+/// ([`FactorWork`]), which every row made afresh and dropped, and since task
+/// 304 the block vectors the density reads and the column its quadratic form
+/// is solved in. Each is written in full before it is read, and the factor
+/// is [`crate::SpdFactor::of`]'s, to the bit.
 #[derive(Default)]
 struct DecoWork {
     s: Vec<f64>,
+    y: Vec<f64>,
+    sqrt_n: Vec<f64>,
     factor: FactorWork,
     quad: QuadWork,
 }
 
-impl Clone for DecoWork {
+/// A learned row's working space: its sums ([`Row`]) and its density's
+/// ([`DecoWork`]), the nine allocations a row made afresh (task 304). Boxed
+/// so that taking it for a row moves a pointer, not eight vectors. Not state:
+/// neither serialized, compared nor shown, and a copy holds none.
+#[derive(Default)]
+struct RowWork(Option<Box<(Row, DecoWork)>>);
+
+impl Clone for RowWork {
     fn clone(&self) -> Self {
         Self::default()
     }
 }
 
-impl PartialEq for DecoWork {
+impl PartialEq for RowWork {
     fn eq(&self, _: &Self) -> bool {
         true
     }
@@ -325,7 +335,7 @@ impl Deco {
             rho_bar: vec![f64::NAN; m],
             rho_w: vec![0.0; m],
             rho_bar_lo: vec![0.0; m],
-            work: DecoWork::default(),
+            work: RowWork::default(),
         })
     }
 
@@ -375,9 +385,27 @@ impl Deco {
     /// `(S₁, S₂, n)` per block from the standardised row, over the entries
     /// that are finite, and whether every entry was: a column with no spread
     /// is left out of its block (see the module docs).
+    #[cfg(test)]
     fn block_sums(&self, r: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>, bool) {
+        let (mut s1, mut s2, mut n) = (Vec::new(), Vec::new(), Vec::new());
+        let ok = self.block_sums_into(r, &mut s1, &mut s2, &mut n);
+        (s1, s2, n, ok)
+    }
+
+    /// [`Self::block_sums`], written over `s1`, `s2` and `n`: whether every
+    /// entry had a value.
+    fn block_sums_into(
+        &self,
+        r: &[f64],
+        s1: &mut Vec<f64>,
+        s2: &mut Vec<f64>,
+        n: &mut Vec<f64>,
+    ) -> bool {
         let k = self.blocks.len();
-        let (mut s1, mut s2, mut n) = (vec![0.0; k], vec![0.0; k], vec![0.0; k]);
+        for v in [&mut *s1, &mut *s2, &mut *n] {
+            v.clear();
+            v.resize(k, 0.0);
+        }
         let mut ok = true;
         for (bi, b) in self.blocks.iter().enumerate() {
             for &i in b {
@@ -391,16 +419,25 @@ impl Deco {
                 }
             }
         }
-        (s1, s2, n, ok)
+        ok
     }
 
     /// The row's equicorrelation estimates, in emission order, from each
     /// block's sums over the `n` columns that have a standardised value. NaN
     /// where the row says nothing: a block with fewer than two such columns,
     /// a pair with an empty side, an all-zero block.
+    #[cfg(test)]
     fn row_u(&self, s1: &[f64], s2: &[f64], n: &[f64]) -> Vec<f64> {
+        let mut out = Vec::new();
+        self.row_u_into(s1, s2, n, &mut out);
+        out
+    }
+
+    /// [`Self::row_u`], written over `out`.
+    fn row_u_into(&self, s1: &[f64], s2: &[f64], n: &[f64], out: &mut Vec<f64>) {
         let k = self.blocks.len();
-        let mut out = Vec::with_capacity(n_values(k));
+        out.clear();
+        out.reserve(n_values(k));
         for bi in 0..k {
             out.push(if n[bi] >= 2.0 && s2[bi] > 0.0 {
                 (s1[bi] * s1[bi] - s2[bi]) / ((n[bi] - 1.0) * s2[bi])
@@ -414,7 +451,6 @@ impl Deco {
                 out.push(if d > 0.0 { s1[i] * s1[j] / d } else { f64::NAN });
             }
         }
-        out
     }
 
     /// `−½[n·ln 2π + ln det R + r'R⁻¹r]` for the row, under `rho`. See the
@@ -436,8 +472,17 @@ impl Deco {
         let n_total: f64 = self.blocks.iter().map(|b| b.len() as f64).sum();
         let mut log_det = 0.0;
         let mut quad = 0.0;
-        let mut y = vec![0.0; k];
-        let mut sqrt_n = vec![0.0; k];
+        let DecoWork {
+            s,
+            y,
+            sqrt_n,
+            factor,
+            quad: column,
+        } = work;
+        y.clear();
+        y.resize(k, 0.0);
+        sqrt_n.clear();
+        sqrt_n.resize(k, 0.0);
         for (bi, b) in self.blocks.iter().enumerate() {
             let n = b.len() as f64;
             let d = 1.0 - clamp(rho[bi], n);
@@ -448,7 +493,6 @@ impl Deco {
         }
         // `S = I + N^{1/2} P N^{1/2}`, symmetric and positive definite when
         // `R` is; one `K x K` Cholesky where a dense form would need `n x n`.
-        let s = &mut work.s;
         s.clear();
         s.resize(k * k, 0.0);
         for i in 0..k {
@@ -464,7 +508,7 @@ impl Deco {
                 s[j * k + i] = s[i * k + j];
             }
         }
-        let Some(f) = work.factor.factor(s, k) else {
+        let Some(f) = factor.factor(s, k) else {
             return f64::NAN;
         };
         // Past the edge, no density (task 278): a factor that needed jitter
@@ -481,14 +525,14 @@ impl Deco {
         // own equilibration, of condition 1, and the unblocked model's rows
         // pay nothing for a test it always passes.
         if k != 1 && (f.attempts() != 0 || f.carries_no_digit(s)) {
-            work.factor.give(f);
+            factor.give(f);
             return f64::NAN;
         }
         let yy: f64 = y.iter().map(|v| v * v).sum();
         // `quad_forms(y, k, 1)[0]` to the bit, in a kept column.
-        let sinv = f.quad_form(&y, &mut work.quad);
+        let sinv = f.quad_form(y, column);
         log_det += f.log_det();
-        work.factor.give(f);
+        factor.give(f);
         quad += sinv - yy;
         // TAU is 2 pi, so `TAU.ln()` is the `ln 2 pi` of the density.
         let ll = -0.5 * (n_total * std::f64::consts::TAU.ln() + log_det + quad);
@@ -512,26 +556,18 @@ impl Deco {
         }
     }
 
-    /// The row's block sums and estimates, from the state as it stands:
-    /// what the row reports and what it learns from, taken once for both
-    /// (task 270, D-6).
-    fn row(&self, x: &[f64]) -> Row {
-        let mut r = Vec::with_capacity(x.len());
-        self.standardise(x, &mut r);
-        let (s1, s2, n, ok) = self.block_sums(&r);
-        let u = self.row_u(&s1, &s2, &n);
-        Row { s1, s2, ok, u }
+    /// The row's block sums and estimates, from the state as it stands,
+    /// written over `row`: what the row reports and what it learns from,
+    /// taken once for both (task 270, D-6).
+    fn row_into(&self, x: &[f64], row: &mut Row) {
+        self.standardise(x, &mut row.r);
+        row.ok = self.block_sums_into(&row.r, &mut row.s1, &mut row.s2, &mut row.n);
+        self.row_u_into(&row.s1, &row.s2, &row.n, &mut row.u);
     }
 
-    /// What [`crate::OnlineModel::predict`] reports for the row whose sums
-    /// are `row`: its outputs, once the weight reaches `min_weight`.
-    fn step_of(&self, row: &Row) -> crate::Step {
-        let mut out = crate::Step::default();
-        self.step_of_into(row, &mut out, &mut DecoWork::default());
-        out
-    }
-
-    /// [`Self::step_of`], written over `out`, its density formed in `work`.
+    /// What the row whose sums are `row` reports: its outputs, once the
+    /// weight reaches `min_weight`, written over `out`, its density formed
+    /// in `work`.
     fn step_of_into(&self, row: &Row, out: &mut crate::Step, work: &mut DecoWork) {
         let n_eff = self.diag.n_eff();
         if n_eff >= self.cfg.min_weight {
@@ -547,7 +583,7 @@ impl Deco {
 
     /// The row's outputs, from its sums ([`Self::row`]), written over `out`.
     fn read_row(&self, row: &Row, out: &mut Vec<f64>, work: &mut DecoWork) {
-        let Row { s1, s2, ok, u } = row;
+        let Row { s1, s2, ok, u, .. } = row;
         // The density is over every column, so a row with one that has no
         // standardised value has none (task 115 (h)).
         let loglik = if *ok {
@@ -562,11 +598,15 @@ impl Deco {
     }
 }
 
-/// A row's standardised block sums `(S₁, S₂)`, whether every entry had a
-/// standardised value, and its equicorrelation estimates ([`Deco::row`]).
+/// A row's standardised values, its block sums `(S₁, S₂)` over the `n`
+/// columns with a value, whether every entry had one, and its
+/// equicorrelation estimates ([`Deco::row_into`]).
+#[derive(Default)]
 struct Row {
+    r: Vec<f64>,
     s1: Vec<f64>,
     s2: Vec<f64>,
+    n: Vec<f64>,
     ok: bool,
     u: Vec<f64>,
 }
@@ -596,10 +636,10 @@ impl crate::OnlineModel for Deco {
         // state before this row, which is what makes them usable as features
         // for the same row. The row's estimates are the ones it then learns
         // from, standardised once (task 270, D-6).
-        let row = self.row(x);
-        let mut work = std::mem::take(&mut self.work);
-        self.step_of_into(&row, out, &mut work);
-        self.work = work;
+        let mut kept = self.work.0.take().unwrap_or_default();
+        let (row, work) = &mut *kept;
+        self.row_into(x, row);
+        self.step_of_into(row, out, work);
         let lam = self.cfg.decay.factor(d_clock);
         if weight >= 0.0 {
             // Each value learns from its own estimate, where the row has one
@@ -607,13 +647,18 @@ impl crate::OnlineModel for Deco {
             self.advance(&row.u, lam, weight);
         }
         self.diag.update(x, lam, weight);
+        self.work.0 = Some(kept);
     }
 
     fn predict(&self, x: &[f64], d_clock: f64) -> crate::Step {
         if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
             return refused;
         }
-        self.step_of(&self.row(x))
+        let mut row = Row::default();
+        self.row_into(x, &mut row);
+        let mut out = crate::Step::default();
+        self.step_of_into(&row, &mut out, &mut DecoWork::default());
+        out
     }
 
     fn state(&self) -> crate::State {
@@ -750,8 +795,8 @@ mod tests {
         }
     }
 
-    /// The density formed in the model's kept working space -- `S`, its
-    /// factor and faer's scratch -- is the one formed afresh, to the bit:
+    /// The row read in the model's kept working space -- its sums, `S`, its
+    /// factor and faer's scratch -- is the one read afresh, to the bit:
     /// every output of every row, unblocked and over three blocks, and the
     /// state's `Debug`, which shows none of it (task 298). The kept model
     /// writes over the last row's factor once the density is read.
@@ -767,8 +812,8 @@ mod tests {
             let (mut written_over, mut finite) = (0, 0);
             for (i, x) in stream(300, 6, 0.4, 11).iter().enumerate() {
                 let w = if i % 37 == 5 { 0.0 } else { 1.0 };
-                fresh.work = DecoWork::default();
-                written_over += kept.work.factor.kept();
+                fresh.work = RowWork::default();
+                written_over += kept.work.0.as_ref().map_or(0, |w| w.1.factor.kept());
                 let a = kept.step(x, &[], 1.0, w);
                 let b = fresh.step(x, &[], 1.0, w);
                 let bits = |v: &[f64]| v.iter().map(|p| p.to_bits()).collect::<Vec<_>>();

@@ -179,8 +179,8 @@ fn huber_reports_its_scales_into_the_kept_buffer() {
 /// `deco` standardised the row and formed its block sums twice, once to
 /// report and once to learn (D-6): 19 allocations a row, 13 after. Its
 /// density's matrix, factor and faer's scratch are kept since (task 298):
-/// three fewer. Its density's quadratic form solves in a kept column (task
-/// 304): two fewer.
+/// three fewer. Its density's quadratic form solves in a kept column, and
+/// the row's own vectors are kept (task 304): what is left is the `Step`.
 #[test]
 fn deco_standardises_a_row_once() {
     let got = per_row(
@@ -189,7 +189,7 @@ fn deco_standardises_a_row_once() {
         20,
         0,
     );
-    check("deco m=20", got, 8.0, 19.0);
+    check("deco m=20", got, 1.0, 19.0);
 }
 
 /// `hmm` built `Π` twice on a learning row, a vector a matrix row each time
@@ -391,12 +391,12 @@ fn huber_keeps_its_solves_working_space() {
 /// The dropped factors are kept and written over now, with the scratch and
 /// the matrix: `hmm`'s two states' three allocations each, and the list
 /// its factors are held in, and `deco`'s three. Then each quadratic form, a
-/// matrix and a vector a form, went to a kept column, and `hmm`'s row's own
-/// vectors with them, so it allocates nothing a row (task 304). Counted over
+/// matrix and a vector a form, went to a kept column, and each row's own
+/// vectors with them, so neither allocates a row (task 304). Counted over
 /// each bench case's own measured block, as the bank steps it.
 #[test]
 fn hmm_and_deco_keep_their_factors_working_space() {
-    for (id, bound, before) in [("hmm", 0.0, 22.0), ("deco", 7.0, 12.0)] {
+    for (id, bound, before) in [("hmm", 0.0, 22.0), ("deco", 0.0, 12.0)] {
         let mut run = online_bench::model_setup(id);
         let start = calls();
         std::hint::black_box(online_bench::polars_online_budget_model_rows(&mut run));
