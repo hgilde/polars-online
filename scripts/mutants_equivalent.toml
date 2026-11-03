@@ -2416,13 +2416,14 @@ why = """as `check_change`'s: the branch runs where `|r| >= h > 0`, so `r = 0` r
 file = "crates/online-core/src/sgd.rs"
 function = "<impl OnlineModel for Sgd>::step_into"
 mutation = "replace > with >="
-line_has = "let along = if c > 0.0 { weight * c * zz } else { 0.0 };"
+line_has = "let along = if c > 0.0 {"
 why = """the curvature `c` is never below 0 (1, 0 or 1 under Huber, `p = \
 e^η >= e^−30` under Poisson, `p(1 − p)` with `p` in [0, 1] under the \
 logistic, 0 under the sign-valued losses) and never NaN (`p` is finite: \
 `beta` keeps only finite steps), so the two differ only at `c = 0`, where \
 `weight · 0 · zz` is +0, the else branch's 0: the weight is finite and \
-positive here, and `zz = off + |z̃|²` is finite. Every feature is within \
+positive here, and `zz = off + |z̃|²` is finite (computed once a row and \
+kept, so taking it at `c = 0` too changes no later read of it). Every feature is within \
 the input bound 1e100, and the scaler admits the row at unit weight, so a \
 standardized feature is at most `√(W + 1)` deviations out (or the raw \
 deviation, at most 2e100, where its variance is not usable): no square \
