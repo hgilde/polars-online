@@ -1,8 +1,9 @@
 //! The configurations of the models a spec does not build field by field:
 //! `audit`, `bocpd`, `corrchange`, `hmm`, `rcov` and `deco`, each read from
 //! its spec, and `deco`'s block names; and the models `huber`, `quantile`
-//! and `sgd` build from their specs (moved out of `stream.rs` under the
-//! 250 KB cap a source file is held to).
+//! and `sgd` build from their specs; and the floor a model is read at below
+//! its `min_weight` (moved out of `stream.rs` under the 250 KB cap a source
+//! file is held to).
 
 #[allow(unused_imports)]
 use super::*;
@@ -758,6 +759,29 @@ pub fn sgd_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         mad_anchor: true,
     };
     Ok(AnyModel::Sgd(Box::new(Sgd::new(cfg)?)))
+}
+
+/// The floor a model is read at on a row its `min_weight` may withhold
+/// ([`Persisted::ungated_spread`]): the floor the model keeps with no
+/// `min_weight` given. That is 0 for every model but `ewridge`, whose own
+/// floor is then a row per unknown (`build_bare`): below it its system has
+/// fewer rows than unknowns, and the spec with no `min_weight` reports
+/// nothing there, the noise gate being its readiness gate. An explicit
+/// `min_weight` below that lowers the model's own floor, so the read is at
+/// the lower of the two, and a `min_weight` above a row per unknown
+/// withholds what the spec without one reports and nothing else. The floor
+/// counts weight, as the model's does. `ewridge` runs no due solve while its
+/// weight is below `1 - ln 2 / 50` of the least of this floor and its own
+/// (`online_core`'s `ewridge/unread.rs`; task 311): this read is one reason
+/// a row per unknown is in it.
+pub(crate) fn read_floor(spec: &Spec, min_weight: &[f64]) -> f64 {
+    match spec.model {
+        ModelKind::EwRidge { .. } => {
+            let own = (spec.k() + usize::from(spec.fit_intercept)) as f64;
+            min_weight.iter().copied().fold(own, f64::min)
+        }
+        _ => 0.0,
+    }
 }
 
 #[cfg(test)]

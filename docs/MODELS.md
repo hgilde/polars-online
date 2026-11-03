@@ -159,7 +159,14 @@ to keep a fit on every feature, name a set that holds them all, such as
 `max_rows_between_solves=1`.** Otherwise `ewridge` predicts with the
 coefficients of its last solve. Under a finite half-life it solves once the
 weight learned since then reaches `ln 2 / 50` of the weight the fit holds:
-about 1.4 %, or every `half_life/50` of clock in steady state. To solve on
+about 1.4 %, or every `half_life/50` of clock in steady state. While the
+weight is below `1 - ln 2 / 50` of the lowest floor a prediction is read at
+(`k + 1`, `min_weight`, each target's own), a solve that comes due is not
+run, unless `max_rows_between_solves` brings it due: until the next one, every row learns less than that share of the
+weight, so each stays below the floor and withholds its prediction, and
+nothing would read the solve. Every prediction, residual and spread is the
+same to the bit; `coef` there is the last fit solved, and `solve_failures`
+counts only the solves run. To solve on
 the clock instead, give `solve_every` in clock units. Until `solve_every`
 has passed since the stream's start, or `max_rows_between_solves` rows, the
 model solves by weight as it does by default, so a fit of its first few rows

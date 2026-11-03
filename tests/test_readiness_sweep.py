@@ -398,8 +398,20 @@ def test_min_weight_withholds_exactly_the_rows_below_it_and_they_nest(kind: str,
 )
 def test_min_weight_zero_is_the_default_where_the_default_is_zero(kind: str):
     base, zero = run(kind, "rows", {}), run(kind, "rows", {"min_weight": 0.0})
+    # `ewridge`'s own floor is a row per unknown without `min_weight`, and 0
+    # at `min_weight = 0`, whose fit any row past its first may read. Below
+    # `1 - ln 2 / 50` of its floor no row reads a solve before the next comes
+    # due, so none is run (task 311): without `min_weight` its first rows
+    # report no fit, where at 0 they report the solves it runs. Every other
+    # number is the same, and the fit from the first row it reports.
+    fits = {"coef", "support_coef"} if kind == "ewridge" else set()
     for n in base.columns:
-        assert _bits(base[n]) == _bits(zero[n]), f"{kind}: {n} moved"
+        if n in fits:
+            first = base[n].is_not_null().arg_true()[0]
+            assert 0 < first <= 3 and zero[n][:first].is_not_null().all(), (n, first)
+            assert _bits(base[n][first:]) == _bits(zero[n][first:]), f"{kind}: {n} moved"
+        else:
+            assert _bits(base[n]) == _bits(zero[n]), f"{kind}: {n} moved"
 
 
 # ---------------------------------------------------------------------------

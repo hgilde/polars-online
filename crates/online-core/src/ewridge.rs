@@ -50,6 +50,13 @@
 //!
 //! Predictions use the last solved coefficients (out-of-sample by construction:
 //! the solve happens after the row's update, the pred before it).
+//!
+//! A solve a weight share brings due while the weight is below `(1 − s)` of
+//! the lowest floor any read of the fit uses is not run: every row until
+//! the next solve comes due is then below that floor, so nothing reads it.
+//! The schedule and the Gram's block move as after it, so every served
+//! number is the same to the bit; `coef` there is the last fit solved
+//! (`unread`'s module docs have the argument).
 
 use std::borrow::Cow;
 use std::sync::{Arc, OnceLock};
@@ -145,7 +152,10 @@ pub struct EwRidgeCfg {
     /// clock's own `half_life / 50` at a share of `ln 2 / 50`; where they part
     /// -- warm-up, after a gap, a half-life far longer than the stream -- it
     /// keeps the fit that close to its data, where the clock solved once and
-    /// never again. `None` keeps the clock.
+    /// never again. `None` keeps the clock. Under a share of at most `1/2`,
+    /// a due solve no row can read before the next comes due -- the weight
+    /// below `(1 − share)` of the lowest floor a read uses -- is not run, and
+    /// the schedule moves on as after it (`unread`'s module docs).
     #[serde(default)]
     pub solve_share: Option<f64>,
     /// Rows of the Gram update held back and merged as one block
@@ -881,6 +891,8 @@ impl EwRidge {
     }
 
     fn solve(&mut self) {
+        #[cfg(test)]
+        unread::SOLVED.with(|c| c.set(c.get() + 1));
         // A held Gram block goes in before the matrix is read. Solves are
         // scheduled by the clock and the row count, never by a chunk end, so
         // the block boundary this moves is the same whichever way the stream
@@ -1765,9 +1777,14 @@ impl EwRidge {
 
     /// Whether any slot's fit is withheld as too ill-conditioned to carry a
     /// digit, as the state stands: what the stream reads before a row to
-    /// name its withheld predictions `ill_conditioned`.
+    /// name its withheld predictions `ill_conditioned`. Never below
+    /// `min_weight`, where the model predicts from no fit, so none is
+    /// withheld for its condition -- and where the fit is the last one
+    /// solved, not the schedule's latest due one (`unread`'s module docs;
+    /// task 311): the row is `min_weight`'s.
     pub fn ill_conditioned(&self) -> bool {
-        (0..self.ready.system_of.len()).any(|slot| self.slot_ill(slot))
+        self.n_eff() >= self.cfg.min_weight
+            && (0..self.ready.system_of.len()).any(|slot| self.slot_ill(slot))
     }
 
     /// The `z` slot `zi` of a feature row, without the augmentation buffer:
@@ -2548,8 +2565,15 @@ impl OnlineModel for EwRidge {
                 &self.since_solve,
                 self.rows_since_solve,
             );
-            self.solve();
-            self.first_period_by_share &= !(first && explicit);
+            // A solve no row can read before the next one comes due is not
+            // run, and the schedule moves on as after it (`unread`'s module
+            // docs; task 311).
+            if !explicit && self.solve_is_unread(first) {
+                self.pass_unread_solve();
+            } else {
+                self.solve();
+                self.first_period_by_share &= !(first && explicit);
+            }
             period.put_back(&mut self.since_solve, &mut self.rows_since_solve);
         }
     }
@@ -2667,11 +2691,16 @@ impl OnlineModel for EwRidge {
     }
 }
 
+mod unread;
+
 #[cfg(test)]
 mod tests;
 
 #[cfg(test)]
 mod condition_tests;
+
+#[cfg(test)]
+mod unread_tests;
 
 #[cfg(test)]
 mod output_only_tests;

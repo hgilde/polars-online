@@ -618,11 +618,18 @@ fn coef_is_the_output_s_last_coef_per_group() {
     assert!(written.contains("\"solve_every\":10.0"), "{written}");
     let mut lazy = Bank::new(vec![lazy]).unwrap();
     lazy.fit_predict(&df.slice(0, 2)).unwrap();
-    assert_eq!(
-        lazy.coef(0, None).unwrap(),
-        fresh.coef(0, None).unwrap(),
-        "the clock schedule's first rows solve as the every-row one's do"
-    );
+    // The clock schedule's first period solves by weight, as the default
+    // schedule does; and a solve the weight brings due while it is below
+    // `1 - ln 2 / 50` of the floor (here `min_weight`, 5) is not run, since
+    // no row can read it before the next comes due (task 311). So its first
+    // rows have no fit to report, where the row cap of 1 runs every solve:
+    // the same weight, and `coef` null.
+    let (lazy, fresh) = (lazy.coef(0, None).unwrap(), fresh.coef(0, None).unwrap());
+    assert_eq!(lazy.len(), fresh.len());
+    for (l, f) in lazy.iter().zip(&fresh) {
+        assert_eq!((&l.group, l.n_eff.to_bits()), (&f.group, f.n_eff.to_bits()));
+        assert!(l.coef.is_none() && f.coef.is_some(), "{l:?} against {f:?}");
+    }
 }
 
 #[test]

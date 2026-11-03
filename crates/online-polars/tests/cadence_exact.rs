@@ -698,6 +698,19 @@ fn on_the_row_clock_each_cadence_is_its_row_cap() {
             let lam = 0.5_f64.powf(1.0 / 20.0);
             let share = share_rows(&[1.0; 6], |_| lam, 6);
             assert_eq!(share, [0, 1, 2, 3, 4, 5], "{name}: the share's rows");
+            // `ewridge` runs no solve the weight brings due below `1 - ln 2
+            // / 50` of its floor, `k + 1 = 2` here (and a margin of
+            // `2^-16`), since no row can read it before the next comes due
+            // (task 311): rows 0 and 1, which hold 1 and `1 + lam`.
+            let share = if name == "ewridge" {
+                let edge = 2.0 * (1.0 - std::f64::consts::LN_2 / 50.0) * (1.0 - 1.0 / 65_536.0);
+                let held = |i: usize| (0..=i).map(|j| lam.powi((i - j) as i32)).sum::<f64>();
+                let run: Vec<usize> = share.into_iter().filter(|&i| held(i) >= edge).collect();
+                assert_eq!(run, [2, 3, 4, 5], "{name}: the share's rows it runs");
+                run
+            } else {
+                share
+            };
             with_first_period(event, share, want)
         } else {
             want

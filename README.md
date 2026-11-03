@@ -2629,8 +2629,8 @@ path = (
     .select("t", "stock_id", "^coef_.*$")
     .collect()
 )
-for t, x0 in path.filter(pl.col("t").is_in([0.0, 4.0, 40.0, 200.0, 396.0])).select("t", "coef_y_x0").iter_rows():
-    print(f"b0 at t {t:>3.0f}: coef on x0 {x0:.2f}")
+for t, x0 in path.filter(pl.col("t").is_in([0.0, 4.0, 8.0, 40.0, 200.0, 396.0])).select("t", "coef_y_x0").iter_rows():
+    print(f"b0 at t {t:>3.0f}: coef on x0 {'null' if x0 is None else f'{x0:.2f}'}")
 
 # 3. From a saved output: unnest takes the specs, a bank, or the path of the state the run saved.
 lf.online.fit_predict([ols], save_state="ols.state").sink_parquet("fitted.parquet")
@@ -2652,18 +2652,22 @@ print(matrix.shape)
 
 ```text
 [('b0', 1.0, 2.02, -1.01), ('b1', 1.01, 2.03, -1.06), ('b2', 0.93, 1.94, -0.99), ('b3', 1.03, 1.99, -0.97)]
-b0 at t   0: coef on x0 0.00
-b0 at t   4: coef on x0 0.66
+b0 at t   0: coef on x0 null
+b0 at t   4: coef on x0 null
+b0 at t   8: coef on x0 2.72
 b0 at t  40: coef on x0 2.24
 b0 at t 200: coef on x0 2.06
 b0 at t 396: coef on x0 2.02
 True
-(400, 3)
+(392, 3)
 ```
 
-Stock `b0`'s rows are every fourth, from `t` 0. Its path starts at 0,
-since one row fixes no slope, is near 2 by its eleventh row, and ends on
-the 2.02 `bank.coef()` reports.
+Stock `b0`'s rows are every fourth, from `t` 0. Its path starts null: a
+fit needs a row per coefficient before any row is predicted from it, three
+here, so the model solves nothing on its first two rows, where nothing
+would read the solve. It starts on its third row, is near 2 by its
+eleventh, and ends on the 2.02 `bank.coef()` reports. Each stock's first
+two rows are the 8 of 400 that carry no `coef`.
 
 **`coef_every=0` writes `coef` on every row but a skipped one**, as a list
 of one float per term. Without a cadence the bank writes it on each
@@ -3687,7 +3691,8 @@ chunk, whatever its size.
 It changes only which rows carry `coef` and `support_coef`: each group's
 last accepted row of every chunk. This code reads the same file 10 rows
 at a time and all at once, with four groups, so the small chunks write the
-coefficients on 4 rows of each of 40 chunks.
+coefficients on 4 rows of each of 40 chunks, less the first chunk's four,
+where each group has had two or three rows, too few for a fit.
 This code uses the file `ticks.parquet` and `df` from [Example data](#example-data):
 
 ```python
@@ -3712,7 +3717,7 @@ print("rows carrying coef:", field(small, "coef").is_not_null().sum(), "at 10 ro
 ```text
 largest difference in pred_y: 0.0
 the same as the frame's: True
-rows carrying coef: 160 at 10 rows a chunk, 4 at 100,000
+rows carrying coef: 156 at 10 rows a chunk, 4 at 100,000
 ```
 
 **For a wide frame, use larger chunks, because each chunk carries a fixed

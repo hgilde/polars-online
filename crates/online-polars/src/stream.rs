@@ -1315,6 +1315,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
 }
 
 mod model_cfgs;
+use model_cfgs::read_floor;
 pub use model_cfgs::{
     audit_cfg, bocpd_cfg, corrchange_cfg, deco_block_names, deco_cfg, hmm_cfg, huber_model,
     quantile_model, rcov_cfg, sgd_model,
@@ -2547,26 +2548,6 @@ pub fn last_accepted(
 #[inline]
 fn step_n_eff_below(n_eff: f64, min_weight: &[f64], target: usize) -> bool {
     min_weight.get(target).is_some_and(|t| n_eff < *t)
-}
-
-/// The floor a model is read at on a row its `min_weight` may withhold
-/// ([`Persisted::ungated_spread`]): the floor the model keeps with no
-/// `min_weight` given. That is 0 for every model but `ewridge`, whose own
-/// floor is then a row per unknown (`build_bare`): below it its system has
-/// fewer rows than unknowns, and the spec with no `min_weight` reports
-/// nothing there, the noise gate being its readiness gate. An explicit
-/// `min_weight` below that lowers the model's own floor, so the read is at
-/// the lower of the two, and a `min_weight` above a row per unknown
-/// withholds what the spec without one reports and nothing else. The floor
-/// counts weight, as the model's does.
-fn read_floor(spec: &Spec, min_weight: &[f64]) -> f64 {
-    match spec.model {
-        ModelKind::EwRidge { .. } => {
-            let own = (spec.k() + usize::from(spec.fit_intercept)) as f64;
-            min_weight.iter().copied().fold(own, f64::min)
-        }
-        _ => 0.0,
-    }
 }
 
 /// Keep each slot's prediction as the step gave it, once, before the first
@@ -5461,7 +5442,7 @@ fn run_instance(
             // Each coefficient's data share rides on the same cadence
             // (§2.2), and a coefficient more ridge than data is named once
             // per instance, here, where the shares are read anyway -- but
-            // only on a row whose prediction the gates let through
+            // only on a row the model predicted and the gates let through
             // (`reason == 0`) of a stream settled enough to judge
             // ([`settled_enough`]), the rule the other two notices keep. The
             // first solve of any spec is under-determined by construction,
@@ -5475,13 +5456,15 @@ fn run_instance(
             // mean-form ridge, standardized, read below 0.5 at the first row
             // the gates let through in 8 seeds of 12, from the first rows'
             // noisy feature variances, and settled at 0.51-0.53 (task 116,
-            // G).
+            // G). Below `ewridge`'s own floor no gate names a row, and its
+            // fit is the last solved, not the latest due (task 311).
             let support = inst.model.get().support_coef();
-            if let (Some(s), false, 0, true) = (
+            if let (Some(s), false, 0, true, true) = (
                 &support,
                 inst.notified.support,
                 reason,
                 settled_enough(learned),
+                step.pred.iter().any(|p| p.is_finite()),
             ) {
                 let k_total = inst.spec.k() + usize::from(inst.spec.fit_intercept);
                 let worst = s
