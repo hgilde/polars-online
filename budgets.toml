@@ -1397,6 +1397,108 @@ version = "1.3.0"
 reason = "-25.4% since 1.2.0 (4,299,477 -> 3,205,518), a gain: a learned row's nearest centre is searched once instead of twice, and the step writes into a kept Step instead of allocating its prediction vector; the case now counts that kept step"
 changelog = "`kmeans` searches for a learned row's nearest centre once instead of twice"
 
+[[signoff]]
+key = "instructions.huber_k20"
+version = "1.4.0"
+reason = "-20.8% since 1.3.0 (7,833,126 -> 6,202,789), a gain: the co-moment update covers the lower triangle only, the solves keep their working space, the step writes into a kept Step, the systems build only their lower triangle, and the sketch reads a bucket off the float's bits; the refit of the first rows and the readiness gate's floor had cost +3.8% on the way"
+changelog = "The co-moment update every `EwCov` makes does `k(k+1)/2` entries where it did `k²`"
+
+[[signoff]]
+key = "instructions.huber_k20_sets"
+version = "1.4.0"
+reason = "-21.0% since 1.3.0 (10,123,658 -> 8,002,718), a gain: the solves under three feature sets stop allocating (2.55 allocations a row to 0), beside huber_k20's lower-triangle co-moments, kept Step, lower-triangle systems and bit-read sketch"
+changelog = "`huber` and `quantile` solves stop allocating their working space"
+
+[[signoff]]
+key = "instructions.huber_k20_sum"
+version = "1.4.0"
+reason = "-22.4% since 1.3.0 (8,242,907 -> 6,395,189), a gain: huber_k20's causes under ridge_scale sum -- the lower-triangle co-moment update, the solves' kept working space, the kept Step, the lower-triangle systems and the bit-read sketch"
+changelog = "The co-moment update every `EwCov` makes does `k(k+1)/2` entries where it did `k²`"
+
+[[signoff]]
+key = "instructions.sgd"
+version = "1.4.0"
+reason = "-17.0% since 1.3.0 (3,053,026 -> 2,533,026), a gain: the per-feature loops index without bounds checks and the spread's update and dot product are inlined (-17% natively), and on x86-64 with AVX2 the standardizing means and variances run four slots at a time; the target-spread clip, level rule and unstable-rate gate had cost +15% on the way"
+changelog = "`sgd` steps a row in fewer instructions, bit for bit"
+
+[[signoff]]
+key = "instructions.sgd_huber"
+version = "1.4.0"
+reason = "-18.1% since 1.3.0 (3,501,863 -> 2,867,534), a gain: sgd's leaner step, the sketch's bucket read off the float's bits, and on x86-64 with AVX2 the features standardized four at a time; the target-spread clip, level rule and unstable-rate gate had cost +14% on the way"
+changelog = "`sgd` steps a row in fewer instructions, bit for bit"
+
+[[signoff]]
+key = "instructions.pa"
+version = "1.4.0"
+reason = "-21.9% since 1.3.0 (2,739,988 -> 2,141,010), a gain: on x86-64 with AVX2 the features are standardized four at a time and the means and variances behind them updated four slots at a time, beside the spread update it shares with sgd's leaner step"
+changelog = "`sgd` and `pa` standardize their features four at a time in AVX2 lanes"
+
+[[signoff]]
+key = "instructions.bocpd"
+version = "1.4.0"
+reason = "-14.5% since 1.3.0 (15,479,823 -> 13,235,671), a gain: a row reuses its working space and the runs it prunes (16 allocations a row to none under the diagonal emission), and the step writes into a kept Step"
+changelog = "`bocpd` reuses its per-row working space and the runs it prunes, bit for bit"
+
+[[signoff]]
+key = "instructions.bocpd_full"
+version = "1.4.0"
+reason = "-34.2% since 1.3.0 (31,220,323 -> 20,530,363), a gain: the per-row working space and pruned runs are reused, the factorizations keep their scratch and write a finished factor over the next (21 allocations a row to none), and the systems build only their lower triangle"
+changelog = "`hmm`, `deco`, `ew_class` and `bocpd` under the full covariance keep the working space of the factorizations they run on every row"
+
+[[signoff]]
+key = "instructions.ew_cov"
+version = "1.4.0"
+reason = "-32.8% since 1.3.0 (13,825,026 -> 9,296,026), a gain: the covariances and correlations are written into slots sized once a row, the co-moment update covers the lower triangle only, and the row's output is no longer zero-filled first"
+changelog = "`ew_cov` writes its covariances and correlations into slots sized once a row, bit for bit"
+
+[[signoff]]
+key = "instructions.ew_cov_lags"
+version = "1.4.0"
+reason = "-17.1% since 1.3.0 (21,569,026 -> 17,890,026), a gain: ew_cov's slots sized once a row, its lower-triangle co-moment update and the zero-fill removed, with lags"
+changelog = "`ew_cov` writes its covariances and correlations into slots sized once a row, bit for bit"
+
+[[signoff]]
+key = "instructions.ew_class"
+version = "1.4.0"
+reason = "-12.9% since 1.3.0 (50,438,883 -> 43,907,578), a gain: the scoring buffers are kept between rows and a solve of few right-hand sides builds no list of one band (15 allocations a row to 2), then the factorizations keep their working space (2 to 0)"
+changelog = "Every solve with fewer than 256 right-hand sides runs without building a list of one band"
+
+[[signoff]]
+key = "instructions.deco"
+version = "1.4.0"
+reason = "-51.6% since 1.3.0 (7,250,026 -> 3,508,026), a gain: the row's working vectors are kept (9 allocations a row to none), the factorizations keep their scratch and the matrix they read, a solve of few right-hand sides builds no band list, and the step writes into a kept Step"
+changelog = "`hmm` and `deco` keep their row's working vectors and allocate nothing a row"
+
+[[signoff]]
+key = "instructions.hmm"
+version = "1.4.0"
+reason = "-41.9% since 1.3.0 (14,309,026 -> 8,309,026), a gain: the row's working vectors are kept (15 allocations a row to none), the factorizations keep their scratch and the matrix they read, a solve of few right-hand sides builds no band list, and the step writes into a kept Step"
+changelog = "`hmm` and `deco` keep their row's working vectors and allocate nothing a row"
+
+[[signoff]]
+key = "instructions.rcov"
+version = "1.4.0"
+reason = "-21.5% since 1.3.0 (91,282,062 -> 71,666,026), a gain: the kernel estimator walks each lag's block once, adding the same products in the same order"
+changelog = "`rcov`'s kernel estimator walks each lag's block once"
+
+[[signoff]]
+key = "instructions.corrchange_monitor_w2500"
+version = "1.4.0"
+reason = "-23.0% since 1.3.0 (5,985,416 -> 4,607,708), a gain: the monitor reads its span's rows where they are and copies a row once, and the step's allocation is gone; building the thread pool in the warm-up had counted +1.7% on the way"
+changelog = "`hmm` and `deco` keep their row's working vectors and allocate nothing a row"
+
+[[signoff]]
+key = "instructions.bank_ewridge_k5_groups"
+version = "1.4.0"
+reason = "-32.5% since 1.3.0 (26,990,984 -> 18,219,786), a gain: copying a group's one row no longer zeroes an 8 KiB scratch, a solve of few right-hand sides builds no band list, and the bank's loop lends the stream's clock rather than copying it"
+changelog = "Copying features into rows no longer zeroes an 8 KiB scratch on every copy"
+
+[[signoff]]
+key = "instructions.bank_ew_cov_wide_t1"
+version = "1.4.0"
+reason = "-22.3% since 1.3.0 (164,895,853 -> 128,115,226), a gain: ew_cov's slots sized once a row, its lower-triangle co-moment update and the zero-fill removed, on the 20-feature wide bank"
+changelog = "`ew_cov` writes its covariances and correlations into slots sized once a row, bit for bit"
+
 [[raised]]
 key = "instructions.bank_seqtest"
 from = 2013107
