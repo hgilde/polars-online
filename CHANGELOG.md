@@ -872,8 +872,10 @@ returns.
   arm64 against the 1.3.0 wheel (p25, one thread): a default fit of 2,000
   rows runs 7.6 times as fast (1.02 before), and of 20,000 rows 1.37 (1.09);
   `solve_every = 256` with `gram_block_rows = 256` goes from 0.10 to 0.78 of
-  1.3.0 on 2,000 rows, and from 0.48 to 0.96 on 20,000. The saving is in the
-  stream's first solves, so a long stream gains little.
+  1.3.0 on 2,000 rows, and from 0.48 to 0.96 on 20,000; on the whole pool,
+  `scripts/wide_benchmark.py`'s 2,000-row stream reads 0.62 (task 314,
+  below). The saving is in the stream's first solves, so a long stream
+  gains little.
 - `drift_action="reset"` restarting a stream as a fresh bank from the next
   row costs a few instructions a row in the bank's loop (task 278): counted
   with Valgrind, 6 a row on the cheapest model's bank path, +0.74% on a
@@ -881,11 +883,41 @@ returns.
 - Scoring a held row over the clock since the newest learned row costs
   about 9 instructions a row in the bank's loop (task 278, D11): counted
   with Valgrind, +0.44% on a `seqtest` bank and +0.16% on a formula target.
-- An explicit cadence's first period costs a wide model about 145 more
-  solves in a 256-row period, about 0.9 s at 1,000 features (task 278):
-  `scripts/wide_benchmark.py`'s "solve every 256" at 1,000 features goes
-  from 11.0k to 1.5k rows/s on its 2,000-row stream. `solve_every=inf` pays
-  none.
+- An explicit cadence's first period costs a wide model more solves in its
+  first 256 rows (task 278): about 145 more at 1,000 features. Since the
+  solves its weight cannot read are skipped (task 311, above),
+  `scripts/wide_benchmark.py`'s "solve every 256" on its 2,000-row stream at
+  1,000 features runs at 1.52 and 1.12 times 1.3.0's rate on one thread
+  and the whole pool on arm64, where the first period alone had taken it
+  from 11.0k to 1.5k rows a second. With `gram_block_rows = 256` beside it
+  the first period's solves are still most of the stream: 0.93, 0.87 and
+  0.79 of 1.3.0's rate at 200, 500 and 1,000 features on one thread, and
+  0.94, 0.85 and 0.62 on the whole pool (best of three, interleaved with
+  1.3.0 built on the same machine; the pool's 1.3.0 rate at 1,000 features
+  is 3.0 times its one-thread rate, this build's 2.3). `solve_every=inf`
+  pays none.
+- **Rows that are slower than 1.3.0 on arm64, with their causes** (task
+  314). Through the bank, against 1.3.0 built on the same Apple M4 Pro, by
+  the best of four runs interleaved with it, in the default and an aligned
+  code layout, each confirmed by a second set of four (`sgd` is above):
+  - The bank's loop does more on every row: it keeps the clock a
+    `drift_action="reset"` restart reads, scores a held row over the clock
+    since the newest learned one, holds an embargo's rows, reads the
+    ungated prediction the residual spread learns from while a model is
+    below its floor, and checks each target against the input bound. Each
+    is a few instructions (the entries above), and together, profiled on
+    the thread that runs the rows, they take the bank's own loop from
+    about 19 to 24 ns a row. A cheap row shows it: `seqtest` 3.4% and 2.4%
+    slower (64 to 67 ns), `pa` at 20 features with `standardize=False`
+    3.3% and 3.3% (113 to 117 ns), and `ewridge` at 20 features with 10
+    targets 2.2% and 0.8%, whose loop does it for each target, beside
+    `ewridge`'s own per-target readiness. Against x86-64's 1.3.0, by
+    instructions and time, `seqtest` and `pa` are not slower.
+  - `kmeans` is 3.1-3.7% slower on the benchmark's 200,000 rows at 4 and 20
+    features, both layouts. The cost is its greedy k-means++ placement
+    (*Changed*), once a stream: about 1 ms at 4 features and 2 ms at 20.
+    A row after it steps about 1 ns faster than 1.3.0's, and the bank's
+    loop adds its 2 ns.
 - The bank's residual spread reads one extra prediction a row while a
   model's weight is below its `min_weight` floor, and each stream keeps
   about 16 more bytes (task 278).
@@ -895,10 +927,24 @@ returns.
 - `quantile` keeps a sketch of `|e|` per target for its band's scale: about
   5% more time a row at 20 features (0.60 to 0.63 ms per 1,000 rows,
   measured natively), and about 9 KB more state per target (task 278).
-- `sgd`'s step keeps each target's spread, step gains and level: about 3-5%
-  more a row (about 5 ns at 20 features, about 100 ns at 1,000, measured
-  natively), the cost of the clip in the target's units, the level rule and
-  the unstable-rate gate (task 278).
+- `sgd`'s step keeps each target's spread, step gains and level under the
+  squared and Huber losses, on by default (task 278): the clip in the
+  target's units, the level rule and the unstable-rate gate. It is work a
+  row does, not a delay. Through the bank, against 1.3.0 built on the same
+  machine, by the best of four runs (default and an aligned code layout):
+  `sgd` at 20 features with `standardize=False` is 9.2% and 10.0% slower
+  on arm64 (an Apple M4 Pro, 120 to 132 ns a row), and was about 13% and
+  14% on x86-64 before the rest below; with `coef_min=0, coef_sum=1` 3.9%
+  and 3.2% on arm64, and about 8% on x86-64. Counted under Valgrind on x86-64 the raw row does 394 more
+  instructions (1,133 to 1,527 a row, +35%): the step gain's `|z̃|²` about
+  100, indexing each target's state 50, the spread's update 45, the
+  gains' and the level's sums 40 and 25, the curvature 30. On arm64 the
+  step itself takes about 5 of those ns natively (31 to 36 ns), the gate
+  about 2 of them, and the bank's loop the rest (below). A calm gate now
+  rests (*Fixed*), which takes 0.7 ns off the native step and 0.1-0.9%
+  off the row through the bank: what remains is the spread, the level and
+  the bank. The standardized default, which reaches the AVX2 lanes on
+  x86-64, counts 17% fewer instructions than 1.3.0 there.
 - `holt`'s step also updates the line fit's three sums, a few operations a
   row; no change measurable at the bank (task 278).
 - **The refit's buffers, and the bound on them** (task 277). Measured with 150-row groups, two targets and 20 features, fed from parquet. Each cell gives peak resident memory after the fit, then the saved state:
@@ -1182,18 +1228,19 @@ returns.
 - Four rows that this release had made slower than 1.3.0 on arm64 are
   level with it again or faster, bit for bit (task 314). Measured through
   the bank against 1.3.0 built on the same Apple M4 Pro, by the best of
-  five runs in the default and an aligned code layout:
+  four runs (three for the wide `ewridge` row) in the default and an
+  aligned code layout:
   - `ew_class` with a tied covariance sums each class's lower triangle a
     row's run at a time, where it indexed every entry and checked both
-    bounds on each (−8.9% and −3.6% before; −1.1% and +0.7% now).
+    bounds on each (−8.9% and −3.6% before; +0.2% and +0.4% now).
   - `bocpd`'s prune moves only the runs it must, where it swapped every
     kept run with itself, and borrows its working space in place, where
     it made and dropped an empty one each row (4 features, `max_run=20`:
-    −2.7% and −2.0% before; +2.7% and +2.6% now).
+    −2.7% and −2.0% before; +2.5% and +2.3% now).
   - `ewridge` forms its solve's system on the co-moments' lower triangle
     and mirrors it, where it read each upper entry across the triangle's
     rows and divided it again (200 features, a solve every row: −2.2% and
-    −3.5% before; +3.9% and +2.7% now).
+    −3.5% before; +4.3% and +4.4% now).
   - `sgd` checks and takes a slope's step in one pass at a shared rate,
     where it formed each gradient twice (+0.9% and +2.2% against the build
     before).

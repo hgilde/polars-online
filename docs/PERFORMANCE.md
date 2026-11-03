@@ -76,22 +76,22 @@ engine, and the parameter names of its day, each defined here.
 the bank's work around it or more.** Around each row the bank clocks it,
 keeps its schedule, copies its features in and writes its fields out:
 about 60 to 170 ns at up to 50 features and one target, 2 ns more for each
-feature and 2 to 4 ns for each field a row writes. Measured on 2026-10-24
-at a load average of 2.3 to 3.1, one stream on one thread, the model's
-step alone against the same rows through a bank (§44), in ns a row:
+feature and 2 to 4 ns for each field a row writes. Measured on 2026-11-03
+at a load average of 5.0, one stream on one thread, the model's step alone
+against the same rows through a bank (§44, run again in §46), in ns a row:
 
 | model | features | the model's step | through the bank | bank over step |
 |---|---:|---:|---:|---:|
-| `seqtest` | 0 | 13 | 70 | 5.4× |
-| `sgd` | 5 | 41 | 130 | 3.2× |
-| `ewridge` | 5 | 118 | 235 | 2.0× |
-| `ew_cov`, 23 fields | 5 | 57 | 153 | 2.7× |
-| `sgd` | 50 | 159 | 296 | 1.9× |
-| `ewridge` | 50 | 968 | 1,141 | 1.2× |
-| `ew_cov`, 1,328 fields | 50 | 1,359 | 4,204 | 3.1× |
-| `sgd` | 500 | 1,357 | 2,349 | 1.7× |
-| `ewridge` | 500 | 123,433 | 129,397 | 1.0–1.2× |
-| `ew_cov`, 125,753 fields | 500 | 126,995 | 603,508 | 4.8× |
+| `seqtest` | 0 | 13 | 73 | 5.6× |
+| `sgd` | 5 | 46 | 139 | 3.0× |
+| `ewridge` | 5 | 107 | 217 | 2.0× |
+| `ew_cov`, 23 fields | 5 | 46 | 148 | 3.2× |
+| `sgd` | 50 | 158 | 300 | 1.9× |
+| `ewridge` | 50 | 795 | 955 | 1.2× |
+| `ew_cov`, 1,328 fields | 50 | 1,431 | 4,228 | 3.0× |
+| `sgd` | 500 | 1,345 | 2,360 | 1.8× |
+| `ewridge` | 500 | 94,226 | 111,804 | 1.2× |
+| `ew_cov`, 125,753 fields | 500 | 120,315 | 604,538 | 5.0× |
 
 So a regression's row is the bank's bookkeeping as much as the model's at
 five features, and the model's from about 50, while a model that writes a
@@ -5307,6 +5307,204 @@ because one thread is 87% faster, not because more threads are slower.
 | eight single-group specs, one at a time | 726 ms | 641 ms |
 | 12M rows, 14 Polars and 14 bank threads | 1.9 s, 0.85 GB | 1.63 s, 0.86 GB |
 | 12M rows, 4 Polars and 14 bank threads | 2.1 s, 0.61 GB | 1.87 s, 0.58 GB |
+
+### 46. 1.4.0 against 1.3.0 (2026-11-03)
+
+*Provenance: measured at `0311852`, 1.4.0's build (the commits after it
+change documents, not the wheel), on polars 2.0.0 and Python 3.12.13. An
+Apple M4 Pro. Load: a load average of 3.7 to 5.9 for the benchmark's four
+rounds, 1.7 to 4.6 for the wide benchmark's three, and 5.0 for the bank's
+share. The machine was not idle: Photos' `mediaanalysisd` and Spotlight's
+`mds_stores` held 30-85% of a core each through every run, and another
+project's scripts ran a core at a time between them. Each run waited for a
+load average of at most 8 and at most 2.5 cores taken by the three busiest
+processes, and each round ran the builds in turn, the order reversed from
+one round to the next, so that the background fell on every build alike.*
+
+Release step 2 (`docs/RELEASE-READINESS.md`). Five builds, each a release
+wheel in its own environment beside polars 2.0.0: 1.3.0's wheel from PyPI,
+1.3.0 built here from its tag in a clone with its own target directory, this
+build, and the last two again with every function aligned to 64 bytes
+(`-C llvm-args=-align-all-functions=6`), a second code layout. A row counts
+as slower only if it is slower in both layouts.
+
+#### The benchmark
+
+`scripts/benchmark.py --markdown`, four rounds, each run the best of 3 over
+200k rows. Each build's column is the best of its four; the README's
+*Throughput* table now carries the 1.4.0 column. *The medians* compares the
+median of each build's four; *aligned* compares the best of the two aligned
+builds; *spread* is the gap between 1.4.0's fastest and slowest run of the
+row, over its fastest:
+
+| configuration | notes | 1.3.0, PyPI's wheel | 1.3.0, built here | 1.4.0 | 1.4.0 against 1.3.0 built here | the medians | aligned layout, both built here | 1.4.0's spread |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| ewridge k=5 | 1 target, 1 half_life | 5,168,621 | 5,180,626 | 5,308,149 | +2.5% | +1.9% | +2.3% | 1.8% |
+| ewridge k=20 | 1 target, 1 half_life | 3,148,687 | 3,154,054 | 3,339,800 | +5.9% | +5.4% | +6.5% | 1.7% |
+| ewridge k=50 | 1 target, 1 half_life | 1,068,810 | 1,063,390 | 1,205,322 | +13.3% | +12.9% | +11.9% | 1.2% |
+| ewridge k=20, 1 target(s) | 1 half_life | 3,144,747 | 3,142,192 | 3,310,637 | +5.4% | +3.9% | +6.6% | 2.3% |
+| ewridge k=20, 10 target(s) | 1 half_life | 1,588,117 | 1,586,248 | 1,552,590 | −2.1% | −2.2% | −1.3% | 0.6% |
+| ewridge k=20, 1 half_life(s) | 1 target | 2,532,859 | 2,512,384 | 2,647,560 | +5.4% | +5.2% | +5.5% | 0.8% |
+| ewridge k=20, 5 half_life(s) | 1 target | 1,812,061 | 1,771,269 | 1,826,370 | +3.1% | +2.7% | +2.9% | 4.8% |
+| ewridge | k=20, 1 target | 3,147,919 | 3,137,089 | 3,345,559 | +6.6% | +6.7% | +6.9% | 0.7% |
+| rls | k=20, 1 target | 1,707,868 | 1,687,878 | 1,706,253 | +1.1% | +1.2% | +1.8% | 0.7% |
+| kalman | k=20, 1 target | 1,817,165 | 1,819,324 | 1,821,628 | +0.1% | +0.0% | −1.4% | 1.0% |
+| lasso | k=20, 1 target | 1,740,587 | 1,750,101 | 1,869,574 | +6.8% | +6.9% | +7.9% | 1.3% |
+| huber | k=20, 1 target | 3,186,991 | 3,186,343 | 3,551,157 | +11.4% | +11.6% | +11.3% | 0.5% |
+| ftrl | k=20, 1 target | 5,043,225 | 5,008,760 | 5,038,836 | +0.6% | +0.8% | +0.7% | 0.4% |
+| ewridge + conformal | k=20, 90% interval | 3,098,433 | 3,104,369 | 3,278,341 | +5.6% | +5.6% | +5.9% | 0.9% |
+| sgd | k=20, squared loss, standardize=False | 8,352,460 | 8,320,506 | 7,552,383 | −9.2% | −9.2% | −10.0% | 2.5% |
+| sgd, simplex | k=20, coef >= 0, sum 1 | 2,452,722 | 2,442,501 | 2,346,605 | −3.9% | −3.8% | −3.2% | 1.0% |
+| pa | k=20, standardize=False | 8,793,963 | 8,709,774 | 8,502,016 | −2.4% | −2.6% | −4.5% | 1.5% |
+| kalman + revert | k=20, revert_half_life | 1,575,271 | 1,579,754 | 1,582,737 | +0.2% | +0.2% | −0.8% | 0.4% |
+| ew_cov | k=20: mean, std, corr (230 statistics) | 2,095,505 | 2,100,029 | 2,029,717 | −3.3% | −3.3% | −1.4% | 0.5% |
+| ew_cov, mahal | k=20: mean, mahal, mahal_q0.99 | 810,933 | 808,490 | 832,440 | +3.0% | +3.4% | +2.6% | 0.6% |
+| ew_class, full | k=20, 3 classes (QDA) | 515,409 | 514,045 | 582,797 | +13.4% | +13.5% | +13.7% | 0.5% |
+| ew_class, shared | k=20, 3 classes (LDA) | 595,197 | 599,793 | 601,016 | +0.2% | −0.1% | +0.4% | 1.1% |
+| ew_class, diagonal | k=20, 3 classes (naive Bayes) | 2,411,074 | 2,400,544 | 2,545,255 | +6.0% | +6.3% | +7.3% | 1.1% |
+| kmeans | 4 features, K=8 | 5,410,633 | 5,455,699 | 5,285,220 | −3.1% | −2.8% | −3.6% | 0.7% |
+| kmeans | k=20, K=8 | 3,279,275 | 3,318,534 | 3,199,622 | −3.6% | −3.8% | −3.7% | 0.6% |
+| micro | 4 features, eps=1 | 7,445,831 | 7,467,028 | 7,883,016 | +5.6% | +6.2% | +6.4% | 0.7% |
+| seqtest | sign of one column | 15,070,928 | 15,337,766 | 14,804,580 | −3.5% | −3.8% | −2.5% | 2.7% |
+| deco | k=20, ew dynamics | 2,693,905 | 2,845,213 | 5,043,924 | +77.3% | +76.9% | +73.7% | 9.7% |
+| deco, blocks | k=20 in 4 blocks | 2,183,674 | 2,174,958 | 2,844,648 | +30.8% | +31.6% | +31.2% | 1.1% |
+| hmm | 4 features, K=2 | 1,416,751 | 1,411,023 | 2,519,190 | +78.5% | +78.1% | +75.5% | 1.0% |
+| hmm | k=20, K=2 | 383,853 | 383,690 | 437,770 | +14.1% | +15.1% | +15.4% | 0.2% |
+| corrchange, monitor | 4 features, horizon 500 | 4,898,379 | 4,891,645 | 5,960,689 | +21.9% | +21.3% | +23.4% | 2.2% |
+| corrchange, window | 4 features, window 100, permute every 500 | 447,398 | 447,147 | 493,752 | +10.4% | +10.6% | +10.5% | 1.8% |
+| bocpd | 4 features, diag, max_run 200 | 682,367 | 684,002 | 704,535 | +3.0% | +3.2% | +3.9% | 0.1% |
+| bocpd | 4 features, diag, max_run 20 | 694,605 | 694,006 | 711,347 | +2.5% | +2.3% | +2.3% | 0.5% |
+| bocpd, gaussian | 4 features, full covariance, max_run 200 | 731,522 | 730,686 | 1,158,813 | +58.6% | +59.2% | +58.3% | 0.6% |
+| rcov | 4 features, kernel, groups of 1000 | 4,116,645 | 4,128,212 | 4,518,149 | +9.4% | +10.5% | +9.1% | 2.0% |
+| ew_cov, lags | k=20: mean, cov, lags 1-5 | 1,402,782 | 1,402,049 | 1,628,550 | +16.2% | +16.0% | +15.5% | 0.6% |
+| quantile | k=20, the median | 1,628,296 | 1,635,236 | 1,730,774 | +5.8% | +5.8% | +6.1% | 0.9% |
+| holt | level and trend of one column | 11,627,653 | 11,635,094 | 12,057,090 | +3.6% | +4.0% | +3.4% | 3.1% |
+| marginal | 20 features against one target | 10,415,537 | 10,368,626 | 10,212,831 | −1.5% | −1.0% | +0.3% | 0.9% |
+| audit | 20 continuous columns, 256 counters | 961,372 | 959,500 | 958,272 | −0.1% | +0.0% | −0.4% | 0.4% |
+| ew_cov, write_parquet struct | k=20, 230 statistics: the writer alone | 254,279 | 256,494 | 254,461 | −0.8% | −0.0% | +0.1% | 0.3% |
+| ew_cov, write_parquet flat | k=20, 230 statistics: the writer alone | 2,782,846 | 3,124,599 | 3,087,230 | −1.2% | −4.1% | +8.2% | 20.5% |
+
+**1.4.0 is faster on most rows, and by the most where this release changed
+the row's path.** `hmm` at four features and `deco` run 74-78% faster,
+`bocpd`'s full covariance 58%, `deco`'s blocks 31%, `corrchange`'s monitor
+22% and `ew_cov` with lags 16%: most of these rows now keep the working
+space of the factorizations and vectors they used to make and drop each
+row. `huber` and `ew_class`'s
+full covariance run 11-14% faster, `ewridge` at 50 features 12-13%.
+
+**Six rows are slower in both layouts.**
+
+| row | default, aligned | where it comes from |
+|---|---:|---|
+| `sgd`, `standardize=False` | −9.2%, −10.0% | the target's spread, the level and the unstable-rate gate, on by default under the squared loss: about 5 ns of the model's 36 ns step, and the bank's loop below |
+| `sgd`, simplex | −3.9%, −3.2% | the same work, on a row the constraint makes three times as long |
+| `pa`, `standardize=False` | −2.4%, −4.5% | the bank's loop: about 19 to 24 ns a row on the thread that runs the rows |
+| `seqtest` | −3.5%, −2.5% | the bank's loop, on the cheapest row there is |
+| `kmeans` at 4 and 20 features | −3.1% to −3.7% | the greedy k-means++ placement, once a stream: about 1 ms at 4 features and 2 ms at 20, of a 38 ms and 63 ms fit |
+| `ewridge`, 20 features, 10 targets | −2.1%, −1.3% | the bank's loop and `ewridge`'s readiness, both per target |
+
+The bank's loop now keeps the clock a `drift_action="reset"` restart reads,
+scores a held row over the clock since the newest learned one, holds an
+embargo's rows, reads the ungated prediction the residual spread learns
+from below a model's floor, and checks each target against the input bound.
+Each costs a few instructions, and on arm64 they took the function that
+runs each row from 18.6 to 24.2 ns a row on the `sgd` row (profiled with
+Instruments' Time Profiler, the samples of the thread that runs the rows
+only, attributed to source lines through the build's line tables). A
+second set of four runs, interleaved the same way, confirmed each row:
+`pa` −3.3% in both layouts, `seqtest` −3.4% and −2.4%, `ewridge` with 10
+targets −2.2% and −0.8%. `ew_cov` (−3.3% default, −1.4% aligned here) read
+−1.0% and +1.5% there, and `marginal` −1.4% and −1.1% with its p25 within
+0.4% and 1.7%: inside the scatter, layout rather than work.
+
+The step `sgd` added is its own measurement: natively, the 20-feature raw
+step takes 31.3 ns with the target's spread off and 36.2 ns with it on,
+against 1.3.0's 30.0 ns. Of the 5 ns the unstable-rate gate is about 2 (its
+`|z̃|²` a row and its sums), and the gate now rests while it is calm, which
+takes 0.7 ns off the step and leaves the row through the bank 0.1-0.9%
+faster than the build before it.
+
+**Four rows the release candidate had made slower were fixed before the
+release, bit for bit**: each row's outputs are the same, compared field by
+field over the release probe's 74 specs and by digests of 27 streams of
+200,000 rows.
+
+| row | the candidate, default and aligned | 1.4.0 | the cause |
+|---|---:|---:|---|
+| `ew_class`, tied covariance | −8.9%, −3.6% | +0.2%, +0.4% | the classes' lower triangles summed entry by entry, with both bounds checked on each, where 1.3.0 summed whole rows |
+| `bocpd`, `max_run=20` | −2.7%, −2.0% | +2.5%, +2.3% | the prune swapped every kept run with itself, and made and dropped an empty working space each row |
+| `ewridge`, 200 features, a solve every row | −2.2%, −3.5% | +4.3%, +4.4% | the solve's system read each upper entry across the co-moments' lower triangle and divided it a second time |
+| `sgd`, `standardize=False` | (the build before) | +0.9%, +2.2% | each slope's gradient formed twice, for the check and for the step |
+
+`ew_class`'s slowdown showed in the wheel and not in a Rust example of the
+same rows on the system allocator, at 1.87 µs a row either way: whether
+the indexing cost or was hidden depended on the build. Each cause was found
+by bisecting the commits between the two releases over a Rust timing of
+the row through `Bank::fit_predict` where it showed natively, and by
+profiling both wheels where it did not.
+
+#### The wide benchmark
+
+`scripts/wide_benchmark.py`, three rounds, each fit the best of two, rows a
+second:
+
+| features | configuration | 1.3.0, PyPI's wheel | 1.3.0, built here | 1.4.0 | 1.4.0 against 1.3.0 built here | the medians | aligned layout, both built here | 1.4.0's spread |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| 200 | ewridge, default schedule (solve ~every 20 rows) | 64,213 | 64,048 | 84,565 | +32.0% | +32.1% | +32.6% | 0.1% |
+| 200 | ewridge, solve every 256 rows | 131,983 | 132,055 | 200,683 | +52.0% | +52.6% | +53.2% | 0.6% |
+| 200 | ewridge, solve every 256 rows, gram_block_rows 256 | 415,760 | 418,498 | 392,992 | −6.1% | −5.8% | −5.5% | 0.4% |
+| 200 | ewridge, solve every row | 6,891 | 6,899 | 7,194 | +4.3% | +4.4% | +4.4% | 0.2% |
+| 200 | lasso, 3 penalties (800 rows) | 960 | 950 | 961 | +1.2% | +0.7% | −0.4% | 0.7% |
+| 500 | ewridge, default schedule (solve ~every 20 rows) | 7,035 | 7,038 | 12,362 | +75.6% | +75.4% | +76.2% | 1.3% |
+| 500 | ewridge, solve every 256 rows | 22,290 | 22,342 | 36,249 | +62.2% | +63.5% | +64.4% | 0.6% |
+| 500 | ewridge, solve every 256 rows, gram_block_rows 256 | 110,353 | 110,733 | 94,862 | −14.3% | −14.1% | −14.2% | 0.4% |
+| 500 | lasso, 3 penalties (2000 rows) | 264 | 264 | 263 | −0.4% | +0.0% | +0.0% | 0.8% |
+| 1,000 | ewridge, default schedule (solve ~every 20 rows) | 1,422 | 1,444 | 10,404 | +620.5% | +610.0% | +606.6% | 5.5% |
+| 1,000 | ewridge, solve every 256 rows | 12,879 | 13,582 | 15,160 | +11.6% | +16.6% | +16.7% | 3.3% |
+| 1,000 | ewridge, solve every 256 rows, gram_block_rows 256 | 39,872 | 40,150 | 24,750 | −38.4% | −38.4% | −37.6% | 0.4% |
+
+On one thread and on the whole pool, the best of four of each, interleaved,
+1.4.0's rate over 1.3.0's:
+
+| features | default schedule | solve every 256 rows | and `gram_block_rows` 256 |
+|---:|---:|---:|---:|
+| 200 | 1.32, 1.31 | 1.52, 1.52 | 0.93, 0.94 |
+| 500 | 1.74, 1.74 | 1.60, 1.65 | 0.87, 0.85 |
+| 1,000 | 7.76, 7.36 | 1.52, 1.12 | 0.79, 0.62 |
+
+**The blocked rows are slower, and the rest faster, by the same cause.** An
+explicit cadence's first period now solves on the default weight-share
+schedule until the cadence's first period has passed, and those solves are
+most of a 2,000- to 20,000-row stream:
+`solve_every=256` alone more than makes up for them, since a solve the
+weight cannot read is skipped and the condition check is settled from the
+ridge, but beside `gram_block_rows` they are what the stream pays for. On
+the whole pool at 1,000 features 1.3.0's blocked fit ran 3.0 times its
+one-thread rate, and 1.4.0's runs 2.3 times: a solve's factorization runs
+on one thread, so the first period's solves do not share the pool's
+speedup.
+
+#### The bank's share by width
+
+§44's Rust example run again on this build, the best of eight passes, ns a
+row:
+
+| model | features | the model's step | through the bank | bank over step |
+|---|---:|---:|---:|---:|
+| `seqtest` | 0 | 13 | 73 | 5.6× |
+| `sgd` | 5 | 46 | 139 | 3.0× |
+| `ewridge` | 5 | 107 | 217 | 2.0× |
+| `ew_cov` | 5 | 46 | 148 | 3.2× |
+| `sgd` | 50 | 158 | 300 | 1.9× |
+| `ewridge` | 50 | 795 | 955 | 1.2× |
+| `ew_cov` | 50 | 1,431 | 4,228 | 3.0× |
+| `sgd` | 500 | 1,345 | 2,360 | 1.8× |
+| `ewridge` | 500 | 94,226 | 111,804 | 1.2× |
+| `ew_cov` | 500 | 120,315 | 604,538 | 5.0× |
+
+The bank's own work around a row is 60 to 160 ns at up to 50 features, as
+§44 and §45 found; `sgd` at five features spends 5 ns more in its step,
+and `ewridge` at 50 and 500 features 18% and 30% less than §45 read.
 
 ### 45. 1.3.0 against 1.2.0 (2026-10-24)
 
