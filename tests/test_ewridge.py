@@ -740,10 +740,14 @@ class TestTheRowClockSolveCadence:
         assert clock.equals(cap, null_equal=True)
         # The solves, seen where the fit the rows report moves: every row of
         # the first period, which ends on the 7th (0-based 6), then every 7th
-        # row from it.
+        # row from it -- but the first two, whose weights (1 and 1.97) are
+        # below ``1 - ln 2 / 50`` of the model's own floor of 2, where no row
+        # could read a solve before the next comes due, so none is run
+        # (task 311): the first fit is the third row's.
         c = clock["support_coef"].to_list()
+        assert c[0] is None and c[1] is None and c[2] is not None
         moved = [i for i in range(1, len(c)) if c[i] != c[i - 1]]
-        assert moved == [1, 2, 3, 4, 5, *range(6, 60, 7)]
+        assert moved == [2, 3, 4, 5, *range(6, 60, 7)]
 
 
 def _relation_frame(seed: int, n: int = 2000, gaps: bool = True) -> pl.DataFrame:

@@ -124,8 +124,11 @@ def test_an_explicit_cadences_first_period_is_the_default_schedule(model, extra,
     assert moved == list(range(149, 1_000, 150)), moved
     # The evidence the period acts: its fit moved on most of its rows (every
     # row of the first 72, then geometrically), where the floor's fit was
-    # held the whole period.
-    fits = {tuple(c) for c in coef[:149]}
+    # held the whole period. `ewridge`'s first rows have none: below `1 - ln 2
+    # / 50` of its floor, a row per unknown, no row can read a solve before
+    # the next comes due, and none is run (task 311).
+    assert (model == "ewridge") == (coef[0] is None), coef[:3]
+    fits = {tuple(c) for c in coef[:149] if c is not None}
     print(f"{model}, {cadence}: {len(fits)} fits in the first period")
     assert len(fits) > 100, len(fits)
 

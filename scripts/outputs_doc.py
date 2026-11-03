@@ -273,7 +273,9 @@ SHARED_FIELDS: list[tuple[str, str, str]] = [
         "regression's coefficients, or what a model that is not a regression keeps in their "
         "place, such as its centres or state means. Its builder's docstring lays the list "
         "out. A model that solves on a schedule (`solve_every`) shows its latest solve, and "
-        "the entries of a target no solve has fit yet are null. "
+        "the entries of a target no solve has fit yet are null. `ewridge` does not run a "
+        "solve that comes due while its weight is too far below the floor for any row to "
+        "read it before the next one, so there it shows the last fit solved. "
         "Under an `embargo` the row's own update waits for the delay, so `coef` is written "
         "after the rows this row releases, and is the fit the next row is predicted with "
         "only when the next row releases none",

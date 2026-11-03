@@ -1134,7 +1134,18 @@ def ewridge(
         far longer than the stream still solves, at rows further apart as the
         weight grows. ``half_life = inf`` and ``lam`` solve every row.
         ``max_rows_between_solves`` is off by default. The coefficients are the
-        sums' as of the last solve. A given ``solve_every`` below ``1e18``
+        sums' as of the last solve. While the weight is below ``1 - ln 2 / 50``
+        of the lowest floor any prediction reads at (``k + 1``, ``min_weight``,
+        each target's own), a solve the schedule by weight brings due is not
+        run, unless ``max_rows_between_solves`` brings it due too: until the
+        next one comes due, the weight learned since is less than that share
+        of the weight, so every row stays below the floor and is withheld,
+        and none could read it. The schedule moves on as after the solve, so
+        every prediction, residual and spread is the same to the bit;
+        ``coef`` there is the last fit solved, and a solve not run is not
+        counted in ``solve_failures``. That is most of the warm-up's solves at
+        a thousand features, and a fit there runs several times faster until
+        the weight reaches the floor. A given ``solve_every`` below ``1e18``
         starts with a first period that solves by weight, as the default does: until
         ``solve_every`` has passed since the stream's start (on the row clock,
         the start is a row before the first row), or ``max_rows_between_solves``
