@@ -615,6 +615,17 @@ returns.
   because the verdict estimates an expectation from the rate's rows: the
   fit's own memory, a handful of rows near the bound, withheld 6-11% of a
   stable rate's rows and served a third to a half of a diverging one's.
+  Under the squared and Huber losses a calm gate rests (task 314): once a
+  target's sums hold two half-lives of rows and the gains' mean square is
+  at most their mean, half the bound or less, it takes no gains but a
+  probe's every 8th row, and wakes where the probe passes twice the resting
+  mean or a row's residual passes 8 of the target's spreads; awake, it
+  rests again only after 100 gains, once calm. On five standardized
+  features over 10 streams, a rate raised after 2,000 rows from half the
+  bound to 1.15 times it was first withheld within a row of where a gate
+  kept awake withheld it, and from 0.3 to 1.5 times within 27 rows (65 to
+  99 rows after the change, the awake gate's range). A rate near the bound
+  is never calm and never rests.
 - `hmm`'s `transition_prior` docs say the prior pulls harder than its
   pseudo-count (at 10 and 4,000 rows the matrix is 0.088 from the truth at
   the 95th percentile, against 0.006 from the pseudo-counts alone, because
@@ -1168,6 +1179,24 @@ returns.
   `corrchange` with a monitored span counts 1.7% more through glibc's
   multi-threaded allocator, its process now running threads as a
   production one does; the model's work is unchanged.
+- Four rows that this release had made slower than 1.3.0 on arm64 are
+  level with it again or faster, bit for bit (task 314). Measured through
+  the bank against 1.3.0 built on the same Apple M4 Pro, by the best of
+  five runs in the default and an aligned code layout:
+  - `ew_class` with a tied covariance sums each class's lower triangle a
+    row's run at a time, where it indexed every entry and checked both
+    bounds on each (−8.9% and −3.6% before; −1.1% and +0.7% now).
+  - `bocpd`'s prune moves only the runs it must, where it swapped every
+    kept run with itself, and borrows its working space in place, where
+    it made and dropped an empty one each row (4 features, `max_run=20`:
+    −2.7% and −2.0% before; +2.7% and +2.6% now).
+  - `ewridge` forms its solve's system on the co-moments' lower triangle
+    and mirrors it, where it read each upper entry across the triangle's
+    rows and divided it again (200 features, a solve every row: −2.2% and
+    −3.5% before; +3.9% and +2.7% now).
+  - `sgd` checks and takes a slope's step in one pass at a shared rate,
+    where it formed each gradient twice (+0.9% and +2.2% against the build
+    before).
 
 ### Known issues
 

@@ -333,7 +333,13 @@ fn the_gate_reads_the_step_gains_mean_square_against_their_mean() {
 /// alone.
 #[test]
 fn each_gain_enters_bounded_by_four_times_the_mean_before_it() {
-    let at = |q: f64, n: f64| StepGain { q, q2: q * q, n };
+    let at = |q: f64, n: f64| StepGain {
+        q,
+        q2: q * q,
+        n,
+        resting: false,
+        rested: 0,
+    };
     assert_eq!(at(1.0, 1.0).bounded(10.0), 4.0);
     assert_eq!(at(3.0, 2.0).bounded(10.0), 6.0);
     assert_eq!(at(1.0, 1.0).bounded(3.0), 3.0);
@@ -343,15 +349,17 @@ fn each_gain_enters_bounded_by_four_times_the_mean_before_it() {
     assert_eq!(StepGain::default().bounded(10.0), 10.0);
     assert_eq!(StepGain::default().bounded(1e300), GAIN_CAP);
     let mut g = at(1.0, 1.0);
-    g.learn(0.0);
+    g.learn(0.0, false);
     assert_eq!(g, at(1.0, 1.0));
-    g.learn(10.0);
+    g.learn(10.0, false);
     assert_eq!(
         g,
         StepGain {
             q: GAIN_DECAY + 4.0,
             q2: GAIN_DECAY + 16.0,
             n: GAIN_DECAY + 1.0,
+            resting: false,
+            rested: 1,
         }
     );
 }
@@ -374,6 +382,8 @@ fn the_gate_moves_nothing_the_fit_learns() {
         q: 0.0,
         q2: 1e300,
         n: 1.0,
+        resting: false,
+        rested: 0,
     };
     let mut withheld = 0;
     for (x, y) in &rows {
@@ -571,6 +581,11 @@ fn each_step_gain_is_the_rate_times_the_curvature_along_the_row() {
             let p = m.link(dot(&m.beta[0], 1, x));
             let scale = m.scale(0);
             m.step(x, &[Some(y)], 1.0, w);
+            // Held awake: this reads each gain's arithmetic, and a calm gate
+            // rests (`the_calm_gate_rests_and_wakes_on_a_wide_residual`).
+            if let Some(g) = m.gain.first_mut() {
+                g.resting = false;
+            }
             // The level's first row takes the whole residual and nothing
             // else: no step, no gain.
             if first {
@@ -856,4 +871,149 @@ fn a_refused_step_moves_neither_the_level_nor_the_gains() {
     assert_eq!(m.beta, beta, "the refused row moved the fit");
     assert_eq!(m.level[0], level, "the refused row moved the level");
     assert_eq!(m.gain[0], gain, "the refused row entered the gains");
+}
+
+/// A calm gate rests (task 314): once its sums hold `REST_WEIGHT` of rows
+/// and their mean square is at most their mean, a stable rate's gate takes
+/// no more gains -- its sums stand still, and it serves every row -- but a
+/// probe's every `PROBE_ROWS` rows, until a probe or a residual past
+/// `WAKE_SPREADS` of the target's spread wakes it. The waking row's gain
+/// and the ones after join the sums, and the gate rests again once it has
+/// taken `AWAKE_ROWS` of them and is calm.
+#[test]
+fn the_calm_gate_rests_and_wakes_on_a_wide_residual() {
+    let rows = rows(3000, 0.0);
+    let c = SgdCfg {
+        standardize: false,
+        min_weight: 0.0,
+        ..cfg(SgdLoss::Squared, LearningRate::Constant, 0.002)
+    };
+    let mut m = Sgd::new(c).unwrap();
+    let mut rested_at = None;
+    let mut woke = None;
+    let mut rested_again = None;
+    let mut probed = 0;
+    for (i, (x, y)) in rows.iter().enumerate() {
+        let before = m.gain[0];
+        // A wide residual at row 1,500: the target 100 times its spread off.
+        let wide = i == 1500;
+        let yv = if wide {
+            y + 100.0 * m.spread.band(0, 1.0)
+        } else {
+            *y
+        };
+        let pred = m.step(x, &[Some(yv)], 1.0, 1.0).pred[0];
+        assert!(
+            i == 0 || pred.is_finite(),
+            "row {i} withheld at a stable rate"
+        );
+        let after = m.gain[0];
+        if before.resting && after.resting {
+            assert_eq!(
+                (after.q, after.q2, after.n),
+                (before.q, before.q2, before.n),
+                "row {i}"
+            );
+        }
+        if before.resting && !after.resting && !wide {
+            // Woken by a probe, on a probe's row, its gain taken.
+            assert_eq!((before.rested + 1) % PROBE_ROWS, 0, "row {i}");
+            assert_eq!(after.rested, 1, "row {i}");
+            probed += 1;
+        }
+        if after.resting && rested_at.is_none() {
+            rested_at = Some(i);
+            assert!(after.n >= REST_WEIGHT && after.q2 <= after.q, "{after:?}");
+        }
+        if wide {
+            assert!(before.resting, "the gate rested before row 1,500");
+            assert!(after.n > before.n, "the waking row's gain joined the sums");
+            woke = Some(i);
+        }
+        if woke.is_some() && rested_again.is_none() && after.resting && i > 1500 {
+            rested_again = Some(i);
+        }
+    }
+    let rested_at = rested_at.expect("the gate rested");
+    println!(
+        "rested at row {rested_at}, woke at {woke:?}, rested again at {rested_again:?}; \
+         {probed} probes woke it"
+    );
+    assert!(rested_at <= 260, "rested at row {rested_at}");
+    // Awake for `AWAKE_ROWS` gains after it woke, then calm again.
+    let awake = AWAKE_ROWS as usize;
+    assert!(
+        rested_again.is_some_and(|r| (1500 + awake - 1..=1500 + 2 * awake).contains(&r)),
+        "{rested_again:?}"
+    );
+}
+
+/// A resting gate probes every `PROBE_ROWS`-th row's gain (task 314), and
+/// wakes where it passes `PROBE_WAKE` times the resting mean: features
+/// scaled by 1.5 from row 2,000 raise a stable rate's gains 2.25 times,
+/// with no residual near `WAKE_SPREADS` of the target's spread, and the
+/// gate is awake within two probes.
+#[test]
+fn a_resting_gate_wakes_on_a_probe() {
+    let rows = rows(3000, 0.0);
+    let c = SgdCfg {
+        standardize: false,
+        min_weight: 0.0,
+        ..cfg(SgdLoss::Squared, LearningRate::Constant, 0.002)
+    };
+    let mut m = Sgd::new(c).unwrap();
+    let mut woke = None;
+    for (i, (x, y)) in rows.iter().enumerate() {
+        let x = if i >= 2000 { x.map(|v| 1.5 * v) } else { *x };
+        if i == 2000 {
+            assert!(m.gain[0].resting, "rested before the rows widen");
+        }
+        let p = m.predict(&x, 1.0).pred[0];
+        let band = m.spread.band(0, 1.0);
+        m.step(&x, &[Some(*y)], 1.0, 1.0);
+        if i >= 2000 && woke.is_none() && !m.gain[0].resting {
+            assert!(
+                (y - p).abs() <= WAKE_SPREADS * band,
+                "row {i}: a residual woke it"
+            );
+            woke = Some(i);
+        }
+    }
+    let woke = woke.expect("the gate woke");
+    println!("woke {} rows after the rows widened", woke - 2000);
+    assert!(
+        woke - 2000 < 2 * PROBE_ROWS as usize,
+        "woke {} rows after",
+        woke - 2000
+    );
+}
+
+/// Only a gate in the target's units rests: under the Poisson and logistic
+/// losses no residual is in the spread's units to wake it, so their gates
+/// take every gain, as before (task 314).
+#[test]
+fn a_gate_outside_the_targets_units_never_rests() {
+    let rows = rows(2000, 0.0);
+    for (what, loss) in [
+        ("poisson", SgdLoss::Poisson),
+        ("logistic", SgdLoss::Logistic),
+    ] {
+        let c = SgdCfg {
+            standardize: false,
+            min_weight: 0.0,
+            ..cfg(loss, LearningRate::Constant, 0.002)
+        };
+        let mut m = Sgd::new(c).unwrap();
+        let mut n_last = 0.0;
+        for (i, (x, y)) in rows.iter().enumerate() {
+            let y = match loss {
+                SgdLoss::Poisson => (y.abs() / 4.0).floor(),
+                _ => f64::from(*y > 10.0),
+            };
+            m.step(x, &[Some(y)], 1.0, 1.0);
+            assert!(!m.gain[0].resting, "{what}, row {i}");
+            n_last = m.gain[0].n;
+        }
+        assert!(n_last > REST_WEIGHT, "{what}: {n_last}");
+    }
 }

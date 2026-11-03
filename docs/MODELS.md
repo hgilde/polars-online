@@ -1345,6 +1345,25 @@ memory of the rate either. A rate raised past the bound after 2,000 stable
 rows was withheld from 68 rows later at 1.9 times the bound and 201 at 1.15
 times.
 
+**A calm gate rests.** Under the squared and Huber losses, once a target's
+sums hold two half-lives of rows (a weight of 108, three quarters of their
+limit) and the gains' mean square is at most their mean, half the bound or
+less, the gate stops taking gains: no row forms `|z|²` for it, and its
+verdict stays the stable one its sums read. It probes every 8th row's gain,
+and wakes where the probe passes twice the resting mean, or where a row's
+residual passes 8 of the target's spreads; awake, it takes every gain and
+rests again only after 100 of them, once calm. A rate past the bound grows
+its gains, so a probe finds it within a few rows. On five standardized
+features, over 10 streams each, a rate raised after 2,000 rows from half
+the bound to 1.15 times it was first withheld within a row of where the
+gate kept awake withheld it (113 to 225 rows after the change), from half
+the bound to 1.9 times within 8 rows (26 to 47), and from 0.3 to 1.5 times
+within 27 (65 to 99 rows, the awake gate's range). A rate near the bound is
+never calm, so its gate does not rest. At a constant rate of 0.01 on 20
+features, the benchmark's `sgd` row, the gate rests on 95% of the rows.
+The Poisson and logistic gates take every gain, since their residual is not
+in the target's units.
+
 `λ` is the row's decay, so `λ·weight_sum` is the weight before the row
 decayed to it, and `Gᵢ` is decayed by it too. A row of weight 0 in between
 therefore leaves the next row's rate where it would be without that row.

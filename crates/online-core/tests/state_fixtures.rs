@@ -1203,6 +1203,7 @@ fn the_gates_forms_and_the_quantile_scale_are_written() {
         ("sgd_spread", "Sgd", false),
         ("sgd_unstable", "Sgd", false),
         ("sgd_spread_adagrad", "Sgd", false),
+        ("sgd_resting", "Sgd", false),
     ] {
         let v = decode(name);
         let got = at(&v, &["model", variant, "cfg", "min_weight_holds_learning"])
@@ -1251,7 +1252,8 @@ fn the_gates_forms_and_the_quantile_scale_are_written() {
 /// its step gains (with their rows' weight, task 282 M1) and its level,
 /// every one holding a number; `sgd_unstable`
 /// is saved with its gate withholding, so its continuation reads the gains
-/// from the file and withholds every row; `sgd_spread_adagrad` keeps the
+/// from the file and withholds every row; `sgd_resting` is saved with its
+/// gate resting (task 314); `sgd_spread_adagrad` keeps the
 /// spread and the level and no gains, AdaGrad's step being bounded. The
 /// cases without the flag write none of them.
 #[test]
@@ -1269,7 +1271,12 @@ fn the_target_spread_forms_are_written() {
             .unwrap_or_else(|| panic!("{name}: no {key}"))
     };
     let len = |v: &rmpv::Value| v.as_array().map_or(0, Vec::len);
-    for name in ["sgd_spread", "sgd_unstable", "sgd_spread_adagrad"] {
+    for name in [
+        "sgd_spread",
+        "sgd_unstable",
+        "sgd_spread_adagrad",
+        "sgd_resting",
+    ] {
         let on = at(&decoded(name), &["model", "Sgd", "cfg", "target_spread"])
             .and_then(rmpv::Value::as_bool);
         assert_eq!(on, Some(true), "{name}: cfg.target_spread");
@@ -1278,7 +1285,19 @@ fn the_target_spread_forms_are_written() {
             assert!(held(&field(name, key)) > 0, "{name}: {key} holds nothing");
         }
     }
-    for name in ["sgd_spread", "sgd_unstable"] {
+    // The gate's two forms (task 314): awake in `sgd_spread` and
+    // `sgd_unstable`, resting in `sgd_resting`, each target's.
+    for (name, rests) in [
+        ("sgd_spread", false),
+        ("sgd_unstable", false),
+        ("sgd_resting", true),
+    ] {
+        for g in field(name, "gain").as_array().unwrap() {
+            let resting = at(g, &["resting"]).and_then(rmpv::Value::as_bool);
+            assert_eq!(resting, Some(rests), "{name}: gain {g}");
+        }
+    }
+    for name in ["sgd_spread", "sgd_unstable", "sgd_resting"] {
         assert_eq!(len(&field(name, "gain")), 2, "{name}: gains, one a target");
         assert!(
             held(&field(name, "gain")) > 0,
@@ -1299,7 +1318,11 @@ fn the_target_spread_forms_are_written() {
     }
     // The gate: the stable case predicts after its save, the unstable one
     // withholds every row, read from the gains in the file.
-    for (name, withheld) in [("sgd_spread", false), ("sgd_unstable", true)] {
+    for (name, withheld) in [
+        ("sgd_spread", false),
+        ("sgd_unstable", true),
+        ("sgd_resting", false),
+    ] {
         let f = frozen::ALL.iter().find(|f| f.name == name).unwrap();
         let mut m = load(&case_of(f), &f.bytes()).unwrap();
         let preds: Vec<f64> = f.rows().iter().flat_map(|r| m.step(r).pred).collect();

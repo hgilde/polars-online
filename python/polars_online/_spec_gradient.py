@@ -256,6 +256,20 @@ def sgd(
     the gate's memory it withheld 6-11% of a stable rate's rows and served a
     third to a half of a diverging one's. A rate raised past the bound after
     2,000 stable rows was withheld from 68 to 201 rows later.
+
+    Under ``squared`` and ``huber`` a calm gate rests: once a target's sums
+    hold two half-lives of rows and the gains' mean square is at most their
+    mean (half the bound or less), it takes no gains, so no row forms
+    ``|z|^2`` for it, and its verdict stays stable. It probes every 8th
+    row's gain and wakes where the probe passes twice the resting mean, or
+    where a row's residual passes 8 of the target's spreads; awake, it takes
+    every gain and rests again after 100 of them, once calm. A rate raised
+    past the bound raises its gains, so a probe finds it within a few rows:
+    on five standardized features over 10 streams, a rate raised from half
+    the bound to 1.15 times it was first withheld within a row of where an
+    awake gate withheld it, and from 0.3 to 1.5 times within 27 rows (65 to
+    99 rows after, the awake gate's range). A rate near the bound is never
+    calm, and its gate never rests.
     ``"inv_scaling"`` from a rate past the bound is withheld on its first rows
     and released as the rate falls, once the large gains of those rows have
     faded from the sums. ``"adagrad"`` moves a coefficient at most the rate

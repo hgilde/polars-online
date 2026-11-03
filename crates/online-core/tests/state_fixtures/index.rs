@@ -133,6 +133,9 @@ pub mod sgd_spread {
 pub mod sgd_unstable {
     include!("sgd_unstable.rs");
 }
+pub mod sgd_resting {
+    include!("sgd_resting.rs");
+}
 pub mod sgd_spread_adagrad {
     include!("sgd_spread_adagrad.rs");
 }
@@ -272,6 +275,7 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &sgd_huber_refit_done::FIXTURE,
     &sgd_spread::FIXTURE,
     &sgd_unstable::FIXTURE,
+    &sgd_resting::FIXTURE,
     &sgd_spread_adagrad::FIXTURE,
     &sgd_eps::FIXTURE,
     &sgd_logistic::FIXTURE,

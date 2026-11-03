@@ -213,7 +213,13 @@
 //! withheld for those rows, though the one-row rule calls it unstable. The memory is a
 //! count of stepped rows because the verdict is an estimate of an
 //! expectation, whose error is set by the spread of the gains, not by the
-//! rate or the decay ([`GAIN_DECAY`]). The rule is the one-row mean-square
+//! rate or the decay ([`GAIN_DECAY`]). Under the squared and Huber losses
+//! a calm gate rests (task 314; [`StepGain`]): once its sums hold two
+//! half-lives of rows and `Σq̂² ≤ Σq̂`, half the bound or less, it takes no
+//! gains, so no row forms `|z̃|²` for it, but a probe's every
+//! [`PROBE_ROWS`] rows; a probe past [`PROBE_WAKE`] times the resting mean,
+//! or a residual past [`WAKE_SPREADS`] of the target's spread, wakes it,
+//! and it rests again only after [`AWAKE_ROWS`] gains, once calm. The rule is the one-row mean-square
 //! contraction `E[(1 − q)²] < 1`; on standardized normal features with an
 //! intercept it bounds a constant rate at `2 (p + 1) / (p² + 4p + 1)`,
 //! 0.261 at five features, where the measured edge was 0.25-0.3. Without
@@ -491,12 +497,58 @@ const NEUTRAL_GAIN: f64 = 2.0;
 /// so the residual shrinks in mean square while `E[(1 − q)²] < 1`, that is
 /// `E[q²] < 2·E[q]`; past it the fit diverges, and the target is
 /// [`StepGain::unstable`].
+///
+/// Under a loss in the target's units (squared and Huber), a gate whose
+/// sums hold [`REST_WEIGHT`] of rows and whose mean square is at most its
+/// mean -- half the bound or less -- rests: it takes no gains, so no row
+/// forms `|z̃|²` for it, and its verdict stays the stable one its sums
+/// read. Every [`PROBE_ROWS`]-th row it rests it takes a probe of the
+/// row's gain, and wakes where the probe passes [`PROBE_WAKE`] times the
+/// sums' mean; a row whose residual passes [`WAKE_SPREADS`] of the
+/// target's spread wakes it too. Awake, it takes the waking gain and every
+/// one after, as before it rested, and may rest again after
+/// [`AWAKE_ROWS`] of them. A rate that passes its bound raises its gains,
+/// so a probe finds it within a few rows. What the rest saves is the
+/// other rows' gains: at 20 features and a rate of 0.01 the gate rests on
+/// 95% of the rows, and the step takes 0.7 of its 36 ns less on arm64,
+/// natively (task 314).
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub(crate) struct StepGain {
     q: f64,
     q2: f64,
     n: f64,
+    /// Whether the gate rests (above). A state written before it was kept
+    /// loads awake, and the gate goes on as it did.
+    #[serde(default)]
+    resting: bool,
+    /// The rows a resting gate has let pass since it rested: every
+    /// [`PROBE_ROWS`]-th takes a probe of the row's gain.
+    #[serde(default)]
+    rested: u32,
 }
+
+/// The gains a gate takes after it wakes before it may rest again: a
+/// half-life of them ([`StepGain`]).
+const AWAKE_ROWS: u32 = 100;
+
+/// A resting gate probes every `PROBE_ROWS`-th row's gain ([`StepGain`]).
+const PROBE_ROWS: u32 = 8;
+
+/// A probe wakes the gate where its gain passes `PROBE_WAKE` times the
+/// resting sums' mean ([`StepGain`]).
+const PROBE_WAKE: f64 = 2.0;
+
+/// The weight of rows a gate's sums hold before it may rest: three
+/// quarters of their limit, `1 / (1 − GAIN_DECAY)` ≈ 144.8, which they
+/// reach after two half-lives, 200 stepped rows ([`StepGain`]).
+const REST_WEIGHT: f64 = 108.0;
+
+/// The residual, in the target's spreads, that wakes a resting gate
+/// ([`StepGain`]). A rate that has passed its bound grows its residuals
+/// row by row, and passes this within a few rows of doing so; a row this
+/// far off for another reason wakes the gate for no more than the rows it
+/// takes to be calm again.
+const WAKE_SPREADS: f64 = 8.0;
 
 /// Per target, the weight of the rows its level has been learned from,
 /// undecayed, `Σw` and `Σw²` ([`SgdCfg::target_spread`]; the module docs):
@@ -546,7 +598,9 @@ impl StepGain {
     /// the cut would then dilute its own verdict to the floor of 2, which
     /// moves nothing, while the rows that still step with a curvature, each
     /// at a gain far past 2, are the evidence the rate diverges.
-    fn learn(&mut self, q: f64) {
+    ///
+    /// Where `may_rest`, a gate whose sums are calm after the gain rests.
+    fn learn(&mut self, q: f64, may_rest: bool) {
         if q == 0.0 {
             return;
         }
@@ -554,6 +608,15 @@ impl StepGain {
         self.q = GAIN_DECAY * self.q + q;
         self.q2 = GAIN_DECAY * self.q2 + q * q;
         self.n = GAIN_DECAY * self.n + 1.0;
+        // Awake, `rested` counts the gains taken since the gate woke; it
+        // rests again only after a half-life of them, so a gate woken by a
+        // probe or a wide residual reads the rows after it before it
+        // judges itself calm.
+        self.rested = self.rested.saturating_add(1);
+        if may_rest && self.rested >= AWAKE_ROWS && self.n >= REST_WEIGHT && self.q2 <= self.q {
+            self.resting = true;
+            self.rested = 0;
+        }
     }
 
     /// The recent gains' mean square above twice their mean: the step
@@ -1279,7 +1342,8 @@ impl Sgd {
             self.level[j] = lv;
         }
         if let Some(q) = gain {
-            self.gain[j].learn(q);
+            let may_rest = in_target_units(&self.cfg);
+            self.gain[j].learn(q, may_rest);
         }
     }
 
@@ -2018,18 +2082,9 @@ impl OnlineModel for Sgd {
         // The squared length of the row the step is taken on, `|z̃|²` with
         // the intercept's 1, for the step gains (`StepGain`); unread where
         // none are kept.
-        let zz = if self.gain.is_empty() {
-            0.0
-        } else {
-            let z: &[f64] = if self.scaler.is_some() {
-                &self.zbuf[off..]
-            } else {
-                x
-            };
-            // In `dot`'s lanes: a plain running sum is a chain of
-            // dependent additions, a tenth of a wide step.
-            off as f64 + dot(z, 0, z)
-        };
+        // Formed for the first target whose gate takes the row's gain, and
+        // for none while every gate rests ([`StepGain`]).
+        let mut zz: Option<f64> = None;
         // Per target, the label a row taught it with, while a refit buffer
         // is open (`SgdCfg::refit_rows`); empty otherwise, which costs a
         // row nothing once every refit has run. The model's own scratch,
@@ -2164,7 +2219,21 @@ impl OnlineModel for Sgd {
             // with `c` the loss's curvature at the prediction: the rate
             // past its stability bound shows in their mean square
             // (`StepGain`). `l2` shrinks each slope by `1 − lr·l2` besides.
-            let step_gain = match (self.gain.is_empty(), lr_row) {
+            // A resting gate takes no gain, and wakes on a residual past
+            // `WAKE_SPREADS` of the target's spread, its unit here
+            // ([`StepGain`]).
+            let (resting, probe) = match self.gain.get_mut(j) {
+                Some(g) if g.resting => {
+                    g.rested = g.rested.wrapping_add(1);
+                    if (yj - p).abs() > WAKE_SPREADS * unit {
+                        g.resting = false;
+                        g.rested = 0;
+                    }
+                    (g.resting, g.resting && g.rested % PROBE_ROWS == 0)
+                }
+                _ => (false, false),
+            };
+            let step_gain = match (self.gain.is_empty() || (resting && !probe), lr_row) {
                 (false, Some(lr)) => {
                     let c = match self.cfg.loss {
                         SgdLoss::Squared => 1.0,
@@ -2173,8 +2242,37 @@ impl OnlineModel for Sgd {
                         SgdLoss::Logistic => p * (1.0 - p),
                         SgdLoss::Quantile { .. } | SgdLoss::EpsilonInsensitive { .. } => 0.0,
                     };
-                    let along = if c > 0.0 { weight * c * zz } else { 0.0 };
-                    Some(lr * (along + l2))
+                    let along = if c > 0.0 {
+                        // In `dot`'s lanes: a plain running sum is a chain
+                        // of dependent additions, a tenth of a wide step.
+                        let zz = *zz.get_or_insert_with(|| {
+                            let z: &[f64] = if self.scaler.is_some() {
+                                &self.zbuf[off..]
+                            } else {
+                                x
+                            };
+                            off as f64 + dot(z, 0, z)
+                        });
+                        weight * c * zz
+                    } else {
+                        0.0
+                    };
+                    let q = lr * (along + l2);
+                    if probe {
+                        // A probe: the gain wakes the gate past twice the
+                        // resting mean, and joins the sums; otherwise it is
+                        // let pass.
+                        let g = &mut self.gain[j];
+                        if q > PROBE_WAKE * g.q / g.n {
+                            g.resting = false;
+                            g.rested = 0;
+                            Some(q)
+                        } else {
+                            None
+                        }
+                    } else {
+                        Some(q)
+                    }
                 }
                 _ => None,
             };

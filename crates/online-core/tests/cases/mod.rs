@@ -1242,6 +1242,25 @@ pub fn all() -> Vec<Case> {
             Targets::Linear(2),
             40
         ),
+        // A calm gate, resting (task 314): a stable rate, saved after its
+        // sums hold two half-lives of rows, so its continuation reads the
+        // flag from the file and takes no gains until a wide residual.
+        case!(
+            "sgd_resting",
+            "Sgd",
+            Sgd,
+            Sgd::new(SgdCfg {
+                schedule: LearningRate::Constant,
+                learning_rate: 0.01,
+                target_spread: true,
+                min_weight_holds_learning: false,
+                ..sgd_cfg(SgdLoss::Squared, 2)
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            300
+        ),
         case!(
             "sgd_spread_adagrad",
             "Sgd",
