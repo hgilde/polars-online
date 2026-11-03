@@ -459,6 +459,34 @@ fn a_due_solve_is_passed_exactly_below_the_floors_margin() {
     );
 }
 
+/// The threshold to the bit, on a first row whose weight is the model's
+/// whole weight, exactly: a weight one ulp below `F (1 − s)(1 − 2⁻¹⁶)` (as
+/// the model rounds it) passes its due solve; the threshold itself, and
+/// `F (1 − s)`, run it (task 313: CI's survivors of 0ab3bac1 made the
+/// comparison `<=`, the margin a division, and its `1 − 2⁻¹⁶` `1 + 2⁻¹⁶`).
+#[test]
+fn the_first_rows_solve_is_passed_strictly_below_the_threshold() {
+    let cfg = base(4, 1);
+    let floor = EwRidge::new(cfg.clone()).unwrap().unread_floor();
+    assert_eq!(floor, 5.0);
+    let s = crate::DEFAULT_SOLVE_SHARE;
+    let edge = floor * (1.0 - s) * (1.0 - 1.0 / 65_536.0);
+    let below = f64::from_bits(edge.to_bits() - 1);
+    let outcomes: Vec<(u64, u64)> = [below, edge, floor * (1.0 - s)]
+        .iter()
+        .map(|&w| {
+            let mut m = EwRidge::new(cfg.clone()).unwrap();
+            m.set_min_weight_output_only(true);
+            let (u0, s0) = (UNREAD.with(|c| c.get()), SOLVED.with(|c| c.get()));
+            m.step(&[0.3, -0.1, 0.7, 0.2], &[Some(1.0)], 0.0, w);
+            assert_eq!(m.n_eff().to_bits(), w.to_bits(), "the weight is the row's");
+            (UNREAD.with(|c| c.get()) - u0, SOLVED.with(|c| c.get()) - s0)
+        })
+        .collect();
+    // Each first row is due (all of its weight is new): passed, or run.
+    assert_eq!(outcomes, [(1, 0), (0, 1), (0, 1)]);
+}
+
 /// The floor is a row per unknown -- `k + 1` with an intercept, `k`
 /// through the origin -- where `min_weight` and the targets' own are above
 /// it, and the lowest of them otherwise (task 313: the docs state it so).
