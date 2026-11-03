@@ -77,7 +77,7 @@ release = 7947283
 
 [instructions.ewridge_k200]
 what = "ewridge, 200 features, 1 target, half-life 1000, min_weight 200, the default schedule: AnyModel::step_into, into one kept Step"
-budget = 320449457
+budget = 303034471
 
 [instructions.ewridge_gram_t10]
 what = "ewridge, 50 features, 10 targets, gram_block_rows 64, pairwise, a solve every 400: AnyModel::step_into, into one kept Step, the targets folded into the block's merge"
@@ -105,12 +105,12 @@ budget = 46955773
 
 [instructions.sgd]
 what = "sgd, 20 features, squared loss, learning rate 0.01, standardized: AnyModel::step_into, into one kept Step"
-budget = 2533026
+budget = 2427776
 release = 3053026
 
 [instructions.sgd_huber]
 what = "sgd, 20 features, Huber loss in the MAD scale, learning rate 0.01, standardized: AnyModel::step_into, into one kept Step"
-budget = 2867534
+budget = 2753466
 release = 3501863
 
 [instructions.sgd_huber_refit]
@@ -129,7 +129,7 @@ release = 433958
 
 [instructions.bocpd]
 what = "bocpd, 4 features, diagonal, max_run 200, prune below 1e-6: AnyModel::step_into, into one kept Step"
-budget = 13237033
+budget = 12748524
 release = 15479823
 
 [instructions.kmeans]
@@ -268,7 +268,7 @@ release = 952261
 
 [instructions.bocpd_full]
 what = "bocpd, 4 features, full covariance, max_run 200, prune below 1e-6: AnyModel::step_into, into one kept Step"
-budget = 20529631
+budget = 20101111
 release = 31220323
 
 [instructions.ew_cov_lags]
