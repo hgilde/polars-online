@@ -169,6 +169,9 @@ pub(crate) fn clock_due(since: &Since, solve_every: f64) -> bool {
 /// decides, and its solves fall on the rows the same cadence from the
 /// model's start reaches. A model's own first solves (a fresh model's at
 /// its floor, a late target's) during the period are the period's too.
+/// `ewridge` does not run a period's solve that no row can read before the
+/// next comes due, and leaves every counter as that solve would
+/// (`ewridge/unread.rs`; task 311).
 ///
 /// A spec with an explicit `solve_every` sets the mark
 /// ([`crate::OnlineModel::set_first_period_by_share`]); a state written
