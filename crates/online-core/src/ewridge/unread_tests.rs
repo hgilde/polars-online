@@ -215,6 +215,12 @@ fn cases() -> Vec<Case> {
     c.cfg.min_weight = 0.0;
     c.skips = false;
     out.push(c);
+    // Nor past a share of 1/2, where the margin argument stops (item 3);
+    // at exactly 1/2 the "min_weight over k, held back" case skips.
+    let mut c = case("share past one half", base(6, 2));
+    c.cfg.solve_share = Some(0.6);
+    c.skips = false;
+    out.push(c);
     out
 }
 
@@ -451,6 +457,28 @@ fn a_due_solve_is_passed_exactly_below_the_floors_margin() {
         passed > 20 && run_below > 0,
         "{passed} passed, {run_below} run below F"
     );
+}
+
+/// The floor is a row per unknown -- `k + 1` with an intercept, `k`
+/// through the origin -- where `min_weight` and the targets' own are above
+/// it, and the lowest of them otherwise (task 313: the docs state it so).
+#[test]
+fn the_floor_is_a_row_per_unknown_or_the_lowest_threshold() {
+    let floor = |intercept: bool, min_weight: f64, targets: Vec<f64>| {
+        let mut cfg = base(6, 2);
+        cfg.fit_intercept = intercept;
+        cfg.min_weight = min_weight;
+        let mut m = EwRidge::new(cfg).unwrap();
+        m.set_min_weight_output_only(true);
+        if !targets.is_empty() {
+            m.set_target_min_weight(targets).unwrap();
+        }
+        m.unread_floor()
+    };
+    assert_eq!(floor(true, 20.0, vec![]), 7.0);
+    assert_eq!(floor(false, 20.0, vec![]), 6.0);
+    assert_eq!(floor(true, 4.0, vec![]), 4.0);
+    assert_eq!(floor(true, 20.0, vec![9.0, 5.0]), 5.0);
 }
 
 /// `ill_conditioned` names no fit below `min_weight`, where the model

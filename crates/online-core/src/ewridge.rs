@@ -154,8 +154,9 @@ pub struct EwRidgeCfg {
     /// keeps the fit that close to its data, where the clock solved once and
     /// never again. `None` keeps the clock. Under a share of at most `1/2`,
     /// a due solve no row can read before the next comes due -- the weight
-    /// below `(1 − share)` of the lowest floor a read uses -- is not run, and
-    /// the schedule moves on as after it (`unread`'s module docs).
+    /// below `(1 − share)(1 − 2⁻¹⁶)` of the lowest floor a read uses -- is
+    /// not run, and the schedule moves on as after it (`unread`'s module
+    /// docs); above `1/2` every due solve runs.
     #[serde(default)]
     pub solve_share: Option<f64>,
     /// Rows of the Gram update held back and merged as one block

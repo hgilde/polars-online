@@ -160,13 +160,21 @@ to keep a fit on every feature, name a set that holds them all, such as
 coefficients of its last solve. Under a finite half-life it solves once the
 weight learned since then reaches `ln 2 / 50` of the weight the fit holds:
 about 1.4 %, or every `half_life/50` of clock in steady state. While the
-weight is below `1 - ln 2 / 50` of the lowest floor a prediction is read at
-(`k + 1`, `min_weight`, each target's own), a solve that comes due is not
-run, unless `max_rows_between_solves` brings it due: until the next one, every row learns less than that share of the
-weight, so each stays below the floor and withholds its prediction, and
-nothing would read the solve. Every prediction, residual and spread is the
-same to the bit; `coef` there is the last fit solved, and `solve_failures`
-counts only the solves run. To solve on
+weight is below `(1 - ln 2 / 50)(1 - 2^-16)` of the floor -- the least of a
+row per unknown (`k + 1`, `k` without an intercept), `min_weight` and each
+target's own threshold -- a solve that comes due is not run, unless
+`max_rows_between_solves` brings it due: until the next one, the rows learn
+less than `ln 2 / 50` of the weight, so each stays below the floor and
+withholds its prediction, and nothing would read the solve (the `2^-16`
+covers the weight's rounding). Every prediction, residual and spread is the
+same to the bit; `coef` there is the last fit solved, null before the
+first, and `solve_failures` counts only the solves run. So a group whose
+weight never reaches the floor, such as one of two rows over two features,
+reports no `coef` on any row, in `bank.coef()` or as a closed group, where
+running every solve gave it a ridge fit of its few rows. To keep every
+solve, give `min_weight=0`, which makes the floor 0 and withholds no
+prediction for its weight, or `max_rows_between_solves=1`, whose solves
+always run. To solve on
 the clock instead, give `solve_every` in clock units. Until `solve_every`
 has passed since the stream's start, or `max_rows_between_solves` rows, the
 model solves by weight as it does by default, so a fit of its first few rows

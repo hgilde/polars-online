@@ -92,7 +92,12 @@ returns.
   latest due solve; a solve not run is not counted in `solve_failures`; and a
   state saved there holds that fit. A solve `max_rows_between_solves` brings
   due always runs, so `max_rows_between_solves = 1` still reports a fit on
-  every row; under `window_size` every due solve runs. Two corners can read
+  every row; under `window_size` every due solve runs. So a group whose
+  weight never reaches the floor -- two rows over two features, say, under
+  the default spec -- reports no `coef` on any row, in `bank.coef()` or as a
+  closed group, where 1.3.0 reported a ridge fit of its few rows (task 313).
+  `min_weight = 0` (the floor becomes 0) or `max_rows_between_solves = 1`
+  keeps every solve, and that fit with it. Two corners can read
   the older fit in a prediction: a target whose weight has decayed to exactly
   0 while the stream is below the floor (more than about 1,074 half-lives
   without a row), whose next row was predicted from a ridge over no rows and
@@ -842,9 +847,10 @@ returns.
 ### Performance
 
 - `ewridge` no longer runs a solve its weight schedule brings due while the
-  fit's weight is below `1 - ln 2 / 50` of the lowest floor any prediction is
-  read at (a row per coefficient, `min_weight`, each target's own; task 311):
-  until the next solve comes due, every row learns less than that share of
+  fit's weight is below `(1 - ln 2 / 50)(1 - 2^-16)` of the floor, the least
+  of a row per coefficient (`k + 1`, `k` without an intercept), `min_weight`
+  and each target's own threshold (task 311; stated exactly in task 313):
+  until the next solve comes due, the rows learn less than `ln 2 / 50` of
   the weight, so each stays below the floor, withholds its prediction and
   could not read the solve. The schedule moves on as after the solve, so
   every residual, spread, weight and Gram, and every prediction outside the
