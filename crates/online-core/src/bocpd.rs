@@ -1660,8 +1660,9 @@ impl Bocpd {
             return;
         }
         // The runs dropped go to the working space, each to be a later
-        // row's empty run (task 292).
-        let mut work = std::mem::take(&mut self.work);
+        // row's empty run (task 292). Borrowed in place: taken out and put
+        // back, an empty one was made and dropped on every row.
+        let work = &mut self.work;
         if self.cfg.prune_below > 0.0 {
             let keep = &mut work.keep;
             keep.clear();
@@ -1676,10 +1677,17 @@ impl Bocpd {
                 // The kept runs moved to the front in their order, as
                 // `retain` keeps them, and the rest dropped from the end.
                 let mut at = 0;
+                // A run already in its place is not moved: until the first
+                // run dropped, every kept run is. Swapped with itself, and
+                // with the working space taken out and put back above, the
+                // prune cost a diagonal row at `max_run = 20` about 75 ns
+                // on arm64, 5% of it (task 314).
                 for (i, &k) in keep.iter().enumerate() {
                     if k || i == 0 {
-                        self.runs.swap(at, i);
-                        self.logjoint[at] = self.logjoint[i];
+                        if at != i {
+                            self.runs.swap(at, i);
+                            self.logjoint[at] = self.logjoint[i];
+                        }
                         at += 1;
                     }
                 }
@@ -1734,7 +1742,6 @@ impl Bocpd {
             self.logjoint.truncate(kept + 1);
             self.logjoint[kept] = tail;
         }
-        self.work = work;
     }
 }
 
