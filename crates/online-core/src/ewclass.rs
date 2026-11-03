@@ -593,11 +593,16 @@ impl EwClass {
                 for &c in &seen {
                     let pi = weights[c] / total;
                     let ridge = self.ridge(c);
-                    // The lower triangle, which the factorization reads.
+                    // The lower triangle, which the factorization reads,
+                    // a row's run `[i·k, i·k + i]` at a time: indexed slot
+                    // by slot, the loop checked both bounds on every
+                    // product and ran a slot at a time, about a tenth of
+                    // a 20-feature row's time on arm64 (task 314).
                     let cl = classes[c].comoments().lower();
                     for i in 0..k {
-                        for j in 0..=i {
-                            m[i * k + j] += pi * cl[i * k + j];
+                        let run = i * k..i * k + i + 1;
+                        for (mij, cij) in m[run.clone()].iter_mut().zip(&cl[run]) {
+                            *mij += pi * cij;
                         }
                     }
                     for i in 0..k {
