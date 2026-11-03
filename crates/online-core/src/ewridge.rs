@@ -942,9 +942,7 @@ impl EwRidge {
                 kept: factors,
                 work: Some(work),
             };
-            self.since_solve.restart();
-            self.rows_since_solve = 0;
-            self.weight_since_solve = 0.0;
+            self.restart_schedule();
             return;
         }
         let mut failures = 0u64;
@@ -1256,6 +1254,13 @@ impl EwRidge {
             kept: factors,
             work: Some(work),
         };
+        self.restart_schedule();
+    }
+
+    /// Restart the solve schedule as a solve does: its clock, its row count
+    /// and the weight learned since, from this row. A solve run, an empty
+    /// window's and a solve passed as unread (`unread.rs`) all end here.
+    fn restart_schedule(&mut self) {
         self.since_solve.restart();
         self.rows_since_solve = 0;
         self.weight_since_solve = 0.0;

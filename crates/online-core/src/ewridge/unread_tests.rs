@@ -265,12 +265,30 @@ struct Served {
     grams: Option<Vec<Vec<u64>>>,
 }
 
+/// The thread's skip mode for as long as it lives, set back to the model's
+/// way (`true`) when it drops -- on a panic too, so a failing test does not
+/// leave a later test on its thread running the reference mode.
+struct SkipMode;
+
+impl SkipMode {
+    fn set(skip: bool) -> Self {
+        SKIP_UNREAD.with(|s| s.set(skip));
+        SkipMode
+    }
+}
+
+impl Drop for SkipMode {
+    fn drop(&mut self) {
+        SKIP_UNREAD.with(|s| s.set(true));
+    }
+}
+
 /// Run `c` over `data`, every due solve run or not, with a save and load
 /// at each row of `loads` and the readiness settled, as a chunk's end
 /// settles it, every 37 rows. Returns what each row served and the solves
 /// run and passed.
 fn run(c: &Case, data: &[Row], skip: bool, loads: &[usize]) -> (Vec<Served>, u64, u64) {
-    SKIP_UNREAD.with(|s| s.set(skip));
+    let _mode = SkipMode::set(skip);
     let (solved0, unread0) = (SOLVED.with(|s| s.get()), UNREAD.with(|s| s.get()));
     let mut m = build(c);
     let floor = m.unread_floor();
@@ -330,12 +348,24 @@ fn run(c: &Case, data: &[Row], skip: bool, loads: &[usize]) -> (Vec<Served>, u64
             m.settle_readiness();
         }
     }
-    SKIP_UNREAD.with(|s| s.set(true));
     (
         out,
         SOLVED.with(|s| s.get()) - solved0,
         UNREAD.with(|s| s.get()) - unread0,
     )
+}
+
+/// The reference mode does not outlive a test that panics in it (task 313):
+/// the guard restores the model's way as the panic unwinds.
+#[test]
+fn the_skip_mode_is_restored_on_a_panic() {
+    let caught = std::panic::catch_unwind(|| {
+        let _mode = SkipMode::set(false);
+        assert!(!SKIP_UNREAD.with(std::cell::Cell::get));
+        panic!("a failing test in the reference mode");
+    });
+    assert!(caught.is_err());
+    assert!(SKIP_UNREAD.with(std::cell::Cell::get));
 }
 
 /// Every served number to the bit against the model that runs every due
@@ -492,7 +522,7 @@ fn a_target_decayed_to_nothing_keeps_the_fit_of_the_last_solve_run() {
         })
         .collect();
     let served = |skip: bool| {
-        SKIP_UNREAD.with(|c| c.set(skip));
+        let _mode = SkipMode::set(skip);
         let mut m = EwRidge::new(cfg.clone()).unwrap();
         m.set_min_weight_output_only(true);
         let mut out = Vec::new();
@@ -505,7 +535,6 @@ fn a_target_decayed_to_nothing_keeps_the_fit_of_the_last_solve_run() {
                 );
             }
         }
-        SKIP_UNREAD.with(|c| c.set(true));
         out
     };
     let (all, passed) = (served(false), served(true));
