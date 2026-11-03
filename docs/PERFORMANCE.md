@@ -5506,6 +5506,26 @@ The bank's own work around a row is 60 to 160 ns at up to 50 features, as
 §44 and §45 found; `sgd` at five features spends 5 ns more in its step,
 and `ewridge` at 50 and 500 features 18% and 30% less than §45 read.
 
+#### On x86-64
+
+The same benchmark rows on an Intel Xeon (Linux, 4 virtual cores, rustc
+1.99.1), 1.4.0 (`b52f0cdc`, the wheel of `0311852`) against 1.3.0 built
+there from its tag, the best of three over 200k rows in each of eight
+rounds, the order rotated, as the change in rows a second, best and 25th
+percentile, default layout | aligned:
+
+| row | 1.4.0 against 1.3.0 | 1.4.0 against 1.4.0 before the calm gate rests |
+|---|---|---|
+| `sgd`, `standardize=False` | −11.2% / −7.0% \| −11.7% / −9.7% | −1.6% / +0.2% \| +2.3% / +0.7% |
+| `sgd`, `coef_min=0, coef_sum=1` | −5.1% / −5.8% \| −5.1% / −3.6% | −1.2% / −0.1% \| +2.0% / +4.1% |
+| `pa`, `standardize=False` | −7.8% / −2.8% \| +1.3% / +0.3% | −1.3% / −1.2% \| +3.1% / +0.9% |
+
+`pa` is not slower in both layouts. Counted under Valgrind, the raw `sgd`
+block does 1,133 instructions a row in 1.3.0, 1,527 before the gate rests
+and 1,341 after; natively its step takes 73, 97 and 89 ns. Through the
+bank, a row spends about 440 ns, of which the step is about 90, so the
+step's 8 ns is within the rounds' noise there.
+
 ### 45. 1.3.0 against 1.2.0 (2026-10-24)
 
 *Provenance: measured at `e40faaf`, 1.3.0's build (the later merges into

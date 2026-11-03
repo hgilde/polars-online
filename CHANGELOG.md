@@ -933,18 +933,22 @@ returns.
   row does, not a delay. Through the bank, against 1.3.0 built on the same
   machine, by the best of four runs (default and an aligned code layout):
   `sgd` at 20 features with `standardize=False` is 9.2% and 10.0% slower
-  on arm64 (an Apple M4 Pro, 120 to 132 ns a row), and was about 13% and
-  14% on x86-64 before the rest below; with `coef_min=0, coef_sum=1` 3.9%
-  and 3.2% on arm64, and about 8% on x86-64. Counted under Valgrind on x86-64 the raw row does 394 more
-  instructions (1,133 to 1,527 a row, +35%): the step gain's `|z̃|²` about
-  100, indexing each target's state 50, the spread's update 45, the
-  gains' and the level's sums 40 and 25, the curvature 30. On arm64 the
-  step itself takes about 5 of those ns natively (31 to 36 ns), the gate
-  about 2 of them, and the bank's loop the rest (below). A calm gate now
-  rests (*Fixed*), which takes 0.7 ns off the native step and 0.1-0.9%
-  off the row through the bank: what remains is the spread, the level and
-  the bank. The standardized default, which reaches the AVX2 lanes on
-  x86-64, counts 17% fewer instructions than 1.3.0 there.
+  on arm64 (an Apple M4 Pro, 120 to 132 ns a row), and 11.2% and 11.7%
+  on x86-64 (an Intel Xeon under Linux, the best of three in each of
+  eight rounds); with `coef_min=0, coef_sum=1` 3.9% and 3.2% on arm64,
+  and 5.1% and 5.1% on x86-64. Counted under Valgrind on x86-64, the raw
+  row did 394 more instructions a row than 1.3.0 (1,133 to 1,527, +35%)
+  before the gate rested: the step gain's `|z̃|²` about 100, indexing each
+  target's state 50, the spread's update 45, the gains' and the level's
+  sums 40 and 25, the curvature 30. A calm gate now rests (*Fixed*). On
+  x86-64 that takes the raw row to 1,341 instructions (+18% on 1.3.0) and
+  its native step from 97 to 89 ns (73 ns in 1.3.0). On arm64 the step
+  itself takes about 5 ns more natively (31 to 36 ns), the gate about 2 of
+  them, and resting takes 0.7 ns off. Through the bank, resting is within
+  the runs' scatter on both (0.1-0.9% on arm64): what remains is the
+  spread, the level and the bank's loop (below). The standardized default,
+  which reaches the AVX2 lanes on x86-64, counts 20% fewer instructions
+  than 1.3.0 there.
 - `holt`'s step also updates the line fit's three sums, a few operations a
   row; no change measurable at the bank (task 278).
 - **The refit's buffers, and the bound on them** (task 277). Measured with 150-row groups, two targets and 20 features, fed from parquet. Each cell gives peak resident memory after the fit, then the saved state:
