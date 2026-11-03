@@ -9,7 +9,7 @@ order, another kernel), each declared with its size. Before 1.0, the minor
 version carried breaking changes, and any change to the numbers a model
 returns.
 
-## [Unreleased]
+## [1.4.0] — 2026-11-03
 
 ### Added
 
@@ -1192,6 +1192,15 @@ returns.
   fit then wanders by up to 1.4 residual scales at 1e-1 (median 0.13).
   Holding the half-width at the stream's own scale settles every pass but
   fits wild first rows worse than no refit, so it was not taken (task 282).
+- **On Windows on x86, each thread that runs one of faer's larger matrix
+  products still commits memory of about twice the CPU's L3 cache**, as
+  1.1.0's *Known issues* describes. faer's x86 product kernel stays on
+  every x86 build, since it is the faster product, and keeps a packing
+  buffer of that size on every thread that has multiplied; Windows commits
+  all of it, where Linux and macOS back only the pages a product touches.
+  A smaller pool bounds it: the commit is at most about twice the L3 times
+  the bank's `threads=`. `docs/PERFORMANCE.md`, "faer's x86 kernel on
+  every x86 build", has the measurements.
 
 ## [1.3.0] — 2026-10-24
 
