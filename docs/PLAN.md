@@ -10425,7 +10425,7 @@ tick, and that the series holding it up has a count near 1.
       §43 has the tables. CI runs 38610653398, 38625365356, 38626170815,
       38645950981, 38658964449; the user's artifact
       claude.ai/artifact/Tb3tizyExD1PLqpxnwknDe.
-- [ ] 263. **Why the bounded product costs twice as much on Windows** --
+- [x] 263. **Why the bounded product costs twice as much on Windows** --
       found 2026-10-14 (CI 38658964449, a Windows runner, Intel Xeon
       8573C, against 1.0.1's wheel): wide `ewridge` 0.74-0.88 of 1.0.1's
       speed on the default schedule and 0.37-0.71 with `gram_block_rows`
@@ -10487,6 +10487,12 @@ tick, and that the series holding it up has a count near 1.
       the same day: "Keep the kernel for every build for now, record all
       the findings for later work" -- task 264. The options above stay
       open for later work, measured against that build.
+      *Closed 2026-11-03, the user: "263 seems like we currently have the
+      best option."* faer's kernel stays on every x86 build (task 264); the
+      Windows commit of 2 x L3 a multiplying thread is documented in
+      PERFORMANCE §43 and repeated as a Known issue in 1.4.0's CHANGELOG
+      (pointing to 1.1.0's); `threads=` bounds it. The upstream asks of (e)
+      stay the user's to file.
 - [x] 264. **The kernel on every x86 build** -- the user, 2026-10-15:
       "Keep the kernel for every build for now, record all the findings for
       later work." `online-core`'s manifest turns faer's `std` on for
@@ -16599,7 +16605,7 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       unchanged (CHANGELOG); N1 stays open after 1.4. The W5/W6 patches are
       in `.claude/coord/review10/`.
 
-- [ ] 283. **One refit buffer a group, shared by its targets** (ENHANCEMENTS
+- [x] 283. **One refit buffer a group, shared by its targets** (ENHANCEMENTS
       E76) -- the user, 2026-10-31: "Measure just the first and do it if
       works keep the other two as ideas" (E77 spill to disk, E78 rewind
       through the Polars API: ideas only). Today each target's refit buffer
@@ -16635,6 +16641,13 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       per-row path): rebase, find the sgd_huber slowdown (VM Callgrind and
       x86 timing), re-measure, and merge only if single-target sgd is
       unchanged and the multi-target cases are within 1% in CI's counts.
+      *Dropped 2026-11-03, at the user's request to re-evaluate:* the WIP
+      missed the user's bar and was 134 commits behind `main`; its
+      reservation was only 17-26% lower while a group's reservation is kept
+      for the bank's life, so the budget admits few more groups. 1.4.0
+      freezes the refit buffer's per-target layout (schema 64), so a later
+      build that shares the buffer needs a loader for 1.4.0's states
+      (ENHANCEMENTS E76).
 - [x] 284. **Pay less for the per-row drift since 1.3.0** -- the user,
       2026-10-31: "Look for more efficient implementations of the ones that
       drift". CI's Valgrind since 1.3.0: `sgd` +16.8% (+512 instructions a
