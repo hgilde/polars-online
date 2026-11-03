@@ -190,7 +190,24 @@ null on one to three early rows where 1.2.0 read a number from a variance
 that could not yet be of full rank, and no other value; and `kalman`'s
 rows before a target's prior is sized, withheld where 1.2.0 predicted
 0.0, and the fit after them. The specs that set `huber_scale` are not
-comparable, since 1.2.0 refuses the keyword.
+comparable, since 1.2.0 refuses the keyword. On 2026-11-03, 1.4.0's build
+against 1.3.0 compared 1,283 fields of 72 specs, and 637 differ, each
+where its CHANGELOG declares a change: every spec's `withheld_reason`,
+whose type gained two categories with every value equal; the fits whose
+rules moved (`kalman`, `holt`, every `sgd` with an intercept under an
+identity link, `huber`'s anchored sketch, `lasso`'s relative stopping
+rule, within 7.8e-10, `hmm`'s seeding, which numbers its states the other
+way round, and `ewridge` under `session_shrink`, after a drift reset, and
+below its floor, where it no longer runs a solve no row reads); the
+residual spread every gate now folds, which starts `sigma`, its interval
+and `se_coef` sooner and moves `emit_selected` and `emit_averaged`; the
+weighted `autocorr`, the young windowed CUSUMs, and the last bits of the
+skewness and of everything read from a co-moment matrix's cross terms
+(at most 3.7e-13 of `1 + |v|`). The specs that set `huber_refit_rows`
+are not comparable, since 1.3.0 refuses the keyword. The comparison
+corrected two CHANGELOG entries: the co-moments' sizes, which the
+released states had read lower, and the readiness gate's reach into
+`se_coef`.
 
 #### A released build's state files
 
