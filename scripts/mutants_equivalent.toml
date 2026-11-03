@@ -3000,3 +3000,49 @@ line_has = "Behind::Rows(rows) if (2.0 * rows as f64 + 6.0) * U > 0.01 => return
 why = """as `replace > with >=` on the order's guard above: `(2n + 6) u` is \
 an integer times `2⁻⁵³`, and 0.01 an odd integer times `2⁻⁵⁹`, so the two \
 are never equal"""
+
+# Task 312 (docs/PLAN.md): the survivors of 5f890340's changed lines that
+# no input reaches: a merge bound's forgetting of held steps, the step that
+# only says whether the residue's term is formed, and the solve's guard on
+# a variance its kept columns already passed.
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov/held.rs"
+function = "HeldSteps::is_open"
+mutation = "replace HeldSteps::is_open -> bool with false"
+line_has = "self.open"
+why = """`merge_held` forgets the merges' bound where the hold writes steps \
+into `C`, and an open hold's accumulator never has one to forget: steps are \
+held only by `update_held` on an accumulator that does not block (a \
+blocking one merges the hold first and updates at once), the bound is made \
+only by a block's merge, and every way into or out of blocking \
+(`set_block_rows`) forgets it, as a new or loaded accumulator starts \
+without it. So from the first step held to the merge -- which comes before \
+the accumulator merges a block of its own, the hold's contract (the robust \
+refit, its one owner, merges each Gram's hold before the next) -- the bound \
+is not known, and forgetting it again moves nothing (`merge_rounding` is \
+`None` throughout, and the next merge rebuilds it from the matrix)"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov/merge_bound.rs"
+function = "MergeBound::merged"
+mutation = "replace * with +"
+line_has = "let tau_n = 2.0 * spread;"
+why = """`τ_n` is read only by `r`, and `r` only for whether it is finite: the \
+residue's term is formed from `lead` and `spread`. `spread ≥ 1` where it is \
+finite, so `(2 + spread)²/(2 spread)²` lies in `(1/4, 9/4]` and the two \
+`r` differ in finiteness only where the true `r = 7 ω τ_n²/ε` is under \
+`2¹⁰²⁶`; the term formed there is `η² r` to within its roundings (`τ`'s on \
+the subnormals' grid at most double it), under `2⁻¹¹²⁰`, and rounds to +0, \
+the term left out. Where `spread` is infinite both `r` are; checked over \
+300,000 random merges across the overflow (task 312), none moved `e'`"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewridge.rs"
+function = "EwRidge::solve_centred"
+mutation = "replace || with &&"
+line_has = "if v.is_nan() || v <= 0.0 {"
+why = """the guard never fires: standardized, the kept columns are those whose \
+variance `var(i)` passed `variance_is_usable`, positive and finite, and \
+`var` reads the same entry of the same flushed matrix again, so `v` is \
+neither NaN nor at most 0 and both forms are false"""

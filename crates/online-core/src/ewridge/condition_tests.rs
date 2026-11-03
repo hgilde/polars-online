@@ -539,3 +539,98 @@ fn a_blocked_fit_of_two_hundred_features_settles_by_the_ridge() {
         );
     }
 }
+
+/// A blocked system's kept bound is read over the system's own features
+/// (the condition module's docs, item 9; task 312): `Ê = Σ e_i` over the
+/// features' columns of the Gram -- the intercept's column 0 not among
+/// them -- or `Σ e_i / c_ii` standardized. Four features of spreads 1, 2,
+/// 4 and 8, so that each column's `e_i` and `c_ii` differ by a factor of
+/// 4 from the next; a ridge grid of two ridges either side of the edge
+/// the shortcut's slack test puts at that `Ê`, 0.1% from it, and the one
+/// above is settled by the shortcut and the one below is not. `Ê` is
+/// three orders past the slack's other terms, so a sum over other
+/// columns, a product or remainder in place of the quotient, or no sum
+/// moves the edge past one ridge or the other.
+#[test]
+fn a_blocked_systems_bound_is_read_over_its_own_features() {
+    use crate::solve::condition_switches::{SHORTCUTS, ridge_holds};
+    let k = 4;
+    // A solve every 16 rows from the first: the last of 145 rows solves.
+    let n = 145;
+    let mut s = 312u64;
+    let rows: Vec<(Vec<f64>, f64)> = (0..n)
+        .map(|_| {
+            let x: Vec<f64> = (0..k)
+                .map(|j| f64::from(1u32 << j) * 3f64.sqrt() * lcg(&mut s))
+                .collect();
+            let y = 0.3 + x[0] - 0.5 * x[2] + 0.25 * x[3] + 0.1 * lcg(&mut s);
+            (x, y)
+        })
+        .collect();
+    for standardize in [false, true] {
+        let cfg = blocked(k, 16, 200.0, standardize);
+        let mut model = EwRidge::new(cfg.clone()).unwrap();
+        for (x, y) in &rows {
+            model.step(x, &[Some(*y)], 1.0, 1.0);
+        }
+        // The Gram as the last row's solve read it, merged: the features
+        // are its columns 1 to 4.
+        let cov = model.gram(0);
+        let e = cov.merge_rounding().expect("a merged bound").to_vec();
+        assert_eq!(e.len(), k + 1);
+        let var: Vec<f64> = (1..=k).map(|z| cov.cov(z, z)).collect();
+        let e_hat: f64 = if standardize {
+            (1..=k).map(|z| e[z] / var[z - 1]).sum()
+        } else {
+            e[1..].iter().sum()
+        };
+        // The system's diagonal at a ridge: `c_ii`, or 1 standardized, plus
+        // the ridge, as the solve forms it.
+        let holds = |ridge: f64| {
+            let diag = var.iter().map(|&v| {
+                if standardize {
+                    let sd = v.sqrt();
+                    v / (sd * sd) + ridge
+                } else {
+                    v + ridge
+                }
+            });
+            ridge_holds(diag, k, OverMoments::merged(ridge, e_hat), 0.0)
+        };
+        // The edge, by bisection: below it the slack test refuses.
+        let (mut lo, mut hi) = (e_hat, 1e3 * e_hat);
+        assert!(!holds(lo) && holds(hi), "std {standardize}: {e_hat:e}");
+        for _ in 0..200 {
+            let mid = 0.5 * (lo + hi);
+            if holds(mid) {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        let (below, above) = (0.999 * lo, 1.001 * hi);
+        // Activation: `Ê` is the slack: a tenth of it, or ten times it, moves
+        // the edge by more than either margin.
+        let edge_at = |e_hat: f64| 2.5 * e_hat;
+        assert!(
+            (0.98..1.02).contains(&(hi / edge_at(e_hat))),
+            "std {standardize}: edge {hi:e} at Ê {e_hat:e}"
+        );
+        let mut cfg = cfg;
+        cfg.ridge = vec![below, above];
+        let mut model = EwRidge::new(cfg).unwrap();
+        let (last, head) = rows.split_last().unwrap();
+        for (x, y) in head {
+            model.step(x, &[Some(*y)], 1.0, 1.0);
+        }
+        let before = SHORTCUTS.with(std::cell::Cell::get);
+        model.step(&last.0, &[Some(last.1)], 1.0, 1.0);
+        let settled = SHORTCUTS.with(std::cell::Cell::get) - before;
+        assert_eq!(
+            settled, 1,
+            "std {standardize}: ridges {below:e} and {above:e} at Ê {e_hat:e}"
+        );
+        // The same Gram the first model's last solve read.
+        assert_eq!(model.gram(0).merge_rounding(), Some(&e[..]));
+    }
+}

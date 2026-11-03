@@ -1019,7 +1019,7 @@ mod condition;
 pub(crate) use condition::OverMoments;
 #[cfg(test)]
 pub(crate) mod condition_switches {
-    pub(crate) use super::condition::{SHORTCUT_OFF, SHORTCUTS};
+    pub(crate) use super::condition::{SHORTCUT_OFF, SHORTCUTS, ridge_holds};
 }
 
 #[cfg(test)]
