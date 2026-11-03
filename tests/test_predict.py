@@ -782,5 +782,11 @@ def test_predict_reads_no_coefficient_cadence():
     a, b = eager.select("m").unnest("m"), chunked.select("m").unnest("m")
     rest = [c for c in a.columns if c not in ("coef", "support_coef")]
     assert a.select(rest).equals(b.select(rest), null_equal=True)
-    # Learning reads it: every row.
-    assert filled(po.ModelBank([spec]).fit_predict(rows)) == rows.height
+    # Learning reads it: every row from the first solve run. The solves due
+    # on the first rows, below a row per coefficient, are not run, since no
+    # row could read them before the next comes due, so those rows carry no
+    # fit yet.
+    learned = po.ModelBank([spec]).fit_predict(rows).unnest("m")
+    none = learned["coef"].is_null().arg_true().to_list()
+    assert none == list(range(len(none))) and 0 < len(none) < 3
+    assert (learned["weight_sum"].gather(none) < 3.0).all()

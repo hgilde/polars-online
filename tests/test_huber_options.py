@@ -486,7 +486,11 @@ class TestParameterRelations:
         part on the first solve, which ``huber`` takes on the row its target
         has a row a coefficient and ``ewridge`` on the row its weight
         reaches that many (rows 3 and 4 of this stream at ``solve_every`` 7
-        and 50), then each schedules from its own first."""
+        and 50), then each schedules from its own first. And ``ewridge`` does
+        not run a solve no row can read before the next comes due, where
+        ``huber`` runs every due solve: on rows below ``min_weight`` its
+        ``coef`` and ``support_coef`` are the last fit solved, null on this
+        stream's first rows, and ``huber``'s the fit no row reads."""
         df = _frame()
         c = dict(COMMON, targets=targets, min_weight=4.0, ridge=ridge, **schedule)
         with warnings.catch_warnings():
@@ -496,7 +500,19 @@ class TestParameterRelations:
             ew = po.ModelBank([po.spec.ewridge("m", **c)]).fit_predict(df)
             off = po.spec.huber("m", huber_delta=INF, huber_refit_rows=0, **c)
             assert po.ModelBank([off]).fit_predict(df).equals(hub, null_equal=True)
-        assert hub.equals(ew, null_equal=True)
+        h, e = hub.unnest("m"), ew.unnest("m")
+        fits = ["coef", "support_coef"]
+        assert h.drop(fits).equals(e.drop(fits), null_equal=True)
+        read = e["weight_sum"] >= 4.0
+        assert h.filter(read).equals(e.filter(read), null_equal=True)
+        # Below it the two part only where ``ewridge`` has no fit yet; a
+        # solve the row cap brings due is run, so at a cap of 1 they never do.
+        same = [h[f].eq_missing(e[f]) for f in fits]
+        parted = e.filter(~(same[0] & same[1]))
+        assert parted.select(pl.col(fits).is_null().all()).row(0) == (True, True)
+        assert (parted["weight_sum"] < 4.0).all()
+        every_row = schedule.get("max_rows_between_solves") == 1
+        assert (parted.height == 0) == every_row
         # Learned rows past the refit's 500, and a finite cut that moves the
         # fit, so the refit could have run and the relation is not vacuous.
         assert int((df["w"] > 0).sum()) > 1000
