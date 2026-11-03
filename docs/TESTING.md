@@ -919,6 +919,12 @@ where that is not enough a bisection over the wave's merges finds it in
 about log₂ of the wave's size in gates. The branch goes back to its task,
 and the rest of the wave lands without it.
 
+A wave of one branch has no merges to conflict, so it skips `integration`
+and the essentials gate: the branch merges onto `main`, a fast-forward where
+it can be, and the full suite, which runs before every push anyway, runs
+once on that commit. Through `integration` the same branch paid for an
+essentials gate and then the full one.
+
 **At most two gates run at once on this machine.** `scripts/gate.sh` takes
 one of `POLARS_ONLINE_GATES` (default 2) tokens, directories in the
 repository's common git directory holding their gate's pid, and waits for

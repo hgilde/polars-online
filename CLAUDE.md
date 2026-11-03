@@ -67,6 +67,10 @@ once, runs ONE essentials gate, and fast-forwards `main` on PASS; a failure
 is mapped to a branch by the files it touched (`scripts/slot.sh overlap`)
 or bisected over the wave's merges (the user, 2026-10-26: parallel gates
 and the re-gates of conflicting merges were the agents' two bottlenecks).
+A wave of one branch skips `integration` and the essentials gate: it merges
+onto `main` (a fast-forward where it can be) and the full tier runs once, on
+that sha, before the push (the user, 2026-11-03: "why bother with an
+integration branch").
 `scripts/gate.sh` takes one of two machine-wide tokens and waits for one
 (`POLARS_ONLINE_GATES`). The full tier runs, always, before every push on
 the exact sha.
