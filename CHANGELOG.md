@@ -346,9 +346,11 @@ returns.
   independent features can move by up to 2.7e-8 of itself over 100,000
   rows. `lasso`'s predictions move by up to 2e-15 of `1 + |pred|`. The
   diagnostics read from a co-moment matrix's cross terms move by up to
-  1.1e-13 (`calibration_*`), 3.9e-14 (`ramsey_reset_*`), 1.1e-14
+  3.7e-13 (`calibration_*`), 3.9e-14 (`ramsey_reset_*`), 9.1e-14
   (`break_wald_*`), 9e-16 (`breusch_pagan_*`) and 3e-16 (`ic_*`) of
-  `1 + |v|`, and the exported Gram's `comoments` is now symmetric. A
+  `1 + |v|` (the release comparison's 400 rows; over every 1.x release's
+  saved states, 1.1e-13 for `calibration_*` and 1.1e-14 for
+  `break_wald_*`), and the exported Gram's `comoments` is now symmetric. A
   `marginal` pair's `cov` and `corr` now agree with a two-column `ew_cov`'s
   within a few roundings, where they were equal to the bit; its means and
   variances still are. Every other model's predictions are unchanged, bit
@@ -444,7 +446,8 @@ returns.
   bound is 1e-12 (task 281).
 - A readiness gate no longer moves the residual spread the bank keeps per
   slot, which `sigma`, `zscore`, the drift detector's scale, the ranking of
-  `emit_selected` and the weights of `emit_averaged` read (task 278). It
+  `emit_selected`, the weights of `emit_averaged` and the `se_coef` of
+  `ewridge` and `rls` (scaled by `sigma`) read (task 278). It
   folded only the residuals the bank reported, so `min_weight`,
   `min_settled_frac` or `max_error_inflation` changed which slot
   `pred_<t>__selected` took (on a half-life grid of 20 and 200,
