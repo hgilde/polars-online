@@ -530,13 +530,6 @@ impl StepGain {
     /// enters whole, at most the cap. A gain that is not a number is taken
     /// at the bound (`f64::min` returns the other operand).
     fn bounded(&self, q: f64) -> f64 {
-        // At or below the floor of 2 the bound, at least 2, cannot cut
-        // `q`, and neither can the cap: `q` itself, with no division on
-        // the sums' chain (task 314). A NaN fails the test and takes the
-        // full rule below.
-        if q <= NEUTRAL_GAIN {
-            return q;
-        }
         if self.n > 0.0 {
             q.min(NEUTRAL_GAIN.max(GAIN_BOUND * self.q / self.n))
                 .min(GAIN_CAP)
@@ -1583,35 +1576,6 @@ fn slopes_stepped(
         })
 }
 
-/// [`dot`]`(beta, off, z)` and `dot(z, 0, z)`, `|z|²`, in one pass over
-/// `z`: each in its own [`DOT_LANES`] partial sums, in `dot`'s order and
-/// folded as `dot` folds them, so each is `dot`'s to the bit. Taken apart,
-/// the square was a second pass over the row, a load and a multiply-add a
-/// feature (task 314).
-#[inline(always)]
-fn dot_and_square(beta: &[f64], off: usize, z: &[f64]) -> (f64, f64) {
-    let b = &beta[off..];
-    debug_assert_eq!(b.len(), z.len());
-    let mut acc = [0.0f64; DOT_LANES];
-    let mut sq = [0.0f64; DOT_LANES];
-    let (zc, zr) = z.as_chunks::<DOT_LANES>();
-    let (bc, br) = b.as_chunks::<DOT_LANES>();
-    for (zs, bs) in zc.iter().zip(bc) {
-        for l in 0..DOT_LANES {
-            acc[l] += zs[l] * bs[l];
-            sq[l] += zs[l] * zs[l];
-        }
-    }
-    for (l, (zi, bi)) in zr.iter().zip(br).enumerate() {
-        acc[l] += zi * bi;
-        sq[l] += zi * zi;
-    }
-    let fold =
-        |a: [f64; DOT_LANES]| ((a[0] + a[1]) + (a[2] + a[3])) + ((a[4] + a[5]) + (a[6] + a[7]));
-    let s = fold(acc);
-    (if off == 1 { beta[0] + s } else { s }, fold(sq))
-}
-
 /// The decay the scaler's history takes into a row of weight `w`: `lam`, or
 /// 0 where that history's share of the weight after the row, `lam·W /
 /// (lam·W + w)`, is below the smallest normal double -- forgotten there, as
@@ -2054,12 +2018,7 @@ impl OnlineModel for Sgd {
         // The squared length of the row the step is taken on, `|z̃|²` with
         // the intercept's 1, for the step gains (`StepGain`); unread where
         // none are kept.
-        // Where the first target's prediction reads the same row -- `x`
-        // without a scaler, `z` while it warms up -- `|z̃|²` is taken in
-        // that prediction's pass ([`dot_and_square`]), over one load of the
-        // row; otherwise here, before the targets.
-        let fused_square = !self.gain.is_empty() && m > 0 && (self.scaler.is_none() || !held);
-        let mut zz = if self.gain.is_empty() || fused_square {
+        let zz = if self.gain.is_empty() {
             0.0
         } else {
             let z: &[f64] = if self.scaler.is_some() {
@@ -2082,13 +2041,10 @@ impl OnlineModel for Sgd {
             taught.resize(m, None);
         }
         for j in 0..m {
-            let row: &[f64] = if reads_z { &self.zbuf[off..] } else { x };
-            let eta = if fused_square && j == 0 {
-                let (eta, square) = dot_and_square(&self.beta[j], off, row);
-                zz = off as f64 + square;
-                eta
+            let eta = if reads_z {
+                dot(&self.beta[j], off, &self.zbuf[off..])
             } else {
-                dot(&self.beta[j], off, row)
+                dot(&self.beta[j], off, x)
             };
             let p = self.link(eta);
             // A prediction the target's weight allows, withheld while its
@@ -2267,9 +2223,10 @@ impl OnlineModel for Sgd {
             // slope's gradient is formed once, its new value written to
             // `dbuf` beside the verdict, and copied in once the row passes.
             // Formed twice, once for the verdict and again for the step,
-            // the gradient was about a tenth of a 20-feature row's time on
-            // arm64 (task 314). The values are the update's own, so `beta`
-            // moves to the same bits.
+            // the gradient cost a 20-feature step about 3 of its 39 ns on
+            // arm64, natively, and a row through the bank about 1% (task
+            // 314). The values are the update's own, so `beta` moves to the
+            // same bits.
             let n = beta.len() - off;
             if self.dbuf.len() < n {
                 self.dbuf.resize(n, 0.0);
@@ -3250,34 +3207,6 @@ mod tests {
         // Per slot: NaN under all four settings; each infinity unclipped
         // under both rates and clipped under AdaGrad; 2e200 under AdaGrad.
         assert_eq!(refusals, 5 * (4 + 3 + 3 + 2));
-    }
-
-    /// `dot_and_square` (task 314) is `dot(beta, off, z)` and
-    /// `dot(z, 0, z)` to the bit, at every length about the lanes' width,
-    /// with and without an intercept, on rows with large, tiny and
-    /// cancelling values.
-    #[test]
-    fn the_fused_square_is_each_dot_to_the_bit() {
-        let mut s = 5u64;
-        for k in 0..=3 * DOT_LANES + 1 {
-            for off in [0usize, 1] {
-                for scale in [1.0, 1e150, 1e-160] {
-                    let beta: Vec<f64> = (0..k + off).map(|_| 3.0 * lcg(&mut s)).collect();
-                    let z: Vec<f64> = (0..k).map(|_| scale * lcg(&mut s)).collect();
-                    let (eta, square) = dot_and_square(&beta, off, &z);
-                    assert_eq!(
-                        eta.to_bits(),
-                        dot(&beta, off, &z).to_bits(),
-                        "k {k}, off {off}"
-                    );
-                    assert_eq!(
-                        square.to_bits(),
-                        dot(&z, 0, &z).to_bits(),
-                        "k {k}, off {off}"
-                    );
-                }
-            }
-        }
     }
 
     /// The one-pass check and step at a shared rate (task 314) gives the
