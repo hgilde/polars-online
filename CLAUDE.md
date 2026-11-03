@@ -166,6 +166,17 @@ runs both tiers, but a plain `cargo test` skips the extended Rust tests
    group's exported `comoments`) within the golden 1e-12; every prediction
    continues to the bit, `lasso` stays inside its own 1e-9, and each state
    still re-saves the current fixture's bytes exactly.
+   A seventh, the user's (2026-11-03, task 311): an `ewridge` state saved
+   by an earlier build no longer runs a solve its weight schedule brings due
+   while the weight is below `(1 − s)(1 − 2⁻¹⁶)` of its lowest floor. It
+   continues with every residual, spread, weight and Gram to the bit, and
+   every prediction to the bit except where a target's weight has decayed to
+   exactly 0 below the floor or a fit's factorization fails at every rung:
+   there a row may read the last fit solved rather than the skipped one.
+   Until the next solve run, its `coef`, `support_coef` and `se_coef` report
+   the file's fit and `solve_failures` counts only the solves run, so the
+   state it re-saves after those rows is not the old build's. No frozen
+   fixture reaches it.
 6. No `unsafe` in `online-core`. f64 everywhere.
 7. Commit after each completed task in `docs/PLAN.md`, with the task number in the message.
 8. **`n_eff` -- the models' accessor, emitted as `weight_sum` -- means the same thing in

@@ -85,6 +85,24 @@ returns.
 
 ### Changed
 
+- **`ewridge` does not run a solve no row can read** (task 311). Below the
+  floor described under *Performance*, `coef`, `support_coef` and `se_coef`
+  -- on the rows that carry them, in `bank.coef()` and `bank.gram()` -- are
+  the last fit solved, null before the first, where they were the schedule's
+  latest due solve; a solve not run is not counted in `solve_failures`; and a
+  state saved there holds that fit. A solve `max_rows_between_solves` brings
+  due always runs, so `max_rows_between_solves = 1` still reports a fit on
+  every row; under `window_size` every due solve runs. Two corners can read
+  the older fit in a prediction: a target whose weight has decayed to exactly
+  0 while the stream is below the floor (more than about 1,074 half-lives
+  without a row), whose next row was predicted from a ridge over no rows and
+  is now withheld until the next solve; and a fit whose factorization fails
+  at every rung of the jitter ladder, which keeps the last fit solved.
+- `withheld_reason` no longer reads `ill_conditioned` on a row below
+  `ewridge`'s own `min_weight` (a row per coefficient when none is given),
+  where no fit is read; it read so only with the noise gate off
+  (`max_error_inflation = inf`). The `support_coef < 0.5` notice is judged
+  only on a row the model predicted (task 311).
 - A spec with neither `half_life` nor `lam` is refused with a message that
   now also says how to ask for no decay: `half_life = inf`.
 - **An explicit solve cadence's first period solves by weight** (task 278):
@@ -823,6 +841,19 @@ returns.
 
 ### Performance
 
+- `ewridge` no longer runs a solve its weight schedule brings due while the
+  fit's weight is below `1 - ln 2 / 50` of the lowest floor any prediction is
+  read at (a row per coefficient, `min_weight`, each target's own; task 311):
+  until the next solve comes due, every row learns less than that share of
+  the weight, so each stays below the floor, withholds its prediction and
+  could not read the solve. The schedule moves on as after the solve, so
+  every residual, spread, weight and Gram, and every prediction outside the
+  two corners under *Changed*, is the same to the bit. At 1,000 features, on
+  arm64 against the 1.3.0 wheel (p25, one thread): a default fit of 2,000
+  rows runs 7.6 times as fast (1.02 before), and of 20,000 rows 1.37 (1.09);
+  `solve_every = 256` with `gram_block_rows = 256` goes from 0.10 to 0.78 of
+  1.3.0 on 2,000 rows, and from 0.48 to 0.96 on 20,000. The saving is in the
+  stream's first solves, so a long stream gains little.
 - `drift_action="reset"` restarting a stream as a fresh bank from the next
   row costs a few instructions a row in the bank's loop (task 278): counted
   with Valgrind, 6 a row on the cheapest model's bank path, +0.74% on a
