@@ -179,7 +179,7 @@ release = 218029
 
 [instructions.bank_seqtest]
 what = "Bank::fit_predict of one frame, seqtest: every per-row step of the bank around the cheapest model"
-budget = 2077057
+budget = 2031959
 release = 1980599
 
 [instructions.bank_ewridge_k5]
@@ -194,7 +194,7 @@ release = 11517941
 
 [instructions.bank_ewridge_k5_groups]
 what = "Bank::fit_predict of one frame of 1,000 groups, one row each, ewridge with 5 features and a solve every 4 rows, on a pool of one thread"
-budget = 18667399
+budget = 18170095
 release = 26990984
 
 [instructions.bank_ew_cov_wide_t1]
