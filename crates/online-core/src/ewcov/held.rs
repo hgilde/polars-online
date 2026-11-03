@@ -517,6 +517,28 @@ mod tests {
         each.flush();
         held_cov.flush();
         assert_eq!(bits(&each), bits(&held_cov));
+        // And the merges' kept bound with them: a merge of nothing held
+        // writes nothing, so it forgets nothing, and each block's merge
+        // carries the bound on from the last (task 312). Forgotten at each
+        // row, it would be rebuilt from the whole matrix at each merge.
+        let kept = |c: &EwCov| -> Vec<u64> {
+            c.merge_rounding()
+                .expect("a merged bound")
+                .iter()
+                .map(|v| v.to_bits())
+                .collect()
+        };
+        assert_eq!(kept(&each), kept(&held_cov));
+        let top = (0..k)
+            .map(|i| each.comoments().get(k, i, i))
+            .fold(0.0, f64::max);
+        assert!(
+            each.merge_rounding()
+                .unwrap()
+                .iter()
+                .all(|&e| e < 1e-6 * top),
+            "the bound is the merges', not the matrix's"
+        );
     }
 
     /// The steps are held, not taken: after each row the co-moments stand

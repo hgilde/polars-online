@@ -1137,15 +1137,51 @@ type = "ewridge"
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A refusal that fetched nothing takes what the same command takes on
+/// local paths -- the process's start, the config, a dry run -- and a fetch
+/// at least a second more: the cloud reader's retry policy backs off for its
+/// first second on an `https://` URL that refuses the connection, and an
+/// `s3://` one looks for credentials for seconds first. So `refused`, checked
+/// by `check`, is timed beside `local`, which must succeed, and held to
+/// within half a second of one and a half times it. A loaded shared runner
+/// slows both (a refusal took 1.15 s on CI's macOS runner, 2026-11-02, against
+/// a bound of 1 s that did not look at the machine's speed), and a burst can
+/// land on one of the pair, so a pair over the bound runs again, three times
+/// in all, before it fails.
+fn no_slower_than_local(
+    label: &str,
+    local: impl Fn() -> (Option<i32>, String, String),
+    refused: impl Fn() -> (Option<i32>, String, String),
+    check: impl Fn((Option<i32>, String, String)),
+) {
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        let t = std::time::Instant::now();
+        let (code, stdout, err) = local();
+        let base = t.elapsed().as_secs_f64();
+        assert_eq!(code, Some(0), "{label}: the local run: {stdout}{err}");
+        let t = std::time::Instant::now();
+        let got = refused();
+        let took = t.elapsed().as_secs_f64();
+        check(got);
+        if took <= 1.5 * base + 0.5 {
+            return;
+        }
+        seen.push((took, base));
+    }
+    panic!("{label}: refused, but past its local run's time, as a fetch would be: {seen:?}");
+}
+
 /// Review 9, H-1 and H-2: a URL as a path reached polars' cloud reader --
 /// an `https://` input was fetched over the binary's own TLS client, ten
 /// retries over up to 180 s, before anything of this library's refused it --
 /// and a URL in the TOML was joined under the config's directory first
 /// (`conf/s3://...`). The command line reads and writes local files: a URL
 /// in any path, a flag's or the TOML's, is refused by name before a byte is
-/// fetched, under `--dry-run` too and in well under the retry policy's
-/// first second. A `file://` URL is the local path it names; a Windows path
-/// (`C:\data\x.parquet`: a drive letter is one character) is no URL.
+/// fetched, under `--dry-run` too, and no slower than the same command on
+/// local paths ([`no_slower_than_local`]). A `file://` URL is the local path
+/// it names; a Windows path (`C:\data\x.parquet`: a drive letter is one
+/// character) is no URL.
 #[test]
 fn a_url_in_any_path_is_refused_by_name_before_a_fetch() {
     let dir = fresh_dir("h1");
@@ -1169,15 +1205,19 @@ fn a_url_in_any_path_is_refused_by_name_before_a_fetch() {
             "{label}: {err}"
         );
     };
+    // The binary's first start is not timed: macOS checks a newly linked
+    // binary on its first run, for seconds, and a local run that took them
+    // would let the first URL's run take as long.
+    let (code, stdout, err) = online_with(&dir, &input, &output, "", 50.0, &["--dry-run"]);
+    assert_eq!(code, Some(0), "{stdout}{err}");
     for url in urls {
         for flag in ["--input", "--output", "--save-state", "--load-state"] {
-            let t = std::time::Instant::now();
-            let got = online_with(&dir, &input, &output, "", 50.0, &["--dry-run", flag, url]);
-            refused(&format!("{flag} {url}"), got, url);
-            assert!(
-                t.elapsed().as_secs_f64() < 1.0,
-                "{flag} {url}: {:?}",
-                t.elapsed()
+            let label = format!("{flag} {url}");
+            no_slower_than_local(
+                &label,
+                || online_with(&dir, &input, &output, "", 50.0, &["--dry-run"]),
+                || online_with(&dir, &input, &output, "", 50.0, &["--dry-run", flag, url]),
+                |got| refused(&label, got, url),
             );
         }
     }
@@ -1185,6 +1225,23 @@ fn a_url_in_any_path_is_refused_by_name_before_a_fetch() {
     // as written, not the directory joined to it.
     let conf = dir.join("conf");
     std::fs::create_dir_all(&conf).unwrap();
+    let job = |inp: &str, out: &str, extra: &str| {
+        format!(
+            "input = \"{inp}\"\noutput = \"{out}\"\n{extra}\n[[specs]]\nname = \"m\"\n\
+             targets = [\"y\"]\nfeatures = [\"x0\"]\nhalf_life = 50.0\ngap_cap = 10.0\n\
+             group_close = \"monotone\"\nclock = \"t\"\ngroup = \"group\"\n[specs.model]\ntype = \
+             \"ewridge\"\n"
+        )
+    };
+    // The same job on local paths, for the runs to be timed against.
+    let local = conf.join("local.toml");
+    std::fs::write(&local, job(&toml_path(&input), &toml_path(&output), "")).unwrap();
+    let local_run = || {
+        online_args(
+            &[std::ffi::OsStr::new("--config"), local.as_os_str()],
+            &["--dry-run"],
+        )
+    };
     for url in urls {
         for key in ["input", "output", "save_state", "closed_groups"] {
             let (inp, out) = match key {
@@ -1196,29 +1253,26 @@ fn a_url_in_any_path_is_refused_by_name_before_a_fetch() {
                 "save_state" | "closed_groups" => format!("{key} = \"{url}\"\n"),
                 _ => String::new(),
             };
-            let toml = format!(
-                "input = \"{inp}\"\noutput = \"{out}\"\n{extra}\n[[specs]]\nname = \"m\"\n\
-                 targets = [\"y\"]\nfeatures = [\"x0\"]\nhalf_life = 50.0\ngroup_close = \
-                 \"monotone\"\nclock = \"t\"\ngroup = \"group\"\n[specs.model]\ntype = \
-                 \"ewridge\"\n"
-            );
             let cfg = conf.join("job.toml");
-            std::fs::write(&cfg, toml).unwrap();
-            let t = std::time::Instant::now();
-            let got = online_args(
-                &[std::ffi::OsStr::new("--config"), cfg.as_os_str()],
-                &["--dry-run"],
-            );
-            assert!(
-                !got.2.contains("conf/s3") && !got.2.contains("conf\\s3"),
-                "{}",
-                got.2
-            );
-            refused(&format!("TOML {key} = {url}"), got, url);
-            assert!(
-                t.elapsed().as_secs_f64() < 1.0,
-                "TOML {key} {url}: {:?}",
-                t.elapsed()
+            std::fs::write(&cfg, job(&inp, &out, &extra)).unwrap();
+            let label = format!("TOML {key} = {url}");
+            no_slower_than_local(
+                &label,
+                local_run,
+                || {
+                    online_args(
+                        &[std::ffi::OsStr::new("--config"), cfg.as_os_str()],
+                        &["--dry-run"],
+                    )
+                },
+                |got| {
+                    assert!(
+                        !got.2.contains("conf/s3") && !got.2.contains("conf\\s3"),
+                        "{}",
+                        got.2
+                    );
+                    refused(&label, got, url);
+                },
             );
         }
     }
