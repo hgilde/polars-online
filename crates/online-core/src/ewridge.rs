@@ -154,8 +154,9 @@ pub struct EwRidgeCfg {
     /// keeps the fit that close to its data, where the clock solved once and
     /// never again. `None` keeps the clock. Under a share of at most `1/2`,
     /// a due solve no row can read before the next comes due -- the weight
-    /// below `(1 − share)` of the lowest floor a read uses -- is not run, and
-    /// the schedule moves on as after it (`unread`'s module docs).
+    /// below `(1 − share)(1 − 2⁻¹⁶)` of the lowest floor a read uses -- is
+    /// not run, and the schedule moves on as after it (`unread`'s module
+    /// docs); above `1/2` every due solve runs.
     #[serde(default)]
     pub solve_share: Option<f64>,
     /// Rows of the Gram update held back and merged as one block
@@ -942,9 +943,7 @@ impl EwRidge {
                 kept: factors,
                 work: Some(work),
             };
-            self.since_solve.restart();
-            self.rows_since_solve = 0;
-            self.weight_since_solve = 0.0;
+            self.restart_schedule();
             return;
         }
         let mut failures = 0u64;
@@ -1256,6 +1255,13 @@ impl EwRidge {
             kept: factors,
             work: Some(work),
         };
+        self.restart_schedule();
+    }
+
+    /// Restart the solve schedule as a solve does: its clock, its row count
+    /// and the weight learned since, from this row. A solve run, an empty
+    /// window's and a solve passed as unread (`unread.rs`) all end here.
+    fn restart_schedule(&mut self) {
         self.since_solve.restart();
         self.rows_since_solve = 0;
         self.weight_since_solve = 0.0;

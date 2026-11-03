@@ -770,10 +770,13 @@ pub fn sgd_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
 /// `min_weight` below that lowers the model's own floor, so the read is at
 /// the lower of the two, and a `min_weight` above a row per unknown
 /// withholds what the spec without one reports and nothing else. The floor
-/// counts weight, as the model's does. `ewridge` runs no due solve while its
-/// weight is below `1 - ln 2 / 50` of the least of this floor and its own
-/// (`online_core`'s `ewridge/unread.rs`; task 311): this read is one reason
-/// a row per unknown is in it.
+/// counts weight, as the model's does. `ewridge` runs no solve its weight
+/// share `s` brings due -- `solve_share`, or `ln 2 / 50` in the default
+/// schedule and an explicit cadence's first period -- while its weight is
+/// below `(1 - s)(1 - 2⁻¹⁶)` of the least of this floor and its targets'
+/// own, and runs every one for `s > 1/2` (`online_core`'s
+/// `ewridge/unread.rs`; tasks 311 and 313): this read is one reason a row
+/// per unknown -- `k + 1`, `k` without an intercept -- is in it.
 pub(crate) fn read_floor(spec: &Spec, min_weight: &[f64]) -> f64 {
     match spec.model {
         ModelKind::EwRidge { .. } => {

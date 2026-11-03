@@ -6,6 +6,7 @@ nulls, weights, groups and sessions; `test_semantics_all_models` and the other
 sweeps hold this model to the invariants every model shares.
 """
 
+import math
 import warnings
 
 import numpy as np
@@ -748,6 +749,72 @@ class TestTheRowClockSolveCadence:
         assert c[0] is None and c[1] is None and c[2] is not None
         moved = [i for i in range(1, len(c)) if c[i] != c[i - 1]]
         assert moved == [2, 3, 4, 5, *range(6, 60, 7)]
+
+
+class TestGroupsThatNeverReachTheFloor:
+    """A group of two rows over two features never reaches the floor, a row
+    per unknown (3). Below ``1 - ln 2 / 50`` of it no row can read a solve
+    before the next comes due, so none is run, and the group reports no
+    ``coef`` -- on its rows, in ``bank.coef()`` or as a closed group -- where
+    1.3.0 reported the ridge fit of its rows. ``min_weight = 0`` (the floor
+    becomes 0) and ``max_rows_between_solves = 1`` (a solve the row cap
+    brings due always runs) each keep every solve (task 313)."""
+
+    @staticmethod
+    def run(**kw) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+        rng = np.random.default_rng(313)
+        keys = [f"g{i}" for i in range(6)]
+        n = 2 * len(keys)
+        x0, x1 = rng.standard_normal(n), rng.standard_normal(n)
+        df = pl.DataFrame(
+            {
+                "g": [k for k in keys for _ in range(2)],
+                "x0": x0,
+                "x1": x1,
+                "y": 2.0 * x0 - x1 + 0.1 * rng.standard_normal(n),
+            }
+        )
+        spec = po.spec.ewridge(
+            "r",
+            targets=["y"],
+            features=["x0", "x1"],
+            half_life=40.0,
+            group="g",
+            group_close="monotone",
+            **kw,
+        )
+        bank = po.ModelBank([spec])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", po.ReadinessWarning)
+            out = bank.fit_predict(df).unnest("r")
+        # Every group but the last has closed; the last is still open.
+        return out, bank.coef(), bank.closed_groups()
+
+    @staticmethod
+    def fits(out: pl.DataFrame, coef: pl.DataFrame, closed: pl.DataFrame) -> list[bool]:
+        """Whether each group's last row, its ``bank.coef()`` or its closed
+        row carries a fit: the open group's two, then each closed one's."""
+        last = out.filter(pl.col("coef").is_not_null())["coef"].to_list()
+        assert len(last) in (0, 6), last
+        rows = [c is not None and all(v is not None for v in c) for c in last]
+        assert coef["group"].unique().to_list() == ["g5"]
+        assert sorted(closed["group"].to_list()) == ["g0", "g1", "g2", "g3", "g4"]
+        return [
+            *rows,
+            coef["coef"].is_not_null().all(),
+            *(c is not None and all(v is not None for v in c) for c in closed["coef"]),
+        ]
+
+    def test_by_default_no_solve_is_run(self):
+        out, coef, closed = self.run()
+        assert out["weight_sum"].max() < 3.0 * (1.0 - math.log(2.0) / 50.0)
+        assert not any(self.fits(out, coef, closed))
+        assert out["coef"].is_null().all()
+
+    @pytest.mark.parametrize("opt_out", [{"min_weight": 0.0}, {"max_rows_between_solves": 1}])
+    def test_each_opt_out_keeps_every_solve(self, opt_out):
+        got = self.fits(*self.run(**opt_out))
+        assert len(got) == 12 and all(got), got
 
 
 def _relation_frame(seed: int, n: int = 2000, gaps: bool = True) -> pl.DataFrame:

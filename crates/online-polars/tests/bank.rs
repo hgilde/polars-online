@@ -610,25 +610,42 @@ fn coef_is_the_output_s_last_coef_per_group() {
         &serde_json::to_string(&spec_json("m", true))
             .unwrap()
             .replace(r#","max_rows_between_solves":1"#, "")
-            .replace(r#""solve_every":null"#, r#""solve_every":10.0"#),
+            .replace(r#""solve_every":null"#, r#""solve_every":1000.0"#),
     )
     .unwrap();
     let written = serde_json::to_string(&lazy).unwrap();
     assert!(!written.contains("max_rows_between_solves\":1"));
-    assert!(written.contains("\"solve_every\":10.0"), "{written}");
+    assert!(written.contains("\"solve_every\":1000.0"), "{written}");
     let mut lazy = Bank::new(vec![lazy]).unwrap();
     lazy.fit_predict(&df.slice(0, 2)).unwrap();
     // The clock schedule's first period solves by weight, as the default
     // schedule does; and a solve the weight brings due while it is below
-    // `1 - ln 2 / 50` of the floor (here `min_weight`, 5) is not run, since
-    // no row can read it before the next comes due (task 311). So its first
-    // rows have no fit to report, where the row cap of 1 runs every solve:
-    // the same weight, and `coef` null.
-    let (lazy, fresh) = (lazy.coef(0, None).unwrap(), fresh.coef(0, None).unwrap());
-    assert_eq!(lazy.len(), fresh.len());
-    for (l, f) in lazy.iter().zip(&fresh) {
+    // `(1 - ln 2 / 50)(1 - 2^-16)` of the floor (here a row per unknown, 3,
+    // the least of it and `min_weight`, 5) is not run, since no row can
+    // read it before the next comes due (task 311). So its first rows have
+    // no fit to report, where the row cap of 1 runs every solve: the same
+    // weight, and `coef` null.
+    let (lazy_two, fresh_two) = (lazy.coef(0, None).unwrap(), fresh.coef(0, None).unwrap());
+    assert_eq!(lazy_two.len(), fresh_two.len());
+    for (l, f) in lazy_two.iter().zip(&fresh_two) {
         assert_eq!((&l.group, l.n_eff.to_bits()), (&f.group, f.n_eff.to_bits()));
         assert!(l.coef.is_none() && f.coef.is_some(), "{l:?} against {f:?}");
+    }
+    // Past the floor, the first period's weight share brings every row with
+    // weight due (each learns more than `ln 2 / 50` of a weight of a few
+    // rows), so both schedules solve on each group's last row, from the same
+    // moments: the clock schedule's first-period fit is the every-row one's.
+    // (The period lasts until `solve_every` has passed, about 285 rows of
+    // this clock at 1000, so the 20 rows here are all in it; at 10 it ended
+    // within the first 3 rows, before either group reached the floor.)
+    lazy.fit_predict(&df.slice(2, 18)).unwrap();
+    fresh.fit_predict(&df.slice(2, 18)).unwrap();
+    let (lazy, fresh) = (lazy.coef(0, None).unwrap(), fresh.coef(0, None).unwrap());
+    assert_eq!(lazy.len(), 2);
+    for (l, f) in lazy.iter().zip(&fresh) {
+        assert!(l.n_eff > 3.0, "{l:?} is not past the floor");
+        assert!(l.coef.is_some(), "{l:?}");
+        assert_eq!(l, f, "the clock schedule's first-period fit");
     }
 }
 

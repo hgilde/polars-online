@@ -215,6 +215,12 @@ fn cases() -> Vec<Case> {
     c.cfg.min_weight = 0.0;
     c.skips = false;
     out.push(c);
+    // Nor past a share of 1/2, where the margin argument stops (item 3);
+    // at exactly 1/2 the "min_weight over k, held back" case skips.
+    let mut c = case("share past one half", base(6, 2));
+    c.cfg.solve_share = Some(0.6);
+    c.skips = false;
+    out.push(c);
     out
 }
 
@@ -265,12 +271,30 @@ struct Served {
     grams: Option<Vec<Vec<u64>>>,
 }
 
+/// The thread's skip mode for as long as it lives, set back to the model's
+/// way (`true`) when it drops -- on a panic too, so a failing test does not
+/// leave a later test on its thread running the reference mode.
+struct SkipMode;
+
+impl SkipMode {
+    fn set(skip: bool) -> Self {
+        SKIP_UNREAD.with(|s| s.set(skip));
+        SkipMode
+    }
+}
+
+impl Drop for SkipMode {
+    fn drop(&mut self) {
+        SKIP_UNREAD.with(|s| s.set(true));
+    }
+}
+
 /// Run `c` over `data`, every due solve run or not, with a save and load
 /// at each row of `loads` and the readiness settled, as a chunk's end
 /// settles it, every 37 rows. Returns what each row served and the solves
 /// run and passed.
 fn run(c: &Case, data: &[Row], skip: bool, loads: &[usize]) -> (Vec<Served>, u64, u64) {
-    SKIP_UNREAD.with(|s| s.set(skip));
+    let _mode = SkipMode::set(skip);
     let (solved0, unread0) = (SOLVED.with(|s| s.get()), UNREAD.with(|s| s.get()));
     let mut m = build(c);
     let floor = m.unread_floor();
@@ -330,12 +354,24 @@ fn run(c: &Case, data: &[Row], skip: bool, loads: &[usize]) -> (Vec<Served>, u64
             m.settle_readiness();
         }
     }
-    SKIP_UNREAD.with(|s| s.set(true));
     (
         out,
         SOLVED.with(|s| s.get()) - solved0,
         UNREAD.with(|s| s.get()) - unread0,
     )
+}
+
+/// The reference mode does not outlive a test that panics in it (task 313):
+/// the guard restores the model's way as the panic unwinds.
+#[test]
+fn the_skip_mode_is_restored_on_a_panic() {
+    let caught = std::panic::catch_unwind(|| {
+        let _mode = SkipMode::set(false);
+        assert!(!SKIP_UNREAD.with(std::cell::Cell::get));
+        panic!("a failing test in the reference mode");
+    });
+    assert!(caught.is_err());
+    assert!(SKIP_UNREAD.with(std::cell::Cell::get));
 }
 
 /// Every served number to the bit against the model that runs every due
@@ -423,6 +459,56 @@ fn a_due_solve_is_passed_exactly_below_the_floors_margin() {
     );
 }
 
+/// The threshold to the bit, on a first row whose weight is the model's
+/// whole weight, exactly: a weight one ulp below `F (1 − s)(1 − 2⁻¹⁶)` (as
+/// the model rounds it) passes its due solve; the threshold itself, and
+/// `F (1 − s)`, run it (task 313: CI's survivors of 0ab3bac1 made the
+/// comparison `<=`, the margin a division, and its `1 − 2⁻¹⁶` `1 + 2⁻¹⁶`).
+#[test]
+fn the_first_rows_solve_is_passed_strictly_below_the_threshold() {
+    let cfg = base(4, 1);
+    let floor = EwRidge::new(cfg.clone()).unwrap().unread_floor();
+    assert_eq!(floor, 5.0);
+    let s = crate::DEFAULT_SOLVE_SHARE;
+    let edge = floor * (1.0 - s) * (1.0 - 1.0 / 65_536.0);
+    let below = f64::from_bits(edge.to_bits() - 1);
+    let outcomes: Vec<(u64, u64)> = [below, edge, floor * (1.0 - s)]
+        .iter()
+        .map(|&w| {
+            let mut m = EwRidge::new(cfg.clone()).unwrap();
+            m.set_min_weight_output_only(true);
+            let (u0, s0) = (UNREAD.with(|c| c.get()), SOLVED.with(|c| c.get()));
+            m.step(&[0.3, -0.1, 0.7, 0.2], &[Some(1.0)], 0.0, w);
+            assert_eq!(m.n_eff().to_bits(), w.to_bits(), "the weight is the row's");
+            (UNREAD.with(|c| c.get()) - u0, SOLVED.with(|c| c.get()) - s0)
+        })
+        .collect();
+    // Each first row is due (all of its weight is new): passed, or run.
+    assert_eq!(outcomes, [(1, 0), (0, 1), (0, 1)]);
+}
+
+/// The floor is a row per unknown -- `k + 1` with an intercept, `k`
+/// through the origin -- where `min_weight` and the targets' own are above
+/// it, and the lowest of them otherwise (task 313: the docs state it so).
+#[test]
+fn the_floor_is_a_row_per_unknown_or_the_lowest_threshold() {
+    let floor = |intercept: bool, min_weight: f64, targets: Vec<f64>| {
+        let mut cfg = base(6, 2);
+        cfg.fit_intercept = intercept;
+        cfg.min_weight = min_weight;
+        let mut m = EwRidge::new(cfg).unwrap();
+        m.set_min_weight_output_only(true);
+        if !targets.is_empty() {
+            m.set_target_min_weight(targets).unwrap();
+        }
+        m.unread_floor()
+    };
+    assert_eq!(floor(true, 20.0, vec![]), 7.0);
+    assert_eq!(floor(false, 20.0, vec![]), 6.0);
+    assert_eq!(floor(true, 4.0, vec![]), 4.0);
+    assert_eq!(floor(true, 20.0, vec![9.0, 5.0]), 5.0);
+}
+
 /// `ill_conditioned` names no fit below `min_weight`, where the model
 /// predicts from none: the last solve's condition is the floor's business
 /// there, and the last solve run may be older than the schedule's latest.
@@ -492,7 +578,7 @@ fn a_target_decayed_to_nothing_keeps_the_fit_of_the_last_solve_run() {
         })
         .collect();
     let served = |skip: bool| {
-        SKIP_UNREAD.with(|c| c.set(skip));
+        let _mode = SkipMode::set(skip);
         let mut m = EwRidge::new(cfg.clone()).unwrap();
         m.set_min_weight_output_only(true);
         let mut out = Vec::new();
@@ -505,7 +591,6 @@ fn a_target_decayed_to_nothing_keeps_the_fit_of_the_last_solve_run() {
                 );
             }
         }
-        SKIP_UNREAD.with(|c| c.set(true));
         out
     };
     let (all, passed) = (served(false), served(true));

@@ -3046,3 +3046,24 @@ why = """the guard never fires: standardized, the kept columns are those whose \
 variance `var(i)` passed `variance_is_usable`, positive and finite, and \
 `var` reads the same entry of the same flushed matrix again, so `v` is \
 neither NaN nor at most 0 and both forms are false"""
+
+# Task 313 (docs/PLAN.md): the survivor of 0ab3bac1's changed lines that no
+# input reaches -- the first period's guard on the default share, read only
+# where a due solve's weight is already at the floor. The other three, on
+# the threshold's comparison, are caught by
+# `unread_tests::the_first_rows_solve_is_passed_strictly_below_the_threshold`.
+
+[[equivalent]]
+file = "crates/online-core/src/ewridge/unread.rs"
+function = "EwRidge::solve_is_unread"
+mutation = "replace match guard first with true"
+line_has = "None if first => crate::DEFAULT_SOLVE_SHARE,"
+why = """the arm differs only with no `solve_share` and `first` false, and the \
+caller asks only of a due solve that is not `explicit`. There the share \
+does not bring it due (`by_cadence` is `explicit`, false), so it is due by \
+the row cap -- which returns false a line later either way -- or by a first \
+solve: the model's, at `W ≥ own_floor = capped(min_weight) ≥ F`, or a \
+target's, at its weight `λ w_j + w ≥ capped(threshold_j) ≥ F`, and `W` is \
+never below a target's weight (`unread`'s item 1). So `W ≥ F > F (1 − s)(1 \
+− 2⁻¹⁶)` with the default `s`, the comparison is false, and both forms \
+return false; a window returns false before it in both"""

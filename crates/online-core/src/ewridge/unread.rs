@@ -165,9 +165,7 @@ impl EwRidge {
         #[cfg(test)]
         UNREAD.with(|c| c.set(c.get() + 1));
         self.acc.flush();
-        self.since_solve.restart();
-        self.rows_since_solve = 0;
-        self.weight_since_solve = 0.0;
+        self.restart_schedule();
     }
 }
 

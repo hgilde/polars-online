@@ -1134,17 +1134,25 @@ def ewridge(
         far longer than the stream still solves, at rows further apart as the
         weight grows. ``half_life = inf`` and ``lam`` solve every row.
         ``max_rows_between_solves`` is off by default. The coefficients are the
-        sums' as of the last solve. While the weight is below ``1 - ln 2 / 50``
-        of the lowest floor any prediction reads at (``k + 1``, ``min_weight``,
-        each target's own), a solve the schedule by weight brings due is not
-        run, unless ``max_rows_between_solves`` brings it due too: until the
-        next one comes due, the weight learned since is less than that share
-        of the weight, so every row stays below the floor and is withheld,
-        and none could read it. The schedule moves on as after the solve, so
-        every prediction, residual and spread is the same to the bit;
-        ``coef`` there is the last fit solved, and a solve not run is not
-        counted in ``solve_failures``. That is most of the warm-up's solves at
-        a thousand features, and a fit there runs several times faster until
+        sums' as of the last solve. The schedule by weight runs no solve it
+        brings due while the weight is below ``(1 - ln 2 / 50)(1 - 2**-16)``
+        of the floor, the least of a row per unknown (``k + 1``, ``k`` without
+        an intercept), ``min_weight`` and each target's own threshold, unless
+        ``max_rows_between_solves`` brings it due too: until the next one comes
+        due, the weight learned since is less than ``ln 2 / 50`` of the
+        weight, so every row stays below the floor and is withheld, and none
+        could read the solve (the ``2**-16`` covers the weight's rounding).
+        The schedule moves on as after the solve, so every prediction,
+        residual and spread is the same to the bit; ``coef`` there is the last
+        fit solved, null before the first, and a solve not run is not counted
+        in ``solve_failures``. So a group whose weight never reaches the
+        floor, such as one of two rows over two features, reports no ``coef``
+        on any row, in ``bank.coef()`` or as a closed group, where running
+        every solve gave it a ridge fit of its few rows. To keep every solve,
+        give ``min_weight = 0``, which makes the floor 0 and withholds no
+        prediction for its weight, or ``max_rows_between_solves = 1``, whose
+        solves always run. The solves not run are most of the warm-up's at a
+        thousand features, and a fit there runs several times faster until
         the weight reaches the floor. A given ``solve_every`` below ``1e18``
         starts with a first period that solves by weight, as the default does: until
         ``solve_every`` has passed since the stream's start (on the row clock,
