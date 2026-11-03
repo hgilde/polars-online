@@ -1352,11 +1352,18 @@ impl EwRidge {
                 ill: false,
             });
         }
+        // The lower triangle formed and mirrored: entry `(j, i)` is entry
+        // `(i, j)`'s bits, since the moments are kept once for both and
+        // `s_i·s_j` is `s_j·s_i` (task 314; see `solve_centred`).
         let mut asub = vec![0.0; kk * kk];
         for (i2, &i) in keep.iter().enumerate() {
-            for (j2, &j) in keep.iter().enumerate() {
-                asub[i2 * kk + j2] = cov.raw(zidx[i], zidx[j]) / (s[i] * s[j]);
+            for (j2, &j) in keep[..=i2].iter().enumerate() {
+                let v = cov.raw(zidx[i], zidx[j]) / (s[i] * s[j]);
+                asub[i2 * kk + j2] = v;
+                asub[j2 * kk + i2] = v;
             }
+        }
+        for i2 in 0..kk {
             asub[i2 * kk + i2] += ridge;
         }
         let mut bsub = vec![0.0; kk * m];
@@ -1447,19 +1454,24 @@ impl EwRidge {
         let mut system = None;
         let mut ill = false;
         if kk > 0 {
+            // The lower triangle formed, each entry once, and mirrored:
+            // entry `(j, i)` is entry `(i, j)`'s bits, since the co-moments
+            // keep one value for both and `s_i·s_j` is `s_j·s_i`. Read
+            // whole, each upper entry was a read across the triangle's rows
+            // and a second division: at 200 features solving every row, 7
+            // µs of a 147 µs row on arm64 (task 314).
             let mut asub = vec![0.0; kk * kk];
             for (i2, &i) in keep.iter().enumerate() {
-                let row = &mut asub[i2 * kk..(i2 + 1) * kk];
-                if standardize {
-                    for (a, &j) in row.iter_mut().zip(&keep) {
-                        *a = cov.cov(zidx[i + 1], zidx[j + 1]) / (s[i] * s[j]);
-                    }
-                } else {
-                    for (a, &j) in row.iter_mut().zip(&keep) {
-                        *a = cov.cov(zidx[i + 1], zidx[j + 1]);
-                    }
+                let zi = zidx[i + 1];
+                for (j2, &j) in keep[..=i2].iter().enumerate() {
+                    let c = cov.cov(zi, zidx[j + 1]);
+                    let v = if standardize { c / (s[i] * s[j]) } else { c };
+                    asub[i2 * kk + j2] = v;
+                    asub[j2 * kk + i2] = v;
                 }
-                row[i2] += ridge;
+            }
+            for i2 in 0..kk {
+                asub[i2 * kk + i2] += ridge;
             }
             let mut bsub = vec![0.0; kk * mr];
             for (jj, &j) in readers.iter().enumerate() {
