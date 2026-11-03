@@ -19,6 +19,7 @@ as plain numbers.
 from __future__ import annotations
 
 import inspect
+import math
 import re
 from datetime import date, datetime, timedelta
 
@@ -268,9 +269,18 @@ class TestHowADurationIsWritten:
         for key in ("coef_every", "solve_every", "restart_after_step_back"):
             zero = _fit(df, _ridge("t", **{key: 0}, **timed))
             assert zero.equals(_fit(df, _ridge("t", **{key: "0s"}, **timed)), null_equal=True), key
-        # And a zero `coef_every` is every row, where unset is the last.
-        every = _fit(df, _ridge("t", coef_every=0, **timed)).struct.field("coef")
-        assert every.null_count() == 0
+        # And a zero `coef_every` is every row, where unset is the last: a
+        # fit on every row from the first solve, which no earlier row could
+        # read below `1 - ln 2 / 50` of the floor, a row per coefficient (3),
+        # and so is not run before (task 311).
+        out = _fit(df, _ridge("t", coef_every=0, **timed))
+        every, held = out.struct.field("coef"), out.struct.field("weight_sum")
+        first = every.is_not_null().arg_true()[0]
+        assert first > 0 and every[first:].null_count() == 0, first
+        # The rows up to it held less than the floor, and its own row more
+        # than the share's margin below it: the solve it shows is its own.
+        edge = 3.0 * (1.0 - math.log(2.0) / 50.0) * (1.0 - 2.0**-16)
+        assert held[first] < 3.0 and held[first + 1] >= edge, held[: first + 2]
 
     @pytest.mark.parametrize(
         ("value", "exc", "says"),
