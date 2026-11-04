@@ -183,7 +183,7 @@ jobs:
           git diff "$BASE" HEAD -- crates/ > changed.diff
           echo "$(grep -c '^+[^+]' changed.diff || true) added lines under crates/ since $BASE"
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: mutants-list
           cache-on-failure: true
@@ -251,7 +251,7 @@ jobs:
       - name: free disk and use a leaner linker
         uses: ./.github/actions/linux-build-prep
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: mutants-changed
           cache-on-failure: true
@@ -296,7 +296,7 @@ jobs:
           # stopped by the limit above. The report decides on those; anything
           # else means the run itself failed.
           case "$code" in 0|2|3|124|137) exit 0 ;; *) exit "$code" ;; esac
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: mutants-changed-${{ matrix.shard }}
@@ -313,7 +313,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: mutants-changed-*
           path: shards
@@ -358,7 +358,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: mutants-weekly
           cache-on-failure: true
@@ -392,7 +392,7 @@ jobs:
           echo "disk used: $(head -n 1 "$disk_peak") MiB at the start, $(sort -n "$disk_peak" | tail -n 1) MiB at most"
           mkdir -p shard/mutants.out && cp listed.txt shard/mutants.out/
           case "$code" in 0|2|3|124|137) exit 0 ;; *) exit "$code" ;; esac
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: mutants-shard-${{ matrix.shard }}
@@ -409,7 +409,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: mutants-shard-*
           path: shards

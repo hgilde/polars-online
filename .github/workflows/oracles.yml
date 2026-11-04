@@ -67,7 +67,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
       - name: the cached datasets
@@ -84,7 +84,7 @@ jobs:
       - run: uv sync --locked --no-install-project
       - name: fetch every dataset the ledger names
         run: uv run --no-sync python scripts/oracles.py fetch
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: oracle-datasets
           path: |
@@ -121,17 +121,17 @@ jobs:
       # rustflags must be in place before anything compiles.
       - name: free disk and use a leaner linker (Linux)
         uses: ./.github/actions/linux-build-prep
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           cache-on-failure: true
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
       # The public datasets the grids read (Rdatasets, NIST StRD, LIBSVM,
       # Fränti's clustering sets, TCPD), as the `datasets` job fetched them:
       # every shard reads the same files and downloads none.
       - name: the datasets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: oracle-datasets
           path: .cache
@@ -150,7 +150,7 @@ jobs:
         run: mkdir -p records && touch records/done
       - name: the shard's records
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: oracle-records-${{ matrix.shard }}
           path: records
@@ -169,7 +169,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: oracle-records-*
           path: records
@@ -182,7 +182,7 @@ jobs:
       # the tightenings and the versions this run settles.
       - name: the measurements
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: oracle-ledger-measured
           path: measured.json
