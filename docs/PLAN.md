@@ -16545,6 +16545,32 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       (4) The fixture index and shared test-case registry generated rather
       than appended to, so new fixtures stop conflicting between branches.
       (5) `spec.rs` sits at 249.9 KB of the 250 KB cap: split a seam.
+      *(4) and (5) built 2026-11-04 (W45, `task-281-followups`); (1)-(3)
+      await the user* (measured and proposed, not built:
+      `.claude/coord/W45-281-scratch/PROPOSALS.md`). [x] (5): `spec.rs`
+      249,960 -> 216,675 bytes, a pure move of two seams, re-exported from
+      `spec` so no path, API or serialized form moves: the value types a
+      parameter is written in (`spec/values.rs`) and the spec's clock --
+      `CLOCK_FIELDS` and its sibling tables, `ClockScale`, `ClockPolicy`,
+      `clock_cfg_of`, `Spec::clock_spans`/`clock_scale` (`spec/clock.rs`).
+      [x] (4): the state fixtures are discovered, not listed. Each crate's
+      `build.rs` (one file in both, a test holds the copies equal) writes
+      `$OUT_DIR/state_fixtures_index.rs` from every `<case>.rs` under
+      `tests/state_fixtures/` and under each `v<N>/`; the generated
+      `index.rs` files and `previous![..]` are gone, so a branch adding a
+      fixture adds a file and edits no shared list, and a kept schema is a
+      `v<N>/` directory. Counted at run time: the current set compiled in
+      equals the `.rs` files on disk, the fixtures' names equal the cases'
+      (as sets), each kept set is non-empty and every fixture in it of its
+      directory's schema. `PRINT_STATE_FIXTURES=1` rewrites both crates'
+      fixtures byte-identically. Not done, and what remains of the
+      conflict: the case registries themselves (`tests/cases/mod.rs`'s
+      `all()`, the bank harness's `kinds()`) are hand-written code a new
+      case appends to; two branches conflict there only where they append
+      at the same spot. Discovering them would mean a file per case (78 +
+      13), splitting each family's cases and the comments that relate them
+      -- more than a tidy refactor, so left for the user. CLAUDE.md rule 5
+      still names `previous![..]`; the user's file, not edited.
 
 - [x] 282. **Review round 10's fixes, before 1.4.0** -- the user, 2026-10-28:
       "Review the 1.4 changes theory and code". Nine read-only reviewers over

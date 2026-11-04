@@ -37,12 +37,15 @@
 //!
 //! 1. copy the kinds the promise covers -- `bank.rs` and the
 //!    `refresh_time*.rs` files, not the unstable windows states -- to
-//!    `tests/state_fixtures/v44/`, with an `index.rs` listing them as the
-//!    current index does;
+//!    `tests/state_fixtures/v44/`, the directory the kept set, which
+//!    `build.rs` finds;
 //! 2. raise `SCHEMA_VERSION` to 45 and write the loader;
-//! 3. list the kept schema here: `previous![44]`, which includes
-//!    `v44/index.rs` -- a schema listed without its files does not compile;
-//! 4. regenerate the current set.
+//! 3. regenerate the current set.
+//!
+//! No index lists the files: `build.rs` discovers every `<kind>.rs` under
+//! `tests/state_fixtures/`, and every one under each `v<N>/`, on each
+//! build, so two branches that each add a kind add two files and edit no
+//! shared list.
 //!
 //! Each kept set is held by `every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes`:
 //! every fixture loads through the loader, goes on to the bit against its
@@ -50,8 +53,13 @@
 //! schema's fixture bytes of the same kind, the two being the same stream
 //! saved at the same row (the exact-conversion check).
 
-#[path = "state_fixtures/index.rs"]
-mod frozen;
+/// The fixtures, discovered: `build.rs` lists every file under
+/// `tests/state_fixtures/` and each `v<N>/` beside them, so a kind added is
+/// a file added and no list is edited by hand.
+mod frozen {
+    use crate::Fixture;
+    include!(concat!(env!("OUT_DIR"), "/state_fixtures_index.rs"));
+}
 
 use std::fmt::Write as _;
 use std::io::Cursor;
@@ -81,9 +89,9 @@ pub struct Fixture {
 const REGENERATE: &str = "PRINT_STATE_FIXTURES=1 cargo test -p online-polars --test state_fixtures";
 
 /// The schemas before the current one whose fixtures are kept, each under
-/// `tests/state_fixtures/v<N>/` and loaded by this build: `PREVIOUS` lists
-/// them, and `previous_sets` is each set as its `v<N>/index.rs` lists it.
-/// A schema listed without its files does not compile. None before 1.0
+/// `tests/state_fixtures/v<N>/` and loaded by this build: `previous` lists
+/// them, and `previous_sets` is each set as `build.rs` found it in its
+/// directory. None before 1.0
 /// (the module doc has the steps from 1.0). 61, 1.0's, kept since 62
 /// (docs/PLAN.md task 257): the bank files and `refresh_time` states. 62
 /// kept since 63 moved `huber`'s and `sgd`'s layout (docs/PLAN.md task
@@ -116,22 +124,15 @@ const REGENERATE: &str = "PRINT_STATE_FIXTURES=1 cargo test -p online-polars --t
 /// learns its residual variance and first solve at its own floor
 /// (`min_weight_output_only`): [`kept_rules`] leaves both out of the kept
 /// forms, `bank_reset` freezes the first, and `bank_gated` the second.
-macro_rules! previous {
-    ($($schema:literal),* $(,)?) => {
-        const PREVIOUS: &[u32] = &[$($schema),*];
-
-        fn previous_sets() -> Vec<(u32, &'static [&'static Fixture])> {
-            vec![$({
-                mod set {
-                    include!(concat!("state_fixtures/v", $schema, "/index.rs"));
-                }
-                ($schema, set::ALL)
-            }),*]
-        }
-    };
+/// The kept schemas, each a `v<N>/` directory found beside the current set.
+fn previous() -> Vec<u32> {
+    frozen::PREVIOUS_SETS.iter().map(|(s, _)| *s).collect()
 }
 
-previous![61, 62, 63];
+/// Each kept schema's set, as `build.rs` found it on disk.
+fn previous_sets() -> Vec<(u32, &'static [&'static Fixture])> {
+    frozen::PREVIOUS_SETS.to_vec()
+}
 
 /// The golden pipeline's tolerance, off the writer's platform.
 const TOL: f64 = 1e-12;
@@ -1169,10 +1170,22 @@ fn every_fixture_loads_goes_on_to_the_bit_and_saves_its_bytes_again() {
     if regenerating() {
         return;
     }
+    // The fixtures are discovered in file-name order and the kinds are in
+    // file order: compared as sets, and counted, so a discovery that found
+    // nothing fails here too.
+    let mut names: Vec<&str> = frozen::ALL.iter().map(|f| f.name).collect();
+    let mut kinds_named: Vec<&str> = kinds().iter().map(|k| k.name).collect();
+    names.sort_unstable();
+    kinds_named.sort_unstable();
+    assert!(!kinds_named.is_empty(), "no kind to freeze");
     assert_eq!(
-        frozen::ALL.iter().map(|f| f.name).collect::<Vec<_>>(),
-        kinds().iter().map(|k| k.name).collect::<Vec<_>>(),
+        names, kinds_named,
         "the frozen fixtures are not the kinds: regenerate with `{REGENERATE}`"
+    );
+    assert_eq!(
+        fixtures_on_disk(&dir()),
+        Ok(frozen::ALL.len()),
+        "the current set compiled in is not the files on disk: rebuild the test"
     );
     for f in frozen::ALL {
         let kind = kind_of(f);
@@ -1203,36 +1216,42 @@ fn every_fixture_loads_goes_on_to_the_bit_and_saves_its_bytes_again() {
     }
 }
 
-/// The set a kept schema has on disk: `dir/v<schema>/index.rs` and the
-/// fixtures beside it, counted; or why there is none.
-fn set_on_disk(dir: &Path, schema: u32) -> Result<usize, String> {
-    let set = dir.join(format!("v{schema}"));
-    if !set.join("index.rs").is_file() {
-        return Err(format!(
-            "schema {schema} is listed in PREVIOUS and has no set under {}: a kept schema keeps \
-             its fixtures there, with an index.rs listing them",
-            set.display()
-        ));
-    }
-    let fixtures = std::fs::read_dir(&set)
-        .map_err(|e| format!("{}: {e}", set.display()))?
+/// The `.rs` files directly in `dir`, counted: what `build.rs` discovers
+/// there, read again at run time, so a test binary built before a fixture
+/// was added or removed is caught rather than trusted.
+fn fixtures_on_disk(dir: &Path) -> Result<usize, String> {
+    Ok(std::fs::read_dir(dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "rs") && !p.ends_with("index.rs"))
-        .count();
-    if fixtures == 0 {
+        .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "rs"))
+        .count())
+}
+
+/// The set a kept schema has on disk: the fixtures under `dir/v<schema>/`,
+/// counted; or why there is none.
+fn set_on_disk(dir: &Path, schema: u32) -> Result<usize, String> {
+    let set = dir.join(format!("v{schema}"));
+    if !set.is_dir() {
         return Err(format!(
-            "schema {schema}: {} holds an index and no fixture",
+            "schema {schema} has no set under {}: a kept schema keeps its fixtures there",
             set.display()
         ));
     }
-    Ok(fixtures)
+    match fixtures_on_disk(&set)? {
+        0 => Err(format!(
+            "schema {schema}: {} holds no fixture",
+            set.display()
+        )),
+        n => Ok(n),
+    }
 }
 
 /// Every schema a bank file loads from has its fixtures: the bank's minimum
 /// cannot sit below the oldest set kept, nor the schema move without one.
-/// A kept schema's set is on disk, under `v<N>/`, holds a bank file, and
-/// has as many fixtures as its index lists (review round 5, D2).
+/// A kept schema's set is on disk, under `v<N>/`, holds a bank file, every
+/// fixture in it of schema `N`, and each set compiled in holds every file
+/// its directory does (review round 5, D2; discovery, task 281 (4)).
 #[test]
 fn the_bank_fixtures_cover_the_schemas_a_bank_loads() {
     if regenerating() {
@@ -1250,27 +1269,29 @@ fn the_bank_fixtures_cover_the_schemas_a_bank_loads() {
          regenerate",
         bank.schema
     );
-    let covered: Vec<u32> = PREVIOUS.iter().copied().chain([bank.schema]).collect();
+    let previous = previous();
+    let covered: Vec<u32> = previous.iter().copied().chain([bank.schema]).collect();
     let claimed: Vec<u32> = (MIN_BANK_SCHEMA_VERSION..=SCHEMA_VERSION).collect();
     assert_eq!(
         claimed, covered,
         "a bank loads schemas {MIN_BANK_SCHEMA_VERSION}..={SCHEMA_VERSION} and fixtures cover \
          {covered:?}: each needs a frozen file, held to its loader"
     );
-    let sets = previous_sets();
-    assert_eq!(
-        sets.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
-        PREVIOUS,
-        "the kept sets are the schemas listed"
-    );
-    for (schema, set) in &sets {
+    for (schema, set) in &previous_sets() {
         let on_disk = set_on_disk(&dir(), *schema).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(
             on_disk,
             set.len(),
-            "schema {schema}: v{schema}/ holds {on_disk} fixtures and its index lists {}",
+            "schema {schema}: v{schema}/ holds {on_disk} fixtures and {} were compiled in",
             set.len()
         );
+        for f in *set {
+            assert_eq!(
+                f.schema, *schema,
+                "v{schema}/{}.rs is another schema's",
+                f.name
+            );
+        }
         assert!(
             set.iter().any(|f| f.name == "bank"),
             "schema {schema}: the kept set has no bank file, the kind the minimum is about"
@@ -1279,9 +1300,8 @@ fn the_bank_fixtures_cover_the_schemas_a_bank_loads() {
 }
 
 /// The on-disk check behind the coverage test, proven on a directory of
-/// its own while `PREVIOUS` is empty (review round 5, D2): a listed schema
-/// with no set, or an index alone, is refused; a set with fixtures passes
-/// and is counted.
+/// its own (review round 5, D2): a schema with no set, or an empty one, is
+/// refused; a set with fixtures passes and is counted.
 #[test]
 fn a_kept_schema_without_its_set_on_disk_is_refused() {
     let root = std::env::temp_dir().join(format!(
@@ -1292,16 +1312,15 @@ fn a_kept_schema_without_its_set_on_disk_is_refused() {
     std::fs::create_dir_all(&root).unwrap();
     let missing = set_on_disk(&root, 44).unwrap_err();
     assert!(
-        missing.contains("schema 44 is listed") && missing.contains("v44"),
+        missing.contains("schema 44 has no set") && missing.contains("v44"),
         "{missing}"
     );
     let set = root.join("v44");
     std::fs::create_dir_all(&set).unwrap();
-    std::fs::write(set.join("index.rs"), "// an index\n").unwrap();
+    std::fs::write(set.join("notes.txt"), "not a fixture\n").unwrap();
     let empty = set_on_disk(&root, 44).unwrap_err();
     assert!(empty.contains("no fixture"), "{empty}");
     std::fs::write(set.join("bank.rs"), "// a fixture\n").unwrap();
-    std::fs::write(set.join("notes.txt"), "not a fixture\n").unwrap();
     assert_eq!(set_on_disk(&root, 44), Ok(1));
     std::fs::write(set.join("refresh_time.rs"), "// a fixture\n").unwrap();
     assert_eq!(set_on_disk(&root, 44), Ok(2));
@@ -1316,8 +1335,8 @@ fn a_kept_schema_without_its_set_on_disk_is_refused() {
 /// bytes of the same kind: the same stream saved at the same row, so the
 /// converted state is the one this build writes (the exact-conversion
 /// check). The sets must share a writer, since a libm bit in a decayed
-/// sum differs by platform. Nothing to run before 1.0, where `PREVIOUS`
-/// is empty.
+/// sum differs by platform. Nothing to run before 1.0, where no set
+/// is kept.
 ///
 /// What it cannot see (review 8, E-7; recorded by the user's decision,
 /// 2026-10-16): a previous fixture whose map *key* is corrupted, when the
@@ -1358,7 +1377,7 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
                 f.writer, current.writer
             );
             // A window's snapshots from before task 275 carry no running
-            // products (the doc above `previous!`): its continuation goes on
+            // products (the doc above `previous`): its continuation goes on
             // from the saved state's reads, the first to the bit, and parts
             // from the old build's in the last bits once a snapshot taken
             // after the load is the boundary, as a fresh run's reads do; the
@@ -1986,7 +2005,7 @@ fn file_of(kind: &Kind) -> String {
     out
 }
 
-/// Rewrites every fixture, and the index, when `PRINT_STATE_FIXTURES=1`.
+/// Rewrites every fixture when `PRINT_STATE_FIXTURES=1`.
 #[test]
 fn regenerate_when_asked() {
     if !regenerating() {
@@ -1994,30 +2013,30 @@ fn regenerate_when_asked() {
     }
     let dir = dir();
     std::fs::create_dir_all(&dir).unwrap();
-    let mut index = format!(
-        "// @generated by `{REGENERATE}`: do not edit by hand.\n\
-         // The frozen fixtures of a bank file and its helpers' states.\n\n"
-    );
-    let kinds = kinds();
-    for kind in &kinds {
+    // Every current fixture is rewritten and any other removed (a kept set
+    // under `v<N>/` is not touched); no index: `build.rs` discovers the
+    // files on the next build.
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_file() && path.extension().is_some_and(|e| e == "rs") {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+    for kind in &kinds() {
         let text = file_of(kind);
         std::fs::write(dir.join(format!("{}.rs", kind.name)), &text).unwrap();
-        writeln!(
-            index,
-            "pub mod {} {{\n    include!(\"{}.rs\");\n}}",
-            kind.name, kind.name
-        )
-        .unwrap();
         println!("wrote {}.rs ({} bytes)", kind.name, text.len());
     }
-    writeln!(
-        index,
-        "\n/// Every fixture.\npub const ALL: &[&crate::Fixture] = &["
-    )
-    .unwrap();
-    for kind in &kinds {
-        writeln!(index, "    &{}::FIXTURE,", kind.name).unwrap();
-    }
-    writeln!(index, "];").unwrap();
-    std::fs::write(dir.join("index.rs"), index).unwrap();
+}
+
+/// The two crates discover their fixtures with one `build.rs`, kept as a
+/// copy in each so each package builds on its own: the copies are the same
+/// file, byte for byte.
+#[test]
+fn the_fixture_discovery_is_one_build_script() {
+    assert!(
+        include_str!("../build.rs") == include_str!("../../online-core/build.rs"),
+        "crates/online-polars/build.rs and crates/online-core/build.rs differ: copy one over the \
+         other"
+    );
 }
