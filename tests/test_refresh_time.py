@@ -1,15 +1,18 @@
 """E58: refresh-time sampling — asynchronous series on a common grid.
 
 The oracle is a longhand Python loop over the same ticks: a grid point
-wherever every series has ticked at least once since the last one. Everything
+wherever every series has ticked at least once since the last one, and
+hfhd's ``refresh_time`` is a third party's computation of it. Everything
 else here is the properties that make the sampler usable — nothing
 interpolated, the same grid whatever the chunking, and a retained fraction
 that says how much of the data survived.
 """
 
 import numpy as np
+import pandas as pd
 import polars as pl
 import pytest
+from hfhd import hf
 
 import polars_online as po
 from polars_online import stream
@@ -94,6 +97,59 @@ def test_pairs_are_the_longhand_loop_per_pair():
         assert row["b_value"] == w[f"{b}_value"]
         assert row["n_obs_a"] == w[f"n_obs_{a}"]
         assert row["n_obs_b"] == w[f"n_obs_{b}"]
+
+
+def distinct_ticks(rates=(1.0, 0.4, 0.15), n=3000, seed=0):
+    """``n`` ticks, one a second on a nanosecond clock, each given to one
+    series with chance in proportion to its rate: asynchronous series whose
+    stamps never coincide, so that no tie rule is involved."""
+    rng = np.random.default_rng(seed)
+    p = np.array(rates) / sum(rates)
+    t = np.datetime64("2024-01-02T09:30:00", "ns") + np.arange(n) * np.timedelta64(10**9, "ns")
+    return pl.DataFrame(
+        {
+            "series": np.array(NAMES)[rng.choice(len(NAMES), n, p=p)],
+            "t": t,
+            "v": rng.standard_normal(n),
+        }
+    )
+
+
+def hfhd_grid(df, names):
+    """hfhd's ``refresh_time`` over the named series: its stamps and the
+    previous-tick values, one column a series."""
+    series = []
+    for s in names:
+        one = df.filter(pl.col("series") == s)
+        series.append(pd.Series(one["v"].to_numpy(), index=pd.DatetimeIndex(one["t"].to_numpy())))
+    grid = hf.refresh_time(series)
+    return grid.index.to_numpy(), grid.to_numpy()
+
+
+@pytest.mark.parametrize("pairs", [False, True])
+def test_the_grid_is_hfhds_refresh_time(pairs):
+    """hfhd's ``refresh_time`` is BNHLS's all-refresh-time grid: a point at
+    the first stamp by which every series has ticked since the last point,
+    carrying each series' last value. The grid here is the same, stamp for
+    stamp and value for value, and ``pairs=True`` is hfhd's call on each
+    pair (its pairwise-refresh time)."""
+    df = distinct_ticks()
+    got = run(df, pairs=pairs)
+    sets = (
+        [(a, b) for i, a in enumerate(NAMES) for b in NAMES[i + 1 :]] if pairs else [tuple(NAMES)]
+    )
+    for names in sets:
+        if pairs:
+            part = got.filter(pl.col("pair") == "|".join(names)).sort("time_refresh")
+            cols = ["a_value", "b_value"]
+        else:
+            part = got
+            cols = [f"{s}_value" for s in names]
+        stamps, values = hfhd_grid(df, names)
+        print(f"{names}: {len(stamps)} points from {df.height} ticks")
+        assert len(stamps) > 100
+        assert np.array_equal(part["time_refresh"].to_numpy(), stamps)
+        assert np.array_equal(part.select(cols).to_numpy(), values)
 
 
 def test_pairs_keep_more_of_the_data_than_the_joint_grid():
