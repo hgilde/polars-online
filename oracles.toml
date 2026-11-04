@@ -5539,30 +5539,44 @@ dataset = "tcpd:nile,quality_control_1,quality_control_2,quality_control_3,run_l
 ideal = 0.0
 n = 100
 floor = 1.4e-13
+worst = 3.39399e-14
+p95 = 1.60219e-14
 
 [case."truth_recovery.bocpd_tcpdbench.nile_f1"]
 ideal = 1.0
 n = 1
+worst = 1.0
+p95 = 1.0
 
 [case."truth_recovery.bocpd_tcpdbench.quality_control_1_f1"]
 ideal = 1.0
 n = 1
+worst = 0.8
+p95 = 0.8
 
 [case."truth_recovery.bocpd_tcpdbench.quality_control_2_f1"]
 ideal = 1.0
 n = 1
+worst = 1.0
+p95 = 1.0
 
 [case."truth_recovery.bocpd_tcpdbench.quality_control_3_f1"]
 ideal = 1.0
 n = 1
+worst = 1.0
+p95 = 1.0
 
 [case."truth_recovery.bocpd_tcpdbench.run_log_f1"]
 ideal = 1.0
 n = 1
+worst = 1.0
+p95 = 1.0
 
 [case."truth_recovery.bocpd_tcpdbench.well_log_f1"]
 ideal = 1.0
 n = 1
+worst = 0.796488
+p95 = 0.796488
 
 # --- raises
 
