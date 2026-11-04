@@ -17,6 +17,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -105,15 +106,21 @@ def _transitive_needs(job: str) -> set[str]:
     return seen
 
 
+#: The jobs that follow the upload: the tag, the GitHub release, and the
+#: check of what PyPI serves.
+AFTER_UPLOAD = {"publish", "tag", "release", "verify"}
+
+
 def test_publishing_waits_for_every_job_and_the_tag_waits_for_publishing():
-    """Every job but the three that follow the upload is upstream of it,
+    """Every job but the ones that follow the upload is upstream of it,
     directly or through another job. A literal list of ``publish``'s needs
     passed with a new job left out of it (task 160, TC8)."""
-    assert set(JOBS) - {"publish", "tag", "release"} <= _transitive_needs("publish")
+    assert set(JOBS) - AFTER_UPLOAD <= _transitive_needs("publish")
     assert JOBS["publish"]["environment"] == "pypi"
     assert _needs("tag") == {"version", "publish"}
     assert _needs("release") == {"version", "tag"}
-    for job in ("publish", "tag", "release"):
+    assert _needs("verify") == {"version", "publish"}
+    for job in AFTER_UPLOAD:
         assert JOBS[job]["if"] == "inputs.publish", job
 
 
@@ -465,10 +472,10 @@ def test_the_tag_is_on_the_tested_sha():
     run = next(s["run"] for s in JOBS["tag"]["steps"] if "create and push" in s.get("name", ""))
     assert 'git tag -a --cleanup=verbatim "$TAG" -F notes.md "$GITHUB_SHA"' in run
     assert JOBS["tag"]["permissions"] == {"contents": "write"}
-    gh_release = next(
-        s for s in JOBS["release"]["steps"] if "action-gh-release" in s.get("uses", "")
-    )
-    assert gh_release["with"]["tag_name"] == "${{ needs.version.outputs.tag }}"
+    create = next(s for s in JOBS["release"]["steps"] if s.get("name") == "create the release")
+    assert create["env"]["TAG"] == "${{ needs.version.outputs.tag }}"
+    # On the tag the job before made, never a new one gh would cut from HEAD.
+    assert 'gh release create "$TAG" release/* --verify-tag' in create["run"]
 
 
 def test_the_tags_annotation_keeps_the_changelogs_headings(tmp_path):
@@ -617,6 +624,7 @@ PLACES = [
     "docs/VALIDATION.md",
     "CHANGELOG.md",
     "README.md",
+    "tests/test_released_state.py",
 ]
 
 
@@ -683,7 +691,7 @@ def test_publishing_a_version_whose_tag_exists_is_refused(copy):
 
 
 def test_the_readmes_pin_names_the_current_minor(copy):
-    """Step 6 of a release moves the README's example pin to the new minor,
+    """Step 5 of a release moves the README's example pin to the new minor,
     and nothing checked it (review 2026-10-06, CI13): a pin left on the old
     minor tells a reader to stay on it. The check runs on every dispatch,
     rehearsal included."""
@@ -701,19 +709,231 @@ def test_the_readmes_pin_names_the_current_minor(copy):
     assert "README.md" in bad and f"~={major}.{minor}.0" in bad, bad
 
 
-def test_the_readmes_install_size_names_a_recent_release():
+_wheel_size_spec = importlib.util.spec_from_file_location(
+    "wheel_size", REPO / "scripts/wheel_size.py"
+)
+assert _wheel_size_spec and _wheel_size_spec.loader
+wheel_size = importlib.util.module_from_spec(_wheel_size_spec)
+sys.modules["wheel_size"] = wheel_size  # a dataclass looks its module up there
+_wheel_size_spec.loader.exec_module(wheel_size)
+
+
+def test_the_readmes_install_size_is_a_range_with_no_version():
     """The README's *size* row stated 0.13.0's wheels (8 to 10 MB) three
     releases into 1.x, whose wheels are three times that (review round 9,
-    K-2). The row names the release it measured; it must be one of the two
-    newest in the CHANGELOG, so a release can ship before its wheels are
-    measured (step 12 refreshes the row) but not stay stale past the next."""
+    K-2), and then named the release it measured, so each release needed a
+    commit after it to refresh it (task 317). It states one range for every
+    platform's wheel and names no version; the release's ``wheel-size`` job
+    holds every wheel it builds to it, before the upload."""
     text = (REPO / "README.md").read_text(encoding="utf-8")
     (row,) = [line for line in text.splitlines() if line.startswith("| size |")]
-    (named,) = re.findall(r"for (\d+\.\d+\.\d+) \|$", row)
-    log = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
-    released = re.findall(r"^## \[(\d+\.\d+\.\d+)\]", log, flags=re.M)
-    assert named in released[:2], (row, released[:2])
-    assert re.search(r"\d+ to \d+ MB to download and \d+ to \d+ MB installed", row), row
+    assert not re.search(r"\d+\.\d+\.\d+", row), row
+    (lo, hi), (ilo, ihi) = wheel_size.stated(text)
+    assert 0 < lo <= hi < ilo <= ihi, row
+
+
+def _wheel(path: Path, download: int, installed: int) -> Path:
+    """A wheel of about ``download`` bytes that unpacks to ``installed``:
+    one stored member of incompressible bytes, and one deflated run of
+    zeros that makes up the rest of the unpacked size."""
+    import os
+    import zipfile
+
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(zipfile.ZipInfo("a.bin"), os.urandom(download))
+        z.writestr("b.bin", b"\0" * (installed - download), compress_type=zipfile.ZIP_DEFLATED)
+    return path
+
+
+def test_a_wheel_outside_the_readmes_range_stops_the_release(tmp_path):
+    """Rounded to the whole MB the row states, each wheel's file and the sum
+    of its members' unpacked sizes must lie inside the row's two ranges; one
+    outside either fails, naming the wheel, and the notes give every
+    wheel's exact sizes."""
+    mb = wheel_size.MB
+    readme = tmp_path / "README.md"
+    readme.write_text(
+        "| size | 2 to 3 MB to download and 5 to 6 MB installed, by platform |\n",
+        encoding="utf-8",
+    )
+    inside = _wheel(tmp_path / "a-1-x.whl", int(2.6 * mb), int(5.4 * mb))
+    big = _wheel(tmp_path / "b-1-x.whl", int(3.6 * mb), int(5.4 * mb))
+    fat = _wheel(tmp_path / "c-1-x.whl", int(2.6 * mb), int(6.6 * mb))
+    notes = tmp_path / "sizes.md"
+    assert wheel_size.main([str(inside), "--readme", str(readme), "--notes", str(notes)]) == 0
+    table = notes.read_text(encoding="utf-8")
+    assert table.startswith("### Wheel sizes") and "`a-1-x.whl`" in table
+    size = wheel_size.measure(inside)
+    assert f"{size.download:,} bytes" in table and f"{size.installed:,} bytes" in table
+    sizes = [wheel_size.measure(w) for w in (inside, big, fat)]
+    ranges = wheel_size.stated(readme.read_text(encoding="utf-8"))
+    bad = wheel_size.outside(sizes, ranges)
+    assert len(bad) == 2, bad
+    assert bad[0].startswith("b-1-x.whl:") and "download is 4 MB, outside" in bad[0]
+    assert bad[1].startswith("c-1-x.whl:") and "installed is 7 MB, outside" in bad[1]
+    assert wheel_size.main([str(big), "--readme", str(readme)]) == 1
+    for broken in (
+        "| size | 24 to 30 MB, for 1.3.0 |\n",
+        "| size | 3 to 2 MB to download and 5 to 6 MB installed, by platform |\n",
+    ):
+        with pytest.raises(ValueError, match="size row"):
+            wheel_size.stated(broken)
+
+
+def test_the_wheels_are_held_to_the_readme_before_the_upload():
+    """The ``wheel-size`` job reads every wheel the build matrix made, runs
+    the check, and keeps the exact sizes for the release's notes; the
+    upload needs it."""
+    job = JOBS["wheel-size"]
+    assert _needs("wheel-size") == {"version", "build"}
+    assert "wheel-size" in _needs("publish")
+    (download,) = [s for s in job["steps"] if "download-artifact" in s.get("uses", "")]
+    assert download["with"] == {"pattern": "wheel-*", "path": "dist", "merge-multiple": True}
+    runs = [str(s.get("run", "")) for s in job["steps"]]
+    assert "python3 scripts/wheel_size.py --notes sizes.md dist/*.whl" in runs
+    (upload,) = [s for s in job["steps"] if "upload-artifact" in s.get("uses", "")]
+    assert upload["with"]["name"] == "wheel-sizes" and upload["with"]["path"] == "sizes.md"
+    notes = next(s for s in JOBS["release"]["steps"] if s.get("name") == "the notes")
+    assert "artifacts/wheel-sizes/sizes.md" in notes["run"]
+
+
+def test_the_runs_measurements_become_the_release_asset_the_next_release_reads():
+    """The ``baseline`` job merges the run's instruction counts and each
+    OS's floor-Python memory into ``budgets-baseline.json`` before the
+    upload; the release job attaches it as an asset under the name
+    ``scripts/budgets.py`` reads from the newest release."""
+    text = (REPO / "scripts" / "budgets.py").read_text(encoding="utf-8")
+    (asset,) = re.findall(r'^BASELINE_ASSET = "([^"]+)"$', text, re.M)
+    assert asset == "budgets-baseline.json"
+    job = JOBS["baseline"]
+    assert _needs("baseline") == {"version", "ci", "budgets"}
+    assert "baseline" in _needs("publish")
+    (download,) = [s for s in job["steps"] if "download-artifact" in s.get("uses", "")]
+    assert download["with"] == {"pattern": "budgets-*", "path": "artifacts"}
+    merge = next(s for s in job["steps"] if "budgets.py baseline" in str(s.get("run", "")))
+    run = " ".join(merge["run"].split())
+    assert '"artifacts/budgets-instructions-$GITHUB_SHA/measured.json"' in run
+    assert 'artifacts/budgets-memory-*-python-"$floor"/*.json' in run
+    assert '--version "$VERSION" --sha "$GITHUB_SHA"' in run
+    assert f"--out {asset}" in run
+    assert merge["env"]["VERSION"] == "${{ needs.version.outputs.version }}"
+    (upload,) = [s for s in job["steps"] if "upload-artifact" in s.get("uses", "")]
+    assert upload["with"]["name"] == "budgets-baseline"
+    assert upload["with"]["path"] == asset
+    collect = next(s for s in JOBS["release"]["steps"] if s.get("name") == "collect the files")
+    assert f"cp artifacts/budgets-baseline/{asset} release/" in collect["run"]
+    # The names the memory artifacts are written under, in ci.yml.
+    ci_upload = next(
+        s for s in CI["jobs"]["test"]["steps"] if s.get("name") == "keep the memory measurements"
+    )
+    assert (
+        ci_upload["with"]["name"] == "budgets-memory-${{ matrix.os }}-python-${{ matrix.python }}"
+    )
+    instructions = _load("budgets.yml")["jobs"]["instructions"]
+    kept = next(s for s in instructions["steps"] if s.get("name") == "keep the counts")
+    assert kept["with"]["name"] == "budgets-instructions-${{ github.sha }}"
+    assert "measured.json" in kept["with"]["path"]
+
+
+def test_the_tag_and_the_release_are_each_tried_three_times():
+    """1.4.0's tag push got a 500 from GitHub after the upload. Both steps
+    after the upload retry, with a pause that grows; what makes a retry
+    safe is run for real in ``tests/test_release_packaging.py``."""
+    for job, step in (("tag", "create and push the tag"), ("release", "create the release")):
+        run = next(s["run"] for s in JOBS[job]["steps"] if s.get("name") == step)
+        assert "for attempt in 1 2 3; do" in run, job
+        assert "sleep $((pause * attempt))" in run, job
+        assert run.rstrip().endswith("exit 1"), job
+    tag = next(s["run"] for s in JOBS["tag"]["steps"] if "create and push" in s.get("name", ""))
+    assert 'git ls-remote origin "refs/tags/$TAG^{}"' in tag
+    assert not any("action-gh-release" in str(s.get("uses", "")) for s in JOBS["release"]["steps"])
+
+
+def test_the_release_is_installed_from_pypi_and_run_on_every_os():
+    """After the upload, ``verify`` installs ``polars-online==<version>``
+    from PyPI into a fresh environment on each OS, retrying for up to ten
+    minutes while the index catches up, and runs
+    ``scripts/verify_release.py`` with the run's version and schema. It
+    gates nothing: the upload is done."""
+    job = JOBS["verify"]
+    assert job["strategy"]["matrix"]["os"] == ["ubuntu-latest", "macos-latest", "windows-latest"]
+    assert job["strategy"]["fail-fast"] is False
+    (step,) = [s for s in job["steps"] if "verify_release.py" in str(s.get("run", ""))]
+    assert step["shell"] == "bash"
+    assert step["env"] == {
+        "VERSION": "${{ needs.version.outputs.version }}",
+        "SCHEMA": "${{ needs.version.outputs.schema }}",
+    }
+    run = step["run"]
+    assert "uv venv --python 3.12 fresh" in run
+    assert 'uv pip install --python fresh --no-cache "polars-online==$VERSION"' in run
+    assert "deadline=$((SECONDS + 600))" in run and "sleep 30" in run
+    assert 'python -I scripts/verify_release.py --version "$VERSION" --schema "$SCHEMA"' in run
+    assert JOBS["version"]["outputs"]["schema"] == "${{ steps.v.outputs.schema }}"
+    assert not any("verify" in _needs(j) for j in JOBS)
+
+
+def _verify_release():
+    spec = importlib.util.spec_from_file_location(
+        "verify_release", REPO / "scripts" / "verify_release.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_release_check_passes_on_this_build_and_refuses_a_wrong_version_or_schema():
+    import polars_online as po
+
+    verify = _verify_release()
+    assert verify.check(po.__version__, po.schema_version(), installed=False).endswith(": ok")
+    with pytest.raises(SystemExit, match="__version__ is .*, not 9.9.9"):
+        verify.check("9.9.9", po.schema_version(), installed=False)
+    with pytest.raises(SystemExit, match="schema_version\\(\\) is .*, not 1"):
+        verify.check(po.__version__, 1, installed=False)
+    if Path(po.__file__).resolve().is_relative_to(REPO / "python"):
+        with pytest.raises(SystemExit, match="came from the checkout"):
+            verify.check(po.__version__, po.schema_version())
+
+
+def test_the_version_job_prints_the_schema_the_build_writes():
+    import polars_online as po
+
+    assert release_version.schema() == po.schema_version()
+
+
+def test_publishing_refuses_a_version_older_than_a_spec_it_is_said_to_build(copy):
+    """A spec that needs a new parameter is entered in the released-state
+    test's ``PARAMETER_INTRODUCED`` under the next minor when the parameter
+    is added, so no commit is needed after the release. Publishing a version
+    older than one named there would ship a release that test then believes
+    builds the spec; ``--publish`` refuses it, and a rehearsal does not
+    ask."""
+    _promoted(copy)
+    v = release_version.versions(copy)["pyproject.toml"]
+    major, minor, _ = (int(p) for p in v.split("."))
+    test = copy / "tests/test_released_state.py"
+    text = test.read_text(encoding="utf-8")
+    assert release_version.newer_than(v, copy) == []
+    ahead = f"{major}.{minor + 1}.0"
+    test.write_text(
+        text.replace(
+            "PARAMETER_INTRODUCED = {\n", f'PARAMETER_INTRODUCED = {{\n    "next": "{ahead}",\n', 1
+        ),
+        encoding="utf-8",
+    )
+    assert release_version.introduced(copy)["PARAMETER_INTRODUCED"]["next"] == ahead
+    (bad,) = release_version.problems(copy, publish=True, tag_exists=lambda t: False)
+    assert f"PARAMETER_INTRODUCED['next'] = '{ahead}'" in bad and f"newer than {v}" in bad, bad
+    assert release_version.problems(copy, tag_exists=lambda t: False) == []
+    # Not a literal: refused rather than read as empty.
+    test.write_text(
+        text.replace("PARAMETER_INTRODUCED = {", "PARAMETER_INTRODUCED = {**{}, ", 1),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError):
+        release_version.introduced(copy)
 
 
 def test_the_readmes_throughput_table_postdates_the_previous_release():
@@ -748,7 +968,7 @@ def test_the_readmes_throughput_table_postdates_the_previous_release():
 
 
 def test_publishing_with_entries_left_under_unreleased_is_refused(copy):
-    """Step 5 promotes `[Unreleased]` to the version's section, and the tag's
+    """Step 4 promotes `[Unreleased]` to the version's section, and the tag's
     notes are that section, so an entry left behind would ship with notes
     that miss it (review 2026-10-06, CI13). Publishing refuses it; a
     rehearsal does not ask, since between releases the section fills."""

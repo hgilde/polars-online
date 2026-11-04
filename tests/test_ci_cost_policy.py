@@ -228,6 +228,7 @@ class TestWindowsIsTwoImagesAndEveryJobNamesItsMachine:
             "cpu-paths.yml:sde",
             "release.yml:build",
             "release.yml:read-state",
+            "release.yml:verify",
         ], found
 
     def test_the_report_covers_every_os_and_never_fails_a_job(self):

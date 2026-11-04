@@ -25,6 +25,7 @@ job summary.
 
 from __future__ import annotations
 
+import functools
 import importlib.util
 import json
 import os
@@ -56,6 +57,11 @@ def _load(name: str):
 
 
 budgets = _load("budgets")
+
+#: The last release's measurements, read once a process, for the drift each
+#: report shows; or why they could not be read, which fails nothing here
+#: (the instruction counts' job is the one that requires them).
+_baseline = functools.cache(budgets.baseline_or_reason)
 
 #: The rows every field is measured over.
 ROWS = 20_000
@@ -323,10 +329,12 @@ def _held(kind: str, measured: dict[str, float], measure: bool = False) -> None:
     ``measure``, or in a measuring run, report without failing."""
     doc = budgets.load()
     measure = measure or budgets.measuring()
-    verdicts = budgets.judge_all(doc, measured, measure)
+    found = _baseline()
+    baseline = found if isinstance(found, budgets.Baseline) else None
+    verdicts = budgets.judge_all(doc, measured, measure, baseline)
     title = f"{kind} budgets ({sys.platform}, Python {sys.version_info.major}."
     title += f"{sys.version_info.minor})" + (" -- measuring run" if measure else "")
-    budgets.write_summary(budgets.report(doc, verdicts, title=title))
+    budgets.write_summary(budgets.report(doc, verdicts, title=title, baseline=found))
     out = os.environ.get("POLARS_ONLINE_BUDGETS_OUT")
     # The resident memory only where its budget is held: every leg wrote it
     # under one name per platform, so `apply` could take a 3.14 leg's file.

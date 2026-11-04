@@ -49,7 +49,6 @@ toolchain = "1.99.0"
 runner = "ubuntu-24.04"
 gungraun = "0.20.0"
 rows = 1000
-release = "1.0.0"
 drift_signoff = 0.10
 
 [meta.tolerance]
@@ -60,14 +59,13 @@ rss = 0.15
 [instructions.a]
 what = "case a"
 budget = 1000000
-release = 1000000
 
 [instructions.b]
 what = "case b"
 
 [memory.ewridge]
 pred_y = { budget = 8.125 }
-"abs_resid_q0.1_y" = { budget = 8.125, release = 8.0 }
+"abs_resid_q0.1_y" = { budget = 8.125 }
 
 [rss.streaming]
 linux = { budget = 100.0 }
@@ -78,6 +76,17 @@ linux = { budget = 100.0 }
 
 def small(extra: str = "") -> dict:
     return tomllib.loads(SMALL + extra)
+
+
+SHA = "c36c03e32538cd02f57db783282f65fb4c0802fe"
+
+
+def baseline(version: str = "1.0.0", **measured: float) -> object:
+    """The last release's measurements: ``instructions.a`` at 1,000,000 and
+    ``memory.ewridge.abs_resid_q0.1_y`` at 8.0 unless given."""
+    values = {"instructions.a": 1_000_000.0, "memory.ewridge.abs_resid_q0.1_y": 8.0}
+    values.update({k.replace("__", "."): v for k, v in measured.items()})
+    return budgets.Baseline(version, SHA, values)
 
 
 # --- the file against the repository -------------------------------------------
@@ -198,29 +207,35 @@ def test_each_kind_has_its_own_tolerance():
 
 def test_drift_since_the_release_past_the_signoff_needs_a_signoff():
     doc = small()
-    verdicts = budgets.judge_all(doc, {"instructions.a": 1_015_000, "memory.ewridge.pred_y": 8.0})
-    assert budgets.signoff_failures(doc, verdicts) == []
+    then = baseline()
+    measured = {"instructions.a": 1_015_000, "memory.ewridge.pred_y": 8.0}
+    verdicts = budgets.judge_all(doc, measured, baseline=then)
+    assert budgets.signoff_failures(doc, verdicts, released=then.version) == []
     # A case that crept 2% a change for six changes, each within its budget
     # once raised: 12% past the release.
     doc = small()
     doc["instructions"]["a"]["budget"] = 1_120_000
-    verdicts = budgets.judge_all(doc, {"instructions.a": 1_120_000})
-    (failure,) = budgets.signoff_failures(doc, verdicts, "1.1.0")
+    verdicts = budgets.judge_all(doc, {"instructions.a": 1_120_000}, baseline=then)
+    (failure,) = budgets.signoff_failures(doc, verdicts, "1.1.0", then.version)
     assert "+12.0% since 1.0.0" in failure
     signed = small(
         '[[signoff]]\nkey = "instructions.a"\nversion = "1.1.0"\nreason = "the new prior"\n'
     )
     signed["instructions"]["a"]["budget"] = 1_120_000
-    assert budgets.signoff_failures(signed, verdicts, "1.1.0") == []
+    assert budgets.signoff_failures(signed, verdicts, "1.1.0", then.version) == []
     # A sign-off is for one release.
-    assert budgets.signoff_failures(signed, verdicts, "1.2.0") == [failure]
+    assert budgets.signoff_failures(signed, verdicts, "1.2.0", then.version) == [failure]
+    # With no baseline there is no drift, and nothing to sign off.
+    verdicts = budgets.judge_all(doc, {"instructions.a": 1_120_000})
+    assert verdicts[0].drift is None
+    assert budgets.signoff_failures(doc, verdicts, "1.1.0") == []
 
 
 def test_on_a_push_only_a_signoff_for_a_coming_release_counts():
     """On a push the drift since the release is a warning, silenced by a
     sign-off -- once by one of any version, a past release's too (review 8,
-    E-6). Only a sign-off above ``meta.release`` speaks for the release to
-    come."""
+    E-6). Only a sign-off above the baseline's release speaks for the
+    release to come."""
 
     def signed(version: str) -> dict:
         doc = small(
@@ -229,11 +244,12 @@ def test_on_a_push_only_a_signoff_for_a_coming_release_counts():
         doc["instructions"]["a"]["budget"] = 1_120_000
         return doc
 
-    verdicts = budgets.judge_all(signed("1.1.0"), {"instructions.a": 1_120_000})
-    assert budgets.signoff_failures(signed("1.1.0"), verdicts) == []
-    assert budgets.signoff_failures(signed("1.0.10"), verdicts) == []
-    for stale in ("0.9.0", "1.0.0"):  # the file's release is 1.0.0
-        (failure,) = budgets.signoff_failures(signed(stale), verdicts)
+    then = baseline()
+    verdicts = budgets.judge_all(signed("1.1.0"), {"instructions.a": 1_120_000}, baseline=then)
+    assert budgets.signoff_failures(signed("1.1.0"), verdicts, released="1.0.0") == []
+    assert budgets.signoff_failures(signed("1.0.10"), verdicts, released="1.0.0") == []
+    for stale in ("0.9.0", "1.0.0"):  # the baseline's release is 1.0.0
+        (failure,) = budgets.signoff_failures(signed(stale), verdicts, released="1.0.0")
         assert "+12.0% since 1.0.0" in failure
 
 
@@ -371,9 +387,7 @@ def test_a_budget_deleted_then_returned_higher_is_a_raise():
     one commit and writing it back higher in the next raised it with no
     entry (review 8, E-2). The last number seen for each key is carried
     through the history instead."""
-    gone = SMALL.replace(
-        '[instructions.a]\nwhat = "case a"\nbudget = 1000000\nrelease = 1000000\n', ""
-    )
+    gone = SMALL.replace('[instructions.a]\nwhat = "case a"\nbudget = 1000000\n', "")
     assert "instructions.a" not in budgets.entries(tomllib.loads(gone))
     versions = [("a" * 40, SMALL), ("b" * 40, gone)]
     (error,) = budgets.check_history(versions, _raised(5_000_000))
@@ -449,7 +463,7 @@ def test_apply_writes_new_and_tightened_budgets_and_never_raises_one():
     assert after["instructions"]["a"]["budget"] == 1_000_000
     assert after["instructions"]["b"]["budget"] == 42_000
     assert after["memory"]["ewridge"]["pred_y"]["budget"] == 7.0
-    assert after["memory"]["ewridge"]["abs_resid_q0.1_y"] == {"budget": 8.125, "release": 8.0}
+    assert after["memory"]["ewridge"]["abs_resid_q0.1_y"] == {"budget": 8.125}
     assert after["memory"]["lasso"]["coef"]["budget"] == 198.205
     assert after["rss"]["streaming"] == {"linux": {"budget": 100.0}, "darwin": {"budget": 300.5}}
     assert len(done) == 4
@@ -458,14 +472,92 @@ def test_apply_writes_new_and_tightened_budgets_and_never_raises_one():
     assert budgets.check_history([("a" * 40, SMALL)], text) == []
 
 
-def test_apply_records_a_releases_counts():
+def test_a_release_number_in_the_file_is_refused():
+    """The last release's numbers are its baseline asset, not lines here: a
+    `release` beside a budget, or in `[meta]`, is what an old file or an old
+    habit leaves, and would read as a baseline nobody uses."""
+    changelog = "### Performance\n\nexact clock stamps\n"
+    stale = SMALL.replace("budget = 1000000\n", "budget = 1000000\nrelease = 990000\n")
+    stale = stale.replace("rows = 1000\n", 'rows = 1000\nrelease = "1.0.0"\n')
+    errors = budgets.check_file(tomllib.loads(stale), changelog, ["a", "b"])
+    assert len(errors) == 2, errors
+    assert any(e.startswith("[meta] names a release") for e in errors), errors
+    assert any(e.startswith("instructions.a has a `release` number") for e in errors), errors
+
+
+def test_a_baseline_merges_a_releases_measurements_and_refuses_a_hole(tmp_path):
+    """The release job's `baseline` merges the run's instruction counts and
+    each platform's memory into one asset: every budgeted quantity must be
+    in it, two files may not disagree on a key, and what it writes its own
+    reader takes."""
     doc = small()
-    verdicts = budgets.judge_all(doc, {"instructions.a": 990_000, "instructions.b": 5})
-    text, _ = budgets.apply(SMALL, verdicts, release="1.1.0")
-    after = tomllib.loads(text)
-    assert after["meta"]["release"] == "1.1.0"
-    assert after["instructions"]["a"] == {"what": "case a", "budget": 1_000_000, "release": 990_000}
-    assert after["instructions"]["b"]["release"] == 5
+    counts = {"instructions.a": 990_000.0, "instructions.b": 5.0}
+    memory = {"memory.ewridge.pred_y": 8.125, "memory.ewridge.abs_resid_q0.1_y": 8.0}
+    rss = {"rss.streaming.linux": 99.5}
+    out = budgets.make_baseline("1.1.0", SHA, [counts, memory, memory, rss], doc)
+    assert out["version"] == "1.1.0" and out["sha"] == SHA
+    assert out["measured"] == {**counts, **memory, **rss}
+    parsed = budgets.parse_baseline(json.dumps(out))
+    assert parsed == budgets.Baseline("1.1.0", SHA, {**counts, **memory, **rss})
+    with pytest.raises(ValueError, match=r"miss 1 budgets: \['rss.streaming.linux'\]"):
+        budgets.make_baseline("1.1.0", SHA, [counts, memory], doc)
+    with pytest.raises(ValueError, match="memory.ewridge.pred_y: two measurements disagree"):
+        budgets.make_baseline("1.1.0", SHA, [counts, memory, rss, {"memory.ewridge.pred_y": 9.0}])
+
+
+@pytest.mark.parametrize(
+    ("doc", "match"),
+    [
+        ({"version": "1.1.0", "sha": SHA}, "holds"),
+        ({"version": "v1.1.0", "sha": SHA, "measured": {"instructions.a": 1}}, "not a release"),
+        ({"version": "1.1.0", "sha": "abc", "measured": {"instructions.a": 1}}, "not a commit"),
+        ({"version": "1.1.0", "sha": SHA, "measured": {}}, "measures nothing"),
+        ({"version": "1.1.0", "sha": SHA, "measured": {"speed.a": 1}}, "no kind of budget"),
+        ({"version": "1.1.0", "sha": SHA, "measured": {"instructions.a": 0}}, "not a positive"),
+        ({"version": "1.1.0", "sha": SHA, "measured": {"instructions.a": True}}, "not a positive"),
+    ],
+)
+def test_a_malformed_baseline_is_an_error_not_a_missing_one(doc, match):
+    """A file that is read and wrong fails every run, CI or not: only a
+    baseline that cannot be read at all is reported and passed over."""
+    with pytest.raises(ValueError, match=match):
+        budgets.parse_baseline(json.dumps(doc))
+    with pytest.raises(ValueError, match="not JSON"):
+        budgets.parse_baseline("<html>")
+
+
+def test_the_baseline_is_read_from_a_file_a_directory_or_the_variable(tmp_path, monkeypatch):
+    """Locally and in tests the baseline is a path: the asset itself, or the
+    directory a `gh release download` left it in; the variable stands in for
+    `--baseline`. A path that is not there is `NoBaseline`, which a plain
+    run reports and passes over. By default it is the newest release's
+    asset, by a URL that names no version."""
+    then = baseline("1.1.0")
+    body = {"version": then.version, "sha": then.sha, "measured": then.measured}
+    (tmp_path / budgets.BASELINE_ASSET).write_text(json.dumps(body), encoding="utf-8")
+    assert budgets.read_baseline(tmp_path) == then
+    assert budgets.read_baseline(tmp_path / budgets.BASELINE_ASSET) == then
+    monkeypatch.setenv(budgets.BASELINE_VARIABLE, str(tmp_path))
+    assert budgets.read_baseline() == then
+    with pytest.raises(budgets.NoBaseline):
+        budgets.read_baseline(tmp_path / "nowhere")
+    reason = budgets.baseline_or_reason(tmp_path / "nowhere")
+    assert isinstance(reason, str) and "could not read the last release's baseline" in reason
+    assert budgets.BASELINE_URL == (
+        "https://github.com/hgilde/polars-online/releases/latest/download/budgets-baseline.json"
+    )
+
+
+def test_the_report_says_which_release_the_drift_is_from_or_why_none():
+    doc = small()
+    then = baseline("1.1.0")
+    verdicts = budgets.judge_all(doc, {"instructions.a": 1_010_000}, baseline=then)
+    table = budgets.report(doc, verdicts, baseline=then)
+    assert "drift since release 1.1.0 (its budgets-baseline.json)" in table
+    assert "| instructions.a | 1,000,000 | 1,010,000 | +1.00% | +1.00% |" in table
+    table = budgets.report(doc, budgets.judge_all(doc, {"instructions.a": 1_010_000}), baseline="x")
+    assert "no drift: x" in table
+    assert "| instructions.a | 1,000,000 | 1,010,000 | +1.00% |  |" in table
 
 
 def test_check_end_to_end(tmp_path, monkeypatch, capsys):
@@ -478,6 +570,13 @@ def test_check_end_to_end(tmp_path, monkeypatch, capsys):
     summary = tmp_path / "summary.md"
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
     monkeypatch.delenv(budgets.MEASURE_VARIABLE, raising=False)
+    then = baseline()
+    asset = tmp_path / budgets.BASELINE_ASSET
+    asset.write_text(
+        json.dumps({"version": then.version, "sha": then.sha, "measured": then.measured}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(budgets.BASELINE_VARIABLE, str(asset))
     first, second = tmp_path / "first.json", tmp_path / "second.json"
     for f in (first, second):
         f.write_text(
@@ -501,6 +600,76 @@ def test_check_end_to_end(tmp_path, monkeypatch, capsys):
     assert budgets.main(["apply", str(measured)]) == 0
     assert tomllib.loads(path.read_text(encoding="utf-8"))["instructions"]["a"]["budget"] == 900_000
     assert budgets.main(["check", str(first), str(second)]) == 0
+
+
+def test_a_run_that_cannot_read_the_baseline_fails_only_when_told_to(tmp_path, monkeypatch, capsys):
+    """Off CI, `check` without the network reports that it read no baseline
+    and holds the budgets as ever; CI's job passes `--require-baseline`,
+    and a release check needs it always, so a lost asset cannot quietly
+    turn the drift and its sign-off off. With the baseline, a release check
+    fails on a case past the sign-off with no `[[signoff]]` for it."""
+    path = tmp_path / "budgets.toml"
+    path.write_text(SMALL, encoding="utf-8")
+    monkeypatch.setattr(budgets, "BUDGETS", path)
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    monkeypatch.delenv(budgets.MEASURE_VARIABLE, raising=False)
+    monkeypatch.setenv(budgets.BASELINE_VARIABLE, str(tmp_path / "nowhere"))
+    run = tmp_path / "run.json"
+    run.write_text(
+        "\n".join(json.dumps(_summary(c, n)) for c, n in (("a", 1_000_000), ("b", 7))),
+        encoding="utf-8",
+    )
+    assert budgets.main(["check", str(run)]) == 0
+    out = capsys.readouterr().out
+    assert "::warning::could not read the last release's baseline" in out
+    assert budgets.main(["check", str(run), "--require-baseline"]) == 1
+    assert "::error::could not read the last release's baseline" in capsys.readouterr().out
+    assert budgets.main(["check", str(run), "--release-check", "1.1.0"]) == 1
+    capsys.readouterr()
+    # Read: 12% past the release's own count needs a sign-off for 1.1.0.
+    then = baseline("1.0.0", instructions__a=893_000.0)
+    asset = tmp_path / budgets.BASELINE_ASSET
+    body = {"version": then.version, "sha": then.sha, "measured": then.measured}
+    asset.write_text(json.dumps(body), encoding="utf-8")
+    args = ["check", str(run), "--baseline", str(tmp_path), "--require-baseline"]
+    assert budgets.main(args) == 0
+    assert "::warning::instructions.a: +12.0% since 1.0.0" in capsys.readouterr().out
+    assert budgets.main([*args, "--release-check", "1.1.0"]) == 1
+    assert "::error::instructions.a: +12.0% since 1.0.0" in capsys.readouterr().out
+    measured = tmp_path / "measured.json"
+    measured.write_text(json.dumps({"instructions.a": 1_000_000}), encoding="utf-8")
+    check = ["release-check", str(measured), "--version", "1.1.0", "--baseline", str(asset)]
+    assert budgets.main(check) == 1
+    path.write_text(
+        SMALL + '[[signoff]]\nkey = "instructions.a"\nversion = "1.1.0"\nreason = "a prior"\n',
+        encoding="utf-8",
+    )
+    assert budgets.main([*args, "--release-check", "1.1.0"]) == 0
+    assert budgets.main(check) == 0
+    nowhere = ["release-check", str(measured), "--version", "1.1.0", "--baseline", "/nowhere"]
+    assert budgets.main(nowhere) == 1
+
+
+def test_baseline_writes_the_asset_the_release_attaches(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "budgets.toml"
+    path.write_text(SMALL, encoding="utf-8")
+    monkeypatch.setattr(budgets, "BUDGETS", path)
+    parts = {
+        "measured.json": {"instructions.a": 990_000, "instructions.b": 5},
+        "memory.json": {"memory.ewridge.pred_y": 8.125, "memory.ewridge.abs_resid_q0.1_y": 8.0},
+        "rss-linux.json": {"rss.streaming.linux": 99.5},
+    }
+    for name, values in parts.items():
+        (tmp_path / name).write_text(json.dumps(values), encoding="utf-8")
+    out = tmp_path / "asset" / budgets.BASELINE_ASSET
+    out.parent.mkdir()
+    files = [str(tmp_path / n) for n in parts]
+    args = ["baseline", *files, "--version", "1.1.0", "--sha", SHA, "--out", str(out)]
+    assert budgets.main(args) == 0
+    assert "1.1.0 at c36c03e325, 2 instructions, 2 memory, 1 rss" in capsys.readouterr().out
+    assert budgets.read_baseline(out.parent).measured["rss.streaming.linux"] == 99.5
+    with pytest.raises(ValueError, match="miss 1 budgets"):
+        budgets.main(["baseline", *files[:2], "--version", "1.1.0", "--sha", SHA, "--out", "x"])
 
 
 def test_measuring_is_asked_for_by_name(monkeypatch):
