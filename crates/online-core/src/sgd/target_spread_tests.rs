@@ -1017,3 +1017,211 @@ fn a_gate_outside_the_targets_units_never_rests() {
         assert!(n_last > REST_WEIGHT, "{what}: {n_last}");
     }
 }
+
+/// The prediction `step` reads for the squared loss without a scaler,
+/// `b_0 + b·x` by the model's own sum, which `predict` would withhold
+/// while the gate is unstable.
+fn eta(m: &Sgd, x: &[f64]) -> f64 {
+    dot(&m.beta[0], 1, x)
+}
+
+/// A model on `rows`' stable stream whose gate rests, and whose next row is
+/// not a probe's: rows of residual 0 at `x = 0` move it there, each one's
+/// gain, `lr` alone, far under the resting mean (task 315).
+fn resting(rows: &[Row]) -> Sgd {
+    let mut m = Sgd::new(SgdCfg {
+        standardize: false,
+        min_weight: 0.0,
+        ..cfg(SgdLoss::Squared, LearningRate::Constant, 0.002)
+    })
+    .unwrap();
+    for (x, y) in rows {
+        m.step(x, &[Some(*y)], 1.0, 1.0);
+    }
+    let zero = [0.0; 3];
+    while !m.gain[0].resting || (m.gain[0].rested + 1).is_multiple_of(PROBE_ROWS) {
+        let p = eta(&m, &zero);
+        m.step(&zero, &[Some(p)], 1.0, 1.0);
+    }
+    m
+}
+
+/// A resting gate wakes on a residual past `WAKE_SPREADS` of the target's
+/// spread, and on no residual at it or below it (task 315; the survivors
+/// `-` → `/` and `>` → `>=` of task 314's wake). The residual `y − p` is
+/// put on the bound to the bit: `p` is below the bound's binade, so `y − p`
+/// rounds onto the bound's grid and one `y` lands on it, and the doubles
+/// either side of that `y` land one step below and above it. Off a probe's
+/// row, the gate at and below the bound lets the row pass with its sums
+/// unmoved; past it, it wakes and takes the row's gain.
+///
+/// Waking changes what the model does after: the rows that follow have a
+/// residual of 0, so no residual wakes either gate again, and a gain of
+/// 5.4, past the bound of 2, on every row but the resting gate's probes,
+/// which see a gain of `lr` at `x = 0`. The woken gate takes those gains
+/// and withholds its predictions within a few dozen rows; the gate at the
+/// bound, still resting, never sees them, and serves every row.
+#[test]
+fn a_resting_gate_wakes_on_a_residual_past_its_bound_and_not_at_it() {
+    let rows = rows(1200, 0.0);
+    let m = resting(&rows[..1000]);
+    let x = rows[1000].0;
+    let p = eta(&m, &x);
+    let bound = WAKE_SPREADS * m.unit(0);
+    assert!(bound > 1.0 && p.abs() < bound / 4.0, "p {p}, bound {bound}");
+    let mut on = p + bound;
+    let mut tries = 0;
+    while on - p != bound {
+        on = if on - p < bound {
+            on.next_up()
+        } else {
+            on.next_down()
+        };
+        tries += 1;
+        assert!(tries < 64, "no y puts the residual on the bound");
+    }
+    let (below, past) = (on.next_down(), on.next_up());
+    assert!(below - p < bound && past - p > bound, "{below} {on} {past}");
+    let mut at = None;
+    for (what, y) in [("below", below), ("at", on), ("past", past)] {
+        let mut m = m.clone();
+        let before = m.gain[0];
+        assert!(before.resting && !(before.rested + 1).is_multiple_of(PROBE_ROWS));
+        let pred = m.step(&x, &[Some(y)], 1.0, 1.0).pred[0];
+        assert_eq!(pred, p, "{what}: the row's prediction");
+        let after = m.gain[0];
+        if what == "past" {
+            assert!(!after.resting, "past the bound, the gate rests");
+            assert_eq!(after.rested, 1, "the waking row's gain");
+            assert!(after.n > before.n, "the waking row's gain joined the sums");
+            let mut rest = at.take().expect("the gate at the bound");
+            the_rows_after(&mut rest, &mut m);
+        } else {
+            assert!(after.resting, "{what} the bound, the gate woke");
+            assert_eq!(after.rested, before.rested + 1, "{what}");
+            assert_eq!(
+                (after.q, after.q2, after.n),
+                (before.q, before.q2, before.n),
+                "{what}: a resting gate's sums moved"
+            );
+            if what == "at" {
+                at = Some(m);
+            }
+        }
+    }
+}
+
+/// [`a_resting_gate_wakes_on_a_residual_past_its_bound_and_not_at_it`]'s
+/// rows after the wake, the same for both models: a residual of 0 each, at
+/// `x = 0` where the resting gate probes, else at a gain of 5.4.
+fn the_rows_after(rest: &mut Sgd, woke: &mut Sgd) {
+    let (zero, wide) = ([0.0; 3], [30.0; 3]);
+    let mut withheld = None;
+    for i in 0..400 {
+        let x = if (rest.gain[0].rested + 1).is_multiple_of(PROBE_ROWS) {
+            zero
+        } else {
+            wide
+        };
+        let p = eta(rest, &x);
+        let out = rest.step(&x, &[Some(p)], 1.0, 1.0).pred[0];
+        assert_eq!(out, p, "row {i}: the resting gate withheld or moved");
+        assert!(rest.gain[0].resting, "row {i}: the resting gate woke");
+        let p = eta(woke, &x);
+        let out = woke.step(&x, &[Some(p)], 1.0, 1.0).pred[0];
+        if out.is_nan() {
+            withheld.get_or_insert(i);
+        } else {
+            assert_eq!(out, p, "row {i}");
+        }
+    }
+    let withheld = withheld.expect("the woken gate withheld no row");
+    println!("the woken gate withheld from row {withheld} after the wake");
+    assert!(woke.gain[0].unstable(), "the woken gate ended stable");
+}
+
+/// A probe wakes a resting gate where its gain passes `PROBE_WAKE` times
+/// the resting sums' mean, and not where it is that to the bit (task 315;
+/// the survivor `>` → `>=`). At `x = 0` the probe's gain is `lr·w`, so a
+/// row's weight `w` puts it on `2·q/n` exactly; the next double of `w` puts
+/// it past. At the edge the probe is let pass: the gate rests on and its
+/// sums stand still.
+#[test]
+fn a_probe_at_twice_the_resting_mean_lets_the_gate_rest() {
+    let rows = rows(1000, 0.0);
+    let mut m = resting(&rows);
+    let zero = [0.0; 3];
+    while !(m.gain[0].rested + 1).is_multiple_of(PROBE_ROWS) {
+        let p = eta(&m, &zero);
+        m.step(&zero, &[Some(p)], 1.0, 1.0);
+        assert!(m.gain[0].resting);
+    }
+    let lr = m.cfg.learning_rate;
+    let g = m.gain[0];
+    let edge = PROBE_WAKE * g.q / g.n;
+    // The probe's gain as `step` forms it: `lr·(w·c·|z̃|² + l2)`, with
+    // `c = 1`, `|z̃|² = 1` and `l2 = 0`.
+    let gain = |w: f64| lr * (w * 1.0 * 1.0 + 0.0);
+    let mut w = edge / lr;
+    let mut tries = 0;
+    while gain(w) != edge {
+        w = if gain(w) < edge {
+            w.next_up()
+        } else {
+            w.next_down()
+        };
+        tries += 1;
+        assert!(tries < 64, "no weight puts the probe on the edge");
+    }
+    let mut past = w.next_up();
+    while gain(past) == edge {
+        past = past.next_up();
+    }
+    for (what, w) in [("at", w), ("past", past)] {
+        let mut m = m.clone();
+        let p = eta(&m, &zero);
+        m.step(&zero, &[Some(p)], 1.0, w);
+        let after = m.gain[0];
+        if what == "at" {
+            assert!(after.resting, "a probe at the edge woke the gate");
+            assert_eq!((after.q, after.q2, after.n), (g.q, g.q2, g.n));
+        } else {
+            assert!(!after.resting, "a probe past the edge let the gate rest");
+            assert!(after.n > g.n, "the waking probe's gain joined the sums");
+        }
+    }
+}
+
+/// A model read straight from its serde form, as `ModelState::Sgd` holds
+/// it, without `restore` to size its scratch, steps as the model it was
+/// written from does, to the bit (task 315; the survivor `<` → `==` of the
+/// step's scratch check): without a scaler nothing else sizes the buffer
+/// the one-pass step writes the slopes' new values into.
+#[test]
+fn a_model_read_without_restore_steps_as_its_original() {
+    let rows = rows(300, 0.0);
+    for fit_intercept in [true, false] {
+        let mut m = Sgd::new(SgdCfg {
+            standardize: false,
+            fit_intercept,
+            ..cfg(SgdLoss::Squared, LearningRate::Constant, 0.002)
+        })
+        .unwrap();
+        for (x, y) in &rows[..100] {
+            m.step(x, &[Some(*y)], 1.0, 1.0);
+        }
+        let bytes = rmp_serde::to_vec(&m).unwrap();
+        let mut back: Sgd = rmp_serde::from_slice(&bytes).unwrap();
+        assert!(back.dbuf.is_empty(), "the scratch is not written");
+        for (i, (x, y)) in rows[100..].iter().enumerate() {
+            let a = m.step(x, &[Some(*y)], 1.0, 1.0).pred[0];
+            let b = back.step(x, &[Some(*y)], 1.0, 1.0).pred[0];
+            assert_eq!(
+                a.to_bits(),
+                b.to_bits(),
+                "intercept {fit_intercept}, row {i}"
+            );
+        }
+        assert_eq!(m.beta, back.beta, "intercept {fit_intercept}");
+    }
+}

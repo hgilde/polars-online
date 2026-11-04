@@ -3068,3 +3068,44 @@ target's, at its weight `λ w_j + w ≥ capped(threshold_j) ≥ F`, and `W` is \
 never below a target's weight (`unread`'s item 1). So `W ≥ F > F (1 − s)(1 \
 − 2⁻¹⁶)` with the default `s`, the comparison is false, and both forms \
 return false; a window returns false before it in both"""
+
+# Task 315 (docs/PLAN.md): the survivors of 255ae009's changed lines (task
+# 314) that no input reaches. The other five are caught: the resting gate's
+# wake on a residual (`-` → `/`, `>` → `>=`) and its probe's row (`==` →
+# `!=`) by `sgd::target_spread_tests::a_resting_gate_wakes_on_a_residual_past_its_bound_and_not_at_it`,
+# the probe's edge (`>` → `>=`) by `a_probe_at_twice_the_resting_mean_lets_the_gate_rest`,
+# and the scratch check's `<` → `==` by `a_model_read_without_restore_steps_as_its_original`.
+
+[[equivalent]]
+file = "crates/online-core/src/sgd.rs"
+function = "<impl OnlineModel for Sgd>::step_into"
+mutation = "replace < with <="
+line_has = "if self.dbuf.len() < n {"
+why = """the two differ only where `dbuf` already holds `n`, and there \
+`resize(n, 0.0)` leaves a vector of length `n` as it is: same length, same \
+values, same capacity"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewridge.rs"
+function = "EwRidge::solve_scaled_through_origin"
+mutation = "replace * with /"
+line_has = "asub[j2 * kk + i2] = v;"
+why = """the mirror write reaches only the strict upper triangle, and nothing \
+reads it: the factorization takes `A`'s lower triangle over zeros \
+(`solve::rung_entry`), the jitter's trace, the ridge's shortcut and the \
+condition estimate read the diagonal and the factor, and the system kept for \
+the leverage becomes a `LowerTriangle`, whose `From` mirrors the lower \
+triangle over the upper. `j2 / kk` is 0 (`j2 < kk`), so the mutant writes \
+entry `(0, i2)` instead: the diagonal's own value at `i2 = 0`, and a strict \
+upper entry otherwise, so the lower triangle is the original's to the bit"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewridge.rs"
+function = "EwRidge::solve_centred"
+mutation = "replace * with /"
+line_has = "asub[j2 * kk + i2] = v;"
+why = """as in `solve_scaled_through_origin`: the mirror reaches only the \
+strict upper triangle, which neither the factorization, the condition \
+check (its diagonal and the factor), nor the kept system (a \
+`LowerTriangle`) reads; the mutant writes entry `(0, i2)` instead, and the \
+lower triangle is the original's to the bit"""
