@@ -37,7 +37,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           toolchain: "1.95"
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       # `+1.95`, because the repository's rust-toolchain.toml names `stable`,
       # which a bare `cargo` inside the checkout would use instead. online-py
       # builds pyo3 for `abi3-py312`, whose build script wants a Python of at
