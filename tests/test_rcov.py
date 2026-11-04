@@ -5,6 +5,8 @@ the same returns — not to a golden number, and not to each other. What ties
 them together is `plain`: it equals `n` times an `ew_cov(lam=1)`'s uncentred
 second moment **to the bit**, so it is the reference the noise-robust two are
 measured against, and the gap between them is the thing they remove.
+The pre-averaged estimate at its default is also held to a third party,
+hfhd's ``mrc``.
 """
 
 import math
@@ -12,8 +14,10 @@ import re
 import warnings
 
 import numpy as np
+import pandas as pd
 import polars as pl
 import pytest
+from hfhd import hf
 
 import polars_online as po
 
@@ -219,6 +223,70 @@ def test_the_psd_form_is_a_longer_window_without_the_bias_term():
     # A longer window means fewer pre-averaged blocks.
     assert repaired["rcov_n"][0] == len(ybar) < strict["rcov_n"][0]
     assert repaired["rcov_psd_repaired"][0] is False
+
+
+#: hfhd's ``mrc`` against the default ``preavg`` block, relative to the
+#: estimate's largest entry. Measured 2026-11-04 over seeds 0-4 at 200, 500
+#: and 1,000 returns a block (aarch64, macOS): at most 2.0e-15. The bound
+#: leaves fifty times that for another CPU's last bits.
+HFHD_TOL = 1e-13
+
+
+@pytest.mark.parametrize("n", [200, 1000])
+def test_the_default_preaveraged_estimate_is_hfhds_mrc(n):
+    """``kind = "preavg"`` at its defaults (``psd = True``, ``theta = 1``) is
+    Christensen, Kinnebrock and Podolskij's modulated realised covariance
+    over the window ``k_n = ceil(theta * N^0.6)`` without its bias term,
+    which hfhd computes as ``mrc(bias_correction=False)``: hfhd differences
+    the log-prices, pre-averages with ``g(x) = min(x, 1 - x)``, and scales
+    by ``N / (N - k_n + 2) / (psi_2 k_n)``, finite-sample ``psi_2``.
+
+    Two offsets, each mapped rather than loosened. hfhd's first
+    pre-averaged return starts at the second return, where CKP's Eq. 9
+    (and this library) start at the first; so hfhd is given a leading copy
+    of the first price, a zero return its windows skip, and then sums the
+    same ``n - k_n + 2`` windows. It then counts ``N = n + 1`` returns, so
+    the block's ``block_rows`` hint is ``n + 1``, which gives both the same
+    ``k_n``, and its scale ``(n + 1) / (n - k_n + 3)`` is replaced by this
+    library's ``n / (n - k_n + 2)``. Without the leading copy the two part
+    by 0.2% to 1%. The estimate is a sum of outer products, so the clip
+    under ``psd`` leaves it alone, which the block reports."""
+    rng = np.random.default_rng(3)
+    k = 3
+    c = rng.normal(size=(k, k))
+    cov = (c @ c.T + np.eye(k)) * 1e-4
+    level = np.cumsum(rng.multivariate_normal(np.zeros(k), cov, 2 * n), axis=0)
+    obs = 4.6 + level + 0.002 * rng.standard_normal((2 * n, k))
+    price = np.vstack([obs[:1], obs])
+    ret = np.diff(price, axis=0)
+    cols = [f"x{i}" for i in range(k)]
+    df = pl.DataFrame({**{f: ret[:, i] for i, f in enumerate(cols)}, "b": np.arange(2 * n) // n})
+    bank = po.ModelBank(
+        [
+            po.spec.rcov(
+                "r",
+                features=cols,
+                group="b",
+                group_close="monotone",
+                block_rows=n + 1,
+                kind="preavg",
+            )
+        ]
+    )
+    bank.fit_predict(df)
+    rows = bank.closed_groups(drop=False)
+    got = unvech(rows["rcov"][0].to_list(), k)
+    led = np.vstack([price[:1], price[: n + 1]])
+    stamps = pd.date_range("2024-01-02", periods=n + 2, freq="s")
+    series = [pd.Series(led[:, i], index=stamps) for i in range(k)]
+    want = hf.mrc(series, theta=1.0, bias_correction=False, pairwise=False)
+    kn = math.ceil((n + 1) ** 0.6)
+    want *= (n / (n - kn + 2)) / ((n + 1) / (n - kn + 3))
+    assert rows["rcov_n"][0] == n - kn + 2
+    assert rows["rcov_psd_repaired"][0] is False
+    err = np.abs(got - want).max() / np.abs(want).max()
+    print(f"n={n}, k_n={kn}: relative error {err:.2e}")
+    assert err <= HFHD_TOL, err
 
 
 @pytest.mark.parametrize("kind", ["plain", "kernel"])

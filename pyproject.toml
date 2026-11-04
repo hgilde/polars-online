@@ -189,6 +189,13 @@ dev = [
     "xgboost>=3.4.1; sys_platform == 'darwin'",
     "xgboost-cpu>=3.4.1; sys_platform != 'darwin'",
     "lightgbm>=4.7.0",
+    # tests/test_rcov.py and tests/test_refresh_time.py: hfhd's `mrc` without
+    # its bias correction is `rcov`'s pre-averaged estimator at its default,
+    # and its `refresh_time` is BNHLS's all-refresh-time grid. MIT. It is
+    # unmaintained since 2020 and pulls in numba (whose linear algebra calls
+    # scipy's BLAS) and seaborn; it installs and runs on the locked numpy.
+    # The floor is the version measured.
+    "hfhd>=0.1.4",
 ]
 # The API reference: Sphinx over the docstrings, which are written in its
 # dialect (``:class:`` roles, ``::`` literal blocks). Its own group, so a

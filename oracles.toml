@@ -5516,6 +5516,54 @@ p95 = 3.15303e-14
 n = 50
 floor = 3.4e-13
 
+[group."second_opinion_regimes.hmm_tvtp"]
+tests = [
+    "tests/test_second_opinion_regimes.py::TestHmmTvtpIsStatsmodelsMarkovRegression::test_fifty_seeds",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = ""
+
+[group."truth_recovery.bocpd_tcpdbench"]
+tests = [
+    "tests/test_truth_recovery.py::test_bocpd_in_tcpdbenchs_configuration_scores_its_published_f1[nile]",
+    "tests/test_truth_recovery.py::test_bocpd_in_tcpdbenchs_configuration_scores_its_published_f1[quality_control_1]",
+    "tests/test_truth_recovery.py::test_bocpd_in_tcpdbenchs_configuration_scores_its_published_f1[quality_control_2]",
+    "tests/test_truth_recovery.py::test_bocpd_in_tcpdbenchs_configuration_scores_its_published_f1[quality_control_3]",
+    "tests/test_truth_recovery.py::test_bocpd_in_tcpdbenchs_configuration_scores_its_published_f1[run_log]",
+    "tests/test_truth_recovery.py::test_bocpd_in_tcpdbenchs_configuration_scores_its_published_f1[well_log]",
+]
+oracles = {}
+dataset = "tcpd:nile,quality_control_1,quality_control_2,quality_control_3,run_log,well_log"
+
+[case."second_opinion_regimes.hmm_tvtp.error"]
+ideal = 0.0
+n = 100
+floor = 1.4e-13
+
+[case."truth_recovery.bocpd_tcpdbench.nile_f1"]
+ideal = 1.0
+n = 1
+
+[case."truth_recovery.bocpd_tcpdbench.quality_control_1_f1"]
+ideal = 1.0
+n = 1
+
+[case."truth_recovery.bocpd_tcpdbench.quality_control_2_f1"]
+ideal = 1.0
+n = 1
+
+[case."truth_recovery.bocpd_tcpdbench.quality_control_3_f1"]
+ideal = 1.0
+n = 1
+
+[case."truth_recovery.bocpd_tcpdbench.run_log_f1"]
+ideal = 1.0
+n = 1
+
+[case."truth_recovery.bocpd_tcpdbench.well_log_f1"]
+ideal = 1.0
+n = 1
+
 # --- raises
 
 [[raised]]
