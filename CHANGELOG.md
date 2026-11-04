@@ -9,6 +9,18 @@ order, another kernel), each declared with its size. Before 1.0, the minor
 version carried breaking changes, and any change to the numbers a model
 returns.
 
+## [Unreleased]
+
+### Changed
+
+- The README's install size names no release: one range for every
+  platform's wheel, 25 to 30 MB to download and 71 to 99 MB installed, read
+  from 1.4.0's wheels. A release now holds every wheel it builds to that
+  range before the upload, and its GitHub release gives each wheel's exact
+  sizes in its notes and carries the release's own budget measurements as
+  `budgets-baseline.json`, which the next release's drift is read from
+  (task 317).
+
 ## [1.4.0] — 2026-11-03
 
 ### Added

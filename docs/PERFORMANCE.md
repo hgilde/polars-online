@@ -343,11 +343,21 @@ names all three in `[meta]`. Changing one re-measures every case.
   which is how a new case gets its first budget. A measuring run, a dispatch
   of the workflow with `measure` or `POLARS_ONLINE_BUDGETS=measure` for the
   tests, reports everything and fails nothing.
-- Beside each budget, `release` keeps the measurement at the last release.
-  Every run reports each case's drift since then. A release fails on a case
-  that moved more than 10% either way unless `budgets.toml` holds a
+- The last release's own measurements are the baseline every run's drift
+  is read from. A release merges its run's instruction counts and each
+  OS's memory into one file, `budgets-baseline.json`, and attaches it to
+  its GitHub release as an asset, so nothing is committed after a release
+  to record them. Every run then reads the newest release's copy, by a URL
+  that names no version (`https://github.com/hgilde/polars-online/releases/latest/download/budgets-baseline.json`),
+  and reports each case's drift since. A release fails on a case that
+  moved more than 10% either way unless `budgets.toml` holds a
   `[[signoff]]` for it at that version. A push only warns of it, and only
-  a sign-off for a release after the last one silences the warning.
+  a sign-off for a release after the baseline's silences the warning. CI
+  fails when it cannot read the baseline, since a lost asset would
+  otherwise switch the drift off without a word; run elsewhere,
+  `scripts/budgets.py check` says it read none and holds the budgets as
+  ever. `--baseline` names a local copy: the asset, or the directory
+  `gh release download --pattern budgets-baseline.json` left it in.
 
 **Valgrind does not run on macOS on Apple silicon, so the counts come from
 CI.** `cargo test -p online-bench` runs every case natively on any platform

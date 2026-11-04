@@ -22,9 +22,11 @@ the CHANGELOG *Performance* entry it points to; ``raises`` holds every
 increase in the file's git history to that.
 
     python scripts/budgets.py check SUMMARY.json [SECOND.json] [--measure]
+        [--baseline SOURCE] [--require-baseline] [--release-check VERSION]
     python scripts/budgets.py raises
-    python scripts/budgets.py apply MEASURED.json [--release VERSION]
-    python scripts/budgets.py release-check MEASURED.json
+    python scripts/budgets.py apply MEASURED.json...
+    python scripts/budgets.py release-check MEASURED.json... --version VERSION
+    python scripts/budgets.py baseline MEASURED.json... --version V --sha SHA --out FILE
     python scripts/budgets.py runner-version | toolchain
 
 ``check`` reads Gungraun's JSON output (``--output-format=json``), one
@@ -34,6 +36,19 @@ the tolerance, since the tolerance would then be noise. It writes a
 Markdown report to stdout and to ``$GITHUB_STEP_SUMMARY`` when set, and the
 counts to ``--measured`` for ``apply``. Standard library only: the CI job
 that runs it has no project environment.
+
+**The drift since the last release is read from that release, not from
+this file.** A release's workflow merges the run's own measurements -- the
+instruction counts and each platform's memory -- into one file,
+``budgets-baseline.json`` (``baseline``), and attaches it to the GitHub
+release as an asset. Every later run reads it from the newest release
+(``BASELINE_URL``; the repository is public, so no token is needed) and
+reports each case's drift since; a release fails on a case past
+``meta.drift_signoff`` with no ``[[signoff]]`` for its version. So nothing
+is committed after a release to record its numbers. ``--baseline`` (or
+``POLARS_ONLINE_BUDGETS_BASELINE``) reads a local file, a directory holding
+one, or another URL instead. A run that cannot read it says so and goes on,
+unless it is told ``--require-baseline``, as CI and a release are.
 """
 
 from __future__ import annotations
@@ -46,7 +61,10 @@ import os
 import re
 import subprocess
 import sys
+import time
 import tomllib
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -68,6 +86,15 @@ TIGHTEN_SHARE = {"rss": 0.25}
 MEASURE_VARIABLE = "POLARS_ONLINE_BUDGETS"
 #: The line that opens the file's last section, the raises and sign-offs.
 RAISES_MARK = "# --- raises and sign-offs"
+#: The release asset that holds a release's own measurements, the baseline
+#: every later run's drift is read from.
+BASELINE_ASSET = "budgets-baseline.json"
+#: The newest release's copy: GitHub redirects ``latest`` to the newest
+#: release that is not a draft or a prerelease.
+BASELINE_URL = f"https://github.com/hgilde/polars-online/releases/latest/download/{BASELINE_ASSET}"
+BASELINE_VARIABLE = "POLARS_ONLINE_BUDGETS_BASELINE"
+#: The platforms whose resident memory a baseline must hold.
+BASELINE_PLATFORMS = PLATFORMS
 
 
 def load(path: Path | None = None) -> dict:
@@ -88,7 +115,7 @@ def measuring() -> bool:
 
 def entries(doc: dict) -> dict[str, dict]:
     """Every budgeted quantity by its flat key, each a table that may hold
-    ``budget`` and ``release``: ``instructions.<case>``,
+    ``budget``: ``instructions.<case>``,
     ``memory.<spec>.<field>`` and ``rss.<case>.<platform>``."""
     out: dict[str, dict] = {}
     for case, table in doc.get("instructions", {}).items():
@@ -144,6 +171,11 @@ def check_file(doc: dict, changelog: str, cases: list[str]) -> list[str]:
     for key in ("toolchain", "runner", "gungraun", "rows", "tolerance", "drift_signoff"):
         if key not in meta:
             errors.append(f"[meta] has no {key}")
+    if "release" in meta:
+        errors.append(
+            "[meta] names a release: the baseline is read from the newest release's "
+            f"{BASELINE_ASSET} asset, not written here"
+        )
     tol = meta.get("tolerance", {})
     if set(tol) != set(KINDS):
         errors.append(f"[meta.tolerance] names {sorted(tol)}, not {list(KINDS)}")
@@ -161,10 +193,14 @@ def check_file(doc: dict, changelog: str, cases: list[str]) -> list[str]:
         if not table.get("what"):
             errors.append(f"instructions.{case} says nothing in `what`")
     for key, table in entries(doc).items():
-        for field in ("budget", "release"):
-            v = table.get(field)
-            if v is not None and not (isinstance(v, int | float) and v > 0 and math.isfinite(v)):
-                errors.append(f"{key}.{field} = {v!r}: a positive number")
+        v = table.get("budget")
+        if v is not None and not (isinstance(v, int | float) and v > 0 and math.isfinite(v)):
+            errors.append(f"{key}.budget = {v!r}: a positive number")
+        if "release" in table:
+            errors.append(
+                f"{key} has a `release` number: the baseline is read from the newest "
+                f"release's {BASELINE_ASSET} asset, not written here"
+            )
         if key.startswith("instructions.") and not isinstance(table.get("budget", 0), int):
             errors.append(f"{key}.budget is a count of instructions, a whole number")
     known = set(entries(doc)) | set(tolerances(doc))
@@ -293,7 +329,7 @@ class Verdict:
     key: str
     measured: float
     budget: float | None
-    release: float | None
+    baseline: float | None
     status: str  # ok | over | under | unmeasured
     message: str
 
@@ -304,7 +340,7 @@ class Verdict:
     @property
     def drift(self) -> float | None:
         """The change since the last release's own measurement."""
-        return None if not self.release else self.measured / self.release - 1.0
+        return None if not self.baseline else self.measured / self.baseline - 1.0
 
 
 def _fmt(v: float) -> str:
@@ -316,18 +352,24 @@ def _fmt(v: float) -> str:
 
 
 def judge(
-    key: str, measured: float, table: dict | None, tol: float, tighten: float | None = None
+    key: str,
+    measured: float,
+    table: dict | None,
+    tol: float,
+    tighten: float | None = None,
+    baseline: float | None = None,
 ) -> Verdict:
     """One measurement against its budget: past it by more than ``tol``
     fails as a regression; below it by more than ``tighten`` (``tol`` when
-    not given) fails as a budget to tighten, to the measurement itself."""
+    not given) fails as a budget to tighten, to the measurement itself.
+    ``baseline`` is the last release's measurement, for the drift."""
     tighten = tol if tighten is None else tighten
     table = table or {}
-    budget, release = table.get("budget"), table.get("release")
+    budget = table.get("budget")
     if budget is None:
         msg = f"{key}: no budget yet; measured {_fmt(measured)}: "
         msg += f"set budget = {_round(key, measured)}"
-        return Verdict(key, measured, None, release, "unmeasured", msg)
+        return Verdict(key, measured, None, baseline, "unmeasured", msg)
     # To the twelfth place: a measurement exactly the tolerance away is
     # within it, whatever the last bit of the division says.
     ratio = round(measured / budget - 1.0, 12)
@@ -338,14 +380,14 @@ def judge(
             "slower or larger; if that is the price of a change worth having, raise the budget "
             "with a [[raised]] entry naming the reason and a CHANGELOG *Performance* entry."
         )
-        return Verdict(key, measured, budget, release, "over", msg)
+        return Verdict(key, measured, budget, baseline, "over", msg)
     if ratio < -tighten:
         msg = against + (
             f"under its budget of {_fmt(budget)}: tighten the budget to "
             f"{_round(key, measured)}, so the gain is kept."
         )
-        return Verdict(key, measured, budget, release, "under", msg)
-    return Verdict(key, measured, budget, release, "ok", f"{key}: {ratio:+.2%} of its budget")
+        return Verdict(key, measured, budget, baseline, "under", msg)
+    return Verdict(key, measured, budget, baseline, "ok", f"{key}: {ratio:+.2%} of its budget")
 
 
 def _round(key: str, measured: float) -> int | float:
@@ -357,15 +399,22 @@ def _round(key: str, measured: float) -> int | float:
     return math.ceil(round(measured * 10_000, 6)) / 10_000
 
 
-def judge_all(doc: dict, measured: dict[str, float], measure: bool = False) -> list[Verdict]:
-    """Every measurement against the file; in a measuring run nothing fails."""
+def judge_all(
+    doc: dict,
+    measured: dict[str, float],
+    measure: bool = False,
+    baseline: Baseline | None = None,
+) -> list[Verdict]:
+    """Every measurement against the file, and against ``baseline``'s for
+    the drift; in a measuring run nothing fails."""
     table = entries(doc)
+    then = baseline.measured if baseline is not None else {}
     out = []
     for key, value in measured.items():
         tol = tolerance(doc, key)
-        v = judge(key, value, table.get(key), tol, tighten_at(key, tol))
+        v = judge(key, value, table.get(key), tol, tighten_at(key, tol), then.get(key))
         if measure and v.failed:
-            v = Verdict(v.key, v.measured, v.budget, v.release, "ok", f"measuring: {v.message}")
+            v = Verdict(v.key, v.measured, v.budget, v.baseline, "ok", f"measuring: {v.message}")
         out.append(v)
     return out
 
@@ -374,20 +423,28 @@ def _version(text: str) -> tuple[int, ...]:
     return tuple(int(n) for n in re.findall(r"\d+", text))
 
 
-def signoff_failures(doc: dict, verdicts: list[Verdict], version: str | None = None) -> list[str]:
+def signoff_failures(
+    doc: dict, verdicts: list[Verdict], version: str | None = None, released: str = ""
+) -> list[str]:
     """The cases that moved past ``meta.drift_signoff`` since the last
-    release, either way, with no ``[[signoff]]`` for ``version`` -- or, on
-    a push (no ``version``), none for a release above ``meta.release``: a
-    past release's sign-off speaks for nothing to come."""
+    release, ``released`` (the baseline's version), either way, with no
+    ``[[signoff]]`` for ``version`` -- or, on a push (no ``version``), none
+    for a release above ``released``: a past release's sign-off speaks for
+    nothing to come."""
     limit = float(doc["meta"]["drift_signoff"])
-    released = _version(str(doc["meta"].get("release") or ""))
+    since = released
+    released_key = _version(released)
     signed = {
         s["key"]
         for s in doc.get("signoff", [])
-        if (s["version"] == version if version is not None else _version(s["version"]) > released)
+        if (
+            s["version"] == version
+            if version is not None
+            else _version(s["version"]) > released_key
+        )
     }
     return [
-        f"{v.key}: {v.drift:+.1%} since {doc['meta'].get('release')} -- past "
+        f"{v.key}: {v.drift:+.1%} since {since} -- past "
         f"{limit:.0%}, a release needs a [[signoff]] entry for it"
         for v in verdicts
         if v.drift is not None and abs(v.drift) > limit and v.key not in signed
@@ -409,12 +466,22 @@ def repeat_failures(doc: dict, a: dict[str, float], b: dict[str, float]) -> list
 
 
 def report(
-    doc: dict, verdicts: list[Verdict], second: dict[str, float] | None = None, title: str = ""
+    doc: dict,
+    verdicts: list[Verdict],
+    second: dict[str, float] | None = None,
+    title: str = "",
+    baseline: Baseline | str | None = None,
 ) -> str:
-    """The Markdown table a run writes to its job summary."""
+    """The Markdown table a run writes to its job summary. ``baseline`` is
+    the last release's measurements, or why they could not be read."""
     meta = doc["meta"]
     lines = [f"### {title or 'Budgets'}", ""]
-    release = meta.get("release")
+    if isinstance(baseline, Baseline):
+        since = f"drift since release {baseline.version} (its {BASELINE_ASSET})"
+    elif baseline:
+        since = f"no drift: {baseline}"
+    else:
+        since = "no drift: no baseline read"
     tighter = ", ".join(
         f"{k} past {float(meta['tolerance'][k]) * share:.1%} under"
         for k, share in TIGHTEN_SHARE.items()
@@ -423,8 +490,7 @@ def report(
     lines.append(
         f"Tolerance {', '.join(f'{k} {v:.0%}' for k, v in meta['tolerance'].items())}"
         f"{f' (tightened {tighter})' if tighter else ''}; "
-        f"drift since {'release ' + release if release else 'the last release (none recorded)'}"
-        f", sign-off past {float(meta['drift_signoff']):.0%}."
+        f"{since}, sign-off past {float(meta['drift_signoff']):.0%}."
     )
     lines.append("")
     columns = ["case", "budget", "measured", "vs budget", "since release"]
@@ -508,21 +574,17 @@ def _set_number(text: str, key: str, field: str, value: float) -> str:
     return "\n".join(lines) + "\n"
 
 
-def apply(text: str, verdicts: list[Verdict], release: str | None = None) -> tuple[str, list[str]]:
+def apply(text: str, verdicts: list[Verdict]) -> tuple[str, list[str]]:
     """Write what a measurement settles into the file's text: a budget for
-    each case that has none, a tightened budget for each case under its own
-    by more than the tolerance, and -- with ``release`` -- every case's
-    release count. A budget is never raised here: that takes a reason."""
+    each case that has none, and a tightened budget for each case under its
+    own by more than the tolerance. A budget is never raised here: that
+    takes a reason. A release's own numbers are not written here at all:
+    they are its ``budgets-baseline.json`` asset."""
     done = []
     for v in verdicts:
         if v.status in ("unmeasured", "under"):
             text = _set_number(text, v.key, "budget", _round(v.key, v.measured))
             done.append(f"{v.key}: budget {_round(v.key, v.measured)}")
-        if release is not None:
-            text = _set_number(text, v.key, "release", _round(v.key, v.measured))
-    if release is not None:
-        text = re.sub(r'(?m)^release = ".*"$', f'release = "{release}"', text, count=1)
-        done.append(f"release counts recorded as {release}")
     return text, done
 
 
@@ -530,6 +592,121 @@ def read_measured(path: Path) -> dict[str, float]:
     """A measurement file: flat ``{key: value}``, written by ``check
     --measured`` or by the memory tests."""
     return {k: float(v) for k, v in json.loads(path.read_text(encoding="utf-8")).items()}
+
+
+# --- the baseline: the last release's own measurements -----------------------------
+
+
+@dataclass(frozen=True)
+class Baseline:
+    """A release's own measurements, every kind, as its asset holds them."""
+
+    version: str
+    sha: str
+    measured: dict[str, float]
+
+
+class NoBaseline(RuntimeError):
+    """The baseline could not be read: no network, no such asset yet, no
+    such file. A file that *is* read and is malformed is a ``ValueError``."""
+
+
+def parse_baseline(text: str, where: str = "the baseline") -> Baseline:
+    """A baseline file's text, checked: a release version, the sha it was
+    measured at, and a positive finite number for each key."""
+    try:
+        doc = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{where} is not JSON: {e}") from e
+    if not isinstance(doc, dict) or set(doc) != {"version", "sha", "measured"}:
+        raise ValueError(f"{where} holds {sorted(doc) if isinstance(doc, dict) else doc!r}")
+    version, sha, measured = doc["version"], doc["sha"], doc["measured"]
+    if not (isinstance(version, str) and re.fullmatch(r"\d+\.\d+\.\d+", version)):
+        raise ValueError(f"{where}: version {version!r} is not a release's")
+    if not (isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha)):
+        raise ValueError(f"{where}: sha {sha!r} is not a commit's")
+    if not isinstance(measured, dict) or not measured:
+        raise ValueError(f"{where} measures nothing")
+    out = {}
+    for key, v in measured.items():
+        if key.split(".", 1)[0] not in KINDS:
+            raise ValueError(f"{where}: {key!r} is no kind of budget")
+        if (
+            isinstance(v, bool)
+            or not isinstance(v, int | float)
+            or not (math.isfinite(v) and v > 0)
+        ):
+            raise ValueError(f"{where}: {key} = {v!r}, not a positive number")
+        out[key] = float(v)
+    return Baseline(version, sha, out)
+
+
+def _fetch(url: str, attempts: int = 3, timeout: float = 30.0) -> str:
+    """``url``'s body, retried on what a retry could fix; ``NoBaseline``
+    once every attempt has failed, or at once on an answer such as a 404."""
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as resp:
+                return resp.read().decode("utf-8")
+        except urllib.error.HTTPError as e:
+            if e.code < 500 and e.code != 429:
+                raise NoBaseline(f"{url} answered {e.code}") from e
+            last: Exception = e
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            last = e
+        if attempt + 1 < attempts:
+            time.sleep(2.0 * (attempt + 1))
+    raise NoBaseline(f"{url} could not be read: {last}")
+
+
+def read_baseline(source: str | Path | None = None) -> Baseline:
+    """The last release's measurements, from ``source``: a URL, a file, or a
+    directory holding ``budgets-baseline.json``. Unset, from
+    ``POLARS_ONLINE_BUDGETS_BASELINE``, else from the newest GitHub release
+    (``BASELINE_URL``)."""
+    source = str(source or os.environ.get(BASELINE_VARIABLE) or BASELINE_URL)
+    if source.startswith(("https://", "http://")):
+        return parse_baseline(_fetch(source), source)
+    path = Path(source)
+    if path.is_dir():
+        path = path / BASELINE_ASSET
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as e:
+        raise NoBaseline(f"{path} could not be read: {e}") from e
+    return parse_baseline(text, str(path))
+
+
+def baseline_or_reason(source: str | Path | None = None) -> Baseline | str:
+    """The baseline, or why it could not be read, for a report that goes on
+    without it."""
+    try:
+        return read_baseline(source)
+    except NoBaseline as e:
+        return f"could not read the last release's baseline ({e})"
+
+
+def make_baseline(
+    version: str, sha: str, measured: list[dict[str, float]], doc: dict | None = None
+) -> dict:
+    """One release's measurements merged into the asset's form, refused if
+    two files disagree on a key, or if any budgeted quantity of the file --
+    every case, every memory field, the resident memory on each platform --
+    is missing: a hole in the baseline would hide its case's drift for a
+    whole release."""
+    doc = load() if doc is None else doc
+    merged: dict[str, float] = {}
+    for part in measured:
+        for key, v in part.items():
+            if key in merged and merged[key] != v:
+                raise ValueError(f"{key}: two measurements disagree, {merged[key]} and {v}")
+            merged[key] = v
+    missing = sorted(k for k, t in entries(doc).items() if "budget" in t and k not in merged)
+    if missing:
+        raise ValueError(f"the release's measurements miss {len(missing)} budgets: {missing}")
+    out = {"version": version, "sha": sha, "measured": dict(sorted(merged.items()))}
+    parse_baseline(json.dumps(out), "the merged baseline")  # its own reader takes it
+    return out
 
 
 # --- the command line ------------------------------------------------------------
@@ -548,23 +725,29 @@ def _cmd_check(args: argparse.Namespace) -> int:
             for k, v in parse_gungraun(args.second.read_text(encoding="utf-8")).items()
         }
     measure = args.measure or measuring()
-    verdicts = judge_all(doc, first, measure)
+    found = baseline_or_reason(args.baseline)
+    baseline = found if isinstance(found, Baseline) else None
+    verdicts = judge_all(doc, first, measure, baseline)
     missing = sorted({f"instructions.{c}" for c in doc["instructions"]} - set(first))
     text = report(
         doc,
         verdicts,
         second,
         title="Instruction counts" + (" (measuring run: nothing fails)" if measure else ""),
+        baseline=found,
     )
     problems = [v.message for v in verdicts if v.failed]
     problems += [f"{k}: budgeted, and the run did not measure it" for k in missing]
     repeat = repeat_failures(doc, first, second) if second is not None else []
-    drift = signoff_failures(doc, verdicts, args.release_check)
+    released = baseline.version if baseline is not None else ""
+    drift = signoff_failures(doc, verdicts, args.release_check, released)
+    unread = [] if baseline is not None else [str(found)]
     notes = [v.message for v in verdicts if v.status == "unmeasured"]
     for heading, items in (
         ("Fails", problems),
         ("Two runs of one binary disagree", repeat),
         ("Past the sign-off since the last release", drift),
+        ("No baseline", unread),
         ("New cases", notes),
     ):
         if items:
@@ -584,6 +767,13 @@ def _cmd_check(args: argparse.Namespace) -> int:
         failed += drift
     else:
         for m in drift:
+            print(f"::warning::{m}")
+    # A release cannot check its drift without the baseline, and CI must
+    # not let a lost asset quietly turn the drift report off.
+    if args.require_baseline or args.release_check is not None:
+        failed += unread
+    else:
+        for m in unread:
             print(f"::warning::{m}")
     for m in failed:
         print(f"::error::{m}")
@@ -607,7 +797,7 @@ def _cmd_apply(args: argparse.Namespace) -> int:
     for path in args.measured:
         measured.update(read_measured(path))
     verdicts = judge_all(doc, measured)
-    text, done = apply(BUDGETS.read_text(encoding="utf-8"), verdicts, args.release)
+    text, done = apply(BUDGETS.read_text(encoding="utf-8"), verdicts)
     loads(text)  # still TOML
     BUDGETS.write_text(text, encoding="utf-8")
     print("\n".join(done) or "nothing to change")
@@ -619,9 +809,30 @@ def _cmd_release_check(args: argparse.Namespace) -> int:
     measured: dict[str, float] = {}
     for path in args.measured:
         measured.update(read_measured(path))
-    failures = signoff_failures(doc, judge_all(doc, measured, measure=True), args.version)
-    print("\n".join(failures) or "every case within the sign-off since the last release")
+    try:
+        baseline = read_baseline(args.baseline)
+    except NoBaseline as e:
+        print(f"::error::could not read the last release's baseline ({e})")
+        return 1
+    verdicts = judge_all(doc, measured, measure=True, baseline=baseline)
+    failures = signoff_failures(doc, verdicts, args.version, baseline.version)
+    print(
+        "\n".join(failures)
+        or f"every case within the sign-off since the last release, {baseline.version}"
+    )
     return 1 if failures else 0
+
+
+def _cmd_baseline(args: argparse.Namespace) -> int:
+    parts = [read_measured(p) for p in args.measured]
+    out = make_baseline(args.version, args.sha, parts)
+    args.out.write_text(json.dumps(out, indent=1) + "\n", encoding="utf-8")
+    kinds = {k: sum(key.startswith(f"{k}.") for key in out["measured"]) for k in KINDS}
+    print(
+        f"{args.out}: {args.version} at {args.sha[:10]}, "
+        + ", ".join(f"{n} {k}" for k, n in kinds.items())
+    )
+    return 0
 
 
 def runner_version() -> str:
@@ -644,17 +855,34 @@ def main(argv: list[str] | None = None) -> int:
         metavar="VERSION",
         help="fail on a case past the sign-off since the last release with no signoff for VERSION",
     )
+    c.add_argument(
+        "--baseline",
+        metavar="SOURCE",
+        help=f"the last release's measurements: a URL, a file, or a directory holding "
+        f"{BASELINE_ASSET} (default: ${BASELINE_VARIABLE}, else the newest release's asset)",
+    )
+    c.add_argument(
+        "--require-baseline",
+        action="store_true",
+        help="fail when the baseline cannot be read (a release check always does)",
+    )
     c.set_defaults(fn=_cmd_check)
     r = sub.add_parser("raises", help="every raise in the file's history has its reason")
     r.set_defaults(fn=_cmd_raises)
     a = sub.add_parser("apply", help="write missing and tightened budgets from measurements")
     a.add_argument("measured", type=Path, nargs="+")
-    a.add_argument("--release", metavar="VERSION", help="also record these as VERSION's counts")
     a.set_defaults(fn=_cmd_apply)
     rc = sub.add_parser("release-check", help="the sign-off rule, on measurement files")
     rc.add_argument("measured", type=Path, nargs="+")
     rc.add_argument("--version", required=True)
+    rc.add_argument("--baseline", metavar="SOURCE", help="as `check --baseline`")
     rc.set_defaults(fn=_cmd_release_check)
+    b = sub.add_parser("baseline", help="merge a release's measurements into its baseline asset")
+    b.add_argument("measured", type=Path, nargs="+")
+    b.add_argument("--version", required=True)
+    b.add_argument("--sha", required=True)
+    b.add_argument("--out", type=Path, required=True)
+    b.set_defaults(fn=_cmd_baseline)
     sub.add_parser("runner-version").set_defaults(fn=lambda _: print(runner_version()) or 0)
     sub.add_parser("toolchain").set_defaults(fn=lambda _: print(load()["meta"]["toolchain"]) or 0)
     args = ap.parse_args(argv)

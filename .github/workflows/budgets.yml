@@ -4,8 +4,10 @@
 # pull request is held to a fixed number per hot path, and fails past the
 # tolerance in either direction -- slower needs a stated raise, faster
 # tightens the budget in the same change. Each case's drift since the last
-# release is in the job summary; a release calls this workflow with
-# `release-check`, which fails on a case past the sign-off.
+# release is in the job summary, read from the newest GitHub release's
+# `budgets-baseline.json` asset (scripts/budgets.py, "the baseline"); a
+# release calls this workflow with `release-check`, which fails on a case
+# past the sign-off.
 #
 # Valgrind runs on Linux alone, so this is where the counts come from; a
 # developer on macOS runs the cases natively (`cargo test -p online-bench`)
@@ -107,6 +109,10 @@ jobs:
               --output-format=json --nosummary > "$run.json"
           done
 
+      # The drift is read from the newest release's baseline asset, and a
+      # run that cannot read it fails: a lost or unreadable asset would
+      # otherwise turn the drift report, and a release's sign-off, off
+      # without a word. Off CI, `check` reports that and goes on.
       - name: hold the counts to their budgets
         env:
           MEASURE: ${{ inputs.measure && '--measure' || '' }}
@@ -114,10 +120,11 @@ jobs:
         run: |
           # Unquoted on purpose: empty, or one flag.
           # shellcheck disable=SC2086
-          python3 scripts/budgets.py check first.json second.json \
+          python3 scripts/budgets.py check first.json second.json --require-baseline \
             --measured measured.json $MEASURE ${RELEASE:+--release-check "$RELEASE"}
 
-      # The counts as a file, for `scripts/budgets.py apply measured.json`.
+      # The counts as a file, for `scripts/budgets.py apply measured.json`,
+      # and, in a release, for the release's own baseline asset.
       - name: keep the counts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

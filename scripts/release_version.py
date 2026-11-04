@@ -15,16 +15,23 @@ With ``--publish``, nothing may be left under the CHANGELOG's
 behind would ship without its line. And the tag ``v<version>`` must not exist
 yet: release tags are immutable (the ruleset "release tags are immutable"),
 so a version whose tag exists can never be released again, and finding that
-out after the builds wastes their hour and a half.
+out after the builds wastes their hour and a half. And no version named in
+``tests/test_released_state.py``'s ``PARAMETER_INTRODUCED`` or ``INTRODUCED``
+may be newer than the one published: a spec or kind is entered there under
+the next minor release when it is added, and publishing an older version
+would ship a release that test then believes builds it.
 
-Prints ``version=<X.Y.Z>`` and ``tag=v<X.Y.Z>``, the lines ``release.yml``
-appends to ``$GITHUB_OUTPUT``; exits 1 naming every disagreement. Standard
+Prints ``version=<X.Y.Z>``, ``tag=v<X.Y.Z>`` and ``schema=<N>``, the state
+schema the build writes (``SCHEMA_VERSION`` in ``crates/online-core``),
+which the release's ``verify`` job holds the installed package to: the
+lines ``release.yml`` appends to ``$GITHUB_OUTPUT``; exits 1 naming every disagreement. Standard
 library only, so it runs before any environment is built.
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import re
 import subprocess
 import sys
@@ -59,6 +66,13 @@ def versions(root: Path = REPO) -> dict[str, str | None]:
     }
 
 
+def schema(root: Path = REPO) -> int:
+    """The state schema this build writes, ``SCHEMA_VERSION`` in online-core."""
+    text = (root / "crates/online-core/src/lib.rs").read_text(encoding="utf-8")
+    (found,) = re.findall(r"^pub const SCHEMA_VERSION: u32 = (\d+);$", text, re.M)
+    return int(found)
+
+
 #: The README's example pin: ``polars-online~=0.13.0`` names the 0.13 series.
 README_PIN = re.compile(r"polars-online~=(\d+\.\d+\.\d+)")
 
@@ -68,6 +82,48 @@ def unreleased(changelog: str) -> str:
     section is empty or absent, as release day leaves it."""
     m = re.search(r"^## \[Unreleased\][^\n]*\n(.*?)(?=^## \[|\Z)", changelog, re.M | re.S)
     return m.group(1).strip() if m else ""
+
+
+#: Where the released-state test names the first release that builds each
+#: newer spec (``PARAMETER_INTRODUCED``) and each newer kind (``INTRODUCED``).
+RELEASED_STATE = "tests/test_released_state.py"
+INTRODUCED_TABLES = ("PARAMETER_INTRODUCED", "INTRODUCED")
+
+
+def _key(version: str) -> tuple[int, ...]:
+    return tuple(int(p) for p in re.findall(r"\d+", version))
+
+
+def introduced(root: Path = REPO) -> dict[str, dict[str, str]]:
+    """Each table of ``INTRODUCED_TABLES`` in the released-state test, read as
+    the literal it must be (``ast.literal_eval``): name -> first version."""
+    tree = ast.parse((root / RELEASED_STATE).read_text(encoding="utf-8"))
+    out: dict[str, dict[str, str]] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        else:
+            continue
+        for t in targets:
+            if isinstance(t, ast.Name) and t.id in INTRODUCED_TABLES:
+                out[t.id] = ast.literal_eval(value)
+    missing = sorted(set(INTRODUCED_TABLES) - set(out))
+    if missing:
+        raise ValueError(f"{RELEASED_STATE} assigns no literal {', '.join(missing)}")
+    return out
+
+
+def newer_than(version: str, root: Path = REPO) -> list[str]:
+    """The entries of the released-state test's tables that name a version
+    newer than ``version``."""
+    return [
+        f"{table}[{name!r}] = {first!r}"
+        for table, entries in introduced(root).items()
+        for name, first in entries.items()
+        if _key(first) > _key(version)
+    ]
 
 
 def problems(root: Path = REPO, *, publish: bool = False, tag_exists=None) -> list[str]:
@@ -101,6 +157,14 @@ def problems(root: Path = REPO, *, publish: bool = False, tag_exists=None) -> li
             f"`## [{version}]` before publishing, since the tag's notes are that section"
         )
     if publish:
+        ahead = newer_than(version, root)
+        if ahead:
+            out.append(
+                f"{RELEASED_STATE} names a release newer than {version}: "
+                + ", ".join(ahead)
+                + "; a spec is entered under the release that first builds it, "
+                "so publish that release, or correct the entry"
+            )
         exists = tag_exists if tag_exists is not None else _remote_tag_exists
         if exists(f"v{version}"):
             out.append(
@@ -133,6 +197,7 @@ def main() -> int:
     version = versions()["pyproject.toml"]
     print(f"version={version}")
     print(f"tag=v{version}")
+    print(f"schema={schema()}")
     return 0
 
 

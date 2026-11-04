@@ -1,7 +1,10 @@
 """A state written by a released wheel meets this build as the release policy
 says it will (docs/PLAN.md tasks 109 and 198).
 
-Each release is installed from PyPI into the cache
+The releases before 1.0 are listed here; every 1.x release is read from
+PyPI's JSON when the suite is collected (``data.pypi_releases``), so a
+release is held from the moment it is uploaded, with no commit after it
+(task 317). Each release is installed from PyPI into the cache
 ``scripts/compare_release.py`` keeps (``.cache/release-compare/<version>``),
 and ``scripts/release_probe.py --states`` runs under it: every spec of the
 release comparison's workload -- every kind the release has -- fitted on the first
@@ -17,9 +20,9 @@ schema this build writes, above every release's: 0.10.0 wrote 14, 0.11.1 17,
 this build's own** (review round 4, D1, CI3 and TB3): this build loads it with
 its own spec and fits the second half, beside a bank of its own that fitted
 both halves, and every float, the closed groups, the coefficients and
-``marginal``'s table agree. Until 1.0.0 is released and listed, that test runs
-on the states this build writes itself, so the harness exists, and has run,
-before the first release that must honour it. Every float goes on to the
+``marginal``'s table agree. It runs on the states this build writes itself
+too, so the harness ran before the first release that had to honour it.
+Every float goes on to the
 bit, as the release comparison holds its outputs; a spec a CHANGELOG entry
 moved since the release is named in ``DECLARED``, with the entry, and goes
 on as the release itself goes on from the same file, run under the
@@ -28,8 +31,8 @@ release's own wheel (``test_a_moved_spec_goes_on_as_its_release_did``).
 Until 2026-09-28 the loading test held 0.11.1's files (schema 17) bit for
 bit and 0.10.0's (schema 14) within 2.2e-13; the pre-1.0 waiver (the user,
 "Do not worry about old specs") made them refusals. Downloading needs the
-network, so a release is skipped offline (hard rule 1); this build's own
-states are not.
+network, so a release is skipped offline (hard rule 1), and so is the list
+of 1.x releases; this build's own states are not.
 """
 
 from __future__ import annotations
@@ -46,41 +49,65 @@ import polars as pl
 import pytest
 
 import polars_online as po
-from data import is_transient
+from data import Offline, is_transient, pypi_releases
 
 TIER = "extended"
 
 REPO = Path(__file__).resolve().parents[1]
 
-#: Every release from 0.10.0, the oldest whose files a loader once promised,
-#: to the latest. A release joins the list on its release day
-#: (docs/RELEASE-READINESS.md, "The steps of a release"): before 1.0 each
-#: wrote a schema of its own and is refused; from 1.0 each loads and goes on.
-RELEASES = ["0.10.0", "0.11.1", "0.12.0", "0.13.0", "1.0.0", "1.0.1", "1.1.0", "1.2.0", "1.3.0"]
+#: The releases before 1.0 the test holds, from 0.10.0, the oldest whose
+#: files a loader once promised: each wrote a schema of its own and is
+#: refused by it. Literal, since no later release is one of them.
+PRE_1_0 = ["0.10.0", "0.11.1", "0.12.0", "0.13.0"]
+
+
+def _published() -> list[str] | None:
+    """Every 1.x release on PyPI, not yanked, read when the suite is
+    collected: a release is held here from the moment it is uploaded, with
+    no edit to this file. ``None`` offline, where the 1.x releases' tests
+    are skipped as their downloads would be."""
+    try:
+        return [v for v in pypi_releases() if _major(v) >= 1]
+    except Offline:
+        return None
 
 
 def _major(version: str) -> int:
     return int(version.split(".")[0])
 
 
+PUBLISHED = _published()
+
+#: Every release the test holds: before 1.0 each is refused by its schema;
+#: from 1.0 each loads and goes on.
+RELEASES = PRE_1_0 + (PUBLISHED or [])
+
 #: The releases before 1.0, whose files are refused by their version.
 REFUSED = [v for v in RELEASES if _major(v) < 1]
 
 #: The workload's kinds newer than a release, by the first version that has
 #: each: a release before it has no builder for one, and its probe records
-#: the refusal (`audit`, task 223 (b), after 0.13.0).
+#: the refusal (`audit`, task 223 (b), after 0.13.0). A literal, read by
+#: `scripts/release_version.py` as `PARAMETER_INTRODUCED` is.
 INTRODUCED = {"audit": "1.0.0"}
 
-#: The workload's specs no listed release can build: a parameter added
-#: since the newest. On the release day that ships it, its specs move to
-#: `PARAMETER_INTRODUCED` under that release, which builds them.
-UNRELEASED: set[str] = {"huber_refit", "sgd_huber_refit"}
-
 #: The workload's specs that need a parameter newer than a release, by the
-#: first release that takes it (task 271's `huber_scale`, in 1.3.0). An
-#: older release refuses the keyword itself, a `TypeError`, not the
-#: `AttributeError` of a builder it lacks.
-PARAMETER_INTRODUCED = {name: "1.3.0" for name in ("huber_mad", "huber_rms", "sgd_huber_mad")}
+#: first release that takes it (task 271's `huber_scale` in 1.3.0, task
+#: 277's `huber_refit_rows` in 1.4.0). An older release refuses the keyword
+#: itself, a `TypeError`, not the `AttributeError` of a builder it lacks.
+#: A spec that needs a new parameter is entered here under the next minor
+#: release when the parameter is added, so no release can build it until
+#: that release is on PyPI. A literal: `scripts/release_version.py
+#: --publish` reads it, and refuses to publish a version older than any
+#: version named here, since that release's files would then claim a
+#: parameter it does not take.
+PARAMETER_INTRODUCED = {
+    "huber_mad": "1.3.0",
+    "huber_rms": "1.3.0",
+    "sgd_huber_mad": "1.3.0",
+    "huber_refit": "1.4.0",
+    "sgd_huber_refit": "1.4.0",
+}
 
 
 def _parameter_newer(name: str, version: str) -> bool:
@@ -99,8 +126,7 @@ def _buildable(version: str) -> list[str]:
         for name, builder, *_ in probe.WORKLOAD
         if version == THIS_BUILD
         or (
-            name not in UNRELEASED
-            and not _parameter_newer(name, version)
+            not _parameter_newer(name, version)
             and _version(version) >= _version(INTRODUCED.get(builder, "0.0.0"))
         )
     ]
@@ -255,9 +281,23 @@ DECLARED: dict[tuple[str, str], str] = {
 }
 
 #: The releases from 1.0, whose files load and go on; and this build, whose
-#: own files stand in until 1.0.0 is listed and run beside them after.
+#: own files ran the harness before 1.0.0 was released and run beside them.
 THIS_BUILD = "this build"
-LOADED = [v for v in RELEASES if _major(v) >= 1] + [THIS_BUILD]
+
+#: Offline, the 1.x releases cannot be listed: one parameter stands for
+#: them and is skipped, as their downloads would be (hard rule 1).
+OFFLINE = pytest.param(
+    "the 1.x releases",
+    marks=pytest.mark.skip(reason="offline: PyPI's list of releases cannot be read"),
+)
+
+
+def _from_1_0(versions: list) -> list:
+    """``versions``, with the offline stand-in when PyPI could not be read."""
+    return versions + ([OFFLINE] if PUBLISHED is None else [])
+
+
+LOADED = _from_1_0([v for v in RELEASES if _major(v) >= 1]) + [THIS_BUILD]
 
 # The workload's specs are built to reach every path, not to be ready: a
 # readiness warning about one of them is expected and says nothing here.
@@ -356,7 +396,7 @@ def test_every_spec_was_saved_by_the_release_at_an_older_schema(refused):
     newer = {name for name, *_ in probe.WORKLOAD} - set(manifest["saved"]) - reach
     assert set(manifest["refused"]) - reach == newer
     for name, why in manifest["refused"].items():
-        if name not in reach | UNRELEASED and not _parameter_newer(name, version):
+        if name not in reach and not _parameter_newer(name, version):
             assert why.startswith("AttributeError") and name in why, (name, why)
     # An older schema: the refusal below is by the version, not the layout.
     assert manifest["schema"] < po.schema_version()
@@ -476,7 +516,9 @@ def _moved(version: str) -> set[str]:
 
 
 #: The releases whose moved specs go on as the release itself goes on from
-#: the same file, run under its own wheel: every release whose files load.
+#: the same file, run under its own wheel: every release whose files load
+#: and that has a spec a CHANGELOG entry moved since (a release with none
+#: goes on as this build's own in every spec, above).
 #: The CHANGELOG says so of each entry in `DECLARED`: `sgd` loads with the
 #: old rules and goes on to the bit, `kalman` goes on as it was fitted,
 #: `holt` with the textbook gains, the residual spread folding only the
@@ -484,7 +526,7 @@ def _moved(version: str) -> set[str]:
 #: sketch with its fixed buckets, a Huber file of 1.2.0 on the scale it was
 #: fitted with. Measured 2026-10-31: every field of every moved spec of the
 #: five to the bit but those `WITHIN`, `ROUNDED`, `UPPER_READ`, `YOUNG` and `RESETS` name.
-RESUMED = [v for v in RELEASES if _major(v) >= 1]
+RESUMED = _from_1_0([v for v in RELEASES if _major(v) >= 1 and _moved(v)])
 
 #: The golden pipeline's tolerance, the library's bound for a move within
 #: rounding (`tests/test_golden_pipeline.py`).
@@ -809,28 +851,57 @@ def test_a_young_field_parts_only_as_the_same_sum_at_a_younger_share():
 def test_every_declared_move_names_a_spec_and_a_release():
     names = {name for name, *_ in probe.WORKLOAD}
     for (name, since), why in DECLARED.items():
-        assert name in names and since in RELEASES and why, (name, since, why)
+        # Offline the 1.x releases are not listed; a declared move is of one.
+        listed = since in RELEASES if PUBLISHED is not None else _major(since) >= 1
+        assert name in names and listed and why, (name, since, why)
     # A tolerance excuses only a declared move, of the same releases' files.
     for (name, since), tol in WITHIN.items():
         assert (name, since) in DECLARED and 0 < tol <= 1e-9, (name, since, tol)
     assert set(RESETS) <= {n for n, _ in DECLARED}
 
 
-def test_the_policy_page_lists_every_release_the_test_holds():
-    """``docs/RELEASE-READINESS.md``'s paragraph on ``RELEASES`` names the
-    first and the newest release this test holds, and does not call every
-    release's files refused once a 1.x release is listed (task 269, review 8
-    F-2: it stopped at 1.0.0 and said every release was refused after 1.1.0
-    joined the list and 1.x files loaded)."""
+def test_a_release_is_listed_once_uploaded_unless_yanked():
+    """``pypi_releases`` reads PyPI's JSON as ``pip`` does: a final version
+    with at least one file, not every file yanked. A prerelease, a version
+    whose files are all yanked and one with no file are left out, and the
+    rest come oldest first by number, not by text."""
+    file, yanked = {"yanked": False}, {"yanked": True}
+    doc = {
+        "releases": {
+            "1.10.0": [file],
+            "1.9.0": [file, yanked],
+            "1.2.0": [yanked, yanked],
+            "1.3.0": [],
+            "2.0.0rc1": [file],
+            "0.13.0": [file],
+        }
+    }
+    assert pypi_releases(json.dumps(doc)) == ["0.13.0", "1.9.0", "1.10.0"]
+
+
+def test_every_1_x_release_on_pypi_is_held():
+    """The 1.x releases the test holds are the ones PyPI lists, read when the
+    suite is collected: the first is 1.0.0, each is a final version, and the
+    four before 1.0 stay literal beside them."""
+    if PUBLISHED is None:
+        pytest.skip("offline: PyPI's list of releases cannot be read")
+    assert PUBLISHED[0] == "1.0.0" and "1.4.0" in PUBLISHED, PUBLISHED
+    assert RELEASES == PRE_1_0 + PUBLISHED
+    assert [v for v in LOADED if v != THIS_BUILD] == PUBLISHED
+
+
+def test_the_policy_page_says_where_the_releases_come_from():
+    """``docs/RELEASE-READINESS.md``'s section on a released build's state
+    files says the 1.x releases are read from PyPI and names no list to edit
+    on release day: a list of releases by name went stale there (task 269,
+    review 8 F-2), and keeping one current was a commit after every release
+    (task 317). It does not call every release's files refused."""
     page = (REPO / "docs" / "RELEASE-READINESS.md").read_text(encoding="utf-8")
     section = page.split("#### A released build's state files", 1)[1].split("\n#### ", 1)[0]
-    lead = "**Add each release to `RELEASES` there.**"
-    assert lead in section
-    paragraph = section.split(lead, 1)[1].split("\n\n", 1)[0]
-    for version in (RELEASES[0], RELEASES[-1]):
-        assert version in paragraph, f"{version} is not named after {lead}"
-    if any(_major(v) >= 1 for v in RELEASES):
-        assert "any release so far is refused" not in section
+    flat = " ".join(section.split())
+    assert "read from PyPI" in flat, "the section does not say the releases are read from PyPI"
+    assert "Add each release" not in flat and "joins the same way, on its release day" not in flat
+    assert "any release so far is refused" not in flat
 
 
 def _changelog_entries() -> list[str]:

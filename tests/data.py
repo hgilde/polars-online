@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import http.client
 import io
+import json
 import os
+import re
 import ssl
 import time
 import urllib.error
@@ -163,6 +165,25 @@ def _download(
                 raise Offline("offline") from e
             time.sleep(2.0 * (attempt + 1))
     raise AssertionError("unreachable")
+
+
+#: PyPI's JSON description of this package: every version and its files.
+PYPI_JSON = "https://pypi.org/pypi/polars-online/json"
+
+
+def pypi_releases(text: str | None = None) -> list[str]:
+    """Every final version of this package on PyPI that is not yanked,
+    oldest first: a version counts once it has a file and not every file
+    is yanked, as ``pip`` reads it. Read fresh each time, never cached, so
+    a release is listed the moment it is uploaded; raises :class:`Offline`
+    as the downloads do. ``text`` is the JSON itself, for a test."""
+    doc = json.loads(_download(PYPI_JSON, attempts=2) if text is None else text)
+    out = [
+        v
+        for v, files in doc["releases"].items()
+        if re.fullmatch(r"\d+\.\d+\.\d+", v) and files and not all(f["yanked"] for f in files)
+    ]
+    return sorted(out, key=lambda v: tuple(int(p) for p in v.split(".")))
 
 
 def write_atomically(path: Path, write) -> None:
@@ -368,7 +389,6 @@ def nist_strd_linear(name: str) -> dict[str, object]:
     polynomial's degree, 0 for ``Longley``). Raises :class:`Offline` when the
     network fails, which :func:`nist_strd_linear_or_skip` turns into a skip.
     """
-    import re
 
     out_dir = CACHE_DIR / "strd"
     out_dir.mkdir(parents=True, exist_ok=True)
