@@ -22,6 +22,7 @@ assert the tails.
 from __future__ import annotations
 
 import itertools
+import json
 import warnings
 
 import numpy as np
@@ -35,6 +36,7 @@ import ledger
 import polars_online as po
 from polars_online import sim
 from public_benchmarks import franti_or_skip, tcpd_or_skip
+from tcpdbench_metrics import f_measure
 
 TIER = "mixed"
 
@@ -569,11 +571,15 @@ def test_bocpd_finds_every_mean_shift_and_dates_it(delta):
 
 
 #: Per TCPD series, the F1 of ``bocpd`` at its default ``hazard`` (250) on
-#: the raw series, TCPDBench's measure at its margin of 5 rows. Measured
+#: the raw series, TCPDBench's measure (``tests/tcpdbench_metrics.py``) at
+#: its margin of 5 rows. Measured
 #: (2026-10-25), identical with the series scaled by 1e-3 and 1e3: well_log
 #: 0.787, quality_control_1 0.571, quality_control_2 1.000,
 #: quality_control_3 0.667, nile 1.000, run_log 0.990. One series, one
-#: ordering, deterministic: each bound is the measurement less 0.05.
+#: ordering, deterministic: each bound is the measurement less 0.05. Two
+#: sit below TCPDBench's published BOCPD scores, by the change-point
+#: extraction, not the posterior
+#: (``test_bocpd_in_tcpdbenchs_configuration_scores_its_published_f1``).
 TCPD = {
     "well_log": 0.73,
     "quality_control_1": 0.52,
@@ -582,30 +588,6 @@ TCPD = {
     "nile": 0.95,
     "run_log": 0.94,
 }
-
-
-def tcpd_f1(predicted: list[int], annotations: dict[str, list[int]], margin: int = 5) -> float:
-    """TCPDBench's F1 (van den Burg and Williams 2020, eqs. 3-4): precision
-    against the union of the annotators' change points, recall averaged over
-    the annotators, each point matched at most once within ``margin``, and
-    row 0 a change point of every set."""
-
-    def hits(truth: list[int], pred: list[int]) -> int:
-        used: set[int] = set()
-        n = 0
-        for t in truth:
-            near = [p for p in pred if abs(p - t) <= margin and p not in used]
-            if near:
-                used.add(min(near, key=lambda p: abs(p - t)))
-                n += 1
-        return n
-
-    pred = sorted({0, *predicted})
-    sets = [sorted({0, *a}) for a in annotations.values()]
-    union = sorted(set().union(*sets))
-    precision = hits(union, pred) / len(pred)
-    recall = float(np.mean([hits(a, pred) / len(a) for a in sets]))
-    return 0.0 if precision + recall == 0 else 2 * precision * recall / (precision + recall)
 
 
 #: Every field on each series. The bounds sit 0.05 under the measured F1,
@@ -624,10 +606,141 @@ def test_bocpd_on_tcpd_series(name):
     x, annotations = tcpd_or_skip(name)
     alarms, began = bocpd_starts(x, hazard=250.0)
     found = sorted({began[a] for a in alarms if began[a] is not None})
-    score = tcpd_f1(found, annotations)
+    score = f_measure(annotations, found)
     print(f"{name}: F1 {score:.3f}, found {found}")
     ledger.record("bocpd_tcpd", f"{name}_f1", score, ideal=1.0)
     assert score >= TCPD[name], (score, found)
+
+
+# --- bocpd in TCPDBench's own configuration -----------------------------------------
+
+#: TCPDBench's published F1 for its default BOCPD on each series
+#: (``analysis/output/scores/default_f1_scores.json``, key ``bocpd``, at
+#: https://github.com/alan-turing-institute/TCPDBench).
+TCPDBENCH_BOCPD_F1 = {
+    "nile": 1.0,
+    "quality_control_1": 0.8,
+    "quality_control_2": 1.0,
+    "quality_control_3": 1.0,
+    "run_log": 1.0,
+    "well_log": 0.7964879993865501,
+}
+
+#: TCPDBench's default BOCPD (``execs/R/cpdbench_ocp.R``) is R ocp's
+#: ``onlineCPD`` with its Gaussian model at ``m = 0, k = 1, a = 1, b = 1``
+#: and ``lambda = 100``: the normal-inverse-gamma prior with ``nu0 = 2a``
+#: and ``covariance_prior = 2b``, and a hazard of 1/100 after every row. It
+#: drops the oldest runs whose tail carries under ``1e-4`` of the mass,
+#: which moved no change point on these series; nothing is pruned here,
+#: so the posterior is the whole one.
+TCPDBENCH_BOCPD = {
+    "hazard": 100.0,
+    "mean_prior": [0.0],
+    "mean_precision_prior": 1.0,
+    "degrees_of_freedom_prior": 2.0,
+    "covariance_prior": [2.0],
+    "prune_below": 0.0,
+    "max_run": 100_000,
+    "min_weight": 0.0,
+}
+
+
+def tcpdbench_scaled(x: np.ndarray) -> np.ndarray:
+    """The series as TCPDBench's ``load.dataset`` hands it to a method: R's
+    ``scale``, centred and divided by the sample standard deviation."""
+    return (x - x.mean()) / x.std(ddof=1)
+
+
+def run_length_posteriors(y: np.ndarray) -> tuple[list[np.ndarray], list[int]]:
+    """``bocpd``'s log posterior over run lengths after each row, index
+    ``r`` the run length, and its ``run_mode`` on each row. The model emits
+    the posterior's mode and mean only, so the whole posterior is read from
+    the state the bank writes as JSON, one row at a time."""
+    bank = po.ModelBank([po.spec.bocpd("b", features=["x"], **TCPDBENCH_BOCPD)])
+    posts, modes = [], []
+    for v in y:
+        out = bank.fit_predict(pl.DataFrame({"x": [v]})).unnest("b")
+        modes.append(out["run_mode"][0])
+        state = json.loads(bank.write_json())["states"][0][0][1]
+        model = state["models"][0]["model"]["Bocpd"]
+        logjoint = np.full(len(model["runs"]), -np.inf)
+        for run, lj in zip(model["runs"], model["logjoint"], strict=True):
+            logjoint[int(run["len"])] = lj
+        top = logjoint.max()
+        posts.append(logjoint - (top + np.log(np.exp(logjoint - top).sum())))
+    return posts, modes
+
+
+def map_changepoints(posts: list[np.ndarray]) -> list[int]:
+    """The change points ocp reports as ``maxCPs``, which TCPDBench scores:
+    an online maximum a posteriori segmentation over the run-length
+    posteriors (``findCPprobs`` in ocp 0.1.1's ``onlineCPD.R``), written
+    from its recursion.
+
+    After row ``t`` (from 0), run length ``r`` dates a break at ``s = t - r
+    + 1``. It scores ``log p_t(r)`` plus ``best[s - 1]``, the best score
+    after ``s - 1`` rows, with ``best[0] = 0`` and 0 before it. ``best[t +
+    1]`` is the largest score, the first from the longest run down, and its
+    breaks are that run's predecessor's plus ``s``. Row 0 is a break of
+    every segmentation. The answer is the segmentation after the last
+    row."""
+    best = {0: 0.0}
+    breaks: dict[int, list[int]] = {0: [0]}
+    for t, post in enumerate(posts):
+        top, start, before = -np.inf, 0, 0
+        for r in range(len(post) - 1, -1, -1):
+            s = t - r + 1
+            score = post[r] + best.get(s - 1, 0.0)
+            if score > top:
+                top, start, before = score, s, s - 1
+        best[t + 1] = top
+        breaks[t + 1] = [*breaks.get(before, [0]), start]
+    return sorted(set(breaks[len(posts)]))
+
+
+ledger.guard(
+    "bocpd_tcpdbench",
+    lambda: [
+        bocpd_out(tcpdbench_scaled(tcpd_or_skip(name)[0]), **TCPDBENCH_BOCPD)
+        for name in sorted(TCPD)
+    ],
+    dataset="tcpd:" + ",".join(sorted(TCPD)),
+)
+
+
+@pytest.mark.oracle_grid(reason="the network: TCPD's annotated series, each F1 held to the ledger")
+@pytest.mark.parametrize("name", sorted(TCPD))
+def test_bocpd_in_tcpdbenchs_configuration_scores_its_published_f1(name):
+    """Run as TCPDBench runs its default BOCPD -- the scaled series, its
+    prior and hazard, ocp's ``maxCPs`` and its 5-row margin -- ``bocpd``
+    scores the F1 TCPDBench published, on every series.
+
+    That explains why ``test_bocpd_on_tcpd_series`` scores below the
+    published default on ``quality_control_1`` (0.571 against 0.800) and
+    ``quality_control_3`` (0.667 against 1.000). At this configuration the
+    run-length posterior is ocp's (its ``run_mode`` agreed on every row and
+    its mean run length within 7e-12, against a transcription of ocp's
+    recursion, measured 2026-11-04), and the alarm rule that test uses,
+    a dated start that jumps forward by more than 5 rows, still scores
+    0.571 and 0.500 on those two series. The gap is the change-point
+    extraction: ocp's segmentation revisits the dated starts with all the
+    evidence after them, where an alarm stays raised. On
+    ``quality_control_1`` the alarms add breaks at rows 98 and 108 that the
+    segmentation drops."""
+    x, annotations = tcpd_or_skip(name)
+    y = tcpdbench_scaled(x)
+    posts, modes = run_length_posteriors(y)
+    # Evidence the posterior read is the model's: its mode after each row
+    # is the next row's run_mode, and nothing was pruned.
+    assert [int(np.argmax(p)) for p in posts[:-1]] == modes[1:]
+    assert [len(p) for p in posts] == list(range(2, len(y) + 2))
+    found = map_changepoints(posts)
+    score = f_measure(annotations, found)
+    alarms, began = bocpd_starts(y, **TCPDBENCH_BOCPD)
+    by_alarm = f_measure(annotations, sorted({began[a] for a in alarms if began[a] is not None}))
+    print(f"{name}: F1 {score:.3f} from {found}, {by_alarm:.3f} by the alarm rule")
+    ledger.record("bocpd_tcpdbench", f"{name}_f1", score, ideal=1.0)
+    assert score == pytest.approx(TCPDBENCH_BOCPD_F1[name], abs=1e-12), (score, found)
 
 
 # --- corrchange --------------------------------------------------------------------
