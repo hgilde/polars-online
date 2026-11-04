@@ -215,3 +215,30 @@ fn a_solve_that_leaves_nothing_pending_keeps_no_spare() {
     }
     assert!(m.pending_readiness() > 0);
 }
+
+/// What one system's solves keep between them (task 316, review 11's
+/// S3-2): one spare factor, the pending solve's that the next solve
+/// replaced, and under `keep_factor` a second, the kept factor the next
+/// solve replaced too. One Gram here, both targets on every row, a solve
+/// on every row: after the second solve the working space keeps one factor
+/// without `keep_factor` and two with it, and no more on the rows after.
+#[test]
+fn a_system_keeps_one_spare_factor_and_two_under_keep_factor() {
+    for (keep_factor, want) in [(false, 1), (true, 2)] {
+        let mut m = EwRidge::new(cfg(true, true, false, None)).unwrap();
+        m.set_keep_factor(keep_factor);
+        let mut s = 7u64;
+        for i in 0..12 {
+            let x: Vec<f64> = (0..K).map(|j| 2.0 * lcg(&mut s) + j as f64).collect();
+            let y = [Some(x[0] - x[2] + 0.1 * lcg(&mut s)), Some(x[1])];
+            m.step(&x, &y, if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            if i >= 6 {
+                assert_eq!(
+                    spares(&m),
+                    want,
+                    "keep_factor {keep_factor}, row {i}: the spares kept"
+                );
+            }
+        }
+    }
+}

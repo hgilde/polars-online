@@ -1352,15 +1352,12 @@ impl EwRidge {
                 ill: false,
             });
         }
-        // The lower triangle formed and mirrored: entry `(j, i)` is entry
-        // `(i, j)`'s bits, since the moments are kept once for both and
-        // `s_i·s_j` is `s_j·s_i` (task 314; see `solve_centred`).
+        // The lower triangle alone, each entry once; the upper stays 0
+        // (task 314; see `solve_centred`, and `Solved::a`).
         let mut asub = vec![0.0; kk * kk];
         for (i2, &i) in keep.iter().enumerate() {
             for (j2, &j) in keep[..=i2].iter().enumerate() {
-                let v = cov.raw(zidx[i], zidx[j]) / (s[i] * s[j]);
-                asub[i2 * kk + j2] = v;
-                asub[j2 * kk + i2] = v;
+                asub[i2 * kk + j2] = cov.raw(zidx[i], zidx[j]) / (s[i] * s[j]);
             }
         }
         for i2 in 0..kk {
@@ -1454,20 +1451,21 @@ impl EwRidge {
         let mut system = None;
         let mut ill = false;
         if kk > 0 {
-            // The lower triangle formed, each entry once, and mirrored:
-            // entry `(j, i)` is entry `(i, j)`'s bits, since the co-moments
-            // keep one value for both and `s_i·s_j` is `s_j·s_i`. Read
-            // whole, each upper entry was a read across the triangle's rows
-            // and a second division: at 200 features solving every row, 7
-            // µs of a 147 µs row on arm64 (task 314).
+            // The lower triangle alone, each entry once; the upper stays 0.
+            // Nothing reads it: the factorization's rungs read the lower
+            // triangle and the readiness check the diagonal, and a kept
+            // system is a `LowerTriangle`, which mirrors the lower over it
+            // (`Solved::a`). Read whole, each upper entry was a read across
+            // the triangle's rows and a second division: at 200 features
+            // solving every row, 7 µs of a 147 µs row on arm64 (task 314);
+            // written as the lower's mirror, it was `k(k − 1)/2` strided
+            // stores a solve that nothing read (task 316).
             let mut asub = vec![0.0; kk * kk];
             for (i2, &i) in keep.iter().enumerate() {
                 let zi = zidx[i + 1];
                 for (j2, &j) in keep[..=i2].iter().enumerate() {
                     let c = cov.cov(zi, zidx[j + 1]);
-                    let v = if standardize { c / (s[i] * s[j]) } else { c };
-                    asub[i2 * kk + j2] = v;
-                    asub[j2 * kk + i2] = v;
+                    asub[i2 * kk + j2] = if standardize { c / (s[i] * s[j]) } else { c };
                 }
             }
             for i2 in 0..kk {
@@ -1826,7 +1824,11 @@ struct Solved {
     /// dropped).
     factor: Option<SpdFactor>,
     /// The ridged, normalised system as factorized, row-major over the kept
-    /// columns, the jitter excluded (the factor knows it).
+    /// columns, the jitter excluded (the factor knows it). Its lower
+    /// triangle is the system; the upper is whatever the solve left there
+    /// (0 from the centred and standardized solves), which nothing reads:
+    /// the factorization reads the lower triangle, and [`System::a`], a
+    /// [`crate::LowerTriangle`], mirrors the lower over it when kept.
     a: Vec<f64>,
     /// Positions in the combo's `zidx` of the kept columns, in the system's
     /// order.
@@ -1882,9 +1884,10 @@ impl Solved {
 struct System {
     /// Row-major `kk × kk`, the jitter excluded; the factor is rebuilt from
     /// it on load. Symmetric, and kept as its lower triangle, the one the
-    /// factorization reads: a system a build before task 294 saved, its
-    /// upper triangle read from the co-moments' own, loads as its lower
-    /// triangle mirrored, as the co-moments do ([`crate::LowerTriangle`]).
+    /// factorization reads, formed alone by the solve ([`Solved::a`]) and
+    /// mirrored here: a system a build before task 294 saved, its upper
+    /// triangle read from the co-moments' own, loads as its lower triangle
+    /// mirrored, as the co-moments do ([`crate::LowerTriangle`]).
     a: crate::LowerTriangle,
     /// The accumulator index (`z` slot) of each kept column.
     z: Vec<usize>,
