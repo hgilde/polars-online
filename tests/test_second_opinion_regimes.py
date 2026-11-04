@@ -9,6 +9,8 @@ This module carries each to the parameters those left out:
 
 - ``hmm`` under ``"diag"`` and ``"tied"`` covariances and at three states,
   against hmmlearn's ``GaussianHMM``;
+- ``hmm``'s time-varying transitions (``exog_tvtp``) at two and three
+  states, against statsmodels' ``MarkovRegression``;
 - ``bocpd`` at ``mean_precision_prior`` 0.3 and 5 with the default
   ``degrees_of_freedom_prior``, against the package's ``StudentT`` run-length
   recursion;
@@ -39,6 +41,7 @@ import polars as pl
 import pytest
 from hmmlearn.hmm import GaussianHMM
 from scipy.stats import kstwobign
+from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
 
 import ledger
 import polars_online as po
@@ -241,6 +244,188 @@ class TestHmmIsHmmlearnsAtEveryShape:
         print(f"hmm: least move from uniform {moved:.3f}, from full {spread:.3f}, zeros {zeros}")
         assert moved > 0.2 and spread > 0.1 and zeros > 10
         assert worst[0] <= HMM_TOL, worst
+
+
+# --- hmm's time-varying transitions against statsmodels' MarkovRegression ---------------
+
+#: The filtered and predicted probabilities, absolute, and each row's
+#: log-likelihood relative to ``1 + |loglik|``. Measured 2026-11-04 over
+#: ``SEEDS`` at two and three states (aarch64, macOS): the worst 3.4e-14
+#: (seed 25, three states), the 95th percentile 1.6e-14; seed 0 at most
+#: 1.3e-15. The bound leaves thirty times the worst for another CPU's last
+#: bits.
+TVTP_TOL = 1e-12
+
+#: The sticky matrix every stream's first row moves by: symmetric with rows
+#: that are distributions, so doubly stochastic (below).
+TVTP_STAY = 0.9
+
+
+def tvtp_stream(seed: int, k: int, n: int = 400) -> dict[str, Any]:
+    """One feature from ``k`` Gaussian states whose transition matrix is
+    ``softmax_l(A_kl + B_kl z_t)``, with ``z`` a standard normal and a slope
+    ``B`` large enough that some transition's chance ranges over most of
+    ``(0, 1)``, and small enough that none falls below the 1e-20 at which
+    statsmodels clips one.
+
+    ``A`` is drawn so that row 0's matrix, at its own ``z``, is the sticky
+    ``S`` with ``TVTP_STAY`` on the diagonal: ``A = log S - B z_0`` plus a
+    random constant per row, which a softmax over the row takes out. ``S``
+    is doubly stochastic, so the uniform start maps to itself through it,
+    which is what lets statsmodels start where this filter does
+    (``tvtp_errors``). The constants make every ``A[k, K-1]`` nonzero, so
+    the mapping to statsmodels' reference state is exercised."""
+    rng = np.random.default_rng(seed)
+    b = rng.normal(0.0, 1.5, (k, k))
+    z = rng.standard_normal(n)
+    s = np.full((k, k), (1.0 - TVTP_STAY) / (k - 1))
+    np.fill_diagonal(s, TVTP_STAY)
+    a = np.log(s) - b * z[0] + rng.normal(0.0, 2.0, (k, 1))
+    means = np.sort(rng.normal(0.0, 3.0, k))
+    var = rng.uniform(0.3, 2.0, k)
+
+    def pi(t: int) -> np.ndarray:
+        logits = a + b * z[t]
+        e = np.exp(logits - logits.max(axis=1, keepdims=True))
+        return e / e.sum(axis=1, keepdims=True)
+
+    state = np.zeros(n, dtype=int)
+    state[0] = rng.integers(k)
+    for t in range(1, n):
+        state[t] = rng.choice(k, p=pi(t)[state[t - 1]])
+    x = means[state] + np.sqrt(var[state]) * rng.standard_normal(n)
+    return {"x": x, "z": z, "a": a, "b": b, "means": means, "var": var, "pi": pi}
+
+
+def tvtp_run(s: dict[str, Any]) -> pl.DataFrame:
+    k = len(s["means"])
+    spec = po.spec.hmm(
+        "h",
+        features=["x"],
+        n_components=k,
+        precision_prior=HMM_RIDGE,
+        half_life=float("inf"),
+        min_weight=0.0,
+        learn=False,
+        means=s["means"].tolist(),
+        covs=s["var"].tolist(),
+        exog_tvtp="z",
+        tvtp_coef=[s["a"].ravel().tolist(), s["b"].ravel().tolist()],
+    )
+    frame = pl.DataFrame({"x": s["x"], "z": s["z"]})
+    return po.ModelBank([spec]).fit_predict(frame)["h"].struct.unnest()
+
+
+ledger.guard(
+    "hmm_tvtp",
+    lambda: [tvtp_run(tvtp_stream(s, k)) for s in range(10) for k in (2, 3)],
+    oracles=["statsmodels"],
+    bits=52,
+)
+
+
+def tvtp_errors(seed: int, k: int) -> tuple[float, float, float]:
+    """The worst error of the filtered probabilities, the predicted ones and
+    the log-likelihoods against statsmodels' ``MarkovRegression`` with
+    ``trend="c"``, ``switching_variance=True`` and ``exog_tvtp = [1, z]``,
+    filtered at the stream's parameters.
+
+    statsmodels' transitions are a multinomial logit with the last state's
+    logit fixed at 0, and its matrix at row ``t`` is ``P[i, j] = Pr(S_t = i
+    given S_t-1 = j)``, the transpose of this library's ``Pi(t)``, read from
+    row ``t`` of ``exog_tvtp`` as here. So the coefficient of ``j -> i``
+    is ``(A_ji - A_j,K-1, B_ji - B_j,K-1)``: a softmax over a row is
+    unchanged by a constant taken from the row. Each state's variance is the
+    given one plus the ridge. statsmodels keeps the joint of two
+    consecutive states, so its initial distribution is two steps before row
+    0, and both steps are taken with row 0's matrix: the uniform start
+    stays uniform there because that matrix, ``S``, is doubly stochastic.
+
+    Everything here is read before the row, so ``filtered_state`` on row
+    ``t`` is statsmodels' filtered probability on row ``t - 1`` (uniform
+    before the first), and ``predicted_state`` and ``loglik`` are its
+    ``predicted_marginal_probabilities`` and ``llf_obs`` on row ``t``."""
+    s = tvtp_stream(seed, k)
+    out = tvtp_run(s)
+    model = MarkovRegression(
+        s["x"],
+        k_regimes=k,
+        trend="c",
+        switching_variance=True,
+        exog_tvtp=np.column_stack([np.ones(len(s["z"])), s["z"]]),
+    )
+    model.initialize_known(np.full(k, 1.0 / k))
+    a, b = s["a"], s["b"]
+    value = {}
+    for i in range(k):
+        for j in range(k - 1):
+            value[f"p[{i}->{j}].tvtp0"] = a[i, j] - a[i, k - 1]
+            value[f"p[{i}->{j}].tvtp1"] = b[i, j] - b[i, k - 1]
+        value[f"const[{i}]"] = s["means"][i]
+        value[f"sigma2[{i}]"] = s["var"][i] + HMM_RIDGE
+    res = model.filter(np.array([value[name] for name in model.param_names]))
+    want_filtered = np.vstack([np.full(k, 1.0 / k), res.filtered_marginal_probabilities[:-1]])
+    filtered = out.select(f"filtered_state{j}" for j in range(k)).to_numpy()
+    predicted = out.select(f"predicted_state{j}" for j in range(k)).to_numpy()
+    loglik = out["loglik"].to_numpy()
+    return (
+        float(np.abs(filtered - want_filtered).max()),
+        float(np.abs(predicted - res.predicted_marginal_probabilities).max()),
+        float((np.abs(loglik - res.llf_obs) / (1.0 + np.abs(res.llf_obs))).max()),
+    )
+
+
+def tvtp_evidence(seed: int, k: int) -> tuple[float, float, float]:
+    """That the paths the oracle checks were taken: the widest range of one
+    transition's chance over the rows (the slope moves the matrix), the
+    least chance of any transition on any row (statsmodels clips one at
+    1e-20), and how far the filter moves from uniform."""
+    s = tvtp_stream(seed, k)
+    pis = np.array([s["pi"](t) for t in range(len(s["z"]))])
+    out = tvtp_run(s)
+    filtered = out.select(f"filtered_state{j}" for j in range(k)).to_numpy()
+    spread = (pis.max(axis=0) - pis.min(axis=0)).max()
+    return float(spread), float(pis.min()), float(np.abs(filtered - 1 / k).max())
+
+
+class TestHmmTvtpIsStatsmodelsMarkovRegression:
+    """``hmm(exog_tvtp=, tvtp_coef=)`` with given states and ``learn =
+    False`` is Hamilton's filter with time-varying transition probabilities
+    at fixed parameters, which statsmodels' ``MarkovRegression`` computes
+    for one feature. It holds the logistic link: which logit is which
+    state's, from which state, and which row's ``z`` moves the matrix."""
+
+    @pytest.mark.parametrize("k", [2, 3])
+    def test_one_seed(self, k):
+        spread, least, moved = tvtp_evidence(0, k)
+        print(f"k={k}: widest range {spread:.3f}, least transition {least:.1e}, filter {moved:.3f}")
+        assert spread > 0.5 and least > 1e-19 and moved > 0.4
+        errors = tvtp_errors(0, k)
+        assert max(errors) <= TVTP_TOL, errors
+
+    @pytest.mark.oracle_grid(reason="50 seeds x 2 state counts against statsmodels' filter")
+    def test_fifty_seeds(self):
+        rows = [
+            (max(tvtp_errors(seed, k)), *tvtp_evidence(seed, k), seed, k)
+            for seed in SEEDS
+            for k in (2, 3)
+        ]
+        worst = max(rows)
+        errors = np.array([r[0] for r in rows])
+        print(
+            f"hmm tvtp: worst error {worst[0]:.2e} (seed {worst[4]}, k={worst[5]}), "
+            f"95th percentile {np.quantile(errors, 0.95):.2e}"
+        )
+        # Round-off: the ledger holds it at about four times the measured 3.4e-14.
+        ledger.record("hmm_tvtp", "error", errors, floor=1.4e-13)
+        spread = min(r[1] for r in rows)
+        least = min(r[2] for r in rows)
+        moved = min(r[3] for r in rows)
+        print(f"hmm tvtp: least range {spread:.3f}, transition {least:.1e}, filter {moved:.3f}")
+        # Measured 2026-11-04: the least widest range 0.243, the least
+        # transition 1.4e-18 and the least move from uniform 0.486.
+        assert spread > 0.2 and least > 1e-19 and moved > 0.4
+        assert worst[0] <= TVTP_TOL, worst
 
 
 # --- bocpd against bayesian_changepoint_detection ------------------------------------
