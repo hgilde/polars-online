@@ -873,6 +873,57 @@ fn a_refused_step_moves_neither_the_level_nor_the_gains() {
     assert_eq!(m.gain[0], gain, "the refused row entered the gains");
 }
 
+/// A refused row leaves a resting gate as it found it (task 316, review
+/// 11's S1-1): neither its rest count `rested`, which says when the next
+/// probe falls, nor `resting`, which a residual past `WAKE_SPREADS` of the
+/// target's spread, or a probe's gain past `PROBE_WAKE` times the resting
+/// mean, would otherwise clear. Inside the input bound a row's gradient
+/// overflows only on a fit thrown far off, so the resting model's slopes
+/// are set by hand to two such fits. At a slope of `1e10`, a row at
+/// `x = 1e100` and a weight of `1e100` is predicted at `1e110`, a residual
+/// that wakes the gate, and its slope gradient `1e310` is `inf`. At slopes
+/// of `±1e300`, a row at `x = 1e10` is predicted at `inf − inf`, not a
+/// number: no residual wakes the gate, but a probe of the row's gain would.
+/// Each is tried off a probe's row and on one.
+#[test]
+fn a_refused_step_leaves_a_resting_gate_as_it_was() {
+    let rows = rows(1200, 0.0);
+    let rested = resting(&rows[..1000]);
+    let zero = [0.0; 3];
+    for probe_row in [false, true] {
+        let mut m = rested.clone();
+        m.cfg.clip_gradient = f64::INFINITY;
+        while (m.gain[0].rested + 1).is_multiple_of(PROBE_ROWS) != probe_row {
+            let p = eta(&m, &zero);
+            m.step(&zero, &[Some(p)], 1.0, 1.0);
+            assert!(m.gain[0].resting);
+        }
+        for (what, slopes, x, w) in [
+            ("wide", [1e10, 0.0, 0.0], [1e100, 0.0, 0.0], 1e100),
+            ("not a number", [1e300, -1e300, 0.0], [1e10, 1e10, 0.0], 1.0),
+        ] {
+            let mut m = m.clone();
+            m.beta[0][1..].copy_from_slice(&slopes);
+            let p = eta(&m, &x);
+            if what == "wide" {
+                assert!(p.abs() > WAKE_SPREADS * m.unit(0), "{what}: p {p}");
+            } else {
+                assert!(p.is_nan(), "{what}: p {p}");
+            }
+            let (beta, gate) = (m.beta.clone(), m.gain[0]);
+            m.step(&x, &[Some(0.0)], 1.0, w);
+            assert_eq!(
+                m.beta, beta,
+                "{what}, probe {probe_row}: the row was not refused"
+            );
+            assert_eq!(
+                m.gain[0], gate,
+                "{what}, probe {probe_row}: the refused row moved the resting gate"
+            );
+        }
+    }
+}
+
 /// A calm gate rests (task 314): once its sums hold `REST_WEIGHT` of rows
 /// and their mean square is at most their mean, a stable rate's gate takes
 /// no more gains -- its sums stand still, and it serves every row -- but a
@@ -946,6 +997,64 @@ fn the_calm_gate_rests_and_wakes_on_a_wide_residual() {
         rested_again.is_some_and(|r| (1500 + awake - 1..=1500 + 2 * awake).contains(&r)),
         "{rested_again:?}"
     );
+}
+
+/// Under Huber a residual that wakes a resting gate is past the cut, where
+/// the loss has no curvature, so the waking row's gain is 0 and the sums
+/// skip it (task 316, review 11's S1-3): the gate wakes with its sums and
+/// its count of gains, `rested`, where they were, 0, and the first gain it
+/// takes is the next row's inside the cut, which counts 1 and moves the
+/// sums.
+#[test]
+fn a_huber_gate_wakes_on_a_wide_residual_without_its_gain() {
+    let rows = rows(2000, 0.0);
+    let c = SgdCfg {
+        standardize: false,
+        min_weight: 0.0,
+        ..cfg(
+            SgdLoss::Huber { delta: 1.345 },
+            LearningRate::Constant,
+            0.002,
+        )
+    };
+    let mut m = Sgd::new(c).unwrap();
+    let mut woke = false;
+    for (i, (x, y)) in rows.iter().enumerate() {
+        let before = m.gain[0];
+        if i < 1500 || !before.resting || woke {
+            m.step(x, &[Some(*y)], 1.0, 1.0);
+            if woke && m.gain[0].n != before.n {
+                assert_eq!(
+                    m.gain[0].rested, 1,
+                    "row {i}: the first gain after the wake"
+                );
+                return;
+            }
+            continue;
+        }
+        // The target 100 of its spreads off, on a row no probe falls on.
+        if (before.rested + 1).is_multiple_of(PROBE_ROWS) {
+            m.step(x, &[Some(*y)], 1.0, 1.0);
+            continue;
+        }
+        let band = m.spread.band(0, 1.0);
+        let cut = 1.345 * m.scale(0).expect("a residual scale");
+        assert!(WAKE_SPREADS * band > cut, "band {band}, cut {cut}");
+        m.step(x, &[Some(y + 100.0 * band)], 1.0, 1.0);
+        let after = m.gain[0];
+        assert!(
+            !after.resting,
+            "row {i}: the wide residual let the gate rest"
+        );
+        assert_eq!(after.rested, 0, "row {i}: the waking row counted a gain");
+        assert_eq!(
+            (after.q, after.q2, after.n),
+            (before.q, before.q2, before.n),
+            "row {i}: the waking row's gain of 0 joined the sums"
+        );
+        woke = true;
+    }
+    panic!("the gate never rested by row 1,500, or took no gain after it woke");
 }
 
 /// A resting gate probes every `PROBE_ROWS`-th row's gain (task 314), and

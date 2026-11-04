@@ -247,7 +247,23 @@ const MOVED: &[(&str, f64)] = &[("lasso", 1e-9), ("lasso_window", 1e-9), ("holt"
 ///   outputs by at most 1.9e-16 (`ew_cov`) and 7.1e-16 (`ew_cov_window`)
 ///   of `1 + |out|`, from the first row after the load, measured
 ///   2026-11-01 on all three kept sets; the bound is the user's, 1e-15.
-const CONTINUES_WITHIN: &[(&str, f64)] = &[("ew_cov", 1e-15), ("ew_cov_window", 1e-15)];
+///   It holds the `corr` slots alone, numbers 6 to 8 of both cases (after
+///   three means and three variances; `cases::all`), and no other: the
+///   means, variances, Mahalanobis distances, its quantiles, the lagged
+///   correlations and the component read the lower triangle only, and
+///   continue to the bit (task 316, review 11's S2-1).
+/// - `ew_cov_accumulator`: the bare accumulator's slots are its two means
+///   and then its 2 × 2 co-moments row by row (`cases::Accumulator`), so
+///   number 3 is `cov(0, 1)`, an upper entry, read through the mirror
+///   from `(1, 0)` since task 294 and read directly before it. On these
+///   rows the two entries are the same double, so it continues to the bit;
+///   that is the data's doing, not the arithmetic's, so it is held to the
+///   same 1e-15 as the model's `corr` (task 316, review 11's S2-3).
+const CONTINUES_WITHIN: &[(&str, f64, std::ops::Range<usize>)] = &[
+    ("ew_cov", 1e-15, 6..9),
+    ("ew_cov_window", 1e-15, 6..9),
+    ("ew_cov_accumulator", 1e-15, 3..4),
+];
 
 /// How far a continuation may part from the one frozen, on a platform other
 /// than the writer's: the golden files' tolerance (`tests/golden.rs`).
@@ -272,6 +288,12 @@ fn case_of(f: &Fixture) -> Case {
 }
 
 fn same_out(what: &str, got: &Out, want: &Out, tol: f64) {
+    same_out_by(what, got, want, |_| tol);
+}
+
+/// [`same_out`], each number `i` (the predictions', then `n_eff`, then the
+/// extras') within its own `tol(i)`.
+fn same_out_by(what: &str, got: &Out, want: &Out, tol: impl Fn(usize) -> f64) {
     let pairs = got
         .pred
         .iter()
@@ -285,7 +307,7 @@ fn same_out(what: &str, got: &Out, want: &Out, tol: f64) {
     );
     for (i, (g, w)) in pairs.enumerate() {
         assert!(
-            agree(*g, *w, tol),
+            agree(*g, *w, tol(i)),
             "{what}, number {i}: got {g:e} ({:#018x}), frozen {w:e} ({:#018x})",
             g.to_bits(),
             w.to_bits()
@@ -497,8 +519,8 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
             let moved = MOVED.iter().find(|(n, _)| *n == f.name).map(|&(_, b)| b);
             let within = CONTINUES_WITHIN
                 .iter()
-                .find(|(n, _)| *n == f.name)
-                .map(|&(_, b)| b);
+                .find(|(n, _, _)| *n == f.name)
+                .map(|(_, b, slots)| (*b, slots.clone()));
             // Seeded by the `lloyd` rule before task 278 (plain k-means++
             // starts, ten Lloyd passes): the rule since finds the same
             // centres in another order (the doc above `previous!`).
@@ -564,9 +586,22 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
                 // build's in their last bits, as a fresh run's do.
                 let tol = if windowed && i > 0 { tol.max(TOL) } else { tol };
                 let tol = moved.map_or(tol, |b| tol.max(b));
-                let tol = within.map_or(tol, |b| tol.max(b));
                 let got = m.step(row);
-                same_out(&format!("{what}, row {i} after the save"), &got, &want, tol);
+                if let Some((_, slots)) = &within {
+                    assert!(
+                        slots.end <= got.pred.len(),
+                        "{what}: CONTINUES_WITHIN names slots past the predictions"
+                    );
+                }
+                same_out_by(
+                    &format!("{what}, row {i} after the save"),
+                    &got,
+                    &want,
+                    |n| match &within {
+                        Some((b, slots)) if slots.contains(&n) => tol.max(*b),
+                        _ => tol,
+                    },
+                );
             }
         }
     }
@@ -1295,6 +1330,13 @@ fn the_target_spread_forms_are_written() {
         for g in field(name, "gain").as_array().unwrap() {
             let resting = at(g, &["resting"]).and_then(rmpv::Value::as_bool);
             assert_eq!(resting, Some(rests), "{name}: gain {g}");
+            // The gate's count, the second new field, written non-zero
+            // where the gate rests: the rows let pass since it rested
+            // (task 316, review 11's S2-4).
+            if rests {
+                let rested = at(g, &["rested"]).and_then(rmpv::Value::as_u64);
+                assert!(rested.is_some_and(|r| r > 0), "{name}: gain {g}");
+            }
         }
     }
     for name in ["sgd_spread", "sgd_unstable", "sgd_resting"] {

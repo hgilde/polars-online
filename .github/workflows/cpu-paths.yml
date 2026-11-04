@@ -87,13 +87,15 @@ jobs:
             expect: avx2=true avx512f=true l3_kib=2048
     env:
       # Every module of online-core whose tests run faer's products or
-      # factorizations or compare against `crate::oracle`, as libtest
-      # filters. tests/test_cpu_paths.py fails when a module that does
-      # either is missing here.
+      # factorizations, compare against `crate::oracle`, or dispatch on the
+      # CPU's vector units (`pulp`, `is_x86_feature_detected`), as libtest
+      # filters: the last so that the Sandy Bridge leg, the one CPU here
+      # without AVX2, runs their fallback paths. tests/test_cpu_paths.py
+      # fails when a module that does any of these is missing here.
       SDE_TESTS: >-
-        bocpd:: breaks:: calibration:: deco:: ewclass:: ewcov:: ewridge::
-        gaps:: gramfit:: hmm:: holt:: kalman:: lasso:: oracle:: pieces:: rcov::
-        rls:: robust:: sandwich:: sgd:: solve:: specification::
+        bocpd:: breaks:: calibration:: deco:: ewclass:: ewcov:: ewdiag:: ewridge::
+        gaps:: gramfit:: hmm:: holt:: huber_refit:: kalman:: lasso:: oracle:: pieces::
+        rcov:: rls:: robust:: sandwich:: sgd:: solve:: specification::
       # A release build, ten or more times faster than the debug build CI
       # tests, which matters under an emulator; with the debug build's
       # assertions and overflow checks, so the tests that expect one to

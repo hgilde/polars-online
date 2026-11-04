@@ -154,12 +154,14 @@ def sgd(
         b   = weighted least squares at v_i * min(1, delta * s / |r_i|)
         repeated until no row's fit z_i'b moves by over 1e-10 of s, or 200 passes
 
-    with a ridge of 1e-6 on the mean-form system, and ``l2`` as the steps
-    apply it: a penalty of ``l2 * s_i^2`` on each slope (``s_i`` the
-    feature's scale under ``standardize``, 1 without), once a row, so the fit
-    is the minimum of ``sum(v_i * rho(r_i / s)) + l2 / 2 * sum(s_i^2 * b_i^2)
-    * sum(c_i)``, ``c_i`` each row counted once and decayed as its weight
-    is. The intercept is not penalized. ``s`` is then
+    with a ridge on the mean-form system of ``1e-6 * s_i^2`` on each slope's
+    diagonal (``s_i`` the feature's scale under ``standardize``, 1 without:
+    1e-6 on the standardized slopes, as ``huber``'s, so a feature's units do
+    not move the fit), and ``l2`` as the steps apply it: a penalty of
+    ``l2 * s_i^2`` on each slope, once a row, so the fit is the minimum of
+    ``sum(v_i * rho(r_i / s)) + l2 / 2 * sum(s_i^2 * b_i^2) * sum(c_i)``,
+    ``c_i`` each row counted once and decayed as its weight is. The
+    intercept is not penalized by either. ``s`` is then
     rebuilt from the fit's residuals. The fit is set in the coordinates the
     coefficients are held in: the caller's units, or, while the scaler still
     warms up, its moments' coordinates as they stand (``b_i * s_i`` and

@@ -583,3 +583,97 @@ fn a_clock_reset_on_a_skipped_row_steps_the_next_row_from_it() {
         );
     }
 }
+
+/// `df` with the clock replaced by `c` and feature `x0` null on each row of
+/// `skipped`.
+fn with_clock_and_skips(df: &DataFrame, c: &[f64], skipped: &[usize]) -> DataFrame {
+    let mut out = df.clone();
+    for &at in skipped {
+        out = skip_row(&out, at);
+    }
+    out.with_column(Series::new("t".into(), c.to_vec()).into())
+        .unwrap();
+    out
+}
+
+/// The deepest clock corner of a drift reset (task 316; review 11's S5
+/// left it unreached): a clock reset at an accepted row, under both
+/// `drift_action = "reset"` and an `embargo`, after skipped rows whose
+/// fresh clock (the stream's `restart_fold`) did not see the
+/// step back the stream's clock reset on -- it begins at the first skipped
+/// row, so a step back there, or one from the last accepted row that the
+/// skipped rows' own clocks hide, is not a step back within it. The fresh
+/// clock is what a drift reset's restarted model steps its next row by; a
+/// clock reset restarts every instance at a step of 0, as a fresh stream's
+/// first row. Every field from the row the clock reset on equals a fresh
+/// bank's fed the rows from it, to the bit, through one chunk and a chunk
+/// boundary at it, at a row well after the detector fired and at one
+/// whose rows are still held behind the detection.
+///
+/// The corners, each three rows from the reset's place `r` on, the row
+/// before `r` accepted at clock `c`:
+/// - the first skipped row steps back 50, so the fresh clock begins after
+///   the step back, the next skipped row steps on, and the accepted row
+///   steps back 30 from it (a clock reset at an accepted row after a
+///   clock reset at a skipped row);
+/// - the skipped rows step on from `c`, and the accepted row steps back
+///   below `c` (the fresh clock sees the step back from its own rows);
+/// - the skipped rows step on, and the accepted row lands between `c` and
+///   the skipped rows: a step back from the last skipped row only, which
+///   the stream's clock and the fresh clock both see.
+#[test]
+fn a_clock_reset_at_an_accepted_row_after_skipped_rows_is_a_fresh_bank() {
+    let base = frame();
+    let s = spec_with(
+        r#"{"type": "rls", "delta": 100.0}"#,
+        "200.0",
+        r#", "embargo": 3.0, "restart_after_step_back": 0.0"#,
+    );
+    let probe = feed(&mut Bank::new(vec![s.clone()]).unwrap(), &base, &[]);
+    let (t, r1) = embargo_fire(&probe, &base, 3.0);
+    for r in [t + 40, r1 + 1] {
+        // Rows r and r + 1 skipped, row r + 2 accepted where the clock resets.
+        let corners: [(&str, [f64; 3]); 3] = [
+            ("a step back on the first skipped row", [-50.0, 1.0, -30.0]),
+            ("a step back below the accepted row", [1.0, 1.0, -50.0]),
+            ("a step back from the skipped rows only", [2.0, 2.0, -3.0]),
+        ];
+        for (what, steps) in corners {
+            let mut c = clock(&base);
+            let shift: Vec<f64> = (0..N)
+                .map(|i| match i {
+                    _ if i < r => 0.0,
+                    _ if i == r => steps[0] - (c[r] - c[r - 1]),
+                    _ if i == r + 1 => steps[0] + steps[1] - (c[r + 1] - c[r - 1]),
+                    _ => steps[0] + steps[1] + steps[2] - (c[r + 2] - c[r - 1]),
+                })
+                .collect();
+            for (v, d) in c.iter_mut().zip(&shift) {
+                *v += d;
+            }
+            assert!(c[r + 2] < c[r + 1], "{what}: the accepted row steps back");
+            let df = with_clock_and_skips(&base, &c, &[r, r + 1]);
+            let at = r + 2;
+            let what = format!("{what}, at row {at} (fired at {t}, row {r1})");
+            let mut bank = Bank::new(vec![s.clone()]).unwrap();
+            let one = feed(&mut bank, &df, &[]);
+            // The evidence the corner is reached: one clock reset, at the
+            // accepted row (the first corner's skipped row resets too), and
+            // the skipped rows learned by neither bank.
+            let resets = bank.summary(0, None).unwrap();
+            let resets = resets.column("resets").unwrap().i64().unwrap().get(0);
+            let want = if steps[0] < 0.0 { 2 } else { 1 };
+            assert_eq!(resets, Some(want), "{what}: the clock resets");
+            let fresh = feed(
+                &mut Bank::new(vec![s.clone()]).unwrap(),
+                &df.slice(at as i64, N - at),
+                &[],
+            );
+            assert_tail_same(&one, at, &fresh, &what);
+            for cuts in [vec![r], vec![at], vec![at + 1]] {
+                let cut = feed(&mut Bank::new(vec![s.clone()]).unwrap(), &df, &cuts);
+                assert_tail_same(&cut, 0, &one, &format!("{what}, cut at {cuts:?}"));
+            }
+        }
+    }
+}

@@ -9,6 +9,18 @@ order, another kernel), each declared with its size. Before 1.0, the minor
 version carried breaking changes, and any change to the numbers a model
 returns.
 
+## [Unreleased]
+
+### Changed
+
+- Two 1.4.0 entries are corrected in place. The x86-64 lanes entry said
+  other CPUs run the same machine code as before; an x86-64 CPU without
+  AVX2 runs the new lanes one slot at a time, with the same bits, and only
+  other architectures run the old code. The `ewridge` working-space entry
+  said a model keeps one spare factor per system; one that keeps each
+  solve's factor for the per-row leverage (`emit_se_coef` and the
+  diagnostics that read a row's error inflation) keeps two.
+
 ## [1.4.0] — 2026-11-03
 
 ### Added
@@ -1094,8 +1106,10 @@ returns.
   at the 25th percentile of time: the refit case is 16.6% faster, `pa`
   7.2% and `sgd` 4.6%; `sgd(loss="huber")` is 3.6% faster with each
   function's alignment held fixed, and within code-layout noise in the
-  default build. Rows narrower than 8 slots run as before. Other CPUs run
-  the same machine code as before.
+  default build. Rows narrower than 8 slots run as before. Other
+  architectures run the same machine code as before; an x86-64 CPU without
+  AVX2 runs the new lanes one slot at a time from 8 slots, with the same
+  bits.
 - `huber` and `quantile` solves stop allocating their working space: the
   band system, the right-hand side, the factor's matrix, the
   factorization's scratch, the data shares' lists and the coefficient
@@ -1132,9 +1146,11 @@ returns.
   block in both the default and an aligned code layout: `ewridge` at 5
   features about 6-9% less time, at 20 features about 3-5% less, and a bank
   over it 2-4% less. A factorization's matrix is no longer built out of
-  line. A model keeps one spare factor per system while a chunk runs, about
-  `k² · 8` bytes each, and drops them when the chunk ends; a model stepped
-  directly, with no bank to end a chunk, keeps them.
+  line. A model keeps one spare factor per system while a chunk runs, and
+  two where it keeps each solve's factor for the per-row leverage (a spec
+  with `emit_se_coef`, `emit_error_inflation`, `emit_breaks`, `emit_tails`
+  or `emit_influence`), about `k² · 8` bytes each, and drops them when the chunk ends; a model
+  stepped directly, with no bank to end a chunk, keeps them.
 - A `huber` or `quantile` model's refit of its first rows now rebuilds its
   co-moments at each pass in register blocks rather than one row at a time,
   with the same numbers to the bit (task 300). A 2,500-row refit at 20

@@ -797,6 +797,39 @@ impl SpdFactor {
         }
         clamp_rounding(acc)
     }
+
+    /// [`Self::quad_forms`] written into `out`, the `m` vectors solved in
+    /// `work`'s kept `k × m` matrix: the same matrix, filled the same way,
+    /// solved by the same triangular solves and summed in the same order,
+    /// so the same forms to the bit, where `quad_forms` allocates a matrix
+    /// and a vector for each call. Once `work` and `out` have held `m`
+    /// forms of order `k`, a call allocates nothing ([`crate::Hmm`]'s
+    /// shared covariance, a factorization and `m` forms a row; task 316).
+    pub(crate) fn quad_forms_into(
+        &self,
+        d: &[f64],
+        k: usize,
+        m: usize,
+        work: &mut QuadWork,
+        out: &mut Vec<f64>,
+    ) {
+        debug_assert_eq!(d.len(), k * m);
+        let x = work.columns(k, m);
+        for j in 0..m {
+            for i in 0..k {
+                x[(i, j)] = d[j * k + i];
+            }
+        }
+        solve_in_place(&self.l, x.as_mut());
+        out.clear();
+        for j in 0..m {
+            let mut acc = 0.0;
+            for i in 0..k {
+                acc += d[j * k + i] * x[(i, j)];
+            }
+            out.push(clamp_rounding(acc));
+        }
+    }
 }
 
 /// A copy is the same factor; `clone_from` writes it into the matrix the
@@ -863,10 +896,20 @@ impl QuadWork {
     /// The column, of `k` rows: the kept one, or a new one where the kept
     /// one is of another order.
     fn column(&mut self, k: usize) -> &mut Mat<f64> {
-        if self.0.as_ref().is_none_or(|x| x.nrows() != k) {
-            self.0 = Some(Mat::zeros(k, 1));
+        self.columns(k, 1)
+    }
+
+    /// `m` columns of `k` rows: the kept matrix, or a new one where the
+    /// kept one is of another shape.
+    fn columns(&mut self, k: usize, m: usize) -> &mut Mat<f64> {
+        if self
+            .0
+            .as_ref()
+            .is_none_or(|x| x.nrows() != k || x.ncols() != m)
+        {
+            self.0 = Some(Mat::zeros(k, m));
         }
-        self.0.as_mut().expect("the column is made above")
+        self.0.as_mut().expect("the matrix is made above")
     }
 }
 
@@ -1727,6 +1770,38 @@ mod tests {
         // The zero vector's form is exactly 0, as `quad_forms` gives it.
         let f = SpdFactor::of(&[4.0, 1.0, 1.0, 3.0], 2).unwrap();
         assert_eq!(f.quad_form(&[0.0, 0.0], &mut work), 0.0);
+    }
+
+    /// `quad_forms_into` is `quad_forms` to the bit, its matrix kept in one
+    /// working space across factors of every order and every count of
+    /// vectors, the shape changing up and down between calls, a NaN
+    /// vector's form NaN, as there (task 316).
+    #[test]
+    fn quadratic_forms_in_a_kept_matrix_are_quad_forms_to_the_bit() {
+        let mut s = 43u64;
+        let mut work = QuadWork::default();
+        let mut out = Vec::new();
+        for (k, m) in [
+            (1usize, 1usize),
+            (4, 2),
+            (4, 3),
+            (10, 2),
+            (17, 5),
+            (4, 2),
+            (2, 1),
+        ] {
+            for cond in [1.0, 1e6, 1e12] {
+                let f = SpdFactor::of(&spd(k, cond, &mut s), k).unwrap();
+                let mut d: Vec<f64> = (0..k * m).map(|_| draw(&mut s)).collect();
+                if cond == 1e12 {
+                    d[k * m - 1] = f64::NAN;
+                }
+                let want = f.quad_forms(&d, k, m);
+                f.quad_forms_into(&d, k, m, &mut work, &mut out);
+                let bits = |v: &[f64]| v.iter().map(|q| q.to_bits()).collect::<Vec<_>>();
+                assert_eq!(bits(&out), bits(&want), "k {k}, m {m}, cond {cond}");
+            }
+        }
     }
 
     /// A factor read back from its state form is itself (task 170): fresh,

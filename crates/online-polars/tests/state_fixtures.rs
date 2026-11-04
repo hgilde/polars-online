@@ -1063,25 +1063,42 @@ fn same(what: &str, got: &DataFrame, want: &DataFrame, tol: f64) {
     same_within(what, got, want, tol, &[]);
 }
 
-/// [`same`], with each column or struct field under a name `within` lists
-/// -- a spec's struct column -- held to `tol` or that name's bound, if
-/// larger ([`CONTINUES_WITHIN`]).
-fn same_within(what: &str, got: &DataFrame, want: &DataFrame, tol: f64, within: &[(&str, f64)]) {
+/// [`same`], with each column `within` names held to `tol` or that name's
+/// bound, if larger ([`CONTINUES_WITHIN`]): the whole column where the
+/// entry names no field prefix, and otherwise, in a struct column, only
+/// the fields whose names start with one of its prefixes.
+fn same_within(what: &str, got: &DataFrame, want: &DataFrame, tol: f64, within: &[Within]) {
     assert_eq!(got.shape(), want.shape(), "{what}: shape");
     for (g, w) in got.columns().iter().zip(want.columns()) {
         assert_eq!(g.name(), w.name(), "{what}: column names");
-        let tol = within
-            .iter()
-            .find(|(n, _)| *n == w.name().as_str())
-            .map_or(tol, |&(_, b)| tol.max(b));
-        same_series(
-            &format!("{what}.{}", w.name()),
-            g.as_materialized_series(),
-            w.as_materialized_series(),
-            tol,
-        );
+        let (gs, ws) = (g.as_materialized_series(), w.as_materialized_series());
+        let what = format!("{what}.{}", w.name());
+        match within.iter().find(|(n, _, _)| *n == w.name().as_str()) {
+            Some(&(_, prefixes, b)) if !prefixes.is_empty() => {
+                let (DataType::Struct(gf), DataType::Struct(wf)) = (gs.dtype(), ws.dtype()) else {
+                    panic!("{what}: field prefixes name a column that is not a struct");
+                };
+                let names = |f: &[Field]| f.iter().map(|f| f.name().clone()).collect::<Vec<_>>();
+                assert_eq!(names(gf), names(wf), "{what}: fields");
+                assert_eq!(gs.len(), ws.len(), "{what}: length");
+                let (gst, wst) = (gs.struct_().unwrap(), ws.struct_().unwrap());
+                for (gf, wf) in gst.fields_as_series().iter().zip(wst.fields_as_series()) {
+                    let moves = prefixes.iter().any(|p| wf.name().starts_with(p));
+                    let tol = if moves { tol.max(b) } else { tol };
+                    same_series(&format!("{what}.{}", wf.name()), gf, &wf, tol);
+                }
+            }
+            entry => {
+                let tol = entry.map_or(tol, |&(_, _, b)| tol.max(b));
+                same_series(&what, gs, ws, tol);
+            }
+        }
     }
 }
+
+/// A [`CONTINUES_WITHIN`] entry: the column, the prefixes of the struct
+/// fields that move (none: the whole column), and the bound.
+type Within = (&'static str, &'static [&'static str], f64);
 
 fn same_series(what: &str, got: &Series, want: &Series, tol: f64) {
     // `withheld_reason`'s names only ever grow at the end -- the code a
@@ -1404,23 +1421,44 @@ const MOVED_SINCE: &[&str] = &["cusum_"];
 /// correlation of pair `(i, j)`, `i < j`, reads entry `(j, i)`, where the
 /// frozen frames read entry `(i, j)`, rounded apart from it; the state
 /// loads as its lower triangle mirrored, the triangle every build computed
-/// alike, and saves the current fixture's bytes. A closed group's
-/// `comoments`, the matrix's upper triangle row by row, moves alike (1.3e-17
-/// here), as do the `diagnosed` spec's specification, calibration and break
-/// tests, which solve from one triangle of such a matrix and read their
-/// cross terms from the other: held to the golden tolerance, as the rule
-/// says (`breusch_pagan_y` moved by 4.4e-16 and `ramsey_reset_y` by 7.7e-17
+/// alike, and saves the current fixture's bytes. Only the fields that read
+/// an upper entry are held to the bound; every other field, the
+/// predictions among them, goes on to the bit (task 316, review 11's
+/// S2-2): an `ew_cov` spec's `corr_` and `cov_` fields (its means,
+/// standard deviations and component read the lower triangle only), a
+/// closed group's `comoments`, the matrix's upper triangle row by row
+/// (1.3e-17 here), and the `diagnosed` spec's specification
+/// (`ljung_box_`, `breusch_pagan_`, `ramsey_reset_`), calibration
+/// (`calibration_`), break (`break_wald_`) and `ic_` statistics, which
+/// solve from one triangle of such a matrix and read their cross terms
+/// from the other: held to the golden tolerance, as the rule says
+/// (`breusch_pagan_y` moved by 4.4e-16 and `ramsey_reset_y` by 7.7e-17
 /// on the first row, measured 2026-11-01; the rows after it are the
 /// window's, held to the golden tolerance already).
-const CONTINUES_WITHIN: &[(&str, f64)] = &[
-    ("comoments", 1e-15),
-    ("diagnosed", TOL),
-    ("closing", 1e-15),
-    ("windowed", 1e-15),
-    ("uint_clock", 1e-15),
-    ("sessioned", 1e-15),
-    ("components", 1e-15),
+const CONTINUES_WITHIN: &[Within] = &[
+    ("comoments", &[], 1e-15),
+    (
+        "diagnosed",
+        &[
+            "ljung_box_",
+            "breusch_pagan_",
+            "ramsey_reset_",
+            "calibration_",
+            "break_wald_",
+            "ic_",
+        ],
+        TOL,
+    ),
+    ("closing", COV_FIELDS, 1e-15),
+    ("windowed", COV_FIELDS, 1e-15),
+    ("uint_clock", COV_FIELDS, 1e-15),
+    ("sessioned", COV_FIELDS, 1e-15),
+    ("components", COV_FIELDS, 1e-15),
 ];
+
+/// The fields of an `ew_cov` spec that read an upper entry of its
+/// co-moment matrix ([`CONTINUES_WITHIN`]).
+const COV_FIELDS: &[&str] = &["corr_", "cov_"];
 
 /// `kept`, a kept fixture's frozen frame, with the struct fields that
 /// [`MOVED_SINCE`] names taken from `now`, the current fixture's frame of
