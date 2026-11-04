@@ -507,11 +507,16 @@ const NEUTRAL_GAIN: f64 = 2.0;
 /// sums' mean; a row whose residual passes [`WAKE_SPREADS`] of the
 /// target's spread wakes it too. Awake, it takes the waking gain and every
 /// one after, as before it rested, and may rest again after
-/// [`AWAKE_ROWS`] of them. A rate that passes its bound raises its gains,
-/// so a probe finds it within a few rows. What the rest saves is the
-/// other rows' gains: at 20 features and a rate of 0.01 the gate rests on
-/// 95% of the rows, and the step takes 0.7 of its 36 ns less on arm64,
-/// natively (task 314).
+/// [`AWAKE_ROWS`] of them. Under Huber a waking residual is past the cut
+/// wherever the cut, `δ` residual scales, is the narrower -- at
+/// `δ = 1.345`, unless the residuals spread six times wider than the
+/// target -- and there the loss has no curvature: the waking gain is 0,
+/// which the sums skip as they skip every such row, so the first gain the
+/// gate takes is the next row's inside the cut. A rate that passes its
+/// bound raises its gains, so a probe finds it within a few rows. What the
+/// rest saves is the other rows' gains: at 20 features and a rate of 0.01
+/// the gate rests on 95% of the rows, and the step takes 0.7 of its 36 ns
+/// less on arm64, natively (task 314).
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub(crate) struct StepGain {
     q: f64,
@@ -521,8 +526,11 @@ pub(crate) struct StepGain {
     /// loads awake, and the gate goes on as it did.
     #[serde(default)]
     resting: bool,
-    /// The rows a resting gate has let pass since it rested: every
-    /// [`PROBE_ROWS`]-th takes a probe of the row's gain.
+    /// Resting, the rows the gate has let pass since it rested: every
+    /// [`PROBE_ROWS`]-th takes a probe of the row's gain. Awake, the gains
+    /// it has taken since it woke (0 at the wake, which a waking gain then
+    /// makes 1): it may rest again once they reach [`AWAKE_ROWS`]. A row
+    /// whose step is refused moves it in neither meaning.
     #[serde(default)]
     rested: u32,
 }
@@ -1335,11 +1343,24 @@ impl Sgd {
     }
 
     /// Target `j` took its step: its level's weight with the row in it
-    /// becomes its own, and the step's gain joins the unstable rate's sums
-    /// ([`StepGain`]). Neither moves for a row the step refused.
-    fn took_step(&mut self, j: usize, level: Option<Level>, gain: Option<f64>) {
+    /// becomes its own, the gate takes the row's rest count and any wake
+    /// (`gate`, read from it before the step and changed only in that
+    /// copy), and the step's gain joins the unstable rate's sums
+    /// ([`StepGain`]). None of them moves for a row the step refused: not
+    /// the level, not the sums, and not the gate's `resting` or `rested`,
+    /// so a refused row neither counts toward a probe nor wakes the gate.
+    fn took_step(
+        &mut self,
+        j: usize,
+        level: Option<Level>,
+        gate: Option<StepGain>,
+        gain: Option<f64>,
+    ) {
         if let Some(lv) = level {
             self.level[j] = lv;
+        }
+        if let Some(g) = gate {
+            self.gain[j] = g;
         }
         if let Some(q) = gain {
             let may_rest = in_target_units(&self.cfg);
@@ -2221,8 +2242,11 @@ impl OnlineModel for Sgd {
             // (`StepGain`). `l2` shrinks each slope by `1 − lr·l2` besides.
             // A resting gate takes no gain, and wakes on a residual past
             // `WAKE_SPREADS` of the target's spread, its unit here
-            // ([`StepGain`]).
-            let (resting, probe) = match self.gain.get_mut(j) {
+            // ([`StepGain`]). The rest count and the wake are made on a copy
+            // of the gate, which `took_step` keeps only where the row's step
+            // is taken: a refused row leaves the gate as it found it.
+            let mut gate = self.gain.get(j).copied();
+            let (resting, probe) = match gate.as_mut() {
                 Some(g) if g.resting => {
                     g.rested = g.rested.wrapping_add(1);
                     if (yj - p).abs() > WAKE_SPREADS * unit {
@@ -2233,7 +2257,7 @@ impl OnlineModel for Sgd {
                 }
                 _ => (false, false),
             };
-            let step_gain = match (self.gain.is_empty() || (resting && !probe), lr_row) {
+            let step_gain = match (gate.is_none() || (resting && !probe), lr_row) {
                 (false, Some(lr)) => {
                     let c = match self.cfg.loss {
                         SgdLoss::Squared => 1.0,
@@ -2262,7 +2286,7 @@ impl OnlineModel for Sgd {
                         // A probe: the gain wakes the gate past twice the
                         // resting mean, and joins the sums; otherwise it is
                         // let pass.
-                        let g = &mut self.gain[j];
+                        let g = gate.as_mut().expect("a probe is a resting gate's");
                         if q > PROBE_WAKE * g.q / g.n {
                             g.resting = false;
                             g.rested = 0;
@@ -2280,7 +2304,7 @@ impl OnlineModel for Sgd {
                 // The step in the row's coordinates, mapped into the
                 // caller's units by the row's map, and projected there.
                 if self.step_mapped(j, d, weight, lr_row, (clip, ada_eps), level_step) {
-                    self.took_step(j, level_next, step_gain);
+                    self.took_step(j, level_next, gate, step_gain);
                     if let Some(t) = taught.get_mut(j) {
                         *t = Some(yj);
                     }
@@ -2372,7 +2396,7 @@ impl OnlineModel for Sgd {
             if let Some(l) = self.learned.get_mut(j) {
                 *l = true;
             }
-            self.took_step(j, level_next, step_gain);
+            self.took_step(j, level_next, gate, step_gain);
             if let Some(t) = taught.get_mut(j) {
                 *t = Some(yj);
             }
