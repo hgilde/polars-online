@@ -27,7 +27,10 @@
 //! ```
 //!
 //! rewrites every file under `tests/state_fixtures/` from the cases in
-//! `tests/cases/mod.rs`, and a run without the variable checks them. A
+//! `tests/cases/mod.rs`, and a run without the variable checks them. No
+//! index lists the files: `build.rs` discovers every `<case>.rs` there, and
+//! every one under each `v<N>/`, on each build, so two branches that each
+//! add a case add two files and edit no shared list. A
 //! change that moves a number moves a continuation too: regenerate after
 //! confirming the move is intended, as for `tests/golden.rs`.
 //!
@@ -36,21 +39,19 @@
 //! round 5, D1 and D2). The first 1.x layout change, from schema 44 to 45,
 //! goes like this:
 //!
-//! 1. copy the current set, every `<case>.rs` and `index.rs`, to
+//! 1. copy the current set, every `<case>.rs`, to
 //!    `tests/state_fixtures/v44/` as it is -- the files are the schema's,
-//!    and `v44/index.rs` lists them as the current index does;
+//!    and the directory is the kept set, which `build.rs` finds;
 //! 2. raise `SCHEMA_VERSION` to 45 and write the loader the change needs,
 //!    in the model's `Deserialize` (`check_schema`'s doc);
-//! 3. list the kept schema here: `previous![44]`, which includes
-//!    `v44/index.rs` -- a schema listed without its files does not compile;
-//! 4. regenerate the current set, which is then schema 45's.
+//! 3. regenerate the current set, which is then schema 45's.
 //!
 //! Each kept set is held by `every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes`:
 //! every fixture loads through the loader, goes on to the bit against its
 //! own frozen continuation, and -- loaded, then saved -- writes the current
 //! schema's fixture bytes of the same case, since the two are the same case
 //! over the same rows (the exact-conversion check). A later change repeats
-//! the steps with `v45/`, and `previous![44, 45]`: the loaders of 1.x stay.
+//! the steps with `v45/`: the loaders of 1.x stay.
 //!
 //! The variant names are the files' tags (the named encoding writes
 //! `{"EwRidge": {...}}`), so they are frozen here too: a renamed variant
@@ -58,8 +59,13 @@
 
 mod cases;
 
-#[path = "state_fixtures/index.rs"]
-mod frozen;
+/// The fixtures, discovered: `build.rs` lists every file under
+/// `tests/state_fixtures/` and each `v<N>/` beside them, so a case added is
+/// a file added and no list is edited by hand.
+mod frozen {
+    use crate::cases::Fixture;
+    include!(concat!(env!("OUT_DIR"), "/state_fixtures_index.rs"));
+}
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -68,9 +74,9 @@ use cases::{Case, Fixture, Out, agree, all, hex, load, named, saved, writer};
 use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 
 /// The schemas before the current one whose fixtures are kept, each under
-/// `tests/state_fixtures/v<N>/` and loaded by this build: `PREVIOUS` lists
-/// them, and `previous_sets` is each set as its `v<N>/index.rs` lists it.
-/// A schema listed without its files does not compile. None before 1.0,
+/// `tests/state_fixtures/v<N>/` and loaded by this build: `previous` lists
+/// them, and `previous_sets` is each set as `build.rs` found it in its
+/// directory. None before 1.0,
 /// where a layout change regenerates the set instead (the module doc has
 /// the steps from 1.0). 61, 1.0's, kept since 62 moved a blocked
 /// `ewridge`'s layout (docs/PLAN.md task 257): its states load through the
@@ -185,24 +191,15 @@ use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 /// a covariance or a correlation, reads the mirror where the frozen
 /// continuation read the entry rounded on its own; [`CONTINUES_WITHIN`]
 /// lists the cases and their bound.
-macro_rules! previous {
-    ($($schema:literal),* $(,)?) => {
-        const PREVIOUS: &[u32] = &[$($schema),*];
-
-        fn previous_sets() -> Vec<(u32, &'static [&'static Fixture])> {
-            vec![$({
-                mod set {
-                    include!(concat!("state_fixtures/v", $schema, "/index.rs"));
-                }
-                // The index is the set as it was generated, its schema with it.
-                assert_eq!(set::SCHEMA, $schema, "v{}/index.rs is another schema's", $schema);
-                ($schema, set::ALL)
-            }),*]
-        }
-    };
+/// The kept schemas, each a `v<N>/` directory found beside the current set.
+fn previous() -> Vec<u32> {
+    frozen::PREVIOUS_SETS.iter().map(|(s, _)| *s).collect()
 }
 
-previous![61, 62, 63];
+/// Each kept schema's set, as `build.rs` found it on disk.
+fn previous_sets() -> Vec<(u32, &'static [&'static Fixture])> {
+    frozen::PREVIOUS_SETS.to_vec()
+}
 
 /// The cases whose numbers a later fix moved without touching the layout,
 /// each with how far its continuation may part from a previous set's
@@ -217,7 +214,7 @@ previous![61, 62, 63];
 /// the same keys, lengths and every number but a float the same, each
 /// float within the bound ([`same_but_floats`]), so the loader's work is
 /// still checked whole -- but under a window, whose converted ring differs
-/// by design (the doc above `previous!`).
+/// by design (the doc above `previous`).
 ///
 /// - `lasso`, `lasso_window`: the descent's stopping rule compares a
 ///   sweep's move with `tol` times the target's spread, not with `tol`
@@ -376,83 +373,106 @@ fn every_fixture_saves_its_bytes_again() {
     }
 }
 
-/// The set a kept schema has on disk: `dir/v<schema>/index.rs` and the
-/// fixtures beside it, counted; or why there is none.
-fn set_on_disk(dir: &Path, schema: u32) -> Result<usize, String> {
-    let set = dir.join(format!("v{schema}"));
-    if !set.join("index.rs").is_file() {
-        return Err(format!(
-            "schema {schema} is listed in PREVIOUS and has no set under {}: a kept schema keeps \
-             its fixtures there, with an index.rs listing them",
-            set.display()
-        ));
-    }
-    let fixtures = std::fs::read_dir(&set)
-        .map_err(|e| format!("{}: {e}", set.display()))?
+/// The `.rs` files directly in `dir`, counted: what `build.rs` discovers
+/// there, read again at run time, so a test binary built before a fixture
+/// was added or removed is caught rather than trusted.
+fn fixtures_on_disk(dir: &Path) -> Result<usize, String> {
+    Ok(std::fs::read_dir(dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "rs") && !p.ends_with("index.rs"))
-        .count();
-    if fixtures == 0 {
+        .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "rs"))
+        .count())
+}
+
+/// The set a kept schema has on disk: the fixtures under `dir/v<schema>/`,
+/// counted; or why there is none.
+fn set_on_disk(dir: &Path, schema: u32) -> Result<usize, String> {
+    let set = dir.join(format!("v{schema}"));
+    if !set.is_dir() {
         return Err(format!(
-            "schema {schema}: {} holds an index and no fixture",
+            "schema {schema} has no set under {}: a kept schema keeps its fixtures there",
             set.display()
         ));
     }
-    Ok(fixtures)
+    match fixtures_on_disk(&set)? {
+        0 => Err(format!(
+            "schema {schema}: {} holds no fixture",
+            set.display()
+        )),
+        n => Ok(n),
+    }
+}
+
+/// The schema of the current set: the one every fixture in it was written
+/// at.
+fn current_schema() -> u32 {
+    let schemas: Vec<u32> = frozen::ALL.iter().map(|f| f.schema).collect();
+    assert!(
+        !schemas.is_empty(),
+        "no current fixture was discovered under {}: regenerate with `{REGENERATE}`",
+        dir().display()
+    );
+    assert!(
+        schemas.iter().all(|s| *s == schemas[0]),
+        "one schema a set: {schemas:?}"
+    );
+    schemas[0]
 }
 
 /// Every schema this build claims to load has its fixtures, and every
 /// fixture is of a schema it loads: so `SCHEMA_VERSION` cannot move without
 /// a set of its own, and `MIN_SCHEMA_VERSION` cannot sit below the oldest
-/// set kept. A kept schema's set is on disk, under `v<N>/`, with as many
-/// fixtures as its index lists (review round 5, D2).
+/// set kept. A kept schema's set is on disk, under `v<N>/`, every fixture
+/// in it of schema `N`, and each set compiled in holds every file its
+/// directory does (review round 5, D2; discovery, task 281 (4)).
 #[test]
 fn the_fixtures_cover_the_schemas_this_build_loads() {
     if regenerating() {
         return;
     }
-    assert!(
-        frozen::ALL.iter().all(|f| f.schema == frozen::SCHEMA),
-        "one schema a set"
+    let schema = current_schema();
+    assert_eq!(
+        schema, SCHEMA_VERSION,
+        "SCHEMA_VERSION is {SCHEMA_VERSION} and the frozen state fixtures are of {schema}: a \
+         layout change ships its fixtures. Before 1.0, regenerate them with `{REGENERATE}` and \
+         raise MIN_SCHEMA_VERSION (and the bank's minimum) to the new schema; from 1.0, keep \
+         this set as the previous schema's (the module doc), write its loader, then regenerate"
     );
     assert_eq!(
-        frozen::SCHEMA,
-        SCHEMA_VERSION,
-        "SCHEMA_VERSION is {SCHEMA_VERSION} and the frozen state fixtures are of {}: a layout \
-         change ships its fixtures. Before 1.0, regenerate them with `{REGENERATE}` and raise \
-         MIN_SCHEMA_VERSION (and the bank's minimum) to the new schema; from 1.0, keep this set \
-         as the previous schema's (the module doc), write its loader, then regenerate",
-        frozen::SCHEMA
+        fixtures_on_disk(&dir()),
+        Ok(frozen::ALL.len()),
+        "the current set compiled in is not the files on disk: rebuild the test"
     );
-    let covered: Vec<u32> = PREVIOUS.iter().copied().chain([frozen::SCHEMA]).collect();
+    let previous = previous();
+    let covered: Vec<u32> = previous.iter().copied().chain([schema]).collect();
     let claimed: Vec<u32> = (MIN_SCHEMA_VERSION..=SCHEMA_VERSION).collect();
     assert_eq!(
         claimed, covered,
         "this build loads schemas {MIN_SCHEMA_VERSION}..={SCHEMA_VERSION} and fixtures cover \
          {covered:?}: each schema it loads needs a frozen set, held to its loader"
     );
-    let sets = previous_sets();
-    assert_eq!(
-        sets.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
-        PREVIOUS,
-        "the kept sets are the schemas listed"
-    );
-    for (schema, set) in &sets {
+    for (schema, set) in &previous_sets() {
         let on_disk = set_on_disk(&dir(), *schema).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(
             on_disk,
             set.len(),
-            "schema {schema}: v{schema}/ holds {on_disk} fixtures and its index lists {}",
+            "schema {schema}: v{schema}/ holds {on_disk} fixtures and {} were compiled in",
             set.len()
         );
+        for f in *set {
+            assert_eq!(
+                f.schema, *schema,
+                "v{schema}/{}.rs is another schema's",
+                f.name
+            );
+        }
     }
 }
 
 /// The on-disk check behind the coverage test, proven on a directory of
-/// its own while `PREVIOUS` is empty (review round 5, D2): a listed schema
-/// with no set, or an index alone, is refused; a set with fixtures passes
-/// and is counted.
+/// its own (review round 5, D2): a schema with no set, or an empty one, is
+/// refused; a set with fixtures passes and is counted.
 #[test]
 fn a_kept_schema_without_its_set_on_disk_is_refused() {
     let root = std::env::temp_dir().join(format!(
@@ -463,16 +483,15 @@ fn a_kept_schema_without_its_set_on_disk_is_refused() {
     std::fs::create_dir_all(&root).unwrap();
     let missing = set_on_disk(&root, 44).unwrap_err();
     assert!(
-        missing.contains("schema 44 is listed") && missing.contains("v44"),
+        missing.contains("schema 44 has no set") && missing.contains("v44"),
         "{missing}"
     );
     let set = root.join("v44");
     std::fs::create_dir_all(&set).unwrap();
-    std::fs::write(set.join("index.rs"), "// an index\n").unwrap();
+    std::fs::write(set.join("notes.txt"), "not a fixture\n").unwrap();
     let empty = set_on_disk(&root, 44).unwrap_err();
     assert!(empty.contains("no fixture"), "{empty}");
     std::fs::write(set.join("ewridge.rs"), "// a fixture\n").unwrap();
-    std::fs::write(set.join("notes.txt"), "not a fixture\n").unwrap();
     assert_eq!(set_on_disk(&root, 44), Ok(1));
     std::fs::write(set.join("sgd.rs"), "// a fixture\n").unwrap();
     assert_eq!(set_on_disk(&root, 44), Ok(2));
@@ -488,7 +507,7 @@ fn a_kept_schema_without_its_set_on_disk_is_refused() {
 /// the converted state is the one this build writes, field for field (the
 /// exact-conversion check). The sets must share a writer, since a libm
 /// bit in a decayed sum differs by platform. Nothing to run before 1.0,
-/// where `PREVIOUS` is empty.
+/// where no set is kept.
 #[test]
 fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
     if regenerating() {
@@ -523,9 +542,9 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
                 .map(|(_, b, slots)| (*b, slots.clone()));
             // Seeded by the `lloyd` rule before task 278 (plain k-means++
             // starts, ten Lloyd passes): the rule since finds the same
-            // centres in another order (the doc above `previous!`).
+            // centres in another order (the doc above `previous`).
             let reseeded = f.name == "kmeans_warming";
-            // A `holt` of 61-63 keeps no line fit (the doc above `previous!`).
+            // A `holt` of 61-63 keeps no line fit (the doc above `previous`).
             if f.name == "kmeans" || f.name == "holt" {
                 let saved = named(&m.state());
                 let again = load(&case, &saved).unwrap_or_else(|e| panic!("{what}: {e}"));
@@ -535,7 +554,7 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
                 );
             } else if windowed || moved.is_some() {
                 // A window's snapshots from before task 275 carry no running
-                // products (the doc above `previous!`): converted, they say
+                // products (the doc above `previous`): converted, they say
                 // so, and the state saves bytes that load back to the same.
                 // A moved case's (`MOVED`) state is the old arithmetic's,
                 // and saves bytes that load back to the same.
@@ -704,8 +723,14 @@ fn every_variant_and_every_case_has_a_fixture() {
     if regenerating() {
         return;
     }
-    let names: Vec<&str> = frozen::ALL.iter().map(|f| f.name).collect();
-    let cases: Vec<&str> = all().iter().map(|c| c.name).collect();
+    // The fixtures are discovered in file-name order and the cases are in
+    // file order: compared as sets, and counted, so a discovery that found
+    // nothing fails here too.
+    let mut names: Vec<&str> = frozen::ALL.iter().map(|f| f.name).collect();
+    let mut cases: Vec<&str> = all().iter().map(|c| c.name).collect();
+    names.sort_unstable();
+    cases.sort_unstable();
+    assert!(!cases.is_empty(), "no case in tests/cases/mod.rs");
     assert_eq!(
         names, cases,
         "the frozen fixtures are not the cases: regenerate with `{REGENERATE}`"
@@ -1844,7 +1869,7 @@ fn file_of(case: &Case) -> String {
     out
 }
 
-/// Rewrites every fixture, and the index, when `PRINT_STATE_FIXTURES=1`.
+/// Rewrites every fixture when `PRINT_STATE_FIXTURES=1`.
 #[test]
 fn regenerate_when_asked() {
     if !regenerating() {
@@ -1858,34 +1883,12 @@ fn regenerate_when_asked() {
             std::fs::remove_file(path).unwrap();
         }
     }
-    let mut index = format!(
-        "// @generated by `{REGENERATE}`: do not edit by hand.\n\
-         // The frozen state fixtures, one file a case of tests/cases/mod.rs.\n\n\
-         /// The schema every fixture here was written at.\n\
-         pub const SCHEMA: u32 = {SCHEMA_VERSION};\n\n"
-    );
-    let cases = all();
-    for case in &cases {
+    // No index: `build.rs` discovers the files on the next build.
+    for case in &all() {
         let text = file_of(case);
         std::fs::write(dir.join(format!("{}.rs", case.name)), &text).unwrap();
-        writeln!(
-            index,
-            "pub mod {} {{\n    include!(\"{}.rs\");\n}}",
-            case.name, case.name
-        )
-        .unwrap();
         println!("wrote {}.rs ({} bytes)", case.name, text.len());
     }
-    writeln!(
-        index,
-        "\n/// Every fixture, in the cases' order.\npub const ALL: &[&crate::cases::Fixture] = &["
-    )
-    .unwrap();
-    for case in &cases {
-        writeln!(index, "    &{}::FIXTURE,", case.name).unwrap();
-    }
-    writeln!(index, "];").unwrap();
-    std::fs::write(dir.join("index.rs"), index).unwrap();
 }
 
 /// The anchored MAD sketches' forms (schema 64, task 278, the user's
