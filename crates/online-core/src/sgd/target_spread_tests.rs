@@ -893,7 +893,9 @@ fn a_refused_step_leaves_a_resting_gate_as_it_was() {
     for probe_row in [false, true] {
         let mut m = rested.clone();
         m.cfg.clip_gradient = f64::INFINITY;
+        let mut walked = 0;
         while (m.gain[0].rested + 1).is_multiple_of(PROBE_ROWS) != probe_row {
+            walk_to_a_probe(&mut walked);
             let p = eta(&m, &zero);
             m.step(&zero, &[Some(p)], 1.0, 1.0);
             assert!(m.gain[0].resting);
@@ -1148,11 +1150,31 @@ fn resting(rows: &[Row]) -> Sgd {
         m.step(x, &[Some(*y)], 1.0, 1.0);
     }
     let zero = [0.0; 3];
+    let mut walked = 0;
     while !m.gain[0].resting || (m.gain[0].rested + 1).is_multiple_of(PROBE_ROWS) {
+        walked += 1;
+        assert!(
+            walked <= AWAKE_ROWS + PROBE_ROWS,
+            "the gate neither rested nor left a probe's row"
+        );
         let p = eta(&m, &zero);
         m.step(&zero, &[Some(p)], 1.0, 1.0);
     }
     m
+}
+
+/// One more row of a walk to (or off) a probe's row: a resting gate's rows
+/// count up to its next probe within `PROBE_ROWS` of them, so a longer walk
+/// is a gate whose count does not move as resting says, and fails here
+/// rather than walking for ever (task 318: under the CI mutant that lets a
+/// resting gate take every gain but a probe's, `rested` cycles through even
+/// numbers, and the unbounded walks hung).
+fn walk_to_a_probe(walked: &mut u32) {
+    *walked += 1;
+    assert!(
+        *walked <= PROBE_ROWS,
+        "{walked} rows and no probe's row: the rest count does not move by one a row"
+    );
 }
 
 /// A resting gate wakes on a residual past `WAKE_SPREADS` of the target's
@@ -1260,7 +1282,9 @@ fn a_probe_at_twice_the_resting_mean_lets_the_gate_rest() {
     let rows = rows(1000, 0.0);
     let mut m = resting(&rows);
     let zero = [0.0; 3];
+    let mut walked = 0;
     while !(m.gain[0].rested + 1).is_multiple_of(PROBE_ROWS) {
+        walk_to_a_probe(&mut walked);
         let p = eta(&m, &zero);
         m.step(&zero, &[Some(p)], 1.0, 1.0);
         assert!(m.gain[0].resting);

@@ -1484,6 +1484,79 @@ mod tests {
         }
     }
 
+    /// The tied shape's densities at sizes where `d·d` and `d + d`, and
+    /// `d·k` and `d + k`, part: the pooled matrix and the states'
+    /// deviations are sized by products, and at `d = k = 2`, where every
+    /// other tied test sits, a sum is the same number (task 318). One
+    /// feature and three states, three features and two, two and three,
+    /// three and four, four and three; the states learned from rows of
+    /// unequal weights, so the pool's weights are unequal too, then scored
+    /// against faer's Gaussian of the pool (`crate::oracle`) within each
+    /// side's bounded rounding.
+    #[test]
+    fn tied_densities_hold_where_features_and_states_differ() {
+        for (d, k) in [(1usize, 3usize), (3, 2), (2, 3), (3, 4), (4, 3)] {
+            let mut seed = 11 + (d * 10 + k) as u64;
+            let means: Vec<f64> = (0..k * d)
+                .map(|i| (i / d) as f64 * 2.5 - 2.0 + 0.3 * (i % d) as f64)
+                .collect();
+            let mut covs = Vec::with_capacity(k * d * d);
+            for s in 0..k {
+                for i in 0..d {
+                    for j in 0..d {
+                        covs.push(if i == j {
+                            1.0 + 0.4 * s as f64 + 0.2 * i as f64
+                        } else {
+                            0.1 * (s + 1) as f64 / (1 + i + j) as f64
+                        });
+                    }
+                }
+            }
+            let mut m = Hmm::new(HmmCfg {
+                covariance: Covariance::Shared,
+                decay: Decay::Halflife(30.0),
+                means: Some(means),
+                covs: Some(covs),
+                ..cfg(d, k)
+            })
+            .unwrap();
+            for i in 0..80 {
+                let c = (i / 7 % k) as f64 * 2.5 - 2.0;
+                let x: Vec<f64> = (0..d).map(|_| c + lcg(&mut seed)).collect();
+                let w = if i % 5 == 0 { 0.3 } else { 1.0 };
+                let out = m.step(&x, &[], 1.0, w);
+                assert!(out.pred.iter().all(|v| v.is_finite()), "{d}x{k}, row {i}");
+            }
+            let x: Vec<f64> = (0..d).map(|i| 0.4 - 0.3 * i as f64).collect();
+            let got = m.log_densities(&x).unwrap();
+            assert_eq!(got.len(), k, "{d}x{k}: one density a state");
+            let total: f64 = m.states.iter().map(EwCov::n_eff).sum();
+            assert!(total > 0.0, "{d}x{k}: the states carry weight");
+            let mut shared = vec![0.0; d * d];
+            for (s, state) in m.states.iter().enumerate() {
+                let pi = state.n_eff() / total;
+                for (j, c) in state.comoments().to_full().iter().enumerate() {
+                    shared[j] += pi * c;
+                }
+                for i in 0..d {
+                    shared[i * d + i] += pi * m.ridge(s);
+                }
+            }
+            for (s, state) in m.states.iter().enumerate() {
+                let dv: Vec<f64> = (0..d).map(|i| state.deviation(i, x[i])).collect();
+                let want = crate::oracle::gaussian_log_density(&shared, &dv);
+                let bound = crate::oracle::cholesky_log_density_error(&shared, &dv)
+                    + crate::oracle::gaussian_log_density_error(&shared, &dv);
+                crate::oracle::assert_within(
+                    got[s],
+                    want,
+                    bound,
+                    format_args!("{d} features, {k} states: state {s}"),
+                );
+            }
+        }
+    }
+
     #[test]
     fn the_filter_is_the_longhand_recursion() {
         let (d, k) = (2usize, 2usize);
