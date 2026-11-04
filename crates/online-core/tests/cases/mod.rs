@@ -64,7 +64,10 @@ impl<M: OnlineModel> Run for Model<M> {
 
 /// The bare accumulator, which no model's state is and which a variant
 /// still names: stepped by its own `update`, its means and co-moments
-/// reported as the slots.
+/// reported as the slots, the co-moments all `K²` of them row by row. The
+/// upper entries, `cov(i, j)` with `i < j`, are read through the lower
+/// triangle's mirror, so a state of schema 61-63 continues within 1e-15
+/// there, not to the bit (`state_fixtures.rs`, `CONTINUES_WITHIN`).
 struct Accumulator(EwCov);
 
 const ACC_DECAY: Decay = Decay::Halflife(8.0);

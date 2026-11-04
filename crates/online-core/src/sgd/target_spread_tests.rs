@@ -912,7 +912,10 @@ fn a_refused_step_leaves_a_resting_gate_as_it_was() {
             }
             let (beta, gate) = (m.beta.clone(), m.gain[0]);
             m.step(&x, &[Some(0.0)], 1.0, w);
-            assert_eq!(m.beta, beta, "{what}, probe {probe_row}: the row was not refused");
+            assert_eq!(
+                m.beta, beta,
+                "{what}, probe {probe_row}: the row was not refused"
+            );
             assert_eq!(
                 m.gain[0], gate,
                 "{what}, probe {probe_row}: the refused row moved the resting gate"
@@ -1008,7 +1011,11 @@ fn a_huber_gate_wakes_on_a_wide_residual_without_its_gain() {
     let c = SgdCfg {
         standardize: false,
         min_weight: 0.0,
-        ..cfg(SgdLoss::Huber { delta: 1.345 }, LearningRate::Constant, 0.002)
+        ..cfg(
+            SgdLoss::Huber { delta: 1.345 },
+            LearningRate::Constant,
+            0.002,
+        )
     };
     let mut m = Sgd::new(c).unwrap();
     let mut woke = false;
@@ -1017,7 +1024,10 @@ fn a_huber_gate_wakes_on_a_wide_residual_without_its_gain() {
         if i < 1500 || !before.resting || woke {
             m.step(x, &[Some(*y)], 1.0, 1.0);
             if woke && m.gain[0].n != before.n {
-                assert_eq!(m.gain[0].rested, 1, "row {i}: the first gain after the wake");
+                assert_eq!(
+                    m.gain[0].rested, 1,
+                    "row {i}: the first gain after the wake"
+                );
                 return;
             }
             continue;
@@ -1032,7 +1042,10 @@ fn a_huber_gate_wakes_on_a_wide_residual_without_its_gain() {
         assert!(WAKE_SPREADS * band > cut, "band {band}, cut {cut}");
         m.step(x, &[Some(y + 100.0 * band)], 1.0, 1.0);
         let after = m.gain[0];
-        assert!(!after.resting, "row {i}: the wide residual let the gate rest");
+        assert!(
+            !after.resting,
+            "row {i}: the wide residual let the gate rest"
+        );
         assert_eq!(after.rested, 0, "row {i}: the waking row counted a gain");
         assert_eq!(
             (after.q, after.q2, after.n),
