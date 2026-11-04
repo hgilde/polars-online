@@ -316,9 +316,8 @@ class TestTheWorkflow:
             pattern = r"\bfaer\b|crate::oracle|\boracle::|\bpulp\b|is_x86_feature_detected"
             if top != "lib" and re.search(pattern, text):
                 needed.add(f"{top}::")
-        assert {"gramfit::", "solve::", "pieces::", "ewcov::", "ewdiag::", "huber_refit::"} <= needed, (
-            needed
-        )
+        expected = {"gramfit::", "solve::", "pieces::", "ewcov::", "ewdiag::", "huber_refit::"}
+        assert expected <= needed, needed
         listed = set(shlex.split(WF["jobs"]["sde"]["env"]["SDE_TESTS"]))
         assert needed <= listed, sorted(needed - listed)
         assert all(f.endswith("::") for f in listed), listed
