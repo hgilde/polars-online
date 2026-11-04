@@ -23,6 +23,9 @@ pub(super) fn check_huber_scale(
     Ok(())
 }
 
+/// `v > 0` as a named predicate, so that `!positive(v)` refuses NaN too (a
+/// plain `v <= 0.0` lets it through, and NaN in any of these parameters is
+/// a state that never washes out).
 pub(super) fn positive(v: f64) -> bool {
     v > 0.0
 }
