@@ -69,11 +69,11 @@ budget = 2764561
 
 [instructions.ewridge_k20]
 what = "ewridge, 20 features, 1 target, half-life 1000: AnyModel::step_into, into one kept Step"
-budget = 7405668
+budget = 7184748
 
 [instructions.ewridge_k200]
 what = "ewridge, 200 features, 1 target, half-life 1000, min_weight 200, the default schedule: AnyModel::step_into, into one kept Step"
-budget = 303034471
+budget = 296186941
 
 [instructions.ewridge_gram_t10]
 what = "ewridge, 50 features, 10 targets, gram_block_rows 64, pairwise, a solve every 400: AnyModel::step_into, into one kept Step, the targets folded into the block's merge"
@@ -1191,7 +1191,7 @@ windows = { budget = 396.1915 }
 [rss.ewridge_10_targets]
 darwin = { budget = 104.1407 }
 linux = { budget = 123.1016 }
-windows = { budget = 80.129 }
+windows = { budget = 73.1016 }
 
 # Added with the review of 2026-10-23 (task 270 (e)), unmeasured on every
 # platform: `scripts/budgets.py apply` sets each from CI's floor-leg
