@@ -30,10 +30,11 @@
 //! task 214). After a gap that takes the counts to nothing, `Π` is the
 //! prior's mean. The states need no such step: a row that adds no weight
 //! moves no mean, co-moment or prior scale, which are all a density reads.
-//! The densities go through the same `quad_forms_logdet` and softmax path
-//! `ew_class` uses, with the same decaying `precision_prior` ridge -- which
-//! is **required** here as it is there: a state's centred co-moments start
-//! at zero, and a zero matrix has no density.
+//! The densities go through the factorization, forms and softmax path
+//! `ew_class` uses (`quad_forms_logdet`'s, to the bit), with the same
+//! decaying `precision_prior` ridge -- which is **required** here as it is
+//! there: a state's centred co-moments start at zero, and a zero matrix has
+//! no density.
 //!
 //! # Learning
 //!
@@ -66,7 +67,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::cluster::kmeans::seed_centres;
-use crate::solve::{FactorWork, QuadWork, SpdFactor, quad_forms_logdet};
+use crate::solve::{FactorWork, QuadWork, SpdFactor};
 use crate::{Covariance, Decay, EwCov, SeedRule};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -249,8 +250,19 @@ struct RowWork {
     joint: Vec<f64>,
     /// The row's deviation from a state's mean.
     delta: Vec<f64>,
-    /// The column a state's quadratic form is solved in.
+    /// The column a state's quadratic form is solved in; under the shared
+    /// covariance, the columns of every state's.
     quad: QuadWork,
+    /// Under the shared covariance (task 316): the states' weights, the
+    /// shared matrix, the row's deviation from each state's mean, `d*K`
+    /// state-major, and each state's quadratic form.
+    weights: Vec<f64>,
+    shared: Vec<f64>,
+    deltas: Vec<f64>,
+    forms: Vec<f64>,
+    /// The shared matrix's factor's working space: faer's scratch, and the
+    /// factor the last row gave back, which the next row's is written over.
+    shared_work: FactorWork,
 }
 
 /// Per-state Cholesky factors for the `full` shape: built on demand and
@@ -612,6 +624,11 @@ impl Hmm {
             logf: out,
             delta,
             quad,
+            weights,
+            shared: m,
+            deltas,
+            forms,
+            shared_work,
             ..
         } = work;
         out.clear();
@@ -634,9 +651,13 @@ impl Hmm {
             Covariance::Shared => {
                 // One matrix, weighted by the states' own weights, and every
                 // state's quadratic form against it from one factorization.
-                let weights: Vec<f64> = self.states.iter().map(EwCov::n_eff).collect();
+                // Each in the row's kept working space, written in full
+                // before it is read (task 316): a row allocates nothing.
+                weights.clear();
+                weights.extend(self.states.iter().map(EwCov::n_eff));
                 let total: f64 = weights.iter().sum();
-                let mut m = vec![0.0; d * d];
+                m.clear();
+                m.resize(d * d, 0.0);
                 for (s, &w) in weights.iter().enumerate() {
                     let pi = if total > 0.0 {
                         w / total
@@ -654,17 +675,24 @@ impl Hmm {
                         m[i * d + i] += pi * self.ridge(s);
                     }
                 }
-                let mut deltas = vec![0.0; d * k];
+                deltas.clear();
+                deltas.resize(d * k, 0.0);
                 for (s, state) in self.states.iter().enumerate() {
                     for (i, &xi) in x.iter().enumerate() {
                         deltas[s * d + i] = state.deviation(i, xi);
                     }
                 }
-                let Some((q, log_det, _)) = quad_forms_logdet(&m, &deltas, d, k) else {
+                // `quad_forms_logdet(m, deltas, d, k)` to the bit: the
+                // factor `SpdFactor::of` gives, written over the last row's,
+                // and its forms in the kept columns.
+                let Some(f) = shared_work.factor(m, d) else {
                     return false;
                 };
+                f.quad_forms_into(deltas, d, k, quad, forms);
+                let log_det = f.log_det();
+                shared_work.give(f);
                 for (s, o) in out.iter_mut().enumerate() {
-                    *o = base - 0.5 * log_det - 0.5 * q[s];
+                    *o = base - 0.5 * log_det - 0.5 * forms[s];
                 }
             }
             Covariance::Full => {

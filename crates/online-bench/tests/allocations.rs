@@ -405,6 +405,29 @@ fn hmm_and_deco_keep_their_factors_working_space() {
     }
 }
 
+/// `hmm` under the shared covariance (`covariance_type = "tied"`) made the
+/// states' weights, the shared
+/// matrix and the row's deviations from each state's mean afresh on every
+/// row, and the factor of that matrix with faer's scratch, its forms'
+/// matrix and their list (review 11's S5-1). Each is kept in the row's
+/// working space now, the factor written over the last row's, so a row
+/// stepped into a kept `Step` allocates nothing, as under the full and
+/// diagonal covariances (task 316).
+#[test]
+fn hmm_with_a_shared_covariance_allocates_nothing_a_row() {
+    for (covariance, before) in [("tied", 7.0), ("full", 0.0), ("diag", 0.0)] {
+        let got = per_row_with(
+            json!({"name": "m", "model": {"type": "hmm", "n_components": 2,
+                                           "covariance_type": covariance, "precision_prior": 1.0},
+                   "features": names("x", 4), "clock": "t", "gap_cap": 100.0, "half_life": 1000.0}),
+            4,
+            0,
+            true,
+        );
+        check(&format!("hmm {covariance} K=2 d=4"), got, 0.0, before);
+    }
+}
+
 /// `ewridge`'s solves made the factor's matrix and faer's scratch for it
 /// afresh at every solve, and dropped the factor the last solve's data
 /// shares held (task 301): two allocations a solve, 69 solves in the
