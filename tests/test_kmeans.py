@@ -457,7 +457,7 @@ class TestDefinitions:
         return X, t, w
 
     @staticmethod
-    def by_definition(X, t, w, k, half_life, update_every_rows):
+    def by_definition(X, t, w, k, half_life, update_every_rows, metric=None):
         """Sequential k-means as docs/CLUSTERING.md §6.2-6.3 define it, with
         the `first` rule and no split-merge. The first `k` learned rows are
         the seeds, and replaying the buffer assigns each to itself. Every
@@ -466,7 +466,9 @@ class TestDefinitions:
         is recomputed as the weighted mean of every row assigned to it, at
         the weight it has decayed to. Its radius² is the same weighted mean
         of each row's squared distance to the centre it was assigned to
-        (`summary.rs`, `absorb_plain`)."""
+        (`summary.rs`, `absorb_plain`). ``metric``, one row per row, is the
+        diagonal metric each row's distances are read in; the Euclidean one
+        when it is not given."""
         learned = [i for i in range(len(w)) if w[i] > 0.0]
         seeds = learned[:k]
         rows: list[list[int]] = [[i] for i in seeds]
@@ -488,7 +490,8 @@ class TestDefinitions:
         scored: dict[int, tuple[int, float, float]] = {}
         since = 0
         for i in range(seeds[-1] + 1, len(w)):
-            d2 = ((X[i] - centres) ** 2).sum(axis=1)
+            mw = 1.0 if metric is None else metric[i]
+            d2 = ((X[i] - centres) ** 2 * mw).sum(axis=1)
             j = int(np.argmin(d2))
             scored[i] = (j, math.sqrt(d2[j]), math.sqrt(np.sort(d2)[1]))
             if w[i] <= 0.0:
@@ -502,29 +505,64 @@ class TestDefinitions:
                 centres = np.array([c for _, c, _ in summarise(i, i)])
         return scored, checkpoints, summarise
 
+    @staticmethod
+    def numpy_metric(X, t, w, half_life):
+        """The standardized metric each row is read in, from numpy: ``1/v``
+        with ``v`` the biased weighted variance of each feature over the
+        rows learned before it (weight above 0), each at its weight decayed
+        on the clock, ``np.cov(aweights=, bias=True)``; 1 where ``v`` is 0
+        or there are fewer than two such rows."""
+        out = np.ones(X.shape)
+        for i in range(1, len(X)):
+            idx = np.flatnonzero(w[:i] > 0.0)
+            if idx.size < 2:
+                continue
+            aw = w[idx] * _decay(t[i - 1] - t[idx], half_life)
+            v = np.diag(np.cov(X[idx].T, aweights=aw, bias=True))
+            out[i] = np.where(v > 0.0, 1.0 / np.where(v > 0.0, v, 1.0), 1.0)
+        return out
+
+    @pytest.mark.parametrize("standardize", [False, True], ids=["raw", "standardized"])
     @pytest.mark.parametrize("update_every_rows", [1, 7])
-    def test_each_checkpoint_is_the_decayed_mean_of_its_rows(self, update_every_rows):
+    def test_each_checkpoint_is_the_decayed_mean_of_its_rows(self, update_every_rows, standardize):
+        """Standardized, the default, with the second feature in units fifty
+        times the first's: every distance is read in the metric numpy's
+        weighted variance gives (:meth:`numpy_metric`), and the definitions
+        are otherwise the same. The metric's floor, ``scale_floor``, does not
+        bind on this stream (the outputs at the default floor and at none
+        are the same, checked below), so what is held is the variance."""
         X, t, w = self.stream()
         k, half_life = 3, 60.0
-        s = spec(
+        if standardize:
+            X = X * np.array([1.0, 50.0])
+        params = dict(
             k=k,
             half_life=half_life,
             min_weight=0.0,
             warm_rows=k,
             init="first",
             split_merge=0.0,
-            standardize=False,
+            standardize=standardize,
             update_every_rows=update_every_rows,
             clock="t",
             gap_cap=1e9,
             weight="w",
             coef_every=0,
         )
+        s = spec(**params)
         df = frame(X, t=t, w=w)
+        metric = self.numpy_metric(X, t, w, half_life) if standardize else None
         scored, checkpoints, summarise = self.by_definition(
-            X, t, w, k, half_life, update_every_rows
+            X, t, w, k, half_life, update_every_rows, metric
         )
         out = unnested(po.ModelBank([s]).fit_predict(df))
+        if standardize:
+            unfloored = unnested(po.ModelBank([spec(**params, scale_floor=0.0)]).fit_predict(df))
+            assert out.equals(unfloored), "the floor binds: the case holds the variance alone"
+            # The metric moved: the second feature's weight is about 1/2500
+            # of the first's, and neither is constant.
+            assert np.median(metric[100:, 1] / metric[100:, 0]) < 1e-3
+            assert metric[100:].std(axis=0).min() > 0.0
         # The assignment, and the distances to the nearest and the runner-up.
         # Tolerances here (task 252 (b)): definitions computed another way
         # (batch means of the raw rows at their decayed weights, against the
@@ -550,7 +588,11 @@ class TestDefinitions:
             done = [c for c in checkpoints if c <= last]
             if not done:
                 continue
-            got = _state(bank)["clusters"]
+            state = _state(bank)
+            if standardize and last + 1 < df.height:
+                # The metric the state holds for the next row is numpy's.
+                np.testing.assert_allclose(state["mw"], metric[last + 1], rtol=1e-12)
+            got = state["clusters"]
             for g, (n, c, r2) in zip(got, summarise(last, done[-1]), strict=True):
                 assert math.isclose(g["n"], n, rel_tol=1e-9), (last, g["n"], n)
                 np.testing.assert_allclose(g["c"], c, rtol=1e-9, atol=1e-12)
@@ -798,6 +840,40 @@ class TestDefinitions:
         dist = np.linalg.norm(coef[:, None, :] - km.cluster_centers_[None, :, :], axis=2)
         assert sorted(dist.argmin(axis=1)) == list(range(k)), "not one centre each"
         assert dist.min(axis=1).max() < 0.01, dist.min(axis=1)
+
+    def test_a_large_standardized_case_without_decay_is_scikit_learns_on_scaled_rows(self):
+        """The default, ``standardize=True``, on the same blobs with the
+        second feature in units a hundred times the first's. Without decay
+        the metric settles to one over each feature's variance over the
+        stream, so the fixed point is batch k-means on the rows scaled by
+        their standard deviation: scikit-learn's ``StandardScaler(with_mean=
+        False)`` then ``KMeans``, its centres scaled back. The centres stay
+        in the features' own units here (the metric is scaled, not the
+        rows). Measured 2026-11-04: ARI 0.99995, and the centres 1.7e-4
+        apart at most in units of each feature's standard deviation (4.3
+        and 434; the noise is 0.21 of them). The control: unstandardized,
+        the second feature's units decide, and the partition is not
+        scikit-learn's (ARI 0.40)."""
+        from sklearn.cluster import KMeans
+        from sklearn.preprocessing import StandardScaler
+
+        n, k = 100_000, 6
+        X, _ = blobs(n=n, k=k, seed=12, scale=0.9, spread=6.0)
+        X = X * np.array([1.0, 100.0])
+        params = dict(k=k, half_life=float("inf"), min_weight=50.0, warm_rows=3000, split_merge=0.0)
+        out = unnested(po.ModelBank([spec(**params)]).fit_predict(frame(X)))
+        got = out["cluster"].to_numpy()
+        scored = out["cluster"].is_not_null().to_numpy()
+        scaler = StandardScaler(with_mean=False).fit(X)
+        km = KMeans(n_clusters=k, n_init=10, random_state=0).fit(scaler.transform(X))
+        assert ari(got[scored], km.labels_[scored]) > 0.999
+        coef = np.array(out["coef"][-1]).reshape(k, 2) / scaler.scale_
+        dist = np.linalg.norm(coef[:, None, :] - km.cluster_centers_[None, :, :], axis=2)
+        assert sorted(dist.argmin(axis=1)) == list(range(k)), "not one centre each"
+        assert dist.min(axis=1).max() < 1e-3, dist.min(axis=1)
+        raw = unnested(po.ModelBank([spec(**params, standardize=False)]).fit_predict(frame(X)))
+        lost = raw["cluster"].to_numpy()
+        assert ari(lost[scored], km.labels_[scored]) < 0.9
 
 
 def stranded(seed, n=20_000, sd=0.6, radius=6.0, born=(9.0, 9.0)):

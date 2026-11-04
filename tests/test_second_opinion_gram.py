@@ -13,6 +13,9 @@ correlation form under ``standardize`` and the weights' meaning.
 
 from __future__ import annotations
 
+import math
+import re
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -244,3 +247,140 @@ class TestLassoPathsWeightsAreEnetPathOnRescaledColumns:
         ledger.record("lasso_weights", "error", [e for e, _ in errs], floor=9.9e-11)
         assert all(moved > 1.0 for _, moved in errs)
         assert errs[worst][0] <= 1e-10
+
+
+# ------------------------------------------------- the condition estimate
+#
+# The solve's condition estimate, `‖H⁻¹‖₁` of the equilibrated matrix `H =
+# D⁻¹ A D⁻¹` by Hager's method as Higham refined it, is the one LAPACK's
+# `dpocon` runs (`dlacn2`). It is not exposed to Python, so the Rust test
+# `crates/online-core/src/solve/condition_tests.rs::the_estimate_is_lapacks_dpocon`
+# holds it to a table of `dpocon`'s numbers, and this test holds the table
+# to scipy: each matrix is rebuilt from the same formula (exact entries,
+# the same bits in both languages), and scipy's `dpocon` on its factor must
+# read the number the table says, to the rounding of a solve with `H`.
+
+CONDITION_TESTS = (
+    Path(__file__).resolve().parents[1] / "crates/online-core/src/solve/condition_tests.rs"
+)
+
+
+def dpocon_case(name: str) -> np.ndarray:
+    """The Rust test's `dpocon_case`, in numpy."""
+    if name in ("hilbert5", "hilbert7"):
+        k, lcm = (5, 2520.0) if name == "hilbert5" else (7, 360360.0)
+        return np.array([[lcm / (i + j + 1) for j in range(k)] for i in range(k)])
+    if name == "pascal6":
+        return np.array([[float(math.comb(i + j, i)) for j in range(6)] for i in range(6)])
+    if name == "gram8":
+        b = np.array(
+            [
+                [float((r * r * 3 + j * (r + 2) * 5 + j * j) % 17 - 8) for j in range(8)]
+                for r in range(24)
+            ]
+        )
+        return b.T @ b
+    if name == "collinear5":
+        b = np.array([[float((r * (2 * j + 5) + j) % 13 - 6) for j in range(5)] for r in range(30)])
+        b[:, 4] = 64.0 * b[:, 0] + np.array([float(r % 3 - 1) for r in range(30)])
+        return b.T @ b
+    if name == "alternating3":
+        c = 1.0 - 2.0**-20
+        return np.array([[1.0, c, 0.0], [c, 1.0, 0.0], [0.0, 0.0, 1.0]])
+    if name == "kahan6":
+        r = np.zeros((6, 6))
+        for i in range(6):
+            r[i, i:] = -0.75 * 0.5**i
+            r[i, i] = 0.5**i
+        return r.T @ r
+    raise ValueError(name)
+
+
+def test_the_rust_tables_dpocon_numbers_are_scipys():
+    from scipy.linalg import cholesky, lapack
+
+    text = CONDITION_TESTS.read_text(encoding="utf-8")
+    table = re.search(r"const DPOCON: \[\(&str, f64\); (\d+)\] = \[(.*?)\];", text, re.S)
+    assert table is not None, "the table moved"
+    rows = re.findall(r'\("(\w+)", ([-+.e\d]+)\)', table.group(2))
+    assert len(rows) == int(table.group(1)) == 7, rows
+    for name, number in rows:
+        a = dpocon_case(name)
+        k = len(a)
+        d = np.sqrt(np.diag(a))
+        h = a / np.outer(d, d)
+        h_norm = np.abs(h).sum(axis=0).max()
+        rcond, info = lapack.dpocon(cholesky(h, lower=False), h_norm)
+        assert info == 0, name
+        est = 1.0 / (rcond * h_norm)
+        # The rounding of LAPACK's solves with `H`, which another build of
+        # LAPACK may take in another order: `k κ₁ u` of it, `κ₁ = ‖H‖₁ ×`
+        # the estimate. The table is this build's to the bit (scipy 1.18.1,
+        # 2026-11-04).
+        tol = k * h_norm * est * U
+        assert abs(float(number) / est - 1.0) <= tol, (name, float(number), est)
+        # The estimate is at most the norm it estimates, numpy's exact
+        # `cond(H, 1) / ‖H‖₁`.
+        assert est <= np.linalg.cond(h, 1) / h_norm * (1.0 + tol), name
+
+
+# ---------------------------------------------------- `po.gram.condition`
+#
+# Belsley's collinearity diagnostics, which `po.gram.condition` computes
+# from the accumulated moments: the eigendecomposition of the unit-length
+# column-scaled second-moment matrix. numpy computes the same quantities
+# from the rows another way, the SVD of the weighted design scaled to unit
+# column length (Belsley, Kuh and Welsch 1980, §3.2): its singular values,
+# `np.linalg.cond` of it for `kappa`, and the proportions, by Belsley's
+# definition, `φ_kj = v_jk² / μ_k²` normalised over the components `k` for
+# each column `j`. The moments carry the design's square, so a singular
+# value `μ_k` comes back to about `(μ_max / μ_k)² u` of itself from them
+# (an eigenvalue of the moments to `u` of the largest), where the SVD of the
+# rows reads it to `u`. The tolerance is that, eight times: measured
+# 2026-11-04 at 0.06 to 0.43 of `κ² u` on the designs below, `κ` to 1.1e5.
+
+
+def condition_rows(
+    seed: int, eps: float, n: int = 600, k: int = 4
+) -> tuple[np.ndarray, np.ndarray]:
+    """Columns of unlike scales (1e-2 to 1e2) and levels (to 50), the third
+    three times the first plus ``eps`` of its spread."""
+    rng = np.random.default_rng(seed)
+    x = rng.normal(size=(n, k)) * 10.0 ** rng.uniform(-2.0, 2.0, k) + rng.uniform(-50.0, 50.0, k)
+    x[:, 2] = 3.0 * x[:, 0] + eps * rng.normal(size=n) * x[:, 0].std()
+    return x, x @ np.ones(k) + rng.normal(size=n)
+
+
+@pytest.mark.parametrize(
+    ("seed", "eps", "half_life", "fit_intercept"),
+    [
+        (1, 1.0, float("inf"), True),
+        (2, 1e-3, float("inf"), True),
+        (3, 1e-3, 150.0, True),
+        (4, 1e-2, 150.0, False),
+    ],
+)
+def test_condition_is_numpys_svd_of_the_scaled_rows(seed, eps, half_life, fit_intercept):
+    x, y = condition_rows(seed, eps)
+    g = gram_of(x, y, half_life, fit_intercept)
+    got = po.gram.condition(g)
+    n = len(y)
+    w = 0.5 ** (np.arange(n)[::-1] / half_life)
+    design = np.column_stack([np.ones(n), x]) if fit_intercept else x
+    assert got["columns"] == g["columns"] and len(got["columns"]) == design.shape[1]
+    scaled = design * np.sqrt(w)[:, None]
+    scaled = scaled / np.linalg.norm(scaled, axis=0)
+    _, mu, vt = np.linalg.svd(scaled, full_matrices=False)
+    kappa = np.linalg.cond(scaled)
+    tol = 8.0 * kappa**2 * U
+    assert kappa > 2000.0, "the case: a near-dependency"
+    np.testing.assert_allclose(got["singular_values"], mu, rtol=tol, atol=0.0)
+    np.testing.assert_allclose(got["condition_indexes"], mu[0] / mu, rtol=tol, atol=0.0)
+    assert got["kappa"] == pytest.approx(kappa, rel=tol)
+    phi = vt.T**2 / mu**2
+    proportions = (phi / phi.sum(axis=1, keepdims=True)).T
+    np.testing.assert_allclose(got["proportions"], proportions, rtol=0.0, atol=tol)
+    # The dependency is where it was built: the last component carries most
+    # of the variance of the first and third features.
+    j0 = got["columns"].index("x0")
+    assert proportions[-1, j0] > 0.5 and proportions[-1, j0 + 2] > 0.5

@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import math
 from datetime import datetime, timedelta
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -39,6 +40,7 @@ import pytest
 
 import polars_online as po
 import reference_cluster as ref
+from test_kmeans import TestDefinitions as KMeansDefinitions
 from test_kmeans import ari, blobs, frame, stranded
 
 TIER = "mixed"
@@ -295,20 +297,22 @@ class TestDefinitions:
         return model["Micro"]
 
     @staticmethod
-    def after(m: dict, z: np.ndarray, lam: float) -> float:
+    def after(m: dict, z: np.ndarray, lam: float, mw: Any = 1.0) -> float:
         """``r2_after``: the summary's radius² once it took ``z`` at weight
-        1, its weight decayed by the row's step first."""
+        1, its weight decayed by the row's step first; distances in the
+        diagonal metric ``mw``."""
         n = float(m["s"]["n"]) * lam
         c = np.array(m["s"]["c"])
         a, b = n / (n + 1.0), 1.0 / (n + 1.0)
-        return a * float(m["s"]["r2"]) + a * b * float((z - c) @ (z - c))
+        return a * float(m["s"]["r2"]) + a * b * float(((z - c) ** 2 * mw).sum())
 
     @staticmethod
-    def nearest(z: np.ndarray, group: list[dict]) -> tuple[dict, float] | None:
-        """The summary nearest ``z`` (the first of a tie) and the distance."""
+    def nearest(z: np.ndarray, group: list[dict], mw: Any = 1.0) -> tuple[dict, float] | None:
+        """The summary nearest ``z`` (the first of a tie) and the distance,
+        in the diagonal metric ``mw``."""
         if not group:
             return None
-        d2 = [float((z - np.array(m["s"]["c"])) @ (z - np.array(m["s"]["c"]))) for m in group]
+        d2 = [float(((z - np.array(m["s"]["c"])) ** 2 * mw).sum()) for m in group]
         j = int(np.argmin(d2))
         return group[j], math.sqrt(d2[j])
 
@@ -386,6 +390,84 @@ class TestDefinitions:
                 assert float(m["s"]["n"]) == pytest.approx(n, rel=1e-9), (i, m["id"])
                 np.testing.assert_allclose(m["s"]["c"], c, rtol=1e-9, atol=1e-12)
                 assert float(m["s"]["r2"]) == pytest.approx(r2, rel=1e-9, abs=1e-12), (i, m["id"])
+            prev = now
+        assert all(v > 20 for v in seen.values()), seen
+
+    def test_standardized_every_row_goes_where_numpy_s_metric_says(self):
+        """The default, ``standardize=True``, with the second feature in
+        units fifty times the first's: the admission rule above with every
+        distance read in the metric numpy's weighted variance gives
+        (``1/v``, ``np.cov(aweights=, bias=True)`` over the rows learned
+        before the row, at their weights decayed on the clock; the kmeans
+        definitions' :meth:`numpy_metric`), and each live summary's weight
+        and centre the rows ``micro_id`` sent it. The centres stay in the
+        features' own units. Its radius is not recomputed from the rows: it
+        takes each row's distance in the metric of that row's own moment, so
+        it has no batch form, and the admissions that read it are what is
+        held. The floor does not bind on this stream (the outputs at the
+        default floor and at none are the same)."""
+        X, _ = shapes("varied", seed=3, n=1200)
+        X = X * np.array([1.0, 50.0])
+        rng = np.random.default_rng(3)
+        steps = rng.exponential(1.0, len(X))
+        steps[::150] = 20.0
+        t = np.cumsum(steps)
+        w = np.ones(len(X))
+        half_life = 300.0
+        params = dict(
+            eps=0.3,
+            half_life=half_life,
+            min_weight=0.0,
+            beta_mu=5.0,
+            prune_every=100,
+            clock="t",
+            gap_cap=1e9,
+        )
+        df = frame(X, t=t)
+        whole = unnested(po.ModelBank([spec(**params)]).fit_predict(df))
+        unfloored = unnested(po.ModelBank([spec(**params, scale_floor=0.0)]).fit_predict(df))
+        assert whole.drop("coef").equals(unfloored.drop("coef")), "the floor binds"
+        metric = KMeansDefinitions.numpy_metric(X, t, w, half_life)
+        assert np.median(metric[100:, 1] / metric[100:, 0]) < 1e-3
+        bank = po.ModelBank([spec(**params)])
+        prev = None
+        took: dict[int, list[int]] = {}
+        seen = dict.fromkeys(("potential", "outlier", "new"), 0)
+        for i in range(df.height):
+            out = unnested(bank.fit_predict(df.slice(i, 1)))
+            now = self.state(bank)
+            micro_id, outlier, dist = out["micro_id"][0], out["outlier"][0], out["dist"][0]
+            took.setdefault(micro_id, []).append(i)
+            if i + 1 < df.height:
+                # The metric the state holds for the next row is numpy's.
+                np.testing.assert_allclose(now["mw"], metric[i + 1], rtol=1e-12)
+            if prev is not None:
+                lam = 0.5 ** ((t[i] - t[i - 1]) / half_life)
+                E, z, mw = float(prev["eps2"]), X[i], metric[i]
+                pot = self.nearest(z, [m for m in prev["mc"] if m["potential"]], mw)
+                out_ = self.nearest(z, [m for m in prev["mc"] if not m["potential"]], mw)
+                if pot is not None and self.after(pot[0], z, lam, mw) <= E:
+                    want, kind = pot[0]["id"], "potential"
+                elif out_ is not None and self.after(out_[0], z, lam, mw) <= E:
+                    want, kind = out_[0]["id"], "outlier"
+                else:
+                    want, kind = prev["next_id"], "new"
+                seen[kind] += 1
+                assert micro_id == want, (i, kind)
+                assert outlier == (kind != "potential"), i
+                if pot is None:
+                    assert dist is None, i
+                else:
+                    # Tolerance: the distance read from the exported centre,
+                    # rounded from its compensated pair, and numpy's metric.
+                    assert dist == pytest.approx(pot[1], rel=1e-9), i
+            for m in now["mc"]:
+                idx = np.array(took[m["id"]])
+                wt = 0.5 ** ((t[i] - t[idx]) / half_life)
+                n = wt.sum()
+                c = (wt[:, None] * X[idx]).sum(axis=0) / n
+                assert float(m["s"]["n"]) == pytest.approx(n, rel=1e-9), (i, m["id"])
+                np.testing.assert_allclose(m["s"]["c"], c, rtol=1e-9, atol=1e-12)
             prev = now
         assert all(v > 20 for v in seen.values()), seen
 
@@ -1432,3 +1514,94 @@ class TestScaleEquivariance:
         uniform = self.run(X * c, eps=0.5 * c, standardize=False)
         assert _differ(base, uniform) == ["dist", "coef"]
         assert (uniform["dist"] == base["dist"] * c).all()
+
+
+class TestTheMacroStepIsScipys:
+    """The macro step against scipy, at every checkpoint: single linkage
+    over the potential summaries cut at ``L``, inclusive, in the metric the
+    checkpoint read (the one in force for its row, which the state before
+    the row holds). scipy's ``connected_components`` on the graph with an
+    edge where ``‖c_a − c_b‖_mw ≤ L``, and ``fcluster`` of a single-linkage
+    tree at ``t = L`` (``criterion="distance"``), compute the same
+    partition; this library labels a component by its smallest id, so the
+    partitions are compared, not the label values. ``L`` is the state's
+    ``link2``, and that is ``macro_link · eps √p`` where it is given, or
+    derived: ``max(LINK_FLOOR · eps √p, LINK_FACTOR ·`` the 90th
+    percentile (nearest rank, numpy's ``inverted_cdf``) of each summary's
+    nearest-neighbour distance, scipy's ``cKDTree.query(k=2)``), with
+    ``LINK_FLOOR = 2`` and ``LINK_FACTOR = 1.5`` as the module states them.
+    No pair sits within rounding of ``L`` (checked), so the partition rests
+    on no last bit."""
+
+    LINK_FLOOR, LINK_FACTOR = 2.0, 1.5
+
+    @staticmethod
+    def partition(labels) -> set[frozenset[int]]:
+        groups: dict[Any, set[int]] = {}
+        for a, lab in enumerate(labels):
+            groups.setdefault(lab, set()).add(a)
+        return {frozenset(g) for g in groups.values()}
+
+    @pytest.mark.parametrize("link", [None, 1.0, 2.5, 4.0], ids=lambda v: f"link={v}")
+    @pytest.mark.parametrize("geometry", ["blobs", "moons"])
+    def test_every_checkpoint_is_single_linkage_at_the_threshold(self, geometry, link):
+        from scipy.cluster.hierarchy import fcluster, linkage
+        from scipy.sparse.csgraph import connected_components
+        from scipy.spatial import cKDTree
+        from scipy.spatial.distance import pdist, squareform
+
+        if geometry == "blobs":
+            X, _ = blobs(n=3000, k=5, seed=2, scale=0.8, spread=6.0)
+        else:
+            X, _ = shapes("moons", seed=2, n=3000)
+        X = X * np.array([1.0, 30.0])
+        eps, every = 0.1, 100
+        s = spec(eps=eps, half_life=500.0, min_weight=3.0, prune_every=every, macro_link=link)
+        df = frame(X)
+        bank = po.ModelBank([s])
+        prev = None
+        checked, links, parts, margin = 0, 0, 0, np.inf
+        for start in range(0, df.height, every):
+            # The checkpoint is the last row of each run of `every` rows:
+            # the state before it holds its metric.
+            bank.fit_predict(df.slice(start, every - 1))
+            prev = TestDefinitions.state(bank)
+            bank.fit_predict(df.slice(start + every - 1, 1))
+            now = TestDefinitions.state(bank)
+            assert now["rows_since_prune"] == 0, start
+            pot = [m for m in now["mc"] if m["potential"]]
+            if len(pot) < 2:
+                continue
+            mw = np.asarray(prev["mw"], dtype=float)
+            c = np.array([np.add(m["s"]["c"], m["s"]["c_lo"]) for m in pot]) * np.sqrt(mw)
+            rp = eps * math.sqrt(X.shape[1])
+            if link is None:
+                nn = cKDTree(c).query(c, k=2)[0][:, 1]
+                p90 = np.percentile(nn, 90, method="inverted_cdf")
+                want_l = max(self.LINK_FLOOR * rp, self.LINK_FACTOR * p90)
+            else:
+                want_l = link * rp
+            got_l = math.sqrt(float(now["link2"]))
+            assert got_l == pytest.approx(want_l, rel=1e-12), start
+            d = pdist(c)
+            margin = min(margin, float(np.min(np.abs(d - want_l)) / want_l))
+            graph = squareform(d <= want_l)
+            n_comp, comp = connected_components(graph, directed=False)
+            tree = fcluster(linkage(c, method="single"), t=want_l, criterion="distance")
+            labels = [m["label"] for m in pot]
+            assert self.partition(labels) == self.partition(comp), start
+            assert self.partition(tree) == self.partition(comp), start
+            assert now["n_clusters"] == n_comp, start
+            # A component is labelled by its smallest id.
+            for g in self.partition(comp):
+                assert {pot[a]["label"] for a in g} == {min(pot[a]["id"] for a in g)}
+            checked += 1
+            links += int(n_comp < len(pot))
+            parts += int(n_comp > 1)
+        assert checked >= 20, checked
+        # More than one component: the cut separated summaries too.
+        assert parts >= 20, parts
+        assert margin > 1e-9, margin
+        if link != 1.0:
+            # Summaries were linked, not only left alone.
+            assert links >= 20, links

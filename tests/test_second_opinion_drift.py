@@ -143,3 +143,112 @@ def test_a_larger_delta_flags_no_sooner_and_no_more(kind):
         counts = [r.size for r in runs]
         assert counts == sorted(counts, reverse=True), counts
         assert counts[0] > counts[2] >= 1, counts
+
+
+# Under a half-life and on a clock. river's ``alpha`` fades the cumulative
+# sums, not the mean, so no drift library computes this detector; pandas
+# computes its mean. ``ē`` is the EW mean of the scored errors at the model's
+# half-life on the clock, ``ewm(halflife=, times=, adjust=True)``: each error
+# weighs ``2^(-(t_now - t_i)/h)``, which is the library's ``W = λW + 1`` with
+# ``λ = 2^(-d/h)`` over every row's step, scored or not. The excess is
+# numpy's: ``m_t = cumsum(d_t (e_t - ē_t - δ))`` with ``d_t`` the row's clock
+# step, its low-water mark ``minimum.accumulate`` from 0, and a flag where
+# ``m - M`` first exceeds the threshold. A flag starts the detector over, so
+# the oracle splits the scored rows there and starts pandas afresh.
+
+#: (half_life, clock): a row clock, a numeric clock with uneven steps, and a
+#: temporal clock in minutes.
+CLOCKED = [
+    (200.0, None),
+    (30.0, None),
+    (200.0, "t"),
+    (30.0, "t"),
+    ("2h", "ts"),
+]
+
+
+def _clocked_frame(n: int = 3000, seed: int = 5) -> pl.DataFrame:
+    """Uneven clock steps of 0.5, 1 and 3 units (minutes on ``ts``), two
+    level shifts, uneven weights and two zero-weight rows, which age the mean
+    and are not scored."""
+    rng = np.random.default_rng(seed)
+    t = np.cumsum(rng.choice([0.5, 1.0, 3.0], n))
+    x = rng.normal(0.0, 1.0, n)
+    y = 1.0 + 2.0 * x + rng.normal(0.0, 0.5, n)
+    for at in (1000, 2000):
+        y[at:] += 4.0
+    w = rng.uniform(0.5, 1.5, n)
+    w[700:702] = 0.0
+    ts = pl.datetime(2024, 1, 2) + pl.duration(milliseconds=pl.lit(t * 60_000.0).cast(pl.Int64))
+    return pl.DataFrame({"t": t, "x": x, "y": y, "w": w}).with_columns(ts=ts)
+
+
+def _pandas_page_hinkley(
+    e: np.ndarray, t: np.ndarray, fed: np.ndarray, half_life: float, delta: float, threshold: float
+) -> tuple[np.ndarray, list[float]]:
+    """The flags the definition gives, and each segment's closest approach
+    of the statistic to the threshold (evidence no flag rests on rounding)."""
+    import pandas as pd
+
+    d = np.diff(t, prepend=t[0])
+    flags = np.zeros(len(e), dtype=bool)
+    idx, margins = np.flatnonzero(fed), []
+    while idx.size:
+        s = pd.Series(e[idx], index=pd.to_datetime(t[idx] * 1e9))
+        mean = s.ewm(halflife=pd.Timedelta(seconds=half_life), times=s.index, adjust=True).mean()
+        m = np.cumsum(d[idx] * (e[idx] - mean.to_numpy() - delta))
+        stat = m - np.minimum.accumulate(np.minimum(m, 0.0))
+        hit = np.flatnonzero(stat > threshold)
+        end = hit[0] + 1 if hit.size else idx.size
+        margins.append(float(np.min(np.abs(stat[:end] - threshold))))
+        if not hit.size:
+            break
+        flags[idx[hit[0]]] = True
+        idx = idx[end:]
+    return flags, margins
+
+
+@pytest.mark.parametrize(("half_life", "clock"), CLOCKED, ids=lambda v: str(v))
+@pytest.mark.parametrize(
+    ("delta", "threshold"), [(0.5, 20.0), (0.05, 5.0), (0.0, 30.0)], ids=["default", "low", "zero"]
+)
+def test_under_a_half_life_and_on_a_clock_the_mean_is_pandas_ewm(
+    half_life, clock, delta, threshold
+):
+    df = _clocked_frame()
+    kw: dict = {}
+    if clock == "t":
+        kw = dict(clock="t", gap_cap=1e6)
+    elif clock == "ts":
+        # Minutes on the temporal clock: the oracle reads its seconds.
+        kw = dict(clock="ts", gap_cap="100d")
+        threshold = f"{threshold * 60:g}s"
+    out = _fit(
+        "rls",
+        df,
+        half_life=half_life,
+        min_weight=0.0,
+        drift_delta=delta,
+        drift_threshold=threshold,
+        **kw,
+    )
+    resid, sigma = out["resid_y"].to_numpy(), out["sigma_y"].to_numpy()
+    flags = out["drift_y"].fill_null(False).to_numpy()
+    if clock is None:
+        t = np.arange(len(df), dtype=float)
+    elif clock == "t":
+        t = df["t"].to_numpy()
+    else:
+        t = df["t"].to_numpy() * 60.0
+    h = 7200.0 if half_life == "2h" else half_life
+    th = float(threshold[:-1]) if isinstance(threshold, str) else threshold
+    with np.errstate(divide="ignore", invalid="ignore"):
+        e = np.abs(resid) / sigma
+    fed = (df["w"].to_numpy() > 0) & np.isfinite(e) & (sigma > 0)
+    want, margins = _pandas_page_hinkley(e, t, fed, h, delta, th)
+    assert fed.sum() > 2900 and not fed[700:702].any()
+    assert np.array_equal(flags, want), (np.flatnonzero(flags), np.flatnonzero(want))
+    # The detector flagged, and no flag stands within rounding of the
+    # threshold (the closest approach measured 2026-11-04 is 1.2e-3).
+    assert want.any(), "the case needs a flag"
+    assert min(margins) > 1e-6, margins

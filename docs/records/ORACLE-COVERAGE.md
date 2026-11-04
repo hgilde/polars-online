@@ -13,6 +13,20 @@ libraries' own source and docs and the published tables, each definition
 read against this library's; §5 picks the next oracle tasks. Nothing was
 run or built.*
 
+*2026-11-04, third pass (task 302, first half: §5's items 1, 3, 4, 5 and
+7): each item is now a test, and each row it touched is updated below.
+Two corrections. `po.gram.condition` is Belsley's diagnostics from an
+eigendecomposition of the scaled moments, not the Hager-Higham estimate:
+that estimate is the solve's own (`SpdFactor::equilibrated_inverse_norm`,
+behind `ewridge`'s `ill_conditioned`), and it is not exposed to Python. So
+`dpocon` is held against the Rust estimate through a table of its numbers
+that a Python test recomputes with scipy, and `po.gram.condition` is held
+to numpy's SVD of the scaled rows. And `dlacn2` differs from this
+library's estimate in two places that the tested matrices do not reach: it
+keeps the last estimate where the iteration stops growing (this library
+keeps the largest), and it compares a signed entry with an absolute one
+where the largest entry stays put.*
+
 ## 1. Purpose and definitions
 
 This record lists every user-facing model, feature and parameter. For each
@@ -113,14 +127,14 @@ Rust test is named by its file and function. The oracle ledger
 | `sgd(eps=)` above 0 | the epsilon tube, in the target's EW std | [T] sklearn only at `eps=0`; [L] `sgd_ref` above it | — | COVERED |
 | `sgd(loss="huber")` | Huber SGD | [L] `sgd_ref`; [T] statsmodels (ledger `convergence.sgd_huber`, `huber_scale.huber_sgd_cuts`) | — | COVERED |
 | `sgd(loss="quantile", quantile=)` | quantile SGD | [T] statsmodels `QuantReg`, statistical, `TestSgdQuantileIsQuantReg`; [L] `sgd_ref` | — | COVERED |
-| `sgd(loss="poisson")` | Poisson SGD | [L] `sgd_ref` row by row; [T] statsmodels GLM, statistical (ledger `convergence.sgd_poisson`, `learning_rate.schedules`) | — | COVERED |
+| `sgd(loss="poisson")` | Poisson SGD | [T] river `LinearRegression(loss=Poisson())` row by row, on a constant-1 feature, unit and uneven weights, to 1e-14, `test_second_opinion_gradient.py::TestSgdPoissonAndAdaGradAreRivers::test_poisson_at_a_constant_rate`; [L] `sgd_ref` row by row; [T] statsmodels GLM, statistical (ledger `convergence.sgd_poisson`, `learning_rate.schedules`) | — | COVERED |
 | `sgd(schedule="inv_scaling", power=, learning_rate=)` | the decaying rate | [T] sklearn `invscaling` at unit weights, `TestSgdIsScikitLearnsSgd::test_inv_scaling_at_unit_weights_is_scikit_learns_invscaling`; [T] sklearn and statsmodels (ledger `learning_rate.schedules`) | LIBSVM `abalone` (ledger `learning_rate.libsvm_passes`) | COVERED |
-| `sgd(schedule="adagrad")` | AdaGrad | [L] `sgd_ref` only; [T] statistical excess (ledger `learning_rate.schedules`) | LIBSVM `abalone`, excess over sklearn's batch fit | COVERED |
+| `sgd(schedule="adagrad")` | AdaGrad | [T] river `AdaGrad`, and `RMSProp(lr·√(1−λ), rho=λ)` for the decayed form, row by row under the squared and Poisson losses, unit and uneven weights, to 1e-7 (river's epsilon sits inside the root), `TestSgdPoissonAndAdaGradAreRivers::test_adagrad`; [L] `sgd_ref`; [T] statistical excess (ledger `learning_rate.schedules`) | LIBSVM `abalone`, excess over sklearn's batch fit | COVERED |
 | `sgd(l2=, clip_gradient=)` | slope ridge and per-coordinate clip | [L] `sgd_ref` where both bind, `TestSgd::test_the_clip_and_the_ridge_bind` | — | COVERED |
 | `sgd/pa(standardize=True)`, the default | SGD on standardized features | [L] `sgd_ref`, `pa_ref`, `TestStandardized`, `TestStandardizedOtherLosses`. The third-party comparisons run unstandardized | — | COVERED |
 | `sgd/pa(coef_min=, coef_max=, coef_sum=)` | box and simplex constraints | [L] the projection in `sgd_ref` and `pa_ref`, `TestStandardized::test_a_constraint`, `test_a_constraint_under_every_other_loss` | — | COVERED |
 | `sgd` unstable-rate gate (`withheld_reason="unstable_rate"`) | withholding while the gains diverge | [L] `TestTheUnstableRate::test_the_gate_withholds_while_the_gains_say_so` | — | COVERED |
-| `pa(mode="pa"/"pa1"/"pa2", c=, eps=)` | passive-aggressive regression | [T] river `PARegressor` without an intercept, unit weight, `eps=0`, `TestPassiveAggressiveIsRivers`; [L] `pa_ref`, `TestPassiveAggressive::test_every_mode`; [T] sklearn (ledger `learning_rate.pa_noisy`) | — | COVERED |
+| `pa(mode="pa"/"pa1"/"pa2", c=, eps=)` | passive-aggressive regression | [T] river `PARegressor` without an intercept, unit weight, `eps=0`, `TestPassiveAggressiveIsRivers`; [T] river with the intercept as a constant-1 feature and `eps = 0.1`, the tube set before each row from pandas' EW variance, every mode, `half_life` inf and 50, to 1e-13, `test_second_opinion_gradient.py::TestAPassiveAggressiveInterceptAndTubeAreRivers`; [L] `pa_ref`, `TestPassiveAggressive::test_every_mode`; [T] sklearn (ledger `learning_rate.pa_noisy`) | — | COVERED |
 | `strict_binary` (`sgd`, `ftrl`), `refit_budget` | a refusal; a memory bound | refusals and bounds only | — | N/A |
 
 ### 2.3 Classification
@@ -183,7 +197,7 @@ Rust test is named by its file and function. The oracle ledger
 | `corrchange(change_action="reset")`, `emit_drift(drift_action="reset")` | restart on a flag | self-comparison with a fresh model (`test_reset_empties_the_windows_at_a_flag`, `test_drift_reset.py`) | — | PARTIAL |
 | `seqtest(a=, b=)`; `po.eval.seqtest` | sequential sign test by betting (e-values) | [L] `seqtest_ref`, the paper's recursion, and its closed form where the clip never binds (`test_seqtest.py`); the eval twin equals the bank (self) | known truth: type-I error under a fair coin and a dependent null | COVERED |
 | `emit_drift`, `drift_delta`, `drift_threshold`, with nothing decaying | Page-Hinkley on `abs(resid)/sigma` | [T] river `PageHinkley`, flag for flag, `test_second_opinion_drift.py::test_the_drift_column_is_rivers_page_hinkley` (`rls`, `sgd`, `holt`; δ 0 and 0.5, threshold 5) and `TestAZeroWeightRowIsNotSeen::test_the_drift_column_is_rivers_page_hinkley_without_it` (`ewridge`) | — | COVERED |
-| `emit_drift` under a finite `half_life` or on a clock | the EW mean ē and the clock-weighted sum | none: river is compared only at `half_life=inf`, on a row clock. The knobs' order is derived (`test_a_larger_threshold_flags_no_sooner_and_no_more`) | — | PARTIAL |
+| `emit_drift` under a finite `half_life` or on a clock | the EW mean ē and the clock-weighted sum | [T] pandas `ewm(halflife=, times=, adjust=True).mean()` for ē and numpy for the clock-weighted excess and its low-water mark, flag for flag, split at each flag, `test_second_opinion_drift.py::test_under_a_half_life_and_on_a_clock_the_mean_is_pandas_ewm` (a row clock, a numeric clock with uneven steps, a temporal clock; three δ and threshold pairs; zero-weight rows). The knobs' order is derived (`test_a_larger_threshold_flags_no_sooner_and_no_more`) | — | COVERED |
 | `conformal=`, `conformal_rate=` | adaptive conformal intervals (Gibbs and Candès) | [L] the replayed recursion, bit for bit, `test_conformal.py::TestOracle::test_lo_hi_and_coverage_are_the_replayed_recursion`; the telescoped bound | known truth: coverage over 50 streams (ledger `conformal.coverage_rates`) | COVERED |
 | `po.sim.regimes` (unstable) | the regime simulator | its parameters recovered statistically (`test_sim.py::test_the_per_state_correlations_are_recovered`, `test_phi_is_recovered_from_the_lag_one_autocorrelation`) | known truth by construction | PARTIAL |
 
@@ -193,11 +207,12 @@ Rust test is named by its file and function. The oracle ledger
 |---|---|---|---|---|
 | `kmeans` core: assignment, decayed centres, `update_every_rows` | sequential k-means on a checkpoint clock | [L] `test_kmeans.py::TestDefinitions::test_each_checkpoint_is_the_decayed_mean_of_its_rows`; [T] sklearn `KMeans` without decay on 100,000 rows, `test_a_large_case_without_decay_is_scikit_learns_kmeans` | Fränti A1-A3 and S1-S4, inertia against sklearn from the published centres (ledger `truth_recovery.kmeans_franti`); known truth (ledger `truth_recovery.kmeans_blobs`) | COVERED |
 | `kmeans(split_merge=, split_merge_every_rows=, dead_frac=)` | far, merge and dead decisions | [L] `TestDefinitions::test_the_far_and_merge_criteria_are_the_formulas`, `test_the_dead_criterion_is_the_formula` | — | COVERED |
-| `kmeans/micro(standardize=True)` (default), `scale_floor=` | distances on a running EW scale | every definition and sklearn test runs `standardize=False`. The default is held by equivariance (`TestScaleEquivariance`) and by the transcription at every floor (`TestScaleFloor`) | — | PARTIAL |
+| `kmeans/micro(standardize=True)` (default) | distances on a running EW scale | [T] numpy `cov(aweights=, bias=True)` over the rows before each row, at their decayed weights, as the metric fed to the definitions: `test_kmeans.py::TestDefinitions::test_each_checkpoint_is_the_decayed_mean_of_its_rows[standardized]`, `test_micro.py::TestDefinitions::test_standardized_every_row_goes_where_numpy_s_metric_says` (the state's metric to 1e-12 of numpy's on every row); [T] sklearn `StandardScaler(with_mean=False)` then `KMeans` at `half_life=inf`, `test_a_large_standardized_case_without_decay_is_scikit_learns_on_scaled_rows`. Also equivariance (`TestScaleEquivariance`) | — | COVERED |
+| `kmeans/micro(scale_floor=)` | the metric's floor | the transcription at every floor (`TestScaleFloor`); the standardized definition tests above check the floor does not bind on their streams, so they hold the variance alone | — | PARTIAL |
 | `micro` admission, summaries, outliers, `eps` | DenStream-style micro-clusters | [L] `test_micro.py::TestDefinitions::test_each_summary_is_its_rows_and_each_row_goes_where_the_rule_says` (unit weights, no standardization) | Fränti S1, ARI (ledger `truth_recovery.micro_franti`); known truth (`truth_recovery.micro_blobs`) | COVERED |
 | `micro(beta_mu=, prune_every=, max_rows_between_prunes=)` | promotion and pruning | [L] DenStream's ξ(age) by hand on a small case, `TestEdgeCases::test_promotion_at_beta_mu_and_pruning_below_it` | — | COVERED |
 | `micro(max_clusters=)` | eviction of the lightest summary | behaviour and the transcription (`test_the_cap_evicts_the_lightest_summary`, `TestTheParameters::test_one_summary_at_most`) | — | PARTIAL |
-| `micro(macro_link=)` and the macro step | which summaries share a cluster label | ARI on blobs, limits at 0 and far above the spacing (`test_the_link_threshold_derived_or_overridden`), and labels the only output that moves (`test_macro_link_moves_the_labels_and_nothing_else`) | known truth | PARTIAL |
+| `micro(macro_link=)` and the macro step | which summaries share a cluster label | [T] scipy `connected_components` and `fcluster(linkage(…, "single"), t=L)` on the potential summaries' scaled centres, the partition at every checkpoint, and the derived `L` from scipy `cKDTree.query(k=2)` and numpy `percentile(method="inverted_cdf")`, `test_micro.py::TestTheMacroStepIsScipys` (blobs and moons; `macro_link` unset, 1, 2.5, 4); ARI on blobs, limits (`test_the_link_threshold_derived_or_overridden`), and labels the only output that moves (`test_macro_link_moves_the_labels_and_nothing_else`) | known truth | COVERED |
 
 ### 2.7 Window operators and formula targets
 
@@ -270,7 +285,8 @@ Rust test is named by its file and function. The oracle ledger
 | `po.gram.vif`, `correlation` | VIF, correlation | [T] statsmodels `variance_inflation_factor` (`TestVarianceInflation`); numpy (`test_correlation_matches_numpy`) | — | COVERED |
 | `po.gram.merge`, `within=` | pooling Grams | [L] faer, `crates/online-core/src/gramfit/merge_tests.rs`, `within_tests.rs` | — | COVERED |
 | Huber on a Gram (algorithm H) | iteratively reweighted passes | [T] statsmodels `RLM`, `TestAlgorithmHOnAGramAgainstStatsmodels` (ledger `second_opinion_grids.ewridge_gram_huber`) | — | COVERED |
-| `po.gram.condition` | a condition estimate | [L] Hager's method step for step (`solve/condition_tests.rs::the_estimate_is_hagers_method_step_for_step`); near 1 on an orthogonal design. Not compared with an exact condition number | — | PARTIAL |
+| `po.gram.condition` | Belsley's diagnostics: singular values, condition indexes, `kappa`, variance-decomposition proportions | [T] numpy `linalg.svd` and `linalg.cond` of the weighted design scaled to unit column length, within `8 κ² u` (the moments square the design), `test_second_opinion_gram.py::test_condition_is_numpys_svd_of_the_scaled_rows`; near 1 on an orthogonal design | — | COVERED |
+| the solve's condition estimate (`ewridge`'s `ill_conditioned`) | `‖H⁻¹‖₁` by Hager-Higham | [T] LAPACK `dpocon` (scipy), within `k κ₁ u` on seven matrices of exact entries, `solve/condition_tests.rs::the_estimate_is_lapacks_dpocon`, its table recomputed by `test_second_opinion_gram.py::test_the_rust_tables_dpocon_numbers_are_scipys`, which also bounds it by numpy's `cond(H, 1)`; [L] Hager's method step for step (`the_estimate_is_hagers_method_step_for_step`) and faer's LU inverse (`the_estimate_is_the_inverse_norm_from_below`) | — | COVERED |
 | `po.gbdt.xgboost_matrix`, `lightgbm_dataset` (unstable) | cuts and binned data for boosted trees | [T] numpy weighted quantiles for the cuts (`test_gbdt.py::test_weighted_cuts_are_numpy_s_weighted_quantiles`); XGBoost and LightGBM grow their own trees on the same data (`test_xgboost_grows_its_own_trees_on_the_same_cuts`, `test_lightgbm_grows_its_own_trees_from_float32`) | — | COVERED |
 | `ModelBank.describe` | column statistics | [T] polars, `test_summary.py::test_describe_is_the_frame_s_statistics_per_column` | — | COVERED |
 
@@ -282,6 +298,13 @@ Rust test is named by its file and function. The oracle ledger
 | PARTIAL | 23 |
 | GAP | 2 |
 | N/A | 5 |
+
+*2026-11-04 (third pass):* COVERED 153, PARTIAL 20, GAP 2, N/A 5, over
+180 rows. `emit_drift` under a half-life or a clock, the standardized
+metric, the macro step and `po.gram.condition` moved to COVERED; the
+standardized metric's row was split from `scale_floor`'s, which stays
+PARTIAL, and the solve's condition estimate has a row of its own. The
+§3b row for `sgd`'s AdaGrad and Poisson now has river beside its longhand.
 
 Only two rows are GAPs because the suite is dense. Most of the risk sits
 in the PARTIAL rows that touch a **default** or the forgetting form. §3
@@ -298,15 +321,15 @@ a path taken by default, and a feature in wide use.
 
 | rank | row | status | why it ranks here |
 |---|---|---|---|
-| 1 | `emit_drift` under a finite `half_life` or on a clock | PARTIAL | river's Page-Hinkley holds the detector only when nothing decays, on a row clock. Most specs set a half-life, so the EW mean and the clock-weighted sum are what users run. A wrong mean shifts the alarms in time, and the shift looks plausible |
-| 2 | `kmeans/micro(standardize=True)`, `scale_floor` | PARTIAL | the default. Every definition test and the sklearn test run with `standardize=False`, so the running EW scale behind every default distance is held only by equivariance and a transcription. A wrong scale still gives plausible clusters |
+| 1 | `emit_drift` under a finite `half_life` or on a clock | COVERED 2026-11-04 | river's Page-Hinkley holds the detector only when nothing decays, on a row clock. Most specs set a half-life, so the EW mean and the clock-weighted sum are what users run. A wrong mean shifts the alarms in time, and the shift looks plausible |
+| 2 | `kmeans/micro(standardize=True)`, `scale_floor` | the scale COVERED 2026-11-04; `scale_floor` PARTIAL | the default. Every definition test and the sklearn test run with `standardize=False`, so the running EW scale behind every default distance is held only by equivariance and a transcription. A wrong scale still gives plausible clusters |
 | 3 | `bocpd(prune_below=, max_run=)` | PARTIAL | on by default. Every oracle comparison turns pruning off, so the truncated posterior users get is compared only with itself. A posterior that loses mass still shows breaks |
 | 4 | `hmm(learn=True)` under a finite half-life | PARTIAL | the default `learn`. Its online EM is held only statistically, at `half_life=inf`, for the means of three well-separated location regimes. The learned covariances and transitions, and the forgetting form, have no oracle |
 | 5 | `hmm/kmeans(init=, seed=, warm_rows=)` | PARTIAL | the seeding fixes the label order and the local optimum. Only a transcription of the Rust holds it bit for bit, which can share a mistake. The default rule is judged by its outcome, the other three not at all |
 | 6 | residual diagnostics on `huber`, `quantile`, `lasso`, `pa`, `ftrl`, `holt` | PARTIAL | each kind's residuals and leverage feed the shared statistics differently. The oracles hold them on `ewridge` (with `rls`, `sgd`, `kalman`), so a wrong leverage or scale on another kind would pass |
 | 7 | `bocpd(robust_beta=)` | GAP | opt-in, but a robust user picks it exactly because the data has outliers, and then cannot check the result. Only its limit at 0 is held |
 | 8 | `hmm(exog_tvtp=, tvtp_coef=)` | GAP | opt-in and niche. But the logistic link's sign or its indexing could be wrong and the probabilities would still sum to one and look fine |
-| 9 | `micro(macro_link=)`, `max_clusters` | PARTIAL | `cluster` is `micro`'s main output, and the macro step that assigns it is held only by ARI on blobs and two limits |
+| 9 | `micro(macro_link=)`, `max_clusters` | the macro step COVERED 2026-11-04; `max_clusters` PARTIAL | `cluster` is `micro`'s main output, and the macro step that assigns it is held only by ARI on blobs and two limits |
 | 10 | `rcov(psd=True)`, `jitter` | PARTIAL | `psd` is the default, and its value is not held to a definition, only to being positive semi-definite. `rcov` as a whole has no third-party or published values (§3b) |
 | 11 | `influence_half_life` finite | PARTIAL | DFFITS is held run once, on prefixes; the memory form only behaves |
 | 12 | `restart_after_step_back`, `drift_action` and `change_action="reset"` | PARTIAL | rules whose effect is a restart; held by comparison with a fresh model. The effect is visible in the output, so risk is low |
@@ -314,7 +337,7 @@ a path taken by default, and a feature in wide use.
 | 14 | `marginal(cross_lags=)` | PARTIAL | held by reduction to `ew_cov`'s lags; no `ccf` comparison |
 | 15 | `huber(feature_sets=)`, `huber(ridge_scale="sum")`, solve cadence of `huber` and `quantile` | PARTIAL | reductions to `ewridge` and `rls`, which are well held; low risk |
 | 16 | formula targets, `group_close`, `closed_groups` | PARTIAL | plumbing equivalences to an oracle-held path; low risk |
-| 17 | `po.gram.condition`, `po.corr` transforms and screening helpers, `po.sim.regimes` | PARTIAL | helpers, two of them unstable; a wrong number would be visible to a careful caller |
+| 17 | `po.gram.condition`, `po.corr` transforms and screening helpers, `po.sim.regimes` | `po.gram.condition` COVERED 2026-11-04; the rest PARTIAL | helpers, two of them unstable; a wrong number would be visible to a careful caller |
 
 ### 3b. Held by a longhand alone
 
@@ -330,7 +353,7 @@ the paper that a longhand repeats.
 | `seqtest`, `po.eval.seqtest` | `seqtest_ref` |
 | `huber`, `quantile`, `ftrl` under a finite half-life | `robust_ref`, `ftrl_ref` (no library forgets) |
 | `ew_class` under decay | faer from scratch |
-| `sgd(schedule="adagrad")`, `sgd(loss="poisson")` row by row | `sgd_ref` |
+| `sgd(schedule="adagrad")`, `sgd(loss="poisson")` row by row | `sgd_ref`; since 2026-11-04 river as well (`TestSgdPoissonAndAdaGradAreRivers`) |
 | `sgd/pa(standardize=True)`, the defaults, and constraints | `sgd_ref`, `pa_ref` |
 | `ew_cov(partial_corr)`, `lags` | faer inverse; the unrolled sum |
 | `marginal(serial_rule="geometric")`, bin rules | the factor and the edge rule |
@@ -413,13 +436,13 @@ allowed one. Every candidate below is open source.
 
 Ordered by risk removed for the effort, best first.
 
-1. **`emit_drift` under a half-life or on a clock (rank 1):** a pandas `ewm(times=)` mean plus a numpy excess, flag for flag. river's `alpha` cannot do this, because it fades the sum, not the mean.
+1. *Done 2026-11-04.* **`emit_drift` under a half-life or on a clock (rank 1):** a pandas `ewm(times=)` mean plus a numpy excess, flag for flag. river's `alpha` cannot do this, because it fades the sum, not the mean.
 2. **`hmm(exog_tvtp=)` (rank 8):** statsmodels `MarkovRegression(exog_tvtp=)` `.filter()` at fixed parameters, one feature, K = 2 and 3. The last-regime-reference logit and the transposed matrix are the mapping. This closes a GAP.
-3. **`po.gram.condition` (rank 17):** scipy `lapack.dpocon` runs the same Hager-Higham estimator in LAPACK. Cheap, and it turns a PARTIAL into an exact third-party match.
-4. **`kmeans/micro(standardize=True)` (rank 2):** the pandas EW variance shifted one row as the metric, fed to the existing definitions longhand, plus sklearn `KMeans` on `x/√v` at `half_life=inf`. The scale floor stays held by the transcription.
-5. **`micro` macro step (rank 9):** scipy `connected_components` at the summaries' scaled centres, comparing the partition at every checkpoint.
+3. *Done 2026-11-04, see the third pass's note above.* **`po.gram.condition` (rank 17):** scipy `lapack.dpocon` runs the same Hager-Higham estimator in LAPACK. Cheap, and it turns a PARTIAL into an exact third-party match.
+4. *Done 2026-11-04 (numpy's weighted variance in place of pandas', for the row weights).* **`kmeans/micro(standardize=True)` (rank 2):** the pandas EW variance shifted one row as the metric, fed to the existing definitions longhand, plus sklearn `KMeans` on `x/√v` at `half_life=inf`. The scale floor stays held by the transcription.
+5. *Done 2026-11-04.* **`micro` macro step (rank 9):** scipy `connected_components` at the summaries' scaled centres, comparing the partition at every checkpoint.
 6. **`rcov` `preavg` at its default (rank 10, §3b):** hfhd's `mrc(bias_correction=False)` is the same estimator. Check first that hfhd 0.1.4 installs on numpy 2.5; if it does not, freeze its outputs from a scratch environment.
-7. **`pa` with an intercept and `eps > 0`; `sgd` Poisson and AdaGrad (§3b):** river on a constant-1 feature (PA, Poisson), with the tube set per row from pandas, and river AdaGrad/RMSProp at a 1e-6 tolerance. All of these are already dev dependencies.
+7. *Done 2026-11-04 (AdaGrad within 1e-7, measured 9e-9).* **`pa` with an intercept and `eps > 0`; `sgd` Poisson and AdaGrad (§3b):** river on a constant-1 feature (PA, Poisson), with the tube set per row from pandas, and river AdaGrad/RMSProp at a 1e-6 tolerance. All of these are already dev dependencies.
 8. **`bocpd` against TCPD (§3b):** adopt TCPDBench's `metrics.f_measure`, and run `bocpd` once in TCPDBench's configuration against the published BOCPD F1. The library's current configuration measures below the published default on `quality_control_1` (0.571 against 0.800) and `quality_control_3` (0.667 against 1.000). That is a lead to explain before any floor is raised, not yet a bug.
 
 Where every candidate's definition differs from this library's, no

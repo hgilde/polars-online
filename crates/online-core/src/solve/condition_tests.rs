@@ -589,3 +589,149 @@ fn a_first_rung_jittered_solve_past_the_limit_is_refused() {
     }
     assert!(found >= 10, "first-rung factors {found} of 20");
 }
+
+/// The matrices `the_estimate_is_lapacks_dpocon` reads, each with entries a
+/// double holds exactly (integers, or dyadic fractions summed in few
+/// terms), so that `tests/test_second_opinion_gram.py` builds the same bits
+/// in numpy from the same formulas. Row-major, with the order.
+fn dpocon_case(name: &str) -> (Vec<f64>, usize) {
+    let gram = |b: &[Vec<f64>], k: usize| -> Vec<f64> {
+        let mut a = vec![0.0; k * k];
+        for i in 0..k {
+            for j in 0..k {
+                a[i * k + j] = b.iter().map(|r| r[i] * r[j]).sum();
+            }
+        }
+        a
+    };
+    let binomial = |n: u64, r: u64| (1..=r).fold(1u64, |c, i| c * (n + 1 - i) / i) as f64;
+    match name {
+        // Hilbert's matrices times the least common multiple of their
+        // denominators, 1 to 9 and 1 to 13.
+        "hilbert5" | "hilbert7" => {
+            let (k, l) = if name == "hilbert5" {
+                (5, 2520.0)
+            } else {
+                (7, 360360.0)
+            };
+            let a = (0..k * k)
+                .map(|p| l / ((p / k + p % k + 1) as f64))
+                .collect();
+            (a, k)
+        }
+        // Pascal's matrix, `C(i + j, i)`.
+        "pascal6" => {
+            let k = 6;
+            let a = (0..k * k)
+                .map(|p| binomial((p / k + p % k) as u64, (p / k) as u64))
+                .collect();
+            (a, k)
+        }
+        // The Gram of 24 rows of small integers, eight columns: a case
+        // where the estimate falls short of the norm.
+        "gram8" => {
+            let k = 8;
+            let b: Vec<Vec<f64>> = (0..24i64)
+                .map(|r| {
+                    (0..k as i64)
+                        .map(|j| ((r * r * 3 + j * (r + 2) * 5 + j * j) % 17 - 8) as f64)
+                        .collect()
+                })
+                .collect();
+            (gram(&b, k), k)
+        }
+        // Five columns of small integers, the last 64 times the first plus
+        // a step of -1, 0 or 1.
+        "collinear5" => {
+            let k = 5;
+            let b: Vec<Vec<f64>> = (0..30i64)
+                .map(|r| {
+                    let mut row: Vec<f64> = (0..k as i64)
+                        .map(|j| ((r * (2 * j + 5) + j) % 13 - 6) as f64)
+                        .collect();
+                    row[4] = 64.0 * row[0] + (r % 3 - 1) as f64;
+                    row
+                })
+                .collect();
+            (gram(&b, k), k)
+        }
+        // The matrix whose inverse fools the iteration, at `c = 1 − 2⁻²⁰`:
+        // the alternating vector's candidate is taken.
+        "alternating3" => {
+            let c = 1.0 - 2f64.powi(-20);
+            (vec![1.0, c, 0.0, c, 1.0, 0.0, 0.0, 0.0, 1.0], 3)
+        }
+        // Kahan's form, `RᵀR` with `r_ii = sⁱ` and `r_ij = −c sⁱ` above
+        // the diagonal, at `s = 1/2` and `c = 3/4`.
+        "kahan6" => {
+            let k = 6;
+            let r = |i: usize, j: usize| match (i, j) {
+                (i, j) if i == j => 0.5f64.powi(i as i32),
+                (i, j) if i < j => -0.75 * 0.5f64.powi(i as i32),
+                _ => 0.0,
+            };
+            let a = (0..k * k)
+                .map(|p| (0..k).map(|m| r(m, p / k) * r(m, p % k)).sum())
+                .collect();
+            (a, k)
+        }
+        _ => unreachable!("{name}"),
+    }
+}
+
+/// LAPACK's `dpocon` on these matrices: `1 / (rcond · ‖H‖₁)` from scipy
+/// 1.18.1's `linalg.lapack.dpocon` on the upper Cholesky factor of `H =
+/// D⁻¹ A D⁻¹`, scipy's `linalg.cholesky`. `dpocon` runs `dlacn2`, the
+/// estimate this module implements, in its own arithmetic (`dpotrs`-style
+/// triangular solves on `H`'s factor, where this module solves on `A`'s and
+/// scales). `tests/test_second_opinion_gram.py` recomputes every number
+/// here with scipy and fails where one has moved, so the table is scipy's,
+/// not a copy of this module's output.
+const DPOCON: [(&str, f64); 7] = [
+    ("hilbert5", 62985.03072923218),
+    ("hilbert7", 42251047.00048633),
+    ("pascal6", 6965.116215327147),
+    ("gram8", 4.740697218498352),
+    ("collinear5", 181147.09421514583),
+    ("alternating3", 582542.6666666665),
+    ("kahan6", 120182.12039007685),
+];
+
+/// The estimate is LAPACK's: on each matrix above it reads the number
+/// `dpocon` reads, to the rounding of the two ways of solving with `H`,
+/// each about `κ₁ u` of it, `κ₁ = ‖H‖₁ ‖H⁻¹‖₁`: held within `k κ₁ u`,
+/// measured 2026-11-04 at most `0.56 κ₁ u` (`collinear5`). The matrices take the
+/// iteration down different paths: to the exact norm (most), short of it
+/// (`gram8`, 0.95 of `‖H⁻¹‖₁`), and to the alternating vector
+/// (`alternating3`, 0.56). Two differences from `dlacn2` are not reached
+/// here: `dlacn2` keeps the last estimate where the iteration stopped
+/// growing, where this module keeps the largest, and it compares a signed
+/// entry with an absolute one where the largest entry stays put.
+#[test]
+fn the_estimate_is_lapacks_dpocon() {
+    for (name, want) in DPOCON {
+        let (a, k) = dpocon_case(name);
+        let f = SpdFactor::of(&a, k).expect("positive definite");
+        assert_eq!(f.attempts(), 0, "{name}");
+        let got = f.equilibrated_inverse_norm(&a);
+        // `κ₁ = ‖H‖₁ ‖H⁻¹‖₁`, `H`'s 1-norm from its entries.
+        let d: Vec<f64> = (0..k).map(|i| a[i * k + i].sqrt()).collect();
+        let h_norm = (0..k)
+            .map(|j| {
+                (0..k)
+                    .map(|i| (a[i * k + j] / (d[i] * d[j])).abs())
+                    .sum::<f64>()
+            })
+            .fold(0.0, f64::max);
+        let kappa = h_norm * want;
+        let off = (got / want - 1.0).abs();
+        println!(
+            "{name}: {got:e}, dpocon {want:e}: {:.3} κ₁u apart",
+            off / (kappa * U)
+        );
+        let tol = k as f64 * kappa * U;
+        assert!(off <= tol, "{name}: {got:e} against {want:e}");
+        // The bound it estimates, `‖H⁻¹‖₁` from the oracle's inverse.
+        assert!(got <= exact(&a, k) * (1.0 + tol), "{name}");
+    }
+}
