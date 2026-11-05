@@ -246,7 +246,7 @@ budget = 13088675
 
 [instructions.window_ewm_sum_w10k]
 what = "WindowsRun::feed of one frame, ewm_sum over a window of 12,500 clock units (about 10,000 rows), half-life 1000, inside the stream's first window"
-budget = 12418077
+budget = 12166574
 
 [instructions.window_ewm_quantile_w10k]
 what = "WindowsRun::feed of one frame, ewm_quantile at 0.5 over a window of 12,500 clock units (about 10,000 rows), half-life 1000, inside the stream's first window: the sketches walked an octave at a time on every row"
@@ -258,6 +258,7 @@ budget = 13216462
 
 [instructions.window_ewm_sum_groups10k]
 what = "WindowsRun::feed of one frame, ewm_sum of x0 with no window, half-life 1000, grouped by g over 10,000 groups, one row of each in turn, each row its own stamp, gap_cap 1e12 (no group is ever cut), after a warm-up of two rows a group: a row resolves the one group pending, whatever the groups behind it"
+budget = 11870555
 
 # --- memory ----------------------------------------------------------------------
 # Bytes per row of every output field of every model at its fullest, over the

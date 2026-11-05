@@ -5644,6 +5644,7 @@ n = 400
 floor = 0.05
 worst = 0.0713456
 p95 = 0.0359382
+tolerance = 0.4
 
 [case."second_opinion_seeding.seeding_kmeanspp.ks_over_critical"]
 ideal = 0.0
@@ -7526,3 +7527,11 @@ to = 0.158364
 date = 2026-11-05
 reason = "the MAD scale's warm-up is now the exact weighted median of the refit's held residuals, not a sketch anchored at the first residual, and the oracle's bandwidth is that exact median rather than a model of the sketch's buckets; these grids run without decay, so the first 500 rows' changed scale persists to the end of each stream. Over the two groups 3 of 36 numbers rose (this one among them) and 13 fell by more than 2%, measured on darwin-arm64; CI's linux-x86_64 run sets the ledger's own numbers"
 changelog = "no longer takes its sketch's units from the"
+
+[[raised]]
+key = "second_opinion_hmm.hmm_online_em.error_over_tolerance.tolerance"
+from = 0.02
+to = 0.4
+date = 2026-11-05
+reason = "a case that moves with the runner's CPU: the same hmm code read the worst seed's error over its derived bound at 0.0713456 (run 41953172781, a7b5c85b) and 0.052624 (run 42045692666, 2037f872, whose changes touch no hmm path), 36% apart; the rule amplifies whichever last bits numpy's SIMD kernels and libm give on that CPU (task 322), and the measure is a ratio to a bound that stays under 1 on both; 40% covers that spread"
+changelog = "A case that moves with the runner's CPU has its own tolerance"
