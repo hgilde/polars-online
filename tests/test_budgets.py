@@ -763,7 +763,10 @@ def test_a_constant_cell_fails_past_its_tolerance(large, failed):
 
 def test_a_cell_the_run_missed_fails():
     doc = small(SCALING)
-    counts = {budgets.scale_case("ewridge.k", "small"): 1, budgets.scale_case("ewridge.k", "large"): 2}
+    counts = {
+        budgets.scale_case("ewridge.k", "small"): 1,
+        budgets.scale_case("ewridge.k", "large"): 2,
+    }
     scaled, missing = budgets.judge_scaling(doc, counts)
     assert [v.cell for v in scaled] == ["ewridge.k"]
     assert missing == ["scaling.bank.groups_seen: the run did not count both sizes"]

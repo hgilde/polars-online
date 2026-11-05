@@ -50,6 +50,7 @@ The steps at a glance:
 | [14](#step-14--teststest_golden_pipelinepy) | `tests/test_golden_pipeline.py` | a spec in `specs()`, and its lines in `GOLDEN` | `test_the_golden_pipeline_pins_every_model` |
 | [15](#step-15--docsmodelsmd-and-readmemd) | `docs/MODELS.md`, `README.md`, `docs/OUTPUTS.md`, `llms.txt` | the model's heading, its row and its API links; its family and field meanings in the OUTPUTS generator; the model count | `test_the_models_page_documents_every_model`, the `test_api_links` pair, the `test_outputs_doc` trio, `test_it_says_how_many_models_there_are` |
 | [16](#step-16--changelogmd-and-the-design-note) | `CHANGELOG.md`, and the design note | an entry | **no check** |
+| [17](#step-17--cratesonline-benchsrcscalingrs) | `crates/online-bench/src/scaling.rs`, `docs/PERFORMANCE.md` | a `<kind>.history` cell and a cell for each size the model has, each with its declared growth, and their rows in the table | `every_kind_has_its_cells`; each cell's own test in `crates/online-bench/tests/scaling.rs` |
 
 ## The recursion — `crates/online-core`
 
@@ -712,6 +713,20 @@ defaults, kept with the project's records ([docs/README.md](README.md#records)
 lists them).
 
 **No check.**
+
+### Step 17 — `crates/online-bench/src/scaling.rs`
+
+The model's cells in the scaling table: one that runs it after 1,000 rows
+and after 8,000 (`<kind>.history`, which must cost the same and keep the
+same state), and one for each size it has -- its features, its targets, its
+clusters, a window, a held buffer -- with the growth its algorithm gives a
+row's work and its state. Give each cell its case in `model_case` and its
+row, with the reason, in docs/PERFORMANCE.md's
+[table](PERFORMANCE.md#how-cost-grows-with-size). A cell that fails is a
+growth the model was not meant to have: find it before the model ships.
+
+**Check:** `every_kind_has_its_cells` fails for a kind in `KINDS` with no
+cell, and each cell fails past its declared growth.
 
 ### Then the gate
 

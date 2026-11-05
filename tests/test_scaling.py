@@ -64,7 +64,13 @@ def _seconds(fn: Callable[[], object]) -> float:
     return time.perf_counter() - at
 
 
-def _hold(name: str, small: Callable[[], object], large: Callable[[], object], bound: float, rows: tuple[int, int]) -> None:
+def _hold(
+    name: str,
+    small: Callable[[], object],
+    large: Callable[[], object],
+    bound: float,
+    rows: tuple[int, int],
+) -> None:
     """The least time per row of ``large`` over ``small``'s, within ``bound``
     times the slack."""
     best_s, best_l = float("inf"), float("inf")
@@ -85,19 +91,32 @@ def test_a_chunked_bank_costs_each_spec_the_same(small: int, chunk: int) -> None
     what a call costs a spec -- its columns looked up, its output built --
     is the cost."""
     rows = 4096 if chunk > 4 else 512
-    df = _frame(2048 + rows)
-    warm, block = df.head(2048), df.slice(2048)
+    df = _frame(2048 + RUNS * rows)
+    warm = df.head(2048)
     banks = {}
     for n in (small, STEP * small):
         bank = po.ModelBank(_specs(n), threads=1)
         bank.fit_predict(warm)
         banks[n] = bank
-    chunks = [block.slice(i, chunk) for i in range(0, rows, chunk)]
+    # Each run feeds the next block of the stream, so a bank's clock moves on.
+    blocks = [df.slice(2048 + r * rows, rows) for r in range(RUNS)]
+    at = {n: 0 for n in banks}
 
     def run(n: int) -> Callable[[], object]:
-        return lambda: [banks[n].fit_predict(c) for c in chunks]
+        def go() -> object:
+            block = blocks[at[n]]
+            at[n] += 1
+            return [banks[n].fit_predict(block.slice(i, chunk)) for i in range(0, rows, chunk)]
 
-    _hold(f"bank specs {small}->{STEP * small}, chunk {chunk}", run(small), run(STEP * small), STEP, (rows, rows))
+        return go
+
+    _hold(
+        f"bank specs {small}->{STEP * small}, chunk {chunk}",
+        run(small),
+        run(STEP * small),
+        STEP,
+        (rows, rows),
+    )
 
 
 @pytest.mark.parametrize(("small", "chunk"), [(1, 2048), (8, 2048), (8, 16)])
@@ -112,7 +131,13 @@ def test_the_io_source_costs_each_spec_the_same(small: int, chunk: int) -> None:
         specs = _specs(n)
         return lambda: lf.online.fit_predict(specs, chunk_size=chunk, threads=1).collect()
 
-    _hold(f"io source specs {small}->{STEP * small}, chunk {chunk}", run(small), run(STEP * small), STEP, (rows, rows))
+    _hold(
+        f"io source specs {small}->{STEP * small}, chunk {chunk}",
+        run(small),
+        run(STEP * small),
+        STEP,
+        (rows, rows),
+    )
 
 
 def test_the_io_source_costs_a_row_the_same_however_long_the_stream() -> None:

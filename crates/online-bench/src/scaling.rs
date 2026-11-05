@@ -150,14 +150,14 @@ pub const CELLS: &[Cell] = &[
     cell("huber.k", 4, 8, Pow(2), Pow(2)),
     cell("huber.targets", 1, 8, Pow(1), Pow(1)),
     cell("huber.feature_sets", 1, 8, Pow(1), Pow(1)),
-    cell("huber.refit_rows", 500, 8, Log, Pow(1)),
+    cell("huber.refit_rows", 1000, 8, Log, Pow(1)),
     cell("huber.history", 1000, 8, Const, Const),
     cell("quantile.k", 4, 8, Pow(2), Pow(2)),
-    cell("quantile.refit_rows", 500, 8, Log, Pow(1)),
+    cell("quantile.refit_rows", 1000, 8, Log, Pow(1)),
     cell("quantile.history", 1000, 8, Const, Const),
     cell("sgd.k", 4, 8, Pow(1), Pow(1)),
     cell("sgd.targets", 1, 8, Pow(1), Pow(1)),
-    cell("sgd.refit_rows", 500, 8, Log, Pow(1)),
+    cell("sgd.refit_rows", 1000, 8, Log, Pow(1)),
     cell("sgd.history", 1000, 8, Const, Const),
     cell("pa.k", 4, 8, Pow(1), Pow(1)),
     cell("pa.targets", 1, 8, Pow(1), Pow(1)),
@@ -382,6 +382,38 @@ impl ScaleRun {
         }
     }
 
+    /// Whether the run is on the path its cell is for, read once its
+    /// blocks have run: a refit cell's refit still waits, so its rows are
+    /// held; `micro`'s summaries fill their cap; a window cell's window holds
+    /// rows. `Err` names what is not so.
+    pub fn on_its_path(&self) -> Result<(), String> {
+        let id = self.id;
+        match &self.work {
+            Work::Model { model, .. } if id.ends_with(".refit_rows") => {
+                let s = model.refit_status();
+                if s.is_empty() || s.iter().any(|r| r.done) {
+                    return Err(format!("{id}: the refit ran inside the blocks: {s:?}"));
+                }
+            }
+            Work::Model { model, .. } if id == "micro.max_clusters" => {
+                if let AnyModel::Micro(m) = model.as_ref()
+                    && m.micro_clusters().len() + 1 < self.size
+                {
+                    let n = m.micro_clusters().len();
+                    return Err(format!("{id}: {n} summaries under a cap of {}", self.size));
+                }
+            }
+            Work::Windows { run, .. }
+                if (id.starts_with("windows.window") || id == "windows.forward")
+                    && run.queued() < self.size / 2 =>
+            {
+                return Err(format!("{id}: the window holds {} rows", run.queued()));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// Drop the rows not yet stepped, so what the allocator holds after is
     /// the state alone.
     pub fn drop_data(&mut self) {
@@ -517,6 +549,10 @@ struct ModelCase {
     shape: Shape,
     warm: usize,
     block: usize,
+    /// The row a refit runs on, which the last block must end before: the
+    /// warm-up is then set from the blocks asked for, so every block steps
+    /// with about this many rows held.
+    refit_at: Option<usize>,
 }
 
 impl ModelCase {
@@ -526,6 +562,7 @@ impl ModelCase {
             shape,
             warm: 2_000,
             block: 1_000,
+            refit_at: None,
         }
     }
 
@@ -647,8 +684,8 @@ fn model_case(id: &str, n: usize) -> ModelCase {
         ),
         ("huber", "targets") => ModelCase::new(fit(json!({"type": "huber"}), 8, n), lin),
         ("huber", "history") => ModelCase::new(fit(json!({"type": "huber"}), 8, 1), lin).warm(n),
-        // The rows of the first refit held: the block ends before the refit
-        // runs, with about `n` rows held (the refit's buffer).
+        // The rows of the first refit held: the last block ends before the
+        // refit runs, with about `n` rows held (the refit's buffer).
         ("huber" | "quantile" | "sgd", "refit_rows") => {
             let model = match kind {
                 "huber" => json!({"type": "huber", "huber_refit_rows": n}),
@@ -659,9 +696,9 @@ fn model_case(id: &str, n: usize) -> ModelCase {
                     json!({"type": "sgd", "learning_rate": 0.01, "loss": "huber", "huber_refit_rows": n})
                 }
             };
-            ModelCase::new(fit(model, 4, 1), lin)
-                .warm(n - 300)
-                .block(200)
+            let mut c = ModelCase::new(fit(model, 4, 1), lin).block(200);
+            c.refit_at = Some(n);
+            c
         }
         ("quantile", "k") => ModelCase::new(
             fit(
@@ -817,15 +854,16 @@ fn model_case(id: &str, n: usize) -> ModelCase {
             Shape::Blobs,
         )
         .warm(n),
-        // A radius small against the blobs' spread, so the micro-clusters
-        // fill to their cap.
+        // Uniform rows and a radius a sixth of their range a coordinate, so
+        // the summaries fill to their cap (a smaller radius opens an outlier
+        // a row, pruned before it grows).
         ("micro", "max_clusters") => ModelCase::new(
             untargeted(
-                json!({"type": "micro", "eps": 0.02, "max_clusters": n}),
+                json!({"type": "micro", "eps": 0.3, "max_clusters": n}),
                 4,
                 true,
             ),
-            Shape::Blobs,
+            Shape::Linear,
         ),
         ("micro", "history") => ModelCase::new(
             untargeted(json!({"type": "micro", "eps": 1.0}), 4, true),
@@ -965,7 +1003,14 @@ fn built(id: &str, value: Value) -> Spec {
 }
 
 fn model_setup(id: &'static str, n: usize, blocks: usize) -> ScaleRun {
-    let case = model_case(id, n);
+    let mut case = model_case(id, n);
+    if let Some(at) = case.refit_at {
+        case.warm = at
+            .checked_sub(blocks * case.block + 100)
+            .unwrap_or_else(|| {
+                panic!("{id}: {n} rows too few for {blocks} blocks before the refit")
+            });
+    }
     let spec = built(id, case.spec);
     let mut models = online_polars::build_models(&spec).unwrap_or_else(|e| panic!("{id}: {e}"));
     assert_eq!(models.len(), 1, "{id}: one instance");

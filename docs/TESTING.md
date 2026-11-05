@@ -425,6 +425,7 @@ behaves, then the files the repository promises.
 | `kalman` at any row spacing (2026-10-03) | `crates/online-core/tests/kalman_clock.rs` | `coef_half_life` is a half-life on the clock: a slope step takes about the same clock time to learn at rows 1, 0.25 and 0.04 apart, where the old form parted by a factor of five, and a gap row adds exactly `q d²` to `P` |
 | [the math library's last bits](#the-math-librarys-last-bits) | the bound helpers in `crates/online-core/src/oracle.rs`, and the comments beside each oracle comparison | each oracle comparison held to a bound derived from both sides' rounding, a few ulps for each call to `exp`, `ln`, `exp2` or `powf` among the terms; each value pinned to its bits on a stream that calls none of them |
 | the solve cadence | `tests/test_solve_cadence.py` | by default, `ewridge`, `lasso`, `huber` and `quantile` solve again once the weight learned since the last solve reaches `ln 2 / 50` of the weight the fit holds, so a long half-life still re-solves |
+| [how cost grows](#how-cost-grows-is-held-not-only-what-it-is) | `crates/online-bench/tests/scaling.rs`; the `scale_*` cases in `crates/online-bench/benches/instructions.rs`; `tests/test_scaling.py` | each surface's cost at two sizes of each size it has, held to the growth its algorithm declares: a row's time and allocations, the saved state and its heap natively, a row's instructions on CI |
 
 The files the repository promises are held the same way:
 
@@ -532,6 +533,43 @@ from what `git archive` (a fresh clone, an sdist) would produce. It was
 written after 136 files of `cargo mutants` output sat tracked for several
 commits, swept in by a `git add -A`, with nothing complaining. It was
 verified to fire as well as to pass.
+
+#### How cost grows is held, not only what it is
+
+**A budget catches a workload that got slower; a ratio of two sizes catches
+one that grows the wrong way.** A budget in `budgets.toml` fixes the cost of
+one workload at one size and compares each run with it. A cost that grows
+with a size the workload holds small is invisible to it, however long it has
+been there: `with_windows(group=...)` walked every group the stream had seen
+on every row in every release from 1.0.0, while every window test used a
+handful of groups and the one budget case with 1,000 groups set its number
+with the walk already in it. So each surface also declares how a row's work
+and its state grow with each size it has, and
+`crates/online-bench/tests/scaling.rs` measures every declaration at two
+sizes, `n` and usually `8n`, and fails where the ratio exceeds the declared
+growth. No earlier run's number is read, so a defect present from the first
+day fails on the first run. docs/PERFORMANCE.md's
+[table](PERFORMANCE.md#how-cost-grows-with-size) gives every cell, its
+reason and its measured ratios.
+
+**Natively the counts are exact and time is a backstop.** An allocation
+count, the saved state's bytes and the heap freed on drop are the same on
+every run, so they are held within 25% of the declared growth. Time is held
+within a factor of `step^0.5`, 2.8 at a step of 8, the least of three blocks
+taken in turn at the two sizes. On CI, Callgrind counts the instructions of
+the cells in `[scaling.cells]` of `budgets.toml` at both sizes, and
+`scripts/budgets.py check` holds their ratio within one run to 10% past the
+declared growth.
+
+**A cell that fails is a finding, held in the extended tier until it is
+fixed.** It keeps its declaration and its test is marked `#[ignore =
+"extended: scaling finding <id>"]`, so the essentials stay green while the
+fix is dispatched, and the extended tier, which every push runs, fails until
+the fix lands. A declaration changes only where the algorithm's own growth is
+higher by design, with the reason in the table. Each kind has a cell for the
+rows a stream has already seen and one for a size of its own
+(`every_kind_has_its_cells`), so a new model joins the table with its first
+test.
 
 #### Examples are executed
 

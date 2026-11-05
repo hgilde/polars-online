@@ -23,6 +23,10 @@ fn spec(name: String, model: Value, features: usize, target: bool) -> Spec {
         "gap_cap": 100.0,
         "half_life": 1000.0,
     });
+    if v["model"]["type"] == "bocpd" {
+        // A run-length posterior forgets by its hazard, not a half-life.
+        v.as_object_mut().expect("an object").remove("half_life");
+    }
     if target {
         v["targets"] = json!(["y0"]);
         v["min_weight"] = json!(features as f64);

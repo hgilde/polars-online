@@ -134,6 +134,11 @@ fn measure(c: &Cell) -> (Measured, Measured) {
         }
     }
     let is_run = small.is_run();
+    // Each size is on the path its cell is for: a refit still waiting, a
+    // cap filled, a window holding its rows.
+    for run in [&small, &large] {
+        run.on_its_path().unwrap_or_else(|e| panic!("{e}"));
+    }
     out[0].saved = small.state_bytes();
     out[1].saved = large.state_bytes();
     out[1].heap = heap_of(large);
@@ -280,6 +285,32 @@ fn every_cell_is_held_by_one_test() {
             .count();
         assert_eq!(held, 1, "{}: held by {held} tests", c.id);
         assert!(c.small >= 1 && c.step >= 2, "{}", c.id);
+    }
+}
+
+/// Every model kind has its cells: one that holds a row's work and the state
+/// to O(1) in the rows the stream has seen, and one for a size it has. A
+/// kind added without them is in no row of the table (docs/EXTENDING.md).
+/// `rcov` alone has no history cell: its block is closed by the bank, so a
+/// model fed rows with no close holds every row by design, and its cells are
+/// the block's length and the width.
+#[test]
+fn every_kind_has_its_cells() {
+    for kind in online_polars::ModelKind::KINDS {
+        let cells: Vec<&str> = CELLS
+            .iter()
+            .filter(|c| c.id.split_once('.').map(|(k, _)| k) == Some(*kind))
+            .map(|c| c.id)
+            .collect();
+        let history = format!("{kind}.history");
+        assert!(
+            *kind == "rcov" || cells.contains(&history.as_str()),
+            "{kind}: no {history} cell"
+        );
+        assert!(
+            cells.iter().any(|c| !c.ends_with(".history")),
+            "{kind}: no cell for a size the model has"
+        );
     }
 }
 

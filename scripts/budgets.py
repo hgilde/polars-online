@@ -242,7 +242,8 @@ def scaling_report(scaled: list[Scaled]) -> str:
     lines = [
         "### Scaling",
         "",
-        "Each cell's instructions at its larger size over its smaller, against its declared growth.",
+        "Each cell's instructions at its larger size over its smaller, "
+        "against its declared growth.",
         "",
         "| cell | small | large | ratio | allowed | |",
         "|---|---|---|---|---|---|",
@@ -370,9 +371,10 @@ def check_scaling_file(doc: dict, cells: list[str] | None) -> list[str]:
             )
     if cells is not None and set(cells) != set(table.get("cells", {})):
         listed = set(table.get("cells", {}))
+        only_file, only_bench = sorted(listed - set(cells)), sorted(set(cells) - listed)
         errors.append(
-            f"[scaling.cells] and the bench disagree: in the file only {sorted(listed - set(cells))}, "
-            f"in the bench only {sorted(set(cells) - listed)}"
+            f"[scaling.cells] and the bench disagree: in the file only {only_file}, "
+            f"in the bench only {only_bench}"
         )
     return errors
 
@@ -857,7 +859,7 @@ def make_baseline(
 # --- the command line ------------------------------------------------------------
 
 
-def _split(counts: dict[str, int]) -> tuple[dict[str, float], dict[str, float]]:
+def _split(counts: dict[str, int]) -> tuple[dict, dict]:
     """A run's counts: the budgeted cases by key, and the scaling cases by
     bench id."""
     budgeted = {f"instructions.{k}": v for k, v in counts.items() if not k.startswith(SCALE_PREFIX)}
@@ -887,9 +889,13 @@ def _cmd_check(args: argparse.Namespace) -> int:
     problems += [f"{k}: budgeted, and the run did not measure it" for k in missing]
     repeat = repeat_failures(doc, first, second) if second is not None else []
     if second_scaled is not None:
-        repeat += repeat_failures(doc, *(
-            {f"instructions.{k}": v for k, v in run.items()} for run in (first_scaled, second_scaled)
-        ))
+        repeat += repeat_failures(
+            doc,
+            *(
+                {f"instructions.{k}": v for k, v in run.items()}
+                for run in (first_scaled, second_scaled)
+            ),
+        )
     scaled, scale_missing = judge_scaling(doc, first_scaled)
     if scaled:
         text += "\n" + scaling_report(scaled)
@@ -940,9 +946,7 @@ def _cmd_check(args: argparse.Namespace) -> int:
 
 def _cmd_raises(_: argparse.Namespace) -> int:
     doc = load()
-    errors = check_file(
-        doc, CHANGELOG.read_text(encoding="utf-8"), bench_cases(), scale_cells()
-    )
+    errors = check_file(doc, CHANGELOG.read_text(encoding="utf-8"), bench_cases(), scale_cells())
     versions, shallow = history()
     errors += check_history(versions, BUDGETS.read_text(encoding="utf-8"))
     print(f"budgets.toml: {len(versions)} committed versions read{' (shallow clone)' * shallow}")
