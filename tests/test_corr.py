@@ -328,6 +328,34 @@ def test_spectral_round_trips_through_from_spectral():
     assert np.linalg.eigvalsh(low).min() > -1e-12
 
 
+def test_spectral_is_arpacks_top_eigenpairs():
+    """Task 320, rank 17: ``spectral`` runs numpy's ``eigh`` (LAPACK's
+    divide and conquer), so numpy is no oracle for it; scipy's ``eigsh``
+    finds the top ``k`` eigenpairs by ARPACK's implicitly restarted Lanczos
+    iteration instead, a different algorithm. Values and vectors agree once
+    ARPACK's are put in descending order and signed by the same rule
+    (largest-magnitude entry positive). Measured 2026-11-04: 8.9e-16 in the
+    values and 9.3e-15 in the vectors, over three factors of a 12-variable
+    matrix whose top eigenvalues are well apart."""
+    from scipy.sparse.linalg import eigsh
+
+    rng = np.random.default_rng(17)
+    n, p = 2000, 12
+    f = rng.standard_normal((n, 3)) * np.array([3.0, 2.0, 1.2])
+    x = f @ rng.standard_normal((3, p)) + rng.standard_normal((n, p))
+    r = np.corrcoef(x.T)
+    k = 4
+    vals, vecs = corr.spectral(r, k)
+    want_vals, want_vecs = eigsh(r, k=k, which="LA", tol=0.0, v0=np.ones(p))
+    order = np.argsort(want_vals)[::-1]
+    want_vals, want_vecs = want_vals[order], want_vecs[:, order].T
+    for row in want_vecs:
+        row *= np.sign(row[np.argmax(np.abs(row))])
+    assert np.min(-np.diff(want_vals)) > 0.1, "the eigenvalues are apart"
+    np.testing.assert_allclose(vals, want_vals, rtol=1e-13)
+    np.testing.assert_allclose(vecs, want_vecs, rtol=0, atol=1e-12)
+
+
 def test_block_means_round_trips_through_from_blocks():
     r = np.array(
         [
