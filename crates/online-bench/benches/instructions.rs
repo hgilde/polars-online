@@ -142,6 +142,8 @@ fn windows(mut run: WindowsCase) -> WindowsCase {
 #[bench::scale_marginal_by_k_large(args = ("marginal.k:large"), setup = scale_setup)]
 #[bench::scale_bank_by_groups_seen_small(args = ("bank.groups_seen:small"), setup = scale_setup)]
 #[bench::scale_bank_by_groups_seen_large(args = ("bank.groups_seen:large"), setup = scale_setup)]
+#[bench::scale_bank_by_groups_seen_per_call_small(args = ("bank.groups_seen_per_call:small"), setup = scale_setup)]
+#[bench::scale_bank_by_groups_seen_per_call_large(args = ("bank.groups_seen_per_call:large"), setup = scale_setup)]
 #[bench::scale_bank_by_history_small(args = ("bank.history:small"), setup = scale_setup)]
 #[bench::scale_bank_by_history_large(args = ("bank.history:large"), setup = scale_setup)]
 #[bench::scale_bank_by_embargo_small(args = ("bank.embargo:small"), setup = scale_setup)]

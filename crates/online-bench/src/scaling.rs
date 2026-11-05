@@ -210,6 +210,10 @@ pub const CELLS: &[Cell] = &[
     cell("audit.history", 1000, 8, Const, Log),
     // --- the bank, `Bank::fit_predict` on a pool of one thread --------------
     cell("bank.groups_seen", 250, 8, Const, Pow(1)),
+    // The same in calls of four rows, each to one group: what a call costs
+    // beyond its rows -- finding its groups' streams, taking their notices
+    // -- must not grow with the groups behind it either.
+    cell("bank.groups_seen_per_call", 1000, 8, Const, Pow(1)),
     // Specs on one stream: over the same columns, each over columns of its
     // own, a mix of five kinds (the size is the mix's copies, five specs
     // each), and the same in calls of four rows, where what a call costs a
@@ -276,6 +280,7 @@ pub const BENCH_CELLS: &[&str] = &[
     "ew_cov.window",
     "marginal.k",
     "bank.groups_seen",
+    "bank.groups_seen_per_call",
     "bank.history",
     "bank.embargo",
     "bank.formula_window",
@@ -1149,6 +1154,20 @@ fn bank_setup(id: &'static str, n: usize, blocks: usize) -> ScaleRun {
             specs[0]["group"] = json!("g");
             warm = 10 * n;
             group_of = Some(Box::new(move |i| if i < 10 * n { i % n } else { i % 50 }));
+        }
+        // Every group seen twice in the warm-up, then calls of four rows,
+        // each call one group's, the first 50 in turn.
+        "groups_seen_per_call" => {
+            specs[0]["group"] = json!("g");
+            warm = 2 * n;
+            chunk = 4;
+            group_of = Some(Box::new(move |i| {
+                if i < 2 * n {
+                    i % n
+                } else {
+                    ((i - 2 * n) / 4) % 50
+                }
+            }));
         }
         "specs" | "specs_wide" | "specs_per_call" | "specs_per_call_wide" => {
             specs = (0..n)
