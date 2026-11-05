@@ -251,11 +251,12 @@ def test_chunking_and_save_load_across_the_reset(name, df, tmp_path):
 def test_the_refit_starts_over_after_a_reset(name, df, tmp_path):
     """A reset rebuilds the model as a fresh bank would, its refit buffer
     empty: the refit of the first 500 learned rows runs before the break and
-    again 500 rows after the reset, each moving the fit (the run without it,
-    ``huber_refit_rows = 0``, parts there and not before). A save and a load
-    between the reset and the second refit, and after it, go on to the bit."""
+    again 500 rows after the reset, each moving the fit (a run whose refit
+    waits past the rows, its scale read from the same buffered residuals,
+    parts there and not before). A save and a load between the reset and
+    the second refit, and after it, go on to the bit."""
     s = spec(name)
-    off = {**s, "model": {**s["model"], "huber_refit_rows": 0}}
+    off = {**s, "model": {**s["model"], "huber_refit_rows": 100_000}}
     one = run(po.ModelBank([s], threads=1), df)
     t = first_fire(one)
     zero = run(po.ModelBank([off], threads=1), df)
