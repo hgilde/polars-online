@@ -1546,9 +1546,6 @@ impl Robust {
         };
         let nf = self.cfg.n_features;
         let held = self.refit[j].take();
-        // The one-pass sketch first, for a refit that fails; the rebuilt
-        // one replaces it below.
-        self.scale_from_held(j, &held);
         let rows = Rows::new(&held.rows, &held.ages, nf);
         let n = rows.len();
         // The scale reads the residuals at the weights its own clock has
@@ -1620,6 +1617,10 @@ impl Robust {
         let Some(b) = beta.filter(|_| solved) else {
             self.refit[j].fail();
             self.solve_failures += 1;
+            // No fit to rebuild the scale from: the sketch from the
+            // one-pass `|e|` held, built only here, so a refit that runs
+            // allocates no sketch it then drops.
+            self.scale_from_held(j, &held);
             return;
         };
         // A refit that took every pass is counted, as a seeding's Lloyd run

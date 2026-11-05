@@ -127,9 +127,6 @@ impl Robust {
     pub(super) fn refit_quantile(&mut self, j: usize, tau: f64) {
         let nf = self.cfg.n_features;
         let held = self.refit[j].take();
-        // The one-pass sketch first, for a refit that leaves the warm-up's
-        // fit or fails; the rebuilt one replaces it below.
-        self.scale_from_held(j, &held);
         let rows = Rows::new(&held.rows, &held.ages, nf);
         let n = rows.len();
         let v = rows.decayed_weights();
@@ -140,7 +137,9 @@ impl Robust {
         let count: f64 = (0..n).map(|i| v[i] / rows.w(i)).sum();
         if count.is_nan() || count < WARM_ROWS * kf {
             // Still the warm-up's least squares: the stream's sums are the
-            // batch fit's, and the refit leaves them.
+            // batch fit's, and the refit leaves them, its scale the sketch
+            // from the one-pass `|e|` held.
+            self.scale_from_held(j, &held);
             return;
         }
         let width = self.cfg.quantile_eps.max((kf / count).powf(0.4));
@@ -241,6 +240,7 @@ impl Robust {
         let Some(b) = beta.filter(|_| solved) else {
             self.refit[j].fail();
             self.solve_failures += 1;
+            self.scale_from_held(j, &held);
             return;
         };
         // A refit that took every pass is counted, as `huber`'s is: its fit

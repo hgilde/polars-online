@@ -508,3 +508,55 @@ fn the_window_operators_keep_their_pending_list() {
         check(id, got, 0.6, 1.42);
     }
 }
+
+/// While a refit waits, the MAD is read from a tree of the residuals its
+/// buffer holds (task 323), each row inserted and the median walked: the
+/// tree's nodes are reserved with the buffer, at its first learned row, so
+/// a row allocates nothing for it. Counted over 1,000 rows of a refit
+/// waiting past them (a count of 5,000) beside the same spec with the refit
+/// off, for each model that keeps the read -- `huber`, `quantile`,
+/// `sgd(loss="huber")` and `marginal`'s Huber bins on given edges -- the
+/// waiting refit allocates no more a row, but for the bins' own hold of
+/// each row (their refit holds the rows whole); the deviations beside it
+/// are reserved with the hold.
+#[test]
+fn the_held_median_allocates_nothing_a_row() {
+    let bins = json!({"type": "marginal", "bin_edges": [[-0.5, 0.0, 0.5], [-0.5, 0.0, 0.5], [-0.5, 0.0, 0.5]], "bin_stat": "huber"});
+    for (kind, base, key) in [
+        ("huber", json!({"type": "huber"}), "huber_refit_rows"),
+        (
+            "quantile",
+            json!({"type": "quantile", "quantile": 0.5}),
+            "quantile_refit_rows",
+        ),
+        (
+            "sgd",
+            json!({"type": "sgd", "loss": "huber", "learning_rate": 0.01}),
+            "huber_refit_rows",
+        ),
+        ("marginal", bins, "bin_refit_rows"),
+    ] {
+        let spec = |rows: u32| {
+            let mut model = base.clone();
+            model[key] = json!(rows);
+            json!({"name": "m", "model": model, "targets": ["y0"], "features": names("x", 3), "half_life": 500.0})
+        };
+        let waiting = per_row_with(spec(5_000), 3, 1, true);
+        let off = per_row_with(spec(0), 3, 1, true);
+        // The bins hold each row whole for their refit, as they did before
+        // the tree: its features and targets, two vectors a row, and the
+        // list of rows grown by doubling up to the count, at most
+        // `log2(5000 / 4) + 1 = 11` times.
+        let hold = if kind == "marginal" {
+            2.0 + 11.0 / ROWS as f64
+        } else {
+            0.0
+        };
+        check(
+            &format!("{kind}, its refit waiting (off: {off:.3})"),
+            waiting,
+            off + hold,
+            off,
+        );
+    }
+}

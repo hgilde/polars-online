@@ -489,7 +489,8 @@ impl RefitBuf {
     /// from here (its `|e|`, where it kept them, an empty list).
     pub(crate) fn take(&mut self) -> Taken {
         self.done = true;
-        self.median = HeldMedian::new(1);
+        // No tree, and no allocation for one.
+        self.median = HeldMedian::new(0);
         Taken {
             rows: std::mem::take(&mut self.rows),
             ages: std::mem::take(&mut self.ages),

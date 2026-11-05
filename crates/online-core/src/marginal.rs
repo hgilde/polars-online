@@ -794,7 +794,7 @@ impl Binned {
         if self.before_65 {
             hist.await_first_values();
         } else if self.refit_open(cfg) {
-            hist.hold_deviations();
+            hist.hold_deviations(cfg.refit_rows as usize);
         }
     }
 }
