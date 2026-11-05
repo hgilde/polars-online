@@ -946,7 +946,9 @@ class TestScaleFloorDefinition:
                     assert np.all((X[i] - mu_l) ** 2 <= cls.CLIP * v_long[i]), i
             if idx.size >= 2:
                 floored = np.maximum(v[i], np.nan_to_num(scale_floor * v_long[i]))
-                metric[i] = np.where(floored > 0.0, 1.0 / np.where(floored > 0.0, floored, 1.0), 1.0)
+                metric[i] = np.where(
+                    floored > 0.0, 1.0 / np.where(floored > 0.0, floored, 1.0), 1.0
+                )
         return v, v_long, metric
 
     def test_the_floored_metric_and_the_distances_are_the_definition(self):

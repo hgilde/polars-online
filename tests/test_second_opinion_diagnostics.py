@@ -852,6 +852,85 @@ class TestInfluenceIsDffitsAtTheNewestRow:
         assert checked == 59
 
 
+class TestInfluenceUnderAMemoryIsWlsRowByRow:
+    """Task 320, rank 11. Under a finite ``half_life`` and
+    ``influence_half_life``, ``influence = (v / s) sqrt(h)`` from its
+    definition with every regression quantity statsmodels': for each row,
+    ``WLS`` over the rows before it at weights ``w·0.5^(age/half_life)``
+    gives the prediction (so the residual ``e``) and ``(X'ΩX)⁻¹``; the
+    leverage is ``h = x'(X'ΩX)⁻¹x · W / n_kish``, the WLS leverage scaled by
+    the weights' total over Kish's size ``W² / Σω²`` (this library reads a
+    row's leverage against the mean-form Gram over Kish's size, so that
+    uneven or decayed weights count as the rows they are worth); ``v = e /
+    sqrt(1 + h)``; and ``s²`` is ``DescrStatsW``'s weighted mean of the
+    folded rows' ``v²`` before the row, at ``w·0.5^(age/influence_half_
+    life)``. The rows folded are the fit's settled ones (``settled_frac ≥
+    0.95``), a gate of this library's. statsmodels' ``OLSInfluence.dffits``
+    itself is not the quantity here: it divides the residual sum of squares
+    by ``n − k − 1`` rows, where this scale is a weighted mean, and it reads
+    WLS's leverage without Kish's factor; the two meet only run once at unit
+    weights, which ``TestInfluenceIsDffitsAtTheNewestRow`` holds."""
+
+    @pytest.mark.parametrize("influence_half_life", [30.0, 120.0])
+    def test_each_rows_influence_is_its_definition_from_wls(self, influence_half_life):
+        import statsmodels.api as sm
+        from statsmodels.stats.weightstats import DescrStatsW
+
+        rng = np.random.default_rng(83)
+        n, h = 900, 120.0
+        x = rng.normal(size=(n, 2)) + np.array([1.0, -2.0])
+        x[::41, 0] += 4.0  # rows of high leverage
+        e = rng.standard_t(5, size=n)
+        y = 0.3 + x @ np.array([1.2, -0.7]) + e
+        w = rng.uniform(0.5, 1.5, n)
+        df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y, "w": w})
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            half_life=h,
+            weight="w",
+            ridge=1e-12,
+            solve_every=0.0,
+            min_weight=10.0,
+            emit_error_inflation=True,
+            emit_influence=True,
+            influence_half_life=influence_half_life,
+        )
+        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        X = sm.add_constant(x)
+        ready = out["settled_frac"].to_numpy() >= 0.95
+        first = int(np.argmax(ready))
+        assert 400 < first < 600, first
+        lev = np.full(n, np.nan)
+        v = np.full(n, np.nan)
+        for t in range(first - 1, n):
+            om = w[:t] * 0.5 ** (((t - 1) - np.arange(t)) / h)
+            fit = sm.WLS(y[:t], X[:t], weights=om).fit()
+            kish = om.sum() ** 2 / (om**2).sum()
+            lev[t] = X[t] @ fit.normalized_cov_params @ X[t] * om.sum() / kish
+            v[t] = (y[t] - X[t] @ fit.params) / np.sqrt(1.0 + lev[t])
+        got = out["influence_y"].to_numpy().astype(float)
+        np.testing.assert_allclose(
+            out["error_inflation_y"].to_numpy()[first:] ** 2 - 1.0, lev[first:], rtol=1e-10
+        )
+        want = np.full(n, np.nan)
+        for t in range(first + 1, n):
+            past = np.arange(first, t)
+            om = w[past] * 0.5 ** (((t - 1) - past) / influence_half_life)
+            s = np.sqrt(DescrStatsW(v[past] ** 2, weights=om).mean)
+            want[t] = v[t] / s * np.sqrt(lev[t])
+        diff = np.abs(got - want)[first + 1 :]
+        print(f"influence_half_life {influence_half_life}: worst {diff.max():.1e} absolute")
+        # Absolute: the residual is a difference of numbers of y's size, so
+        # the two predictions' last bits (1e-13 of y here) are what is left
+        # where an influence is small. Measured 2026-11-04: 1.1e-12.
+        np.testing.assert_allclose(got[first + 1 :], want[first + 1 :], rtol=0, atol=5e-12)
+        # The rows of high leverage stand out: the largest is 0.76, fifteen
+        # times the median.
+        assert np.abs(want[first + 1 :]).max() > 10 * np.median(np.abs(want[first + 1 :]))
+
+
 class TestFeatureHealthIsTwoWeightedMoments:
     """Task 221 (g). ``spread_ratio_<f>`` and ``mean_shift_<f>`` are
     ``statsmodels``' ``DescrStatsW`` weighted mean and standard deviation
