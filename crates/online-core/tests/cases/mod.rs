@@ -1482,6 +1482,21 @@ pub fn all() -> Vec<Case> {
             Targets::Class(3),
             40
         ),
+        // The diagonal shape, which keeps each class's variances alone
+        // (schema 66, task 327); `ew_class_window` is its windowed form.
+        case!(
+            "ew_class_diag",
+            "EwClass",
+            EwClass,
+            EwClass::new(EwClassCfg {
+                covariance: Covariance::Diagonal,
+                ..ew_class_cfg()
+            })
+            .unwrap(),
+            K,
+            Targets::Class(3),
+            40
+        ),
         case!(
             "ew_class_window",
             "EwClass",
@@ -1763,6 +1778,34 @@ pub fn all() -> Vec<Case> {
                 // The pooled shape, so the fixture freezes its word, "tied"
                 // (task 244, schema 61); `ew_class_window`'s is "diag".
                 covariance: Covariance::Shared,
+                precision_prior: 1e-2,
+                min_weight: 0.0,
+                learn: true,
+                transition_prior: 1.0,
+                transition: None,
+                means: None,
+                covs: None,
+                warm_rows: 10,
+                seed_rule: SeedRule::First,
+                seed: 1,
+                tvtp: None,
+            })
+            .unwrap(),
+            K,
+            Targets::None,
+            40
+        ),
+        // The diagonal shape, which keeps each state's variances alone
+        // (schema 66, task 327).
+        case!(
+            "hmm_diag",
+            "Hmm",
+            Hmm,
+            Hmm::new(HmmCfg {
+                n_features: K,
+                k: 2,
+                decay: decay(),
+                covariance: Covariance::Diagonal,
                 precision_prior: 1e-2,
                 min_weight: 0.0,
                 learn: true,

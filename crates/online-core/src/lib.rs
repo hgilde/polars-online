@@ -145,7 +145,7 @@ pub use deco::{Deco, DecoCfg, DecoDynamics};
 pub use drift::PageHinkley;
 pub use ewclass::{Covariance, EwClass, EwClassCfg};
 pub use ewcov::{
-    EwCov, EwCovCfg, EwCovModel, EwCovStat, LowerTriangle, Pca, TargetMoments, partial_corr,
+    EwCov, EwCovCfg, EwCovDiag, EwCovModel, EwCovStat, LowerTriangle, Pca, TargetMoments, partial_corr,
     variance_is_usable,
 };
 pub use ewdiag::{EwDiag, Including};
@@ -194,8 +194,8 @@ pub use stats::{
 pub use tails::Tails;
 pub use warmup::{WARMUP_ROWS, Warmup};
 pub use window::{
-    At, Bytes, Cadence, Footprint, Moments, Snapshots, WindowBudget, WindowClosed, WindowShadow,
-    truncated, truncated_mean, truncated_scalar,
+    At, Bytes, Cadence, DiagMoments, Footprint, Moments, Snapshots, WindowBudget, WindowClosed,
+    WindowShadow, truncated, truncated_diag, truncated_mean, truncated_scalar,
 };
 
 /// Version of the serialized model-state layout.
