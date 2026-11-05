@@ -361,6 +361,85 @@ SIX = dict(
 )
 
 
+class TestUnderDecayIsScikitLearnAndScipy:
+    """Task 320 (§3b): the forgetting form held to third parties at a
+    negligible ``precision_prior`` (1e-12, in squared units of features of
+    unit spread). Every class's weight decays on every row, so at each row
+    the classes are the batch fit over the labelled rows before it, each at
+    ``w · 0.5^(age / half_life)`` on the clock. ``"diag"`` is scikit-learn's
+    ``GaussianNB`` fitted with those ``sample_weight``s (``var_smoothing =
+    0``): its weighted class priors, means and biased variances are
+    ``π_c = n_c / Σ n``, ``μ_c`` and ``diag(C_c)``, and ``predict_proba`` is
+    the posterior. ``"full"`` and ``"tied"`` are scipy's
+    ``multivariate_normal`` at numpy's weighted ``cov(aweights=, bias=True)``
+    per class, and at ``Σ_c π_c C_c`` for the tied one, by Bayes' rule.
+    Measured 2026-11-04: 1.3e-14 at most in a posterior (a decayed Welford
+    recursion against batch moments, through ``exp2`` and ``pow`` over an
+    irregular clock, then a softmax)."""
+
+    @pytest.mark.parametrize("covariance", SHAPES)
+    def test_each_rows_posteriors_are_the_weighted_batch_fit(self, covariance):
+        from scipy.stats import multivariate_normal
+        from sklearn.naive_bayes import GaussianNB
+
+        means = [[0.0, 0.0], [2.0, 1.0], [-1.0, 2.0]]
+        covs = [[[1.0, 0.5], [0.5, 1.0]], [[1.5, -0.4], [-0.4, 0.8]], [[0.7, 0.0], [0.0, 1.2]]]
+        n, h = 1500, 150.0
+        X, lab = gaussians(n, means, covs, seed=41)
+        rng = np.random.default_rng(41)
+        t = np.cumsum(rng.exponential(1.0, n))
+        w = rng.uniform(0.5, 1.5, n)
+        w[rng.random(n) < 0.05] = 0.0
+        df = frame(X, lab, null_every=13, t=t, w=w)
+        out = unnested(
+            po.ModelBank(
+                [
+                    spec(
+                        covariance_type=covariance,
+                        precision_prior=1e-12,
+                        half_life=h,
+                        min_weight=0.0,
+                        clock="t",
+                        gap_cap=1e9,
+                        weight="w",
+                    )
+                ]
+            ).fit_predict(df)
+        )
+        got = out.select("p_a", "p_b", "p_c").to_numpy()
+        learned = (w > 0.0) & (np.arange(n) % 13 != 0)
+        worst = 0.0
+        checked = 0
+        for i in range(60, n, 7):
+            rows = np.flatnonzero(learned[:i])
+            sw = w[rows] * 0.5 ** ((t[i - 1] - t[rows]) / h)
+            if covariance == "diag":
+                nb = GaussianNB(var_smoothing=0.0).fit(X[rows], lab[rows], sample_weight=sw)
+                want = nb.predict_proba(X[i : i + 1])[0]
+            else:
+                pis, mus, cs = [], [], []
+                for c in range(3):
+                    m = lab[rows] == c
+                    pis.append(sw[m].sum() / sw.sum())
+                    mus.append(np.average(X[rows][m], axis=0, weights=sw[m]))
+                    cs.append(np.cov(X[rows][m].T, aweights=sw[m], bias=True))
+                if covariance == "tied":
+                    pooled = sum(p * c for p, c in zip(pis, cs, strict=True))
+                    cs = [pooled] * 3
+                ell = np.array(
+                    [
+                        math.log(pis[c]) + multivariate_normal(mus[c], cs[c]).logpdf(X[i])
+                        for c in range(3)
+                    ]
+                )
+                want = np.exp(ell - ell.max()) / np.exp(ell - ell.max()).sum()
+            worst = max(worst, float(np.max(np.abs(got[i] - want))))
+            checked += 1
+        print(f"{covariance}: worst {worst:.1e} over {checked} rows")
+        assert checked > 200
+        assert worst <= 1e-12, worst
+
+
 class TestLargeData:
     def test_two_hundred_thousand_rows_reach_the_bayes_rate_and_are_calibrated(self):
         X, lab = gaussians(200_000, seed=5, probs=[0.5, 0.3, 0.2], **SIX)
