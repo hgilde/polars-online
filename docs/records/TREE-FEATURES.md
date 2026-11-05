@@ -1,13 +1,14 @@
 # What this library adds to XGBoost and LightGBM: designs, measured
 
-**Status as of 2026-11-05: design and measurement for PLAN task 324, v1;
+**Status as of 2026-11-05: design and measurement for PLAN task 324, v2
+(v1, then the self-review of §9 and the measurements it asked for);
 nothing is built.** The question (the user, 2026-11-05): what can this
 library add, at high impact, to the batch tree libraries without rewriting
 them, choosing ideas that will not be rethought later. Each candidate was
 prototyped in Python (numpy, Polars, the bank as it is, XGBoost 3.4.1,
 LightGBM 4.7.0) on public data and on data that plants the effect, and is
 ranked here by the gain it measured. The prototypes are kept as
-`scripts/tree_features/` (§9 runs them). [BOOSTED-TREES.md](../BOOSTED-TREES.md)
+`scripts/tree_features/` (§11 runs them). [BOOSTED-TREES.md](../BOOSTED-TREES.md)
 is the earlier question, an online tree model inside the library, and
 [GBDT-ADAPTER.md](../GBDT-ADAPTER.md) the one that built `po.gbdt`.
 
@@ -17,9 +18,9 @@ is the earlier question, an online tree model inside the library, and
 
 | rank | item | measured gain | cost to build | surface | risk |
 |---:|---|---|---|---|---|
-| 1 | **Target statistics of a categorical**, decayed, read before the row's label, labels folded in only once known | real data: arrival delay MAE 24.25 → 22.47 (−7%) with a 30-day half-life; → 20.92 (−14%) with short half-lives beside it; delayed-flight AUC 0.640 → 0.746. Planted: RMSE 1.50 → 1.17, where every batch encoder stays at 1.45 to 1.55 | a model kind, about 1,600 lines with tests; or a recipe today at 0 lines once a `with_windows` defect is fixed (§2.6) | `po.spec.target_encoder` | low: the arithmetic is a mean |
-| 2 | **Frozen trees as features of an online model**: a reader of the libraries' model files, and each row's leaves as inputs to `sgd`/`ftrl`/`ewridge` | planted drift: RMSE 2.44–2.55 frozen → 1.02–1.03 (noise floor 1.00); real: flights 37.46 → 36.86 (−1.6%), BTCUSDT none | about 1,650 lines with tests | `trees=po.trees(...)` on the linear kinds | medium: a fifth unstable interface, the model file formats |
-| 3 | **`offset=`, and a model of the intercept alone**: an external model's prediction as the offset of an online one | 90% intervals around a frozen tree model: coverage 0.900 online against 0.59–0.77 static on planted drift, 0.880 against 0.917 on flights; online bias alone: flights RMSE 37.39 → 36.74 | about 600 lines with tests, no state change | `offset=` on the regression kinds | low |
+| 1 | **Target statistics of a categorical**, decayed, read before the row's label, labels folded in only once known | real data: arrival delay MAE 24.25 → 22.47 (−7%) with a 30-day half-life; → 20.92 (−14%) with short half-lives beside it; delayed-flight AUC 0.640 → 0.746; a cap of 1,024 levels costs nothing. Planted: RMSE 1.50 → 1.17, where every batch encoder stays at 1.45 to 1.55 | first, fix the `with_windows` defect of §6.1, which makes it an exact recipe; then a model kind, about 1,600 lines with tests | `po.spec.target_encoder` | low: the arithmetic is a mean |
+| 2 | **`offset=`, and a model of the intercept alone**: an external model's prediction as the offset of an online one | 90% intervals around a frozen tree model: coverage 0.900 online against 0.59–0.77 static on planted drift, 0.880 against 0.917 on flights; online bias alone: flights RMSE 37.39 → 36.74 (−1.7%), planted 2.44–2.55 → 1.47–1.50 | about 600 lines with tests, no state change | `offset=` on the regression kinds | low |
+| 3 | **Frozen trees as features of an online model**: each row's leaves as inputs to `sgd`/`ftrl`/`ewridge` | planted drift: RMSE 2.44–2.55 frozen → 1.02–1.03 (noise floor 1.00); real: flights 37.46 → 36.86 (−1.6%), BTCUSDT none | a recipe today in Python (§3.3, measured); a reader of the model files for the command line and for serving without the libraries, about 1,650 lines with tests | `trees=po.trees(...)`, appended by the bank to any kind's features | medium for the reader: a fifth unstable interface, the model file formats |
 | 4 | **A base margin through `po.gbdt`** | planted level outside the training range: RMSE 5.83 trees, 3.13 with the online prediction as a feature, 1.02 as the margin; in range, margin = feature; real: BTCUSDT Poisson 0.4682 → 0.4603 log-RMSE, flights worse than as a feature | about 400 lines with tests | `base_margin=` / `init_score=` | low |
 | 5 | **Ranking groups through `po.gbdt`** | a capability, not an accuracy: unmeasured. Found that XGBoost splits a group that straddles two batches, silently | about 300 lines with tests | `qid=` / `group_column=` | low, once the batching rule is kept |
 | — | pairwise interaction screen | planted: linear model 1.337 → 1.148, XGBoost constraints 1.034 → 1.025; real: none on either dataset | deferred (§7) | | |
@@ -45,9 +46,9 @@ batches, both without a word.
 
 | data | rows | what it is | used for |
 |---|---:|---|---|
-| nycflights13 `flights` (Rdatasets) | 327,346 | every 2013 departure from New York, cancelled flights dropped, in scheduled-departure order; target `arr_delay` in minutes, or `arr_delay > 15`. Categoricals: `tailnum` 4,037 levels, `flight_id` (carrier and number) 5,706, `route` 223, `dest` 104, `carrier` 16, `origin` 3. A label is known only at arrival: `avail = t + dep_delay + air_time + 20` minutes | 1, 2, 3, 4, 7 |
-| BTCUSDT 1-minute klines, 60 days from 2024-01-02 (Binance) | 86,390 | target `log1p(n_trades)` or `n_trades` (counts), features lagged EW means of the target at 5, 30, 240 and 1,440 minutes, the last absolute return and its 30-minute mean, minute of day, weekday | 1, 2, 3, 4, 7 |
-| planted | 200,000–300,000 | per item, below; seeds 0, 1, 2 | all |
+| nycflights13 `flights` (Rdatasets) | 327,346 | every 2013 departure from New York, cancelled flights dropped, in scheduled-departure order; target `arr_delay` in minutes, or `arr_delay > 15`. Categoricals: `tailnum` 4,037 levels, `flight_id` (carrier and number) 5,706, `route` 223, `dest` 104, `carrier` 16, `origin` 3. A label is known only at arrival: `avail = t + dep_delay + air_time + 20` minutes | §2, §3, §4, §5, §7 |
+| BTCUSDT 1-minute klines, 60 days from 2024-01-02 (Binance) | 86,390 | target `log1p(n_trades)` or `n_trades` (counts), features lagged EW means of the target at 5, 30, 240 and 1,440 minutes, the last absolute return and its 30-minute mean, minute of day, weekday | §3, §5, §7 |
+| planted | 200,000–300,000 | per section, below; seeds 0, 1, 2 | all |
 
 **Splits are by time, never shuffled.** Flights: train January–August,
 validate (early stopping) September, test October–December. BTCUSDT: days
@@ -174,6 +175,21 @@ somewhat worse, because it thrashes. So: a cap, sized to the levels in use,
 and `weight` emitted beside the statistic so a tree can tell a level read
 from data from one read from the prior.
 
+**On flights, the cap costs nothing down to a quarter of the levels**
+(`ts_flights_cap.py`, the best arm above with every table capped; v2's
+measurement). A plane or a flight number that has not flown for weeks has
+the least weight, and is the one evicted:
+
+| levels kept per table | test RMSE | test MAE |
+|---|---:|---:|
+| all (`tailnum` 4,037, `flight_id` 5,706) | 34.472 | 20.969 |
+| 1,024 | 34.377 | 21.005 |
+| 256 | 34.453 | 21.204 |
+| 64 | 34.852 | 21.996 |
+
+(The uncapped MAE differs from the table above in the third digit because
+this arm leaves out the frequency columns.)
+
 ### 2.3 The recipe it already is, and the defect that stops it
 
 **The decayed, label-time statistic is already exact with the window
@@ -219,7 +235,9 @@ Polars has no such concept.
 
 | per row, per feature `f`, half-life `h`, target `t` | |
 |---|---|
-| key | the value's 64-bit hash (xxh3 of its string form, fixed seed; a `pl.Enum` hashes its category string, not its code; a null is a level of its own, as `group_by` keeps it) |
+| key | the value's 64-bit hash (xxh3 of its string form, fixed seed; a `pl.Enum` hashes its category string, not its code; a null is a level of its own, as `group_by` keeps it). The model receives it as two exact 32-bit halves in its `f64` features, so `OnlineModel` does not change; the state records the hash's name and seed, and a state with another is refused. Two levels collide with probability about n²/2⁶⁵: 3·10⁻⁶ at ten million levels |
+| prior | `prior="running"`: the target's own decayed mean before the row, at `prior_half_life` (default the spec's half-life, or the longest of a list; flights' short statistics measured best with a 4-hour prior under a 2-to-6-hour statistic); or a number |
+| names | with one half-life, `enc_<f>_<t>`; with a list, each half-life's fields carry the instance suffix `ewridge`'s grid gives its slots |
 | read, before the row is learned | `enc = (S + a·p) / (W + a)`, with `W`, `S` the level's decayed label weight and label sum at the row's clock, `p` the prior. `a = 0` and `W = 0` give null, never 0/0 (rule 9) |
 | learn | `W' = λW + w`, `S' = λS + w·y`, `λ = 0.5^(Δt/h)` from the level's last label; a null target learns nothing; weight 0 learns nothing and creates no level |
 | emitted | `enc_<f>_<t>`, `weight_<f>_<t>` (the level's `W`, so a tree sees whether the value came from data or from the prior), and `weight_sum` with rule 8's meaning |
@@ -268,22 +286,32 @@ Memory as above: a million levels of one target at about 56 MB.
 
 **What would make us rethink it:** a keyed window operator in `po.ops`,
 which would make the kind a second way to do the same thing. The recipe of
-§2.3 is that operator in all but name, so the kind should be built only if
-the user wants one spec to encode many columns with a running prior and a
-cap; otherwise fix §6.1 and document the recipe.
+§2.3 is that operator in all but name. So the order is: fix §6.1 first,
+which is a defect whatever is decided and makes the recipe exact and fast;
+then build the kind for what the recipe cannot do, one spec over many
+columns with a shared running prior, a cap, and the classification form,
+in one pass rather than one `with_windows` call per column plus one for
+the prior.
+
+**The second thing a year would bring: labels with a time of their own.**
+Flights' labels arrive hours after their rows, at a time that differs by
+row. The doubled stream handles it today for every kind, and so does
+nothing else; a `label_clock=` column on the bank, for every kind, is the
+durable answer, and the encoder should not grow a mechanism of its own for
+it.
 
 ---
 
-## 3. Frozen trees as features of an online model (rank 2)
+## 3. Frozen trees as features of an online model (rank 3)
 
 ### 3.1 What it is
 
 He et al. 2014 (Facebook's click prediction, §3.1) train boosted trees in
 batch, take the leaf each row falls into in each tree as a one-hot
 feature, and fit a linear model on those leaves: "a supervised feature
-encoding". Their §3.2 finds that a day's staleness costs about 1% of
-normalized entropy and that the trees can be retrained daily while the
-linear layer learns online. That split is exactly this library's place:
+encoding". Their §3.2 finds that training daily rather than weekly cuts
+normalized entropy by about 1%, and proposes retraining the trees daily or
+every few days while the linear layer learns online. That split is exactly this library's place:
 the structure from the library's batch fit, the adaptation from an online
 model that refits the leaf weights with decay. XGBoost's R package ships
 the encoding (`xgb.create.features`).
@@ -317,7 +345,36 @@ residual 36.910, and with the origin's recent delays in the residual model
 36.098. BTCUSDT: frozen 0.4486, leaf values 0.4535, the residual 0.4481:
 no gain, as its lagged features already carry the level.
 
-### 3.3 Reading the model files without linking
+### 3.3 A recipe today, measured
+
+**In Python it needs nothing built** (`leaves_recipe.py`, v2's measurement):
+the library's own `pred_leaf`, one-hot encoded chunk by chunk with
+`LazyFrame.map_batches(..., streamable=True)`, feeds the bank through the
+IO plugin, and the result equals the same columns made on the collected
+frame to the bit:
+
+```python
+def add_leaves(df: pl.DataFrame) -> pl.DataFrame:
+    leaves = booster.predict(df.select(names).to_numpy(), pred_leaf=True)   # (rows, trees)
+    onehot = np.zeros((df.height, n_trees * n_leaves))
+    onehot[np.arange(df.height)[:, None], np.arange(n_trees) * n_leaves + leaves] = 1.0
+    return df.hstack(pl.DataFrame(onehot, schema=leaf_columns))
+
+out = (pl.scan_parquet("rows.parquet")
+       .map_batches(add_leaves, streamable=True, schema=schema)               # a row's leaves are its own: any chunking
+       .online.fit_predict([po.spec.sgd("refit", targets=["y"], features=leaf_columns, schedule="adagrad",
+                                        learning_rate=0.05, standardize=False, clock="c", gap_cap=10.0, half_life=20.0)])
+       .collect())
+```
+
+On the planted drift, seed 0, it scored the 1.0250 of the table above, in
+0.51 s for 300,000 rows. `standardize=False` matters: `sgd` and `pa`
+standardize by default, and centring a one-hot column spreads every row's
+update over every coefficient. What the recipe cannot do is run where
+Python does not: the command line, or a server without XGBoost or LightGBM
+installed. That is what the reader below would buy, and all it would buy.
+
+### 3.4 Reading the model files without linking
 
 **A reader of XGBoost's JSON and LightGBM's text model gives each row's
 leaf exactly as the libraries' own `pred_leaf` does** (`tree_reader.py`):
@@ -337,11 +394,14 @@ Each reader was about 40 lines of Python. In Rust, with parsing (XGBoost's
 JSON through `serde_json`, already a workspace dependency; LightGBM's text
 by hand), about 700 lines for both, plus tests.
 
-### 3.4 The design
+### 3.5 The design: the reader, when the command line needs it
 
-**Recommended: the reader in `online-core` (`forest.rs`, a parsed forest
-and its evaluation, no Polars), and a `trees=` input on the linear kinds
-that appends the encoding to the features.**
+**Recommended, when the command line or library-free serving is wanted:
+the reader in `online-core` (`forest.rs`, a parsed forest and its
+evaluation, no Polars), and a `trees=` input that the bank turns into
+columns appended to the kind's features.** The models do not change: the
+bank assembles the row (rule 4), as it would the recipe's columns, and the
+coefficient index names them.
 
 ```python
 leaves = po.trees("model.json", features=["x0", "x1", "x2", "venue"], encode="one_hot")  # or "leaf_value"
@@ -355,7 +415,8 @@ spec = po.spec.sgd("refit", targets=["y"], features=["x0", "x1"], trees=leaves,
 | features | by the model's own `feature_names`; a model without them takes `features=` in order. A categorical feature is a `pl.Enum`'s codes, as `po.gbdt` builds it |
 | `encode="one_hot"` | width Σ leaves, one 1 per tree; coefficient names `tree<k>_leaf<l>` |
 | `encode="leaf_value"` | width M, each tree's leaf value (refused for LightGBM's linear trees and XGBoost's DART, whose leaf value is not the output) |
-| width | `sgd`, `pa`, `ftrl`: O(width) a row; the kinds that solve (`ewridge`, `huber`, `quantile`, `rls`, `lasso`, `kalman`) refuse a one-hot width past a budget and name `encode="leaf_value"` |
+| width | `sgd`, `pa`, `ftrl`: O(width) a row, dense; the kinds that solve (`ewridge`, `huber`, `quantile`, `rls`, `lasso`, `kalman`) refuse a one-hot width past a budget and name `encode="leaf_value"`. A one-hot column is never standardized, whatever `standardize` says of the raw features (§3.3) |
+| sparsity | not in v1. A one-hot row has M ones in Σ leaves columns, so `sgd`'s update could touch M coefficients rather than all; worth building only when a forest's width makes the dense row the cost (500 trees of 64 leaves: 32,000 columns) |
 | state | the forest is not state: its SHA-256 goes into the spec, and a state loads only against the same forest; the coefficients are the kind's own |
 | the CLI | `trees = { path = "model.json", encode = "one_hot" }` in the spec's TOML |
 
@@ -376,7 +437,7 @@ multiclass with a tree per class, categorical, each missing type).
 comparisons, an estimate of 0.3–1 µs), then the kind on the appended width:
 `sgd` on 285 one-hot columns measured 1.2 µs a row through the bank.
 
-### 3.5 Durability
+### 3.6 Durability
 
 | a user will want | taken |
 |---|---|
@@ -390,11 +451,13 @@ comparisons, an estimate of 0.3–1 µs), then the kind on the appended width:
 **What would make us rethink it:** a model trained on pandas categoricals,
 whose JSON (XGBoost 3.x) stores category names and recodes inputs by name
 at prediction. v1 should refuse such a model by name rather than read codes
-the model would not.
+the model would not. And the recipe of §3.3 already covers Python: if the
+command line never needs tree features, the reader is a cost with no
+user, which is why it ranks below `offset=`.
 
 ---
 
-## 4. `offset=`, and a model of the intercept alone (rank 3)
+## 4. `offset=`, and a model of the intercept alone (rank 2)
 
 **An offset is a column added to the model's linear predictor, which the
 model fits around.** It is the concept of `glmnet`'s and `statsmodels`'
@@ -419,7 +482,15 @@ of the intercept alone, which `features=[]` refuses today). 90% intervals:
 
 On flights the online interval covered 88.0%, short of 90%, because the
 labels arrive hours late and the tracker learns from them late; the static
-one held on average and fell to 87% in December.
+one held on average and fell to 87% in the last quarter of the test period.
+
+**For squared error it is a recipe today, and that is what was measured:**
+the target `y − trees` and a column of zeros as the one feature. What a
+build adds is what the recipe cannot reach: the offset inside a link (the
+log of a Poisson `sgd`, the logit of `ftrl`), `features=[]` in place of the
+column of zeros, and a `pred` that includes the offset, so that `resid`,
+`sigma`, `conformal`'s `lo`/`hi` and the rest are on the target's own scale
+without the user adding it back.
 
 **Design.** `offset="col"` on every regression kind: the prediction is
 `offset + f(x)` in the kind's link space (identity; the log of `sgd`'s
@@ -427,7 +498,9 @@ Poisson; the logit of `ftrl` and `sgd`'s logistic), and residuals and every
 diagnostic are read on `y − pred`. A null offset withholds the row as a
 null feature does. `features=[]` with `fit_intercept=True` becomes legal: a
 model of the intercept alone. No state changes, so no schema bump; one
-subtraction a row.
+subtraction a row. The offset must itself be known before the row's label,
+as any feature must: an external model's prediction made in advance, not a
+fit that saw the row.
 
 **Tests and their oracle.** statsmodels' GLM with `offset=` (Poisson,
 binomial) and least squares on `y − offset`, at no decay, against the
@@ -595,19 +668,65 @@ paragraph in GBDT.md, not a feature.
 
 ---
 
-## 9. Reproducing
+## 9. Self-review: what a user would hit in a year
+
+v1 ranked the items and designed each; this section attacks every
+recommendation as a user a year from now would, and says what v2 changed.
+The changes are folded into the sections above.
+
+| item | the attack | the answer, and what changed |
+|---|---|---|
+| target encoder | "I already have this": `with_windows(group=cat)` with `ewm_sum(..., closed="left")` is exact | true (§2.3), and it is the oracle for late labels. v2 orders the work: the `with_windows` defect first (§6.1), the kind after it for what the recipe cannot do in one pass |
+| target encoder | a cap that thrashes, or one that silently drops the levels that matter | v2 measured it on real data: 1,024 levels of 4,037 and 5,706 cost nothing, 64 cost 5% of MAE; the evicted level reads the prior, and `weight_<f>_<t>` says so to the tree |
+| target encoder | keys through a model trait that only takes `f64` | two exact 32-bit halves of a 64-bit hash; the hash's name and seed in the state, so a build with another hash refuses the file rather than reading other levels |
+| target encoder | my labels arrive late, each at its own time | the doubled stream, for every kind; the durable fix is a bank-level `label_clock=`, not a mechanism inside the encoder (§2.5) |
+| target encoder | I want the short and the long half-life at once | measured as the largest gain on flights; the design takes a list, as `ewridge`'s grid does, from the first version |
+| target encoder | the trees I trained see young, noisy statistics on the first rows of each level, and old, steady ones at serving | the prediction shift CatBoost names; `weight_<f>_<t>` beside each statistic lets a tree condition on it. Not measured separately |
+| target encoder | one real dataset | flights is the only public set here with a high-cardinality categorical; the planted case reproduces the mechanism, not the size of the gain. A second real dataset is an open item |
+| frozen trees | "I can do this in Python today" | measured true in v2 (§3.3): `map_batches(streamable=True)` and `pred_leaf`, equal to the bit to the eager run. The reader's only addition is the command line and serving without the libraries, so v2 ranks it below `offset=` |
+| frozen trees | a one-hot row standardized by `sgd`'s default | every update then moves every coefficient; v2's design never standardizes the leaf columns |
+| frozen trees | 500 trees of 64 leaves | 32,000 dense columns: the cost is the row, not the model; a sparse update is the follow-up, named in §3.5, not built first |
+| frozen trees | trees trained on the rows the stream then scores | in sample for the trees, whatever rule 2 says of the online layer; the docs must say to train the trees before the scored segment |
+| frozen trees | a newer XGBoost, a pandas-categorical model | a version check that refuses by name; a model with stored category names refused in v1 |
+| `offset=` | "a target transform does this" | for squared error, yes, and that is what was measured; the build is for the link-space offset, `features=[]`, and diagnostics on the target's own scale (§4) |
+| `offset=` | intervals under-cover when labels arrive late (0.880 on flights) | the tracker can only learn a miss once the label exists; the same bank-level `label_clock=` would let it learn each at its time, and the docs should state the shortfall |
+| base margin | the margin was worse than a feature on flights | measured, and kept in the table: a margin is for a level that can leave the training range (planted seed 2: 1.02 against 3.13), and passing both was within 0.09 of the better of the two on both real datasets (flights 35.22 against 35.13; BTCUSDT 0.4615 against 0.4603) |
+| base margin | prediction then needs the margin too | XGBoost's `DMatrix(base_margin=)` and LightGBM's `raw_score=True` plus the margin; the docs must show it, since forgetting it shifts every prediction |
+| ranking groups | my groups straddle a file's batches | §6.2's finding: `po.gbdt` cuts XGBoost's batches at a group boundary and refuses ids that step back, so a straddling group is neither split nor refused silently |
+| interaction screen | deferred on two datasets | no real gain was found; F statistics far above 1 on every real pair show it would need the serial-dependence count `marginal(lags=)` already keeps before its ranking means anything |
+
+## 10. Open questions for the user
+
+1. **The target encoder as a kind, or the recipe alone.** Once §6.1 is
+   fixed, the recipe is exact and fast but takes one `with_windows` call
+   per column plus one for the prior, and has no cap or classification
+   form. The kind is about 1,600 lines. Recommended: fix §6.1 now; build
+   the kind.
+2. **The model-file reader.** About 1,650 lines and a fifth unstable
+   interface, for tree features on the command line and serving without
+   the libraries installed; Python has the recipe (§3.3). Recommended:
+   document the recipe now, and build the reader only if the command line
+   needs tree features.
+3. **A bank-level `label_clock=`**, raised by the encoder, by `offset=`'s
+   intervals and by flights' late labels: a column giving each row's label
+   time, for every kind, in place of the doubled stream. Not designed here;
+   it is a change to the bank, not to the tree work.
+
+## 11. Reproducing
 
 ```sh
 .venv/bin/python -I scripts/tree_features/fetch.py "$PWD"   # 60 days of BTCUSDT, nycflights13 into .cache/
 cd scripts/tree_features
 ../../.venv/bin/python -I ts_flights.py          # §2.2, about 1 minute
 ../../.venv/bin/python -I ts_flights_binary.py
+../../.venv/bin/python -I ts_flights_cap.py      # v2: the cap on real data
 ../../.venv/bin/python -I ts_synth.py            # about 15 minutes, the capped tables in pure Python
 ../../.venv/bin/python -I ts_recipe.py
 ../../.venv/bin/python -I ts_recipe_speed.py
 ../../.venv/bin/python -I ts_recipe_speed2.py
 ../../.venv/bin/python -I leafrefit.py
 ../../.venv/bin/python -I leafrefit2.py
+../../.venv/bin/python -I leaves_recipe.py       # v2: the no-build recipe through map_batches
 ../../.venv/bin/python -I flights_more.py
 ../../.venv/bin/python -I tree_reader.py
 ../../.venv/bin/python -I margin_btc.py
@@ -619,7 +738,7 @@ cd scripts/tree_features
 ../../.venv/bin/python -I pairs_value.py
 ../../.venv/bin/python -I pairs_real.py
 ../../.venv/bin/python -I decayw.py
-uv run --no-project --python 3.12 --with interpret-core --with numpy --with pandas --with scikit-learn python -I pairs_interpret.py "$OUT"
+uv run --no-project --python 3.12 --with interpret-core --with numpy --with pandas --with scikit-learn python -I pairs_interpret.py "${TREE_FEATURES_OUT:-../../.cache/tree-features/results}"
 uv run --no-project --python 3.12 --with category_encoders --with numpy --with pandas --with polars python -I ce_oracle.py
 ```
 
