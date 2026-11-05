@@ -1298,6 +1298,14 @@ struct Group {
     linked: bool,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// [`Windows::flush_group`]'s calls on this thread, and those of them
+    /// that found nothing pending: what a row's walk over the groups costs,
+    /// counted rather than timed (task 325).
+    static FLUSHES: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
+
 /// How a window over a row ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum End {
@@ -2351,22 +2359,45 @@ impl Windows {
     }
 
     /// Resolve the backward windows of every group's stamp before `now`.
-    /// The silent list holds every group with a clock, oldest last row
-    /// first, and the stream is in clock order across groups, so the
-    /// groups behind `now` are its head.
+    ///
+    /// The silent list holds every group with a clock, in the order of its
+    /// last row, and the stream is in clock order across groups: a step
+    /// back on the stream's clock is refused or starts every group over,
+    /// and a session change on it ends every group's windows, either way
+    /// emptying the list. So the groups with rows pending are those whose
+    /// last row is at the stream's latest stamp -- every row of a group
+    /// joins its pending rows, and only a later stamp, which flushes them,
+    /// or the group's end, which unlinks it, empties them -- and they are
+    /// the list's tail. Walking from the head, as this did, stepped over
+    /// every group ever seen and already flushed, on every row (task 325:
+    /// 80 µs a row at 10,000 groups). From the tail it steps over only the
+    /// groups it flushes, plus one: nothing under `"left"` or `"none"`,
+    /// which pend no row, and nothing on a row at the same stamp. They are
+    /// flushed in the list's order, the head walk's.
     fn flush_stamps_before(&mut self, now: ClockValue) {
-        let mut gi = self.head;
+        let passed =
+            |g: &Group| !g.pending.is_empty() && g.stamp.is_some_and(|s| elapsed(now, s) > 0.0);
+        let mut first = None;
+        let mut at = self.tail;
+        while let Some(i) = at.filter(|&i| passed(&self.groups[i])) {
+            first = Some(i);
+            at = self.groups[i].prev_link;
+        }
+        let mut gi = first;
         while let Some(i) = gi {
-            match self.groups[i].stamp {
-                Some(s) if elapsed(now, s) > 0.0 => self.flush_group(i),
-                _ => break,
-            }
+            self.flush_group(i);
             gi = self.groups[i].next_link;
         }
     }
 
     /// Resolve the pending backward windows of group `gi` at its stamp.
     fn flush_group(&mut self, gi: usize) {
+        #[cfg(test)]
+        FLUSHES.with(|c| {
+            let (calls, idle) = c.get();
+            let idle = idle + u64::from(self.groups[gi].pending.is_empty());
+            c.set((calls + 1, idle));
+        });
         let g = &mut self.groups[gi];
         if g.pending.is_empty() {
             return;
@@ -3104,11 +3135,45 @@ mod tests {
             // module made, across every stream the brute force runs.
             core.check()
                 .unwrap_or_else(|e| panic!("after row {i}: {e}"));
+            pending_are_the_tail(&core).unwrap_or_else(|e| panic!("after row {i}: {e}"));
         }
         t.append(core.finish(), &mut next);
         core.check().unwrap_or_else(|e| panic!("finished: {e}"));
         assert_eq!(next, rows.len() as u64);
         Ok(t)
+    }
+
+    /// What [`Windows::flush_stamps_before`] walks from the tail on (task
+    /// 325): the groups with rows pending are the silent list's tail, each
+    /// at the stream's latest stamp, and no group off the list has any.
+    /// Held after every row of every stream [`run`] feeds -- gaps, cuts,
+    /// sessions, step backs and resets among them -- so a stream that broke
+    /// it, where a walk from the tail would leave a group's rows pending
+    /// that the head walk resolved, fails here by name.
+    fn pending_are_the_tail(core: &Windows) -> Result<(), String> {
+        let latest = core.shared.last_clock();
+        let (mut at, mut tail) = (core.head, false);
+        while let Some(i) = at {
+            let g = &core.groups[i];
+            let pends = !g.pending.is_empty();
+            if tail && !pends {
+                return Err(format!("group {i} pends nothing after a group that pends"));
+            }
+            let current = matches!((g.stamp, latest), (Some(s), Some(l)) if elapsed(l, s) == 0.0);
+            if pends && !current {
+                return Err(format!("group {i} pends rows at an earlier stamp"));
+            }
+            tail |= pends;
+            at = g.next_link;
+        }
+        if let Some(i) = core
+            .groups
+            .iter()
+            .position(|g| !g.linked && !g.pending.is_empty())
+        {
+            return Err(format!("group {i} pends rows off the silent list"));
+        }
+        Ok(())
     }
 
     /// Each invariant [`Windows::check`] holds a loaded core to, broken
@@ -4237,6 +4302,123 @@ mod tests {
         assert_mirror(&rows, cfg(8.0, Some(SessionGap::Reset), None), |rows, j| {
             rows[j + 1].session != rows[j].session
         });
+    }
+
+    /// A stream of many groups, interleaved, `per` rows at each stamp on
+    /// average (1 to `2 * per - 1`), each row's group drawn afresh: rows
+    /// pending in many groups at once at a repeated stamp.
+    fn many_groups_stream(seed: u64, n: usize, groups: usize, per: usize) -> Vec<Row> {
+        let mut rows = stream(seed, n, groups, false, false);
+        let mut rng = Lcg(seed.wrapping_mul(17).wrapping_add(3));
+        let (mut t, mut left) = (0.0, 0);
+        for r in &mut rows {
+            if left == 0 {
+                t += 1.0;
+                left = 1 + rng.below(2 * per - 1);
+            }
+            left -= 1;
+            r.group = Some(format!("g{}", rng.below(groups)));
+            r.clock = Some(ClockValue::F64(t));
+        }
+        rows
+    }
+
+    /// One backward sum under `closed`, with no window and no cap: every
+    /// group stays on the silent list for the whole stream.
+    fn one_sum(closed: Closed) -> (Vec<KernelDef>, Vec<OpDef>) {
+        let k = KernelDef {
+            direction: Direction::Backward,
+            half_life: 50.0,
+            window_size: None,
+            window_ns: None,
+            closed,
+        };
+        let op = OpDef {
+            kernel: 0,
+            stat: Stat::Sum,
+            input: 0,
+            min_samples: 1,
+            partial: Partial::Keep,
+            bias: false,
+            quantile: None,
+        };
+        (vec![k], vec![op])
+    }
+
+    /// A row resolves only the groups with rows pending (task 325): the
+    /// walk from the silent list's head stepped over every group ever seen
+    /// on every row, each already resolved, so the rows' cost grew with the
+    /// groups, not the work -- 80 µs a row at 10,000 groups. Counted, not
+    /// timed: over 2,000 interleaved groups, `"left"` and `"none"` pend no
+    /// row and resolve no group as rows arrive; `"right"` and `"both"`
+    /// resolve each group once for each stamp it had rows at, at the next
+    /// stamp, and never one with nothing pending. The head walk made about
+    /// 2,000 calls a row here, nearly all idle.
+    #[test]
+    fn a_row_resolves_only_the_groups_with_rows_pending() {
+        let (n, groups) = (6_000, 2_000);
+        let rows = many_groups_stream(41, n, groups, 4);
+        let last = rows.last().and_then(|r| r.clock);
+        // Each group's stamps before the last: one resolution each.
+        let mut due = std::collections::HashSet::new();
+        for r in rows.iter().filter(|r| r.clock != last) {
+            let Some(ClockValue::F64(t)) = r.clock else {
+                unreachable!("a number clock")
+            };
+            due.insert((r.group.clone(), t.to_bits()));
+        }
+        assert!(due.len() > n / 2, "{} group stamps", due.len());
+        for closed in [Closed::Left, Closed::Neither, Closed::Right, Closed::Both] {
+            let (kernels, ops) = one_sum(closed);
+            let mut core = Windows::new(kernels, ops, cfg(f64::INFINITY, None, None)).unwrap();
+            core.set_grouped(true);
+            FLUSHES.with(|c| c.set((0, 0)));
+            for r in &rows {
+                push(&mut core, r).unwrap();
+            }
+            let (calls, idle) = FLUSHES.with(std::cell::Cell::get);
+            assert!(
+                core.groups.len() > groups * 9 / 10,
+                "{closed:?}: groups seen"
+            );
+            let want = if closed.near(Direction::Backward) {
+                due.len() as u64
+            } else {
+                0
+            };
+            assert_eq!((calls, idle), (want, 0), "{closed:?}: calls, idle");
+        }
+    }
+
+    /// A state saved while many groups have rows pending at a repeated
+    /// stamp resumes to the bit (task 325): the walk reads the pending
+    /// groups off the silent list's tail, which the state carries.
+    #[test]
+    fn a_state_saved_with_many_groups_pending_resumes_to_the_bit() {
+        let (kernels, ops) = all_kernels();
+        let rows = many_groups_stream(43, 600, 60, 6);
+        let c = cfg(f64::INFINITY, None, None);
+        let one = run(&kernels, &ops, c, &rows, 1).unwrap();
+        let mut most = 0;
+        for at in [1, 5, 97, 211, 300, 451, 599] {
+            let mut core = Windows::new(kernels.clone(), ops.clone(), c).unwrap();
+            core.set_grouped(true);
+            let (mut t, mut next) = (Table::default(), 0);
+            for r in &rows[..at] {
+                push(&mut core, r).unwrap();
+            }
+            most = most.max(core.groups.iter().filter(|g| !g.pending.is_empty()).count());
+            t.append(core.drain(), &mut next);
+            let bytes = rmp_serde::to_vec_named(&core).unwrap();
+            let mut core: Windows = rmp_serde::from_slice(&bytes).unwrap();
+            core.check().unwrap();
+            for r in &rows[at..] {
+                push(&mut core, r).unwrap();
+            }
+            t.append(core.finish(), &mut next);
+            assert!(t.same_bits(&one), "resumed at {at}");
+        }
+        assert!(most >= 4, "at most {most} groups pending at a save");
     }
 
     /// Every row at a repeated stamp gets the same backward window under

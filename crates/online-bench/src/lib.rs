@@ -135,13 +135,21 @@ fn grouped(id: &str) -> bool {
 /// O(rows in the window) a row where the sum costs O(1) (docs/PLAN.md task
 /// 270, M-2). The two are held within twice each other. And the quantile
 /// (task 272 (d)): over the same window, its sketches walked on every row,
-/// and with no window, the running sketch an EW-MAD reads.
+/// and with no window, the running sketch an EW-MAD reads. And a running
+/// sum over [`WINDOW_GROUPS`] groups, one row of each in turn, with no cap
+/// on a group's silence, so every group stays on the window core's list of
+/// groups by last row: a row's cost must not grow with the groups behind it
+/// (task 325: the walk from the list's head made it 80 µs a row at 10,000).
 pub const WINDOW_CASES: &[&str] = &[
     "window_ewm_mean_w10k",
     "window_ewm_sum_w10k",
     "window_ewm_quantile_w10k",
     "window_ewm_quantile_running",
+    "window_ewm_sum_groups10k",
 ];
+
+/// Groups in the grouped window case: its warm-up is two rows of each.
+pub const WINDOW_GROUPS: usize = 10_000;
 
 /// The wide bank cases: a frame of [`WIDE_ROWS`] rows of the `ew_cov` case's
 /// 230 statistics through `Bank::fit_predict`, on a pool of one thread.
@@ -818,26 +826,50 @@ fn window_tree(id: &str) -> Value {
         "window_ewm_quantile_running" => {
             return json!(["ewm_quantile", ["abs", ["col", "x0"]], {"half_life": 1000.0, "quantile": 0.5}]);
         }
+        "window_ewm_sum_groups10k" => {
+            return json!(["ewm_sum", ["col", "x0"], {"half_life": 1000.0}]);
+        }
         other => panic!("no case {other:?}"),
     };
     json!([op, ["col", "x0"], {"half_life": 1000.0, "window_size": 12_500.0}])
 }
 
 /// The setup of a window case: the core over one feature column and the
-/// clock, fed the warm-up rows as one frame.
+/// clock, fed the warm-up rows as one frame. The grouped case adds a group
+/// column, the row's place modulo [`WINDOW_GROUPS`], on the same irregular
+/// clock, so each row is a stamp of its own; its cap of 1e12 never cuts a
+/// group, and its warm-up of two rows a group puts every group on the list.
 pub fn windows_setup(id: &str) -> WindowsCase {
-    let config: WindowsConfig = serde_json::from_value(json!({
+    let grouped = id.ends_with("_groups10k");
+    let mut config = json!({
         "formulas": [{"name": "w", "tree": window_tree(id)}],
         "clock": "t",
         "gap_cap": 100.0,
-    }))
-    .unwrap_or_else(|e| panic!("{id}: {e}"));
-    let rows = Rows::generate(Shape::Linear, 1, 0, WARM_ROWS + ROWS, 0, 7);
-    let warm = rows.frame(0, WARM_ROWS);
+    });
+    let warm_rows = if grouped {
+        config["gap_cap"] = json!(1e12);
+        config["group"] = json!("g");
+        2 * WINDOW_GROUPS
+    } else {
+        WARM_ROWS
+    };
+    let config: WindowsConfig =
+        serde_json::from_value(config).unwrap_or_else(|e| panic!("{id}: {e}"));
+    let rows = Rows::generate(Shape::Linear, 1, 0, warm_rows + ROWS, 0, 7);
+    let frame = |from: usize, to: usize| {
+        let mut f = rows.frame(from, to);
+        if grouped {
+            let g: Vec<i64> = (from..to).map(|i| (i % WINDOW_GROUPS) as i64).collect();
+            f.with_column(Column::new("g".into(), g))
+                .expect("a column of the frame's height");
+        }
+        f
+    };
+    let warm = frame(0, warm_rows);
     let mut run = WindowsRun::new(config, warm.schema()).unwrap_or_else(|e| panic!("{id}: {e}"));
     run.feed(&warm, None)
         .unwrap_or_else(|e| panic!("{id}: {e}"));
-    let frame = rows.frame(WARM_ROWS, rows.len());
+    let frame = frame(warm_rows, rows.len());
     WindowsCase { run, frame }
 }
 
