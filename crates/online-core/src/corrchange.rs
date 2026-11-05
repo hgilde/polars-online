@@ -64,13 +64,34 @@
 //! critical value is drawn after a report and held for
 //! `permute_every_rows` reports, so a later report meets draws of windows a
 //! few rows older than its own, and the size is about `alpha`, not held to
-//! it (5.1% measured at alpha 0.05 and 200 draws; review round 10, S6-3).
+//! it (5.1% measured at alpha 0.05 and 200 draws; review round 10, S6-3;
+//! 4.8% to 5.2% at windows of 50 to 400 rows held for `window_rows`
+//! reports, the default since task 328).
 //! Too few draws to flag at all are refused.
+//!
+//! The report's correlations are merged from summaries of blocks of
+//! `⌈k/2⌉ + 3` rows, each a count, an anchor row, the mean's offset from
+//! it and the centred co-moments (`crate::window_moments`, which has the
+//! rule and the scheme): `O(b·k²)` a row however long the windows, where
+//! reading both afresh was `O(window_rows·k²)` (task 328; finding S3 of
+//! task 326's scaling audit). The sums are rebuilt from the ring and the
+//! count of rows it has taken (`ring_rows`, schema 66), so they are not
+//! saved. A window of fewer than four blocks is read whole, as before:
+//! there the two passes cost no more than the merges (measured, task 328).
+//! The merged correlations are within `γ_K·κ_a·κ_b` of the exact ones,
+//! `κ² = n·range²/M_aa`, `K = 8b + 29G + 123`, `G = ⌊window_rows/b⌋`, at any
+//! level (the tests derive it); measured, at most 3.6e-15 off the exact
+//! statistic where the two-pass form was 1.2e-14 off.
+//!
+//! Unset, `permute_every_rows` is `window_rows` (task 328): a redraw is
+//! `n_perm` passes over the `2·window_rows` pooled rows, so held for a
+//! window's length it costs `O(n_perm·k²)` a row whatever the window.
 
 use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
+use crate::window_moments::WindowSums;
 use crate::{Decay, EwDiag, SplitMix64};
 
 /// Which test; see the module docs.
@@ -565,6 +586,23 @@ pub struct CorrChange {
     /// computed on construction and on load.
     #[serde(skip)]
     seq_crit: f64,
+    /// `window`: the rows the ring has taken since it last started (at the
+    /// first row, a flag under `reset`, or `clear_lags`). It numbers the
+    /// rows, and the numbers alone fix which rows each merged sum covers
+    /// ([`WindowSums`]), so a state that keeps it rebuilds the same sums.
+    /// Absent, 0, under the other kinds and before schema 66, where a
+    /// loaded ring is numbered from its oldest row.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    ring_rows: u64,
+    /// `window`: the merged sums of the next report's two windows, `None`
+    /// where the windows are read whole. A cache of the ring: rebuilt on
+    /// load, never saved.
+    #[serde(skip)]
+    sums: Option<WindowSums>,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 impl CorrChange {
@@ -592,6 +630,7 @@ impl CorrChange {
         }
         let d = cfg.n_features;
         let seq_crit = Self::sequential_crit_of(&cfg);
+        let sums = Self::sums_of(&cfg);
         Ok(Self {
             ring: VecDeque::new(),
             diag: EwDiag::new(d),
@@ -602,8 +641,75 @@ impl CorrChange {
             rng: SplitMix64::new(cfg.seed),
             monitoring: None,
             seq_crit,
+            ring_rows: 0,
+            sums,
             cfg,
         })
+    }
+
+    /// `window`'s merged sums, or `None` where its windows are read whole:
+    /// under the other kinds, and where a window holds too few blocks for
+    /// merging to cost less.
+    fn sums_of(cfg: &CorrChangeCfg) -> Option<WindowSums> {
+        match cfg.kind {
+            CorrChangeKind::Window => WindowSums::new(cfg.n_features, cfg.span_rows),
+            _ => None,
+        }
+    }
+
+    /// Make the merged sums ready for the next report, from the ring as it
+    /// stands; or forget them where the ring is too short for a report.
+    fn ready_sums(&mut self) {
+        let Some(sums) = &mut self.sums else {
+            return;
+        };
+        let held = self.ring.len();
+        if held + 1 < 2 * self.cfg.span_rows {
+            sums.clear();
+            return;
+        }
+        let (ring, pos) = (&self.ring, self.ring_rows);
+        let front = pos - held as u64;
+        sums.ready(pos, &|q| ring[(q - front) as usize].as_slice());
+    }
+
+    /// The window statistic of the report on `row` from the merged sums:
+    /// [`Self::window_stat_by`]'s norm over the same pairs, in the same
+    /// order.
+    fn window_stat_merged(&self, sums: &WindowSums, row: &[f64]) -> f64 {
+        let d = self.cfg.n_features;
+        let layout = sums.layout();
+        let stride = layout.stride();
+        let (ring, pos) = (&self.ring, self.ring_rows);
+        let front = pos - ring.len() as u64;
+        let read = |q: u64| {
+            if q < pos {
+                ring[(q - front) as usize].as_slice()
+            } else {
+                row
+            }
+        };
+        // Both windows' summaries, then one summary, `δ`, `c·δ` and a
+        // row's deviations: one allocation a report.
+        let mut buf = vec![0.0; 3 * stride + 3 * d];
+        let (out, tmp) = buf.split_at_mut(2 * stride);
+        sums.summaries(pos, &read, out, tmp);
+        let (pre, post) = out.split_at(stride);
+        let mut acc = 0.0f64;
+        for a in 0..d {
+            for b in (a + 1)..d {
+                let (x, y) = (layout.corr(pre, b, a), layout.corr(post, b, a));
+                if !(x.is_finite() && y.is_finite()) {
+                    return f64::NAN;
+                }
+                let diff = (x - y).abs();
+                match self.cfg.norm {
+                    ChangeNorm::L1 => acc += diff,
+                    ChangeNorm::LInf => acc = acc.max(diff),
+                }
+            }
+        }
+        acc
     }
 
     /// `sequential`'s critical value, or NaN under the other kinds.
@@ -1326,10 +1432,13 @@ impl CorrChange {
                 }
                 let skip = held + 1 - 2 * w;
                 let ring = &self.ring;
-                let stat = self.window_stat_by(2 * w, |i| {
-                    let i = skip + i;
-                    if i < held { &ring[i] } else { row }
-                });
+                let stat = match &self.sums {
+                    Some(sums) => self.window_stat_merged(sums, row),
+                    None => self.window_stat_by(2 * w, |i| {
+                        let i = skip + i;
+                        if i < held { &ring[i] } else { row }
+                    }),
+                };
                 // The value **in force**: a redraw happens after the row is
                 // reported, so `predict` and `step` see the same one.
                 let crit = self.cfg.crit.or(self.perm_crit);
@@ -1421,12 +1530,14 @@ impl crate::OnlineModel for CorrChange {
             }
             CorrChangeKind::Window => {
                 self.ring.push_back(row);
+                self.ring_rows += 1;
                 let w = self.cfg.span_rows;
                 while self.ring.len() > 2 * w {
                     self.ring.pop_front();
                 }
                 if flagged && self.cfg.reset {
                     self.ring.clear();
+                    self.ring_rows = 0;
                     self.perm_crit = None;
                     self.since_perm = 0;
                 } else if self.cfg.crit.is_none() && self.ring.len() >= 2 * w {
@@ -1443,6 +1554,7 @@ impl crate::OnlineModel for CorrChange {
                         self.since_perm = 0;
                     }
                 }
+                self.ready_sums();
             }
         }
     }
@@ -1462,6 +1574,8 @@ impl crate::OnlineModel for CorrChange {
         // The rings pair rows the clock says are no longer adjacent; a
         // `monitor` span that spans a break is not a span.
         self.ring.clear();
+        self.ring_rows = 0;
+        self.ready_sums();
         self.perm_crit = None;
         self.since_perm = 0;
         // And a `sequential` cycle across a break is not one cycle.
@@ -1494,13 +1608,32 @@ impl crate::OnlineModel for CorrChange {
                         || mon.cross.len() != pairs
                         || mon.rows.iter().any(|r| r.len() != width)
                 });
-                if m.diag.k() != d || m.ring.iter().any(|r| r.len() != width) || wrong_mon {
+                // A window's ring was numbered from 66 on; before, it is
+                // numbered from its oldest row, a numbering as good as any
+                // other (the sums it fixes are each a window's own).
+                let window = m.cfg.kind == CorrChangeKind::Window;
+                if window && s.schema_version < 66 {
+                    m.ring_rows = m.ring.len() as u64;
+                }
+                let wrong_rows = if window {
+                    m.ring_rows < m.ring.len() as u64
+                } else {
+                    m.ring_rows != 0
+                };
+                if m.diag.k() != d
+                    || m.ring.iter().any(|r| r.len() != width)
+                    || wrong_mon
+                    || wrong_rows
+                {
                     return Err(crate::StateError::Invalid(
                         "corrchange: the state has the wrong shape".into(),
                     ));
                 }
                 // Configuration, not state: recomputed on load.
                 m.seq_crit = Self::sequential_crit_of(&m.cfg);
+                // A cache of the ring: rebuilt from it.
+                m.sums = Self::sums_of(&m.cfg);
+                m.ready_sums();
                 Ok(m)
             }
             other => Err(crate::StateError::WrongModel {
@@ -2446,12 +2579,16 @@ mod tests {
     /// a break, at a level of 0 and of 1e4, under both norms and with a
     /// block size that does not divide the pool, the statistic against
     /// the copied windows' and each redrawn critical value against the
-    /// copied draws' from the same generator state.
+    /// copied draws' from the same generator state. The windows are 19
+    /// rows, one short of the four blocks of five rows at which four
+    /// columns' sums are merged (task 328), so they are read whole; the
+    /// merged statistic is held to the exact one instead
+    /// (`the_merged_statistic_is_the_exact_one_within_its_bound`).
     #[test]
     fn the_window_kind_read_in_place_is_the_copied_one_to_the_bit() {
         for (level, norm, block) in [(0.0, ChangeNorm::L1, 7), (1e4, ChangeNorm::LInf, 1)] {
             let mut n = Normals::new(31);
-            let w = 30;
+            let w = 19;
             let mut m = CorrChange::new(CorrChangeCfg {
                 span_rows: w,
                 crit: None,
@@ -2462,6 +2599,7 @@ mod tests {
                 ..cfg(4, CorrChangeKind::Window)
             })
             .unwrap();
+            assert!(m.sums.is_none(), "read whole");
             let mut rows: Vec<Vec<f64>> = Vec::new();
             let (mut stats, mut crits) = (0, 0);
             for i in 0..400 {
@@ -4450,6 +4588,535 @@ mod tests {
                 .map(|&a| crit_at(seed, a))
                 .collect();
             assert!(at.windows(2).all(|p| p[1] < p[0]), "seed {seed}: {at:?}");
+        }
+    }
+
+    // --- the merged window statistic (task 328) ---------------------------
+
+    use crate::oracle::{U, centred_comoment, gamma, up};
+    use crate::window_moments::block_rows;
+
+    /// The rounding of the merged sums, as a multiple of `u`: a window's
+    /// co-moment `M_ab` is off the exact one by at most `γ_K·n·ρ_a·ρ_b`,
+    /// `ρ` a column's range over the window, `K = 8b + 29G + 123`, `b` the
+    /// block's rows and `G = ⌊w/b⌋`. Derived to first order in `u`
+    /// (Higham's model, every operation within `u` of its exact result):
+    ///
+    /// - every anchor is a row of the window and every mean lies in its
+    ///   range, so `|x − α|`, `|o|` and `|δ|` are at most `ρ`, and `|M_ab|`
+    ///   at most `n·ρ_a·ρ_b`;
+    /// - a block or a window's end read from its `r ≤ b` rows (two passes
+    ///   about its first row): the offset is off by `(r + 1)u·ρ`, a common
+    ///   shift whose first-order term in `M` vanishes, as `Σ(x − m) = 0`;
+    ///   each deviation is off by `2u·ρ` besides, and the products and
+    ///   their sum by `γ_r`: `|E| ≤ (r + 4)u·r·ρ_a·ρ_b`;
+    /// - a merge of `A` and `B`: `δ` is off by `e_A + e_B + 4uρ` (`e` an
+    ///   offset's error); the offset, kept against the larger part's anchor
+    ///   and moved by the smaller part's share `f ≤ 1/2`, is a convex
+    ///   combination of the parts' errors plus `(6f + 1)u·ρ ≤ 4u·ρ`; `M`
+    ///   adds `c·(ρ_a·Δδ_b + Δδ_a·ρ_b)`, `c = n_A n_B / n`, the rounding
+    ///   of `c·δ_a·δ_b` (`3u·c·ρρ`) and of the two sums, at most
+    ///   `u·(n_small + c + n)·ρρ`;
+    /// - the window's tree: a suffix fold and a prefix fold of `G` blocks
+    ///   at most, each merge's `c < b`, so `Σ c < n` over the folds, and
+    ///   three merges of the parts, `c ≤ n/4` each: `Σ c ≤ 1.75·n`; the
+    ///   depth is at most `G + 3`, so every offset is off by at most `(b +
+    ///   1 + 4(G + 3))u·ρ`; the sums' roundings total `(G + 6.5)·n·u·ρρ`.
+    ///
+    /// Adding up: `(b + 4) + 1.75·(4(b + 4G + 13) + 8) + 7 + (G + 6.5) ≤
+    /// 8b + 29G + 123`. The two-pass form over the `w` rows has `K = w + 2`
+    /// for the products and sums, and its mean, formed whole, is off by
+    /// `γ_{w+1}·max|x|`: a common shift whose square, `w·γ²_{w+1}·L_a·L_b`,
+    /// is the level's share of its error.
+    fn merged_k(b: usize, g: usize) -> usize {
+        8 * b + 29 * g + 123
+    }
+
+    /// One window's exact moments: `n·M` rounded once, entry `a·d + b`,
+    /// each column's range and largest magnitude.
+    struct Exact {
+        n: f64,
+        nm: Vec<f64>,
+        range: Vec<f64>,
+        level: Vec<f64>,
+    }
+
+    fn exact_window(rows: &[Vec<f64>]) -> Exact {
+        let d = rows[0].len();
+        let cols: Vec<Vec<f64>> = (0..d)
+            .map(|a| rows.iter().map(|r| r[a]).collect())
+            .collect();
+        let mut nm = vec![0.0; d * d];
+        for a in 0..d {
+            for b in 0..=a {
+                let v = centred_comoment(&cols[a], &cols[b]);
+                nm[a * d + b] = v;
+                nm[b * d + a] = v;
+            }
+        }
+        let range = cols
+            .iter()
+            .map(|c| {
+                let (lo, hi) = c
+                    .iter()
+                    .fold((f64::MAX, f64::MIN), |(l, h), &x| (l.min(x), h.max(x)));
+                (hi - lo) * up(1)
+            })
+            .collect();
+        let level = cols
+            .iter()
+            .map(|c| c.iter().fold(0.0f64, |m, x| m.max(x.abs())))
+            .collect();
+        Exact {
+            n: rows.len() as f64,
+            nm,
+            range,
+            level,
+        }
+    }
+
+    impl Exact {
+        fn corr(&self, a: usize, b: usize) -> f64 {
+            let d = self.range.len();
+            self.nm[a * d + b] / (self.nm[a * d + a] * self.nm[b * d + b]).sqrt()
+        }
+
+        /// `κ_a² = n·ρ_a²/M_aa`, rounded up.
+        fn kappa2(&self, a: usize) -> f64 {
+            let d = self.range.len();
+            self.n * self.n * self.range[a] * self.range[a] / self.nm[a * d + a] * up(4)
+        }
+
+        /// The most a correlation computed with co-moments off by
+        /// `e_ab·√(M_aa M_bb)` and `ε_a·M_aa` can be off the exact one,
+        /// three roundings beside: `(|r| + e)((1 + γ₃)/√((1 − ε_a)(1 −
+        /// ε_b)) − 1) + e`.
+        fn corr_bound(&self, a: usize, b: usize, e: f64, ea: f64, eb: f64) -> f64 {
+            assert!(ea < 0.5 && eb < 0.5, "no bound: {ea}, {eb}");
+            let r = self.corr(a, b).abs().min(1.0) * up(1);
+            ((r + e) * ((1.0 + gamma(3)) / ((1.0 - ea) * (1.0 - eb)).sqrt() - 1.0) + e) * up(8)
+        }
+
+        /// The merged form's bound on pair `(a, b)`.
+        fn merged(&self, a: usize, b: usize, k: usize) -> f64 {
+            let g = gamma(k);
+            let (ka, kb) = (self.kappa2(a), self.kappa2(b));
+            self.corr_bound(a, b, g * (ka * kb).sqrt(), g * ka, g * kb)
+        }
+
+        /// The two-pass form's.
+        fn two_pass(&self, a: usize, b: usize) -> f64 {
+            let d = self.range.len();
+            let w = self.n as usize;
+            let (g, s) = (gamma(w + 2), gamma(w + 1));
+            let (ka, kb) = (self.kappa2(a), self.kappa2(b));
+            let shift = |i: usize| {
+                self.n * self.n * s * s * self.level[i] * self.level[i] / self.nm[i * d + i]
+            };
+            let (sa, sb) = (shift(a) * up(6), shift(b) * up(6));
+            self.corr_bound(
+                a,
+                b,
+                g * (ka * kb).sqrt() + (sa * sb).sqrt(),
+                g * ka + sa,
+                g * kb + sb,
+            )
+        }
+    }
+
+    /// The exact statistic of two windows and how far a computed one may be
+    /// from it: each pair's correlations within `bound(window, a, b)`, the
+    /// norm's own rounding beside, and the oracle's (`γ₅` of each exact
+    /// correlation, four roundings and a square root's half of three).
+    fn exact_stat(
+        pre: &Exact,
+        post: &Exact,
+        norm: ChangeNorm,
+        bound: impl Fn(&Exact, usize, usize) -> f64,
+    ) -> (f64, f64) {
+        let d = pre.range.len();
+        let pairs = d * (d - 1) / 2;
+        let (mut s, mut sum, mut most) = (0.0f64, 0.0f64, 0.0f64);
+        for a in 0..d {
+            for b in (a + 1)..d {
+                let (x, y) = (pre.corr(a, b), post.corr(a, b));
+                let diff = (x - y).abs();
+                let beta = bound(pre, a, b) + bound(post, a, b) + gamma(5) * (x.abs() + y.abs());
+                match norm {
+                    ChangeNorm::L1 => {
+                        s += diff;
+                        sum += beta;
+                    }
+                    ChangeNorm::LInf => {
+                        s = s.max(diff);
+                        most = most.max(beta);
+                    }
+                }
+            }
+        }
+        let b = match norm {
+            ChangeNorm::L1 => (sum + 2.0 * gamma(pairs + 1) * (s + sum)) * up(4),
+            ChangeNorm::LInf => (most + 2.0 * U * (s + most)) * up(4),
+        };
+        (s, b)
+    }
+
+    /// `m` stepped over `rows[from..]`, `rows[..from]` its history, each
+    /// report held to the exact statistic within the merged form's bound,
+    /// and the two-pass form's over the same windows to its own; the worst
+    /// error of each and its share of its bound.
+    fn held_to_the_exact_statistic(
+        m: &mut CorrChange,
+        rows: &[Vec<f64>],
+        from: usize,
+    ) -> ([f64; 2], [f64; 2], usize) {
+        let w = m.cfg.span_rows;
+        let k = {
+            let sums = m.sums.as_ref().expect("merged");
+            let b = sums.block() as usize;
+            merged_k(b, w / b)
+        };
+        let (mut err, mut share, mut reports) = ([0.0f64; 2], [0.0f64; 2], 0);
+        for i in from..rows.len() {
+            let got = m.predict(&rows[i], 1.0).pred[0];
+            if i + 1 >= 2 * w {
+                let tail = &rows[i + 1 - 2 * w..=i];
+                let (pre, post) = (exact_window(&tail[..w]), exact_window(&tail[w..]));
+                let norm = m.cfg.norm;
+                let (want, bound) = exact_stat(&pre, &post, norm, |e, a, b| e.merged(a, b, k));
+                let (_, old_bound) = exact_stat(&pre, &post, norm, |e, a, b| e.two_pass(a, b));
+                let old = m.window_stat(tail);
+                for (j, (v, bd)) in [(got, bound), (old, old_bound)].into_iter().enumerate() {
+                    let e = (v - want).abs();
+                    assert!(
+                        e <= bd,
+                        "row {i}, form {j}: {v} vs exact {want}, off {e:e} past {bd:e}"
+                    );
+                    err[j] = err[j].max(e);
+                    share[j] = share[j].max(e / bd);
+                }
+                reports += 1;
+            } else {
+                assert!(got.is_nan(), "row {i}");
+            }
+            m.step(&rows[i], &[], 1.0, 1.0);
+        }
+        (err, share, reports)
+    }
+
+    /// A stream of `d` columns of scales 1 to 4 about `level`, with a
+    /// correlation break and, under `drift`, a level that walks a tenth of
+    /// a spread a row.
+    fn level_rows(seed: u64, d: usize, n: usize, level: f64, drift: bool) -> Vec<Vec<f64>> {
+        let mut g = Normals::new(seed);
+        (0..n)
+            .map(|i| {
+                let rho = if (i / 97) % 2 == 0 { 0.2 } else { 0.7 };
+                let walk = if drift { 0.1 * i as f64 } else { 0.0 };
+                equicorrelated(&mut g, d, rho)
+                    .iter()
+                    .enumerate()
+                    .map(|(j, v)| level + walk + (1.0 + j as f64 % 4.0) * v)
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The merged statistic is the exact one within its derived bound
+    /// ([`merged_k`]) on every report: at three widths, at the shortest
+    /// window that merges and two longer ones, at a level of 0, of 1e8 with
+    /// a spread of 1 (the case the two-pass form exists for: a mean formed
+    /// whole is off by the level's spacing, 1.5e-8), and of 1e8 drifting;
+    /// under both norms. The exact statistic is `oracle::centred_comoment`'s,
+    /// each window's `n·M` rounded once; the two-pass form over the same
+    /// windows is held to its own bound beside it. Measured 2026-11-05
+    /// (arm64): the merged form's worst error and share of its bound, then
+    /// the two-pass form's, are printed per case.
+    #[test]
+    fn the_merged_statistic_is_the_exact_one_within_its_bound() {
+        let mut worst = [0.0f64; 2];
+        for (d, seed) in [(2usize, 1u64), (4, 2), (7, 3)] {
+            let b = block_rows(d);
+            for w in [4 * b, 57, 160] {
+                for (level, drift) in [(0.0, false), (1e8, false), (1e8, true)] {
+                    let norm = if w == 57 {
+                        ChangeNorm::LInf
+                    } else {
+                        ChangeNorm::L1
+                    };
+                    let mut m = CorrChange::new(CorrChangeCfg {
+                        span_rows: w,
+                        crit: Some(0.5),
+                        norm,
+                        ..cfg(d, CorrChangeKind::Window)
+                    })
+                    .unwrap();
+                    assert!(m.sums.is_some(), "d {d}, w {w}: read whole");
+                    let rows = level_rows(seed, d, 2 * w + 3 * b * (w / b), level, drift);
+                    let (err, share, reports) = held_to_the_exact_statistic(&mut m, &rows, 0);
+                    assert!(reports > 2 * b, "{reports}");
+                    eprintln!(
+                        "d {d} w {w} level {level:e} drift {drift}: merged {:.2e} ({:.1e} of its bound), \
+                         two-pass {:.2e} ({:.1e})",
+                        err[0], share[0], err[1], share[1]
+                    );
+                    for j in 0..2 {
+                        worst[j] = worst[j].max(err[j]);
+                    }
+                }
+            }
+        }
+        eprintln!("worst: merged {:.2e}, two-pass {:.2e}", worst[0], worst[1]);
+    }
+
+    /// The sums are a function of the ring and the rows' numbers alone: a
+    /// state saved and loaded at every row reports the next row's statistic
+    /// to the bit, under a permutation critical value and under `reset`,
+    /// whose flags renumber the rows from 0; and its bytes hold the count.
+    #[test]
+    fn a_state_loaded_at_any_row_reports_the_merged_statistic_to_the_bit() {
+        let rows = level_rows(9, 3, 900, 5.0, false);
+        for reset in [false, true] {
+            let mut m = CorrChange::new(CorrChangeCfg {
+                span_rows: 30,
+                crit: if reset { Some(1.0) } else { None },
+                n_perm: 20,
+                permute_every_rows: 30,
+                reset,
+                ..cfg(3, CorrChangeKind::Window)
+            })
+            .unwrap();
+            assert!(m.sums.is_some());
+            let (mut flags, mut reports) = (0, 0);
+            for (i, r) in rows.iter().enumerate() {
+                let loaded = CorrChange::restore(&m.state()).unwrap();
+                assert_eq!(loaded.ring_rows, m.ring_rows, "row {i}");
+                let (a, b) = (m.predict(r, 1.0), loaded.predict(r, 1.0));
+                for (p, q) in a.pred.iter().zip(&b.pred) {
+                    assert!(
+                        same(*p, *q) && p.to_bits() == q.to_bits() || p.is_nan() && q.is_nan(),
+                        "row {i}: {p} vs {q}"
+                    );
+                }
+                let out = m.step(r, &[], 1.0, 1.0);
+                flags += usize::from(out.pred[2] == 1.0);
+                reports += usize::from(out.pred[0].is_finite());
+                if reset && out.pred[2] == 1.0 {
+                    assert_eq!((m.ring_rows, m.depth()), (0, 0), "row {i}");
+                }
+            }
+            assert!(reports > if reset { 200 } else { 800 }, "{reports}");
+            if reset {
+                assert!(flags >= 3, "reset {reset}: {flags} flags");
+            }
+            let bytes = rmp_serde::to_vec_named(&m.state()).unwrap();
+            let v = rmpv::decode::read_value(&mut bytes.as_slice()).unwrap();
+            let held = v
+                .as_map()
+                .unwrap()
+                .iter()
+                .find(|(k, _)| k.as_str() == Some("model"))
+                .unwrap()
+                .1
+                .clone();
+            let inner = &held.as_map().unwrap()[0].1;
+            let count = inner
+                .as_map()
+                .unwrap()
+                .iter()
+                .find(|(k, _)| k.as_str() == Some("ring_rows"));
+            assert_eq!(
+                count.and_then(|(_, v)| v.as_u64()),
+                Some(m.ring_rows),
+                "reset {reset}"
+            );
+        }
+    }
+
+    /// A window's state from before schema 66 holds no count: it is
+    /// numbered from its ring's oldest row, and goes on within the merged
+    /// form's bound of the exact statistic. A count below the ring's length
+    /// is refused, and the other kinds write none.
+    #[test]
+    fn a_window_state_before_66_is_numbered_from_its_oldest_row() {
+        let rows = level_rows(4, 4, 700, 1e8, false);
+        let mut m = CorrChange::new(CorrChangeCfg {
+            span_rows: 45,
+            crit: Some(0.5),
+            ..cfg(4, CorrChangeKind::Window)
+        })
+        .unwrap();
+        for r in &rows[..333] {
+            m.step(r, &[], 1.0, 1.0);
+        }
+        assert_eq!(m.ring_rows, 333);
+        let mut old = m.state();
+        old.schema_version = 65;
+        if let crate::ModelState::CorrChange(c) = &mut old.model {
+            c.ring_rows = 0;
+        }
+        let mut loaded = CorrChange::restore(&old).unwrap();
+        assert_eq!(loaded.ring_rows, 90, "numbered from the ring's oldest row");
+        let differ = rows[333..]
+            .iter()
+            .filter(|r| {
+                m.predict(r, 1.0).pred[0].to_bits() != loaded.predict(r, 1.0).pred[0].to_bits()
+            })
+            .count();
+        eprintln!("{differ} reports of the first row's numbering differ in their bits");
+        let (_, share, reports) = held_to_the_exact_statistic(&mut loaded, &rows, 333);
+        assert!(reports > 300 && share[0] <= 1.0);
+        let mut bad = m.state();
+        if let crate::ModelState::CorrChange(c) = &mut bad.model {
+            c.ring_rows = 89;
+        }
+        assert!(CorrChange::restore(&bad).is_err());
+        let monitor = CorrChange::new(cfg(2, CorrChangeKind::Monitor)).unwrap();
+        let bytes = rmp_serde::to_vec_named(&monitor.state()).unwrap();
+        assert!(
+            !bytes.windows(9).any(|w| w == b"ring_rows"),
+            "the monitor writes no count"
+        );
+    }
+
+    /// The merged sums hold no more numbers than the ring does, at every
+    /// width from 2 to 20 and three window lengths, on every row of three
+    /// passes of the windows; and below [`MIN_BLOCKS`] blocks a window is
+    /// read whole, to the bit of the two-pass form.
+    ///
+    /// [`MIN_BLOCKS`]: crate::window_moments::MIN_BLOCKS
+    #[test]
+    fn the_merged_sums_hold_no_more_than_the_ring() {
+        for d in 2..=20usize {
+            let b = block_rows(d);
+            for w in [4 * b, 100, 333] {
+                let mut m = CorrChange::new(CorrChangeCfg {
+                    span_rows: w,
+                    crit: Some(0.5),
+                    ..cfg(d, CorrChangeKind::Window)
+                })
+                .unwrap();
+                let rows = level_rows(d as u64, d, 6 * w, 0.0, false);
+                let mut most = 0usize;
+                for r in &rows {
+                    m.step(r, &[], 1.0, 1.0);
+                    most = most.max(m.sums.as_ref().unwrap().held());
+                }
+                // The suffixes, `2G` summaries at most, each no larger than
+                // its block's rows; and the two running prefixes.
+                let ring = 2 * w * d;
+                let prefixes = 2 * crate::window_moments::Layout::new(d).stride();
+                assert!(
+                    most <= ring + prefixes,
+                    "d {d}, w {w}: {most} numbers against the ring's {ring}"
+                );
+            }
+            let mut direct = CorrChange::new(CorrChangeCfg {
+                span_rows: 4 * b - 1,
+                crit: Some(0.5),
+                ..cfg(d, CorrChangeKind::Window)
+            })
+            .unwrap();
+            assert!(direct.sums.is_none());
+            let rows = level_rows(7, d, 20 * b, 3.0, false);
+            for (i, r) in rows.iter().enumerate() {
+                let got = direct.predict(r, 1.0).pred[0];
+                let w = 4 * b - 1;
+                let want = if i + 1 >= 2 * w {
+                    direct.window_stat(&rows[i + 1 - 2 * w..=i])
+                } else {
+                    f64::NAN
+                };
+                assert!(
+                    same(got, want) && got.to_bits() == want.to_bits()
+                        || got.is_nan() && want.is_nan(),
+                    "d {d}, row {i}"
+                );
+                direct.step(r, &[], 1.0, 1.0);
+            }
+        }
+    }
+
+    /// Under the merged sums, as when the windows are read whole: a column
+    /// constant over a window leaves no statistic, a column scaled by a
+    /// power of two leaves it to the bit, and a zero-weight or refused row
+    /// takes no place in the windows, its own report the one it would have
+    /// made.
+    #[test]
+    fn the_merged_windows_keep_the_window_kinds_rules() {
+        let w = 40usize;
+        let c = CorrChangeCfg {
+            span_rows: w,
+            crit: Some(0.5),
+            ..cfg(3, CorrChangeKind::Window)
+        };
+        let mut g = Normals::new(17);
+        let rows: Vec<Vec<f64>> = (0..5 * w)
+            .map(|i| {
+                let mut r = equicorrelated(&mut g, 3, if i < 2 * w { 0.2 } else { 0.6 });
+                if (60..110).contains(&i) {
+                    r[2] = 0.1;
+                }
+                r
+            })
+            .collect();
+        let mut m = CorrChange::new(c.clone()).unwrap();
+        assert!(m.sums.is_some());
+        let mut scaled = [(-270, m.clone()), (300, m.clone())];
+        let (mut nan, mut finite) = (0, 0);
+        for (i, r) in rows.iter().enumerate() {
+            let got = m.step(r, &[], 1.0, 1.0).pred[0];
+            // Rows 60..110 hold the constant: a window of 40 inside them
+            // starts at rows 60..=70, the newer window of the reports on
+            // rows 99..=109 and the older of those on rows 139..=149.
+            if (99..=109).contains(&i) || (139..=149).contains(&i) {
+                assert!(got.is_nan(), "row {i}: {got}");
+                nan += 1;
+            } else if i + 1 >= 2 * w {
+                assert!(got.is_finite(), "row {i}");
+                finite += 1;
+            }
+            for (e, s) in &mut scaled {
+                let f = 2f64.powi(*e);
+                let x = [r[0], f * r[1], r[2]];
+                let v = s.step(&x, &[], 1.0, 1.0).pred[0];
+                assert!(
+                    v.to_bits() == got.to_bits() || v.is_nan() && got.is_nan(),
+                    "row {i} at 2^{e}"
+                );
+            }
+        }
+        assert!(nan == 22 && finite == 99, "{nan} {finite}");
+        // A zero-weight and a refused row in a stream, against the stream
+        // without them: the same bytes and reports throughout.
+        let bytes = |m: &CorrChange| rmp_serde::to_vec(&m.state()).unwrap();
+        for (bad, weight) in [
+            (vec![1e6, -1e6, 0.0], 0.0),
+            (vec![f64::NAN, 0.5, 0.1], 1.0),
+            (vec![0.5, 0.25, 0.1], f64::INFINITY),
+        ] {
+            let mut with = CorrChange::new(c.clone()).unwrap();
+            let mut without = with.clone();
+            for (i, r) in rows.iter().enumerate() {
+                if i == 150 {
+                    let would = with.predict(&bad, 1.0);
+                    let out = with.step(&bad, &[], 1.0, weight);
+                    if weight == 0.0 {
+                        assert_eq!(out.pred[0].to_bits(), would.pred[0].to_bits(), "{bad:?}");
+                        assert!(out.pred[0].is_finite());
+                    }
+                    assert_eq!(bytes(&with), bytes(&without), "{bad:?}");
+                }
+                let (a, b) = (with.step(r, &[], 1.0, 1.0), without.step(r, &[], 1.0, 1.0));
+                assert!(
+                    a.pred
+                        .iter()
+                        .zip(&b.pred)
+                        .all(|(p, q)| p.to_bits() == q.to_bits() || p.is_nan() && q.is_nan()),
+                    "{bad:?} row {i}"
+                );
+            }
+            assert_eq!(with.ring_rows, rows.len() as u64);
         }
     }
 }

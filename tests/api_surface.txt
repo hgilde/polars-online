@@ -486,7 +486,7 @@
     model.n_perm = 200
     model.norm = "l1"
     model.perm_block = 1
-    model.permute_every_rows = 50
+    model.permute_every_rows = 20
     model.reset = false
     model.scalar = false
     model.seed = 0

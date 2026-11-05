@@ -119,6 +119,7 @@ mod stats;
 mod tails;
 mod warmup;
 mod window;
+mod window_moments;
 
 pub use audit::{
     Audit, AuditCfg, ClockReport as AuditClock, ColumnReport as AuditColumn, DISTINCT_CAP,
@@ -754,16 +755,27 @@ pub use window::{
 ///   no `|e|` reads the sketch it feeds until its refit, and a histogram
 ///   its warm-up still waits for is built so (`Binned`'s `before_65`).
 ///   Schema 64's fixtures are kept (`tests/state_fixtures/v64/`).
-/// - 66 (2026-11-05, task 327): `hmm` and `ew_class` under
-///   `covariance_type = "diag"` keep each state's or class's variances
-///   alone, an `EwCovDiag` in `diag_states` / `diag_classes` (and a
-///   windowed class's snapshots in `diag_classes` of `DiagMoments`), where
-///   they kept a whole `EwCov` and updated its `k²` co-moments a row to read
-///   `k` of them. Each variance's step reads no other entry, so nothing a
-///   row reports moves. A diagonal state of 65 or earlier keeps its whole
-///   matrices in `states` / `classes` and loads as their diagonals, going
-///   on to the bit and saving the bytes this build saves from the same
-///   rows; the other shapes load as they were, with the new list empty.
+/// - 66 (2026-11-05, tasks 327 and 328), two changes in one schema:
+///   - task 327: `hmm` and `ew_class` under `covariance_type = "diag"` keep
+///     each state's or class's variances alone, an `EwCovDiag` in
+///     `diag_states` / `diag_classes` (and a windowed class's snapshots in
+///     `diag_classes` of `DiagMoments`), where they kept a whole `EwCov`
+///     and updated its `k²` co-moments a row to read `k` of them. Each
+///     variance's step reads no other entry, so nothing a row reports
+///     moves. A diagonal state of 65 or earlier keeps its whole matrices in
+///     `states` / `classes` and loads as their diagonals, going on to the
+///     bit and saving the bytes this build saves from the same rows; the
+///     other shapes load as they were, with the new list empty.
+///   - task 328: `corrchange(kind = "window")` merges its windows'
+///     correlations from summaries of blocks of rows, cut by each row's
+///     number since the ring last started; the state keeps that count,
+///     `ring_rows`, written only where it is not 0, and rebuilds the sums
+///     from the ring on load. A window's state of 65 or earlier has none and
+///     is numbered from its ring's oldest row: a numbering as good as any,
+///     whose reports are within the merged sums' rounding of the exact
+///     statistic, as every numbering's are. A window short enough to be
+///     read whole (fewer than four blocks) reports the bits it did.
+///
 ///   Schema 65's fixtures are kept (`tests/state_fixtures/v65/`).
 pub const SCHEMA_VERSION: u32 = 66;
 

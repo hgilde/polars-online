@@ -991,8 +991,9 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
     task 271, for ``huber``'s and ``sgd``'s Huber scale, so 62 loads too;
     64 since task 277, for their refit of the first rows, so 63 loads too;
     65 since task 323, for the MAD read from a refit's held residuals, so 64
-    loads too; 66 since task 327, for ``hmm``'s and ``ew_class``'s diagonal
-    states, so 65 loads too."""
+    loads too; 66 since tasks 327 and 328, for ``hmm``'s and ``ew_class``'s
+    diagonal states and the count of rows ``corrchange``'s window ring has
+    taken, so 65 loads too."""
     bank = po.ModelBank([spec(fwd())])
     bank.fit_predict(stream(60, 50))
     state = bank.save_bytes()

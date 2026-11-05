@@ -345,7 +345,10 @@ fn the_runner_windows_and_samplers_grow_as_declared() {
 }
 
 /// A finding's cells, held to their declaration: each fails until its
-/// finding is fixed, and then gates like any other cell.
+/// finding is fixed, and then gates like any other cell. No finding is open
+/// (S1 to S3 are fixed); the next one's `#[ignore = "extended: scaling
+/// finding <id>"]` test calls this.
+#[allow(dead_code)]
 fn hold_finding(id: &str) {
     let ids: Vec<&str> = CELLS
         .iter()
@@ -354,12 +357,4 @@ fn hold_finding(id: &str) {
         .collect();
     assert!(!ids.is_empty(), "no cell of finding {id}");
     hold(&ids);
-}
-
-/// `corrchange(kind="window")` computes both windows' correlations afresh
-/// on every row: `O(window_rows · k²)` a row.
-#[test]
-#[ignore = "extended: scaling finding S3, corrchange's window costs O(window_rows) a row"]
-fn finding_s3_corrchange_window_costs_o_1_a_row_in_its_window() {
-    hold_finding("S3");
 }

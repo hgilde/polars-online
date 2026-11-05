@@ -208,16 +208,23 @@ use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 /// saving bytes that load back to the same ([`kept_scale_rule`]), not to
 /// the current fixture's bytes.
 ///
-/// 65 kept since 66 gave `hmm` and `ew_class` under `covariance_type =
-/// "diag"` their variances alone (task 327): a 65 state keeps each state's
-/// or class's whole co-moments, and each window snapshot's, of which the
-/// shape read the diagonal alone, so it loads as their diagonals, goes on
-/// to the bit, and saves the current fixture's bytes of the same case --
-/// the windowed `ew_class_window` too, its snapshots carrying their running
-/// products since 63 (the windowed rule below is for the sets before
-/// them). The cases `hmm_diag` and `ew_class_diag` were written into
-/// `v65/` by the schema-65 build, so the conversion of each diagonal form
-/// is held, windowed and not.
+/// 65 kept since 66 made two changes (tasks 327 and 328). First, `hmm` and
+/// `ew_class` under `covariance_type = "diag"` keep their variances alone
+/// (task 327): a 65 state keeps each state's or class's whole co-moments,
+/// and each window snapshot's, of which the shape read the diagonal alone,
+/// so it loads as their diagonals, goes on to the bit, and saves the
+/// current fixture's bytes of the same case -- the windowed
+/// `ew_class_window` too, its snapshots carrying their running products
+/// since 63 (the windowed rule below is for the sets before them). The
+/// cases `hmm_diag` and `ew_class_diag` were written into `v65/` by the
+/// schema-65 build, so the conversion of each diagonal form is held,
+/// windowed and not. Second, `corrchange(kind = "window")` keeps the count
+/// of rows its ring has taken, `ring_rows`, which numbers the rows its
+/// merged sums are cut by (task 328). It is written only where it is not 0,
+/// so a monitor or sequential state's bytes are as they were; a window's
+/// state of 65 has none and is numbered from its ring's oldest row. The
+/// case `corrchange_window` was written into `v65/` by the schema-65
+/// build, so that conversion is held: [`RENUMBERED`] says how.
 ///
 /// The kept schemas, each a `v<N>/` directory found beside the current set.
 fn previous() -> Vec<u32> {
@@ -289,6 +296,25 @@ const CONTINUES_WITHIN: &[(&str, f64, std::ops::Range<usize>)] = &[
     ("ew_cov_window", 1e-15, 6..9),
     ("ew_cov_accumulator", 1e-15, 3..4),
 ];
+
+/// The `corrchange(kind = "window")` cases of schema 65, each with how far
+/// its statistic may part from the frozen one by [`agree`]'s measure, and
+/// the slots that statistic fills. A state of 65 keeps no `ring_rows`
+/// (task 328), so it loads numbered from its ring's oldest row: converted,
+/// it is the current fixture's field for field but that count, which is the
+/// ring's length where the current fixture's counts every row the ring has
+/// taken ([`renumbered_rule`]). The statistic is merged from blocks cut by
+/// that numbering, where the schema-65 build computed it in two passes over
+/// the ring, so it continues within the merged sums' rounding of the frozen
+/// one; every other slot -- `crit`, `flag`, `since_flag`, `since_change`
+/// and the weight -- continues to the bit.
+///
+/// - `corrchange_window`: two windows of 16 rows over two columns, four
+///   blocks a window, the ring saved past its first row (32 rows held, 36
+///   taken). On these rows the statistic moved by at most 4.1e-16 of
+///   `1 + |stat|` (a few units in its last place), measured 2026-11-05 on
+///   macOS arm64; the bound is 24 times that.
+const RENUMBERED: &[(&str, f64, std::ops::Range<usize>)] = &[("corrchange_window", 1e-14, 0..1)];
 
 /// How far a continuation may part from the one frozen, on a platform other
 /// than the writer's: the golden files' tolerance (`tests/golden.rs`).
@@ -564,10 +590,15 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
             );
             let windowed = holds_a_window(&f.bytes());
             let moved = MOVED.iter().find(|(n, _)| *n == f.name).map(|&(_, b)| b);
+            let renumbered = RENUMBERED
+                .iter()
+                .find(|(n, _, _)| *n == f.name && schema == 65)
+                .map(|(_, b, slots)| (*b, slots.clone()));
             let within = CONTINUES_WITHIN
                 .iter()
                 .find(|(n, _, _)| *n == f.name)
-                .map(|(_, b, slots)| (*b, slots.clone()));
+                .map(|(_, b, slots)| (*b, slots.clone()))
+                .or_else(|| renumbered.clone());
             // Seeded by the `lloyd` rule before task 278 (plain k-means++
             // starts, ten Lloyd passes): the rule since finds the same
             // centres in another order (the doc above `previous`).
@@ -604,6 +635,9 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
                     let decode = |b: &[u8]| rmpv::decode::read_value(&mut &b[..]).unwrap();
                     same_but_floats(&decode(&saved), &decode(&current.bytes()), bound, &what);
                 }
+            } else if renumbered.is_some() {
+                assert_eq!(schema, 65, "{what}: RENUMBERED is for schema 65's windows");
+                renumbered_rule(&case, &named(&m.state()), &current.bytes(), &what);
             } else {
                 assert!(
                     named(&m.state()) == current.bytes(),
@@ -726,6 +760,63 @@ fn kept_scale_rule(case: &Case, kept: &rmpv::Value, saved: &[u8], what: &str) {
         !holds_for_a_refit(saved),
         "{what}: held for a refit by the new rule"
     );
+    let again = load(case, saved).unwrap_or_else(|e| panic!("{what}: {e}"));
+    assert!(
+        named(&again.state()) == saved,
+        "{what}: saved, loaded, saved"
+    );
+}
+
+/// A `corrchange(kind = "window")` state of schema 65, converted to
+/// `saved` ([`RENUMBERED`]): numbered from its ring's oldest row, so its
+/// `ring_rows` is the ring's length, and every other field is the current
+/// fixture's, `current`, exactly; and the state saves bytes that load back
+/// to the same.
+fn renumbered_rule(case: &Case, saved: &[u8], current: &[u8], what: &str) {
+    let decode = |b: &[u8]| rmpv::decode::read_value(&mut &b[..]).unwrap();
+    let (got, want) = (decode(saved), decode(current));
+    let model = ["model", "CorrChange"];
+    let count =
+        |v: &rmpv::Value| at(v, &[model[0], model[1], "ring_rows"]).and_then(rmpv::Value::as_u64);
+    let ring = at(&got, &[model[0], model[1], "ring"])
+        .and_then(rmpv::Value::as_array)
+        .map_or(0, Vec::len) as u64;
+    assert_eq!(
+        count(&got),
+        Some(ring),
+        "{what}: numbered from the ring's oldest row"
+    );
+    let taken = count(&want).unwrap_or_else(|| panic!("{what}: the current fixture has no count"));
+    assert!(
+        taken > ring,
+        "{what}: the current fixture's ring has taken no more rows than it holds"
+    );
+    // The count aside, the converted state is the current one's.
+    fn same_but_count(got: &rmpv::Value, want: &rmpv::Value, what: &str) {
+        use rmpv::Value as V;
+        match (got, want) {
+            (V::Map(g), V::Map(w)) => {
+                assert_eq!(g.len(), w.len(), "{what}: a map of another size");
+                for ((gk, gv), (wk, wv)) in g.iter().zip(w) {
+                    assert_eq!(gk, wk, "{what}: another key");
+                    if gk.as_str() != Some("ring_rows") {
+                        same_but_count(gv, wv, &format!("{what}.{gk}"));
+                    }
+                }
+            }
+            (V::Array(g), V::Array(w)) => {
+                assert_eq!(g.len(), w.len(), "{what}: an array of another length");
+                for (i, (gv, wv)) in g.iter().zip(w).enumerate() {
+                    same_but_count(gv, wv, &format!("{what}[{i}]"));
+                }
+            }
+            (V::F64(g), V::F64(w)) => {
+                assert!(agree(*g, *w, 0.0), "{what}: {g:e} against {w:e}");
+            }
+            _ => assert_eq!(got, want, "{what}"),
+        }
+    }
+    same_but_count(&got, &want, what);
     let again = load(case, saved).unwrap_or_else(|e| panic!("{what}: {e}"));
     assert!(
         named(&again.state()) == saved,
@@ -919,17 +1010,21 @@ fn held(v: &rmpv::Value) -> usize {
 /// spread per target, under a half-life (`holt`) and without one
 /// (`holt_inf`). `marginal`'s windowed lag moments about an origin (64,
 /// task 280 phase 3): `marginal_window_lags` keeps the origin and the
-/// lagged sides' sums.
+/// lagged sides' sums. `corrchange`'s count of the rows its window ring has
+/// taken (66, task 328): `corrchange_window` is saved past the ring's
+/// first row, so the count is more than the ring holds.
 #[test]
 fn every_layout_a_schema_moved_is_written_by_a_fixture() {
     if regenerating() {
         return;
     }
-    const FORMS: [(&str, &[&str]); 49] = [
+    const FORMS: [(&str, &[&str]); 50] = [
         // Schema 66 (task 327): a diagonal shape's variances alone.
         ("hmm_diag", &["model", "Hmm", "diag_states"]),
         ("ew_class_diag", &["model", "EwClass", "diag_classes"]),
         ("ew_class_window", &["model", "EwClass", "diag_classes"]),
+        // Schema 66 (task 328): the rows a window's ring has taken.
+        ("corrchange_window", &["model", "CorrChange", "ring_rows"]),
         (
             "marginal_window_lags",
             &["model", "Marginal", "lag", "origin", "x"],

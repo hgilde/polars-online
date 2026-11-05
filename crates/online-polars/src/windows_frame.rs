@@ -2716,8 +2716,9 @@ mod tests {
         // refit of `huber`'s and `sgd`'s first rows, whose loader reads 63:
         // the windows state unchanged. 65 for task 323's MAD read exactly
         // from a refit's held `|e|`, whose loader reads 64: unchanged too.
-        // 66 for task 327's diagonal `hmm` and `ew_class` states, whose
-        // loader reads 65: unchanged too.
+        // 66 for task 327's diagonal `hmm` and `ew_class` states and task
+        // 328's count of the rows `corrchange`'s window ring has taken,
+        // whose loaders read 65: unchanged too.
         assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (10, 66));
         assert_eq!(MIN_WINDOWS_VERSION, 9);
     }

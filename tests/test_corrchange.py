@@ -802,15 +802,23 @@ def test_n_perm_converges_at_the_rate_of_an_empirical_quantile():
 def test_a_block_of_a_whole_window_makes_the_quantile_the_observed_statistic():
     """``perm_block = window_rows`` leaves two blocks, so every draw is the
     two windows as they are or swapped, and the statistic is the same both
-    ways: the critical value drawn after a row is that row's statistic,
-    exactly, so the next row flags just when its statistic rose."""
+    ways: the critical value drawn after a row is that row's statistic, so
+    the next row flags just when its statistic rose. A report's statistic
+    is merged from its windows' block sums (task 328) and a draw's is read
+    from its shuffled rows whole, so the two agree to rounding, not to the
+    bit: within 1e-14 here, and the flag is held where the statistic moved
+    by more than that."""
     w = 30
     out = run(three_regimes(), **{**WINDOW, "window_rows": w}, perm_block=w, permute_every_rows=1)
     stat, crit, flag = (out[c].to_list() for c in ("stat", "crit", "flag"))
     assert crit[2 * w - 1] is None
+    held = 0
     for t in range(2 * w - 1, len(stat) - 1):
-        assert crit[t + 1] == stat[t], t
-        assert flag[t + 1] == (stat[t + 1] > stat[t]), t
+        assert crit[t + 1] == pytest.approx(stat[t], rel=1e-14, abs=1e-15), t
+        if abs(stat[t + 1] - stat[t]) > 1e-14 * (1 + stat[t]):
+            assert flag[t + 1] == (stat[t + 1] > stat[t]), t
+            held += 1
+    assert held > len(stat) // 2, held
 
 
 @pytest.mark.parametrize(
@@ -1042,15 +1050,21 @@ def test_the_scalar_standardisers_half_life_moves_the_statistic():
         assert a["weight_sum"][-1] != b["weight_sum"][-1]
 
 
+@pytest.mark.parametrize("level", [0.0, 1e8])
 @pytest.mark.parametrize("norm", ["l1", "linf"])
-def test_the_window_statistic_is_its_norm_on_every_row(norm):
+def test_the_window_statistic_is_its_norm_on_every_row(norm, level):
     """The definition, by hand: ``norm(vech(R_pre - R_post))`` over the two
     windows ending at each row, the correlations from ``np.corrcoef``. No
     library computes the statistic, so this is the reference, on every row
     of a stream with a break, at four columns (six pairs); ``linf`` the
-    largest pair, ``l1`` their sum."""
+    largest pair, ``l1`` their sum. Windows of 40 rows over four columns are
+    eight blocks of five, so the statistic is merged from the blocks' sums
+    (task 328), and at a level of 1e8 with a spread of 1 each block keeps
+    its mean against one of its rows: numpy's two-pass ``corrcoef`` agrees
+    within 1e-12 there too."""
     w, k = 40, 4
     df = pl.concat([pair(100, 0.1, seed=8, k=k), pair(100, 0.8, seed=9, k=k)])
+    df = df.with_columns(pl.all() + level)
     cols = [f"x{i}" for i in range(k)]
     out = run(df, features=cols, kind="window", window_rows=w, crit=9.0, norm=norm)
     x = df.to_numpy()

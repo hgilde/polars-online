@@ -105,7 +105,9 @@ const fn cell(id: &'static str, small: usize, step: usize, work: Growth, state: 
 }
 
 /// A cell whose measurement exceeds its declaration: held to the
-/// declaration in the extended tier, where it fails until it is fixed.
+/// declaration in the extended tier, where it fails until it is fixed. No
+/// cell is one now (findings S1 to S3 are fixed).
+#[allow(dead_code)]
 const fn finding(
     id: &'static str,
     small: usize,
@@ -195,8 +197,8 @@ pub const CELLS: &[Cell] = &[
     cell("seqtest.targets", 1, 8, Pow(1), Pow(1)),
     cell("seqtest.history", 1000, 8, Const, Const),
     cell("corrchange.k", 2, 8, Pow(2), Pow(2)),
-    finding("corrchange.window", 100, 8, Const, Pow(1), "S3"),
-    finding("corrchange.window_crit", 100, 8, Const, Pow(1), "S3"),
+    cell("corrchange.window", 100, 8, Const, Pow(1)),
+    cell("corrchange.window_crit", 100, 8, Const, Pow(1)),
     cell("corrchange.history", 1000, 8, Const, Const),
     cell("bocpd.max_run", 25, 8, Pow(1), Pow(1)),
     cell("bocpd.k", 2, 8, Pow(1), Pow(1)),

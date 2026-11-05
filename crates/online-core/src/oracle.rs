@@ -156,14 +156,9 @@ fn two_product(a: f64, b: f64) -> (f64, f64) {
     (p, e)
 }
 
-/// `Σ xs` rounded once, to nearest: Shewchuk's exact partials (Shewchuk
-/// 1997, "Adaptive precision floating-point arithmetic and fast robust
-/// geometric predicates", Discrete Comput. Geom. 18), every partial
-/// nonoverlapping and their sum exact, then rounded as CPython's
-/// `math.fsum` rounds them: the top partials added down to the first
-/// inexact step, and a half-way case decided by the sign of the partial
-/// below it. Finite inputs whose partial sums do not overflow.
-pub(crate) fn sum(xs: impl IntoIterator<Item = f64>) -> f64 {
+/// The exact partials of `Σ xs` (Shewchuk 1997, cited at [`sum`]):
+/// nonoverlapping, in increasing magnitude, their sum `Σ xs` exactly.
+fn exact_partials(xs: impl IntoIterator<Item = f64>) -> Vec<f64> {
     let mut partials: Vec<f64> = Vec::new();
     for mut x in xs {
         let mut kept = 0;
@@ -183,6 +178,18 @@ pub(crate) fn sum(xs: impl IntoIterator<Item = f64>) -> f64 {
         partials.truncate(kept);
         partials.push(x);
     }
+    partials
+}
+
+/// `Σ xs` rounded once, to nearest: Shewchuk's exact partials (Shewchuk
+/// 1997, "Adaptive precision floating-point arithmetic and fast robust
+/// geometric predicates", Discrete Comput. Geom. 18), every partial
+/// nonoverlapping and their sum exact, then rounded as CPython's
+/// `math.fsum` rounds them: the top partials added down to the first
+/// inexact step, and a half-way case decided by the sign of the partial
+/// below it. Finite inputs whose partial sums do not overflow.
+pub(crate) fn sum(xs: impl IntoIterator<Item = f64>) -> f64 {
+    let mut partials = exact_partials(xs);
     let Some(mut hi) = partials.pop() else {
         return 0.0;
     };
@@ -214,6 +221,36 @@ pub(crate) fn dot(pairs: impl IntoIterator<Item = (f64, f64)>) -> f64 {
         let (p, e) = two_product(x, y);
         [p, e]
     }))
+}
+
+/// `n·Σᵢ (xᵢ − x̄)(yᵢ − ȳ)` over `n` pairs, rounded once, to nearest: `n`
+/// times the centred co-moment, as `n·Σxᵢyᵢ − (Σxᵢ)(Σyᵢ)`, the same number
+/// in exact arithmetic. Each `n·xᵢ·yᵢ` is split exactly as [`dot3`]'s
+/// terms are, `Σx` and `Σy` are kept as their exact partials, each product
+/// of two partials is split exactly ([`two_product`]), and every part is
+/// summed exactly ([`sum`]). No mean is formed, so nothing is rounded at
+/// the level of the columns: the result is the exact co-moment's own
+/// nearest double, whatever the level.
+pub(crate) fn centred_comoment(xs: &[f64], ys: &[f64]) -> f64 {
+    assert_eq!(xs.len(), ys.len(), "a co-moment of pairs");
+    let n = xs.len() as f64;
+    let (px, py) = (
+        exact_partials(xs.iter().copied()),
+        exact_partials(ys.iter().copied()),
+    );
+    let mut parts = Vec::with_capacity(4 * xs.len() + 2 * px.len() * py.len());
+    for (&x, &y) in xs.iter().zip(ys) {
+        let (p, e) = two_product(n, x);
+        let ((pp, pe), (ep, ee)) = (two_product(p, y), two_product(e, y));
+        parts.extend([pp, pe, ep, ee]);
+    }
+    for &a in &px {
+        for &b in &py {
+            let (p, e) = two_product(a, b);
+            parts.extend([-p, -e]);
+        }
+    }
+    sum(parts)
 }
 
 /// `Σ aᵢ·bᵢ·cᵢ` rounded once, to nearest: `aᵢ·bᵢ` split exactly into

@@ -246,7 +246,9 @@ pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
         decay: online_core::Decay::Lam(1.0),
         crit: *crit,
         n_perm: n_perm.unwrap_or(200),
-        permute_every_rows: permute_every_rows.unwrap_or(50),
+        // One critical value in force for one shift of the windows: the
+        // draws then cost `n_perm · k²` a row whatever `window_rows` is.
+        permute_every_rows: permute_every_rows.unwrap_or(span_rows),
         perm_block: perm_block.unwrap_or(1),
         norm: match norm.as_deref() {
             None | Some("l1") => ChangeNorm::L1,

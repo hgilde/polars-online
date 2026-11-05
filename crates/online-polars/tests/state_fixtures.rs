@@ -138,6 +138,19 @@ const REGENERATE: &str = "PRINT_STATE_FIXTURES=1 cargo test -p online-polars --t
 /// holds an anchored sketch, or whose current one holds an `|e|` for a
 /// refit (`bank_refit`), is held to its marks and to saving bytes that load
 /// back to the same ([`kept_scale_rule`]).
+///
+/// 65 kept since 66 made two changes (tasks 327 and 328): `hmm` and
+/// `ew_class` under `covariance_type = "diag"` keep their variances alone,
+/// and `corrchange(kind = "window")` keeps the count of rows its ring has
+/// taken (`ring_rows`). No bank file holds a diagonal `hmm` or `ew_class`
+/// (the core's fixtures hold both conversions). `bank_diagnosed`'s
+/// `corr_window`, ten rows a window over two columns, is read whole, as
+/// before, so it goes on to the bit; a kept one has no count and is
+/// numbered from its ring's oldest row, and that file holds a window, so
+/// its state is held as above. Its spec leaves `permute_every_rows` unset,
+/// whose default is now the window's rows: a kept state's config keeps the
+/// 50 it was saved with, and goes on with it.
+///
 /// The kept schemas, each a `v<N>/` directory found beside the current set.
 fn previous() -> Vec<u32> {
     frozen::PREVIOUS_SETS.iter().map(|(s, _)| *s).collect()
@@ -1925,6 +1938,12 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
         ("bank_refit", "a sketch on the grid fixed at 1", |p, v| {
             p.ends_with(".anchor") && v.as_f64() == Some(1.0)
         }),
+        // Schema 66 (task 328): the rows a window's ring has taken.
+        (
+            "bank_diagnosed",
+            "a window ring's count of its rows",
+            |p, v| p.ends_with(".ring_rows") && v.as_u64().is_some_and(|n| n > 0),
+        ),
         (
             "bank_refit_64",
             "a buffer of schema 64, with no |e|",

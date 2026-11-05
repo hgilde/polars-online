@@ -1048,8 +1048,10 @@ def test_schema_version_is_current():
     (task 257), 63 for ``huber``'s and ``sgd``'s Huber scale (task 271), 64
     for their refit of each target's first rows (task 277), 65 for the MAD
     read exactly from the residuals a refit holds, with no anchor chosen
-    from the first residual (task 323)."""
-    assert po.schema_version() == 65
+    from the first residual (task 323), 66 for ``hmm``'s and ``ew_class``'s
+    diagonal states, which keep the variances alone (task 327), and the
+    count of rows ``corrchange``'s window ring has taken (task 328)."""
+    assert po.schema_version() == 66
 
 
 def test_an_integer_key_used_as_both_session_and_group_orders_numerically():
