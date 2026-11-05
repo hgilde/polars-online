@@ -225,6 +225,53 @@ class TestPartialCorrelation:
         assert abs(row["partial_corr_x0_x1"]) > 0.7
         assert abs(row["partial_corr_x0_x2"]) < 0.1
 
+    def test_under_decay_it_is_numpys_inverse_of_the_weighted_covariance(self):
+        """Task 320 (§3b), beside the faer one in Rust: at a finite half-life
+        on an irregular clock with uneven weights, ``partial_corr_ij`` is
+        ``-P_ij / sqrt(P_ii P_jj)`` and ``mahal`` is ``sqrt((x - m)' P (x -
+        m))``, with ``P`` numpy's (LAPACK's) inverse of numpy's weighted
+        ``cov(aweights=w·0.5^(age/h), bias=True)`` of the rows before, ``m``
+        their weighted mean, at a negligible prior (1e-12) and ``bias=True``
+        (``c = 1``; a partial correlation does not read ``c`` at all).
+        Measured 2026-11-04: 1.2e-13 in a partial correlation and 1.0e-13
+        relative in ``mahal``."""
+        rng = np.random.default_rng(31)
+        n, h = 800, 60.0
+        d = rng.standard_normal(n)
+        x = np.column_stack([d, d + 0.5 * rng.standard_normal(n), 0.3 * d + rng.standard_normal(n)])
+        x[400:, 2] += 2.0 * x[400:, 1]  # a link that appears
+        t = np.cumsum(rng.exponential(1.0, n))
+        w = rng.uniform(0.5, 1.5, n)
+        df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "t": t, "w": w})
+        spec = po.spec.ew_cov(
+            "c",
+            features=["x0", "x1", "x2"],
+            half_life=h,
+            stats=["partial_corr", "mahal"],
+            precision_prior=1e-12,
+            bias=True,
+            min_weight=0.0,
+            clock="t",
+            gap_cap=1e9,
+            weight="w",
+        )
+        out = po.ModelBank([spec]).fit_predict(df).unnest("c")
+        pairs = [(0, 1), (0, 2), (1, 2)]
+        pc_err, mahal_err = 0.0, 0.0
+        for i in range(20, n, 9):
+            aw = w[:i] * 0.5 ** ((t[i - 1] - t[:i]) / h)
+            p = np.linalg.inv(np.cov(x[:i].T, aweights=aw, bias=True))
+            for a, b in pairs:
+                want = -p[a, b] / np.sqrt(p[a, a] * p[b, b])
+                pc_err = max(pc_err, abs(out[f"partial_corr_x{a}_x{b}"][i] - want))
+            dev = x[i] - np.average(x[:i], axis=0, weights=aw)
+            want = np.sqrt(dev @ p @ dev)
+            mahal_err = max(mahal_err, abs(out["mahal"][i] / want - 1.0))
+        print(f"partial_corr {pc_err:.1e}, mahal {mahal_err:.1e}")
+        assert pc_err <= 1e-12 and mahal_err <= 1e-12, (pc_err, mahal_err)
+        # The link that appears is read: x1-x2 partial correlation moves.
+        assert out["partial_corr_x1_x2"][n - 1] - out["partial_corr_x1_x2"][399] > 0.3
+
     def test_is_bounded(self):
         row = self._last(self._driver_data(seed=3), stats=["partial_corr"], precision_prior=1e-6)
         for k, v in row.items():
