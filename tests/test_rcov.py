@@ -13,11 +13,11 @@ import math
 import re
 import warnings
 
+import numba
 import numpy as np
 import pandas as pd
 import polars as pl
 import pytest
-import numba
 from hfhd import hf
 
 import polars_online as po
