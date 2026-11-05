@@ -3,8 +3,9 @@
 //! `embargo`, a temporal clock, a window), a second bank file of the
 //! diagnostics with a memory of their own (`bank_diagnosed`), a third of an autocorrelation's
 //! lagged values (`bank_autocorr`), a `with_windows` state holding
-//! rows for a window that looks ahead, and a `refresh_time` state part-way
-//! through an interval -- each embedded as its bytes beside the input that
+//! rows for a window that looks ahead, a `refresh_time` state part-way
+//! through an interval, and one holding the rest of a tick's pair points
+//! that a slice left out (`refresh_time_held`) -- each embedded as its bytes beside the input that
 //! follows it and the frames that input gave (docs/PLAN.md task 198; review
 //! round 4, D1). The models' own states are `online-core`'s
 //! `tests/state_fixtures.rs`, on the same three checks:
@@ -978,6 +979,128 @@ fn refresh_int_first() -> (Vec<u8>, DataFrame) {
     refresh_first_of(ticks_int())
 }
 
+/// The ticks with a pair grid's columns: a group, a zoned clock, and a
+/// `keep` column of each form a held row's value takes -- a boolean, a
+/// signed and an unsigned integer, a float, a string, a null, a date, a
+/// duration, a time of day, and a list, which is kept as Arrow IPC (task
+/// 321).
+fn ticks_held() -> DataFrame {
+    let df = ticks();
+    let n = df.height();
+    let tz = TimeZone::opt_try_new(Some("Europe/Amsterdam")).unwrap();
+    let row: Vec<i64> = (0..n as i64).collect();
+    let t = (df.column("t").unwrap().as_materialized_series() * 1e6)
+        .cast(&DataType::Int64)
+        .unwrap()
+        .into_datetime(TimeUnit::Microseconds, tz);
+    let cols = vec![
+        df.column("series").unwrap().clone(),
+        t.into_column(),
+        df.column("v").unwrap().clone(),
+        Column::new(
+            "g".into(),
+            row.iter()
+                .map(|r| ["p", "q"][(r % 2) as usize])
+                .collect::<Vec<_>>(),
+        ),
+        Column::new("i".into(), row.clone()),
+        Column::new(
+            "flag".into(),
+            row.iter().map(|r| r % 3 == 0).collect::<Vec<_>>(),
+        ),
+        Column::new(
+            "u".into(),
+            row.iter().map(|r| *r as u32 + 7).collect::<Vec<_>>(),
+        ),
+        Column::new(
+            "x".into(),
+            row.iter().map(|r| *r as f64 / 8.0).collect::<Vec<_>>(),
+        ),
+        Column::new(
+            "label".into(),
+            row.iter().map(|r| format!("row {r}")).collect::<Vec<_>>(),
+        ),
+        Column::full_null("none".into(), n, &DataType::Int64),
+        Column::new(
+            "day".into(),
+            row.iter().map(|r| 19_000 + *r as i32).collect::<Vec<_>>(),
+        )
+        .cast(&DataType::Date)
+        .unwrap(),
+        Column::new(
+            "wait".into(),
+            row.iter().map(|r| r * 1_000).collect::<Vec<_>>(),
+        )
+        .cast(&DataType::Duration(TimeUnit::Milliseconds))
+        .unwrap(),
+        Column::new(
+            "at".into(),
+            row.iter().map(|r| r * 1_000_000_000).collect::<Vec<_>>(),
+        )
+        .cast(&DataType::Time)
+        .unwrap(),
+        Series::new(
+            "list".into(),
+            row.iter()
+                .map(|r| Series::new("".into(), [*r, -r]))
+                .collect::<Vec<_>>(),
+        )
+        .into_column(),
+    ];
+    DataFrame::new(n, cols).unwrap()
+}
+
+const HELD_KEEP: &[&str] = &[
+    "i", "flag", "u", "x", "label", "none", "day", "wait", "at", "list",
+];
+
+fn held_keep() -> Vec<String> {
+    HELD_KEEP.iter().map(|k| (*k).to_string()).collect()
+}
+
+fn held_cols(keep: &[String]) -> RefreshCols<'_> {
+    RefreshCols {
+        series: "series",
+        clock: "t",
+        value: "v",
+        group: Some("g"),
+        keep,
+    }
+}
+
+/// A pair grid sliced among one tick's points (task 321): the state holds
+/// the tick's point the slice left out, and the run loaded from it returns
+/// that point first.
+fn refresh_held_first() -> (Vec<u8>, DataFrame) {
+    let df = ticks_held();
+    let keep = held_keep();
+    let whole = RefreshTime::new(refresh_names(), true)
+        .unwrap()
+        .feed(&df, &held_cols(&keep))
+        .unwrap();
+    let i = whole.column("i").unwrap().i64().unwrap();
+    // A slice ending after the first point of a tick past the input's middle.
+    let half = (df.height() / 2) as i64;
+    let at = (1..i.len())
+        .find(|&r| i.get(r) == i.get(r - 1) && i.get(r).unwrap() > half)
+        .expect("a tick completing two pairs past the middle");
+    let mut r = RefreshTime::new(refresh_names(), true).unwrap();
+    r.feed_limited(&df, &held_cols(&keep), Some(at)).unwrap();
+    let bytes = r.save_bytes().unwrap();
+    let fed = i.get(at).unwrap() as usize + 1;
+    (bytes, df.slice(fed as i64, df.height() - fed))
+}
+
+fn refresh_held_run(bytes: &[u8], input: &DataFrame) -> Ran {
+    let keep = held_keep();
+    let mut r = RefreshTime::load_bytes(bytes, refresh_names(), true, true)?;
+    let again = r.save_bytes()?;
+    let fed = r
+        .feed(input, &held_cols(&keep))
+        .map_err(|e| e.to_string())?;
+    Ok((again, vec![("feed".into(), fed)]))
+}
+
 fn kinds() -> Vec<Kind> {
     vec![
         Kind {
@@ -1044,6 +1167,11 @@ fn kinds() -> Vec<Kind> {
             name: "refresh_time_int",
             first: refresh_int_first,
             run: refresh_run,
+        },
+        Kind {
+            name: "refresh_time_held",
+            first: refresh_held_first,
+            run: refresh_held_run,
         },
     ]
 }
@@ -1711,6 +1839,50 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
         ),
         ("refresh_time_int", "Instant::Int", |p, _| {
             p.contains(".last_time.") && p.ends_with(".Int")
+        }),
+        // Task 321: a pair grid sliced among one tick's points holds the
+        // rest, the file then version 2, and the tick's row in each form a
+        // held value takes.
+        ("refresh_time_held", "version 2", |p, v| {
+            p == ".version" && v.as_u64() == Some(2)
+        }),
+        ("refresh_time_held", "a held point", |p, v| {
+            p.starts_with(".held.points.0.2.") && v.as_f64().is_some()
+        }),
+        ("refresh_time_held", "Cell::Null", |p, v| {
+            p.starts_with(".held.row.") && v.as_str() == Some("Null")
+        }),
+        ("refresh_time_held", "Cell::Bool", |p, _| {
+            p.starts_with(".held.row.") && p.ends_with(".Bool")
+        }),
+        ("refresh_time_held", "Cell::Int", |p, _| {
+            p.starts_with(".held.row.") && p.ends_with(".Int")
+        }),
+        ("refresh_time_held", "Cell::UInt", |p, _| {
+            p.starts_with(".held.row.") && p.ends_with(".UInt")
+        }),
+        ("refresh_time_held", "Cell::Float", |p, _| {
+            p.starts_with(".held.row.") && p.ends_with(".Float")
+        }),
+        ("refresh_time_held", "Cell::Str", |p, _| {
+            p.starts_with(".held.row.") && p.ends_with(".Str")
+        }),
+        ("refresh_time_held", "Cell::Date", |p, _| {
+            p.starts_with(".held.row.") && p.ends_with(".Date")
+        }),
+        ("refresh_time_held", "a zoned Cell::Datetime", |p, v| {
+            p.starts_with(".held.row.") && p.ends_with(".Datetime.2") && v.as_str().is_some()
+        }),
+        ("refresh_time_held", "Cell::Duration", |p, v| {
+            p.starts_with(".held.row.") && p.ends_with(".Duration.1") && v.as_str() == Some("Ms")
+        }),
+        ("refresh_time_held", "Cell::Time", |p, _| {
+            p.starts_with(".held.row.") && p.ends_with(".Time")
+        }),
+        ("refresh_time_held", "Cell::Arrow, as a binary", |p, v| {
+            p.starts_with(".held.row.")
+                && p.ends_with(".Arrow")
+                && v.as_slice().is_some_and(|b| b.starts_with(b"ARROW1"))
         }),
         ("bank", "a target's floor_since", |p, v| {
             p.contains(".notified.") && p.contains(".floor_since.") && v.as_f64().is_some()

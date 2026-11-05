@@ -479,9 +479,10 @@ def refresh_time(
     that tick, whatever the chunk size, as a bank's is after the rows a
     ``head(n)`` pulled. A run resumed on the input after that tick goes on
     with the next point. With ``pairs=True`` one tick can complete several
-    pairs' points at once. If the slice ends among them, the state is still
-    the state after that tick, so the points it left out are returned by
-    neither the slice nor a run resumed after the tick. ``load_state`` is
+    pairs' points at once. If the slice ends among them, the state holds the
+    tick's points the slice left out, and a run resumed on the input after
+    that tick returns them first: the slice and the resumed run together give
+    the one run's grid, wherever the slice ends. ``load_state`` is
     read when the plan is built and goes on from there, so feeding a stream
     in two runs gives the grid one run gives. It must have been saved with
     the same ``names`` and ``pairs``, on the same kind of clock (a temporal
@@ -583,19 +584,29 @@ def refresh_time(
         # `head(n)`, and the same whatever the chunk size.
         rt = build()
         seen = 0
-        for chunk in lazy.collect_batches(chunk_size=rows, maintain_order=True):
-            out = rt.feed(chunk, None if n_rows is None else n_rows - seen)
-            if n_rows is not None:
-                # A tick that completes several pairs' points is taken whole.
-                out = out.head(n_rows - seen)
-            seen += out.height
+
+        def emit(out: pl.DataFrame) -> pl.DataFrame:
             if predicate is not None:
                 out = out.filter(predicate)
             if with_columns is not None:
                 out = out.select(with_columns)
-            yield out
+            return out
+
+        for chunk in lazy.collect_batches(chunk_size=rows, maintain_order=True):
+            # Exactly the points still wanted: the rest of a tick's points
+            # past them are held, in the state too, for the next feed.
+            out = rt.feed(chunk, None if n_rows is None else n_rows - seen)
+            seen += out.height
+            yield emit(out)
             if n_rows is not None and seen >= n_rows:
                 break
+        else:
+            # Points a resumed state held come out on the first feed; an
+            # input of no rows gives no chunk to feed, so a frame of none
+            # takes them.
+            out = rt.feed(pl.DataFrame(schema=in_schema), None if n_rows is None else n_rows - seen)
+            if out.height:
+                yield emit(out)
         # Reached once the input is fed, or the slice is: not on a run the
         # caller abandons, nor one the sampler ended with an error.
         if save_path is not None:

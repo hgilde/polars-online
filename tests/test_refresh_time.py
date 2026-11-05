@@ -935,37 +935,100 @@ def test_pairs_through_a_saved_state_are_the_one_runs_pairs(tmp_path, split):
     assert state.read_bytes() == whole.read_bytes()
 
 
-def test_a_slice_ending_among_one_ticks_pairs_saves_the_state_after_that_tick(tmp_path):
-    """The docstring's warning, held: one tick can complete several pairs'
-    points, and a ``head(n)`` that ends among them reads up to that tick and
-    saves the state after it, whatever the chunk size. That state is the one
-    a run over the input up to the tick saves, so the points the slice left
-    out of that tick are returned by neither the slice nor a run resumed
-    after the tick; every other point is."""
-    df = xyz_obs()
-    kw = dict(series="series", names=XYZ, clock="t", value="v", pairs=True, keep=["i"])
-    whole = stream.refresh_time(df, **kw)
-    tick = multi_pair_ticks(whole)[0]
-    first_at_tick = whole.with_row_index("r").filter(pl.col("i") == tick)["r"]
-    assert first_at_tick.len() >= 2, "the tick completes several pairs"
-    n = first_at_tick[0] + 1  # the slice ends after the first of them
-    states = []
-    for size in (1, 7, 100_000):
-        path = tmp_path / f"head{size}.state"
-        plan = stream.refresh_time(df.lazy(), save_state=path, chunk_size=size, **kw)
-        head = plan.head(n).collect()
-        assert head.equals(whole.head(n)), size
-        states.append(path.read_bytes())
-    assert states[0] == states[1] == states[2]
-    upto = tmp_path / "upto.state"
-    stream.refresh_time(df.filter(pl.col("i") <= tick), save_state=upto, **kw)
-    assert upto.read_bytes() == states[0]
-    resumed = stream.refresh_time(
-        df.filter(pl.col("i") > tick), load_state=tmp_path / "head1.state", **kw
+WXYZ = ["w", "x", "y", "z"]
+
+
+def _wxyz_obs():
+    """Four series, so with ``pairs`` one tick can complete three pairs'
+    points: a slice can leave two of them for the run after it."""
+    return (
+        poisson_obs(names=WXYZ, rates=(1.0, 0.6, 0.3, 0.15), n=150, seed=3)
+        .with_row_index("i")
+        .with_columns(pl.col("i").cast(pl.Int64))
     )
-    lost = whole.slice(n, first_at_tick.len() - 1)
-    assert lost["i"].to_list() == [tick] * (first_at_tick.len() - 1)
-    assert pl.concat([head, lost, resumed]).equals(whole)
+
+
+def _slice_case(pairs):
+    df = _wxyz_obs()
+    kw = dict(series="series", names=WXYZ, clock="t", value="v", pairs=pairs, keep=["i"])
+    whole = stream.refresh_time(df, **kw)
+    return df, kw, whole
+
+
+def _first_tick_of(whole, points):
+    """The row of the first point of the first tick completing ``points``
+    points, or more."""
+    at = whole.with_row_index("r").group_by("i", maintain_order=True).agg(pl.col("r"))
+    rows = at.filter(pl.col("r").list.len() >= points)["r"][0]
+    return rows[0], len(rows)
+
+
+def _ends(whole, pairs):
+    """Slices of the output: the first point, the last, and, with ``pairs``,
+    either edge of a tick completing three points and inside it."""
+    ends = {"the first point": 1, "the last point": whole.height}
+    if pairs:
+        r, k = _first_tick_of(whole, 3)
+        ends |= {
+            "before the tick": r,
+            "after its first pair": r + 1,
+            "before its last pair": r + k - 1,
+            "after the tick": r + k,
+        }
+    return ends
+
+
+@pytest.mark.parametrize("pairs", [False, True])
+def test_a_slice_and_the_run_resumed_after_it_are_the_one_run(tmp_path, pairs):
+    """A ``head(n)`` reads the input up to the tick that completed its last
+    point and saves the state there, whatever the chunk size. With ``pairs``
+    one tick can complete several points; a slice ending among them holds the
+    rest in that state, and a run resumed on the input after the tick
+    returns them first. So the slice and the resumed run are the one run,
+    wherever the slice ends: the first or the last point, at a tick's edge
+    or inside it."""
+    df, kw, whole = _slice_case(pairs)
+    if pairs:
+        assert multi_pair_ticks(whole).len() > 10
+    for what, n in _ends(whole, pairs).items():
+        for size in (1, 7, 100_000):
+            path = tmp_path / f"head{size}.state"
+            plan = stream.refresh_time(df.lazy(), save_state=path, chunk_size=size, **kw)
+            head = plan.head(n).collect()
+            assert head.equals(whole.head(n)), (what, size)
+            tick = head["i"][-1]
+            resumed = stream.refresh_time(
+                df.filter(pl.col("i") > tick), load_state=path, chunk_size=size, **kw
+            )
+            assert pl.concat([head, resumed]).equals(whole), (what, size)
+            if size == 1:
+                first = path.read_bytes()
+            else:
+                assert path.read_bytes() == first, (what, size)
+
+
+def test_a_resumed_run_sliced_below_the_points_held_holds_the_rest(tmp_path):
+    """A slice that leaves two of a tick's three points: a run resumed after
+    the tick and sliced to one point returns one of them and saves the
+    other, which the next run returns first. An input of no rows after the
+    tick returns what is held."""
+    df, kw, whole = _slice_case(True)
+    r, k = _first_tick_of(whole, 3)
+    first, second = tmp_path / "first.state", tmp_path / "second.state"
+    head = stream.refresh_time(df.lazy(), save_state=first, **kw).head(r + 1).collect()
+    tick = head["i"][-1]
+    after = df.filter(pl.col("i") > tick)
+    one = (
+        stream.refresh_time(after.lazy(), load_state=first, save_state=second, **kw)
+        .head(1)
+        .collect()
+    )
+    assert one.equals(whole.slice(r + 1, 1))
+    rest = stream.refresh_time(after, load_state=second, **kw)
+    assert pl.concat([head, one, rest]).equals(whole)
+    held = stream.refresh_time(after.clear(), load_state=first, **kw)
+    assert held.equals(whole.slice(r + 1, k - 1))
+    assert held["i"].to_list() == [tick] * (k - 1)
 
 
 _GRID_ORDERS = [XYZ, ["z", "x", "y"], ["y", "x", "z"]]

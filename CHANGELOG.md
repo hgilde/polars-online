@@ -28,6 +28,18 @@ returns.
   `budgets-baseline.json`, which the next release's drift is read from
   (task 317).
 
+### Fixed
+
+- `po.stream.refresh_time(pairs=True)` resumed after a `head(n)` that
+  ended among one tick's pairs lost that tick's remaining points: neither
+  the slice nor the resumed run returned them. The slice now returns
+  exactly `n` points and its state holds the rest of the tick, which the
+  resumed run returns first, so the two give the one run's grid wherever
+  the slice ends. A state holding such points is written as version 2 of
+  the `refresh_time` state (an older build refuses it rather than dropping
+  the points, and it is 71 bytes larger per point held); every other state
+  is byte-identical to before (task 321).
+
 ### Performance
 
 - `hmm` with `covariance_type="tied"` allocates nothing a row (7 before),
