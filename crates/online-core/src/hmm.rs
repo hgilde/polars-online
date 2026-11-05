@@ -1255,14 +1255,24 @@ mod tests {
         assert!(back.states.is_empty());
         let want: Vec<EwCovDiag> = whole.iter().map(EwCovDiag::of).collect();
         assert_eq!(back.diag_states, want);
+        // A state still holding a block of rows is no whole matrix: it does
+        // not load as a diagonal, and the state is refused.
+        let mut pending = whole[1].clone();
+        pending.set_block_rows(4);
+        pending.update(&[0.5, 0.5, 0.5], 1.0, 1.0);
+        assert!(pending.has_pending() && pending.has_shape(3));
         type Edit<'a> = (u32, &'a dyn Fn(&mut Hmm));
-        let refused: [Edit; 4] = [
+        let refused: [Edit; 5] = [
             (66, &as_65),
             (66, &|h| h.states = whole.clone()),
             (66, &|h| {
                 h.diag_states.pop();
             }),
             (65, &|h| h.cfg.covariance = Covariance::Full),
+            (65, &|h| {
+                as_65(h);
+                h.states[1] = pending.clone();
+            }),
         ];
         for (i, (schema, edit)) in refused.into_iter().enumerate() {
             match old(schema, edit) {

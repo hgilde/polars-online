@@ -422,7 +422,9 @@ mod tests {
     }
 
     /// Given moments, and moments set, are the full accumulator's with that
-    /// diagonal; a shape of the wrong width is refused, as is a bad prior.
+    /// diagonal, at a weight of 0 too (no rows yet, which hard rule 9 makes
+    /// legal); a shape of the wrong width is refused, as are a negative or
+    /// unbounded weight and a bad prior.
     #[test]
     fn given_and_set_moments_are_the_full_ones_diagonal() {
         let k = 3;
@@ -438,6 +440,14 @@ mod tests {
         assert_eq!(diag, EwCovDiag::of(&cov));
         assert!(EwCovDiag::from_moments(k, 1.0, &means, &full, 0.1).is_err());
         assert!(EwCovDiag::from_moments(k, -1.0, &means, &vars, 0.1).is_err());
+        for bad in [f64::NAN, f64::INFINITY, -f64::MIN_POSITIVE] {
+            assert!(EwCovDiag::from_moments(k, bad, &means, &vars, 0.1).is_err());
+        }
+        let empty = EwCov::from_moments(k, 0.0, &means, &full, 0.1).unwrap();
+        assert_eq!(
+            EwCovDiag::from_moments(k, 0.0, &means, &vars, 0.1),
+            Ok(EwCovDiag::of(&empty))
+        );
         assert!(EwCovDiag::with_precision_prior(k, 0.0).is_err());
         assert!(EwCovDiag::with_precision_prior(k, f64::INFINITY).is_err());
         assert!(diag.has_shape(3) && !diag.has_shape(2));

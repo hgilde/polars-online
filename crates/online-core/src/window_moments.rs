@@ -64,6 +64,12 @@ use std::fmt;
 /// columns, 2,524 against 11,701 at twenty).
 pub(crate) const MIN_BLOCKS: usize = 4;
 
+#[cfg(test)]
+thread_local! {
+    /// The summaries [`Layout::leaf`] has formed from rows.
+    pub(crate) static LEAVES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Rows a block summary covers at `k` columns: `⌈k/2⌉ + 3`, the fewest at
 /// which a summary (`k²/2 + 5k/2 + 1` numbers) takes no more memory than
 /// its block's rows in the ring (`b·k`).
@@ -103,6 +109,8 @@ impl Layout {
         hi: u64,
         row: &impl Fn(u64) -> &'a [f64],
     ) {
+        #[cfg(test)]
+        LEAVES.with(|c| c.set(c.get() + 1));
         let k = self.k;
         out.fill(0.0);
         if hi <= lo {
@@ -523,10 +531,14 @@ mod tests {
     /// suffix, one prefix, or a suffix and a prefix cover, at every window
     /// length a width merges and every row number through three periods of
     /// the chunks: `plan`'s asserts hold, and head, blocks and tail tile
-    /// each window.
+    /// each window. A run is at least `C = G − 1` blocks (a window of `w ≥
+    /// G·b` rows, less the row being reported, spans `G − 1` full blocks at
+    /// the least), so a run inside one chunk is the whole chunk, and it
+    /// reads the prefix its side carries to the chunk's end, not a suffix
+    /// from the chunk's start.
     #[test]
     fn every_windows_blocks_are_a_suffix_and_a_prefix() {
-        let mut plans = 0usize;
+        let (mut plans, mut whole_chunks) = (0usize, 0usize);
         for k in 2..=24 {
             let b = block_rows(k) as u64;
             for w in 3..=260usize {
@@ -543,12 +555,107 @@ mod tests {
                         assert!(p.j1 * b <= e && e - p.j1 * b <= b, "tail of k {k}, w {w}");
                         assert!(p.j1 * b <= pos, "an incomplete block, k {k}, w {w}");
                         assert!(p.suffix.is_some() || p.prefix.is_some());
+                        let c = sums.chunk;
+                        assert!(p.j1 - p.j0 >= c, "a run under C blocks, k {k}, w {w}");
+                        if (p.j1 - 1) / c == p.j0 / c {
+                            assert_eq!(
+                                (p.j0 % c, p.suffix, p.prefix),
+                                (0, None, Some(p.j0 / c)),
+                                "a run inside one chunk, k {k}, w {w}, row {pos}"
+                            );
+                            whole_chunks += 1;
+                        }
                         plans += 1;
                     }
                 }
             }
         }
         assert!(plans > 1_000_000, "{plans}");
+        assert!(whole_chunks > 10_000, "{whole_chunks}");
+    }
+
+    /// One summary of `k = 1` column: `[n, α, o, M]`.
+    fn summary(n: f64, anchor: f64, m: f64) -> Vec<f64> {
+        vec![n, anchor, 0.0, m]
+    }
+
+    /// **The larger part's co-moments are added last**, so a merge rounds
+    /// once at the scale of the merged rows: where the larger part's `M` is
+    /// 1 and the smaller part's and the cross term `c·δ²` are each half a
+    /// unit in the last place of 1, the two small ones sum exactly to a
+    /// whole unit and the merge is `1 + 2⁻⁵²`, exact; adding the large one
+    /// to either small one first ties to even at 1, and the other then ties
+    /// to 1 again. Every number is binary, so the arithmetic is exact: `δ =
+    /// 2⁻²⁷` (the anchors' difference, the offsets 0) and `c = n_A n_B / n
+    /// = 2`, at 3 rows before 6 (the later part the larger) and at 4 and 4
+    /// (a tie, the earlier part's anchor and co-moments kept as the
+    /// larger).
+    #[test]
+    fn the_larger_parts_comoments_are_added_last() {
+        let layout = Layout::new(1);
+        let (half, delta) = (2f64.powi(-53), 2f64.powi(-27));
+        let mut d = vec![0.0; 2];
+        for (a, b) in [
+            (summary(3.0, 0.0, half), summary(6.0, delta, 1.0)),
+            (summary(4.0, 0.0, 1.0), summary(4.0, delta, half)),
+        ] {
+            let mut acc = a.clone();
+            layout.merge(&mut acc, &b, &mut d);
+            assert_eq!(d[1] * delta, half, "c·δ² is half a unit");
+            assert_eq!(acc[0], a[0] + b[0]);
+            assert_eq!(
+                acc[3].to_bits(),
+                (1.0 + 2f64.powi(-52)).to_bits(),
+                "{} rows then {}: M = {:e}",
+                a[0],
+                b[0],
+                acc[3] - 1.0
+            );
+            assert_eq!(1.0 + half + half, 1.0, "the other order rounds to 1");
+        }
+    }
+
+    /// **A report summarises O(1) blocks**: over a stream, every block is
+    /// summarised at most three times -- once into its chunk's suffixes and
+    /// once into each side's running prefix, which is carried forward from
+    /// where it stands, never rebuilt from its chunk's first block while its
+    /// chunk is the same -- and each report reads its two windows' ends from
+    /// the rows, four leaves more. Rebuilding a prefix a report would make
+    /// its cost grow with the window. At `w = 160` over two columns a chunk
+    /// is 39 blocks.
+    #[test]
+    fn a_report_summarises_a_bounded_number_of_blocks() {
+        for (k, w) in [(2usize, 160usize), (5, 100), (7, 4 * block_rows(7))] {
+            let mut sums = WindowSums::new(k, w).expect("merged");
+            let rows: Vec<Vec<f64>> = (0..10 * w)
+                .map(|i| (0..k).map(|j| ((i * 7 + j * 3) % 11) as f64).collect())
+                .collect();
+            let row = |q: u64| rows[q as usize].as_slice();
+            let s = sums.layout().stride();
+            let (mut out, mut tmp) = (vec![0.0; 2 * s], vec![0.0; s + 3 * k]);
+            let before = LEAVES.with(std::cell::Cell::get);
+            let mut reports = 0usize;
+            for pos in (2 * w as u64 - 1)..rows.len() as u64 {
+                sums.ready(pos, &row);
+                sums.summaries(pos, &row, &mut out, &mut tmp);
+                reports += 1;
+            }
+            let leaves = LEAVES.with(std::cell::Cell::get) - before;
+            let blocks = rows.len() / sums.block() as usize + 1;
+            let bound = 4 * reports + 3 * blocks;
+            eprintln!("k {k}, w {w}: {leaves} leaves for {reports} reports, bound {bound}");
+            assert!(leaves <= bound, "k {k}, w {w}: {leaves} past {bound}");
+        }
+    }
+
+    /// The sums show their shape, not their numbers.
+    #[test]
+    fn the_sums_debug_as_their_shape() {
+        let sums = WindowSums::new(2, 160).unwrap();
+        assert_eq!(
+            format!("{sums:?}"),
+            "WindowSums { block: 4, chunk: 39, chunks: 0 }"
+        );
     }
 
     /// The merge is Chan, Golub & LeVeque's rule: two halves of a set of

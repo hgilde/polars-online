@@ -1314,6 +1314,13 @@ mod tests {
             );
         }
         assert!(m.classes.is_empty() && m.diag_classes.len() == 2);
+        for c in 0..2 {
+            assert!(std::ptr::eq(m.class_diag(c).unwrap(), &m.diag_classes[c]));
+            assert!(m.class_cov(c).is_none());
+        }
+        assert!(m.class_diag(2).is_none());
+        let full = EwClass::new(cfg(3, 2, Covariance::Full)).unwrap();
+        assert!(full.class_diag(0).is_none() && full.class_cov(0).is_some());
         let snaps = &m.win.as_ref().unwrap().snaps;
         assert!(snaps.iter().count() > 3);
         assert!(
@@ -1353,14 +1360,28 @@ mod tests {
             assert!(s.classes.is_empty());
             assert_eq!(s.diag_classes, vec![part.clone(); 2]);
         }
+        // A class still holding a block of rows is no whole matrix: it
+        // does not load as a diagonal, and the state is refused.
+        let mut pending = whole[1].clone();
+        pending.set_block_rows(4);
+        pending.update(&[0.5, 0.5, 0.5], 1.0, 1.0);
+        assert!(pending.has_pending() && pending.has_shape(3));
         type Edit<'a> = (u32, &'a dyn Fn(&mut EwClass));
-        let refused: [Edit; 4] = [
+        let refused: [Edit; 6] = [
             (66, &as_65),
             (66, &|e| e.classes = whole.clone()),
             (66, &|e| {
                 e.diag_classes.pop();
             }),
             (65, &|e| e.cfg.covariance = Covariance::Full),
+            (65, &|e| {
+                as_65(e);
+                e.classes[1] = pending.clone();
+            }),
+            (66, &|e| {
+                let snap = e.win.as_mut().unwrap().snaps.iter_mut().nth(1).unwrap();
+                snap.diag_classes[0].v.pop();
+            }),
         ];
         for (i, (schema, edit)) in refused.into_iter().enumerate() {
             match old(schema, edit) {
@@ -2282,7 +2303,15 @@ mod tests {
         crate::window::json_edit(&mut v, "runs", &mut |x| {
             *x = serde_json::json!({"x": [], "start": []});
         });
-        assert!(restore(v).unwrap().classes.iter().all(|c| !c.keeps_runs()));
+        // The edit gives each diagonal class runs, which the load turns off.
+        let edited: crate::State = serde_json::from_value(v.clone()).unwrap();
+        let crate::ModelState::EwClass(e) = &edited.model else {
+            unreachable!()
+        };
+        assert!(e.diag_classes.len() == 2 && e.diag_classes.iter().all(EwCovDiag::keeps_runs));
+        let back = restore(v).unwrap();
+        assert!(back.classes.is_empty() && back.diag_classes.len() == 2);
+        assert!(back.diag_classes.iter().all(|c| !c.keeps_runs()));
         let mut v = build(Some(20.0));
         crate::window::json_edit(&mut v, "runs", &mut |x| {
             x["off"] = serde_json::json!(true);
@@ -2565,6 +2594,59 @@ mod tests {
             m.window_over_budget().is_some(),
             "the budget was never reached"
         );
+    }
+
+    /// **A diagonal class counts its `k` variances against the window's
+    /// budget**, not the `k²` co-moments a whole class holds. A snapshot's
+    /// footprint is the bytes it holds: the model's weight (8), and per
+    /// class the weight, the row count and the Kish sum (3·8) beside `k`
+    /// means and `k` variances (2·8·k). At 3 features and 2 classes that is
+    /// `8 + 2·(24 + 48) = 152` bytes, where two whole classes are `8 +
+    /// 2·(24 + 24 + 72) = 248` (`k²` co-moments). With a snapshot every row
+    /// and a window no row leaves, the ring holds one snapshot a learned
+    /// row; a refusing budget of 10½ snapshots holds 10 and turns away the
+    /// eleventh, on the eleventh row, reporting the `11·152 = 1,672` bytes
+    /// it would have reached; and a thinning one of the same size thins on
+    /// that row to every second snapshot and the newest, 6 of them.
+    #[test]
+    fn a_diagonal_snapshot_counts_its_variances_against_the_budget() {
+        let per = 8 + 2 * (3 * 8 + 2 * 8 * 3);
+        assert_eq!(per, 152);
+        for (shape, bytes) in [(Covariance::Diagonal, 152usize), (Covariance::Full, 248)] {
+            let mut c = cfg(3, 2, shape);
+            c.window = Some(1e6);
+            c.max_rows_between_snapshots = Some(1);
+            let mib = |b: usize| (21 * b) as f64 / 2.0 / (1024.0 * 1024.0);
+            let mut refusing = EwClass::new(c.clone()).unwrap();
+            refusing.set_window_budget(Some(crate::WindowBudget::Refuse(mib(bytes))));
+            let mut thinning = EwClass::new(c).unwrap();
+            thinning.set_window_budget(Some(crate::WindowBudget::Thin(mib(bytes))));
+            let mut s = 5u64;
+            for i in 0..14usize {
+                let label = f64::from(i % 2 == 0);
+                let x = [lcg(&mut s), lcg(&mut s), lcg(&mut s)];
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                refusing.step(&x, &[Some(label)], d, 1.0);
+                thinning.step(&x, &[Some(label)], d, 1.0);
+                let held = refusing.win.as_ref().unwrap().snaps.len();
+                let over = refusing.window_over_budget().map(|(b, _)| b);
+                let thin = &thinning.win.as_ref().unwrap().snaps;
+                if i < 10 {
+                    assert_eq!((held, over), (i + 1, None), "{shape:?}, row {i}");
+                    assert_eq!(thin.len(), i + 1, "{shape:?}, row {i}");
+                } else {
+                    assert_eq!((held, over), (10, Some(11 * bytes)), "{shape:?}, row {i}");
+                }
+                if i == 10 {
+                    assert_eq!(thin.len(), 6, "{shape:?}: thinned on the eleventh row");
+                }
+                assert_eq!(
+                    thin.bytes(),
+                    thin.len() * bytes,
+                    "{shape:?}, row {i}: each snapshot's footprint"
+                );
+            }
+        }
     }
 
     /// A class's moments put where a test needs them, its co-moments and
