@@ -31,10 +31,10 @@ IDS = [m[0] for m in MODELS]
 
 def _ew_quantile(values, weights, p):
     """The exponentially weighted quantile by definition: the smallest value
-    whose cumulative weight, ascending, reaches ``p`` of the total."""
-    order = np.argsort(values, kind="stable")
-    cum = np.cumsum(weights[order])
-    return float(values[order][np.searchsorted(cum, p * cum[-1])])
+    whose cumulative weight, ascending, reaches ``p`` of the total. That is
+    numpy's weighted ``quantile`` under ``method="inverted_cdf"`` (Hyndman
+    and Fan's definition 1), which computes it here (task 320)."""
+    return float(np.quantile(values, p, weights=weights, method="inverted_cdf"))
 
 
 ALPHA = math.tanh(1 / 128)  # the sketch's relative accuracy (task 146)
@@ -1217,6 +1217,43 @@ class TestAutocorrByDefinition:
         # The frame's runs: the pairs restart after each cut.
         assert run.max() >= 8, run.max()
         np.testing.assert_allclose(got[ok], want[ok], rtol=0, atol=1e-12)
+
+    def test_run_once_it_is_near_statsmodels_acf(self):
+        """Task 320 (§3b): at ``half_life = inf`` the field on the last row is
+        statsmodels' ``acf`` of the residuals before it, at lags 1, 2 and 5,
+        on AR(1) residuals at 0.6. Not to rounding: ``acf`` centres every
+        product at the residuals' final mean, where each pair here is centred
+        at the means as they stood (the Welford centring above). Measured
+        2026-11-04 over seeds 0-19 at 5,000 rows: 0.0021 at most; seeds 0-4
+        run here, held at 0.005."""
+        import statsmodels.tsa.stattools as stattools
+
+        for seed in range(5):
+            rng = np.random.default_rng(seed)
+            n = 5000
+            x = rng.standard_normal(n)
+            u = np.zeros(n)
+            for i in range(1, n):
+                u[i] = 0.6 * u[i - 1] + rng.standard_normal()
+            df = pl.DataFrame({"x0": x, "y0": 2.0 * x + u + 3.0})
+            for lag in (1, 2, 5):
+                spec = po.spec.ewridge(
+                    "m",
+                    targets=["y0"],
+                    features=["x0"],
+                    half_life=float("inf"),
+                    min_weight=10.0,
+                    emit_autocorr=True,
+                    resid_autocorr_lag=lag,
+                )
+                out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+                r = out["resid_y0"].to_numpy().astype(float)
+                before = r[np.isfinite(r)][:-1]
+                want = stattools.acf(before, nlags=lag, fft=False)[lag]
+                got = out["autocorr_y0"][n - 1]
+                assert abs(got - want) <= 0.005, (seed, lag, got, want)
+                if lag == 1:
+                    assert abs(got - 0.6) < 0.05, "the residuals' own AR(1)"
 
     def test_the_lag_reads_its_own_structure(self):
         """Residuals of an AR(2) with no lag-1 term: lag 2 reads its 0.7,
