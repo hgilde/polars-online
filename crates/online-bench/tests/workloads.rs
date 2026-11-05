@@ -22,6 +22,10 @@ fn the_bench_names_every_case_and_nothing_else() {
         .filter_map(|l| l.trim().strip_prefix("#[bench::"))
         .map(|l| &l[..l.find('(').expect("an argument list")])
         .collect();
+    let scaled: Vec<String> = online_bench::scaling::BENCH_CELLS
+        .iter()
+        .flat_map(|c| ["small", "large"].map(|s| online_bench::scaling::bench_id(c, s)))
+        .collect();
     let mut cases: Vec<&str> = MODEL_CASES
         .iter()
         .chain(CLOCK_CASES)
@@ -29,11 +33,42 @@ fn the_bench_names_every_case_and_nothing_else() {
         .chain(WIDE_CASES)
         .chain(WINDOW_CASES)
         .copied()
+        .chain(scaled.iter().map(String::as_str))
         .collect();
     let mut sorted = named.clone();
     sorted.sort_unstable();
     cases.sort_unstable();
     assert_eq!(sorted, cases);
+}
+
+/// budgets.toml's `[scaling.cells]`, which `scripts/budgets.py` holds the
+/// counts to, says what `online_bench::scaling` declares for each cell the
+/// bench counts: the growth and the two sizes.
+#[test]
+fn the_scaling_cells_budgets_toml_holds_are_the_benchs() {
+    use online_bench::scaling::{BENCH_CELLS, Growth, cell_of};
+    let doc: toml::Table = include_str!("../../../budgets.toml").parse().expect("TOML");
+    let cells = doc["scaling"]["cells"].as_table().expect("[scaling.cells]");
+    let mut listed: Vec<&str> = cells.keys().map(String::as_str).collect();
+    let mut bench = BENCH_CELLS.to_vec();
+    listed.sort_unstable();
+    bench.sort_unstable();
+    assert_eq!(listed, bench);
+    for id in BENCH_CELLS {
+        let c = cell_of(id);
+        assert!(c.finding.is_none(), "{id}: an open finding is not counted");
+        let t = &cells[*id];
+        let growth = match c.work {
+            Growth::Const => "1".to_owned(),
+            Growth::Log => "log n".to_owned(),
+            Growth::Pow(1) => "n".to_owned(),
+            Growth::Pow(e) => format!("n^{e}"),
+            Growth::Frac(..) => panic!("{id}: budgets.py reads no fractional growth"),
+        };
+        assert_eq!(t["growth"].as_str(), Some(growth.as_str()), "{id}");
+        assert_eq!(t["small"].as_integer(), Some(c.small as i64), "{id}");
+        assert_eq!(t["large"].as_integer(), Some(c.large() as i64), "{id}");
+    }
 }
 
 #[test]

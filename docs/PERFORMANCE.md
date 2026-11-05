@@ -13,6 +13,7 @@ each reads as of its date, with the names of its day.
 | section | read it when | subsections |
 |---|---|---|
 | [Reading this document](#reading-this-document) | you are new here: where the time and memory go now, the words this document uses, today's name for each old one, and how every number was measured | [the headline](#the-headline) · [words](#words-this-document-uses) · [names that changed](#names-that-changed) · [how the numbers are made](#how-the-numbers-are-made) · [budgets](#budgets-that-only-tighten) |
+| [How cost grows with size](#how-cost-grows-with-size) | you want how a row's work and a state grow with each size a surface has -- features, targets, groups, specs, a window, the rows already seen -- the test that holds each, and what it found | [how a cell is measured](#how-a-cell-is-measured) · [the table](#the-table) · [specs on one stream](#specs-on-one-stream) · [what the table found](#what-the-table-found) |
 | **[The first pass, and the bank's plumbing](#the-first-pass-and-the-banks-plumbing)** | | |
 | [1. The measured baseline](#1-the-measured-baseline) | you want the numbers from before any change, 2026-08-30 | |
 | [2. What the numbers say](#2-what-the-numbers-say) | you want why the plumbing around the models, not the models, was the cost | |
@@ -366,6 +367,286 @@ install gungraun-runner --version 0.20.0` (the version `Cargo.lock` holds)
 and then `cargo bench -p online-bench --bench instructions` prints the
 counts. Elsewhere, a Linux container with Valgrind installed runs the same
 two commands. The workflow keeps each run's counts as an artifact.
+
+## How cost grows with size
+
+**Every surface states how a row's work and its kept state grow with each
+size it has, and a test holds each statement by measuring two sizes.** A
+budget fixes what one workload costs at one size, so it catches a change
+that made the workload slower than before. It cannot catch a cost that grew
+the wrong way from the first day. `with_windows(group=...)` once walked every
+group the stream had seen on every row, `O(groups)` a row. The budget case
+with 1,000 groups absorbed that cost on the day its number was set, and every
+window test used a handful of groups, where the walk costs nothing
+measurable, so it shipped in every release until a realistic shape found it.
+Holding the *ratio* of the costs at two sizes to the growth the algorithm
+declares needs no number from an earlier run. The exponent comes from the
+algorithm, so the check catches a defect that was there from the start.
+
+### How a cell is measured
+
+A *cell* is one surface and one size it has: `ewridge`'s features, the
+bank's specs, the groups a window has seen. Each cell runs one workload at
+two sizes, `n` and `step·n` (the step is 8 unless the table says otherwise),
+over the same number of rows after a warm-up that brings the state to where
+a long stream keeps it. It is held to
+
+```text
+cost(step·n) / cost(n)  <=  g(step·n) / g(n)
+```
+
+where `g` is the declared growth: 1 for a cost the size must not move,
+`log n`, or `n` to a power. A cost with a fixed part below the growing one
+reads under its bound, so only a growth past the declared one fails.
+
+Four measurements are taken for each cell, at both sizes:
+
+| measurement | where | what it reads | allowed past the declared growth, and why |
+|---|---|---|---|
+| a row's time | `crates/online-bench/tests/scaling.rs`, every run of `cargo test` (the essentials) | the least of three blocks of rows, the small and large sizes taken in turn, so a change in the machine's load falls on both | a factor of `step^0.5`, 2.8 at a step of 8: time moves with the load and the caches, and a wrong growth is a whole power of the step, 8x |
+| a row's allocations | the same | the allocator's count of calls over the blocks | 25%: what a vector's doubling or a hash table's growth adds at one size and not the other |
+| the saved state | the same | the bytes of the state as a state file holds it (msgpack) | 25%, as above |
+| the state's heap | the same | the bytes freed when the workload is dropped, its rows dropped first; for a run of the command line's runner, the most it held above the live heap during the run | 25%, as above |
+| a row's instructions | `.github/workflows/budgets.yml`, Callgrind, on every push (the `scale_*` cases) | the instructions of the block at each size, in one run | 10% (`[scaling]` in `budgets.toml`): a count is exact, and a fixed part only lowers the ratio, so what 10% absorbs is a held structure a little deeper at the large size |
+
+The instruction count is the fine measurement and time the coarse one. A
+count does not see a cache miss, which makes a size that no longer fits in
+cache read slower without its work growing, so the timed check allows a
+factor of 2.8 that the counted one does not need. Callgrind runs on Linux
+alone, so the counted cells are the ones where a count sees what a timing
+cannot and that stay cheap under Valgrind: every cell whose growth must be 1
+(the rows already seen, the groups seen, the held rows of an embargo or a
+window), the spec counts, and one width per family. `scripts/budgets.py
+check` holds each to `[scaling.cells]` within the run, a measuring run
+included, since a wrong growth is a defect and not a number to re-measure.
+
+The rows a workload is fed are copies of their own, as a stream's chunks
+arrive. A slice of a frame shares its parent's buffer, so a state that keeps
+a row of a slice, as the window core keeps the last row it read, would keep
+every row of the parent alive, and the heap would read as growing with the
+stream when it is the test's frame that grows.
+
+The Python surfaces add their own per-call work on top of the bank's, so
+`tests/test_scaling.py`, in the extended tier, times them the same way: the
+chunked `ModelBank.fit_predict` and the IO source behind
+`LazyFrame.online.fit_predict`, by their specs, at large calls and at small
+ones, and the IO source by its rows.
+
+A cell whose measurement exceeds its declaration is a *finding*. It is held
+to its declaration in the extended tier, where it fails until it is fixed
+([What the table found](#what-the-table-found)). A declaration is corrected
+only where the algorithm's own growth is higher by design, with the reason
+in the table.
+
+### The table
+
+**111 cells: 76 over the 21 model kinds' rows, 17 over the
+bank, 3 over the command line's runner, 9 over the window operators, 4 over
+`refresh_time` and 2 over `po.gbdt`'s sample.** Each row is one cell: the
+size it varies, its two sizes, the growth declared for a row's work and for
+the state in that size (written in `n`, the size), the reason, and the four
+native ratios from large to small as measured on 2026-11-05 (a debug build,
+`cargo test -p online-bench --test scaling -- --include-ignored` with
+`SCALING_REPORT=1`, which prints them). A row's time and allocations are per
+row; the saved state and the heap are the state's. `(CI)` marks the 22 cells
+Callgrind also counts. A cell whose ratio reads below 1 got cheaper at the
+larger size: a fixed cost shared by more rows, or a block that held its
+largest buffer at the smaller.
+
+| cell | the size | n → step·n | a row's work | state | why | time · allocations · saved · heap, ratio |
+|---|---|---|---|---|---|---|
+| `ewridge.k` (CI) | features k, no solve due | 4 → 32 | O(n^2) | O(n^2) | a row is the Gram's rank-one update, k² entries; the state is the Gram | 4.97 · 1.00 · 13.43 · 4.70 |
+| `ewridge.solve_k` | features k, a solve every row | 4 → 32 | O(n^3) | O(n^2) | a solve factorizes the k×k Gram, k³/3 | 36.01 · 1.00 · 13.41 · 5.65 |
+| `ewridge.targets` | targets T | 1 → 8 | O(n) | O(n) | each target keeps its cross-moments with the features (k a target) and its own solve | 1.67 · 1.37 · 3.01 · 1.55 |
+| `ewridge.ridge_grid` | ridge values G, a solve every row | 1 → 8 | O(n) | O(n) | one solve and one coefficient vector per value, from one set of sums | 7.97 · 6.72 · 1.72 · 2.24 |
+| `ewridge.feature_sets` | feature sets S, a solve every row | 1 → 8 | O(n) | O(n) | one solve and one coefficient vector per set, from one set of sums | 7.70 · 6.77 · 1.73 · 2.32 |
+| `ewridge.window` | window W clock units | 500 → 4,000 | O(1) | O(n) | a row adds a snapshot and subtracts the one leaving; the window keeps a snapshot a row | 0.60 · 0.79 · 8.23 · 8.03 |
+| `ewridge.gram_block` | Gram block B rows | 8 → 64 | O(1) | O(n) | the block's rows are merged once a block, the same work a row; the block holds B rows | 0.51 · 0.18 · 2.53 · 1.60 |
+| `ewridge.history` (CI) | rows already seen | 1,000 → 8,000 | O(1) | O(1) | sufficient statistics: nothing grows with the stream | 0.99 · 0.85 · 1.00 · 1.00 |
+| `rls.k` | features k | 4 → 32 | O(n^2) | O(n^2) | the inverse's rank-one update, k² | 9.33 · 1.00 · 26.27 · 6.39 |
+| `rls.targets` | targets T | 1 → 8 | O(n) | O(n) | one inverse shared, a coefficient vector a target | 3.68 · 1.00 · 2.24 · 1.66 |
+| `rls.history` | rows already seen | 1,000 → 8,000 | O(1) | O(1) | the inverse and the coefficients only | 1.00 · 1.00 · 1.00 · 1.00 |
+| `lasso.k` | features k, no solve due | 4 → 32 | O(n^2) | O(n^2) | the Gram's update, k² | 4.41 · 1.00 · 12.72 · 4.06 |
+| `lasso.path` | penalties P | 2 → 16 | O(n) | O(n) | each penalty's fit is read and scored on every row, k a penalty | 3.32 · 2.16 · 1.78 · 1.38 |
+| `lasso.history` | rows already seen | 1,000 → 8,000 | O(1) | O(1) | sufficient statistics | 0.97 · 0.85 · 1.00 · 1.00 |
+| `kalman.k` | features k | 4 → 32 | O(n^2) | O(n^2) | the covariance P's update, k² | 10.04 · 1.00 · 17.62 · 5.12 |
+| `kalman.targets` | targets T | 1 → 8 | O(n) | O(n) | a filter a target | 5.72 · 1.00 · 5.15 · 2.63 |
+| `kalman.history` | rows already seen | 1,000 → 8,000 | O(1) | O(1) | the filter's state only | 1.00 · 1.00 · 1.00 · 1.00 |
+| `huber.k` | features k, no solve due | 4 → 32 | O(n^2) | O(n^2) | the weighted Gram's update, k² | 4.95 · 1.12 · 2.52 · 4.53 |
+| `huber.targets` | targets T | 1 → 8 | O(n) | O(n) | a weighted Gram and scale a target | 7.57 · 1.33 · 6.53 · 3.21 |
+| `huber.feature_sets` | feature sets S, a solve every row | 1 → 8 | O(n) | O(n) | a solve a set | 7.74 · 1.00 · 1.13 · 1.31 |
+| `huber.refit_rows` | rows held for the first refit, R | 1,000 → 8,000 | O(log n) | O(n) | a held residual enters an ordered tree, log R; the buffer holds R rows | 0.83 · 1.00 · 8.69 · 7.66 |
+| `huber.history` (CI) | rows already seen | 1,000 → 8,000 | O(1) | O(1) | after its refit the model keeps its sums and the scale's sketch | 0.97 · 0.88 · 1.00 · 1.00 |
+| `quantile.k` | features k, no solve due | 4 → 32 | O(n^2) | O(n^2) | the weighted Gram's update, k² | 24.22 · 1.07 · 2.66 · 4.34 |
+| `quantile.refit_rows` | rows held for the first refit, R | 1,000 → 8,000 | O(log n) | O(n) | as huber's | 0.91 · 0.78 · 8.67 · 7.65 |
+| `quantile.history` (CI) | rows already seen | 1,000 → 8,000 | O(1) | O(1) | as huber's | 1.00 · 0.91 · 1.06 · 1.02 |
+| `sgd.k` (CI) | features k | 4 → 32 | O(n) | O(n) | one gradient step, k | 2.68 · 1.00 · 3.36 · 1.89 |
+| `sgd.targets` | targets T | 1 → 8 | O(n) | O(n) | a step a target | 4.09 · 1.00 · 3.23 · 1.67 |
+| `sgd.refit_rows` | rows held for the first refit, R | 1,000 → 8,000 | O(log n) | O(n) | as huber's | 1.17 · 1.00 · 8.72 · 7.82 |
+| `sgd.history` | rows already seen | 1,000 → 8,000 | O(1) | O(1) | coefficients and scales only | 1.00 · 1.00 · 1.00 · 1.00 |
+| `pa.k` | features k | 4 → 32 | O(n) | O(n) | one projection, k | 3.33 · 1.00 · 4.01 · 1.94 |
+| `pa.targets` | targets T | 1 → 8 | O(n) | O(n) | a projection a target | 3.22 · 1.00 · 2.92 · 1.64 |
+| `pa.history` | rows already seen | 1,000 → 8,000 | O(1) | O(1) | coefficients only | 1.00 · 1.00 · 1.00 · 1.00 |
+| `ftrl.k` | features k | 4 → 32 | O(n) | O(n) | per-coordinate accumulators, k | 4.74 · 1.00 · 3.99 · 1.69 |
+| `ftrl.history` | rows already seen | 1,000 → 8,000 | O(1) | O(1) | accumulators only | 0.99 · 1.00 · 1.00 · 1.00 |
+| `holt.targets` | targets T | 1 → 8 | O(n) | O(n) | a level and trend a target | 4.95 · 1.00 · 4.99 · 1.35 |
+| `holt.history` | rows already seen | 1,000 → 8,000 | O(1) | O(1) | level and trend only | 0.99 · 1.00 · 1.00 · 1.00 |
+| `ew_cov.k` (CI) | columns k | 4 → 32 | O(n^2) | O(n^2) | the co-moments' rank-one update, k² | 14.98 · 1.00 · 27.25 · 6.03 |
+| `ew_cov.lags` | lags L | 1 → 8 | O(n) | O(n) | a lagged co-moment block a lag | 2.51 · 1.00 · 3.33 · 1.49 |
+| `ew_cov.window` (CI) | window W clock units | 500 → 4,000 | O(1) | O(n) | a snapshot added and one subtracted a row; a snapshot a row held | 1.01 · 1.00 · 8.23 · 7.98 |
+| `ew_cov.history` | rows already seen | 1,000 → 8,000 | O(1) | O(1) | moments only | 1.00 · 1.00 · 1.00 · 1.00 |
+| `marginal.k` (CI) | features p | 4 → 32 | O(n) | O(n) | each feature's pair with the target, p | 2.63 · 1.00 · 4.59 · 1.40 |
+| `marginal.targets` | targets T | 1 → 8 | O(n) | O(n) | p pairs a target | 6.14 · 1.00 · 6.67 · 1.92 |
+| `marginal.lags` | lags L | 1 → 8 | O(n) | O(n) | each lag's pair moments, p·L | 3.49 · 1.00 · 3.56 · 1.74 |
+| `marginal.bins` | bins B a feature | 4 → 32 | O(log n) | O(n) | one search of B−1 edges a feature, log B; B cells a pair | 1.15 · 1.00 · 6.26 · 2.49 |
+| `marginal.history` | rows already seen | 1,000 → 8,000 | O(1) | O(1) | moments only | 1.00 · 1.00 · 1.00 · 1.00 |
+| `deco.k` | columns m | 4 → 32 | O(n) | O(n) | standardised sums, m a row | 1.24 · 1.00 · 4.75 · 1.42 |
+| `deco.blocks` | blocks K | 1 → 8 | O(n^2) | O(n^2) | a level a block and a pair of blocks, K² | 11.26 · 1.00 · 10.72 · 2.64 |
+| `deco.history` | rows already seen | 1,000 → 8,000 | O(1) | O(1) | sums only | 1.01 · 1.00 · 1.00 · 1.00 |
+| `rcov.k` | columns k | 2 → 16 | O(n^2) | O(n^2) | each lag of the kernel adds a k×k outer product (H·k²); the ring holds H rows of k | 11.38 · 1.00 · 42.15 · 25.63 |
+| `rcov.block_rows` | block length n | 500 → 4,000 | O(n^(3/5)) | O(n^(3/5)) | the automatic bandwidth's ring depth is c·n^(3/5) lags, read a row | 3.34 · 1.00 · 3.22 · 3.13 |
+| `hmm.states` | states K | 2 → 16 | O(n^2) | O(n^2) | the forward filter's K×K transition | 8.16 · 1.00 · 10.01 · 1.52 |
+| `hmm.k` **finding S2** | columns d, diagonal | 2 → 16 | O(n) | O(n) | a diagonal state needs d variances | 3.00 · 1.00 · 13.57 · 1.13 |
+| `hmm.history` | rows already seen | 1,000 → 8,000 | O(1) | O(1) | states and counts only | 1.00 · 0.50 · 1.00 · 1.00 |
+| `kmeans.clusters` | clusters K | 2 → 16 | O(n) | O(n) | the nearest of K centres | 3.80 · 0.28 · 3.90 · 2.80 |
+| `kmeans.k` | columns p | 4 → 32 | O(n) | O(n) | a distance is p | 4.46 · 1.00 · 6.51 · 3.43 |
+| `kmeans.history` | rows already seen | 1,000 → 8,000 | O(1) | O(1) | centres only | 1.00 · 1.00 · 1.00 · 1.00 |
+| `micro.max_clusters` | micro-clusters m | 8 → 64 | O(n) | O(n) | the nearest of m summaries | 5.07 · 0.51 · 4.57 · 3.51 |
+| `micro.history` | rows already seen | 1,000 → 8,000 | O(1) | O(1) | at most m summaries | 1.00 · 1.00 · 1.00 · 1.00 |
+| `ew_class.classes` | classes C | 2 → 16 | O(n) | O(n) | a learned row updates its class; a prediction reads each class's density | 5.20 · 1.00 · 7.70 · 4.36 |
+| `ew_class.k` | features k, full covariance | 4 → 16 | O(n^3) | O(n^2) | the learned class is refactorized, k³; a class keeps k² | 8.43 · 1.00 · 9.00 · 3.60 |
+| `ew_class.k_diag` **finding S2** | features k, diagonal | 4 → 32 | O(n) | O(n) | a diagonal class needs k variances | 5.64 · 1.00 · 33.18 · 8.00 |
+| `ew_class.history` | rows already seen | 1,000 → 8,000 | O(1) | O(1) | class moments only | 1.00 · 1.00 · 1.00 · 1.00 |
+| `seqtest.targets` | targets T | 1 → 8 | O(n) | O(n) | a test a target | 4.85 · 1.00 · 4.60 · 1.37 |
+| `seqtest.history` | rows already seen | 1,000 → 8,000 | O(1) | O(1) | running evidence only | 0.98 · 1.00 · 1.00 · 1.00 |
+| `corrchange.k` | columns k, monitor | 2 → 16 | O(n^2) | O(n^2) | every pair's correlation, k² | 38.98 · 1.24 · 3.21 · 1.02 |
+| `corrchange.window` **finding S3** | window W rows | 100 → 800 | O(1) | O(n) | the two windows' sums can move a row in, a row out: k² a row, W rows held | 7.80 · 1.00 · 7.78 · 7.18 |
+| `corrchange.window_crit` **finding S3** | window W rows, a fixed threshold | 100 → 800 | O(1) | O(n) | as above, with no permutation drawn | 7.97 · 1.00 · 7.78 · 7.18 |
+| `corrchange.history` | rows already seen | 1,000 → 8,000 | O(1) | O(1) | the two windows only | 1.00 · 1.00 · 1.00 · 1.00 |
+| `bocpd.max_run` | runs R | 25 → 200 | O(n) | O(n) | each run's sufficient statistics, R·d | 9.14 · 1.00 · 7.45 · 4.55 |
+| `bocpd.k` | columns d, diagonal | 2 → 16 | O(n) | O(n) | R·d | 3.19 · 1.00 · 5.89 · 2.19 |
+| `bocpd.k_full` | columns d, full | 2 → 8 | O(n^3) | O(n^2) | each run's scale factorized, R·d³; R·d² held | 6.40 · 1.00 · 7.21 · 2.59 |
+| `bocpd.history` | rows already seen | 1,000 → 8,000 | O(1) | O(1) | at most R runs | 0.99 · 1.00 · 1.00 · 1.00 |
+| `audit.k` | columns c | 4 → 32 | O(n) | O(n) | each column's counters | 7.57 · 7.68 · 7.89 · 7.27 |
+| `audit.pairs` | columns c, pairs | 4 → 32 | O(n^2) | O(n^2) | every pair's moments, c² | 12.44 · 7.68 · 9.35 · 7.66 |
+| `audit.distinct_cap` | counter cap D | 32 → 256 | O(1) | O(n) | a value is a hash lookup; a table full empties in O(D) once per D new values; D counters held | 1.01 · 1.00 · 1.27 · 2.64 |
+| `audit.history` | rows already seen | 1,000 → 8,000 | O(1) | O(log n) | D counters at most; their counts' encodings lengthen as the counts grow, log in the rows | 0.86 · 0.93 · 1.26 · 1.24 |
+| `bank.groups_seen` (CI) | groups seen G (a block over 50 of them) | 250 → 2,000 | O(1) | O(n) | a row touches its group's state alone; a state a group | 1.03 · 1.00 · 7.99 · 7.14 |
+| `bank.specs` (CI) | specs S, one set of columns | 1 → 8 | O(n) | O(n) | each spec steps its model, S | 8.28 · 7.67 · 7.80 · 7.23 |
+| `bank.specs_wide` | specs S from 8 to 64 | 8 → 64 | O(n) | O(n) | S | 7.88 · 7.95 · 7.98 · 7.93 |
+| `bank.specs_distinct` (CI) | specs S, each its own columns | 1 → 8 | O(n) | O(n) | S, the columns looked up a spec | 8.29 · 7.77 · 7.81 · 7.23 |
+| `bank.specs_distinct_wide` | specs S from 8 to 64, each its own columns | 8 → 64 | O(n) | O(n) | S | 7.98 · 7.95 · 7.98 · 7.94 |
+| `bank.specs_mixed` (CI) | copies of a mix of five kinds | 1 → 8 | O(n) | O(n) | S | 7.87 · 7.75 · 7.97 · 7.92 |
+| `bank.specs_per_call` (CI) | specs S, calls of four rows | 1 → 8 | O(n) | O(n) | what a call costs a spec (its columns, its output) is linear in S | 4.32 · 6.04 · 7.80 · 7.27 |
+| `bank.specs_per_call_wide` | specs S from 8 to 64, calls of four rows | 8 → 64 | O(n) | O(n) | S | 7.24 · 7.64 · 7.98 · 7.62 |
+| `bank.k` | features k (ewridge) | 4 → 32 | O(n^2) | O(n^2) | the model's k², and k columns extracted | 14.85 · 1.08 · 4.39 · 1.64 |
+| `bank.targets` | targets T (ewridge) | 1 → 8 | O(n) | O(n) | T | 2.37 · 1.41 · 1.88 · 1.52 |
+| `bank.chunk_rows` | rows a call | 64 → 512 | O(1) | O(1) | a call's fixed cost is shared by its rows; a row's own cost does not grow | 0.72 · 0.34 · 1.00 · 0.65 |
+| `bank.history` (CI) | rows already seen | 1,000 → 8,000 | O(1) | O(1) | the state only | 0.96 · 0.85 · 1.00 · 1.00 |
+| `bank.embargo` (CI) | embargo E clock units | 125 → 1,000 | O(1) | O(n) | a row is held once and released once; E/step rows held | 1.02 · 1.02 · 6.79 · 5.11 |
+| `bank.formula_window` (CI) | a target's window W ahead | 125 → 1,000 | O(1) | O(n) | a row waits for its window once; W/step rows held | 0.99 · 0.99 · 7.44 · 3.31 |
+| `bank.ljung_box_lags` | Ljung-Box lags L | 2 → 16 | O(n) | O(n) | the residual's autocorrelations at L lags | 1.07 · 1.00 · 1.12 · 1.03 |
+| `bank.robust_se_lags` | Newey-West lags L | 1 → 8 | O(n) | O(n) | L lagged scores | 1.17 · 1.01 · 1.37 · 1.08 |
+| `bank.resid_quantiles` | residual quantiles Q | 1 → 8 | O(n) | O(n) | a sketch a quantile | 1.14 · 1.03 · 1.02 · 1.09 |
+| `runner.rows` | rows in the run | 4,096 → 32,768 | O(1) | O(1) | the run streams: a chunk at a time, whatever the rows behind or ahead | 1.01 · 0.99 · 1.01 · 1.00 |
+| `runner.specs` | specs S, calls of 1,024 rows | 1 → 8 | O(n) | O(n) | S | 7.88 · 7.72 · 7.80 · 4.99 |
+| `runner.specs_per_call` | specs S from 16 to 128, calls of 16 rows | 16 → 128 | O(n) | O(n) | a call's output a spec, S: the chunk's columns and the specs' outputs are joined in one pass over their names | 7.75 · 7.79 · 7.99 · 7.81 |
+| `windows.groups` | groups G, rows in turn over all | 1,000 → 8,000 | O(1) | O(n) | a row touches its group's sums; a state a group | 0.82 · 1.06 · 7.48 · 7.89 |
+| `windows.groups_seen` (CI) | groups seen G (a block over 50) | 1,000 → 8,000 | O(1) | O(n) | a row resolves its own group; a state a group | 0.98 · 0.99 · 7.96 · 7.86 |
+| `windows.kernels` (CI) | kernels K | 1 → 8 | O(n) | O(n) | each kernel's queue a row | 2.98 · 2.25 · 2.42 · 2.58 |
+| `windows.operators` | operators O on one kernel | 1 → 8 | O(n) | O(n) | each operator's sums a row | 2.61 · 3.06 · 2.42 · 4.04 |
+| `windows.window_mean` (CI) | window W clock units | 1,250 → 10,000 | O(1) | O(n) | a row enters and leaves the queue once, O(1) amortized; W/step rows held | 0.90 · 1.00 · 7.74 · 6.92 |
+| `windows.window_var` | window W, ewm_var | 1,250 → 10,000 | O(1) | O(n) | as the mean | 0.89 · 1.00 · 7.78 · 7.17 |
+| `windows.window_quantile` | window W, ewm_quantile | 1,250 → 10,000 | O(log n) | O(n) | the window's sketch, log W | 1.08 · 0.93 · 6.33 · 6.68 |
+| `windows.forward` | window W ahead, rewm_mean | 1,250 → 10,000 | O(1) | O(n) | as the backward mean | 0.94 · 1.03 · 7.81 · 7.41 |
+| `windows.history` (CI) | rows already seen | 1,000 → 8,000 | O(1) | O(1) | running sums only | 1.01 · 1.00 · 1.00 · 1.00 |
+| `refresh.series` | series m | 2 → 16 | O(n) | O(n) | a tick updates its series; a point checks one counter | 0.83 · 0.40 · 3.22 · 1.42 |
+| `refresh.pairs` | series m, pairs | 8 → 64 | O(n) | O(n^2) | a tick updates its m−1 pairs; m² pairs held | 10.45 · 8.96 · 67.43 · 43.77 |
+| `refresh.groups` (CI) | groups G | 100 → 800 | O(1) | O(n) | a tick touches its group | 1.01 · 1.00 · 8.05 · 7.70 |
+| `refresh.history` (CI) | ticks already seen | 1,000 → 8,000 | O(1) | O(1) | the grid's last values only | 1.00 · 1.00 · 1.00 · 1.00 |
+| `gbdt.history` | rows offered | 10,000 → 80,000 | O(1) | O(1) | a priority sample: a row is kept or not by its hash, the heap holds the sample | 0.53 · 0.83 · 1.00 · 1.00 |
+| `gbdt.sample` | sample size N | 1,000 → 8,000 | O(log n) | O(n) | a heap of N, log N; N rows kept | 1.90 · 1.01 · 8.00 · 7.30 |
+
+The surfaces and sizes the cells above do not measure, each with where it is
+held instead or why it needs no cell:
+
+| surface | the size | a row's work | state | held by, or why |
+|---|---|---|---|---|
+| `lasso`, `marginal`, `ew_class` under `window_size` | the window | O(1) | O(window) | the same snapshot machinery as `ewridge.window` and `ew_cov.window` |
+| `ewridge` with `session_shrink` | rows seen | O(1) | O(1) | a second accumulator beside the first, the same update twice |
+| `micro`'s pruning | micro-clusters `m` | O(m²) once a `prune_every`, O(m) a row amortized | O(m) | `micro.max_clusters` reads the amortized row |
+| `kmeans`'s seeding | the warm-up's rows | O(rows·k) once, at seeding | O(warm_rows·p), freed after | once a stream, before the measured block of every cell |
+| `rcov` at a block's close | the block's rows | O(n·H·k²) once a close | the block's rows | the close is the bank's, once a block; `rcov.block_rows` reads the rows that build it |
+| the clock | rows seen | O(1) | O(1) | the `clock_float` and `clock_temporal` budget cases count a fixed block |
+| the bank's `predict` | as `fit_predict`'s | as `fit_predict`'s | unchanged by a call | the same extraction and models, without the update |
+| `Bank::fit_predict` with groups that close | groups open | O(1) a row | O(groups open) | closing a group drops its state; `bank.groups_seen` holds the open ones |
+| the IO source, `LazyFrame.online.fit_predict` | specs; rows | O(specs); O(1) | the bank's | `tests/test_scaling.py`, by time |
+| the chunked `ModelBank.fit_predict` | specs, at large and small calls | O(specs) | the bank's | `tests/test_scaling.py`, by time |
+| `po.gbdt`'s build | rows | O(1) a row in the sample | O(sample) in the sample; O(rows) in XGBoost's and LightGBM's own matrices | the libraries bin every row by design; the sample is `gbdt.history` and `gbdt.sample` |
+
+### Specs on one stream
+
+**A bank's cost is linear in the specs it holds, a row at a time and a call
+at a time, whether the specs share their columns or read their own.** The
+spec cells hold it from 1 spec to 8 and from 8 to 64, over one set of
+columns (`bank.specs`, `bank.specs_wide`), over columns of each spec's own
+(`bank.specs_distinct`, `bank.specs_distinct_wide`), as a mix of `ewridge`,
+`huber`, `ew_cov`, `kmeans` and `bocpd` (`bank.specs_mixed`, five specs then
+forty), and in calls of four rows (`bank.specs_per_call`,
+`bank.specs_per_call_wide`), where what a call costs a spec -- its columns
+looked up, its output assembled -- is most of the cost. Each read 7.1x to
+7.95x in time and in allocations for 8x the specs. Specs that share their
+columns cost what specs over columns of their own cost (`bank.specs` and
+`bank.specs_distinct` read within 3% of each other): at four features a
+spec, its model's step is most of its row, so a column read once or once a
+spec does not show. The Python surfaces read the same (`tests/
+test_scaling.py`): 5.4x to 7.2x for 8x the specs through the IO source and
+the chunked `ModelBank`, and 4.9x at calls of 4 and 16 rows, where their
+fixed cost per call is a larger share. The command line's runner was the
+one surface past linear, in its allocations, until finding S1 below was
+fixed.
+
+**The pool spreads the specs of one call across its threads, a spec a task,
+so its speed-up is bounded by the costliest spec and by the call's own
+serial part.** The wall time of 16 calls of 4,096 rows after a warm-up, the
+least of three runs (`cargo run --profile dev-wheel -p online-bench --example
+spec_threads`), measured on 2026-11-05 at a load of 9.8 to 11.3 on the 14
+cores, so other work held some of the threads:
+
+| specs | kind | 1 thread (ms) | 4 threads | 8 threads | speed-up at 4 | at 8 |
+|---|---|---|---|---|---|---|
+| 1 | `ewridge` | 15.9 | 16.0 | 17.4 | 0.99x | 0.92x |
+| 8 | `ewridge` | 122.5 | 39.5 | 34.4 | 3.11x | 3.56x |
+| 64 | `ewridge` | 1,030.6 | 310.4 | 220.5 | 3.32x | 4.67x |
+| 5 | the mix of five | 133.0 | 97.3 | 90.9 | 1.37x | 1.46x |
+| 40 | the mix of five | 1,091.3 | 318.5 | 243.1 | 3.43x | 4.49x |
+
+Three readings, none a gate. One spec gains nothing from more threads, since
+its rows are sequential. Five specs of different kinds gain 1.4x, not 4x,
+because the call waits for its slowest spec (here `bocpd` and `huber`, each
+several times an `ewridge` row): the work is not split within a spec. Eight
+or more specs reach 3.1x to 3.4x at 4 threads and 3.6x to 4.7x at 8, short of
+linear by the call's serial part -- extracting the columns, assembling the
+output -- and by the load the machine carried.
+
+### What the table found
+
+Every cell above was measured before any of them gated. Three findings
+exceeded their declaration. S1 is fixed and its cell gates; S2 and S3 are
+held in the extended tier until they are:
+
+| finding | cell | measured | declared | the cause |
+|---|---|---|---|---|
+| S1, fixed | `runner.specs_per_call` | allocations 10.5x for 8x the specs from 8 to 64, at calls of 16 rows, and 13.3x from 16 to 128 (376,098 to 5,008,296 over three blocks of 512 rows), time 10.3x; 407 allocations a call at 16 specs and 24,770 at 128 (61x for 8x) | O(specs) a call | `crates/online-polars/src/runner.rs`, `augment`: the bank's columns were appended to the chunk one spec at a time with `DataFrame::with_column`, which looks each name up through the frame's cached schema; the insert before it dropped that cache, so each spec's struct column rebuilt the schema of every column before it, copying their fields. Now `with_columns` joins them in one pass over the names, the same frame column for column (a name the chunk has is replaced where it stands, as before): 7.79x in allocations and 7.75x in time from 16 specs to 128 |
+| S2 | `hmm.k`, `ew_class.k_diag` | saved state 13.6x for 8x the columns (`hmm`, 2 to 16), 33.2x (`ew_class`, 4 to 32) | O(k) under `covariance_type="diag"` | `crates/online-core/src/hmm.rs` (`states: Vec<EwCov>`) and `crates/online-core/src/ewclass.rs` (`classes: Vec<EwCov>`): every state or class keeps its full co-moment matrix and updates it, O(k²) a row, where the diagonal model reads only the k variances |
+| S3 | `corrchange.window`, `corrchange.window_crit` | time 7.8x to 7.9x for 8x the window, with a fixed threshold too | O(1) a row in `window_rows` | `crates/online-core/src/corrchange.rs`, the `"window"` report in `step`: both windows' correlations are computed afresh from the ring on every row (`window_stat_by` over `2·window_rows` rows), O(window_rows·k²) a row, where sums over each window moved by the row entering and the row leaving cost O(k²). The permutation draws are a separate O(n_perm·window_rows·k²) every `permute_every_rows` rows, by design |
+
+Three declarations were corrected, each the algorithm's own growth:
+`rcov.k` (O(k) to O(k²): each lag of the kernel adds a k×k outer product,
+as `rcov`'s documentation says), `rcov.block_rows` (O(1) to O(n^(3/5)): the
+automatic bandwidth's ring depth is `c·block_rows^(3/5)` lags, all read on a
+row) and `audit.history`'s saved state (O(1) to O(log rows): a counter's
+msgpack encoding lengthens as its count grows, while its heap stays flat).
 
 ## The first pass, and the bank's plumbing
 

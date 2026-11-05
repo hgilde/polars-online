@@ -94,7 +94,7 @@ def baseline(version: str = "1.0.0", **measured: float) -> object:
 
 def test_the_file_is_well_formed_and_every_raise_quotes_the_changelog():
     changelog = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert budgets.check_file(DOC, changelog, budgets.bench_cases()) == []
+    assert budgets.check_file(DOC, changelog, budgets.bench_cases(), budgets.scale_cells()) == []
 
 
 def test_every_case_the_bench_names_has_an_entry():
@@ -677,3 +677,133 @@ def test_measuring_is_asked_for_by_name(monkeypatch):
     assert budgets.measuring()
     monkeypatch.setenv(budgets.MEASURE_VARIABLE, "1")
     assert not budgets.measuring()
+
+
+# --- the scaling table: a ratio within one run -----------------------------------
+
+SCALING = """
+[scaling]
+tolerance = 0.10
+
+[scaling.cells."bank.groups_seen"]
+what = "a row over the groups behind it"
+growth = "1"
+small = 250
+large = 2000
+
+[scaling.cells."ewridge.k"]
+what = "the Gram's update"
+growth = "n^2"
+small = 4
+large = 32
+"""
+
+
+def test_a_growth_bounds_the_ratio_of_two_sizes():
+    assert budgets.growth_bound("1", 4, 32) == 1.0
+    assert budgets.growth_bound("n", 4, 32) == 8.0
+    assert budgets.growth_bound("n^2", 4, 32) == 64.0
+    assert budgets.growth_bound("log n", 10, 100) == pytest.approx(2.0)
+    with pytest.raises(ValueError, match="one of"):
+        budgets.growth_bound("n log n", 4, 32)
+
+
+def test_the_bench_names_each_scaling_cell_at_both_sizes():
+    """A cell is ``scale_<surface>_by_<dimension>_small`` and ``..._large``,
+    and is no budgeted case; a cell at one size alone is no cell."""
+    bench = "\n".join(
+        f"#[bench::{c}(args = (), setup = s)]"
+        for c in (
+            "a",
+            budgets.scale_case("bank.groups_seen", "small"),
+            budgets.scale_case("bank.groups_seen", "large"),
+            budgets.scale_case("ewridge.k", "small"),
+        )
+    )
+    assert budgets.scale_case("bank.groups_seen", "large") == "scale_bank_by_groups_seen_large"
+    assert budgets.bench_cases(bench) == ["a"]
+    assert budgets.scale_cells(bench) == ["bank.groups_seen"]
+
+
+def test_the_repositorys_scaling_table_is_the_benchs():
+    assert set(DOC["scaling"]["cells"]) == set(budgets.scale_cells())
+    assert len(budgets.scale_cells()) >= 20
+
+
+def test_a_scaling_table_that_disagrees_with_the_bench_is_refused():
+    doc = small(SCALING)
+    assert budgets.check_scaling_file(doc, ["bank.groups_seen", "ewridge.k"]) == []
+    (error,) = budgets.check_scaling_file(doc, ["bank.groups_seen"])
+    assert "in the file only ['ewridge.k']" in error
+    bad = small(SCALING.replace('growth = "n^2"', 'growth = "k^2"'))
+    assert any("one of" in e for e in budgets.check_scaling_file(bad, None))
+    flat = small(SCALING.replace("large = 32", "large = 4"))
+    assert any("small < large" in e for e in budgets.check_scaling_file(flat, None))
+
+
+@pytest.mark.parametrize(
+    ("large", "failed"),
+    [(1_000_000, False), (1_099_000, False), (1_200_000, True), (8_000_000, True)],
+)
+def test_a_constant_cell_fails_past_its_tolerance(large, failed):
+    doc = small(SCALING)
+    counts = {
+        budgets.scale_case("bank.groups_seen", "small"): 1_000_000,
+        budgets.scale_case("bank.groups_seen", "large"): large,
+        budgets.scale_case("ewridge.k", "small"): 1_000_000,
+        budgets.scale_case("ewridge.k", "large"): 20_000_000,
+    }
+    scaled, missing = budgets.judge_scaling(doc, counts)
+    assert missing == []
+    by = {v.cell: v for v in scaled}
+    assert by["bank.groups_seen"].failed is failed
+    assert not by["ewridge.k"].failed  # 20x, within 64x
+    assert ("past" in by["bank.groups_seen"].message) is failed
+
+
+def test_a_cell_the_run_missed_fails():
+    doc = small(SCALING)
+    counts = {
+        budgets.scale_case("ewridge.k", "small"): 1,
+        budgets.scale_case("ewridge.k", "large"): 2,
+    }
+    scaled, missing = budgets.judge_scaling(doc, counts)
+    assert [v.cell for v in scaled] == ["ewridge.k"]
+    assert missing == ["scaling.bank.groups_seen: the run did not count both sizes"]
+
+
+def test_check_holds_the_scaling_cells_even_in_a_measuring_run(tmp_path, monkeypatch, capsys):
+    """A ratio needs no budget, so a measuring run holds it too: a wrong
+    growth is a defect, not a number to re-measure. The scaling cases are
+    never budgets, and never in the measurements ``apply`` reads."""
+    path = tmp_path / "budgets.toml"
+    path.write_text(SMALL + SCALING, encoding="utf-8")
+    monkeypatch.setattr(budgets, "BUDGETS", path)
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    monkeypatch.delenv(budgets.MEASURE_VARIABLE, raising=False)
+    asset = tmp_path / budgets.BASELINE_ASSET
+    then = baseline()
+    asset.write_text(
+        json.dumps({"version": then.version, "sha": then.sha, "measured": then.measured}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(budgets.BASELINE_VARIABLE, str(asset))
+    run = tmp_path / "run.json"
+    counts = [
+        ("a", 1_000_000),
+        ("b", 7),
+        (budgets.scale_case("bank.groups_seen", "small"), 1_000_000),
+        (budgets.scale_case("bank.groups_seen", "large"), 8_000_000),
+        (budgets.scale_case("ewridge.k", "small"), 1_000_000),
+        (budgets.scale_case("ewridge.k", "large"), 20_000_000),
+    ]
+    run.write_text("\n".join(json.dumps(_summary(c, n)) for c, n in counts), encoding="utf-8")
+    measured = tmp_path / "measured.json"
+    assert budgets.main(["check", str(run), "--measure", "--measured", str(measured)]) == 1
+    out = capsys.readouterr().out
+    assert "::error::scaling.bank.groups_seen: 8.000x from the small size to the large" in out
+    assert "| ewridge.k | 1,000,000 | 20,000,000 | 20.000x | 70.400x |  |" in out
+    assert set(json.loads(measured.read_text(encoding="utf-8"))) == {
+        "instructions.a",
+        "instructions.b",
+    }

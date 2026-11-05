@@ -18,6 +18,8 @@
 //! code and the toolchain alone. `cargo test` runs every case natively on
 //! every platform and checks that it reaches the path it is named for.
 
+pub mod scaling;
+
 use online_polars::online_core::{ClockCfg, ClockState, ClockValue, ExactCaps};
 use online_polars::{AnyModel, Bank, Spec, WindowsConfig, WindowsRun, build_models};
 use polars::prelude::*;
@@ -202,6 +204,10 @@ enum Shape {
     /// `k` features around one of three centres two apart, and the centre's
     /// number as the target: a label a classifier learns, not always right.
     Labelled,
+    /// As `Labelled`, over this many classes: feature `j` is raised for the
+    /// classes `c` with `j % classes == c` (a class past the features has
+    /// none raised, and its rows still carry its label).
+    Classes(usize),
 }
 
 /// Rows in the layout a model steps them: features row-major, targets
@@ -237,6 +243,11 @@ impl Rows {
                     x.extend((0..k).map(|j| g.signed() + if j % 3 == label { 2.0 } else { 0.0 }));
                     y.extend((0..m).map(|_| Some(label as f64)));
                 }
+                Shape::Classes(c) => {
+                    let label = ((c as f64 * g.next()).floor() as usize).min(c - 1);
+                    x.extend((0..k).map(|j| g.signed() + if j % c == label { 2.0 } else { 0.0 }));
+                    y.extend((0..m).map(|_| Some(label as f64)));
+                }
             }
             let fit: f64 = x[row..]
                 .iter()
@@ -246,7 +257,7 @@ impl Rows {
             // With no features, a column whose sign a sequential test
             // watches: either sign, a small drift up.
             let (level, noise) = if k == 0 { (0.05, 1.0) } else { (0.5, 0.3) };
-            if !matches!(shape, Shape::Labelled) {
+            if !matches!(shape, Shape::Labelled | Shape::Classes(_)) {
                 y.extend((0..m).map(|j| Some(level + fit + j as f64 + noise * g.signed())));
             }
             let step = if i == 0 { 0.0 } else { step_of(g.next()) };
@@ -270,6 +281,19 @@ impl Rows {
 
     fn len(&self) -> usize {
         self.d.len()
+    }
+
+    /// No rows: what a scaling case keeps once its rows are dropped.
+    fn empty() -> Self {
+        Self {
+            groups: 0,
+            k: 0,
+            m: 0,
+            x: Vec::new(),
+            y: Vec::new(),
+            d: Vec::new(),
+            t: Vec::new(),
+        }
     }
 
     fn row(&self, i: usize) -> (&[f64], &[Option<f64>], f64) {
