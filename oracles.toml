@@ -5659,6 +5659,21 @@ n = 1
 ideal = 1.0
 n = 1
 
+[group."second_opinion_grids.marglag_ccf"]
+tests = [
+    "tests/test_second_opinion_grids.py::test_cross_lag_corr_is_ccf_over_fifty_seeds",
+]
+oracles = { "statsmodels" = "0.15.0" }
+dataset = ""
+
+[case."second_opinion_grids.marglag_ccf.cross_xy"]
+ideal = 0.0
+n = 50
+
+[case."second_opinion_grids.marglag_ccf.cross_yx"]
+ideal = 0.0
+n = 50
+
 # --- raises
 
 [[raised]]
