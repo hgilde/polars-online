@@ -53,6 +53,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::held_median::HeldMedian;
 use crate::robust::{HuberScale, NORMAL_Q3};
 use crate::{EwQuantile, SpdFactor};
 
@@ -82,10 +83,10 @@ pub const REFIT_PASSES: usize = 200;
 /// The most rows a refit of the first rows buffers (a spec's
 /// `huber_refit_rows`, `quantile_refit_rows`): 2^20. A buffer is held at
 /// its full size from a target's first learned row, `(features + 4) · 8`
-/// bytes a row and 8 more under the MAD, so the count sizes an allocation
+/// bytes a row and 48 more under the MAD, so the count sizes an allocation
 /// before any row is seen: with `refit_budget = inf`, which bounds nothing,
 /// `2^32 − 1` rows of one feature reserved 172 GB and aborted the process.
-/// 2^20 rows are 40 MiB a target at one feature (48 under the MAD), the ceiling the spec layer's other counts that
+/// 2^20 rows are 40 MiB a target at one feature (88 under the MAD), the ceiling the spec layer's other counts that
 /// size an allocation keep (a lag, `n_perm`); it refuses more by name.
 pub const MAX_REFIT_ROWS: u32 = 1 << 20;
 
@@ -184,14 +185,15 @@ impl RefitStatus {
 }
 
 /// The bytes one target's refit buffer can hold at most: `refit_rows`
-/// learned rows of `n_features + 4` numbers, and one more under the MAD
-/// (`mad`), the row's one-pass `|e|` (`RefitBuf`), and
+/// learned rows of `n_features + 4` numbers, and under the MAD (`mad`) six
+/// more, the row's one-pass `|e|` (`RefitBuf`) and its node in the tree
+/// the scale is read from (40 bytes, [`crate::held_median`]), and
 /// [`REFIT_RUNS_PER_ROW`] ageing runs of 4 numbers a learned row, 8 bytes
 /// each -- what a bank reserves against a spec's `refit_budget` for it,
 /// its contents, not the allocator's slack. 0 when the refit is off.
 pub fn refit_reservation(n_features: usize, refit_rows: u32, mad: bool) -> usize {
     let n = refit_rows as usize;
-    8 * n * (n_features + 4 + usize::from(mad) + 4 * REFIT_RUNS_PER_ROW as usize)
+    8 * n * (n_features + 4 + 6 * usize::from(mad) + 4 * REFIT_RUNS_PER_ROW as usize)
 }
 
 /// One target's refit buffer, from the first row it learned: the learned
@@ -212,7 +214,8 @@ pub fn refit_reservation(n_features: usize, refit_rows: u32, mad: bool) -> usize
 /// taken none, the prediction not finite), and while the refit waits the target's scale is
 /// read from them exactly ([`Self::warm_scale`]): their weighted median at
 /// the scale's weights to now over `Φ⁻¹(3/4)`, with no sketch between, and
-/// no anchor to choose (the module docs). A buffer saved before schema 65
+/// no anchor to choose (the module docs), in `O(log n)` a row from a tree of
+/// them that is not state ([`crate::held_median`]). A buffer saved before schema 65
 /// holds no `|e|` (`resid` is `None`), and its model goes on reading the
 /// sketch it fed, as that build did.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -231,6 +234,11 @@ pub(crate) struct RefitBuf {
     /// encodings.
     #[serde(default)]
     resid: Option<Vec<f64>>,
+    /// The `|e|` held, in a tree by size at the weights the scale's decays
+    /// leave them, where the buffer keeps them: built from the rows, not
+    /// state ([`Self::rebuild_median`] on a restore).
+    #[serde(skip)]
+    median: HeldMedian,
 }
 
 /// What a buffer held, taken from it ([`RefitBuf::take`]): the learned
@@ -255,6 +263,7 @@ impl RefitBuf {
             failed: false,
             over_budget: false,
             resid: None,
+            median: HeldMedian::new(1),
         }
     }
 
@@ -287,21 +296,44 @@ impl RefitBuf {
 
     /// The target's MAD scale before its refit, where the buffer keeps its
     /// rows' one-pass `|e|` ([`Self::reads_resid`]): `Some` of the
-    /// weighted median of the `|e|` that are finite, at the scale's weights
-    /// to the last learned row (the weights [`Rows::scale_weights`] gives
-    /// the rebuild, ageing runs included), over [`NORMAL_Q3`], as
-    /// [`crate::robust::mad_scale`] reads a sketch's median -- `Some(None)`
+    /// weighted median of the `|e|` taken, each row at its raw weight over
+    /// the product of the scale's decays to it, ageing runs included -- the
+    /// weights the scale's clock leaves them, up to the factor all share
+    /// ([`crate::held_median`]) -- over [`NORMAL_Q3`], as
+    /// [`crate::robust::mad_scale`] reads a sketch's median; `Some(None)`
     /// while there is no such row, or while half the weight or more is on
-    /// an `|e|` of 0. A common factor of every weight -- the decay since
-    /// the last learned row -- moves no weighted median, so the read is the
-    /// one at the row being predicted. `None` where the sketch is read.
-    /// `O(n)` in the rows held: [`weighted_median`]'s selection.
-    pub(crate) fn warm_scale(&self, nf: usize) -> Option<Option<f64>> {
-        let e = self.resid.as_deref().filter(|_| !self.done)?;
-        let rows = Rows::new(&self.rows, &self.ages, nf);
-        let v = counted_weights(&rows, e);
-        let s = weighted_median(e, &v) / NORMAL_Q3;
+    /// an `|e|` of 0. The decay since the last learned row is common to
+    /// every weight and moves no median, so the read is the one at the row
+    /// being predicted. `None` where the sketch is read. `O(log n)` a read.
+    pub(crate) fn warm_scale(&self) -> Option<Option<f64>> {
+        if !self.reads_resid() {
+            return None;
+        }
+        let s = self.median.median(0).map_or(f64::NAN, |m| m / NORMAL_Q3);
         Some((s > 0.0 && s.is_finite()).then_some(s))
+    }
+
+    /// The tree of the `|e|` held, built again from the rows and runs in
+    /// their order, each decay as the stream took it: what a restored
+    /// buffer reads from, the weights the live buffer reached, to the bit.
+    pub(crate) fn rebuild_median(&mut self, nf: usize) {
+        self.median = HeldMedian::new(1);
+        let Some(e) = self.resid.as_deref().filter(|_| !self.done) else {
+            return;
+        };
+        let rows = Rows::new(&self.rows, &self.ages, nf);
+        for ev in rows.events_iter() {
+            match ev {
+                Event::Age { lam_s, count, .. } => {
+                    self.median.begin_run();
+                    self.median.run(lam_s, count);
+                }
+                Event::Row(i) => {
+                    self.median.decay(rows.lam_s(i));
+                    self.median.insert(0, e[i], rows.w(i));
+                }
+            }
+        }
     }
 
     /// Whether the buffer still takes rows.
@@ -394,17 +426,21 @@ impl RefitBuf {
             self.rows.reserve_exact(cap as usize * (x.len() + 4));
             if let Some(r) = self.resid.as_mut() {
                 r.reserve_exact(cap as usize);
+                self.median.reserve(cap as usize);
             }
         }
         self.rows.extend_from_slice(x);
         self.rows.extend_from_slice(&[y, w, lam, lam_s]);
         if let Some(r) = self.resid.as_mut() {
             // What the sketch would take, as `EwQuantile::add` takes it.
-            r.push(if e >= 0.0 && e.is_finite() {
+            let e = if e >= 0.0 && e.is_finite() {
                 e
             } else {
                 NOT_TAKEN
-            });
+            };
+            r.push(e);
+            self.median.decay(lam_s);
+            self.median.insert(0, e, w);
         }
         self.learned += 1;
         self.learned >= cap
@@ -431,10 +467,17 @@ impl RefitBuf {
                 && last[1].to_bits() == lam_s.to_bits()
             {
                 last[2] += 1.0;
+                if self.resid.is_some() {
+                    self.median.run(lam_s, last[2] as u64);
+                }
                 return None;
             }
         }
         self.ages.extend_from_slice(&[lam, lam_s, 1.0, before]);
+        if self.resid.is_some() {
+            self.median.begin_run();
+            self.median.run(lam_s, 1);
+        }
         if self.ages.len() / 4 > (REFIT_RUNS_PER_ROW * cap) as usize {
             self.abandoned = true;
             return Some(self.take());
@@ -446,6 +489,7 @@ impl RefitBuf {
     /// from here (its `|e|`, where it kept them, an empty list).
     pub(crate) fn take(&mut self) -> Taken {
         self.done = true;
+        self.median = HeldMedian::new(1);
         Taken {
             rows: std::mem::take(&mut self.rows),
             ages: std::mem::take(&mut self.ages),
@@ -1626,9 +1670,9 @@ mod tests {
         assert_eq!(default_refit_rows(100), 1000);
         assert_eq!(default_refit_rows(101), 0);
         assert_eq!(refit_reservation(20, 500, false), 160_000);
-        assert_eq!(refit_reservation(20, 500, true), 164_000);
+        assert_eq!(refit_reservation(20, 500, true), 184_000);
         assert_eq!(refit_reservation(1, 50, false), 8 * 50 * 21);
-        assert_eq!(refit_reservation(1, 50, true), 8 * 50 * 22);
+        assert_eq!(refit_reservation(1, 50, true), 8 * 50 * 27);
         assert_eq!(refit_reservation(3, 0, true), 0);
         // The ceiling a spec's count is refused past: 2^20 rows, the
         // learned rows alone 40 MiB a target at one feature.

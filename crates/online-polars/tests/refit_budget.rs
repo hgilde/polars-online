@@ -82,9 +82,10 @@ fn given_up(bank: &Bank) -> Vec<i64> {
 }
 
 /// A budget of 1 MiB at 50 rows a target: each group of two targets
-/// reserves `2 · 8 · 50 · (1 + 4 + 1 + 16)` = 17,600 bytes -- a row's
+/// reserves `2 · 8 · 50 · (1 + 4 + 6 + 16)` = 21,600 bytes -- a row's
 /// feature, target, weight and two factors, its one-pass `|e|` under the
-/// MAD, and the ageing runs -- so 59 groups fit and the 41 after them give
+/// MAD with its node in the tree the scale is read from, and the ageing
+/// runs -- so 48 groups fit and the 52 after them give
 /// their refits up, both targets each, counted and noticed once. The groups that refit have refit by the end.
 #[test]
 fn the_groups_past_the_budget_give_their_refits_up() {
@@ -92,9 +93,9 @@ fn the_groups_past_the_budget_give_their_refits_up() {
     let mut bank = Bank::new(vec![spec("1.0", 50)]).unwrap();
     feed(&mut bank, &df, df.height());
     let each = 2 * online_polars::online_core::refit_reservation(1, 50, true);
-    assert_eq!(each, 17_600);
+    assert_eq!(each, 21_600);
     let fit = (1024 * 1024) / each;
-    assert_eq!(fit, 59);
+    assert_eq!(fit, 48);
     let counts = given_up(&bank);
     assert_eq!(counts[..fit], vec![0; fit][..]);
     assert_eq!(counts[fit..], vec![2; 100 - fit][..]);
@@ -104,7 +105,7 @@ fn the_groups_past_the_budget_give_their_refits_up() {
         .filter(|n| n.contains("refit_budget"))
         .collect();
     assert_eq!(refit.len(), 1, "{notices:?}");
-    assert!(refit[0].contains("at group \"59\""), "{}", refit[0]);
+    assert!(refit[0].contains("at group \"48\""), "{}", refit[0]);
     // No bound: every group refits.
     let mut free = Bank::new(vec![spec("\"inf\"", 50)]).unwrap();
     feed(&mut free, &df, df.height());
@@ -226,7 +227,7 @@ fn sgd_spec(budget: &str, loss: &str) -> Spec {
 }
 
 /// `sgd(loss = "huber")` reserves and gives up as `huber` does: the same
-/// 17,600 bytes a group, so the same 59 groups refit. Another loss has no
+/// 21,600 bytes a group, so the same 48 groups refit. Another loss has no
 /// refit and so no budget.
 #[test]
 fn sgds_huber_loss_holds_the_same_budget() {
@@ -234,8 +235,8 @@ fn sgds_huber_loss_holds_the_same_budget() {
     let mut bank = Bank::new(vec![sgd_spec("1.0", "huber")]).unwrap();
     feed(&mut bank, &df, df.height());
     let counts = given_up(&bank);
-    assert_eq!(counts[..59], vec![0; 59][..]);
-    assert_eq!(counts[59..], vec![2; 41][..]);
+    assert_eq!(counts[..48], vec![0; 48][..]);
+    assert_eq!(counts[48..], vec![2; 52][..]);
     assert_eq!(sgd_spec("1.0", "huber").model.refit_budget_mib(), Some(1.0));
     assert_eq!(sgd_spec("\"inf\"", "huber").model.refit_budget_mib(), None);
     let squared: Spec = serde_json::from_str(
@@ -297,7 +298,7 @@ fn a_damaged_reservation_is_refused() {
 /// stream, and the group keeps what the budget gave it when the bank first
 /// saw it: the two groups admitted refit again in the new session, and the
 /// two past the budget stay given up. Each group reserves
-/// `2 · 8 · 20 · 22` = 7,040 bytes; the budget holds two and a half.
+/// `2 · 8 · 20 · 27` = 8,640 bytes; the budget holds two and a half.
 #[test]
 fn a_session_restart_keeps_each_group_as_the_budget_left_it() {
     let base = frame(4, 60);
@@ -308,7 +309,7 @@ fn a_session_restart_keeps_each_group_as_the_budget_left_it() {
         .hstack(&[Column::new("t".into(), t), Column::new("s".into(), s)])
         .unwrap();
     let each = 2 * online_polars::online_core::refit_reservation(1, 20, true);
-    assert_eq!(each, 7_040);
+    assert_eq!(each, 8_640);
     let budget = 2.5 * each as f64 / (1024.0 * 1024.0);
     let text = format!(
         r#"{{"name": "m", "model": {{"type": "huber", "huber_refit_rows": 20, "refit_budget": {budget}}},
@@ -379,9 +380,9 @@ fn a_refit_that_runs_to_its_cap_is_a_solve_failure() {
 /// A chunk refused after its new groups reserved their buffers takes the
 /// once-a-bank notice back with them: the groups are forgotten, so the
 /// notice naming one, and the flag that it was raised, go too (review round
-/// 10, S7-5). Here the chunk's groups 59 to 99 cross the budget at 59, and
+/// 10, S7-5). Here the chunk's groups 48 to 99 cross the budget at 48, and
 /// a row of group 0 that steps its clock back refuses the chunk; nothing is
-/// noticed, and the chunk fed again without that row names group 59.
+/// noticed, and the chunk fed again without that row names group 48.
 #[test]
 fn a_refused_chunk_takes_its_refit_notice_back() {
     let df = frame(100, 1);
@@ -392,7 +393,7 @@ fn a_refused_chunk_takes_its_refit_notice_back() {
         "half_life": "inf", "coef_every": 0}"#;
     let s: Spec = serde_json::from_str(text).unwrap();
     let mut bank = Bank::new(vec![s]).unwrap();
-    bank.fit_predict(&df.slice(0, 59)).unwrap();
+    bank.fit_predict(&df.slice(0, 48)).unwrap();
     assert!(
         bank.take_notices()
             .iter()
@@ -400,7 +401,7 @@ fn a_refused_chunk_takes_its_refit_notice_back() {
     );
     let back =
         df!("g" => [0i64], "x" => [0.1], "y" => [1000.0], "z" => [0.0], "t" => [-1.0]).unwrap();
-    let mut refused = df.slice(59, 41);
+    let mut refused = df.slice(48, 52);
     refused.vstack_mut(&back).unwrap();
     let e = bank
         .fit_predict(&refused)
@@ -411,12 +412,12 @@ fn a_refused_chunk_takes_its_refit_notice_back() {
         notices.iter().all(|n| !n.contains("refit_budget")),
         "a notice of a forgotten group: {notices:?}"
     );
-    bank.fit_predict(&df.slice(59, 41)).unwrap();
+    bank.fit_predict(&df.slice(48, 52)).unwrap();
     let notices = bank.take_notices();
     let refit: Vec<&String> = notices
         .iter()
         .filter(|n| n.contains("refit_budget"))
         .collect();
     assert_eq!(refit.len(), 1, "{notices:?}");
-    assert!(refit[0].contains("at group \"59\""), "{}", refit[0]);
+    assert!(refit[0].contains("at group \"48\""), "{}", refit[0]);
 }

@@ -198,7 +198,7 @@ def test_a_count_inside_the_warm_up_is_refused():
 def test_the_refit_budget_gives_up_the_later_groups_and_counts_them():
     """``refit_budget`` bounds the buffers of all the spec's groups, as for
     ``huber``: at 50 rows, one feature and two targets a group reserves
-    17,600 bytes, so 0.06 MiB holds three groups' buffers; the fourth to
+    21,600 bytes, so 0.07 MiB holds three groups' buffers; the fourth to
     appear and every later one keep their one-pass fits, one notice names
     ``quantile_refit_rows``, and ``summary()`` counts their targets. Each
     admitted group is the group a bank with no bound fits, to the bit, and
@@ -224,7 +224,7 @@ def test_the_refit_budget_gives_up_the_later_groups_and_counts_them():
             out = b.fit_predict(df)
         return b, out, [str(w.message) for w in caught if "refit_budget" in str(w.message)]
 
-    bounded, out, notices = bank(refit_budget=0.06)
+    bounded, out, notices = bank(refit_budget=0.07)
     free, out_free, none = bank(refit_budget=INF)
     off_spec = po.spec.quantile("m", quantile=0.5, quantile_refit_rows=0, **c)
     out_off = po.ModelBank([off_spec]).fit_predict(df)

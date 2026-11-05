@@ -313,7 +313,7 @@ def sgd(
         a count given is always taken, up to ``2 ** 20``, since the rows are held
         from the first. ``0`` turns the refit off, leaving the one-pass
         fit of the steps above. A target's rows are held until
-        its refit: ``(features + 5) * 8`` bytes a learned row under the MAD, whose
+        its refit: ``(features + 10) * 8`` bytes a learned row under the MAD, whose
         scale is read exactly from their residuals until then (``(features + 4) *
         8`` under ``"rms"``), and 32 bytes a run of
         rows that only aged it (its value null or its weight 0), one run for such rows
@@ -327,7 +327,7 @@ def sgd(
     ``refit_budget``
         A bound in MiB on the refit buffers of all the spec's groups together, as for
         :func:`huber`: above 0, or ``inf`` for none; default 256. Each new group
-        reserves ``(features + 21) * 8`` bytes a target of each model instance (a
+        reserves ``(features + 26) * 8`` bytes a target of each model instance (a
         half-life grid reserves once per value) for each row of the count when it
         first appears, and the group that would cross the bound, and every new group
         after it, keeps its one-pass fit, with a notice and ``summary()``'s

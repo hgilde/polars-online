@@ -2907,6 +2907,10 @@ impl OnlineModel for Marginal {
                 // A build of schema 64 or earlier anchored each bin scale's
                 // sketch at its first deviation: they keep that rule, and a
                 // histogram the warm-up still waits for is built so.
+                // The held deviations' trees are not state.
+                if let Some(h) = m.bins.as_mut().and_then(|b| b.hist.as_mut()) {
+                    h.rebuild_held_median();
+                }
                 // Marked only where it acts: a Huber histogram still to
                 // be built whose sketches are anchored or whose refit
                 // waits, so every other state converts to the bytes this

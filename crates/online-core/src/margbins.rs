@@ -167,6 +167,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::EwQuantile;
+use crate::held_median::HeldMedian;
 use crate::huber_refit::NOT_TAKEN;
 
 /// The renormalization point: the stored weights run to `1/RENORM_AT` times
@@ -281,15 +282,34 @@ pub(crate) struct HeldDevs {
     e: Vec<f64>,
     /// The decay since the last row.
     pending: f64,
+    /// Each target's deviations in a tree by size at their weights, read in
+    /// `O(log n)` ([`crate::held_median`]): built from the rows, not state
+    /// ([`Self::rebuild_median`] on a restore).
+    #[serde(skip)]
+    median: HeldMedian,
 }
 
 impl HeldDevs {
-    fn new() -> Self {
+    fn new(n_targets: usize) -> Self {
         Self {
             w: Vec::new(),
             lam: Vec::new(),
             e: Vec::new(),
             pending: 1.0,
+            median: HeldMedian::new(n_targets),
+        }
+    }
+
+    /// The trees built again from the rows held, each row's decay and
+    /// deviations in order: the weights the live record reached, to the
+    /// bit.
+    fn rebuild_median(&mut self, n_targets: usize) {
+        self.median = HeldMedian::new(n_targets);
+        for i in 0..self.w.len() {
+            self.median.decay(self.lam[i]);
+            for t in 0..n_targets {
+                self.median.insert(t, self.e[i * n_targets + t], self.w[i]);
+            }
         }
     }
 
@@ -331,11 +351,12 @@ impl HeldDevs {
     /// [`crate::robust::mad_scale`] reads a sketch's; `None` while there is
     /// none, or while half the weight or more is on deviations of 0. The
     /// decay since the last row is common to every weight and moves no
-    /// median.
-    fn scale(&self, t: usize, n_targets: usize) -> Option<f64> {
-        let v = self.weights(t, n_targets);
-        let m = crate::huber_refit::weighted_median(&self.devs(t, n_targets), &v);
-        let s = m / crate::robust::NORMAL_Q3;
+    /// median. `O(log n)` ([`crate::held_median`]).
+    fn scale(&self, t: usize) -> Option<f64> {
+        let s = self
+            .median
+            .median(t)
+            .map_or(f64::NAN, |m| m / crate::robust::NORMAL_Q3);
         (s > 0.0 && s.is_finite()).then_some(s)
     }
 
@@ -388,7 +409,9 @@ impl BinScales {
     fn begin_row(&mut self, w: f64) {
         if let Some(h) = self.held.as_deref_mut() {
             h.w.push(w);
-            h.lam.push(std::mem::replace(&mut h.pending, 1.0));
+            let lam = std::mem::replace(&mut h.pending, 1.0);
+            h.lam.push(lam);
+            h.median.decay(lam);
             h.e.extend(std::iter::repeat_n(NOT_TAKEN, self.mad.len()));
         }
     }
@@ -432,7 +455,7 @@ impl BinScales {
     /// its sketch otherwise.
     pub(crate) fn judge(&self, t: usize) -> Judge {
         let scale = match self.held.as_deref() {
-            Some(h) => h.scale(t, self.mad.len()),
+            Some(h) => h.scale(t),
             None => crate::robust::mad_scale(&self.mad[t]),
         };
         let cut = scale.map_or(f64::INFINITY, |s| self.delta * s);
@@ -464,6 +487,7 @@ impl BinScales {
                 if a.is_finite() && w > 0.0 && w.is_finite() {
                     let at = h.e.len() - n + t;
                     h.e[at] = a;
+                    h.median.insert(t, a, w);
                 }
             }
             None => self.mad[t].add(e.abs(), w),
@@ -504,7 +528,7 @@ impl BinScales {
         self.mad.iter_mut().for_each(EwQuantile::reset);
         // The deviations held go as the sketch's weight does.
         if let Some(h) = self.held.as_deref_mut() {
-            *h = HeldDevs::new();
+            *h = HeldDevs::new(self.mad.len());
         }
     }
 }
@@ -538,9 +562,11 @@ pub(crate) fn hold_bytes(warm_rows: usize, p: usize, n_targets: usize) -> usize 
 
 /// The bytes the deviations a Huber histogram holds for its refit take
 /// ([`HeldDevs`]): `rows` rows of a weight, a decay and a deviation per
-/// target, 8 bytes each, its contents, not the allocator's slack.
+/// target, 8 bytes each, and a target's node in the tree its scale is read
+/// from, 40 ([`crate::held_median`]): its contents, not the allocator's
+/// slack.
 pub(crate) fn held_devs_bytes(rows: usize, n_targets: usize) -> usize {
-    rows.saturating_mul(n_targets.saturating_add(2).saturating_mul(8))
+    rows.saturating_mul(n_targets.saturating_mul(48).saturating_add(16))
 }
 
 /// The bytes a histogram's buffers take, for `p` features whose bins add up
@@ -773,6 +799,18 @@ impl MarginalBins {
         }
     }
 
+    /// The trees of the deviations held for the refit, built again from
+    /// the rows held: what a restored histogram reads its scales from
+    /// ([`HeldDevs`]; not state).
+    pub(crate) fn rebuild_held_median(&mut self) {
+        if let Some(sc) = self.scales.as_deref_mut() {
+            let n = sc.mad.len();
+            if let Some(h) = sc.held.as_deref_mut() {
+                h.rebuild_median(n);
+            }
+        }
+    }
+
     /// Mark a histogram built, empty, for a state of schema 64 or earlier
     /// -- its edges fixed from a warm-up that build held -- so that each
     /// anchored sketch awaits its first deviation, as that build's did.
@@ -790,7 +828,7 @@ impl MarginalBins {
     /// refit waits does from its first row. Nothing under the mean.
     pub(crate) fn hold_deviations(&mut self) {
         if let Some(sc) = self.scales.as_deref_mut() {
-            sc.held = Some(Box::new(HeldDevs::new()));
+            sc.held = Some(Box::new(HeldDevs::new(sc.mad.len())));
         }
     }
 

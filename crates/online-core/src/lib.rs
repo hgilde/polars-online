@@ -86,6 +86,7 @@ mod gaps;
 /// Fits read off an exported Gram, offline (docs/PLAN.md tasks 226-227).
 pub mod gramfit;
 mod health;
+mod held_median;
 mod hmm;
 mod holt;
 mod huber_refit;

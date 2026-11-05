@@ -1193,20 +1193,88 @@ class EwMedian:
         return s if 0.0 < s < math.inf else None
 
 
-def _held_mad(held: list[list]) -> float | None:
-    """The MAD scale from the held rows' ``|e|`` (``[e, weight]``, ``e``
-    ``None`` where the scale took none): their weighted median -- the
-    smallest ``e`` at which the cumulative weight, ascending, reaches half
-    the total -- over ``Φ⁻¹(3/4)``, once it is above 0."""
-    rows = sorted((e, v) for e, v in held if e is not None and v > 0.0)
-    total = sum(v for _, v in rows)
-    acc = 0.0
-    for e, v in rows:
-        acc += v
-        if acc >= 0.5 * total:
-            s = e / NORMAL_Q3
-            return s if 0.0 < s < math.inf else None
-    return None
+def _times(a: tuple[float, int], b: tuple[float, int]) -> tuple[float, int]:
+    """``a * b`` for products kept as ``m * 2**k``, ``m`` in ``[1/2, 1)``:
+    the mantissas' product, one rounding, brought back by ``frexp``."""
+    m, e = math.frexp(a[0] * b[0])
+    return m, a[1] + b[1] + e
+
+
+def _pow(x: float, n: int) -> tuple[float, int]:
+    """``x ** n`` by squaring in the same parts."""
+    out, base = (0.5, 1), math.frexp(x)
+    while n > 0:
+        if n & 1:
+            out = _times(out, base)
+        base = _times(base, base)
+        n >>= 1
+    return out
+
+
+class HeldMedian:
+    """The refit buffer's exact MAD while the refit waits (``held_median.rs``),
+    written from its definition: row ``i`` held at ``r_i = w_i / D_i``,
+    ``D_i`` the product of the scale's decays to it kept as ``m * 2**k``
+    (``frexp`` after each product, a run of equal decays by squaring), at
+    ``r_i * 2**(K - k_i)`` for a reference exponent ``K`` that every weight
+    is rescaled by ``2**-512`` with once ``K - k`` reaches 512; the median
+    the first ``|e|``, ascending (ties in arrival order), at which the
+    running sum of ``r`` reaches half their sum, both summed in that order
+    one addition at a time."""
+
+    def __init__(self) -> None:
+        self.d: tuple[float, int] = (0.5, 1)
+        self.base = self.d
+        self.ref: int | None = None
+        self.rows: list[list[float]] = []
+        # The run of ageings lengthened: its decays and the rows before it.
+        self.run_key: tuple | None = None
+        self.count = 0
+
+    def decay(self, lam: float) -> None:
+        self.d = _times(self.d, math.frexp(lam))
+        self.base = self.d
+
+    def age(self, lam: float, lam_s: float) -> None:
+        """A row that only aged the target: a run, lengthened while its two
+        decays repeat after the same learned rows."""
+        if not self.rows:
+            return
+        key = (lam, lam_s, len(self.rows))
+        if key == self.run_key:
+            self.count += 1
+        else:
+            self.run_key, self.count, self.base = key, 1, self.d
+        self.d = _times(self.base, _pow(lam_s, self.count))
+
+    def insert(self, e: float | None, w: float) -> None:
+        """A learned row, after its decay; ``e`` ``None`` where the scale
+        took none (the row is still held, at no weight)."""
+        if not (e is not None and math.isfinite(e) and e >= 0.0 and w > 0.0):
+            self.rows.append([0.0, 0.0])
+            return
+        k = self.d[1]
+        ref = k if self.ref is None else self.ref
+        steps = (ref - k) // 512
+        for _ in range(min(steps, 5)):
+            for r in self.rows:
+                r[1] *= 2.0**-512
+        self.ref = ref - steps * 512
+        self.rows.append([e, w / self.d[0] * 2.0 ** (self.ref - k)])
+
+    def scale(self) -> float | None:
+        """The median over ``Φ⁻¹(3/4)``, once it is above 0."""
+        rows = sorted((r for r in self.rows if r[1] > 0.0), key=lambda r: r[0])
+        total = 0.0
+        for _, v in rows:
+            total += v
+        acc = 0.0
+        for e, v in rows:
+            acc += v
+            if acc >= 0.5 * total:
+                s = e / NORMAL_Q3
+                return s if 0.0 < s < math.inf else None
+        return None
 
 
 def robust_ref(
@@ -1310,9 +1378,9 @@ def robust_ref(
             "sig2": np.zeros(m),
             "wsig": np.zeros(m),
             "mad": [EwMedian() for _ in range(m)],
-            # While the refit waits: each learned row's one-pass |e| (None
-            # where the scale took none) and its weight on the scale's clock.
-            "held": [[] for _ in range(m)],
+            # While the refit waits: each learned row's one-pass |e| at
+            # its weight on the scale's clock.
+            "held": [HeldMedian() for _ in range(m)],
             # EW count of observations under the RAW row weights: the
             # accumulators are scaled by the IRLS weights, the count is not.
             "w_raw": 0.0,
@@ -1357,9 +1425,8 @@ def robust_ref(
             # the scale's clock, and so does the MAD's sketch.
             st["wsig"][j] *= lam_s
             st["mad"][j].age(lam_s)
-            for h in st["held"][j]:
-                h[1] *= lam_s
             if np.isnan(Y[i, j]):
+                st["held"][j].age(lam, lam_s)
                 st["W"][j] *= lam
                 st["wj"][j] *= lam
                 st["wobs"][j] = present
@@ -1375,7 +1442,7 @@ def robust_ref(
             if mad:
                 scale = st["mad"][j].scale()
                 if refit_rows > 0:
-                    scale = _held_mad(st["held"][j])
+                    scale = st["held"][j].scale()
             aged_w, aged_wj = lam * st["W"][j], lam * st["wj"][j]
             aged_rows = aged_wj * (rows / present) if present > 0.0 else 0.0
             kind, value, target = _row_update(
@@ -1396,9 +1463,12 @@ def robust_ref(
             learns = w[i] > 0.0 and (kind == "nudge" or value > 0.0)
             if refit_rows > 0 and learns:
                 e = abs(Y[i, j] - p_own[j]) if np.isfinite(p_own[j]) else None
-                st["held"][j].append([e if e is not None and np.isfinite(e) else None, w[i]])
-                if len(st["held"][j]) >= refit_rows:
+                st["held"][j].decay(lam_s)
+                st["held"][j].insert(e, w[i])
+                if len(st["held"][j].rows) >= refit_rows:
                     raise NotImplementedError("robust_ref does not model the refit")
+            elif refit_rows > 0:
+                st["held"][j].age(lam, lam_s)
             if kind == "nudge":
                 st["W"][j] = aged_w
                 st["wj"][j] = aged_wj

@@ -278,9 +278,9 @@ def test_the_default_count_grows_with_the_features_and_stops_above_100():
 @pytest.mark.parametrize("kind", ["huber", "sgd"])
 def test_the_refit_budget_gives_up_the_later_groups_and_counts_them(kind):
     """``refit_budget`` bounds the buffers of all the spec's groups: each new
-    group reserves ``(features + 21) * 8`` bytes a target for each row of the
+    group reserves ``(features + 26) * 8`` bytes a target for each row of the
     count when it first appears. At 50 rows, one feature and two targets that
-    is 17,600 bytes a group, so 0.06 MiB holds three groups' buffers; the
+    is 21,600 bytes a group, so 0.07 MiB holds three groups' buffers; the
     fourth to appear and every later one keep their one-pass fits, one
     notice says so, and ``summary()`` counts their targets. Each admitted
     group is the group a bank with no bound fits, to the bit, and each
@@ -308,7 +308,7 @@ def test_the_refit_budget_gives_up_the_later_groups_and_counts_them(kind):
             out = b.fit_predict(df)
         return b, out, [str(w.message) for w in caught if "refit_budget" in str(w.message)]
 
-    bounded, out, notices = bank(refit_budget=0.06)
+    bounded, out, notices = bank(refit_budget=0.07)
     free, out_free, none = bank(refit_budget=INF)
     out_off = po.ModelBank([build("m", huber_refit_rows=0, **c)]).fit_predict(df)
     assert len(notices) == 1 and 'at group "3"' in notices[0], notices

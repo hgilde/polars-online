@@ -935,6 +935,11 @@ impl TryFrom<SgdV3> for Sgd {
                 "sgd: the state's refit buffers do not match its cfg's huber_refit_rows".into(),
             );
         }
+        // The held |e|'s tree is not state: built from the rows.
+        let mut refit = refit;
+        refit
+            .iter_mut()
+            .for_each(|b| b.rebuild_median(cfg.n_features));
         if gain.len() != scales(keeps_gain(&cfg)) {
             return Err("sgd: the state's step gains do not match its cfg".into());
         }
@@ -1207,11 +1212,7 @@ impl Sgd {
                 if let Some(q) = self.mad.get(j) {
                     // Exact from the one-pass `|e|` the refit's buffer
                     // holds while the refit waits, as `huber`'s.
-                    if let Some(s) = self
-                        .refit
-                        .get(j)
-                        .and_then(|b| b.warm_scale(self.cfg.n_features))
-                    {
+                    if let Some(s) = self.refit.get(j).and_then(RefitBuf::warm_scale) {
                         return s;
                     }
                     return crate::robust::mad_scale(q);

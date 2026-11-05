@@ -233,11 +233,12 @@ def test_the_refit_budget_bounds_the_groups_holds():
     df = pl.concat([p.with_columns(t=pl.col("t") * groups + i) for i, p in enumerate(parts)]).sort(
         "t"
     )
-    # A hold of 300 rows of one feature and one target, 112 bytes each: the
+    # A hold of 300 rows of one feature and one target, 152 bytes each: the
     # row (two vectors, its decay and weight, 64), its feature (8), its
     # target (an optional double, 16), and the deviation its scale reads
-    # while the refit waits, with the row's weight and decay (24).
-    budget = 3.5 * 300 * 112 / 2**20
+    # while the refit waits, with the row's weight and decay (24) and its
+    # node in the tree the scale is read from (40).
+    budget = 3.5 * 300 * 152 / 2**20
 
     def bank(**kw) -> tuple[po.ModelBank, list[str]]:
         b = po.ModelBank([spec(group="g", bin_refit_rows=300, **kw)])

@@ -28,7 +28,7 @@ BASE = dict(targets=["y"], features=["x0"], half_life=10.0)
 
 #: Why a refit's row count has a ceiling, as the builder says it.
 REFIT_ROWS_WHY = (
-    "the refit's buffer is held at its full size, (features + 5) * 8 bytes a row, from a "
+    "the refit's buffer is held at its full size, (features + 10) * 8 bytes a row, from a "
     "target's first learned row, so the count sizes an allocation before any row is seen"
 )
 

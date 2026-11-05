@@ -1375,11 +1375,7 @@ impl Robust {
     /// Huber cut has nothing to be drawn in (the module docs; task 177).
     fn residual_scale(&self, j: usize) -> Option<f64> {
         if let Some(q) = self.mad.get(j) {
-            if let Some(s) = self
-                .refit
-                .get(j)
-                .and_then(|b| b.warm_scale(self.cfg.n_features))
-            {
+            if let Some(s) = self.refit.get(j).and_then(RefitBuf::warm_scale) {
                 return s;
             }
             return mad_scale(q);
@@ -2964,6 +2960,9 @@ impl OnlineModel for Robust {
                         "{kind}: the refit's buffers do not match {kind}_refit_rows"
                     )));
                 }
+                // The held |e|'s tree is not state: built from the rows.
+                let nf = m.cfg.n_features;
+                m.refit.iter_mut().for_each(|b| b.rebuild_median(nf));
                 // The floor's counts: one a target, none above the floor,
                 // where the gate leaves learning alone; none where it held
                 // learning back (`RobustCfg::min_weight_holds_learning`).

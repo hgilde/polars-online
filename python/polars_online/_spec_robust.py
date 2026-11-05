@@ -263,7 +263,7 @@ def huber(
         sketch, about 1.6%, and a quantile fit, whose band is drawn in it, by
         more; a power of two moves nothing. A state saved
         before the refit existed goes on to the bit. A target's rows are held
-        until its refit: ``(features + 5) * 8`` bytes a learned row under the MAD
+        until its refit: ``(features + 10) * 8`` bytes a learned row under the MAD
         (``(features + 4) * 8`` under ``"rms"``), and 32 bytes a run
         of rows that only aged it (its value null or its weight 0), one run for such
         rows in a row at one clock step. Past 4 runs a learned row of the count, as on
@@ -276,7 +276,7 @@ def huber(
     ``refit_budget``
         A bound in MiB on the refit buffers of all the spec's groups together, above
         0, or ``inf`` for none. Default 256. Each new group reserves the most its
-        targets' buffers can hold when it first appears, ``(features + 21) * 8`` bytes
+        targets' buffers can hold when it first appears, ``(features + 26) * 8`` bytes
         a target of each model instance under the MAD (``+ 20`` under ``"rms"``; a
         half-life grid reserves once per value) for each row of the count (the row,
         its residual and its 4 runs), and keeps it
@@ -286,7 +286,7 @@ def huber(
         notice says so once, and ``summary()``'s ``refit_given_up`` counts the targets
         of each instance. A group's reservation is not handed back when its refit frees
         its buffer, so once the bound is reached no later group refits. At 20 features
-        and 500 rows a target reserves 164 KB, and 256 MiB refits the first 1,636
+        and 500 rows a target reserves 184 KB, and 256 MiB refits the first 1,458
         targets.
     ``emit_huber_scale``
         Emit ``huber_scale_<t>``, each target's residual scale ``s`` as the
@@ -549,7 +549,7 @@ def quantile(
         since the rows are held from the first, but one below three rows a
         coefficient, the rows the warm-up takes as least squares, is refused.
         ``0`` turns the refit off. A group shorter than the count
-        never refits and holds its rows to the end: ``(features + 5) * 8``
+        never refits and holds its rows to the end: ``(features + 10) * 8``
         bytes a learned row, its residual kept for the scale (a quantile fit's
         band is drawn in the MAD, read from them exactly while the refit
         waits), and 32 bytes a run of rows that only aged the
@@ -564,7 +564,7 @@ def quantile(
     ``refit_budget``
         A bound in MiB on the refit buffers of all the spec's groups
         together, above 0, or ``inf`` for none; default 256. As for
-        :func:`huber`: each new group reserves ``(features + 21) * 8`` bytes a
+        :func:`huber`: each new group reserves ``(features + 26) * 8`` bytes a
         target of each model instance (a half-life grid reserves once per
         value) for each row of the count when it first appears, and keeps it
         for the life of the bank; the group that would cross the bound, and

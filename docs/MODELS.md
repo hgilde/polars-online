@@ -904,7 +904,10 @@ their way. `huber_scale=` chooses between two scales:
 
 While a target's refit waits (`huber_refit_rows`, `quantile_refit_rows`),
 the median is read exactly, from the residuals its buffer holds for the
-refit, a selection over them each row. From the refit on it is read from a
+refit: each row's weight relative to the others is fixed once it is held,
+since every later decay applies to all of them, so the residuals sit in a
+tree by size at those weights and a row's read is a walk down it, its cost
+growing with the logarithm of the rows held. From the refit on it is read from a
 quantile sketch kept per target, within 0.78% of the exact weighted median.
 Each scale learns a residual at the row's own weight, not at its Huber
 weight, and ages on every row.
@@ -1038,8 +1041,9 @@ target's own spread and level), so for it the refit off is the one-pass fit of
 today's steps.
 
 **The refit holds each target's rows until it runs, then frees them.** A
-learned row takes `(features + 5) · 8` bytes under the MAD -- its features,
-target, weight and two decay factors, and the residual the scale reads --
+learned row takes `(features + 10) · 8` bytes under the MAD -- its features,
+target, weight and two decay factors, the residual the scale reads, and
+the residual's node in the tree it is read from --
 and `(features + 4) · 8` under the RMS. The rows that only aged the
 target -- its value null, or its weight 0 -- take 32 bytes a run, one run
 for such rows in a row at one clock step. So one feature and 500 rows take
@@ -1067,7 +1071,7 @@ moved by a level, 50 passes ran out on 149 and 200 on 9, all nine past 39%.
 
 **`refit_budget` bounds the buffers of all a spec's groups together: 256
 MiB by default, or `inf` for no bound.** Each new group reserves, when it
-first appears, the most its targets' buffers can hold: `(features + 21) · 8`
+first appears, the most its targets' buffers can hold: `(features + 26) · 8`
 bytes a target of each model instance under the MAD, `(features + 20) · 8`
 under the RMS (a half-life grid reserves once per value), for each row of
 `huber_refit_rows`, the row and its four runs. The group that would cross the bound, and every new group after it,
@@ -1079,7 +1083,7 @@ bank, so which groups refit depends neither on the chunking nor on the order
 the groups run in, nor on a save and load between them. The price is that
 once the bound is reached no later group refits, though the first groups'
 buffers have long been freed. At 20 features and 500 rows a target reserves
-164 KB under the MAD, and 256 MiB refits the first 1,636 targets. Measured on the 150-row
+184 KB under the MAD, and 256 MiB refits the first 1,458 targets. Measured on the 150-row
 groups above, fed from parquet, as the peak resident memory after the fit and
 the saved state (at 20,000 groups the median of three runs, which spread by
 up to 130 MiB; the reservation is the most a buffer can hold, and these held
