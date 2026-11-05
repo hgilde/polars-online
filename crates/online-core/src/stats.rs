@@ -67,6 +67,12 @@ const PRUNE: f64 = 1e-12;
 /// positive normal floats span, which bounds nothing.
 pub const MAX_BAND_OCTAVES: u32 = 2048;
 
+/// The last state schema whose build anchored a residual sketch at its
+/// first value ([`EwQuantile`]'s "Where the anchor is set"): a model
+/// restored from it or an earlier one marks its anchored sketches to keep
+/// that rule ([`EwQuantile::keep_first_value_anchor`]).
+pub(crate) const LAST_FIRST_VALUE_ANCHOR_SCHEMA: u32 = 64;
+
 /// An exponentially weighted quantile of non-negative values: DDSketch
 /// (Masson, Rim & Lee, 2019, "DDSketch: a fast and fully-mergeable quantile
 /// sketch with relative-error guarantees", PVLDB 12(12), 2195-2205), its
@@ -129,21 +135,51 @@ pub const MAX_BAND_OCTAVES: u32 = 2048;
 /// edges over `c`. Reading within the bucket does not avoid it either: near
 /// a median of a few hundred rows' weight a bucket holds one or two values,
 /// and one value crossing an edge moves half that bucket's weight. An
-/// anchored sketch ([`EwQuantile::anchored`]) instead buckets `v / a`, where
-/// `a` is the first value it takes at a weight above 0 and above the
-/// smallest normal float, or one its caller gives before it takes any
-/// (`anchor_at`), and reads `a` times the bucket's
-/// representative.
+/// anchored sketch ([`EwQuantile::anchored`]) instead buckets `v / a` for
+/// an anchor `a`, and reads `a` times the bucket's representative.
 /// Scaled by `c`, every ratio is the same to a rounding of the division, so
 /// every value lands in the same bucket unless its ratio is within a
 /// rounding of an edge, and the read is `c` times the unscaled one to
 /// rounding. A power of two divides out exactly, so the read stays bitwise
-/// `c` times there, as unanchored. Every read carries the anchor's own
-/// relative rounding, so a value rounded at a scale above its own -- a
-/// residual of `1e-4` of a target at `1e6` -- anchors the sketch only as
-/// well as that rounding. The bound `α` holds as it is: the read is
-/// within `α` of the quantile of the ratios, times `a`. A division and a
+/// `c` times there, as unanchored. The bound `α` holds as it is: the read
+/// is within `α` of the quantile of the ratios, times `a`. A division and a
 /// multiplication, with no libm result in the state.
+///
+/// **Where the anchor is set.** A sketch is anchored at a value only where
+/// that value is itself scaled with the values to a rounding of its own
+/// size: a ratio regroups only where its rounding exceeds its distance to a
+/// bucket edge, but every read carries the anchor's relative rounding. A
+/// caller holding every value in hand has such a value
+/// ([`Self::anchor_at`]): a refit's rebuilt sketch of residuals is
+/// anchored at their weighted median, an order statistic of them, which
+/// scales with them to a single residual's rounding, since rounding is
+/// monotone, and is of the size the sketch reads.
+///
+/// A sketch fed one value at a time has none. An anchor frozen from the
+/// first values is a function of values the stream has not yet shown to be
+/// typical: a first residual of `1e-6` on a target at `1e6` is rounded at
+/// the target's level, `1e-4` of itself, and an anchor set there kept a
+/// stream and the same stream times 3 a bucket apart, `1.2e-2` in the
+/// scale, for as long as the sketch lived. Waiting for more values does
+/// not mend it: a start whose values are all small beside what follows
+/// defeats any count of them, and how often a stream starts so cannot be
+/// stated without assuming the values' distribution. The level a residual
+/// was formed at, `max(|y|, |p|)`, is rounded at its own size, but a level
+/// added to the target moves it where the residuals do not move, so a
+/// sketch anchored there read a stream and the same stream shifted a
+/// bucket apart. So [`Self::anchored`] fixes the grid at 1 until its
+/// caller anchors it, and a sketch nobody anchors keeps it: `v / 1` and
+/// `1 · q` are exact, so its reads are the fixed buckets', to the bit, a
+/// power of two scales them to the bit, and any other factor moves them
+/// by up to a bucket (each read is within `α` of the exact quantile, so
+/// two units' reads are within `2α / (1 − α)` of each other).
+///
+/// A sketch saved before schema 65 was anchored at its first value at a
+/// weight above 0 and at or above the smallest normal float, and keeps
+/// that rule for its life ([`Self::keep_first_value_anchor`]): one saved
+/// while its anchor was awaited (`Some(0.0)`) takes its next such value as
+/// the anchor, and so does one a later [`Self::reset`] clears, so a state
+/// that build saved goes on to the bit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EwQuantile {
     /// The levels reported, each in (0, 1).
@@ -169,13 +205,23 @@ pub struct EwQuantile {
     band: Option<u32>,
     /// An anchored sketch's anchor ([`EwQuantile`]'s "The anchor"): `None`
     /// buckets each value as it is, every sketch saved without the field;
-    /// `Some(0.0)` buckets in units of the first value it takes, which has
-    /// not come; `Some(a)` buckets `v / a`. Only a bounded sketch is
+    /// `Some(a)` buckets `v / a`, `a = 1` the grid fixed at 1; `Some(0.0)`,
+    /// only in a sketch saved before schema 65, buckets in units of the
+    /// first value it takes, which has not come. Only a bounded sketch is
     /// anchored, so the field is present only where `band` is, and the
     /// array encoding never reads it in `band`'s place: the two skip
     /// together, the anchor last.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     anchor: Option<f64>,
+    /// Whether a [`Self::reset`] leaves the sketch awaiting its first value
+    /// as its anchor, where it would fix the grid at 1 ([`EwQuantile`]'s
+    /// "Where the anchor is set"): `true` only in an anchored sketch
+    /// restored from a state of schema 64 or earlier, whose build anchored
+    /// that way. Present only where it is `true`, so only where `anchor`
+    /// is, and last: the array encoding skips the three together from the
+    /// end.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    anchor_by_first_value: bool,
 }
 
 impl EwQuantile {
@@ -200,6 +246,7 @@ impl EwQuantile {
             below: vec![0.0; n],
             band: None,
             anchor: None,
+            anchor_by_first_value: false,
         }
     }
 
@@ -216,12 +263,14 @@ impl EwQuantile {
         Ok(q)
     }
 
-    /// A bounded sketch that buckets its values in units of the first it
-    /// takes ([`EwQuantile`]'s "The anchor"), so its quantiles scale with
-    /// the values to rounding at any factor.
+    /// A bounded sketch that buckets its values in units of an anchor
+    /// ([`EwQuantile`]'s "The anchor"): the grid fixed at 1, the bounded
+    /// sketch's own buckets to the bit, until its caller anchors it at a
+    /// value scaled with the values ([`Self::anchor_at`]), from which its
+    /// quantiles scale with the values to rounding at any factor.
     pub fn anchored(levels: &[f64], octaves: u32) -> Result<Self, String> {
         let mut q = Self::bounded(levels, octaves)?;
-        q.anchor = Some(0.0);
+        q.anchor = Some(1.0);
         Ok(q)
     }
 
@@ -231,22 +280,60 @@ impl EwQuantile {
         self.band
     }
 
-    /// An anchored sketch's anchor: `Some(0.0)` before its first value,
-    /// `Some(a)` after; `None` for a sketch that buckets values as they are.
+    /// An anchored sketch's anchor, `Some(a)` (`Some(0.0)`: a sketch saved
+    /// before schema 65 awaiting its first value); `None` for a sketch
+    /// that buckets values as they are.
     pub fn anchor(&self) -> Option<f64> {
         self.anchor
     }
 
-    /// Anchor an anchored sketch that has taken nothing yet at `a` rather
-    /// than at its first value: what a caller holding every value in hand
-    /// gives it, a value of the size it will read, so the anchor's own
-    /// rounding is a rounding of that size. A sketch already anchored, one
-    /// that is not anchored, or an `a` that is not a positive normal float
-    /// (the values a first value could set) is left as it is.
+    /// Anchor an anchored sketch that holds no weight yet at `a`: what a
+    /// caller holding every value in hand gives it, a value of the size it
+    /// will read and scaled with the values to a rounding of that size
+    /// ([`EwQuantile`]'s "Where the anchor is set"). A sketch holding
+    /// weight, one that is not anchored, or an `a` that is not a positive
+    /// normal float is left as it is.
     pub(crate) fn anchor_at(&mut self, a: f64) {
-        if self.anchor == Some(0.0) && a.is_finite() && a >= f64::MIN_POSITIVE {
+        if self.anchor.is_some()
+            && self.buckets.is_empty()
+            && self.zero == 0.0
+            && a.is_finite()
+            && a >= f64::MIN_POSITIVE
+        {
             self.anchor = Some(a);
         }
+    }
+
+    /// Mark an anchored sketch restored from a state of schema 64 or
+    /// earlier: its anchor, awaited now or after a [`Self::reset`], is set
+    /// by its first value, as that build set it, so the state goes on to
+    /// the bit. A sketch that is not anchored is left as it is.
+    pub(crate) fn keep_first_value_anchor(&mut self) {
+        self.anchor_by_first_value = self.anchor.is_some();
+    }
+
+    /// Whether this sketch keeps the first-value anchor of a state of
+    /// schema 64 or earlier ([`Self::keep_first_value_anchor`]).
+    pub fn anchors_by_first_value(&self) -> bool {
+        self.anchor_by_first_value
+    }
+
+    /// An empty sketch at the same levels, band and anchoring rule: what a
+    /// caller rebuilding this sketch from values it holds starts from
+    /// ([`Self::reset`]).
+    pub(crate) fn cleared(&self) -> Self {
+        let mut q = Self::empty(self.levels.clone());
+        q.band = self.band;
+        q.anchor = self.anchor.map(|_| self.awaited());
+        q.anchor_by_first_value = self.anchor_by_first_value;
+        q
+    }
+
+    /// The anchor an anchored sketch takes when it is cleared: awaiting its
+    /// first value under the rule of a state of schema 64 or earlier, and
+    /// the grid fixed at 1 otherwise.
+    fn awaited(&self) -> f64 {
+        if self.anchor_by_first_value { 0.0 } else { 1.0 }
     }
 
     /// Whether a restored sketch can be read and added to: a pointer and a
@@ -289,6 +376,8 @@ impl EwQuantile {
                     && ((a == 0.0 && self.buckets.is_empty())
                         || (a >= f64::MIN_POSITIVE && a.is_finite()))
             })
+            // The first-value rule marks an anchored sketch alone.
+            && (!self.anchor_by_first_value || self.anchor.is_some())
     }
 
     /// The levels this sketch reports, in the order [`EwQuantile::get`]
@@ -599,8 +688,9 @@ impl EwQuantile {
     }
 
     /// `v` in the units the buckets are kept in: itself unanchored, and
-    /// over the anchor anchored, the anchor first set to `v` if this is the
-    /// first value that counts. A value below the smallest normal float
+    /// over the anchor anchored, the anchor first set to `v` if it awaits
+    /// the first value that counts (a sketch saved before schema 65,
+    /// [`EwQuantile`]'s "Where the anchor is set"). A value below the smallest normal float
     /// counts as 0 and sets nothing, as does one the caller does not add (a
     /// weight of 0, hard rule 9); a ratio past the largest float counts in
     /// the top bucket, and one below the smallest normal as 0.
@@ -671,13 +761,11 @@ impl EwQuantile {
     }
 
     /// Back to no weight, at the same levels: valid, since `new` checked
-    /// them and a restore holds a sketch to [`Self::has_shape`].
+    /// them and a restore holds a sketch to [`Self::has_shape`]. An
+    /// anchored sketch goes back to the grid fixed at 1, or, saved before
+    /// schema 65, to awaiting its next first value ([`Self::cleared`]).
     pub fn reset(&mut self) {
-        let (band, anchored) = (self.band, self.anchor.is_some());
-        *self = Self::empty(std::mem::take(&mut self.levels));
-        self.band = band;
-        // An anchored sketch waits for its next first value.
-        self.anchor = anchored.then_some(0.0);
+        *self = self.cleared();
     }
 
     /// The bytes this sketch takes, its fields and what each vector has

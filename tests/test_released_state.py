@@ -278,6 +278,28 @@ DECLARED: dict[tuple[str, str], str] = {
     ("full_huber", "1.3.0"): "the next release, Fixed: the robust scale's sketch keeps each "
     "residual in units of the first one it takes; and a readiness gate no longer moves the "
     "residual spread, and the residual autocorrelation weighs each residual by its row",
+    # Task 323 (the next release's Changed): no MAD sketch takes an anchor
+    # from the residuals one pass sees. While a refit waits the scale is the
+    # exact weighted median of the residuals its buffer holds, and with the
+    # refit off the sketch keeps its fixed buckets. A file of 1.4.0 keeps
+    # the first-value anchor and its buffers hold no residuals, so it goes on
+    # as it was fitted, where this build's own bank reads the exact median:
+    # 8.2e-4 to 1.2e-3 apart in their predictions here (4.8e-3 in
+    # `full_huber`'s diagnostics); `huber_rms`, which keeps no sketch, to
+    # the bit.
+    **{
+        (name, "1.4.0"): "the next release, Changed: the MAD scale reads the refit's held "
+        "residuals exactly, and no sketch is anchored at its first residual"
+        for name in (
+            "huber",
+            "huber_mad",
+            "huber_refit",
+            "full_huber",
+            "sgd_huber",
+            "sgd_huber_mad",
+            "sgd_huber_refit",
+        )
+    },
 }
 
 #: The releases from 1.0, whose files load and go on; and this build, whose
@@ -820,7 +842,11 @@ def test_a_moved_spec_goes_on_as_its_release_did(resumed):
         # The rows were compared: the release wrote them, all of them.
         assert pl.read_parquet(out / f"{name}.rows.parquet").height == second.height, name
     # The exceptions were used: the comparisons they excuse ran, and moved.
-    assert used["reset"] == len(set(RESETS) & set(names)) and used["young"], used
+    # The young sums moved after 1.3.0 (task 278, D-B5), so a later
+    # release's files read them as this build does and use no exception.
+    young_moved = _version(version) <= _version("1.3.0")
+    assert used["reset"] == len(set(RESETS) & set(names)), used
+    assert bool(used["young"]) == young_moved, used
     wrong = {k: v for k, v in wrong.items() if v}
     assert not wrong, "\n".join(f"{k}: {line}" for k, v in sorted(wrong.items()) for line in v)
 
@@ -1091,8 +1117,9 @@ def test_a_bank_of_the_release_before_the_refit_resumes_without_it_in_its_groups
     to the bit against 1.3.0's own continuation, past 500 rows; a group the
     bank first sees after the load is built from the spec, whose default
     refits at 500 rows, as a fresh bank's does. One bank, two rules: the
-    restored groups' and the new one's. (A bank of this build with the refit
-    off is not 1.3.0's: its MAD sketch is anchored, task 278.)"""
+    restored groups' and the new one's. Before its refit the new group is a
+    bank's whose refit waits past the rows, its scale read from the same
+    buffered residuals (task 323)."""
     if not _online():
         pytest.skip("offline: the released wheel cannot be downloaded")
     rng = np.random.default_rng(21)
@@ -1132,8 +1159,8 @@ def test_a_bank_of_the_release_before_the_refit_resumes_without_it_in_its_groups
     # 1.3.0's own run over both parts, its rows after the save.
     then = pl.read_parquet(went_on).with_columns(g=pl.concat([head, tail])["g"]).slice(head.height)
     resumed = po.ModelBank.load(saved, specs=[spec]).fit_predict(tail)
-    off = {**spec, "model": {**spec["model"], "huber_refit_rows": 0}}
-    one_pass = po.ModelBank([off])
+    waits = {**spec, "model": {**spec["model"], "huber_refit_rows": 10_000}}
+    one_pass = po.ModelBank([waits])
     one_pass.fit_predict(head)
     restored = one_pass.fit_predict(tail)
     fresh_c = po.ModelBank([spec]).fit_predict(tail.filter(pl.col("g") == "c"))
@@ -1148,7 +1175,8 @@ def test_a_bank_of_the_release_before_the_refit_resumes_without_it_in_its_groups
         assert mine.equals(plain(then.filter(pl.col("g") == g)), null_equal=True), g
     new = resumed.filter(pl.col("g") == "c")["m"]
     assert new.equals(fresh_c["m"], null_equal=True)
-    # The new group's refit ran: it parts from the one pass after its 500th row.
+    # The new group's refit ran: it parts from a refit that waits after its
+    # 500th row.
     p = new.struct.field("pred_y").to_numpy()
     q = restored.filter(pl.col("g") == "c")["m"].struct.field("pred_y").to_numpy()
     differ = np.flatnonzero(~((p == q) | (np.isnan(p) & np.isnan(q))))

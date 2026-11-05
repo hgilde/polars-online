@@ -89,12 +89,13 @@ fn the_replay_rebuilds_the_streams_sums_to_the_bit() {
 }
 
 /// The refit moves the fit where the Huber cut binds: after it the
-/// predictions part from the plain stream's, and not before.
+/// predictions part from those of a stream whose refit waits past the data
+/// -- its scale read from the same buffered `|e|` -- and not before.
 #[test]
 fn the_refit_fires_on_the_row_the_count_is_reached() {
     let data = rows(300, false);
     let plain = run(
-        &mut Robust::new(base(1.345, Decay::Lam(1.0), 0)).unwrap(),
+        &mut Robust::new(base(1.345, Decay::Lam(1.0), 10_000)).unwrap(),
         &data,
     );
     let mut m = Robust::new(base(1.345, Decay::Lam(1.0), 100)).unwrap();
@@ -186,13 +187,13 @@ fn the_refit_is_refused_where_it_does_not_apply() {
 }
 
 /// On the row a target's buffer fills only that target's fit moves: the
-/// other target's predictions are the run without a refit's to the bit
-/// until its own buffer fills, and the solve cadence -- rows and clock since
-/// the last solve -- is that run's on every row.
+/// other target's predictions are those of a run whose refit waits past
+/// the data to the bit until its own buffer fills, and the solve cadence
+/// -- rows and clock since the last solve -- is that run's on every row.
 #[test]
 fn the_refit_moves_its_own_target_alone_and_not_the_cadence() {
     let data = rows(300, false);
-    let mut c = base(1.345, Decay::Lam(0.999), 0);
+    let mut c = base(1.345, Decay::Lam(0.999), 10_000);
     c.max_rows_between_solves = 7;
     c.solve_every = f64::INFINITY;
     let mut off = Robust::new(c.clone()).unwrap();
@@ -374,8 +375,12 @@ fn a_refit_that_runs_to_its_cap_is_counted() {
 #[test]
 fn a_refit_given_up_and_its_reservation() {
     let mut m = Robust::new(base(1.345, Decay::Lam(1.0), 60)).unwrap();
-    assert_eq!(m.refit_reservation(), 2 * crate::refit_reservation(2, 60));
-    assert!(m.refit_reservation() > crate::refit_reservation(2, 60));
+    let mad = m.cfg().huber_scale == crate::HuberScale::Mad;
+    assert_eq!(
+        m.refit_reservation(),
+        2 * crate::refit_reservation(2, 60, mad)
+    );
+    assert!(m.refit_reservation() > crate::refit_reservation(2, 60, mad));
     run(&mut m, &rows(10, false));
     m.refit_give_up();
     run(&mut m, &rows(100, false));

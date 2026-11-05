@@ -5135,7 +5135,7 @@ n = 50
 [case."oracles.quantile_eps.eps_0_5_n_80000_from_the_smoothed_fit"]
 ideal = 0.0
 worst = 0.0110238
-p95 = 0.00678098
+p95 = 0.00778801
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_5_n_20000_quantreg_se"]
@@ -5249,13 +5249,13 @@ n = 50
 [case."oracles.quantile_huge_ridge.tau_0_9_n_5000_smoothed"]
 ideal = 0.0
 worst = 0.0115512
-p95 = 0.00969791
+p95 = 0.0103028
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_5000_smoothed_in_se"]
 ideal = 0.0
 worst = 0.192449
-p95 = 0.14466
+p95 = 0.158364
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_80000_quantreg_se"]
@@ -7502,3 +7502,27 @@ to = 0.06
 date = 2026-10-28
 reason = "a case that moves with the runner's CPU: five CI runs of the same code read the worst seed at 0.930223 (runs 40364575712, 40469534166, 40681623263, 40710283328) or 0.958523 (run 40742093527, e1072236, whose only change from a02ae59c was a workflow timeout), 3.0% apart; the quantile refit meets a near-tie at a pivot that faer's runtime-chosen SIMD kernel decides; 6% is twice that spread"
 changelog = "A case that moves with the runner's CPU has its own tolerance"
+
+[[raised]]
+key = "oracles.quantile_eps.eps_0_5_n_80000_from_the_smoothed_fit.p95"
+from = 0.00678098
+to = 0.00778801
+date = 2026-11-05
+reason = "the MAD scale's warm-up is now the exact weighted median of the refit's held residuals, not a sketch anchored at the first residual, and the oracle's bandwidth is that exact median rather than a model of the sketch's buckets; these grids run without decay, so the first 500 rows' changed scale persists to the end of each stream. Over the two groups 3 of 36 numbers rose (this one among them) and 13 fell by more than 2%, measured on darwin-arm64; CI's linux-x86_64 run sets the ledger's own numbers"
+changelog = "no longer takes its sketch's units from the"
+
+[[raised]]
+key = "oracles.quantile_huge_ridge.tau_0_9_n_5000_smoothed.p95"
+from = 0.00969791
+to = 0.0103028
+date = 2026-11-05
+reason = "the MAD scale's warm-up is now the exact weighted median of the refit's held residuals, not a sketch anchored at the first residual, and the oracle's bandwidth is that exact median rather than a model of the sketch's buckets; these grids run without decay, so the first 500 rows' changed scale persists to the end of each stream. Over the two groups 3 of 36 numbers rose (this one among them) and 13 fell by more than 2%, measured on darwin-arm64; CI's linux-x86_64 run sets the ledger's own numbers"
+changelog = "no longer takes its sketch's units from the"
+
+[[raised]]
+key = "oracles.quantile_huge_ridge.tau_0_9_n_5000_smoothed_in_se.p95"
+from = 0.14466
+to = 0.158364
+date = 2026-11-05
+reason = "the MAD scale's warm-up is now the exact weighted median of the refit's held residuals, not a sketch anchored at the first residual, and the oracle's bandwidth is that exact median rather than a model of the sketch's buckets; these grids run without decay, so the first 500 rows' changed scale persists to the end of each stream. Over the two groups 3 of 36 numbers rose (this one among them) and 13 fell by more than 2%, measured on darwin-arm64; CI's linux-x86_64 run sets the ledger's own numbers"
+changelog = "no longer takes its sketch's units from the"

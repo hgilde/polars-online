@@ -181,6 +181,15 @@ runs both tiers, but a plain `cargo test` skips the extended Rust tests
    the file's fit and `solve_failures` counts only the solves run, so the
    state it re-saves after those rows is not the old build's. No frozen
    fixture reaches it.
+   An eighth, the user's (2026-11-05, task 323): a state of schema 64 or
+   earlier that holds a MAD scale sketch (`huber`, `quantile`,
+   `sgd(loss="huber")`, `marginal`'s huber bins) keeps the rule it was saved
+   under -- a sketch awaiting its anchor takes its first value, a warm-up
+   with no held residuals reads its sketch -- marked in its bytes
+   (`anchor_by_first_value`, `before_65`). It continues to the bit, but
+   re-saves to its own marked bytes, not the current fixture's, so it is
+   held, beside `kmeans` and `holt`, to re-saving bytes that load back the
+   same (`kept_scale_rule`).
 6. No `unsafe` in `online-core`. f64 everywhere.
 7. Commit after each completed task in `docs/PLAN.md`, with the task number in the message.
 8. **`n_eff` -- the models' accessor, emitted as `weight_sum` -- means the same thing in

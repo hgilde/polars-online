@@ -67,7 +67,7 @@ def test_the_refit_is_statsmodels_converged_fit_on_the_buffer(kind, share):
 
 @pytest.mark.parametrize(
     ("kind", "rows", "seed", "share", "before", "after"),
-    [("huber", 20_000, 110, 0.25, 0.4257, 0.0025), ("sgd", 2_000, 100, 0.4, 2.9735, 0.0347)],
+    [("huber", 20_000, 110, 0.25, 0.4261, 0.0025), ("sgd", 2_000, 100, 0.4, 2.9756, 0.0347)],
 )
 def test_the_refit_frees_a_captured_stream(kind, rows, seed, share, before, after):
     """The capture the refit is there for (the module doc of
@@ -84,7 +84,10 @@ def test_the_refit_frees_a_captured_stream(kind, rows, seed, share, before, afte
     (task 278), the one-pass gaps read 0.4261 and 2.9756, and ``sgd``'s
     refitted one 0.0351; with the refit's rebuilt sketch anchored at its
     first residual rather than at their median size (task 278, qequiv),
-    0.0349."""
+    0.0349. With the refit off the sketch is on those fixed buckets again
+    (task 323: no anchor is chosen from the first residuals; the anchored
+    one-pass gaps had read 0.4257 and 2.9735), so the one-pass gaps are
+    0.4261 and 2.9756 once more; the refitted ones do not move."""
     df = stream(rows, share, seed, level=1000.0)
     X = sm.add_constant(df["x"].to_numpy())
     oracle = sm.RLM(df["y"].to_numpy(), X, M=HuberT(1.345)).fit(scale_est="mad").params
@@ -155,14 +158,16 @@ def _without_refit(spec: dict, rows: int | None) -> dict:
 
 @pytest.mark.parametrize("spec", _specs(), ids=IDS)
 def test_the_refit_moves_the_fit_after_its_row_and_not_the_weight(spec):
-    """The activation check: with the refit on, the predictions part from the
-    run without it only after a target's buffer fills -- here its 200th learned
-    row -- and the weight the bank reports and gates on does not move (hard
-    rule 8). The default at one feature is 500 rows, so a spec that does not
-    name it is the spec at 500."""
+    """The activation check: with the refit on, the predictions part from
+    those of a run whose refit waits past the data -- its scale read from
+    the same buffered ``|e|`` -- only after a target's buffer fills, here
+    its 200th learned row, and the weight the bank reports and gates on is
+    the run without a refit's (hard rule 8). The default at one feature is
+    500 rows, so a spec that does not name it is the spec at 500."""
     df = _frame()
     on = po.ModelBank([spec]).fit_predict(df)["m"]
     off = po.ModelBank([_without_refit(spec, 0)]).fit_predict(df)["m"]
+    waits = po.ModelBank([_without_refit(spec, df.height)]).fit_predict(df)["m"]
     default = po.ModelBank([_without_refit(spec, None)]).fit_predict(df)["m"]
     at_500 = po.ModelBank([_without_refit(spec, 500)]).fit_predict(df)["m"]
     assert default.equals(at_500, null_equal=True)
@@ -173,7 +178,7 @@ def test_the_refit_moves_the_fit_after_its_row_and_not_the_weight(spec):
     )
     fills = int(learned["i"][199])
     a = on.struct.field("pred_y0").to_numpy()
-    b = off.struct.field("pred_y0").to_numpy()
+    b = waits.struct.field("pred_y0").to_numpy()
     differ = np.flatnonzero(~((a == b) | (np.isnan(a) & np.isnan(b))))
     assert differ.size > 0
     assert differ[0] > fills, (differ[0], fills)
@@ -182,8 +187,8 @@ def test_the_refit_moves_the_fit_after_its_row_and_not_the_weight(spec):
 def test_the_refit_solves_its_own_target_alone():
     """On the row a target's buffer fills, only that target's fit moves: the
     other target, present on every row, is refit on another row, and until
-    then its predictions are the run without any refit's to the bit, the
-    solve cadence included."""
+    then its predictions are those of a run whose refits wait past the data,
+    to the bit, the solve cadence included."""
     rng = np.random.default_rng(4)
     n = 600
     x = rng.standard_normal(n)
@@ -196,7 +201,7 @@ def test_the_refit_solves_its_own_target_alone():
     spec = po.spec.huber("m", huber_refit_rows=100, **c)
     on = po.ModelBank([spec]).fit_predict(df)["m"]
     # Each target's refit alone: y1's at its 100th row, y0's at its 100th.
-    off = po.ModelBank([po.spec.huber("m", huber_refit_rows=0, **c)]).fit_predict(df)["m"]
+    off = po.ModelBank([po.spec.huber("m", huber_refit_rows=n, **c)]).fit_predict(df)["m"]
     p_on = on.struct.field("pred_y0").to_numpy()
     p_off = off.struct.field("pred_y0").to_numpy()
     y0_fills = int(np.flatnonzero(~np.isnan(y0))[99])
@@ -273,9 +278,9 @@ def test_the_default_count_grows_with_the_features_and_stops_above_100():
 @pytest.mark.parametrize("kind", ["huber", "sgd"])
 def test_the_refit_budget_gives_up_the_later_groups_and_counts_them(kind):
     """``refit_budget`` bounds the buffers of all the spec's groups: each new
-    group reserves ``(features + 20) * 8`` bytes a target for each row of the
+    group reserves ``(features + 26) * 8`` bytes a target for each row of the
     count when it first appears. At 50 rows, one feature and two targets that
-    is 16,800 bytes a group, so 0.05 MiB holds three groups' buffers; the
+    is 21,600 bytes a group, so 0.07 MiB holds three groups' buffers; the
     fourth to appear and every later one keep their one-pass fits, one
     notice says so, and ``summary()`` counts their targets. Each admitted
     group is the group a bank with no bound fits, to the bit, and each
@@ -303,7 +308,7 @@ def test_the_refit_budget_gives_up_the_later_groups_and_counts_them(kind):
             out = b.fit_predict(df)
         return b, out, [str(w.message) for w in caught if "refit_budget" in str(w.message)]
 
-    bounded, out, notices = bank(refit_budget=0.05)
+    bounded, out, notices = bank(refit_budget=0.07)
     free, out_free, none = bank(refit_budget=INF)
     out_off = po.ModelBank([build("m", huber_refit_rows=0, **c)]).fit_predict(df)
     assert len(notices) == 1 and 'at group "3"' in notices[0], notices

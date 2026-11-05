@@ -989,13 +989,15 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
     keeps at 1.0 (60 refused); 62 since task 257, for a blocked ``ewridge``'s
     held targets, the first change since 1.0, so 61 still loads; 63 since
     task 271, for ``huber``'s and ``sgd``'s Huber scale, so 62 loads too;
-    64 since task 277, for their refit of the first rows, so 63 loads too."""
+    64 since task 277, for their refit of the first rows, so 63 loads too;
+    65 since task 323, for the MAD read from a refit's held residuals, so 64
+    loads too."""
     bank = po.ModelBank([spec(fwd())])
     bank.fit_predict(stream(60, 50))
     state = bank.save_bytes()
     key = b"\xaeschema_version"
     i = state.index(key) + len(key)
-    assert state[i] == 64, state[i]
+    assert state[i] == 65, state[i]
     for before in range(25, 61):
         old = state[:i] + bytes([before]) + state[i + 1 :]
         with pytest.raises(

@@ -117,12 +117,34 @@
 //!   fit's first residuals -- the level's size, while the intercept is near
 //!   0 -- leave it once the fit has the level. At 5% one-sided outliers on a
 //!   target at 1,000 with no decay the slope is 2.041 where statsmodels'
-//!   converged `RLM` with the MAD gives 2.039. Under
-//!   [`RobustCfg::mad_anchor`], which a spec sets, each sketch keeps `|e|`
-//!   in units of its first ([`EwQuantile::anchored`], task 278), so a target
-//!   rescaled by any factor rescales `s`, and the fit, to rounding; on the
-//!   fixed buckets a factor other than a power of two moved `m` by up to a
-//!   bucket.
+//!   converged `RLM` with the MAD gives 2.039.
+//!
+//!   **Where the rows are held, the MAD is read from them.** A sketch's
+//!   buckets are fixed points of `log2`, so values scaled by a factor other
+//!   than a power of two regroup across their edges and its median moves by
+//!   up to a bucket (about 1.6%), where it should move by the factor. An
+//!   anchor -- bucketing `|e| / a` -- removes that only where `a` is
+//!   scaled with the residuals to a rounding of their size, and no anchor
+//!   chosen from residuals seen one at a time is: the first is rounded at
+//!   the target's level, not at its own size, and a start whose residuals
+//!   are all small beside what follows defeats any count of them; the
+//!   level they were formed at moves under a level shift where they do not
+//!   ([`EwQuantile`]'s "Where the anchor is set"). So the scale chooses no
+//!   anchor from one pass. While a target's refit waits
+//!   ([`RobustCfg::refit_rows`]), its buffer holds each row's one-pass
+//!   `|e|` beside it, and `s` is their exact weighted median at the
+//!   scale's weights over `Φ⁻¹(3/4)` -- an order statistic, which scales
+//!   with the residuals to a single residual's rounding, rounding being
+//!   monotone -- and the sketch takes nothing. The refit then builds the
+//!   sketch from the converged residuals, anchored at their weighted
+//!   median ([`crate::huber_refit::one_pass_sketch`]), and a refit that
+//!   never runs -- given up, abandoned, failed -- builds it the same way
+//!   from the one-pass `|e|` held. With the refit off nothing is held, and
+//!   the sketch keeps the grid fixed at 1 ([`EwQuantile::anchored`]):
+//!   reads in two units of the same stream differ by up to a bucket, and a
+//!   power of two scales them to the bit. A state written before schema
+//!   65 goes on as it was: its sketches anchored at their first `|e|`, and
+//!   a buffer that holds no `|e|` read through the sketch it fed.
 //! - **`Rms`**: `s = √σ²`, the plain EW mean of squared residuals, in which
 //!   the rows Huber down-weights count at full weight, so an outlier
 //!   inflates the scale the next rows' cuts are drawn in, and without decay
@@ -254,8 +276,8 @@ pub(crate) fn mad_scale(q: &EwQuantile) -> Option<f64> {
 pub const MAD_BAND_OCTAVES: u32 = 8;
 
 /// One sketch of `|e|` per target under the MAD, none under the RMS;
-/// anchored ([`EwQuantile::anchored`]) where the cfg says so
-/// ([`RobustCfg::mad_anchor`]).
+/// anchored ([`EwQuantile::anchored`], the grid fixed at 1 until a refit
+/// anchors it) where the cfg says so ([`RobustCfg::mad_anchor`]).
 pub(crate) fn mad_sketches(scale: HuberScale, anchored: bool, n: usize) -> Vec<EwQuantile> {
     match scale {
         HuberScale::Mad => vec![
@@ -384,14 +406,16 @@ pub struct RobustCfg {
     /// rows its stream has long passed.
     #[serde(default)]
     pub refit_rows: u32,
-    /// Whether each MAD sketch buckets `|e|` in units of the first `|e|` it
-    /// takes ([`EwQuantile::anchored`]; a refit's rebuilt sketch in units
-    /// of its residuals' median size), so the scale, and the fit it
-    /// weighs, moves with a rescaled target by the factor to rounding,
-    /// where the fixed buckets moved it by up to a bucket at any factor
-    /// but a power of two. A spec sets it. A state written before schema
-    /// 64 has no such field and its sketches bucket `|e|` as it is, so it
-    /// loads as `false` and goes on as it was, to the bit.
+    /// Whether each MAD sketch is anchored ([`EwQuantile::anchored`]): a
+    /// refit's rebuilt sketch buckets `|e|` in units of its residuals'
+    /// weighted median, so the scale, and the fit it weighs, moves with a
+    /// rescaled target by the factor to rounding, where the fixed buckets
+    /// moved it by up to a bucket at any factor but a power of two; a
+    /// sketch no refit anchors keeps the grid fixed at 1, the fixed buckets
+    /// (the module docs). A spec sets it. A state written before schema 64
+    /// has no such field and its sketches bucket `|e|` as it is, so it
+    /// loads as `false` and goes on as it was, to the bit; one written at
+    /// 64 anchored each sketch at its first `|e|` and goes on so.
     #[serde(default)]
     pub mad_anchor: bool,
     /// Whether `min_weight` holds learning back as well as the output, as
@@ -1179,7 +1203,7 @@ impl Robust {
             mad: mad_sketches(cfg.huber_scale, cfg.mad_anchor, m),
             nudge: NudgeScratch::default(),
             scratch: SolveScratch::default(),
-            refit: RefitBuf::per_target(cfg.refit_rows, m),
+            refit: RefitBuf::per_target(cfg.refit_rows, m, cfg.huber_scale == HuberScale::Mad),
             seen: if cfg.min_weight_holds_learning {
                 Vec::new()
             } else {
@@ -1341,14 +1365,19 @@ impl Robust {
     }
 
     /// Target `j`'s residual scale, once it has one: under
-    /// [`HuberScale::Mad`] the EW median of `|e|` over [`NORMAL_Q3`]
-    /// ([`mad_scale`]), for either loss, and otherwise -- the RMS --
+    /// [`HuberScale::Mad`] the EW median of `|e|` over [`NORMAL_Q3`], for
+    /// either loss -- exact from the one-pass `|e|` its refit's buffer
+    /// holds while the refit waits ([`RefitBuf::warm_scale`]), and from
+    /// its sketch otherwise ([`mad_scale`]) -- and otherwise -- the RMS --
     /// the EW std `s = √σ²` of its residuals, `σ²` finite and above 0.
     /// `None` before -- no residual yet, or every one so far exactly zero
     /// (under the MAD, half the weight on such residuals) -- where the
     /// Huber cut has nothing to be drawn in (the module docs; task 177).
     fn residual_scale(&self, j: usize) -> Option<f64> {
         if let Some(q) = self.mad.get(j) {
+            if let Some(s) = self.refit.get(j).and_then(RefitBuf::warm_scale) {
+                return s;
+            }
             return mad_scale(q);
         }
         let s2 = self.sig2[j];
@@ -1366,9 +1395,24 @@ impl Robust {
     /// group whose reservation the budget cannot take, and to the models
     /// a reset rebuilds for it.
     pub fn refit_give_up(&mut self) {
-        self.refit
-            .iter_mut()
-            .for_each(RefitBuf::give_up_over_budget);
+        for j in 0..self.refit.len() {
+            if let Some(t) = self.refit[j].give_up_over_budget() {
+                self.scale_from_held(j, &t);
+            }
+        }
+    }
+
+    /// Target `j`'s MAD sketch built from the one-pass `|e|` its buffer
+    /// held, where it kept them: what a target whose refit never runs --
+    /// given up, abandoned, failed, or left to the warm-up's least squares
+    /// -- goes on with online, by the rule the refit rebuilds it by
+    /// ([`crate::huber_refit::one_pass_sketch`]). Nothing where the buffer
+    /// kept no `|e|`: its sketch took every row as it came.
+    fn scale_from_held(&mut self, j: usize, t: &crate::huber_refit::Taken) {
+        if let (Some(e), Some(q)) = (t.resid.as_deref(), self.mad.get_mut(j)) {
+            let rows = Rows::new(&t.rows, &t.ages, self.cfg.n_features);
+            *q = crate::huber_refit::one_pass_sketch(&rows, e, q);
+        }
     }
 
     /// The bytes this model's refit buffers can hold at most
@@ -1377,7 +1421,12 @@ impl Robust {
         if self.refit.is_empty() {
             return 0;
         }
-        self.cfg.n_targets * crate::refit_reservation(self.cfg.n_features, self.cfg.refit_rows)
+        self.cfg.n_targets
+            * crate::refit_reservation(
+                self.cfg.n_features,
+                self.cfg.refit_rows,
+                self.cfg.huber_scale == HuberScale::Mad,
+            )
     }
 
     /// Per target, the sketch of `|e|` the MAD scale is read from: empty
@@ -1496,8 +1545,11 @@ impl Robust {
             RobustLoss::Quantile { tau } => return self.refit_quantile(j, tau),
         };
         let nf = self.cfg.n_features;
-        let (buf, ages) = self.refit[j].take();
-        let rows = Rows::new(&buf, &ages, nf);
+        let held = self.refit[j].take();
+        // The one-pass sketch first, for a refit that fails; the rebuilt
+        // one replaces it below.
+        self.scale_from_held(j, &held);
+        let rows = Rows::new(&held.rows, &held.ages, nf);
         let n = rows.len();
         // The scale reads the residuals at the weights its own clock has
         // left them (`huber_scale_decay`), as the stream's scale holds them.
@@ -1575,7 +1627,7 @@ impl Robust {
         if self.refit[j].status().ran_to_cap() {
             self.solve_failures += 1;
         }
-        let scale = rebuild_scale(&rows, self.cfg.huber_scale, self.cfg.mad_anchor, |i| {
+        let scale = rebuild_scale(&rows, self.mad.get(j), |i| {
             rows.y(i) - fitted(&b, rows.x(i), intercept)
         });
         self.sig2[j] = scale.sig2;
@@ -1584,6 +1636,19 @@ impl Robust {
             self.mad[j] = q;
         }
         self.resolve_target(j, fitted_before);
+    }
+
+    /// A row that only aged target `j`'s sums, into its refit's buffer; a
+    /// buffer it gives up hands its rows to the target's sketch
+    /// ([`Self::scale_from_held`]).
+    fn age_refit(&mut self, j: usize, lam: f64, lam_scale: f64) {
+        if let Some(t) = self
+            .refit
+            .get_mut(j)
+            .and_then(|b| b.age(lam, lam_scale, self.cfg.refit_rows))
+        {
+            self.scale_from_held(j, &t);
+        }
     }
 
     /// Target `j`'s slots solved again after its refit rebuilt its sums,
@@ -2570,9 +2635,7 @@ impl OnlineModel for Robust {
             let present = lam * self.wobs[j];
             let rows = lam * self.nobs[j];
             let Some(yj) = y[j] else {
-                if let Some(b) = self.refit.get_mut(j) {
-                    b.age(lam, lam_scale, self.cfg.refit_rows);
-                }
+                self.age_refit(j, lam, lam_scale);
                 self.cov[j].decay(lam);
                 self.wj[j] *= lam;
                 self.wobs[j] = present;
@@ -2622,15 +2685,20 @@ impl OnlineModel for Robust {
                 0.0
             };
             let pj = pred[j * nc + weighing];
+            // The `|e|` the one-pass scale takes from the row, NaN where it
+            // takes none: the refit's buffer keeps it beside the row.
+            let e_abs = if pj.is_finite() {
+                (yj - pj).abs()
+            } else {
+                f64::NAN
+            };
             match self.row_update(yj, pj, scale, weight, rows, aged_rows) {
                 // NaN is `inf / inf` from an overflowed residual against an
                 // overflowed scale; such a row cannot be learned from either.
                 // It is a usable row that fails, and counted as present above;
                 // a row holding a value that is not usable never gets here.
                 RowUpdate::Fit { w, .. } if w.is_nan() || w <= 0.0 => {
-                    if let Some(b) = self.refit.get_mut(j) {
-                        b.age(lam, lam_scale, self.cfg.refit_rows);
-                    }
+                    self.age_refit(j, lam, lam_scale);
                     self.cov[j].decay(lam_t);
                     self.wj[j] = aged;
                     continue;
@@ -2661,7 +2729,7 @@ impl OnlineModel for Robust {
                     self.wj[j] = wj_new;
                     self.move_band_system(j, a, step);
                     if let Some(b) = self.refit.get_mut(j)
-                        && b.learn(x, yj, weight, lam, lam_scale, self.cfg.refit_rows)
+                        && b.learn_scored(x, yj, e_abs, weight, lam, lam_scale, self.cfg.refit_rows)
                     {
                         refits.push(j);
                     }
@@ -2682,13 +2750,11 @@ impl OnlineModel for Robust {
                     // learned row, as the fit arm does: the refit scores
                     // every row afresh (task 278, D-Q2).
                     if weight.is_nan() || weight <= 0.0 {
-                        if let Some(b) = self.refit.get_mut(j) {
-                            b.age(lam, lam_scale, self.cfg.refit_rows);
-                        }
+                        self.age_refit(j, lam, lam_scale);
                         continue;
                     }
                     if let Some(b) = self.refit.get_mut(j)
-                        && b.learn(x, yj, weight, lam, lam_scale, self.cfg.refit_rows)
+                        && b.learn_scored(x, yj, e_abs, weight, lam, lam_scale, self.cfg.refit_rows)
                     {
                         refits.push(j);
                     }
@@ -2745,8 +2811,12 @@ impl OnlineModel for Robust {
                 // The MAD's sketch takes the same residual at the same raw
                 // weight; a weight of 0 or an `|e|` that is not finite adds
                 // nothing (`EwQuantile::add`), so a zero-weight row only
-                // ages it (hard rule 9).
-                if let Some(q) = self.mad.get_mut(j) {
+                // ages it (hard rule 9). Not while the refit's buffer holds
+                // the `|e|` and the scale is read from them
+                // (`RefitBuf::reads_resid`): the refit builds the sketch.
+                if let Some(q) = self.mad.get_mut(j)
+                    && !self.refit.get(j).is_some_and(RefitBuf::reads_resid)
+                {
                     q.add(resid.abs(), weight);
                 }
             }
@@ -2862,6 +2932,14 @@ impl OnlineModel for Robust {
                         "{kind}: the residual sketches do not match huber_scale"
                     )));
                 }
+                // A build of schema 64 or earlier anchored each sketch at
+                // its first residual: its sketches keep that rule
+                // (`EwQuantile::keep_first_value_anchor`).
+                if s.schema_version <= crate::stats::LAST_FIRST_VALUE_ANCHOR_SCHEMA {
+                    m.mad
+                        .iter_mut()
+                        .for_each(EwQuantile::keep_first_value_anchor);
+                }
                 // The refit's buffers (`RobustCfg::refit_rows`): one per
                 // target when it is on, each one this configuration writes,
                 // and none when it is off.
@@ -2869,15 +2947,22 @@ impl OnlineModel for Robust {
                     m.refit.is_empty()
                 } else {
                     m.refit.len() == n
-                        && m.refit
-                            .iter()
-                            .all(|b| b.fits(m.cfg.n_features, m.cfg.refit_rows))
+                        && m.refit.iter().all(|b| {
+                            b.fits(
+                                m.cfg.n_features,
+                                m.cfg.refit_rows,
+                                m.cfg.huber_scale == HuberScale::Mad,
+                            )
+                        })
                 };
                 if !refit_fits {
                     return Err(StateError::Invalid(format!(
                         "{kind}: the refit's buffers do not match {kind}_refit_rows"
                     )));
                 }
+                // The held |e|'s tree is not state: built from the rows.
+                let nf = m.cfg.n_features;
+                m.refit.iter_mut().for_each(|b| b.rebuild_median(nf));
                 // The floor's counts: one a target, none above the floor,
                 // where the gate leaves learning alone; none where it held
                 // learning back (`RobustCfg::min_weight_holds_learning`).
@@ -2944,3 +3029,7 @@ mod gate_tests;
 #[cfg(test)]
 #[path = "robust/quantile_refit_tests.rs"]
 mod quantile_refit_tests;
+
+#[cfg(test)]
+#[path = "robust/equivariance_tests.rs"]
+mod equivariance_tests;

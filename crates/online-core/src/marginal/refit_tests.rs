@@ -177,8 +177,8 @@ fn each_cell_is_the_m_location_of_its_rows_at_the_refit() {
 /// With learned edges and a count within the warm-up, the refit runs as the
 /// edges are fixed, over every held row, and holds nothing of its own (its
 /// reservation is 0); a count past the warm-up keeps the rows held after
-/// the edges are fixed, until it, and reserves them. Given edges reserve
-/// the count's rows.
+/// the edges are fixed, until it, and reserves them and their deviations.
+/// Given edges reserve the count's rows and deviations.
 #[test]
 fn learned_edges_refit_at_the_freeze_or_hold_on() {
     let data = rows(200);
@@ -187,11 +187,11 @@ fn learned_edges_refit_at_the_freeze_or_hold_on() {
     let mut later = model(None, 40, 90, 50.0);
     assert_eq!(
         later.refit_reservation(),
-        crate::margbins::hold_bytes(90, 3, 2)
+        crate::margbins::hold_bytes(90, 3, 2) + crate::margbins::held_devs_bytes(90, 2)
     );
     assert_eq!(
         model(given(), 2, 90, 50.0).refit_reservation(),
-        crate::margbins::hold_bytes(90, 3, 2)
+        crate::margbins::hold_bytes(90, 3, 2) + crate::margbins::held_devs_bytes(90, 2)
     );
     for (i, (x, y, w)) in data.iter().enumerate() {
         at_freeze.step(x, y, 1.0, *w);

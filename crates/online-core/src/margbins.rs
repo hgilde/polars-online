@@ -145,7 +145,14 @@
 //! do not move. With learned edges the warm-up's own hold is those rows, so
 //! the refit runs as the edges are fixed when its count is within the
 //! warm-up, and otherwise the hold goes on past the freeze to the count.
-//! The rows are then let go and the stream goes on in one pass. With the
+//! The rows are then let go and the stream goes on in one pass. While the
+//! refit waits each target's scale is read exactly, the weighted median of
+//! the deviations its rows were judged by, held beside them ([`HeldDevs`]),
+//! and its sketch takes none: `huber`'s rule (`crate::robust`'s module doc,
+//! "Where the rows are held"), so the rows a decimal unit would regroup in
+//! the sketch's buckets are not bucketed before the refit builds the sketch
+//! in units of the converged deviations' median. A refit given up builds it
+//! the same way from the deviations held. With the
 //! refit, the same worst seeds were 0.017, 0.015 and 0.004 at 12%, and 0.15,
 //! 0.14 and 0.057 at 20%.
 //!
@@ -160,6 +167,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::EwQuantile;
+use crate::held_median::HeldMedian;
+use crate::huber_refit::NOT_TAKEN;
 
 /// The renormalization point: the stored weights run to `1/RENORM_AT` times
 /// the real ones before a fold, and a cell's `m2` adds `u·δ²` at that
@@ -238,6 +247,11 @@ impl Judge {
 /// module doc). The location is the one-bin form of a cell's: a weight it
 /// counts for, undecayed against the histogram's scale as a cell's is, and
 /// a compensated mean.
+///
+/// While the refit waits ([`BinCfg::refit_rows`]) the deviations are held
+/// as well ([`HeldDevs`]), and each target's scale is read from them
+/// exactly, its sketch taking none (`huber`'s rule, the module doc's "The
+/// refit").
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct BinScales {
     delta: f64,
@@ -245,6 +259,137 @@ pub(crate) struct BinScales {
     m: Vec<f64>,
     m_lo: Vec<f64>,
     mad: Vec<EwQuantile>,
+    /// The deviations held while the refit waits; `None` once it has run
+    /// or was given up, with the refit off, and in a state written before
+    /// schema 65, whose sketches took every deviation. Last, and
+    /// `default`, so a state written before it reads in both encodings.
+    #[serde(default)]
+    held: Option<Box<HeldDevs>>,
+}
+
+/// Each learned row's deviations from its targets' locations, `|y − m_t|`,
+/// held while the refit waits, so each target's MAD is read from them
+/// exactly ([`BinScales::judge`]) where a sketch would bucket them: the
+/// row's raw weight, the decay the sketches took since the row before, and
+/// per target the deviation the one-pass sketch would have taken
+/// ([`crate::huber_refit::NOT_TAKEN`] where it took none: the target
+/// absent, or its first row, which sets the location).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct HeldDevs {
+    w: Vec<f64>,
+    lam: Vec<f64>,
+    /// Row-major, `n_targets` a row.
+    e: Vec<f64>,
+    /// The decay since the last row.
+    pending: f64,
+    /// Each target's deviations in a tree by size at their weights, read in
+    /// `O(log n)` ([`crate::held_median`]): built from the rows, not state
+    /// ([`Self::rebuild_median`] on a restore).
+    #[serde(skip)]
+    median: HeldMedian,
+}
+
+impl HeldDevs {
+    fn new(n_targets: usize) -> Self {
+        Self {
+            w: Vec::new(),
+            lam: Vec::new(),
+            e: Vec::new(),
+            pending: 1.0,
+            median: HeldMedian::new(n_targets),
+        }
+    }
+
+    /// The trees built again from the rows held, each row's decay and
+    /// deviations in order: the weights the live record reached, to the
+    /// bit.
+    fn rebuild_median(&mut self, n_targets: usize) {
+        self.median = HeldMedian::new(n_targets);
+        for i in 0..self.w.len() {
+            self.median.decay(self.lam[i]);
+            for t in 0..n_targets {
+                self.median.insert(t, self.e[i * n_targets + t], self.w[i]);
+            }
+        }
+    }
+
+    fn has_shape(&self, n_targets: usize) -> bool {
+        let n = self.w.len();
+        let factor = |f: &f64| *f >= 0.0 && *f <= 1.0;
+        self.lam.len() == n
+            && self.e.len() == n * n_targets
+            && self.w.iter().all(|w| *w > 0.0 && w.is_finite())
+            && self.lam.iter().all(factor)
+            && factor(&self.pending)
+            && self
+                .e
+                .iter()
+                .all(|e| *e == NOT_TAKEN || (*e >= 0.0 && e.is_finite()))
+    }
+
+    /// Each held row's weight decayed to the last, by the sketches' clock;
+    /// 0 for a row whose deviation of target `t` the sketch did not take.
+    fn weights(&self, t: usize, n_targets: usize) -> Vec<f64> {
+        let mut v = vec![0.0; self.w.len()];
+        let mut age = 1.0;
+        for i in (0..self.w.len()).rev() {
+            if self.e[i * n_targets + t] >= 0.0 {
+                v[i] = self.w[i] * age;
+            }
+            age *= self.lam[i];
+        }
+        v
+    }
+
+    /// Target `t`'s deviations, in the rows' order.
+    fn devs(&self, t: usize, n_targets: usize) -> Vec<f64> {
+        self.e.iter().skip(t).step_by(n_targets).copied().collect()
+    }
+
+    /// Target `t`'s MAD scale, read exactly: the weighted median of its
+    /// held deviations at their weights over `Φ⁻¹(3/4)`, as
+    /// [`crate::robust::mad_scale`] reads a sketch's; `None` while there is
+    /// none, or while half the weight or more is on deviations of 0. The
+    /// decay since the last row is common to every weight and moves no
+    /// median. `O(log n)` ([`crate::held_median`]).
+    fn scale(&self, t: usize) -> Option<f64> {
+        let s = self
+            .median
+            .median(t)
+            .map_or(f64::NAN, |m| m / crate::robust::NORMAL_Q3);
+        (s > 0.0 && s.is_finite()).then_some(s)
+    }
+
+    /// Target `t`'s sketch built from its held deviations: `like` cleared
+    /// and anchored at their weighted median, then fed them in order at
+    /// their raw weights, aged as the stream aged it from its first
+    /// (`huber`'s rule for a refit that never runs,
+    /// [`crate::huber_refit::one_pass_sketch`]).
+    fn sketch(&self, t: usize, n_targets: usize, like: &EwQuantile) -> EwQuantile {
+        let mut q = like.cleared();
+        if q.anchor().is_some() {
+            let v = self.weights(t, n_targets);
+            q.anchor_at(crate::huber_refit::weighted_median(
+                &self.devs(t, n_targets),
+                &v,
+            ));
+        }
+        let mut started = false;
+        for i in 0..self.w.len() {
+            if started {
+                q.age(self.lam[i]);
+            }
+            let e = self.e[i * n_targets + t];
+            if e >= 0.0 {
+                q.add(e, self.w[i]);
+                started = true;
+            }
+        }
+        if started {
+            q.age(self.pending);
+        }
+        q
+    }
 }
 
 impl BinScales {
@@ -255,6 +400,31 @@ impl BinScales {
             m: vec![0.0; n_targets],
             m_lo: vec![0.0; n_targets],
             mad: crate::robust::mad_sketches(crate::robust::HuberScale::Mad, anchored, n_targets),
+            held: None,
+        }
+    }
+
+    /// A row about to be learned, of raw weight `w`: held, while the
+    /// deviations are, with no deviation yet ([`Self::learn`] writes each).
+    fn begin_row(&mut self, w: f64) {
+        if let Some(h) = self.held.as_deref_mut() {
+            h.w.push(w);
+            let lam = std::mem::replace(&mut h.pending, 1.0);
+            h.lam.push(lam);
+            h.median.decay(lam);
+            h.e.extend(std::iter::repeat_n(NOT_TAKEN, self.mad.len()));
+        }
+    }
+
+    /// Each target's sketch built from its held deviations, and the
+    /// deviations let go: what a refit that never runs leaves
+    /// ([`HeldDevs::sketch`]). Nothing while none are held.
+    fn release(&mut self) {
+        if let Some(h) = self.held.take() {
+            let n = self.mad.len();
+            for (t, q) in self.mad.iter_mut().enumerate() {
+                *q = h.sketch(t, n, q);
+            }
         }
     }
 
@@ -271,6 +441,7 @@ impl BinScales {
                 .iter()
                 .all(|v| v.len() == n_targets)
             && self.w.iter().all(|w| w.is_finite() && *w >= 0.0)
+            && self.held.as_ref().is_none_or(|h| h.has_shape(n_targets))
             && crate::robust::mad_sketches_fit(
                 crate::robust::HuberScale::Mad,
                 anchored,
@@ -279,9 +450,15 @@ impl BinScales {
             )
     }
 
-    /// Target `t`'s cut and location, before the row.
+    /// Target `t`'s cut and location, before the row: the cut drawn in its
+    /// MAD, read from the held deviations while they are held, and from
+    /// its sketch otherwise.
     pub(crate) fn judge(&self, t: usize) -> Judge {
-        let cut = crate::robust::mad_scale(&self.mad[t]).map_or(f64::INFINITY, |s| self.delta * s);
+        let scale = match self.held.as_deref() {
+            Some(h) => h.scale(t),
+            None => crate::robust::mad_scale(&self.mad[t]),
+        };
+        let cut = scale.map_or(f64::INFINITY, |s| self.delta * s);
         Judge {
             cut,
             m: self.m[t],
@@ -301,7 +478,20 @@ impl BinScales {
             return;
         }
         let e = crate::comp::dev(y, self.m[t], self.m_lo[t]);
-        self.mad[t].add(e.abs(), w);
+        // Held while the refit waits, the row's own slot in the held rows
+        // ([`Self::begin_row`]); into the sketch otherwise.
+        match self.held.as_deref_mut() {
+            Some(h) => {
+                let n = self.mad.len();
+                let a = e.abs();
+                if a.is_finite() && w > 0.0 && w.is_finite() {
+                    let at = h.e.len() - n + t;
+                    h.e[at] = a;
+                    h.median.insert(t, a, w);
+                }
+            }
+            None => self.mad[t].add(e.abs(), w),
+        }
         let (wt, m, lo) = (&mut self.w[t], &mut self.m[t], &mut self.m_lo[t]);
         if e.abs() <= j.cut {
             let ob = *wt + u;
@@ -318,6 +508,17 @@ impl BinScales {
 
     fn age(&mut self, lam: f64) {
         self.mad.iter_mut().for_each(|q| q.age(lam));
+        if let Some(h) = self.held.as_deref_mut() {
+            h.pending *= lam;
+        }
+    }
+
+    /// Mark each anchored sketch restored from a state of schema 64 or
+    /// earlier ([`EwQuantile::keep_first_value_anchor`]).
+    fn keep_first_value_anchor(&mut self) {
+        self.mad
+            .iter_mut()
+            .for_each(EwQuantile::keep_first_value_anchor);
     }
 
     fn reset(&mut self) {
@@ -325,6 +526,10 @@ impl BinScales {
         self.m.iter_mut().for_each(|v| *v = 0.0);
         self.m_lo.iter_mut().for_each(|v| *v = 0.0);
         self.mad.iter_mut().for_each(EwQuantile::reset);
+        // The deviations held go as the sketch's weight does.
+        if let Some(h) = self.held.as_deref_mut() {
+            *h = HeldDevs::new(self.mad.len());
+        }
     }
 }
 
@@ -353,6 +558,15 @@ pub(crate) fn hold_bytes(warm_rows: usize, p: usize, n_targets: usize) -> usize 
         .saturating_add(p.saturating_mul(std::mem::size_of::<HeldFeature>()))
         .saturating_add(n_targets.saturating_mul(std::mem::size_of::<HeldTarget>()));
     warm_rows.saturating_mul(row)
+}
+
+/// The bytes the deviations a Huber histogram holds for its refit take
+/// ([`HeldDevs`]): `rows` rows of a weight, a decay and a deviation per
+/// target, 8 bytes each, and a target's node in the tree its scale is read
+/// from, 40 ([`crate::held_median`]): its contents, not the allocator's
+/// slack.
+pub(crate) fn held_devs_bytes(rows: usize, n_targets: usize) -> usize {
+    rows.saturating_mul(n_targets.saturating_mul(48).saturating_add(16))
 }
 
 /// The bytes a histogram's buffers take, for `p` features whose bins add up
@@ -576,6 +790,57 @@ impl MarginalBins {
         self.scales.as_ref().is_some_and(|s| s.anchored())
     }
 
+    /// Mark each target's anchored MAD sketch, in a histogram restored from
+    /// a state of schema 64 or earlier, to keep anchoring at its first
+    /// deviation, as that build did ([`EwQuantile::keep_first_value_anchor`]).
+    pub(crate) fn keep_first_value_anchor(&mut self) {
+        if let Some(sc) = self.scales.as_deref_mut() {
+            sc.keep_first_value_anchor();
+        }
+    }
+
+    /// The trees of the deviations held for the refit, built again from
+    /// the rows held: what a restored histogram reads its scales from
+    /// ([`HeldDevs`]; not state).
+    pub(crate) fn rebuild_held_median(&mut self) {
+        if let Some(sc) = self.scales.as_deref_mut() {
+            let n = sc.mad.len();
+            if let Some(h) = sc.held.as_deref_mut() {
+                h.rebuild_median(n);
+            }
+        }
+    }
+
+    /// Mark a histogram built, empty, for a state of schema 64 or earlier
+    /// -- its edges fixed from a warm-up that build held -- so that each
+    /// anchored sketch awaits its first deviation, as that build's did.
+    pub(crate) fn await_first_values(&mut self) {
+        if let Some(sc) = self.scales.as_deref_mut() {
+            for q in &mut sc.mad {
+                q.keep_first_value_anchor();
+                q.reset();
+            }
+        }
+    }
+
+    /// Hold each row's deviations from here until the refit, each target's
+    /// MAD read from them exactly ([`HeldDevs`]): what a histogram whose
+    /// refit waits does from its first row. Nothing under the mean.
+    pub(crate) fn hold_deviations(&mut self) {
+        if let Some(sc) = self.scales.as_deref_mut() {
+            sc.held = Some(Box::new(HeldDevs::new(sc.mad.len())));
+        }
+    }
+
+    /// Let the held deviations go, each target's sketch built from them
+    /// ([`HeldDevs::sketch`]): a refit given up. Nothing while none are
+    /// held.
+    pub(crate) fn release_deviations(&mut self) {
+        if let Some(sc) = self.scales.as_deref_mut() {
+            sc.release();
+        }
+    }
+
     /// What each bin's location is: the statistic it was built with.
     pub fn stat(&self) -> BinStat {
         self.scales
@@ -795,6 +1060,9 @@ impl MarginalBins {
         let mut row = std::mem::take(&mut self.row.0);
         self.bin_offsets(0, x, &mut row);
         let width = self.off[self.p];
+        if let Some(sc) = self.scales.as_deref_mut() {
+            sc.begin_row(w);
+        }
         for (t, yt) in y.iter().enumerate().take(self.n_targets) {
             let Some(v) = yt.filter(|v| v.is_finite()) else {
                 continue;
@@ -849,6 +1117,7 @@ impl MarginalBins {
         let Some(sc) = self.scales.as_deref_mut() else {
             return;
         };
+        sc.begin_row(w);
         for (t, yt) in y.iter().enumerate().take(self.n_targets) {
             let Some(v) = yt.filter(|v| v.is_finite()) else {
                 out.push(Judge::NONE);
@@ -1190,6 +1459,12 @@ impl MarginalBins {
         let Some(delta) = self.scales.as_ref().map(|s| s.delta) else {
             return passes;
         };
+        // Each target's sketch from the deviations held for the refit
+        // first, where they were held: what a target no row below refits
+        // goes on with. The rebuilt sketch replaces it where one is built.
+        if let Some(sc) = self.scales.as_deref_mut() {
+            sc.release();
+        }
         let n = rows.len();
         // Each row's raw weight decayed to now, `v_i = w_i · Π_{l > i} λ_l`,
         // and in the cells' undecayed units, `v_i / scale` (the module doc's
@@ -1236,16 +1511,13 @@ impl MarginalBins {
             *took_t = took;
             // The scale's sketch from the converged deviations, in the rows'
             // order, at their raw weights, aged on the histogram's clock from
-            // the target's first row.
-            let anchored = self.scales.as_deref().is_some_and(BinScales::anchored);
-            let mut q = crate::robust::mad_sketches(crate::robust::HuberScale::Mad, anchored, 1)
-                .pop()
-                .expect("one sketch under the MAD");
+            // the target's first row: the target's own sketch cleared.
+            let mut q = self.scales.as_deref().expect("checked above").mad[t].cleared();
             // Anchored at the deviations' median size, not at the first
             // deviation, which is rounded at the target's level and may sit
-            // at that rounding: `crate::huber_refit::rebuild_scale`'s rule
-            // (task 278, qequiv).
-            if anchored {
+            // at that rounding: `crate::huber_refit::one_pass_sketch`'s
+            // rule (task 278, qequiv).
+            if q.anchor().is_some() {
                 let dev: Vec<f64> = ys.iter().map(|y| (y - m).abs()).collect();
                 q.anchor_at(crate::huber_refit::weighted_median(&dev, &vs));
             }
@@ -1386,11 +1658,11 @@ pub struct BinCfg {
     /// not skipped, since `budget_mib` is the one field here that may.
     #[serde(default)]
     pub refit_rows: u32,
-    /// Under [`BinStat::Huber`], whether each target's MAD sketch buckets
-    /// its deviations in units of the first it takes (the refit's rebuilt
-    /// sketch in units of their median size), as
-    /// [`crate::RobustCfg::mad_anchor`]. A spec sets it; a state written
-    /// before schema 64 loads as `false` and goes on as it was.
+    /// Under [`BinStat::Huber`], whether each target's MAD sketch is
+    /// anchored, as [`crate::RobustCfg::mad_anchor`]: the refit's rebuilt
+    /// sketch buckets its deviations in units of their median, and one no
+    /// refit anchors keeps the grid fixed at 1. A spec sets it; a state
+    /// written before schema 64 loads as `false` and goes on as it was.
     #[serde(default)]
     pub mad_anchor: bool,
     /// The MiB the warm-up hold and the histogram may each take before the
@@ -2705,10 +2977,14 @@ mod tests {
         }
 
         /// The stream of [`rows`] with each target times `c`, through a
-        /// histogram whose MAD sketches are anchored or not.
-        fn run_scaled(n: usize, c: f64, anchored: bool) -> MarginalBins {
+        /// histogram whose MAD sketches are anchored or not, its
+        /// deviations held as a refit that waits holds them, or not.
+        fn run_scaled(n: usize, c: f64, anchored: bool, held: bool) -> MarginalBins {
             let edges = vec![vec![-0.3, 0.3]];
             let mut b = MarginalBins::new_with_anchor(1, 2, edges, HUBER, anchored).unwrap();
+            if held {
+                b.hold_deviations();
+            }
             for (i, (x, y, w)) in rows(n).into_iter().enumerate() {
                 if i > 0 {
                     b.decay(0.97);
@@ -2718,20 +2994,29 @@ mod tests {
             b
         }
 
-        /// Anchored sketches (task 278, the user's 2026-10-26): a decimal
-        /// scale of the targets moves every cell's location by rounding,
-        /// where the fixed buckets moved the scale, and every cut and
-        /// location it judged, by up to a bucket. The unanchored move is
-        /// printed and held above rounding as evidence that the cuts bound.
+        /// The deviations held, as while a refit waits (task 323): a
+        /// decimal scale of the targets moves every cell's location by
+        /// rounding, the scale read from them exactly, where the fixed
+        /// buckets moved the scale, and every cut and location it judged,
+        /// by up to a bucket. The fixed buckets' move is printed and held
+        /// above rounding as evidence that the cuts bound; an anchored
+        /// sketch nothing anchors is on the grid fixed at 1, the fixed
+        /// buckets to the bit.
         #[test]
-        fn anchored_sketches_scale_the_locations_by_rounding() {
+        fn held_deviations_scale_the_locations_by_rounding() {
             let n = 2000;
-            let (base, fixed) = (run_scaled(n, 1.0, true), run_scaled(n, 1.0, false));
+            let (base, fixed) = (
+                run_scaled(n, 1.0, true, true),
+                run_scaled(n, 1.0, false, false),
+            );
             assert!(base.mad_anchor() && !fixed.mad_anchor());
+            let grid = run_scaled(n, 1.0, true, false);
+            let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&grid.mean), bits(&fixed.mean));
             let spread = base.mean.iter().fold(0.0f64, |a, m| a.max(m.abs()));
             let (mut worst_anchored, mut worst_fixed) = (0.0f64, 0.0f64);
             for c in [1e-6, 1e-3, 1e3, 1e6] {
-                let (a, f) = (run_scaled(n, c, true), run_scaled(n, c, false));
+                let (a, f) = (run_scaled(n, c, true, true), run_scaled(n, c, false, false));
                 for i in 0..base.mean.len() {
                     let d = (a.mean[i] - c * base.mean[i]).abs() / (c * spread);
                     worst_anchored = worst_anchored.max(d);

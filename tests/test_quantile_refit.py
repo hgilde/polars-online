@@ -158,14 +158,17 @@ def _with_rows(spec: dict, rows: int | None) -> dict:
 
 @pytest.mark.parametrize("spec", _specs(), ids=IDS)
 def test_the_refit_moves_the_fit_after_its_row_and_not_the_weight(spec):
-    """The activation check: with the refit on, the predictions part from the
-    run without it only after a target's buffer fills -- its 200th learned
-    row, a row of weight above 0 with its target -- and the weight the bank
-    reports and gates on does not move (hard rule 8). A spec that does not
-    name the count is the spec at 500, the default at one feature."""
+    """The activation check: with the refit on, the predictions part from
+    those of a run whose refit waits past the data -- its scale read from
+    the same buffered ``|e|`` -- only after a target's buffer fills, its
+    200th learned row, a row of weight above 0 with its target, and the
+    weight the bank reports and gates on is the run without a refit's (hard
+    rule 8). A spec that does not name the count is the spec at 500, the
+    default at one feature."""
     df = _frame()
     on = po.ModelBank([spec]).fit_predict(df)["m"]
     off = po.ModelBank([_with_rows(spec, 0)]).fit_predict(df)["m"]
+    waits = po.ModelBank([_with_rows(spec, df.height)]).fit_predict(df)["m"]
     default = po.ModelBank([_with_rows(spec, None)]).fit_predict(df)["m"]
     at_500 = po.ModelBank([_with_rows(spec, 500)]).fit_predict(df)["m"]
     assert default.equals(at_500, null_equal=True)
@@ -174,7 +177,7 @@ def test_the_refit_moves_the_fit_after_its_row_and_not_the_weight(spec):
     learned = df.with_row_index("i").filter(pl.col("y0").is_not_null() & (pl.col("w") > 0))
     fills = int(learned["i"][199])
     a = on.struct.field("pred_y0").to_numpy()
-    b = off.struct.field("pred_y0").to_numpy()
+    b = waits.struct.field("pred_y0").to_numpy()
     differ = np.flatnonzero(~((a == b) | (np.isnan(a) & np.isnan(b))))
     assert differ.size > 0
     assert differ[0] > fills, (differ[0], fills)
@@ -195,7 +198,7 @@ def test_a_count_inside_the_warm_up_is_refused():
 def test_the_refit_budget_gives_up_the_later_groups_and_counts_them():
     """``refit_budget`` bounds the buffers of all the spec's groups, as for
     ``huber``: at 50 rows, one feature and two targets a group reserves
-    16,800 bytes, so 0.05 MiB holds three groups' buffers; the fourth to
+    21,600 bytes, so 0.07 MiB holds three groups' buffers; the fourth to
     appear and every later one keep their one-pass fits, one notice names
     ``quantile_refit_rows``, and ``summary()`` counts their targets. Each
     admitted group is the group a bank with no bound fits, to the bit, and
@@ -221,7 +224,7 @@ def test_the_refit_budget_gives_up_the_later_groups_and_counts_them():
             out = b.fit_predict(df)
         return b, out, [str(w.message) for w in caught if "refit_budget" in str(w.message)]
 
-    bounded, out, notices = bank(refit_budget=0.05)
+    bounded, out, notices = bank(refit_budget=0.07)
     free, out_free, none = bank(refit_budget=INF)
     off_spec = po.spec.quantile("m", quantile=0.5, quantile_refit_rows=0, **c)
     out_off = po.ModelBank([off_spec]).fit_predict(df)

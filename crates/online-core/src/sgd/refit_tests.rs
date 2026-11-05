@@ -105,7 +105,8 @@ fn the_refit_reads_out_as_the_fit_whatever_the_scaler_holds() {
 }
 
 /// The learning rate's state is not the refit's: on the row a buffer fills,
-/// AdaGrad's sums are the run without a refit's to the bit, and the weight
+/// AdaGrad's sums are those of a run whose refit waits past the data (its
+/// scale read from the same buffered `|e|`) to the bit, and the weight
 /// `inv_scaling` reads is too (hard rule 8).
 #[test]
 fn the_refit_leaves_the_learning_rates_state() {
@@ -115,7 +116,7 @@ fn the_refit_leaves_the_learning_rates_state() {
     ] {
         let data = rows(60, true);
         let mut on = Sgd::new(cfg(30, false, schedule, Decay::Lam(0.99))).unwrap();
-        let mut off = Sgd::new(cfg(0, false, schedule, Decay::Lam(0.99))).unwrap();
+        let mut off = Sgd::new(cfg(10_000, false, schedule, Decay::Lam(0.99))).unwrap();
         // Up to and including the row the first buffer fills (target 1's:
         // present on every row); after it the fits, and so the gradients,
         // part.
@@ -380,7 +381,7 @@ fn the_reservation_is_every_targets_and_a_give_up_empties_each() {
     let mut m = Sgd::new(c.clone()).unwrap();
     assert_eq!(
         m.refit_reservation(),
-        c.n_targets * crate::refit_reservation(c.n_features, 30)
+        c.n_targets * crate::refit_reservation(c.n_features, 30, !m.mad_sketch().is_empty())
     );
     assert_eq!(
         Sgd::new(cfg(0, false, LearningRate::Constant, Decay::Halflife(50.0)))

@@ -50,7 +50,7 @@ impl Spec {
         {
             return Err(format!(
                 "spec {:?}: {key} must be at most {} (2^20), got {rows}: the refit's buffer \
-                 is held at its full size, (features + 4) * 8 bytes a row, from a target's \
+                 is held at its full size, (features + 10) * 8 bytes a row, from a target's \
                  first learned row, so the count sizes an allocation before any row is seen",
                 self.name,
                 online_core::MAX_REFIT_ROWS

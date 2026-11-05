@@ -617,12 +617,15 @@ fn decimal_move<M: OnlineModel>(make: impl Fn() -> M, rows: &[(f64, f64)]) -> f6
     worst
 }
 
-/// With each MAD sketch anchored, `huber` (its refit off and on, the
-/// refit rebuilding the sketch anchored) and `sgd(loss="huber")` move by
-/// rounding under a decimal scale of the target -- a few `n · u` of the
-/// level over the spread -- where the fixed buckets moved them by up to a
+/// With the refit on -- the MAD read exactly from the buffered `|e|`
+/// before it, and the sketch it rebuilds anchored at the converged
+/// residuals' median -- `huber` and `sgd(loss="huber")` move by rounding
+/// under a decimal scale of the target, a few `n · u` of the level over the
+/// spread, where an unanchored rebuilt sketch moved them by up to a
 /// bucket's share; that move is printed and held above rounding as
-/// evidence that the scale bound the cut.
+/// evidence that the scale bound the cut. With the refit off nothing is
+/// held and nothing anchors the sketch: its grid is fixed at 1, the fixed
+/// buckets to the bit, and moves them as much (task 323).
 #[test]
 fn an_anchored_mad_moves_the_fits_by_rounding_under_a_decimal_scale() {
     let rows = contaminated(3000, 0.05, 23);
@@ -637,12 +640,13 @@ fn an_anchored_mad_moves_the_fits_by_rounding_under_a_decimal_scale() {
             .unwrap()
         }
     };
-    let sgd = |anchor: bool| {
+    let sgd = |anchor: bool, refit_rows: u32| {
         move || {
             crate::Sgd::new(crate::SgdCfg {
                 decay: Decay::Lam(0.995),
                 target_spread: true,
                 mad_anchor: anchor,
+                refit_rows,
                 ..sgd_cfg(crate::SgdLoss::Huber { delta: 1.345 }, HuberScale::Mad)
             })
             .unwrap()
@@ -660,28 +664,42 @@ fn an_anchored_mad_moves_the_fits_by_rounding_under_a_decimal_scale() {
         st.done && st.passes > 0 && !st.failed && !st.abandoned,
         "{st:?}"
     );
-    assert!(m.mad_sketch()[0].anchor().is_some_and(|a| a > 0.0));
+    assert!(
+        m.mad_sketch()[0]
+            .anchor()
+            .is_some_and(|a| a > 0.0 && a != 1.0)
+    );
     for (what, anchored, fixed) in [
-        (
-            "huber",
-            decimal_move(huber(true, 0), &rows),
-            decimal_move(huber(false, 0), &rows),
-        ),
         (
             "huber refit",
             decimal_move(huber(true, 40), &rows),
             decimal_move(huber(false, 40), &rows),
         ),
         (
-            "sgd huber",
-            decimal_move(sgd(true), &rows),
-            decimal_move(sgd(false), &rows),
+            "sgd huber refit",
+            decimal_move(sgd(true, 40), &rows),
+            decimal_move(sgd(false, 40), &rows),
         ),
     ] {
         println!("{what}: anchored {anchored:e}, fixed {fixed:e}");
         assert!(anchored < 1e-10, "{what}: anchored {anchored:e}");
         assert!(fixed > 1e-7, "{what}: the fixed buckets moved {fixed:e}");
     }
+    // The refit off: the grid fixed at 1 is the fixed buckets, to the bit.
+    let run = |mut m: Robust| {
+        preds(
+            |x, y, d| m.step(&[x], &[Some(y)], d, 1.0).pred[0],
+            &rows,
+            3.0,
+        )
+        .iter()
+        .map(|p| p.to_bits())
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(run(huber(true, 0)()), run(huber(false, 0)()));
+    let moved = decimal_move(huber(true, 0), &rows);
+    println!("huber, refit off: {moved:e}");
+    assert!(moved > 1e-7, "{moved:e}");
 }
 
 /// A state whose sketches are not anchored as its cfg says is refused: the

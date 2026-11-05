@@ -86,6 +86,7 @@ mod gaps;
 /// Fits read off an exported Gram, offline (docs/PLAN.md tasks 226-227).
 pub mod gramfit;
 mod health;
+mod held_median;
 mod hmm;
 mod holt;
 mod huber_refit;
@@ -737,7 +738,23 @@ pub use window::{
 ///   release, the mark was `decay_time`'s sign (task 278, batch 3), which a
 ///   released 63 never wrote. Schema 63's fixtures are kept
 ///   (`tests/state_fixtures/v63/`).
-pub const SCHEMA_VERSION: u32 = 64;
+/// - 65 (2026-11-05, task 323): no MAD sketch takes an anchor chosen from
+///   the residuals one pass sees -- each target's under `huber`,
+///   `quantile`, `sgd(loss="huber")` and `marginal(bin_stat="huber")`.
+///   While a target's refit waits its buffer keeps each row's one-pass
+///   `|e|` beside it (`RefitBuf`'s `resid`; a histogram's `HeldDevs`, the
+///   deviations from each target's location), the scale is read from them
+///   exactly, and the sketch takes none; the refit's rebuilt sketch is
+///   anchored at the converged residuals' weighted median, as before, and
+///   a refit that never runs builds it so from the `|e|` held; with the
+///   refit off the grid is fixed at 1 (`EwQuantile::anchored`). A state of
+///   64 or earlier has neither field and goes on to the bit: its model's
+///   restore marks each anchored sketch (`anchor_by_first_value`, written
+///   only where `true`) to keep anchoring at its first value, a buffer with
+///   no `|e|` reads the sketch it feeds until its refit, and a histogram
+///   its warm-up still waits for is built so (`Binned`'s `before_65`).
+///   Schema 64's fixtures are kept (`tests/state_fixtures/v64/`).
+pub const SCHEMA_VERSION: u32 = 65;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last

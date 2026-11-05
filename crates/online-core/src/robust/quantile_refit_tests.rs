@@ -88,14 +88,15 @@ fn reset_kinds() {
 }
 
 /// The refit fires on the row a target's learned rows reach the count, a
-/// row outside the band counted as one: the predictions part from the run
-/// without it on the next row and not before. It moves its own target
-/// alone -- the other's predictions are that run's to the bit until its own
-/// buffer fills -- and the solve cadence is that run's on every row.
+/// row outside the band counted as one: the predictions part from those of
+/// a run whose refit waits past the data on the next row and not before.
+/// It moves its own target alone -- the other's predictions are that run's
+/// to the bit until its own buffer fills -- and the solve cadence is that
+/// run's on every row.
 #[test]
 fn the_refit_fires_on_its_count_and_moves_its_own_target_alone() {
     let data = stream(400, 3, 0, 2, false);
-    let mut c = base(0.5, Decay::Lam(0.999), 0);
+    let mut c = base(0.5, Decay::Lam(0.999), 10_000);
     c.n_targets = 2;
     c.max_rows_between_solves = 7;
     c.solve_every = f64::INFINITY;
@@ -597,10 +598,17 @@ fn a_band_with_no_row_keeps_the_targets_weight() {
     // The premise: the converged fit's band holds no row.
     let b = on.coefficients().unwrap()[0].clone();
     let fitted = |x: &[f64; 2]| b[0] + b[1] * x[0] + b[2] * x[1];
-    assert!(
-        data.iter()
-            .all(|(x, y, _)| (y[0].unwrap() - fitted(x)).abs() > 0.5)
-    );
+    // The band at it: the refit's width, `max(quantile_eps, (k/n)^(2/5))`,
+    // times the MAD of its residuals, every row at weight 1.
+    let absr: Vec<f64> = data
+        .iter()
+        .map(|(x, y, _)| (y[0].unwrap() - fitted(x)).abs())
+        .collect();
+    let width = 0.2f64.max((3.0 / f64::from(n)).powf(0.4));
+    let h = width * crate::huber_refit::weighted_median(&absr, &vec![1.0; absr.len()])
+        / crate::robust::NORMAL_Q3;
+    assert!(h > 0.3 && h < 0.45, "{h}");
+    assert!(absr.iter().all(|r| *r > h), "{h} {absr:?}");
     assert!(
         on.wj[0] > 0.0 && off.wj[0] > 0.0,
         "{} {}",

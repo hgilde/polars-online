@@ -397,7 +397,7 @@ _CEILING = {
 #: Why a count's ceiling is where it is, said after the refusal where the
 #: Rust side says it too (``online_core::MAX_PERM``'s message).
 _REFIT_ROWS_WHY = (
-    "the refit's buffer is held at its full size, (features + 4) * 8 bytes a row, from a "
+    "the refit's buffer is held at its full size, (features + 10) * 8 bytes a row, from a "
     "target's first learned row, so the count sizes an allocation before any row is seen"
 )
 _CEILING_WHY = {

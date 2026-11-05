@@ -514,6 +514,44 @@ fn corrchange_cfg(kind: CorrChangeKind) -> CorrChangeCfg {
 /// every three.
 const WINDOW: (Option<f64>, Option<f64>, Option<usize>) = (Some(12.0), Some(3.0), None);
 
+/// A fresh `m` as a build of schema 64 saved it, restored by this build:
+/// each anchored sketch awaiting its first value (an anchor of 0, where
+/// this build fixes the grid at 1), each refit buffer holding no `|e|`, and
+/// no deviations held for a histogram's refit -- the forms that build
+/// wrote, every other field the same bytes under either build -- and the
+/// state relabelled 64. Its restore marks each anchored sketch to keep
+/// anchoring at its first value, and the model goes on as that build did
+/// (schema 65): the forms a 64 state takes in a state this build saves.
+pub fn restored_from_64<M: OnlineModel>(m: M) -> M {
+    fn old(v: &mut rmpv::Value) {
+        match v {
+            rmpv::Value::Map(m) => {
+                for (k, v) in m.iter_mut() {
+                    match k.as_str() {
+                        Some("anchor") if v.as_f64() == Some(1.0) => *v = rmpv::Value::from(0.0),
+                        Some("resid") => *v = rmpv::Value::Nil,
+                        // A histogram's held deviations; the warm-up's
+                        // held rows are a list, and stay.
+                        Some("held") if v.is_map() => *v = rmpv::Value::Nil,
+                        _ => old(v),
+                    }
+                }
+            }
+            rmpv::Value::Array(a) => a.iter_mut().for_each(old),
+            _ => {}
+        }
+    }
+    let mut s = m.state();
+    s.schema_version = 64;
+    let bytes = rmp_serde::to_vec_named(&s).unwrap();
+    let mut v = rmpv::decode::read_value(&mut &bytes[..]).unwrap();
+    old(&mut v);
+    let mut out = Vec::new();
+    rmpv::encode::write_value(&mut out, &v).unwrap();
+    let s: State = rmp_serde::from_slice(&out).unwrap();
+    M::restore(&s).expect("a fresh state as 64 wrote it restores")
+}
+
 macro_rules! case {
     ($name:literal, $variant:literal, $ty:ty, $build:expr, $k:expr, $targets:expr, $before:expr) => {
         Case {
@@ -916,6 +954,27 @@ pub fn all() -> Vec<Case> {
             Targets::Linear(2),
             2
         ),
+        // A state of schema 64 saved while its anchors were awaited, read
+        // by this build (schema 65): each sketch marked to keep anchoring
+        // at its first residual, as the build that saved it did, where a
+        // sketch this build makes keeps the grid fixed at 1. Saved before
+        // any residual, so the continuation sets the anchors.
+        case!(
+            "huber_mad_awaiting_first_value",
+            "Robust",
+            Robust,
+            restored_from_64(
+                Robust::new(RobustCfg {
+                    huber_scale: online_core::HuberScale::Mad,
+                    mad_anchor: true,
+                    ..robust_cfg(RobustLoss::Huber { delta: 1.5 })
+                })
+                .unwrap()
+            ),
+            K,
+            Targets::Linear(2),
+            2
+        ),
         // Feature sets from each target's one set of sums, the rows weighed
         // by the largest set's residual (schema 63, docs/PLAN.md task 272
         // (a)).
@@ -972,6 +1031,28 @@ pub fn all() -> Vec<Case> {
             K,
             Targets::Linear(2),
             40
+        ),
+        // A state of schema 64 saved mid-buffer, read by this build: its
+        // buffers hold no `|e|`, so its scale is read from the sketch it
+        // feeds, anchored at its first residual, until the refit, which
+        // falls in the continuation (task 323).
+        case!(
+            "huber_refit_first_value",
+            "Robust",
+            Robust,
+            restored_from_64(
+                Robust::new(RobustCfg {
+                    huber_scale: online_core::HuberScale::Mad,
+                    mad_anchor: true,
+                    refit_rows: 40,
+                    min_weight_holds_learning: false,
+                    ..robust_cfg(RobustLoss::Huber { delta: 1.5 })
+                })
+                .unwrap()
+            ),
+            K,
+            Targets::Linear(2),
+            30
         ),
         case!(
             "huber_refit_done",
@@ -1541,6 +1622,35 @@ pub fn all() -> Vec<Case> {
             K,
             Targets::Linear(2),
             30
+        ),
+        // A state of schema 64 saved inside a learned warm-up, read by this
+        // build: the histogram its continuation builds at the freeze (row
+        // 12) anchors each sketch at its first deviation and feeds it every
+        // deviation until the refit (row 20), as that build did, where one
+        // this build makes holds the deviations (task 323).
+        case!(
+            "marginal_bins_refit_first_value",
+            "Marginal",
+            Marginal,
+            restored_from_64(
+                Marginal::new(MarginalCfg {
+                    bins: Some(Box::new(BinCfg {
+                        n_bins: 4,
+                        edges: None,
+                        rule: BinRule::Quantile,
+                        warm_rows: 12,
+                        stat: online_core::BinStat::Huber { delta: 1.0 },
+                        refit_rows: 20,
+                        budget_mib: None,
+                        mad_anchor: true,
+                    })),
+                    ..marginal_cfg()
+                })
+                .unwrap()
+            ),
+            K,
+            Targets::Linear(2),
+            8
         ),
         // Each target's MAD sketch anchored (schema 64, task 278);
         // `marginal_bins_huber` is the form a state saved before it goes

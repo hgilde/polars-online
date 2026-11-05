@@ -27,6 +27,28 @@ returns.
   sizes in its notes and carries the release's own budget measurements as
   `budgets-baseline.json`, which the next release's drift is read from
   (task 317).
+- The MAD scale of `huber`, `quantile`, `sgd(loss="huber")` and
+  `marginal(bin_stat="huber")` no longer takes its sketch's units from the
+  first residual. A residual is rounded at the target's level, so a first
+  residual small beside the noise (a quiet start) carried that rounding into
+  every read, and the same stream in other units read a bucket apart, 1.2e-2
+  in the scale, for the life of the sketch; no rule that picks the units
+  from the first residuals survives such a start, and anchoring at the
+  residual's level was measured and rejected, since a level shift then moved
+  the scale. Now, while a refit waits (`huber_refit_rows`,
+  `quantile_refit_rows`, `bin_refit_rows`, on by default), the scale is the
+  exact weighted median of the residuals the refit's buffer holds; at the
+  refit the sketch is built from the converged residuals in units of their
+  median, as before, and a refit given up or abandoned builds it the same
+  way from the residuals it held; with the refit off the sketch keeps fixed
+  buckets, so two units can differ by up to a bucket (about 1.6%, and a
+  quantile fit by more), and a power of two moves nothing. With the refit
+  on, a stream times 3 or shifted gives the same scale and fit to the
+  rounding of the target's level, measured at levels up to 1e9. Numbers
+  move only in the rows before each refit: the golden pipeline's `huber`
+  and `quantile` by at most 1.5e-4 of `1+|v|`, and 1.4.0's own files'
+  continuations against this build's fresh run by 8e-4 to 5e-3. A state
+  saved by 1.4.0 goes on to the bit (task 323).
 
 ### Fixed
 
@@ -53,6 +75,12 @@ returns.
   rows of randomly interleaved groups, best of three: 3,225 → 170 ns a row
   at 1,000 groups and 81,855 → 525 ns at 10,000. Outputs and saved states
   are unchanged to the bit (task 325).
+- While a refit waits, the MAD scale is read from a tree of the held
+  residuals: O(log n) a row and 40 bytes a held row, so a refit's
+  reservation is `(features + 26)·8` bytes a target per row under the MAD.
+  The blocks of the 2,500-row refit bench cases take 7-10% more time than
+  the one-pass sketch, and a 10,000-group `huber` bank through its 500-row
+  refits about 3% more (task 323).
 
 ## [1.4.0] — 2026-11-03
 
