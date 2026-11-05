@@ -826,9 +826,17 @@ impl MarginalBins {
     /// Hold each row's deviations from here until the refit, each target's
     /// MAD read from them exactly ([`HeldDevs`]): what a histogram whose
     /// refit waits does from its first row. Nothing under the mean.
-    pub(crate) fn hold_deviations(&mut self) {
+    /// `rows` is the refit's count: the most rows held, reserved here once,
+    /// so a row allocates nothing for them.
+    pub(crate) fn hold_deviations(&mut self, rows: usize) {
         if let Some(sc) = self.scales.as_deref_mut() {
-            sc.held = Some(Box::new(HeldDevs::new(sc.mad.len())));
+            let n = sc.mad.len();
+            let mut h = HeldDevs::new(n);
+            h.w.reserve_exact(rows);
+            h.lam.reserve_exact(rows);
+            h.e.reserve_exact(rows.saturating_mul(n));
+            h.median.reserve(rows);
+            sc.held = Some(Box::new(h));
         }
     }
 
@@ -2983,7 +2991,7 @@ mod tests {
             let edges = vec![vec![-0.3, 0.3]];
             let mut b = MarginalBins::new_with_anchor(1, 2, edges, HUBER, anchored).unwrap();
             if held {
-                b.hold_deviations();
+                b.hold_deviations(n);
             }
             for (i, (x, y, w)) in rows(n).into_iter().enumerate() {
                 if i > 0 {

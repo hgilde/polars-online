@@ -1429,9 +1429,6 @@ impl Sgd {
         let intercept = self.cfg.fit_intercept;
         let off = usize::from(intercept);
         let held = self.refit[j].take();
-        // The one-pass sketch first, for a refit that fails; the rebuilt
-        // one replaces it below.
-        self.scale_from_held(j, &held);
         let rows = Rows::new(&held.rows, &held.ages, self.cfg.n_features);
         // `l2` is a penalty on the standardized slope `β_i = s_i b_i` a step
         // applies once a row, so in the caller's units it is `l2 · s_i²`
@@ -1450,8 +1447,10 @@ impl Sgd {
         let Some((fit, passes)) =
             huber_refit::irls(&rows, intercept, delta, self.cfg.huber_scale, &ridge, &l2)
         else {
-            // No pass solved: the one-pass fit stands, and the refit says so.
+            // No pass solved: the one-pass fit stands, and the refit says
+            // so; its scale the sketch from the one-pass `|e|` held.
             self.refit[j].fail();
+            self.scale_from_held(j, &held);
             return;
         };
         self.refit[j].ran(passes);
