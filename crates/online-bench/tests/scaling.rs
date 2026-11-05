@@ -356,14 +356,6 @@ fn hold_finding(id: &str) {
     hold(&ids);
 }
 
-/// The runner appends a chunk's output a spec at a time, and each append of
-/// a struct column costs the columns already there: O(specs²) a call.
-#[test]
-#[ignore = "extended: scaling finding S1, the runner's per-call cost is O(specs^2)"]
-fn finding_s1_the_runner_costs_each_spec_the_same_a_call() {
-    hold_finding("S1");
-}
-
 /// `hmm` and `ew_class` under `covariance_type="diag"` keep every state's
 /// full co-moments, `O(k²)`, where the diagonal model reads `k` variances.
 #[test]

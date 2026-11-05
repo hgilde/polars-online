@@ -550,7 +550,7 @@ largest buffer at the smaller.
 | `bank.resid_quantiles` | residual quantiles Q | 1 → 8 | O(n) | O(n) | a sketch a quantile | 1.14 · 1.03 · 1.02 · 1.09 |
 | `runner.rows` | rows in the run | 4,096 → 32,768 | O(1) | O(1) | the run streams: a chunk at a time, whatever the rows behind or ahead | 1.01 · 0.99 · 1.01 · 1.00 |
 | `runner.specs` | specs S, calls of 1,024 rows | 1 → 8 | O(n) | O(n) | S | 7.88 · 7.72 · 7.80 · 4.99 |
-| `runner.specs_per_call` **finding S1** | specs S from 8 to 64, calls of 16 rows | 8 → 64 | O(n) | O(n) | a call's output a spec, S | 8.82 · 10.53 · 7.98 · 7.64 |
+| `runner.specs_per_call` | specs S from 16 to 128, calls of 16 rows | 16 → 128 | O(n) | O(n) | a call's output a spec, S: the chunk's columns and the specs' outputs are joined in one pass over their names | 7.75 · 7.79 · 7.99 · 7.81 |
 | `windows.groups` | groups G, rows in turn over all | 1,000 → 8,000 | O(1) | O(n) | a row touches its group's sums; a state a group | 0.82 · 1.06 · 7.48 · 7.89 |
 | `windows.groups_seen` (CI) | groups seen G (a block over 50) | 1,000 → 8,000 | O(1) | O(n) | a row resolves its own group; a state a group | 0.98 · 0.99 · 7.96 · 7.86 |
 | `windows.kernels` (CI) | kernels K | 1 → 8 | O(n) | O(n) | each kernel's queue a row | 2.98 · 2.25 · 2.42 · 2.58 |
@@ -602,8 +602,9 @@ spec, its model's step is most of its row, so a column read once or once a
 spec does not show. The Python surfaces read the same (`tests/
 test_scaling.py`): 5.4x to 7.2x for 8x the specs through the IO source and
 the chunked `ModelBank`, and 4.9x at calls of 4 and 16 rows, where their
-fixed cost per call is a larger share. The command line's runner is the one
-surface past linear, in its allocations: finding S1 below.
+fixed cost per call is a larger share. The command line's runner was the
+one surface past linear, in its allocations, until finding S1 below was
+fixed.
 
 **The pool spreads the specs of one call across its threads, a spec a task,
 so its speed-up is bounded by the costliest spec and by the call's own
@@ -631,11 +632,12 @@ output -- and by the load the machine carried.
 ### What the table found
 
 Every cell above was measured before any of them gated. Three findings
-exceed their declaration and are held in the extended tier until fixed:
+exceeded their declaration. S1 is fixed and its cell gates; S2 and S3 are
+held in the extended tier until they are:
 
 | finding | cell | measured | declared | the cause |
 |---|---|---|---|---|
-| S1 | `runner.specs_per_call` | allocations 10.5x for 8x the specs, at calls of 16 rows; 407 allocations a call at 16 specs and 24,770 at 128 (61x for 8x) | O(specs) a call | `crates/online-polars/src/runner.rs`, `augment`: the bank's columns are appended to the chunk one spec at a time (`for c in cols { out.with_column(c)? }`), and each append of a struct column costs the columns already there, O(specs²) a call. One `hstack` of all of them is O(specs); the bank's own call and the Python paths append once |
+| S1, fixed | `runner.specs_per_call` | allocations 10.5x for 8x the specs from 8 to 64, at calls of 16 rows, and 13.3x from 16 to 128 (376,098 to 5,008,296 over three blocks of 512 rows), time 10.3x; 407 allocations a call at 16 specs and 24,770 at 128 (61x for 8x) | O(specs) a call | `crates/online-polars/src/runner.rs`, `augment`: the bank's columns were appended to the chunk one spec at a time with `DataFrame::with_column`, which looks each name up through the frame's cached schema; the insert before it dropped that cache, so each spec's struct column rebuilt the schema of every column before it, copying their fields. Now `with_columns` joins them in one pass over the names, the same frame column for column (a name the chunk has is replaced where it stands, as before): 7.79x in allocations and 7.75x in time from 16 specs to 128 |
 | S2 | `hmm.k`, `ew_class.k_diag` | saved state 13.6x for 8x the columns (`hmm`, 2 to 16), 33.2x (`ew_class`, 4 to 32) | O(k) under `covariance_type="diag"` | `crates/online-core/src/hmm.rs` (`states: Vec<EwCov>`) and `crates/online-core/src/ewclass.rs` (`classes: Vec<EwCov>`): every state or class keeps its full co-moment matrix and updates it, O(k²) a row, where the diagonal model reads only the k variances |
 | S3 | `corrchange.window`, `corrchange.window_crit` | time 7.8x to 7.9x for 8x the window, with a fixed threshold too | O(1) a row in `window_rows` | `crates/online-core/src/corrchange.rs`, the `"window"` report in `step`: both windows' correlations are computed afresh from the ring on every row (`window_stat_by` over `2·window_rows` rows), O(window_rows·k²) a row, where sums over each window moved by the row entering and the row leaving cost O(k²). The permutation draws are a separate O(n_perm·window_rows·k²) every `permute_every_rows` rows, by design |
 

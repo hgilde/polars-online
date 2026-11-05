@@ -231,10 +231,11 @@ pub const CELLS: &[Cell] = &[
     // --- the runner behind the command line, `online_polars::run` -----------
     // A block is a whole run: `n` rows in calls of 1,024 (the work is read a
     // row; the memory a run holds at its peak must not grow with its rows),
-    // and specs on one stream, in calls of 1,024 rows and of 16.
+    // and specs on one stream, in calls of 1,024 rows and of 16 (16 specs
+    // then 128, where an O(specs²) cost a call reads 13x).
     cell("runner.rows", 4_096, 8, Const, Const),
     cell("runner.specs", 1, 8, Pow(1), Pow(1)),
-    finding("runner.specs_per_call", 8, 8, Pow(1), Pow(1), "S1"),
+    cell("runner.specs_per_call", 16, 8, Pow(1), Pow(1)),
     // --- the window operators, `WindowsRun::feed` ---------------------------
     cell("windows.groups", 1000, 8, Const, Pow(1)),
     cell("windows.groups_seen", 1000, 8, Const, Pow(1)),
@@ -1479,7 +1480,7 @@ fn runner_setup(id: &'static str, n: usize, blocks: usize) -> ScaleRun {
     let (specs, rows, call) = match dim {
         "rows" => (1, n, 1_024),
         "specs" => (n, 4_096, 1_024),
-        "specs_per_call" => (n, 1_024, 16),
+        "specs_per_call" => (n, 512, 16),
         other => panic!("no runner cell {other:?}"),
     };
     let specs: Vec<Spec> = (0..specs)
