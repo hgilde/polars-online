@@ -1283,13 +1283,13 @@ fn ew_class_classifies_the_same_at_every_level() {
             let out = m.step(x, &[Some(label_of(*y))], d(i), 1.0);
             post.push(out.pred[1]);
             if i == MOVING - 1 {
-                at_stop = [m.class_cov(0).var(2), m.class_cov(1).var(2)];
+                at_stop = [m.class_cov(0).unwrap().var(2), m.class_cov(1).unwrap().var(2)];
             }
         }
         (
             post,
             at_stop,
-            [m.class_cov(0).var(2), m.class_cov(1).var(2)],
+            [m.class_cov(0).unwrap().var(2), m.class_cov(1).unwrap().var(2)],
         )
     };
     let (base, _, _) = run(0.5);
@@ -1360,10 +1360,10 @@ fn hmm_filters_the_same_at_every_level() {
             let s = m.step(x, &[], d(i), 1.0);
             out.push((s.pred[0], s.pred[s.pred.len() - 1]));
             if i == MOVING - 1 {
-                at_stop = [m.state_cov(0).var(2), m.state_cov(1).var(2)];
+                at_stop = [m.state_cov(0).unwrap().var(2), m.state_cov(1).unwrap().var(2)];
             }
         }
-        (out, at_stop, [m.state_cov(0).var(2), m.state_cov(1).var(2)])
+        (out, at_stop, [m.state_cov(0).unwrap().var(2), m.state_cov(1).unwrap().var(2)])
     };
     // Each state's weight is its share of the rows, so its spread decays at
     // that share of the rate: 2.7e-22 of its value at the stop, measured at

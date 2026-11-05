@@ -208,6 +208,17 @@ use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 /// saving bytes that load back to the same ([`kept_scale_rule`]), not to
 /// the current fixture's bytes.
 ///
+/// 65 kept since 66 gave `hmm` and `ew_class` under `covariance_type =
+/// "diag"` their variances alone (task 327): a 65 state keeps each state's
+/// or class's whole co-moments, and each window snapshot's, of which the
+/// shape read the diagonal alone, so it loads as their diagonals, goes on
+/// to the bit, and saves the current fixture's bytes of the same case --
+/// the windowed `ew_class_window` too, its snapshots carrying their running
+/// products since 63 (the windowed rule below is for the sets before
+/// them). The cases `hmm_diag` and `ew_class_diag` were written into
+/// `v65/` by the schema-65 build, so the conversion of each diagonal form
+/// is held, windowed and not.
+///
 /// The kept schemas, each a `v<N>/` directory found beside the current set.
 fn previous() -> Vec<u32> {
     frozen::PREVIOUS_SETS.iter().map(|(s, _)| *s).collect()
@@ -574,7 +585,7 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
                 && (sketches(&kept, "anchor") > 0 || holds_for_a_refit(&current.bytes()))
             {
                 kept_scale_rule(&case, &kept, &named(&m.state()), &what);
-            } else if windowed || moved.is_some() {
+            } else if (windowed && schema < 65) || moved.is_some() {
                 // A window's snapshots from before task 275 carry no running
                 // products (the doc above `previous`): converted, they say
                 // so, and the state saves bytes that load back to the same.
@@ -625,7 +636,11 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
                 // bit; once a snapshot taken after the load is the boundary,
                 // its products decay it, and the reads part from the old
                 // build's in their last bits, as a fresh run's do.
-                let tol = if windowed && i > 0 { tol.max(TOL) } else { tol };
+                let tol = if windowed && schema < 65 && i > 0 {
+                    tol.max(TOL)
+                } else {
+                    tol
+                };
                 let tol = moved.map_or(tol, |b| tol.max(b));
                 let got = m.step(row);
                 if let Some((_, slots)) = &within {
@@ -910,7 +925,11 @@ fn every_layout_a_schema_moved_is_written_by_a_fixture() {
     if regenerating() {
         return;
     }
-    const FORMS: [(&str, &[&str]); 46] = [
+    const FORMS: [(&str, &[&str]); 49] = [
+        // Schema 66 (task 327): a diagonal shape's variances alone.
+        ("hmm_diag", &["model", "Hmm", "diag_states"]),
+        ("ew_class_diag", &["model", "EwClass", "diag_classes"]),
+        ("ew_class_window", &["model", "EwClass", "diag_classes"]),
         (
             "marginal_window_lags",
             &["model", "Marginal", "lag", "origin", "x"],
@@ -1012,6 +1031,42 @@ fn every_layout_a_schema_moved_is_written_by_a_fixture() {
                 Some(!name.ends_with("_warming")),
                 "{name}: saved on the wrong side of the switch"
             );
+        }
+    }
+    // Each shape keeps one list (66, task 327): the diagonal ones their
+    // variances alone and no whole matrix, in the model and in every window
+    // snapshot; the others their matrices and no diagonal list.
+    for (name, variant, list, diag) in [
+        ("hmm_diag", "Hmm", "states", true),
+        ("hmm", "Hmm", "states", false),
+        ("ew_class_diag", "EwClass", "classes", true),
+        ("ew_class_window", "EwClass", "classes", true),
+        ("ew_class", "EwClass", "classes", false),
+    ] {
+        let f = frozen::ALL
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("{name}: no fixture; add the case and regenerate"));
+        let v = rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap();
+        let len = |key: &str| {
+            at(&v, &["model", variant, key])
+                .and_then(rmpv::Value::as_array)
+                .unwrap_or_else(|| panic!("{name}: the state has no {key}"))
+                .len()
+        };
+        let (whole, part) = (len(list), len(&format!("diag_{list}")));
+        assert_eq!((whole == 0, part == 0), (diag, !diag), "{name}: {whole} {part}");
+        if let Some(ring) = at(&v, &["model", variant, "win", "snaps", "ring"])
+            .and_then(rmpv::Value::as_array)
+        {
+            assert!(!ring.is_empty(), "{name}: the window holds no snapshot");
+            for (i, item) in ring.iter().enumerate() {
+                let moments = item.as_array().and_then(|t| t.get(2)).unwrap();
+                let n = |key: &str| at(moments, &[key]).and_then(rmpv::Value::as_array).map(Vec::len);
+                assert_eq!(n("classes"), Some(0), "{name}: snapshot {i}");
+                assert_eq!(n("diag_classes"), Some(3), "{name}: snapshot {i}");
+                assert!(held(at(moments, &["diag_classes"]).unwrap()) > 0, "{name}: snapshot {i}");
+            }
         }
     }
     // `huber_sum` asks for the sum-scale prior and the emitted scale, and

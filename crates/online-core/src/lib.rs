@@ -754,7 +754,18 @@ pub use window::{
 ///   no `|e|` reads the sketch it feeds until its refit, and a histogram
 ///   its warm-up still waits for is built so (`Binned`'s `before_65`).
 ///   Schema 64's fixtures are kept (`tests/state_fixtures/v64/`).
-pub const SCHEMA_VERSION: u32 = 65;
+/// - 66 (2026-11-05, task 327): `hmm` and `ew_class` under
+///   `covariance_type = "diag"` keep each state's or class's variances
+///   alone, an `EwCovDiag` in `diag_states` / `diag_classes` (and a
+///   windowed class's snapshots in `diag_classes` of `DiagMoments`), where
+///   they kept a whole `EwCov` and updated its `k²` co-moments a row to read
+///   `k` of them. Each variance's step reads no other entry, so nothing a
+///   row reports moves. A diagonal state of 65 or earlier keeps its whole
+///   matrices in `states` / `classes` and loads as their diagonals, going
+///   on to the bit and saving the bytes this build saves from the same
+///   rows; the other shapes load as they were, with the new list empty.
+///   Schema 65's fixtures are kept (`tests/state_fixtures/v65/`).
+pub const SCHEMA_VERSION: u32 = 66;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last

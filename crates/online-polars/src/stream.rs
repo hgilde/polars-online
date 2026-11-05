@@ -540,7 +540,7 @@ impl AnyModel {
             // class means.
             AnyModel::Hmm(m) => Some(
                 (0..m.cfg().k)
-                    .map(|s| m.state_cov(s).means().to_vec())
+                    .map(|s| m.state_means(s).to_vec())
                     .collect(),
             ),
             // corrchange has no coefficients: its outputs are the test.

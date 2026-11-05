@@ -194,12 +194,6 @@ impl EwCovDiag {
         &self.m
     }
 
-    /// What each mean's double leaves out, one per mean.
-    #[cfg(test)]
-    pub(crate) fn means_lo(&self) -> &[f64] {
-        &self.m_lo
-    }
-
     /// `x`'s deviation from mean `i`, the pair's ([`crate::comp::dev`]).
     #[inline]
     pub fn deviation(&self, i: usize, x: f64) -> f64 {
