@@ -45,6 +45,14 @@ returns.
 - `hmm` with `covariance_type="tied"` allocates nothing a row (7 before),
   with the same bits: 1.4.0's "allocates nothing a row" now holds for every
   covariance type (task 316).
+- `with_windows(group=...)` no longer costs time in proportion to the groups
+  it has seen. Each row walked every group that `gap_cap` had not cut,
+  though only the groups at the latest stamp had anything to resolve; now a
+  row touches only those, and none at all under `closed="left"` or
+  `"none"`. Measured on arm64, a release build, one `ewm_sum` over 100,000
+  rows of randomly interleaved groups, best of three: 3,225 → 170 ns a row
+  at 1,000 groups and 81,855 → 525 ns at 10,000. Outputs and saved states
+  are unchanged to the bit (task 325).
 
 ## [1.4.0] — 2026-11-03
 
