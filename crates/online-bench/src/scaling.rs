@@ -260,6 +260,9 @@ pub const CELLS: &[Cell] = &[
 /// `budgets.toml`'s `[scaling.cells]` declares: the cells where a count
 /// sees what a timing cannot -- a growth hidden under the cache's, or a
 /// constant only a few percent off -- and that are cheap under Valgrind.
+/// Each runs on the thread Callgrind counts: `po.gbdt`'s sample pushes its
+/// rows on a pool of its own, whose thread the count would miss, so it has
+/// none here.
 pub const BENCH_CELLS: &[&str] = &[
     "ewridge.k",
     "ewridge.history",
@@ -283,7 +286,6 @@ pub const BENCH_CELLS: &[&str] = &[
     "windows.kernels",
     "refresh.groups",
     "refresh.history",
-    "gbdt.history",
 ];
 
 /// The bench id of one size of a cell: `scale_<surface>_by_<dimension>_small`

@@ -168,8 +168,6 @@ fn windows(mut run: WindowsCase) -> WindowsCase {
 #[bench::scale_refresh_by_groups_large(args = ("refresh.groups:large"), setup = scale_setup)]
 #[bench::scale_refresh_by_history_small(args = ("refresh.history:small"), setup = scale_setup)]
 #[bench::scale_refresh_by_history_large(args = ("refresh.history:large"), setup = scale_setup)]
-#[bench::scale_gbdt_by_history_small(args = ("gbdt.history:small"), setup = scale_setup)]
-#[bench::scale_gbdt_by_history_large(args = ("gbdt.history:large"), setup = scale_setup)]
 fn scaling(mut run: ScaleRun) -> ScaleRun {
     if run.on_the_pool() {
         let pool = online_polars::pool().expect("the bank's pool, built by the setup");

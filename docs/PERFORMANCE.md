@@ -448,7 +448,7 @@ the state in that size (written in `n`, the size), the reason, and the four
 native ratios from large to small as measured on 2026-11-05 (a debug build,
 `cargo test -p online-bench --test scaling -- --include-ignored` with
 `SCALING_REPORT=1`, which prints them). A row's time and allocations are per
-row; the saved state and the heap are the state's. `(CI)` marks the 23 cells
+row; the saved state and the heap are the state's. `(CI)` marks the 22 cells
 Callgrind also counts. A cell whose ratio reads below 1 got cheaper at the
 larger size: a fixed cost shared by more rows, or a block that held its
 largest buffer at the smaller.
@@ -564,7 +564,7 @@ largest buffer at the smaller.
 | `refresh.pairs` | series m, pairs | 8 → 64 | O(n) | O(n^2) | a tick updates its m−1 pairs; m² pairs held | 10.45 · 8.96 · 67.43 · 43.77 |
 | `refresh.groups` (CI) | groups G | 100 → 800 | O(1) | O(n) | a tick touches its group | 1.01 · 1.00 · 8.05 · 7.70 |
 | `refresh.history` (CI) | ticks already seen | 1,000 → 8,000 | O(1) | O(1) | the grid's last values only | 1.00 · 1.00 · 1.00 · 1.00 |
-| `gbdt.history` (CI) | rows offered | 10,000 → 80,000 | O(1) | O(1) | a priority sample: a row is kept or not by its hash, the heap holds the sample | 0.53 · 0.83 · 1.00 · 1.00 |
+| `gbdt.history` | rows offered | 10,000 → 80,000 | O(1) | O(1) | a priority sample: a row is kept or not by its hash, the heap holds the sample | 0.53 · 0.83 · 1.00 · 1.00 |
 | `gbdt.sample` | sample size N | 1,000 → 8,000 | O(log n) | O(n) | a heap of N, log N; N rows kept | 1.90 · 1.01 · 8.00 · 7.30 |
 
 The surfaces and sizes the cells above do not measure, each with where it is

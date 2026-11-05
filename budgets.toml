@@ -411,12 +411,6 @@ growth = "1"
 small = 1000
 large = 8000
 
-[scaling.cells."gbdt.history"]
-what = "po.gbdt's sample of 1,000 rows, offered 1,000 rows after 10,000, then after 80,000"
-growth = "1"
-small = 10000
-large = 80000
-
 # --- memory ----------------------------------------------------------------------
 # Bytes per row of every output field of every model at its fullest, over the
 # same rows (tests/test_budgets_memory.py), and the peak resident memory a
