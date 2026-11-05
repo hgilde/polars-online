@@ -208,6 +208,14 @@ use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 /// saving bytes that load back to the same ([`kept_scale_rule`]), not to
 /// the current fixture's bytes.
 ///
+/// 65 kept since 66 gave `corrchange(kind = "window")` the count of rows
+/// its ring has taken, `ring_rows`, which numbers the rows its merged sums
+/// are cut by (task 328). It is written only where it is not 0, so a
+/// monitor or sequential state's bytes are as they were; a window's state
+/// of 65 has none and is numbered from its ring's oldest row. No case of
+/// 65 holds a window, so each converts to the current bytes exactly, and
+/// the count's form is the new case `corrchange_window`.
+///
 /// The kept schemas, each a `v<N>/` directory found beside the current set.
 fn previous() -> Vec<u32> {
     frozen::PREVIOUS_SETS.iter().map(|(s, _)| *s).collect()
@@ -904,13 +912,16 @@ fn held(v: &rmpv::Value) -> usize {
 /// spread per target, under a half-life (`holt`) and without one
 /// (`holt_inf`). `marginal`'s windowed lag moments about an origin (64,
 /// task 280 phase 3): `marginal_window_lags` keeps the origin and the
-/// lagged sides' sums.
+/// lagged sides' sums. `corrchange`'s count of the rows its window ring has
+/// taken (66, task 328): `corrchange_window` is saved past the ring's
+/// first row, so the count is more than the ring holds.
 #[test]
 fn every_layout_a_schema_moved_is_written_by_a_fixture() {
     if regenerating() {
         return;
     }
-    const FORMS: [(&str, &[&str]); 46] = [
+    const FORMS: [(&str, &[&str]); 47] = [
+        ("corrchange_window", &["model", "CorrChange", "ring_rows"]),
         (
             "marginal_window_lags",
             &["model", "Marginal", "lag", "origin", "x"],

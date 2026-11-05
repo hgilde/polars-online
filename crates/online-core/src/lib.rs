@@ -119,6 +119,7 @@ mod stats;
 mod tails;
 mod warmup;
 mod window;
+mod window_moments;
 
 pub use audit::{
     Audit, AuditCfg, ClockReport as AuditClock, ColumnReport as AuditColumn, DISTINCT_CAP,
@@ -754,7 +755,17 @@ pub use window::{
 ///   no `|e|` reads the sketch it feeds until its refit, and a histogram
 ///   its warm-up still waits for is built so (`Binned`'s `before_65`).
 ///   Schema 64's fixtures are kept (`tests/state_fixtures/v64/`).
-pub const SCHEMA_VERSION: u32 = 65;
+/// - 66 (2026-11-05, task 328): `corrchange(kind = "window")` merges its
+///   windows' correlations from summaries of blocks of rows, cut by each
+///   row's number since the ring last started; the state keeps that count,
+///   `ring_rows`, written only where it is not 0, and rebuilds the sums
+///   from the ring on load. A window's state of 65 or earlier has none and
+///   is numbered from its ring's oldest row: a numbering as good as any,
+///   whose reports are within the merged sums' rounding of the exact
+///   statistic, as every numbering's are. A window short enough to be read
+///   whole (fewer than four blocks) reports the bits it did. Schema 65's
+///   fixtures are kept (`tests/state_fixtures/v65/`).
+pub const SCHEMA_VERSION: u32 = 66;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last

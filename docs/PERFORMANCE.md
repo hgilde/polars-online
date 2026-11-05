@@ -520,8 +520,8 @@ largest buffer at the smaller.
 | `seqtest.targets` | targets T | 1 → 8 | O(n) | O(n) | a test a target | 4.85 · 1.00 · 4.60 · 1.37 |
 | `seqtest.history` | rows already seen | 1,000 → 8,000 | O(1) | O(1) | running evidence only | 0.98 · 1.00 · 1.00 · 1.00 |
 | `corrchange.k` | columns k, monitor | 2 → 16 | O(n^2) | O(n^2) | every pair's correlation, k² | 38.98 · 1.24 · 3.21 · 1.02 |
-| `corrchange.window` **finding S3** | window W rows | 100 → 800 | O(1) | O(n) | the two windows' sums can move a row in, a row out: k² a row, W rows held | 7.80 · 1.00 · 7.78 · 7.18 |
-| `corrchange.window_crit` **finding S3** | window W rows, a fixed threshold | 100 → 800 | O(1) | O(n) | as above, with no permutation drawn | 7.97 · 1.00 · 7.78 · 7.18 |
+| `corrchange.window` | window W rows | 100 → 800 | O(1) | O(n) | each window merged from block summaries: the rows at its two ends and a few merges, about k³ a row; 2W rows held, and the summaries of at most 2W/b blocks | 0.94 · 0.98 · 7.78 · 7.27 |
+| `corrchange.window_crit` | window W rows, a fixed threshold | 100 → 800 | O(1) | O(n) | as above, with no permutation drawn | 0.96 · 0.98 · 7.78 · 7.27 |
 | `corrchange.history` | rows already seen | 1,000 → 8,000 | O(1) | O(1) | the two windows only | 1.00 · 1.00 · 1.00 · 1.00 |
 | `bocpd.max_run` | runs R | 25 → 200 | O(n) | O(n) | each run's sufficient statistics, R·d | 9.14 · 1.00 · 7.45 · 4.55 |
 | `bocpd.k` | columns d, diagonal | 2 → 16 | O(n) | O(n) | R·d | 3.19 · 1.00 · 5.89 · 2.19 |
@@ -632,14 +632,14 @@ output -- and by the load the machine carried.
 ### What the table found
 
 Every cell above was measured before any of them gated. Three findings
-exceeded their declaration. S1 is fixed and its cell gates; S2 and S3 are
-held in the extended tier until they are:
+exceeded their declaration. S1 and S3 are fixed and their cells gate; S2 is
+held in the extended tier until it is:
 
 | finding | cell | measured | declared | the cause |
 |---|---|---|---|---|
 | S1, fixed | `runner.specs_per_call` | allocations 10.5x for 8x the specs from 8 to 64, at calls of 16 rows, and 13.3x from 16 to 128 (376,098 to 5,008,296 over three blocks of 512 rows), time 10.3x; 407 allocations a call at 16 specs and 24,770 at 128 (61x for 8x) | O(specs) a call | `crates/online-polars/src/runner.rs`, `augment`: the bank's columns were appended to the chunk one spec at a time with `DataFrame::with_column`, which looks each name up through the frame's cached schema; the insert before it dropped that cache, so each spec's struct column rebuilt the schema of every column before it, copying their fields. Now `with_columns` joins them in one pass over the names, the same frame column for column (a name the chunk has is replaced where it stands, as before): 7.79x in allocations and 7.75x in time from 16 specs to 128 |
 | S2 | `hmm.k`, `ew_class.k_diag` | saved state 13.6x for 8x the columns (`hmm`, 2 to 16), 33.2x (`ew_class`, 4 to 32) | O(k) under `covariance_type="diag"` | `crates/online-core/src/hmm.rs` (`states: Vec<EwCov>`) and `crates/online-core/src/ewclass.rs` (`classes: Vec<EwCov>`): every state or class keeps its full co-moment matrix and updates it, O(k²) a row, where the diagonal model reads only the k variances |
-| S3 | `corrchange.window`, `corrchange.window_crit` | time 7.8x to 7.9x for 8x the window, with a fixed threshold too | O(1) a row in `window_rows` | `crates/online-core/src/corrchange.rs`, the `"window"` report in `step`: both windows' correlations are computed afresh from the ring on every row (`window_stat_by` over `2·window_rows` rows), O(window_rows·k²) a row, where sums over each window moved by the row entering and the row leaving cost O(k²). The permutation draws are a separate O(n_perm·window_rows·k²) every `permute_every_rows` rows, by design |
+| S3, fixed | `corrchange.window`, `corrchange.window_crit` | time 7.8x to 7.9x for 8x the window, with a fixed threshold too | O(1) a row in `window_rows` | `crates/online-core/src/corrchange.rs`, the `"window"` report in `step`: both windows' correlations were computed afresh from the ring on every row (`window_stat_by` over `2·window_rows` rows), O(window_rows·k²) a row. Now each window is merged from summaries of blocks of `⌈k/2⌉ + 3` rows -- a count, an anchor row, the mean's offset from it and the centred co-moments, combined by Chan, Golub and LeVeque's pairwise rule, which needs no subtraction of a row that leaves (`crates/online-core/src/window_moments.rs`): a chunk of blocks keeps its suffix sums and a running prefix sum, so a window's full blocks are one suffix and one prefix, and only the rows at its two ends are read. 0.94x and 0.96x in time from 100 to 800 rows (2.31 ms to 2.18 ms a block of 200 rows in a debug build, where the old code took 17.2 ms to 133.7 ms); natively (release, arm64, 200 draws, the default cadence), 6.6, 5.0 and 5.6 µs a row at windows of 100, 800 and 2,500 rows over four columns, where the old code at its cadence of 50 rows took 12.5, 72.0 and 296.9, and 27.8, 28.0 and 29.2 µs over twenty columns, where it took 61.5, 494.0 and 1,598.3. The summaries hold no more numbers than the ring: the state's heap is 1.8x the old one's at both sizes (23,858 and 179,762 bytes), and its saved bytes are the old ones, the summaries rebuilt from the ring on load. A window of fewer than four blocks is read whole, where the two passes cost no more. The permutation draws are a separate O(n_perm·window_rows·k²) at each redraw; unset, `permute_every_rows` is now `window_rows`, so their cost is O(n_perm·k²) a row too |
 
 Three declarations were corrected, each the algorithm's own growth:
 `rcov.k` (O(k) to O(k²): each lag of the kernel adds a k×k outer product,

@@ -3541,6 +3541,20 @@ windows, redrawn every `permute_every_rows` rows. The shuffles move blocks of
 null too liberal. To skip the permutations, give `crit=` as a fixed
 threshold. The same `seed` gives the same critical values.
 
+**A window's report costs the same whatever its length; its redraws are
+held for a window's length.** Each window's correlations are merged from
+summaries of blocks of rows -- a block's count, mean and centred
+co-moments, kept once and combined by the pairwise update rule -- so a
+report reads only the rows at each window's ends, about `k/2 + 3` of them,
+plus a handful of merges. A row that leaves a window is never subtracted, so
+nothing drifts, and each mean is kept against one of its rows, so a level of
+1e8 under a spread of 1 costs no accuracy: the statistic is within a few
+units of rounding of the exact one. A redraw shuffles the `2 * window_rows`
+pooled rows `n_perm` times, so `permute_every_rows` defaults to
+`window_rows`: the redraws then cost `n_perm * k**2` a row whatever the
+window, and each value is held until the windows have moved past the rows it
+was drawn from.
+
 **The window test's size is about `alpha`.** A report flags when fewer
 than `floor(alpha * (n_perm + 1))` shuffles reach its statistic. That counts
 the observed split as one more shuffle, so on rows with no change its rank
@@ -3550,8 +3564,10 @@ and the default 200 shuffles. The critical value is drawn from the windows
 after a report, though, and held for `permute_every_rows` reports, so each
 later report is compared with shuffles of windows a few rows older than its
 own, and the size is near that figure rather than held to it. Over 200
-streams of iid rows, at `alpha` 0.05 and 200 shuffles, 5.1% of
-non-overlapping spans flagged. Fewer than `ceil(1/alpha) - 1` shuffles could never
+streams of iid rows, at `alpha` 0.05 and 200 shuffles, each value held for
+`window_rows` reports (the default), 4.8% to 5.2% of non-overlapping spans
+flagged at windows of 50 to 400 rows, each within one standard error
+(0.24%) of 5%. Fewer than `ceil(1/alpha) - 1` shuffles could never
 flag, so such an `n_perm` is refused: 99 at least at `alpha` 0.01.
 
 **Count a run of the window kind's flags as one change.** Two windows that

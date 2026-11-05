@@ -1789,6 +1789,22 @@ pub fn all() -> Vec<Case> {
             Targets::None,
             40
         ),
+        // Two windows of 16 rows over two columns, four blocks of four
+        // rows: their sums merged, the ring past its first row, so the
+        // count of rows it has taken (schema 66) is more than it holds.
+        case!(
+            "corrchange_window",
+            "CorrChange",
+            CorrChange,
+            CorrChange::new(CorrChangeCfg {
+                span_rows: 16,
+                ..corrchange_cfg(CorrChangeKind::Window)
+            })
+            .unwrap(),
+            K,
+            Targets::None,
+            40
+        ),
         case!(
             "corrchange_sequential",
             "CorrChange",

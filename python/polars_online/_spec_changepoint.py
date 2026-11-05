@@ -525,10 +525,13 @@ def corrchange(
     the default 200. The size here is about that, not exactly it: the
     critical value is drawn from the windows after a report and held for
     ``permute_every_rows`` reports, so each later report is compared with
-    draws of windows a few rows older than its own. Over 200 streams of iid
-    rows at alpha 0.05 and 200 draws, 5.1% of non-overlapping spans flagged. Fewer than ``ceil(1 /
-    alpha) - 1`` draws could never flag, so such an ``n_perm`` is refused: at
-    alpha 0.01, 99 draws at least.
+    draws of windows up to ``permute_every_rows - 1`` rows older than its
+    own. Over 200 streams of iid rows at alpha 0.05 and 200 draws, with the
+    value held for ``window_rows`` reports (the default), 4.8% to 5.2% of
+    non-overlapping spans flagged at windows of 50 to 400 rows, each within
+    one standard error (0.24%) of 5%. Fewer than ``ceil(1 / alpha) - 1``
+    draws could never flag, so such an ``n_perm`` is refused: at alpha 0.01,
+    99 draws at least.
     The draws are in blocks of ``perm_block``, so that serial dependence does
     not make the null too liberal. It is not a sign-flip null, which a first
     reading of the literature suggests. Negating a whole row leaves every ``x
@@ -595,8 +598,16 @@ def corrchange(
     ``n_perm``, ``permute_every_rows``, ``perm_block``, ``seed``
         ``"window"``'s permutation quantile: ``n_perm`` draws (default 200, at
         least 20 and at least ``ceil(1 / alpha) - 1``, at most 2^20), redrawn
-        every ``permute_every_rows`` rows (default 50, at least 1), in blocks
-        of ``perm_block`` rows (default 1, at most ``window_rows``). ``seed``
+        every ``permute_every_rows`` rows (default ``window_rows``, at least
+        1), in blocks of ``perm_block`` rows (default 1, at most
+        ``window_rows``). A redraw shuffles the ``2 * window_rows`` pooled rows
+        ``n_perm`` times and reads both windows' correlations each time, so it
+        costs ``n_perm * window_rows * k**2`` for ``k`` features. Redrawn once
+        a window's length of rows, that is ``n_perm * k**2`` a row, whatever
+        the window: the default keeps the draws' cost per row from growing
+        with ``window_rows``, and holds each value for one shift of the
+        windows, after which they share no row with the windows it was drawn
+        from. A smaller value redraws more often, at more cost a row. ``seed``
         (default 0) seeds the draws, so two runs with the same seed report the
         same critical values; ``None`` is 0, and nothing draws from the
         system's entropy.

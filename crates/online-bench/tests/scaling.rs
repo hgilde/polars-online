@@ -363,11 +363,3 @@ fn hold_finding(id: &str) {
 fn finding_s2_a_diagonal_covariance_keeps_o_k() {
     hold_finding("S2");
 }
-
-/// `corrchange(kind="window")` computes both windows' correlations afresh
-/// on every row: `O(window_rows · k²)` a row.
-#[test]
-#[ignore = "extended: scaling finding S3, corrchange's window costs O(window_rows) a row"]
-fn finding_s3_corrchange_window_costs_o_1_a_row_in_its_window() {
-    hold_finding("S3");
-}
