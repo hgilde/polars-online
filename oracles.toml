@@ -5116,25 +5116,25 @@ n = 50
 
 [case."oracles.quantile_eps.eps_0_1_n_80000_from_the_smoothed_fit"]
 ideal = 0.0
-worst = 0.00319097
+worst = 0.00326381
 p95 = 0.00270255
 n = 50
 
 [case."oracles.quantile_eps.eps_0_5_n_20000_from_the_smoothed_fit"]
 ideal = 0.0
-worst = 0.0218907
+worst = 0.0181596
 p95 = 0.0143926
 n = 50
 
 [case."oracles.quantile_eps.eps_0_5_n_5000_from_the_smoothed_fit"]
 ideal = 0.0
-worst = 0.0471903
-p95 = 0.0353774
+worst = 0.0444493
+p95 = 0.0331394
 n = 50
 
 [case."oracles.quantile_eps.eps_0_5_n_80000_from_the_smoothed_fit"]
 ideal = 0.0
-worst = 0.0110238
+worst = 0.0114648
 p95 = 0.00778801
 n = 50
 
@@ -5153,13 +5153,13 @@ n = 50
 [case."oracles.quantile_huge_ridge.tau_0_5_n_20000_smoothed"]
 ideal = 0.0
 worst = 0.000950647
-p95 = 0.000813482
+p95 = 0.000792353
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_5_n_20000_smoothed_in_se"]
 ideal = 0.0
 worst = 0.0448157
-p95 = 0.0382609
+p95 = 0.0372671
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_5_n_5000_quantreg_se"]
@@ -5224,14 +5224,14 @@ n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_20000_smoothed"]
 ideal = 0.0
-worst = 0.00595934
-p95 = 0.00372258
+worst = 0.00544047
+p95 = 0.00336418
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_20000_smoothed_in_se"]
 ideal = 0.0
-worst = 0.196217
-p95 = 0.119417
+worst = 0.179133
+p95 = 0.107118
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_5000_quantreg_se"]
@@ -5248,13 +5248,13 @@ n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_5000_smoothed"]
 ideal = 0.0
-worst = 0.0115512
+worst = 0.0118157
 p95 = 0.0103028
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_5000_smoothed_in_se"]
 ideal = 0.0
-worst = 0.192449
+worst = 0.196856
 p95 = 0.158364
 n = 50
 
@@ -5272,14 +5272,14 @@ n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_80000_smoothed"]
 ideal = 0.0
-worst = 0.00367539
-p95 = 0.00250494
+worst = 0.00305384
+p95 = 0.00233735
 n = 50
 
 [case."oracles.quantile_huge_ridge.tau_0_9_n_80000_smoothed_in_se"]
 ideal = 0.0
-worst = 0.228592
-p95 = 0.161622
+worst = 0.190958
+p95 = 0.150702
 n = 50
 
 [case."oracles.quantile_mixed_scales.tau_0_5_standardized_se"]
@@ -7535,3 +7535,35 @@ to = 0.4
 date = 2026-11-05
 reason = "a case that moves with the runner's CPU: the same hmm code read the worst seed's error over its derived bound at 0.0713456 (run 41953172781, a7b5c85b) and 0.052624 (run 42045692666, 2037f872, whose changes touch no hmm path), 36% apart; the rule amplifies whichever last bits numpy's SIMD kernels and libm give on that CPU (task 322), and the measure is a ratio to a bound that stays under 1 on both; 40% covers that spread"
 changelog = "A case that moves with the runner's CPU has its own tolerance"
+
+[[raised]]
+key = "oracles.quantile_eps.eps_0_1_n_80000_from_the_smoothed_fit.worst"
+from = 0.00319097
+to = 0.00326381
+date = 2026-11-05
+reason = "the MAD scale's warm-up is now the exact weighted median of the refit's held residuals, not a sketch anchored at the first residual, and the oracle's bandwidth is that exact median; these grids run without decay, so the first 500 rows' changed scale persists to the end of each stream. CI's linux-x86_64 run on 31ee42bd (42056482026) read this worst 2-4% over while the same run tightened nine other numbers of the two groups"
+changelog = "no longer takes its sketch's units from the"
+
+[[raised]]
+key = "oracles.quantile_eps.eps_0_5_n_80000_from_the_smoothed_fit.worst"
+from = 0.0110238
+to = 0.0114648
+date = 2026-11-05
+reason = "the MAD scale's warm-up is now the exact weighted median of the refit's held residuals, not a sketch anchored at the first residual, and the oracle's bandwidth is that exact median; these grids run without decay, so the first 500 rows' changed scale persists to the end of each stream. CI's linux-x86_64 run on 31ee42bd (42056482026) read this worst 2-4% over while the same run tightened nine other numbers of the two groups"
+changelog = "no longer takes its sketch's units from the"
+
+[[raised]]
+key = "oracles.quantile_huge_ridge.tau_0_9_n_5000_smoothed.worst"
+from = 0.0115512
+to = 0.0118157
+date = 2026-11-05
+reason = "the MAD scale's warm-up is now the exact weighted median of the refit's held residuals, not a sketch anchored at the first residual, and the oracle's bandwidth is that exact median; these grids run without decay, so the first 500 rows' changed scale persists to the end of each stream. CI's linux-x86_64 run on 31ee42bd (42056482026) read this worst 2-4% over while the same run tightened nine other numbers of the two groups"
+changelog = "no longer takes its sketch's units from the"
+
+[[raised]]
+key = "oracles.quantile_huge_ridge.tau_0_9_n_5000_smoothed_in_se.worst"
+from = 0.192449
+to = 0.196856
+date = 2026-11-05
+reason = "the MAD scale's warm-up is now the exact weighted median of the refit's held residuals, not a sketch anchored at the first residual, and the oracle's bandwidth is that exact median; these grids run without decay, so the first 500 rows' changed scale persists to the end of each stream. CI's linux-x86_64 run on 31ee42bd (42056482026) read this worst 2-4% over while the same run tightened nine other numbers of the two groups"
+changelog = "no longer takes its sketch's units from the"

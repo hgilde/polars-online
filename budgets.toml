@@ -93,7 +93,7 @@ budget = 6395189
 
 [instructions.huber_k20_refit]
 what = "huber, 20 features, 1 target, half-life 1000, the MAD scale, the refit of the first 2,500 rows on the block's 500th row: AnyModel::step_into, into one kept Step"
-budget = 46955773
+budget = 48112220
 
 [instructions.sgd]
 what = "sgd, 20 features, squared loss, learning rate 0.01, standardized: AnyModel::step_into, into one kept Step"
@@ -101,11 +101,11 @@ budget = 2427776
 
 [instructions.sgd_huber]
 what = "sgd, 20 features, Huber loss in the MAD scale, learning rate 0.01, standardized: AnyModel::step_into, into one kept Step"
-budget = 2753466
+budget = 2815341
 
 [instructions.sgd_huber_refit]
 what = "sgd, 20 features, Huber loss in the MAD scale, learning rate 0.01, standardized, the refit of the first 2,500 rows on the block's 500th row: AnyModel::step_into, into one kept Step"
-budget = 30324016
+budget = 31454774
 
 [instructions.pa]
 what = "pa, 20 features, standardized: AnyModel::step_into, into one kept Step"
@@ -188,7 +188,7 @@ budget = 14262785
 
 [instructions.quantile_refit]
 what = "quantile, the median, 20 features, half-life 1000, the refit of the first 2,500 rows on the block's 500th row: AnyModel::step_into, into one kept Step"
-budget = 45636328
+budget = 46716819
 
 [instructions.ftrl]
 what = "ftrl, 20 features, logistic loss, half-life 1000: AnyModel::step_into, into one kept Step"
@@ -1539,3 +1539,35 @@ to = 5878980
 date = 2026-11-01
 reason = "task 292's P8, in the VM's variant A: the benchmark builds rayon's global pool at the end of each model case's warm-up, so sgd_huber_refit's count no longer moves with the process environment's size. corrchange's monitored span ran single-threaded before (1 thread against 5), and its allocations now take glibc's multi-threaded path: +1.70% (CI's count on c1975c43, 5,878,980), all of it in malloc and free, the model's own instructions unchanged (the VM's Callgrind, R-V7). Its process now runs threads as a production one does"
 changelog = "The instruction-count benchmarks build rayon's thread pool at the end of"
+
+[[raised]]
+key = "instructions.huber_k20_refit"
+from = 46955773
+to = 48112220
+date = 2026-11-05
+reason = "task 323: while a refit waits, the MAD scale is the exact weighted median of the residuals the refit holds, read from a treap of them (O(log n) a row, the nodes reserved with the buffer), where it was a one-pass sketch anchored at the first residual, which a quiet start defeats for the life of the sketch; the block's warm-up rows pay the tree's insert and read. CI's count on 31ee42bd (run 42056482021)"
+changelog = "While a refit waits, the MAD scale is read from a tree of the held"
+
+[[raised]]
+key = "instructions.quantile_refit"
+from = 45636328
+to = 46716819
+date = 2026-11-05
+reason = "task 323: while a refit waits, the MAD scale is the exact weighted median of the residuals the refit holds, read from a treap of them (O(log n) a row, the nodes reserved with the buffer), where it was a one-pass sketch anchored at the first residual, which a quiet start defeats for the life of the sketch; the block's warm-up rows pay the tree's insert and read. CI's count on 31ee42bd (run 42056482021)"
+changelog = "While a refit waits, the MAD scale is read from a tree of the held"
+
+[[raised]]
+key = "instructions.sgd_huber"
+from = 2753466
+to = 2815341
+date = 2026-11-05
+reason = "task 323: while a refit waits, the MAD scale is the exact weighted median of the residuals the refit holds, read from a treap of them (O(log n) a row, the nodes reserved with the buffer), where it was a one-pass sketch anchored at the first residual, which a quiet start defeats for the life of the sketch; the block's warm-up rows pay the tree's insert and read. CI's count on 31ee42bd (run 42056482021)"
+changelog = "While a refit waits, the MAD scale is read from a tree of the held"
+
+[[raised]]
+key = "instructions.sgd_huber_refit"
+from = 30324016
+to = 31454774
+date = 2026-11-05
+reason = "task 323: while a refit waits, the MAD scale is the exact weighted median of the residuals the refit holds, read from a treap of them (O(log n) a row, the nodes reserved with the buffer), where it was a one-pass sketch anchored at the first residual, which a quiet start defeats for the life of the sketch; the block's warm-up rows pay the tree's insert and read. CI's count on 31ee42bd (run 42056482021)"
+changelog = "While a refit waits, the MAD scale is read from a tree of the held"
