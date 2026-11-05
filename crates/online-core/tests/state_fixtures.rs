@@ -2144,6 +2144,139 @@ fn regenerate_when_asked() {
     }
 }
 
+/// Where `got` is not `want` field for field -- the same map keys in the
+/// same order, the same array lengths, every value but a float equal, and
+/// each float within `bound` by [`agree`] -- the first place it is not:
+/// [`same_but_floats`] as a finding rather than a panic.
+fn first_difference(got: &rmpv::Value, want: &rmpv::Value, bound: f64, at: &str) -> Option<String> {
+    use rmpv::Value as V;
+    match (got, want) {
+        (V::Map(g), V::Map(w)) => {
+            if g.len() != w.len() {
+                return Some(format!("{at}: {} keys against {}", g.len(), w.len()));
+            }
+            g.iter().zip(w).find_map(|((gk, gv), (wk, wv))| {
+                if gk == wk {
+                    first_difference(gv, wv, bound, &format!("{at}.{gk}"))
+                } else {
+                    Some(format!("{at}: key {gk} against {wk}"))
+                }
+            })
+        }
+        (V::Array(g), V::Array(w)) => {
+            if g.len() != w.len() {
+                return Some(format!("{at}: {} entries against {}", g.len(), w.len()));
+            }
+            g.iter()
+                .zip(w)
+                .enumerate()
+                .find_map(|(i, (gv, wv))| first_difference(gv, wv, bound, &format!("{at}[{i}]")))
+        }
+        (V::F64(g), V::F64(w)) => {
+            (!agree(*g, *w, bound)).then(|| format!("{at}: {g:e} against {w:e}"))
+        }
+        _ => (got != want).then(|| format!("{at}: {got} against {want}")),
+    }
+}
+
+/// Where the current build's run of `case` is not the committed fixture
+/// `f`, which another platform wrote: the state's layout exactly and its
+/// numbers within the golden files' tolerance, the continuation's inputs
+/// to the bit and its reports within the same tolerance. A decay or a
+/// log-likelihood runs through libm, whose last bit is the platform's.
+fn differs_from_another_writer(case: &Case, f: &Fixture) -> Option<String> {
+    let (mut m, rows) = saved(case);
+    let decode = |b: &[u8]| rmpv::decode::read_value(&mut &b[..]).unwrap();
+    let state = first_difference(
+        &decode(&named(&m.state())),
+        &decode(&f.bytes()),
+        TOL,
+        "state",
+    );
+    if state.is_some() {
+        return state;
+    }
+    let after = &rows[case.before..];
+    let frozen = f.rows();
+    if after.len() != frozen.len() {
+        return Some(format!(
+            "{} continuation rows against {}",
+            after.len(),
+            frozen.len()
+        ));
+    }
+    let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    let ybits = |v: &[Option<f64>]| v.iter().map(|x| x.map(f64::to_bits)).collect::<Vec<_>>();
+    for (i, ((r, fr), want)) in after.iter().zip(&frozen).zip(f.outs()).enumerate() {
+        let same_row = bits(&r.x) == bits(&fr.x)
+            && ybits(&r.y) == ybits(&fr.y)
+            && r.d.to_bits() == fr.d.to_bits()
+            && r.w.to_bits() == fr.w.to_bits();
+        if !same_row {
+            return Some(format!("row {i} after the save: another input"));
+        }
+        let got = m.step(r);
+        let numbers = |o: &Out| {
+            o.pred
+                .iter()
+                .copied()
+                .chain([o.n_eff])
+                .chain(o.extra.iter().copied())
+                .collect::<Vec<_>>()
+        };
+        let (g, w) = (numbers(&got), numbers(&want));
+        if g.len() != w.len() || g.iter().zip(&w).any(|(a, b)| !agree(*a, *b, TOL)) {
+            return Some(format!("row {i} after the save: another report"));
+        }
+    }
+    None
+}
+
+/// **The committed fixtures are what this build writes.** Every case of
+/// the current schema is run as `PRINT_STATE_FIXTURES=1` runs it, in
+/// memory, and set beside its committed file: where the platform that
+/// wrote the file is this one, the text [`file_of`] would write must be
+/// the file's, byte for byte; elsewhere the state's layout must be the
+/// same and its numbers and the continuation's within the golden
+/// tolerance ([`differs_from_another_writer`]). The other checks load a
+/// fixture, go on from it and save it again, which a file written before
+/// a change in what a case saves still passes: it loads and re-saves its
+/// own bytes. This one fails on such a file, and names it, so a change
+/// that moves what a case writes regenerates the set in the same change.
+#[test]
+fn the_committed_fixtures_are_what_this_build_writes() {
+    if regenerating() {
+        return;
+    }
+    let mut stale = Vec::new();
+    for case in &all() {
+        let file = format!("{}.rs", case.name);
+        let f = frozen::ALL
+            .iter()
+            .find(|f| f.name == case.name)
+            .unwrap_or_else(|| {
+                panic!("{file}: no committed fixture; regenerate with `{REGENERATE}`")
+            });
+        let why = if f.writer == writer() {
+            let committed = std::fs::read_to_string(dir().join(&file))
+                .unwrap_or_else(|e| panic!("{file}: {e}"));
+            (file_of(case) != committed).then(|| "the text this build writes is another".to_owned())
+        } else {
+            differs_from_another_writer(case, f)
+        };
+        if let Some(why) = why {
+            stale.push(format!("{file} ({why})"));
+        }
+    }
+    assert!(
+        stale.is_empty(),
+        "{} committed fixture(s) are not what this build writes: {}. If the change that moved \
+         them is intended, regenerate the set with `{REGENERATE}`",
+        stale.len(),
+        stale.join("; ")
+    );
+}
+
 /// The anchored MAD sketches' forms (schema 64, task 278, the user's
 /// 2026-10-26; schema 65, task 323). `huber_mad_anchored`,
 /// `sgd_huber_mad_anchored`, `marginal_bins_huber_anchored`, `quantile_mad`

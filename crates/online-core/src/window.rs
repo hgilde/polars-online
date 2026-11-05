@@ -1815,6 +1815,7 @@ mod tests {
                 q: None,
             };
             let cut = truncated(&cov, &old, 1.0).expect("a window");
+            diag_agrees(&cov, &old, 1.0);
             assert_eq!(cut.n_eff(), 4.0);
             let bound = 64.0 * f64::EPSILON * 9.0;
             assert_eq!(bound, 144.0 * unit, "the bound is exact");
@@ -1904,6 +1905,7 @@ mod tests {
                         let old = &snaps[first];
                         let f = (first..t).fold(1.0, |f, _| f * lam);
                         let out = truncated(&cov, old, f).expect("rows inside");
+                        diag_agrees(&cov, old, f);
                         // The bound without the level's part.
                         let (w_now, w_old) = (cov.n_eff(), f * old.w);
                         let w = w_now - w_old;
@@ -1938,6 +1940,19 @@ mod tests {
         }
         println!("the smallest kept variance over its bound, and where: {least:?}");
         assert!(least.0 > 1.0, "{least:?}");
+    }
+
+    /// [`truncated_diag`] over `cov`'s and `old`'s diagonals is
+    /// [`truncated`]'s diagonal, to the bit: the cases that hold the full
+    /// form's bound at its edge, its level's part and its Kish floor hold
+    /// the diagonal form's too.
+    fn diag_agrees(cov: &EwCov, old: &Moments, f: f64) {
+        let full = truncated(cov, old, f).map(|c| EwCovDiag::of(&c));
+        let part = truncated_diag(&EwCovDiag::of(cov), &DiagMoments::of_full(old), f);
+        assert_eq!(
+            part, full,
+            "the diagonal form against the full one's diagonal"
+        );
     }
 
     fn lcg(s: &mut u64) -> f64 {
@@ -3165,6 +3180,7 @@ mod tests {
             // The snapshot precedes the second row, which the window holds.
             old.rows = Some(1);
             let cut = truncated(&cov, &old, 1.0).expect("the window holds weight");
+            diag_agrees(&cov, &old, 1.0);
             let want = if kept { left } else { 0.0 };
             assert_eq!(
                 cut.q_sum().map(f64::to_bits),

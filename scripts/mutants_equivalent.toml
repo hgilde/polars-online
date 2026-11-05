@@ -3255,3 +3255,35 @@ line_has = "if a.is_finite() && w > 0.0 && w.is_finite() {"
 why = """both callers, `MarginalBins::update_row` and `judge_row`, take a row \
 only once `row_weight` has found its weight finite and above 0, so `w = 0` \
 never reaches this line"""
+
+[[equivalent]]
+file = "crates/online-core/src/window_moments.rs"
+function = "Layout::corr"
+mutation = "replace > with >="
+line_has = "if den > 0.0 {"
+why = """at `den = 0` the mutant divides `M_ab` by 0, a NaN or an infinity, \
+where the original returns NaN; `corr`'s one caller, \
+`CorrChange::window_stat_merged`, returns NaN for the report the moment \
+either window's correlation is not finite, so the report is NaN either \
+way (`den` is never negative: the diagonal co-moments are sums of squares \
+and of non-negative merge terms)"""
+
+[[equivalent]]
+file = "crates/online-core/src/window_moments.rs"
+function = "<impl PartialEq for WindowSums>::eq"
+mutation = "replace <impl PartialEq for WindowSums>::eq -> bool with false"
+line_has = "fn eq(&self, _: &Self) -> bool {\n        true"
+why = """`CorrChange` alone holds a `WindowSums`, only under `kind = \
+"window"`, and its derived `PartialEq` compares `seq_crit` first, which \
+is NaN under every kind but `sequential`: the comparison is false before \
+it reaches the sums, so this `eq` is never called"""
+
+[[equivalent]]
+file = "crates/online-core/src/window_moments.rs"
+function = "WindowSums::ready"
+mutation = "replace < with <="
+line_has = "if s.low < low {"
+why = """a chunk's suffix sums hold exactly blocks `s.low..end`, one summary \
+each (`extend_suffix` adds one a step down, and this trim keeps that \
+length), so at `s.low == low` the truncation is to the length the sums \
+have and `s.low` is set to itself"""

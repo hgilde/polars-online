@@ -5038,10 +5038,11 @@ mod tests {
     }
 
     /// Under the merged sums, as when the windows are read whole: a column
-    /// constant over a window leaves no statistic, a column scaled by a
-    /// power of two leaves it to the bit, and a zero-weight or refused row
-    /// takes no place in the windows, its own report the one it would have
-    /// made.
+    /// constant over a window leaves no statistic under either norm (the
+    /// largest change of the pairs that have one is no change of every
+    /// pair), a column scaled by a power of two leaves it to the bit, and a
+    /// zero-weight or refused row takes no place in the windows, its own
+    /// report the one it would have made.
     #[test]
     fn the_merged_windows_keep_the_window_kinds_rules() {
         let w = 40usize;
@@ -5060,33 +5061,35 @@ mod tests {
                 r
             })
             .collect();
-        let mut m = CorrChange::new(c.clone()).unwrap();
-        assert!(m.sums.is_some());
-        let mut scaled = [(-270, m.clone()), (300, m.clone())];
-        let (mut nan, mut finite) = (0, 0);
-        for (i, r) in rows.iter().enumerate() {
-            let got = m.step(r, &[], 1.0, 1.0).pred[0];
-            // Rows 60..110 hold the constant: a window of 40 inside them
-            // starts at rows 60..=70, the newer window of the reports on
-            // rows 99..=109 and the older of those on rows 139..=149.
-            if (99..=109).contains(&i) || (139..=149).contains(&i) {
-                assert!(got.is_nan(), "row {i}: {got}");
-                nan += 1;
-            } else if i + 1 >= 2 * w {
-                assert!(got.is_finite(), "row {i}");
-                finite += 1;
+        for norm in [ChangeNorm::L1, ChangeNorm::LInf] {
+            let mut m = CorrChange::new(CorrChangeCfg { norm, ..c.clone() }).unwrap();
+            assert!(m.sums.is_some());
+            let mut scaled = [(-270, m.clone()), (300, m.clone())];
+            let (mut nan, mut finite) = (0, 0);
+            for (i, r) in rows.iter().enumerate() {
+                let got = m.step(r, &[], 1.0, 1.0).pred[0];
+                // Rows 60..110 hold the constant: a window of 40 inside them
+                // starts at rows 60..=70, the newer window of the reports on
+                // rows 99..=109 and the older of those on rows 139..=149.
+                if (99..=109).contains(&i) || (139..=149).contains(&i) {
+                    assert!(got.is_nan(), "{norm:?}, row {i}: {got}");
+                    nan += 1;
+                } else if i + 1 >= 2 * w {
+                    assert!(got.is_finite(), "{norm:?}, row {i}");
+                    finite += 1;
+                }
+                for (e, s) in &mut scaled {
+                    let f = 2f64.powi(*e);
+                    let x = [r[0], f * r[1], r[2]];
+                    let v = s.step(&x, &[], 1.0, 1.0).pred[0];
+                    assert!(
+                        v.to_bits() == got.to_bits() || v.is_nan() && got.is_nan(),
+                        "{norm:?}, row {i} at 2^{e}"
+                    );
+                }
             }
-            for (e, s) in &mut scaled {
-                let f = 2f64.powi(*e);
-                let x = [r[0], f * r[1], r[2]];
-                let v = s.step(&x, &[], 1.0, 1.0).pred[0];
-                assert!(
-                    v.to_bits() == got.to_bits() || v.is_nan() && got.is_nan(),
-                    "row {i} at 2^{e}"
-                );
-            }
+            assert!(nan == 22 && finite == 99, "{norm:?}: {nan} {finite}");
         }
-        assert!(nan == 22 && finite == 99, "{nan} {finite}");
         // A zero-weight and a refused row in a stream, against the stream
         // without them: the same bytes and reports throughout.
         let bytes = |m: &CorrChange| rmp_serde::to_vec(&m.state()).unwrap();
