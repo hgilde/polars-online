@@ -145,7 +145,7 @@ budget = 4606713
 
 [instructions.corrchange_window_w100]
 what = "corrchange window, 4 features, two windows of 100 rows, 100 permutations redrawn every 250 rows: AnyModel::step"
-budget = 100557079
+budget = 41740325
 
 [instructions.clock_float]
 what = "ClockState::advance_stamped, a float clock, gap_cap 100"
