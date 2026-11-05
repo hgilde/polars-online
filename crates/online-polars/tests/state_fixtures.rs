@@ -2441,7 +2441,10 @@ fn first_difference(got: &rmpv::Value, want: &rmpv::Value, bound: f64, at: &str)
             let agree = if g.is_nan() || w.is_nan() {
                 g.is_nan() && w.is_nan()
             } else {
-                g.to_bits() == w.to_bits() || (g - w).abs() <= bound * (1.0 + w.abs())
+                // An infinity agrees only with itself: against an infinite
+                // `w` the relative bound would admit any number.
+                g.to_bits() == w.to_bits()
+                    || (g.is_finite() && w.is_finite() && (g - w).abs() <= bound * (1.0 + w.abs()))
             };
             (!agree).then(|| format!("{at}: {g:e} against {w:e}"))
         }

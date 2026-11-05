@@ -2053,15 +2053,21 @@ pub fn unhex(s: &str) -> Vec<u8> {
 }
 
 /// Whether two numbers a row reported agree: both NaN -- whatever their
-/// bits, which an x86 and an ARM build make differently -- or, at
-/// `tol = 0`, the same bits, and otherwise within `tol` relative to
-/// `1 + |want|`.
+/// bits, which an x86 and an ARM build make differently -- or the same
+/// bits, and otherwise, at `tol > 0`, within `tol` relative to
+/// `1 + |want|`. An infinity agrees only with itself: two equal
+/// infinities differ by NaN, which no tolerance admits, and against an
+/// infinite `want` the relative bound is infinite and would admit any
+/// number.
 pub fn agree(got: f64, want: f64, tol: f64) -> bool {
     if got.is_nan() || want.is_nan() {
         return got.is_nan() && want.is_nan();
     }
-    if tol == 0.0 {
-        return got.to_bits() == want.to_bits();
+    if got.to_bits() == want.to_bits() {
+        return true;
     }
-    (got - want).abs() <= tol * (1.0 + want.abs())
+    tol > 0.0
+        && got.is_finite()
+        && want.is_finite()
+        && (got - want).abs() <= tol * (1.0 + want.abs())
 }

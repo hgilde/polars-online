@@ -2494,3 +2494,21 @@ fn the_anchored_sketch_forms_are_written() {
         assert_eq!(marked, want, "{}: marked sketches", f.name);
     }
 }
+
+/// A fixture written on another platform is compared number by number, and
+/// a configuration can hold an infinity (`solve_every`, `revert_half_life`):
+/// equal infinities agree at any tolerance, and unequal numbers at none.
+#[test]
+fn equal_infinities_agree_at_any_tolerance() {
+    for tol in [0.0, 1e-12] {
+        assert!(agree(f64::INFINITY, f64::INFINITY, tol));
+        assert!(agree(f64::NEG_INFINITY, f64::NEG_INFINITY, tol));
+        assert!(!agree(f64::INFINITY, f64::NEG_INFINITY, tol));
+        assert!(!agree(f64::INFINITY, 1e300, tol));
+        assert!(!agree(1e300, f64::INFINITY, tol));
+        assert!(agree(f64::NAN, -f64::NAN, tol));
+        assert!(!agree(f64::NAN, 1.0, tol));
+    }
+    assert!(!agree(1.0, 1.0 + 1e-15, 0.0));
+    assert!(agree(1.0, 1.0 + 1e-15, 1e-12));
+}
