@@ -326,7 +326,7 @@ def sgd(
         refused beside another loss.
     ``refit_budget``
         A bound in MiB on the refit buffers of all the spec's groups together, as for
-        :func:`huber`: above 0, or ``inf`` for none; default 256. Each new group
+        :func:`huber`: above 0, or ``inf`` for none; default 320. Each new group
         reserves ``(features + 26) * 8`` bytes a target of each model instance (a
         half-life grid reserves once per value) for each row of the count when it
         first appears, and the group that would cross the bound, and every new group

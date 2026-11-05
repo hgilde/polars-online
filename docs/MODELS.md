@@ -1069,7 +1069,7 @@ features; 200 is where the slow refits of heavy one-sided outliers end:
 over 3,000 streams of 50 to 500 rows with up to 45% of the rows on one side
 moved by a level, 50 passes ran out on 149 and 200 on 9, all nine past 39%.
 
-**`refit_budget` bounds the buffers of all a spec's groups together: 256
+**`refit_budget` bounds the buffers of all a spec's groups together: 320
 MiB by default, or `inf` for no bound.** Each new group reserves, when it
 first appears, the most its targets' buffers can hold: `(features + 26) · 8`
 bytes a target of each model instance under the MAD, `(features + 20) · 8`
@@ -1083,16 +1083,15 @@ bank, so which groups refit depends neither on the chunking nor on the order
 the groups run in, nor on a save and load between them. The price is that
 once the bound is reached no later group refits, though the first groups'
 buffers have long been freed. At 20 features and 500 rows a target reserves
-184 KB under the MAD, and 256 MiB refits the first 1,458 targets. Measured on the 150-row
+184 KB under the MAD, and 320 MiB refits the first 1,823 targets. Measured on the 150-row
 groups above, fed from parquet, as the peak resident memory after the fit and
-the saved state (at 20,000 groups the median of three runs, which spread by
-up to 130 MiB; the reservation is the most a buffer can hold, and these held
-less):
+the saved state (the median of three runs, which spread by up to 120 MiB; the
+reservation is the most a buffer can hold, and these held less):
 
-| groups | `huber_refit_rows=0` | the default, 256 MiB | `refit_budget=inf` |
+| groups | `huber_refit_rows=0` | the default, 320 MiB | `refit_budget=inf` |
 |---|---|---|---|
-| 5,000 | 660 MiB peak; state 126 MiB | 749 MiB; 178 MiB; 8,324 of 10,000 targets given up | 1,084 MiB; 435 MiB |
-| 20,000 | 1,625 MiB; 502 MiB | 1,641 MiB; 556 MiB; 38,324 of 40,000 given up | 3,161 MiB; 1,741 MiB |
+| 5,000 | 572 MiB peak; state 128 MiB | 691 MiB; 177 MiB; 8,178 of 10,000 targets given up | 1,199 MiB; 391 MiB |
+| 20,000 | 1,195 MiB; 512 MiB | 1,390 MiB; 563 MiB; 38,178 of 40,000 given up | 3,915 MiB; 1,565 MiB |
 
 **Two settings have no refit: it is off by default there, and refused when
 asked for.** Under `ridge_scale="sum"` the prior has aged with every row
@@ -2451,7 +2450,7 @@ moves: `bin_n`, `weight_sum` and every pair moment are the one pass's.
 | default count | `max(500, 30 · bins)`, `bins` the most any feature has; 0 under `"mean"` or an infinite cut |
 | learned edges | the warm-up's held rows are the refit's: within `bin_warm_rows` it runs as the edges are fixed and holds no row of its own |
 | given edges, or a count past the warm-up | the rows are held until the count: `bin_refit_rows · (8 · features + 16 · targets + 64)` bytes a group |
-| `refit_budget` | the holds of all a spec's groups, 256 MiB by default; past it a new group keeps the one pass, with a notice and `summary()`'s `refit_given_up` |
+| `refit_budget` | the holds of all a spec's groups, 320 MiB by default; past it a new group keeps the one pass, with a notice and `summary()`'s `refit_given_up` |
 | `bin_refit_rows=0` | the one pass alone |
 
 Against statsmodels' M-location of each bin over the rows so far (16 bins,

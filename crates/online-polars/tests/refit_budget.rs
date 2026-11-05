@@ -117,6 +117,51 @@ fn the_groups_past_the_budget_give_their_refits_up() {
     );
 }
 
+/// The default budget is 320 MiB, held by its effect (task 331): three
+/// groups of one target and one feature at 500,000 rows reserve
+/// `8 · 500,000 · (1 + 4 + 6 + 16)` = 108,000,000 bytes each, 309 MiB in
+/// all, past 256 MiB and within 320. A spec that names no budget refits all
+/// three; one that names 256 MiB, the default before each held row kept its
+/// one-pass `|e|`, gives the third up. The buffers are reserved at their
+/// full size from a target's first learned row, but two rows a group touch
+/// little of them.
+#[test]
+fn the_default_budget_refits_what_320_mib_holds() {
+    let rows = 500_000;
+    let each = online_polars::online_core::refit_reservation(1, rows, true);
+    assert_eq!(each, 108_000_000);
+    let mib = |b: usize| b as f64 / (1024.0 * 1024.0);
+    assert!(mib(3 * each) > 256.0 && mib(3 * each) <= 320.0);
+    let make = |budget: &str| -> Spec {
+        let text = format!(
+            r#"{{"name": "m", "model": {{"type": "huber", "huber_refit_rows": {rows}{budget}}},
+                "targets": ["y"], "features": ["x"], "group": "g", "half_life": "inf",
+                "coef_every": 0}}"#
+        );
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("{text}: {e}"))
+    };
+    let df = frame(3, 2);
+    let mut default = Bank::new(vec![make("")]).unwrap();
+    feed(&mut default, &df, df.height());
+    assert_eq!(given_up(&default), vec![0, 0, 0]);
+    assert!(
+        default
+            .take_notices()
+            .iter()
+            .all(|n| !n.contains("refit_budget"))
+    );
+    let mut old = Bank::new(vec![make(r#", "refit_budget": 256.0"#)]).unwrap();
+    feed(&mut old, &df, df.height());
+    assert_eq!(given_up(&old), vec![0, 0, 1]);
+    let notices = old.take_notices();
+    assert!(
+        notices
+            .iter()
+            .any(|n| n.contains("refit_budget = 256 MiB at group \"2\"")),
+        "{notices:?}"
+    );
+}
+
 /// Which groups give up depends on the order their rows first arrive, not
 /// on where the chunks end: one chunk, chunks of 7 and 600 rows, and a
 /// save and a load in between give the same output and the same counts.
@@ -144,6 +189,94 @@ fn the_budget_is_the_same_at_any_chunking_and_across_a_save() {
     both.vstack_mut(&tail).unwrap();
     assert!(both.equals_missing(&whole));
     assert_eq!(given_up(&b), given_up(&one));
+}
+
+/// A bank saved under one budget and resumed under a larger one, as a bank
+/// saved under the earlier default of 256 MiB resumes under 320 (task 331,
+/// the user's rule-5 exception of 2026-11-05): the spec stores only a budget
+/// given, so the default is resolved at use, and the file keeps the bytes
+/// its groups reserved. Here the budget is 1 MiB when saved and 1.5 MiB in
+/// the file the load reads (the file's spec rewritten, as a resolved default
+/// is never written). At 21,600 bytes a group, groups 0-47 refit and 48-59
+/// give up before the save; after the load the 48 reservations kept,
+/// 1,036,800 bytes, leave room under 1.5 MiB for 24 more, so of the new
+/// groups 60-89 the first 24 refit and the last 6 give up. The groups held
+/// at the save continue to the bit against the same bank never saved, and
+/// those it gave up stay given up.
+#[test]
+fn a_bank_resumed_under_a_larger_budget_admits_only_new_groups() {
+    let (head, tail) = (frame(60, 50), frame(90, 60));
+    let each = 2 * online_polars::online_core::refit_reservation(1, 50, true);
+    assert_eq!(each, 21_600);
+    let mut kept = Bank::new(vec![spec("1.0", 50)]).unwrap();
+    feed(&mut kept, &head, head.height());
+    let mut saved = Bank::new(vec![spec("1.0", 50)]).unwrap();
+    feed(&mut saved, &head, head.height());
+    let mut before = vec![0; 48];
+    before.extend([2; 12]);
+    assert_eq!(given_up(&saved), before);
+    // The file's spec, as it would resolve under a larger default.
+    let mut file = rmpv::decode::read_value(&mut &saved.save_bytes().unwrap()[..]).unwrap();
+    let rmpv::Value::Map(map) = &mut file else {
+        panic!("a bank file is a map")
+    };
+    let specs = map
+        .iter_mut()
+        .find(|(k, _)| k.as_str() == Some("specs"))
+        .map(|(_, v)| v)
+        .expect("the file keeps its specs");
+    let rmpv::Value::Array(specs) = specs else {
+        panic!("the specs are an array")
+    };
+    let rmpv::Value::Map(spec_map) = &mut specs[0] else {
+        panic!("a spec is a map")
+    };
+    let rmpv::Value::Map(model) = spec_map
+        .iter_mut()
+        .find(|(k, _)| k.as_str() == Some("model"))
+        .map(|(_, v)| v)
+        .expect("a spec names its model")
+    else {
+        panic!("a model is a map")
+    };
+    let budget = model
+        .iter_mut()
+        .find(|(k, _)| k.as_str() == Some("refit_budget"))
+        .expect("the spec gives its budget");
+    budget.1 = rmpv::Value::F64(1.5);
+    let mut bytes = Vec::new();
+    rmpv::encode::write_value(&mut bytes, &file).unwrap();
+    let mut resumed = Bank::load_bytes(&bytes, Some(&[spec("1.5", 50)])).unwrap();
+    assert_eq!(given_up(&resumed), before, "the load re-read no group");
+    let got = feed(&mut resumed, &tail, tail.height());
+    let want = feed(&mut kept, &tail, tail.height());
+    let mut after = before.clone();
+    after.extend([0; 24]);
+    after.extend([2; 6]);
+    assert_eq!(given_up(&resumed), after);
+    // The bank never saved, under 1 MiB still, gives every new group up.
+    let mut never = before.clone();
+    never.extend([2; 30]);
+    assert_eq!(given_up(&kept), never);
+    // Every row of a group held at the save, to the bit.
+    let old = tail.column("g").unwrap().i64().unwrap().lt(60);
+    assert!(
+        got.filter(&old)
+            .unwrap()
+            .equals_missing(&want.filter(&old).unwrap())
+    );
+    // The reservation re-saved: the kept bytes and the 24 new groups', under
+    // the budget.
+    let file = rmpv::decode::read_value(&mut &resumed.save_bytes().unwrap()[..]).unwrap();
+    let rmpv::Value::Map(map) = file else {
+        panic!("a bank file is a map")
+    };
+    let (_, reserved) = map
+        .iter()
+        .find(|(k, _)| k.as_str() == Some("refit_reserved"))
+        .expect("the file keeps the reservation");
+    assert_eq!(reserved[0][1].as_f64(), Some((72 * each) as f64));
+    assert!((72 * each) as f64 <= 1.5 * 1024.0 * 1024.0);
 }
 
 #[test]
