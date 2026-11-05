@@ -21,6 +21,8 @@ polars.workspace = true
 # (task 292, P8); rayon is already linked, through online-core.
 rayon.workspace = true
 serde_json.workspace = true
+# The scaling cases read a state's size as a state file holds it.
+rmp-serde.workspace = true
 
 [dev-dependencies]
 # `tests/product_memory.rs` calls faer's products directly, as the Gram's
@@ -28,6 +30,9 @@ serde_json.workspace = true
 # faer and rayon are already linked, through online-core.
 faer.workspace = true
 rayon.workspace = true
+# `tests/workloads.rs` reads budgets.toml's `[scaling.cells]`, which must
+# mirror the cells the bench counts.
+toml.workspace = true
 
 # Tests only, in the sense of CLAUDE.md rule 12: the harness links into the
 # bench binary alone, never into the wheel or the command line. Gungraun is

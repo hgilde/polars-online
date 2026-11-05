@@ -18,12 +18,15 @@
 //! 2, 4 and 8 threads and by the measured table in docs/PERFORMANCE.md.
 //!
 //! A case added here needs an entry in `budgets.toml`; its first CI run
-//! reports its count, which is then committed as its budget.
+//! reports its count, which is then committed as its budget. The scaling
+//! cases (`scale_*`) have no budget: their entry is the cell's in
+//! `[scaling.cells]`, and their ratio is checked within the run.
 
 use std::hint::black_box;
 
 use gungraun::prelude::*;
 use gungraun::{Callgrind, EntryPoint};
+use online_bench::scaling::{ScaleRun, polars_online_budget_scale_rows, scale_setup};
 use online_bench::{
     BankRun, ClockRun, ModelRun, WindowsCase, bank_setup, clock_setup, model_setup,
     polars_online_budget_bank_rows, polars_online_budget_clock_rows,
@@ -116,6 +119,70 @@ fn windows(mut run: WindowsCase) -> WindowsCase {
     run
 }
 
-library_benchmark_group!(name = hot_paths, benchmarks = [model, clock, bank, windows]);
+// The scaling table's cells, each at its two sizes (`online_bench::scaling`):
+// `scripts/budgets.py` holds the ratio of a cell's two counts to the growth
+// `budgets.toml`'s `[scaling.cells]` declares, within the run. A bank's cell
+// runs on the bank's pool, as the bank cases do.
+#[library_benchmark(config = counted_from("polars_online_budget_scale_rows"))]
+#[bench::scale_ewridge_by_k_small(args = ("ewridge.k:small"), setup = scale_setup)]
+#[bench::scale_ewridge_by_k_large(args = ("ewridge.k:large"), setup = scale_setup)]
+#[bench::scale_ewridge_by_history_small(args = ("ewridge.history:small"), setup = scale_setup)]
+#[bench::scale_ewridge_by_history_large(args = ("ewridge.history:large"), setup = scale_setup)]
+#[bench::scale_huber_by_history_small(args = ("huber.history:small"), setup = scale_setup)]
+#[bench::scale_huber_by_history_large(args = ("huber.history:large"), setup = scale_setup)]
+#[bench::scale_quantile_by_history_small(args = ("quantile.history:small"), setup = scale_setup)]
+#[bench::scale_quantile_by_history_large(args = ("quantile.history:large"), setup = scale_setup)]
+#[bench::scale_sgd_by_k_small(args = ("sgd.k:small"), setup = scale_setup)]
+#[bench::scale_sgd_by_k_large(args = ("sgd.k:large"), setup = scale_setup)]
+#[bench::scale_ew_cov_by_k_small(args = ("ew_cov.k:small"), setup = scale_setup)]
+#[bench::scale_ew_cov_by_k_large(args = ("ew_cov.k:large"), setup = scale_setup)]
+#[bench::scale_ew_cov_by_window_small(args = ("ew_cov.window:small"), setup = scale_setup)]
+#[bench::scale_ew_cov_by_window_large(args = ("ew_cov.window:large"), setup = scale_setup)]
+#[bench::scale_marginal_by_k_small(args = ("marginal.k:small"), setup = scale_setup)]
+#[bench::scale_marginal_by_k_large(args = ("marginal.k:large"), setup = scale_setup)]
+#[bench::scale_bank_by_groups_seen_small(args = ("bank.groups_seen:small"), setup = scale_setup)]
+#[bench::scale_bank_by_groups_seen_large(args = ("bank.groups_seen:large"), setup = scale_setup)]
+#[bench::scale_bank_by_history_small(args = ("bank.history:small"), setup = scale_setup)]
+#[bench::scale_bank_by_history_large(args = ("bank.history:large"), setup = scale_setup)]
+#[bench::scale_bank_by_embargo_small(args = ("bank.embargo:small"), setup = scale_setup)]
+#[bench::scale_bank_by_embargo_large(args = ("bank.embargo:large"), setup = scale_setup)]
+#[bench::scale_bank_by_formula_window_small(args = ("bank.formula_window:small"), setup = scale_setup)]
+#[bench::scale_bank_by_formula_window_large(args = ("bank.formula_window:large"), setup = scale_setup)]
+#[bench::scale_bank_by_specs_small(args = ("bank.specs:small"), setup = scale_setup)]
+#[bench::scale_bank_by_specs_large(args = ("bank.specs:large"), setup = scale_setup)]
+#[bench::scale_bank_by_specs_distinct_small(args = ("bank.specs_distinct:small"), setup = scale_setup)]
+#[bench::scale_bank_by_specs_distinct_large(args = ("bank.specs_distinct:large"), setup = scale_setup)]
+#[bench::scale_bank_by_specs_mixed_small(args = ("bank.specs_mixed:small"), setup = scale_setup)]
+#[bench::scale_bank_by_specs_mixed_large(args = ("bank.specs_mixed:large"), setup = scale_setup)]
+#[bench::scale_bank_by_specs_per_call_small(args = ("bank.specs_per_call:small"), setup = scale_setup)]
+#[bench::scale_bank_by_specs_per_call_large(args = ("bank.specs_per_call:large"), setup = scale_setup)]
+#[bench::scale_windows_by_groups_seen_small(args = ("windows.groups_seen:small"), setup = scale_setup)]
+#[bench::scale_windows_by_groups_seen_large(args = ("windows.groups_seen:large"), setup = scale_setup)]
+#[bench::scale_windows_by_history_small(args = ("windows.history:small"), setup = scale_setup)]
+#[bench::scale_windows_by_history_large(args = ("windows.history:large"), setup = scale_setup)]
+#[bench::scale_windows_by_window_mean_small(args = ("windows.window_mean:small"), setup = scale_setup)]
+#[bench::scale_windows_by_window_mean_large(args = ("windows.window_mean:large"), setup = scale_setup)]
+#[bench::scale_windows_by_kernels_small(args = ("windows.kernels:small"), setup = scale_setup)]
+#[bench::scale_windows_by_kernels_large(args = ("windows.kernels:large"), setup = scale_setup)]
+#[bench::scale_refresh_by_groups_small(args = ("refresh.groups:small"), setup = scale_setup)]
+#[bench::scale_refresh_by_groups_large(args = ("refresh.groups:large"), setup = scale_setup)]
+#[bench::scale_refresh_by_history_small(args = ("refresh.history:small"), setup = scale_setup)]
+#[bench::scale_refresh_by_history_large(args = ("refresh.history:large"), setup = scale_setup)]
+#[bench::scale_gbdt_by_history_small(args = ("gbdt.history:small"), setup = scale_setup)]
+#[bench::scale_gbdt_by_history_large(args = ("gbdt.history:large"), setup = scale_setup)]
+fn scaling(mut run: ScaleRun) -> ScaleRun {
+    if run.on_the_pool() {
+        let pool = online_polars::pool().expect("the bank's pool, built by the setup");
+        black_box(pool.install(|| polars_online_budget_scale_rows(black_box(&mut run))));
+    } else {
+        black_box(polars_online_budget_scale_rows(black_box(&mut run)));
+    }
+    run
+}
+
+library_benchmark_group!(
+    name = hot_paths,
+    benchmarks = [model, clock, bank, windows, scaling]
+);
 
 main!(library_benchmark_groups = hot_paths);

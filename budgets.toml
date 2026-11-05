@@ -259,6 +259,164 @@ budget = 13216462
 [instructions.window_ewm_sum_groups10k]
 what = "WindowsRun::feed of one frame, ewm_sum of x0 with no window, half-life 1000, grouped by g over 10,000 groups, one row of each in turn, each row its own stamp, gap_cap 1e12 (no group is ever cut), after a warm-up of two rows a group: a row resolves the one group pending, whatever the groups behind it"
 
+# --- scaling ---------------------------------------------------------------------
+# How a cost grows, not what it is (docs/PERFORMANCE.md, "How cost grows";
+# crates/online-bench/src/scaling.rs). Each cell is counted at two sizes of one
+# dimension, `small` and `large` (the `scale_*` cases), and the ratio of the two
+# counts, within one run, is held to the growth the algorithm declares:
+# count(large) / count(small) <= g(large) / g(small) * (1 + tolerance). No
+# number from an earlier run is read, so a cost that grew the wrong way from
+# the first day fails on the first run. `growth` is "1", "log n", "n" or
+# "n^e". The cells mirror online-bench's own declarations
+# (`tests/scaling.rs` holds the two to each other).
+[scaling]
+# A count is the code's alone, the same each run to well inside this, and a
+# declared growth bounds the honest ratio from above: a fixed cost per row
+# only lowers it. What 10% has to absorb is the one place a count may read
+# a constant above 1, a held structure larger at the large size (a hash
+# table's probes, a heap's depth), which the native measurement of every
+# such cell put at 1.00x to 1.03x in allocations. A growth one power past the
+# declared reads the step, 8x.
+tolerance = 0.10
+
+[scaling.cells."ewridge.k"]
+what = "ewridge's row with no solve due, 4 then 32 features: the Gram's rank-one update, O(k^2)"
+growth = "n^2"
+small = 4
+large = 32
+
+[scaling.cells."ewridge.history"]
+what = "ewridge, 8 features: a row after 1,000 rows of stream, then after 8,000: no row's work may grow with the rows before it"
+growth = "1"
+small = 1000
+large = 8000
+
+[scaling.cells."huber.history"]
+what = "huber, 8 features, the MAD scale's sketch: a row after 1,000 rows, then after 8,000"
+growth = "1"
+small = 1000
+large = 8000
+
+[scaling.cells."quantile.history"]
+what = "quantile, 8 features: a row after 1,000 rows, then after 8,000"
+growth = "1"
+small = 1000
+large = 8000
+
+[scaling.cells."sgd.k"]
+what = "sgd's gradient step, 4 then 32 features, O(k)"
+growth = "n"
+small = 4
+large = 32
+
+[scaling.cells."ew_cov.k"]
+what = "ew_cov's moments, 4 then 32 columns, O(k^2)"
+growth = "n^2"
+small = 4
+large = 32
+
+[scaling.cells."ew_cov.window"]
+what = "ew_cov under a window of 500 clock units, then 4,000: a row subtracts one snapshot whatever the window holds, O(1) in it"
+growth = "1"
+small = 500
+large = 4000
+
+[scaling.cells."marginal.k"]
+what = "marginal's pairs, 4 then 32 features against one target, O(k)"
+growth = "n"
+small = 4
+large = 32
+
+[scaling.cells."bank.groups_seen"]
+what = "Bank::fit_predict of 1,000 rows over 50 groups, after a warm-up over 250 groups, then over 2,000: a row's work must not grow with the groups behind it"
+growth = "1"
+small = 250
+large = 2000
+
+[scaling.cells."bank.history"]
+what = "Bank::fit_predict of 1,000 rows of ewridge after 1,000 rows, then after 8,000"
+growth = "1"
+small = 1000
+large = 8000
+
+[scaling.cells."bank.embargo"]
+what = "Bank::fit_predict under an embargo of 125 clock units, then 1,000: a row joins and leaves the held rows once, O(1) in their number"
+growth = "1"
+small = 125
+large = 1000
+
+[scaling.cells."bank.formula_window"]
+what = "a target 125 clock units ahead (rewm_mean) under an embargo of the same, then 1,000: O(1) a row in the rows held"
+growth = "1"
+small = 125
+large = 1000
+
+[scaling.cells."bank.specs"]
+what = "Bank::fit_predict with 1 ewridge spec, then 8, over the same columns: linear in the specs"
+growth = "n"
+small = 1
+large = 8
+
+[scaling.cells."bank.specs_distinct"]
+what = "1 spec, then 8, each over four features and a target of its own: linear in the specs"
+growth = "n"
+small = 1
+large = 8
+
+[scaling.cells."bank.specs_mixed"]
+what = "a mix of ewridge, huber, ew_cov, kmeans and bocpd over the same columns, once and then eight times: linear in the specs"
+growth = "n"
+small = 1
+large = 8
+
+[scaling.cells."bank.specs_per_call"]
+what = "1 spec, then 8, fed in calls of four rows: what a call costs a spec, linear in the specs"
+growth = "n"
+small = 1
+large = 8
+
+[scaling.cells."windows.groups_seen"]
+what = "WindowsRun::feed of 1,000 rows over 50 groups after a warm-up over 1,000 groups, then 8,000: O(1) a row in the groups behind it"
+growth = "1"
+small = 1000
+large = 8000
+
+[scaling.cells."windows.history"]
+what = "WindowsRun::feed, a running ewm_sum, after 1,000 rows, then 8,000"
+growth = "1"
+small = 1000
+large = 8000
+
+[scaling.cells."windows.window_mean"]
+what = "ewm_mean over a window of 1,250 clock units, then 10,000: O(1) a row in the rows the window holds"
+growth = "1"
+small = 1250
+large = 10000
+
+[scaling.cells."windows.kernels"]
+what = "WindowsRun::feed with 1 kernel, then 8, one operator each: linear in the kernels"
+growth = "n"
+small = 1
+large = 8
+
+[scaling.cells."refresh.groups"]
+what = "RefreshTime::feed of four series over 100 groups, then 800: O(1) a tick in the groups"
+growth = "1"
+small = 100
+large = 800
+
+[scaling.cells."refresh.history"]
+what = "RefreshTime::feed after 1,000 ticks, then 8,000"
+growth = "1"
+small = 1000
+large = 8000
+
+[scaling.cells."gbdt.history"]
+what = "po.gbdt's sample of 1,000 rows, offered 1,000 rows after 10,000, then after 80,000"
+growth = "1"
+small = 10000
+large = 80000
+
 # --- memory ----------------------------------------------------------------------
 # Bytes per row of every output field of every model at its fullest, over the
 # same rows (tests/test_budgets_memory.py), and the peak resident memory a

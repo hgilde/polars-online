@@ -2069,7 +2069,9 @@ dependencies = [
  "online-polars",
  "polars",
  "rayon",
+ "rmp-serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]

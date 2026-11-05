@@ -29,6 +29,13 @@ increase in the file's git history to that.
     python scripts/budgets.py baseline MEASURED.json... --version V --sha SHA --out FILE
     python scripts/budgets.py runner-version | toolchain
 
+The bench also counts each cell of the scaling table at two sizes of one
+dimension (the ``scale_*`` cases). Those have no budget: ``check`` holds the
+ratio of a cell's two counts *within the run* to the growth ``[scaling]``
+declares for it, ``count(large) / count(small) <= g(large) / g(small)`` times
+``1 + scaling.tolerance``, so a cost that grows the wrong way fails on its
+first run, with no number from an earlier one.
+
 ``check`` reads Gungraun's JSON output (``--output-format=json``), one
 summary per case; given a second run of the same binary, it also reports
 how far the two agree, and fails when they differ by more than a quarter of
@@ -72,6 +79,10 @@ REPO = Path(__file__).resolve().parent.parent
 BUDGETS = REPO / "budgets.toml"
 CHANGELOG = REPO / "CHANGELOG.md"
 BENCH = REPO / "crates/online-bench/benches/instructions.rs"
+#: The bench cases of the scaling table: ``scale_<surface>_by_<dimension>_small``
+#: and ``..._large``, a cell's two sizes.
+SCALE_PREFIX = "scale_"
+SCALE_SIZES = ("small", "large")
 KINDS = ("instructions", "memory", "rss")
 PLATFORMS = ("linux", "darwin", "windows")
 #: How far two runs of one binary may differ, as a share of the tolerance.
@@ -144,9 +155,105 @@ def tighten_at(key: str, tol: float) -> float:
 
 
 def bench_cases(text: str | None = None) -> list[str]:
-    """The case ids `benches/instructions.rs` names, in its order."""
+    """The budgeted case ids `benches/instructions.rs` names, in its order:
+    every case but the scaling table's."""
+    return [c for c in _bench_ids(text) if not c.startswith(SCALE_PREFIX)]
+
+
+def _bench_ids(text: str | None = None) -> list[str]:
     text = BENCH.read_text(encoding="utf-8") if text is None else text
     return re.findall(r"^\s*#\[bench::(\w+)\(", text, re.M)
+
+
+def scale_case(cell: str, size: str) -> str:
+    """The bench id of one size of a scaling cell: ``bank.groups_seen``'s
+    larger size is ``scale_bank_by_groups_seen_large``."""
+    return f"{SCALE_PREFIX}{cell.replace('.', '_by_', 1)}_{size}"
+
+
+def scale_cells(text: str | None = None) -> list[str]:
+    """The scaling cells the bench counts at both sizes, as ``<surface>.<dim>``."""
+    ids = set(_bench_ids(text))
+    cells = []
+    for c in sorted(ids):
+        if c.startswith(SCALE_PREFIX) and c.endswith("_small"):
+            cell = c[len(SCALE_PREFIX) : -len("_small")].replace("_by_", ".", 1)
+            if scale_case(cell, "large") in ids:
+                cells.append(cell)
+    return cells
+
+
+def growth_bound(growth: str, small: float, large: float) -> float:
+    """How much a cost of declared ``growth`` may grow from size ``small``
+    to ``large``: ``"1"`` not at all, ``"log n"`` as the logarithm, ``"n"``
+    and ``"n^e"`` as that power."""
+    if growth == "1":
+        return 1.0
+    if growth == "log n":
+        return math.log(large) / math.log(small)
+    m = re.fullmatch(r"n(?:\^(\d+))?", growth)
+    if m is None:
+        raise ValueError(f"growth {growth!r}: one of 1, log n, n, n^e")
+    return (large / small) ** int(m.group(1) or 1)
+
+
+@dataclass
+class Scaled:
+    cell: str
+    small: float
+    large: float
+    bound: float
+    tol: float
+
+    @property
+    def ratio(self) -> float:
+        return self.large / self.small
+
+    @property
+    def failed(self) -> bool:
+        return self.ratio > self.bound * (1.0 + self.tol)
+
+    @property
+    def message(self) -> str:
+        allowed = self.bound * (1.0 + self.tol)
+        verdict = "past" if self.failed else "within"
+        return (
+            f"scaling.{self.cell}: {self.ratio:.3f}x from the small size to the large, "
+            f"{verdict} the {allowed:.3f}x its declared growth allows"
+        )
+
+
+def judge_scaling(doc: dict, counts: dict[str, float]) -> tuple[list[Scaled], list[str]]:
+    """Each cell of ``[scaling.cells]`` held to its declared growth by its
+    two counts in ``counts`` (the bench ids); and the cells a run missed."""
+    table = doc.get("scaling", {})
+    tol = float(table.get("tolerance", 0.0))
+    out, missing = [], []
+    for cell, t in sorted(table.get("cells", {}).items()):
+        s, lg = (counts.get(scale_case(cell, size)) for size in SCALE_SIZES)
+        if s is None or lg is None:
+            missing.append(f"scaling.{cell}: the run did not count both sizes")
+            continue
+        out.append(Scaled(cell, s, lg, growth_bound(t["growth"], t["small"], t["large"]), tol))
+    return out, missing
+
+
+def scaling_report(scaled: list[Scaled]) -> str:
+    lines = [
+        "### Scaling",
+        "",
+        "Each cell's instructions at its larger size over its smaller, against its declared growth.",
+        "",
+        "| cell | small | large | ratio | allowed | |",
+        "|---|---|---|---|---|---|",
+    ]
+    for v in scaled:
+        mark = "**past**" if v.failed else ""
+        lines.append(
+            f"| {v.cell} | {_fmt(v.small)} | {_fmt(v.large)} | {v.ratio:.3f}x "
+            f"| {v.bound * (1 + v.tol):.3f}x | {mark} |"
+        )
+    return "\n".join(lines) + "\n"
 
 
 def performance_text(changelog: str) -> str:
@@ -163,9 +270,12 @@ def performance_text(changelog: str) -> str:
     return " ".join(" ".join(out).split())
 
 
-def check_file(doc: dict, changelog: str, cases: list[str]) -> list[str]:
+def check_file(
+    doc: dict, changelog: str, cases: list[str], scaled: list[str] | None = None
+) -> list[str]:
     """What is wrong with the file on its own: its shape, the cases against
-    the bench, and every ``[[raised]]`` entry against the CHANGELOG."""
+    the bench, the scaling cells against the bench's (``scaled``, when
+    given), and every ``[[raised]]`` entry against the CHANGELOG."""
     errors = []
     meta = doc.get("meta", {})
     for key in ("toolchain", "runner", "gungraun", "rows", "tolerance", "drift_signoff"):
@@ -189,6 +299,7 @@ def check_file(doc: dict, changelog: str, cases: list[str]) -> list[str]:
             f"[instructions] and the bench disagree: in the file only {only_file}, "
             f"in the bench only {only_bench}"
         )
+    errors += check_scaling_file(doc, scaled)
     for case, table in doc.get("instructions", {}).items():
         if not table.get("what"):
             errors.append(f"instructions.{case} says nothing in `what`")
@@ -229,6 +340,40 @@ def check_file(doc: dict, changelog: str, cases: list[str]) -> list[str]:
             errors.append(f"[[signoff]] #{i + 1} has no {sorted(missing)}")
         elif s["key"] not in entries(doc):
             errors.append(f"[[signoff]] #{i + 1} ({s['key']}): no such budget")
+    return errors
+
+
+def check_scaling_file(doc: dict, cells: list[str] | None) -> list[str]:
+    """``[scaling]`` on its own, and against the cells the bench counts."""
+    errors = []
+    table = doc.get("scaling")
+    if table is None:
+        return [] if not cells else ["no [scaling] table, and the bench counts scaling cells"]
+    tol = table.get("tolerance")
+    if not (isinstance(tol, float) and 0.0 <= tol < 0.5):
+        errors.append(f"scaling.tolerance = {tol!r}: a share from 0 to below 0.5")
+    for cell, t in table.get("cells", {}).items():
+        where = f"scaling.cells.{cell}"
+        if set(t) != {"growth", "small", "large", "what"}:
+            errors.append(f"{where} holds {sorted(t)}, not growth, small, large and what")
+            continue
+        try:
+            growth_bound(t["growth"], 2, 4)
+        except ValueError as e:
+            errors.append(f"{where}: {e}")
+        if not (isinstance(t["small"], int) and isinstance(t["large"], int)):
+            errors.append(f"{where}: the sizes are whole numbers")
+        elif not 1 <= t["small"] < t["large"] or (t["growth"] == "log n" and t["small"] < 2):
+            errors.append(
+                f"{where}: sizes {t['small']} and {t['large']}, not 1 <= small < large "
+                "(2 <= small under log n)"
+            )
+    if cells is not None and set(cells) != set(table.get("cells", {})):
+        listed = set(table.get("cells", {}))
+        errors.append(
+            f"[scaling.cells] and the bench disagree: in the file only {sorted(listed - set(cells))}, "
+            f"in the bench only {sorted(set(cells) - listed)}"
+        )
     return errors
 
 
@@ -712,18 +857,20 @@ def make_baseline(
 # --- the command line ------------------------------------------------------------
 
 
+def _split(counts: dict[str, int]) -> tuple[dict[str, float], dict[str, float]]:
+    """A run's counts: the budgeted cases by key, and the scaling cases by
+    bench id."""
+    budgeted = {f"instructions.{k}": v for k, v in counts.items() if not k.startswith(SCALE_PREFIX)}
+    scaled = {k: v for k, v in counts.items() if k.startswith(SCALE_PREFIX)}
+    return budgeted, scaled
+
+
 def _cmd_check(args: argparse.Namespace) -> int:
     doc = load()
-    first = {
-        f"instructions.{k}": v
-        for k, v in parse_gungraun(args.summary.read_text(encoding="utf-8")).items()
-    }
-    second = None
+    first, first_scaled = _split(parse_gungraun(args.summary.read_text(encoding="utf-8")))
+    second = second_scaled = None
     if args.second is not None:
-        second = {
-            f"instructions.{k}": v
-            for k, v in parse_gungraun(args.second.read_text(encoding="utf-8")).items()
-        }
+        second, second_scaled = _split(parse_gungraun(args.second.read_text(encoding="utf-8")))
     measure = args.measure or measuring()
     found = baseline_or_reason(args.baseline)
     baseline = found if isinstance(found, Baseline) else None
@@ -739,6 +886,14 @@ def _cmd_check(args: argparse.Namespace) -> int:
     problems = [v.message for v in verdicts if v.failed]
     problems += [f"{k}: budgeted, and the run did not measure it" for k in missing]
     repeat = repeat_failures(doc, first, second) if second is not None else []
+    if second_scaled is not None:
+        repeat += repeat_failures(doc, *(
+            {f"instructions.{k}": v for k, v in run.items()} for run in (first_scaled, second_scaled)
+        ))
+    scaled, scale_missing = judge_scaling(doc, first_scaled)
+    if scaled:
+        text += "\n" + scaling_report(scaled)
+    scale_failed = [v.message for v in scaled if v.failed] + scale_missing
     released = baseline.version if baseline is not None else ""
     drift = signoff_failures(doc, verdicts, args.release_check, released)
     unread = [] if baseline is not None else [str(found)]
@@ -746,6 +901,7 @@ def _cmd_check(args: argparse.Namespace) -> int:
     for heading, items in (
         ("Fails", problems),
         ("Two runs of one binary disagree", repeat),
+        ("Grown past the declared growth", scale_failed),
         ("Past the sign-off since the last release", drift),
         ("No baseline", unread),
         ("New cases", notes),
@@ -760,7 +916,9 @@ def _cmd_check(args: argparse.Namespace) -> int:
         )
     for m in notes:
         print(f"::warning::{m}")
-    failed = list(repeat)
+    # A ratio within one run needs no budget, so a measuring run holds it
+    # too: a wrong growth is a defect, not a number to re-measure.
+    failed = list(repeat) + scale_failed
     if not measure:
         failed += problems
     if args.release_check is not None:
@@ -782,7 +940,9 @@ def _cmd_check(args: argparse.Namespace) -> int:
 
 def _cmd_raises(_: argparse.Namespace) -> int:
     doc = load()
-    errors = check_file(doc, CHANGELOG.read_text(encoding="utf-8"), bench_cases())
+    errors = check_file(
+        doc, CHANGELOG.read_text(encoding="utf-8"), bench_cases(), scale_cells()
+    )
     versions, shallow = history()
     errors += check_history(versions, BUDGETS.read_text(encoding="utf-8"))
     print(f"budgets.toml: {len(versions)} committed versions read{' (shallow clone)' * shallow}")
