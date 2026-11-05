@@ -1,7 +1,10 @@
 //! An anchored [`EwQuantile`] (task 278, the user's decision of
-//! 2026-10-26): its values bucketed in units of the first, so a quantile
-//! read scales with the values by any factor to rounding, where the fixed
-//! buckets moved it by up to a bucket at any factor but a power of two.
+//! 2026-10-26; task 323): its values bucketed in units of an anchor its
+//! caller sets from values it holds, so a quantile read scales with the
+//! values by any factor to rounding, where the fixed buckets moved it by up
+//! to a bucket at any factor but a power of two; until then the grid fixed
+//! at 1, the fixed buckets to the bit. A sketch saved before schema 65
+//! keeps the first-value anchor of its build.
 
 use super::*;
 
@@ -62,6 +65,33 @@ fn anchored() -> EwQuantile {
     EwQuantile::anchored(&[0.5], 8).unwrap()
 }
 
+/// An anchored sketch its caller anchors at `a` before any value.
+fn anchored_at(a: f64) -> EwQuantile {
+    let mut q = anchored();
+    q.anchor_at(a);
+    assert_eq!(q.anchor(), Some(a));
+    q
+}
+
+/// An anchored sketch as a state of schema 64 or earlier restores it while
+/// it awaits its first value: `Some(0.0)`, marked to keep that rule.
+fn awaiting() -> EwQuantile {
+    let mut q = anchored();
+    q.anchor = Some(0.0);
+    q.keep_first_value_anchor();
+    assert!(q.has_shape() && q.anchors_by_first_value());
+    q
+}
+
+/// The first value of a stream at or above the smallest normal float: a
+/// value scaled with the stream, as a refit's median is.
+fn first_value(rows: &[(f64, f64, f64)]) -> f64 {
+    rows.iter()
+        .map(|r| r.1)
+        .find(|v| *v >= f64::MIN_POSITIVE)
+        .unwrap()
+}
+
 /// The read is within `α` of the definition at every level, row by row,
 /// as an unanchored sketch's is: the bound is relative, and the anchor a
 /// factor.
@@ -69,6 +99,7 @@ fn anchored() -> EwQuantile {
 fn an_anchored_read_is_within_alpha_of_the_definition() {
     let levels = [0.1, 0.5, 0.9];
     let mut q = EwQuantile::anchored(&levels, 8).unwrap();
+    q.anchor_at(0.37);
     let mut seen: Vec<(f64, f64)> = Vec::new();
     for (i, (lam, v, w)) in stream(3, 3000).into_iter().enumerate() {
         q.age(lam);
@@ -83,24 +114,31 @@ fn an_anchored_read_is_within_alpha_of_the_definition() {
             );
         }
     }
-    assert!(q.anchor().is_some_and(|a| a > 0.0));
+    assert_eq!(q.anchor(), Some(0.37));
 }
 
-/// A decimal scale moves an anchored median by rounding on every row of
-/// five streams -- a few ulps of the division and the read's product --
-/// where it moves the unanchored one by up to a bucket, which is printed
-/// and held above half a percent as evidence that the edges were crossed.
+/// A decimal scale moves a median anchored at a value scaled with the
+/// values by rounding on every row of five streams -- a few ulps of the
+/// division and the read's product -- where it moves the unanchored one,
+/// and one on the grid fixed at 1, by up to a bucket, which is printed and
+/// held above half a percent as evidence that the edges were crossed, and
+/// within `2α / (1 − α)`, each read being within `α` of the quantile.
 #[test]
 fn a_decimal_scale_moves_an_anchored_median_by_rounding() {
     let mut worst_fixed: f64 = 0.0;
     let mut worst_anchored: f64 = 0.0;
     for seed in 0..5 {
         let rows = stream(seed, 2000);
+        let a = first_value(&rows);
         let fixed = medians(&mut EwQuantile::bounded(&[0.5], 8).unwrap(), &rows, 1.0);
-        let base = medians(&mut anchored(), &rows, 1.0);
+        let grid = medians(&mut anchored(), &rows, 1.0);
+        let same: Vec<u64> = fixed.iter().map(|v| v.to_bits()).collect();
+        let on_grid: Vec<u64> = grid.iter().map(|v| v.to_bits()).collect();
+        assert_eq!(same, on_grid, "the grid fixed at 1 is the fixed buckets");
+        let base = medians(&mut anchored_at(a), &rows, 1.0);
         for c in [1e-6, 1e-3, 1e3, 1e6] {
             let moved = medians(&mut EwQuantile::bounded(&[0.5], 8).unwrap(), &rows, c);
-            let scaled = medians(&mut anchored(), &rows, c);
+            let scaled = medians(&mut anchored_at(a * c), &rows, c);
             for i in 0..rows.len() {
                 worst_fixed = worst_fixed.max((moved[i] / c - fixed[i]).abs() / fixed[i]);
                 let r = (scaled[i] - c * base[i]).abs() / (c * base[i]);
@@ -117,6 +155,8 @@ fn a_decimal_scale_moves_an_anchored_median_by_rounding() {
         worst_fixed > 5e-3,
         "the fixed buckets moved {worst_fixed:e}"
     );
+    let a = EW_QUANTILE_ALPHA;
+    assert!(worst_fixed <= 2.0 * a / (1.0 - a), "{worst_fixed:e}");
 }
 
 /// A power of two divides out exactly: the read is bitwise `c` times the
@@ -124,29 +164,44 @@ fn a_decimal_scale_moves_an_anchored_median_by_rounding() {
 #[test]
 fn a_power_of_two_scales_an_anchored_median_bitwise() {
     let rows = stream(11, 2000);
-    let base = medians(&mut anchored(), &rows, 1.0);
-    for k in [-30, -7, 1, 20] {
-        let c = 2f64.powi(k);
-        let scaled = medians(&mut anchored(), &rows, c);
-        for i in 0..rows.len() {
-            assert_eq!(
-                scaled[i].to_bits(),
-                (c * base[i]).to_bits(),
-                "2^{k}, row {i}"
-            );
+    let a = first_value(&rows);
+    for (base, at) in [
+        (medians(&mut anchored(), &rows, 1.0), None),
+        (medians(&mut anchored_at(a), &rows, 1.0), Some(a)),
+    ] {
+        for k in [-30, -7, 1, 20] {
+            let c = 2f64.powi(k);
+            let mut q = at.map_or_else(anchored, |a| anchored_at(a * c));
+            let scaled = medians(&mut q, &rows, c);
+            for i in 0..rows.len() {
+                assert_eq!(
+                    scaled[i].to_bits(),
+                    (c * base[i]).to_bits(),
+                    "{at:?}, 2^{k}, row {i}"
+                );
+            }
         }
     }
 }
 
-/// The anchor is the first value that counts (hard rule 9): a weight of 0,
-/// a value of exactly 0, one below the smallest normal float, and one that
-/// is not finite set nothing; the first positive value at a positive
-/// weight sets it; a later one does not move it; and a reset waits for the
-/// next first value.
+/// An anchored sketch keeps the grid fixed at 1 through every value and a
+/// reset: nothing it takes sets an anchor. One saved awaiting its first
+/// value by a build of schema 64 or earlier keeps that rule: the first
+/// value that counts (hard rule 9) sets it -- a weight of 0, a value of
+/// exactly 0, one below the smallest normal float, and one that is not
+/// finite set nothing; a later one does not move it; and a reset waits for
+/// the next first value.
 #[test]
-fn only_a_counted_positive_value_sets_the_anchor_and_a_reset_clears_it() {
-    let mut q = anchored();
-    assert_eq!(q.anchor(), Some(0.0));
+fn only_a_sketch_saved_awaiting_its_first_value_is_anchored_by_one() {
+    let mut g = anchored();
+    assert_eq!(g.anchor(), Some(1.0));
+    g.add(0.75, 2.0);
+    g.add(3.0, 1.0);
+    assert_eq!(g.anchor(), Some(1.0), "no value anchors the grid");
+    g.reset();
+    assert_eq!((g.anchor(), g.get(0), g.band()), (Some(1.0), None, Some(8)));
+    assert!(!g.anchors_by_first_value());
+    let mut q = awaiting();
     q.add(5.0, 0.0);
     q.add(0.0, 1.0);
     q.add(f64::MIN_POSITIVE / 2.0, 1.0);
@@ -164,7 +219,7 @@ fn only_a_counted_positive_value_sets_the_anchor_and_a_reset_clears_it() {
     q.add(3.0, 1.0);
     assert_eq!(q.anchor(), Some(0.75), "a later value keeps it");
     // The zero bucket is read as 0, not as a multiple of the anchor.
-    let mut z = anchored();
+    let mut z = awaiting();
     z.add(0.0, 3.0);
     z.add(2.0, 1.0);
     assert_eq!(z.get(0), Some(0.0));
@@ -172,11 +227,13 @@ fn only_a_counted_positive_value_sets_the_anchor_and_a_reset_clears_it() {
     assert_eq!((q.anchor(), q.get(0), q.band()), (Some(0.0), None, Some(8)));
     q.add(6.0, 1.0);
     assert_eq!(q.anchor(), Some(6.0), "the next first value");
-    // An unanchored sketch stays one through a reset.
+    assert!(q.anchors_by_first_value(), "the rule kept through a reset");
+    // An unanchored sketch stays one through a reset, and takes no mark.
     let mut b = EwQuantile::bounded(&[0.5], 8).unwrap();
     b.add(1.0, 1.0);
+    b.keep_first_value_anchor();
     b.reset();
-    assert_eq!(b.anchor(), None);
+    assert_eq!((b.anchor(), b.anchors_by_first_value()), (None, false));
 }
 
 /// The definition: an anchored sketch is an unanchored bounded one fed
@@ -192,7 +249,7 @@ fn an_anchored_sketch_is_a_sketch_of_the_ratios_times_the_anchor() {
     rows[201].1 = 1e300;
     rows[400].1 = 1e-310;
     let a = rows[0].1;
-    let mut q = anchored();
+    let mut q = anchored_at(a);
     let mut ratios = EwQuantile::bounded(&[0.5], 8).unwrap();
     for (i, &(lam, v, w)) in rows.iter().enumerate() {
         q.age(lam);
@@ -211,18 +268,32 @@ fn an_anchored_sketch_is_a_sketch_of_the_ratios_times_the_anchor() {
     assert_eq!(q.anchor(), Some(a));
 }
 
-/// Both encodings round-trip each form -- awaiting, set, unanchored with
-/// and without a band -- and an unanchored sketch writes no anchor, so its
-/// bytes are what they were before the field.
+/// Both encodings round-trip each form -- the grid fixed at 1, awaiting
+/// under the first-value rule, set, unanchored with and without a band --
+/// and an unanchored sketch writes no anchor, so its bytes are what they
+/// were before the field; only a sketch under the first-value rule writes
+/// that rule.
 #[test]
 fn every_form_round_trips_in_both_encodings() {
-    let mut set = anchored();
+    let mut set = anchored_at(0.3);
     medians(&mut set, &stream(5, 50), 1.0);
+    let mut grid = anchored();
+    medians(&mut grid, &stream(5, 50), 1.0);
+    let mut first = awaiting();
+    medians(&mut first, &stream(5, 50), 1.0);
     let mut fixed = EwQuantile::bounded(&[0.5], 8).unwrap();
     medians(&mut fixed, &stream(5, 50), 1.0);
     let mut open = EwQuantile::new(&[0.5]).unwrap();
     medians(&mut open, &stream(5, 50), 1.0);
-    for q in [anchored(), set, fixed.clone(), open] {
+    for q in [
+        anchored(),
+        grid.clone(),
+        awaiting(),
+        first,
+        set,
+        fixed.clone(),
+        open,
+    ] {
         for bytes in [
             rmp_serde::to_vec(&q).unwrap(),
             rmp_serde::to_vec_named(&q).unwrap(),
@@ -237,6 +308,14 @@ fn every_form_round_trips_in_both_encodings() {
         !named.windows(6).any(|w| w == b"anchor"),
         "an unanchored sketch writes no anchor"
     );
+    let rule = b"anchor_by_first_value";
+    let has = |q: &EwQuantile| {
+        rmp_serde::to_vec_named(q)
+            .unwrap()
+            .windows(rule.len())
+            .any(|w| w == rule)
+    };
+    assert!(!has(&grid) && has(&awaiting()));
 }
 
 /// A restored anchor is 0 (awaiting) or a positive normal float, and only
@@ -262,7 +341,7 @@ fn a_restored_anchor_must_be_one_the_sketch_could_set() {
 /// multiplied by.
 #[test]
 fn a_restored_sketch_awaiting_its_anchor_holds_no_bucket() {
-    let mut z = anchored();
+    let mut z = awaiting();
     z.add(0.0, 2.0);
     assert!(z.has_shape());
     assert_eq!(z.get(0), Some(0.0));
@@ -274,25 +353,38 @@ fn a_restored_sketch_awaiting_its_anchor_holds_no_bucket() {
     assert!(!set.has_shape(), "awaiting, with buckets");
 }
 
-/// Task 281: `anchor_at` anchors only a sketch that awaits its anchor, and
-/// only at a positive normal float; it leaves an unanchored sketch
-/// unanchored and a set anchor where it is.
+/// Task 281: `anchor_at` anchors only an anchored sketch that holds no
+/// weight yet, and only at a positive normal float; it leaves an
+/// unanchored sketch unanchored and the anchor of one holding weight where
+/// it is.
 #[test]
-fn anchor_at_sets_only_an_awaiting_anchor_to_a_positive_normal() {
+fn anchor_at_sets_only_an_empty_anchored_sketch_to_a_positive_normal() {
     for bad in [0.0, -1.0, f64::MIN_POSITIVE / 2.0, f64::INFINITY, f64::NAN] {
         let mut q = anchored();
         q.anchor_at(bad);
-        assert_eq!(q.anchor(), Some(0.0), "{bad}");
+        assert_eq!(q.anchor(), Some(1.0), "{bad}");
     }
     let mut q = anchored();
     q.anchor_at(f64::MIN_POSITIVE);
     assert_eq!(q.anchor(), Some(f64::MIN_POSITIVE));
+    q.add(1.0, 1.0);
     q.anchor_at(2.0);
-    assert_eq!(q.anchor(), Some(f64::MIN_POSITIVE), "a set anchor stays");
-    let mut taken = anchored();
+    assert_eq!(
+        q.anchor(),
+        Some(f64::MIN_POSITIVE),
+        "a sketch with weight keeps it"
+    );
+    let mut zero = anchored();
+    zero.add(0.0, 1.0);
+    zero.anchor_at(2.0);
+    assert_eq!(zero.anchor(), Some(1.0), "weight at 0 is weight");
+    let mut taken = awaiting();
     taken.add(0.5, 1.0);
     taken.anchor_at(2.0);
     assert_eq!(taken.anchor(), Some(0.5), "the first value's anchor stays");
+    let mut early = awaiting();
+    early.anchor_at(2.0);
+    assert_eq!(early.anchor(), Some(2.0), "an awaited anchor is set");
     let mut plain = EwQuantile::bounded(&[0.5], 8).unwrap();
     plain.anchor_at(2.0);
     assert_eq!(plain.anchor(), None, "an unanchored sketch stays one");

@@ -425,9 +425,11 @@ pub struct SgdCfg {
     /// it was, to the bit.
     #[serde(default)]
     pub target_spread: bool,
-    /// Whether each MAD sketch buckets `|e|` in units of the first `|e|` it
-    /// takes, as [`crate::RobustCfg::mad_anchor`]. A spec sets it; a state
-    /// written before schema 64 loads as `false` and goes on as it was.
+    /// Whether each MAD sketch is anchored, as
+    /// [`crate::RobustCfg::mad_anchor`]: a refit's rebuilt sketch at its
+    /// residuals' weighted median, the grid fixed at 1 otherwise. A spec
+    /// sets it; a state written before schema 64 loads as `false` and goes
+    /// on as it was.
     #[serde(default)]
     pub mad_anchor: bool,
 }
@@ -814,11 +816,12 @@ pub struct Sgd {
     /// Which targets stepped this row (only kept under a constraint).
     #[serde(skip)]
     learned: Vec<bool>,
-    /// Per target, the label a row taught it with, while a refit buffer is
+    /// Per target, the label a row taught it with and the `|e|` its
+    /// one-pass scale took (NaN: none), while a refit buffer is
     /// open ([`SgdCfg::refit_rows`]); empty otherwise. Held here, taken for
     /// the row and put back, so that a row allocates nothing for it.
     #[serde(skip)]
-    taught: Vec<Option<f64>>,
+    taught: Vec<Option<(f64, f64)>>,
 }
 
 /// The layout `Sgd` loads, checked on the way in: what the cfg asks for,
@@ -918,7 +921,14 @@ impl TryFrom<SgdV3> for Sgd {
         let refit_fits = if cfg.refit_rows == 0 {
             refit.is_empty()
         } else {
-            refit.len() == m && refit.iter().all(|b| b.fits(cfg.n_features, cfg.refit_rows))
+            refit.len() == m
+                && refit.iter().all(|b| {
+                    b.fits(
+                        cfg.n_features,
+                        cfg.refit_rows,
+                        huber_scale == crate::HuberScale::Mad,
+                    )
+                })
         };
         if !refit_fits {
             return Err(
@@ -986,6 +996,7 @@ impl Sgd {
         } else {
             Vec::new()
         };
+        let keeps_resid = !mad.is_empty();
         let residual = if residual { m } else { 0 };
         Ok(Self {
             scaler,
@@ -1002,7 +1013,7 @@ impl Sgd {
             } else {
                 TargetSpread::none()
             },
-            refit: RefitBuf::per_target(cfg.refit_rows, m),
+            refit: RefitBuf::per_target(cfg.refit_rows, m, keeps_resid),
             gain,
             level,
             zbuf: vec![0.0; k],
@@ -1110,9 +1121,22 @@ impl Sgd {
     /// group whose reservation the budget cannot take, and to the models
     /// a reset rebuilds for it.
     pub fn refit_give_up(&mut self) {
-        self.refit
-            .iter_mut()
-            .for_each(RefitBuf::give_up_over_budget);
+        for j in 0..self.refit.len() {
+            if let Some(t) = self.refit[j].give_up_over_budget() {
+                self.scale_from_held(j, &t);
+            }
+        }
+    }
+
+    /// Target `j`'s MAD sketch built from the one-pass `|e|` its buffer
+    /// held, where it kept them: what a target whose refit never runs
+    /// goes on with online, by the rule the refit rebuilds it by
+    /// (`huber`'s, [`crate::huber_refit::one_pass_sketch`]).
+    fn scale_from_held(&mut self, j: usize, t: &huber_refit::Taken) {
+        if let (Some(e), Some(q)) = (t.resid.as_deref(), self.mad.get_mut(j)) {
+            let rows = Rows::new(&t.rows, &t.ages, self.cfg.n_features);
+            *q = huber_refit::one_pass_sketch(&rows, e, q);
+        }
     }
 
     /// The bytes this model's refit buffers can hold at most
@@ -1121,7 +1145,12 @@ impl Sgd {
         if self.refit.is_empty() {
             return 0;
         }
-        self.cfg.n_targets * crate::refit_reservation(self.cfg.n_features, self.cfg.refit_rows)
+        self.cfg.n_targets
+            * crate::refit_reservation(
+                self.cfg.n_features,
+                self.cfg.refit_rows,
+                !self.mad.is_empty(),
+            )
     }
 
     /// Per target, the sketch of `|e|` the MAD scale is read from, under
@@ -1176,6 +1205,15 @@ impl Sgd {
         match self.cfg.loss {
             SgdLoss::Huber { .. } => {
                 if let Some(q) = self.mad.get(j) {
+                    // Exact from the one-pass `|e|` the refit's buffer
+                    // holds while the refit waits, as `huber`'s.
+                    if let Some(s) = self
+                        .refit
+                        .get(j)
+                        .and_then(|b| b.warm_scale(self.cfg.n_features))
+                    {
+                        return s;
+                    }
                     return crate::robust::mad_scale(q);
                 }
                 let s2 = self.sig2[j];
@@ -1389,8 +1427,11 @@ impl Sgd {
         };
         let intercept = self.cfg.fit_intercept;
         let off = usize::from(intercept);
-        let (buf, ages) = self.refit[j].take();
-        let rows = Rows::new(&buf, &ages, self.cfg.n_features);
+        let held = self.refit[j].take();
+        // The one-pass sketch first, for a refit that fails; the rebuilt
+        // one replaces it below.
+        self.scale_from_held(j, &held);
+        let rows = Rows::new(&held.rows, &held.ages, self.cfg.n_features);
         // `l2` is a penalty on the standardized slope `β_i = s_i b_i` a step
         // applies once a row, so in the caller's units it is `l2 · s_i²`
         // a row; and the ridge, on the same slope, is `REFIT_RIDGE · s_i²`.
@@ -1413,10 +1454,9 @@ impl Sgd {
             return;
         };
         self.refit[j].ran(passes);
-        let scale =
-            huber_refit::rebuild_scale(&rows, self.cfg.huber_scale, self.cfg.mad_anchor, |i| {
-                rows.y(i) - huber_refit::fitted(&fit, rows.x(i), intercept)
-            });
+        let scale = huber_refit::rebuild_scale(&rows, self.mad.get(j), |i| {
+            rows.y(i) - huber_refit::fitted(&fit, rows.x(i), intercept)
+        });
         match &self.scaler {
             Some(sc) if !self.warmup.switched() => {
                 let s = scales_of(sc, off);
@@ -1448,8 +1488,7 @@ impl Sgd {
         }
         self.sig2[j] = scale.sig2;
         self.wsig[j] = scale.wsig;
-        if let Some(mut q) = scale.mad {
-            q.keep_anchor_rule_of(&self.mad[j]);
+        if let Some(q) = scale.mad {
             self.mad[j] = q;
         }
     }
@@ -2172,6 +2211,9 @@ impl OnlineModel for Sgd {
             // (`SgdCfg::min_weight_holds_learning`; docs/PLAN.md task 278,
             // D10).
             let scored = predicted || !self.cfg.min_weight_holds_learning;
+            // The `|e|` the one-pass scale takes from the row, NaN where it
+            // takes none: the refit's buffer keeps it beside the row.
+            let mut e_abs = f64::NAN;
             if !self.sig2.is_empty() && scored && p.is_finite() {
                 let resid = yj - p;
                 let ws_new = self.wsig[j] + weight;
@@ -2184,12 +2226,15 @@ impl OnlineModel for Sgd {
                 }
                 // The MAD's sketch takes the same residual at the same
                 // weight (`huber`'s rule; an `|e|` that is not finite adds
-                // nothing), an anchored one anchored at the level the
-                // residual was rounded at, the larger of the target and the
-                // prediction (`EwQuantile`'s "Where the anchor is set").
-                if let Some(q) = self.mad.get_mut(j) {
-                    q.add_at_level(resid.abs(), weight, yj.abs().max(p.abs()));
+                // nothing), but not while the refit's buffer holds the
+                // `|e|` and the scale is read from them
+                // (`RefitBuf::reads_resid`).
+                if let Some(q) = self.mad.get_mut(j)
+                    && !self.refit.get(j).is_some_and(RefitBuf::reads_resid)
+                {
+                    q.add(resid.abs(), weight);
                 }
+                e_abs = resid.abs();
             }
             // The target's level, while it warms up (`keeps_level`): the
             // intercept takes the running weighted mean of the residuals,
@@ -2229,7 +2274,7 @@ impl OnlineModel for Sgd {
                         self.beta[j][0] = b0;
                         self.level[j] = lv;
                         if let Some(t) = taught.get_mut(j) {
-                            *t = Some(yj);
+                            *t = Some((yj, e_abs));
                         }
                     }
                     continue;
@@ -2309,7 +2354,7 @@ impl OnlineModel for Sgd {
                 if self.step_mapped(j, d, weight, lr_row, (clip, ada_eps), level_step) {
                     self.took_step(j, level_next, gate, step_gain);
                     if let Some(t) = taught.get_mut(j) {
-                        *t = Some(yj);
+                        *t = Some((yj, e_abs));
                     }
                     if self.cfg.constraint.is_some() {
                         self.project_mapped(j);
@@ -2401,7 +2446,7 @@ impl OnlineModel for Sgd {
             }
             self.took_step(j, level_next, gate, step_gain);
             if let Some(t) = taught.get_mut(j) {
-                *t = Some(yj);
+                *t = Some((yj, e_abs));
             }
         }
         if let Some(sc) = &mut self.scaler {
@@ -2448,9 +2493,11 @@ impl OnlineModel for Sgd {
             for (j, t) in taught.iter().enumerate() {
                 let b = &mut self.refit[j];
                 let full = match t {
-                    Some(yj) => b.learn(x, *yj, weight, lam, lam_scale, cap),
+                    Some((yj, e)) => b.learn_scored(x, *yj, *e, weight, lam, lam_scale, cap),
                     None => {
-                        b.age(lam, lam_scale, cap);
+                        if let Some(held) = b.age(lam, lam_scale, cap) {
+                            self.scale_from_held(j, &held);
+                        }
                         false
                     }
                 };

@@ -126,8 +126,11 @@ impl Robust {
     #[inline(never)]
     pub(super) fn refit_quantile(&mut self, j: usize, tau: f64) {
         let nf = self.cfg.n_features;
-        let (buf, ages) = self.refit[j].take();
-        let rows = Rows::new(&buf, &ages, nf);
+        let held = self.refit[j].take();
+        // The one-pass sketch first, for a refit that leaves the warm-up's
+        // fit or fails; the rebuilt one replaces it below.
+        self.scale_from_held(j, &held);
+        let rows = Rows::new(&held.rows, &held.ages, nf);
         let n = rows.len();
         let v = rows.decayed_weights();
         let vs = rows.scale_weights();
@@ -269,7 +272,7 @@ impl Robust {
                 target: rows.y(i),
             }),
         }
-        let scale = rebuild_scale(&rows, self.cfg.huber_scale, self.cfg.mad_anchor, |i| {
+        let scale = rebuild_scale(&rows, self.mad.get(j), |i| {
             rows.y(i) - fitted(&b, rows.x(i), intercept)
         });
         self.sig2[j] = scale.sig2;

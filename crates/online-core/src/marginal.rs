@@ -684,6 +684,13 @@ struct Binned {
     /// asks for none.
     #[serde(default)]
     refit: BinRefit,
+    /// Restored from a state of schema 64 or earlier: a histogram built at
+    /// the freeze from here anchors each MAD sketch at its first deviation
+    /// and feeds it every deviation while the refit waits, as that build
+    /// did ([`crate::EwQuantile`]'s "Where the anchor is set"), so the
+    /// state goes on to the bit. Written only where it is `true`, last.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    before_65: bool,
 }
 
 /// The bins' Huber refit, as it stands ([`Binned::refit`]).
@@ -761,17 +768,33 @@ impl Binned {
     }
 
     /// Give the refit up, past the spec's `refit_budget`: done and marked,
-    /// and any rows held for it alone let go. The warm-up's rows stay: the
-    /// edges are still read from them.
+    /// and any rows held for it alone let go, each target's sketch built
+    /// from the deviations held for it (`huber`'s rule for a refit that
+    /// never runs). The warm-up's rows stay: the edges are still read from
+    /// them.
     fn refit_give_up(&mut self) {
         if self.refit.done {
             return;
         }
         self.refit.done = true;
         self.refit.over_budget = true;
-        if self.hist.is_some() {
+        if let Some(h) = self.hist.as_mut() {
+            h.release_deviations();
             self.held = Vec::new();
             self.pending_lam = 1.0;
+        }
+    }
+
+    /// A histogram just built, before any row: under a refit that waits,
+    /// it holds each row's deviations for it, each target's scale read
+    /// from them ([`crate::MarginalBins::hold_deviations`]); restored from
+    /// a state of schema 64 or earlier, its sketches await their first
+    /// deviations instead, as that build's did.
+    fn start(&self, cfg: &crate::BinCfg, hist: &mut crate::MarginalBins) {
+        if self.before_65 {
+            hist.await_first_values();
+        } else if self.refit_open(cfg) {
+            hist.hold_deviations();
         }
     }
 }
@@ -795,6 +818,7 @@ impl Binned {
         let mut hist =
             crate::MarginalBins::new_with_anchor(p, n_targets, edges, cfg.stat, cfg.mad_anchor)
                 .expect("edges_from gives one finite, strictly increasing list per feature");
+        self.start(cfg, &mut hist);
         for row in &self.held {
             hist.decay(row.lam);
             hist.update_row(&row.x, &row.y, row.w);
@@ -844,22 +868,25 @@ impl Marginal {
         let bins = match cfg.bins.as_ref() {
             None => None,
             Some(bc) => {
-                let hist = match &bc.edges {
-                    Some(e) => Some(crate::MarginalBins::new_with_anchor(
+                let mut b = Binned {
+                    hist: None,
+                    held: Vec::new(),
+                    pending_lam: 1.0,
+                    refit: BinRefit::default(),
+                    before_65: false,
+                };
+                if let Some(e) = &bc.edges {
+                    let mut hist = crate::MarginalBins::new_with_anchor(
                         p,
                         t,
                         e.clone(),
                         bc.stat,
                         bc.mad_anchor,
-                    )?),
-                    None => None,
-                };
-                Some(Box::new(Binned {
-                    hist,
-                    held: Vec::new(),
-                    pending_lam: 1.0,
-                    refit: BinRefit::default(),
-                }))
+                    )?;
+                    b.start(bc, &mut hist);
+                    b.hist = Some(hist);
+                }
+                Some(Box::new(b))
             }
         };
         // One mean and variance per feature under `"shared"`, one per pair
@@ -986,6 +1013,7 @@ impl Marginal {
 
     /// The bytes the bins' refit can hold beyond what the model holds
     /// without it: `refit_rows` held rows ([`crate::margbins::hold_bytes`])
+    /// and their deviations ([`crate::margbins::held_devs_bytes`])
     /// where the edges are given or learned from fewer rows, and nothing
     /// where the warm-up's own hold already covers the count (the refit then
     /// runs when the edges are fixed). 0 when it is off or done.
@@ -996,11 +1024,17 @@ impl Marginal {
         if !b.refit_open(c) || (c.edges.is_none() && c.refit_rows as usize <= c.warm_rows) {
             return 0;
         }
+        let devs = if matches!(c.stat, crate::BinStat::Huber { .. }) {
+            crate::margbins::held_devs_bytes(c.refit_rows as usize, self.cfg.n_targets)
+        } else {
+            0
+        };
         crate::margbins::hold_bytes(
             c.refit_rows as usize,
             self.cfg.n_features,
             self.cfg.n_targets,
         )
+        .saturating_add(devs)
     }
 
     /// The targets whose refit took every pass of its cap
@@ -2871,11 +2905,22 @@ impl OnlineModel for Marginal {
                     ));
                 }
                 // A build of schema 64 or earlier anchored each bin scale's
-                // sketch at its first deviation: they keep that rule.
+                // sketch at its first deviation: they keep that rule, and a
+                // histogram the warm-up still waits for is built so.
+                // Marked only where it acts: a Huber histogram still to
+                // be built whose sketches are anchored or whose refit
+                // waits, so every other state converts to the bytes this
+                // build writes.
                 if s.schema_version <= crate::stats::LAST_FIRST_VALUE_ANCHOR_SCHEMA
-                    && let Some(h) = m.bins.as_mut().and_then(|b| b.hist.as_mut())
+                    && let (Some(b), Some(c)) = (m.bins.as_mut(), m.cfg.bins.as_ref())
                 {
-                    h.keep_first_value_anchor();
+                    match b.hist.as_mut() {
+                        Some(h) => h.keep_first_value_anchor(),
+                        None => {
+                            b.before_65 = matches!(c.stat, crate::BinStat::Huber { .. })
+                                && (c.mad_anchor || b.refit_open(c));
+                        }
+                    }
                 }
                 Ok(m)
             }

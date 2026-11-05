@@ -95,7 +95,8 @@ fn a_rows_change_is_the_difference_of_its_losses_and_its_size_its_terms() {
 fn one_row(x: [f64; 2], y: f64, w: f64) -> (Vec<f64>, Vec<f64>) {
     let mut b = RefitBuf::new();
     b.learn(&x, y, w, 1.0, 1.0, 9);
-    b.take()
+    let t = b.take();
+    (t.rows, t.ages)
 }
 
 /// The majorizer's row is a least-squares row at the row's weight and the

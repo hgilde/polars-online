@@ -192,16 +192,21 @@ use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 /// continuation read the entry rounded on its own; [`CONTINUES_WITHIN`]
 /// lists the cases and their bound.
 ///
-/// 64 kept since 65 anchored a residual sketch at its first residual's
-/// level, where it was anchored at that residual (task 323): a kept state's
-/// sketches are anchored, or awaiting, by the old rule, so its model's
-/// restore marks each anchored sketch to keep it, and it goes on to the
-/// bit. Converted, every anchored sketch carries the mark, which a sketch
-/// this build makes does not, so such a case is held to its marks, to
-/// saving bytes that load back to the same and, its marks set aside, to
-/// the current fixture's bytes where its anchors were still awaited
-/// (`huber_mad_awaiting`); a set anchor is the old rule's, and the
-/// buckets are kept in its units ([`first_value_anchored`]).
+/// 64 kept since 65 stopped choosing a residual sketch's anchor from the
+/// residuals one pass sees (task 323): while a refit waits, the MAD is
+/// read exactly from the `|e|` its buffer keeps beside each row, the
+/// sketch taking none; a sketch no refit anchors keeps the grid fixed at
+/// 1. A kept state's sketches are anchored at their first value, or await
+/// it, and its refit buffers hold no `|e|`, so its model's restore marks
+/// each anchored sketch to keep the old rule, reads its scale from the
+/// sketch it feeds until its refit, and it goes on to the bit. Converted,
+/// every anchored sketch carries the mark and every open buffer says it
+/// holds no `|e|`, which a state this build makes does not, and the rows
+/// before the save were scaled by the old rule, so such a case -- one
+/// whose kept state holds an anchored sketch, or whose current state holds
+/// an `|e|` or deviations for a refit -- is held to its marks and to
+/// saving bytes that load back to the same ([`kept_scale_rule`]), not to
+/// the current fixture's bytes.
 /// The kept schemas, each a `v<N>/` directory found beside the current set.
 fn previous() -> Vec<u32> {
     frozen::PREVIOUS_SETS.iter().map(|(s, _)| *s).collect()
@@ -564,8 +569,10 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
                     named(&again.state()) == saved,
                     "{what}: saved, loaded, saved"
                 );
-            } else if schema <= 64 && sketches(&kept, "anchor") > 0 {
-                first_value_anchored(&case, &kept, &named(&m.state()), current, &what);
+            } else if schema <= 64
+                && (sketches(&kept, "anchor") > 0 || holds_for_a_refit(&current.bytes()))
+            {
+                kept_scale_rule(&case, &kept, &named(&m.state()), &what);
             } else if windowed || moved.is_some() {
                 // A window's snapshots from before task 275 carry no running
                 // products (the doc above `previous`): converted, they say
@@ -654,34 +661,32 @@ fn sketches(v: &rmpv::Value, key: &str) -> usize {
     }
 }
 
-/// `v` without the key `key` in any map: a converted state with its marks
-/// set aside.
-fn without(v: &rmpv::Value, key: &str) -> rmpv::Value {
-    match v {
-        rmpv::Value::Map(m) => rmpv::Value::Map(
-            m.iter()
-                .filter(|(k, _)| k.as_str() != Some(key))
-                .map(|(k, v)| (k.clone(), without(v, key)))
-                .collect(),
-        ),
-        rmpv::Value::Array(a) => rmpv::Value::Array(a.iter().map(|v| without(v, key)).collect()),
-        v => v.clone(),
+/// Whether a state's refit buffers keep each row's `|e|` (`resid`, a list,
+/// empty once the refit is done) or a histogram holds its deviations
+/// (`held`, with its `pending` decay): the forms a state of schema 64 has
+/// none of, and the mark of a case whose rows before the save were scaled
+/// by the rule since.
+fn holds_for_a_refit(bytes: &[u8]) -> bool {
+    fn any(v: &rmpv::Value) -> bool {
+        match v {
+            rmpv::Value::Map(m) => m.iter().any(|(k, v)| {
+                (k.as_str() == Some("resid") && v.is_array())
+                    || (k.as_str() == Some("held") && at(v, &["pending"]).is_some())
+                    || any(v)
+            }),
+            rmpv::Value::Array(a) => a.iter().any(any),
+            _ => false,
+        }
     }
+    any(&rmpv::decode::read_value(&mut &bytes[..]).unwrap())
 }
 
-/// A kept state of schema 64 holding anchored sketches, `kept`, converted
-/// to `saved` (the doc above `previous`): every anchored sketch is marked
-/// to keep anchoring at its first value and nothing else is; the state
-/// saves bytes that load back to the same; and, its marks set aside, it is
-/// the current fixture's state where every anchor was still awaited, the
-/// one case in which the two rules have yet to part.
-fn first_value_anchored(
-    case: &Case,
-    kept: &rmpv::Value,
-    saved: &[u8],
-    current: &Fixture,
-    what: &str,
-) {
+/// A kept state of schema 64, `kept`, converted to `saved`, whose scale the
+/// old rule kept (the doc above `previous`): every anchored sketch is
+/// marked to keep anchoring at its first value and nothing else is; no
+/// buffer or histogram holds an `|e|` or deviations for a refit; and the
+/// state saves bytes that load back to the same.
+fn kept_scale_rule(case: &Case, kept: &rmpv::Value, saved: &[u8], what: &str) {
     const MARK: &str = "anchor_by_first_value";
     let converted = rmpv::decode::read_value(&mut &saved[..]).unwrap();
     let anchored = sketches(kept, "anchor");
@@ -690,32 +695,20 @@ fn first_value_anchored(
         anchored,
         "{what}: each of the {anchored} anchored sketches is marked, and no other"
     );
-    assert_eq!(sketches(kept, MARK), 0, "{what}: a kept state carries no mark");
+    assert_eq!(
+        sketches(kept, MARK),
+        0,
+        "{what}: a kept state carries no mark"
+    );
+    assert!(
+        !holds_for_a_refit(saved),
+        "{what}: held for a refit by the new rule"
+    );
     let again = load(case, saved).unwrap_or_else(|e| panic!("{what}: {e}"));
-    assert!(named(&again.state()) == saved, "{what}: saved, loaded, saved");
-    let awaiting = |v: &rmpv::Value| {
-        fn any_set(v: &rmpv::Value) -> bool {
-            match v {
-                rmpv::Value::Map(m) => m.iter().any(|(k, v)| {
-                    (k.as_str() == Some("anchor") && v.as_f64().is_some_and(|a| a > 0.0))
-                        || any_set(v)
-                }),
-                rmpv::Value::Array(a) => a.iter().any(any_set),
-                _ => false,
-            }
-        }
-        !any_set(v)
-    };
-    if awaiting(kept) {
-        // Compared as bytes: a NaN, which a share no solve has fit writes,
-        // is not equal to itself as a value.
-        let mut bytes = Vec::new();
-        rmpv::encode::write_value(&mut bytes, &without(&converted, MARK)).unwrap();
-        assert!(
-            bytes == current.bytes(),
-            "{what}: its marks set aside, an awaiting state converts to the current fixture's"
-        );
-    }
+    assert!(
+        named(&again.state()) == saved,
+        "{what}: saved, loaded, saved"
+    );
 }
 
 /// `got` is `want` field for field -- the same map keys in the same order,
@@ -1984,16 +1977,18 @@ fn regenerate_when_asked() {
 }
 
 /// The anchored MAD sketches' forms (schema 64, task 278, the user's
-/// 2026-10-26): `huber_mad_anchored`, `sgd_huber_mad_anchored` and
-/// `marginal_bins_huber_anchored` and `quantile_mad` set the flag and hold every sketch's
-/// anchor at a positive value, the first residual's; `huber_mad_awaiting`
-/// is saved before any residual, every anchor 0, awaiting its first. The
-/// cases without the flag write it `false` and keep no anchor, the form a
-/// state saved before it goes on in. Since schema 65 (task 323) a sketch a
-/// state of 64 or earlier held is marked to keep anchoring at its first
-/// value, and `huber_mad_awaiting_first_value` writes that mark on every
-/// sketch, saved awaiting, its continuation anchoring by the old rule; no
-/// other case writes it.
+/// 2026-10-26; schema 65, task 323). `huber_mad_anchored`,
+/// `sgd_huber_mad_anchored`, `marginal_bins_huber_anchored`, `quantile_mad`
+/// and `huber_mad_awaiting` set the flag with the refit off, every sketch
+/// on the grid fixed at 1; `quantile_refit` is saved while its refit
+/// waits, its sketches untouched on the grid, and `quantile_refit_done`
+/// after it, anchored at the converged residuals' median. The cases
+/// without the flag write it `false` and keep no anchor, the form a state
+/// saved before schema 64 goes on in. A sketch a state of 64 or earlier
+/// held is marked to keep anchoring at its first value:
+/// `huber_mad_awaiting_first_value` writes that mark on every sketch,
+/// saved awaiting, and `huber_refit_first_value` on every sketch, saved
+/// mid-buffer, anchored at its first residual; no other case writes it.
 #[test]
 fn the_anchored_sketch_forms_are_written() {
     if regenerating() {
@@ -2012,46 +2007,86 @@ fn the_anchored_sketch_forms_are_written() {
     let robust_cfg = ["model", "Robust", "cfg"];
     let sgd_cfg = ["model", "Sgd", "cfg"];
     let bins_cfg = ["model", "Marginal", "cfg", "bins"];
+    #[derive(Clone, Copy, Debug)]
+    enum Anchors {
+        None,
+        Grid,
+        Set,
+        Awaiting,
+    }
     // (case, where its sketches are, where its flag is, whether it is set,
-    // the anchors: None for none, Some(true) set, Some(false) awaiting)
-    type Form<'a> = (&'a str, &'a [&'a str], &'a [&'a str], bool, Option<bool>);
-    let cases: [Form; 11] = [
-        ("huber_mad_anchored", &robust, &robust_cfg, true, Some(true)),
+    // its anchors)
+    type Form<'a> = (&'a str, &'a [&'a str], &'a [&'a str], bool, Anchors);
+    let cases: [Form; 13] = [
+        (
+            "huber_mad_anchored",
+            &robust,
+            &robust_cfg,
+            true,
+            Anchors::Grid,
+        ),
         (
             "huber_mad_awaiting_first_value",
             &robust,
             &robust_cfg,
             true,
-            Some(false),
+            Anchors::Awaiting,
         ),
-        ("quantile_mad", &robust, &robust_cfg, true, Some(true)),
-        ("quantile_refit", &robust, &robust_cfg, true, Some(true)),
+        (
+            "huber_refit_first_value",
+            &robust,
+            &robust_cfg,
+            true,
+            Anchors::Set,
+        ),
+        ("quantile_mad", &robust, &robust_cfg, true, Anchors::Grid),
+        ("quantile_refit", &robust, &robust_cfg, true, Anchors::Grid),
         (
             "quantile_refit_done",
             &robust,
             &robust_cfg,
             true,
-            Some(true),
+            Anchors::Set,
         ),
         (
             "huber_mad_awaiting",
             &robust,
             &robust_cfg,
             true,
-            Some(false),
+            Anchors::Grid,
         ),
-        ("sgd_huber_mad_anchored", &sgd, &sgd_cfg, true, Some(true)),
+        (
+            "sgd_huber_mad_anchored",
+            &sgd,
+            &sgd_cfg,
+            true,
+            Anchors::Grid,
+        ),
         (
             "marginal_bins_huber_anchored",
             &bins,
             &bins_cfg,
             true,
-            Some(true),
+            Anchors::Grid,
         ),
-        ("huber_mad", &robust, &robust_cfg, false, None),
-        ("sgd_huber_mad", &sgd, &sgd_cfg, false, None),
-        ("marginal_bins_huber", &bins, &bins_cfg, false, None),
+        (
+            "marginal_bins_refit_done",
+            &bins,
+            &bins_cfg,
+            true,
+            Anchors::Set,
+        ),
+        ("huber_mad", &robust, &robust_cfg, false, Anchors::None),
+        ("sgd_huber_mad", &sgd, &sgd_cfg, false, Anchors::None),
+        (
+            "marginal_bins_huber",
+            &bins,
+            &bins_cfg,
+            false,
+            Anchors::None,
+        ),
     ];
+    let marked_cases = ["huber_mad_awaiting_first_value", "huber_refit_first_value"];
     for (name, place, flag_at, flag, anchors) in cases {
         let v = decoded(name);
         let path: Vec<&str> = flag_at.iter().copied().chain(["mad_anchor"]).collect();
@@ -2064,21 +2099,97 @@ fn the_anchored_sketch_forms_are_written() {
         assert_eq!(sketches.len(), 2, "{name}: a sketch a target");
         for q in sketches {
             let mark = at(q, &["anchor_by_first_value"]).and_then(rmpv::Value::as_bool);
-            let marked = name == "huber_mad_awaiting_first_value";
-            assert_eq!(mark, marked.then_some(true), "{name}: anchor_by_first_value");
+            assert_eq!(
+                mark,
+                marked_cases.contains(&name).then_some(true),
+                "{name}: anchor_by_first_value"
+            );
             let a = at(q, &["anchor"]).and_then(rmpv::Value::as_f64);
             match anchors {
-                None => assert_eq!(a, None, "{name}: an anchor without the flag"),
-                Some(true) => assert!(a.is_some_and(|a| a > 0.0), "{name}: anchor {a:?}"),
-                Some(false) => assert_eq!(a, Some(0.0), "{name}: awaiting"),
+                Anchors::None => assert_eq!(a, None, "{name}: an anchor without the flag"),
+                Anchors::Grid => assert_eq!(a, Some(1.0), "{name}: the grid fixed at 1"),
+                Anchors::Set => assert!(
+                    a.is_some_and(|a| a > 0.0 && a != 1.0),
+                    "{name}: anchor {a:?}"
+                ),
+                Anchors::Awaiting => assert_eq!(a, Some(0.0), "{name}: awaiting"),
             }
+        }
+    }
+    // While a refit waits its buffers hold each row's `|e|`, a finite
+    // number at least 0 or -1 where the scale took none, and the sketch
+    // holds nothing; a state of 64 read by this build holds none, its
+    // sketch fed.
+    for (name, place, keeps) in [
+        ("huber_refit", &robust, true),
+        ("quantile_refit", &robust, true),
+        ("sgd_huber_refit", &sgd, true),
+        ("huber_refit_first_value", &robust, false),
+    ] {
+        let v = decoded(name);
+        let path: Vec<&str> = place.iter().copied().chain(["refit"]).collect();
+        let bufs = at(&v, &path).and_then(rmpv::Value::as_array).unwrap();
+        assert_eq!(bufs.len(), 2, "{name}: a buffer a target");
+        for b in bufs {
+            let rows = at(b, &["rows"]).and_then(rmpv::Value::as_array).unwrap();
+            let learned = at(b, &["learned"]).and_then(rmpv::Value::as_u64).unwrap();
+            assert!(!rows.is_empty() && learned > 0, "{name}: an open buffer");
+            let resid = at(b, &["resid"]).unwrap();
+            if keeps {
+                let e = resid.as_array().unwrap();
+                assert_eq!(e.len() as u64, learned, "{name}: an |e| a row");
+                assert!(
+                    e.iter().filter_map(rmpv::Value::as_f64).any(|e| e > 0.0),
+                    "{name}: {e:?}"
+                );
+            } else {
+                assert!(resid.is_nil(), "{name}: {resid:?}");
+            }
+        }
+        let path: Vec<&str> = place.iter().copied().chain(["mad"]).collect();
+        let fed = at(&v, &path)
+            .and_then(rmpv::Value::as_array)
+            .unwrap()
+            .iter()
+            .any(|q| {
+                at(q, &["buckets"])
+                    .and_then(rmpv::Value::as_array)
+                    .is_some_and(|b| !b.is_empty())
+            });
+        assert_eq!(fed, !keeps, "{name}: the sketch fed");
+    }
+    // A histogram whose refit waits holds each row's deviations from each
+    // target's location; one a state of 64 left inside its warm-up builds
+    // its histogram by that build's rule, and says so.
+    let v = decoded("marginal_bins_refit");
+    let held = at(&v, &["model", "Marginal", "bins", "hist", "scales", "held"]).unwrap();
+    let e = at(held, &["e"]).and_then(rmpv::Value::as_array).unwrap();
+    let w = at(held, &["w"]).and_then(rmpv::Value::as_array).unwrap();
+    assert!(!w.is_empty() && e.len() == 2 * w.len(), "{held:?}");
+    assert!(e.iter().filter_map(rmpv::Value::as_f64).any(|e| e > 0.0));
+    let v = decoded("marginal_bins_refit_first_value");
+    let b = at(&v, &["model", "Marginal", "bins"]).unwrap();
+    assert!(at(b, &["hist"]).is_some_and(rmpv::Value::is_nil));
+    assert_eq!(
+        at(b, &["before_65"]).and_then(rmpv::Value::as_bool),
+        Some(true)
+    );
+    assert!(
+        at(b, &["held"])
+            .and_then(rmpv::Value::as_array)
+            .is_some_and(|h| !h.is_empty())
+    );
+    for f in frozen::ALL {
+        if f.name != "marginal_bins_refit_first_value" {
+            let v = rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap();
+            assert_eq!(sketches(&v, "before_65"), 0, "{}", f.name);
         }
     }
     // No other fixture writes the mark.
     for f in frozen::ALL {
         let v = rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap();
         let marked = sketches(&v, "anchor_by_first_value");
-        let want = if f.name == "huber_mad_awaiting_first_value" { 2 } else { 0 };
+        let want = if marked_cases.contains(&f.name) { 2 } else { 0 };
         assert_eq!(marked, want, "{}: marked sketches", f.name);
     }
 }
