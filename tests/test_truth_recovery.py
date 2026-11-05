@@ -24,6 +24,7 @@ from __future__ import annotations
 import itertools
 import json
 import warnings
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -651,12 +652,14 @@ def tcpdbench_scaled(x: np.ndarray) -> np.ndarray:
     return (x - x.mean()) / x.std(ddof=1)
 
 
-def run_length_posteriors(y: np.ndarray) -> tuple[list[np.ndarray], list[int]]:
+def run_length_posteriors(y: np.ndarray, **extra: Any) -> tuple[list[np.ndarray], list[int]]:
     """``bocpd``'s log posterior over run lengths after each row, index
-    ``r`` the run length, and its ``run_mode`` on each row. The model emits
-    the posterior's mode and mean only, so the whole posterior is read from
-    the state the bank writes as JSON, one row at a time."""
-    bank = po.ModelBank([po.spec.bocpd("b", features=["x"], **TCPDBENCH_BOCPD)])
+    ``r`` the run length, and its ``run_mode`` on each row, at
+    ``TCPDBENCH_BOCPD`` and any ``extra`` options. The model emits the
+    posterior's mode and mean only, so the whole posterior is read from the
+    state the bank writes as JSON, one row at a time."""
+    spec = po.spec.bocpd("b", features=["x"], **TCPDBENCH_BOCPD, **extra)
+    bank = po.ModelBank([spec])
     posts, modes = [], []
     for v in y:
         out = bank.fit_predict(pl.DataFrame({"x": [v]})).unnest("b")
@@ -741,6 +744,61 @@ def test_bocpd_in_tcpdbenchs_configuration_scores_its_published_f1(name):
     print(f"{name}: F1 {score:.3f} from {found}, {by_alarm:.3f} by the alarm rule")
     ledger.record("bocpd_tcpdbench", f"{name}_f1", score, ideal=1.0)
     assert score == pytest.approx(TCPDBENCH_BOCPD_F1[name], abs=1e-12), (score, found)
+
+
+#: TCPDBench's published F1 for ``rbocpdms`` at its default settings
+#: (``analysis/output/scores/default_f1_scores.json``, key ``rbocpdms``):
+#: Knoblauch, Jewson and Damoulas' (2018) robust BOCPD, whose posterior is
+#: the beta-divergence's generalised Bayes one under a variational
+#: approximation. ``bocpd(robust_beta=)`` weighs each row by ``(pi(x) /
+#: pi(mode))^beta`` instead, so this is a published benchmark on the same
+#: series, not the same model: a floor, not a reproduction.
+TCPDBENCH_RBOCPDMS_F1 = {
+    "nile": 0.45161290322580644,
+    "quality_control_1": 0.6666666666666666,
+    "quality_control_2": 0.6666666666666666,
+    "quality_control_3": 0.6666666666666666,
+    "run_log": 0.6599326599326599,
+    "well_log": 0.5167126648267403,
+}
+
+#: The robust emission's default ``robust_beta``.
+ROBUST_BETA = 0.1
+
+ledger.guard(
+    "bocpd_tcpdbench_robust",
+    lambda: [
+        bocpd_out(
+            tcpdbench_scaled(tcpd_or_skip(name)[0]), **TCPDBENCH_BOCPD, robust_beta=ROBUST_BETA
+        )
+        for name in sorted(TCPD)
+    ],
+    dataset="tcpd:" + ",".join(sorted(TCPD)),
+)
+
+
+@pytest.mark.oracle_grid(reason="the network: TCPD's annotated series, each F1 held to the ledger")
+@pytest.mark.parametrize("name", sorted(TCPD))
+def test_robust_bocpd_in_tcpdbenchs_configuration_scores_above_published_rbocpdms(name):
+    """The robust emission at its default ``robust_beta``, run as
+    ``test_bocpd_in_tcpdbenchs_configuration_scores_its_published_f1`` runs
+    the plain one (the scaled series, TCPDBench's prior and hazard, ocp's
+    ``maxCPs`` segmentation over the run-length posterior and its 5-row
+    margin), scores at least the F1 TCPDBench published for ``rbocpdms`` at
+    its defaults, on every series. Measured 2026-11-04: 1.0 on ``nile``,
+    ``run_log``, ``quality_control_2`` and ``quality_control_3``, 0.800 on
+    ``quality_control_1`` and 0.881 on ``well_log``, against the published
+    0.452 to 0.667."""
+    x, annotations = tcpd_or_skip(name)
+    posts, modes = run_length_posteriors(tcpdbench_scaled(x), robust_beta=ROBUST_BETA)
+    # Evidence the posterior read is the model's: its mode after each row
+    # is the next row's run_mode.
+    assert [int(np.argmax(p)) for p in posts[:-1]] == modes[1:]
+    found = map_changepoints(posts)
+    score = f_measure(annotations, found)
+    print(f"{name}: robust F1 {score:.3f} from {found}")
+    ledger.record("bocpd_tcpdbench_robust", f"{name}_f1", score, ideal=1.0)
+    assert score >= TCPDBENCH_RBOCPDMS_F1[name], (score, found)
 
 
 # --- corrchange --------------------------------------------------------------------

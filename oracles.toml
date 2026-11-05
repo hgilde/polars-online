@@ -5564,6 +5564,101 @@ n = 1
 ideal = 1.0
 n = 1
 
+[group."second_opinion_bocpd.bocpd_pruning"]
+tests = [
+    "tests/test_second_opinion_bocpd.py::TestDefaultPruningIsThePackagesPosterior::test_fifty_seeds",
+]
+oracles = { "bayesian-changepoint-detection" = "0.2.dev1" }
+dataset = ""
+
+[group."second_opinion_hmm.hmm_batch_limit"]
+tests = [
+    "tests/test_second_opinion_hmm.py::TestTheLimitIsBaumWelch::test_fifty_seeds",
+]
+oracles = { "hmmlearn" = "0.3.3" }
+dataset = ""
+
+[group."second_opinion_hmm.hmm_online_em"]
+tests = [
+    "tests/test_second_opinion_hmm.py::TestOnlineEmIsItsRuleRebuilt::test_fifty_seeds",
+]
+oracles = { "hmmlearn" = "0.3.3", "numpy" = "2.5.2", "scipy" = "1.18.1" }
+dataset = ""
+
+[group."second_opinion_seeding.seeding_kmeanspp"]
+tests = [
+    "tests/test_second_opinion_seeding.py::TestKmeansPlusPlusIsScikitLearnsInDistribution::test_ten_streams",
+]
+oracles = { "scikit-learn" = "1.9.1" }
+dataset = ""
+
+[case."second_opinion_bocpd.bocpd_pruning.identity_nats"]
+ideal = 0.0
+n = 50
+floor = 2e-11
+
+[case."second_opinion_bocpd.bocpd_pruning.mode_misses"]
+ideal = 0.0
+n = 50
+tolerance = 0.0
+
+[case."second_opinion_hmm.hmm_batch_limit.covs_over_tolerance"]
+ideal = 0.0
+n = 50
+
+[case."second_opinion_hmm.hmm_batch_limit.means_over_tolerance"]
+ideal = 0.0
+n = 50
+
+[case."second_opinion_hmm.hmm_batch_limit.transitions_over_tolerance"]
+ideal = 0.0
+n = 50
+
+[case."second_opinion_hmm.hmm_online_em.error_over_tolerance"]
+ideal = 0.0
+n = 200
+floor = 0.05
+
+[case."second_opinion_seeding.seeding_kmeanspp.ks_over_critical"]
+ideal = 0.0
+n = 10
+
+[group."truth_recovery.bocpd_tcpdbench_robust"]
+tests = [
+    "tests/test_truth_recovery.py::test_robust_bocpd_in_tcpdbenchs_configuration_scores_above_published_rbocpdms[nile]",
+    "tests/test_truth_recovery.py::test_robust_bocpd_in_tcpdbenchs_configuration_scores_above_published_rbocpdms[quality_control_1]",
+    "tests/test_truth_recovery.py::test_robust_bocpd_in_tcpdbenchs_configuration_scores_above_published_rbocpdms[quality_control_2]",
+    "tests/test_truth_recovery.py::test_robust_bocpd_in_tcpdbenchs_configuration_scores_above_published_rbocpdms[quality_control_3]",
+    "tests/test_truth_recovery.py::test_robust_bocpd_in_tcpdbenchs_configuration_scores_above_published_rbocpdms[run_log]",
+    "tests/test_truth_recovery.py::test_robust_bocpd_in_tcpdbenchs_configuration_scores_above_published_rbocpdms[well_log]",
+]
+oracles = {}
+dataset = "tcpd:nile,quality_control_1,quality_control_2,quality_control_3,run_log,well_log"
+
+[case."truth_recovery.bocpd_tcpdbench_robust.nile_f1"]
+ideal = 1.0
+n = 1
+
+[case."truth_recovery.bocpd_tcpdbench_robust.quality_control_1_f1"]
+ideal = 1.0
+n = 1
+
+[case."truth_recovery.bocpd_tcpdbench_robust.quality_control_2_f1"]
+ideal = 1.0
+n = 1
+
+[case."truth_recovery.bocpd_tcpdbench_robust.quality_control_3_f1"]
+ideal = 1.0
+n = 1
+
+[case."truth_recovery.bocpd_tcpdbench_robust.run_log_f1"]
+ideal = 1.0
+n = 1
+
+[case."truth_recovery.bocpd_tcpdbench_robust.well_log_f1"]
+ideal = 1.0
+n = 1
+
 # --- raises
 
 [[raised]]
