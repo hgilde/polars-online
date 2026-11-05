@@ -1293,6 +1293,78 @@ mod tests {
         }
     }
 
+    /// A `diagonal` model keeps each class's variances alone, and each
+    /// window snapshot's, and no matrix. A `diagonal` state of schema 65,
+    /// which kept whole matrices in the model and in its snapshots, loads as
+    /// their diagonals (the frozen fixtures hold the numbers it then goes on
+    /// to); the same layout at schema 66, one holding both lists, or a whole
+    /// shape holding diagonals, is refused (task 327).
+    #[test]
+    fn a_diagonal_state_keeps_its_variances_and_an_old_one_loads_as_them() {
+        use crate::{ModelState, StateError};
+        let mut c = cfg(3, 2, Covariance::Diagonal);
+        c.window = Some(20.0);
+        c.max_rows_between_snapshots = Some(1);
+        let mut m = EwClass::new(c).unwrap();
+        let mut s = 7u64;
+        for i in 0..50 {
+            let x = [lcg(&mut s), lcg(&mut s), 3.0 + lcg(&mut s)];
+            m.step(&x, &[Some(f64::from(i % 2))], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        assert!(m.classes.is_empty() && m.diag_classes.len() == 2);
+        let snaps = &m.win.as_ref().unwrap().snaps;
+        assert!(snaps.iter().count() > 3);
+        assert!(snaps
+            .iter()
+            .all(|s| s.classes.is_empty() && s.diag_classes.len() == 2));
+        let whole: Vec<EwCov> = (0..2)
+            .map(|i| {
+                EwCov::from_moments(3, 1.5 + i as f64, &[0.5, 1.0, -1.0], &[2.0; 9], 0.1).unwrap()
+            })
+            .collect();
+        let snap = crate::Moments::of(&whole[0], 0.5);
+        let old = |schema: u32, edit: &dyn Fn(&mut EwClass)| {
+            let mut s = m.state();
+            s.schema_version = schema;
+            let ModelState::EwClass(inner) = &mut s.model else {
+                unreachable!()
+            };
+            edit(inner);
+            EwClass::restore(&s)
+        };
+        let as_65 = |e: &mut EwClass| {
+            e.diag_classes.clear();
+            e.classes = whole.clone();
+            for s in e.win.as_mut().unwrap().snaps.iter_mut() {
+                s.diag_classes.clear();
+                s.classes = vec![snap.clone(); 2];
+            }
+        };
+        let back = old(65, &as_65).unwrap();
+        assert!(back.classes.is_empty());
+        let want: Vec<EwCovDiag> = whole.iter().map(EwCovDiag::of).collect();
+        assert_eq!(back.diag_classes, want);
+        let part = crate::DiagMoments::of_full(&snap);
+        for s in back.win.as_ref().unwrap().snaps.iter() {
+            assert!(s.classes.is_empty());
+            assert_eq!(s.diag_classes, vec![part.clone(); 2]);
+        }
+        let refused: [(u32, &dyn Fn(&mut EwClass)); 4] = [
+            (66, &as_65),
+            (66, &|e| e.classes = whole.clone()),
+            (66, &|e| {
+                e.diag_classes.pop();
+            }),
+            (65, &|e| e.cfg.covariance = Covariance::Full),
+        ];
+        for (i, (schema, edit)) in refused.into_iter().enumerate() {
+            match old(schema, edit) {
+                Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{i}: {e}"),
+                other => panic!("{i}: {other:?}"),
+            }
+        }
+    }
+
     fn cfg(k: usize, nc: usize, covariance: Covariance) -> EwClassCfg {
         EwClassCfg {
             n_features: k,

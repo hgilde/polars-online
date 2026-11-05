@@ -364,14 +364,6 @@ fn finding_s1_the_runner_costs_each_spec_the_same_a_call() {
     hold_finding("S1");
 }
 
-/// `hmm` and `ew_class` under `covariance_type="diag"` keep every state's
-/// full co-moments, `O(k²)`, where the diagonal model reads `k` variances.
-#[test]
-#[ignore = "extended: scaling finding S2, a diagonal covariance keeps O(k^2) co-moments"]
-fn finding_s2_a_diagonal_covariance_keeps_o_k() {
-    hold_finding("S2");
-}
-
 /// `corrchange(kind="window")` computes both windows' correlations afresh
 /// on every row: `O(window_rows · k²)` a row.
 #[test]

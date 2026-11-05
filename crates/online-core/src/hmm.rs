@@ -1208,6 +1208,71 @@ mod tests {
     }
     use crate::{EwClass, EwClassCfg, OnlineModel};
 
+    /// A `diag` model keeps each state's variances alone and no matrix. A
+    /// `diag` state of schema 65, which kept whole matrices, loads as their
+    /// diagonals (the frozen fixtures hold the numbers it then goes on to);
+    /// the same layout at schema 66, one holding both lists, a short one,
+    /// or a whole shape holding diagonals, is refused (task 327).
+    #[test]
+    fn a_diagonal_state_keeps_its_variances_and_an_old_one_loads_as_them() {
+        use crate::{ModelState, StateError};
+        let diag = HmmCfg {
+            covariance: Covariance::Diagonal,
+            ..cfg(3, 2)
+        };
+        let mut m = Hmm::new(diag.clone()).unwrap();
+        for (x, _) in stream(60, 5, 7) {
+            let x = [x[0], x[1], x[0] - x[1]];
+            m.step(&x, &[], 1.0, 1.0);
+        }
+        assert!(m.seeded && m.states.is_empty() && m.diag_states.len() == 2);
+        assert!(m.diag_states.iter().all(|s| s.has_shape(3) && s.n_eff() > 0.0));
+        let whole: Vec<EwCov> = (0..2)
+            .map(|i| {
+                EwCov::from_moments(3, 1.5 + i as f64, &[0.5, 1.0, -1.0], &[2.0; 9], 1e-2)
+                    .unwrap()
+                    .without_runs()
+            })
+            .collect();
+        let old = |schema: u32, edit: &dyn Fn(&mut Hmm)| {
+            let mut s = m.state();
+            s.schema_version = schema;
+            let ModelState::Hmm(inner) = &mut s.model else {
+                unreachable!()
+            };
+            edit(inner);
+            Hmm::restore(&s)
+        };
+        let as_65 = |h: &mut Hmm| {
+            h.diag_states.clear();
+            h.states = whole.clone();
+        };
+        let back = old(65, &as_65).unwrap();
+        assert!(back.states.is_empty());
+        let want: Vec<EwCovDiag> = whole.iter().map(EwCovDiag::of).collect();
+        assert_eq!(back.diag_states, want);
+        let refused: [(u32, &dyn Fn(&mut Hmm)); 4] = [
+            (66, &as_65),
+            (66, &|h| h.states = whole.clone()),
+            (66, &|h| {
+                h.diag_states.pop();
+            }),
+            (65, &|h| h.cfg.covariance = Covariance::Full),
+        ];
+        for (i, (schema, edit)) in refused.into_iter().enumerate() {
+            match old(schema, edit) {
+                Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{i}: {e}"),
+                other => panic!("{i}: {other:?}"),
+            }
+        }
+        // The whole shapes load as they were, with no diagonal list.
+        let full = Hmm::new(cfg(3, 2)).unwrap();
+        let mut s = full.state();
+        s.schema_version = 65;
+        let back = Hmm::restore(&s).unwrap();
+        assert!(back.diag_states.is_empty() && back.states.len() == 2);
+    }
+
     /// A row whose densities are all non-finite cannot be scored or learned,
     /// but it still happened: it must age `n_eff`, the counts and the states
     /// together, as a zero-weight row does -- not advance `n_eff` alone
