@@ -59,6 +59,11 @@ use serde::{Deserialize, Serialize};
 use crate::bank::GroupKey;
 use crate::stream::usable;
 
+mod held;
+#[cfg(test)]
+mod held_tests;
+use held::Held;
+
 /// One series' state within a group: its last value, whether it has ticked
 /// since the last grid point, and how many times.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -150,6 +155,9 @@ pub struct RefreshTime {
     /// Rows fed before this chunk, so an error names the input's row, not
     /// the chunk's (task 120).
     rows_fed: usize,
+    /// The points of one row past a limited feed's limit, which the next
+    /// feed returns first.
+    held: Option<Held>,
 }
 
 /// A clock value as the order check compares it: a float as itself, an
@@ -235,6 +243,10 @@ struct RefreshFile {
     /// Sorted by key, so one state is one file, byte for byte.
     states: Vec<(GroupKey, Vec<GridState>)>,
     last_time: Vec<(GroupKey, Instant)>,
+    /// The points a limited feed held back: absent when there are none, and
+    /// the file then version 1, the bytes of a build that holds none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    held: Option<Held>,
 }
 
 /// Which kind of clock a sampler has been fed.
@@ -255,6 +267,9 @@ impl ClockKind {
 
 const REFRESH_MAGIC: &str = "polars-online refresh_time";
 const REFRESH_VERSION: u32 = 1;
+/// A state holding points a limited feed held back: a build that reads only
+/// version 1 refuses it rather than dropping them.
+const REFRESH_VERSION_HELD: u32 = 2;
 
 /// One completed grid point, as the scan collects it: the group it belongs
 /// to, which pair (0 for the joint grid), the row of the completing tick,
@@ -314,6 +329,7 @@ impl RefreshTime {
             grouped: None,
             kind: None,
             rows_fed: 0,
+            held: None,
         })
     }
 
@@ -336,13 +352,18 @@ impl RefreshTime {
         last_time.sort_by(|a, b| a.0.cmp(&b.0));
         let file = RefreshFile {
             magic: REFRESH_MAGIC.into(),
-            version: REFRESH_VERSION,
+            version: if self.held.is_some() {
+                REFRESH_VERSION_HELD
+            } else {
+                REFRESH_VERSION
+            },
             names: self.names.clone(),
             pairs: !self.pairs.is_empty(),
             grouped: self.grouped.unwrap_or(false),
             kind: self.kind,
             states,
             last_time,
+            held: self.held.clone(),
         };
         rmp_serde::to_vec_named(&file).map_err(|e| e.to_string())
     }
@@ -374,10 +395,22 @@ impl RefreshTime {
         if file.magic != REFRESH_MAGIC {
             return Err("not a refresh_time state".into());
         }
-        if file.version != REFRESH_VERSION {
+        if file.version != REFRESH_VERSION && file.version != REFRESH_VERSION_HELD {
             return Err(format!(
-                "refresh_time state version {} not supported (this build reads {REFRESH_VERSION})",
+                "refresh_time state version {} not supported (this build reads \
+                 {REFRESH_VERSION} and {REFRESH_VERSION_HELD})",
                 file.version
+            ));
+        }
+        if (file.version == REFRESH_VERSION_HELD) != file.held.is_some() {
+            return Err(format!(
+                "refresh_time: the state is damaged: version {} {} held points",
+                file.version,
+                if file.held.is_some() {
+                    "with"
+                } else {
+                    "without"
+                }
             ));
         }
         if file.names != names || file.pairs != pairs {
@@ -417,6 +450,21 @@ impl RefreshTime {
         rt.last_time = file.last_time.into_iter().collect();
         rt.grouped = Some(grouped);
         rt.kind = file.kind;
+        if let Some(h) = &file.held {
+            // At least one point, each of a grid this sampler runs, with a
+            // count and a value per series of that grid.
+            if h.points.is_empty()
+                || h.points
+                    .iter()
+                    .any(|(pi, t, l)| *pi >= n_grids || t.len() != width || l.len() != width)
+            {
+                return Err(format!(
+                    "refresh_time: the state is damaged: its held points are not points of \
+                     {n_grids} grids of {width} series"
+                ));
+            }
+        }
+        rt.held = file.held;
         Ok(rt)
     }
 
@@ -481,9 +529,50 @@ impl RefreshTime {
     /// state is the state after that row, wherever the chunk ends. That is
     /// what a slice of the output saves (task 105): the state after the
     /// input behind the rows returned, the same whatever the chunk size.
-    /// One row can complete several pairs' points at once; it is taken
-    /// whole, so the points may pass `limit` by the rest of that row's.
+    /// One row can complete several pairs' points at once: exactly `limit`
+    /// are returned, and the rest of that row's are held, in the state too,
+    /// and returned first by the next feed (task 321).
     pub fn feed_limited(
+        &mut self,
+        df: &DataFrame,
+        cols: &RefreshCols<'_>,
+        limit: Option<usize>,
+    ) -> PolarsResult<DataFrame> {
+        let Some(held) = &self.held else {
+            return self.scan(df, cols, limit);
+        };
+        let take = limit.map_or(held.points.len(), |l| l.min(held.points.len()));
+        let names = Self::carried(cols);
+        let row = held.frame(df, &names)?;
+        let points: Vec<Point> = held.points[..take]
+            .iter()
+            .map(|(pi, ticks, last)| (GroupKey(None), *pi, 0, ticks.clone(), last.clone()))
+            .collect();
+        let mut out = self.frame(&row, cols, points)?;
+        let held = self.held.as_mut().expect("matched above");
+        if take < held.points.len() {
+            held.points.drain(..take);
+            return Ok(out);
+        }
+        self.held = None;
+        let rest = self.scan(df, cols, limit.map(|l| l - take))?;
+        out.vstack_mut(&rest)?;
+        Ok(out)
+    }
+
+    /// The input columns a point carries: the group, the clock and `keep`,
+    /// each once.
+    fn carried<'a>(cols: &RefreshCols<'a>) -> Vec<&'a str> {
+        let mut names: Vec<&str> = cols.group.into_iter().collect();
+        names.push(cols.clock);
+        names.extend(cols.keep.iter().map(String::as_str));
+        let mut seen = std::collections::HashSet::new();
+        names.retain(|n| seen.insert(*n));
+        names
+    }
+
+    /// The scan of [`Self::feed_limited`], holding nothing on entry.
+    fn scan(
         &mut self,
         df: &DataFrame,
         cols: &RefreshCols<'_>,
@@ -708,6 +797,18 @@ impl RefreshTime {
             }
         }
         self.rows_fed += consumed;
+        if let Some(l) = limit.filter(|l| points.len() > *l) {
+            // Only the last row read can pass the limit: the scan stops
+            // before a row once `limit` points are out.
+            let rest = points.split_off(l);
+            let at = rest[0].2;
+            debug_assert!(rest.iter().all(|p| p.2 == at));
+            let rest = rest
+                .into_iter()
+                .map(|(_, pi, _, ticks, last)| (pi, ticks, last))
+                .collect();
+            self.held = Some(Held::new(df, &Self::carried(cols), at, rest)?);
+        }
         self.frame(df, cols, points)
     }
 
@@ -1813,6 +1914,7 @@ mod tests {
                 kind: None,
                 states: Vec::new(),
                 last_time: Vec::new(),
+                held: None,
             })
             .unwrap()
         };
@@ -1822,11 +1924,16 @@ mod tests {
             Some("not a refresh_time state".to_string())
         );
         assert_eq!(
-            load(&file(REFRESH_MAGIC, REFRESH_VERSION + 1)).err(),
+            load(&file(REFRESH_MAGIC, REFRESH_VERSION_HELD + 1)).err(),
             Some(format!(
-                "refresh_time state version {} not supported (this build reads {REFRESH_VERSION})",
-                REFRESH_VERSION + 1
+                "refresh_time state version {} not supported (this build reads \
+                 {REFRESH_VERSION} and {REFRESH_VERSION_HELD})",
+                REFRESH_VERSION_HELD + 1
             ))
+        );
+        assert_eq!(
+            load(&file(REFRESH_MAGIC, REFRESH_VERSION_HELD)).err(),
+            Some("refresh_time: the state is damaged: version 2 without held points".to_string())
         );
         assert!(load(&file(REFRESH_MAGIC, REFRESH_VERSION)).is_ok());
     }

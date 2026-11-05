@@ -361,7 +361,10 @@ match the state's where it was cut is taken as the same input.
 
 `po.stream.refresh_time` resumes as a bank does: on the input after the
 last tick it read. Under a slice it reads up to the tick that completed the
-last point returned, so its state is the same whatever the chunk size. A
+last point returned, so its state is the same whatever the chunk size.
+With `pairs=True` one tick can complete several pairs' points; a slice
+that ends among them keeps the rest in its state, and the run resumed after
+that tick returns them first, so the two runs give the one run's grid. A
 row before a group's saved clock is refused as any step back is.
 
 ### The rules, and the evidence for each
