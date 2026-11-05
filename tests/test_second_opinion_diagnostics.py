@@ -1060,6 +1060,32 @@ class TestNestedComparisonsAreTheirPapers:
                     cw.filter(pl.col("g") == gi)["cw"][0], want_cw, rtol=1e-9
                 )
 
+    def test_the_run_once_forms_are_statsmodels_hac_t_statistics(self):
+        """Task 320 (§3b): both run-once statistics are a third party's
+        computation whole, not only their variance: statsmodels' ``OLS`` of
+        the differential on a constant, ``fit(cov_type="HAC", maxlags=lags,
+        use_correction=False)``, whose ``tvalues[0]`` is the mean over its
+        Newey-West standard error (Bartlett weights ``1 - l/(lags + 1)``,
+        no small-sample factor), Diebold and Mariano's statistic on ``d =
+        e_b² - e_a²`` and Clark and West's on ``f = d + (e_a - e_b)²``, no
+        Harvey, Leybourne and Newbold correction. Measured 2026-11-04: 6.7e-16
+        relative at most."""
+        import statsmodels.api as sm
+
+        out = _nested_out(1500, 107, 0.05)
+        ra = out["big"].struct.field("resid_y").to_numpy()
+        rb = out["small"].struct.field("resid_y").to_numpy()
+        ok = np.isfinite(ra) & np.isfinite(rb)
+        ra, rb = ra[ok], rb[ok]
+        for lags in (0, 1, 4, 12):
+            dm = po.eval.diebold_mariano(out, a="big", b="small", lags=lags)["dm"][0]
+            cw = po.eval.clark_west(out, big="big", small="small", lags=lags)["cw"][0]
+            for got, v in ((dm, rb**2 - ra**2), (cw, rb**2 - ra**2 + (ra - rb) ** 2)):
+                fit = sm.OLS(v, np.ones_like(v)).fit(
+                    cov_type="HAC", cov_kwds={"maxlags": lags, "use_correction": False}
+                )
+                np.testing.assert_allclose(got, fit.tvalues[0], rtol=1e-12)
+
     def test_the_exponentially_weighted_form_at_each_row(self):
         h, lags = 250.0, 2
         out = _nested_out(1200, 102, 0.1)
