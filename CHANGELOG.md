@@ -49,6 +49,28 @@ returns.
   and `quantile` by at most 1.5e-4 of `1+|v|`, and 1.4.0's own files'
   continuations against this build's fresh run by 8e-4 to 5e-3. A state
   saved by 1.4.0 goes on to the bit (task 323).
+- `corrchange(kind="window")` merges each window's correlations from
+  summaries of blocks of `ceil(k/2) + 3` rows (a count, an anchor row, the
+  mean's offset from it and the centred co-moments, combined by the pairwise
+  update rule) instead of reading both windows' rows on every row. The
+  statistic moves in its last bits: at most 3.6e-15 off the exact statistic,
+  where reading the rows was up to 1.2e-14 off, at levels of 0 and 1e8
+  alike. Windows of fewer than four blocks are still read whole and report
+  the same bits. A state saved by 1.4.0 continues within that rounding
+  (task 328).
+- `corrchange(kind="window")`'s `permute_every_rows` defaults to
+  `window_rows` (was 50): one critical value in force for one shift of the
+  windows, so a redraw's cost per row no longer grows with the window. A
+  spec or saved state with a value keeps it. The size measured 4.8% to 5.2%
+  at windows of 50 to 400 rows (alpha 0.05, 200 draws) (task 328).
+- A windowed `ew_class` under `covariance_type="diag"` counts each class's
+  snapshot at the k variances it keeps against `window_budget`, where it
+  counted a k-by-k matrix, so a budget that bound before now holds up to k
+  times as many snapshots (task 327).
+- State schema 66: `hmm` and `ew_class` under `covariance_type="diag"`
+  keep only their variances, and a `corrchange` window keeps the count of
+  rows its ring has taken. States saved at 65 or earlier load and go on
+  (tasks 327, 328).
 
 ### Fixed
 
@@ -81,6 +103,36 @@ returns.
   The blocks of the 2,500-row refit bench cases take 7-10% more time than
   the one-pass sketch, and a 10,000-group `huber` bank through its 500-row
   refits about 3% more (task 323).
+- `hmm` and `ew_class` with `covariance_type="diag"` keep each state's or
+  class's variances alone, and a window's snapshots do too, where they kept
+  and updated a whole co-moment matrix to read its diagonal: the state and a
+  row's work grow with the features rather than their square. At 32
+  features a two-state `hmm`'s state is 2.4 KB where it was 20 KB and its
+  row 0.24 µs where it was 0.43 µs; a three-class `ew_class`'s state is
+  3.3 KB where it was 30 KB (arm64). Every output is unchanged to the bit
+  (task 327).
+- `corrchange(kind="window")` costs the same a row whatever its window.
+  Native arm64, 200 draws, the default cadence, at windows of 100 / 800 /
+  2,500 rows: 6.6 / 5.0 / 5.6 µs a row at 4 features, against 12.5 / 72.0 /
+  296.9 before; 27.8 / 28.0 / 29.2 µs at 20 features, against 61.5 / 494.0 /
+  1,598.3. Its heap is about 1.8 times the old ring's (task 328).
+- The command line's runner adds a chunk's output columns in one pass, where
+  it added them one spec at a time and each addition copied the columns
+  before it: a call with 128 specs made about 24,770 allocations to join its
+  columns; a call's cost now grows in proportion to its specs. The output is
+  unchanged, column for column (task 326).
+
+### Tests and documents
+
+- Each surface states how a row's work and its state grow with every size
+  it has -- a model's features, targets and windows, the bank's groups and
+  specs, the window operators' groups and kernels, the rows a stream has
+  already seen -- and a test holds each statement by measuring two sizes,
+  so a cost that grows the wrong way fails even if it has always been there.
+  `docs/PERFORMANCE.md`, "How cost grows with size", gives the 111
+  measurements and the reason for each; CI counts the instructions of 22 of
+  them at both sizes on every push. The three it found are fixed above
+  (task 326).
 
 ## [1.4.0] — 2026-11-03
 

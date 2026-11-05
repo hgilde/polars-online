@@ -190,6 +190,22 @@ runs both tiers, but a plain `cargo test` skips the extended Rust tests
    re-saves to its own marked bytes, not the current fixture's, so it is
    held, beside `kmeans` and `holt`, to re-saving bytes that load back the
    same (`kept_scale_rule`).
+   A ninth, the user's (2026-11-05, task 328): a `corrchange(kind="window")`
+   state of schema 65 or earlier loads numbered from its ring's oldest row
+   (it never recorded `ring_rows`), and where its windows span four blocks
+   or more its statistic is merged from block moments rather than read from
+   the rows, so `stat` continues within the merged form's derived rounding
+   bound (held at 1e-14 of `1 + |stat|`, measured 4e-16), not to the bit;
+   every other output continues to the bit, a kept `permute_every_rows`
+   stays as saved, and its re-saved state equals the current fixture's but
+   for `ring_rows` (`RENUMBERED`).
+   A tenth, the user's (2026-11-05, task 327): a windowed `ew_class` under
+   `covariance_type="diag"` now counts each snapshot class at its k
+   variances, not k² co-moments, against `window_budget`, so a state of
+   schema 65 or earlier that had reached its budget thins or refuses later
+   than it would have, and from that row does not continue to the bit. No
+   frozen fixture reaches it; every state below its budget continues to the
+   bit.
 6. No `unsafe` in `online-core`. f64 everywhere.
 7. Commit after each completed task in `docs/PLAN.md`, with the task number in the message.
 8. **`n_eff` -- the models' accessor, emitted as `weight_sum` -- means the same thing in
