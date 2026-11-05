@@ -16570,7 +16570,7 @@ wheels (24.5-29.8 MB, 70.9-98.4 MB installed).
       at the same spot. Discovering them would mean a file per case (78 +
       13), splitting each family's cases and the comments that relate them
       -- more than a tidy refactor, so left for the user. CLAUDE.md rule 5
-      still names `previous![..]`; the user's file, not edited.
+      named `previous![..]`; corrected to the `build.rs` discovery 2026-11-04.
 
 - [x] 282. **Review round 10's fixes, before 1.4.0** -- the user, 2026-10-28:
       "Review the 1.4 changes theory and code". Nine read-only reviewers over

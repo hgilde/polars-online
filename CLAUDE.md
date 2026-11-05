@@ -128,7 +128,7 @@ runs both tiers, but a plain `cargo test` skips the extended Rust tests
    to `SCHEMA_VERSION` has frozen fixtures (`crates/*/tests/state_fixtures.rs`): the
    current schema's load, continue to the bit and re-save byte for byte; a previous
    schema's load through its loader, continue to the bit and re-save as the current
-   schema's fixture bytes of the same case (`state_fixtures/v<N>/`, `previous![..]`).
+   schema's fixture bytes of the same case (`state_fixtures/v<N>/`, found by each crate's `build.rs`).
    A layout change cannot land without them, and a fixture must freeze every form a
    layout can take (a test decodes each file and holds the new forms non-empty; review
    5, B1 and D3). Pre-1.0 (the user, 2026-09-14 and 2026-09-28): a state saved before
