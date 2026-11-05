@@ -89,6 +89,14 @@ returns.
 
 ### Fixed
 
+- A readiness notice raised in the same call that closes its group
+  (`group_close="monotone"`) or its session span (`group_close="session"`)
+  is now said. It was lost before, so whether it appeared depended on where
+  a chunk ended: one call said nothing, and the same rows in two calls said
+  it. Under sessions, a group says the closed span's notices before the
+  next span's. `drop_groups` also no longer discards a notice still held
+  after a call that learned and then raised an error. Outputs and saved
+  states are unchanged (task 333).
 - `po.stream.refresh_time(pairs=True)` resumed after a `head(n)` that
   ended among one tick's pairs lost that tick's remaining points: neither
   the slice nor the resumed run returned them. The slice now returns
