@@ -69,6 +69,12 @@ MAX_DOC_BYTES = 2_000_000
 #: about data.
 LOCKFILES = {"uv.lock", "Cargo.lock"}
 
+#: The oracle ledger is generated the same way (``scripts/oracles.py
+#: apply`` and ``rerun`` write it), must be tracked, and grows by a block
+#: for every oracle group and case; it reached the source cap at 248,910
+#: bytes with 61 groups (2026-11-04). Its size says nothing about data.
+GENERATED = LOCKFILES | {"oracles.toml"}
+
 
 def _tracked() -> list[Path]:
     out = subprocess.run(
@@ -133,7 +139,7 @@ def test_no_tracked_file_is_data_sized(tracked):
     big = []
     for p in tracked:
         f = REPO / p
-        if p.name in LOCKFILES:
+        if p.name in GENERATED:
             continue
         cap = MAX_DOC_BYTES if p.suffix == ".md" else MAX_SOURCE_BYTES
         if f.is_file() and f.stat().st_size > cap:
