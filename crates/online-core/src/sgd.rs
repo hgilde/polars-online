@@ -1448,7 +1448,8 @@ impl Sgd {
         }
         self.sig2[j] = scale.sig2;
         self.wsig[j] = scale.wsig;
-        if let Some(q) = scale.mad {
+        if let Some(mut q) = scale.mad {
+            q.keep_anchor_rule_of(&self.mad[j]);
             self.mad[j] = q;
         }
     }
@@ -2183,9 +2184,11 @@ impl OnlineModel for Sgd {
                 }
                 // The MAD's sketch takes the same residual at the same
                 // weight (`huber`'s rule; an `|e|` that is not finite adds
-                // nothing).
+                // nothing), an anchored one anchored at the level the
+                // residual was rounded at, the larger of the target and the
+                // prediction (`EwQuantile`'s "Where the anchor is set").
                 if let Some(q) = self.mad.get_mut(j) {
-                    q.add(resid.abs(), weight);
+                    q.add_at_level(resid.abs(), weight, yj.abs().max(p.abs()));
                 }
             }
             // The target's level, while it warms up (`keeps_level`): the
@@ -2541,6 +2544,14 @@ impl OnlineModel for Sgd {
                 // The shapes are checked as the state is read (`SgdV3`).
                 crate::model::check_cfg("sgd", m.cfg.validate())?;
                 m.ensure_buffers();
+                // A build of schema 64 or earlier anchored each sketch at
+                // its first residual: its sketches keep that rule
+                // (`EwQuantile::keep_first_value_anchor`).
+                if s.schema_version <= crate::stats::LAST_FIRST_VALUE_ANCHOR_SCHEMA {
+                    m.mad
+                        .iter_mut()
+                        .for_each(crate::EwQuantile::keep_first_value_anchor);
+                }
                 Ok(m)
             }
             other => Err(StateError::WrongModel {

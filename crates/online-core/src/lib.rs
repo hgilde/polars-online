@@ -737,7 +737,19 @@ pub use window::{
 ///   release, the mark was `decay_time`'s sign (task 278, batch 3), which a
 ///   released 63 never wrote. Schema 63's fixtures are kept
 ///   (`tests/state_fixtures/v63/`).
-pub const SCHEMA_VERSION: u32 = 64;
+/// - 65 (2026-11-05, task 323): an anchored residual sketch -- each
+///   target's MAD sketch under `huber`, `quantile`, `sgd(loss="huber")`
+///   and `marginal(bin_stat="huber")` -- is anchored at the level of the
+///   first residual it takes, the larger of the target and the prediction
+///   (the value and the location in a bin's scale), where it was anchored
+///   at that residual itself (`EwQuantile`'s "Where the anchor is set").
+///   A sketch keeps `anchor_by_first_value`, written only where it is
+///   `true`: a state of 64 or earlier has no such field, and its model's
+///   restore marks each anchored sketch with it (a sketch awaiting its
+///   anchor, or one a later reset leaves awaiting, then anchors at its
+///   first value), so the state goes on to the bit. Schema 64's fixtures
+///   are kept (`tests/state_fixtures/v64/`).
+pub const SCHEMA_VERSION: u32 = 65;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last

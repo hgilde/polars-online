@@ -1580,7 +1580,8 @@ impl Robust {
         });
         self.sig2[j] = scale.sig2;
         self.wsig[j] = scale.wsig;
-        if let Some(q) = scale.mad {
+        if let Some(mut q) = scale.mad {
+            q.keep_anchor_rule_of(&self.mad[j]);
             self.mad[j] = q;
         }
         self.resolve_target(j, fitted_before);
@@ -2745,9 +2746,12 @@ impl OnlineModel for Robust {
                 // The MAD's sketch takes the same residual at the same raw
                 // weight; a weight of 0 or an `|e|` that is not finite adds
                 // nothing (`EwQuantile::add`), so a zero-weight row only
-                // ages it (hard rule 9).
+                // ages it (hard rule 9). An anchored one is anchored at the
+                // level the residual was rounded at, the larger of the
+                // target and the prediction (`EwQuantile`'s "Where the
+                // anchor is set").
                 if let Some(q) = self.mad.get_mut(j) {
-                    q.add(resid.abs(), weight);
+                    q.add_at_level(resid.abs(), weight, yj.abs().max(pj.abs()));
                 }
             }
         }
@@ -2861,6 +2865,12 @@ impl OnlineModel for Robust {
                     return Err(StateError::Invalid(format!(
                         "{kind}: the residual sketches do not match huber_scale"
                     )));
+                }
+                // A build of schema 64 or earlier anchored each sketch at
+                // its first residual: its sketches keep that rule
+                // (`EwQuantile::keep_first_value_anchor`).
+                if s.schema_version <= crate::stats::LAST_FIRST_VALUE_ANCHOR_SCHEMA {
+                    m.mad.iter_mut().for_each(EwQuantile::keep_first_value_anchor);
                 }
                 // The refit's buffers (`RobustCfg::refit_rows`): one per
                 // target when it is on, each one this configuration writes,

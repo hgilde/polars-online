@@ -301,7 +301,10 @@ impl BinScales {
             return;
         }
         let e = crate::comp::dev(y, self.m[t], self.m_lo[t]);
-        self.mad[t].add(e.abs(), w);
+        // An anchored sketch is anchored at the level the deviation was
+        // rounded at, the larger of the value and the location
+        // (`EwQuantile`'s "Where the anchor is set").
+        self.mad[t].add_at_level(e.abs(), w, y.abs().max(self.m[t].abs()));
         let (wt, m, lo) = (&mut self.w[t], &mut self.m[t], &mut self.m_lo[t]);
         if e.abs() <= j.cut {
             let ob = *wt + u;
@@ -318,6 +321,14 @@ impl BinScales {
 
     fn age(&mut self, lam: f64) {
         self.mad.iter_mut().for_each(|q| q.age(lam));
+    }
+
+    /// Mark each anchored sketch restored from a state of schema 64 or
+    /// earlier ([`EwQuantile::keep_first_value_anchor`]).
+    fn keep_first_value_anchor(&mut self) {
+        self.mad
+            .iter_mut()
+            .for_each(EwQuantile::keep_first_value_anchor);
     }
 
     fn reset(&mut self) {
@@ -574,6 +585,15 @@ impl MarginalBins {
     /// `false` under the mean, which keeps none.
     pub fn mad_anchor(&self) -> bool {
         self.scales.as_ref().is_some_and(|s| s.anchored())
+    }
+
+    /// Mark each target's anchored MAD sketch, in a histogram restored from
+    /// a state of schema 64 or earlier, to keep anchoring at its first
+    /// deviation, as that build did ([`EwQuantile::keep_first_value_anchor`]).
+    pub(crate) fn keep_first_value_anchor(&mut self) {
+        if let Some(sc) = self.scales.as_deref_mut() {
+            sc.keep_first_value_anchor();
+        }
     }
 
     /// What each bin's location is: the statistic it was built with.
@@ -1264,6 +1284,7 @@ impl MarginalBins {
             let cut = crate::robust::mad_scale(&q).map_or(f64::INFINITY, |s| delta * s);
             let weigh = |e: f64| if e.abs() > cut { cut / e.abs() } else { 1.0 };
             let sc = self.scales.as_deref_mut().expect("checked above");
+            q.keep_anchor_rule_of(&sc.mad[t]);
             sc.m[t] = m;
             sc.m_lo[t] = 0.0;
             sc.w[t] = order.iter().map(|&i| units[i] * weigh(y_of(i) - m)).sum();

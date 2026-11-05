@@ -514,6 +514,16 @@ fn corrchange_cfg(kind: CorrChangeKind) -> CorrChangeCfg {
 /// every three.
 const WINDOW: (Option<f64>, Option<f64>, Option<usize>) = (Some(12.0), Some(3.0), None);
 
+/// `m` as a build of schema 64 saved it and this build restores it: a
+/// fresh state is the same bytes under either build, so relabelled it is
+/// one that build wrote, and its restore marks each anchored sketch to keep
+/// anchoring at its first value, as that build did (schema 65).
+fn restored_from_64<M: OnlineModel>(m: M) -> M {
+    let mut s = m.state();
+    s.schema_version = 64;
+    M::restore(&s).expect("a fresh state restores")
+}
+
 macro_rules! case {
     ($name:literal, $variant:literal, $ty:ty, $build:expr, $k:expr, $targets:expr, $before:expr) => {
         Case {
@@ -912,6 +922,27 @@ pub fn all() -> Vec<Case> {
                 ..robust_cfg(RobustLoss::Huber { delta: 1.5 })
             })
             .unwrap(),
+            K,
+            Targets::Linear(2),
+            2
+        ),
+        // A state of schema 64 saved while its anchors were awaited, read
+        // by this build (schema 65): each sketch marked to keep anchoring
+        // at its first residual, as the build that saved it did, where a
+        // sketch this build makes anchors at the residual's level. Saved
+        // before any residual, so the continuation sets the anchors.
+        case!(
+            "huber_mad_awaiting_first_value",
+            "Robust",
+            Robust,
+            restored_from_64(
+                Robust::new(RobustCfg {
+                    huber_scale: online_core::HuberScale::Mad,
+                    mad_anchor: true,
+                    ..robust_cfg(RobustLoss::Huber { delta: 1.5 })
+                })
+                .unwrap()
+            ),
             K,
             Targets::Linear(2),
             2

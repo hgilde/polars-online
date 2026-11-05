@@ -2803,7 +2803,7 @@ impl OnlineModel for Marginal {
         crate::check_schema(s)?;
         match &s.model {
             crate::ModelState::Marginal(m) => {
-                let m = (**m).clone();
+                let mut m = (**m).clone();
                 crate::model::check_cfg("marginal", m.cfg.validate())?;
                 let (p, t) = (m.cfg.n_features, m.cfg.n_targets);
                 // Every per-pair vector at `p·t`, every per-target one at
@@ -2869,6 +2869,13 @@ impl OnlineModel for Marginal {
                     return Err(StateError::Invalid(
                         "marginal: the state has the wrong shape".into(),
                     ));
+                }
+                // A build of schema 64 or earlier anchored each bin scale's
+                // sketch at its first deviation: they keep that rule.
+                if s.schema_version <= crate::stats::LAST_FIRST_VALUE_ANCHOR_SCHEMA
+                    && let Some(h) = m.bins.as_mut().and_then(|b| b.hist.as_mut())
+                {
+                    h.keep_first_value_anchor();
                 }
                 Ok(m)
             }

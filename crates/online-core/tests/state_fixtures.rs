@@ -191,6 +191,17 @@ use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 /// a covariance or a correlation, reads the mirror where the frozen
 /// continuation read the entry rounded on its own; [`CONTINUES_WITHIN`]
 /// lists the cases and their bound.
+///
+/// 64 kept since 65 anchored a residual sketch at its first residual's
+/// level, where it was anchored at that residual (task 323): a kept state's
+/// sketches are anchored, or awaiting, by the old rule, so its model's
+/// restore marks each anchored sketch to keep it, and it goes on to the
+/// bit. Converted, every anchored sketch carries the mark, which a sketch
+/// this build makes does not, so such a case is held to its marks, to
+/// saving bytes that load back to the same and, its marks set aside, to
+/// the current fixture's bytes where its anchors were still awaited
+/// (`huber_mad_awaiting`); a set anchor is the old rule's, and the
+/// buckets are kept in its units ([`first_value_anchored`]).
 /// The kept schemas, each a `v<N>/` directory found beside the current set.
 fn previous() -> Vec<u32> {
     frozen::PREVIOUS_SETS.iter().map(|(s, _)| *s).collect()
@@ -544,6 +555,7 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
             // starts, ten Lloyd passes): the rule since finds the same
             // centres in another order (the doc above `previous`).
             let reseeded = f.name == "kmeans_warming";
+            let kept = rmpv::decode::read_value(&mut &f.bytes()[..]).unwrap();
             // A `holt` of 61-63 keeps no line fit (the doc above `previous`).
             if f.name == "kmeans" || f.name == "holt" {
                 let saved = named(&m.state());
@@ -552,6 +564,8 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
                     named(&again.state()) == saved,
                     "{what}: saved, loaded, saved"
                 );
+            } else if schema <= 64 && sketches(&kept, "anchor") > 0 {
+                first_value_anchored(&case, &kept, &named(&m.state()), current, &what);
             } else if windowed || moved.is_some() {
                 // A window's snapshots from before task 275 carry no running
                 // products (the doc above `previous`): converted, they say
@@ -623,6 +637,84 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
                 );
             }
         }
+    }
+}
+
+/// The maps in `v`, at any depth, that hold the key `key`: the sketches a
+/// state keeps that are anchored (`"anchor"`), or marked to anchor at their
+/// first value (`"anchor_by_first_value"`).
+fn sketches(v: &rmpv::Value, key: &str) -> usize {
+    match v {
+        rmpv::Value::Map(m) => {
+            usize::from(m.iter().any(|(k, _)| k.as_str() == Some(key)))
+                + m.iter().map(|(_, v)| sketches(v, key)).sum::<usize>()
+        }
+        rmpv::Value::Array(a) => a.iter().map(|v| sketches(v, key)).sum(),
+        _ => 0,
+    }
+}
+
+/// `v` without the key `key` in any map: a converted state with its marks
+/// set aside.
+fn without(v: &rmpv::Value, key: &str) -> rmpv::Value {
+    match v {
+        rmpv::Value::Map(m) => rmpv::Value::Map(
+            m.iter()
+                .filter(|(k, _)| k.as_str() != Some(key))
+                .map(|(k, v)| (k.clone(), without(v, key)))
+                .collect(),
+        ),
+        rmpv::Value::Array(a) => rmpv::Value::Array(a.iter().map(|v| without(v, key)).collect()),
+        v => v.clone(),
+    }
+}
+
+/// A kept state of schema 64 holding anchored sketches, `kept`, converted
+/// to `saved` (the doc above `previous`): every anchored sketch is marked
+/// to keep anchoring at its first value and nothing else is; the state
+/// saves bytes that load back to the same; and, its marks set aside, it is
+/// the current fixture's state where every anchor was still awaited, the
+/// one case in which the two rules have yet to part.
+fn first_value_anchored(
+    case: &Case,
+    kept: &rmpv::Value,
+    saved: &[u8],
+    current: &Fixture,
+    what: &str,
+) {
+    const MARK: &str = "anchor_by_first_value";
+    let converted = rmpv::decode::read_value(&mut &saved[..]).unwrap();
+    let anchored = sketches(kept, "anchor");
+    assert_eq!(
+        sketches(&converted, MARK),
+        anchored,
+        "{what}: each of the {anchored} anchored sketches is marked, and no other"
+    );
+    assert_eq!(sketches(kept, MARK), 0, "{what}: a kept state carries no mark");
+    let again = load(case, saved).unwrap_or_else(|e| panic!("{what}: {e}"));
+    assert!(named(&again.state()) == saved, "{what}: saved, loaded, saved");
+    let awaiting = |v: &rmpv::Value| {
+        fn any_set(v: &rmpv::Value) -> bool {
+            match v {
+                rmpv::Value::Map(m) => m.iter().any(|(k, v)| {
+                    (k.as_str() == Some("anchor") && v.as_f64().is_some_and(|a| a > 0.0))
+                        || any_set(v)
+                }),
+                rmpv::Value::Array(a) => a.iter().any(any_set),
+                _ => false,
+            }
+        }
+        !any_set(v)
+    };
+    if awaiting(kept) {
+        // Compared as bytes: a NaN, which a share no solve has fit writes,
+        // is not equal to itself as a value.
+        let mut bytes = Vec::new();
+        rmpv::encode::write_value(&mut bytes, &without(&converted, MARK)).unwrap();
+        assert!(
+            bytes == current.bytes(),
+            "{what}: its marks set aside, an awaiting state converts to the current fixture's"
+        );
     }
 }
 
@@ -1897,7 +1989,11 @@ fn regenerate_when_asked() {
 /// anchor at a positive value, the first residual's; `huber_mad_awaiting`
 /// is saved before any residual, every anchor 0, awaiting its first. The
 /// cases without the flag write it `false` and keep no anchor, the form a
-/// state saved before it goes on in.
+/// state saved before it goes on in. Since schema 65 (task 323) a sketch a
+/// state of 64 or earlier held is marked to keep anchoring at its first
+/// value, and `huber_mad_awaiting_first_value` writes that mark on every
+/// sketch, saved awaiting, its continuation anchoring by the old rule; no
+/// other case writes it.
 #[test]
 fn the_anchored_sketch_forms_are_written() {
     if regenerating() {
@@ -1919,8 +2015,15 @@ fn the_anchored_sketch_forms_are_written() {
     // (case, where its sketches are, where its flag is, whether it is set,
     // the anchors: None for none, Some(true) set, Some(false) awaiting)
     type Form<'a> = (&'a str, &'a [&'a str], &'a [&'a str], bool, Option<bool>);
-    let cases: [Form; 10] = [
+    let cases: [Form; 11] = [
         ("huber_mad_anchored", &robust, &robust_cfg, true, Some(true)),
+        (
+            "huber_mad_awaiting_first_value",
+            &robust,
+            &robust_cfg,
+            true,
+            Some(false),
+        ),
         ("quantile_mad", &robust, &robust_cfg, true, Some(true)),
         ("quantile_refit", &robust, &robust_cfg, true, Some(true)),
         (
@@ -1960,6 +2063,9 @@ fn the_anchored_sketch_forms_are_written() {
             .unwrap_or_else(|| panic!("{name}: no sketches"));
         assert_eq!(sketches.len(), 2, "{name}: a sketch a target");
         for q in sketches {
+            let mark = at(q, &["anchor_by_first_value"]).and_then(rmpv::Value::as_bool);
+            let marked = name == "huber_mad_awaiting_first_value";
+            assert_eq!(mark, marked.then_some(true), "{name}: anchor_by_first_value");
             let a = at(q, &["anchor"]).and_then(rmpv::Value::as_f64);
             match anchors {
                 None => assert_eq!(a, None, "{name}: an anchor without the flag"),
@@ -1967,5 +2073,12 @@ fn the_anchored_sketch_forms_are_written() {
                 Some(false) => assert_eq!(a, Some(0.0), "{name}: awaiting"),
             }
         }
+    }
+    // No other fixture writes the mark.
+    for f in frozen::ALL {
+        let v = rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap();
+        let marked = sketches(&v, "anchor_by_first_value");
+        let want = if f.name == "huber_mad_awaiting_first_value" { 2 } else { 0 };
+        assert_eq!(marked, want, "{}: marked sketches", f.name);
     }
 }
