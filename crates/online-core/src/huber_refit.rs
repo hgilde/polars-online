@@ -1870,6 +1870,43 @@ mod tests {
         );
     }
 
+    /// A buffer keeping each learned row's `|e|` holds a number the sketch
+    /// would take, or [`NOT_TAKEN`]: an infinite or negative `|e|` and a NaN
+    /// are none (task 329). It fits only under the MAD, with an `|e|` a
+    /// learned row, each one of those.
+    #[test]
+    fn a_buffer_keeping_its_e_holds_and_fits_only_what_the_sketch_takes() {
+        let mut b = RefitBuf::keeping_resid();
+        for e in [0.5, f64::INFINITY, -0.5, f64::NAN, 0.0] {
+            b.learn_scored(&[1.0], 2.0, e, 1.0, 0.9, 0.8, 10);
+        }
+        assert_eq!(
+            b.resid.as_deref(),
+            Some(&[0.5, NOT_TAKEN, NOT_TAKEN, NOT_TAKEN, 0.0][..])
+        );
+        assert!(b.fits(1, 10, true));
+        assert!(!b.fits(1, 10, false), "an |e| kept under the RMS");
+        let bad = |f: &dyn Fn(&mut Vec<f64>)| {
+            let mut c = b.clone();
+            f(c.resid.as_mut().unwrap());
+            !c.fits(1, 10, true)
+        };
+        assert!(bad(&|r| r.push(1.0)), "an |e| more than the rows");
+        assert!(
+            bad(&|r| {
+                r.pop();
+            }),
+            "an |e| fewer"
+        );
+        for e in [-0.5, f64::INFINITY, f64::NAN, f64::NEG_INFINITY] {
+            assert!(bad(&|r| r[0] = e), "an |e| of {e}");
+        }
+        let mut done = b.clone();
+        done.take();
+        assert!(done.fits(1, 10, true));
+        assert!(!done.fits(1, 10, false), "an |e| list kept under the RMS");
+    }
+
     /// Past [`REFIT_RUNS_PER_ROW`] runs a row of its count, a target's refit
     /// is given up: the buffer freed, done, and marked.
     #[test]

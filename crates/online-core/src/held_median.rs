@@ -424,6 +424,16 @@ impl HeldMedian {
         self.trees[t].median()
     }
 
+    /// The bytes the trees' nodes take, as each vector reports its
+    /// allocation: what a reservation of the held rows must count.
+    #[cfg(test)]
+    pub(crate) fn reserved_bytes(&self) -> usize {
+        self.trees
+            .iter()
+            .map(|t| t.nodes.capacity() * std::mem::size_of::<Node>())
+            .sum()
+    }
+
     /// The weights held for target `t`, in the order the rows came: what
     /// a test holds the reads to.
     #[cfg(test)]

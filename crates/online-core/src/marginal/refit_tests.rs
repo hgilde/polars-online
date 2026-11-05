@@ -544,3 +544,133 @@ fn the_refits_hold_grows_by_doubling_to_its_count() {
         caps.len() - 1
     );
 }
+
+/// While the refit waits, each target's cut is drawn in the exact MAD of
+/// the deviations held (task 329, `Binned::start`'s and the held read's
+/// mutants): `δ` times the weighted median of `|y − m|`, `m` the target's
+/// location before the row, each row at its raw weight times every decay
+/// since, over `Φ⁻¹(3/4)` -- written out here from the rows fed, on every
+/// row until the refit runs, both targets, a weight of 0 and an absent
+/// target among them. A sketch's read is a bucket off (`e^(1/64)`); this
+/// one is the deviations' own, to the locations' low parts.
+#[test]
+fn while_the_refit_waits_each_cut_is_the_held_deviations_mad() {
+    let data = rows(80);
+    let h = 20.0;
+    let lam = Decay::Halflife(h).factor(1.0);
+    let mut m = model(given(), 2, 60, h);
+    // Per target, each held deviation and its weight, decayed to the row.
+    let mut held: [Vec<(f64, f64)>; 2] = Default::default();
+    let median = |v: &[(f64, f64)]| {
+        let mut s: Vec<(f64, f64)> = v.iter().copied().filter(|p| p.1 > 0.0).collect();
+        s.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let total: f64 = s.iter().map(|p| p.1).sum();
+        let mut cum = 0.0;
+        for (e, w) in s {
+            cum += w;
+            if cum >= 0.5 * total {
+                return e;
+            }
+        }
+        f64::NAN
+    };
+    let mut checked = 0;
+    for (i, (x, y, w)) in data.iter().enumerate() {
+        let hist = m.bins.as_ref().unwrap().hist.as_ref().unwrap();
+        if m.refit_status()[0].done {
+            break;
+        }
+        assert!(hist.holds_deviations(), "row {i}");
+        let mut locs = [None; 2];
+        for t in 0..2 {
+            let med = median(&held[t]) / crate::robust::NORMAL_Q3;
+            let want = if med > 0.0 {
+                1.345 * med
+            } else {
+                f64::INFINITY
+            };
+            let cut = hist.cell_and_cut(t, 0, 0).3;
+            assert!(
+                cut == want || (cut - want).abs() <= 1e-12 * want,
+                "row {i}, target {t}: {cut} against {want}"
+            );
+            checked += usize::from(want.is_finite());
+            let (_, tw, loc) = hist.m2_and_target(t, 0, 0);
+            locs[t] = (tw > 0.0).then_some(loc);
+        }
+        for v in &mut held {
+            v.iter_mut().for_each(|p| p.1 *= lam);
+        }
+        if *w > 0.0 {
+            for t in 0..2 {
+                if let (Some(yt), Some(loc)) = (y[t], locs[t]) {
+                    held[t].push(((yt - loc).abs(), *w));
+                }
+            }
+        }
+        m.step(x, y, 1.0, *w);
+    }
+    assert!(m.refit_status()[0].done, "the refit ran");
+    assert!(checked > 80, "{checked} cuts held");
+}
+
+/// A marginal of `stat` with learned edges (a warm-up of 12 rows), its MAD
+/// sketches anchored or not, the refit at `refit` rows.
+fn learned(stat: crate::BinStat, anchored: bool, refit: u32) -> Marginal {
+    let mut c = model(None, 12, refit, 80.0).cfg.clone();
+    let b = c.bins.as_mut().unwrap();
+    b.stat = stat;
+    b.mad_anchor = anchored;
+    Marginal::new(c).unwrap()
+}
+
+/// A state of schema 64 saved inside a learned warm-up builds its histogram
+/// at the freeze as that build did (task 329, the mark's rule and
+/// `await_first_values`): a Huber histogram whose sketches are anchored or
+/// whose refit waits is marked, and built with no deviations held and
+/// each anchored sketch awaiting its first deviation, which anchors it --
+/// each target's second row less its first. Every other state is not
+/// marked, and re-saves the bytes this build writes.
+#[test]
+fn a_warm_up_saved_by_schema_64_builds_its_histogram_as_that_build_did() {
+    use crate::BinStat;
+    let data = rows(40);
+    let huber = BinStat::Huber { delta: 1.345 };
+    for (stat, anchored, refit) in [
+        (huber, true, 20),
+        (huber, true, 0),
+        (huber, false, 20),
+        (huber, false, 0),
+        (BinStat::Mean, true, 0),
+        (BinStat::Mean, false, 0),
+    ] {
+        let what = format!("{stat:?}, anchored {anchored}, refit {refit}");
+        let mut m = learned(stat, anchored, refit);
+        for (x, y, w) in &data[..8] {
+            m.step(x, y, 1.0, *w);
+        }
+        let mut s = m.state();
+        s.schema_version = 64;
+        let mut back = Marginal::restore(&s).unwrap();
+        let marked = stat == huber && (anchored || refit > 0);
+        assert_eq!(back.bins.as_ref().unwrap().before_65, marked, "{what}");
+        if !marked {
+            let bytes = |m: &Marginal| rmp_serde::to_vec_named(&m.state()).unwrap();
+            assert_eq!(bytes(&back), bytes(&m), "{what}");
+        }
+        for (x, y, w) in &data[8..18] {
+            back.step(x, y, 1.0, *w);
+        }
+        let hist = back.bins.as_ref().unwrap().hist.as_ref().expect("frozen");
+        if marked {
+            assert!(!hist.holds_deviations(), "{what}");
+            for (t, q) in hist.mad_sketches().iter().enumerate() {
+                assert_eq!(q.anchors_by_first_value(), anchored, "{what}");
+                if anchored {
+                    let first = (data[1].1[t].unwrap() - data[0].1[t].unwrap()).abs();
+                    assert_eq!(q.anchor(), Some(first), "{what}, target {t}");
+                }
+            }
+        }
+    }
+}

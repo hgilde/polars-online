@@ -390,3 +390,33 @@ fn a_refit_given_up_and_its_reservation() {
     let off = Robust::new(base(1.345, Decay::Lam(1.0), 0)).unwrap();
     assert_eq!(off.refit_reservation(), 0);
 }
+
+/// A refit given up mid-wait hands the one-pass `|e|` its buffer held to
+/// the target's sketch (task 329, `scale_from_held`'s mutant): the scale,
+/// read from them exactly while the refit waited, is read from the sketch
+/// built from them after, within a bucket of the sketch's grid
+/// (`e^(1/64) − 1`), anchored or not; the sketch took none of them while
+/// they were held, so without them it would read no scale at all.
+#[test]
+fn a_refit_given_up_mid_wait_keeps_its_scale_in_the_sketch() {
+    let bucket = (1.0f64 / 64.0).exp() - 1.0;
+    for anchored in [false, true] {
+        let mut c = base(1.345, Decay::Lam(0.98), 60);
+        c.mad_anchor = anchored;
+        let mut m = Robust::new(c).unwrap();
+        run(&mut m, &rows(30, true));
+        assert!(m.refit_status().iter().all(|s| !s.done && s.learned > 0));
+        assert!(m.mad_sketch().iter().all(|q| q.get(0).is_none()));
+        let before: Vec<f64> = (0..2).map(|j| m.residual_scale(j).unwrap()).collect();
+        m.refit_give_up();
+        for (j, b) in before.iter().enumerate() {
+            let after = m.residual_scale(j).expect("the sketch reads a scale");
+            let moved = (after / b - 1.0).abs();
+            println!("anchored {anchored}, target {j}: {moved:e}");
+            assert!(
+                moved <= bucket,
+                "anchored {anchored}, target {j}: {moved:e}"
+            );
+        }
+    }
+}

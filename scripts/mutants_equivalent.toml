@@ -3084,3 +3084,174 @@ line_has = "if self.dbuf.len() < n {"
 why = """the two differ only where `dbuf` already holds `n`, and there \
 `resize(n, 0.0)` leaves a vector of length `n` as it is: same length, same \
 values, same capacity"""
+
+# Task 329 (docs/PLAN.md): the survivors of 31ee42bd's changed lines (task
+# 323) that no input tells apart. The rest are caught by the tests task 329
+# added in `held_median_tests.rs`, `huber_refit.rs`, `margbins.rs`,
+# `marginal/refit_tests.rs`, `robust/refit_tests.rs` and
+# `sgd/refit_tests.rs`. The treap's priority hash only shapes the tree,
+# which no read or insert result depends on (every rotation keeps the
+# order by `(|e|, seq)`); its mutants that would make a read `O(n)` -- a
+# constant priority, one following the arrival order, no rotation -- are
+# caught by `the_tree_stays_logarithmic_in_any_arrival_order`, and those
+# listed here left the tree as shallow as the hash does (4,096 rows rising,
+# falling, repeated and random: deepest 25 to 32, mean depth 13.5 to 16.5,
+# against 32 and 16.5 unmutated; a list is 4,096 deep).
+
+[[equivalent]]
+file = "crates/online-core/src/held_median.rs"
+function = "priority"
+mutation = "replace >> with <<"
+line_has = "z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);"
+why = """the priority only shapes the treap: every read and insert gives the \
+same values on any tree ordered by `(|e|, seq)`, and the mutated hash still \
+mixes `seq` (an odd multiply and a later xor-shift follow), so the tree \
+stays logarithmic: deepest 30, mean depth 15.0 on 4,096 sorted rows"""
+
+[[equivalent]]
+file = "crates/online-core/src/held_median.rs"
+function = "priority"
+mutation = "replace ^ with &"
+line_has = "z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);"
+why = """the priority only shapes the treap (as above); after the first odd \
+multiply `z & (z >> 27)` is still a mixed value of `seq`: deepest 28, mean \
+depth 15.1 on 4,096 sorted rows"""
+
+[[equivalent]]
+file = "crates/online-core/src/held_median.rs"
+function = "priority"
+mutation = "replace ^ with |"
+line_has = "z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);"
+why = """the priority only shapes the treap (as above); `z | (z >> 27)` is \
+still a mixed value of `seq`: deepest 28, mean depth 14.3 on 4,096 sorted \
+rows"""
+
+[[equivalent]]
+file = "crates/online-core/src/held_median.rs"
+function = "priority"
+mutation = "replace >> with <<"
+line_has = "z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);"
+why = """the priority only shapes the treap (as above); a left shift in the \
+xor-shift after one odd multiply still mixes: deepest 27, mean depth 14.6 \
+on 4,096 sorted rows"""
+
+[[equivalent]]
+file = "crates/online-core/src/held_median.rs"
+function = "priority"
+mutation = "replace >> with <<"
+line_has = "    z ^ (z >> 31)"
+why = """the priority only shapes the treap (as above); the last xor-shift \
+acts on a value two odd multiplies have mixed: deepest 27, mean depth 14.6 \
+on 4,096 sorted rows"""
+
+[[equivalent]]
+file = "crates/online-core/src/held_median.rs"
+function = "priority"
+mutation = "replace ^ with &"
+line_has = "    z ^ (z >> 31)"
+why = """the priority only shapes the treap (as above); `z & (z >> 31)` of a \
+mixed `z` is still mixed: deepest 26, mean depth 13.7 on 4,096 sorted rows"""
+
+[[equivalent]]
+file = "crates/online-core/src/held_median.rs"
+function = "priority"
+mutation = "replace ^ with |"
+line_has = "    z ^ (z >> 31)"
+why = """the priority only shapes the treap (as above); `z | (z >> 31)` keeps \
+`z`'s top 31 bits, which order the priorities but where they tie, so the \
+tree is the unmutated one's on the 4,096-row streams (deepest 32, mean 16.5)"""
+
+[[equivalent]]
+file = "crates/online-core/src/held_median.rs"
+function = "Tree::put"
+mutation = "replace > with <"
+line_has = "if priority(self.nodes[l as usize].seq) > priority(self.nodes[at as usize].seq) {"
+why = """a rotation keeps the order by `(|e|, seq)` and the subtree sums \
+(`pull`), so any rotation rule gives the same reads; with the left side \
+rotating by the lower priority the tree stays logarithmic: deepest 27 to \
+32, mean depth 14.4 to 16.5 on 4,096 rows rising, falling and random"""
+
+[[equivalent]]
+file = "crates/online-core/src/held_median.rs"
+function = "Tree::put"
+mutation = "replace > with >="
+line_has = "if priority(self.nodes[l as usize].seq) > priority(self.nodes[at as usize].seq) {"
+why = """`l` and `at` are different nodes, so their `seq` differ, and \
+SplitMix64's finalizer (two xor-shifts and two odd multiplies after adding \
+the constant) is a bijection of `u64`: the two priorities are never equal"""
+
+[[equivalent]]
+file = "crates/online-core/src/held_median.rs"
+function = "Tree::put"
+mutation = "replace > with <"
+line_has = "if priority(self.nodes[r as usize].seq) > priority(self.nodes[at as usize].seq) {"
+why = """as for the left rotation: any rotation rule gives the same reads; \
+with the right side rotating by the lower priority the tree stays \
+logarithmic: deepest 27 to 32, mean depth 14.9 to 16.5 on 4,096 rows"""
+
+[[equivalent]]
+file = "crates/online-core/src/held_median.rs"
+function = "Tree::put"
+mutation = "replace > with >="
+line_has = "if priority(self.nodes[r as usize].seq) > priority(self.nodes[at as usize].seq) {"
+why = """as for the left rotation: distinct `seq`, and the hash a bijection, \
+so the priorities are never equal"""
+
+[[equivalent]]
+file = "crates/online-core/src/held_median.rs"
+function = "dyadic"
+mutation = "replace < with <="
+line_has = "s.fract() == 0.0 && w < 8_589_934_592.0 // 2^33"
+why = """it differs only at a weight or a sum of exactly `2^33`; multiples of \
+`2^-20` up to and including `2^33` need at most 53 bits, so every sum of \
+them is still exact there and the tree's row is the definition's, margin or \
+none; the next row of positive weight takes the sum past `2^33`, which both \
+refuse"""
+
+[[equivalent]]
+file = "crates/online-core/src/held_median.rs"
+function = "Tree::median"
+mutation = "replace || with &&"
+line_has = "if total.is_nan() || total <= 0.0 {"
+why = """the total is a sum of weights each finite and at least 0 (a rescale \
+multiplies by `2^-512`), so it is never NaN nor below 0; at a total of 0 \
+every weight is 0, and the walk ends in the definition's, which finds no \
+positive weight and returns `None`, as the guard does"""
+
+[[equivalent]]
+file = "crates/online-core/src/held_median.rs"
+function = "Tree::median"
+mutation = "replace < with <="
+line_has = """let clear = if self.exact {
+                    left < half"""
+why = """at this branch the sum below the crossing is under half: the walk \
+goes left wherever it reaches half with a left child, and moves right only \
+past sums under half, so `left ≥ half` here needs `half = 0`, a total \
+whose half rounds to 0; under the exact flag every positive weight is a \
+multiple of `2^-20`, so the total is 0 (no read) or at least `2^-20`"""
+
+[[equivalent]]
+file = "crates/online-core/src/held_median.rs"
+function = "frexp"
+mutation = "replace < with <="
+line_has = "let (x, bias) = if x < f64::MIN_POSITIVE {"
+why = """it differs only at `x = 2^-1022`, which the scaled branch multiplies \
+by `2^64` exactly and returns with 64 taken off the exponent: `(1/2, \
+-1021)` either way"""
+
+[[equivalent]]
+file = "crates/online-core/src/held_median.rs"
+function = "frexp"
+mutation = "replace | with ^"
+line_has = "let m = f64::from_bits((bits & !(0x7ff << 52)) | (1022u64 << 52));"
+why = """the mask clears the exponent field, so the bits `1022 << 52` sets \
+are all 0 in the other operand, where `|` and `^` agree"""
+
+[[equivalent]]
+file = "crates/online-core/src/margbins.rs"
+function = "BinScales::learn"
+mutation = "replace > with >="
+line_has = "if a.is_finite() && w > 0.0 && w.is_finite() {"
+why = """both callers, `MarginalBins::update_row` and `judge_row`, take a row \
+only once `row_weight` has found its weight finite and above 0, so `w = 0` \
+never reaches this line"""

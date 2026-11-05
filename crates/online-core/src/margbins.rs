@@ -1036,6 +1036,20 @@ impl MarginalBins {
         (self.m2[i] * self.scale, sc.w[t] * self.scale, sc.m[t])
     }
 
+    /// Each target's MAD sketch, under [`BinStat::Huber`]: what the tests
+    /// of a histogram's build and release read.
+    #[cfg(test)]
+    pub(crate) fn mad_sketches(&self) -> &[EwQuantile] {
+        self.scales.as_ref().map_or(&[], |s| &s.mad)
+    }
+
+    /// Whether the histogram holds each row's deviations for a refit
+    /// ([`Self::hold_deviations`]).
+    #[cfg(test)]
+    pub(crate) fn holds_deviations(&self) -> bool {
+        self.scales.as_ref().is_some_and(|s| s.held.is_some())
+    }
+
     /// The bytes this histogram's buffers take, as each vector reports its
     /// allocation: what [`histogram_bytes`] must count.
     #[cfg(test)]
@@ -3339,6 +3353,208 @@ mod tests {
             empty.scales.as_mut().unwrap().w[1] = 0.0;
             assert!(empty.has_shape(1, 2), "a target with no weight yet");
             assert!(run(BinStat::Mean, 0.97, 50).has_shape(1, 2));
+        }
+
+        /// The held part's own shape (task 329, `HeldDevs::has_shape`'s
+        /// mutants): a decay and a deviation a target for every row, each
+        /// weight finite and above 0, each decay and the one pending in
+        /// `[0, 1]`, each deviation finite and at least 0 or `NOT_TAKEN`. A
+        /// length off by one alone, every value fit, is refused, as each
+        /// value out of its range alone is.
+        #[test]
+        fn has_shape_holds_the_deviations_held() {
+            let h = run_scaled(60, 1.0, true, true);
+            assert!(h.holds_deviations() && h.has_shape(1, 2));
+            let bad = |what: &str, f: &dyn Fn(&mut HeldDevs)| {
+                let mut c = h.clone();
+                f(c.scales.as_mut().unwrap().held.as_mut().unwrap());
+                assert!(!c.has_shape(1, 2), "{what}");
+            };
+            bad("a deviation too many", &|d| d.e.push(1.0));
+            bad("a decay too many", &|d| d.lam.push(1.0));
+            for w in [0.0, -1.0, f64::INFINITY, f64::NAN] {
+                bad(&format!("a weight of {w}"), &|d| d.w[3] = w);
+            }
+            for f in [1.5, -0.5, f64::NAN] {
+                bad(&format!("a decay of {f}"), &|d| d.lam[3] = f);
+                bad(&format!("a pending decay of {f}"), &|d| d.pending = f);
+            }
+            for e in [-0.5, f64::INFINITY, f64::NAN] {
+                bad(&format!("a deviation of {e}"), &|d| d.e[3] = e);
+            }
+            let fit = |f: &dyn Fn(&mut HeldDevs)| {
+                let mut c = h.clone();
+                f(c.scales.as_mut().unwrap().held.as_mut().unwrap());
+                c.has_shape(1, 2)
+            };
+            assert!(fit(&|d| d.e[3] = NOT_TAKEN));
+            assert!(fit(&|d| d.e[3] = 0.0));
+            assert!(fit(&|d| d.lam[3] = 0.0));
+            assert!(fit(&|d| d.pending = 1.0));
+        }
+
+        /// The reservation counts what a hold allocates (task 329,
+        /// `held_devs_bytes`' and `HeldMedian::reserve`'s mutants): a
+        /// weight, a decay and a deviation a target for each row, and a
+        /// tree's node a target, reserved once, for the refit's count.
+        #[test]
+        fn a_hold_allocates_what_its_reservation_counts() {
+            for (rows, targets) in [(90, 2), (1, 1), (500, 3)] {
+                let edges = vec![vec![-0.3, 0.3]];
+                let mut b = MarginalBins::new_with_anchor(1, targets, edges, HUBER, true).unwrap();
+                b.hold_deviations(rows);
+                let h = b.scales.as_ref().unwrap().held.as_ref().unwrap();
+                let f = std::mem::size_of::<f64>();
+                let bytes = (h.w.capacity() + h.lam.capacity() + h.e.capacity()) * f
+                    + h.median.reserved_bytes();
+                assert_eq!(
+                    bytes,
+                    held_devs_bytes(rows, targets),
+                    "{rows} rows, {targets}"
+                );
+            }
+        }
+
+        /// Half the weight or more on deviations of 0 is no scale (task
+        /// 329, `HeldDevs::scale`'s mutants): a target whose rows repeat its
+        /// first value has nothing to draw a cut in, and clips nothing; the
+        /// first deviation off it is a scale.
+        #[test]
+        fn held_deviations_of_zero_draw_no_cut() {
+            let edges = vec![vec![0.0]];
+            let mut b = MarginalBins::new_with_anchor(1, 1, edges, HUBER, true).unwrap();
+            b.hold_deviations(10);
+            for _ in 0..3 {
+                b.update_row(&[0.5], &[Some(5.0)], 1.0);
+            }
+            assert_eq!(b.scales.as_ref().unwrap().judge(0).cut, f64::INFINITY);
+            b.update_row(&[0.5], &[Some(6.0)], 1.0);
+            // Deviations 0, 0, 1: half the weight still on 0.
+            assert_eq!(b.scales.as_ref().unwrap().judge(0).cut, f64::INFINITY);
+            // Unclipped, the location took the whole step: 5 + 1/4.
+            assert_eq!(b.scales.as_ref().unwrap().m[0], 5.25);
+            // Deviations 0, 0, 1, 1.75, 2.4: the median is 1.
+            b.update_row(&[0.5], &[Some(7.0)], 1.0);
+            b.update_row(&[0.5], &[Some(8.0)], 1.0);
+            let cut = b.scales.as_ref().unwrap().judge(0).cut;
+            assert!(cut.is_finite() && cut > 0.0, "{cut}");
+        }
+
+        /// A deviation too large for a double is not held (task 329,
+        /// `BinScales::learn`'s test of it): the target's location moves by
+        /// the cut, and the deviations held stay finite or `NOT_TAKEN`, so
+        /// the state restores.
+        #[test]
+        fn a_deviation_past_the_largest_double_is_not_held() {
+            let edges = vec![vec![0.0]];
+            let mut b = MarginalBins::new_with_anchor(1, 1, edges, HUBER, true).unwrap();
+            b.hold_deviations(10);
+            for y in [1e308, 1.1e308, 0.9e308, 1.05e308] {
+                b.update_row(&[0.5], &[Some(y)], 1.0);
+            }
+            let cut = b.scales.as_ref().unwrap().judge(0).cut;
+            assert!(cut.is_finite(), "{cut}");
+            b.update_row(&[0.5], &[Some(-1e308)], 1.0);
+            let h = b.scales.as_ref().unwrap().held.as_ref().unwrap();
+            assert_eq!(h.e.last(), Some(&NOT_TAKEN), "{:?}", h.e);
+            assert!(b.scales.as_ref().unwrap().m[0].is_finite());
+            assert!(b.has_shape(1, 1));
+            let bytes = rmp_serde::to_vec_named(&b).unwrap();
+            let mut back: MarginalBins = rmp_serde::from_slice(&bytes).unwrap();
+            assert!(back.has_shape(1, 1));
+            back.rebuild_held_median();
+            assert_eq!(
+                back.scales.as_ref().unwrap().judge(0),
+                b.scales.as_ref().unwrap().judge(0)
+            );
+        }
+
+        /// Restored mid-hold, a histogram rebuilds each target's tree from
+        /// the deviations held (task 329, `rebuild_median`'s and the held
+        /// slot's mutants): two targets, the second absent on some rows,
+        /// every cut after the restore the live one's to the bit, and the
+        /// histogram too.
+        #[test]
+        fn a_restored_hold_reads_each_targets_cut_as_the_live_one() {
+            let edges = vec![vec![-0.3, 0.3]];
+            let mut live = MarginalBins::new_with_anchor(1, 2, edges, HUBER, true).unwrap();
+            live.hold_deviations(200);
+            let mut back: Option<MarginalBins> = None;
+            for (i, (x, y, w)) in rows(200).into_iter().enumerate() {
+                if i > 0 {
+                    live.decay(0.97);
+                    if let Some(b) = back.as_mut() {
+                        b.decay(0.97);
+                    }
+                }
+                if i == 80 {
+                    let bytes = rmp_serde::to_vec_named(&live).unwrap();
+                    let mut b: MarginalBins = rmp_serde::from_slice(&bytes).unwrap();
+                    b.rebuild_held_median();
+                    back = Some(b);
+                }
+                if let Some(b) = back.as_mut() {
+                    for t in 0..2 {
+                        assert_eq!(
+                            b.scales.as_ref().unwrap().judge(t),
+                            live.scales.as_ref().unwrap().judge(t),
+                            "row {i}, target {t}"
+                        );
+                    }
+                    b.update_row(&[x], &y, w);
+                }
+                live.update_row(&[x], &y, w);
+            }
+            assert_eq!(back.unwrap(), live);
+        }
+
+        /// Given up mid-hold, each target's sketch is built from its held
+        /// deviations (task 329, `HeldDevs::sketch`, `weights` and `devs`):
+        /// anchored at their weighted median at the weights the decays left
+        /// them -- the scale's exact read before, by the tree -- and fed them
+        /// in order at their raw weights: its read is within a bucket of
+        /// the read before, and target 0's sketch is the one a histogram of
+        /// target 0 alone builds, to the bit.
+        #[test]
+        fn a_released_hold_builds_each_sketch_from_its_deviations() {
+            let n = 150;
+            let bucket = (1.0f64 / 64.0).exp() - 1.0;
+            let edges = vec![vec![-0.3, 0.3]];
+            for anchored in [true, false] {
+                let mut two =
+                    MarginalBins::new_with_anchor(1, 2, edges.clone(), HUBER, anchored).unwrap();
+                let mut one =
+                    MarginalBins::new_with_anchor(1, 1, edges.clone(), HUBER, anchored).unwrap();
+                two.hold_deviations(n);
+                one.hold_deviations(n);
+                for (i, (x, y, w)) in rows(n).into_iter().enumerate() {
+                    if i > 0 {
+                        two.decay(0.97);
+                        one.decay(0.97);
+                    }
+                    two.update_row(&[x], &y, w);
+                    one.update_row(&[x], &y[..1], w);
+                }
+                let held = two.scales.as_ref().unwrap().held.as_ref().unwrap();
+                let medians: Vec<f64> = (0..2).map(|t| held.median.median(t).unwrap()).collect();
+                let reads: Vec<f64> = (0..2).map(|t| held.scale(t).unwrap()).collect();
+                two.release_deviations();
+                one.release_deviations();
+                assert!(!two.holds_deviations() && !one.holds_deviations());
+                let q = two.mad_sketches();
+                for t in 0..2 {
+                    if anchored {
+                        assert_eq!(q[t].anchor(), Some(medians[t]), "target {t}");
+                    }
+                    let after = crate::robust::mad_scale(&q[t]).expect("a scale");
+                    let moved = (after / reads[t] - 1.0).abs();
+                    assert!(
+                        moved <= bucket,
+                        "anchored {anchored}, target {t}: {moved:e}"
+                    );
+                }
+                assert_eq!(q[0], one.mad_sketches()[0], "anchored {anchored}");
+            }
         }
 
         /// The budget counts the fifth value a cell keeps, and the targets'

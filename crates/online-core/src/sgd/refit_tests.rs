@@ -458,3 +458,31 @@ fn the_refit_ridge_is_on_the_standardized_slope() {
         }
     }
 }
+
+/// A refit given up mid-wait hands the one-pass `|e|` its buffer held to
+/// the target's sketch (task 329, `scale_from_held`'s mutant), as
+/// `huber`'s does: the scale read from them exactly while the refit waited
+/// is read from the sketch after, within a bucket (`e^(1/64) − 1`).
+#[test]
+fn a_refit_given_up_mid_wait_keeps_its_scale_in_the_sketch() {
+    let bucket = (1.0f64 / 64.0).exp() - 1.0;
+    for anchored in [false, true] {
+        let mut c = cfg(60, false, LearningRate::Constant, Decay::Lam(0.98));
+        c.mad_anchor = anchored;
+        let mut m = Sgd::new(c).unwrap();
+        run(&mut m, &rows(30, true));
+        assert!(m.refit_status().iter().all(|s| !s.done && s.learned > 0));
+        assert!(m.mad_sketch().iter().all(|q| q.get(0).is_none()));
+        let before: Vec<f64> = (0..2).map(|j| m.scale(j).unwrap()).collect();
+        m.refit_give_up();
+        for (j, b) in before.iter().enumerate() {
+            let after = m.scale(j).expect("the sketch reads a scale");
+            let moved = (after / b - 1.0).abs();
+            println!("anchored {anchored}, target {j}: {moved:e}");
+            assert!(
+                moved <= bucket,
+                "anchored {anchored}, target {j}: {moved:e}"
+            );
+        }
+    }
+}
