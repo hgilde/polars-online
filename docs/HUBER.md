@@ -327,19 +327,24 @@ rebuilt cut, over the rows held to the count ([the guide](MODELS.md)).
 count given is always taken. At one feature that is the table's 500 column:
 over 2,000 rows at 20% it leaves 10 (1) `huber` streams where 200 left 18
 (5), and 8 (0) `sgd` streams where 200 left 16 (4); over 20,000 rows it
-changes nothing that 200 did not already fix. A per-spec `refit_budget`,
-256 MiB by default, bounds the buffers of all a spec's groups: each new
-group reserves `8·rows·(k + 20)` bytes a target of each model instance (a
+changes nothing that 200 did not already fix. A per-spec `refit_budget`
+bounds the buffers of all a spec's groups, 256 MiB by default as decided
+and 320 MiB since each held row also keeps its one-pass `|e|` and that
+residual's node in the tree the warm-up's exact median is read from. Those
+40 bytes more a row took a target's reservation at 5 features and 500 rows
+from 100 KB to 124 KB, so 256 MiB refit 2,164 such targets where it had
+refit 2,684, and 320 MiB refits 2,706. Each new
+group reserves `8·rows·(k + 26)` bytes a target of each model instance (a
 half-life grid reserves once per value) when it first appears, in
 first-appearance order, keeps the reservation for the bank's life and saves
 it with the bank, so admission is the same under any chunking; the group
 that would cross the bound and every later new group give their refits up
 (a notice once, `summary()`'s `refit_given_up`). Measured with 150-row
-groups, two targets and 20 features, fed from parquet (peak RSS after the
-fit; the saved state; at 20,000 groups the median of three runs, which
-spread by up to 130 MiB):
+groups, two targets and 20 features, fed from parquet
+(`scripts/huber/m7_refit_memory.py`; peak RSS after the fit; the saved
+state; the median of three runs, which spread by up to 120 MiB):
 
-| groups | refit off | default (256 MiB) | `refit_budget=inf` |
-|---|---|---|---|
-| 5,000 | 660 MiB; 126 MiB | 749 MiB; 178 MiB; 8,324 of 10,000 targets given up | 1,084 MiB; 435 MiB |
-| 20,000 | 1,625 MiB; 502 MiB | 1,641 MiB; 556 MiB; 38,324 of 40,000 given up | 3,161 MiB; 1,741 MiB |
+| groups | refit off | `refit_budget=256` | default (320 MiB) | `refit_budget=inf` |
+|---|---|---|---|---|
+| 5,000 | 572 MiB; 128 MiB | 652 MiB; 167 MiB; 8,542 of 10,000 targets given up | 691 MiB; 177 MiB; 8,178 of 10,000 given up | 1,199 MiB; 391 MiB |
+| 20,000 | 1,195 MiB; 512 MiB | 1,329 MiB; 554 MiB; 38,542 of 40,000 given up | 1,390 MiB; 563 MiB; 38,178 of 40,000 given up | 3,915 MiB; 1,565 MiB |

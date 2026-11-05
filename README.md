@@ -4237,7 +4237,7 @@ the model's stated definition, the update equations its docstring gives:
 | a default or a meaning changed, or a stable name removed | major |
 | a change to an unstable part | minor, declared in the CHANGELOG |
 
-**Two defaults have changed in a minor release, against the table's row
+**Four defaults have changed in a minor release, against the table's row
 for a changed default.** Release 1.3.0 moved `huber_scale` from `"rms"` to
 `"mad"`. It is the scale `huber` and `sgd(loss="huber")` draw their cut in,
 and Huber's loss caps a row's pull at `huber_delta` times that scale. A root
@@ -4269,6 +4269,38 @@ as least squares in its sums at full weight, and three wild first targets
 left the worst of 50 streams 0.22 from statsmodels' `QuantReg` after 8,000
 rows, against 0.0053 with the refit. `quantile_refit_rows=0` turns it off,
 and a state saved before it loads with it off.
+
+The release after 1.4.0 raised `refit_budget` from 256 to 320 MiB. The
+budget bounds the rows that the refits of all of a spec's groups hold. Each
+group reserves the most its refit can hold when the bank first sees it.
+The group whose reservation would pass the budget keeps its one-pass fit,
+and so does every new group after it. The same release keeps 40 more bytes
+for each held row: the row's one-pass residual, and its place in the tree
+that the residuals' exact median is read from while the refit waits. At 5
+features and 500 rows a target now reserves 124 KB where it reserved 100
+KB, so 256 MiB would refit 2,164 such targets where it refit 2,684. 320 MiB
+refits 2,706. Where the budget binds, a bank holds up to 64 MiB more, the
+difference between the two bounds. `refit_budget=256` restores the old
+bound. A bank saved under the old default resumes under the new one. The
+groups it gave up stay given up, every group it holds goes on to the bit,
+and the groups it first sees after the load refit until 320 MiB is
+reserved. The CHANGELOG declares the move with its size.
+
+The same release changed `corrchange(kind="window")`'s
+`permute_every_rows` from 50 to `window_rows`. Without a fixed `crit`, the
+critical value is a quantile of `n_perm` draws, each a shuffle of the two
+windows' pooled rows. One redraw costs `n_perm · window_rows · k²` for `k`
+features, so a redraw every 50 rows cost more a row the longer the window.
+A redraw once a window's length of rows costs `n_perm · k²` a row, whatever
+the window. Each critical value is then in force for one shift of the
+windows, after which they share no row with the windows it was drawn from.
+The test's size stayed near `alpha`: at alpha 0.05 and 200 draws, 4.8% to
+5.2% of non-overlapping spans of rows with no change were flagged, at
+windows of 50 to 400 rows. `permute_every_rows=50` restores the old
+schedule of draws. A saved state keeps the value it was saved with, given
+or a default: a bank saved under the old default goes on redrawing every 50
+rows, and a group it first sees after the load redraws every `window_rows`
+rows. The CHANGELOG declares the move.
 
 **A spec parameter renamed after 1.0 is forwarded by a table, and any
 other renamed name by a forwarding of its own.** The table reads a spec

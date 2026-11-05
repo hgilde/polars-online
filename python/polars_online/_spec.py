@@ -4253,7 +4253,7 @@ def marginal(
         a count past the warm-up, the model holds the rows until the count:
         ``bin_refit_rows * (8 * features + 16 * targets + 64)`` bytes per
         group, 4 MB at 1,000 features. ``refit_budget`` bounds those holds
-        over all of a spec's groups, in MiB, 256 by default and
+        over all of a spec's groups, in MiB, 320 by default and
         ``float("inf")`` for no bound. Each new group reserves its hold when
         it first appears; the group that would pass the bound keeps the one
         pass, as does every new group after it. A notice says so once, and

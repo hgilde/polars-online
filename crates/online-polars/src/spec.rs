@@ -73,8 +73,13 @@ pub fn num_label(v: f64) -> String {
 pub const HUBER_SCALES: [&str; 2] = ["mad", "rms"];
 
 /// The MiB a spec's groups' Huber refit buffers may reserve by default
-/// (docs/PLAN.md task 277): `window_budget`'s default, 256.
-pub const REFIT_BUDGET_MIB: f64 = 256.0;
+/// (docs/PLAN.md task 277): 256 at first, `window_budget`'s default, and
+/// 320 since task 331 (the user's, 2026-11-05), when each held row's
+/// one-pass `|e|` and its node in the median's tree (task 323, 40 bytes a
+/// row) raised a target's reservation at 5 features and 500 rows from
+/// 100 KB to 124 KB: 256 MiB then refit 2,164 such targets where it had
+/// refit 2,684, and 320 refits 2,706.
+pub const REFIT_BUDGET_MIB: f64 = 320.0;
 
 /// Model choice + model-specific params (docs/PLAN.md §4).
 ///
@@ -1412,7 +1417,7 @@ impl ModelKind {
     /// 256 MiB where it names none (`online_core::WindowBudget::DEFAULT`).
     /// `None` without a window.
     /// The MiB a spec's groups' Huber refit buffers may reserve in a bank
-    /// (docs/PLAN.md task 277): `refit_budget`, 256 by default, `None` for
+    /// (docs/PLAN.md task 277): `refit_budget`, [`REFIT_BUDGET_MIB`] by default, `None` for
     /// no bound (`inf`) or a kind without the refit.
     pub fn refit_budget_mib(&self) -> Option<f64> {
         let given = match self {

@@ -275,7 +275,7 @@ def huber(
         and beside an infinite ``huber_delta``, least squares.
     ``refit_budget``
         A bound in MiB on the refit buffers of all the spec's groups together, above
-        0, or ``inf`` for none. Default 256. Each new group reserves the most its
+        0, or ``inf`` for none. Default 320. Each new group reserves the most its
         targets' buffers can hold when it first appears, ``(features + 26) * 8`` bytes
         a target of each model instance under the MAD (``+ 20`` under ``"rms"``; a
         half-life grid reserves once per value) for each row of the count (the row,
@@ -286,7 +286,7 @@ def huber(
         notice says so once, and ``summary()``'s ``refit_given_up`` counts the targets
         of each instance. A group's reservation is not handed back when its refit frees
         its buffer, so once the bound is reached no later group refits. At 20 features
-        and 500 rows a target reserves 184 KB, and 256 MiB refits the first 1,458
+        and 500 rows a target reserves 184 KB, and 320 MiB refits the first 1,823
         targets.
     ``emit_huber_scale``
         Emit ``huber_scale_<t>``, each target's residual scale ``s`` as the
@@ -563,7 +563,7 @@ def quantile(
         rows after it cost what they did.
     ``refit_budget``
         A bound in MiB on the refit buffers of all the spec's groups
-        together, above 0, or ``inf`` for none; default 256. As for
+        together, above 0, or ``inf`` for none; default 320. As for
         :func:`huber`: each new group reserves ``(features + 26) * 8`` bytes a
         target of each model instance (a half-life grid reserves once per
         value) for each row of the count when it first appears, and keeps it
