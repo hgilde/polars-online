@@ -20,6 +20,7 @@ import numpy as np
 import polars as pl
 import pytest
 from scipy.special import logsumexp
+from scipy.stats import multivariate_t
 
 import polars_online as po
 
@@ -130,9 +131,9 @@ def test_the_posterior_is_the_longhand_algorithm_one():
 
 def longhand_gaussian(x, hazard, k0=1.0):
     """Algorithm 1 again, with the ``gaussian`` emission: a normal-inverse-
-    Wishart run whose predictive is a multivariate Student-t, written from the
-    textbook -- raw sums, ``numpy.linalg.solve`` and ``slogdet`` -- where the
-    model keeps centred sums and a Cholesky factor. The prior is ``mu0 = 0``,
+    Wishart run whose predictive is a multivariate Student-t, its posterior
+    written from the textbook in raw sums where the model keeps centred sums
+    and a Cholesky factor, and its density scipy's ``multivariate_t``. The prior is ``mu0 = 0``,
     ``nu0 = d + 2``, ``Psi0 = I``, given whole to the spec it is held against
     (left out, the first rows set ``mu0`` and ``Psi0``, docs/PLAN.md task 195).
     Returns the row's log score and ``P(r <= 1)`` after it, per row."""
@@ -153,16 +154,10 @@ def longhand_gaussian(x, hazard, k0=1.0):
             psin = psi0 + scatter + k0 * n / kn * np.outer(xbar - mu0, xbar - mu0)
             dof = nun - d + 1.0
             sigma = psin * (kn + 1.0) / (kn * dof)
-            delta = row - mun
-            q = delta @ np.linalg.solve(sigma, delta)
-            _, logdet = np.linalg.slogdet(sigma)
-            ln = (
-                lgamma((dof + d) / 2.0)
-                - lgamma(dof / 2.0)
-                - 0.5 * d * np.log(dof * np.pi)
-                - 0.5 * logdet
-                - 0.5 * (dof + d) * np.log1p(q / dof)
-            )
+            # The predictive's density is scipy's (task 320): Murphy's
+            # (2007) eq. 258, a Student-t with `dof` degrees of freedom,
+            # location `mun` and shape `sigma`.
+            ln = multivariate_t(loc=mun, shape=sigma, df=dof).logpdf(row)
             pi.append(np.exp(ln))
         pi = np.array(pi)
         pre = joint / joint.sum()
@@ -203,11 +198,11 @@ def test_the_gaussian_emission_is_the_longhand_at_three_features():
     )
     out = run(x, covariance_type="full", **common)
     scores, p_change = longhand_gaussian(x, 50.0)
-    # Tolerances (task 252 (b)): an oracle computed another way (raw sums,
-    # numpy's solve and slogdet against centred sums and a Cholesky factor)
-    # through libm.
-    assert out["loglik"].to_list()[1:] == pytest.approx(list(scores[1:]), abs=1e-10)
-    assert out["p_change"].to_list()[1:] == pytest.approx(list(p_change[1:]), abs=1e-10)
+    # Tolerances (task 252 (b)): an oracle computed another way (raw sums and
+    # scipy's density against centred sums and a Cholesky factor) through
+    # libm. Measured 2026-11-04: 3.2e-14 in `loglik`, 1.2e-14 in `p_change`.
+    assert out["loglik"].to_list()[1:] == pytest.approx(list(scores[1:]), abs=1e-12)
+    assert out["p_change"].to_list()[1:] == pytest.approx(list(p_change[1:]), abs=1e-12)
     diag = run(x, covariance_type="diag", **common)["loglik"].to_numpy()[1:]
     assert np.max(np.abs(diag - scores[1:])) > 1e-2, "the covariance matters here"
 
