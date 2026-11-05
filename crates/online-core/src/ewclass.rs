@@ -32,6 +32,12 @@
 //! has carried yet has posterior exactly zero, and until some row has, every
 //! output is null.
 //!
+//! Under the `diagonal` shape a class keeps its variances alone
+//! ([`EwCovDiag`]), `O(k)` a row and held where a whole matrix is `O(k²)`:
+//! the score reads no covariance, and each variance's step reads no other
+//! entry, so every number is the one a class keeping its whole matrix gave,
+//! to the bit.
+//!
 //! The precision prior is required: a class's centered co-moments start at
 //! zero and stay singular until `k` independent rows have been seen, so
 //! there is nothing to invert without it. As in `ew_cov`, its scale `s_c`
@@ -43,7 +49,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::clock::Decay;
-use crate::ewcov::EwCov;
+use crate::ewcov::{EwCov, EwCovDiag};
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
 use crate::solve::{FactorWork, QuadWork, SpdFactor, quad_forms_logdet};
 
@@ -285,13 +291,21 @@ impl PartialEq for ScoreWork {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EwClass {
     cfg: EwClassCfg,
-    /// One accumulator per class, in label order.
+    /// One accumulator per class, in label order, under `full` and `tied`;
+    /// empty under `diagonal`, whose classes are [`Self::diag_classes`].
     classes: Vec<EwCov>,
     /// EW weight of every accepted row, labelled or not.
     n_eff: f64,
     /// Rows whose covariance could not be factorized even with jitter; the
     /// row's outputs are null.
     pub solve_failures: u64,
+    /// One accumulator per class under `diagonal`, its variances alone;
+    /// empty under the other shapes. Empty in a state saved before schema
+    /// 66, whose diagonal classes were whole in `classes`: it loads as
+    /// their diagonals (`restore`). Written always, ahead of `win`, which
+    /// alone may skip.
+    #[serde(default)]
+    diag_classes: Vec<EwCovDiag>,
     /// The hard-cutoff window, when the spec asks for one. Last among the
     /// serialized fields, for the reason `EwClassCfg::window` gives;
     /// `factors` is skipped, so it does not count.
@@ -312,11 +326,32 @@ struct Windowed {
     snaps: crate::Snapshots<ClassMoments>,
 }
 
-/// Every class's moments, before a row and decayed to it.
+/// Every class's moments, before a row and decayed to it: in `classes`
+/// under `full` and `tied`, in `diag_classes` under `diagonal`, as the
+/// model keeps them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct ClassMoments {
     n_eff: f64,
     classes: Vec<crate::Moments>,
+    /// Empty in a snapshot saved before schema 66, whose diagonal classes
+    /// were whole in `classes` (`EwClass::restore`).
+    #[serde(default)]
+    diag_classes: Vec<crate::DiagMoments>,
+}
+
+impl ClassMoments {
+    /// The snapshot of `classes` and `diag` decayed by `lam`, with the
+    /// model's weight `n_eff` decayed already.
+    fn of(n_eff: f64, classes: &[EwCov], diag: &[EwCovDiag], lam: f64) -> Self {
+        Self {
+            n_eff,
+            classes: classes.iter().map(|c| crate::Moments::of(c, lam)).collect(),
+            diag_classes: diag
+                .iter()
+                .map(|c| crate::DiagMoments::of(c, lam))
+                .collect(),
+        }
+    }
 }
 
 impl crate::Footprint for ClassMoments {
@@ -327,7 +362,20 @@ impl crate::Footprint for ClassMoments {
                 .iter()
                 .map(crate::Footprint::footprint)
                 .sum::<usize>()
+            + self
+                .diag_classes
+                .iter()
+                .map(crate::Footprint::footprint)
+                .sum::<usize>()
     }
+}
+
+/// The accumulators a row is scored on: each class's, or under a `window`
+/// each with everything older subtracted. One of the two is empty, as in
+/// the model.
+struct View {
+    classes: Vec<EwCov>,
+    diag: Vec<EwCovDiag>,
 }
 
 impl EwClass {
@@ -335,9 +383,16 @@ impl EwClass {
         cfg.validate()?;
         // Runs are a window's (docs/PLAN.md task 128).
         let windowed = cfg.window.is_some();
-        let classes = (0..cfg.n_classes)
+        let diagonal = matches!(cfg.covariance, Covariance::Diagonal);
+        let classes = (0..if diagonal { 0 } else { cfg.n_classes })
             .map(|_| {
                 EwCov::with_precision_prior(cfg.n_features, cfg.precision_prior)
+                    .map(|c| if windowed { c } else { c.without_runs() })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let diag_classes = (0..if diagonal { cfg.n_classes } else { 0 })
+            .map(|_| {
+                EwCovDiag::with_precision_prior(cfg.n_features, cfg.precision_prior)
                     .map(|c| if windowed { c } else { c.without_runs() })
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -354,6 +409,7 @@ impl EwClass {
             classes,
             n_eff: 0.0,
             solve_failures: 0,
+            diag_classes,
             win,
             factors: Factors::default(),
             work: ScoreWork::default(),
@@ -397,12 +453,13 @@ impl EwClass {
     /// out of it yet (docs/PLAN.md §13). Computed once per scoring call: the
     /// per-class subtraction is `O(k^2)` and the factorization that follows
     /// is `O(k^3)`.
-    fn view(&self) -> Option<Vec<EwCov>> {
+    fn view(&self) -> Option<View> {
         let win = self.win.as_ref()?;
         let (f, old) = win.snaps.cut(win.clock, self.cfg.decay, 0)?;
         if old.n_eff == 0.0 {
             return None;
         }
+        let k = self.cfg.n_features;
         let mut out = Vec::with_capacity(self.classes.len());
         for (cov, old_c) in self.classes.iter().zip(&old.classes) {
             match crate::truncated(cov, old_c, f) {
@@ -411,25 +468,53 @@ impl EwClass {
                 // rather than scoring on rows the window excludes.
                 None => {
                     let mut empty = cov.clone();
-                    let k = self.cfg.n_features;
                     empty.set_moments(&vec![0.0; k], &vec![0.0; k * k], 0.0, None);
                     out.push(empty);
                 }
             }
         }
-        Some(out)
+        let mut diag = Vec::with_capacity(self.diag_classes.len());
+        for (cov, old_c) in self.diag_classes.iter().zip(&old.diag_classes) {
+            match crate::truncated_diag(cov, old_c, f) {
+                Some(t) => diag.push(t),
+                None => {
+                    let mut empty = cov.clone();
+                    empty.set_moments(&vec![0.0; k], &vec![0.0; k], 0.0, None);
+                    diag.push(empty);
+                }
+            }
+        }
+        Some(View { classes: out, diag })
+    }
+
+    /// Each class's weight, from the accumulators `view` gives, or the
+    /// model's own without one.
+    fn weights_of(&self, view: Option<&View>, out: &mut Vec<f64>) {
+        let (classes, diag) = match view {
+            Some(v) => (v.classes.as_slice(), v.diag.as_slice()),
+            None => (self.classes.as_slice(), self.diag_classes.as_slice()),
+        };
+        out.clear();
+        out.extend(classes.iter().map(EwCov::n_eff));
+        out.extend(diag.iter().map(EwCovDiag::n_eff));
     }
 
     pub fn class_weights(&self) -> Vec<f64> {
-        match self.view() {
-            Some(v) => v.iter().map(EwCov::n_eff).collect(),
-            None => self.classes.iter().map(EwCov::n_eff).collect(),
-        }
+        let mut out = Vec::new();
+        self.weights_of(self.view().as_ref(), &mut out);
+        out
     }
 
-    /// The accumulator of class `c`.
-    pub fn class_cov(&self, c: usize) -> &EwCov {
-        &self.classes[c]
+    /// The accumulator of class `c` under `full` and `tied`; `None` under
+    /// `diagonal`, whose classes keep no covariance ([`Self::class_diag`]).
+    pub fn class_cov(&self, c: usize) -> Option<&EwCov> {
+        self.classes.get(c)
+    }
+
+    /// The accumulator of class `c` under `diagonal`, its variances alone;
+    /// `None` under the other shapes ([`Self::class_cov`]).
+    pub fn class_diag(&self, c: usize) -> Option<&EwCovDiag> {
+        self.diag_classes.get(c)
     }
 
     /// The class means, one row of `n_features` per class in label order —
@@ -440,17 +525,23 @@ impl EwClass {
     /// were the whole history's, beside a windowed weight and windowed
     /// scores (review round 4, CE1).
     pub fn coefficients(&self) -> Vec<Vec<f64>> {
-        let means = |c: &EwCov| {
-            if c.n_eff() > 0.0 {
-                c.means().to_vec()
+        let means = |w: f64, m: &[f64]| {
+            if w > 0.0 {
+                m.to_vec()
             } else {
                 vec![f64::NAN; self.cfg.n_features]
             }
         };
-        match self.view() {
-            Some(v) => v.iter().map(means).collect(),
-            None => self.classes.iter().map(means).collect(),
-        }
+        let view = self.view();
+        let (classes, diag) = match view.as_ref() {
+            Some(v) => (v.classes.as_slice(), v.diag.as_slice()),
+            None => (self.classes.as_slice(), self.diag_classes.as_slice()),
+        };
+        classes
+            .iter()
+            .map(|c| means(c.n_eff(), c.means()))
+            .chain(diag.iter().map(|c| means(c.n_eff(), c.means())))
+            .collect()
     }
 
     /// Output names: `class`, then `p_<name>` per class.
@@ -474,7 +565,11 @@ impl EwClass {
 
     /// The ridge in force on class `c`'s covariance.
     fn ridge(&self, c: usize) -> f64 {
-        self.cfg.precision_prior * self.classes[c].precision_scale()
+        let scale = match self.classes.get(c) {
+            Some(cov) => cov.precision_scale(),
+            None => self.diag_classes[c].precision_scale(),
+        };
+        self.cfg.precision_prior * scale
     }
 
     /// `C_c + r_c I`, the matrix the `full` shape factorizes for one class,
@@ -533,12 +628,11 @@ impl EwClass {
         }
         // Under a `window`, every class is scored on its truncated moments.
         let view = self.view();
-        let classes: &[EwCov] = match view.as_ref() {
-            Some(v) => v,
-            None => &self.classes,
+        let (classes, diag): (&[EwCov], &[EwCovDiag]) = match view.as_ref() {
+            Some(v) => (&v.classes, &v.diag),
+            None => (&self.classes, &self.diag_classes),
         };
-        weights.clear();
-        weights.extend(classes.iter().map(EwCov::n_eff));
+        self.weights_of(view.as_ref(), weights);
         let total: f64 = weights.iter().sum();
         if total <= 0.0 || total.is_nan() {
             return nan(out);
@@ -628,11 +722,10 @@ impl EwClass {
                 }
             }
             Covariance::Diagonal => {
-                for c in 0..nc {
+                for (c, cov) in diag.iter().enumerate() {
                     if weights[c] <= 0.0 {
                         continue;
                     }
-                    let cov = &classes[c];
                     let ridge = self.ridge(c);
                     let mut log_det = 0.0;
                     let mut q = 0.0;
@@ -703,14 +796,7 @@ impl OnlineModel for EwClass {
     fn window_shadow(&self) -> Option<crate::WindowShadow> {
         let win = self.win.as_ref()?;
         Some(crate::WindowShadow::new(win.clock, &win.snaps, || {
-            ClassMoments {
-                n_eff: self.n_eff,
-                classes: self
-                    .classes
-                    .iter()
-                    .map(|c| crate::Moments::of(c, 1.0))
-                    .collect(),
-            }
+            ClassMoments::of(self.n_eff, &self.classes, &self.diag_classes, 1.0)
         }))
     }
 
@@ -758,13 +844,8 @@ impl OnlineModel for EwClass {
             // formed on the rows `offer` keeps, not on every row (review
             // 2026-09-18, P1).
             win.snaps
-                .learn_decayed(&mut win.clock, d_clock, &[lam], || ClassMoments {
-                    n_eff: self.n_eff * lam,
-                    classes: self
-                        .classes
-                        .iter()
-                        .map(|c| crate::Moments::of(c, lam))
-                        .collect(),
+                .learn_decayed(&mut win.clock, d_clock, &[lam], || {
+                    ClassMoments::of(self.n_eff * lam, &self.classes, &self.diag_classes, lam)
                 });
             // A window's truncated covariance moves every row, because the
             // decay carried to the boundary does, so no cached factor
@@ -776,6 +857,13 @@ impl OnlineModel for EwClass {
                 cov.update(x, lam, weight);
                 // The one matrix this row moved.
                 self.factors.invalidate(c);
+            } else {
+                cov.decay(lam);
+            }
+        }
+        for (c, cov) in self.diag_classes.iter_mut().enumerate() {
+            if label == Some(c) {
+                cov.update(x, lam, weight);
             } else {
                 cov.decay(lam);
             }
@@ -809,13 +897,46 @@ impl OnlineModel for EwClass {
         check_schema(s)?;
         match &s.model {
             ModelState::EwClass(m) => {
-                let m = (**m).clone();
+                let mut m = (**m).clone();
                 crate::model::check_cfg("ew_class", m.cfg.validate())?;
-                // One accumulator per class at the cfg's width, and a window
-                // exactly when the cfg asks for one (review 2026-09-18, B3).
                 let (k, nc) = (m.cfg.n_features, m.cfg.n_classes);
-                if m.classes.len() != nc
+                let diagonal = matches!(m.cfg.covariance, Covariance::Diagonal);
+                // A `diagonal` state saved before schema 66 kept every
+                // class's whole co-moments, and every snapshot its window
+                // took, of which the shape read the diagonals alone: it
+                // loads as those diagonals, and goes on to the bit
+                // (`EwCovDiag`'s module says why).
+                if diagonal && s.schema_version < 66 && m.diag_classes.is_empty() {
+                    let whole = |c: &EwCov| c.has_shape(k) && !c.has_pending();
+                    if m.classes.len() == nc && m.classes.iter().all(whole) {
+                        m.diag_classes = m.classes.iter().map(EwCovDiag::of).collect();
+                        m.classes.clear();
+                    }
+                    if let Some(win) = m.win.as_mut() {
+                        for snap in win.snaps.iter_mut() {
+                            if snap.diag_classes.is_empty() {
+                                snap.diag_classes = snap
+                                    .classes
+                                    .iter()
+                                    .map(crate::DiagMoments::of_full)
+                                    .collect();
+                                snap.classes.clear();
+                            }
+                        }
+                    }
+                }
+                // One accumulator per class at the cfg's width, in the
+                // shape's accumulator and none in the other, and a window
+                // exactly when the cfg asks for one (review 2026-09-18, B3).
+                let (kept, other) = if diagonal {
+                    (m.diag_classes.len(), m.classes.len())
+                } else {
+                    (m.classes.len(), m.diag_classes.len())
+                };
+                if kept != nc
+                    || other != 0
                     || m.classes.iter().any(|c| !c.has_shape(k))
+                    || m.diag_classes.iter().any(|c| !c.has_shape(k))
                     || m.win.is_some() != m.cfg.window.is_some()
                 {
                     return Err(StateError::Invalid(
@@ -827,8 +948,15 @@ impl OnlineModel for EwClass {
                 // so each holds the classes at the width, and a weight a
                 // subtraction can read (review 2026-10-06, CE3).
                 let snap = |s: &ClassMoments| {
-                    s.classes.len() == nc
+                    let (kept, other) = if diagonal {
+                        (s.diag_classes.len(), s.classes.len())
+                    } else {
+                        (s.classes.len(), s.diag_classes.len())
+                    };
+                    kept == nc
+                        && other == 0
                         && s.classes.iter().all(|c| c.has_shape(k))
+                        && s.diag_classes.iter().all(|c| c.has_shape(k))
                         && s.n_eff.is_finite()
                         && s.n_eff >= 0.0
                 };
@@ -841,10 +969,15 @@ impl OnlineModel for EwClass {
                 }
                 // The runs follow the window, not the file (review 2026-09-26,
                 // C4; `EwCovModel::restore` says why).
-                let mut m = m;
                 match m.cfg.window {
-                    None => m.classes.iter_mut().for_each(EwCov::set_runs_off),
-                    Some(_) if !m.classes.iter().all(EwCov::keeps_runs) => {
+                    None => {
+                        m.classes.iter_mut().for_each(EwCov::set_runs_off);
+                        m.diag_classes.iter_mut().for_each(EwCovDiag::set_runs_off);
+                    }
+                    Some(_)
+                        if !m.classes.iter().all(EwCov::keeps_runs)
+                            || !m.diag_classes.iter().all(EwCovDiag::keeps_runs) =>
+                    {
                         return Err(StateError::Invalid(
                             "ew_class: a windowed state whose runs are off".into(),
                         ));
@@ -918,12 +1051,20 @@ mod tests {
         assert!(m.view().is_some(), "rows have aged out of the window");
         assert!(EwClass::restore(&m.state()).is_ok(), "the state as saved");
         type Damage<'a> = (&'a str, &'a dyn Fn(&mut ClassMoments));
-        let damage: [Damage; 3] = [
+        let damage: [Damage; 5] = [
             ("a class short", &|snap| {
-                snap.classes.pop();
+                snap.diag_classes.pop();
             }),
             ("a class of another width", &|snap| {
-                snap.classes[0] = crate::Moments::of(&EwCov::new(5), 1.0);
+                let wide = EwCovDiag::with_precision_prior(5, 1.0).unwrap();
+                snap.diag_classes[0] = crate::DiagMoments::of(&wide, 1.0);
+            }),
+            ("a whole matrix beside the diagonals", &|snap| {
+                snap.classes.push(crate::Moments::of(&EwCov::new(2), 1.0));
+            }),
+            ("whole matrices in place of the diagonals", &|snap| {
+                snap.diag_classes.clear();
+                snap.classes = vec![crate::Moments::of(&EwCov::new(2), 1.0); 3];
             }),
             ("a weight that is not a number", &|snap| {
                 snap.n_eff = f64::NAN
@@ -947,6 +1088,20 @@ mod tests {
                     panic!("{what}: loaded and was read");
                 }
                 Err(e) => panic!("{what}: {e}"),
+            }
+        }
+    }
+
+    impl EwClass {
+        /// Class `c`'s means and its co-moments as kept: the whole matrix
+        /// under `full` and `tied`, the diagonal under `diagonal`.
+        fn moments_of(&self, c: usize) -> (Vec<f64>, Vec<f64>) {
+            match self.classes.get(c) {
+                Some(cov) => (cov.means().to_vec(), cov.comoments().to_full()),
+                None => {
+                    let cov = &self.diag_classes[c];
+                    (cov.means().to_vec(), cov.comoments().to_vec())
+                }
             }
         }
     }
@@ -1051,11 +1206,16 @@ mod tests {
                 );
             }
             let view = m.view().expect("rows have aged out of the window");
-            for (class, cov) in view.iter().enumerate() {
+            for (class, cov) in view.classes.iter().enumerate() {
                 assert_eq!(cov.var(1), 0.0, "{covariance:?}, class {class}");
                 assert_eq!(cov.cov(0, 1), 0.0, "{covariance:?}, class {class}");
                 assert!(cov.var(0) > 0.0, "{covariance:?}, class {class}");
             }
+            for (class, cov) in view.diag.iter().enumerate() {
+                assert_eq!(cov.var(1), 0.0, "{covariance:?}, class {class}");
+                assert!(cov.var(0) > 0.0, "{covariance:?}, class {class}");
+            }
+            assert_eq!(view.classes.len() + view.diag.len(), 2, "{covariance:?}");
         }
     }
 
@@ -1127,6 +1287,86 @@ mod tests {
             );
             let shown = format!("{kept:?}");
             assert!(shown.contains("factors: Factors(") && !shown.contains("FactorWork"));
+        }
+    }
+
+    /// A `diagonal` model keeps each class's variances alone, and each
+    /// window snapshot's, and no matrix. A `diagonal` state of schema 65,
+    /// which kept whole matrices in the model and in its snapshots, loads as
+    /// their diagonals (the frozen fixtures hold the numbers it then goes on
+    /// to); the same layout at schema 66, one holding both lists, or a whole
+    /// shape holding diagonals, is refused (task 327).
+    #[test]
+    fn a_diagonal_state_keeps_its_variances_and_an_old_one_loads_as_them() {
+        use crate::{ModelState, StateError};
+        let mut c = cfg(3, 2, Covariance::Diagonal);
+        c.window = Some(20.0);
+        c.max_rows_between_snapshots = Some(1);
+        let mut m = EwClass::new(c).unwrap();
+        let mut s = 7u64;
+        for i in 0..50 {
+            let x = [lcg(&mut s), lcg(&mut s), 3.0 + lcg(&mut s)];
+            m.step(
+                &x,
+                &[Some(f64::from(i % 2))],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        assert!(m.classes.is_empty() && m.diag_classes.len() == 2);
+        let snaps = &m.win.as_ref().unwrap().snaps;
+        assert!(snaps.iter().count() > 3);
+        assert!(
+            snaps
+                .iter()
+                .all(|s| s.classes.is_empty() && s.diag_classes.len() == 2)
+        );
+        let whole: Vec<EwCov> = (0..2)
+            .map(|i| {
+                EwCov::from_moments(3, 1.5 + i as f64, &[0.5, 1.0, -1.0], &[2.0; 9], 0.1).unwrap()
+            })
+            .collect();
+        let snap = crate::Moments::of(&whole[0], 0.5);
+        let old = |schema: u32, edit: &dyn Fn(&mut EwClass)| {
+            let mut s = m.state();
+            s.schema_version = schema;
+            let ModelState::EwClass(inner) = &mut s.model else {
+                unreachable!()
+            };
+            edit(inner);
+            EwClass::restore(&s)
+        };
+        let as_65 = |e: &mut EwClass| {
+            e.diag_classes.clear();
+            e.classes = whole.clone();
+            for s in e.win.as_mut().unwrap().snaps.iter_mut() {
+                s.diag_classes.clear();
+                s.classes = vec![snap.clone(); 2];
+            }
+        };
+        let back = old(65, &as_65).unwrap();
+        assert!(back.classes.is_empty());
+        let want: Vec<EwCovDiag> = whole.iter().map(EwCovDiag::of).collect();
+        assert_eq!(back.diag_classes, want);
+        let part = crate::DiagMoments::of_full(&snap);
+        for s in back.win.as_ref().unwrap().snaps.iter() {
+            assert!(s.classes.is_empty());
+            assert_eq!(s.diag_classes, vec![part.clone(); 2]);
+        }
+        type Edit<'a> = (u32, &'a dyn Fn(&mut EwClass));
+        let refused: [Edit; 4] = [
+            (66, &as_65),
+            (66, &|e| e.classes = whole.clone()),
+            (66, &|e| {
+                e.diag_classes.pop();
+            }),
+            (65, &|e| e.cfg.covariance = Covariance::Full),
+        ];
+        for (i, (schema, edit)) in refused.into_iter().enumerate() {
+            match old(schema, edit) {
+                Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{i}: {e}"),
+                other => panic!("{i}: {other:?}"),
+            }
         }
     }
 
@@ -1622,8 +1862,8 @@ mod tests {
         assert!(n_eff > n[0] + n[1]);
         let coef = m.coefficients();
         assert_eq!(coef.len(), 2);
-        assert_eq!(coef[0], m.class_cov(0).means());
-        assert_eq!(coef[1], m.class_cov(1).means());
+        assert_eq!(coef[0], m.moments_of(0).0);
+        assert_eq!(coef[1], m.moments_of(1).0);
     }
 
     #[test]
@@ -1643,11 +1883,7 @@ mod tests {
             full.step(&x1, &[Some(1.0)], 1.0, 1.0);
             shared.step(&x1, &[Some(1.0)], 1.0, 1.0);
         }
-        assert!(close(
-            &full.class_cov(0).comoments().to_full(),
-            &full.class_cov(1).comoments().to_full(),
-            1e-12
-        ));
+        assert!(close(&full.moments_of(0).1, &full.moments_of(1).1, 1e-12));
         for _ in 0..50 {
             let x = [2.0 * lcg(&mut s), 2.0 * lcg(&mut s)];
             let a = full.predict(&x, 1.0).pred;
@@ -1675,7 +1911,7 @@ mod tests {
             }
         }
         for c in 0..2 {
-            assert_eq!(full.class_cov(c).cov(0, 1), 0.0);
+            assert_eq!(full.class_cov(c).unwrap().cov(0, 1), 0.0);
         }
         let mut s = 5u64;
         for _ in 0..50 {
@@ -1739,8 +1975,7 @@ mod tests {
             let w = a.class_weights();
             assert!((w[0] - before[0] * lam.powi(ticks)).abs() < 1e-12);
             assert!((w[1] - before[1] * lam.powi(ticks)).abs() < 1e-12);
-            assert_eq!(a.class_cov(0).means(), b.class_cov(0).means());
-            assert_eq!(a.class_cov(0).comoments(), b.class_cov(0).comoments());
+            assert_eq!(a.moments_of(0), b.moments_of(0));
         }
         // n_eff counted every one of them; a zero-weight row only ticks.
         let n = a.n_eff();
@@ -1748,7 +1983,7 @@ mod tests {
         assert_eq!(s.n_eff, n);
         assert_eq!(a.n_eff(), lam * n);
         assert!((a.class_weights()[1] - before[1] * lam.powi(ticks + 1)).abs() < 1e-12);
-        assert_eq!(a.class_cov(1).means(), b.class_cov(1).means());
+        assert_eq!(a.moments_of(1).0, b.moments_of(1).0);
     }
 
     #[test]
@@ -1765,7 +2000,7 @@ mod tests {
         let p = m.predict(&[1.0, 2.0], 1.0).pred;
         assert_eq!(p[0], 0.0);
         assert!(p[1] > p[2] && p.iter().all(|v| v.is_finite()));
-        assert_eq!(m.class_cov(0).means(), &[1.0, 2.0]);
+        assert_eq!(m.moments_of(0).0, &[1.0, 2.0]);
     }
 
     /// In every shape: the two that read a quadratic form, `full` and
@@ -1795,16 +2030,7 @@ mod tests {
                 "{covariance:?}"
             );
             for c in 0..2 {
-                assert_eq!(
-                    m.class_cov(c).means(),
-                    before.class_cov(c).means(),
-                    "{covariance:?}"
-                );
-                assert_eq!(
-                    m.class_cov(c).comoments(),
-                    before.class_cov(c).comoments(),
-                    "{covariance:?}"
-                );
+                assert_eq!(m.moments_of(c), before.moments_of(c), "{covariance:?}");
             }
             assert_eq!(m.solve_failures, 0, "{covariance:?}");
             let next = m.step(&[3.0, 1.2], &[Some(1.0)], 1.0, 1.0);
@@ -2281,7 +2507,7 @@ mod tests {
         let mut m = EwClass::new(c).unwrap();
         m.step(&[0.0], &[Some(0.0)], 0.0, 1.0);
         m.step(&[1.0], &[Some(0.0)], 1.0, 1.0);
-        let cov = m.class_cov(0);
+        let cov = m.class_cov(0).unwrap();
         assert_eq!(
             cov.comoments().to_full()[0] + 1.5 * cov.precision_scale(),
             1.0
@@ -2362,13 +2588,9 @@ mod tests {
         m.step(&[-1.0, -1.0], &[Some(0.0)], 1.0, 1.0);
         place(&mut m, 0, &[0.0, 0.0], Some(&[f64::INFINITY; 4]));
         assert!(
-            m.class_cov(0)
-                .comoments()
-                .to_full()
-                .iter()
-                .all(|v| v.is_infinite()),
+            m.moments_of(0).1.iter().all(|v| v.is_infinite()),
             "{:?}",
-            m.class_cov(0).comoments()
+            m.moments_of(0)
         );
         assert_eq!(m.solve_failures, 0);
         let out = m.step(&[0.0, 0.0], &[None], 1.0, 1.0);

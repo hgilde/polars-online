@@ -3234,7 +3234,7 @@ Give `covariance_type`, scikit-learn's words, to set what each class keeps:
 |---|---|---|
 | `"full"`, the default (QDA) | its own covariance, and its Cholesky factor, which only the row's own class refactors (under a `window_size`, every class on every row) | in general |
 | `"tied"` (LDA) | one covariance pooled by class weight, factorized once per row | the classes differ in location but not in spread; it then labels more than 98% of rows as `"full"` does in the tests, with fewer parameters to learn |
-| `"diag"` (Gaussian naive Bayes) | variances only | speed matters most, since it runs about five times as fast as the other two ([Throughput](../README.md#throughput)); it cannot see a correlation, so two classes with the same marginals and opposite correlations are one class to it |
+| `"diag"` (Gaussian naive Bayes) | variances only: `k` numbers a class to keep and update on a row, where the other two keep `k²` | speed matters most, since it runs about five times as fast as the other two ([Throughput](../README.md#throughput)); it cannot see a correlation, so two classes with the same marginals and opposite correlations are one class to it |
 
 **Give `window_size` when the class means move,** because over a long history
 two regimes average together. Each class's moments then cover only the

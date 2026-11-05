@@ -76,7 +76,7 @@ use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{EwCov, Stamp};
+use crate::{EwCov, EwCovDiag, Stamp};
 
 /// Where a snapshot sits: the two clocks of the row it precedes
 /// (docs/PLAN.md task 175). `clock` is the model's own, summed from the
@@ -1295,6 +1295,117 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
     // reports no size rather than one made of rounding: 10.75 against 11
     // with the window's rows at 1e-6 (review 2026-10-05, CE6b; CE6's rule
     // in `marginal`).
+    let q = match (cov.q_sum(), old.q) {
+        (Some(q_now), Some(q_then)) => {
+            let q = q_now - f * f * q_then;
+            Some(if q > 64.0 * f64::EPSILON * q_now {
+                q
+            } else {
+                0.0
+            })
+        }
+        _ => None,
+    };
+    let mut out = cov.clone();
+    out.set_moments(&mean, &cen, w, q);
+    Some(out)
+}
+
+/// An [`EwCovDiag`]'s data, decayed to the clock of the row it precedes: a
+/// [`Moments`] whose co-moments are their diagonal alone, for an owner that
+/// keeps no other ([`EwCovDiag`]'s module says which).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiagMoments {
+    pub w: f64,
+    pub m: Vec<f64>,
+    /// The centred second moments, `C_ii`, length `k`.
+    pub v: Vec<f64>,
+    /// The accumulator's count of learned rows, as [`Moments::rows`].
+    pub rows: Option<u64>,
+    /// The Kish sum, where the accumulator keeps one.
+    pub q: Option<f64>,
+}
+
+impl DiagMoments {
+    /// [`Moments::of`], for a diagonal accumulator.
+    pub fn of(cov: &EwCovDiag, lam: f64) -> Self {
+        Self {
+            w: cov.n_eff() * lam,
+            q: cov.q_sum().map(|q| q * lam * lam),
+            m: cov.means().to_vec(),
+            v: cov.comoments().to_vec(),
+            rows: Some(cov.rows_learned()),
+        }
+    }
+
+    /// `old`'s diagonal: a snapshot taken when a diagonal owner kept whole
+    /// matrices, as it loads.
+    pub fn of_full(old: &Moments) -> Self {
+        let k = old.m.len();
+        Self {
+            w: old.w,
+            m: old.m.clone(),
+            v: (0..k).map(|i| old.c.get(k, i, i)).collect(),
+            rows: old.rows,
+            q: old.q,
+        }
+    }
+
+    /// [`Moments::holds_rows`].
+    pub fn holds_rows(&self, cov: &EwCovDiag) -> bool {
+        self.rows.is_none_or(|r| cov.rows_learned() > r)
+    }
+
+    /// [`Moments::has_shape`].
+    pub fn has_shape(&self, k: usize) -> bool {
+        self.m.len() == k && self.v.len() == k && self.w.is_finite() && self.w >= 0.0
+    }
+}
+
+impl Footprint for DiagMoments {
+    fn footprint(&self) -> usize {
+        3 * std::mem::size_of::<f64>() + floats(&self.m) + floats(&self.v)
+    }
+}
+
+/// [`truncated`] for a diagonal accumulator: its arithmetic, entry for
+/// entry, on the `C_ii` alone. Each of `truncated`'s diagonal entries reads
+/// no other -- `g·C_ii − ratio·C_u,ii − ratio·g·dᵢ·dᵢ`, clamped, read as no
+/// spread below the subtraction's rounding or where the feature held one
+/// value -- so this is that function's diagonal to the bit
+/// (`window::tests`' `the_diagonal_window_is_the_full_ones_diagonal`).
+pub fn truncated_diag(cov: &EwCovDiag, old: &DiagMoments, f: f64) -> Option<EwCovDiag> {
+    let k = cov.k();
+    let w_now = cov.n_eff();
+    let w_old = f * old.w;
+    let w = w_now - w_old;
+    if w <= EMPTY_FRACTION * w_now || !w.is_finite() || !old.holds_rows(cov) {
+        return None;
+    }
+    let (ratio, g) = (w_old / w, w_now / w);
+    let d: Vec<f64> = (0..k).map(|i| old.m[i] - cov.mean(i)).collect();
+    let mut mean: Vec<f64> = (0..k).map(|i| cov.mean(i) - ratio * d[i]).collect();
+    let (c_now, c_old) = (cov.comoments(), &old.v);
+    let mut cen = vec![0.0; k];
+    for i in 0..k {
+        let c = g * c_now[i] - ratio * c_old[i] - ratio * g * d[i] * d[i];
+        let c = crate::solve::clamp_rounding(c);
+        let terms = g * c_now[i] + ratio * c_old[i];
+        let level = ratio * g * d[i].abs() * (cov.mean(i).abs() + old.m[i].abs());
+        cen[i] = if c <= rounding_floor(terms + level) {
+            0.0
+        } else {
+            c
+        };
+    }
+    if let Some(rows) = old.rows {
+        for i in 0..k {
+            if let Some(value) = cov.held_from(i, rows + 1) {
+                mean[i] = value;
+                cen[i] = 0.0;
+            }
+        }
+    }
     let q = match (cov.q_sum(), old.q) {
         (Some(q_now), Some(q_then)) => {
             let q = q_now - f * f * q_then;
@@ -3226,5 +3337,55 @@ mod tests {
                 assert_eq!(taken[4], 1_201, "the summed clock's spacing drifts");
             }
         }
+    }
+
+    /// The diagonal window is the full one's diagonal to the bit: over a
+    /// stream with a feature at a large offset, one held throughout, uneven
+    /// and zero weights, each snapshot subtracted at boundaries from the
+    /// first row to the last -- where the window empties -- by the factor
+    /// its age gives, the means, the variances (an unresolved one read as
+    /// none, a held one as none at its value), the weight and Kish's sum
+    /// agree with [`truncated`]'s; and a snapshot of whole matrices reads
+    /// as its diagonal ([`DiagMoments::of_full`]).
+    #[test]
+    fn the_diagonal_window_is_the_full_ones_diagonal() {
+        let k = 4;
+        let mut cov = EwCov::with_precision_prior(k, 0.5).unwrap();
+        let mut diag = EwCovDiag::with_precision_prior(k, 0.5).unwrap();
+        let mut snaps: Vec<(Moments, DiagMoments)> = Vec::new();
+        let mut st = 11u64;
+        let mut next = || {
+            st = st
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (st >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut checked = (0, 0);
+        for row in 0..120 {
+            let lam = if row % 9 == 0 { 0.6 } else { 0.95 };
+            snaps.push((Moments::of(&cov, lam), DiagMoments::of(&diag, lam)));
+            let x = [1e9 + next(), 3.25, next() - 0.5, 4.0 * next()];
+            let w = match row % 5 {
+                0 => 0.0,
+                1 => 1e-7,
+                _ => next() + 0.1,
+            };
+            cov.update(&x, lam, w);
+            diag.update(&x, lam, w);
+            for (age, (full, part)) in snaps.iter().enumerate() {
+                assert_eq!(&DiagMoments::of_full(full), part, "row {row}");
+                let f = 0.95f64.powi((snaps.len() - age) as i32);
+                let a = truncated(&cov, full, f);
+                let b = truncated_diag(&diag, part, f);
+                assert_eq!(a.is_some(), b.is_some(), "row {row}, snapshot {age}");
+                let (Some(a), Some(b)) = (a, b) else {
+                    checked.1 += 1;
+                    continue;
+                };
+                checked.0 += 1;
+                assert_eq!(b, EwCovDiag::of(&a), "row {row}, snapshot {age}");
+            }
+        }
+        assert!(checked.0 > 1000 && checked.1 > 0, "{checked:?}");
     }
 }

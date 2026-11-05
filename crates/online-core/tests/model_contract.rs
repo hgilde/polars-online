@@ -4236,9 +4236,10 @@ fn hmm_recovers_from_bounded_extremes() {
     // ~30 500 rows on every `cargo test` for nothing (review 2026-09-18, T2).
     // Every state's moments are finite, and the model goes on filtering.
     for s in 0..2 {
-        assert!(m.state_cov(s).means().iter().all(|v| v.is_finite()));
+        assert!(m.state_means(s).iter().all(|v| v.is_finite()));
         assert!(
             m.state_cov(s)
+                .unwrap()
                 .comoments()
                 .to_full()
                 .iter()
@@ -4271,8 +4272,8 @@ fn hmm_recovers_from_bounded_extremes() {
     }
     assert!(right > 0, "the filter reports a state on a clean stream");
     assert!(
-        m.state_cov(0).means().iter().all(|v| v.is_finite())
-            && m.state_cov(1).means().iter().all(|v| v.is_finite())
+        m.state_means(0).iter().all(|v| v.is_finite())
+            && m.state_means(1).iter().all(|v| v.is_finite())
     );
 }
 

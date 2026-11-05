@@ -27,6 +27,9 @@ use crate::Runs;
 use crate::since::Since;
 use serde::{Deserialize, Serialize};
 
+pub use diag::EwCovDiag;
+
+mod diag;
 mod held;
 mod lower;
 mod merge_bound;

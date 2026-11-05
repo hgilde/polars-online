@@ -159,7 +159,9 @@ def model_run(
     s: dict[str, Any], half_life: float, cov: str = "full"
 ) -> tuple[pl.DataFrame, dict[str, np.ndarray]]:
     """The model's rows, and its learned means, co-moments and transition
-    counts after the last row, read from the state the bank writes."""
+    counts after the last row, read from the state the bank writes. Under
+    ``"diag"`` a state keeps its variances alone (``diag_states``, each
+    ``v``), read here as a diagonal matrix."""
     k, d = s["m0"].shape
     features = [f"x{i}" for i in range(d)]
     spec = po.spec.hmm(
@@ -177,9 +179,13 @@ def model_run(
     bank = po.ModelBank([spec])
     out = bank.fit_predict(frame)["h"].struct.unnest()
     model = json.loads(bank.write_json())["states"][0][0][1]["models"][0]["model"]["Hmm"]
+    states = model["diag_states"] if cov == "diag" else model["states"]
+    assert len(states) == k and not model["states" if cov == "diag" else "diag_states"]
     learned = {
-        "means": np.array([st["m"] for st in model["states"]]),
-        "covs": np.array([np.reshape(st["c"], (d, d)) for st in model["states"]]),
+        "means": np.array([st["m"] for st in states]),
+        "covs": np.array(
+            [np.diag(st["v"]) if cov == "diag" else np.reshape(st["c"], (d, d)) for st in states]
+        ),
         "counts": np.reshape(model["a"], (k, k)),
     }
     return out, learned
@@ -204,10 +210,12 @@ def rule_from_scratch(s: dict[str, Any], half_life: float, cov: str) -> dict[str
     ``predicted_state`` and ``loglik`` as the model reads them before the
     row, and the learned means, covariances and counts after the last.
 
-    Each state learns its full moments whatever the shape; the shape is how
+    Each state's moments are the same whatever the shape; the shape is how
     the density reads them: ``"full"`` each state's ``C_l + r_l I``,
     ``"diag"`` its diagonal, and ``"tied"`` one matrix, ``sum_l W_l (C_l +
-    r_l I) / sum_l W_l``, the states pooled by their weights.
+    r_l I) / sum_l W_l``, the states pooled by their weights. The rule
+    rebuilds them whole; under ``"diag"`` the model keeps the diagonal
+    alone, which is all it compares there (:func:`em_errors`).
 
     Under ``"rows"``, what each row read and learned, which the error bound
     (:func:`rule_error_bound`) walks: the states' means, moment matrices
@@ -712,6 +720,9 @@ def em_errors(seed: int, cov: str, k: int, half_life: float) -> dict[str, float]
     def rel(a: np.ndarray, b: np.ndarray) -> np.ndarray:
         return np.abs(a - b) / (1.0 + np.abs(b))
 
+    # Under "diag" a state keeps its variances alone: the diagonal is compared.
+    covs = want["covs"] * np.eye(s["m0"].shape[1]) if cov == "diag" else want["covs"]
+
     filtered = out.select(f"filtered_state{j}" for j in range(k)).to_numpy()
     predicted = out.select(f"predicted_state{j}" for j in range(k)).to_numpy()
     return {
@@ -719,7 +730,7 @@ def em_errors(seed: int, cov: str, k: int, half_life: float) -> dict[str, float]
         "predicted": over(np.abs(predicted - want["predicted"]), "predicted"),
         "loglik": over(rel(out["loglik"].to_numpy(), want["loglik"]), "loglik"),
         "means": over(rel(learned["means"], want["means"]), "means"),
-        "covs": over(rel(learned["covs"], want["covs"]), "covs"),
+        "covs": over(rel(learned["covs"], covs), "covs"),
         "counts": over(np.abs(learned["counts"] - want["counts"]) / want["counts"].max(), "counts"),
         "moved": float(np.abs(learned["means"] - s["m0"]).max()),
         "largest_count": float(want["counts"].max()),

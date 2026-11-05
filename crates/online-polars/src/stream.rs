@@ -538,11 +538,7 @@ impl AnyModel {
             AnyModel::Rcov(_) => None,
             // The state means, one row per state, as `ew_class` reports its
             // class means.
-            AnyModel::Hmm(m) => Some(
-                (0..m.cfg().k)
-                    .map(|s| m.state_cov(s).means().to_vec())
-                    .collect(),
-            ),
+            AnyModel::Hmm(m) => Some((0..m.cfg().k).map(|s| m.state_means(s).to_vec()).collect()),
             // corrchange has no coefficients: its outputs are the test.
             AnyModel::CorrChange(_) => None,
             // bocpd has none either: its value is the run-length posterior.

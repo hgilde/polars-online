@@ -3728,7 +3728,8 @@ def ew_class(
              - one factorization
            * - ``"diag"``
              - the variances alone, which cannot see a correlation
-             -
+             - ``k`` numbers a class to keep and update on a row, where the
+               other two keep ``k x k``
     ``precision_prior``
         A ridge on every class covariance, in the features' squared units and
         above 0, so the first rows of a class, whose sample covariance is

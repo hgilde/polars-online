@@ -30,6 +30,10 @@
 //! task 214). After a gap that takes the counts to nothing, `Π` is the
 //! prior's mean. The states need no such step: a row that adds no weight
 //! moves no mean, co-moment or prior scale, which are all a density reads.
+//! Under `covariance_type = "diag"` a state keeps its variances alone
+//! ([`EwCovDiag`]), `O(d)` a row and held: the density reads no
+//! covariance, and each variance's step reads no other entry, so the
+//! numbers are the ones a state keeping its whole matrix gave, to the bit.
 //! The densities go through the factorization, forms and softmax path
 //! `ew_class` uses (`quad_forms_logdet`'s, to the bit), with the same
 //! decaying `precision_prior` ridge -- which is **required** here as it is
@@ -68,7 +72,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cluster::kmeans::seed_centres;
 use crate::solve::{FactorWork, QuadWork, SpdFactor};
-use crate::{Covariance, Decay, EwCov, SeedRule};
+use crate::{Covariance, Decay, EwCov, EwCovDiag, SeedRule};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HmmCfg {
@@ -344,7 +348,8 @@ impl Factors {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Hmm {
     cfg: HmmCfg,
-    /// One accumulator per state.
+    /// One accumulator per state under `full` and `tied`; empty under
+    /// `diag`, whose states are [`Self::diag_states`].
     states: Vec<EwCov>,
     /// The filtered posterior left by the last learned row.
     p: Vec<f64>,
@@ -358,6 +363,13 @@ pub struct Hmm {
     /// Rows the filter could not evaluate, and the seeding's `lloyd` runs
     /// that stopped at their cap short of a fixed point.
     pub solve_failures: u64,
+    /// One accumulator per state under `diag`, its variances alone; empty
+    /// under the other shapes. Empty in a state saved before schema 66,
+    /// whose `diag` states were whole in `states`: it loads as their
+    /// diagonals (`restore`). Written always, after the fields it follows:
+    /// the compact encoding is positional, and only a last field may skip.
+    #[serde(default)]
+    diag_states: Vec<EwCovDiag>,
     /// The `full` shape's per-state factors between rows; see [`Factors`].
     #[serde(skip)]
     factors: Factors,
@@ -390,22 +402,32 @@ impl Hmm {
         let (k, d) = (cfg.k, cfg.n_features);
         // No window reads a run here, so none is kept (docs/PLAN.md task
         // 128; review 2026-09-26, C3).
-        let mut states = (0..k)
-            .map(|_| EwCov::with_precision_prior(d, cfg.precision_prior).map(EwCov::without_runs))
-            .collect::<Result<Vec<_>, _>>()?;
-        let seeded = cfg.means.is_some();
-        if let (Some(m), Some(c)) = (&cfg.means, &cfg.covs) {
-            for (s, i) in states.iter_mut().zip(0..k) {
-                *s = EwCov::from_moments(
-                    d,
-                    1.0,
-                    &m[i * d..(i + 1) * d],
-                    &c[i * d * d..(i + 1) * d * d],
-                    cfg.precision_prior,
-                )?
-                .without_runs();
+        let diagonal = matches!(cfg.covariance, Covariance::Diagonal);
+        let mut states = Vec::new();
+        let mut diag_states = Vec::new();
+        for i in 0..k {
+            let given = cfg.means.as_ref().zip(cfg.covs.as_ref());
+            let mean = given.map(|(m, _)| &m[i * d..(i + 1) * d]);
+            let cov = given.map(|(_, c)| &c[i * d * d..(i + 1) * d * d]);
+            if diagonal {
+                // The given matrix's diagonal: all of it the shape reads.
+                let state = match (mean, cov) {
+                    (Some(m), Some(c)) => {
+                        let v: Vec<f64> = (0..d).map(|j| c[j * d + j]).collect();
+                        EwCovDiag::from_moments(d, 1.0, m, &v, cfg.precision_prior)?
+                    }
+                    _ => EwCovDiag::with_precision_prior(d, cfg.precision_prior)?,
+                };
+                diag_states.push(state.without_runs());
+            } else {
+                let state = match (mean, cov) {
+                    (Some(m), Some(c)) => EwCov::from_moments(d, 1.0, m, c, cfg.precision_prior)?,
+                    _ => EwCov::with_precision_prior(d, cfg.precision_prior)?,
+                };
+                states.push(state.without_runs());
             }
         }
+        let seeded = cfg.means.is_some();
         Ok(Self {
             p: vec![1.0 / k as f64; k],
             a: vec![0.0; k * k],
@@ -415,6 +437,7 @@ impl Hmm {
             solve_failures: 0,
             factors: Factors::default(),
             states,
+            diag_states,
             cfg,
         })
     }
@@ -464,9 +487,24 @@ impl Hmm {
         &self.p
     }
 
-    /// The accumulator of state `s`.
-    pub fn state_cov(&self, s: usize) -> &EwCov {
-        &self.states[s]
+    /// The accumulator of state `s` under `full` and `tied`; `None` under
+    /// `diag`, whose states keep no covariance ([`Self::state_diag`]).
+    pub fn state_cov(&self, s: usize) -> Option<&EwCov> {
+        self.states.get(s)
+    }
+
+    /// The accumulator of state `s` under `diag`, its variances alone;
+    /// `None` under the other shapes ([`Self::state_cov`]).
+    pub fn state_diag(&self, s: usize) -> Option<&EwCovDiag> {
+        self.diag_states.get(s)
+    }
+
+    /// The mean of state `s`, in every shape.
+    pub fn state_means(&self, s: usize) -> &[f64] {
+        match self.states.get(s) {
+            Some(c) => c.means(),
+            None => self.diag_states[s].means(),
+        }
     }
 
     /// The Dirichlet pseudo-count of cell `(r, c)`.
@@ -575,7 +613,11 @@ impl Hmm {
     }
 
     fn ridge(&self, s: usize) -> f64 {
-        self.cfg.precision_prior * self.states[s].precision_scale()
+        let scale = match self.states.get(s) {
+            Some(c) => c.precision_scale(),
+            None => self.diag_states[s].precision_scale(),
+        };
+        self.cfg.precision_prior * scale
     }
 
     /// `C_s + r_s I`'s lower triangle, which the factorization reads
@@ -635,8 +677,7 @@ impl Hmm {
         out.resize(k, f64::NEG_INFINITY);
         match self.cfg.covariance {
             Covariance::Diagonal => {
-                for (s, o) in out.iter_mut().enumerate() {
-                    let cov = &self.states[s];
+                for (s, (o, cov)) in out.iter_mut().zip(&self.diag_states).enumerate() {
                     let r = self.ridge(s);
                     let (mut log_det, mut q) = (0.0, 0.0);
                     for (i, xi) in x.iter().enumerate() {
@@ -860,7 +901,10 @@ impl Hmm {
                     best = s;
                 }
             }
-            self.states[best].update(x, 1.0, *wi);
+            match self.states.get_mut(best) {
+                Some(state) => state.update(x, 1.0, *wi),
+                None => self.diag_states[best].update(x, 1.0, *wi),
+            }
         }
         self.buffer.clear();
         self.seeded = true;
@@ -886,6 +930,9 @@ impl Hmm {
     /// task 183).
     fn age_states(&mut self, x: &[f64], lam: f64) {
         for s in self.states.iter_mut() {
+            s.update(x, lam, 0.0);
+        }
+        for s in self.diag_states.iter_mut() {
             s.update(x, lam, 0.0);
         }
     }
@@ -1009,6 +1056,9 @@ impl Hmm {
             for (s, cov) in self.states.iter_mut().enumerate() {
                 cov.update(x, lam, weight * work.post[s]);
             }
+            for (s, cov) in self.diag_states.iter_mut().enumerate() {
+                cov.update(x, lam, weight * work.post[s]);
+            }
             self.factors.clear();
         }
         // The posterior is the next row's `p`, and the `p` it replaces the
@@ -1076,12 +1126,33 @@ impl crate::OnlineModel for Hmm {
             crate::ModelState::Hmm(m) => {
                 let mut m = (**m).clone();
                 crate::model::check_cfg("hmm", m.cfg.validate())?;
-                // `k` states at the cfg's width, `k` marginals, a `k×k`
-                // transition matrix and buffered rows `d` long (review
-                // 2026-09-18, B3).
                 let (k, d) = (m.cfg.k, m.cfg.n_features);
-                if m.states.len() != k
+                let diagonal = matches!(m.cfg.covariance, Covariance::Diagonal);
+                // A `diag` state saved before schema 66 kept every state's
+                // whole co-moments, of which the shape read the diagonal
+                // alone: it loads as those diagonals, and goes on to the bit
+                // (`EwCovDiag`'s module says why).
+                if diagonal
+                    && s.schema_version < 66
+                    && m.diag_states.is_empty()
+                    && m.states.len() == k
+                    && m.states.iter().all(|s| s.has_shape(d) && !s.has_pending())
+                {
+                    m.diag_states = m.states.iter().map(EwCovDiag::of).collect();
+                    m.states.clear();
+                }
+                // `k` states at the cfg's width, in the shape's accumulator
+                // and none in the other, `k` marginals, a `k×k` transition
+                // matrix and buffered rows `d` long (review 2026-09-18, B3).
+                let (kept, other) = if diagonal {
+                    (m.diag_states.len(), m.states.len())
+                } else {
+                    (m.states.len(), m.diag_states.len())
+                };
+                if kept != k
+                    || other != 0
                     || m.states.iter().any(|s| !s.has_shape(d))
+                    || m.diag_states.iter().any(|s| !s.has_shape(d))
                     || m.p.len() != k
                     || m.a.len() != k * k
                     || m.buffer.iter().any(|(x, _)| x.len() != d)
@@ -1092,6 +1163,7 @@ impl crate::OnlineModel for Hmm {
                 }
                 // No window reads a run here (review 2026-09-26, C3 and C4).
                 m.states.iter_mut().for_each(EwCov::set_runs_off);
+                m.diag_states.iter_mut().for_each(EwCovDiag::set_runs_off);
                 Ok(m)
             }
             other => Err(crate::StateError::WrongModel {
@@ -1136,6 +1208,76 @@ mod tests {
     }
     use crate::{EwClass, EwClassCfg, OnlineModel};
 
+    /// A `diag` model keeps each state's variances alone and no matrix. A
+    /// `diag` state of schema 65, which kept whole matrices, loads as their
+    /// diagonals (the frozen fixtures hold the numbers it then goes on to);
+    /// the same layout at schema 66, one holding both lists, a short one,
+    /// or a whole shape holding diagonals, is refused (task 327).
+    #[test]
+    fn a_diagonal_state_keeps_its_variances_and_an_old_one_loads_as_them() {
+        use crate::{ModelState, StateError};
+        let diag = HmmCfg {
+            covariance: Covariance::Diagonal,
+            ..cfg(3, 2)
+        };
+        let mut m = Hmm::new(diag.clone()).unwrap();
+        for (x, _) in stream(60, 5, 7) {
+            let x = [x[0], x[1], x[0] - x[1]];
+            m.step(&x, &[], 1.0, 1.0);
+        }
+        assert!(m.seeded && m.states.is_empty() && m.diag_states.len() == 2);
+        assert!(
+            m.diag_states
+                .iter()
+                .all(|s| s.has_shape(3) && s.n_eff() > 0.0)
+        );
+        let whole: Vec<EwCov> = (0..2)
+            .map(|i| {
+                EwCov::from_moments(3, 1.5 + i as f64, &[0.5, 1.0, -1.0], &[2.0; 9], 1e-2)
+                    .unwrap()
+                    .without_runs()
+            })
+            .collect();
+        let old = |schema: u32, edit: &dyn Fn(&mut Hmm)| {
+            let mut s = m.state();
+            s.schema_version = schema;
+            let ModelState::Hmm(inner) = &mut s.model else {
+                unreachable!()
+            };
+            edit(inner);
+            Hmm::restore(&s)
+        };
+        let as_65 = |h: &mut Hmm| {
+            h.diag_states.clear();
+            h.states = whole.clone();
+        };
+        let back = old(65, &as_65).unwrap();
+        assert!(back.states.is_empty());
+        let want: Vec<EwCovDiag> = whole.iter().map(EwCovDiag::of).collect();
+        assert_eq!(back.diag_states, want);
+        type Edit<'a> = (u32, &'a dyn Fn(&mut Hmm));
+        let refused: [Edit; 4] = [
+            (66, &as_65),
+            (66, &|h| h.states = whole.clone()),
+            (66, &|h| {
+                h.diag_states.pop();
+            }),
+            (65, &|h| h.cfg.covariance = Covariance::Full),
+        ];
+        for (i, (schema, edit)) in refused.into_iter().enumerate() {
+            match old(schema, edit) {
+                Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{i}: {e}"),
+                other => panic!("{i}: {other:?}"),
+            }
+        }
+        // The whole shapes load as they were, with no diagonal list.
+        let full = Hmm::new(cfg(3, 2)).unwrap();
+        let mut s = full.state();
+        s.schema_version = 65;
+        let back = Hmm::restore(&s).unwrap();
+        assert!(back.diag_states.is_empty() && back.states.len() == 2);
+    }
+
     /// A row whose densities are all non-finite cannot be scored or learned,
     /// but it still happened: it must age `n_eff`, the counts and the states
     /// together, as a zero-weight row does -- not advance `n_eff` alone
@@ -1158,16 +1300,43 @@ mod tests {
         m.states[1].update(&[f64::NAN, f64::NAN], 1.0, 1.0);
         m.factors.clear();
         let n_eff_before = m.n_eff;
-        let sum_before: f64 = (0..2).map(|s| m.state_cov(s).n_eff()).sum();
+        let sum_before: f64 = (0..2).map(|s| m.n_eff_of(s)).sum();
         let fails = m.solve_failures;
         crate::OnlineModel::step(&mut m, &[0.5, 0.5], &[], 1.0, 1.0);
         assert_eq!(m.solve_failures, fails + 1, "the row did not fail to score");
         assert_eq!(m.n_eff, n_eff_before, "a failed row advanced n_eff alone");
-        let sum_after: f64 = (0..2).map(|s| m.state_cov(s).n_eff()).sum();
+        let sum_after: f64 = (0..2).map(|s| m.n_eff_of(s)).sum();
         assert_eq!(
             sum_after, sum_before,
             "a failed row moved the state weights"
         );
+    }
+
+    impl Hmm {
+        /// State `s`'s weight, in every shape.
+        fn n_eff_of(&self, s: usize) -> f64 {
+            match self.states.get(s) {
+                Some(c) => c.n_eff(),
+                None => self.diag_states[s].n_eff(),
+            }
+        }
+
+        /// State `s`'s means and its co-moments as kept: the whole matrix
+        /// under `full` and `tied`, the diagonal under `diag`.
+        fn moments_of(&self, s: usize) -> (Vec<f64>, Vec<f64>) {
+            match self.states.get(s) {
+                Some(c) => (c.means().to_vec(), c.comoments().to_full()),
+                None => {
+                    let c = &self.diag_states[s];
+                    (c.means().to_vec(), c.comoments().to_vec())
+                }
+            }
+        }
+
+        /// The states, in either accumulator.
+        fn n_states(&self) -> usize {
+            self.states.len() + self.diag_states.len()
+        }
     }
 
     fn lcg(state: &mut u64) -> f64 {
@@ -1285,7 +1454,7 @@ mod tests {
             m.step(x, &[], if i == 0 { 0.0 } else { 1.0 }, w);
         }
         assert!(m.seeded, "twenty rows seed the states");
-        let total: f64 = (0..2).map(|j| m.state_cov(j).n_eff()).sum();
+        let total: f64 = (0..2).map(|j| m.n_eff_of(j)).sum();
         assert!(
             (total - m.n_eff()).abs() <= 1e-12 * m.n_eff(),
             "{total} in the states, {} in n_eff",
@@ -1342,14 +1511,14 @@ mod tests {
         // so the only difference left is the softmax's own arithmetic; and
         // the two classes' prior scales are the same double.
         assert_eq!(cls.class_weights()[0], cls.class_weights()[1]);
-        let scale = cls.class_cov(0).precision_scale();
-        assert_eq!(scale, cls.class_cov(1).precision_scale());
+        let scale = cls.class_cov(0).unwrap().precision_scale();
+        assert_eq!(scale, cls.class_cov(1).unwrap().precision_scale());
         assert!((scale - 0.01).abs() < 1e-12, "100 rows a class: {scale}");
         let means: Vec<f64> = (0..2)
-            .flat_map(|c| cls.class_cov(c).means().to_vec())
+            .flat_map(|c| cls.class_cov(c).unwrap().means().to_vec())
             .collect();
         let covs: Vec<f64> = (0..2)
-            .flat_map(|c| cls.class_cov(c).comoments().to_full())
+            .flat_map(|c| cls.class_cov(c).unwrap().comoments().to_full())
             .collect();
         let build = |precision_prior: f64| {
             Hmm::new(HmmCfg {
@@ -1412,7 +1581,8 @@ mod tests {
             .unwrap();
             let got = m.log_densities(&x).unwrap();
             let base = -0.5 * d as f64 * std::f64::consts::TAU.ln();
-            let total: f64 = m.states.iter().map(EwCov::n_eff).sum();
+            assert_eq!(m.n_states(), k, "{covariance:?}");
+            let total: f64 = (0..k).map(|s| m.n_eff_of(s)).sum();
             let mut shared = vec![0.0; 4];
             for (s, state) in m.states.iter().enumerate() {
                 let pi = if total > 0.0 {
@@ -1426,18 +1596,23 @@ mod tests {
                 shared[0] += pi * m.ridge(s);
                 shared[3] += pi * m.ridge(s);
             }
-            for (s, state) in m.states.iter().enumerate() {
-                let dv = [state.deviation(0, x[0]), state.deviation(1, x[1])];
+            for (s, &got_s) in got.iter().enumerate() {
+                let dv = match (m.state_cov(s), m.state_diag(s)) {
+                    (Some(c), _) => [c.deviation(0, x[0]), c.deviation(1, x[1])],
+                    (_, Some(c)) => [c.deviation(0, x[0]), c.deviation(1, x[1])],
+                    _ => unreachable!(),
+                };
                 let r = m.ridge(s);
                 let want = match covariance {
                     Covariance::Diagonal => {
+                        let state = m.state_diag(s).unwrap();
                         let (v0, v1) = (state.var(0) + r, state.var(1) + r);
                         base - 0.5 * (v0.ln() + v1.ln())
                             - 0.5 * (dv[0] * dv[0] / v0 + dv[1] * dv[1] / v1)
                     }
                     Covariance::Shared => crate::oracle::gaussian_log_density(&shared, &dv),
                     Covariance::Full => {
-                        let mut mat = state.comoments().to_full();
+                        let mut mat = m.state_cov(s).unwrap().comoments().to_full();
                         mat[0] += r;
                         mat[3] += r;
                         crate::oracle::gaussian_log_density(&mat, &dv)
@@ -1453,6 +1628,7 @@ mod tests {
                 // equal to the bit; the result moved by 100u of itself fails it, 7.9 times).
                 let bound = match covariance {
                     Covariance::Diagonal => {
+                        let state = m.state_diag(s).unwrap();
                         let (v0, v1) = (state.var(0) + r, state.var(1) + r);
                         let lv = v0.ln().abs() + v1.ln().abs();
                         let qv = dv[0] * dv[0] / v0 + dv[1] * dv[1] / v1;
@@ -1467,7 +1643,7 @@ mod tests {
                             + crate::oracle::gaussian_log_density_error(&shared, &dv)
                     }
                     Covariance::Full => {
-                        let mut mat = state.comoments().to_full();
+                        let mut mat = m.state_cov(s).unwrap().comoments().to_full();
                         mat[0] += r;
                         mat[3] += r;
                         crate::oracle::cholesky_log_density_error(&mat, &dv)
@@ -1475,7 +1651,7 @@ mod tests {
                     }
                 };
                 crate::oracle::assert_within(
-                    got[s],
+                    got_s,
                     want,
                     bound,
                     format_args!("{covariance:?}, state {s}"),
@@ -1630,7 +1806,7 @@ mod tests {
         assert!(pi[0] > 0.9 && pi[3] > 0.9, "{pi:?}");
         assert!(pi[1] < 0.1 && pi[2] < 0.1, "{pi:?}");
         // And the states found the blobs.
-        let mut centres: Vec<f64> = (0..2).map(|s| m.state_cov(s).mean(0)).collect();
+        let mut centres: Vec<f64> = (0..2).map(|s| m.state_means(s)[0]).collect();
         centres.sort_by(|a, b| a.partial_cmp(b).unwrap());
         assert!(
             (centres[0] + 3.0).abs() < 0.3 && (centres[1] - 3.0).abs() < 0.3,
@@ -2490,8 +2666,8 @@ mod tests {
             m.step(&x, &[], 1.0, 1.0);
         }
         assert!(m.seeded);
-        assert_eq!(m.state_cov(0).n_eff(), 2.0);
-        assert_eq!(m.state_cov(1).n_eff(), 1.0);
+        assert_eq!(m.n_eff_of(0), 2.0);
+        assert_eq!(m.n_eff_of(1), 1.0);
     }
 
     /// A row of no weight, a row past the input bound -- a row of weight 0
@@ -2576,11 +2752,10 @@ mod tests {
                 assert_eq!(m.p, before.p, "{case}");
                 let aged: Vec<f64> = before.a.iter().map(|v| lam * v).collect();
                 assert_eq!(m.a, aged, "{case}");
+                assert_eq!(m.n_states(), 2, "{case}");
                 for s in 0..2 {
-                    let (now, was) = (m.state_cov(s), before.state_cov(s));
-                    assert_eq!(now.means(), was.means(), "{case}, state {s}");
-                    assert_eq!(now.comoments(), was.comoments(), "{case}, state {s}");
-                    assert_eq!(now.n_eff(), lam * was.n_eff(), "{case}, state {s}");
+                    assert_eq!(m.moments_of(s), before.moments_of(s), "{case}, state {s}");
+                    assert_eq!(m.n_eff_of(s), lam * before.n_eff_of(s), "{case}, state {s}");
                 }
                 for (row, _) in stream(20, 12, 40) {
                     let out = m.step(&row, &[], 1.0, 1.0);
