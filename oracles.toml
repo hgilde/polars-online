@@ -5610,32 +5610,46 @@ dataset = ""
 ideal = 0.0
 n = 50
 floor = 2e-11
+worst = 1.15269e-11
+p95 = 1.10991e-11
 
 [case."second_opinion_bocpd.bocpd_pruning.mode_misses"]
 ideal = 0.0
 n = 50
 tolerance = 0.0
+worst = 0.0
+p95 = 0.0
 
 [case."second_opinion_hmm.hmm_batch_limit.covs_over_tolerance"]
 ideal = 0.0
 n = 50
+worst = 0.946233
+p95 = 0.171748
 
 [case."second_opinion_hmm.hmm_batch_limit.means_over_tolerance"]
 ideal = 0.0
 n = 50
+worst = 0.186701
+p95 = 0.0532583
 
 [case."second_opinion_hmm.hmm_batch_limit.transitions_over_tolerance"]
 ideal = 0.0
 n = 50
+worst = 0.158499
+p95 = 0.106121
 
 [case."second_opinion_hmm.hmm_online_em.error_over_tolerance"]
 ideal = 0.0
-n = 200
+n = 400
 floor = 0.05
+worst = 0.0713456
+p95 = 0.0359382
 
 [case."second_opinion_seeding.seeding_kmeanspp.ks_over_critical"]
 ideal = 0.0
 n = 10
+worst = 0.800145
+p95 = 0.800145
 
 [group."truth_recovery.bocpd_tcpdbench_robust"]
 tests = [
@@ -5652,26 +5666,38 @@ dataset = "tcpd:nile,quality_control_1,quality_control_2,quality_control_3,run_l
 [case."truth_recovery.bocpd_tcpdbench_robust.nile_f1"]
 ideal = 1.0
 n = 1
+worst = 1.0
+p95 = 1.0
 
 [case."truth_recovery.bocpd_tcpdbench_robust.quality_control_1_f1"]
 ideal = 1.0
 n = 1
+worst = 0.8
+p95 = 0.8
 
 [case."truth_recovery.bocpd_tcpdbench_robust.quality_control_2_f1"]
 ideal = 1.0
 n = 1
+worst = 1.0
+p95 = 1.0
 
 [case."truth_recovery.bocpd_tcpdbench_robust.quality_control_3_f1"]
 ideal = 1.0
 n = 1
+worst = 1.0
+p95 = 1.0
 
 [case."truth_recovery.bocpd_tcpdbench_robust.run_log_f1"]
 ideal = 1.0
 n = 1
+worst = 1.0
+p95 = 1.0
 
 [case."truth_recovery.bocpd_tcpdbench_robust.well_log_f1"]
 ideal = 1.0
 n = 1
+worst = 0.881477
+p95 = 0.881477
 
 [group."second_opinion_grids.marglag_ccf"]
 tests = [
@@ -5683,10 +5709,14 @@ dataset = ""
 [case."second_opinion_grids.marglag_ccf.cross_xy"]
 ideal = 0.0
 n = 50
+worst = 0.00200516
+p95 = 0.00171786
 
 [case."second_opinion_grids.marglag_ccf.cross_yx"]
 ideal = 0.0
 n = 50
+worst = 0.00402839
+p95 = 0.00371578
 
 # --- raises
 
