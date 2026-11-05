@@ -93,7 +93,7 @@ jobs:
       # without AVX2, runs their fallback paths. tests/test_cpu_paths.py
       # fails when a module that does any of these is missing here.
       SDE_TESTS: >-
-        bocpd:: breaks:: calibration:: deco:: ewclass:: ewcov:: ewdiag:: ewridge::
+        bocpd:: breaks:: calibration:: corrchange:: deco:: ewclass:: ewcov:: ewdiag:: ewridge::
         gaps:: gramfit:: hmm:: holt:: huber_refit:: kalman:: lasso:: oracle:: pieces::
         rcov:: rls:: robust:: sandwich:: sgd:: solve:: specification::
       # A release build, ten or more times faster than the debug build CI

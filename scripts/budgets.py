@@ -417,7 +417,11 @@ def history(path: str = "budgets.toml", repo: Path = REPO) -> tuple[list[tuple[s
     and whether the clone is shallow -- a shallow clone holds only the
     commits it fetched, so its history may start part way."""
     shallow = _git(repo, "rev-parse", "--is-shallow-repository").strip() == "true"
-    shas = _git(repo, "log", "--reverse", "--format=%H", "--", path).split()
+    # Main's own versions, in its order: a branch's commits, which a merge
+    # brings in together, are read as the merge's one version, so a branch
+    # cut before main tightened a budget cannot read as raising it again
+    # (as `scripts/oracles.py` reads its ledger).
+    shas = _git(repo, "log", "--first-parent", "--reverse", "--format=%H", "--", path).split()
     return [(sha, _git(repo, "show", f"{sha}:{path}")) for sha in shas], shallow
 
 
