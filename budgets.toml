@@ -334,6 +334,12 @@ growth = "1"
 small = 250
 large = 2000
 
+[scaling.cells."bank.groups_seen_per_call"]
+what = "Bank::fit_predict in calls of 4 rows, each to one of 50 groups, after a warm-up over 1,000 groups, then over 8,000: what a call costs beyond its rows -- finding its groups' streams, taking their notices -- must not grow with the groups behind it"
+growth = "1"
+small = 1000
+large = 8000
+
 [scaling.cells."bank.history"]
 what = "Bank::fit_predict of 1,000 rows of ewridge after 1,000 rows, then after 8,000"
 growth = "1"

@@ -15,7 +15,7 @@ use polars_arrow::array::{
 use polars_arrow::bitmap::MutableBitmap;
 use polars_arrow::datatypes::{ArrowDataType, Field as ArrowField};
 use polars_arrow::offset::OffsetsBuffer;
-use polars_utils::aliases::PlHashMap;
+use polars_utils::aliases::{PlHashMap, PlIndexMap};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -1677,9 +1677,62 @@ impl RefitsBefore {
     }
 }
 
-fn forget(states: &mut [HashMap<GroupKey, Stream>], fresh: &[(usize, GroupKey)]) {
+fn forget(states: &mut [Streams], fresh: &[(usize, GroupKey)]) {
     for (si, key) in fresh {
-        states[*si].remove(key);
+        states[*si].swap_remove(key);
+    }
+}
+
+/// One spec's streams, by group. An index map, so that a call can borrow
+/// the streams of its chunk's groups at once by their places in it
+/// ([`chunk_streams`]) and walk nothing else: the order of its entries is
+/// never read, every reader sorting the keys.
+type Streams = PlIndexMap<GroupKey, Stream>;
+
+/// The streams of `groups` -- one chunk's groups of one spec, each in the
+/// map -- borrowed at once, in `groups`' order: each found by its place in
+/// the map, and the map's entries split at those places in ascending
+/// order, so the work is the chunk's groups' and not the map's (task 332:
+/// a map of every stream, built to take a call's few out of it, cost a call
+/// of four rows 44 million instructions at 100,000 groups seen). One
+/// allocation, as that map was.
+fn chunk_streams<'a>(
+    map: &'a mut Streams,
+    groups: &[(GroupKey, Vec<usize>)],
+) -> impl Iterator<Item = &'a mut Stream> {
+    // (place in the map, place in the chunk, the stream once found)
+    let mut found: Vec<(usize, usize, Option<&'a mut Stream>)> = groups
+        .iter()
+        .enumerate()
+        .map(|(c, (key, _))| {
+            let at = map.get_index_of(key).expect("stream materialized above");
+            (at, c, None)
+        })
+        .collect();
+    found.sort_unstable_by_key(|f| f.0);
+    let mut rest = map.as_mut_slice();
+    let mut from = 0;
+    for f in &mut found {
+        // A chunk's groups are distinct keys, so their places are too, and
+        // each lies at or past `from`.
+        let (_, tail) = std::mem::take(&mut rest).split_at_mut(f.0 - from);
+        let ((_, stream), tail) = tail.split_first_mut().expect("a place in the map");
+        f.2 = Some(stream);
+        rest = tail;
+        from = f.0 + 1;
+    }
+    found.sort_unstable_by_key(|f| f.1);
+    found.into_iter().map(|f| f.2.expect("every group found"))
+}
+
+/// A stream's notices, taken and named by its spec and group.
+fn say_notices(notices: &mut Vec<String>, spec: &str, key: &GroupKey, stream: &mut Stream) {
+    for body in stream.take_notices() {
+        let group = key
+            .0
+            .as_deref()
+            .map_or(String::new(), |g| format!(" group {g:?}"));
+        notices.push(format!("spec {spec:?}{group}: {body}"));
     }
 }
 
@@ -2849,7 +2902,7 @@ pub struct Bank {
     specs: Vec<Spec>,
     clock_cfgs: Vec<ClockCfg>,
     derived: Vec<SpecDerived>,
-    states: Vec<HashMap<GroupKey, Stream>>,
+    states: Vec<Streams>,
     /// Per spec, the clock column's type as first seen (task 152).
     clock_dtypes: Vec<Option<crate::stream::ClockDtype>>,
     /// Rows fed so far. Kept at the bank level because a stream's `rows_seen`
@@ -2902,6 +2955,11 @@ pub struct Bank {
     /// Readiness notices raised and not yet taken
     /// ([`Self::take_notices`]); not state.
     notices: Vec<String>,
+    /// Whether a call learned rows and then returned an error before it
+    /// took its streams' notices (an output it could not assemble), so that
+    /// streams outside the next call's chunk may hold some: the next call
+    /// that completes takes every stream's, not only its chunk's. Not state.
+    notices_left: bool,
     /// Run buffers kept from earlier chunks for small runs to fill again
     /// (task 270, G-1); not state.
     spares: Spares,
@@ -3084,7 +3142,7 @@ impl Bank {
                 Ok(d)
             })
             .collect::<Result<Vec<_>, String>>()?;
-        let states = specs.iter().map(|_| HashMap::new()).collect();
+        let states = specs.iter().map(|_| Streams::default()).collect();
         let high_water = specs.iter().map(|_| None).collect();
         let key_dtypes = vec![[None, None]; specs.len()];
         let clock_dtypes = vec![None; specs.len()];
@@ -3145,6 +3203,7 @@ impl Bank {
             window_prepass: true,
             threads: crate::pool::Threads::default(),
             notices,
+            notices_left: false,
             spares: Spares::default(),
             refit_reserved: vec![0.0; n_specs],
             refit_noticed: vec![false; n_specs],
@@ -3229,7 +3288,7 @@ impl Bank {
 
     /// The number of groups each spec holds state for.
     pub fn group_counts(&self) -> Vec<usize> {
-        self.states.iter().map(HashMap::len).collect()
+        self.states.iter().map(Streams::len).collect()
     }
 
     /// Per spec, every group's last clock -- the value its stream last
@@ -3307,7 +3366,7 @@ impl Bank {
                 continue;
             }
             for key in keys {
-                dropped += usize::from(hm.remove(key).is_some());
+                dropped += usize::from(hm.swap_remove(key).is_some());
                 // The group's window core goes with its stream, so a group
                 // that appears again starts cold there too (review R1, D1:
                 // a stale core refused the new rows, or held the old ones).
@@ -3802,7 +3861,9 @@ impl Bank {
     /// the way out. Learning raises them; scoring never does. And once per
     /// bank, from its construction, each diagnostic of a clocked spec with
     /// an `embargo` and no `horizon_rows` that has no horizon to read (task
-    /// 232 (3)).
+    /// 232 (3)). The notices a call's streams raise come by spec, then in
+    /// the order the groups' rows first arrive in its chunk, then by model
+    /// instance.
     pub fn take_notices(&mut self) -> Vec<String> {
         std::mem::take(&mut self.notices)
     }
@@ -4129,14 +4190,13 @@ impl Bank {
         let derived = &self.derived;
         let cfgs = &self.clock_cfgs;
         // Each task owns a disjoint `&mut Stream`, so the borrow checker needs
-        // them pulled out of the maps up front. `base` is where the group's
-        // run starts in the laid-out columns.
+        // them pulled out of the maps up front: the chunk's groups' alone,
+        // whatever the groups seen. `base` is where the group's run starts in
+        // the laid-out columns.
         let mut work: Vec<(usize, &GroupKey, &Vec<usize>, usize, &mut Stream)> = Vec::new();
         for (si, hm) in self.states.iter_mut().enumerate() {
-            let mut taken: HashMap<&GroupKey, &mut Stream> = hm.iter_mut().collect();
             let mut base = 0;
-            for (key, idx) in &groups[si] {
-                let stream = taken.remove(key).expect("stream materialized above");
+            for ((key, idx), stream) in groups[si].iter().zip(chunk_streams(hm, &groups[si])) {
                 work.push((si, key, idx, base, stream));
                 base += idx.len();
             }
@@ -4345,6 +4405,10 @@ impl Bank {
         let mut per_spec_rows: Vec<Vec<Box<ChunkOut>>> =
             (0..specs.len()).map(|_| Vec::new()).collect();
         let mut closed: Vec<ClosedRow> = Vec::new();
+        // From here the streams learn, and raise their notices as they do:
+        // a return before the end leaves them in the streams
+        // (`notices_left`).
+        let notices_left = std::mem::replace(&mut self.notices_left, true);
         let sinks1 = sinks(work1.iter().map(|w| w.0), specs, derived, n, clock_dtypes);
         let (rows1, closed1, filled1, left1) = process(
             work1,
@@ -4375,6 +4439,12 @@ impl Bank {
                     return Err(e);
                 }
             }
+        }
+        // A return here leaves the notices the rows raised in their streams,
+        // as an output that cannot be assembled below would.
+        #[cfg(test)]
+        if notices_tests::fail_after_learning(specs) {
+            return Err(polars_err!(ComputeError: "a failure after learning, for a test"));
         }
         let mut t_process = t2.elapsed();
         let t3 = std::time::Instant::now();
@@ -4482,7 +4552,9 @@ impl Bank {
                     key_cmp(k, &key, integer) != std::cmp::Ordering::Greater
                 });
                 let at = starts.get(at).map_or(0, |(_, r)| *r);
-                let stream = self.states[si].remove(&key).expect("key came from the map");
+                let stream = self.states[si]
+                    .swap_remove(&key)
+                    .expect("key came from the map");
                 closed.extend(close_rows(si, &self.specs[si], &key, &stream, at));
             }
             self.high_water[si] = Some(max_key);
@@ -4491,19 +4563,27 @@ impl Bank {
         // The readiness notices the chunk raised (docs/WARMUP-AND-CONVERGENCE.md
         // §3), each once per (spec, group, instance), named by both, for
         // the caller to surface as it sees fit -- a warning in Python, a
-        // line on stderr from the runner.
+        // line on stderr from the runner. A stream raises them only as it
+        // learns, and every call that completes takes them, so only the
+        // chunk's groups can hold any (task 332), taken by spec and then in
+        // the order their rows first arrive; a group closed in the call is
+        // gone from the map, as it was from the walk of every stream before.
+        // After a call that learned and returned early, every stream's.
         for (si, hm) in self.states.iter_mut().enumerate() {
-            for (key, stream) in hm.iter_mut() {
-                for body in stream.take_notices() {
-                    let group = key
-                        .0
-                        .as_deref()
-                        .map_or(String::new(), |g| format!(" group {g:?}"));
-                    self.notices
-                        .push(format!("spec {:?}{group}: {body}", self.specs[si].name));
+            let name = &self.specs[si].name;
+            if notices_left {
+                for (key, stream) in hm.iter_mut() {
+                    say_notices(&mut self.notices, name, key, stream);
+                }
+            } else {
+                for (key, _) in &groups[si] {
+                    if let Some(stream) = hm.get_mut(key) {
+                        say_notices(&mut self.notices, name, key, stream);
+                    }
                 }
             }
         }
+        self.notices_left = false;
 
         if timing {
             let total = t0.elapsed();
@@ -5221,3 +5301,6 @@ mod damaged_file_tests;
 
 #[cfg(test)]
 mod threads_tests;
+
+#[cfg(test)]
+mod notices_tests;
