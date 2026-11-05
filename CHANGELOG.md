@@ -134,6 +134,16 @@ returns.
   2,500 rows: 6.6 / 5.0 / 5.6 µs a row at 4 features, against 12.5 / 72.0 /
   296.9 before; 27.8 / 28.0 / 29.2 µs at 20 features, against 61.5 / 494.0 /
   1,598.3. Its heap is about 1.8 times the old ring's (task 328).
+- `ModelBank.fit_predict` no longer walks every group a spec has seen on
+  every call. It built a map of every group's state to take the chunk's out
+  of it, and took every group's readiness notices, so a call's fixed cost
+  grew with the groups behind it: a call of four rows to one group took
+  50 µs, 306 µs and 16.7 ms at 1,000, 10,000 and 100,000 groups seen. A call
+  now reaches its own groups' states by key and takes only their notices:
+  22-23 µs at all three sizes, with the same allocations (arm64). Outputs
+  and saved states are unchanged. A call's readiness notices now come by
+  spec and then in the order their groups' rows first arrive in the chunk,
+  where they followed a hash map's order (task 332).
 - The command line's runner adds a chunk's output columns in one pass, where
   it added them one spec at a time and each addition copied the columns
   before it: a call with 128 specs made about 24,770 allocations to join its
