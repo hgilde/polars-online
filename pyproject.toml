@@ -196,6 +196,11 @@ dev = [
     # scipy's BLAS) and seaborn; it installs and runs on the locked numpy.
     # The floor is the version measured.
     "hfhd>=0.1.4",
+    # tests/test_rcov.py: hfhd's `krvm` takes its kernel as a numba-compiled
+    # function, so the test compiles BNHLS's `k(h/(H+1))` weights for it with
+    # `numba.njit`. hfhd already pulls numba in; it is named here because the
+    # test imports it. BSD-2-Clause. The floor is the version measured.
+    "numba>=0.68.1",
 ]
 # The API reference: Sphinx over the docstrings, which are written in its
 # dialect (``:class:`` roles, ``::`` literal blocks). Its own group, so a

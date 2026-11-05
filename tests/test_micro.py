@@ -393,6 +393,86 @@ class TestDefinitions:
             prev = now
         assert all(v > 20 for v in seen.values()), seen
 
+    @pytest.mark.extended(reason="a second or more: the state read after every row (1.2 s each)")
+    @pytest.mark.parametrize("half_life", [200.0, math.inf])
+    def test_at_the_cap_a_new_summary_evicts_the_lightest_outlier_then_potential(self, half_life):
+        """``max_clusters`` (task 320, rank 9): a row that opens a summary
+        while ``max_clusters`` are live first drops the lightest outlier
+        summary, or, with none, the lightest potential one (the first of a
+        tie in the summaries' order), by their weights decayed to the row.
+        Held from the module doc's rule, read against the state before and
+        after every row, with the checkpoints off so that only the cap
+        removes a summary. No library implements this cap: DenStream bounds
+        nothing (river's ``DenStream`` keeps every summary until it fades),
+        and CluStream's ``max_micro_clusters`` (river's ``CluStream``)
+        merges the closest pair or deletes the stalest by its relevance
+        stamp, a different rule. So the definition is the oracle. Six far
+        blobs, a twentieth of the rows uniform noise, room for five: both kinds
+        of eviction occur many times, and each live summary is still the
+        rows ``micro_id`` sent it. Without decay every lone row's summary
+        weighs 1, so the cap meets ties (four times on this stream) and the
+        first in order must go."""
+        rng = np.random.default_rng(31)
+        n, cap = 3000, 5
+        lab = rng.integers(0, 6, n)
+        X = np.array([[10.0 * j, 5.0 * (j % 2)] for j in range(6)])[lab]
+        X = X + 0.2 * rng.standard_normal((n, 2))
+        noise = rng.random(n) < 1 / 20
+        X[noise] = rng.uniform(-5.0, 55.0, (noise.sum(), 2))
+        s = spec(
+            eps=0.3,
+            half_life=half_life,
+            min_weight=0.0,
+            beta_mu=3.0,
+            standardize=False,
+            max_clusters=cap,
+            prune_every=1e12,
+            max_rows_between_prunes=2**32 - 1,
+        )
+        df = frame(X)
+        bank = po.ModelBank([s])
+        lam = 0.5 ** (1.0 / half_life)
+        prev = None
+        took: dict[int, list[int]] = {}
+        seen = dict.fromkeys(("outlier evicted", "potential evicted", "below the cap"), 0)
+        ties = 0
+        for i in range(df.height):
+            out = unnested(bank.fit_predict(df.slice(i, 1)))
+            now = self.state(bank)
+            micro_id = out["micro_id"][0]
+            took.setdefault(micro_id, []).append(i)
+            assert len(now["mc"]) <= cap, i
+            if prev is not None:
+                before = [m["id"] for m in prev["mc"]]
+                after = [m["id"] for m in now["mc"]]
+                if micro_id != prev["next_id"]:
+                    assert after == before, i  # nothing opened, nothing dropped
+                elif len(before) < cap:
+                    assert after == [*before, micro_id], i
+                    seen["below the cap"] += 1
+                else:
+                    outliers = [m for m in prev["mc"] if not m["potential"]]
+                    kind = "outlier" if outliers else "potential"
+                    pool = outliers or prev["mc"]
+                    weights = [float(m["s"]["n"]) * lam for m in pool]
+                    gone = pool[int(np.argmin(weights))]["id"]
+                    ties += weights.count(min(weights)) > 1
+                    assert after == [b for b in before if b != gone] + [micro_id], (i, kind)
+                    seen[f"{kind} evicted"] += 1
+            for m in now["mc"]:
+                idx = np.array(took[m["id"]])
+                wt = lam ** (i - idx)
+                c = (wt[:, None] * X[idx]).sum(axis=0) / wt.sum()
+                assert float(m["s"]["n"]) == pytest.approx(wt.sum(), rel=1e-12), (i, m["id"])
+                np.testing.assert_allclose(m["s"]["c"], c, rtol=1e-12, atol=1e-12)
+            prev = now
+        print(seen, ties)
+        if half_life == math.inf:
+            assert ties > 0, ties
+        assert seen["below the cap"] == cap - 1, seen  # the first row opens one too
+        assert min(seen["outlier evicted"], seen["potential evicted"]) > 50, seen
+        assert self.state(bank)["n_evicted"] == seen["outlier evicted"] + seen["potential evicted"]
+
     def test_standardized_every_row_goes_where_numpy_s_metric_says(self):
         """The default, ``standardize=True``, with the second feature in
         units fifty times the first's: the admission rule above with every

@@ -17,6 +17,7 @@ import json
 import numpy as np
 import polars as pl
 import pytest
+from scipy.stats import multivariate_normal
 
 import polars_online as po
 
@@ -183,8 +184,8 @@ def test_the_linear_dynamics_targets_the_ew_level():
 
 
 def dense_loglik(r, rho, blocks):
-    """`-0.5 * (n ln 2pi + ln det R + r'R^-1 r)` on the dense matrix, and how
-    far rounding can move it.
+    """`-0.5 * (n ln 2pi + ln det R + r'R^-1 r)` on the dense matrix, scipy's
+    ``multivariate_normal.logpdf``, and how far rounding can move it.
 
     The bound (task 273): LAPACK's `slogdet` and `solve` are backward
     stable, so each of `ln det R` and `r'R^-1 r` carries a few `n 2^-53`
@@ -221,7 +222,10 @@ def dense_loglik(r, rho, blocks):
     assert sign > 0
     q = r @ np.linalg.solve(m, r)
     scale = 0.5 * (n * np.log(2 * np.pi) + abs(logdet) + abs(q))
-    return -0.5 * (n * np.log(2 * np.pi) + logdet + q), 64 * 2.0**-53 * np.linalg.cond(m) * scale
+    # The density itself is scipy's (task 320), from its own eigendecomposition
+    # of `R`; `slogdet` and `solve` above only size the bound.
+    want = float(multivariate_normal(mean=np.zeros(n), cov=m).logpdf(r))
+    return want, 64 * 2.0**-53 * np.linalg.cond(m) * scale
 
 
 def past_the_edge(rho, sizes):

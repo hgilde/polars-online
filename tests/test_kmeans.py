@@ -876,6 +876,172 @@ class TestDefinitions:
         assert ari(lost[scored], km.labels_[scored]) < 0.9
 
 
+class TestScaleFloorDefinition:
+    """``scale_floor`` from its definition (task 320, rank 2): the metric is
+    ``1 / max(v, scale_floor · v_long)``, where ``v_long`` is each feature's
+    long-run variance -- the same weighted moments at eight times the
+    half-life, started from the medians of the feature's first five learned
+    rows (the values' median, the median squared deviation from it, and for
+    its weight five times the median weight). No library keeps such a
+    reference, so its pieces come from numpy: ``np.median`` for the start,
+    and for every later row the biased weighted moments
+    (``np.average``) over the start, as a pseudo-sample of two points at
+    ``m₀ ± √v₀`` sharing its weight, and the rows after it, each at its
+    weight decayed on the clock at eight half-lives. The reference also
+    clips a row's weight at its own and a squared deviation at a hundred
+    times its variance; this stream reaches neither clip (checked row by
+    row from the oracle), so what is held is the moments and the floor.
+    The distances are then :meth:`TestDefinitions.by_definition`'s in that
+    floored metric."""
+
+    LONG_HALFLIVES, START_ROWS, CLIP = 8.0, 5, 100.0
+
+    @staticmethod
+    def stream():
+        """`TestDefinitions.stream` at 1,500 rows, the second feature in
+        units fifty times the first's and held still on rows 500-1199,
+        about twelve half-lives."""
+        X, t, w = TestDefinitions.stream(n=1500, seed=23)
+        X = X * np.array([1.0, 50.0])
+        X[500:1200, 1] = X[500, 1]
+        return X, t, w
+
+    @classmethod
+    def by_numpy(cls, X, t, w, half_life, scale_floor):
+        """Per row ``i``: the variance ``v`` and the reference ``v_long``
+        each feature has over the rows learned before ``i`` (nan before
+        there are any), and the metric ``1/max(v, scale_floor · v_long)``
+        it reads row ``i`` in (1 where that is not positive). Asserts that
+        no learned row after the start reaches either clip."""
+        n, p = X.shape
+        learned = np.flatnonzero(w > 0.0)
+        s = cls.START_ROWS
+        start = learned[:s]
+        m0 = np.median(X[start], axis=0)
+        v0 = np.median((X[start] - m0) ** 2, axis=0)
+        w0 = s * np.median(w[start])
+        long_hl = cls.LONG_HALFLIVES * half_life
+        v = np.full((n, p), np.nan)
+        v_long = np.full((n, p), np.nan)
+        metric = np.ones((n, p))
+        after = learned[s:]
+        for i in range(1, n):
+            idx = learned[learned < i]
+            if idx.size >= 2:
+                aw = w[idx] * _decay(t[i - 1] - t[idx], half_life)
+                mu = np.average(X[idx], axis=0, weights=aw)
+                v[i] = np.average((X[idx] - mu) ** 2, axis=0, weights=aw)
+            if start[-1] < i:
+                rows = after[after < i]
+                pts = np.vstack([m0 - np.sqrt(v0), m0 + np.sqrt(v0), X[rows]])
+                at = np.concatenate([[t[start[-1]]] * 2, t[rows]])
+                aw = np.concatenate([[w0 / 2, w0 / 2], w[rows]]) * _decay(t[i - 1] - at, long_hl)
+                mu_l = np.average(pts, axis=0, weights=aw)
+                v_long[i] = np.average((pts - mu_l) ** 2, axis=0, weights=aw)
+                if i in after:
+                    # Row i's step: its weight against the reference's
+                    # weight decayed to it, its squared deviation against
+                    # a hundred times the reference's variance.
+                    assert w[i] <= aw.sum() * _decay(t[i] - t[i - 1], long_hl), i
+                    assert np.all((X[i] - mu_l) ** 2 <= cls.CLIP * v_long[i]), i
+            if idx.size >= 2:
+                floored = np.maximum(v[i], np.nan_to_num(scale_floor * v_long[i]))
+                metric[i] = np.where(
+                    floored > 0.0, 1.0 / np.where(floored > 0.0, floored, 1.0), 1.0
+                )
+        return v, v_long, metric
+
+    def test_the_floored_metric_and_the_distances_are_the_definition(self):
+        """Measured 2026-11-04: the state's ``var``, ``var_long`` and metric
+        within 5.1e-15 of numpy's, relative, at every checkpoint, and the
+        distances within 3.1e-14; held at 1e-13 and 1e-12 (running
+        compensated means against batch means, through ``exp2`` in the bank
+        and ``pow`` here, over an irregular clock). The floor binds on a third of the rows, all
+        in the quiet spell, and moves the distances there: without it the
+        quiet feature's weight grows 2^Q over Q half-lives."""
+        X, t, w = self.stream()
+        k, half_life, scale_floor = 3, 60.0, 0.1
+        params = dict(
+            k=k,
+            half_life=half_life,
+            min_weight=0.0,
+            warm_rows=k,
+            init="first",
+            split_merge=0.0,
+            update_every_rows=1,
+            clock="t",
+            gap_cap=1e9,
+            weight="w",
+            coef_every=0,
+            scale_floor=scale_floor,
+        )
+        s = spec(**params)
+        df = frame(X, t=t, w=w)
+        v, v_long, metric = self.by_numpy(X, t, w, half_life, scale_floor)
+        binds = scale_floor * v_long > v
+        rows_bound = np.flatnonzero(binds.any(axis=1))
+        print(f"the floor binds on {rows_bound.size} of {len(X)} rows")
+        assert rows_bound.size > len(X) // 4
+        assert rows_bound.min() >= 500 and rows_bound.max() < 1200 + 100
+        # The state, read after every 23rd row: the reference and the metric
+        # it holds for the next row.
+        bank = po.ModelBank([s])
+        compared = 0
+        for a in range(0, df.height, 23):
+            bank.fit_predict(df.slice(a, 23))
+            nxt = min(a + 23, df.height)
+            if nxt >= df.height or nxt <= self.START_ROWS + 3:
+                continue
+            state = _state(bank)
+            np.testing.assert_allclose(state["moments"]["var_long"], v_long[nxt], rtol=1e-13)
+            np.testing.assert_allclose(state["moments"]["var"], v[nxt], rtol=1e-13)
+            np.testing.assert_allclose(state["mw"], metric[nxt], rtol=1e-13)
+            compared += 1
+        assert compared > 50
+        # The assignment and the distances in the floored metric.
+        scored, _, _ = TestDefinitions.by_definition(X, t, w, k, half_life, 1, metric)
+        out = unnested(po.ModelBank([s]).fit_predict(df))
+        for i, (j, d1, d2) in scored.items():
+            assert out["cluster"][i] == j, i
+            assert math.isclose(out["dist"][i], d1, rel_tol=1e-12), i
+            assert math.isclose(out["dist_second"][i], d2, rel_tol=1e-12), i
+        unfloored = unnested(po.ModelBank([spec(**{**params, "scale_floor": 0.0})]).fit_predict(df))
+        moved = (unfloored["dist"] != out["dist"]).to_numpy()
+        assert moved[rows_bound].mean() > 0.9 and not moved[:500].any()
+
+    def test_micro_holds_the_same_floored_metric(self):
+        """`micro` keeps the same moments and floor: its state's ``var_long``
+        and metric are numpy's at every checkpoint, to the same 1e-13."""
+        X, t, w = self.stream()
+        half_life, scale_floor = 60.0, 0.1
+        s = po.spec.micro(
+            "m",
+            features=["x0", "x1"],
+            eps=0.5,
+            half_life=half_life,
+            clock="t",
+            gap_cap=1e9,
+            weight="w",
+            scale_floor=scale_floor,
+        )
+        df = frame(X, t=t, w=w)
+        v, v_long, metric = self.by_numpy(X, t, w, half_life, scale_floor)
+        bank = po.ModelBank([s])
+        compared = 0
+        for a in range(0, df.height, 23):
+            bank.fit_predict(df.slice(a, 23))
+            nxt = min(a + 23, df.height)
+            if nxt >= df.height or nxt <= self.START_ROWS + 3:
+                continue
+            model = json.loads(bank.write_json())["states"][0][0][1]["models"][0]["model"]
+            state = model["Micro"]
+            np.testing.assert_allclose(state["moments"]["var_long"], v_long[nxt], rtol=1e-13)
+            np.testing.assert_allclose(state["mw"], metric[nxt], rtol=1e-13)
+            compared += 1
+        assert compared > 50
+        assert (scale_floor * v_long > v).any(axis=1).sum() > len(X) // 4
+
+
 def stranded(seed, n=20_000, sd=0.6, radius=6.0, born=(9.0, 9.0)):
     """Four blobs on a circle; from n/2 on, blob 3 is replaced by a fifth
     blob at `born`, far from every centre. Labels are the generating blob."""

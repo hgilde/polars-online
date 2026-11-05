@@ -354,6 +354,41 @@ def test_polars_computes_the_same_mean_and_sum() -> None:
         assert INSTALLED < (1, 43, 0), "ewm_sum_by arrived in 1.43.0"
 
 
+def test_the_rate_is_polars_sum_over_scipys_integral_of_the_decay() -> None:
+    """Task 320 (§3b): ``ewm_rate`` over the stretch is Polars'
+    ``ewm_sum_by`` over the decayed time the stretch covers, that time
+    ``∫₀ᵀ 2^(−s/h) ds`` with ``T`` the row's time since the stretch's first
+    row, integrated by scipy's ``quad`` rather than read from the closed
+    form ``h/ln 2·(1 − 2^(−T/h))``. On distinct stamps with no nulls, where
+    Polars and this library read the same rows. Measured 2026-11-04: 2.3e-13
+    relative at most, all of it the two sums' (Polars' recursion against
+    this library's compensated one)."""
+    from scipy.integrate import quad
+
+    h = 2.5
+    df = (
+        ticks(400, 13, repeats=False)
+        .with_columns(pl.col("x").fill_null(1.0))
+        .with_columns(ts=pl.from_epoch((pl.col("t") * 1e9).cast(pl.Int64), time_unit="ns"))
+    )
+    out = po.stream.with_windows(
+        df, r=po.ewm_rate("x", half_life="2s500ms"), clock="ts", gap_cap="1000s"
+    )
+    if not hasattr(pl.Expr, "ewm_sum_by"):
+        assert INSTALLED < (1, 43, 0), "ewm_sum_by arrived in 1.43.0"
+        return
+    num = df.select(pl.col("x").ewm_sum_by("ts", half_life="2s500ms"))["x"].to_numpy()
+    ns = df["ts"].dt.epoch("ns").to_numpy()
+    tau = (ns - ns[0]) / 1e9  # the stamps as the clock reads them, to the ns
+    got = out["r"].to_numpy().astype(float)
+    worst = 0.0
+    for i in range(1, df.height):
+        span, _ = quad(lambda s: 2.0 ** (-s / h), 0.0, tau[i], epsabs=0.0, epsrel=1e-13)
+        worst = max(worst, abs(got[i] * span / num[i] - 1.0))
+    print(f"worst {worst:.1e}")
+    assert worst <= 2e-12, worst
+
+
 @pytest.mark.parametrize(
     "closed",
     [

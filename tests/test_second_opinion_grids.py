@@ -12,6 +12,9 @@ The single-seed tests stay where they are, the cheap check in the gate.
   ``acf``, the truncated and Bartlett serial factors' pairs and a window's
   rows (three tests of ``tests/test_second_opinion.py``, 0.02), and the
   window's against its definition written out;
+- ``marglag_ccf``: ``marginal``'s cross-lag correlations against
+  statsmodels' ``ccf``, both orientations, on a target that follows its
+  feature;
 - ``kalman_share_p_se``: ``share_p``'s ``se_coef`` against each target's
   own filterpy ``KalmanFilter`` (a ratio within 0.05 and 0.15 of 1);
 - ``ewridge_robust_se``: ``ewridge``'s HC0 and HAC run once against
@@ -191,6 +194,75 @@ def test_windowed_lag_corr_is_its_definition_and_near_acf_over_fifty_seeds():
     print(f"windowed: definition {max(own):.2g}, acf {max(against_acf):.4f}")
     assert max(own) <= 1e-12, (max(own), int(np.argmax(own)))
     assert max(against_acf) <= 0.01, (max(against_acf), int(np.argmax(against_acf)))
+
+
+def cross_pair(seed: int) -> pl.DataFrame:
+    """``x`` AR(1) at 0.8 and ``y = 0.6·x_{t−2} + u``, ``u`` AR(1) at 0.5,
+    5,000 rows: a target that follows its feature two rows later, so the
+    cross-correlations in both orientations are far from 0."""
+    rng = np.random.default_rng(seed)
+    x = ar1(rng, 0.8, 5002)
+    y = 0.6 * x[:-2] + ar1(rng, 0.5, 5000)
+    return pl.DataFrame({"x": x[2:], "y": y})
+
+
+CROSS_SPEC = po.spec.marginal(
+    "m",
+    targets=["y"],
+    features=["x"],
+    lags=[1, 2, 3, 4],
+    cross_lags=[1, 2, 4],
+    half_life=float("inf"),
+)
+
+
+def cross_row(frame: pl.DataFrame) -> dict:
+    bank = po.ModelBank([CROSS_SPEC])
+    bank.fit_predict(frame)
+    return bank.marginal("m").row(0, named=True)
+
+
+ledger.guard(
+    "marglag_ccf",
+    lambda: [cross_row(cross_pair(s)) for s in GUARD_SEEDS],
+    oracles=["statsmodels"],
+)
+
+#: ``cross_lags``' correlations against ``ccf``, the worst lag per seed.
+#: Measured 2026-11-04 over seeds 0-49: at most 0.0020 (``xy``) and
+#: 0.0040 (``yx``); the bound is twice the worse.
+CCF_BOUND = 0.008
+
+
+def test_cross_lag_corr_is_ccf_over_fifty_seeds():
+    """``marginal(cross_lags=)`` (task 320, rank 14): ``lag_corr_xy[ℓ]``,
+    the feature now against the target ``ℓ`` rows back, is statsmodels'
+    ``ccf(x, y, adjusted=False)[ℓ]`` (``corr(x_{t+ℓ}, y_t)``), and
+    ``lag_corr_yx[ℓ]`` is ``ccf(y, x)[ℓ]``, at the cross lags named. Not
+    to rounding: ``ccf`` centres every product at the series' final means,
+    where the running recursion centres each row's product at the means
+    as they stood before it, the same gap ``acf`` leaves the autocorrelations
+    above. A cross lag left out of ``cross_lags`` (3) is not reported."""
+    errors: dict[str, list[float]] = {"xy": [], "yx": []}
+    cross = [1, 2, 4]
+    for seed in SEEDS:
+        frame = cross_pair(seed)
+        row = cross_row(frame)
+        x, y = frame["x"].to_numpy(), frame["y"].to_numpy()
+        for leg, (a, b) in (("xy", (x, y)), ("yx", (y, x))):
+            got = np.asarray(row[f"lag_corr_{leg}"])
+            assert got.shape == (len(cross),)
+            want = stattools.ccf(a, b, adjusted=False, nlags=5, fft=False)[cross]
+            errors[leg].append(float(np.max(np.abs(got - want))))
+        if seed == 0:
+            # The design: the target follows the feature by two rows, so
+            # the target now against the feature two back reads highest
+            # (0.64), and the other orientation lower (0.25).
+            assert row["lag_corr_yx"][1] > row["lag_corr_xy"][1] + 0.3
+    for leg, values in errors.items():
+        ledger.record("marglag_ccf", f"cross_{leg}", values)
+        print(f"cross {leg}: worst {max(values):.4f}")
+        assert max(values) <= CCF_BOUND, (leg, max(values), int(np.argmax(values)))
 
 
 #: The windowed lags' distance from their definition is rounding: its

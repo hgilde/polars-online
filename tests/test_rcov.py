@@ -13,6 +13,7 @@ import math
 import re
 import warnings
 
+import numba
 import numpy as np
 import pandas as pd
 import polars as pl
@@ -21,7 +22,7 @@ from hfhd import hf
 
 import polars_online as po
 
-TIER = "essential"
+TIER = "mixed"
 
 COLS = ["x0", "x1"]
 
@@ -130,6 +131,86 @@ def test_the_kernel_is_its_definition():
     assert np.allclose(got, (want + want.T) / 2, rtol=1e-9, atol=1e-15)
     assert rows["rcov_n"][0] == len(y)
     assert rows["rcov_bandwidth_used"][0] == h
+
+
+def bnhls_weights(h_bw):
+    """BNHLS's Parzen weight at lag ``h``, ``k(h / (H + 1))``, compiled for
+    hfhd's ``krvm`` and indexed as it calls a kernel: hfhd weighs lag ``h``
+    by ``kernel((h - 1) / H_hfhd)``, so with ``H_hfhd = 1`` the function
+    receives ``h - 1``."""
+    scale = float(h_bw + 1)
+
+    @numba.njit
+    def kernel(u):
+        x = abs((u + 1.0) / scale)
+        if x <= 0.5:
+            return 1.0 - 6.0 * x**2 + 6.0 * x**3
+        if x <= 1.0:
+            return 2.0 * (1.0 - x) ** 3
+        return 0.0
+
+    return kernel
+
+
+#: hfhd's ``krvm`` against the kernel block, relative to the estimate's
+#: largest entry. Measured 2026-11-04 (aarch64, macOS) over the grid below:
+#: at most 1.5e-15. The bound leaves room for another CPU's last bits.
+KRVM_TOL = 1e-13
+
+
+@pytest.mark.extended(reason="a second or more: numba compiles hfhd's kernel sum per kernel")
+@pytest.mark.filterwarnings("ignore::numba.core.errors.NumbaPerformanceWarning")
+@pytest.mark.parametrize("m", [1, 2, 3])
+@pytest.mark.parametrize("h_bw", [3, 8])
+def test_the_jittered_kernel_is_hfhds_krvm_on_the_jittered_prices(m, h_bw):
+    """``jitter = m`` (task 320, rank 10) as BNHLS (2011) define it, on the
+    *prices*: the block's first price replaced by the mean of its first
+    ``m`` and its last by the mean of its last ``m`` (``p_0 .. p_{m-1}`` and
+    ``p_{n-m+1} .. p_n`` over the ``n + 1`` prices behind ``n`` returns),
+    the ``m - 1`` prices inside each end dropped. hfhd's ``krvm`` then
+    computes the kernel over those jittered prices' returns, with
+    ``pairwise = False`` and BNHLS's ``k(h / (H + 1))`` weights passed as its
+    kernel (:func:`bnhls_weights`): hfhd's own docstring says it ignores the
+    jitter and weighs by the flat-top ``k((h - 1) / H)``, so the jitter is
+    the test's, written from the paper in prices (where
+    :func:`effective` writes it in returns), and the kernel sum is hfhd's.
+    Three features, so the cross terms count too."""
+    rng = np.random.default_rng(10 * m + h_bw)
+    n, k = 400, 3
+    c = rng.normal(size=(k, k))
+    cov = (c @ c.T + np.eye(k)) * 1e-4
+    level = np.cumsum(rng.multivariate_normal(np.zeros(k), cov, 2 * n), axis=0)
+    obs = 4.6 + level + 0.002 * rng.standard_normal((2 * n, k))
+    price = np.vstack([obs[:1], obs])  # n + 1 prices behind each block's n returns
+    ret = np.diff(price, axis=0)
+    cols = [f"x{i}" for i in range(k)]
+    df = pl.DataFrame({**{f: ret[:, i] for i, f in enumerate(cols)}, "b": np.arange(2 * n) // n})
+    bank = po.ModelBank(
+        [spec(features=cols, kind="kernel", bandwidth=h_bw, jitter=m, block_rows=n)]
+    )
+    bank.fit_predict(df)
+    rows = bank.closed_groups(drop=False)
+    got = unvech(rows["rcov"][0].to_list(), k)
+    p = price[: n + 1]
+    jittered = np.vstack([p[:m].mean(axis=0), p[m : n - m + 1], p[n - m + 1 :].mean(axis=0)])
+    assert len(jittered) == n - 2 * m + 3
+    stamps = pd.date_range("2024-01-02", periods=len(jittered), freq="s")
+    series = [pd.Series(jittered[:, i], index=stamps) for i in range(k)]
+    want = hf.krvm(series, 1, pairwise=False, kernel=bnhls_weights(h_bw))
+    assert rows["rcov_n"][0] == n - 2 * m + 2
+    assert rows["rcov_bandwidth_used"][0] == h_bw
+    assert rows["rcov_psd_repaired"][0] is False
+    err = np.abs(got - want).max() / np.abs(want).max()
+    print(f"m={m}, H={h_bw}: relative error {err:.2e}")
+    assert err <= KRVM_TOL, err
+    if m > 1:
+        # The jitter is in effect: the unjittered prices give another number.
+        plain = [
+            pd.Series(p[:, i], index=pd.date_range("2024-01-02", periods=n + 1, freq="s"))
+            for i in range(k)
+        ]
+        other = hf.krvm(plain, 1, pairwise=False, kernel=bnhls_weights(h_bw))
+        assert np.abs(other - want).max() / np.abs(want).max() > 1e3 * KRVM_TOL
 
 
 @pytest.mark.parametrize("m", [1, 2, 3, 4])
