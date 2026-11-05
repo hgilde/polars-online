@@ -1055,17 +1055,28 @@ fn every_layout_a_schema_moved_is_written_by_a_fixture() {
                 .len()
         };
         let (whole, part) = (len(list), len(&format!("diag_{list}")));
-        assert_eq!((whole == 0, part == 0), (diag, !diag), "{name}: {whole} {part}");
-        if let Some(ring) = at(&v, &["model", variant, "win", "snaps", "ring"])
-            .and_then(rmpv::Value::as_array)
+        assert_eq!(
+            (whole == 0, part == 0),
+            (diag, !diag),
+            "{name}: {whole} {part}"
+        );
+        if let Some(ring) =
+            at(&v, &["model", variant, "win", "snaps", "ring"]).and_then(rmpv::Value::as_array)
         {
             assert!(!ring.is_empty(), "{name}: the window holds no snapshot");
             for (i, item) in ring.iter().enumerate() {
                 let moments = item.as_array().and_then(|t| t.get(2)).unwrap();
-                let n = |key: &str| at(moments, &[key]).and_then(rmpv::Value::as_array).map(Vec::len);
+                let n = |key: &str| {
+                    at(moments, &[key])
+                        .and_then(rmpv::Value::as_array)
+                        .map(Vec::len)
+                };
                 assert_eq!(n("classes"), Some(0), "{name}: snapshot {i}");
                 assert_eq!(n("diag_classes"), Some(3), "{name}: snapshot {i}");
-                assert!(held(at(moments, &["diag_classes"]).unwrap()) > 0, "{name}: snapshot {i}");
+                assert!(
+                    held(at(moments, &["diag_classes"]).unwrap()) > 0,
+                    "{name}: snapshot {i}"
+                );
             }
         }
     }

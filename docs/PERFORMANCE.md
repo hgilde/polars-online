@@ -506,7 +506,7 @@ largest buffer at the smaller.
 | `rcov.k` | columns k | 2 → 16 | O(n^2) | O(n^2) | each lag of the kernel adds a k×k outer product (H·k²); the ring holds H rows of k | 11.38 · 1.00 · 42.15 · 25.63 |
 | `rcov.block_rows` | block length n | 500 → 4,000 | O(n^(3/5)) | O(n^(3/5)) | the automatic bandwidth's ring depth is c·n^(3/5) lags, read a row | 3.34 · 1.00 · 3.22 · 3.13 |
 | `hmm.states` | states K | 2 → 16 | O(n^2) | O(n^2) | the forward filter's K×K transition | 8.16 · 1.00 · 10.01 · 1.52 |
-| `hmm.k` **finding S2** | columns d, diagonal | 2 → 16 | O(n) | O(n) | a diagonal state needs d variances | 3.00 · 1.00 · 13.57 · 1.13 |
+| `hmm.k` | columns d, diagonal | 2 → 16 | O(n) | O(n) | a diagonal state keeps d variances | 1.71 · 1.00 · 3.09 · 1.02 |
 | `hmm.history` | rows already seen | 1,000 → 8,000 | O(1) | O(1) | states and counts only | 1.00 · 0.50 · 1.00 · 1.00 |
 | `kmeans.clusters` | clusters K | 2 → 16 | O(n) | O(n) | the nearest of K centres | 3.80 · 0.28 · 3.90 · 2.80 |
 | `kmeans.k` | columns p | 4 → 32 | O(n) | O(n) | a distance is p | 4.46 · 1.00 · 6.51 · 3.43 |
@@ -515,7 +515,7 @@ largest buffer at the smaller.
 | `micro.history` | rows already seen | 1,000 → 8,000 | O(1) | O(1) | at most m summaries | 1.00 · 1.00 · 1.00 · 1.00 |
 | `ew_class.classes` | classes C | 2 → 16 | O(n) | O(n) | a learned row updates its class; a prediction reads each class's density | 5.20 · 1.00 · 7.70 · 4.36 |
 | `ew_class.k` | features k, full covariance | 4 → 16 | O(n^3) | O(n^2) | the learned class is refactorized, k³; a class keeps k² | 8.43 · 1.00 · 9.00 · 3.60 |
-| `ew_class.k_diag` **finding S2** | features k, diagonal | 4 → 32 | O(n) | O(n) | a diagonal class needs k variances | 5.64 · 1.00 · 33.18 · 8.00 |
+| `ew_class.k_diag` | features k, diagonal | 4 → 32 | O(n) | O(n) | a diagonal class keeps k variances | 3.14 · 1.00 · 5.05 · 1.72 |
 | `ew_class.history` | rows already seen | 1,000 → 8,000 | O(1) | O(1) | class moments only | 1.00 · 1.00 · 1.00 · 1.00 |
 | `seqtest.targets` | targets T | 1 → 8 | O(n) | O(n) | a test a target | 4.85 · 1.00 · 4.60 · 1.37 |
 | `seqtest.history` | rows already seen | 1,000 → 8,000 | O(1) | O(1) | running evidence only | 0.98 · 1.00 · 1.00 · 1.00 |
@@ -631,12 +631,13 @@ output -- and by the load the machine carried.
 ### What the table found
 
 Every cell above was measured before any of them gated. Three findings
-exceed their declaration and are held in the extended tier until fixed:
+exceeded their declaration. S2 is fixed and its cells gate with the rest;
+the others are held in the extended tier until fixed:
 
 | finding | cell | measured | declared | the cause |
 |---|---|---|---|---|
 | S1 | `runner.specs_per_call` | allocations 10.5x for 8x the specs, at calls of 16 rows; 407 allocations a call at 16 specs and 24,770 at 128 (61x for 8x) | O(specs) a call | `crates/online-polars/src/runner.rs`, `augment`: the bank's columns are appended to the chunk one spec at a time (`for c in cols { out.with_column(c)? }`), and each append of a struct column costs the columns already there, O(specs²) a call. One `hstack` of all of them is O(specs); the bank's own call and the Python paths append once |
-| S2 | `hmm.k`, `ew_class.k_diag` | saved state 13.6x for 8x the columns (`hmm`, 2 to 16), 33.2x (`ew_class`, 4 to 32) | O(k) under `covariance_type="diag"` | `crates/online-core/src/hmm.rs` (`states: Vec<EwCov>`) and `crates/online-core/src/ewclass.rs` (`classes: Vec<EwCov>`): every state or class keeps its full co-moment matrix and updates it, O(k²) a row, where the diagonal model reads only the k variances |
+| S2, fixed | `hmm.k`, `ew_class.k_diag` | saved state 13.6x for 8x the columns (`hmm`, 2 to 16), 33.2x (`ew_class`, 4 to 32); now 3.1x and 5.1x | O(k) under `covariance_type="diag"` | every state or class kept its full co-moment matrix and updated it, O(k²) a row, where the diagonal model reads only the k variances. Each now keeps the k variances alone (`EwCovDiag`, `crates/online-core/src/ewcov/diag.rs`), and a window's snapshots too. A variance's update reads no other entry of the matrix, so every output is the same to the bit. At 32 features a state file of 2 states is 2,408 bytes where it was 20,251, and a row takes 242 ns where it took 425 (`ew_class`, 3 classes: 3,295 bytes where 30,065, and 324 ns where 426; Apple M-series, release build, the least of five blocks of 20,000 rows) |
 | S3 | `corrchange.window`, `corrchange.window_crit` | time 7.8x to 7.9x for 8x the window, with a fixed threshold too | O(1) a row in `window_rows` | `crates/online-core/src/corrchange.rs`, the `"window"` report in `step`: both windows' correlations are computed afresh from the ring on every row (`window_stat_by` over `2·window_rows` rows), O(window_rows·k²) a row, where sums over each window moved by the row entering and the row leaving cost O(k²). The permutation draws are a separate O(n_perm·window_rows·k²) every `permute_every_rows` rows, by design |
 
 Three declarations were corrected, each the algorithm's own growth:

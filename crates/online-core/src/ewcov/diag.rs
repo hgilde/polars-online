@@ -338,9 +338,15 @@ mod tests {
             );
         }
         assert_eq!(diag.n_eff().to_bits(), cov.n_eff().to_bits(), "{what}");
-        assert_eq!(diag.precision_scale().to_bits(), cov.precision_scale().to_bits());
+        assert_eq!(
+            diag.precision_scale().to_bits(),
+            cov.precision_scale().to_bits()
+        );
         assert_eq!(diag.prior_scale().to_bits(), cov.prior_scale().to_bits());
-        assert_eq!(diag.q_sum().map(f64::to_bits), cov.q_sum().map(f64::to_bits));
+        assert_eq!(
+            diag.q_sum().map(f64::to_bits),
+            cov.q_sum().map(f64::to_bits)
+        );
     }
 
     /// The diagonal accumulator is the full one's diagonal to the bit, every

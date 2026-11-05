@@ -345,10 +345,7 @@ impl ClassMoments {
     fn of(n_eff: f64, classes: &[EwCov], diag: &[EwCovDiag], lam: f64) -> Self {
         Self {
             n_eff,
-            classes: classes
-                .iter()
-                .map(|c| crate::Moments::of(c, lam))
-                .collect(),
+            classes: classes.iter().map(|c| crate::Moments::of(c, lam)).collect(),
             diag_classes: diag
                 .iter()
                 .map(|c| crate::DiagMoments::of(c, lam))
@@ -487,10 +484,7 @@ impl EwClass {
                 }
             }
         }
-        Some(View {
-            classes: out,
-            diag,
-        })
+        Some(View { classes: out, diag })
     }
 
     /// Each class's weight, from the accumulators `view` gives, or the
@@ -921,8 +915,11 @@ impl OnlineModel for EwClass {
                     if let Some(win) = m.win.as_mut() {
                         for snap in win.snaps.iter_mut() {
                             if snap.diag_classes.is_empty() {
-                                snap.diag_classes =
-                                    snap.classes.iter().map(crate::DiagMoments::of_full).collect();
+                                snap.diag_classes = snap
+                                    .classes
+                                    .iter()
+                                    .map(crate::DiagMoments::of_full)
+                                    .collect();
                                 snap.classes.clear();
                             }
                         }
@@ -1309,14 +1306,21 @@ mod tests {
         let mut s = 7u64;
         for i in 0..50 {
             let x = [lcg(&mut s), lcg(&mut s), 3.0 + lcg(&mut s)];
-            m.step(&x, &[Some(f64::from(i % 2))], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            m.step(
+                &x,
+                &[Some(f64::from(i % 2))],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
         }
         assert!(m.classes.is_empty() && m.diag_classes.len() == 2);
         let snaps = &m.win.as_ref().unwrap().snaps;
         assert!(snaps.iter().count() > 3);
-        assert!(snaps
-            .iter()
-            .all(|s| s.classes.is_empty() && s.diag_classes.len() == 2));
+        assert!(
+            snaps
+                .iter()
+                .all(|s| s.classes.is_empty() && s.diag_classes.len() == 2)
+        );
         let whole: Vec<EwCov> = (0..2)
             .map(|i| {
                 EwCov::from_moments(3, 1.5 + i as f64, &[0.5, 1.0, -1.0], &[2.0; 9], 0.1).unwrap()
@@ -1349,7 +1353,8 @@ mod tests {
             assert!(s.classes.is_empty());
             assert_eq!(s.diag_classes, vec![part.clone(); 2]);
         }
-        let refused: [(u32, &dyn Fn(&mut EwClass)); 4] = [
+        type Edit<'a> = (u32, &'a dyn Fn(&mut EwClass));
+        let refused: [Edit; 4] = [
             (66, &as_65),
             (66, &|e| e.classes = whole.clone()),
             (66, &|e| {
@@ -1878,11 +1883,7 @@ mod tests {
             full.step(&x1, &[Some(1.0)], 1.0, 1.0);
             shared.step(&x1, &[Some(1.0)], 1.0, 1.0);
         }
-        assert!(close(
-            &full.moments_of(0).1,
-            &full.moments_of(1).1,
-            1e-12
-        ));
+        assert!(close(&full.moments_of(0).1, &full.moments_of(1).1, 1e-12));
         for _ in 0..50 {
             let x = [2.0 * lcg(&mut s), 2.0 * lcg(&mut s)];
             let a = full.predict(&x, 1.0).pred;

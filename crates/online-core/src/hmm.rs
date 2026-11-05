@@ -1226,7 +1226,11 @@ mod tests {
             m.step(&x, &[], 1.0, 1.0);
         }
         assert!(m.seeded && m.states.is_empty() && m.diag_states.len() == 2);
-        assert!(m.diag_states.iter().all(|s| s.has_shape(3) && s.n_eff() > 0.0));
+        assert!(
+            m.diag_states
+                .iter()
+                .all(|s| s.has_shape(3) && s.n_eff() > 0.0)
+        );
         let whole: Vec<EwCov> = (0..2)
             .map(|i| {
                 EwCov::from_moments(3, 1.5 + i as f64, &[0.5, 1.0, -1.0], &[2.0; 9], 1e-2)
@@ -1251,7 +1255,8 @@ mod tests {
         assert!(back.states.is_empty());
         let want: Vec<EwCovDiag> = whole.iter().map(EwCovDiag::of).collect();
         assert_eq!(back.diag_states, want);
-        let refused: [(u32, &dyn Fn(&mut Hmm)); 4] = [
+        type Edit<'a> = (u32, &'a dyn Fn(&mut Hmm));
+        let refused: [Edit; 4] = [
             (66, &as_65),
             (66, &|h| h.states = whole.clone()),
             (66, &|h| {
@@ -1591,7 +1596,7 @@ mod tests {
                 shared[0] += pi * m.ridge(s);
                 shared[3] += pi * m.ridge(s);
             }
-            for s in 0..k {
+            for (s, &got_s) in got.iter().enumerate() {
                 let dv = match (m.state_cov(s), m.state_diag(s)) {
                     (Some(c), _) => [c.deviation(0, x[0]), c.deviation(1, x[1])],
                     (_, Some(c)) => [c.deviation(0, x[0]), c.deviation(1, x[1])],
@@ -1646,7 +1651,7 @@ mod tests {
                     }
                 };
                 crate::oracle::assert_within(
-                    got[s],
+                    got_s,
                     want,
                     bound,
                     format_args!("{covariance:?}, state {s}"),
