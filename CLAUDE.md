@@ -206,6 +206,14 @@ runs both tiers, but a plain `cargo test` skips the extended Rust tests
    than it would have, and from that row does not continue to the bit. No
    frozen fixture reaches it; every state below its budget continues to the
    bit.
+   An eleventh, the user's (2026-11-05, task 331): `refit_budget`'s
+   default rose from 256 to 320 MiB, and the spec keeps only a budget the
+   user gave, so a bank saved under the old default reads its saved
+   reservation against 320 MiB when loaded. The groups it gave up stay
+   given up and every group it holds continues to the bit, but a group it
+   first sees after the load refits until 320 MiB is reserved, where the
+   old build would have given it up. No frozen fixture reaches the
+   default budget.
 6. No `unsafe` in `online-core`. f64 everywhere.
 7. Commit after each completed task in `docs/PLAN.md`, with the task number in the message.
 8. **`n_eff` -- the models' accessor, emitted as `weight_sum` -- means the same thing in

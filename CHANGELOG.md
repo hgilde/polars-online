@@ -71,6 +71,21 @@ returns.
   keep only their variances, and a `corrchange` window keeps the count of
   rows its ring has taken. States saved at 65 or earlier load and go on
   (tasks 327, 328).
+- `refit_budget`'s default is 320 MiB (was 256) for `huber`, `quantile`,
+  `sgd(loss="huber")` and `marginal(bin_stat="huber")`. Each row a refit
+  holds now also keeps its one-pass residual and that residual's place in
+  the tree the warm-up's exact median is read from, 40 bytes a row, so a
+  target's reservation at 5 features and 500 rows rose from 100 KB to
+  124 KB, and 256 MiB covered about a fifth fewer groups (2,164 such
+  targets where it had covered 2,684); 320 MiB covers 2,706. Where the
+  budget binds, a bank holds up to 64 MiB more: at 5,000 groups of 150
+  rows, two targets and 20 features, peak memory was 691 MiB against
+  652 MiB, and the saved state 177 MiB against 167 MiB.
+  `refit_budget=256` restores the old bound. A bank saved past the old
+  default reads its reservation against the new one when loaded: the
+  groups it gave up stay given up, every group it holds goes on to the
+  bit, and groups it first sees after the load refit until 320 MiB is
+  reserved (task 331).
 
 ### Fixed
 
@@ -101,8 +116,11 @@ returns.
   residuals: O(log n) a row and 40 bytes a held row, so a refit's
   reservation is `(features + 26)·8` bytes a target per row under the MAD.
   The blocks of the 2,500-row refit bench cases take 7-10% more time than
-  the one-pass sketch, and a 10,000-group `huber` bank through its 500-row
-  refits about 3% more (task 323).
+  the one-pass sketch on arm64 and 4-9% on x86-64, where `marginal`'s
+  huber bins take about 1% more a row. A 10,000-group `huber` bank through its 500-row
+  refits takes about 3% more on arm64; on x86-64, with every group
+  refitting, 11-14% more, since each group's tree is out of cache by the
+  time its next row arrives (task 323).
 - `hmm` and `ew_class` with `covariance_type="diag"` keep each state's or
   class's variances alone, and a window's snapshots do too, where they kept
   and updated a whole co-moment matrix to read its diagonal: the state and a
@@ -133,6 +151,9 @@ returns.
   measurements and the reason for each; CI counts the instructions of 22 of
   them at both sizes on every push. The three it found are fixed above
   (task 326).
+- A test regenerates every current saved-state fixture and compares it to
+  the committed file, naming any that a fresh build would write
+  differently, so a fixture can no longer go stale unnoticed (task 330).
 
 ## [1.4.0] — 2026-11-03
 
