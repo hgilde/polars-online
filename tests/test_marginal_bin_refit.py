@@ -119,12 +119,17 @@ def test_a_captured_stream_is_freed_on_the_refits_row():
     2026-10-26). The refit runs on the 500th row: there every bin is within
     the sketch's resolution of the oracle (measured 0.0012), and the one
     pass from there stays near it (0.045 at 1,000, 0.027 at 2,000), where
-    `bin_refit_rows=0` -- the one pass alone, as 1.3.0 -- stays captured."""
+    `bin_refit_rows=0` -- the one pass alone, as 1.3.0 -- stays captured.
+    Before the refit nothing moves but by the scale: the bins are those of a
+    stream whose refit waits past the data, its scale read from the same
+    held deviations (task 323)."""
     df = stream(20_000, 0.2, 138).head(2_000)
     cuts = [499, 500, 1_000, 2_000]
     on, off = gaps(df, cuts), gaps(df, cuts, bin_refit_rows=0)
+    waits = gaps(df, [499], bin_refit_rows=2_000)
     assert off[499] > 5.0 and off[2_000] > 2.0, f"the capture: {off}"
-    assert on[499] == pytest.approx(off[499], rel=1e-12), "nothing moves before the refit"
+    assert on[499] == pytest.approx(waits[499], rel=1e-12), "nothing moves before the refit"
+    assert waits[499] > 5.0, f"the capture: {waits}"
     assert on[500] < 0.01, on
     assert on[1_000] < 0.1 and on[2_000] < 0.06, on
 
@@ -228,10 +233,11 @@ def test_the_refit_budget_bounds_the_groups_holds():
     df = pl.concat([p.with_columns(t=pl.col("t") * groups + i) for i, p in enumerate(parts)]).sort(
         "t"
     )
-    # A hold of 300 rows of one feature and one target, 88 bytes each: the
-    # row (two vectors, its decay and weight, 64), its feature (8) and its
-    # target (an optional double, 16).
-    budget = 3.5 * 300 * 88 / 2**20
+    # A hold of 300 rows of one feature and one target, 112 bytes each: the
+    # row (two vectors, its decay and weight, 64), its feature (8), its
+    # target (an optional double, 16), and the deviation its scale reads
+    # while the refit waits, with the row's weight and decay (24).
+    budget = 3.5 * 300 * 112 / 2**20
 
     def bank(**kw) -> tuple[po.ModelBank, list[str]]:
         b = po.ModelBank([spec(group="g", bin_refit_rows=300, **kw)])

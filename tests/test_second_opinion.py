@@ -3178,24 +3178,28 @@ class TestTheMadScaleIsNumpysWeightedMedian:
     residual, is numpy's exponentially weighted median of the residuals
     before it -- ``np.quantile(|e|, 0.5, weights=λ^age,
     method="inverted_cdf")``, the smallest value whose cumulative weight
-    reaches half -- over ``Φ⁻¹(3/4)``, within the sketch's relative accuracy
-    ``tanh(1/128)``. Its sketch keeps ``|e|`` in units of the first (task
-    278), so the bound holds unchanged, and a target scaled by ``10^k``
-    scales the scale and the predictions by ``10^k`` to rounding, where the
-    fixed buckets moved them by up to a bucket."""
+    reaches half -- over ``Φ⁻¹(3/4)``. While the refit waits it is read from
+    the residuals the refit's buffer holds, so it is that median exactly;
+    with the refit off it is the sketch's read, within its relative accuracy
+    ``tanh(1/128)``. With the refit on, a target scaled by ``10^k`` scales
+    the scale and the predictions by ``10^k`` to rounding: the buffer's
+    median is an order statistic of the residuals, and the sketch the refit
+    builds buckets them in units of their median. With it off the sketch's
+    buckets are fixed, and a factor other than a power of two moves the
+    scale by up to a bucket, ``e^(1/64)`` (task 323)."""
 
     ALPHA = 0.007_812_341_058_161_014
     HALF_LIFE = 50.0
 
     @classmethod
-    def run(cls, x: np.ndarray, y: np.ndarray) -> pl.DataFrame:
+    def run(cls, x: np.ndarray, y: np.ndarray, refit: int = 0) -> pl.DataFrame:
         spec = po.spec.huber(
             "h",
             targets=["y"],
             features=["x"],
             half_life=cls.HALF_LIFE,
             emit_huber_scale=True,
-            huber_refit_rows=0,
+            huber_refit_rows=refit,
             # Every residual the scale learns from is a prediction emitted:
             # `min_weight` withholds the output alone.
             min_weight=0.0,
@@ -3203,37 +3207,57 @@ class TestTheMadScaleIsNumpysWeightedMedian:
         out = po.ModelBank([spec]).fit_predict(pl.DataFrame({"x": x, "y": y}))
         return out.unnest("h")
 
-    @pytest.mark.parametrize("seed", [0, 1, 2])
-    def test_the_scale_is_the_weighted_median_and_scales_with_the_target(self, seed):
+    @classmethod
+    def medians(cls, out: pl.DataFrame, y: np.ndarray, upto: int):
+        """Each row's scale and numpy's weighted median of the residuals
+        before it, over the quartile, from the first prediction to ``upto``."""
         from scipy.stats import norm
 
+        pred = out["pred_y"].to_numpy()
+        scale = out["huber_scale_y"].to_numpy()
+        lam = 0.5 ** (1.0 / cls.HALF_LIFE)
+        resid = y - pred
+        first = int(np.argmax(np.isfinite(pred)))
+        assert np.isfinite(pred[first:]).all(), "every row from the first prediction"
+        for t in range(first + 1, upto):
+            e = np.abs(resid[first:t])
+            w = lam ** np.arange(t - first - 1, -1, -1.0)
+            want = np.quantile(e, 0.5, weights=w, method="inverted_cdf") / norm.ppf(0.75)
+            yield t, scale[t], want
+
+    @pytest.mark.parametrize("seed", [0, 1, 2])
+    def test_the_scale_is_the_weighted_median_and_scales_with_the_target(self, seed):
         rng = np.random.default_rng(seed)
         n = 1500
         x = rng.standard_normal(n)
         y = 3.0 + 2.0 * x + 0.5 * rng.standard_t(3, n)
         out = self.run(x, y)
-        pred = out["pred_y"].to_numpy()
-        scale = out["huber_scale_y"].to_numpy()
-        lam = 0.5 ** (1.0 / self.HALF_LIFE)
-        resid = y - pred
-        first = int(np.argmax(np.isfinite(pred)))
-        assert np.isfinite(pred[first:]).all(), "every row from the first prediction"
         checked = 0
-        for t in range(first + 1, n):
-            e = np.abs(resid[first:t])
-            w = lam ** np.arange(t - first - 1, -1, -1.0)
-            want = np.quantile(e, 0.5, weights=w, method="inverted_cdf") / norm.ppf(0.75)
-            assert abs(scale[t] - want) <= self.ALPHA * want * (1 + 1e-9), (t, scale[t], want)
+        for t, got, want in self.medians(out, y, n):
+            assert abs(got - want) <= self.ALPHA * want * (1 + 1e-9), (t, got, want)
             checked += 1
         assert checked > 1000
-        for c in (1e-3, 1e6):
-            other = self.run(x, y * c)
-            for f in ("pred_y", "huber_scale_y"):
-                a, b = other[f].to_numpy(), out[f].to_numpy()
-                ok = np.isfinite(b)
-                assert np.array_equal(np.isfinite(a), ok), f
-                rel = np.max(np.abs(a[ok] - c * b[ok]) / (c * np.abs(b[ok])))
-                assert rel < 1e-10, (f, c, rel)
+        # The refit waiting past every row: the buffer's median, exactly.
+        held = self.run(x, y, refit=n)
+        checked = 0
+        for t, got, want in self.medians(held, y, n):
+            assert got == want, (t, got, want)
+            checked += 1
+        assert checked > 1000
+        bucket = float(np.expm1(1.0 / 64.0))
+        for refit, bound in ((500, 1e-10), (0, None)):
+            base = self.run(x, y, refit=refit)
+            for c in (1e-3, 1e6):
+                other = self.run(x, y * c, refit=refit)
+                for f in ("pred_y", "huber_scale_y"):
+                    a, b = other[f].to_numpy(), base[f].to_numpy()
+                    ok = np.isfinite(b)
+                    assert np.array_equal(np.isfinite(a), ok), f
+                    rel = np.max(np.abs(a[ok] - c * b[ok]) / (c * np.abs(b[ok])))
+                    if bound is not None:
+                        assert rel < bound, (refit, f, c, rel)
+                    elif f == "huber_scale_y":
+                        assert rel <= bucket, (f, c, rel)
 
 
 class TestAlgorithmHOnAGramAgainstStatsmodels:

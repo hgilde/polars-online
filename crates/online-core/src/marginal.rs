@@ -1013,7 +1013,7 @@ impl Marginal {
 
     /// The bytes the bins' refit can hold beyond what the model holds
     /// without it: `refit_rows` held rows ([`crate::margbins::hold_bytes`])
-    /// and their deviations ([`crate::margbins::held_devs_bytes`])
+    /// and their deviations (`margbins::held_devs_bytes`)
     /// where the edges are given or learned from fewer rows, and nothing
     /// where the warm-up's own hold already covers the count (the refit then
     /// runs when the edges are fixed). 0 when it is off or done.

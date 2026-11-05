@@ -20,7 +20,7 @@ import pytest
 import ledger
 import polars_online as po
 from data import synthetic
-from reference import EwMedian, ftrl_ref, kalman_ref, lasso_ref, robust_ref
+from reference import NORMAL_Q3, ftrl_ref, kalman_ref, lasso_ref, robust_ref
 
 TIER = "mixed"
 
@@ -578,6 +578,11 @@ class TestRobustOracles:
             if scale_half_life is not None:
                 ref_kw["huber_scale_half_life"] = scale_half_life
                 spec_kw["huber_scale_half_life"] = scale_half_life
+        else:
+            # The quantile refit's count, the spec's default of 500 rows
+            # (none of these streams reaches it): while it waits the MAD is
+            # read exactly from the buffered |e| (task 323).
+            ref_kw = {"refit_rows": spec_kw.get("quantile_refit_rows", 500), **(ref_kw or {})}
         x, dc, w = _arrays(df, k)
         y = np.column_stack([df[t].to_numpy() for t in targets])
         ref = robust_ref(
@@ -792,12 +797,13 @@ class TestRobustOracles:
     def _quantile_fit(x, y, tau, **kw):
         """The last fit and the band's scale ``s`` before the last row, with
         no decay and a solve on every row. Without decay ``s`` is the median
-        of every scored ``|e|`` over ``Phi^-1(3/4)`` on the sketch's buckets
-        (``robust.rs``'s module doc; task 278's D-Q moved it from the RMS),
-        which ``reference.EwMedian`` reads from the emitted residuals: the
-        bandwidth the stream had settled on. ``min_weight = 0`` reports
-        every residual the scale learned from (it withholds the output
-        alone)."""
+        of every scored ``|e|`` over ``Phi^-1(3/4)`` (``robust.rs``'s module
+        doc; task 278's D-Q moved it from the RMS), read here exactly from
+        the emitted residuals: the bandwidth the stream had settled on,
+        whose sketch reads it within ``tanh(1/128)`` (task 323: a model of
+        the sketch's buckets here moved the oracle's bandwidth by a bucket
+        with any change of anchor). ``min_weight = 0`` reports every
+        residual the scale learned from (it withholds the output alone)."""
         spec = po.spec.quantile(
             "m",
             targets=["y"],
@@ -813,10 +819,8 @@ class TestRobustOracles:
             warnings.simplefilter("ignore", po.ReadinessWarning)
             out = bank.fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y}))
         resid = out["m"].struct.field("resid_y").drop_nulls().to_numpy()
-        mad = EwMedian()
-        for r in resid:
-            mad.add(abs(float(r)), 1.0)
-        return bank.coef("m")["coef"].to_numpy(), float(mad.scale())
+        med = np.quantile(np.abs(resid), 0.5, method="inverted_cdf")
+        return bank.coef("m")["coef"].to_numpy(), float(med / NORMAL_Q3)
 
     @staticmethod
     def _smoothed(z, y, tau, h):

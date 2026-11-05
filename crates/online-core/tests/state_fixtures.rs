@@ -195,8 +195,8 @@ use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 /// 64 kept since 65 stopped choosing a residual sketch's anchor from the
 /// residuals one pass sees (task 323): while a refit waits, the MAD is
 /// read exactly from the `|e|` its buffer keeps beside each row, the
-/// sketch taking none; a sketch no refit anchors keeps the grid fixed at
-/// 1. A kept state's sketches are anchored at their first value, or await
+/// sketch taking none; a sketch no refit anchors keeps its grid fixed at
+/// one. A kept state's sketches are anchored at their first value, or await
 /// it, and its refit buffers hold no `|e|`, so its model's restore marks
 /// each anchored sketch to keep the old rule, reads its scale from the
 /// sketch it feeds until its refit, and it goes on to the bit. Converted,
@@ -207,6 +207,7 @@ use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 /// an `|e|` or deviations for a refit -- is held to its marks and to
 /// saving bytes that load back to the same ([`kept_scale_rule`]), not to
 /// the current fixture's bytes.
+///
 /// The kept schemas, each a `v<N>/` directory found beside the current set.
 fn previous() -> Vec<u32> {
     frozen::PREVIOUS_SETS.iter().map(|(s, _)| *s).collect()

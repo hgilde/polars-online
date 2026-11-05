@@ -145,7 +145,14 @@
 //! do not move. With learned edges the warm-up's own hold is those rows, so
 //! the refit runs as the edges are fixed when its count is within the
 //! warm-up, and otherwise the hold goes on past the freeze to the count.
-//! The rows are then let go and the stream goes on in one pass. With the
+//! The rows are then let go and the stream goes on in one pass. While the
+//! refit waits each target's scale is read exactly, the weighted median of
+//! the deviations its rows were judged by, held beside them ([`HeldDevs`]),
+//! and its sketch takes none: `huber`'s rule (`crate::robust`'s module doc,
+//! "Where the rows are held"), so the rows a decimal unit would regroup in
+//! the sketch's buckets are not bucketed before the refit builds the sketch
+//! in units of the converged deviations' median. A refit given up builds it
+//! the same way from the deviations held. With the
 //! refit, the same worst seeds were 0.017, 0.015 and 0.004 at 12%, and 0.15,
 //! 0.14 and 0.057 at 20%.
 //!
@@ -1613,11 +1620,11 @@ pub struct BinCfg {
     /// not skipped, since `budget_mib` is the one field here that may.
     #[serde(default)]
     pub refit_rows: u32,
-    /// Under [`BinStat::Huber`], whether each target's MAD sketch buckets
-    /// its deviations in units of the first it takes (the refit's rebuilt
-    /// sketch in units of their median size), as
-    /// [`crate::RobustCfg::mad_anchor`]. A spec sets it; a state written
-    /// before schema 64 loads as `false` and goes on as it was.
+    /// Under [`BinStat::Huber`], whether each target's MAD sketch is
+    /// anchored, as [`crate::RobustCfg::mad_anchor`]: the refit's rebuilt
+    /// sketch buckets its deviations in units of their median, and one no
+    /// refit anchors keeps the grid fixed at 1. A spec sets it; a state
+    /// written before schema 64 loads as `false` and goes on as it was.
     #[serde(default)]
     pub mad_anchor: bool,
     /// The MiB the warm-up hold and the histogram may each take before the

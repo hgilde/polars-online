@@ -737,18 +737,22 @@ pub use window::{
 ///   release, the mark was `decay_time`'s sign (task 278, batch 3), which a
 ///   released 63 never wrote. Schema 63's fixtures are kept
 ///   (`tests/state_fixtures/v63/`).
-/// - 65 (2026-11-05, task 323): an anchored residual sketch -- each
-///   target's MAD sketch under `huber`, `quantile`, `sgd(loss="huber")`
-///   and `marginal(bin_stat="huber")` -- is anchored at the level of the
-///   first residual it takes, the larger of the target and the prediction
-///   (the value and the location in a bin's scale), where it was anchored
-///   at that residual itself (`EwQuantile`'s "Where the anchor is set").
-///   A sketch keeps `anchor_by_first_value`, written only where it is
-///   `true`: a state of 64 or earlier has no such field, and its model's
-///   restore marks each anchored sketch with it (a sketch awaiting its
-///   anchor, or one a later reset leaves awaiting, then anchors at its
-///   first value), so the state goes on to the bit. Schema 64's fixtures
-///   are kept (`tests/state_fixtures/v64/`).
+/// - 65 (2026-11-05, task 323): no MAD sketch takes an anchor chosen from
+///   the residuals one pass sees -- each target's under `huber`,
+///   `quantile`, `sgd(loss="huber")` and `marginal(bin_stat="huber")`.
+///   While a target's refit waits its buffer keeps each row's one-pass
+///   `|e|` beside it (`RefitBuf`'s `resid`; a histogram's `HeldDevs`, the
+///   deviations from each target's location), the scale is read from them
+///   exactly, and the sketch takes none; the refit's rebuilt sketch is
+///   anchored at the converged residuals' weighted median, as before, and
+///   a refit that never runs builds it so from the `|e|` held; with the
+///   refit off the grid is fixed at 1 (`EwQuantile::anchored`). A state of
+///   64 or earlier has neither field and goes on to the bit: its model's
+///   restore marks each anchored sketch (`anchor_by_first_value`, written
+///   only where `true`) to keep anchoring at its first value, a buffer with
+///   no `|e|` reads the sketch it feeds until its refit, and a histogram
+///   its warm-up still waits for is built so (`Binned`'s `before_65`).
+///   Schema 64's fixtures are kept (`tests/state_fixtures/v64/`).
 pub const SCHEMA_VERSION: u32 = 65;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`

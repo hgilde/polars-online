@@ -575,7 +575,13 @@ def switched_signature() -> dict[str, float | str | None]:
 #: ``tests/test_oracles_sigma.py`` holds ``sigma`` to its recursion over the
 #: residuals of the same spec with no gate, and
 #: ``crates/online-polars/tests/gate_isolation.rs`` to the gate never moving
-#: it; nothing else moved.
+#: it; nothing else moved. Task 323 (2026-11-05) moved the same 8,
+#: ``huber``'s and ``quantile``'s at rows 60 and 119: while each refit waits
+#: (500 rows here, past the stream) the MAD is the exact weighted median of
+#: the buffered ``|e|``, where it was the sketch's read, within a bucket of
+#: it; the largest move 1.5e-4 of ``1 + |v|`` (``quantile.pred_y0@60``);
+#: ``robust_ref`` reads the same median and holds both to every row
+#: (``tests/test_oracles.py``); nothing else moved.
 GOLDEN: dict[str, float | str | None] = {
     "ridge.pred_y0__r0.000001@25": -4.684371132566456,
     "ridge.pred_y0__r0.000001@60": -0.25563207972202284,
@@ -683,11 +689,11 @@ GOLDEN: dict[str, float | str | None] = {
     "lasso.penalty_selected_y0@60": 0.0,
     "lasso.penalty_selected_y0@119": 0.0,
     "huber.pred_y0@25": -4.684375830329454,
-    "huber.pred_y0@60": -0.25295004317258707,
-    "huber.pred_y0@119": -0.15953151258978532,
+    "huber.pred_y0@60": -0.25295781642638193,
+    "huber.pred_y0@119": -0.159536342178747,
     "huber.resid_y0@25": -0.16722999390526194,
-    "huber.resid_y0@60": -0.21909108564449087,
-    "huber.resid_y0@119": 0.10883274163155648,
+    "huber.resid_y0@60": -0.219083312390696,
+    "huber.resid_y0@119": 0.10883757122051815,
     "huber.weight_sum@25": 7.999488060097996,
     "huber.weight_sum@60": 12.473100285951407,
     "huber.weight_sum@119": 15.110060335371337,
@@ -698,11 +704,11 @@ GOLDEN: dict[str, float | str | None] = {
     "huber.withheld_reason@60": None,
     "huber.withheld_reason@119": None,
     "quantile.pred_y0@25": -4.684375830329454,
-    "quantile.pred_y0@60": -0.2290338155024383,
-    "quantile.pred_y0@119": -0.10985340510060985,
+    "quantile.pred_y0@60": -0.22921308637891635,
+    "quantile.pred_y0@119": -0.10994375923423028,
     "quantile.resid_y0@25": -0.16722999390526194,
-    "quantile.resid_y0@60": -0.24300731331463965,
-    "quantile.resid_y0@119": 0.05915463414238102,
+    "quantile.resid_y0@60": -0.24282804243816158,
+    "quantile.resid_y0@119": 0.05924498827600144,
     "quantile.weight_sum@25": 7.999488060097996,
     "quantile.weight_sum@60": 12.473100285951407,
     "quantile.weight_sum@119": 15.110060335371337,

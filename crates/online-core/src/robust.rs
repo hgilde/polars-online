@@ -3030,3 +3030,7 @@ mod gate_tests;
 #[cfg(test)]
 #[path = "robust/quantile_refit_tests.rs"]
 mod quantile_refit_tests;
+
+#[cfg(test)]
+#[path = "robust/equivariance_tests.rs"]
+mod equivariance_tests;

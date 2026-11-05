@@ -902,22 +902,35 @@ their way. `huber_scale=` chooses between two scales:
 | `"mad"`, the default | the exponentially weighted median of `\|e\|`, over `Φ⁻¹(3/4) = 0.6745` so that it is the standard deviation when the errors are normal | moves it by the row's weight, whatever the size of the miss, so the scale holds until half the weight is outliers |
 | `"rms"` | the exponentially weighted root mean square of `e`, about 0 | sets it: every row counts at full weight, a wild row included |
 
-The median is read from a quantile sketch kept per target, within 0.78% of
-the exact weighted median. Each scale learns a residual at the row's own
-weight, not at its Huber weight, and ages on every row.
+While a target's refit waits (`huber_refit_rows`, `quantile_refit_rows`),
+the median is read exactly, from the residuals its buffer holds for the
+refit, a selection over them each row. From the refit on it is read from a
+quantile sketch kept per target, within 0.78% of the exact weighted median.
+Each scale learns a residual at the row's own weight, not at its Huber
+weight, and ages on every row.
 
-The sketch keeps each residual in units of the target's first one, so
-rescaling the target rescales the fit to rounding. Its buckets are fixed
-in the residual's own units, and only a power of two maps them onto
-themselves. Kept in those units, a target in grams instead of kilograms
-regrouped residuals across bucket edges and moved the median by up to a
-bucket, 1.6%. Over 50 streams of 1,500 rows with heavy-tailed noise and a
-half-life of 300 rows, predictions moved by up to 0.4% of the target's
-spread at scales of 1e±3 and 1e±6. In the first residual's units they move
-by at most 3e-12 of the spread, under the 2e-11 the fit's own rounding
-allows. The read costs a division more a row, about 2 ns per target. A
-state saved before this change keeps its fixed buckets and continues as it
-was.
+The sketch's buckets are fixed points of the logarithm, and only a power
+of two maps them onto themselves. So a target in grams instead of
+kilograms regroups residuals across bucket edges, and the median moves by
+up to a bucket, 1.6%, where it should move by the factor. Over 50 streams
+of 1,500 rows with heavy-tailed noise and a half-life of 300 rows, that
+moved predictions by up to 0.4% of the target's spread at scales of 1e±3
+and 1e±6. Keeping the residuals in units of a number scaled with them
+removes it, and the refit has one: its sketch is built from the converged
+residuals in units of their median, an order statistic of them, which
+scales with them to a single residual's rounding. Before the refit the
+exact median needs no units. So with the refit on, a stream in another
+unit gives the same scale and fit to the rounding of the target's level
+(measured at levels to `1e9`, a first residual `1e-6` of the noise: within
+178 `u·|y|max`, `u` the unit roundoff). No unit is taken from the residuals
+as they arrive: the first can all be small beside the rest, and a sketch
+anchored at the first residual carried its rounding at the target's level
+into every read, a bucket apart in the two units for the life of the
+sketch. So with the refit off the sketch keeps its fixed buckets: the scale
+in two units differs by up to a bucket, and a quantile fit, whose band is
+drawn in it, by more (at a factor of 3, 0.4% in its slope after 500
+rows, 3.8% at its first rows); a power of two
+moves nothing. A state saved before this change continues as it was.
 
 The sketch's buckets span at most 16 octaves around the median, a factor
 of 65,536. A residual beyond them is folded into the outermost bucket on
@@ -1017,15 +1030,17 @@ alike, the worst slope 0.85 off; at 15% none is, and a first window of
 the same 4 streams at 20% as 500 do, the worst by 0.18; over 2,000 rows the
 table shows what the longer default buys. `huber_refit_rows=0` turns the refit off.
 Under `huber_scale="rms"` it gives `huber` the numbers of the releases before it,
-to the bit; under the MAD, the default, they move by up to a bucket of the MAD's
-sketch, which now keeps each residual in units of the first one it takes. A state
+to the bit; under the MAD, the default, its sketch is then on the fixed buckets
+those releases used. A state
 saved before the refit existed goes on to the bit. `sgd`'s
 steps have changed since (its clip, AdaGrad's epsilon and its intercept read the
 target's own spread and level), so for it the refit off is the one-pass fit of
 today's steps.
 
 **The refit holds each target's rows until it runs, then frees them.** A
-learned row takes `(features + 4) · 8` bytes. The rows that only aged the
+learned row takes `(features + 5) · 8` bytes under the MAD -- its features,
+target, weight and two decay factors, and the residual the scale reads --
+and `(features + 4) · 8` under the RMS. The rows that only aged the
 target -- its value null, or its weight 0 -- take 32 bytes a run, one run
 for such rows in a row at one clock step. So one feature and 500 rows take
 about 20 KB a target. A group shorter than `huber_refit_rows` never refits
@@ -1052,9 +1067,10 @@ moved by a level, 50 passes ran out on 149 and 200 on 9, all nine past 39%.
 
 **`refit_budget` bounds the buffers of all a spec's groups together: 256
 MiB by default, or `inf` for no bound.** Each new group reserves, when it
-first appears, the most its targets' buffers can hold: `(features + 20) · 8`
-bytes a target of each model instance (a half-life grid reserves once per
-value) for each row of `huber_refit_rows`, the row and its four runs. The group that would cross the bound, and every new group after it,
+first appears, the most its targets' buffers can hold: `(features + 21) · 8`
+bytes a target of each model instance under the MAD, `(features + 20) · 8`
+under the RMS (a half-life grid reserves once per value), for each row of
+`huber_refit_rows`, the row and its four runs. The group that would cross the bound, and every new group after it,
 gives its refit up and keeps its one-pass fit; a notice says so once, and
 `summary()`'s `refit_given_up` counts the targets of each instance. A
 reservation lasts the
@@ -1063,7 +1079,7 @@ bank, so which groups refit depends neither on the chunking nor on the order
 the groups run in, nor on a save and load between them. The price is that
 once the bound is reached no later group refits, though the first groups'
 buffers have long been freed. At 20 features and 500 rows a target reserves
-160 KB, and 256 MiB refits the first 1,677 targets. Measured on the 150-row
+164 KB under the MAD, and 256 MiB refits the first 1,636 targets. Measured on the 150-row
 groups above, fed from parquet, as the peak resident memory after the fit and
 the saved state (at 20,000 groups the median of three runs, which spread by
 up to 130 MiB; the reservation is the most a buffer can hold, and these held
@@ -1146,9 +1162,8 @@ med = po.spec.quantile("med", targets=["y"], features=["x0", "x1"], clock="t", g
 statsmodels' `HuberT` takes 1.345 and scikit-learn's `HuberRegressor`
 1.35. `huber_delta=inf` cuts nothing, which is least squares. To come
 close to the numbers of a version before the refit existed (1.3.0 and
-earlier), give `huber_refit_rows=0`: under the MAD they still move by up to
-a bucket of its sketch, which now keeps each residual in units of the first
-one it takes. Before `huber_scale` existed (1.2.0 and earlier), give
+earlier), give `huber_refit_rows=0`: the MAD's sketch is then on the fixed
+buckets those versions used. Before `huber_scale` existed (1.2.0 and earlier), give
 `huber_scale="rms"` as well, which keeps no sketch. A state saved by an
 earlier version goes on to the bit.
 

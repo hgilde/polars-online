@@ -82,10 +82,10 @@ pub const REFIT_PASSES: usize = 200;
 /// The most rows a refit of the first rows buffers (a spec's
 /// `huber_refit_rows`, `quantile_refit_rows`): 2^20. A buffer is held at
 /// its full size from a target's first learned row, `(features + 4) · 8`
-/// bytes a row, so the count sizes an allocation before any row is seen:
-/// with `refit_budget = inf`, which bounds nothing, `2^32 − 1` rows of one
-/// feature reserved 172 GB and aborted the process. 2^20 rows are 40 MiB a
-/// target at one feature, the ceiling the spec layer's other counts that
+/// bytes a row and 8 more under the MAD, so the count sizes an allocation
+/// before any row is seen: with `refit_budget = inf`, which bounds nothing,
+/// `2^32 − 1` rows of one feature reserved 172 GB and aborted the process.
+/// 2^20 rows are 40 MiB a target at one feature (48 under the MAD), the ceiling the spec layer's other counts that
 /// size an allocation keep (a lag, `n_perm`); it refuses more by name.
 pub const MAX_REFIT_ROWS: u32 = 1 << 20;
 
@@ -185,7 +185,7 @@ impl RefitStatus {
 
 /// The bytes one target's refit buffer can hold at most: `refit_rows`
 /// learned rows of `n_features + 4` numbers, and one more under the MAD
-/// (`mad`), the row's one-pass `|e|` ([`RefitBuf`]), and
+/// (`mad`), the row's one-pass `|e|` (`RefitBuf`), and
 /// [`REFIT_RUNS_PER_ROW`] ageing runs of 4 numbers a learned row, 8 bytes
 /// each -- what a bank reserves against a spec's `refit_budget` for it,
 /// its contents, not the allocator's slack. 0 when the refit is off.

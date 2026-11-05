@@ -1147,14 +1147,16 @@ class EwMedian:
     of 0 or a value that is not finite adds nothing. The core keeps the decay
     as one factor beside the buckets; here each bucket is multiplied.
 
-    Anchored, as every sketch a spec builds is (task 278), a value is
-    bucketed in units of the first value that counts -- a positive normal
-    float at a weight above 0 -- ``v / a`` capped at the largest float, and
-    the median read is ``a`` times the bucket's representative."""
+    Every sketch a spec builds is anchored, its values bucketed in units of
+    an anchor ``a``, ``v / a`` capped at the largest float, the median read
+    ``a`` times the bucket's representative (task 278); no anchor is chosen
+    from the values one pass sees, so a sketch no refit anchors keeps the
+    grid fixed at ``a = 1``, the fixed buckets (task 323). A refit's rebuilt
+    sketch is anchored at its residuals' weighted median, ``anchor=``."""
 
-    def __init__(self, anchored: bool = True) -> None:
+    def __init__(self, anchor: float = 1.0) -> None:
         self.w: dict[int | None, float] = {}
-        self.anchor: float | None = 0.0 if anchored else None
+        self.anchor = anchor
 
     def age(self, lam: float) -> None:
         for key in self.w:
@@ -1163,9 +1165,7 @@ class EwMedian:
     def add(self, v: float, weight: float) -> None:
         if not (v >= 0.0 and math.isfinite(v) and weight > 0.0 and math.isfinite(weight)):
             return
-        if self.anchor is not None and v >= sys.float_info.min:
-            if self.anchor == 0.0:
-                self.anchor = v
+        if v >= sys.float_info.min:
             v = min(v / self.anchor, sys.float_info.max)
         key = None if v < sys.float_info.min else _sketch_bucket(v)
         self.w[key] = self.w.get(key, 0.0) + weight
@@ -1181,7 +1181,7 @@ class EwMedian:
                 if key is None:
                     return 0.0
                 q = _sketch_representative(key)
-                return q * self.anchor if self.anchor else q
+                return q * self.anchor
         return None
 
     def scale(self) -> float | None:
@@ -1191,6 +1191,22 @@ class EwMedian:
             return None
         s = q / NORMAL_Q3
         return s if 0.0 < s < math.inf else None
+
+
+def _held_mad(held: list[list]) -> float | None:
+    """The MAD scale from the held rows' ``|e|`` (``[e, weight]``, ``e``
+    ``None`` where the scale took none): their weighted median -- the
+    smallest ``e`` at which the cumulative weight, ascending, reaches half
+    the total -- over ``Φ⁻¹(3/4)``, once it is above 0."""
+    rows = sorted((e, v) for e, v in held if e is not None and v > 0.0)
+    total = sum(v for _, v in rows)
+    acc = 0.0
+    for e, v in rows:
+        acc += v
+        if acc >= 0.5 * total:
+            s = e / NORMAL_Q3
+            return s if 0.0 < s < math.inf else None
+    return None
 
 
 def robust_ref(
@@ -1211,8 +1227,16 @@ def robust_ref(
     gap_cap: float = np.inf,
     huber_scale: str = "mad",
     huber_scale_half_life: float | None = None,
+    refit_rows: int = 0,
 ) -> dict[str, np.ndarray]:
     """Huber / quantile oracle (docs/PLAN.md section 4.5).
+
+    ``refit_rows`` is the spec's ``huber_refit_rows`` or
+    ``quantile_refit_rows``: while a target has learned fewer rows than it,
+    its MAD is read exactly from the ``|e|`` of the rows it learned, their
+    weighted median at the weights the scale's clock has left them over
+    ``Φ⁻¹(3/4)``, as the refit's buffer holds them (task 323). The refit
+    itself is not modelled: a stream that reaches the count is refused.
 
     Huber's cut is drawn in ``huber_scale``'s scale: ``"mad"``, an
     :class:`EwMedian` of ``|e|`` over ``Φ⁻¹(3/4)`` per target, fed and aged as
@@ -1286,6 +1310,9 @@ def robust_ref(
             "sig2": np.zeros(m),
             "wsig": np.zeros(m),
             "mad": [EwMedian() for _ in range(m)],
+            # While the refit waits: each learned row's one-pass |e| (None
+            # where the scale took none) and its weight on the scale's clock.
+            "held": [[] for _ in range(m)],
             # EW count of observations under the RAW row weights: the
             # accumulators are scaled by the IRLS weights, the count is not.
             "w_raw": 0.0,
@@ -1330,6 +1357,8 @@ def robust_ref(
             # the scale's clock, and so does the MAD's sketch.
             st["wsig"][j] *= lam_s
             st["mad"][j].age(lam_s)
+            for h in st["held"][j]:
+                h[1] *= lam_s
             if np.isnan(Y[i, j]):
                 st["W"][j] *= lam
                 st["wj"][j] *= lam
@@ -1345,6 +1374,8 @@ def robust_ref(
             scale = float(np.sqrt(s2)) if 0.0 < s2 < np.inf else None
             if mad:
                 scale = st["mad"][j].scale()
+                if refit_rows > 0:
+                    scale = _held_mad(st["held"][j])
             aged_w, aged_wj = lam * st["W"][j], lam * st["wj"][j]
             aged_rows = aged_wj * (rows / present) if present > 0.0 else 0.0
             kind, value, target = _row_update(
@@ -1360,6 +1391,14 @@ def robust_ref(
                 quantile,
                 quantile_eps,
             )
+            # The rows the refit's buffer learns: a nudge or a fit of
+            # positive weight, at the row's raw weight.
+            learns = w[i] > 0.0 and (kind == "nudge" or value > 0.0)
+            if refit_rows > 0 and learns:
+                e = abs(Y[i, j] - p_own[j]) if np.isfinite(p_own[j]) else None
+                st["held"][j].append([e if e is not None and np.isfinite(e) else None, w[i]])
+                if len(st["held"][j]) >= refit_rows:
+                    raise NotImplementedError("robust_ref does not model the refit")
             if kind == "nudge":
                 st["W"][j] = aged_w
                 st["wj"][j] = aged_wj
