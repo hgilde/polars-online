@@ -2364,6 +2364,25 @@ impl Stream {
             .collect()
     }
 
+    /// Hold `notices`, taken from the stream this one replaces, to be taken
+    /// before any of its own ([`Self::take_notices`]): a session's span
+    /// closed within a call starts this stream, and the notices the closed
+    /// span raised in that call are said with the call's, as they are when
+    /// a chunk ends between the two spans. Same spec, so the same instances:
+    /// a stream that raised a notice has a first one to hold them in.
+    pub fn carry_notices(&mut self, mut notices: Vec<String>) {
+        if notices.is_empty() {
+            return;
+        }
+        let first = self
+            .persisted
+            .notified
+            .first_mut()
+            .expect("a stream that raised a notice has an instance");
+        notices.append(&mut first.pending);
+        first.pending = notices;
+    }
+
     /// Where this stream stands (§3), for `Bank::summary`: read from its
     /// first instance, as it stands after the last row.
     pub fn readiness(&self, spec: &Spec) -> Readiness {

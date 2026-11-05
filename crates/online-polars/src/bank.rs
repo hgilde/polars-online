@@ -1172,7 +1172,13 @@ fn process<'s>(
                     // The span before this row is finished.
                     closed.extend(close_rows(si, spec, key, stream, idx[start]));
                     let over = stream.refit_over_budget();
+                    // The notices the span raised and nobody has taken go
+                    // on to the next span's stream, to be said first: lost
+                    // with the span, they were said or not by where a chunk
+                    // ended (task 333).
+                    let held = stream.take_notices();
                     *stream = Stream::new(spec).expect("the spec built this stream once");
+                    stream.carry_notices(held);
                     // The group's reservation is the one it was given when
                     // the bank first saw it (`reserve_refits`).
                     if over {
@@ -3352,8 +3358,10 @@ impl Bank {
     /// return how many streams were dropped. A dropped group starts cold if it
     /// appears again, exactly as a never-seen one would: its window core and
     /// the PCA sign continuity it keeps under `group_close = "session"` go
-    /// with it, whether or not its stream was still held. `spec` is an index
-    /// into [`Self::specs`]; the caller keeps it in range.
+    /// with it, whether or not its stream was still held. A readiness notice
+    /// its stream raised and that was not yet taken stays for
+    /// [`Self::take_notices`]. `spec` is an index into [`Self::specs`]; the
+    /// caller keeps it in range.
     pub fn drop_groups(&mut self, keys: &[GroupKey], spec: Option<usize>) -> Result<usize, String> {
         if let Some(si) = spec
             && si >= self.states.len()
@@ -3366,7 +3374,13 @@ impl Bank {
                 continue;
             }
             for key in keys {
-                dropped += usize::from(hm.swap_remove(key).is_some());
+                // A stream holds notices not yet taken only after a call
+                // that learned and then failed (`notices_left`); they are
+                // said, not dropped with it (task 333).
+                if let Some(mut stream) = hm.swap_remove(key) {
+                    say_notices(&mut self.notices, &self.specs[si].name, key, &mut stream);
+                    dropped += 1;
+                }
                 // The group's window core goes with its stream, so a group
                 // that appears again starts cold there too (review R1, D1:
                 // a stale core refused the new rows, or held the old ones).
@@ -3863,7 +3877,10 @@ impl Bank {
     /// an `embargo` and no `horizon_rows` that has no horizon to read (task
     /// 232 (3)). The notices a call's streams raise come by spec, then in
     /// the order the groups' rows first arrive in its chunk, then by model
-    /// instance.
+    /// instance; a group whose session closed in the call says the closed
+    /// span's before the next span's. A group that closes in the call says
+    /// its notices as any other: which are said does not depend on where a
+    /// chunk ends.
     pub fn take_notices(&mut self) -> Vec<String> {
         std::mem::take(&mut self.notices)
     }
@@ -4521,6 +4538,32 @@ impl Bank {
             &mut self.spares,
         )?;
         t_assemble += t5.elapsed();
+        // The readiness notices the chunk raised (docs/WARMUP-AND-CONVERGENCE.md
+        // §3), each once per (spec, group, instance), named by both, for
+        // the caller to surface as it sees fit -- a warning in Python, a
+        // line on stderr from the runner. A stream raises them only as it
+        // learns, and every call that completes takes them, so only the
+        // chunk's groups can hold any (task 332), taken by spec and then in
+        // the order their rows first arrive. Taken before the monotone close
+        // below removes the groups it finishes: taken after it, a notice
+        // raised in the call that closed its group was lost, and said only
+        // where a chunk ended between the group and the next (task 333).
+        // After a call that learned and returned early, every stream's.
+        for (si, hm) in self.states.iter_mut().enumerate() {
+            let name = &self.specs[si].name;
+            if notices_left {
+                for (key, stream) in hm.iter_mut() {
+                    say_notices(&mut self.notices, name, key, stream);
+                }
+            } else {
+                for (key, _) in &groups[si] {
+                    if let Some(stream) = hm.get_mut(key) {
+                        say_notices(&mut self.notices, name, key, stream);
+                    }
+                }
+            }
+        }
+        self.notices_left = false;
         // ---- the monotone close batch (E54) ----
         // After both phases and in key order: every group below the chunk's
         // largest key is finished, whatever the chunking, because every row
@@ -4560,30 +4603,6 @@ impl Bank {
             self.high_water[si] = Some(max_key);
         }
         self.queue_closed(closed, &integer_keys);
-        // The readiness notices the chunk raised (docs/WARMUP-AND-CONVERGENCE.md
-        // §3), each once per (spec, group, instance), named by both, for
-        // the caller to surface as it sees fit -- a warning in Python, a
-        // line on stderr from the runner. A stream raises them only as it
-        // learns, and every call that completes takes them, so only the
-        // chunk's groups can hold any (task 332), taken by spec and then in
-        // the order their rows first arrive; a group closed in the call is
-        // gone from the map, as it was from the walk of every stream before.
-        // After a call that learned and returned early, every stream's.
-        for (si, hm) in self.states.iter_mut().enumerate() {
-            let name = &self.specs[si].name;
-            if notices_left {
-                for (key, stream) in hm.iter_mut() {
-                    say_notices(&mut self.notices, name, key, stream);
-                }
-            } else {
-                for (key, _) in &groups[si] {
-                    if let Some(stream) = hm.get_mut(key) {
-                        say_notices(&mut self.notices, name, key, stream);
-                    }
-                }
-            }
-        }
-        self.notices_left = false;
 
         if timing {
             let total = t0.elapsed();

@@ -2117,6 +2117,7 @@ dependencies = [
  "polars-core",
  "polars-parquet",
  "polars-utils",
+ "proptest",
  "rayon",
  "rmp-serde",
  "rmpv",

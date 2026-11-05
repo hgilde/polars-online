@@ -10,6 +10,13 @@
 //! were already said or are still to come; a group whose session closes
 //! within the call; and a chunk refused before any row is learned.
 //!
+//! A group or session span that closes in a call says the notices it
+//! raised in that call, as one closed in a later call does, so which are
+//! said, and in what order, does not depend on where a chunk ends (task
+//! 333): under `group_close = "monotone"` the closed stream was removed
+//! before the notices were taken, under `"session"` the span's stream was
+//! replaced within the call, and either lost them.
+//!
 //! The notice used is the support notice: under a ridge of 0.5, a feature
 //! duplicated reads a support below 0.5 from its first solve, and at a
 //! half-life of 4 rows on a row clock the decay time before a group's row
@@ -18,6 +25,7 @@
 
 use online_polars::{Bank, Spec};
 use polars::prelude::*;
+use proptest::prelude::*;
 
 /// The row a group's notice is raised on (0-based): its 20th.
 const RAISED_AT: usize = 19;
@@ -187,4 +195,153 @@ fn a_session_closed_in_the_call_says_the_new_spans_notice() {
     let said = bank.take_notices();
     assert_eq!((said.len(), named(&said, "a", 1)), (1, 1), "{said:#?}");
     assert_eq!(bank.closed_groups(None, true).unwrap().height(), 1);
+}
+
+/// `df` with the session column `s` set to `name` on every row.
+fn session(df: DataFrame, name: &str) -> DataFrame {
+    let n = df.height();
+    let mut df = df;
+    df.with_column(Column::new("s".into(), vec![name; n]))
+        .unwrap();
+    df
+}
+
+/// The notices a bank of `specs` says over `df` fed as calls ending at
+/// `cuts` (row positions, in order; the last call ends at the frame's end),
+/// in the order they are taken, and the closed rows it queues.
+fn said_over(specs: &[Spec], df: &DataFrame, cuts: &[usize]) -> (Vec<String>, usize) {
+    let mut bank = Bank::new(specs.to_vec()).unwrap();
+    let mut said = Vec::new();
+    let mut from = 0;
+    for &to in cuts.iter().chain(std::iter::once(&df.height())) {
+        if to > from {
+            bank.fit_predict(&df.slice(from as i64, to - from)).unwrap();
+            said.extend(bank.take_notices());
+        }
+        from = from.max(to);
+    }
+    let closed = bank.closed_groups(None, true).unwrap().height();
+    (said, closed)
+}
+
+/// Every way to cut `df` into two calls, and into calls of one row: each
+/// says the notices one call says, in the same order, and queues the same
+/// closed rows.
+fn same_at_every_cut(specs: &[Spec], df: &DataFrame) -> Vec<String> {
+    let (whole, closed) = said_over(specs, df, &[]);
+    for cut in 1..df.height() {
+        assert_eq!(
+            said_over(specs, df, &[cut]),
+            (whole.clone(), closed),
+            "cut at row {cut}"
+        );
+    }
+    let rows: Vec<usize> = (1..df.height()).collect();
+    assert_eq!(
+        said_over(specs, df, &rows),
+        (whole.clone(), closed),
+        "a row a call"
+    );
+    whole
+}
+
+/// Under `group_close = "monotone"`, a group that reaches its row 19 in the
+/// call whose next group closes it says its notice there, as it does when
+/// the call ends before the next group's first row.
+#[test]
+fn a_group_closed_in_the_call_says_its_notice_at_any_chunking() {
+    let specs = [spec("a", r#", "group_close": "monotone""#)];
+    let df = concat(&[rows(1, 0, RAISED_AT + 1), rows(2, 0, 3)]);
+    let said = same_at_every_cut(&specs, &df);
+    assert_eq!((said.len(), named(&said, "a", 1)), (1, 1), "{said:#?}");
+    // Two groups closed in one call, each past its row 19, and a third that
+    // closes nothing: both notices, in key order.
+    let df = concat(&[
+        rows(1, 0, RAISED_AT + 2),
+        rows(2, 0, RAISED_AT + 1),
+        rows(3, 0, 2),
+    ]);
+    let said = same_at_every_cut(&specs, &df);
+    assert_eq!(said.len(), 2, "{said:#?}");
+    assert!(said[0].starts_with("spec \"a\" group \"1\":"), "{said:#?}");
+    assert!(said[1].starts_with("spec \"a\" group \"2\":"), "{said:#?}");
+}
+
+/// Under `group_close = "session"`, a span that reaches its row 19 in the
+/// call that closes it says its notice there, before the next span's own:
+/// each span is a fresh stream and says its notice once. Three spans in one
+/// call carry the first's notice through the second's stream.
+#[test]
+fn a_session_span_closed_in_the_call_says_its_notice_at_any_chunking() {
+    let specs = [spec("a", r#", "session": "s", "group_close": "session""#)];
+    let df = concat(&[
+        session(rows(1, 0, RAISED_AT + 1), "one"),
+        session(rows(1, 0, 3), "two"),
+    ]);
+    let said = same_at_every_cut(&specs, &df);
+    assert_eq!((said.len(), named(&said, "a", 1)), (1, 1), "{said:#?}");
+    let df = concat(&[
+        session(rows(1, 0, RAISED_AT + 1), "one"),
+        session(rows(1, 0, 4), "two"),
+        session(rows(1, 0, RAISED_AT + 2), "three"),
+        session(rows(1, 0, 1), "four"),
+    ]);
+    let said = same_at_every_cut(&specs, &df);
+    assert_eq!((said.len(), named(&said, "a", 1)), (2, 2), "{said:#?}");
+}
+
+/// The rows of a stream of groups, each group's rows contiguous and the
+/// groups in ascending key order (so `"monotone"` closes each at the next
+/// one's first row), each group cut into session spans: `groups[g]` holds
+/// group `g`'s span lengths. A group's rows are numbered along the group,
+/// so a monotone stream's row 19 is the group's.
+fn stream_of(groups: &[Vec<usize>]) -> DataFrame {
+    let mut parts = Vec::new();
+    for (g, spans) in groups.iter().enumerate() {
+        let mut from = 0;
+        for (k, &len) in spans.iter().enumerate() {
+            parts.push(session(rows(g as i64, from, len), &format!("{g}-{k}")));
+            from += len;
+        }
+    }
+    concat(&parts)
+}
+
+proptest! {
+    /// Over random streams of groups and spans and random chunkings, a
+    /// monotone spec and a session spec beside it say the same notices, in
+    /// the same order within each spec, as one call does, and the count is
+    /// the streams' that reach row 19: each group's under `"monotone"`, each
+    /// span's under `"session"`.
+    #[test]
+    fn notices_are_the_same_at_any_chunking(
+        groups in prop::collection::vec(prop::collection::vec(1usize..=26, 1..=3), 1..=4),
+        cuts in prop::collection::vec(0usize..1000, 0..=6),
+    ) {
+        let specs = [
+            spec("mono", r#", "group_close": "monotone""#),
+            spec("sess", r#", "session": "s", "group_close": "session""#),
+        ];
+        let df = stream_of(&groups);
+        let n = df.height();
+        let mut cuts: Vec<usize> = cuts.iter().map(|c| c * n / 1000).collect();
+        cuts.sort_unstable();
+        let (whole, closed) = said_over(&specs, &df, &[]);
+        let (chunked, closed_chunked) = said_over(&specs, &df, &cuts);
+        let of = |said: &[String], s: &str| -> Vec<String> {
+            let tag = format!("spec {s:?} ");
+            said.iter().filter(|n| n.starts_with(&tag)).cloned().collect()
+        };
+        prop_assert_eq!(of(&chunked, "mono"), of(&whole, "mono"));
+        prop_assert_eq!(of(&chunked, "sess"), of(&whole, "sess"));
+        prop_assert_eq!(chunked.len(), whole.len());
+        prop_assert_eq!(closed_chunked, closed);
+        let groups_past = groups
+            .iter()
+            .filter(|spans| spans.iter().sum::<usize>() > RAISED_AT)
+            .count();
+        let spans_past = groups.iter().flatten().filter(|&&l| l > RAISED_AT).count();
+        prop_assert_eq!(of(&whole, "mono").len(), groups_past, "{:#?}", whole);
+        prop_assert_eq!(of(&whole, "sess").len(), spans_past, "{:#?}", whole);
+    }
 }
