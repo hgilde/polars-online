@@ -908,6 +908,45 @@ def test_the_default_bandwidth_is_the_floor_of_ln_m(kind, m):
             assert not default["stat"].equals(run(df, **kw, bandwidth=other)["stat"]), other
 
 
+@pytest.mark.parametrize("bandwidth", [1, 3, 10, None])
+def test_the_monitor_statistic_is_its_definition_with_statsmodels_bartlett(bandwidth):
+    """``bandwidth`` (task 320, rank 13) through the whole statistic, each
+    span's ``Q = max_{2≤j≤T} (j/√T)·|ρ̂ⱼ − ρ̂_T| / D̂`` from Wied, Krämer and
+    Dehling's definition: ``ρ̂ⱼ`` numpy's ``corrcoef`` of the span's first
+    ``j`` rows, and ``D̂²`` statsmodels' Bartlett long-run variance
+    ``S_hac_simple(ξ, nlags=γ − 1) / T`` of the delta-method series ``ξₜ =
+    x̃ₜỹₜ − ρ̂ − (ρ̂/2)(x̃ₜ² − 1 + ỹₜ² − 1)`` on the span standardized by
+    its mean and (biased) standard deviation. statsmodels weighs lag ``l``
+    by ``1 − l/(nlags + 1)``, so ``nlags = γ − 1`` is this kernel's ``1 −
+    l/γ``; unset, ``γ = ⌊ln T⌋``. Measured 2026-11-04: 4.4e-15 relative at
+    most over the four spans and four bandwidths; a correlation break inside
+    the third span puts its statistic past the 5% critical value."""
+    from statsmodels.stats.sandwich_covariance import S_hac_simple
+
+    span = 200
+    df = pl.concat([pair(500, 0.05, seed=4), pair(300, 0.85, seed=5)])
+    X = df.to_numpy()
+    kw = {} if bandwidth is None else {"bandwidth": bandwidth}
+    out = run(df, window_rows=span, alpha_adjust="none", **kw)
+    stat = out["stat"].to_numpy().astype(float)
+    closes = np.flatnonzero(np.isfinite(stat))
+    assert closes.tolist() == [199, 399, 599, 799]
+    gamma = bandwidth or math.floor(math.log(span))
+    j = np.arange(2, span + 1)
+    qs = []
+    for c in closes:
+        s = X[c - span + 1 : c + 1]
+        z = (s - s.mean(axis=0)) / s.std(axis=0)
+        rho = float((z[:, 0] * z[:, 1]).mean())
+        xi = z[:, 0] * z[:, 1] - rho - rho / 2 * (z[:, 0] ** 2 - 1 + z[:, 1] ** 2 - 1)
+        d = math.sqrt(S_hac_simple(xi, nlags=gamma - 1)[0, 0] / span)
+        rj = np.array([np.corrcoef(s[:i, 0], s[:i, 1])[0, 1] for i in j])
+        qs.append(np.max(j / math.sqrt(span) * np.abs(rj - rho) / d))
+    np.testing.assert_allclose(stat[closes], qs, rtol=1e-13)
+    # The break's span reads past the 5% critical value, 1.3581; the others not.
+    assert stat[599] > 1.3581 > max(stat[199], stat[399], stat[799]), stat[closes]
+
+
 @pytest.mark.parametrize("kind", ["monitor", "sequential"])
 def test_a_bandwidth_of_the_whole_span_is_the_largest_accepted(kind):
     """The bandwidth is at most ``window_rows``: a span of ``m`` rows has no
