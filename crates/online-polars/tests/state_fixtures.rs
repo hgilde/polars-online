@@ -125,6 +125,19 @@ const REGENERATE: &str = "PRINT_STATE_FIXTURES=1 cargo test -p online-polars --t
 /// learns its residual variance and first solve at its own floor
 /// (`min_weight_output_only`): [`kept_rules`] leaves both out of the kept
 /// forms, `bank_reset` freezes the first, and `bank_gated` the second.
+///
+/// 64 kept since 65 stopped choosing a MAD sketch's anchor from the
+/// residuals one pass sees (task 323): while a refit waits the MAD is read
+/// exactly from the `|e|` its buffer keeps beside each row, and a sketch no
+/// refit anchors keeps the grid fixed at 1. A kept bank's anchored sketches
+/// are anchored at their first value, or await it, and its refit buffers
+/// hold no `|e|`: each model's restore marks its anchored sketches to keep
+/// that rule and reads its scale from the sketch until its refit, so it
+/// goes on to the bit, but the rows before the save were scaled by the old
+/// rule, so its state is not the current fixture's. A kind whose kept bank
+/// holds an anchored sketch, or whose current one holds an `|e|` for a
+/// refit (`bank_refit`), is held to its marks and to saving bytes that load
+/// back to the same ([`kept_scale_rule`]).
 /// The kept schemas, each a `v<N>/` directory found beside the current set.
 fn previous() -> Vec<u32> {
     frozen::PREVIOUS_SETS.iter().map(|(s, _)| *s).collect()
@@ -578,7 +591,8 @@ fn kept_throughout(bytes: Vec<u8>) -> Vec<u8> {
 /// `bank_diagnosed`'s quantile fit in the form a state written before
 /// schema 64 holds, set before its first row: its band drawn in the RMS
 /// and `min_weight` holding its learning back (docs/PLAN.md task 278, D-Q
-/// and D10), where a spec builds the MAD and a gate on the output alone.
+/// and D10), where a spec builds the MAD and a gate on the output alone,
+/// its refit's buffers keeping no `|e|`, as the RMS's do.
 /// So the kept fixtures of this kind, which load in that form, go on to
 /// this fixture's numbers and convert to its bytes; the model's form since
 /// is frozen by the core's `quantile_mad` fixture.
@@ -600,6 +614,16 @@ fn kept_quantile(bytes: &[u8]) -> Vec<u8> {
                     *key(cfg, "min_weight_holds_learning").expect("the gate's form") =
                         Value::from(true);
                     *key(robust, "mad").expect("mad") = Value::Array(Vec::new());
+                    // The RMS's buffers keep no `|e|` (task 323).
+                    if let Some(Value::Array(bufs)) = key(robust, "refit") {
+                        for b in bufs {
+                            if let Value::Map(b) = b
+                                && let Some(e) = key(b, "resid")
+                            {
+                                *e = Value::Nil;
+                            }
+                        }
+                    }
                     *key(robust, "seen").expect("the floor's counts") = Value::Array(Vec::new());
                     *found += 1;
                     return;
@@ -795,6 +819,22 @@ fn refit_first() -> (Vec<u8>, DataFrame) {
         bank.save_bytes().unwrap(),
         df.slice(REFIT_SPLIT as i64, REFIT_N - REFIT_SPLIT),
     )
+}
+
+/// `bank_refit` as the build of schema 64 saved it (`v64/bank_refit.rs`),
+/// loaded and saved by this build (task 323): each anchored MAD sketch
+/// marked to keep anchoring at its first value, and `b`'s buffer, which
+/// holds no `|e|`, read through the sketch it feeds until its refit, which
+/// falls in the continuation. The forms a 64 bank takes in a bank this
+/// build saves.
+fn refit_64_first() -> (Vec<u8>, DataFrame) {
+    let kept = previous_sets()
+        .into_iter()
+        .find(|(s, _)| *s == 64)
+        .and_then(|(_, set)| set.iter().find(|f| f.name == "bank_refit"))
+        .expect("the kept bank_refit of schema 64");
+    let bank = Bank::load_bytes(&unhex(kept.state), Some(&refit_specs())).unwrap();
+    (bank.save_bytes().unwrap(), from_ipc(kept.input))
 }
 
 fn refit_run(bytes: &[u8], input: &DataFrame) -> Ran {
@@ -1126,6 +1166,11 @@ fn kinds() -> Vec<Kind> {
         Kind {
             name: "bank_refit",
             first: refit_first,
+            run: refit_run,
+        },
+        Kind {
+            name: "bank_refit_64",
+            first: refit_64_first,
             run: refit_run,
         },
         Kind {
@@ -1512,7 +1557,12 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
             // state it saves is then not the current fixture's, whose window
             // read its products from the first row.
             let windowed = holds_a_window(&unhex(f.state));
-            if !windowed {
+            let kept = rmpv::decode::read_value(&mut &unhex(f.state)[..]).unwrap();
+            let old_scale = schema <= 64
+                && (sketches(&kept, "anchor") > 0 || holds_for_a_refit(&unhex(current.state)));
+            if old_scale {
+                kept_scale_rule(&kind, &kept, &again, &from_ipc(f.input), &what);
+            } else if !windowed {
                 assert!(
                     again == unhex(current.state),
                     "{what}: loaded, the state does not save the current schema's fixture bytes \
@@ -1528,6 +1578,11 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
             {
                 assert_eq!(name, frozen_name, "{what}");
                 let want = moved_since(&from_ipc(want), &from_ipc(now));
+                let want = if old_scale {
+                    new_after_load(f.name, name, &from_ipc(f.input), &want, &from_ipc(now))
+                } else {
+                    want
+                };
                 if windowed {
                     same_within(
                         &format!("{what}: {name}, the first row"),
@@ -1548,6 +1603,73 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
             }
         }
     }
+}
+
+/// The maps in `v`, at any depth, that hold the key `key`: the sketches a
+/// state keeps that are anchored (`"anchor"`), or marked to anchor at their
+/// first value (`"anchor_by_first_value"`).
+fn sketches(v: &rmpv::Value, key: &str) -> usize {
+    match v {
+        rmpv::Value::Map(m) => {
+            // A quantile sketch's: beside its `band` (a window's operator
+            // keeps an `anchor` of its own).
+            let has = |name: &str| m.iter().any(|(k, _)| k.as_str() == Some(name));
+            usize::from(has(key) && has("band"))
+                + m.iter().map(|(_, v)| sketches(v, key)).sum::<usize>()
+        }
+        rmpv::Value::Array(a) => a.iter().map(|v| sketches(v, key)).sum(),
+        _ => 0,
+    }
+}
+
+/// Whether a bank's refit buffers keep each row's `|e|` (`resid`, a list)
+/// or a histogram holds its deviations (`held`, with its `pending` decay):
+/// the forms a bank of schema 64 has none of.
+fn holds_for_a_refit(bytes: &[u8]) -> bool {
+    fn any(v: &rmpv::Value) -> bool {
+        match v {
+            rmpv::Value::Map(m) => m.iter().any(|(k, v)| {
+                // A refit buffer's: beside its `learned` count.
+                (k.as_str() == Some("resid")
+                    && v.is_array()
+                    && m.iter().any(|(k, _)| k.as_str() == Some("learned")))
+                    || (k.as_str() == Some("held")
+                        && v.as_map()
+                            .is_some_and(|h| h.iter().any(|(k, _)| k.as_str() == Some("pending"))))
+                    || any(v)
+            }),
+            rmpv::Value::Array(a) => a.iter().any(any),
+            _ => false,
+        }
+    }
+    any(&rmpv::decode::read_value(&mut &bytes[..]).unwrap())
+}
+
+/// A kept bank of schema 64, `kept`, converted to `saved`, whose scales the
+/// old rule kept (the doc above `previous`): every anchored sketch is
+/// marked to keep anchoring at its first value and nothing else is; no
+/// buffer or histogram holds an `|e|` or deviations for a refit; and the
+/// bank saves bytes that load back to the same.
+fn kept_scale_rule(kind: &Kind, kept: &rmpv::Value, saved: &[u8], input: &DataFrame, what: &str) {
+    const MARK: &str = "anchor_by_first_value";
+    let converted = rmpv::decode::read_value(&mut &saved[..]).unwrap();
+    let anchored = sketches(kept, "anchor");
+    assert_eq!(
+        sketches(&converted, MARK),
+        anchored,
+        "{what}: each of the {anchored} anchored sketches is marked, and no other"
+    );
+    assert_eq!(
+        sketches(kept, MARK),
+        0,
+        "{what}: a kept bank carries no mark"
+    );
+    assert!(
+        !holds_for_a_refit(saved),
+        "{what}: held for a refit by the new rule"
+    );
+    let (again, _) = (kind.run)(saved, input).unwrap_or_else(|e| panic!("{what}: {e}"));
+    assert!(again == saved, "{what}: saved, loaded, saved");
 }
 
 /// The fields whose numbers a fix moved after a kept schema's fixtures were
@@ -1645,6 +1767,52 @@ fn moved_since(kept: &DataFrame, now: &DataFrame) -> DataFrame {
         })
         .collect();
     DataFrame::new(kept.height(), columns).unwrap()
+}
+
+/// The groups a kind's continuation first sees, after the load: each is a
+/// stream this build makes from its spec, under its own rules, in the
+/// kept fixture's continuation and the current one's alike, so where a
+/// rule moved since the kept schema (`kept_scale_rule`) its rows are held
+/// to the current fixture's numbers: `bank_refit`'s group `e`, from row
+/// 72 of the 96, whose MAD before its refit is read exactly from its
+/// buffer, where the 64 build read the sketch.
+const NEW_AFTER_LOAD: &[(&str, &str, &[&str])] = &[("bank_refit", "g", &["e"])];
+
+/// `want`, a kept fixture's frame `frame` (with [`moved_since`] applied),
+/// with the rows of the groups [`NEW_AFTER_LOAD`] names for kind `kind`
+/// taken from `now`, the current fixture's frame of the same name; `input`
+/// is the continuation's input, whose rows the frame's are.
+fn new_after_load(
+    kind: &str,
+    frame: &str,
+    input: &DataFrame,
+    want: &DataFrame,
+    now: &DataFrame,
+) -> DataFrame {
+    let Some((_, col, groups)) = NEW_AFTER_LOAD.iter().find(|(k, _, _)| *k == kind) else {
+        return want.clone();
+    };
+    if frame != "fit_predict" {
+        return want.clone();
+    }
+    let keys = input.column(col).unwrap().str().unwrap();
+    let new: BooleanChunked = keys
+        .iter()
+        .map(|g| Some(g.is_some_and(|g| groups.contains(&g))))
+        .collect();
+    assert!(new.any(), "{kind}: a group new after the load");
+    let columns: Vec<Column> = want
+        .columns()
+        .iter()
+        .map(|k| {
+            let n = now.column(k.name()).unwrap();
+            n.as_materialized_series()
+                .zip_with(&new, k.as_materialized_series())
+                .unwrap()
+                .into_column()
+        })
+        .collect();
+    DataFrame::new(want.height(), columns).unwrap()
 }
 
 /// Whether a saved state holds a window's snapshots: a non-empty `ring`
@@ -1746,6 +1914,27 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
         ("bank_refit", "a stream over the refit budget", |p, v| {
             p.ends_with(".refit_over_budget") && v.as_bool() == Some(true)
         }),
+        // Schema 65 (task 323): a buffer's one-pass `|e|` beside each row
+        // while the refit waits, and a sketch on the grid fixed at 1 (a
+        // stream over the budget, its refit given up before a row); a 64
+        // bank's buffer holding none, and its sketches kept at their first
+        // value.
+        ("bank_refit", "a refit buffer's |e|", |p, v| {
+            p.contains(".resid.") && v.as_f64().is_some_and(|f| f > 0.0)
+        }),
+        ("bank_refit", "a sketch on the grid fixed at 1", |p, v| {
+            p.ends_with(".anchor") && v.as_f64() == Some(1.0)
+        }),
+        (
+            "bank_refit_64",
+            "a buffer of schema 64, with no |e|",
+            |p, v| p.ends_with(".resid") && v.is_nil(),
+        ),
+        (
+            "bank_refit_64",
+            "a sketch kept at its first value",
+            |p, v| p.ends_with(".anchor_by_first_value") && v.as_bool() == Some(true),
+        ),
         // Schema 64 (task 278, batch 17): the spread folding the slots' own
         // predictions, the autocorrelation weighed by the rows, and a held
         // row's record carrying the prediction a gate withheld: one slot an

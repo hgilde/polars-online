@@ -2714,8 +2714,8 @@ mod tests {
         // released build reads a 63 bank (1.2.0 refuses it by number), so
         // none meets a 10 core at a group's first chunk. 64 for task 277's
         // refit of `huber`'s and `sgd`'s first rows, whose loader reads 63:
-        // the windows state unchanged. 65 for task 323's residual sketches
-        // anchored at their level, whose loader reads 64: unchanged too.
+        // the windows state unchanged. 65 for task 323's MAD read exactly
+        // from a refit's held `|e|`, whose loader reads 64: unchanged too.
         assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (10, 65));
         assert_eq!(MIN_WINDOWS_VERSION, 9);
     }

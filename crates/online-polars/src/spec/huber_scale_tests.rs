@@ -103,9 +103,11 @@ fn a_spec_without_them_serializes_as_before() {
 
 /// Every MAD sketch a spec builds is anchored (task 278, the user's
 /// 2026-10-26): `huber`'s, `sgd`'s under the Huber loss, and `marginal`'s
-/// under `bin_stat = "huber"`, so each scale moves with a rescaled target
-/// by the factor to rounding. A state written without the flag loads with
-/// it off (`online_core`'s state fixtures).
+/// under `bin_stat = "huber"`, on the grid fixed at 1 until a refit
+/// anchors it at its converged residuals' median (task 323), from which
+/// each scale moves with a rescaled target by the factor to rounding. A
+/// state written without the flag loads with it off (`online_core`'s state
+/// fixtures).
 #[test]
 fn a_spec_anchors_every_mad_sketch() {
     for model in [
@@ -121,7 +123,7 @@ fn a_spec_anchors_every_mad_sketch() {
             _ => panic!("{model}: neither huber nor sgd"),
         };
         assert!(flag, "{model}");
-        assert!(!sketches.is_empty() && sketches.iter().all(|q| q.anchor() == Some(0.0)));
+        assert!(!sketches.is_empty() && sketches.iter().all(|q| q.anchor() == Some(1.0)));
     }
     let mut s = spec(r#"{"type": "marginal", "bins": 4, "bin_stat": "huber"}"#);
     s.check().unwrap();

@@ -653,7 +653,10 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
 fn sketches(v: &rmpv::Value, key: &str) -> usize {
     match v {
         rmpv::Value::Map(m) => {
-            usize::from(m.iter().any(|(k, _)| k.as_str() == Some(key)))
+            // A quantile sketch's: beside its `band` (a window's operator
+            // keeps an `anchor` of its own).
+            let has = |name: &str| m.iter().any(|(k, _)| k.as_str() == Some(name));
+            usize::from(has(key) && has("band"))
                 + m.iter().map(|(_, v)| sketches(v, key)).sum::<usize>()
         }
         rmpv::Value::Array(a) => a.iter().map(|v| sketches(v, key)).sum(),
@@ -670,7 +673,10 @@ fn holds_for_a_refit(bytes: &[u8]) -> bool {
     fn any(v: &rmpv::Value) -> bool {
         match v {
             rmpv::Value::Map(m) => m.iter().any(|(k, v)| {
-                (k.as_str() == Some("resid") && v.is_array())
+                // A refit buffer's: beside its `learned` count.
+                (k.as_str() == Some("resid")
+                    && v.is_array()
+                    && m.iter().any(|(k, _)| k.as_str() == Some("learned")))
                     || (k.as_str() == Some("held") && at(v, &["pending"]).is_some())
                     || any(v)
             }),
