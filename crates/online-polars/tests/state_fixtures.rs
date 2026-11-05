@@ -2409,6 +2409,118 @@ fn regenerate_when_asked() {
     }
 }
 
+/// Where `got` is not `want` field for field -- the same map keys in the
+/// same order, the same array lengths, every value but a float equal, and
+/// each float within `bound` of its twin relative to `1 + |want|` (a NaN
+/// on both sides agrees) -- the first place it is not.
+fn first_difference(got: &rmpv::Value, want: &rmpv::Value, bound: f64, at: &str) -> Option<String> {
+    use rmpv::Value as V;
+    match (got, want) {
+        (V::Map(g), V::Map(w)) => {
+            if g.len() != w.len() {
+                return Some(format!("{at}: {} keys against {}", g.len(), w.len()));
+            }
+            g.iter().zip(w).find_map(|((gk, gv), (wk, wv))| {
+                if gk == wk {
+                    first_difference(gv, wv, bound, &format!("{at}.{gk}"))
+                } else {
+                    Some(format!("{at}: key {gk} against {wk}"))
+                }
+            })
+        }
+        (V::Array(g), V::Array(w)) => {
+            if g.len() != w.len() {
+                return Some(format!("{at}: {} entries against {}", g.len(), w.len()));
+            }
+            g.iter()
+                .zip(w)
+                .enumerate()
+                .find_map(|(i, (gv, wv))| first_difference(gv, wv, bound, &format!("{at}[{i}]")))
+        }
+        (V::F64(g), V::F64(w)) => {
+            let agree = if g.is_nan() || w.is_nan() {
+                g.is_nan() && w.is_nan()
+            } else {
+                g.to_bits() == w.to_bits() || (g - w).abs() <= bound * (1.0 + w.abs())
+            };
+            (!agree).then(|| format!("{at}: {g:e} against {w:e}"))
+        }
+        _ => (got != want).then(|| format!("{at}: {got} against {want}")),
+    }
+}
+
+/// Where the current build's run of `kind` is not the committed fixture
+/// `f`, which another platform wrote: the state's layout exactly and its
+/// numbers within the golden files' tolerance, the continuation's input to
+/// the bit and the frames it gave within the same tolerance ([`same`]). A
+/// decay or a log-likelihood runs through libm, whose last bit is the
+/// platform's.
+fn differs_from_another_writer(kind: &Kind, f: &Fixture) -> Option<String> {
+    let (bytes, input) = (kind.first)();
+    let decode = |b: &[u8]| rmpv::decode::read_value(&mut &b[..]).unwrap();
+    if let Some(d) = first_difference(&decode(&bytes), &decode(&unhex(f.state)), TOL, "state") {
+        return Some(d);
+    }
+    let compared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        same("input", &input, &from_ipc(f.input), 0.0);
+        let (_, frames) = (kind.run)(&bytes, &input).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(frames.len(), f.output.len(), "the frames");
+        for ((name, got), (_, want)) in frames.iter().zip(f.output) {
+            same(name, got, &from_ipc(want), TOL);
+        }
+    }));
+    compared
+        .is_err()
+        .then(|| "the continuation is another (its panic above says where)".to_owned())
+}
+
+/// **The committed fixtures are what this build writes.** Every kind of
+/// the current schema is run as `PRINT_STATE_FIXTURES=1` runs it, in
+/// memory, and set beside its committed file: where the platform that
+/// wrote the file is this one, the text [`file_of`] would write must be
+/// the file's, byte for byte; elsewhere the state's layout must be the
+/// same and its numbers and the continuation's within the golden
+/// tolerance ([`differs_from_another_writer`]). The other checks load a
+/// fixture, go on from it and save it again, which a file written before
+/// a change in what a kind saves still passes: it loads and re-saves its
+/// own bytes (`bank_refit` and `bank_diagnosed` stood so through a change
+/// that reserved a refit's held residuals). This one fails on such a file,
+/// and names it, so a change that moves what a kind writes regenerates the
+/// set in the same change.
+#[test]
+fn the_committed_fixtures_are_what_this_build_writes() {
+    if regenerating() {
+        return;
+    }
+    let mut stale = Vec::new();
+    for kind in &kinds() {
+        let file = format!("{}.rs", kind.name);
+        let f = frozen::ALL
+            .iter()
+            .find(|f| f.name == kind.name)
+            .unwrap_or_else(|| {
+                panic!("{file}: no committed fixture; regenerate with `{REGENERATE}`")
+            });
+        let why = if f.writer == writer() {
+            let committed = std::fs::read_to_string(dir().join(&file))
+                .unwrap_or_else(|e| panic!("{file}: {e}"));
+            (file_of(kind) != committed).then(|| "the text this build writes is another".to_owned())
+        } else {
+            differs_from_another_writer(kind, f)
+        };
+        if let Some(why) = why {
+            stale.push(format!("{file} ({why})"));
+        }
+    }
+    assert!(
+        stale.is_empty(),
+        "{} committed fixture(s) are not what this build writes: {}. If the change that moved \
+         them is intended, regenerate the set with `{REGENERATE}`",
+        stale.len(),
+        stale.join("; ")
+    );
+}
+
 /// The two crates discover their fixtures with one `build.rs`, kept as a
 /// copy in each so each package builds on its own: the copies are the same
 /// file, byte for byte.
