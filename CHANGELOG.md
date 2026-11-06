@@ -201,6 +201,19 @@ returns.
 
 ### Tests and documents
 
+- CI keeps the public datasets the tests download through an outage at
+  their source, with no copy in the repository. The cache is keyed on the
+  list of datasets rather than the oracle ledger, so it no longer changes
+  with every ledger update. On a cache miss, CI restores the copy the
+  newest oracle run kept as its `oracle-datasets` artifact, which is not
+  evicted under cache pressure, and then downloads only what is still
+  missing. CI's test jobs now restore the datasets the suite reads before
+  it runs; the clustering benchmark sets had been skipped as offline on
+  nearly every leg. Under CI a download is tried five times, 5 to 40
+  seconds apart. The weekly oracle sweep still downloads every dataset
+  fresh, and falls back to the kept copy only for a set an outage
+  withholds. `scripts/oracles.py` gains `datasets` and `fetch --suite`;
+  docs/TESTING.md, "Downloaded data in CI", explains the setup (task 339).
 - `docs/CALIBRATION.md`, a new guide: one pattern for choosing a setting
   from out-of-sample errors, why the best error over the rows you report is
   optimistic, recipes for the half-life, the ridge (what a ridge value
