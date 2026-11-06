@@ -21,6 +21,14 @@
 //! float64 array reads every value as float64; a float32 value lands in
 //! another bin only where the rounding crosses a bin edge
 //! (docs/GBDT-ADAPTER.md §4.5: validation RMSE equal to six places).
+//!
+//! A margin goes in as `init_score`: pushed with each segment's rows, class
+//! by class (`LGBM_DatasetInitStreaming` told it has them and how many
+//! classes, which the first row sets), or, in memory, every row's set at
+//! the end (`LGBM_DatasetSetField`), held as `n · K` float64 values, as
+//! LightGBM's own route holds them. LightGBM keeps a dataset's initial
+//! scores class-major, all rows of class 0 and then of class 1, and so do
+//! both routes here.
 
 use std::ffi::{CString, c_char, c_int, c_void};
 use std::ptr::null_mut;
@@ -32,12 +40,14 @@ use polars_arrow::datatypes::{ArrowDataType, Field};
 use polars_arrow::ffi::export_iterator;
 use rayon::prelude::*;
 
-use super::frames::{Frames, Reader, Segment, checked_f64, segments_of};
+use super::frames::{Frames, Reader, Segment, WidthFrom, checked_f64, margin_rows, segments_of};
 use super::libs::{Handle, LgbLib};
 use super::{GbdtError, Layout, conversion_pool};
 
 /// `C_API_DTYPE_FLOAT32` (`include/LightGBM/c_api.h`).
 const DTYPE_FLOAT32: c_int = 0;
+/// `C_API_DTYPE_FLOAT64`, the type LightGBM takes initial scores in.
+const DTYPE_FLOAT64: c_int = 1;
 /// LightGBM's `kZeroThreshold` (`include/LightGBM/meta.h`, `1e-35f`): a
 /// sampled value at or below it in magnitude counts as zero and is left out
 /// of the sample, as `LGBM_DatasetCreateFromMat` leaves it out.
@@ -61,6 +71,9 @@ pub struct LgbOptions {
     pub in_memory: bool,
     /// Frames the reader keeps ready ahead of LightGBM.
     pub read_ahead: usize,
+    /// The values a row of the reference's margin, which this dataset's
+    /// margin must match; `None` sets it from the first row.
+    pub margin_width: Option<usize>,
 }
 
 /// A built dataset: a handle LightGBM made, which the caller now owns and
@@ -78,6 +91,8 @@ pub struct LgbBuilt {
     pub build_s: f64,
     /// Seconds spent waiting for a frame.
     pub waited_s: f64,
+    /// The margin's values a row, when the layout has a margin.
+    pub margin_width: Option<usize>,
 }
 
 /// A dataset handle freed when dropped, unless released.
@@ -159,13 +174,23 @@ fn segment_meta(
 struct Meta {
     labels: Vec<f32>,
     weights: Option<Vec<f32>>,
+    /// Every row's margin, class-major (`n` rows of class 0, then of class
+    /// 1, ...), sized once the first row sets the width.
+    scores: Vec<f64>,
+    rows: usize,
+    width: Option<(usize, WidthFrom)>,
+    buf: Vec<f64>,
 }
 
 impl Meta {
-    fn new(layout: &Layout, n: usize) -> Self {
+    fn new(layout: &Layout, n: usize, margin_width: Option<usize>) -> Self {
         Self {
             labels: Vec::with_capacity(n),
             weights: layout.weight.as_ref().map(|_| Vec::with_capacity(n)),
+            scores: Vec::new(),
+            rows: n,
+            width: margin_width.map(|k| (k, WidthFrom::Reference)),
+            buf: Vec::new(),
         }
     }
 
@@ -176,6 +201,22 @@ impl Meta {
         if let Some(w) = self.weights.as_mut() {
             let vals = checked_f64(seg, p + 1, layout, row)?;
             w.extend(vals.iter().map(|&v| v as f32));
+        }
+        if layout.margin.is_some() {
+            margin_rows(
+                seg,
+                layout,
+                "init_score",
+                "reference",
+                row,
+                &mut self.width,
+                &mut self.buf,
+            )?;
+            let k = self.width.map_or(1, |w| w.0);
+            if self.scores.is_empty() {
+                self.scores = vec![0.0; self.rows * k];
+            }
+            class_major(&self.buf, k, self.rows, row as usize, &mut self.scores);
         }
         Ok(())
     }
@@ -199,7 +240,32 @@ impl Meta {
         if let Some(w) = &self.weights {
             field("weight", w)?;
         }
+        if !self.scores.is_empty() {
+            let f = cstr("init_score")?;
+            // SAFETY: `scores` holds `len` float64 values; LightGBM copies them.
+            let rc = unsafe {
+                (lib.set_field)(
+                    ds,
+                    f.as_ptr(),
+                    self.scores.as_ptr().cast(),
+                    self.scores.len() as c_int,
+                    DTYPE_FLOAT64,
+                )
+            };
+            lib.check(rc, "setting the init_score")?;
+        }
         Ok(())
+    }
+}
+
+/// `rows` row-major rows of `k` values into `dst`, class-major over
+/// `stride` rows, starting at row `at`: value `c` of row `i` goes to
+/// `dst[c * stride + at + i]`, the order LightGBM keeps initial scores in.
+pub(crate) fn class_major(rows: &[f64], k: usize, stride: usize, at: usize, dst: &mut [f64]) {
+    for (i, row) in rows.chunks_exact(k).enumerate() {
+        for (c, &v) in row.iter().enumerate() {
+            dst[c * stride + at + i] = v;
+        }
     }
 }
 
@@ -281,12 +347,22 @@ pub fn lightgbm_dataset(
             reference,
             &params,
             n,
+            opts.margin_width,
             &pool,
         )?
     } else {
-        rows_route(lib, &mut reader, layout, reference, &params, n, &pool)?
+        rows_route(
+            lib,
+            &mut reader,
+            layout,
+            reference,
+            &params,
+            n,
+            opts.margin_width,
+            &pool,
+        )?
     };
-    let (ds, sample_s, build_s) = built;
+    let (ds, sample_s, build_s, margin_width) = built;
     let mut got: c_int = 0;
     // SAFETY: a live dataset.
     lib.check(
@@ -294,6 +370,7 @@ pub fn lightgbm_dataset(
         "counting the rows",
     )?;
     Ok(LgbBuilt {
+        margin_width,
         handle: ds.release() as usize,
         rows: got as u64,
         passes: reader.passes,
@@ -304,9 +381,11 @@ pub fn lightgbm_dataset(
     })
 }
 
-type Built<'a> = (Owned<'a>, f64, f64);
+/// The dataset, the seconds sampling and building, and the margin's width.
+type Built<'a> = (Owned<'a>, f64, f64, Option<usize>);
 
 /// Two passes: LightGBM's sample, then the pushes.
+#[allow(clippy::too_many_arguments)]
 fn rows_route<'a>(
     lib: &'a LgbLib,
     reader: &mut Reader,
@@ -314,6 +393,7 @@ fn rows_route<'a>(
     reference: Option<usize>,
     params: &CString,
     n: i32,
+    margin_width: Option<usize>,
     pool: &rayon::ThreadPool,
 ) -> Result<Built<'a>, GbdtError> {
     let p = layout.names.len();
@@ -345,13 +425,15 @@ fn rows_route<'a>(
     // made on a reference that has weights has its own already, which
     // `InitStreaming` refuses to make again; they are pushed into the same.
     let has_weights = i32::from(layout.weight.is_some() && !has_field(lib, ds.h, "weight")?);
-    // SAFETY: a live dataset, its metadata not yet set.
-    lib.check(
-        unsafe { (lib.init_streaming)(ds.h, has_weights, 0, 0, 1, 1, -1) },
-        "making the dataset ready for its rows",
-    )?;
+    // Initial scores likewise: a reference with them has made this
+    // dataset's, of the reference's classes, which the margin's width is
+    // held to.
+    let has_scores = i32::from(layout.margin.is_some() && !has_field(lib, ds.h, "init_score")?);
     let mut buf: Vec<f32> = Vec::new();
     let (mut labels, mut weights) = (Vec::new(), Vec::new());
+    let mut width = margin_width.map(|k| (k, WidthFrom::Reference));
+    let (mut rows_major, mut scores) = (Vec::new(), Vec::new());
+    let mut ready = false;
     let mut start: u64 = 0;
     while let Some(df) = reader.next()? {
         for seg in segments_of(df, layout)? {
@@ -359,15 +441,48 @@ fn rows_route<'a>(
                 return Err(wrong_rows(n as u64, start + seg.n as u64));
             }
             segment_meta(&seg, layout, start, &mut labels, &mut weights)?;
+            if layout.margin.is_some() {
+                margin_rows(
+                    &seg,
+                    layout,
+                    "init_score",
+                    "reference",
+                    start,
+                    &mut width,
+                    &mut rows_major,
+                )?;
+                let k = width.map_or(1, |w| w.0);
+                scores.clear();
+                scores.resize(seg.n * k, 0.0);
+                class_major(&rows_major, k, seg.n, 0, &mut scores);
+            }
+            if !ready {
+                // The classes are known once the first row is read.
+                let classes = width.map_or(1, |w| w.0) as i32;
+                // SAFETY: a live dataset, its metadata not yet set.
+                lib.check(
+                    unsafe {
+                        (lib.init_streaming)(ds.h, has_weights, has_scores, 0, classes, 1, -1)
+                    },
+                    "making the dataset ready for its rows",
+                )?;
+                ready = true;
+            }
             rows_f32(&seg, p, &mut buf, pool);
             let weight = if weights.is_empty() {
                 std::ptr::null()
             } else {
                 weights.as_ptr()
             };
+            let init = if scores.is_empty() {
+                std::ptr::null()
+            } else {
+                scores.as_ptr()
+            };
             // SAFETY: `buf` holds `seg.n * p` float32 values, row-major;
             // `labels` and a non-null `weight` hold `seg.n` float32 values
-            // each, which LightGBM copies; no initial scores or queries.
+            // each, and a non-null `init` `seg.n` float64 values a class,
+            // class-major, which LightGBM copies; no queries.
             let rc = unsafe {
                 (lib.push_rows_meta)(
                     ds.h,
@@ -378,7 +493,7 @@ fn rows_route<'a>(
                     start as i32,
                     labels.as_ptr(),
                     weight,
-                    std::ptr::null(),
+                    init,
                     std::ptr::null(),
                     0,
                 )
@@ -396,7 +511,7 @@ fn rows_route<'a>(
         "finishing the dataset",
     )?;
     set_names(lib, ds.h, layout)?;
-    Ok((ds, sample_s, t.elapsed().as_secs_f64()))
+    Ok((ds, sample_s, t.elapsed().as_secs_f64(), width.map(|w| w.0)))
 }
 
 /// LightGBM's sample rows gathered in one pass, and the bins placed from
@@ -508,6 +623,7 @@ fn arrow_route<'a>(
     reference: Option<usize>,
     params: &CString,
     n: i32,
+    margin_width: Option<usize>,
     pool: &rayon::ThreadPool,
 ) -> Result<Built<'a>, GbdtError> {
     let p = layout.names.len();
@@ -524,7 +640,7 @@ fn arrow_route<'a>(
         })
         .collect();
     let dtype = ArrowDataType::Struct(fields);
-    let mut meta = Meta::new(layout, n as usize);
+    let mut meta = Meta::new(layout, n as usize, margin_width);
     let mut chunks: Vec<Box<dyn Array>> = Vec::new();
     let mut row: u64 = 0;
     while let Some(df) = reader.next()? {
@@ -555,5 +671,5 @@ fn arrow_route<'a>(
     let ds = Owned { lib, h };
     meta.set(lib, ds.h)?;
     set_names(lib, ds.h, layout)?;
-    Ok((ds, 0.0, t.elapsed().as_secs_f64()))
+    Ok((ds, 0.0, t.elapsed().as_secs_f64(), meta.width.map(|w| w.0)))
 }

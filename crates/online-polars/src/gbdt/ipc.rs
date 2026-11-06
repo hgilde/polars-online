@@ -12,8 +12,10 @@
 //! converted where a library needs it, as the Python layer's plan converts a
 //! polars frame's: a Boolean feature to `UInt8`, a dictionary column (how
 //! polars writes a `pl.Enum`) to its codes in the Enum's categories, the
-//! label and weight to `Float64`. A dictionary that is the Enum's categories
-//! in order, as polars writes one, hands over its keys as they are.
+//! label and weight to `Float64`, a margin of one number a row to `Float64`
+//! (a list of them is taken as it is). A dictionary that is the Enum's
+//! categories in order, as polars writes one, hands over its keys as they
+//! are.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -26,7 +28,7 @@ use polars_arrow::array::{
 use polars_arrow::datatypes::{ArrowDataType, IntegerType};
 use polars_arrow::io::ipc::read::{FileReader, read_file_metadata};
 
-use super::frames::{Frame, Frames, Num, column_name};
+use super::frames::{Frame, Frames, MarginArray, Num, column_name};
 use super::{GbdtError, Kind, Layout};
 
 /// Arrow IPC files, read in order, the columns of [`Layout`] taken from each.
@@ -135,6 +137,17 @@ impl IpcFrames {
     ) -> Result<Box<dyn Array>, GbdtError> {
         let p = self.layout.names.len();
         let name = column_name(&self.layout, j);
+        if Some(j) == self.layout.margin_at() {
+            // The margin: a list of numbers as it is, its values read as
+            // float64 where they are taken; a number as `Float64`.
+            if Num::of(a).is_none() && MarginArray::of(a).is_some() {
+                return Ok(a.to_boxed());
+            }
+            if let Some(num) = Num::of(a) {
+                return Ok(num.to_f64().boxed());
+            }
+            return Err(not_read(name, a.dtype()));
+        }
         if j >= p {
             // The label or the weight, as Float64.
             if matches!(Num::of(a), Some(Num::F64(_))) {

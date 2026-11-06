@@ -1345,8 +1345,8 @@
     unpack(df: 'pl.DataFrame', spec: 'str | dict', *, targets: 'Sequence[str] | None' = None) -> 'pl.DataFrame'
     window_metrics(df: 'pl.DataFrame', spec: 'str | dict', *, clock: 'str', every: 'float | Duration', group: 'str | Iterable[str] | None' = None, targets: 'Sequence[str] | None' = None, min_samples: 'int' = 30, binary: 'bool | None' = None) -> 'pl.DataFrame'
   gbdt:  # unstable
-    lightgbm_dataset(source: 'Source', *, label: 'str', weight: 'str | None' = None, features: 'Sequence[str] | None' = None, categorical: 'Sequence[str] | None' = None, max_bin: 'int' = 255, params: 'dict[str, Any] | None' = None, reference: 'lightgbm.Dataset | None' = None, in_memory: "bool | Literal['auto']" = 'auto', threads: 'int | None' = None, engine: 'Engine' = 'auto') -> 'lightgbm.Dataset'
-    xgboost_matrix(source: 'Source', *, label: 'str', weight: 'str | None' = None, features: 'Sequence[str] | None' = None, max_bin: 'int' = 256, sample_rows: 'int | None' = 200000, ref: 'xgboost.DMatrix | None' = None, threads: 'int | None' = None, seed: 'int' = 0, engine: 'Engine' = 'auto') -> 'xgboost.QuantileDMatrix'
+    lightgbm_dataset(source: 'Source', *, label: 'str', weight: 'str | None' = None, features: 'Sequence[str] | None' = None, categorical: 'Sequence[str] | None' = None, max_bin: 'int' = 255, params: 'dict[str, Any] | None' = None, reference: 'lightgbm.Dataset | None' = None, init_score: 'str | None' = None, in_memory: "bool | Literal['auto']" = 'auto', threads: 'int | None' = None, engine: 'Engine' = 'auto') -> 'lightgbm.Dataset'
+    xgboost_matrix(source: 'Source', *, label: 'str', weight: 'str | None' = None, features: 'Sequence[str] | None' = None, max_bin: 'int' = 256, sample_rows: 'int | None' = 200000, ref: 'xgboost.DMatrix | None' = None, base_margin: 'str | None' = None, threads: 'int | None' = None, seed: 'int' = 0, engine: 'Engine' = 'auto') -> 'xgboost.QuantileDMatrix'
   gram:
     Gram
     INTERCEPT

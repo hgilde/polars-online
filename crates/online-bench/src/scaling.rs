@@ -1488,6 +1488,7 @@ fn gbdt_setup(id: &'static str, n: usize, blocks: usize) -> ScaleRun {
         kinds: vec![Kind::Float; k],
         label: "y0".to_owned(),
         weight: None,
+        margin: None,
     };
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(1)

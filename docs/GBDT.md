@@ -128,9 +128,9 @@ Each step of a build, for each library:
 |---|---|---|
 | read | Arrow IPC files in Rust, a record batch at a time (polars-arrow's reader); Parquet and a `LazyFrame` through Polars' `collect_batches`, each frame's chunks joined into one on the reader thread; two batches ready ahead | the same |
 | bins | a sample of 200,000 rows by the SplitMix64 hash of their index, the same rows however the source is batched: the rows of smallest hash, or with weights the rows of largest `w / u`, `u` uniform from the hash (priority sampling); edges at the sample's weighted quantiles, or a bin per value for a feature of at most `max_bin` values; built into a dense `ref` | LightGBM's own, unweighted: `LGBM_SampleIndices`, those rows gathered in the first pass, `LGBM_DatasetCreateFromSampledColumn` |
-| hand-over | each batch's columns as array interfaces on their Arrow buffers, the validity bitmap as the mask, into `XGQuantileDMatrixCreateFromCallback` | float32 rows built in parallel, pushed with their labels and weights a batch at a time, `LGBM_DatasetPushRowsWithMetadata`; or in memory, every batch as float32 Arrow, `LGBM_DatasetCreateFromArrowStream` |
+| hand-over | each batch's columns as array interfaces on their Arrow buffers, the validity bitmap as the mask, into `XGQuantileDMatrixCreateFromCallback`; the batch's margin as its `base_margin` | float32 rows built in parallel, pushed with their labels, weights and initial scores a batch at a time, `LGBM_DatasetPushRowsWithMetadata`; or in memory, every batch as float32 Arrow, `LGBM_DatasetCreateFromArrowStream`, and every row's initial scores set after it |
 | categoricals | a `pl.Enum`'s codes, feature type `c`, its levels planted in the `ref` | a `pl.Enum`'s codes in `categorical_feature`, and any integer column named |
-| refusals | a null or non-finite label or weight, a negative weight, a `pl.Categorical`, a column of another type, a source whose passes give different rows, a `ref` built here on other features or on a `pl.Enum` of other categories, a library version outside the range the native engine is built for (XGBoost from 2.1, the first whose C API takes Arrow columns, to before 4.0) | the same, with LightGBM from 4.0 to before 5.0, and more than 2³¹ − 1 rows |
+| refusals | a null or non-finite label, weight or margin, a negative weight, a margin row whose number of values differs from the first row's or the `ref`'s, a `ref` with a margin and none here or none and one here, a `pl.Categorical`, a column of another type, a source whose passes give different rows, a `ref` built here on other features or on a `pl.Enum` of other categories, a library version outside the range the native engine is built for (XGBoost from 2.1, the first whose C API takes Arrow columns, to before 4.0) | the same, with LightGBM from 4.0 to before 5.0, and more than 2³¹ − 1 rows |
 
 ### XGBoost places its cuts where they are planted
 
@@ -314,6 +314,155 @@ measured on 2026-10-10, that route was 14% sooner than the two passes, at a peak
 data (2.9 GB for 2.0 GB). Both routes hand LightGBM the same float32
 values, so the choice, which depends on the machine, never changes the
 trees.
+
+## Training trees around an online model's prediction
+
+**Give the trees an online model's prediction as the *margin*, the raw
+score each row's prediction starts from, and they fit what the online
+model leaves of the target.** The margin is `base_margin=` in
+`po.gbdt.xgboost_matrix` and `init_score=` in `po.gbdt.lightgbm_dataset`,
+each the name its library uses. A tree predicts within the range of the
+targets it was trained on, so a level that has since moved past them is out
+of its reach, but a margin is added after the trees and carries the level
+with it. A model trained around a margin must be served with that margin
+added back, so this task has a training half and a serving half.
+
+You need:
+
+- a Parquet file, or a query, of rows in clock order, with the features
+  and the target;
+- a spec for an online model of the target, whose prediction follows its
+  level (see the README's [A first fit](../README.md#a-first-fit));
+- XGBoost or LightGBM installed.
+
+The steps, each numbered in the recipe below:
+
+1. Run the online model over the rows with `lf.online.fit_predict`, and
+   write each row's prediction beside it. Drop the rows it has no
+   prediction for yet, since every row needs a margin.
+2. Copy the prediction to a column of its own, to pass it as a feature
+   too. A margin and a feature are each better on some data, and passing
+   both was within 0.09 of the better of the two on the real data below.
+3. Build the training input with the prediction as the margin, and train.
+4. Serve: give XGBoost the rows' margin in its `DMatrix`, or add it to
+   LightGBM's `predict(X, raw_score=True)`.
+5. Check the test error against the same rows served without the margin.
+
+This recipe plants a level that drifts above every value the training rows
+reach, trains on the steps before 1,200 and tests on those from 1,600:
+
+```python
+import lightgbm as lgb
+import numpy as np
+import polars as pl
+import polars_online as po
+import xgboost as xgb
+
+# Rows in clock order, 50 a step over 2,000 steps; a level no feature carries wanders and drifts up.
+rng = np.random.default_rng(9)
+steps, per = 2_000, 50
+level = np.repeat(np.cumsum(rng.normal(0.0, 0.1, steps)) + 0.004 * np.arange(steps), per)
+x0, x1 = rng.standard_normal((2, steps * per))
+pl.DataFrame({
+    "t": np.repeat(np.arange(steps), per), "x0": x0, "x1": x1,
+    "y": level + np.sin(2 * x0) + (x1 > 0.5) + 0.3 * rng.standard_normal(steps * per),   # noise of spread 0.3
+}).write_parquet("rows.parquet")
+
+# 1. Each row's online prediction, made before the row is learned, written beside it.
+online = po.spec.ewridge("online", targets=["y"], features=["x0", "x1"],
+                         clock="t", half_life=5, gap_cap=10)          # follows the level within a few steps
+(
+    pl.scan_parquet("rows.parquet")
+    .online.fit_predict([online]).online.unnest([online])             # adds pred_y, resid_y, ...
+    .filter(pl.col("pred_y").is_not_null())                           # the first rows have no prediction yet
+    # 2. The prediction again, as a feature.
+    .select("t", "x0", "x1", "y", "pred_y", online_pred=pl.col("pred_y"))
+    .sink_parquet("scored.parquet")
+)
+features = ["x0", "x1", "online_pred"]
+train = pl.scan_parquet("scored.parquet").filter(pl.col("t") < 1_200)
+test = pl.scan_parquet("scored.parquet").filter(pl.col("t") >= 1_600).collect()
+low, high = train.select(low=pl.col("pred_y").min(), high=pl.col("pred_y").max()).collect().row(0)
+print(f"online prediction: {low:.1f} to {high:.1f} on the training rows, "
+      f"{test['pred_y'].min():.1f} to {test['pred_y'].max():.1f} on the test rows")
+X, margin = test.select(features).to_numpy(), test["pred_y"].to_numpy()
+
+def rmse(pred):
+    return float(np.sqrt(np.mean((pred - test["y"].to_numpy()) ** 2)))
+
+# 3. XGBoost, trained around the margin.
+matrix = po.gbdt.xgboost_matrix(train, label="y", features=features, base_margin="pred_y")
+booster = xgb.train({"tree_method": "hist", "max_depth": 4, "eta": 0.1}, matrix, 200)
+# 4. Served with each row's margin in the DMatrix; 5. and, for the check, without it.
+served = booster.predict(xgb.DMatrix(X, base_margin=margin, feature_names=features))
+forgot = booster.predict(xgb.DMatrix(X, feature_names=features))
+print(f"XGBoost:  test RMSE {rmse(served):.2f} served with the margin, {rmse(forgot):.2f} without it")
+
+# 3. LightGBM, trained around the margin.
+dataset = po.gbdt.lightgbm_dataset(train, label="y", features=features, init_score="pred_y")
+booster = lgb.train({"num_leaves": 15, "learning_rate": 0.1, "verbose": -1}, dataset, 200)
+# 4. Served as the trees' raw score plus each row's margin; 5. and without it.
+served = booster.predict(X, raw_score=True) + margin
+forgot = booster.predict(X, raw_score=True)
+print(f"LightGBM: test RMSE {rmse(served):.2f} served with the margin, {rmse(forgot):.2f} without it")
+```
+
+```text
+online prediction: -1.5 to 8.0 on the training rows, 7.3 to 13.6 on the test rows
+XGBoost:  test RMSE 0.38 served with the margin, 7.02 without it
+LightGBM: test RMSE 0.37 served with the margin, 10.27 without it
+```
+
+**The test rows' level reaches 13.6, above every training row's, and the
+trees served with the margin come within 0.08 of the noise's spread of
+0.3.** The same trees served without it miss by the level they were never
+shown.
+
+**A model trained with a margin must be served with it, and neither
+library warns when it is not.** Its trees learned only what the margin
+leaves, so a prediction without the margin lacks the level the margin
+carried: in the recipe the error grows from 0.38 to 7.02. XGBoost's
+`predict` adds the margin a `DMatrix` holds, so build every matrix you
+predict on with `base_margin=`. A matrix built with `ref=` from
+`po.gbdt.xgboost_matrix` does the same, and refuses a missing margin when
+its `ref` had one. LightGBM's `predict` takes no margin, so add it to the
+raw score yourself, and apply the objective's link after, such as the
+logistic function for a binary objective. A validation set for early
+stopping needs its own rows' margin too: `po.gbdt` refuses one built with
+`ref=` or `reference=` without a margin when the training set had one.
+
+**The online prediction leaks nothing into the margin.** The online model
+predicts each row before it learns from that row's target, so the margin
+of a training row never contains the target the trees are fitted to.
+
+### When a margin helps, and when a feature does
+
+**A margin wins where the level can leave the range the training rows
+reached, and a feature can win where it cannot.** Measured on 2026-11-05
+with LightGBM 4.7.0's trees, early stopping on a validation slice, each
+data set split by time with no shuffling. The planted rows are 100 a clock step over 2,000 steps, with a
+level that wanders and that no feature carries, and an online model of
+half-life 5 steps (`ewridge` for the Gaussian target, `ftrl` for the
+Bernoulli one), and noise of spread 1.0; each seed trains on the first
+part of its clock and tests on the last.
+BTCUSDT is Binance's one-minute trade counts over 60 days from 2024-01-02,
+a Poisson objective, scored as RMSE on the log scale. Flights is every
+2013 departure from New York (nycflights13), arrival delay in minutes, with
+the origin airport's recent delays as the online prediction:
+
+| data | score | trees alone | the prediction as a feature | the prediction as the margin |
+|---|---|---:|---:|---:|
+| planted, Gaussian, test level inside the training range (seeds 0, 1) | RMSE | 1.777, 1.742 | 1.026, 1.024 | 1.021, 1.022 |
+| planted, Gaussian, test level outside it (seed 2) | RMSE | 5.825 | 3.131 | **1.023** |
+| planted, Bernoulli, inside (seeds 0, 1) | log loss | 0.516, 0.386 | 0.480, 0.353 | 0.479, 0.354 |
+| planted, Bernoulli, outside (seed 2) | log loss | 0.389 | 0.204 | **0.152** |
+| BTCUSDT trade counts | log-RMSE | 0.4682 | 0.4652 | **0.4603** |
+| flights' arrival delay | RMSE, minutes | 37.39 | **35.13** | 36.00 |
+
+The planted Gaussian rows' noise floor is 1.0. Where the level stays
+inside the training range, the margin and the feature score within 0.005
+of each other. On flights the feature won, and passing the prediction both
+ways scored 35.22, within 0.09 of it, which is why the recipe passes both.
 
 ## Polars' read-ahead
 
