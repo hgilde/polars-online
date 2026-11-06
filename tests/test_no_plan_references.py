@@ -94,6 +94,7 @@ FILES: list[str] = [
     "docs/TESTING.md",
     "docs/EXTENDING.md",
     "docs/WRITING.md",
+    "docs/GLOSSARY.md",
     "docs/VALIDATION.md",
     *sorted(str(p.relative_to(REPO)) for p in REFERENCE.glob("*.rst")),
 ]

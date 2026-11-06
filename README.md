@@ -226,7 +226,9 @@ calling `ModelBank.fit_predict` on each chunk, or from the standalone
 
 ### Terminology
 
-polars-online uses these words in a sense of its own:
+polars-online uses these words in a sense of its own. The
+[glossary](docs/GLOSSARY.md) defines every other word the docs use for
+the library:
 
 | term | meaning |
 |---|---|
