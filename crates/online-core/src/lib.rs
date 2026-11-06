@@ -777,7 +777,28 @@ pub use window::{
 ///     read whole (fewer than four blocks) reports the bits it did.
 ///
 ///   Schema 65's fixtures are kept (`tests/state_fixtures/v65/`).
-pub const SCHEMA_VERSION: u32 = 66;
+/// - 67 (2026-11-05, task 340, the user's two decisions of the same day;
+///   task 341 extends it), two changes in one schema:
+///   - the notices a failed call leaves: a bank's stream keeps, per model
+///     instance, the readiness notices it has raised and the bank has not
+///     yet taken (`online_polars`' `Notified::pending`, each a `Notice`:
+///     its body, and the session span it names where one is). Every call
+///     that completes takes them before the bank can be saved, so a saved
+///     stream holds some only after a call that learned rows and then
+///     returned an error; written only then. A bank saved and loaded
+///     between such a call and its next said them never, the flags that
+///     they were raised being saved and their text not; now its first
+///     completing call says them, taking every stream's. A state of 66 or
+///     earlier holds none and loads with none.
+///   - `marginal`'s `before_65` (schema 65), the mark a histogram still to
+///     be built from a state of 64 or earlier carries, is cleared once the
+///     histogram is built, at the freeze, where it acts last; before, it
+///     was written on every later save. A state of 65 or 66 saved past its
+///     freeze carries it still and loads without it; one saved inside its
+///     warm-up loads marked, as before, and goes on to the bit either way.
+///
+///   Schema 66's fixtures are kept (`tests/state_fixtures/v66/`).
+pub const SCHEMA_VERSION: u32 = 67;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last

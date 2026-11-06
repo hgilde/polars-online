@@ -702,16 +702,16 @@ fn a_restored_hold_is_reserved_for_the_refits_count() {
     );
 }
 
-/// A state of schema 64 saved inside a learned warm-up keeps its mark
-/// `before_65` after the freeze has built its histogram (task 335, F10,
-/// held as it is, not changed): the mark acts only where a histogram is
-/// built ([`Binned::start`]), which no row reaches again once one exists,
-/// so every later save writes it although it no longer acts. Cleared after
-/// the freeze, the state's bytes would lose the field and nothing else,
-/// and the model would go on to the bit: the same outputs on every row and
-/// the same bytes but for it.
+/// A state of schema 64 saved inside a learned warm-up carries the mark
+/// `before_65` until the freeze builds its histogram, where the mark acts
+/// ([`Binned::start`]) and is cleared (schema 67, task 340; until it the
+/// mark outlived the freeze and was written on every later save, task 335,
+/// F10). From the freeze the state saves the current form, without the
+/// field, and the model goes on to the bit. A state of schema 65 or 66
+/// saved past its freeze, which carries the mark still, loads without it
+/// and saves that form too, going on to the bit.
 #[test]
-fn the_schema_64_mark_outlives_the_freeze_and_acts_no_more() {
+fn the_schema_64_mark_is_cleared_at_the_freeze() {
     let data = rows(80);
     let mut m = learned(crate::BinStat::Huber { delta: 1.345 }, true, 20);
     for (x, y, w) in &data[..8] {
@@ -720,34 +720,47 @@ fn the_schema_64_mark_outlives_the_freeze_and_acts_no_more() {
     let mut s = m.state();
     s.schema_version = 64;
     let mut kept = Marginal::restore(&s).unwrap();
-    for (x, y, w) in &data[8..30] {
+    assert!(kept.bins.as_ref().unwrap().before_65, "marked at the load");
+    let named = |m: &Marginal| rmp_serde::to_vec_named(&m.state()).unwrap();
+    let written = |m: &Marginal| {
+        let bytes = named(m);
+        let v = rmpv::decode::read_value(&mut bytes.as_slice()).unwrap();
+        format!("{v}").contains("\"before_65\": true")
+    };
+    for (i, (x, y, w)) in data[8..30].iter().enumerate() {
+        let frozen = kept.bins.as_ref().unwrap().hist.is_some();
+        assert_eq!(
+            kept.bins.as_ref().unwrap().before_65,
+            !frozen,
+            "row {}: marked until the freeze, not after",
+            8 + i
+        );
+        assert_eq!(written(&kept), !frozen, "and written only while marked");
         kept.step(x, y, 1.0, *w);
     }
     let b = kept.bins.as_ref().unwrap();
     assert!(b.hist.is_some() && b.refit.done, "frozen and refit");
-    assert!(b.before_65, "the mark outlives the freeze");
-    let named = |m: &Marginal| rmp_serde::to_vec_named(&m.state()).unwrap();
+    assert!(!b.before_65, "the mark does not outlive the freeze");
+    assert!(!written(&kept));
+    // The current form: what a build before 67 wrote past the freeze was
+    // this state with the mark, which loads to it, saves its bytes and
+    // goes on to the bit.
     let bytes = named(&kept);
-    let v = rmpv::decode::read_value(&mut bytes.as_slice()).unwrap();
-    assert!(
-        format!("{v}").contains("\"before_65\": true"),
-        "written on every save"
-    );
-    // Cleared: only the field moves.
-    let mut cleared = kept.clone();
-    cleared.bins.as_mut().unwrap().before_65 = false;
-    assert_ne!(named(&cleared), bytes);
-    let mut back = Marginal::restore(&kept.state()).unwrap();
-    assert!(back.bins.as_ref().unwrap().before_65, "and read back");
+    let mut marked = kept.clone();
+    marked.bins.as_mut().unwrap().before_65 = true;
+    let mut old = marked.state();
+    old.schema_version = 66;
+    assert_ne!(rmp_serde::to_vec_named(&old).unwrap(), bytes);
+    let mut back = Marginal::restore(&old).unwrap();
+    assert!(!back.bins.as_ref().unwrap().before_65, "loaded without it");
+    assert_eq!(named(&back), bytes, "and saves the current form");
+    let mut again = Marginal::restore(&kept.state()).unwrap();
     for (x, y, w) in &data[30..] {
-        let a = back.step(x, y, 1.0, *w);
-        let c = cleared.step(x, y, 1.0, *w);
+        let a = kept.step(x, y, 1.0, *w);
+        let b = back.step(x, y, 1.0, *w);
+        let c = again.step(x, y, 1.0, *w);
+        assert_eq!(format!("{a:?}"), format!("{b:?}"));
         assert_eq!(format!("{a:?}"), format!("{c:?}"));
     }
-    back.bins.as_mut().unwrap().before_65 = false;
-    assert_eq!(
-        named(&back),
-        named(&cleared),
-        "the same state but for the mark"
-    );
+    assert_eq!(named(&kept), named(&back));
 }

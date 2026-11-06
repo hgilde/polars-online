@@ -226,6 +226,21 @@ use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 /// case `corrchange_window` was written into `v65/` by the schema-65
 /// build, so that conversion is held: [`RENUMBERED`] says how.
 ///
+/// 66 kept since 67 made two changes (task 340), of which one touches a
+/// model's state: `marginal`'s mark `before_65` -- carried by a histogram
+/// still to be built from a state of schema 64 or earlier, which the freeze
+/// then builds by that build's rule -- is cleared at the freeze, where it
+/// acts last, so from there the state saves the current form; a build
+/// before wrote it on every later save. A state of 65 or 66 saved past its
+/// freeze carries the mark still and loads without it, going on to the
+/// bit: the case `marginal_bins_refit_first_value_frozen`, saved past its
+/// freeze and before its refit, was written into `v66/` by the schema-66
+/// build, marked, and converts to the current fixture's bytes exactly;
+/// `marginal_bins_refit_first_value`, saved inside its warm-up, loads
+/// marked as before, and its kept file is the current one. The other
+/// change, the notices a bank's stream keeps, is the bank harness's. Every
+/// other kept case converts to the current bytes exactly.
+///
 /// The kept schemas, each a `v<N>/` directory found beside the current set.
 fn previous() -> Vec<u32> {
     frozen::PREVIOUS_SETS.iter().map(|(s, _)| *s).collect()
@@ -2387,7 +2402,15 @@ fn the_anchored_sketch_forms_are_written() {
             Anchors::None,
         ),
     ];
-    let marked_cases = ["huber_mad_awaiting_first_value", "huber_refit_first_value"];
+    // The histogram a state of 64 builds at its freeze anchors each sketch
+    // at its first deviation, marked so; `marginal_bins_refit_first_value_frozen`
+    // is saved past that freeze, its mark `before_65` cleared there (schema
+    // 67) and its two sketches marked.
+    let marked_cases = [
+        "huber_mad_awaiting_first_value",
+        "huber_refit_first_value",
+        "marginal_bins_refit_first_value_frozen",
+    ];
     for (name, place, flag_at, flag, anchors) in cases {
         let v = decoded(name);
         let path: Vec<&str> = flag_at.iter().copied().chain(["mad_anchor"]).collect();
@@ -2479,6 +2502,31 @@ fn the_anchored_sketch_forms_are_written() {
         at(b, &["held"])
             .and_then(rmpv::Value::as_array)
             .is_some_and(|h| !h.is_empty())
+    );
+    // Past its freeze the mark is cleared (schema 67, task 340): the
+    // histogram is built, the refit's rows are held on, and the field is
+    // not written; the schema-66 build's file of the same case carries it.
+    let v = decoded("marginal_bins_refit_first_value_frozen");
+    let b = at(&v, &["model", "Marginal", "bins"]).unwrap();
+    assert!(at(b, &["hist"]).is_some_and(|h| !h.is_nil()));
+    assert!(at(b, &["before_65"]).is_none(), "cleared at the freeze");
+    assert!(
+        at(b, &["held"])
+            .and_then(rmpv::Value::as_array)
+            .is_some_and(|h| !h.is_empty()),
+        "saved before its refit"
+    );
+    let kept = frozen::v66::ALL
+        .iter()
+        .find(|f| f.name == "marginal_bins_refit_first_value_frozen")
+        .expect("the 66 build's file of the case");
+    let v = rmpv::decode::read_value(&mut kept.bytes().as_slice()).unwrap();
+    let b = at(&v, &["model", "Marginal", "bins"]).unwrap();
+    assert!(at(b, &["hist"]).is_some_and(|h| !h.is_nil()));
+    assert_eq!(
+        at(b, &["before_65"]).and_then(rmpv::Value::as_bool),
+        Some(true),
+        "the kept file is marked past its freeze"
     );
     for f in frozen::ALL {
         if f.name != "marginal_bins_refit_first_value" {

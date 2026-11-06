@@ -151,6 +151,19 @@ const REGENERATE: &str = "PRINT_STATE_FIXTURES=1 cargo test -p online-polars --t
 /// whose default is now the window's rows: a kept state's config keeps the
 /// 50 it was saved with, and goes on with it.
 ///
+/// 66 kept since 67 made two changes (task 340). A stream keeps the
+/// readiness notices a call that learned and then failed left in it
+/// (`Notified::pending`), which a build before held in memory alone, so a
+/// bank saved and loaded between such a call and its next never said them;
+/// a 66 file holds none and loads with none, so every kept kind converts
+/// to the current bytes exactly, the windowed ones as above. The kind that
+/// holds some, `bank_notice_pending`, is new at 67 and has no kept file:
+/// one the 66 build wrote would hold the flags that the notices were raised
+/// and not their text, another stream than the current fixture's (the
+/// loader of such a file is held by `bank/notices_tests.rs`). And
+/// `marginal`'s mark `before_65` is cleared once its histogram is built,
+/// which no bank file holds (the core's fixtures hold that conversion).
+///
 /// The kept schemas, each a `v<N>/` directory found beside the current set.
 fn previous() -> Vec<u32> {
     frozen::PREVIOUS_SETS.iter().map(|(s, _)| *s).collect()
@@ -962,6 +975,100 @@ fn unstable_run(bytes: &[u8], input: &DataFrame) -> Ran {
     bank_run_of(&unstable_specs(), bytes, input)
 }
 
+/// The spec of the tenth bank file, `bank_notice_pending`: a stream saved
+/// holding readiness notices raised and not yet taken (`Notified::pending`,
+/// schema 67, task 340). Every call that completes takes them before the
+/// bank can be saved, so a stream holds some only after a call that learned
+/// rows and then returned an error (an output it could not assemble, which
+/// no input reaches: the bank's own hook makes one). Under `group_close =
+/// "session"` a notice names its span, so the file holds both forms a
+/// pending notice takes: group 1's span `"a"` raised its notice in the
+/// call and was closed by span `"b"` in it, so span `"b"`'s stream holds
+/// the notice named ` session "a"`; group 2 raised its own in its open
+/// span, which is named only when the notice is taken. The continuation's
+/// first call says both, in the groups' order, and the frame of what it
+/// said is frozen beside its output.
+fn notice_specs() -> Vec<Spec> {
+    [
+        r#"{"name": "noticed", "model": {"type": "ewridge", "ridge": 0.5}, "targets": ["y"], "features": ["x0", "x1", "x2"], "half_life": 4.0, "coef_every": 1, "group": "g", "session": "s", "group_close": "session"}"#,
+    ]
+    .iter()
+    .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))
+    .collect()
+}
+
+/// Rows `from..from + n` of group `g` in session `s`: under a ridge of 0.5
+/// the duplicated feature `x2` reads a support below 0.5, and at a
+/// half-life of 4 rows the span is 95% settled from its row 19 (0-based),
+/// where the support notice is raised (`tests/notice_paths.rs`).
+fn notice_rows(g: i64, s: &str, from: usize, n: usize) -> DataFrame {
+    let x0: Vec<f64> = (from..from + n)
+        .map(|i| ((i * 7) % 11) as f64 - 5.0)
+        .collect();
+    let x1: Vec<f64> = (from..from + n)
+        .map(|i| ((i * 5) % 9) as f64 - 4.0)
+        .collect();
+    let y: Vec<f64> = (from..from + n)
+        .map(|i| x0[i - from] - x1[i - from] + ((i * 3) % 7) as f64 * 0.1)
+        .collect();
+    df!("g" => vec![g; n], "s" => vec![s; n], "x0" => &x0, "x1" => &x1, "x2" => &x0, "y" => &y)
+        .unwrap()
+}
+
+fn stacked(parts: &[DataFrame]) -> DataFrame {
+    let mut out = parts[0].clone();
+    for p in &parts[1..] {
+        out.vstack_mut(p).unwrap();
+    }
+    out
+}
+
+fn notice_first() -> (Vec<u8>, DataFrame) {
+    let mut bank = Bank::new(notice_specs()).unwrap();
+    bank.fit_predict(&stacked(&[
+        notice_rows(1, "a", 0, 19),
+        notice_rows(2, "a", 0, 19),
+    ]))
+    .unwrap();
+    assert!(
+        bank.take_notices().is_empty(),
+        "nothing raised before row 19"
+    );
+    // Group 1's span "a" raises its notice at its row 19 and is closed by
+    // span "b", which carries it; group 2 raises its own; then the call
+    // fails, leaving both in their streams.
+    bank.fail_next_call_after_learning();
+    assert!(
+        bank.fit_predict(&stacked(&[
+            notice_rows(1, "a", 19, 1),
+            notice_rows(1, "b", 0, 2),
+            notice_rows(2, "a", 19, 1),
+        ]))
+        .is_err(),
+        "the call fails after learning"
+    );
+    assert!(
+        bank.take_notices().is_empty(),
+        "none taken by the failed call"
+    );
+    (
+        bank.save_bytes().unwrap(),
+        stacked(&[notice_rows(1, "b", 2, 4), notice_rows(2, "a", 20, 4)]),
+    )
+}
+
+fn notice_run(bytes: &[u8], input: &DataFrame) -> Ran {
+    let mut bank = Bank::load_bytes(bytes, Some(&notice_specs()))?;
+    let again = bank.save_bytes()?;
+    let cols = bank.fit_predict(input).map_err(|e| e.to_string())?;
+    let out = DataFrame::new(input.height(), cols).map_err(|e| e.to_string())?;
+    let said = df!("notice" => bank.take_notices()).map_err(|e| e.to_string())?;
+    Ok((
+        again,
+        vec![("fit_predict".into(), out), ("notices".into(), said)],
+    ))
+}
+
 fn windows_first_of(config: WindowsConfig, input: DataFrame) -> (Vec<u8>, DataFrame) {
     let mut run = WindowsRun::new(config, input.schema()).unwrap();
     run.feed(&input.slice(0, SPLIT), None).unwrap();
@@ -1200,6 +1307,11 @@ fn kinds() -> Vec<Kind> {
             name: "bank_unstable",
             first: unstable_first,
             run: unstable_run,
+        },
+        Kind {
+            name: "bank_notice_pending",
+            first: notice_first,
+            run: notice_run,
         },
         Kind {
             name: "with_windows",
@@ -1937,6 +2049,16 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
         }),
         ("bank_refit", "a sketch on the grid fixed at 1", |p, v| {
             p.ends_with(".anchor") && v.as_f64() == Some(1.0)
+        }),
+        // Schema 67 (task 340): the notices a failed call left in a stream,
+        // one naming the closed span it was raised in, one its body alone.
+        ("bank_notice_pending", "a pending notice's body", |p, v| {
+            p.contains(".pending.")
+                && p.ends_with(".body")
+                && v.as_str().is_some_and(|s| s.contains("support_coef"))
+        }),
+        ("bank_notice_pending", "a pending notice's span", |p, v| {
+            p.contains(".pending.") && p.ends_with(".span") && v.as_str() == Some(" session \"a\"")
         }),
         // Schema 66 (task 328): the rows a window's ring has taken.
         (

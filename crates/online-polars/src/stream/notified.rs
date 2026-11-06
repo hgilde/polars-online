@@ -17,8 +17,14 @@ pub struct Notified {
     /// noise gate's reason is never the row's, and a stream says the one
     /// that holds it back.
     pub unreachable: bool,
-    /// Raised and not yet drained; not state.
-    #[serde(skip)]
+    /// Raised and not yet taken. Every call that completes takes its
+    /// streams' before the bank can be saved, so a saved stream holds some
+    /// only after a call that learned and then returned an error; written
+    /// only then (schema 67, task 340), so that a bank saved and loaded
+    /// before its next call still says them. Before 67 they were held in
+    /// memory alone, and the flags above, which are saved, kept them from
+    /// ever being said again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending: Vec<Notice>,
     /// Per target, the decay time at the first row of the run of rows the
     /// `min_weight` floor has withheld since the stream was 95% settled
@@ -63,11 +69,16 @@ pub struct Notified {
 /// one (`session_gap = "reset"`, a drift reset, `restart_after_step_back`)
 /// rebuilds its models and keeps which notices it has said -- so a notice
 /// is said once per (spec, group, instance) and names no span.
-#[derive(Debug, Clone, Default, PartialEq)]
+///
+/// Saved with its stream while it is pending ([`Notified::pending`]): the
+/// span only where one is named, so a notice raised in the span the stream
+/// is in writes its body alone.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Notice {
     /// ` session "a"` (the value quoted as a group key is), or ` session
     /// null` for a span whose session value is null; `None` until the
     /// notice is taken, and for a spec that does not close on session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub span: Option<String>,
     /// What the notice says, after its spec, group and span.
     pub body: String,

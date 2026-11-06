@@ -2970,8 +2970,17 @@ pub struct Bank {
     /// Whether a call learned rows and then returned an error before it
     /// took its streams' notices (an output it could not assemble), so that
     /// streams outside the next call's chunk may hold some: the next call
-    /// that completes takes every stream's, not only its chunk's. Not state.
+    /// that completes takes every stream's, not only its chunk's. Not
+    /// state: the notices such a call leaves are saved with their streams
+    /// (`Notified::pending`, schema 67), and a loaded bank starts with this
+    /// set, so its first completing call takes every stream's once, wherever
+    /// the file's streams held them.
     notices_left: bool,
+    /// The next call returns an error once its streams have learned, in
+    /// place of its output: what no input reaches, made for the tests of
+    /// the notices such a call leaves ([`Self::fail_next_call_after_learning`]).
+    /// Not state.
+    fail_after_learning: bool,
     /// Run buffers kept from earlier chunks for small runs to fill again
     /// (task 270, G-1); not state.
     spares: Spares,
@@ -3216,6 +3225,7 @@ impl Bank {
             threads: crate::pool::Threads::default(),
             notices,
             notices_left: false,
+            fail_after_learning: false,
             spares: Spares::default(),
             refit_reserved: vec![0.0; n_specs],
             refit_noticed: vec![false; n_specs],
@@ -3903,6 +3913,18 @@ impl Bank {
         self.window_prepass = on;
     }
 
+    /// Make the next learning call return an error once its streams have
+    /// learned, in place of its output, as a call whose output could not be
+    /// assembled does: its streams keep the notices its rows raised, to be
+    /// said by the next call that completes, or by a save and load. No
+    /// input reaches such a return, so the tests of what it leaves make one
+    /// here (`bank/notices_tests.rs`, and the frozen bank file that holds a
+    /// pending notice). Not for use.
+    #[doc(hidden)]
+    pub fn fail_next_call_after_learning(&mut self) {
+        self.fail_after_learning = true;
+    }
+
     /// Refuse to go on from a chunk refused after some of it was learned
     /// (the `broken` field).
     fn refuse_if_broken(&self) -> PolarsResult<()> {
@@ -4469,8 +4491,7 @@ impl Bank {
         }
         // A return here leaves the notices the rows raised in their streams,
         // as an output that cannot be assembled below would.
-        #[cfg(test)]
-        if notices_tests::fail_after_learning(specs) {
+        if std::mem::take(&mut self.fail_after_learning) {
             return Err(polars_err!(ComputeError: "a failure after learning, for a test"));
         }
         let mut t_process = t2.elapsed();
@@ -4558,7 +4579,9 @@ impl Bank {
         // below removes the groups it finishes: taken after it, a notice
         // raised in the call that closed its group was lost, and said only
         // where a chunk ended between the group and the next (task 333).
-        // After a call that learned and returned early, every stream's.
+        // After a call that learned and returned early, every stream's; and
+        // on the first call a loaded bank completes, since a file's streams
+        // keep what such a call left them (task 340).
         for (si, hm) in self.states.iter_mut().enumerate() {
             let spec = &self.specs[si];
             if notices_left {
@@ -5089,6 +5112,11 @@ impl Bank {
         }
         let specs_len = specs.len();
         let mut bank = Bank::new(specs)?;
+        // A stream saved after a call that learned and then failed keeps the
+        // notices that call raised (`Notified::pending`), in any group of any
+        // spec: the first call that completes takes every stream's, as the
+        // next call after such a failure does in the bank that failed.
+        bank.notices_left = true;
         // The caller's spec may write a half-life grid another way, `"600s"`
         // for `"10m"`: the same instances, a duration being its length, under
         // other labels. Each stream is restored under the bank's spec, so its

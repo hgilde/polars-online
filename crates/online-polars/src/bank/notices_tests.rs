@@ -3,38 +3,20 @@
 //! 332), and so does a path that removes such a stream before that call
 //! (task 333): the monotone close of an earlier group, and `drop_groups`.
 //! No input reaches such a return -- it is an output the bank could not
-//! assemble -- so the test makes one, by a spec's name, once armed.
-use std::sync::Mutex;
-
+//! assemble -- so the test makes one, by the bank's own hook
+//! (`Bank::fail_next_call_after_learning`), and since schema 67 the
+//! notices it leaves are saved with their streams (task 340).
 use crate::{Bank, GroupKey, Spec};
 use polars::prelude::*;
 
-/// The names of the specs whose bank's next call fails after learning:
-/// one name a test, so tests run side by side do not take each other's.
-static ARMED: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
-fn armed() -> std::sync::MutexGuard<'static, Vec<String>> {
-    ARMED
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+/// The bank's next learning call fails once its streams have learned.
+fn arm(bank: &mut Bank) {
+    bank.fail_next_call_after_learning();
 }
 
-/// Whether this call returns an error once its streams have learned: once,
-/// when armed, for a bank with a spec named for it.
-pub(super) fn fail_after_learning(specs: &[Spec]) -> bool {
-    let mut armed = armed();
-    let before = armed.len();
-    armed.retain(|name| !specs.iter().any(|s| &s.name == name));
-    armed.len() < before
-}
-
-fn arm(name: &str) {
-    armed().push(name.to_string());
-}
-
-/// Whether the failure armed for `name` was reached (and so disarmed).
-fn reached(name: &str) -> bool {
-    !armed().iter().any(|n| n == name)
+/// Whether the failure armed was reached (and so disarmed).
+fn reached(bank: &Bank) -> bool {
+    !bank.fail_after_learning
 }
 
 fn spec(name: &str, extra: &str) -> Spec {
@@ -70,12 +52,9 @@ fn a_notice_left_by_a_call_that_failed_after_learning_is_said_once() {
     bank.fit_predict(&rows(2, 0, 2)).unwrap();
     assert!(bank.take_notices().is_empty());
     // Group 1's row 19 is learned, and the call fails after it.
-    arm("fails-after-learning-a");
+    arm(&mut bank);
     assert!(bank.fit_predict(&rows(1, 19, 1)).is_err());
-    assert!(
-        reached("fails-after-learning-a"),
-        "the call reached the failure"
-    );
+    assert!(reached(&bank), "the call reached the failure");
     assert!(bank.take_notices().is_empty());
     // A call to another group says it.
     bank.fit_predict(&rows(2, 2, 1)).unwrap();
@@ -101,9 +80,9 @@ fn a_notice_left_in_a_group_the_next_call_closes_is_said_once() {
     let mut bank = Bank::new(vec![spec(name, r#", "group_close": "monotone""#)]).unwrap();
     bank.fit_predict(&rows(1, 0, 19)).unwrap();
     assert!(bank.take_notices().is_empty());
-    arm(name);
+    arm(&mut bank);
     assert!(bank.fit_predict(&rows(1, 19, 1)).is_err());
-    assert!(reached(name), "the call reached the failure");
+    assert!(reached(&bank), "the call reached the failure");
     assert!(bank.take_notices().is_empty());
     // Group 2's first row closes group 1.
     bank.fit_predict(&rows(2, 0, 1)).unwrap();
@@ -127,9 +106,9 @@ fn a_notice_left_in_a_dropped_group_is_said_once() {
     let name = "fails-after-learning-drop";
     let mut bank = Bank::new(vec![spec(name, "")]).unwrap();
     bank.fit_predict(&rows(1, 0, 19)).unwrap();
-    arm(name);
+    arm(&mut bank);
     assert!(bank.fit_predict(&rows(1, 19, 1)).is_err());
-    assert!(reached(name), "the call reached the failure");
+    assert!(reached(&bank), "the call reached the failure");
     let one = GroupKey(Some("1".to_string()));
     assert_eq!(bank.drop_groups(&[one], None), Ok(1));
     let said = bank.take_notices();
@@ -144,16 +123,16 @@ fn a_notice_left_in_a_dropped_group_is_said_once() {
     assert_eq!(bank.take_notices().len(), 1);
 }
 
-/// A failed call's notices outlive it only in memory (code review of the
-/// release, task 334): `notices_left` is not state, and neither are the
-/// notices it points at -- `Notified::pending` is `#[serde(skip)]` -- so a
-/// bank saved and loaded after such a call holds no stream with a notice
-/// the next call's walk of its own groups could miss. The bank that failed
-/// says both groups' at its next completing call, whichever group it
-/// feeds; the loaded one holds none to say: the flag that a notice was
-/// raised is saved, its text is not, so neither group says it again.
+/// A failed call's notices outlive a save (schema 67, task 340): the
+/// notices it left are saved with their streams (`Notified::pending`), and
+/// a loaded bank's first completing call takes every stream's, as the next
+/// call after the failure does in the bank that failed. Before 67 only the
+/// flag that a notice was raised was saved, its text not, so a bank saved
+/// and loaded after such a call never said it. Both banks say both groups'
+/// at their next completing call, whichever group it feeds, in the groups'
+/// order, and once.
 #[test]
-fn a_failed_calls_notices_do_not_outlive_a_save() {
+fn a_failed_calls_notices_outlive_a_save() {
     let name = "fails-after-learning-saved";
     let mut bank = Bank::new(vec![spec(name, "")]).unwrap();
     let both = |from: usize, n: usize| {
@@ -164,9 +143,9 @@ fn a_failed_calls_notices_do_not_outlive_a_save() {
     bank.fit_predict(&both(0, 19)).unwrap();
     assert!(bank.take_notices().is_empty());
     // Both groups' row 19 learned, and the call fails after it.
-    arm(name);
+    arm(&mut bank);
     assert!(bank.fit_predict(&both(19, 1)).is_err());
-    assert!(reached(name), "the call reached the failure");
+    assert!(reached(&bank), "the call reached the failure");
     let held = |bank: &Bank| -> usize {
         bank.states
             .iter()
@@ -177,19 +156,99 @@ fn a_failed_calls_notices_do_not_outlive_a_save() {
     };
     assert_eq!(held(&bank), 2, "each group's stream holds its notice");
     let bytes = bank.save_bytes().unwrap();
+    assert!(
+        String::from_utf8_lossy(&bytes).contains("support_coef < 0.5"),
+        "the notice's text is in the file"
+    );
 
     let mut loaded = Bank::load_bytes(&bytes, None).unwrap();
-    assert_eq!(held(&loaded), 0, "no notice text survives a save");
-    assert!(!loaded.notices_left);
+    assert_eq!(held(&loaded), 2, "the notices survive the save");
+    assert!(loaded.notices_left, "its first call takes every stream's");
+    let expect_both = |said: &[String]| {
+        assert_eq!(said.len(), 2, "{said:#?}");
+        assert!(said[0].starts_with(&format!("spec {name:?} group \"1\":")));
+        assert!(said[1].starts_with(&format!("spec {name:?} group \"2\":")));
+        assert!(said.iter().all(|s| s.contains("support_coef < 0.5")));
+    };
+    // The loaded bank's first call feeds group 1 alone and says both.
     loaded.fit_predict(&rows(1, 20, 1)).unwrap();
+    expect_both(&loaded.take_notices());
+    assert!(!loaded.notices_left);
+    assert_eq!(held(&loaded), 0);
+    // Once: the next calls, to either group, say nothing more.
     loaded.fit_predict(&rows(2, 20, 1)).unwrap();
+    loaded.fit_predict(&rows(1, 21, 1)).unwrap();
     assert!(loaded.take_notices().is_empty());
+    // A save after they were said holds no notice.
+    let again = loaded.save_bytes().unwrap();
+    assert!(!String::from_utf8_lossy(&again).contains("support_coef < 0.5"));
+    assert_eq!(held(&Bank::load_bytes(&again, None).unwrap()), 0);
 
     // The bank that failed says both at its next call, which feeds group 1
-    // alone.
+    // alone, as before.
     bank.fit_predict(&rows(1, 20, 1)).unwrap();
-    let said = bank.take_notices();
-    assert_eq!(said.len(), 2, "{said:#?}");
-    assert!(said[0].starts_with(&format!("spec {name:?} group \"1\":")));
-    assert!(said[1].starts_with(&format!("spec {name:?} group \"2\":")));
+    expect_both(&bank.take_notices());
+}
+
+/// A stream saved with a pending notice by a build of schema 66 or
+/// earlier has no `pending` list -- the notices were held in memory alone
+/// -- and loads with none: the flags that they were raised are saved, so
+/// such a bank says nothing for them, as it did. The file is the current
+/// one with its `pending` lists removed (the clock's `pending`, a number,
+/// stays) and every schema at 66, the header's and the model state's, the
+/// one layout difference.
+#[test]
+fn a_bank_of_schema_66_loads_its_streams_with_no_pending_notice() {
+    let name = "fails-after-learning-66";
+    let mut bank = Bank::new(vec![spec(name, "")]).unwrap();
+    bank.fit_predict(&rows(1, 0, 19)).unwrap();
+    arm(&mut bank);
+    assert!(bank.fit_predict(&rows(1, 19, 1)).is_err());
+    assert!(reached(&bank));
+    let bytes = bank.save_bytes().unwrap();
+    fn strip(v: &mut rmpv::Value, pending: &mut usize, schema: &mut usize) {
+        match v {
+            rmpv::Value::Map(m) => {
+                let before = m.len();
+                m.retain(|(k, v)| !(k.as_str() == Some("pending") && v.is_array()));
+                *pending += before - m.len();
+                for (k, v) in m.iter_mut() {
+                    if k.as_str() == Some("schema_version") && v.as_u64() == Some(67) {
+                        *v = rmpv::Value::from(66);
+                        *schema += 1;
+                    }
+                    strip(v, pending, schema);
+                }
+            }
+            rmpv::Value::Array(a) => a.iter_mut().for_each(|v| strip(v, pending, schema)),
+            _ => {}
+        }
+    }
+    let mut v = rmpv::decode::read_value(&mut &bytes[..]).unwrap();
+    let (mut pending, mut schema) = (0, 0);
+    strip(&mut v, &mut pending, &mut schema);
+    assert_eq!(
+        (pending, schema),
+        (1, 2),
+        "one pending list; the header's schema and the one model state's"
+    );
+    let mut old = Vec::new();
+    rmpv::encode::write_value(&mut old, &v).unwrap();
+    let mut loaded = Bank::load_bytes(&old, None).unwrap();
+    let held: usize = loaded
+        .states
+        .iter()
+        .flat_map(|hm| hm.values())
+        .flat_map(|s| &s.persisted.notified)
+        .map(|n| n.pending.len())
+        .sum();
+    assert_eq!(held, 0, "a 66 stream holds no notice");
+    assert!(
+        loaded.states[0]
+            .values()
+            .all(|s| s.persisted.notified[0].support),
+        "and keeps that it was raised"
+    );
+    loaded.fit_predict(&rows(1, 20, 2)).unwrap();
+    assert!(loaded.take_notices().is_empty(), "so it is never said");
 }

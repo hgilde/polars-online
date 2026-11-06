@@ -688,7 +688,11 @@ struct Binned {
     /// the freeze from here anchors each MAD sketch at its first deviation
     /// and feeds it every deviation while the refit waits, as that build
     /// did ([`crate::EwQuantile`]'s "Where the anchor is set"), so the
-    /// state goes on to the bit. Written only where it is `true`, last.
+    /// state goes on to the bit. Written only where it is `true`, last, and
+    /// cleared once the histogram is built (schema 67, task 340): it acts
+    /// nowhere after, so from the freeze the state saves the current form.
+    /// A state of schema 65 or 66 saved past its freeze carries it still,
+    /// and loads without it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     before_65: bool,
 }
@@ -827,6 +831,9 @@ impl Binned {
             crate::MarginalBins::new_with_anchor(p, n_targets, edges, cfg.stat, cfg.mad_anchor)
                 .expect("edges_from gives one finite, strictly increasing list per feature");
         self.start(cfg, &mut hist);
+        // The schema-64 rule has acted where it acts, in `start`: cleared,
+        // so the state saves the current form from here.
+        self.before_65 = false;
         for row in &self.held {
             hist.decay(row.lam);
             hist.update_row(&row.x, &row.y, row.w);
@@ -2944,6 +2951,16 @@ impl OnlineModel for Marginal {
                                 && (c.mad_anchor || b.refit_open(c));
                         }
                     }
+                }
+                // A state of schema 65 or 66 converted from one of 64 and
+                // saved past its freeze wrote the mark on every save (task
+                // 335, F10): it acts nowhere once the histogram exists, so
+                // it loads without it (schema 67, task 340), and the state
+                // saves the current form.
+                if let Some(b) = m.bins.as_mut()
+                    && b.hist.is_some()
+                {
+                    b.before_65 = false;
                 }
                 Ok(m)
             }

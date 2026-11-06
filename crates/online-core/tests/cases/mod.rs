@@ -1667,6 +1667,37 @@ pub fn all() -> Vec<Case> {
             Targets::Linear(2),
             8
         ),
+        // The same state read by this build and saved past its freeze (row
+        // 12), before its refit (row 20): the histogram was built by the
+        // schema-64 rule above, and the mark that built it so has acted
+        // and is cleared (task 340, schema 67; before it the mark was
+        // written on every later save), so the saved form is the current
+        // one. The 66 build's file is kept under `v66/`, marked: it loads,
+        // goes on to the bit and converts to this one's bytes.
+        case!(
+            "marginal_bins_refit_first_value_frozen",
+            "Marginal",
+            Marginal,
+            restored_from_64(
+                Marginal::new(MarginalCfg {
+                    bins: Some(Box::new(BinCfg {
+                        n_bins: 4,
+                        edges: None,
+                        rule: BinRule::Quantile,
+                        warm_rows: 12,
+                        stat: online_core::BinStat::Huber { delta: 1.0 },
+                        refit_rows: 20,
+                        budget_mib: None,
+                        mad_anchor: true,
+                    })),
+                    ..marginal_cfg()
+                })
+                .unwrap()
+            ),
+            K,
+            Targets::Linear(2),
+            16
+        ),
         // Each target's MAD sketch anchored (schema 64, task 278);
         // `marginal_bins_huber` is the form a state saved before it goes
         // on in.

@@ -2718,8 +2718,10 @@ mod tests {
         // from a refit's held `|e|`, whose loader reads 64: unchanged too.
         // 66 for task 327's diagonal `hmm` and `ew_class` states and task
         // 328's count of the rows `corrchange`'s window ring has taken,
-        // whose loaders read 65: unchanged too.
-        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (10, 66));
+        // whose loaders read 65: unchanged too. 67 for task 340's pending
+        // notices saved with a stream and `marginal`'s mark cleared at its
+        // freeze, whose loaders read 66: unchanged too.
+        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (10, 67));
         assert_eq!(MIN_WINDOWS_VERSION, 9);
     }
 
