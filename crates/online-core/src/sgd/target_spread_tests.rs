@@ -879,9 +879,11 @@ fn a_refused_step_moves_neither_the_level_nor_the_gains() {
 /// target's spread, or a probe's gain past `PROBE_WAKE` times the resting
 /// mean, would otherwise clear. Inside the input bound a row's gradient
 /// overflows only on a fit thrown far off, so the resting model's slopes
-/// are set by hand to two such fits. At a slope of `1e10`, a row at
-/// `x = 1e100` and a weight of `1e100` is predicted at `1e110`, a residual
-/// that wakes the gate, and its slope gradient `1e310` is `inf`. At slopes
+/// are set by hand to two such fits. At a slope of `1e200`, a row at
+/// `x = 1e100` and a weight of `1e100` is predicted at `1e300`, a residual
+/// that wakes the gate, and its slope gradient is `inf`: `1e500` from `x`
+/// itself, and from a held fit's standardized `z` too, which a scaler that
+/// takes the row in bounds by about the root of its rows. At slopes
 /// of `±1e300`, a row at `x = 1e10` is predicted at `inf − inf`, not a
 /// number: no residual wakes the gate, but a probe of the row's gain would.
 /// Each is tried off a probe's row and on one.
@@ -890,18 +892,64 @@ fn a_refused_step_leaves_a_resting_gate_as_it_was() {
     let rows = rows(1200, 0.0);
     let rested = resting(&rows[..1000]);
     let zero = [0.0; 3];
+    refused_rows_leave_the_gate(&rested, |m| {
+        let p = eta(m, &zero);
+        m.step(&zero, &[Some(p)], 1.0, 1.0);
+    });
+}
+
+/// The same once a scaler has warmed up and the fit is held in the
+/// caller's units, where the step is mapped into them by the row's map and
+/// refused there, on its own path (task 347: the gate's rest count and
+/// wake are undone on each path a step is refused on, so each has a test).
+/// The walk to (or off) a probe's row takes the stream's own rows.
+#[test]
+fn a_refused_held_step_leaves_a_resting_gate_as_it_was() {
+    let rows = rows(2000, 0.0);
+    let mut m = Sgd::new(SgdCfg {
+        min_weight: 0.0,
+        ..cfg(SgdLoss::Squared, LearningRate::Constant, 0.002)
+    })
+    .unwrap();
+    let mut stream = rows.iter().cycle();
+    for (x, y) in stream.by_ref().take(1000) {
+        m.step(x, &[Some(*y)], 1.0, 1.0);
+    }
+    let mut walked = 0;
+    while !m.gain[0].resting || (m.gain[0].rested + 1).is_multiple_of(PROBE_ROWS) {
+        walked += 1;
+        assert!(
+            walked <= AWAKE_ROWS + PROBE_ROWS,
+            "the gate neither rested nor left a probe's row"
+        );
+        let (x, y) = stream.next().expect("a cycle");
+        m.step(x, &[Some(*y)], 1.0, 1.0);
+    }
+    assert!(
+        m.warmup.switched(),
+        "the fit is not held in the caller's units"
+    );
+    refused_rows_leave_the_gate(&m, |m| {
+        let (x, y) = stream.next().expect("a cycle");
+        m.step(x, &[Some(*y)], 1.0, 1.0);
+    });
+}
+
+/// From `rested`, a resting model whose next row is not a probe's, each of
+/// the two refused rows of [`a_refused_step_leaves_a_resting_gate_as_it_was`]
+/// off a probe's row and on one, walked there by `walk`'s rows.
+fn refused_rows_leave_the_gate(rested: &Sgd, mut walk: impl FnMut(&mut Sgd)) {
     for probe_row in [false, true] {
         let mut m = rested.clone();
         m.cfg.clip_gradient = f64::INFINITY;
         let mut walked = 0;
         while (m.gain[0].rested + 1).is_multiple_of(PROBE_ROWS) != probe_row {
             walk_to_a_probe(&mut walked);
-            let p = eta(&m, &zero);
-            m.step(&zero, &[Some(p)], 1.0, 1.0);
+            walk(&mut m);
             assert!(m.gain[0].resting);
         }
         for (what, slopes, x, w) in [
-            ("wide", [1e10, 0.0, 0.0], [1e100, 0.0, 0.0], 1e100),
+            ("wide", [1e200, 0.0, 0.0], [1e100, 0.0, 0.0], 1e100),
             ("not a number", [1e300, -1e300, 0.0], [1e10, 1e10, 0.0], 1.0),
         ] {
             let mut m = m.clone();

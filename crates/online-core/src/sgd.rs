@@ -1373,28 +1373,35 @@ impl Sgd {
     }
 
     /// Target `j` took its step: its level's weight with the row in it
-    /// becomes its own, the gate takes the row's rest count and any wake
-    /// (`gate`, read from it before the step and changed only in that
-    /// copy), and the step's gain joins the unstable rate's sums
-    /// ([`StepGain`]). None of them moves for a row the step refused: not
-    /// the level, not the sums, and not the gate's `resting` or `rested`,
-    /// so a refused row neither counts toward a probe nor wakes the gate.
-    fn took_step(
-        &mut self,
-        j: usize,
-        level: Option<Level>,
-        gate: Option<StepGain>,
-        gain: Option<f64>,
-    ) {
+    /// becomes its own, and the step's gain joins the unstable rate's sums
+    /// ([`StepGain`]). Neither moves for a row the step refused, which
+    /// [`Sgd::refused_step`] handles instead.
+    fn took_step(&mut self, j: usize, level: Option<Level>, gain: Option<f64>) {
         if let Some(lv) = level {
             self.level[j] = lv;
-        }
-        if let Some(g) = gate {
-            self.gain[j] = g;
         }
         if let Some(q) = gain {
             let may_rest = in_target_units(&self.cfg);
             self.gain[j].learn(q, may_rest);
+        }
+    }
+
+    /// Target `j`'s step was refused: a gate that rested as the row found
+    /// it (`found`, its rest count then) rests again with that count, so a
+    /// refused row neither counts toward a probe nor wakes the gate. The
+    /// row's rest count and any wake are made on the gate in place before
+    /// the step, as the gain's verdict reads them, and undone here only on
+    /// this rare path: a copy of the gate taken and written back on every
+    /// row cost the 20-feature squared-loss step 0.9% of its instructions
+    /// on arm64, natively, and 1.9% on x86-64 under Valgrind (task 347). An
+    /// awake gate moves only in [`Sgd::took_step`], so a refused row leaves
+    /// it as it was.
+    #[cold]
+    fn refused_step(&mut self, j: usize, found: Option<u32>) {
+        if let Some(rested) = found {
+            let g = &mut self.gain[j];
+            g.resting = true;
+            g.rested = rested;
         }
     }
 
@@ -2281,22 +2288,27 @@ impl OnlineModel for Sgd {
             // (`StepGain`). `l2` shrinks each slope by `1 − lr·l2` besides.
             // A resting gate takes no gain, and wakes on a residual past
             // `WAKE_SPREADS` of the target's spread, its unit here
-            // ([`StepGain`]). The rest count and the wake are made on a copy
-            // of the gate, which `took_step` keeps only where the row's step
-            // is taken: a refused row leaves the gate as it found it.
-            let mut gate = self.gain.get(j).copied();
-            let (resting, probe) = match gate.as_mut() {
+            // ([`StepGain`]). The rest count and the wake are made on the
+            // gate in place; `found`, a resting gate's count as the row found
+            // it, lets `refused_step` undo them where the row's step is
+            // refused: a refused row leaves the gate as it found it.
+            let (resting, probe, found) = match self.gain.get_mut(j) {
                 Some(g) if g.resting => {
+                    let found = g.rested;
                     g.rested = g.rested.wrapping_add(1);
                     if (yj - p).abs() > WAKE_SPREADS * unit {
                         g.resting = false;
                         g.rested = 0;
                     }
-                    (g.resting, g.resting && g.rested % PROBE_ROWS == 0)
+                    (
+                        g.resting,
+                        g.resting && g.rested % PROBE_ROWS == 0,
+                        Some(found),
+                    )
                 }
-                _ => (false, false),
+                _ => (false, false, None),
             };
-            let step_gain = match (gate.is_none() || (resting && !probe), lr_row) {
+            let step_gain = match (self.gain.is_empty() || (resting && !probe), lr_row) {
                 (false, Some(lr)) => {
                     let c = match self.cfg.loss {
                         SgdLoss::Squared => 1.0,
@@ -2325,7 +2337,7 @@ impl OnlineModel for Sgd {
                         // A probe: the gain wakes the gate past twice the
                         // resting mean, and joins the sums; otherwise it is
                         // let pass.
-                        let g = gate.as_mut().expect("a probe is a resting gate's");
+                        let g = &mut self.gain[j];
                         if q > PROBE_WAKE * g.q / g.n {
                             g.resting = false;
                             g.rested = 0;
@@ -2343,13 +2355,15 @@ impl OnlineModel for Sgd {
                 // The step in the row's coordinates, mapped into the
                 // caller's units by the row's map, and projected there.
                 if self.step_mapped(j, d, weight, lr_row, (clip, ada_eps), level_step) {
-                    self.took_step(j, level_next, gate, step_gain);
+                    self.took_step(j, level_next, step_gain);
                     if let Some(t) = taught.get_mut(j) {
                         *t = Some((yj, e_abs));
                     }
                     if self.cfg.constraint.is_some() {
                         self.project_mapped(j);
                     }
+                } else {
+                    self.refused_step(j, found);
                 }
                 continue;
             }
@@ -2404,6 +2418,7 @@ impl OnlineModel for Sgd {
                 None => slopes_usable(&beta[off..], z, d, weight, l2, clip, true),
             };
             if (off == 1 && !usable((d * weight).clamp(-clip, clip))) || !slopes_ok {
+                self.refused_step(j, found);
                 continue;
             }
             // The intercept's step: its gradient's at the row's rate or
@@ -2435,7 +2450,7 @@ impl OnlineModel for Sgd {
             if let Some(l) = self.learned.get_mut(j) {
                 *l = true;
             }
-            self.took_step(j, level_next, gate, step_gain);
+            self.took_step(j, level_next, step_gain);
             if let Some(t) = taught.get_mut(j) {
                 *t = Some((yj, e_abs));
             }
