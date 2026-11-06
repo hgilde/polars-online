@@ -650,7 +650,7 @@ on rereading:
 | 7. render | read it as the repository will show it | GitHub's API renders it: `POST /markdown` with `mode=markdown`. `uv run python scripts/doc_review.py render FILE.md OUT.html` does it through `gh`, as a standalone page |
 | 8. test gate | run the tests that read the README | `tests/test_production_hardening.py` runs every python block and checks that each name a block reads was built by a block before it, `tests/test_llms_txt.py` checks every anchor `llms.txt` uses, `tests/test_api_links.py` resolves every API link and walks every model section, and `tests/test_doc_structure.py` runs step 5 over every Markdown file git tracks. `tests/test_example_steps.py` checks that each long example names its steps (§3). A README recipe is held to the output it shows by `test_a_readme_recipe_prints_what_it_shows`, a guide's by its page's own test, and `test_every_guide_has_a_readme_section` holds each guide to a README section (§2). `tests/test_no_plan_references.py` holds every reader-facing file to §4's rule on citations |
 | 9. cold read | read it in order as a newcomer | a reader with none of the pass's context (no brief, no earlier version, no code) reads the rendered page from the top. They mark each paragraph whose purpose they cannot tell from what comes before it, and each example they could not run from what the page has shown. A writer who checks one part against the rules misses both: the rules are about sentences, and a writer knows what each paragraph is for |
-| 10. review until nothing is left | give the draft to a reviewer with none of the pass's context, revise it from their report, and give the revision to another such reviewer, round after round | each reviewer has the page and these rules, and nothing else: no brief, no earlier version and no earlier report. The reviewer sorts each finding into one of three classes: *wrong* (a false fact, a contradiction, missing or lost content, a broken link or anchor), *rule* (it breaks a written rule of this guide or the glossary, which the finding cites by section and rule), or *preference* (anything else, such as a better wording that breaks no rule). Fix every *wrong* and *rule* finding. Apply a *preference* only where it is clearly better and cheap, and log the rest. The pass ends at the first round whose reviewers raise no *wrong* and no *rule* finding, however many rounds that takes. Where two reviewers' *rule* findings contradict each other, the rule is unclear: fix it in this guide in the same change, then go on (the user, 2026-11-05: "For the docs be sure to iterate until there is no more to consider") |
+| 10. review in rounds | give the draft to reviewers with none of the pass's context, and revise it from their reports. Round 1 reviews the whole page. Each later round reviews only the text the round before it changed: the changed passages, with enough of their surroundings to read them. When a scoped round finds no *wrong* and no *rule* finding in the changed text, give the page one final full read. Fix its *wrong* and *rule* findings without opening another round, and stop: that read is the page's last | each reviewer has the page, these rules and the repository to check facts against, and nothing else: no brief, no earlier version and no earlier report. The reviewer sorts each finding into one of three classes: *wrong* (a false fact, a contradiction, missing or lost content, a broken link or anchor), *rule* (it breaks a written rule of this guide or the glossary, which the finding cites by section and rule), or *preference* (anything else, such as a better wording that breaks no rule). Fix every *wrong* and *rule* finding. Apply a *preference* only where it is clearly better and cheap, and log the rest. Where two reviewers' *rule* findings contradict each other, the rule is unclear: fix it in this guide in the same change, then go on. Later rounds are scoped because rounds over the whole page never came back clean: the glossary took 27 of them and the map of the rewrite 19. A reviewer who can check about a hundred claims against the code always finds one stated imprecisely, and each round's fixes add text for the next round to fault (the user, 2026-11-06, choosing "Scope later rounds") |
 
 The counts, taken outside code blocks, tables and headings. `uv run python
 scripts/doc_review.py measure FILE.md` takes the first seven, and `counts
@@ -1011,6 +1011,32 @@ rule against citing the plan already is:
 | the vocabulary | no message uses a word the glossary keeps out of user-facing text, and every page uses American spelling |
 | the sentences | `scripts/doc_review.py`'s counts (§6) stay under their limits on every guide, not only the README |
 | the page kind | each guide declares its kind, and a how-to has its prerequisites and numbered steps |
+
+**Every finding is reported, and only a file that got worse fails.**
+`scripts/writing_checks.py` runs the five checks. `uv run python
+scripts/writing_checks.py report` prints each check's totals, and `--list`
+prints every finding with its file and line. A finding is *held* when it
+breaks a rule outright. It is *to read* when it is a hit of one of §6's
+numbered counts, or a word the glossary retires in one sense and keeps in
+another, such as *source*. Only held findings are counted.
+
+**A file's count of held findings may only fall.** `writing_ratchet.toml`
+records each check's held findings by file and rule, and
+`tests/test_writing_checks.py` holds every count to it. A count above its
+record fails, since the file got worse. A count below it fails too, naming
+the number to record, so the change that made the gain is the one that
+keeps it. `uv run python scripts/writing_checks.py apply` writes that
+number, and never increases a count. A new file fails until `apply` records
+it, so its counts show in the change that adds it. Once a file's rewrite is
+complete, it goes under `[finished]` for that check. There any held finding
+fails, apart from those listed under `[[accepted]]` with the reason a
+reader accepted them.
+
+**A page declares its kind in an HTML comment on its first line**, as
+`<!-- kind: how-to -->`. GitHub does not show the comment, so the
+declaration adds no sentence about the page (P1), and the page's first
+sentence still says what it is about (P12). The kind is one of the seven
+§9 accepts.
 
 A prose linter such as Vale, which Google's and Microsoft's guides are
 published for as rule sets, can hold the sentence rules. It is a program

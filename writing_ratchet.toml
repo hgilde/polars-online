@@ -509,7 +509,7 @@ kinds = []
 "retired" = 2
 
 [vocabulary."crates/online-polars/src/spec.rs#messages"]
-"british" = 3
+"british" = 4
 "retired" = 2
 
 [vocabulary."crates/online-polars/src/spec/checks.rs#messages"]
@@ -552,7 +552,7 @@ kinds = []
 "retired" = 2
 
 [vocabulary."docs/DATA-QUALITY.md"]
-"british" = 11
+"british" = 16
 "retired" = 21
 
 [vocabulary."docs/DIAGNOSTICS.md"]
@@ -566,30 +566,29 @@ kinds = []
 [vocabulary."docs/GBDT.md"]
 
 [vocabulary."docs/GRAM.md"]
-"british" = 20
+"british" = 24
 "retired" = 2
 
 [vocabulary."docs/MODELS.md"]
-"british" = 76
+"british" = 78
 "retired" = 20
 
 [vocabulary."docs/OUTPUTS.md"]
 "british" = 5
 
 [vocabulary."docs/PERFORMANCE.md"]
-"british" = 36
+"british" = 40
 "retired" = 108
 
 [vocabulary."docs/README.md"]
-"british" = 1
 "retired" = 3
 
 [vocabulary."docs/REGIMES.md"]
-"british" = 1
+"british" = 2
 "retired" = 9
 
 [vocabulary."docs/RELEASE-READINESS.md"]
-"british" = 8
+"british" = 12
 "retired" = 23
 
 [vocabulary."docs/RUNNER.md"]
@@ -613,7 +612,7 @@ kinds = []
 "retired" = 3
 
 [vocabulary."python/polars_online/_bank.py#docstrings"]
-"british" = 16
+"british" = 19
 "retired" = 26
 
 [vocabulary."python/polars_online/_bank.py#messages"]
@@ -635,7 +634,7 @@ kinds = []
 [vocabulary."python/polars_online/_renamed.py#messages"]
 
 [vocabulary."python/polars_online/_spec.py#docstrings"]
-"british" = 70
+"british" = 72
 "retired" = 35
 
 [vocabulary."python/polars_online/_spec.py#messages"]
@@ -646,7 +645,7 @@ kinds = []
 [vocabulary."python/polars_online/_spec_audit.py#messages"]
 
 [vocabulary."python/polars_online/_spec_changepoint.py#docstrings"]
-"british" = 11
+"british" = 13
 "retired" = 3
 
 [vocabulary."python/polars_online/_spec_gradient.py#docstrings"]
@@ -656,7 +655,7 @@ kinds = []
 [vocabulary."python/polars_online/_spec_gradient.py#messages"]
 
 [vocabulary."python/polars_online/_spec_regimes.py#docstrings"]
-"british" = 12
+"british" = 13
 "retired" = 3
 
 [vocabulary."python/polars_online/_spec_regimes.py#messages"]
@@ -674,7 +673,7 @@ kinds = []
 [vocabulary."python/polars_online/_warnings.py#messages"]
 
 [vocabulary."python/polars_online/corr.py#docstrings"]
-"british" = 7
+"british" = 9
 
 [vocabulary."python/polars_online/corr.py#messages"]
 
@@ -689,7 +688,7 @@ kinds = []
 [vocabulary."python/polars_online/gbdt.py#messages"]
 
 [vocabulary."python/polars_online/gram.py#docstrings"]
-"british" = 20
+"british" = 21
 "retired" = 11
 
 [vocabulary."python/polars_online/gram.py#messages"]
@@ -707,6 +706,7 @@ kinds = []
 [vocabulary."python/polars_online/sim.py#messages"]
 
 [vocabulary."python/polars_online/stream.py#docstrings"]
+"british" = 1
 
 [vocabulary."python/polars_online/stream.py#messages"]
 
@@ -740,7 +740,7 @@ kinds = []
 [sentences."docs/GBDT.md"]
 "45+" = 1
 "is-a-lead" = 1
-"python-word" = 2
+"python-word" = 1
 
 [sentences."docs/GLOSSARY.md"]
 
@@ -802,7 +802,7 @@ kinds = []
 "about-the-document" = 6
 "inverted" = 3
 "is-a-lead" = 7
-"python-word" = 15
+"python-word" = 10
 
 [kinds."CONTRIBUTING.md"]
 "undeclared" = 1

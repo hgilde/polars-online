@@ -47,7 +47,7 @@ committed count for each check, file and rule:
 
 ``apply`` lowers each count to what is measured, records the files the
 ratchet has not seen, and drops the files no check reads any more. It never
-raises a count. The vocabulary counts a source file's docstrings and its
+increases a count. The vocabulary counts a source file's docstrings and its
 messages apart (``x.py#docstrings``, ``x.py#messages``), since different
 stages rewrite them.
 
@@ -207,10 +207,11 @@ def glossary_retired(repo: Path = REPO) -> list[str]:
 
 
 def glossary_kept_out(repo: Path = REPO) -> list[str]:
-    """Each word of the glossary's *Words kept out of reader-facing text*
-    table, as its first column names it."""
+    """Each word of the glossary's *Words kept out of user-facing text*
+    table, as its first column names it. The heading is found by its first
+    words, so a rename of what the text is called does not lose it."""
     text = (repo / "docs" / "GLOSSARY.md").read_text(encoding="utf-8")
-    section = text.split("\n## Words kept out of reader-facing text\n", 1)[1].split("\n## ", 1)[0]
+    section = re.split(r"\n## Words kept out of [^\n]*\n", text, maxsplit=1)[1].split("\n## ", 1)[0]
     out: list[str] = []
     for head, rows, _ in _tables(section):
         if head and head[0] == "word":
@@ -307,6 +308,7 @@ VARIANTS: list[Variant] = [
     Variant("honest", r"\bhonest(?:ly)?\b", True),
     Variant("prequential", r"\bprequential\b", False),
     Variant("forecast", r"\bforecast(?:s|ed|ing)?\b", False),
+    Variant("scored", r"\bscored\b", False),
     Variant("beta", r"\bbetas?\b", False),
     Variant("accumulator", r"\baccumulators?\b", True),
     Variant("sufficient statistics", r"\bsufficient statistics?\b", False),
@@ -345,7 +347,6 @@ VARIANTS: list[Variant] = [
 #: fails until then.
 NOT_SCANNED: dict[str, str] = {
     "key": "a group's value is *key* alone only in context; *group key* and Polars' keys stay",
-    "Labels that arrive late": "a heading the row keeps until every link to it moves",
     "teaches the model nothing": "an example of *teach*, which is scanned",
     "timestamp column": "kept as a description of a clock that holds times",
     "error": "retired only where it means one row's residual, a sense a scan cannot tell",
@@ -359,7 +360,16 @@ NOT_SCANNED: dict[str, str] = {
     "Timestamp column": "kept as a description of a clock that holds times",
     "a clock (timestamp column `ts`)": "an example of the use the row keeps",
     "Forget": "kept as an ordinary verb in an explanation",
-    "the half-life": "the wording the row gives in place of *lam*",
+    "fresh": "the word the row gives as the reason; *fresh bank* is scanned",
+    "stream": "retired only for one model's rows; the glossary's word for a bank's rows",
+    "grid": "retired alone only for `refresh_time`'s times; the glossary's word for a spec's grid",
+    "the model's rows": "the wording the row gives in place of *stream* for one model's rows",
+    "break": "retired alone only for a clock break, a sense a scan cannot tell from a break test",
+    "warm-up": "the chosen spelling, named as the reason *warmup* is retired",
+    "slot": "retired only for a coefficient's position, a sense a scan cannot tell",
+    "grid point": "retired only for one of `refresh_time`'s times, a sense a scan cannot tell",
+    "the refresh grid": "the wording the row gives in place of *grid* for `refresh_time`'s times",
+    "refresh time": "the wording the row gives in place of *grid point* for those times",
     "Out of order": "kept for a query whose row order Polars does not promise",
     "update equation": "the docstring section's name, which keeps *update*",
     "under a hard window": "the wording the row gives in place of *windowed*",
@@ -383,7 +393,7 @@ def _vocabulary(text: str) -> str:
 
 
 def _markdown_prose(text: str) -> str:
-    """A Markdown page's reader-facing words: its prose, and the comments of
+    """A Markdown page's user-facing words: its prose, and the comments of
     its code examples; code, code spans, quotations and block quotes
     blanked, lines kept."""
     out: list[str] = []
@@ -418,7 +428,7 @@ def _british() -> tuple[dict[str, str], re.Pattern[str]]:
 
 
 def vocabulary_findings(text: str, path: str, *, where: str = "", line0: int = 1) -> list[Finding]:
-    """The retired variants and British spellings in reader-facing ``text``."""
+    """The retired variants and British spellings in user-facing ``text``."""
     prose = _vocabulary(text)
     plain = _without_code_spans(prose)
     found: list[Finding] = []

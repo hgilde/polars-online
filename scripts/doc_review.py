@@ -179,6 +179,7 @@ PYTHON_WORDS = re.compile(r"\bexceptions?\b|\braise[sd]?\b|\braising\b", re.I)
 #: the everyday *exception* is not one), or *raises an error*.
 AN_ERROR = re.compile(
     r"(Error|Exception|Warning)\b|\b(?i:raise[sd]?|raising)\b.*\b(?i:error|exception)s?\b"
+    r"|\b(?i:errors?|exceptions?)\b.*\b(?i:raise[sd]?|raising)\b"  # the errors it raises
 )
 
 #: The models' builders, which a paragraph names as models rather than as

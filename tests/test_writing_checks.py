@@ -251,14 +251,18 @@ def test_every_retired_word_is_placed():
     for it. A phrase the glossary adds fails here until it is placed."""
     retired = wc.glossary_retired()
     assert len(retired) > 60, retired
-    placed = {v.phrase for v in wc.VARIANTS} | set(wc.NOT_SCANNED)
-    assert [p for p in retired if p not in placed] == []
-    assert [v.phrase for v in wc.VARIANTS if v.phrase not in retired] == []
+    # A phrase that opens a sentence is capitalized there (*Label stays*),
+    # so phrases are compared without case.
+    placed = {p.lower() for p in [v.phrase for v in wc.VARIANTS] + list(wc.NOT_SCANNED)}
+    assert [p for p in retired if p.lower() not in placed] == []
+    lowered = {p.lower() for p in retired}
+    assert [v.phrase for v in wc.VARIANTS if v.phrase.lower() not in lowered] == []
 
 
 def test_every_kept_out_word_is_placed():
     kept_out = wc.glossary_kept_out()
     assert len(kept_out) > 15, kept_out
+    assert {"settled", "cfg", "collect_batches", "the gate"} <= set(kept_out), kept_out
     placed = set(wc.KEPT_OUT) | set(wc.KEPT_OUT_NOT_SCANNED)
     assert [w for w in kept_out if w not in placed] == []
 
