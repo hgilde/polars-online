@@ -15,14 +15,15 @@ forms: a term used before it is named, a cost that does not say what is
 spent, a mechanism alluded to rather than stated, and a document that
 assumes the reader has the author's map of it.
 
-Ten principles sit above the numbered rules. They generalize the user's
-verdicts on the README's rewrites, and
-were written down at the user's word on 2026-10-04: "Write all the rules".
-Each numbered rule is one way to keep one of them.
+Fourteen principles sit above the numbered rules. The first ten generalize
+the user's verdicts on the README's rewrites, and were written down at the
+user's word on 2026-10-04: "Write all the rules". P11 to P14 came with the
+rules of §9 to §13, on 2026-11-05. Each numbered rule is one way to keep
+one of them.
 
 | | principle | in practice |
 |---|---|---|
-| P1 | **Every sentence is about the library or the reader's task, never about the document** | no sentence lists what follows; a lead-in says what the points are for, as *here are a few points to remember about fitting models with polars-online*; a table of a section's contents opens it only when the table explains the subsections (§2) |
+| P1 | **Every sentence is about the library or the reader's task, never about the document** | apart from a page's first sentence, which says what the page is about and who it is for (§9); no sentence lists what follows; a lead-in says what the points are for, as *here are a few points to remember about fitting models with polars-online*; a table of a section's contents opens it only when the table explains the subsections (§2) |
 | P2 | **Concrete first: show it working, then explain** | the introduction leads with its example; an example shows its input and its output; give the value, not a description of it (§2, §3, §5) |
 | P3 | **Show what is distinctive about the library early** | the first example carries what sets the library apart: a target that looks ahead, predictions made before learning, a local fit (§2, §3) |
 | P4 | **Say what it means for the reader, with the reason** | turn a mechanism into the advice it implies; why, then what (§5) |
@@ -284,9 +285,9 @@ input, built in code the reader has seen, with a few of its rows printed in
 a table where their shape matters, and the table each step returns. Its
 comments say what each line takes and what it gives. The `refresh_time`
 example became readable once it built its eight ticks in the open and
-printed the grid they make. The first fit is held to the same rule. A
+printed the refresh grid they make. The first fit is held to the same rule. A
 printed table is a claim like any other, so a test holds it to what the
-code returns, as `tests/test_refresh_time.py` holds that grid.
+code returns, as `tests/test_refresh_time.py` holds that refresh grid.
 
 **Every name an example reads was built by an example before it.** A reader
 starts with nothing and runs the examples in order, so a frame described in
@@ -723,7 +724,7 @@ use one whenever the items share dimensions:
 
 | the content | the table | where the docs do it |
 |---|---|---|
-| options compared | a row per option, a column per dimension | the three ways to hold a row back: scored, clock advances, fit moves, `weight_sum`, use it to |
+| options compared | a row per option, a column per dimension | the three ways to hold a row back: predicted, clock advances, fit moves, `weight_sum`, use it to |
 | settings | the setting, its default, what it does, what it reads | the two warm-up gates |
 | caveats | the caveat, and why | the five things to know before reading the numbers of a model under a hard window |
 | failure modes | what you see, what it means, what to do | `micro`'s two wrong values of `eps`, in MODELS.md |
@@ -740,7 +741,10 @@ complete the grid may not (§4).
 **A list stays a list when there is nothing to compare,** such as a
 single point, or steps that are only an order. A reason, a warning or a
 trade-off stays prose: it is an argument, and a table cell cuts an
-argument into fragments.
+argument into fragments. A table of choices may still give each choice
+its reason in a cell, in a sentence or two, as the glossary's table of
+contested words does; a reason that needs more goes in prose beside the
+table.
 
 ## 8. Rewrites, as examples
 
@@ -755,7 +759,7 @@ What the rules above did to the README's own text:
 | before | after | rule |
 |---|---|---|
 | seventeen top-level sections, listed in a contents paragraph of sixteen links, with the twenty models flat | ten sections holding subsections, a contents table, and the models under four families | §2 |
-| three bullets comparing weight `0`, a null target and `predict`, each a paragraph | a table with one row per way, and a column each for scored, clock, fit, `weight_sum` and use | §7 |
+| three bullets comparing weight `0`, a null target and `predict`, each a paragraph | a table with one row per way, and a column each for predicted, clock, fit, `weight_sum` and use | §7 |
 | a paragraph listing the readiness fields a model writes | a runnable block that fits a spec and reads each field, with a comment on each | §3 |
 | the withheld reasons as `below_min_settled_frac`, `above_max_error_inflation`, `below_min_weight` | the order `WITHHELD_REASONS` declares, which is their precedence: `below_min_settled_frac`, `below_min_weight`, `above_max_error_inflation`, `below_warm_rows`, `ill_conditioned`, `unstable_rate` | §4 |
 | *The order of the rows matters only when a model forgets* | *Row order matters when a model forgets … Without one, the models that solve or accumulate give the same answer in any order* | §4 |
@@ -796,7 +800,7 @@ Before:
 > between two stocks over a day.
 
 After, in the user's words, with code formatting added and two facts
-corrected (§4). A row's betas are the fit *after* learning that row. And
+corrected (§4). A row's coefficients are the fit *after* learning that row. And
 every row is now `coef_every=0`: `coef_every` became a clock parameter, as
 `solve_every` is, so 1 now means one of the clock's units.
 
@@ -957,7 +961,7 @@ the value to change it to. The derivation belongs in the guide it links to.
 a glance. `72.6359` asks the reader to decide which digits matter.
 
 **A warning names everything it is about.** A readiness warning names its
-spec, its group and, where sessions start the model over, its session, so
+spec, its group and, under `group_close="session"`, its session span, so
 two warnings from one call are never the same text. A spec with no groups
 names no group: `group ""` is a value the reader did not give.
 
@@ -971,8 +975,8 @@ once in the [glossary](GLOSSARY.md), with its definition, and every page, docstr
 message uses that name. A word varied for style is read as a different
 thing. *Instance*, *slot* and *grid point* were used interchangeably
 across the docs for three different things, and *candidate* for two of
-them. *Settled* was used both for the share of its long-run weight a model has
-reached and for readiness, where `settled_frac` and *ready* now name each.
+them. *Settled* was used both for how far a model has come toward its steady
+state under decay and for readiness, where `settled_frac` and *ready* now name each.
 One word, *model*, names both a kind of model and the one a bank keeps, as in
 scikit-learn, and the glossary says when to use each.
 
@@ -1004,11 +1008,11 @@ rule against citing the plan already is:
 |---|---|
 | the message shape | every error and warning the package raises starts with where it happened and ends with a sentence in the imperative, and is at most three sentences |
 | the docstring sections | every public function's docstring has §10's sections in §10's order |
-| the vocabulary | no message uses a word the glossary keeps out of reader-facing text, and every page uses American spelling |
+| the vocabulary | no message uses a word the glossary keeps out of user-facing text, and every page uses American spelling |
 | the sentences | `scripts/doc_review.py`'s counts (§6) stay under their limits on every guide, not only the README |
 | the page kind | each guide declares its kind, and a how-to has its prerequisites and numbered steps |
 
 A prose linter such as Vale, which Google's and Microsoft's guides are
 published for as rule sets, can hold the sentence rules. It is a program
-outside Python, so adopting it is a decision about the tools the gate
+outside Python, so adopting it is a decision about the tools the test gate
 needs, and the checks above do not wait for it.
