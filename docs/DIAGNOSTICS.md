@@ -1716,9 +1716,11 @@ coefficient that has moved. That is the half-life to choose. Chosen as the
 stream ran, the selection held 25 on 41% of the rows, 400 on 30% and 100
 on 27%, and its error sits between the best and the third. Each slot is
 ranked at its own half-life, so the shortest is ranked on the fewest rows
-and wins its share by luck. Choose a half-life over a long stretch with
-`po.eval.metrics`, and use `emit_selected` where the best setting itself
-moves.
+and wins its share by luck. Use `emit_selected` where the best setting
+itself moves. To choose one setting to run from here on, choose it over a
+long stretch with `po.eval.grid_search`, which also scores the choice on
+rows it had not seen: the best error over the rows that chose it is
+optimistic ([Calibrating a model](CALIBRATION.md)).
 
 ### Comparing two models
 

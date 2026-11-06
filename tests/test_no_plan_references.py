@@ -83,6 +83,7 @@ FILES: list[str] = [
     "docs/GRAM.md",
     "docs/DIAGNOSTICS.md",
     "docs/DATA-QUALITY.md",
+    "docs/CALIBRATION.md",
     "docs/MODELS.md",
     "docs/WINDOWS.md",
     "docs/RUNNER.md",

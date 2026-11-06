@@ -1,10 +1,12 @@
 """Scoring a bank's output: out-of-sample R², IC and hit rate per (spec, group,
 target), overall or in windows, the sums that give them one chunk at a time,
-and tests of one spec's errors against another's.
+tests of one spec's errors against another's, and a setting chosen from a
+stream's own errors.
 
-Everything here consumes the frame a :class:`~polars_online.ModelBank`
-returns: the original columns plus one struct column per spec. Four kinds of
-call read it:
+Every call but :func:`grid_search` consumes the frame a
+:class:`~polars_online.ModelBank` returns: the original columns plus one
+struct column per spec. Four kinds of call read it, and :func:`grid_search`
+runs the bank over a query itself:
 
 .. list-table::
    :header-rows: 1
@@ -25,6 +27,9 @@ call read it:
    * - the long form the scores read
      - :func:`unpack`
      - the whole frame, collected
+   * - a setting chosen from a stream's own errors
+     - :func:`grid_search`
+     - two sums per setting and span, the bank run over a query
 
 The scores over a frame are polars aggregations, so they need the whole
 frame. For a stream too long to hold, a spec's ``emit_metrics`` keeps the same
@@ -39,8 +44,9 @@ that is not a column under its own name -- a column renamed with
 read through it (see :func:`unpack`), and so is whether a fit is a
 classifier, whose scores take other names (:func:`metrics`'s ``binary``).
 
-Every call here reads a whole ``DataFrame``: a ``LazyFrame`` is refused with
-a ``TypeError`` that says to collect it. The scores start from
+Every call here but :func:`grid_search`, which runs a bank over a query
+itself, reads a whole ``DataFrame``: a ``LazyFrame`` is refused with a
+``TypeError`` that says to collect it. The scores start from
 :func:`unpack` and raise what it raises: ``KeyError`` for a spec the frame
 has no column of, ``TypeError`` for a column that is not a model's
 prediction struct, ``ValueError`` for a slot whose target column cannot be
@@ -64,12 +70,13 @@ threshold, its false-alarm rate as measured, and a recipe that runs.
 from __future__ import annotations
 
 import functools
+import itertools
 import math
 import re
 import warnings
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import timedelta
-from typing import Any
+from typing import Any, Literal
 
 import polars as pl
 
@@ -81,6 +88,7 @@ __all__ = [
     "metrics",
     "window_metrics",
     "compare_specs",
+    "grid_search",
     "unpack",
     "seqtest",
     "diebold_mariano",
@@ -880,6 +888,425 @@ def compare_specs(
     ]
     cols = ["spec", *frames[0].columns[:-1]] if frames else []
     return pl.concat(frames).select(cols) if frames else pl.DataFrame()
+
+
+#: :func:`grid_search`'s scorings: each names the column it writes and
+#: whether a lower value is the better one.
+_SCORINGS = {"mse": True, "loglik": False}
+
+#: The settings a spec's own grid varies, as :func:`polars_online.spec.output_index`
+#: names them: :func:`grid_search` writes a column for each that varies.
+_GRID_COLUMNS = ("half_life", "ridge", "feature_set", "penalty")
+
+#: :func:`grid_search`'s own columns, which a ``param_grid`` key may not take.
+_SEARCH_COLUMNS = ("spec", "slot", "target", "n", "rank", "folds_chosen", *_SCORINGS)
+
+
+def _points(param_grid: Any) -> list[dict[str, Any]]:
+    """``param_grid`` as its list of points, in scikit-learn's
+    ``ParameterGrid`` order: the keys sorted, the last key varying fastest."""
+    who = "po.eval.grid_search"
+    if not isinstance(param_grid, Mapping) or not param_grid:
+        msg = f"{who}: param_grid is a dict of each setting's values, got {param_grid!r}"
+        raise TypeError(msg)
+    keys = sorted(param_grid)
+    for key in keys:
+        values = param_grid[key]
+        if not isinstance(key, str):
+            msg = f"{who}: param_grid's keys are a builder's keywords, got {key!r}"
+            raise TypeError(msg)
+        if key in _SEARCH_COLUMNS:
+            msg = f"{who}: param_grid key {key!r} names one of the result's own columns"
+            raise ValueError(msg)
+        if isinstance(values, (str, bytes)) or not isinstance(values, Sequence) or not values:
+            msg = f"{who}: param_grid[{key!r}] is a list of the values to try, got {values!r}"
+            raise TypeError(msg)
+    return [
+        dict(zip(keys, point, strict=True))
+        for point in itertools.product(*(param_grid[k] for k in keys))
+    ]
+
+
+def _search_specs(
+    specs: Any, param_grid: Mapping[str, Sequence[Any]] | None
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The specs to run, and each one's point of the grid (``{}`` without one)."""
+    who = "po.eval.grid_search"
+    if callable(specs):
+        points = _points(param_grid)
+        built = []
+        for point in points:
+            name = ", ".join(f"{k}={v}" for k, v in point.items())
+            spec = specs(name, **point)
+            if not isinstance(spec, dict) or spec.get("name") != name:
+                msg = (
+                    f"{who}: the spec builder must return a spec named by its first argument, "
+                    f"as po.spec's builders do: called with {name!r}, it returned "
+                    f"{spec.get('name') if isinstance(spec, dict) else type(spec).__name__!r}"
+                )
+                raise ValueError(msg)
+            built.append(spec)
+        return built, points
+    if param_grid is not None:
+        msg = f"{who}: param_grid needs a spec builder to call, and got specs already built"
+        raise TypeError(msg)
+    given = [specs] if isinstance(specs, dict) else list(specs)
+    if not given or not all(isinstance(s, dict) for s in given):
+        msg = f"{who}: specs is a spec, a list of them, or a builder, got {specs!r}"
+        raise TypeError(msg)
+    return given, [{} for _ in given]
+
+
+def _time_series_folds(n: int, n_splits: int, gap: int) -> list[tuple[int, int, int]]:
+    """Each fold as ``(choose_end, test_start, test_end)``, in rows: scikit-learn's
+    ``TimeSeriesSplit(n_splits, gap=gap)`` over ``n`` rows, each fold's choice read
+    from the rows before ``choose_end`` and scored on ``test_start:test_end``."""
+    who = "po.eval.grid_search"
+    if isinstance(n_splits, bool) or not isinstance(n_splits, int) or n_splits < 1:
+        msg = f"{who}: n_splits must be a whole number >= 1, got {n_splits!r}"
+        raise ValueError(msg)
+    if isinstance(gap, bool) or not isinstance(gap, int) or gap < 0:
+        msg = f"{who}: gap must be a whole number of rows >= 0, got {gap!r}"
+        raise ValueError(msg)
+    test_size = n // (n_splits + 1)
+    first = n - n_splits * test_size
+    if test_size < 1 or first - gap < 1:
+        msg = (
+            f"{who}: {n} rows are too few for n_splits={n_splits} and gap={gap}: each of "
+            f"the {n_splits + 1} spans needs a row, and the first must outlast the gap"
+        )
+        raise ValueError(msg)
+    return [(s - gap, s, s + test_size) for s in range(first, n, test_size)]
+
+
+def _search_slots(
+    specs: list[dict[str, Any]], frame: pl.DataFrame, scoring: str
+) -> list[dict[str, Any]]:
+    """One record per field :func:`grid_search` scores: its spec, field and
+    target, the target's value as an expression, the spec grid's settings,
+    and whether it is a setting to choose among (``emit_selected``'s and
+    ``emit_averaged``'s fields are scored beside them, never chosen)."""
+    from polars_online import spec as _spec_mod
+
+    slots = []
+    for i, spec in enumerate(specs):
+        idx = _spec_mod.output_index(spec)
+        if scoring == "loglik":
+            rows = idx.filter(pl.col("kind") == "loglik")
+            if rows.is_empty():
+                msg = (
+                    f"po.eval.grid_search: spec {spec['name']!r} writes no loglik field to score "
+                    'by scoring="loglik"; bocpd, hmm and deco do'
+                )
+                raise ValueError(msg)
+            for r in rows.iter_rows(named=True):
+                slots.append(
+                    {
+                        "spec": i,
+                        "field": r["field"],
+                        "target": None,
+                        "y": None,
+                        "choose": True,
+                        **{c: r[c] for c in _GRID_COLUMNS},
+                    }
+                )
+            continue
+        targets = _spec_targets(spec, frame)
+        if not targets:
+            msg = (
+                f"po.eval.grid_search: spec {spec['name']!r} makes no prediction of a target to "
+                'score by mse; score a bocpd, hmm or deco spec by scoring="loglik"'
+            )
+            raise ValueError(msg)
+        rows = idx.filter(pl.col("kind").is_in(["pred", "pred_selected", "pred_averaged"]))
+        for r in rows.iter_rows(named=True):
+            if r["kind"] == "pred":
+                if r["field"] not in targets:
+                    continue
+                target, y = targets[r["field"]]
+            else:
+                target = r["target"]
+                y = next(v for t, v in targets.values() if t == target)
+            slots.append(
+                {
+                    "spec": i,
+                    "field": r["field"],
+                    "target": target,
+                    "y": y,
+                    "choose": r["kind"] == "pred",
+                    **{c: r[c] for c in _GRID_COLUMNS},
+                }
+            )
+    return slots
+
+
+def _slot_sums(
+    chunk: pl.DataFrame, specs: list[dict[str, Any]], slots: list[dict[str, Any]], scoring: str
+) -> list[tuple[float, int]]:
+    """Each slot's sum of squared errors, or of ``loglik``, and its row count,
+    over the rows of ``chunk`` where every slot of its target has a value."""
+
+    def value(s: dict[str, Any]) -> pl.Expr:
+        return pl.col(specs[s["spec"]]["name"]).struct.field(s["field"]).cast(pl.Float64)
+
+    exprs = []
+    for target in dict.fromkeys(s["target"] for s in slots):
+        mine = [(k, s) for k, s in enumerate(slots) if s["target"] == target]
+        common = pl.all_horizontal(
+            [_usable(value(s)) for _, s in mine]
+            + ([] if scoring == "loglik" else [_usable(mine[0][1]["y"].cast(pl.Float64))])
+        ).fill_null(False)
+        for k, s in mine:
+            v = value(s) if scoring == "loglik" else (value(s) - s["y"].cast(pl.Float64)) ** 2
+            exprs.append(v.filter(common).sum().alias(f"s{k}"))
+            exprs.append(common.sum().cast(pl.Int64).alias(f"n{k}"))
+    row = chunk.select(exprs).row(0, named=True)
+    return [(float(row[f"s{k}"]), int(row[f"n{k}"])) for k in range(len(slots))]
+
+
+def grid_search(
+    source: pl.LazyFrame | pl.DataFrame,
+    specs: dict[str, Any] | Sequence[dict[str, Any]] | Callable[..., dict[str, Any]],
+    param_grid: Mapping[str, Sequence[Any]] | None = None,
+    *,
+    n_splits: int = 5,
+    gap: int = 0,
+    scoring: Literal["mse", "loglik"] = "mse",
+    chunk_size: int | None = None,
+    threads: int | None = None,
+) -> pl.DataFrame:
+    """Score every setting of a grid in one pass over a stream, and choose one
+    from earlier rows only.
+
+    Each row's prediction is made before the row is learned from, so the
+    stream's own errors are out of sample, and every setting is scored on
+    the same rows. Choosing the setting whose error is lowest over those rows
+    and reporting that error is optimistic: each error is the setting's true
+    error plus noise, and the minimum picks the setting whose noise happened
+    to run lowest. So this also scores the *choice*. The rows are cut as
+    scikit-learn's ``TimeSeriesSplit(n_splits, gap=gap)`` cuts them: the
+    ``n`` rows into ``n_splits + 1`` spans, the last ``n_splits`` of
+    ``n // (n_splits + 1)`` rows each. Before each of those test spans the
+    setting with the best score over every row before it (``gap`` rows short
+    of it) is chosen, and scored on the span:
+
+    .. code-block:: text
+
+        size     = n // (n_splits + 1)
+        start_k  = n - (n_splits - k) * size                 k = 0 .. n_splits - 1
+        chosen_k = argbest over settings s of score(s, rows [0, start_k - gap))
+        honest   = score(chosen_k on rows [start_k, start_k + size), pooled over k)
+
+    ``score`` is ``mse``, the mean of ``(y - pred)**2``, lowest best, or
+    ``loglik``, the mean log predictive density of a row, highest best.
+    Under ``scoring="loglik"`` the settings are scored on the ``loglik`` field
+    of ``bocpd``, ``hmm`` and ``deco``: the sum of a stream's pre-row log
+    densities is its log marginal likelihood (the prequential score), the
+    criterion that compares hazards, priors and state counts. ``gap`` keeps
+    the choice from rows whose outcome was not yet known at the span's start:
+    give it the rows a target looks ahead.
+
+    **What is scored.** The candidates are every prediction a spec writes,
+    one per target and point of its own grid (``half_life``, ``ridge``,
+    ``feature_sets`` or ``penalties`` as lists), across all the specs. A row
+    counts for a target only where every candidate of that target has a
+    value and the target is present, so the settings are compared on the same
+    rows, and the rows each setting withholds while it warms up count for
+    none. Every row weighs alike. ``emit_selected``'s and ``emit_averaged``'s
+    predictions, where a spec writes them, are scored on the same rows and
+    never chosen.
+
+    ``specs`` is a spec, a list of specs, or a spec builder called as
+    ``specs(name, **point)`` for each point of ``param_grid``, a dict of each
+    keyword's values, as scikit-learn's ``ParameterGrid`` takes one: its keys
+    sorted, the last varying fastest. ``functools.partial(po.spec.sgd,
+    targets=["y"], features=["x"])`` with ``{"learning_rate": [...]}`` is one.
+    The name it is given is the point written out, ``"learning_rate=0.01"``.
+
+    ``source`` is a query or a frame; it is read once, ``chunk_size`` rows
+    at a time, through one bank of every spec, with ``threads`` as
+    :class:`~polars_online.ModelBank` takes them. Only the sums below are
+    kept, so memory is the bank's state and a chunk, however long the
+    stream. A query is counted first, to place the spans: for a parquet scan
+    Polars reads the count from the files' footers, and any other query runs
+    once more without the bank.
+
+    Returns one row per candidate and target, in grid order, then per target
+    one row for the choice:
+
+    ``spec``
+        The spec's name; null on the choice's row.
+    the keys of ``param_grid``, then ``half_life``, ``ridge``, ``feature_set``, ``penalty``
+        The candidate's settings: the grid's point, and each setting of the
+        specs' own grids that varies among the candidates.
+    ``slot``, ``target``
+        The field scored and its target (null under ``loglik``). The choice's
+        row is ``pred_<target>__chosen``, or ``loglik__chosen``.
+    ``n``
+        The rows scored, over the test spans.
+    ``mse`` or ``loglik``
+        The score over those rows.
+    ``rank``
+        1 for the best candidate over the test spans, ties sharing the lower
+        rank: the setting to run from here on. Its score is chosen on the rows
+        it reports, so it is the optimistic number. Null on the choice's row
+        and on ``emit_selected``'s and ``emit_averaged``'s.
+    ``folds_chosen``
+        How many test spans the choice ran the candidate on. A tie goes to the
+        first in grid order.
+
+    The choice's row is the honest number: what choosing the best setting
+    from the rows before each span earned on that span. Its gap below the
+    rank-1 score is what choosing on the same rows would have overstated.
+
+    .. code-block:: python
+
+        import functools
+
+        sgd = functools.partial(po.spec.sgd, targets=["y"], features=["x0", "x1"], half_life=1000.0)
+        table = po.eval.grid_search(
+            pl.scan_parquet("ticks.parquet"), sgd, {"learning_rate": [0.001, 0.01, 0.1]}, n_splits=4
+        )
+        best = table.filter(pl.col("rank") == 1)                 # the rate to run from here on
+        honest = table.filter(pl.col("spec").is_null())          # what choosing so earned
+
+    The sums are added a chunk at a time, so the scores are the same to
+    rounding whatever ``chunk_size`` is, and the choices the same unless two
+    settings tie to rounding. Raises ``TypeError`` for a ``param_grid``
+    beside specs already built, or one that is not a dict of non-empty
+    lists, and for a builder that does not name its spec by its first
+    argument (``ValueError``). ``ValueError`` for an unknown ``scoring``, an
+    ``n_splits`` below 1, a negative ``gap``, a stream too short for its
+    spans, a spec with nothing to score, a ``param_grid`` key that is one of
+    the columns above, and a first span on which no row is scored, since no
+    choice can be read from it. Whatever the bank raises for the specs or a
+    chunk, this raises.
+    """
+    from polars_online._bank import ModelBank
+
+    who = "po.eval.grid_search"
+    if scoring not in _SCORINGS:
+        msg = f"{who}: scoring is one of {sorted(_SCORINGS)}, got {scoring!r}"
+        raise ValueError(msg)
+    built, points = _search_specs(specs, param_grid)
+    if isinstance(source, pl.LazyFrame):
+        n = int(source.select(pl.len()).collect().item())
+    elif isinstance(source, pl.DataFrame):
+        n = source.height
+    else:
+        msg = f"{who}: source is a polars LazyFrame or DataFrame, got {type(source).__name__}"
+        raise TypeError(msg)
+    folds = _time_series_folds(n, n_splits, gap)
+    # The rows split at every place a fold starts or its choice stops, so a
+    # span's sums are the sums of whole segments.
+    cuts = sorted({0, n, *(c for f in folds for c in f[:2])})
+    segments = list(itertools.pairwise(cuts))
+    slots: list[dict[str, Any]] | None = None
+    totals: list[list[tuple[float, int]]] = []
+    seen = 0
+    bank = ModelBank(built, threads=threads)
+    for chunk in bank.fit_predict_batches(source, chunk_size=chunk_size):
+        if slots is None:
+            slots = _search_slots(built, chunk, scoring)
+            totals = [[(0.0, 0)] * len(slots) for _ in segments]
+        for j, (a, b) in enumerate(segments):
+            lo, hi = max(a, seen), min(b, seen + chunk.height)
+            if lo < hi:
+                part = _slot_sums(chunk.slice(lo - seen, hi - lo), built, slots, scoring)
+                totals[j] = [
+                    (s0 + s1, n0 + n1) for (s0, n0), (s1, n1) in zip(totals[j], part, strict=True)
+                ]
+        seen += chunk.height
+    if seen != n:
+        msg = (
+            f"{who}: the query gave {n} rows when counted and {seen} when run; give it a "
+            "query that returns the same rows each time"
+        )
+        raise ValueError(msg)
+    assert slots is not None  # n >= 2 rows, so at least one chunk
+
+    def over(k: int, start: int, end: int) -> tuple[float, int]:
+        parts = [totals[j][k] for j, (a, b) in enumerate(segments) if start <= a and b <= end]
+        return math.fsum(p[0] for p in parts), sum(p[1] for p in parts)
+
+    lower = _SCORINGS[scoring]
+    rows: list[dict[str, Any]] = []
+    for target in dict.fromkeys(s["target"] for s in slots):
+        mine = [k for k, s in enumerate(slots) if s["target"] == target]
+        chosen_from = [k for k in mine if slots[k]["choose"]]
+        picks = []
+        honest_sum, honest_n = 0.0, 0
+        for choose_end, start, end in folds:
+            before = {k: over(k, 0, choose_end) for k in chosen_from}
+            if not any(c for _, c in before.values()):
+                label = "every row" if target is None else f"target {target!r}"
+                msg = (
+                    f"{who}: no row before row {choose_end} has a value from every candidate for "
+                    f"{label}, so the first span has nothing to choose by; use fewer splits, or a "
+                    "shorter warm-up"
+                )
+                raise ValueError(msg)
+            means = {k: s / c for k, (s, c) in before.items()}
+            pick = (min if lower else max)(chosen_from, key=lambda k: means[k])
+            picks.append(pick)
+            s, c = over(pick, start, end)
+            honest_sum, honest_n = honest_sum + s, honest_n + c
+        tested = {k: over(k, folds[0][1], n) for k in mine}
+        scores: dict[int, float | None] = {
+            k: (s / c if c else None) for k, (s, c) in tested.items()
+        }
+        ranked = [v for k in chosen_from if (v := scores[k]) is not None]
+        for k in mine:
+            slot = slots[k]
+            score = scores[k]
+            rank = None
+            if slot["choose"] and score is not None:
+                rank = 1 + sum(
+                    1 for r in ranked if (r < score if lower else r > score)
+                )  # ties share
+            rows.append(
+                {
+                    "spec": built[slot["spec"]]["name"],
+                    **points[slot["spec"]],
+                    **{c: slot[c] for c in _GRID_COLUMNS},
+                    "slot": slot["field"],
+                    "target": target,
+                    "n": tested[k][1],
+                    scoring: score,
+                    "rank": rank,
+                    "folds_chosen": picks.count(k) if slot["choose"] else None,
+                }
+            )
+        base = "loglik" if target is None else f"pred_{target}"
+        rows.append(
+            {
+                "spec": None,
+                "slot": f"{base}__chosen",
+                "target": target,
+                "n": honest_n,
+                scoring: honest_sum / honest_n if honest_n else None,
+                "rank": None,
+                "folds_chosen": None,
+            }
+        )
+    keys = list(points[0]) if points else []
+    varying = [
+        c for c in _GRID_COLUMNS if c not in keys and len({s[c] for s in slots if s["choose"]}) > 1
+    ]
+    columns = ["spec", *keys, *varying, "slot", "target", "n", scoring, "rank", "folds_chosen"]
+    schema: dict[str, Any] = {
+        "spec": pl.String,
+        "slot": pl.String,
+        "target": pl.String,
+        "n": pl.Int64,
+        scoring: pl.Float64,
+        "rank": pl.Int64,
+        "folds_chosen": pl.Int64,
+    }
+    data = {c: [r.get(c) for r in rows] for c in columns}
+    return pl.DataFrame(
+        {c: pl.Series(c, v, dtype=schema.get(c), strict=False) for c, v in data.items()}
+    )
 
 
 def _resid_fields(df: pl.DataFrame, spec_name: str) -> list[str]:

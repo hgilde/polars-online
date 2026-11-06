@@ -158,6 +158,10 @@ Windows alike.
   is the model working, one question at a time -- calibration, breaks, robust standard
   errors, specification tests, tails, influence, feature health, model comparison,
   readiness, intervals -- each with its thresholds, cost, theory and a recipe that runs
+- [Calibrating a model](https://github.com/hgilde/polars-online/blob/main/docs/CALIBRATION.md):
+  choosing a half-life, a ridge, a drift speed, a learning rate, Holt's smoothing or a
+  changepoint hazard from the stream's own out-of-sample errors in one pass, with
+  `po.eval.grid_search`, and why the best error over the rows you report is optimistic
 - [Data quality](https://github.com/hgilde/polars-online/blob/main/docs/DATA-QUALITY.md):
   each `bank.check()` finding, what it does to a fit, and its fix in Polars
 - [Wide fits from Grams](https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md):

@@ -21,7 +21,7 @@ ahead. Rust core, Python API, and a standalone command line.
 | [Saving, loading and serving](#saving-loading-and-serving) | [save and load](#save-and-load) · [serving without learning](#serving-without-learning) · [a state without this library](#reading-a-state-without-this-library) |
 | [Reading the fit](#reading-the-fit) | [what a bank holds](#what-a-bank-holds) · [output field names](#output-field-names) · [coefficients](#coefficients) · [many features from one pass](#fitting-many-features-from-one-pass) · [one row per finished group](#one-row-per-finished-group) · [correlation matrices](#reading-a-correlation-matrix) |
 | [Checking the data and the model](#checking-the-data-and-the-model) | [your data's quality](#checking-your-datas-quality) · [that a model works](#checking-that-a-model-works), one question at a time: [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md) |
-| [Models](#models) | [choosing a model](#choosing-a-model) · [detecting changes and regimes](#detecting-changes-and-regimes) · the entries, by family: [linear models](docs/MODELS.md#linear-models) · [moments and correlation](docs/MODELS.md#moments-and-correlation) · [clustering and classification](docs/MODELS.md#clustering-and-classification) · [sequential tests and regimes](docs/MODELS.md#sequential-tests-and-regimes) |
+| [Models](#models) | [choosing a model](#choosing-a-model) · [detecting changes and regimes](#detecting-changes-and-regimes) · [calibrating a model](#calibrating-a-model) · the entries, by family: [linear models](docs/MODELS.md#linear-models) · [moments and correlation](docs/MODELS.md#moments-and-correlation) · [clustering and classification](docs/MODELS.md#clustering-and-classification) · [sequential tests and regimes](docs/MODELS.md#sequential-tests-and-regimes) |
 | [Performance](#performance) | [throughput](#throughput) · [parallelism](#parallelism) · [chunk size](#chunk-size) · [memory](#memory) · [tuning memory](#tuning-memory-with-polars-own-settings) · [window operators](#window-operators) · [against scikit-learn](#against-scikit-learn) |
 | [Scope and integrations](#scope-and-integrations) | [what this is not](#what-this-is-not) · [DuckDB and ADBC](#databases-duckdb-and-adbc) · [Pathway](#pathway) · [XGBoost and LightGBM](#training-xgboost-and-lightgbm-on-files-larger-than-memory) |
 | [Versions, testing and development](#versions-testing-and-development) | [versioning and the Polars pin](#versioning-and-the-polars-pin) · [testing](#testing) · [development](#development) · [license](#license) |
@@ -3338,6 +3338,46 @@ as 500 rows, lets the filter weigh each row against what the rows before
 it said. Without those two arguments, the filter puts 58% of the rows in
 their true regime.
 
+### Calibrating a model
+
+**Choose a setting from the stream's own out-of-sample errors, and report
+what the choice earned on rows it had not seen.**
+[docs/CALIBRATION.md](docs/CALIBRATION.md) states the pattern and gives a
+recipe for each setting: a half-life, a ridge, a Kalman filter's drift
+speed, a learning rate, Holt's smoothing and a changepoint hazard.
+`po.eval.grid_search` runs every value of a setting in one pass, as a grid
+in one spec or as one spec per value. It cuts the rows into spans as
+scikit-learn's `TimeSeriesSplit` does, chooses the best value from the rows
+before each span, and scores the choice on the span. The best value over
+the rows you report always looks better than choosing it earns, because
+the minimum of several noisy errors picks the luckiest. This code uses
+`lf` from [Example data](#example-data):
+
+```python
+# A grid of four half-lives for ret, whose beta on signal_a flips at row 200.
+half_lives = po.spec.ewridge("hl", targets=["ret"], features=["signal_a"], half_life=[10.0, 30.0, 100.0, 1_000.0])
+table = po.eval.grid_search(lf, half_lives, n_splits=3)   # rows 100-199, 200-299 and 300-399, each chosen from the rows before it
+
+# Each half-life's error over those rows, and the error of choosing from the rows before each span.
+for half_life, mse, rank, chosen in table.drop_nulls("rank").select("half_life", "mse", "rank", "folds_chosen").iter_rows():
+    print(f"half-life {half_life:>4.0f}: mse {mse:.3f}, rank {rank}, chosen for {chosen} of 3 spans")
+print(f"chosen from earlier rows: mse {table.filter(pl.col('spec').is_null())['mse'].item():.3f}")
+```
+
+```text
+half-life   10: mse 3.029, rank 1, chosen for 1 of 3 spans
+half-life   30: mse 3.036, rank 2, chosen for 0 of 3 spans
+half-life  100: mse 3.321, rank 3, chosen for 0 of 3 spans
+half-life 1000: mse 3.619, rank 4, chosen for 2 of 3 spans
+chosen from earlier rows: mse 3.446
+```
+
+A half-life of 10 rows ranks first over the three spans, since it relearns
+the flipped beta fastest. But before the flip at row 200 the long memory
+looked best, and the rows before two of the three spans chose 1,000. So
+choosing from earlier rows earned an error of 3.446, not the 3.029 that
+the best half-life shows in hindsight, and 3.446 is the number to report.
+
 ## Performance
 
 **A bank spends its time on the models' own arithmetic and its own work
@@ -3629,7 +3669,11 @@ on each group, and the query reads the file once. Its output has one
 column per spec, which is what `po.eval.compare_specs` reads, and one state
 file, `grid.state`, holds them all. `df`'s target is built from `x0` and
 `x1`, so the set of those two scores best, and adding `x2`, which plays no
-part, scores a little lower.
+part, scores a little lower. Each spec's grid point is chosen on the
+first half of the rows and scored on the second, because the best point's
+R² over the rows that chose it overstates what choosing it earns
+([Calibrating a model](#calibrating-a-model)). Here the second half
+scores higher all the same, since the first holds each fit's warm-up.
 This code is a script of its own, run in a new process, since Polars reads
 `POLARS_MAX_THREADS` when it is first imported. It uses the file
 `ticks.parquet` from [Example data](#example-data):
@@ -3659,20 +3703,24 @@ specs = [factor_spec(n, f, s) for (n, f), s in product(factors.items(), [False, 
    .online.fit_predict(specs, chunk_size=200_000, save_state="grid.state", threads=8)
    .sink_parquet("grid.parquet"))
 
-# one row per spec and grid point; keep each spec's best
-scores = po.eval.compare_specs(pl.read_parquet("grid.parquet"), [s["name"] for s in specs])
-best = scores.group_by("spec").agg(pl.col("r2").max()).sort("r2", descending=True)
-for spec_name, r2 in best.iter_rows():
-    print(f"{spec_name:<15} best R² {r2:.3f}")
+# Each spec's grid point chosen on the first half of the rows, then scored on the second.
+out = pl.read_parquet("grid.parquet")
+half = out.height // 2
+first = po.eval.compare_specs(out.head(half), specs)                 # one row per spec and grid point
+second = po.eval.compare_specs(out.tail(out.height - half), specs)
+picks = first.sort("r2", descending=True).group_by("spec", maintain_order=True).first()
+best = picks.join(second, on=["spec", "slot", "target"], suffix="_after").sort(pl.col("r2_after").round(3), "spec", descending=[True, False])
+for spec_name, r2, after in best.select("spec", "r2", "r2_after").iter_rows():
+    print(f"{spec_name:<15} R² {r2:.3f} where chosen, {after:.3f} after")
 ```
 
 ```text
-mkt-sz-std0     best R² 0.938
-mkt-sz-std1     best R² 0.938
-mkt-sz-val-std0 best R² 0.927
-mkt-sz-val-std1 best R² 0.926
-mkt-std0        best R² 0.707
-mkt-std1        best R² 0.707
+mkt-sz-std0     R² 0.930 where chosen, 0.944 after
+mkt-sz-std1     R² 0.930 where chosen, 0.944 after
+mkt-sz-val-std0 R² 0.915 where chosen, 0.935 after
+mkt-sz-val-std1 R² 0.913 where chosen, 0.935 after
+mkt-std0        R² 0.672 where chosen, 0.738 after
+mkt-std1        R² 0.672 where chosen, 0.738 after
 ```
 
 On 2.56M rows over 64 groups, the six specs make 6 × 64 tasks every chunk,
