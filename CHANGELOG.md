@@ -191,6 +191,13 @@ returns.
 
 ### Performance
 
+- `corrchange`'s monitor and sequential kinds copy each row they keep at
+  its exact length again: since the window kind stopped allocating a row,
+  they had grown each copy from an empty vector, about 100 more
+  instructions a row. A Huber or quantile refit buffer reserves its full
+  size once, where it checked three reservations on every row it holds
+  (about 70 instructions a row), and still reserves again after a load or
+  a copy (task 345).
 - `corrchange(kind="window")` allocates nothing a row (2 to 23 allocations
   a row before), about 6% faster at 4 columns; and a `marginal` Huber refit
   builds the held sketch only for the targets it does not refit, about 6%
