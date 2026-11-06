@@ -111,6 +111,16 @@ returns.
 
 ### Fixed
 
+- The refusal of a `huber_refit_rows` or `quantile_refit_rows` count above
+  2^20, and `sgd`'s `refit_budget` docstring, give the per-row size under
+  `huber_scale="rms"` as well as under the MAD, where they gave the MAD's
+  alone (task 335).
+- A refit buffer or a marginal Huber hold restored mid-refit reserves its
+  full size again on its next row, where it grew by doubling past the
+  bank's reservation; so does a hold a total gap wipes, and the deviations
+  a learned-edge `marginal` replays at its freeze. A saved refit buffer
+  builds its residual tree as the state is read, so no load path can leave
+  it without one. Outputs and saved bytes are unchanged (task 335).
 - A readiness notice raised in the same call that closes its group
   (`group_close="monotone"`) or its session span (`group_close="session"`)
   is now said. It was lost before, so whether it appeared depended on where
@@ -131,6 +141,10 @@ returns.
 
 ### Performance
 
+- `corrchange(kind="window")` allocates nothing a row (2 to 23 allocations
+  a row before), about 6% faster at 4 columns; and a `marginal` Huber refit
+  builds the held sketch only for the targets it does not refit, about 6%
+  faster over its refit block (arm64; task 335).
 - `hmm` with `covariance_type="tied"` allocates nothing a row (7 before),
   with the same bits: 1.4.0's "allocates nothing a row" now holds for every
   covariance type (task 316).
