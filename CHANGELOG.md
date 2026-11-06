@@ -246,6 +246,18 @@ returns.
 
 ### Tests and documents
 
+- The instruction counts are taken under a stopped wall clock, with
+  libfaketime on the counting step alone. Polars' hash maps seed their
+  hashing from the time once per process, and that seed moved a bank
+  case's count by up to 2% between two runs of one binary; with the clock
+  stopped they agree within 0.001%. The library keeps its random seeds. The
+  counts moved once, and the budgets were re-applied from the first run.
+  In CI's test job and the oracle grids, which restore their datasets
+  before the tests, a test skipped because its public dataset is offline
+  now fails and names the dataset; locally, and in jobs that restore
+  nothing, it still skips. The runner test that writes into a read-only
+  directory skips, saying why, where the process can write there anyway,
+  as root can (task 346).
 - docs/GLOSSARY.md: one word for each concept, with the variants it
   replaces, the words kept out of messages and American spelling.
   docs/WRITING.md links it, adds the kinds of page, the reference and
