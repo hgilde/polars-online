@@ -251,7 +251,7 @@ their own doc pages have a section in the main readme so a casual user can
 find"). So the section's heading names what the reader wants to do, as
 *Fitting many features from one pass* does for GRAM, rather than the page.
 It sits in the contents table, its own text links the page before any
-other link, and its recipe shows the capability working. The four guides
+other link, and its recipe shows the capability working. The guides
 for changing the library and writing its docs need only a link.
 `test_every_guide_has_a_readme_section` in `tests/test_doc_structure.py`
 holds every guide in `docs/README.md`'s *Guides* table to it, so a page
@@ -569,7 +569,9 @@ them, and each exception is named where its parameter is introduced* left
 the user asking whether a model raised something. For the everyday sense,
 say *except*, *apart from*, *a model that does not take it*, *increase* or
 *a larger*. On 2026-10-04 the README used *exception* in that sense seven
-times and *raise* for *increase* five.
+times and *raise* for *increase* five. Where the API fixes such a word as
+a name, as the `instance` column does, the page keeps the API's word and
+glosses it at its first use.
 
 **A *too* far from what it points at marks one topic split in two.**
 *The diagnostics are out-of-sample too* sat four paragraphs below *Every
@@ -647,7 +649,7 @@ on rereading:
 | 7. render | read it as the repository will show it | GitHub's API renders it: `POST /markdown` with `mode=markdown`. `uv run python scripts/doc_review.py render FILE.md OUT.html` does it through `gh`, as a standalone page |
 | 8. test gate | run the tests that read the README | `tests/test_production_hardening.py` runs every python block and checks that each name a block reads was built by a block before it, `tests/test_llms_txt.py` checks every anchor `llms.txt` uses, `tests/test_api_links.py` resolves every API link and walks every model section, and `tests/test_doc_structure.py` runs step 5 over every Markdown file git tracks. `tests/test_example_steps.py` checks that each long example names its steps (§3). A README recipe is held to the output it shows by `test_a_readme_recipe_prints_what_it_shows`, a guide's by its page's own test, and `test_every_guide_has_a_readme_section` holds each guide to a README section (§2). `tests/test_no_plan_references.py` holds every reader-facing file to §4's rule on citations |
 | 9. cold read | read it in order as a newcomer | a reader with none of the pass's context (no brief, no earlier version, no code) reads the rendered page from the top. They mark each paragraph whose purpose they cannot tell from what comes before it, and each example they could not run from what the page has shown. A writer who checks one part against the rules misses both: the rules are about sentences, and a writer knows what each paragraph is for |
-| 10. review until nothing is left | give the draft to a reviewer with none of the pass's context, revise it from their report, and give the revision to another such reviewer, round after round | each reviewer has the page and these rules, and nothing else: no brief, no earlier version and no earlier report. The pass ends at the first round whose reviewer raises nothing a writer would change, however many rounds that takes (the user, 2026-11-05: "For the docs be sure to iterate until there is no more to consider") |
+| 10. review until nothing is left | give the draft to a reviewer with none of the pass's context, revise it from their report, and give the revision to another such reviewer, round after round | each reviewer has the page and these rules, and nothing else: no brief, no earlier version and no earlier report. The reviewer sorts each finding into one of three classes: *wrong* (a false fact, a contradiction, missing or lost content, a broken link or anchor), *rule* (it breaks a written rule of this guide or the glossary, which the finding cites by section and rule), or *preference* (anything else, such as a better wording that breaks no rule). Fix every *wrong* and *rule* finding. Apply a *preference* only where it is clearly better and cheap, and log the rest. The pass ends at the first round whose reviewers raise no *wrong* and no *rule* finding, however many rounds that takes. Where two reviewers' *rule* findings contradict each other, the rule is unclear: fix it in this guide in the same change, then go on (the user, 2026-11-05: "For the docs be sure to iterate until there is no more to consider") |
 
 The counts, taken outside code blocks, tables and headings. `uv run python
 scripts/doc_review.py measure FILE.md` takes the first seven, and `counts
@@ -988,8 +990,8 @@ a call and another in the sentence beside it. *Summarize*, *behavior*,
 *colour*, *modelling* and *initialise*. A user's words quoted in this
 guide keep their own vocabulary, such as *betas* for coefficients. A quotation keeps its source's
 spelling. The [glossary's spelling table](GLOSSARY.md#spelling) lists
-each British spelling the README, the guides, the docstrings and the
-messages held, with its count and its American
+each group of British spellings the README, the guides for users, the
+public docstrings and the messages held, with its count and its American
 form. The checks of §13 hold every page to it.
 
 ## 13. Checks that hold the rules
