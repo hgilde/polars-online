@@ -267,6 +267,9 @@ pub(crate) struct WindowSums {
     leaf: Vec<f64>,
     delta: Vec<f64>,
     dev: Vec<f64>,
+    /// The sums of chunks no report reads any more, kept for the next
+    /// chunk's, so a new chunk allocates nothing (task 335, F7).
+    spare: Vec<Vec<f64>>,
 }
 
 impl fmt::Debug for WindowSums {
@@ -309,6 +312,7 @@ impl WindowSums {
             leaf: vec![0.0; s],
             delta: vec![0.0; 2 * k],
             dev: vec![0.0; k],
+            spare: Vec::new(),
         })
     }
 
@@ -324,7 +328,7 @@ impl WindowSums {
 
     /// Forget every sum: the rows are renumbered from 0.
     pub(crate) fn clear(&mut self) {
-        self.suffixes.clear();
+        self.spare.extend(self.suffixes.drain(..).map(|s| s.sums));
         for p in &mut self.prefixes {
             p.valid = false;
         }
@@ -405,7 +409,15 @@ impl WindowSums {
         // No later report starts before the older window's first block.
         let low = oldest.expect("two windows");
         let (c, stride) = (self.chunk, self.layout.stride());
-        self.suffixes.retain(|s| s.chunk >= low / c);
+        let mut i = 0;
+        while i < self.suffixes.len() {
+            if self.suffixes[i].chunk < low / c {
+                let gone = self.suffixes.remove(i);
+                self.spare.push(gone.sums);
+            } else {
+                i += 1;
+            }
+        }
         for s in &mut self.suffixes {
             if s.low < low {
                 let end = (s.chunk + 1) * c;
@@ -448,10 +460,12 @@ impl WindowSums {
         let at = match self.suffixes.iter().position(|s| s.chunk == chunk) {
             Some(i) => i,
             None => {
+                let mut sums = self.spare.pop().unwrap_or_default();
+                sums.clear();
                 self.suffixes.push(Suffixes {
                     chunk,
                     low: (chunk + 1) * c,
-                    sums: Vec::new(),
+                    sums,
                 });
                 self.suffixes.len() - 1
             }

@@ -334,7 +334,8 @@ residual's node in the tree the warm-up's exact median is read from. Those
 40 bytes more a row took a target's reservation at 5 features and 500 rows
 from 100 KB to 124 KB, so 256 MiB refit 2,164 such targets where it had
 refit 2,684, and 320 MiB refits 2,706. Each new
-group reserves `8·rows·(k + 26)` bytes a target of each model instance (a
+group reserves `8·rows·(k + 26)` bytes a target of each model instance
+under the MAD scale, `8·rows·(k + 20)` under the RMS (a
 half-life grid reserves once per value) when it first appears, in
 first-appearance order, keeps the reservation for the bank's life and saves
 it with the bank, so admission is the same under any chunking; the group

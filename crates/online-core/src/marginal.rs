@@ -790,11 +790,19 @@ impl Binned {
     /// from them ([`crate::MarginalBins::hold_deviations`]); restored from
     /// a state of schema 64 or earlier, its sketches await their first
     /// deviations instead, as that build's did.
+    ///
+    /// The hold is reserved for the refit's count, or for the warm-up's
+    /// rows the freeze replays into it where they are more: with learned
+    /// edges and a count no larger than the warm-up, the refit runs at the
+    /// freeze over every row replayed, each judged by the deviations held
+    /// before it, so the hold takes every one of them and is let go in the
+    /// same row (task 335, F3: reserved for the count alone, it grew by
+    /// doubling through the replay).
     fn start(&self, cfg: &crate::BinCfg, hist: &mut crate::MarginalBins) {
         if self.before_65 {
             hist.await_first_values();
         } else if self.refit_open(cfg) {
-            hist.hold_deviations(cfg.refit_rows as usize);
+            hist.hold_deviations((cfg.refit_rows as usize).max(self.held.len()));
         }
     }
 }
@@ -1017,6 +1025,12 @@ impl Marginal {
     /// where the edges are given or learned from fewer rows, and nothing
     /// where the warm-up's own hold already covers the count (the refit then
     /// runs when the edges are fixed). 0 when it is off or done.
+    ///
+    /// What it holds after a row, that is: in the second case the freeze
+    /// holds the replayed warm-up's deviations too, and lets them go in the
+    /// same row ([`Binned::start`]), a peak of that row beside the warm-up's
+    /// hold and the new histogram, as [`crate::margbins::DEFAULT_BUDGET_MIB`] says of
+    /// those two, and no row after it holds.
     pub fn refit_reservation(&self) -> usize {
         let (Some(b), Some(c)) = (self.bins.as_ref(), self.cfg.bins.as_ref()) else {
             return 0;
@@ -2908,8 +2922,13 @@ impl OnlineModel for Marginal {
                 // sketch at its first deviation: they keep that rule, and a
                 // histogram the warm-up still waits for is built so.
                 // The held deviations' trees are not state.
-                if let Some(h) = m.bins.as_mut().and_then(|b| b.hist.as_mut()) {
-                    h.rebuild_held_median();
+                // The deviations held are reserved for the refit's count,
+                // as the live hold was.
+                if let (Some(h), Some(c)) = (
+                    m.bins.as_mut().and_then(|b| b.hist.as_mut()),
+                    m.cfg.bins.as_ref(),
+                ) {
+                    h.reserve_held(c.refit_rows as usize);
                 }
                 // Marked only where it acts: a Huber histogram still to
                 // be built whose sketches are anchored or whose refit

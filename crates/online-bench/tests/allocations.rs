@@ -482,7 +482,7 @@ fn ewridge_reads_its_kish_sizes_in_place() {
 fn corrchange_reads_its_rows_where_they_are() {
     for (id, bound, before) in [
         ("corrchange_monitor_w2500", 1.008, 4.508),
-        ("corrchange_window_w100", 3.812, 4.812),
+        ("corrchange_window_w100", 0.0, 3.812),
     ] {
         let mut run = online_bench::model_setup(id);
         let start = calls();
@@ -559,4 +559,81 @@ fn the_held_median_allocates_nothing_a_row() {
             off,
         );
     }
+}
+
+/// `corrchange(kind="window")` reads its statistic from merged block
+/// summaries (task 328), and each report took a buffer of two windows'
+/// summaries and its working space, each row's copy into the ring a vector
+/// of its own, each new chunk's suffix sums a list, and each permutation
+/// draw two windows' correlations (task 335, F7). Now kept between rows: a
+/// row allocates nothing, at 4 and 20 columns, with a fixed critical value
+/// or the permutation's redrawn every 100 rows (the default cadence, a
+/// window's rows), and with windows read whole (5 columns, 20 rows: fewer
+/// blocks than the merged form pays for).
+#[test]
+fn the_window_kind_allocates_nothing_a_row() {
+    let mut counts = Vec::new();
+    for (k, w, crit, before) in [
+        (4, 100, true, 2.060),
+        (20, 100, true, 2.052),
+        (4, 100, false, 6.090),
+        (20, 100, false, 6.082),
+        (5, 20, false, 23.150),
+    ] {
+        let mut model = json!({"type": "corrchange", "kind": "window", "window_rows": w});
+        if crit {
+            model["crit"] = json!(0.5);
+        }
+        let spec = json!({"name": "m", "model": model, "features": names("x", k)});
+        let got = per_row_with(spec, k, 0, true);
+        counts.push((
+            format!("corrchange window, {k} columns, w {w}, fixed crit {crit}"),
+            got,
+            before,
+        ));
+    }
+    for (what, got, before) in counts {
+        check(&what, got, 0.0, before);
+    }
+}
+
+/// With learned edges and a refit count no larger than the warm-up, the
+/// freeze replays the warm-up into a new Huber histogram, holding each
+/// row's deviations, and the refit runs on them in the same row. The hold
+/// was reserved for the refit's count and grew by doubling through the
+/// rest of the replay: at a warm-up of 400 rows and a count of 50, three
+/// doublings of its three lists and each target's tree (task 335, F3). Now
+/// reserved for the rows replayed, the freeze row allocates as many times
+/// at a count of 50 as at the warm-up's own 400.
+#[test]
+fn the_freeze_reserves_the_rows_it_replays() {
+    let (k, m, warm) = (3, 2, 400);
+    let freeze_row = |refit: u32| {
+        let spec = json!({"name": "m", "model": {"type": "marginal", "bins": 4,
+            "bin_warm_rows": warm, "bin_stat": "huber", "bin_refit_rows": refit},
+            "targets": names("y", m), "features": names("x", k), "half_life": 500.0});
+        let mut model = model(spec);
+        let mut s = 5u64;
+        let rows: Vec<(Vec<f64>, Vec<Option<f64>>)> = (0..warm)
+            .map(|_| {
+                let x: Vec<f64> = (0..k).map(|_| draw(&mut s)).collect();
+                let y = (0..m).map(|j| Some(x[j] + draw(&mut s))).collect();
+                (x, y)
+            })
+            .collect();
+        let mut kept = online_polars::online_core::Step::default();
+        for (x, y) in &rows[..warm - 1] {
+            model.step_into(x, y, 1.0, 1.0, &mut kept);
+        }
+        let (x, y) = &rows[warm - 1];
+        let before = calls();
+        model.step_into(x, y, 1.0, 1.0, &mut kept);
+        let got = calls() - before;
+        let s = model.refit_status();
+        assert!(s.iter().all(|r| r.done && r.passes > 0), "{s:?}");
+        got
+    };
+    let (whole, short) = (freeze_row(warm as u32), freeze_row(50));
+    eprintln!("the freeze row: {whole} allocations at a count of {warm}, {short} at 50");
+    assert_eq!(short, whole, "the hold grew past its reservation");
 }

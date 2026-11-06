@@ -13,6 +13,12 @@ fn lcg(s: &mut u64) -> f64 {
     ((*s >> 11) as f64 + 0.5) / (1u64 << 53) as f64
 }
 
+/// A buffer written and read back as a state holds it: the tree is not
+/// state, and reading the buffer builds it from the rows.
+fn read_back(b: &RefitBuf) -> RefitBuf {
+    rmp_serde::from_slice(&rmp_serde::to_vec_named(b).unwrap()).unwrap()
+}
+
 fn fallbacks() -> usize {
     FALLBACKS.with(std::cell::Cell::get)
 }
@@ -145,8 +151,7 @@ fn a_rebuilt_buffer_reads_the_live_one_and_the_backward_weights_agree() {
             };
             b.learn_scored(&[0.0], 0.0, e, 0.5 + lcg(&mut s), lam, lam, cap);
             let live = b.warm_scale().expect("the buffer reads its |e|");
-            let mut back = b.clone();
-            back.rebuild_median(1);
+            let back = read_back(&b);
             assert_eq!(back.warm_scale(), Some(live), "seed {seed}");
             let held = b.clone().take();
             let rows = Rows::new(&held.rows, &held.ages, 1);
@@ -464,8 +469,7 @@ fn a_run_begins_where_the_last_one_ended() {
     b.learn_scored(&[0.0], 0.0, 3.0, 1.0 / 16.0, 1.0, 1.0, 10);
     let want = 3.0 / crate::robust::NORMAL_Q3;
     assert_eq!(b.warm_scale(), Some(Some(want)));
-    let mut back = b.clone();
-    back.rebuild_median(1);
+    let back = read_back(&b);
     assert_eq!(back.warm_scale(), Some(Some(want)), "rebuilt");
 }
 
@@ -473,8 +477,82 @@ fn a_run_begins_where_the_last_one_ended() {
 #[test]
 fn reserve_makes_room_in_every_tree() {
     let mut h = HeldMedian::new(3);
-    h.reserve(100);
+    h.reserve_to(3, 100);
     for t in &h.trees {
         assert!(t.nodes.capacity() >= 100, "{}", t.nodes.capacity());
+    }
+    // Room in all for a tree that holds rows already, and trees made for
+    // targets it had none for.
+    let mut h = HeldMedian::new(1);
+    for i in 0..10 {
+        h.insert(0, f64::from(i), 1.0);
+    }
+    h.reserve_to(2, 100);
+    assert_eq!(h.trees.len(), 2);
+    for t in &h.trees {
+        assert_eq!(t.nodes.capacity(), 100, "{}", t.nodes.len());
+    }
+}
+
+/// A tree is made by its target's first row, and an absent tree reads as
+/// an empty one (task 335, F9): the default holds no row and refuses none,
+/// and reads what [`HeldMedian::new`] of the targets reads, to the bit.
+#[test]
+fn a_targets_tree_is_made_by_its_first_row() {
+    let mut s = 11u64;
+    let mut lazy = HeldMedian::default();
+    let mut eager = HeldMedian::new(3);
+    assert_eq!(lazy.median(2), None);
+    for i in 0..400 {
+        let lam = if i % 50 == 49 { 0.0 } else { 0.97 };
+        for h in [&mut lazy, &mut eager] {
+            h.decay(lam);
+        }
+        // Target 2 first takes a row at 120, target 1 at 7.
+        for t in 0..3 {
+            if (t == 2 && i < 120) || (t == 1 && i < 7) {
+                continue;
+            }
+            let (e, w) = (lcg(&mut s), 0.5 + lcg(&mut s));
+            lazy.insert(t, e, w);
+            eager.insert(t, e, w);
+        }
+        for t in 0..3 {
+            assert_eq!(
+                lazy.median(t).map(f64::to_bits),
+                eager.median(t).map(f64::to_bits),
+                "row {i}, target {t}"
+            );
+        }
+    }
+}
+
+/// Cleared, a hold reads as a new one and keeps its room (task 335, F5).
+#[test]
+fn a_cleared_hold_is_a_new_one_with_its_room() {
+    let mut s = 3u64;
+    let mut h = HeldMedian::new(2);
+    h.reserve_to(2, 64);
+    for _ in 0..40 {
+        h.decay(0.9);
+        h.insert(0, lcg(&mut s), 1.0);
+        h.insert(1, lcg(&mut s), 1.0);
+    }
+    h.clear(2);
+    let mut fresh = HeldMedian::new(2);
+    for t in &h.trees {
+        assert!(t.nodes.is_empty() && t.nodes.capacity() == 64);
+    }
+    for _ in 0..30 {
+        let (e, w, lam) = (lcg(&mut s), lcg(&mut s), 0.8 + 0.2 * lcg(&mut s));
+        for m in [&mut h, &mut fresh] {
+            m.decay(lam);
+            m.insert(1, e, w);
+        }
+        assert_eq!(
+            h.median(1).map(f64::to_bits),
+            fresh.median(1).map(f64::to_bits)
+        );
+        assert_eq!(h.weights(1), fresh.weights(1));
     }
 }

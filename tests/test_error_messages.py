@@ -28,8 +28,9 @@ BASE = dict(targets=["y"], features=["x0"], half_life=10.0)
 
 #: Why a refit's row count has a ceiling, as the builder says it.
 REFIT_ROWS_WHY = (
-    "the refit's buffer is held at its full size, (features + 10) * 8 bytes a row, from a "
-    "target's first learned row, so the count sizes an allocation before any row is seen"
+    "the refit's buffer is held at its full size, (features + 10) * 8 bytes a row under the "
+    "MAD scale and (features + 4) * 8 under the RMS, from a target's first learned row, so the "
+    "count sizes an allocation before any row is seen"
 )
 
 
@@ -1340,6 +1341,18 @@ def test_a_count_past_its_width_is_named_in_python():
             dict(quantile=0.5, quantile_refit_rows=2**20 + 1),
             f"quantile_refit_rows must be <= 1048576, got 1048577: {REFIT_ROWS_WHY}",
         ),
+        # Under the RMS the buffer keeps no residual a row, and the reason
+        # says that size too (task 335, F2).
+        (
+            po.spec.huber,
+            dict(huber_scale="rms", huber_refit_rows=2**20 + 1),
+            f"huber_refit_rows must be <= 1048576, got 1048577: {REFIT_ROWS_WHY}",
+        ),
+        (
+            po.spec.sgd,
+            dict(loss="huber", huber_scale="rms", huber_refit_rows=2**20 + 1),
+            f"huber_refit_rows must be <= 1048576, got 1048577: {REFIT_ROWS_WHY}",
+        ),
     ],
     ids=[
         "marginal.lags",
@@ -1349,6 +1362,8 @@ def test_a_count_past_its_width_is_named_in_python():
         "huber.huber_refit_rows",
         "sgd.huber_refit_rows",
         "quantile.quantile_refit_rows",
+        "huber.rms.huber_refit_rows",
+        "sgd.rms.huber_refit_rows",
     ],
 )
 def test_a_count_that_sizes_memory_has_a_ceiling(builder, kw, msg):

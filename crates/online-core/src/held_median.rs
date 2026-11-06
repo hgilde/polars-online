@@ -329,6 +329,9 @@ pub(crate) struct HeldMedian {
     seq: u32,
 }
 
+/// No tree yet: each target's is made by its first row
+/// ([`HeldMedian::insert`]), and an absent tree reads as an empty one, so
+/// the default holds no rows rather than refusing them.
 impl Default for HeldMedian {
     fn default() -> Self {
         Self::new(0)
@@ -350,6 +353,22 @@ impl HeldMedian {
             reference: None,
             trees: vec![Tree::new(); targets],
             seq: 0,
+        }
+    }
+
+    /// Every row let go, as [`Self::new`] of `targets` would hold them, each
+    /// tree keeping the room it had: what a hold whose weight went to 0
+    /// starts again from, allocating nothing.
+    pub(crate) fn clear(&mut self, targets: usize) {
+        self.d = Split::ONE;
+        self.run_base = Split::ONE;
+        self.reference = None;
+        self.seq = 0;
+        self.trees.resize_with(targets, Tree::new);
+        for t in &mut self.trees {
+            t.nodes.clear();
+            t.root = NIL;
+            t.exact = true;
         }
     }
 
@@ -407,21 +426,31 @@ impl HeldMedian {
         let up = f64::from_bits(((reference - k + 1023) as u64) << 52);
         let seq = self.seq;
         self.seq += 1;
+        // A target's tree is made by its first row: an empty tree takes no
+        // part in a decay of 0 or a rescale, so one made here is the one
+        // that would have stood empty until now.
+        if t >= self.trees.len() {
+            self.trees.resize_with(t + 1, Tree::new);
+        }
         self.trees[t].insert(e, r * up, seq);
     }
 
-    /// Room for `rows` more rows of each target, allocated once: a refit
-    /// buffer knows its count from its first row.
-    pub(crate) fn reserve(&mut self, rows: usize) {
-        self.trees
-            .iter_mut()
-            .for_each(|t| t.nodes.reserve_exact(rows));
+    /// Room for `rows` rows in all of each of `targets` targets' trees,
+    /// allocated once where a tree has less: a refit buffer knows its count
+    /// from its first row, and a restored one from its configuration.
+    pub(crate) fn reserve_to(&mut self, targets: usize, rows: usize) {
+        if self.trees.len() < targets {
+            self.trees.resize_with(targets, Tree::new);
+        }
+        for t in &mut self.trees {
+            t.nodes.reserve_exact(rows.saturating_sub(t.nodes.len()));
+        }
     }
 
     /// Target `t`'s median `|e|`, or `None` while no row of positive
     /// weight is held.
     pub(crate) fn median(&self, t: usize) -> Option<f64> {
-        self.trees[t].median()
+        self.trees.get(t).and_then(Tree::median)
     }
 
     /// The bytes the trees' nodes take, as each vector reports its
