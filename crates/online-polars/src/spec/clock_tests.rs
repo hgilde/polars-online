@@ -394,7 +394,7 @@ fn coef_every_is_a_clock_parameter_and_its_row_cap_a_count() {
             .validate()
             .unwrap_err();
         assert!(
-            err.contains("coef_every must be finite and >= 0 clock units"),
+            err.contains("coef_every must be finite and at least 0 clock units, but it is"),
             "{bad}: {err}"
         );
     }

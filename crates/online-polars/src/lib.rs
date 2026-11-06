@@ -44,6 +44,7 @@ mod bank;
 mod checks;
 mod column;
 mod defaults;
+mod figures;
 mod formula;
 pub mod gbdt;
 pub mod gramfit;

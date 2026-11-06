@@ -929,7 +929,7 @@ class TestEmbargoItself:
         s = spec(group="g", weight="_online_role_weight", gap_cap=5.0)
         out = stream.embargo(by_group, clock="t", delay=3.0)
         assert out.filter(pl.col("g") == "b")["t"].is_sorted() is False
-        with pytest.raises(ValueError, match="goes backwards"):
+        with pytest.raises(ValueError, match="steps back"):
             po.ModelBank([s]).fit_predict(out)
         fixed = stream.embargo(by_group.sort("t", maintain_order=True), clock="t", delay=3.0)
         for g in ("a", "b"):

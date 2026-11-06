@@ -184,7 +184,7 @@ def test_bad_config_rejected():
         _spec(mode="pa3")
     with pytest.raises(ValueError, match="pa c must be > 0"):
         _spec(c=0.0)
-    with pytest.raises(ValueError, match="pa eps must be finite and >= 0"):
+    with pytest.raises(ValueError, match="eps must be finite and at least 0"):
         _spec(eps=-1.0)
 
 

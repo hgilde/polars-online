@@ -183,7 +183,7 @@ class TestTheSteps:
         df = pl.DataFrame(
             {"t": [T0 + 5, T0 + 6, T0 + 5], "x": [1.0, 2.0, 3.0], "y": [1.0, 2.0, 3.0]}
         )
-        with pytest.raises(ValueError, match="goes backwards by 1 at row 2"):
+        with pytest.raises(ValueError, match="steps back by 1 at row 2"):
             po.ModelBank([ridge()]).fit_predict(df)
 
     def test_a_step_back_of_exactly_restart_after_step_back_is_a_late_row(self):
@@ -192,7 +192,10 @@ class TestTheSteps:
         doubles the two clocks were 256 apart, past it."""
         spec = ridge(restart_after_step_back=100)
         late = pl.DataFrame({"t": [T0 + 227, T0 + 127], "x": [1.0, 2.0], "y": [1.0, 2.0]})
-        with pytest.raises(ValueError, match="goes backwards by 100 at row 1, no more than"):
+        with pytest.raises(
+            ValueError,
+            match=re.escape("steps back by 100 at row 1 (counting from 0), no more than"),
+        ):
             po.ModelBank([spec]).fit_predict(late)
         bank = po.ModelBank([spec])
         bank.fit_predict(late.with_columns(t=pl.Series([T0 + 228, T0 + 127])))
@@ -420,7 +423,7 @@ def test_the_command_line_reads_an_integer_clock_as_the_bank_does(online_cli, tm
         output=tmp_path / "back_out.parquet",
         check=False,
     )
-    assert res.returncode != 0 and "goes backwards by 1 at row 2" in res.stderr, res.stderr
+    assert res.returncode != 0 and "steps back by 1 at row 2" in res.stderr, res.stderr
 
 
 def test_embargo_moves_an_integer_clock_in_integers():

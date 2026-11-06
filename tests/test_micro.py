@@ -1101,9 +1101,9 @@ class TestRefusals:
             ({"beta_mu": 0.0}, "beta_mu must be finite and > 0"),
             ({"max_clusters": 0}, "max_clusters must be >= 1"),
             # Clock units since task 163, 0 for every row.
-            ({"prune_every": -1.0}, "prune_every must be finite and >= 0 clock units"),
-            ({"macro_link": -1.0}, "macro_link must be finite and >= 0"),
-            ({"scale_floor": -0.5}, "scale_floor must be finite and >= 0"),
+            ({"prune_every": -1.0}, "prune_every must be finite and at least 0 clock units"),
+            ({"macro_link": -1.0}, "macro_link must be finite and at least 0"),
+            ({"scale_floor": -0.5}, "scale_floor must be finite and at least 0"),
             ({"features": ["x0", "x0"]}, "more than once"),
         ],
         ids=lambda v: next(iter(v)) if isinstance(v, dict) else v,
@@ -1262,7 +1262,9 @@ class TestTheCheckpointClock:
     def test_a_cadence_in_the_wrong_kind_or_below_zero_is_refused(self):
         with pytest.raises(ValueError, match="prune_every is a plain number"):
             self.clocked(prune_every=300.0)
-        with pytest.raises(ValueError, match="prune_every must be finite and >= 0 clock units"):
+        with pytest.raises(
+            ValueError, match="prune_every must be finite and at least 0 clock units"
+        ):
             spec(prune_every=-1.0)
 
 

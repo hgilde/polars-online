@@ -1966,7 +1966,7 @@ prediction's `withheld_reason` names the gate that held it:
 | `min_weight` | `below_min_weight` |
 | `max_error_inflation` | `above_max_error_inflation` |
 | `warm_rows` (`kmeans`, `hmm`, `bocpd`): the rows a model learns from before it has seeded its centres, states or prior; `kalman`'s rows before a target's prior is sized | `below_warm_rows` |
-| none, the solve itself (`ewridge`): a fit whose normal equations are past the condition at which a solve keeps a digit, see [`ewridge`](MODELS.md#ewridge--ew-ridge-on-sufficient-statistics) | `ill_conditioned` |
+| none, the solve itself (`ewridge`): a fit whose normal equations are past the condition at which a solve keeps a digit, see [`ewridge`](MODELS.md#ewridge--exponentially-weighted-ridge-regression) | `ill_conditioned` |
 | none, the learning rate itself (`sgd`): a target whose recent steps' gains have a mean square above twice their mean, so each step grows its own row's residual and the fit diverges | `unstable_rate` |
 
 The reasons are listed in their order of precedence, which is the order
@@ -1974,6 +1974,29 @@ The reasons are listed in their order of precedence, which is the order
 on `ewridge` alone, at `sqrt(2)`. `emit_error_inflation` writes each row's
 own factor, `error_inflation_<t>`, against the row's own features: large
 for a row leaning on a direction the data never showed.
+
+**A `min_weight` above the weight a stream can reach is never met, and a
+readiness warning says so.** Under a half-life, a row's weight decays, so a
+target's weight stops growing at a ceiling, where each new row only
+replaces what decay removes. For rows of weight `w` spaced `d` clock units
+apart, the ceiling is `w / (1 − 2^(−d / half_life))`: for rows of weight 1,
+one clock unit apart, about 7.7 at a half-life of 5. Rows that come
+faster or weigh more lift the ceiling, so the warning projects it and does
+not promise it. Once the model is
+within 5% of its steady state and the gate has withheld every row for a
+further half-life, the bank issues a `ReadinessWarning` that names the
+gate, and the target where the model predicts one. Its forms:
+
+| what the warning finds | what it gives | what to do |
+|---|---|---|
+| a ceiling it can project from the rows so far | the ceiling, rounded down, and the `half_life` (or `lam`) above which the ceiling passes the floor the gate reads (`min_weight`, or 2 for `ew_cov`) | lower `min_weight` below the ceiling, or increase `half_life` (or `lam`) above the value given |
+| no row the model learned has the target's value and a positive weight (for a model that predicts no target, a positive weight alone) | no figure: there is no weight to project from | check that rows reach the model with the target's value and a positive weight |
+| rows too uneven to project, such as a target present on only its first row, or row weights far apart | no figure | lower `min_weight`, or increase `half_life` (or `lam`) |
+| a hard window, which limits the weight in addition to the decay | no figure | lower `min_weight`, or increase `half_life` (or `lam`) or `window_size` |
+
+`ew_cov` needs a weight of at least 2 for a covariance, so it lifts a
+lower `min_weight` to 2, and its warning says so and does not offer
+lowering `min_weight`.
 
 The recipe fits ten features under each gate, and reads when each first
 predicts and how good its early predictions are:

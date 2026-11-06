@@ -259,7 +259,7 @@ class TestClockSemantics:
     def test_a_negative_delta_is_refused_by_default(self):
         # Row 2's clock runs backwards (100 -> 50). The removed `"max"` took
         # the cap as the step; the default refuses it, naming the row.
-        with pytest.raises(ValueError, match="goes backwards by 50 at row 2"):
+        with pytest.raises(ValueError, match="steps back by 50 at row 2"):
             self._run([0.0, 100.0, 50.0, 51.0])
 
     def test_reset_state(self):

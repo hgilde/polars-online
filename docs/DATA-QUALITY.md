@@ -1421,7 +1421,7 @@ model = po.spec.ewridge(
 try:
     po.ModelBank([audit, model]).fit(lf)
 except ValueError as err:
-    print(str(err).split(";")[0])
+    print(str(err).split(". ")[0])
 
 # Told that any step back starts the stream over, the model restarts at each late row.
 # (The audit is left out: it reads the same clock, and would refuse the stream too.)
@@ -1452,7 +1452,7 @@ print(f"rows fed {fed}, learned {learned}")
 ```
 
 ```text
-spec "audit": clock column "t" goes backwards by 1 at row 185 (restart_after_step_back is unset, so every step back is refused)
+spec "audit": clock column "t" steps back by 1 at row 185 (counting from 0), and restart_after_step_back is not set, so the bank refused the chunk and learned none of it
 warning step_back ridge t 65.0
 info resets ridge t 65.0
 info duplicate_stamps audit t 0.0248

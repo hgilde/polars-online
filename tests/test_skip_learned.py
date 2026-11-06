@@ -212,9 +212,9 @@ def test_the_command_line_is_told_its_own_way_out(online_cli, tmp_path):
         args=["--load-state", str(state)],
         check=False,
     )
-    assert res.returncode != 0 and "goes backwards" in res.stderr, res.stderr
+    assert res.returncode != 0 and "steps back" in res.stderr, res.stderr
     assert "skip_learned" in res.stderr
-    assert "--skip-learned on the command line" in res.stderr, res.stderr
+    assert "(or --skip-learned)" in res.stderr, res.stderr
     run_online(
         online_cli,
         tmp_path,

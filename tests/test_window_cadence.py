@@ -756,7 +756,9 @@ class TestRefusals:
 
     @pytest.mark.parametrize("bad", [-5.0, -1])
     def test_a_negative_spacing_is_refused(self, bad):
-        with pytest.raises(ValueError, match="snapshot_every must be finite and >= 0 clock units"):
+        with pytest.raises(
+            ValueError, match="snapshot_every must be finite and at least 0 clock units"
+        ):
             ew_cov(clock=None, gap_cap=None, half_life=40.0, window_size=120.0, snapshot_every=bad)
 
     @pytest.mark.parametrize("bad", [-1, 0])

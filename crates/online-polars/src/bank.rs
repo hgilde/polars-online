@@ -1601,46 +1601,77 @@ fn over_budget_message(
     )
 }
 
-/// The error for a refused backwards clock: names the spec, the column, the
-/// size of the step back, the row, and the way out. With
-/// `restart_after_step_back` unset, the default (`disorder` is `None`), the
-/// way out is a sort, skipping what a resumed state has learned, or setting
-/// it; given, a step back no larger than it is a late row, and the way out
-/// is a sort or a smaller value. Either way the bank was not updated.
+/// Where a step-back error sends its reader: the how-to that says how to
+/// put rows in clock order, at the section on a refused chunk. A message
+/// link is never changed once shipped, so that heading stays.
+pub(crate) const CLOCK_ORDER_HOW_TO: &str = "https://github.com/hgilde/polars-online/blob/main/\
+    docs/how-to/put-rows-in-clock-order.md#fix-a-chunk-the-bank-refused";
+
+/// The error for a refused backwards clock, in the parts every message
+/// takes (WRITING §11): where (the spec), what is wrong and the value (the
+/// clock column, the size of the step back and the row, counted from 0),
+/// what the bank did, and what to do (the ways out, and the how-to that
+/// chooses among them). With `restart_after_step_back` unset, the default
+/// (`disorder` is `None`), or given and no smaller than the step, the ways
+/// out are a sort, skipping what a resumed state has learned, or a setting
+/// below the step. Either way the bank was not updated. A step on a number
+/// clock is printed to three significant figures, and the setting to stay
+/// below it, rounded down, so the remedy holds; a step in integers or
+/// nanoseconds is exact.
 fn backwards_clock(spec: &Spec, refusal: ClockRefusal, row_base: usize) -> PolarsError {
+    use crate::figures::{Round, three_figures};
     let column = spec.clock.as_deref().unwrap_or("<row count>");
     let row = row_base + refusal.row;
     // The step exactly: in integer nanoseconds on a temporal clock, where the
     // double of seconds resolves more than a nanosecond above about 104 days;
     // in integers on an integer clock (task 200).
-    let step = match (
+    let (step, below) = match (
         refusal.back_ns.and_then(|ns| i64::try_from(ns).ok()),
         refusal.back_int,
     ) {
-        (Some(ns), _) => crate::span::format_duration(ns),
-        (None, Some(back)) => back.to_string(),
-        (None, None) => clock_amount(spec, -refusal.raw),
+        (Some(ns), _) => {
+            let s = crate::span::format_duration(ns);
+            (s.clone(), s)
+        }
+        (None, Some(back)) => (back.to_string(), back.to_string()),
+        (None, None)
+            if spec
+                .gap_cap
+                .as_ref()
+                .is_some_and(crate::span::Span::is_duration) =>
+        {
+            let s = clock_amount(spec, -refusal.raw);
+            (s.clone(), s)
+        }
+        // Rounded down both times: the step printed is then never above a
+        // setting it is "no more than", and the setting to stay below holds.
+        (None, None) => {
+            let s = three_figures(-refusal.raw, Round::Down);
+            (s.clone(), s)
+        }
     };
+    // Each form written whole, so a reading of the message finds its where
+    // and its remedy in one string (WRITING §13).
     match refusal.disorder {
         None => polars_err!(ComputeError:
-            "spec {:?}: clock column {:?} goes backwards by {} at row {} \
-             (restart_after_step_back is unset, so every step back is refused); the bank \
-             was not updated. Sort each group by the clock; to resume a saved state on \
-             input that overlaps it, drop the rows it has learned, with \
-             ModelBank.skip_learned(frame) in Python or --skip-learned on the command line; \
-             or, if a step back this large starts the stream over, set \
-             restart_after_step_back below it (a step back no larger than the setting is a \
-             late row).",
-            spec.name, column, step, row
+            "spec {:?}: clock column {column:?} steps back by {step} at row {row} (counting \
+             from 0), and restart_after_step_back is not set, so the bank refused the chunk and \
+             learned none of it. Sort the rows by the clock, skip the rows a saved state has \
+             learned with ModelBank.skip_learned (or --skip-learned), or set \
+             restart_after_step_back below {below} to reset the model at such a step back (0 \
+             resets it at every one). See {CLOCK_ORDER_HOW_TO} for which to choose.",
+            spec.name
         ),
         Some(Disorder {
             min_backwards_jump, ..
         }) => polars_err!(ComputeError:
-            "spec {:?}: clock column {:?} goes backwards by {} at row {}, no more than \
-             restart_after_step_back = {}: a late row, not a new start; the bank was not \
-             updated. Sort each group by the clock, or lower restart_after_step_back if a \
-             step back this small starts the stream over (0 starts over at every one).",
-            spec.name, column, step, row,
+            "spec {:?}: clock column {column:?} steps back by {step} at row {row} (counting \
+             from 0), no more than restart_after_step_back = {}, so the bank refused the chunk \
+             and learned none of it. Sort the rows by the clock, skip the rows a saved state has \
+             learned with ModelBank.skip_learned (or --skip-learned), or set \
+             restart_after_step_back below {below} to reset the model at such a step back (0 \
+             resets it at every one). See {CLOCK_ORDER_HOW_TO} for which to choose.",
+            spec.name,
             // As the spec wrote it: a duration's text is exact.
             spec.restart_after_step_back
                 .as_ref()
@@ -1714,6 +1745,7 @@ fn reserve_refits(
         let group = key
             .0
             .as_deref()
+            .filter(|_| spec.group.is_some())
             .map_or(String::new(), |g| format!(" at group {g:?}"));
         notices.push(format!(
             "spec {:?}: the refit buffers of its groups reached refit_budget = {budget} \
@@ -1801,9 +1833,12 @@ fn chunk_streams<'a>(
 /// `group_close = "session"` by the span that raised each (`Notice`).
 fn say_notices(notices: &mut Vec<String>, spec: &Spec, key: &GroupKey, stream: &mut Stream) {
     for notice in stream.take_notices(spec) {
+        // A spec with no groups names none: its one stream's key is the
+        // empty text, a value the reader never gave (WRITING §11).
         let group = key
             .0
             .as_deref()
+            .filter(|_| spec.group.is_some())
             .map_or(String::new(), |g| format!(" group {g:?}"));
         let span = notice.span.as_deref().unwrap_or("");
         notices.push(format!(

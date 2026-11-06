@@ -222,7 +222,7 @@ def test_a_long_step_empties_the_window(kind, field):
         ({"max_rows_between_snapshots": 5}, "max_rows_between_snapshots needs"),
         (
             {"window_size": 10.0, "snapshot_every": -1.0},
-            "snapshot_every must be finite and >= 0 clock units",
+            "snapshot_every must be finite and at least 0 clock units",
         ),
         ({"window_size": 10.0, "lags": [1]}, "window_size and lags do not combine"),
         ({"window_size": 10.0, "mahal_quantiles": [0.99]}, "mahal_quantiles"),

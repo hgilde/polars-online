@@ -3040,9 +3040,13 @@ impl Spec {
         // A tolerance or a threshold of `inf` is a detector that never
         // fires: no setting (review 2026-09-12, S27).
         if let Some(v) = self.drift_delta.filter(|v| *v < 0.0 || !v.is_finite()) {
-            return Err(format!(
-                "spec {:?}: drift_delta must be finite and >= 0, got {v}",
-                self.name
+            return Err(at_least_zero(
+                &format!("spec {:?}", self.name),
+                "drift_delta",
+                "",
+                &Got::One(num_label(v)),
+                None,
+                None,
             ));
         }
         if let Some(v) = self
@@ -3193,10 +3197,13 @@ impl Spec {
                 }
             }
             if let Some(e) = every.filter(|e| !non_negative(e.value()) || !e.value().is_finite()) {
-                return Err(format!(
-                    "spec {:?}: snapshot_every must be finite and >= 0 clock units (0 snapshots \
-                     every row), got {e}",
-                    self.name
+                return Err(at_least_zero(
+                    &format!("spec {:?}", self.name),
+                    "snapshot_every",
+                    " clock units",
+                    &Got::One(e.to_string()),
+                    Some("to take a snapshot on every row"),
+                    None,
                 ));
             }
         }
@@ -3280,10 +3287,13 @@ impl Spec {
             .as_ref()
             .filter(|e| !(e.value().is_finite() && non_negative(e.value())))
         {
-            return Err(format!(
-                "spec {:?}: coef_every must be finite and >= 0 clock units (0 writes `coef` on \
-                 every row), got {e}",
-                self.name
+            return Err(at_least_zero(
+                &format!("spec {:?}", self.name),
+                "coef_every",
+                " clock units",
+                &Got::One(e.to_string()),
+                Some("to fill the coef field on every row"),
+                None,
             ));
         }
         // A cap of no rows is no schedule: every row is `coef_every = 0`.
@@ -3438,9 +3448,13 @@ impl Spec {
                 // A tube of `inf` holds every row: a model that never learns
                 // (review 2026-09-12, S27).
                 if let Some(v) = eps.filter(|v| *v < 0.0 || !v.is_finite()) {
-                    return Err(format!(
-                        "spec {:?}: pa eps must be finite and >= 0, got {v}",
-                        self.name
+                    return Err(at_least_zero(
+                        &format!("spec {:?}", self.name),
+                        "eps",
+                        "",
+                        &Got::One(num_label(v)),
+                        Some("to move the fit on every row with a residual other than 0"),
+                        None,
                     ));
                 }
             }
@@ -3704,10 +3718,13 @@ impl Spec {
                     .as_ref()
                     .filter(|e| !non_negative(e.value()) || !e.value().is_finite())
                 {
-                    return Err(format!(
-                        "spec {:?}: ew_cov pca_every must be finite and >= 0 clock units (0 \
-                         refreshes on every row), got {e}",
-                        self.name
+                    return Err(at_least_zero(
+                        &format!("spec {:?}", self.name),
+                        "pca_every",
+                        " clock units",
+                        &Got::One(e.to_string()),
+                        Some("to refresh the principal components on every row"),
+                        None,
                     ));
                 }
                 for (key, given) in [
@@ -3757,22 +3774,35 @@ impl Spec {
                     ));
                 }
                 if let Some(v) = split_merge.filter(|v| *v < 0.0 || !v.is_finite()) {
-                    return Err(format!(
-                        "spec {:?}: split_merge must be finite and >= 0 (0 disables it), got {v}",
-                        self.name
+                    return Err(at_least_zero(
+                        &format!("spec {:?}", self.name),
+                        "split_merge",
+                        "",
+                        &Got::One(num_label(v)),
+                        Some("to learn every row, with no split or merge"),
+                        None,
                     ));
                 }
                 if let Some(v) = dead_frac.filter(|v| *v < 0.0 || !v.is_finite()) {
-                    return Err(format!(
-                        "spec {:?}: dead_frac must be finite and >= 0 (0 disables it), got {v}",
-                        self.name
+                    return Err(at_least_zero(
+                        &format!("spec {:?}", self.name),
+                        "dead_frac",
+                        "",
+                        &Got::One(num_label(v)),
+                        Some("to never re-place a center whose weight has decayed"),
+                        Some(0.5),
                     ));
                 }
                 if let Some(v) = scale_floor.filter(|v| *v < 0.0 || !v.is_finite()) {
-                    return Err(format!(
-                        "spec {:?}: scale_floor must be finite and >= 0 (0 is the EW variance \
-                         alone), got {v}",
-                        self.name
+                    return Err(at_least_zero(
+                        &format!("spec {:?}", self.name),
+                        "scale_floor",
+                        "",
+                        &Got::One(num_label(v)),
+                        Some(
+                            "to measure distances by each feature's exponentially weighted variance alone",
+                        ),
+                        None,
                     ));
                 }
                 if *standardize == Some(false) && scale_floor.is_some() {
@@ -3816,23 +3846,35 @@ impl Spec {
                     .as_ref()
                     .filter(|e| !non_negative(e.value()) || !e.value().is_finite())
                 {
-                    return Err(format!(
-                        "spec {:?}: micro prune_every must be finite and >= 0 clock units (0 \
-                         checkpoints on every row), got {e}",
-                        self.name
+                    return Err(at_least_zero(
+                        &format!("spec {:?}", self.name),
+                        "prune_every",
+                        " clock units",
+                        &Got::One(e.to_string()),
+                        Some("to prune and join, on every row, the small clusters the model keeps"),
+                        None,
                     ));
                 }
                 if let Some(v) = macro_link.filter(|v| *v < 0.0 || !v.is_finite()) {
-                    return Err(format!(
-                        "spec {:?}: macro_link must be finite and >= 0 (0 links nothing), got {v}",
-                        self.name
+                    return Err(at_least_zero(
+                        &format!("spec {:?}", self.name),
+                        "macro_link",
+                        "",
+                        &Got::One(num_label(v)),
+                        Some("to join none of the small clusters the model keeps"),
+                        None,
                     ));
                 }
                 if let Some(v) = scale_floor.filter(|v| *v < 0.0 || !v.is_finite()) {
-                    return Err(format!(
-                        "spec {:?}: scale_floor must be finite and >= 0 (0 is the EW variance \
-                         alone), got {v}",
-                        self.name
+                    return Err(at_least_zero(
+                        &format!("spec {:?}", self.name),
+                        "scale_floor",
+                        "",
+                        &Got::One(num_label(v)),
+                        Some(
+                            "to measure distances by each feature's exponentially weighted variance alone",
+                        ),
+                        None,
                     ));
                 }
                 if *standardize == Some(false) && scale_floor.is_some() {
@@ -4221,11 +4263,19 @@ impl Spec {
                         self.name
                     ));
                 }
-                for (name, v) in [("beta", beta), ("l1", l1), ("l2", l2)] {
+                for (name, v, zero) in [
+                    ("beta", beta, None),
+                    ("l1", l1, Some("for no L1 penalty")),
+                    ("l2", l2, Some("for no L2 penalty")),
+                ] {
                     if let Some(v) = v.filter(|v| *v < 0.0 || !v.is_finite()) {
-                        return Err(format!(
-                            "spec {:?}: ftrl {name} must be finite and >= 0, got {v}",
-                            self.name
+                        return Err(at_least_zero(
+                            &format!("spec {:?}", self.name),
+                            name,
+                            "",
+                            &Got::One(num_label(v)),
+                            zero,
+                            None,
                         ));
                     }
                 }
@@ -4354,14 +4404,20 @@ impl Spec {
                         q.len()
                     ));
                 }
-                if let Some(v) = q
-                    .as_ref()
-                    .and_then(|q| q.iter().find(|v| !non_negative(v.0) || !v.0.is_finite()))
-                {
-                    return Err(format!(
-                        "spec {:?}: q values must be finite and >= 0 (0 pins a coefficient), got \
-                         {}",
-                        self.name, v.0
+                let bad: Vec<String> = q
+                    .iter()
+                    .flatten()
+                    .filter(|v| !non_negative(v.0) || !v.0.is_finite())
+                    .map(|v| num_label(v.0))
+                    .collect();
+                if !bad.is_empty() {
+                    return Err(at_least_zero(
+                        &format!("spec {:?}", self.name),
+                        "q",
+                        "",
+                        &Got::Of(bad),
+                        Some("for no drift over time"),
+                        None,
                     ));
                 }
                 if let Some(v) = obs_var.filter(|v| !positive(*v) || !v.is_finite()) {
@@ -4388,14 +4444,21 @@ impl Spec {
                 if penalties.is_empty() {
                     return Err(format!("spec {:?}: penalties must be non-empty", self.name));
                 }
-                if let Some(l) = penalties
+                let bad: Vec<String> = penalties
                     .iter()
-                    .find(|l| !non_negative(**l) || !l.is_finite())
-                {
-                    return Err(format!(
-                        "spec {:?}: penalties must each be finite and >= 0, got {l}",
-                        self.name
-                    ));
+                    .filter(|l| !non_negative(**l) || !l.is_finite())
+                    .map(|l| num_label(*l))
+                    .collect();
+                if !bad.is_empty() {
+                    // A list always: `penalties` takes no single number.
+                    return Err(at_least_zero(
+                        &format!("spec {:?}", self.name),
+                        "penalties",
+                        "",
+                        &Got::Distinct(bad.clone(), penalties.len() > bad.len()),
+                        None,
+                        None,
+                    ) + " Keep the penalties strictly decreasing: 0 can only come last.");
                 }
                 // Strictly: a repeated penalty is two identical slots with the
                 // same field name.
@@ -4457,10 +4520,19 @@ impl Spec {
                     // coefficients garbage; NaN/inf make them zero. Zero is
                     // legal: plain least squares, rescued by the jitter
                     // fallback when singular.
-                    if let Some(r) = rs.iter().find(|r| !non_negative(**r) || !r.is_finite()) {
-                        return Err(format!(
-                            "spec {:?}: ridge must be finite and >= 0, got {r}",
-                            self.name
+                    let bad: Vec<String> = rs
+                        .iter()
+                        .filter(|r| !non_negative(**r) || !r.is_finite())
+                        .map(|r| num_label(*r))
+                        .collect();
+                    if !bad.is_empty() {
+                        return Err(at_least_zero(
+                            &format!("spec {:?}", self.name),
+                            "ridge",
+                            "",
+                            &Got::list(rs.len(), bad, true),
+                            Some(NO_SHRINKAGE),
+                            None,
                         ));
                     }
                     if let Some(dup) = first_duplicate(&rs) {

@@ -2516,8 +2516,10 @@ mod last_row;
 pub use last_row::LastRow;
 
 mod notified;
+mod unmet_floor;
 use notified::span_name;
 pub use notified::{Notice, Notified};
+use unmet_floor::{Projection, unmet_floor_notice};
 
 impl Stream {
     pub fn new(spec: &Spec) -> Result<Self, String> {
@@ -4833,7 +4835,7 @@ fn run_instance(
         };
         // The first target whose floor has withheld every row for that long,
         // the ceiling its weight tops out at, and the weight it reads.
-        let mut unmet_floor: Option<(usize, f64, f64)> = None;
+        let mut unmet_floor: Vec<(usize, f64, f64)> = Vec::new();
         if keep && !kept {
             let below = (0..step.pred.len().div_ceil(nc)).any(|tj| {
                 let weight = match sc.tn.get(tj) {
@@ -4860,7 +4862,6 @@ fn run_instance(
             }
             if !inst.notified.unreachable
                 && inst.notified.floor_withheld_for(tj, below, judged, now) >= half
-                && unmet_floor.is_none()
             {
                 let ceiling = settled_weight(
                     weight,
@@ -4869,7 +4870,7 @@ fn run_instance(
                     rounding_steps(inst.steps, inst.notified),
                 );
                 if ceiling < min_weight[tj] {
-                    unmet_floor = Some((tj, ceiling, weight));
+                    unmet_floor.push((tj, ceiling, weight));
                 }
             }
         }
@@ -4887,47 +4888,24 @@ fn run_instance(
         // row weighs 0 -- and `(0 − w₁(1 − s))/s` read a negative ceiling, or
         // 0, with advice to lower the floor below it (task 208's worker). So
         // that notice says what the stream lacks, with no figure.
-        if let Some((tj, ceiling, weight)) = unmet_floor {
+        // Every target unmet on this row is named, each in its own notice
+        // with its own figure (WRITING §11: report every problem).
+        if !unmet_floor.is_empty() {
             inst.notified.unreachable = true;
             inst.notified.restart_waits();
-            let floor = min_weight[tj];
-            let named = inst.spec.targets.get(tj);
-            let target = named.map_or_else(String::new, |t| format!(" for target {t:?}"));
-            let figure = projected_figure(ceiling);
-            inst.notified.raise(if weight == 0.0 {
-                let lacks = if named.is_some() {
-                    "the target has had no row with a value and a positive weight"
-                } else {
-                    "no row has had a positive weight"
-                };
-                format!(
-                    "min_weight = {floor} has not been met{target} on any row for a half-life \
-                     since the stream settled: {lacks}, so it has no weight to meet the floor \
-                     with, and predictions stay withheld until a row brings some \
-                     (the README, *Warm-up*)."
-                )
-            } else if let Some(figure) = figure {
-                format!(
-                    "min_weight = {floor} has not been met{target} on any row for a half-life \
-                     since the stream settled (it is {:.0}% settled), and at the row rate seen \
-                     so far the weight it reads tops out near {figure}, the ceiling \
-                     1/(1 - lam^d) at its rows' spacing d and weight, so predictions stay \
-                     withheld unless the rows come faster or carry more weight. Lower \
-                     min_weight below {figure}, or raise the half_life \
-                     (the README, *Warm-up*).",
-                    100.0 * learned
-                )
-            } else {
-                format!(
-                    "min_weight = {floor} has not been met{target} on any row for a half-life \
-                     since the stream settled (it is {:.0}% settled), and the rows so far are \
-                     too uneven -- a target present on few of them, or weights far apart -- \
-                     to project the weight they settle at, so predictions stay withheld until \
-                     the target's rows bring weight past the floor \
-                     (the README, *Warm-up*).",
-                    100.0 * learned
-                )
-            });
+            for (tj, ceiling, weight) in unmet_floor {
+                inst.notified.raise(unmet_floor_notice(
+                    inst.spec,
+                    inst.decay,
+                    tj,
+                    min_weight[tj],
+                    Projection {
+                        ceiling,
+                        weight,
+                        row_weight: w,
+                    },
+                ));
+            }
         }
         // At or above the ratio: at equality the estimation variance is the
         // noise, and one observation's mean -- `edf = n_kish = 1`, exactly

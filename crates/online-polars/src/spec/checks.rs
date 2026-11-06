@@ -34,6 +34,114 @@ pub(super) fn non_negative(v: f64) -> bool {
     v >= 0.0
 }
 
+/// Which values a range refusal reports: the parameter's one value, or
+/// every bad value of a list, each as the spec gave it. A list whose values
+/// must differ from each other, a grid's, says so in its remedy.
+pub(crate) enum Got {
+    One(String),
+    Of(Vec<String>),
+    /// The bad values, and whether the list holds good ones beside them.
+    Distinct(Vec<String>, bool),
+}
+
+impl Got {
+    /// A grid's bad values (`bad`), or its one value where the parameter
+    /// may be given as a single number (`scalar`) and the list holds one.
+    pub(crate) fn list(all: usize, bad: Vec<String>, scalar: bool) -> Self {
+        if scalar && all == 1 {
+            Got::One(bad.into_iter().next().unwrap_or_default())
+        } else {
+            let others = all > bad.len();
+            Got::Distinct(bad, others)
+        }
+    }
+}
+
+/// The refusal of a number a spec takes as finite and at least 0 (and, with
+/// `below`, less than it), in the shape every message takes (WRITING §11):
+/// where it happened, what is wrong and the values it got, then the remedy
+/// as a sentence of its own. `who` is where (`spec "m"`, or `with_windows`),
+/// `unit` the units the number is in (`" clock units"`, or empty), and
+/// `zero` what 0 does, where a value of 0 means something a reader would set
+/// it for. A list reports every bad value at once. One check, so every
+/// parameter it serves says the same thing in the same words.
+pub(crate) fn at_least_zero(
+    who: &str,
+    key: &str,
+    unit: &str,
+    got: &Got,
+    zero: Option<&str>,
+    below: Option<f64>,
+) -> String {
+    let range = below.map_or_else(
+        || format!("finite and at least 0{unit}"),
+        |b| format!("at least 0 and below {}{unit}", super::num_label(b)),
+    );
+    let positive = |many: bool| {
+        let s = if many { "s" } else { "" };
+        below.map_or_else(
+            || format!("{}finite positive value{s}", if many { "" } else { "a " }),
+            |b| {
+                format!(
+                    "{}positive value{s} below {}",
+                    if many { "" } else { "a " },
+                    super::num_label(b)
+                )
+            },
+        )
+    };
+    let zero = zero.map_or_else(String::new, |z| format!(" {z}"));
+    let (is, remedy) = match got {
+        Got::One(v) => (
+            format!("it is {v}"),
+            format!("Set {key} to 0{zero}, or to {}.", positive(false)),
+        ),
+        Got::Of(v) if v.len() == 1 => (
+            format!("one of its values is {}", v[0]),
+            format!("Set that value to 0{zero}, or to {}.", positive(false)),
+        ),
+        Got::Distinct(v, others) if v.len() == 1 => (
+            format!("one of its values is {}", v[0]),
+            if *others {
+                format!(
+                    "Set that value to 0{zero} or to {}, different from the other values.",
+                    positive(false)
+                )
+            } else {
+                format!("Set that value to 0{zero}, or to {}.", positive(false))
+            },
+        ),
+        Got::Of(v) => (
+            format!("its values {} are not", listed(v)),
+            format!("Set those values to 0{zero}, or to {}.", positive(true)),
+        ),
+        Got::Distinct(v, others) => (
+            format!("its values {} are not", listed(v)),
+            format!(
+                "Set each to 0{} or to {}, all different from each other{}.",
+                zero.is_empty()
+                    .then(String::new)
+                    .unwrap_or_else(|| format!(" ({})", zero.trim())),
+                positive(false),
+                if *others {
+                    " and from the other values"
+                } else {
+                    ""
+                },
+            ),
+        ),
+    };
+    format!("{who}: {key} must be {range}, but {is}. {remedy}")
+}
+
+/// `a, b and c`.
+fn listed(v: &[String]) -> String {
+    match v.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => v.join(""),
+    }
+}
+
 /// The first value that appears twice in a grid, if any. Grid entries become
 /// field-name suffixes, so a repeated value is always a mistake. Compared
 /// as numbers, so `-0.0` repeats `0.0`: bit by bit the two were two
@@ -83,12 +191,20 @@ pub(super) fn check_bin_refit(
     check_refit_budget(name, budget)
 }
 
+/// What a `ridge` of 0 does, as a range refusal says it.
+pub(super) const NO_SHRINKAGE: &str = "for no shrinkage";
+
 /// `ridge` for the IRLS models: finite and non-negative (zero is plain least
 /// squares).
 pub(super) fn check_ridge(name: &str, ridge: Option<f64>) -> Result<(), String> {
     if let Some(r) = ridge.filter(|r| !non_negative(*r) || !r.is_finite()) {
-        return Err(format!(
-            "spec {name:?}: ridge must be finite and >= 0, got {r}"
+        return Err(at_least_zero(
+            &format!("spec {name:?}"),
+            "ridge",
+            "",
+            &Got::One(super::num_label(r)),
+            Some(NO_SHRINKAGE),
+            None,
         ));
     }
     Ok(())
@@ -169,7 +285,10 @@ mod tests {
         assert!(check_ridge("m", Some(0.0)).is_ok() && check_ridge("m", Some(2.5)).is_ok());
         for bad in [-1.0, f64::INFINITY, f64::NAN] {
             let e = check_ridge("m", Some(bad)).unwrap_err();
-            assert!(e.contains("ridge must be finite and >= 0"), "{bad}: {e}");
+            assert!(
+                e.contains("ridge must be finite and at least 0"),
+                "{bad}: {e}"
+            );
         }
         assert!(check_refit_budget("m", Some(Num(f64::INFINITY))).is_ok());
         for bad in [0.0, -1.0, f64::NAN] {

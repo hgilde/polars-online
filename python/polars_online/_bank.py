@@ -469,19 +469,123 @@ class ModelBank:
         return names.index(spec)
 
     def fit_predict(self, df: pl.DataFrame) -> pl.DataFrame:
-        """One chunk in; the chunk plus one struct column per spec out.
+        """Learn a frame's rows, and return them with each spec's output.
 
-        The struct is named after the spec, and its fields are what
-        :mod:`polars_online.spec` describes under *What a spec writes* and
-        the spec's builder describes under *Output*. For a regression that is
-        ``pred_<t>``, ``resid_<t>``, ``weight_sum`` and ``coef``, plus the
-        diagnostics switched on (:meth:`output_fields` lists them;
-        `docs/OUTPUTS.md
+        Use it for rows held in memory as a frame, when you want the output
+        back as one frame. For a query or a stream too large to hold, use
+        ``lf.online.fit_predict`` or :meth:`fit_predict_batches`. To learn
+        without keeping the output, use :meth:`fit`, and to predict without
+        learning, :meth:`predict`.
+
+        .. rubric:: Parameters
+
+        ``df``
+            The next rows of the stream, as one chunk: a ``DataFrame``
+            holding every column the bank's specs read. Those are the specs'
+            targets and features, the clock, session, weight, group and
+            ``label_clock`` columns they name, and the columns a formula
+            target's expression reads. In each group of a spec with a
+            clock, the rows continue the group's clock within each session.
+            A step back is refused, unless ``restart_after_step_back`` is
+            set below it, where the model resets.
+
+        .. rubric:: Returns
+
+        ``df`` with one output column added for each spec, named after the
+        spec, whose value in each row is a record of named fields. For a
+        regression they are ``pred_<t>``, ``resid_<t>``, ``weight_sum``,
+        ``settled_frac``, ``withheld_reason`` and ``coef``, with
+        ``support_coef`` where the model reports it, ``lasso``'s
+        ``penalty_selected_<t>``, and the fields of the diagnostics switched
+        on. Under a grid of half-lives every field read from one instance
+        carries its suffix, such as ``weight_sum@h100`` (an instance is the
+        part of the model that fits one half-life). The fields that choose
+        across instances (``emit_selected``, ``emit_averaged``) and those
+        ``emit_clocks`` writes carry none. Under a grid of ``ridge`` values,
+        feature sets or penalties, each slot's fields, its ``pred``, its
+        ``resid`` and its diagnostics, carry the slot's suffix, such as
+        ``pred_y__r0.1``. :attr:`output_fields` lists a
+        bank's fields, :mod:`polars_online.spec` describes them under *What
+        a spec writes*, and `docs/OUTPUTS.md
         <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md>`_
-        has every model's). ``pred`` is out-of-sample: computed from the
-        state before the row updates it. Chunk boundaries never change the
-        numbers. By default they move the rows ``coef`` is reported on;
-        under ``coef_every`` or ``max_rows_between_coefs`` not even those.
+        gives every model's. Each prediction is out-of-sample: the model
+        makes it from what it learned before the row, and only then learns
+        the row. ``coef``, ``support_coef`` and the standard errors are the
+        fit after the row.
+
+        .. rubric:: Raises
+
+        ``TypeError``
+            ``df`` is not a ``DataFrame``, such as a ``LazyFrame``.
+        :class:`~polars_online.ColumnNotFoundError`
+            A column a spec reads is not in ``df``. It is both a
+            ``ValueError`` and Polars' ``ColumnNotFoundError``.
+        ``ValueError``
+            When:
+
+            - a target, feature or weight column is neither numeric nor
+              Boolean, or a column is ``UInt128``, which polars-online
+              cannot read;
+            - a clock is not a number, a Boolean, a ``Datetime``, a ``Date``
+              or a ``Duration`` (a ``Time`` starts again at midnight), is an
+              ``Int128``, or is a ``UInt64`` past the largest ``Int64``;
+            - between chunks, an integer clock column changes its width or
+              becomes a float, a float clock becomes an integer, or a group
+              or session column changes between integer, float, text and
+              Boolean keys;
+            - a spec gives its clock the other kind of clock parameter: a
+              plain number to a temporal clock, or a duration to a numeric
+              one (*Clock units* in :mod:`polars_online.spec`), or a
+              ``gap_cap`` or ``restart_after_step_back`` finer than the
+              clock's smallest step;
+            - a temporal column is read as a feature, target or weight, or
+              by a formula target, other than as the clock;
+            - a ``label_clock`` column's type does not match the clock's, a
+              temporal one for a temporal clock and a numeric one for a
+              numeric clock;
+            - a group, session or ``label_clock`` key column has a type with
+              no text form, such as a nested one;
+            - the clock has a null or non-finite value, or a step between
+              two of its values that is not a finite number;
+            - a weight is negative (a null weight skips the row);
+            - a spec is named like an input column, which its output column
+              would replace;
+            - a group's clock steps back within a session, with
+              ``restart_after_step_back`` not set, the default, or by no
+              more than it. A chunk that overlaps what a loaded state has
+              learned is refused the same way, and :meth:`skip_learned`
+              drops the overlap;
+            - under ``group_close="monotone"``, a group key is null or below
+              the key before it, or the group column is not an integer,
+              String or Categorical type;
+            - a ``label_clock`` time is before its row's clock, or a group's
+              rows waiting for their label times would pass
+              ``max_held_rows`` under ``held_overflow="refuse"``, the
+              default;
+            - a formula target's ``embargo`` is shorter than its longest
+              look-ahead ``window_size``;
+            - a chunk would take a hard window's snapshots past a
+              ``window_budget`` that refuses;
+            - a model refuses a value of its own, such as a ``strict_binary``
+              target that is not 0 or 1, as its builder's docstring says;
+            - the bank refused an earlier chunk after learning part of it
+              (see Notes);
+            - ``POLARS_ONLINE_MAX_THREADS`` is not a whole number, or names
+              more threads than the system will start, on a bank
+              with ``threads=None``, at the first call that runs on the
+              process's threads.
+        ``RuntimeError``
+            The bank is in use on another thread (:class:`ModelBank`).
+        :class:`~polars_online.ReadinessWarning`
+            A warning, not an error: issued when a finding that casts doubt
+            on what a model reports first holds, such as a gate still unmet
+            once the model has learned long enough to judge. That class's
+            docstring lists each finding and how often it is issued.
+
+        .. rubric:: Examples
+
+        This code reads ``df`` from the README's `Example data
+        <https://github.com/hgilde/polars-online#example-data>`_:
 
         .. code-block:: python
 
@@ -489,52 +593,43 @@ class ModelBank:
                 "ridge", targets=["y"], features=["x0", "x1"], half_life=100.0, ridge=[1e-6, 0.1]
             )
             bank = po.ModelBank([spec])
-            out = bank.fit_predict(df)
-            preds = out["ridge"].struct.field("pred_y__r0.1")
-            flat = out.online.unnest([spec])          # one column per field
+            out = bank.fit_predict(df)                         # df, with the column "ridge" added
+            pred = out["ridge"].struct.field("pred_y__r0.1")   # the slot with ridge 0.1
+            first = pred.is_not_null().arg_true()[0]           # the first row after its warm-up
+            print(f"{pred.count()} of {out.height} rows predicted, the first at row {first}")
 
-        Raises ``TypeError`` for anything but a ``DataFrame`` (a ``LazyFrame``
-        is told to collect, or to feed :meth:`fit_predict_batches`), and
-        ``ValueError``, naming the spec and the column, when:
+        .. code-block:: text
 
-        - a column a spec reads (target, feature, clock, session, weight,
-          group) is not in the frame, as
-          :class:`~polars_online.ColumnNotFoundError`, which is both a
-          ``ValueError`` and Polars' ``ColumnNotFoundError``;
-        - a target, feature or weight column is not numeric;
-        - a column is ``UInt128``, read or not: the extension cannot take one
-          in, so the column is named with a cast to make, a clock in the
-          words an ``Int128`` clock gets;
-        - a clock is not a number, a ``Datetime``, a ``Date`` or a
-          ``Duration`` (a ``Time`` is refused: a time of day starts again at
-          midnight);
-        - a spec gives its clock the other kind of clock parameter: a plain
-          number to a temporal clock, or a duration to a numeric one (*Clock
-          units* in :mod:`polars_online.spec`);
-        - the clock has a null or non-finite value;
-        - a weight is negative (a null weight skips the row);
-        - a spec is named like an input column, which the struct would
-          replace;
-        - a group's clock runs backwards with ``restart_after_step_back``
-          unset, the default, or by no more than it, where that is a late
-          row rather than a new start. A chunk that overlaps what a loaded
-          state has learned is refused the same way, and :meth:`skip_learned`
-          drops the overlap.
+            396 of 400 rows predicted, the first at row 4
 
-        A chunk that would take a window past a refusing ``window_budget``
-        is refused too (``ValueError``, naming the ring's size and its
-        cadence, ``snapshot_every`` and ``max_rows_between_snapshots``), found
-        by replaying the chunk's clock schedule on the rings before any row
-        is learned. A refused chunk leaves the bank exactly as it was, so the
-        corrected chunk can be fed. One refusal comes too late for that: a
-        window past its budget under ``drift_action="reset"``, whose resets
-        the replay cannot foresee. That is found as the rows are learned, so
-        the chunk is refused after some of it has been. The bank then refuses
-        every later ``fit_predict``, ``predict`` and ``save`` rather than go
-        on from there: rebuild it from its last save.
+        .. rubric:: See also
 
-        ``RuntimeError`` when the bank is in use on another thread (class
-        docstring).
+        - ``lf.online.fit_predict``, the same over a query, run as the query
+          runs.
+        - :meth:`fit_predict_batches`, the same over an iterator of chunks.
+        - :meth:`fit`, which learns and keeps no output.
+        - :meth:`predict`, which predicts and learns nothing.
+        - `Why every prediction is out-of-sample
+          <https://github.com/hgilde/polars-online/blob/main/docs/explanation/out-of-sample.md>`_.
+
+        .. rubric:: Notes
+
+        Chunk boundaries never change the numbers: a stream fed as one chunk
+        or a thousand gives the same predictions to the bit. By default they
+        move the rows ``coef`` is reported on, each group's last row in the
+        chunk; under ``coef_every`` or ``max_rows_between_coefs`` not even
+        those.
+
+        A refused chunk leaves the bank as it was, so the corrected chunk can
+        be fed. The bank checks every group's clock steps in every spec over
+        the whole chunk, and plays the chunk's clock through each hard
+        window's snapshot schedule, before it learns a row. Two overruns of
+        a ``window_budget`` are found only as the rows are learned: one under
+        ``drift_action="reset"``, whose resets the check cannot foresee, and
+        one where a snapshot grows within the chunk. Then the chunk is
+        refused after some of it has been learned, and the bank refuses
+        every later call that learns, predicts or saves: load its last saved
+        state with :meth:`load` and feed it the rows since that save.
         """
         return self._fit_predict_from(df, 0)
 

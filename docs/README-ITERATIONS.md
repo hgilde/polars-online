@@ -936,6 +936,50 @@ or a decision are left for the coordinator. The user's verdict is pending.
 
 **Verdict:** pending.
 
+### I9, task 338 stage 1 (2026-11-06)
+
+**Prompt:** We want a rewrite of all guides, api docs, printed messages and
+exception text
+
+Then: Do the full doc rewrite and I will review on GitHub.
+
+Then: For the docs be sure to iterate until there is no more to consider.
+
+**Scope:** the README's opening, which the rewrite's map (stage 1) makes
+the first tutorial: its title section, *Introduction*'s opener and *A first
+fit*. The map's README rows, copied as WRITING §2 asks:
+
+| line | section | lands in |
+|---:|---|---|
+| 1 | polars-online | README landing: what the library is; the links table stays until the landing page replaces it |
+| 29 | · Introduction | README landing; its heading stays, since `llms.txt` links it |
+| 33 | · · A first fit | the first tutorial. The aside on the look-ahead target ← moved to `docs/explanation/out-of-sample.md`; the aside on the local fit ← moved into *Time and decay* |
+
+The same stage moved, with a one-line link left behind: *Row order and the
+two guarantees*' out-of-sample paragraph ← `docs/explanation/out-of-sample.md`;
+the query check's recipe and the error recipe of *How a bank detects rows
+out of order* ← `docs/how-to/put-rows-in-clock-order.md`; *Save and load*'s
+overlap paragraph and load-error table and recipe ←
+`docs/how-to/resume-from-a-saved-state.md`.
+
+**Ideas applied:** WRITING §9's tutorial shape (one path, numbered steps,
+every step's output shown, no alternatives), so Step 2 became two steps and
+the served rows got a table of their own; the glossary's words (*feature*
+for *signal*, *prediction* for *forecast*, *serve* for *score*), each term
+defined at first use, and *beta* defined as the finance example's word.
+
+**Counts** (`doc_review.py measure` on the title section and *A first
+fit*): before, 551 prose words, 34 sentences, mean 16.2 words, no sentence
+of 35 words or more, 6 tables; after, 808 prose words, 47 sentences, mean
+17.2, two of 35 or more and none of 45, 7 tables. The words grew with the
+definitions a newcomer needs and the served table's step.
+
+**Reviews:** round 1 by two fresh readers, then scoped rounds over the
+changed text until one found no *wrong* or *rule* finding (round 4), then
+one final full read, which found none.
+
+**Verdict:** pending.
+
 ## The ideas
 
 Every idea the reviews and the verdicts raised, grouped by kind. A status
