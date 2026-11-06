@@ -3287,3 +3287,13 @@ why = """a chunk's suffix sums hold exactly blocks `s.low..end`, one summary \
 each (`extend_suffix` adds one a step down, and this trim keeps that \
 length), so at `s.low == low` the truncation is to the length the sums \
 have and `s.low` is set to itself"""
+
+[[equivalent]]
+file = "crates/online-core/src/huber_refit.rs"
+function = "<impl Clone for Reserved>::clone"
+mutation = "replace <impl Clone for Reserved>::clone -> Self with Default::default()"
+line_has = "Self(false)"
+why = """`Reserved` is a newtype over `bool` whose `Default` is derived, so \
+`Default::default()` is `Reserved(false)`, the very value the body \
+returns: a copied buffer is unreserved by design and reserves its full \
+size again on its next learned row"""

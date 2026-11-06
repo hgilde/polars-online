@@ -1771,6 +1771,44 @@ impl crate::OnlineModel for CorrChange {
 mod tests {
     use super::*;
 
+    /// The window kind's spare row is a ring row the window let go, so its
+    /// room is exactly the next row's length: `ring_row` reuses it there,
+    /// keeping its buffer, and allocates a row of its own only where the
+    /// spare is shorter, leaving the spare as it was. The zero-allocation
+    /// test that holds this lives in `online-bench`, which mutation testing
+    /// of `online-core` does not run (task 344: `<` as `<=` allocated on
+    /// every row of the window kind and survived).
+    #[test]
+    fn ring_row_reuses_a_spare_of_exactly_the_rows_length() {
+        let r = [1.0, 2.0, 3.0];
+        let mut work = Work {
+            spare: Vec::with_capacity(r.len()),
+            ..Work::default()
+        };
+        assert_eq!(work.spare.capacity(), r.len());
+        let at = work.spare.as_ptr();
+        let row = work.ring_row(&r);
+        assert_eq!(row, r);
+        assert_eq!(row.as_ptr(), at, "the spare's buffer is the row's");
+        assert_eq!(work.spare.capacity(), 0, "the spare was taken");
+
+        // A spare of more room is taken too.
+        work.spare = Vec::with_capacity(8);
+        let at = work.spare.as_ptr();
+        let row = work.ring_row(&r);
+        assert_eq!(row.as_ptr(), at);
+
+        // A spare one short is left alone, and the row is a new one of its
+        // own length.
+        work.spare = Vec::with_capacity(r.len() - 1);
+        let (at, room) = (work.spare.as_ptr(), work.spare.capacity());
+        let row = work.ring_row(&r);
+        assert_eq!(row, r);
+        assert_ne!(row.as_ptr(), at);
+        assert_eq!(row.capacity(), r.len());
+        assert_eq!((work.spare.as_ptr(), work.spare.capacity()), (at, room));
+    }
+
     /// A ring row narrower than the cfg is refused, where it loaded and
     /// panicked on the first `step` (review 2026-09-18, B3).
     #[test]
