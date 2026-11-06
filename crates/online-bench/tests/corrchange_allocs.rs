@@ -55,6 +55,7 @@ fn the_window_kind_allocates_a_few_times_a_row() {
     assert_eq!(block.predicted, ROWS);
     // The row's report and its copy into the ring, each window's one buffer
     // of sums, and each draw's two (four redraws of 100 draws in the
-    // block): 5.8 a row when this was written, 286 before.
-    assert!(per_row <= 8.0, "{per_row} allocations a row");
+    // block): 5.8 a row when this was written, 286 before. Every one of
+    // them is now a buffer kept between rows (task 335, F7): none.
+    assert!(per_row == 0.0, "{per_row} allocations a row");
 }

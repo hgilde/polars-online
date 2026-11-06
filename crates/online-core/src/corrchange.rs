@@ -599,6 +599,43 @@ pub struct CorrChange {
     /// load, never saved.
     #[serde(skip)]
     sums: Option<WindowSums>,
+    /// `window`: the step's buffers between rows ([`Work`]).
+    #[serde(skip)]
+    work: Work,
+}
+
+/// `window`'s buffers between rows, so a row allocates nothing (task 335,
+/// F7): the report's two windows' summaries and their working space, or
+/// its two windows' correlations; the row the ring let go last, which the
+/// next row is copied into; and a permutation redraw's statistics, block
+/// order and pooled rows. Not state: two models with the same state are
+/// the same model whatever is left here, a copy keeps none of it, and a
+/// state file carries none.
+#[derive(Default)]
+struct Work {
+    report: Vec<f64>,
+    spare: Vec<f64>,
+    stats: Vec<f64>,
+    order: Vec<usize>,
+    shuffled: Vec<usize>,
+}
+
+impl Clone for Work {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for Work {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for Work {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Work")
+    }
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -643,6 +680,7 @@ impl CorrChange {
             seq_crit,
             ring_rows: 0,
             sums,
+            work: Work::default(),
             cfg,
         })
     }
@@ -676,7 +714,7 @@ impl CorrChange {
     /// The window statistic of the report on `row` from the merged sums:
     /// [`Self::window_stat_by`]'s norm over the same pairs, in the same
     /// order.
-    fn window_stat_merged(&self, sums: &WindowSums, row: &[f64]) -> f64 {
+    fn window_stat_merged(&self, sums: &WindowSums, row: &[f64], buf: &mut Vec<f64>) -> f64 {
         let d = self.cfg.n_features;
         let layout = sums.layout();
         let stride = layout.stride();
@@ -690,8 +728,9 @@ impl CorrChange {
             }
         };
         // Both windows' summaries, then one summary, `δ`, `c·δ` and a
-        // row's deviations: one allocation a report.
-        let mut buf = vec![0.0; 3 * stride + 3 * d];
+        // row's deviations, in a buffer kept between rows.
+        buf.clear();
+        buf.resize(3 * stride + 3 * d, 0.0);
         let (out, tmp) = buf.split_at_mut(2 * stride);
         sums.summaries(pos, &read, out, tmp);
         let (pre, post) = out.split_at(stride);
@@ -1214,19 +1253,28 @@ impl CorrChange {
     /// `‖vech(R̂_pre − R̂_post)‖` over the two windows in `rows`.
     #[cfg(test)]
     fn window_stat(&self, rows: &[Vec<f64>]) -> f64 {
-        self.window_stat_by(rows.len(), |i| &rows[i])
+        self.window_stat_by(rows.len(), |i| &rows[i], &mut Vec::new())
+    }
+
+    /// [`Self::window_corr_into`] into a buffer of its own.
+    #[cfg(test)]
+    fn window_corr<'a>(&self, w: usize, row: impl Fn(usize) -> &'a [f64]) -> Vec<f64> {
+        let d = self.cfg.n_features;
+        let mut buf = vec![0.0; 2 * d + d * d.saturating_sub(1) / 2];
+        self.window_corr_into(w, row, &mut buf);
+        buf
     }
 
     /// The window's correlation matrix, the strict upper triangle in the
     /// pairs' order, of its `w` rows `row(0)..row(w)`: [`Self::corr_of`]'s
     /// sums, in its order, with each column's mean and squared deviations
     /// summed once rather than once for each pair it is in. The same bits.
-    /// One buffer: the means, the squared deviations, then the
-    /// correlations, which start at `2 d`.
-    fn window_corr<'a>(&self, w: usize, row: impl Fn(usize) -> &'a [f64]) -> Vec<f64> {
+    /// Into `buf`, `2 d + d (d − 1) / 2` long, written over: the means, the
+    /// squared deviations, then the correlations, which start at `2 d`.
+    fn window_corr_into<'a>(&self, w: usize, row: impl Fn(usize) -> &'a [f64], buf: &mut [f64]) {
         let d = self.cfg.n_features;
         let wf = w as f64;
-        let mut buf = vec![0.0; 2 * d + d * d.saturating_sub(1) / 2];
+        buf.fill(0.0);
         let (mean, rest) = buf.split_at_mut(d);
         let (ss, corr) = rest.split_at_mut(d);
         for i in 0..w {
@@ -1265,21 +1313,31 @@ impl CorrChange {
                 p += 1;
             }
         }
-        buf
     }
 
     /// `‖vech(R̂_pre − R̂_post)‖` over the two windows of the `n` rows
     /// `row(0)..row(n)`, read where they are: the ring was copied whole on
     /// every row, and every pooled row on every permutation draw
     /// (docs/PLAN.md task 270, D-2).
-    fn window_stat_by<'a>(&self, n: usize, row: impl Fn(usize) -> &'a [f64]) -> f64 {
+    fn window_stat_by<'a>(
+        &self,
+        n: usize,
+        row: impl Fn(usize) -> &'a [f64],
+        buf: &mut Vec<f64>,
+    ) -> f64 {
         let w = self.cfg.span_rows;
         if n < 2 * w || w < 2 {
             return f64::NAN;
         }
-        let at = 2 * self.cfg.n_features;
-        let pre = self.window_corr(w, &row);
-        let post = self.window_corr(w, |i| row(w + i));
+        let d = self.cfg.n_features;
+        let at = 2 * d;
+        // Both windows' correlations, in a buffer kept between rows.
+        let len = at + d * d.saturating_sub(1) / 2;
+        buf.clear();
+        buf.resize(2 * len, 0.0);
+        let (pre, post) = buf.split_at_mut(len);
+        self.window_corr_into(w, &row, pre);
+        self.window_corr_into(w, |i| row(w + i), post);
         let mut acc = 0.0f64;
         for (x, y) in pre[at..].iter().zip(&post[at..]) {
             if !(x.is_finite() && y.is_finite()) {
@@ -1304,13 +1362,25 @@ impl CorrChange {
         if self.ring.len() < 2 * w {
             return None;
         }
-        let ring = &self.ring;
         let block = self.cfg.perm_block;
         let nblocks = (2 * w).div_ceil(block);
-        let mut stats = Vec::with_capacity(self.cfg.n_perm);
-        let mut order: Vec<usize> = (0..nblocks).collect();
+        // The draws' buffers, kept between redraws.
+        let mut work = std::mem::take(&mut self.work);
+        let Work {
+            report: buf,
+            stats,
+            order,
+            shuffled,
+            ..
+        } = &mut work;
+        stats.clear();
+        stats.reserve_exact(self.cfg.n_perm);
+        order.clear();
+        order.extend(0..nblocks);
         // The pooled rows by their places in the ring, permuted in blocks.
-        let mut shuffled: Vec<usize> = Vec::with_capacity(2 * w);
+        shuffled.clear();
+        shuffled.reserve_exact(2 * w);
+        let ring = &self.ring;
         for _ in 0..self.cfg.n_perm {
             // Fisher-Yates over the blocks, from the state's own generator
             // so the draws are a function of the data alone.
@@ -1319,24 +1389,27 @@ impl CorrChange {
                 order.swap(i, j);
             }
             shuffled.clear();
-            for &bi in &order {
+            for &bi in order.iter() {
                 let start = bi * block;
                 shuffled.extend(start..(start + block).min(2 * w));
             }
-            let s = self.window_stat_by(2 * w, |i| &ring[shuffled[i]]);
+            let s = self.window_stat_by(2 * w, |i| &ring[shuffled[i]], buf);
             if s.is_finite() {
                 stats.push(s);
             }
         }
-        if stats.is_empty() {
-            return None;
-        }
-        stats.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
-        // It was the `⌈(1 − alpha)·B⌉`-th smallest, whose size is `(B + 1 −
-        // q) / (B + 1)`: 0.0952 at 20 draws and alpha 0.05, 0.0476 at 0.01
-        // (task 278, batch 33 measured it; fixed in ff).
-        let m = perm_rejections(self.cfg.alpha, stats.len());
-        (m > 0).then(|| stats[stats.len() - m])
+        let crit = if stats.is_empty() {
+            None
+        } else {
+            stats.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+            // It was the `⌈(1 − alpha)·B⌉`-th smallest, whose size is `(B +
+            // 1 − q) / (B + 1)`: 0.0952 at 20 draws and alpha 0.05, 0.0476
+            // at 0.01 (task 278, batch 33 measured it; fixed in ff).
+            let m = perm_rejections(self.cfg.alpha, stats.len());
+            (m > 0).then(|| stats[stats.len() - m])
+        };
+        self.work = work;
+        crit
     }
 
     /// The row as the ring would hold it, or `None` when the standardiser
@@ -1372,12 +1445,13 @@ impl CorrChange {
     /// `predict` does not know the weight (docs/REVIEW-E54-E64.md CC2).
     fn read(&self, x: &[f64]) -> Vec<f64> {
         let mut pred = Vec::new();
-        self.read_into(x, &mut pred);
+        self.read_into(x, &mut pred, &mut Vec::new());
         pred
     }
 
-    /// [`Self::read`], written over `pred`.
-    fn read_into(&self, x: &[f64], pred: &mut Vec<f64>) {
+    /// [`Self::read`], written over `pred`, `buf` the window statistic's
+    /// working space.
+    fn read_into(&self, x: &[f64], pred: &mut Vec<f64>, buf: &mut Vec<f64>) {
         pred.clear();
         pred.resize(Self::n_outputs_for(), f64::NAN);
         let mut one = [0.0];
@@ -1433,11 +1507,15 @@ impl CorrChange {
                 let skip = held + 1 - 2 * w;
                 let ring = &self.ring;
                 let stat = match &self.sums {
-                    Some(sums) => self.window_stat_merged(sums, row),
-                    None => self.window_stat_by(2 * w, |i| {
-                        let i = skip + i;
-                        if i < held { &ring[i] } else { row }
-                    }),
+                    Some(sums) => self.window_stat_merged(sums, row, buf),
+                    None => self.window_stat_by(
+                        2 * w,
+                        |i| {
+                            let i = skip + i;
+                            if i < held { &ring[i] } else { row }
+                        },
+                        buf,
+                    ),
                 };
                 // The value **in force**: a redraw happens after the row is
                 // reported, so `predict` and `step` see the same one.
@@ -1492,7 +1570,9 @@ impl crate::OnlineModel for CorrChange {
             return;
         }
         // `predict`'s answer, read before the row: `x` is usable here.
-        self.read_into(x, &mut out.pred);
+        let mut buf = std::mem::take(&mut self.work.report);
+        self.read_into(x, &mut out.pred, &mut buf);
+        self.work.report = buf;
         out.n_eff = self.n_eff;
         out.extra = None;
         let lam = self.cfg.decay.factor(d_clock);
@@ -1506,13 +1586,26 @@ impl crate::OnlineModel for CorrChange {
             }
             return;
         }
+        // The row as the ring holds it, copied into the row the window's
+        // ring let go last, so the copy allocates nothing.
         let mut one = [0.0];
-        let row = self.ring_row(x, &mut one).map(<[f64]>::to_vec);
+        let mut row = std::mem::take(&mut self.work.spare);
+        let ready = match self.ring_row(x, &mut one) {
+            Some(r) => {
+                row.clear();
+                row.extend_from_slice(r);
+                true
+            }
+            None => false,
+        };
         if self.cfg.scalar {
             self.diag.update(x, lam, weight);
         }
         self.n_eff = lam * self.n_eff + weight;
-        let Some(row) = row else { return };
+        if !ready {
+            self.work.spare = row;
+            return;
+        }
         self.since_flag = Some(self.since_flag.unwrap_or(0) + 1);
         let flagged = out.pred[2] == 1.0;
         if flagged {
@@ -1533,7 +1626,9 @@ impl crate::OnlineModel for CorrChange {
                 self.ring_rows += 1;
                 let w = self.cfg.span_rows;
                 while self.ring.len() > 2 * w {
-                    self.ring.pop_front();
+                    if let Some(old) = self.ring.pop_front() {
+                        self.work.spare = old;
+                    }
                 }
                 if flagged && self.cfg.reset {
                     self.ring.clear();
@@ -2553,7 +2648,7 @@ mod tests {
                 order.swap(i, j);
             }
             let mut shuffled: Vec<Vec<f64>> = Vec::new();
-            for &bi in &order {
+            for &bi in order.iter() {
                 let start = bi * block;
                 for r in rows.iter().take((start + block).min(2 * w)).skip(start) {
                     shuffled.push(r.clone());
