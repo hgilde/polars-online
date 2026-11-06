@@ -207,22 +207,42 @@ def libsvm_or_skip(path: str, n_features: int) -> tuple[np.ndarray, np.ndarray]:
 # Every set an oracle group names
 
 
-#: The sources a ledger group's ``dataset`` may name, each a loader here.
-SOURCES = ("franti", "libsvm", "nist", "rdatasets", "tcpd")
+#: The sources a ledger group's ``dataset`` may name, each a loader here:
+#: these five, and Binance's public dump (``binance`` a day of BTCUSDT's
+#: one-minute rows, ``binance-um`` a ``SYMBOL/DATE`` of USD-M futures quotes
+#: and trades), which only :data:`SUITE` names so far.
+SOURCES = ("binance", "binance-um", "franti", "libsvm", "nist", "rdatasets", "tcpd")
+
+#: Every set the test suite reads that no ledger group names, in
+#: :func:`fetch`'s form: CI fetches these and the ledger's before the
+#: suite runs (``scripts/oracles.py fetch --suite``), and keys its cache on
+#: the list (``scripts/oracles.py datasets --suite --digest``). A test that
+#: reads a new set adds it here, so CI keeps it through an outage at its
+#: source.
+SUITE = (
+    "binance:" + ",".join(data.VALIDATION_DATES),
+    "binance-um:ETCUSDT/2024-01-02",
+    "nist:NumAcc1,NumAcc2,NumAcc3,NumAcc4",
+)
 
 
 def fetch(dataset: str) -> list[str]:
     """Download (or find cached) every set a ledger group's ``dataset``
-    names -- ``source:name,name`` with the sources ``franti``, ``libsvm``,
-    ``nist``, ``rdatasets`` and ``tcpd``, several joined by ``;`` -- and
-    return what each was. Raises :class:`data.Offline` as the loaders do,
+    names -- ``source:name,name`` with the sources in :data:`SOURCES`,
+    several joined by ``;`` -- and return what each was. A set already in
+    ``.cache`` is read there and not downloaded. Raises :class:`data.Offline` as the loaders do,
     and ``ValueError`` on a source this does not know, so a group cannot
     name a set nothing fetches."""
     done = []
     for part in filter(None, (p.strip() for p in dataset.split(";"))):
         source, _, names = part.partition(":")
         for name in filter(None, names.split(",")):
-            if source == "franti":
+            if source == "binance":
+                data.public_intraday((name,))
+            elif source == "binance-um":
+                symbol, _, date = name.partition("/")
+                data.public_quotes_and_trades(symbol, date)
+            elif source == "franti":
                 franti(name)
             elif source == "libsvm":
                 libsvm_text(name)

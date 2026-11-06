@@ -966,7 +966,7 @@ class TestActionsArePinnedToCommits:
     13 sites, release.yml's wheel build among them (task 160, CI1). Read from
     the text, since YAML drops the comment that names the version."""
 
-    FILES = [*WORKFLOWS, PREP_ACTION, REPORT_ACTION]
+    FILES = [*WORKFLOWS, *sorted(PREP_ACTION.parents[1].glob("*/action.yml"))]
     USES = re.compile(r"^\s*(?:-\s*)?uses:\s*(\S+?)@(\S+)(.*)$")
 
     def _external(self):

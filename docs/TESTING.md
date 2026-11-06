@@ -832,6 +832,8 @@ nothing. On the ledger's first CI run each shard fetched its own sets from
 a cold cache, one shard's download of Fränti's S4 failed, and its grid
 skipped as offline. Its three cases went unmeasured, and the ledger job
 failed on them. The shards also print each skip's reason (`-rfEsxX`).
+How that job survives an outage at a source is
+[Downloaded data in CI](#downloaded-data-in-ci).
 
 **The gate keeps a cheap guard instead of the grids.** For each group,
 `tests/test_oracle_ledger.py` calls the group's callable and hashes this
@@ -1224,8 +1226,61 @@ on another Polars. On the floor, a test that needs a newer Polars skips,
 naming the version it needs and why (`tests/polars_version.py`). Tests
 generate or download their own data (hard rule 1). Downloads are cached
 under `.cache/`, and a test that needs one skips offline: the public
-intraday data (`tests/data.py::public_intraday`), the released wheels, and
-the day of quotes and trades.
+intraday data (`tests/data.py::public_intraday`), the released wheels, the
+day of quotes and trades, and the public benchmark sets. CI keeps the
+datasets through an outage at their source, below.
+
+### Downloaded data in CI
+
+No dataset is in the repository, and none is published anew: the public
+sets stay at their sources, and CI keeps a copy of each where only this
+repository's workflows can read it. Three copies stand between a run and a
+server that is down.
+
+1. **The Actions cache**, keyed on the list of sets alone:
+   `uv run python scripts/oracles.py datasets [--suite] --digest` hashes
+   the sets the ledger's groups name (and with `--suite`, the sets the rest
+   of the suite reads, `tests/public_benchmarks.py`'s `SUITE`). The oracle
+   job's key once hashed `oracles.toml`, which every ledger `apply`
+   rewrites, so each apply started a new entry; a measured number moving
+   now leaves the key as it was. A loader that changes what it writes to
+   `.cache/` must change its file name too, as it must for a developer's
+   own `.cache/`, which nothing clears either.
+2. **The `oracle-datasets` artifact**, on a cache miss. The repository's
+   caches sit at GitHub's 10 GB limit, most of it Rust's build caches, and
+   GitHub then evicts the least recently used entry; that took the 0.9 MB
+   dataset entry just as Fränti's server stopped answering, and the oracle
+   run failed. An artifact is kept for its retention period (90 days)
+   whatever the cache does. `.github/actions/last-datasets` copies the
+   newest unexpired one, from a run of this repository's `main`, into
+   `.cache/`, file by file, leaving every file already there. It holds the
+   ledger's sets, which the oracle job has uploaded every run; it reads the
+   artifact and publishes nothing.
+3. **`oracles.py fetch`**, which downloads only what is still missing: a
+   set already in `.cache/` is read there. Under CI (`CI` set) a download
+   is tried five times, 5, 10, 20 and 40 seconds apart, so a server down
+   for about a minute and a half is waited out; elsewhere three times, 2
+   and 4 seconds apart, so an offline run gives up within seconds
+   (`tests/data.py::download_pauses`). Once a source has failed every
+   round, a later set from it is named as missed without waiting again.
+
+Where each runs:
+
+| job | cache | on a miss | then | a set it cannot get |
+|---|---|---|---|---|
+| `oracles.yml`, `datasets`, a push or by hand | `oracle-data-<digest>`, the ledger's sets | the artifact | `fetch`, three rounds | fails the job by name, before any grid runs |
+| `oracles.yml`, `datasets`, the weekly sweep | not read | — | `fetch` afresh first, so a set changed at its source is measured; a set an outage withholds is filled from the artifact, with a warning naming it, and fetched again | fails the job by name (only when the artifact lacks it too) |
+| `ci.yml`, `test`, every leg | `test-data-<OS>-<digest>`, the ledger's sets and `SUITE` (Binance's days and the day of quotes and trades, NIST's NumAcc sets) | the artifact | `fetch --suite`, one round | a warning naming it; its tests skip offline, as on a desk |
+
+The cache is saved where it missed, and in `ci.yml` only once every set is
+in hand, so an entry is never short of one. Binance's days and the quotes
+are in no artifact (only the ledger's sets are published), so the CI cache
+is their one copy: on a miss with Binance down, their tests skip. Before
+this, Fränti's server timed out from the runners on nearly every leg of
+the 25 CI runs to 2026-11-05, and the two oracle guards that read its
+sets skipped on each. A test that reads a new public set adds it to
+`SUITE` (or to its ledger group's `dataset`), or CI fetches it only when
+the test runs and keeps no copy.
 
 ### The machines and the CPU paths
 

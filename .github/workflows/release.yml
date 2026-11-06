@@ -75,12 +75,15 @@ jobs:
   # `pages` and `id-token`, and a called workflow may ask for no more than
   # its caller grants, checked at start whether the job runs or not; it runs
   # only on a push to main, so under this call it is skipped and the grant is
-  # inert (tests/test_release_workflow.py holds both to that).
+  # inert (tests/test_release_workflow.py holds both to that). `actions:
+  # read` is the test job's: it reads the dataset artifact of an oracle run
+  # when its cache misses (.github/actions/last-datasets).
   ci:
     name: CI
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
+      actions: read
       pages: write
       id-token: write
 

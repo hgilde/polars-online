@@ -173,6 +173,7 @@ def test_a_truncated_download_is_retried_and_a_dead_one_is_offline(monkeypatch):
             raise http.client.IncompleteRead(b"partial")
         return _Resp(b"whole")
 
+    monkeypatch.delenv("CI", raising=False)  # three attempts, as on a desk
     monkeypatch.setattr(data.time, "sleep", lambda s: None)
     monkeypatch.setattr(data.urllib.request, "urlopen", flaky)
     assert data._download("http://example.invalid/x") == b"whole"
@@ -231,6 +232,7 @@ def test_only_the_network_is_offline(monkeypatch, tmp_path, fetch):
     import data
 
     monkeypatch.setattr(data, "CACHE_DIR", tmp_path)
+    monkeypatch.delenv("CI", raising=False)  # three attempts, as on a desk
     monkeypatch.setattr(data.time, "sleep", lambda s: None)
     calls: list[str] = []
 
@@ -257,3 +259,355 @@ def test_only_the_network_is_offline(monkeypatch, tmp_path, fetch):
         kind, reason = _outcome(lambda: fetch(data))
         assert kind == "skipped" and "offline" in reason, (kind, reason)
         assert len(calls) == 3, "a transient failure was not retried"
+
+
+# ---------------------------------------------------------------------------
+# The downloaded data survive an outage at their source (task 339)
+
+
+class _Body:
+    def __init__(self, body: bytes):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return None
+
+    def read(self) -> bytes:
+        return self.body
+
+
+def _opener(answers: list):
+    """An ``urlopen`` that gives each of ``answers`` in turn: an exception
+    is raised, bytes are the response. Records each URL asked."""
+    calls: list[str] = []
+
+    def urlopen(request, timeout, **tls):
+        calls.append(request.full_url)
+        answer = answers[min(len(calls), len(answers)) - 1]
+        if isinstance(answer, BaseException):
+            raise answer
+        return _Body(answer)
+
+    return urlopen, calls
+
+
+@pytest.mark.parametrize(
+    ("ci", "pauses"),
+    [("true", [5.0, 10.0, 20.0, 40.0]), (None, [2.0, 4.0])],
+    ids=["ci", "desk"],
+)
+def test_a_download_waits_out_a_short_outage_under_ci_and_gives_up_fast_elsewhere(
+    monkeypatch, ci, pauses
+):
+    """Fränti's server timed out for minutes from GitHub's runners; three
+    attempts 2 and 4 seconds apart gave up inside 100 seconds, so a CI run
+    skipped or failed for it. Under CI (``CI`` set) five attempts, 5, 10, 20
+    and 40 seconds apart; elsewhere three, so a run offline does not hang.
+    The schedule is the pauses taken, read from a patched opener and sleep:
+    no network."""
+    import urllib.error
+
+    import data
+
+    if ci is None:
+        monkeypatch.delenv("CI", raising=False)
+    else:
+        monkeypatch.setenv("CI", ci)
+    slept: list[float] = []
+    monkeypatch.setattr(data.time, "sleep", slept.append)
+    down = urllib.error.URLError(TimeoutError("timed out"))
+    assert list(data.download_pauses()) == pauses
+
+    # Down for all but the last attempt: waited out.
+    urlopen, calls = _opener([down] * len(pauses) + [b"whole"])
+    monkeypatch.setattr(data.urllib.request, "urlopen", urlopen)
+    assert data._download("http://example.invalid/x") == b"whole"
+    assert slept == pauses and len(calls) == len(pauses) + 1
+
+    # Down throughout: offline after every pause, and no sleep after the last.
+    slept.clear()
+    urlopen, calls = _opener([down])
+    monkeypatch.setattr(data.urllib.request, "urlopen", urlopen)
+    with pytest.raises(data.Offline) as e:
+        data._download("http://example.invalid/x")
+    assert e.value.__cause__ is down
+    assert slept == pauses and len(calls) == len(pauses) + 1
+
+    # A caller's own count takes the schedule's first pauses.
+    slept.clear()
+    urlopen, calls = _opener([down])
+    monkeypatch.setattr(data.urllib.request, "urlopen", urlopen)
+    with pytest.raises(data.Offline):
+        data._download("http://example.invalid/x", attempts=2)
+    assert slept == pauses[:1] and len(calls) == 2
+
+
+def test_fetch_downloads_only_what_is_not_already_on_disk(monkeypatch, tmp_path):
+    """CI restores the sets from its cache or an earlier run's artifact and
+    then fetches: a set on disk must not be downloaded again, or an outage
+    at its source would still fail the run. The Binance sources go to their
+    loaders by date and by symbol and date."""
+    import data
+    import public_benchmarks
+
+    monkeypatch.setattr(data, "CACHE_DIR", tmp_path)
+    urlopen, calls = _opener([b"rownames,a,b\n1,2,3\n2,4,5\n"])
+    monkeypatch.setattr(data.urllib.request, "urlopen", urlopen)
+    spec = "rdatasets:datasets/one,datasets/two"
+    assert public_benchmarks.fetch(spec) == ["rdatasets:datasets/one", "rdatasets:datasets/two"]
+    assert len(calls) == 2
+    assert sorted(p.name for p in (tmp_path / "rdatasets").iterdir()) == [
+        "datasets-one.parquet",
+        "datasets-two.parquet",
+    ]
+    calls.clear()
+    assert public_benchmarks.fetch(spec) == ["rdatasets:datasets/one", "rdatasets:datasets/two"]
+    assert calls == [], "a set on disk was downloaded again"
+
+    asked: list[tuple] = []
+    monkeypatch.setattr(data, "public_intraday", lambda dates: asked.append(("day", dates)))
+    monkeypatch.setattr(
+        data, "public_quotes_and_trades", lambda s, d: asked.append(("quotes", s, d))
+    )
+    got = public_benchmarks.fetch("binance:2024-01-02,2024-01-03;binance-um:ETCUSDT/2024-01-02")
+    assert got == [
+        "binance:2024-01-02",
+        "binance:2024-01-03",
+        "binance-um:ETCUSDT/2024-01-02",
+    ]
+    assert asked == [
+        ("day", ("2024-01-02",)),
+        ("day", ("2024-01-03",)),
+        ("quotes", "ETCUSDT", "2024-01-02"),
+    ]
+
+
+def _oracles():
+    """``scripts/oracles.py``, loaded once under its own name, as
+    tests/test_oracle_ledger.py loads it."""
+    import importlib.util
+    import pathlib
+    import sys
+
+    if "oracles" in sys.modules:
+        return sys.modules["oracles"]
+    path = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "oracles.py"
+    spec = importlib.util.spec_from_file_location("oracles", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["oracles"] = module  # a dataclass looks its module up there
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_cache_key_moves_with_the_sets_alone(capsys):
+    """The cache was keyed on oracles.toml, which every ledger `apply`
+    rewrites, so each apply started a new entry. The key is now the list of
+    sets: a measured number moving leaves it, a set added moves it, and the
+    suite's sets are in the CI test jobs' list."""
+    import copy
+
+    import public_benchmarks
+
+    oracles = _oracles()
+    doc = oracles.load()
+    before = oracles.wanted_datasets(doc=doc)
+    gid = next(g for g, v in doc["group"].items() if v.get("dataset"))
+    moved = copy.deepcopy(doc)
+    for case in moved["group"][gid].get("case", {}).values():
+        if isinstance(case, dict):
+            for k, v in case.items():
+                if isinstance(v, float):
+                    case[k] = v * 0.5
+    moved["meta"]["tolerance"] = 0.5
+    assert oracles.wanted_datasets(doc=moved) == before
+    moved["group"][gid]["dataset"] += ";nist:Longley"
+    assert oracles.wanted_datasets(doc=moved) != before
+
+    suite = oracles.wanted_datasets(suite=True, doc=doc)
+    assert set(before) | set(public_benchmarks.SUITE) == set(suite)
+    for spec in public_benchmarks.SUITE:
+        assert spec.partition(":")[0] in public_benchmarks.SOURCES, spec
+
+    import argparse
+
+    oracles._cmd_datasets(argparse.Namespace(suite=False, digest=True))
+    first = capsys.readouterr().out
+    oracles._cmd_datasets(argparse.Namespace(suite=True, digest=True))
+    second = capsys.readouterr().out
+    assert len(first.strip()) == 16 and len(second.strip()) == 16 and first != second
+
+
+def test_fetch_waits_out_a_dead_source_once_and_names_every_set_it_missed(monkeypatch, capsys):
+    """When a source is down for every round, a later set from it is named
+    as missed without waiting out its rounds again (Fränti's two sets cost
+    two full waits); the others are fetched; the annotation is the level
+    asked for, and the run fails."""
+    import argparse
+
+    import data
+    import public_benchmarks
+
+    oracles = _oracles()
+    sets = ["franti:a1,s1", "franti:s1", "nist:Longley"]
+    monkeypatch.setattr(oracles, "wanted_datasets", lambda suite, doc=None: sets)
+    tried: list[str] = []
+
+    def fetch(dataset):
+        tried.append(dataset)
+        if dataset.startswith("franti"):
+            raise data.Offline("offline") from TimeoutError("timed out")
+        return [dataset]
+
+    monkeypatch.setattr(public_benchmarks, "fetch", fetch)
+    args = argparse.Namespace(rounds=1, suite=False, annotate="warning")
+    assert oracles._cmd_fetch(args) == 1
+    assert tried == ["franti:a1,s1", "nist:Longley"]
+    out = capsys.readouterr().out
+    assert "fetch: nist:Longley" in out
+    assert "::warning::fetch: could not download franti:a1,s1: TimeoutError" in out
+    assert "::warning::fetch: could not download franti:s1: its source failed" in out
+    assert "::error::" not in out
+
+
+def _workflow(name: str) -> dict:
+    import pathlib
+
+    import yaml
+
+    path = pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows" / name
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+LAST = "./.github/actions/last-datasets"
+
+
+def _uses(step: dict) -> str:
+    return str(step.get("uses", ""))
+
+
+def _index(steps: list, predicate) -> int:
+    (i,) = [i for i, s in enumerate(steps) if predicate(s)]
+    return i
+
+
+def test_the_oracle_datasets_survive_an_evicted_cache_and_an_outage():
+    """oracles.yml's `datasets` job: the cache keyed on the list of sets,
+    then on a miss the newest run's `oracle-datasets` artifact, then `fetch`
+    for what is still missing, and the cache saved where it missed. The
+    weekly sweep skips the cache and fetches afresh, and only an outage
+    sends it to the artifact."""
+    job = _workflow("oracles.yml")["jobs"]["datasets"]
+    assert job["permissions"] == {"contents": "read", "actions": "read"}
+    steps = job["steps"]
+    key = _index(steps, lambda s: "oracles.py datasets --digest" in str(s.get("run", "")))
+    assert "oracles.toml" not in str(steps[key]) and "hashFiles" not in str(steps[key])
+    restore = _index(steps, lambda s: "actions/cache/restore@" in _uses(s))
+    fresh = _index(steps, lambda s: s.get("id") == "fresh")
+    last = _index(steps, lambda s: _uses(s) == LAST)
+    fetch = _index(steps, lambda s: str(s.get("run", "")).strip().endswith("oracles.py fetch"))
+    save = _index(steps, lambda s: "actions/cache/save@" in _uses(s))
+    upload = _index(steps, lambda s: "upload-artifact" in _uses(s))
+    assert key < restore < fresh < last < fetch < save < upload
+    assert not [s for s in steps if _uses(s).startswith("actions/cache@")]
+    assert steps[restore]["if"] == "github.event_name != 'schedule'"
+    assert steps[fresh]["if"] == "github.event_name == 'schedule'"
+    assert steps[fresh]["continue-on-error"] is True
+    assert "--annotate warning" in steps[fresh]["run"]
+    when = " ".join(steps[last]["if"].split())
+    assert when == (
+        "(github.event_name == 'schedule' && steps.fresh.outcome == 'failure') "
+        "|| (github.event_name != 'schedule' && steps.cache.outputs.cache-hit != 'true')"
+    )
+    assert "if" not in steps[fetch] and "continue-on-error" not in steps[fetch]
+    assert steps[save]["if"] == (
+        "github.event_name != 'schedule' && steps.cache.outputs.cache-hit != 'true'"
+    )
+    for i in (restore, save):
+        assert steps[i]["with"]["key"] == "${{ steps.key.outputs.key }}"
+    paths = {steps[i]["with"]["path"] for i in (restore, save, upload)}
+    assert paths == {"${{ env.DATASET_PATHS }}"}
+    assert steps[upload]["with"]["name"] == "oracle-datasets"
+
+
+def test_ci_restores_the_suites_datasets_before_it_runs():
+    """ci.yml's test job: its OS's cache keyed on the suite's sets, the
+    oracle runs' artifact on a miss, `fetch --suite` for the rest (a set it
+    cannot get warns and its tests skip), and the cache saved only once
+    every set is in hand, all before pytest."""
+    job = _workflow("ci.yml")["jobs"]["test"]
+    assert job["permissions"] == {"contents": "read", "actions": "read"}
+    steps = job["steps"]
+    sync = _index(steps, lambda s: s.get("run") == "uv sync --locked")
+    key = _index(steps, lambda s: s.get("id") == "data-key")
+    assert "oracles.py datasets --suite --digest" in steps[key]["run"]
+    assert "runner.os" in steps[key]["run"] and steps[key]["shell"] == "bash"
+    restore = _index(steps, lambda s: "actions/cache/restore@" in _uses(s))
+    last = _index(steps, lambda s: _uses(s) == LAST)
+    fetch = _index(steps, lambda s: s.get("id") == "data-fetch")
+    save = _index(steps, lambda s: "actions/cache/save@" in _uses(s))
+    pytest_step = _index(steps, lambda s: s.get("name") == "pytest")
+    assert sync < key < restore < last < fetch < save < pytest_step
+    miss = "steps.data-cache.outputs.cache-hit != 'true'"
+    assert steps[last]["if"] == miss and steps[fetch]["if"] == miss
+    assert "oracles.py fetch --suite" in steps[fetch]["run"]
+    assert steps[fetch]["continue-on-error"] is True
+    assert steps[save]["if"] == "steps.data-fetch.outcome == 'success'"
+    for i in (restore, save):
+        assert steps[i]["with"]["key"] == "${{ steps.data-key.outputs.key }}"
+        assert steps[i]["with"]["path"] == "${{ env.DATASET_PATHS }}"
+    paths = job["env"]["DATASET_PATHS"].split()
+    assert ".cache/microstructure/*.parquet" in paths
+    assert not any(p.endswith(".csv") or p == ".cache/microstructure" for p in paths)
+
+
+def test_no_workflow_publishes_a_new_copy_of_a_dataset():
+    """A public repository's artifacts can be downloaded by anyone signed
+    in to GitHub, so a dataset in one is a published copy. The one that
+    exists, `oracle-datasets`, holds the ledger's sets; nothing else uploads
+    `.cache`, and the CI test jobs keep their sets in the Actions cache,
+    which only this repository's workflows read."""
+    import pathlib
+
+    import yaml
+
+    workflows = sorted((pathlib.Path(__file__).resolve().parents[1] / ".github").rglob("*.yml"))
+    uploads = []
+    for path in workflows:
+        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        jobs = doc.get("jobs", {}) if isinstance(doc, dict) else {}
+        steps = [s for j in jobs.values() for s in j.get("steps", [])]
+        if path.name == "action.yml":
+            steps = doc.get("runs", {}).get("steps", [])
+        for s in steps:
+            if "upload-artifact" in _uses(s) or "upload-pages-artifact" in _uses(s):
+                where = str(s.get("with", {}).get("path", ""))
+                if ".cache" in where or "DATASET" in where:
+                    uploads.append((path.name, s["with"].get("name")))
+    assert uploads == [("oracles.yml", "oracle-datasets")], uploads
+
+
+def test_the_last_datasets_action_reads_main_of_this_repository_and_overwrites_nothing():
+    """The artifact taken is the newest unexpired one from a run of this
+    repository's main: a fork's pull request runs its own workflows and can
+    upload an artifact of the same name from a branch it calls main. A file
+    already in `.cache` (the weekly sweep's fresh download) is kept."""
+    import pathlib
+
+    import yaml
+
+    path = pathlib.Path(__file__).resolve().parents[1] / LAST.removeprefix("./") / "action.yml"
+    action = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert action["runs"]["using"] == "composite"
+    (step,) = action["runs"]["steps"]
+    run = " ".join(step["run"].split())
+    assert "name=oracle-datasets" in run and "--name oracle-datasets" in run
+    assert "select(.expired | not)" in run
+    assert 'select(.workflow_run.head_branch == "main")' in run
+    assert "select(.workflow_run.head_repository_id == .workflow_run.repository_id)" in run
+    assert 'if [ ! -e ".cache/$f" ]' in run
+    assert step["env"] == {"GH_TOKEN": "${{ github.token }}"}
+    assert "exit 1" not in run, "never fails the job: fetch downloads what is missing"

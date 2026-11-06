@@ -45,7 +45,8 @@ tolerance with a ``[[rebased]]`` entry; further needs a ``[[raised]]`` one.
     python scripts/oracles.py apply RECORDS...
     python scripts/oracles.py raises
     uv run python scripts/oracles.py rerun [GROUP...]
-    uv run python scripts/oracles.py fetch [--rounds N]
+    uv run python scripts/oracles.py fetch [--rounds N] [--suite] [--annotate error|warning]
+    uv run python scripts/oracles.py datasets [--suite] [--digest]
 
 ``RECORDS`` are directories of the JSON lines ``tests/ledger.py`` writes
 under ``POLARS_ONLINE_ORACLES_OUT``, or a merged file ``check --measured``
@@ -56,9 +57,11 @@ otherwise applies the run and writes those groups' hashes to
 ``oracle_hashes.toml`` -- so a hash moves only with a passing run of its
 oracles. ``fetch`` downloads every dataset the ledger's groups name, once,
 and fails naming any it could not get: CI runs it before the shards, so no
-shard skips a grid as offline. Everything but ``rerun`` and ``fetch`` uses
-the standard library alone: the CI job that checks has no project
-environment.
+shard skips a grid as offline. With ``--suite`` it fetches every set the
+rest of the suite reads too, as CI's test jobs do. ``datasets`` lists what
+``fetch`` would fetch, or with ``--digest`` hashes the list for a cache key.
+Everything but ``rerun``, ``fetch`` and ``datasets --suite`` uses the
+standard library alone: the CI job that checks has no project environment.
 """
 
 from __future__ import annotations
@@ -946,31 +949,72 @@ def _cmd_rerun(args: argparse.Namespace) -> int:
     return 0
 
 
+def wanted_datasets(suite: bool = False, doc: dict | None = None) -> list[str]:
+    """Every ``dataset`` the ledger's groups name, sorted, each once; with
+    ``suite``, also every set the rest of the test suite reads
+    (``public_benchmarks.SUITE``). These decide what ``fetch`` downloads, so
+    they alone make the CI cache's key (``datasets --digest``): a ledger
+    ``apply`` that names no new set leaves the key, and the cached copy, as
+    they were. ``doc`` is a parsed ledger, oracles.toml's by default."""
+    doc = load() if doc is None else doc
+    wanted = {g.get("dataset", "") for g in doc.get("group", {}).values()} - {""}
+    if suite:
+        sys.path.insert(0, str(REPO / "tests"))
+        import public_benchmarks
+
+        wanted |= set(public_benchmarks.SUITE)
+    return sorted(wanted)
+
+
+def _cmd_datasets(args: argparse.Namespace) -> int:
+    """The sets ``fetch`` would fetch, one a line, or with ``--digest`` the
+    first 16 hex digits of their SHA-256: the cache key's tail."""
+    import hashlib
+
+    lines = "".join(f"{d}\n" for d in wanted_datasets(args.suite))
+    if args.digest:
+        print(hashlib.sha256(lines.encode()).hexdigest()[:16])
+    else:
+        print(lines, end="")
+    return 0
+
+
+def _sources(dataset: str) -> set[str]:
+    return {part.partition(":")[0] for part in dataset.split(";") if part.strip()}
+
+
 def _cmd_fetch(args: argparse.Namespace) -> int:
-    """Every dataset the ledger's groups name, each tried ``rounds`` times
-    (the loaders retry three times within a round), into ``.cache``."""
+    """Every dataset :func:`wanted_datasets` names, each tried ``rounds``
+    times (the loaders retry within a round, ``tests/data.py``'s
+    ``download_pauses``), into ``.cache``; a set already there is not
+    downloaded again. Once a source has failed every round, a later set from
+    it is reported failed without waiting out its rounds again: the server
+    is down for that set too, as far as one run can tell."""
     import time
 
     sys.path.insert(0, str(REPO / "tests"))
     import data
     import public_benchmarks
 
-    wanted = sorted({g.get("dataset", "") for g in load().get("group", {}).values()} - {""})
-    failed = []
-    for dataset in wanted:
+    failed, dead = [], set()
+    for dataset in wanted_datasets(args.suite):
+        if _sources(dataset) & dead:
+            failed.append(f"{dataset}: its source failed every round above")
+            continue
         for attempt in range(args.rounds):
             try:
                 got = public_benchmarks.fetch(dataset)
             except data.Offline as e:
                 if attempt + 1 == args.rounds:
                     failed.append(f"{dataset}: {e.__cause__!r}")
+                    dead |= _sources(dataset)
                 else:
                     time.sleep(30.0 * (attempt + 1))
                 continue
             print(f"fetch: {', '.join(got)}", flush=True)
             break
     for f in failed:
-        print(f"::error::fetch: could not download {f}")
+        print(f"::{args.annotate}::fetch: could not download {f}")
     return 1 if failed else 0
 
 
@@ -995,7 +1039,18 @@ def main(argv: list[str] | None = None) -> int:
     rr.set_defaults(fn=_cmd_rerun)
     f = sub.add_parser("fetch", help="download every dataset the ledger's groups name")
     f.add_argument("--rounds", type=int, default=3)
+    f.add_argument("--suite", action="store_true", help="and every set the test suite reads")
+    f.add_argument(
+        "--annotate",
+        choices=("error", "warning"),
+        default="error",
+        help="the GitHub annotation each set not fetched is printed as",
+    )
     f.set_defaults(fn=_cmd_fetch)
+    d = sub.add_parser("datasets", help="the sets `fetch` fetches, or their digest")
+    d.add_argument("--suite", action="store_true", help="and every set the test suite reads")
+    d.add_argument("--digest", action="store_true", help="the cache key's tail, not the list")
+    d.set_defaults(fn=_cmd_datasets)
     args = ap.parse_args(argv)
     return args.fn(args)
 

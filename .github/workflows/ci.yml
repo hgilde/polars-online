@@ -158,6 +158,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
+      # The oracle runs' dataset artifact (.github/actions/last-datasets).
+      actions: read
     # 300 minutes while the repository is public, where minutes are free; 120
     # if it is ever private again, where Windows bills twice and macOS ten
     # times. The Windows legs' Rust build alone took 33 to 78 minutes on
@@ -198,6 +200,15 @@ jobs:
             python: "3.13"
     env:
       UV_PYTHON: ${{ matrix.python }}
+      # What the suite downloads (tests/data.py, tests/public_benchmarks.py):
+      # Binance's days, NIST, Rdatasets and the benchmark sets. The quotes'
+      # CSVs are left out: the parquet beside them is what a test reads.
+      DATASET_PATHS: |
+        .cache/BTCUSDT-1m-*.parquet
+        .cache/microstructure/*.parquet
+        .cache/benchmarks
+        .cache/strd
+        .cache/rdatasets
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # First, so a failure names its machine: a runner label is a pool of
@@ -247,6 +258,43 @@ jobs:
           enable-cache: true
 
       - run: uv sync --locked
+
+      # The public datasets the suite reads, before it runs, so a test does
+      # not skip for an outage at a source. Fränti's server timed out from
+      # the runners on nearly every leg of the 25 runs before 2026-11-05,
+      # and the two oracle guards that read its sets skipped on each. The
+      # same three copies as oracles.yml's `datasets` job: this OS's cache,
+      # keyed on the list of sets alone (`oracles.py datasets --suite
+      # --digest`); on a miss, the oracle runs' artifact, which holds the
+      # ledger's sets (only they are in it: nothing new is published); then
+      # `fetch --suite` downloads what is still missing. A set it cannot get
+      # warns by name and its tests skip as before; the cache is saved only
+      # once every set is in hand, so an entry is never short of one.
+      - name: the datasets' key
+        id: data-key
+        shell: bash
+        # `tr`: Python's print ends the line with CR LF on Windows.
+        run: echo "key=test-data-${{ runner.os }}-$(uv run --no-sync python scripts/oracles.py datasets --suite --digest | tr -d '\r')" >> "$GITHUB_OUTPUT"
+      - name: the cached datasets
+        id: data-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.DATASET_PATHS }}
+          key: ${{ steps.data-key.outputs.key }}
+      - name: the datasets the newest oracle run kept
+        if: steps.data-cache.outputs.cache-hit != 'true'
+        uses: ./.github/actions/last-datasets
+      - name: fetch every dataset the suite reads
+        id: data-fetch
+        if: steps.data-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: uv run --no-sync python scripts/oracles.py fetch --suite --rounds 1 --annotate warning
+      - name: keep them for the next run
+        if: steps.data-fetch.outcome == 'success'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.DATASET_PATHS }}
+          key: ${{ steps.data-key.outputs.key }}
 
       # XGBoost's and LightGBM's macOS wheels load `@rpath/libomp.dylib` from
       # Homebrew's prefix, and tests/test_gbdt.py imports both (task 242).

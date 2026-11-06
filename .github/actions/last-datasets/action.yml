@@ -1,0 +1,55 @@
+# The public datasets as the newest run of oracles.yml kept them, for a job
+# whose cache missed: the copy a source's outage cannot take away.
+#
+# The `datasets` job of oracles.yml uploads every set the oracle ledger
+# names as the `oracle-datasets` artifact, once it has fetched them all.
+# An artifact keeps for its retention period (90 days here), where an
+# Actions cache entry is evicted, least recently used first, once the
+# repository's caches pass 10 GB: the Rust caches alone hold most of that,
+# and on 2026-11-05 the 0.9 MB dataset entry went with them, the next
+# download from Fränti's server timed out, and the oracle run failed.
+#
+# This takes the newest unexpired `oracle-datasets` from a run of this
+# repository's own `main` (not a fork's, whose branch may also be called
+# main) and copies into `.cache/` each file that is not already there, so
+# a set fetched fresh in this job is never replaced by the older copy.
+# Nothing is published: the artifact already exists, and this only reads
+# it. The job needs `actions: read`. Never fails the job: with no artifact
+# to read it warns, and the `fetch` after it downloads what is missing.
+name: the datasets the newest oracle run kept
+description: >-
+  Copies the newest `oracle-datasets` artifact from this repository's main
+  branch into .cache/, file by file, leaving every file already there.
+runs:
+  using: composite
+  steps:
+    - name: the newest oracle-datasets artifact
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -uo pipefail
+        run=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=oracle-datasets&per_page=100" \
+          --jq '[.artifacts[] | select(.expired | not)
+                 | select(.workflow_run.head_branch == "main")
+                 | select(.workflow_run.head_repository_id == .workflow_run.repository_id)
+                ][0].workflow_run.id // empty') || run=""
+        if [ -z "$run" ]; then
+          echo "::warning::no oracle-datasets artifact to restore; fetch downloads every set"
+          exit 0
+        fi
+        kept="$RUNNER_TEMP/last-datasets"
+        rm -rf "$kept"
+        if ! gh run download "$run" --repo "$GITHUB_REPOSITORY" --name oracle-datasets --dir "$kept"; then
+          echo "::warning::could not download oracle-datasets from run $run; fetch downloads every set"
+          exit 0
+        fi
+        added=0
+        while IFS= read -r f; do
+          if [ ! -e ".cache/$f" ]; then
+            mkdir -p ".cache/$(dirname "$f")"
+            cp "$kept/$f" ".cache/$f"
+            added=$((added + 1))
+          fi
+        done < <(cd "$kept" && find . -type f | sed 's|^\./||')
+        echo "oracle-datasets of run $run: $added files added to .cache/"

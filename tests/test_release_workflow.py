@@ -80,14 +80,20 @@ def test_ci_runs_inside_the_release_on_every_os():
 def test_the_pages_grant_to_ci_is_inert():
     """A called workflow may ask for no more than its caller grants, so the
     release grants ``docs``'s scopes; ``docs`` runs on a push to main alone,
-    never under the release's dispatch, so the grant deploys nothing."""
+    never under the release's dispatch, so the grant deploys nothing. It
+    grants ``actions: read`` too, which the test job asks for: it reads the
+    repository's workflow runs and their artifacts, and writes nothing."""
     grant = JOBS["ci"]["permissions"]
-    assert set(grant) == {"contents", "pages", "id-token"}
-    assert grant["contents"] == "read"
+    assert set(grant) == {"contents", "actions", "pages", "id-token"}
+    assert grant["contents"] == "read" and grant["actions"] == "read"
     docs_if = CI["jobs"]["docs"]["if"]
     assert "github.event_name == 'push'" in docs_if
+    # The test job reads the oracle runs' dataset artifact on a cache miss
+    # (.github/actions/last-datasets); every other job reads the code alone.
     for job, spec in CI["jobs"].items():
-        if job != "docs":
+        if job == "test":
+            assert spec["permissions"] == {"contents": "read", "actions": "read"}, job
+        elif job != "docs":
             assert spec["permissions"] == {"contents": "read"}, job
 
 

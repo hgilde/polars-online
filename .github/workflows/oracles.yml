@@ -28,7 +28,8 @@ name: Oracles
 # the push that carries it, and the moved version fails the check until
 # `apply` records it. The weekly run re-runs everything when nothing is
 # pushed, and downloads the datasets afresh instead of reading the cache, so
-# a dataset that changed at its source is measured too.
+# a dataset that changed at its source is measured too (the `datasets` job
+# says how an outage at a source is survived).
 on:
   push:
     branches: [main]
@@ -57,40 +58,80 @@ jobs:
   # as offline, so its three cases went unmeasured and the ledger job failed
   # (2026-10-26); a dozen runners fetching the same files at once is what a
   # small university server is least likely to serve. Here a set that
-  # cannot be fetched fails this job by name, before any grid runs. The
-  # weekly sweep skips the cache and downloads each set again.
+  # cannot be fetched fails this job by name, before any grid runs.
+  #
+  # Three copies stand between a run and an outage at a source. The cache,
+  # keyed on the list of sets alone (`oracles.py datasets --digest`), so a
+  # ledger `apply` that names no new set keeps its entry; it hashed
+  # oracles.toml once, which changes with every apply. On a miss, the copy
+  # the newest run kept as its `oracle-datasets` artifact
+  # (.github/actions/last-datasets): the repository's caches sit at their
+  # 10 GB limit, mostly Rust's, and GitHub evicts the least recently used,
+  # which took this 0.9 MB entry on 2026-11-05 just as Fränti's server
+  # timed out; an artifact is kept 90 days whatever the cache does. Then
+  # `fetch`, which downloads only the sets still missing, each retried for
+  # about a minute and a half and in three rounds (tests/data.py's
+  # `download_pauses`).
+  #
+  # The weekly sweep downloads every set afresh first, so a set that
+  # changed at its source is measured; a set an outage withholds is filled
+  # from the artifact, with a warning naming it, rather than failing the
+  # week. Its upload is then the newest copy a later miss restores.
   datasets:
     name: the oracle grids' datasets
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Three rounds of a source's retries take about nine minutes when it is
+    # down; the cache and the artifact leave that for a set neither has.
+    timeout-minutes: 60
     permissions:
       contents: read
+      # The artifact of an earlier run (last-datasets).
+      actions: read
+    env:
+      DATASET_PATHS: |
+        .cache/benchmarks
+        .cache/strd
+        .cache/rdatasets
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
-      - name: the cached datasets
-        if: github.event_name != 'schedule'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            .cache/benchmarks
-            .cache/strd
-            .cache/rdatasets
-          key: oracle-data-${{ hashFiles('oracles.toml', 'tests/data.py', 'tests/public_benchmarks.py') }}
-          restore-keys: oracle-data-
       # The loaders need numpy and polars, not this library: no build.
       - run: uv sync --locked --no-install-project
+      - name: the datasets' key
+        id: key
+        run: echo "key=oracle-data-$(uv run --no-sync python scripts/oracles.py datasets --digest)" >> "$GITHUB_OUTPUT"
+      - name: the cached datasets
+        id: cache
+        if: github.event_name != 'schedule'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.DATASET_PATHS }}
+          key: ${{ steps.key.outputs.key }}
+          restore-keys: oracle-data-
+      - name: the weekly sweep downloads every dataset afresh
+        id: fresh
+        if: github.event_name == 'schedule'
+        continue-on-error: true
+        run: uv run --no-sync python scripts/oracles.py fetch --annotate warning
+      - name: the datasets the newest run kept
+        if: >-
+          (github.event_name == 'schedule' && steps.fresh.outcome == 'failure')
+          || (github.event_name != 'schedule' && steps.cache.outputs.cache-hit != 'true')
+        uses: ./.github/actions/last-datasets
       - name: fetch every dataset the ledger names
         run: uv run --no-sync python scripts/oracles.py fetch
+      - name: keep them for the next run
+        if: github.event_name != 'schedule' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.DATASET_PATHS }}
+          key: ${{ steps.key.outputs.key }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: oracle-datasets
-          path: |
-            .cache/benchmarks
-            .cache/strd
-            .cache/rdatasets
+          path: ${{ env.DATASET_PATHS }}
           include-hidden-files: true
           if-no-files-found: error
 

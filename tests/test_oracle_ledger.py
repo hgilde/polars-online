@@ -766,10 +766,8 @@ def test_the_oracle_workflow_records_every_shard_and_checks_the_ledger():
     # One job fetches every dataset, failing on any it cannot get, and
     # hands them to every shard, which downloads none.
     fetch = wf["jobs"]["datasets"]
-    cache = [s for s in fetch["steps"] if "actions/cache" in str(s.get("uses", ""))]
-    assert [s.get("if") for s in cache] == ["github.event_name != 'schedule'"], (
-        "the weekly sweep downloads the datasets afresh"
-    )
+    # How the job survives an outage at a source (the cache, the last run's
+    # artifact, the weekly fresh fetch): tests/test_data_and_reference.py.
     assert "oracles.py fetch" in " ".join(str(s.get("run", "")) for s in fetch["steps"])
     grid = wf["jobs"]["grid"]
     assert grid["needs"] == "datasets"

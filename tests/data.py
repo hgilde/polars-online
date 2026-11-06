@@ -140,19 +140,35 @@ def is_transient(e: BaseException) -> bool:
     return isinstance(e, _TRANSIENT)
 
 
+def download_pauses() -> tuple[float, ...]:
+    """The seconds :func:`_download` waits before each retry. Under CI (the
+    ``CI`` variable set, as GitHub Actions and every other CI service set
+    it), five attempts 5, 10, 20 and 40 seconds apart, so a server down for
+    about a minute and a half is waited out: a run there has no one to
+    retry it, and a set that cannot be fetched skips its tests. Anywhere
+    else, three attempts 2 and 4 seconds apart, so a run offline gives up
+    within seconds rather than minutes."""
+    return (5.0, 10.0, 20.0, 40.0) if os.environ.get("CI") else (2.0, 4.0)
+
+
 def _download(
     url: str,
-    attempts: int = 3,
+    attempts: int | None = None,
     headers: dict[str, str] | None = None,
     context: ssl.SSLContext | None = None,
 ) -> bytes:
-    """One public file, retried with a short pause; :class:`Offline` once
-    every attempt has failed. An HTTP status a retry cannot fix is raised at
-    once, as itself. ``headers`` go with the request (NIST's server answers
-    urllib's default agent with a 403); ``context`` is the TLS context, for
-    a server whose certificate needs one of its own."""
+    """One public file, retried after each of :func:`download_pauses`'
+    pauses (the first ``attempts - 1`` of them, when ``attempts`` is given);
+    :class:`Offline` once every attempt has failed. An HTTP status a retry
+    cannot fix is raised at once, as itself. ``headers`` go with the request
+    (NIST's server answers urllib's default agent with a 403); ``context``
+    is the TLS context, for a server whose certificate needs one of its
+    own."""
+    pauses = download_pauses()
+    if attempts is not None:
+        pauses = pauses[: attempts - 1]
     opened = {"timeout": 30} if context is None else {"timeout": 30, "context": context}
-    for attempt in range(attempts):
+    for attempt in range(len(pauses) + 1):
         try:
             request = urllib.request.Request(url, headers=headers or {})
             with urllib.request.urlopen(request, **opened) as resp:
@@ -161,9 +177,9 @@ def _download(
             if not is_transient(e):
                 e.add_note(f"{url}: the server's answer, not the network's, so not offline")
                 raise
-            if attempt + 1 == attempts:
+            if attempt == len(pauses):
                 raise Offline("offline") from e
-            time.sleep(2.0 * (attempt + 1))
+            time.sleep(pauses[attempt])
     raise AssertionError("unreachable")
 
 
