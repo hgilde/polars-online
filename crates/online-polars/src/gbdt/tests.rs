@@ -18,6 +18,7 @@ fn layout(p: usize, weight: bool) -> Layout {
         kinds: vec![Kind::Float; p],
         label: "y".into(),
         weight: weight.then(|| "w".into()),
+        margin: None,
     }
 }
 
@@ -651,6 +652,7 @@ mod ipc {
             kinds: vec![Kind::Bool, Kind::Category { levels: 3 }],
             label: "y".into(),
             weight: None,
+            margin: None,
         }
     }
 
@@ -745,6 +747,7 @@ mod ipc {
             kinds: vec![kind],
             label: "y".into(),
             weight: None,
+            margin: None,
         }
     }
 

@@ -105,6 +105,7 @@ fn layout(
     levels: Vec<u32>,
     label: String,
     weight: Option<String>,
+    margin: Option<String>,
 ) -> PyResult<Layout> {
     if kinds.len() != names.len() || levels.len() != names.len() {
         return Err(PyValueError::new_err(format!(
@@ -130,6 +131,7 @@ fn layout(
         kinds,
         label,
         weight,
+        margin,
     })
 }
 
@@ -155,9 +157,12 @@ impl PyXgb {
     }
 
     /// A `QuantileDMatrix` handle (which the caller owns) and the build's
-    /// counts and timings.
+    /// counts and timings, with the margin's values a row (`margin_width`)
+    /// when `margin` names one; `margin_width` given is the `ref`'s, which
+    /// the margin must match.
     #[pyo3(signature = (batches, names, kinds, levels, label, weight, max_bin, threads,
-                        sample_rows, seed, ref_handle, read_ahead, ipc=None))]
+                        sample_rows, seed, ref_handle, read_ahead, ipc=None, margin=None,
+                        margin_width=None))]
     #[allow(clippy::too_many_arguments)]
     fn matrix(
         &self,
@@ -175,8 +180,10 @@ impl PyXgb {
         ref_handle: Option<usize>,
         read_ahead: usize,
         ipc: Option<IpcSource>,
+        margin: Option<String>,
+        margin_width: Option<usize>,
     ) -> PyResult<(usize, HashMap<&'static str, f64>)> {
-        let layout = layout(names, kinds, levels, label, weight)?;
+        let layout = layout(names, kinds, levels, label, weight, margin)?;
         let frames = frames(batches, ipc, &layout)?;
         let opts = XgbOptions {
             max_bin,
@@ -184,12 +191,13 @@ impl PyXgb {
             sample_rows,
             seed,
             read_ahead,
+            margin_width,
         };
         let lib = Arc::clone(&self.lib);
         let built = py
             .detach(move || xgboost_matrix(&lib, frames, &layout, ref_handle, &opts))
             .map_err(to_py)?;
-        let stats = HashMap::from([
+        let mut stats = HashMap::from([
             ("rows", built.rows as f64),
             ("passes", built.passes as f64),
             ("batches", built.batches as f64),
@@ -197,6 +205,9 @@ impl PyXgb {
             ("build_s", built.build_s),
             ("waited_s", built.waited_s),
         ]);
+        if let Some(k) = built.margin_width {
+            stats.insert("margin_width", k as f64);
+        }
         Ok((built.handle, stats))
     }
 }
@@ -224,9 +235,12 @@ impl PyLgb {
     }
 
     /// A `Dataset` handle (which the caller owns) and the build's counts and
-    /// timings.
+    /// timings, with the margin's values a row (`margin_width`) when
+    /// `margin` names one; `margin_width` given is the reference's, which
+    /// the margin must match.
     #[pyo3(signature = (batches, names, kinds, levels, label, weight, params, threads, rows,
-                        in_memory, reference, read_ahead, ipc=None))]
+                        in_memory, reference, read_ahead, ipc=None, margin=None,
+                        margin_width=None))]
     #[allow(clippy::too_many_arguments)]
     fn dataset(
         &self,
@@ -244,8 +258,10 @@ impl PyLgb {
         reference: Option<usize>,
         read_ahead: usize,
         ipc: Option<IpcSource>,
+        margin: Option<String>,
+        margin_width: Option<usize>,
     ) -> PyResult<(usize, HashMap<&'static str, f64>)> {
-        let layout = layout(names, kinds, levels, label, weight)?;
+        let layout = layout(names, kinds, levels, label, weight, margin)?;
         let frames = frames(batches, ipc, &layout)?;
         let opts = LgbOptions {
             params,
@@ -253,12 +269,13 @@ impl PyLgb {
             rows,
             in_memory,
             read_ahead,
+            margin_width,
         };
         let lib = Arc::clone(&self.lib);
         let built = py
             .detach(move || lightgbm_dataset(&lib, frames, &layout, reference, &opts))
             .map_err(to_py)?;
-        let stats = HashMap::from([
+        let mut stats = HashMap::from([
             ("rows", built.rows as f64),
             ("passes", built.passes as f64),
             ("in_memory", f64::from(u8::from(built.in_memory))),
@@ -266,6 +283,9 @@ impl PyLgb {
             ("build_s", built.build_s),
             ("waited_s", built.waited_s),
         ]);
+        if let Some(k) = built.margin_width {
+            stats.insert("margin_width", k as f64);
+        }
         Ok((built.handle, stats))
     }
 }
@@ -283,7 +303,8 @@ pub(crate) struct PySampler {
 #[pymethods]
 impl PySampler {
     #[new]
-    #[pyo3(signature = (names, kinds, levels, label, weight, sample_rows, seed, threads))]
+    #[pyo3(signature = (names, kinds, levels, label, weight, sample_rows, seed, threads,
+                        margin=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         names: Vec<String>,
@@ -294,8 +315,9 @@ impl PySampler {
         sample_rows: usize,
         seed: u64,
         threads: usize,
+        margin: Option<String>,
     ) -> PyResult<Self> {
-        let layout = layout(names, kinds, levels, label, weight)?;
+        let layout = layout(names, kinds, levels, label, weight, margin)?;
         Ok(Self {
             inner: Sampler::new(
                 layout.kinds.clone(),

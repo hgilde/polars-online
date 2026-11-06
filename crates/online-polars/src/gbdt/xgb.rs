@@ -8,7 +8,9 @@
 //! validity bitmap as its `mask`, so nothing is copied: XGBoost reads each
 //! value as float32, a null or a NaN as missing. The label and the weight go
 //! in the same way, and the feature names and types with every batch, as
-//! xgboost's Python `DataIter` sends them.
+//! xgboost's Python `DataIter` sends them. A margin goes in as
+//! `base_margin`, each batch's rows of one value or of one per class, which
+//! XGBoost stacks over the batches as its own route stacks them.
 //!
 //! XGBoost reads the stream three times with a `ref` (counting, indexing,
 //! the column matrix) and four without, the extra pass sketching each
@@ -25,7 +27,9 @@ use std::panic::AssertUnwindSafe;
 use std::ptr::null_mut;
 use std::time::Instant;
 
-use super::frames::{Frames, Reader, Segment, checked_f64, panic_message, segments_of};
+use super::frames::{
+    Frames, Reader, Segment, WidthFrom, checked_f64, margin_rows, panic_message, segments_of,
+};
 use super::libs::{Handle, XgbLib};
 use super::sample::Sampler;
 use super::{GbdtError, Layout, conversion_pool};
@@ -44,6 +48,9 @@ pub struct XgbOptions {
     pub seed: u64,
     /// Frames the reader keeps ready ahead of XGBoost.
     pub read_ahead: usize,
+    /// The values a row of the `ref`'s margin, which this matrix's margin
+    /// must match; `None` sets it from the first row.
+    pub margin_width: Option<usize>,
 }
 
 /// A built matrix: a handle XGBoost made, which the caller now owns and
@@ -63,6 +70,8 @@ pub struct XgbBuilt {
     pub build_s: f64,
     /// Seconds XGBoost or the sampler waited for a frame.
     pub waited_s: f64,
+    /// The margin's values a row, when the layout has a margin.
+    pub margin_width: Option<usize>,
 }
 
 /// A matrix handle freed when dropped, unless released.
@@ -135,6 +144,10 @@ struct It<'a> {
     first_pass_rows: Option<u64>,
     batches: usize,
     json: String,
+    /// The margin's values a row, and where that was set.
+    margin_width: Option<(usize, WidthFrom)>,
+    /// The batch's margin, row-major, until XGBoost has copied it.
+    margin: Vec<f64>,
 }
 
 impl It<'_> {
@@ -192,6 +205,27 @@ impl It<'_> {
         info("label", label)?;
         if let Some(w) = weight {
             info("weight", w)?;
+        }
+        if self.layout.margin.is_some() {
+            margin_rows(
+                &seg,
+                self.layout,
+                "base_margin",
+                "ref",
+                self.row,
+                &mut self.margin_width,
+                &mut self.margin,
+            )?;
+            let k = self.margin_width.map_or(1, |w| w.0);
+            let shape: &[usize] = if k == 1 { &[n] } else { &[n, k] };
+            let mut s = String::new();
+            interface(&mut s, self.margin.as_ptr() as usize, "<f8", shape, None);
+            let (f, s) = (cstr("base_margin")?, cstr(&s)?);
+            // SAFETY: as above; XGBoost copies the meta information.
+            lib.check(
+                unsafe { (lib.set_info)(self.proxy, f.as_ptr(), s.as_ptr()) },
+                "setting the base_margin",
+            )?;
         }
         set_str_info(lib, self.proxy, "feature_name", self.names)?;
         set_str_info(lib, self.proxy, "feature_type", self.types)?;
@@ -399,6 +433,8 @@ pub fn xgboost_matrix(
         first_pass_rows: None,
         batches: 0,
         json: String::new(),
+        margin_width: opts.margin_width.map(|k| (k, WidthFrom::Reference)),
+        margin: Vec::new(),
     };
     let cfg = cstr(&format!(
         "{{\"missing\": NaN, \"nthread\": {}, \"max_bin\": {}}}",
@@ -435,6 +471,7 @@ pub fn xgboost_matrix(
     let passes = it.reader.passes;
     let waited_s = it.reader.waited.as_secs_f64();
     let batches = it.batches;
+    let margin_width = it.margin_width.map(|w| w.0);
     drop(it);
     drop(proxy);
     drop(owned_ref);
@@ -446,5 +483,6 @@ pub fn xgboost_matrix(
         sample_s,
         build_s,
         waited_s,
+        margin_width,
     })
 }

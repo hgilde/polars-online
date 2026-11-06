@@ -33,9 +33,16 @@
 //!   column.
 //!
 //! The frames carry the features in order, then the label, then the weight
-//! when there is one ([`Layout`]); the Python layer selects and casts them
-//! (a `pl.Enum` to its codes, a Boolean to `UInt8`, the label and weight to
-//! `Float64`), so every feature arrives as a primitive numeric column.
+//! when there is one, then the margin when there is one ([`Layout`]); the
+//! Python layer selects and casts them (a `pl.Enum` to its codes, a Boolean
+//! to `UInt8`, the label and weight to `Float64`, the margin to `Float64` or
+//! a list of them), so every feature arrives as a primitive numeric column.
+//!
+//! **A margin** (XGBoost's `base_margin`, LightGBM's `init_score`) is a
+//! prediction the trees are fitted around: each row's raw score starts from
+//! it rather than from a constant. One value a row, or one per class for a
+//! K-class objective, handed over batch by batch with the labels
+//! ([`frames::margin_rows`]). The cuts and bins never read it.
 
 mod frames;
 mod ipc;
@@ -114,19 +121,32 @@ impl Kind {
 }
 
 /// The columns of every frame, by position: the features in this order,
-/// then the label, then the weight when `weight` is set.
+/// then the label, then the weight when `weight` is set, then the margin
+/// when `margin` is set.
 #[derive(Debug, Clone)]
 pub struct Layout {
     pub names: Vec<String>,
     pub kinds: Vec<Kind>,
     pub label: String,
     pub weight: Option<String>,
+    /// The margin column: a number a row, or a list of one per class.
+    pub margin: Option<String>,
 }
 
 impl Layout {
     /// Columns a frame carries.
     pub(crate) fn width(&self) -> usize {
-        self.names.len() + 1 + usize::from(self.weight.is_some())
+        self.names.len()
+            + 1
+            + usize::from(self.weight.is_some())
+            + usize::from(self.margin.is_some())
+    }
+
+    /// The margin's position in a frame, when the layout has one.
+    pub(crate) fn margin_at(&self) -> Option<usize> {
+        self.margin
+            .as_ref()
+            .map(|_| self.names.len() + 1 + usize::from(self.weight.is_some()))
     }
 
     pub(crate) fn check(&self) -> Result<(), GbdtError> {
@@ -155,5 +175,7 @@ pub fn conversion_pool(threads: usize) -> Result<rayon::ThreadPool, GbdtError> {
         .map_err(|e| GbdtError::msg(format!("a thread pool for the conversions: {e}")))
 }
 
+#[cfg(test)]
+mod margin_tests;
 #[cfg(test)]
 mod tests;

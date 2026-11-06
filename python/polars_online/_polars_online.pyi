@@ -296,6 +296,8 @@ class GbdtXgboost:
         ref_handle: int | None,
         read_ahead: int,
         ipc: tuple[list[str], list[list[str] | None]] | None = None,
+        margin: str | None = None,
+        margin_width: int | None = None,
     ) -> tuple[int, dict[str, float]]: ...
 
 class GbdtLightgbm:
@@ -317,6 +319,8 @@ class GbdtLightgbm:
         reference: int | None,
         read_ahead: int,
         ipc: tuple[list[str], list[list[str] | None]] | None = None,
+        margin: str | None = None,
+        margin_width: int | None = None,
     ) -> tuple[int, dict[str, float]]: ...
 
 class GbdtSampler:
@@ -330,6 +334,7 @@ class GbdtSampler:
         sample_rows: int,
         seed: int,
         threads: int,
+        margin: str | None = None,
     ) -> None: ...
     def push(self, df: pl.DataFrame) -> None: ...
     @property

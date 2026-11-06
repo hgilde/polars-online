@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use polars::prelude::*;
-use polars_arrow::array::{Array, PrimitiveArray};
+use polars_arrow::array::{Array, FixedSizeListArray, ListArray, PrimitiveArray};
 use polars_arrow::bitmap::Bitmap;
 
 use super::{GbdtError, Layout};
@@ -250,17 +250,10 @@ fn check_kinds<'a>(
     cols: impl Iterator<Item = (&'a dyn Array, String)>,
     layout: &Layout,
 ) -> Result<(), GbdtError> {
-    let p = layout.names.len();
     let mut width = 0;
     for (j, (c, dtype)) in cols.enumerate() {
         width += 1;
-        let num = Num::of(c);
-        let ok = if j < p {
-            num.is_some()
-        } else {
-            matches!(num, Some(Num::F64(_)))
-        };
-        if !ok {
+        if !column_ok(layout, j, c) {
             return Err(GbdtError::msg(format!(
                 "column `{}` arrived as {dtype}, which is not a numeric column the libraries read",
                 column_name(layout, j)
@@ -283,10 +276,15 @@ pub(crate) fn segments(df: &DataFrame, layout: &Layout) -> Result<Vec<Segment>, 
     let width = layout.width();
     if df.width() != width {
         return Err(GbdtError::msg(format!(
-            "a frame of {} columns where {width} were expected (the features, the label{})",
+            "a frame of {} columns where {width} were expected (the features, the label{}{})",
             df.width(),
             if layout.weight.is_some() {
                 ", the weight"
+            } else {
+                ""
+            },
+            if layout.margin.is_some() {
+                ", the margin"
             } else {
                 ""
             }
@@ -298,17 +296,9 @@ pub(crate) fn segments(df: &DataFrame, layout: &Layout) -> Result<Vec<Segment>, 
         .iter()
         .map(|c| c.as_materialized_series())
         .collect();
-    let p = layout.names.len();
     for (j, s) in series.iter().enumerate() {
         let name = column_name(layout, j);
-        let ok = s.chunks().iter().all(|c| {
-            let num = Num::of(c.as_ref());
-            if j < p {
-                num.is_some()
-            } else {
-                matches!(num, Some(Num::F64(_)))
-            }
-        });
+        let ok = s.chunks().iter().all(|c| column_ok(layout, j, c.as_ref()));
         if !ok {
             return Err(GbdtError::msg(format!(
                 "column `{name}` arrived as {}, which is not a numeric column the libraries read",
@@ -344,8 +334,23 @@ pub(crate) fn column_name(layout: &Layout, j: usize) -> &str {
         &layout.names[j]
     } else if j == p {
         &layout.label
+    } else if Some(j) == layout.margin_at() {
+        layout.margin.as_deref().unwrap_or("margin")
     } else {
         layout.weight.as_deref().unwrap_or("weight")
+    }
+}
+
+/// Whether column `j` of a frame is of a kind its role takes: a feature
+/// any primitive numeric array, the label and weight `Float64`, the margin
+/// a primitive numeric array or a list of them ([`MarginArray`]).
+fn column_ok(layout: &Layout, j: usize, c: &dyn Array) -> bool {
+    if j < layout.names.len() {
+        Num::of(c).is_some()
+    } else if Some(j) == layout.margin_at() {
+        MarginArray::of(c).is_some()
+    } else {
+        matches!(Num::of(c), Some(Num::F64(_)))
     }
 }
 
@@ -419,6 +424,13 @@ macro_rules! nums {
             pub(crate) fn validity(&self) -> Option<&'a Bitmap> {
                 match self {
                     $(Num::$v(x) => x.validity(),)*
+                }
+            }
+
+            /// Value `i` as float64, or `None` for a null.
+            pub(crate) fn f64_at(&self, i: usize) -> Option<f64> {
+                match self {
+                    $(Num::$v(x) => x.is_valid(i).then(|| x.value(i) as f64),)*
                 }
             }
 
@@ -547,4 +559,148 @@ pub(crate) fn checked_f64<'a>(
         )));
     }
     Ok(vals)
+}
+
+/// A margin column's array: a number a row, or a list of numbers a row
+/// (polars' `List`, as either offset width, or its `Array`, a fixed-size
+/// list), whose values are any primitive numeric type.
+pub(crate) enum MarginArray<'a> {
+    Scalar(Num<'a>),
+    List32(&'a ListArray<i32>, Num<'a>),
+    List64(&'a ListArray<i64>, Num<'a>),
+    Fixed(&'a FixedSizeListArray, Num<'a>),
+}
+
+impl<'a> MarginArray<'a> {
+    pub(crate) fn of(a: &'a dyn Array) -> Option<Self> {
+        if let Some(num) = Num::of(a) {
+            return Some(Self::Scalar(num));
+        }
+        let any = a.as_any();
+        if let Some(l) = any.downcast_ref::<ListArray<i32>>() {
+            return Num::of(l.values().as_ref()).map(|v| Self::List32(l, v));
+        }
+        if let Some(l) = any.downcast_ref::<ListArray<i64>>() {
+            return Num::of(l.values().as_ref()).map(|v| Self::List64(l, v));
+        }
+        if let Some(l) = any.downcast_ref::<FixedSizeListArray>() {
+            return Num::of(l.values().as_ref()).map(|v| Self::Fixed(l, v));
+        }
+        None
+    }
+
+    /// Row `i`'s values as a range of the child array, or `None` when the
+    /// row itself is null.
+    fn row(&self, i: usize) -> Option<std::ops::Range<usize>> {
+        match self {
+            Self::Scalar(num) => num
+                .validity()
+                .is_none_or(|v| v.get_bit(i))
+                .then_some(i..i + 1),
+            Self::List32(l, _) => l.is_valid(i).then(|| {
+                let (a, b) = l.offsets().start_end(i);
+                a..b
+            }),
+            Self::List64(l, _) => l.is_valid(i).then(|| {
+                let (a, b) = l.offsets().start_end(i);
+                a..b
+            }),
+            Self::Fixed(l, _) => l.is_valid(i).then(|| i * l.size()..(i + 1) * l.size()),
+        }
+    }
+
+    fn values(&self) -> &Num<'a> {
+        match self {
+            Self::Scalar(v) | Self::List32(_, v) | Self::List64(_, v) | Self::Fixed(_, v) => v,
+        }
+    }
+}
+
+/// `k` values, in words: "1 value", "3 values".
+fn values(k: usize) -> String {
+    if k == 1 {
+        "1 value".to_owned()
+    } else {
+        format!("{k} values")
+    }
+}
+
+/// Where a margin's width -- its values a row -- was set: by the training
+/// set's margin a validation set is binned on, or by the first row read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WidthFrom {
+    Reference,
+    Row(u64),
+}
+
+/// A segment's margin into `out`, row-major, `seg.n` rows of `width`
+/// values; refused by name at a null, a value that is not finite, or a row
+/// whose count of values is not `width`. An unset `width` is set by the
+/// first row, which needs one value at least. `role` is the library's name
+/// for a margin (`base_margin`, `init_score`) and `whose` the name of the
+/// training set it was handed (`ref`, `reference`), for the messages.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn margin_rows(
+    seg: &Segment,
+    layout: &Layout,
+    role: &str,
+    whose: &str,
+    row0: u64,
+    width: &mut Option<(usize, WidthFrom)>,
+    out: &mut Vec<f64>,
+) -> Result<(), GbdtError> {
+    let j = layout.margin_at().expect("a layout with a margin");
+    let name = column_name(layout, j);
+    let m = MarginArray::of(seg.cols[j].as_ref()).expect("checked in segments()");
+    let vals = m.values();
+    out.clear();
+    let null = |r: u64| {
+        GbdtError::msg(format!(
+            "the {role} column `{name}` has a null at row {r}, and every row needs a margin. \
+             Fill it before the build, with 0 where the row has no prediction to start from."
+        ))
+    };
+    for i in 0..seg.n {
+        let r = row0 + i as u64;
+        let range = m.row(i).ok_or_else(|| null(r))?;
+        let k = range.len();
+        match *width {
+            Some((want, _)) if want == k => {}
+            Some((want, WidthFrom::Reference)) => {
+                return Err(GbdtError::msg(format!(
+                    "the {role} column `{name}` holds {} at row {r}, and the {whose}'s margin \
+                     holds {} a row. Give every row as many values as the training margin has.",
+                    values(k),
+                    values(want)
+                )));
+            }
+            Some((want, WidthFrom::Row(at))) => {
+                return Err(GbdtError::msg(format!(
+                    "the {role} column `{name}` holds {} at row {r} and {want} at row {at}, \
+                     and every row needs the same number. Give every row one value, or one for \
+                     each class.",
+                    values(k)
+                )));
+            }
+            None if k == 0 => {
+                return Err(GbdtError::msg(format!(
+                    "the {role} column `{name}` holds no values at row {r}, and a margin needs \
+                     one. Give every row one value, or one for each class."
+                )));
+            }
+            None => *width = Some((k, WidthFrom::Row(r))),
+        }
+        for c in range {
+            let v = vals.f64_at(c).ok_or_else(|| null(r))?;
+            if !v.is_finite() {
+                return Err(GbdtError::msg(format!(
+                    "the {role} column `{name}` holds {v:?} at row {r}, and a margin must be \
+                     finite. Replace it before the build, with 0 where the row has no \
+                     prediction to start from."
+                )));
+            }
+            out.push(v);
+        }
+    }
+    Ok(())
 }
