@@ -1,0 +1,868 @@
+# The writing checks' ratchet (docs/WRITING.md §13; scripts/writing_checks.py).
+#
+# Each check's held findings, counted by file and rule. A count may only
+# fall: a file over its count fails, and a file under it fails too, naming
+# the count to tighten it to, so the change that made the gain keeps it
+# (`uv run python scripts/writing_checks.py apply` writes it). A file a check
+# reads has a table here even when it is clean, so a new file shows in the
+# diff that adds it; a source file's docstrings and messages are counted
+# apart in the vocabulary, as `x.py#docstrings` and `x.py#messages`, since
+# different stages rewrite them. A file under [finished] fails on any held
+# finding but those [[accepted]] with a reader's reason: it moves there when
+# the stage that rewrites it has finished (docs/records/DOCS-REWRITE-MAP.md,
+# "When each check fails the gate"). `scripts/writing_checks.py report`
+# prints every finding, the ones to read among them.
+
+[finished]
+messages = []
+docstrings = []
+vocabulary = []
+sentences = []
+kinds = []
+
+[messages."crates/online-cli/src/main.rs"]
+"remedy" = 4
+"where" = 4
+
+[messages."crates/online-core/src/audit.rs"]
+"remedy" = 4
+
+[messages."crates/online-core/src/bocpd.rs"]
+"remedy" = 22
+
+[messages."crates/online-core/src/clock.rs"]
+"remedy" = 2
+
+[messages."crates/online-core/src/cluster/kmeans.rs"]
+"formula" = 1
+"remedy" = 13
+
+[messages."crates/online-core/src/cluster/micro.rs"]
+"remedy" = 8
+
+[messages."crates/online-core/src/conformal.rs"]
+"remedy" = 2
+
+[messages."crates/online-core/src/constraint.rs"]
+"remedy" = 7
+
+[messages."crates/online-core/src/corrchange.rs"]
+"formula" = 2
+"remedy" = 18
+
+[messages."crates/online-core/src/deco.rs"]
+"remedy" = 10
+
+[messages."crates/online-core/src/ewclass.rs"]
+"remedy" = 5
+
+[messages."crates/online-core/src/ewcov.rs"]
+"remedy" = 16
+
+[messages."crates/online-core/src/ewcov/diag.rs"]
+"remedy" = 3
+
+[messages."crates/online-core/src/ewdiag.rs"]
+"remedy" = 1
+
+[messages."crates/online-core/src/ewlagcov.rs"]
+"remedy" = 4
+
+[messages."crates/online-core/src/ewridge.rs"]
+"remedy" = 20
+
+[messages."crates/online-core/src/ftrl.rs"]
+"remedy" = 4
+
+[messages."crates/online-core/src/gramfit/lars.rs"]
+"internal-word" = 1
+"remedy" = 1
+
+[messages."crates/online-core/src/hmm.rs"]
+"remedy" = 18
+
+[messages."crates/online-core/src/holt.rs"]
+"remedy" = 4
+
+[messages."crates/online-core/src/kalman.rs"]
+"internal-word" = 1
+"remedy" = 15
+
+[messages."crates/online-core/src/lasso.rs"]
+"remedy" = 12
+
+[messages."crates/online-core/src/margbins.rs"]
+"remedy" = 9
+
+[messages."crates/online-core/src/marginal.rs"]
+"remedy" = 6
+
+[messages."crates/online-core/src/marglag.rs"]
+"remedy" = 6
+
+[messages."crates/online-core/src/model.rs"]
+"remedy" = 1
+
+[messages."crates/online-core/src/pa.rs"]
+"remedy" = 3
+
+[messages."crates/online-core/src/rcov.rs"]
+"digits" = 2
+"remedy" = 19
+
+[messages."crates/online-core/src/rls.rs"]
+"remedy" = 5
+
+[messages."crates/online-core/src/robust.rs"]
+"remedy" = 23
+
+[messages."crates/online-core/src/seqtest.rs"]
+"remedy" = 2
+
+[messages."crates/online-core/src/sgd.rs"]
+"internal-word" = 9
+"remedy" = 24
+
+[messages."crates/online-core/src/solve.rs"]
+"remedy" = 5
+
+[messages."crates/online-core/src/stats.rs"]
+"remedy" = 3
+
+[messages."crates/online-core/src/warmup.rs"]
+"remedy" = 1
+
+[messages."crates/online-core/src/window.rs"]
+"remedy" = 7
+
+[messages."crates/online-polars/src/arrow.rs"]
+"remedy" = 16
+"where" = 5
+
+[messages."crates/online-polars/src/bank.rs"]
+"remedy" = 42
+"where" = 26
+
+[messages."crates/online-polars/src/bank/audit.rs"]
+"remedy" = 3
+"where" = 3
+
+[messages."crates/online-polars/src/bank/learned.rs"]
+"remedy" = 2
+
+[messages."crates/online-polars/src/defaults.rs"]
+"remedy" = 2
+"where" = 2
+
+[messages."crates/online-polars/src/formula.rs"]
+"remedy" = 18
+"where" = 10
+
+[messages."crates/online-polars/src/gramfit.rs"]
+"remedy" = 10
+"where" = 9
+
+[messages."crates/online-polars/src/pool.rs"]
+"remedy" = 1
+"where" = 1
+
+[messages."crates/online-polars/src/refresh.rs"]
+"remedy" = 19
+"where" = 3
+
+[messages."crates/online-polars/src/refresh/held.rs"]
+"remedy" = 4
+
+[messages."crates/online-polars/src/resolvers.rs"]
+"remedy" = 3
+
+[messages."crates/online-polars/src/runner.rs"]
+"remedy" = 18
+"where" = 16
+
+[messages."crates/online-polars/src/spec.rs"]
+"internal-word" = 3
+"remedy" = 163
+
+[messages."crates/online-polars/src/spec/checks.rs"]
+"remedy" = 10
+
+[messages."crates/online-polars/src/spec/clock.rs"]
+"remedy" = 14
+
+[messages."crates/online-polars/src/spec/label_clock.rs"]
+"remedy" = 1
+
+[messages."crates/online-polars/src/spec/limits.rs"]
+"formula" = 2
+"remedy" = 5
+
+[messages."crates/online-polars/src/spec/names.rs"]
+"remedy" = 3
+"where" = 3
+
+[messages."crates/online-polars/src/stream.rs"]
+"remedy" = 14
+"where" = 13
+
+[messages."crates/online-polars/src/stream/last_row.rs"]
+"remedy" = 1
+"where" = 1
+
+[messages."crates/online-polars/src/stream/model_cfgs.rs"]
+"remedy" = 23
+"where" = 15
+
+[messages."crates/online-polars/src/summary.rs"]
+"remedy" = 1
+"where" = 1
+
+[messages."crates/online-polars/src/timing.rs"]
+"remedy" = 1
+"where" = 1
+
+[messages."crates/online-polars/src/windows.rs"]
+"digits" = 2
+"remedy" = 26
+"where" = 22
+
+[messages."crates/online-polars/src/windows_frame.rs"]
+"remedy" = 39
+"where" = 1
+
+[messages."crates/online-py/src/gbdt.rs"]
+"remedy" = 2
+"where" = 2
+
+[messages."crates/online-py/src/gramfit.rs"]
+"digits" = 1
+"remedy" = 13
+"where" = 11
+
+[messages."crates/online-py/src/lib.rs"]
+"remedy" = 4
+"where" = 5
+
+[messages."python/polars_online/_bank.py"]
+"remedy" = 23
+"where" = 13
+
+[messages."python/polars_online/_duration.py"]
+"remedy" = 9
+
+[messages."python/polars_online/_formula.py"]
+"remedy" = 21
+"where" = 2
+
+[messages."python/polars_online/_frame.py"]
+"remedy" = 14
+"where" = 6
+
+[messages."python/polars_online/_renamed.py"]
+"remedy" = 3
+"where" = 2
+
+[messages."python/polars_online/_spec.py"]
+"remedy" = 28
+"where" = 1
+
+[messages."python/polars_online/_spec_audit.py"]
+"remedy" = 3
+
+[messages."python/polars_online/_spec_gradient.py"]
+"remedy" = 1
+
+[messages."python/polars_online/_spec_regimes.py"]
+"remedy" = 1
+
+[messages."python/polars_online/_warnings.py"]
+"remedy" = 11
+"where" = 7
+
+[messages."python/polars_online/corr.py"]
+"formula" = 1
+"remedy" = 23
+"where" = 1
+
+[messages."python/polars_online/eval.py"]
+"formula" = 1
+"internal-word" = 1
+"remedy" = 44
+"where" = 8
+
+[messages."python/polars_online/gbdt.py"]
+"remedy" = 41
+"where" = 19
+
+[messages."python/polars_online/gram.py"]
+"formula" = 1
+"remedy" = 57
+"where" = 38
+
+[messages."python/polars_online/ops.py"]
+"remedy" = 2
+"where" = 2
+
+[messages."python/polars_online/sim.py"]
+"remedy" = 20
+"where" = 1
+
+[messages."python/polars_online/stream.py"]
+"remedy" = 26
+"sentences" = 1
+"where" = 2
+
+[docstrings."crates/online-py/src/lib.rs"]
+"missing" = 3
+
+[docstrings."python/polars_online/_bank.py"]
+"missing" = 78
+"summary" = 13
+
+[docstrings."python/polars_online/_errors.py"]
+"missing" = 1
+
+[docstrings."python/polars_online/_frame.py"]
+"missing" = 36
+
+[docstrings."python/polars_online/_renamed.py"]
+"missing" = 3
+
+[docstrings."python/polars_online/_spec.py"]
+"missing" = 30
+"order" = 13
+"summary" = 6
+"unknown-section" = 13
+"when" = 5
+
+[docstrings."python/polars_online/_spec_audit.py"]
+"missing" = 3
+"unknown-section" = 1
+"when" = 1
+
+[docstrings."python/polars_online/_spec_changepoint.py"]
+"missing" = 2
+"order" = 2
+"summary" = 2
+"unknown-section" = 2
+"when" = 1
+
+[docstrings."python/polars_online/_spec_gradient.py"]
+"missing" = 1
+"order" = 1
+"unknown-section" = 3
+
+[docstrings."python/polars_online/_spec_regimes.py"]
+"missing" = 2
+"order" = 2
+"unknown-section" = 2
+"when" = 2
+
+[docstrings."python/polars_online/_spec_robust.py"]
+"missing" = 2
+"order" = 2
+"unknown-section" = 4
+
+[docstrings."python/polars_online/_spec_trend.py"]
+"missing" = 1
+"order" = 1
+"unknown-section" = 1
+
+[docstrings."python/polars_online/_warnings.py"]
+"missing" = 3
+
+[docstrings."python/polars_online/corr.py"]
+"missing" = 57
+"summary" = 6
+
+[docstrings."python/polars_online/eval.py"]
+"missing" = 33
+"summary" = 3
+
+[docstrings."python/polars_online/gbdt.py"]
+"unknown-section" = 2
+
+[docstrings."python/polars_online/gram.py"]
+"missing" = 32
+"unknown-section" = 2
+
+[docstrings."python/polars_online/ops.py"]
+"missing" = 21
+"summary" = 8
+
+[docstrings."python/polars_online/sim.py"]
+"missing" = 2
+
+[docstrings."python/polars_online/stream.py"]
+"missing" = 9
+"summary" = 1
+
+[vocabulary."CONTRIBUTING.md"]
+
+[vocabulary."README.md"]
+"british" = 13
+"retired" = 36
+
+[vocabulary."crates/online-cli/src/main.rs#messages"]
+
+[vocabulary."crates/online-core/src/audit.rs#messages"]
+
+[vocabulary."crates/online-core/src/bocpd.rs#messages"]
+
+[vocabulary."crates/online-core/src/clock.rs#messages"]
+
+[vocabulary."crates/online-core/src/cluster/kmeans.rs#messages"]
+"british" = 5
+
+[vocabulary."crates/online-core/src/cluster/micro.rs#messages"]
+
+[vocabulary."crates/online-core/src/conformal.rs#messages"]
+
+[vocabulary."crates/online-core/src/constraint.rs#messages"]
+
+[vocabulary."crates/online-core/src/corrchange.rs#messages"]
+
+[vocabulary."crates/online-core/src/deco.rs#messages"]
+
+[vocabulary."crates/online-core/src/ewclass.rs#messages"]
+
+[vocabulary."crates/online-core/src/ewcov.rs#messages"]
+"retired" = 2
+
+[vocabulary."crates/online-core/src/ewcov/diag.rs#messages"]
+
+[vocabulary."crates/online-core/src/ewdiag.rs#messages"]
+
+[vocabulary."crates/online-core/src/ewlagcov.rs#messages"]
+
+[vocabulary."crates/online-core/src/ewridge.rs#messages"]
+"retired" = 1
+
+[vocabulary."crates/online-core/src/ftrl.rs#messages"]
+
+[vocabulary."crates/online-core/src/gramfit/lars.rs#messages"]
+
+[vocabulary."crates/online-core/src/hmm.rs#messages"]
+"british" = 1
+
+[vocabulary."crates/online-core/src/holt.rs#messages"]
+
+[vocabulary."crates/online-core/src/kalman.rs#messages"]
+
+[vocabulary."crates/online-core/src/lasso.rs#messages"]
+
+[vocabulary."crates/online-core/src/margbins.rs#messages"]
+
+[vocabulary."crates/online-core/src/marginal.rs#messages"]
+"british" = 1
+"retired" = 1
+
+[vocabulary."crates/online-core/src/marglag.rs#messages"]
+
+[vocabulary."crates/online-core/src/model.rs#messages"]
+
+[vocabulary."crates/online-core/src/pa.rs#messages"]
+
+[vocabulary."crates/online-core/src/rcov.rs#messages"]
+
+[vocabulary."crates/online-core/src/rls.rs#messages"]
+
+[vocabulary."crates/online-core/src/robust.rs#messages"]
+
+[vocabulary."crates/online-core/src/seqtest.rs#messages"]
+
+[vocabulary."crates/online-core/src/sgd.rs#messages"]
+
+[vocabulary."crates/online-core/src/solve.rs#messages"]
+
+[vocabulary."crates/online-core/src/stats.rs#messages"]
+
+[vocabulary."crates/online-core/src/warmup.rs#messages"]
+
+[vocabulary."crates/online-core/src/window.rs#messages"]
+
+[vocabulary."crates/online-polars/src/arrow.rs#messages"]
+
+[vocabulary."crates/online-polars/src/bank.rs#messages"]
+"british" = 2
+"retired" = 2
+
+[vocabulary."crates/online-polars/src/bank/audit.rs#messages"]
+
+[vocabulary."crates/online-polars/src/bank/learned.rs#messages"]
+
+[vocabulary."crates/online-polars/src/defaults.rs#messages"]
+
+[vocabulary."crates/online-polars/src/formula.rs#messages"]
+
+[vocabulary."crates/online-polars/src/gramfit.rs#messages"]
+
+[vocabulary."crates/online-polars/src/pool.rs#messages"]
+
+[vocabulary."crates/online-polars/src/refresh.rs#messages"]
+
+[vocabulary."crates/online-polars/src/refresh/held.rs#messages"]
+
+[vocabulary."crates/online-polars/src/resolvers.rs#messages"]
+
+[vocabulary."crates/online-polars/src/runner.rs#messages"]
+"retired" = 2
+
+[vocabulary."crates/online-polars/src/spec.rs#messages"]
+"british" = 3
+"retired" = 2
+
+[vocabulary."crates/online-polars/src/spec/checks.rs#messages"]
+
+[vocabulary."crates/online-polars/src/spec/clock.rs#messages"]
+
+[vocabulary."crates/online-polars/src/spec/label_clock.rs#messages"]
+
+[vocabulary."crates/online-polars/src/spec/limits.rs#messages"]
+"british" = 3
+
+[vocabulary."crates/online-polars/src/spec/names.rs#messages"]
+
+[vocabulary."crates/online-polars/src/stream.rs#messages"]
+"retired" = 1
+
+[vocabulary."crates/online-polars/src/stream/last_row.rs#messages"]
+
+[vocabulary."crates/online-polars/src/stream/model_cfgs.rs#messages"]
+
+[vocabulary."crates/online-polars/src/summary.rs#messages"]
+
+[vocabulary."crates/online-polars/src/timing.rs#messages"]
+
+[vocabulary."crates/online-polars/src/windows.rs#messages"]
+
+[vocabulary."crates/online-polars/src/windows_frame.rs#messages"]
+"retired" = 2
+
+[vocabulary."crates/online-py/src/gbdt.rs#messages"]
+
+[vocabulary."crates/online-py/src/gramfit.rs#messages"]
+
+[vocabulary."crates/online-py/src/lib.rs#docstrings"]
+
+[vocabulary."crates/online-py/src/lib.rs#messages"]
+
+[vocabulary."docs/CALIBRATION.md"]
+"british" = 1
+"retired" = 2
+
+[vocabulary."docs/DATA-QUALITY.md"]
+"british" = 11
+"retired" = 21
+
+[vocabulary."docs/DIAGNOSTICS.md"]
+"british" = 9
+"retired" = 25
+
+[vocabulary."docs/EXTENDING.md"]
+"british" = 4
+"retired" = 14
+
+[vocabulary."docs/GBDT.md"]
+
+[vocabulary."docs/GRAM.md"]
+"british" = 20
+"retired" = 2
+
+[vocabulary."docs/MODELS.md"]
+"british" = 76
+"retired" = 20
+
+[vocabulary."docs/OUTPUTS.md"]
+"british" = 5
+
+[vocabulary."docs/PERFORMANCE.md"]
+"british" = 36
+"retired" = 108
+
+[vocabulary."docs/README.md"]
+"british" = 1
+"retired" = 3
+
+[vocabulary."docs/REGIMES.md"]
+"british" = 1
+"retired" = 9
+
+[vocabulary."docs/RELEASE-READINESS.md"]
+"british" = 8
+"retired" = 23
+
+[vocabulary."docs/RUNNER.md"]
+"british" = 1
+"retired" = 5
+
+[vocabulary."docs/STATE-WORKFLOW.md"]
+
+[vocabulary."docs/TESTING.md"]
+"british" = 15
+"retired" = 47
+
+[vocabulary."docs/VALIDATION.md"]
+"retired" = 1
+
+[vocabulary."docs/WINDOWS.md"]
+"british" = 2
+"retired" = 7
+
+[vocabulary."llms.txt"]
+"retired" = 3
+
+[vocabulary."python/polars_online/_bank.py#docstrings"]
+"british" = 16
+"retired" = 26
+
+[vocabulary."python/polars_online/_bank.py#messages"]
+
+[vocabulary."python/polars_online/_duration.py#messages"]
+
+[vocabulary."python/polars_online/_errors.py#docstrings"]
+
+[vocabulary."python/polars_online/_formula.py#messages"]
+
+[vocabulary."python/polars_online/_frame.py#docstrings"]
+"british" = 3
+"retired" = 15
+
+[vocabulary."python/polars_online/_frame.py#messages"]
+
+[vocabulary."python/polars_online/_renamed.py#docstrings"]
+
+[vocabulary."python/polars_online/_renamed.py#messages"]
+
+[vocabulary."python/polars_online/_spec.py#docstrings"]
+"british" = 70
+"retired" = 35
+
+[vocabulary."python/polars_online/_spec.py#messages"]
+
+[vocabulary."python/polars_online/_spec_audit.py#docstrings"]
+"retired" = 4
+
+[vocabulary."python/polars_online/_spec_audit.py#messages"]
+
+[vocabulary."python/polars_online/_spec_changepoint.py#docstrings"]
+"british" = 11
+"retired" = 3
+
+[vocabulary."python/polars_online/_spec_gradient.py#docstrings"]
+"british" = 3
+"retired" = 3
+
+[vocabulary."python/polars_online/_spec_gradient.py#messages"]
+
+[vocabulary."python/polars_online/_spec_regimes.py#docstrings"]
+"british" = 12
+"retired" = 3
+
+[vocabulary."python/polars_online/_spec_regimes.py#messages"]
+
+[vocabulary."python/polars_online/_spec_robust.py#docstrings"]
+"british" = 1
+"retired" = 6
+
+[vocabulary."python/polars_online/_spec_trend.py#docstrings"]
+"retired" = 2
+
+[vocabulary."python/polars_online/_warnings.py#docstrings"]
+"retired" = 1
+
+[vocabulary."python/polars_online/_warnings.py#messages"]
+
+[vocabulary."python/polars_online/corr.py#docstrings"]
+"british" = 7
+
+[vocabulary."python/polars_online/corr.py#messages"]
+
+[vocabulary."python/polars_online/eval.py#docstrings"]
+"british" = 5
+"retired" = 9
+
+[vocabulary."python/polars_online/eval.py#messages"]
+
+[vocabulary."python/polars_online/gbdt.py#docstrings"]
+
+[vocabulary."python/polars_online/gbdt.py#messages"]
+
+[vocabulary."python/polars_online/gram.py#docstrings"]
+"british" = 20
+"retired" = 11
+
+[vocabulary."python/polars_online/gram.py#messages"]
+"british" = 1
+"retired" = 1
+
+[vocabulary."python/polars_online/ops.py#docstrings"]
+"british" = 1
+
+[vocabulary."python/polars_online/ops.py#messages"]
+
+[vocabulary."python/polars_online/sim.py#docstrings"]
+"british" = 2
+
+[vocabulary."python/polars_online/sim.py#messages"]
+
+[vocabulary."python/polars_online/stream.py#docstrings"]
+
+[vocabulary."python/polars_online/stream.py#messages"]
+
+[sentences."CONTRIBUTING.md"]
+"is-a-lead" = 1
+"python-word" = 1
+
+[sentences."README.md"]
+"45+" = 7
+"about-the-document" = 1
+"python-word" = 3
+
+[sentences."docs/CALIBRATION.md"]
+"45+" = 2
+
+[sentences."docs/DATA-QUALITY.md"]
+"45+" = 2
+
+[sentences."docs/DIAGNOSTICS.md"]
+"45+" = 7
+"about-the-document" = 2
+"is-a-lead" = 4
+
+[sentences."docs/EXTENDING.md"]
+"45+" = 6
+"about-the-document" = 2
+"is-a-lead" = 1
+"no-opener" = 5
+"python-word" = 1
+
+[sentences."docs/GBDT.md"]
+"45+" = 1
+"is-a-lead" = 1
+"python-word" = 2
+
+[sentences."docs/GLOSSARY.md"]
+
+[sentences."docs/GRAM.md"]
+"45+" = 2
+"python-word" = 1
+
+[sentences."docs/MODELS.md"]
+"45+" = 53
+"is-a-lead" = 5
+"python-word" = 5
+
+[sentences."docs/OUTPUTS.md"]
+
+[sentences."docs/PERFORMANCE.md"]
+"45+" = 47
+"about-the-document" = 21
+"contents-opener" = 1
+"is-a-lead" = 10
+"no-opener" = 2
+"python-word" = 9
+
+[sentences."docs/README.md"]
+"python-word" = 1
+
+[sentences."docs/REGIMES.md"]
+"45+" = 2
+"python-word" = 2
+
+[sentences."docs/RELEASE-READINESS.md"]
+"45+" = 9
+"about-the-document" = 3
+"contents-opener" = 1
+"is-a-lead" = 4
+"python-word" = 22
+
+[sentences."docs/RUNNER.md"]
+"45+" = 2
+"is-a-lead" = 1
+
+[sentences."docs/STATE-WORKFLOW.md"]
+"contents-opener" = 1
+
+[sentences."docs/TESTING.md"]
+"45+" = 23
+"about-the-document" = 1
+"is-a-lead" = 3
+"python-word" = 11
+
+[sentences."docs/VALIDATION.md"]
+"45+" = 1
+
+[sentences."docs/WINDOWS.md"]
+"45+" = 2
+"is-a-lead" = 2
+
+[sentences."docs/WRITING.md"]
+"45+" = 1
+"about-the-document" = 6
+"inverted" = 3
+"is-a-lead" = 7
+"python-word" = 15
+
+[kinds."CONTRIBUTING.md"]
+"undeclared" = 1
+
+[kinds."README.md"]
+"undeclared" = 1
+
+[kinds."docs/CALIBRATION.md"]
+"undeclared" = 1
+
+[kinds."docs/DATA-QUALITY.md"]
+"undeclared" = 1
+
+[kinds."docs/DIAGNOSTICS.md"]
+"undeclared" = 1
+
+[kinds."docs/EXTENDING.md"]
+"undeclared" = 1
+
+[kinds."docs/GBDT.md"]
+"undeclared" = 1
+
+[kinds."docs/GLOSSARY.md"]
+"undeclared" = 1
+
+[kinds."docs/GRAM.md"]
+"undeclared" = 1
+
+[kinds."docs/MODELS.md"]
+"undeclared" = 1
+
+[kinds."docs/OUTPUTS.md"]
+"undeclared" = 1
+
+[kinds."docs/PERFORMANCE.md"]
+"undeclared" = 1
+
+[kinds."docs/README.md"]
+"undeclared" = 1
+
+[kinds."docs/REGIMES.md"]
+"undeclared" = 1
+
+[kinds."docs/RELEASE-READINESS.md"]
+"undeclared" = 1
+
+[kinds."docs/RUNNER.md"]
+"undeclared" = 1
+
+[kinds."docs/STATE-WORKFLOW.md"]
+"undeclared" = 1
+
+[kinds."docs/TESTING.md"]
+"undeclared" = 1
+
+[kinds."docs/VALIDATION.md"]
+"undeclared" = 1
+
+[kinds."docs/WINDOWS.md"]
+"undeclared" = 1
+
+[kinds."docs/WRITING.md"]
+"undeclared" = 1
