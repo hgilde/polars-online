@@ -43,6 +43,21 @@ returns.
   `drift_action="reset"`, and for `holt`, `kalman`, `hmm` and `micro`
   (task 341).
 
+- `po.gbdt.xgboost_matrix(base_margin=)` and
+  `po.gbdt.lightgbm_dataset(init_score=)`: each row's margin, the raw score
+  its prediction starts from, as a number per row or a `List`/`Array` of
+  one per class. It is streamed with each batch through XGBoost's callback
+  route and LightGBM's two-pass route, and the trees match each library's
+  own in-memory route with the same margin. A validation set takes its own
+  margin column. A null or non-finite margin, rows of differing widths, or
+  a margin on only one of the training and validation sets is refused by
+  name. A tree cannot predict outside the range it split on and a margin is
+  added after it, so an online model's prediction as the margin carries a
+  level the trees never saw. GBDT.md shows training trees around it and
+  serving them with the margin added back: a model trained with a margin is
+  off by the level when served without it, and neither library warns
+  (task 343).
+
 ### Changed
 
 - State schema 67, with three changes. A bank's stream saves the readiness
@@ -231,6 +246,12 @@ returns.
 
 ### Tests and documents
 
+- docs/GLOSSARY.md: one word for each concept, with the variants it
+  replaces, the words kept out of messages and American spelling.
+  docs/WRITING.md links it, adds the kinds of page, the reference and
+  message shapes, and a review loop that every documentation pass runs
+  until a round of fresh reviewers finds nothing wrong and no rule broken
+  (task 338).
 - CI keeps the public datasets the tests download through an outage at
   their source, with no copy in the repository. The cache is keyed on the
   list of datasets rather than the oracle ledger, so it no longer changes
