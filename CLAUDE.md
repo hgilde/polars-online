@@ -341,7 +341,17 @@ dependencies; `crate-type` is the publisher's choice).
     maintenance, not a surprise, and check those paths first. The floor is
     py-polars 1.37.0, the first whose `LazyFrame.collect_batches` (added in
     1.34.0), which the IO plugin reads with, stops reading ahead of a slower
-    consumer: 1.34.0-1.36.1 held a whole 1 GB source (2026-10-12).
+    consumer: 1.34.0-1.36.1 held a whole 1 GB source (2026-10-12). That
+    holds only where a source feeds `collect_batches` directly. Polars
+    bounds what it keeps in flight by frames, not bytes, about ten frames a
+    thread between a source and a node that runs on every thread
+    (`with_columns`, a computing `select`), on 1.37.0 and 2.0 alike
+    (2026-11-06, task 348): so a scan followed by `with_columns` in front of
+    a slower `fit_predict` reads ahead (848 MB at 4M rows, against 279 MB
+    for the same model in a loop over the bare scan), and this library's
+    own sources hand Polars slices of at most 1 MiB so that two stages in
+    series stay bounded. The loop is the remedy for a Polars scan;
+    `docs/PERFORMANCE.md` §47 measures both.
     `ModelBank` alone works from 1.28.1.
 
 ## Style
