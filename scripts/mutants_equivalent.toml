@@ -632,10 +632,10 @@ line_has = "Ok(None)"
 why = "`Option::default()` is `None`, which is what the visitor returns"
 
 [[equivalent]]
-file = "crates/online-core/src/window.rs"
-function = "Snapshots<S>::enforce"
+file = "crates/online-core/src/window/flat.rs"
+function = "Ring<S>::keep_alternate"
 mutation = "replace - with +"
-line_has = ".filter(|(i, _)| (n - 1 - i).is_multiple_of(2))"
+line_has = "let keep = |i: usize| (n - 1 - i).is_multiple_of(2);"
 why = """either `-` made `+` (`n + 1 - i`, or `n - 1 + i`) moves the number by \
 2 or by `2i`, so its parity, and the snapshots the filter keeps, stay the \
 same; with `i < n` neither overflows"""

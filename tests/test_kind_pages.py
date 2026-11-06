@@ -28,7 +28,7 @@ import pytest
 from doc_recipes import differences, fenced_blocks, shown_outputs
 from test_production_hardening import _as_a_terminal_shows, _readme_namespace
 
-TIER = "mixed"
+TIER = "essential"
 
 REPO = Path(__file__).resolve().parents[1]
 KINDS = ("how-to", "explanation", "tutorials")
