@@ -50,9 +50,9 @@ Each numbered rule is one way to keep one of them.
 | [8. Rewrites, as examples](#8-rewrites-as-examples) | what these rules produced, and a paragraph the user rewrote |
 | [9. Four kinds of page](#9-four-kinds-of-page) | a tutorial, a how-to, a reference or an explanation, never a mix |
 | [10. Reference entries and docstrings](#10-reference-entries-and-docstrings) | the same sections, in the same order, for every function and model |
-| [11. Errors, warnings and notices](#11-errors-warnings-and-notices) | the shape of every message the library prints or raises |
+| [11. Errors and warnings](#11-errors-and-warnings) | the shape of every message the library prints or raises |
 | [12. One word for one thing](#12-one-word-for-one-thing) | the glossary, and the words kept out of messages |
-| [13. Checks that hold the rules](#13-checks-that-hold-the-rules) | what the gate checks, so a rule outlives the pass that wrote it |
+| [13. Checks that hold the rules](#13-checks-that-hold-the-rules) | what the test gate checks, so a rule outlives the pass that wrote it |
 
 ## 0. Write for one stated reader
 
@@ -66,12 +66,16 @@ replaced with what it does:
 
 | this library's own words | Polars-internal words | assumed statistics, safe to use |
 |---|---|---|
-| bank, model bank, spec, state, stream, chunk, clock, decay, half-life, session, group, warm-up, `weight_sum`, accumulator, sufficient statistics, out-of-sample, fresh (bank) | plan, sink, collect, `collect_batches`, streaming engine, struct column, expression, scan, row group | regression, coefficient, residual, variance, correlation, kernel, weighted least squares, effective sample size |
+| bank, model bank, spec, state, stream, chunk, clock, decay, half-life, session, group, warm-up, `weight_sum`, running sums, Gram, out-of-sample | plan, sink, collect, `collect_batches`, streaming engine, struct column, expression (glossed at first use, not replaced), scan, row group | regression, coefficient, residual, variance, correlation, kernel, weighted least squares, effective sample size (Kish's, never a name for `weight_sum`) |
+
+The [glossary](GLOSSARY.md) names every one of the library's own words,
+with its definition and the variants it replaces. Where it and this table
+differ, the glossary is the newer.
 
 **A term of art is defined at first use, and again where its concept
 lives.** *The bank* is an English word with several meanings. It becomes a
 term once the reader has been told it is a *model bank*, a set of models
-fitted together over the same rows, held by the object `ModelBank`. The
+fitted together over the same rows, held by the class `ModelBank`. The
 introduction defines the library's words once, together. The section that
 owns each concept restates its word, because readers arrive there from a
 search as often as from the top.
@@ -87,7 +91,7 @@ time* asks nothing. The replacements so far:
 | a plan, a `LazyFrame` | a query, which runs only when you ask for its result |
 | `sink_parquet` | runs the query and writes the result to a file without holding it all in memory |
 | `collect_batches` | gives the result one chunk at a time |
-| a struct column | one column whose value in each row is a record with named fields |
+| a struct column | the spec's output column, one column whose value in each row is a record with named fields |
 | a row group | a block of a parquet file |
 | a fresh bank | a bank that starts with nothing learned |
 
@@ -145,7 +149,7 @@ what a sentence-by-sentence pass cannot. The README's map caught these:
 ten top-level sections suit a document the size of the README, which had
 seventeen. Group them by what the reader is doing: learning the idea,
 running a bank, reading what it produced, choosing a model, tuning it, and
-deciding whether to trust it. A catalogue goes one level down, under
+deciding whether to trust it. A catalog goes one level down, under
 families, rather than flat. The twenty-two models sit under four families, and
 each family opens with one line on what its members share.
 
@@ -326,7 +330,7 @@ looks ahead, each as what it is.
 
 **A long example names its steps in brief comments, and leaves the detail
 to the prose.** The first fit runs four steps in one block: make up the
-input, fit every row and serve, fit locally, and forecast a target that
+input, fit every row and serve, fit locally, and predict a target that
 looks ahead. The user found the section "much better" with its tables and
 prose, and asked for comments "briefly describing what is happening but not
 high detail since the section has good detail". So each step opens with a
@@ -468,7 +472,7 @@ reads.
 **An effect is attributed to its own cause.** *That order is what makes
 every prediction honest … and it is what lets the whole thing run on far
 more rows than fit in memory* fused two claims with one "and". The
-predict-then-learn order does make a prediction honest. Bounded memory
+predict-then-learn order does make every prediction out-of-sample. Bounded memory
 comes from the models keeping only their state, in any order. When a
 sentence carries two effects, check that each is credited to the mechanism
 that actually produces it.
@@ -516,8 +520,8 @@ word, so it became *market-data-like sessions, with their boundaries,
 clock gaps and clock resets*.
 
 **Why, then what, then units.** The sentence on `min_weight` gives the
-reason first: a model reports only once it has seen enough data to have
-converged, so it never reports an uninformed number. Its units, `weight_sum`,
+reason first: a model reports only once it has seen enough data to be
+ready, so it never reports an uninformed number. Its units, `weight_sum`,
 come last. The draft put the units first and the reason never.
 
 **Plain English.** A compressed possessive (*the numbers are the bank's*)
@@ -641,8 +645,9 @@ on rereading:
 | 5. structure | break nothing | every table row has its header's cell count; every in-page link lands on a heading; every anchor another file uses survives; a link to moved text points where it went. `uv run python scripts/doc_structure.py [FILE.md ...]` runs all four as GitHub renders the file, and reports a table GitHub shows as code or text |
 | 6. measure again | compare | the same counts as step 1, side by side |
 | 7. render | read it as the repository will show it | GitHub's API renders it: `POST /markdown` with `mode=markdown`. `uv run python scripts/doc_review.py render FILE.md OUT.html` does it through `gh`, as a standalone page |
-| 8. gate | run the tests that read the README | `tests/test_production_hardening.py` runs every python block and checks that each name a block reads was built by a block before it, `tests/test_llms_txt.py` checks every anchor `llms.txt` uses, `tests/test_api_links.py` resolves every API link and walks every model section, and `tests/test_doc_structure.py` runs step 5 over every Markdown file git tracks. `tests/test_example_steps.py` checks that each long example names its steps (§3). A README recipe is held to the output it shows by `test_a_readme_recipe_prints_what_it_shows`, a guide's by its page's own test, and `test_every_guide_has_a_readme_section` holds each guide to a README section (§2). `tests/test_no_plan_references.py` holds every reader-facing file to §4's rule on citations |
+| 8. test gate | run the tests that read the README | `tests/test_production_hardening.py` runs every python block and checks that each name a block reads was built by a block before it, `tests/test_llms_txt.py` checks every anchor `llms.txt` uses, `tests/test_api_links.py` resolves every API link and walks every model section, and `tests/test_doc_structure.py` runs step 5 over every Markdown file git tracks. `tests/test_example_steps.py` checks that each long example names its steps (§3). A README recipe is held to the output it shows by `test_a_readme_recipe_prints_what_it_shows`, a guide's by its page's own test, and `test_every_guide_has_a_readme_section` holds each guide to a README section (§2). `tests/test_no_plan_references.py` holds every reader-facing file to §4's rule on citations |
 | 9. cold read | read it in order as a newcomer | a reader with none of the pass's context (no brief, no earlier version, no code) reads the rendered page from the top. They mark each paragraph whose purpose they cannot tell from what comes before it, and each example they could not run from what the page has shown. A writer who checks one part against the rules misses both: the rules are about sentences, and a writer knows what each paragraph is for |
+| 10. review until nothing is left | give the draft to a reviewer with none of the pass's context, revise it from their report, and give the revision to another such reviewer, round after round | each reviewer has the page and these rules, and nothing else: no brief, no earlier version and no earlier report. The pass ends at the first round whose reviewer raises nothing a writer would change, however many rounds that takes (the user, 2026-11-05: "For the docs be sure to iterate until there is no more to consider") |
 
 The counts, taken outside code blocks, tables and headings. `uv run python
 scripts/doc_review.py measure FILE.md` takes the first seven, and `counts
@@ -693,8 +698,8 @@ mechanism, the equations, the units, the defaults and the refusals:
 |---|---|
 | 1 and 6, measure | the docstring's own text, with headings, code blocks and list-tables dropped and each paragraph split on its own. A definition-list header merges with its body in the count, so read every long sentence it reports |
 | 4, account | page by page: the old docstring saved beside the draft, and a diff of its backticked names, numbers and link targets |
-| 7, render | Sphinx with `-W`, which the gate runs: a docstring that is not valid reStructuredText fails there |
-| 8, gate | the doc tests, and the tests that pin a docstring's text. `tests/test_temporal_clock.py` wants each clock parameter's entry to say "clock units" on one line, and `tests/test_weight_scale.py` pins whole phrases, line wraps included. Grep the tests for `__doc__` before a batch, and run them |
+| 7, render | Sphinx with `-W`, which the test gate runs: a docstring that is not valid reStructuredText fails there |
+| 8, test gate | the doc tests, and the tests that pin a docstring's text. `tests/test_temporal_clock.py` wants each clock parameter's entry to say "clock units" on one line, and `tests/test_weight_scale.py` pins whole phrases, line wraps included. Grep the tests for `__doc__` before a batch, and run them |
 
 **Record every pass over the README in the log of README passes**, which
 [docs/README.md](README.md#records) lists under *Logs of the
@@ -718,11 +723,11 @@ use one whenever the items share dimensions:
 |---|---|---|
 | options compared | a row per option, a column per dimension | the three ways to hold a row back: scored, clock advances, fit moves, `weight_sum`, use it to |
 | settings | the setting, its default, what it does, what it reads | the two warm-up gates |
-| caveats | the caveat, and why | the five things to know before reading a windowed model's numbers |
+| caveats | the caveat, and why | the five things to know before reading the numbers of a model under a hard window |
 | failure modes | what you see, what it means, what to do | `micro`'s two wrong values of `eps`, in MODELS.md |
 | a sweep of measurements | the setting, and the number at each | `bocpd`'s `prune_below`; the two thread configurations |
 | a translation | the problem, and its fix | the query steps that can reorder rows |
-| a catalogue | the item, how it works, what it is | the model table, grouped by family |
+| a catalog | the item, how it works, what it is | the model table, grouped by family |
 | a map | the section, and its subsections | the README's contents |
 
 **The header names the dimensions.** Only a column of row labels may go
@@ -830,7 +835,21 @@ read all four. The split, and what belongs in each kind:
 | **explanation** | wants to understand | give the reasons and the mechanism | prose with diagrams and derivations, led by the point | steps to follow, parameter lists |
 
 **A page is one kind.** Where a page needs another kind's content, it
-links to the page that holds it. A how-to that needs a concept links to
+links to the page that holds it. Three kinds of document sit outside the
+four: the README's landing page, the maps of the documents (`llms.txt`
+and `docs/README.md`), and the records, which are not rewritten beyond their spelling. A few
+pages hold a second kind on purpose: the README's opening is the first
+tutorial, since the first example is what a new reader opens it for; a
+reference entry for a data finding ends in its remedy, since it is the
+long form of a message that must say what to do; each step of adding a
+model says what the layer it touches holds; the contributor reference
+on the test machines keeps the reasons their last bits differ; the
+glossary gives the
+reason for each contested word, since a writer needs it to choose a new
+one; and this guide keeps its pass (§6) and its rewrites (§8) beside its
+rules, since every rule cites them. The page-kind check (§13)
+accepts these seven kinds: tutorial, how-to, reference, explanation,
+landing, map and record. A how-to that needs a concept links to
 its explanation, in one sentence, and goes on with the task.
 
 **Every page is page one.** A reader who arrives from a search has not
@@ -872,7 +891,7 @@ sections this library adds:
 | Parameters | each parameter: what it is for, its units, its default and the reason for that default, what it interacts with, and what is refused | in the order of the signature; *for*, then units, then default |
 | Returns, or the output fields | each field: what it is, its units, when it is null | a model's fields link to OUTPUTS.md rather than repeat it |
 | Raises | each error a caller can meet, and its cause | the condition, not the message text |
-| the update | the equations, which every model's docstring states | in a code block, with each symbol defined once |
+| the update equation | the equations, which every model's docstring states | in a code block, with each symbol defined once |
 | Examples | one short example that runs, with its output | the doc tests run it |
 | See also | the related functions and the guide sections | one line each |
 | Notes | the mechanism, the precision, the measurements | last, so a reader who wants only the call never meets it |
@@ -887,7 +906,7 @@ next section.
 how its solve estimates the condition number before the parameters. A
 reader who wanted the parameters scrolled past a derivation to reach them.
 
-## 11. Errors, warnings and notices
+## 11. Errors and warnings
 
 A reader meets an error at the moment something has gone wrong, with the
 least patience they will have. The message has to tell them what to do
@@ -928,16 +947,16 @@ teaches the reader to ignore warnings.
 
 **No formula and no internal word in a message.** The readiness warning
 once said the stream was *98% settled* and gave the ceiling
-`1/(1 - lam^d)`. *Settled* and `lam` are words of the code, and the
-formula is the derivation's. The message names the setting to change and
+`1/(1 - lam^d)`. *Settled* is a word of the code, `lam` belongs in a
+message only where the reader set it, and the formula is the derivation's. The message names the setting to change and
 the value to change it to. The derivation belongs in the guide it links to.
 
 **A number in a message has three significant figures.** `72.6` reads at
 a glance. `72.6359` asks the reader to decide which digits matter.
 
-**A notice names everything it is about.** A readiness notice names its
+**A warning names everything it is about.** A readiness warning names its
 spec, its group and, where sessions start the model over, its session, so
-two notices from one call are never the same text. A spec with no groups
+two warnings from one call are never the same text. A spec with no groups
 names no group: `group ""` is a value the reader did not give.
 
 **No blame and no alarm.** *Expected a number* says what is needed.
@@ -946,13 +965,17 @@ names no group: `group ""` is a value the reader did not give.
 ## 12. One word for one thing
 
 **The glossary is the vocabulary.** Every concept the library has is named
-once in the glossary, with its definition, and every page, docstring and
+once in the [glossary](GLOSSARY.md), with its definition, and every page, docstring and
 message uses that name. A word varied for style is read as a different
-thing. Three words for one concept appeared across the docs at once,
-*instance*, *slot* and *grid point*, and so did *warm-up*, *settled* and
-*ready*.
+thing. *Instance*, *slot* and *grid point* were used interchangeably
+across the docs for three different things, and *candidate* for two of
+them. *Settled* was used both for the share of its long-run weight a model has
+reached and for readiness, where `settled_frac` and *ready* now name each.
+One word, *model*, names both a kind of model and a fit, as in
+scikit-learn, and the glossary says when to use each.
 
-**A word the glossary does not have stays out of messages.** An error is
+**A term of the library's that the glossary does not have stays out of
+messages.** An error is
 read without the documentation open. A word the reader has not met in the
 docstrings or the guides is a word of the code, and the message says what
 it means instead.
@@ -962,20 +985,24 @@ American"). It matches Polars, scikit-learn and the code's own
 identifiers, such as `normalize`, so a reader never meets one spelling in
 a call and another in the sentence beside it. *Summarize*, *behavior*,
 *color*, *modeling* and *initialize*, not *summarise*, *behaviour*,
-*colour*, *modelling* and *initialise*. A quotation keeps its source's
-spelling. The checks of §13 hold every page to it.
+*colour*, *modelling* and *initialise*. A user's words quoted in this
+guide keep their own vocabulary, such as *betas* for coefficients. A quotation keeps its source's
+spelling. The [glossary's spelling table](GLOSSARY.md#spelling) lists
+each British spelling the README, the guides, the docstrings and the
+messages held, with its count and its American
+form. The checks of §13 hold every page to it.
 
 ## 13. Checks that hold the rules
 
 A rule a pass applies by hand lasts until the next writer who has not read
-it. So each rule that can be checked by a program is, in the gate, as the
+it. So each rule that can be checked by a program is, in the test gate, as the
 rule against citing the plan already is:
 
 | check | what it holds |
 |---|---|
 | the message shape | every error and warning the package raises starts with where it happened and ends with a sentence in the imperative, and is at most three sentences |
 | the docstring sections | every public function's docstring has §10's sections in §10's order |
-| the vocabulary | no message uses a word the glossary lists as internal, and every page uses American spelling |
+| the vocabulary | no message uses a word the glossary keeps out of reader-facing text, and every page uses American spelling |
 | the sentences | `scripts/doc_review.py`'s counts (§6) stay under their limits on every guide, not only the README |
 | the page kind | each guide declares its kind, and a how-to has its prerequisites and numbered steps |
 

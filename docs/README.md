@@ -32,6 +32,7 @@ kept in [`records/`](records/), and its row links it there.
 | [RELEASE-READINESS.md](RELEASE-READINESS.md) | you are cutting a release, or asking which Polars versions are promised and which are merely measured |
 | **Writing the documentation** | |
 | [WRITING.md](WRITING.md) | you are writing or rewriting any reader-facing doc — the rules the docs are held to, each drawn from a report in [PHRASING.md](records/PHRASING.md), with the README's rewrite of 2026-09-23 as the worked example. A pass over the README starts from [README-ITERATIONS.md](README-ITERATIONS.md), and a new report goes into PHRASING.md |
+| [GLOSSARY.md](GLOSSARY.md) | you meet a word a page uses without defining it, or you choose the word for a sentence, a docstring or a message — every concept's one word, what it means, the words it replaces and whether a message may use it, with the words kept out of reader-facing text and the American spelling of each British one the docs held |
 
 ## Records
 
@@ -61,6 +62,7 @@ out-of-date one, its row here says what became of it.
 | **Logs of the documentation** | |
 | [PHRASING.md](records/PHRASING.md) | every phrasing report, kept verbatim with its reading, begun for task 68's clarity pass: each rule in WRITING.md names the report it came from |
 | [README-ITERATIONS.md](README-ITERATIONS.md) | every pass over the README, with its prompt verbatim, its counts and its verdict, and every idea the reviews raised with its status |
+| [DOCS-REWRITE-MAP.md](records/DOCS-REWRITE-MAP.md) | the map of the documentation rewrite, written before any page of it: every section of the README and the guides with its kind and the page it moves to, the pages the rewrite produces, why the guides stay Markdown, and the first set of pieces it writes |
 | **Reviews, oldest first** | |
 | [SIMPLIFICATION.md](SIMPLIFICATION.md) | what complexity was removed after the performance work, and what was kept on purpose |
 | [IMPROVEMENTS.md](IMPROVEMENTS.md) | the pre-release review by axis — correctness, performance, usability, extensibility, testing — with the decision on each item |
