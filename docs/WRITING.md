@@ -32,6 +32,10 @@ Each numbered rule is one way to keep one of them.
 | P8 | **An example is complete** | its input, built by code the reader has seen before it; its output; and every part of the claim it illustrates, each named as what it is (§3) |
 | P9 | **The opening is read hardest, and one instance stands for a pattern** | the top of the README gets the most care; a reported fault is counted and fixed everywhere it occurs (§6) |
 | P10 | **A reader can act on every how-to sentence without inferring a step or a tool** | a procedure in procedural sentences, naming the tool, the method and the point in the pipeline; a condition with both branches; no definition by negation or "An X that is Y is a Z"; a relative word with its reference (§5) |
+| P11 | **Every page is one of four kinds, and stays that kind** | a tutorial teaches, a how-to solves one task, a reference describes, an explanation gives the reasons; a page that mixes them grows in four directions at once (§9) |
+| P12 | **Every page is page one** | most readers arrive from a search, partway in: a page says what it is about in its first sentence, and defines or links every term it uses (§9) |
+| P13 | **One word for one thing, everywhere** | the glossary names each concept once, and errors, docstrings and guides all use that word (§12) |
+| P14 | **An error or a warning says what happened, what it does to the output, and what to do** | the remedy is its own sentence, in the imperative, and the message names the setting and the value it got (§11) |
 
 | section | what it asks of a draft |
 |---|---|
@@ -44,6 +48,11 @@ Each numbered rule is one way to keep one of them.
 | [6. The pass itself](#6-the-pass-itself) | a sequence of steps, each with a check |
 | [7. Tables, not bullet lists](#7-tables-not-bullet-lists) | the shapes a comparison takes |
 | [8. Rewrites, as examples](#8-rewrites-as-examples) | what these rules produced, and a paragraph the user rewrote |
+| [9. Four kinds of page](#9-four-kinds-of-page) | a tutorial, a how-to, a reference or an explanation, never a mix |
+| [10. Reference entries and docstrings](#10-reference-entries-and-docstrings) | the same sections, in the same order, for every function and model |
+| [11. Errors, warnings and notices](#11-errors-warnings-and-notices) | the shape of every message the library prints or raises |
+| [12. One word for one thing](#12-one-word-for-one-thing) | the glossary, and the words kept out of messages |
+| [13. Checks that hold the rules](#13-checks-that-hold-the-rules) | what the gate checks, so a rule outlives the pass that wrote it |
 
 ## 0. Write for one stated reader
 
@@ -513,7 +522,7 @@ come last. The draft put the units first and the reason never.
 
 **Plain English.** A compressed possessive (*the numbers are the bank's*)
 reads as a puzzle before it reads as a sentence. So do a stacked pair of
-em-dash clauses and an italicised copula doing a verb's work. A pronoun or
+em-dash clauses and an italicized copula doing a verb's work. A pronoun or
 a back-reference, such as *the loop above*, must point at something the
 reader has just seen, in the document's current order.
 
@@ -601,6 +610,22 @@ every row* names the setting, a plain verb and the result. *The thing to
 read is the path the coefficients took, which coef_every=1 writes on every
 row, rather than the state they ended on* put a placeholder subject first,
 the setting in a relative clause, and a contrast last.
+
+**Rules the large style guides share.** The rules below come from the
+public style guides most technical documentation follows: Google's
+developer documentation style guide, the Microsoft Writing Style Guide and
+the US government's plain-language guidelines. The user asked on
+2026-11-05 for them to be written into this guide. Each agrees with the
+rules above, and each closes a gap the README rules left open.
+
+| rule | in practice |
+|---|---|
+| **Address the reader as *you*, in the present tense and the active voice** | *You set `half_life`*, not *the half-life is set by the user* or *will be set* |
+| **Write an instruction in the imperative** | *Sort the rows by the clock.* A sentence that tells the reader to do something starts with the verb |
+| **Put a condition before its action** | *If the clock steps back, set `restart_after_step_back`.* The reader whose case it is not stops reading at the comma |
+| **Leave out *simply*, *just*, *easy* and *obviously*** | they tell the reader the step is trivial, which is wrong for the reader it fails for, and they carry no fact |
+| **Head a task with a verb, and a concept with a noun** | *Choose a half-life* is a task. *Half-lives and decay* is a concept. A heading is what a reader scans for, so it names what they want to do or know |
+| **Lead with the conclusion** | the first sentence of a page, a section or a paragraph carries the point. The detail and the evidence follow it |
 
 ## 6. The pass itself
 
@@ -786,3 +811,175 @@ every row is now `coef_every=0`: `coef_every` became a clock parameter, as
 | where a fact sits | *weighted toward the last few tens of minutes* in the sentence about serving | the same words in the sentence about the fit they describe | §2, every paragraph serves its heading |
 | the uses | *to plot, difference, or compare between two stocks over a day* | *to track the betas over time* | §5, one idea per sentence |
 | how the sentences connect | six facts in a row | *Because …, remember … But …*: an argument | |
+
+## 9. Four kinds of page
+
+Large documentation sets sort their pages by what the reader is doing.
+Django, NumPy and Canonical use the split that Diátaxis names, and IBM's
+DITA and Carroll's minimalism research reached the same split earlier.
+The split matters here because the guides grew by accretion. One guide
+held a model's reference entry, a tutorial on fitting it, its design
+record and three how-to recipes, so a reader looking for any one of them
+read all four. The split, and what belongs in each kind:
+
+| kind | the reader | its job | its form | what does not belong |
+|---|---|---|---|---|
+| **tutorial** | new, learning by doing | take them from nothing to one working result | one path, numbered steps, every step's output shown | options, alternatives, the reasons behind a design |
+| **how-to** | has a task to finish | solve that one task | its prerequisites first, then numbered steps in the imperative, then how to check the result | teaching the concepts, a survey of every option |
+| **reference** | knows what they want to look up | describe one thing completely | the same sections in the same order for every entry (§10) | a narrative, advice that belongs in a how-to |
+| **explanation** | wants to understand | give the reasons and the mechanism | prose with diagrams and derivations, led by the point | steps to follow, parameter lists |
+
+**A page is one kind.** Where a page needs another kind's content, it
+links to the page that holds it. A how-to that needs a concept links to
+its explanation, in one sentence, and goes on with the task.
+
+**Every page is page one.** A reader who arrives from a search has not
+read the page before it. The first sentence says what the page is about
+and who it is for. A term is defined where the page first uses it, or
+linked to the glossary (§12). A sentence never depends on *as shown
+above* for a page the reader may not have seen.
+
+**A how-to names its prerequisites before its first step.** A reader who
+finds at step four that they needed a clock column has done three steps
+for nothing. The prerequisites are a short list under the opening
+sentence.
+
+**A step is one action and its result.** *Run the query. Each row of the
+output has a `pred_y`* is one step. Two actions are two steps.
+
+**The common case comes first, and the rest is one link away.** A how-to
+shows the default path. The options and edge cases follow it, or sit in
+the reference entry the how-to links to. This is the order Stripe's API
+documentation popularized, and the README already follows it for the
+first fit.
+
+**The altitudes of §1 apply inside each kind.** A tutorial's opening is
+read hardest, as the README's is. A reference entry still states the
+consequence before the mechanism.
+
+## 10. Reference entries and docstrings
+
+A reader of a reference entry has come to look one thing up, so every
+entry has the same sections in the same order. They learn the layout
+once and go straight to the section they need. The order follows the
+NumPy docstring standard, which scikit-learn and Polars use, with the
+sections this library adds:
+
+| section | what it holds | rule |
+|---|---|---|
+| summary | one sentence: what it does | no aside, no nickname. *Exponentially weighted ridge regression on running sums.* |
+| when to use it | the case it is for, and the function to use otherwise | at most three sentences, each naming the alternative |
+| Parameters | each parameter: what it is for, its units, its default and the reason for that default, what it interacts with, and what is refused | in the order of the signature; *for*, then units, then default |
+| Returns, or the output fields | each field: what it is, its units, when it is null | a model's fields link to OUTPUTS.md rather than repeat it |
+| Raises | each error a caller can meet, and its cause | the condition, not the message text |
+| the update | the equations, which every model's docstring states | in a code block, with each symbol defined once |
+| Examples | one short example that runs, with its output | the doc tests run it |
+| See also | the related functions and the guide sections | one line each |
+| Notes | the mechanism, the precision, the measurements | last, so a reader who wants only the call never meets it |
+
+**The summary is one plain sentence.** It is the line the API reference's
+index shows, and the first thing `help()` prints. *Exponentially weighted
+ridge regression on running sums -- the workhorse* adds a nickname the
+reader cannot use. The reason to reach for the model first belongs in the
+next section.
+
+**Mechanism goes last.** `ewridge`'s docstring once gave two screens on
+how its solve estimates the condition number before the parameters. A
+reader who wanted the parameters scrolled past a derivation to reach them.
+
+## 11. Errors, warnings and notices
+
+A reader meets an error at the moment something has gone wrong, with the
+least patience they will have. The message has to tell them what to do
+without sending them to read the documentation. The rules below follow
+the practice of the compilers known for their messages, Elm's and
+Rust's, and Microsoft's guidelines for error messages.
+
+**An error has four parts, in this order:** where it happened, what is
+wrong, the value received, and what to do. The first three can share a
+sentence. The remedy is a sentence of its own, in the imperative.
+
+| part | example |
+|---|---|
+| where | `spec "m":` |
+| what is wrong, and the value | `ridge must be finite and at least 0, but it is -1.` |
+| what to do | `Set ridge to 0 for no shrinkage, or to a positive value.` |
+
+**At most three sentences.** A message that needs more links to the guide
+section that explains it, by a stable address a terminal shows in full.
+The clock error once ran past a hundred words, with three remedies joined
+by semicolons and a parenthetical inside them. Three remedies are a list:
+*Either sort each group by the clock, or skip the rows a saved state has
+learned with `ModelBank.skip_learned`, or set `restart_after_step_back`.*
+
+**Report every problem, where finding them all is cheap.** A spec missing
+both `half_life` and `gap_cap` reported only the first. The reader fixed
+it, ran again, and met the second. A validator that collects every
+problem, then raises once with all of them, saves that loop.
+
+**The exception type follows the problem.** `TypeError` for a value of
+the wrong kind, `ValueError` for a value out of range or a combination
+refused, and Polars' own exceptions for a column problem, such as
+`ColumnNotFoundError`, so a caller's existing handlers catch them.
+
+**A warning says what it does to the output.** *Predictions stay withheld
+until …* tells the reader whether to act. A warning with no consequence
+teaches the reader to ignore warnings.
+
+**No formula and no internal word in a message.** The readiness warning
+once said the stream was *98% settled* and gave the ceiling
+`1/(1 - lam^d)`. *Settled* and `lam` are words of the code, and the
+formula is the derivation's. The message names the setting to change and
+the value to change it to. The derivation belongs in the guide it links to.
+
+**A number in a message has three significant figures.** `72.6` reads at
+a glance. `72.6359` asks the reader to decide which digits matter.
+
+**A notice names everything it is about.** A readiness notice names its
+spec, its group and, where sessions start the model over, its session, so
+two notices from one call are never the same text. A spec with no groups
+names no group: `group ""` is a value the reader did not give.
+
+**No blame and no alarm.** *Expected a number* says what is needed.
+*Invalid input* says only that the reader got it wrong.
+
+## 12. One word for one thing
+
+**The glossary is the vocabulary.** Every concept the library has is named
+once in the glossary, with its definition, and every page, docstring and
+message uses that name. A word varied for style is read as a different
+thing. Three words for one concept appeared across the docs at once,
+*instance*, *slot* and *grid point*, and so did *warm-up*, *settled* and
+*ready*.
+
+**A word the glossary does not have stays out of messages.** An error is
+read without the documentation open. A word the reader has not met in the
+docstrings or the guides is a word of the code, and the message says what
+it means instead.
+
+**American spelling throughout** (the user, 2026-11-05: "Spelling
+American"). It matches Polars, scikit-learn and the code's own
+identifiers, such as `normalize`, so a reader never meets one spelling in
+a call and another in the sentence beside it. *Summarize*, *behavior*,
+*color*, *modeling* and *initialize*, not *summarise*, *behaviour*,
+*colour*, *modelling* and *initialise*. A quotation keeps its source's
+spelling. The checks of §13 hold every page to it.
+
+## 13. Checks that hold the rules
+
+A rule a pass applies by hand lasts until the next writer who has not read
+it. So each rule that can be checked by a program is, in the gate, as the
+rule against citing the plan already is:
+
+| check | what it holds |
+|---|---|
+| the message shape | every error and warning the package raises starts with where it happened and ends with a sentence in the imperative, and is at most three sentences |
+| the docstring sections | every public function's docstring has §10's sections in §10's order |
+| the vocabulary | no message uses a word the glossary lists as internal, and every page uses American spelling |
+| the sentences | `scripts/doc_review.py`'s counts (§6) stay under their limits on every guide, not only the README |
+| the page kind | each guide declares its kind, and a how-to has its prerequisites and numbered steps |
+
+A prose linter such as Vale, which Google's and Microsoft's guides are
+published for as rule sets, can hold the sentence rules. It is a program
+outside Python, so adopting it is a decision about the tools the gate
+needs, and the checks above do not wait for it.
