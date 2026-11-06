@@ -380,9 +380,14 @@ class ReadinessWarning(PolarsOnlineWarning, UserWarning):
       (``weight_sum_settled`` in :meth:`ModelBank.summary`), and the way out.
       A target no row has given a value with a positive weight has no rate
       to project from, so its message says that instead, with no ceiling.
-      Where the rows are too uneven to project one -- a target present on
-      few of them, weights far apart, or a stream whose weight is still its
-      first row's -- the message says so, with no figure.
+      A target whose own weight is below ``weight_sum`` has not been learned
+      from every row and has no ceiling of its own: its weight falls on each
+      row without it, toward 0 once the rows stop carrying it. Its message
+      says so, with no figure where rows that each carried it would meet the
+      floor, and otherwise with the ceiling of such rows. A message on a row
+      of weight 0, or on rows too uneven to project -- one row far heavier
+      than the rest, or a stream whose weight is still its first row's --
+      gives no figure.
     - **A diagnostic has no horizon**: a spec with a ``clock``, an
       ``embargo`` and no ``horizon_rows``, beside a diagnostic that reads
       the target's horizon (``emit_calibration``, ``emit_breaks``,

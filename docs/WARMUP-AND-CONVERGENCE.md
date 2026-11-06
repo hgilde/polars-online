@@ -369,7 +369,17 @@ name no span:
   target never present, or a stream whose every row weighs 0 -- reads a
   weight of 0, which projects to no rate at all: its notice says the target
   has had no such row, with no ceiling and no advice to lower the floor,
-  where it once read "tops out near -0.0256" (task 208). Under
+  where it once read "tops out near -0.0256" (task 208). A target the
+  rows stopped carrying has no steady level to project: its weight halves
+  every half-life, toward 0, and the notice read that falling weight as a
+  ceiling ("tops out near 2.21" of a target whose rows had reached 7.73).
+  One decay's sums at one time cannot tell such a target from one on a
+  share of the rows, but the shared weight, every row the model learned,
+  tells either from a target every row carries; so a target short of it is
+  told it has not been learned from every row, with no figure where rows
+  that each carried it would meet the floor, and with the shared weight's
+  ceiling where they would not, and a notice on a row of weight 0 gives no
+  figure (task 350). Under
   `embargo` both notices read how far the rows the model has learned from
   have settled, the clock its weight has covered, as `weight_sum_settled`
   does; paired with the row's fraction, which counts the held rows' clock

@@ -4833,9 +4833,9 @@ fn run_instance(
         } else {
             f64::NAN
         };
-        // The first target whose floor has withheld every row for that long,
-        // the ceiling its weight tops out at, and the weight it reads.
-        let mut unmet_floor: Vec<(usize, f64, f64)> = Vec::new();
+        // Each target whose floor has withheld every row for that long, and
+        // what its notice projects from ([`Projection`]).
+        let mut unmet_floor: Vec<(usize, Projection)> = Vec::new();
         if keep && !kept {
             let below = (0..step.pred.len().div_ceil(nc)).any(|tj| {
                 let weight = match sc.tn.get(tj) {
@@ -4863,14 +4863,16 @@ fn run_instance(
             if !inst.notified.unreachable
                 && inst.notified.floor_withheld_for(tj, below, judged, now) >= half
             {
-                let ceiling = settled_weight(
-                    weight,
-                    w,
-                    learned,
-                    rounding_steps(inst.steps, inst.notified),
-                );
+                let steps = rounding_steps(inst.steps, inst.notified);
+                let ceiling = settled_weight(weight, w, learned, steps);
                 if ceiling < min_weight[tj] {
-                    unmet_floor.push((tj, ceiling, weight));
+                    // The shared weight is what the target would read had
+                    // every row the model learned carried it.
+                    let shared = own_weights.then_some(step.n_eff);
+                    unmet_floor.push((
+                        tj,
+                        Projection::read(ceiling, weight, shared, w, learned, steps),
+                    ));
                 }
             }
         }
@@ -4887,23 +4889,22 @@ fn run_instance(
         // positive weight -- a target never present, or a stream whose every
         // row weighs 0 -- and `(0 − w₁(1 − s))/s` read a negative ceiling, or
         // 0, with advice to lower the floor below it (task 208's worker). So
-        // that notice says what the stream lacks, with no figure.
+        // that notice says what the stream lacks, with no figure. A target
+        // that rows stopped carrying decays toward 0 and has no ceiling, and
+        // `unmet_floor_notice` tells it from one the rows carry by its weight
+        // against the shared one (task 350).
         // Every target unmet on this row is named, each in its own notice
         // with its own figure (WRITING §11: report every problem).
         if !unmet_floor.is_empty() {
             inst.notified.unreachable = true;
             inst.notified.restart_waits();
-            for (tj, ceiling, weight) in unmet_floor {
+            for (tj, at) in unmet_floor {
                 inst.notified.raise(unmet_floor_notice(
                     inst.spec,
                     inst.decay,
                     tj,
                     min_weight[tj],
-                    Projection {
-                        ceiling,
-                        weight,
-                        row_weight: w,
-                    },
+                    at,
                 ));
             }
         }

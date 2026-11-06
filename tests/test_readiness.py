@@ -878,6 +878,92 @@ class TestSettledWeight:
             assert not re.search(r"tops out near -", msg), msg
             assert "tops out near 0.0000" not in msg, msg
 
+    @staticmethod
+    def _stopped(stop: int = 200, zero_from: int = 200) -> pl.DataFrame:
+        """``frame(200)`` with ``y`` null from row ``stop`` and every row's
+        weight 0 from row ``zero_from``."""
+        i = pl.int_range(pl.len())
+        return frame(200).with_columns(
+            y=pl.when(i < stop).then(pl.col("y")),
+            w=pl.when(i < zero_from).then(1.0).otherwise(0.0),
+        )
+
+    @pytest.mark.parametrize(
+        "model", ["ewridge", "rls", "sgd", "pa", "huber", "ftrl", "kalman", "holt", "lasso"]
+    )
+    def test_a_target_the_rows_stopped_carrying_is_not_given_a_ceiling(self, model):
+        """Task 350: ``y`` present on rows 0-39 and null after, at half-life 5
+        under a floor of 5. Its weight reaches the ceiling of 7.73 by row 39,
+        falls below 5 at row 43 and halves every half-life after it, toward 0,
+        while the shared ``weight_sum`` stays at 7.73. The warning, a
+        half-life later, read that decaying weight as a ceiling: "tops out
+        near 2.21 ... Lower min_weight below 2.21". It now says the target's
+        weight falls on each row without it, with the floor the one figure,
+        however the rows are chunked and wherever the bank is saved and
+        loaded."""
+        kw: dict = {"targets": ["y"], "half_life": 5.0, "min_weight": 5.0, "weight": "w"}
+        if model != "holt":
+            kw["features"] = ["x0", "x1"]
+        extra = {"kalman": {"coef_half_life": 50.0}, "lasso": {"penalties": [0.1]}}
+        s = getattr(po.spec, model)("m", **kw, **extra.get(model, {}))
+        df = self._stopped(stop=40)
+        want = (
+            'spec "m": min_weight = 5 has not been met for target "y" on any row for the last '
+            "half-life, with the model within 5% of its steady state. The model has not learned "
+            'target "y" from every row, and its weight falls on each row without it, so '
+            'predictions for target "y" stay withheld until rows with a value of the target bring '
+            'that weight to 5. Check that rows reach the model with a value of target "y", as '
+            f"{READY} explains."
+        )
+        fitted = _fit_noting(po.ModelBank([s]), df)
+        assert fitted.notices == [want]
+        ws = field(fitted.out, "weight_sum")
+        assert ws[39] == pytest.approx(ws[150], rel=0.01), "the shared weight stays"
+        # Saved and loaded inside the wait, in chunks either side.
+        bank = po.ModelBank([s])
+        head = _fit_noting(bank, df[:46])
+        bank = po.ModelBank.load_bytes(bank.save_bytes())
+        tail = _fit_noting(bank, df[46:])
+        assert head.notices + tail.notices == [want]
+
+    def test_a_target_short_of_the_rows_is_given_the_rows_ceiling(self):
+        """Task 350: ``y`` null from row 15, before the warning, under a floor
+        of 10 that rows each carrying it, topping out at 7.73, would not meet
+        either. The figure is that ceiling, said as the ceiling of rows that
+        carry the target, and the half-life at which it passes 10,
+        ``1 / -log2(1 - 1/10) = 6.58`` rounded up. It gave the target's own
+        decaying weight, "tops out near 1.11"."""
+        ceiling = 1.0 / (1.0 - 2.0 ** (-1.0 / 5.0))
+        figure = f"{math.floor(ceiling * 100) / 100:.2f}"
+        need = 1.0 / -math.log2(1.0 - 1.0 / 10.0)
+        s = spec(half_life=5.0, min_weight=10.0, weight="w", max_error_inflation=math.inf)
+        fitted = _fit_noting(po.ModelBank([s]), self._stopped(stop=15))
+        assert fitted.notices == [
+            'spec "m": min_weight = 10 has not been met for target "y" on any row for the last '
+            "half-life, with the model within 5% of its steady state. At the row weights seen so "
+            f"far, the weight the gate reads tops out near {figure} if every row carries a value "
+            'of target "y", and the model has not learned the target from every row, so '
+            'predictions for target "y" stay withheld unless the rows carry more weight, and each '
+            f"carries a value of the target. Lower min_weight below {figure}, or increase "
+            f"half_life above {math.ceil(need * 100) / 100}, as {READY} explains."
+        ]
+
+    def test_a_row_of_weight_zero_is_given_no_ceiling(self):
+        """Task 350: every row weighs 0 from row 40, so the shared weight
+        decays with the target's, toward 0. The warning comes on a row of
+        weight 0, which adds nothing, so it cannot project where the weight
+        tops out; it read "tops out near 2.21"."""
+        s = spec(half_life=5.0, min_weight=5.0, weight="w", max_error_inflation=math.inf)
+        fitted = _fit_noting(po.ModelBank([s]), self._stopped(zero_from=40))
+        assert fitted.notices == [
+            'spec "m": min_weight = 5 has not been met for target "y" on any row for the last '
+            "half-life, with the model within 5% of its steady state, so predictions for target "
+            '"y" stay withheld until the weight the gate reads reaches 5. This warning comes on a '
+            "row of weight 0, which adds nothing to the weight, so it cannot say where the weight "
+            "tops out. Check that rows reach the model with a positive weight, lower min_weight, "
+            f"or increase half_life, as {READY} explains."
+        ]
+
     def test_a_row_that_meets_the_floor_restarts_the_wait(self):
         """One heavy row at row 25, inside the wait that began at row 23,
         lifts the weight past a floor of 10 that the stream's ceiling of 7.73

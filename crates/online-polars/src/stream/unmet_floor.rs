@@ -3,7 +3,7 @@
 
 use online_core::Decay;
 
-use super::{half_life_of, projected_figure};
+use super::{half_life_of, projected_figure, settled_weight};
 use crate::spec::Spec;
 
 /// Where a readiness warning sends its reader: the reference section on
@@ -14,25 +14,100 @@ const READY_LINK: &str =
 /// What a "min_weight has not been met" notice projects from: the weight
 /// the target's rows top out at, at their spacing and weight so far
 /// ([`settled_weight`]), the weight the gate read on the row, and the row's
-/// own weight.
+/// own weight; and, for a model that keeps a weight per target, where the
+/// shared weight tops out and whether the target's is short of it.
+///
+/// The projection reads one weight at one time and takes it for its steady
+/// level, which it is on a stream whose rows each carry the target. A
+/// target the rows stopped carrying is not at a steady level: its weight
+/// only decays, toward 0, and the projection read that falling weight as a
+/// ceiling (task 350). One decay's running sums at one time cannot tell a
+/// target that stopped from one that comes on a share of the rows; that
+/// takes the weight at a second time, which the state does not keep. But
+/// the shared weight -- every row the model learned, the target's or not,
+/// at the same decay -- tells either from a target every row carries: the
+/// target's weight is below it. Where it is, the most the target's weight
+/// can reach at the rows' spacing and weight so far is the shared weight's
+/// ceiling, and the notice says the target is short of the rows rather than
+/// where its own weight tops out.
 pub(super) struct Projection {
     pub(super) ceiling: f64,
     pub(super) weight: f64,
     pub(super) row_weight: f64,
+    /// Where the shared weight tops out ([`settled_weight`]): what a target
+    /// every row carried would read. The target's own `ceiling` where the
+    /// model keeps only the shared weight.
+    pub(super) shared: f64,
+    /// Whether the target's weight is below the shared weight by more than
+    /// the two carry in rounding: the rows the model learned did not all
+    /// carry the target.
+    pub(super) short: bool,
+}
+
+impl Projection {
+    /// The projection for a target whose weight is `weight` and whose own
+    /// ceiling is `ceiling`, beside the shared weight `shared` where the
+    /// model keeps a weight per target, on a row of weight `row_weight` at
+    /// the settled fraction `settled`, each weight carried through at most
+    /// `steps` decay steps.
+    ///
+    /// Two weights the same rows built are equal but for rounding: each is
+    /// within `4u·n` of itself after `n` steps ([`settled_weight`]), so they
+    /// differ by at most `4u·n·(S + T)`, and their difference rounds by `u`
+    /// of `S`. A target is short where `S − T` passes `8u·n·(S + T)`, which
+    /// one row it missed passes until that row's weight has decayed below
+    /// it.
+    pub(super) fn read(
+        ceiling: f64,
+        weight: f64,
+        shared: Option<f64>,
+        row_weight: f64,
+        settled: f64,
+        steps: f64,
+    ) -> Self {
+        let (shared, short) = match shared {
+            Some(s) => {
+                let noise = 8.0 * (f64::EPSILON / 2.0) * steps.max(1.0) * (s.abs() + weight.abs());
+                (
+                    settled_weight(s, row_weight, settled, steps),
+                    s - weight > noise,
+                )
+            }
+            None => (ceiling, false),
+        };
+        Self {
+            ceiling,
+            weight,
+            row_weight,
+            shared,
+            short,
+        }
+    }
 }
 
 /// The warning that `min_weight` has not been met for a half-life, with the
 /// model within 5% of its steady state, in the shape every message takes
 /// (WRITING §11): what has not been met, what that does to the output, and
-/// what to change, with the reference that explains the gates. Its forms: a
-/// target the model has learned no weighted value of; a projection at the
-/// rows' spacing and weight so far, with the half-life (or `lam`) at which
-/// the projected weight would reach the floor; and, with no figure, rows
-/// too uneven to project or a hard window, whose weight does not settle as
-/// the decay does. A model that predicts no target names none. A floor the
-/// bank raised above the spec's (`ew_cov`'s two rows) is named as raised,
-/// and lowering `min_weight` is not offered for it. A spec with several
-/// half-lives names the instance.
+/// what to change, with the reference that explains the gates. Its forms:
+///
+/// - a target the model has learned no weighted value of;
+/// - a hard window, whose weight does not settle as the decay does: no
+///   figure;
+/// - a row of weight 0, which adds nothing, so no regular stream of rows
+///   like it reads the weight there is: no figure;
+/// - a target the model has not learned from every row
+///   ([`Projection::short`]): where rows that each carried it would reach
+///   the floor, no figure, as its weight falls on each row without it;
+///   where they would not, the shared weight's ceiling and the half-life (or
+///   `lam`) at which it would reach the floor;
+/// - a target every row carries: its projection at the rows' spacing and
+///   weight so far, with that half-life (or `lam`);
+/// - and, with no figure, rows too uneven to project.
+///
+/// A model that predicts no target names none. A floor the bank raised
+/// above the spec's (`ew_cov`'s two rows) is named as raised, and lowering
+/// `min_weight` is not offered for it. A spec with several half-lives names
+/// the instance.
 pub(super) fn unmet_floor_notice(
     spec: &Spec,
     decay: Decay,
@@ -91,31 +166,66 @@ pub(super) fn unmet_floor_notice(
         .model
         .window_parts()
         .is_some_and(|(window, _)| window.is_some());
-    let figure = (!windowed)
-        .then(|| projected_figure(at.ceiling))
-        .flatten()
-        .map(|_| three_figures(at.ceiling, Round::Down));
-    let Some(figure) = figure else {
-        let why = if windowed {
-            "The hard window limits the weight, in addition to the decay, so the warning cannot say \
-             where the weight tops out"
-        } else {
-            "The rows so far are too uneven (such as a target present on only its first row, or \
-             row weights far apart) to project where the weight the gate reads tops out"
-        };
-        let more = if windowed {
-            format!("{decay_name} or window_size")
-        } else {
-            decay_name.to_string()
-        };
+    if windowed {
         let remedy = if raised {
-            format!("Increase {more}")
+            format!("Increase {decay_name} or window_size")
         } else {
-            format!("Lower min_weight, or increase {more}")
+            format!("Lower min_weight, or increase {decay_name} or window_size")
         };
         return format!(
-            "{unmet}, so {withheld} until the weight the gate reads reaches {floor}. {why}. {remedy}, as \
-             {READY_LINK} explains."
+            "{unmet}, so {withheld} until the weight the gate reads reaches {floor}. The hard window \
+             limits the weight, in addition to the decay, so the warning cannot say where the \
+             weight tops out. {remedy}, as {READY_LINK} explains."
+        );
+    }
+    if at.row_weight <= 0.0 {
+        let remedy = if raised {
+            format!(
+                "Check that rows reach the model with a positive weight, or increase {decay_name}"
+            )
+        } else {
+            format!(
+                "Check that rows reach the model with a positive weight, lower min_weight, or \
+                 increase {decay_name}"
+            )
+        };
+        return format!(
+            "{unmet}, so {withheld} until the weight the gate reads reaches {floor}. This warning \
+             comes on a row of weight 0, which adds nothing to the weight, so it cannot say where \
+             the weight tops out. {remedy}, as {READY_LINK} explains."
+        );
+    }
+    // A target the model has not learned from every row: the rows' own
+    // ceiling is the shared weight's, and the target's weight falls on each
+    // row it misses.
+    let short = named.filter(|_| at.short);
+    if let Some(t) = short
+        && projected_figure(at.shared).is_some()
+        && at.shared >= floor
+    {
+        return format!(
+            "{unmet}. The model has not learned target {t:?} from every row, and its weight falls \
+             on each row without it, so {withheld} until rows with a value of the target bring \
+             that weight to {floor}. Check that rows reach the model with a value of target \
+             {t:?}, as {READY_LINK} explains."
+        );
+    }
+    let ceiling = if short.is_some() {
+        at.shared
+    } else {
+        at.ceiling
+    };
+    let Some(figure) = projected_figure(ceiling).map(|_| three_figures(ceiling, Round::Down))
+    else {
+        let remedy = if raised {
+            format!("Increase {decay_name}")
+        } else {
+            format!("Lower min_weight, or increase {decay_name}")
+        };
+        return format!(
+            "{unmet}, so {withheld} until the weight the gate reads reaches {floor}. The rows so far \
+             are too uneven (such as one row far heavier than the rest) to project where the \
+             weight the gate reads tops out. {remedy}, as {READY_LINK} explains."
         );
     };
     let (rate, faster) = if spec.clock.is_some() {
@@ -123,16 +233,28 @@ pub(super) fn unmet_floor_notice(
     } else {
         ("row weights", "the rows carry more weight")
     };
-    let to =
-        floor_reaching(spec, decay, &at, floor).map_or_else(String::new, |v| format!(" above {v}"));
+    let to = floor_reaching(spec, decay, ceiling, at.row_weight, floor)
+        .map_or_else(String::new, |v| format!(" above {v}"));
     let remedy = if raised {
         format!("Increase {decay_name}{to}")
     } else {
         format!("Lower min_weight below {figure}, or increase {decay_name}{to}")
     };
+    let (every, carries) = short.map_or_else(
+        || (String::new(), String::new()),
+        |t| {
+            (
+                format!(
+                    " if every row carries a value of target {t:?}, and the model has not learned \
+                     the target from every row"
+                ),
+                ", and each carries a value of the target".to_string(),
+            )
+        },
+    );
     format!(
-        "{unmet}. At the {rate} seen so far, the weight the gate reads tops out near {figure}, so \
-         {withheld} unless {faster}. {remedy}, as {READY_LINK} explains."
+        "{unmet}. At the {rate} seen so far, the weight the gate reads tops out near {figure}{every}, \
+         so {withheld} unless {faster}{carries}. {remedy}, as {READY_LINK} explains."
     )
 }
 
@@ -141,12 +263,12 @@ pub(super) fn unmet_floor_notice(
 /// rounded up so the remedy holds; `None` where none does. The ceiling
 /// `C = w/(1 − 2^(−d/h))` gives the spacing in half-lives,
 /// `d/h = −log2(1 − w/C)`, and the floor `N` is reached where
-/// `h > d/−log2(1 − w/N)`.
-fn floor_reaching(spec: &Spec, decay: Decay, at: &Projection, floor: f64) -> Option<String> {
+/// `h > d/−log2(1 − w/N)`, for rows of weight `w` whose weight tops out at
+/// `ceiling`.
+fn floor_reaching(spec: &Spec, decay: Decay, ceiling: f64, w: f64, floor: f64) -> Option<String> {
     use crate::figures::{Round, three_figures};
     let h = half_life_of(decay);
-    let w = at.row_weight;
-    let d = h * -(1.0 - w / at.ceiling).log2();
+    let d = h * -(1.0 - w / ceiling).log2();
     let need = d / -(1.0 - w / floor).log2();
     if !(need.is_finite() && need > 0.0 && w < floor) {
         return None;

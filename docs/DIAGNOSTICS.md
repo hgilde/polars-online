@@ -1982,16 +1982,26 @@ replaces what decay removes. For rows of weight `w` spaced `d` clock units
 apart, the ceiling is `w / (1 − 2^(−d / half_life))`: for rows of weight 1,
 one clock unit apart, about 7.7 at a half-life of 5. Rows that come
 faster or weigh more lift the ceiling, so the warning projects it and does
-not promise it. Once the model is
+not promise it. The ceiling holds for a target every row carries. A target
+the rows stop carrying has none: its weight halves every half-life, toward
+0. The warning tells the two apart by `weight_sum`, the weight of every row
+the model learned, whether the row carried the target or not: a target's
+own weight below it means the model has not learned the target from every
+row. One weight at one time cannot say whether such a target has stopped or
+comes on a share of the rows, so the warning says only that its weight falls
+on each row without it. Once the model is
 within 5% of its steady state and the gate has withheld every row for a
 further half-life, the bank issues a `ReadinessWarning` that names the
 gate, and the target where the model predicts one. Its forms:
 
 | what the warning finds | what it gives | what to do |
 |---|---|---|
-| a ceiling it can project from the rows so far | the ceiling, rounded down, and the `half_life` (or `lam`) above which the ceiling passes the floor the gate reads (`min_weight`, or 2 for `ew_cov`) | lower `min_weight` below the ceiling, or increase `half_life` (or `lam`) above the value given |
+| a target every row carries, with a ceiling it can project from the rows so far | the ceiling, rounded down, and the `half_life` (or `lam`) above which the ceiling passes the floor the gate reads (`min_weight`, or 2 for `ew_cov`) | lower `min_weight` below the ceiling, or increase `half_life` (or `lam`) above the value given |
+| a target the model has not learned from every row, where rows that each carried it would reach the floor | no figure: the target's weight falls on each row without it, toward 0 if the rows have stopped carrying it | check that rows reach the model with the target's value (`rls` learns a row only where every target has a value) |
+| a target the model has not learned from every row, where rows that each carried it would not reach the floor either | the ceiling of rows that each carry the target, rounded down, and the `half_life` (or `lam`) above which it passes the floor | lower `min_weight` below that ceiling, or increase `half_life` (or `lam`) above the value given, and check that rows carry the target's value |
 | no row the model learned has the target's value and a positive weight (for a model that predicts no target, a positive weight alone) | no figure: there is no weight to project from | check that rows reach the model with the target's value and a positive weight |
-| rows too uneven to project, such as a target present on only its first row, or row weights far apart | no figure | lower `min_weight`, or increase `half_life` (or `lam`) |
+| the warning comes on a row of weight 0, which adds nothing to the weight | no figure: no stream of rows like it reads a positive weight | check that rows reach the model with a positive weight, lower `min_weight`, or increase `half_life` (or `lam`) |
+| rows too uneven to project, such as one row far heavier than the rest | no figure | lower `min_weight`, or increase `half_life` (or `lam`) |
 | a hard window, which limits the weight in addition to the decay | no figure | lower `min_weight`, or increase `half_life` (or `lam`) or `window_size` |
 
 `ew_cov` needs a weight of at least 2 for a covariance, so it lifts a
