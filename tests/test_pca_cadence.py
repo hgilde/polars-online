@@ -273,7 +273,7 @@ class TestRefusals:
             )
 
     def test_a_negative_cadence_is_refused(self):
-        with pytest.raises(ValueError, match="pca_every must be finite and >= 0 clock units"):
+        with pytest.raises(ValueError, match="pca_every must be finite and at least 0 clock units"):
             po.spec.ew_cov(
                 "c", features=FEATURES, half_life=100.0, stats=["mean"], pca=1, pca_every=-5.0
             )

@@ -666,7 +666,7 @@ fn errors_name_the_frame_row_under_any_layout() {
     let prev = previous_in_group(&df, row).unwrap();
     let t_prev = df.column("t").unwrap().f64().unwrap().get(prev).unwrap();
     let backwards = with_value(&df, "t", row, Some(t_prev - 1.0));
-    names(bank.fit_predict(&backwards).unwrap_err(), "goes backwards");
+    names(bank.fit_predict(&backwards).unwrap_err(), "steps back");
     assert_eq!(
         bank.save_bytes().unwrap(),
         before,
@@ -743,7 +743,7 @@ fn errors_name_the_frame_row_under_any_layout() {
     let trained = bank.save_bytes().unwrap();
     let msg = bank.fit_predict(&bad).unwrap_err().to_string();
     assert!(
-        msg.contains("goes backwards") && msg.contains(&format!("row {row2}")),
+        msg.contains("steps back") && msg.contains(&format!("row {row2}")),
         "{msg}"
     );
     assert_eq!(

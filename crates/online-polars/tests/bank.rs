@@ -55,8 +55,8 @@ fn an_ungrouped_view_of_interleaved_groups_is_refused_by_default() {
         .fit_predict(&make_df_clocked(200, true))
         .unwrap_err()
         .to_string();
-    assert!(err.contains("goes backwards by"), "{err}");
-    assert!(err.contains("restart_after_step_back is unset"), "{err}");
+    assert!(err.contains("steps back by"), "{err}");
+    assert!(err.contains("restart_after_step_back is not set"), "{err}");
     assert_eq!(bank.rows_fed(), 0, "the refused chunk taught nothing");
 }
 
@@ -491,7 +491,7 @@ fn a_refused_chunk_updates_nothing() {
     let before = bank.save_bytes().unwrap();
     let err = bank.fit_predict(&bad).unwrap_err().to_string();
     assert!(
-        err.contains("goes backwards") && err.contains("row 81"),
+        err.contains("steps back") && err.contains("row 81"),
         "{err}"
     );
     assert!(

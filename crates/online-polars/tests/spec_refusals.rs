@@ -363,7 +363,7 @@ fn a_refused_value_is_named() {
     for (json, want) in [
         (
             sup(r#"{"type": "ewridge", "ridge": -1.0}"#, ""),
-            "ridge must be finite and >= 0, got -1",
+            "ridge must be finite and at least 0, but it is -1. Set ridge to 0 for no shrinkage, or to a finite positive value.",
         ),
         (
             sup(r#"{"type": "ewridge"}"#, r#", "min_weight": -2.0"#),
@@ -401,7 +401,7 @@ fn a_refused_value_is_named() {
                 r#"{"type": "kmeans", "n_clusters": 2, "dead_frac": -1.0}"#,
                 r#", "half_life": 10.0"#,
             ),
-            "dead_frac must be finite and >= 0 (0 disables it), got -1",
+            "dead_frac must be at least 0 and below 0.5, but it is -1. Set dead_frac to 0 to never re-place a center whose weight has decayed, or to a positive value below 0.5.",
         ),
         (
             unsup(

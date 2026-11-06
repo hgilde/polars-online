@@ -35,9 +35,9 @@ Ten models predict a numeric target. Nine regress it on features, and
 
 | parameters | taken by | explained under |
 |---|---|---|
-| `ridge` | `ewridge`, where a list fits a grid; `huber` and `quantile`, as one number. `rls` refuses it and takes `delta` | [`ewridge`](#ewridge--ew-ridge-on-sufficient-statistics) and [`rls`](#rls--recursive-least-squares) |
-| `solve_every`, `max_rows_between_solves` | `ewridge`, `lasso`, `huber`, `quantile` | [`ewridge`](#ewridge--ew-ridge-on-sufficient-statistics) |
-| `target_gaps` | `ewridge`, `lasso` | [`ewridge`](#ewridge--ew-ridge-on-sufficient-statistics) |
+| `ridge` | `ewridge`, where a list fits a grid; `huber` and `quantile`, as one number. `rls` refuses it and takes `delta` | [`ewridge`](#ewridge--exponentially-weighted-ridge-regression) and [`rls`](#rls--recursive-least-squares) |
+| `solve_every`, `max_rows_between_solves` | `ewridge`, `lasso`, `huber`, `quantile` | [`ewridge`](#ewridge--exponentially-weighted-ridge-regression) |
+| `target_gaps` | `ewridge`, `lasso` | [`ewridge`'s docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ewridge) |
 | `window_size` | `ewridge`, `lasso` | [A hard window](../README.md#a-hard-window) |
 | `standardize` | `ewridge`, `huber` and `quantile`, off by default; `kalman`, `sgd` and `pa`, on by default. `lasso` always standardizes, and `ftrl` never does | `ewridge`, `kalman` and `ftrl` |
 | `coef_min`, `coef_max`, `coef_sum` | `sgd`, `pa` | [`sgd`](#sgd--stochastic-gradient-descent) |
@@ -57,15 +57,52 @@ What `half_life` decays differs by model:
 | `ftrl` | its per-coordinate sums, but not its penalties, so a shorter half-life shrinks the fit more |
 | `holt` | the level; the trend has `trend_half_life` |
 
-### `ewridge` — EW ridge on sufficient statistics
+### `ewridge` — exponentially weighted ridge regression
 
 *API:* [`po.spec.ewridge`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ewridge) — *Rust:* [`ewridge.rs`](../crates/online-core/src/ewridge.rs) — *Outputs:* [fields](OUTPUTS.md#ewridge)
 
-Start with `ewridge`, ridge regression solved from running sums, and change
-to another linear model when your data need what it adds, such as
-coefficients that drift (`kalman`). For a Huber loss use
-[`huber`](#huber--quantile--robust-regression), which is these sums with
-each row down-weighted by its residual.
+Exponentially weighted ridge regression on running sums.
+
+Start with `ewridge` for a numeric target, where its
+[Gram](GLOSSARY.md#fitting-a-model), the sums it keeps of its columns'
+means and co-moments, fits a grid of ridge values and feature sets for one
+extra solve each. Change to another linear model when your data need what
+it adds:
+[`kalman`](#kalman--random-walk-β-dynamic-linear-model) for coefficients
+that drift, [`huber`](#huber--quantile--robust-regression) for outliers or
+`quantile` for a quantile, and
+[`lasso`](#lasso--lasso-path-its-penalty-chosen-as-it-runs) for a sparse
+fit. Use [`sgd`](#sgd--stochastic-gradient-descent) or
+[`pa`](#pa--passive-aggressive-regression) where learning a row must take O(k) time for
+`k` features: this model takes O(k²) time.
+
+Its parameters, their defaults and what each refuses are in its
+[docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ewridge),
+and the fields it writes in [OUTPUTS.md](OUTPUTS.md#ewridge). The
+parameters every spec takes are in [What a spec
+names](../README.md#what-a-spec-names).
+
+#### The update
+
+Under the default `target_gaps="own_rows"`, `S_j` and `η_j` are taken over
+the rows where `y_j` is present, and `W_j` is the
+weight behind them. Under `"pairwise"`, one `S`, weighted by `W`, is taken
+over every row, while `η_j`, `W_j` and the feature means the intercept is
+centered on stay over `y_j`'s rows, and the slopes solve the centered
+system the docstring's Notes give under *Target gaps*. `W` is the
+`weight_sum` a row reports. The equations are the default's, and the
+coefficients are solved on a schedule:
+
+```
+W'   = λW + w                       weight_sum, over every row
+W_j' = λW_j + w                     on the rows where y_j is present, λW_j on the others
+S_j' = (λW_j·S_j + w·z zᵀ) / W_j'   η_j' = (λW_j·η_j + w·z·y_j) / W_j'
+solve, ridge_scale="mean":  (S_j + ridge·D) β_j = η_j + ridge·D·β₀      D = I with a 0 at the intercept
+solve, ridge_scale="sum":   (W_j·S_j + p·ridge·I) β_j = W_j·η_j + p·ridge·β₀
+                            p the product of every decay so far, β₀ = coef_prior (0 by default)
+```
+
+#### Example
 
 **A grid of half-lives and ridge values is fitted in one pass.** Each
 half-life keeps a set of running sums, and each ridge value is one more
@@ -112,18 +149,11 @@ weighs the rows from the middle of the stream, where the slope was near 2.
 A ridge of 0.1 divides a slope by about `1 + 0.1/var(x)`, here 1.1, because
 the ridge is added to the feature's variance in the solve.
 
-`S_j` and `η_j` are target `j`'s running means of `z zᵀ` and `z·y_j`, kept
-over the rows where `y_j` is present, and `W_j` is the weight behind them.
-The coefficients are solved from them on a schedule:
+#### Choosing its settings
 
-```
-W'   = λW + w                       weight_sum, over every row
-W_j' = λW_j + w                     on the rows where y_j is present, λW_j on the others
-S_j' = (λW_j·S_j + w·z zᵀ) / W_j'   η_j' = (λW_j·η_j + w·z·y_j) / W_j'
-solve, ridge_scale="mean":  (S_j + ridge·D) β_j = η_j + ridge·D·β₀      D = I with a 0 at the intercept
-solve, ridge_scale="sum":   (W_j·S_j + p·ridge·I) β_j = W_j·η_j + p·ridge·β₀
-                            p the product of every decay so far, β₀ = coef_prior (0 by default)
-```
+The settings choose what one pass fits (a grid), when the model solves,
+how the ridge pulls, what the sums remember across sessions, and how a
+wide fit runs. The docstring defines each.
 
 ```python
 rr = po.spec.ewridge(
@@ -133,25 +163,15 @@ rr = po.spec.ewridge(
     solve_every=12.0,              # solve every 12 clock units ...
     max_rows_between_solves=100,   # ... and at least every 100 rows, whatever the clock does
     standardize=True,              # solve on the correlation matrix, then unscale the coefficients
-    ridge_scale="mean",            # the default; "sum" makes the ridge a warm start that fades
-    coef_prior=None,               # shrink toward a stated belief instead of toward zero
+    ridge_scale="mean",            # the default ("sum", a warm start that fades, is refused beside standardize, a ridge or feature-set grid, or window_size)
+    coef_prior=None,               # the default: shrink toward zero, not toward a stated belief
     target_gaps="own_rows",        # the default: a target null on some rows is fitted on its own rows
 )
 ```
 
-`ewridge`'s own parameters fall into six groups:
-
-| group | parameters | refused or required |
-|---|---|---|
-| the grid | `ridge` as a list, `feature_sets` | |
-| when it solves | `solve_every`, `max_rows_between_solves` | |
-| how the ridge applies | `standardize`, `ridge_scale`, `coef_prior` | `ridge_scale="sum"` is refused beside `standardize`, a ridge or feature-set grid, and a window |
-| a target null on some rows | `target_gaps` | |
-| what the sums remember | `window_size` ([A hard window](../README.md#a-hard-window)), `session_shrink` | `session_shrink` needs `session` and `long_half_life`, and is refused beside `session_gap="reset"`, `group_close="session"` and `window_size` |
-| a wide fit | `gram_block_rows`, `gram_threads` | `gram_block_rows` is refused beside `window_size`, and wherever no schedule spaces the solves: `solve_every=0`, `max_rows_between_solves=1`, or `half_life=inf` and `lam=` without a `solve_every` |
-
-**A grid of `ridge` values or of `feature_sets`, as in `rr`, adds a solve
-per value and no update of the sums.** Only the named sets are fitted, so
+**A grid of `ridge` values or of `feature_sets` adds a solve per grid point
+(each ridge value with each feature set: four in `rr`), and the model still
+learns each row once.** Only the named sets are fitted, so
 to keep a fit on every feature, name a set that holds them all, such as
 `"all"`.
 
@@ -159,102 +179,53 @@ to keep a fit on every feature, name a set that holds them all, such as
 `max_rows_between_solves=1`.** Otherwise `ewridge` predicts with the
 coefficients of its last solve. Under a finite half-life it solves once the
 weight learned since then reaches `ln 2 / 50` of the weight the fit holds:
-about 1.4 %, or every `half_life/50` of clock in steady state. While the
-weight is below `(1 - ln 2 / 50)(1 - 2^-16)` of the floor -- the least of a
-row per unknown (`k + 1`, `k` without an intercept), `min_weight` and each
-target's own threshold -- a solve that comes due is not run, unless
-`max_rows_between_solves` brings it due: until the next one, the rows learn
-less than `ln 2 / 50` of the weight, so each stays below the floor and
-withholds its prediction, and nothing would read the solve (the `2^-16`
-covers the weight's rounding). Every prediction, residual and spread is the
-same to the bit; `coef` there is the last fit solved, null before the
-first, and `solve_failures` counts only the solves run. So a group whose
+about 1.4%, or every `half_life/50` of clock in steady state.
+
+**While a group's weight is more than about 1.4% below its floor, the
+model runs no solve that nothing would read.** The floor is the least of a
+row per unknown (`k + 1` for `k` features, `k` without an intercept) and
+`min_weight`. Below it every prediction is withheld, so under the schedule
+by weight, and not under a hard window, a solve that comes due there is
+not run, unless `max_rows_between_solves` also brings it due. A row cap's
+solves always run. `bank.solve_failures()`, which counts the solves that
+needed a jitter (a small value added to the diagonal so that a
+near-singular system factorizes) or were withheld as ill-conditioned,
+counts only the solves run. So a group whose
 weight never reaches the floor, such as one of two rows over two features,
-reports no `coef` on any row, in `bank.coef()` or as a closed group, where
-running every solve gave it a ridge fit of its few rows. To keep every
-solve, give `min_weight=0`, which makes the floor 0 and withholds no
-prediction for its weight, or `max_rows_between_solves=1`, whose solves
-always run. To solve on
-the clock instead, give `solve_every` in clock units. Until `solve_every`
-has passed since the stream's start, or `max_rows_between_solves` rows, the
-model solves by weight as it does by default, so a fit of its first few rows
-is not held for a whole period: with `solve_every=500` and `min_weight=50`,
-the error of the predictions it served in the first 600 rows fell from
-5.6e-4 to 3.1e-6 on five seeds of a five-feature stream at a half-life of
-1,000. `solve_every=float("inf")`, or any value from `1e18` on, past the end
-of any stream, never comes due and has no first period: the model collects
-its sums and solves only to give its first rows a fit and where a row
-cap says. `half_life=inf` and
-`lam=` solve on every row, so when the fit need not be current at every
-row, give them a `solve_every`. On 6M rows × 20 features from a parquet
-stream, `solve_every=1000` took 1.4 s instead of 10.7 s, with the
-coefficients at most 1000 rows out of date.
+reports no `coef` on any row, in `bank.coef()` or as a closed group. To
+keep every solve, give `min_weight=0`, which makes the floor 0, or
+`max_rows_between_solves=1`, whose solves always run. The docstring's
+Notes, under *The solve schedule*, give the exact margin and its two rare
+cases.
 
-**`ewridge` solves by Cholesky factorization, and retries a near-singular
-system with a small jitter on the diagonal.** `bank.solve_failures()`
-counts the solves that needed it. A count above zero points at constant or
-collinear features, or too few rows for the features.
+**To solve on the clock instead, give `solve_every` in clock units.** Until
+`solve_every` has passed since the group's first row or its last reset, or
+`max_rows_between_solves` rows with weight have been learned, the model
+solves by weight in a first period, so a fit of its first few rows is not
+held for a whole period. With `solve_every=500` and `min_weight=50`, the mean squared error
+of the predictions over the first 600 rows was 3.1e-6, where holding the
+first fit for the whole period gave 5.6e-4, on five seeds of a
+five-feature stream at a half-life of 1,000.
 
-**A system can factorize and still be too nearly singular for its solve to
-keep a digit, and then `ewridge` withholds the fit.** Rounding can leave a
-matrix past `1/u` in condition positive definite, `u = 2^-53`, and its
-coefficients then come out wrong by more than their own size. Two features
-equal to within `1e-11` of their spread gave slopes of -364.1 and 363.1 for a
-truth of 1 and -2. So each factorization estimates the condition of the
-system with each column scaled by the root of its diagonal. That is what a
-Cholesky solve is accurate to, so the features' units do not enter. A
-factorization that needed jitter is judged as the system it solves, `A + δI`:
-the first rung's `δ`, `1e-12` of the mean diagonal, leaves `‖H⁻¹‖₁` near
-`1e12` on a design with a column of no variance of its own, past the limit
-from about 30 coefficients. An upper bound from the factor settles most systems at
-the cost of one solve with it, and the rest take Hager and Higham's
-estimate, about four. Where it puts the solve's
-forward-error bound at 1 or more, no digit of the coefficients is promised:
+**To solve only for each target's first fit, and then only where a row
+cap says, give `solve_every=float("inf")`.** Neither it nor any value from
+`1e18` on comes due, since `1e18` lies past the end of any stream. Neither
+has a first period. The model keeps its sums, and solves only to give each
+target its first fit and where a row cap says.
 
-| | |
-|---|---|
-| the estimate | `‖H⁻¹‖₁`, `H = D⁻¹ (A + δI) D⁻¹`, `D = diag(√(a_ii + δ))`, `δ` the jitter (0 where none was needed), by Hager's method as LAPACK's `dlacn2` runs it |
-| the solve's backward error in `H` | at most `η = k γ_{3k+1}` an entry, `γ_m = m u / (1 − m u)` |
-| the forward-error bound | `2κη / (1 − κη)`, with `κη = k γ_{3k+1} ‖H⁻¹‖₁` |
-| withheld where | `3 k γ_{3k+1} ‖H⁻¹‖₁ ≥ 1`: at `k = 3` from `1.0e14`, at `k = 10` from `9.7e12`, at `k = 50` from `4.0e11` |
-
-A withheld fit has null `coef`, `support_coef` and predictions,
-`withheld_reason` reads `ill_conditioned`, and the solve is counted in
-`bank.solve_failures()`. The next solve inside the limit reports again.
-NIST's statistical reference datasets show where the limit falls. Their
-hardest designs that double precision can solve by the normal equations
-have correlation matrices conditioned at `2.7e6`, far inside it. `Filip`, a
-degree-10 polynomial at `1.5e16`, is past it, and is withheld. A ridge
-keeps a system inside the limit. So does `rls`, which rotates the design
-rather than squaring it and loses half as many digits: it keeps 7 of
-`Filip`'s.
+**Under `half_life=float("inf")` or `lam=`, give a `solve_every` when the
+fit need not be current at every row,** since both solve on every row by
+default. On 6M rows × 20 features from a parquet stream, `solve_every=1000`
+took 1.4 s instead of 10.7 s, with the coefficients at most 1000 rows out
+of date.
 
 **To start from a belief that fades as data arrives, such as yesterday's
 fit, give it as `coef_prior` with `ridge_scale="sum"`.** The ridge then
-sits on the decaying sum scale, as `rls`'s does, and pulls every
+sits on the decaying sum scale, as `rls`'s `delta` does, and pulls every
 coefficient toward `coef_prior`, the intercept included, until the evidence
 takes over. `S` is a mean, so under the default `"mean"` the ridge is a
 penalty per observation that never fades: use it to hold the slopes near
 `coef_prior`, or near zero, for good.
-
-**To make one `ridge` value mean the same whatever the features' units,
-give `standardize=True`:** the solve then runs on the correlation matrix,
-and drops a feature whose variance is zero instead of blowing up. Under the
-default `standardize=False`, `ridge` is in the features' squared units.
-
-**When a target is null on some rows, `target_gaps` chooses which rows its
-`S_j` covers:**
-
-| `target_gaps` | `S_j` covers | the targets of one spec keep |
-|---|---|---|
-| `"own_rows"`, the default | the rows the target is present on, so its fit is the fit of the frame with those nulls dropped | one `k × k` matrix per pattern of missing rows |
-| `"pairwise"` | every row, the way pandas' `DataFrame.cov` takes a pairwise-complete covariance, with `η_j` centred at the target's own rows' means | one matrix |
-
-The two modes agree when the gaps are independent of the features. When
-they depend on the features, as with a target present only on trade rows
-between market-data rows, keep the default. There `"pairwise"` would scale
-each slope by the feature's variance on the target's rows over its variance
-on every row.
 
 **To start each session from a blend with the long run, give
 `session_shrink=f` and `long_half_life=`, beside a `session` column and a
@@ -266,22 +237,22 @@ blend = po.spec.ewridge(
     session="session",       # the column whose change starts a session ...
     session_gap=60.0,        # ... and the clock step applied there; "reset" is refused beside a blend
     long_half_life=5000.0,   # a twin of the sums, forgetting at this longer half-life
-    session_shrink=0.3,      # at each session change, the moments become 0.7 of today's and 0.3 of the twin's
+    session_shrink=0.3,      # at each session change, the moments become 0.7 of this session's and 0.3 of the twin's
 )
 ```
 
-The blended moments keep today's weight, Kish's effective sample size and
-prior scale, so `weight_sum`, the warm-up gates and the solve schedule do
-not move. The blend changes the moments and nothing else: the coefficients
-stay as last solved until the next solve the schedule brings due, which
-reads the blended moments. So a small `f` moves the output by a small amount,
+The blended moments keep this session's weight, Kish's effective sample
+size and prior scale (`p` in the update), so `weight_sum`, the warm-up
+gates and the solve schedule do not move. The blend changes the moments and
+nothing else. The coefficients stay as last solved until the next solve the
+schedule brings due, which reads the blended moments. So a small `f` moves the output by a small amount,
 and `0` is the same as no `session_shrink`. With `max_rows_between_solves=1`
-the solve on the session's first row reads the blend, and every row after
-it is predicted from it.
+the solve on the session's first row reads the blend, and the next row is
+predicted from it.
 
 **For a fit over hundreds of features, give `gram_block_rows=256`.**
-Updating `S` takes O(k²) time per row for `k` features, and at a thousand
-features that update takes most of the run. The option holds 256 rows back
+Learning a row takes O(k²) time in `S` for `k` features, and at a thousand
+features that takes most of the run. The option holds 256 rows back
 and adds them to `S` with one matrix product
 ([docs/PERFORMANCE.md](PERFORMANCE.md) §18). A solve brings `S` up to
 date before it runs, so solve rarely: under `half_life=inf`, give
@@ -310,19 +281,42 @@ coefficients agree with the row-by-row fit to rounding.
 
 **That product runs on several cores wherever the bank has idle threads.**
 `gram_threads` defaults to `"auto"`, which splits a group's update only
-when the groups the bank runs at once leave at least half its pool idle.
-The threads come from the pool the bank runs its groups on, and the output
-is the same to the bit at every thread count. At 2,000 features a bank
+when the work the bank runs at once, one piece per spec and group, leaves
+at least half the bank's threads idle. The threads are the bank's own, and
+the output is the same to the bit at every thread count. At 2,000 features a bank
 learned 3.9 times as fast on eight threads
 ([docs/PERFORMANCE.md](PERFORMANCE.md) §37). A bank whose groups
 already keep every core busy gains nothing from a split, so `"auto"` does
-not split there; `gram_threads=8` asks for eight whatever the groups.
+not split there. `gram_threads=8` asks for eight whatever the groups.
+
+#### See also
+
+When `ewridge`'s fit is not the one you need, or to use its sums outside a
+bank:
+
+- [`rls`](#rls--recursive-least-squares), the same fit by recursive least
+  squares, which loses half as many digits on a nearly collinear design.
+- [`huber`](#huber--quantile--robust-regression), which keeps sums of the
+  same form, each row down-weighted by its residual.
+- [GRAM.md](GRAM.md), to read the sums back, pool them and solve them
+  offline.
+
+#### Notes
 
 **With decay off and `ridge=0`, `ewridge` fits ordinary least squares over
 every row seen, in any row order.** Its coefficients match
 `numpy.linalg.lstsq` to 2e-13, fed forwards or backwards. On 6M rows × 20
 features from a parquet stream, memory peaked at 1.4 GB, against 3.97 GB
 for `lstsq` on the same rows.
+
+**NIST's statistical reference datasets show where the solve stops
+promising a digit.** Their hardest designs that double precision can solve
+by the normal equations have correlation matrices conditioned at `2.7e6`,
+far inside the limit at which `ewridge` withholds a fit. `Filip`, a
+degree-10 polynomial at `1.5e16`, is past it, and is withheld. `rls`,
+which rotates the design rather than squaring it, keeps 7 of `Filip`'s
+digits. The docstring's Notes give the limit, and how each solve is
+checked against it.
 
 ### `rls` — recursive least squares
 

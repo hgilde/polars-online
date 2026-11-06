@@ -651,12 +651,16 @@ class TestRefusals:
 
     def test_a_negative_cadence_in_a_dict_is_refused_by_name(self):
         spec = {**kind("ewridge", 30.0), "coef_every": -5.0}
-        with pytest.raises(ValueError, match=r"coef_every must be finite and >= 0 clock units"):
+        with pytest.raises(
+            ValueError, match=r"coef_every must be finite and at least 0 clock units"
+        ):
             po.ModelBank([spec])
 
     def test_an_infinite_cadence_is_refused(self):
         spec = {**kind("ewridge", 30.0), "coef_every": float("inf")}
-        with pytest.raises(ValueError, match=r"coef_every must be finite and >= 0 clock units"):
+        with pytest.raises(
+            ValueError, match=r"coef_every must be finite and at least 0 clock units"
+        ):
             po.ModelBank([spec])
 
     def test_a_row_cap_of_zero_is_refused(self):

@@ -228,7 +228,7 @@ bank = po.ModelBank.load("ridge.state")
 try:
     bank.fit_predict(pl.read_parquet("rerun.parquet"))    # refused: the bank is untouched
 except ValueError as e:
-    print(str(e).split(";")[0])
+    print(str(e).split(". ")[0])
 kept = bank.skip_learned(pl.scan_parquet("rerun.parquet"))   # a query
 print(f"skip_learned keeps {kept.collect().height} of {pl.scan_parquet('rerun.parquet').collect().height} rows")
 
@@ -241,7 +241,7 @@ print(f"the state is one run's, byte for byte: {po.ModelBank.load('ridge.state')
 ```
 
 ```text
-spec "ridge": clock column "t" goes backwards by 99 at row 0 (restart_after_step_back is unset, so every step back is refused)
+spec "ridge": clock column "t" steps back by 99 at row 0 (counting from 0), and restart_after_step_back is not set, so the bank refused the chunk and learned none of it
 skip_learned keeps 500 of 600 rows
 the state is one run's, byte for byte: True
 ```

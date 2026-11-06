@@ -274,7 +274,7 @@ class TestClockSemantics:
         assert neff[3] == pytest.approx(w2 * 0.5 ** (4 / 200) + 1.0, rel=1e-9)
 
     def test_a_backwards_clock_is_refused_by_default(self, model, extra):
-        with pytest.raises(ValueError, match="goes backwards by 50 at row 2"):
+        with pytest.raises(ValueError, match="steps back by 50 at row 2"):
             self._clocked(model, extra, [0.0, 100.0, 50.0, 51.0])
 
     def test_reset_state_restarts_the_stream(self, model, extra):

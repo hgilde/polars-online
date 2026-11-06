@@ -1207,10 +1207,22 @@ fn weight_sum_settled_is_the_ceiling_and_an_unreachable_min_weight_is_named() {
     // promises nothing for good (review round 5, F3).
     assert!(
         unmet[0].contains("has not been met")
-            && unmet[0].contains("at the row rate seen so far")
+            && unmet[0].contains("seen so far")
             && !unmet[0].contains("for good")
-            && unmet[0].contains(&format!("{ceiling:.4}")),
+            && unmet[0].contains("Lower min_weight below"),
         "{unmet:?}"
+    );
+    // The ceiling to three figures, rounded down, so a floor below the
+    // figure is below the ceiling too.
+    let figure: f64 = unmet[0]
+        .split("tops out near ")
+        .nth(1)
+        .and_then(|t| t.split(',').next())
+        .and_then(|t| t.parse().ok())
+        .expect("a figure");
+    assert!(
+        figure <= ceiling && figure > 0.99 * ceiling,
+        "{figure} for {ceiling}"
     );
     assert!(notices(0.99 * ceiling).is_empty());
 }
@@ -1250,16 +1262,23 @@ fn a_target_with_no_weighted_value_is_named_without_a_ceiling() {
         assert!(
             msg.contains("min_weight = 5 has not been met for target")
                 && msg.contains(named)
-                && msg.contains("the target has had no row with a value and a positive weight")
+                && msg.contains(&format!(
+                    "has learned no row with a value of target {named} and a positive weight"
+                ))
                 && !msg.contains("tops out")
                 && !msg.contains("Lower min_weight"),
             "{msg}"
         );
-        let digits: Vec<&str> = msg
+        // The floor is the one number, beside the fixed "within 5%".
+        let said = msg.replace("within 5% of", "");
+        let digits: Vec<&str> = said
             .split(|c: char| !c.is_ascii_digit())
             .filter(|s| !s.is_empty())
             .collect();
-        assert_eq!(digits, ["5"], "the floor is the one number: {msg}");
+        assert!(
+            digits.iter().all(|d| *d == "5"),
+            "the floor is the one number: {msg}"
+        );
     }
 }
 

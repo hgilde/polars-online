@@ -172,7 +172,7 @@ def test_one_stranded_centre_is_re_placed_at_the_check_its_weight_predicts():
 #: at 0.5, 3 seeds (n_dead up to 210, late ARI 0.50); at 0.6, 29 (ARI 0.23);
 #: at 0.9, all 50 (n_dead up to 518). So `dead_frac` is refused from 0.5
 #: (task 278, ff), where it was refused only from 1.
-BORN_DEAD = "dead_frac must be below 0.5, got {}: a re-placed centre starts at half"
+BORN_DEAD = "dead_frac must be below 0.5, but it is {}: a re-placed center starts at half"
 
 KM_CELLS = [pytest.param(d, e, id=f"{d}-{e}") for d in (0.05, 0.1, 0.25) for e in (25, 100, 400)]
 

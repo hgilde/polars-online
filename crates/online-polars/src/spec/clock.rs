@@ -233,13 +233,21 @@ pub(crate) fn clock_cfg_of(p: &ClockPolicy<'_>) -> Result<ClockCfg, String> {
     // refused, a larger one starts over. It has no default from the cap
     // (task 120; one name since task 144). `validate` names a missing
     // clock first.
-    if p.restart_after_step_back
-        .is_some_and(|v| !(v.value().is_finite() && non_negative(v.value())))
+    if let Some(v) = p
+        .restart_after_step_back
+        .filter(|v| !(v.value().is_finite() && non_negative(v.value())))
     {
-        return Err(format!(
-            "{who}: restart_after_step_back must be finite and >= 0 (0 starts {} over \
-                 at every step back)",
-            if model { "the model" } else { "every window" }
+        return Err(super::checks::at_least_zero(
+            who,
+            "restart_after_step_back",
+            " clock units",
+            &super::checks::Got::One(v.to_string()),
+            Some(if model {
+                "to reset the model at every step back"
+            } else {
+                "to reset every group's windows at every step back"
+            }),
+            None,
         ));
     }
     Ok(ClockCfg {

@@ -34,12 +34,16 @@ def _df(n: int = 60) -> pl.DataFrame:
 
 # (builder, kwargs beyond BASE, expected message fragment)
 REJECTED = [
-    (po.spec.ewridge, dict(half_life=10.0, ridge=-1.0), "ridge must be finite and >= 0"),
+    (po.spec.ewridge, dict(half_life=10.0, ridge=-1.0), "ridge must be finite and at least 0"),
     # The builder's own check since S27: `ridge` left the table of what may be
     # infinite, where only Rust refused it (review 2026-09-12).
     (po.spec.ewridge, dict(half_life=10.0, ridge=INF), "ridge must be finite, got float inf"),
     (po.spec.ewridge, dict(half_life=10.0, ridge=NAN), "ridge must not be NaN"),
-    (po.spec.ewridge, dict(half_life=10.0, ridge=[1e-6, -1.0]), "ridge must be finite and >= 0"),
+    (
+        po.spec.ewridge,
+        dict(half_life=10.0, ridge=[1e-6, -1.0]),
+        "ridge must be finite and at least 0",
+    ),
     (
         po.spec.ewridge,
         dict(half_life=10.0, ridge=[1e-6, 1e-6]),
@@ -76,12 +80,12 @@ REJECTED = [
         dict(half_life=10.0, session="s", session_gap=0.0, session_shrink=0.5, long_half_life=-1.0),
         "long_half_life must be > 0",
     ),
-    (po.spec.huber, dict(half_life=10.0, ridge=-1.0), "ridge must be finite and >= 0"),
+    (po.spec.huber, dict(half_life=10.0, ridge=-1.0), "ridge must be finite and at least 0"),
     (po.spec.huber, dict(half_life=10.0, solve_every=-1.0), "solve_every must be >= 0"),
     (
         po.spec.quantile,
         dict(half_life=10.0, quantile=0.5, ridge=-1e-3),
-        "ridge must be finite and >= 0",
+        "ridge must be finite and at least 0",
     ),
     # A plain f64 on the Rust side: refused in Python by name (IMPROVEMENTS U2).
     (po.spec.quantile, dict(half_life=10.0, quantile=0.5, ridge=INF), "ridge must be finite"),
@@ -106,7 +110,7 @@ REJECTED = [
     (
         po.spec.lasso,
         dict(half_life=10.0, penalties=[0.1, -0.1]),
-        "penalties must each be finite and >= 0",
+        "penalties must be finite and at least 0",
     ),
     (
         po.spec.lasso,
@@ -124,7 +128,7 @@ REJECTED = [
     (
         po.spec.kalman,
         dict(half_life=10.0, q=[-1.0, 1.0]),
-        "q values must be finite and >= 0",
+        "q must be finite and at least 0",
     ),
     (
         po.spec.kalman,
@@ -226,7 +230,7 @@ REJECTED = [
     (
         po.spec.ewridge,
         dict(half_life=10.0, window_size=5.0, snapshot_every=-1.0),
-        "snapshot_every must be finite and >= 0 clock units",
+        "snapshot_every must be finite and at least 0 clock units",
     ),
     (
         po.spec.ewridge,
@@ -642,14 +646,14 @@ NONSENSE = [
     (
         po.spec.kmeans,
         dict(**_KM, dead_frac=0.5),
-        'spec "m": dead_frac must be below 0.5, got 0.5: a re-placed centre starts at half '
-        "its source's weight, so at 0.5 or above it can be born at the floor that marks a "
-        "centre dead, dead_frac * weight_sum / n_clusters, and the next split-merge check "
-        "re-places it again",
+        'spec "m": dead_frac must be below 0.5, but it is 0.5: a re-placed center starts at '
+        "half its source's weight, so at 0.5 or above it can be born at the floor that marks a "
+        "center dead, dead_frac * weight_sum / n_clusters, and the next split-merge check "
+        "re-places it again. Set dead_frac below 0.5.",
     ),
-    (po.spec.kmeans, dict(**_KM, dead_frac=0.6), "dead_frac must be below 0.5, got 0.6"),
-    (po.spec.kmeans, dict(**_KM, dead_frac=1.0), "dead_frac must be below 0.5, got 1"),
-    (po.spec.kmeans, dict(**_KM, dead_frac=1.5), "dead_frac must be below 0.5, got 1.5"),
+    (po.spec.kmeans, dict(**_KM, dead_frac=0.6), "dead_frac must be below 0.5, but it is 0.6"),
+    (po.spec.kmeans, dict(**_KM, dead_frac=1.0), "dead_frac must be below 0.5, but it is 1"),
+    (po.spec.kmeans, dict(**_KM, dead_frac=1.5), "dead_frac must be below 0.5, but it is 1.5"),
     # One slot leaves nothing to average: the field was that slot's
     # prediction under another name, as `emit_selected` was refused for.
     (

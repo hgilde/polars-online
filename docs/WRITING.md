@@ -255,8 +255,11 @@ It sits in the contents table, its own text links the page before any
 other link, and its recipe shows the capability working. The guides
 for changing the library and writing its docs need only a link.
 `test_every_guide_has_a_readme_section` in `tests/test_doc_structure.py`
-holds every guide in `docs/README.md`'s *Guides* table to it, so a page
-listed there fails the test until its section exists.
+holds every guide in the *Using the library* group of `docs/README.md`'s
+*Guides* table to it, so a page listed there fails the test until its
+section exists. The pages written as one of §9's four kinds sit in the
+table's *New pages* group instead, which the test does not read, until the
+README becomes a landing page whose map links each reader task's pages.
 
 ## 3. Code with comments, not prose that narrates code
 
@@ -893,7 +896,7 @@ sections this library adds:
 | section | what it holds | rule |
 |---|---|---|
 | summary | one sentence: what it does | no aside, no nickname. *Exponentially weighted ridge regression on running sums.* |
-| when to use it | the case it is for, and the function to use otherwise | at most three sentences, each naming the alternative |
+| when to use it | the case it is for, and the function to use otherwise | at most three sentences: the case first, then each alternative by name |
 | Parameters | each parameter: what it is for, its units, its default and the reason for that default, what it interacts with, and what is refused | in the order of the signature; *for*, then units, then default |
 | Returns, or the output fields | each field: what it is, its units, when it is null | a model's fields link to OUTPUTS.md rather than repeat it |
 | Raises | each error a caller can meet, and its cause | the condition, not the message text |
@@ -928,7 +931,7 @@ sentence. The remedy is a sentence of its own, in the imperative.
 |---|---|
 | where | `spec "m":` |
 | what is wrong, and the value | `ridge must be finite and at least 0, but it is -1.` |
-| what to do | `Set ridge to 0 for no shrinkage, or to a positive value.` |
+| what to do | `Set ridge to 0 for no shrinkage, or to a finite positive value.` |
 
 **At most three sentences.** A message that needs more links to the guide
 section that explains it, by a stable address a terminal shows in full.
@@ -958,7 +961,10 @@ message only where the reader set it, and the formula is the derivation's. The m
 the value to change it to. The derivation belongs in the guide it links to.
 
 **A number in a message has three significant figures.** `72.6` reads at
-a glance. `72.6359` asks the reader to decide which digits matter.
+a glance. `72.6359` asks the reader to decide which digits matter. A
+factor near 1, such as `lam`, keeps the decimals that tell it from 1, as
+`0.999862`. A figure a remedy sets a bound by is rounded toward the side
+that keeps the remedy true: a value to stay below rounds down.
 
 **A warning names everything it is about.** A readiness warning names its
 spec, its group and, under `group_close="session"`, its session span, so

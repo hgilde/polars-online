@@ -5,12 +5,14 @@
 > **Version 1.0 changes the API relative to 0.x.** The API is more standard
 > and consistent now, and should remain stable from here on.
 
-Online model fitting for [Polars](https://pola.rs): linear models,
-streaming moments, clustering and regime detection, for data too large to
-hold in memory at once. When the rows have a time order, a fit can also be
-local, following the recent rows without refitting a window at every step.
-Features and targets can be windowed means over the stream, looking back or
-ahead. Rust core, Python API, and a standalone command line.
+polars-online fits models online, one row at a time, to
+[Polars](https://pola.rs) data, for anyone whose data are too large to
+hold in memory at once: linear models, streaming moments, clustering and
+regime detection. Each row is predicted before the model learns from it.
+When the rows have a time order, a fit can also be local, following the
+recent rows without refitting on the last rows at every step. Features and targets can be means over a window of the stream,
+looking back or ahead. The models are written in Rust, and run from Python
+or from a command line of their own.
 
 | section | what it covers |
 |---|---|
@@ -19,7 +21,7 @@ ahead. Rust core, Python API, and a standalone command line.
 | [Preparing a stream](#preparing-a-stream) | [making features and targets from windows](#making-features-and-targets-from-windows) · [windows as columns](docs/WINDOWS.md#windows-as-columns) · [windows as a model's inputs and target](docs/WINDOWS.md#windows-as-a-models-inputs-and-target) · [features in units of their spread](docs/WINDOWS.md#features-in-units-of-their-spread) · [saving and resuming a window run](docs/WINDOWS.md#saving-and-resuming-a-window-run) · [series that tick at their own times](#series-that-tick-at-their-own-times) |
 | [Running a bank](#running-a-bank) | [as a query](#as-a-query-lfonlinefit_predict) · [in a loop](#in-a-loop-modelbank) · [as a job, without Python](#running-a-bank-as-a-job-without-python) · [output as Arrow](#output-as-arrow) |
 | [Saving, loading and serving](#saving-loading-and-serving) | [save and load](#save-and-load) · [serving without learning](#serving-without-learning) · [a state without this library](#reading-a-state-without-this-library) |
-| [Reading the fit](#reading-the-fit) | [what a bank holds](#what-a-bank-holds) · [output field names](#output-field-names) · [coefficients](#coefficients) · [many features from one pass](#fitting-many-features-from-one-pass) · [one row per finished group](#one-row-per-finished-group) · [correlation matrices](#reading-a-correlation-matrix) |
+| [Reading the fit](#reading-the-fit) | [what a bank holds](#what-a-bank-holds) · [output field names](#output-field-names) · [coefficients](#coefficients) · [many features from one pass](#fitting-many-features-from-one-pass) · [one row per closed group](#one-row-per-finished-group) · [correlation matrices](#reading-a-correlation-matrix) |
 | [Checking the data and the model](#checking-the-data-and-the-model) | [your data's quality](#checking-your-datas-quality) · [that a model works](#checking-that-a-model-works), one question at a time: [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md) |
 | [Models](#models) | [choosing a model](#choosing-a-model) · [detecting changes and regimes](#detecting-changes-and-regimes) · [calibrating a model](#calibrating-a-model) · the entries, by family: [linear models](docs/MODELS.md#linear-models) · [moments and correlation](docs/MODELS.md#moments-and-correlation) · [clustering and classification](docs/MODELS.md#clustering-and-classification) · [sequential tests and regimes](docs/MODELS.md#sequential-tests-and-regimes) |
 | [Performance](#performance) | [throughput](#throughput) · [parallelism](#parallelism) · [chunk size](#chunk-size) · [memory](#memory) · [tuning memory](#tuning-memory-with-polars-own-settings) · [window operators](#window-operators) · [against scikit-learn](#against-scikit-learn) |
@@ -32,13 +34,20 @@ Here is a first model fit and an introduction to the library.
 
 ### A first fit
 
-This first fit regresses each stock's return on two signals over a made-up
-trading day with known true betas. To run it, install the library and numpy
-with `pip install polars-online numpy` ([Install](#install) has the
+In this first fit you regress each stock's return on two features over a
+made-up trading day. You know the day's true betas (the coefficients of
+the return on each feature), and you read back the betas the model found. It takes
+five steps, each with its result. To run it, install the library and numpy
+with `pip install "polars-online[numpy]"` ([Install](#install) has the
 requirements).
 
-A *spec* describes one model, and `fit_predict` fits a list of specs in one
-pass over the rows, as a *model bank*.
+A *spec* describes one model. A *model bank*
+([`ModelBank`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank))
+fits a set of models together in one pass over the rows, one for each spec
+and each group (the rows that share one value of the column `group=` names,
+here each stock). `.online.fit_predict`, chained on a query (a chain of Polars
+steps that runs only when you ask for its result), runs a bank over the
+query's rows and adds the specs' output to them.
 
 ```python
 from datetime import datetime
@@ -61,9 +70,9 @@ prices = pl.DataFrame({
     # beta 0.2 rising to 0.8 on signal_a, and -0.2 on signal_b
     "ret": np.linspace(0.2, 0.8, n) * signal_a - 0.2 * signal_b + rng.standard_normal(n),
 })
-prices.write_parquet("prices.parquet")          # on disk: every fit below reads it back as a query
+prices.write_parquet("prices.parquet")          # on disk: every fit in this block reads it back as a query
 
-# 2. One fit over every row: fit the rows before 15:30, save the state, read it back, serve the rest.
+# 2. A fit with every row weighted the same: fit the rows before 15:30, and save the state.
 whole = po.spec.ewridge(
     "whole",                                    # the spec's name: it names the output column
     targets=["ret"], features=["signal_a", "signal_b"],
@@ -76,13 +85,19 @@ flat = (
     .online.unnest([whole])                     # as columns: pred_<target>, resid_<target>, ...
     .collect()                                  # runs the query
 )
+# 3. Read the fit back from the saved state, and serve the last half hour from it.
 saved = (
     po.ModelBank.load("bank.state").coef()      # the fit in the file, a row per coefficient
     .pivot("term", index="group", values="coef")   # a row per stock, a column per term
 )
-served = pl.scan_parquet("prices.parquet").tail(1_800).online.predict("bank.state").collect()   # scores the last half hour, learns nothing
+served = (
+    pl.scan_parquet("prices.parquet").tail(1_800)   # the last half hour, from 15:30
+    .online.predict("bank.state")               # predicts each row from the state, learns nothing
+    .online.unnest([whole])
+    .collect()
+)
 
-# 3. A fit that follows the recent rows, and its betas on every row.
+# 4. A fit that follows the recent rows, and its betas on every row.
 local = po.spec.ewridge(
     "local", targets=["ret"], features=["signal_a", "signal_b"], group="stock_id",
     clock="ts", half_life="10m",                # a row's weight halves every ten minutes of ts
@@ -91,17 +106,18 @@ local = po.spec.ewridge(
 )
 betas = pl.scan_parquet("prices.parquet").online.fit_predict([local]).online.unnest([local]).collect()   # a row of betas per input row
 
-# 4. A target that looks ahead: each row's mean return over the next ten minutes.
+# 5. A target that looks ahead: each row's mean return over the next ten minutes.
 fwd_ret = po.ewm_mean("ret", half_life=float("inf"), window_size="10m", reverse=True).alias("fwd_ret")
 ahead = po.spec.ewridge(
     "ahead", targets=[fwd_ret], features=["signal_a", "signal_b"], group="stock_id",
     clock="ts", half_life="10m", gap_cap="5m",
     embargo="10m",                              # learn each row once its ten minutes have passed
 )
-forecast = pl.scan_parquet("prices.parquet").online.fit_predict([ahead]).online.unnest([ahead]).collect()   # each row's forecast of fwd_ret
+ahead_out = pl.scan_parquet("prices.parquet").online.fit_predict([ahead]).online.unnest([ahead]).collect()   # each row's prediction of fwd_ret
 ```
 
-The input, `prices`, begins with these rows:
+**Step 1 makes up the input,** `prices`, and saves it to a parquet file.
+It begins with these rows:
 
 | ts | stock_id | signal_a | signal_b | ret |
 |---|---|---:|---:|---:|
@@ -112,14 +128,16 @@ The input, `prices`, begins with these rows:
 | 09:30:04 | B | -0.54 | -0.08 | -0.08 |
 | 09:30:05 | C | 0.36 | -0.01 | 0.24 |
 
-**Step 2 weights every row equally, because `half_life=float("inf")` forgets
-nothing.** So `whole`, a ridge regression solved from running sums, converges
-to the batch fit over every row it has seen. Its state is a complete summary
-of those rows, worth saving and serving.
-
-`fit_predict` adds one column per spec, holding a record of named fields
-in each row (a Polars `Struct` column), and `.online.unnest`, chained after it, spreads them into columns. For
-stock A, `flat` begins:
+**Step 2 fits the rows before 15:30, each with the same weight, and saves
+the state, everything the bank has learned.** `whole` is a ridge
+regression solved from running sums (the decayed sums a model keeps in
+place of its rows), and `half_life=float("inf")` forgets nothing. So at
+every row its fit is the batch fit over the rows it has learned, and its
+state is a complete summary of those rows, worth saving and serving.
+`.online.fit_predict` adds one column per spec, named after the spec,
+whose value in each row is a record of named fields (its type is Polars'
+`Struct`). `.online.unnest`, chained after it, spreads the fields into
+columns. For stock A, `flat` begins:
 
 | ts | ret | pred_ret | resid_ret | weight_sum | withheld_reason |
 |---|---:|---:|---:|---:|---|
@@ -129,14 +147,16 @@ stock A, `flat` begins:
 | 09:30:09 | 1.22 | -0.47 | 1.69 | 3 | null |
 | 09:30:12 | -1.18 | 1.64 | -2.81 | 4 | null |
 
-`pred_ret` is each row's prediction from the stock's rows before it, and
-`resid_ret` is `ret` less `pred_ret`. `weight_sum` is the weight behind that
-prediction: here the count of the stock's rows learned so far. A stock's
-first three rows have too little behind them, so `pred_ret` is null and
-`withheld_reason` says why ([Warm-up](#warm-up)).
+`pred_ret` is each row's prediction, made from the stock's rows before it,
+and `resid_ret` is `ret` less `pred_ret`. `weight_sum` is the weight behind
+that prediction: here the count of the stock's rows learned so far. A
+stock's first three rows have too little behind them, so `pred_ret` is
+null and `withheld_reason` says why ([Warm-up](#warm-up)).
 
-The state saved at 15:30 holds each stock's fit, near the average of the true
-betas until then:
+**Step 3 reads the fit back from the saved state, and serves the last half
+hour from it.** The state holds each stock's fit, near the average of the
+true betas until 15:30: 0.48 on `signal_a`, whose beta rises from 0.2 to
+0.75, and -0.2 on `signal_b`. `saved` holds it:
 
 | group | intercept | signal_a | signal_b |
 |---|---:|---:|---:|
@@ -144,22 +164,29 @@ betas until then:
 | B | -0.01 | 0.45 | -0.19 |
 | C | 0.01 | 0.48 | -0.20 |
 
-`served` scores the rows from 15:30 with that state, and learns nothing from
-them. To keep learning from new rows instead, call
-`.online.fit_predict(load_state="bank.state")` on a query over them
-([Saving, loading and serving](#saving-loading-and-serving)).
+`served` predicts the rows from 15:30 with that state, and learns nothing
+from them, so its `weight_sum` stays at the 7,200 rows of each stock the
+state learned. For stock A it begins:
 
-**Step 3 follows the recent rows, with a clock and the `gap_cap` a clock
-requires.** Give the same spec a clock (timestamp column `ts`) and
-`half_life="10m"` and each row's weight halves every ten minutes of `ts`. The
-fit is now local: it describes the recent past, and it moves from row to row,
-weighted toward the last few tens of minutes. Because this is a local
-regression, remember that saving the final state may be of limited value.
-But `coef_every=0` produces a time series of the betas at every row, as they
-stood after learning that row. This can be used to track the betas over
-time.
+| ts | pred_ret | weight_sum |
+|---|---:|---:|
+| 15:30:00 | 0.24 | 7200 |
+| 15:30:03 | 0.22 | 7200 |
+| 15:30:06 | 0.72 | 7200 |
 
-Each hour from 10:30, stock A's beta on `signal_a` climbs with the true one:
+[Resume from a saved state](docs/how-to/resume-from-a-saved-state.md)
+shows how to go on learning from new rows instead.
+
+**Step 4 fits locally, following the recent rows.** Give the same spec a
+clock (the column that says how far apart two rows are, here the
+timestamps `ts`), `gap_cap="5m"` (required with a clock: a gap longer than
+five minutes decays as five), and `half_life="10m"`. Each row's weight then halves every ten
+minutes of `ts`. The fit is now local: it describes the recent past, and
+it moves from row to row, so its final state is a poor summary of the day
+([Time and decay](#time-and-decay)). `coef_every=0` writes, on every row,
+the betas the model holds after that row, from its latest solve. Each hour
+from 10:30, stock A's beta on `signal_a` climbs with the true one, which is
+0.29, 0.38, 0.48, 0.57, 0.66 and 0.75 at those times:
 
 | ts | coef_ret_signal_a | coef_ret_signal_b |
 |---|---:|---:|
@@ -170,16 +197,18 @@ Each hour from 10:30, stock A's beta on `signal_a` climbs with the true one:
 | 14:30:00 | 0.66 | -0.22 |
 | 15:30:00 | 0.72 | -0.18 |
 
-**Step 4 forecasts a target that looks ahead.** `fwd_ret`, a Polars
-expression written with `po.ewm_mean(..., reverse=True)`, is the time-weighted mean of the
-stock's returns over the next ten minutes.
-
-`fit_predict` requires an `embargo` of at least the target's `window_size`;
-otherwise it refuses the spec, so for a shorter embargo use `ModelBank.fit`,
-which keeps no predictions. With `embargo="10m"`, each row is scored where it
-sits, before its target is known, and learned from ten minutes later. So
-`ahead` learns nothing from 9:30 to 9:40, and `resid_fwd_ret` is null on
-every row:
+**Step 5 predicts a target that looks ahead.** `fwd_ret`, a Polars
+expression (a column computation, such as `pl.col("x") * 2`) written with
+`po.ewm_mean(..., reverse=True)`, is the mean of the stock's returns over
+the next ten minutes, weighted by time. Its value at a row is known only
+ten minutes later. With `embargo="10m"`, the bank predicts each row where
+it sits and learns from it ten minutes later. So `ahead` learns nothing
+from 9:30 to 9:40. `resid_fwd_ret` is null on every row, because no row's
+target is known when the row is predicted. `fit_predict` refuses an
+`embargo` shorter than the target's ten minutes ([Why every prediction is
+out-of-sample](docs/explanation/out-of-sample.md)). `weight_sum`
+is now a decayed weight, less than the count of rows learned. For stock A,
+every five minutes:
 
 | ts | pred_fwd_ret | resid_fwd_ret | weight_sum |
 |---|---:|---:|---:|
@@ -575,6 +604,15 @@ are. At each row, the model multiplies the weight of everything it has
 learned by `λ = 0.5 ** (Δclock / half_life)`, where `Δclock` is the
 clock's step from the previous row. To fit one model per half-life, give
 `half_life` a list.
+
+**A finite half-life makes the fit of a model that keeps running sums,
+such as `ewridge`, local, so its final state describes mostly the recent
+end of the stream.** Under `half_life="10m"`, the fit weighs the last few
+tens of minutes on the clock most. Saving the final state of such a fit
+may then be of limited value as a summary of the whole stream. In a
+regression such as `ewridge`, `coef_every=0` writes its coefficients on
+every row instead, a time series of what it found, as step 4 of [A first
+fit](#a-first-fit) shows.
 
 #### Clock types and units
 
@@ -1003,10 +1041,10 @@ features, the fit is a regression whose coefficients move along the clock.
 Two guarantees hold for every run, and both rest on a fixed row order,
 which the caller supplies.
 
-**Every prediction and diagnostic is out-of-sample.** Each row is scored
-from the state as it stood before the row's own target was learned, so no
-row's outcome reaches its own prediction or the diagnostics measured on
-it.
+**Every prediction and diagnostic is out-of-sample.** Each row is
+predicted before the model learns from it. [Why every prediction is
+out-of-sample](docs/explanation/out-of-sample.md) gives the reasons, and
+what it guarantees.
 
 **The numbers do not depend on the chunking.** One chunk or a thousand,
 with or without a save and resume in the middle, gives bit-identical
@@ -1067,39 +1105,10 @@ query and refusing a chunk that runs backwards before learning any of it.
 | the clock | each group's clock, row by row, for every spec with a `clock` | refuses the chunk on a backwards step the settings below do not allow |
 | the group keys | with `group_close="monotone"`, the keys in the column's own order, an integer column as numbers and any other as text | refuses the chunk on a key below the one before it, since a closed group cannot reopen |
 
-**The query check names the step and its fix.** This code joins each
-row's venue to a fee, once as Polars' `join` does by default and once with
-`maintain_order="left"`, and prints what the bank warns of each. The
-warning calls the query a *plan*, and its steps *nodes*, as Polars does.
-It reads `lf` from [Example data](#example-data):
-
-```python
-import textwrap
-import warnings
-
-# A fee per venue, and a spec that reads it.
-pl.DataFrame({"venue": ["X", "Y"], "fee": [0.1, 0.2]}).write_parquet("fees.parquet")
-priced = po.spec.ewridge("priced", targets=["y"], features=["x0", "fee"], half_life=100.0)
-# Join both ways, and print the bank's warning, if any.
-for order in [None, "left"]:
-    joined = lf.join(pl.scan_parquet("fees.parquet"), on="venue", **({"maintain_order": order} if order else {}))
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        joined.online.fit_predict([priced]).collect()
-    said = [str(w.message) for w in caught if issubclass(w.category, po.OrderNotGuaranteedWarning)]
-    print(f"maintain_order={order!r}:", textwrap.fill(said[0], 100) if said else "no warning")
-```
-
-```text
-maintain_order=None: lf.online.fit_predict: the plan's row order is not guaranteed, and an online model learns in row
-order. 1 node(s) leave it unspecified: a join without maintain_order (pass maintain_order="left" to
-keep the order of the left input). The streaming engine that runs the plan may deliver rows in an
-order lf.collect() would not, and it may differ between runs. Give the plan a fixed order --
-maintain_order="left" on a join, maintain_order=True on a group_by, a sort after a unique() or
-before the bank -- or, for a plan whose order is fixed by other means,
-warnings.simplefilter("ignore", polars_online.OrderNotGuaranteedWarning).
-maintain_order='left': no warning
-```
+**To put a stream in clock order, and to fix a chunk the bank refused,
+follow [Put rows in clock order](docs/how-to/put-rows-in-clock-order.md).**
+It shows the query check's warning, the error a step back raises, and
+the ways out.
 
 **The query check is best-effort.** It reads the query's `explain()` text,
 and walks the query's steps only when that names a join, an aggregation, a
@@ -1137,54 +1146,6 @@ be, and `0` restarts the model at every step back:
 | no larger than `restart_after_step_back` | a late row, such as a transposed pair or a row a minute late | refuses the chunk |
 | larger than `restart_after_step_back` | a new start, such as a replayed day or a restarted feed | restarts the model |
 | any size, on a row whose `session` value changes | a new session, where the step is no measure of time | applies `session_gap`, or restarts the model under `session_gap="reset"` |
-
-**A refused chunk leaves the bank as it was.** The bank runs the clock of
-every group of every spec over the chunk before it learns any row. So one
-late row in one group changes nothing: correct the chunk and feed it again.
-To resume a saved state on input that overlaps it, pass the input through
-`bank.skip_learned(...)`, which drops the rows the state has learned ([Save
-and load](#save-and-load)).
-
-**The error locates the step and names the way out, and the summary counts
-what the clock rules met.** The row the error names is counted from the
-start of the input however it arrives (one frame, batches, a query or the
-command line's file). On a temporal clock the step is a duration.
-`bank.summary()` reports `clock_backwards`, the rows whose clock fell below
-the previous row's within a session, and `resets`, the rows where a stream
-restarted. This code feeds ten rows of `df` with the row at `t = 6` two
-rows late, first with `restart_after_step_back` unset, then set below the
-step:
-It reads `df` from [Example data](#example-data):
-
-```python
-import textwrap
-
-late = df.head(10)[[0, 1, 2, 3, 4, 5, 7, 8, 6, 9]]           # t runs 0 ... 5, 7, 8, 6, 9
-# Left unset, any step back is refused.
-strict = po.spec.ewridge("strict", targets=["y"], features=["x0"], clock="t", half_life=100.0, gap_cap=300.0)
-try:
-    po.ModelBank([strict]).fit_predict(late)
-except ValueError as err:
-    print(textwrap.fill(str(err), 100))
-
-# Set below the step: the model starts over, and summary() counts it.
-lenient = po.spec.ewridge("lenient", targets=["y"], features=["x0"], clock="t", half_life=100.0, gap_cap=300.0,
-                          restart_after_step_back=1.0)       # a step back larger than 1 starts the model over
-bank = po.ModelBank([lenient])
-bank.fit_predict(late)
-counts = bank.summary().row(0, named=True)
-print(f"{counts['spec']}: clock_backwards {counts['clock_backwards']}, resets {counts['resets']}")
-```
-
-```text
-spec "strict": clock column "t" goes backwards by 2 at row 8 (restart_after_step_back is unset, so
-every step back is refused); the bank was not updated. Sort each group by the clock; to resume a
-saved state on input that overlaps it, drop the rows it has learned, with
-ModelBank.skip_learned(frame) in Python or --skip-learned on the command line; or, if a step back
-this large starts the stream over, set restart_after_step_back below it (a step back no larger than
-the setting is a late row).
-lenient: clock_backwards 1, resets 1
-```
 
 ### Groups
 
@@ -2294,15 +2255,10 @@ later.online.fit_predict(load_state="bank.state", save_state="bank.state").sink_
 bank = po.ModelBank.load_bytes(po.ModelBank.load("bank.state").save_bytes(), specs=[spec])         # bytes load as a file does
 ```
 
-**To resume on input that overlaps the state, pass it through
-`bank.skip_learned(frame)` before the bank.** Without it, the overlap steps
-every group's clock back, which the bank refuses unless
-`restart_after_step_back` reads it as a new start. `skip_learned` keeps the
-rows after each group's last clock (a row at that clock counts as learned)
-and every row of a group the bank has not seen. It keeps a `LazyFrame`
-lazy. For a bank whose specs all count rows, it raises `ValueError`; drop
-the learned rows with `frame.slice(bank.rows_fed)` instead, when the
-input starts where the saved one did.
+**To load a saved state and go on learning, follow [Resume from a saved
+state](docs/how-to/resume-from-a-saved-state.md),** from Python or the
+command line. It covers input that overlaps what the state has learned,
+and the errors a load raises.
 
 **A query abandoned before its last row, or ended by an error inside the
 bank, leaves the `save_state` file as it was.** An error in a step after
@@ -2322,40 +2278,6 @@ spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t",
 (later.online.fit_predict(load_state="bank-2024-01-02.state",        # the next batch loads the one before ...
                           save_state="bank-2024-01-03.state")        # ... and writes a file of its own,
    .sink_parquet("fitted-2024-01-03.parquet"))                       # so a rerun of it loads bank-2024-01-02 again
-```
-
-**`po.ModelBank.load` raises an error that names what is wrong with the
-file:**
-
-| the file | raises | what to do |
-|---|---|---|
-| does not exist yet | `FileNotFoundError` | on a first run, build the bank from its specs with `po.ModelBank(specs)` |
-| is not a bank, or holds different specs from the `specs=` given | `ValueError` | check the path, and pass the specs the state was saved with |
-| holds a state that contradicts its own spec | `ValueError` | refit the bank from its input |
-| was written under a newer state schema or file format than this build reads | `ValueError` | load it with the version of polars-online that wrote it |
-| was saved by 0.13.0 or an earlier release | `ValueError`, naming the range | refit the bank from its input. `po.schema_version()` gives the installed version's schema |
-
-This code uses `df` and `ticks.parquet` from [Example data](#example-data):
-
-```python
-# A saved bank, and a spec that does not match it.
-spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
-bank = po.ModelBank([spec])
-bank.fit_predict(df)
-bank.save("bank.state")
-other = po.spec.ewridge("ridge", targets=["y"], features=["x0"], clock="t", half_life=600.0, gap_cap=300.0)
-# Three loads that fail: no file, the wrong spec, not a state file.
-for path, specs in [("nowhere.state", [spec]), ("bank.state", [other]), ("ticks.parquet", None)]:
-    try:
-        po.ModelBank.load(path, specs=specs)
-    except (FileNotFoundError, ValueError) as e:
-        print(f"{type(e).__name__}: {e}")
-```
-
-```text
-FileNotFoundError: [Errno 2] No such file or directory: 'nowhere.state'
-ValueError: saved specs do not match the bank's specs: spec "ridge" (1 of 1) differs at features: ["x0","x1"] in the file, ["x0"] in the bank; refusing to load
-ValueError: not a polars-online bank state file (invalid type: integer `80`, expected struct BankHeader)
 ```
 
 ### Serving without learning
@@ -3192,7 +3114,7 @@ against.
 | model | learns by | what it is |
 |---|---|---|
 | **[Linear models](docs/MODELS.md#linear-models)** | | predict a numeric target, from features or from its own past |
-| [`ewridge`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ewridge) · [math](docs/MODELS.md#ewridge--ew-ridge-on-sufficient-statistics) | solve | exponentially weighted ridge regression, the workhorse; several ridge values and feature sets are solved from the same running sums at almost no extra work |
+| [`ewridge`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ewridge) · [math](docs/MODELS.md#ewridge--exponentially-weighted-ridge-regression) | solve | exponentially weighted ridge regression, the workhorse; several ridge values and feature sets are solved from the same running sums at almost no extra work |
 | [`rls`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.rls) · [math](docs/MODELS.md#rls--recursive-least-squares) | solve | recursive least squares, in the numerically safe square-root form |
 | [`lasso`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.lasso) · [math](docs/MODELS.md#lasso--lasso-path-its-penalty-chosen-as-it-runs) | solve | lasso and elastic-net path, with the penalty chosen as the stream runs |
 | [`kalman`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.kalman) · [math](docs/MODELS.md#kalman--random-walk-β-dynamic-linear-model) | filter | a Kalman filter whose coefficients drift as random walks |

@@ -69,6 +69,7 @@ their first rows on (task 277), which restarts with the model.
 from __future__ import annotations
 
 import math
+import re
 import warnings
 from typing import Any
 
@@ -245,7 +246,9 @@ def test_a_step_back_is_refused_by_default(kind):
     bank = po.ModelBank([s], threads=1)
     run(bank, df.head(100))
     before = bank.save_bytes()
-    with pytest.raises(ValueError, match=f"goes backwards by 10 at row {BACK - 100} "):
+    with pytest.raises(
+        ValueError, match=re.escape(f"steps back by 10 at row {BACK - 100} (counting from 0), and ")
+    ):
         run(bank, df.slice(100))
     assert bank.save_bytes() == before
     # And the stream carries on from where it was: the rows refused were
@@ -264,7 +267,10 @@ def test_a_step_back_at_or_below_the_threshold_is_a_late_row(kind):
         bank = po.ModelBank([clocked(kind, restart_after_step_back=bound)], threads=1)
         before = bank.save_bytes()
         with pytest.raises(
-            ValueError, match=f"goes backwards by 10 at row {BACK}, no more than restart"
+            ValueError,
+            match=re.escape(
+                f"steps back by 10 at row {BACK} (counting from 0), no more than restart"
+            ),
         ):
             run(bank, df)
         assert bank.save_bytes() == before

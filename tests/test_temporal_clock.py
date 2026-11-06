@@ -700,7 +700,7 @@ class TestADurationTheDataCannotHold:
         assert "every one would start the model over" in str(e.value)
         df = self._daily()
         late = pl.concat([df.slice(0, 3), df.slice(4, 1), df.slice(3, 1), df.slice(5)])
-        with pytest.raises(ValueError, match="goes backwards by 1d at row 4") as e:
+        with pytest.raises(ValueError, match="steps back by 1d at row 4") as e:
             _fit(late, self._daily_spec(restart_after_step_back="1d", **restart))
         assert "restart_after_step_back = 1d" in str(e.value)
 
@@ -899,7 +899,7 @@ class TestNanosecondsAreKept:
         untouched = po.ModelBank([spec]).save_bytes()
         bank = po.ModelBank([spec])
         late = pl.concat([df.slice(0, 5), df.slice(6, 5), df.slice(5, 1)])
-        with pytest.raises(ValueError, match="backwards"):
+        with pytest.raises(ValueError, match="steps back"):
             bank.fit_predict(late)
         assert bank.save_bytes() == untouched
         # Accepted, the clock range and the last clock come back in the clock

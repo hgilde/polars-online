@@ -762,7 +762,7 @@ class TestEdgeCases:
         fresh = unnested(po.ModelBank([spec()]).fit_predict(df[400:]))
         assert restarted[400:].equals(fresh, null_equal=True)
         # The default refuses the step back rather than absorb it (task 120).
-        with pytest.raises(ValueError, match="goes backwards by"):
+        with pytest.raises(ValueError, match="steps back by"):
             po.ModelBank([spec(clock="t", gap_cap=10.0)]).fit_predict(back)
 
     def test_lazy_path_equals_bank(self):

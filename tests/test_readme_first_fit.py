@@ -1,6 +1,7 @@
-"""The README's first fit prints five tables: its input, the fit over every
-row, the betas the saved state holds, the local fit's betas hour by hour, and
-the forecast of a target that looks ahead. A printed table is a claim like any
+"""The README's first fit prints six tables: its input, the fit with every
+row weighted the same, the betas the saved state holds, the rows served from
+it, the local fit's betas hour by hour, and the predictions of a target that
+looks ahead. A printed table is a claim like any
 other (docs/WRITING.md §3), so this runs the README's block, as the README
 test runs every block, and holds each shown value to the one the code returns:
 a number to half a unit of its last shown digit, a time to the second, a text
@@ -30,13 +31,14 @@ SHOWN = [
     ("the input's first rows", lambda ns: ns["prices"].head(6)),
     ("stock A's first rows of the fit over every row", lambda ns: ns["flat"].filter(A).head(5)),
     ("the betas in the saved state", lambda ns: ns["saved"]),
+    ("stock A's first rows served from the state", lambda ns: ns["served"].filter(A).head(3)),
     (
         "stock A's local betas each hour from 10:30",
         lambda ns: ns["betas"].filter(A).gather_every(1200, offset=1200),
     ),
     (
         "stock A's forecast every five minutes from 9:30",
-        lambda ns: ns["forecast"].filter(A).gather_every(100).head(5),
+        lambda ns: ns["ahead_out"].filter(A).gather_every(100).head(5),
     ),
 ]
 SEPARATOR = re.compile(r"^\|(\s*:?-+:?\s*\|)+$")
@@ -128,7 +130,7 @@ def test_the_first_fits_prose_holds(ran):
 
     # "`served` scores the rows from 15:30 with that state, and learns nothing
     # from them": every row is scored with the weight the state was saved with.
-    served = ns["served"].unnest("whole")
+    served = ns["served"]
     assert served["ts"].min() == datetime(2024, 1, 2, 15, 30)
     assert served["weight_sum"].unique().to_list() == [21_600 / 3]
 
@@ -168,15 +170,15 @@ def test_the_first_fits_prose_holds(ran):
     # "With `embargo="10m"`, each row is scored where it sits, before its
     # target is known, and learned from ten minutes later. So `ahead` learns
     # nothing from 9:30 to 9:40, and `resid_fwd_ret` is null on every row."
-    forecast = ns["forecast"]
+    forecast = ns["ahead_out"]
     first_ten = forecast.filter(pl.col("ts") <= datetime(2024, 1, 2, 9, 40))
     assert first_ten["weight_sum"].max() == 0
     assert forecast.filter(pl.col("ts") == datetime(2024, 1, 2, 9, 45))["weight_sum"].min() > 0
     assert forecast["resid_fwd_ret"].null_count() == forecast.height
 
-    # "`fit_predict` requires an `embargo` of at least the target's
-    # `window_size`; otherwise it refuses the spec, so for a shorter embargo
-    # use `ModelBank.fit`, which keeps no predictions."
+    # The refusal docs/explanation/out-of-sample.md gives: `fit_predict`
+    # requires an `embargo` of at least the target's `window_size`, and
+    # `ModelBank.fit`, which keeps no predictions, takes a shorter one.
     short = po.spec.ewridge(
         "short",
         targets=[ns["fwd_ret"]],

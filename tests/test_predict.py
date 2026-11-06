@@ -270,7 +270,8 @@ def test_a_backwards_clock_is_scored_and_refused_only_when_learned():
     assert scored.equals(bank.predict(_at_the_last_clock(bank, bad, [7]))["m"])
     assert not scored.struct.field("pred_y0").is_null().any()
     back = bad["t"][6] - bad["t"][7]
-    with pytest.raises(ValueError, match=f"goes backwards by {back} at row 7"):
+    # Three significant figures of the step.
+    with pytest.raises(ValueError, match=f"steps back by {back:.3g} at row 7"):
         po.ModelBank.load_bytes(snap, specs).fit_predict(bad)
 
 

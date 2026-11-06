@@ -275,7 +275,7 @@ class TestClockOrdering:
         bank = po.ModelBank([_spec(clock="t", gap_cap=4.0, half_life=1.0)])
         bank.fit_predict(a)
         before = bank.save_bytes()
-        with pytest.raises(ValueError, match="goes backwards by 1.5 at row 0"):
+        with pytest.raises(ValueError, match="steps back by 1.5 at row 0"):
             bank.fit_predict(b)
         assert bank.save_bytes() == before
 
@@ -916,7 +916,7 @@ class TestStrictClock:
         spec = self._spec_for()
         bank = po.ModelBank([spec])
         bank.fit_predict(a)
-        with pytest.raises(Exception, match="goes backwards"):
+        with pytest.raises(Exception, match="steps back"):
             bank.fit_predict(b)
 
     def test_per_group_so_interleaved_groups_are_fine(self):

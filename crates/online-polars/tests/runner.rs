@@ -644,7 +644,7 @@ fn a_glob_input_is_read_in_the_lexicographic_order_of_its_paths() {
     );
     let err = run_config(&clocked, no_progress).unwrap_err().to_string();
     assert!(
-        err.contains("goes backwards") && err.contains("row 200"),
+        err.contains("steps back") && err.contains("row 200"),
         "{err}"
     );
     let _ = std::fs::remove_dir_all(&dir);

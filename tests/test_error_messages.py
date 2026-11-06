@@ -181,7 +181,9 @@ VALUES = [
     (
         po.spec.ewridge,
         dict(coef_every=-1),
-        "coef_every must be finite and >= 0 clock units (0 writes `coef` on every row), got -1",
+        "coef_every must be finite and at least 0 clock units, but it is -1. Set "
+        "coef_every to 0 to fill the coef field on every row, or to a finite positive "
+        "value.",
     ),
     (
         po.spec.ewridge,
@@ -229,7 +231,9 @@ VALUES = [
         po.spec.ew_cov,
         # Clock units since task 161, 0 for every row, as `solve_every`.
         dict(features=["x0", "y"], targets=None, pca=1, pca_every=-1.0),
-        "ew_cov pca_every must be finite and >= 0 clock units (0 refreshes on every row), got -1",
+        "pca_every must be finite and at least 0 clock units, but it is -1. Set "
+        "pca_every to 0 to refresh the principal components on every row, or to a finite "
+        "positive value.",
     ),
     (
         po.spec.ew_cov,
@@ -283,7 +287,12 @@ VALUES = [
     ),
     # Every refusal of a value names it (review 2026-10-06, PC11): about
     # thirty named the parameter and not the value.
-    (po.spec.ewridge, dict(ridge=-1.0), "ridge must be finite and >= 0, got -1"),
+    (
+        po.spec.ewridge,
+        dict(ridge=-1.0),
+        "ridge must be finite and at least 0, but it is -1. Set ridge to 0 for no "
+        "shrinkage, or to a finite positive value.",
+    ),
     (po.spec.ewridge, dict(min_weight=-1.0), "min_weight must be >= 0, got -1"),
     (
         po.spec.ewridge,
@@ -295,7 +304,8 @@ VALUES = [
     (
         po.spec.ewridge,
         dict(emit_drift=True, drift_delta=-1.0),
-        "drift_delta must be finite and >= 0, got -1",
+        "drift_delta must be finite and at least 0, but it is -1. Set drift_delta to 0, "
+        "or to a finite positive value.",
     ),
     (
         po.spec.ewridge,
@@ -320,7 +330,9 @@ VALUES = [
     (
         po.spec.ewridge,
         dict(window_size=5.0, snapshot_every=-1.0),
-        "snapshot_every must be finite and >= 0 clock units (0 snapshots every row), got -1",
+        "snapshot_every must be finite and at least 0 clock units, but it is -1. Set "
+        "snapshot_every to 0 to take a snapshot on every row, or to a finite positive "
+        "value.",
     ),
     (
         po.spec.ewridge,
@@ -333,7 +345,12 @@ VALUES = [
         "long_half_life must be > 0, got -1",
     ),
     (po.spec.pa, dict(c=-1.0), 'pa c must be > 0 ("inf" caps nothing: mode "pa"), got -1'),
-    (po.spec.pa, dict(eps=-1.0), "pa eps must be finite and >= 0, got -1"),
+    (
+        po.spec.pa,
+        dict(eps=-1.0),
+        "eps must be finite and at least 0, but it is -1. Set eps to 0 to move the fit "
+        "on every row with a residual other than 0, or to a finite positive value.",
+    ),
     (po.spec.sgd, dict(learning_rate=-1.0), "learning_rate must be finite and > 0, got -1"),
     (
         po.spec.sgd,
@@ -345,7 +362,12 @@ VALUES = [
         dict(huber_delta=-1.0),
         'huber_delta must be > 0 ("inf" is least squares), got -1',
     ),
-    (po.spec.huber, dict(ridge=-1.0), "ridge must be finite and >= 0, got -1"),
+    (
+        po.spec.huber,
+        dict(ridge=-1.0),
+        "ridge must be finite and at least 0, but it is -1. Set ridge to 0 for no "
+        "shrinkage, or to a finite positive value.",
+    ),
     (po.spec.quantile, dict(quantile=1.5), "quantile must be in (0, 1), got 1.5"),
     (
         po.spec.quantile,
@@ -382,7 +404,9 @@ VALUES = [
     (
         po.spec.lasso,
         dict(penalties=[0.1, -0.1]),
-        "penalties must each be finite and >= 0, got -0.1",
+        "penalties must be finite and at least 0, but one of its values is -0.1. Set "
+        "that value to 0 or to a finite positive value, different from the other values. "
+        "Keep the penalties strictly decreasing: 0 can only come last.",
     ),
     (
         po.spec.kalman,
@@ -397,7 +421,8 @@ VALUES = [
     (
         po.spec.kalman,
         dict(q=[-1.0, 0.0]),
-        "q values must be finite and >= 0 (0 pins a coefficient), got -1",
+        "q must be finite and at least 0, but one of its values is -1. Set that value to "
+        "0 for no drift over time, or to a finite positive value.",
     ),
     (po.spec.kalman, dict(q=[0.0]), "q must have length 2, got 1"),
     (
@@ -407,24 +432,44 @@ VALUES = [
     ),
     (po.spec.kalman, dict(coef_half_life=10.0, p0=-1.0), "p0 must be finite and > 0, got -1"),
     (po.spec.ftrl, dict(alpha=-1.0), "ftrl alpha must be finite and > 0, got -1"),
-    (po.spec.ftrl, dict(beta=-1.0), "ftrl beta must be finite and >= 0, got -1"),
-    (po.spec.ftrl, dict(l1=-1.0), "ftrl l1 must be finite and >= 0, got -1"),
-    (po.spec.ftrl, dict(l2=-1.0), "ftrl l2 must be finite and >= 0, got -1"),
+    (
+        po.spec.ftrl,
+        dict(beta=-1.0),
+        "beta must be finite and at least 0, but it is -1. Set beta to 0, or to a finite "
+        "positive value.",
+    ),
+    (
+        po.spec.ftrl,
+        dict(l1=-1.0),
+        "l1 must be finite and at least 0, but it is -1. Set l1 to 0 for no L1 penalty, "
+        "or to a finite positive value.",
+    ),
+    (
+        po.spec.ftrl,
+        dict(l2=-1.0),
+        "l2 must be finite and at least 0, but it is -1. Set l2 to 0 for no L2 penalty, "
+        "or to a finite positive value.",
+    ),
     (po.spec.rls, dict(delta=-1.0), "rls delta must be finite and > 0, got -1"),
     (
         po.spec.kmeans,
         dict(features=["x0", "y"], targets=None, n_clusters=2, split_merge=-1.0),
-        "split_merge must be finite and >= 0 (0 disables it), got -1",
+        "split_merge must be finite and at least 0, but it is -1. Set split_merge to 0 "
+        "to learn every row, with no split or merge, or to a finite positive value.",
     ),
     (
         po.spec.kmeans,
         dict(features=["x0", "y"], targets=None, n_clusters=2, dead_frac=-1.0),
-        "dead_frac must be finite and >= 0 (0 disables it), got -1",
+        "dead_frac must be at least 0 and below 0.5, but it is -1. Set dead_frac to 0 to "
+        "never re-place a center whose weight has decayed, or to a positive value below "
+        "0.5.",
     ),
     (
         po.spec.kmeans,
         dict(features=["x0", "y"], targets=None, n_clusters=2, scale_floor=-1.0),
-        "scale_floor must be finite and >= 0 (0 is the EW variance alone), got -1",
+        "scale_floor must be finite and at least 0, but it is -1. Set scale_floor to 0 "
+        "to measure distances by each feature's exponentially weighted variance alone, "
+        "or to a finite positive value.",
     ),
     (
         po.spec.micro,
@@ -439,13 +484,15 @@ VALUES = [
     (
         po.spec.micro,
         dict(features=["x0", "y"], targets=None, eps=0.3, macro_link=-1.0),
-        "macro_link must be finite and >= 0 (0 links nothing), got -1",
+        "macro_link must be finite and at least 0, but it is -1. Set macro_link to 0 to "
+        "join none of the small clusters the model keeps, or to a finite positive value.",
     ),
     (
         po.spec.micro,
         dict(features=["x0", "y"], targets=None, eps=0.3, prune_every=-1.0),
-        "micro prune_every must be finite and >= 0 clock units (0 checkpoints on every row), "
-        "got -1",
+        "prune_every must be finite and at least 0 clock units, but it is -1. Set "
+        "prune_every to 0 to prune and join, on every row, the small clusters the model "
+        "keeps, or to a finite positive value.",
     ),
 ]
 

@@ -70,10 +70,11 @@ impl Spec {
             ModelKind::KMeans { dead_frac, .. } => {
                 if let Some(v) = dead_frac.filter(|v| v.is_finite() && *v >= 0.5) {
                     return Err(format!(
-                        "spec {:?}: dead_frac must be below 0.5, got {v}: a re-placed centre \
-                         starts at half its source's weight, so at 0.5 or above it can be born \
-                         at the floor that marks a centre dead, dead_frac * weight_sum / \
-                         n_clusters, and the next split-merge check re-places it again",
+                        "spec {:?}: dead_frac must be below 0.5, but it is {v}: a re-placed \
+                         center starts at half its source's weight, so at 0.5 or above it can be \
+                         born at the floor that marks a center dead, dead_frac * weight_sum / \
+                         n_clusters, and the next split-merge check re-places it again. Set \
+                         dead_frac below 0.5.",
                         self.name
                     ));
                 }

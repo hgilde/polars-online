@@ -16,9 +16,9 @@
 [finished]
 messages = []
 docstrings = []
-vocabulary = []
-sentences = []
-kinds = []
+vocabulary = ["docs/explanation/out-of-sample.md", "docs/how-to/put-rows-in-clock-order.md", "docs/how-to/resume-from-a-saved-state.md"]
+sentences = ["docs/explanation/out-of-sample.md", "docs/how-to/put-rows-in-clock-order.md", "docs/how-to/resume-from-a-saved-state.md"]
+kinds = ["docs/explanation/out-of-sample.md", "docs/how-to/put-rows-in-clock-order.md", "docs/how-to/resume-from-a-saved-state.md"]
 
 [messages."crates/online-cli/src/main.rs"]
 "remedy" = 4
@@ -182,20 +182,20 @@ kinds = []
 
 [messages."crates/online-polars/src/spec.rs"]
 "internal-word" = 3
-"remedy" = 163
+"remedy" = 148
 
 [messages."crates/online-polars/src/spec/checks.rs"]
-"remedy" = 10
+"remedy" = 9
 
 [messages."crates/online-polars/src/spec/clock.rs"]
-"remedy" = 14
+"remedy" = 13
 
 [messages."crates/online-polars/src/spec/label_clock.rs"]
 "remedy" = 1
 
 [messages."crates/online-polars/src/spec/limits.rs"]
 "formula" = 2
-"remedy" = 5
+"remedy" = 4
 
 [messages."crates/online-polars/src/spec/names.rs"]
 "remedy" = 3
@@ -316,8 +316,8 @@ kinds = []
 "missing" = 3
 
 [docstrings."python/polars_online/_bank.py"]
-"missing" = 78
-"summary" = 13
+"missing" = 75
+"summary" = 12
 
 [docstrings."python/polars_online/_errors.py"]
 "missing" = 1
@@ -329,11 +329,11 @@ kinds = []
 "missing" = 3
 
 [docstrings."python/polars_online/_spec.py"]
-"missing" = 30
-"order" = 13
-"summary" = 6
-"unknown-section" = 13
-"when" = 5
+"missing" = 29
+"order" = 12
+"summary" = 5
+"unknown-section" = 12
+"when" = 4
 
 [docstrings."python/polars_online/_spec_audit.py"]
 "missing" = 3
@@ -401,7 +401,7 @@ kinds = []
 
 [vocabulary."README.md"]
 "british" = 13
-"retired" = 36
+"retired" = 34
 
 [vocabulary."crates/online-cli/src/main.rs#messages"]
 
@@ -485,7 +485,6 @@ kinds = []
 
 [vocabulary."crates/online-polars/src/bank.rs#messages"]
 "british" = 2
-"retired" = 2
 
 [vocabulary."crates/online-polars/src/bank/audit.rs#messages"]
 
@@ -519,7 +518,7 @@ kinds = []
 [vocabulary."crates/online-polars/src/spec/label_clock.rs#messages"]
 
 [vocabulary."crates/online-polars/src/spec/limits.rs#messages"]
-"british" = 3
+"british" = 1
 
 [vocabulary."crates/online-polars/src/spec/names.rs#messages"]
 
@@ -570,8 +569,8 @@ kinds = []
 "retired" = 2
 
 [vocabulary."docs/MODELS.md"]
-"british" = 78
-"retired" = 20
+"british" = 77
+"retired" = 19
 
 [vocabulary."docs/OUTPUTS.md"]
 "british" = 5
@@ -613,7 +612,7 @@ kinds = []
 
 [vocabulary."python/polars_online/_bank.py#docstrings"]
 "british" = 19
-"retired" = 26
+"retired" = 24
 
 [vocabulary."python/polars_online/_bank.py#messages"]
 
@@ -634,8 +633,8 @@ kinds = []
 [vocabulary."python/polars_online/_renamed.py#messages"]
 
 [vocabulary."python/polars_online/_spec.py#docstrings"]
-"british" = 72
-"retired" = 35
+"british" = 68
+"retired" = 33
 
 [vocabulary."python/polars_online/_spec.py#messages"]
 
@@ -717,7 +716,7 @@ kinds = []
 [sentences."README.md"]
 "45+" = 7
 "about-the-document" = 1
-"python-word" = 3
+"python-word" = 2
 
 [sentences."docs/CALIBRATION.md"]
 "45+" = 2
@@ -749,7 +748,7 @@ kinds = []
 "python-word" = 1
 
 [sentences."docs/MODELS.md"]
-"45+" = 53
+"45+" = 51
 "is-a-lead" = 5
 "python-word" = 5
 

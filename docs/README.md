@@ -33,6 +33,10 @@ kept in [`records/`](records/), and its row links it there.
 | **Writing the documentation** | |
 | [WRITING.md](WRITING.md) | you are writing or rewriting any reader-facing doc — the rules the docs are held to, each drawn from a report in [PHRASING.md](records/PHRASING.md), with the README's rewrite of 2026-09-23 as the worked example. A pass over the README starts from [README-ITERATIONS.md](README-ITERATIONS.md), and a new report goes into PHRASING.md |
 | [GLOSSARY.md](GLOSSARY.md) | you meet a word a page uses without defining it, or you choose the word for a sentence, a docstring or a message — every concept's one word, what it means, the words it replaces and whether a message may use it, with the words kept out of user-facing text and the American spelling of each British one the docs held |
+| **New pages** | |
+| [how-to/put-rows-in-clock-order.md](how-to/put-rows-in-clock-order.md) | you fit a bank on a stream with a clock — how to give it each group's rows in clock order, read its warning about a query's row order, and fix a chunk it refused |
+| [how-to/resume-from-a-saved-state.md](how-to/resume-from-a-saved-state.md) | you have a saved state and want the bank to go on learning, from Python or the command line — including on input that overlaps what it learned |
+| [explanation/out-of-sample.md](explanation/out-of-sample.md) | you want to know why each prediction and diagnostic is made before its row is learned, what that guarantees, and how a target that looks ahead is learned |
 
 ## Records
 

@@ -2855,14 +2855,16 @@ _CLOCK_REFUSALS: dict[str, tuple[dict[str, Any], type[Exception], str]] = {
     "restart negative": (
         dict(clock="t", gap_cap=5.0, restart_after_step_back=-1.0),
         ValueError,
-        "with_windows: restart_after_step_back must be finite and >= 0 (0 starts every window "
-        "over at every step back)",
+        "with_windows: restart_after_step_back must be finite and at least 0 clock units, but it "
+        "is -1. Set restart_after_step_back to 0 to reset every group's windows at every step "
+        "back, or to a finite positive value.",
     ),
     "restart inf": (
         dict(clock="t", gap_cap=5.0, restart_after_step_back=math.inf),
         ValueError,
-        "with_windows: restart_after_step_back must be finite and >= 0 (0 starts every window "
-        "over at every step back)",
+        "with_windows: restart_after_step_back must be finite and at least 0 clock units, but it "
+        "is inf. Set restart_after_step_back to 0 to reset every group's windows at every step "
+        "back, or to a finite positive value.",
     ),
     "restart NaN": (
         dict(clock="t", gap_cap=5.0, restart_after_step_back=math.nan),

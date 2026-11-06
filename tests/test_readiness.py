@@ -93,11 +93,15 @@ def _fit_noting(bank: po.ModelBank, df: pl.DataFrame) -> _Fitted:
     )
 
 
+#: The reference a readiness warning links: the gates' section, which stays.
+READY = "https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#is-it-ready"
+
+
 def _says_not_met_at_the_rate_so_far(msg: str) -> None:
     """The two "not met" notices project from the rows seen so far, which a
     faster stream can outrun, so neither says the floor "cannot be met" nor
     that predictions are withheld "for good" (review round 5, F3)."""
-    assert "has not been met" in msg and "at the row rate seen so far" in msg, msg
+    assert "has not been met" in msg and "seen so far" in msg, msg
     assert "cannot be met" not in msg and "for good" not in msg, msg
 
 
@@ -786,7 +790,14 @@ class TestSettledWeight:
         assert field(out, "pred_y").null_count() == 100
         msg = at.notices[0]
         assert "min_weight = 20" in msg and '"y"' in msg and "half_life" in msg, msg
-        assert f"{ceiling:.4}" in msg, (ceiling, msg)
+        figure = f"{math.floor(ceiling * 100) / 100:.2f}"  # three figures, rounded down
+        assert msg == (
+            'spec "m": min_weight = 20 has not been met for target "y" on any row for the last '
+            "half-life, with the model within 5% of its steady state. At the row weights seen so "
+            f"far, the weight the gate reads tops out near {figure}, so predictions for target "
+            '"y" stay withheld unless the rows carry more weight. Lower min_weight below '
+            f"{figure}, or increase half_life above 13.6, as {READY} explains."
+        ), (ceiling, msg)
         _says_not_met_at_the_rate_so_far(msg)
         assert bank.summary("m")["weight_sum_settled"][0] == pytest.approx(ceiling, rel=1e-12)
 
@@ -809,9 +820,14 @@ class TestSettledWeight:
         assert len(fitted.notices) == 1, fitted.notices
         msg = fitted.notices[0]
         assert "min_weight = 5" in msg and named in msg, msg
-        assert "has had no row with a value and a positive weight" in msg, msg
+        assert f"has learned no row with a value of target {named} and a positive weight" in msg, (
+            msg
+        )
         assert "tops out" not in msg and "Lower min_weight" not in msg, msg
-        assert re.findall(r"\d+(?:\.\d+)?", msg) == ["5"], msg
+        # The floor is the one number, beside the fixed "within 5%" (the
+        # link has no digit).
+        said = msg.replace("within 5% of", "")
+        assert set(re.findall(r"\d+(?:\.\d+)?", said)) == {"5"}, msg
         if absent == "null_target":
             assert field(fitted.out, "pred_y").null_count() < 30
             assert field(fitted.out, "pred_z").null_count() == 300
@@ -858,7 +874,7 @@ class TestSettledWeight:
             )
         fitted = _fit_noting(po.ModelBank([s]), df)
         for msg in fitted.notices:
-            assert "Lower min_weight" not in msg, msg
+            assert "Lower min_weight below" not in msg, msg
             assert not re.search(r"tops out near -", msg), msg
             assert "tops out near 0.0000" not in msg, msg
 

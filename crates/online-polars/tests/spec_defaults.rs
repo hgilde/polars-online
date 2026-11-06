@@ -36,7 +36,7 @@ fn a_restart_threshold_reads_as_given() {
     }
     let err = cfg(&format!("{CLOCK}restart_after_step_back = -1.0")).unwrap_err();
     assert!(
-        err.contains("restart_after_step_back must be finite and >= 0"),
+        err.contains("restart_after_step_back must be finite and at least 0 clock units, but it is -1. Set restart_after_step_back to 0 to reset the model at every step back, or to a finite positive value."),
         "{err}"
     );
 }

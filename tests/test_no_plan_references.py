@@ -96,6 +96,9 @@ FILES: list[str] = [
     "docs/WRITING.md",
     "docs/GLOSSARY.md",
     "docs/VALIDATION.md",
+    "docs/how-to/put-rows-in-clock-order.md",
+    "docs/how-to/resume-from-a-saved-state.md",
+    "docs/explanation/out-of-sample.md",
     *sorted(str(p.relative_to(REPO)) for p in REFERENCE.glob("*.rst")),
 ]
 

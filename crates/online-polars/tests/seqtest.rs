@@ -461,7 +461,7 @@ fn a_refused_chunk_updates_neither_phase() {
     bank.fit_predict(&first).unwrap();
     let before = bank.save_bytes().unwrap();
     let err = bank.fit_predict(&bad).unwrap_err().to_string();
-    assert!(err.contains("goes backwards"), "{err}");
+    assert!(err.contains("steps back"), "{err}");
     assert_eq!(
         bank.save_bytes().unwrap(),
         before,

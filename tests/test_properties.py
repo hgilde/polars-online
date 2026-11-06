@@ -26,6 +26,7 @@ these tests are meant to produce a small counterexample, not just a red mark.
 """
 
 import math
+import re
 import warnings
 from collections.abc import Callable
 
@@ -403,7 +404,10 @@ class TestUniversalProperties:
             )
             df = binarize(df, model)
             spec = build(model, extra, restart_after_step_back=MINIMUM)
-            says = f"goes backwards by 2 at row {i}, no more than restart_after_step_back = 5"
+            says = re.escape(
+                f"steps back by 2 at row {i} (counting from 0), no more than "
+                "restart_after_step_back = 5"
+            )
             with pytest.raises(ValueError, match=says):
                 po.ModelBank([spec]).fit_predict(df)
             chunks = [df.slice(k, chunk) for k in range(0, df.height, chunk)]

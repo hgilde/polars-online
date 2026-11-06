@@ -1413,9 +1413,9 @@ class TestRefusals:
             ),
             ({"update_every_rows": 0}, "update_every_rows must be >= 1"),
             ({"split_merge_every_rows": 0}, "split_merge_every_rows must be >= 1"),
-            ({"split_merge": -1.0}, "split_merge must be finite and >= 0"),
-            ({"dead_frac": -0.1}, "dead_frac must be finite and >= 0"),
-            ({"scale_floor": -0.5}, "scale_floor must be finite and >= 0"),
+            ({"split_merge": -1.0}, "split_merge must be finite and at least 0"),
+            ({"dead_frac": -0.1}, "dead_frac must be at least 0 and below 0.5"),
+            ({"scale_floor": -0.5}, "scale_floor must be finite and at least 0"),
             ({"features": ["x0", "x0"]}, "more than once"),
         ],
         ids=lambda v: next(iter(v)) if isinstance(v, dict) else v,
@@ -1659,7 +1659,7 @@ class TestTheBoundaries:
         X, _ = blobs(n=600, seed=7)
         out = unnested(po.ModelBank([spec(dead_frac=0.499, warm_rows=50)]).fit_predict(frame(X)))
         assert out["dist"].drop_nulls().is_finite().all()
-        with pytest.raises(ValueError, match="dead_frac must be below 0.5, got 0.5"):
+        with pytest.raises(ValueError, match="dead_frac must be below 0.5, but it is 0.5"):
             po.ModelBank([spec(dead_frac=0.5, warm_rows=50)])
 
 
