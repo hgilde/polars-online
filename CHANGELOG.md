@@ -20,8 +20,13 @@ returns.
   scores every setting on the rows they all predicted; and reports each
   setting's `mse` (or `loglik`, for `bocpd`, `hmm` and `deco`) with its
   `rank`, beside the error that choosing from the rows before each span
-  earned (`pred_<target>__chosen`), the number to report. Memory is the
-  bank's state and one chunk (task 336).
+  earned, the number to report. Its first column, `kind`, says what each
+  row is: `"candidate"`, `"selected"` or `"averaged"` (a spec's
+  `emit_selected` or `emit_averaged` prediction, scored and never chosen),
+  or `"choice"`. A stream whose first span leaves no row to choose from
+  (too short for its spans, covered by `gap`, or inside a setting's
+  warm-up) is refused with the rows it read and the remedy. Memory is the
+  bank's state and one chunk (tasks 336 and 337).
 
 ### Changed
 
