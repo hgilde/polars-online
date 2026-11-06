@@ -20,7 +20,7 @@ import polars_online as po
 from conftest import run_online
 from test_conformal import norm_ppf
 
-TIER = "mixed"
+TIER = "essential"
 
 GAP_CAP = 25.0
 HALF_LIFE = 40.0
