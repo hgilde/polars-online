@@ -33,15 +33,41 @@ use online_bench::{
     polars_online_budget_model_rows, polars_online_budget_windows_rows, windows_setup,
 };
 
-/// Count from `entry` on, with each pool held to one thread.
+/// Count from `entry` on, with each pool held to one thread, and under the
+/// clock the run was started with.
+///
+/// The harness clears the environment, so the variables that freeze the
+/// clock (`FAKETIME_ENV`) are passed through by name: unset, as off CI,
+/// nothing is passed and the clock is the machine's.
 fn counted_from(entry: &str) -> LibraryBenchmarkConfig {
     let mut config = LibraryBenchmarkConfig::default();
     config
         .tool(Callgrind::default().entry_point(EntryPoint::Custom(entry.to_owned())))
         .env("POLARS_ONLINE_MAX_THREADS", "1")
-        .env("POLARS_MAX_THREADS", "1");
+        .env("POLARS_MAX_THREADS", "1")
+        .pass_through_envs(FAKETIME_ENV);
     config
 }
+
+/// The variables of a frozen clock, which CI's Budgets job sets on its
+/// counting step (libfaketime preloaded, the wall clock stopped at one
+/// instant, the monotonic clock left running).
+///
+/// Polars' maps hash with a seed drawn once a process from, among other
+/// things, the time since the epoch. The seed decides where each key lands,
+/// so the order in which a table grows and frees, so how far the
+/// allocator searches its bins: two runs of one binary counted a bank case
+/// up to 2% apart at the machine's clock, and within 0.001% under a frozen
+/// one, with address randomization on or off. The product keeps its seeds
+/// (a fixed one would open a bank to keys chosen to collide); only the
+/// count's process sees the stopped clock. `LD_PRELOAD` the harness keeps
+/// anyway; it is named so the list is the whole of what freezes the clock.
+const FAKETIME_ENV: [&str; 4] = [
+    "LD_PRELOAD",
+    "FAKETIME",
+    "FAKETIME_DONT_FAKE_MONOTONIC",
+    "NO_FAKE_STAT",
+];
 
 #[library_benchmark(config = counted_from("polars_online_budget_model_rows"))]
 #[bench::ewridge_k5(args = ("ewridge_k5"), setup = model_setup)]

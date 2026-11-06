@@ -898,7 +898,8 @@ fn readiness_lines_pass_over_a_spec_that_withholds_nothing() {
 ///
 /// Unix only: a directory is made unwritable by its mode bits, which
 /// Windows does not read (its read-only attribute on a directory does not
-/// stop a file being created in it).
+/// stop a file being created in it). Skipped, saying so, where the process
+/// may write past the mode bits, as root does.
 #[cfg(unix)]
 #[test]
 fn a_writer_that_cannot_create_its_file_ends_the_run_with_its_own_error() {
@@ -907,6 +908,20 @@ fn a_writer_that_cannot_create_its_file_ends_the_run_with_its_own_error() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    // A process that may write past a directory's mode -- root, which holds
+    // `CAP_DAC_OVERRIDE` -- creates the file anyway, so there is no refusal
+    // to test: the probe tries the very write the runner would make, and
+    // skips with the reason where it succeeds.
+    let probe = dir.join("probe");
+    if std::fs::File::create(&probe).is_ok() {
+        eprintln!(
+            "skipped: this process can create a file in a 0555 directory \
+             (running as root, or with CAP_DAC_OVERRIDE), so no writer is refused"
+        );
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
     let df = closing_stream();
     let writable = tmp("read-only-out.parquet");
     for which in ["output", "closed groups"] {

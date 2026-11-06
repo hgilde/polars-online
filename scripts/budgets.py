@@ -39,7 +39,10 @@ first run, with no number from an earlier one.
 ``check`` reads Gungraun's JSON output (``--output-format=json``), one
 summary per case; given a second run of the same binary, it also reports
 how far the two agree, and fails when they differ by more than a quarter of
-the tolerance, since the tolerance would then be noise. It writes a
+the tolerance, since the tolerance would then be noise. The workflow counts
+under a stopped wall clock (libfaketime): Polars' maps seed their hashing
+from the time once a process, and the seed moved a bank case's count by up
+to 2% between two runs, against 0.001% with the clock stopped. It writes a
 Markdown report to stdout and to ``$GITHUB_STEP_SUMMARY`` when set, and the
 counts to ``--measured`` for ``apply``. Standard library only: the CI job
 that runs it has no project environment.

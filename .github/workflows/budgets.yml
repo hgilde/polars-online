@@ -70,7 +70,8 @@ jobs:
       - name: free disk and use a leaner linker (Linux)
         uses: ./.github/actions/linux-build-prep
         with:
-          packages: valgrind
+          # faketime: the counting step's frozen clock, below.
+          packages: valgrind faketime
           update-lists: "true"
 
       # The compiler and the harness budgets.toml and Cargo.lock name, read
@@ -98,10 +99,43 @@ jobs:
       - name: the harness's runner, the version the lock resolves
         run: cargo install gungraun-runner --version "${{ steps.pins.outputs.runner }}" --locked
 
+      # Built at the machine's clock, so nothing compiles under the frozen
+      # one below and the counting step only runs what this built.
+      - name: build the bench
+        run: cargo bench -p online-bench --bench instructions --locked --no-run
+
+      # The library that stops the wall clock, found where the package put
+      # it (it is not on the loader's search path), and shown to work: a
+      # preload that failed to load would leave every count on the
+      # machine's clock without a word.
+      - name: the frozen clock
+        id: clock
+        run: |
+          lib="$(dpkg -L libfaketime | grep '/libfaketime\.so\.1$')"
+          frozen="$(LD_PRELOAD="$lib" FAKETIME="$FROZEN_AT" date -u '+%F %T')"
+          echo "libfaketime: $lib; date under it: $frozen"
+          test "$frozen" = "$FROZEN_AT"
+          echo "lib=$lib" >> "$GITHUB_OUTPUT"
+        env:
+          FROZEN_AT: "2026-01-01 00:00:00"
+          TZ: UTC
+
       # Twice, the same binary: `check` fails where the two runs differ by
       # more than a quarter of the tolerance, which would make the
-      # tolerance noise.
+      # tolerance noise. Under a stopped wall clock: Polars' maps draw
+      # their hash seed once a process from the time since the epoch, among
+      # other things, and the seed moved a bank case's count by up to 2%
+      # between two runs; frozen, they agree within 0.001%. The product
+      # keeps its seeds; only this step's processes see the stopped clock
+      # (`counted_from` in the bench passes these variables through). The
+      # monotonic clock runs, as the harness and Valgrind need; file times
+      # are the files' own, so cargo reads the build above as fresh.
       - name: count every case, twice
+        env:
+          LD_PRELOAD: ${{ steps.clock.outputs.lib }}
+          FAKETIME: "2026-01-01 00:00:00"
+          FAKETIME_DONT_FAKE_MONOTONIC: "1"
+          NO_FAKE_STAT: "1"
         run: |
           set -o pipefail
           for run in first second; do

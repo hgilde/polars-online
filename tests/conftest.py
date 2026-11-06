@@ -39,6 +39,10 @@ tiers.register()
 # which reads it.
 import oracle_marks  # noqa: E402
 
+# A test skipped as offline fails instead in a job that restored its
+# datasets first (tests/offline_skips.py): importing the hook registers it.
+from offline_skips import pytest_runtest_makereport  # noqa: E402, F401, I001
+
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config, items):

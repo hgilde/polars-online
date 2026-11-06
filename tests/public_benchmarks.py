@@ -83,7 +83,7 @@ def _or_skip(fetch, what: str):
     try:
         return fetch()
     except data.Offline as e:
-        pytest.skip(f"offline: could not download {what} ({e.__cause__})")
+        pytest.skip(f"{data.OFFLINE_SKIP}{what} ({e.__cause__})")
 
 
 # ---------------------------------------------------------------------------

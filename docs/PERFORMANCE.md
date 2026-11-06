@@ -315,7 +315,18 @@ placed the code alone, and a shared runner adds its load on top. Two runs
 of one binary under Callgrind count the same instructions, so the workflow
 runs every case twice and fails if the two differ by more than a quarter of
 the tolerance. What the 2% absorbs is the inlining an unrelated change
-moves. A count does not see a cache miss, so `scripts/benchmark.py` still
+moves. They count the same only under a stopped wall clock, which the
+counting step alone runs under (libfaketime, preloaded): Polars' hash maps
+draw their seed once a process from the time since the epoch and a few
+addresses, the seed decides where each key lands, and so the order in which
+a table grows and frees and how far the allocator searches for a block. At
+the machine's clock two runs counted a bank case up to 2% apart, and turning
+address randomization off did not help; with the clock stopped they agree
+within 0.001%. The library keeps its seeds, since a fixed one would let
+keys chosen to collide slow a bank down; only the counted process sees the
+stopped clock. The stopped clock is a seed like any other, so the counts it
+gives differ from the machine clock's once, and the budgets were re-applied
+from its first run. A count does not see a cache miss, so `scripts/benchmark.py` still
 measures throughput. A count also belongs to the compiler that built it,
 the image it ran on and the harness that counted it, so `budgets.toml`
 names all three in `[meta]`. Changing one re-measures every case.

@@ -268,7 +268,8 @@ jobs:
       # --digest`); on a miss, the oracle runs' artifact, which holds the
       # ledger's sets (only they are in it: nothing new is published); then
       # `fetch --suite` downloads what is still missing. A set it cannot get
-      # warns by name and its tests skip as before; the cache is saved only
+      # warns by name, and its tests fail rather than skip (the pytest
+      # step's POLARS_ONLINE_DATASETS_RESTORED); the cache is saved only
       # once every set is in hand, so an entry is never short of one.
       - name: the datasets' key
         id: data-key
@@ -367,6 +368,10 @@ jobs:
         env:
           POLARS_ONLINE_BUDGETS_OUT: ${{ runner.temp }}/budgets
           POLARS_ONLINE_RSS_HELD: ${{ matrix.os != 'windows-2022' }}
+          # The datasets were restored above, so a test skipped as offline
+          # means every copy failed: it fails, naming the set
+          # (tests/offline_skips.py).
+          POLARS_ONLINE_DATASETS_RESTORED: "1"
         run: uv run pytest ${{ runner.os == 'Linux' && matrix.python == '3.12' && '--cov=polars_online --cov-report=term' || '' }}
 
       - name: keep the memory measurements

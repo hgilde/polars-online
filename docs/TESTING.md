@@ -559,7 +559,13 @@ within a factor of `step^0.5`, 2.8 at a step of 8, the least of three blocks
 taken in turn at the two sizes. On CI, Callgrind counts the instructions of
 the cells in `[scaling.cells]` of `budgets.toml` at both sizes, and
 `scripts/budgets.py check` holds their ratio within one run to 10% past the
-declared growth.
+declared growth. It counts under a stopped wall clock, so two runs of one
+binary agree to 0.001%: at the machine's clock, the hash seed Polars' maps
+draw from the time once a process moved a bank cell's count by up to 2%
+between runs, past the quarter of the 2% tolerance that two runs may differ
+by ([PERFORMANCE.md](PERFORMANCE.md#budgets-that-only-tighten)). Only the
+counted process sees the stopped clock; the tests and the library run at
+the machine's.
 
 **A cell that fails is a finding, held in the extended tier until it is
 fixed.** It keeps its declaration and its test is marked `#[ignore =
@@ -1228,7 +1234,8 @@ generate or download their own data (hard rule 1). Downloads are cached
 under `.cache/`, and a test that needs one skips offline: the public
 intraday data (`tests/data.py::public_intraday`), the released wheels, the
 day of quotes and trades, and the public benchmark sets. CI keeps the
-datasets through an outage at their source, below.
+datasets through an outage at their source, below, and where it has
+restored them a test that skips offline fails instead.
 
 ### Downloaded data in CI
 
@@ -1270,17 +1277,37 @@ Where each runs:
 |---|---|---|---|---|
 | `oracles.yml`, `datasets`, a push or by hand | `oracle-data-<digest>`, the ledger's sets | the artifact | `fetch`, three rounds | fails the job by name, before any grid runs |
 | `oracles.yml`, `datasets`, the weekly sweep | not read | — | `fetch` afresh first, so a set changed at its source is measured; a set an outage withholds is filled from the artifact, with a warning naming it, and fetched again | fails the job by name (only when the artifact lacks it too) |
-| `ci.yml`, `test`, every leg | `test-data-<OS>-<digest>`, the ledger's sets and `SUITE` (Binance's days and the day of quotes and trades, NIST's NumAcc sets) | the artifact | `fetch --suite`, one round | a warning naming it; its tests skip offline, as on a desk |
+| `ci.yml`, `test`, every leg | `test-data-<OS>-<digest>`, the ledger's sets and `SUITE` (Binance's days and the day of quotes and trades, NIST's NumAcc sets) | the artifact | `fetch --suite`, one round | a warning naming it, and each test that reads it fails, naming it |
 
 The cache is saved where it missed, and in `ci.yml` only once every set is
 in hand, so an entry is never short of one. Binance's days and the quotes
 are in no artifact (only the ledger's sets are published), so the CI cache
-is their one copy: on a miss with Binance down, their tests skip. Before
+is their one copy: on a miss with Binance down, their tests fail. Before
 this, Fränti's server timed out from the runners on nearly every leg of
 the 25 CI runs to 2026-11-05, and the two oracle guards that read its
 sets skipped on each. A test that reads a new public set adds it to
 `SUITE` (or to its ledger group's `dataset`), or CI fetches it only when
 the test runs and keeps no copy.
+
+**Where the datasets were restored, a test skipped as offline fails.** A
+test whose set cannot be downloaded skips, so a desk with no network still
+runs the suite. In `ci.yml`'s `test` job and in each oracle grid's shard
+the sets are in place before the tests start, so there such a skip means
+every copy above failed, and among hundreds of tests a skip is easy to
+miss: those two guards skipped on every such leg while the run passed.
+The two steps set `POLARS_ONLINE_DATASETS_RESTORED=1`, and
+`tests/offline_skips.py` then turns a skip whose reason begins with the
+loaders' `offline: could not download ` into a failure that names the set
+(a skip in a fixture shows as an error). `CI` alone does not turn it on:
+the canary, the release's Polars and NumPy legs and the CPU-path runs also
+run the suite under `CI` and restore nothing, so there an outage at a
+source is a skip, as on a desk. A released wheel or PyPI's list of
+releases, of which no job keeps a copy, skips everywhere. The weekly sweep
+changes nothing here: its `datasets` job already fails, naming the set,
+before any grid runs when neither a fresh download nor the artifact has
+it, as a push's does when its copies fail. So a grid fails here only on a
+set its ledger group does not name, which the `datasets` job never
+fetched; naming the set there mends it.
 
 ### The machines and the CPU paths
 

@@ -184,6 +184,10 @@ jobs:
         run: uv run maturin develop --release -m crates/online-py/Cargo.toml
 
       - name: pytest, this shard
+        # The `datasets` job put every set in place, so a grid skipped as
+        # offline fails, naming the set (tests/offline_skips.py).
+        env:
+          POLARS_ONLINE_DATASETS_RESTORED: "1"
         run: uv run pytest -m oracle_grid -q -rfEsxX -n 4 --dist worksteal --oracle-shard ${{ matrix.shard }}/12
       # Written only when every test of the shard ran, so the ledger job
       # judges a case missing only when every shard finished.

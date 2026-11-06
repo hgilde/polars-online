@@ -135,7 +135,7 @@ def test_the_workflow_gates_every_push_and_pull_request_and_a_release_calls_it()
     assert steps[0]["with"]["fetch-depth"] == 0, "the raise rule reads the whole history"
     runs = [str(s.get("run", "")) for s in steps]
     assert any("budgets.py raises" in r for r in runs)
-    (count,) = [r for r in runs if "cargo bench" in r]
+    (count,) = [r for r in runs if "cargo bench" in r and "--no-run" not in r]
     assert "for run in first second" in count and "--output-format=json" in count
     (check,) = [r for r in runs if "budgets.py check" in r]
     assert "first.json second.json" in check
@@ -145,6 +145,59 @@ def test_the_workflow_gates_every_push_and_pull_request_and_a_release_calls_it()
     assert call["uses"] == "./.github/workflows/budgets.yml"
     assert call["with"]["release-check"] == "${{ needs.version.outputs.version }}"
     assert "budgets" in release["jobs"]["publish"]["needs"]
+
+
+#: The variables that stop the wall clock under the counts.
+FROZEN = {"LD_PRELOAD", "FAKETIME", "FAKETIME_DONT_FAKE_MONOTONIC", "NO_FAKE_STAT"}
+
+
+def test_the_counts_run_under_a_frozen_clock_and_nothing_else_does():
+    """Polars' maps draw their hash seed once a process from the time since
+    the epoch, among other things, and the seed moved a bank case's count
+    by up to 2% between two runs of one binary; under a stopped wall clock
+    they agree within 0.001%. So the counting step, and only it, runs under
+    libfaketime: the job installs it, finds it and shows it stops `date`;
+    the bench is built before, at the machine's clock; the bench passes the
+    variables through the harness, which clears the environment; and no
+    other step, job or workflow sets them, nor does any product source read
+    them (the product keeps its seeds)."""
+    steps = WORKFLOW["jobs"]["instructions"]["steps"]
+    (prep,) = [s for s in steps if s.get("uses") == "./.github/actions/linux-build-prep"]
+    assert "faketime" in prep["with"]["packages"].split()
+    names = [s.get("name", "") for s in steps]
+    build = names.index("build the bench")
+    clock = names.index("the frozen clock")
+    count = names.index("count every case, twice")
+    assert build < clock < count
+    assert "--no-run" in steps[build]["run"] and "env" not in steps[build]
+    probe = steps[clock]
+    assert probe["id"] == "clock"
+    assert "dpkg -L libfaketime" in probe["run"]
+    assert 'test "$frozen" = "$FROZEN_AT"' in probe["run"]
+    assert "lib=$lib" in probe["run"] and "GITHUB_OUTPUT" in probe["run"]
+    env = steps[count]["env"]
+    assert set(env) == FROZEN
+    assert env["LD_PRELOAD"] == "${{ steps.clock.outputs.lib }}"
+    assert env["FAKETIME"] == probe["env"]["FROZEN_AT"]
+    assert re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d", env["FAKETIME"]), "stopped, not ticking"
+    assert env["FAKETIME_DONT_FAKE_MONOTONIC"] == "1" and env["NO_FAKE_STAT"] == "1"
+    for i, step in enumerate(steps):
+        if i != count:
+            assert not FROZEN & set(step.get("env") or {}) - {"FROZEN_AT"}, step.get("name")
+    assert not FROZEN & set(WORKFLOW.get("env") or {})
+    assert not FROZEN & set(WORKFLOW["jobs"]["instructions"].get("env") or {})
+    bench = (REPO / "crates/online-bench/benches/instructions.rs").read_text(encoding="utf-8")
+    (listed,) = re.findall(r"const FAKETIME_ENV: \[&str; \d+\] = \[([^\]]*)\]", bench)
+    assert set(re.findall(r'"([A-Z_]+)"', listed)) == FROZEN
+    (config,) = re.findall(r"fn counted_from\(.*?\n\}", bench, re.S)
+    assert ".pass_through_envs(FAKETIME_ENV)" in config
+    for workflow in (REPO / ".github").rglob("*.yml"):
+        if workflow.name != "budgets.yml":
+            assert "FAKETIME" not in workflow.read_text(encoding="utf-8"), workflow
+    product = [*(REPO / "crates").glob("*/src/**/*.rs"), *(REPO / "python").rglob("*.py")]
+    assert product
+    for path in product:
+        assert "FAKETIME" not in path.read_text(encoding="utf-8"), path
 
 
 def test_this_files_history_explains_every_raise():

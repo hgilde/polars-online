@@ -123,6 +123,12 @@ class Offline(RuntimeError):
     The one failure a test turns into a skip."""
 
 
+#: How every skip of a test whose public dataset could not be downloaded
+#: begins; the dataset's name follows. ``tests/offline_skips.py`` reads it:
+#: where the job restored its datasets before the tests, such a skip fails.
+OFFLINE_SKIP = "offline: could not download "
+
+
 #: Errors a retry can fix: no route, a timeout, a reset, and a response cut
 #: short (``http.client.IncompleteRead``, which is not an ``OSError`` -- one
 #: took a CI run down as a crash rather than a skip). An HTTP error is an
@@ -145,7 +151,9 @@ def download_pauses() -> tuple[float, ...]:
     ``CI`` variable set, as GitHub Actions and every other CI service set
     it), five attempts 5, 10, 20 and 40 seconds apart, so a server down for
     about a minute and a half is waited out: a run there has no one to
-    retry it, and a set that cannot be fetched skips its tests. Anywhere
+    retry it, and a set that cannot be fetched skips its tests, or fails
+    them in a job that restored its datasets first
+    (``tests/offline_skips.py``). Anywhere
     else, three attempts 2 and 4 seconds apart, so a run offline gives up
     within seconds rather than minutes."""
     return (5.0, 10.0, 20.0, 40.0) if os.environ.get("CI") else (2.0, 4.0)
@@ -263,8 +271,10 @@ def public_intraday_or_skip(dates: tuple[str, ...] = _DEFAULT_DATES) -> pl.DataF
 
     try:
         return public_intraday(dates)
-    except Offline:
-        pytest.skip("offline: could not download public intraday data")
+    except Offline as e:
+        pytest.skip(
+            f"{OFFLINE_SKIP}Binance's BTCUSDT 1-minute rows of {', '.join(dates)} ({e.__cause__})"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -366,7 +376,7 @@ def public_quotes_and_trades_or_skip(
     try:
         return public_quotes_and_trades(symbol, date)
     except Offline as e:
-        pytest.skip(f"offline: could not download {symbol} quotes and trades ({e.__cause__})")
+        pytest.skip(f"{OFFLINE_SKIP}{symbol} quotes and trades of {date} ({e.__cause__})")
 
 
 # ---------------------------------------------------------------------------
@@ -459,7 +469,7 @@ def nist_strd_linear_or_skip(name: str) -> dict[str, object]:
     try:
         return nist_strd_linear(name)
     except Offline as e:
-        pytest.skip(f"offline: could not download NIST StRD {name} ({e.__cause__})")
+        pytest.skip(f"{OFFLINE_SKIP}NIST StRD {name} ({e.__cause__})")
 
 
 # ---------------------------------------------------------------------------
@@ -494,4 +504,4 @@ def rdataset_or_skip(package: str, name: str) -> pl.DataFrame:
     try:
         return rdataset(package, name)
     except Offline as e:
-        pytest.skip(f"offline: could not download Rdatasets {package}/{name} ({e.__cause__})")
+        pytest.skip(f"{OFFLINE_SKIP}Rdatasets {package}/{name} ({e.__cause__})")
