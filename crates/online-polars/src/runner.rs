@@ -1800,6 +1800,19 @@ mod tests {
                 input().head(Some(0)),
                 vec![Column::new("e".into(), Vec::<f64>::new())],
             ),
+            // A frame of no columns keeps its height: polars takes the first
+            // column's height only at shape (0, 0), and so does this (task
+            // 335, F1, read in polars-core's `DataFrame::with_column`).
+            (
+                "a frame of no columns and n rows",
+                DataFrame::new(n as usize, vec![]).expect("a frame"),
+                many[..3].to_vec(),
+            ),
+            (
+                "a frame of no columns and n rows, a unit column broadcast",
+                DataFrame::new(n as usize, vec![]).expect("a frame"),
+                vec![Column::new("c".into(), [7.0f64])],
+            ),
         ];
         for (what, df, cols) in cases {
             let want = looped(df.clone(), cols.clone()).expect(what);
@@ -1813,6 +1826,13 @@ mod tests {
         let bad = vec![spec("a", 1.0), Column::new("b".into(), [1.0f64, 2.0])];
         let want = looped(input(), bad.clone()).expect_err("a shape mismatch");
         let got = with_columns(input(), bad).expect_err("a shape mismatch");
+        assert_eq!(got.to_string(), want.to_string());
+        // A frame of no columns and n rows refuses a column of another
+        // length, as polars does: its height is not the first column's.
+        let empty = || DataFrame::new(3, vec![]).expect("a frame");
+        let five = vec![Column::new("a".into(), [1.0f64, 2.0, 3.0, 4.0, 5.0])];
+        let want = looped(empty(), five.clone()).expect_err("a shape mismatch");
+        let got = with_columns(empty(), five).expect_err("a shape mismatch");
         assert_eq!(got.to_string(), want.to_string());
     }
 
