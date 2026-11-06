@@ -161,6 +161,16 @@ returns.
 
 ### Fixed
 
+- `.online.unnest` over specs whose fields share a name (fits of one kind
+  each have `weight_sum`, `settled_frac` and `withheld_reason`), or a field
+  named like a column of the frame, refuses while the query is built. It
+  raises Polars' `DuplicateError` naming the shared fields, the specs and
+  both remedies, `separator="."` or `pl.col(spec).struct.field(name)`,
+  where it failed later with Polars' message naming one column and no spec.
+  A spec with `window_size` and no `half_life` says to set `half_life` to
+  `"inf"` (`float("inf")` in Python) for a window that weighs every row
+  alike, and any other spec without a half-life gets the same remedy in a
+  plain message (task 344).
 - The refusal of a `huber_refit_rows` or `quantile_refit_rows` count above
   2^20, and `sgd`'s `refit_budget` docstring, give the per-row size under
   `huber_scale="rms"` as well as under the MAD, where they gave the MAD's
@@ -260,6 +270,12 @@ returns.
 
 ### Tests and documents
 
+- docs/PERFORMANCE.md §47 and `scripts/factor_residuals_bench.py` measure
+  factor ridges whose out-of-sample residuals feed a windowed ridge with a
+  forward target, in rows, groups, window length and snapshot cadence:
+  about 2 µs a row for one instrument, 2.7 KB of memory a window snapshot
+  (19 MB an instrument for two hours at a row a second), and a tenfold
+  saving from `snapshot_every="10s"` (task 344).
 - The writing rules are checked: `scripts/writing_checks.py` reports, for
   every error and warning, every public docstring and every guide, what
   breaks the message shape, the docstring section order, the glossary's
