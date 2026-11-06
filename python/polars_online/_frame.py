@@ -337,7 +337,15 @@ class ReadinessWarning(PolarsOnlineWarning, UserWarning):
     ``predict``, for the four findings below, which
     `docs/DIAGNOSTICS.md, Is it ready?
     <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#is-it-ready>`_
-    sets beside the gates that withhold a prediction. The first three judge a
+    sets beside the gates that withhold a prediction. The message begins
+    with its spec and group, ``spec "m" group "g":``. Under
+    ``group_close="session"`` each session span is a stream of its own and
+    can raise the same finding again, so there it is raised once per span,
+    and the message names the span by its session value, quoted as the group
+    is: ``spec "m" group "g" session "a":``, or ``session null`` for a null
+    value. Two spans that say the same finding are then two texts, and
+    Python's default warning filter, which shows a text it has already
+    shown from the same line only once, shows both. The first three judge a
     stream only once it is 95% settled (``settled_frac`` 0.95): before that, its
     early rows still move what a notice would say, and a notice cannot be taken
     back. A stream with no decay never settles, so it is never judged, and its

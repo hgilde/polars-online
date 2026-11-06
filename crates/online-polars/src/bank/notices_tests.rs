@@ -143,3 +143,53 @@ fn a_notice_left_in_a_dropped_group_is_said_once() {
     bank.fit_predict(&rows(1, 19, 1)).unwrap();
     assert_eq!(bank.take_notices().len(), 1);
 }
+
+/// A failed call's notices outlive it only in memory (code review of the
+/// release, task 334): `notices_left` is not state, and neither are the
+/// notices it points at -- `Notified::pending` is `#[serde(skip)]` -- so a
+/// bank saved and loaded after such a call holds no stream with a notice
+/// the next call's walk of its own groups could miss. The bank that failed
+/// says both groups' at its next completing call, whichever group it
+/// feeds; the loaded one holds none to say: the flag that a notice was
+/// raised is saved, its text is not, so neither group says it again.
+#[test]
+fn a_failed_calls_notices_do_not_outlive_a_save() {
+    let name = "fails-after-learning-saved";
+    let mut bank = Bank::new(vec![spec(name, "")]).unwrap();
+    let both = |from: usize, n: usize| {
+        let mut df = rows(1, from, n);
+        df.vstack_mut(&rows(2, from, n)).unwrap();
+        df
+    };
+    bank.fit_predict(&both(0, 19)).unwrap();
+    assert!(bank.take_notices().is_empty());
+    // Both groups' row 19 learned, and the call fails after it.
+    arm(name);
+    assert!(bank.fit_predict(&both(19, 1)).is_err());
+    assert!(reached(name), "the call reached the failure");
+    let held = |bank: &Bank| -> usize {
+        bank.states
+            .iter()
+            .flat_map(|hm| hm.values())
+            .flat_map(|s| &s.persisted.notified)
+            .map(|n| n.pending.len())
+            .sum()
+    };
+    assert_eq!(held(&bank), 2, "each group's stream holds its notice");
+    let bytes = bank.save_bytes().unwrap();
+
+    let mut loaded = Bank::load_bytes(&bytes, None).unwrap();
+    assert_eq!(held(&loaded), 0, "no notice text survives a save");
+    assert!(!loaded.notices_left);
+    loaded.fit_predict(&rows(1, 20, 1)).unwrap();
+    loaded.fit_predict(&rows(2, 20, 1)).unwrap();
+    assert!(loaded.take_notices().is_empty());
+
+    // The bank that failed says both at its next call, which feeds group 1
+    // alone.
+    bank.fit_predict(&rows(1, 20, 1)).unwrap();
+    let said = bank.take_notices();
+    assert_eq!(said.len(), 2, "{said:#?}");
+    assert!(said[0].starts_with(&format!("spec {name:?} group \"1\":")));
+    assert!(said[1].starts_with(&format!("spec {name:?} group \"2\":")));
+}
