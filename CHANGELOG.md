@@ -161,6 +161,18 @@ returns.
 
 ### Fixed
 
+- Two `lf.online.fit_predict` calls in series in one query, joined by a
+  `with_columns` or `.online.unnest`, no longer grow memory with the
+  stream. Polars keeps about ten frames per thread in flight between a
+  source and a node that runs on every thread, counting frames rather than
+  bytes, and this library's sources handed it whole 100,000-row chunks, so
+  a fast first stage ran the whole stream ahead of a slower second one:
+  1,379 MB at 4M rows for three factor ridges feeding a windowed ridge.
+  Every source (`fit_predict`, `predict`, `with_windows`, `refresh_time`)
+  now hands Polars its output in slices of at most 1 MiB, without copying,
+  and the same query holds 629 MB, flat in the stream's length. Output
+  values are unchanged; a single stage's collected frame has more, smaller
+  chunks (task 348).
 - `.online.unnest` over specs whose fields share a name (fits of one kind
   each have `weight_sum`, `settled_frac` and `withheld_reason`), or a field
   named like a column of the frame, refuses while the query is built. It
@@ -201,6 +213,10 @@ returns.
 
 ### Performance
 
+- The slices of task 348 cost Polars about 30 µs each: the fastest single
+  banks (a two-feature `ewridge`) run about 3% slower, and a realistic
+  pipeline within noise. Bounded memory when stages are chained is what it
+  buys (task 348).
 - `sgd`'s step no longer copies each target's step-gain gate on every row
   and writes it back to keep a refused row from moving a resting gate: the
   gate is moved in place and put back only on the rare refused row. The
