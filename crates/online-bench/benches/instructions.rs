@@ -148,6 +148,8 @@ fn windows(mut run: WindowsCase) -> WindowsCase {
 #[bench::scale_bank_by_history_large(args = ("bank.history:large"), setup = scale_setup)]
 #[bench::scale_bank_by_embargo_small(args = ("bank.embargo:small"), setup = scale_setup)]
 #[bench::scale_bank_by_embargo_large(args = ("bank.embargo:large"), setup = scale_setup)]
+#[bench::scale_bank_by_label_clock_small(args = ("bank.label_clock:small"), setup = scale_setup)]
+#[bench::scale_bank_by_label_clock_large(args = ("bank.label_clock:large"), setup = scale_setup)]
 #[bench::scale_bank_by_formula_window_small(args = ("bank.formula_window:small"), setup = scale_setup)]
 #[bench::scale_bank_by_formula_window_large(args = ("bank.formula_window:large"), setup = scale_setup)]
 #[bench::scale_bank_by_specs_small(args = ("bank.specs:small"), setup = scale_setup)]

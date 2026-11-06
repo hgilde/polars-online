@@ -778,7 +778,8 @@ pub use window::{
 ///
 ///   Schema 65's fixtures are kept (`tests/state_fixtures/v65/`).
 /// - 67 (2026-11-05, task 340, the user's two decisions of the same day;
-///   task 341 extends it), two changes in one schema:
+///   task 341, queued by the user the same day), three changes in one
+///   schema:
 ///   - the notices a failed call leaves: a bank's stream keeps, per model
 ///     instance, the readiness notices it has raised and the bank has not
 ///     yet taken (`online_polars`' `Notified::pending`, each a `Notice`:
@@ -796,6 +797,18 @@ pub use window::{
 ///     was written on every later save. A state of 65 or 66 saved past its
 ///     freeze carries it still and loads without it; one saved inside its
 ///     warm-up loads marked, as before, and goes on to the bit either way.
+///   - `label_clock`: a bank's stream under a spec with a label-time
+///     column holds each accepted row until the first row whose clock
+///     reaches its label time, so a held row (`online_polars`'
+///     `PendingRow`) gains its `label` time and the buffer is ordered by
+///     it, ties in arrival order; the stream keeps the clock of the label
+///     times it has learned at (`label_learned`), and counts the rows
+///     accepted with no label time and the held rows dropped unlearned
+///     (`labels_missing`, `labels_dropped`). Each is written only by such
+///     a stream, so no other state's bytes move. A row held under
+///     `embargo` keeps no label time: its release is decided by the delay
+///     on the elapsed clock as before, so a state of 66 or earlier,
+///     `embargo` rows included, loads as it was and goes on to the bit.
 ///
 ///   Schema 66's fixtures are kept (`tests/state_fixtures/v66/`).
 pub const SCHEMA_VERSION: u32 = 67;

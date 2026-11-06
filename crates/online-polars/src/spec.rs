@@ -24,7 +24,9 @@ mod values;
 pub use values::*;
 mod clock;
 pub use clock::*;
+mod label_clock;
 pub(crate) use clock::{ClockPolicy, clock_cfg_of};
+pub use label_clock::*;
 
 #[cfg(test)]
 mod kinds_tests;
@@ -2151,6 +2153,24 @@ pub struct Spec {
     /// one delay behind, events included.
     #[serde(default)]
     pub embargo: Option<Span>,
+    /// The column holding each row's label time, on the clock's own type
+    /// (docs/PLAN.md task 341): the row is scored where it sits, from the
+    /// labels known by then, and held until the first row whose clock is
+    /// at or past its label time, which releases it -- its label scored
+    /// against the prediction, interval and spread it was served with --
+    /// to be learned at its label time. `embargo` is the case where every
+    /// row's label time is its clock plus one delay. A list gives one
+    /// column per target; this version refuses a list whose entries
+    /// differ. Not written while `None`, so no other spec's bytes move.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label_clock: Option<LabelClock>,
+    /// The most rows a group may hold for their label times; `None` holds
+    /// any number. Past it, `held_overflow` decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_held_rows: Option<u64>,
+    /// `"refuse"` (the default) or `"drop_oldest"` ([`HELD_OVERFLOW`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_overflow: Option<String>,
     /// One state per key.
     #[serde(default)]
     pub group: Option<String>,
@@ -2603,6 +2623,7 @@ impl Spec {
                 }
             }
         }
+        self.check_label_clock()?;
         if let Some(d) = self.embargo.as_ref().map(Span::value)
             && (d.is_nan() || !d.is_finite() || d <= 0.0)
         {

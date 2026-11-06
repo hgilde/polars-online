@@ -258,6 +258,10 @@ def _spec_columns(specs: Iterable[dict[str, Any]]) -> set[str]:
         for key in _SCALAR_COLUMN_KEYS:
             if spec.get(key) is not None:
                 cols.add(spec[key])
+        # One label-time column, or one per target.
+        label = spec.get("label_clock")
+        if label is not None:
+            cols.update([label] if isinstance(label, str) else label)
     return cols
 
 
@@ -690,6 +694,7 @@ _ORDER_FREE_ONLY_WHEN: dict[str, tuple[Any, ...]] = {
     "snapshot_every": (None,),
     "max_rows_between_snapshots": (None,),
     "embargo": (None,),
+    "label_clock": (None,),
     "gram_block_rows": (None,),
     "drift_action": ("flag",),
     "session": (None,),

@@ -1057,6 +1057,93 @@ fn notice_first() -> (Vec<u8>, DataFrame) {
     )
 }
 
+/// The specs of the eleventh bank file, `bank_label_clock` (schema 67,
+/// task 341): rows held for their label times, on an integer clock and on
+/// a `Datetime` one. The buffer is ordered by label time, so at the save it
+/// holds a row released after one that arrived later; it holds rows past
+/// the end of the first run, which the continuation learns; and the
+/// counts of labels that never arrived (a null label time) and of rows a
+/// full buffer dropped (`held_overflow = "drop_oldest"` at two rows) are
+/// both above 0. The continuation's `summary()` is frozen beside its
+/// output.
+fn label_specs() -> Vec<Spec> {
+    [
+        r#"{"name": "labelled", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 30.0, "gap_cap": 50.0, "weight": "w", "label_clock": "avail", "max_held_rows": 2, "held_overflow": "drop_oldest", "conformal": 0.9, "emit_metrics": true, "emit_sigma": true}"#,
+        r#"{"name": "labelled_ts", "model": {"type": "rls"}, "targets": ["y"], "features": ["x0"], "clock": "ts", "half_life": "1m", "gap_cap": "10m", "label_clock": ["avail_ts"]}"#,
+    ]
+    .iter()
+    .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))
+    .collect()
+}
+
+const LABEL_N: usize = 60;
+const LABEL_SPLIT: usize = 40;
+
+/// Rows two clock units apart, each label time its clock plus a delay of 0
+/// to 20 by the row's place in a cycle of eight, null on every ninth row
+/// from the fifth; a weight of 0 on every tenth from the eighth.
+fn label_frame() -> DataFrame {
+    let t: Vec<i64> = (0..LABEL_N as i64).map(|i| 2 * i).collect();
+    let delay = |i: usize| [7i64, 1, 11, 3, 0, 20, 5, 2][i % 8];
+    let avail: Vec<Option<i64>> = (0..LABEL_N)
+        .map(|i| (i % 9 != 4).then(|| t[i] + delay(i)))
+        .collect();
+    let ts: Vec<i64> = t.iter().map(|v| T0_NS + v * 1_000_000_000).collect();
+    let avail_ts: Vec<Option<i64>> = avail
+        .iter()
+        .map(|a| a.map(|v| T0_NS + v * 1_000_000_000))
+        .collect();
+    let datetime = |name: &str, v: Vec<Option<i64>>| {
+        Series::new(name.into(), v)
+            .cast(&DataType::Datetime(TimeUnit::Nanoseconds, None))
+            .unwrap()
+    };
+    let x0: Vec<f64> = (0..LABEL_N).map(|i| ((i * 7) % 11) as f64 - 5.0).collect();
+    let x1: Vec<f64> = (0..LABEL_N).map(|i| ((i * 5) % 9) as f64 - 4.0).collect();
+    let y: Vec<f64> = (0..LABEL_N)
+        .map(|i| 0.5 * x0[i] - x1[i] + ((i * 3) % 7) as f64 * 0.1)
+        .collect();
+    let w: Vec<f64> = (0..LABEL_N)
+        .map(|i| {
+            if i % 10 == 7 {
+                0.0
+            } else {
+                1.0 + (i % 3) as f64 * 0.5
+            }
+        })
+        .collect();
+    df!("t" => t, "avail" => avail, "ts" => datetime("ts", ts.into_iter().map(Some).collect()),
+        "avail_ts" => datetime("avail_ts", avail_ts), "x0" => x0, "x1" => x1, "y" => y, "w" => w)
+    .unwrap()
+}
+
+fn label_first() -> (Vec<u8>, DataFrame) {
+    let df = label_frame();
+    let mut bank = Bank::new(label_specs()).unwrap();
+    bank.fit_predict(&df.slice(0, LABEL_SPLIT)).unwrap();
+    let summary = bank.summary(0, None).unwrap();
+    for name in ["labels_missing", "labels_dropped"] {
+        let n = summary.column(name).unwrap().i64().unwrap().get(0).unwrap();
+        assert!(n > 0, "{name} is {n} at the save");
+    }
+    (
+        bank.save_bytes().unwrap(),
+        df.slice(LABEL_SPLIT as i64, LABEL_N - LABEL_SPLIT),
+    )
+}
+
+fn label_run(bytes: &[u8], input: &DataFrame) -> Ran {
+    let mut bank = Bank::load_bytes(bytes, Some(&label_specs()))?;
+    let again = bank.save_bytes()?;
+    let cols = bank.fit_predict(input).map_err(|e| e.to_string())?;
+    let out = DataFrame::new(input.height(), cols).map_err(|e| e.to_string())?;
+    let summary = bank.summary(0, None)?;
+    Ok((
+        again,
+        vec![("fit_predict".into(), out), ("summary".into(), summary)],
+    ))
+}
+
 fn notice_run(bytes: &[u8], input: &DataFrame) -> Ran {
     let mut bank = Bank::load_bytes(bytes, Some(&notice_specs()))?;
     let again = bank.save_bytes()?;
@@ -1312,6 +1399,11 @@ fn kinds() -> Vec<Kind> {
             name: "bank_notice_pending",
             first: notice_first,
             run: notice_run,
+        },
+        Kind {
+            name: "bank_label_clock",
+            first: label_first,
+            run: label_run,
         },
         Kind {
             name: "with_windows",
@@ -1854,10 +1946,18 @@ const CONTINUES_WITHIN: &[Within] = &[
 /// co-moment matrix ([`CONTINUES_WITHIN`]).
 const COV_FIELDS: &[&str] = &["corr_", "cov_"];
 
+/// The columns a frozen frame has gained since a kept schema: `summary()`'s
+/// counts of labels missing and dropped (schema 67, task 341), which a kept
+/// fixture's frame was written without. A kept frame takes each from the
+/// current fixture's frame of the same name, where that has it.
+const ADDED_SINCE: &[&str] = &["labels_missing", "labels_dropped"];
+
 /// `kept`, a kept fixture's frozen frame, with the struct fields that
 /// [`MOVED_SINCE`] names taken from `now`, the current fixture's frame of
-/// the same name.
+/// the same name, and the columns [`ADDED_SINCE`] names that it lacks
+/// taken from `now` at their place there.
 fn moved_since(kept: &DataFrame, now: &DataFrame) -> DataFrame {
+    let kept = &added_since(kept, now);
     let moved = |name: &str| MOVED_SINCE.iter().any(|p| name.starts_with(p));
     let columns: Vec<Column> = kept
         .columns()
@@ -1889,6 +1989,27 @@ fn moved_since(kept: &DataFrame, now: &DataFrame) -> DataFrame {
                 .with_outer_validity(kst.rechunk_validity())
                 .into_series()
                 .into_column()
+        })
+        .collect();
+    DataFrame::new(kept.height(), columns).unwrap()
+}
+
+/// [`moved_since`]'s columns gained: `kept` with each column
+/// [`ADDED_SINCE`] names that `now` has and `kept` lacks, in `now`'s order.
+fn added_since(kept: &DataFrame, now: &DataFrame) -> DataFrame {
+    let lacks = |n: &str| ADDED_SINCE.contains(&n) && kept.column(n).is_err();
+    if !now.columns().iter().any(|c| lacks(c.name())) || now.height() != kept.height() {
+        return kept.clone();
+    }
+    let columns: Vec<Column> = now
+        .columns()
+        .iter()
+        .filter_map(|c| {
+            if lacks(c.name()) {
+                Some(c.clone())
+            } else {
+                kept.column(c.name()).ok().cloned()
+            }
         })
         .collect();
     DataFrame::new(kept.height(), columns).unwrap()
@@ -2059,6 +2180,32 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
         }),
         ("bank_notice_pending", "a pending notice's span", |p, v| {
             p.contains(".pending.") && p.ends_with(".span") && v.as_str() == Some(" session \"a\"")
+        }),
+        // Schema 67 (task 341): rows held for their label times, on an
+        // integer clock and a temporal one; the clock of the labels
+        // learned; and the counts of labels missing and dropped. The
+        // buffer's order by label time is held by
+        // `a_label_buffer_is_frozen_out_of_arrival_order`.
+        (
+            "bank_label_clock",
+            "a held row's integer label time",
+            |p, _| p.contains(".pending.") && p.ends_with(".label.I64"),
+        ),
+        (
+            "bank_label_clock",
+            "a held row's temporal label time",
+            |p, _| p.contains(".pending.") && p.ends_with(".label.Ns"),
+        ),
+        (
+            "bank_label_clock",
+            "the clock of the labels learned",
+            |p, _| p.contains(".label_learned."),
+        ),
+        ("bank_label_clock", "a count of labels missing", |p, v| {
+            p.ends_with(".labels_missing") && v.as_u64().is_some_and(|n| n > 0)
+        }),
+        ("bank_label_clock", "a count of labels dropped", |p, v| {
+            p.ends_with(".labels_dropped") && v.as_u64().is_some_and(|n| n > 0)
         }),
         // Schema 66 (task 328): the rows a window's ring has taken.
         (
@@ -2458,6 +2605,42 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
             "{kind}: no leaf of the state holds {form}, so the fixture freezes nothing of it"
         );
     }
+}
+
+/// The `bank_label_clock` fixture freezes a buffer in label-time order that
+/// is not its arrival order: some held row sits after one that arrived
+/// later, so a loader that read the rows back in arrival order would release
+/// them in another order (schema 67, task 341).
+#[test]
+fn a_label_buffer_is_frozen_out_of_arrival_order() {
+    if regenerating() {
+        return;
+    }
+    let f = frozen::ALL
+        .iter()
+        .find(|f| f.name == "bank_label_clock")
+        .expect("the label_clock fixture");
+    let v = rmpv::decode::read_value(&mut unhex(f.state).as_slice()).unwrap();
+    let mut all = Vec::new();
+    leaves(&v, "", &mut all);
+    // Each held row's arrival clock, in buffer order, by the stream it is in.
+    let mut by_stream: std::collections::BTreeMap<String, Vec<i64>> = Default::default();
+    for (p, v) in &all {
+        if let Some(at) = p.find(".pending.")
+            && p.ends_with(".clock.I64")
+        {
+            by_stream
+                .entry(p[..at].to_string())
+                .or_default()
+                .push(v.as_i64().unwrap());
+        }
+    }
+    assert!(
+        by_stream
+            .values()
+            .any(|c| c.windows(2).any(|w| w[1] < w[0])),
+        "no held row sits after one that arrived later: {by_stream:?}"
+    );
 }
 
 // --- regeneration -----------------------------------------------------------

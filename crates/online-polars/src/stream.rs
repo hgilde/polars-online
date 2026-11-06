@@ -16,7 +16,7 @@ use online_core::{
 use online_core::{ClockValue, CoefVariance, ExactCaps, Stamp};
 use serde::{Deserialize, Serialize};
 
-use crate::arrow::ClockCol;
+use crate::arrow::{ClockCol, LabelTimes};
 use crate::checks::{CheckCfg, Checks, RowView};
 use crate::resid_window::ResidWindow;
 use crate::rows::{FeatureCols, FeatureRows};
@@ -1457,6 +1457,7 @@ impl HeldBreak {
 
 mod label_delay;
 pub use label_delay::PendingRow;
+use label_delay::{LabelRun, held_kind};
 
 /// A spec's `embargo` as the release compares the elapsed clock with it
 /// (docs/PLAN.md task 176): its clock units, and its integer nanoseconds
@@ -1813,6 +1814,24 @@ pub struct Persisted {
     /// the next accepted one, so no other state's bytes move. Schema 64.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restart_fold: Option<ClockState>,
+    /// Under `label_clock`, the clock of the label times the models have
+    /// learned at: a released row's step is its label time's from the one
+    /// before it (task 341, schema 67). Written only by such a stream.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label_learned: Option<ClockState>,
+    /// Under `label_clock`, the rows accepted with a null label time, which
+    /// are scored and never learned. Not written while 0.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub labels_missing: u64,
+    /// Under `label_clock`, the held rows dropped unlearned: by a full
+    /// buffer under `held_overflow = "drop_oldest"`, or by a clock reset.
+    /// Not written while 0.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub labels_dropped: u64,
+}
+
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
 }
 
 /// [`Persisted::score_pred`] holds nothing worth writing.
@@ -2218,37 +2237,6 @@ impl Stream {
         !self.persisted.drift.is_empty() && spec.drift_action.as_deref() == Some("reset")
     }
 
-    /// The part of the clock of the rows held under `embargo` that a fresh
-    /// bank fed the rows after a drift reset's row never sees: the first
-    /// held row's `d_clock`, its step from the row that fired, less its
-    /// `d_fresh`, the step it reads as that fresh bank's first accepted
-    /// row. What an instance restarted since that row arrived takes out of
-    /// the held clock for a row it scores after every row held now; `None`
-    /// where no row is held, so that the row scored is the first such an
-    /// instance will learn.
-    fn front_cut(&self) -> Option<f64> {
-        self.persisted
-            .pending
-            .front()
-            .map(|r| r.d_clock - r.d_fresh)
-    }
-
-    /// The clock the rows held under `embargo` have covered, as instance
-    /// `i`'s next row reads it: the held rows' summed steps, or, for an
-    /// instance restarted since the first of them arrived, those a fresh
-    /// bank fed the rows after the restart reads -- the first held row's
-    /// step from the row that fired taken out ([`Self::front_cut`]),
-    /// none while no row is held.
-    fn held_clock(&self, i: usize) -> f64 {
-        let held = self.persisted.pending_clock.get(i).copied().unwrap_or(0.0);
-        if self.persisted.pending_clock.is_empty()
-            || !self.persisted.restarted.get(i).copied().unwrap_or(false)
-        {
-            return held;
-        }
-        self.front_cut().map_or(0.0, |cut| held - cut)
-    }
-
     /// Summed over this stream's model instances (one per half-life).
     /// The bytes this group's Huber refit buffers can hold at most, over
     /// its model instances: what a bank reserves against the spec's
@@ -2602,7 +2590,7 @@ impl Stream {
                 ungated_drift: spec.emit_drift && !spec.model.predicts_no_target(),
                 // Only a delay ever holds rows: without one there is no
                 // clock to keep, and none is written.
-                pending_clock: if embargo.is_some() {
+                pending_clock: if embargo.is_some() || spec.label_clock.is_some() {
                     vec![0.0; instances]
                 } else {
                     Vec::new()
@@ -2618,6 +2606,9 @@ impl Stream {
                 last_session: None,
                 coef_cadence: CoefCadence::default(),
                 restart_fold: None,
+                label_learned: spec.label_clock.as_ref().map(|_| ClockState::new()),
+                labels_missing: 0,
+                labels_dropped: 0,
             },
             min_weight: gate_floors(spec),
             models,
@@ -2853,6 +2844,7 @@ impl Stream {
         {
             return Err("saved state's pending rows do not fit this spec".into());
         }
+        held_kind(spec, &mut p)?;
         // And values the bank would send a model: a held row is learned at
         // its release, where none of the bank's checks on a row run, so a
         // feature or target that is not usable, a weight that is not usable
@@ -3136,6 +3128,7 @@ impl Stream {
                 drift_ri: ri,
                 learn: true,
                 buffered: false,
+                parks: false,
                 w: w.unwrap_or(1.0),
             });
             if keep_elapsed {
@@ -3171,6 +3164,7 @@ impl Stream {
         features: &FeatureCols,
         targets: &[Vec<f64>],
         clock: Option<&ClockCol>,
+        label: Option<&LabelTimes>,
         session: Option<&[u64]>,
         weight: Option<&[f64]>,
         rows: &[usize],
@@ -3203,12 +3197,25 @@ impl Stream {
                 rows,
                 base,
                 None,
-                self.embargo.is_some() || formulas.is_some(),
+                self.keeps_elapsed(formulas.is_some()),
                 &mut self.persisted.restart_fold.clone(),
             )
             .ok()?;
         let mut pending = self.persisted.pending.clone();
         let mut held_break = self.persisted.held_break;
+        let mut learned = self.persisted.label_learned.clone();
+        let (mut missing, mut dropped) = (0, 0);
+        let mut places = Vec::new();
+        let mut labels = LabelRun::of(
+            spec,
+            cfg,
+            self.exact_caps,
+            label,
+            &mut learned,
+            &mut missing,
+            &mut dropped,
+            &mut places,
+        );
         Self::apply_label_delay(
             self.embargo,
             &mut pending,
@@ -3219,6 +3226,7 @@ impl Stream {
             targets,
             formulas,
             None,
+            labels.as_mut(),
         );
         // A reset rebuilds each instance's model and its residual ring, as
         // `Instance::reset` does, so their shadows start empty.
@@ -3313,6 +3321,7 @@ impl Stream {
         features: &FeatureRows,
         targets: &[Vec<f64>],
         clock: Option<&ClockCol>,
+        label: Option<&LabelTimes>,
         session: Option<&[u64]>,
         weight: Option<&[f64]>,
         rows: &[usize],
@@ -3348,7 +3357,7 @@ impl Stream {
             rows,
             base,
             coef_at,
-            self.embargo.is_some() || formulas.is_some(),
+            self.keeps_elapsed(formulas.is_some()),
             &mut restart_fold,
         )?;
         for plan in plans.iter().filter(|p| p.accept) {
@@ -3404,6 +3413,20 @@ impl Stream {
         // detection restarts the models under an `embargo`.
         let mut front_cuts: Vec<Option<f64>> = Vec::new();
         let keep_cuts = self.embargo.is_some() && self.resets_on_drift(spec);
+        let mut learned = self.persisted.label_learned.take();
+        let (mut missing, mut dropped) =
+            (self.persisted.labels_missing, self.persisted.labels_dropped);
+        let mut places: Vec<(u32, u32)> = Vec::new();
+        let mut labels = LabelRun::of(
+            spec,
+            cfg,
+            self.exact_caps,
+            label,
+            &mut learned,
+            &mut missing,
+            &mut dropped,
+            &mut places,
+        );
         let released = Self::apply_label_delay(
             self.embargo,
             &mut self.persisted.pending,
@@ -3414,7 +3437,11 @@ impl Stream {
             targets,
             formulas,
             keep_cuts.then_some(&mut front_cuts),
+            labels.as_mut(),
         );
+        self.persisted.label_learned = learned;
+        self.persisted.labels_missing = missing;
+        self.persisted.labels_dropped = dropped;
 
         // A released row whose formula target resolved with a value, and
         // whose plain targets gave none at its row, is learned from now
@@ -3505,6 +3532,7 @@ impl Stream {
                         false,
                         None,
                         &front_cuts,
+                        &places,
                     );
                 }
                 if seen {
@@ -3527,6 +3555,7 @@ impl Stream {
                     false,
                     None,
                     &front_cuts,
+                    &places,
                 );
             });
         } else if let Some(inst) = insts.first_mut() {
@@ -3542,6 +3571,7 @@ impl Stream {
                 drift_resets,
                 Some(&mut fired),
                 &front_cuts,
+                &places,
             );
         }
         drop(insts);
@@ -3691,6 +3721,7 @@ impl Stream {
                 drift_ri: ri,
                 learn: false,
                 buffered: false,
+                parks: false,
                 w: 1.0,
             };
             // Scored against the state as it stands, so the learned clock is
@@ -3845,6 +3876,8 @@ impl Stream {
             n_rows,
             self.persisted.rows_seen,
         );
+        // Scoring holds no row.
+        let places: [(u32, u32); 0] = [];
         if insts.len() > 1 {
             use rayon::prelude::*;
             insts.par_iter_mut().for_each(|inst| {
@@ -3858,6 +3891,7 @@ impl Stream {
                     false,
                     None,
                     &front_cuts,
+                    &places,
                 );
             });
         } else if let Some(inst) = insts.first_mut() {
@@ -3871,6 +3905,7 @@ impl Stream {
                 false,
                 None,
                 &front_cuts,
+                &places,
             );
         }
     }
@@ -4201,6 +4236,10 @@ struct RowPlan {
     /// Pushed into the `embargo` buffer as it was scored: its prediction
     /// is kept for the diagnostics to fold when it matures (C21).
     buffered: bool,
+    /// Under `label_clock`, a row only scored and never held -- its weight
+    /// 0, or its label time null -- whose step still joins the held rows'
+    /// clock, as a held row's does.
+    parks: bool,
     w: f64,
 }
 
@@ -4455,6 +4494,10 @@ fn run_instance(
     // a clock reset restarts an instance: it drops every held row, and its
     // own row and every row after it step as a fresh bank's would.
     front_cuts: &[Option<f64>],
+    // Under `label_clock`, for each row held, by its `ri`, where it went
+    // into the buffer and the row a full buffer dropped after it
+    // ([`u32::MAX`] for none); empty elsewhere.
+    places: &[(u32, u32)],
 ) -> bool {
     let mut drift_seen = false;
     // No clock column: the clock is the row count.
@@ -5049,7 +5092,19 @@ fn run_instance(
             if kept {
                 record.extend_from_slice(&sc.ungated);
             }
-            inst.score_pred.push_back(record);
+            // Under `label_clock` the buffer is ordered by label time, and
+            // the records keep its order (task 341).
+            // `places`, by the row, says where (task 341): kept beside the
+            // plans, as `front_cuts` is, so no other spec's plan grows.
+            match places.get(ri) {
+                Some(&(at, drop)) => {
+                    inst.score_pred.insert(at as usize, record);
+                    if drop != u32::MAX {
+                        inst.score_pred.remove(drop as usize);
+                    }
+                }
+                None => inst.score_pred.push_back(record),
+            }
         } else if !plan.direct() {
             let n = step.pred.len();
             let conformal = inst.conformal.is_some();
@@ -5382,7 +5437,7 @@ fn run_instance(
             *inst.restarted = false;
         }
         if let Some(c) = inst.pending_clock.as_deref_mut() {
-            if plan.buffered {
+            if plan.buffered || plan.parks {
                 *c += plan.d_clock;
             } else if !plan.direct() {
                 *c -= plan.d_clock;

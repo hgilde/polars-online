@@ -187,6 +187,16 @@ def embargo(
     rewritten. Reach for this when a delay has to be visible in the data (an
     oracle, a demonstration, or an engine that is not this one).
 
+    When each label arrives at a time of its own, give the spec a
+    ``label_clock`` column of those times rather than doubling by hand. A
+    doubled stream learns the same labels at the same clocks, so its
+    predict rows' predictions are the ones a ``label_clock`` bank serves,
+    but its learn rows form every residual diagnostic from a fresh
+    prediction, one the row was never shown: on New York's 2013 flights its
+    90% interval covered 88.0% of the delays it was shown while reporting
+    90.0%. ``label_clock`` scores each label against the prediction and
+    interval its row was served.
+
     ``delay`` is measured the way a spec's clock parameters are: a number of
     the clock's own units for a numeric clock, and a duration for a
     ``Datetime``, ``Date`` or ``Duration`` one (``pl.duration(minutes=5)``,

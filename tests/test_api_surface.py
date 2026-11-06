@@ -608,6 +608,13 @@ ENUM_PROBES: list[
         {"session": {"session_gap": None}},
     ),
     (
+        "spec.held_overflow",
+        "ewridge",
+        {"clock": "t", "gap_cap": 10.0, "label_clock": "avail", "max_held_rows": 5},
+        "held_overflow",
+        "word",
+    ),
+    (
         "spec.session_gap",
         "ewridge",
         {"clock": "t", "gap_cap": 10.0, "session": "s", "session_gap": 1.0},
@@ -1001,6 +1008,7 @@ FREE_TEXT = {
     "session",
     "weight",
     "label",
+    "label_clock",
     "hazard_col",
     "exog_tvtp",
     "a",

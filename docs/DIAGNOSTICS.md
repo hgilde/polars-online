@@ -2078,6 +2078,22 @@ rows covered can then sit on either side of the number asked for. The step is
 taken once per scored row, so the radius moves faster in clock time where
 rows are denser. `conformal_rate` is 0.05 by default.
 
+**Under a long delay, set `conformal_rate` lower.** Under `embargo` or
+`label_clock` a row's label arrives after the row was shown its interval,
+and the row is scored against the radius it was shown. When hundreds of
+rows wait for their labels, the rows shown a radius that was too narrow
+all report their misses together, and the default step overshoots. On New
+York's 2013 flights (327,346 departures, the residual of a tree model's
+arrival delay, each label known at landing), one stream under an 8-hour
+`embargo` covered 90.3% of rows at a half-width of 189 minutes with the
+default 0.05, and 89.9% at 50.4 with 0.01; 0.002 gave 89.7% at 43.3. On
+the same rows with each label at its own arrival (`label_clock`), a
+simulation of the tracker gave 89.95% at 64.3 with 0.05 and 89.9% at 47.4
+with 0.01. A rule that sets the step from the rows in flight is being
+studied: dividing it by the square root of the rows waiting over-covered,
+91.3% at 49.2. Until then choose the rate on earlier months, as
+[CALIBRATION.md](CALIBRATION.md) chooses any setting.
+
 The recipe builds three 90% intervals on two streams, one with Gaussian
 noise and one with Student's t at 3 degrees of freedom, scaled to the same
 standard deviation:

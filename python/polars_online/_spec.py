@@ -843,6 +843,9 @@ def _common(
     emit_feature_health: bool = False,
     feature_health_half_life: float | Duration | None = None,
     embargo: float | Duration | None = None,
+    label_clock: str | Sequence[str] | None = None,
+    max_held_rows: int | None = None,
+    held_overflow: Literal["refuse", "drop_oldest"] | None = None,
     group: str | None = None,
     group_close: Literal["monotone", "session"] | None = None,
 ) -> dict[str, Any]:
@@ -908,6 +911,14 @@ def _common(
         "group": group,
         "group_close": group_close,
     }
+    # Written only when given, as the Rust spec writes them, so a spec
+    # without them is the dict it always was.
+    if label_clock is not None:
+        spec["label_clock"] = label_clock if isinstance(label_clock, str) else list(label_clock)
+    if max_held_rows is not None:
+        spec["max_held_rows"] = max_held_rows
+    if held_overflow is not None:
+        spec["held_overflow"] = held_overflow
     validate_spec(_json(spec))
     return spec
 

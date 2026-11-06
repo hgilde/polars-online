@@ -1226,6 +1226,11 @@ class ModelBank:
             The targets of a ``huber`` or ``sgd(loss="huber")`` stream that
             gave up the refit of their first rows to the spec's
             ``refit_budget``; 0 on every other spec.
+        ``labels_missing``, ``labels_dropped``
+            Under ``label_clock``, the rows learned from none of their labels:
+            those accepted with a null label time, and those held for their
+            label times and dropped, by ``held_overflow="drop_oldest"`` or by
+            a clock that restarted the stream; 0 on every other spec.
         ``settled_frac``, ``error_inflation``
             The warm-up readings of the stream's first instance after the
             last row (`docs/DIAGNOSTICS.md, Is it ready?

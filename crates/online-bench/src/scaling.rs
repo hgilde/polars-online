@@ -230,6 +230,12 @@ pub const CELLS: &[Cell] = &[
     cell("bank.chunk_rows", 64, 8, Const, Const),
     cell("bank.history", 1000, 8, Const, Const),
     cell("bank.embargo", 125, 8, Const, Pow(1)),
+    // Each row's label time its clock plus a delay spread evenly up to twice
+    // the size, so a short delay often overtakes a long one and a row goes
+    // into the held rows' order by label time, not at their end (task 341):
+    // placed by moving the shorter side of the buffer, a memmove linear in
+    // the rows held, so the work is declared O(n).
+    cell("bank.label_clock", 125, 8, Pow(1), Pow(1)),
     cell("bank.formula_window", 125, 8, Const, Pow(1)),
     cell("bank.ljung_box_lags", 2, 8, Pow(1), Pow(1)),
     cell("bank.robust_se_lags", 1, 8, Pow(1), Pow(1)),
@@ -283,6 +289,7 @@ pub const BENCH_CELLS: &[&str] = &[
     "bank.groups_seen_per_call",
     "bank.history",
     "bank.embargo",
+    "bank.label_clock",
     "bank.formula_window",
     "bank.specs",
     "bank.specs_distinct",
@@ -1233,6 +1240,7 @@ fn bank_setup(id: &'static str, n: usize, blocks: usize) -> ScaleRun {
         "chunk_rows" => chunk = n,
         "history" => warm = n,
         "embargo" => specs[0]["embargo"] = json!(n as f64),
+        "label_clock" => specs[0]["label_clock"] = json!("avail"),
         "formula_window" => {
             specs[0]["targets"] = json!([{
                 "name": "fwd",
@@ -1267,7 +1275,20 @@ fn bank_setup(id: &'static str, n: usize, blocks: usize) -> ScaleRun {
     online_polars::pool().unwrap_or_else(|e| panic!("{id}: {e}"));
     bank.set_threads(Some(1))
         .unwrap_or_else(|e| panic!("{id}: {e}"));
-    let df = frame(k, t, warm + blocks * block, 7, group_of.as_deref());
+    let mut df = frame(k, t, warm + blocks * block, 7, group_of.as_deref());
+    if dim == "label_clock" {
+        // The label times: the clock plus `(i·7919) mod 2n` clock units.
+        let avail: Vec<f64> = df
+            .column("t")
+            .and_then(|c| c.f64().cloned())
+            .unwrap_or_else(|e| panic!("{id}: {e}"))
+            .into_no_null_iter()
+            .enumerate()
+            .map(|(i, t)| t + ((i * 7919) % (2 * n)) as f64)
+            .collect();
+        df.with_column(Column::new("avail".into(), avail))
+            .unwrap_or_else(|e| panic!("{id}: {e}"));
+    }
     for part in chunks_of(&df, warm, 4_096) {
         bank.fit_predict(&part)
             .unwrap_or_else(|e| panic!("{id}: {e}"));

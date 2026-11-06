@@ -43,6 +43,10 @@ SUMMARY_SCHEMA = {
     # The targets that gave the refit of their first rows up to the
     # spec's `refit_budget` (task 277).
     "refit_given_up": pl.Int64,
+    # Under `label_clock`, the rows with no label time and the held rows
+    # dropped unlearned (task 341); 0 elsewhere.
+    "labels_missing": pl.Int64,
+    "labels_dropped": pl.Int64,
     # The readiness statistics (docs/WARMUP-AND-CONVERGENCE.md §3).
     "settled_frac": pl.Float64,
     "weight_sum_settled": pl.Float64,

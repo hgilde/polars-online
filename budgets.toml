@@ -352,6 +352,12 @@ growth = "1"
 small = 125
 large = 1000
 
+[scaling.cells."bank.label_clock"]
+what = "Bank::fit_predict with each row's label time its clock plus up to 250 clock units, then up to 2,000: a row goes into the held rows in label-time order, found by bisection and placed by moving the shorter side of the buffer, so linear in the rows held with a small constant (natively 0.006 us a row at about 100 held, 0.38 us at about 800), and leaves from their front"
+growth = "n"
+small = 125
+large = 1000
+
 [scaling.cells."bank.formula_window"]
 what = "a target 125 clock units ahead (rewm_mean) under an embargo of the same, then 1,000: O(1) a row in the rows held"
 growth = "1"

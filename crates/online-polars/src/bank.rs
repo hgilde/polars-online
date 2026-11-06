@@ -20,7 +20,8 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::arrow::{
-    ArrowChunk, ArrowCol, ClockArray, ClockCol, KeyDtype, KeyForm, chunk_from_frame_at, f64_values,
+    ArrowChunk, ArrowCol, ClockArray, ClockCol, KeyDtype, KeyForm, LabelTimes, chunk_from_frame_at,
+    f64_values,
 };
 use crate::column::F64Column;
 use crate::resolvers::{
@@ -272,6 +273,8 @@ struct SpecColumns {
     features: FeatureCols,
     targets: Vec<Vec<f64>>,
     clock: Option<ClockCol>,
+    /// Each row's label time, for a spec with `label_clock` (task 341).
+    label: Option<LabelTimes>,
     session: Option<Vec<u64>>,
     weight: Option<Vec<f64>>,
     /// The session column's *values*, in the chunk's own row order, for a
@@ -659,6 +662,66 @@ fn extract(
             }
         }))
     };
+    // Each row's label time, as the clock is read but with its nulls kept:
+    // a null is a label that never arrives (task 341).
+    let label = || -> PolarsResult<Option<LabelTimes>> {
+        let Some(l) = &spec.label_clock else {
+            return Ok(None);
+        };
+        let validity = |v: Option<&polars_arrow::bitmap::Bitmap>| -> Option<Vec<bool>> {
+            let v = v.filter(|v| v.unset_bits() > 0)?;
+            Some(match layout {
+                Some(perm) => perm.iter().map(|&i| v.get_bit(i)).collect(),
+                None => v.iter().collect(),
+            })
+        };
+        let ints = |a: &polars_arrow::array::Int64Array| -> Vec<i64> {
+            let values = a.values().as_slice();
+            match layout {
+                Some(perm) => perm.iter().map(|&i| values[i]).collect(),
+                None => values.to_vec(),
+            }
+        };
+        Ok(Some(match chunk.clock(spec, l.column())? {
+            ClockArray::F64(a) => {
+                let values = f64_values(a);
+                let v: Vec<f64> = match layout {
+                    Some(perm) => perm.iter().map(|&i| values[i]).collect(),
+                    None => values.into_owned(),
+                };
+                LabelTimes {
+                    values: ClockCol::F64(v),
+                    valid: None,
+                }
+            }
+            ClockArray::Nanos(a) => LabelTimes {
+                values: ClockCol::Ns(ints(a)),
+                valid: validity(a.validity()),
+            },
+            ClockArray::I64(a) => LabelTimes {
+                values: ClockCol::I64(ints(a)),
+                valid: validity(a.validity()),
+            },
+            // An unsigned label time past an `i64` is no place on an
+            // integer clock, which is one (task 200): never reached.
+            ClockArray::U64(a) => {
+                let n = layout.map_or(a.len(), <[usize]>::len);
+                let mut v = Vec::with_capacity(n);
+                let mut valid = Vec::with_capacity(n);
+                for j in 0..n {
+                    let x = a
+                        .get(layout.map_or(j, |perm| perm[j]))
+                        .and_then(|x| i64::try_from(x).ok());
+                    valid.push(x.is_some());
+                    v.push(x.unwrap_or(0));
+                }
+                LabelTimes {
+                    values: ClockCol::I64(v),
+                    valid: Some(valid),
+                }
+            }
+        }))
+    };
     let session = || -> PolarsResult<(Option<Vec<u64>>, Option<Utf8ViewArray>)> {
         match &spec.session {
             Some(c) if !optional(c) => {
@@ -721,6 +784,7 @@ fn extract(
         features: features?,
         targets: targets?,
         clock: clock?,
+        label: label()?,
         session,
         weight: weight?,
         session_str,
@@ -1203,6 +1267,7 @@ fn process<'s>(
                                 rows,
                                 &sc.targets,
                                 sc.clock.as_ref(),
+                                sc.label.as_ref(),
                                 sc.session.as_deref(),
                                 sc.weight.as_deref(),
                                 run,
@@ -3790,6 +3855,10 @@ impl Bank {
                     summary: stream.summary(),
                     solve_failures: stream.solve_failures(),
                     refit_given_up: stream.refits_given_up(),
+                    labels: (
+                        stream.persisted.labels_missing,
+                        stream.persisted.labels_dropped,
+                    ),
                     readiness: Some(stream.readiness(&self.specs[spec])),
                     fits: !self.specs[spec].model.reads_every_row(),
                 }
@@ -4276,7 +4345,24 @@ impl Bank {
                     idx,
                     *base,
                 )
-                .map_err(|refusal| backwards_clock(&specs[*si], refusal, chunk.row_base()))
+                .map_err(|refusal| backwards_clock(&specs[*si], refusal, chunk.row_base()))?;
+            // Under `label_clock`, a label time before its row, or a buffer
+            // past its bound (task 341).
+            stream
+                .check_labels(
+                    &specs[*si],
+                    &cfgs[*si],
+                    &sc.features,
+                    sc.clock.as_ref(),
+                    sc.label.as_ref(),
+                    sc.session.as_deref(),
+                    sc.weight.as_deref(),
+                    idx,
+                    *base,
+                )
+                .map_err(
+                    |r| polars_err!(ComputeError: "{}", r.message(&specs[*si], chunk.row_base())),
+                )
         });
         if let Err(e) = checked {
             drop(work);
@@ -4412,6 +4498,7 @@ impl Bank {
                             &sc.features,
                             &sc.targets,
                             sc.clock.as_ref(),
+                            sc.label.as_ref(),
                             sc.session.as_deref(),
                             sc.weight.as_deref(),
                             run,

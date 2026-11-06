@@ -208,6 +208,34 @@ refusals below. The README's *How a bank sees a stream* shows them at work.
     wait with the row after it, and run when that row is learned. A reset
     drops the held rows. Units: clock units, or without a ``clock`` the
     group's rows, a skipped row included.
+``label_clock``, ``max_held_rows``, ``held_overflow``
+    Why: when each label arrives at a time of its own, a flight's delay at
+    its landing, one delay for every row learns some labels before they are
+    known and others late. What: a column of each row's label time, on the
+    clock's own type. Each row is scored where it sits, from the labels
+    known by then, and held until the first row whose clock reaches its
+    label time, exactly at the time included. Then its label is scored
+    against the prediction, interval and spread the row was served with,
+    and the row is learned at its label time, so a short delay can be
+    learned before an earlier long one. ``resid`` on the row is its label
+    less that served prediction. ``embargo=d`` is the case
+    ``label_clock = clock + d``, and gives the same numbers wherever the
+    clock adds up exactly. A row with weight 0 is scored and not held, and
+    so is a row whose label time is null: its label never arrives, and
+    :meth:`~polars_online.ModelBank.summary` counts it in
+    ``labels_missing``. A label time before its row's clock is refused,
+    naming the row. A list gives one column per target; this version takes
+    a list only when every entry names the same column. ``max_held_rows``
+    bounds the rows a group holds; past it ``held_overflow="refuse"`` (the
+    default) refuses the chunk and ``"drop_oldest"`` drops the row that
+    arrived first, counted in ``labels_dropped``, as a clock reset's drop
+    is. Rows still held at the end are not learned unless the state is saved
+    and resumed. Refused beside ``embargo``, a window-expression target,
+    ``group_close``, a ``session`` column and ``drift_action="reset"``, and
+    for ``holt``, ``kalman``, ``hmm`` and ``micro``, whose score reaches from
+    the newest learned row. Cost: a held row is placed in label-time order
+    by bisection, moving the shorter side of the buffer, 0.006 microseconds
+    a row with about 100 rows held and 0.38 with about 800 (Apple M4 Pro).
 ``group``, ``group_close``
     One model state per value of the ``group`` column. ``group_close`` says
     when a key is finished, so its state can be dropped. ``"monotone"``: the
@@ -618,7 +646,11 @@ The diagnostics add, per slot:
        either side of it. Null until the first
        ``sigma`` exists. The step is taken once per scored row, so ``q``
        moves faster in clock time where rows are denser; the delivered
-       coverage decays on the clock.
+       coverage decays on the clock. Under ``embargo`` or ``label_clock``
+       each row is scored against the radius it was shown, when its label
+       arrives; with hundreds of rows waiting, misses arrive in bursts and
+       the default step overshoots, so set ``conformal_rate`` lower (0.01
+       held 90% at a quarter of the width on New York's 2013 flights).
    * - ``resid_quantiles``
      - ``abs_resid_q<p>_<slot>``
      - The exponentially weighted quantile of ``|resid|`` at level ``p``,

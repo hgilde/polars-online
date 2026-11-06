@@ -317,6 +317,28 @@ impl ClockCol {
     }
 }
 
+/// A stream's `label_clock` column as the bank hands it to a stream (task
+/// 341): each row's label time in the clock's own form, and which rows have
+/// one. A null, or a float that is not finite, is a label that never
+/// arrives.
+#[derive(Debug, Clone)]
+pub struct LabelTimes {
+    pub values: ClockCol,
+    /// `false` where the row's label time is null; `None` when none is.
+    pub valid: Option<Vec<bool>>,
+}
+
+impl LabelTimes {
+    /// Row `i`'s label time, `None` where it has none.
+    #[inline]
+    pub fn at(&self, i: usize) -> Option<ClockValue> {
+        if self.valid.as_ref().is_some_and(|v| !v[i]) {
+            return None;
+        }
+        Some(self.values.at(i)).filter(|v| !matches!(v, ClockValue::F64(f) if !f.is_finite()))
+    }
+}
+
 /// The columns a bank reads for one chunk, already cast.
 ///
 /// A name may appear twice with different forms: one spec may read a column as
@@ -748,6 +770,11 @@ fn wanted(specs: &[Spec]) -> Vec<(PlSmallStr, Want)> {
         if let Some(c) = &s.clock {
             push(c, Want::Clock);
         }
+        // Each row's label time, read as the clock is: a temporal one in
+        // nanoseconds, an integer one in its integers (task 341).
+        if let Some(l) = &s.label_clock {
+            push(l.column(), Want::Clock);
+        }
         if let Some(w) = &s.weight {
             push(w, Want::Number);
         }
@@ -1118,6 +1145,7 @@ fn first_readers(specs: &[Spec]) -> PlHashMap<&str, (&str, &'static str)> {
                     .chain(formula)
             }))
             .chain(s.clock.as_deref().map(|c| (c, "clock")))
+            .chain(s.label_clock.as_ref().map(|l| (l.column(), "label_clock")))
             .chain(s.weight.as_deref().map(|c| (c, "weight")))
             .chain(s.session.as_deref().map(|c| (c, "session")))
             .chain(s.group.as_deref().map(|c| (c, "group")));
@@ -1142,6 +1170,7 @@ fn check_clocks(df: &DataFrame, specs: &[Spec]) -> PolarsResult<()> {
             continue;
         };
         let dtype = col.dtype();
+        check_label_clock(df, spec, clock, dtype)?;
         let scale = spec
             .clock_scale()
             .map_err(|e| polars_err!(ComputeError: "{}", e))?;
@@ -1268,6 +1297,43 @@ fn check_clocks(df: &DataFrame, specs: &[Spec]) -> PolarsResult<()> {
                 spec.name, param, clock, dtype, clock, param
             );
         }
+    }
+    Ok(())
+}
+
+/// A spec's `label_clock` column against its clock (task 341): a label
+/// time is a place on the clock, so a temporal clock takes a temporal label
+/// column and a number clock a numeric one. A column the frame has not got
+/// is the bank's missing-column error to name.
+fn check_label_clock(
+    df: &DataFrame,
+    spec: &Spec,
+    clock: &str,
+    dtype: &DataType,
+) -> PolarsResult<()> {
+    let Some(label) = spec.label_clock.as_ref().map(|l| l.column()) else {
+        return Ok(());
+    };
+    let Ok(col) = df.column(label) else {
+        return Ok(());
+    };
+    let ldt = col.dtype();
+    let fits = if dtype.is_temporal() {
+        ldt.is_temporal() && !matches!(ldt, DataType::Time)
+    } else {
+        ldt.is_numeric() && !(ldt.is_integer() && !fits_64(ldt))
+    };
+    if !fits {
+        let want = if dtype.is_temporal() {
+            "a temporal column, as the clock is"
+        } else {
+            "a numeric column of the clock's own units"
+        };
+        polars_bail!(ComputeError:
+            "spec {:?}: label_clock column {:?} has dtype {}, and clock column {:?} has dtype \
+             {}, so its values are no places on the clock. Give label_clock {want}.",
+            spec.name, label, ldt, clock, dtype
+        );
     }
     Ok(())
 }

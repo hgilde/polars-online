@@ -693,6 +693,9 @@ pub struct SummaryRow<'a> {
     /// the cap on a buffer's ageing runs (`Stream::refits_given_up`,
     /// docs/PLAN.md task 277).
     pub refit_given_up: u64,
+    /// Under `label_clock`, the rows accepted with a null label time, and
+    /// the held rows dropped unlearned (task 341); 0 elsewhere.
+    pub labels: (u64, u64),
     /// Where the stream stands on the readiness statistics
     /// (docs/WARMUP-AND-CONVERGENCE.md §3); `None` where a caller has no
     /// stream to read them from.
@@ -723,10 +726,11 @@ pub fn counts(name: &str, values: impl IntoIterator<Item = Option<u64>>) -> Colu
     )
 }
 
-/// The `summary` frame for these rows, 20 columns: `group`, `rows_fed`,
+/// The `summary` frame for these rows: `group`, `rows_fed`,
 /// `rows_processed`, `rows_skipped`, `rows_learned`, `rows_zero_weight`,
 /// `weight_sum`, `clock_min`, `clock_max`, `clock_last`, `session_changes`,
-/// `clock_backwards`, `resets`, `solve_failures`, and the readiness
+/// `clock_backwards`, `resets`, `solve_failures`, `refit_given_up`,
+/// `labels_missing`, `labels_dropped`, and the readiness
 /// statistics (docs/WARMUP-AND-CONVERGENCE.md §3): `settled_frac`,
 /// `weight_sum_settled`, `error_inflation`, `support_coef_min`,
 /// `support_coef_min_feature` and `n_coef`. Every count is an `Int64`
@@ -783,6 +787,8 @@ pub fn summary_frame(
             "refit_given_up",
             rows.iter().map(|r| Some(r.refit_given_up)),
         ),
+        counts("labels_missing", rows.iter().map(|r| Some(r.labels.0))),
+        counts("labels_dropped", rows.iter().map(|r| Some(r.labels.1))),
         // The readiness statistics, NaN as null: a fraction that does not
         // exist (no decay), a ratio the model has not got, a share before
         // the first solve.

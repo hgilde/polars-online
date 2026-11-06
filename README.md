@@ -369,7 +369,7 @@ applies within each group, the clock included.
 | which rows belong to which model | `group`, `group_close` | [Groups](#groups) |
 | how much each row counts | `weight` | [Weights](#weights) |
 | when a model has seen enough to report | `min_weight`, `min_settled_frac`, `max_error_inflation` | [Warm-up](#warm-up) |
-| when a label may be learned | `embargo` | [Labels that arrive late](#labels-that-arrive-late) |
+| when a label may be learned | `embargo`, `label_clock` | [Labels that arrive late](#labels-that-arrive-late) |
 | what a null does, and how to keep a row from teaching a model | a null, a weight of 0, `predict` | [Nulls, and three ways to hold a row back](#nulls-and-three-ways-to-hold-a-row-back) |
 
 ### What a spec names
@@ -1413,8 +1413,9 @@ that much of the future before it predicts the rows in between. Every
 out-of-sample number after that is contaminated, and with a feature
 correlated with its own past, even a pure-noise column starts to look
 predictive. To learn each label only once it would have arrived, give the
-spec an `embargo`. To write the same delay out as rows,
-use `po.stream.embargo` in the query before the bank.
+spec an `embargo` when every label takes the same time, or a `label_clock`
+column when each arrives at a time of its own. To write a delay out as
+rows, use `po.stream.embargo` in the query before the bank.
 
 #### The built-in delay
 
@@ -1461,6 +1462,78 @@ row 300: scored at 14:30, having learned the rows up to 14:25, weight_sum 43.74
 | at the end of the stream | the rows still waiting are not learned, unless the state is saved and another run resumes from it |
 | in the state | the waiting rows are saved with it: one row's values for each row inside the delay, in each group |
 | row by row | `emit_clocks=True`, on any model, writes `scored_clock`, the row's own clock, and `learned_clock`, the clock of the newest row the model had learned from when it was scored, both in the clock column's own type. With no clock they are the row's index in its group |
+
+#### A label time per row
+
+Give a spec `label_clock="landed"`, a column of each row's label time on
+the clock's own type, when labels arrive at times of their own: a flight's
+delay is known when it lands. The bank scores each row where it sits,
+holds it, and learns it at its label time, at the first row whose clock
+has reached it. Its label is then scored against the prediction, the
+interval and the spread the row was served, so every residual diagnostic
+describes what was shown. `embargo="5m"` is the case where every label
+time is the clock plus five minutes, and the two give the same numbers.
+
+This code makes up flights, writes them to a file and fits them from it:
+
+```python
+from datetime import datetime, timedelta
+
+import numpy as np
+import polars as pl
+
+import polars_online as po
+
+# 1. Make up flights, one every ten minutes, whose delay is known only when each one lands.
+rng = np.random.default_rng(3)
+n = 20_000
+distance = rng.uniform(200.0, 2_000.0, n)                            # miles
+start = datetime(2024, 1, 1)
+pl.DataFrame({
+    "departed": pl.datetime_range(start, start + timedelta(minutes=10 * (n - 1)), "10m", eager=True),
+    "distance": distance,
+    "delay": 0.01 * distance + 10.0 * rng.standard_t(3, n),         # minutes late
+}).with_columns(
+    landed=pl.col("departed") + pl.duration(minutes=pl.col("distance") / 8.0 + 20.0),  # when the delay is known
+).write_parquet("flights.parquet")
+
+# 2. Fit them from the file, each delay learned at its landing.
+late = po.spec.ewridge(
+    "late", targets=["delay"], features=["distance"],
+    clock="departed", gap_cap="1h", half_life="2d",
+    label_clock="landed",   # learned at landing; each interval scored against the one served
+    conformal=0.9,
+)
+rows = pl.scan_parquet("flights.parquet").online.fit_predict([late]).unnest("late").collect()
+# 3. Count the intervals that held the delay each flight was served.
+served = rows.filter(pl.col("lo_delay").is_not_null())
+covered = served.select(((pl.col("delay") - pl.col("pred_delay")).abs() <= pl.col("hi_delay") - pl.col("pred_delay")).mean()).item()
+print(f"{served.height} intervals served, {covered:.3f} of them held the delay that landed,",
+      f"half-width {served.select((pl.col('hi_delay') - pl.col('pred_delay')).mean()).item():.1f} minutes")
+```
+
+```text
+19973 intervals served, 0.901 of them held the delay that landed, half-width 23.7 minutes
+```
+
+| case | what `label_clock` does |
+|---|---|
+| the order of learning | by label time, so a short flight landing first is learned before an earlier long one; rows with one label time in the order they arrived. Each is learned at its label time: its step is the one from the label time learned before it |
+| `resid` on a row | the label less the prediction the row was served |
+| a weight of 0, or a null label time | the row is scored and never held. A null is a label that never arrives: `summary()` counts it in `labels_missing` |
+| a label time before its row's clock | refused, naming the row: the column is not the label times |
+| how many rows wait | `max_held_rows` bounds them per group. Past it the chunk is refused, or with `held_overflow="drop_oldest"` the row that arrived first is dropped, counted in `labels_dropped` |
+| at a reset, and at the end of the stream | a reset drops the rows still waiting, counted in `labels_dropped`. Rows waiting at the end are not learned, unless the state is saved and another run resumes from it |
+| what it refuses | `embargo` beside it, a target that is a window expression, `group_close`, a `session` column and `drift_action="reset"`; and `holt`, `kalman`, `hmm` and `micro`, whose score reaches from the newest row learned, which `label_clock` moves to a label time |
+| cost | each held row goes into the waiting rows in label-time order: 0.006 microseconds a row with about 100 waiting, 0.38 with about 800 (Apple M4 Pro) |
+
+**With hundreds of labels in flight, set `conformal_rate` below its
+default of 0.05.** Each row is scored against the radius it was shown, so
+misses arrive in bursts and the default step overshoots: on New York's
+2013 flights under an 8-hour `embargo`, 0.05 held 90% of delays at a
+half-width of 189 minutes, and 0.01 held 90% at 50.
+[DIAGNOSTICS.md](docs/DIAGNOSTICS.md#conformal-intervals) has the
+measurement.
 
 #### The delay as data
 
