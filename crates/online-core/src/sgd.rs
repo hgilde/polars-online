@@ -935,11 +935,8 @@ impl TryFrom<SgdV3> for Sgd {
                 "sgd: the state's refit buffers do not match its cfg's huber_refit_rows".into(),
             );
         }
-        // The held |e|'s tree is not state: built from the rows.
-        let mut refit = refit;
-        refit
-            .iter_mut()
-            .for_each(|b| b.rebuild_median(cfg.n_features));
+        // The held |e|'s tree is not state: reading each buffer built it
+        // from the rows (`RefitBufFile`).
         if gain.len() != scales(keeps_gain(&cfg)) {
             return Err("sgd: the state's step gains do not match its cfg".into());
         }
@@ -1126,22 +1123,13 @@ impl Sgd {
     /// group whose reservation the budget cannot take, and to the models
     /// a reset rebuilds for it.
     pub fn refit_give_up(&mut self) {
-        for j in 0..self.refit.len() {
-            if let Some(t) = self.refit[j].give_up_over_budget() {
-                self.scale_from_held(j, &t);
-            }
-        }
+        huber_refit::give_up_over_budget(&mut self.refit, &mut self.mad, self.cfg.n_features);
     }
 
-    /// Target `j`'s MAD sketch built from the one-pass `|e|` its buffer
-    /// held, where it kept them: what a target whose refit never runs
-    /// goes on with online, by the rule the refit rebuilds it by
-    /// (`huber`'s, [`crate::huber_refit::one_pass_sketch`]).
+    /// Target `j`'s MAD sketch built from what its buffer held
+    /// ([`crate::huber_refit::Taken::rebuild_sketch`]).
     fn scale_from_held(&mut self, j: usize, t: &huber_refit::Taken) {
-        if let (Some(e), Some(q)) = (t.resid.as_deref(), self.mad.get_mut(j)) {
-            let rows = Rows::new(&t.rows, &t.ages, self.cfg.n_features);
-            *q = huber_refit::one_pass_sketch(&rows, e, q);
-        }
+        t.rebuild_sketch(self.mad.get_mut(j), self.cfg.n_features);
     }
 
     /// The bytes this model's refit buffers can hold at most

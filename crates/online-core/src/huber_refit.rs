@@ -218,7 +218,11 @@ pub fn refit_reservation(n_features: usize, refit_rows: u32, mad: bool) -> usize
 /// them that is not state ([`crate::held_median`]). A buffer saved before schema 65
 /// holds no `|e|` (`resid` is `None`), and its model goes on reading the
 /// sketch it fed, as that build did.
+///
+/// Read from a state through [`RefitBufFile`], which builds the tree from
+/// the rows held, so no loader can leave a buffer without it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "RefitBufFile")]
 pub(crate) struct RefitBuf {
     rows: Vec<f64>,
     ages: Vec<f64>,
@@ -236,9 +240,61 @@ pub(crate) struct RefitBuf {
     resid: Option<Vec<f64>>,
     /// The `|e|` held, in a tree by size at the weights the scale's decays
     /// leave them, where the buffer keeps them: built from the rows, not
-    /// state ([`Self::rebuild_median`] on a restore).
+    /// state ([`Self::rebuild_median`], as the buffer is read).
     #[serde(skip)]
     median: HeldMedian,
+}
+
+/// A [`RefitBuf`] as a state file holds it: every field but the tree,
+/// which is built from the rows as the buffer is read (task 335, F9: a
+/// loader that forgot to build it panicked on the buffer's next row).
+#[derive(Deserialize)]
+struct RefitBufFile {
+    rows: Vec<f64>,
+    ages: Vec<f64>,
+    learned: u32,
+    done: bool,
+    passes: u32,
+    abandoned: bool,
+    failed: bool,
+    over_budget: bool,
+    #[serde(default)]
+    resid: Option<Vec<f64>>,
+}
+
+impl From<RefitBufFile> for RefitBuf {
+    /// The buffer and its tree. A buffer whose rows are not `learned` rows
+    /// of one width with an `|e|` each, or whose scale's factors are not
+    /// each in `(0, 1]`, holds no tree; the configuration's check refuses
+    /// it ([`RefitBuf::fits`]) before any row reads one.
+    fn from(f: RefitBufFile) -> Self {
+        let mut b = Self {
+            rows: f.rows,
+            ages: f.ages,
+            learned: f.learned,
+            done: f.done,
+            passes: f.passes,
+            abandoned: f.abandoned,
+            failed: f.failed,
+            over_budget: f.over_budget,
+            resid: f.resid,
+            median: HeldMedian::new(1),
+        };
+        let n = b.learned as usize;
+        let width = (n > 0 && b.rows.len().is_multiple_of(n))
+            .then(|| (b.rows.len() / n).checked_sub(4))
+            .flatten();
+        let shaped =
+            b.resid.as_ref().is_some_and(|r| r.len() == n) && b.ages.len().is_multiple_of(4);
+        let factor = |f: f64| f > 0.0 && f <= 1.0;
+        if let (Some(nf), true) = (width, shaped)
+            && b.rows.chunks_exact(nf + 4).all(|r| factor(r[nf + 3]))
+            && b.ages.as_chunks::<4>().0.iter().all(|a| factor(a[1]))
+        {
+            b.rebuild_median(nf);
+        }
+        b
+    }
 }
 
 /// What a buffer held, taken from it ([`RefitBuf::take`]): the learned
@@ -248,6 +304,35 @@ pub(crate) struct Taken {
     pub rows: Vec<f64>,
     pub ages: Vec<f64>,
     pub resid: Option<Vec<f64>>,
+}
+
+impl Taken {
+    /// Target's MAD sketch `q` built from the one-pass `|e|` the buffer
+    /// held, where it kept them: what a target whose refit never runs --
+    /// given up, abandoned, failed, or left to the warm-up's least squares
+    /// -- goes on with online, by the rule the refit rebuilds it by
+    /// ([`one_pass_sketch`]). Nothing where the buffer kept no `|e|`, its
+    /// sketch having taken every row as it came, or where the target keeps
+    /// no sketch (`q` is `None`). The one rule `huber`, `quantile` and
+    /// `sgd(loss="huber")` share, `nf` their features.
+    pub(crate) fn rebuild_sketch(&self, q: Option<&mut EwQuantile>, nf: usize) {
+        if let (Some(e), Some(q)) = (self.resid.as_deref(), q) {
+            let rows = Rows::new(&self.rows, &self.ages, nf);
+            *q = one_pass_sketch(&rows, e, q);
+        }
+    }
+}
+
+/// Every target's refit given up before it begins, past the spec's
+/// `refit_budget`, and each target whose buffer held its rows' `|e|` given
+/// the sketch built from them ([`Taken::rebuild_sketch`]): `refit` and
+/// `mad` a model's per-target buffers and sketches, `nf` its features.
+pub(crate) fn give_up_over_budget(refit: &mut [RefitBuf], mad: &mut [EwQuantile], nf: usize) {
+    for (j, b) in refit.iter_mut().enumerate() {
+        if let Some(t) = b.give_up_over_budget() {
+            t.rebuild_sketch(mad.get_mut(j), nf);
+        }
+    }
 }
 
 impl RefitBuf {
@@ -316,7 +401,7 @@ impl RefitBuf {
     /// The tree of the `|e|` held, built again from the rows and runs in
     /// their order, each decay as the stream took it: what a restored
     /// buffer reads from, the weights the live buffer reached, to the bit.
-    pub(crate) fn rebuild_median(&mut self, nf: usize) {
+    fn rebuild_median(&mut self, nf: usize) {
         self.median = HeldMedian::new(1);
         let Some(e) = self.resid.as_deref().filter(|_| !self.done) else {
             return;
@@ -420,14 +505,17 @@ impl RefitBuf {
         if self.done {
             return false;
         }
-        if self.rows.is_empty() {
-            // Held at its full size from the first row, so it never grows
-            // past what a bank reserves for it ([`refit_reservation`]).
-            self.rows.reserve_exact(cap as usize * (x.len() + 4));
-            if let Some(r) = self.resid.as_mut() {
-                r.reserve_exact(cap as usize);
-                self.median.reserve(cap as usize);
-            }
+        // Held at its full size from the first row, so it never grows past
+        // what a bank reserves for it ([`refit_reservation`]); and from the
+        // first row after a restore, whose vectors hold only their rows
+        // (task 335, F6). A no-op on every other row.
+        let full = cap as usize * (x.len() + 4);
+        self.rows
+            .reserve_exact(full.saturating_sub(self.rows.len()));
+        if let Some(r) = self.resid.as_mut() {
+            let cap = cap as usize;
+            r.reserve_exact(cap.saturating_sub(r.len()));
+            self.median.reserve_to(1, cap);
         }
         self.rows.extend_from_slice(x);
         self.rows.extend_from_slice(&[y, w, lam, lam_s]);
@@ -1685,6 +1773,49 @@ mod tests {
         assert_eq!(default_bin_refit_rows(17), 510);
         assert_eq!(default_bin_refit_rows(64), 1920);
         assert_eq!(default_bin_refit_rows(usize::MAX), u32::MAX);
+    }
+
+    /// Read back from a state mid-refit, a buffer holds only its rows; its
+    /// next learned row reserves its full size again, rows, `|e|` and the
+    /// tree's nodes, so it never grows past the reservation by doubling
+    /// (task 335, F6), and it reads what the live buffer reads, its tree
+    /// built as it was read with no call a loader can forget (F9: read
+    /// alone, it had no tree and its next row panicked).
+    #[test]
+    fn a_buffer_read_back_mid_refit_reserves_its_full_size_again() {
+        let (nf, cap) = (3usize, 40u32);
+        let mut live = RefitBuf::keeping_resid();
+        let mut back: Option<RefitBuf> = None;
+        for i in 0..cap - 1 {
+            let x = [f64::from(i), 1.0, -f64::from(i % 5)];
+            let e = f64::from((i * 7) % 11) + 0.5;
+            if i == 13 {
+                let bytes = rmp_serde::to_vec_named(&live).unwrap();
+                let b: RefitBuf = rmp_serde::from_slice(&bytes).unwrap();
+                assert!(b.rows.capacity() < cap as usize * (nf + 4));
+                back = Some(b);
+            }
+            if let Some(b) = back.as_mut() {
+                assert_eq!(b.warm_scale(), live.warm_scale(), "row {i}");
+                b.learn_scored(&x, 1.0, e, 1.0, 0.99, 0.98, cap);
+                if i % 4 == 0 {
+                    b.age(0.9, 0.9, cap);
+                }
+            }
+            live.learn_scored(&x, 1.0, e, 1.0, 0.99, 0.98, cap);
+            if i % 4 == 0 {
+                live.age(0.9, 0.9, cap);
+            }
+        }
+        let back = back.unwrap();
+        assert_eq!(back, live);
+        assert_eq!(back.warm_scale(), live.warm_scale());
+        for b in [&back, &live] {
+            assert_eq!(b.rows.capacity(), cap as usize * (nf + 4));
+            assert_eq!(b.resid.as_ref().unwrap().capacity(), cap as usize);
+            assert_eq!(b.median.reserved_bytes(), live.median.reserved_bytes());
+        }
+        assert_eq!(live.median.reserved_bytes(), cap as usize * 40);
     }
 
     /// A buffer is held at its full size from its first row, so it never

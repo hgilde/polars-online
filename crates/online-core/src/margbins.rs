@@ -274,7 +274,11 @@ pub(crate) struct BinScales {
 /// per target the deviation the one-pass sketch would have taken
 /// ([`crate::huber_refit::NOT_TAKEN`] where it took none: the target
 /// absent, or its first row, which sets the location).
+///
+/// Read from a state through [`HeldDevsFile`], which builds the trees
+/// from the rows held, so no loader can leave the hold without them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "HeldDevsFile")]
 pub(crate) struct HeldDevs {
     w: Vec<f64>,
     lam: Vec<f64>,
@@ -284,9 +288,41 @@ pub(crate) struct HeldDevs {
     pending: f64,
     /// Each target's deviations in a tree by size at their weights, read in
     /// `O(log n)` ([`crate::held_median`]): built from the rows, not state
-    /// ([`Self::rebuild_median`] on a restore).
+    /// ([`Self::rebuild_median`], as the hold is read).
     #[serde(skip)]
     median: HeldMedian,
+}
+
+/// A [`HeldDevs`] as a state file holds it: every field but the trees,
+/// which are built from the rows as the hold is read (task 335, F9: a
+/// loader that forgot to build them panicked on the hold's next row).
+#[derive(Deserialize)]
+struct HeldDevsFile {
+    w: Vec<f64>,
+    lam: Vec<f64>,
+    e: Vec<f64>,
+    pending: f64,
+}
+
+impl From<HeldDevsFile> for HeldDevs {
+    /// The hold and its trees, a target's made by its first deviation
+    /// ([`HeldMedian::insert`]). A hold its own check refuses
+    /// ([`HeldDevs::has_shape`]) holds no tree: the histogram's check
+    /// refuses it before any row reads one.
+    fn from(f: HeldDevsFile) -> Self {
+        let mut h = Self {
+            w: f.w,
+            lam: f.lam,
+            e: f.e,
+            pending: f.pending,
+            median: HeldMedian::default(),
+        };
+        let n = h.w.len();
+        if n > 0 && h.e.len().is_multiple_of(n) && h.has_shape(h.e.len() / n) {
+            h.rebuild_median(h.e.len() / n);
+        }
+        h
+    }
 }
 
 impl HeldDevs {
@@ -304,13 +340,34 @@ impl HeldDevs {
     /// deviations in order: the weights the live record reached, to the
     /// bit.
     fn rebuild_median(&mut self, n_targets: usize) {
-        self.median = HeldMedian::new(n_targets);
+        self.median = HeldMedian::default();
         for i in 0..self.w.len() {
             self.median.decay(self.lam[i]);
             for t in 0..n_targets {
                 self.median.insert(t, self.e[i * n_targets + t], self.w[i]);
             }
         }
+    }
+
+    /// Every row let go, the room kept: what a hold whose weight went to
+    /// 0 starts again from, allocating nothing (task 335, F5).
+    fn clear(&mut self, n_targets: usize) {
+        self.w.clear();
+        self.lam.clear();
+        self.e.clear();
+        self.pending = 1.0;
+        self.median.clear(n_targets);
+    }
+
+    /// Room for `rows` rows in all, allocated where there is less: a hold
+    /// knows its count when it begins, and a restored one from its
+    /// configuration.
+    fn reserve_to(&mut self, rows: usize, n_targets: usize) {
+        self.w.reserve_exact(rows.saturating_sub(self.w.len()));
+        self.lam.reserve_exact(rows.saturating_sub(self.lam.len()));
+        let e = rows.saturating_mul(n_targets);
+        self.e.reserve_exact(e.saturating_sub(self.e.len()));
+        self.median.reserve_to(n_targets, rows);
     }
 
     fn has_shape(&self, n_targets: usize) -> bool {
@@ -526,9 +583,10 @@ impl BinScales {
         self.m.iter_mut().for_each(|v| *v = 0.0);
         self.m_lo.iter_mut().for_each(|v| *v = 0.0);
         self.mad.iter_mut().for_each(EwQuantile::reset);
-        // The deviations held go as the sketch's weight does.
+        // The deviations held go as the sketch's weight does; their room
+        // stays, reserved for the refit's count (task 335, F5).
         if let Some(h) = self.held.as_deref_mut() {
-            *h = HeldDevs::new(self.mad.len());
+            h.clear(self.mad.len());
         }
     }
 }
@@ -799,14 +857,15 @@ impl MarginalBins {
         }
     }
 
-    /// The trees of the deviations held for the refit, built again from
-    /// the rows held: what a restored histogram reads its scales from
-    /// ([`HeldDevs`]; not state).
-    pub(crate) fn rebuild_held_median(&mut self) {
+    /// Room for the refit's count of `rows` in the deviations held, as
+    /// [`Self::hold_deviations`] reserved it: a restored hold holds only
+    /// its rows, and would grow by doubling past the count (task 335, F6).
+    /// Its trees were built as it was read ([`HeldDevs`]; not state).
+    pub(crate) fn reserve_held(&mut self, rows: usize) {
         if let Some(sc) = self.scales.as_deref_mut() {
             let n = sc.mad.len();
             if let Some(h) = sc.held.as_deref_mut() {
-                h.rebuild_median(n);
+                h.reserve_to(rows, n);
             }
         }
     }
@@ -832,12 +891,23 @@ impl MarginalBins {
         if let Some(sc) = self.scales.as_deref_mut() {
             let n = sc.mad.len();
             let mut h = HeldDevs::new(n);
-            h.w.reserve_exact(rows);
-            h.lam.reserve_exact(rows);
-            h.e.reserve_exact(rows.saturating_mul(n));
-            h.median.reserve(rows);
+            h.reserve_to(rows, n);
             sc.held = Some(Box::new(h));
         }
+    }
+
+    /// The bytes the deviations held have room for, as each vector reports
+    /// its allocation: what [`held_devs_bytes`] counts of a hold. 0 with
+    /// none held.
+    #[cfg(test)]
+    pub(crate) fn held_room(&self) -> usize {
+        self.scales
+            .as_ref()
+            .and_then(|sc| sc.held.as_deref())
+            .map_or(0, |h| {
+                (h.w.capacity() + h.lam.capacity() + h.e.capacity()) * std::mem::size_of::<f64>()
+                    + h.median.reserved_bytes()
+            })
     }
 
     /// Let the held deviations go, each target's sketch built from them
@@ -1481,12 +1551,12 @@ impl MarginalBins {
         let Some(delta) = self.scales.as_ref().map(|s| s.delta) else {
             return passes;
         };
-        // Each target's sketch from the deviations held for the refit
-        // first, where they were held: what a target no row below refits
-        // goes on with. The rebuilt sketch replaces it where one is built.
-        if let Some(sc) = self.scales.as_deref_mut() {
-            sc.release();
-        }
+        // The deviations held for the refit, let go: a target no row below
+        // refits goes on with the sketch built from them (`HeldDevs::sketch`),
+        // built only for such a target (task 335, F4: each was built for
+        // every target, and the refit's own replaced it).
+        let held = self.scales.as_deref_mut().and_then(|sc| sc.held.take());
+        let mut fitted = vec![false; self.n_targets];
         let n = rows.len();
         // Each row's raw weight decayed to now, `v_i = w_i · Π_{l > i} λ_l`,
         // and in the cells' undecayed units, `v_i / scale` (the module doc's
@@ -1531,6 +1601,7 @@ impl MarginalBins {
                 continue;
             };
             *took_t = took;
+            fitted[t] = true;
             // The scale's sketch from the converged deviations, in the rows'
             // order, at their raw weights, aged on the histogram's clock from
             // the target's first row: the target's own sketch cleared.
@@ -1624,6 +1695,14 @@ impl MarginalBins {
                     self.mean_lo[cell] = 0.0;
                     self.om[cell] = om;
                     self.m2[cell] = m2;
+                }
+            }
+        }
+        if let (Some(h), Some(sc)) = (held, self.scales.as_deref_mut()) {
+            let n = sc.mad.len();
+            for (t, q) in sc.mad.iter_mut().enumerate() {
+                if !fitted[t] {
+                    *q = h.sketch(t, n, q);
                 }
             }
         }
@@ -3415,6 +3494,44 @@ mod tests {
             }
         }
 
+        /// A total gap wipes the scales and the deviations held, and the
+        /// hold keeps the room reserved for the refit's count (task 335,
+        /// F5: it was replaced by an empty one, and the rows after the gap
+        /// grew it again by doubling, past the count's bytes); the cuts
+        /// after the gap are those of a hold begun afresh.
+        #[test]
+        fn a_wiped_hold_keeps_its_room() {
+            let edges = vec![vec![-0.3, 0.3]];
+            let mut b = MarginalBins::new_with_anchor(1, 2, edges.clone(), HUBER, true).unwrap();
+            let mut fresh = MarginalBins::new_with_anchor(1, 2, edges, HUBER, true).unwrap();
+            b.hold_deviations(90);
+            fresh.hold_deviations(90);
+            let data = rows(80);
+            for (x, y, w) in &data[..30] {
+                b.decay(0.97);
+                b.update_row(&[*x], y, *w);
+            }
+            b.decay(0.0);
+            for (i, (x, y, w)) in data[30..].iter().enumerate() {
+                if i > 0 {
+                    b.decay(0.97);
+                    fresh.decay(0.97);
+                }
+                for t in 0..2 {
+                    let (j, k) = (
+                        b.scales.as_ref().unwrap().judge(t),
+                        fresh.scales.as_ref().unwrap().judge(t),
+                    );
+                    assert_eq!((j.cut.to_bits(), j.has), (k.cut.to_bits(), k.has), "{i}");
+                }
+                b.update_row(&[*x], y, *w);
+                fresh.update_row(&[*x], y, *w);
+            }
+            assert_eq!(b.held_room(), held_devs_bytes(90, 2));
+            let len = |b: &MarginalBins| b.scales.as_ref().unwrap().held.as_ref().unwrap().w.len();
+            assert_eq!(len(&b), len(&fresh));
+        }
+
         /// Half the weight or more on deviations of 0 is no scale (task
         /// 329, `HeldDevs::scale`'s mutants): a target whose rows repeat its
         /// first value has nothing to draw a cut in, and clips nothing; the
@@ -3460,9 +3577,8 @@ mod tests {
             assert!(b.scales.as_ref().unwrap().m[0].is_finite());
             assert!(b.has_shape(1, 1));
             let bytes = rmp_serde::to_vec_named(&b).unwrap();
-            let mut back: MarginalBins = rmp_serde::from_slice(&bytes).unwrap();
+            let back: MarginalBins = rmp_serde::from_slice(&bytes).unwrap();
             assert!(back.has_shape(1, 1));
-            back.rebuild_held_median();
             assert_eq!(
                 back.scales.as_ref().unwrap().judge(0),
                 b.scales.as_ref().unwrap().judge(0)
@@ -3473,7 +3589,11 @@ mod tests {
         /// the deviations held (task 329, `rebuild_median`'s and the held
         /// slot's mutants): two targets, the second absent on some rows,
         /// every cut after the restore the live one's to the bit, and the
-        /// histogram too.
+        /// histogram too. The trees are built as the hold is read, with no
+        /// call for a loader to forget (task 335, F9: read alone, the hold
+        /// had no tree and its first row panicked), and the room the live
+        /// hold reserved is reserved again, so no later row allocates for
+        /// it (F6).
         #[test]
         fn a_restored_hold_reads_each_targets_cut_as_the_live_one() {
             let edges = vec![vec![-0.3, 0.3]];
@@ -3490,7 +3610,9 @@ mod tests {
                 if i == 80 {
                     let bytes = rmp_serde::to_vec_named(&live).unwrap();
                     let mut b: MarginalBins = rmp_serde::from_slice(&bytes).unwrap();
-                    b.rebuild_held_median();
+                    let before = b.scales.as_ref().unwrap().judge(1);
+                    b.reserve_held(200);
+                    assert_eq!(b.scales.as_ref().unwrap().judge(1), before);
                     back = Some(b);
                 }
                 if let Some(b) = back.as_mut() {
@@ -3505,7 +3627,10 @@ mod tests {
                 }
                 live.update_row(&[x], &y, w);
             }
-            assert_eq!(back.unwrap(), live);
+            let back = back.unwrap();
+            assert_eq!(back.held_room(), held_devs_bytes(200, 2));
+            assert_eq!(live.held_room(), held_devs_bytes(200, 2));
+            assert_eq!(back, live);
         }
 
         /// Given up mid-hold, each target's sketch is built from its held

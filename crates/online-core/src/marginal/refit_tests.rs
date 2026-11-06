@@ -674,3 +674,80 @@ fn a_warm_up_saved_by_schema_64_builds_its_histogram_as_that_build_did() {
         }
     }
 }
+
+/// A marginal restored while its refit waits on given edges reserves the
+/// deviations held for the refit's count again, as the live one did from
+/// its first row, so no row after the load grows them by doubling past
+/// that count's bytes (task 335, F6); and goes on as the live one, to the
+/// bit.
+#[test]
+fn a_restored_hold_is_reserved_for_the_refits_count() {
+    let data = rows(120);
+    let mut live = model(given(), 12, 90, 80.0);
+    for (x, y, w) in &data[..40] {
+        live.step(x, y, 1.0, *w);
+    }
+    let mut back = Marginal::restore(&live.state()).unwrap();
+    for (x, y, w) in &data[40..80] {
+        live.step(x, y, 1.0, *w);
+        back.step(x, y, 1.0, *w);
+    }
+    let room = |m: &Marginal| m.bins.as_ref().unwrap().hist.as_ref().unwrap().held_room();
+    let want = crate::margbins::held_devs_bytes(90, 2);
+    assert_eq!(room(&live), want);
+    assert_eq!(room(&back), want);
+    assert_eq!(
+        rmp_serde::to_vec_named(&back.state()).unwrap(),
+        rmp_serde::to_vec_named(&live.state()).unwrap()
+    );
+}
+
+/// A state of schema 64 saved inside a learned warm-up keeps its mark
+/// `before_65` after the freeze has built its histogram (task 335, F10,
+/// held as it is, not changed): the mark acts only where a histogram is
+/// built ([`Binned::start`]), which no row reaches again once one exists,
+/// so every later save writes it although it no longer acts. Cleared after
+/// the freeze, the state's bytes would lose the field and nothing else,
+/// and the model would go on to the bit: the same outputs on every row and
+/// the same bytes but for it.
+#[test]
+fn the_schema_64_mark_outlives_the_freeze_and_acts_no_more() {
+    let data = rows(80);
+    let mut m = learned(crate::BinStat::Huber { delta: 1.345 }, true, 20);
+    for (x, y, w) in &data[..8] {
+        m.step(x, y, 1.0, *w);
+    }
+    let mut s = m.state();
+    s.schema_version = 64;
+    let mut kept = Marginal::restore(&s).unwrap();
+    for (x, y, w) in &data[8..30] {
+        kept.step(x, y, 1.0, *w);
+    }
+    let b = kept.bins.as_ref().unwrap();
+    assert!(b.hist.is_some() && b.refit.done, "frozen and refit");
+    assert!(b.before_65, "the mark outlives the freeze");
+    let named = |m: &Marginal| rmp_serde::to_vec_named(&m.state()).unwrap();
+    let bytes = named(&kept);
+    let v = rmpv::decode::read_value(&mut bytes.as_slice()).unwrap();
+    assert!(
+        format!("{v}").contains("\"before_65\": true"),
+        "written on every save"
+    );
+    // Cleared: only the field moves.
+    let mut cleared = kept.clone();
+    cleared.bins.as_mut().unwrap().before_65 = false;
+    assert_ne!(named(&cleared), bytes);
+    let mut back = Marginal::restore(&kept.state()).unwrap();
+    assert!(back.bins.as_ref().unwrap().before_65, "and read back");
+    for (x, y, w) in &data[30..] {
+        let a = back.step(x, y, 1.0, *w);
+        let c = cleared.step(x, y, 1.0, *w);
+        assert_eq!(format!("{a:?}"), format!("{c:?}"));
+    }
+    back.bins.as_mut().unwrap().before_65 = false;
+    assert_eq!(
+        named(&back),
+        named(&cleared),
+        "the same state but for the mark"
+    );
+}
