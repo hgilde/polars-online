@@ -60,6 +60,22 @@ returns.
 
 ### Changed
 
+- The error for a clock that steps back says where it happened (the row,
+  counted from 0), what the bank did, and one list of remedies for both
+  forms: sort the rows, skip what a saved state has learned with
+  `skip_learned` or `--skip-learned`, or set `restart_after_step_back`
+  below the step. It links the new how-to *Put rows in clock order*, and a
+  step on a number clock prints to three significant figures. A spec
+  number that must be finite and at least 0 is refused in one shape across
+  17 parameters, such as `ridge must be finite and at least 0, but it is
+  -1. Set ridge to 0 for no shrinkage, or to a finite positive value.`, and
+  a list reports every bad value. The readiness warning that `min_weight`
+  has not been met names no group for a spec with no groups, gives its
+  figure to three significant figures and the `half_life` that reaches the
+  floor, names every unmet target (and the instance under a half-life
+  grid), says what it does to the predictions, and links *Is it ready?*.
+  MODELS.md's `ewridge` heading is "`ewridge` — exponentially weighted
+  ridge regression" (task 338, stage 1).
 - State schema 67, with three changes. A bank's stream saves the readiness
   notices a call raised that the bank has not yet taken: a saved stream
   holds some only after a call that learned rows and then returned an
@@ -286,6 +302,13 @@ returns.
 
 ### Tests and documents
 
+- The documentation rewrite's first pages: the how-tos *Resume from a
+  saved state* and *Put rows in clock order*, and the explanation *Why
+  every prediction is out of sample*. `ewridge`'s and
+  `ModelBank.fit_predict`'s docstrings follow the reference order, and the
+  README opens as a tutorial. New tests run every new page's recipes, check
+  that every documentation link the package prints lands on a heading, and
+  hold a docstring example to its printed output (task 338, stage 1).
 - docs/PERFORMANCE.md §47 and `scripts/factor_residuals_bench.py` measure
   factor ridges whose out-of-sample residuals feed a windowed ridge with a
   forward target, in rows, groups, window length and snapshot cadence:
