@@ -13,7 +13,7 @@ stale, it stays, and the present one follows it with its evidence.
 
 | section | what it covers |
 |---|---|
-| [Cutting a release](#cutting-a-release) | [the steps](#the-steps-of-a-release) · [the release gate](#the-release-gate) · [rehearse before tagging](#rehearse-before-tagging) · [compare with the last release](#compare-with-the-last-release-bit-for-bit) · [the README on PyPI](#the-readmes-links-on-pypi) · [the README's size row](#the-readmes-size-row) · [the budgets baseline](#the-budgets-baseline) · [the tests that hold the workflow](#the-tests-that-hold-the-workflow) · [how the workflow came to this](#how-the-release-workflow-came-to-this) |
+| [Cutting a release](#cutting-a-release) | [the steps](#the-steps-of-a-release) · [the release gate](#the-release-gate) · [no rehearsal](#no-rehearsal) · [compare with the last release](#compare-with-the-last-release-bit-for-bit) · [the README on PyPI](#the-readmes-links-on-pypi) · [the README's size row](#the-readmes-size-row) · [the budgets baseline](#the-budgets-baseline) · [the tests that hold the workflow](#the-tests-that-hold-the-workflow) · [how the workflow came to this](#how-the-release-workflow-came-to-this) |
 | [Which Polars versions are promised](#which-polars-versions-are-promised) | [the floor and the ceiling](#the-floor-and-the-ceiling) · [which interfaces carry a promise](#which-interfaces-carry-a-promise) · [NumPy](#numpy-the-one-optional-dependency) · [raising the ceiling](#raising-the-ceiling-to-a-new-major) · [the pin, and the two copies of Polars](#the-polars-pin-and-the-two-copies-of-polars-2026-08-31) · [2.0.0rc1, measured](#polars-200rc1-measured-2026-09-10) · [the expression plugin](#the-expression-plugin-as-recorded) |
 | [Keeping the API stable](#keeping-the-api-stable) | [the policy](#the-policy) · [what not to do](#what-not-to-do) · [what the API is](#what-the-api-actually-is) · [the snapshot test](#s--the-mechanism-one-api-snapshot-test--done) · [the usability round](#api-usability-round-pre-users-window) · [the correlation and regime models](#what-the-correlation-and-regime-models-added-to-the-surface-2026-09) |
 | [CI cost while the repo was private](#ci-cost-while-the-repo-was-private) | [the policy, as the test holds it](#the-policy-as-the-test-holds-it) · [the quota, spent on day one](#actions-quota-exhausted-on-day-one-2026-08-31) · [where the 80 minutes went](#ci-cost-where-the-80-minutes-went) · [what was unexpectedly expensive](#what-was-unexpectedly-expensive-2026-08-31) |
@@ -23,8 +23,9 @@ stale, it stays, and the present one follows it with its evidence.
 
 **A release is dispatched, never tagged by hand, and three things make it
 safe.** A gate stands in front of the one step nothing can undo, the
-upload. The tag exists only once the release does. And a rehearsal finds a
-broken workflow before a publishing run does.
+upload. The tag exists only once the release does. And a run that fails
+anywhere stops before the upload, so a broken release is fixed and
+dispatched again, and no version is lost.
 
 Dispatched on `main` with `publish` on, `.github/workflows/release.yml`
 tests everything first. It runs CI on all three OSes, and builds every
@@ -32,8 +33,7 @@ wheel and the command-line binaries. It runs the state hand-off between
 OSes, and the suite on the newest Polars, on the floor of the Polars range
 and on the newest NumPy. Then it waits for approval and uploads to PyPI.
 Only after the upload does it create the tag `v<version>` on the sha it
-tested, and the GitHub release. With `publish` off, the same run is the
-rehearsal, and it tags and uploads nothing.
+tested, and the GitHub release.
 
 **A tag pushed by hand starts nothing, and it uses up its version.**
 Release tags cannot be moved or deleted, and
@@ -61,10 +61,10 @@ step 5).
 | 2. benchmark | `uv run python scripts/benchmark.py` and `uv run python scripts/wide_benchmark.py` under the last release and under this build, in turn, with the machine's load logged; the last release built here from its tag as well as its wheel from PyPI, since a wheel built on another machine reads a few percent apart on its own. The wide one reaches the solves and products `benchmark.py`'s 50 features never do: before 1.1.0 it found a 1,000-feature `ewridge` at 0.56 of 1.0.1's speed with every `benchmark.py` row unchanged. A slowdown past the runs' scatter is fixed, or declared in the CHANGELOG. Then this build's `benchmark.py --markdown`, the best of three runs or more for each row, replaces the rows of the README's *Throughput* table and goes into a dated section of `docs/PERFORMANCE.md`, with the date, the commit, the machine and the load; the prose around the table is checked against the new rows, and the headline's share of the bank by width is measured again. A test holds the table's date to no older than the previous release, since a table nobody re-ran sat three releases stale, past its own stated noise. `docs/PERFORMANCE.md` §26 found two slowdowns 0.11.0 had shipped, and §31 ran this step before 0.13.0. The `Budgets` run of the last push reports each instruction count's drift since the last release, read from that release's measurements ([The budgets baseline](#the-budgets-baseline)), and a case that moved more than 10% either way needs a `[[signoff]]` for this version in `budgets.toml`, or the release's `budgets` job fails (`docs/PERFORMANCE.md`, "Budgets that only tighten") |
 | 3. version | the version in six places: `pyproject.toml`, `Cargo.toml` three times, `python/polars_online/__init__.py`, and `docs/VALIDATION.md`, regenerated with `uv run python scripts/validate.py > docs/VALIDATION.md`; then `Cargo.lock` and `uv.lock` refreshed. `uv run --no-project --python 3.12 python scripts/release_version.py --publish` says whether they agree and the tag is new |
 | 4. changelog | `[Unreleased]` promoted to `## [X.Y.Z] — <date>`; the tag's message and the GitHub release are that section. `release_version.py --publish` refuses to publish while anything is left under `[Unreleased]` |
-| 5. README | for a minor release, the example pin under the README's *This package's own versioning* names the new minor, as `~=0.13.0` names the 0.13 series. `release_version.py` refuses a pin on another minor, rehearsing too. The install *size* row needs an edit only if a wheel's size moved out of the range it states: the release's `wheel-size` job holds every wheel it builds to the row and stops before the upload if one is outside ([The README's size row](#the-readmes-size-row)) |
+| 5. README | for a minor release, the example pin under the README's *This package's own versioning* names the new minor, as `~=0.13.0` names the 0.13 series. `release_version.py` refuses a pin on another minor. The install *size* row needs an edit only if a wheel's size moved out of the range it states: the release's `wheel-size` job holds every wheel it builds to the row and stops before the upload if one is outside ([The README's size row](#the-readmes-size-row)) |
 | 6. local gate | `bash scripts/gate.sh --extended`, the full suite, unpiped, until its last line says `gate: PASS` with the extended tier |
 | 7. commit and push | on `main` itself, not on a branch; then wait for CI on the pushed sha |
-| 8. release | dispatch `release.yml` on `main` with `publish` on (`gh workflow run release.yml --ref main -f publish=true`); never push a tag by hand. No rehearsal first: this run does everything a rehearsal does before it asks for approval, and a failure there leaves nothing to undo -- dispatch again ([Rehearse before tagging](#rehearse-before-tagging)). Push no change to `.github/workflows` until the tag exists: the tag job's token may not create a ref whose workflow files differ from `main`'s, so on 1.0.1 (2026-10-13) a workflow change pushed while the run waited for approval left the upload done and the tag refused, and the tag and the GitHub release were made by hand from the run's own notes and files |
+| 8. release | dispatch `release.yml` on `main` with `publish` on (`gh workflow run release.yml --ref main -f publish=true`); never push a tag by hand. No rehearsal: this run tests everything before it asks for approval, and a failure there leaves nothing to undo -- fix it and dispatch again ([No rehearsal](#no-rehearsal)). Push no change to `.github/workflows` until the tag exists: the tag job's token may not create a ref whose workflow files differ from `main`'s, so on 1.0.1 (2026-10-13) a workflow change pushed while the run waited for approval left the upload done and the tag refused, and the tag and the GitHub release were made by hand from the run's own notes and files |
 | 9. approve | the `publish to PyPI` job, in the `Pypi` environment, once every job is green ([The release gate](#the-release-gate)); the tag and the GitHub release follow the upload |
 | 10. verify | the run's `verify` job does it, after the upload, on Linux, macOS and Windows: it installs `polars-online==<version>` from PyPI into a fresh environment, retrying for up to ten minutes while the index catches up, and checks that the package came from there, that `po.__version__`, `po.native_version()` and `po.schema_version()` are the release's, and that an `ewridge` fit over a parquet file finds its line's slope (`scripts/verify_release.py`). Left to look at by hand: that the three `verify` legs are green, and that the GitHub release carries the wheels, the sdist, the binaries and `budgets-baseline.json`, with the wheels' exact sizes under the CHANGELOG's section in its notes |
 
@@ -107,7 +107,7 @@ step nothing can undo, and in front of nothing else.
 
 | side of the gate | what happens there | can it be undone |
 |---|---|---|
-| before | dispatching a rehearsal or a release, re-running a failed job, cancelling a run, declining the approval | yes: all of it can be retried, none of it reaches a user, and none of it creates a tag |
+| before | dispatching a release, re-running a failed job, cancelling a run, declining the approval | yes: all of it can be retried, none of it reaches a user, and none of it creates a tag |
 | after | the upload, then the tag, the GitHub release and the check of what PyPI serves | no: PyPI never allows a version number to be reused, even after a yank, and a `v*` tag cannot be moved or deleted. A failed `tag`, `release` or `verify` job can still be re-run: the tag goes on the same sha, and the release is finished where it stopped |
 
 **A tag that turns out to be wrong is *not* fixed by moving it.** The
@@ -126,25 +126,27 @@ grants the deploy's scopes, since a called workflow may ask for no more
 than its caller grants. The deploy runs on a push alone, so under a release
 it is skipped (`tests/test_release_workflow.py`).
 
-### Rehearse before tagging
+### No rehearsal
 
-**Rehearse a change to `release.yml` with `publish` off, because a run uses
-the workflow file at the commit it runs on.** A fault in the workflow would
-otherwise ship inside the released commit, and the rehearsals of 2026-09-03
-found six ([The six faults of 2026-09-03](#the-six-faults-of-2026-09-03)).
-A rehearsal runs the same jobs,
-CI included, and tags and uploads nothing. Only publishing is held to
-`main`, by the `version` job, so a rehearsal can also try a branch's
-workflow before it is merged.
+**A release is not rehearsed, not even after a change to `release.yml`**
+(the user, 2026-11-06). A push to `main` runs CI on all three OSes and the
+instruction budgets, and a publishing run tests everything again before it
+asks for approval: it stops before the upload, and creates no tag, when any
+job fails. A failed release is fixed on `main` and dispatched again; no
+version is used up.
 
-**A release needs no rehearsal first.** Since 2026-09-27 a publishing run
-stops before the upload, and creates no tag, when any job fails. A failed
-release then means a rerun, not a lost version: its own run is a rehearsal
-up to the approval. Neither run can try the three jobs after the upload,
-`tag`, `release` and `verify`, since a rehearsal skips them; the scripts of
-the first two are run for real by `tests/test_release_packaging.py`, against
-a local remote and a stand-in for `gh`. If one fails, re-running it tags
-the same sha.
+**Some jobs run only in a release,** so a release is where they first
+fail: the source distribution (`sdist`), every wheel and the command-line
+binaries (`build`), the state written on one OS and read on the others
+(`write-state`, `read-state`), the suite on the newest Polars, on the floor
+of the Polars range and on the newest NumPy (`next-polars`,
+`floor-polars`, `next-numpy`), the instruction baseline (`baseline`) and
+the wheels' sizes (`wheel-size`). The floor of the Polars range can be run
+locally before the dispatch, in a scratch environment. The three jobs after
+the upload, `tag`, `release` and `verify`, are tested by
+`tests/test_release_packaging.py`, which runs the scripts of the first two
+against a local remote and a stand-in for `gh`. If one fails, re-running it
+tags the same sha.
 
 ### Compare with the last release, bit for bit
 
@@ -304,7 +306,7 @@ the user said "Do not worry about old specs".
 the README as the project page, where a relative link to another file
 resolves against pypi.org and is a 404. So both jobs that build a package
 first run `scripts/pypi_readme.py --ref <the tag the run will create>`, or
-the sha in a rehearsal. It points each such link at the file on GitHub as
+the sha in a run with `publish` off. It points each such link at the file on GitHub as
 it is at the released commit. The README in the repository keeps its
 relative links.
 
@@ -603,7 +605,7 @@ legs every release runs before it publishes withhold the release:
 
 | run | when | what it resolves to | a red run |
 |---|---|---|---|
-| `release.yml`'s `next-polars`, the newest in-range leg | every dispatched release, rehearsals included, before any tag exists | the newest stable inside `<3` | withholds the release until the range is capped or the code fixed |
+| `release.yml`'s `next-polars`, the newest in-range leg | every dispatched release, before any tag exists | the newest stable inside `<3` | withholds the release until the range is capped or the code fixed |
 | `release.yml`'s `floor-polars` | every dispatched release, as above | exactly the floor `pyproject.toml` declares, 1.37.0, with its runtime package | withholds the release until the code is fixed or the floor raised |
 | `release.yml`'s `next-polars`, the next-major leg | every dispatched release, as above | unpinned, prereleases allowed | is advisory, and withholds nothing |
 | `release.yml`'s `next-numpy`, the newest NumPy | every dispatched release, as above | the newest NumPy | withholds the release |
