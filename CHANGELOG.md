@@ -87,6 +87,16 @@ returns.
   bit, and groups it first sees after the load refit until 320 MiB is
   reserved (task 331).
 
+- A readiness notice raised under `group_close="session"` names its
+  session span: `spec "m" group "g" session "a": ...`, or `session null`
+  for a span whose session value is null. The value is cast to text and
+  quoted as the group key is. Each span is a stream of its own and says
+  each notice once, so two spans of one group could say the same text,
+  and Python's default warning filter showed only the first; now each
+  span's notice is its own text and both are shown. Every other notice's
+  text is unchanged, including under `session_gap="reset"`, which restarts
+  the models in the same stream and repeats no notice (task 334).
+
 ### Fixed
 
 - A readiness notice raised in the same call that closes its group
