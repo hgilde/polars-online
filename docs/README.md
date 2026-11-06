@@ -32,7 +32,7 @@ kept in [`records/`](records/), and its row links it there.
 | [RELEASE-READINESS.md](RELEASE-READINESS.md) | you are cutting a release, or asking which Polars versions are promised and which are merely measured |
 | **Writing the documentation** | |
 | [WRITING.md](WRITING.md) | you are writing or rewriting any reader-facing doc — the rules the docs are held to, each drawn from a report in [PHRASING.md](records/PHRASING.md), with the README's rewrite of 2026-09-23 as the worked example. A pass over the README starts from [README-ITERATIONS.md](README-ITERATIONS.md), and a new report goes into PHRASING.md |
-| [GLOSSARY.md](GLOSSARY.md) | you meet a word a page uses without defining it, or you choose the word for a sentence, a docstring or a message — every concept's one word, what it means, the words it replaces and whether a message may use it, with the words kept out of reader-facing text and the American spelling of each British one the docs held |
+| [GLOSSARY.md](GLOSSARY.md) | you meet a word a page uses without defining it, or you choose the word for a sentence, a docstring or a message — every concept's one word, what it means, the words it replaces and whether a message may use it, with the words kept out of user-facing text and the American spelling of each British one the docs held |
 
 ## Records
 
@@ -82,7 +82,7 @@ out-of-date one, its row here says what became of it.
 | [`CHANGELOG.md`](../CHANGELOG.md) | one entry per release, with what changed and why |
 | [`CONTRIBUTING.md`](../CONTRIBUTING.md) | the gate and the commit conventions |
 | [`SECURITY.md`](../SECURITY.md) | how to report a vulnerability privately, which versions receive fixes, and what is in scope |
-| [`CODE_OF_CONDUCT.md`](../CODE_OF_CONDUCT.md) | the Contributor Covenant, version 2.1, as adapted here, and where to report unacceptable behaviour privately |
+| [`CODE_OF_CONDUCT.md`](../CODE_OF_CONDUCT.md) | the Contributor Covenant, version 2.1, as adapted here, and where to report unacceptable behavior privately |
 | [`llms.txt`](../llms.txt) | the map a coding agent reads before it writes against this library |
 
 ## Section numbers
