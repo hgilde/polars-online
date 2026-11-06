@@ -30,9 +30,9 @@ grid = po.spec.ewridge(
 table = po.eval.grid_search(pl.scan_parquet("wander.parquet"), grid)  # five spans, each chosen from the rows before it
 
 # Each half-life's error, its rank, and how often the rows before a span chose it.
-for half_life, mse, rank, chosen in table.drop_nulls("rank").select("half_life", "mse", "rank", "folds_chosen").iter_rows():
+for half_life, mse, rank, chosen in table.filter(kind="candidate").select("half_life", "mse", "rank", "folds_chosen").iter_rows():
     print(f"half-life {half_life:>6.0f}: mse {mse:.4f}, rank {rank}, chosen for {chosen} of 5 spans")
-print(f"choosing from earlier rows only: mse {table.filter(pl.col('spec').is_null())['mse'].item():.4f}")
+print(f"choosing from earlier rows only: mse {table.filter(kind='choice')['mse'].item():.4f}")
 ```
 
 ```text
@@ -152,26 +152,42 @@ state and one chunk of rows, however long the stream.
 | `scoring` | `"mse"`, lowest best, or `"loglik"`, highest best, for `bocpd`, `hmm` and `deco` |
 | `chunk_size`, `threads` | as [`ModelBank`](../README.md#in-a-loop-modelbank) takes them |
 
-It returns a frame with one row per setting and target:
+It returns a frame with one row per setting and target, and one more per
+target for the choice. Its first column, `kind`, says what each row is:
+
+| `kind` | the row |
+|---|---|
+| `"candidate"` | a setting to choose among |
+| `"selected"`, `"averaged"` | a spec's `emit_selected` or `emit_averaged` prediction, where it writes one: scored on the same rows, never ranked or chosen |
+| `"choice"` | what choosing from the rows before each span earned on the span: the number to report |
+
+So `table.filter(kind="choice")` reads the choice, and
+`table.filter(kind="candidate")` the settings. The other columns:
 
 | column | what it holds |
 |---|---|
-| `spec`, the `param_grid` keys, and `half_life`, `ridge`, `feature_set`, `penalty` where a spec's own grid varies them | the setting |
-| `slot`, `target` | the field scored and the target it predicts |
+| `spec`, the `param_grid` keys, and `half_life`, `ridge`, `feature_set`, `penalty` where a spec's own grid varies them | the setting; null on the choice's row, which runs whichever setting each span chose |
+| `slot`, `target` | the field scored, null on the choice's row, and the target it predicts |
 | `n` | the rows scored: those of the test spans on which every setting has a prediction |
-| `mse` or `loglik` | the setting's score over those rows |
-| `rank` | 1 for the best: the setting to run on the rows to come. Its score was read on the rows that ranked it, so it is the optimistic number |
-| `folds_chosen` | how many spans the choice ran it on |
+| `mse` or `loglik` | the score over those rows |
+| `rank` | 1 for the best candidate: the setting to run on the rows to come. Its score was read on the rows that ranked it, so it is the optimistic number |
+| `folds_chosen` | how many spans the choice ran the candidate on |
 
-One more row per target, whose `spec` is null and `slot` is
-`pred_<target>__chosen`, holds the choice: its score over the same rows is
-the number to report. A spec's `emit_selected` and `emit_averaged`
-predictions, where it writes them, are scored on the same rows with a null
-`rank`. They choose differently: `emit_selected` ranks the settings on
-every row by an exponentially weighted error at each setting's own
-half-life, so it follows a best setting that moves, at the price of the
-noise in a short memory. [Choosing among a grid's
+`emit_selected` and `emit_averaged` choose differently from the choice:
+`emit_selected` ranks the settings on every row by an exponentially
+weighted error at each setting's own half-life, so it follows a best
+setting that moves, at the price of the noise in a short memory.
+[Choosing among a grid's
 settings](DIAGNOSTICS.md#choosing-among-a-grids-settings) measures it.
+
+**Give the first span room for every setting's warm-up.** The first choice
+reads the rows before the first test span, `n // (n_splits + 1)` of them
+and up to `n_splits` more, less `gap`. A row counts only where every setting
+predicts, so if one setting withholds its predictions longer than that
+(`min_weight`, `warm_rows`), there is nothing to choose by. The call then
+refuses, and names the rows it read and the setting that predicted on the
+fewest of them. Its remedy is fewer `n_splits`, which lengthen the first
+span, a smaller `gap`, a shorter warm-up, or more rows.
 
 **To score a target that looks ahead, give `gap` the rows it looks
 ahead.** A row's residual is known only once its target has played out,
@@ -213,7 +229,7 @@ print(f"by hand: {pick}, mse {second.filter(slot=pick)['mse'].item():.4f} on the
 # The same with grid_search: one span to test, so the choice is read from the first half.
 table = po.eval.grid_search(lf, grid, n_splits=1)
 chosen = table.filter(pl.col("folds_chosen") == 1)["slot"].item()
-print(f"grid_search: {chosen}, mse {table.filter(pl.col('spec').is_null())['mse'].item():.4f} on the second half")
+print(f"grid_search: {chosen}, mse {table.filter(kind='choice')['mse'].item():.4f} on the second half")
 ```
 
 ```text
@@ -337,11 +353,11 @@ spec = po.spec.ewridge(
 table = po.eval.grid_search(pl.scan_parquet("walk.parquet"), spec)
 
 # The best ridge at each half-life, then the pair chosen and what choosing it earned.
-settings = table.drop_nulls("rank")
+settings = table.filter(kind="candidate")
 for half_life, ridge, mse in settings.sort("mse").group_by("half_life", maintain_order=True).first().sort("half_life").select("half_life", "ridge", "mse").iter_rows():
     print(f"half-life {half_life:>3.0f}: best ridge {ridge:g}, mse {mse:.4f}")
 best = settings.filter(rank=1).row(0, named=True)
-print(f"rank 1: half-life {best['half_life']:.0f}, ridge {best['ridge']:g}; chosen from earlier rows: mse {table.filter(pl.col('spec').is_null())['mse'].item():.4f}")
+print(f"rank 1: half-life {best['half_life']:.0f}, ridge {best['ridge']:g}; chosen from earlier rows: mse {table.filter(kind='choice')['mse'].item():.4f}")
 ```
 
 ```text
@@ -385,9 +401,9 @@ kalman = functools.partial(po.spec.kalman, targets=["y"], features=["x0", "x1"],
 grid = {"coef_half_life": [3.0, 10.0, 30.0, 100.0, 300.0, 1_000.0]}
 table = po.eval.grid_search(pl.scan_parquet("drift.parquet"), kalman, grid)
 
-for speed, mse, rank in table.drop_nulls("rank").select("coef_half_life", "mse", "rank").iter_rows():
+for speed, mse, rank in table.filter(kind="candidate").select("coef_half_life", "mse", "rank").iter_rows():
     print(f"coef_half_life {speed:>6g}: mse {mse:.4f}, rank {rank}")
-print(f"chosen from earlier rows: mse {table.filter(pl.col('spec').is_null())['mse'].item():.4f}")
+print(f"chosen from earlier rows: mse {table.filter(kind='choice')['mse'].item():.4f}")
 ```
 
 ```text
@@ -436,9 +452,9 @@ pl.DataFrame({"x0": x0, "x1": x1, "y": b * x0 + 0.5 * x1 + e}).write_parquet("sl
 sgd = functools.partial(po.spec.sgd, targets=["y"], features=["x0", "x1"], half_life=1_000.0)
 table = po.eval.grid_search(pl.scan_parquet("slow.parquet"), sgd, {"learning_rate": [0.0003, 0.001, 0.003, 0.01, 0.03, 0.1]})
 
-for rate, mse, rank in table.drop_nulls("rank").select("learning_rate", "mse", "rank").iter_rows():
+for rate, mse, rank in table.filter(kind="candidate").select("learning_rate", "mse", "rank").iter_rows():
     print(f"learning_rate {rate:<6g} (about {1 / rate:>4.0f} rows): mse {mse:.4f}, rank {rank}")
-print(f"chosen from earlier rows: mse {table.filter(pl.col('spec').is_null())['mse'].item():.4f}")
+print(f"chosen from earlier rows: mse {table.filter(kind='choice')['mse'].item():.4f}")
 ```
 
 ```text
@@ -485,9 +501,9 @@ holt = functools.partial(po.spec.holt, targets=["y"], clock="t", gap_cap=5.0, ha
 table = po.eval.grid_search(pl.scan_parquet("trend.parquet"), holt, {"trend_half_life": [25.0, 100.0, 400.0, 1_600.0, float("inf")]})
 
 # The three best pairs, and what choosing from earlier rows earned.
-for trend, level, mse in table.drop_nulls("rank").sort("rank").head(3).select("trend_half_life", "half_life", "mse").iter_rows():
+for trend, level, mse in table.filter(kind="candidate").sort("rank").head(3).select("trend_half_life", "half_life", "mse").iter_rows():
     print(f"level half-life {level:>2.0f} (alpha {1 - 2 ** (-1 / level):.3f}), trend half-life {trend:>4g}: mse {mse:.4f}")
-print(f"chosen from earlier rows: mse {table.filter(pl.col('spec').is_null())['mse'].item():.4f}")
+print(f"chosen from earlier rows: mse {table.filter(kind='choice')['mse'].item():.4f}")
 ```
 
 ```text
@@ -537,9 +553,9 @@ bocpd = functools.partial(
 )
 table = po.eval.grid_search(pl.scan_parquet("jumps.parquet"), bocpd, {"hazard": [20.0, 60.0, 200.0, 600.0, 2_000.0]}, scoring="loglik")
 
-for hazard, loglik, rank in table.drop_nulls("rank").select("hazard", "loglik", "rank").iter_rows():
+for hazard, loglik, rank in table.filter(kind="candidate").select("hazard", "loglik", "rank").iter_rows():
     print(f"hazard {hazard:>5g}: loglik {loglik:.4f} a row, rank {rank}")
-print(f"chosen from earlier rows: loglik {table.filter(pl.col('spec').is_null())['loglik'].item():.4f} a row")
+print(f"chosen from earlier rows: loglik {table.filter(kind='choice')['loglik'].item():.4f} a row")
 ```
 
 ```text
