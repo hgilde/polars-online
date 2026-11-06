@@ -243,6 +243,32 @@ pub(crate) struct RefitBuf {
     /// state ([`Self::rebuild_median`], as the buffer is read).
     #[serde(skip)]
     median: HeldMedian,
+    /// Whether the rows, the `|e|` and the tree hold the room of the
+    /// buffer's full size ([`Self::reserve_full`]): not state.
+    #[serde(skip)]
+    reserved: Reserved,
+}
+
+/// Whether a [`RefitBuf`]'s vectors hold the room of its full size, so its
+/// learned rows ask once rather than on every row (task 345: three
+/// reservations a row cost each learned row about 70 instructions natively). Never
+/// read from a state file and never copied, since neither a file nor a
+/// clone keeps a vector's spare room: a buffer read back or copied
+/// reserves again on its next learned row (task 335, F6). Two buffers that
+/// differ only here hold the same rows, so they are equal.
+#[derive(Debug, Default)]
+struct Reserved(bool);
+
+impl Clone for Reserved {
+    fn clone(&self) -> Self {
+        Self(false)
+    }
+}
+
+impl PartialEq for Reserved {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 /// A [`RefitBuf`] as a state file holds it: every field but the tree,
@@ -279,6 +305,7 @@ impl From<RefitBufFile> for RefitBuf {
             over_budget: f.over_budget,
             resid: f.resid,
             median: HeldMedian::new(1),
+            reserved: Reserved(false),
         };
         let n = b.learned as usize;
         let width = (n > 0 && b.rows.len().is_multiple_of(n))
@@ -349,6 +376,7 @@ impl RefitBuf {
             over_budget: false,
             resid: None,
             median: HeldMedian::new(1),
+            reserved: Reserved(false),
         }
     }
 
@@ -507,15 +535,10 @@ impl RefitBuf {
         }
         // Held at its full size from the first row, so it never grows past
         // what a bank reserves for it ([`refit_reservation`]); and from the
-        // first row after a restore, whose vectors hold only their rows
-        // (task 335, F6). A no-op on every other row.
-        let full = cap as usize * (x.len() + 4);
-        self.rows
-            .reserve_exact(full.saturating_sub(self.rows.len()));
-        if let Some(r) = self.resid.as_mut() {
-            let cap = cap as usize;
-            r.reserve_exact(cap.saturating_sub(r.len()));
-            self.median.reserve_to(1, cap);
+        // first row after a restore or a copy, whose vectors hold only their
+        // rows (task 335, F6). A flag a row on every other.
+        if !self.reserved.0 {
+            self.reserve_full(x.len(), cap as usize);
         }
         self.rows.extend_from_slice(x);
         self.rows.extend_from_slice(&[y, w, lam, lam_s]);
@@ -532,6 +555,23 @@ impl RefitBuf {
         }
         self.learned += 1;
         self.learned >= cap
+    }
+
+    /// Room for the buffer's full size, `cap` rows of `nf` features (and
+    /// their `|e|` and tree nodes where it keeps them), in each vector that
+    /// has less: a buffer's first learned row, and its first after a
+    /// restore or a copy.
+    #[cold]
+    #[inline(never)]
+    fn reserve_full(&mut self, nf: usize, cap: usize) {
+        let full = cap * (nf + 4);
+        self.rows
+            .reserve_exact(full.saturating_sub(self.rows.len()));
+        if let Some(r) = self.resid.as_mut() {
+            r.reserve_exact(cap.saturating_sub(r.len()));
+            self.median.reserve_to(1, cap);
+        }
+        self.reserved.0 = true;
     }
 
     /// A row that only aged the target's sums, once a row has been learned
@@ -579,6 +619,7 @@ impl RefitBuf {
         self.done = true;
         // No tree, and no allocation for one.
         self.median = HeldMedian::new(0);
+        self.reserved.0 = false;
         Taken {
             rows: std::mem::take(&mut self.rows),
             ages: std::mem::take(&mut self.ages),
@@ -1786,6 +1827,10 @@ mod tests {
         let (nf, cap) = (3usize, 40u32);
         let mut live = RefitBuf::keeping_resid();
         let mut back: Option<RefitBuf> = None;
+        // And a copy taken there, as a model's state and its restore copy
+        // a buffer: a copy keeps no spare room either (task 345: the
+        // buffer asks for its room once, by a flag a copy does not keep).
+        let mut copy: Option<RefitBuf> = None;
         for i in 0..cap - 1 {
             let x = [f64::from(i), 1.0, -f64::from(i % 5)];
             let e = f64::from((i * 7) % 11) + 0.5;
@@ -1794,8 +1839,11 @@ mod tests {
                 let b: RefitBuf = rmp_serde::from_slice(&bytes).unwrap();
                 assert!(b.rows.capacity() < cap as usize * (nf + 4));
                 back = Some(b);
+                let c = live.clone();
+                assert!(c.rows.capacity() < cap as usize * (nf + 4));
+                copy = Some(c);
             }
-            if let Some(b) = back.as_mut() {
+            for b in [back.as_mut(), copy.as_mut()].into_iter().flatten() {
                 assert_eq!(b.warm_scale(), live.warm_scale(), "row {i}");
                 b.learn_scored(&x, 1.0, e, 1.0, 0.99, 0.98, cap);
                 if i % 4 == 0 {
@@ -1807,10 +1855,11 @@ mod tests {
                 live.age(0.9, 0.9, cap);
             }
         }
-        let back = back.unwrap();
+        let (back, copy) = (back.unwrap(), copy.unwrap());
         assert_eq!(back, live);
+        assert_eq!(copy, live);
         assert_eq!(back.warm_scale(), live.warm_scale());
-        for b in [&back, &live] {
+        for b in [&back, &copy, &live] {
             assert_eq!(b.rows.capacity(), cap as usize * (nf + 4));
             assert_eq!(b.resid.as_ref().unwrap().capacity(), cap as usize);
             assert_eq!(b.median.reserved_bytes(), live.median.reserved_bytes());

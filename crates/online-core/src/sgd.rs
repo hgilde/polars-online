@@ -1127,7 +1127,10 @@ impl Sgd {
     }
 
     /// Target `j`'s MAD sketch built from what its buffer held
-    /// ([`crate::huber_refit::Taken::rebuild_sketch`]).
+    /// ([`crate::huber_refit::Taken::rebuild_sketch`]). Never inlined: in
+    /// the step it is the ageing row's rare branch, and inlined there it
+    /// moved a register spill onto every row's path (task 345).
+    #[inline(never)]
     fn scale_from_held(&mut self, j: usize, t: &huber_refit::Taken) {
         t.rebuild_sketch(self.mad.get_mut(j), self.cfg.n_features);
     }

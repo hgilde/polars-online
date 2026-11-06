@@ -620,6 +620,26 @@ struct Work {
     shuffled: Vec<usize>,
 }
 
+impl Work {
+    /// `r`, copied into the row the window's ring let go last, or into a
+    /// row of its own length where the ring has let none go: on the window
+    /// kind's first rows, and on every row of the `monitor` and
+    /// `sequential` kinds, whose rings hand their rows on rather than let
+    /// them go. A row of its own is allocated at its exact length, as
+    /// `to_vec` does: growing an empty vector cost each of those rows about
+    /// 100 instructions more under Callgrind on x86-64 (60 natively on
+    /// arm64), and gave a one-column ring's row room for four (task 345).
+    fn ring_row(&mut self, r: &[f64]) -> Vec<f64> {
+        if self.spare.capacity() < r.len() {
+            return r.to_vec();
+        }
+        let mut row = std::mem::take(&mut self.spare);
+        row.clear();
+        row.extend_from_slice(r);
+        row
+    }
+}
+
 impl Clone for Work {
     fn clone(&self) -> Self {
         Self::default()
@@ -1569,10 +1589,17 @@ impl crate::OnlineModel for CorrChange {
             *out = refused;
             return;
         }
-        // `predict`'s answer, read before the row: `x` is usable here.
-        let mut buf = std::mem::take(&mut self.work.report);
-        self.read_into(x, &mut out.pred, &mut buf);
-        self.work.report = buf;
+        // `predict`'s answer, read before the row: `x` is usable here. Only
+        // the window kind's report reads the working space; the others are
+        // given an empty one, which allocates nothing, rather than pay to
+        // take the kept one and put it back on every row (task 345).
+        if matches!(self.cfg.kind, CorrChangeKind::Window) {
+            let mut buf = std::mem::take(&mut self.work.report);
+            self.read_into(x, &mut out.pred, &mut buf);
+            self.work.report = buf;
+        } else {
+            self.read_into(x, &mut out.pred, &mut Vec::new());
+        }
         out.n_eff = self.n_eff;
         out.extra = None;
         let lam = self.cfg.decay.factor(d_clock);
@@ -1589,23 +1616,12 @@ impl crate::OnlineModel for CorrChange {
         // The row as the ring holds it, copied into the row the window's
         // ring let go last, so the copy allocates nothing.
         let mut one = [0.0];
-        let mut row = std::mem::take(&mut self.work.spare);
-        let ready = match self.ring_row(x, &mut one) {
-            Some(r) => {
-                row.clear();
-                row.extend_from_slice(r);
-                true
-            }
-            None => false,
-        };
+        let row = self.ring_row(x, &mut one).map(|r| self.work.ring_row(r));
         if self.cfg.scalar {
             self.diag.update(x, lam, weight);
         }
         self.n_eff = lam * self.n_eff + weight;
-        if !ready {
-            self.work.spare = row;
-            return;
-        }
+        let Some(row) = row else { return };
         self.since_flag = Some(self.since_flag.unwrap_or(0) + 1);
         let flagged = out.pred[2] == 1.0;
         if flagged {
@@ -2390,6 +2406,45 @@ mod tests {
                 (got - want).abs() <= 1e-12 * (1.0 + want),
                 "bandwidth {bandwidth:?}: {got} against {want}"
             );
+        }
+    }
+
+    /// Every row a ring holds is its row's length and no longer: copied at
+    /// its exact length where the ring has let no row go (`monitor` and
+    /// `sequential` hand their rows on; the window's first rows), and into
+    /// a let-go row of the same length after. Grown from an empty vector
+    /// instead, a one-column ring's row took four numbers' room for one,
+    /// and each row cost about 100 instructions more (task 345).
+    #[test]
+    fn a_ring_holds_each_row_at_its_own_length() {
+        // Each kind, and `scalar`'s one-column ring where the kind takes it
+        // (the window statistic is one number already).
+        let cases = [
+            (CorrChangeKind::Monitor, false),
+            (CorrChangeKind::Monitor, true),
+            (CorrChangeKind::Sequential, false),
+            (CorrChangeKind::Sequential, true),
+            (CorrChangeKind::Window, false),
+        ];
+        for (kind, scalar) in cases {
+            let c = match kind {
+                CorrChangeKind::Sequential => seq_cfg(3, 40, 20, 0.0),
+                _ => CorrChangeCfg {
+                    span_rows: 40,
+                    ..cfg(3, kind)
+                },
+            };
+            let mut m = CorrChange::new(CorrChangeCfg { scalar, ..c }).unwrap();
+            let mut n = Normals::new(5);
+            for i in 0..130 {
+                let (a, b) = (n.pair(0.5)[0], n.pair(0.5)[1]);
+                crate::OnlineModel::step(&mut m, &[a, b, a - b], &[], 1.0, 1.0);
+                assert!(
+                    m.ring.iter().all(|r| r.capacity() == r.len()),
+                    "{kind:?} scalar {scalar}, row {i}"
+                );
+            }
+            assert!(!m.ring.is_empty(), "{kind:?} scalar {scalar}");
         }
     }
 
