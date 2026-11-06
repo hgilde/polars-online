@@ -28,8 +28,38 @@ returns.
   warm-up) is refused with the rows it read and the remedy. Memory is the
   bank's state and one chunk (tasks 336 and 337).
 
+- `label_clock=` on every spec, and the command line's key of the same
+  name: a column of each row's label time, on the clock's type. Each row
+  is scored where it sits, held until the first row whose clock reaches its
+  label time, and learned at that time. Its label is scored against the
+  prediction, interval and spread the row was served, so every residual
+  diagnostic describes what was shown. A doubled stream scored them against
+  a later prediction: its 90% interval covered 88.0% of the served delays
+  on New York's 2013 flights while reporting 90.0%. `embargo=d` is the case
+  `label_clock = clock + d`. `max_held_rows` and `held_overflow`
+  (`"refuse"`, `"drop_oldest"`) bound the rows held, and `summary()` gains
+  `labels_missing` and `labels_dropped`. Refused beside `embargo`, a
+  window-expression target, `group_close`, a session column and
+  `drift_action="reset"`, and for `holt`, `kalman`, `hmm` and `micro`
+  (task 341).
+
 ### Changed
 
+- State schema 67, with three changes. A bank's stream saves the readiness
+  notices a call raised that the bank has not yet taken: a saved stream
+  holds some only after a call that learned rows and then returned an
+  error, and a bank saved and loaded between such a call and its next now
+  says them once, on its first call that completes, where it never said
+  them. A `marginal` state converted from schema 64 or earlier no longer
+  carries the mark of its old rule past the end of its warm-up, where the
+  mark stops acting, so from then on it saves the current form. And a
+  stream under `label_clock` saves each held row's label time, the clock
+  of the label times it has learned at, and its counts of labels missing
+  and dropped, each written only by such a stream. A schema-66 state loads
+  and continues to the bit, `embargo` rows included; schema 66's fixtures
+  are kept under `v66/` (tasks 340 and 341).
+- `summary()` has two more columns, `labels_missing` and `labels_dropped`,
+  which are 0 except under `label_clock` (task 341).
 - Two 1.4.0 entries are corrected in place. The x86-64 lanes entry said
   other CPUs run the same machine code as before; an x86-64 CPU without
   AVX2 runs the new lanes one slot at a time, with the same bits, and only

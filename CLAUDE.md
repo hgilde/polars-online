@@ -181,15 +181,21 @@ runs both tiers, but a plain `cargo test` skips the extended Rust tests
    the file's fit and `solve_failures` counts only the solves run, so the
    state it re-saves after those rows is not the old build's. No frozen
    fixture reaches it.
-   An eighth, the user's (2026-11-05, task 323): a state of schema 64 or
-   earlier that holds a MAD scale sketch (`huber`, `quantile`,
-   `sgd(loss="huber")`, `marginal`'s huber bins) keeps the rule it was saved
-   under -- a sketch awaiting its anchor takes its first value, a warm-up
-   with no held residuals reads its sketch -- marked in its bytes
-   (`anchor_by_first_value`, `before_65`). It continues to the bit, but
-   re-saves to its own marked bytes, not the current fixture's, so it is
-   held, beside `kmeans` and `holt`, to re-saving bytes that load back the
-   same (`kept_scale_rule`).
+   An eighth, the user's (2026-11-05, task 323; amended 2026-11-05, task
+   340): a state of schema 64 or earlier that holds a MAD scale sketch
+   (`huber`, `quantile`, `sgd(loss="huber")`, `marginal`'s huber bins)
+   keeps the rule it was saved under -- a sketch awaiting its anchor takes
+   its first value, a warm-up with no held residuals reads its sketch --
+   marked in its bytes (`anchor_by_first_value`, `before_65`). It continues
+   to the bit, but re-saves to its own marked bytes, not the current
+   fixture's, so it is held, beside `kmeans` and `holt`, to re-saving bytes
+   that load back the same (`kept_scale_rule`). A converted `marginal`
+   state re-saves so only until its histogram is built: `before_65` acts at
+   the freeze and is cleared there (schema 67), so from the freeze it
+   re-saves the current form; a state of 65 or 66 saved past its freeze
+   still carries the mark and loads without it, converting to the current
+   fixture's bytes exactly (`marginal_bins_refit_first_value_frozen`, kept
+   under `v66/` by the 66 build).
    A ninth, the user's (2026-11-05, task 328): a `corrchange(kind="window")`
    state of schema 65 or earlier loads numbered from its ring's oldest row
    (it never recorded `ring_rows`), and where its windows span four blocks
