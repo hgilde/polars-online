@@ -742,6 +742,15 @@ pub trait OnlineModel: Sized {
         None
     }
 
+    /// Whether `rows` learned rows could take this model's window past a
+    /// refusing budget: [`crate::WindowShadow::could_refuse`] of its shadow,
+    /// read from the ring without copying it, so a caller asks this of every
+    /// chunk and forms a shadow only where it answers yes. `false` for a
+    /// model without a window.
+    fn window_could_refuse(&self, _rows: usize) -> bool {
+        false
+    }
+
     /// Each target's own accumulated weight, with `n_eff`'s meaning --
     /// before this row's update and before its own decay, and inside the
     /// window under one -- for the per-target `min_weight` gate: the stream

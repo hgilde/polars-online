@@ -72,11 +72,15 @@
 //! either sign.
 
 use std::cmp::Ordering;
-use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
 use crate::{EwCov, EwCovDiag, Stamp};
+
+mod flat;
+
+use flat::Ring;
+pub use flat::{Offer, Pack, Packer, Unpacker};
 
 /// Where a snapshot sits: the two clocks of the row it precedes
 /// (docs/PLAN.md task 175). `clock` is the model's own, summed from the
@@ -270,6 +274,17 @@ impl Footprint for Bytes {
     }
 }
 
+impl Pack for Bytes {
+    /// No numbers: the bytes are the snapshot's structure.
+    fn pack(&self, out: &mut Packer) {
+        out.dim(self.0);
+    }
+
+    fn unpack(from: &mut Unpacker<'_>) -> Self {
+        Bytes(from.dim())
+    }
+}
+
 /// A window's ring without its snapshots: each one's bytes where the ring
 /// holds the snapshot, the model's clock, and the bytes the model's next
 /// snapshot would hold. [`Self::learn`] is what a learned row does to the
@@ -290,11 +305,24 @@ impl WindowShadow {
     /// The shadow of `ring`, whose model's clock is `clock`. Its snapshots
     /// are taken at the newest one's size, or, in an empty ring, at the size
     /// of the one `make` forms: the closure the model hands `offer`.
-    pub fn new<S: Footprint>(clock: f64, ring: &Snapshots<S>, make: impl FnOnce() -> S) -> Self {
-        let snapshot = match ring.ring.back() {
-            Some(e) => e.snap.footprint(),
-            None => make().footprint(),
+    pub fn new<S: Pack + Footprint + Clone, V: Offer<S>>(
+        clock: f64,
+        ring: &Snapshots<S>,
+        make: impl FnOnce() -> V,
+    ) -> Self {
+        let snapshot = match ring.ring.back_footprint() {
+            Some(bytes) => bytes,
+            None => make().bytes(),
         };
+        let mut places = Ring::new();
+        for (clock, stamp, bytes) in ring.ring.places() {
+            places.push_back(Entry {
+                clock,
+                stamp,
+                snap: Bytes(bytes),
+                decay: Products::default(),
+            });
+        }
         Self {
             clock,
             ring: Snapshots {
@@ -303,16 +331,7 @@ impl WindowShadow {
                 spacing: ring.spacing,
                 closed: ring.closed,
                 since: ring.since,
-                ring: ring
-                    .ring
-                    .iter()
-                    .map(|e| Entry {
-                        clock: e.clock,
-                        stamp: e.stamp,
-                        snap: Bytes(e.snap.footprint()),
-                        decay: Products::default(),
-                    })
-                    .collect(),
+                ring: places,
                 decay: Products::default(),
                 limit: ring.limit.clone(),
                 next: None,
@@ -338,18 +357,22 @@ impl WindowShadow {
         self.ring.over_budget()
     }
 
+    /// The bytes a budget counts of the ring's snapshots
+    /// ([`Snapshots::bytes`]).
+    pub fn bytes(&self) -> usize {
+        self.ring.bytes()
+    }
+
+    /// The snapshots the ring holds.
+    pub fn snapshots(&self) -> usize {
+        self.ring.len()
+    }
+
     /// Whether `rows` learned rows could take the ring past a refusing
     /// budget at all: a row adds at most one snapshot, so a ring that fits
     /// that many more needs no replay.
     pub fn could_refuse(&self, rows: usize) -> bool {
-        match self.ring.limit.budget {
-            Some(b @ WindowBudget::Refuse(_)) => {
-                self.ring.limit.over.is_some()
-                    || (self.ring.limit.held + rows.saturating_mul(self.snapshot)) as f64
-                        > b.bytes()
-            }
-            _ => false,
-        }
+        self.ring.limit.could_refuse(rows, || self.snapshot)
     }
 }
 
@@ -664,8 +687,11 @@ impl<'de, S: Deserialize<'de>> Deserialize<'de> for Entry<S> {
 }
 
 /// Snapshots of an accumulator, oldest first, spanning at most one window.
+/// The oldest, the boundary, is held as the struct a model reads, and every
+/// later one written flat as its numbers ([`Pack`]; the `flat` module's docs),
+/// so a snapshot holds about what [`Footprint`] counts of it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Snapshots<S> {
+pub struct Snapshots<S: Pack + Footprint + Clone> {
     /// Clock units of history the window keeps.
     window: f64,
     /// A snapshot at most every `every` rows; `1` snapshots them all and
@@ -694,8 +720,10 @@ pub struct Snapshots<S> {
     /// decayed clock held exactly, which places it against the window's
     /// edge and the spacing ([`At`]; docs/PLAN.md task 175), and the
     /// products [`Self::decay`] held when the snapshot was taken, which
-    /// decay it forward ([`Entry`]; docs/PLAN.md task 275).
-    ring: VecDeque<Entry<S>>,
+    /// decay it forward ([`Entry`]; docs/PLAN.md task 275). Written as the
+    /// sequence of those tuples, as when the ring held its snapshots as
+    /// structs.
+    ring: Ring<S>,
     /// The running product of the per-row factors the model's moments have
     /// decayed by, one per decay the model reads its window with
     /// ([`Product`]; docs/PLAN.md task 275): a snapshot is decayed forward by
@@ -730,9 +758,47 @@ struct Limit {
     held: usize,
 }
 
+impl Limit {
+    /// Whether `rows` more snapshots of `snapshot` bytes each could take
+    /// the ring past a refusing budget ([`WindowShadow::could_refuse`]).
+    fn could_refuse(&self, rows: usize, snapshot: impl FnOnce() -> usize) -> bool {
+        match self.budget {
+            Some(b @ WindowBudget::Refuse(_)) => {
+                self.over.is_some()
+                    || (self.held + rows.saturating_mul(snapshot())) as f64 > b.bytes()
+            }
+            _ => false,
+        }
+    }
+}
+
 impl PartialEq for Limit {
     fn eq(&self, _: &Self) -> bool {
         true
+    }
+}
+
+/// A ring's snapshots decoded for rewriting ([`Snapshots::edit`]), written
+/// back into the ring when dropped.
+pub struct Edit<'a, S: Pack + Footprint + Clone> {
+    ring: &'a mut Ring<S>,
+    entries: Vec<Entry<S>>,
+}
+
+impl<S: Pack + Footprint + Clone> Edit<'_, S> {
+    /// The snapshots, oldest first.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut S> {
+        self.entries.iter_mut().map(|e| &mut e.snap)
+    }
+}
+
+impl<S: Pack + Footprint + Clone> Drop for Edit<'_, S> {
+    fn drop(&mut self) {
+        let mut ring = Ring::new();
+        for e in self.entries.drain(..) {
+            ring.push_back(e);
+        }
+        *self.ring = ring;
     }
 }
 
@@ -742,7 +808,7 @@ fn no_spacing() -> f64 {
     f64::INFINITY
 }
 
-impl<S> Snapshots<S> {
+impl<S: Pack + Footprint + Clone> Snapshots<S> {
     /// `window` in clock units, a snapshot every `every` rows and on no
     /// clock spacing.
     pub fn new(window: f64, every: usize) -> Result<Self, String> {
@@ -781,7 +847,7 @@ impl<S> Snapshots<S> {
             spacing: cadence.spacing,
             closed: WindowClosed::default(),
             since: usize::MAX, // the first row always snapshots
-            ring: VecDeque::new(),
+            ring: Ring::new(),
             decay: Products::default(),
             limit: Limit::default(),
             next: None,
@@ -834,15 +900,21 @@ impl<S> Snapshots<S> {
         })
     }
 
-    /// The snapshots, oldest first.
-    pub fn iter(&self) -> impl Iterator<Item = &S> {
-        self.ring.iter().map(|e| &e.snap)
+    /// The snapshots, oldest first, each decoded: for a check or a
+    /// conversion of the whole ring, not for a row.
+    pub fn iter(&self) -> impl Iterator<Item = S> + '_ {
+        self.ring.entries().map(|e| e.snap)
     }
 
-    /// Every snapshot held, oldest first, for a caller that must rewrite them
-    /// in place: a state converted as it is read.
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut S> {
-        self.ring.iter_mut().map(|e| &mut e.snap)
+    /// Every snapshot held, decoded, for a caller that must rewrite them in
+    /// place -- a state converted as it is read -- and written back when the
+    /// edit is dropped ([`Edit`]).
+    pub fn edit(&mut self) -> Edit<'_, S> {
+        let entries = self.ring.entries().collect();
+        Edit {
+            ring: &mut self.ring,
+            entries,
+        }
     }
 
     /// The snapshot to subtract, and the model's clock it is referenced at,
@@ -870,10 +942,9 @@ impl<S> Snapshots<S> {
 
     /// The newest snapshot's place, which the spacing is measured from.
     pub(crate) fn newest(&self) -> Option<At> {
-        self.ring.back().map(|e| At {
-            clock: e.clock,
-            stamp: e.stamp,
-        })
+        self.ring
+            .back_place()
+            .map(|(clock, stamp)| At { clock, stamp })
     }
 
     /// The next learned row's stamp, its decayed clock held exactly
@@ -904,7 +975,7 @@ impl<S> Snapshots<S> {
     }
 }
 
-impl<S: Footprint> Snapshots<S> {
+impl<S: Pack + Footprint + Clone> Snapshots<S> {
     /// Drop what can never be the boundary again: everything that has left
     /// the window at `now`, by the stamps' exact difference
     /// ([`Stamp::cmp_span`]) -- strictly older than `window`, and exactly
@@ -917,9 +988,14 @@ impl<S: Footprint> Snapshots<S> {
     /// the row it precedes, which keeps that row -- review 2026-09-12, S6.)
     pub fn trim(&mut self, now: impl Into<Stamp>) {
         let now = now.into();
-        while self.ring.len() > 1 && self.closed.has_left(now, self.ring[0].stamp, self.window) {
-            if let Some(e) = self.ring.pop_front() {
-                self.limit.held = self.limit.held.saturating_sub(e.snap.footprint());
+        while self.ring.len() > 1
+            && self
+                .ring
+                .front()
+                .is_some_and(|e| self.closed.has_left(now, e.stamp, self.window))
+        {
+            if let Some(bytes) = self.ring.pop_front() {
+                self.limit.held = self.limit.held.saturating_sub(bytes);
             }
         }
     }
@@ -946,7 +1022,7 @@ impl<S: Footprint> Snapshots<S> {
     /// inside it (the module docs); `make` is not called otherwise. Past a
     /// thinning budget the ring then thins; a refusing one keeps no snapshot
     /// that would cross it, and makes none after ([`WindowBudget`]).
-    pub fn offer(&mut self, at: impl Into<At>, make: impl FnOnce() -> S) {
+    pub fn offer<V: Offer<S>>(&mut self, at: impl Into<At>, make: impl FnOnce() -> V) {
         let at = at.into();
         self.since = self.since.saturating_add(1);
         if self.limit.over.is_some() {
@@ -955,7 +1031,7 @@ impl<S: Footprint> Snapshots<S> {
         if self.due(self.since, at.stamp) {
             self.since = 0;
             let snap = make();
-            let held = self.limit.held + snap.footprint();
+            let held = self.limit.held + snap.bytes();
             // The ring stops short of a refusing budget: the caller refuses
             // the run, and until it looks, the memory stays bounded.
             let refuse = matches!(
@@ -967,12 +1043,7 @@ impl<S: Footprint> Snapshots<S> {
                 return;
             }
             self.limit.held = held;
-            self.ring.push_back(Entry {
-                clock: at.clock,
-                stamp: at.stamp,
-                snap,
-                decay: self.decay,
-            });
+            self.ring.push_offer(at.clock, at.stamp, self.decay, snap);
             self.enforce();
         }
     }
@@ -982,7 +1053,7 @@ impl<S: Footprint> Snapshots<S> {
     /// ([`Self::next_at`]), move `clock` to the row, and trim at its stamp.
     /// Every windowed model's step does exactly this, before it learns the
     /// row.
-    pub fn learn(&mut self, clock: &mut f64, d_clock: f64, make: impl FnOnce() -> S) {
+    pub fn learn<V: Offer<S>>(&mut self, clock: &mut f64, d_clock: f64, make: impl FnOnce() -> V) {
         self.learn_decayed(clock, d_clock, &[], make);
     }
 
@@ -992,12 +1063,12 @@ impl<S: Footprint> Snapshots<S> {
     /// is offered, since the snapshot holds the state already decayed to the
     /// row. Every learned row, whatever its weight or its targets, decays
     /// the moments, and so moves the products (hard rule 9).
-    pub fn learn_decayed(
+    pub fn learn_decayed<V: Offer<S>>(
         &mut self,
         clock: &mut f64,
         d_clock: f64,
         lams: &[f64],
-        make: impl FnOnce() -> S,
+        make: impl FnOnce() -> V,
     ) {
         if self.decay.len() != lams.len() {
             // The first learned row, or the first since a state saved before
@@ -1024,6 +1095,16 @@ impl<S: Footprint> Snapshots<S> {
         self.enforce();
     }
 
+    /// [`WindowShadow::could_refuse`] of this ring's shadow, without forming
+    /// it: whether `rows` learned rows could take the ring past a refusing
+    /// budget, its next snapshot sized as its newest, or, in an empty ring,
+    /// as the one `make` forms.
+    pub fn could_refuse<V: Offer<S>>(&self, rows: usize, make: impl FnOnce() -> V) -> bool {
+        self.limit.could_refuse(rows, || {
+            self.ring.back_footprint().unwrap_or_else(|| make().bytes())
+        })
+    }
+
     /// A refusing budget's overrun: the bytes the ring reached, and the
     /// cadence it reached them at (`window_every` and
     /// `max_rows_between_snapshots`, doubled by any thinning), which the
@@ -1034,7 +1115,7 @@ impl<S: Footprint> Snapshots<S> {
 
     /// The bytes the ring's snapshots hold.
     pub fn bytes(&self) -> usize {
-        self.ring.iter().map(|e| e.snap.footprint()).sum()
+        self.ring.footprint()
     }
 
     fn enforce(&mut self) {
@@ -1059,13 +1140,7 @@ impl<S: Footprint> Snapshots<S> {
                 // never keeps an older one. The newest stays, and the clock
                 // spacing is measured from it.
                 while self.limit.held as f64 > limit && self.ring.len() > 1 {
-                    let n = self.ring.len();
-                    self.ring = std::mem::take(&mut self.ring)
-                        .into_iter()
-                        .enumerate()
-                        .filter(|(i, _)| (n - 1 - i).is_multiple_of(2))
-                        .map(|(_, e)| e)
-                        .collect();
+                    self.ring.keep_alternate();
                     self.every = self.every.saturating_mul(2);
                     self.spacing *= 2.0;
                     self.limit.held = self.bytes();
@@ -1147,6 +1222,40 @@ impl Moments {
             && k.checked_mul(k) == Some(self.c.len())
             && self.w.is_finite()
             && self.w >= 0.0
+    }
+}
+
+crate::pack_fields!(Moments { w, m, c, rows, q });
+
+/// [`Moments::of`] as a view: the words it writes, written straight from the
+/// accumulator, so a window's ring copies its co-moments once
+/// ([`Offer`]).
+#[derive(Clone, Copy)]
+pub struct MomentsOf<'a> {
+    pub cov: &'a EwCov,
+    pub lam: f64,
+}
+
+impl Offer<Moments> for MomentsOf<'_> {
+    fn bytes(&self) -> usize {
+        3 * std::mem::size_of::<f64>()
+            + floats(self.cov.means())
+            + floats(self.cov.comoments().lower())
+    }
+
+    fn write(&self, out: &mut Packer) {
+        let (cov, lam) = (self.cov, self.lam);
+        // `Moments`' fields in their order: `w`, `m`, `c`, `rows`, `q`.
+        (cov.n_eff() * lam).pack(out);
+        out.dim(cov.means().len());
+        out.f64s(cov.means());
+        cov.comoments().pack(out);
+        Some(cov.rows_learned()).pack(out);
+        cov.q_sum().map(|q| q * lam * lam).pack(out);
+    }
+
+    fn into_snapshot(self) -> Moments {
+        Moments::of(self.cov, self.lam)
     }
 }
 
@@ -1362,6 +1471,38 @@ impl DiagMoments {
     }
 }
 
+crate::pack_fields!(DiagMoments { w, m, v, rows, q });
+
+/// [`DiagMoments::of`] as a view ([`Offer`]), as [`MomentsOf`] is
+/// [`Moments::of`]'s.
+#[derive(Clone, Copy)]
+pub struct DiagMomentsOf<'a> {
+    pub cov: &'a EwCovDiag,
+    pub lam: f64,
+}
+
+impl Offer<DiagMoments> for DiagMomentsOf<'_> {
+    fn bytes(&self) -> usize {
+        3 * std::mem::size_of::<f64>() + floats(self.cov.means()) + floats(self.cov.comoments())
+    }
+
+    fn write(&self, out: &mut Packer) {
+        let (cov, lam) = (self.cov, self.lam);
+        // `DiagMoments`' fields in their order: `w`, `m`, `v`, `rows`, `q`.
+        (cov.n_eff() * lam).pack(out);
+        out.dim(cov.means().len());
+        out.f64s(cov.means());
+        out.dim(cov.comoments().len());
+        out.f64s(cov.comoments());
+        Some(cov.rows_learned()).pack(out);
+        cov.q_sum().map(|q| q * lam * lam).pack(out);
+    }
+
+    fn into_snapshot(self) -> DiagMoments {
+        DiagMoments::of(self.cov, self.lam)
+    }
+}
+
 impl Footprint for DiagMoments {
     fn footprint(&self) -> usize {
         3 * std::mem::size_of::<f64>() + floats(&self.m) + floats(&self.v)
@@ -1492,6 +1633,17 @@ mod tests {
     impl Footprint for Held {
         fn footprint(&self) -> usize {
             8
+        }
+    }
+
+    impl Pack for Held {
+        fn pack(&self, out: &mut Packer) {
+            self.0.pack(out);
+            self.1.pack(out);
+        }
+
+        fn unpack(from: &mut Unpacker<'_>) -> Self {
+            Held(f64::unpack(from), crate::TargetMoments::unpack(from))
         }
     }
 
@@ -1674,7 +1826,7 @@ mod tests {
         for i in 10..20usize {
             old.learn_decayed(&mut clock, 1.0, &[decay.factor(1.0)], || i);
         }
-        assert!(old.ring.iter().all(|e| e.decay.len() == 1));
+        assert!(old.ring.entries().all(|e| e.decay.len() == 1));
     }
 
     /// The scalar truncation is the slice one's arithmetic, to the bit, and
@@ -2431,10 +2583,17 @@ mod tests {
     #[test]
     fn takes_says_when_offer_forms_a_snapshot() {
         /// A snapshot of one MiB, so a budget of a few MiB trips in a few rows.
+        #[derive(Clone)]
         struct Big;
         impl Footprint for Big {
             fn footprint(&self) -> usize {
                 1 << 20
+            }
+        }
+        impl Pack for Big {
+            fn pack(&self, _: &mut Packer) {}
+            fn unpack(_: &mut Unpacker<'_>) -> Self {
+                Big
             }
         }
         let mut seed = 5u64;
@@ -2583,7 +2742,7 @@ mod tests {
             r.trim(i as f64);
         }
         assert!(!r.is_empty());
-        assert_eq!(r.iter().copied().collect::<Vec<_>>(), vec![10, 11, 12, 13]);
+        assert_eq!(r.iter().collect::<Vec<_>>(), vec![10, 11, 12, 13]);
     }
 
     /// A ring stopped by a refusing budget makes no snapshot, so the
@@ -2632,11 +2791,7 @@ mod tests {
         r.offer(5.0, || 1);
         assert_eq!(r.len(), 2);
         r.trim(5.0);
-        assert_eq!(
-            r.iter().copied().collect::<Vec<_>>(),
-            vec![1],
-            "and is trimmed"
-        );
+        assert_eq!(r.iter().collect::<Vec<_>>(), vec![1], "and is trimmed");
     }
 
     /// The edge rule itself, on stamps of both kinds: older than the window
@@ -2666,7 +2821,7 @@ mod tests {
     #[test]
     fn thinning_keeps_the_newest_and_every_second_before_it() {
         let r = ring_of(6, 100.0, Some(WindowBudget::Thin(24.0 / (1024.0 * 1024.0))));
-        assert_eq!(r.iter().copied().collect::<Vec<_>>(), vec![1, 3, 5]);
+        assert_eq!(r.iter().collect::<Vec<_>>(), vec![1, 3, 5]);
         assert_eq!(r.every, 2);
         assert_eq!(r.bytes(), 24, "the budget exactly, which fits");
     }
@@ -2680,7 +2835,7 @@ mod tests {
             let mut r: Snapshots<usize> = Snapshots::new(100.0, 1).unwrap();
             r.set_budget(Some(WindowBudget::Thin(4.0 / (1024.0 * 1024.0))));
             r.offer(0.0, || 7);
-            let _ = tx.send(r.iter().copied().collect::<Vec<_>>());
+            let _ = tx.send(r.iter().collect::<Vec<_>>());
         });
         let kept = rx
             .recv_timeout(std::time::Duration::from_secs(5))
@@ -2742,8 +2897,8 @@ mod tests {
     }
 
     /// The clocks of a ring's snapshots, oldest first.
-    fn clocks_of<S>(r: &Snapshots<S>) -> Vec<f64> {
-        r.ring.iter().map(|e| e.clock).collect()
+    fn clocks_of<S: Pack + Footprint + Clone>(r: &Snapshots<S>) -> Vec<f64> {
+        r.ring.places().map(|(clock, _, _)| clock).collect()
     }
 
     /// A ring fed `clocks`, a snapshot offered and the ring trimmed at each
@@ -2954,8 +3109,8 @@ mod tests {
         let want = snapshot_rows(&mut whole, &clocks);
         let mid = |r: &Snapshots<usize>, t: f64| {
             r.ring
-                .back()
-                .is_some_and(|e| t - e.clock > 0.0 && t - e.clock < cadence.spacing)
+                .back_place()
+                .is_some_and(|(clock, _)| t - clock > 0.0 && t - clock < cadence.spacing)
         };
         // Cuts where the last row learned is part of a spacing past the
         // newest snapshot, and the next row takes none.

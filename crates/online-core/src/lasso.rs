@@ -371,6 +371,55 @@ struct LassoMoments {
     sel_err: Vec<Vec<f64>>,
 }
 
+crate::pack_fields!(LassoMoments {
+    acc,
+    sel_w,
+    sel_err
+});
+
+/// The window's snapshot as a view: [`LassoMoments`]' words, written
+/// straight from the model's accumulators and selection ([`crate::Offer`]).
+#[derive(Clone, Copy)]
+struct LassoOf<'a> {
+    acc: crate::gaps::AccSnapOf<'a>,
+    sel_w: &'a [f64],
+    sel_lam: f64,
+    sel_err: &'a [Vec<f64>],
+}
+
+impl crate::Offer<LassoMoments> for LassoOf<'_> {
+    fn bytes(&self) -> usize {
+        self.acc.bytes()
+            + crate::window::floats(self.sel_w)
+            + self
+                .sel_err
+                .iter()
+                .map(|v| crate::window::floats(v))
+                .sum::<usize>()
+    }
+
+    fn write(&self, out: &mut crate::Packer) {
+        self.acc.write(out);
+        out.dim(self.sel_w.len());
+        for w in self.sel_w {
+            out.f64(w * self.sel_lam);
+        }
+        out.dim(self.sel_err.len());
+        for e in self.sel_err {
+            out.dim(e.len());
+            out.f64s(e);
+        }
+    }
+
+    fn into_snapshot(self) -> LassoMoments {
+        LassoMoments {
+            acc: self.acc.owned(),
+            sel_w: self.sel_w.iter().map(|w| w * self.sel_lam).collect(),
+            sel_err: self.sel_err.to_vec(),
+        }
+    }
+}
+
 impl crate::Footprint for LassoMoments {
     fn footprint(&self) -> usize {
         crate::Footprint::footprint(&self.acc)
@@ -396,6 +445,16 @@ impl LassoMoments {
 }
 
 impl Lasso {
+    /// The snapshot the window's ring would take of the model as it
+    /// stands, undecayed: what its shadow sizes the next snapshot by.
+    fn next_snapshot(&self) -> LassoMoments {
+        LassoMoments {
+            acc: self.acc.snapshot(1.0),
+            sel_w: self.sel_w.clone(),
+            sel_err: self.sel_err.clone(),
+        }
+    }
+
     pub fn new(cfg: LassoCfg) -> Result<Self, String> {
         cfg.validate()?;
         let k_total = cfg.k_total();
@@ -1039,12 +1098,14 @@ impl OnlineModel for Lasso {
     fn window_shadow(&self) -> Option<crate::WindowShadow> {
         let win = self.win.as_ref()?;
         Some(crate::WindowShadow::new(win.clock, &win.snaps, || {
-            LassoMoments {
-                acc: self.acc.snapshot(1.0),
-                sel_w: self.sel_w.clone(),
-                sel_err: self.sel_err.clone(),
-            }
+            self.next_snapshot()
         }))
+    }
+
+    fn window_could_refuse(&self, rows: usize) -> bool {
+        self.win
+            .as_ref()
+            .is_some_and(|win| win.snaps.could_refuse(rows, || self.next_snapshot()))
     }
     /// `sqrt(1 + df / n_kish)` per (target, path point), as it stands
     /// before the row: `df` the coefficients the last solve left active
@@ -1173,12 +1234,14 @@ impl OnlineModel for Lasso {
             // Two products: the moments' decay and the selection's
             // (`Snapshots::cut`'s `which`, 0 and 1; docs/PLAN.md task 275).
             win.snaps
-                .learn_decayed(&mut win.clock, d_clock, &[lam_decay, sel_lam], || {
-                    LassoMoments {
-                        acc: self.acc.snapshot(lam_decay),
-                        sel_w: self.sel_w.iter().map(|w| w * sel_lam).collect(),
-                        sel_err: self.sel_err.clone(),
-                    }
+                .learn_decayed(&mut win.clock, d_clock, &[lam_decay, sel_lam], || LassoOf {
+                    acc: crate::gaps::AccSnapOf {
+                        acc: &self.acc,
+                        lam: lam_decay,
+                    },
+                    sel_w: &self.sel_w,
+                    sel_lam,
+                    sel_err: &self.sel_err,
                 });
         }
 
@@ -1470,7 +1533,14 @@ mod tests {
             let ModelState::Lasso(inner) = &mut st.model else {
                 unreachable!()
             };
-            inner.win.as_mut().unwrap().snaps.iter_mut().for_each(f);
+            inner
+                .win
+                .as_mut()
+                .unwrap()
+                .snaps
+                .edit()
+                .iter_mut()
+                .for_each(f);
             match Lasso::restore(&st) {
                 Err(StateError::Invalid(e)) => assert!(e.contains("snapshots"), "{what}: {e}"),
                 Ok(mut back) => {

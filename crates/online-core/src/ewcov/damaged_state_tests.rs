@@ -121,7 +121,14 @@ fn a_window_snapshot_of_the_wrong_shape_is_refused() {
         let crate::ModelState::EwCovModel(inner) = &mut state.model else {
             unreachable!()
         };
-        inner.win.as_mut().unwrap().snaps.iter_mut().for_each(f);
+        inner
+            .win
+            .as_mut()
+            .unwrap()
+            .snaps
+            .edit()
+            .iter_mut()
+            .for_each(f);
         assert_refused(what, &state, "wrong shape");
     }
 }

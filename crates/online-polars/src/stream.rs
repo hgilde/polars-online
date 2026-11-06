@@ -331,6 +331,11 @@ impl AnyModel {
         dispatch!(self, m => m.window_shadow())
     }
 
+    /// [`OnlineModel::window_could_refuse`].
+    pub fn window_could_refuse(&self, rows: usize) -> bool {
+        dispatch!(self, m => m.window_could_refuse(rows))
+    }
+
     /// The default schedule in an explicit cadence's first period
     /// ([`OnlineModel::set_first_period_by_share`]).
     pub fn set_first_period_by_share(&mut self, on: bool) {
@@ -3171,13 +3176,14 @@ impl Stream {
         base: usize,
         formulas: Option<FormulaTargets<'_>>,
     ) -> Option<(usize, online_core::Cadence)> {
-        let mut live = self.window_shadows();
         // A learned row adds at most one snapshot to a ring, and the rows a
-        // `embargo` holds are learned in this chunk at the most.
+        // `embargo` holds are learned in this chunk at the most. A shadow
+        // copies its ring, so it is formed only where one could refuse.
         let most = rows.len() + self.persisted.pending.len();
-        if !live.iter().any(|s| s.could_refuse(most)) {
+        if !self.rings_could_refuse(most) {
             return None;
         }
+        let mut live = self.window_shadows();
         if !self.persisted.drift.is_empty() && spec.drift_action.as_deref() == Some("reset") {
             return None;
         }
@@ -3261,8 +3267,20 @@ impl Stream {
     /// Whether a ring of this stream could refuse a chunk of `rows` rows
     /// past its budget: what the window pre-pass replays for.
     pub(crate) fn could_refuse_window(&self, rows: usize) -> bool {
-        let most = rows + self.persisted.pending.len();
-        self.window_shadows().iter().any(|s| s.could_refuse(most))
+        self.rings_could_refuse(rows + self.persisted.pending.len())
+    }
+
+    /// [`WindowShadow::could_refuse`] of any of [`Self::window_shadows`],
+    /// read from the rings without copying them.
+    fn rings_could_refuse(&self, most: usize) -> bool {
+        let n_slots = self.n_slots();
+        self.models.iter().any(|(_, m)| m.window_could_refuse(most))
+            || self
+                .persisted
+                .resid_win
+                .iter()
+                .flatten()
+                .any(|r| r.could_refuse(n_slots, most))
     }
 
     fn window_shadows(&self) -> Vec<WindowShadow> {

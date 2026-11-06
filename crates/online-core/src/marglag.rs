@@ -328,6 +328,16 @@ impl LagMoments {
     }
 }
 
+crate::pack_fields!(LagMoments {
+    p,
+    cyy,
+    cxx,
+    cxy,
+    cyx,
+    bx,
+    by
+});
+
 impl crate::Footprint for LagMoments {
     fn footprint(&self) -> usize {
         [

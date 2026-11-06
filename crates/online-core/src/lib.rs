@@ -195,8 +195,9 @@ pub use stats::{
 pub use tails::Tails;
 pub use warmup::{WARMUP_ROWS, Warmup};
 pub use window::{
-    At, Bytes, Cadence, DiagMoments, Footprint, Moments, Snapshots, WindowBudget, WindowClosed,
-    WindowShadow, truncated, truncated_diag, truncated_mean, truncated_scalar,
+    At, Bytes, Cadence, DiagMoments, Edit, Footprint, Moments, Offer, Pack, Packer, Snapshots,
+    Unpacker, WindowBudget, WindowClosed, WindowShadow, truncated, truncated_diag, truncated_mean,
+    truncated_scalar,
 };
 
 /// Version of the serialized model-state layout.

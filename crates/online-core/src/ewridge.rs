@@ -530,6 +530,41 @@ struct RidgeMoments {
     sig2: Vec<f64>,
 }
 
+crate::pack_fields!(RidgeMoments { acc, wsig, sig2 });
+
+/// The window's snapshot as a view: [`RidgeMoments`]' words, written
+/// straight from the model's accumulators ([`crate::Offer`]).
+#[derive(Clone, Copy)]
+struct RidgeOf<'a> {
+    acc: crate::gaps::AccSnapOf<'a>,
+    wsig: &'a [f64],
+    sig2: &'a [f64],
+}
+
+impl crate::Offer<RidgeMoments> for RidgeOf<'_> {
+    fn bytes(&self) -> usize {
+        self.acc.bytes() + crate::window::floats(self.wsig) + crate::window::floats(self.sig2)
+    }
+
+    fn write(&self, out: &mut crate::Packer) {
+        self.acc.write(out);
+        out.dim(self.wsig.len());
+        for w in self.wsig {
+            out.f64(w * self.acc.lam);
+        }
+        out.dim(self.sig2.len());
+        out.f64s(self.sig2);
+    }
+
+    fn into_snapshot(self) -> RidgeMoments {
+        RidgeMoments {
+            acc: self.acc.owned(),
+            wsig: self.wsig.iter().map(|w| w * self.acc.lam).collect(),
+            sig2: self.sig2.to_vec(),
+        }
+    }
+}
+
 impl crate::Footprint for RidgeMoments {
     fn footprint(&self) -> usize {
         crate::Footprint::footprint(&self.acc)
@@ -556,6 +591,16 @@ struct RidgeView {
 }
 
 impl EwRidge {
+    /// The snapshot the window's ring would take of the model as it
+    /// stands, undecayed: what its shadow sizes the next snapshot by.
+    fn next_snapshot(&self) -> RidgeMoments {
+        RidgeMoments {
+            acc: self.acc.snapshot(1.0),
+            wsig: self.wsig.clone(),
+            sig2: self.sig2.clone(),
+        }
+    }
+
     pub fn new(cfg: EwRidgeCfg) -> Result<Self, String> {
         cfg.validate()?;
         let k_total = cfg.k_total();
@@ -2270,12 +2315,14 @@ impl OnlineModel for EwRidge {
     fn window_shadow(&self) -> Option<crate::WindowShadow> {
         let win = self.win.as_ref()?;
         Some(crate::WindowShadow::new(win.clock, &win.snaps, || {
-            RidgeMoments {
-                acc: self.acc.snapshot(1.0),
-                wsig: self.wsig.clone(),
-                sig2: self.sig2.clone(),
-            }
+            self.next_snapshot()
         }))
+    }
+
+    fn window_could_refuse(&self, rows: usize) -> bool {
+        self.win
+            .as_ref()
+            .is_some_and(|win| win.snaps.could_refuse(rows, || self.next_snapshot()))
     }
     fn target_n_eff_into(&self, out: &mut Vec<f64>) -> bool {
         out.clear();
@@ -2506,10 +2553,13 @@ impl OnlineModel for EwRidge {
             // P1). The closure reads `acc`/`wsig`/`sig2`, disjoint fields from
             // `win`, so the borrows do not collide.
             win.snaps
-                .learn_decayed(&mut win.clock, d_clock, &[lam], || RidgeMoments {
-                    acc: self.acc.snapshot(lam),
-                    wsig: self.wsig.iter().map(|w| w * lam).collect(),
-                    sig2: self.sig2.clone(),
+                .learn_decayed(&mut win.clock, d_clock, &[lam], || RidgeOf {
+                    acc: crate::gaps::AccSnapOf {
+                        acc: &self.acc,
+                        lam,
+                    },
+                    wsig: &self.wsig,
+                    sig2: &self.sig2,
                 });
         }
         let pred = below.as_deref().unwrap_or(&out.pred);

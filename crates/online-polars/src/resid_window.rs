@@ -21,8 +21,8 @@
 //! promise.
 
 use online_core::{
-    Cadence, Decay, Footprint, Snapshots, Stamp, WindowBudget, WindowClosed, WindowShadow,
-    truncated_scalar,
+    Cadence, Decay, Footprint, Offer, Packer, Snapshots, Stamp, WindowBudget, WindowClosed,
+    WindowShadow, truncated_scalar,
 };
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +35,48 @@ struct Spread {
     var: Vec<f64>,
     #[serde(default)]
     n: Vec<u64>,
+}
+
+online_core::pack_fields!(Spread { w, var, n });
+
+/// The spread before a learned row, decayed to it by `lam`, as a view that
+/// writes a [`Spread`]'s words straight from the stream's own
+/// ([`online_core::Offer`]).
+#[derive(Clone, Copy)]
+struct SpreadOf<'a> {
+    w: &'a [f64],
+    var: &'a [f64],
+    n: &'a [u64],
+    lam: f64,
+}
+
+impl Offer<Spread> for SpreadOf<'_> {
+    fn bytes(&self) -> usize {
+        std::mem::size_of_val(self.w)
+            + std::mem::size_of_val(self.var)
+            + std::mem::size_of_val(self.n)
+    }
+
+    fn write(&self, out: &mut Packer) {
+        out.dim(self.w.len());
+        for w in self.w {
+            out.f64(w * self.lam);
+        }
+        out.dim(self.var.len());
+        out.f64s(self.var);
+        out.dim(self.n.len());
+        for &n in self.n {
+            out.word(n);
+        }
+    }
+
+    fn into_snapshot(self) -> Spread {
+        Spread {
+            w: self.w.iter().map(|w| w * self.lam).collect(),
+            var: self.var.to_vec(),
+            n: self.n.to_vec(),
+        }
+    }
 }
 
 impl Footprint for Spread {
@@ -122,10 +164,11 @@ impl ResidWindow {
         }
         let rows = &self.rows;
         self.snaps
-            .learn_decayed(&mut self.clock, d_clock, &[lam], || Spread {
-                w: w.iter().map(|w| w * lam).collect(),
-                var: var.to_vec(),
-                n: rows.clone(),
+            .learn_decayed(&mut self.clock, d_clock, &[lam], || SpreadOf {
+                w,
+                var,
+                n: rows,
+                lam,
             });
         if weight > 0.0 {
             for (n, r) in self.rows.iter_mut().zip(resid) {
@@ -154,6 +197,16 @@ impl ResidWindow {
     /// of `n_slots` slots, as `learn` takes one.
     pub fn shadow(&self, n_slots: usize) -> WindowShadow {
         WindowShadow::new(self.clock, &self.snaps, || Spread {
+            w: vec![0.0; n_slots],
+            var: vec![0.0; n_slots],
+            n: vec![0; n_slots],
+        })
+    }
+
+    /// [`WindowShadow::could_refuse`] of [`Self::shadow`], without forming
+    /// it.
+    pub fn could_refuse(&self, n_slots: usize, rows: usize) -> bool {
+        self.snaps.could_refuse(rows, || Spread {
             w: vec![0.0; n_slots],
             var: vec![0.0; n_slots],
             n: vec![0; n_slots],
