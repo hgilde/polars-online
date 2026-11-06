@@ -177,6 +177,18 @@ returns.
 
 ### Fixed
 
+- The readiness warnings no longer read a falling weight as a ceiling. A
+  target the rows stopped carrying, or one they do not all carry, was told
+  its weight "tops out near" its current, decaying weight, with advice to
+  lower `min_weight` below it; it is now told the model has not learned it
+  from every row and that its weight falls on each row without it, and,
+  where rows that each carried it could not reach the floor either, given
+  their ceiling. The `max_error_inflation` warning for a model that has not
+  fit at all no longer reads a falling `weight_sum` as a ceiling. On a row
+  of weight 0, or rows too uneven to project, neither gives a figure. Both
+  give their figures to three significant figures, the ceiling rounded
+  down and the `half_life` up, and link the section that explains the
+  gates. A target every row carries reads as before (task 350).
 - Two `lf.online.fit_predict` calls in series in one query, joined by a
   `with_columns` or `.online.unnest`, no longer grow memory with the
   stream. Polars keeps about ten frames per thread in flight between a
