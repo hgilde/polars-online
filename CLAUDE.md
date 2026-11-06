@@ -122,6 +122,17 @@ waits until the current turn ends, so put long jobs (builds, Valgrind,
 timing) in background shells and keep turns short, or the poll slips.
 Background shells and their output do not survive a restart either:
 write results to files in the scratchpad, not only to a shell's output.
+On 2026-11-05 the VM restarted four times in two hours (about every
+40-50 minutes), each time killing the build or timing in progress. Make
+every long job resumable, so a restart costs one step: a script that
+skips each binary already built, and a marker file written after each
+finished timing round, which the rerun skips. Run it detached (`setsid
+nohup ... &`), because a tracked background shell is killed at its
+2-hour limit even while it only waits. Keep a tracked shell waiting on
+the job's done line beside it: the restarts came while only detached
+jobs ran, and one came with such a watcher running, so it helps but does
+not prevent them. The safety-check message names the rerun commands, so
+a restart that kills both is one message from recovered.
 
 ## Hard rules
 
