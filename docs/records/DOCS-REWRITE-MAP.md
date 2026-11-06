@@ -4,8 +4,8 @@
 page is rewritten. It is a record: each stage that moves a section ticks
 it off in PLAN 338, not here, and the map is not kept in step with the
 pages. Its section lists and line counts are generated from the pages as
-they stood at `965e57c0`, so WRITING.md's rows show it before stage 0
-changed it. Where each section lands was decided by hand.*
+they stood at `965e57c0`, so they show WRITING.md as it stood before
+stage 0 changed it. Where each section lands was decided by hand.*
 
 The rewrite turns the README and the guides, about 31,600 lines in 632
 sections, into pages of four kinds: tutorials, how-tos, references and
@@ -42,7 +42,8 @@ A message links its long form as
 `https://github.com/hgilde/polars-online/blob/main/docs/<page>.md#<anchor>`,
 which a terminal shows in full, and a test holds every such link to a
 heading that exists. A heading a message links stays on its old page, as a
-heading that shipped code links does (*Rules for moving text*). A message links no heading of the README, whose sections
+heading that shipped code links does
+([Rules for moving text](#rules-for-moving-text)). A message links no heading of the README, whose sections
 move.
 
 Stages 1 and 2 come before most pages are written, so their messages
@@ -74,6 +75,11 @@ Each stage lands as its own change, in this order, and runs WRITING
 | 9 | the contributor pages, and the records moved out of TESTING.md and RELEASE-READINESS.md | `docs/contributing/`, `CONTRIBUTING.md` (rewritten in place), `docs/EXTENDING.md`, `docs/TESTING.md`, `docs/RELEASE-READINESS.md`, `docs/WRITING.md`, `docs/records/TESTING-LOG.md`, `docs/records/RELEASE-HISTORY.md` |
 | 10 | American spelling over the pages no earlier stage rewrote, the records included (their words change only in spelling, and a quotation keeps its own), then a cold read of every page and the link checks over all of them | none new |
 
+Stage 1 and stage 8 rewrite the README's prose, so each logs its pass in
+the log of README passes, which WRITING §2 and §6 name, with the map's
+README rows copied into its entry, as WRITING §2 asks. The stages between move README sections out and leave a
+one-line link, which rewrites no prose and so is no pass.
+
 ## The pages the rewrite produces
 
 Three of the kinds in the page list sit outside WRITING §9's four: the
@@ -90,7 +96,7 @@ hold a second kind on purpose:
 | the README | its opening is the first tutorial | the first example is what a new reader opens it for |
 | WRITING.md | its pass (§6, a how-to) and its rewrites (§8, explanations) | every rule cites them |
 | DATA-QUALITY.md | each finding's entry ends in its remedy | WRITING §11 asks every message to say what to do, and the entry is the long form of `bank.check()`'s message |
-| EXTENDING.md | each step says what the layer it touches holds | a step a contributor cannot act on without that is not a step |
+| EXTENDING.md | each step says what the layer it touches holds | a contributor needs to know what a layer holds to act on the step that touches it |
 | GLOSSARY.md | the reason for each contested word | a writer needs it to choose a new one |
 | TESTING.md | the reasons a platform's last bits differ | a contributor reading which machine runs what needs them beside it |
 
@@ -101,7 +107,7 @@ a floor, since the how-tos for the recipes in the model entries are named
 later, by the rule for model entries. The stage column names the stage
 that rewrites a page, not every stage that edits it: every stage adds its
 new pages to `docs/README.md`, stage 1 corrects a sentence of WRITING
-§2, and stage 8 replaces that section's rule. The rows of the page list,
+§2, and stage 8 replaces §2's rule that every guide has a README section. The rows of the page list,
 counted by kind (the README twice, and `docs/reference/` as one):
 
 | kind | rows |
@@ -141,8 +147,9 @@ reference page for users goes at the top of `docs/`, since `docs/reference/` hol
 the Sphinx sources, and a record goes under `docs/records/`.
 
 **Every page that exists today keeps its path, and becomes whichever kind
-its remaining text is.** That is a decision, made because released docstrings
-link pages on `main` by path, and a released wheel keeps those links for
+its remaining text is.** That is one rule for every page, since `llms.txt`,
+the README, code comments and other guides link them all by path. It
+matters most where released docstrings link pages on `main` by path, and a released wheel keeps those links for
 as long as it is installed. They link `OUTPUTS.md` with an anchor per
 model (24 links), `GRAM.md` (11, none with an anchor), `DIAGNOSTICS.md`
 (5, two with an anchor), `DATA-QUALITY.md` (3, one with an anchor, and
@@ -235,7 +242,7 @@ PERFORMANCE.md's reference sections instead.
 | `docs/how-to/bound-memory.md` | how-to | 6 | Keep a run's memory down with Polars' own settings and by filtering after the bank. |
 | `docs/CALIBRATION.md` | how-to | 6 | Choose a model's settings from the stream's own out-of-sample errors with `po.eval.grid_search`, and report what the choice earned. |
 | `docs/GBDT.md` | how-to | 6 | Train XGBoost or LightGBM on files larger than memory with `po.gbdt`. |
-| `docs/MODELS.md` | reference | 1 (`ewridge`), 4 | Every model's entry by family, as the rule for model entries sets it (summary, when to use it, links to its parameters and outputs, update, one example, and what it is checked against in its Notes), and what every spec takes. |
+| `docs/MODELS.md` | reference | 1 (`ewridge`), 4 | Every model's entry by family, as the rule for model entries sets it (summary, when to use it, links to its parameters and outputs, update, one example, and what it is checked against in its Notes), and what every spec takes, in an order of its own (Parameters, Raises, Examples). |
 | `docs/OUTPUTS.md` | reference | 4 | Every field each model writes, with its type and when it is null, generated from the code. |
 | `docs/GLOSSARY.md` | reference | 0 | Every concept's one word, its meaning, the words it replaces and whether a message may use it, and the reason for each contested word. |
 | `docs/RUNNER.md` | reference | 4 | The command line, in the order of its sections today: exit status; the configuration file (the flags and the TOML keys they override, input and output files, specs in TOML, clocks that are times); chunk size; the Rust entry points; and what `--version` prints. |
@@ -298,7 +305,7 @@ API reference alone. The evidence weighed, measured at `965e57c0`:
 | links from shipped docstrings | `blob/main/docs/*.md` addresses, which every released wheel carries | every one of those links would break in every installed version |
 | cross-links between a guide and the reference | a guide links the reference's HTML pages by URL, and a docstring links a guide by URL; `tests/test_api_links.py` resolves both | Sphinx resolves them by name and fails `-W` on a broken one, a real gain |
 | search | GitHub's search over the repository | Sphinx's search over guides and reference together, the other gain |
-| the cost of moving | none | a new Sphinx extension (MyST) or every guide rewritten in RST, the tests above moved with them, and a published site whose URLs replace the GitHub ones |
+| the cost of moving | none | a new Sphinx extension (MyST) or every guide rewritten in RST, the 55 test and script files that read the guides moved with them, and a published site whose URLs replace the GitHub ones |
 
 No compelling reason to move was found. Two gains are real: checked
 cross-links, and one search over guides and reference. The link check
@@ -309,29 +316,27 @@ the tests already run gives the first of them.
 Each stage moves sections by these rules, so the map's last column can be
 followed without a decision at each row:
 
-- **When a section moves depends on two stages,** the one that writes
-  its destination and the one that rewrites the page it is on. Where the
-  destination's stage comes first, as the glossary's (stage 0) and the
-  docstrings' Notes (stage 3) do, the text is copied there then, and the
-  source page's stage removes it and leaves a one-line link, except a
-  README section, which the next rule governs. Where the destination's
-  stage has already passed, the source page's stage moves the text. Where the two
-  are the same stage, the text moves. Where the destination's stage comes
-  later, the text is left as it stands, and is rewritten only when it
-  moves. A record moves out in the stage that rewrites the page holding
-  it.
+- **The destination's stage copies the text, and the source page's stage
+  removes it** and leaves a one-line link. Where the two are the same
+  stage, the text moves. Where the destination's stage comes after
+  the source page's, the source page's stage leaves the text as it
+  stands, and the destination's stage moves it. Where the destination's
+  stage has already passed, as stage 0's glossary has, the source page's
+  stage moves the text. A README section follows the next rule instead.
+  A record moves out in the stage that rewrites the page holding it.
 - **A README section moves, and is not copied,** in the stage that writes
-  its destination, with three exceptions. *Terminology* stays until stage
+  its destination, in all but four cases. *Terminology* stays until stage
   8, which trims it to the words a newcomer needs and a link to the
   glossary, since the glossary already holds every term. *Development*
   stays until stage 8 moves its text as it stands into CONTRIBUTING.md,
   which stage 9 rewrites. The headings
   `llms.txt` links stay until stage 8 too. And a README section that leads to an existing guide stays, with
   its recipe, until stage 8, since `test_every_guide_has_a_readme_section`
-  holds that guide to it until then. The exception covers the section's
+  holds that guide to it until then. This covers the section's
   own text and recipe, not its subsections. The stage that writes its
   destination copies its text there, and stage 8 removes it from the
-  README. Where a README section moves whole in a middle stage, its
+  README. A part whose destination stage 0 wrote leaves the README in the
+  last stage that moves the rest of its section. Where a README section moves whole in a middle stage, its
   one-line link stays where the section stood, under its parent's opener,
   until stage 8.
 - **A heading's address matters only where something links it.** Where
@@ -356,10 +361,17 @@ followed without a decision at each row:
   page list that covers the task, or else names a new how-to for it by the
   task it solves. That stage records each recipe's how-to, listed or new,
   in PLAN 338. The
-  page list leaves those how-tos out, and stage 6 writes them with the
+  page list leaves the new how-tos out, and stage 6 writes them with the
   rest. Until then, a rewritten entry keeps those recipes as they stand,
   under a heading of their own after its Notes. Its mechanism goes to
   its docstring's Notes, unless its row names an explanation for it.
+- **An opening table that points at how-tos links what exists.** Before
+  stage 6, the tables that open DIAGNOSTICS.md and GRAM.md link the
+  sections still on their pages, and stage 6 points each row at its new
+  how-to.
+- **The stage that moves a record rewrites the citations to it** in code
+  comments, tests and other records, as `PERFORMANCE.md §N` becomes the
+  log's path with the same section number.
 - **A test moves with the text it reads.** The page tests
   (`tests/test_*_page.py`), the README's recipe tests and
   `tests/test_api_links.py` follow a section to its new page in the same
@@ -403,7 +415,7 @@ followed without a decision at each row:
 How the 31,600 lines of the README and the guides divide by kind today,
 counting each section's own lines (its heading to its first subsection).
 A *mixed* section holds more than one kind, and its row in the map says
-which parts go where; each is counted under *mixed*. The records are the dated research and logs that
+where each part goes. Its lines are counted under *mixed*. The records are the dated research and logs that
 the guides hold today.
 
 | page | lines | sections | tutorial | how-to | reference | explanation | mixed | record |
@@ -424,9 +436,9 @@ the guides hold today.
 | docs/PERFORMANCE.md | 6416 | 200 |  |  | 510 | 160 | 56 | 5690 |
 | docs/EXTENDING.md | 778 | 33 |  | 778 |  |  |  |  |
 | docs/TESTING.md | 2587 | 46 |  | 272 | 690 |  | 490 | 1135 |
-| docs/RELEASE-READINESS.md | 1983 | 59 |  | 212 | 751 | 44 | 179 | 797 |
+| docs/RELEASE-READINESS.md | 1983 | 59 |  | 212 | 751 | 44 | 168 | 808 |
 | docs/WRITING.md | 986 | 17 |  | 81 | 828 | 77 |  |  |
-| all | 31589 | 632 | 159 | 6194 | 5243 | 1273 | 10701 | 8019 |
+| all | 31589 | 632 | 159 | 6194 | 5243 | 1273 | 10690 | 8030 |
 
 ## The stage 1 set
 
@@ -435,15 +447,11 @@ their kinds, and every later stage copies their shape. So each is chosen
 as the case that shows most of its kind's rules, or as a page another
 piece needs. PLAN 338 named six pieces. The map keeps them and adds
 four, each for a shape the six do not show or a page one of them needs.
-Stage 1 and stage 8 rewrite the README's prose, so each logs its pass in
-the log of README passes, which WRITING §2 and §6 name, with the map's
-README rows copied into its entry, as WRITING §2 asks. The stages between move README sections out and leave a
-one-line link, which rewrites no prose and so is no pass.
 
 | piece | kind | why it represents its kind |
 |---|---|---|
 | the clock's step-back error (`crates/online-polars`) | Rust error | the longest message (over a hundred words), with three remedies, an internal setting and a row number: every part of the four-part shape is tested on it |
-| `spec "m": ridge must be finite and >= 0, got -1`, raised when a spec is built | Python error | **added.** The package has 354 raise sites in Python, beside about 1,090 error returns in Rust, most of them spec checks at build time, and none of the six is one. This one comes from the range check every numeric keyword shares, so its shape reaches every such refusal at once, and its rewritten form is WRITING §11's example |
+| `spec "m": ridge must be finite and >= 0, got -1`, raised when a spec is built | Python error | **added.** The package has 354 raise sites in Python, most of them spec checks at build time, beside about 1,090 error returns in Rust, and none of the six pieces is a Python refusal. This one comes from the range check every numeric keyword shares, so its shape reaches every such refusal at once, and its rewritten form is WRITING §11's example |
 | the readiness warning | warning | it holds every fault of a warning at once: the internal words *settled* and `lam`, a formula, an unrounded number, and `group ""` for a spec with no groups |
 | `ewridge`'s docstring | model docstring | the longest and most used model, whose mechanism (the solve, the condition check) sits before its parameters today |
 | `ModelBank.fit_predict`'s docstring | function docstring | **added.** Most of the reference's entries are functions, whose sections (Parameters, Returns, Raises) differ from a model's, and this is the call every reader makes first |
@@ -466,7 +474,8 @@ spelling. Where a row names a
 page's section after a colon, as *MODELS.md: What every spec takes*, the
 words describe the section and are not its heading. A heading that stays
 on its page, apart from the page's title, keeps its wording, so its
-anchor holds (*Rules for moving text* says how titles change).
+anchor holds ([Rules for moving text](#rules-for-moving-text) says how
+titles change).
 
 
 ### README.md
@@ -483,7 +492,7 @@ anchor holds (*Rules for moving text* says how titles change).
 | 241 | · · What you can rely on | 17 | reference (the guarantees) | README landing, one row each; the depth of each to the page that holds it: out-of-sample predictions to explanation/out-of-sample.md, any chunking to explanation/chunk-invariance-and-streaming.md, bounded memory to explanation/chunk-invariance-and-streaming.md, thread counts to explanation/where-the-time-and-memory-go.md, unusable values and zero weights to how-to/hold-a-row-back.md, `weight_sum` to explanation/warm-up-and-readiness.md, the clock policy to explanation/time-and-decay.md, named mistakes and testing to explanation/how-the-library-is-tested.md |
 | 258 | · · Install | 25 | how-to | README landing: Install |
 | 283 | · · Example data | 70 | reference (builds the two example frames) | README landing: Example data stays where WRITING §3 and its tests put it, and a how-to that reads `df` or `trades` names it as a prerequisite and links it |
-| 353 | · How a bank sees a stream | 22 | mixed: explanation (opener), reference (table of shared parameters) | MODELS.md: What every spec takes (new section, §10 order), whose opener its opener becomes; its heading stays until stage 8, since `llms.txt` links it |
+| 353 | · How a bank sees a stream | 22 | mixed: explanation (opener), reference (table of shared parameters) | MODELS.md: What every spec takes (new section, in an order of its own: Parameters, Raises, Examples), whose opener its opener becomes; its heading stays until stage 8, since `llms.txt` links it |
 | 375 | · · What a spec names | 60 | mixed: reference (what a spec names), how-to (two refusals shown) | MODELS.md: What every spec takes; its refusals become that section's Examples |
 | 435 | · · · Relative and look-ahead targets | 133 | how-to | how-to/make-a-target-that-looks-ahead.md; its reasons, and those of the first fit's aside on the look-ahead target, to explanation/out-of-sample.md, which says why a target that looks ahead is learned only once it is known; that part moves in stage 1, which writes the explanation |
 | 568 | · · Time and decay | 9 | explanation | explanation/time-and-decay.md |
@@ -523,7 +532,7 @@ anchor holds (*Rules for moving text* says how titles change).
 | 2942 | · Checking the data and the model | 13 | explanation (opener) | README landing: the map row for checking |
 | 2955 | · · Checking your data's quality | 76 | how-to | stays in the README, with its recipe, until stage 8, as the section that leads to DATA-QUALITY.md; then how-to/check-data-quality.md |
 | 3031 | · · Checking that a model works | 74 | how-to (an index of the questions) | stays in the README, with its recipe, until stage 8, as the section that leads to DIAGNOSTICS.md; then DIAGNOSTICS.md opener; each question to its how-to; its recipe (a break test) to how-to/detect-a-break.md |
-| 3105 | · Models | 52 | mixed: reference (the model table), how-to (choosing a family) | MODELS.md opener; the README keeps the table of families |
+| 3105 | · Models | 52 | mixed: reference (the model table), how-to (choosing a family) | the full per-model table to MODELS.md's opener; choosing a family to how-to/choose-a-model.md; the README keeps a table of the four families, one row each, linking each family's section of MODELS.md |
 | 3157 | · · Choosing a model | 106 | how-to | stays in the README, with its recipe, until stage 8, as the section that leads to MODELS.md; then how-to/choose-a-model.md |
 | 3263 | · · Detecting changes and regimes | 78 | mixed: explanation, how-to | stays in the README, with its recipe, until stage 8, as the section that leads to REGIMES.md; then how-to/choose-a-model.md, with the question each of the four answers and its recipe; one line on what the four share to MODELS.md's opener of Sequential tests and regimes; the measurements to REGIMES.md |
 | 3341 | · · Calibrating a model | 40 | how-to | stays in the README, with its recipe, until stage 8, as the section that leads to CALIBRATION.md; then CALIBRATION.md, the how-to it already leads to |
@@ -605,7 +614,7 @@ anchor holds (*Rules for moving text* says how titles change).
 | 1 | Running a bank as a job: the `polars-online` command line | 32 | reference (opener) | RUNNER.md, the command line's reference (the path stays) |
 | 33 | · Running it | 6 | how-to (opener) | how-to/run-a-bank-from-the-command-line.md |
 | 39 | · · A first run | 74 | mixed: tutorial, how-to | how-to/run-a-bank-from-the-command-line.md, whose steps its first run becomes |
-| 113 | · · Saving, resuming and scoring | 67 | how-to | how-to/run-a-bank-from-the-command-line.md; resuming to how-to/resume-from-a-saved-state.md (its command-line steps) |
+| 113 | · · Saving, resuming and scoring | 67 | how-to | how-to/run-a-bank-from-the-command-line.md; saving to how-to/save-a-state.md and resuming to how-to/resume-from-a-saved-state.md (their command-line steps) |
 | 180 | · · A run whose product is its state | 20 | how-to | how-to/run-a-bank-from-the-command-line.md |
 | 200 | · · Closed groups to a sidecar file | 30 | how-to | how-to/close-finished-groups.md (its command-line steps) |
 | 230 | · · Exit status | 31 | reference | RUNNER.md: exit status |
@@ -1183,7 +1192,7 @@ anchor holds (*Rules for moving text* says how titles change).
 | 1395 | · · S — The mechanism: one API snapshot test — **done** | 55 | reference | contributing/change-the-api.md |
 | 1450 | · · API usability round (pre-users window) | 31 | record | records/RELEASE-HISTORY.md |
 | 1481 | · · What the correlation and regime models added to the surface (2026-09) | 16 | record (dated) | records/RELEASE-HISTORY.md |
-| 1497 | · CI cost while the repo was private | 11 | mixed: record, reference (the policy) | records/RELEASE-HISTORY.md, whole; stage 9 copies the policy into TESTING.md: where the suite runs |
+| 1497 | · CI cost while the repo was private | 11 | record | records/RELEASE-HISTORY.md, its own lines; its policy is its subsection *The policy, as the test holds it*, which goes to TESTING.md by itself |
 | 1508 | · · The policy, as the test holds it | 23 | reference | TESTING.md: where the suite runs |
 | 1531 | · · Actions quota: exhausted on day one (2026-08-31) | 40 | record (dated) | records/RELEASE-HISTORY.md |
 | 1571 | · · CI cost: where the 80 minutes went | 32 | record (dated) | records/RELEASE-HISTORY.md |

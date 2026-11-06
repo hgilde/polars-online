@@ -971,7 +971,7 @@ thing. *Instance*, *slot* and *grid point* were used interchangeably
 across the docs for three different things, and *candidate* for two of
 them. *Settled* was used both for the share of its long-run weight a model has
 reached and for readiness, where `settled_frac` and *ready* now name each.
-One word, *model*, names both a kind of model and a fit, as in
+One word, *model*, names both a kind of model and the one a bank keeps, as in
 scikit-learn, and the glossary says when to use each.
 
 **A term of the library's that the glossary does not have stays out of
