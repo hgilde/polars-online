@@ -165,11 +165,11 @@ budget = 5845523
 
 [instructions.bank_seqtest_groups]
 what = "Bank::fit_predict of one frame of 1,000 groups, one row each, seqtest, on a pool of one thread: what a (spec, group) task costs whatever its rows"
-budget = 11726134
+budget = 11165143
 
 [instructions.bank_ewridge_k5_groups]
 what = "Bank::fit_predict of one frame of 1,000 groups, one row each, ewridge with 5 features and a solve every 4 rows, on a pool of one thread"
-budget = 18170095
+budget = 17692367
 
 [instructions.bank_ew_cov_wide_t1]
 what = "Bank::fit_predict of one frame of 8,192 rows, ew_cov's 230 statistics, on a pool of one thread: each run copied into the output as it ends, after the next is learned"
