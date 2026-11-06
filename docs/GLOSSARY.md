@@ -9,7 +9,10 @@ a sentence, a docstring or a message about the library. In the examples,
 is Polars, imported as `import polars as pl`.
 
 *Reader-facing text* here means the README, the guides for users, the
-public docstrings and the messages. A message is read with no
+public docstrings and the messages. Every page, the contributor guides
+included, uses the words of the topic tables, from *The bank and what it
+reads* to *Saving and serving*. The list in *Words kept out of
+reader-facing text* binds reader-facing text only. A message is read with no
 documentation open, so it uses only words a reader has met in the
 docstrings and the guides. The *in a message*
 column says how a message may use each word, in one of four ways:
@@ -24,7 +27,7 @@ column says how a message may use each word, in one of four ways:
 The number after a word in *replaces* is how often it appeared in the
 README, the guides for users, the public docstrings and the messages on 2026-11-05.
 The count covers the prose and the comments of code examples. Retire a
-word with no number all the same, in the sense its row gives. A word chosen as the variant used most, by the third rule of
+word that has no count in the same way, in the sense its row gives. A word chosen as the variant used most, by the third rule of
 [Why the contested words were chosen](#why-the-contested-words-were-chosen),
 carries its own count in that table.
 
@@ -70,8 +73,8 @@ A model predicts each row before it learns it. Most models keep only running sum
 
 | word | what it means | replaces (uses) | in a message |
 |---|---|---|---|
-| **model** | one of the kinds of model a spec can name, such as `ewridge` or `kmeans`, and also the model a bank keeps for one spec and one group, which holds one [instance](#grids) (the part of the model that fits one half-life) for each half-life the spec lists. This is a word chosen to name two different things, as in scikit-learn: name the kind (*an `ewridge` model*) where the kind matters, and say *the model* for the one a bank keeps | | yes |
-| **fit** | as a noun, what a model has estimated from its running sums, such as its coefficients. As a verb, the calls that learn (`fit`, `fit_predict`, `fit_predict_batches` and a query's `online.fit_predict`) and a whole pass over the stream. *Learn* names the same step for one row | | yes |
+| **model** | one of the kinds of model a spec can name, such as `ewridge` or `kmeans`. Also the model a bank keeps for one spec and one [group](#the-bank-and-what-it-reads). That model holds one [instance](#grids) (the part of the model that fits one half-life) for each half-life the spec lists. *Model* names both, as in scikit-learn: name the kind (*an `ewridge` model*) where the kind matters, and say *the model* for the one a bank keeps | | yes |
+| **fit** | as a noun, what a model has estimated from its running sums, such as its coefficients. As a verb, what the calls that learn do (`fit`, `fit_predict`, `fit_predict_batches` and a query's `online.fit_predict`): a whole pass over the stream. *Learn* names the same step for one row | | yes |
 | **learn** | take a row into a model's running sums, so it counts toward every later prediction. A model learns a row after predicting it | *update* for this step, though *update* stays in *update equation*, the docstring section that states the step's equations; *train*; *teach*, as in *teaches the model nothing* | yes |
 | **out-of-sample** | a row's prediction is made before the model learns from that row, so it never reflects the row's own target. Every diagnostic reads residuals made the same way. Write it hyphenated wherever it stands: *an out-of-sample residual*, *every prediction is out-of-sample* | *out of sample* unhyphenated (12); *honest* (10); *prequential* (5), except where a docstring names the prequential score and defines it | yes |
 | **prediction** | a model's value for a target on a row, made before it learns the row, in the field `pred_<target>` | *forecast* (25); *score* as a noun for a prediction | yes |
@@ -109,7 +112,7 @@ A spec given a list of values in place of one value fits every combination of th
 
 | word | what it means | replaces (uses) | in a message |
 |---|---|---|---|
-| **grid** | the lists a spec takes in place of one value, for `half_life`, `ridge`, `feature_sets` or `penalties`. The spec fits every combination in one pass over the stream | *sweep*, for a spec's grid | yes |
+| **grid** | the lists a spec takes in place of one value, for `half_life`, `ridge`, `feature_sets` or `penalties`. | *sweep*, for a spec's grid | yes |
 | **grid point** | one combination of the values a spec's grid lists, such as `half_life=500` with `ridge=0.1` | *grid combination* (4), *grid slot* (3); *setting* for a whole combination; *candidate* (27), scikit-learn's word, for a grid point | yes |
 | **instance** | the part of a model (the one a bank keeps for one spec and one group) that fits one of its half-lives, with state of its own. Python also says *instance* for an object of a class, so a page or a message glosses the word at its first use: *the instance for half-life 500 (the part of the model that fits that half-life)*. A spec with one half-life has one instance. The `instance` column of `bank.coef()`, `bank.gram()`, `bank.closed_groups()` and `po.spec.output_index()` holds its name: a suffix such as `"@h500"`, or `""` when the spec has one half-life. Grid points that differ only in `ridge`, `feature_sets` or `penalties` share one instance, so an instance is not a grid point | *decay instance* | yes, glossed |
 | **slot** | one of the predictions a spec writes on each row: one target at one grid point. `po.eval` and `po.eval.grid_search` score each slot, in their `slot` column, and a diagnostic writes one field per slot | *prediction slot*; *candidate* where it means a slot | yes |
@@ -140,14 +143,13 @@ A bank's state can be saved to a file, and loaded to go on learning or to predic
 ## Words kept out of reader-facing text
 
 Keep every word in a *replaces* column out of reader-facing text, in the
-sense its row retires, apart from the uses its row keeps. Keep out, too,
+sense its row retires, apart from the uses its row keeps, and use *λ*
+only inside a docstring's update equation. Keep out, too,
 the words of the code, the tests and Polars' internals that have no row in
 the topic tables, and *settled* in the sense of `settled_frac`, whose
 replacement needs a longer phrase.
 
-Apart from the uses each row keeps, none of these words appears in
-reader-facing prose, and *λ* appears only inside a docstring's update
-equation. A code example calls Polars' own methods, such as
+A code example calls Polars' own methods, such as
 `pl.scan_parquet`, `collect` and `collect_batches`, by name. Where the
 word is also the name of a parameter or a field, as `lam` and
 `settled_frac` are, the name may appear in backticks, as the *in a
@@ -170,7 +172,7 @@ may print it.
 | *row group* | the unit a parquet file stores its rows in | *a block of a parquet file* |
 | *the pool* | the bank's threads | *the bank's threads* |
 | *task*, meaning the work the bank gives one thread | the bank's unit of work | *the work each thread does* |
-| *golden*, *oracle*, *the gate* (the test run before a commit), *mutants* | a stored reference result, an independent check of a computed value, the test run before a commit, and mutation testing | in a guide for users, what each means; in the contributor guides, the word itself, with *the test gate* for *the gate* |
+| *golden*, *oracle*, *the gate*, *mutants* | a stored reference result, an independent check of a computed value, the test run before a commit, and mutation testing | in a guide for users, what each means; in the contributor guides, the word itself, with *the test gate* for *the gate* |
 
 ## Why the contested words were chosen
 
@@ -198,7 +200,7 @@ without naming the mechanism, as *honest* does.
 | *running sums* | *accumulator* | *accumulator* is the code's type, and *running sums* says what is kept |
 | *state* | *checkpoint* | the API's `save_state=` and `load_state=` |
 | *serve* | *score rows* | *score* is the metric's word, as in `scoring=` |
-| *query* | *plan* | the second rule: Polars' user guide speaks of a lazy *query*, and of the *query plan* Polars makes from it, which is its internals |
+| *query* | *plan* | the second rule: Polars' user guide speaks of a lazy *query*, and of the *query plan* Polars makes from it, which belongs to Polars' internals |
 | *stream* | *source* | as `po.eval.grid_search`'s parameter, `source` names the query or frame the rows are read from, not the rows themselves. *Stream* is the variant used most for the rows (947 uses, against 128) |
 | *readiness warning* | *notice* | the API's `ReadinessWarning` |
 | *command line* | *CLI*, *runner* | the variant used most (80 uses, against 31 and 61) |
@@ -214,7 +216,7 @@ scikit-learn says *model* for both, and the API's `po.spec` builders name kinds 
 
 ### Instance, slot and grid point
 
-The API names two different things: `instance` is a column of `bank.coef()`, `bank.gram()`, `bank.closed_groups()` and `po.spec.output_index()` for one half-life with its own state, and `slot` is a column of `po.eval` for one prediction. A grid point is neither: several grid points share an instance's state, and each grid point has a slot per target. So each keeps its word, and a page uses each only for its own thing. *Instance* has a Python meaning, which a word normally keeps, but the API's `instance` column fixes the word, so a page glosses it instead of replacing it. scikit-learn's *candidate* is one combination of parameter values, which here would be a grid point, but `grid_search`'s docstring used it for a slot, so it would name two things.
+The API names two different things: `instance` is a column of `bank.coef()`, `bank.gram()`, `bank.closed_groups()` and `po.spec.output_index()` for one half-life with its own state, and `slot` is a column of `po.eval` for one prediction. A grid point is neither: several grid points share an instance's state, and each grid point has a slot per target. So each keeps its word, and a page uses each only for its own thing. *Instance* has a Python meaning, which a word normally keeps, but the API's `instance` column fixes the word, so a page glosses it instead of replacing it. scikit-learn's *candidate* is the thing a search scores. Here `po.eval.grid_search` scores slots, one per target at each grid point, so *candidate* would name a slot as often as a grid point.
 
 ### Warm-up, withheld and ready
 
@@ -226,8 +228,8 @@ Every page uses American spelling, the contributor guides included, for
 the reason [WRITING.md §12](WRITING.md#12-one-word-for-one-thing)
 gives. No function, parameter or field in the public API uses a British
 spelling. A quotation keeps its source's
-spelling. The records are not rewritten, but make their spelling American
-like every page's, apart from what they quote.
+spelling. Rewrite the records only to make their spelling American, apart from
+what they quote.
 
 On 2026-11-05 the README, the guides for users, the public docstrings and the messages
 held 336 British spellings. The contributor guides and the records held

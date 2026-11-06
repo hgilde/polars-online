@@ -10,11 +10,10 @@ stage 0 changed it. Where each section lands was decided by hand.*
 The rewrite turns the README and the guides, about 31,600 lines in 632
 sections, into a landing page, two maps, the records, and pages of four
 kinds: tutorials, how-tos, references and
-explanations ([WRITING.md §9](../WRITING.md#9-four-kinds-of-page)). This
-record holds what stage 0 decided before any of them is written: the
-pages the rewrite will produce, where every section of today's text goes,
-where the guides live, and the set of pieces stage 1 writes first. Every
-section has an address in the map, and a model entry's recipes get theirs
+explanations ([WRITING.md §9](../WRITING.md#9-four-kinds-of-page)). Every
+section of today's text has one destination, the guides stay Markdown on
+GitHub, and stage 1 writes ten pieces first, as patterns. Every section
+has an address in the map, and a model entry's recipes get theirs
 by the rule for model entries, so nothing is lost
 ([WRITING.md §1](../WRITING.md#1-every-document-has-an-altitude-and-stays-at-it):
 depth has an address). `CONTRIBUTING.md`, `llms.txt` and `docs/README.md`
@@ -80,12 +79,12 @@ Each stage lands as its own change, in this order, and runs WRITING
 report mode from stage 0. It fails the test gate once the stage that
 rewrites what it reads has finished:
 
-- the message shape, after stage 2
-- the docstring sections, after stage 3
-- the vocabulary in messages, after stage 2
-- the vocabulary, the sentence counts and the page kind, on each page from
-  the last stage that moves text onto or off it, and on every page after
-  stage 10
+| check | fails the gate |
+|---|---|
+| the message shape | after stage 2 |
+| the vocabulary in messages | after stage 2 |
+| the docstring sections | after stage 3 |
+| the vocabulary, the sentence counts and the page kind on a guide | from the last stage that moves text onto or off that guide, and on every guide (the records apart) after stage 10 |
 
 Stage 1 and stage 8 rewrite the README's prose, so each logs its pass in
 the log of README passes, which WRITING §2 and §6 name, with the map's
@@ -117,9 +116,10 @@ twice, as the landing page and as its opening, the first tutorial. One of
 the paths is the Sphinx directory `docs/reference/`. The how-to count is
 a floor, since the how-tos for the recipes in the model entries are named
 later, by the rule for model entries. The stage column names the stage
-that rewrites a page, not every stage that edits it: every stage adds its
+that rewrites a page, not every stage that edits it. Every stage adds its
 new pages to `docs/README.md`, stage 1 corrects a sentence of WRITING
-§2, and stage 8 replaces §2's rule that every guide has a README section. The rows of the page list,
+§2, and stage 8 replaces §2's rule that every guide has a README section.
+The rows of the page list,
 counted by kind (the README twice, and `docs/reference/` as one):
 
 | kind | rows |
@@ -374,19 +374,21 @@ followed without a decision at each row:
   share, and its first recipe as its one example. It links its refusals
   to the docstring's Raises, gives its See also, and its Notes say what it
   is checked against. Every recipe after the first goes to the how-to its
-  row names. Where its row names none, the stage writing the entry (stage
-  1 for `ewridge`, stage 4 for the rest) sends the recipe to a how-to in the
-  page list that covers the task, or else names a new how-to for it by the
-  task it solves. That stage records each recipe's how-to, listed or new,
+  row names. Where its row names none, the stage writing the entry sends
+  the recipe to a how-to in the page list that covers the task, or else
+  names a new how-to for it by the task it solves. That stage is stage 1
+  for `ewridge`, and stage 4 for the rest. That stage records each recipe's how-to, listed or new,
   in PLAN 338. The
   page list leaves the new how-tos out, and stage 6 writes them with the
   rest. Until then, a rewritten entry keeps those recipes, and every
   other part bound for a later stage's page, as they stand, under a
   heading of their own before its See also and Notes. Its mechanism goes to
   its docstring's Notes, unless its row names an explanation for it.
-- **An opening table that points at how-tos links what exists.** Before
-  stage 6, the tables that open DIAGNOSTICS.md and GRAM.md link the
-  sections still on their pages, and stage 6 points each row at its new
+- **A page links what exists, and the stage that writes the target
+  repoints the link.** Before stage 6, for example, the tables that open
+  DIAGNOSTICS.md and GRAM.md link the sections still on their pages, and
+  the how-to stage 1 writes on putting rows in clock order links the
+  README's *Sessions, gaps and steps back*. Stage 6 points each at its new
   how-to.
 - **The stage that moves a record rewrites the citations to it** in code
   comments, tests and other records, as `PERFORMANCE.md §N` becomes the
@@ -441,9 +443,10 @@ followed without a decision at each row:
 How the 31,600 lines of the README and the guides divide by kind today,
 counting each section's own lines (its heading to its first subsection).
 A *mixed* section holds more than one kind in parts of some size, and its
-row in the map says where each part goes. A section of one kind with a
+row in the map says where each part goes. Its lines are counted under
+*mixed*. A section of one kind with a
 few sentences of another, an aside, is counted under its main kind, and
-its row still says where the aside goes. Its lines are counted under *mixed*. The records are the dated research and logs that
+its row still says where the aside goes. The records are the dated research and logs that
 the guides hold today.
 
 | page | lines | sections | tutorial | how-to | reference | explanation | mixed | record |
@@ -476,7 +479,7 @@ as the case that shows most of its kind's rules, or as a page another
 piece needs. PLAN 338 named six pieces. The map keeps them and adds
 four, each for a shape the six do not show or a page one of them needs.
 
-WRITING §10 and §11 tell the faults below in the past tense, as the cases
+WRITING §10 and §11 tell the faults of the stage 1 pieces in the past tense, as the cases
 their rules came from. The faults still stand in the code and the pages
 until stages 1 and 2 fix them.
 
@@ -495,7 +498,7 @@ until stages 1 and 2 fix them.
 
 ## The map, section by section
 
-Each page's sections in order, with each section's own lines, its kind
+Each table lists a page's sections in order, with each section's own lines, its kind
 now, and where it lands. The kinds are tutorial, how-to, reference,
 explanation and record, and a *mixed* row names its parts. A row that
 says *with its parent* moves with the section that contains it, named
@@ -504,13 +507,15 @@ the part of the parent it belongs to goes. A record moves
 whole to `docs/records/` and is not rewritten beyond stage 10's
 spelling. Where a row names a
 page's section after a colon, as *MODELS.md: What every spec takes*, the
-words describe the section and are not its heading. From stage 1 on, a
-heading that stays on its page, apart from the page's title, keeps its
-wording. Stage 0 renamed one, WRITING §11's *Errors, warnings and
-notices* to *Errors and warnings*, after checking that only WRITING's own
-contents table linked it. Otherwise a heading keeps its wording, so its
-anchor holds ([Rules for moving text](#rules-for-moving-text) says how
-titles change).
+words describe the section and are not its heading. A heading that
+shipped code, a message or `llms.txt` links keeps its wording, so its
+anchor holds. Any other heading may be reworded once its stage has
+pointed every link to it at the new wording (WRITING §2, a heading's text
+is its anchor), as the `huber` / `quantile` split is. Stage 0 renamed one
+this way, WRITING §11's *Errors, warnings and notices* to *Errors and
+warnings*, after checking that only WRITING's own contents table linked
+it. [Rules for moving text](#rules-for-moving-text) says how titles
+change.
 
 
 ### README.md
@@ -553,7 +558,7 @@ titles change).
 | 1947 | · · In a loop: `ModelBank` | 68 | how-to | how-to/run-a-bank-in-a-python-loop.md |
 | 2015 | · · Running a bank as a job, without Python | 60 | how-to | stays in the README, with its recipe, until stage 8, as the section that leads to RUNNER.md; then how-to/run-a-bank-from-the-command-line.md |
 | 2075 | · · Output as Arrow | 46 | how-to | how-to/hand-the-output-to-arrow.md |
-| 2121 | · Saving, loading and serving | 55 | explanation (opener) | stays in the README, with its recipe, until stage 8, as the section that leads to STATE-WORKFLOW.md; then explanation/state-and-resuming.md, and its recipe (fit, save, load, serve) to tutorials/fit-save-and-serve.md. Its subsection's loading and resuming steps move in stage 1, and the rest in stages 5 and 6; *Save and load*'s own row gives where |
+| 2121 | · Saving, loading and serving | 55 | explanation (opener) | stays in the README, with its recipe, until stage 8, as the section that leads to STATE-WORKFLOW.md; then explanation/state-and-resuming.md, and its recipe (fit, save, load, serve) to tutorials/fit-save-and-serve.md. *Save and load*'s loading and resuming steps move in stage 1, and the rest in stages 5 and 6; *Save and load*'s own row gives where |
 | 2176 | · · Save and load | 110 | mixed: how-to, explanation (what the file guarantees) | how-to/resume-from-a-saved-state.md (stage 1), its loading and resuming steps; its saving steps to how-to/save-a-state.md; the guarantees to explanation/state-and-resuming.md |
 | 2286 | · · Serving without learning | 46 | how-to | how-to/serve-from-a-saved-state.md |
 | 2332 | · · Reading a state without this library | 31 | how-to | how-to/read-a-state-without-this-library.md |
@@ -713,7 +718,7 @@ titles change).
 | 1286 | · Are its tails heavy? | 140 | mixed: how-to, reference, explanation | how-to/measure-heavy-tails.md; entries to DIAGNOSTICS.md; the theory to the Notes of each diagnostic's entry in DIAGNOSTICS.md |
 | 1426 | · Which row moved it? | 101 | mixed: how-to, reference, explanation | how-to/find-an-influential-row.md; entry to DIAGNOSTICS.md; the theory to the Notes of each diagnostic's entry in DIAGNOSTICS.md |
 | 1527 | · Are its features healthy? | 87 | mixed: how-to, reference, explanation | how-to/check-feature-health.md; entry to DIAGNOSTICS.md; the theory to the Notes of each diagnostic's entry in DIAGNOSTICS.md |
-| 1614 | · Is another model better? | 35 | explanation (opener) | DIAGNOSTICS.md: the comparison rows of its questions table |
+| 1614 | · Is another model better? | 35 | explanation (opener) | DIAGNOSTICS.md: the comparison rows of its questions table; its prose on comparing models to the openings of how-to/compare-two-models.md and how-to/choose-among-a-grid-online.md, and on why the best error is optimistic to explanation/grids-and-instances.md |
 | 1649 | · · Choosing among a grid's settings | 76 | how-to | how-to/choose-among-a-grid-online.md |
 | 1725 | · · Comparing two models | 95 | mixed: how-to, explanation | how-to/compare-two-models.md; the test's theory to the Notes of `po.eval.compare_specs`'s docstring |
 | 1820 | · · Evaluating an output frame | 79 | how-to | how-to/evaluate-an-output-frame.md |
