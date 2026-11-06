@@ -3358,10 +3358,10 @@ the minimum of several noisy errors picks the luckiest. This code uses
 half_lives = po.spec.ewridge("hl", targets=["ret"], features=["signal_a"], half_life=[10.0, 30.0, 100.0, 1_000.0])
 table = po.eval.grid_search(lf, half_lives, n_splits=3)   # rows 100-199, 200-299 and 300-399, each chosen from the rows before it
 
-# Each half-life's error over those rows, and the error of choosing from the rows before each span.
-for half_life, mse, rank, chosen in table.drop_nulls("rank").select("half_life", "mse", "rank", "folds_chosen").iter_rows():
+# Each half-life's error over those rows (kind "candidate"), and the error of choosing from the rows before each span (kind "choice").
+for half_life, mse, rank, chosen in table.filter(kind="candidate").select("half_life", "mse", "rank", "folds_chosen").iter_rows():
     print(f"half-life {half_life:>4.0f}: mse {mse:.3f}, rank {rank}, chosen for {chosen} of 3 spans")
-print(f"chosen from earlier rows: mse {table.filter(pl.col('spec').is_null())['mse'].item():.3f}")
+print(f"chosen from earlier rows: mse {table.filter(kind='choice')['mse'].item():.3f}")
 ```
 
 ```text
