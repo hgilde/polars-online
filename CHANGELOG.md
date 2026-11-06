@@ -11,6 +11,18 @@ returns.
 
 ## [Unreleased]
 
+### Added
+
+- `po.eval.grid_search`, which scores every setting of a grid in one pass
+  over a stream and chooses one from earlier rows only. It takes a spec, a
+  list of specs, or a builder with a `param_grid` (scikit-learn's
+  `ParameterGrid` order); cuts the rows as `TimeSeriesSplit(n_splits, gap)`;
+  scores every setting on the rows they all predicted; and reports each
+  setting's `mse` (or `loglik`, for `bocpd`, `hmm` and `deco`) with its
+  `rank`, beside the error that choosing from the rows before each span
+  earned (`pred_<target>__chosen`), the number to report. Memory is the
+  bank's state and one chunk (task 336).
+
 ### Changed
 
 - Two 1.4.0 entries are corrected in place. The x86-64 lanes entry said
@@ -170,6 +182,16 @@ returns.
 
 ### Tests and documents
 
+- `docs/CALIBRATION.md`, a new guide: one pattern for choosing a setting
+  from out-of-sample errors, why the best error over the rows you report is
+  optimistic, recipes for the half-life, the ridge (what a ridge value
+  means, with and without `standardize`), ridge with half-life, `kalman`'s
+  drift speed, `sgd`'s learning rate, `holt`'s smoothing and `bocpd`'s
+  hazard, and the settings it cannot choose (the number of `kmeans`
+  clusters or `hmm` states, and `huber_delta`). A README section,
+  *Calibrating a model*, leads to it. The README's factor-grid example no
+  longer reports each spec's best R² on the rows that chose it: it chooses
+  on the first half and reports the second (task 336).
 - Each surface states how a row's work and its state grow with every size
   it has -- a model's features, targets and windows, the bank's groups and
   specs, the window operators' groups and kernels, the rows a stream has
