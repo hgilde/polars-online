@@ -191,6 +191,13 @@ returns.
 
 ### Performance
 
+- `sgd`'s step no longer copies each target's step-gain gate on every row
+  and writes it back to keep a refused row from moving a resting gate: the
+  gate is moved in place and put back only on the rare refused row. The
+  20-feature squared-loss step counts 0.9% fewer instructions natively on
+  arm64 (the copy was 1.9% of it under Valgrind on x86-64), and an
+  unstandardized one 2.4% fewer. Outputs and saved states are unchanged to
+  the bit (task 347).
 - `corrchange`'s monitor and sequential kinds copy each row they keep at
   its exact length again: since the window kind stopped allocating a row,
   they had grown each copy from an empty vector, about 100 more
@@ -267,7 +274,7 @@ returns.
   hashing from the time once per process, and that seed moved a bank
   case's count by up to 2% between two runs of one binary; with the clock
   stopped they agree within 0.001%. The library keeps its random seeds. The
-  counts moved once, and the budgets were re-applied from the first run.
+  counts moved once, inside their budgets' tolerance.
   In CI's test job and the oracle grids, which restore their datasets
   before the tests, a test skipped because its public dataset is offline
   now fails and names the dataset; locally, and in jobs that restore
