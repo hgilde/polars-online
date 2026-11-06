@@ -370,7 +370,10 @@ class ReadinessWarning(PolarsOnlineWarning, UserWarning):
       predictions stay withheld unless the rows come faster. Not for
       ``kalman``, whose gate reads each row's own value, which a row nearer
       the design's centre reads lower. The message says how far, and the way
-      out: a half-life above the one it names, or a looser ratio.
+      out: a half-life above the one it names, or a looser ratio. Where the
+      model has not fit at all, its ``weight_sum`` short of a row per
+      coefficient, the message gives where ``weight_sum`` tops out instead,
+      and no figure on a row of weight 0 or rows too uneven to project.
     - **A** ``min_weight`` **has not been met**: the stream is settled, the
       floor has withheld every row for a further half-life, and the weight a
       target reads tops out below its ``min_weight``. At the rows' spacing

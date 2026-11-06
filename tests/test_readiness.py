@@ -1161,8 +1161,9 @@ class TestSettledWeight:
         ("k", "h", "limit"),
         [
             # Ten features at a half-life of 2 rows: the weight tops out near
-            # 3.4, below the 11 the model needs before it solves, so the ratio
-            # is infinite and the figure is the weight's.
+            # 3.4, below the 11 the model needs before it fits at all, so the
+            # ratio is infinite and the figure is the weight's ("Increase
+            # half_life above 7.28,", rounded up to three figures).
             (10, 2.0, None),
             # Two features at 3 rows solve, and read about 1.16 against a
             # limit of 1.1: the figure is Kish's size's.
@@ -1187,10 +1188,52 @@ class TestSettledWeight:
         out, msgs = run(h)
         assert _last_reason(out) == "above_max_error_inflation"
         assert len(msgs) == 1, msgs
-        figure = float(msgs[0].split("aise the half_life above ")[1].split()[0])
+        said = re.search(r"(?:aise the half_life|ncrease half_life) above ([0-9.]+[0-9])", msgs[0])
+        assert said, msgs[0]
+        figure = float(said.group(1))
         assert figure > h, msgs[0]
         opened, quiet = run(1.05 * figure)
         assert _last_reason(opened) is None, figure
         assert not quiet, quiet
         shut, _ = run(0.95 * figure)
         assert _last_reason(shut) == "above_max_error_inflation", figure
+
+    @pytest.mark.parametrize("weights", ["steady", "zero_from_row_3"])
+    def test_the_unsolved_noise_gate_reads_weight_sum_as_it_stands(self, weights):
+        """Task 350: ten features at a half-life of 2 rows, where the model
+        needs 11 of ``weight_sum`` before it fits at all and ``weight_sum``
+        tops out at ``1 / (1 - 2 ** (-1 / 2)) = 3.414``: the warning comes on
+        row 12. Rows that keep coming at weight 1 get that ceiling, rounded
+        down, and the half-life that lets the model fit, rounded up; it said
+        "tops out near 3.4142" and "Raise the half_life above
+        7.272540897341715". Rows of weight 0 from row 3 leave ``weight_sum``
+        falling toward 0, and the warning, on a row of weight 0, gives no
+        figure; it said "tops out near 0.0997"."""
+        k = 10
+        df = frame(60, k=k).with_columns(
+            w=pl.when(pl.int_range(pl.len()) < 3).then(1.0).otherwise(0.0)
+            if weights == "zero_from_row_3"
+            else pl.lit(1.0)
+        )
+        s = spec(features=[f"x{j}" for j in range(k)], half_life=2.0, weight="w")
+        fitted = _fit_noting(po.ModelBank([s]), df)
+        opening = (
+            'spec "m": max_error_inflation = 1.414 has not been met on any row for the last '
+            "half-life, with the model within 5% of its steady state"
+        )
+        needs = "the 11 the model needs before it fits at all, one for each of its 11 coefficients"
+        if weights == "steady":
+            want = (
+                f"{opening}. At the row weights seen so far, weight_sum tops out near 3.41, below "
+                f"{needs}, so error_inflation stays infinite and predictions stay withheld unless "
+                f"the rows carry more weight. Increase half_life above 7.28, as {READY} explains."
+            )
+        else:
+            want = (
+                f"{opening}, so error_inflation stays infinite and predictions stay withheld until "
+                f"weight_sum reaches {needs}. This warning comes on a row of weight 0, which adds "
+                "nothing to the weight, so it cannot say where weight_sum tops out. Check that "
+                "rows reach the model with a positive weight, or increase half_life, as "
+                f"{READY} explains."
+            )
+        assert fitted.notices == [want]

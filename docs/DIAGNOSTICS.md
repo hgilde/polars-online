@@ -2008,6 +2008,18 @@ gate, and the target where the model predicts one. Its forms:
 lower `min_weight` to 2, and its warning says so and does not offer
 lowering `min_weight`.
 
+**The noise gate warns the same way while the model has not fit at
+all.** Until `weight_sum` reaches a row per coefficient, or `min_weight`
+where it is set, the model has no fit and `error_inflation` is infinite,
+which no `max_error_inflation` opens. It comes at the same point as the
+`min_weight` warning. It gives where `weight_sum` tops out at the rows so
+far, rounded down. It also gives the `half_life` (or `lam`) above which the
+model fits and Kish's effective sample size carries its coefficients,
+rounded up. On a row of
+weight 0, or on rows too uneven to project, it gives no figure. A target's
+nulls do not move `weight_sum`, so this warning has no form for a target
+the rows stopped carrying.
+
 The recipe fits ten features under each gate, and reads when each first
 predicts and how good its early predictions are:
 

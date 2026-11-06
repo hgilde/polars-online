@@ -2132,9 +2132,25 @@ fn solve_floor(spec: &Spec) -> f64 {
 /// "Above", since the gate withholds at equality. In the spec's own terms: a
 /// duration on a temporal clock, `lam` where the spec gives one.
 fn half_life_figure(spec: &Spec, decay: Decay, at: &Unmet) -> String {
+    let need = half_life_need(spec, decay, at);
+    if !(need.is_finite() && need > 0.0) {
+        return "raise the half_life".into();
+    }
+    match decay {
+        Decay::Lam(_) => format!("raise lam above {:.6}", (-1.0 / need).exp2()),
+        Decay::Halflife(_) => format!(
+            "raise the half_life above {}",
+            crate::bank::clock_amount(spec, need)
+        ),
+    }
+}
+
+/// The half-life [`half_life_figure`] names, in clock units: NaN or not
+/// positive where none opens the gate on the rows so far.
+fn half_life_need(spec: &Spec, decay: Decay, at: &Unmet) -> f64 {
     let h = half_life_of(decay);
     let (max, s, w) = (at.max, at.settled, at.row_weight);
-    let need = if at.worst.is_finite() {
+    if at.worst.is_finite() {
         h * (at.worst * at.worst - 1.0) / (max * max - 1.0) * s / (2.0 - s)
     } else {
         let d = h * -(1.0 - w / settled_weight(at.weight, w, s, at.steps)).log2();
@@ -2145,16 +2161,6 @@ fn half_life_figure(spec: &Spec, decay: Decay, at: &Unmet) -> String {
         // A bound that cannot bind -- a floor of one row, a Kish size of
         // one -- is NaN, and `max` takes the other.
         floor.max(kish)
-    };
-    if !(need.is_finite() && need > 0.0) {
-        return "raise the half_life".into();
-    }
-    match decay {
-        Decay::Lam(_) => format!("raise lam above {:.6}", (-1.0 / need).exp2()),
-        Decay::Halflife(_) => format!(
-            "raise the half_life above {}",
-            crate::bank::clock_amount(spec, need)
-        ),
     }
 }
 
@@ -2519,7 +2525,7 @@ mod notified;
 mod unmet_floor;
 use notified::span_name;
 pub use notified::{Notice, Notified};
-use unmet_floor::{Projection, unmet_floor_notice};
+use unmet_floor::{Projection, unmet_floor_notice, unsolved_notice};
 
 impl Stream {
     pub fn new(spec: &Spec) -> Result<Self, String> {
@@ -4990,9 +4996,9 @@ fn run_instance(
             let worst = unmet.worst;
             inst.notified.unreachable = true;
             inst.notified.restart_waits();
-            let figure = half_life_figure(inst.spec, inst.decay, &unmet);
             let k = inst.spec.k() + usize::from(inst.spec.fit_intercept);
             inst.notified.raise(if worst.is_finite() {
+                let figure = half_life_figure(inst.spec, inst.decay, &unmet);
                 format!(
                     "max_error_inflation = {max_infl:.3} has not been met on any row for a \
                      half-life since the stream settled (it is {:.0}% settled): \
@@ -5007,28 +5013,7 @@ fn run_instance(
             } else {
                 // Infinite: the model has not solved, its weight short of the
                 // floor its first solve needs, which no ratio can loosen.
-                let tops = projected_figure(settled_weight(
-                    step.n_eff,
-                    w,
-                    learned,
-                    rounding_steps(inst.steps, inst.notified),
-                ))
-                .map_or_else(
-                    || "the rows so far are too uneven to project the weight it settles at".into(),
-                    |f| format!("at the row rate seen so far its weight tops out near {f}"),
-                );
-                format!(
-                    "max_error_inflation = {max_infl:.3} has not been met on any row for a \
-                     half-life since the stream settled (it is {:.0}% settled): {tops}, below \
-                     the {} the model needs before it solves (a row per coefficient, or \
-                     min_weight), so error_inflation stays infinite and predictions stay \
-                     withheld unless the rows come faster. {}{} so it can carry the {k} \
-                     coefficients (the README, *Warm-up*).",
-                    100.0 * learned,
-                    solve_floor(inst.spec),
-                    figure[..1].to_uppercase(),
-                    &figure[1..]
-                )
+                unsolved_notice(inst.spec, inst.decay, &unmet)
             });
         }
 

@@ -1,9 +1,11 @@
-//! The readiness warning that `min_weight` has not been met (WRITING §11),
-//! split from `stream.rs` to keep it under the repository's file-size cap.
+//! The readiness warnings that a floor on the weight has not been met
+//! (WRITING §11): `min_weight`'s, and the noise gate's where the model has
+//! not fit at all, its weight below the floor its first fit needs. Split
+//! from `stream.rs` to keep it under the repository's file-size cap.
 
 use online_core::Decay;
 
-use super::{half_life_of, projected_figure, settled_weight};
+use super::{Unmet, half_life_need, half_life_of, projected_figure, settled_weight, solve_floor};
 use crate::spec::Spec;
 
 /// Where a readiness warning sends its reader: the reference section on
@@ -119,13 +121,7 @@ pub(super) fn unmet_floor_notice(
     let named = (!spec.model.predicts_no_target())
         .then(|| spec.targets.get(tj))
         .flatten();
-    let instance = match spec.decays() {
-        Ok(d) if d.len() > 1 => format!(
-            "the instance for half_life {} (the part of the model that fits that half-life): ",
-            crate::bank::clock_amount(spec, half_life_of(decay))
-        ),
-        _ => String::new(),
-    };
+    let instance = instance_name(spec, decay);
     let given = spec
         .min_periods_per_target()
         .get(tj)
@@ -228,11 +224,7 @@ pub(super) fn unmet_floor_notice(
              weight the gate reads tops out. {remedy}, as {READY_LINK} explains."
         );
     };
-    let (rate, faster) = if spec.clock.is_some() {
-        ("row rate", "the rows come faster or carry more weight")
-    } else {
-        ("row weights", "the rows carry more weight")
-    };
+    let (rate, faster) = rate_words(spec);
     let to = floor_reaching(spec, decay, ceiling, at.row_weight, floor)
         .map_or_else(String::new, |v| format!(" above {v}"));
     let remedy = if raised {
@@ -266,19 +258,29 @@ pub(super) fn unmet_floor_notice(
 /// `h > d/−log2(1 − w/N)`, for rows of weight `w` whose weight tops out at
 /// `ceiling`.
 fn floor_reaching(spec: &Spec, decay: Decay, ceiling: f64, w: f64, floor: f64) -> Option<String> {
-    use crate::figures::{Round, three_figures};
     let h = half_life_of(decay);
     let d = h * -(1.0 - w / ceiling).log2();
     let need = d / -(1.0 - w / floor).log2();
-    if !(need.is_finite() && need > 0.0 && w < floor) {
+    if w >= floor {
+        return None;
+    }
+    decay_above(spec, decay, need)
+}
+
+/// A half-life of `need` clock units as a remedy names the decay to pass,
+/// in the spec's own terms, rounded so the remedy holds: up for a
+/// half-life, and for `lam` its distance from 1 down, so `lam` rounds up
+/// and stays below 1. `None` where `need` is not a positive, finite
+/// half-life.
+fn decay_above(spec: &Spec, decay: Decay, need: f64) -> Option<String> {
+    use crate::figures::{Round, three_figures};
+    if !(need.is_finite() && need > 0.0) {
         return None;
     }
     Some(match decay {
         // A factor near 1 keeps the decimals that tell it from 1 (WRITING
         // §11).
         Decay::Lam(_) => {
-            // `lam` above the threshold: its distance from 1 to three
-            // figures, rounded down, so `lam` rounds up and stays below 1.
             let gap: f64 = three_figures(1.0 - (-1.0 / need).exp2(), Round::Down)
                 .parse()
                 .ok()?;
@@ -290,4 +292,93 @@ fn floor_reaching(spec: &Spec, decay: Decay, ceiling: f64, w: f64, floor: f64) -
             crate::bank::clock_amount(spec, up)
         }
     })
+}
+
+/// How a warning names the instance it is about, where the spec has several
+/// half-lives; empty where it has one.
+fn instance_name(spec: &Spec, decay: Decay) -> String {
+    match spec.decays() {
+        Ok(d) if d.len() > 1 => format!(
+            "the instance for half_life {} (the part of the model that fits that half-life): ",
+            crate::bank::clock_amount(spec, half_life_of(decay))
+        ),
+        _ => String::new(),
+    }
+}
+
+/// What a projection is read at, and what lifts it: with a clock column,
+/// the rows' rate and weight; without one, a row a clock unit, their
+/// weight alone.
+fn rate_words(spec: &Spec) -> (&'static str, &'static str) {
+    if spec.clock.is_some() {
+        ("row rate", "the rows come faster or carry more weight")
+    } else {
+        ("row weights", "the rows carry more weight")
+    }
+}
+
+/// The noise gate's warning where its ratio is infinite: the model has not
+/// fit at all, its weight short of the floor its first fit needs
+/// ([`solve_floor`]), so no `max_error_inflation` can open the gate. In the
+/// shape every message takes (WRITING §11). The first fit reads the shared
+/// weight, `weight_sum`, which a target's nulls do not move, so where
+/// `min_weight`'s warning tells a target the rows stopped carrying, this
+/// one has none to tell (task 350). Its forms:
+///
+/// - where `weight_sum` tops out, projected at the rows' spacing and weight
+///   so far ([`settled_weight`]), rounded down, and the half-life (or
+///   `lam`) above which the model fits and its Kish size carries its
+///   coefficients ([`half_life_need`]), rounded up;
+/// - a row of weight 0, which adds nothing, so no regular stream of rows
+///   like it reads the weight there is: no figure. A stream whose rows
+///   weigh 0 from some row on has a `weight_sum` that falls toward 0, and
+///   the projection read that falling weight as a ceiling (task 350);
+/// - rows too uneven to project: no figure.
+pub(super) fn unsolved_notice(spec: &Spec, decay: Decay, at: &Unmet) -> String {
+    use crate::figures::{Round, three_figures};
+    let floor = solve_floor(spec);
+    let k = spec.k() + usize::from(spec.fit_intercept);
+    let needs = if spec.min_weight.is_some() {
+        format!("the {floor} that min_weight sets for the model's first fit")
+    } else {
+        format!(
+            "the {floor} the model needs before it fits at all, one for each of its {k} \
+             coefficients"
+        )
+    };
+    let unmet = format!(
+        "{}max_error_inflation = {:.3} has not been met on any row for the last half-life, with \
+         the model within 5% of its steady state",
+        instance_name(spec, decay),
+        at.max
+    );
+    let withheld = "error_inflation stays infinite and predictions stay withheld";
+    let decay_name = match decay {
+        Decay::Lam(_) => "lam",
+        Decay::Halflife(_) => "half_life",
+    };
+    if at.row_weight <= 0.0 {
+        return format!(
+            "{unmet}, so {withheld} until weight_sum reaches {needs}. This warning comes on a row \
+             of weight 0, which adds nothing to the weight, so it cannot say where weight_sum tops \
+             out. Check that rows reach the model with a positive weight, or increase \
+             {decay_name}, as {READY_LINK} explains."
+        );
+    }
+    let ceiling = settled_weight(at.weight, at.row_weight, at.settled, at.steps);
+    let Some(figure) = projected_figure(ceiling).map(|_| three_figures(ceiling, Round::Down))
+    else {
+        return format!(
+            "{unmet}, so {withheld} until weight_sum reaches {needs}. The rows so far are too \
+             uneven (such as one row far heavier than the rest) to project where weight_sum tops \
+             out. Increase {decay_name}, as {READY_LINK} explains."
+        );
+    };
+    let (rate, faster) = rate_words(spec);
+    let to = decay_above(spec, decay, half_life_need(spec, decay, at))
+        .map_or_else(String::new, |v| format!(" above {v}"));
+    format!(
+        "{unmet}. At the {rate} seen so far, weight_sum tops out near {figure}, below {needs}, so \
+         {withheld} unless {faster}. Increase {decay_name}{to}, as {READY_LINK} explains."
+    )
 }

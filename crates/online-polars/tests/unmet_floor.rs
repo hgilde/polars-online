@@ -19,6 +19,11 @@
 //! no clock column, so the decay time before row `i` is `i − 1`, 95% settled
 //! from row 23 (`1 − 2^(−22/5) = 0.953`), and the warning comes a half-life
 //! after the first row the floor withholds from there.
+//!
+//! The noise gate's warning where the model has not fit at all, its
+//! `weight_sum` short of a row per coefficient, projected `weight_sum` the
+//! same way, and on rows of weight 0 read it falling as a ceiling too; its
+//! tests are the last three (`unsolved`).
 
 use online_polars::{Bank, Spec};
 use polars::prelude::*;
@@ -180,4 +185,92 @@ fn a_target_every_row_carries_keeps_its_ceiling() {
             "{model}"
         );
     }
+}
+
+/// Ten features under `ewridge`'s default noise gate, at a half-life of 2
+/// rows: the first fit needs a row per coefficient, 11 of weight, and
+/// `weight_sum` tops out at `1/(1 − 2^(−1/2)) = 3.414`, so the gate's ratio
+/// stays infinite. On a row clock the decay time before row `i` is `i − 1`,
+/// 95% settled from row 10 (`1 − 2^(−9/2) = 0.956`), and the warning comes a
+/// half-life later, on row 12. `w` is each row's weight.
+fn unsolved(w: &[f64]) -> Vec<String> {
+    let n = w.len();
+    let mut cols: Vec<Column> = (0..10)
+        .map(|j| {
+            let x: Vec<f64> = (0..n)
+                .map(|i| (((i + 3) * (2 * j + 7) + j * j) % 13) as f64 - 6.0)
+                .collect();
+            Column::new(format!("x{j}").into(), x)
+        })
+        .collect();
+    let y: Vec<f64> = (0..n).map(|i| (i % 5) as f64).collect();
+    cols.push(Column::new("y".into(), y));
+    cols.push(Column::new("w".into(), w.to_vec()));
+    let df = DataFrame::new(n, cols).unwrap();
+    let features: Vec<String> = (0..10).map(|j| format!("\"x{j}\"")).collect();
+    let spec: Spec = serde_json::from_str(&format!(
+        r#"{{"name": "m", "model": {{"type": "ewridge"}}, "targets": ["y"],
+            "features": [{}], "half_life": 2.0, "weight": "w"}}"#,
+        features.join(", ")
+    ))
+    .unwrap();
+    let mut bank = Bank::new(vec![spec]).unwrap();
+    let mut all = Vec::new();
+    for part in [df.slice(0, 12), df.slice(12, n - 12)] {
+        bank.fit_predict(&part).unwrap();
+        all.extend(bank.take_notices());
+    }
+    all
+}
+
+/// The noise gate's opening while the model has not fit.
+const UNSOLVED: &str = "spec \"m\": max_error_inflation = 1.414 has not been met on any row for \
+     the last half-life, with the model within 5% of its steady state";
+
+/// The rows keep coming at weight 1: `weight_sum` tops out near 3.41,
+/// rounded down, and the half-life that lets the model fit with a Kish size
+/// that carries its 11 coefficients is 7.2725, rounded up. It said "tops
+/// out near 3.4142" and "Raise the half_life above 7.272540897341715", and
+/// cited the README, not the reference that explains the gates.
+#[test]
+fn the_unsolved_noise_gate_gives_where_weight_sum_tops_out() {
+    let want = format!(
+        "{UNSOLVED}. At the row weights seen so far, weight_sum tops out near 3.41, below the 11 \
+         the model needs before it fits at all, one for each of its 11 coefficients, so \
+         error_inflation stays infinite and predictions stay withheld unless the rows carry more \
+         weight. Increase half_life above 7.28, as {READY} explains."
+    );
+    assert_eq!(unsolved(&[1.0; 40]), vec![want]);
+}
+
+/// Every row weighs 0 from row 3, so `weight_sum` falls toward 0 (0.0975
+/// before row 12); the warning comes on a row of weight 0 and gives no
+/// figure. It said "tops out near 0.0997", the falling weight over the
+/// settled fraction.
+#[test]
+fn the_unsolved_noise_gate_on_a_row_of_weight_zero_gives_no_figure() {
+    let w: Vec<f64> = (0..40).map(|i| if i < 3 { 1.0 } else { 0.0 }).collect();
+    let want = format!(
+        "{UNSOLVED}, so error_inflation stays infinite and predictions stay withheld until \
+         weight_sum reaches the 11 the model needs before it fits at all, one for each of its 11 \
+         coefficients. This warning comes on a row of weight 0, which adds nothing to the weight, \
+         so it cannot say where weight_sum tops out. Check that rows reach the model with a \
+         positive weight, or increase half_life, as {READY} explains."
+    );
+    assert_eq!(unsolved(&w), vec![want]);
+}
+
+/// A row of weight 1e90 where the warning comes: read as the weight every
+/// row brings, it projects a `weight_sum` far below 0, so there is no
+/// figure.
+#[test]
+fn the_unsolved_noise_gate_on_uneven_rows_gives_no_figure() {
+    let w: Vec<f64> = (0..40).map(|i| if i == 12 { 1e90 } else { 1.0 }).collect();
+    let want = format!(
+        "{UNSOLVED}, so error_inflation stays infinite and predictions stay withheld until \
+         weight_sum reaches the 11 the model needs before it fits at all, one for each of its 11 \
+         coefficients. The rows so far are too uneven (such as one row far heavier than the \
+         rest) to project where weight_sum tops out. Increase half_life, as {READY} explains."
+    );
+    assert_eq!(unsolved(&w), vec![want]);
 }

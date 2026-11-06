@@ -394,7 +394,7 @@ fn the_noise_gates_notice_under_lam_names_the_lam_that_opens_it() {
     let h = 2.0f64;
     let by_h = notice(&format!(r#""half_life": {h:?}"#));
     let need_h: f64 = by_h
-        .split("aise the half_life above ")
+        .split("ncrease half_life above ")
         .nth(1)
         .and_then(|r| r.split_whitespace().next())
         .unwrap_or_else(|| panic!("{by_h}"))
@@ -403,7 +403,7 @@ fn the_noise_gates_notice_under_lam_names_the_lam_that_opens_it() {
         .unwrap();
     let by_lam = notice(&format!(r#""lam": {:?}"#, (-1.0 / h).exp2()));
     let need_lam: f64 = by_lam
-        .split("aise lam above ")
+        .split("ncrease lam above ")
         .nth(1)
         .and_then(|r| r.split_whitespace().next())
         .unwrap_or_else(|| panic!("{by_lam}"))
@@ -412,9 +412,11 @@ fn the_noise_gates_notice_under_lam_names_the_lam_that_opens_it() {
         .unwrap();
     // Tolerance (task 252 (b)): both figures are read back from a notice's
     // text, printed rounded for a reader, and a half-life becomes a factor
-    // through libm's `exp2`.
+    // through libm's `exp2`. Since task 350 each is rounded to three
+    // figures, the half-life up and `lam`'s distance from 1 down: at a
+    // half-life near 7.3 each moves `lam` by up to about 1e-4.
     assert!(
-        (need_lam - (-1.0 / need_h).exp2()).abs() < 1e-5,
+        (need_lam - (-1.0 / need_h).exp2()).abs() < 2e-4,
         "lam {need_lam} against half_life {need_h}: {by_lam}"
     );
     // With min_weight given, the floor is the spec's: a floor of 3 rows is
