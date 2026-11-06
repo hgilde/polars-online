@@ -226,7 +226,8 @@ fn the_formula_target_case_holds_about_a_thousand_rows() {
     let mut run = bank_setup("formula_target_held1k");
     polars_online_budget_bank_rows(&mut run);
     // The rows the embargo holds, read from the saved state: the stream's
-    // `pending` rows, beside which `notified.pending` holds only strings.
+    // `pending` rows (`notified.pending`, the notices not yet said, is never
+    // saved).
     fn held(v: &serde_json::Value) -> usize {
         match v {
             serde_json::Value::Object(m) => m

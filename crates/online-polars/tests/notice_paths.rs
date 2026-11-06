@@ -17,6 +17,14 @@
 //! before the notices were taken, under `"session"` the span's stream was
 //! replaced within the call, and either lost them.
 //!
+//! Under `group_close = "session"` each span of a group is a fresh stream
+//! that says each notice once, so two spans of one group can raise the same
+//! notice; each names its span by its session value -- `spec "a" group "1"
+//! session "one": ` -- so the two are two texts, and Python's default
+//! warning filter, which shows an identical text from one line once, shows
+//! both (task 334). Under any other spec a session that starts a stream over
+//! keeps which notices it has said, and no notice names a session.
+//!
 //! The notice used is the support notice: under a ridge of 0.5, a feature
 //! duplicated reads a support below 0.5 from its first solve, and at a
 //! half-life of 4 rows on a row clock the decay time before a group's row
@@ -64,6 +72,19 @@ fn concat(parts: &[DataFrame]) -> DataFrame {
 fn named(notices: &[String], spec: &str, g: i64) -> usize {
     let tag = format!("spec {spec:?} group \"{g}\":");
     notices.iter().filter(|n| n.starts_with(&tag)).count()
+}
+
+/// How a notice of spec `spec`, group `g` and the session span `span` (its
+/// value, `None` for a null one) begins.
+fn span_tag(spec: &str, g: i64, span: Option<&str>) -> String {
+    let span = span.map_or_else(|| "null".to_string(), |v| format!("{v:?}"));
+    format!("spec {spec:?} group \"{g}\" session {span}: ")
+}
+
+/// What a notice says after its spec, group and span.
+fn body(notice: &str) -> &str {
+    let at = notice.find(": ").expect("a named notice");
+    &notice[at + 2..]
 }
 
 /// Among 300 groups seen, a call to a few of them says the notices of
@@ -193,7 +214,11 @@ fn a_session_closed_in_the_call_says_the_new_spans_notice() {
     ]))
     .unwrap();
     let said = bank.take_notices();
-    assert_eq!((said.len(), named(&said, "a", 1)), (1, 1), "{said:#?}");
+    assert_eq!(said.len(), 1, "{said:#?}");
+    assert!(
+        said[0].starts_with(&span_tag("a", 1, Some("two"))),
+        "{said:#?}"
+    );
     assert_eq!(bank.closed_groups(None, true).unwrap().height(), 1);
 }
 
@@ -279,7 +304,11 @@ fn a_session_span_closed_in_the_call_says_its_notice_at_any_chunking() {
         session(rows(1, 0, 3), "two"),
     ]);
     let said = same_at_every_cut(&specs, &df);
-    assert_eq!((said.len(), named(&said, "a", 1)), (1, 1), "{said:#?}");
+    assert_eq!(said.len(), 1, "{said:#?}");
+    assert!(
+        said[0].starts_with(&span_tag("a", 1, Some("one"))),
+        "{said:#?}"
+    );
     let df = concat(&[
         session(rows(1, 0, RAISED_AT + 1), "one"),
         session(rows(1, 0, 4), "two"),
@@ -287,8 +316,140 @@ fn a_session_span_closed_in_the_call_says_its_notice_at_any_chunking() {
         session(rows(1, 0, 1), "four"),
     ]);
     let said = same_at_every_cut(&specs, &df);
-    assert_eq!((said.len(), named(&said, "a", 1)), (2, 2), "{said:#?}");
+    assert_eq!(said.len(), 2, "{said:#?}");
+    assert!(
+        said[0].starts_with(&span_tag("a", 1, Some("one"))),
+        "{said:#?}"
+    );
+    assert!(
+        said[1].starts_with(&span_tag("a", 1, Some("three"))),
+        "{said:#?}"
+    );
 }
+
+/// Two spans of one group that raise the same notice -- the same rows, so
+/// the same words -- say two texts, each naming its span, once each, at any
+/// chunking: in one call, closed and open, closed both, or a row a call.
+#[test]
+fn two_spans_raising_the_same_notice_say_two_texts_at_any_chunking() {
+    let specs = [spec("a", r#", "session": "s", "group_close": "session""#)];
+    for tail in [0, 1] {
+        let mut parts = vec![
+            session(rows(1, 0, RAISED_AT + 1), "one"),
+            session(rows(1, 0, RAISED_AT + 1), "two"),
+        ];
+        if tail > 0 {
+            parts.push(session(rows(1, 0, tail), "three"));
+        }
+        let said = same_at_every_cut(&specs, &concat(&parts));
+        assert_eq!(said.len(), 2, "{said:#?}");
+        assert!(
+            said[0].starts_with(&span_tag("a", 1, Some("one"))),
+            "{said:#?}"
+        );
+        assert!(
+            said[1].starts_with(&span_tag("a", 1, Some("two"))),
+            "{said:#?}"
+        );
+        assert_eq!(body(&said[0]), body(&said[1]), "the same notice");
+        assert_ne!(said[0], said[1], "two texts");
+        assert!(body(&said[0]).contains("support_coef < 0.5"), "{said:#?}");
+    }
+}
+
+/// A span is named by its session value as the user's data gives it, cast
+/// to text and quoted as a group key is: an integer session column's `3`
+/// reads `session "3"`. A null session value reads `session null`, which no
+/// quoted value reads -- not even the text "null" -- and is what
+/// `closed_groups()` reports for that span, a null `session`.
+#[test]
+fn a_span_is_named_by_its_session_value_quoted_as_a_group_key_is() {
+    let specs = [spec("a", r#", "session": "s", "group_close": "session""#)];
+    let int_session = |df: DataFrame, v: i64| {
+        let n = df.height();
+        let mut df = df;
+        df.with_column(Column::new("s".into(), vec![v; n])).unwrap();
+        df
+    };
+    let df = concat(&[
+        int_session(rows(1, 0, RAISED_AT + 1), 3),
+        int_session(rows(1, 0, RAISED_AT + 1), 4),
+    ]);
+    let said = same_at_every_cut(&specs, &df);
+    assert_eq!(said.len(), 2, "{said:#?}");
+    assert!(
+        said[0].starts_with(&span_tag("a", 1, Some("3"))),
+        "{said:#?}"
+    );
+    assert!(
+        said[1].starts_with(&span_tag("a", 1, Some("4"))),
+        "{said:#?}"
+    );
+
+    let null_session = |df: DataFrame| {
+        let n = df.height();
+        let mut df = df;
+        df.with_column(Column::new("s".into(), vec![None::<&str>; n]))
+            .unwrap();
+        df
+    };
+    let df = concat(&[
+        null_session(rows(1, 0, RAISED_AT + 1)),
+        session(rows(1, 0, RAISED_AT + 1), "null"),
+        session(rows(1, 0, 1), "after"),
+    ]);
+    let said = same_at_every_cut(&specs, &df);
+    assert_eq!(said.len(), 2, "{said:#?}");
+    assert!(said[0].starts_with(&span_tag("a", 1, None)), "{said:#?}");
+    assert!(
+        said[1].starts_with(&span_tag("a", 1, Some("null"))),
+        "{said:#?}"
+    );
+    let mut bank = Bank::new(specs.to_vec()).unwrap();
+    bank.fit_predict(&df).unwrap();
+    let closed = bank.closed_groups(None, true).unwrap();
+    let sessions: Vec<Option<&str>> = closed
+        .column("session")
+        .unwrap()
+        .str()
+        .unwrap()
+        .iter()
+        .collect();
+    assert_eq!(sessions, [None, Some("null")]);
+}
+
+/// Under `session_gap = "reset"` a new session restarts the group's models
+/// in the same stream, which keeps which notices it has said: two sessions
+/// that each reach row 19 say the notice once, at any chunking, in the text
+/// a spec with no session says -- no span is named.
+#[test]
+fn a_session_gap_reset_says_a_notice_once_and_names_no_span() {
+    let specs = [spec("a", r#", "session": "s", "session_gap": "reset""#)];
+    let df = concat(&[
+        session(rows(1, 0, RAISED_AT + 1), "one"),
+        session(rows(1, 0, RAISED_AT + 1), "two"),
+    ]);
+    let said = same_at_every_cut(&specs, &df);
+    assert_eq!((said.len(), named(&said, "a", 1)), (1, 1), "{said:#?}");
+    let (plain, _) = said_over(&[spec("a", "")], &rows(1, 0, RAISED_AT + 1), &[]);
+    assert_eq!(said, plain, "the text of a spec with no session");
+}
+
+/// A spec without sessions says the text it always has, to the byte: its
+/// spec and group, then the notice.
+#[test]
+fn a_spec_without_sessions_says_the_text_it_always_has() {
+    let (said, _) = said_over(&[spec("a", "")], &rows(1, 0, RAISED_AT + 1), &[]);
+    assert_eq!(said, [PLAIN_NOTICE], "{said:#?}");
+}
+
+/// The support notice of `rows(1, 0, 20)` under `spec("a", "")`, as every
+/// build before the span was named said it.
+const PLAIN_NOTICE: &str = "spec \"a\" group \"1\": the coefficient of \"x0\" is 0.49 \
+    data and 0.51 ridge (support_coef < 0.5): the design does not determine it -- a \
+    duplicated or constant column, or a ridge as large as the feature's variance. \
+    Predictions are unaffected in sample; the split among such columns is arbitrary and \
+    moves the moment the collinearity breaks (the README, *Warm-up*).";
 
 /// The rows of a stream of groups, each group's rows contiguous and the
 /// groups in ascending key order (so `"monotone"` closes each at the next
@@ -343,5 +504,26 @@ proptest! {
         let spans_past = groups.iter().flatten().filter(|&&l| l > RAISED_AT).count();
         prop_assert_eq!(of(&whole, "mono").len(), groups_past, "{:#?}", whole);
         prop_assert_eq!(of(&whole, "sess").len(), spans_past, "{:#?}", whole);
+        // Each span's notice names it, in group and then span order, so no
+        // two of the session spec's notices are one text; the monotone
+        // spec's name no span.
+        let named_spans: Vec<String> = groups
+            .iter()
+            .enumerate()
+            .flat_map(|(g, spans)| {
+                spans
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, l)| **l > RAISED_AT)
+                    .map(move |(k, _)| span_tag("sess", g as i64, Some(&format!("{g}-{k}"))))
+            })
+            .collect();
+        let sess = of(&whole, "sess");
+        for (n, tag) in sess.iter().zip(&named_spans) {
+            prop_assert!(n.starts_with(tag), "{} does not begin {}", n, tag);
+        }
+        let distinct: std::collections::HashSet<&String> = sess.iter().collect();
+        prop_assert_eq!(distinct.len(), sess.len());
+        prop_assert!(of(&whole, "mono").iter().all(|n| !n.contains(" session ")));
     }
 }

@@ -1175,8 +1175,9 @@ fn process<'s>(
                     // The notices the span raised and nobody has taken go
                     // on to the next span's stream, to be said first: lost
                     // with the span, they were said or not by where a chunk
-                    // ended (task 333).
-                    let held = stream.take_notices();
+                    // ended (task 333). Each names the closed span, whose
+                    // session value the stream still holds (task 334).
+                    let held = stream.take_notices(spec);
                     *stream = Stream::new(spec).expect("the spec built this stream once");
                     stream.carry_notices(held);
                     // The group's reservation is the one it was given when
@@ -1731,14 +1732,19 @@ fn chunk_streams<'a>(
     found.into_iter().map(|f| f.2.expect("every group found"))
 }
 
-/// A stream's notices, taken and named by its spec and group.
-fn say_notices(notices: &mut Vec<String>, spec: &str, key: &GroupKey, stream: &mut Stream) {
-    for body in stream.take_notices() {
+/// A stream's notices, taken and named by its spec and group, and under
+/// `group_close = "session"` by the span that raised each (`Notice`).
+fn say_notices(notices: &mut Vec<String>, spec: &Spec, key: &GroupKey, stream: &mut Stream) {
+    for notice in stream.take_notices(spec) {
         let group = key
             .0
             .as_deref()
             .map_or(String::new(), |g| format!(" group {g:?}"));
-        notices.push(format!("spec {spec:?}{group}: {body}"));
+        let span = notice.span.as_deref().unwrap_or("");
+        notices.push(format!(
+            "spec {:?}{group}{span}: {}",
+            spec.name, notice.body
+        ));
     }
 }
 
@@ -3378,7 +3384,7 @@ impl Bank {
                 // that learned and then failed (`notices_left`); they are
                 // said, not dropped with it (task 333).
                 if let Some(mut stream) = hm.swap_remove(key) {
-                    say_notices(&mut self.notices, &self.specs[si].name, key, &mut stream);
+                    say_notices(&mut self.notices, &self.specs[si], key, &mut stream);
                     dropped += 1;
                 }
                 // The group's window core goes with its stream, so a group
@@ -3880,7 +3886,11 @@ impl Bank {
     /// instance; a group whose session closed in the call says the closed
     /// span's before the next span's. A group that closes in the call says
     /// its notices as any other: which are said does not depend on where a
-    /// chunk ends.
+    /// chunk ends. Each names its spec and group -- `spec "m" group "g": `
+    /// -- and under `group_close = "session"`, where each span of a group is
+    /// a fresh stream that says its notices once, the span's session value
+    /// too -- `spec "m" group "g" session "a": `, or `session null` -- so
+    /// two spans that raise the same notice say two texts (task 334).
     pub fn take_notices(&mut self) -> Vec<String> {
         std::mem::take(&mut self.notices)
     }
@@ -4550,15 +4560,15 @@ impl Bank {
         // where a chunk ended between the group and the next (task 333).
         // After a call that learned and returned early, every stream's.
         for (si, hm) in self.states.iter_mut().enumerate() {
-            let name = &self.specs[si].name;
+            let spec = &self.specs[si];
             if notices_left {
                 for (key, stream) in hm.iter_mut() {
-                    say_notices(&mut self.notices, name, key, stream);
+                    say_notices(&mut self.notices, spec, key, stream);
                 }
             } else {
                 for (key, _) in &groups[si] {
                     if let Some(stream) = hm.get_mut(key) {
-                        say_notices(&mut self.notices, name, key, stream);
+                        say_notices(&mut self.notices, spec, key, stream);
                     }
                 }
             }

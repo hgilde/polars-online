@@ -483,6 +483,41 @@ class TestSummaryAndWarnings:
         assert "x2" in str(got[0].message) or "x0" in str(got[0].message)
         assert "support_coef" in str(got[0].message)
 
+    def test_two_session_spans_saying_the_same_notice_both_show(self):
+        """Under ``group_close="session"`` each span of a group is a fresh
+        stream that says each notice once, so two spans of the same rows say
+        the same notice, in one call. Each names its span by its session
+        value, so the two are two texts, and Python's default warning filter
+        -- which shows an identical text from one line once -- shows both
+        (task 334). Under the default filter, not ``"always"``: the filter a
+        user runs under."""
+        one = frame(100, k=2).with_columns(pl.col("x0").alias("x2"), g=pl.lit(1))
+        df = pl.concat(
+            [
+                one.with_columns(s=pl.lit("one")),
+                one.with_columns(s=pl.lit("two")),
+                one.head(1).with_columns(s=pl.lit("three")),
+            ]
+        )
+        s = spec(
+            features=["x0", "x1", "x2"],
+            ridge=0.5,
+            half_life=20.0,
+            coef_every=1,
+            group="g",
+            session="s",
+            group_close="session",
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("default")
+            po.ModelBank([s]).fit_predict(df)
+        got = [str(w.message) for w in caught if issubclass(w.category, po.ReadinessWarning)]
+        assert len(got) == 2, got
+        assert got[0].startswith('spec "m" group "1" session "one": '), got
+        assert got[1].startswith('spec "m" group "1" session "two": '), got
+        bodies = [m.split(": ", 1)[1] for m in got]
+        assert bodies[0] == bodies[1] and "support_coef < 0.5" in bodies[0], got
+
     def test_an_unreachable_gate_is_named_with_the_fix(self):
         """Half-life 2 rows tops Kish's ``n`` out near 5.8; with ten features
         ``sqrt(1 + 11 / 5.8)`` never reaches ``sqrt(2)``. The notice waits

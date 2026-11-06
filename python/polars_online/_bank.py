@@ -554,7 +554,8 @@ class ModelBank:
 
     def _warn_notices(self) -> None:
         """Raise each readiness notice the last chunk left as a
-        :class:`polars_online.ReadinessWarning`, once per (spec, group): a
+        :class:`polars_online.ReadinessWarning`, once per (spec, group), or
+        per session span under ``group_close="session"``, which it names: a
         coefficient the ridge determined more than the data did, or a
         ``max_error_inflation`` the stream has settled below
         (docs/WARMUP-AND-CONVERGENCE.md §3)."""

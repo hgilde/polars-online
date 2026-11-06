@@ -1218,7 +1218,8 @@ fn augment(
         bank.fit_predict_from_with(&chunk, row_base, learn_only)?
     };
     // A readiness notice is a line on stderr, once per (spec, group,
-    // instance), as the Python layer warns once (docs/WARMUP-AND-CONVERGENCE.md
+    // instance) -- under `group_close = "session"` once per span, which it
+    // names -- as the Python layer warns once (docs/WARMUP-AND-CONVERGENCE.md
     // §3): a coefficient more ridge than data, or a noise gate that cannot
     // be met.
     for notice in bank.take_notices() {

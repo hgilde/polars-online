@@ -312,7 +312,21 @@ Warnings, queued in Rust as notices (`Bank::take_notices`), raised in
 Python as `ReadinessWarning` and printed on stderr by the command line,
 **once per model instance of each (spec, group)** -- once per (spec, group)
 for one half-life, once per half-life under a grid, each instance judging
-its own stream -- and only once the stream is at least 95% settled:
+its own stream -- and only once the stream is at least 95% settled. Each
+begins with its spec and group, `spec "m" group "g":`. Under
+`group_close = "session"` each session span of a group is a stream of its
+own, which says each notice once, so two spans can raise the same notice;
+there the notice names its span by the session value as the data gives it,
+cast to text and quoted as the group key is -- `spec "m" group "g" session
+"a":`, and `session null` for a span whose value is null, the span
+`closed_groups()` reports with a null `session` -- so the two are two texts.
+(Two null spans of one group, with another span between them, read alike,
+as their closed rows do: nothing the stream keeps tells them apart.)
+Python's default warning filter shows a text it has shown from the same line
+only once, and would hide the second. A session that restarts the models in
+the same stream instead (`session_gap = "reset"`, like a drift reset) keeps
+which notices the stream has said, so it raises none again and its notices
+name no span:
 
 - **a coefficient more ridge than data** (`support_coef < 0.5`, on a row
   whose prediction the gates let through, as settled on 2026-09-21, §2.2,
