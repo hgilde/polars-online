@@ -253,6 +253,15 @@ returns.
 
 ### Tests and documents
 
+- The writing rules are checked: `scripts/writing_checks.py` reports, for
+  every error and warning, every public docstring and every guide, what
+  breaks the message shape, the docstring section order, the glossary's
+  vocabulary and American spelling, the sentence limits and the declared
+  page kind. `writing_ratchet.toml` holds a per-file count of each that may
+  only fall, a file whose rewrite has finished fails on any finding, and
+  `tests/test_writing_checks.py` plants a violation for each check. Every
+  documentation pass now reviews in rounds: the whole page first, then only
+  what each round changed, then one final full read (task 338).
 - The instruction counts are taken under a stopped wall clock, with
   libfaketime on the counting step alone. Polars' hash maps seed their
   hashing from the time once per process, and that seed moved a bank
