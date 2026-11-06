@@ -487,6 +487,43 @@ def _source_runs() -> int:
         return _SOURCE_RUNS_LAST
 
 
+#: The most bytes of a chunk's output one of this package's sources hands
+#: Polars at a time (task 348). Polars' streaming engine bounds what it holds
+#: from a source by a number of frames, not of bytes: between a Python source
+#: and a node that runs on every thread (a `with_columns`, a `select` that
+#: computes, `.online.unnest`) it keeps up to about ten frames a thread in
+#: flight, however slowly the node after them consumes -- 148 on a 14-thread
+#: Mac, 28 under `POLARS_MAX_THREADS=2`, on py-polars 1.37.0 and 2.0.0 alike
+#: (a scan straight into `collect_batches` keeps 6). So a source in front of
+#: a slower consumer, one `fit_predict` feeding another through a
+#: `with_columns`, runs that many frames ahead of it. As whole 100,000-row
+#: chunks of three factor ridges' output, 29 MB each, that was the whole of
+#: a 4,000,000-row stream: 1,379 MB at its peak, where a loop over the same
+#: two banks held 311. In slices of at most 1 MiB the same frames are a few
+#: chunks' rows, and the query held 455 MB at 1,000,000 rows and 629 MB at
+#: 4,000,000, flat from its first second to the input's end (2 MiB: 774 MB
+#: at 4,000,000, still filling). The chunk the bank is fed, and every value
+#: out, are unchanged; a slice shares its chunk's buffers. Each extra frame
+#: costs Polars about 30 µs, 3-4% of the fastest single bank's time
+#: (an `ewridge` on two features, 0.17 µs a row).
+_MORSEL_BYTES = 1 << 20
+
+
+def _in_morsels(out: pl.DataFrame) -> Iterator[pl.DataFrame]:
+    """``out`` in consecutive slices of as many rows as fit in
+    `_MORSEL_BYTES` at its mean bytes a row by ``estimated_size()`` (one at
+    the least), the last taking the rest: what a source yields in place of
+    ``out``. A frame within the bound, an empty one included, is yielded
+    whole."""
+    size = out.estimated_size()
+    if size <= _MORSEL_BYTES:
+        yield out
+        return
+    rows = max(1, int(out.height * _MORSEL_BYTES // size))
+    for start in range(0, out.height, rows):
+        yield out.slice(start, rows)
+
+
 def _is_python_scan(lf: pl.LazyFrame, plan_text: str | None = None) -> bool:
     """Whether ``lf``'s source is a Python scan, which is what an Arrow C
     stream and this package's own plan form both are.
@@ -956,7 +993,7 @@ def _source(
                 out = out.filter(predicate)
             if with_columns is not None:
                 out = out.select(with_columns)
-            yield out
+            yield from _in_morsels(out)
             if n_rows is not None and seen >= n_rows:
                 break
         # Reached only when the source has fed the bank its last row: the

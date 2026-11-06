@@ -35,6 +35,7 @@ import textwrap
 import tomllib
 import warnings
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -598,6 +599,122 @@ def test_the_peak_memory_of_the_standard_runs_within_its_budget(tmp_path):
     # macOS runner 3.14 read 18-20% under 3.12, and the streaming run read
     # 291 MiB on a 14-core M4 Pro against 237 on that runner, one build.
     _held("rss", measured, measure=not _rss_held_here())
+
+
+#: Two `fit_predict` calls in series, as one query (task 348): three factor
+#: ridges, whose residuals, taken out of their structs by a `with_columns`,
+#: feed a windowed ridge with a forward target and an embargo, about eight
+#: times slower a row. The child reports the peak resident memory over its
+#: baseline, sampled as `CHILD` does, and the rows it read.
+CHAIN_CHILD = textwrap.dedent(
+    """
+    import gc, json, sys, threading, time
+    import polars as pl, polars_online as po, psutil
+
+    proc = psutil.Process()
+    src = sys.argv[1]
+    clock = dict(clock="ts", gap_cap="5m", group="g")
+    factors = [
+        po.spec.ewridge(
+            f"fac{f}", targets=[f"d{f}"], features=[f"x{f}_{j}" for j in range(4)],
+            half_life="2h", **clock,
+        )
+        for f in range(3)
+    ]
+    forward = po.ewm_mean("y", half_life="30s", window_size="150s", reverse=True) - pl.col("y")
+    stage2 = po.spec.ewridge(
+        "stage2", targets=[forward.alias("B")], features=[f"resid_d{f}" for f in range(3)],
+        window_size="2h", half_life=float("inf"), embargo="150s", min_weight=500.0, **clock,
+    )
+    residuals = [pl.col(f"fac{f}").struct.field(f"resid_d{f}") for f in range(3)]
+    plan = (
+        pl.scan_parquet(src)
+        .online.fit_predict(factors)
+        .with_columns(residuals)
+        .online.fit_predict([stage2])
+    )
+    gc.collect()
+    if sys.platform.startswith("linux"):
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    base = proc.memory_info().rss
+    peak = [base]
+    stop = threading.Event()
+
+    def sample():
+        while not stop.is_set():
+            peak[0] = max(peak[0], proc.memory_info().rss)
+            time.sleep(0.002)
+
+    sampler = threading.Thread(target=sample, daemon=True)
+    sampler.start()
+    rows = 0
+    for batch in plan.collect_batches():
+        rows += batch.height
+    peak[0] = max(peak[0], proc.memory_info().rss)
+    stop.set()
+    sampler.join()
+    print(json.dumps({"rows": rows, "mib": (peak[0] - base) / 2**20}))
+    """
+)
+
+#: The two lengths of the chained stream, rows.
+CHAIN_ROWS = (1_000_000, 4_000_000)
+
+#: The most the chained run's peak may grow from the shorter stream to the
+#: longer, MiB. Measured on macOS (M4 Pro, py-polars 2.0.0, three runs,
+#: 2026-11-06): 331 and 419 MiB, +88, where the source that handed Polars its
+#: whole 100,000-row chunks read 369 and 1,222, +853. The first stage's
+#: output is about 290 bytes a row, so a chain that kept what it ran ahead of
+#: the second stage grows by about 830 MiB over the 3,000,000 rows between
+#: the two. The +88 is not growth in time: the longer run holds about 405
+#: MiB from its first second to the input's end, and the shorter one's input
+#: runs out before its frames in flight fill.
+CHAIN_GROWTH_MIB = 250.0
+
+
+def _chain_input(path: Path, rows: int) -> None:
+    """The factor pipeline's columns, one instrument, a row a second:
+    ``x<f>_<j>`` inputs, ``d<f>`` dependents on them with noise, and ``y``
+    a random walk."""
+    rng = np.random.default_rng(3)
+    cols: dict[str, Any] = {}
+    for f in range(3):
+        xs = rng.standard_normal((4, rows))
+        cols |= {f"x{f}_{j}": xs[j] for j in range(4)}
+        cols[f"d{f}"] = rng.normal(0, 1, 4) @ xs + 0.3 * rng.standard_normal(rows)
+    cols["y"] = np.cumsum(rng.normal(0, 0.01, rows))
+    second = pl.Series(np.arange(rows, dtype=np.int64) * 1_000_000_000)
+    pl.DataFrame(
+        {"ts": second.cast(pl.Datetime("ns")), "g": pl.repeat("i0", rows, eager=True), **cols}
+    ).write_parquet(path)
+
+
+@pytest.mark.extended(reason="memory: two child interpreters, up to four million rows each")
+@pytest.mark.serial
+def test_two_fit_predicts_in_series_hold_memory_flat_in_the_streams_length(tmp_path):
+    """Chained through a `with_columns`, the first stage's source runs ahead
+    of the second by as many frames as Polars keeps in flight before a node
+    that runs on every thread, about ten a thread. Handed over as 100,000-row
+    chunks of its output, that was the whole of a four-million-row stream on
+    four threads; in slices of at most a mebibyte it is a few chunks' worth,
+    whatever the stream's length."""
+    peaks = []
+    for rows in CHAIN_ROWS:
+        src = tmp_path / f"chain_{rows}.parquet"
+        _chain_input(src, rows)
+        r = subprocess.run(
+            [sys.executable, "-c", CHAIN_CHILD, str(src)],
+            capture_output=True, text=True, encoding="utf-8",
+            env=child.env(**STREAMED_ENV), timeout=600,
+        )  # fmt: skip
+        assert r.returncode == 0, r.stderr[-3000:]
+        got = json.loads(r.stdout.strip().splitlines()[-1])
+        assert got["rows"] == rows, got
+        assert got["mib"] > 1.0, got
+        peaks.append(got["mib"])
+        src.unlink()
+    assert peaks[1] - peaks[0] < CHAIN_GROWTH_MIB, peaks
 
 
 @pytest.mark.parametrize(

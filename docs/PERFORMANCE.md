@@ -2481,27 +2481,49 @@ residuals = [pl.col(f"fac{f}").struct.field(f"resid_d{f}") for f in range(3)]
 | 1,000,000 | 2.13 µs | 0.26 µs | 0.05 µs | 760 MB | 641 MB | 477 MB |
 | 4,000,000 | 1.97 µs | 0.25 µs | 0.04 µs | 1,769 MB | 1,404 MB | 965 MB |
 
-**Polars holds part of the growth with the rows, and the two stages in
-series hold the rest.** Two settings take Polars' share out: the memory
-allocator told to return the pages it frees at once
+**Polars holds part of the growth with the rows, and until 2026-11-06 the
+two stages in series held the rest.** Two settings take Polars' share
+out: the memory allocator told to return the pages it frees at once
 (`_RJEM_MALLOC_CONF=dirty_decay_ms:0,muzzy_decay_ms:0`), and Polars'
 read-ahead held to one block of the file
 (`POLARS_ROW_GROUP_PREFETCH_SIZE=1`). Under both, the file read and
-written alone holds 124 to 133 MB at every size, and the pipeline 171,
-396 and 1,012 MB. Each stage alone, its output taken a chunk at a time,
-moves by at most 51 MB from 1,000,000 rows to 4,000,000. The growth
-comes from running the two `fit_predict` calls in series in one query:
-422 MB at 1,000,000 rows and 1,294 MB at 4,000,000, about 290 bytes a
-row. Two plain Python sources in series, with no bank in either, grow by
-32 bytes a row under the same settings, so the rest of the 290 has not
-been traced. The same two banks fed by a loop hold 297 MB and 299 MB, and
-give the same output, every field but `coef` and `support_coef` (which a
-call reports on its last row of each group) to the bit:
+written alone holds 124 to 133 MB at every size. The pipeline measured
+above held 438 MB at 1,000,000 rows and 1,379 MB at 4,000,000, about 290
+bytes a row, where the same two banks fed by a loop over the file held
+304 and 311 MB.
+
+The cause was how Polars bounds what it holds from a source: by a number
+of frames, not of bytes. Between a Python source and a node that runs on
+every thread, such as the `with_columns` that takes the residuals out of
+their structs, it keeps up to about ten frames a thread in flight, however
+slowly the next stage consumes them. That is 148 frames on this 14-thread
+machine and 28 under `POLARS_MAX_THREADS=2`, on py-polars 1.37.0 too. The factor
+ridges ran faster than the windowed ridge, and each of their frames was a
+100,000-row chunk of output, 29 MB, so they ran the whole 4,000,000-row
+stream ahead of it. Every source in this library now hands Polars its
+output in slices of at most 1 MiB, the chunk the bank is fed unchanged, so
+the frames in flight are a few chunks' rows. Under both settings the
+pipeline holds 455 MB at 1,000,000 rows and 629 MB at 4,000,000, flat from
+its first second to the end of the input, and its output equals the loop's
+to the bit, every field. A slice costs Polars about 30 µs, which is 3-4% of
+the time of the fastest single bank (an `ewridge` on two features, 0.17 µs
+a row) and within the noise for this pipeline.
+
+**A `with_columns` in front of a slow `fit_predict` makes Polars' own scan
+read ahead.** The limit counts frames from any source, so the parquet scan
+before a computed column runs ahead of the bank that reads it. Under both
+settings the windowed ridge alone over
+`pl.scan_parquet(...).with_columns(...)` held 301 MB at 1,000,000 rows and
+848 MB at 4,000,000. The same bank over the scan alone, computing the
+columns in each chunk, held 272 and 279 MB. This
+library cannot slice a frame Polars' scan makes. A computed column that
+the bank does not need can be added after `fit_predict` instead, and one
+it does need can be computed in a loop over the scan's chunks:
 
 ```python
-factor_bank, stage2_bank = po.ModelBank(factors), po.ModelBank([stage2])
+bank = po.ModelBank([stage2])
 for chunk in pl.scan_parquet("input.parquet").collect_batches(chunk_size=100_000):
-    out = stage2_bank.fit_predict(factor_bank.fit_predict(chunk).with_columns(residuals))
+    out = bank.fit_predict(chunk.with_columns(columns))
     ...  # write out, or keep what you need of it
 ```
 

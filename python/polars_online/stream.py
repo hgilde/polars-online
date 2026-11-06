@@ -58,6 +58,7 @@ from polars_online._frame import (
     ConsumedSourceWarning,
     State,
     _explain_named,
+    _in_morsels,
     _is_python_scan,
     _plan_text,
     _read_state,
@@ -607,7 +608,7 @@ def refresh_time(
             # past them are held, in the state too, for the next feed.
             out = rt.feed(chunk, None if n_rows is None else n_rows - seen)
             seen += out.height
-            yield emit(out)
+            yield from _in_morsels(emit(out))
             if n_rows is not None and seen >= n_rows:
                 break
         else:
@@ -616,7 +617,7 @@ def refresh_time(
             # takes them.
             out = rt.feed(pl.DataFrame(schema=in_schema), None if n_rows is None else n_rows - seen)
             if out.height:
-                yield emit(out)
+                yield from _in_morsels(emit(out))
         # Reached once the input is fed, or the slice is: not on a run the
         # caller abandons, nor one the sampler ended with an error.
         if save_path is not None:
@@ -1074,7 +1075,7 @@ def with_windows(
             read += chunk.height
             out = w.feed(chunk, None if n_rows is None else n_rows - seen)
             seen += out.height
-            yield done(out)
+            yield from _in_morsels(done(out))
             if n_rows is not None and seen >= n_rows:
                 sliced = True
                 break
@@ -1083,7 +1084,7 @@ def with_windows(
             out = w.finish()
             if n_rows is not None:
                 out = out.head(n_rows - seen)
-            yield done(out)
+            yield from _in_morsels(done(out))
         # Reached once the input is fed, or the slice is: not on a run the
         # caller abandons, nor one the windows ended with an error. Under a
         # slice -- asked for, satisfied or not (review R5, C2) -- the state
