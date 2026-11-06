@@ -241,6 +241,20 @@ returns.
 
 ### Performance
 
+- A model under a hard window (`window_size`) holds each snapshot of its
+  running sums in about the bytes `window_budget` counts of it, where it
+  held several times that: an `ewridge` of three features held about
+  2.6 KB a snapshot in a running query against the 376 bytes counted, so
+  the default 256 MiB a ring let one group reach about 1.9 GB; it now holds
+  about 424 bytes. A co-moment matrix is kept as its lower triangle, so a
+  wide snapshot holds less than its count. Over 100 instruments with a
+  two-hour window the query's peak fell from 2.7 GB to 1.8 GB, and with an
+  eight-hour window from 8.5 GB to 4.9 GB. A row under a hard window got
+  faster: `ewridge` and `lasso` by 10-30%, `marginal` by 9-19%. The budget
+  counts as it did, so it thins or refuses at the same row; every output
+  and saved state is unchanged to the bit, and states saved before load as
+  they did. The bank no longer copies every window's ring on every chunk to
+  ask whether a refusing budget could be reached (task 349).
 - The slices of task 348 cost Polars about 30 µs each: the fastest single
   banks (a two-feature `ewridge`) run about 3% slower, and a realistic
   pipeline within noise. Bounded memory when stages are chained is what it
