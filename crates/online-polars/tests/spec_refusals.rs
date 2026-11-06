@@ -834,7 +834,15 @@ fn a_target_table_with_nothing_to_name_is_refused() {
 fn a_refit_row_count_past_the_ceiling_is_refused_by_name() {
     for (model, key) in [
         (r#"{"type": "huber""#, "huber_refit_rows"),
+        (
+            r#"{"type": "huber", "huber_scale": "rms""#,
+            "huber_refit_rows",
+        ),
         (r#"{"type": "sgd", "loss": "huber""#, "huber_refit_rows"),
+        (
+            r#"{"type": "sgd", "loss": "huber", "huber_scale": "rms""#,
+            "huber_refit_rows",
+        ),
         (
             r#"{"type": "quantile", "quantile": 0.5"#,
             "quantile_refit_rows",
@@ -846,6 +854,10 @@ fn a_refit_row_count_past_the_ceiling_is_refused_by_name() {
                 &format!("{key} must be at most 1048576 (2^20)"),
                 "got 1048577",
                 "sizes an allocation",
+                // Each scale's size a row (task 335, F2): the MAD's keeps
+                // each row's residual and its tree node beside the row.
+                "(features + 10) * 8 bytes a row under the MAD scale",
+                "(features + 4) * 8 under the RMS",
             ],
         );
         refused(

@@ -397,8 +397,9 @@ _CEILING = {
 #: Why a count's ceiling is where it is, said after the refusal where the
 #: Rust side says it too (``online_core::MAX_PERM``'s message).
 _REFIT_ROWS_WHY = (
-    "the refit's buffer is held at its full size, (features + 10) * 8 bytes a row, from a "
-    "target's first learned row, so the count sizes an allocation before any row is seen"
+    "the refit's buffer is held at its full size, (features + 10) * 8 bytes a row under the "
+    "MAD scale and (features + 4) * 8 under the RMS, from a target's first learned row, so the "
+    "count sizes an allocation before any row is seen"
 )
 _CEILING_WHY = {
     "n_perm": "the draws are held to take their quantile, and each is a pass over both blocks",
