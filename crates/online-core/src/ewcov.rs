@@ -1346,6 +1346,13 @@ pub struct TargetMoments {
     mean_lo: Vec<f64>,
 }
 
+crate::pack_fields!(TargetMoments {
+    mean,
+    var,
+    q,
+    mean_lo
+});
+
 impl TargetMoments {
     pub fn new(n_targets: usize) -> Self {
         Self {
@@ -1411,6 +1418,21 @@ impl TargetMoments {
             q: self.q.iter().map(|q| q * lam * lam).collect(),
             mean_lo: self.mean_lo.clone(),
         }
+    }
+
+    /// [`Self::decayed`]'s words, as [`crate::Pack`] writes them, straight
+    /// from these: a window's view of its snapshot ([`crate::Offer`]).
+    pub(crate) fn write_decayed(&self, lam: f64, out: &mut crate::Packer) {
+        out.dim(self.mean.len());
+        out.f64s(&self.mean);
+        out.dim(self.var.len());
+        out.f64s(&self.var);
+        out.dim(self.q.len());
+        for q in &self.q {
+            out.f64(q * lam * lam);
+        }
+        out.dim(self.mean_lo.len());
+        out.f64s(&self.mean_lo);
     }
 
     /// What each mean leaves out ([`crate::comp`]), one per target. For a
@@ -1954,6 +1976,12 @@ fn slots<'a>(rest: &mut &'a mut [f64], n: usize) -> &'a mut [f64] {
 }
 
 impl EwCovModel {
+    /// The snapshot the window's ring would take of the model as it
+    /// stands, undecayed: what its shadow sizes the next snapshot by.
+    fn next_snapshot(&self) -> crate::Moments {
+        crate::Moments::of(&self.cov, 1.0)
+    }
+
     pub fn new(cfg: EwCovCfg) -> Result<Self, String> {
         cfg.validate()?;
         let cfg_window = cfg.window;
@@ -2543,8 +2571,14 @@ impl crate::OnlineModel for EwCovModel {
     fn window_shadow(&self) -> Option<crate::WindowShadow> {
         let win = self.win.as_ref()?;
         Some(crate::WindowShadow::new(win.clock, &win.snaps, || {
-            crate::Moments::of(&self.cov, 1.0)
+            self.next_snapshot()
         }))
+    }
+
+    fn window_could_refuse(&self, rows: usize) -> bool {
+        self.win
+            .as_ref()
+            .is_some_and(|win| win.snaps.could_refuse(rows, || self.next_snapshot()))
     }
 
     /// The step, into the caller's buffer (task 270, M-4).
@@ -2617,7 +2651,10 @@ impl crate::OnlineModel for EwCovModel {
             // the rows `offer` keeps, not on every row (review 2026-09-18, P1).
             win.snaps
                 .learn_decayed(&mut win.clock, d_clock, &[lam], || {
-                    crate::Moments::of(&self.cov, lam)
+                    crate::window::MomentsOf {
+                        cov: &self.cov,
+                        lam,
+                    }
                 });
         }
         self.cov.update(x, lam, weight);

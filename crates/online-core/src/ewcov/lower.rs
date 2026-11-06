@@ -195,6 +195,59 @@ impl PartialEq for LowerTriangle {
     }
 }
 
+impl crate::Pack for LowerTriangle {
+    /// The lower triangle alone, row by row, after `k`: what a window's ring
+    /// holds of a snapshot's co-moments, about half the storage. Read back
+    /// into the lower triangle alone, as the accumulator keeps it: the
+    /// strict upper one holds no meaning, zeros or whatever the storage held.
+    /// A storage that is no square, a damaged state's, is written whole.
+    fn pack(&self, out: &mut crate::Packer) {
+        match self.side() {
+            Some(k) => {
+                out.dim(0);
+                out.dim(k);
+                for i in 0..k {
+                    out.f64s(&self.0[i * k..=i * k + i]);
+                }
+            }
+            None => {
+                out.dim(1);
+                out.dim(self.0.len());
+                out.f64s(&self.0);
+            }
+        }
+    }
+
+    fn unpack(from: &mut crate::Unpacker<'_>) -> Self {
+        let mut out = Self(Vec::new());
+        out.unpack_into(from);
+        out
+    }
+
+    fn unpack_into(&mut self, from: &mut crate::Unpacker<'_>) {
+        let whole = from.dim() == 1;
+        let n = from.dim();
+        let v = &mut self.0;
+        if whole {
+            v.clear();
+            v.extend(from.words(n).iter().map(|w| f64::from_bits(*w)));
+            return;
+        }
+        if v.len() != n * n {
+            v.clear();
+            v.resize(n * n, 0.0);
+        }
+        let mut words = from.words(n * (n + 1) / 2);
+        for i in 0..n {
+            let (row, rest) = words.split_at(i + 1);
+            words = rest;
+            for (x, w) in v[i * n..=i * n + i].iter_mut().zip(row) {
+                *x = f64::from_bits(*w);
+            }
+        }
+    }
+}
+
 impl std::fmt::Debug for LowerTriangle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.to_full().fmt(f)

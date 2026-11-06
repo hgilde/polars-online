@@ -335,7 +335,7 @@ fn the_windowed_kish_floor_is_sixty_four_epsilons_of_the_live_sum() {
             let y = 0.7 * x + lcg(&mut s);
             m.step(&[x], &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
         }
-        for snap in m.win.as_mut().unwrap().snaps.iter_mut() {
+        for snap in m.win.as_mut().unwrap().snaps.edit().iter_mut() {
             snap.qt[0] = 2.0 - left;
         }
         m.qt[0] = 2.0;
@@ -4556,7 +4556,12 @@ fn each_part_of_a_state_is_checked_alone() {
     let lagged = run(c);
     let snapshot = |m: &mut Marginal| {
         let win = m.win.as_mut().unwrap();
-        win.snaps.iter_mut().next().expect("a snapshot").clone()
+        win.snaps
+            .edit()
+            .iter_mut()
+            .next()
+            .expect("a snapshot")
+            .clone()
     };
     assert!(snapshot(&mut windowed.clone()).sxy.len() == 6);
     let restored = |m: &Marginal, f: &dyn Fn(&mut Marginal)| {
@@ -4572,8 +4577,15 @@ fn each_part_of_a_state_is_checked_alone() {
         state_bytes(&windowed)
     );
     assert!(restored(&lagged, &|_| {}).is_ok());
-    fn first(m: &mut Marginal) -> &mut MarginalMoments {
-        m.win.as_mut().unwrap().snaps.iter_mut().next().unwrap()
+    fn first(m: &mut Marginal, f: impl FnOnce(&mut MarginalMoments)) {
+        f(m.win
+            .as_mut()
+            .unwrap()
+            .snaps
+            .edit()
+            .iter_mut()
+            .next()
+            .unwrap());
     }
     // A threshold short a target is the cfg's own refusal, by name, since
     // every `restore` runs the cfg's check (review 2026-10-06, CF4).
@@ -4594,13 +4606,19 @@ fn each_part_of_a_state_is_checked_alone() {
             m.cfg.bins = Some(bins_cfg(3, 50))
         }),
         ("a snapshot short a weight", &windowed, &|m| {
-            first(m).wt.pop();
+            first(m, |s| {
+                s.wt.pop();
+            });
         }),
         ("a snapshot short a mean", &windowed, &|m| {
-            first(m).mx.pop();
+            first(m, |s| {
+                s.mx.pop();
+            });
         }),
         ("a snapshot short a covariance", &windowed, &|m| {
-            first(m).sxy.pop();
+            first(m, |s| {
+                s.sxy.pop();
+            });
         }),
         ("a window the cfg does not have", &windowed, &|m| {
             m.cfg.window = None;

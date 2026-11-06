@@ -615,6 +615,96 @@ pub(crate) struct GramsSnap {
     of: Vec<usize>,
 }
 
+crate::pack_fields!(GramsSnap { grams, of });
+
+/// [`Acc::snapshot`] as a view: the words an [`AccSnap`] of it writes,
+/// written straight from the accumulators ([`crate::Offer`]), for a model
+/// whose snapshot holds one.
+#[derive(Clone, Copy)]
+pub(crate) struct AccSnapOf<'a> {
+    pub(crate) acc: &'a Acc,
+    pub(crate) lam: f64,
+}
+
+impl AccSnapOf<'_> {
+    /// The bytes the budget counts of the [`AccSnap`] this forms.
+    pub(crate) fn bytes(&self) -> usize {
+        let (acc, f) = (self.acc, crate::window::floats);
+        let c = &acc.cross;
+        let grams = acc
+            .grams
+            .grams
+            .iter()
+            .map(|g| crate::Offer::<Moments>::bytes(&crate::window::MomentsOf { cov: g, lam: 1.0 }))
+            .sum::<usize>()
+            + std::mem::size_of_val(acc.grams.of.as_slice());
+        // The cross accumulator as the snapshot holds it, its low parts
+        // left out ([`Acc::snapshot`]).
+        let cross = std::mem::size_of::<f64>()
+            + std::mem::size_of::<u64>()
+            + std::mem::size_of_val(c.nj.as_slice())
+            + f(&c.m)
+            + f(&c.my)
+            + c.mj.iter().chain(&c.c).map(|v| f(v)).sum::<usize>();
+        let tm = &acc.tm;
+        grams + f(&acc.wj) + cross + f(tm.means()) + f(tm.vars()) + f(tm.q()) + f(tm.means_lo())
+    }
+
+    /// The words [`crate::Pack`] writes of the [`AccSnap`] this forms.
+    pub(crate) fn write(&self, out: &mut crate::Packer) {
+        use crate::Pack;
+        let (acc, lam) = (self.acc, self.lam);
+        // `AccSnap`: `grams` (`GramsSnap`: `grams`, `of`), `wj`, `cross`, `tm`.
+        out.dim(acc.grams.grams.len());
+        for g in &acc.grams.grams {
+            crate::Offer::<Moments>::write(&crate::window::MomentsOf { cov: g, lam }, out);
+        }
+        acc.grams.of.pack(out);
+        out.dim(acc.wj.len());
+        for w in &acc.wj {
+            out.f64(w * lam);
+        }
+        // `Cross`: `w`, `m`, `mj`, `my`, `c`, `m_lo`, `my_lo`, `mj_lo`,
+        // `nj`, `n`, the low parts empty.
+        let c = &acc.cross;
+        (c.w * lam).pack(out);
+        c.m.pack(out);
+        c.mj.pack(out);
+        c.my.pack(out);
+        c.c.pack(out);
+        for _ in 0..3 {
+            out.dim(0);
+        }
+        c.nj.pack(out);
+        c.n.pack(out);
+        out.dim(1);
+        acc.tm.write_decayed(lam, out);
+    }
+
+    /// The snapshot itself.
+    pub(crate) fn owned(&self) -> AccSnap {
+        self.acc.snapshot(self.lam)
+    }
+}
+crate::pack_fields!(Cross {
+    w,
+    m,
+    mj,
+    my,
+    c,
+    m_lo,
+    my_lo,
+    mj_lo,
+    nj,
+    n
+});
+crate::pack_fields!(AccSnap {
+    grams,
+    wj,
+    cross,
+    tm
+});
+
 impl crate::Footprint for GramsSnap {
     fn footprint(&self) -> usize {
         self.grams

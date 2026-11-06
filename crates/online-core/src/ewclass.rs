@@ -354,6 +354,56 @@ impl ClassMoments {
     }
 }
 
+crate::pack_fields!(ClassMoments {
+    n_eff,
+    classes,
+    diag_classes
+});
+
+/// [`ClassMoments::of`] as a view: its words, written straight from the
+/// classes' accumulators ([`crate::Offer`]).
+#[derive(Clone, Copy)]
+struct ClassesOf<'a> {
+    n_eff: f64,
+    classes: &'a [EwCov],
+    diag: &'a [EwCovDiag],
+    lam: f64,
+}
+
+impl crate::Offer<ClassMoments> for ClassesOf<'_> {
+    fn bytes(&self) -> usize {
+        let lam = self.lam;
+        std::mem::size_of::<f64>()
+            + self
+                .classes
+                .iter()
+                .map(|cov| crate::window::MomentsOf { cov, lam }.bytes())
+                .sum::<usize>()
+            + self
+                .diag
+                .iter()
+                .map(|cov| crate::window::DiagMomentsOf { cov, lam }.bytes())
+                .sum::<usize>()
+    }
+
+    fn write(&self, out: &mut crate::Packer) {
+        let lam = self.lam;
+        out.f64(self.n_eff);
+        out.dim(self.classes.len());
+        for cov in self.classes {
+            crate::window::MomentsOf { cov, lam }.write(out);
+        }
+        out.dim(self.diag.len());
+        for cov in self.diag {
+            crate::window::DiagMomentsOf { cov, lam }.write(out);
+        }
+    }
+
+    fn into_snapshot(self) -> ClassMoments {
+        ClassMoments::of(self.n_eff, self.classes, self.diag, self.lam)
+    }
+}
+
 impl crate::Footprint for ClassMoments {
     fn footprint(&self) -> usize {
         std::mem::size_of::<f64>()
@@ -379,6 +429,12 @@ struct View {
 }
 
 impl EwClass {
+    /// The snapshot the window's ring would take of the model as it
+    /// stands, undecayed: what its shadow sizes the next snapshot by.
+    fn next_snapshot(&self) -> ClassMoments {
+        ClassMoments::of(self.n_eff, &self.classes, &self.diag_classes, 1.0)
+    }
+
     pub fn new(cfg: EwClassCfg) -> Result<Self, String> {
         cfg.validate()?;
         // Runs are a window's (docs/PLAN.md task 128).
@@ -796,8 +852,14 @@ impl OnlineModel for EwClass {
     fn window_shadow(&self) -> Option<crate::WindowShadow> {
         let win = self.win.as_ref()?;
         Some(crate::WindowShadow::new(win.clock, &win.snaps, || {
-            ClassMoments::of(self.n_eff, &self.classes, &self.diag_classes, 1.0)
+            self.next_snapshot()
         }))
+    }
+
+    fn window_could_refuse(&self, rows: usize) -> bool {
+        self.win
+            .as_ref()
+            .is_some_and(|win| win.snaps.could_refuse(rows, || self.next_snapshot()))
     }
 
     fn step_into(
@@ -844,8 +906,11 @@ impl OnlineModel for EwClass {
             // formed on the rows `offer` keeps, not on every row (review
             // 2026-09-18, P1).
             win.snaps
-                .learn_decayed(&mut win.clock, d_clock, &[lam], || {
-                    ClassMoments::of(self.n_eff * lam, &self.classes, &self.diag_classes, lam)
+                .learn_decayed(&mut win.clock, d_clock, &[lam], || ClassesOf {
+                    n_eff: self.n_eff * lam,
+                    classes: &self.classes,
+                    diag: &self.diag_classes,
+                    lam,
                 });
             // A window's truncated covariance moves every row, because the
             // decay carried to the boundary does, so no cached factor
@@ -913,7 +978,7 @@ impl OnlineModel for EwClass {
                         m.classes.clear();
                     }
                     if let Some(win) = m.win.as_mut() {
-                        for snap in win.snaps.iter_mut() {
+                        for snap in win.snaps.edit().iter_mut() {
                             if snap.diag_classes.is_empty() {
                                 snap.diag_classes = snap
                                     .classes
@@ -961,7 +1026,7 @@ impl OnlineModel for EwClass {
                         && s.n_eff >= 0.0
                 };
                 if let Some(win) = &m.win
-                    && !win.snaps.iter().all(snap)
+                    && !win.snaps.iter().all(|s| snap(&s))
                 {
                     return Err(StateError::Invalid(
                         "ew_class: the window's snapshots have the wrong shape".into(),
@@ -1075,7 +1140,14 @@ mod tests {
             let ModelState::EwClass(inner) = &mut state.model else {
                 unreachable!()
             };
-            inner.win.as_mut().unwrap().snaps.iter_mut().for_each(f);
+            inner
+                .win
+                .as_mut()
+                .unwrap()
+                .snaps
+                .edit()
+                .iter_mut()
+                .for_each(f);
             match EwClass::restore(&state) {
                 Err(StateError::Invalid(e)) => {
                     assert!(
@@ -1346,7 +1418,7 @@ mod tests {
         let as_65 = |e: &mut EwClass| {
             e.diag_classes.clear();
             e.classes = whole.clone();
-            for s in e.win.as_mut().unwrap().snaps.iter_mut() {
+            for s in e.win.as_mut().unwrap().snaps.edit().iter_mut() {
                 s.diag_classes.clear();
                 s.classes = vec![snap.clone(); 2];
             }
@@ -1379,8 +1451,8 @@ mod tests {
                 e.classes[1] = pending.clone();
             }),
             (66, &|e| {
-                let snap = e.win.as_mut().unwrap().snaps.iter_mut().nth(1).unwrap();
-                snap.diag_classes[0].v.pop();
+                let mut snaps = e.win.as_mut().unwrap().snaps.edit();
+                snaps.iter_mut().nth(1).unwrap().diag_classes[0].v.pop();
             }),
         ];
         for (i, (schema, edit)) in refused.into_iter().enumerate() {

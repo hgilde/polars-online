@@ -459,7 +459,9 @@ size it varies, its two sizes, the growth declared for a row's work and for
 the state in that size (written in `n`, the size), the reason, and the four
 native ratios from large to small as measured on 2026-11-05 (a debug build,
 `cargo test -p online-bench --test scaling -- --include-ignored` with
-`SCALING_REPORT=1`, which prints them). A row's time and allocations are per
+`SCALING_REPORT=1`, which prints them). The two `.window` cells were
+measured again on 2026-11-06, once a window's snapshots were laid out flat
+(§16). A row's time and allocations are per
 row; the saved state and the heap are the state's. `(CI)` marks the 23 cells
 Callgrind also counts. A cell whose ratio reads below 1 got cheaper at the
 larger size: a fixed cost shared by more rows, or a block that held its
@@ -472,7 +474,7 @@ largest buffer at the smaller.
 | `ewridge.targets` | targets T | 1 → 8 | O(n) | O(n) | each target keeps its cross-moments with the features (k a target) and its own solve | 1.67 · 1.37 · 3.01 · 1.55 |
 | `ewridge.ridge_grid` | ridge values G, a solve every row | 1 → 8 | O(n) | O(n) | one solve and one coefficient vector per value, from one set of sums | 7.97 · 6.72 · 1.72 · 2.24 |
 | `ewridge.feature_sets` | feature sets S, a solve every row | 1 → 8 | O(n) | O(n) | one solve and one coefficient vector per set, from one set of sums | 7.70 · 6.77 · 1.73 · 2.32 |
-| `ewridge.window` | window W clock units | 500 → 4,000 | O(1) | O(n) | a row adds a snapshot and subtracts the one leaving; the window keeps a snapshot a row | 0.60 · 0.79 · 8.23 · 8.03 |
+| `ewridge.window` | window W clock units | 500 → 4,000 | O(1) | O(n) | a row adds a snapshot and subtracts the one leaving; the window keeps a snapshot a row | 0.71 · 0.83 · 8.23 · 7.95 |
 | `ewridge.gram_block` | Gram block B rows | 8 → 64 | O(1) | O(n) | the block's rows are merged once a block, the same work a row; the block holds B rows | 0.51 · 0.18 · 2.53 · 1.60 |
 | `ewridge.history` (CI) | rows already seen | 1,000 → 8,000 | O(1) | O(1) | sufficient statistics: nothing grows with the stream | 0.99 · 0.85 · 1.00 · 1.00 |
 | `rls.k` | features k | 4 → 32 | O(n^2) | O(n^2) | the inverse's rank-one update, k² | 9.33 · 1.00 · 26.27 · 6.39 |
@@ -505,7 +507,7 @@ largest buffer at the smaller.
 | `holt.history` | rows already seen | 1,000 → 8,000 | O(1) | O(1) | level and trend only | 0.99 · 1.00 · 1.00 · 1.00 |
 | `ew_cov.k` (CI) | columns k | 4 → 32 | O(n^2) | O(n^2) | the co-moments' rank-one update, k² | 14.98 · 1.00 · 27.25 · 6.03 |
 | `ew_cov.lags` | lags L | 1 → 8 | O(n) | O(n) | a lagged co-moment block a lag | 2.51 · 1.00 · 3.33 · 1.49 |
-| `ew_cov.window` (CI) | window W clock units | 500 → 4,000 | O(1) | O(n) | a snapshot added and one subtracted a row; a snapshot a row held | 1.01 · 1.00 · 8.23 · 7.98 |
+| `ew_cov.window` (CI) | window W clock units | 500 → 4,000 | O(1) | O(n) | a snapshot added and one subtracted a row; a snapshot a row held | 1.00 · 1.00 · 8.23 · 7.86 |
 | `ew_cov.history` | rows already seen | 1,000 → 8,000 | O(1) | O(1) | moments only | 1.00 · 1.00 · 1.00 · 1.00 |
 | `marginal.k` (CI) | features p | 4 → 32 | O(n) | O(n) | each feature's pair with the target, p | 2.63 · 1.00 · 4.59 · 1.40 |
 | `marginal.targets` | targets T | 1 → 8 | O(n) | O(n) | p pairs a target | 6.14 · 1.00 · 6.67 · 1.92 |
@@ -2434,12 +2436,17 @@ script changed, none of them on a row's path. A load average of 4.8 to
 time is the best of three. Memory is the peak physical footprint, the
 most the process held at once as macOS counts it; the peak RSS reads 40
 to 70 MB more. `scripts/factor_residuals_bench.py` makes the data and
-runs every case.*
+runs every case. Every table below was measured again on 2026-11-06,
+after a window's snapshots were laid out flat (§16). A release wheel of
+that change ran each case beside one of `135da9d2`, the build before it,
+at a load average of 3 to 29, most of it the benchmark's own threads.
+The text names the figures of the build before.*
 
 **The second stage's flat window sets both the time and the memory.** Each
 group's window keeps a snapshot of the running sums for every row it
-covers, and a snapshot takes about 2.7 KB while the run holds it. Two
-hours at one row a second is 7,200 snapshots, 19 MB a group.
+covers, and each one adds about 1.3 KB to the run's peak, half of it the
+saved state the query writes at its end. Two hours at one row a second is
+7,200 snapshots, about 9 MB a group.
 
 The pipeline fits three factor ridges, each on its own dependent and four
 inputs. Each one's out-of-sample residual, the dependent less a
@@ -2477,9 +2484,12 @@ residuals = [pl.col(f"fac{f}").struct.field(f"resid_d{f}") for f in range(3)]
 
 | rows | a row, the pipeline | a row, the factor ridges alone | a row, the file read and written alone | peak, the pipeline | peak, the factor ridges | peak, the file alone |
 |---:|---:|---:|---:|---:|---:|---:|
-| 250,000 | 2.24 µs | 0.32 µs | 0.11 µs | 336 MB | 277 MB | 212 MB |
-| 1,000,000 | 2.13 µs | 0.26 µs | 0.05 µs | 760 MB | 641 MB | 477 MB |
-| 4,000,000 | 1.97 µs | 0.25 µs | 0.04 µs | 1,769 MB | 1,404 MB | 965 MB |
+| 250,000 | 2.08 µs | 0.34 µs | 0.11 µs | 380 MB | 269 MB | 196 MB |
+| 1,000,000 | 1.83 µs | 0.29 µs | 0.05 µs | 733 MB | 526 MB | 483 MB |
+| 4,000,000 | 1.78 µs | 0.27 µs | 0.04 µs | 1,414 MB | 1,247 MB | 944 MB |
+
+The build before ran the pipeline at 2.30, 2.01 and 1.97 µs a row, to
+peaks of 382, 855 and 1,586 MB.
 
 **Polars holds part of the growth with the rows, and until 2026-11-06 the
 two stages in series held the rest.** Two settings take Polars' share
@@ -2532,60 +2542,69 @@ and 1,000 instruments, the two-hour window.
 
 | instruments | rows each | snapshots held at the end | a row | peak | the second stage's saved state |
 |---:|---:|---:|---:|---:|---:|
-| 1 | 4,000,000 | 7,200 | 1.97 µs | 1,769 MB | 4.3 MB |
-| 100 | 40,000 | 720,000 | 1.06 µs | 3,110 MB | 423 MB |
-| 1,000 | 4,000 | 4,000,000 | 3.41 µs | 12,717 MB | 2,295 MB |
+| 1 | 4,000,000 | 7,200 | 1.78 µs | 1,414 MB | 4.3 MB |
+| 100 | 40,000 | 720,000 | 0.88 µs | 1,870 MB | 423 MB |
+| 1,000 | 4,000 | 4,000,000 | 2.80 µs | 7,613 MB | 2,295 MB |
 
-The file read and written alone holds 943 to 965 MB at all three. A
+The file read and written alone holds 933 to 944 MB at all three. A
 hundred instruments run faster a row than one, since the bank's threads
 take the groups in parallel. A thousand instruments of 4,000 rows each, 67
-minutes, keep every row in their windows: 4,000,000 snapshots, about 11
-GB.
-At that size a row's time is the memory's, not the models'.
+minutes, keep every row in their windows: 4,000,000 snapshots. Their peak
+was 12,196 MB in the build before, at 3.30 µs a row, and a hundred
+instruments' 2,719 MB at 1.03 µs. At that size a row's time is the
+memory's, not the models'.
 
-**In the window's length, the memory grows by 2.7 KB a snapshot:** 100
+**In the window's length, the memory grows by 1.3 KB a snapshot:** 100
 instruments of ten hours each, 3,600,000 rows, so every window is full.
 
 | window | snapshots held | a row | peak | peak, the allocator returning pages | the second stage's saved state |
 |---|---:|---:|---:|---:|---:|
-| 30 minutes | 180,000 | 0.85 µs | 1,864 MB | 1,190 MB | 112 MB |
-| 2 hours | 720,000 | 1.06 µs | 3,072 MB | 2,507 MB | 423 MB |
-| 8 hours | 2,880,000 | 1.89 µs | 8,999 MB | 8,383 MB | 1,670 MB |
-| 2 hours, `snapshot_every="10s"` | 72,000 | 0.76 µs | 1,670 MB | 1,079 MB | 49.6 MB |
-| 2 hours, `snapshot_every="60s"` | 12,000 | 0.73 µs | 1,676 MB | 1,008 MB | 14.9 MB |
+| 30 minutes | 180,000 | 0.84 µs | 1,437 MB | 967 MB | 112 MB |
+| 2 hours | 720,000 | 0.93 µs | 1,791 MB | 1,256 MB | 423 MB |
+| 8 hours | 2,880,000 | 1.34 µs | 4,924 MB | 4,194 MB | 1,670 MB |
+| 2 hours, `snapshot_every="10s"` | 72,000 | 0.72 µs | 1,377 MB | 874 MB | 49.6 MB |
+| 2 hours, `snapshot_every="60s"` | 12,000 | 0.70 µs | 1,372 MB | 859 MB | 14.9 MB |
 
-From 30 minutes to 8 hours the peak grows by 2,643 bytes for each snapshot
-added, and by 2,664 with the allocator returning its pages. The saved
-state grows by 577 bytes a snapshot. So at one row a second a group's
-window holds 4.8 MB for 30 minutes, 19 MB for two hours and 77 MB for
-eight. A row's time grows with the window too, since every snapshot is
-allocated and freed in the heap the windows fill.
+From 30 minutes to 8 hours the peak grows by 1,291 bytes for each snapshot
+added, and by 1,195 with the allocator returning its pages. The build
+before grew by 2,588 and 2,590, to 8,515 and 8,032 MB at 8 hours, at
+0.94, 1.07 and 1.92 µs a row. The saved state grows by 577 bytes a
+snapshot, and the query writes it whole at its end, so that write is a
+large part of the slope. Without saving the state, the allocator
+returning its pages, the peak at 8 hours was 1,524 MB, against 3,422 MB
+before. By the allocator's count (§16) the ring holds about 424 bytes a
+snapshot of this spec, so at one row a second a group's window holds
+about 0.8 MB for 30 minutes, 3 MB for two hours and 12 MB for eight. A
+row's time still grows with the window, but less than it did.
 
-**`window_budget` counts 376 of a snapshot's 2.7 KB.** The budget counts
-the numbers a snapshot holds: the Gram's lower triangle, the
-cross-moments and the target's moments. The rest is the snapshot's own
-424 bytes in the ring, its 18 vectors, each allocated on its own, and the
-ring's spare room. So the default bound of 256 MiB for each ring lets a
-group of this spec reach about 1.9 GB before it refuses.
+**`window_budget` counts about what a snapshot holds.** The budget counts
+the numbers a snapshot holds, 376 bytes here: the Gram, the
+cross-moments and the target's moments. The ring holds 424 for it: the
+numbers, the Gram's lower triangle alone, its place in the window and its
+share of the blocks' spare room. So the default bound of 256 MiB for each
+ring lets a group of this spec hold about 290 MB before it refuses. Before
+the snapshots were laid out flat, each one took 2.7 KB in a running query
+and the same bound let a group reach about 1.9 GB.
 
 **`snapshot_every` divides the memory and the time.** A snapshot every
 10 seconds keeps a tenth of them and loses at most 10 seconds of the
 window's two hours, since the window then covers between 1 h 59 min 50 s
-and 2 h. It cut the windows' memory tenfold and a row from 1.06 µs to
-0.76. At 60 seconds the windows hold 12,000 snapshots, about 32 MB, and
+and 2 h. It cut the windows' memory tenfold and a row from 0.93 µs to
+0.72. At 60 seconds the windows hold 12,000 snapshots, about 5 MB, and
 the rest of the query sets the peak.
 
 **Where a row's time goes**, at 1,000,000 rows of one instrument:
 
 | run | a row |
 |---|---:|
-| the pipeline | 2.13 µs |
-| the second stage decaying at a two-hour half-life, with no window | 0.81 µs |
-| the second stage with `y` as its target, with no forward window or embargo | 1.72 µs |
+| the pipeline | 1.79 µs |
+| the second stage decaying at a two-hour half-life, with no window | 0.64 µs |
+| the second stage with `y` as its target, with no forward window or embargo | 1.34 µs |
 | the factor ridges alone | 0.26 µs |
 
-The window costs about 1.3 µs a row, the forward target and its embargo
-0.4, and the three factor ridges 0.26 between them.
+The window costs about 1.15 µs a row, the forward target and its embargo
+0.45, and the three factor ridges 0.26 between them. The build before
+ran the pipeline at 2.00 µs and the plain target at 1.55.
 
 **This pipeline is not a cell of the scaling table**
 ([How cost grows with size](#how-cost-grows-with-size)). Each size it
@@ -4503,6 +4522,42 @@ is `O(state)`. The settings that bound it:
 
 The refusal dates from 2026-09-12: at `k = 1000` over a 3,600-row window, the ring was about 29 GB per
 instance, and nothing checked.
+
+**A hard window now holds about what its budget counts** (since
+2026-11-06). The budget counts the numbers each snapshot holds, eight
+bytes a number. The ring keeps its oldest snapshot, the one a row
+subtracts, as the model's own struct. Every later one is written as its
+numbers alone, one after another in a few large blocks, beside its place
+in the window: its clock, its stamp and its running product, about six
+numbers. A co-moment matrix is written as its lower triangle, the only
+half a reader reads, though the budget counts the whole of it. Each
+snapshot was once a struct of vectors, each allocated on its own, and it
+took several times its count. Measured by counting the bytes asked of the
+allocator (`crates/online-bench/tests/window_memory.rs`, with
+`WINDOW_MEMORY_REPORT=1`), a ring of 3,000:
+
+| model | counted | held before | held now |
+|---|---:|---:|---:|
+| `ewridge`, 3 features, 1 target | 376 B | 1,207 B | 424 B |
+| `ewridge`, 30 features, 3 targets | 9,952 B | 10,846 B | 6,591 B |
+| `lasso`, 3 features, 1 target | 392 B | 1,211 B | 421 B |
+| `marginal`, 3 features, 1 target | 120 B | 701 B | 165 B |
+| `marginal`, 30 features, 3 targets | 2,288 B | 2,869 B | 2,446 B |
+| `ew_cov`, 4 features | 184 B | 400 B | 181 B |
+| `ew_cov`, 30 features | 7,464 B | 7,680 B | 4,227 B |
+| `ew_class`, 3 features, `"full"` | 368 B | 749 B | 355 B |
+| `ew_class`, 3 features, `"diag"` | 224 B | 605 B | 278 B |
+| `ew_class`, 20 features, `"full"` | 10,160 B | 10,546 B | 5,929 B |
+
+These are the bytes asked of the allocator. A process holds more where
+it rounds each small vector up to a size class, which the old layout
+paid on every vector it kept: §47 measured 2.6 KB each in a running
+query, against 376 counted. The model now writes its numbers into the
+ring straight from its running sums, with no vector allocated. Under a
+hard window a row of `ewridge` or `lasso` got faster by 10 to 30%, and of
+`marginal` by 9 to 19%, while `ew_cov` and `ew_class` moved within 3%.
+Each was timed over 200,000 rows through `ModelBank.fit_predict`, a
+window of 2,000 rows, best of 7, on release wheels of the two layouts.
 
 ### 17. What `marginal`'s two views cost, and two costs that were not theirs (2026-09-07)
 

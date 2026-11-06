@@ -481,6 +481,90 @@ struct MarginalMoments {
     lag: Option<crate::LagMoments>,
 }
 
+/// The window's snapshot, decayed by `lam`, as a view that writes its words
+/// straight from the model's accumulators ([`crate::Offer`]): the fields
+/// [`MarginalMoments`] holds, in its order, before they are decayed.
+#[derive(Clone)]
+struct MarginalOf<'a> {
+    w_sum: f64,
+    wt: &'a [f64],
+    qt: &'a [f64],
+    /// `my`, `syy`, `mx`, `sxx` and `sxy`.
+    kept: [&'a [f64]; 5],
+    rows: &'a [u64],
+    lag: Option<crate::LagMoments>,
+    lam: f64,
+}
+
+impl crate::Offer<MarginalMoments> for MarginalOf<'_> {
+    fn bytes(&self) -> usize {
+        std::mem::size_of::<f64>()
+            + crate::window::floats(self.wt)
+            + crate::window::floats(self.qt)
+            + self
+                .kept
+                .iter()
+                .map(|v| crate::window::floats(v))
+                .sum::<usize>()
+            + std::mem::size_of_val(self.rows)
+            + self.lag.as_ref().map_or(0, crate::Footprint::footprint)
+    }
+
+    fn write(&self, out: &mut crate::Packer) {
+        use crate::Pack;
+        let lam = self.lam;
+        (self.w_sum * lam).pack(out);
+        out.dim(self.wt.len());
+        for w in self.wt {
+            out.f64(w * lam);
+        }
+        out.dim(self.qt.len());
+        for q in self.qt {
+            out.f64(q * lam * lam);
+        }
+        for v in self.kept {
+            out.dim(v.len());
+            out.f64s(v);
+        }
+        out.dim(1);
+        out.dim(self.rows.len());
+        for &n in self.rows {
+            out.word(n);
+        }
+        self.lag.pack(out);
+    }
+
+    fn into_snapshot(self) -> MarginalMoments {
+        let lam = self.lam;
+        let [my, syy, mx, sxx, sxy] = self.kept.map(<[f64]>::to_vec);
+        MarginalMoments {
+            w_sum: self.w_sum * lam,
+            wt: self.wt.iter().map(|w| w * lam).collect(),
+            qt: self.qt.iter().map(|q| q * lam * lam).collect(),
+            my,
+            syy,
+            mx,
+            sxx,
+            sxy,
+            rows: Some(self.rows.to_vec()),
+            lag: self.lag,
+        }
+    }
+}
+
+crate::pack_fields!(MarginalMoments {
+    w_sum,
+    wt,
+    qt,
+    my,
+    syy,
+    mx,
+    sxx,
+    sxy,
+    rows,
+    lag
+});
+
 impl crate::Footprint for MarginalMoments {
     /// Every vector the snapshot holds, the per-target row counts included
     /// (docs/PLAN.md task 130).
@@ -854,6 +938,23 @@ impl Binned {
 }
 
 impl Marginal {
+    /// The snapshot the window's ring would take of the model as it
+    /// stands, undecayed: what its shadow sizes the next snapshot by.
+    fn next_snapshot(&self) -> MarginalMoments {
+        MarginalMoments {
+            w_sum: self.w_sum,
+            wt: self.wt.clone(),
+            qt: self.qt.clone(),
+            my: self.my.clone(),
+            syy: self.syy.clone(),
+            mx: self.mx.clone(),
+            sxx: self.sxx.clone(),
+            sxy: self.sxy.clone(),
+            rows: Some(self.rows_t.clone()),
+            lag: self.lag.as_ref().map(|l| l.moments()),
+        }
+    }
+
     pub fn new(cfg: MarginalCfg) -> Result<Self, String> {
         cfg.validate()?;
         let (p, t) = (cfg.n_features, cfg.n_targets);
@@ -1618,17 +1719,14 @@ impl Marginal {
             // Built inside the closure so the snapshot is only formed on the
             // rows `offer` keeps, not on every row (review 2026-09-18, P1).
             win.snaps
-                .learn_decayed(&mut win.clock, d_clock, &[lam], || MarginalMoments {
-                    w_sum: self.w_sum * lam,
-                    wt: self.wt.iter().map(|w| w * lam).collect(),
-                    qt: self.qt.iter().map(|q| q * lam * lam).collect(),
-                    my: self.my.clone(),
-                    syy: self.syy.clone(),
-                    mx: self.mx.clone(),
-                    sxx: self.sxx.clone(),
-                    sxy: self.sxy.clone(),
-                    rows: Some(self.rows_t.clone()),
+                .learn_decayed(&mut win.clock, d_clock, &[lam], || MarginalOf {
+                    w_sum: self.w_sum,
+                    wt: &self.wt,
+                    qt: &self.qt,
+                    kept: [&self.my, &self.syy, &self.mx, &self.sxx, &self.sxy],
+                    rows: &self.rows_t,
                     lag: self.lag.as_ref().map(|l| l.moments()),
+                    lam,
                 });
         }
     }
@@ -2745,19 +2843,14 @@ impl OnlineModel for Marginal {
     fn window_shadow(&self) -> Option<crate::WindowShadow> {
         let win = self.win.as_ref()?;
         Some(crate::WindowShadow::new(win.clock, &win.snaps, || {
-            MarginalMoments {
-                w_sum: self.w_sum,
-                wt: self.wt.clone(),
-                qt: self.qt.clone(),
-                my: self.my.clone(),
-                syy: self.syy.clone(),
-                mx: self.mx.clone(),
-                sxx: self.sxx.clone(),
-                sxy: self.sxy.clone(),
-                rows: Some(self.rows_t.clone()),
-                lag: self.lag.as_ref().map(|l| l.moments()),
-            }
+            self.next_snapshot()
         }))
+    }
+
+    fn window_could_refuse(&self, rows: usize) -> bool {
+        self.win
+            .as_ref()
+            .is_some_and(|win| win.snaps.could_refuse(rows, || self.next_snapshot()))
     }
 
     fn step_into(
