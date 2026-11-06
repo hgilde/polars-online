@@ -179,14 +179,14 @@ def test_the_spec_halflife_alone_is_enough(tmp_path):
 
 
 def test_a_holt_spec_still_needs_one_of_them():
-    with pytest.raises(ValueError, match="one of half_life/lam is required"):
+    with pytest.raises(ValueError, match="this model needs a half_life, and none is given"):
         po.spec.holt("m", targets=["y0"], trend_half_life=100.0)
     with pytest.raises(ValueError, match="half_life must be > 0"):
         po.spec.holt("m", targets=["y0"], half_life=-1.0)
 
 
 def test_other_models_do_not_get_the_exemption():
-    with pytest.raises(ValueError, match="one of half_life/lam is required"):
+    with pytest.raises(ValueError, match="this model needs a half_life, and none is given"):
         po.spec.kalman("m", targets=["y0"], features=["x0"], coef_half_life=50.0)
 
 

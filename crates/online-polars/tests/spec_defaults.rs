@@ -344,6 +344,34 @@ fn a_spec_the_bank_refuses_resolves_to_its_refusal() {
     )
     .unwrap();
     let err = online_polars::resolved_defaults(&spec).unwrap_err();
-    assert!(err.contains("one of half_life/lam is required"), "{err}");
-    assert!(err.contains("half_life = inf for no decay"), "{err}");
+    assert_eq!(
+        err,
+        "spec \"m\": this model needs a half_life, and none is given. Set half_life to a value \
+         in clock units, or to \"inf\" (in Python, float(\"inf\")) for no decay."
+    );
+}
+
+/// A window with no half-life names the flat window, the usual intent: a
+/// `half_life` of "inf" weighs every row in the window alike.
+#[test]
+fn a_window_with_no_half_life_is_told_to_use_inf_for_a_flat_window() {
+    let spec: Spec = toml::from_str(
+        "name = \"w\"\ntargets = [\"y\"]\nfeatures = [\"x0\"]\n[model]\ntype = \"ewridge\"\n\
+         window_size = 100.0\n",
+    )
+    .unwrap();
+    let err = online_polars::resolved_defaults(&spec).unwrap_err();
+    assert_eq!(
+        err,
+        "spec \"w\": a window_size needs a half_life too, and none is given. Set half_life to \
+         \"inf\" (in Python, float(\"inf\")) to weigh every row in the window alike, or to a \
+         finite value to decay the older rows within it."
+    );
+    // The flat window it names is accepted, written as TOML writes it.
+    let flat: Spec = toml::from_str(
+        "name = \"w\"\ntargets = [\"y\"]\nfeatures = [\"x0\"]\nhalf_life = \"inf\"\n\
+         [model]\ntype = \"ewridge\"\nwindow_size = 100.0\n",
+    )
+    .unwrap();
+    online_polars::resolved_defaults(&flat).unwrap();
 }

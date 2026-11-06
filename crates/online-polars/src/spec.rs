@@ -2277,8 +2277,19 @@ impl Spec {
                 | ModelKind::Audit { .. } => {
                     Ok(vec![(String::new(), Decay::Halflife(f64::INFINITY))])
                 }
+                // A window with no half-life is the common case of a flat
+                // window, so it is named: `half_life` "inf" weighs each row
+                // in the window alike.
+                _ if self.model.keeps_window_ring() => Err(format!(
+                    "spec {:?}: a window_size needs a half_life too, and none is given. \
+                     Set half_life to \"inf\" (in Python, float(\"inf\")) to weigh every row \
+                     in the window alike, or to a finite value to decay the older rows within it.",
+                    self.name
+                )),
                 _ => Err(format!(
-                    "spec {:?}: one of half_life/lam is required (half_life = inf for no decay)",
+                    "spec {:?}: this model needs a half_life, and none is given. Set half_life \
+                     to a value in clock units, or to \"inf\" (in Python, float(\"inf\")) for \
+                     no decay.",
                     self.name
                 )),
             },

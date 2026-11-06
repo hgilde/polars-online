@@ -551,7 +551,7 @@ def test_label_delay_is_accepted_as_ew_cov_accepts_it():
 
 
 def test_a_decay_is_required():
-    with pytest.raises(ValueError, match="half_life/lam"):
+    with pytest.raises(ValueError, match="this model needs a half_life, and none is given"):
         po.spec.deco("d", features=cols(4))
 
 

@@ -1111,9 +1111,13 @@ def _unnest_exprs(
             raise ValueError(msg)
         by_name[spec["name"]] = spec
     exprs: list[pl.Expr] = []
+    # Each output column's name and where it comes from: a spec's name, or
+    # None for a column of the frame kept as it is.
+    origins: list[tuple[str, str | None]] = []
     for column, dtype in schema.items():
         if column not in by_name:
             exprs.append(pl.col(column))
+            origins.append((column, None))
             continue
         spec = by_name.pop(column)
         if not isinstance(dtype, pl.Struct):
@@ -1149,6 +1153,7 @@ def _unnest_exprs(
             base = "coef" + field.removeprefix(beside) if beside else field
             if base not in lists:
                 exprs.append(col.alias(named(field)))
+                origins.append((named(field), column))
                 continue
             # A `List` as the bank writes it, or an `Array` as a file written
             # by a build that wrote one (task 244, reverted by task 250).
@@ -1158,10 +1163,63 @@ def _unnest_exprs(
             ):
                 out = beside + "_" + name.removeprefix("coef_") if beside else name
                 exprs.append(get(position, null_on_oob=False).alias(named(out)))
+                origins.append((named(out), column))
     if by_name:
         msg = f"online.unnest: the frame has no column(s) {', '.join(map(repr, by_name))}"
         raise ValueError(msg)
+    _refuse_shared_names(origins, separator)
     return exprs
+
+
+def _and_list(words: list[str]) -> str:
+    """``words`` as one English list: ``a``, ``a and b``, ``a, b and c``."""
+    return words[0] if len(words) == 1 else ", ".join(words[:-1]) + " and " + words[-1]
+
+
+def _refuse_shared_names(origins: list[tuple[str, str | None]], separator: str | None) -> None:
+    """Refuse an unnest that would name two columns alike: two specs with a
+    field of the same name (three fits of one kind each have ``weight_sum``),
+    or a spec's field and a column of the frame. Polars would refuse the
+    selection with its ``DuplicateError`` naming one column and neither
+    source, after the plan was built; this names every shared field, the
+    specs it comes from, and the two ways out. The error is Polars'
+    ``DuplicateError`` still, so a handler for Polars' own catches it."""
+    sources: dict[str, list[str | None]] = {}
+    for name, origin in origins:
+        sources.setdefault(name, []).append(origin)
+    # The shared names, grouped by the specs (and frame columns) they come
+    # from, so three specs sharing five fields read as one clause.
+    shared: dict[tuple[str | None, ...], list[str]] = {}
+    for name, origin_list in sources.items():
+        if len(origin_list) > 1:
+            shared.setdefault(tuple(dict.fromkeys(origin_list)), []).append(name)
+    if not shared:
+        return
+    clauses = []
+    for where, names in shared.items():
+        specs = [f'"{w}"' for w in where if w is not None]
+        one = len(names) == 1
+        whose = "a field of " if one else "fields of "
+        whose += ("spec " if len(specs) == 1 else "specs ") + _and_list(specs)
+        if None in where:
+            whose += " and a column of the frame" if one else " and columns of the frame"
+        # Two specs of one target share their coefficients' names too, a
+        # dozen fields or more: the first few name the clash.
+        shown = names if len(names) <= 6 else [*names[:5], f"{len(names) - 5} more"]
+        clauses.append(f"{_and_list(shown)} {'is' if one else 'are'} {whose}")
+    (where, names), *_ = shared.items()
+    spec = next(w for w in where if w is not None)
+    other = (
+        'separator="." to name each column after its spec'
+        if separator is None
+        else f"a separator other than {separator!r}"
+    )
+    msg = (
+        f"online.unnest: {'; '.join(clauses)}, so the columns unnested would share a name. "
+        f'Pass {other}, or take the fields you need with pl.col("{spec}").struct.field('
+        f'"{names[0]}").'
+    )
+    raise pl.exceptions.DuplicateError(msg)
 
 
 def _unnest_lazy(
@@ -1391,15 +1449,20 @@ class LazyFrameOnlineNamespace:
           and for a spec that is not valid;
         - ``TypeError`` for ``specs`` that are none of the three;
         - ``FileNotFoundError`` and :meth:`~polars_online.ModelBank.load`'s ``ValueError``
-          for a path.
+          for a path;
+        - Polars' ``DuplicateError`` for two columns the unnest would name
+          alike, naming each shared field and the specs it comes from.
 
         ``separator`` names each column after its spec too, as Polars 2.0's
         ``LazyFrame.unnest(separator=)`` does: ``{spec}{separator}{name}``, so
         ``separator="."`` gives ``ridge.pred_y`` and ``ridge.coef_y_x1``. Two
-        specs that produce a field of the same name -- two fits of one target
-        -- then unnest side by side. Without it (``None``, the default) they
-        unnest to the same column name, which polars reports as its
-        ``DuplicateError``.
+        specs that produce a field of the same name -- two fits of one target,
+        or two fits of one kind, which share ``weight_sum`` -- then unnest side
+        by side. Without it (``None``, the default) they would unnest to the
+        same column name, and the call raises Polars' ``DuplicateError``
+        naming the shared fields. The names are given here rather than by
+        Polars' own ``separator``, so it works on every Polars this library
+        supports.
         """
         return _unnest_lazy(self._lf, specs, separator)
 

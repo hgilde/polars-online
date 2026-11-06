@@ -30,6 +30,7 @@ each reads as of its date, with the names of its day.
 | [11. Memory](#11-memory-which-surface-is-odata-2026-09-02) | memory is the question: which surface is O(data) and which O(state), with the numbers, and what Polars holds before the bank | [the plugin](#the-plugin-was-odata-nothing-else-is) · [the constant](#what-the-constant-is) · [the fix](#the-query-shaped-trap-and-the-fix) · [before the bank](#what-comes-before-the-bank) · [the window](#where-the-window-comes-from) · [what shrinks it](#what-shrinks-the-window) · [filter after the bank](#filter-after-the-bank) · [levers not taken](#two-levers-not-taken) · [Polars' own windows](#polars-own-windowed-operations-do-the-same-thing) · [how it was measured](#how-it-was-measured-and-why-not-rss) |
 | [21. What inspecting the plan costs `fit(lf)`](#21-what-inspecting-the-plan-costs-fitlf-2026-09-18) | `fit(lf)` seems slow on a small input | [the bisect](#the-bisect) · [what it is](#what-it-actually-is) · [the fix](#the-fix) · [the case the user has](#measure-the-case-the-user-has) |
 | [40. An eager call's peak](#40-an-eager-calls-peak-each-run-into-the-output-as-it-ends-2026-10-13) | a wide eager `fit_predict` takes more memory than its output | |
+| [47. Factor ridges feeding a windowed forward ridge](#47-factor-ridges-feeding-a-windowed-forward-ridge-2026-11-06) | you fit ridges on other ridges' residuals, under a window, per instrument: the time a row and the memory in rows, groups and the window's length, the bytes a snapshot, and what `snapshot_every` saves | |
 | **[Model by model](#model-by-model)** | | |
 | [13. The new families](#13-the-new-families-and-where-a-wide-row-goes-2026-09-05) | you run one of the new families (`kmeans`, `micro`, `ew_class`, `sgd`, `pa`, `seqtest`, `kalman`'s transition, conformal intervals), or a wide row | [the contract](#the-contract-bit-for-bit) · [the survey](#the-survey) · [`ew_cov`'s row](#where-ew_covs-row-went) · [the wall clock](#reading-the-wall-clock-not-the-profile) · [`ew_class`](#ew_class-one-factorization-per-learned-row) · [`kalman`, `sgd`, `pa`](#kalman-sgd-pa-allocations-and-a-closure) · [thread scaling](#thread-scaling) · [what is left](#what-is-left-and-why) |
 | [14. The Gram update](#14-the-gram-update-measured-2026-09-05) | you want why the Gram update is not computed as one triangle | [the variants](#the-variants) · [not bit-identical](#the-mirror-is-not-bit-identical) · [slower](#and-it-is-slower-by-a-lot) · [what shipped](#what-is-worth-having) |
@@ -2422,6 +2423,155 @@ binary differed by 0.655%, more than the quarter of the 2% tolerance that
 a count may move between runs, because the pool's idle workers spin and
 steal work for as long as the scheduler lets them. Pool sizes are held by
 the identity tests above and the table.
+
+### 47. Factor ridges feeding a windowed forward ridge (2026-11-06)
+
+*Provenance: an Apple M4 Pro (14 cores), py-polars 2.0.0, Python 3.14.6,
+a release wheel of `0a20dc26` with two messages and this benchmark's
+script changed, none of them on a row's path. A load average of 4.8 to
+8.7 for the timed runs, with Photos' `mediaanalysisd` and Spotlight's
+`mds_stores` taking about a core and a third between them. Each case ran in a fresh process, and a
+time is the best of three. Memory is the peak physical footprint, the
+most the process held at once as macOS counts it; the peak RSS reads 40
+to 70 MB more. `scripts/factor_residuals_bench.py` makes the data and
+runs every case.*
+
+**The second stage's flat window sets both the time and the memory.** Each
+group's window keeps a snapshot of the running sums for every row it
+covers, and a snapshot takes about 2.7 KB while the run holds it. Two
+hours at one row a second is 7,200 snapshots, 19 MB a group.
+
+The pipeline fits three factor ridges, each on its own dependent and four
+inputs. Each one's out-of-sample residual, the dependent less a
+prediction made before the row is learned, is a feature of a second ridge.
+That ridge weighs every row of a two-hour window alike, and its target is
+the forward exponentially weighted mean of `y` over the next 150 seconds,
+less `y`, learned once those 150 seconds have passed. Both stages are
+grouped by instrument. Each instrument has a row a second, and the
+instruments' rows are interleaved in clock order:
+
+```python
+clock = dict(clock="ts", gap_cap="5m", group="g")
+factors = [
+    po.spec.ewridge(f"fac{f}", targets=[f"d{f}"],
+                    features=[f"x{f}_{j}" for j in range(4)], half_life="2h", **clock)
+    for f in range(3)
+]
+forward = po.ewm_mean("y", half_life="30s", window_size="150s", reverse=True) - pl.col("y")
+stage2 = po.spec.ewridge(
+    "stage2", targets=[forward.alias("B")], features=["resid_d0", "resid_d1", "resid_d2"],
+    window_size="2h", half_life=float("inf"), embargo="150s", min_weight=500.0, **clock,
+)
+residuals = [pl.col(f"fac{f}").struct.field(f"resid_d{f}") for f in range(3)]
+(
+    pl.scan_parquet("input.parquet")
+    .online.fit_predict(factors)
+    .with_columns(residuals)
+    .online.fit_predict([stage2])
+    .online.unnest([stage2])
+    .sink_parquet("output.parquet")
+)
+```
+
+**In rows, a row's time stays flat:** one instrument, the two-hour window.
+
+| rows | a row, the pipeline | a row, the factor ridges alone | a row, the file read and written alone | peak, the pipeline | peak, the factor ridges | peak, the file alone |
+|---:|---:|---:|---:|---:|---:|---:|
+| 250,000 | 2.24 µs | 0.32 µs | 0.11 µs | 336 MB | 277 MB | 212 MB |
+| 1,000,000 | 2.13 µs | 0.26 µs | 0.05 µs | 760 MB | 641 MB | 477 MB |
+| 4,000,000 | 1.97 µs | 0.25 µs | 0.04 µs | 1,769 MB | 1,404 MB | 965 MB |
+
+**Polars holds part of the growth with the rows, and the two stages in
+series hold the rest.** Two settings take Polars' share out: the memory
+allocator told to return the pages it frees at once
+(`_RJEM_MALLOC_CONF=dirty_decay_ms:0,muzzy_decay_ms:0`), and Polars'
+read-ahead held to one block of the file
+(`POLARS_ROW_GROUP_PREFETCH_SIZE=1`). Under both, the file read and
+written alone holds 124 to 133 MB at every size, and the pipeline 171,
+396 and 1,012 MB. Each stage alone, its output taken a chunk at a time,
+moves by at most 51 MB from 1,000,000 rows to 4,000,000. The growth
+comes from running the two `fit_predict` calls in series in one query:
+422 MB at 1,000,000 rows and 1,294 MB at 4,000,000, about 290 bytes a
+row. Two plain Python sources in series, with no bank in either, grow by
+32 bytes a row under the same settings, so the rest of the 290 has not
+been traced. The same two banks fed by a loop hold 297 MB and 299 MB, and
+give the same output, every field but `coef` and `support_coef` (which a
+call reports on its last row of each group) to the bit:
+
+```python
+factor_bank, stage2_bank = po.ModelBank(factors), po.ModelBank([stage2])
+for chunk in pl.scan_parquet("input.parquet").collect_batches(chunk_size=100_000):
+    out = stage2_bank.fit_predict(factor_bank.fit_predict(chunk).with_columns(residuals))
+    ...  # write out, or keep what you need of it
+```
+
+**In groups, the windows' memory multiplies:** 4,000,000 rows over 1, 100
+and 1,000 instruments, the two-hour window.
+
+| instruments | rows each | snapshots held at the end | a row | peak | the second stage's saved state |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 4,000,000 | 7,200 | 1.97 µs | 1,769 MB | 4.3 MB |
+| 100 | 40,000 | 720,000 | 1.06 µs | 3,110 MB | 423 MB |
+| 1,000 | 4,000 | 4,000,000 | 3.41 µs | 12,717 MB | 2,295 MB |
+
+The file read and written alone holds 943 to 965 MB at all three. A
+hundred instruments run faster a row than one, since the bank's threads
+take the groups in parallel. A thousand instruments of 4,000 rows each, 67
+minutes, keep every row in their windows: 4,000,000 snapshots, about 11
+GB.
+At that size a row's time is the memory's, not the models'.
+
+**In the window's length, the memory grows by 2.7 KB a snapshot:** 100
+instruments of ten hours each, 3,600,000 rows, so every window is full.
+
+| window | snapshots held | a row | peak | peak, the allocator returning pages | the second stage's saved state |
+|---|---:|---:|---:|---:|---:|
+| 30 minutes | 180,000 | 0.85 µs | 1,864 MB | 1,190 MB | 112 MB |
+| 2 hours | 720,000 | 1.06 µs | 3,072 MB | 2,507 MB | 423 MB |
+| 8 hours | 2,880,000 | 1.89 µs | 8,999 MB | 8,383 MB | 1,670 MB |
+| 2 hours, `snapshot_every="10s"` | 72,000 | 0.76 µs | 1,670 MB | 1,079 MB | 49.6 MB |
+| 2 hours, `snapshot_every="60s"` | 12,000 | 0.73 µs | 1,676 MB | 1,008 MB | 14.9 MB |
+
+From 30 minutes to 8 hours the peak grows by 2,643 bytes for each snapshot
+added, and by 2,664 with the allocator returning its pages. The saved
+state grows by 577 bytes a snapshot. So at one row a second a group's
+window holds 4.8 MB for 30 minutes, 19 MB for two hours and 77 MB for
+eight. A row's time grows with the window too, since every snapshot is
+allocated and freed in the heap the windows fill.
+
+**`window_budget` counts 376 of a snapshot's 2.7 KB.** The budget counts
+the numbers a snapshot holds: the Gram's lower triangle, the
+cross-moments and the target's moments. The rest is the snapshot's own
+424 bytes in the ring, its 18 vectors, each allocated on its own, and the
+ring's spare room. So the default bound of 256 MiB for each ring lets a
+group of this spec reach about 1.9 GB before it refuses.
+
+**`snapshot_every` divides the memory and the time.** A snapshot every
+10 seconds keeps a tenth of them and loses at most 10 seconds of the
+window's two hours, since the window then covers between 1 h 59 min 50 s
+and 2 h. It cut the windows' memory tenfold and a row from 1.06 µs to
+0.76. At 60 seconds the windows hold 12,000 snapshots, about 32 MB, and
+the rest of the query sets the peak.
+
+**Where a row's time goes**, at 1,000,000 rows of one instrument:
+
+| run | a row |
+|---|---:|
+| the pipeline | 2.13 µs |
+| the second stage decaying at a two-hour half-life, with no window | 0.81 µs |
+| the second stage with `y` as its target, with no forward window or embargo | 1.72 µs |
+| the factor ridges alone | 0.26 µs |
+
+The window costs about 1.3 µs a row, the forward target and its embargo
+0.4, and the three factor ridges 0.26 between them.
+
+**This pipeline is not a cell of the scaling table**
+([How cost grows with size](#how-cost-grows-with-size)). Each size it
+varies has a cell there already, in one bank: `ewridge.window` holds a
+row's work flat and the state linear in the window, and
+`bank.groups_seen`, `bank.embargo` and `bank.formula_window` hold the
+groups, the embargo and the forward window. The cells cannot show the
+absolute figures at realistic sizes, or two banks in series.
 
 ## Model by model
 

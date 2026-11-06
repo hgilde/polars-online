@@ -257,6 +257,22 @@ def test_a_closed_that_leaves_out_the_current_row_is_refused_with_the_reason(mod
 
 
 @pytest.mark.parametrize("model", sorted(WINDOWED))
+def test_a_window_with_no_half_life_is_told_to_use_inf_for_a_flat_window(model):
+    """A window with no half-life is most often meant flat, so the refusal
+    names the value that makes it so, in Python's spelling and the
+    command line's, and the value it names is accepted."""
+    with pytest.raises(ValueError) as err:
+        WINDOWED[model](window_size=5.0)
+    assert str(err.value) == (
+        'spec "m": a window_size needs a half_life too, and none is given. Set half_life to '
+        '"inf" (in Python, float("inf")) to weigh every row in the window alike, or to a '
+        "finite value to decay the older rows within it."
+    )
+    for flat in (float("inf"), "inf"):
+        assert WINDOWED[model](window_size=5.0, half_life=flat)["half_life"] == float("inf")
+
+
+@pytest.mark.parametrize("model", sorted(WINDOWED))
 def test_closed_both_needs_a_window(model):
     """A parameter its mode ignores is refused (review S10's rule)."""
     with pytest.raises(ValueError, match="closed needs `window_size`"):

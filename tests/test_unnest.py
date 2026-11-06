@@ -257,17 +257,60 @@ class TestUnnest:
         with pytest.raises(FileNotFoundError):
             nested.lazy().online.unnest(tmp_path / "missing.bin")
 
-    def test_two_specs_with_the_same_fields_are_polars_duplicate_error(self):
+    def test_two_specs_with_the_same_fields_are_refused_by_name(self):
+        """Two specs of one kind and one target share every field, eleven
+        here. Polars' own refusal named one column and neither spec, after
+        the plan was built; this one names the shared fields (the first five
+        and a count), the specs, and the two ways out, while the plan is
+        built, and is Polars' ``DuplicateError`` still, so a handler for
+        Polars' own catches it."""
         other = {**OLS, "name": "ols2"}
         nested = _frame().online.fit_predict([OLS, other])
-        with pytest.raises(pl.exceptions.DuplicateError):
-            nested.online.unnest([OLS, other])
-        with pytest.raises(pl.exceptions.DuplicateError):
-            nested.lazy().online.unnest([OLS, other]).collect()
-        # The documented way out: prefix the fields of one of them first.
+        want = (
+            "online.unnest: pred_y, resid_y, weight_sum, settled_frac, withheld_reason and 6 more "
+            'are fields of specs "ols" and "ols2", so the columns unnested would share a name. '
+            'Pass separator="." to name each column after its spec, or take the fields you '
+            'need with pl.col("ols").struct.field("pred_y").'
+        )
+        for unnest in (nested.online.unnest, nested.lazy().online.unnest):
+            with pytest.raises(pl.exceptions.DuplicateError) as err:
+                unnest([OLS, other])  # the lazy form refuses with no collect
+            assert str(err.value) == want
+        # Both ways out run: a separator, on either form ...
+        flat = nested.online.unnest([OLS, other], separator=".")
+        assert {"ols.pred_y", "ols2.pred_y", "ols2.weight_sum"} <= set(flat.columns)
+        assert nested.lazy().online.unnest([OLS, other], separator=".").collect().equals(flat)
+        # ... or the fields taken by name, beside the other spec unnested.
+        picked = nested.with_columns(
+            pl.col("ols2").struct.field("pred_y").alias("pred_y_ols2")
+        ).drop("ols2")
+        out = picked.online.unnest([OLS])
+        assert out["pred_y_ols2"].equals(flat["ols2.pred_y"].alias("pred_y_ols2"))
+        # The prefix the earlier way out added still works.
         renamed = nested.with_columns(pl.col("ols2").name.prefix_fields("ols2_"))
         assert "ols2_pred_y" in renamed["ols2"].struct.fields
         assert "pred_y" in renamed.online.unnest([OLS]).columns
+
+    def test_a_field_named_like_a_column_of_the_frame_is_refused_by_name(self):
+        """A column of the frame that a spec's field would repeat is named as
+        the frame's; a separator already given is named as the one to change."""
+        nested = _frame().online.fit_predict([OLS]).with_columns(weight_sum=pl.lit(1.0))
+        with pytest.raises(pl.exceptions.DuplicateError) as err:
+            nested.lazy().online.unnest([OLS])
+        assert str(err.value).startswith(
+            'online.unnest: weight_sum is a field of spec "ols" and a column of the frame, '
+            "so the columns unnested would share a name. "
+            'Pass separator="." to name each column after its spec'
+        )
+        assert "ols.weight_sum" in nested.online.unnest([OLS], separator=".").columns
+        clash = nested.with_columns(pl.lit(1.0).alias("ols.weight_sum"))
+        with pytest.raises(pl.exceptions.DuplicateError) as err:
+            clash.online.unnest([OLS], separator=".")
+        assert str(err.value) == (
+            'online.unnest: ols.weight_sum is a field of spec "ols" and a column of the frame, '
+            "so the columns unnested would share a name. Pass a separator other than '.', or "
+            'take the fields you need with pl.col("ols").struct.field("ols.weight_sum").'
+        )
 
 
 def test_named_coefficients_predict_the_next_row():
