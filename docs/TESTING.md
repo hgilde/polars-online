@@ -1071,7 +1071,8 @@ reader sees no file or the whole one. The released versions' environments,
 which `scripts/compare_release.py` builds, are built under a per-process
 name and renamed the same way.
 
-**At most two agents build at once on this machine, each held to six build
+**At most two agents build at once on this machine (three while the load is
+low), each held to six build
 jobs and four test processes.** Each worktree has its own `target/` and
 compiles Polars there, which takes 66 s for the Rust tests and 130 s for the
 `dev-wheel` extension from nothing, at a load near 5. More agents do not
@@ -1086,7 +1087,9 @@ finish sooner, and past a point they bring the machine down:
 
 A `cargo mutants` run builds and tests every mutant, each time with every
 core, so two at once already saturate the machine. So, on this machine:
-- **Two agents at most.** One is the default when their work is builds and
+- **Two agents at most, three while the load is low.** A third starts only
+  while the 1-minute load is under about 20, and none starts above it (the
+  user, 2026-11-07). One is the default when their work is builds and
   tests rather than reading and writing.
 - **Each agent exports `CARGO_BUILD_JOBS=6`.** It runs pytest at `-n 4` at
   most, and the gate at `GATE_WORKERS=4`.
@@ -1150,7 +1153,7 @@ test another checkout's binary. There are at most four slots
 (`POLARS_ONLINE_SLOTS`), each about 28 GB of builds and 0.9 GB of
 environment. A slot stays warm between tasks whether or not an agent is
 building in it, so there are more slots than agents running: at most two
-build at once (above). `take` refuses a
+build at once, three while the load is low (above). `take` refuses a
 slot with uncommitted work, and so does `give`. `take` also refuses a
 branch another worktree has checked out and names that worktree: `git
 checkout -B` would move the slot onto it, and a commit in either worktree

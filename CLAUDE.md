@@ -74,7 +74,8 @@ integration branch").
 `scripts/gate.sh` takes one of two machine-wide tokens and waits for one
 (`POLARS_ONLINE_GATES`). The full tier runs, always, before every push on
 the exact sha.
-Run at most two building agents at once on this machine, each with
+Run at most two building agents at once on this machine -- three while the
+1-minute load stays under about 20 (the user, 2026-11-07) -- each with
 `CARGO_BUILD_JOBS=6`, pytest at `-n 4` and the gate at `GATE_WORKERS=4`;
 a local `cargo mutants` runs alone, under `.claude/coord/mutants.lock`;
 check `uptime` first and wait above a load of about 20 (docs/TESTING.md,
