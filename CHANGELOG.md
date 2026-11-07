@@ -13,6 +13,16 @@ returns.
 
 ### Added
 
+- `conformal_rate="auto"`: under `embargo` or `label_clock`, the conformal
+  interval's step is divided by the rows waiting for their labels:
+  `0.05 / (1 + 0.1 · g · n̄)`, where `n̄` is the rows still waiting at each
+  label's arrival, averaged over the model's half-life, and `g` is the
+  density of `|Z|` at the asked quantile (0.21 for a 90% interval). With
+  nothing waiting it is 0.05 to the bit. It keeps the interval from
+  swinging under a long delay: on New York's 2013 flights under an 8-hour
+  `embargo` (338 rows waiting) it held 90% at a half-width of 46.5 minutes,
+  against the default's 189. The default stays 0.05. A state saved under it
+  carries one more number per interval (schema 67).
 - `po.eval.grid_search`, which scores every setting of a grid in one pass
   over a stream and chooses one from earlier rows only. It takes a spec, a
   list of specs, or a builder with a `param_grid` (scikit-learn's
@@ -60,6 +70,43 @@ returns.
 
 ### Changed
 
+- Refusals whose exception class did not fit their problem now raise one
+  of three new classes, each inheriting from both the class the problem
+  calls for and the class raised before, so existing `except` handlers keep
+  working. `po.WrongTypeError` (a `TypeError` and a `ValueError`) is raised
+  for a value or column of the wrong type: one spec or a str given to
+  `ModelBank`, a `UInt128` column, a text clock or value in
+  `po.stream.refresh_time`, a text or `Int128` clock in `po.stream.embargo`,
+  a non-integer `min_samples`, `n_splits`, `gap`, `max_iter`, `max_active`,
+  `max_bin`, `threads` or `sample_rows`, `po.gram.solve_subsets` jobs that
+  are not a list of mappings, and `po.gbdt` columns of a type it cannot
+  read. `po.RefusedValueError` (a `ValueError` and a `TypeError`) is raised
+  for a refused combination or an empty value: `reverse=True` without
+  `window_size`, `with_windows(like=)` beside a clock setting, and in
+  `po.eval.grid_search` a `param_grid` with specs already built, an empty
+  `param_grid` or an empty list of values. `po.OutputColumnNotFoundError`
+  (a `po.ColumnNotFoundError`, so Polars' `ColumnNotFoundError` and
+  `ValueError`, and a `KeyError`) is raised by `po.eval`'s scoring functions
+  for a spec's output column the frame does not have. A non-integer
+  `min_samples`, `n_splits` or `gap` is now a `TypeError`, while a whole
+  number out of range stays a plain `ValueError`. Messages are unchanged.
+  The older parent of each class will be dropped at the next major version:
+  catch `TypeError`, `ValueError` and `ColumnNotFoundError` respectively.
+- A saved state that a model refuses as it loads now says it is damaged and
+  what to do: "state file: spec "m": ftrl: it is damaged, since its running
+  sums have the wrong shape. Load an undamaged copy of the state file, or
+  rebuild it from its input." The "invalid state:" prefix and the code's
+  own names are gone. A saved setting a model refuses is named, without the
+  remedy meant for a spec.
+- A state file from a newer or older polars-online is refused in plain
+  words, without its schema number.
+- A target given `relative_to` or `relative` is refused naming the key,
+  with a shorter remedy. From a TOML file, the remedy names the input file.
+- A window formula holding something it cannot read now names it as
+  written (`the method shift`, `the operator //`, `an aggregation`, the
+  types a cast may take), and a target formula's refusal names its spec.
+- A clock parameter given as a duration beside `lam` is told a way out that
+  works, with or without a clock.
 - A spec with several problems reports all of them in one refusal,
   `spec "m": 3 problems.` and then one line for each, where it reported
   only the first. Where one problem keeps the others from being checked (a
