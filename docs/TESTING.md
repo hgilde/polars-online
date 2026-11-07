@@ -554,7 +554,20 @@ reason and its measured ratios.
 
 **Natively the counts are exact and time is a backstop.** An allocation
 count, the saved state's bytes and the heap freed on drop are the same on
-every run, so they are held within 25% of the declared growth. Time is held
+every run, so they are held within 25% of the declared growth. A block's
+allocations are counted on every thread but the test harness's. The
+measured work also runs on threads it does not name: the bank's pool,
+Polars' pool, the runner's reader. So the count cannot follow the work by
+thread, but the harness's threads are known. The main thread of libtest
+reports each finished test and starts the next while another test measures. A
+test's own thread formats its verdict while the next cell runs. Counted
+with the rest, they moved a cell that allocates nothing to 4 allocations
+over its blocks when the binary's tests ran side by side. That is past what
+a ratio of O(1) allows. A count may also read 4 allocations a block past
+its declared growth, whatever its ratio. That is what no mark reaches: the
+harness allocates on a new test's thread before the test's first line can
+mark it as the harness's. A growth the check is for adds one a row, at
+least 200 a block. Time is held
 within a factor of `step^0.5`, 2.8 at a step of 8, the least of three blocks
 taken in turn at the two sizes. On CI, Callgrind counts the instructions of
 the cells in `[scaling.cells]` of `budgets.toml` at both sizes, and

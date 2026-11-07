@@ -7,11 +7,23 @@
 //! turns under one lock: the tests of this binary may still be run side by
 //! side, and nextest runs each in a process of its own.
 //!
+//! A block's allocations are counted on every thread but the harness's.
+//! The measured work runs on the measuring thread and on threads it does
+//! not name -- the bank's pool, Polars' pool, the runner's reader thread --
+//! so it cannot be counted by thread from the inside. The harness's threads
+//! can: libtest's main thread, which reports each finished test and starts
+//! the next while another test measures, and each test's own thread outside
+//! the blocks it measures (`harness_thread`). Counted with the rest, they
+//! read 0 -> 4 allocations over its blocks for a cell that allocates
+//! nothing, and 2 -> 18 for another, when the tests ran side by side on
+//! three threads with their output captured, as `cargo test` runs them on
+//! CI: past the ratio a growth of O(1) allows.
+//!
 //! `SCALING_REPORT=1` prints every cell's ratios, the audit's table.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use online_bench::scaling::{
@@ -22,12 +34,39 @@ struct Counting;
 
 static LIVE: AtomicIsize = AtomicIsize::new(0);
 static PEAK: AtomicIsize = AtomicIsize::new(0);
+/// Allocations on every thread but the harness's: what a block counts.
 static CALLS: AtomicUsize = AtomicUsize::new(0);
+/// Allocations on the harness's threads, reported beside a cell's count.
+static HARNESS_CALLS: AtomicUsize = AtomicUsize::new(0);
+/// Whether the process has allocated: its first allocation is on its main
+/// thread, libtest's, before libtest has started any other.
+static STARTED: AtomicBool = AtomicBool::new(false);
+
+thread_local! {
+    /// Whether this thread is the harness's: libtest's main thread, or a
+    /// test's thread outside the blocks it measures. A `const` `Cell` of a
+    /// `bool` has no destructor and its first read allocates nothing, so
+    /// the allocator may read it on any thread at any time.
+    static HARNESS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 fn grew(by: usize) {
-    CALLS.fetch_add(1, Ordering::Relaxed);
+    if !STARTED.load(Ordering::Relaxed) && !STARTED.swap(true, Ordering::Relaxed) {
+        HARNESS.set(true);
+    }
+    if HARNESS.get() {
+        HARNESS_CALLS.fetch_add(1, Ordering::Relaxed);
+    } else {
+        CALLS.fetch_add(1, Ordering::Relaxed);
+    }
     let now = LIVE.fetch_add(by as isize, Ordering::Relaxed) + by as isize;
     PEAK.fetch_max(now, Ordering::Relaxed);
+}
+
+/// Marks this test's thread as the harness's: its allocations are a cell's
+/// only inside the blocks it measures. The first line of every test.
+fn harness_thread() {
+    HARNESS.set(true);
 }
 
 // SAFETY: every method forwards to `System` with the caller's arguments
@@ -74,6 +113,8 @@ struct Measured {
     time: Duration,
     /// Allocations over every block.
     calls: usize,
+    /// The harness's allocations meanwhile, which `calls` leaves out.
+    harness: usize,
     /// The saved state's bytes, and the heap the state holds.
     saved: usize,
     heap: usize,
@@ -91,22 +132,34 @@ fn heap_of(mut run: ScaleRun) -> usize {
     (held - LIVE.load(Ordering::Relaxed)).max(0) as usize
 }
 
-fn block(run: &mut ScaleRun) -> (Duration, usize, usize) {
+/// One block of a run: its time, its allocations, and the most it held above
+/// the live heap. Its allocations are those on every thread but the
+/// harness's, so this thread counts while the block runs; the harness's
+/// threads' allocations meanwhile are the third.
+fn block(run: &mut ScaleRun) -> (Duration, usize, usize, usize) {
     let pool = run
         .on_the_pool()
         .then(|| online_polars::pool().expect("the bank's pool"));
     let calls = CALLS.load(Ordering::Relaxed);
+    let harness = HARNESS_CALLS.load(Ordering::Relaxed);
     let live = LIVE.load(Ordering::Relaxed);
     PEAK.store(live, Ordering::Relaxed);
+    HARNESS.set(false);
     let at = Instant::now();
     let sum = match pool {
         Some(p) => p.install(|| polars_online_budget_scale_rows(run)),
         None => polars_online_budget_scale_rows(run),
     };
     let time = at.elapsed();
+    HARNESS.set(true);
     std::hint::black_box(sum);
     let peak = (PEAK.load(Ordering::Relaxed) - live).max(0) as usize;
-    (time, CALLS.load(Ordering::Relaxed) - calls, peak)
+    (
+        time,
+        CALLS.load(Ordering::Relaxed) - calls,
+        peak,
+        HARNESS_CALLS.load(Ordering::Relaxed) - harness,
+    )
 }
 
 /// Both sizes of a cell, their blocks interleaved, so a change in the
@@ -120,6 +173,7 @@ fn measure(c: &Cell) -> (Measured, Measured) {
     let mut out = [&small, &large].map(|run| Measured {
         time: Duration::MAX,
         calls: 0,
+        harness: 0,
         saved: 0,
         heap: 0,
         peak: 0,
@@ -127,9 +181,10 @@ fn measure(c: &Cell) -> (Measured, Measured) {
     });
     for _ in 0..BLOCKS {
         for (m, run) in out.iter_mut().zip([&mut small, &mut large]) {
-            let (t, calls, peak) = block(run);
+            let (t, calls, peak, harness) = block(run);
             m.time = m.time.min(t);
             m.calls += calls;
+            m.harness += harness;
             m.peak = m.peak.max(peak);
         }
     }
@@ -167,6 +222,18 @@ const TIME_SLACK: f64 = 0.5;
 /// a hash table's growth add at one size and not the other.
 const COUNT_TOL: f64 = 0.25;
 
+/// Allocations a block may make past its declared growth whatever the
+/// ratio reads, so a cell that allocates a handful a block is not judged
+/// by a ratio of two handfuls. What reaches a count beside the measured work
+/// is a handful: libtest allocates on a test's thread before the test's
+/// first line can mark it as the harness's, so a test that starts while
+/// another measures adds a few, and so does a thread of a pool a finished
+/// workload dropped, which exits on its own time. Over ten runs of this
+/// binary on three threads, a small count moved by 2 at most between runs
+/// once the harness's threads were left out. The growth the check is for
+/// adds an allocation a row, and a block is at least 200 rows.
+const ALLOC_SLACK: usize = 4;
+
 struct Verdict {
     line: String,
     failures: Vec<String>,
@@ -203,11 +270,23 @@ fn judge(c: &Cell) -> Verdict {
         }
     };
     check("a block's time", t, time_bound);
-    check("a block's allocations", a, work * (1.0 + COUNT_TOL));
+    // Within the declared ratio, or within the slack of the count the
+    // declared growth gives the large size from the small one's.
+    let expected = s.calls as f64 * work * l.rows as f64 / s.rows as f64;
+    if l.calls as f64 > expected + (ALLOC_SLACK * BLOCKS) as f64 {
+        check(
+            &format!(
+                "a block's allocations ({} -> {}, more than {ALLOC_SLACK} a block past the declared growth)",
+                s.calls, l.calls
+            ),
+            a,
+            work * (1.0 + COUNT_TOL),
+        );
+    }
     check("the saved state", saved, state * (1.0 + COUNT_TOL));
     check("the state's heap", heap, state * (1.0 + COUNT_TOL));
     let line = format!(
-        "{:<28} work {:<10} state {:<10} | time {:>7.2}x (<= {:>7.2}) {:>9.3} ms -> {:>9.3} ms | allocs {:>7.2}x ({} -> {}) | saved {:>6.2}x ({} -> {}) | heap {:>6.2}x ({} -> {}) {}",
+        "{:<28} work {:<10} state {:<10} | time {:>7.2}x (<= {:>7.2}) {:>9.3} ms -> {:>9.3} ms | allocs {:>7.2}x ({} -> {}, harness {} -> {}) | saved {:>6.2}x ({} -> {}) | heap {:>6.2}x ({} -> {}) {}",
         c.id,
         c.work.show("n"),
         c.state.show("n"),
@@ -218,6 +297,8 @@ fn judge(c: &Cell) -> Verdict {
         a,
         s.calls,
         l.calls,
+        s.harness,
+        l.harness,
         saved,
         s.saved,
         l.saved,
@@ -273,6 +354,7 @@ const SURFACES: &[&[&str]] = &[
 
 #[test]
 fn every_cell_is_held_by_one_test() {
+    harness_thread();
     let mut ids: Vec<&str> = CELLS.iter().map(|c| c.id).collect();
     ids.sort_unstable();
     let n = ids.len();
@@ -296,6 +378,7 @@ fn every_cell_is_held_by_one_test() {
 /// the block's length and the width.
 #[test]
 fn every_kind_has_its_cells() {
+    harness_thread();
     for kind in online_polars::ModelKind::KINDS {
         let cells: Vec<&str> = CELLS
             .iter()
@@ -316,31 +399,37 @@ fn every_kind_has_its_cells() {
 
 #[test]
 fn the_linear_models_grow_as_declared() {
+    harness_thread();
     hold_surfaces(SURFACES[0]);
 }
 
 #[test]
 fn the_robust_and_gradient_models_grow_as_declared() {
+    harness_thread();
     hold_surfaces(SURFACES[1]);
 }
 
 #[test]
 fn the_moment_models_grow_as_declared() {
+    harness_thread();
     hold_surfaces(SURFACES[2]);
 }
 
 #[test]
 fn the_state_and_cluster_models_grow_as_declared() {
+    harness_thread();
     hold_surfaces(SURFACES[3]);
 }
 
 #[test]
 fn the_bank_grows_as_declared() {
+    harness_thread();
     hold_surfaces(SURFACES[4]);
 }
 
 #[test]
 fn the_runner_windows_and_samplers_grow_as_declared() {
+    harness_thread();
     hold_surfaces(SURFACES[5]);
 }
 
