@@ -3297,3 +3297,47 @@ why = """`Reserved` is a newtype over `bool` whose `Default` is derived, so \
 `Default::default()` is `Reserved(false)`, the very value the body \
 returns: a copied buffer is unreserved by design and reserves its full \
 size again on its next learned row"""
+
+[[equivalent]]
+file = "crates/online-core/src/window/flat.rs"
+function = "<impl Pack for Stamp>::unpack"
+mutation = "replace | with ^"
+line_has = "(u128::from(lo) | (u128::from(hi) << 64)) as i128"
+why = """`u128::from(lo)` holds bits 0-63 and `u128::from(hi) << 64` bits \
+64-127, so the two share no set bit and `a | b` is `a ^ b`"""
+
+[[equivalent]]
+file = "crates/online-core/src/window/flat.rs"
+function = "Ring<S>::push_offer"
+mutation = "replace && with ||"
+line_has = "if V::VIEW && cfg!(debug_assertions) {"
+why = """the block only asserts that what was written equals what the \
+snapshot itself packs, counted at its own footprint; for the snapshot \
+itself (`VIEW` false, debug builds) `write` is `pack` and `bytes` is \
+`footprint`, so the added check holds by construction, and in a release \
+build it is the views' check, which every debug test already holds; \
+nothing is written or kept differently either way"""
+
+[[equivalent]]
+file = "crates/online-core/src/window/flat.rs"
+function = "Ring<S>::push_offer"
+mutation = "replace > with >="
+line_has = "if block.len() > cap {"
+why = """at `block.len() == cap` the record fitted: `split_off(at)` leaves the \
+block its buffer, `shrink_to(cap)` is a no-op at that capacity, and `put` \
+finds exactly the record's room in the same block (`room` asks `>= n`) and \
+copies it back, so the block's words, capacity and the run recorded are \
+those of the other branch"""
+
+[[equivalent]]
+file = "crates/online-core/src/window/flat.rs"
+function = "Ring<S>::pop_front"
+mutation = "replace > with <"
+line_has = "while self.blocks.len() > 1 {"
+why = """the loop never runs: when the last later snapshot is decoded, the \
+loop above has popped every block before the one holding it, and no block \
+follows the newest snapshot's (a block is made only just before a record is \
+written, and one left empty by a record that overflowed it precedes the \
+block the record moved to), so one block remains either way (held by an \
+`assert_eq!(blocks.len(), 1)` in its place over every online-core and \
+online-polars test, extended included)"""

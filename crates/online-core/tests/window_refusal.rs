@@ -225,3 +225,53 @@ fn window_could_refuse_is_the_shadows_answer() {
         "both answers seen: {yes} yes, {no} no"
     );
 }
+
+/// A model with no window has no ring to refuse a row: it answers no for
+/// any number of rows, before its first row and after many, whether it is a
+/// kind that never keeps a window or one configured without one, and under
+/// a refusing budget too.
+#[test]
+fn a_model_without_a_window_could_refuse_nothing() {
+    fn check<M: OnlineModel>(name: &str, mut m: M, targets: usize) {
+        m.set_window_budget(Some(WindowBudget::Refuse(0.0005)));
+        assert!(m.window_shadow().is_none(), "{name}: no shadow");
+        let mut s = 351u64;
+        for i in 0..60 {
+            for rows in [0, 1, 7, 5_000] {
+                assert!(!m.window_could_refuse(rows), "{name} row {i} rows {rows}");
+            }
+            let x: Vec<f64> = (0..K).map(|_| lcg(&mut s)).collect();
+            let y: Vec<Option<f64>> = (0..targets).map(|_| Some(lcg(&mut s))).collect();
+            m.step(if name == "holt" { &[] } else { &x }, &y, 1.0, 1.0);
+        }
+    }
+    check(
+        "pa",
+        Pa::new(PaCfg {
+            n_features: K,
+            n_targets: 2,
+            fit_intercept: true,
+            decay: decay(),
+            mode: PaMode::Pa1,
+            c: 1.0,
+            eps: 0.1,
+            min_weight: 3.0,
+            constraint: None,
+            standardize: true,
+        })
+        .unwrap(),
+        2,
+    );
+    check(
+        "holt",
+        Holt::new(HoltCfg {
+            n_targets: 1,
+            level_half_life: 2.0,
+            trend_half_life: 4.0,
+            min_weight: 2.0,
+            trend: true,
+        })
+        .unwrap(),
+        1,
+    );
+}
