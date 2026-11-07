@@ -59,11 +59,12 @@ def _keyword(path: str) -> str:
     return path.removeprefix("model.")
 
 
-#: `spec "Probe": <param> must be [an int or ]"a", "b" or "c", but it is
+#: `spec "Probe": <param> must be [an int or |a number or ]"a", "b" or "c", but it is
 #: "zz_bogus". Use one of those words.`; a parameter with one word, such as
 #: `rcov`'s `kernel`, names it in the remedy, and its model's name may lead.
 _SHAPE = (
-    r'^spec "Probe": (\w+: )?{param} must be (an int or )?"[^"]+"(, "[^"]+")*( or "[^"]+")?'
+    r'^spec "Probe": (\w+: )?{param} must be (an int or |a number or )?'
+    r'"[^"]+"(, "[^"]+")*( or "[^"]+")?'
     r'(, [^"]+)?, but it is "zz_bogus"\. '
     r'(Use one of those words|Use one of those|Use "[^"]+"|Set {param} to "[^"]+")\.'
     # Where the checks after it read the word (a model's kind), the refusal

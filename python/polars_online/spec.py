@@ -248,7 +248,7 @@ refusals below. The README's *How a bank sees a stream* shows them at work.
 the diagnostics
     ``emit_sigma``, ``emit_zscore``, ``emit_se_coef``, ``emit_selected``,
     ``emit_averaged`` with ``average_eta``, ``emit_metrics``, ``conformal``
-    with ``conformal_rate`` (default 0.05), ``resid_quantiles``,
+    with ``conformal_rate`` (default 0.05, or ``"auto"``), ``resid_quantiles``,
     ``emit_autocorr`` with ``resid_autocorr_lag``, ``emit_drift`` with
     ``drift_delta``, ``drift_threshold`` and ``drift_action``,
     ``emit_calibration`` with ``calibration_half_life``, ``emit_breaks`` with
@@ -649,10 +649,13 @@ The diagnostics add, per slot:
        coverage decays on the clock. Under ``embargo`` or ``label_clock``
        each row is scored against the radius it was shown, when its label
        arrives; with hundreds of rows waiting, misses arrive in bursts and
-       the default step overshoots, so set ``conformal_rate`` lower. For a
-       90% interval with ``n`` rows waiting on average, ``0.05 / (1 + n /
-       48)`` held 90% at a quarter of the default's width on New York's
-       2013 flights.
+       the default step overshoots. ``conformal_rate="auto"`` divides the
+       step by the rows waiting: ``0.05 / (1 + 0.1 * g * n)``, ``n`` the
+       rows still waiting at each label's arrival averaged over the
+       half-life, and ``g`` the density of ``|Z|``, ``Z`` standard normal,
+       at the asked quantile (0.21 at 90%). It is 0.05 when nothing waits,
+       and held 90% at a quarter of the default's width on New York's 2013
+       flights with 338 rows waiting.
    * - ``resid_quantiles``
      - ``abs_resid_q<p>_<slot>``
      - The exponentially weighted quantile of ``|resid|`` at level ``p``,

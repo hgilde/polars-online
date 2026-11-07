@@ -2123,7 +2123,7 @@ rows covered can then sit on either side of the number asked for. The step is
 taken once per scored row, so the radius moves faster in clock time where
 rows are denser. `conformal_rate` is 0.05 by default.
 
-**Under a long delay, divide `conformal_rate` by the rows waiting.** Under
+**Under a long delay, set `conformal_rate="auto"`.** Under
 `embargo` or `label_clock` a row's label arrives after the row was shown
 its interval, and the row is scored against the radius it was shown. So
 the radius learns of a miss only when the label arrives, and every row
@@ -2137,24 +2137,33 @@ normal: 0.64 for a 50% interval, 0.21 for 90%, 0.12 for 95% and 0.029 for
 99%. A loop whose news is `n` steps old holds steady when that move times
 `n` stays below about one half. Past about 1.6 it swings: the radius
 overshoots, the misses stop, it undershoots, and the interval is wider on
-average. So set the rate to `0.05 / (1 + 0.1 · g · n)`, which is the
+average. So the step should be `0.05 / (1 + 0.1 · g · n)`, which is the
 default when nothing waits. For a 90% interval that is `0.05 / (1 + n /
 48)`.
 
-On New York's 2013 flights (327,346 departures, the residual of a tree
-model's arrival delay, scored on October to December), the rule held 90%
-intervals within 9% of the width with no delay:
+`"auto"` takes that step with `n` counted as the stream runs: at each
+label's arrival, the rows still waiting in its group, averaged over the
+model's half-life. With nothing waiting it is 0.05 to the bit. The mean
+is slow on purpose. A step that read the count at each instant would take
+its smallest steps when the waiting rows pile up, which is when the
+misses do. Flights pile up in the afternoon, when the delays are worst, and
+such a step covered 92.1% of them where 90% was asked. Under a delay that
+does not move, the formula with a fixed `n` gives the same step.
 
-| labels | rows waiting | default 0.05: covered, half-width | the rule's rate | the rule: covered, half-width |
-|---|---:|---:|---:|---:|
-| at once | 0 | 90.0%, 44.5 minutes | 0.05 | 90.0%, 44.5 minutes |
-| an `embargo` of 1 hour | 54 | 90.0%, 47.4 | 0.024 | 89.9%, 46.1 |
-| at landing (`label_clock`) | 152 | 90.0%, 63.6 | 0.012 | 89.9%, 48.5 |
-| an `embargo` of 8 hours | 338 | 90.3%, 189 | 0.0063 | 89.9%, 46.6 |
+On New York's 2013 flights (327,346 departures, the residual of a tree
+model's arrival delay, scored on October to December), `"auto"` held 90%
+intervals within 10% of the width with no delay, as the formula did:
+
+| labels | rows waiting | default 0.05: covered, half-width | the formula's rate | the formula: covered, half-width | `"auto"`: covered, half-width |
+|---|---:|---:|---:|---:|---:|
+| at once | 0 | 90.0%, 44.5 minutes | 0.05 | 90.0%, 44.5 minutes | 90.0%, 44.5 minutes |
+| an `embargo` of 1 hour | 54 | 90.0%, 47.4 | 0.024 | 89.9%, 46.1 | 89.9%, 46.0 |
+| at landing (`label_clock`) | 152 | 90.0%, 63.6 | 0.012 | 89.9%, 48.5 | 89.9%, 48.6 |
+| an `embargo` of 8 hours | 338 | 90.3%, 189 | 0.0063 | 89.9%, 46.6 | 89.9%, 46.5 |
 
 At 50% the default's swing pins the radius at zero for long stretches, so
 under the 8-hour delay it covered 70% of rows at a half-width of 127
-minutes. The rule's 0.0022 covered 49.95% at 15.4.
+minutes. The formula's 0.0022 covered 49.95% at 15.4.
 
 A smaller step also recovers more slowly from a radius that is wrong for
 another reason. That can be a start from the first residuals of a model

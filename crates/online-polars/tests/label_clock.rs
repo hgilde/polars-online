@@ -443,10 +443,21 @@ fn a_short_delay_overtakes_a_long_one_and_is_learned_first() {
 
 #[test]
 fn any_chunking_and_a_save_while_rows_are_held_give_the_same_output() {
+    chunkings_and_saves_agree("");
+}
+
+/// The same under the delay-aware conformal step, whose mean of the rows
+/// waiting is state that a save carries mid-stream (task 342b).
+#[test]
+fn any_chunking_and_a_save_give_the_same_output_under_the_auto_step() {
+    chunkings_and_saves_agree(r#", "conformal_rate": "auto""#);
+}
+
+fn chunkings_and_saves_agree(extra: &str) {
     let df = frame(400, 5, Some(300), &varied);
-    let spec = varied_spec(
-        r#""half_life": 30.0, "label_clock": "avail", "conformal": 0.9, "emit_metrics": true, "emit_sigma": true, "emit_drift": true, "drift_threshold": 20.0, "emit_calibration": true, "max_held_rows": 12, "held_overflow": "drop_oldest", "coef_every": 0"#,
-    );
+    let spec = varied_spec(&format!(
+        r#""half_life": 30.0, "label_clock": "avail", "conformal": 0.9, "emit_metrics": true, "emit_sigma": true, "emit_drift": true, "drift_threshold": 20.0, "emit_calibration": true, "max_held_rows": 12, "held_overflow": "drop_oldest", "coef_every": 0{extra}"#,
+    ));
     let whole = run(&spec, &df, 0);
     let mut r = lcg(99);
     for size in [1, 2, 7, 50] {
@@ -786,4 +797,62 @@ fn settled_frac_reads_the_clock_since_the_first_row_as_with_no_delay() {
     let bad: Vec<usize> = (0..a.len()).filter(|&i| a[i] != b[i]).collect();
     assert!(bad.is_empty(), "rows {bad:?}");
     assert!(a.iter().flatten().count() > 300);
+}
+
+/// `conformal_rate = "auto"` (task 342b): under `embargo = 6` and
+/// `label_clock = t + 6` the same to the bit, whole and in chunks of 13,
+/// with a clock reset or without; different from the fixed step there,
+/// rows being held; and with no delay at all, the fixed 0.05 to the bit.
+#[test]
+fn the_auto_step_reads_an_embargo_and_a_label_clock_alike_and_nothing_without_a_delay() {
+    let base = r#""half_life": 30.0, "conformal": 0.9, "emit_sigma": true, "emit_metrics": true"#;
+    for reset in [None, Some(260)] {
+        let df = frame(400, 7, reset, &|_| Some(6));
+        for size in [0, 13] {
+            let auto = |delay: &str| {
+                run(
+                    &varied_spec(&format!(r#"{base}, "conformal_rate": "auto", {delay}"#)),
+                    &df,
+                    size,
+                )
+            };
+            let by_label = auto(r#""label_clock": "avail""#);
+            assert_same(
+                &auto(r#""embargo": 6.0"#),
+                &by_label,
+                &format!("reset {reset:?}, chunks of {size}"),
+            );
+            let fixed = run(
+                &varied_spec(&format!(r#"{base}, "label_clock": "avail""#)),
+                &df,
+                size,
+            );
+            assert_eq!(
+                field_bits(&fixed, "pred_y"),
+                field_bits(&by_label, "pred_y")
+            );
+            assert_ne!(
+                field_bits(&fixed, "lo_y"),
+                field_bits(&by_label, "lo_y"),
+                "the rows held move the step"
+            );
+        }
+    }
+    let df = frame(400, 7, None, &|_| None);
+    let at = |rate: &str| {
+        run(
+            &varied_spec(&format!(r#"{base}, "conformal_rate": {rate}"#)),
+            &df,
+            0,
+        )
+    };
+    let (auto, fixed) = (at(r#""auto""#), at("0.05"));
+    assert!(
+        field_bits(&auto, "lo_y")
+            .iter()
+            .filter(|v| v.is_some())
+            .count()
+            > 300
+    );
+    assert_same(&auto, &fixed, "no delay: auto is 0.05");
 }

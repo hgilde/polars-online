@@ -2382,6 +2382,7 @@
     pair_split_gain_t: List[Float64]
 
 [enum values]  # the words each string-valued parameter takes, read from its refusal of one it does not: a word added, renamed or dropped is a diff here
+  spec.conformal_rate: auto
   spec.drift_action: flag, reset
   spec.group_close: monotone, session
   spec.held_overflow: drop_oldest, refuse

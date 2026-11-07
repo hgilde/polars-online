@@ -217,6 +217,12 @@ fn the_stream_settings_resolve_as_documented() {
     assert_eq!(s["average_eta"], 2.0);
     assert_eq!(s["min_settled_frac"], 0.5);
     assert_eq!(s["max_error_inflation"], "inf");
+    // The delay-aware step resolves as the word it was given (task 342b).
+    let r = resolved_with(
+        "conformal = 0.9\nconformal_rate = \"auto\"",
+        "type = \"ewridge\"",
+    );
+    assert_eq!(r["stream"]["conformal_rate"], "auto");
 }
 
 /// `ewridge`'s gate is its noise statistic, so its `min_weight` resolves

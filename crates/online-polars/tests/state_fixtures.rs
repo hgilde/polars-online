@@ -1144,6 +1144,46 @@ fn label_run(bytes: &[u8], input: &DataFrame) -> Ran {
     ))
 }
 
+/// The specs of the twelfth bank file, `bank_conformal_auto` (schema 67,
+/// task 342b): a conformal interval under `conformal_rate = "auto"` on rows
+/// held for their label times, past its warm start at the save, so its
+/// tracker writes the mean of the rows waiting at each release
+/// (`held_mean`), which a tracker with nothing waiting does not write. The
+/// rows of `bank_label_clock`, a buffer with no bound.
+fn auto_specs() -> Vec<Spec> {
+    [
+        r#"{"name": "auto", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 30.0, "gap_cap": 50.0, "weight": "w", "label_clock": "avail", "conformal": 0.9, "conformal_rate": "auto", "emit_sigma": true}"#,
+    ]
+    .iter()
+    .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))
+    .collect()
+}
+
+fn auto_first() -> (Vec<u8>, DataFrame) {
+    let df = label_frame();
+    let mut bank = Bank::new(auto_specs()).unwrap();
+    let cols = bank.fit_predict(&df.slice(0, LABEL_SPLIT)).unwrap();
+    let out = DataFrame::new(LABEL_SPLIT, cols).unwrap();
+    let lo = out.column("auto").unwrap().struct_().unwrap();
+    let lo = lo.field_by_name("lo_y").unwrap();
+    assert!(
+        lo.f64().unwrap().iter().flatten().count() > 10,
+        "past the warm start"
+    );
+    (
+        bank.save_bytes().unwrap(),
+        df.slice(LABEL_SPLIT as i64, LABEL_N - LABEL_SPLIT),
+    )
+}
+
+fn auto_run(bytes: &[u8], input: &DataFrame) -> Ran {
+    let mut bank = Bank::load_bytes(bytes, Some(&auto_specs()))?;
+    let again = bank.save_bytes()?;
+    let cols = bank.fit_predict(input).map_err(|e| e.to_string())?;
+    let out = DataFrame::new(input.height(), cols).map_err(|e| e.to_string())?;
+    Ok((again, vec![("fit_predict".into(), out)]))
+}
+
 fn notice_run(bytes: &[u8], input: &DataFrame) -> Ran {
     let mut bank = Bank::load_bytes(bytes, Some(&notice_specs()))?;
     let again = bank.save_bytes()?;
@@ -1404,6 +1444,11 @@ fn kinds() -> Vec<Kind> {
             name: "bank_label_clock",
             first: label_first,
             run: label_run,
+        },
+        Kind {
+            name: "bank_conformal_auto",
+            first: auto_first,
+            run: auto_run,
         },
         Kind {
             name: "with_windows",
@@ -2207,6 +2252,13 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
         ("bank_label_clock", "a count of labels dropped", |p, v| {
             p.ends_with(".labels_dropped") && v.as_u64().is_some_and(|n| n > 0)
         }),
+        // Schema 67 (task 342b): a conformal tracker's mean of the rows
+        // waiting at each release, under `conformal_rate = "auto"`.
+        (
+            "bank_conformal_auto",
+            "a conformal mean of the rows held",
+            |p, v| p.ends_with(".held_mean") && v.as_f64().is_some_and(|f| f > 0.0),
+        ),
         // Schema 66 (task 328): the rows a window's ring has taken.
         (
             "bank_diagnosed",

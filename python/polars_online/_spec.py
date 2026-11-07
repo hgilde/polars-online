@@ -958,7 +958,7 @@ def _common(
     average_eta: float | None = None,
     emit_metrics: bool = False,
     conformal: float | None = None,
-    conformal_rate: float | None = None,
+    conformal_rate: float | Literal["auto"] | None = None,
     resid_quantiles: list[float] | None = None,
     emit_autocorr: bool = False,
     resid_autocorr_lag: int | None = None,

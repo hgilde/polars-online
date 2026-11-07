@@ -1490,13 +1490,14 @@ print(f"{served.height} intervals served, {covered:.3f} of them held the delay t
 | what it refuses | `embargo` beside it, a target that is a window expression, `group_close`, a `session` column and `drift_action="reset"`; and `holt`, `kalman`, `hmm` and `micro`, whose score reaches from the newest row learned, which `label_clock` moves to a label time |
 | cost | each held row goes into the waiting rows in label-time order: 0.006 microseconds a row with about 100 waiting, 0.38 with about 800 (Apple M4 Pro) |
 
-**With hundreds of labels in flight, set `conformal_rate` below its
-default of 0.05.** Each row is scored against the radius it was shown, so
-misses arrive in bursts and the default step overshoots. For a 90%
-interval with `n` rows waiting on average, use `0.05 / (1 + n / 48)`: on
-New York's 2013 flights under an 8-hour `embargo`, with 338 rows waiting,
-0.05 held 90% of delays at a half-width of 189 minutes, and that rule's
-0.0063 held 90% at 47.
+**With hundreds of labels in flight, set `conformal_rate="auto"`.** Each
+row is scored against the radius it was shown, so misses arrive in bursts
+and the default step of 0.05 overshoots. `"auto"` divides the step by the
+rows waiting for their labels, averaged as the stream runs, and is 0.05
+when nothing waits. On New York's 2013 flights under an 8-hour `embargo`,
+with 338 rows waiting, 0.05 held 90% of delays at a half-width of 189
+minutes, and `"auto"` held 90% at 47. To set the rate by hand for a 90%
+interval with `n` rows waiting, use `0.05 / (1 + n / 48)`.
 [DIAGNOSTICS.md](docs/DIAGNOSTICS.md#conformal-intervals) has the
 measurement.
 

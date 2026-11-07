@@ -289,6 +289,83 @@ impl<'de> Deserialize<'de> for CountOrAuto {
     }
 }
 
+/// The conformal interval's step, as a spec writes it (docs/PLAN.md task
+/// 342b): a number, the step per unit of `sigma` on every scored row, or
+/// `"auto"`, the default step divided by `1 + 0.05 · g(α) · n̄ / c` with `n̄`
+/// the mean rows waiting for their labels (`online_core::Conformal`), which
+/// is the number 0.05 exactly where nothing waits. A setting, written in
+/// the spec; the tracker keeps the step it takes when nothing waits.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ConformalRate {
+    Fixed(f64),
+    Auto,
+}
+
+impl ConformalRate {
+    /// The default step, and the step `"auto"` takes when nothing waits.
+    pub const DEFAULT: f64 = 0.05;
+
+    /// The step per unit of `sigma` with nothing waiting.
+    pub fn base(&self) -> f64 {
+        match *self {
+            ConformalRate::Fixed(r) => r,
+            ConformalRate::Auto => Self::DEFAULT,
+        }
+    }
+
+    pub fn is_auto(&self) -> bool {
+        matches!(self, ConformalRate::Auto)
+    }
+}
+
+impl Serialize for ConformalRate {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match *self {
+            ConformalRate::Fixed(r) => s.serialize_f64(r),
+            ConformalRate::Auto => s.serialize_str("auto"),
+        }
+    }
+}
+
+/// A number or `"auto"`, each read by its own rule, so a wrong value is
+/// named as what it is; a number is read as an `f64` always was, and its
+/// range is `Spec::validate`'s.
+impl<'de> Deserialize<'de> for ConformalRate {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = ConformalRate;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a number, or \"auto\"")
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<ConformalRate, E> {
+                Ok(ConformalRate::Fixed(v))
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<ConformalRate, E> {
+                Ok(ConformalRate::Fixed(v as f64))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<ConformalRate, E> {
+                Ok(ConformalRate::Fixed(v as f64))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<ConformalRate, E> {
+                match v {
+                    "auto" => Ok(ConformalRate::Auto),
+                    // The one shape of a word's refusal (task 244, P-4).
+                    _ => Err(E::custom(format!(
+                        "must be a number or \"auto\", but it is {v:?}. Use one of those."
+                    ))),
+                }
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
 /// What `ewridge`'s ridge is scaled against (docs/PLAN.md task 151): a
 /// penalty on the mean moments, permanent, or a prior on the decaying sums,
 /// fading (`"sum"`, classic RLS regularization; task 144 named the

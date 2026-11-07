@@ -50,15 +50,30 @@
 //! row that has a residual and a finite `σ > 0`, and tracks from there. The
 //! realized coverage is an EW mean of `1{s_t ≤ q_t}` on the same clock as the
 //! model, also read before the row.
+//!
+//! **Under a label delay** (docs/records/CONFORMAL-STEP.md, docs/PLAN.md
+//! task 342). A row whose label arrives `n` releases after it was shown its
+//! interval feeds the recursion `n` steps late: linearized about the true
+//! quantile, the radius error follows `e_{t+1} = e_t − k·e_{t−n}` with
+//! `k = rate · g(α)` ([`gauss_gain`]), stable only for `k·n` below about
+//! `π/2` and free of overshoot below about `1/e`. The delay-aware step
+//! divides the rate by `1 + rate · g(α) · n̄ / c`, with `n̄` the EW mean of
+//! the rows waiting at each release and `c` = [`HELD_GAIN_BOUND`]: the
+//! fixed step when nothing waits, and `k·n̄` held below `c` when much does.
+//! `n̄` is a slow mean, not the count at the instant: a step that followed
+//! the instant count would take its smallest steps exactly when the misses
+//! pile up, and the miss rate the guarantee holds is weighted by the steps.
 
 use serde::{Deserialize, Serialize};
 
 /// Tracked conformal radius and realized coverage for one output slot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "Saved")]
 pub struct Conformal {
     /// Miscoverage target `α`; the interval aims at coverage `1 − α`.
     alpha: f64,
-    /// Step per unit of `σ`.
+    /// Step per unit of `σ`: the step itself, or under the delay-aware rule
+    /// the step it takes when nothing waits.
     rate: f64,
     /// The radius. NaN until the warm start.
     q: f64,
@@ -73,7 +88,61 @@ pub struct Conformal {
     w_mean: f64,
     #[serde(default)]
     w_rows: f64,
+    /// The EW mean of the rows still waiting for their labels at each
+    /// release, the released row aside, on the same rows and decay as
+    /// `w_mean`: `n̄` of the delay-aware step (docs/PLAN.md task 342). 0
+    /// wherever the stream passes no count, so the step is `rate`'s; not
+    /// written while 0, so no other state's bytes move (schema 67).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    held_mean: f64,
+    /// `g(α) = 2φ(Φ⁻¹(1 − α/2))`, the step's loop gain per unit of rate on
+    /// Gaussian residuals, derived from `α` when the tracker is made or
+    /// loaded and never written: a value of the configuration, not of the
+    /// stream.
+    #[serde(skip_serializing)]
+    gain: f64,
 }
+
+/// A [`Conformal`] as its file holds it: every field but the derived gain.
+#[derive(Deserialize)]
+struct Saved {
+    alpha: f64,
+    rate: f64,
+    q: f64,
+    cov: f64,
+    cov_w: f64,
+    #[serde(default)]
+    w_mean: f64,
+    #[serde(default)]
+    w_rows: f64,
+    #[serde(default)]
+    held_mean: f64,
+}
+
+impl From<Saved> for Conformal {
+    fn from(s: Saved) -> Self {
+        Self {
+            alpha: s.alpha,
+            rate: s.rate,
+            q: s.q,
+            cov: s.cov,
+            cov_w: s.cov_w,
+            w_mean: s.w_mean,
+            w_rows: s.w_rows,
+            held_mean: s.held_mean,
+            gain: gauss_gain(s.alpha),
+        }
+    }
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
+}
+
+/// The delay-aware step's constant `c`: the step is cut so that its loop
+/// gain times the rows waiting stays below `c`, between the edge at which
+/// the radius stops overshooting (`1/e`) and the edge of stability (`π/2`).
+pub const HELD_GAIN_BOUND: f64 = 0.5;
 
 impl Conformal {
     /// `coverage` is the target `1 − α`, strictly inside `(0, 1)`; `rate` the
@@ -102,6 +171,8 @@ impl Conformal {
             cov_w: 0.0,
             w_mean: 0.0,
             w_rows: 0.0,
+            held_mean: 0.0,
+            gain: gauss_gain(1.0 - coverage),
         })
     }
 
@@ -127,30 +198,57 @@ impl Conformal {
     /// emitted for it. Every later row is scored against the radius it was
     /// given, then moves it.
     pub fn update(&mut self, resid: f64, sigma: f64, lam: f64, w: f64) {
-        self.update_against(resid, sigma, lam, w, None);
+        self.update_against(resid, sigma, lam, w, None, 0);
     }
 
     /// [`Self::update`] for a row whose label arrives after the row was
-    /// shown its interval (`embargo`): the row is scored against the
-    /// radius it was *shown*, `shown`, not the radius the recursion has
-    /// reached since, and the step moves the current radius by that error --
-    /// the delayed-feedback form of adaptive conformal inference. Scored
-    /// against the radius at release, the coverage described intervals
-    /// nobody was shown (review 2026-09-12, C21's other half; docs/PLAN.md
-    /// task 112). `None` is the current radius, which is what `shown` is
-    /// with no delay; `Some(NaN)`, a row shown no interval because none
-    /// existed yet, is no evidence either way: it ages the coverage and
-    /// takes no step.
-    pub fn update_against(&mut self, resid: f64, sigma: f64, lam: f64, w: f64, shown: Option<f64>) {
+    /// shown its interval (`embargo`, `label_clock`): the row is scored
+    /// against the radius it was *shown*, `shown`, not the radius the
+    /// recursion has reached since, and the step moves the current radius by
+    /// that error -- the delayed-feedback form of adaptive conformal
+    /// inference. Scored against the radius at release, the coverage
+    /// described intervals nobody was shown (review 2026-09-12, C21's other
+    /// half; docs/PLAN.md task 112). `None` is the current radius, which is
+    /// what `shown` is with no delay; `Some(NaN)`, a row shown no interval
+    /// because none existed yet, is no evidence either way: it ages the
+    /// coverage and takes no step.
+    ///
+    /// `held` is the count of rows still waiting for their labels as this
+    /// one is released, itself aside, for the delay-aware step: its EW mean
+    /// `n̄`, over the rows `w̄` is taken over, divides the step,
+    ///
+    /// ```text
+    /// η = rate · σ / (1 + rate · g(α) · n̄ / c)
+    /// ```
+    ///
+    /// so that the loop gain `η·g/σ` times the rows in flight stays below
+    /// `c` ([`HELD_GAIN_BOUND`]); see [`gauss_gain`]. 0 on every row leaves
+    /// `n̄` at 0 and the step at `rate · σ` to the bit, which is how the
+    /// fixed rate is kept.
+    pub fn update_against(
+        &mut self,
+        resid: f64,
+        sigma: f64,
+        lam: f64,
+        w: f64,
+        shown: Option<f64>,
+        held: usize,
+    ) {
         if !resid.is_finite() || w <= 0.0 {
             self.cov_w *= lam;
             self.w_rows *= lam;
             return;
         }
         // The stream's mean weight, this row's included, so the first row
-        // reads its own weight as 1.
+        // reads its own weight as 1; and the mean of the rows waiting, on the
+        // same count.
         self.w_rows = lam * self.w_rows + 1.0;
         self.w_mean += (w - self.w_mean) / self.w_rows;
+        // (A tracker that has never been passed a count skips the division,
+        // whose result would be 0: the fixed step costs what it did.)
+        if held > 0 || self.held_mean != 0.0 {
+            self.held_mean += (held as f64 - self.held_mean) / self.w_rows;
+        }
         let usable_sigma = sigma.is_finite() && sigma > 0.0;
         if !self.q.is_finite() {
             if usable_sigma {
@@ -171,7 +269,11 @@ impl Conformal {
         self.cov_w = cw;
         // A slot whose residuals have all been exactly zero has sigma 0 and
         // takes no step: the radius waits until there is an error scale.
-        let eta = if usable_sigma { self.rate * sigma } else { 0.0 };
+        let mut eta = if usable_sigma { self.rate * sigma } else { 0.0 };
+        // Nothing has waited: the fixed step, with no division to round it.
+        if self.held_mean > 0.0 {
+            eta /= 1.0 + self.rate * self.gain * self.held_mean / HELD_GAIN_BOUND;
+        }
         let rel = if self.w_mean > 0.0 {
             w / self.w_mean
         } else {
@@ -179,6 +281,63 @@ impl Conformal {
         };
         self.q = (self.q + eta * rel * (f64::from(miss) - self.alpha)).max(0.0);
     }
+
+    /// `n̄`: the EW mean of the rows waiting at each release, 0 where none
+    /// has been counted.
+    pub fn held_mean(&self) -> f64 {
+        self.held_mean
+    }
+}
+
+/// `g(α) = 2φ(Φ⁻¹(1 − α/2))`: the density of `|Z|`, `Z` standard normal,
+/// at its `1 − α` quantile. On Gaussian residuals a step of `rate · σ` moves
+/// the expected miss rate by `rate · g` per unit of radius error in `σ`, so
+/// `rate · g` is the tracker's loop gain: 0.636 at a coverage of 50%, 0.206
+/// at 90%, 0.029 at 99%.
+///
+/// `φ`'s exponential is [`exp_neg`], basic arithmetic alone, so the gain is
+/// the same bits on every platform and a radius stepped by it continues to
+/// the bit wherever its state is loaded. `Φ⁻¹` is [`norm_ppf`], whose tails
+/// beyond `p = 0.02425` (coverage above 95.15%) read the platform's `ln`, as
+/// the warm start does.
+pub fn gauss_gain(alpha: f64) -> f64 {
+    let z = norm_ppf(1.0 - 0.5 * alpha);
+    // 1 / sqrt(2π)
+    const INV_SQRT_2PI: f64 = 0.398_942_280_401_432_7;
+    2.0 * INV_SQRT_2PI * exp_neg(0.5 * z * z)
+}
+
+/// `e^{−x}` for `x ≥ 0` in basic arithmetic, the same bits on every
+/// platform: `x = k·ln 2 + r` with `0 ≤ r < ln 2` (`k` whole), `e^{−r}` by
+/// its Taylor series to the term below the last bit, scaled by `2^{−k}`
+/// exactly. Within a few ulps of the true value; NaN for NaN, 0 past the
+/// smallest normal.
+pub fn exp_neg(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    if x <= 0.0 {
+        return 1.0;
+    }
+    if x > 708.0 {
+        return 0.0;
+    }
+    // ln 2 split in two (Cody and Waite): `k·LN2_HI` is exact for every `k`
+    // here, so `r` keeps its digits however large `k` is.
+    const LN2_HI: f64 = 0.693_147_180_369_123_8;
+    const LN2_LO: f64 = 1.908_214_929_270_587_7e-10;
+    let k = (x / std::f64::consts::LN_2).floor();
+    let r = (x - k * LN2_HI) - k * LN2_LO;
+    // e^{-r}, r in [0, ln 2): the terms fall below 2^-53 of the sum by the
+    // 18th.
+    let mut term = 1.0;
+    let mut sum = 1.0;
+    for i in 1..=20 {
+        term *= -r / f64::from(i);
+        sum += term;
+    }
+    // 2^-k, k in 0..=1021, exactly: the exponent field of a normal double.
+    sum * f64::from_bits(((1023 - k as i64) as u64) << 52)
 }
 
 /// Inverse of the standard normal CDF, `Φ⁻¹(p)` for `p` in `(0, 1)`.
@@ -394,22 +553,22 @@ mod tests {
         // |resid| 1.2 against a shown radius of 1.3: covered, though 1.2 is
         // past a radius of 1.0 it might have moved to since.
         let mut shown = c.clone();
-        shown.update_against(1.2, 1.0, 1.0, 1.0, Some(1.3));
+        shown.update_against(1.2, 1.0, 1.0, 1.0, Some(1.3), 0);
         assert_eq!(shown.coverage(), Some(1.0));
         assert!((shown.radius().unwrap() - (q0 - 0.1 * 0.1)).abs() < 1e-15);
         let mut missed = c.clone();
-        missed.update_against(1.2, 1.0, 1.0, 1.0, Some(1.1));
+        missed.update_against(1.2, 1.0, 1.0, 1.0, Some(1.1), 0);
         assert_eq!(missed.coverage(), Some(0.0));
         assert!((missed.radius().unwrap() - (q0 + 0.1 * 0.9)).abs() < 1e-15);
         // Shown nothing: no evidence, no step.
         let mut none = c.clone();
-        none.update_against(9.0, 1.0, 0.5, 1.0, Some(f64::NAN));
+        none.update_against(9.0, 1.0, 0.5, 1.0, Some(f64::NAN), 0);
         assert_eq!((none.coverage(), none.radius()), (None, Some(q0)));
         // `None` is the current radius, which is `update`.
         let (mut a, mut b) = (c.clone(), c);
         for (r, w) in [(0.3, 1.0), (2.5, 0.5), (-1.7, 2.0), (0.0, 1.0)] {
             a.update(r, 1.1, 0.97, w);
-            b.update_against(r, 1.1, 0.97, w, None);
+            b.update_against(r, 1.1, 0.97, w, None, 0);
         }
         assert_eq!(a, b);
     }
@@ -540,7 +699,7 @@ mod tests {
                     kinds[1] += 1;
                 }
                 5 if q.is_finite() => {
-                    c.update_against(resid, sigma, lam, w, Some(f64::NAN));
+                    c.update_against(resid, sigma, lam, w, Some(f64::NAN), 0);
                     means.push((w, 1.0));
                     kinds[2] += 1;
                 }
@@ -625,5 +784,211 @@ mod tests {
         let (lo, hi) = (norm_ppf(p), norm_ppf(1.0 - p));
         assert!((lo + hi).abs() < 1e-12, "{lo} and {hi}");
         assert!((lo - -1.972_961_051_311_884_5).abs() < 3e-9, "{lo}");
+    }
+
+    // The delay-aware step (docs/PLAN.md task 342b).
+
+    /// `exp_neg` against the platform's `exp` over the range the gain reads
+    /// and past it, within a few ulps, and its edges.
+    #[test]
+    fn exp_neg_is_the_exponential() {
+        let mut x = 0.0f64;
+        let mut worst = 0.0f64;
+        while x < 700.0 {
+            let (got, want) = (exp_neg(x), (-x).exp());
+            worst = worst.max((got - want).abs() / want);
+            x += 0.0137 + x * 0.003;
+        }
+        assert!(worst < 1e-15, "worst relative error {worst}");
+        assert_eq!(exp_neg(0.0), 1.0);
+        assert_eq!(exp_neg(-1.0), 1.0);
+        assert_eq!(exp_neg(1e4), 0.0);
+        assert!(exp_neg(f64::NAN).is_nan());
+    }
+
+    /// `g(α)` is `2φ(Φ⁻¹(1 − α/2))`: the record's values, and the density of
+    /// `|Z|` written with the platform's `exp`.
+    #[test]
+    fn the_gain_is_the_density_of_the_absolute_normal_at_its_quantile() {
+        for (cov, g) in [(0.5, 0.636), (0.9, 0.206), (0.95, 0.117), (0.99, 0.029)] {
+            let alpha = 1.0 - cov;
+            let got = gauss_gain(alpha);
+            let z = norm_ppf(1.0 - 0.5 * alpha);
+            let want = 2.0 * (-0.5 * z * z).exp() / (2.0 * std::f64::consts::PI).sqrt();
+            assert!((got - want).abs() <= 1e-15 * want, "{cov}: {got} vs {want}");
+            assert!((got - g).abs() < 5e-4, "{cov}: {got} vs {g}");
+        }
+    }
+
+    /// Fed a count of 0 on every row, the delay-aware tracker is the fixed
+    /// one to the bit, and writes the same bytes.
+    #[test]
+    fn a_count_of_zero_is_the_fixed_step_to_the_bit() {
+        let (mut a, mut b) = (
+            Conformal::new(0.9, 0.05).unwrap(),
+            Conformal::new(0.9, 0.05).unwrap(),
+        );
+        let mut s = 17u64;
+        for t in 0..3000 {
+            let (r, w, lam) = (2.0 * gauss(&mut s), 0.5 + lcg(&mut s), 0.99);
+            let shown = (t % 3 == 0).then(|| a.radius().unwrap_or(f64::NAN));
+            a.update_against(r, 1.3, lam, w, shown, 0);
+            b.update_against(r, 1.3, lam, w, shown, 0);
+            c_eq_bits(&a, &b);
+        }
+        let mut fixed = Conformal::new(0.9, 0.05).unwrap();
+        let mut s = 17u64;
+        for _ in 0..3000 {
+            let (r, w) = (2.0 * gauss(&mut s), 0.5 + lcg(&mut s));
+            fixed.update(r, 1.3, 0.99, w);
+        }
+        assert_eq!(fixed.held_mean(), 0.0);
+        let bytes = rmp_serde::to_vec_named(&fixed).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(!text.contains("held_mean"), "a count of 0 is not written");
+        assert!(!text.contains("gain"), "the gain is never written");
+    }
+
+    fn c_eq_bits(a: &Conformal, b: &Conformal) {
+        assert_eq!(
+            a.radius().map(f64::to_bits),
+            b.radius().map(f64::to_bits),
+            "{a:?} vs {b:?}"
+        );
+    }
+
+    /// `n̄` and the step against their definitions, row for row: `n̄` the
+    /// EW mean of the counts over the rows `w̄` is taken over, each row's age
+    /// the product of the factors after it; the step `rate·σ / (1 + rate·g·n̄
+    /// / c)` times `w / w̄` -- with rows that are no evidence mixed in, which
+    /// age the count and add nothing to it.
+    #[test]
+    fn the_held_mean_and_the_step_are_their_definitions() {
+        let (alpha, rate) = (0.1, 0.05);
+        let g = gauss_gain(alpha);
+        let mut c = Conformal::new(1.0 - alpha, rate).unwrap();
+        let mut rows: Vec<(f64, f64, f64)> = Vec::new(); // (w, held, age)
+        let mut q = f64::NAN;
+        let mut s = 29u64;
+        let mut stepped = 0;
+        for t in 0..400 {
+            let lam = 0.95 + 0.04 * lcg(&mut s);
+            let (resid, w, sigma) = (gauss(&mut s), 0.5 + lcg(&mut s), 1.0 + lcg(&mut s));
+            let held = (lcg(&mut s) * 300.0) as usize;
+            rows.iter_mut().for_each(|e| e.2 *= lam);
+            if t % 5 == 2 {
+                c.update_against(f64::NAN, sigma, lam, w, None, held);
+            } else {
+                c.update_against(resid, sigma, lam, w, None, held);
+                rows.push((w, held as f64, 1.0));
+                let ages: f64 = rows.iter().map(|e| e.2).sum();
+                let nbar = rows.iter().map(|e| e.1 * e.2).sum::<f64>() / ages;
+                let wbar = rows.iter().map(|e| e.0 * e.2).sum::<f64>() / ages;
+                assert!(
+                    (c.held_mean() - nbar).abs() <= 1e-12 * (1.0 + nbar),
+                    "row {t}: {} vs {nbar}",
+                    c.held_mean()
+                );
+                if q.is_finite() {
+                    let miss = f64::from(resid.abs() > q);
+                    let eta = rate * sigma / (1.0 + rate * g * nbar / HELD_GAIN_BOUND);
+                    q = (q + eta * (w / wbar) * (miss - alpha)).max(0.0);
+                    stepped += 1;
+                } else {
+                    q = sigma * norm_ppf(1.0 - 0.5 * alpha);
+                }
+            }
+            let got = c.radius().unwrap();
+            assert!(
+                (got - q).abs() <= 1e-12 * (1.0 + q),
+                "row {t}: {got} vs {q}"
+            );
+        }
+        assert!(stepped > 300 && c.held_mean() > 50.0, "{stepped} {c:?}");
+    }
+
+    /// `held_mean` survives a save, a file without it loads at 0, and the
+    /// gain is derived again on load rather than read.
+    #[test]
+    fn the_held_mean_round_trips_and_an_older_file_loads_at_zero() {
+        let mut c = Conformal::new(0.9, 0.05).unwrap();
+        let mut s = 5u64;
+        for i in 0..200 {
+            c.update_against(gauss(&mut s), 1.0, 0.99, 1.0, None, i % 40);
+        }
+        assert!(c.held_mean() > 0.0);
+        let bytes = rmp_serde::to_vec_named(&c).unwrap();
+        let back: Conformal = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(back, c);
+        assert_eq!(back.gain.to_bits(), gauss_gain(0.1 - 0.0).to_bits());
+        // The same state as a build before the field wrote it.
+        let mut old = c.clone();
+        old.held_mean = 0.0;
+        let older = rmp_serde::to_vec_named(&old).unwrap();
+        assert!(older.len() < bytes.len());
+        let back: Conformal = rmp_serde::from_slice(&older).unwrap();
+        assert_eq!(back.held_mean(), 0.0);
+        assert_eq!(back, old);
+    }
+
+    /// The derivation's simulation (docs/records/CONFORMAL-STEP.md §2.4):
+    /// standard normal residuals, `σ = 1` known, each row's label exactly
+    /// `n` releases late. At the fixed 0.05 with 300 rows waiting `k·n =
+    /// 0.05 · g · 300 = 3.1`, past the stability edge `π/2`, and the radius
+    /// swings: its mean is far above `q*` and its spread is of the order of
+    /// `q*` itself. The delay-aware step holds `k·n̄` to `c = 1/2`, where the
+    /// radius stays within a few percent of `q*` on average and spreads
+    /// about a twentieth of it. The coverage holds near 90% in both: the
+    /// guarantee does not depend on the step.
+    #[test]
+    fn under_a_long_delay_the_auto_step_holds_the_loop_gain_and_the_fixed_one_swings() {
+        let (n, rows, burn) = (300usize, 200_000usize, 50_000usize);
+        let q_star = norm_ppf(0.95);
+        let run = |held_count: bool| {
+            let mut c = Conformal::new(0.9, 0.05).unwrap();
+            let mut s = 41u64;
+            let mut shown: std::collections::VecDeque<(f64, f64)> = Default::default();
+            let (mut sum, mut sum2, mut misses, mut m) = (0.0, 0.0, 0.0, 0.0);
+            for t in 0..rows {
+                let r = gauss(&mut s);
+                if shown.len() == n {
+                    let (r_old, q_old) = shown.pop_front().unwrap();
+                    let held = if held_count { shown.len() } else { 0 };
+                    c.update_against(r_old, 1.0, 1.0 - 1.0 / 2000.0, 1.0, Some(q_old), held);
+                }
+                let q = c.radius().unwrap_or(f64::NAN);
+                if t >= burn && q.is_finite() {
+                    sum += q;
+                    sum2 += q * q;
+                    misses += f64::from(r.abs() > q);
+                    m += 1.0;
+                }
+                shown.push_back((r, q));
+            }
+            let mean = sum / m;
+            let sd = (sum2 / m - mean * mean).max(0.0).sqrt();
+            (mean / q_star, sd / q_star, 1.0 - misses / m, c)
+        };
+        let (fixed_mean, fixed_sd, fixed_cov, _) = run(false);
+        let (auto_mean, auto_sd, auto_cov, c) = run(true);
+        // n̄ is the n - 1 others waiting at every release.
+        assert!(
+            (c.held_mean() - (n - 1) as f64).abs() < 1e-9,
+            "{}",
+            c.held_mean()
+        );
+        let k_n =
+            0.05 / (1.0 + 0.05 * c.gain * c.held_mean() / HELD_GAIN_BOUND) * c.gain * n as f64;
+        assert!(k_n < HELD_GAIN_BOUND, "k·n {k_n}");
+        assert!(
+            fixed_mean > 1.5 && fixed_sd > 0.8,
+            "fixed: {fixed_mean} {fixed_sd}"
+        );
+        assert!(
+            (auto_mean - 1.0).abs() < 0.03 && auto_sd < 0.1,
+            "auto: {auto_mean} {auto_sd}"
+        );
+        assert!((fixed_cov - 0.9).abs() < 0.01, "fixed coverage {fixed_cov}");
+        assert!((auto_cov - 0.9).abs() < 0.005, "auto coverage {auto_cov}");
     }
 }

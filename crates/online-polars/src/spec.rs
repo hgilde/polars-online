@@ -1934,9 +1934,12 @@ pub struct Spec {
     /// Step of the conformal radius per unit of the slot's `sigma`. Default
     /// 0.05: a miss widens the interval by `0.05·sigma·(1 − α)`, a hit
     /// narrows it by `0.05·sigma·α`, each times the row's weight over the
-    /// scored rows' EW mean weight (docs/PLAN.md task 147).
+    /// scored rows' EW mean weight (docs/PLAN.md task 147). `"auto"`
+    /// divides 0.05 by `1 + 0.05·g(α)·n̄/c`, `n̄` the EW mean of the rows
+    /// waiting for their labels at each release (task 342b): 0.05 exactly
+    /// where nothing waits.
     #[serde(default)]
-    pub conformal_rate: Option<f64>,
+    pub conformal_rate: Option<ConformalRate>,
     /// Emit `abs_resid_q<p>_<slot>` for each level in `resid_quantiles`: the
     /// exponentially weighted quantile of `|resid|` at the model's half-life
     /// and each row's weight (ENHANCEMENTS E23, docs/PLAN.md task 146), from
@@ -2530,9 +2533,17 @@ impl Spec {
         self.drift_threshold.as_ref().map_or(20.0, Span::value)
     }
 
-    /// The conformal radius' step per unit of `sigma`, `0.05` unless set.
+    /// The conformal radius' step per unit of `sigma` with nothing waiting,
+    /// `0.05` unless set (and under `"auto"`).
     pub fn conformal_rate_or_default(&self) -> f64 {
-        self.conformal_rate.unwrap_or(0.05)
+        self.conformal_rate
+            .map_or(ConformalRate::DEFAULT, |r| r.base())
+    }
+
+    /// Whether the conformal step reads the rows waiting for their labels
+    /// (`conformal_rate = "auto"`).
+    pub fn conformal_rate_auto(&self) -> bool {
+        self.conformal_rate.is_some_and(|r| r.is_auto())
     }
 
     /// The lag of `emit_autocorr`, `1` unless set.
@@ -3289,7 +3300,10 @@ impl Spec {
                  as 0.9."
             ));
         }
-        if let Some(r) = self.conformal_rate.filter(|r| !(*r > 0.0 && r.is_finite())) {
+        if let Some(ConformalRate::Fixed(r)) = self
+            .conformal_rate
+            .filter(|r| !(r.base() > 0.0 && r.base().is_finite()))
+        {
             no.refuse(format!(
                 "spec {name:?}: conformal_rate must be finite and above 0, but it is {r}. Set \
                  conformal_rate to how fast the interval's width adapts, such as the default \
