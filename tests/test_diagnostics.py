@@ -333,7 +333,7 @@ class TestOnlineSelection:
             assert names[i] == best, i
 
     def test_requires_more_than_one_slot(self):
-        with pytest.raises(ValueError, match="more than one slot"):
+        with pytest.raises(ValueError, match="has one slot per target"):
             po.spec.ewridge(
                 "m", targets=["y0"], features=["x0"], half_life=100.0, emit_selected=True
             )
@@ -860,9 +860,9 @@ class TestResidualDistribution:
 
     def test_bad_config_rejected(self):
         base = dict(targets=["y0"], features=["x0"], half_life=100.0)
-        with pytest.raises(ValueError, match="strictly between 0 and 1"):
+        with pytest.raises(ValueError, match="must each be above 0 and below 1"):
             po.spec.ewridge("m", resid_quantiles=[0.0], **base)
-        with pytest.raises(ValueError, match="non-empty"):
+        with pytest.raises(ValueError, match="must list at least one level"):
             po.spec.ewridge("m", resid_quantiles=[], **base)
         with pytest.raises(ValueError, match="resid_autocorr_lag"):
             po.spec.ewridge("m", emit_autocorr=True, resid_autocorr_lag=0, **base)

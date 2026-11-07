@@ -404,7 +404,7 @@ def test_m17_reverse_runs_through_with_windows_and_targets():
 
 
 def test_m11_a_bare_col_target_is_told_to_write_the_string():
-    with pytest.raises(ValueError, match="write the string 'p'"):
+    with pytest.raises(ValueError, match="Write the string 'p' in targets"):
         po.spec.ewridge("m", targets=[pl.col("p")], features=["x0"], half_life=10.0)
 
 

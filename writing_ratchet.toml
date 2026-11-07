@@ -602,21 +602,14 @@ text = "polars-online: {FORMULA_UNSTABLE}"
 reason = "main's prefix in front of a message read where it is written"
 
 [messages."crates/online-core/src/ewcov.rs"]
-"remedy" = 14
 
 [messages."crates/online-core/src/ewcov/diag.rs"]
-"remedy" = 2
 
 [messages."crates/online-core/src/kalman.rs"]
-"internal-word" = 1
-"remedy" = 10
 
 [messages."crates/online-core/src/robust.rs"]
-"remedy" = 20
 
 [messages."crates/online-core/src/sgd.rs"]
-"internal-word" = 9
-"remedy" = 13
 
 [docstrings."crates/online-py/src/lib.rs"]
 "missing" = 3
@@ -718,7 +711,6 @@ reason = "main's prefix in front of a message read where it is written"
 [vocabulary."crates/online-core/src/clock.rs#messages"]
 
 [vocabulary."crates/online-core/src/cluster/kmeans.rs#messages"]
-"british" = 5
 
 [vocabulary."crates/online-core/src/cluster/micro.rs#messages"]
 
@@ -733,7 +725,6 @@ reason = "main's prefix in front of a message read where it is written"
 [vocabulary."crates/online-core/src/ewclass.rs#messages"]
 
 [vocabulary."crates/online-core/src/ewcov.rs#messages"]
-"retired" = 2
 
 [vocabulary."crates/online-core/src/ewcov/diag.rs#messages"]
 
@@ -742,14 +733,12 @@ reason = "main's prefix in front of a message read where it is written"
 [vocabulary."crates/online-core/src/ewlagcov.rs#messages"]
 
 [vocabulary."crates/online-core/src/ewridge.rs#messages"]
-"retired" = 1
 
 [vocabulary."crates/online-core/src/ftrl.rs#messages"]
 
 [vocabulary."crates/online-core/src/gramfit/lars.rs#messages"]
 
 [vocabulary."crates/online-core/src/hmm.rs#messages"]
-"british" = 1
 
 [vocabulary."crates/online-core/src/holt.rs#messages"]
 
@@ -760,8 +749,6 @@ reason = "main's prefix in front of a message read where it is written"
 [vocabulary."crates/online-core/src/margbins.rs#messages"]
 
 [vocabulary."crates/online-core/src/marginal.rs#messages"]
-"british" = 1
-"retired" = 1
 
 [vocabulary."crates/online-core/src/marglag.rs#messages"]
 
@@ -790,7 +777,6 @@ reason = "main's prefix in front of a message read where it is written"
 [vocabulary."crates/online-polars/src/arrow.rs#messages"]
 
 [vocabulary."crates/online-polars/src/bank.rs#messages"]
-"british" = 2
 
 [vocabulary."crates/online-polars/src/bank/audit.rs#messages"]
 
@@ -813,11 +799,8 @@ reason = "main's prefix in front of a message read where it is written"
 [vocabulary."crates/online-polars/src/resolvers.rs#messages"]
 
 [vocabulary."crates/online-polars/src/runner.rs#messages"]
-"retired" = 2
 
 [vocabulary."crates/online-polars/src/spec.rs#messages"]
-"british" = 4
-"retired" = 2
 
 [vocabulary."crates/online-polars/src/spec/checks.rs#messages"]
 
@@ -826,14 +809,12 @@ reason = "main's prefix in front of a message read where it is written"
 [vocabulary."crates/online-polars/src/spec/label_clock.rs#messages"]
 
 [vocabulary."crates/online-polars/src/spec/limits.rs#messages"]
-"british" = 1
 
 [vocabulary."crates/online-polars/src/spec/models.rs#messages"]
 
 [vocabulary."crates/online-polars/src/spec/names.rs#messages"]
 
 [vocabulary."crates/online-polars/src/stream.rs#messages"]
-"retired" = 1
 
 [vocabulary."crates/online-polars/src/stream/last_row.rs#messages"]
 
@@ -846,7 +827,6 @@ reason = "main's prefix in front of a message read where it is written"
 [vocabulary."crates/online-polars/src/windows.rs#messages"]
 
 [vocabulary."crates/online-polars/src/windows_frame.rs#messages"]
-"retired" = 2
 
 [vocabulary."crates/online-py/src/gbdt.rs#messages"]
 
@@ -1001,8 +981,6 @@ reason = "main's prefix in front of a message read where it is written"
 "retired" = 11
 
 [vocabulary."python/polars_online/gram.py#messages"]
-"british" = 1
-"retired" = 1
 
 [vocabulary."python/polars_online/ops.py#docstrings"]
 "british" = 1
@@ -1035,7 +1013,7 @@ reason = "main's prefix in front of a message read where it is written"
 "45+" = 2
 
 [sentences."docs/DIAGNOSTICS.md"]
-"45+" = 7
+"45+" = 6
 "about-the-document" = 2
 "is-a-lead" = 4
 

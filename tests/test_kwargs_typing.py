@@ -79,9 +79,7 @@ def test_each_builder_takes_common_as_the_typed_dict(name):
 
 
 def test_a_typo_is_still_named_at_runtime():
-    with pytest.raises(
-        TypeError, match="ewridge\\(\\) got an unexpected keyword argument 'halflif'"
-    ):
+    with pytest.raises(TypeError, match='ewridge\\(\\) takes no parameter "halflif"'):
         po.spec.ewridge("m", targets=["y"], features=["x0"], halflif=10.0)
 
 
