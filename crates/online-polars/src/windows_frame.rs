@@ -28,6 +28,7 @@ use crate::stream::usable;
 use crate::windows::{
     Closed, Direction, KernelDef, OpDef, OpKind, Partial, Peek, Refusal, RowIn, Stat, Windows,
 };
+use crate::wrong_type::{Refused, wrong_type};
 
 /// The spec behind `like=`: its name, for messages, and the columns whose
 /// values must all be usable for it to learn from a row -- its features and
@@ -209,13 +210,14 @@ fn dtypes_of(schema: &Schema, exprs: Vec<Expr>) -> Result<Schema, String> {
         .map_err(|e| e.to_string())
 }
 
-fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, String> {
+fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, Refused> {
     if config.formulas.is_empty() {
         return Err(format!(
             "{WHO}: no expression (a column computation, such as pl.col(\"x\") + 1) was given. \
              Give at least one that holds a window operator or an increment, such as \
              po.ewm_mean(pl.col(\"x\"), half_life=10)."
-        ));
+        )
+        .into());
     }
     let has = |role: &str, c: &str| -> Result<(), String> {
         if input.contains(c) {
@@ -237,7 +239,8 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, String> {
                  pl.col(\"x\") + 1) with .alias() or a keyword argument, such as \
                  with_windows(lf, m=...).",
                 f.name
-            ));
+            )
+            .into());
         }
         if input.contains(&f.name) {
             return Err(format!(
@@ -246,7 +249,8 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, String> {
                  its leftmost column unless .alias() names it. Give it another name with \
                  .alias() or a keyword argument, such as with_windows(lf, m=...).",
                 f.name
-            ));
+            )
+            .into());
         }
         if !names.insert(&f.name) {
             return Err(format!(
@@ -254,7 +258,7 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, String> {
                  named {:?}. Give each a name of its own with .alias() or a keyword argument, such as \
                  with_windows(lf, m=...).",
                 f.name
-            ));
+            ).into());
         }
         // Each formula holds an operator (one rule with the Python side,
         // review R1, N7), and reads no column under a reserved prefix (N8).
@@ -264,7 +268,8 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, String> {
                  holds no window operator or increment, and a window run computes only those. \
                  Compute an expression of the row alone with Polars' with_columns.",
                 f.name
-            ));
+            )
+            .into());
         }
         for c in f.tree.columns() {
             if c.starts_with("@po:") || c.starts_with("@in:") {
@@ -273,7 +278,8 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, String> {
                      1) reads column {c:?}, but a name that starts with \"@po:\" or \"@in:\" is \
                      kept for the window run's own columns. Rename the column before the call.",
                     f.name
-                ));
+                )
+                .into());
             }
             has("input", &c)?;
         }
@@ -308,7 +314,8 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, String> {
                      own columns. Compute the inner increment in one \
                      with_windows call, and the increment of its output in a second.",
                     f.name
-                ));
+                )
+                .into());
             }
             let dtype = dtypes_of(
                 input,
@@ -324,12 +331,12 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, String> {
             let dtype = dtype.get("@t").expect("aliased").clone();
             let temporal = dtype.is_temporal();
             if !(numeric(&dtype) || temporal) {
-                return Err(format!(
+                return Err(Refused::wrong_type(format!(
                     "{WHO}: {}: an increment's input must be a number or a temporal column, but \
                      it is {}. Cast the input to a number, such as with .cast(pl.Float64).",
                     f.name,
                     crate::arrow::dtype_name(&dtype)
-                ));
+                )));
             }
             p.increments.push((key, (*op.input).clone(), temporal));
         }
@@ -395,13 +402,13 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, String> {
                     })?;
                     let dtype = dtype.get("@t").expect("aliased").clone();
                     if !numeric(&dtype) {
-                        return Err(format!(
+                        return Err(Refused::wrong_type(format!(
                             "{WHO}: {}: {}'s input must be a number, but it is {}. Cast \
                              the input to a number, such as with .cast(pl.Float64).",
                             f.name,
                             op.kind.name(),
                             crate::arrow::dtype_name(&dtype)
-                        ));
+                        )));
                     }
                     p.inputs.push((*op.input).clone());
                     p.inputs.len() - 1
@@ -810,7 +817,7 @@ impl WindowsRun {
     ///
     /// A formula or clock policy that cannot run, a column the input has
     /// not got, and an output name that collides.
-    pub fn new(config: WindowsConfig, input: &Schema) -> Result<Self, String> {
+    pub fn new(config: WindowsConfig, input: &Schema) -> Result<Self, Refused> {
         for (role, c) in [
             ("clock", &config.clock),
             ("session", &config.session),
@@ -823,7 +830,8 @@ impl WindowsRun {
                     "{WHO}: the {role} column {c:?} is not in the input, whose columns are {:?}. \
                      Name a column the input has, or add {c:?} to it.",
                     input.iter_names().map(|n| n.as_str()).collect::<Vec<_>>()
-                ));
+                )
+                .into());
             }
         }
         // A key that does nothing is refused, as a spec refuses it (task 278,
@@ -833,14 +841,16 @@ impl WindowsRun {
                 "{WHO}: session_gap is set, but session is not, and session_gap says only what \
                  a change of session does. Set session to the session column, or leave out \
                  session_gap."
-            ));
+            )
+            .into());
         }
         if config.restart_after_step_back.is_some() && config.clock.is_none() {
             return Err(format!(
                 "{WHO}: restart_after_step_back is set, but clock is not, and without a clock \
                  column every row is one step forward, so no row steps back. Set clock to the \
                  clock column, or leave out restart_after_step_back."
-            ));
+            )
+            .into());
         }
         let cfg: ClockCfg = clock_cfg_of(&ClockPolicy {
             who: WHO,
@@ -872,7 +882,8 @@ impl WindowsRun {
                      the input. Add {c:?} to the input, or pass a spec that reads only its \
                      columns.",
                     config.like.as_ref().map_or("", |l| l.spec.as_str())
-                ));
+                )
+                .into());
             }
         }
         // The output's dtypes: the formulas over the hidden columns, every
@@ -1713,7 +1724,7 @@ impl WindowsRun {
                 })
                 .collect::<PolarsResult<_>>()?
         } else if col.dtype().is_integer() {
-            polars_bail!(ComputeError: "{}", wide_integer_clock(WHO, c, col.dtype()));
+            return Err(wrong_type(wide_integer_clock(WHO, c, col.dtype())));
         } else {
             let s = col.cast(&DataType::Float64)?;
             s.f64()?
@@ -2004,7 +2015,11 @@ impl WindowsRun {
     ///
     /// Bytes that are not a windows state, a version this build does not
     /// read, another call, or held rows whose columns the input has not got.
-    pub fn load_bytes(bytes: &[u8], config: WindowsConfig, input: &Schema) -> Result<Self, String> {
+    pub fn load_bytes(
+        bytes: &[u8],
+        config: WindowsConfig,
+        input: &Schema,
+    ) -> Result<Self, Refused> {
         let header: Header = rmp_serde::from_slice(bytes).map_err(|e| {
             format!(
                 "{WHO}: the state cannot be read ({e}), so it is damaged or was not saved by a \
@@ -2016,7 +2031,8 @@ impl WindowsRun {
             return Err(format!(
                 "{WHO}: the state was not saved by a window run. Pass a state file a window run \
                  saved, or leave out load_state to start over."
-            ));
+            )
+            .into());
         }
         if !(MIN_WINDOWS_VERSION..=WINDOWS_VERSION).contains(&header.version) {
             return Err(format!(
@@ -2025,7 +2041,8 @@ impl WindowsRun {
                  version of polars-online that saved it, or leave out load_state to start \
                  over.",
                 header.version
-            ));
+            )
+            .into());
         }
         let file: FileIn = rmp_serde::from_slice(bytes).map_err(|e| {
             format!(
@@ -2042,7 +2059,8 @@ impl WindowsRun {
                  saved it, but {}. Give the call as the state was saved with it, or leave out \
                  load_state to start over.",
                 call_differences(&same_call(&file.config), &same_call(&config))
-            ));
+            )
+            .into());
         }
         let mut run = Self::new(config, input)?;
         if file.key_dtypes != run.key_dtypes {
@@ -2075,7 +2093,8 @@ impl WindowsRun {
                  was saved with.",
                 saved.join(", "),
                 now.join(", ")
-            ));
+            )
+            .into());
         }
         if file.core.kernels() != run.core.kernels()
             || file.core.ops() != run.core.ops()
@@ -2085,7 +2104,8 @@ impl WindowsRun {
                 "{WHO}: the state's window operators are not those of the call that saved it, \
                  so the state is damaged. Load an undamaged copy of the state file, or leave out \
                  load_state to start over."
-            ));
+            )
+            .into());
         }
         // The core's own invariants, beyond the call's (review 2026-10-06,
         // PD1): a damaged core that still decoded panicked at the next call.
@@ -2113,7 +2133,8 @@ impl WindowsRun {
                  copy of the state file, or leave out load_state to start over.",
                 held.height(),
                 file.core.held()
-            ));
+            )
+            .into());
         }
         let hidden_names = run.hidden_names();
         let held_input: Vec<(String, DataType)> = held
@@ -2139,7 +2160,8 @@ impl WindowsRun {
                 want.iter()
                     .map(|(n, t)| format!("{n}: {}", crate::arrow::dtype_name(t)))
                     .collect::<Vec<_>>()
-            ));
+            )
+            .into());
         }
         run.run_base = file.core.next_seq();
         run.core = file.core;
@@ -2172,7 +2194,8 @@ impl WindowsRun {
                     want.iter()
                         .map(|(n, t)| format!("{n}: {}", crate::arrow::dtype_name(t)))
                         .collect::<Vec<_>>()
-                ));
+                )
+                .into());
             }
             run.last_row = Some(last);
         }
@@ -2217,7 +2240,8 @@ impl WindowsRun {
                      know its input by, so it is damaged. Load an undamaged copy of the state \
                      file, or leave out load_state to start over.",
                     file.resume_skip
-                ));
+                )
+                .into());
             }
             run.resume_held = Some(want);
         }
@@ -2652,7 +2676,10 @@ mod tests {
             ),
         ] {
             let err = match serde_json::from_str::<WindowsConfig>(json) {
-                Ok(c) => WindowsRun::new(c, df.schema()).err().expect("refused"),
+                Ok(c) => WindowsRun::new(c, df.schema())
+                    .err()
+                    .expect("refused")
+                    .into_string(),
                 Err(e) => e.to_string(),
             };
             assert!(err.contains(says), "{json}: {err}");

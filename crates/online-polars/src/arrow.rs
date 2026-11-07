@@ -14,6 +14,10 @@
 //! integer. Everything *model-shaped* -- a clock that must be finite, a weight
 //! that must not be negative, a label that must be one of the declared classes
 //! -- stays in the bank, because it is true whoever supplies the data.
+//!
+//! A dtype the role cannot take is refused as `InvalidOperation`, the kind
+//! [`crate::is_wrong_type`] reads (task 355), and every other refusal here
+//! as `ComputeError`; the text alone is what either displays.
 
 use polars::prelude::*;
 // The trait is brought in unnamed: `ArrowArray` below is the C Data Interface
@@ -649,13 +653,13 @@ impl ArrowChunk {
             // A number in its own type is read only as a feature; every
             // other role reads a number as `Float64`.
             if let ArrowCol::Num(a) = c {
-                return polars_err!(SchemaMismatch:
+                return polars_err!(InvalidOperation:
                     "spec {:?}: {} column {:?} is given as {} numbers, which only a feature \
                      reads in their own type. Give a {} column as {}.",
                     spec.name, role, name, a.dtype_name(), role, wanted
                 );
             }
-            return polars_err!(SchemaMismatch:
+            return polars_err!(InvalidOperation:
                 "spec {:?}: {} column {:?} is given as {}, but a {} is read as {}. Give the \
                  column as {}.",
                 spec.name, role, name, c.form(), role, wanted, wanted
@@ -872,7 +876,7 @@ fn cast_to(
         Want::Number => {
             let dtype = s.dtype();
             if !(dtype.is_numeric() || matches!(dtype, DataType::Boolean | DataType::Null)) {
-                polars_bail!(ComputeError:
+                polars_bail!(InvalidOperation:
                     "spec {:?}: {} column {:?} must be a number, but it is {}. Cast it, such \
                      as with pl.col({:?}).cast(pl.Float64).",
                     spec_name, role, name, dtype_name(dtype), name
@@ -899,7 +903,7 @@ fn cast_to(
         Want::Value => {
             let dtype = s.dtype();
             if dtype.is_temporal() {
-                polars_bail!(ComputeError:
+                polars_bail!(InvalidOperation:
                     "spec {:?}: {} column {:?} is {}, but a formula target reads numbers, \
                      booleans and text, and a temporal column can only be a clock. Cast it to a number, such \
                      as with pl.col({:?}).dt.epoch(\"s\").cast(pl.Float64), or \
@@ -1048,7 +1052,7 @@ pub(crate) fn key_text(s: &Series) -> PolarsResult<Series> {
 /// one is refused by name.
 fn text_array(s: &Series, spec_name: &str, role: &str, name: &str) -> PolarsResult<Utf8ViewArray> {
     let cast = key_text(s).map_err(|e| {
-        polars_err!(ComputeError:
+        polars_err!(InvalidOperation:
             "spec {:?}: {} column {:?} is {}, which cannot be read as text ({}). Give a column \
              with one value per row, such as String or an integer; join a list's items into \
              one, such as with pl.col({:?}).cast(pl.List(pl.String)).list.join(\",\").",
@@ -1094,7 +1098,7 @@ pub fn chunk_from_frame_at(
         };
         let dt = col.dtype();
         if !(dt.is_integer() || matches!(dt, DataType::String | DataType::Categorical(..))) {
-            polars_bail!(ComputeError:
+            polars_bail!(InvalidOperation:
                 "spec {:?}: group_close = \"monotone\" needs a group column it can order, but \
                  {:?} is {}. Cast it to an integer, String or Categorical column.",
                 spec.name, g, dtype_name(dt)
@@ -1267,7 +1271,7 @@ fn check_clocks(df: &DataFrame, specs: &[Spec]) -> PolarsResult<()> {
             .clock_scale()
             .map_err(|e| polars_err!(ComputeError: "{}", e))?;
         if matches!(dtype, DataType::Time) {
-            polars_bail!(ComputeError:
+            polars_bail!(InvalidOperation:
                 "spec {:?}: clock column {:?} is a time of day, which starts again at \
                  midnight, so it cannot be a clock. Combine it with its date into a Datetime, \
                  such as with pl.col(\"date\").dt.combine(pl.col({:?})).",
@@ -1275,7 +1279,7 @@ fn check_clocks(df: &DataFrame, specs: &[Spec]) -> PolarsResult<()> {
             );
         }
         if dtype.is_integer() && !fits_64(dtype) {
-            polars_bail!(ComputeError: "{}",
+            polars_bail!(InvalidOperation: "{}",
                 wide_integer_clock(&format!("spec {:?}", spec.name), clock, dtype));
         }
         if dtype.is_temporal() {
@@ -1378,7 +1382,7 @@ fn check_clocks(df: &DataFrame, specs: &[Spec]) -> PolarsResult<()> {
                 } else {
                     continue;
                 };
-                polars_bail!(ComputeError:
+                polars_bail!(InvalidOperation:
                     "spec {:?}: it reads column {:?} as {}, which must be {must}, but the \
                      column is {}, and a temporal column can only be a clock. Add a number \
                      column for that use, such as \
@@ -1428,7 +1432,7 @@ fn check_label_clock(
         } else {
             "a number column of at most 64 bits, in the clock's own units"
         };
-        polars_bail!(ComputeError:
+        polars_bail!(InvalidOperation:
             "spec {:?}: label_clock column {:?} is {}, and clock column {:?} is {}, so its \
              values are not times on that clock. Give label_clock {want}.",
             spec.name, label, dtype_name(ldt), clock, dtype_name(dtype)
@@ -1474,12 +1478,12 @@ fn nanos_per_unit(s: &Series, role: NanosRole, who: &str) -> PolarsResult<i64> {
         | DataType::Duration(TimeUnit::Nanoseconds) => 1,
         DataType::Date => 86_400 * 1_000_000_000,
         DataType::Time if role == NanosRole::Increment => 1,
-        DataType::Time => polars_bail!(ComputeError:
+        DataType::Time => polars_bail!(InvalidOperation:
             "{who}: clock column {:?} is a time of day, which starts again at midnight, so it \
              cannot be a clock. Combine it with its date into a Datetime, such as with \
              pl.col(\"date\").dt.combine(pl.col({:?})).",
             s.name(), s.name()),
-        dt => polars_bail!(ComputeError:
+        dt => polars_bail!(InvalidOperation:
             "{who}: column {:?} is {}, which cannot be read as {}. Use a Datetime, Date or \
              Duration column.",
             s.name(), dtype_name(dt), role.what()),

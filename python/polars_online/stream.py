@@ -218,13 +218,13 @@ def embargo(
     - a ``delay`` of the wrong kind for the clock, or one that is not a whole
       number on an integer clock;
     - a ``clock`` or ``weight`` column the frame has not got;
-    - a ``Time`` clock, since a time of day starts again at midnight;
     - a frame that already has a column named ``role``, or, without
       ``weight``, one named ``role + "_weight"``.
 
     ``TypeError`` for a ``clock`` column that is neither numeric nor temporal,
-    as :func:`polars_online.eval.window_metrics` refuses it, and for an
-    integer wider than 64 bits (``Int128``), which a bank refuses as a clock.
+    as :func:`polars_online.eval.window_metrics` refuses it, for an integer
+    wider than 64 bits (``Int128``), which a bank refuses as a clock, and for
+    a ``Time`` clock, since a time of day starts again at midnight.
 
     An integer clock within ``delay`` of its dtype's top cannot hold its
     learn copy: Polars raises ``InvalidOperationError`` when the plan runs,
@@ -522,15 +522,22 @@ def refresh_time(
 
     - fewer than two ``names``, or a duplicate;
     - a column the frame has not got;
-    - a ``clock`` column that is neither numeric nor temporal, as a spec
-      refuses one (a boolean and a column of nulls are numbers);
-    - a ``value`` column that is not numeric (a boolean and a column of nulls
-      are);
-    - a ``UInt128`` column, read or not: the extension cannot take one in, so
-      the column is named with a cast to make;
     - ``chunk_size`` below 1;
     - a ``load_state`` that is not such a state, or was saved with other
       ``names`` or ``pairs``.
+
+    :class:`~polars_online.WrongTypeError`, a ``TypeError`` and a
+    ``ValueError``, for a column of a type the call cannot read, as a spec
+    refuses it:
+
+    - a ``clock`` column that is neither numeric nor temporal (a boolean and
+      a column of nulls are numbers), an ``Int128``, wider than the
+      ``Int64`` an integer clock is held in, or a ``Time``, which starts
+      again at midnight;
+    - a ``value`` column that is not numeric (a boolean and a column of nulls
+      are);
+    - a ``UInt128`` column, read or not: the extension cannot take one in, so
+      the column is named with a cast to make.
 
     ``FileNotFoundError`` for a ``load_state`` that is not there, or a
     ``save_state`` whose directory is not.
@@ -981,8 +988,12 @@ def with_windows(
       without ``clock``, which would do nothing, an output name that
       collides, ``chunk_size`` below 1, and a ``load_state`` another call
       saved;
-    - ``ValueError`` for a ``UInt128`` column, read or not: the extension
-      cannot take one in, so the column is named with a cast to make;
+    - :class:`~polars_online.WrongTypeError`, a ``TypeError`` and a
+      ``ValueError``, for an input column of a type the call cannot read: a
+      window operator's input that is not a number, an increment's that is
+      neither a number nor temporal, and a ``UInt128`` column, read or not,
+      which the extension cannot take in, so the column is named with a
+      cast to make;
     - ``TypeError`` for something that is not an expression, an expression
       given to a clock keyword, a ``like`` that is not a spec, and a clock
       keyword beside ``like=``;
@@ -1037,7 +1048,8 @@ def with_windows(
         clash = [k for k, v in given.items() if v is not None]
         if clash:
             raise RefusedValueError(
-                f'{who}: like= takes the clock settings from spec "{like.get("name")}", but '
+                f'po.stream.with_windows: like= takes the clock settings from spec "'
+                f'{like.get("name")}", but '
                 f"{_and_list(clash)} {'is' if len(clash) == 1 else 'are'} given too. Leave out "
                 f"{_and_list(clash)}, or like=."
             )

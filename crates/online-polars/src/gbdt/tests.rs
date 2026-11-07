@@ -85,11 +85,15 @@ fn segments_cut_where_any_column_s_chunks_end_and_copy_nothing() {
 #[test]
 fn a_column_of_the_wrong_kind_is_refused_by_name() {
     let df = df!("x0" => ["a", "b"], "x1" => [1i32, 2], "y" => [1.0, 2.0]).unwrap();
-    let e = segments(&df, &layout(2, false)).err().unwrap().to_string();
+    let e = segments(&df, &layout(2, false)).err().unwrap();
+    assert!(matches!(e, GbdtError::WrongType(_)), "{e}");
+    let e = e.to_string();
     assert!(e.contains("`x0`") && e.contains("String"), "{e}");
     // The label must arrive as Float64.
     let df = df!("x0" => [1.0, 2.0], "x1" => [1i32, 2], "y" => [1i64, 2]).unwrap();
-    let e = segments(&df, &layout(2, false)).err().unwrap().to_string();
+    let e = segments(&df, &layout(2, false)).err().unwrap();
+    assert!(matches!(e, GbdtError::WrongType(_)), "{e}");
+    let e = e.to_string();
     assert!(e.contains("`y`"), "{e}");
 }
 
@@ -590,8 +594,9 @@ fn a_record_batch_of_the_wrong_kind_or_width_or_no_rows() {
         &lay,
     )
     .err()
-    .unwrap()
-    .to_string();
+    .unwrap();
+    assert!(matches!(e, GbdtError::WrongType(_)), "{e}");
+    let e = e.to_string();
     assert!(
         e.starts_with("po.gbdt: column `x0` arrived as Utf8View, which is not a numeric column"),
         "{e}"
@@ -864,7 +869,9 @@ mod ipc {
             y(),
             false,
         );
-        let e = read_cat(&path, Kind::Float).err().unwrap().to_string();
+        let e = read_cat(&path, Kind::Float).err().unwrap();
+        assert!(matches!(e, GbdtError::WrongType(_)), "{e}");
+        let e = e.to_string();
         assert!(e.starts_with("po.gbdt: column `cat` is Dictionary("), "{e}");
         assert!(e.contains("in the Arrow IPC file, which is not a column the libraries read"));
         // A dictionary of numbers, which no Enum is.

@@ -261,7 +261,7 @@ fn check_kinds<'a>(
     for (j, (c, dtype)) in cols.enumerate() {
         width += 1;
         if !column_ok(layout, j, c) {
-            return Err(GbdtError::msg(format!(
+            return Err(GbdtError::WrongType(format!(
                 "po.gbdt: column `{}` arrived as {dtype}, which is not a numeric column the \
                  libraries read. Cast it to a number type before the build.",
                 column_name(layout, j)
@@ -312,7 +312,7 @@ pub(crate) fn segments(df: &DataFrame, layout: &Layout) -> Result<Vec<Segment>, 
         let name = column_name(layout, j);
         let ok = s.chunks().iter().all(|c| column_ok(layout, j, c.as_ref()));
         if !ok {
-            return Err(GbdtError::msg(format!(
+            return Err(GbdtError::WrongType(format!(
                 "po.gbdt: column `{name}` arrived as {}, which is not a numeric column the \
                  libraries read. Cast it to a number type before the build.",
                 crate::arrow::dtype_name(s.dtype())

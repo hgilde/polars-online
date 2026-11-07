@@ -548,15 +548,29 @@ class ModelBank:
         :class:`~polars_online.ColumnNotFoundError`
             A column a spec reads is not in ``df``. It is both a
             ``ValueError`` and Polars' ``ColumnNotFoundError``.
-        ``ValueError``
-            When:
+        :class:`~polars_online.WrongTypeError`
+            A column of a type its role cannot take. It is both a
+            ``TypeError`` and a ``ValueError``. When:
 
             - a target, feature or weight column is neither numeric nor
               Boolean, or a column is ``UInt128``, which polars-online
               cannot read;
             - a clock is not a number, a Boolean, a ``Datetime``, a ``Date``
-              or a ``Duration`` (a ``Time`` starts again at midnight), is an
-              ``Int128``, or is a ``UInt64`` past the largest ``Int64``;
+              or a ``Duration`` (a ``Time`` starts again at midnight), or is
+              an ``Int128``;
+            - a temporal column is read as a feature, target or weight, or
+              by a formula target, other than as the clock;
+            - a ``label_clock`` column's type does not match the clock's, a
+              temporal one for a temporal clock and a numeric one for a
+              numeric clock;
+            - a group, session or ``label_clock`` key column has a type with
+              no text form, such as a nested one;
+            - under ``group_close="monotone"``, the group column is not an
+              integer, String or Categorical type.
+        ``ValueError``
+            When:
+
+            - a clock is a ``UInt64`` past the largest ``Int64``;
             - between chunks, an integer clock column changes its width or
               becomes a float, a float clock becomes an integer, or a group
               or session column changes between integer, float, text and
@@ -566,13 +580,6 @@ class ModelBank:
               one (*Clock units* in :mod:`polars_online.spec`), or a
               ``gap_cap`` or ``restart_after_step_back`` finer than the
               clock's smallest step;
-            - a temporal column is read as a feature, target or weight, or
-              by a formula target, other than as the clock;
-            - a ``label_clock`` column's type does not match the clock's, a
-              temporal one for a temporal clock and a numeric one for a
-              numeric clock;
-            - a group, session or ``label_clock`` key column has a type with
-              no text form, such as a nested one;
             - the clock has a null or non-finite value, or a step between
               two of its values that is not a finite number;
             - a weight is negative (a null weight skips the row);
@@ -584,8 +591,7 @@ class ModelBank:
               learned is refused the same way, and :meth:`skip_learned`
               drops the overlap;
             - under ``group_close="monotone"``, a group key is null or below
-              the key before it, or the group column is not an integer,
-              String or Categorical type;
+              the key before it;
             - a ``label_clock`` time is before its row's clock, or a group's
               rows waiting for their label times would pass
               ``max_held_rows`` under ``held_overflow="refuse"``, the

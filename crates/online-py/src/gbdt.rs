@@ -32,6 +32,7 @@ fn to_py(e: GbdtError) -> PyErr {
             Err(other) => PyValueError::new_err(other.to_string()),
         },
         GbdtError::Msg(m) => PyValueError::new_err(m),
+        GbdtError::WrongType(m) => crate::wrong_type(m),
     }
 }
 

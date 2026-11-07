@@ -64,6 +64,7 @@ mod timing;
 mod window_quantile;
 mod windows;
 mod windows_frame;
+mod wrong_type;
 
 pub use arrow::{
     ArrowChunk, ArrowCol, ClockArray, ClockCol, NumArray, chunk_from_frame, chunk_from_frame_at,
@@ -118,3 +119,4 @@ pub use windows::{
     Closed, Direction, Emitted, KernelDef, OpDef, OpKind, Partial, Refusal, RowIn, Stat, Windows,
 };
 pub use windows_frame::{Like, WindowsConfig, WindowsRun};
+pub use wrong_type::{Refused, is_wrong_type, wrong_type};

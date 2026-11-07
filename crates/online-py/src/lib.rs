@@ -246,11 +246,27 @@ fn run_err(e: &PolarsError) -> PyErr {
 /// has not got is `polars_online.ColumnNotFoundError`, which is both
 /// Polars' `ColumnNotFoundError` and a `ValueError`, with the message alone
 /// (a `PolarsError`'s display puts `not found: ` in front of it); every
-/// other refusal is the `ValueError` with the message (task 244, M-1).
+/// other refusal is the `ValueError` with the message (task 244, M-1),
+/// but for a value or a column of the wrong type
+/// ([`online_polars::is_wrong_type`]), which is
+/// `polars_online.WrongTypeError`, a `TypeError` and a `ValueError` both
+/// (task 355).
 fn bank_err(e: &PolarsError) -> PyErr {
     match e {
         PolarsError::ColumnNotFound(msg) => column_not_found(msg.to_string()),
+        _ if online_polars::is_wrong_type(e) => wrong_type(e.to_string()),
         _ => PyValueError::new_err(e.to_string()),
+    }
+}
+
+/// A refusal made before any row is read ([`online_polars::Refused`]):
+/// `polars_online.WrongTypeError` for a value or a column of the wrong
+/// type, else the `ValueError`, with the message.
+fn refused_err(r: online_polars::Refused) -> PyErr {
+    if r.is_wrong_type() {
+        wrong_type(r.into_string())
+    } else {
+        PyValueError::new_err(r.into_string())
     }
 }
 
@@ -259,10 +275,23 @@ fn bank_err(e: &PolarsError) -> PyErr {
 /// module not import, the `ValueError` the class derives from is raised
 /// instead, with the same message.
 fn column_not_found(msg: String) -> PyErr {
+    errors_class("ColumnNotFoundError", msg)
+}
+
+/// `polars_online.WrongTypeError(msg)`, a `TypeError` and a `ValueError`
+/// (`_errors.py`); should the module not import, the `ValueError` these
+/// refusals raised before, with the same message.
+pub(crate) fn wrong_type(msg: String) -> PyErr {
+    errors_class("WrongTypeError", msg)
+}
+
+/// An instance of the class `name` of `polars_online._errors`, or the
+/// `ValueError` each of them derives from where it cannot be had.
+fn errors_class(name: &str, msg: String) -> PyErr {
     Python::attach(|py| {
         match py
             .import("polars_online._errors")
-            .and_then(|m| m.getattr("ColumnNotFoundError"))
+            .and_then(|m| m.getattr(name))
             .and_then(|c| Ok(c.cast_into::<pyo3::types::PyType>()?))
         {
             Ok(cls) => PyErr::from_type(cls, msg),
@@ -993,8 +1022,7 @@ impl PyWindows {
     fn new(config: &str, input: PyDataFrame) -> PyResult<Self> {
         let config = parse_json(config, "windows").map_err(PyValueError::new_err)?;
         Ok(Self {
-            inner: online_polars::WindowsRun::new(config, input.0.schema())
-                .map_err(PyValueError::new_err)?,
+            inner: online_polars::WindowsRun::new(config, input.0.schema()).map_err(refused_err)?,
         })
     }
 
@@ -1005,7 +1033,7 @@ impl PyWindows {
         let config = parse_json(config, "windows").map_err(PyValueError::new_err)?;
         Ok(Self {
             inner: online_polars::WindowsRun::load_bytes(state, config, input.0.schema())
-                .map_err(PyValueError::new_err)?,
+                .map_err(refused_err)?,
         })
     }
 

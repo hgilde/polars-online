@@ -1,7 +1,8 @@
 """The refusals whose class changed to the one the problem calls for keep
 the class they raised before as a second parent (task 354; the user chose
 it, 2026-11-07): each site raises its new class, and an ``except`` for the
-old class and one for the new both catch it."""
+old class and one for the new both catch it. Task 355 carried the rule to
+the Rust side's refusals of a column of the wrong type."""
 
 from __future__ import annotations
 
@@ -110,6 +111,178 @@ def _like_clash() -> None:
     po.stream.with_windows(_df(), f=po.ewm_mean("x0", half_life=5.0), like=like, clock="t")
 
 
+def _bank(df: pl.DataFrame, **kw: Any) -> Callable[[], None]:
+    """A bank of one ewridge spec fed ``df``: the Rust side's refusals."""
+
+    def call() -> None:
+        args: dict[str, Any] = {"targets": ["y"], "features": ["x0"], "half_life": 10.0, **kw}
+        po.ModelBank([po.spec.ewridge("m", **args)]).fit_predict(df)
+
+    return call
+
+
+def _seconds(df: pl.DataFrame) -> pl.DataFrame:
+    return df.with_columns(t=pl.from_epoch(pl.col("t").cast(pl.Int64), time_unit="s"))
+
+
+def _time_of_day(df: pl.DataFrame) -> pl.DataFrame:
+    return df.with_columns(t=(pl.col("t").cast(pl.Int64) * 1_000_000_000).cast(pl.Time))
+
+
+_CLOCKED: dict[str, Any] = {"clock": "t", "gap_cap": 5.0}
+
+
+def _windows(df: pl.DataFrame, expr: pl.Expr, **kw: Any) -> Callable[[], None]:
+    def call() -> None:
+        po.stream.with_windows(df, f=expr, **kw)
+
+    return call
+
+
+def _ipc_second_file_text(tmp: Any) -> None:
+    """Two Arrow IPC files whose second holds a feature as text: the native
+    reader refuses it, the schema read from the first having passed."""
+    a, b = tmp / "a.arrow", tmp / "b.arrow"
+    _df().write_ipc(a)
+    _df().with_columns(x0=pl.col("x0").cast(pl.String)).write_ipc(b)
+    po.gbdt.xgboost_matrix([str(a), str(b)], label="y", features=["x0"])
+
+
+def _window_metrics(df: pl.DataFrame, every: Any) -> Callable[[], None]:
+    def call() -> None:
+        out = po.ModelBank([_spec()]).fit_predict(_df())
+        po.eval.window_metrics(out.with_columns(t=df["t"]), "m", clock="t", every=every)
+
+    return call
+
+
+# The Rust side's refusals of a column of the wrong type (task 355): each
+# raised ValueError through the extension, and raises WrongTypeError now.
+RUST_SITES: list[tuple[str, Callable[[], Any]]] = [
+    ("bank, a text feature", _bank(_df().with_columns(x0=pl.col("x0").cast(pl.String)))),
+    ("bank, a text target", _bank(_df().with_columns(y=pl.col("y").cast(pl.String)))),
+    ("bank, a text weight", _bank(_df().with_columns(w=pl.lit("a")), weight="w")),
+    ("bank, a text clock", _bank(_df().with_columns(t=pl.col("t").cast(pl.String)), **_CLOCKED)),
+    ("bank, an Int128 clock", _bank(_df().with_columns(t=pl.col("t").cast(pl.Int128)), **_CLOCKED)),
+    ("bank, a time-of-day clock", _bank(_time_of_day(_df()), **_CLOCKED)),
+    (
+        "bank, a temporal clock read as a feature",
+        _bank(
+            _seconds(_df()),
+            features=["x0", "t"],
+            clock="t",
+            half_life="10s",
+            gap_cap="5s",
+        ),
+    ),
+    (
+        "bank, a label_clock of another type than the clock",
+        _bank(_df().with_columns(lc=pl.lit("a")), label_clock="lc", **_CLOCKED),
+    ),
+    (
+        "bank, a nested group column",
+        _bank(_df().with_columns(g=pl.concat_list("x0")), group="g"),
+    ),
+    (
+        "bank, a float group under group_close='monotone'",
+        _bank(_df().with_columns(g=pl.col("x0")), group="g", group_close="monotone"),
+    ),
+    (
+        "with_windows, a text input",
+        _windows(
+            _df().with_columns(x0=pl.col("x0").cast(pl.String)), po.ewm_mean("x0", half_life=5.0)
+        ),
+    ),
+    (
+        "with_windows, an Int128 clock",
+        _windows(
+            _df().with_columns(t=pl.col("t").cast(pl.Int128)),
+            po.ewm_mean("x0", half_life=5.0),
+            **_CLOCKED,
+        ),
+    ),
+    (
+        "with_windows, a time-of-day clock",
+        _windows(_time_of_day(_df()), po.ewm_mean("x0", half_life="5s"), clock="t", gap_cap="5s"),
+    ),
+    ("refresh_time, an Int128 clock", _refresh(pl.Int128, pl.Float64)),
+    ("refresh_time, a time-of-day clock", _refresh(pl.Time, pl.Float64)),
+]
+
+
+@pytest.mark.parametrize("call", [s[1] for s in RUST_SITES], ids=[s[0] for s in RUST_SITES])
+def test_each_rust_side_wrong_type_raises_wrong_type_error(call: Callable[[], Any]) -> None:
+    with pytest.raises(po.WrongTypeError) as caught:
+        call()
+    assert type(caught.value) is po.WrongTypeError
+    with pytest.raises(ValueError):
+        call()
+    with pytest.raises(TypeError):
+        call()
+
+
+def test_the_native_gbdt_reader_raises_wrong_type_error(tmp_path: Any) -> None:
+    with pytest.raises(po.WrongTypeError, match="is Utf8View in the Arrow IPC file") as caught:
+        _ipc_second_file_text(tmp_path)
+    assert type(caught.value) is po.WrongTypeError
+
+
+def test_a_rust_side_refusal_for_another_reason_stays_a_value_error() -> None:
+    """A duration on a number clock is a combination refused, and a cap
+    finer than the clock's step a value out of range: neither is a type."""
+    for call in (
+        _bank(_df(), clock="t", half_life="10s", gap_cap="5s"),
+        _bank(_seconds(_df()), clock="t", half_life="10s", gap_cap="1ns"),
+    ):
+        with pytest.raises(ValueError) as caught:
+            call()
+        assert not isinstance(caught.value, TypeError), caught.value
+
+
+# Every path that refuses the same clock raises the same class (task 355):
+# the bank's, the window run's and refresh_time's in Rust, and embargo's
+# and window_metrics' in Python.
+_SAME_INPUT: dict[str, list[Callable[[], Any]]] = {
+    "a text clock": [
+        _bank(_df().with_columns(t=pl.col("t").cast(pl.String)), **_CLOCKED),
+        _embargo_text_clock,
+        _refresh(pl.String, pl.Float64),
+        _window_metrics(_df().with_columns(t=pl.col("t").cast(pl.String)), 10.0),
+    ],
+    "an Int128 clock": [
+        _bank(_df().with_columns(t=pl.col("t").cast(pl.Int128)), **_CLOCKED),
+        _embargo_wide_clock,
+        _refresh(pl.Int128, pl.Float64),
+        _windows(
+            _df().with_columns(t=pl.col("t").cast(pl.Int128)),
+            po.ewm_mean("x0", half_life=5.0),
+            **_CLOCKED,
+        ),
+    ],
+    "a time-of-day clock": [
+        _bank(_time_of_day(_df()), **_CLOCKED),
+        lambda: po.stream.embargo(_time_of_day(_df()), clock="t", delay="1s"),
+        _refresh(pl.Time, pl.Float64),
+        _windows(_time_of_day(_df()), po.ewm_mean("x0", half_life="5s"), clock="t", gap_cap="5s"),
+        _window_metrics(_time_of_day(_df()), "5s"),
+    ],
+}
+
+
+@pytest.mark.parametrize("input_", list(_SAME_INPUT))
+def test_python_and_rust_paths_refusing_the_same_clock_raise_one_class(input_: str) -> None:
+    for call in _SAME_INPUT[input_]:
+        with pytest.raises(po.WrongTypeError) as caught:
+            call()
+        assert type(caught.value) is po.WrongTypeError, caught.value
+
+
+def test_the_like_clash_names_the_function_in_full() -> None:
+    pin = r"^po\.stream\.with_windows: like= takes the clock settings from spec \"m\""
+    with pytest.raises(po.RefusedValueError, match=pin):
+        _like_clash()
+
+
 # (site, call, the new class, the class it raised before, the rule's class)
 SITES: list[tuple[str, Callable[[], Any], type[Exception], type[Exception], type[Exception]]] = [
     # A value or column of the wrong type: TypeError, once ValueError.
@@ -146,6 +319,27 @@ SITES: list[tuple[str, Callable[[], Any], type[Exception], type[Exception], type
     # bank's UInt128 refusal, so the ValueError parent is new there.
     ("embargo, a text clock", _embargo_text_clock, po.WrongTypeError, TypeError, ValueError),
     ("embargo, an Int128 clock", _embargo_wide_clock, po.WrongTypeError, TypeError, ValueError),
+    (
+        "window_metrics, a text clock",
+        _window_metrics(_df().with_columns(t=pl.col("t").cast(pl.String)), 10.0),
+        po.WrongTypeError,
+        TypeError,
+        ValueError,
+    ),
+    (
+        "embargo, a time-of-day clock",
+        lambda: po.stream.embargo(_time_of_day(_df()), clock="t", delay="1s"),
+        po.WrongTypeError,
+        ValueError,
+        TypeError,
+    ),
+    (
+        "window_metrics, a time-of-day clock",
+        _window_metrics(_time_of_day(_df()), "5s"),
+        po.WrongTypeError,
+        ValueError,
+        TypeError,
+    ),
     (
         "window operator, min_samples=1.5",
         lambda: po.ewm_mean("x0", half_life=5.0, window_size=10.0, min_samples=1.5),  # type: ignore[arg-type]

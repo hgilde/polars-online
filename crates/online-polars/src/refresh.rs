@@ -623,7 +623,7 @@ impl RefreshTime {
             || time_dtype.is_temporal()
             || matches!(time_dtype, DataType::Boolean | DataType::Null))
         {
-            polars_bail!(ComputeError:
+            polars_bail!(InvalidOperation:
                 "po.stream.refresh_time: clock column {:?} must be a number or temporal, but it \
                  is {}. Cast it, such as with pl.col({:?}).cast(pl.Float64) or \
                  pl.col({:?}).str.to_datetime().",
@@ -642,7 +642,7 @@ impl RefreshTime {
             _ => self.grouped = Some(grouped),
         }
         if time_dtype.is_integer() && !crate::arrow::fits_64(&time_dtype) {
-            polars_bail!(ComputeError: "{}",
+            polars_bail!(InvalidOperation: "{}",
                 crate::arrow::wide_integer_clock("po.stream.refresh_time", cols.clock, &time_dtype));
         }
         let integer = time_dtype.is_integer() && crate::arrow::fits_64(&time_dtype);
@@ -704,7 +704,7 @@ impl RefreshTime {
         let value = df.column(cols.value)?;
         let dtype = value.dtype();
         if !(dtype.is_numeric() || matches!(dtype, DataType::Boolean | DataType::Null)) {
-            polars_bail!(ComputeError:
+            polars_bail!(InvalidOperation:
                 "po.stream.refresh_time: value column {:?} must be a number, but it is {}. \
                  Cast it, such as with pl.col({:?}).cast(pl.Float64).",
                 cols.value, crate::arrow::dtype_name(dtype), cols.value

@@ -202,7 +202,7 @@ impl IpcFrames {
 }
 
 fn not_read(name: &str, dtype: &ArrowDataType) -> GbdtError {
-    GbdtError::msg(format!(
+    GbdtError::WrongType(format!(
         "po.gbdt: column `{name}` is {dtype:?} in the Arrow IPC file, which is not a column the \
          libraries read. Write it as a number, a Boolean or an Enum column."
     ))

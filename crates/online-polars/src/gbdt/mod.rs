@@ -67,6 +67,9 @@ pub use xgb::{XgbBuilt, XgbOptions, xgboost_matrix};
 pub enum GbdtError {
     /// A refusal or a library's error, as a message.
     Msg(String),
+    /// A column of a type the libraries do not read, as a message: told
+    /// apart from the other refusals by its kind, not its text (task 355).
+    WrongType(String),
     /// The source of the frames failed.
     Source(Box<dyn std::error::Error + Send + Sync>),
 }
@@ -80,7 +83,7 @@ impl GbdtError {
 impl fmt::Display for GbdtError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            GbdtError::Msg(m) => f.write_str(m),
+            GbdtError::Msg(m) | GbdtError::WrongType(m) => f.write_str(m),
             GbdtError::Source(e) => write!(f, "{e}"),
         }
     }

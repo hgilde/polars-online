@@ -784,10 +784,11 @@ def window_metrics(
 
     - ``ValueError`` for an ``every`` that is not finite and above 0, of the
       wrong kind for the clock, not a whole number on an integer clock, or a
-      month, quarter or year on a ``Duration`` clock, and for a ``Time``
-      clock, which starts again at midnight;
+      month, quarter or year on a ``Duration`` clock;
     - ``TypeError`` for a ``clock`` column that is neither numeric nor
-      temporal;
+      temporal, and for a ``Time`` clock, which starts again at midnight
+      (:class:`~polars_online.WrongTypeError`, a ``ValueError`` too, as a
+      bank's refusal of the same clock is);
     - polars' ``ColumnNotFoundError`` for a ``clock`` or ``group`` column the
       frame has not got.
     """
@@ -807,7 +808,7 @@ def window_metrics(
             f"po.eval.window_metrics: clock column {clock!r} must be numeric or temporal, but "
             f"it is {dtype}. Cast the clock to a number or a Datetime."
         )
-        raise TypeError(msg)
+        raise WrongTypeError(msg)
     ns: int | None
     if isinstance(dtype, (pl.Datetime, pl.Date)) and isinstance(every, str) and _is_calendar(every):
         ns = _calendar_every(every, dtype, clock)

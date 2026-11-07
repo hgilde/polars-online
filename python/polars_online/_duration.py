@@ -19,6 +19,7 @@ from typing import Any
 
 import polars as pl
 
+from polars_online._errors import WrongTypeError
 from polars_online._polars_online import format_duration, parse_duration
 
 #: What a clock parameter may be given as besides a number.
@@ -133,7 +134,7 @@ def clock_nanoseconds(value: Any, dtype: pl.DataType, who: str, key: str, clock:
     column's own steps, which adding to the column would cut short."""
     duration = isinstance(value, (timedelta, str, pl.Expr))
     if isinstance(dtype, pl.Time):
-        raise ValueError(
+        raise WrongTypeError(
             f"{who}: clock column {clock!r} is a time of day, which starts again at "
             "midnight, so it cannot be a clock. Combine it with its date into a Datetime, "
             f'such as pl.col("date").dt.combine(pl.col({clock!r})).'

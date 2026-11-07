@@ -264,8 +264,10 @@ fn a_column_in_the_wrong_form_is_named_as_such() {
     let err = Bank::new(vec![spec()])
         .unwrap()
         .fit_predict_arrow(&chunk)
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
+    // A column of the wrong type, by its kind (task 355).
+    assert!(online_polars::is_wrong_type(&err), "{err}");
+    let err = err.to_string();
     assert!(err.contains("clock column \"t\" is given as text"), "{err}");
     assert!(err.contains("read as a number"), "{err}");
     assert!(!err.contains("not found"), "{err}");
@@ -449,7 +451,9 @@ fn a_feature_in_its_own_type_learns_what_its_cast_does() {
         chunk.f64(&spec, "weight", "w").is_ok(),
         "the shared column is Float64"
     );
-    let err = chunk.f64(&spec, "target", "x0").unwrap_err().to_string();
+    let err = chunk.f64(&spec, "target", "x0").unwrap_err();
+    assert!(online_polars::is_wrong_type(&err), "{err}");
+    let err = err.to_string();
     assert!(
         err.contains("is given as Float32 numbers, which only a feature reads"),
         "{err}"
