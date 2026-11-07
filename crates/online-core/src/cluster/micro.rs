@@ -169,8 +169,9 @@ impl MicroCfg {
         if !self.eps.is_finite() || self.eps <= 0.0 {
             no.refuse(format!(
                 "micro: eps must be finite and above 0, but it is {}. Set eps to the largest \
-                 spread one of the small clusters the model keeps may have along each \
-                 standardized feature, such as 0.3.",
+                 spread along each feature that one of the small clusters the model keeps may \
+                 have, in the feature's standard deviations (its own units under \
+                 standardize=False), such as 0.3.",
                 self.eps
             ));
         }
@@ -178,7 +179,7 @@ impl MicroCfg {
             no.refuse(format!(
                 "micro: beta_mu must be finite and above 0, but it is {}. Set beta_mu to the \
                  weight, in rows of the stream's mean weight, at which one of the small clusters \
-                 the model keeps stops counting as outliers, such as 3.",
+                 the model keeps stops counting as an outlier, such as 3.",
                 self.beta_mu
             ));
         }

@@ -65,16 +65,21 @@ pub const MAX_LAG: usize = 1 << 20;
 /// caller adds where it happened, the spec or the model, in front.
 pub fn check_lag_ceiling(param: &str, lag: usize) -> Result<(), String> {
     if lag > MAX_LAG {
-        // A list's remedy is for each of its lags, a single lag's for it.
-        let set = if param.ends_with("lags") {
-            format!("Set each lag in {param}")
+        // `lags` is a list, whose remedy is for each of its lags; every other
+        // parameter is a single lag.
+        return Err(if param == "lags" {
+            format!(
+                "lags must list lags of at most {MAX_LAG}, but it lists {lag}: memory for that \
+                 many rows is set aside before the first row. Set each lag in lags to {MAX_LAG} \
+                 or below."
+            )
         } else {
-            format!("Set {param}")
-        };
-        return Err(format!(
-            "{param} must be at most {MAX_LAG}, but it asks for a lag of {lag}: memory for that \
-             many rows is set aside before the first row. {set} to {MAX_LAG} or below."
-        ));
+            format!(
+                "{param} must be at most {MAX_LAG}, but it asks for a lag of {lag}: memory for \
+                 that many rows is set aside before the first row. Set {param} to {MAX_LAG} or \
+                 below."
+            )
+        });
     }
     Ok(())
 }
@@ -581,7 +586,7 @@ mod tests {
             };
             assert!(
                 e.contains(&format!(
-                    "lags must be at most 1048576, but it asks for a lag of {lag}"
+                    "lags must list lags of at most 1048576, but it lists {lag}"
                 )),
                 "{e}"
             );

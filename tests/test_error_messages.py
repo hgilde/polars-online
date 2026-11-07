@@ -28,9 +28,8 @@ BASE = dict(targets=["y"], features=["x0"], half_life=10.0)
 
 #: Why a refit's row count has a ceiling, as the builder says it.
 REFIT_ROWS_WHY = (
-    "the refit's buffer is held at its full size, (features + 10) * 8 bytes a row under the "
-    "MAD scale and (features + 4) * 8 under the RMS, from a target's first learned row, so the "
-    "count sizes an allocation before any row is seen"
+    "the refit holds that many rows from a target's first learned row, so the count sets "
+    "aside memory before any row is seen"
 )
 
 
@@ -55,8 +54,8 @@ SHAPES = [
     (
         po.spec.ewridge,
         dict(targets="y"),
-        "targets must be a list of strs, po.target tables or window expressions "
-        "looking ahead, got str 'y'",
+        "targets must be a list of column names, po.target tables or formula targets, "
+        "but it is str 'y'",
     ),
     (po.spec.ewridge, dict(features="x0"), "features must be a list of strs, but it is str 'x0'"),
     # A string is a duration's shape now ("10m", task 88), so a wrong
@@ -64,12 +63,14 @@ SHAPES = [
     (
         po.spec.ewridge,
         dict(half_life=True),
-        "half_life must be a number or a duration or a list of numbers or durations, but it is bool",
+        "half_life must be a number or a duration or a list of numbers or durations, "
+        "but it is bool",
     ),
     (
         po.spec.ewridge,
         dict(half_life=[10, None]),
-        "half_life must be a number or a duration or a list of numbers or durations, but it is list",
+        "half_life must be a number or a duration or a list of numbers or durations, "
+        "but it is list",
     ),
     (
         po.spec.ewridge,
@@ -83,13 +84,17 @@ SHAPES = [
     ),
     (po.spec.ewridge, dict(standardize=1), "standardize must be a bool, but it is int 1"),
     # The common bools, each pinned (task 278: no test matched either).
-    (po.spec.ewridge, dict(fit_intercept="yes"), "fit_intercept must be a bool, but it is str 'yes'"),
+    (
+        po.spec.ewridge,
+        dict(fit_intercept="yes"),
+        "fit_intercept must be a bool, but it is str 'yes'",
+    ),
     (po.spec.ewridge, dict(emit_clocks=1), "emit_clocks must be a bool, but it is int 1"),
     (po.spec.ewridge, dict(coef_prior=[1.0, 2.0]), "coef_prior must be a list of lists of numbers"),
     (
         po.spec.ewridge,
         dict(feature_sets=[("a", ["x0"])]),
-        "feature_sets must be a dict of a str -> a list of strs",
+        "feature_sets must be a dict from strs to lists of strs",
     ),
     (po.spec.quantile, dict(quantile=[0.5]), "quantile must be a number, but it is list [0.5]"),
     # A table target is a TypedDict, which the check did not read: a wrong
@@ -97,29 +102,29 @@ SHAPES = [
     (
         po.spec.ewridge,
         dict(targets=[3]),
-        "targets must be a list of strs, po.target tables or window expressions "
-        "looking ahead, got list [3]",
+        "targets must be a list of column names, po.target tables or formula targets, "
+        "but it is list [3]",
     ),
     (
         po.spec.ewridge,
         dict(targets=[{"column": "p", "name": 1}]),
-        "targets must be a list of strs, po.target tables or window expressions "
-        "looking ahead, got list [{'column': 'p', 'name': 1}]",
+        "targets must be a list of column names, po.target tables or formula targets, "
+        "but it is list [{'column': 'p', 'name': 1}]",
     ),
     (
         po.spec.ewridge,
         dict(targets=[{"col": "p"}]),
-        "targets must be a list of strs, po.target tables or window expressions "
-        "looking ahead, got list [{'col': 'p'}]",
+        "targets must be a list of column names, po.target tables or formula targets, "
+        "but it is list [{'col': 'p'}]",
     ),
     (
         po.spec.ewridge,
         dict(targets=[None]),
-        "targets must be a list of strs, po.target tables or window expressions "
-        "looking ahead, got list [None]",
+        "targets must be a list of column names, po.target tables or formula targets, "
+        "but it is list [None]",
     ),
     (po.spec.lasso, dict(penalties=0.1), "penalties must be a list of numbers, but it is float"),
-    (po.spec.ewridge, dict(bogus=1), "ewridge() takes no parameter "bogus""),
+    (po.spec.ewridge, dict(bogus=1), 'ewridge() takes no parameter "bogus"'),
 ]
 
 
@@ -132,7 +137,7 @@ def test_a_wrong_shape_names_the_parameter(builder, kw, msg):
 
 
 def test_a_spec_name_must_be_a_string():
-    with pytest.raises(TypeError, match="spec name must be a str, but it is int 1"):
+    with pytest.raises(TypeError, match="po.spec: a spec's name must be a str, but it is int 1"):
         po.spec.ewridge(1, **BASE)
 
 
@@ -147,7 +152,9 @@ def test_kmeans_has_no_targets():
 
 
 def test_ew_class_takes_a_label_not_targets():
-    with pytest.raises(TypeError, match='spec "m": ew_class\\(\\) takes `label`, not targets'):
+    with pytest.raises(
+        TypeError, match='spec "m": ew_class\\(\\) takes no targets, since label names the column'
+    ):
         po.spec.ew_class(
             "m",
             features=["x0"],
@@ -163,11 +170,27 @@ VALUES = [
     # The common parameters' NaN and inf refusals, each pinned in full (task
     # 278: the min_weight NaN had no test, and the others were matched on
     # their names alone).
-    (po.spec.ewridge, dict(min_weight=float("nan")), 'spec "m": min_weight must not be NaN'),
-    (po.spec.ewridge, dict(min_weight=[float("nan")]), 'spec "m": min_weight must not be NaN'),
+    (
+        po.spec.ewridge,
+        dict(min_weight=float("nan")),
+        'spec "m": min_weight must be a number, but it is NaN',
+    ),
+    (
+        po.spec.ewridge,
+        dict(min_weight=[float("nan")]),
+        'spec "m": min_weight must hold numbers, but one of its values is NaN',
+    ),
     (po.spec.ewridge, dict(half_life=None, lam=INF), 'spec "m": lam must be finite, but it is inf'),
-    (po.spec.ewridge, dict(coef_every=float("nan")), 'spec "m": coef_every must not be NaN'),
-    (po.spec.ewridge, dict(embargo=float("nan")), 'spec "m": embargo must not be NaN'),
+    (
+        po.spec.ewridge,
+        dict(coef_every=float("nan")),
+        'spec "m": coef_every must be a number, but it is NaN',
+    ),
+    (
+        po.spec.ewridge,
+        dict(embargo=float("nan")),
+        'spec "m": embargo must be a number, but it is NaN',
+    ),
     # A list's entries are held to the int floor as a scalar is (review
     # 2026-09-26, F7: a negative lag was named by serde as `model`).
     (po.spec.marginal, dict(lags=[-1]), "lags must each be at least 1, but one of them is -1"),
@@ -192,9 +215,13 @@ VALUES = [
     ),
     # No sweep is no descent: every solve a failure, and coefficients that
     # read like a fit (review 2026-10-05, PB7).
-    (po.spec.lasso, dict(penalties=[0.1], max_iter=-1), "max_iter must be at least 1, but it is -1"),
+    (
+        po.spec.lasso,
+        dict(penalties=[0.1], max_iter=-1),
+        "max_iter must be at least 1, but it is -1",
+    ),
     (po.spec.lasso, dict(penalties=[0.1], max_iter=0), "max_iter must be at least 1, but it is 0"),
-    (po.spec.ewridge, dict(resid_quantiles=[0.5, INF]), "resid_quantiles must be finite"),
+    (po.spec.ewridge, dict(resid_quantiles=[0.5, INF]), "resid_quantiles must hold finite numbers"),
     (po.spec.rls, dict(delta=-INF), "delta must be finite, but it is -inf"),
     (po.spec.ewridge, dict(conformal=INF), "conformal must be finite, but it is inf"),
     (
@@ -239,12 +266,12 @@ VALUES = [
     (
         po.spec.ew_cov,
         dict(features=["x0", "y"], targets=None, pca_every=2),
-        "pca_every schedules the principal components, but pca",
+        "pca_every schedules the refreshes of the principal components, but pca",
     ),
     (
         po.spec.ew_cov,
         dict(features=["x0", "y"], targets=None, max_rows_between_pcas=20),
-        "max_rows_between_pcas schedules the principal components, but pca",
+        "max_rows_between_pcas schedules the refreshes of the principal components, but pca",
     ),
     (
         po.spec.ew_class,
@@ -266,7 +293,7 @@ VALUES = [
         dict(
             targets=None, label="y", classes=["a", "b"], precision_prior=1.0, covariance_type="lda"
         ),
-        'covariance_type must be one of "full", "tied", "diag"; got "lda"',
+        'covariance_type must be "full", "tied" or "diag", but it is "lda"',
     ),
     # `hmm`'s named `ew_class` (task 190's find, folded into task 193); now
     # neither names a model, but the parameter and its words (task 244, P-4).
@@ -279,7 +306,7 @@ VALUES = [
             precision_prior=0.1,
             covariance_type="lda",
         ),
-        'covariance_type must be one of "full", "tied", "diag"; got "lda"',
+        'covariance_type must be "full", "tied" or "diag", but it is "lda"',
     ),
     (
         po.spec.ew_class,
@@ -324,7 +351,7 @@ VALUES = [
     (
         po.spec.ewridge,
         dict(emit_drift=True, drift_action="nope"),
-        'drift_action must be one of "flag", "reset"; got "nope"',
+        'drift_action must be "flag" or "reset", but it is "nope"',
     ),
     (
         po.spec.ewridge,
@@ -368,8 +395,8 @@ VALUES = [
     (
         po.spec.sgd,
         dict(loss="huber", huber_delta=-1.0),
-        "huber_delta must be above 0, but it is -1. Set huber_delta to a positive cut, or to inf "
-        "for the squared loss.",
+        "huber_delta must be above 0, but it is -1. Set huber_delta to a positive cut in units of "
+        "the residuals' scale, or to inf for the squared loss.",
     ),
     (
         po.spec.huber,
@@ -598,7 +625,9 @@ def test_an_empty_features_list_is_named_by_a_model_with_no_target(builder):
     anything checked the list, so ``features=[]`` raised ``IndexError`` and the
     Rust side's own message was never reached; they say it first now."""
     merged = {k: v for k, v in {**BASE, **BUILDERS[builder]}.items() if v is not None}
-    with pytest.raises(ValueError, match='^spec "m": features must be non-empty'):
+    with pytest.raises(
+        ValueError, match='^spec "m": features must name at least one column, but it is empty'
+    ):
         builder("m", **{**merged, "features": []})
 
 
@@ -827,7 +856,7 @@ def test_inf_is_refused_where_it_means_nothing(builder, key, extra, value):
     ``q`` were in the Python table and refused by Rust alone, which the
     builder reached anyway, since it validates through Rust."""
     kwargs = _kwargs(builder, extra)
-    with pytest.raises(ValueError, match=f"{key} must be finite, got"):
+    with pytest.raises(ValueError, match=f"{key} must (be finite|hold finite numbers), but"):
         builder("m", **{**kwargs, key: value})
     spec = builder("m", **kwargs)
     where = spec if key in spec else spec["model"]
@@ -1271,7 +1300,7 @@ def test_gap_cap_without_a_clock_is_refused_by_name():
     po.spec.ewridge("m", **BASE, clock="t", gap_cap=0.5)
 
 
-EMPTY_HALF_LIFE = 'spec "m": half_life names no half-life, but the model needs one'
+EMPTY_HALF_LIFE = 'spec "m": half_life must list at least one half-life, but it is empty'
 
 
 @pytest.mark.parametrize(
@@ -1317,10 +1346,10 @@ def test_a_deco_block_refusal_reads_as_one_sentence():
     line without a ``\\``, so each carried a run of 18 spaces."""
     spec = po.spec.deco("d", features=["x0", "y"], half_life=10.0)
     for blocks, want in [
-        ([], "deco: blocks must name at least one block, but it names none. Leave blocks out"),
+        ([], 'spec "d": blocks must name at least one block, but it names none. Leave blocks out'),
         (
             [["u", ["x0"]], ["u", ["y"]]],
-            'deco: blocks names "u" more than once, but a block\'s name labels its output fields',
+            'blocks names "u" more than once, but a block\'s name labels its output fields',
         ),
     ]:
         spec["model"]["blocks"] = blocks
@@ -1358,7 +1387,9 @@ def test_an_int_past_the_rust_width_is_refused_by_name(builder):
     for key, is_list in _int_parameters(builder).items():
         ceiling = _spec._int_ceiling(key, builder.__name__)
         past = [ceiling + 1] if is_list else ceiling + 1
-        with pytest.raises(ValueError, match=rf'spec "m": {key} must be <= {ceiling}, got'):
+        with pytest.raises(
+            ValueError, match=rf'spec "m": {key} must (each )?be at most {ceiling}, but'
+        ):
             builder("m", **{**kwargs, key: past})
         spec = builder("m", **kwargs)
         where = spec if key in spec else spec["model"]
@@ -1372,10 +1403,13 @@ def test_an_int_past_the_rust_width_is_refused_by_name(builder):
 
 
 def test_a_count_past_its_width_is_named_in_python():
-    with pytest.raises(ValueError, match=r'spec "m": seed must be at most 18446744073709551615, but it is 1'):
+    with pytest.raises(
+        ValueError, match=r'spec "m": seed must be at most 18446744073709551615, but it is 1'
+    ):
         po.spec.kmeans("m", features=["x0", "y"], n_clusters=2, seed=2**64, half_life=10.0)
     with pytest.raises(
-        ValueError, match=r'spec "m": max_rows_between_solves must be at most 4294967295, but it is 4294967296'
+        ValueError,
+        match=r'spec "m": max_rows_between_solves must be at most 4294967295, but it is 4294967296',
     ):
         po.spec.ewridge("m", max_rows_between_solves=2**32, **BASE)
 
@@ -1383,7 +1417,11 @@ def test_a_count_past_its_width_is_named_in_python():
 @pytest.mark.parametrize(
     ("builder", "kw", "msg"),
     [
-        (po.spec.marginal, dict(lags=[1, 2**62]), "lags must each be at most 1048576, but one of them is"),
+        (
+            po.spec.marginal,
+            dict(lags=[1, 2**62]),
+            "lags must each be at most 1048576, but one of them is",
+        ),
         (
             po.spec.ew_cov,
             dict(features=["x0", "y"], targets=None, lags=[2**40]),
@@ -1399,8 +1437,8 @@ def test_a_count_past_its_width_is_named_in_python():
                 window_rows=10,
                 n_perm=2**21,
             ),
-            "n_perm must be at most 1048576, but it is 2097152: the draws are held to take their "
-            "quantile, and each is a pass over both blocks",
+            "n_perm must be at most 1048576, but it is 2097152: every draw is kept, and each takes "
+            "a pass over the rows",
         ),
         (
             po.spec.ewridge,
@@ -1469,7 +1507,9 @@ def test_a_count_that_sizes_memory_has_a_ceiling(builder, kw, msg):
     spec = builder("m", **{**merged, key: legal[key]})
     where = spec if key in spec else spec["model"]
     where[key] = kw[key]
-    with pytest.raises(ValueError, match=f"{key} must (be at most|not exceed) 1048576, but"):
+    with pytest.raises(
+        ValueError, match=f"{key} must (be at most|list lags of at most) 1048576, but"
+    ):
         po.ModelBank([spec])
 
 
@@ -1488,7 +1528,7 @@ def test_hmm_k_has_a_ceiling():
     spec["model"]["n_components"] = spec["model"]["warm_rows"] = 2**62
     with pytest.raises(
         ValueError,
-        match=re.escape(f'spec "m": hmm: n_components must be at most 1024, but it is {2**62}'),
+        match=re.escape(f'spec "m": n_components must be at most 1024, but it is {2**62}'),
     ):
         po.ModelBank([spec])
     po.ModelBank([po.spec.hmm("m", n_components=1024, warm_rows=1024, **kw)])
@@ -1503,10 +1543,13 @@ def test_kmeans_k_and_buffer_have_ceilings_and_micro_needs_none():
     its cap needs none."""
     kw = dict(features=["x0", "y"], half_life=10.0)
     with pytest.raises(
-        ValueError, match=r'spec "m": kmeans: n_clusters must be at most 65536, but it is 65537'
+        ValueError, match=r'spec "m": n_clusters must be at most 65536, but it is 65537'
     ):
         po.spec.kmeans("m", n_clusters=2**16 + 1, warm_rows=2**16 + 1, **kw)
-    with pytest.raises(ValueError, match=r"warm_rows = 5592406 would hold 256\.00003 MiB"):
+    with pytest.raises(
+        ValueError,
+        match=r"the first 5592406 rows, which seed the centers, would take 256\.00003 MiB",
+    ):
         po.spec.kmeans("m", n_clusters=3, warm_rows=5_592_406, **kw)
     po.spec.micro("m", eps=0.3, max_clusters=10**7, **kw)
 
@@ -1515,7 +1558,9 @@ def test_rcov_lagged_products_have_a_byte_ceiling():
     """``(max_bandwidth + 1) * k^2`` doubles before the first row: 84 GB at
     a bandwidth of 2^20 over 100 features, under the count ceiling (review
     2026-10-06, CE9)."""
-    with pytest.raises(ValueError, match=r'spec "m": rcov: the lagged products would take 800 MiB'):
+    with pytest.raises(
+        ValueError, match=r'spec "m": the lagged covariances the model keeps would take 800 MiB'
+    ):
         po.spec.rcov(
             "m",
             features=[f"x{i}" for i in range(10)],
@@ -1541,7 +1586,7 @@ def test_a_models_refusal_names_the_spec():
     YA4). And ``window_size must be > 0 (got inf)`` was untrue of infinity."""
     with pytest.raises(ValueError) as exc:
         po.spec.sgd("m", clip_gradient=0.0, **BASE)
-    assert str(exc.value).startswith('spec "m": sgd: clip_gradient must be above 0'), str(exc.value)
+    assert str(exc.value).startswith('spec "m": clip_gradient must be above 0'), str(exc.value)
     for model in (
         {"type": "lasso", "penalties": [0.1], "window_size": "inf"},
         {"type": "marginal", "window_size": "inf"},
@@ -1582,14 +1627,19 @@ def test_a_marginal_and_a_nameless_refusal_name_the_spec_as_every_other():
     """``marginal 'm':`` where every other refusal reads ``spec "m":``, and
     ``spec null:`` for a hand-built dict with no name (review 2026-10-06,
     YA6)."""
-    with pytest.raises(ValueError, match=r'^spec "m": bin_edges is missing'):
+    with pytest.raises(
+        ValueError, match=r'^spec "m": 2 problems\.\n- bin_edges must give edges for every feature'
+    ):
         po.spec.marginal("m", bin_edges={"zz": [0.0]}, **BASE)
     with pytest.raises(
-        ValueError, match=r'^spec "m": shards must be an int or one of "auto"; got "many"$'
+        ValueError,
+        match=r'^spec "m": shards must be an int or "auto", but it is "many"\. Use one of those\.$',
     ):
         po.spec.marginal("m", shards="many", **BASE)
     nameless = {"model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0"]}
-    with pytest.raises(ValueError, match="^a spec with no name: half_life must not be NaN$"):
+    with pytest.raises(
+        ValueError, match="^a spec with no name: half_life must be a number, but it is NaN"
+    ):
         po.ModelBank([{**nameless, "half_life": math.nan}])
 
 

@@ -449,7 +449,7 @@ def test_a_session_change_blends_the_held_block_first():
         # The default cadence is every row for an infinite half-life and for
         # `lam`: the option then needs its own.
         ({"half_life": float("inf"), "solve_every": None}, "solve_every is 0"),
-        ({"half_life": None, "lam": 0.99, "solve_every": None}, "its default under lam"),
+        ({"half_life": None, "lam": 0.99, "solve_every": None}, "as the default under lam does"),
         ({"gram_block_rows": 1 << 30}, "over the 256 MiB limit"),
     ],
 )

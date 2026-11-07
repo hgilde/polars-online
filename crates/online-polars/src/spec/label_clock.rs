@@ -173,7 +173,9 @@ impl Spec {
         // so the step would no longer be the row's distance from it.
         let reads_step = match &self.model {
             ModelKind::Holt { .. } => Some("holt extrapolates"),
-            ModelKind::Kalman { .. } => Some("kalman's drift and error_inflation grow"),
+            ModelKind::Kalman { .. } => {
+                Some("kalman's drift and its predictions' uncertainty grow")
+            }
             ModelKind::Hmm { .. } => Some("hmm's transitions age"),
             ModelKind::Micro { .. } => Some("micro's small clusters age"),
             ModelKind::Audit { .. } => {

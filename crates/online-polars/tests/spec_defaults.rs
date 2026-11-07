@@ -367,7 +367,7 @@ fn a_window_with_no_half_life_is_told_to_use_inf_for_a_flat_window() {
     let err = online_polars::resolved_defaults(&spec).unwrap_err();
     assert_eq!(
         err,
-        "spec \"w\": a hard window (window_size) needs a half_life too, and none is given. Set \
+        "spec \"w\": a hard window (window_size) needs half_life, but half_life is not set. Set \
          half_life to \"inf\" (in Python, float(\"inf\")) to weigh every row in the hard window \
          alike, or to a finite value to decay the older rows within it."
     );

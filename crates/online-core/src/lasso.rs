@@ -271,7 +271,7 @@ impl LassoCfg {
         if !(0.0..=1.0).contains(&self.l1_ratio) {
             no.refuse(format!(
                 "lasso: l1_ratio must be from 0 to 1, but it is {}. Set l1_ratio to 1 for the \
-                 lasso, or to a value from 0 to below 1 for an elastic net.",
+                 lasso, to 0 for ridge, or to a value between 0 and 1 for an elastic net.",
                 self.l1_ratio
             ));
         }

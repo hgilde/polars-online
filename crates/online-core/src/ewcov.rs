@@ -1691,11 +1691,12 @@ impl EwCovCfg {
         .map(|(_, name)| name)
         .collect();
         if self.n_features < 2 && !pairwise.is_empty() {
-            let listed = pairwise
-                .iter()
-                .map(|s| format!("\"{s}\""))
-                .collect::<Vec<_>>()
-                .join(", ");
+            let listed = crate::model::listed(
+                &pairwise
+                    .iter()
+                    .map(|s| format!("\"{s}\""))
+                    .collect::<Vec<_>>(),
+            );
             no.refuse(format!(
                 "ew_cov: stats lists {listed}, which {} two features, but the model has {}. \
                  Name at least two columns in features, or leave {listed} out of stats.",

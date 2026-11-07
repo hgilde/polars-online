@@ -34,9 +34,11 @@ use crate::formula::Node;
 
 /// What a table naming `relative_to` or `relative` is told: the two keys
 /// were task 107a's relative target, which task 201 removed.
-pub const RELATIVE_REMOVED: &str = "relative targets were removed; derive the target column \
-     upstream (in Polars, with_columns(ret=pl.col(\"p\") - pl.col(\"mid\")), or for a return \
-     the log ratio (pl.col(\"p\") / pl.col(\"mid\")).log()) and name it in targets";
+/// The same text as the Python side's `_RELATIVE_REMOVED`.
+pub const RELATIVE_REMOVED: &str = "relative targets were removed. Make the target a column \
+     with Polars' with_columns in the query before the bank, such as \
+     lf.with_columns(ret=pl.col(\"p\") - pl.col(\"mid\")), or for a return the log ratio \
+     (pl.col(\"p\") / pl.col(\"mid\")).log(), and name that column in targets.";
 
 /// One target: the name its output fields carry and the column its values
 /// are read from; or, for a formula target, the formula of the row's future
@@ -272,8 +274,13 @@ impl<'de> Deserialize<'de> for Targets {
                     if t.relative_to.is_some() || t.relative.is_some() {
                         let which = t.column.as_ref().or(t.name.as_ref());
                         return Err(serde::de::Error::custom(match which {
-                            Some(c) => format!("target {c:?}: {RELATIVE_REMOVED}"),
-                            None => RELATIVE_REMOVED.to_string(),
+                            Some(c) => format!(
+                                "target {c:?} is relative to another column, but \
+                                 {RELATIVE_REMOVED}"
+                            ),
+                            None => format!(
+                                "a target is relative to another column, but {RELATIVE_REMOVED}"
+                            ),
                         }));
                     }
                     // A formula target (docs/PLAN.md task 104): a name and
@@ -479,7 +486,8 @@ mod tests {
     /// have said only "unknown field".
     #[test]
     fn a_relative_target_is_refused_by_name() {
-        let removed = "relative targets were removed; derive the target column upstream";
+        let removed = "relative targets were removed. Make the target a column with Polars' \
+                       with_columns in the query before the bank";
         let fwd = r#"["rewm_mean", ["col", "mid"], {"half_life": "10s", "window_size": "1m"}]"#;
         for table in [
             r#"{"column": "p", "relative_to": "mid"}"#.to_string(),

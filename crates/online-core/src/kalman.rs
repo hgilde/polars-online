@@ -608,11 +608,18 @@ impl KalmanCfg {
         let bad_of = |v: &[f64], ok: &dyn Fn(f64) -> bool| -> Vec<String> {
             v.iter().filter(|x| !ok(**x)).map(f64::to_string).collect()
         };
-        let one_or_these = |bad: &[String]| {
-            if let [one] = bad {
-                format!("one of its values is {one}")
+        // A single value (one for every coefficient) is "it", and the
+        // remedy sets it; a list's bad values are named and each is set.
+        let one_or_these = |all: &[f64], bad: &[String]| {
+            if all.len() == 1 {
+                (format!("it is {}", bad[0]), "it")
+            } else if let [one] = bad {
+                (format!("one of its values is {one}"), "each")
             } else {
-                format!("its values {} are not", crate::model::listed(bad))
+                (
+                    format!("its values {} are not", crate::model::listed(bad)),
+                    "each",
+                )
             }
         };
         let first = if self.fit_intercept {
@@ -644,10 +651,10 @@ impl KalmanCfg {
             // `inf` on `P`'s diagonal (review 2026-10-06, CC7).
             let bad = bad_of(q, &|v| v.is_finite() && v >= 0.0);
             if !bad.is_empty() {
+                let (said, set) = one_or_these(q, &bad);
                 no.refuse(format!(
-                    "kalman: q must be finite and at least 0, but {}. Set each to 0 for a \
-                     coefficient that does not drift, or to a finite positive variance.",
-                    one_or_these(&bad)
+                    "kalman: q must be finite and at least 0, but {said}. Set {set} to 0 for no \
+                     drift over time, or to a finite positive variance."
                 ));
             }
         } else {
@@ -658,10 +665,10 @@ impl KalmanCfg {
             }
             let bad = bad_of(&self.half_life, &|h| h > 0.0);
             if !bad.is_empty() {
+                let (said, set) = one_or_these(&self.half_life, &bad);
                 no.refuse(format!(
-                    "kalman: coef_half_life must be above 0, but {}. Set each to a positive \
-                     number of clock units, or to inf to hold the coefficient fixed.",
-                    one_or_these(&bad)
+                    "kalman: coef_half_life must be above 0, but {said}. Set {set} to a positive \
+                     number of clock units, or to inf to hold the coefficient fixed."
                 ));
             }
         }
@@ -673,11 +680,11 @@ impl KalmanCfg {
         }
         let bad = bad_of(&self.revert_half_life, &|h| h > 0.0);
         if !bad.is_empty() {
+            let (said, set) = one_or_these(&self.revert_half_life, &bad);
             no.refuse(format!(
-                "kalman: revert_half_life must be above 0, but {}. Set each to a positive \
+                "kalman: revert_half_life must be above 0, but {said}. Set {set} to a positive \
                  number of clock units, or to inf for a coefficient that drifts with no pull \
-                 toward 0.",
-                one_or_these(&bad)
+                 toward 0."
             ));
         }
         // Finite, as the spec layer has them: at `p0 = inf` `P` is never

@@ -685,7 +685,7 @@ impl SgdCfg {
         if self.clip_gradient.is_nan() || self.clip_gradient <= 0.0 {
             no.refuse(format!(
                 "sgd: clip_gradient must be above 0, but it is {}. Set clip_gradient to the \
-                 most each coordinate of the gradient may move a step, such as the default \
+                 largest size a coordinate of the gradient may take, such as the default \
                  1000, or to inf for no clipping.",
                 self.clip_gradient
             ));
@@ -696,8 +696,8 @@ impl SgdCfg {
             SgdLoss::Huber { delta } if delta <= 0.0 || delta.is_nan() => {
                 no.refuse(format!(
                     "sgd: huber_delta must be above 0, but it is {delta}. Set huber_delta to \
-                     a positive cut in units of the residuals' scale, such as 1.345, or to inf \
-                     for the squared loss."
+                     a positive cut in units of the residuals' scale, or to inf for the \
+                     squared loss."
                 ));
             }
             SgdLoss::Quantile { tau }
@@ -750,7 +750,7 @@ impl SgdCfg {
             if let Some(d) = self.huber_scale_decay {
                 no.take(crate::model::check_scale_decay("sgd", d));
             }
-            if self.refit_rows > 0 && delta.is_infinite() {
+            if self.refit_rows > 0 && delta == f64::INFINITY {
                 no.refuse(
                     "sgd: huber_refit_rows refits a target's first rows to a Huber fit, but \
                      huber_delta is inf, which makes that fit least squares. Set huber_delta \

@@ -43,7 +43,9 @@ def test_a_loss_parameter_beside_a_loss_that_does_not_use_it_is_refused():
 
 def test_bin_edges_naming_a_column_that_is_no_feature_is_refused():
     with pytest.raises(
-        ValueError, match=r"spec \"m\": bin_edges has \['z'\], which are not features"
+        ValueError,
+        match='spec "m": bin_edges must name only features, but it names "z", which is not a '
+        "feature",
     ):
         po.spec.marginal("m", bin_edges={"x": [0.0, 1.0], "z": [0.0, 1.0]}, **BASE)
 
@@ -81,8 +83,8 @@ def test_a_raw_spec_dict_with_a_duration_under_a_plain_parameter_is_refused():
     spec["model"]["ridge"] = timedelta(seconds=1)
     with pytest.raises(
         TypeError,
-        match='spec "m": ridge takes no timedelta; a duration is a clock parameter\'s, and a '
-        "window expression is a target's",
+        match='spec "m": ridge takes no timedelta, since it is not measured on the clock and is '
+        "not a target",
     ):
         po.ModelBank([spec])
 

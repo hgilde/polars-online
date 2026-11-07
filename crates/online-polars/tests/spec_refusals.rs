@@ -66,7 +66,7 @@ fn a_lag_or_n_perm_past_the_ceiling_is_refused_by_name() {
                 "",
             ),
             &[
-                format!("spec \"m\": lags must be at most 1048576, but it asks for a lag of {lag}")
+                format!("spec \"m\": lags must list lags of at most 1048576, but it lists {lag}")
                     .as_str(),
             ],
         );
@@ -76,7 +76,7 @@ fn a_lag_or_n_perm_past_the_ceiling_is_refused_by_name() {
                 r#", "half_life": 10.0"#,
             ),
             &[
-                format!("spec \"m\": lags must be at most 1048576, but it asks for a lag of {lag}")
+                format!("spec \"m\": lags must list lags of at most 1048576, but it lists {lag}")
                     .as_str(),
             ],
         );
@@ -814,8 +814,8 @@ fn lam_is_a_decay_where_a_decay_is_needed() {
     )));
     assert_eq!(
         both.decays().unwrap_err(),
-        "spec \"m\": half_life and lam cannot both be set, since each sets the decay. Give \
-         half_life or lam, not both."
+        "spec \"m\": half_life and lam cannot both be set: each sets the decay. Leave out \
+         half_life, or lam."
     );
 }
 

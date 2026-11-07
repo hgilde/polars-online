@@ -64,7 +64,7 @@ def test_a_model_with_no_features_has_no_features_keyword(builder, kw):
     """The keyword took only ``[]`` or ``None``: it is gone from the
     signature, and a call that gives it is told what the model reads."""
     assert "features" not in inspect.signature(builder).parameters
-    with pytest.raises(TypeError, match=r"\(\) takes no features; it reads only its targets"):
+    with pytest.raises(TypeError, match=r"\(\) takes no features, since it .*Leave out features\."):
         builder("m", targets=["y"], features=[], **kw)
     # A spec dict, which has every key, still says `features = []`.
     spec = builder("m", targets=["y"], **kw)
@@ -226,7 +226,9 @@ def test_the_new_words_are_scikit_learns():
     for shape in ("full", "tied", "diag"):
         _build("hmm", {"covariance_type": shape})
         _build("ew_class", {"covariance_type": shape})
-    with pytest.raises(ValueError, match='covariance_type must be one of "full", "diag"'):
+    with pytest.raises(
+        ValueError, match='covariance_type must be "full" or "diag", but it is "tied"'
+    ):
         _build("bocpd", {"covariance_type": "tied"})
     with pytest.raises(ValueError, match='robust_beta applies only under covariance_type="diag"'):
         _build("bocpd", {"covariance_type": "full", "robust_beta": 0.1})

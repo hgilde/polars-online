@@ -300,8 +300,8 @@ impl EwRidgeCfg {
             if !w.is_finite() || w <= 0.0 {
                 no.refuse(format!(
                     "ewridge: window_size must be finite and above 0, but it is {w}. Set \
-                     window_size to the age, in clock units, at which a row stops counting, \
-                     or leave it out for no hard window."
+                     window_size to the age, in clock units, past which a row counts for \
+                     nothing, or leave it out for no hard window."
                 ));
             }
             if self.ridge_scale {
@@ -329,7 +329,7 @@ impl EwRidgeCfg {
         if self.gram_block_rows > 0 {
             if self.window.is_some() {
                 no.refuse(
-                    "ewridge: gram_block_rows and window_size cannot both be set, since a hard \
+                    "ewridge: gram_block_rows and window_size cannot both be set: a hard \
                      window keeps its Gram whole for its snapshots and holds no rows back. \
                      Leave out gram_block_rows, or window_size.",
                 );
@@ -349,7 +349,8 @@ impl EwRidgeCfg {
                      above 0, or leave gram_block_rows out.",
                     self.solve_every
                 ));
-            } else if self.max_rows_between_solves <= 1 {
+            }
+            if self.max_rows_between_solves <= 1 {
                 no.refuse(format!(
                     "ewridge: gram_block_rows holds rows back until the next solve, but \
                      max_rows_between_solves is {}, which solves every row. Set \
@@ -440,14 +441,14 @@ impl EwRidgeCfg {
                      session_shrink, or leave long_half_life out.",
                 );
             }
-            (Some(_), Some(h)) if h <= 0.0 || h.is_nan() => {
-                no.refuse(format!(
-                    "ewridge: long_half_life must be above 0, but it is {h}. Set \
-                     long_half_life to a positive number of clock units, or to inf for \
-                     long-run running sums of every row."
-                ));
-            }
             _ => {}
+        }
+        if let Some(h) = self.long_half_life.filter(|h| *h <= 0.0 || h.is_nan()) {
+            no.refuse(format!(
+                "ewridge: long_half_life must be above 0, but it is {h}. Set long_half_life \
+                 to a positive number of clock units, or to inf for long-run running sums of \
+                 every row."
+            ));
         }
         if let Some(c) = &self.coef_prior {
             no.take(crate::model::check_coef_prior(

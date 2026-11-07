@@ -813,11 +813,7 @@ def python_messages(src: str, path: str) -> tuple[list[Message], list[Unread]]:
                 name = ast.unparse(node.func)
                 if name in ("warnings.warn", "warn", "_warn") and node.args:
                     record(node.args[0], node.lineno, "warning", scope)
-                elif (
-                    id(node) in kept
-                    and re.search(r"(Error|Exception)$", name)
-                    and node.args
-                ):
+                elif id(node) in kept and re.search(r"(Error|Exception)$", name) and node.args:
                     record(node.args[0], node.lineno, "error", scope)
 
     def record(arg: ast.expr, line: int, kind: str, scope: dict[str, ast.expr]) -> None:

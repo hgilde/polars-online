@@ -1057,9 +1057,11 @@ class TestRefusals:
             builder("m", coef_sum="1", **_base())
         with pytest.raises(ValueError, match="coef_sum must be finite, but it is inf"):
             builder("m", coef_sum=INF, **_base())
-        with pytest.raises(ValueError, match="coef_min must not be NaN"):
+        with pytest.raises(ValueError, match="coef_min must be a number, but it is NaN"):
             builder("m", coef_min=float("nan"), **_base())
-        with pytest.raises(ValueError, match="coef_max must not be NaN"):
+        with pytest.raises(
+            ValueError, match="coef_max must hold numbers, but one of its values is NaN"
+        ):
             builder("m", coef_max=[0.0, float("nan")], **_base())
 
     @pytest.mark.parametrize(
@@ -1075,8 +1077,8 @@ class TestRefusals:
             ),
             (
                 dict(coef_min=1.0, coef_max=0.5),
-                r"coef_min must be at most coef_max, but for feature 0, counting from 0, "
-                r"coef_min is 1 and coef_max is 0\.5",
+                r"coef_min must be at most coef_max, but for features 0, 1 and 2, counting "
+                r"from 0, coef_min is above coef_max, as at feature 0, where they are 1 and 0\.5",
             ),
             (
                 dict(coef_min=[0.0, 0.0, 2.0], coef_max=1.0),
@@ -1091,8 +1093,8 @@ class TestRefusals:
                 dict(coef_min=0.0, coef_sum=-1.0),
                 r"coef_sum must be one the bounds allow, from 0 to inf, but it is -1",
             ),
-            (dict(coef_min=INF), "coef_min is inf for feature 0, counting from 0"),
-            (dict(coef_max=-INF), "coef_max is -inf for feature 0, counting from 0"),
+            (dict(coef_min=INF), "coef_min is inf for features 0, 1 and 2, counting from 0"),
+            (dict(coef_max=-INF), "coef_max is -inf for features 0, 1 and 2, counting from 0"),
             # A list of the wrong length bounds nothing it could name, and was
             # dropped unchecked when every entry was infinite (task 160, PB4).
             (
@@ -1111,11 +1113,11 @@ class TestRefusals:
     )
     @pytest.mark.parametrize("builder", [po.spec.sgd, po.spec.pa])
     def test_the_rust_side_names_the_offence(self, builder, kw, msg):
-        with pytest.raises(ValueError, match=f"{builder.__name__}: {msg}"):
+        with pytest.raises(ValueError, match=f'spec "m": {msg}'):
             po.ModelBank([builder("m", **kw, **_base())])
 
     def test_other_builders_do_not_take_them(self):
-        with pytest.raises(TypeError, match="got an unexpected keyword argument 'coef_min'"):
+        with pytest.raises(TypeError, match='ewridge\\(\\) takes no parameter "coef_min"'):
             po.spec.ewridge("m", coef_min=0.0, **_base())
 
     def test_a_hand_built_spec_is_parsed_by_path(self):

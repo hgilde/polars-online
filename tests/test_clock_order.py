@@ -207,7 +207,9 @@ def test_the_refused_chunk_leaves_the_bank_untouched():
 def test_the_minimum_is_the_callers_to_give():
     """No default from the cap: what a late row is, only the caller knows;
     and it is read off a clock."""
-    with pytest.raises(ValueError, match="needs clock"):
+    with pytest.raises(
+        ValueError, match="restart_after_step_back applies only with a clock, but clock is not set"
+    ):
         po.spec.ewridge(
             "m",
             targets=["y"],
@@ -218,7 +220,7 @@ def test_the_minimum_is_the_callers_to_give():
     for bad in (-1.0, float("inf")):
         with pytest.raises(ValueError, match="restart_after_step_back must be finite"):
             spec(restart_after_step_back=bad)
-    with pytest.raises(ValueError, match="restart_after_step_back must not be NaN"):
+    with pytest.raises(ValueError, match="restart_after_step_back must be a number, but it is NaN"):
         spec(restart_after_step_back=float("nan"))
 
 

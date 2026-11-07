@@ -724,10 +724,7 @@ fn every_refusal_beside_it_names_the_setting_and_the_remedy() {
     );
     let no_clock = r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0"], "half_life": 5.0, "label_clock": "avail"}"#;
     let err = Bank::new(vec![spec_of(no_clock)]).err().unwrap();
-    assert!(
-        err.contains("label_clock \"avail\" needs clock"),
-        "{err}"
-    );
+    assert!(err.contains("label_clock \"avail\" needs clock"), "{err}");
 }
 
 fn field_bits(out: &DataFrame, name: &str) -> Vec<Option<u64>> {

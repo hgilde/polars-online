@@ -372,11 +372,14 @@ def test_a_zero_weight_row_is_not_a_row_of_the_span():
     [
         ({"features": ["x0"]}, "needs at least two features"),
         ({"window_rows": 4}, "window_rows of at least 8"),
-        ({"window_rows": None}, "needs `window_rows`"),
-        ({"kind": "nope"}, 'kind must be one of "monitor", "sequential", "window"; got "nope"'),
+        ({"window_rows": None}, 'kind="monitor" needs window_rows, .*but it is not set'),
+        ({"kind": "nope"}, 'kind must be "monitor", "sequential" or "window", but it is "nope"'),
         ({"alpha": 1.5}, "alpha must be above 0 and below 1, but it is 1.5"),
         ({"alpha_adjust": "nope"}, 'alpha_adjust must be "bonferroni" or "none", but it is "nope"'),
-        ({"kind": "window", "window_rows": None}, "needs `window_rows`"),
+        (
+            {"kind": "window", "window_rows": None},
+            'kind="window" needs window_rows, .*but it is not set',
+        ),
         ({"kind": "window", "window_rows": 2}, "window_rows of at least 3"),
         ({"kind": "window", "window_rows": 20, "n_perm": 2}, "n_perm must be at least 20"),
         (
@@ -387,7 +390,7 @@ def test_a_zero_weight_row_is_not_a_row_of_the_span():
         ({"emit_sigma": True}, "does not apply to corrchange"),
         # docs/REVIEW-E54-E64.md CC1 and CC3: a critical value that never
         # flags or always does, and the permutation knobs.
-        ({"kind": "window", "crit": float("nan")}, "crit must not be NaN"),
+        ({"kind": "window", "crit": float("nan")}, "crit must be a number, but it is NaN"),
         ({"kind": "window", "crit": 0.0}, "crit must be finite and above 0, but it is 0"),
         ({"kind": "sequential", "crit": -1.0}, "crit must be finite and above 0, but it is -1"),
         ({"kind": "window", "crit": float("inf")}, "crit must be finite"),
@@ -441,7 +444,9 @@ def test_a_parameter_of_another_kind_is_refused(kind, kw, applies_to):
     ``"monitor"`` changed nothing, and the docstring's promise that
     ``reset`` under ``"monitor"`` raises was not kept (task 114)."""
     param = next(iter(kw))
-    with pytest.raises(ValueError, match=f"{param} applies only under kind={applies_to}"):
+    # `change_action` is named with its value, `change_action="reset"`.
+    named = f'{param}="{kw[param]}"' if param == "change_action" else param
+    with pytest.raises(ValueError, match=f"{named} applies only under kind={applies_to}"):
         spec(kind=kind, window_rows=50, **kw)
 
 
@@ -824,15 +829,18 @@ def test_a_block_of_a_whole_window_makes_the_quantile_the_observed_statistic():
 @pytest.mark.parametrize(
     ("kw", "message"),
     [
-        ({"n_perm": 19}, "n_perm >= 20"),
+        (
+            {"n_perm": 19},
+            "n_perm must be at least 20 for a permutation critical value, but it is 19",
+        ),
         (
             {"n_perm": 2**20 + 1},
-            "n_perm must be at most 1048576, but it is 1048577: the draws are held to take their "
-            "quantile, and each is a pass over both blocks$",
+            r"n_perm must be at most 1048576, but it is 1048577: every draw is kept, and each "
+            r"takes a pass over the rows\. Lower n_perm to 1048576 or below\.$",
         ),
-        ({"perm_block": 31}, r"perm_block must be 1..=30 \(window_rows\)"),
-        ({"alpha": 0.0}, "alpha must be strictly between 0 and 1"),
-        ({"alpha": 1.0}, "alpha must be strictly between 0 and 1"),
+        ({"perm_block": 31}, r"perm_block must be from 1 to window_rows \(30\), but it is 31"),
+        ({"alpha": 0.0}, "alpha must be above 0 and below 1, but it is 0"),
+        ({"alpha": 1.0}, "alpha must be above 0 and below 1, but it is 1"),
     ],
 )
 def test_the_permutation_knobs_bounds_are_refused_by_name(kw, message):
@@ -1162,10 +1170,10 @@ def test_the_smallest_window_rows_report_where_they_close(kw, live):
 @pytest.mark.parametrize(
     ("kw", "message"),
     [
-        ({"window_rows": 7}, 'kind = "monitor" needs window_rows of at least 8'),
+        ({"window_rows": 7}, 'kind="monitor" needs window_rows of at least 8, but it is 7'),
         (
             {"kind": "sequential", "window_rows": 7},
-            'kind = "sequential" needs window_rows of at least 8',
+            'kind="sequential" needs window_rows of at least 8, but it is 7',
         ),
         (
             {"kind": "sequential", "window_rows": 8, "monitor_rows": 1},

@@ -74,7 +74,9 @@ class TestLeakageAndDuplicateRejection:
             _spec(features=["x0", "y0"])
 
     def test_the_rejection_message_offers_the_right_fix(self):
-        with pytest.raises(ValueError, match="lagged copy"):
+        with pytest.raises(
+            ValueError, match=r"make its previous value a column with Polars' shift\(1\)"
+        ):
             _spec(features=["y0"])
 
     def test_duplicate_features_are_rejected(self):

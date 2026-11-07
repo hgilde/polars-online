@@ -683,7 +683,7 @@ def test_chunks_and_a_reload_do_not_move_it():
         (dict(half_life=10.0), "half_life does not apply to bocpd"),
         (
             dict(covariance_type="student"),
-            'covariance_type must be one of "full", "diag"; got "student"',
+            'covariance_type must be "full" or "diag", but it is "student"',
         ),
         (
             dict(covariance_type="full", robust_beta=0.1),
@@ -709,13 +709,13 @@ def test_chunks_and_a_reload_do_not_move_it():
         # `prior_scale`, which no surface takes), and the floor in full.
         (
             dict(mean_prior=[0.0], covariance_prior=[1.0], warm_rows=5),
-            'spec "b": bocpd: warm_rows sets the prior from the first rows, but mean_prior and '
+            'spec "b": warm_rows sets the prior from the first rows, but mean_prior and '
             "covariance_prior are both given, so it has nothing to set. Leave out warm_rows, or "
             "one of the two priors.",
         ),
         (
             dict(warm_rows=1),
-            'spec "b": bocpd: warm_rows must be at least 2, but it is 1: the prior\'s scale is a '
+            'spec "b": warm_rows must be at least 2, but it is 1: the prior\'s scale is a '
             "variance, which needs two rows. Set warm_rows to 2 or more.",
         ),
     ],
@@ -1091,11 +1091,17 @@ def test_a_hazard_on_the_clock_is_chunk_invariant_and_resumes():
             dict(hazard="1h", clock="t", gap_cap=300.0),
             "hazard is a duration but gap_cap is a plain number",
         ),
-        (dict(hazard="0s", clock="t", gap_cap="1h"), "hazard .* must be > 0"),
-        (dict(hazard="-5m", clock="t", gap_cap="1h"), "hazard .* must be > 0"),
+        (
+            dict(hazard="0s", clock="t", gap_cap="1h"),
+            "hazard, given as a duration, must be finite and above 0, but it is 0 seconds",
+        ),
+        (
+            dict(hazard="-5m", clock="t", gap_cap="1h"),
+            "hazard, given as a duration, must be finite and above 0, but it is -300 seconds",
+        ),
         (
             dict(hazard=timedelta(hours=1), hazard_col="h", clock="t", gap_cap="1h"),
-            "hazard_col .* per-row hazard.* hazard is a duration",
+            'hazard_col "h" and a hazard given as a duration \\(1h\\) cannot both be set',
         ),
     ],
 )

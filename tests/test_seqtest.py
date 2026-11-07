@@ -978,13 +978,19 @@ class TestRefusals:
             (dict(features=["x0"]), r"seqtest\(\) takes no features"),
             (dict(a="p"), "seqtest needs a and b together, but only a is set"),
             (dict(b="q"), "seqtest needs a and b together, but only b is set"),
-            (dict(a="p", b="p"), 'seqtest a and b both name "p" with the same suffix'),
-            (dict(a="p", b="p", a_suffix="@h20", b_suffix="@h20"), "with the same suffix"),
+            (
+                dict(a="p", b="p"),
+                'seqtest a and b both name "p", with no suffix or the same one',
+            ),
+            (
+                dict(a="p", b="p", a_suffix="@h20", b_suffix="@h20"),
+                "with no suffix or the same one, so the spec would be compared with itself",
+            ),
             (dict(a="m", b="q"), "seqtest a and b must name other specs, but a names this spec"),
             (dict(a_suffix="@h20"), "a_suffix and b_suffix pick which slots of a and b to compare"),
             (dict(weight="w"), "weight does not apply to seqtest"),
-            (dict(half_life=20.0), "half_life and lam do not apply to seqtest"),
-            (dict(lam=0.99), "half_life and lam do not apply to seqtest"),
+            (dict(half_life=20.0), "half_life does not apply to seqtest"),
+            (dict(lam=0.99), "lam does not apply to seqtest"),
             (dict(emit_sigma=True), "emit_sigma does not apply to seqtest"),
             (dict(emit_zscore=True), "emit_zscore does not apply to seqtest"),
             (dict(conformal=0.9), "conformal does not apply to seqtest"),
@@ -1055,5 +1061,5 @@ class TestRefusals:
     def test_a_wrong_type_names_the_parameter(self):
         with pytest.raises(TypeError, match='spec "m": a must be a str, but it is int 1'):
             po.spec.seqtest("m", targets=["d"], a=1, b="q")
-        with pytest.raises(TypeError, match="seqtest\\(\\) got an unexpected keyword argument 'c'"):
+        with pytest.raises(TypeError, match='spec "m": seqtest\\(\\) takes no parameter "c"'):
             po.spec.seqtest("m", targets=["d"], c="q")

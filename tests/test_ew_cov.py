@@ -163,11 +163,14 @@ class TestPlumbing:
         assert out["c"].struct.field("corr_x0_x1@h50").null_count() < df.height
 
     def test_bad_stat_is_rejected(self):
-        with pytest.raises(ValueError, match='stats must be one of "mean", .*; got "nonsense"'):
+        with pytest.raises(ValueError, match='stats must be "mean", .*, but it is "nonsense"'):
             _spec(stats=["nonsense"])
 
     def test_pairwise_stats_need_two_columns(self):
-        with pytest.raises(ValueError, match="at least two features"):
+        with pytest.raises(
+            ValueError,
+            match='stats lists "corr", which compares two features, but features names 1 column',
+        ):
             _spec(features=("x0",), stats=["corr"])
 
 
@@ -296,7 +299,9 @@ class TestPartialCorrelation:
         ]
 
     def test_requires_a_precision_prior(self):
-        with pytest.raises(ValueError, match="needs .precision_prior."):
+        with pytest.raises(
+            ValueError, match='"partial_corr" in stats needs precision_prior, but it is not set'
+        ):
             po.spec.ew_cov("c", features=["x0", "x1"], stats=["partial_corr"], half_life=NO_DECAY)
 
     def test_rejects_a_bad_prior(self):
@@ -670,7 +675,7 @@ class TestLaggedComoments:
 
     def test_a_bad_lag_list_is_refused_by_name(self):
         for lags, message in (
-            ([0, 1], "must be >= 1"),
+            ([0, 1], "lags must each be at least 1, but one of them is 0"),
             ([2, 1], "strictly increasing"),
             ([1, 1], "strictly increasing"),
         ):

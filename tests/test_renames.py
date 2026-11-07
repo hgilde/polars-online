@@ -430,9 +430,9 @@ def test_the_model_type_is_ewridge_everywhere():
 def test_lagcorr_is_refused_naming_lag_corr_and_lag_corr_is_written_everywhere():
     """N10: the `stats` value, the field prefix and the state say `lag_corr`,
     as `partial_corr` does, and `marginal`'s lists follow."""
-    with pytest.raises(ValueError, match="lagcorr was renamed lag_corr"):
+    with pytest.raises(ValueError, match='but it is "lagcorr", the old name of "lag_corr"'):
         po.spec.ew_cov("c", features=["x0", "x1"], stats=["lagcorr"], lags=[1], half_life=10.0)
-    with pytest.raises(ValueError, match="lagcorr was renamed lag_corr"):
+    with pytest.raises(ValueError, match='stats lists "lagcorr", which was renamed "lag_corr"'):
         po.ModelBank(
             [
                 {

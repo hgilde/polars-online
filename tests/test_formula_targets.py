@@ -377,7 +377,7 @@ def test_predict_scores_without_the_target() -> None:
 
 
 def test_what_is_refused() -> None:
-    with pytest.raises(ValueError, match="holds no operator looking ahead"):
+    with pytest.raises(ValueError, match="holds no window operator looking ahead"):
         spec((po.ewm_mean("mid", half_life=H) - pl.col("mid")).alias("back"))
 
 
@@ -390,7 +390,7 @@ def test_a_window_target_with_group_needs_a_clock_column() -> None:
     the spec is refused at every door it comes in by, with ``with_windows``'
     message: the rule is stated once. With a clock column it runs."""
     msg = (
-        'spec "m": a window looking ahead under group needs clock, but clock is not set.*'
+        'spec "m": a formula target under group needs clock, but clock is not set.*'
         "Set clock and gap_cap, or leave group out"
     )
     with pytest.raises(ValueError, match=msg):
@@ -475,11 +475,15 @@ def test_a_target_known_at_its_own_row_is_pointed_to_the_call_that_makes_its_col
     assert made.columns == ["t", "mid", "price", "back"]
     with pytest.raises(ValueError, match="needs a name"):
         spec(po.ewm_mean("mid", half_life=H, window_size=W, reverse=True))
-    with pytest.raises(ValueError, match="group_close and a formula target cannot both be set"):
+    with pytest.raises(ValueError, match="group_close cannot be set beside a formula target"):
         spec(fwd(), group="g", group_close="monotone", embargo=None)
     with pytest.raises(ValueError, match="a formula target .* does not apply"):
         po.spec.ftrl("f", targets=[fwd()], features=["x"])  # a probability to a 0/1 target
-    with pytest.raises(TypeError, match="window expressions looking ahead"):
+    with pytest.raises(
+        TypeError,
+        match=r"targets must be a list of column names, po\.target tables or formula targets, "
+        r"but it is list \[3\]",
+    ):
         spec(3)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="temporal column can only be a clock"):
         po.ModelBank([spec(fwd())]).fit_predict(
@@ -1021,7 +1025,9 @@ def test_a_target_named_after_its_own_column_is_refused_at_the_builder(
     refused it on the first chunk in ``with_windows``' words. The builder
     refuses it, naming ``.alias``; and a bank's refusal of a formula target
     names the spec, never ``with_windows``."""
-    with pytest.raises(ValueError, match=r"named after a column its formula reads.*\.alias"):
+    with pytest.raises(
+        ValueError, match=r"takes its name from a column its formula reads.*\.alias"
+    ):
         spec(pl.col("mid") - po.ewm_mean("mid", half_life=H, window_size=W, reverse=True))
     # Task 160 (PB5): the same spec as a table, the form a dict or a TOML
     # file writes, passed the Rust validation and was refused only at the

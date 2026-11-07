@@ -38,7 +38,7 @@ REJECTED = [
     # The builder's own check since S27: `ridge` left the table of what may be
     # infinite, where only Rust refused it (review 2026-09-12).
     (po.spec.ewridge, dict(half_life=10.0, ridge=INF), "ridge must be finite, but it is inf"),
-    (po.spec.ewridge, dict(half_life=10.0, ridge=NAN), "ridge must not be NaN"),
+    (po.spec.ewridge, dict(half_life=10.0, ridge=NAN), "ridge must be a number, but it is NaN"),
     (
         po.spec.ewridge,
         dict(half_life=10.0, ridge=[1e-6, -1.0]),
@@ -54,7 +54,11 @@ REJECTED = [
         dict(half_life=10.0, clock="t", gap_cap=-5.0),
         "gap_cap must be finite and above 0",
     ),
-    (po.spec.ewridge, dict(half_life=10.0, clock="t", gap_cap=NAN), "gap_cap must not be NaN"),
+    (
+        po.spec.ewridge,
+        dict(half_life=10.0, clock="t", gap_cap=NAN),
+        "gap_cap must be a number, but it is NaN",
+    ),
     (
         po.spec.ewridge,
         dict(half_life=10.0, clock="t", gap_cap=10.0, session="s", session_gap=-1.0),
@@ -63,18 +67,22 @@ REJECTED = [
     (
         po.spec.ewridge,
         dict(half_life=10.0, clock="t", gap_cap=10.0, session="s", session_gap=NAN),
-        "session_gap must not be NaN",
+        "session_gap must be a number, but it is NaN",
     ),
     (
         po.spec.ewridge,
         dict(half_life=10.0, solve_every=-1.0),
         "solve_every must be at least 0 clock units",
     ),
-    (po.spec.ewridge, dict(half_life=10.0, solve_every=NAN), "solve_every must not be NaN"),
+    (
+        po.spec.ewridge,
+        dict(half_life=10.0, solve_every=NAN),
+        "solve_every must be a number, but it is NaN",
+    ),
     (po.spec.ewridge, dict(half_life=[10.0, 10.0]), "half_life lists 10 more than once"),
-    (po.spec.ewridge, dict(half_life=NAN), "half_life must not be NaN"),
+    (po.spec.ewridge, dict(half_life=NAN), "half_life must be a number, but it is NaN"),
     (po.spec.ewridge, dict(half_life=-1.0), "half_life must be above 0"),
-    (po.spec.ewridge, dict(lam=NAN), "lam must not be NaN"),
+    (po.spec.ewridge, dict(lam=NAN), "lam must be a number, but it is NaN"),
     (
         po.spec.ewridge,
         dict(half_life=10.0, session="s", session_gap=0.0, session_shrink=0.5, long_half_life=-1.0),
@@ -102,7 +110,7 @@ REJECTED = [
     (
         po.spec.quantile,
         dict(half_life=10.0, quantile=0.5, quantile_eps=NAN),
-        "quantile_eps must not be NaN",
+        "quantile_eps must be a number, but it is NaN",
     ),
     (po.spec.rls, dict(half_life=10.0, delta=0.0), "delta must be finite and above 0"),
     (po.spec.rls, dict(half_life=10.0, delta=-1.0), "delta must be finite and above 0"),
@@ -126,7 +134,11 @@ REJECTED = [
         dict(half_life=10.0, penalties=[0.1], tol=0.0),
         "tol must be finite and above 0",
     ),
-    (po.spec.kalman, dict(half_life=10.0, coef_half_life=NAN), "coef_half_life must not be NaN"),
+    (
+        po.spec.kalman,
+        dict(half_life=10.0, coef_half_life=NAN),
+        "coef_half_life must be a number, but it is NaN",
+    ),
     # `q` alone: beside `coef_half_life` the pair is refused (review
     # 2026-10-06, PC6), below.
     (
@@ -356,7 +368,9 @@ def test_the_legal_neighbours_still_run(builder, kw):
 
 
 def test_a_nan_deep_in_a_list_names_the_parameter():
-    with pytest.raises(ValueError, match='spec "m": coef_prior must not be NaN'):
+    with pytest.raises(
+        ValueError, match='spec "m": coef_prior must hold numbers, but one of its values is NaN'
+    ):
         po.spec.ewridge("m", half_life=10.0, coef_prior=[[0.0, NAN]], **BASE)
 
 
@@ -425,12 +439,12 @@ def test_a_row_cap_of_zero_is_refused_by_both_doors(builder, kw, key):
     row, refused, or a second spelling of 1. It is refused everywhere, as
     `max_rows_between_coefs`'s was since task 178; the clock form's `0` is
     every row. From the builder, and from a dict, which the TOML shares."""
-    with pytest.raises(ValueError, match=f"{key} must be >= 1, got 0"):
+    with pytest.raises(ValueError, match=f"{key} must be at least 1, but it is 0"):
         builder("m", half_life=10.0, **kw, **{key: 0})
     spec = builder("m", half_life=10.0, **kw, **{key: 1})
     where = spec if key == "max_rows_between_coefs" else spec["model"]
     where[key] = 0
-    with pytest.raises(ValueError, match=f"{key} must be >= 1"):
+    with pytest.raises(ValueError, match=f"{key} must be at least 1, but it is 0"):
         po.ModelBank([spec])
 
 
@@ -540,11 +554,31 @@ _KMEANS = dict(**_TWO, half_life=10.0)
 #: name (review 2026-10-06, CE4, CF6); and `warm_rows` below `k`, floored to
 #: `k` in silence where `hmm` refuses it (PC8).
 IGNORED = [
-    (po.spec.hmm, dict(**_HMM, **_TVTP, transition=[0.9, 0.1, 0.2, 0.8]), "hmm: transition"),
-    (po.spec.hmm, dict(**_HMM, **_TVTP, transition_prior=2.0), "hmm: transition_prior"),
-    (po.spec.hmm, dict(**_HMM, **_GIVEN, warm_rows=20), "hmm: warm_rows does not apply"),
-    (po.spec.hmm, dict(**_HMM, **_GIVEN, init="first"), "hmm: init does not apply"),
-    (po.spec.hmm, dict(**_HMM, **_GIVEN, seed=3), "hmm: seed does not apply"),
+    (
+        po.spec.hmm,
+        dict(**_HMM, **_TVTP, transition=[0.9, 0.1, 0.2, 0.8]),
+        'spec "m": transition does not apply under tvtp_coef',
+    ),
+    (
+        po.spec.hmm,
+        dict(**_HMM, **_TVTP, transition_prior=2.0),
+        'spec "m": transition_prior does not apply under tvtp_coef',
+    ),
+    (
+        po.spec.hmm,
+        dict(**_HMM, **_GIVEN, warm_rows=20),
+        'spec "m": warm_rows does not apply when means and covs are given',
+    ),
+    (
+        po.spec.hmm,
+        dict(**_HMM, **_GIVEN, init="first"),
+        'spec "m": init does not apply when means and covs are given',
+    ),
+    (
+        po.spec.hmm,
+        dict(**_HMM, **_GIVEN, seed=3),
+        'spec "m": seed does not apply when means and covs are given',
+    ),
     (
         po.spec.rcov,
         dict(**_RCOV, kind="plain", jitter=3),
@@ -578,17 +612,18 @@ IGNORED = [
     (
         po.spec.kmeans,
         dict(**_KMEANS, n_clusters=3, split_merge=0.0, dead_frac=0.25),
-        "kmeans: dead_frac = 0.25 re-places dead centers only at a split-merge check",
+        'spec "m": dead_frac = 0.25 re-places a center only at a split-merge check',
     ),
     (
         po.spec.kmeans,
         dict(**_KMEANS, n_clusters=3, warm_rows=1),
-        "kmeans: warm_rows must be at least n_clusters (3) to seed that many centers, but it is 1",
+        'spec "m": warm_rows must be at least n_clusters (3) to seed that many centers, but it '
+        "is 1",
     ),
     (
         po.spec.deco,
         dict(**_TWO, half_life=10.0, blocks={}),
-        "deco: blocks must name at least one block",
+        'spec "m": blocks must name at least one block, but it names none',
     ),
     (
         po.spec.ew_cov,
@@ -662,7 +697,8 @@ NONSENSE = [
     (
         po.spec.marginal,
         dict(targets=["y"], features=["x0", "x1"], half_life=10.0, min_weight=[INF]),
-        'spec "m": min_weight must be finite, but it is inf',
+        'spec "m": min_weight must be finite, but one of its values is inf, a floor no weight '
+        "reaches",
     ),
     # Every feature one open bin: no response curve and no cut anywhere. It
     # was taken, and the "finite and strictly increasing" rule held only
@@ -671,7 +707,7 @@ NONSENSE = [
         po.spec.marginal,
         dict(targets=["y"], features=["x0"], half_life=10.0, bin_edges=[[]]),
         'spec "m": bin_edges gives no feature an edge, so each feature would be one open bin, '
-        "with no response curve and no cut to report. Give at least one feature an edge, or "
+        "with no response curve and no split to report. Give at least one feature an edge, or "
         "leave bin_edges out for no bins.",
     ),
     (
@@ -687,9 +723,9 @@ NONSENSE = [
         po.spec.kmeans,
         dict(**_KM, dead_frac=0.5),
         'spec "m": dead_frac must be below 0.5, but it is 0.5: a re-placed center starts at '
-        "half its source's weight, so at 0.5 or above it can start already dead and be "
-        "re-placed again at the next split-merge check. Set dead_frac below 0.5, such as the "
-        "default 0.05.",
+        "half the weight of the cluster it splits from, so at 0.5 or above it can start at or "
+        "below the floor dead_frac sets and be re-placed again at the next split-merge check. "
+        "Set dead_frac below 0.5, such as the default 0.05.",
     ),
     (po.spec.kmeans, dict(**_KM, dead_frac=0.6), "dead_frac must be below 0.5, but it is 0.6"),
     (po.spec.kmeans, dict(**_KM, dead_frac=1.0), "dead_frac must be below 0.5, but it is 1"),

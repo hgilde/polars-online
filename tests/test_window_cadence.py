@@ -765,7 +765,9 @@ class TestRefusals:
     def test_a_row_cap_of_no_rows_is_refused(self, bad):
         """A cap of no rows is no schedule; `snapshot_every = 0` is every row
         (docs/PLAN.md task 196, U7)."""
-        with pytest.raises(ValueError, match=f"max_rows_between_snapshots must be >= 1, got {bad}"):
+        with pytest.raises(
+            ValueError, match=f"max_rows_between_snapshots must be at least 1, but it is {bad}"
+        ):
             ew_cov(max_rows_between_snapshots=bad)
 
     @pytest.mark.parametrize(

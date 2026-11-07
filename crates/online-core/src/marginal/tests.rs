@@ -785,7 +785,7 @@ fn a_lag_past_the_ceiling_is_refused_by_name() {
         };
         assert!(
             err.contains(&format!(
-                "marginal: lags must be at most 1048576, but it asks for a lag of {lag}"
+                "marginal: lags must list lags of at most 1048576, but it lists {lag}"
             )),
             "{err}"
         );

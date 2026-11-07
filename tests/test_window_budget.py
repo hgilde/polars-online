@@ -169,9 +169,9 @@ def test_a_budget_the_ring_stays_under_changes_nothing():
 @pytest.mark.parametrize(
     ("budget", "message"),
     [
-        ({"thin": 0.0}, "window_budget must be above 0 MiB, but it is 0 MiB"),
-        ({"refuse": -1.0}, "window_budget must be above 0 MiB, but it is -1 MiB"),
-        ({"thin": float("nan")}, "must not be NaN"),
+        ({"thin": 0.0}, 'window_budget\'s "thin" must be above 0 MiB, but it is 0\\.'),
+        ({"refuse": -1.0}, 'window_budget\'s "refuse" must be above 0 MiB, but it is -1\\.'),
+        ({"thin": float("nan")}, "window_budget must hold numbers, but one of its values is NaN"),
         ({"shrink": 1.0}, "thin"),
     ],
 )

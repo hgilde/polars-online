@@ -209,22 +209,25 @@ impl KMeansCfg {
             let most = (KMeans::WARM_BUDGET_MIB / row).floor();
             // Where the rows that fit are fewer than the centers, warm_rows
             // cannot be lowered enough: only the features or the clusters can.
-            let remedy = if most >= self.k as f64 {
-                format!(
-                    "Set warm_rows to {most} or below, and at least n_clusters, or use fewer \
-                     features."
-                )
-            } else {
-                format!("Use fewer features, or lower n_clusters to {most} or below.")
-            };
-            no.refuse(format!(
-                "kmeans: the first {} rows, which seed the centers, would take {} MiB at {} \
-                 features, over the {} MiB limit. {remedy}",
+            let (rows, over, p, limit) = (
                 self.warm_rows,
                 crate::budget::mib_over(mib, KMeans::WARM_BUDGET_MIB),
                 self.n_features,
-                KMeans::WARM_BUDGET_MIB
-            ));
+                KMeans::WARM_BUDGET_MIB,
+            );
+            no.refuse(if most >= self.k as f64 {
+                format!(
+                    "kmeans: the first {rows} rows, which seed the centers, would take {over} MiB \
+                     at {p} features, over the {limit} MiB limit. Set warm_rows to {most} or \
+                     below, and at least n_clusters, or use fewer features."
+                )
+            } else {
+                format!(
+                    "kmeans: the first {rows} rows, which seed the centers, would take {over} MiB \
+                     at {p} features, over the {limit} MiB limit. Use fewer features, or lower \
+                     n_clusters and warm_rows to {most} or below."
+                )
+            });
         }
         if self.min_weight.is_nan() || self.min_weight < 0.0 {
             no.refuse(format!(
@@ -262,9 +265,9 @@ impl KMeansCfg {
             // The dead rule runs inside the split–merge check (review
             // 2026-10-06, CF6).
             no.refuse(format!(
-                "kmeans: dead_frac = {} re-places a center holding less than that share of an \
-                 equal share of the weight, but only at a split-merge check, and split_merge = 0 \
-                 runs none, so it would do nothing. Set split_merge above 0, or dead_frac to 0.",
+                "kmeans: dead_frac = {} re-places a center only at a split-merge check, but \
+                 split_merge = 0 runs none, so dead_frac would do nothing. Set split_merge above \
+                 0, or dead_frac to 0.",
                 self.dead_frac
             ));
         }
@@ -417,18 +420,21 @@ impl KMeans {
     pub const DEAD_FRAC_BELOW: f64 = 0.5;
 
     pub fn new(cfg: KMeansCfg) -> Result<Self, String> {
-        cfg.validate()?;
+        let mut no = crate::Refusals::new();
+        no.take(cfg.validate());
         // Refused here and not in `validate`, which a restored state runs
         // too: a state saved with such a value still loads and continues.
-        if cfg.dead_frac >= Self::DEAD_FRAC_BELOW {
-            return Err(format!(
+        // A value that is not finite is `validate`'s.
+        if cfg.dead_frac.is_finite() && cfg.dead_frac >= Self::DEAD_FRAC_BELOW {
+            no.refuse(format!(
                 "kmeans: dead_frac must be below 0.5, but it is {}: a re-placed center starts at \
                  half the weight of the cluster it splits from, so at 0.5 or above it can start \
-                 below the floor dead_frac sets and be re-placed again at the next split-merge \
-                 check. Set dead_frac below 0.5, such as the default 0.05.",
+                 at or below the floor dead_frac sets and be re-placed again at the next \
+                 split-merge check. Set dead_frac below 0.5, such as the default 0.05.",
                 cfg.dead_frac
             ));
         }
+        no.finish()?;
         let p = cfg.n_features;
         Ok(Self {
             moments: FeatureMoments::new(p),

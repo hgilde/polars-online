@@ -108,10 +108,13 @@ fn three_figures(x: f64, up: bool) -> String {
         return format!("{x}");
     }
     let scale = 10f64.powi(2 - x.abs().log10().floor() as i32);
+    // A hair inside first, so a sum that is three figures but for its
+    // last bit (0.1 + 0.2) is not rounded a whole step outward.
+    let q = x * scale;
     let r = if up {
-        (x * scale).ceil()
+        (q - q.abs() * 1e-12).ceil()
     } else {
-        (x * scale).floor()
+        (q + q.abs() * 1e-12).floor()
     } / scale;
     let s = format!("{r:.3e}");
     // `1.230e0` back to the shortest plain form a reader writes.
@@ -160,7 +163,7 @@ impl Constraint {
         if !up.is_empty() {
             no.refuse(format!(
                 "{who}: coef_min is inf for {}, counting from 0, a lower bound no coefficient \
-                 can reach. Set {} to -inf for no lower bound, or to a finite number.",
+                 can reach. Set {} to a number, or to -inf for no lower bound.",
                 features(&up),
                 that(&up, "bound"),
             ));
@@ -169,8 +172,7 @@ impl Constraint {
         if !down.is_empty() {
             no.refuse(format!(
                 "{who}: coef_max is -inf for {}, counting from 0, an upper bound no \
-                 coefficient can reach. Set {} to inf for no upper bound, or to a finite \
-                 number.",
+                 coefficient can reach. Set {} to a number, or to inf for no upper bound.",
                 features(&down),
                 that(&down, "bound"),
             ));
@@ -212,11 +214,16 @@ impl Constraint {
                 if s < lo - slack || s > hi + slack {
                     // Three figures, each rounded inward, so a value inside
                     // the range the message gives is accepted.
+                    // A range narrower than its third figure would print
+                    // crossed ends once rounded inward: print it as it is.
+                    let (mut lo_s, mut hi_s) = (three_figures(lo, true), three_figures(hi, false));
+                    if lo_s.parse::<f64>().unwrap_or(lo) > hi_s.parse::<f64>().unwrap_or(hi) {
+                        (lo_s, hi_s) = (format!("{lo}"), format!("{hi}"));
+                    }
                     no.refuse(format!(
-                        "{who}: coef_sum must be one the bounds allow, from {} to {}, but it is \
-                         {s}. Set coef_sum inside that range, or widen coef_min and coef_max.",
-                        three_figures(lo, true),
-                        three_figures(hi, false),
+                        "{who}: coef_sum must be one the bounds allow, from {lo_s} to {hi_s}, but \
+                         it is {s}. Set coef_sum inside that range, or widen coef_min and \
+                         coef_max."
                     ));
                 }
             }
@@ -693,8 +700,8 @@ mod tests {
         assert_eq!(
             err(boxed(&[f64::INFINITY, 0.0], &[f64::INFINITY, 1.0], None)),
             "sgd: coef_min is inf for feature 0, counting from 0, a lower bound no \
-             coefficient can reach. Set that bound to -inf for no lower bound, or to a finite \
-             number."
+             coefficient can reach. Set that bound to a number, or to -inf for no lower \
+             bound."
         );
         assert_eq!(
             err(boxed(
@@ -703,8 +710,8 @@ mod tests {
                 None
             )),
             "sgd: coef_max is -inf for feature 0, counting from 0, an upper bound no \
-             coefficient can reach. Set that bound to inf for no upper bound, or to a finite \
-             number."
+             coefficient can reach. Set that bound to a number, or to inf for no upper \
+             bound."
         );
         assert_eq!(
             err(boxed(&[0.0, 2.0], &[1.0, 1.0], None)),
@@ -769,6 +776,24 @@ mod tests {
                 .validate(k, "sgd")
                 .unwrap_err(),
             "sgd: coef_sum must be one the bounds allow, from 0.112 to 0.222, but it is 1. \
+             Set coef_sum inside that range, or widen coef_min and coef_max."
+        );
+        // A sum three figures but for its last bit rounds to those figures,
+        // not a step outward: 0.1 + 0.5 is 0.6000000000000001.
+        assert_eq!(
+            boxed(&[0.1, 0.5], &[0.1, 0.5], Some(1.0))
+                .validate(k, "sgd")
+                .unwrap_err(),
+            "sgd: coef_sum must be one the bounds allow, from 0.6 to 0.6, but it is 1. Set \
+             coef_sum inside that range, or widen coef_min and coef_max."
+        );
+        // A range narrower than its third figure prints as it is, never
+        // with crossed ends.
+        assert_eq!(
+            boxed(&[0.6001, 0.0], &[0.6004, 0.0], Some(1.0))
+                .validate(k, "sgd")
+                .unwrap_err(),
+            "sgd: coef_sum must be one the bounds allow, from 0.6001 to 0.6004, but it is 1. \
              Set coef_sum inside that range, or widen coef_min and coef_max."
         );
         // Floors that sum to 0.6000000000000001 accept a sum of 0.6.

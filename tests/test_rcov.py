@@ -543,18 +543,24 @@ def test_the_block_survives_a_refresh_time_grid():
 @pytest.mark.parametrize(
     ("kw", "message"),
     [
-        # `group_close`'s own check reaches a missing group first, and says
-        # the same thing about it.
-        ({"group": None}, "group_close needs a group column"),
-        ({"group_close": None}, "needs `group` and `group_close`"),
+        # rcov's own check names a missing group; the generic "group_close
+        # needs a group" refusal stands aside for it.
+        ({"group": None}, "rcov needs group and group_close"),
+        ({"group_close": None}, "rcov needs group and group_close, .*but group_close is not set"),
         ({"half_life": 50.0}, "half_life does not apply to rcov"),
         ({"lam": 0.99}, "lam does not apply to rcov"),
         ({"kernel": "bartlett"}, "the one kernel this model takes"),
-        ({"kind": "nope"}, 'kind must be one of "kernel", "preavg", "plain"; got "nope"'),
+        ({"kind": "nope"}, 'kind must be "kernel", "preavg" or "plain", but it is "nope"'),
         ({"jitter": 0}, "jitter must be at least 1, but it is 0"),
         ({"block_rows": None}, "needs block_rows"),
-        ({"kind": "plain", "bandwidth": 3}, "bandwidth applies to"),
-        ({"kind": "kernel", "preavg_rows": 3}, "preavg_rows applies to"),
+        (
+            {"kind": "plain", "bandwidth": 3},
+            'bandwidth applies only under kind="kernel", but kind is "plain"',
+        ),
+        (
+            {"kind": "kernel", "preavg_rows": 3},
+            'preavg_rows applies only under kind="preavg", but kind is "kernel"',
+        ),
         ({"emit_sigma": True}, "does not apply to rcov"),
         # docs/REVIEW-E54-E64.md R9: settings that used to be accepted and
         # then quietly gave a block that never accumulates, or a kernel with
@@ -888,14 +894,13 @@ def test_theta_beside_preavg_rows_is_deprecated_and_changes_nothing():
         with pytest.warns(po.PolarsOnlineDeprecationWarning) as caught:
             got, _ = block(df, kind="preavg", preavg_rows=12, theta=theta)
         assert [str(w.message) for w in caught] == [
-            f'spec "r": theta = {theta!r} is deprecated beside preavg_rows: preavg_rows '
-            "fixes the pre-averaging window, which is all theta sets, so theta has no "
-            "effect. Leave it out. It is accepted and ignored until the next major "
-            "version, which refuses it"
+            f'spec "r": theta={theta!r} is ignored beside preavg_rows, which fixes the '
+            "pre-averaging span theta would set. The next major version refuses it. "
+            "Leave theta out."
         ]
         assert caught[0].filename == __file__, "the warning names the caller's line"
         assert got.equals(base), theta
-    with pytest.raises(ValueError, match="theta = 13 gives a pre-averaging window of 604 returns"):
+    with pytest.raises(ValueError, match="theta = 13 gives a pre-averaging span of 604 returns"):
         spec(kind="preavg", theta=13.0)
     # theta alone sets the window, and warns of nothing.
     with warnings.catch_warnings():
@@ -909,8 +914,8 @@ def test_theta_beside_preavg_rows_is_deprecated_and_changes_nothing():
     [
         # The strides: counts of at least one, and at most the ceiling every
         # size this model allocates from before the first row is held to.
-        ({"noise_stride": 0}, ValueError, "noise_stride must be >= 1"),
-        ({"iv_stride": 0}, ValueError, "iv_stride must be >= 1"),
+        ({"noise_stride": 0}, ValueError, "noise_stride must be at least 1, but it is 0"),
+        ({"iv_stride": 0}, ValueError, "iv_stride must be at least 1, but it is 0"),
         ({"noise_stride": -1}, ValueError, "noise_stride must be at least 1, but it is -1"),
         ({"iv_stride": -3}, ValueError, "iv_stride must be at least 1, but it is -3"),
         ({"jitter": -1}, ValueError, "jitter must be at least 1, but it is -1"),
@@ -921,7 +926,7 @@ def test_theta_beside_preavg_rows_is_deprecated_and_changes_nothing():
         (
             {"kind": "preavg", "preavg_rows": -1},
             ValueError,
-            "preavg_rows must be at least 2 (3 under psd = False), but it is -1",
+            "preavg_rows must be at least 2 (3 under psd=False), but it is -1",
         ),
         (
             {"kind": "preavg", "preavg_rows": 1},
@@ -963,7 +968,11 @@ def test_theta_beside_preavg_rows_is_deprecated_and_changes_nothing():
             ValueError,
             "theta must be finite and above 0, but it is -1",
         ),
-        ({"kind": "preavg", "theta": float("nan")}, ValueError, "theta must not be NaN"),
+        (
+            {"kind": "preavg", "theta": float("nan")},
+            ValueError,
+            "theta must be a number, but it is NaN",
+        ),
         (
             {"kind": "preavg", "theta": float("inf")},
             ValueError,
@@ -975,12 +984,12 @@ def test_theta_beside_preavg_rows_is_deprecated_and_changes_nothing():
         (
             {"kind": "preavg", "theta": 13.0},
             ValueError,
-            "theta = 13 gives a pre-averaging window of 604 returns",
+            "theta = 13 gives a pre-averaging span of 604 returns",
         ),
         (
             {"kind": "preavg", "theta": 24.6, "psd": False},
             ValueError,
-            "theta = 24.6 gives a pre-averaging window of 602 returns, more than block_rows (600)",
+            "theta = 24.6 gives a pre-averaging span of 602 returns, more than block_rows (600)",
         ),
     ],
 )

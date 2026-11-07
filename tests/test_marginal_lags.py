@@ -475,7 +475,7 @@ def test_a_saved_bank_keeps_its_cross_lags(tmp_path):
 @pytest.mark.parametrize(
     ("kw", "msg"),
     [
-        ({"lags": [0, 1]}, "lags must be >= 1"),
+        ({"lags": [0, 1]}, "lags must each be at least 1, but one of them is 0"),
         ({"lags": [2, 1]}, "strictly increasing"),
         # Taken as no lags, where `ew_cov(lags=[])` is refused.
         (
@@ -485,8 +485,11 @@ def test_a_saved_bank_keeps_its_cross_lags(tmp_path):
                 "lag, such as [1], or leave lags out."
             ),
         ),
-        ({"serial_rule": "geometric"}, "serial_rule needs `lags`"),
-        ({"lags": [1], "serial_rule": "nope"}, 'serial_rule must be one of "truncated"'),
+        ({"serial_rule": "geometric"}, "serial_rule needs lags, but lags is not set"),
+        (
+            {"lags": [1], "serial_rule": "nope"},
+            'serial_rule must be "truncated", "bartlett" or "geometric", but it is "nope"',
+        ),
     ],
 )
 def test_a_bad_lag_spec_is_refused_by_name(kw, msg):

@@ -91,7 +91,7 @@ impl Covariance {
             "diag" => Ok(Covariance::Diagonal),
             other => Err(format!(
                 "covariance_type must be \"full\", \"tied\" or \"diag\", but it is {other:?}. \
-                 Set covariance_type to one of those words."
+                 Use one of those words."
             )),
         }
     }
@@ -2257,7 +2257,7 @@ mod tests {
         assert_eq!(
             Covariance::parse("spherical").unwrap_err(),
             "covariance_type must be \"full\", \"tied\" or \"diag\", but it is \"spherical\". \
-             Set covariance_type to one of those words."
+             Use one of those words."
         );
         assert_eq!(Covariance::Diagonal.name(), "diag");
         assert_eq!(

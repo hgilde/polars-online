@@ -592,7 +592,7 @@ class TestValidation:
             ({"conformal": 1.0}, "conformal must be above 0 and below 1"),
             ({"conformal": -0.5}, "conformal must be above 0 and below 1"),
             ({"conformal": 1.5}, "conformal must be above 0 and below 1"),
-            ({"conformal": float("nan")}, "conformal must not be NaN"),
+            ({"conformal": float("nan")}, "conformal must be a number, but it is NaN"),
             ({"conformal": float("inf")}, "conformal must be finite"),
             (
                 {"conformal": 0.9, "conformal_rate": 0.0},
@@ -622,7 +622,7 @@ class TestValidation:
     def test_a_dict_edited_by_hand_is_checked_at_use(self):
         spec = _spec()
         spec["conformal"] = 2.0
-        with pytest.raises(ValueError, match="strictly between 0 and 1"):
+        with pytest.raises(ValueError, match="conformal must be above 0 and below 1, but it is 2"):
             po.ModelBank([spec])
 
     @pytest.mark.parametrize(

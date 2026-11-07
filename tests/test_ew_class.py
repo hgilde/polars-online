@@ -838,12 +838,12 @@ class TestRefusals:
             ({"classes": ["a", ""]}, "classes must name each class, but one of its names is empty"),
             (
                 {"covariance_type": "spherical"},
-                'covariance_type must be one of "full", "tied", "diag"; got "spherical"',
+                'covariance_type must be "full", "tied" or "diag", but it is "spherical"',
             ),
             ({"precision_prior": 0.0}, "precision_prior must be finite and above 0"),
             ({"precision_prior": -1.0}, "precision_prior must be finite and above 0"),
             ({"features": ["x0", "x0"]}, "more than once"),
-            ({"features": ["x0", "y"]}, "both a label and a feature"),
+            ({"features": ["x0", "y"]}, "both the column of classes and a feature"),
         ],
         ids=lambda v: next(iter(v)) if isinstance(v, dict) else v,
     )
@@ -864,7 +864,7 @@ class TestRefusals:
         with pytest.raises(TypeError, match="label must be a str, but it is list"):
             build(label=["y"])
         with pytest.raises(
-            TypeError, match='covariance_type must be one of "full", "tied", "diag", got int'
+            TypeError, match='covariance_type must be "full", "tied" or "diag", but it is int 1'
         ):
             build(covariance_type=1)
         with pytest.raises(TypeError, match="precision_prior must be a number, but it is str"):
@@ -873,7 +873,9 @@ class TestRefusals:
             build(precision_prior=float("inf"))
 
     def test_takes_a_label_not_targets(self):
-        with pytest.raises(TypeError, match=r"ew_class\(\) takes `label`, not targets"):
+        with pytest.raises(
+            TypeError, match=r"ew_class\(\) takes no targets, since label names the column"
+        ):
             po.spec.ew_class(
                 "m",
                 features=["x0"],
@@ -1155,9 +1157,10 @@ def test_the_label_listed_as_a_feature_is_refused_by_name():
     with pytest.raises(
         ValueError,
         match=(
-            r'spec "m": "y" is both a label and a feature, so the model would predict the '
-            r'label from itself on the same row\. Remove "y" from features, or use a lagged '
-            r"copy of the column as the feature\."
+            r'spec "m": "y" is both the column of classes and a feature, so the model would '
+            r'predict it from itself on the same row\. Remove "y" from features, or make its '
+            r"previous value a column with Polars' shift\(1\) in the query before the bank, and "
+            r"use that as the feature\.$"
         ),
     ):
         spec(features=("x0", "y"))

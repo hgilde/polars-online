@@ -115,8 +115,8 @@ def _json(spec: dict[str, Any] | list[dict[str, Any]]) -> str:
                 return duration_text(v, _who(who), key)
             raise TypeError(
                 f"{_who(who)}: {key} takes no {type(v).__name__}, since it is not measured "
-                "on the clock and is not a target. Pass a column's name as a str, or the "
-                "value the parameter takes."
+                "on the clock and is not a target. Pass the value the parameter takes, such "
+                "as a number, a word or a column's name."
             )
         return v
 
@@ -358,18 +358,20 @@ _AT_LEAST_ONE = frozenset(
 #: Between 0 and the floor the Rust refusal, which gives the reason, is
 #: left to speak.
 _FLOOR = {
-    "block_rows": "1",
-    "preavg_rows": "2 (3 under psd=False)",
+    "block_rows": ("1", "1 or more"),
+    "preavg_rows": ("2 (3 under psd=False)", "2 or more (3 or more under psd=False)"),
+    # 0 is the Rust side's to refuse, which says why: no component.
+    "pca": ("1", "1 or more"),
 }
 
 
-def _int_floor(key: str) -> tuple[int, str]:
-    """The least an int parameter may be here, and how its refusal states
-    the floor."""
+def _int_floor(key: str) -> tuple[int, str, str]:
+    """The least an int parameter may be here, how its refusal states the
+    floor, and the values its remedy asks for."""
     if key in _FLOOR:
-        return 0, _FLOOR[key]
+        return 0, *_FLOOR[key]
     floor = 1 if key in _AT_LEAST_ONE else 0
-    return floor, str(floor)
+    return floor, str(floor), f"{floor} or more"
 
 
 #: The int parameters that are a ``u32`` on the Rust side; every other count
@@ -537,13 +539,10 @@ def _keyword_problem(
         for t in value:
             if isinstance(t, dict) and any(k in t for k in _RELATIVE_KEYS):
                 what = t.get("column", t.get("name"))
+                target = "a target" if what is None else f"target {quoted(what)}"
                 problems.append(
                     TypeError(
-                        f"{who}: target {quoted(what)} is relative to another column, but "
-                        "relative targets were removed. Make the target a column with Polars' "
-                        "with_columns in the query before the bank, such as "
-                        'ret=(pl.col("p") / pl.col("mid")).log(), and name that column in '
-                        "targets."
+                        f"{who}: {target} is relative to another column, but {_RELATIVE_REMOVED}"
                     )
                 )
                 return
@@ -588,12 +587,18 @@ def _keyword_problem(
                 return
             problems.append(ValueError(words_refusal(who, key, *bad, hint=hint)))
             return
-        problems.append(
-            TypeError(
-                f"{who}: {key} must be {_describe(hint)}, but it is {_got(value)}. "
-                "Pass a value of that kind."
+        # A parameter that takes only words says so in its remedy.
+        kind, got = _describe(hint), _got(value)
+        if typing.get_origin(hint) is Literal:
+            problems.append(
+                TypeError(f"{who}: {key} must be {kind}, but it is {got}. Use one of those words.")
             )
-        )
+        else:
+            problems.append(
+                TypeError(
+                    f"{who}: {key} must be {kind}, but it is {got}. Pass a value of that kind."
+                )
+            )
         return
     # Every int parameter is a count (u32 on the Rust side), and some are
     # counts of something there must be one of: the Rust side's floor, said
@@ -603,12 +608,12 @@ def _keyword_problem(
         and not isinstance(value, bool)
         and int in (hint, *typing.get_args(hint))
     ):
-        floor, stated = _int_floor(key)
+        floor, stated, more = _int_floor(key)
         if value < floor:
             problems.append(
                 ValueError(
                     f"{who}: {key} must be at least {stated}, but it is {value}. "
-                    f"Set {key} to {stated} or more."
+                    f"Set {key} to {more}."
                 )
             )
             return
@@ -633,12 +638,12 @@ def _keyword_problem(
         and all(isinstance(x, numbers.Integral) and not isinstance(x, bool) for x in value)
         and list[int] in (hint, *typing.get_args(hint))
     ):
-        floor, stated = _int_floor(key)
+        floor, stated, more = _int_floor(key)
         if min(value) < floor:
             problems.append(
                 ValueError(
                     f"{who}: {key} must each be at least {stated}, but one of them is "
-                    f"{min(value)}. Set each to {stated} or more."
+                    f"{min(value)}. Set each to {more}."
                 )
             )
             return
@@ -4765,7 +4770,8 @@ def marginal(
                     f"{who}: bin_edges must name only features, but it names "
                     f"{_listed([quoted(f) for f in extra])}, which "
                     f"{'is not a feature' if len(extra) == 1 else 'are not features'}. "
-                    "Remove them from bin_edges, or add them to features."
+                    f"Remove {'it' if len(extra) == 1 else 'them'} from bin_edges, or add "
+                    f"{'it' if len(extra) == 1 else 'them'} to features."
                 )
             )
         if problems:

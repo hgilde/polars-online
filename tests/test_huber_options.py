@@ -285,7 +285,9 @@ class TestRidgeScale:
             po.spec.huber("m", ridge_scale="sum", standardize=True, **COMMON)
         with pytest.raises(ValueError, match="the spec has two or more feature sets"):
             po.spec.huber("m", ridge_scale="sum", feature_sets=SETS, **COMMON)
-        with pytest.raises(ValueError, match='ridge_scale must be one of "mean", "sum"'):
+        with pytest.raises(
+            ValueError, match='ridge_scale must be "mean" or "sum", but it is "median"'
+        ):
             po.spec.huber("m", ridge_scale="median", **COMMON)  # type: ignore[arg-type]
 
 
@@ -526,7 +528,8 @@ class TestParameterRelations:
     def test_an_infinite_cut_refuses_a_refit(self):
         with pytest.raises(
             ValueError,
-            match="huber_refit_rows refits the rows past the Huber cut, but huber_delta is inf",
+            match="huber_refit_rows refits a target's first rows to a Huber fit, but huber_delta "
+            "is inf, which makes that fit least squares",
         ):
             po.ModelBank([po.spec.huber("m", huber_delta=INF, huber_refit_rows=10, **COMMON)])
 

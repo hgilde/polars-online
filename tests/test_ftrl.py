@@ -327,7 +327,7 @@ class TestSquaredLoss:
 
     def test_unknown_loss_is_rejected(self):
         with pytest.raises(
-            ValueError, match='loss must be one of "logistic", "squared"; got "hinge"'
+            ValueError, match='loss must be "logistic" or "squared", but it is "hinge"'
         ):
             self._spec(loss="hinge")
 

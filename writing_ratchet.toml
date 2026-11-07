@@ -14,120 +14,77 @@
 # prints every finding, the ones to read among them.
 
 [finished]
-messages = []
+messages = ["crates/online-core/src/audit.rs", "crates/online-core/src/bocpd.rs", "crates/online-core/src/clock.rs", "crates/online-core/src/cluster/kmeans.rs", "crates/online-core/src/cluster/micro.rs", "crates/online-core/src/conformal.rs", "crates/online-core/src/constraint.rs", "crates/online-core/src/corrchange.rs", "crates/online-core/src/deco.rs", "crates/online-core/src/ewclass.rs", "crates/online-core/src/ewlagcov.rs", "crates/online-core/src/ewridge.rs", "crates/online-core/src/ftrl.rs", "crates/online-core/src/hmm.rs", "crates/online-core/src/holt.rs", "crates/online-core/src/lasso.rs", "crates/online-core/src/margbins.rs", "crates/online-core/src/marginal.rs", "crates/online-core/src/marglag.rs", "crates/online-core/src/model.rs", "crates/online-core/src/pa.rs", "crates/online-core/src/rcov.rs", "crates/online-core/src/rls.rs", "crates/online-core/src/seqtest.rs", "crates/online-core/src/stats.rs", "crates/online-polars/src/spec.rs", "crates/online-polars/src/spec/checks.rs", "crates/online-polars/src/spec/clock.rs", "crates/online-polars/src/spec/label_clock.rs", "crates/online-polars/src/spec/limits.rs", "crates/online-polars/src/spec/models.rs", "crates/online-polars/src/spec/names.rs", "crates/online-polars/src/stream/model_cfgs.rs", "python/polars_online/_spec.py", "python/polars_online/_spec_audit.py", "python/polars_online/_spec_gradient.py", "python/polars_online/_spec_regimes.py"]
 docstrings = []
 vocabulary = ["docs/explanation/out-of-sample.md", "docs/how-to/put-rows-in-clock-order.md", "docs/how-to/resume-from-a-saved-state.md"]
 sentences = ["docs/explanation/out-of-sample.md", "docs/how-to/put-rows-in-clock-order.md", "docs/how-to/resume-from-a-saved-state.md"]
 kinds = ["docs/explanation/out-of-sample.md", "docs/how-to/put-rows-in-clock-order.md", "docs/how-to/resume-from-a-saved-state.md"]
 
+[[accepted]]
+check = "messages"
+path = "crates/online-polars/src/spec/names.rs"
+rule = "where"
+text = "emission = {word:?} is deprecated"
+reason = "The caller names the spec: these lines are written inside a spec's own check, and the spec layer's notice and refusal paths prefix them with spec \"m\": (the command line's TOML path, which names no spec, is the next stage's)."
+
+[[accepted]]
+check = "messages"
+path = "crates/online-polars/src/spec/names.rs"
+rule = "where"
+text = "reset_on_flag = {shown} is deprecated"
+reason = "The caller names the spec: these lines are written inside a spec's own check, and the spec layer's notice and refusal paths prefix them with spec \"m\": (the command line's TOML path, which names no spec, is the next stage's)."
+
+[[accepted]]
+check = "messages"
+path = "crates/online-polars/src/spec/names.rs"
+rule = "where"
+text = "{old} was renamed {new}, and both are given"
+reason = "The caller names the spec: these lines are written inside a spec's own check, and the spec layer's notice and refusal paths prefix them with spec \"m\": (the command line's TOML path, which names no spec, is the next stage's)."
+
+[[accepted]]
+check = "messages"
+path = "crates/online-core/src/stats.rs"
+rule = "remedy"
+text = "EwAutoCorr: {e}"
+reason = "A prefix on check_lag_ceiling's refusal (ewlagcov.rs), whose last sentence is its remedy: \"Set lag to N or below.\""
+
+[[accepted]]
+check = "messages"
+path = "python/polars_online/_spec.py"
+rule = "remedy"
+text = "is relative to another column, but {_RELATIVE_REMOVED}"
+reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends in the remedy: \"... and name that column in targets.\""
+
 [messages."crates/online-cli/src/main.rs"]
 "remedy" = 4
 "where" = 4
 
-[messages."crates/online-core/src/audit.rs"]
-"remedy" = 4
-
-[messages."crates/online-core/src/bocpd.rs"]
-"remedy" = 22
-
-[messages."crates/online-core/src/clock.rs"]
-"remedy" = 2
-
-[messages."crates/online-core/src/cluster/kmeans.rs"]
-"formula" = 1
-"remedy" = 13
-
-[messages."crates/online-core/src/cluster/micro.rs"]
-"remedy" = 8
-
-[messages."crates/online-core/src/conformal.rs"]
-"remedy" = 2
-
-[messages."crates/online-core/src/constraint.rs"]
-"remedy" = 7
-
-[messages."crates/online-core/src/corrchange.rs"]
-"formula" = 2
-"remedy" = 18
-
-[messages."crates/online-core/src/deco.rs"]
-"remedy" = 10
-
-[messages."crates/online-core/src/ewclass.rs"]
-"remedy" = 5
-
 [messages."crates/online-core/src/ewcov.rs"]
-"remedy" = 16
+"remedy" = 2
 
 [messages."crates/online-core/src/ewcov/diag.rs"]
-"remedy" = 3
+"remedy" = 2
 
 [messages."crates/online-core/src/ewdiag.rs"]
 "remedy" = 1
-
-[messages."crates/online-core/src/ewlagcov.rs"]
-"remedy" = 4
-
-[messages."crates/online-core/src/ewridge.rs"]
-"remedy" = 20
-
-[messages."crates/online-core/src/ftrl.rs"]
-"remedy" = 4
 
 [messages."crates/online-core/src/gramfit/lars.rs"]
 "internal-word" = 1
 "remedy" = 1
 
-[messages."crates/online-core/src/hmm.rs"]
-"remedy" = 18
-
-[messages."crates/online-core/src/holt.rs"]
-"remedy" = 4
-
 [messages."crates/online-core/src/kalman.rs"]
 "internal-word" = 1
-"remedy" = 15
-
-[messages."crates/online-core/src/lasso.rs"]
-"remedy" = 12
-
-[messages."crates/online-core/src/margbins.rs"]
-"remedy" = 9
-
-[messages."crates/online-core/src/marginal.rs"]
-"remedy" = 6
-
-[messages."crates/online-core/src/marglag.rs"]
-"remedy" = 6
-
-[messages."crates/online-core/src/model.rs"]
-"remedy" = 1
-
-[messages."crates/online-core/src/pa.rs"]
-"remedy" = 3
-
-[messages."crates/online-core/src/rcov.rs"]
-"digits" = 2
-"remedy" = 19
-
-[messages."crates/online-core/src/rls.rs"]
 "remedy" = 5
 
 [messages."crates/online-core/src/robust.rs"]
-"remedy" = 23
-
-[messages."crates/online-core/src/seqtest.rs"]
-"remedy" = 2
+"remedy" = 3
 
 [messages."crates/online-core/src/sgd.rs"]
 "internal-word" = 9
-"remedy" = 24
+"remedy" = 11
 
 [messages."crates/online-core/src/solve.rs"]
 "remedy" = 5
-
-[messages."crates/online-core/src/stats.rs"]
-"remedy" = 3
 
 [messages."crates/online-core/src/warmup.rs"]
 "remedy" = 1
@@ -180,27 +137,6 @@ kinds = ["docs/explanation/out-of-sample.md", "docs/how-to/put-rows-in-clock-ord
 "remedy" = 18
 "where" = 16
 
-[messages."crates/online-polars/src/spec.rs"]
-"internal-word" = 3
-"remedy" = 147
-
-[messages."crates/online-polars/src/spec/checks.rs"]
-"remedy" = 9
-
-[messages."crates/online-polars/src/spec/clock.rs"]
-"remedy" = 13
-
-[messages."crates/online-polars/src/spec/label_clock.rs"]
-"remedy" = 1
-
-[messages."crates/online-polars/src/spec/limits.rs"]
-"formula" = 2
-"remedy" = 4
-
-[messages."crates/online-polars/src/spec/names.rs"]
-"remedy" = 3
-"where" = 3
-
 [messages."crates/online-polars/src/stream.rs"]
 "remedy" = 14
 "where" = 13
@@ -208,10 +144,6 @@ kinds = ["docs/explanation/out-of-sample.md", "docs/how-to/put-rows-in-clock-ord
 [messages."crates/online-polars/src/stream/last_row.rs"]
 "remedy" = 1
 "where" = 1
-
-[messages."crates/online-polars/src/stream/model_cfgs.rs"]
-"remedy" = 23
-"where" = 15
 
 [messages."crates/online-polars/src/summary.rs"]
 "remedy" = 1
@@ -261,19 +193,6 @@ kinds = ["docs/explanation/out-of-sample.md", "docs/how-to/put-rows-in-clock-ord
 [messages."python/polars_online/_renamed.py"]
 "remedy" = 3
 "where" = 2
-
-[messages."python/polars_online/_spec.py"]
-"remedy" = 28
-"where" = 1
-
-[messages."python/polars_online/_spec_audit.py"]
-"remedy" = 3
-
-[messages."python/polars_online/_spec_gradient.py"]
-"remedy" = 1
-
-[messages."python/polars_online/_spec_regimes.py"]
-"remedy" = 1
 
 [messages."python/polars_online/_warnings.py"]
 "remedy" = 11
@@ -412,7 +331,6 @@ kinds = ["docs/explanation/out-of-sample.md", "docs/how-to/put-rows-in-clock-ord
 [vocabulary."crates/online-core/src/clock.rs#messages"]
 
 [vocabulary."crates/online-core/src/cluster/kmeans.rs#messages"]
-"british" = 5
 
 [vocabulary."crates/online-core/src/cluster/micro.rs#messages"]
 
@@ -427,7 +345,6 @@ kinds = ["docs/explanation/out-of-sample.md", "docs/how-to/put-rows-in-clock-ord
 [vocabulary."crates/online-core/src/ewclass.rs#messages"]
 
 [vocabulary."crates/online-core/src/ewcov.rs#messages"]
-"retired" = 2
 
 [vocabulary."crates/online-core/src/ewcov/diag.rs#messages"]
 
@@ -436,14 +353,12 @@ kinds = ["docs/explanation/out-of-sample.md", "docs/how-to/put-rows-in-clock-ord
 [vocabulary."crates/online-core/src/ewlagcov.rs#messages"]
 
 [vocabulary."crates/online-core/src/ewridge.rs#messages"]
-"retired" = 1
 
 [vocabulary."crates/online-core/src/ftrl.rs#messages"]
 
 [vocabulary."crates/online-core/src/gramfit/lars.rs#messages"]
 
 [vocabulary."crates/online-core/src/hmm.rs#messages"]
-"british" = 1
 
 [vocabulary."crates/online-core/src/holt.rs#messages"]
 
@@ -454,8 +369,6 @@ kinds = ["docs/explanation/out-of-sample.md", "docs/how-to/put-rows-in-clock-ord
 [vocabulary."crates/online-core/src/margbins.rs#messages"]
 
 [vocabulary."crates/online-core/src/marginal.rs#messages"]
-"british" = 1
-"retired" = 1
 
 [vocabulary."crates/online-core/src/marglag.rs#messages"]
 
@@ -508,8 +421,6 @@ kinds = ["docs/explanation/out-of-sample.md", "docs/how-to/put-rows-in-clock-ord
 "retired" = 2
 
 [vocabulary."crates/online-polars/src/spec.rs#messages"]
-"british" = 4
-"retired" = 2
 
 [vocabulary."crates/online-polars/src/spec/checks.rs#messages"]
 
@@ -518,7 +429,8 @@ kinds = ["docs/explanation/out-of-sample.md", "docs/how-to/put-rows-in-clock-ord
 [vocabulary."crates/online-polars/src/spec/label_clock.rs#messages"]
 
 [vocabulary."crates/online-polars/src/spec/limits.rs#messages"]
-"british" = 1
+
+[vocabulary."crates/online-polars/src/spec/models.rs#messages"]
 
 [vocabulary."crates/online-polars/src/spec/names.rs#messages"]
 

@@ -620,7 +620,7 @@ impl RobustCfg {
         // named huber's (review round 10, S2-5).
         if self.refit_rows > 0 {
             if let RobustLoss::Huber { delta } = self.loss
-                && !delta.is_finite()
+                && delta == f64::INFINITY
             {
                 no.refuse(format!(
                     "{kind}: huber_refit_rows refits a target's first rows to a Huber fit, \
@@ -657,8 +657,8 @@ impl RobustCfg {
                 if delta <= 0.0 || delta.is_nan() {
                     no.refuse(format!(
                         "{kind}: huber_delta must be above 0, but it is {delta}. Set \
-                         huber_delta to a positive cut in units of the residuals' scale, such \
-                         as 1.345, or to inf for least squares."
+                         huber_delta to a positive cut in units of the residuals' scale, or \
+                         to inf for least squares."
                     ));
                 }
                 if let Some(d) = self.huber_scale_decay {

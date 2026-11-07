@@ -309,7 +309,7 @@ fn a_formula_target_with_group_needs_a_clock() {
 fn an_empty_half_life_grid_is_refused() {
     let err = spec(r#", "half_life": []"#).check().unwrap_err();
     assert!(
-        err.contains("spec \"m\": half_life names no half-life, but the model needs one"),
+        err.contains("spec \"m\": half_life must list at least one half-life, but it is empty"),
         "{err}"
     );
 }

@@ -218,13 +218,20 @@ def test_a_long_step_empties_the_window(kind, field):
         ({"window_size": 0.0}, "window_size must be finite and above 0"),
         ({"window_size": -1.0}, "window_size must be finite and above 0"),
         ({"window_size": float("inf")}, "window_size must be finite"),
-        ({"snapshot_every": 5}, "snapshot_every needs"),
-        ({"max_rows_between_snapshots": 5}, "max_rows_between_snapshots needs"),
+        (
+            {"snapshot_every": 5},
+            "snapshot_every applies only under a hard window, but window_size is not set",
+        ),
+        (
+            {"max_rows_between_snapshots": 5},
+            "max_rows_between_snapshots applies only under a hard window, but window_size is not "
+            "set",
+        ),
         (
             {"window_size": 10.0, "snapshot_every": -1.0},
             "snapshot_every must be finite and at least 0 clock units",
         ),
-        ({"window_size": 10.0, "lags": [1]}, "window_size and lags do not combine"),
+        ({"window_size": 10.0, "lags": [1]}, "window_size and lags cannot both be set"),
         ({"window_size": 10.0, "mahal_quantiles": [0.99]}, "mahal_quantiles"),
     ],
 )
@@ -267,9 +274,9 @@ def test_a_window_with_no_half_life_is_told_to_use_inf_for_a_flat_window(model):
     with pytest.raises(ValueError) as err:
         WINDOWED[model](window_size=5.0)
     assert str(err.value) == (
-        'spec "m": a window_size needs a half_life too, and none is given. Set half_life to '
-        '"inf" (in Python, float("inf")) to weigh every row in the window alike, or to a '
-        "finite value to decay the older rows within it."
+        'spec "m": a hard window (window_size) needs half_life, but half_life is not set. '
+        'Set half_life to "inf" (in Python, float("inf")) to weigh every row in the hard '
+        "window alike, or to a finite value to decay the older rows within it."
     )
     for flat in (float("inf"), "inf"):
         assert WINDOWED[model](window_size=5.0, half_life=flat)["half_life"] == float("inf")
@@ -289,7 +296,9 @@ def test_only_the_models_that_can_honour_it_accept_it(model):
     Everywhere else the keyword is refused, naming the model, rather than
     accepted and quietly ignored."""
     columns = {} if model == "holt" else {"features": ["x"]}  # holt reads its target alone
-    with pytest.raises(TypeError, match=f"{model}.*unexpected keyword argument 'window_size'"):
+    with pytest.raises(
+        TypeError, match=f'spec "m": {model}\\(\\) takes no parameter "window_size"'
+    ):
         getattr(po.spec, model)("m", targets=["y"], window_size=10.0, **columns)
 
 

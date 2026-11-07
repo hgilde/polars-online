@@ -1864,10 +1864,10 @@ impl BinCfg {
             && !matches!(self.stat, BinStat::Huber { delta } if delta.is_finite())
         {
             no.refuse(
-                "marginal: bin_refit_rows applies only under bin_stat=\"huber\" with a finite \
-                 bin_huber_delta, since under the mean, or an infinite bin_huber_delta, the \
-                 first pass is already the full fit. Leave out bin_refit_rows, or set \
-                 bin_stat=\"huber\" with a finite bin_huber_delta.",
+                "marginal: bin_refit_rows applies only under bin_stat=\"huber\" with \
+                 bin_huber_delta below inf: under bin_stat=\"mean\", or bin_huber_delta=inf, one \
+                 pass over the rows already gives the refit's result. Leave out bin_refit_rows, \
+                 or set bin_stat=\"huber\" with bin_huber_delta below inf.",
             );
         }
         let values = self.stat.cell_values();
@@ -1879,7 +1879,11 @@ impl BinCfg {
                         "the bin histogram",
                         histogram_bytes(p, n_targets, bins, values),
                         budget,
-                        &format!("{bins} bins over {p} features and {n_targets} targets"),
+                        &format!(
+                            "{bins} bins over {} and {}",
+                            crate::model::count(p, "feature"),
+                            crate::model::count(n_targets, "target")
+                        ),
                         "use fewer bins, targets or features",
                     ));
                 }
@@ -1894,7 +1898,7 @@ impl BinCfg {
                 if self.warm_rows < self.n_bins {
                     no.refuse(format!(
                         "marginal: bin_warm_rows must be at least bins ({}), since the edges are \
-                         set from the rows it holds, but it is {}. Set bin_warm_rows to {} \
+                         set from those first rows, but it is {}. Set bin_warm_rows to {} \
                          or more.",
                         self.n_bins, self.warm_rows, self.n_bins
                     ));
@@ -1905,8 +1909,10 @@ impl BinCfg {
                         hold_bytes(self.warm_rows, p, n_targets),
                         budget,
                         &format!(
-                            "bin_warm_rows = {} over {p} features and {n_targets} targets",
-                            self.warm_rows
+                            "bin_warm_rows = {} over {} and {}",
+                            self.warm_rows,
+                            crate::model::count(p, "feature"),
+                            crate::model::count(n_targets, "target")
                         ),
                         "lower bin_warm_rows, or use fewer targets or features",
                     ));
@@ -1917,8 +1923,10 @@ impl BinCfg {
                         histogram_bytes(p, n_targets, p.saturating_mul(self.n_bins), values),
                         budget,
                         &format!(
-                            "{} bins for each of {p} features and {n_targets} targets",
-                            self.n_bins
+                            "{} bins for each of {} and {}",
+                            self.n_bins,
+                            crate::model::count(p, "feature"),
+                            crate::model::count(n_targets, "target")
                         ),
                         "use fewer bins, targets or features",
                     ));

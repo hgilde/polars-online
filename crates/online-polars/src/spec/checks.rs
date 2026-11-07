@@ -189,7 +189,7 @@ pub(crate) fn at_least_zero(
 }
 
 /// `a, b and c`.
-fn listed(v: &[String]) -> String {
+pub(super) fn listed(v: &[String]) -> String {
     match v.split_last() {
         Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
         _ => v.join(""),
@@ -238,10 +238,10 @@ pub(super) fn check_bin_refit(
     ] {
         if given && !huber_cut {
             no.refuse(format!(
-                "spec {name:?}: {key} applies only under bin_stat=\"huber\" with a finite \
-                 bin_huber_delta: under the mean, or an infinite bin_huber_delta, one pass over \
-                 the rows already gives the refit's result. Set bin_stat=\"huber\" with a finite \
-                 bin_huber_delta, or leave {key} out."
+                "spec {name:?}: {key} applies only under bin_stat=\"huber\" with \
+                 bin_huber_delta below inf: under bin_stat=\"mean\", or bin_huber_delta=inf, one \
+                 pass over the rows already gives the refit's result. Set bin_stat=\"huber\" with \
+                 bin_huber_delta below inf, or leave {key} out."
             ));
         }
     }
@@ -279,7 +279,7 @@ pub(super) fn check_solve_every(name: &str, v: Option<&Span>) -> Result<(), Stri
         return Err(format!(
             "spec {name:?}: solve_every must be at least 0 clock units, but it is {v}. Set \
              solve_every to 0 to solve on every row, to a positive number of clock units, or to \
-             \"inf\" for no solve on the clock, or leave it out to solve by weight."
+             \"inf\" for no solve on the clock, or leave it out for the default cadence."
         ));
     }
     Ok(())
@@ -313,7 +313,7 @@ pub(super) fn check_feature_sets(
         if !names.insert(name.as_str()) {
             no.refuse(format!(
                 "spec {spec:?}: feature_sets names {name:?} more than once, but a set's name \
-                 is part of its output fields' names. Rename one of the two sets."
+                 is part of its output fields' names. Rename all but one of them."
             ));
         }
         if cols.is_empty() {

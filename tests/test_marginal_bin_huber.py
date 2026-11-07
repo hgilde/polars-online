@@ -278,8 +278,8 @@ def test_the_spec_reports_back_what_it_was_given():
         (dict(bin_stat="mean", bin_huber_delta=2.0), "bin_huber_delta is the cut of"),
         (dict(bin_huber_delta=0.0), "bin_huber_delta must be above 0"),
         (dict(bin_huber_delta=-1.0), "bin_huber_delta must be above 0"),
-        (dict(bin_huber_delta=float("nan")), "bin_huber_delta must not be NaN"),
-        (dict(bin_stat="median"), "bin_stat must be one of"),
+        (dict(bin_huber_delta=float("nan")), "bin_huber_delta must be a number, but it is NaN"),
+        (dict(bin_stat="median"), 'bin_stat must be "mean" or "huber", but it is "median"'),
     ],
 )
 def test_refusals(kw, message):

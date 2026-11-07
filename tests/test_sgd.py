@@ -214,16 +214,18 @@ class TestPlumbing:
         assert abs(np.corrcoef(p[m], df["y0"].to_numpy()[m])[0, 1]) < 0.06
 
     def test_bad_config_rejected(self):
-        with pytest.raises(ValueError, match='loss must be one of "squared", .*; got "hinge"'):
+        with pytest.raises(ValueError, match='loss must be "squared", .*, but it is "hinge"'):
             _spec(loss="hinge")
         with pytest.raises(
             ValueError,
-            match='schedule must be one of "constant", "inv_scaling", "adagrad"; got "cosine"',
+            match='schedule must be "constant", "inv_scaling" or "adagrad", but it is "cosine"',
         ):
             _spec(schedule="cosine")
         with pytest.raises(ValueError, match="learning_rate"):
             _spec(learning_rate=0.0)
-        with pytest.raises(ValueError, match="needs a .quantile. level"):
+        with pytest.raises(
+            ValueError, match='loss="quantile" needs a quantile level, but quantile is not set'
+        ):
             _spec(loss="quantile")
 
     @pytest.mark.parametrize(
@@ -267,10 +269,10 @@ class TestPlumbing:
         """Review 2026-10-05 (YA8): each of these went through and was ignored,
         the output equal to the spec without it, where a parameter whose
         switch is off is refused (:mod:`polars_online.spec`)."""
-        with pytest.raises(ValueError, match='^spec "m": sgd ') as e:
+        with pytest.raises(ValueError, match='^spec "m": ') as e:
             _spec(**kw)
         assert says in str(e.value), str(e.value)
-        assert "does not use it" in str(e.value), str(e.value)
+        assert ", which does not use it" in str(e.value), str(e.value)
 
     @pytest.mark.parametrize(
         "kw",
@@ -576,7 +578,7 @@ def test_a_raw_spec_with_a_parameter_nothing_reads_is_refused(extra, msg, tmp_pa
     CLI's dry run."""
     spec = _spec()
     raw = dict(spec, model={**spec["model"], **extra})
-    with pytest.raises(ValueError, match=f'spec "m": {msg} does not use it'):
+    with pytest.raises(ValueError, match=f'spec "m": {msg}, which does not use it'):
         po.ModelBank([raw])
     _linear(n=50).write_parquet(tmp_path / "in.parquet")
     res = run_online(
@@ -589,7 +591,7 @@ def test_a_raw_spec_with_a_parameter_nothing_reads_is_refused(extra, msg, tmp_pa
         check=False,
     )
     assert res.returncode != 0, res.stdout
-    assert f"{msg} does not use it" in res.stderr, res.stderr
+    assert f"{msg}, which does not use it" in res.stderr, res.stderr
     # The builder's own dict carries each as a null, which is the default,
     # not a value given.
     assert all(spec["model"][k] is None for k in extra), spec["model"]

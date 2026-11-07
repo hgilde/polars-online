@@ -617,9 +617,13 @@ class TestSharedFeatureMoments:
                 assert (own["var_x"] == pair["var_x"]) == (t == "y0"), (f, t)
 
     def test_it_is_refused_with_a_window_or_another_value(self):
-        with pytest.raises(ValueError, match='"shared" takes no window'):
+        with pytest.raises(
+            ValueError, match='feature_moments="shared" and window_size cannot both be set'
+        ):
             spec(feature_moments="shared", window_size=50.0)
-        with pytest.raises(ValueError, match='must be one of "per_target", "shared"; got "both"'):
+        with pytest.raises(
+            ValueError, match='feature_moments must be "per_target" or "shared", but it is "both"'
+        ):
             spec(feature_moments="both")
         spec(feature_moments="per_target", window_size=50.0, lags=[1], window_lags=True)
         spec(feature_moments="shared", lags=[1, 3], serial_rule="bartlett")

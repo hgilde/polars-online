@@ -82,19 +82,24 @@ class TestTheBuilder:
     def test_targets_and_features_are_refused_by_name(self):
         with pytest.raises(TypeError, match="audit\\(\\) takes no targets"):
             po.spec.audit("a", columns=["x0"], targets=["y"])
-        with pytest.raises(TypeError, match="takes columns=, not features="):
+        with pytest.raises(TypeError, match="audit\\(\\) takes no features, since columns names"):
             po.spec.audit("a", columns=["x0"], features=["x1"])
-        with pytest.raises(ValueError, match="columns must be non-empty"):
+        with pytest.raises(
+            ValueError, match="columns must name at least one column, but it is empty"
+        ):
             po.spec.audit("a", columns=[])
 
     def test_its_refusals_say_columns(self):
         """An audit takes ``columns``, and its refusals name them so: a
         column given twice, and ``targets``, read as ``features`` once."""
-        with pytest.raises(ValueError, match='spec "a": columns lists "x0" more than once'):
+        with pytest.raises(
+            ValueError,
+            match='spec "a": columns must name each column once, but it names "x0" more than once',
+        ):
             po.spec.audit("a", columns=["x0", "x1", "x0"])
         with pytest.raises(
             TypeError,
-            match='spec "a": audit\\(\\) takes no targets; it counts what is in the columns',
+            match='spec "a": audit\\(\\) takes no targets, since it counts what is in the columns',
         ):
             po.spec.audit("a", columns=["x0"], targets=["y"])
 
@@ -103,7 +108,7 @@ class TestTheBuilder:
         [
             ({"half_life": 10.0}, "half_life does not apply to audit"),
             ({"lam": 0.9}, "lam does not apply to audit"),
-            ({"weight": "w"}, "list the weight column in columns"),
+            ({"weight": "w"}, "To audit the weight column, list it among the columns"),
             ({"embargo": 3.0, "clock": "t", "gap_cap": 5.0}, "embargo does not apply to audit"),
             # Review 6, F-10: taken and ignored, the output, `audit()` and
             # `check()` the same at 0, 5 and 1e9.

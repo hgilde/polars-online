@@ -446,7 +446,7 @@ class TestPerTargetMinPeriods:
     def test_wrong_length_is_rejected(self):
         with pytest.raises(
             ValueError,
-            match="min_weight must give one value for each of the 2 targets, but it lists 3",
+            match="min_weight must list one value per target \\(2\\), but it lists 3",
         ):
             po.spec.ewridge(
                 "m",

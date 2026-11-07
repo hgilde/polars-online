@@ -260,12 +260,21 @@ def test_split_gain_t_uses_n_serial_when_it_has_one():
         (dict(bins=8, window_size=100.0), "bins and window_size cannot both be set"),
         (dict(bins=8, bin_warm_rows=4), "bin_warm_rows"),
         (dict(bins=1), "at least 2"),
-        (dict(bins=8, bin_rule="tertiles"), 'bin_rule must be one of "quantile", "fixed"'),
+        (dict(bins=8, bin_rule="tertiles"), 'bin_rule must be "quantile" or "fixed", but it is'),
         (dict(bin_edges=[[1.0, 0.0]]), "strictly increasing"),
-        (dict(bin_edges=[[0.0], [1.0]]), "one list per feature"),
-        (dict(bin_edges={"z": [0.0]}), "missing"),
+        (
+            dict(bin_edges=[[0.0], [1.0]]),
+            "bin_edges must hold one list of edges for each feature, 1 in all, but it holds 2",
+        ),
+        (
+            dict(bin_edges={"z": [0.0]}),
+            '- bin_edges must give edges for every feature, but it has none for "x".',
+        ),
         (dict(bins=8, bin_warm_rows=10**9), "budget"),
-        (dict(bin_budget=64.0, bins=None, bin_warm_rows=None), "needs bins or bin_edges"),
+        (
+            dict(bin_budget=64.0, bins=None, bin_warm_rows=None),
+            "bin_budget bounds the memory of the bins, but neither bins nor bin_edges is set",
+        ),
         (dict(bins=8, bin_budget=0.0), "bin_budget must be above 0 MiB, but it is 0"),
         (dict(bins=8, bin_budget=-5.0), "bin_budget must be above 0 MiB, but it is -5"),
         # The budget holds given edges too (review 2026-09-26, F missing 8).
@@ -300,13 +309,13 @@ def test_bin_budget_sets_the_limit():
             ]
         )
 
-    with pytest.raises(ValueError, match=re.escape("over the 256 MiB")):
+    with pytest.raises(ValueError, match=re.escape("over the bin_budget of 256 MiB")):
         bank()
     bank(bin_budget=400.0)
     bank(bin_budget=float("inf"))
-    with pytest.raises(ValueError, match=re.escape("over the 300 MiB")) as err:
+    with pytest.raises(ValueError, match=re.escape("over the bin_budget of 300 MiB")) as err:
         bank(bin_budget=300.0)
-    assert "raise bin_budget" in str(err.value)
+    assert "Increase bin_budget" in str(err.value)
 
 
 @pytest.mark.parametrize("kw", [dict(bins=8), dict(bin_rule="fixed"), dict(bin_warm_rows=50)])
@@ -321,7 +330,8 @@ def test_given_edges_refuse_the_learned_kinds_knobs(kw):
         bin_edges=[[0.0]],
     )
     d.update(kw)
-    with pytest.raises(ValueError, match="do not apply with it"):
+    (knob,) = kw
+    with pytest.raises(ValueError, match=f"bin_edges fixes the bins, but {knob} is also set"):
         po.ModelBank([po.spec.marginal("m", **d)])
 
 

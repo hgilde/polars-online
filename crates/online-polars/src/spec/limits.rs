@@ -75,7 +75,7 @@ impl Spec {
                     no.refuse(format!(
                         "spec {:?}: dead_frac must be below 0.5, but it is {v}: a re-placed \
                          center starts at half the weight of the cluster it splits from, so at \
-                         0.5 or above it can start below the floor dead_frac sets and be \
+                         0.5 or above it can start at or below the floor dead_frac sets and be \
                          re-placed again at the next split-merge check. Set dead_frac below \
                          0.5, such as the default 0.05.",
                         self.name

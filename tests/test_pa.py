@@ -180,7 +180,7 @@ def test_save_load(tmp_path):
 
 
 def test_bad_config_rejected():
-    with pytest.raises(ValueError, match='mode must be one of "pa", "pa1", "pa2"; got "pa3"'):
+    with pytest.raises(ValueError, match='mode must be "pa", "pa1" or "pa2", but it is "pa3"'):
         _spec(mode="pa3")
     with pytest.raises(ValueError, match="c must be above 0"):
         _spec(c=0.0)
@@ -195,8 +195,8 @@ def test_c_beside_the_mode_that_reads_none_is_refused(c, tmp_path, online_cli):
     is refused, as ``sgd`` refuses ``power`` beside a schedule that does not
     read it, by the builder, by a raw dict and by the CLI's dry run."""
     msg = (
-        'spec "m": c caps the step of mode="pa1" and mode="pa2", but mode is "pa", which caps '
-        'none. Leave c out, or set mode="pa1" or "pa2".'
+        'spec "m": c caps the step under mode="pa1" and damps it under mode="pa2", but mode is '
+        '"pa", which reads neither. Leave c out, or set mode="pa1" or "pa2".'
     )
     with pytest.raises(ValueError, match=msg):
         _spec(mode="pa", c=c)

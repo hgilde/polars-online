@@ -392,8 +392,8 @@ impl CorrChangeCfg {
         }
         if !["bonferroni", "none"].contains(&self.alpha_adjust.as_str()) {
             no.refuse(format!(
-                "corrchange: alpha_adjust must be \"bonferroni\" or \"none\", but it is {:?}. Set \
-                 alpha_adjust to one of those words.",
+                "corrchange: alpha_adjust must be \"bonferroni\" or \"none\", but it is {:?}. Use \
+                 one of those words.",
                 self.alpha_adjust
             ));
         }
@@ -463,30 +463,53 @@ impl CorrChangeCfg {
                 // `γ` (`boundary::MIN_SEQUENTIAL_TAIL`; docs/PLAN.md task
                 // 195). A configured `crit` reads no `alpha`.
                 let floor = crate::boundary::MIN_SEQUENTIAL_TAIL;
-                if self.crit.is_none() && self.pair_alpha() < floor {
-                    if self.alpha_adjust == "bonferroni" {
-                        // The least alpha whose share clears the floor,
-                        // rounded up so the remedy holds; none below 1 where
-                        // the pairs are too many.
-                        let least = floor * self.npairs() as f64;
-                        let raise = if least < 1.0 {
-                            format!("Set alpha to {} or more, set", up_to_three(least))
-                        } else {
-                            "Set".to_string()
-                        };
-                        no.refuse(format!(
-                            "corrchange: kind=\"sequential\" tests each of its {} pairs at its \
-                             share of alpha, {:.2e}, below 5e-11, where the critical value cannot \
-                             be computed accurately. {raise} alpha_adjust=\"none\", or give crit.",
-                            self.npairs(),
-                            self.pair_alpha()
-                        ));
-                    } else {
+                // An alpha out of its range is the range check's to refuse.
+                let in_range = self.alpha > 0.0 && self.alpha < 1.0;
+                if in_range && self.crit.is_none() && self.pair_alpha() < floor {
+                    // Under Bonferroni with several pairs each is tested at
+                    // a share of alpha; with one pair the share is alpha.
+                    let shared = self.alpha_adjust == "bonferroni" && self.npairs() > 1;
+                    // The least alpha whose share clears the floor, rounded
+                    // up so the remedy holds; none below 1 where the pairs
+                    // are too many.
+                    let least = floor * self.npairs() as f64;
+                    let (n, share) = (self.npairs(), self.pair_alpha());
+                    if !shared {
                         no.refuse(format!(
                             "corrchange: kind=\"sequential\" tests each pair at alpha = {}, \
                              below 5e-11, where the critical value cannot be computed accurately. \
                              Set alpha to 5e-11 or more, or give crit.",
                             self.alpha
+                        ));
+                    } else if self.alpha >= floor && least < 1.0 {
+                        // alpha_adjust="none" tests each pair at alpha, which
+                        // clears the floor.
+                        no.refuse(format!(
+                            "corrchange: kind=\"sequential\" tests each of its {n} pairs at its \
+                             share of alpha, {share:.2e}, below 5e-11, where the critical value \
+                             cannot be computed accurately. Set alpha to {} or more, set \
+                             alpha_adjust=\"none\", or give crit.",
+                            up_to_three(least)
+                        ));
+                    } else if self.alpha >= floor {
+                        no.refuse(format!(
+                            "corrchange: kind=\"sequential\" tests each of its {n} pairs at its \
+                             share of alpha, {share:.2e}, below 5e-11, where the critical value \
+                             cannot be computed accurately. Set alpha_adjust=\"none\", or give \
+                             crit."
+                        ));
+                    } else if least < 1.0 {
+                        no.refuse(format!(
+                            "corrchange: kind=\"sequential\" tests each of its {n} pairs at its \
+                             share of alpha, {share:.2e}, below 5e-11, where the critical value \
+                             cannot be computed accurately. Set alpha to {} or more, or give crit.",
+                            up_to_three(least)
+                        ));
+                    } else {
+                        no.refuse(format!(
+                            "corrchange: kind=\"sequential\" tests each of its {n} pairs at its \
+                             share of alpha, {share:.2e}, below 5e-11, where the critical value \
+                             cannot be computed accurately. Give crit, or use fewer features."
                         ));
                     }
                 }
@@ -726,7 +749,7 @@ impl CorrChange {
             let least = up_to_three(1.0 / (MAX_PERM as f64 + 1.0));
             return Err(format!(
                 "corrchange: no n_perm up to {MAX_PERM} lets the permutation test flag at alpha = \
-                 {}. Set alpha to {least} or more, or give crit.",
+                 {}. Set alpha to {least} or more and n_perm to {MAX_PERM}, or give crit.",
                 cfg.alpha
             ));
         }
@@ -2021,8 +2044,14 @@ mod tests {
             );
         }
         // The remedy gives the least alpha that clears the floor: 5e-11 for
-        // each of the three pairs, or a plain alpha of 5e-11.
+        // each of the three pairs, or a plain alpha of 5e-11. Testing each
+        // pair at alpha itself is offered only where alpha clears the floor.
         let err = with(1e-17, "bonferroni").validate().unwrap_err();
+        assert!(
+            err.contains("Set alpha to 1.50e-10 or more, or give crit."),
+            "{err}"
+        );
+        let err = with(2.9 * limit, "bonferroni").validate().unwrap_err();
         assert!(
             err.contains("Set alpha to 1.50e-10 or more, set alpha_adjust=\"none\", or give crit."),
             "{err}"

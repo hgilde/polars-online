@@ -242,7 +242,7 @@ def audit(
         problems.append(
             ValueError(
                 f"{who}: columns must name each column once, but it names {listed} more than "
-                "once. Remove the repeats."
+                "once. Remove the repeats from columns."
             )
         )
     if problems:

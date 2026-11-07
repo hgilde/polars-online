@@ -1788,14 +1788,14 @@ fn every_core_validate_refuses_what_the_spec_refuses() {
                 half_life: vec![nan],
                 ..kalman_cfg()
             }),
-            "kalman: coef_half_life must be above 0, but one of its values is NaN.",
+            "kalman: coef_half_life must be above 0, but it is NaN.",
         ),
         (
             kalman(KalmanCfg {
                 revert_half_life: vec![0.0],
                 ..kalman_cfg()
             }),
-            "kalman: revert_half_life must be above 0, but one of its values is 0.",
+            "kalman: revert_half_life must be above 0, but it is 0.",
         ),
     ];
     let wrong: Vec<String> = refused

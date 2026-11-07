@@ -2836,7 +2836,7 @@ _CLOCK_REFUSALS: dict[str, tuple[dict[str, Any], type[Exception], str]] = {
         dict(clock="t", gap_cap=5.0, session="s", session_gap=math.inf),
         ValueError,
         "with_windows: session_gap must be finite, but it is inf. Set session_gap to the clock "
-        'step to take at a session change, or to "reset" to start over there.',
+        'step to take at a session change, or to "reset" to reset every group\'s windows there.',
     ),
     "session_gap negative": (
         dict(clock="t", gap_cap=5.0, session="s", session_gap=-1.0),
@@ -3267,7 +3267,7 @@ def test_reverse_must_be_a_bool() -> None:
         extra: dict[str, Any] = {"quantile": 0.5} if name == "quantile" else {}
         with pytest.raises(TypeError) as exc:
             getattr(po, f"ewm_{name}")("x", half_life=1.0, window_size=2.0, reverse=1, **extra)
-        assert str(exc.value) == f"po.ewm_{name}: reverse must be a bool, but it is int"
+        assert str(exc.value) == f"po.ewm_{name}: reverse must be a bool, got int"
 
 
 # --------------------------------------------------------------------------

@@ -1080,7 +1080,7 @@ class TestEdgeCases:
         seeds on the k-th row, as the floor did."""
         with pytest.raises(
             ValueError,
-            match=r'spec "m": kmeans: warm_rows must be at least n_clusters \(10\) to seed '
+            match=r'spec "m": warm_rows must be at least n_clusters \(10\) to seed '
             r"that many centers, but it is 1",
         ):
             spec(k=10, warm_rows=1, min_weight=1.0)
@@ -1404,15 +1404,18 @@ class TestRefusals:
     @pytest.mark.parametrize(
         ("kw", "msg"),
         [
-            ({"n_clusters": 0}, "n_clusters must be >= 1"),
+            ({"n_clusters": 0}, "n_clusters must be at least 1, but it is 0"),
             (
                 {"init": "random"},
                 re.escape(
-                    'init must be one of "first", "farthest", "k-means++", "lloyd"; got "random"'
+                    'init must be "first", "farthest", "k-means++" or "lloyd", but it is "random"'
                 ),
             ),
-            ({"update_every_rows": 0}, "update_every_rows must be >= 1"),
-            ({"split_merge_every_rows": 0}, "split_merge_every_rows must be >= 1"),
+            ({"update_every_rows": 0}, "update_every_rows must be at least 1, but it is 0"),
+            (
+                {"split_merge_every_rows": 0},
+                "split_merge_every_rows must be at least 1, but it is 0",
+            ),
             ({"split_merge": -1.0}, "split_merge must be finite and at least 0"),
             ({"dead_frac": -0.1}, "dead_frac must be at least 0 and below 0.5"),
             ({"scale_floor": -0.5}, "scale_floor must be finite and at least 0"),
@@ -1614,7 +1617,11 @@ class TestTheDefaults:
         off = self.run(split_merge=0.0)
         assert _differ(off, self.run(split_merge=0.0, dead_frac=0.0)) == []
         assert _differ(off, self.run()) != []
-        with pytest.raises(ValueError, match="kmeans: dead_frac = 0.05 re-places dead centers"):
+        with pytest.raises(
+            ValueError,
+            match='spec "m": dead_frac = 0.05 re-places a center only at a split-merge check, but '
+            "split_merge = 0 runs none",
+        ):
             po.ModelBank([spec(split_merge=0.0, dead_frac=0.05)])
 
 
@@ -1633,7 +1640,8 @@ class TestTheBoundaries:
         po.ModelBank([spec(warm_rows=5_592_405)])
         with pytest.raises(
             ValueError,
-            match="warm_rows = 5592406 would hold 256.00003 MiB of rows of 2 features",
+            match=r"the first 5592406 rows, which seed the centers, would take 256\.00003 MiB at 2 "
+            r"features, over the 256 MiB limit\. Set warm_rows to 5592405 or below",
         ):
             po.ModelBank([spec(warm_rows=5_592_406)])
 
@@ -1641,7 +1649,7 @@ class TestTheBoundaries:
         ("kw", "msg"),
         [
             ({"split_merge": float("inf")}, "split_merge must be finite, but it is inf"),
-            ({"dead_frac": float("nan")}, "dead_frac must not be NaN"),
+            ({"dead_frac": float("nan")}, "dead_frac must be a number, but it is NaN"),
             ({"scale_floor": float("inf")}, "scale_floor must be finite"),
             ({"warm_rows": 2}, "warm_rows"),
         ],

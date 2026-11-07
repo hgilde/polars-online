@@ -88,7 +88,7 @@ pub fn bocpd_cfg(spec: &Spec) -> Result<BocpdCfg, String> {
                 return Err(format!(
                     "bocpd: robust_beta must be finite and above 0, but it is {b}. Set \
                      robust_beta to a small positive value such as 0.1, which ignores a row 20 \
-                     standard deviations out and still finds a shift of 4, or leave it out to \
+                     standard deviations out and still finds a shift of 4 standard deviations, or leave it out to \
                      weigh every row in full."
                 ));
             }
@@ -160,6 +160,9 @@ pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
     // Every problem at once, but a kind outside the three stops the
     // checks: each after it asks what the kind reads.
     let mut no = online_core::Refusals::new();
+    // Unset, the kind is the default, which a refusal of window_rows does
+    // not name: the reader wrote no kind.
+    let kind_given = kind.is_some();
     let (kind, name) = match kind.as_deref() {
         None | Some("monitor") => (CorrChangeKind::Monitor, "monitor"),
         Some("window") => (CorrChangeKind::Window, "window"),
@@ -177,9 +180,15 @@ pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
     let span_rows = match *span_rows {
         Some(rows) => rows,
         None => {
+            // A subject either way: the spec's render drops "corrchange: ".
+            let kind_said = if kind_given {
+                format!("kind={name:?} ")
+            } else {
+                "the model ".to_string()
+            };
             no.refuse(format!(
-                "corrchange: kind={name:?} needs window_rows, {}, but it is not set. Set \
-                 window_rows to a number of rows, {} or more.",
+                "corrchange: {kind_said}needs window_rows, {}, but it is not set. Set window_rows \
+                 to a number of rows, {} or more.",
                 match kind {
                     CorrChangeKind::Sequential =>
                         "the rows of history each monitored period is tested against",
@@ -566,6 +575,12 @@ pub fn deco_cfg(spec: &Spec) -> Result<DecoCfg, String> {
             .all(|(_, cols)| cols.iter().all(|c| spec.features.contains(c)))
     {
         no.take(deco_blocks_by_name(&spec.features, named));
+    } else if blocks_named(&spec.model).is_some_and(|named| !named.is_empty()) {
+        // A block naming another column leaves the by-name rules (a
+        // feature in no block among them) unchecked: say so.
+        if !no.is_empty() {
+            let _ = no.stop_here();
+        }
     }
     // A JSON or TOML spec writes `blocks` as an array of pairs, so two of
     // them can carry the same name; the collision then surfaces as two
@@ -575,7 +590,7 @@ pub fn deco_cfg(spec: &Spec) -> Result<DecoCfg, String> {
         for (dup, _) in named.iter().filter(|(n, _)| !seen.insert(n.as_str())) {
             no.refuse(format!(
                 "deco: blocks names {dup:?} more than once, but a block's name labels its \
-                 output fields. Rename one of the two blocks."
+                 output fields. Rename all but one of them."
             ));
         }
     }

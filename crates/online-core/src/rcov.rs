@@ -615,6 +615,8 @@ impl RcovCfg {
         // given `bandwidth` or `max_bandwidth` is the ring, held to it above.
         if let (Some(h), Some(b)) = (self.ring_rows(), self.block_rows)
             && self.kind == RcovKind::Kernel
+            && self.bandwidth.is_none()
+            && self.max_bandwidth.is_none()
             && h > MAX_RING as f64
         {
             no.refuse(format!(
@@ -655,14 +657,38 @@ impl RcovCfg {
                 // The most lags whose covariances fit, rounded down so the
                 // remedy holds.
                 let most = (GAMMA_BUDGET_MIB * f64::from(1 << 20) / (8.0 * k * k)).floor() - 1.0;
-                no.refuse(format!(
-                    "rcov: the lagged covariances the model keeps would take {} MiB at {ring} \
-                     lags of {} features, over the {GAMMA_BUDGET_MIB} MiB limit. Set bandwidth or \
-                     max_bandwidth to {} or below, or use fewer features.",
-                    crate::budget::mib_over(mib, GAMMA_BUDGET_MIB),
-                    self.n_features,
-                    most.max(0.0)
-                ));
+                let mib = crate::budget::mib_over(mib, GAMMA_BUDGET_MIB);
+                let n = self.n_features;
+                // Lags are kept only under kind="kernel", and only a
+                // bandwidth of 1 or more is one to lower to.
+                // The depth is max_bandwidth where it is set, else bandwidth,
+                // else the automatic bandwidth either one replaces.
+                let (some_max, some_bandwidth) =
+                    (self.max_bandwidth.is_some(), self.bandwidth.is_some());
+                if ring > 0 && most >= 1.0 && some_max {
+                    no.refuse(format!(
+                        "rcov: the lagged covariances the model keeps would take {mib} MiB at \
+                         {ring} lags of {n} features, over the {GAMMA_BUDGET_MIB} MiB limit. Set \
+                         max_bandwidth to {most} or below, or use fewer features."
+                    ));
+                } else if ring > 0 && most >= 1.0 && some_bandwidth {
+                    no.refuse(format!(
+                        "rcov: the lagged covariances the model keeps would take {mib} MiB at \
+                         {ring} lags of {n} features, over the {GAMMA_BUDGET_MIB} MiB limit. Set \
+                         bandwidth to {most} or below, or use fewer features."
+                    ));
+                } else if ring > 0 && most >= 1.0 {
+                    no.refuse(format!(
+                        "rcov: the lagged covariances the model keeps would take {mib} MiB at \
+                         {ring} lags of {n} features, over the {GAMMA_BUDGET_MIB} MiB limit. Set \
+                         bandwidth or max_bandwidth to {most} or below, or use fewer features."
+                    ));
+                } else {
+                    no.refuse(format!(
+                        "rcov: the covariances the model keeps would take {mib} MiB at {n} \
+                         features, over the {GAMMA_BUDGET_MIB} MiB limit. Use fewer features."
+                    ));
+                }
             }
         }
         no.finish()

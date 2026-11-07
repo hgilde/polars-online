@@ -1513,7 +1513,10 @@ def test_every_memory_and_lag_is_refused_out_of_range_or_without_its_switch():
             dict(emit_specification=True, ljung_box_lags=2**20 + 1),
             "ljung_box_lags must be at most 1048576, but it is 1048577",
         ),
-        (dict(emit_robust_se=True, robust_se_lags=-1), "robust_se_lags must be at least 0, but it is -1"),
+        (
+            dict(emit_robust_se=True, robust_se_lags=-1),
+            "robust_se_lags must be at least 0, but it is -1",
+        ),
         (
             dict(emit_robust_se=True, robust_se_lags=2**20 + 1),
             "robust_se_lags must be at most 1048576, but it is 1048577",

@@ -257,18 +257,15 @@ pub(crate) fn check_scale_decay(kind: &str, decay: crate::Decay) -> Result<(), S
 
 /// A model with no feature or no target to fit, naming what it lacks.
 pub(crate) fn check_dims(kind: &str, n_features: usize, n_targets: usize) -> Result<(), String> {
-    let (lacks, remedy) = match (n_features == 0, n_targets == 0) {
+    let (lacks, missing) = match (n_features == 0, n_targets == 0) {
         (false, false) => return Ok(()),
-        (true, true) => (
-            "no feature and no target",
-            "Name at least one column in features and one in targets.",
-        ),
-        (true, false) => ("no feature", "Name at least one column in features."),
-        (false, true) => ("no target", "Name at least one column in targets."),
+        (true, true) => ("no feature and no target", "features and one in targets"),
+        (true, false) => ("no feature", "features"),
+        (false, true) => ("no target", "targets"),
     };
     Err(format!(
         "{kind}: the model needs at least one feature and one target, but it has {lacks}. \
-         {remedy}"
+         Name at least one column in {missing}."
     ))
 }
 

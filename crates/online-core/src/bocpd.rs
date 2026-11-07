@@ -518,7 +518,15 @@ impl BocpdCfg {
                 ));
             }
         }
-        if self.robust_beta < 0.0 || !self.robust_beta.is_finite() {
+        if (self.robust_beta < 0.0 || !self.robust_beta.is_finite())
+            && self.emission == BocpdEmission::Gaussian
+        {
+            no.refuse(format!(
+                "bocpd: robust_beta must be finite and at least 0, but it is {}. Set robust_beta \
+                 to 0, or leave it out: it applies only under covariance_type=\"diag\".",
+                self.robust_beta
+            ));
+        } else if self.robust_beta < 0.0 || !self.robust_beta.is_finite() {
             no.refuse(format!(
                 "bocpd: robust_beta must be finite and at least 0, but it is {}. Set robust_beta \
                  to 0 to weigh every row in full, or to a small positive value such as 0.1.",

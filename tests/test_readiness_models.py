@@ -247,13 +247,15 @@ class TestLasso:
             assert (why[i] == LIMIT_REASON) == (ratio >= limit), (i, ratio, why[i])
 
     def test_emit_error_inflation_is_refused_with_the_reason(self):
-        with pytest.raises(ValueError, match="keeps no factor"):
+        with pytest.raises(ValueError, match="it keeps no inverse of its Gram"):
             build("lasso", emit_error_inflation=True)
 
 
 class TestRefusals:
     def test_the_scalar_models_say_why_they_have_no_noise_gate(self):
-        with pytest.raises(ValueError, match="a mean's variance"):
+        with pytest.raises(
+            ValueError, match="its statistics are weighted means and covariances of the columns"
+        ):
             po.spec.ew_cov("m", features=["x0", "x1"], half_life=10.0, max_error_inflation=2.0)
 
     def test_a_gradient_model_has_no_noise_gate(self):
@@ -420,9 +422,9 @@ class TestSeCoef:
     @pytest.mark.parametrize(
         ("kind", "why"),
         [
-            ("lasso", "post-selection"),
-            ("huber", "sandwich"),
-            ("quantile", "sandwich"),
+            ("lasso", "chooses its coefficients from the same rows"),
+            ("huber", "needs a different formula"),
+            ("quantile", "needs a different formula"),
             ("sgd", "second moment"),
             ("pa", "second moment"),
             ("ftrl", "second moment"),

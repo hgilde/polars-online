@@ -485,7 +485,7 @@ def test_the_clock_is_a_number(c):
     ("kw", "message"),
     [
         ({"features": ["x0"]}, "needs at least two features"),
-        ({"dynamics": "nope"}, 'dynamics must be one of "ew", "linear"; got "nope"'),
+        ({"dynamics": "nope"}, 'dynamics must be "ew" or "linear", but it is "nope"'),
         ({"dynamics": "linear"}, "needs both alpha and beta"),
         (
             {"dynamics": "linear", "alpha": 0.5, "beta": 0.6},
@@ -493,9 +493,18 @@ def test_the_clock_is_a_number(c):
         ),
         ({"alpha": 0.5}, 'alpha and beta apply only under dynamics="linear"'),
         ({"blocks": {"a": ["x0"], "b": ["x1", "x2", "x3"]}}, "must hold at least two features"),
-        ({"blocks": {"a": ["x0", "x1"]}}, r"features 2 and 3 \(counting from 0\) are in none"),
-        ({"blocks": {"a": ["x0", "x1"], "b": ["x1", "x2"]}}, "is in more than one"),
-        ({"blocks": {"a": ["x0", "nope"], "b": ["x1", "x2"]}}, "not a feature of this spec"),
+        (
+            {"blocks": {"a": ["x0", "x1"]}},
+            'every feature must be in exactly one block, but "x2" and "x3" are in none',
+        ),
+        (
+            {"blocks": {"a": ["x0", "x1"], "b": ["x1", "x2"]}},
+            '- feature "x1" is in blocks "a" and "b", but each feature belongs to one block',
+        ),
+        (
+            {"blocks": {"a": ["x0", "nope"], "b": ["x1", "x2"]}},
+            'block "a" lists "nope", which is not one of features',
+        ),
         ({"emit_sigma": True}, "does not apply to deco"),
         ({"conformal": 0.9}, "does not apply to deco"),
     ],
@@ -516,8 +525,8 @@ def test_a_block_list_written_by_hand_is_checked_too():
         "d", features=cols(4), half_life=HALFLIFE, blocks={"a": ["x0", "x1"], "b": ["x2", "x3"]}
     )
     for blocks, message in (
-        ([["a", ["x0", "x1"]], ["a", ["x2", "x3"]]], "named twice"),
-        ([], "blocks is empty"),
+        ([["a", ["x0", "x1"]], ["a", ["x2", "x3"]]], 'blocks names "a" more than once'),
+        ([], "blocks must name at least one block, but it names none"),
     ):
         raw = json.loads(json.dumps(base))
         raw["model"]["blocks"] = blocks
@@ -816,8 +825,8 @@ def test_alpha_near_one_tracks_the_last_estimate_and_beta_near_one_freezes():
     ("alpha", "beta", "message"),
     [
         (0.25, 0.75, "alpha and beta must sum to less than 1, but alpha is 0.25 and beta is 0.75"),
-        (float("nan"), 0.5, "alpha must not be NaN"),
-        (0.5, float("nan"), "beta must not be NaN"),
+        (float("nan"), 0.5, "alpha must be a number, but it is NaN"),
+        (0.5, float("nan"), "beta must be a number, but it is NaN"),
         (-0.1, 0.5, "alpha and beta must each be at least 0"),
         (0.5, -0.1, "alpha and beta must each be at least 0"),
     ],

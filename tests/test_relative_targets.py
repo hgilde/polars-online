@@ -85,7 +85,9 @@ def test_a_builder_refuses_a_relative_table_by_name():
         {"column": "p", "relative_to": "mid"},
         {"column": "p", "relative": "ratio", "name": "r"},
     ]:
-        with pytest.raises(TypeError, match=f'spec "m": target "p": {REMOVED}'):
+        with pytest.raises(
+            TypeError, match=f'spec "m": target "p" is relative to another column, but {REMOVED}'
+        ):
             po.spec.ewridge("m", targets=["x1", table], features=["x0"], half_life=10.0)
 
 
@@ -105,7 +107,9 @@ def test_a_spec_dict_refuses_a_relative_table_by_name(table):
     column."""
     base = po.spec.ewridge("m", targets=["p"], **common())
     spec = {**base, "targets": [table]}
-    with pytest.raises(ValueError, match=f"{REMOVED}; derive the target column upstream"):
+    with pytest.raises(
+        ValueError, match=f"{REMOVED}. Make the target a column with Polars' with_columns"
+    ):
         po.ModelBank([spec])
     out = po.ModelBank([base]).fit_predict(frame())
     with pytest.raises(ValueError, match=REMOVED):
@@ -141,7 +145,9 @@ def test_the_cli_refuses_a_relative_table_by_name(tmp_path, online_cli):
         check=False,
     )
     assert res.returncode != 0
-    assert f"{REMOVED}; derive the target column upstream" in res.stderr, res.stderr
+    assert f"{REMOVED}. Make the target a column with Polars' with_columns" in res.stderr, (
+        res.stderr
+    )
     assert not dst.exists()
 
 
@@ -287,7 +293,7 @@ def test_a_target_cannot_be_named_nothing():
     """An empty name would give fields called ``pred_``; an empty column names
     no column. Refused by the builder and by the bank (review 2026-09-26, D
     missing 5)."""
-    with pytest.raises(ValueError, match="column must not be empty"):
+    with pytest.raises(ValueError, match="column must name a column, but it is empty"):
         po.target("")
     with pytest.raises(ValueError, match="name must not be empty"):
         po.target("p", name="")
