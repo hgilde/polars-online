@@ -44,32 +44,39 @@ def sgd(
 ) -> dict[str, Any]:
     """Stochastic gradient descent under a choice of losses, with one gradient step a row.
 
-    Use it for a cheap fit, O(k) a row for ``k`` features, for count
-    targets (``loss = "poisson"``, which no other model takes), or for
-    coefficients that must be bounded, sum to a constant or lie on the
-    simplex, as portfolio and mixing weights do. Use :func:`ewridge` for an
-    exact fit in O(k²) a row, and :func:`huber` or :func:`quantile` for a
-    robust or quantile fit solved on running sums. Use :func:`pa` for steps
-    with no learning rate to tune.
+    Use it for a cheap fit, O(k) a row for ``k`` features. It is also the
+    model for count targets (``loss = "poisson"``, which no other model
+    takes), and for coefficients that must be bounded, sum to a constant or
+    lie on the simplex, as portfolio and mixing weights do. Use
+    :func:`ewridge` for an exact fit in O(k²) a row, :func:`huber` or
+    :func:`quantile` for a robust or quantile fit solved on running sums,
+    and :func:`pa` for steps with no learning rate to tune.
 
     .. rubric:: Parameters
 
     The stream parameters every builder takes, such as ``clock``,
     ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
-    diagnostics, are in :mod:`polars_online.spec`. This model's own:
+    diagnostics, are in :mod:`polars_online.spec`. Here ``min_weight``
+    counts the rows the target was present on, at their weights, decayed,
+    where ``weight_sum`` counts every row, so rows with a null target do not
+    warm up coefficients they never moved. It withholds the output alone:
+    under ``loss = "huber"`` the residual scale learns from the prediction
+    the fit made on a row the gate withholds, from the first row, so the fit
+    is the same at any ``min_weight``. This model's own:
 
     ``loss``
         The loss the steps descend. It decides what the prediction is: a
         mean under ``"squared"``, a robust mean under ``"huber"``, a quantile
-        under ``"quantile"``, a fit that ignores errors inside a tube under
+        under ``"quantile"``, a fit that ignores residuals inside a tube under
         ``"epsilon_insensitive"``, a rate of counts under ``"poisson"`` and a
         probability of a 0/1 target under ``"logistic"``. *The update*'s
         table gives each one's link and gradient. Default ``"squared"``.
         ``epsilon_insensitive`` has a sign-valued subgradient, so a constant
         rate oscillates in a band around the optimum. Use
         ``schedule = "inv_scaling"`` with it. ``poisson`` takes counts: a
-        call that learns refuses a chunk with a negative target, naming the
-        row, before any model learns from it, as scikit-learn's
+        call that reads the target (a call that learns, or ``predict`` on a
+        chunk holding the target column) refuses a chunk with a negative
+        target, naming the row, before any model learns from it, as scikit-learn's
         ``PoissonRegressor`` refuses one. Taken as it stands, a negative
         target's ``p - y`` would drive the prediction down to the link's
         floor, ``e ** -30``, and hold it there. ``-0.0`` is the count 0.
@@ -108,14 +115,16 @@ def sgd(
         group after it, keeps its one-pass fit (*The refit's memory* in
         Notes). ``loss = "huber"`` only, and refused beside another loss.
     ``quantile``
-        The level for ``loss = "quantile"``, in ``(0, 1)``. Required for it.
+        The level for ``loss = "quantile"``, in ``(0, 1)``. Required for it,
+        and refused beside another loss.
     ``eps``
         The half-width of the insensitive tube, in units of ``s_y``, the
-        target's own standard deviation. At least 0. Default 0.01: errors
+        target's own standard deviation. At least 0. Default 0.01: residuals
         under 1% of the target's own spread do not move the fit. Inside the
         tube the gradient is zero, so a tube many noise standard deviations
         wide holds the fit wherever it first lands inside it (*The tube* in
-        Notes).
+        Notes). ``loss = "epsilon_insensitive"`` only, and refused beside
+        another loss.
     ``learning_rate``, ``schedule``, ``power``
         The rate and its schedule. The rate is per gradient coordinate: a
         step is ``lr * g_i``, so ``lr`` is in the coefficient's units over
@@ -140,7 +149,8 @@ def sgd(
              - ``lr``
            * - ``"inv_scaling"``
              - ``lr / (1 + lam * weight_sum) ** power``, ``lam`` the row's
-               decay factor and ``power`` at least 0, by default 0.5
+               decay factor and ``power`` at least 0, by default 0.5, and
+               refused beside another schedule
            * - ``"adagrad"``
              - ``lr / (sqrt(G_i) + 1e-8 * s_y)`` under the squared and
                Huber losses and ``lr / (sqrt(G_i) + 1e-8)`` under the
@@ -197,19 +207,13 @@ def sgd(
         simplex starts uniform. The reported coefficients satisfy the
         constraint in the caller's units after every learned row.
     ``strict_binary``
-        Under ``loss = "logistic"``, make a call that learns refuse a chunk
-        whose target is not 0 or 1, naming the row, before any model learns
+        Under ``loss = "logistic"``, make a call that reads the target (a
+        call that learns, or ``predict`` on a chunk holding the target
+        column) refuse a chunk whose target is not 0 or 1, naming the row, before any model learns
         from it, as :func:`ftrl` does. Default ``False``: such a target is
         clamped into ``[0, 1]``, since a target of 5 taken as it stands
         would push the linear prediction ``eta`` up on every row forever.
         Refused beside another loss.
-
-    ``min_weight`` counts the rows the target was present on, at their
-    weights, decayed, where ``weight_sum`` counts every row, so rows with a
-    null target do not warm up coefficients they never moved. It withholds
-    the output alone: under ``loss = "huber"`` the residual scale learns
-    from the prediction the fit made on a row the gate withholds, from the
-    first row, so the fit is the same at any ``min_weight``.
 
     .. rubric:: Output
 
@@ -265,7 +269,7 @@ def sgd(
       ``strict_binary`` beside one other than ``"logistic"``, and ``power``
       beside a ``schedule`` other than ``"inv_scaling"``: each is refused,
       not ignored;
-    - a ``huber_refit_rows`` given beside an infinite ``huber_delta``, or
+    - a ``huber_refit_rows`` above 0 beside an infinite ``huber_delta``, or
       past ``2 ** 20``, and a ``refit_budget`` not above 0;
     - a ``coef_min`` or ``coef_max`` list without one entry per feature, or
       with a ``NaN``; a ``coef_sum`` not finite, or one the bounds cannot
@@ -273,7 +277,8 @@ def sgd(
     - under ``"logistic"`` and ``"poisson"``, a formula target, since the
       model reads a 0/1 target or a count.
 
-    And, from a call that learns, ``ValueError`` for a chunk with a negative
+    And, from a call that learns or ``predict`` on a chunk holding the
+    target column, ``ValueError`` for a chunk with a negative
     target under ``"poisson"``, or a target other than 0 or 1 under
     ``strict_binary``, naming the row.
 
@@ -349,8 +354,10 @@ def sgd(
         b_0  -= lr_0 * g_0 - sum_i m_i * lr_i * g_i / s_i
 
     Under an identity link with an intercept, the intercept takes the
-    running mean's step in place of its gradient's while that is the
-    larger (*The target's level* in Notes).
+    running mean's step in place of its gradient's: under the squared and
+    Huber losses while that is the larger or the target is in its first 22
+    rows, and under the quantile and epsilon-insensitive losses over those
+    rows alone (*The target's level* in Notes).
 
     .. rubric:: Example
 
@@ -453,6 +460,7 @@ def sgd(
               by the scale's clock (huber_scale_half_life)
         b   = weighted least squares of the rows at v_i
         r_i = y_i - z_i'b,  s = weighted median of |r_i| at v_i', over 0.6745
+                            (under "rms", s = sqrt(sum(v_i' * r_i^2) / sum(v_i')))
         b   = weighted least squares at v_i * min(1, delta * s / |r_i|)
         repeated until no row's fit z_i'b moves by over 1e-10 of s, or 200 passes
 
@@ -462,14 +470,14 @@ def sgd(
 
         sum(v_i * rho(r_i / s)) + l2 / 2 * sum(s_i^2 * b_i^2) * sum(c_i)
 
-    with ``c_i`` each row counted once and decayed as its weight is, so
-    ``l2`` acts as the steps apply it, once a row. A ridge of
-    ``1e-6 * s_i^2`` sits on each slope's diagonal of the mean-form system
-    too, ``s_i`` the feature's scale under ``standardize`` and 1 without.
-    Under ``standardize`` that is 1e-6 on the standardized slopes, as
-    ``huber``'s is, so a
-    feature's units do not move the fit. The intercept is penalized by
-    neither. ``s`` is then rebuilt from the fit's residuals.
+    with ``c_i`` each row counted once and decayed as its weight is, so ``l2``
+    acts as the steps apply it, once a row. A ridge of ``1e-6 * s_i^2`` sits on
+    each slope's diagonal of the normal equations the refit solves, each sum
+    divided by the weight, too, ``s_i`` the feature's scale under
+    ``standardize`` and 1 without. Under ``standardize`` that is 1e-6 on the
+    standardized slopes, as ``huber``'s is, so a feature's units do not move the
+    fit. The intercept is penalized by neither. ``s`` is then rebuilt from the
+    fit's residuals.
 
     The fit is set in the coordinates the coefficients are held in: the
     caller's units, or, while the scaler still warms up, its moments'
@@ -517,8 +525,7 @@ def sgd(
     which the clip lets the steps learn at only the rate times
     ``1e3 * s_y`` a row, was still 980,000 off. So under an identity link (every loss but
     ``poisson`` and ``logistic``) with an intercept, the intercept takes the
-    running mean's step in place of its gradient's while that is the
-    larger:
+    running mean's step in place of its gradient's, as the block gives:
 
     .. code-block:: text
 
@@ -530,7 +537,8 @@ def sgd(
     it has fallen under ``"inv_scaling"``. ``"adagrad"`` has no rate shared
     by the coefficients, so there the level's step is taken over the warm-up
     alone. ``d`` is the loss's gradient (the residual, clipped at the Huber
-    cut), ``n`` Kish's count of the rows, ``W ** 2 / sum(w ** 2)``, and 22
+    cut), ``n`` Kish's effective sample size of the rows,
+    ``W ** 2 / sum(w ** 2)``, and 22
     the count the scaler warms up over (*Standardizing* in Notes). The
     sign-valued losses' gradient is not in the target's units, so they take
     the residual's running mean for the warm-up alone. On the target's first
@@ -656,7 +664,7 @@ def sgd(
          - 17 (3.4 to 30)
 
     At 0.1 a fit of a target predicted to within 1% of its spread stopped as
-    soon as every error was inside the tube, about 0.08 off the truth in
+    soon as every residual was inside the tube, about 0.08 off the truth in
     intercept and slope together.
 
     **The gradient's cap.** A cap that is a constant in the target's units
@@ -674,7 +682,8 @@ def sgd(
     features 100 times larger put the default rate past its stability
     bound, so every prediction is withheld as ``unstable_rate``.
 
-    The moments warm up first. Until Kish's count of the rows they have
+    The moments warm up before the coefficients are held in the caller's
+    units. Until Kish's effective sample size of the rows they have
     learned, ``(sum w) ** 2 / sum w ** 2`` undecayed, reaches 22, the
     coefficients are held in the standardized coordinates. The same
     standardized row serves the prediction and the step, and the

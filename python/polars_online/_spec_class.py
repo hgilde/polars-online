@@ -46,7 +46,9 @@ def ew_class(
     ``targets``. ``fit_intercept`` has nothing to act on, as there is no
     regression. No diagnostic that reads residuals applies, and each such
     switch is refused by name: ``emit_sigma``, ``emit_metrics``,
-    ``conformal``, ``emit_drift`` and the rest. This model's own:
+    ``conformal``, ``emit_drift`` and every other switch that reads
+    residuals. So is ``emit_feature_health``, since this model fits no
+    coefficients of its features. This model's own:
 
     ``label``
         The column that holds each row's class, read as a key: any dtype
@@ -71,7 +73,8 @@ def ew_class(
            * - ``covariance_type``
              - the shape
              - per row
-           * - ``"full"`` (the default)
+           * - ``"full"`` (the default, the one shape that sees each
+               class's correlation between features)
              - a covariance per class (quadratic discriminant analysis)
              - each class keeps its Cholesky factor, and only the class a row
                moves is refactored: one ``k x k`` factorization per learned
@@ -161,7 +164,9 @@ def ew_class(
       ``window_budget`` that is not one key, ``"thin"`` or ``"refuse"``, or
       whose MiB is not above 0;
     - ``closed="both"``, ``snapshot_every``, ``max_rows_between_snapshots``
-      or ``window_budget`` without ``window_size``.
+      or ``window_budget`` without ``window_size``;
+    - a switch that reads residuals, such as ``emit_sigma``, and
+      ``emit_feature_health``.
 
     And, from a call that learns, ``ValueError`` for a class not in
     ``classes``, naming the row.
@@ -193,7 +198,7 @@ def ew_class(
         n_c   <- λ n_c + w
         mu_c  <- mu_c + (w / n_c) (x - mu_c)
         C_c   <- weighted Welford on (x - mu_c_old)(x - mu_c_new)'
-        s_c   <- s_c * λ n_c_old / (λ n_c_old + w)
+        s_c   <- s_c * λ n_c_old / (λ n_c_old + w)     (stays 1 on the class's first row)
         n_c'  <- λ n_c'                                     every other class c'
         weight_sum <- λ weight_sum + w
 
@@ -251,7 +256,8 @@ def ew_class(
     nothing, and a row of weight 0 moves the clock alone.
 
     **The prior scale.** ``s_c`` starts at 1 and shrinks by
-    ``λ * n_c / (λ * n_c + w)`` on every row the class learns, so the
+    ``λ * n_c / (λ * n_c + w)`` on every row the class learns but its
+    first, where ``n_c`` is 0 and the scale stays 1, so the
     ridge washes out as the class fills in, exactly as :func:`ew_cov`'s
     ``precision_prior`` does.
     """

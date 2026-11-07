@@ -52,12 +52,13 @@ def hmm(
     ``half_life``, ``gap_cap``, ``min_weight`` and ``group``, are in
     :mod:`polars_online.spec`. This model reads ``features`` and takes no
     ``targets``. ``fit_intercept`` has nothing to act on, as there is no
-    regression, and nothing that reads residuals applies. ``min_weight``
+    regression, and each switch that reads residuals is refused, as is
+    ``emit_feature_health``. ``min_weight``
     withholds what is reported, never what is learned: a row below it moves
     the filter and shows nulls. This model's own:
 
     ``n_components``
-        The number of hidden states, from 2 to 1,024; required.
+        The number of hidden states, from 2 to 1,024, and required.
     ``precision_prior``
         A ridge on every state's covariance, in the features' squared units,
         finite and above 0. It is required here as it is for
@@ -67,7 +68,8 @@ def hmm(
         and not learned, a ridge of 1.0 on data whose variance is about 1.0
         halves every correlation.
     ``covariance_type``
-        ``"full"`` (the default), ``"tied"`` or ``"diag"``, as for
+        ``"full"`` (the default, the one shape that sees a regime's
+        correlation between features), ``"tied"`` or ``"diag"``, as for
         :func:`ew_class`.
     ``learn``
         Whether the states and the transition counts move with the rows.
@@ -98,17 +100,18 @@ def hmm(
         Without given states, the first ``warm_rows`` learned rows (default
         1,000, or ``n_components`` where that is more, and at least
         ``n_components``) are held to seed the states from.
-        :func:`kmeans`' ``init`` (``"lloyd"`` by default; ``"first"``,
-        ``"farthest"``, ``"k-means++"``) chooses centers among them with
-        ``seed`` (default 0, at least 0; ``None`` is 0, so a run seeds the
-        same states every time), and the held rows are replayed through those
-        centers as hard assignments. A group with fewer rows than that never
-        seeds, and reports null on every row. The held rows must hold every
+        :func:`kmeans`' ``init`` (``"lloyd"`` by default, or ``"first"``,
+        ``"farthest"`` or ``"k-means++"``) chooses centers among them with
+        ``seed`` (default 0, at least 0). ``None`` is 0, so a run seeds the
+        same states every time. The held rows are then replayed through
+        those centers as hard assignments. A group with fewer rows than that
+        never seeds, and every field but ``weight_sum``, ``settled_frac``,
+        ``withheld_reason`` and ``coef`` stays null. The held rows must hold every
         regime, several times over (*Seeding* in Notes). With ``means`` and
         ``covs`` given nothing is seeded, and the three are refused.
     ``exog_tvtp``, ``tvtp_coef``
-        A column named on its own, as ``weight`` is, not listed in
-        ``features``, whose value ``z_t`` drives the matrix instead: ``Pi_kl(t) =
+        A column named by this parameter, as ``weight`` is, which need not
+        be in ``features``, whose value ``z_t`` drives the matrix instead: ``Pi_kl(t) =
         softmax_l(A_kl + B_kl z_t)`` from the fixed ``tvtp_coef = [A, B]``, each
         ``n_components x n_components`` flattened row-major. The two are given
         together. The count-based learning is off under it, and ``A`` and ``B`` are
@@ -131,7 +134,8 @@ def hmm(
     ``state``
         The most likely state under the predicted probabilities.
     ``loglik``
-        The row's surprise: its log-likelihood under the predicted mixture.
+        The row's log-likelihood under the predicted mixture: low on a
+        surprising row.
     ``weight_sum``
         The weight the model has accumulated before the row and before the
         row's own decay.
@@ -177,7 +181,9 @@ def hmm(
       ``tvtp_coef`` whose ``A`` and ``B`` are not
       ``n_components x n_components``;
     - ``transition`` or ``transition_prior`` beside ``tvtp_coef``, and
-      ``warm_rows``, ``init`` or ``seed`` beside given states.
+      ``warm_rows``, ``init`` or ``seed`` beside given states;
+    - a switch that reads residuals, such as ``emit_sigma``,
+      ``emit_metrics`` or ``conformal``, and ``emit_feature_health``.
 
     .. rubric:: The update
 
@@ -191,7 +197,7 @@ def hmm(
 
         p1_l   = sum_k p_k * Pi_kl                     the predicted state
         f_l    = N(x | mu_l, Sigma_l + omega_l I)      the state's density
-        loglik = log sum_l p1_l f_l                    the row's surprise
+        loglik = log sum_l p1_l f_l                    the row's log-likelihood
         p_l   <- p1_l f_l / sum                        the filtered state
 
     Each state's running sums then take the row at weight ``w * p_l``, ``w`` the
@@ -288,7 +294,7 @@ def hmm(
     0.016 and 0.0066 at 4,000, 16,000 and 64,000 rows, about halving with
     each fourfold increase.
 
-    One limit, accepted rather than refused: under ``transition_prior = 0``
+    One limit is accepted: under ``transition_prior = 0``
     and ``learn = True`` the counts are only what the rows put there. A state
     the first rows do not favor can get no count, and the learned matrix then
     keeps it out. That needs no extreme separation: on the same chain, 7
@@ -388,7 +394,9 @@ def rcov(
     ``lam``, since ``group_close`` ends each block and no decay applies.
     ``weight`` is taken only as 0 or 1, since a sum over returns has no
     fractional row, and a zero-weight row advances the clock and enters no
-    ring. This model's own:
+    ring (the recent returns the model keeps to form its lagged products).
+    Each switch that reads residuals is refused, as is
+    ``emit_feature_health``. This model's own:
 
     ``kind``, ``kernel``
         The estimator: ``"plain"``, ``"kernel"`` (the default) or
@@ -402,7 +410,8 @@ def rcov(
         limit: a longer block runs, its bandwidth clipped to the ring, and
         reports
         ``rcov_bandwidth_used``. ``max_bandwidth`` fixes the ring depth
-        itself (default ``ceil(c* block_rows^(3/5))`` under the automatic
+        itself (default ``ceil(c* block_rows^(3/5))``, ``c* = 3.5134`` the
+        Parzen kernel's constant, under the automatic
         bandwidth, the depth at which the noise equals the block's integrated
         variance), and must not cap the ring below a fixed ``bandwidth``. The
         ring's lagged products, ``(ring + 1) * k^2`` doubles for ``k``
@@ -433,8 +442,8 @@ def rcov(
         :class:`~polars_online.PolarsOnlineDeprecationWarning`, and is
         accepted and ignored until the next major version, which refuses it.
     ``noise_stride``, ``iv_stride``
-        The strides of two subsampled grids, defaults 1 and 20, each at
-        least 1. The dense one gives the noise variance ``rcov_omega2``,
+        The strides of two subsampled grids, defaults 1 (every return) and
+        20, each at least 1. The dense one gives the noise variance ``rcov_omega2``,
         deliberately biased upward as Barndorff-Nielsen, Hansen, Lunde and
         Shephard accept, and the sparse one the integrated variance
         ``rcov_iv_sparse``, each averaged over the stride's offsets. Both
@@ -451,17 +460,17 @@ def rcov(
     closes:
 
     ``rcov``, ``rcorr``
-        The covariance and correlation estimates, as ``vech`` of the upper
-        triangle.
+        The covariance and correlation estimates, as the upper triangle,
+        row by row: for two features, ``[var0, cov01, var1]``.
     ``rcov_n``, ``rcov_kind``, ``rcov_bandwidth_used``
         The effective returns, the estimator, and the ``H`` used. The
         effective returns are the returns under ``"plain"``; the jittered
         returns under ``"kernel"``, ``n - 2 * jitter + 2`` of a block of
-        ``n`` with no break; and the pre-averaged terms under ``"preavg"``,
+        ``n`` with no clock break; and the pre-averaged terms under ``"preavg"``,
         ``n - k_n + 2`` per stretch.
     ``rcov_omega2``, ``rcov_iv_sparse``
         The noise variance and the sparse integrated variance, per feature,
-        from the grids ``noise_stride`` and ``iv_stride`` set; an automatic
+        from the grids ``noise_stride`` and ``iv_stride`` set. An automatic
         bandwidth reads them.
     ``rcov_iq``
         Per feature, the realized quarticity ``(n / 3) * sum(x**4)`` on the
@@ -502,7 +511,9 @@ def rcov(
       this model sizes a ring, and lagged products past 256 MiB;
     - ``bandwidth``, ``max_bandwidth`` or ``jitter`` under a kind other
       than ``"kernel"``, and ``theta`` or ``preavg_rows`` under one other
-      than ``"preavg"``.
+      than ``"preavg"``;
+    - a switch that reads residuals, such as ``emit_sigma``, and
+      ``emit_feature_health``.
 
     And, from a call that learns, ``ValueError`` for a ``weight`` other than
     0 or 1, naming the row.
@@ -611,7 +622,8 @@ def rcov(
     against the quadratic spectral's 0.93. The Bartlett kernel is not
     consistent here and is not offered.
 
-    **Bandwidth.** Left out, ``bandwidth`` is their
+    **Bandwidth.** Left out, ``bandwidth`` is Barndorff-Nielsen, Hansen,
+    Lunde and Shephard's
     ``H = ceil(c* xi^(4/5) n^(3/5))`` with ``c* = 3.5134``, computed per
     feature with ``xi^2 = omega2 / iv_sparse`` and averaged over the
     features, and 1 where no feature has one.
@@ -624,13 +636,13 @@ def rcov(
     Dividing by ``1 - b`` restores it, where the undivided estimate averages
     0.84 of the covariance at ``k_n = 6``.
 
-    **Breaks in a block.** A gap over ``gap_cap``, or a session change,
+    **Clock breaks in a block.** A gap over ``gap_cap``, or a session change,
     splits the block into stretches: the returns on either side of it are
     not adjacent, and a covariance of adjacent returns is the whole
     statistic. Each stretch is closed as the last one is (leading jitter,
     interior, trailing jitter), and the lagged sums add over stretches, so no
-    product pairs two returns across the break. The two subsampled grids
-    start again at the break as well, so no step of ``omega2``,
+    product pairs two returns across the clock break. The two subsampled
+    grids start again at the clock break as well, so no step of ``omega2``,
     ``iv_sparse`` or ``iq`` sums returns across it either. Under
     ``session_gap = "reset"`` a session change starts the block over
     instead, and drops the returns before it. A stretch too short to reach

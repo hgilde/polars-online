@@ -611,8 +611,6 @@ reason = "main's prefix in front of a message read where it is written"
 
 [messages."crates/online-core/src/sgd.rs"]
 
-[messages."python/polars_online/_spec_class.py"]
-
 [docstrings."crates/online-py/src/lib.rs"]
 "missing" = 3
 
@@ -632,22 +630,6 @@ reason = "main's prefix in front of a message read where it is written"
 [docstrings."python/polars_online/_spec.py"]
 "missing" = 17
 "summary" = 2
-
-[docstrings."python/polars_online/_spec_audit.py"]
-
-[docstrings."python/polars_online/_spec_changepoint.py"]
-
-[docstrings."python/polars_online/_spec_class.py"]
-
-[docstrings."python/polars_online/_spec_cluster.py"]
-
-[docstrings."python/polars_online/_spec_gradient.py"]
-
-[docstrings."python/polars_online/_spec_regimes.py"]
-
-[docstrings."python/polars_online/_spec_robust.py"]
-
-[docstrings."python/polars_online/_spec_trend.py"]
 
 [docstrings."python/polars_online/_warnings.py"]
 "missing" = 3
@@ -910,29 +892,13 @@ reason = "main's prefix in front of a message read where it is written"
 
 [vocabulary."python/polars_online/_spec.py#messages"]
 
-[vocabulary."python/polars_online/_spec_audit.py#docstrings"]
-
 [vocabulary."python/polars_online/_spec_audit.py#messages"]
-
-[vocabulary."python/polars_online/_spec_changepoint.py#docstrings"]
-
-[vocabulary."python/polars_online/_spec_class.py#docstrings"]
 
 [vocabulary."python/polars_online/_spec_class.py#messages"]
 
-[vocabulary."python/polars_online/_spec_cluster.py#docstrings"]
-
-[vocabulary."python/polars_online/_spec_gradient.py#docstrings"]
-
 [vocabulary."python/polars_online/_spec_gradient.py#messages"]
 
-[vocabulary."python/polars_online/_spec_regimes.py#docstrings"]
-
 [vocabulary."python/polars_online/_spec_regimes.py#messages"]
-
-[vocabulary."python/polars_online/_spec_robust.py#docstrings"]
-
-[vocabulary."python/polars_online/_spec_trend.py#docstrings"]
 
 [vocabulary."python/polars_online/_warnings.py#docstrings"]
 "retired" = 1

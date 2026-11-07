@@ -25,12 +25,14 @@ def audit(
     """A count of what a stream's columns hold, read in one pass by a spec that fits
     nothing and predicts nothing.
 
-    Use it to find what a model cannot tell you: that a column is ``-999``
-    on a twentieth of its rows, that a feed stopped and its last value was
-    carried forward, or that a feature is a price level where a change was
-    meant. :meth:`polars_online.ModelBank.check` reads its counts and says
-    so. Run it alone before choosing a model, or beside the models in the
-    same pass (``po.ModelBank([audit, model])``).
+    Use it to find what a model cannot tell you, such as a column that is
+    ``-999`` on a twentieth of its rows, a feed that stopped with its last
+    value carried forward, or a price level where a change was meant. Run
+    it alone before choosing a model, or beside the models in the same pass
+    (``po.ModelBank([audit, model])``), and
+    :meth:`polars_online.ModelBank.check` reads its counts and says so. Use
+    :meth:`~polars_online.ModelBank.describe` for a few statistics of the
+    columns a model has already been fed.
 
     .. rubric:: Parameters
 
@@ -163,8 +165,8 @@ def audit(
     .. rubric:: Notes
 
     **What it counts.** Per column, over every row the stream holds, in the
-    order it holds them. Every statistic past the first row of the table is
-    over the usable values.
+    order it holds them. Every statistic but the counts of values that are
+    not usable is over the usable values.
 
     .. list-table::
        :header-rows: 1
@@ -258,8 +260,8 @@ def audit(
     counter, which empties the table at most once in ``distinct_cap + 1``
     new values, so a continuous column pays a few operations a row at any
     cap. The digest compresses every 256 rows, a few comparisons a row
-    amortized, and ``pairs`` costs ``k(k - 1)/2`` pair updates a row for
-    ``k`` columns. Memory does not grow with the rows. At the defaults it is
+    amortized, and ``pairs`` adds ``k(k - 1)/2`` pair sums to move a row
+    for ``k`` columns. Memory does not grow with the rows. At the defaults it is
     about 14 KiB a column, and 72 bytes a pair, in every group. A column's
     share is a table of ``distinct_cap`` counters, 16 bytes each and as much
     again of the table's slack, and a digest of at most about 200 centroids

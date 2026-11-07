@@ -105,8 +105,7 @@ def bocpd(
              - a normal-inverse-Wishart over all of them
              - the one that can see a break in the correlation with the
                marginals unchanged: in ``run_mode``, since ``p_change`` never
-               moves, and late, a median of 121 rows after the break in
-               ``docs/REGIMES.md`` §5
+               moves, and late (*Reading p_change and run_mode* in Notes)
 
         While the prior is set from the first rows (the default), both are
         free of the data's units: a change of units multiplies every run's
@@ -154,7 +153,7 @@ def bocpd(
         not read as a break: each row is weighted by ``(pi(x) / pi(mode)) **
         robust_beta`` in what the run learns and in the likelihood it passes
         on. Default none, which tempers nothing: a single 20-sigma row is
-        then a break (``p_change`` 0.91) whose run carries the outlier
+        then a break whose run carries the outlier
         in its mean. A larger power finds a real shift later, and past about
         0.2 mostly not at all. Finite and above 0, and refused beside
         ``"full"``. The tempered predictive is not free of the data's units,
@@ -163,10 +162,10 @@ def bocpd(
         ``po.ewm_std`` with Polars' ``with_columns``.
         *Tempering* in Notes gives the measurements.
     ``prune_below``, ``max_run``
-        The share of the mass below which a run is dropped (default
-        ``1e-6``, at least 0 and below 1), and the run length at which runs
-        are folded into the one carrying the most mass, scaled back to
-        ``max_run - 1`` rows (default 10,000, at least 2). A break
+        ``prune_below`` is the share of the mass below which a run is
+        dropped (default ``1e-6``, at least 0 and below 1). ``max_run`` caps
+        a run's length: the runs that reach ``max_run - 1`` rows are folded
+        into the one carrying the most mass (default 10,000, at least 2). A break
         collapses the runs to a few dozen, but a stream that does not break
         spreads them over thousands of run lengths. There ``max_run`` is the
         bound on the runs kept and on a row's work (*Pruning and the capped
@@ -184,7 +183,9 @@ def bocpd(
     .. rubric:: Output
 
     One output column, named after the spec, whose value in each row is a
-    record of these fields, all read before the row is learned.
+    record of these fields. Every field but ``p_change`` is read before the
+    row is learned. ``p_change`` is the posterior once this row's evidence
+    is in.
     `docs/OUTPUTS.md#bocpd
     <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#bocpd>`_
     gives each field's type and when it is null:
@@ -330,8 +331,8 @@ def bocpd(
     before the row, so no mass sits at ``r = 0`` after it, and ``p_change``
     is the chance that this row began a run. There, a row whose clock step
     is 0 (a stamp shared with the last row the model did not skip) reports
-    0. A run's first row is the exception: a group's first row, and its
-    first after a reset. With ``mean_prior`` and ``covariance_prior`` both
+    0, apart from a run's first row: a group's first row, and its first
+    after a reset. With ``mean_prior`` and ``covariance_prior`` both
     given, the default ``min_weight`` withholds such a row, and with
     ``min_weight=0`` it reports a ``p_change`` of 1 there. Unless both are
     given, the first ``warm_rows`` rows report null.
@@ -367,7 +368,9 @@ def bocpd(
     sum. Under ``prune_below = 0`` each step of 0 leaves one run of no mass
     among the runs kept, until ``max_run`` folds it.
 
-    **Tempering.** Tempered, an outlying row is atypical under every run,
+    **Tempering.** Untempered, a single 20-sigma row reads ``p_change``
+    0.91, and its run carries the outlier in its mean. Tempered, an
+    outlying row is atypical under every run,
     every tempered likelihood is about 1, and nothing moves. A whole new
     regime is a run of individually forgiven rows, which is why a larger
     power finds a real shift later. Over 50 streams with a four-sigma shift
@@ -579,21 +582,19 @@ def corrchange(
         the critical value costs time in proportion to ``1 / (1/2 -
         boundary_gamma)`` on the way there, so a value above 0.49 is refused.
 
-    The statistic reported on a row includes that row, and is reported
-    before the row is learned. So a zero-weight row is reported as if it
-    would be learned. It then does not enter the span, the history or the
-    monitoring period, does not advance ``since_flag`` for the rows after
-    it, and if it flags, it resets neither ``since_flag`` nor, under
-    ``change_action="reset"``, the windows. A clock break (a step
-    ``gap_cap`` shortened, or a session change) abandons the span, the
-    windows or the cycle.
-
     .. rubric:: Output
 
     One output column, named after the spec, whose value in each row is a
     record of these fields. ``stat``, ``crit``, ``flag`` and ``since_flag``
     are null except on a row where a statistic is due, and
-    ``since_change`` except on a flag.
+    ``since_change`` except on a flag. The statistic reported on a row
+    includes that row, and is reported before the row is learned. So a
+    zero-weight row is reported as if it would be learned. It then does not
+    enter the span, the history or the monitoring period, does not advance
+    ``since_flag`` for the rows after it, and if it flags, it resets neither
+    ``since_flag`` nor, under ``change_action="reset"``, the windows. A
+    clock break (a step ``gap_cap`` shortened, or a session change)
+    abandons the span, the windows or the cycle.
     `docs/OUTPUTS.md#corrchange
     <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#corrchange>`_
     gives each field's type and when it is null:
@@ -608,15 +609,15 @@ def corrchange(
     ``since_flag``
         Learned rows since the last flag.
     ``since_change``
-        On a flag, the rows since the change it dates, counted through the flag's
-        row from the first changed one: from the row after the maximum of ``j *
-        |rho_j - rho_m|`` over the span (``"monitor"``), by the paper's Eq. 8
-        (``"sequential"``), or the second window (``"window"``). Null
-        otherwise. In the pairwise test (without ``scalar``), it is also
-        null on a ``"sequential"`` flag that has fewer than two monitored
-        rows before it, or where either feature of the flagged pair is
-        constant over those rows, since a correlation then has no spread to
-        divide by.
+        On a flag, the rows since the change it dates, counted through the
+        flag's row from the first changed one. That row is the one after the
+        maximum of ``j * |rho_j - rho_m|`` over the span (``"monitor"``), the
+        one the paper's Eq. 8 gives (``"sequential"``), or the second
+        window's first (``"window"``). Null otherwise. In the pairwise test
+        (without ``scalar``), it is null on a ``"sequential"`` flag that has
+        fewer than two monitored rows before it. And it is null where either
+        feature of the flagged pair is constant over those rows, since a
+        correlation then has no spread to divide by.
     ``weight_sum``
         The weight the model has accumulated before the row and before the
         row's own decay.
@@ -644,7 +645,8 @@ def corrchange(
       ``5e-11`` a pair;
     - a ``bandwidth`` of 0 or above ``window_rows``, a ``crit`` not finite
       or not above 0, and an ``n_perm``, ``permute_every_rows``,
-      ``perm_block`` or ``seed`` outside the range above, an ``n_perm``
+      ``perm_block`` or ``seed`` outside the range its parameter entry
+      gives, an ``n_perm``
       among them too small to flag at ``alpha``;
     - a ``boundary_gamma`` outside ``[0, 0.49]``, and a ``monitor_rows``
       below 2;
@@ -687,8 +689,8 @@ def corrchange(
 
     ``"window"`` reports ``norm(vech(R_pre - R_post))`` over two adjacent
     blocks of ``window_rows`` rows, ``R_pre`` and ``R_post`` their
-    correlation matrices: how big the change is, rather than whether the
-    span was constant. It flags against ``crit``, or without one against a
+    correlation matrices: how big the change is. The monitor asks instead
+    whether the span was constant. It flags against ``crit``, or without one against a
     permutation quantile (*The window test* in Notes).
 
     .. rubric:: Example
@@ -752,10 +754,10 @@ def corrchange(
     computed from the series, not pinned, and it reproduces the published
     1.3581 at 5%. A span reports on its last row only, and tests only its
     own rows. So a change is found at most ``window_rows`` rows late, and
-    reliably only where it falls well inside a span: a jump in correlation
+    reliably only where it falls well inside a span. A jump in correlation
     from 0 to 0.8 at row 1,100 of spans of 200 rows was found on 20 of 20
-    seeds, and at rows 1,190 and 1,195, near the span's end, on 0 to 3 of
-    20 (each of three sets of 20 seeds).
+    seeds. At rows 1,190 and 1,195, near the span's end, it was found on 0
+    to 3 of 20 (each of three sets of 20 seeds).
     ``docs/REGIMES.md`` §2 and §3 measure its size and power against those
     tables, and ``tests/test_corrchange.py`` holds its size near the nominal
     level.
@@ -764,7 +766,7 @@ def corrchange(
     ``T = monitor_rows / window_rows``, ``crit = (T / (1 + T)) ** (1/2 -
     boundary_gamma) * q``. ``q`` is the ``1 - alpha`` quantile of
     ``sup_{0 < s <= 1} |W(s)| / s ** boundary_gamma`` for a Brownian motion
-    ``W`` (their Eq. 7; ``alpha / npairs`` under Bonferroni). At
+    ``W`` (their Eq. 7), at ``alpha / npairs`` under Bonferroni. At
     ``boundary_gamma = 0`` it comes from that law's series, 2.2414 at 5%, so
     ``crit`` is 1.5849 at ``T = 1``. Above 0 there is no series and the
     paper simulates. Here the law is solved as the diffusion it is, without
@@ -781,8 +783,8 @@ def corrchange(
     ``m`` and ``T`` grow.
 
     What it assumes, as the paper does: the history's correlations are
-    constant (their Assumption 1; ``kind = "monitor"`` over the same rows
-    checks it), the rows have finite fourth moments, and dependence fades
+    constant (their Assumption 1, which ``kind = "monitor"`` over the same
+    rows checks), the rows have finite fourth moments, and dependence fades
     (near-epoch dependence, which admits GARCH). Against ``"monitor"``, every
     row is tested and the baseline is fixed. So a change is flagged as soon
     as it is large enough, and a drift that ``"monitor"``'s spans would each
@@ -790,7 +792,7 @@ def corrchange(
 
     **Choosing boundary_gamma.** Above 0 the boundary is lower at the start
     of the period, so a change soon after the history is caught sooner and a
-    late one later. It also raises the size: the paper measured 0.047-0.087
+    late one later. It also increases the size: the paper measured 0.047-0.087
     at ``boundary_gamma`` of 0 and 0.25, and 0.106-0.174 at 0.45, for a
     nominal 0.05 on GARCH pairs (their Table 2). Their summary:
 

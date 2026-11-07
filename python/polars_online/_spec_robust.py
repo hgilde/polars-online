@@ -87,7 +87,7 @@ def huber(
     ``ridge_scale``
         What the ridge is scaled against, as for :func:`ewridge`. ``"mean"``
         (the default) is a fixed penalty on the mean-form sums, whose pull is
-        permanent. ``"sum"`` is RLS's prior on the decaying sum scale,
+        permanent. ``"sum"`` is :func:`rls`'s prior on the decaying sum scale,
         ``(W * S + p * ridge * I) b = W * eta``, which fades as the rows
         arrive and penalizes the intercept too. There ``S`` and ``eta`` are
         the target's running means of ``z z'`` and ``z * y``, ``z`` being the
@@ -104,8 +104,8 @@ def huber(
         Emit ``huber_scale_<t>``, each target's residual scale ``s`` as the
         row's cut reads it: after the row's decay and before the row's own
         residual enters it. So the field is out-of-sample by construction,
-        and can serve as a weight or as the scale of a robust score of the
-        residuals. Null until the target has an ``s`` above 0, and on a
+        and can serve as a weight or to standardize the residuals robustly.
+        Null until the target has an ``s`` above 0, and on a
         skipped row.
         Under an ``embargo`` it is read where the row is predicted, as
         ``pred_<t>`` is. Default ``False``.
@@ -117,12 +117,12 @@ def huber(
         where a refit of ``10 * features`` rows would run for seconds a
         target. A count given is taken at any number of features. It is at
         most ``2 ** 20``, since each target's buffer is allocated at its full
-        size at its first learned row. ``0`` turns the
-        refit off. A group shorter
-        than the count never refits, and holds its rows to the end. Off by
-        default, and refused when given, beside ``ridge_scale = "sum"``,
-        whose prior has aged with every row before the first, and beside an
-        infinite ``huber_delta``, least squares.
+        size at its first learned row. ``0`` turns the refit off. A group
+        shorter than the count never refits, and holds its rows to the end.
+        Off by default, and a count above 0 is refused, beside
+        ``ridge_scale = "sum"``, whose prior has faded over the rows the
+        refit would fit again, and beside an infinite ``huber_delta``, least
+        squares.
     ``refit_budget``
         A bound in MiB on the refit buffers of all the spec's groups
         together, above 0, or ``inf`` for none. Default 320. Each new group
@@ -130,8 +130,8 @@ def huber(
         appears, and keeps it for the life of the bank, so which groups refit
         depends neither on the chunking nor on the order the groups run in.
         The group that would cross the bound, and every new group after it,
-        gives its refit up and keeps its one-pass fit: a readiness warning
-        says so once, and ``summary()``'s ``refit_given_up`` counts the
+        gives its refit up and keeps its one-pass fit. A readiness warning
+        says so once, and ``bank.summary()``'s ``refit_given_up`` counts the
         targets of each instance, the part of the model that fits one
         half-life (*The refit's memory* in Notes).
 
@@ -166,10 +166,12 @@ def huber(
     ``withheld_reason``
         Why the row's predictions were withheld, null where they were not.
     ``huber_scale_<t>``
-        Under ``emit_huber_scale``: the scale the row's cut is drawn in.
+        Under ``emit_huber_scale``: the scale the row's cut is drawn in, an
+        f64, null until the target has an ``s`` above 0 and on a skipped
+        row.
     ``coef``
-        Per target, the intercept then one entry per feature
-        (:func:`coef_index`). Under ``feature_sets``, one per target and set,
+        Per target, the intercept (unless ``fit_intercept=False``) then one
+        entry per feature (:func:`coef_index`). Under ``feature_sets``, one per target and set,
         0 for a feature outside the set.
     ``support_coef``
         On ``coef``'s rows, each coefficient's data share, laid out like
@@ -194,7 +196,7 @@ def huber(
       set, or names a column not in ``features`` or one twice in a set;
     - a ``ridge_scale`` other than ``"mean"`` or ``"sum"``, and ``"sum"``
       beside ``standardize`` or two or more feature sets;
-    - a ``huber_refit_rows`` below 0 or above ``2 ** 20``, or given beside
+    - a ``huber_refit_rows`` below 0 or above ``2 ** 20``, or above 0 beside
       ``ridge_scale = "sum"`` or an infinite ``huber_delta``;
     - a ``refit_budget`` not above 0.
 
@@ -405,15 +407,8 @@ def huber(
     left 18, 500 left 10 and 1,000 left 3.
 
     Under the MAD, while a target's refit waits, its scale is read exactly,
-    as the weighted median of the residuals its buffer holds. The refit
-    builds the scale's sketch from the converged residuals, its buckets in
-    units of their median, so a target in other units (times 3, say) gives
-    the same fit to rounding. With the refit off the sketch's buckets are
-    fixed: no unit is taken from residuals as they arrive, since the first
-    can all be small beside the rest, and a unit taken from them carried
-    their rounding into every read. So there the scale in two units can
-    differ by a bucket of the sketch, about 1.6%, and a quantile fit, whose
-    band is drawn in it, by more. A power of two moves nothing. A saved
+    as the weighted median of the residuals its buffer holds (*The scale*
+    in Notes gives the sketch it builds after). A saved
     state keeps the scale rule it was saved under, and continues to the
     bit.
 
@@ -423,14 +418,13 @@ def huber(
     it (its value null or its weight 0) takes 32 bytes, and consecutive
     such rows at the same clock step are one run. Once its runs number more
     than 4 for each row of the count, as on a target present on fewer than
-    about one row in five under an
-    irregular clock, the target gives its refit up and keeps its one-pass
-    fit. The refit takes 0.06 to 7.2 ms once, for 1 to 50 features and 200
-    to 1,000 rows (an Apple M4 Pro under other load, best of 9). Under
-    ``refit_budget``, each new group reserves ``(features + 26) * 8`` bytes
-    a target of each model instance for each row of the count: under the
-    MAD the row, its residual, its node in the tree the MAD is read from,
-    and its 4 runs, and under ``"rms"``,
+    about one row in five under an irregular clock, the target gives its
+    refit up and keeps its one-pass fit. The refit takes 0.06 to 7.2 ms
+    once, for 1 to 50 features and 200 to 1,000 rows (an Apple M4 Pro under
+    other load, best of 9). Under ``refit_budget`` and the MAD, each new
+    group reserves ``(features + 26) * 8`` bytes a target of each instance
+    for each row of the count: the row, its residual, its node in the tree
+    the MAD is read from, and its 4 runs. Under ``"rms"`` it reserves
     ``(features + 20) * 8``, the row and its 4 runs. A half-life grid
     reserves once per value. A group's reservation is not handed back when
     its refit frees its buffer, so once the bound is
@@ -446,17 +440,16 @@ def huber(
     level for its first residuals.
 
     **A target that arrives late.** A row's Huber weight is read when it is
-    learned. Under an ``embargo``, or with a target that is a window
-    expression looking ahead, a row is predicted where it arrives and learned
-    once its target is known, the held rows in the order they arrived. Its
-    Huber weight is read then, from its residual against the fit at that
-    moment: the fit of every row before it and of none after it, which is
-    the fit it would be weighed by without the delay. So the delay moves the
-    predictions, which come from an older fit. It leaves the fit, the
-    weights and the scale as they are without it: ``coef`` under an embargo
-    of ``E`` rows is the undelayed run's ``coef`` of ``E`` rows earlier, to
-    the bit. The weight is out-of-sample either way, since the row's own
-    target is in neither fit.
+    learned. Under an ``embargo``, or with a formula target, a row is predicted
+    where it arrives and learned once its target is known, the held rows in the
+    order they arrived. Its Huber weight is read then, from its residual against
+    the fit at that moment: the fit of every row before it and of none after it,
+    which is the fit it would be weighed by without the delay. So the delay
+    moves the predictions, which come from an older fit. It leaves the fit, the
+    weights and the scale as they are without it: ``coef`` under an embargo of
+    ``E`` rows is the undelayed run's ``coef`` of ``E`` rows earlier, to the
+    bit. The weight is out-of-sample either way, since the row's own target is
+    in neither fit.
     """
     model: dict[str, Any] = {
         "type": "huber",
@@ -533,20 +526,22 @@ def quantile(
         The learned rows (each of positive weight, with its target) after
         which each target's first rows are refit to convergence, once
         (*The refit of the first rows* in Notes). Default
-        ``max(500, 10 * features)`` up to 100 features, and off above 100. A
-        count given is taken up to ``2 ** 20``, since the rows are held from
-        the first, but one below three rows a coefficient, the rows the
+        ``max(500, 10 * features)`` up to 100 features, and off above 100,
+        where a refit of ``10 * features`` rows would run for seconds a
+        target. A count given is taken up to ``2 ** 20``, since each
+        target's buffer is allocated at its full size at its first learned
+        row, but one below three rows a coefficient, the rows the
         warm-up takes as least squares, is refused. ``0`` turns the refit
         off. A group shorter than the count never refits and holds its rows
         to the end.
     ``refit_budget``
-        A bound in MiB on the refit buffers of all the spec's groups
-        together, above 0, or ``inf`` for none. Default 320. As for
-        :func:`huber`: each new group reserves its buffers' most when it
-        first appears, and keeps it for the life of the bank. The group that
-        would cross the bound, and every new group after it, keeps its
-        one-pass fit: a readiness warning says so once, and ``summary()``'s
-        ``refit_given_up`` counts the targets of each instance (*The refit's
+        A bound in MiB on the refit buffers of all the spec's groups together, above
+        0, or ``inf`` for none. Default 320. As for :func:`huber`: each new group
+        reserves the most its targets' buffers can hold when it first appears, and
+        keeps it for the life of the bank. The group that would cross the bound, and
+        every new group after it, keeps its one-pass fit. A readiness warning says
+        so once, and ``bank.summary()``'s ``refit_given_up`` counts the targets of
+        each instance, the part of the model that fits one half-life (*The refit's
         memory* in Notes).
 
     ``min_weight`` counts the rows the target was present on, at their
@@ -665,7 +660,8 @@ def quantile(
     **Why a Newton step.** The smoothed loss has the same curvature on either
     side of the fit, so the rows' own history cancels and the fit converges
     to the quantile regression. Reweighting the rows by the check loss's
-    IRLS weight, ``psi(e) / e``, does not converge to it. That weight is the
+    iteratively reweighted least squares (IRLS) weight, ``psi(e) / e``,
+    does not converge to it. That weight is the
     secant of this step where the step is its tangent, and it is unbounded
     as ``e`` goes to zero. A row whose residual against the fit before it
     happened to be near zero then holds the fit near the fit it was
@@ -755,16 +751,16 @@ def quantile(
                  = tau * r  or  (tau - 1) * r           otherwise
 
     ``rho_h`` is the check loss smoothed by the uniform kernel, the loss each
-    row's step is taken on. Each pass is a Newton step of ``F``: the rows
-    inside the band are least-squares rows at target ``y + 2h (tau - 1/2)``,
-    and each row outside adds ``w * 2h * psi(r) * z``, with no cap. A step
-    that would increase ``F`` is halved until it does not, since the band's
-    rows measure the curvature at the pass's fit and not at the next. A band
-    of fewer rows than coefficients has no curvature to step on, and such a
-    pass moves every prediction toward its row by at most the band's width
-    instead. The passes stop when the step moves no row's fit ``z_i'b`` by
-    more than 1e-10 of ``s``, beyond the rounding of a fit that size, or when
-    no step along it lowers ``F`` past its rounding, or after 200.
+    row's step is taken on. Each pass is a Newton step of ``F``: the rows inside
+    the band are least-squares rows at target ``y + 2h (tau - 1/2)``, and each
+    row outside adds ``w * 2h * psi(r) * z``, with no cap. A step that would
+    increase ``F`` is halved until it does not, since the band's rows measure
+    the curvature at the pass's fit and not at the next. A band of fewer rows
+    than coefficients has no curvature to step on, and such a pass takes a
+    majorizer's step instead: it moves every prediction toward its row by at
+    most the band's width. The passes stop when the step moves no row's fit
+    ``z_i'b`` by more than 1e-10 of ``s``, beyond the rounding of a fit that
+    size, or when no step along it lowers ``F`` past its rounding, or after 200.
 
     The target's sums are then rebuilt as the stream takes each row
     predicted by the converged fit at its band. Where that band holds fewer

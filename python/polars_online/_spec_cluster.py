@@ -82,8 +82,8 @@ def kmeans(
         ``seed``, at least 0, drives the two random rules: the same seed
         gives the same centers. Default 0 (``None`` is 0), so a run draws the
         same centers every time. The rows held are replayed into the centers
-        and freed, so from that row on memory grows with the model's state
-        alone. Outputs are withheld until seeding and until ``weight_sum``
+        and freed, so from the row that completes seeding, memory grows with
+        the model's state alone. Outputs are withheld until seeding and until ``weight_sum``
         reaches ``min_weight``. *Seeding* in Notes gives its timing and the
         rules at its edges.
     ``update_every_rows``
@@ -346,7 +346,8 @@ def micro(
 
     ``eps``
         The bound on one summary's root-mean-square radius, per standardized
-        coordinate: a summary takes a row only while its radius stays within
+        coordinate (in the features' own units under ``standardize=False``):
+        a summary takes a row only while its radius stays within
         ``eps * sqrt(p)`` for ``p`` features, so one value means the same at
         any ``p``. Required, finite and above 0. About 0.07 for
         two-dimensional shapes, 0.3 for well-separated Gaussians in twenty
@@ -407,11 +408,6 @@ def micro(
         reads no variance to floor. *The scale floor* in Notes gives the
         rule.
 
-    A row of weight ``w`` is admitted where a row of the mean weight would
-    be and absorbed with its full weight, so a constant multiple of every
-    weight moves nothing. A zero-weight row advances the clock and learns
-    nothing.
-
     .. rubric:: Output
 
     One output column, named after the spec, whose value in each row is a
@@ -424,7 +420,9 @@ def micro(
         The label of the nearest established summary (``i64``), null while
         there is none.
     ``dist``
-        The distance to that summary's center.
+        The distance to that summary's center, in units of each feature's
+        EW standard deviation under ``standardize``, and otherwise in the
+        features' own units.
     ``micro_id``
         The id of the summary this row goes to (``i64``), the one it opens
         when none can take it.
@@ -469,9 +467,13 @@ def micro(
     exponentially weighted (EW) mean squared distance of its rows from the
     center (DenStream's radius, with the fading function being the decay).
     Distances are measured in the metric ``mw_i = 1 / var_i`` under
-    ``standardize``, ``var_i`` feature ``i``'s EW variance, so ``eps`` is a
-    bound per standardized coordinate and the bound in the metric is
-    ``E = eps**2 * p``. ``w`` is the row's weight, ``w_bar`` the EW mean
+    ``standardize``, ``var_i`` feature ``i``'s EW variance floored at
+    ``scale_floor`` times its long-run variance (*The scale floor* in
+    Notes), and ``mw_i = 1`` under ``standardize=False``. So ``eps`` is a
+    bound per standardized coordinate (or per unit without
+    ``standardize``), and the bound on a summary's squared radius in the
+    metric is ``E = eps**2 * p``. ``x`` is the row's features, ``w`` the
+    row's weight, ``w_bar`` the EW mean
     weight of the rows learned, and ``λ = 0.5 ** (Δclock / half_life)`` the
     row's decay (``lam ** Δclock`` under ``lam``). ``Δclock`` is the clock's
     step since the last row the model did not skip, capped at ``gap_cap``,
@@ -497,6 +499,11 @@ def micro(
     model drops the light summaries (*Pruning* in Notes), then links the
     established summaries by single linkage: centers within ``L`` of each
     other share a label.
+
+    A row of weight ``w`` is admitted where a row of the mean weight would
+    be and absorbed with its full weight, so a constant multiple of every
+    weight moves nothing. A zero-weight row advances the clock and learns
+    nothing.
 
     .. rubric:: Example
 

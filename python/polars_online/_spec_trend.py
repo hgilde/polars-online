@@ -30,7 +30,6 @@ def holt(
     it in the same bank as the regression, with ``emit_sigma=True`` on both,
     and compare their ``sigma_<slot>`` fields. Or add a :func:`seqtest`
     whose ``a`` and ``b`` name the two specs, to test which predicts closer.
-    :func:`seqtest` is the only other model that takes no features.
 
     .. rubric:: Parameters
 
@@ -58,7 +57,7 @@ def holt(
         trend pinned at zero: the line fit's gain on the slope, which is the
         weighted least-squares slope exactly only when the level does not
         decay either. Beside a finite level half-life the slope learns from
-        errors against a level that forgets, and lands near the line fit's:
+        residuals against a level that forgets, and lands near the line fit's:
         0.2% to 1% of it off at a level half-life of 5 over 3,000 rows.
     ``trend``
         ``False`` fits the level alone: the trend is held at zero and the
@@ -111,9 +110,10 @@ def holt(
     .. rubric:: The update
 
     Per row and target, ``s`` is the clock since the target was last
-    observed, this row's step included, so ``s`` is the row's own step on a
-    stream with no gaps. ``w`` is the row's weight, ``e = y - pred`` the
-    prediction's error, ``l`` and ``b`` the level and the trend, and ``W``,
+    observed, this row's step included, each step capped at ``gap_cap`` (or
+    ``session_gap`` at a session change), so ``s`` is the row's own step on
+    a stream with no gaps. ``w`` is the row's weight, ``e = y - pred`` the
+    residual, ``l`` and ``b`` the level and the trend, and ``W``,
     ``V`` the weight the level and the trend have gathered. Each decays on
     its own half-life: ``λ_l = 0.5 ** (s / half_life)`` (``lam ** s`` under
     ``lam``), the spec's own, and
@@ -199,14 +199,16 @@ def holt(
     gain, so without decay the model is the weighted line fit, to rounding
     (statsmodels' ``WLS`` agrees to 1e-15). Under ``trend_half_life = inf``
     the slope takes the line fit's gain. Under a half-life the line fit's
-    gains fall as ``1/n`` and ``1/n**2``, and the textbook's reach their
+    gains fall as ``1/n`` and ``1/n**2`` (``n`` the number of
+    observations), and the textbook's reach their
     fixed values. So after a warm-up of a few half-lives every row takes the
     textbook's, and statsmodels' ``Holt`` agrees from there. The warm-up
     follows a new series sooner than the textbook would. Without the line
-    fit, gains of ``1/n`` on both level and trend pinned the trend to the
-    first observation, and the level carried that observation's error times
-    ``ln n``: 11 off a flat series after 40,000 rows without decay, at a
-    noise of 0.5, the worst of 50 seeds.
+    fit, gains of ``1/n`` on both level and trend would pin the trend to the
+    first observation. The level would
+    carry that observation's noise times ``ln n``: 11 off a flat series
+    after 40,000 rows without decay, at a noise of 0.5, the worst of 50
+    seeds.
 
     **Rows at one clock, and rows that learn nothing.** A row at the last
     row's clock is a second observation the level takes in. The textbook
