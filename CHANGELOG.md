@@ -344,6 +344,13 @@ returns.
 
 ### Tests and documents
 
+- The scaling test's allocation check counts a block's allocations on
+  every thread but the test harness's: libtest's main thread and the other
+  tests' threads, which allocate while one test measures, had moved a cell
+  that allocates nothing from 0 to 4 allocations over its blocks and failed
+  it at 1.27x on one CI leg. A count within 4 allocations a block past its
+  declared growth now passes whatever its ratio; a growth the check is for
+  adds one a row, at least 200 a block (task 351).
 - The documentation rewrite's first pages: the how-tos *Resume from a
   saved state* and *Put rows in clock order*, and the explanation *Why
   every prediction is out of sample*. `ewridge`'s and
