@@ -22,34 +22,149 @@ def audit(
     distinct_cap: int | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
-    """What a stream's columns hold, read in one pass: a spec that learns nothing.
+    """A count of what a stream's columns hold, read in one pass by a spec that fits
+    nothing and predicts nothing.
 
-    A model cannot tell you that a column is ``-999`` on a twentieth of its
-    rows, that a feed stopped and its last value was carried forward, or
-    that a feature is a price level where a change was meant. An audit
-    counts those things as the rows go by, so that
-    :meth:`polars_online.ModelBank.check` can say so. Run it alone before
-    choosing a model, or beside the models in the same pass
-    (``po.ModelBank([audit, model])``). It predicts nothing, so it writes
-    only ``weight_sum`` per row; what it counted is read back with
-    :meth:`polars_online.ModelBank.audit`.
+    Use it to find what a model cannot tell you: that a column is ``-999``
+    on a twentieth of its rows, that a feed stopped and its last value was
+    carried forward, or that a feature is a price level where a change was
+    meant. :meth:`polars_online.ModelBank.check` reads its counts and says
+    so. Run it alone before choosing a model, or beside the models in the
+    same pass (``po.ModelBank([audit, model])``).
+
+    .. rubric:: Parameters
+
+    The stream parameters every builder takes, such as ``clock``, ``group``
+    and ``session``, are in :mod:`polars_online.spec`. ``gap_cap`` is
+    required with a ``clock``, as for every spec, and is the line a gap is
+    counted at. An audit takes ``columns`` in place of ``targets`` and
+    ``features``. ``fit_intercept`` has nothing to act on, as there is no
+    regression. An audit counts and does not fit, so it refuses these:
+
+    .. list-table::
+       :header-rows: 1
+       :widths: 30 70
+
+       * - refused
+         - why
+       * - ``half_life``, ``lam``
+         - nothing decays
+       * - ``weight``
+         - a value is a value whatever its row weighs. To audit a weight
+           column, list it in ``columns``
+       * - ``embargo``
+         - there is no target to wait for
+       * - ``min_weight``
+         - there is no prediction to withhold
+       * - ``group_close``
+         - a closed group's counts would leave the bank with it, where
+           :meth:`~polars_online.ModelBank.audit` and
+           :meth:`~polars_online.ModelBank.check` cannot read them
+
+    This model's own:
+
+    ``columns``
+        The columns to audit, any number, each once. They are a spec's
+        ``features`` in the bank's tables
+        (:meth:`~polars_online.ModelBank.describe` lists them with role
+        ``"feature"``). Required, and not empty.
+    ``pairs``
+        Keep each pair of columns' correlation and the rows on which the two
+        are equal, what ``check`` reads for ``duplicate``. Memory and work
+        grow as ``k^2`` for ``k`` columns. Default ``False``.
+    ``distinct_cap``
+        The number of counters each column keeps. The distinct count is
+        exact up to this many values, and the most repeated value's count within
+        ``n / (distinct_cap + 1)`` past it. ``None`` (the default) is 256,
+        where a value on 3% of a continuous column's rows was found on ten
+        seeds of ten as a sentinel; at 1,024 one on 2% was. At least 1 and at
+        most 65,536.
+
+    .. rubric:: Output
+
+    One output column, named after the spec, whose value in each row is a
+    record holding ``weight_sum`` alone, the count of rows before this one.
+    `docs/OUTPUTS.md#audit
+    <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#audit>`_
+    gives its type. An audit predicts nothing, so what it counted is read
+    back with :meth:`polars_online.ModelBank.audit`, one row per column (and
+    with ``table="pairs"`` and ``table="clock"``), and judged by
+    :meth:`polars_online.ModelBank.check`. *What it counts* in Notes defines
+    each measurement.
+
+    .. rubric:: Raises
+
+    As every builder does (:mod:`polars_online.spec`), ``TypeError`` for
+    ``targets`` and for ``features``, which an audit calls ``columns``, and
+    ``ValueError`` naming the problem for:
+
+    - an empty ``columns``, or one that names a column twice;
+    - ``half_life``, ``lam``, ``weight``, ``embargo``, ``min_weight`` or
+      ``group_close``;
+    - a ``distinct_cap`` outside 1 to 65,536.
+
+    .. rubric:: The update
+
+    Per column, each row's value ``x`` is first classified: a null, a NaN,
+    ``+inf``, ``-inf`` and a finite value past ``1e100`` in magnitude each
+    add one to its own count, and anything else is *usable*. A usable value
+    is added to the moments by Terriberry's update of the central sums
+    ``M2``, ``M3`` and ``M4``, with ``n`` the usable values before it:
+
+    .. code-block:: text
+
+        n' = n + 1      d = x - mean      e = d / n'      t = d * e * n
+        mean' = mean + e
+        M4' = M4 + t * e^2 * (n'^2 - 3 n' + 3) + 6 e^2 * M2 - 4 e * M3
+        M3' = M3 + t * e * (n' - 2) - 3 e * M2
+        M2' = M2 + t
+
+    and to its counter: a held value's count adds one, a new value takes a
+    counter while fewer than ``distinct_cap`` are held, and otherwise takes
+    one from every counter and drops those at 0 (a Misra-Gries summary). A
+    usable row whose row before was usable adds the pair to the lag-1
+    regression and counts whether the two are equal. Nothing decays.
+
+    .. rubric:: Example
+
+    This code audits a column with ``-999`` planted on about 5% of its rows
+    beside a random walk, and prints what :meth:`~polars_online.ModelBank.check`
+    finds in each:
 
     .. code-block:: python
 
-        audit = po.spec.audit(
-            "audit", columns=["x0", "x1", "x2", "y"], clock="t", gap_cap=300.0, pairs=True
-        )
+        import numpy as np
+
+        rng = np.random.default_rng(4)
+        x = rng.standard_normal(10_000)
+        x[rng.random(10_000) < 0.05] = -999.0          # a sentinel on a twentieth of the rows
+        level = np.cumsum(rng.standard_normal(10_000))  # a level, where a change was meant
+        pl.DataFrame({"x": x, "level": level}).write_parquet("feed.parquet")
+
+        audit = po.spec.audit("audit", columns=["x", "level"])
         bank = po.ModelBank([audit])
-        bank.fit_predict(df)
-        columns = bank.audit()                    # one row per column
-        problems = bank.check()                   # what the counts say is wrong
+        bank.fit(pl.scan_parquet("feed.parquet"))      # count every row, keep no output
+        for r in bank.check().iter_rows(named=True):
+            print(f"{r['column']}: {r['code']} ({r['value']:.3g})")
 
-    .. rubric:: What it measures
+    .. code-block:: text
 
-    Per column, over every row the stream holds, in the order it holds
-    them. A *usable* value is a number a model can learn from: not null,
-    not NaN, not infinite, and no larger than ``1e100`` in magnitude. Every
-    statistic past the first row of the table is over the usable values.
+        level: random_walk (-1.99)
+        x: sentinel (0.0437)
+        x: heavy_tails (953)
+
+    .. rubric:: See also
+
+    - :meth:`polars_online.ModelBank.audit`, the counts, one row per column.
+    - :meth:`polars_online.ModelBank.check`, what the counts say is wrong.
+    - :meth:`polars_online.ModelBank.describe`, a few statistics of every
+      column each spec has been fed.
+
+    .. rubric:: Notes
+
+    **What it counts.** Per column, over every row the stream holds, in the
+    order it holds them. Every statistic past the first row of the table is
+    over the usable values.
 
     .. list-table::
        :header-rows: 1
@@ -107,20 +222,47 @@ def audit(
          - each step between consecutive rows, the time that passed,
            uncapped, is a duplicate stamp (0), a gap (at or past
            ``gap_cap``, which caps the step a model ages by) or a regular
-           step, whose mean, population spread and coefficient of variation
-           are kept, with the largest step of all, as ``Duration`` on a
-           temporal clock
+           step. The regular steps' mean, population spread and coefficient
+           of variation are kept, with the largest step of all, as
+           ``Duration`` on a temporal clock
+
+    **Every row is read.** Every other model skips a row whose feature is not
+    usable, and an audit counts it, since that is what it is for. A reset,
+    at a session gap set to ``"reset"`` or a step back past
+    ``restart_after_step_back``, starts its runs and its clock steps over
+    and keeps its counts: an audit is a record of what the stream held, not
+    a fit. An audit records the clock as fed, so a numeric ``session_gap``
+    changes none of its rows or tables. A step back of the clock is refused,
+    as for every spec: to count the steps back instead, set
+    ``restart_after_step_back`` (``0`` resets at each), and
+    :meth:`~polars_online.ModelBank.summary`'s ``clock_backwards`` and
+    ``check()``'s ``step_back`` count them.
+    :meth:`~polars_online.ModelBank.predict` counts nothing, as it learns
+    nothing. The counts are the same whether the stream comes in one chunk
+    or a thousand, and are kept in the state, so an audit saved after one
+    file goes on over the next. An audit predicts nothing, so it has no
+    prediction to keep out-of-sample.
+
+    **Groups merge.** ``ModelBank.audit(pooled=True)`` reads one audit of
+    every group, as if they were one stream. The counts, the moments
+    (Pébay's pairwise formulas), the longest run, the repeats of the row
+    before, the lag pairs, the pairs and the clock merge exactly, up to
+    rounding. Two do not: past the cap the counters merge as Misra-Gries
+    summaries do (Agarwal et al. 2012, the errors added), and the digests by
+    compressing their centroids together. A run or a lag pair across two
+    groups is not one, so none is counted.
 
     **Cost.** A value costs one lookup in a hash table of a column's
     counters, held or not. Past the cap, a new value takes one from every
     counter, which empties the table at most once in ``distinct_cap + 1``
     new values, so a continuous column pays a few operations a row at any
     cap. The digest compresses every 256 rows, a few comparisons a row
-    amortized, and ``pairs`` costs ``k(k - 1)/2`` pair updates a row. Memory
-    does not grow with the rows: about 14 KiB a column at the defaults (a
-    table of ``distinct_cap`` counters, 16 bytes each and as much again of
-    the table's slack, a digest of at most about 200 centroids and 256
-    values waiting), and 72 bytes a pair, in every group.
+    amortized, and ``pairs`` costs ``k(k - 1)/2`` pair updates a row for
+    ``k`` columns. Memory does not grow with the rows. At the defaults it is
+    about 14 KiB a column, and 72 bytes a pair, in every group. A column's
+    share is a table of ``distinct_cap`` counters, 16 bytes each and as much
+    again of the table's slack, and a digest of at most about 200 centroids
+    and 256 values waiting.
 
     Measured through :meth:`~polars_online.ModelBank.fit_predict` on frames
     in memory, of columns drawn from ``N(0, 1)``, the best of seven runs on an
@@ -144,78 +286,6 @@ def audit(
     The saved state of those ten columns held 4.8 KB a column
     (:meth:`~polars_online.ModelBank.save_bytes`, 48,625 bytes, of which an
     unfed bank is 996), and 4.7 KB a column at fifty.
-
-    **Every row is read.** Another model skips a row whose feature is not
-    usable; an audit counts it, which is the point. A restart, at a session
-    gap set to ``"reset"`` or a step back past ``restart_after_step_back``,
-    starts its runs and its clock steps over and keeps its counts: an audit
-    is a record of what the stream held, not a fit. An audit records the
-    clock as fed, so a numeric ``session_gap`` changes none of its rows or
-    tables. A step back of the
-    clock is refused, as for every spec: to count the steps back instead,
-    set ``restart_after_step_back`` (``0`` restarts at each), and
-    :meth:`~polars_online.ModelBank.summary`'s ``clock_backwards`` and
-    ``check()``'s ``step_back`` count them.
-    :meth:`~polars_online.ModelBank.predict` counts nothing, as it teaches
-    nothing. The counts are the same whether the stream comes in one chunk
-    or a thousand, and are kept in the state, so an audit saved after one
-    file goes on over the next. An audit predicts nothing, so it has no
-    prediction to keep out of sample.
-
-    **Groups merge.** ``ModelBank.audit(pooled=True)`` reads one audit of
-    every group, as if they were one stream. The counts, the moments
-    (Pébay's pairwise formulas), the longest run, the repeats of the row
-    before, the lag pairs, the pairs and the clock merge exactly, up to
-    rounding. Two do not: past the cap the counters merge as Misra-Gries
-    summaries do (Agarwal et al. 2012, the errors added), and the digests by
-    compressing their centroids together. A run or a lag pair across two
-    groups is not one, so none is counted.
-
-    ``columns``
-        The columns to audit, any number. A spec's ``features`` in the
-        bank's tables (:meth:`~polars_online.ModelBank.describe` lists them
-        with role ``"feature"``).
-    ``pairs``
-        Keep each pair of columns' correlation and equal rows, ``O(k^2)``:
-        what ``check`` reads for ``duplicate``. Default ``False``.
-    ``distinct_cap``
-        Counters a column: the distinct count is exact up to this many
-        values, and the most repeated value's count within
-        ``n / (distinct_cap + 1)`` past it. ``None`` (the default) is 256,
-        where a value on 3% of a continuous column's rows was found on ten
-        seeds of ten as a sentinel; at 1,024 one on 2% was. At least 1 and at
-        most 65,536.
-
-    The stream parameters are in :mod:`polars_online.spec`: ``clock``,
-    ``gap_cap`` (required with a ``clock``, as for every spec, and the line
-    a gap is counted at), ``group``, ``session`` and the rest.
-    ``fit_intercept`` has nothing to act on, as there is no regression.
-    ``half_life`` and ``lam`` are refused, since nothing decays. So is
-    ``weight``, since a value is a value whatever its row weighs: to audit a
-    weight column, list it in ``columns``. (The Rust model takes a weight
-    as every model does, into ``weight_sum`` alone, and counts a row of
-    weight 0 as any other.) ``embargo`` is refused too, as there is no label
-    to wait for, and ``min_weight``, as there is no prediction to withhold.
-    So is ``group_close``: a closed group leaves the bank with its stream,
-    and its counts with it, so :meth:`~polars_online.ModelBank.audit` and
-    :meth:`~polars_online.ModelBank.check` could not read them.
-    ``weight_sum`` is the count of rows before this one.
-
-    .. rubric:: Output
-
-    One struct column named after the spec, holding ``weight_sum`` alone
-    (`docs/OUTPUTS.md#audit
-    <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#audit>`_);
-    the counts are read with :meth:`polars_online.ModelBank.audit`.
-
-    .. rubric:: Raises
-
-    As every builder does (:mod:`polars_online.spec`); ``TypeError`` for
-    ``targets`` and for ``features``, which an audit calls ``columns``;
-    ``ValueError`` for an empty ``columns`` or one that names a column twice,
-    for ``half_life``/``lam``,
-    ``weight``, ``embargo``, ``min_weight`` or ``group_close``, and for a
-    ``distinct_cap`` outside 1 to 65,536.
     """
     # Every problem at once, where several hold.
     who = f"spec {quoted(name)}"
