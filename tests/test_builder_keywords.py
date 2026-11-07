@@ -162,6 +162,30 @@ def test_a_renamed_keyword_is_read_as_the_new_one_with_a_warning(kind, old, new,
     assert new[0] in said and "next major version" in said, said
 
 
+#: What a ``reset_on_flag`` that is no bool is told, word for word as the
+#: command line tells a TOML file's
+#: (``crates/online-cli/tests/surface.rs``,
+#: ``a_reset_on_flag_that_is_no_bool_is_read_with_python_s_warning``).
+_RESET_WORD_NOTICE = (
+    'reset_on_flag = "reset" is deprecated: it is read as change_action = "reset" until the '
+    'next major version, which refuses it. Write change_action = "reset" or "flag" instead.'
+)
+
+
+def test_a_reset_on_flag_that_is_no_bool_says_what_the_command_line_says():
+    """The two sides gave a ``reset_on_flag`` that is no bool different
+    notices: Python's builder one, a TOML file's none (task 352)."""
+    want = po.spec.corrchange(
+        "m", features=["x0", "x1"], kind="window", window_rows=10, change_action="reset"
+    )
+    with pytest.warns(po.PolarsOnlineDeprecationWarning) as caught:
+        got = po.spec.corrchange(
+            "m", features=["x0", "x1"], kind="window", window_rows=10, reset_on_flag="reset"
+        )
+    assert got == want
+    assert [str(w.message) for w in caught] == [f'spec "m": {_RESET_WORD_NOTICE}']
+
+
 @pytest.mark.parametrize(("kind", "old", "new", "extra"), RENAMED, ids=_IDS)
 def test_a_spec_dict_with_an_old_key_is_read_as_the_new_one(kind, old, new, extra):
     """A hand-written dict is forwarded at the bank's door the same way,

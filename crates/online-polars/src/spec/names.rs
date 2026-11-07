@@ -261,16 +261,22 @@ pub fn forward_model<M: ModelTable + ?Sized>(
             return Err(both("emission", "covariance_type"));
         }
         // A value that is no word, or a word that never was one, is passed
-        // on for `covariance_type` to refuse in its own words, with no
-        // notice: the refusal is all the reader needs.
+        // on for `covariance_type` to refuse in its own words, after the
+        // same notice as any other: Python's builders give it, and the two
+        // sides say the same of one spec (task 352).
         let given = map.word("emission");
+        let shown = map.shown("emission");
         let word = given.clone().unwrap_or_default();
         let (covariance, beta) = match word.as_str() {
             "gaussian" => ("full", false),
             "robust" => ("diag", true),
             other => (other, false),
         };
-        let known = matches!(word.as_str(), "gaussian" | "robust");
+        let read_as = if given.is_some() {
+            format!("{covariance:?}")
+        } else {
+            shown.clone()
+        };
         map.rename("emission", "covariance_type");
         if given.is_some() {
             map.set_word("covariance_type", covariance);
@@ -286,13 +292,11 @@ pub fn forward_model<M: ModelTable + ?Sized>(
         } else {
             String::new()
         };
-        if known {
-            notices.push(format!(
-                "emission = {word:?} is deprecated: it is read as covariance_type = \
-                 {covariance:?}{robust} until the next major version, which refuses it. Write \
-                 covariance_type = {covariance:?}{and_beta} instead."
-            ));
-        }
+        notices.push(format!(
+            "emission = {shown} is deprecated: it is read as covariance_type = \
+             {read_as}{robust} until the next major version, which refuses it. Write \
+             covariance_type = {read_as}{and_beta} instead."
+        ));
     }
     if kind == "corrchange" && map.has("reset_on_flag") {
         if map.has("change_action") {
@@ -302,14 +306,21 @@ pub fn forward_model<M: ModelTable + ?Sized>(
         let shown = map.shown("reset_on_flag");
         let action = if flag == Some(true) { "reset" } else { "flag" };
         map.rename("reset_on_flag", "change_action");
-        // A value that is no bool is passed on for `change_action` to
-        // refuse in its own words, with no notice.
+        // A value that is no bool is passed on for `change_action` to read
+        // or refuse in its own words, after the notice Python's builder
+        // gives it, so the two sides say the same of one spec (task 352).
         if flag.is_some() {
             map.set_word("change_action", action);
             notices.push(format!(
                 "reset_on_flag = {shown} is deprecated: it is read as change_action = \
                  {action:?} until the next major version, which refuses it. Write \
                  change_action = {action:?} instead."
+            ));
+        } else {
+            notices.push(format!(
+                "reset_on_flag = {shown} is deprecated: it is read as change_action = {shown} \
+                 until the next major version, which refuses it. Write change_action = \
+                 \"reset\" or \"flag\" instead."
             ));
         }
     }

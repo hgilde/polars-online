@@ -170,6 +170,11 @@ class TestShape:
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
         assert len(bank.gram(0)) == len(bank.gram("m")) == 1
+        # A numpy integer is an index too; it was looked up as a name and
+        # refused with a KeyError (task 352). A bool is not one.
+        assert len(bank.gram(np.int64(0))) == len(bank.gram(np.int32(-1))) == 1
+        with pytest.raises(KeyError, match="no spec named True"):
+            bank.gram(True)
 
     def test_it_tracks_the_stream_rather_than_a_snapshot(self):
         """weight_sum grows with the stream: these are live accumulators, and

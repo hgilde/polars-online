@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import io
+import numbers
 import operator
 import os
 import warnings
@@ -473,15 +474,20 @@ class ModelBank:
         """A spec's position from its name or index: ``KeyError`` for a name
         the bank has not got, ``IndexError`` for a position it has not got."""
         names = self._native.spec_names()
-        if isinstance(spec, int):
-            if not -len(names) <= spec < len(names):
+        # Any whole number is an index, numpy's integers included (task 352);
+        # a bool is not one, and is looked up as a name.
+        at: int | None = None
+        if isinstance(spec, numbers.Integral) and not isinstance(spec, bool):
+            at = operator.index(spec)
+        if at is not None:
+            if not -len(names) <= at < len(names):
                 msg = (
-                    f"{who}: spec index {spec} is out of range, since the bank has {len(names)} "
+                    f"{who}: spec index {at} is out of range, since the bank has {len(names)} "
                     f"specs. Pass an index from {-len(names)} to {len(names) - 1}, or a spec's "
                     "name."
                 )
                 raise IndexError(msg)
-            return spec % len(names)
+            return at % len(names)
         if spec not in names:
             msg = (
                 f"{who}: the bank has no spec named {spec!r}, only {names}. Pass one of those "

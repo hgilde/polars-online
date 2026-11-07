@@ -61,6 +61,7 @@ each function on weekly blocks from one pass, the theory behind it, and a recipe
 from __future__ import annotations
 
 import math
+import numbers
 import operator
 import warnings
 from collections.abc import Mapping, Sequence
@@ -1470,19 +1471,21 @@ def _native_gram(np: Any, g: Gram, icept: int) -> tuple[Any, ...]:
 def _limit(name: str, v: int | None, who: str) -> int | None:
     if v is None:
         return None
-    if isinstance(v, bool) or not isinstance(v, int):
+    # Any whole number, numpy's integers included (task 352), but not a bool.
+    if isinstance(v, bool) or not isinstance(v, numbers.Integral):
         msg = (
-            f"{who}: {name} must be a Python int of at least 1, or None, but it is {v!r}. "
-            "Pass a Python int of at least 1, or None for no limit."
+            f"{who}: {name} must be a whole number of at least 1, or None, but it is {v!r}. "
+            "Pass a whole number of at least 1, or None for no limit."
         )
         raise ValueError(msg)
-    if v < 1:
+    n = operator.index(v)
+    if n < 1:
         msg = (
-            f"{who}: {name} must be at least 1, or None, but it is {v}. Set {name} to 1 or "
+            f"{who}: {name} must be at least 1, or None, but it is {n}. Set {name} to 1 or "
             "more, or to None for no limit."
         )
         raise ValueError(msg)
-    return v
+    return n
 
 
 def _lars_weights(

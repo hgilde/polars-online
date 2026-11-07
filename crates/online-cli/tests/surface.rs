@@ -401,6 +401,41 @@ fn a_deprecated_model_key_is_read_with_a_warning() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// `reset_on_flag` given a value that is no bool is read as `change_action`
+/// with the notice Python's builder gives it, word for word after the spec
+/// Python names; a TOML file's had none (task 352).
+#[test]
+fn a_reset_on_flag_that_is_no_bool_is_read_with_python_s_warning() {
+    let dir = fresh_dir("reset-on-flag-word");
+    let input = dir.join("in.parquet");
+    write_input(&input, 60);
+    let cfg = dir.join("job.toml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "input = '{}'\noutput = '{}'\n[[specs]]\nname = \"cp\"\nfeatures = [\"x0\", \"y\"]\n\
+             [specs.model]\ntype = \"corrchange\"\nkind = \"window\"\nwindow_rows = 10\n\
+             reset_on_flag = \"reset\"\n",
+            text(&input),
+            text(&dir.join("out.parquet"))
+        ),
+    )
+    .unwrap();
+    let (code, out, err) = run(cli().args(["--config", text(&cfg), "--dry-run"]));
+    assert_eq!(code, Some(0), "{err}");
+    // tests/test_builder_keywords.py holds Python's builder to the same text.
+    assert!(
+        err.contains(
+            "polars-online: warning: reset_on_flag = \"reset\" is deprecated: it is read as \
+             change_action = \"reset\" until the next major version, which refuses it. Write \
+             change_action = \"reset\" or \"flag\" instead."
+        ),
+        "{err}"
+    );
+    assert!(out.starts_with("config OK: 1 spec(s)"), "{out}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// `kmeans` reading `x0`, its clusters under the deprecated `k` or as
 /// `n_clusters`, with `half_life = <half_life>` written as given: a config
 /// for `input`, writing `output`.

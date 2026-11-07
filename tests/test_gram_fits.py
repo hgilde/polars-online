@@ -295,8 +295,8 @@ class TestLarsPath:
         ("kw", "match"),
         [
             (dict(max_iter=0), "max_iter must be at least 1, or None, but it is 0"),
-            (dict(max_active=True), "max_active must be a Python int of at least 1"),
-            (dict(max_active=2.0), "max_active must be a Python int of at least 1"),
+            (dict(max_active=True), "max_active must be a whole number of at least 1"),
+            (dict(max_active=2.0), "max_active must be a whole number of at least 1"),
             (
                 dict(penalty_weights=[1.0, 0.0, 1.0, 1.0, 1.0]),
                 "use po.gram.lasso_path for a weight of 0",
@@ -309,6 +309,15 @@ class TestLarsPath:
         g = gram(stream(seed=14, n=200))
         with pytest.raises(ValueError, match=match):
             pg.lars_path(g, **kw)
+
+    def test_a_numpy_integer_is_a_whole_number(self):
+        """``max_iter`` and ``max_active`` refused ``np.int64(3)`` as not a
+        Python int (task 352)."""
+        g = gram(stream(seed=14, n=200))
+        plain = pg.lars_path(g, max_iter=3, max_active=2)
+        numpy = pg.lars_path(g, max_iter=np.int64(3), max_active=np.int32(2))
+        assert np.array_equal(plain["coef"], numpy["coef"])
+        assert plain["active"] == numpy["active"]
 
 
 class TestLarsPaths:

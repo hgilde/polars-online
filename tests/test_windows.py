@@ -2972,6 +2972,27 @@ def test_every_clock_refusal_is_said_in_the_calls_own_words(case: str) -> None:
     assert str(exc.value) == says
 
 
+@pytest.mark.parametrize("key", ["gap_cap", "restart_after_step_back"])
+def test_a_span_keyword_takes_a_duration_expression(key: str) -> None:
+    """``gap_cap`` is annotated to take a duration expression, as a spec's
+    does, but every expression was refused (task 352). One that reads no
+    column is read as its duration; one that is not a duration is refused,
+    naming both remedies."""
+    ts = pl.Series([0, 1_000, 2_000, 9_000, 3_000, 4_000]).cast(pl.Datetime("ms"))
+    df = pl.DataFrame({"ts": ts, "x": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]})
+    f = po.ewm_mean("x", half_life="2s")
+    base = {"clock": "ts", "gap_cap": "5s", "restart_after_step_back": "4s"}
+    want = po.stream.with_windows(df, y=f, **base)
+    for value in (pl.duration(seconds={"gap_cap": 5, "restart_after_step_back": 4}[key]),):
+        got = po.stream.with_windows(df, y=f, **{**base, key: value})
+        assert got.equals(want), got
+        got = df.lazy().online.with_windows(y=f, **{**base, key: value}).collect()
+        assert got.equals(want), got
+    for bad in (pl.col("x"), f, pl.lit(5.0)):
+        with pytest.raises(TypeError, match=rf"{key} takes a number or a duration, but it is "):
+            po.stream.with_windows(df, y=f, **{**base, key: bad})
+
+
 # --------------------------------------------------------------------------
 # Relations every operator keeps (task 278, batch 24): no library computes
 # most of these operators' windowed and forward forms, so each parameter is
