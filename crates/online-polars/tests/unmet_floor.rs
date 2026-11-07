@@ -260,12 +260,26 @@ fn the_unsolved_noise_gate_on_a_row_of_weight_zero_gives_no_figure() {
     assert_eq!(unsolved(&w), vec![want]);
 }
 
-/// A row of weight 1e90 where the warning comes: read as the weight every
-/// row brings, it projects a `weight_sum` far below 0, so there is no
-/// figure.
+/// A row of weight 1,000 where the warning comes: read as the weight every
+/// row brings, it projects `weight_sum` at `(3.34 − 1000·2^(−11/2))/s`, near
+/// −19, so there is no figure. Any weight past about 150 would do.
+///
+/// It was 1e90, and on Windows a second notice came beside this one, that
+/// a coefficient was all ridge. A row that heavy is the whole of the
+/// model's state to the bit (each later row's share of the mean-form
+/// update, `w/(λW + w)`, is about 1e-90): the fit after it is one
+/// observation, its Kish size 1 and its `edf` the intercept's 1, so the
+/// gate's ratio `sqrt(1 + edf/n_kish)` is the threshold `sqrt(2)` but for
+/// rounding, which the decay factors' last bits decide. Where it rounded
+/// below, the gate let a row through and the notice on its all-ridge
+/// slopes fired (on this platform every row after the heavy one passes a
+/// threshold of 1.5). At 1,000 the heavy row's weight halves every two rows
+/// and the others' rows are seen: no row passes a threshold of 2.1, half
+/// again the gate's, so no platform's rounding lets one through, and this
+/// notice is the only one.
 #[test]
 fn the_unsolved_noise_gate_on_uneven_rows_gives_no_figure() {
-    let w: Vec<f64> = (0..40).map(|i| if i == 12 { 1e90 } else { 1.0 }).collect();
+    let w: Vec<f64> = (0..40).map(|i| if i == 12 { 1e3 } else { 1.0 }).collect();
     let want = format!(
         "{UNSOLVED}, so error_inflation stays infinite and predictions stay withheld until \
          weight_sum reaches the 11 the model needs before it fits at all, one for each of its 11 \
