@@ -12,6 +12,12 @@
 
 .. autoclass:: polars_online.ColumnNotFoundError
 
+.. autoclass:: polars_online.OutputColumnNotFoundError
+
+.. autoclass:: polars_online.WrongTypeError
+
+.. autoclass:: polars_online.RefusedValueError
+
 .. autoclass:: polars_online.PolarsOnlineWarning
 
 .. autoclass:: polars_online.OrderNotGuaranteedWarning

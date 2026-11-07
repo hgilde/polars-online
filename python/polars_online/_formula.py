@@ -37,6 +37,7 @@ from typing import Any
 import polars as pl
 
 from polars_online._duration import _INFINITY, duration_text
+from polars_online._errors import RefusedValueError, WrongTypeError
 from polars_online._polars_online import parse_duration
 
 #: The prefix of the column an operator stands in as.
@@ -608,7 +609,7 @@ def operator(
     if window_size is not None:
         params["window_size"] = _span(who, "window_size", window_size, inf_ok=False)
     elif name.startswith("rewm"):
-        raise TypeError(
+        raise RefusedValueError(
             f"{who}: window_size is required when the operator looks ahead, since the rows "
             f"after a row have no end without one, but it is not given. Give window_size in "
             f"clock units."
@@ -622,16 +623,14 @@ def operator(
     # Any integer Polars' `rolling_*_by` takes, a numpy one included, up to
     # the core's ceiling, named; past it the refusal came later and said "at
     # least 1" (review round 4, PD4).
-    if (
-        isinstance(min_samples, bool)
-        or not isinstance(min_samples, numbers.Integral)
-        or not 1 <= min_samples <= MAX_MIN_SAMPLES
-    ):
-        raise ValueError(
+    wrong_type = isinstance(min_samples, bool) or not isinstance(min_samples, numbers.Integral)
+    if wrong_type or not 1 <= min_samples <= MAX_MIN_SAMPLES:
+        msg = (
             f"{who}: min_samples must be an integer of at least 1 and at most "
             f"{MAX_MIN_SAMPLES}, but it is {min_samples!r}. Set min_samples to a whole number "
             f"of rows in that range."
         )
+        raise WrongTypeError(msg) if wrong_type else ValueError(msg)
     params["min_samples"] = int(min_samples)
     if partial is not None:
         if partial not in ("keep", "null", "drop"):

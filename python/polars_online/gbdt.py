@@ -101,7 +101,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import polars as pl
 
 from polars_online import _polars_online as _native
-from polars_online._errors import ColumnNotFoundError
+from polars_online._errors import ColumnNotFoundError, WrongTypeError
 from polars_online._warnings import unstable
 
 if TYPE_CHECKING:
@@ -319,13 +319,13 @@ class _Columns:
                 self.levels.append(len(dt.categories))
                 self.categories.append(dt.categories.to_list())
             elif isinstance(dt, pl.Categorical):
-                raise ValueError(
+                raise WrongTypeError(
                     f"{who}: feature {c!r} is a pl.Categorical, whose codes depend on the "
                     "process that made them, so a model trained on them could not read them "
                     "again. Cast it to a pl.Enum, whose categories fix the codes."
                 )
             else:
-                raise ValueError(
+                raise WrongTypeError(
                     f"{who}: feature {c!r} is {dt}, but po.gbdt reads integer, float, Boolean "
                     "and pl.Enum columns. Cast it to Float64 or a pl.Enum, or leave it out of "
                     "features."
@@ -337,7 +337,7 @@ class _Columns:
                 continue
             dt = schema[name]
             if not (dt.is_numeric() or dt == pl.Boolean) or dt.is_decimal():
-                raise ValueError(
+                raise WrongTypeError(
                     f"{who}: the {role} column {name!r} is {dt}, but it must be an integer, "
                     "float or Boolean column. Cast it to Float64."
                 )
@@ -480,7 +480,7 @@ def _margin_expr(who: str, role: str, name: str, dt: pl.DataType) -> pl.Expr:
         return pl.col(name).cast(pl.List(pl.Float64))
     if isinstance(dt, pl.Array) and len(dt.shape) == 1 and numeric(dt.inner):
         return pl.col(name).cast(pl.Array(pl.Float64, dt.size))
-    raise ValueError(
+    raise WrongTypeError(
         f"{who}: the {role} column {name!r} is {dt}, but a margin is a float or integer "
         "column (one value for each row), or a List or Array of one value for each class. "
         "Cast it to Float64, or to a List of Float64."
@@ -576,7 +576,7 @@ def _check_common(
     """``max_bin`` and ``threads`` as Python ints, once each is checked."""
     bins = _whole(max_bin)
     if bins is None:
-        raise ValueError(
+        raise WrongTypeError(
             f"{who}: max_bin must be a whole number of at least 2, but it is {max_bin!r}. "
             "Pass a whole number of at least 2."
         )
@@ -587,7 +587,7 @@ def _check_common(
     library = "XGBoost's" if "xgboost" in who else "LightGBM's"
     count = None if threads is None else _whole(threads)
     if threads is not None and count is None:
-        raise ValueError(
+        raise WrongTypeError(
             f"{who}: threads must be a whole number of at least 1, or None, but it is "
             f"{threads!r}. Pass a whole number of at least 1, or None for {library} default."
         )
@@ -869,7 +869,7 @@ def xgboost_matrix(
     who = "po.gbdt.xgboost_matrix"
     max_bin, threads = _check_common(who, max_bin, threads, engine)
     if sample_rows is not None and _whole(sample_rows) is None:
-        raise ValueError(
+        raise WrongTypeError(
             f"{who}: sample_rows must be a whole number of at least 1, or None, but it is "
             f"{sample_rows!r}. Pass a whole number of at least 1, or None for XGBoost's own "
             "sketch of every row."
@@ -1338,7 +1338,7 @@ def lightgbm_dataset(
                 )
             j = cols.names.index(c)
             if cols.kinds[j] not in ("category", "int", "bool"):
-                raise ValueError(
+                raise WrongTypeError(
                     f"{who}: categorical names {c!r}, a float column, but LightGBM reads a "
                     "categorical feature as integer codes. Cast it to an integer or a pl.Enum, "
                     "or leave it out of categorical."

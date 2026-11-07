@@ -65,12 +65,31 @@ part of it applies:
      - :class:`ColumnNotFoundError`, naming the spec, the column's role and
        the column: Polars' ``ColumnNotFoundError`` and a ``ValueError``
        both, so either ``except`` catches it
+   * - a spec's output column that a scoring function's frame has not got
+     - :class:`OutputColumnNotFoundError`, a :class:`ColumnNotFoundError`
    * - a wrong type
-     - ``TypeError``
+     - ``TypeError``; where the same refusal once raised ``ValueError``,
+       :class:`WrongTypeError`
+   * - a value out of range, or a combination of settings refused, that
+       once raised ``TypeError``
+     - :class:`RefusedValueError`
    * - a spec name or position a bank has not got
      - ``KeyError`` or ``IndexError``
    * - a bank fed from two threads at once
      - ``RuntimeError``
+
+**Classes with two parents.** A refusal that once raised a class the
+table above no longer gives it raises a class of this library's own that
+inherits from both: the class the table gives, and the class it raised
+before. :class:`WrongTypeError` is a ``TypeError`` and a ``ValueError``,
+:class:`RefusedValueError` a ``ValueError`` and a ``TypeError``, and
+:class:`OutputColumnNotFoundError` a :class:`ColumnNotFoundError` and a
+``KeyError``. So a handler written for either class keeps catching the
+refusal, and new code can catch the class that names the problem. Changing
+the class outright would let such a refusal slip past an ``except`` that
+catches it today.
+The older parent is dropped at the next major version: catch ``TypeError``,
+``ValueError`` and ``ColumnNotFoundError`` respectively.
 
 Inside a running Polars query the same exception arrives wrapped in
 Polars' ``ComputeError`` under py-polars 1.x, carrying its message, and as
@@ -91,7 +110,12 @@ from polars_online import (
     stream,
 )
 from polars_online._bank import ModelBank, thread_pool_size
-from polars_online._errors import ColumnNotFoundError
+from polars_online._errors import (
+    ColumnNotFoundError,
+    OutputColumnNotFoundError,
+    RefusedValueError,
+    WrongTypeError,
+)
 from polars_online._frame import (
     ConsumedSourceWarning,
     OrderNotGuaranteedWarning,
@@ -142,10 +166,13 @@ __all__ = [
     "ConsumedSourceWarning",
     "ModelBank",
     "OrderNotGuaranteedWarning",
+    "OutputColumnNotFoundError",
     "PolarsOnlineDeprecationWarning",
     "PolarsOnlineWarning",
     "ReadinessWarning",
+    "RefusedValueError",
     "UnstableWarning",
+    "WrongTypeError",
     "__version__",
     "corr",
     "eval",
