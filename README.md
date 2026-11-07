@@ -1492,9 +1492,11 @@ print(f"{served.height} intervals served, {covered:.3f} of them held the delay t
 
 **With hundreds of labels in flight, set `conformal_rate` below its
 default of 0.05.** Each row is scored against the radius it was shown, so
-misses arrive in bursts and the default step overshoots: on New York's
-2013 flights under an 8-hour `embargo`, 0.05 held 90% of delays at a
-half-width of 189 minutes, and 0.01 held 90% at 50.
+misses arrive in bursts and the default step overshoots. For a 90%
+interval with `n` rows waiting on average, use `0.05 / (1 + n / 48)`: on
+New York's 2013 flights under an 8-hour `embargo`, with 338 rows waiting,
+0.05 held 90% of delays at a half-width of 189 minutes, and that rule's
+0.0063 held 90% at 47.
 [DIAGNOSTICS.md](docs/DIAGNOSTICS.md#conformal-intervals) has the
 measurement.
 

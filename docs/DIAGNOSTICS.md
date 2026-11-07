@@ -2123,20 +2123,44 @@ rows covered can then sit on either side of the number asked for. The step is
 taken once per scored row, so the radius moves faster in clock time where
 rows are denser. `conformal_rate` is 0.05 by default.
 
-**Under a long delay, set `conformal_rate` lower.** Under `embargo` or
-`label_clock` a row's label arrives after the row was shown its interval,
-and the row is scored against the radius it was shown. When hundreds of
-rows wait for their labels, the rows shown a radius that was too narrow
-all report their misses together, and the default step overshoots. On New
-York's 2013 flights (327,346 departures, the residual of a tree model's
-arrival delay, each label known at landing), one stream under an 8-hour
-`embargo` covered 90.3% of rows at a half-width of 189 minutes with the
-default 0.05, and 89.9% at 50.4 with 0.01; 0.002 gave 89.7% at 43.3. On
-the same rows with each label at its own arrival (`label_clock`), a
-simulation of the tracker gave 89.95% at 64.3 with 0.05 and 89.9% at 47.4
-with 0.01. A rule that sets the step from the rows in flight is being
-studied: dividing it by the square root of the rows waiting over-covered,
-91.3% at 49.2. Until then choose the rate on earlier months, as
+**Under a long delay, divide `conformal_rate` by the rows waiting.** Under
+`embargo` or `label_clock` a row's label arrives after the row was shown
+its interval, and the row is scored against the radius it was shown. So
+the radius learns of a miss only when the label arrives, and every row
+served in the meantime was shown the same radius. With `n` rows waiting
+for their labels on average (the rows that arrive in a unit of clock,
+times the mean delay), the radius is a feedback loop whose news is `n` steps old.
+
+Each step moves the share of misses by about `conformal_rate · g`. Here `g`
+is the density of `|Z|` at the quantile asked for, with `Z` standard
+normal: 0.64 for a 50% interval, 0.21 for 90%, 0.12 for 95% and 0.029 for
+99%. A loop whose news is `n` steps old holds steady when that move times
+`n` stays below about one half. Past about 1.6 it swings: the radius
+overshoots, the misses stop, it undershoots, and the interval is wider on
+average. So set the rate to `0.05 / (1 + 0.1 · g · n)`, which is the
+default when nothing waits. For a 90% interval that is `0.05 / (1 + n /
+48)`.
+
+On New York's 2013 flights (327,346 departures, the residual of a tree
+model's arrival delay, scored on October to December), the rule held 90%
+intervals within 9% of the width with no delay:
+
+| labels | rows waiting | default 0.05: covered, half-width | the rule's rate | the rule: covered, half-width |
+|---|---:|---:|---:|---:|
+| at once | 0 | 90.0%, 44.5 minutes | 0.05 | 90.0%, 44.5 minutes |
+| an `embargo` of 1 hour | 54 | 90.0%, 47.4 | 0.024 | 89.9%, 46.1 |
+| at landing (`label_clock`) | 152 | 90.0%, 63.6 | 0.012 | 89.9%, 48.5 |
+| an `embargo` of 8 hours | 338 | 90.3%, 189 | 0.0063 | 89.9%, 46.6 |
+
+At 50% the default's swing pins the radius at zero for long stretches, so
+under the 8-hour delay it covered 70% of rows at a half-width of 127
+minutes. The rule's 0.0022 covered 49.95% at 15.4.
+
+A smaller step also recovers more slowly from a radius that is wrong for
+another reason. That can be a start from the first residuals of a model
+that has learned little, or a jump in the noise. No step corrects the
+radius faster than the labels arrive. Where the noise moves within the
+delay, choose the rate on earlier months, as
 [CALIBRATION.md](CALIBRATION.md) chooses any setting.
 
 The recipe builds three 90% intervals on two streams, one with Gaussian

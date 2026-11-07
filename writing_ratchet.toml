@@ -637,7 +637,7 @@ reason = "_RELATIVE_REMOVED, the module's constant shared with po.target, ends i
 "45+" = 2
 
 [sentences."docs/DIAGNOSTICS.md"]
-"45+" = 7
+"45+" = 6
 "about-the-document" = 2
 "is-a-lead" = 4
 

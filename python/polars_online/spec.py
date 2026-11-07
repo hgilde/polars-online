@@ -649,8 +649,10 @@ The diagnostics add, per slot:
        coverage decays on the clock. Under ``embargo`` or ``label_clock``
        each row is scored against the radius it was shown, when its label
        arrives; with hundreds of rows waiting, misses arrive in bursts and
-       the default step overshoots, so set ``conformal_rate`` lower (0.01
-       held 90% at a quarter of the width on New York's 2013 flights).
+       the default step overshoots, so set ``conformal_rate`` lower. For a
+       90% interval with ``n`` rows waiting on average, ``0.05 / (1 + n /
+       48)`` held 90% at a quarter of the default's width on New York's
+       2013 flights.
    * - ``resid_quantiles``
      - ``abs_resid_q<p>_<slot>``
      - The exponentially weighted quantile of ``|resid|`` at level ``p``,
