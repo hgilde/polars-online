@@ -837,7 +837,8 @@ the bank reports today.
    flights' 90% interval from 45 to 189 under an 8-hour `embargo` today, and
    to 64 under the simulated `label_clock`; 0.01 kept coverage at 0.899 at
    47–50. Change the default when a spec has a delay (to 0.01), or keep 0.05
-   everywhere and document the case.
+   everywhere and document the case. *Taken up in [CONFORMAL-STEP.md](CONFORMAL-STEP.md)
+   (2026-11-07): the step derived from the delay, measured, the default kept.*
 3. **The model-file reader.** Build it only if the command line needs tree
    features; Python has §8.3's recipe.
 4. **`offset=`.** No measured gain; build it for its semantics (the
