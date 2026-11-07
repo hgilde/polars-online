@@ -4863,9 +4863,12 @@ fn run_instance(
         } else {
             f64::NAN
         };
-        // Each target whose floor has withheld every row for that long, and
-        // what its notice projects from ([`Projection`]).
-        let mut unmet_floor: Vec<(usize, Projection)> = Vec::new();
+        // Whether a target's floor has withheld every row for that long: each
+        // such target's notice is raised in the loop below, from what it
+        // projects ([`Projection`]), and the waits restart after it. No list
+        // of them is formed: a `Vec` on every row cost the bank's cheapest
+        // case 2.5% of its instructions (task 353), for a notice said once.
+        let mut unmet_floor = false;
         if keep && !kept {
             let below = (0..step.pred.len().div_ceil(nc)).any(|tj| {
                 let weight = match sc.tn.get(tj) {
@@ -4899,8 +4902,12 @@ fn run_instance(
                     // The shared weight is what the target would read had
                     // every row the model learned carried it.
                     let shared = own_weights.then_some(step.n_eff);
-                    unmet_floor.push((
+                    unmet_floor = true;
+                    inst.notified.raise(unmet_floor_notice(
+                        inst.spec,
+                        inst.decay,
                         tj,
+                        min_weight[tj],
                         Projection::read(ceiling, weight, shared, w, learned, steps),
                     ));
                 }
@@ -4925,18 +4932,9 @@ fn run_instance(
         // against the shared one (task 350).
         // Every target unmet on this row is named, each in its own notice
         // with its own figure (WRITING §11: report every problem).
-        if !unmet_floor.is_empty() {
+        if unmet_floor {
             inst.notified.unreachable = true;
             inst.notified.restart_waits();
-            for (tj, at) in unmet_floor {
-                inst.notified.raise(unmet_floor_notice(
-                    inst.spec,
-                    inst.decay,
-                    tj,
-                    min_weight[tj],
-                    at,
-                ));
-            }
         }
         // At or above the ratio: at equality the estimation variance is the
         // noise, and one observation's mean -- `edf = n_kish = 1`, exactly
