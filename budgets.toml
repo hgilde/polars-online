@@ -1373,7 +1373,7 @@ windows = { budget = 73.1016 }
 # read passed: five million, the allocator's pages given back at once, and a
 # whole read the test's negative control.
 [rss.streaming_5m]
-windows = { budget = 148.6602 }
+windows = { budget = 128.461 }
 darwin = { budget = 142.4688 }
 linux = { budget = 140.7852 }
 
@@ -1384,7 +1384,7 @@ linux = { budget = 161.3399 }
 
 [rss.ewridge_window]
 windows = { budget = 141.629 }
-darwin = { budget = 165.7657 }
+darwin = { budget = 127.3907 }
 linux = { budget = 215.918 }
 
 [rss.bocpd_runs]

@@ -2665,7 +2665,8 @@ mod tests {
     /// stays inside its budget: a window of three clock units holds four
     /// snapshots at most, one of thirty reaches ten at the eleventh row --
     /// from a first row at clock 10, and at clock 0 (docs/PLAN.md task 115
-    /// (d)).
+    /// (d)). It holds as many snapshots as its ring, counted at the same
+    /// bytes.
     #[test]
     fn a_shadow_reports_the_overrun_its_ring_reaches() {
         for (window, start, trips_at) in [
@@ -2688,6 +2689,8 @@ mod tests {
                 shadow.learn(1.0, None);
                 let case = format!("window {window}, from {start}, row {i}");
                 assert_eq!(shadow.over_budget(), ring.over_budget(), "{case}");
+                assert_eq!(shadow.snapshots(), ring.len(), "{case}: held");
+                assert_eq!(shadow.bytes(), ring.bytes(), "{case}: counted");
                 if tripped.is_none() && ring.over_budget().is_some() {
                     tripped = Some(i);
                 }

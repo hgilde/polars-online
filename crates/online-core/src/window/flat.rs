@@ -1091,4 +1091,261 @@ mod tests {
             assert_eq!(lower(&fresh.c), lower(&b.c), "the lower triangle");
         }
     }
+
+    /// A lower triangle decoded over one of any other side reads the one
+    /// written, at its own side: a side whose square is twice the new side
+    /// (4 for 8) among them.
+    #[test]
+    fn a_lower_triangle_decoded_over_another_side_reads_its_own() {
+        let mut s = 236u64;
+        let tri = |k: usize, s: &mut u64| {
+            let mut c = vec![0.0; k * k];
+            for i in 0..k {
+                for j in 0..=i {
+                    c[i * k + j] = number(s);
+                    c[j * k + i] = c[i * k + j];
+                }
+            }
+            LowerTriangle::from(c)
+        };
+        for a in 0..10 {
+            for b in 0..10 {
+                let (mut into, want) = (tri(a, &mut s), tri(b, &mut s));
+                let mut p = Packer::default();
+                want.pack(&mut p);
+                into.unpack_into(&mut Unpacker {
+                    words: &p.words,
+                    dims: &p.dims,
+                });
+                assert_eq!(into.len(), b * b, "side {a} read as {b}");
+                for i in 0..b {
+                    for j in 0..=i {
+                        assert_eq!(
+                            into.get(b, i, j).to_bits(),
+                            want.get(b, i, j).to_bits(),
+                            "side {a} read as {b}: ({i}, {j})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// A snapshot of one shape: `m` numbers, and an optional part of `m`
+    /// counts.
+    fn fixed(s: &mut u64, m: usize, step: i128) -> Entry<Snap> {
+        Entry {
+            clock: number(s),
+            stamp: Stamp::Ns(step),
+            snap: Snap {
+                w: number(s),
+                v: (0..m).map(|_| number(s)).collect(),
+                n: Some((0..m).map(|_| lcg(s)).collect()),
+                vv: vec![],
+                c: LowerTriangle::from(vec![]),
+                i: 3,
+            },
+            decay: Products::ones(0),
+        }
+    }
+
+    /// Each block's capacity, oldest first.
+    fn capacities(ring: &Ring<Snap>) -> Vec<usize> {
+        ring.blocks.iter().map(Vec::capacity).collect()
+    }
+
+    /// What the layout keeps true whatever happens to the ring: the words
+    /// it says the later snapshots hold are theirs, which sizes each new
+    /// block; neighbouring runs differ in shape (a snapshot of the newest
+    /// run's shape joins it), and an empty ring of later snapshots keeps one
+    /// block at most, empty.
+    fn assert_layout(ring: &Ring<Snap>, at: &str) {
+        let held: usize = ring.runs.iter().map(|r| r.shape.words * r.count).sum();
+        assert_eq!(ring.words, held, "{at}: the words held");
+        let counted: usize = ring.runs.iter().map(|r| r.count).sum();
+        assert_eq!(ring.later, counted, "{at}: the later snapshots");
+        for pair in ring.runs.iter().collect::<Vec<_>>().windows(2) {
+            assert_ne!(pair[0].shape, pair[1].shape, "{at}: two runs of a shape");
+        }
+        if ring.later == 0 {
+            assert!(ring.blocks.len() <= 1, "{at}: {} blocks", ring.blocks.len());
+            assert!(ring.blocks.iter().all(Vec::is_empty), "{at}: a block left");
+        }
+        let used: usize = ring.blocks.iter().map(Vec::len).sum();
+        assert_eq!(used - ring.head, ring.words, "{at}: the words written");
+    }
+
+    /// A ring's blocks are never grown: a push leaves every block there as
+    /// it was made and adds one at the end where the newest lacks the room;
+    /// a pop takes blocks from the front alone; and the layout holds under
+    /// every operation of the reference stream.
+    #[test]
+    fn a_ring_never_grows_a_block_and_keeps_its_layout() {
+        let mut s = 353u64;
+        let mut ring: Ring<Snap> = Ring::new();
+        let mut want: VecDeque<Entry<Snap>> = VecDeque::new();
+        let (mut grew, mut emptied) = (0, 0);
+        for step in 0..4_000i128 {
+            let at = format!("step {step}");
+            let before = capacities(&ring);
+            match lcg(&mut s) % 16 {
+                0..=8 => {
+                    let e = Entry {
+                        clock: number(&mut s),
+                        stamp: stamp(&mut s, step),
+                        snap: snap(&mut s),
+                        decay: Products::ones(0),
+                    };
+                    ring.push_back(e.clone());
+                    want.push_back(e);
+                    let after = capacities(&ring);
+                    assert_eq!(after[..before.len()], before, "{at}: a block grown");
+                    grew += usize::from(after.len() > before.len());
+                }
+                9..=14 => {
+                    let had = ring.later;
+                    ring.pop_front();
+                    want.pop_front();
+                    let after = capacities(&ring);
+                    assert_eq!(after, before[before.len() - after.len()..], "{at}");
+                    emptied += usize::from(had > 0 && ring.later == 0 && before.len() > 1);
+                }
+                _ if !want.is_empty() => {
+                    ring.keep_alternate();
+                    let n = want.len();
+                    want = std::mem::take(&mut want)
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(i, _)| (n - 1 - i).is_multiple_of(2))
+                        .map(|(_, e)| e)
+                        .collect();
+                }
+                _ => {}
+            }
+            assert_layout(&ring, &at);
+            assert_same(&ring, &want, &at);
+        }
+        assert!(grew > 20, "a push made a new block {grew} times");
+        assert!(
+            emptied > 5,
+            "a ring of several blocks emptied {emptied} times"
+        );
+    }
+
+    /// A ring of one shape keeps four of its snapshots to a block while it
+    /// is small, and later a sixteenth of what it holds: about 16 ln N
+    /// blocks for N snapshots, with spare room of about a sixteenth. Popped
+    /// to its boundary, it keeps one block, empty, and reads what is pushed
+    /// next.
+    #[test]
+    fn a_ring_s_blocks_hold_four_snapshots_then_a_sixteenth_of_the_ring() {
+        let mut s = 548u64;
+        let mut ring: Ring<Snap> = Ring::new();
+        let mut want: VecDeque<Entry<Snap>> = VecDeque::new();
+        for step in 0..5 {
+            let e = fixed(&mut s, 40, step);
+            ring.push_back(e.clone());
+            want.push_back(e);
+        }
+        let n = ring.runs[0].shape.words;
+        assert!(n > MIN_BLOCK, "a snapshot of {n} words");
+        assert_eq!(
+            ring.blocks.iter().filter(|b| !b.is_empty()).count(),
+            1,
+            "four snapshots of {n} words in one block: {:?}",
+            capacities(&ring)
+        );
+        for step in 5..10_001 {
+            let e = fixed(&mut s, 40, step);
+            ring.push_back(e.clone());
+            want.push_back(e);
+        }
+        assert_layout(&ring, "pushed");
+        assert_same(&ring, &want, "pushed");
+        let blocks = ring.blocks.len();
+        let bound = 16.0 * (ring.words as f64 / (4 * n) as f64).ln() + 20.0;
+        assert!(
+            (blocks as f64) < bound,
+            "{blocks} blocks for {} snapshots",
+            ring.later
+        );
+        let spare: usize = ring.blocks.iter().map(|b| b.capacity() - b.len()).sum();
+        assert!(
+            spare <= ring.words / 16 + 4 * n + blocks * n,
+            "{spare} words spare of {}",
+            ring.words
+        );
+        while ring.later > 0 {
+            ring.pop_front();
+            want.pop_front();
+        }
+        assert_layout(&ring, "popped");
+        assert_eq!(ring.blocks.len(), 1, "one block kept");
+        for step in 0..3 {
+            let e = fixed(&mut s, 40, step);
+            ring.push_back(e.clone());
+            want.push_back(e);
+        }
+        assert_layout(&ring, "pushed again");
+        assert_same(&ring, &want, "pushed again");
+    }
+
+    /// Decoding the next snapshot into the boundary's place reuses its
+    /// vectors, the one inside an optional part among them, where they have
+    /// the room.
+    #[test]
+    fn the_boundary_is_decoded_into_its_own_vectors() {
+        let mut s = 339u64;
+        let mut ring: Ring<Snap> = Ring::new();
+        for step in 0..3 {
+            ring.push_back(fixed(&mut s, 6, step));
+        }
+        let ptrs = |ring: &Ring<Snap>| {
+            let snap = &ring.front().unwrap().snap;
+            (snap.v.as_ptr(), snap.n.as_ref().unwrap().as_ptr())
+        };
+        let before = ptrs(&ring);
+        ring.pop_front();
+        assert_eq!(ptrs(&ring), before, "the boundary's vectors reused");
+    }
+
+    /// Two rings are equal where they hold equal snapshots, as many: a
+    /// ring and a longer one that starts with it are not. Its debug form
+    /// lists its snapshots, and its encoding refuses what is no sequence by
+    /// saying what it expected.
+    #[test]
+    fn a_ring_compares_prints_and_refuses_by_its_snapshots() {
+        let mut s = 808u64;
+        // Numbers `==` holds equal to themselves: no NaN.
+        let fixed = |s: &mut u64, step| {
+            let mut e = fixed(s, 3, step);
+            e.clock = step as f64;
+            e.snap.w = 0.5;
+            e.snap.v = vec![1.0, -2.0, step as f64];
+            e
+        };
+        let mut ring: Ring<Snap> = Ring::new();
+        let mut want: Vec<Entry<Snap>> = vec![];
+        for step in 0..6 {
+            let e = fixed(&mut s, step);
+            ring.push_back(e.clone());
+            want.push(e);
+        }
+        assert!(ring == ring.clone());
+        let mut longer = ring.clone();
+        longer.push_back(fixed(&mut s, 6));
+        assert!(ring != longer && longer != ring, "a longer ring");
+        let mut other: Ring<Snap> = Ring::new();
+        for (i, e) in want.iter().enumerate() {
+            let mut e = e.clone();
+            if i == 4 {
+                e.snap.w += 1.0;
+            }
+            other.push_back(e);
+        }
+        assert!(ring != other, "a snapshot differs");
+        assert_eq!(format!("{ring:?}"), format!("{want:?}"));
+        let err = serde_json::from_str::<Ring<Snap>>("3").unwrap_err();
+        assert!(err.to_string().contains("a sequence of snapshots"), "{err}");
+    }
 }
