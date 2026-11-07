@@ -808,9 +808,8 @@ class TestRefusals:
         default is no embargo at all."""
         with pytest.raises(ValueError) as exc:
             spec(embargo=0.0)
-        assert "embargo must be finite and > 0 (got 0); leave it out for no delay" in str(
-            exc.value
-        ), str(exc.value)
+        assert "embargo must be finite and above 0, but it is 0." in str(exc.value), str(exc.value)
+        assert "or leave it out for no delay." in str(exc.value), str(exc.value)
         assert "default" not in str(exc.value), str(exc.value)
 
 
@@ -1043,7 +1042,7 @@ EVERY_KIND = pytest.mark.extended(reason="the sweep over every kind that takes a
 #: `audit` counts what it is given and learns nothing a delay could hold
 #: back; `rcov` needs `group_close`, and a closed group cannot release the
 #: rows it still holds.
-REFUSE_EMBARGO = {"audit": "embargo", "rcov": "group_close does not work with embargo"}
+REFUSE_EMBARGO = {"audit": "embargo", "rcov": "group_close and embargo cannot both be set"}
 
 #: A sweep name that is not a kind: `sgd`'s Huber loss, with the refit of
 #: its first rows on as `huber`'s is (task 277).

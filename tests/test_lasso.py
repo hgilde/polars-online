@@ -145,7 +145,11 @@ def test_chunk_invariance():
 
 
 def test_path_must_be_decreasing():
-    with pytest.raises(ValueError, match="decreasing"):
+    with pytest.raises(
+        ValueError,
+        match="penalties must run from the largest to the smallest, each once, but 0.1 comes "
+        "before 1",
+    ):
         _spec([0.1, 1.0])
 
 

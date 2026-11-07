@@ -501,11 +501,15 @@ class TestSessionShrink:
 
     def test_config_is_validated(self):
         base = dict(targets=["y0"], features=["x0"], half_life=50.0, session="s", session_gap=0.0)
-        with pytest.raises(ValueError, match="needs long_half_life"):
+        with pytest.raises(
+            ValueError, match="session_shrink blends in a long-run fit, but long_half_life, the"
+        ):
             po.spec.ewridge("m", session_shrink=0.5, **base)
-        with pytest.raises(ValueError, match="must be in .0, 1."):
+        with pytest.raises(ValueError, match="session_shrink must be from 0 to 1, but it is 1.5"):
             po.spec.ewridge("m", session_shrink=1.5, long_half_life=1e5, **base)
-        with pytest.raises(ValueError, match="needs a .session. column"):
+        with pytest.raises(
+            ValueError, match="session_shrink blends at each session change, but session is not set"
+        ):
             po.spec.ewridge(
                 "m",
                 targets=["y0"],

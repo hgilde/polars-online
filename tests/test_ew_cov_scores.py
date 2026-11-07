@@ -679,7 +679,7 @@ class TestFields:
 
 class TestValidation:
     def test_mahal_needs_a_prior(self):
-        with pytest.raises(ValueError, match="mahal needs `precision_prior`"):
+        with pytest.raises(ValueError, match='"mahal" in stats needs precision_prior'):
             spec(2, precision_prior=None)
 
     def test_quantiles_need_mahal(self):
@@ -690,31 +690,49 @@ class TestValidation:
 
     @pytest.mark.parametrize("bad", [0.0, 1.0, -0.1, 1.5])
     def test_quantile_levels_are_open_interval(self, bad):
-        with pytest.raises(ValueError, match="strictly between 0 and 1"):
+        with pytest.raises(
+            ValueError,
+            match=f"mahal_quantiles must each be above 0 and below 1, but one of them is {bad:g}",
+        ):
             spec(2, mahal_quantiles=[0.5, bad])
 
     def test_quantile_levels_must_be_finite_floats(self):
-        with pytest.raises(ValueError, match="must be finite"):
+        with pytest.raises(
+            ValueError,
+            match="mahal_quantiles must hold finite numbers, but one of its values is infinite",
+        ):
             spec(2, mahal_quantiles=[float("inf")])
         with pytest.raises(TypeError, match="mahal_quantiles must be"):
             spec(2, mahal_quantiles=0.9)
 
     def test_pca_bounds(self):
-        with pytest.raises(ValueError, match="pca asks for 3 components of 2 features"):
+        with pytest.raises(
+            ValueError, match=r"pca must be at most the number of features \(2\), but it is 3"
+        ):
             spec(2, pca=3)
         with pytest.raises(ValueError, match="pca_every must be finite and at least 0 clock units"):
             spec(2, pca=1, pca_every=-1.0)
-        with pytest.raises(ValueError, match="pca_every must not be NaN"):
+        with pytest.raises(ValueError, match="pca_every must be a number, but it is NaN"):
             spec(2, pca=1, pca_every=float("nan"))
         # 0 is every row, as `solve_every = 0` is (task 161).
         assert spec(2, pca=1, pca_every=0)["model"]["pca_every"] == 0
-        with pytest.raises(ValueError, match="pca_every needs `pca`"):
+        with pytest.raises(
+            ValueError,
+            match="pca_every schedules the refreshes of the principal components, but pca, the "
+            "number of them, is not set",
+        ):
             spec(2, pca_every=3)
-        with pytest.raises(ValueError, match="max_rows_between_pcas needs `pca`"):
+        with pytest.raises(
+            ValueError,
+            match="max_rows_between_pcas schedules the refreshes of the principal components, but "
+            "pca",
+        ):
             spec(2, max_rows_between_pcas=3)
-        with pytest.raises(ValueError, match="pca = 0 asks for no component"):
+        with pytest.raises(ValueError, match="pca must be at least 1, but it is 0"):
             spec(2, pca=0, pca_every=3)
-        with pytest.raises(ValueError, match="pca must be >= 0"):
+        with pytest.raises(
+            ValueError, match="pca must be at least 1, but it is -1. Set pca to 1 or more"
+        ):
             spec(2, pca=-1)
         with pytest.raises(TypeError, match="pca must be"):
             spec(2, pca=1.5)
@@ -722,7 +740,9 @@ class TestValidation:
     def test_pca_zero_is_refused_and_absent_is_off(self):
         """``pca = 0`` was a second spelling of absent (docs/PLAN.md task 196,
         U7): it is refused, and leaving ``pca`` out tracks no component."""
-        with pytest.raises(ValueError, match="pca = 0 asks for no component; leave it out"):
+        with pytest.raises(
+            ValueError, match="pca must be at least 1, but it is 0, which asks for no component"
+        ):
             spec(2, stats=["mean"], precision_prior=None, pca=0)
         s = spec(2, stats=["mean"], precision_prior=None)
         assert po.spec.output_fields(s) == [
@@ -736,11 +756,16 @@ class TestValidation:
     def test_hand_edited_dicts_are_checked_at_the_bank(self):
         s = spec(2)
         s["model"]["mahal_quantiles"] = [2.0]
-        with pytest.raises(ValueError, match="strictly between 0 and 1"):
+        with pytest.raises(
+            ValueError,
+            match="mahal_quantiles must each be above 0 and below 1, but one of them is 2",
+        ):
             po.ModelBank([s])
         s = spec(2, stats=["mean"], precision_prior=None, pca=1)
         s["model"]["pca"] = 5
-        with pytest.raises(ValueError, match="5 components of 2 features"):
+        with pytest.raises(
+            ValueError, match=r"pca must be at most the number of features \(2\), but it is 5"
+        ):
             po.ModelBank([s])
 
     def test_mahal_is_listed_as_a_statistic(self):

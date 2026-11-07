@@ -198,7 +198,10 @@ fn the_refit_is_refused_beside_another_loss() {
     c.loss = SgdLoss::Squared;
     c.huber_scale = crate::HuberScale::Rms;
     let e = Sgd::new(c).unwrap_err();
-    assert!(e.contains("huber_refit_rows are for loss \"huber\""), "{e}");
+    assert!(
+        e.contains("huber_refit_rows applies only under loss=\"huber\", but loss is \"squared\""),
+        "{e}"
+    );
 }
 
 /// An infinite cut is the squared loss, so the refit is refused beside one,
@@ -210,7 +213,10 @@ fn the_refit_is_refused_beside_an_infinite_cut() {
         delta: f64::INFINITY,
     };
     let e = Sgd::new(c.clone()).unwrap_err();
-    assert!(e.contains("needs a finite huber_delta"), "{e}");
+    assert!(
+        e.contains("but huber_delta is inf, which makes that fit least squares"),
+        "{e}"
+    );
     c.refit_rows = 0;
     assert!(Sgd::new(c).is_ok());
 }

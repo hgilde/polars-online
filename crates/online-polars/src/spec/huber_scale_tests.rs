@@ -67,23 +67,23 @@ fn a_huber_scale_is_refused_by_name() {
     for (model, want) in [
         (
             r#"{"type": "huber", "huber_scale": "MAD"}"#,
-            r#"huber_scale must be one of "mad", "rms"; got "MAD""#,
+            r#"huber_scale must be "mad" or "rms", but it is "MAD". Use one of those words."#,
         ),
         (
             r#"{"type": "huber", "huber_scale_half_life": 0}"#,
-            "huber_scale_half_life must be > 0",
+            "huber_scale_half_life must be above 0",
         ),
         (
             r#"{"type": "sgd", "loss": "huber", "huber_scale_half_life": -1}"#,
-            "huber_scale_half_life must be > 0",
+            "huber_scale_half_life must be above 0",
         ),
         (
             r#"{"type": "sgd", "huber_scale": "mad"}"#,
-            r#"sgd huber_scale is for loss "huber"; loss "squared" does not use it"#,
+            r#"huber_scale applies only under loss="huber", but loss is "squared", which does not use it"#,
         ),
         (
             r#"{"type": "sgd", "loss": "quantile", "quantile": 0.5, "huber_scale_half_life": 3}"#,
-            r#"sgd huber_scale_half_life is for loss "huber"; loss "quantile" does not use it"#,
+            r#"huber_scale_half_life applies only under loss="huber", but loss is "quantile", which does not use it"#,
         ),
     ] {
         let err = spec(model).check().unwrap_err();

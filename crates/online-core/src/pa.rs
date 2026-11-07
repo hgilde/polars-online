@@ -210,22 +210,34 @@ impl PaCfg {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        let mut no = crate::Refusals::new();
         // The decay first: every model checks it in its own `new`, where only
         // the bank's spec did (review 2026-10-05, CF5).
-        self.decay.check().map_err(|e| format!("pa: {e}"))?;
-        if self.n_features == 0 || self.n_targets == 0 {
-            return Err("pa: n_features and n_targets must be >= 1".into());
-        }
+        no.take(self.decay.check().map_err(|e| format!("pa: {e}")));
+        no.take(crate::model::check_dims(
+            "pa",
+            self.n_features,
+            self.n_targets,
+        ));
         if self.c <= 0.0 || self.c.is_nan() {
-            return Err("pa: c must be > 0".into());
+            no.refuse(format!(
+                "pa: c must be above 0, but it is {}. Set c to a positive value: the larger it \
+                 is, the further one row can move the coefficients.",
+                self.c
+            ));
         }
         if self.eps < 0.0 || self.eps.is_nan() {
-            return Err("pa: eps must be >= 0".into());
+            no.refuse(format!(
+                "pa: eps must be at least 0, but it is {}. Set eps to how far a prediction may \
+                 miss before the model steps, in standard deviations of the target, such as \
+                 the default 0.01, or to 0 to step at every miss.",
+                self.eps
+            ));
         }
         if let Some(c) = &self.constraint {
-            c.validate(self.n_features, "pa")?;
+            no.take(c.validate(self.n_features, "pa"));
         }
-        Ok(())
+        no.finish()
     }
 }
 
@@ -946,15 +958,36 @@ mod tests {
                 Ok(()) => panic!("expected rejection mentioning {want:?}"),
             }
         };
-        bad(&|c| c.n_features = 0, "must be >= 1");
-        bad(&|c| c.n_targets = 0, "must be >= 1");
+        bad(
+            &|c| c.n_features = 0,
+            "needs at least one feature and one target",
+        );
+        bad(
+            &|c| c.n_targets = 0,
+            "needs at least one feature and one target",
+        );
         // c is a divisor in PA-2 and a cap in PA-1, so zero is as bad as negative.
-        bad(&|c| c.c = 0.0, "c must be > 0");
-        bad(&|c| c.c = -1.0, "c must be > 0");
-        bad(&|c| c.c = f64::NAN, "c must be > 0");
+        bad(&|c| c.c = 0.0, "c must be above 0");
+        bad(&|c| c.c = -1.0, "c must be above 0");
+        bad(&|c| c.c = f64::NAN, "c must be above 0");
         // eps is an insensitivity band, so zero is legal (fit exactly).
-        bad(&|c| c.eps = -1e-9, "eps must be >= 0");
-        bad(&|c| c.eps = f64::NAN, "eps must be >= 0");
+        bad(&|c| c.eps = -1e-9, "eps must be at least 0");
+        bad(&|c| c.eps = f64::NAN, "eps must be at least 0");
+        // Every problem at once, each a line of its own.
+        let mut two = cfg(2, PaMode::Pa1);
+        two.c = 0.0;
+        two.eps = -1.0;
+        let e = two.validate().unwrap_err();
+        let lines: Vec<&str> = e.lines().collect();
+        assert_eq!(lines.len(), 2, "{e}");
+        assert!(
+            lines[0].starts_with("pa: c must be above 0, but it is 0."),
+            "{e}"
+        );
+        assert!(
+            lines[1].starts_with("pa: eps must be at least 0, but it is -1."),
+            "{e}"
+        );
         let mut ok = cfg(2, PaMode::Pa1);
         ok.eps = 0.0;
         ok.validate().unwrap();
@@ -1250,7 +1283,9 @@ mod tests {
         let c = constrained(2, 1.0, 0.0, None);
         assert_eq!(
             c.validate().unwrap_err(),
-            "pa: coef_min[0] = 1 is above coef_max[0] = 0"
+            "pa: coef_min must be at most coef_max, but for features 0 and 1, counting from \
+             0, coef_min is above coef_max, as at feature 0, where they are 1 and 0. Set each \
+             feature's coef_min at or below its coef_max."
         );
     }
 

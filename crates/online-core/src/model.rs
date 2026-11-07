@@ -193,12 +193,226 @@ pub(crate) fn check_target_min_weight(
     own: &[f64],
     n_targets: usize,
 ) -> Result<(), String> {
-    if !(own.is_empty() || own.len() == n_targets) || own.iter().any(|t| t.is_nan() || *t < 0.0) {
+    let mut no = crate::Refusals::new();
+    if !(own.is_empty() || own.len() == n_targets) {
+        no.refuse(format!(
+            "{who}: min_weight must be one value, or one value for each target, but it \
+             lists {} for {}. Give one min_weight, or one for each target.",
+            own.len(),
+            count(n_targets, "target"),
+        ));
+    }
+    let bad: Vec<String> = own
+        .iter()
+        .filter(|t| t.is_nan() || **t < 0.0)
+        .map(f64::to_string)
+        .collect();
+    if !bad.is_empty() {
+        no.refuse(format!(
+            "{who}: each target's min_weight must be at least 0, but {} {}. Set each to 0 \
+             for no floor, or to the weight a target must have learned before it is \
+             predicted.",
+            if bad.len() == 1 {
+                "one is"
+            } else {
+                "these are not:"
+            },
+            listed(&bad),
+        ));
+    }
+    no.finish()
+}
+
+/// A `min_weight` that is not a number of at least 0: a NaN one is never
+/// reached and a negative one is no floor. `inf` withholds every
+/// prediction, which is legal.
+pub(crate) fn check_min_weight(kind: &str, min_weight: f64) -> Result<(), String> {
+    if min_weight.is_nan() || min_weight < 0.0 {
         return Err(format!(
-            "{who}: target_min_weight must be empty or one value >= 0 per target, got {own:?}"
+            "{kind}: min_weight must be at least 0, but it is {min_weight}. Set min_weight \
+             to 0 for no floor on weight_sum, or to the weight_sum a prediction needs."
         ));
     }
     Ok(())
+}
+
+/// The memory of a Huber cut's scale, `huber_scale_half_life`, held to
+/// what a model's own decay is held to ([`crate::Decay::check`]).
+pub(crate) fn check_scale_decay(kind: &str, decay: crate::Decay) -> Result<(), String> {
+    if decay.check().is_ok() {
+        return Ok(());
+    }
+    Err(match decay {
+        crate::Decay::Halflife(h) => format!(
+            "{kind}: huber_scale_half_life must be above 0, but it is {h}. Set \
+             huber_scale_half_life to a positive number of clock units, or to inf to forget \
+             no residual."
+        ),
+        crate::Decay::Lam(l) => format!(
+            "{kind}: the decay factor of huber_scale_half_life must be above 0 and at most 1, \
+             but it is {l}. Set it above 0 and below 1, or to 1 for no decay."
+        ),
+    })
+}
+
+/// A model with no feature or no target to fit, naming what it lacks.
+pub(crate) fn check_dims(kind: &str, n_features: usize, n_targets: usize) -> Result<(), String> {
+    let (lacks, missing) = match (n_features == 0, n_targets == 0) {
+        (false, false) => return Ok(()),
+        (true, true) => ("no feature and no target", "features and one in targets"),
+        (true, false) => ("no feature", "features"),
+        (false, true) => ("no target", "targets"),
+    };
+    Err(format!(
+        "{kind}: the model needs at least one feature and one target, but it has {lacks}. \
+         Name at least one column in {missing}."
+    ))
+}
+
+/// `coef_prior`, `ewridge`'s and `rls`'s: one list of `k_total`
+/// coefficients for each target, the intercept first, each finite.
+pub(crate) fn check_coef_prior(
+    kind: &str,
+    c: &[Vec<f64>],
+    n_targets: usize,
+    k_total: usize,
+    fit_intercept: bool,
+) -> Result<(), String> {
+    if c.len() != n_targets || c.iter().any(|v| v.len() != k_total) {
+        let lengths: Vec<String> = c.iter().map(|v| v.len().to_string()).collect();
+        let held = match lengths.as_slice() {
+            [] => "no list".to_string(),
+            [one] => format!("1 list, of length {one}"),
+            many => format!("{} lists, of lengths {}", many.len(), listed(many)),
+        };
+        let (each, order) = if fit_intercept {
+            (
+                format!(
+                    "the intercept and one for each {}",
+                    per_feature(k_total - 1)
+                ),
+                "the intercept first, then the features in order",
+            )
+        } else {
+            (
+                format!("one for each {}", per_feature(k_total)),
+                "the features in order",
+            )
+        };
+        let whose = if n_targets == 1 {
+            "the target".to_string()
+        } else {
+            format!("each of the {n_targets} targets")
+        };
+        return Err(format!(
+            "{kind}: coef_prior must hold one list of {} for {whose}, {each}, but it holds \
+             {held}. Give one list for each target, {order}.",
+            count(k_total, "coefficient"),
+        ));
+    }
+    let mut bad: Vec<String> = c
+        .iter()
+        .flatten()
+        .filter(|v| !v.is_finite())
+        .map(f64::to_string)
+        .collect();
+    bad.sort();
+    bad.dedup();
+    if !bad.is_empty() {
+        return Err(format!(
+            "{kind}: coef_prior must be finite, but it holds {}. Set each coefficient of \
+             coef_prior to a finite number.",
+            listed(&bad)
+        ));
+    }
+    Ok(())
+}
+
+/// `feature`, or `of the 3 features`.
+fn per_feature(n: usize) -> String {
+    if n == 1 {
+        "feature".into()
+    } else {
+        format!("of the {n} features")
+    }
+}
+
+/// `1 target`, `2 targets`: a count with its noun.
+pub(crate) fn count(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
+/// `a`, `a and b`, `a, b and c`.
+pub(crate) fn listed(v: &[String]) -> String {
+    match v.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => v.join(""),
+    }
+}
+
+/// A solving model's weight-share cadence: the share of the fit's weight
+/// learned since the last solve that brings the next one due.
+pub(crate) fn check_solve_share(kind: &str, share: Option<f64>) -> Result<(), String> {
+    match share {
+        Some(f) if !(f.is_finite() && f > 0.0) => Err(format!(
+            "{kind}: solve_share must be finite and above 0, but it is {f}. Set solve_share \
+             to the share of the fit's weight that brings a solve due, or to None to solve on \
+             the solve_every schedule alone."
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// A solving model's clock cadence: a NaN one never comes due, and left
+/// the row cap alone to schedule the solves. `<= 0` solves every row and
+/// `inf` leaves the solves to the row cap on purpose.
+pub(crate) fn check_solve_every(kind: &str, solve_every: f64) -> Result<(), String> {
+    if solve_every.is_nan() {
+        return Err(format!(
+            "{kind}: solve_every must be a number, but it is NaN. Set solve_every to the \
+             clock units between solves, 0 to solve every row, or inf to leave the solves \
+             to max_rows_between_solves."
+        ));
+    }
+    Ok(())
+}
+
+/// A feature set of a model that fits several, as indices of its
+/// features: at least one, each in range, and, where `once`, each once.
+pub(crate) fn check_feature_set(
+    kind: &str,
+    name: &str,
+    idx: &[usize],
+    n_features: usize,
+    once: bool,
+) -> Result<(), String> {
+    let mut no = crate::Refusals::new();
+    if idx.is_empty() {
+        no.refuse(format!(
+            "{kind}: feature set {name:?} names no feature. Name at least one feature in \
+             it, or remove the set."
+        ));
+    }
+    if let Some(i) = idx.iter().find(|&&i| i >= n_features) {
+        no.refuse(format!(
+            "{kind}: feature set {name:?} names feature {i}, but the model has {n_features} \
+             features, numbered from 0. Name only features below {n_features} in it."
+        ));
+    }
+    let mut seen = idx.to_vec();
+    seen.sort_unstable();
+    if let Some(w) = seen.windows(2).find(|w| once && w[0] == w[1]) {
+        no.refuse(format!(
+            "{kind}: feature set {name:?} names feature {} more than once. Name each \
+             feature once in it.",
+            w[0]
+        ));
+    }
+    no.finish()
 }
 
 /// Target `j`'s own threshold: its entry of `own`, or `min_weight`.

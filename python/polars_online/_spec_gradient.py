@@ -6,12 +6,12 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any, Literal, Unpack
 
 from polars_online._duration import Duration
 from polars_online._kwargs import CommonKwargs
 from polars_online._spec import _SKIPPED_WHEN_ABSENT, TargetList, _checked, _common
+from polars_online._spec_words import quoted, refusal
 
 
 @_checked
@@ -581,6 +581,7 @@ def sgd(
     # A parameter of a loss or a schedule the spec does not use is refused, as
     # a switch that is off is; each was taken and ignored (review 2026-10-05,
     # YA8). After the Rust side's checks, so an unknown loss is named first.
+    problems: list[Exception] = []
     for key, value, what, owner, chosen in (
         ("huber_delta", huber_delta, "loss", "huber", loss),
         ("huber_scale", huber_scale, "loss", "huber", loss),
@@ -592,8 +593,13 @@ def sgd(
         ("power", power, "schedule", "inv_scaling", schedule),
     ):
         if value is not None and chosen != owner:
-            raise ValueError(
-                f"spec {json.dumps(name)}: sgd {key} is for {what} {json.dumps(owner)}; "
-                f"{what} {json.dumps(chosen)} does not use it"
+            problems.append(
+                ValueError(
+                    f"spec {quoted(name)}: {key} applies only under {what}="
+                    f'"{owner}", but {what} is {quoted(chosen)}, which does not use it. '
+                    f'Leave {key} out, or set {what}="{owner}".'
+                )
             )
+    if problems:
+        raise refusal(f"spec {quoted(name)}", problems)
     return spec

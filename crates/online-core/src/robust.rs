@@ -606,39 +606,34 @@ impl RobustCfg {
 
     pub fn validate(&self) -> Result<(), String> {
         let kind = self.kind();
+        let mut no = crate::Refusals::new();
         // The decay first: every model checks it in its own `new`, where only
         // the bank's spec did (review 2026-10-05, CF5).
-        self.decay.check().map_err(|e| format!("{kind}: {e}"))?;
-        if self
-            .solve_share
-            .is_some_and(|f| !(f.is_finite() && f > 0.0))
-        {
-            return Err("solve_share must be finite and > 0".into());
-        }
-        if self.n_features == 0 || self.n_targets == 0 {
-            return Err("n_features and n_targets must be >= 1".into());
-        }
+        no.take(self.decay.check().map_err(|e| format!("{kind}: {e}")));
+        no.take(crate::model::check_solve_share(kind, self.solve_share));
+        no.take(crate::model::check_dims(
+            kind,
+            self.n_features,
+            self.n_targets,
+        ));
         // The refit's key names the kind's: a quantile state's message
         // named huber's (review round 10, S2-5).
         if self.refit_rows > 0 {
-            match self.loss {
-                RobustLoss::Huber { delta } if self.ridge_scale || !delta.is_finite() => {
-                    return Err(format!(
-                        "{kind}: huber_refit_rows is for huber with a finite huber_delta, \
-                         and not beside ridge_scale \"sum\": an infinite cut is least \
-                         squares, with no outliers to refit for, and the sum-scale prior \
-                         ages with every row before the first, which a refit of the \
-                         buffered rows does not hold"
-                    ));
-                }
-                RobustLoss::Quantile { .. } if self.ridge_scale => {
-                    return Err(format!(
-                        "{kind}: quantile_refit_rows is not for beside ridge_scale \"sum\": \
-                         the sum-scale prior ages with every row before the first, which a \
-                         refit of the buffered rows does not hold"
-                    ));
-                }
-                _ => {}
+            if let RobustLoss::Huber { delta } = self.loss
+                && delta == f64::INFINITY
+            {
+                no.refuse(format!(
+                    "{kind}: huber_refit_rows refits a target's first rows to a Huber fit, \
+                     but huber_delta is {delta}, which makes that fit least squares. Set \
+                     huber_delta to a finite cut, or leave huber_refit_rows out."
+                ));
+            }
+            if self.ridge_scale {
+                no.refuse(format!(
+                    "{kind}: {kind}_refit_rows and ridge_scale=\"sum\" cannot both be set: \
+                     the refit fits its first rows again after the ridge they were learned \
+                     under has faded. Leave out {kind}_refit_rows, or ridge_scale."
+                ));
             }
         }
         // A quantile fit's refit is of rows past the warm-up: the stream
@@ -649,77 +644,90 @@ impl RobustCfg {
             && self.refit_rows > 0
             && f64::from(self.refit_rows) < WARM_ROWS * self.k_total() as f64
         {
-            return Err(format!(
-                "{kind}: quantile_refit_rows must be 0 or at least three rows a coefficient \
-                 ({}), the rows the fit takes as least squares before its first band, got {}",
-                (WARM_ROWS * self.k_total() as f64) as u64,
+            let least = (WARM_ROWS * self.k_total() as f64) as u64;
+            no.refuse(format!(
+                "{kind}: quantile_refit_rows must be 0 or at least {least}, three rows for \
+                 each coefficient, which the fit learns as least squares first, but it is \
+                 {}. Set quantile_refit_rows to {least} or more, or to 0 for no refit.",
                 self.refit_rows
             ));
         }
         match self.loss {
             RobustLoss::Huber { delta } => {
                 if delta <= 0.0 || delta.is_nan() {
-                    return Err(format!("{kind}: huber_delta must be > 0, got {delta}"));
+                    no.refuse(format!(
+                        "{kind}: huber_delta must be above 0, but it is {delta}. Set \
+                         huber_delta to a positive cut in units of the residuals' scale, or \
+                         to inf for least squares."
+                    ));
                 }
                 if let Some(d) = self.huber_scale_decay {
-                    d.check()
-                        .map_err(|e| format!("{kind}: huber_scale_half_life: {e}"))?;
+                    no.take(crate::model::check_scale_decay(kind, d));
                 }
             }
             RobustLoss::Quantile { tau } => {
                 if !(0.0..=1.0).contains(&tau) || tau == 0.0 || tau == 1.0 {
-                    return Err(format!("{kind}: quantile must be in (0, 1), got {tau}"));
+                    no.refuse(format!(
+                        "{kind}: quantile must be above 0 and below 1, but it is {tau}. Set \
+                         quantile to the level to fit, such as 0.5 for the median."
+                    ));
                 }
                 // The band is drawn in the residuals' MAD (a spec's), or
                 // their EW root mean square (a state written before schema
                 // 64), on the model's clock: a memory of its own is
                 // Huber's (docs/PLAN.md tasks 271 and 278, D-Q).
                 if self.huber_scale_decay.is_some() {
-                    return Err(format!("{kind}: huber_scale_half_life is for huber"));
+                    no.refuse(format!(
+                        "{kind}: huber_scale_half_life sets how fast the Huber cut's scale \
+                         forgets, but a quantile fit has no Huber cut. Leave \
+                         huber_scale_half_life out."
+                    ));
                 }
             }
         }
         if !self.feature_sets.is_empty() && !matches!(self.loss, RobustLoss::Huber { .. }) {
-            return Err(format!(
-                "{kind}: feature_sets are for huber: a quantile fit's nudges read one band \
-                 system per target"
+            no.refuse(format!(
+                "{kind}: feature_sets applies only to huber, and a quantile fit fits every \
+                 feature for each target. Leave feature_sets out, or fit with huber."
             ));
         }
         if self.emit_scale && !matches!(self.loss, RobustLoss::Huber { .. }) {
-            return Err(format!(
-                "{kind}: emit_huber_scale is for huber: a quantile fit's band has no cut"
+            no.refuse(format!(
+                "{kind}: emit_huber_scale reports the Huber cut's scale, but a quantile fit has \
+                 no Huber cut. Leave emit_huber_scale out."
             ));
         }
         if self.ridge_scale {
             if !matches!(self.loss, RobustLoss::Huber { .. }) {
-                return Err(format!(
-                    "{kind}: ridge_scale is for huber: a quantile fit's nudges step the mean-form \
-                     system"
+                no.refuse(format!(
+                    "{kind}: ridge_scale=\"sum\" applies only to huber. Leave ridge_scale out, \
+                     or fit with huber."
                 ));
-            }
-            if self.standardize || self.n_sets() > 1 {
-                return Err(format!(
-                    "{kind}: ridge_scale is incompatible with standardize and with two or more \
-                     feature sets"
-                ));
+            } else {
+                // Each cause its own problem, both where both hold.
+                if self.standardize {
+                    no.refuse(format!(
+                        "{kind}: ridge_scale=\"sum\" fits one ridge on unscaled features, but \
+                         standardize is set. Leave out ridge_scale, or set standardize=False."
+                    ));
+                }
+                if self.n_sets() > 1 {
+                    no.refuse(format!(
+                        "{kind}: ridge_scale=\"sum\" fits one ridge on unscaled features, but \
+                         the spec has two or more feature sets. Leave out ridge_scale, or give \
+                         one feature set."
+                    ));
+                }
             }
         }
         for (name, idx) in &self.feature_sets {
-            if idx.is_empty() {
-                return Err(format!("{kind}: feature set {name:?} is empty"));
-            }
-            if idx.iter().any(|&i| i >= self.n_features) {
-                return Err(format!(
-                    "{kind}: feature set {name:?} has out-of-range indices"
-                ));
-            }
-            let mut seen = idx.clone();
-            seen.sort_unstable();
-            if seen.windows(2).any(|w| w[0] == w[1]) {
-                return Err(format!(
-                    "{kind}: feature set {name:?} lists a feature more than once"
-                ));
-            }
+            no.take(crate::model::check_feature_set(
+                kind,
+                name,
+                idx,
+                self.n_features,
+                true,
+            ));
         }
         // What the spec layer refuses, refused here too, so the Rust API and
         // a state file are held to it (review 2026-10-06, CC7): a NaN ridge
@@ -727,31 +735,25 @@ impl RobustCfg {
         // `<= 0` and read as the band's floor alone, and at `inf` every row
         // was a band row aimed at `y + inf·(tau − 1/2)`.
         if !(self.ridge.is_finite() && self.ridge >= 0.0) {
-            return Err(format!(
-                "{kind}: ridge must be finite and >= 0, got {}",
+            no.refuse(format!(
+                "{kind}: ridge must be finite and at least 0, but it is {}. Set ridge to 0 for \
+                 no shrinkage, or to a finite positive value.",
                 self.ridge
             ));
         }
         if !(self.quantile_eps.is_finite() && self.quantile_eps > 0.0) {
-            return Err(format!(
-                "{kind}: quantile_eps must be finite and > 0, got {}",
+            no.refuse(format!(
+                "{kind}: quantile_eps must be finite and above 0, but it is {}. Set \
+                 quantile_eps to the half-width of the band the fit steps in, in units of \
+                 the residuals' scale, such as the default 0.2.",
                 self.quantile_eps
             ));
         }
-        if self.min_weight.is_nan() || self.min_weight < 0.0 {
-            return Err(format!(
-                "{kind}: min_weight must be >= 0, got {}",
-                self.min_weight
-            ));
-        }
+        no.take(crate::model::check_min_weight(kind, self.min_weight));
         // A NaN cadence never comes due on the clock, and left the row cap
         // alone to schedule the solves, with no word (review round 5, C6).
-        if self.solve_every.is_nan() {
-            return Err(format!(
-                "{kind}: solve_every must not be NaN (<= 0 solves every row)"
-            ));
-        }
-        Ok(())
+        no.take(crate::model::check_solve_every(kind, self.solve_every));
+        no.finish()
     }
 }
 
@@ -1224,7 +1226,7 @@ impl Robust {
     /// reaches its own threshold, as a fresh model's first solve fires on
     /// the row its weight reaches `min_weight` (docs/PLAN.md task 195, S9b).
     pub fn set_target_min_weight(&mut self, own: Vec<f64>) -> Result<(), String> {
-        crate::model::check_target_min_weight("robust", &own, self.cfg.n_targets)?;
+        crate::model::check_target_min_weight(self.cfg.kind(), &own, self.cfg.n_targets)?;
         self.target_min_weight = own;
         Ok(())
     }
@@ -2900,7 +2902,7 @@ impl OnlineModel for Robust {
                     return Err(StateError::Invalid(format!("{kind}: {e}")));
                 }
                 if let Err(e) =
-                    crate::model::check_target_min_weight("robust", &m.target_min_weight, n)
+                    crate::model::check_target_min_weight(m.cfg.kind(), &m.target_min_weight, n)
                 {
                     return Err(StateError::Invalid(e));
                 }

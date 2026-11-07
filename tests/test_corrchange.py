@@ -370,39 +370,42 @@ def test_a_zero_weight_row_is_not_a_row_of_the_span():
 @pytest.mark.parametrize(
     ("kw", "message"),
     [
-        ({"features": ["x0"]}, "at least two columns"),
+        ({"features": ["x0"]}, "needs at least two features"),
         ({"window_rows": 4}, "window_rows of at least 8"),
-        ({"window_rows": None}, "needs `window_rows`"),
-        ({"kind": "nope"}, 'kind must be one of "monitor", "sequential", "window"; got "nope"'),
-        ({"alpha": 1.5}, "alpha must be strictly between"),
-        ({"alpha_adjust": "nope"}, 'alpha_adjust must be one of "bonferroni", "none"; got "nope"'),
-        ({"kind": "window", "window_rows": None}, "needs `window_rows`"),
+        ({"window_rows": None}, 'kind="monitor" needs window_rows, .*but it is not set'),
+        ({"kind": "nope"}, 'kind must be "monitor", "sequential" or "window", but it is "nope"'),
+        ({"alpha": 1.5}, "alpha must be above 0 and below 1, but it is 1.5"),
+        ({"alpha_adjust": "nope"}, 'alpha_adjust must be "bonferroni" or "none", but it is "nope"'),
+        (
+            {"kind": "window", "window_rows": None},
+            'kind="window" needs window_rows, .*but it is not set',
+        ),
         ({"kind": "window", "window_rows": 2}, "window_rows of at least 3"),
-        ({"kind": "window", "window_rows": 20, "n_perm": 2}, "n_perm >= 20"),
+        ({"kind": "window", "window_rows": 20, "n_perm": 2}, "n_perm must be at least 20"),
         (
             {"kind": "window", "window_rows": 20, "scalar": True},
-            'scalar applies to kind = "monitor" or "sequential"; the window',
+            'scalar applies only under kind="monitor" or "sequential", but kind is "window"',
         ),
-        ({"half_life": 100.0}, "apply to corrchange only with scalar"),
+        ({"half_life": 100.0}, "half_life applies to corrchange only under scalar=True"),
         ({"emit_sigma": True}, "does not apply to corrchange"),
         # docs/REVIEW-E54-E64.md CC1 and CC3: a critical value that never
         # flags or always does, and the permutation knobs.
-        ({"kind": "window", "crit": float("nan")}, "crit must not be NaN"),
-        ({"kind": "window", "crit": 0.0}, "crit is the critical value"),
-        ({"kind": "sequential", "crit": -1.0}, "crit is the critical value"),
+        ({"kind": "window", "crit": float("nan")}, "crit must be a number, but it is NaN"),
+        ({"kind": "window", "crit": 0.0}, "crit must be finite and above 0, but it is 0"),
+        ({"kind": "sequential", "crit": -1.0}, "crit must be finite and above 0, but it is -1"),
         ({"kind": "window", "crit": float("inf")}, "crit must be finite"),
-        ({"bandwidth": 0}, "bandwidth must be >= 1"),
+        ({"bandwidth": 0}, "bandwidth must be at least 1, but it is 0"),
         (
             {"kind": "window", "window_rows": 20, "perm_block": 0},
-            "perm_block must be 1..=",
+            r"perm_block must be from 1 to window_rows \(20\), but it is 0",
         ),
         (
             {"kind": "window", "window_rows": 20, "perm_block": 21},
-            "perm_block must be 1..=",
+            r"perm_block must be from 1 to window_rows \(20\), but it is 21",
         ),
         (
             {"kind": "window", "window_rows": 20, "permute_every_rows": 0},
-            "permute_every_rows must be >= 1",
+            "permute_every_rows must be at least 1, but it is 0",
         ),
     ],
 )
@@ -441,7 +444,9 @@ def test_a_parameter_of_another_kind_is_refused(kind, kw, applies_to):
     ``"monitor"`` changed nothing, and the docstring's promise that
     ``reset`` under ``"monitor"`` raises was not kept (task 114)."""
     param = next(iter(kw))
-    with pytest.raises(ValueError, match=f"{param} applies to kind = {applies_to}"):
+    # `change_action` is named with its value, `change_action="reset"`.
+    named = f'{param}="{kw[param]}"' if param == "change_action" else param
+    with pytest.raises(ValueError, match=f"{named} applies only under kind={applies_to}"):
         spec(kind=kind, window_rows=50, **kw)
 
 
@@ -452,7 +457,7 @@ def test_the_boundary_exponent_is_at_most_0_49(kw):
     """W&G allow up to 1/2, but the critical value is solved for, and the
     solve's work grows as 1/(1/2 - gamma): minutes to hours past 0.49
     (task 160, CD1)."""
-    with pytest.raises(ValueError, match=r"boundary_gamma must be in \[0, 0.49\]"):
+    with pytest.raises(ValueError, match="boundary_gamma must be from 0 to 0.49"):
         spec(kind="sequential", window_rows=50, **kw)
 
 
@@ -824,15 +829,18 @@ def test_a_block_of_a_whole_window_makes_the_quantile_the_observed_statistic():
 @pytest.mark.parametrize(
     ("kw", "message"),
     [
-        ({"n_perm": 19}, "n_perm >= 20"),
+        (
+            {"n_perm": 19},
+            "n_perm must be at least 20 for a permutation critical value, but it is 19",
+        ),
         (
             {"n_perm": 2**20 + 1},
-            "n_perm must be <= 1048576, got 1048577: the draws are held to take their "
-            "quantile, and each is a pass over both blocks$",
+            r"n_perm must be at most 1048576, but it is 1048577: every draw is kept, and each "
+            r"takes a pass over the rows\. Lower n_perm to 1048576 or below\.$",
         ),
-        ({"perm_block": 31}, r"perm_block must be 1..=30 \(window_rows\)"),
-        ({"alpha": 0.0}, "alpha must be strictly between 0 and 1"),
-        ({"alpha": 1.0}, "alpha must be strictly between 0 and 1"),
+        ({"perm_block": 31}, r"perm_block must be from 1 to window_rows \(30\), but it is 31"),
+        ({"alpha": 0.0}, "alpha must be above 0 and below 1, but it is 0"),
+        ({"alpha": 1.0}, "alpha must be above 0 and below 1, but it is 1"),
     ],
 )
 def test_the_permutation_knobs_bounds_are_refused_by_name(kw, message):
@@ -966,7 +974,9 @@ def test_a_bandwidth_of_the_whole_span_is_the_largest_accepted(kind):
     out = run(df, kind=kind, window_rows=50, bandwidth=50)
     stats = out["stat"].drop_nulls()
     assert stats.len() > 0 and np.isfinite(stats.to_numpy()).all()
-    with pytest.raises(ValueError, match=r"bandwidth must be at most window_rows \(50\), got 51"):
+    with pytest.raises(
+        ValueError, match=r"bandwidth must be at most window_rows \(50\), but it is 51"
+    ):
         spec(kind=kind, window_rows=50, bandwidth=51)
 
 
@@ -1160,10 +1170,10 @@ def test_the_smallest_window_rows_report_where_they_close(kw, live):
 @pytest.mark.parametrize(
     ("kw", "message"),
     [
-        ({"window_rows": 7}, 'kind = "monitor" needs window_rows of at least 8'),
+        ({"window_rows": 7}, 'kind="monitor" needs window_rows of at least 8, but it is 7'),
         (
             {"kind": "sequential", "window_rows": 7},
-            'kind = "sequential" needs window_rows of at least 8',
+            'kind="sequential" needs window_rows of at least 8, but it is 7',
         ),
         (
             {"kind": "sequential", "window_rows": 8, "monitor_rows": 1},

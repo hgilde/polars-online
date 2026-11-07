@@ -510,16 +510,16 @@ def test_predict_scores_a_new_session_as_the_row_after_the_close():
 @pytest.mark.parametrize(
     ("kw", "message"),
     [
-        ({"group_close": "nope"}, 'must be one of "monotone", "session"; got "nope"'),
+        ({"group_close": "nope"}, 'group_close must be "monotone" or "session", but it is "nope"'),
         ({"group_close": "monotone", "group": None}, "needs a group column"),
-        ({"group_close": "session"}, "needs a session column"),
+        ({"group_close": "session"}, "but session is not set"),
         (
             {"group_close": "session", "session": "s", "session_gap": 5.0},
-            "two prescriptions for one event",
+            'group_close="session" and session_gap cannot both be set',
         ),
         (
             {"group_close": "monotone", "embargo": 5.0},
-            "does not work with embargo",
+            "group_close and embargo cannot both be set",
         ),
     ],
 )

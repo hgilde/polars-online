@@ -443,14 +443,14 @@ def test_a_session_change_blends_the_held_block_first():
 @pytest.mark.parametrize(
     ("kw", "msg"),
     [
-        ({"window_size": 50.0}, "gram_block_rows and window do not combine"),
-        ({"solve_every": 0.0}, "needs a solve cadence"),
-        ({"max_rows_between_solves": 1}, "max_rows_between_solves = 1"),
+        ({"window_size": 50.0}, "gram_block_rows and window_size cannot both be set"),
+        ({"solve_every": 0.0}, "solve_every is 0, which solves every row"),
+        ({"max_rows_between_solves": 1}, "max_rows_between_solves is 1, which solves every row"),
         # The default cadence is every row for an infinite half-life and for
         # `lam`: the option then needs its own.
-        ({"half_life": float("inf"), "solve_every": None}, "solve_every = 0"),
-        ({"half_life": None, "lam": 0.99, "solve_every": None}, "0 for `lam`"),
-        ({"gram_block_rows": 1 << 30}, "over the 256 MiB budget"),
+        ({"half_life": float("inf"), "solve_every": None}, "solve_every is 0"),
+        ({"half_life": None, "lam": 0.99, "solve_every": None}, "as the default under lam does"),
+        ({"gram_block_rows": 1 << 30}, "over the 256 MiB limit"),
     ],
 )
 def test_a_block_that_cannot_pay_is_refused(kw, msg):
@@ -459,10 +459,18 @@ def test_a_block_that_cannot_pay_is_refused(kw, msg):
 
 
 def test_the_budget_names_the_size():
-    with pytest.raises(ValueError, match=r"would hold \d+\.\d GiB of rows \(\d+ × \d+ features\)"):
+    """The refusal gives the size and the largest block that fits, which the
+    slower copy ``session_shrink`` keeps halves."""
+    most = (
+        r"would hold \d+\.\d GiB of rows, over the 256 MiB limit\. Lower gram_block_rows to (\d+)"
+    )
+    with pytest.raises(ValueError, match=most) as plain:
         spec(1 << 30)
-    with pytest.raises(ValueError, match="twice for the slow twin"):
+    with pytest.raises(ValueError, match=most) as twice:
         spec(1 << 30, session="s", session_gap=0.0, session_shrink=0.5, long_half_life=1e4)
+    one = int(re.search(most, str(plain.value)).group(1))
+    two = int(re.search(most, str(twice.value)).group(1))
+    assert two == one // 2, (one, two)
 
 
 # ---- several targets, folded into the block's merge (docs/PLAN.md task 257) ----

@@ -140,38 +140,39 @@ impl RlsCfg {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        let mut no = crate::Refusals::new();
         // The decay first: every model checks it in its own `new`, where only
         // the bank's spec did (review 2026-10-05, CF5).
-        self.decay.check().map_err(|e| format!("rls: {e}"))?;
-        if self.n_features == 0 || self.n_targets == 0 {
-            return Err("n_features and n_targets must be >= 1".into());
-        }
+        no.take(self.decay.check().map_err(|e| format!("rls: {e}")));
+        no.take(crate::model::check_dims(
+            "rls",
+            self.n_features,
+            self.n_targets,
+        ));
         // Finite too, as the spec layer has it: at `inf` every rotation is
         // skipped and every coefficient is 0 (review 2026-10-06, CA6).
         if !(self.delta.is_finite() && self.delta > 0.0) {
-            return Err(format!(
-                "rls: delta must be finite and > 0 (it sets P0 = I / delta), got {}",
+            no.refuse(format!(
+                "rls: delta must be finite and above 0, but it is {}. Set delta to a \
+                 positive value, such as the default 1: the larger it is, the longer the \
+                 coefficients stay near their prior.",
                 self.delta
             ));
         }
-        if self.min_weight.is_nan() || self.min_weight < 0.0 {
-            return Err(format!(
-                "rls: min_weight must be >= 0, got {}",
-                self.min_weight
-            ));
-        }
+        no.take(crate::model::check_min_weight("rls", self.min_weight));
         if let Some(c) = &self.coef_prior {
-            if c.len() != self.n_targets || c.iter().any(|v| v.len() != self.k_total()) {
-                return Err("rls: coef_prior must be n_targets x k_total".into());
-            }
             // The prior enters `u_0 = sqrt(delta) * prior`, and a non-finite
             // entry there never leaves the QR state; `ewridge` refused it,
             // this did not (review 2026-09-18, B4).
-            if c.iter().flatten().any(|v| !v.is_finite()) {
-                return Err("rls: coef_prior must be finite".into());
-            }
+            no.take(crate::model::check_coef_prior(
+                "rls",
+                c,
+                self.n_targets,
+                self.k_total(),
+                self.fit_intercept,
+            ));
         }
-        Ok(())
+        no.finish()
     }
 }
 
@@ -683,20 +684,26 @@ mod tests {
                 Ok(()) => panic!("expected rejection mentioning {want:?}"),
             }
         };
-        bad(&|c| c.n_features = 0, "must be >= 1");
-        bad(&|c| c.n_targets = 0, "must be >= 1");
+        bad(
+            &|c| c.n_features = 0,
+            "needs at least one feature and one target",
+        );
+        bad(
+            &|c| c.n_targets = 0,
+            "needs at least one feature and one target",
+        );
         // delta sets P0 = I/delta, so zero would be an infinite prior variance.
-        bad(&|c| c.delta = 0.0, "delta must be finite and > 0");
-        bad(&|c| c.delta = -1.0, "delta must be finite and > 0");
-        bad(&|c| c.delta = f64::NAN, "delta must be finite and > 0");
+        bad(&|c| c.delta = 0.0, "delta must be finite and above 0");
+        bad(&|c| c.delta = -1.0, "delta must be finite and above 0");
+        bad(&|c| c.delta = f64::NAN, "delta must be finite and above 0");
         // coef_prior is one vector per target, each of length k_total (2 + intercept).
         bad(
             &|c| c.coef_prior = Some(vec![vec![0.0; 3], vec![0.0; 3]]),
-            "n_targets x k_total",
+            "coef_prior must hold one list of 3 coefficients",
         );
         bad(
             &|c| c.coef_prior = Some(vec![vec![0.0; 2]]),
-            "n_targets x k_total",
+            "coef_prior must hold one list of 3 coefficients",
         );
         // A non-finite entry enters `u_0 = sqrt(delta) * prior` and the QR
         // state never recovers; `ewridge` refuses it, this did not (review
@@ -713,6 +720,22 @@ mod tests {
         ok.coef_prior = Some(vec![vec![1.0, 2.0, 3.0]]);
         ok.validate().unwrap();
         rls_cfg(2, 1, 100.0, 1.0).validate().unwrap();
+
+        // Every problem at once, each a line of its own.
+        let mut two = rls_cfg(2, 1, 100.0, 1.0);
+        two.delta = 0.0;
+        two.min_weight = -1.0;
+        let e = two.validate().unwrap_err();
+        let lines: Vec<&str> = e.lines().collect();
+        assert_eq!(lines.len(), 2, "{e}");
+        assert!(
+            lines[0].starts_with("rls: delta must be finite and above 0"),
+            "{e}"
+        );
+        assert!(
+            lines[1].starts_with("rls: min_weight must be at least 0"),
+            "{e}"
+        );
     }
 
     #[test]

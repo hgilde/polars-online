@@ -108,7 +108,9 @@ def test_without_a_clock_the_default_is_20_rows():
 class TestRefusals:
     def test_a_clock_needs_a_threshold(self):
         for clock in (TEMPORAL, SECONDS):
-            with pytest.raises(ValueError, match="drift_threshold is required when clock is given"):
+            with pytest.raises(
+                ValueError, match="drift_threshold must be set when the spec has a clock"
+            ):
                 spec(**clock)
 
     def test_a_temporal_clock_refuses_a_plain_number(self):
@@ -121,7 +123,7 @@ class TestRefusals:
 
     @pytest.mark.parametrize("bad", [0.0, -1.0, float("inf")])
     def test_a_threshold_is_finite_and_above_zero(self, bad):
-        # The builder refuses inf itself, as "must be finite, got float inf".
+        # The builder refuses inf itself, as "must be finite, but it is inf".
         with pytest.raises(ValueError, match="drift_threshold must be finite"):
             spec(drift_threshold=bad, **SECONDS)
 

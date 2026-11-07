@@ -217,27 +217,26 @@ impl LassoCfg {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        let mut no = crate::Refusals::new();
         // The decay first: every model checks it in its own `new`, where only
         // the bank's spec did (review 2026-10-05, CF5).
-        self.decay.check().map_err(|e| format!("lasso: {e}"))?;
-        if self
-            .solve_share
-            .is_some_and(|f| !(f.is_finite() && f > 0.0))
-        {
-            return Err("solve_share must be finite and > 0".into());
-        }
-        if self.n_features == 0 || self.n_targets == 0 {
-            return Err("n_features and n_targets must be >= 1".into());
-        }
-        let own = &self.target_min_weight;
-        let bad = |t: &f64| t.is_nan() || *t < 0.0;
-        if !(own.is_empty() || own.len() == self.n_targets) || own.iter().any(bad) {
-            return Err(
-                "lasso: target_min_weight must be empty or one value >= 0 per target".into(),
-            );
-        }
+        no.take(self.decay.check().map_err(|e| format!("lasso: {e}")));
+        no.take(crate::model::check_solve_share("lasso", self.solve_share));
+        no.take(crate::model::check_dims(
+            "lasso",
+            self.n_features,
+            self.n_targets,
+        ));
+        no.take(crate::model::check_target_min_weight(
+            "lasso",
+            &self.target_min_weight,
+            self.n_targets,
+        ));
         if self.lasso_path.is_empty() {
-            return Err("penalties must have at least one value".into());
+            no.refuse(
+                "lasso: penalties must list at least one value, but it lists none. Set \
+                 penalties to one or more values, largest first.",
+            );
         }
         // What the spec layer refuses, refused here too, so the Rust API and
         // a state file are held to it (review 2026-10-06, CA6): a path point
@@ -245,57 +244,73 @@ impl LassoCfg {
         // order check), a `tol` of NaN or 0 never converges or stops at the
         // first sweep, and a `select_half_life` of 0 makes the selection
         // weight `2^(-0/0)`, NaN for good.
-        if let Some(l) = self
+        let bad: Vec<String> = self
             .lasso_path
             .iter()
-            .find(|l| !(l.is_finite() && **l >= 0.0))
-        {
-            return Err(format!(
-                "lasso: penalties must each be finite and >= 0, got {l}"
+            .filter(|l| !(l.is_finite() && **l >= 0.0))
+            .map(f64::to_string)
+            .collect();
+        if let [l] = bad.as_slice() {
+            no.refuse(format!(
+                "lasso: penalties must each be finite and at least 0, but one of them is {l}. \
+                 Set that penalty to 0 for none, or to a finite positive value."
+            ));
+        } else if !bad.is_empty() {
+            no.refuse(format!(
+                "lasso: penalties must each be finite and at least 0, but {} are not. Set each \
+                 of those penalties to 0 for none, or to a finite positive value.",
+                crate::model::listed(&bad)
+            ));
+        } else if !self.lasso_path.windows(2).all(|w| w[0] >= w[1]) {
+            no.refuse(format!(
+                "lasso: penalties must run from the largest to the smallest, but they are \
+                 {:?}. List the penalties largest first.",
+                self.lasso_path
             ));
         }
-        if !self.lasso_path.windows(2).all(|w| w[0] >= w[1]) {
-            return Err("penalties must be decreasing".into());
-        }
         if !(0.0..=1.0).contains(&self.l1_ratio) {
-            return Err(format!("l1_ratio must be in [0, 1], got {}", self.l1_ratio));
+            no.refuse(format!(
+                "lasso: l1_ratio must be from 0 to 1, but it is {}. Set l1_ratio to 1 for the \
+                 lasso, to 0 for ridge, or to a value between 0 and 1 for an elastic net.",
+                self.l1_ratio
+            ));
         }
         if !(self.tol.is_finite() && self.tol > 0.0) {
-            return Err(format!(
-                "lasso: tol must be finite and > 0, got {}",
+            no.refuse(format!(
+                "lasso: tol must be finite and above 0, but it is {}. Set tol to how far a \
+                 coefficient may still move, as a share of the target's spread, when a solve \
+                 stops.",
                 self.tol
             ));
         }
         if let Some(h) = self.select_half_life.filter(|h| h.is_nan() || *h <= 0.0) {
-            return Err(format!("lasso: select_half_life must be > 0, got {h}"));
-        }
-        if self.min_weight.is_nan() || self.min_weight < 0.0 {
-            return Err(format!(
-                "lasso: min_weight must be >= 0, got {}",
-                self.min_weight
+            no.refuse(format!(
+                "lasso: select_half_life must be above 0, but it is {h}. Set \
+                 select_half_life to a positive number of clock units, or leave it out to \
+                 rank the penalties by their errors over the model's half-life."
             ));
         }
+        no.take(crate::model::check_min_weight("lasso", self.min_weight));
         // A NaN cadence never comes due on the clock, and left the row cap
         // alone to schedule the solves, with no word (review round 5, C6).
-        if self.solve_every.is_nan() {
-            return Err("lasso: solve_every must not be NaN (<= 0 solves every row)".into());
-        }
+        no.take(crate::model::check_solve_every("lasso", self.solve_every));
         // No sweep is no descent: every solve a failure, and the output the
         // start of one -- the intercept at the mean, every slope 0 -- that
         // looked like a fit (review 2026-10-05, PB7).
         if self.max_iter < 1 {
-            return Err(
-                "lasso: max_iter must be >= 1: it is the coordinate descent's sweeps, and with \
-                 none every solve fails and leaves the slopes at 0"
-                    .into(),
+            no.refuse(
+                "lasso: max_iter must be at least 1, but it is 0, and a solve with no sweep \
+                 fits nothing. Set max_iter to the most sweeps a solve may take, such as the \
+                 default 100.",
             );
         }
-        crate::window::check_cadence(
+        no.take(crate::window::check_cadence(
             "lasso",
             self.window,
             self.window_every,
             self.max_rows_between_snapshots,
-        )
+        ));
+        no.finish()
     }
 }
 
@@ -1483,7 +1498,7 @@ mod tests {
         type Corrupt<'a> = (&'a str, fn(&mut Lasso));
         let corrupt: [Corrupt; 2] = [
             ("wrong shape", |l| l.sel_idx[0] = 2),
-            ("target_min_weight must be empty or one value", |l| {
+            ("but it lists 2 for 1 target.", |l| {
                 l.cfg.target_min_weight = vec![1.0; 2]
             }),
         ];
@@ -2164,7 +2179,7 @@ mod tests {
         };
         for bad in [vec![t], vec![t, -1.0], vec![f64::NAN, t]] {
             let err = with(bad).unwrap_err();
-            assert!(err.contains("target_min_weight"), "{err}");
+            assert!(err.contains("min_weight"), "{err}");
         }
         with(vec![0.0, f64::INFINITY]).unwrap();
     }
@@ -3431,7 +3446,10 @@ mod tests {
             c.validate()
         };
         let err = with(0).unwrap_err();
-        assert!(err.contains("max_iter must be >= 1"), "{err}");
+        assert!(
+            err.contains("max_iter must be at least 1, but it is 0"),
+            "{err}"
+        );
         assert!(Lasso::new(cfg(2, 1, vec![0.1])).is_ok());
         with(1).unwrap();
     }
@@ -3644,12 +3662,23 @@ mod tests {
     fn an_empty_or_rising_path_is_refused_by_name() {
         assert_eq!(
             Lasso::new(cfg(2, 1, vec![])).unwrap_err(),
-            "penalties must have at least one value"
+            "lasso: penalties must list at least one value, but it lists none. Set penalties \
+             to one or more values, largest first."
         );
         assert_eq!(
             Lasso::new(cfg(2, 1, vec![0.01, 0.1])).unwrap_err(),
-            "penalties must be decreasing"
+            "lasso: penalties must run from the largest to the smallest, but they are \
+             [0.01, 0.1]. List the penalties largest first."
         );
+        // Every problem at once, each a line of its own.
+        let mut two = cfg(2, 1, vec![0.1]);
+        two.tol = 0.0;
+        two.l1_ratio = 2.0;
+        let e = two.validate().unwrap_err();
+        let lines: Vec<&str> = e.lines().collect();
+        assert_eq!(lines.len(), 2, "{e}");
+        assert!(lines[0].starts_with("lasso: l1_ratio must be from 0 to 1, but it is 2."));
+        assert!(lines[1].starts_with("lasso: tol must be finite and above 0, but it is 0."));
         // A tie is not a rise.
         assert!(Lasso::new(cfg(2, 1, vec![0.1, 0.1, 0.01])).is_ok());
     }

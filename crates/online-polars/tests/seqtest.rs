@@ -566,7 +566,7 @@ fn the_refusals_name_the_problem() {
     .unwrap();
     let e = orphan.validate().unwrap_err();
     assert!(
-        e.contains("a_suffix/b_suffix pick a side's grid instance"),
+        e.contains("a_suffix and b_suffix pick which slots of a and b to compare"),
         "{e}"
     );
 
@@ -575,9 +575,15 @@ fn the_refusals_name_the_problem() {
             "features": []}"#,
     );
     let e = one_sided.unwrap().validate().unwrap_err();
-    assert!(e.contains("a and b go together (got a only)"), "{e}");
+    assert!(
+        e.contains("seqtest needs a and b together, but only a is set."),
+        "{e}"
+    );
     let e = compare("c", "a", "a", false).validate().unwrap_err();
-    assert!(e.contains("both \"a\" with the same suffix"), "{e}");
+    assert!(
+        e.contains("both name \"a\", with no suffix or the same one"),
+        "{e}"
+    );
     // Two instances of one grid are a comparison like any other.
     let two_instances: Spec = serde_json::from_str(
         r#"{"name": "c", "model": {"type": "seqtest", "a": "a", "b": "a",
@@ -586,7 +592,7 @@ fn the_refusals_name_the_problem() {
     .unwrap();
     two_instances.validate().unwrap();
     let e = compare("c", "c", "b", false).validate().unwrap_err();
-    assert!(e.contains("name the spec itself"), "{e}");
+    assert!(e.contains("but a names this spec"), "{e}");
     let mut weighted = column_mode("s", "y", false);
     weighted.weight = Some("w".into());
     let e = weighted.validate().unwrap_err();
@@ -596,11 +602,14 @@ fn the_refusals_name_the_problem() {
         50.0,
     )));
     let e = decayed.validate().unwrap_err();
-    assert!(e.contains("half_life/lam do not apply to seqtest"), "{e}");
+    assert!(e.contains("half_life does not apply to seqtest"), "{e}");
     let mut featured = column_mode("s", "y", false);
     featured.features = vec!["x0".into()];
     let e = featured.validate().unwrap_err();
-    assert!(e.contains("seqtest takes no features (got 1)"), "{e}");
+    assert!(
+        e.contains("seqtest takes no features, but features lists 1 column"),
+        "{e}"
+    );
     let mut sigma = column_mode("s", "y", false);
     sigma.emit_sigma = true;
     let e = sigma.validate().unwrap_err();

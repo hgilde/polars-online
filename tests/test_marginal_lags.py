@@ -423,10 +423,14 @@ def test_no_cross_lags_leaves_the_cross_columns_out():
 @pytest.mark.parametrize(
     ("kw", "msg"),
     [
-        ({"lags": [1, 2], "cross_lags": [3]}, "cross_lags must each be one of lags, and 3 is not"),
+        (
+            {"lags": [1, 2], "cross_lags": [3]},
+            "cross_lags must each be one of lags, since a cross term reads the rows lags keeps, "
+            "but 3 is not",
+        ),
         ({"lags": [1, 2], "cross_lags": [2, 1]}, "cross_lags must be strictly increasing"),
-        ({"cross_lags": [1]}, "cross_lags needs `lags`"),
-        ({"cross_lags": []}, "cross_lags needs `lags`"),
+        ({"cross_lags": [1]}, "cross_lags needs lags"),
+        ({"cross_lags": []}, "cross_lags needs lags"),
     ],
 )
 def test_a_bad_cross_lags_is_refused_by_name_at_construction(kw, msg):
@@ -471,12 +475,21 @@ def test_a_saved_bank_keeps_its_cross_lags(tmp_path):
 @pytest.mark.parametrize(
     ("kw", "msg"),
     [
-        ({"lags": [0, 1]}, "lags must be >= 1"),
+        ({"lags": [0, 1]}, "lags must each be at least 1, but one of them is 0"),
         ({"lags": [2, 1]}, "strictly increasing"),
         # Taken as no lags, where `ew_cov(lags=[])` is refused.
-        ({"lags": []}, 'spec "m": marginal lags must be non-empty; leave it out for none'),
-        ({"serial_rule": "geometric"}, "serial_rule needs `lags`"),
-        ({"lags": [1], "serial_rule": "nope"}, 'serial_rule must be one of "truncated"'),
+        (
+            {"lags": []},
+            (
+                'spec "m": lags must hold at least one lag, but it is empty. Give at least one '
+                "lag, such as [1], or leave lags out."
+            ),
+        ),
+        ({"serial_rule": "geometric"}, "serial_rule needs lags, but lags is not set"),
+        (
+            {"lags": [1], "serial_rule": "nope"},
+            'serial_rule must be "truncated", "bartlett" or "geometric", but it is "nope"',
+        ),
     ],
 )
 def test_a_bad_lag_spec_is_refused_by_name(kw, msg):

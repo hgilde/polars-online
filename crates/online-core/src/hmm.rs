@@ -116,114 +116,186 @@ pub struct HmmCfg {
 
 impl HmmCfg {
     pub fn validate(&self) -> Result<(), String> {
+        let mut no = crate::Refusals::new();
         // The decay first: every model checks it in its own `new`, where only
         // the bank's spec did (review 2026-10-05, CF5).
-        self.decay.check().map_err(|e| format!("hmm: {e}"))?;
+        no.take(self.decay.check().map_err(|e| format!("hmm: {e}")));
         if self.n_features == 0 {
-            return Err("hmm: n_features must be >= 1".into());
-        }
-        if self.k < 2 {
-            return Err("hmm: n_components must be >= 2 (one state is not a Markov chain)".into());
-        }
-        // Before anything reads `k * k` (review 2026-10-06, CF2's sibling).
-        Hmm::check_k(self.k)?;
-        if !(self.precision_prior.is_finite() && self.precision_prior > 0.0) {
-            return Err(
-                "hmm: precision_prior must be finite and > 0; a state's centred co-moments start \
-                 at zero, and a zero matrix has no density"
-                    .into(),
+            no.refuse(
+                "hmm: the model needs at least one feature, but it has none. Name at least one \
+                 column in features.",
             );
         }
+        if self.k < 2 {
+            no.refuse(format!(
+                "hmm: n_components must be at least 2, since one state is not a chain of states, \
+                 but it is {}. Set n_components to 2 or more.",
+                self.k
+            ));
+        }
+        // Before anything reads `k * k` (review 2026-10-06, CF2's sibling).
+        no.take(Hmm::check_k(self.k));
+        // Every size below is read from the features and the states.
+        no.stop_here()?;
+        if !(self.precision_prior.is_finite() && self.precision_prior > 0.0) {
+            no.refuse(format!(
+                "hmm: precision_prior must be finite and above 0, but it is {}: each state's \
+                 covariance starts at zero, which has no density without it. Set \
+                 precision_prior to a finite positive value.",
+                self.precision_prior
+            ));
+        }
         if !(self.transition_prior.is_finite() && self.transition_prior >= 0.0) {
-            return Err("hmm: transition_prior must be finite and >= 0".into());
+            no.refuse(format!(
+                "hmm: transition_prior must be finite and at least 0, but it is {}. Set \
+                 transition_prior to 0, or to a finite positive value.",
+                self.transition_prior
+            ));
         }
         if self.min_weight.is_nan() || self.min_weight < 0.0 {
-            return Err("hmm: min_weight must be >= 0".into());
+            no.refuse(format!(
+                "hmm: min_weight must be at least 0, but it is {}. Set min_weight to 0, or to a \
+                 positive weight.",
+                self.min_weight
+            ));
         }
         let (k, d) = (self.k, self.n_features);
         if let Some(p) = &self.transition {
             if p.len() != k * k {
-                return Err(format!("hmm: transition must be {k}x{k}, got {}", p.len()));
-            }
-            for r in 0..k {
-                let row = &p[r * k..(r + 1) * k];
-                if row.iter().any(|v| *v < 0.0 || !v.is_finite())
-                    || (row.iter().sum::<f64>() - 1.0).abs() > 1e-9
-                {
-                    return Err(format!("hmm: transition row {r} is not a distribution"));
+                no.refuse(format!(
+                    "hmm: transition must be a {k} by {k} matrix, but it has {} values. Give {} \
+                     values, in row order.",
+                    p.len(),
+                    k * k
+                ));
+            } else {
+                let bad: Vec<String> = (0..k)
+                    .filter(|r| {
+                        let row = &p[r * k..(r + 1) * k];
+                        row.iter().any(|v| *v < 0.0 || !v.is_finite())
+                            || (row.iter().sum::<f64>() - 1.0).abs() > 1e-9
+                    })
+                    .map(|r| r.to_string())
+                    .collect();
+                if !bad.is_empty() {
+                    no.refuse(format!(
+                        "hmm: each row of transition must hold finite values of at least 0 that \
+                         sum to 1, but {} (counting from 0) {}. Set each row to the chances of \
+                         moving from that state to each state.",
+                        if bad.len() == 1 {
+                            format!("row {}", bad[0])
+                        } else {
+                            format!("rows {}", bad.join(", "))
+                        },
+                        if bad.len() == 1 { "does not" } else { "do not" }
+                    ));
                 }
             }
         }
         match (&self.means, &self.covs) {
             (Some(m), Some(c)) => {
+                let mut shaped = true;
                 if m.len() != k * d {
-                    return Err(format!("hmm: means must be {k}x{d}, got {}", m.len()));
-                }
-                if c.len() != k * d * d {
-                    return Err(format!(
-                        "hmm: covs must be {k} matrices of {d}x{d}, got {}",
-                        c.len()
+                    shaped = false;
+                    no.refuse(format!(
+                        "hmm: means must hold one row of {d} values for each of the {k} states, \
+                         but it has {} values. Give {} values, in row order.",
+                        m.len(),
+                        k * d
                     ));
                 }
-                if m.iter().chain(c.iter()).any(|v| !v.is_finite()) {
-                    return Err("hmm: means and covs must be finite".into());
+                if c.len() != k * d * d {
+                    shaped = false;
+                    no.refuse(format!(
+                        "hmm: covs must hold a {d} by {d} matrix for each of the {k} states, but \
+                         it has {} values. Give {} values, each state's matrix in row order.",
+                        c.len(),
+                        k * d * d
+                    ));
                 }
-                // A state covariance that will not factorize has no density,
-                // so every row would be a solve failure and every output a
-                // null, with nothing said (docs/REVIEW-E54-E64.md H4).
-                for s in 0..k {
-                    let block = &c[s * d * d..(s + 1) * d * d];
-                    for i in 0..d {
-                        for j in (i + 1)..d {
-                            let (a, b) = (block[i * d + j], block[j * d + i]);
-                            if (a - b).abs() > 1e-12 * (1.0 + a.abs().max(b.abs())) {
-                                return Err(format!(
-                                    "hmm: covs[{s}] must be symmetric; [{i}][{j}] is {a} and \
-                                     [{j}][{i}] is {b}"
-                                ));
-                            }
-                        }
-                    }
-                    if !matches!(SpdFactor::of(block, d), Some(f) if f.attempts() == 0) {
-                        return Err(format!(
-                            "hmm: covs[{s}] must be positive definite; a state with no density \
-                             takes no responsibility for any row"
+                let bad_m = m.iter().find(|v| !v.is_finite());
+                let bad_c = c.iter().find(|v| !v.is_finite());
+                for (name, v) in [("means", bad_m), ("covs", bad_c)] {
+                    if let Some(v) = v {
+                        no.refuse(format!(
+                            "hmm: {name} must be finite, but it holds {v}. Replace {v} with a \
+                             finite value."
                         ));
+                    }
+                }
+                if bad_m.is_none() && bad_c.is_none() && shaped {
+                    // A state covariance that will not factorize has no
+                    // density, so every row would be a solve failure and
+                    // every output a null, with nothing said
+                    // (docs/REVIEW-E54-E64.md H4).
+                    for s in 0..k {
+                        let block = &c[s * d * d..(s + 1) * d * d];
+                        let asymmetric = (0..d)
+                            .flat_map(|i| ((i + 1)..d).map(move |j| (i, j)))
+                            .map(|(i, j)| (i, j, block[i * d + j], block[j * d + i]))
+                            .find(|&(_, _, a, b)| {
+                                (a - b).abs() > 1e-12 * (1.0 + a.abs().max(b.abs()))
+                            });
+                        if let Some((i, j, a, b)) = asymmetric {
+                            no.refuse(format!(
+                                "hmm: the matrix in covs for state {s} (counting from 0) must be \
+                                 symmetric, but its entry at row {i}, column {j} is {a}, and at \
+                                 row {j}, column {i} is {b}. Set the two entries equal."
+                            ));
+                        } else if !matches!(SpdFactor::of(block, d), Some(f) if f.attempts() == 0) {
+                            no.refuse(format!(
+                                "hmm: the matrix in covs for state {s} (counting from 0) must be \
+                                 positive definite, but it is not, and a state with no density is \
+                                 never chosen. Give a positive definite matrix, such as a \
+                                 diagonal one of positive variances."
+                            ));
+                        }
                     }
                 }
             }
             (None, None) => {
                 if !self.learn {
-                    return Err(
-                        "hmm: learn = false with no means/covs has nothing to filter with; give \
-                         the states, or let it seed them"
-                            .into(),
+                    no.refuse(
+                        "hmm: with learn off, the model needs means and covs to filter with, but \
+                         neither is given. Give means and covs, or turn learn on so the model \
+                         seeds its states.",
                     );
                 }
                 if self.warm_rows < k {
-                    return Err(format!(
-                        "hmm: warm_rows must be at least n_components ({k}) to seed that many states"
+                    no.refuse(format!(
+                        "hmm: warm_rows must be at least n_components ({k}) to seed that many \
+                         states, but it is {}. Set warm_rows to {k} or more.",
+                        self.warm_rows
                     ));
                 }
             }
-            _ => return Err("hmm: means and covs go together".into()),
+            (m, _) => no.refuse(format!(
+                "hmm: means and covs must be given together, but only {} is. Give both, or \
+                 leave out both.",
+                if m.is_some() { "means" } else { "covs" }
+            )),
         }
         if let Some((a, b)) = &self.tvtp
             && (a.len() != k * k || b.len() != k * k)
         {
-            return Err(format!("hmm: tvtp_coef A and B must each be {k}x{k}"));
+            no.refuse(format!(
+                "hmm: tvtp_coef must hold two {k} by {k} matrices, but they have {} and {} \
+                 values. Give {} values for each, in row order.",
+                a.len(),
+                b.len(),
+                k * k
+            ));
         }
         // Under `tvtp` the counts are not learned, so the prior they would
         // be spread over is read by nothing (review 2026-10-06, CE4).
         if self.tvtp.is_some() && self.transition.is_some() {
-            return Err(
-                "hmm: transition is the prior of the learned transition counts, and under \
-                 tvtp_coef the matrix is softmax(A + B·z) and no count is learned; give one or \
-                 the other"
-                    .into(),
+            no.refuse(
+                "hmm: transition does not apply under tvtp_coef, which reads each row's \
+                 transitions from exog_tvtp and learns no transition counts. Leave transition \
+                 out, or leave out tvtp_coef.",
             );
         }
-        Ok(())
+        no.finish()
     }
 }
 
@@ -389,8 +461,10 @@ impl Hmm {
     pub fn check_k(k: usize) -> Result<(), String> {
         if k > Self::MAX_K {
             return Err(format!(
-                "hmm: n_components must be at most {} (2^10), got {k}: the transition matrix holds k² cells \
-                 and every state its own moments, all sized before the first row",
+                "hmm: n_components must be at most {}, but it is {k}: the transition matrix and \
+                 each state's moments are set aside before the first row. Lower n_components to \
+                 {} or below.",
+                Self::MAX_K,
                 Self::MAX_K
             ));
         }
@@ -2132,47 +2206,69 @@ mod tests {
         assert_eq!(Hmm::n_outputs_for(4), 10);
     }
 
+    /// Every problem at once: two bad settings are both named, one to a
+    /// line.
+    #[test]
+    fn a_configuration_with_two_problems_reports_both() {
+        let e = Hmm::new(HmmCfg {
+            precision_prior: 0.0,
+            warm_rows: 1,
+            ..cfg(2, 2)
+        })
+        .unwrap_err();
+        let lines: Vec<&str> = e.lines().collect();
+        assert_eq!(lines.len(), 2, "{e}");
+        assert!(lines[0].starts_with("hmm: precision_prior must be"), "{e}");
+        assert!(
+            lines[1].starts_with("hmm: warm_rows must be at least"),
+            "{e}"
+        );
+    }
+
     #[test]
     fn a_bad_configuration_is_refused_by_name() {
         let bad = |c: HmmCfg, msg: &str| {
             let e = Hmm::new(c).unwrap_err();
             assert!(e.contains(msg), "{e}");
         };
-        bad(HmmCfg { k: 1, ..cfg(2, 1) }, "n_components must be >= 2");
+        bad(
+            HmmCfg { k: 1, ..cfg(2, 1) },
+            "n_components must be at least 2",
+        );
         bad(
             HmmCfg {
                 warm_rows: 1025,
                 ..cfg(2, 1025)
             },
-            "n_components must be at most 1024 (2^10), got 1025",
+            "n_components must be at most 1024, but it is 1025",
         );
         bad(
             HmmCfg {
                 precision_prior: 0.0,
                 ..cfg(2, 2)
             },
-            "precision_prior must be finite and > 0",
+            "precision_prior must be finite and above 0",
         );
         bad(
             HmmCfg {
                 learn: false,
                 ..cfg(2, 2)
             },
-            "nothing to filter with",
+            "with learn off, the model needs means and covs",
         );
         bad(
             HmmCfg {
                 means: Some(vec![0.0; 4]),
                 ..cfg(2, 2)
             },
-            "means and covs go together",
+            "means and covs must be given together, but only means is",
         );
         bad(
             HmmCfg {
                 transition: Some(vec![0.5, 0.4, 0.5, 0.5]),
                 ..cfg(2, 2)
             },
-            "not a distribution",
+            "but row 0 (counting from 0) does not",
         );
         bad(
             HmmCfg {
@@ -2190,18 +2286,18 @@ mod tests {
         };
         bad(
             given(vec![1.0, 0.5, 0.4, 1.0, 1.0, 0.0, 0.0, 1.0]),
-            "covs[0] must be symmetric",
+            "the matrix in covs for state 0 (counting from 0) must be symmetric",
         );
         bad(
             given(vec![1.0, 2.0, 2.0, 1.0, 1.0, 0.0, 0.0, 1.0]),
-            "covs[0] must be positive definite",
+            "the matrix in covs for state 0 (counting from 0) must be positive definite",
         );
         bad(
             HmmCfg {
                 means: Some(vec![f64::NAN, 0.0, 1.0, 1.0]),
                 ..given(vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0])
             },
-            "means and covs must be finite",
+            "means must be finite, but it holds NaN",
         );
         // Task 252: no columns, and a transition, means or covs of the
         // wrong size for `k` states over `d` columns, each named with the
@@ -2211,25 +2307,25 @@ mod tests {
                 n_features: 0,
                 ..cfg(2, 2)
             },
-            "hmm: n_features must be >= 1",
+            "hmm: the model needs at least one feature, but it has none",
         );
         bad(
             HmmCfg {
                 transition: Some(vec![0.5; 6]),
                 ..cfg(2, 2)
             },
-            "hmm: transition must be 2x2, got 6",
+            "hmm: transition must be a 2 by 2 matrix, but it has 6 values",
         );
         bad(
             HmmCfg {
                 means: Some(vec![0.0; 3]),
                 ..given(vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0])
             },
-            "hmm: means must be 2x2, got 3",
+            "hmm: means must hold one row of 2 values for each of the 2 states, but it has 3 values",
         );
         bad(
             given(vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]),
-            "hmm: covs must be 2 matrices of 2x2, got 7",
+            "hmm: covs must hold a 2 by 2 matrix for each of the 2 states, but it has 7 values",
         );
     }
 
@@ -2251,8 +2347,9 @@ mod tests {
                     panic!("accepted k = {k}")
                 };
                 assert!(
-                    e.contains("hmm: n_components must be at most 1024 (2^10)")
-                        && e.contains(&format!("got {k}")),
+                    e.contains(&format!(
+                        "hmm: n_components must be at most 1024, but it is {k}"
+                    )),
                     "{e}"
                 );
             }
@@ -2328,7 +2425,7 @@ mod tests {
                     transition_prior: tau,
                     ..cfg(2, 2)
                 },
-                "transition_prior must be finite and >= 0",
+                "transition_prior must be finite and at least 0",
             );
         }
         bad(
@@ -2336,7 +2433,7 @@ mod tests {
                 min_weight: -1.0,
                 ..cfg(2, 2)
             },
-            "min_weight must be >= 0",
+            "min_weight must be at least 0",
         );
         // A row that sums to one with a negative cell is not a distribution.
         bad(
@@ -2344,21 +2441,21 @@ mod tests {
                 transition: Some(vec![1.5, -0.5, 0.5, 0.5]),
                 ..cfg(2, 2)
             },
-            "transition row 0 is not a distribution",
+            "but row 0 (counting from 0) does not",
         );
         bad(
             HmmCfg {
                 tvtp: Some((vec![0.0; 3], vec![0.0; 4])),
                 ..cfg(2, 2)
             },
-            "tvtp_coef A and B must each be 2x2",
+            "tvtp_coef must hold two 2 by 2 matrices",
         );
         bad(
             HmmCfg {
                 tvtp: Some((vec![0.0; 4], vec![0.0; 3])),
                 ..cfg(2, 2)
             },
-            "tvtp_coef A and B must each be 2x2",
+            "tvtp_coef must hold two 2 by 2 matrices",
         );
         // Three states in two columns, every shape right, a cell of zero;
         // and the same states under `tvtp`, which takes no `transition`
@@ -2413,7 +2510,9 @@ mod tests {
         };
         let e = Hmm::new(with(vec![4.0, 1.0, 0.5, 1.0, 4.0, 0.9, 0.5, 0.5, 4.0])).unwrap_err();
         assert!(
-            e.contains("covs[0] must be symmetric; [1][2] is 0.9 and [2][1] is 0.5"),
+            e.contains(
+                "state 0 (counting from 0) must be symmetric, but its entry at row 1, column 2 is 0.9, and at row 2, column 1 is 0.5"
+            ),
             "{e}"
         );
         let mut c = 1e-12f64;

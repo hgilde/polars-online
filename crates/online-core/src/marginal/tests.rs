@@ -50,7 +50,7 @@ fn a_restored_marginal_whose_cfg_new_refuses_is_refused() {
     match Marginal::restore(&s) {
         Err(StateError::Invalid(e)) => {
             assert!(
-                e.contains("configuration") && e.contains("lags must be >= 1"),
+                e.contains("configuration") && e.contains("lags must each be at least 1"),
                 "{e}"
             );
         }
@@ -738,7 +738,7 @@ fn a_bad_cross_lags_is_refused_by_name() {
         (
             vec![1, 2, 5],
             vec![3],
-            "cross_lags must each be one of lags, and 3 is not",
+            "cross_lags must each be one of lags, since a cross term reads the rows lags keeps, but 3 is not",
         ),
         (
             vec![1, 2, 5],
@@ -755,13 +755,9 @@ fn a_bad_cross_lags_is_refused_by_name() {
             vec![2, 2],
             "cross_lags must be strictly increasing",
         ),
-        (
-            vec![1],
-            vec![0],
-            "cross_lags must each be one of lags, and 0 is not",
-        ),
-        (vec![], vec![1], "cross_lags needs `lags`"),
-        (vec![], vec![], "cross_lags needs `lags`"),
+        (vec![1], vec![0], "but 0 is not. Remove 0 from cross_lags"),
+        (vec![], vec![1], "cross_lags needs lags"),
+        (vec![], vec![], "cross_lags needs lags"),
     ] {
         let mut c = cfg(1, 1);
         c.lags = lags.clone();
@@ -788,8 +784,9 @@ fn a_lag_past_the_ceiling_is_refused_by_name() {
             panic!("accepted")
         };
         assert!(
-            err.contains("marginal: lags must be at most 1048576")
-                && err.contains(&format!("got {lag}")),
+            err.contains(&format!(
+                "marginal: lags must list lags of at most 1048576, but it lists {lag}"
+            )),
             "{err}"
         );
     }
@@ -1463,9 +1460,12 @@ fn validation_rejects_each_bad_field() {
     c.min_weight = vec![f64::NAN];
     err(c.clone(), "min_weight");
     c.min_weight = vec![1.0, 2.0];
-    err(c.clone(), "2 entries for 1 targets");
+    err(
+        c.clone(),
+        "one value for each of the 1 targets, but it has 2",
+    );
     c.min_weight = vec![];
-    err(c, "0 entries for 1 targets");
+    err(c, "one value for each of the 1 targets, but it has 0");
     // A window with lags is taken since task 137: the snapshots hold the
     // lag moments, and the spec layer asks for `window_lags` by name.
     let mut c = cfg(1, 1);
@@ -2488,7 +2488,10 @@ fn bins_before_and_beyond_what_it_can_do() {
         })
     };
     let err = with_window(Some(bins_cfg(4, 100))).unwrap_err();
-    assert!(err.contains("bins and window"), "{err}");
+    assert!(
+        err.contains("bins and window_size cannot both be set"),
+        "{err}"
+    );
     assert!(with_window(None).is_ok());
 
     let too_few = Marginal::new(MarginalCfg {
@@ -3989,7 +3992,8 @@ fn shared_feature_moments_refuse_a_window_by_name() {
     };
     let e = windowed.validate().unwrap_err();
     assert!(
-        e.contains("\"shared\" takes no window") && e.contains("per_target"),
+        e.contains("feature_moments=\"shared\" and window_size cannot both be set")
+            && e.contains("per_target"),
         "{e}"
     );
     let lagged = MarginalCfg {
@@ -4592,7 +4596,10 @@ fn each_part_of_a_state_is_checked_alone() {
     match restored(&windowed, &|m| {
         m.cfg.min_weight.pop();
     }) {
-        Err(StateError::Invalid(e)) => assert!(e.contains("min_weight has 1 entries"), "{e}"),
+        Err(StateError::Invalid(e)) => assert!(
+            e.contains("min_weight must hold one value for each of the 2 targets, but it has 1"),
+            "{e}"
+        ),
         other => panic!("min_weight short a target: {other:?}"),
     }
     type Case<'a> = (&'a str, &'a Marginal, &'a dyn Fn(&mut Marginal));
@@ -5301,4 +5308,23 @@ fn the_lag_correlations_are_withheld_where_corr_is() {
     let mut same = gated.clone();
     same.cfg.min_weight = vec![0.0; 2];
     assert!(same == free, "the gate moves no learning");
+}
+
+/// Every problem at once: two bad settings are both named, one to a line.
+#[test]
+fn a_configuration_with_two_problems_reports_both() {
+    let mut c = cfg(1, 1);
+    c.min_weight = vec![-1.0];
+    c.lags = vec![2, 1];
+    let e = Marginal::new(c).unwrap_err();
+    let lines: Vec<&str> = e.lines().collect();
+    assert_eq!(lines.len(), 2, "{e}");
+    assert!(
+        lines[0].starts_with("marginal: min_weight must be at least 0"),
+        "{e}"
+    );
+    assert!(
+        lines[1].starts_with("marginal: lags must be strictly increasing"),
+        "{e}"
+    );
 }

@@ -429,7 +429,7 @@ class TestDegenerateClocks:
     def test_max_dclock_zero_is_refused_and_no_decay_is_an_infinite_halflife(self):
         # A cap of 0 froze the clock, and every positive gap then read as a
         # break (task 120); no decay is `half_life = "inf"`.
-        with pytest.raises(ValueError, match="gap_cap must be > 0"):
+        with pytest.raises(ValueError, match="gap_cap must be above 0"):
             _spec(clock="t", gap_cap=0.0, half_life=1.0)
         df = pl.DataFrame({"t": [0.0, 100.0, 500.0], "x0": [1.0, 2.0, 3.0], "y0": [1.0, 2.0, 3.0]})
         out = _run(df, _spec(clock="t", gap_cap=1e9, half_life=float("inf")))

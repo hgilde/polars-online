@@ -156,7 +156,7 @@ def test_a_spec_dict_reads_an_old_key_as_the_new_one(renamed):
 
 
 def test_without_an_entry_an_unknown_name_is_still_refused():
-    with pytest.raises(TypeError, match="unexpected keyword argument 'rigde'"):
+    with pytest.raises(TypeError, match='ewridge\\(\\) takes no parameter "rigde"'):
         po.spec.ewridge("m", targets=["y"], features=["x"], rigde=0.5)
 
 

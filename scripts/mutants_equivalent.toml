@@ -411,7 +411,7 @@ guard is true wherever it is reached"""
 file = "crates/online-core/src/bocpd.rs"
 function = "BocpdCfg::validate"
 mutation = "replace + with *"
-line_has = "for j in (i + 1)..d {"
+line_has = ".flat_map(|i| ((i + 1)..d).map(move |j| (i, j)))"
 why = """`(i * 1)..d` adds the diagonal, each entry compared with itself; \
 the entries are finite (refused just above otherwise), so `|a − a| = 0` \
 passes the tolerance"""
@@ -485,7 +485,7 @@ near 1 differs from it by an exact multiple of `2⁻⁵³` (Sterbenz), and \
 file = "crates/online-core/src/hmm.rs"
 function = "HmmCfg::validate"
 mutation = "replace + with *"
-line_has = "for j in (i + 1)..d {"
+line_has = ".flat_map(|i| ((i + 1)..d).map(move |j| (i, j)))"
 why = """as `BocpdCfg::validate`'s: `(i * 1)..d` adds the diagonal, each \
 finite entry compared with itself"""
 

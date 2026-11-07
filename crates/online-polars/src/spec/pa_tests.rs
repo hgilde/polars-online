@@ -26,7 +26,9 @@ fn a_c_under_the_mode_that_reads_none_is_refused() {
     ] {
         let err = pa(model).check().unwrap_err();
         assert!(
-            err.contains(r#"spec "m": pa c is for mode "pa1" or "pa2"; mode "pa" does not use it"#),
+            err.contains(
+                r#"spec "m": c caps the step under mode="pa1" and damps it under mode="pa2", but mode is "pa", which reads neither. Leave c out, or set mode="pa1" or "pa2"."#
+            ),
             "{model}: {err}"
         );
     }
@@ -42,10 +44,10 @@ fn a_c_under_the_mode_that_reads_none_is_refused() {
     // A `c` out of range is named for its range first, and an unknown mode
     // as unknown.
     let err = pa(r#", "mode": "pa", "c": 0.0"#).check().unwrap_err();
-    assert!(err.contains("pa c must be > 0"), "{err}");
+    assert!(err.contains("c must be above 0, but it is 0."), "{err}");
     let err = pa(r#", "mode": "pa3", "c": 0.5"#).check().unwrap_err();
     assert!(
-        err.contains("mode must be one of \"pa\", \"pa1\", \"pa2\"; got \"pa3\""),
+        err.contains("mode must be \"pa\", \"pa1\" or \"pa2\", but it is \"pa3\"."),
         "{err}"
     );
 }

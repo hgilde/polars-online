@@ -261,7 +261,11 @@ class TestRefusals:
             spec(embargo=5.0)
 
     def test_a_list_whose_entries_differ(self):
-        with pytest.raises(ValueError, match="a spec reads one label time a row"):
+        with pytest.raises(
+            ValueError,
+            match='label_clock lists "a" and "b", but a spec reads one time a row at which its '
+            "targets become known",
+        ):
             po.spec.ewridge(
                 "m",
                 targets=["y", "x"],

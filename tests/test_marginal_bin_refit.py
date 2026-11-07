@@ -209,10 +209,13 @@ def test_the_default_count_and_the_resolved_spec():
 @pytest.mark.parametrize(
     ("kw", "message"),
     [
-        (dict(bin_stat="mean", bin_refit_rows=10), "bin_refit_rows is for the refit of"),
-        (dict(bin_huber_delta=INF, bin_refit_rows=10), "bin_refit_rows is for the refit of"),
-        (dict(bin_stat="mean", refit_budget=10.0), "refit_budget is for the refit of"),
-        (dict(refit_budget=0.0), "refit_budget must be > 0 MiB"),
+        (dict(bin_stat="mean", bin_refit_rows=10), "bin_refit_rows applies only under bin_stat"),
+        (
+            dict(bin_huber_delta=INF, bin_refit_rows=10),
+            "bin_refit_rows applies only under bin_stat",
+        ),
+        (dict(bin_stat="mean", refit_budget=10.0), "refit_budget applies only under bin_stat"),
+        (dict(refit_budget=0.0), "refit_budget must be above 0 MiB"),
         (dict(bin_refit_rows=-1), "bin_refit_rows"),
     ],
 )

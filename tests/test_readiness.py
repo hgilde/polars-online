@@ -258,7 +258,11 @@ class TestMaxErrorInflation:
             (po.spec.sgd, dict(learning_rate=0.01)),
             (po.spec.huber, {}),
         ]:
-            with pytest.raises(ValueError, match="max_error_inflation needs a model with"):
+            with pytest.raises(
+                ValueError,
+                match="max_error_inflation needs a model that tracks how uncertain each "
+                "prediction is",
+            ):
                 build(
                     "m",
                     targets=["y"],
@@ -340,7 +344,7 @@ def test_every_kind_settles_by_the_formula_and_withholds_until_it(name):
         return getattr(po.spec, name)("m", **{k: v for k, v in kw.items() if v is not None})
 
     if name in ("seqtest", "bocpd"):
-        with pytest.raises(ValueError, match=f"half_life/lam do not apply to {name}"):
+        with pytest.raises(ValueError, match=f"- half_life does not apply to {name}, "):
             build()
         return
     out = po.ModelBank([build()]).fit_predict(frame_for(name))["m"].struct.unnest()

@@ -15,6 +15,7 @@ fn default_true() -> bool {
 mod checks;
 pub(crate) mod diagnostics;
 mod limits;
+pub(crate) use checks::render_refusal;
 use checks::*;
 mod names;
 mod readiness;
@@ -2257,9 +2258,25 @@ impl Spec {
 
     /// Decay values, one per half-life grid entry (one model instance each).
     pub fn decays(&self) -> Result<Vec<(String, Decay)>, String> {
+        // A model that takes no decay has one undecayed instance whatever
+        // `half_life` or `lam` hold: its own check refuses either given, and
+        // a second refusal here, of their values, would ask the reader to
+        // fix a setting the first tells them to leave out.
+        let decays_nothing = match &self.model {
+            ModelKind::SeqTest { .. }
+            | ModelKind::Rcov { .. }
+            | ModelKind::Bocpd { .. }
+            | ModelKind::Audit { .. } => true,
+            ModelKind::CorrChange { scalar, .. } => !scalar.unwrap_or(false),
+            _ => false,
+        };
+        if decays_nothing {
+            return Ok(vec![(String::new(), Decay::Halflife(f64::INFINITY))]);
+        }
         match (&self.half_life, self.lam) {
             (Some(_), Some(_)) => Err(format!(
-                "spec {:?}: half_life and lam are mutually exclusive",
+                "spec {:?}: half_life and lam cannot both be set: each sets the decay. Leave \
+                 out half_life, or lam.",
                 self.name
             )),
             (None, None) => match &self.model {
@@ -2281,9 +2298,10 @@ impl Spec {
                 // window, so it is named: `half_life` "inf" weighs each row
                 // in the window alike.
                 _ if self.model.keeps_window_ring() => Err(format!(
-                    "spec {:?}: a window_size needs a half_life too, and none is given. \
-                     Set half_life to \"inf\" (in Python, float(\"inf\")) to weigh every row \
-                     in the window alike, or to a finite value to decay the older rows within it.",
+                    "spec {:?}: a hard window (window_size) needs half_life, but half_life is not \
+                     set. Set half_life to \"inf\" (in Python, float(\"inf\")) to weigh every \
+                     row in the hard window alike, or to a finite value to decay the older rows \
+                     within it.",
                     self.name
                 )),
                 _ => Err(format!(
@@ -2296,7 +2314,8 @@ impl Spec {
             (None, Some(l)) => {
                 if !(0.0 < l && l <= 1.0) {
                     return Err(format!(
-                        "spec {:?}: lam must be in (0, 1], got {l}",
+                        "spec {:?}: lam must be above 0 and at most 1, but it is {l}. Set lam to \
+                         a value above 0 and below 1, or to 1 for no decay.",
                         self.name
                     ));
                 }
@@ -2308,30 +2327,59 @@ impl Spec {
                 // output struct had no field (task 160, PB3).
                 if hs.is_empty() {
                     return Err(format!(
-                        "spec {:?}: half_life names no half-life; give one or a grid",
+                        "spec {:?}: half_life must list at least one half-life, but it is empty. \
+                         Set half_life to one value, or to a list of them for a grid.",
                         self.name
                     ));
                 }
                 // `!(h > 0)` rather than `h <= 0` so NaN is refused too: it
                 // decays every accumulator to NaN and nothing washes it out.
-                if let Some(bad) = h.spans().iter().find(|s| !positive(s.value())) {
+                let bad: Vec<String> = h
+                    .spans()
+                    .iter()
+                    .filter(|s| !positive(s.value()))
+                    .map(Span::label)
+                    .collect();
+                if !bad.is_empty() {
+                    let (is, set) = match (hs.len(), bad.as_slice()) {
+                        (1, [one]) => (format!("it is {one}"), "half_life"),
+                        (_, [one]) => (format!("one of its values is {one}"), "that value"),
+                        (_, [rest @ .., last]) => (
+                            format!("its values {} and {last} are not", rest.join(", ")),
+                            "each",
+                        ),
+                        (_, []) => unreachable!("bad is not empty"),
+                    };
                     return Err(format!(
-                        "spec {:?}: half_life must be > 0 (\"inf\" for no decay), got {bad}",
+                        "spec {:?}: half_life must be above 0, but {is}. Set {set} to a positive \
+                         number of clock units, or to \"inf\" (in Python, float(\"inf\")) for \
+                         no decay.",
                         self.name
                     ));
                 }
                 if let Some(dup) = first_duplicate(&hs) {
-                    // "5m" and "300s" are one half-life written two ways.
-                    let label = h
-                        .spans()
-                        .iter()
-                        .rev()
-                        .find(|s| s.value().to_bits() == dup.to_bits())
-                        .map_or_else(|| num_label(dup), Span::label);
+                    // "5m" and "300s" are one half-life written two ways:
+                    // each spelling is named, so the reader finds both.
+                    let mut labels: Vec<String> = Vec::new();
+                    for s in h.spans().iter().filter(|s| s.value() == dup) {
+                        let l = s.label();
+                        if !labels.contains(&l) {
+                            labels.push(l);
+                        }
+                    }
+                    let lists = match labels.as_slice() {
+                        [one] => format!("lists {one} more than once"),
+                        [rest @ .., last] => format!(
+                            "lists {} and {last}, which are the same half-life",
+                            rest.join(", ")
+                        ),
+                        [] => format!("lists {} more than once", num_label(dup)),
+                    };
                     return Err(format!(
-                        "spec {:?}: half_life lists {} more than once; each value is one \
-                         model instance and the two would be the same model",
-                        self.name, label
+                        "spec {:?}: half_life {lists}, and each half-life is one instance (the \
+                         part of the model that fits that half-life), so its copies would be one \
+                         instance. List each half-life once.",
+                        self.name
                     ));
                 }
                 if hs.len() == 1 {
@@ -2553,95 +2601,143 @@ impl Spec {
         }
     }
 
+    /// Every problem the spec's own checks find, in one refusal
+    /// ([`render_refusal`]). The checks of the model's own settings, which
+    /// the model makes as it is built (`build_models`), run once these pass:
+    /// building reads what these check.
     pub fn validate(&self) -> Result<(), String> {
+        let mut no = online_core::Refusals::new();
+        if let Err(e) = self.validate_each(&mut no)
+            && !no.stopped()
+        {
+            // A check that still returns at its problem stops the rest.
+            no.take(Err(e));
+            let _ = no.stop_here();
+        }
+        render_refusal(&self.name, self.model.kind_name(), &no)
+    }
+
+    /// The spec's checks, each problem added to `no`; an `Err` only where a
+    /// check stops (`no.stop_here()`), since the checks after it read what
+    /// it refuses.
+    fn validate_each(&self, no: &mut online_core::Refusals) -> Result<(), String> {
+        let name = &self.name;
+        // A parameter that applies only with a switch on, given with it off,
+        // does nothing: refused rather than ignored (review 2026-09-12, S22).
+        let needs = |key: &str, switch: &str| {
+            format!(
+                "spec {name:?}: {key} applies only when {switch} is on, but {switch} is off. \
+                 Turn on {switch}, or leave out {key}."
+            )
+        };
         // Clock parameters given as durations and as numbers at once, or
-        // durations with no clock to measure them (task 88).
-        self.clock_scale()?;
+        // durations with no clock to measure them (task 88). Every check
+        // after this reads a clock parameter's value, which means nothing
+        // until the clock that measures it is settled: a stop.
+        if !no.take(self.clock_scale().map(|_| ())) {
+            no.stop_here()?;
+        }
         // The bank's tables put `spec` and `group` columns beside a struct
         // named after the spec (`ModelBank.last_row`), and an empty name names
         // no struct at all (review 2026-09-12, S7).
-        if self.name.is_empty() || self.name == "spec" || self.name == "group" {
-            return Err(format!(
-                "spec {:?}: the name must be non-empty and neither \"spec\" nor \"group\", \
-                 which the bank's tables use for their own columns",
-                self.name
+        if self.name.is_empty() {
+            no.refuse(format!(
+                "spec {name:?}: the spec's name must not be empty, since it names the spec's \
+                 output column. Give the spec a name."
+            ));
+        } else if self.name == "spec" || self.name == "group" {
+            no.refuse(format!(
+                "spec {name:?}: the spec's name must not be \"spec\" or \"group\", which the \
+                 bank's tables use for their own columns, but it is {name:?}. Give the spec \
+                 another name."
             ));
         }
+        // The columns: a spec with no target, or a model with no feature to
+        // fit on, is a stop, since the checks after these read the columns
+        // (a list per target, a leak, a diagnostic of the features).
+        let mut columns_missing = false;
         if self.targets.is_empty() {
             // An unsupervised spec is allowed to omit them, and
             // `fill_defaults` mirrors `features[0]` (E53) -- so an empty list
             // here means either a model that needs targets, or one that would
             // have had them filled but names no features either.
-            return Err(if self.model.is_unsupervised() {
+            columns_missing = true;
+            no.refuse(if self.model.is_unsupervised() {
                 format!(
-                    "spec {:?}: features must be non-empty ({} learns from no target, so its \
-                     targets are filled from features[0])",
-                    self.name,
+                    "spec {name:?}: features must name at least one column, but it is empty: {} \
+                     learns from no target, and fills its targets from its first feature. Name \
+                     at least one column in features.",
                     self.model.kind_name()
                 )
             } else {
-                format!("spec {:?}: targets must be non-empty", self.name)
+                format!(
+                    "spec {name:?}: targets must name at least one column, but it is empty. Name \
+                     the columns to predict in targets."
+                )
             });
         }
         // An empty name names no column and writes fields called `pred_` and
         // `resid_`; `po.target("")` and an empty table name were refused, a
         // plain `""` was not (review 2026-10-06, YA5).
         if self.targets.defs().iter().any(|t| t.name.is_empty()) {
-            return Err(format!(
-                "spec {:?}: targets must not contain an empty name; its fields would be called \
-                 pred_ and resid_",
-                self.name
+            no.refuse(format!(
+                "spec {name:?}: every target needs a name, but one of them is \"\", which would \
+                 name its fields pred_ and resid_. Give each target a name."
             ));
         }
         if let Some(gc) = &self.group_close {
             const GROUP_CLOSE: [&str; 2] = ["monotone", "session"];
             if !GROUP_CLOSE.contains(&gc.as_str()) {
-                return Err(spec_words_refusal(
+                no.refuse(spec_words_refusal(
                     &self.name,
                     "group_close",
                     &GROUP_CLOSE,
                     gc,
                 ));
             }
-            if self.group.is_none() {
-                return Err(format!(
-                    "spec {:?}: group_close needs a group column; without one the bank keeps a \
-                     single stream, which is never finished",
-                    self.name
+            // rcov needs group_close and audit refuses it: each model's own
+            // check says what to do there.
+            let own = matches!(self.model, ModelKind::Rcov { .. } | ModelKind::Audit { .. });
+            if self.group.is_none() && !own {
+                no.refuse(format!(
+                    "spec {name:?}: group_close needs a group column, but group is not set, so \
+                     every row belongs to one group. Set group, or leave out group_close."
                 ));
             }
             if self.embargo.is_some() {
-                return Err(format!(
-                    "spec {:?}: group_close does not work with embargo; a closed group \
-                     cannot release the rows it is still holding, so its row would not equal \
-                     the gram() read at the same point",
-                    self.name
+                no.refuse(format!(
+                    "spec {name:?}: group_close and embargo cannot both be set: a closed group \
+                     cannot release the rows it still holds for the embargo. Leave out \
+                     group_close, or embargo."
                 ));
             }
             if gc == "session" {
                 if self.session.is_none() {
-                    return Err(format!(
-                        "spec {:?}: group_close = \"session\" needs a session column to close on",
-                        self.name
+                    no.refuse(format!(
+                        "spec {name:?}: group_close=\"session\" closes each group at a session \
+                         change, but session is not set. Set session to the column of sessions, \
+                         or set group_close=\"monotone\"."
                     ));
                 }
                 if self.session_gap.is_some() {
-                    return Err(format!(
-                        "spec {:?}: group_close = \"session\" and session_gap are two \
-                         prescriptions for one event; the close is the reset, with an emission",
-                        self.name
+                    no.refuse(format!(
+                        "spec {name:?}: group_close=\"session\" and session_gap cannot both be \
+                         set: both say what happens at a session change, and under \
+                         group_close=\"session\" the group closes there. Leave out session_gap, \
+                         or group_close."
                     ));
                 }
             }
         }
-        self.check_label_clock()?;
-        if let Some(d) = self.embargo.as_ref().map(Span::value)
-            && (d.is_nan() || !d.is_finite() || d <= 0.0)
-        {
-            return Err(format!(
-                "spec {:?}: embargo must be finite and > 0 (got {d}); leave it out for no \
-                     delay",
-                self.name
+        no.take(self.check_label_clock());
+        if let Some(e) = self.embargo.as_ref().filter(|e| {
+            let d = e.value();
+            d.is_nan() || !d.is_finite() || d <= 0.0
+        }) {
+            no.refuse(format!(
+                "spec {name:?}: embargo must be finite and above 0, but it is {e}. Set embargo \
+                 to the delay before a row's target is known, in clock units, or leave it out \
+                 for no delay."
             ));
         }
         // Holt has no features by construction, and neither has seqtest;
@@ -2650,11 +2746,11 @@ impl Spec {
         // would look like they were used.
         if matches!(self.model, ModelKind::Holt { .. }) {
             if !self.features.is_empty() {
-                return Err(format!(
-                    "spec {:?}: holt takes no features (got {}); it extrapolates the \
-                     target's own level and trend. Use a regression model to use features.",
-                    self.name,
-                    self.features.len()
+                no.refuse(format!(
+                    "spec {name:?}: holt takes no features, but features lists {}: it \
+                     extrapolates each target's own level and trend. Leave out features, or use \
+                     a regression model such as ewridge to fit on them.",
+                    columns_counted(self.features.len())
                 ));
             }
         } else if let ModelKind::SeqTest {
@@ -2665,45 +2761,53 @@ impl Spec {
         } = &self.model
         {
             if !self.features.is_empty() {
-                return Err(format!(
-                    "spec {:?}: seqtest takes no features (got {}); it tests the sign of \
-                     each target. Put the columns whose sign is tested in targets.",
-                    self.name,
-                    self.features.len()
-                ));
+                no.refuse(if a.is_some() || b.is_some() {
+                    format!(
+                        "spec {name:?}: seqtest takes no features, but features lists {}: it \
+                         compares the residuals of the specs a and b name. Leave out features.",
+                        columns_counted(self.features.len())
+                    )
+                } else {
+                    format!(
+                        "spec {name:?}: seqtest takes no features, but features lists {}: it \
+                         tests the sign of each target. Put the columns to test in targets, and \
+                         leave out features.",
+                        columns_counted(self.features.len())
+                    )
+                });
             }
             // The two are one switch: a comparison needs both sides.
             match (a, b) {
                 (Some(_), None) | (None, Some(_)) => {
-                    return Err(format!(
-                        "spec {:?}: seqtest a and b go together (got {}); name both specs \
-                         to compare them, or neither to test the sign of the targets",
-                        self.name,
-                        if a.is_some() { "a only" } else { "b only" }
+                    no.refuse(format!(
+                        "spec {name:?}: seqtest needs a and b together, but only {} is set. Name \
+                         both specs to compare them, or neither to test the sign of each target.",
+                        if a.is_some() { "a" } else { "b" }
                     ));
                 }
                 // One spec against itself is a tie on every row -- unless
                 // the suffixes pick two instances of its grid, which is a
                 // comparison like any other.
                 (Some(a), Some(b)) if a == b && a_suffix == b_suffix => {
-                    return Err(format!(
-                        "spec {:?}: seqtest a and b are both {a:?} with the same suffix; a \
-                         spec against itself is a tie on every row (a_suffix/b_suffix \
-                         compare two instances of its grid)",
-                        self.name
+                    no.refuse(format!(
+                        "spec {name:?}: seqtest a and b both name {a:?}, with no suffix or the \
+                         same one, so the spec would be compared with itself and tie on every row. Name two \
+                         different specs, or give a_suffix and b_suffix to compare two of its \
+                         slots."
                     ));
                 }
                 (Some(a), Some(b)) if a == &self.name || b == &self.name => {
-                    return Err(format!(
-                        "spec {:?}: seqtest a/b name the spec itself; it has no residuals",
-                        self.name
+                    no.refuse(format!(
+                        "spec {name:?}: seqtest a and b must name other specs, but {} names this \
+                         spec, which has no residuals of its own. Name two other specs in a and b.",
+                        if a == &self.name { "a" } else { "b" }
                     ));
                 }
                 (None, None) if a_suffix.is_some() || b_suffix.is_some() => {
-                    return Err(format!(
-                        "spec {:?}: seqtest a_suffix/b_suffix pick a side's grid instance; \
-                         they need a and b",
-                        self.name
+                    no.refuse(format!(
+                        "spec {name:?}: a_suffix and b_suffix pick which slots of a and b to \
+                         compare, but a and b are not set. Set a and b, or leave out the \
+                         suffixes."
                     ));
                 }
                 _ => {}
@@ -2712,21 +2816,33 @@ impl Spec {
             // row, not a weight, and the wealth is a product that no decay
             // can apply to. Refused rather than ignored, as elsewhere.
             if self.weight.is_some() {
-                return Err(format!(
-                    "spec {:?}: weight does not apply to seqtest (every learned row is one \
-                     trial; null the target to skip a row)",
-                    self.name
+                no.refuse(format!(
+                    "spec {name:?}: weight does not apply to seqtest, which counts every learned \
+                     row as one trial, but weight is set. Leave out weight, and make a target \
+                     null on a row to leave that row out of the test."
                 ));
             }
             if self.half_life.is_some() || self.lam.is_some() {
-                return Err(format!(
-                    "spec {:?}: half_life/lam do not apply to seqtest (an e-process does not \
-                     forget; use session or restart_after_step_back to restart it)",
-                    self.name
+                let key = if self.half_life.is_some() {
+                    "half_life"
+                } else {
+                    "lam"
+                };
+                no.refuse(format!(
+                    "spec {name:?}: {key} does not apply to seqtest, whose test does not forget, \
+                     but it is set. Leave out {key}, and set session with session_gap=\"reset\", \
+                     or restart_after_step_back, to reset the test."
                 ));
             }
-        } else if self.features.is_empty() {
-            return Err(format!("spec {:?}: features must be non-empty", self.name));
+        } else if self.features.is_empty() && !(columns_missing && self.model.is_unsupervised()) {
+            columns_missing = true;
+            no.refuse(format!(
+                "spec {name:?}: features must name at least one column, but it is empty. Name \
+                 the columns to fit on in features."
+            ));
+        }
+        if columns_missing {
+            no.stop_here()?;
         }
         // A duplicated column silently splits its coefficient across identical
         // slots on an exactly singular system (the jitter fallback rescues the
@@ -2734,10 +2850,21 @@ impl Spec {
         // in the output struct. Both are always mistakes.
         for (label, cols) in [("features", &self.features), ("targets", &self.targets)] {
             let mut seen = std::collections::HashSet::new();
-            if let Some(dup) = cols.iter().find(|c| !seen.insert(c.as_str())) {
-                return Err(format!(
-                    "spec {:?}: {label} lists {dup:?} more than once",
-                    self.name
+            let mut dups: Vec<&str> = Vec::new();
+            for c in cols.iter() {
+                if !seen.insert(c.as_str()) && !dups.contains(&c.as_str()) {
+                    dups.push(c.as_str());
+                }
+            }
+            if !dups.is_empty() {
+                let listed = dups
+                    .iter()
+                    .map(|d| format!("{d:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                no.refuse(format!(
+                    "spec {name:?}: {label} must name each column once, but it lists {listed} \
+                     more than once. Remove the repeats from {label}."
                 ));
             }
         }
@@ -2767,23 +2894,28 @@ impl Spec {
                 .iter()
                 .any(|t| t.value_column() == Some(f.as_str()))
         };
-        if let Some(leak) = (!unsupervised)
-            .then(|| self.features.iter().find(|f| is_target(f)))
-            .flatten()
-        {
-            // `ew_class` calls its target the label, and so does its message
-            // (task 278, batch 29).
+        if !unsupervised {
+            // `ew_class` names its target with `label` (task 278, batch
+            // 29); the glossary keeps the word for that name alone.
             let role = if matches!(self.model, ModelKind::EwClass { .. }) {
-                "label"
+                "the column of classes"
             } else {
-                "target"
+                "a target"
             };
-            return Err(format!(
-                "spec {:?}: {leak:?} is both a {role} and a feature; a feature is read \
-                 from the current row, so this would predict the {role} with itself \
-                 (use a lagged copy of the column if you mean its past values)",
-                self.name
-            ));
+            // Under a group, a shift crosses from one group's rows to the
+            // next unless it is taken over the group.
+            let shift = match &self.group {
+                Some(g) => format!("shift(1).over({g:?})"),
+                None => "shift(1)".to_string(),
+            };
+            for leak in self.features.iter().filter(|f| is_target(f)) {
+                no.refuse(format!(
+                    "spec {name:?}: {leak:?} is both {role} and a feature, so the model would \
+                     predict it from itself on the same row. Remove {leak:?} from features, or \
+                     make its previous value a column with Polars' {shift} in the query before \
+                     the bank, and use that as the feature."
+                ));
+            }
         }
         // A formula target (docs/PLAN.md task 104) is a regression target.
         // Where the targets slot holds something else -- a column an
@@ -2791,30 +2923,44 @@ impl Spec {
         // fitted to -- it is refused by name rather than turned into a number
         // that means nothing.
         if self.targets.any_formula() {
-            let what = "a formula target (a window expression looking ahead)";
             let why = match &self.model {
-                m if m.is_unsupervised() => Some("learns from no target"),
-                ModelKind::EwClass { .. } => Some("classifies its target as a label"),
-                ModelKind::SeqTest { .. } => Some("tests the signs of its targets"),
+                m if m.is_unsupervised() => Some(("learns from no target", "")),
+                ModelKind::EwClass { .. } => Some((
+                    "classifies a column of classes",
+                    ", and give that column in its place",
+                )),
+                // A comparison's own refusal below says it.
+                m if m.compares().is_some() => None,
+                ModelKind::SeqTest { .. } => Some((
+                    "tests the signs of its targets",
+                    ", and name the columns whose signs are tested in targets",
+                )),
                 ModelKind::Ftrl { loss, .. }
                     if loss.as_deref().unwrap_or("logistic") == "logistic" =>
                 {
-                    Some("fits a probability to a 0/1 target (loss = \"logistic\")")
+                    Some((
+                        "fits a probability to a 0/1 target under loss=\"logistic\"",
+                        ", and name a 0/1 column in targets, or set loss=\"squared\"",
+                    ))
                 }
                 // `sgd` fits the same probability under the same loss, and a
                 // log rate to a count under "poisson" (review 2026-09-26, D2).
-                ModelKind::Sgd { loss, .. } if loss.as_deref() == Some("logistic") => {
-                    Some("fits a probability to a 0/1 target (loss = \"logistic\")")
-                }
-                ModelKind::Sgd { loss, .. } if loss.as_deref() == Some("poisson") => {
-                    Some("fits a log rate to a count (loss = \"poisson\")")
-                }
+                ModelKind::Sgd { loss, .. } if loss.as_deref() == Some("logistic") => Some((
+                    "fits a probability to a 0/1 target under loss=\"logistic\"",
+                    ", and name a 0/1 column in targets, or set loss=\"squared\"",
+                )),
+                ModelKind::Sgd { loss, .. } if loss.as_deref() == Some("poisson") => Some((
+                    "fits a log rate to a count under loss=\"poisson\"",
+                    ", and name a column of counts in targets, or set loss=\"squared\"",
+                )),
                 _ => None,
             };
-            if let Some(why) = why {
-                return Err(format!(
-                    "spec {:?}: {what} does not apply: this model {why}",
-                    self.name
+            if let Some((why, also)) = why {
+                no.refuse(format!(
+                    "spec {name:?}: a formula target (a target holding a window operator with \
+                     reverse=True) does not apply to {}, which {why}. Remove the formula \
+                     target{also}.",
+                    self.model.kind_name()
                 ));
             }
         }
@@ -2824,89 +2970,126 @@ impl Spec {
         // it holds, as under `embargo`.
         if self.targets.any_formula() {
             if self.group_close.is_some() {
-                return Err(format!(
-                    "spec {:?}: group_close does not work with a formula target; a closed \
-                     group cannot release the rows whose windows are still open",
-                    self.name
+                no.refuse(format!(
+                    "spec {name:?}: group_close cannot be set beside a formula target: a closed \
+                     group cannot release the rows whose windows are still open. Leave out \
+                     group_close, or replace the formula target with a column."
                 ));
             }
             if self.model.compares().is_some() {
-                return Err(format!(
-                    "spec {:?}: a comparison reads two other specs' residuals, not a formula \
-                     target",
-                    self.name
+                no.refuse(format!(
+                    "spec {name:?}: a formula target does not apply to a spec that compares two \
+                     other specs' residuals. Leave out the formula target."
                 ));
             }
             // The bank adds the target beside the columns its formula reads,
             // so it cannot be one of them. The builder has said so since task
             // 159 (P1); a spec written as a dict or in TOML was refused only
             // at its first chunk (task 160, PB5).
-            if let Some(t) = self.targets.defs().iter().find(|t| {
+            for t in self.targets.defs().iter().filter(|t| {
                 t.formula
                     .as_ref()
                     .is_some_and(|tree| tree.columns().contains(&t.name))
             }) {
-                return Err(format!(
-                    "spec {:?}: target {:?} is named after a column its formula reads, so it \
-                     could never be added beside that column: give it a name of its own",
-                    self.name, t.name
+                no.refuse(format!(
+                    "spec {name:?}: target {:?} is named after a column its formula reads, so \
+                     the bank could not add it beside that column. Give the target a name of \
+                     its own.",
+                    t.name
                 ));
             }
         }
-        self.decays()?;
-        self.clock_cfg()?;
+        let decays = no.value(self.decays());
+        no.take(self.clock_cfg().map(|_| ()));
         let mp = self.min_periods_per_target();
         if mp.len() != self.m() {
-            return Err(format!(
-                "spec {:?}: min_weight list has {} entries but there are {} targets",
-                self.name,
+            no.refuse(format!(
+                "spec {name:?}: min_weight must list one value per target ({}), but it lists {}. \
+                 Give a list of {}, or a single number for every target.",
+                self.m(),
                 mp.len(),
-                self.m()
+                counted(self.m(), "value", "values"),
             ));
         }
-        if let Some(v) = mp.iter().find(|v| **v < 0.0 || v.is_nan()) {
-            return Err(format!(
-                "spec {:?}: min_weight must be >= 0, got {v}",
-                self.name
+        let bad: Vec<String> = mp
+            .iter()
+            .filter(|v| **v < 0.0 || v.is_nan())
+            .map(|v| num_label(*v))
+            .collect();
+        if !bad.is_empty() {
+            let got = match &self.min_weight {
+                Some(FloatOrList::List(_)) => Got::Of(bad),
+                _ => Got::One(bad.into_iter().next().unwrap_or_default()),
+            };
+            no.refuse(at_least_zero(
+                &format!("spec {name:?}"),
+                "min_weight",
+                "",
+                &got,
+                Some("to predict from the first row"),
+                None,
             ));
         }
         // The values that mean nothing (`limits.rs`).
-        self.refuse_values_that_mean_nothing()?;
+        no.take(self.refuse_values_that_mean_nothing());
         if let Some(Num(f)) = self.min_settled_frac {
             if !(0.0..1.0).contains(&f) {
-                return Err(format!(
-                    "spec {:?}: min_settled_frac must be a finite fraction of steady state in [0, 1) \
-                     (0 is off; 0.5 is one half_life, 0.75 two), got {f}",
-                    self.name
+                no.refuse(format!(
+                    "spec {name:?}: min_settled_frac must be at least 0 and below 1, but it is \
+                     {f}. Set min_settled_frac to 0 to withhold nothing, or to a fraction such as \
+                     0.5, which waits one half-life."
                 ));
-            }
-            if f > 0.0 && !self.has_decay() {
-                return Err(format!(
-                    "spec {:?}: min_settled_frac needs a decay to settle toward (a finite \
-                     half_life, or lam < 1); without one every row is settled and the gate \
-                     would do nothing",
-                    self.name
-                ));
+            } else if f > 0.0 && decays.is_some() && !self.has_decay() {
+                // Where the decay itself is refused, its own refusal speaks.
+                // Name only what the reader set, and offer decay only to a
+                // model that takes it.
+                // As `decays()` reads it: corrchange decays under scalar=True.
+                let decays_by_kind = match &self.model {
+                    ModelKind::SeqTest { .. }
+                    | ModelKind::Rcov { .. }
+                    | ModelKind::Bocpd { .. }
+                    | ModelKind::Audit { .. } => false,
+                    ModelKind::CorrChange { scalar, .. } => scalar.unwrap_or(false),
+                    _ => true,
+                };
+                no.refuse(match (decays_by_kind, self.lam.is_some()) {
+                    (true, true) => format!(
+                        "spec {name:?}: min_settled_frac waits for the model to come toward its \
+                         steady state under decay, but lam is 1, so it would withhold nothing. \
+                         Set lam below 1, or leave out min_settled_frac."
+                    ),
+                    (true, false) => format!(
+                        "spec {name:?}: min_settled_frac waits for the model to come toward its \
+                         steady state under decay, but half_life is inf, so it would withhold \
+                         nothing. Set half_life to a finite value, or leave out min_settled_frac."
+                    ),
+                    _ => format!(
+                        "spec {name:?}: min_settled_frac waits for the model to come toward its \
+                         steady state under decay, but {} does not decay, so it would withhold \
+                         nothing. Leave out min_settled_frac.",
+                        self.model.kind_name()
+                    ),
+                });
             }
         }
         if let Some(Num(r)) = self.max_error_inflation {
             if r.is_nan() || r <= 1.0 {
-                return Err(format!(
-                    "spec {:?}: max_error_inflation must be a ratio above 1 -- how much \
-                     estimation error may inflate a prediction's error over the noise floor \
-                     (sqrt(2) is the default; inf switches the gate off), got {r}",
-                    self.name
+                no.refuse(format!(
+                    "spec {name:?}: max_error_inflation must be above 1, but it is {r}: it bounds \
+                     how far the estimation error may inflate a prediction's error over the \
+                     noise. Set max_error_inflation above 1, such as 1.41, or to inf to withhold \
+                     nothing."
                 ));
             }
             // Range-checked and then dropped on every other model before
             // release 0.11.1 (docs/PLAN.md task 109): refused by name, as
             // `emit_error_inflation` is, with the reason (task 116).
             if !self.has_error_inflation() {
-                return Err(format!(
-                    "spec {:?}: max_error_inflation needs a model with a noise statistic to \
-                     gate on (ewridge, rls, kalman, lasso); {} has none: {}. It is held by \
-                     min_weight alone",
-                    self.name,
+                no.refuse(format!(
+                    "spec {name:?}: max_error_inflation needs a model that tracks how uncertain \
+                     each prediction is, as ewridge, rls, kalman and lasso do, but {} does not: \
+                     {}. Leave out max_error_inflation, and use min_weight to withhold the first \
+                     predictions.",
                     self.model.kind_name(),
                     self.no_noise_statistic()
                 ));
@@ -2915,122 +3098,135 @@ impl Spec {
         if self.emit_se_coef && !self.has_se_coef() {
             let why = match self.model {
                 ModelKind::Lasso { .. } => {
-                    "lasso's fit is post-selection: its active set is chosen from the same rows, \
-                     and a covariance that ignores the choice understates it"
+                    "it chooses its coefficients from the same rows, and a covariance that \
+                     ignores the choice understates their error"
                 }
                 ModelKind::Huber { .. } | ModelKind::Quantile { .. } => {
-                    "an M-estimator's covariance is a sandwich of the loss's curvature and the \
-                     scores' spread, a different formula from a least-squares fit's"
+                    "a robust fit's covariance needs a different formula from a least-squares \
+                     fit's"
                 }
                 ModelKind::Sgd { .. } | ModelKind::Pa { .. } | ModelKind::Ftrl { .. } => {
-                    "a gradient fit keeps no second moment of the features to read a covariance \
+                    "a gradient fit keeps no second moments of the features to read a covariance \
                      from"
                 }
-                _ => "it keeps no covariance of coefficients",
+                _ => "it keeps no covariance of its coefficients",
             };
-            return Err(format!(
-                "spec {:?}: emit_se_coef needs a model that keeps its coefficients' covariance \
-                 (ewridge, rls, kalman); {} has none: {why}",
-                self.name,
+            no.refuse(format!(
+                "spec {name:?}: emit_se_coef needs a model that keeps its coefficients' \
+                 covariance, as ewridge, rls and kalman do, but {} does not: {why}. Leave out \
+                 emit_se_coef, or use one of those models.",
                 self.model.kind_name()
             ));
         }
-        if self.emit_influence && !self.has_row_error_inflation() {
-            return Err(format!(
-                "spec {:?}: emit_influence needs a model that reads one row's leverage \
-                 (ewridge, rls, kalman); {} has none: {}",
-                self.name,
+        // A model that predicts no target is refused these below, once, with
+        // every residual switch it was given.
+        let predicts = !self.model.predicts_no_target();
+        if self.emit_influence && predicts && !self.has_row_error_inflation() {
+            no.refuse(format!(
+                "spec {name:?}: emit_influence needs a model that reads one row's leverage, as \
+                 ewridge, rls and kalman do, but {} does not: {}. Leave out emit_influence, or \
+                 use one of those models.",
                 self.model.kind_name(),
-                self.no_noise_statistic()
+                self.no_leverage()
             ));
         }
-        if self.emit_robust_se && !self.has_robust_se() {
+        if self.emit_robust_se && predicts && !self.has_robust_se() {
             let why = match self.model {
                 ModelKind::Kalman { .. } => {
-                    "kalman's coefficients follow a random walk whose posterior is its own \
-                     covariance (emit_se_coef), not a weighted least-squares fit's"
+                    "its coefficients' covariance is its own posterior, which emit_se_coef \
+                     reports"
                 }
                 ModelKind::Lasso { .. } => {
-                    "lasso's fit is post-selection: its active set is chosen from the same rows, \
-                     and a covariance that ignores the choice understates it"
+                    "it chooses its coefficients from the same rows, and a covariance that \
+                     ignores the choice understates their error"
                 }
                 ModelKind::Huber { .. } | ModelKind::Quantile { .. } => {
-                    "an M-estimator's sandwich weighs each row by its loss's curvature, not the \
-                     least-squares one"
+                    "a robust fit weighs each row by its loss, not as least squares does"
                 }
                 ModelKind::Sgd { .. } | ModelKind::Pa { .. } | ModelKind::Ftrl { .. } => {
-                    "a gradient fit is no weighted least-squares fit, so a least-squares \
-                     sandwich describes other coefficients than its own"
+                    "a gradient fit is not a weighted least-squares fit"
                 }
                 _ => "it has no least-squares coefficients",
             };
-            return Err(format!(
-                "spec {:?}: emit_robust_se needs a least-squares fit (ewridge, rls); {} is \
-                 none: {why}",
-                self.name,
+            no.refuse(format!(
+                "spec {name:?}: emit_robust_se needs a least-squares fit, as ewridge and rls \
+                 have, but {} has none: {why}. Leave out emit_robust_se, or use one of those \
+                 models.",
                 self.model.kind_name()
             ));
         }
         if self.ljung_box_lags.is_some() && !self.emit_specification {
-            return Err(format!(
-                "spec {:?}: ljung_box_lags needs emit_specification",
-                self.name
-            ));
+            no.refuse(needs("ljung_box_lags", "emit_specification"));
         }
         if let Some(l) = self.ljung_box_lags {
+            // The test reads its lags past the ones a horizon skips, and the
+            // rows of them all are set aside before the first row: the
+            // bound on the reader's own number is what is left of the
+            // ceiling (the check `online_core::check_lag_ceiling` makes).
+            let skip = self.ljung_box_skip();
+            let most = online_core::MAX_LAG.saturating_sub(skip);
             if l == 0 {
-                return Err(format!(
-                    "spec {:?}: ljung_box_lags must be >= 1, got 0",
-                    self.name
+                no.refuse(format!(
+                    "spec {name:?}: ljung_box_lags must be at least 1, but it is 0. Set \
+                     ljung_box_lags to 1 or more, such as the default 10, or leave it out."
                 ));
+            } else if l > most {
+                no.refuse(if skip == 0 {
+                    format!(
+                        "spec {name:?}: ljung_box_lags must be at most {most}, but it is {l}: \
+                         memory for every lag is set aside before the first row. Lower \
+                         ljung_box_lags to {most} or below."
+                    )
+                } else {
+                    format!(
+                        "spec {name:?}: ljung_box_lags must be at most {most}, since \
+                         horizon_rows={} skips the first {skip} lags and memory for every lag \
+                         is set aside before the first row, but it is {l}. Lower \
+                         ljung_box_lags to {most} or below, or lower horizon_rows.",
+                        self.horizon()
+                    )
+                });
             }
-            online_core::check_lag_ceiling("ljung_box_lags", l + self.ljung_box_skip())
-                .map_err(|e| format!("spec {:?}: {e}", self.name))?;
         }
         if self.horizon_rows.is_some() && self.horizon_readers().is_empty() {
-            return Err(format!(
-                "spec {:?}: horizon_rows needs a diagnostic that reads it (emit_calibration, \
-                 emit_breaks, emit_specification, emit_robust_se)",
-                self.name
+            no.refuse(format!(
+                "spec {name:?}: horizon_rows applies only when emit_calibration, emit_breaks, \
+                 emit_specification or emit_robust_se is on, but none is. Turn on the \
+                 diagnostic that should read it, or leave out horizon_rows."
             ));
         }
         if let Some(h) = self.horizon_rows.filter(|h| *h > online_core::MAX_LAG / 2) {
-            return Err(format!(
-                "spec {:?}: horizon_rows must be at most {} (2^19), got {h}: Newey and West's \
-                 lags are twice it, and a ring of that many rows is sized before the first row",
-                self.name,
+            no.refuse(format!(
+                "spec {name:?}: horizon_rows must be at most {}, but it is {h}: the diagnostics \
+                 read twice as many lags, and memory for every lag is set aside before the \
+                 first row. Lower horizon_rows to {} or below.",
+                online_core::MAX_LAG / 2,
                 online_core::MAX_LAG / 2
             ));
         }
         if self.robust_se_lags.is_some() && !self.emit_robust_se {
-            return Err(format!(
-                "spec {:?}: robust_se_lags needs emit_robust_se",
-                self.name
-            ));
+            no.refuse(needs("robust_se_lags", "emit_robust_se"));
         }
         if let Some(l) = self.robust_se_lags {
-            online_core::check_lag_ceiling("robust_se_lags", l)
-                .map_err(|e| format!("spec {:?}: {e}", self.name))?;
+            no.take(
+                online_core::check_lag_ceiling("robust_se_lags", l)
+                    .map_err(|e| format!("spec {name:?}: {e}")),
+            );
         }
         if self.emit_error_inflation && !self.has_row_error_inflation() {
-            let why = if matches!(self.model, ModelKind::Lasso { .. }) {
-                "lasso keeps no factor to read a row's own leverage from (its gate reads the \
-                 active count over Kish's n instead)"
-            } else {
-                self.no_noise_statistic()
-            };
-            return Err(format!(
-                "spec {:?}: emit_error_inflation needs a model that reads one row's estimation \
-                 variance (ewridge, rls, kalman); {} has none: {why}",
-                self.name,
-                self.model.kind_name()
+            no.refuse(format!(
+                "spec {name:?}: emit_error_inflation needs a model that reads one row's \
+                 leverage, as ewridge, rls and kalman do, but {} does not: {}. Leave out \
+                 emit_error_inflation, or use one of those models.",
+                self.model.kind_name(),
+                self.no_leverage()
             ));
         }
         const DRIFT_ACTION: [&str; 2] = ["flag", "reset"];
         if let Some(a) = &self.drift_action
             && !DRIFT_ACTION.contains(&a.as_str())
         {
-            return Err(spec_words_refusal(
+            no.refuse(spec_words_refusal(
                 &self.name,
                 "drift_action",
                 &DRIFT_ACTION,
@@ -3040,8 +3236,8 @@ impl Spec {
         // A tolerance or a threshold of `inf` is a detector that never
         // fires: no setting (review 2026-09-12, S27).
         if let Some(v) = self.drift_delta.filter(|v| *v < 0.0 || !v.is_finite()) {
-            return Err(at_least_zero(
-                &format!("spec {:?}", self.name),
+            no.refuse(at_least_zero(
+                &format!("spec {name:?}"),
                 "drift_delta",
                 "",
                 &Got::One(num_label(v)),
@@ -3054,62 +3250,79 @@ impl Spec {
             .as_ref()
             .filter(|v| v.value() <= 0.0 || !v.value().is_finite())
         {
-            return Err(format!(
-                "spec {:?}: drift_threshold must be finite and > 0, got {v}",
-                self.name
+            no.refuse(format!(
+                "spec {name:?}: drift_threshold must be finite and above 0, but it is {v}. Set \
+                 drift_threshold to the summed excess that flags a drift, such as 20 without a \
+                 clock, or a duration such as \"20m\" on a clock that holds times."
             ));
         }
         if let Some(qs) = &self.resid_quantiles {
             if qs.is_empty() {
-                return Err(format!(
-                    "spec {:?}: resid_quantiles must be non-empty",
-                    self.name
+                no.refuse(format!(
+                    "spec {name:?}: resid_quantiles must list at least one level, but it is \
+                     empty. List levels above 0 and below 1, such as [0.05, 0.95], or leave out \
+                     resid_quantiles."
                 ));
             }
-            if let Some(q) = qs
+            let bad: Vec<String> = qs
                 .iter()
-                .find(|q| !(0.0..=1.0).contains(*q) || **q == 0.0 || **q == 1.0)
-            {
-                return Err(format!(
-                    "spec {:?}: resid_quantiles must be strictly between 0 and 1, got {q}",
-                    self.name
+                .filter(|q| !(**q > 0.0 && **q < 1.0))
+                .map(|q| num_label(*q))
+                .collect();
+            if !bad.is_empty() {
+                no.refuse(format!(
+                    "spec {name:?}: resid_quantiles must each be above 0 and below 1, but {} {}. \
+                     Set each level above 0 and below 1.",
+                    if bad.len() == 1 {
+                        "one of them is"
+                    } else {
+                        "these are not:"
+                    },
+                    bad.join(", ")
                 ));
             }
         }
         if let Some(c) = self.conformal.filter(|c| !(*c > 0.0 && *c < 1.0)) {
-            return Err(format!(
-                "spec {:?}: conformal must be a coverage level strictly between 0 and 1, got {c}",
-                self.name
+            no.refuse(format!(
+                "spec {name:?}: conformal must be above 0 and below 1, but it is {c}. Set \
+                 conformal to the share of rows whose target the interval should cover, such \
+                 as 0.9."
             ));
         }
         if let Some(r) = self.conformal_rate.filter(|r| !(*r > 0.0 && r.is_finite())) {
-            return Err(format!(
-                "spec {:?}: conformal_rate must be finite and > 0, got {r}",
-                self.name
+            no.refuse(format!(
+                "spec {name:?}: conformal_rate must be finite and above 0, but it is {r}. Set \
+                 conformal_rate to how fast the interval's width adapts, such as the default \
+                 0.05."
             ));
         }
         if self.conformal_rate.is_some() && self.conformal.is_none() {
-            return Err(format!(
-                "spec {:?}: conformal_rate needs conformal (the coverage level) to be set",
-                self.name
+            no.refuse(format!(
+                "spec {name:?}: conformal_rate sets how fast the interval adapts, but conformal, \
+                 its coverage, is not set. Set conformal, such as 0.9, or leave out \
+                 conformal_rate."
             ));
         }
         if self.resid_autocorr_lag.is_some_and(|l| l == 0) {
-            return Err(format!(
-                "spec {:?}: resid_autocorr_lag must be >= 1, got 0",
-                self.name
+            no.refuse(format!(
+                "spec {name:?}: resid_autocorr_lag must be at least 1, but it is 0. Set \
+                 resid_autocorr_lag to the lag of the autocorrelation to report, such as 1."
             ));
         }
         // The tracker's buffer is sized from the lag before the first row,
         // as the models' lag rings are (review 2026-10-06, CD10).
-        if let Some(l) = self.resid_autocorr_lag {
-            online_core::check_lag_ceiling("resid_autocorr_lag", l)
-                .map_err(|e| format!("spec {:?}: {e}", self.name))?;
+        if let Some(l) = self.resid_autocorr_lag.filter(|l| *l > 0) {
+            no.take(
+                online_core::check_lag_ceiling("resid_autocorr_lag", l)
+                    .map_err(|e| format!("spec {name:?}: {e}")),
+            );
         }
         if let Some(v) = self.average_eta.filter(|v| v.0 <= 0.0 || v.0.is_nan()) {
-            return Err(format!(
-                "spec {:?}: average_eta must be > 0 (\"inf\" is emit_selected's argmin), got {}",
-                self.name, v.0
+            no.refuse(format!(
+                "spec {name:?}: average_eta must be above 0, but it is {}. Set average_eta to a \
+                 positive value, such as the default 1, or to inf to take the best slot alone, \
+                 as emit_selected does.",
+                v.0
             ));
         }
         // A knob whose switch is off does nothing: refused rather than
@@ -3118,10 +3331,9 @@ impl Spec {
         // `"reset"` asks for anything.
         if !self.emit_drift {
             if self.drift_action.as_deref() == Some("reset") {
-                return Err(format!(
-                    "spec {:?}: drift_action = \"reset\" needs emit_drift; the detector is built \
-                     only under that flag",
-                    self.name
+                no.refuse(format!(
+                    "spec {name:?}: drift_action=\"reset\" applies only when emit_drift is on, \
+                     but emit_drift is off. Turn on emit_drift, or leave out drift_action."
                 ));
             }
             for (knob, set) in [
@@ -3129,30 +3341,22 @@ impl Spec {
                 ("drift_threshold", self.drift_threshold.is_some()),
             ] {
                 if set {
-                    return Err(format!("spec {:?}: {knob} needs emit_drift", self.name));
+                    no.refuse(needs(knob, "emit_drift"));
                 }
             }
         } else if self.clock.is_some() && self.drift_threshold.is_none() {
-            return Err(format!(
-                "spec {:?}: drift_threshold is required when clock is given, as gap_cap is: the \
-                 drift detector sums each row's excess times its clock step, so its threshold is \
-                 sigma times clock time, and no default means the same on every clock; give it \
-                 in the clock column's units, or as a duration on a Datetime, Date or Duration \
-                 clock (\"20m\": one sigma of excess held for twenty minutes)",
-                self.name
+            no.refuse(format!(
+                "spec {name:?}: drift_threshold must be set when the spec has a clock, but it is \
+                 not: the detector sums each row's excess times its clock step, so no default \
+                 means the same on every clock. Set drift_threshold in clock units, or as a \
+                 duration such as \"20m\" on a clock that holds times."
             ));
         }
         if self.average_eta.is_some() && !self.emit_averaged {
-            return Err(format!(
-                "spec {:?}: average_eta needs emit_averaged",
-                self.name
-            ));
+            no.refuse(needs("average_eta", "emit_averaged"));
         }
         if self.resid_autocorr_lag.is_some() && !self.emit_autocorr {
-            return Err(format!(
-                "spec {:?}: resid_autocorr_lag needs emit_autocorr",
-                self.name
-            ));
+            no.refuse(needs("resid_autocorr_lag", "emit_autocorr"));
         }
         // A diagnostic's own memory (docs/PLAN.md task 221): a half-life
         // above 0, `inf` the run-once form that forgets nothing; given with
@@ -3160,25 +3364,37 @@ impl Spec {
         for (key, switch, on, memory) in self.diagnostic_memories() {
             let Some(h) = memory else { continue };
             if !on {
-                return Err(format!("spec {:?}: {key} needs {switch}", self.name));
+                no.refuse(needs(key, switch));
             }
             if h.value().is_nan() || h.value() <= 0.0 {
-                return Err(format!(
-                    "spec {:?}: {key} must be > 0 (\"inf\" is the run-once form, which \
-                     forgets nothing), got {h}",
-                    self.name
-                ));
+                // Feature health compares two memories, which an infinite
+                // one makes the same (refused below).
+                no.refuse(if key == "feature_health_half_life" {
+                    format!(
+                        "spec {name:?}: {key} must be above 0, but it is {h}. Set {key} to a \
+                         finite positive number of clock units."
+                    )
+                } else {
+                    format!(
+                        "spec {name:?}: {key} must be above 0, but it is {h}. Set {key} to a \
+                         positive number of clock units, or to inf for a diagnostic that \
+                         forgets nothing."
+                    )
+                });
             }
         }
         if self.session_gap.is_some() && self.session.is_none() {
-            return Err(format!("spec {:?}: session_gap needs session", self.name));
+            no.refuse(format!(
+                "spec {name:?}: session_gap applies only with a session column, but session is \
+                 not set. Set session, or leave out session_gap."
+            ));
         }
         // A step back is read off the clock; given without one it would be
         // silently ignored, and a key that does nothing is refused here.
         if self.restart_after_step_back.is_some() && self.clock.is_none() {
-            return Err(format!(
-                "spec {:?}: restart_after_step_back needs clock",
-                self.name
+            no.refuse(format!(
+                "spec {name:?}: restart_after_step_back applies only with a clock, but clock is \
+                 not set. Set clock, or leave out restart_after_step_back."
             ));
         }
         // The snapshot cadence spaces a window's snapshots, so each part of
@@ -3193,12 +3409,15 @@ impl Spec {
                 ("max_rows_between_snapshots", rows.is_some()),
             ] {
                 if given && window.is_none() {
-                    return Err(format!("spec {:?}: {key} needs `window_size`", self.name));
+                    no.refuse(format!(
+                        "spec {name:?}: {key} applies only under a hard window, but window_size \
+                         is not set. Set window_size, or leave out {key}."
+                    ));
                 }
             }
             if let Some(e) = every.filter(|e| !non_negative(e.value()) || !e.value().is_finite()) {
-                return Err(at_least_zero(
-                    &format!("spec {:?}", self.name),
+                no.refuse(at_least_zero(
+                    &format!("spec {name:?}"),
                     "snapshot_every",
                     " clock units",
                     &Got::One(e.to_string()),
@@ -3217,10 +3436,10 @@ impl Spec {
             && closed == ModelClosed::Both
             && window.is_none()
         {
-            return Err(format!(
-                "spec {:?}: closed needs `window_size` (it says which edge holds a row \
-                 exactly one window old)",
-                self.name
+            no.refuse(format!(
+                "spec {name:?}: closed applies only under a hard window, where it says whether a \
+                 row exactly window_size old keeps its weight, but window_size is not set. Set \
+                 window_size, or leave out closed."
             ));
         }
         // A row cap of no rows is no schedule, in every `max_rows_between_*`,
@@ -3230,36 +3449,42 @@ impl Spec {
         // 196, U7).
         for (key, cap, clock) in self.model.row_caps() {
             if cap == Some(0) {
-                return Err(format!(
-                    "spec {:?}: {key} must be >= 1 ({clock} = 0 is every row), got 0",
-                    self.name
+                no.refuse(format!(
+                    "spec {name:?}: {key} must be at least 1, but it is 0. Set {key} to 1 or \
+                     more, or leave it out and set {clock} to 0 to act on every row."
                 ));
             }
         }
         // A count of no threads (docs/PLAN.md task 225): the reader refuses
         // it, and a spec built in Rust is held to the same.
         if self.model.gram_threads_given() == Some(CountOrAuto::Count(0)) {
-            return Err(format!(
-                "spec {:?}: gram_threads must be >= 1 (the threads of the bank's pool the \
-                 Gram's update may run on; leave it out for one, or give \"auto\" for the whole \
-                 pool), got 0",
-                self.name
+            no.refuse(format!(
+                "spec {name:?}: gram_threads must be at least 1 or \"auto\", but it is 0. Set \
+                 gram_threads to the number of the bank's threads to update the Gram on, or to \
+                 \"auto\" for all of them."
             ));
         }
         // A budget bounds a window's snapshots, so it needs a window, and a
         // budget of no bytes bounds nothing (review 2026-09-12, P4).
         if let Some((window, Some(budget))) = self.model.window_parts() {
             if window.is_none() {
-                return Err(format!(
-                    "spec {:?}: window_budget needs `window_size`",
-                    self.name
+                no.refuse(format!(
+                    "spec {name:?}: window_budget applies only under a hard window, but \
+                     window_size is not set. Set window_size, or leave out window_budget."
                 ));
             }
             let mib = budget.mib();
             if mib <= 0.0 || mib.is_nan() {
-                return Err(format!(
-                    "spec {:?}: window_budget must be > 0 MiB (\"inf\" is no bound), got {mib}",
-                    self.name
+                // The mode the reader gave, as they wrote it.
+                let mode = match budget {
+                    WindowBudgetSpec::Thin(_) => "thin",
+                    WindowBudgetSpec::Refuse(_) => "refuse",
+                };
+                no.refuse(format!(
+                    "spec {name:?}: window_budget's \"{mode}\" must be above 0 MiB, but it is \
+                     {}. Set it to a positive number of MiB, such as 256, or to inf for no \
+                     bound.",
+                    num_label(mib)
                 ));
             }
         }
@@ -3275,9 +3500,9 @@ impl Spec {
             ),
         ] {
             if given && !self.model.has_coef() {
-                return Err(format!(
-                    "spec {:?}: {key} does not apply to {} (it reports no coefficients)",
-                    self.name,
+                no.refuse(format!(
+                    "spec {name:?}: {key} applies only to a model that reports coefficients, but \
+                     {} reports none. Leave out {key}.",
                     self.model.kind_name()
                 ));
             }
@@ -3287,8 +3512,8 @@ impl Spec {
             .as_ref()
             .filter(|e| !(e.value().is_finite() && non_negative(e.value())))
         {
-            return Err(at_least_zero(
-                &format!("spec {:?}", self.name),
+            no.refuse(at_least_zero(
+                &format!("spec {name:?}"),
                 "coef_every",
                 " clock units",
                 &Got::One(e.to_string()),
@@ -3298,15 +3523,16 @@ impl Spec {
         }
         // A cap of no rows is no schedule: every row is `coef_every = 0`.
         if self.max_rows_between_coefs == Some(0) {
-            return Err(format!(
-                "spec {:?}: max_rows_between_coefs must be >= 1 (coef_every = 0 writes `coef` \
-                 on every row), got 0",
-                self.name
+            no.refuse(format!(
+                "spec {name:?}: max_rows_between_coefs must be at least 1, but it is 0. Set \
+                 max_rows_between_coefs to 1 or more, or leave it out and set coef_every to 0 \
+                 to fill the coef field on every row."
             ));
         }
         // Nothing residual-based applies to a model that predicts no target.
         // Refused rather than ignored: a flag that silently emits nothing
         // looks like a bug in the output, not in the spec.
+        let mut health_refused = false;
         if self.model.predicts_no_target() {
             let asked = [
                 ("emit_sigma", self.emit_sigma),
@@ -3322,24 +3548,37 @@ impl Spec {
                 ("emit_specification", self.emit_specification),
                 ("emit_tails", self.emit_tails),
                 ("emit_influence", self.emit_influence),
-                ("emit_feature_health", self.emit_feature_health),
                 ("emit_averaged", self.emit_averaged),
                 ("emit_selected", self.emit_selected),
             ];
-            if let Some((flag, _)) = asked.iter().find(|(_, on)| *on) {
-                // Feature health reads no residual: it watches the features
-                // a fit's coefficients lean on (task 232 (14); review round
-                // 6, F-8).
-                let why = if *flag == "emit_feature_health" {
-                    "it watches the features a fit's coefficients lean on, and this model fits \
-                     no target; a feature's own health is ModelBank.check()'s and \
-                     po.spec.audit's"
+            let on: Vec<&str> = asked
+                .iter()
+                .filter(|(_, on)| *on)
+                .map(|(f, _)| *f)
+                .collect();
+            if let Some((last, rest)) = on.split_last() {
+                let listed = if rest.is_empty() {
+                    (*last).to_string()
                 } else {
-                    "it has no predictions, so no residuals"
+                    format!("{} and {last}", rest.join(", "))
                 };
-                return Err(format!(
-                    "spec {:?}: {flag} does not apply to {} ({why})",
-                    self.name,
+                no.refuse(format!(
+                    "spec {name:?}: {listed} {} not apply to {}, which predicts no number for a \
+                     target, so has no residuals. Leave out {listed}.",
+                    if rest.is_empty() { "does" } else { "do" },
+                    self.model.kind_name()
+                ));
+            }
+            // Feature health reads no residual: it watches the features
+            // a fit's coefficients lean on (task 232 (14); review round
+            // 6, F-8).
+            if self.emit_feature_health {
+                health_refused = true;
+                no.refuse(format!(
+                    "spec {name:?}: emit_feature_health does not apply to {}, which fits no \
+                     coefficients of its features: it watches the features a fit's coefficients \
+                     lean on. Leave out emit_feature_health, and use ModelBank.check() or \
+                     po.spec.audit to watch the features themselves.",
                     self.model.kind_name()
                 ));
             }
@@ -3347,1271 +3586,91 @@ impl Spec {
         // Feature health reads the features alone: a model with none would
         // write no field, so the switch is refused rather than ignored
         // (review round 6, F6).
-        if self.emit_feature_health && self.k() == 0 {
-            return Err(format!(
-                "spec {:?}: emit_feature_health reads each feature's spread and mean, and {} \
-                 has no features",
-                self.name,
+        if self.emit_feature_health && !health_refused && self.k() == 0 {
+            health_refused = true;
+            no.refuse(format!(
+                "spec {name:?}: emit_feature_health watches each feature's spread and mean, but \
+                 {} has no features. Leave out emit_feature_health.",
                 self.model.kind_name()
             ));
         }
         // Run once the fast and the slow memory are both the whole stream,
         // and every field would be null: refused rather than written null
         // (task 232 (2); review round 6, B-4).
-        if self.emit_feature_health {
+        if self.emit_feature_health
+            && !health_refused
+            && let Some(decays) = &decays
+        {
             let forgets = |d: Decay| match d {
                 Decay::Halflife(h) => h.is_finite(),
                 Decay::Lam(l) => l < 1.0,
             };
             let memory = self.feature_health_half_life.as_ref();
-            if self
-                .decays()?
+            if decays
                 .iter()
                 .any(|(_, d)| !forgets(self.diagnostic_decay_of(memory, *d, 1)))
             {
                 let why = if memory.is_some() {
                     "feature_health_half_life is inf"
+                } else if self.lam.is_some() {
+                    "its memory is the fit's, which forgets nothing (lam is 1, with no \
+                     window_size)"
                 } else {
-                    "its memory is the fit's, and the fit forgets nothing (half_life is inf, \
-                     with no window_size)"
+                    "its memory is the fit's, which forgets nothing (half_life is inf, with no \
+                     window_size)"
                 };
-                return Err(format!(
-                    "spec {:?}: emit_feature_health compares each feature's spread and mean at \
-                     its memory with four times it, and {why}, so both are the whole stream and \
-                     every field would be null: give feature_health_half_life a finite value",
-                    self.name
+                no.refuse(format!(
+                    "spec {name:?}: emit_feature_health compares each feature at its memory with \
+                     four times that memory, but {why}, so both read the whole stream and every \
+                     field would be null. Set feature_health_half_life to a finite value."
                 ));
             }
         }
         // Both choose across a target's slots, and one slot leaves nothing to
         // choose: `emit_averaged` there was the slot's own prediction under
         // another name, null on the first scored row (task 278).
-        for (flag, on) in [
-            ("emit_selected", self.emit_selected),
-            ("emit_averaged", self.emit_averaged),
-        ] {
-            if !on {
-                continue;
-            }
-            let n_slots = self.decays()?.len() * crate::combo_labels(self).len();
-            if n_slots < 2 {
-                return Err(format!(
-                    "spec {:?}: {flag} needs more than one slot per target; add a \
-                     ridge/feature_set/half_life grid or a lasso path",
-                    self.name
-                ));
+        // A model that predicts no target has no slots to choose among: its
+        // own refusal of the flag speaks.
+        if let Some(decays) = decays.as_ref().filter(|_| !self.model.predicts_no_target()) {
+            for (flag, on) in [
+                ("emit_selected", self.emit_selected),
+                ("emit_averaged", self.emit_averaged),
+            ] {
+                if !on {
+                    continue;
+                }
+                let n_slots = decays.len() * crate::combo_labels(self).len();
+                if n_slots < 2 {
+                    // Only the grids this model takes: every model takes a
+                    // half_life grid (`combos`, stream.rs).
+                    let grids = match self.model {
+                        ModelKind::EwRidge { .. } => "half_life, ridge or feature_sets",
+                        ModelKind::Huber { .. } => "half_life or feature_sets",
+                        ModelKind::Lasso { .. } => "half_life or penalties",
+                        _ => "half_life",
+                    };
+                    no.refuse(format!(
+                        "spec {name:?}: {flag} chooses among each target's slots, but this spec \
+                         has one slot per target. Give {grids} several values, or leave out \
+                         {flag}."
+                    ));
+                }
             }
         }
-        match &self.model {
-            ModelKind::Holt {
-                trend_half_life,
-                trend,
-            } => {
-                if *trend == Some(false) && trend_half_life.is_some() {
-                    return Err(format!(
-                        "spec {:?}: holt trend_half_life applies only with a trend; trend = false \
-                         holds it at zero",
-                        self.name
-                    ));
-                }
-                if let Some(h) = trend_half_life
-                    .as_ref()
-                    .filter(|h| h.value() <= 0.0 || h.value().is_nan())
-                {
-                    return Err(format!(
-                        "spec {:?}: trend_half_life must be > 0 (\"inf\" forgets no slope), got {h}",
-                        self.name
-                    ));
-                }
-            }
-            ModelKind::Pa { mode, c, eps, .. } => {
-                const MODE: [&str; 3] = ["pa", "pa1", "pa2"];
-                if let Some(md) = mode
-                    && !MODE.contains(&md.as_str())
-                {
-                    return Err(spec_words_refusal(&self.name, "mode", &MODE, md));
-                }
-                if let Some(v) = c.filter(|v| v.0 <= 0.0 || v.0.is_nan()) {
-                    return Err(format!(
-                        "spec {:?}: pa c must be > 0 (\"inf\" caps nothing: mode \"pa\"), got {}",
-                        self.name, v.0
-                    ));
-                }
-                // Refused where nothing reads it, as `sgd`'s `power` is.
-                if c.is_some() && mode.as_deref() == Some("pa") {
-                    return Err(format!(
-                        "spec {:?}: pa c is for mode \"pa1\" or \"pa2\"; mode \"pa\" does not \
-                         use it",
-                        self.name
-                    ));
-                }
-                // A tube of `inf` holds every row: a model that never learns
-                // (review 2026-09-12, S27).
-                if let Some(v) = eps.filter(|v| *v < 0.0 || !v.is_finite()) {
-                    return Err(at_least_zero(
-                        &format!("spec {:?}", self.name),
-                        "eps",
-                        "",
-                        &Got::One(num_label(v)),
-                        Some("to move the fit on every row with a residual other than 0"),
-                        None,
-                    ));
-                }
-            }
-            ModelKind::Sgd {
-                loss,
-                huber_delta,
-                huber_scale,
-                huber_scale_half_life,
-                huber_refit_rows,
-                refit_budget,
-                quantile,
-                eps,
-                learning_rate,
-                schedule,
-                power,
-                strict_binary,
-                ..
-            } => {
-                check_huber_scale(
-                    &self.name,
-                    huber_scale.as_deref(),
-                    huber_scale_half_life.as_ref(),
-                )?;
-                check_refit_budget(&self.name, *refit_budget)?;
-                if let Some(l) = loss {
-                    const OK: [&str; 6] = [
-                        "squared",
-                        "huber",
-                        "quantile",
-                        "epsilon_insensitive",
-                        "poisson",
-                        "logistic",
-                    ];
-                    if !OK.contains(&l.as_str()) {
-                        return Err(spec_words_refusal(&self.name, "loss", &OK, l));
-                    }
-                    if l == "quantile" && quantile.is_none() {
-                        return Err(format!(
-                            "spec {:?}: sgd loss \"quantile\" needs a `quantile` level",
-                            self.name
-                        ));
-                    }
-                }
-                const SCHEDULE: [&str; 3] = ["constant", "inv_scaling", "adagrad"];
-                if let Some(sc) = schedule
-                    && !SCHEDULE.contains(&sc.as_str())
-                {
-                    return Err(spec_words_refusal(&self.name, "schedule", &SCHEDULE, sc));
-                }
-                if let Some(v) = learning_rate.filter(|v| *v <= 0.0 || !v.is_finite()) {
-                    return Err(format!(
-                        "spec {:?}: learning_rate must be finite and > 0, got {v}",
-                        self.name
-                    ));
-                }
-                // Unchecked, a NaN reached the core's `f64::clamp`, which
-                // panics on a NaN bound.
-                if let Some(d) = huber_delta.filter(|d| !positive(d.0)) {
-                    return Err(format!(
-                        "spec {:?}: huber_delta must be > 0 (\"inf\" is the squared loss), got {}",
-                        self.name, d.0
-                    ));
-                }
-                // A parameter of a loss or a schedule the spec does not use
-                // is refused, as a switch that is off is: each was taken and
-                // ignored. The builder has refused them since task 160 (YA8);
-                // a dict or a TOML file is refused here, in its words (YA8b).
-                // A null is the default, not a value given.
-                let loss = loss.as_deref().unwrap_or("squared");
-                let schedule = schedule.as_deref().unwrap_or("constant");
-                for (key, given, what, owner, chosen) in [
-                    ("huber_delta", huber_delta.is_some(), "loss", "huber", loss),
-                    ("huber_scale", huber_scale.is_some(), "loss", "huber", loss),
-                    (
-                        "huber_scale_half_life",
-                        huber_scale_half_life.is_some(),
-                        "loss",
-                        "huber",
-                        loss,
-                    ),
-                    (
-                        "huber_refit_rows",
-                        huber_refit_rows.is_some(),
-                        "loss",
-                        "huber",
-                        loss,
-                    ),
-                    (
-                        "refit_budget",
-                        refit_budget.is_some(),
-                        "loss",
-                        "huber",
-                        loss,
-                    ),
-                    ("quantile", quantile.is_some(), "loss", "quantile", loss),
-                    ("eps", eps.is_some(), "loss", "epsilon_insensitive", loss),
-                    ("strict_binary", *strict_binary, "loss", "logistic", loss),
-                    (
-                        "power",
-                        power.is_some(),
-                        "schedule",
-                        "inv_scaling",
-                        schedule,
-                    ),
-                ] {
-                    if given && chosen != owner {
-                        return Err(format!(
-                            "spec {:?}: sgd {key} is for {what} {owner:?}; {what} {chosen:?} \
-                             does not use it",
-                            self.name
-                        ));
-                    }
-                }
-            }
-            ModelKind::EwCov {
-                stats,
-                // Either value is a choice.
-                bias: _,
-                precision_prior,
-                mahal_quantiles,
-                pca,
-                pca_every,
-                max_rows_between_pcas,
-                lags,
-                // Checked with `ew_ridge`'s (`gram_threads_given`).
-                gram_threads: _,
-                window_size: window,
-                // Checked with every windowed kind's (`window_cadence`).
-                snapshot_every: _,
-                max_rows_between_snapshots: _,
-                window_budget: _,
-                closed: _,
-            } => {
-                if let Some(w) = window
-                    && (!w.value().is_finite() || w.value() <= 0.0)
-                {
-                    return Err(format!(
-                        "spec {:?}: window_size must be finite and > 0 (got {w}); it is clock \
-                         units of history to keep",
-                        self.name
-                    ));
-                }
-                const OK: [&str; 8] = [
-                    "mean",
-                    "var",
-                    "std",
-                    "cov",
-                    "corr",
-                    "partial_corr",
-                    "mahal",
-                    "lag_corr",
-                ];
-                if let Some(stats) = stats {
-                    // `stats = []` stays legal: it is the accumulate-only use
-                    // (docs/ENHANCEMENTS.md E43), which writes `weight_sum`
-                    // alone and keeps the Gram, not a spelling of absent.
-                    for st in stats {
-                        if !OK.contains(&st.as_str()) {
-                            let renamed = RENAMED_VALUES
-                                .iter()
-                                .find(|(old, _)| *old == st)
-                                .map_or(String::new(), |(old, new)| {
-                                    format!("; {old} was renamed {new}")
-                                });
-                            return Err(format!(
-                                "{}{renamed}",
-                                spec_words_refusal(&self.name, "stats", &OK, st)
-                            ));
-                        }
-                    }
-                    let pairwise =
-                        |st: &String| st == "cov" || st == "corr" || st == "partial_corr";
-                    if self.k() < 2 && stats.iter().any(pairwise) {
-                        return Err(format!(
-                            "spec {:?}: ew_cov cov/corr/partial_corr need at least two features",
-                            self.name
-                        ));
-                    }
-                    if stats.iter().any(|st| st == "partial_corr") && precision_prior.is_none() {
-                        return Err(format!(
-                            "spec {:?}: ew_cov partial_corr needs `precision_prior`",
-                            self.name
-                        ));
-                    }
-                    if stats.iter().any(|st| st == "mahal") && precision_prior.is_none() {
-                        return Err(format!(
-                            "spec {:?}: ew_cov mahal needs `precision_prior`",
-                            self.name
-                        ));
-                    }
-                }
-                if let Some(p) = precision_prior.filter(|p| *p <= 0.0 || !p.is_finite()) {
-                    return Err(format!(
-                        "spec {:?}: precision_prior must be finite and > 0, got {p}",
-                        self.name
-                    ));
-                }
-                let has_lag_corr = stats
-                    .as_ref()
-                    .is_some_and(|st| st.iter().any(|s| s == "lag_corr"));
-                if has_lag_corr && lags.as_ref().is_none_or(|l| l.is_empty()) {
-                    return Err(format!(
-                        "spec {:?}: ew_cov lag_corr needs `lags` (which lags to accumulate, e.g. \
-                         lags = [1, 2, 5])",
-                        self.name
-                    ));
-                }
-                if let Some(lags) = lags {
-                    // The list's own rules are the accumulator's, so the CLI
-                    // and the bank get one message.
-                    online_core::EwLagCov::new(self.k().max(1), lags.clone())
-                        .map_err(|e| format!("spec {:?}: ew_cov {e}", self.name))?;
-                }
-                if let Some(levels) = mahal_quantiles {
-                    // An empty list asked for nothing and was taken without a
-                    // word, where `resid_quantiles = []` is refused (review
-                    // 2026-10-06, YA5).
-                    if levels.is_empty() {
-                        return Err(format!(
-                            "spec {:?}: ew_cov mahal_quantiles must be non-empty; leave it out \
-                             for none",
-                            self.name
-                        ));
-                    }
-                    let has_mahal = stats
-                        .as_ref()
-                        .is_some_and(|st| st.iter().any(|s| s == "mahal"));
-                    if !has_mahal {
-                        return Err(format!(
-                            "spec {:?}: ew_cov mahal_quantiles needs \"mahal\" in `stats`",
-                            self.name
-                        ));
-                    }
-                    for &q in levels {
-                        if !(q > 0.0 && q < 1.0) {
-                            return Err(format!(
-                                "spec {:?}: ew_cov mahal_quantiles must be strictly between 0 and 1, got {q}",
-                                self.name
-                            ));
-                        }
-                    }
-                }
-                // `0` was a second spelling of absent (review 2026-10-06,
-                // PC9; docs/PLAN.md task 196, U7).
-                if *pca == Some(0) {
-                    return Err(format!(
-                        "spec {:?}: ew_cov pca = 0 asks for no component; leave it out for none",
-                        self.name
-                    ));
-                }
-                if let Some(r) = pca
-                    && *r > self.k()
-                {
-                    return Err(format!(
-                        "spec {:?}: ew_cov pca asks for {r} components of {} features",
-                        self.name,
-                        self.k()
-                    ));
-                }
-                if let Some(e) = pca_every
-                    .as_ref()
-                    .filter(|e| !non_negative(e.value()) || !e.value().is_finite())
-                {
-                    return Err(at_least_zero(
-                        &format!("spec {:?}", self.name),
-                        "pca_every",
-                        " clock units",
-                        &Got::One(e.to_string()),
-                        Some("to refresh the principal components on every row"),
-                        None,
-                    ));
-                }
-                for (key, given) in [
-                    ("pca_every", pca_every.is_some()),
-                    ("max_rows_between_pcas", max_rows_between_pcas.is_some()),
-                ] {
-                    if given && pca.is_none_or(|r| r == 0) {
-                        return Err(format!(
-                            "spec {:?}: ew_cov {key} needs `pca` (the number of components)",
-                            self.name
-                        ));
-                    }
-                }
-            }
-            ModelKind::KMeans {
-                k,
-                init,
-                update_every_rows,
-                split_merge,
-                split_merge_every_rows,
-                dead_frac,
-                standardize,
-                scale_floor,
-                ..
-            } => {
-                if *k == 0 {
-                    return Err(format!(
-                        "spec {:?}: kmeans n_clusters must be >= 1, got 0",
-                        self.name
-                    ));
-                }
-                if let Some(rule) = init
-                    && !INIT_WORDS.contains(&rule.as_str())
-                {
-                    return Err(spec_words_refusal(&self.name, "init", &INIT_WORDS, rule));
-                }
-                if update_every_rows.is_some_and(|v| v == 0) {
-                    return Err(format!(
-                        "spec {:?}: update_every_rows must be >= 1, got 0",
-                        self.name
-                    ));
-                }
-                if split_merge_every_rows.is_some_and(|v| v == 0) {
-                    return Err(format!(
-                        "spec {:?}: split_merge_every_rows must be >= 1, got 0",
-                        self.name
-                    ));
-                }
-                if let Some(v) = split_merge.filter(|v| *v < 0.0 || !v.is_finite()) {
-                    return Err(at_least_zero(
-                        &format!("spec {:?}", self.name),
-                        "split_merge",
-                        "",
-                        &Got::One(num_label(v)),
-                        Some("to learn every row, with no split or merge"),
-                        None,
-                    ));
-                }
-                if let Some(v) = dead_frac.filter(|v| *v < 0.0 || !v.is_finite()) {
-                    return Err(at_least_zero(
-                        &format!("spec {:?}", self.name),
-                        "dead_frac",
-                        "",
-                        &Got::One(num_label(v)),
-                        Some("to never re-place a center whose weight has decayed"),
-                        Some(0.5),
-                    ));
-                }
-                if let Some(v) = scale_floor.filter(|v| *v < 0.0 || !v.is_finite()) {
-                    return Err(at_least_zero(
-                        &format!("spec {:?}", self.name),
-                        "scale_floor",
-                        "",
-                        &Got::One(num_label(v)),
-                        Some(
-                            "to measure distances by each feature's exponentially weighted variance alone",
-                        ),
-                        None,
-                    ));
-                }
-                if *standardize == Some(false) && scale_floor.is_some() {
-                    return Err(format!(
-                        "spec {:?}: scale_floor floors the variance distances are measured in \
-                         under standardize; standardize = false measures in the features' own \
-                         units, so there is none to floor: leave scale_floor out",
-                        self.name
-                    ));
-                }
-            }
-            ModelKind::Micro {
-                eps,
-                beta_mu,
-                max_clusters,
-                prune_every,
-                macro_link,
-                standardize,
-                scale_floor,
-                ..
-            } => {
-                if !(eps.is_finite() && *eps > 0.0) {
-                    return Err(format!(
-                        "spec {:?}: micro eps must be finite and > 0, got {eps}",
-                        self.name
-                    ));
-                }
-                if let Some(v) = beta_mu.filter(|v| !(v.is_finite() && *v > 0.0)) {
-                    return Err(format!(
-                        "spec {:?}: beta_mu must be finite and > 0, got {v}",
-                        self.name
-                    ));
-                }
-                if max_clusters.is_some_and(|v| v == 0) {
-                    return Err(format!(
-                        "spec {:?}: max_clusters must be >= 1, got 0",
-                        self.name
-                    ));
-                }
-                if let Some(e) = prune_every
-                    .as_ref()
-                    .filter(|e| !non_negative(e.value()) || !e.value().is_finite())
-                {
-                    return Err(at_least_zero(
-                        &format!("spec {:?}", self.name),
-                        "prune_every",
-                        " clock units",
-                        &Got::One(e.to_string()),
-                        Some("to prune and join, on every row, the small clusters the model keeps"),
-                        None,
-                    ));
-                }
-                if let Some(v) = macro_link.filter(|v| *v < 0.0 || !v.is_finite()) {
-                    return Err(at_least_zero(
-                        &format!("spec {:?}", self.name),
-                        "macro_link",
-                        "",
-                        &Got::One(num_label(v)),
-                        Some("to join none of the small clusters the model keeps"),
-                        None,
-                    ));
-                }
-                if let Some(v) = scale_floor.filter(|v| *v < 0.0 || !v.is_finite()) {
-                    return Err(at_least_zero(
-                        &format!("spec {:?}", self.name),
-                        "scale_floor",
-                        "",
-                        &Got::One(num_label(v)),
-                        Some(
-                            "to measure distances by each feature's exponentially weighted variance alone",
-                        ),
-                        None,
-                    ));
-                }
-                if *standardize == Some(false) && scale_floor.is_some() {
-                    return Err(format!(
-                        "spec {:?}: scale_floor floors the variance distances are measured in \
-                         under standardize; standardize = false measures in the features' own \
-                         units, so there is none to floor: leave scale_floor out",
-                        self.name
-                    ));
-                }
-            }
-            ModelKind::EwClass {
-                classes,
-                covariance_type,
-                precision_prior,
-                window_size: window,
-                // Checked with every windowed kind's (`window_cadence`).
-                snapshot_every: _,
-                max_rows_between_snapshots: _,
-                window_budget: _,
-                closed: _,
-            } => {
-                if let Some(w) = window
-                    && (!w.value().is_finite() || w.value() <= 0.0)
-                {
-                    return Err(format!(
-                        "spec {:?}: window_size must be finite and > 0 (got {w})",
-                        self.name
-                    ));
-                }
-                if self.targets.len() != 1 {
-                    return Err(format!(
-                        "spec {:?}: ew_class takes exactly one target, the label column (got {})",
-                        self.name,
-                        self.targets.len()
-                    ));
-                }
-                if classes.len() < 2 {
-                    return Err(format!(
-                        "spec {:?}: ew_class classes must list at least 2 classes (got {})",
-                        self.name,
-                        classes.len()
-                    ));
-                }
-                let mut seen = std::collections::HashSet::new();
-                if let Some(dup) = classes.iter().find(|c| !seen.insert(c.as_str())) {
-                    return Err(format!(
-                        "spec {:?}: ew_class classes lists {dup:?} more than once",
-                        self.name
-                    ));
-                }
-                if classes.iter().any(|c| c.is_empty()) {
-                    return Err(format!(
-                        "spec {:?}: ew_class classes must not contain an empty name",
-                        self.name
-                    ));
-                }
-                if let Some(c) = covariance_type {
-                    online_core::Covariance::parse(c)
-                        .map_err(|e| format!("spec {:?}: {e}", self.name))?;
-                }
-                if !(precision_prior.is_finite() && *precision_prior > 0.0) {
-                    return Err(format!(
-                        "spec {:?}: ew_class precision_prior must be finite and > 0, got \
-                         {precision_prior}",
-                        self.name
-                    ));
-                }
-            }
-            // Checked above, with the features: its refusals come before the
-            // shared checks so that `half_life` is named for what it is here.
-            ModelKind::SeqTest { .. } => {}
-            // The shared checks (non-empty features and targets, no column on
-            // both sides, a decay, `min_weight` per target, no residual
-            // diagnostics) and one of its own: given edges and the knobs for
-            // learning them are two ways of saying where the bins are, and a
-            // spec that says both is a spec with a mistake in it. The core
-            // checks the edges and the lags themselves.
-            ModelKind::Marginal {
-                bins,
-                bin_rule,
-                bin_warm_rows,
-                bin_edges,
-                bin_budget,
-                bin_stat,
-                bin_huber_delta,
-                bin_refit_rows,
-                refit_budget,
-                window_size: window,
-                lags,
-                cross_lags,
-                window_lags,
-                feature_moments,
-                ..
-            } => {
-                // Where the feature moments are kept (docs/PLAN.md task 125).
-                // The core refuses `"shared"` with a window too, and says
-                // why; here it is refused where the spec is made. With lags
-                // it is taken: each feature's autocovariance at each lag is
-                // then kept once, beside the shared moments.
-                match feature_moments.as_deref() {
-                    None | Some("per_target") => {}
-                    Some("shared") if window.is_some() => {
-                        return Err(format!(
-                            "spec {:?}: marginal feature_moments = \"shared\" takes no window: \
-                             a window subtracts each pair's moments centred on the pair's own \
-                             mean, and the shared mean also moves on rows the pair's target \
-                             missed. Use feature_moments = \"per_target\" with a window.",
-                            self.name
-                        ));
-                    }
-                    Some("shared") => {}
-                    Some(other) => {
-                        return Err(spec_words_refusal(
-                            &self.name,
-                            "feature_moments",
-                            &["per_target", "shared"],
-                            other,
-                        ));
-                    }
-                }
-                // An empty list asks for nothing, as `ew_cov`'s does.
-                if lags.as_ref().is_some_and(Vec::is_empty) {
-                    return Err(format!(
-                        "spec {:?}: marginal lags must be non-empty; leave it out for none",
-                        self.name
-                    ));
-                }
-                // Lags under a window cost the snapshot its lag moments, and
-                // the spec says so by name before it pays (the user,
-                // 2026-09-28: "implement but with an api parameter that
-                // documents the impact"; docs/PLAN.md task 137).
-                let n_lags = lags.as_ref().map_or(0, Vec::len);
-                match (window.is_some(), n_lags > 0, window_lags.unwrap_or(false)) {
-                    (true, true, false) => {
-                        let (p, t) = (self.k() as f64, self.m() as f64);
-                        let l = n_lags as f64;
-                        let c = cross_lags.as_ref().map_or(l, |c| c.len() as f64);
-                        let base = (3.0 * p + 5.0) * t;
-                        let more = 2.0 * l * t + 2.0 * (l + c) * p * t;
-                        return Err(format!(
-                            "spec {:?}: marginal lags under a window need window_lags = true. \
-                             Each window snapshot then also holds the lag moments: here {more} \
-                             doubles beside the {base} it holds without them, {:.1} times the \
-                             size (2L·T + 2(L + C)·p·T against (3p + 5)·T, C the cross lags; \
-                             cross_lags = [] costs least, and n_serial does not read the cross \
-                             terms). Set window_lags = true to accept that, or drop the window \
-                             or the lags.",
-                            self.name,
-                            (base + more) / base
-                        ));
-                    }
-                    (window_set, lags_set, true) if !(window_set && lags_set) => {
-                        return Err(format!(
-                            "spec {:?}: marginal window_lags applies only with both a window and \
-                             lags",
-                            self.name
-                        ));
-                    }
-                    _ => {}
-                }
-                if bin_edges.is_some()
-                    && (bins.is_some() || bin_rule.is_some() || bin_warm_rows.is_some())
-                {
-                    return Err(format!(
-                        "spec {:?}: marginal bin_edges fixes the bins outright; bins, bin_rule \
-                         and bin_warm_rows describe learning them and do not apply with it",
-                        self.name
-                    ));
-                }
-                if bin_budget.is_some() && bins.is_none() && bin_edges.is_none() {
-                    return Err(format!(
-                        "spec {:?}: marginal bin_budget bounds the bins' memory and needs bins \
-                         or bin_edges",
-                        self.name
-                    ));
-                }
-                // Each bin's location (docs/PLAN.md task 272 (c)): a
-                // statistic of the bins, so it needs them; its cut belongs to
-                // `"huber"` alone, and a cut given under the mean was taken
-                // and ignored.
-                match bin_stat.as_deref() {
-                    None | Some("mean") | Some("huber") => {}
-                    Some(other) => {
-                        return Err(spec_words_refusal(
-                            &self.name,
-                            "bin_stat",
-                            &["mean", "huber"],
-                            other,
-                        ));
-                    }
-                }
-                if bin_stat.is_some() && bins.is_none() && bin_edges.is_none() {
-                    return Err(format!(
-                        "spec {:?}: marginal bin_stat is each bin's location and needs bins or \
-                         bin_edges",
-                        self.name
-                    ));
-                }
-                if bin_huber_delta.is_some() && bin_stat.as_deref() != Some("huber") {
-                    return Err(format!(
-                        "spec {:?}: marginal bin_huber_delta is the cut of bin_stat = \"huber\" \
-                         and applies only with it",
-                        self.name
-                    ));
-                }
-                if let Some(d) = bin_huber_delta.filter(|d| !positive(d.0)) {
-                    return Err(format!(
-                        "spec {:?}: marginal bin_huber_delta must be > 0 (\"inf\" is the mean), \
-                         got {}",
-                        self.name, d.0
-                    ));
-                }
-                checks::check_bin_refit(
-                    &self.name,
-                    bin_stat.as_deref(),
-                    *bin_huber_delta,
-                    bin_refit_rows.is_some(),
-                    *refit_budget,
-                )?;
-                // The lag ring is sized before the first row: `[2^62]`
-                // panicked inside the builder (review 2026-10-06, CD10).
-                if let Some(&l) = lags.as_ref().and_then(|l| l.iter().max()) {
-                    online_core::check_lag_ceiling("marginal: lags", l)
-                        .map_err(|e| format!("spec {:?}: {e}", self.name))?;
-                }
-            }
-            // Every parameter check is `DecoCfg::validate`'s, so that the
-            // CLI and the bank get the same messages; only
-            // the block *names* are resolved here, where the feature list is.
-            ModelKind::Bocpd {
-                hazard, hazard_col, ..
-            } => {
-                // The model reads `targets[0]` as the hazard whatever the name
-                // here says, so the two must be one column (review
-                // 2026-09-12, C20).
-                // The slot is the column itself, not a table: a table's name
-                // means nothing here, and its column is what the model would
-                // read (review 2026-09-26, D4: the names were compared, so a
-                // table named like the hazard put another column in the slot).
-                if let Some(h) = hazard_col
-                    && self.targets.defs() != [crate::targets::TargetDef::plain(h.clone())]
-                {
-                    return Err(format!(
-                        "spec {:?}: bocpd reads hazard_col {h:?} from the targets slot, so \
-                             targets must be [{h:?}], the column itself (got {:?})",
-                        self.name,
-                        self.targets.as_slice()
-                    ));
-                }
-                if self.half_life.is_some() || self.lam.is_some() {
-                    return Err(format!(
-                        "spec {:?}: half_life/lam do not apply to bocpd; the run-length posterior \
-                         is what forgets, and `hazard` is how fast",
-                        self.name
-                    ));
-                }
-                // A column's value is the chance of a break after its row,
-                // and a duration's the chance of the step before each row:
-                // a null falling back to the duration would put both on one
-                // boundary (task 179).
-                if let (Some(h), Some(d)) =
-                    (hazard_col, hazard.as_ref().filter(|d| d.is_duration()))
-                {
-                    return Err(format!(
-                        "spec {:?}: bocpd's hazard_col {h:?} reads a per-row hazard, the chance \
-                         of a break after its row, and hazard is a duration ({d}), the chance of \
-                         the step before each row; one stream cannot take both. Give hazard as a \
-                         number of rows beside hazard_col, or leave hazard_col out",
-                        self.name
-                    ));
-                }
-                crate::stream::bocpd_cfg(self).map_err(|e| format!("spec {:?}: {e}", self.name))?;
-            }
-            ModelKind::CorrChange { scalar, .. } => {
-                if !scalar.unwrap_or(false) && (self.half_life.is_some() || self.lam.is_some()) {
-                    return Err(format!(
-                        "spec {:?}: half_life/lam apply to corrchange only with scalar = true \
-                         (they parametrise the standardiser); neither kind decays anything else",
-                        self.name
-                    ));
-                }
-                // The model's own checks too, `n_perm`'s ceiling among them,
-                // so a spec meets them here (review 2026-10-06, CD10).
-                crate::stream::corrchange_cfg(self)
-                    .and_then(|c| c.validate())
-                    .map_err(|e| format!("spec {:?}: {e}", self.name))?;
-            }
-            ModelKind::Hmm { k, exog_tvtp, .. } => {
-                // `k` sizes the transition matrix and the states before the
-                // first row, as `kmeans`' sizes its centres; held here before
-                // the configuration is built from it (review 2026-10-06,
-                // CF2's sibling).
-                online_core::Hmm::check_k(*k).map_err(|e| format!("spec {:?}: {e}", self.name))?;
-                // As `bocpd`'s `hazard_col` (review 2026-09-12, C20).
-                if let Some(z) = exog_tvtp
-                    && self.targets.defs() != [crate::targets::TargetDef::plain(z.clone())]
-                {
-                    return Err(format!(
-                        "spec {:?}: hmm reads exog_tvtp {z:?} from the targets slot, so \
-                             targets must be [{z:?}], the column itself (got {:?})",
-                        self.name,
-                        self.targets.as_slice()
-                    ));
-                }
-                crate::stream::hmm_cfg(self).map_err(|e| format!("spec {:?}: {e}", self.name))?;
-            }
-            ModelKind::Audit { .. } => {
-                let why = if self.half_life.is_some() || self.lam.is_some() {
-                    Some("half_life/lam do not apply to audit: it counts every row, undecayed")
-                } else if self.weight.is_some() {
-                    Some(
-                        "weight does not apply to audit: a value is counted whatever its row \
-                         weighs; to audit the weight column, list it in columns",
-                    )
-                } else if self.embargo.is_some() {
-                    Some("embargo does not apply to audit: it has no label to wait for")
-                } else if self.min_weight.is_some() {
-                    // Taken and ignored until review 6 (F-10).
-                    Some("min_weight does not apply to audit: it predicts nothing to withhold")
-                } else if self.group_close.is_some() {
-                    // A closed group's counts left the bank with its stream,
-                    // so `audit()` and `check()` never saw them (review 6,
-                    // C-3 and F-3).
-                    Some(
-                        "group_close does not apply to audit: a closed group's counts would \
-                         leave the bank with it, and audit() and check() could not read them; \
-                         audit the groups without group_close",
-                    )
-                } else {
-                    None
-                };
-                if let Some(why) = why {
-                    return Err(format!("spec {:?}: {why}", self.name));
-                }
-                crate::stream::audit_cfg(self).map_err(|e| format!("spec {:?}: {e}", self.name))?;
-            }
-            ModelKind::Rcov { .. } => {
-                if self.group.is_none() || self.group_close.is_none() {
-                    return Err(format!(
-                        "spec {:?}: rcov needs `group` and `group_close`; its value is the block \
-                         it emits when the group closes, and a stream with no close never emits \
-                         one",
-                        self.name
-                    ));
-                }
-                if self.half_life.is_some() || self.lam.is_some() {
-                    return Err(format!(
-                        "spec {:?}: half_life/lam do not apply to rcov (a realised covariance is \
-                         a sum over a block, not a decayed mean); the block boundary is \
-                         group_close's",
-                        self.name
-                    ));
-                }
-                crate::stream::rcov_cfg(self).map_err(|e| format!("spec {:?}: {e}", self.name))?;
-            }
-            ModelKind::Deco { blocks, .. } => {
-                if let Some(blocks) = blocks {
-                    for (name, cols) in blocks {
-                        for c in cols {
-                            if !self.features.contains(c) {
-                                return Err(format!(
-                                    "spec {:?}: deco block {name:?} names {c:?}, which is not a \
-                                     feature of this spec",
-                                    self.name
-                                ));
-                            }
-                        }
-                    }
-                }
-                crate::stream::deco_cfg(self).map_err(|e| format!("spec {:?}: {e}", self.name))?;
-            }
-            ModelKind::Ftrl {
-                alpha,
-                beta,
-                l1,
-                l2,
-                ..
-            } => {
-                // At `inf` each is no setting: `alpha` leaves `-z/l2`, and
-                // `beta`, `l1` or `l2` zeroes every coordinate for ever
-                // (review 2026-09-12, S27).
-                if let Some(a) = alpha.filter(|a| *a <= 0.0 || !a.is_finite()) {
-                    return Err(format!(
-                        "spec {:?}: ftrl alpha must be finite and > 0, got {a}",
-                        self.name
-                    ));
-                }
-                for (name, v, zero) in [
-                    ("beta", beta, None),
-                    ("l1", l1, Some("for no L1 penalty")),
-                    ("l2", l2, Some("for no L2 penalty")),
-                ] {
-                    if let Some(v) = v.filter(|v| *v < 0.0 || !v.is_finite()) {
-                        return Err(at_least_zero(
-                            &format!("spec {:?}", self.name),
-                            name,
-                            "",
-                            &Got::One(num_label(v)),
-                            zero,
-                            None,
-                        ));
-                    }
-                }
-            }
-            ModelKind::Huber {
-                huber_delta,
-                huber_scale,
-                huber_scale_half_life,
-                ridge,
-                solve_every,
-                feature_sets,
-                refit_budget,
-                ..
-            } => {
-                if let Some(d) = huber_delta.filter(|d| !positive(d.0)) {
-                    return Err(format!(
-                        "spec {:?}: huber_delta must be > 0 (\"inf\" is least squares), got {}",
-                        self.name, d.0
-                    ));
-                }
-                check_huber_scale(
-                    &self.name,
-                    huber_scale.as_deref(),
-                    huber_scale_half_life.as_ref(),
-                )?;
-                check_ridge(&self.name, *ridge)?;
-                check_solve_every(&self.name, solve_every.as_ref())?;
-                check_feature_sets(&self.name, &self.features, feature_sets.as_deref())?;
-                check_refit_budget(&self.name, *refit_budget)?;
-            }
-            ModelKind::Quantile {
-                quantile,
-                quantile_eps,
-                ridge,
-                solve_every,
-                refit_budget,
-                ..
-            } => {
-                check_refit_budget(&self.name, *refit_budget)?;
-                if !(0.0 < *quantile && *quantile < 1.0) {
-                    return Err(format!(
-                        "spec {:?}: quantile must be in (0, 1), got {quantile}",
-                        self.name
-                    ));
-                }
-                // A floor of `inf` weighs every row 0: a model that never
-                // learns (review 2026-09-12, S27).
-                if let Some(e) = quantile_eps.filter(|e| !positive(*e) || !e.is_finite()) {
-                    return Err(format!(
-                        "spec {:?}: quantile_eps must be finite and > 0, got {e}",
-                        self.name
-                    ));
-                }
-                check_ridge(&self.name, *ridge)?;
-                check_solve_every(&self.name, solve_every.as_ref())?;
-            }
-            ModelKind::Kalman {
-                coef_half_life,
-                q,
-                obs_var,
-                p0,
-                revert_half_life,
-                ..
-            } => {
-                let k_total = self.k() + usize::from(self.fit_intercept);
-                // One way of giving the process noise: `coef_half_life` was
-                // required, and ignored beside `q` (review 2026-10-06, PC6).
-                match (coef_half_life, q) {
-                    (Some(_), Some(_)) => {
-                        return Err(format!(
-                            "spec {:?}: kalman takes coef_half_life or q, not both: q is the \
-                             process noise given outright, which coef_half_life derives, and the \
-                             half-life was ignored beside it",
-                            self.name
-                        ));
-                    }
-                    (None, None) => {
-                        return Err(format!(
-                            "spec {:?}: kalman needs coef_half_life (how fast a coefficient may \
-                             drift) or q (the process noise given outright)",
-                            self.name
-                        ));
-                    }
-                    _ => {}
-                }
-                if let Some(hl) = coef_half_life {
-                    let hs = hl.to_vec();
-                    if hs.len() != 1 && hs.len() != k_total {
-                        return Err(format!(
-                            "spec {:?}: coef_half_life must be scalar or length {k_total}, got {} \
-                             values",
-                            self.name,
-                            hs.len()
-                        ));
-                    }
-                    if let Some(h) = hs.iter().find(|&&h| !positive(h)) {
-                        return Err(format!(
-                            "spec {:?}: coef_half_life must be > 0 (\"inf\" pins a coefficient), \
-                             got {h}",
-                            self.name
-                        ));
-                    }
-                }
-                if let Some(rs) = revert_half_life {
-                    let rs = rs.to_vec();
-                    if rs.len() != 1 && rs.len() != k_total {
-                        return Err(format!(
-                            "spec {:?}: revert_half_life must be scalar or length {k_total}, got \
-                             {} values",
-                            self.name,
-                            rs.len()
-                        ));
-                    }
-                    if let Some(r) = rs.iter().find(|&&r| !positive(r)) {
-                        return Err(format!(
-                            "spec {:?}: revert_half_life must be > 0 (\"inf\" is the random \
-                             walk), got {r}",
-                            self.name
-                        ));
-                    }
-                }
-                if let Some(q) = q.as_ref().filter(|q| q.len() != k_total) {
-                    return Err(format!(
-                        "spec {:?}: q must have length {k_total}, got {}",
-                        self.name,
-                        q.len()
-                    ));
-                }
-                let bad: Vec<String> = q
-                    .iter()
-                    .flatten()
-                    .filter(|v| !non_negative(v.0) || !v.0.is_finite())
-                    .map(|v| num_label(v.0))
-                    .collect();
-                if !bad.is_empty() {
-                    return Err(at_least_zero(
-                        &format!("spec {:?}", self.name),
-                        "q",
-                        "",
-                        &Got::Of(bad),
-                        Some("for no drift over time"),
-                        None,
-                    ));
-                }
-                if let Some(v) = obs_var.filter(|v| !positive(*v) || !v.is_finite()) {
-                    return Err(format!(
-                        "spec {:?}: obs_var must be finite and > 0, got {v}",
-                        self.name
-                    ));
-                }
-                if let Some(v) = p0.filter(|v| !positive(*v) || !v.is_finite()) {
-                    return Err(format!(
-                        "spec {:?}: p0 must be finite and > 0, got {v}",
-                        self.name
-                    ));
-                }
-            }
-            ModelKind::Lasso {
-                penalties,
-                l1_ratio,
-                select_half_life,
-                solve_every,
-                tol,
-                ..
-            } => {
-                if penalties.is_empty() {
-                    return Err(format!("spec {:?}: penalties must be non-empty", self.name));
-                }
-                let bad: Vec<String> = penalties
-                    .iter()
-                    .filter(|l| !non_negative(**l) || !l.is_finite())
-                    .map(|l| num_label(*l))
-                    .collect();
-                if !bad.is_empty() {
-                    // A list always: `penalties` takes no single number.
-                    return Err(at_least_zero(
-                        &format!("spec {:?}", self.name),
-                        "penalties",
-                        "",
-                        &Got::Distinct(bad.clone(), penalties.len() > bad.len()),
-                        None,
-                        None,
-                    ) + " Keep the penalties strictly decreasing: 0 can only come last.");
-                }
-                // Strictly: a repeated penalty is two identical slots with the
-                // same field name.
-                if let Some(w) = penalties.windows(2).find(|w| w[0] <= w[1]) {
-                    return Err(format!(
-                        "spec {:?}: penalties must be strictly decreasing, got {} then {}",
-                        self.name, w[0], w[1]
-                    ));
-                }
-                if let Some(r) = l1_ratio.filter(|r| !(0.0..=1.0).contains(r)) {
-                    return Err(format!(
-                        "spec {:?}: l1_ratio must be in [0, 1], got {r}",
-                        self.name
-                    ));
-                }
-                if let Some(h) = select_half_life.as_ref().filter(|h| !positive(h.value())) {
-                    return Err(format!(
-                        "spec {:?}: select_half_life must be > 0, got {h}",
-                        self.name
-                    ));
-                }
-                check_solve_every(&self.name, solve_every.as_ref())?;
-                if let Some(t) = tol.filter(|t| !positive(*t) || !t.is_finite()) {
-                    return Err(format!(
-                        "spec {:?}: tol must be finite and > 0, got {t}",
-                        self.name
-                    ));
-                }
-            }
-            ModelKind::Rls { delta, coef_prior } => {
-                if let Some(r) = delta.filter(|r| !positive(*r) || !r.is_finite()) {
-                    return Err(format!(
-                        "spec {:?}: rls delta must be finite and > 0, got {r}",
-                        self.name
-                    ));
-                }
-                let k_total = self.k() + usize::from(self.fit_intercept);
-                if let Some(c) = coef_prior
-                    && (c.len() != self.m() || c.iter().any(|v| v.len() != k_total))
-                {
-                    return Err(format!(
-                        "spec {:?}: coef_prior must be n_targets x (n_features + intercept)",
-                        self.name
-                    ));
-                }
-            }
-            ModelKind::EwRidge {
-                ridge,
-                feature_sets,
-                coef_prior,
-                session_shrink,
-                long_half_life,
-                solve_every,
-                ..
-            } => {
-                if let Some(r) = ridge {
-                    let rs = r.to_vec();
-                    // A negative ridge makes the system indefinite and the
-                    // coefficients garbage; NaN/inf make them zero. Zero is
-                    // legal: plain least squares, rescued by the jitter
-                    // fallback when singular.
-                    let bad: Vec<String> = rs
-                        .iter()
-                        .filter(|r| !non_negative(**r) || !r.is_finite())
-                        .map(|r| num_label(*r))
-                        .collect();
-                    if !bad.is_empty() {
-                        return Err(at_least_zero(
-                            &format!("spec {:?}", self.name),
-                            "ridge",
-                            "",
-                            &Got::list(rs.len(), bad, true),
-                            Some(NO_SHRINKAGE),
-                            None,
-                        ));
-                    }
-                    if let Some(dup) = first_duplicate(&rs) {
-                        return Err(format!(
-                            "spec {:?}: ridge lists {} more than once; each value is one \
-                             grid slot and the two would produce the same field names",
-                            self.name,
-                            num_label(dup)
-                        ));
-                    }
-                }
-                check_solve_every(&self.name, solve_every.as_ref())?;
-                if let Some(h) = long_half_life.as_ref().filter(|h| !positive(h.value())) {
-                    return Err(format!(
-                        "spec {:?}: long_half_life must be > 0, got {h}",
-                        self.name
-                    ));
-                }
-                if let Some(f) = session_shrink.filter(|f| !(0.0..=1.0).contains(f)) {
-                    return Err(format!(
-                        "spec {:?}: session_shrink must be in [0, 1], got {f}",
-                        self.name
-                    ));
-                }
-                if session_shrink.is_some() && long_half_life.is_none() {
-                    return Err(format!(
-                        "spec {:?}: session_shrink needs long_half_life",
-                        self.name
-                    ));
-                }
-                if session_shrink.is_some() && self.session.is_none() {
-                    return Err(format!(
-                        "spec {:?}: session_shrink needs a `session` column to react to",
-                        self.name
-                    ));
-                }
-                // Two prescriptions for one row. Under `session_gap = "reset"`
-                // the reset wins and the blend never runs; under `group_close
-                // = "session"` the stream starts over at the change, so the
-                // twin is never read (review 2026-09-12, S22).
-                if session_shrink.is_some() {
-                    if matches!(&self.session_gap, Some(SessionGapSpec::Word(w)) if w == "reset") {
-                        return Err(format!(
-                            "spec {:?}: session_shrink does not apply with session_gap = \
-                             \"reset\" (the reset replaces the state the blend would mix)",
-                            self.name
-                        ));
-                    }
-                    if self.closes_on_session() {
-                        return Err(format!(
-                            "spec {:?}: session_shrink does not apply with group_close = \
-                             \"session\" (the stream starts over at the change, so the twin is \
-                             never read)",
-                            self.name
-                        ));
-                    }
-                }
-                if long_half_life.is_some() && session_shrink.is_none() {
-                    return Err(format!(
-                        "spec {:?}: long_half_life needs session_shrink; it is the half_life of \
-                         the twin a session boundary blends toward",
-                        self.name
-                    ));
-                }
-                if let Some(c) = coef_prior {
-                    let k_total = self.k() + usize::from(self.fit_intercept);
-                    if c.len() != self.m() || c.iter().any(|v| v.len() != k_total) {
-                        return Err(format!(
-                            "spec {:?}: coef_prior must be {} vectors of length {k_total}",
-                            self.name,
-                            self.m()
-                        ));
-                    }
-                }
-                check_feature_sets(&self.name, &self.features, feature_sets.as_deref())?;
-            }
-        }
+        self.validate_model(no);
         Ok(())
     }
+}
+
+mod models;
+
+/// `1 column`, `3 columns`: a count with its noun, in agreement.
+fn counted(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+fn columns_counted(n: usize) -> String {
+    counted(n, "column", "columns")
 }
 
 #[cfg(test)]

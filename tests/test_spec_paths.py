@@ -26,21 +26,26 @@ def test_the_name_may_be_given_by_keyword():
 
 
 def test_a_target_s_name_must_be_a_string():
-    with pytest.raises(TypeError, match="target 'y': name must be a str, got int"):
+    with pytest.raises(TypeError, match=r"po.target\('y'\): name must be a str, but it is int"):
         po.target("y", name=3)  # type: ignore[arg-type]
 
 
 def test_a_loss_parameter_beside_a_loss_that_does_not_use_it_is_refused():
     with pytest.raises(
         ValueError,
-        match='spec "m": sgd huber_delta is for loss "huber"; loss "squared" does not use it',
+        match=(
+            'spec "m": huber_delta applies only under loss="huber", but loss is "squared", which '
+            "does not use it"
+        ),
     ):
         po.spec.sgd("m", loss="squared", huber_delta=1.0, **BASE)
 
 
 def test_bin_edges_naming_a_column_that_is_no_feature_is_refused():
     with pytest.raises(
-        ValueError, match=r"spec \"m\": bin_edges has \['z'\], which are not features"
+        ValueError,
+        match='spec "m": bin_edges must name only features, but it names "z", which is not a '
+        "feature",
     ):
         po.spec.marginal("m", bin_edges={"x": [0.0, 1.0], "z": [0.0, 1.0]}, **BASE)
 
@@ -78,8 +83,8 @@ def test_a_raw_spec_dict_with_a_duration_under_a_plain_parameter_is_refused():
     spec["model"]["ridge"] = timedelta(seconds=1)
     with pytest.raises(
         TypeError,
-        match='spec "m": ridge takes no timedelta; a duration is a clock parameter\'s, and a '
-        "window expression is a target's",
+        match='spec "m": ridge takes no timedelta, since it is not measured on the clock and is '
+        "not a target",
     ):
         po.ModelBank([spec])
 

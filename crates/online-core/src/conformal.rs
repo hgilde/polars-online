@@ -79,14 +79,21 @@ impl Conformal {
     /// `coverage` is the target `1 − α`, strictly inside `(0, 1)`; `rate` the
     /// step per unit of `σ`, `> 0`.
     pub fn new(coverage: f64, rate: f64) -> Result<Self, String> {
+        let mut no = crate::Refusals::new();
         if !(coverage > 0.0 && coverage < 1.0) {
-            return Err(format!(
-                "conformal coverage must be strictly between 0 and 1, got {coverage}"
+            no.refuse(format!(
+                "conformal must be above 0 and below 1, but it is {coverage}. Set conformal to \
+                 the share of rows whose target the interval should cover, such as 0.9."
             ));
         }
         if !(rate > 0.0 && rate.is_finite()) {
-            return Err(format!("conformal_rate must be finite and > 0, got {rate}"));
+            no.refuse(format!(
+                "conformal_rate must be finite and above 0, but it is {rate}. Set \
+                 conformal_rate to how fast the interval's width adapts, such as the default \
+                 0.05."
+            ));
         }
+        no.finish()?;
         Ok(Self {
             alpha: 1.0 - coverage,
             rate,
@@ -288,6 +295,12 @@ mod tests {
         assert!(Conformal::new(0.9, f64::INFINITY).is_err());
         assert!(Conformal::new(0.9, f64::NAN).is_err());
         assert!(Conformal::new(0.9, 0.05).is_ok());
+        // Every problem at once, each a line of its own.
+        let e = Conformal::new(1.5, 0.0).err().unwrap_or_default();
+        let lines: Vec<&str> = e.lines().collect();
+        assert_eq!(lines.len(), 2, "{e}");
+        assert!(lines[0].starts_with("conformal must be above 0 and below 1, but it is 1.5."));
+        assert!(lines[1].starts_with("conformal_rate must be finite and above 0, but it is 0."));
     }
 
     #[test]

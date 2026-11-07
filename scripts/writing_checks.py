@@ -779,6 +779,16 @@ def python_messages(src: str, path: str) -> tuple[list[Message], list[Unread]]:
     found: list[Message] = []
     unread: list[Unread] = []
 
+    # An exception built as an argument, such as a problem a check that
+    # reports every problem at once appends to its list.
+    kept = {
+        id(a)
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        for a in n.args
+        if isinstance(a, ast.Call)
+    }
+
     def visit(fn: ast.AST) -> None:
         scope: dict[str, ast.expr] = {}
         nodes = sorted(
@@ -803,6 +813,8 @@ def python_messages(src: str, path: str) -> tuple[list[Message], list[Unread]]:
                 name = ast.unparse(node.func)
                 if name in ("warnings.warn", "warn", "_warn") and node.args:
                     record(node.args[0], node.lineno, "warning", scope)
+                elif id(node) in kept and re.search(r"(Error|Exception)$", name) and node.args:
+                    record(node.args[0], node.lineno, "error", scope)
 
     def record(arg: ast.expr, line: int, kind: str, scope: dict[str, ast.expr]) -> None:
         parts = _parts(arg, scope)
@@ -888,6 +900,7 @@ RUST_OPENERS: list[tuple[str, re.Pattern[str]]] = [
         "error",
         re.compile(r"\b(?:polars_bail|polars_err|polars_ensure)!\((?:[^;]*,)?\s*\w+\s*:\s*$"),
     ),
+    ("error", re.compile(r"\brefuse\(\s*(?:format!\(\s*)?$")),
     ("error", re.compile(r"\bComputeError\(\s*(?:format!\(\s*)?$")),
     ("error", re.compile(r"\bnew_err\(\s*(?:format!\(\s*)?$")),
     ("error", re.compile(r"\b(?:bail|anyhow|format_err)!\(\s*$")),

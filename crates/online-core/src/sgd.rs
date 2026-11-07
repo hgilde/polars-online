@@ -655,86 +655,138 @@ impl SgdCfg {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        let mut no = crate::Refusals::new();
         // The decay first: every model checks it in its own `new`, where only
         // the bank's spec did (review 2026-10-05, CF5).
-        self.decay.check().map_err(|e| format!("sgd: {e}"))?;
-        if self.n_features == 0 || self.n_targets == 0 {
-            return Err("sgd: n_features and n_targets must be >= 1".into());
-        }
+        no.take(self.decay.check().map_err(|e| format!("sgd: {e}")));
+        no.take(crate::model::check_dims(
+            "sgd",
+            self.n_features,
+            self.n_targets,
+        ));
         if self.learning_rate <= 0.0 || self.learning_rate.is_nan() {
-            return Err("sgd: learning_rate must be > 0".into());
+            no.refuse(format!(
+                "sgd: learning_rate must be above 0, but it is {}. Set learning_rate to a \
+                 positive step size, such as the default 0.01.",
+                self.learning_rate
+            ));
         }
         // NaN passes `v < 0.0` and `v <= 0.0` alike, so each bound below
         // names it: a NaN `clip_gradient` reached `f64::clamp`, which panics
         // on a NaN bound, on the first learned row; a NaN `l2`, `eps` or
         // `power` poisoned every coefficient or rate (review 2026-09-18, B4).
         if self.l2.is_nan() || self.l2 < 0.0 {
-            return Err("sgd: l2 must be >= 0".into());
+            no.refuse(format!(
+                "sgd: l2 must be at least 0, but it is {}. Set l2 to 0 for no shrinkage, or \
+                 to a positive value.",
+                self.l2
+            ));
         }
         if self.clip_gradient.is_nan() || self.clip_gradient <= 0.0 {
-            return Err("sgd: clip_gradient must be > 0 (use inf to disable)".into());
+            no.refuse(format!(
+                "sgd: clip_gradient must be above 0, but it is {}. Set clip_gradient to the \
+                 largest size a coordinate of the gradient may take, such as the default \
+                 1000, or to inf for no clipping.",
+                self.clip_gradient
+            ));
         }
         match self.loss {
             // NaN too: `f64::clamp` panics on a NaN bound. `inf` clips
             // nothing, which is the squared loss.
             SgdLoss::Huber { delta } if delta <= 0.0 || delta.is_nan() => {
-                return Err("sgd: huber delta must be > 0".into());
+                no.refuse(format!(
+                    "sgd: huber_delta must be above 0, but it is {delta}. Set huber_delta to \
+                     a positive cut in units of the residuals' scale, or to inf for the \
+                     squared loss."
+                ));
             }
             SgdLoss::Quantile { tau }
                 if !(0.0..=1.0).contains(&tau) || tau == 0.0 || tau == 1.0 =>
             {
-                return Err("sgd: quantile must be in (0, 1)".into());
+                no.refuse(format!(
+                    "sgd: quantile must be above 0 and below 1, but it is {tau}. Set quantile \
+                     to the level to fit, such as 0.5 for the median."
+                ));
             }
             SgdLoss::EpsilonInsensitive { eps } if eps.is_nan() || eps < 0.0 => {
-                return Err("sgd: eps must be >= 0".into());
+                no.refuse(format!(
+                    "sgd: eps must be at least 0, but it is {eps}. Set eps to how far a \
+                     residual may fall from 0 at no cost, in standard deviations of the \
+                     target, such as the default 0.01, or to 0 for none."
+                ));
             }
             _ => {}
         }
         if let LearningRate::InvScaling { power } = self.schedule
             && (power.is_nan() || power < 0.0)
         {
-            return Err("sgd: inv_scaling power must be >= 0".into());
+            no.refuse(format!(
+                "sgd: power must be at least 0, but it is {power}. Set power to 0 for a \
+                 constant step, or to a positive value for a step that shrinks as the model \
+                 learns."
+            ));
         }
         if let Some(c) = &self.constraint {
-            c.validate(self.n_features, "sgd")?;
+            no.take(c.validate(self.n_features, "sgd"));
         }
+        // The loss as the spec names it, for the refusals that read it.
+        let loss = match self.loss {
+            SgdLoss::Squared => "squared",
+            SgdLoss::Huber { .. } => "huber",
+            SgdLoss::Quantile { .. } => "quantile",
+            SgdLoss::EpsilonInsensitive { .. } => "epsilon_insensitive",
+            SgdLoss::Poisson => "poisson",
+            SgdLoss::Logistic => "logistic",
+        };
         if self.strict_binary && self.loss != SgdLoss::Logistic {
-            return Err("sgd: strict_binary applies to the logistic loss only".into());
+            no.refuse(format!(
+                "sgd: strict_binary checks the targets of the logistic loss, but loss is \
+                 \"{loss}\". Set loss=\"logistic\", or leave strict_binary out."
+            ));
         }
         // The Huber cut's scale and its memory are the Huber loss's
         // (docs/PLAN.md task 271).
         if let SgdLoss::Huber { delta } = self.loss {
             if let Some(d) = self.huber_scale_decay {
-                d.check()
-                    .map_err(|e| format!("sgd: huber_scale_half_life: {e}"))?;
+                no.take(crate::model::check_scale_decay("sgd", d));
             }
-            if self.refit_rows > 0 && delta.is_infinite() {
-                return Err(
-                    "sgd: huber_refit_rows needs a finite huber_delta: an infinite one \
-                            is the squared loss, with no outliers to refit for"
-                        .into(),
+            if self.refit_rows > 0 && delta == f64::INFINITY {
+                no.refuse(
+                    "sgd: huber_refit_rows refits a target's first rows to a Huber fit, but \
+                     huber_delta is inf, which makes that fit least squares. Set huber_delta \
+                     to a finite cut, or leave huber_refit_rows out.",
                 );
             }
-        } else if self.huber_scale != crate::HuberScale::Rms
-            || self.huber_scale_decay.is_some()
-            || self.refit_rows > 0
-        {
-            return Err(
-                "sgd: huber_scale, huber_scale_half_life and huber_refit_rows are for loss \"huber\""
-                    .into(),
-            );
+        } else {
+            // Each one the reader set, by name.
+            let given: Vec<String> = [
+                ("huber_scale", self.huber_scale != crate::HuberScale::Rms),
+                ("huber_scale_half_life", self.huber_scale_decay.is_some()),
+                ("huber_refit_rows", self.refit_rows > 0),
+            ]
+            .into_iter()
+            .filter(|(_, set)| *set)
+            .map(|(k, _)| k.to_string())
+            .collect();
+            if !given.is_empty() {
+                let names = crate::model::listed(&given);
+                let (verb, them) = if given.len() == 1 {
+                    ("applies", "it")
+                } else {
+                    ("apply", "them")
+                };
+                no.refuse(format!(
+                    "sgd: {names} {verb} only under loss=\"huber\", but loss is \"{loss}\". \
+                     Set loss=\"huber\", or leave {them} out."
+                ));
+            }
         }
         // What the spec layer refuses, refused here too, so the Rust API
         // and a state file are held to it (review round 5, C6): a NaN
         // `min_weight` is never reached, and a negative one is no floor.
         // `inf` never predicts, which is legal.
-        if self.min_weight.is_nan() || self.min_weight < 0.0 {
-            return Err(format!(
-                "sgd: min_weight must be >= 0, got {}",
-                self.min_weight
-            ));
-        }
-        Ok(())
+        no.take(crate::model::check_min_weight("sgd", self.min_weight));
+        no.finish()
     }
 }
 
@@ -2752,42 +2804,57 @@ mod tests {
                 Ok(()) => panic!("expected rejection mentioning {want:?}"),
             }
         };
-        bad(&|c| c.n_features = 0, "must be >= 1");
-        bad(&|c| c.n_targets = 0, "must be >= 1");
-        bad(&|c| c.learning_rate = 0.0, "learning_rate must be > 0");
-        bad(&|c| c.learning_rate = f64::NAN, "learning_rate must be > 0");
-        bad(&|c| c.l2 = -1e-9, "l2 must be >= 0");
+        bad(
+            &|c| c.n_features = 0,
+            "needs at least one feature and one target",
+        );
+        bad(
+            &|c| c.n_targets = 0,
+            "needs at least one feature and one target",
+        );
+        bad(&|c| c.learning_rate = 0.0, "learning_rate must be above 0");
+        bad(
+            &|c| c.learning_rate = f64::NAN,
+            "learning_rate must be above 0",
+        );
+        bad(&|c| c.l2 = -1e-9, "l2 must be at least 0");
         // clip_gradient is a magnitude bound, so inf disables it rather than
         // being an error, but zero would clip everything to nothing.
-        bad(&|c| c.clip_gradient = 0.0, "clip_gradient must be > 0");
+        bad(&|c| c.clip_gradient = 0.0, "clip_gradient must be above 0");
         // NaN passed every `<= 0.0` / `< 0.0` test here: a NaN clip then
         // panicked in `f64::clamp` on the first learned row, a NaN `l2`
         // poisoned every coefficient, a NaN `eps` emptied the tube and a NaN
         // `power` made every rate NaN (review 2026-09-18, B4).
-        bad(&|c| c.clip_gradient = f64::NAN, "clip_gradient must be > 0");
-        bad(&|c| c.l2 = f64::NAN, "l2 must be >= 0");
+        bad(
+            &|c| c.clip_gradient = f64::NAN,
+            "clip_gradient must be above 0",
+        );
+        bad(&|c| c.l2 = f64::NAN, "l2 must be at least 0");
         bad(
             &|c| c.loss = SgdLoss::EpsilonInsensitive { eps: f64::NAN },
-            "eps must be >= 0",
+            "eps must be at least 0",
         );
         bad(
             &|c| c.schedule = LearningRate::InvScaling { power: f64::NAN },
-            "power must be >= 0",
+            "power must be at least 0",
         );
         let mut ok = cfg(2, SgdLoss::Squared);
         ok.clip_gradient = f64::INFINITY;
         ok.validate().unwrap();
 
-        bad(&|c| c.loss = SgdLoss::Huber { delta: 0.0 }, "huber delta");
+        bad(
+            &|c| c.loss = SgdLoss::Huber { delta: 0.0 },
+            "huber_delta must be above 0",
+        );
         for t in [0.0, 1.0, 1.5] {
             bad(
                 &|c| c.loss = SgdLoss::Quantile { tau: t },
-                "quantile must be in",
+                "quantile must be above 0 and below 1",
             );
         }
         bad(
             &|c| c.loss = SgdLoss::EpsilonInsensitive { eps: -1.0 },
-            "eps must be >= 0",
+            "eps must be at least 0",
         );
         // eps = 0 is a legal (if pointless) epsilon-insensitive loss.
         cfg(2, SgdLoss::EpsilonInsensitive { eps: 0.0 })
@@ -2796,11 +2863,27 @@ mod tests {
 
         bad(
             &|c| c.schedule = LearningRate::InvScaling { power: -0.1 },
-            "power must be >= 0",
+            "power must be at least 0",
         );
         let mut ok = cfg(2, SgdLoss::Squared);
         ok.schedule = LearningRate::InvScaling { power: 0.0 };
         ok.validate().unwrap();
+
+        // Every problem at once, each a line of its own.
+        let mut two = cfg(2, SgdLoss::Squared);
+        two.l2 = -1.0;
+        two.clip_gradient = 0.0;
+        let e = two.validate().unwrap_err();
+        let lines: Vec<&str> = e.lines().collect();
+        assert_eq!(lines.len(), 2, "{e}");
+        assert!(
+            lines[0].starts_with("sgd: l2 must be at least 0, but it is -1."),
+            "{e}"
+        );
+        assert!(
+            lines[1].starts_with("sgd: clip_gradient must be above 0, but it is 0."),
+            "{e}"
+        );
     }
 
     #[test]
@@ -3608,13 +3691,14 @@ mod tests {
         let mut c = constrained(2, 0.0, 1.0, Some(3.0));
         assert_eq!(
             c.validate().unwrap_err(),
-            "sgd: coef_sum = 3 is outside what the bounds allow, [0, 2]"
+            "sgd: coef_sum must be one the bounds allow, from 0 to 2, but it is 3. Set \
+             coef_sum inside that range, or widen coef_min and coef_max."
         );
         c.constraint.as_mut().unwrap().lo = vec![0.0];
         assert!(
             c.validate()
                 .unwrap_err()
-                .contains("coef_min lists 1 bounds")
+                .contains("coef_min must give one bound for each of the 2 features")
         );
     }
 

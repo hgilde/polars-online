@@ -6,11 +6,11 @@ rest.
 
 from __future__ import annotations
 
-import json
 from typing import Any, Unpack
 
 from polars_online._kwargs import CommonKwargs
 from polars_online._spec import _checked, _common, _mirror_target
+from polars_online._spec_words import _listed, quoted, refusal
 
 
 @_checked
@@ -217,20 +217,36 @@ def audit(
     ``weight``, ``embargo``, ``min_weight`` or ``group_close``, and for a
     ``distinct_cap`` outside 1 to 65,536.
     """
+    # Every problem at once, where several hold.
+    who = f"spec {quoted(name)}"
+    problems: list[Exception] = []
     if "features" in common:
-        msg = f"spec {json.dumps(name)}: audit() takes columns=, not features="
-        raise TypeError(msg)
+        problems.append(
+            TypeError(
+                f"{who}: audit() takes no features, since columns names the columns it "
+                "audits. Pass them as columns, and leave out features."
+            )
+        )
     if not columns:
-        raise ValueError(f"spec {json.dumps(name)}: columns must be non-empty")
+        problems.append(
+            ValueError(
+                f"{who}: columns must name at least one column, but it is empty. List the "
+                "columns to audit in columns."
+            )
+        )
     # Named here, in the builder's word: the shared check below says
     # `features`, which an audit does not take.
-    seen: set[str] = set()
-    for c in columns:
-        if c in seen:
-            raise ValueError(
-                f"spec {json.dumps(name)}: columns lists {json.dumps(c)} more than once"
+    twice = list(dict.fromkeys(c for i, c in enumerate(columns) if c in columns[:i]))
+    if twice:
+        listed = _listed([quoted(c) for c in twice])
+        problems.append(
+            ValueError(
+                f"{who}: columns must name each column once, but it names {listed} more than "
+                "once. Remove the repeats from columns."
             )
-        seen.add(c)
+        )
+    if problems:
+        raise refusal(who, problems)
     # Each key is written only when given, as the Rust spec skips it when
     # absent: a spec from a TOML file that leaves it out saves the same bytes,
     # and the bank reports back the dict made here (`_SKIPPED_WHEN_ABSENT`).

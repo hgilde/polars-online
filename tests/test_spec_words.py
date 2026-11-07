@@ -7,7 +7,7 @@ builders' own check reads the same annotation, so a word outside it is
 refused in Python, before anything is serialized. And every surface refuses
 it in one shape, naming the spec, the parameter and the words:
 
-    spec "m": <param> must be one of "a", "b"; got "x"
+    spec "m": <param> must be "a", "b" or "c", but it is "x". Use one of those words.
 
 A builder in Python, a spec dict at the bank's door and a TOML file read by
 the same Rust validation all say that. Each of serde's own enums once said
@@ -59,11 +59,16 @@ def _keyword(path: str) -> str:
     return path.removeprefix("model.")
 
 
-#: `spec "Probe": <param> must be [an int or ]one of "a", "b"; got "zz_bogus"`,
-#: and for `rcov`'s `kernel` the reason it is the only one after a colon.
+#: `spec "Probe": <param> must be [an int or ]"a", "b" or "c", but it is
+#: "zz_bogus". Use one of those words.`; a parameter with one word, such as
+#: `rcov`'s `kernel`, names it in the remedy, and its model's name may lead.
 _SHAPE = (
-    r'^spec "Probe": {param} must be (an int or )?one of "[^"]+"(, "[^"]+")*; '
-    r'got "zz_bogus"(: .+)?$'
+    r'^spec "Probe": (\w+: )?{param} must be (an int or )?"[^"]+"(, "[^"]+")*( or "[^"]+")?'
+    r'(, [^"]+)?, but it is "zz_bogus"\. '
+    r'(Use one of those words|Use one of those|Use "[^"]+"|Set {param} to "[^"]+")\.'
+    # Where the checks after it read the word (a model's kind), the refusal
+    # stops there and says so.
+    r"(\nFix this, then run again to check the spec's other settings\.)?$"
 )
 
 
@@ -103,6 +108,9 @@ def test_a_builder_refuses_a_word_in_python_as_the_rust_side_does(probe):
     label, name, needs, path, shape, *_ = probe
     spec, _ = _registry_spec(name, needs)
     rust = _spec_refusal(spec, path, _shaped(BOGUS, shape)).replace('"Probe"', '"m"')
+    # The builder refuses the word before any later check runs, so it has no
+    # stop to report where the Rust side stops at a kind's word.
+    rust = rust.removesuffix("\nFix this, then run again to check the spec's other settings.")
     with pytest.raises(ValueError) as caught:
         _registry_spec(name, {**needs, _keyword(path): _shaped(BOGUS, shape)})
     assert str(caught.value) == rust
@@ -110,7 +118,10 @@ def test_a_builder_refuses_a_word_in_python_as_the_rust_side_does(probe):
 
 def test_a_word_parameter_given_a_value_of_another_kind_is_a_type_error():
     """Not a word at all is a type error naming the words."""
-    with pytest.raises(TypeError, match=r'mode must be one of "pa", "pa1", "pa2", got int 3$'):
+    with pytest.raises(
+        TypeError,
+        match=r'mode must be "pa", "pa1" or "pa2", but it is int 3\. Use one of those words\.$',
+    ):
         po.spec.pa("m", targets=["y"], features=["x"], half_life=10.0, mode=3)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match=r'stats must be a list of strs, each one of "mean", '):
         po.spec.ew_cov("m", features=["x", "z"], half_life=10.0, stats="mean")  # type: ignore[arg-type]

@@ -1005,6 +1005,24 @@ fn new_refuses_what_it_cannot_run() {
     ] {
         assert!(Audit::new(bad).is_err());
     }
+    // Every problem at once, each a line of its own.
+    let e = AuditCfg {
+        n_columns: 0,
+        gap_cap: Some(0.0),
+        ..cfg(1)
+    }
+    .validate()
+    .unwrap_err();
+    let lines: Vec<&str> = e.lines().collect();
+    assert_eq!(lines.len(), 2, "{e}");
+    assert!(
+        lines[0].starts_with("audit: columns must name at least one column"),
+        "{e}"
+    );
+    assert!(
+        lines[1].starts_with("audit: gap_cap must be finite and above 0"),
+        "{e}"
+    );
 }
 
 /// A saved audit goes on as the one that saved it, from any row: the

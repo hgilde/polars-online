@@ -36,28 +36,46 @@ impl Spec {
         )
     }
 
-    /// Why this spec's model has no noise statistic, for the refusal of a
-    /// setting that reads one (docs/PLAN.md task 116).
+    /// Why this spec's model does not track how uncertain each prediction
+    /// is, for the refusal of `max_error_inflation` (docs/PLAN.md task 116).
     pub(super) fn no_noise_statistic(&self) -> &'static str {
         match self.model {
             ModelKind::Sgd { .. } | ModelKind::Pa { .. } | ModelKind::Ftrl { .. } => {
-                "a gradient fit keeps no second moment of the features to read an estimation \
-                 variance from"
+                "a gradient fit keeps no second moments of the features to read that \
+                 uncertainty from"
             }
             ModelKind::Huber { .. } | ModelKind::Quantile { .. } => {
-                "a robust fit is not linear in the targets, so the ridge family's variance does \
-                 not hold for it"
+                "a robust fit is not linear in its targets, so a least-squares fit's \
+                 uncertainty does not hold for it"
             }
             ModelKind::EwCov { .. }
             | ModelKind::Marginal { .. }
             | ModelKind::Deco { .. }
             | ModelKind::Rcov { .. }
             | ModelKind::CorrChange { .. } => {
-                "its statistics are EW moments, and 1 / n_kish is a mean's variance, not a \
-                 standard deviation's or a correlation's; its min_weight of k + 1 already holds \
-                 the gate's point"
+                "its statistics are weighted means and covariances of the columns, not \
+                 predictions of a target"
             }
-            _ => "it keeps no estimation variance of a prediction",
+            _ => "it keeps no measure of a prediction's uncertainty",
+        }
+    }
+
+    /// Why this spec's model cannot read one row's leverage, for the
+    /// refusals of `emit_influence` and `emit_error_inflation`.
+    pub(super) fn no_leverage(&self) -> &'static str {
+        match self.model {
+            ModelKind::Lasso { .. } => {
+                "it keeps no inverse of its Gram to read one row's leverage from"
+            }
+            ModelKind::Huber { .. } | ModelKind::Quantile { .. } => {
+                "a robust fit is not linear in its targets, so a least-squares leverage does \
+                 not hold for it"
+            }
+            ModelKind::Sgd { .. } | ModelKind::Pa { .. } | ModelKind::Ftrl { .. } => {
+                "a gradient fit keeps no second moments of the features to read one row's \
+                 leverage from"
+            }
+            _ => "it fits no coefficients of features to read one row's leverage from",
         }
     }
 

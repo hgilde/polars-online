@@ -224,7 +224,7 @@ def test_the_builder_names_the_floor_rust_holds(value):
     """The builder's floor is the one Rust refuses below, 1 (review 6, D-3:
     it said ``>= 0``, and 0 was then refused by Rust as ``>= 1``)."""
     for make in (lambda: ridge(value, 64), lambda: cov(value)):
-        with pytest.raises(ValueError, match="gram_threads must be >= 1"):
+        with pytest.raises(ValueError, match="gram_threads must be at least 1, but it is"):
             make()
 
 
@@ -240,7 +240,7 @@ def test_a_spec_without_it_writes_nothing_new():
 
 @pytest.mark.parametrize("make", [lambda: ridge(0, 64), lambda: cov(0)], ids=["ewridge", "ew_cov"])
 def test_zero_threads_is_refused(make):
-    with pytest.raises(ValueError, match="gram_threads must be >= 1"):
+    with pytest.raises(ValueError, match="gram_threads must be at least 1, but it is"):
         po.ModelBank([make()])
 
 
@@ -253,11 +253,9 @@ def test_auto_is_the_one_word_and_is_written_as_given(build):
     spec = make("auto")
     assert spec["model"]["gram_threads"] == "auto"
     assert po.ModelBank([spec]).specs[0]["model"]["gram_threads"] == "auto"
-    with pytest.raises(
-        ValueError, match='gram_threads must be an int or one of "auto"; got "AUTO"'
-    ):
+    with pytest.raises(ValueError, match='gram_threads must be an int or "auto", but it is "AUTO"'):
         make("AUTO")
-    with pytest.raises(TypeError, match='gram_threads must be an int or one of "auto", got bool'):
+    with pytest.raises(TypeError, match='gram_threads must be an int or "auto", but it is bool'):
         make(True)
     for bad in ("x", True, -1):
         hand = {**spec, "model": {**spec["model"], "gram_threads": bad}}

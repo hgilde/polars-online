@@ -10,24 +10,45 @@ use super::DEPRECATED;
 pub const INIT_WORDS: [&str; 4] = ["first", "farthest", "k-means++", "lloyd"];
 
 /// The one refusal of a word outside the words a parameter takes (task 244,
-/// P-4): `<param> must be one of "a", "b"; got "x"`, after the spec's name
-/// where the caller has one ([`spec_words_refusal`]). Every word parameter
-/// says it the same way -- a builder in Python, a spec dict, a TOML file --
-/// so the words read the same wherever a caller meets them, and the API
-/// snapshot reads them from this one shape.
+/// P-4), in the shape every message takes (WRITING §11): `<param> must be
+/// "a", "b" or "c", but it is "x". Use one of those words.`, after the
+/// spec's name where the caller has one ([`spec_words_refusal`]). Every word
+/// parameter says it the same way -- a builder in Python, a spec dict, a
+/// TOML file -- so the words read the same wherever a caller meets them,
+/// and the API snapshot reads them from this one shape.
 pub fn words_refusal(param: &str, words: &[&str], got: &str) -> String {
     format!("{param} {}", words_body(words, got))
 }
 
-/// [`words_refusal`] without the parameter: `must be one of "a", "b"; got
-/// "x"`.
+/// `"a"`, `"a" or "b"`, `"a", "b" or "c"`: the words a parameter takes, as
+/// a refusal lists them.
+pub fn words_listed(words: &[&str]) -> String {
+    let quoted: Vec<String> = words.iter().map(|w| format!("{w:?}")).collect();
+    match quoted.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
+        _ => quoted.join(""),
+    }
+}
+
+/// [`words_refusal`] without the parameter, which its remedy does not
+/// need: `must be "a" or "b", but it is "x". Use one of those words.` A
+/// word renamed before 1.0 ([`super::RENAMED_VALUES`]) is told its new
+/// name.
 pub fn words_body(words: &[&str], got: &str) -> String {
-    let list = words
+    let listed = words_listed(words);
+    if let Some((_, new)) = super::RENAMED_VALUES
         .iter()
-        .map(|w| format!("{w:?}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("must be one of {list}; got {got:?}")
+        .find(|(old, new)| *old == got && words.contains(new))
+    {
+        return format!(
+            "must be {listed}, but it is {got:?}, the old name of {new:?}. Use {new:?}."
+        );
+    }
+    let remedy = match words {
+        [one] => format!("Use {one:?}."),
+        _ => "Use one of those words.".to_string(),
+    };
+    format!("must be {listed}, but it is {got:?}. {remedy}")
 }
 
 /// [`words_refusal`] after `spec "<name>": `.
@@ -36,7 +57,7 @@ pub fn spec_words_refusal(spec: &str, param: &str, words: &[&str], got: &str) ->
 }
 
 /// A deserializer's refusal of a word, `msg`, as [`words_body`] words it:
-/// `must be one of "a", "b"; got "x"`. serde words an enum's unknown
+/// `must be "a" or "b", but it is "x". Use one of those words.` serde words an enum's unknown
 /// variant as ``unknown variant `x`, expected `a` or `b` `` (or ``expected
 /// one of `a`, `b`, `c` ``), and a spec's own deserializers say ``must be
 /// ...`` already. `None` for any other message, which is not about a word.
@@ -103,8 +124,8 @@ pub const DEPRECATED_WORDS_IN: &[(&str, &str, &str, &str)] = &[
 /// What a deprecated word is told, as [`deprecation_notice`] tells a key.
 pub fn word_deprecation_notice(key: &str, old: &str, new: &str) -> String {
     format!(
-        "{key} = {old:?} is deprecated: it was renamed {new:?}. It is read as {new:?} until the \
-         next major version, which refuses it"
+        "{key} = {old:?} is deprecated: it was renamed {new:?}, and is read as {new:?} until the \
+         next major version, which refuses it. Write {key} = {new:?} instead."
     )
 }
 
@@ -118,23 +139,40 @@ pub fn word_deprecation_notice(key: &str, old: &str, new: &str) -> String {
 /// name beside its new one is refused, naming both.
 pub fn forward_deprecated_in_models(v: &mut serde_json::Value) -> Result<Vec<String>, String> {
     let mut notices = Vec::new();
-    forward_models(v, &mut notices)?;
+    forward_models(v, None, &mut notices)?;
     Ok(notices)
 }
 
-fn forward_models(v: &mut serde_json::Value, notices: &mut Vec<String>) -> Result<(), String> {
+/// [`forward_deprecated_in_models`] over `v`, whose enclosing spec is named
+/// `spec` where it has a name: each notice and refusal of a model table then
+/// starts with `spec "m": `, so two specs' notices are never the same text.
+fn forward_models(
+    v: &mut serde_json::Value,
+    spec: Option<&str>,
+    notices: &mut Vec<String>,
+) -> Result<(), String> {
     match v {
         serde_json::Value::Object(map) => {
             if let Some(kind) = map.get("type").and_then(|t| t.as_str()).map(str::to_string) {
-                forward_model(&kind, map, notices)?;
+                let from = notices.len();
+                let named = |m: String| match spec {
+                    Some(name) => format!("spec {name:?}: {m}"),
+                    None => m,
+                };
+                forward_model(&kind, map, notices).map_err(named)?;
+                for n in &mut notices[from..] {
+                    *n = named(std::mem::take(n));
+                }
             }
+            let own = map.get("name").and_then(|n| n.as_str()).map(str::to_string);
+            let spec = own.as_deref().or(spec);
             for value in map.values_mut() {
-                forward_models(value, notices)?;
+                forward_models(value, spec, notices)?;
             }
         }
         serde_json::Value::Array(items) => {
             for value in items {
-                forward_models(value, notices)?;
+                forward_models(value, spec, notices)?;
             }
         }
         _ => {}
@@ -207,7 +245,7 @@ pub fn forward_model<M: ModelTable + ?Sized>(
     notices: &mut Vec<String>,
 ) -> Result<(), String> {
     let both = |old: &str, new: &str| {
-        format!("{old} was renamed {new}, and both are given: give {new} alone")
+        format!("{old} was renamed {new}, and both are given. Give {new} alone.")
     };
     for (model, old, new) in DEPRECATED_IN {
         if *model == kind && map.has(old) {
@@ -223,7 +261,8 @@ pub fn forward_model<M: ModelTable + ?Sized>(
             return Err(both("emission", "covariance_type"));
         }
         // A value that is no word, or a word that never was one, is passed
-        // on for `covariance_type` to refuse in its own words.
+        // on for `covariance_type` to refuse in its own words, with no
+        // notice: the refusal is all the reader needs.
         let given = map.word("emission");
         let word = given.clone().unwrap_or_default();
         let (covariance, beta) = match word.as_str() {
@@ -231,20 +270,29 @@ pub fn forward_model<M: ModelTable + ?Sized>(
             "robust" => ("diag", true),
             other => (other, false),
         };
+        let known = matches!(word.as_str(), "gaussian" | "robust");
         map.rename("emission", "covariance_type");
         if given.is_some() {
             map.set_word("covariance_type", covariance);
         }
         let robust = if beta {
             map.or_float("robust_beta", "0.1", "covariance_type");
-            " with robust_beta, 0.1 where none is given"
+            " with robust_beta, 0.1 where none is given,"
         } else {
             ""
         };
-        notices.push(format!(
-            "emission = {word:?} is deprecated: it is covariance_type = {covariance:?}{robust}. \
-             It is read so until the next major version, which refuses it"
-        ));
+        let and_beta = if beta {
+            format!(" and robust_beta = {}", map.shown("robust_beta"))
+        } else {
+            String::new()
+        };
+        if known {
+            notices.push(format!(
+                "emission = {word:?} is deprecated: it is read as covariance_type = \
+                 {covariance:?}{robust} until the next major version, which refuses it. Write \
+                 covariance_type = {covariance:?}{and_beta} instead."
+            ));
+        }
     }
     if kind == "corrchange" && map.has("reset_on_flag") {
         if map.has("change_action") {
@@ -254,13 +302,16 @@ pub fn forward_model<M: ModelTable + ?Sized>(
         let shown = map.shown("reset_on_flag");
         let action = if flag == Some(true) { "reset" } else { "flag" };
         map.rename("reset_on_flag", "change_action");
+        // A value that is no bool is passed on for `change_action` to
+        // refuse in its own words, with no notice.
         if flag.is_some() {
             map.set_word("change_action", action);
+            notices.push(format!(
+                "reset_on_flag = {shown} is deprecated: it is read as change_action = \
+                 {action:?} until the next major version, which refuses it. Write \
+                 change_action = {action:?} instead."
+            ));
         }
-        notices.push(format!(
-            "reset_on_flag = {shown} is deprecated: it is change_action = {action:?}. It is read \
-             so until the next major version, which refuses it"
-        ));
     }
     for (model, key, old, new) in DEPRECATED_WORDS_IN {
         if *model == kind && map.word(key).as_deref() == Some(*old) {
@@ -275,8 +326,8 @@ pub fn forward_model<M: ModelTable + ?Sized>(
 /// works, and until when.
 pub fn deprecation_notice(old: &str, new: &str) -> String {
     format!(
-        "{old} is deprecated: it was renamed {new}. It is read as {new} until the next major \
-         version, which refuses it"
+        "{old} is deprecated: it was renamed {new}, and is read as {new} until the next major \
+         version, which refuses it. Write {new} instead."
     )
 }
 
@@ -311,7 +362,7 @@ fn forward_into(
                 if let Some(value) = map.remove(*old) {
                     if map.contains_key(*new) {
                         return Err(format!(
-                            "{old} was renamed {new}, and both are given: give {new} alone"
+                            "{old} was renamed {new}, and both are given. Give {new} alone."
                         ));
                     }
                     map.insert((*new).to_string(), value);
@@ -465,18 +516,25 @@ mod tests {
         )
         .unwrap();
         let notices = crate::spec::forward_deprecated(&mut old).unwrap();
+        // Each names the spec whose model table it read.
+        let named = |n: String| format!("spec \"m\": {n}");
         assert_eq!(
             notices,
             [
-                crate::spec::deprecation_notice("k", "n_clusters"),
-                crate::spec::deprecation_notice("seed_rule", "init"),
-                crate::spec::word_deprecation_notice("init", "kmeanspp", "k-means++"),
+                named(crate::spec::deprecation_notice("k", "n_clusters")),
+                named(crate::spec::deprecation_notice("seed_rule", "init")),
+                named(crate::spec::word_deprecation_notice(
+                    "init",
+                    "kmeanspp",
+                    "k-means++"
+                )),
             ]
         );
         assert_eq!(
             notices[2],
-            "init = \"kmeanspp\" is deprecated: it was renamed \"k-means++\". It is read as \
-             \"k-means++\" until the next major version, which refuses it"
+            "spec \"m\": init = \"kmeanspp\" is deprecated: it was renamed \"k-means++\", and is read as \
+             \"k-means++\" until the next major version, which refuses it. Write init = \
+             \"k-means++\" instead."
         );
         assert_eq!(old[0]["model"]["n_clusters"], 2);
         assert_eq!(old[0]["model"]["init"], "k-means++");
@@ -526,12 +584,15 @@ mod tests {
             assert_eq!(crate::stream::init_rule(word).unwrap(), rule, "{word:?}");
         }
         let e = crate::stream::init_rule(Some("kmeanspp")).unwrap_err();
-        assert!(e.starts_with("init must be one of"), "{e}");
+        assert!(e.starts_with("init must be \"first\", "), "{e}");
         let e = serde_json::from_str::<crate::spec::ModelClosed>(r#""left""#)
             .unwrap_err()
             .to_string();
         assert!(
-            e.contains("closed = \"left\" leaves out the current row"),
+            e.contains(
+                "must be \"right\" or \"both\", but it is \"left\", which leaves out the \
+                 current row"
+            ),
             "{e}"
         );
     }
@@ -601,7 +662,7 @@ mod tests {
                 .map(|_| ())
                 .unwrap_err();
             assert!(
-                e.contains("robust_beta must be finite and > 0"),
+                e.contains("robust_beta must be finite and above 0"),
                 "{bad}: {e}"
             );
         }
@@ -610,7 +671,7 @@ mod tests {
                 .map(|_| ())
                 .unwrap_err();
         assert!(
-            e.contains("robust_beta tempers the per-feature predictive"),
+            e.contains("robust_beta applies only under covariance_type=\"diag\""),
             "{e}"
         );
     }
@@ -621,15 +682,29 @@ mod tests {
     fn a_word_refusal_has_one_shape() {
         assert_eq!(
             crate::spec::words_refusal("closed", &["right", "both"], "left"),
-            "closed must be one of \"right\", \"both\"; got \"left\""
+            "closed must be \"right\" or \"both\", but it is \"left\". Use one of those words."
         );
         assert_eq!(
             crate::spec::word_refusal_body("unknown variant `x`, expected `mean` or `sum`"),
-            Some("must be one of \"mean\", \"sum\"; got \"x\"".to_string())
+            Some(
+                "must be \"mean\" or \"sum\", but it is \"x\". Use one of those words.".to_string()
+            )
         );
         assert_eq!(
             crate::spec::word_refusal_body("unknown variant `x`, expected one of `a`, `b`, `c`"),
-            Some("must be one of \"a\", \"b\", \"c\"; got \"x\"".to_string())
+            Some(
+                "must be \"a\", \"b\" or \"c\", but it is \"x\". Use one of those words."
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            crate::spec::words_refusal("kernel", &["parzen"], "bartlett"),
+            "kernel must be \"parzen\", but it is \"bartlett\". Use \"parzen\"."
+        );
+        assert_eq!(
+            crate::spec::words_refusal("stats", &["mean", "lag_corr"], "lagcorr"),
+            "stats must be \"mean\" or \"lag_corr\", but it is \"lagcorr\", the old name of \
+             \"lag_corr\". Use \"lag_corr\"."
         );
         assert_eq!(crate::spec::word_refusal_body("invalid type: map"), None);
     }

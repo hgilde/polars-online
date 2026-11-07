@@ -677,19 +677,19 @@ fn every_refusal_beside_it_names_the_setting_and_the_remedy() {
         ),
         (
             r#""model": {"type": "ewridge"}, "label_clock": ["a", "b"]"#,
-            "label_clock lists 2 columns for 1 targets",
+            "label_clock lists 2 columns for 1 target",
         ),
         (
             r#""model": {"type": "ewridge"}, "max_held_rows": 4"#,
-            "max_held_rows is given without label_clock",
+            "max_held_rows applies only under label_clock",
         ),
         (
             r#""model": {"type": "ewridge"}, "label_clock": "avail", "max_held_rows": 0"#,
-            "max_held_rows is 0",
+            "max_held_rows must be at least 1, but it is 0",
         ),
         (
             r#""model": {"type": "ewridge"}, "label_clock": "avail", "held_overflow": "oldest""#,
-            "held_overflow must be one of \"refuse\", \"drop_oldest\"; got \"oldest\"",
+            "held_overflow must be \"refuse\" or \"drop_oldest\", but it is \"oldest\".",
         ),
     ];
     for (rest, want) in cases {
@@ -702,18 +702,29 @@ fn every_refusal_beside_it_names_the_setting_and_the_remedy() {
         };
         assert!(err.contains(want), "{text}: {err}");
     }
+    // Two settings refused beside it are both reported, the spec named once.
+    let both = format!(
+        r#"{{{base}, "model": {{"type": "ewridge"}}, "label_clock": "avail", "embargo": 2.0, "session": "s", "session_gap": 0.0}}"#
+    );
+    let err = Bank::new(vec![spec_of(&both)]).err().unwrap();
+    assert!(err.starts_with("spec \"m\": 2 problems.\n- "), "{err}");
+    assert!(
+        err.contains("\n- label_clock does not work beside embargo")
+            && err.contains("\n- label_clock does not work beside a session column"),
+        "{err}"
+    );
     let two = r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y", "z"], "features": ["x0"], "clock": "t", "gap_cap": 10.0, "half_life": 5.0, "label_clock": ["a", "b"]}"#;
     let err = Bank::new(vec![spec_of(two)]).err().unwrap();
     assert!(
-        err.contains("label_clock lists \"a\" and \"b\", and a spec reads one label time a row"),
+        err.contains(
+            "label_clock lists \"a\" and \"b\", but a spec reads one time a row at which its \
+             targets become known"
+        ),
         "{err}"
     );
     let no_clock = r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0"], "half_life": 5.0, "label_clock": "avail"}"#;
     let err = Bank::new(vec![spec_of(no_clock)]).err().unwrap();
-    assert!(
-        err.contains("label_clock \"avail\" is given with no clock"),
-        "{err}"
-    );
+    assert!(err.contains("label_clock \"avail\" needs clock"), "{err}");
 }
 
 fn field_bits(out: &DataFrame, name: &str) -> Vec<Option<u64>> {

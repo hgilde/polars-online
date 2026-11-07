@@ -181,7 +181,7 @@ def test_the_spec_halflife_alone_is_enough(tmp_path):
 def test_a_holt_spec_still_needs_one_of_them():
     with pytest.raises(ValueError, match="this model needs a half_life, and none is given"):
         po.spec.holt("m", targets=["y0"], trend_half_life=100.0)
-    with pytest.raises(ValueError, match="half_life must be > 0"):
+    with pytest.raises(ValueError, match="half_life must be above 0"):
         po.spec.holt("m", targets=["y0"], half_life=-1.0)
 
 
@@ -198,7 +198,7 @@ def test_bad_config_rejected():
 
 
 def test_other_models_still_require_features():
-    with pytest.raises(ValueError, match="features must be non-empty"):
+    with pytest.raises(ValueError, match="features must name at least one column, but it is empty"):
         po.spec.ewridge("m", targets=["y0"], features=[], half_life=10.0)
 
 

@@ -46,12 +46,16 @@ fn max_dclock_is_finite_and_above_zero() {
     let with = |v: &str| cfg(&format!("half_life = 10.0\nclock = \"t\"\ngap_cap = {v}"));
     let err = with("0.0").unwrap_err();
     assert!(
-        err.contains("must be > 0") && err.contains("half_life = \"inf\""),
+        err.contains("must be above 0") && err.contains("set half_life to inf"),
         "{err}"
     );
     let err = with("inf").unwrap_err();
     assert!(err.contains("must be finite"), "{err}");
-    assert!(with("-5.0").unwrap_err().contains("finite number > 0"));
+    assert!(
+        with("-5.0")
+            .unwrap_err()
+            .contains("must be finite and above 0, but it is -5")
+    );
     assert_eq!(with("1e-9").unwrap().gap_cap, 1e-9);
 }
 
@@ -363,9 +367,9 @@ fn a_window_with_no_half_life_is_told_to_use_inf_for_a_flat_window() {
     let err = online_polars::resolved_defaults(&spec).unwrap_err();
     assert_eq!(
         err,
-        "spec \"w\": a window_size needs a half_life too, and none is given. Set half_life to \
-         \"inf\" (in Python, float(\"inf\")) to weigh every row in the window alike, or to a \
-         finite value to decay the older rows within it."
+        "spec \"w\": a hard window (window_size) needs half_life, but half_life is not set. Set \
+         half_life to \"inf\" (in Python, float(\"inf\")) to weigh every row in the hard window \
+         alike, or to a finite value to decay the older rows within it."
     );
     // The flat window it names is accepted, written as TOML writes it.
     let flat: Spec = toml::from_str(

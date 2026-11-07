@@ -404,17 +404,29 @@ fn within_block(name: &str, value: usize, block_rows: Option<usize>) -> Result<(
         && value > b
     {
         return Err(format!(
-            "rcov: {name} = {value} is more than block_rows = {b}, the returns a block \
-                 holds: it is sized before the first row and a block never fills it"
+            "rcov: {name} must be at most block_rows ({b}), the block length the model is sized \
+             for before the first row, but it is {value}. Lower {name} to {b} or below, or \
+             increase block_rows."
         ));
     }
     if value > MAX_RING {
         return Err(format!(
-            "rcov: {name} = {value} is above {MAX_RING}, the most this model sizes a ring, a \
-             window or a stride for before the first row"
+            "rcov: {name} must be at most {MAX_RING}, but it is {value}: the model sets aside \
+             room for that many returns before the first row. Lower {name} to {MAX_RING} or \
+             below."
         ));
     }
     Ok(())
+}
+
+/// A count of returns or lags as a refusal prints it: whole below a
+/// million, three significant figures above.
+fn count_text(x: f64) -> String {
+    if x < 1e6 {
+        format!("{x:.0}")
+    } else {
+        format!("{x:.2e}")
+    }
 }
 
 impl RcovCfg {
@@ -477,132 +489,161 @@ impl RcovCfg {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        let mut no = crate::Refusals::new();
         if self.n_features == 0 {
-            return Err("rcov: at least one column is required".into());
+            no.refuse(
+                "rcov: the model needs at least one feature, but it has none. Name at least one \
+                 column in features.",
+            );
         }
+        no.stop_here()?;
         if self.kernel != "parzen" {
-            return Err(format!(
-                "kernel must be one of \"parzen\"; got {:?}: the Bartlett kernel is not \
-                 consistent for this estimator, and Parzen beats the quadratic spectral on \
-                 efficiency (BNHLS 2011)",
+            no.refuse(format!(
+                "rcov: kernel must be \"parzen\", the one kernel this model takes, but it is \
+                 {:?}. Set kernel to \"parzen\".",
                 self.kernel
             ));
         }
         if self.jitter == 0 {
-            return Err("rcov: jitter must be >= 1 (1 is no jitter at all)".into());
+            no.refuse(
+                "rcov: jitter must be at least 1, but it is 0. Set jitter to 1 for no jitter, or \
+                 above 1.",
+            );
         }
         if !(self.theta > 0.0 && self.theta.is_finite()) {
-            return Err("rcov: theta must be finite and > 0".into());
-        }
-        if self.noise_stride == 0 || self.iv_stride == 0 {
-            return Err("rcov: noise_stride and iv_stride must be >= 1".into());
-        }
-        if self.bandwidth.is_some() && self.kind != RcovKind::Kernel {
-            return Err(format!(
-                "rcov: bandwidth applies to kind = \"kernel\", not {:?}",
-                self.kind.as_str()
+            no.refuse(format!(
+                "rcov: theta must be finite and above 0, but it is {}. Set theta to a finite \
+                 positive value.",
+                self.theta
             ));
         }
-        if self.preavg_rows.is_some() && self.kind != RcovKind::Preavg {
-            return Err(format!(
-                "rcov: preavg_rows applies to kind = \"preavg\", not {:?}",
-                self.kind.as_str()
-            ));
+        for (key, stride) in [
+            ("noise_stride", self.noise_stride),
+            ("iv_stride", self.iv_stride),
+        ] {
+            if stride == 0 {
+                no.refuse(format!(
+                    "rcov: {key} must be at least 1, but it is 0. Set {key} to 1 or more."
+                ));
+            }
         }
         // The ring depth is the kernel's: the other two read no ring, and a
         // depth given to them sized memory before the first row and changed
         // nothing else (review 2026-10-06, CE4).
-        if self.max_bandwidth.is_some() && self.kind != RcovKind::Kernel {
-            return Err(format!(
-                "rcov: max_bandwidth applies to kind = \"kernel\", not {:?}",
-                self.kind.as_str()
-            ));
+        for (key, given, owner) in [
+            ("bandwidth", self.bandwidth.is_some(), RcovKind::Kernel),
+            ("preavg_rows", self.preavg_rows.is_some(), RcovKind::Preavg),
+            (
+                "max_bandwidth",
+                self.max_bandwidth.is_some(),
+                RcovKind::Kernel,
+            ),
+        ] {
+            if given && self.kind != owner {
+                no.refuse(format!(
+                    "rcov: {key} applies only under kind={:?}, but kind is {:?}. Leave out {key}, \
+                     or set kind={:?}.",
+                    owner.as_str(),
+                    self.kind.as_str(),
+                    owner.as_str()
+                ));
+            }
         }
         if self.kind == RcovKind::Kernel && self.bandwidth.is_none() && self.block_rows.is_none() {
-            return Err(
-                "rcov: an automatic bandwidth needs `block_rows` (the block's expected length): the \
-                 ring has to be sized before the first row, and `n` is known only at the close"
-                    .into(),
+            no.refuse(
+                "rcov: kind=\"kernel\" with no bandwidth needs block_rows, but block_rows is not \
+                 set: the automatic bandwidth is sized from the block's expected length before \
+                 the first row. Set block_rows to the number of returns a block is expected to \
+                 hold, or give bandwidth.",
             );
         }
         if self.kind == RcovKind::Preavg && self.window_rows().is_none() {
-            return Err(
-                "rcov: pre-averaging needs `block_rows` or an explicit `preavg_rows`: the window has to be \
-                 fixed before the first row"
-                    .into(),
+            no.refuse(
+                "rcov: kind=\"preavg\" needs block_rows or preavg_rows, but neither is set. Set \
+                 block_rows to the number of returns a block is expected to hold, or give \
+                 preavg_rows.",
             );
         }
         if let Some(w) = self.preavg_rows {
             if w < 2 {
-                return Err(format!(
-                    "rcov: preavg_rows must be >= 2 (got {w}); the pre-averaged return is a weighted \
-                     sum over `preavg_rows − 1` returns, so below 2 there is nothing to average and \
-                     no block ever accumulates"
+                no.refuse(format!(
+                    "rcov: preavg_rows must be at least 2, but it is {w}: below 2 there is \
+                     nothing to average. Set preavg_rows to 3 or more, or to 2 with psd=True."
                 ));
-            }
-            if w == 2 && !self.psd {
-                return Err(
-                    "rcov: preavg_rows must be >= 3 without psd (got 2): at 2 the scaled sum of the \
-                     pre-averaged squares is exactly the bias term subtracted from it, so the \
-                     estimate is the zero matrix whatever the returns; give 3 or more, or psd = \
-                     true, where a window of 2 is the plain estimate"
-                        .into(),
+            } else if w == 2 && !self.psd {
+                no.refuse(
+                    "rcov: preavg_rows must be at least 3 under psd=False, but it is 2: at 2 the \
+                     estimate is the zero matrix whatever the returns. Set preavg_rows to 3 or \
+                     more, or set psd=True, under which 2 gives the plain estimate.",
                 );
             }
         }
         if self.block_rows == Some(0) {
-            return Err(
-                "rcov: block_rows is the block's expected length in returns and must be >= 1; the \
-                 ring and the window are sized from it"
-                    .into(),
+            no.refuse(
+                "rcov: block_rows must be at least 1, but it is 0. Set block_rows to the number \
+                 of returns a block is expected to hold.",
             );
         }
         if let (Some(h), Some(b)) = (self.max_bandwidth, self.bandwidth)
             && h < b
         {
-            return Err(format!(
-                "rcov: max_bandwidth = {h} caps the ring below bandwidth = {b}, so the lags the \
-                     bandwidth asks for are not there and it is silently reduced to {h}; raise \
-                     max_bandwidth or lower the bandwidth"
+            no.refuse(format!(
+                "rcov: max_bandwidth must be at least bandwidth, but max_bandwidth is {h} and \
+                 bandwidth is {b}, which would cut the bandwidth to {h}. Increase max_bandwidth \
+                 to {b} or more, or lower bandwidth."
             ));
         }
+        // The sizes below read the kind, `theta` and `block_rows` checked
+        // above.
+        no.stop_here()?;
         // Every size `Rcov::new` allocates from, before the first row: what
         // a caller sets, at most `block_rows` where it is given, and every
         // size at most `MAX_RING` (review 2026-10-05, CE4).
         if let Some(h) = self.bandwidth {
-            within_block("bandwidth", h, self.block_rows)?;
+            no.take(within_block("bandwidth", h, self.block_rows));
         }
         if let Some(h) = self.max_bandwidth {
-            within_block("max_bandwidth", h, self.block_rows)?;
+            no.take(within_block("max_bandwidth", h, self.block_rows));
         }
         if let Some(w) = self.preavg_rows {
-            within_block("preavg_rows", w, self.block_rows)?;
+            no.take(within_block("preavg_rows", w, self.block_rows));
         }
-        within_block("jitter", self.jitter, None)?;
-        within_block("noise_stride", self.noise_stride, None)?;
-        within_block("iv_stride", self.iv_stride, None)?;
+        no.take(within_block("jitter", self.jitter, None));
+        no.take(within_block("noise_stride", self.noise_stride, None));
+        no.take(within_block("iv_stride", self.iv_stride, None));
         // Only an automatic bandwidth's ring can be past the ceiling here: a
         // given `bandwidth` or `max_bandwidth` is the ring, held to it above.
         if let (Some(h), Some(b)) = (self.ring_rows(), self.block_rows)
             && self.kind == RcovKind::Kernel
+            && self.bandwidth.is_none()
+            && self.max_bandwidth.is_none()
             && h > MAX_RING as f64
         {
-            return Err(format!(
-                "rcov: block_rows = {b} gives an automatic bandwidth's ring of {h:e} lags, above \
-                     {MAX_RING}, the most this model sizes a ring for before the first row; give a \
-                     bandwidth, or a max_bandwidth"
+            no.refuse(format!(
+                "rcov: block_rows = {b} gives an automatic bandwidth of {} lags, over the \
+                 {MAX_RING} this model can keep. Give bandwidth, or max_bandwidth at {MAX_RING} or \
+                 below.",
+                count_text(h)
             ));
         }
         if let (RcovKind::Preavg, None, Some(b)) = (self.kind, self.preavg_rows, self.block_rows) {
             let w = self.window_rows().expect("block_rows sizes the window");
             // Read as a double, so a `theta` past any count is refused here
             // rather than saturating the cast.
-            if w > b as f64 || w > MAX_RING as f64 {
-                return Err(format!(
-                    "rcov: the pre-averaging window theta = {} sets is {w:e} returns, which is more \
-                     than block_rows = {b} (or {MAX_RING}, the most this model sizes a window for): \
-                     a window past the block never forms a term; lower theta, or give preavg_rows",
-                    self.theta
+            if w > b as f64 {
+                no.refuse(format!(
+                    "rcov: theta = {} gives a pre-averaging span of {} returns, more than \
+                     block_rows ({b}), so no block is long enough to form a term. Lower theta, \
+                     or give preavg_rows.",
+                    self.theta,
+                    count_text(w)
+                ));
+            } else if w > MAX_RING as f64 {
+                no.refuse(format!(
+                    "rcov: theta = {} gives a pre-averaging span of {} returns, more than \
+                     {MAX_RING}, the most this model can keep. Lower theta, or give preavg_rows.",
+                    self.theta,
+                    count_text(w)
                 ));
             }
         }
@@ -613,16 +654,44 @@ impl RcovCfg {
             let k = self.n_features as f64;
             let mib = (ring as f64 + 1.0) * k * k * 8.0 / f64::from(1 << 20);
             if mib > GAMMA_BUDGET_MIB {
-                return Err(format!(
-                    "rcov: the lagged products would take {} MiB ((ring + 1)·k² = ({ring} + 1)·{}² \
-                     doubles), over the {GAMMA_BUDGET_MIB} MiB this model sizes before the first \
-                     row; give a smaller bandwidth or max_bandwidth, or fewer features",
-                    crate::budget::mib_over(mib, GAMMA_BUDGET_MIB),
-                    self.n_features
-                ));
+                // The most lags whose covariances fit, rounded down so the
+                // remedy holds.
+                let most = (GAMMA_BUDGET_MIB * f64::from(1 << 20) / (8.0 * k * k)).floor() - 1.0;
+                let mib = crate::budget::mib_over(mib, GAMMA_BUDGET_MIB);
+                let n = self.n_features;
+                // Lags are kept only under kind="kernel", and only a
+                // bandwidth of 1 or more is one to lower to.
+                // The depth is max_bandwidth where it is set, else bandwidth,
+                // else the automatic bandwidth either one replaces.
+                let (some_max, some_bandwidth) =
+                    (self.max_bandwidth.is_some(), self.bandwidth.is_some());
+                if ring > 0 && most >= 1.0 && some_max {
+                    no.refuse(format!(
+                        "rcov: the lagged covariances the model keeps would take {mib} MiB at \
+                         {ring} lags of {n} features, over the {GAMMA_BUDGET_MIB} MiB limit. Set \
+                         max_bandwidth to {most} or below, or use fewer features."
+                    ));
+                } else if ring > 0 && most >= 1.0 && some_bandwidth {
+                    no.refuse(format!(
+                        "rcov: the lagged covariances the model keeps would take {mib} MiB at \
+                         {ring} lags of {n} features, over the {GAMMA_BUDGET_MIB} MiB limit. Set \
+                         bandwidth to {most} or below, or use fewer features."
+                    ));
+                } else if ring > 0 && most >= 1.0 {
+                    no.refuse(format!(
+                        "rcov: the lagged covariances the model keeps would take {mib} MiB at \
+                         {ring} lags of {n} features, over the {GAMMA_BUDGET_MIB} MiB limit. Set \
+                         bandwidth or max_bandwidth to {most} or below, or use fewer features."
+                    ));
+                } else {
+                    no.refuse(format!(
+                        "rcov: the covariances the model keeps would take {mib} MiB at {n} \
+                         features, over the {GAMMA_BUDGET_MIB} MiB limit. Use fewer features."
+                    ));
+                }
             }
         }
-        Ok(())
+        no.finish()
     }
 }
 
@@ -1993,8 +2062,8 @@ mod tests {
             panic!("accepted")
         };
         assert!(
-            e.contains("rcov: the lagged products would take 800 MiB")
-                && e.contains("(1048576 + 1)·10²")
+            e.contains("rcov: the lagged covariances the model keeps would take 800 MiB")
+                && e.contains("at 1048576 lags of 10 features")
                 && e.contains("over the 256 MiB"),
             "{e}"
         );
@@ -2007,7 +2076,10 @@ mod tests {
         }) else {
             panic!("accepted")
         };
-        assert!(e.contains("rcov: the lagged products would take"), "{e}");
+        assert!(
+            e.contains("rcov: the lagged covariances the model keeps would take"),
+            "{e}"
+        );
         // (2^20 + 1)·2² doubles: 32 MiB.
         assert!(
             Rcov::new(RcovCfg {
@@ -2033,7 +2105,7 @@ mod tests {
                 panic!("accepted")
             };
             assert!(
-                e.contains("rcov: max_bandwidth applies to kind = \"kernel\", not"),
+                e.contains("rcov: max_bandwidth applies only under kind=\"kernel\", but kind is"),
                 "{e}"
             );
         }
@@ -2050,21 +2122,21 @@ mod tests {
     fn a_bad_configuration_is_refused_by_name() {
         let bad = |c: RcovCfg, msg: &str| {
             let e = Rcov::new(c).unwrap_err();
-            assert!(e.contains(msg), "{e}");
+            assert!(e.contains(msg), "{msg}: {e}");
         };
         bad(
             RcovCfg {
                 kernel: "bartlett".into(),
                 ..cfg(2, RcovKind::Kernel)
             },
-            "not consistent",
+            "the one kernel this model takes",
         );
         bad(
             RcovCfg {
                 jitter: 0,
                 ..cfg(2, RcovKind::Kernel)
             },
-            "jitter must be >= 1",
+            "jitter must be at least 1, but it is 0",
         );
         for w in [0, 1] {
             bad(
@@ -2072,7 +2144,7 @@ mod tests {
                     preavg_rows: Some(w),
                     ..cfg(2, RcovKind::Preavg)
                 },
-                "preavg_rows must be >= 2",
+                "preavg_rows must be at least 2",
             );
         }
         bad(
@@ -2081,7 +2153,7 @@ mod tests {
                 bandwidth: None,
                 ..cfg(2, RcovKind::Kernel)
             },
-            "block_rows is the block's expected length",
+            "block_rows must be at least 1, but it is 0",
         );
         bad(
             RcovCfg {
@@ -2089,7 +2161,7 @@ mod tests {
                 bandwidth: Some(4),
                 ..cfg(2, RcovKind::Kernel)
             },
-            "caps the ring below bandwidth",
+            "max_bandwidth must be at least bandwidth",
         );
         bad(
             RcovCfg {
@@ -2097,7 +2169,7 @@ mod tests {
                 block_rows: None,
                 ..cfg(2, RcovKind::Kernel)
             },
-            "needs `block_rows`",
+            "needs block_rows",
         );
         bad(
             RcovCfg {
@@ -2106,21 +2178,21 @@ mod tests {
                 preavg_rows: None,
                 ..cfg(2, RcovKind::Preavg)
             },
-            "needs `block_rows` or an explicit `preavg_rows`",
+            "needs block_rows or preavg_rows",
         );
         bad(
             RcovCfg {
                 bandwidth: Some(2),
                 ..cfg(2, RcovKind::Plain)
             },
-            "bandwidth applies to",
+            "bandwidth applies only under",
         );
         bad(
             RcovCfg {
                 preavg_rows: Some(2),
                 ..cfg(2, RcovKind::Kernel)
             },
-            "preavg_rows applies to",
+            "preavg_rows applies only under",
         );
         bad(
             RcovCfg {
@@ -2141,14 +2213,14 @@ mod tests {
                     bandwidth: Some(huge),
                     ..cfg(2, RcovKind::Kernel)
                 },
-                "bandwidth = 18446744073709551615 is more than block_rows = 400",
+                "bandwidth must be at most block_rows (400), the block length the model is sized for before the first row, but it is 18446744073709551615",
             ),
             (
                 RcovCfg {
                     bandwidth: Some(401),
                     ..cfg(2, RcovKind::Kernel)
                 },
-                "bandwidth = 401 is more than block_rows = 400",
+                "bandwidth must be at most block_rows (400), the block length the model is sized for before the first row, but it is 401",
             ),
             (
                 RcovCfg {
@@ -2156,7 +2228,7 @@ mod tests {
                     block_rows: None,
                     ..cfg(2, RcovKind::Kernel)
                 },
-                "bandwidth = 18446744073709551615 is above 1048576",
+                "bandwidth must be at most 1048576, but it is 18446744073709551615",
             ),
             (
                 RcovCfg {
@@ -2164,7 +2236,7 @@ mod tests {
                     max_bandwidth: Some(huge),
                     ..cfg(2, RcovKind::Kernel)
                 },
-                "max_bandwidth = 18446744073709551615 is more than block_rows = 400",
+                "max_bandwidth must be at most block_rows (400), the block length the model is sized for before the first row, but it is 18446744073709551615",
             ),
             (
                 RcovCfg {
@@ -2173,7 +2245,7 @@ mod tests {
                     block_rows: None,
                     ..cfg(2, RcovKind::Kernel)
                 },
-                "max_bandwidth = 18446744073709551615 is above 1048576",
+                "max_bandwidth must be at most 1048576, but it is 18446744073709551615",
             ),
             (
                 RcovCfg {
@@ -2181,14 +2253,14 @@ mod tests {
                     block_rows: Some(1 << 62),
                     ..cfg(2, RcovKind::Kernel)
                 },
-                "an automatic bandwidth's ring",
+                "gives an automatic bandwidth of",
             ),
             (
                 RcovCfg {
                     preavg_rows: Some(1 << 62),
                     ..cfg(2, RcovKind::Preavg)
                 },
-                "preavg_rows = 4611686018427387904 is more than block_rows = 400",
+                "preavg_rows must be at most block_rows (400), the block length the model is sized for before the first row, but it is 4611686018427387904",
             ),
             (
                 RcovCfg {
@@ -2196,28 +2268,28 @@ mod tests {
                     block_rows: None,
                     ..cfg(2, RcovKind::Preavg)
                 },
-                "preavg_rows = 4611686018427387904 is above 1048576",
+                "preavg_rows must be at most 1048576, but it is 4611686018427387904",
             ),
             (
                 RcovCfg {
                     jitter: huge,
                     ..cfg(2, RcovKind::Kernel)
                 },
-                "jitter = 18446744073709551615 is above 1048576",
+                "jitter must be at most 1048576, but it is 18446744073709551615",
             ),
             (
                 RcovCfg {
                     iv_stride: huge,
                     ..cfg(2, RcovKind::Plain)
                 },
-                "iv_stride = 18446744073709551615 is above 1048576",
+                "iv_stride must be at most 1048576, but it is 18446744073709551615",
             ),
             (
                 RcovCfg {
                     noise_stride: huge,
                     ..cfg(2, RcovKind::Plain)
                 },
-                "noise_stride = 18446744073709551615 is above 1048576",
+                "noise_stride must be at most 1048576, but it is 18446744073709551615",
             ),
         ] {
             bad(c, msg);
@@ -2234,7 +2306,7 @@ mod tests {
                         psd,
                         ..cfg(2, RcovKind::Preavg)
                     },
-                    "is more than block_rows = 400",
+                    "more than block_rows (400)",
                 );
             }
         }
@@ -2245,7 +2317,7 @@ mod tests {
                 block_rows: Some(1 << 22),
                 ..cfg(2, RcovKind::Preavg)
             },
-            "theta = 1000 sets is 2.048e6 returns",
+            "theta = 1000 gives a pre-averaging span of 2.05e6 returns",
         );
         // An automatic ring of exactly the ceiling is allowed, and the first
         // block whose ring is a lag past it refused.
@@ -2266,10 +2338,7 @@ mod tests {
         }
         assert_eq!(ring(at), MAX_RING as f64, "a block at the ceiling");
         let past = (at..).find(|&n| ring(n) > MAX_RING as f64).unwrap();
-        bad(
-            automatic(past),
-            "an automatic bandwidth's ring of 1.048577e6 lags",
-        );
+        bad(automatic(past), "an automatic bandwidth of 1.05e6 lags");
         // At the ceilings, and the default `theta` on a short block: a
         // window of exactly the block (`⌊20 · √400⌋`), one of exactly the
         // ceiling in a block past it (`512 · 2^11`), and the ring above.
@@ -2317,6 +2386,30 @@ mod tests {
     /// without it, where a window of 2 gave exactly the zero matrix -- the
     /// scaled sum of the pre-averaged squares is then the bias term itself
     /// (review 2026-10-05, CE5).
+    /// Every problem at once: two bad settings are both named, one to a
+    /// line.
+    #[test]
+    fn a_configuration_with_two_problems_reports_both() {
+        let e = Rcov::new(RcovCfg {
+            jitter: 0,
+            theta: f64::NAN,
+            ..cfg(2, RcovKind::Plain)
+        })
+        .unwrap_err();
+        let lines: Vec<&str> = e.lines().collect();
+        // Both, and the sizes, which read `theta`, are left for after.
+        assert_eq!(lines.len(), 3, "{e}");
+        assert_eq!(lines[2], crate::STOPPED_MANY);
+        assert!(
+            lines[0].starts_with("rcov: jitter must be at least 1"),
+            "{e}"
+        );
+        assert!(
+            lines[1].starts_with("rcov: theta must be finite and above 0"),
+            "{e}"
+        );
+    }
+
     #[test]
     fn each_stride_is_refused_at_zero_and_a_window_of_two_is_allowed() {
         for (noise_stride, iv_stride) in [(0, 20), (1, 0)] {
@@ -2327,7 +2420,11 @@ mod tests {
             })
             .unwrap_err();
             assert!(
-                e.contains("noise_stride and iv_stride must be >= 1"),
+                e.contains(if noise_stride == 0 {
+                    "noise_stride must be at least 1, but it is 0"
+                } else {
+                    "iv_stride must be at least 1, but it is 0"
+                }),
                 "{noise_stride}, {iv_stride}: {e}"
             );
         }
@@ -2336,7 +2433,10 @@ mod tests {
             ..cfg(2, RcovKind::Preavg)
         })
         .unwrap_err();
-        assert!(e.contains("preavg_rows must be >= 3 without psd"), "{e}");
+        assert!(
+            e.contains("preavg_rows must be at least 3 under psd=False"),
+            "{e}"
+        );
         assert!(e.contains("zero matrix"), "the message says why: {e}");
         assert!(
             Rcov::new(RcovCfg {
@@ -2982,7 +3082,15 @@ mod tests {
     fn a_covariance_of_no_columns_is_refused_by_name() {
         for kind in [RcovKind::Plain, RcovKind::Kernel, RcovKind::Preavg] {
             let e = Rcov::new(cfg(0, kind)).unwrap_err();
-            assert_eq!(e, "rcov: at least one column is required", "{kind:?}");
+            assert_eq!(
+                e,
+                format!(
+                    "rcov: the model needs at least one feature, but it has none. Name at least \
+                     one column in features.\n{}",
+                    crate::STOPPED
+                ),
+                "{kind:?}"
+            );
         }
     }
 

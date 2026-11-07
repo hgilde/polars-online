@@ -214,39 +214,65 @@ class TestPlumbing:
         assert abs(np.corrcoef(p[m], df["y0"].to_numpy()[m])[0, 1]) < 0.06
 
     def test_bad_config_rejected(self):
-        with pytest.raises(ValueError, match='loss must be one of "squared", .*; got "hinge"'):
+        with pytest.raises(ValueError, match='loss must be "squared", .*, but it is "hinge"'):
             _spec(loss="hinge")
         with pytest.raises(
             ValueError,
-            match='schedule must be one of "constant", "inv_scaling", "adagrad"; got "cosine"',
+            match='schedule must be "constant", "inv_scaling" or "adagrad", but it is "cosine"',
         ):
             _spec(schedule="cosine")
         with pytest.raises(ValueError, match="learning_rate"):
             _spec(learning_rate=0.0)
-        with pytest.raises(ValueError, match="needs a .quantile. level"):
+        with pytest.raises(
+            ValueError, match='loss="quantile" needs a quantile level, but quantile is not set'
+        ):
             _spec(loss="quantile")
 
     @pytest.mark.parametrize(
         ("kw", "says"),
         [
-            (dict(huber_delta=0.5), 'sgd huber_delta is for loss "huber"; loss "squared"'),
-            (dict(huber_delta=0.5, loss="logistic"), 'huber_delta is for loss "huber"; loss "log'),
-            (dict(quantile=0.9), 'sgd quantile is for loss "quantile"; loss "squared"'),
-            (dict(quantile=0.9, loss="huber"), 'quantile is for loss "quantile"; loss "huber"'),
-            (dict(eps=5.0), 'sgd eps is for loss "epsilon_insensitive"; loss "squared"'),
-            (dict(eps=5.0, loss="poisson"), 'eps is for loss "epsilon_insensitive"; loss "poi'),
-            (dict(power=0.9), 'sgd power is for schedule "inv_scaling"; schedule "constant"'),
-            (dict(power=0.9, schedule="adagrad"), 'is for schedule "inv_scaling"; schedule "ada'),
+            (
+                dict(huber_delta=0.5),
+                'huber_delta applies only under loss="huber", but loss is "squared"',
+            ),
+            (
+                dict(huber_delta=0.5, loss="logistic"),
+                'huber_delta applies only under loss="huber", but loss is "log',
+            ),
+            (
+                dict(quantile=0.9),
+                'quantile applies only under loss="quantile", but loss is "squared"',
+            ),
+            (
+                dict(quantile=0.9, loss="huber"),
+                'quantile applies only under loss="quantile", but loss is "huber"',
+            ),
+            (
+                dict(eps=5.0),
+                'eps applies only under loss="epsilon_insensitive", but loss is "squared"',
+            ),
+            (
+                dict(eps=5.0, loss="poisson"),
+                'eps applies only under loss="epsilon_insensitive", but loss is "poi',
+            ),
+            (
+                dict(power=0.9),
+                'power applies only under schedule="inv_scaling", but schedule is "constant"',
+            ),
+            (
+                dict(power=0.9, schedule="adagrad"),
+                'applies only under schedule="inv_scaling", but schedule is "ada',
+            ),
         ],
     )
     def test_a_parameter_of_another_loss_or_schedule_is_refused_by_name(self, kw, says):
         """Review 2026-10-05 (YA8): each of these went through and was ignored,
         the output equal to the spec without it, where a parameter whose
         switch is off is refused (:mod:`polars_online.spec`)."""
-        with pytest.raises(ValueError, match='^spec "m": sgd ') as e:
+        with pytest.raises(ValueError, match='^spec "m": ') as e:
             _spec(**kw)
         assert says in str(e.value), str(e.value)
-        assert "does not use it" in str(e.value), str(e.value)
+        assert ", which does not use it" in str(e.value), str(e.value)
 
     @pytest.mark.parametrize(
         "kw",
@@ -531,10 +557,16 @@ class TestFeatureScaling:
 @pytest.mark.parametrize(
     ("extra", "msg"),
     [
-        ({"huber_delta": 0.5}, 'sgd huber_delta is for loss "huber"; loss "squared"'),
-        ({"quantile": 0.3}, 'sgd quantile is for loss "quantile"; loss "squared"'),
-        ({"eps": 0.2}, 'sgd eps is for loss "epsilon_insensitive"; loss "squared"'),
-        ({"power": 0.9}, 'sgd power is for schedule "inv_scaling"; schedule "constant"'),
+        (
+            {"huber_delta": 0.5},
+            'huber_delta applies only under loss="huber", but loss is "squared"',
+        ),
+        ({"quantile": 0.3}, 'quantile applies only under loss="quantile", but loss is "squared"'),
+        ({"eps": 0.2}, 'eps applies only under loss="epsilon_insensitive", but loss is "squared"'),
+        (
+            {"power": 0.9},
+            'power applies only under schedule="inv_scaling", but schedule is "constant"',
+        ),
     ],
     ids=["huber_delta", "quantile", "eps", "power"],
 )
@@ -546,7 +578,7 @@ def test_a_raw_spec_with_a_parameter_nothing_reads_is_refused(extra, msg, tmp_pa
     CLI's dry run."""
     spec = _spec()
     raw = dict(spec, model={**spec["model"], **extra})
-    with pytest.raises(ValueError, match=f'spec "m": {msg} does not use it'):
+    with pytest.raises(ValueError, match=f'spec "m": {msg}, which does not use it'):
         po.ModelBank([raw])
     _linear(n=50).write_parquet(tmp_path / "in.parquet")
     res = run_online(
@@ -559,7 +591,7 @@ def test_a_raw_spec_with_a_parameter_nothing_reads_is_refused(extra, msg, tmp_pa
         check=False,
     )
     assert res.returncode != 0, res.stdout
-    assert f"{msg} does not use it" in res.stderr, res.stderr
+    assert f"{msg}, which does not use it" in res.stderr, res.stderr
     # The builder's own dict carries each as a null, which is the default,
     # not a value given.
     assert all(spec["model"][k] is None for k in extra), spec["model"]

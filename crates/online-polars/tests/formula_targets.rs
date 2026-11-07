@@ -441,7 +441,7 @@ fn what_a_formula_target_may_not_be() {
     );
     let err = s.check().unwrap_err();
     assert!(
-        err.contains("group_close does not work with a formula target"),
+        err.contains("group_close cannot be set beside a formula target"),
         "{err}"
     );
     let mut s: Spec = serde_json::from_str(&format!(

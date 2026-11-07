@@ -348,9 +348,9 @@ def test_a_lazy_frame_is_split_the_same_way():
 @pytest.mark.parametrize(
     ("shards", "error", "message"),
     [
-        (0, ValueError, "shards must be >= 1"),
-        ("many", ValueError, 'shards must be an int or one of "auto"; got "many"'),
-        (2.5, TypeError, 'shards must be an int or one of "auto", got float 2.5'),
+        (0, ValueError, "shards must be at least 1, but it is 0"),
+        ("many", ValueError, 'shards must be an int or "auto", but it is "many"'),
+        (2.5, TypeError, 'shards must be an int or "auto", but it is float 2.5'),
     ],
 )
 def test_a_count_that_means_nothing_is_refused(shards, error, message):

@@ -22,23 +22,23 @@ fn a_parameter_its_loss_or_schedule_does_not_read_is_refused() {
     for (model, want) in [
         (
             r#", "huber_delta": 0.5"#,
-            r#"sgd huber_delta is for loss "huber"; loss "squared" does not use it"#,
+            r#"huber_delta applies only under loss="huber", but loss is "squared", which does not use it"#,
         ),
         (
             r#", "quantile": 0.3"#,
-            r#"sgd quantile is for loss "quantile"; loss "squared" does not use it"#,
+            r#"quantile applies only under loss="quantile", but loss is "squared", which does not use it"#,
         ),
         (
             r#", "loss": "huber", "eps": 0.2"#,
-            r#"sgd eps is for loss "epsilon_insensitive"; loss "huber" does not use it"#,
+            r#"eps applies only under loss="epsilon_insensitive", but loss is "huber", which does not use it"#,
         ),
         (
             r#", "power": 0.9"#,
-            r#"sgd power is for schedule "inv_scaling"; schedule "constant" does not use it"#,
+            r#"power applies only under schedule="inv_scaling", but schedule is "constant", which does not use it"#,
         ),
         (
             r#", "schedule": "adagrad", "power": 0.9"#,
-            r#"sgd power is for schedule "inv_scaling"; schedule "adagrad" does not use it"#,
+            r#"power applies only under schedule="inv_scaling", but schedule is "adagrad", which does not use it"#,
         ),
     ] {
         let err = sgd(model).check().unwrap_err();
@@ -59,6 +59,9 @@ fn a_parameter_its_loss_or_schedule_does_not_read_is_refused() {
     }
     // An unknown loss is named as unknown, not as the wrong owner.
     let err = sgd(r#", "loss": "nope", "eps": 0.2"#).check().unwrap_err();
-    assert!(err.contains("loss must be one of \"squared\""), "{err}");
-    assert!(err.ends_with("; got \"nope\""), "{err}");
+    assert!(err.contains("loss must be \"squared\", "), "{err}");
+    assert!(
+        err.ends_with("but it is \"nope\". Use one of those words."),
+        "{err}"
+    );
 }

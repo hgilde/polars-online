@@ -304,15 +304,18 @@ def test_a_missing_exogenous_value_is_the_base_transition():
 @pytest.mark.parametrize(
     ("kw", "message"),
     [
-        ({"n_components": 1}, "n_components must be >= 2"),
+        ({"n_components": 1}, "n_components must be at least 2, .*but it is 1"),
         ({"precision_prior": 0.0}, "precision_prior must be finite"),
-        ({"learn": False}, "nothing to filter with"),
-        ({"means": [0.0] * 4}, "means and covs go together"),
-        ({"transition": [0.5, 0.4, 0.5, 0.5]}, "not a distribution"),
+        ({"learn": False}, "with learn off, the model needs means and covs"),
+        ({"means": [0.0] * 4}, "means and covs must be given together, but only means is"),
+        (
+            {"transition": [0.5, 0.4, 0.5, 0.5]},
+            r"but row 0 \(counting from 0\) does not",
+        ),
         ({"warm_rows": 1}, "warm_rows must be at least n_components"),
         (
             {"init": "nope"},
-            re.escape('init must be one of "first", "farthest", "k-means++", "lloyd"; got "nope"'),
+            re.escape('init must be "first", "farthest", "k-means++" or "lloyd", but it is "nope"'),
         ),
         ({"tvtp_coef": [[0.0] * 4, [0.0] * 4]}, "tvtp_coef needs exog_tvtp"),
         ({"exog_tvtp": "z"}, "needs tvtp_coef"),
@@ -324,21 +327,22 @@ def test_a_missing_exogenous_value_is_the_base_transition():
                 "means": [-1.0, -1.0, 1.0, 1.0],
                 "covs": [1.0, 0.5, 0.4, 1.0, 1.0, 0.0, 0.0, 1.0],
             },
-            "covs.0. must be symmetric",
+            r"the matrix in covs for state 0 \(counting from 0\) must be symmetric, but its entry "
+            "at row 0, column 1 is 0.5, and at row 1, column 0 is 0.4",
         ),
         (
             {
                 "means": [-1.0, -1.0, 1.0, 1.0],
                 "covs": [1.0, 2.0, 2.0, 1.0, 1.0, 0.0, 0.0, 1.0],
             },
-            "covs.0. must be positive definite",
+            r"the matrix in covs for state 0 \(counting from 0\) must be positive definite",
         ),
         (
             {
                 "means": [float("nan"), -1.0, 1.0, 1.0],
                 "covs": [1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0],
             },
-            "means must not be NaN",
+            "means must hold numbers, but one of its values is NaN",
         ),
     ],
 )

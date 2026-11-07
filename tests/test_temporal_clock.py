@@ -348,11 +348,9 @@ class TestEachMixtureIsRefused:
             _ridge("t", half_life="10m", gap_cap=1_800.0)
 
     def test_a_rate_per_clock_unit_has_no_duration_form(self):
-        with pytest.raises(ValueError, match="lam is a decay per clock unit"):
+        with pytest.raises(ValueError, match="lam is a decay over one clock unit"):
             po.spec.ewridge("m", targets=["y"], features=["x0"], clock="t", lam=0.99, gap_cap="30m")
-        with pytest.raises(
-            ValueError, match="q is the noise a row one clock unit after the last adds"
-        ):
+        with pytest.raises(ValueError, match="q is the noise over one clock unit"):
             po.spec.kalman(
                 "m",
                 targets=["y"],
@@ -373,7 +371,7 @@ class TestEachMixtureIsRefused:
         assert "give half_life as a duration" in str(e.value)
 
     def test_a_duration_needs_a_clock(self):
-        with pytest.raises(ValueError, match="needs a clock column"):
+        with pytest.raises(ValueError, match="but the spec has no clock to measure it"):
             po.spec.ewridge("m", targets=["y"], features=["x0"], half_life="10m")
 
     def test_a_time_of_day_is_no_clock(self):
@@ -633,7 +631,9 @@ class TestEveryClockParameterTakesADuration:
                     po.ModelBank([fn("m", **{**kw, name: "10m"})]).fit_predict(df)
                     po.ModelBank([fn("m", **{**kw, name: 600.0})]).fit_predict(df)
                     clockless = {k: v for k, v in kw.items() if k not in ("clock", "gap_cap")}
-                    with pytest.raises(ValueError, match=f"{name} is a duration, which needs"):
+                    with pytest.raises(
+                        ValueError, match=f"{name} is a duration, but the spec has no clock"
+                    ):
                         fn("m", **{**clockless, name: "10m"})
                     seen += 1
         assert seen == 1, seen

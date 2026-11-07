@@ -1095,11 +1095,11 @@ class TestRefusals:
     @pytest.mark.parametrize(
         ("kw", "msg"),
         [
-            ({"eps": 0.0}, "eps must be finite and > 0"),
-            ({"eps": float("inf")}, "eps must be finite, got float inf"),
-            ({"eps": float("nan")}, "eps must not be NaN"),
-            ({"beta_mu": 0.0}, "beta_mu must be finite and > 0"),
-            ({"max_clusters": 0}, "max_clusters must be >= 1"),
+            ({"eps": 0.0}, "eps must be finite and above 0, but it is 0"),
+            ({"eps": float("inf")}, "eps must be finite, but it is inf"),
+            ({"eps": float("nan")}, "eps must be a number, but it is NaN"),
+            ({"beta_mu": 0.0}, "beta_mu must be finite and above 0, but it is 0"),
+            ({"max_clusters": 0}, "max_clusters must be at least 1, but it is 0"),
             # Clock units since task 163, 0 for every row.
             ({"prune_every": -1.0}, "prune_every must be finite and at least 0 clock units"),
             ({"macro_link": -1.0}, "macro_link must be finite and at least 0"),
@@ -1430,7 +1430,9 @@ class TestThePruneSchedule:
         assert self.checkpoints(df.head(205)) == [99, 199]
 
     def test_the_row_cap_is_at_least_one(self):
-        with pytest.raises(ValueError, match="max_rows_between_prunes must be >= 1, got 0"):
+        with pytest.raises(
+            ValueError, match="max_rows_between_prunes must be at least 1, but it is 0"
+        ):
             spec(max_rows_between_prunes=0)
         assert spec(max_rows_between_prunes=1)["model"]["max_rows_between_prunes"] == 1
 
@@ -1509,8 +1511,8 @@ class TestTheParameters:
     @pytest.mark.parametrize(
         ("kw", "msg"),
         [
-            ({"beta_mu": float("inf")}, "beta_mu must be finite, got float inf"),
-            ({"macro_link": float("inf")}, "macro_link must be finite, got float inf"),
+            ({"beta_mu": float("inf")}, "beta_mu must be finite, but it is inf"),
+            ({"macro_link": float("inf")}, "macro_link must be finite, but it is inf"),
             ({"scale_floor": float("inf")}, "scale_floor must be finite"),
         ],
         ids=lambda v: next(iter(v)) if isinstance(v, dict) else v,

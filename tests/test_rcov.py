@@ -543,26 +543,32 @@ def test_the_block_survives_a_refresh_time_grid():
 @pytest.mark.parametrize(
     ("kw", "message"),
     [
-        # `group_close`'s own check reaches a missing group first, and says
-        # the same thing about it.
-        ({"group": None}, "group_close needs a group column"),
-        ({"group_close": None}, "needs `group` and `group_close`"),
-        ({"half_life": 50.0}, "do not apply to rcov"),
-        ({"lam": 0.99}, "do not apply to rcov"),
-        ({"kernel": "bartlett"}, "not consistent"),
-        ({"kind": "nope"}, 'kind must be one of "kernel", "preavg", "plain"; got "nope"'),
-        ({"jitter": 0}, "jitter must be >= 1"),
-        ({"block_rows": None}, "needs `block_rows`"),
-        ({"kind": "plain", "bandwidth": 3}, "bandwidth applies to"),
-        ({"kind": "kernel", "preavg_rows": 3}, "preavg_rows applies to"),
+        # rcov's own check names a missing group; the generic "group_close
+        # needs a group" refusal stands aside for it.
+        ({"group": None}, "rcov needs group and group_close"),
+        ({"group_close": None}, "rcov needs group and group_close, .*but group_close is not set"),
+        ({"half_life": 50.0}, "half_life does not apply to rcov"),
+        ({"lam": 0.99}, "lam does not apply to rcov"),
+        ({"kernel": "bartlett"}, "the one kernel this model takes"),
+        ({"kind": "nope"}, 'kind must be "kernel", "preavg" or "plain", but it is "nope"'),
+        ({"jitter": 0}, "jitter must be at least 1, but it is 0"),
+        ({"block_rows": None}, "needs block_rows"),
+        (
+            {"kind": "plain", "bandwidth": 3},
+            'bandwidth applies only under kind="kernel", but kind is "plain"',
+        ),
+        (
+            {"kind": "kernel", "preavg_rows": 3},
+            'preavg_rows applies only under kind="preavg", but kind is "kernel"',
+        ),
         ({"emit_sigma": True}, "does not apply to rcov"),
         # docs/REVIEW-E54-E64.md R9: settings that used to be accepted and
         # then quietly gave a block that never accumulates, or a kernel with
         # no lags in its ring.
-        ({"kind": "preavg", "preavg_rows": 0}, "preavg_rows must be >= 2"),
-        ({"kind": "preavg", "preavg_rows": 1}, "preavg_rows must be >= 2"),
-        ({"block_rows": 0}, "block_rows is the block's expected length"),
-        ({"max_bandwidth": 0, "bandwidth": 4}, "caps the ring below bandwidth"),
+        ({"kind": "preavg", "preavg_rows": 0}, "preavg_rows must be at least 2, but it is 0"),
+        ({"kind": "preavg", "preavg_rows": 1}, "preavg_rows must be at least 2, but it is 1"),
+        ({"block_rows": 0}, "block_rows must be at least 1, but it is 0"),
+        ({"max_bandwidth": 0, "bandwidth": 4}, "max_bandwidth must be at least bandwidth"),
     ],
 )
 def test_a_bad_spec_is_refused_by_name(kw, message):
@@ -888,14 +894,13 @@ def test_theta_beside_preavg_rows_is_deprecated_and_changes_nothing():
         with pytest.warns(po.PolarsOnlineDeprecationWarning) as caught:
             got, _ = block(df, kind="preavg", preavg_rows=12, theta=theta)
         assert [str(w.message) for w in caught] == [
-            f'spec "r": theta = {theta!r} is deprecated beside preavg_rows: preavg_rows '
-            "fixes the pre-averaging window, which is all theta sets, so theta has no "
-            "effect. Leave it out. It is accepted and ignored until the next major "
-            "version, which refuses it"
+            f'spec "r": theta={theta!r} is ignored beside preavg_rows, which fixes the '
+            "pre-averaging span theta would set. The next major version refuses it. "
+            "Leave theta out."
         ]
         assert caught[0].filename == __file__, "the warning names the caller's line"
         assert got.equals(base), theta
-    with pytest.raises(ValueError, match="theta = 13 sets is 6.04e2 returns"):
+    with pytest.raises(ValueError, match="theta = 13 gives a pre-averaging span of 604 returns"):
         spec(kind="preavg", theta=13.0)
     # theta alone sets the window, and warns of nothing.
     with warnings.catch_warnings():
@@ -909,50 +914,82 @@ def test_theta_beside_preavg_rows_is_deprecated_and_changes_nothing():
     [
         # The strides: counts of at least one, and at most the ceiling every
         # size this model allocates from before the first row is held to.
-        ({"noise_stride": 0}, ValueError, "noise_stride must be >= 1"),
-        ({"iv_stride": 0}, ValueError, "iv_stride must be >= 1"),
-        ({"noise_stride": -1}, ValueError, "noise_stride must be >= 1, got -1"),
-        ({"iv_stride": -3}, ValueError, "iv_stride must be >= 1, got -3"),
-        ({"jitter": -1}, ValueError, "jitter must be >= 1, got -1"),
+        ({"noise_stride": 0}, ValueError, "noise_stride must be at least 1, but it is 0"),
+        ({"iv_stride": 0}, ValueError, "iv_stride must be at least 1, but it is 0"),
+        ({"noise_stride": -1}, ValueError, "noise_stride must be at least 1, but it is -1"),
+        ({"iv_stride": -3}, ValueError, "iv_stride must be at least 1, but it is -3"),
+        ({"jitter": -1}, ValueError, "jitter must be at least 1, but it is -1"),
         # A negative block_rows or preavg_rows is told the real floor, not
         # ">= 0"; from 0 to the floor the Rust refusal gives the reason.
-        ({"block_rows": -1}, ValueError, "block_rows must be >= 1, got -1"),
-        ({"block_rows": 0}, ValueError, "block_rows is the block's expected length"),
+        ({"block_rows": -1}, ValueError, "block_rows must be at least 1, but it is -1"),
+        ({"block_rows": 0}, ValueError, "block_rows must be at least 1, but it is 0"),
         (
             {"kind": "preavg", "preavg_rows": -1},
             ValueError,
-            "preavg_rows must be >= 2 (3 under psd = False), got -1",
+            "preavg_rows must be at least 2 (3 under psd=False), but it is -1",
         ),
-        ({"kind": "preavg", "preavg_rows": 1}, ValueError, "preavg_rows must be >= 2 (got 1)"),
-        ({"noise_stride": 2**20 + 1}, ValueError, "noise_stride = 1048577 is above 1048576"),
-        ({"iv_stride": 2**20 + 1}, ValueError, "iv_stride = 1048577 is above 1048576"),
-        ({"noise_stride": 1.5}, TypeError, "noise_stride must be an int, got float 1.5"),
-        ({"iv_stride": True}, TypeError, "iv_stride must be an int, got bool True"),
-        ({"iv_stride": "20"}, TypeError, "iv_stride must be an int, got str '20'"),
+        (
+            {"kind": "preavg", "preavg_rows": 1},
+            ValueError,
+            "preavg_rows must be at least 2, but it is 1",
+        ),
+        (
+            {"noise_stride": 2**20 + 1},
+            ValueError,
+            "noise_stride must be at most 1048576, but it is 1048577",
+        ),
+        (
+            {"iv_stride": 2**20 + 1},
+            ValueError,
+            "iv_stride must be at most 1048576, but it is 1048577",
+        ),
+        ({"noise_stride": 1.5}, TypeError, "noise_stride must be an int, but it is float 1.5"),
+        ({"iv_stride": True}, TypeError, "iv_stride must be an int, but it is bool True"),
+        ({"iv_stride": "20"}, TypeError, "iv_stride must be an int, but it is str '20'"),
         # theta: pre-averaging's alone, finite and above 0, and no window
         # longer than the block it sizes.
-        ({"theta": 1.0}, ValueError, 'theta applies to kind = "preavg", not "kernel"'),
+        (
+            {"theta": 1.0},
+            ValueError,
+            'theta applies only under kind="preavg", but kind is "kernel"',
+        ),
         (
             {"kind": "plain", "theta": 1.0},
             ValueError,
-            'theta applies to kind = "preavg", not "plain"',
+            'theta applies only under kind="preavg", but kind is "plain"',
         ),
-        ({"kind": "preavg", "theta": 0.0}, ValueError, "theta must be finite and > 0"),
-        ({"kind": "preavg", "theta": -1.0}, ValueError, "theta must be finite and > 0"),
-        ({"kind": "preavg", "theta": float("nan")}, ValueError, "theta must not be NaN"),
+        (
+            {"kind": "preavg", "theta": 0.0},
+            ValueError,
+            "theta must be finite and above 0, but it is 0",
+        ),
+        (
+            {"kind": "preavg", "theta": -1.0},
+            ValueError,
+            "theta must be finite and above 0, but it is -1",
+        ),
+        (
+            {"kind": "preavg", "theta": float("nan")},
+            ValueError,
+            "theta must be a number, but it is NaN",
+        ),
         (
             {"kind": "preavg", "theta": float("inf")},
             ValueError,
-            "theta must be finite, got float inf",
+            "theta must be finite, but it is inf",
         ),
-        ({"kind": "preavg", "theta": "1"}, TypeError, "theta must be a number, got str '1'"),
+        ({"kind": "preavg", "theta": "1"}, TypeError, "theta must be a number, but it is str '1'"),
         # The first theta past the block: ceil(13 * 600^0.6) = 604 under psd,
         # floor(24.6 * sqrt(600)) = 602 without.
-        ({"kind": "preavg", "theta": 13.0}, ValueError, "theta = 13 sets is 6.04e2 returns"),
+        (
+            {"kind": "preavg", "theta": 13.0},
+            ValueError,
+            "theta = 13 gives a pre-averaging span of 604 returns",
+        ),
         (
             {"kind": "preavg", "theta": 24.6, "psd": False},
             ValueError,
-            "theta = 24.6 sets is 6.02e2 returns, which is more than block_rows = 600",
+            "theta = 24.6 gives a pre-averaging span of 602 returns, more than block_rows (600)",
         ),
     ],
 )

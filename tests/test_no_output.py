@@ -328,14 +328,14 @@ stats = []
     def test_a_model_that_needs_targets_still_says_so(self):
         spec = dict(ridge_spec())
         spec["targets"] = []
-        with pytest.raises(ValueError, match="targets must be non-empty"):
+        with pytest.raises(ValueError, match="targets must name at least one column"):
             po.ModelBank([spec])
 
     def test_an_unsupervised_spec_with_no_features_either(self):
         spec = dict(cov_spec())
         spec["targets"] = []
         spec["features"] = []
-        with pytest.raises(ValueError, match="features must be non-empty"):
+        with pytest.raises(ValueError, match="features must name at least one column"):
             po.ModelBank([spec])
 
 

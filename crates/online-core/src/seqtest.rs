@@ -54,13 +54,15 @@ pub struct SeqTestCfg {
 
 impl SeqTestCfg {
     pub fn validate(&self) -> Result<(), String> {
+        let mut no = crate::Refusals::new();
         if self.n_targets == 0 {
-            return Err("seqtest: n_targets must be >= 1".into());
+            no.refuse(
+                "seqtest: the model needs at least one target, but it has none. Name at least \
+                 one column in targets.",
+            );
         }
-        if self.min_weight.is_nan() || self.min_weight < 0.0 {
-            return Err("seqtest: min_weight must be >= 0".into());
-        }
-        Ok(())
+        no.take(crate::model::check_min_weight("seqtest", self.min_weight));
+        no.finish()
     }
 }
 
@@ -391,9 +393,20 @@ mod tests {
             };
             assert_eq!(
                 SeqTest::new(bad).unwrap_err(),
-                "seqtest: min_weight must be >= 0"
+                format!(
+                    "seqtest: min_weight must be at least 0, but it is {mp}. Set min_weight to 0 \
+                     for no floor on weight_sum, or to the weight_sum a prediction needs."
+                )
             );
         }
+        // Every problem at once, each a line of its own.
+        let e = SeqTestCfg {
+            n_targets: 0,
+            min_weight: -1.0,
+        }
+        .validate()
+        .unwrap_err();
+        assert_eq!(e.lines().count(), 2, "{e}");
         assert!(SeqTest::new(cfg(3)).is_ok());
     }
 

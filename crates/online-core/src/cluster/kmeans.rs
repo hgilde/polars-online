@@ -163,76 +163,122 @@ pub struct KMeansCfg {
 
 impl KMeansCfg {
     pub fn validate(&self) -> Result<(), String> {
+        let mut no = crate::Refusals::new();
         // The decay first: every model checks it in its own `new`, where only
         // the bank's spec did (review 2026-10-05, CF5).
-        self.decay.check().map_err(|e| format!("kmeans: {e}"))?;
+        no.take(self.decay.check().map_err(|e| format!("kmeans: {e}")));
         if self.n_features == 0 {
-            return Err("kmeans: n_features must be >= 1".into());
+            no.refuse(
+                "kmeans: the model needs at least one feature, but it has none. Name at least one \
+                 column in features.",
+            );
         }
         if self.k == 0 {
-            return Err("kmeans: n_clusters must be >= 1".into());
+            no.refuse(
+                "kmeans: n_clusters must be at least 1, but it is 0. Set n_clusters to the number \
+                 of clusters to fit.",
+            );
         }
         // A count the spec sizes the centres and the seeding by before the
         // stream says anything (review 2026-10-06, CF2).
         if self.k > KMeans::MAX_K {
-            return Err(format!(
-                "kmeans: n_clusters must be at most {} (2^16), got {}: every row is scored against every \
-                 centre, and the default seeding (`init = \"lloyd\"`) runs Lloyd's passes over the warm-up \
-                 buffer from ten greedy k-means++ starts, each pass O(k · n_features) a buffered row",
+            no.refuse(format!(
+                "kmeans: n_clusters must be at most {}, but it is {}: every row is compared with \
+                 every center, and the seeding compares the first rows with every center many \
+                 times over. Lower n_clusters to {} or below.",
                 KMeans::MAX_K,
-                self.k
+                self.k,
+                KMeans::MAX_K
             ));
         }
+        // The warm-up is sized by the features and the centers.
+        no.stop_here()?;
         // The buffer seeds `k` centres from `warm_rows` rows; fewer rows
         // were floored to `k` in silence, where `hmm` refuses them (review
         // 2026-10-06, PC8).
         if self.warm_rows < self.k {
-            return Err(format!(
-                "kmeans: warm_rows must be at least n_clusters ({}) to seed that many centres, got {}",
-                self.k, self.warm_rows
+            no.refuse(format!(
+                "kmeans: warm_rows must be at least n_clusters ({}) to seed that many centers, but \
+                 it is {}. Set warm_rows to {} or more.",
+                self.k, self.warm_rows, self.k
             ));
         }
         let mib = KMeans::warm_mib(self.warm_rows, self.n_features);
         if mib > KMeans::WARM_BUDGET_MIB {
-            return Err(format!(
-                "kmeans: the warm-up buffer would hold {} MiB (warm_rows {} rows of {} features), \
-                 over the {} MiB it is held to; lower warm_rows (at least n_clusters), or narrow the \
-                 features",
-                crate::budget::mib_over(mib, KMeans::WARM_BUDGET_MIB),
+            let row = KMeans::warm_mib(1, self.n_features);
+            let most = (KMeans::WARM_BUDGET_MIB / row).floor();
+            // Where the rows that fit are fewer than the centers, warm_rows
+            // cannot be lowered enough: only the features or the clusters can.
+            let (rows, over, p, limit) = (
                 self.warm_rows,
+                crate::budget::mib_over(mib, KMeans::WARM_BUDGET_MIB),
                 self.n_features,
-                KMeans::WARM_BUDGET_MIB
-            ));
+                KMeans::WARM_BUDGET_MIB,
+            );
+            no.refuse(if most >= self.k as f64 {
+                format!(
+                    "kmeans: the first {rows} rows, which seed the centers, would take {over} MiB \
+                     at {p} features, over the {limit} MiB limit. Set warm_rows to {most} or \
+                     below, and at least n_clusters, or use fewer features."
+                )
+            } else {
+                format!(
+                    "kmeans: the first {rows} rows, which seed the centers, would take {over} MiB \
+                     at {p} features, over the {limit} MiB limit. Use fewer features, or lower \
+                     n_clusters and warm_rows to {most} or below."
+                )
+            });
         }
         if self.min_weight.is_nan() || self.min_weight < 0.0 {
-            return Err("kmeans: min_weight must be >= 0".into());
+            no.refuse(format!(
+                "kmeans: min_weight must be at least 0, but it is {}. Set min_weight to 0, or to \
+                 a positive weight.",
+                self.min_weight
+            ));
         }
         if self.update_every_rows == 0 {
-            return Err("kmeans: update_every_rows must be >= 1".into());
+            no.refuse(
+                "kmeans: update_every_rows must be at least 1, but it is 0. Set \
+                 update_every_rows to 1 to move the centers on every row, or more.",
+            );
         }
         if self.split_merge_every_rows == 0 {
-            return Err("kmeans: split_merge_every_rows must be >= 1".into());
+            no.refuse(
+                "kmeans: split_merge_every_rows must be at least 1, but it is 0. Set \
+                 split_merge_every_rows to 1 or more.",
+            );
         }
         if !self.split_merge.is_finite() || self.split_merge < 0.0 {
-            return Err("kmeans: split_merge must be finite and >= 0".into());
+            no.refuse(format!(
+                "kmeans: split_merge must be finite and at least 0, but it is {}. Set \
+                 split_merge to 0 for no splits or merges, or to a finite positive value.",
+                self.split_merge
+            ));
         }
         if !self.dead_frac.is_finite() || self.dead_frac < 0.0 {
-            return Err("kmeans: dead_frac must be finite and >= 0".into());
-        }
-        // The dead rule runs inside the split–merge check (review
-        // 2026-10-06, CF6).
-        if self.split_merge == 0.0 && self.dead_frac > 0.0 {
-            return Err(format!(
-                "kmeans: dead_frac re-places a centre at a split-merge check, and split_merge = 0 \
-                 runs none, so dead_frac = {} would do nothing; give split_merge > 0, or \
-                 dead_frac = 0",
+            no.refuse(format!(
+                "kmeans: dead_frac must be finite and at least 0, but it is {}. Set dead_frac to \
+                 0 to re-place no center, or to a positive value below 0.5.",
+                self.dead_frac
+            ));
+        } else if self.split_merge == 0.0 && self.dead_frac > 0.0 {
+            // The dead rule runs inside the split–merge check (review
+            // 2026-10-06, CF6).
+            no.refuse(format!(
+                "kmeans: dead_frac = {} re-places a center only at a split-merge check, but \
+                 split_merge = 0 runs none, so dead_frac would do nothing. Set split_merge above \
+                 0, or dead_frac to 0.",
                 self.dead_frac
             ));
         }
         if !self.scale_floor.is_finite() || self.scale_floor < 0.0 {
-            return Err("kmeans: scale_floor must be finite and >= 0".into());
+            no.refuse(format!(
+                "kmeans: scale_floor must be finite and at least 0, but it is {}. Set scale_floor \
+                 to 0 for no floor, or to a finite positive value.",
+                self.scale_floor
+            ));
         }
-        Ok(())
+        no.finish()
     }
 }
 
@@ -374,18 +420,21 @@ impl KMeans {
     pub const DEAD_FRAC_BELOW: f64 = 0.5;
 
     pub fn new(cfg: KMeansCfg) -> Result<Self, String> {
-        cfg.validate()?;
+        let mut no = crate::Refusals::new();
+        no.take(cfg.validate());
         // Refused here and not in `validate`, which a restored state runs
         // too: a state saved with such a value still loads and continues.
-        if cfg.dead_frac >= Self::DEAD_FRAC_BELOW {
-            return Err(format!(
-                "kmeans: dead_frac must be below 0.5, got {}: a re-placed centre starts at half \
-                 its source's weight, so at 0.5 or above it can be born at the floor that marks \
-                 a centre dead, dead_frac * weight_sum / n_clusters, and the next check \
-                 re-places it again",
+        // A value that is not finite is `validate`'s.
+        if cfg.dead_frac.is_finite() && cfg.dead_frac >= Self::DEAD_FRAC_BELOW {
+            no.refuse(format!(
+                "kmeans: dead_frac must be below 0.5, but it is {}: a re-placed center starts at \
+                 half the weight of the cluster it splits from, so at 0.5 or above it can start \
+                 at or below the floor dead_frac sets and be re-placed again at the next \
+                 split-merge check. Set dead_frac below 0.5, such as the default 0.05.",
                 cfg.dead_frac
             ));
         }
+        no.finish()?;
         let p = cfg.n_features;
         Ok(Self {
             moments: FeatureMoments::new(p),
@@ -1279,7 +1328,7 @@ mod tests {
         match KMeans::restore(&s) {
             Err(StateError::Invalid(e)) => {
                 assert!(
-                    e.contains("configuration") && e.contains("n_clusters must be >= 1"),
+                    e.contains("configuration") && e.contains("n_clusters must be at least 1"),
                     "{e}"
                 );
             }
@@ -2470,6 +2519,29 @@ mod tests {
         );
     }
 
+    /// Every problem at once: two bad settings are both named, one to a
+    /// line.
+    #[test]
+    fn a_configuration_with_two_problems_reports_both() {
+        let Err(e) = KMeans::new(KMeansCfg {
+            warm_rows: 2,
+            scale_floor: -1.0,
+            ..cfg(3)
+        }) else {
+            panic!("accepted")
+        };
+        let lines: Vec<&str> = e.lines().collect();
+        assert_eq!(lines.len(), 2, "{e}");
+        assert!(
+            lines[0].starts_with("kmeans: warm_rows must be at least"),
+            "{e}"
+        );
+        assert!(
+            lines[1].starts_with("kmeans: scale_floor must be finite"),
+            "{e}"
+        );
+    }
+
     /// The warm-up buffers `warm_rows` rows and seeds `k` centres from them,
     /// so fewer rows than centres is refused by name, as `hmm` refuses it;
     /// it was floored to `k` in silence (review 2026-10-06, PC8).
@@ -2482,7 +2554,8 @@ mod tests {
             panic!("accepted")
         };
         assert!(
-            e.contains("kmeans: warm_rows must be at least n_clusters (3)") && e.contains("got 2"),
+            e.contains("kmeans: warm_rows must be at least n_clusters (3)")
+                && e.contains("but it is 2"),
             "{e}"
         );
         assert!(
@@ -2541,8 +2614,9 @@ mod tests {
                 panic!("dead_frac {v} accepted")
             };
             assert!(
-                e.contains(&format!("kmeans: dead_frac must be below 0.5, got {v}"))
-                    && e.contains("half its source's weight"),
+                e.contains(&format!(
+                    "kmeans: dead_frac must be below 0.5, but it is {v}"
+                )) && e.contains("half the weight of the cluster it splits from"),
                 "{e}"
             );
         }
@@ -2578,8 +2652,9 @@ mod tests {
             panic!("accepted")
         };
         assert!(
-            e.contains("kmeans: n_clusters must be at most 65536")
-                && e.contains(&format!("got {k}")),
+            e.contains(&format!(
+                "kmeans: n_clusters must be at most 65536, but it is {k}"
+            )),
             "{e}"
         );
         // A buffered row of two features is its vector (24 bytes), its two
@@ -2592,9 +2667,10 @@ mod tests {
             panic!("accepted")
         };
         assert!(
-            e.contains("kmeans: the warm-up buffer would hold 256.00003 MiB")
-                && e.contains("warm_rows 5592406 rows of 2 features")
-                && e.contains("over the 256 MiB"),
+            e.contains(
+                "kmeans: the first 5592406 rows, which seed the centers, would take 256.00003 MiB at 2 features"
+            ) && e.contains("over the 256 MiB limit")
+                && e.contains("Set warm_rows to 5592405 or below"),
             "{e}"
         );
         for c in [

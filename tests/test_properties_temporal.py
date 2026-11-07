@@ -671,10 +671,10 @@ class TestADelayedLabel:
 #: would be a count. `test_the_exempt_kinds_refuse_a_half_life` holds each
 #: reason to the builder's refusal.
 N_EFF_EXEMPT = {
-    "seqtest": "an e-process does not forget",
-    "bocpd": "the run-length posterior is what forgets",
-    "rcov": "a realised covariance is a sum over a block",
-    "audit": "it counts every row, undecayed",
+    "seqtest": "whose test does not forget",
+    "bocpd": "which forgets at each break, at the rate hazard sets",
+    "rcov": "whose covariance is a sum over each block that group_close ends, with no decay",
+    "audit": "which counts every row with no decay",
 }
 
 #: What a kind needs on this file's frame besides `MINIMAL`'s arguments:
@@ -703,7 +703,7 @@ def test_the_exempt_kinds_refuse_a_half_life(name):
     kw = {"targets": ["y"], "features": ["x0", "x1"], "half_life": 5.0}
     kw |= {k: v for k, v in MINIMAL[name].items() if k != "half_life"}
     with pytest.raises(
-        ValueError, match=f"half_life/lam do not apply to {name}.*{N_EFF_EXEMPT[name]}"
+        ValueError, match=f"half_life does not apply to {name}, {N_EFF_EXEMPT[name]}"
     ):
         getattr(po.spec, name)("m", **{k: v for k, v in kw.items() if v is not None})
 

@@ -122,17 +122,30 @@ pub(crate) struct ClockPolicy<'a> {
 pub(crate) fn clock_cfg_of(p: &ClockPolicy<'_>) -> Result<ClockCfg, String> {
     let who = p.who;
     let model = p.spec_closes_on_session.is_some();
+    // Every problem is reported at once; none of these checks reads what
+    // another refuses.
+    let mut no = online_core::Refusals::new();
     if p.clock.is_some() && p.gap_cap.is_none() {
-        return Err(format!("{who}: gap_cap is required when clock is given"));
+        no.refuse(if model {
+            format!(
+                "{who}: gap_cap is required when clock is given, but it is not set. Set gap_cap \
+                 to the longest clock step the model should decay across in full."
+            )
+        } else {
+            format!(
+                "{who}: gap_cap is required when clock is given, but it is not set. Set gap_cap \
+                 to the longest clock step a window should span."
+            )
+        });
     }
     // The cap is on the clock's step. Without a clock every row is one step,
     // and a cap was taken and applied to it: `gap_cap = 0.5` halved every
     // decay step, marked every row capped and cleared every lag at every row
     // (task 160, PB2). Refused, as `restart_after_step_back` is.
     if p.clock.is_none() && p.gap_cap.is_some() {
-        return Err(format!(
-            "{who}: gap_cap needs clock; it caps the step from one clock value to the \
-             next, and without a clock every row is one step"
+        no.refuse(format!(
+            "{who}: gap_cap needs clock, but clock is not set: without a clock every row is \
+             one step, with nothing to cap. Set clock, or leave gap_cap out."
         ));
     }
     // A window looking ahead closes when a row past its far edge arrives on
@@ -145,13 +158,20 @@ pub(crate) fn clock_cfg_of(p: &ClockPolicy<'_>) -> Result<ClockCfg, String> {
     // window (task 173, PC1). Refused, by `with_windows` and by a spec with
     // a window target alike, the user's call: one rule, one message.
     if p.looks_ahead && p.group.is_some() && p.clock.is_none() {
-        return Err(format!(
-            "{who}: a window looking ahead with group needs a clock column. Without one a \
-             group's clock counts only its own rows, so a group that falls silent leaves its \
-             windows open, and every row waiting on them waits for as long as it is silent, \
-             with nothing to cut them: gap_cap, which cuts a silent group, needs a clock. \
-             Name a clock column, with gap_cap, or leave out group"
-        ));
+        no.refuse(if model {
+            format!(
+                "{who}: a formula target under group needs clock, but clock is not set: \
+                 without one, a group that falls silent holds the rows its formula target \
+                 waits on until that group's next row. Set clock and gap_cap, or leave group \
+                 out."
+            )
+        } else {
+            format!(
+                "{who}: a window looking ahead under group needs clock, but clock is not set: \
+                 without one, a group that falls silent keeps its windows open, and every later \
+                 row waits behind them. Set clock and gap_cap, or leave group out."
+            )
+        });
     }
     // The cap is a cap on a step and nothing else (task 120, decided
     // 2026-09-28). A negative one clipped every delta to it, so the decay
@@ -165,79 +185,88 @@ pub(crate) fn clock_cfg_of(p: &ClockPolicy<'_>) -> Result<ClockCfg, String> {
     if let Some(m) = p.gap_cap {
         let v = m.value();
         if v == 0.0 {
-            return Err(format!(
-                "{who}: gap_cap must be > 0; a cap of 0 froze the clock. For \
-                     no decay set half_life = \"inf\", or leave out the clock to count rows"
-            ));
-        }
-        if v == f64::INFINITY {
-            return Err(if model {
+            no.refuse(if model {
                 format!(
-                    "{who}: gap_cap must be finite; it is the longest step a model \
-                     decays across, and a longer gap is a break. Give a cap longer than \
-                     any gap the stream should decay across in full"
+                    "{who}: gap_cap must be above 0, but it is 0, which stops the clock. Set \
+                     gap_cap to a positive number of clock units, or set half_life to inf for \
+                     no decay."
                 )
             } else {
                 format!(
-                    "{who}: gap_cap must be finite; it is the longest step a window \
-                     spans, and a longer gap ends every window open across it. Give a cap \
-                     longer than any gap a window should span"
+                    "{who}: gap_cap must be above 0, but it is 0, which stops the clock. Set \
+                     gap_cap to a positive number of clock units."
                 )
             });
-        }
-        if !(v.is_finite() && positive(v)) {
-            return Err(format!("{who}: gap_cap must be a finite number > 0"));
+        } else if v == f64::INFINITY {
+            no.refuse(if model {
+                format!(
+                    "{who}: gap_cap must be finite, but it is inf: it is the longest step the \
+                     model decays across, and a longer step is a clock break. Set gap_cap above \
+                     every gap the model should decay across in full."
+                )
+            } else {
+                format!(
+                    "{who}: gap_cap must be finite, but it is inf: it is the longest step a \
+                     window spans, and a longer step ends every window open across it. Set \
+                     gap_cap above every gap a window should span."
+                )
+            });
+        } else if !(v.is_finite() && positive(v)) {
+            no.refuse(format!(
+                "{who}: gap_cap must be finite and above 0, but it is {m}. Set gap_cap to a \
+                 positive number of clock units."
+            ));
         }
     }
-    let session_gap = match p.session_gap {
-        None => None,
-        Some(SessionGapSpec::Gap(g)) if g.value() == f64::INFINITY => {
-            return Err(format!(
-                "{who}: session_gap must be finite; to start over at a session \
-                     change set session_gap = \"reset\""
+    let session_gap =
+        match p.session_gap {
+            None => None,
+            Some(SessionGapSpec::Gap(g)) if g.value() == f64::INFINITY => {
+                no.refuse(format!(
+                "{who}: session_gap must be finite, but it is inf. Set session_gap to the clock \
+                 step to take at a session change, or to \"reset\" to reset {} there.",
+                if model { "the model" } else { "every group's windows" }
             ));
-        }
-        Some(SessionGapSpec::Gap(g)) if !(g.value().is_finite() && non_negative(g.value())) => {
-            return Err(format!("{who}: session_gap must be >= 0 or \"reset\""));
-        }
-        Some(SessionGapSpec::Gap(g)) => Some(SessionGap::Gap(g.value())),
-        Some(SessionGapSpec::Word(w)) if w == "reset" => Some(SessionGap::Reset),
-        Some(SessionGapSpec::Word(w)) => {
-            return Err(format!(
-                "{who}: session_gap must be a number, a duration or \"reset\", got {w:?}"
-            ));
-        }
-    };
-    // A window ends at every session change, so the clock's jump across one
-    // is never measured inside a window: a caller with no model reads no
-    // number there, and needs none beside a session (task 278, the user's
-    // decision of 2026-10-25). Only "reset" acts, on the windows still open
-    // ahead of the change, which it discards rather than cuts. A gap of 0
-    // stands in for the number.
+                None
+            }
+            Some(SessionGapSpec::Gap(g)) if !(g.value().is_finite() && non_negative(g.value())) => {
+                no.refuse(format!(
+                    "{who}: session_gap must be at least 0 or \"reset\", but it is {g}. Set \
+                 session_gap to a step of 0 or more clock units, or to \"reset\"."
+                ));
+                None
+            }
+            Some(SessionGapSpec::Gap(g)) => Some(SessionGap::Gap(g.value())),
+            Some(SessionGapSpec::Word(w)) if w == "reset" => Some(SessionGap::Reset),
+            Some(SessionGapSpec::Word(w)) => {
+                no.refuse(format!(
+                    "{who}: session_gap must be a number, a duration or \"reset\", but it is \
+                 {w:?}. Set session_gap to a number of clock units, a duration such as \"5m\", \
+                 or \"reset\"."
+                ));
+                None
+            }
+        };
     let session_gap = match session_gap {
         None if !model && p.session.is_some() => Some(SessionGap::Gap(0.0)),
         given => given,
     };
-    // `group_close = "session"` is itself the prescription for a session
-    // change -- emit the span and start over -- so it takes the place of
-    // `session_gap` rather than sitting beside it (E54); `validate`
-    // refuses the pair.
-    if p.session.is_some() && session_gap.is_none() && p.spec_closes_on_session != Some(true) {
-        return Err(format!(
-            "{who}: session_gap is required when session is given (or \
-             group_close = \"session\", which closes the group at the change instead)"
+    if p.session.is_some()
+        && p.session_gap.is_none()
+        && session_gap.is_none()
+        && p.spec_closes_on_session != Some(true)
+    {
+        no.refuse(format!(
+            "{who}: session needs session_gap, but session_gap is not set. Set session_gap to \
+             the clock step to take at a session change or to \"reset\", or set \
+             group_close=\"session\" to close the group there."
         ));
     }
-    // What a late row is belongs to the caller: unset, every step back is
-    // refused; given, a step back no larger than it is a late row and is
-    // refused, a larger one starts over. It has no default from the cap
-    // (task 120; one name since task 144). `validate` names a missing
-    // clock first.
     if let Some(v) = p
         .restart_after_step_back
         .filter(|v| !(v.value().is_finite() && non_negative(v.value())))
     {
-        return Err(super::checks::at_least_zero(
+        no.refuse(super::checks::at_least_zero(
             who,
             "restart_after_step_back",
             " clock units",
@@ -250,6 +279,7 @@ pub(crate) fn clock_cfg_of(p: &ClockPolicy<'_>) -> Result<ClockCfg, String> {
             None,
         ));
     }
+    no.finish()?;
     Ok(ClockCfg {
         // A row-count clock steps by one row and has no cap.
         gap_cap: p.gap_cap.map_or(f64::INFINITY, Span::value),
@@ -435,32 +465,40 @@ impl Spec {
         });
         match (duration, number) {
             (Some(d), Some("lam")) => Err(format!(
-                "spec {:?}: {d} is a duration, and lam is a decay per clock unit, which has no \
-                 duration form; give half_life as a duration instead",
+                "spec {:?}: {d} is a duration, but lam is a decay over one clock unit, and a \
+                 clock of times has no unit to read it in. Give half_life as a duration in \
+                 place of lam.",
                 self.name
             )),
             (Some(d), Some("q")) => Err(format!(
-                "spec {:?}: {d} is a duration, and q is the noise a row one clock unit after \
-                 the last adds (q times the step squared for a longer one), which has no \
-                 duration form; leave q out and give coef_half_life as a duration, which \
-                 derives it",
+                "spec {:?}: {d} is a duration, but q is the noise over one clock unit, which a \
+                 duration cannot give. Leave q out and give coef_half_life as a duration, from \
+                 which q is derived.",
                 self.name
             )),
             (Some(d), Some(n)) if d == n => Err(format!(
-                "spec {:?}: {d} mixes durations and plain numbers, and a number says nothing \
-                 about its unit; give every value the same way -- durations for a Datetime, \
-                 Date or Duration clock, numbers for a numeric one",
+                "spec {:?}: {d} mixes durations and plain numbers, but a plain number has no \
+                 unit to read beside a duration. Give every value the same way: durations for \
+                 a Datetime, Date or Duration clock, numbers for a numeric one.",
                 self.name
             )),
             (Some(d), Some(n)) => Err(format!(
-                "spec {:?}: {d} is a duration but {n} is a plain number, and a number says \
-                 nothing about its unit; give every clock parameter the same way -- durations \
-                 for a Datetime, Date or Duration clock, numbers for a numeric one",
+                "spec {:?}: {d} is a duration but {n} is a plain number, which has no unit to \
+                 read beside it. Give every clock parameter the same way: durations for a \
+                 Datetime, Date or Duration clock, numbers for a numeric one.",
+                self.name
+            )),
+            // `gap_cap` caps a clock's step, and has no number-of-rows form:
+            // without a clock it is refused whatever it is.
+            (Some("gap_cap"), None) if self.clock.is_none() => Err(format!(
+                "spec {:?}: gap_cap is a duration, but the spec has no clock to measure it. Set \
+                 clock to a column of times (Datetime, Date or Duration), or leave gap_cap out.",
                 self.name
             )),
             (Some(d), None) if self.clock.is_none() => Err(format!(
-                "spec {:?}: {d} is a duration, which needs a clock column to measure it; with \
-                 no clock a row is one unit, so give it as a number of rows",
+                "spec {:?}: {d} is a duration, but the spec has no clock to measure it, and \
+                 without one each row is one clock unit. Set clock to a column of times \
+                 (Datetime, Date or Duration), or give {d} as a number of rows.",
                 self.name
             )),
             (Some(d), None) => Ok(ClockScale::Durations(d)),

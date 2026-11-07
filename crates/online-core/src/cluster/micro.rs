@@ -149,39 +149,71 @@ pub struct MicroCfg {
 
 impl MicroCfg {
     pub fn validate(&self) -> Result<(), String> {
+        let mut no = crate::Refusals::new();
         // The decay first: every model checks it in its own `new`, where only
         // the bank's spec did (review 2026-10-05, CF5).
-        self.decay.check().map_err(|e| format!("micro: {e}"))?;
+        no.take(self.decay.check().map_err(|e| format!("micro: {e}")));
         if self.n_features == 0 {
-            return Err("micro: n_features must be >= 1".into());
+            no.refuse(
+                "micro: the model needs at least one feature, but it has none. Name at least one \
+                 column in features.",
+            );
         }
         if self.min_weight.is_nan() || self.min_weight < 0.0 {
-            return Err("micro: min_weight must be >= 0".into());
+            no.refuse(format!(
+                "micro: min_weight must be at least 0, but it is {}. Set min_weight to 0, or to a \
+                 positive weight.",
+                self.min_weight
+            ));
         }
         if !self.eps.is_finite() || self.eps <= 0.0 {
-            return Err("micro: eps must be finite and > 0".into());
+            no.refuse(format!(
+                "micro: eps must be finite and above 0, but it is {}. Set eps to the largest \
+                 spread along each feature that one of the small clusters the model keeps may \
+                 have, in the feature's standard deviations (its own units under \
+                 standardize=False), such as 0.3.",
+                self.eps
+            ));
         }
         if !self.beta_mu.is_finite() || self.beta_mu <= 0.0 {
-            return Err("micro: beta_mu must be finite and > 0".into());
+            no.refuse(format!(
+                "micro: beta_mu must be finite and above 0, but it is {}. Set beta_mu to the \
+                 weight, in rows of the stream's mean weight, at which one of the small clusters \
+                 the model keeps stops counting as an outlier, such as 3.",
+                self.beta_mu
+            ));
         }
         if self.max_clusters == 0 {
-            return Err("micro: max_clusters must be >= 1".into());
+            no.refuse(
+                "micro: max_clusters must be at least 1, but it is 0. Set max_clusters to the \
+                 most small clusters the model keeps at once.",
+            );
         }
         if self.prune_every.is_nan() || self.prune_every < 0.0 {
-            return Err(format!(
-                "micro: prune_every must be >= 0 clock units (0 checkpoints on every row), got {}",
+            no.refuse(format!(
+                "micro: prune_every must be at least 0 clock units, but it is {}. Set prune_every \
+                 to 0 to prune and join, on every row, the small clusters the model keeps, or to a \
+                 positive number of clock units.",
                 self.prune_every
             ));
         }
         if let Some(l) = self.macro_link
             && (!l.is_finite() || l < 0.0)
         {
-            return Err("micro: macro_link must be finite and >= 0".into());
+            no.refuse(format!(
+                "micro: macro_link must be finite and at least 0, but it is {l}. Set macro_link \
+                 to 0 to join none of the small clusters the model keeps, or leave it out to \
+                 derive it from the data."
+            ));
         }
         if !self.scale_floor.is_finite() || self.scale_floor < 0.0 {
-            return Err("micro: scale_floor must be finite and >= 0".into());
+            no.refuse(format!(
+                "micro: scale_floor must be finite and at least 0, but it is {}. Set scale_floor \
+                 to 0 for no floor, or to a finite positive value.",
+                self.scale_floor
+            ));
         }
-        Ok(())
+        no.finish()
     }
 }
 
@@ -1932,6 +1964,24 @@ mod tests {
             assert!(Micro::new(c.clone()).is_err(), "{c:?}");
         }
         assert!(Micro::new(cfg()).is_ok());
+        // Every problem at once: two bad settings are both named, one to a
+        // line.
+        let e = Micro::new(MicroCfg {
+            eps: 0.0,
+            max_clusters: 0,
+            ..cfg()
+        })
+        .unwrap_err();
+        let lines: Vec<&str> = e.lines().collect();
+        assert_eq!(lines.len(), 2, "{e}");
+        assert!(
+            lines[0].starts_with("micro: eps must be finite and above 0"),
+            "{e}"
+        );
+        assert!(
+            lines[1].starts_with("micro: max_clusters must be at least 1"),
+            "{e}"
+        );
         // 0 is every row by the clock, and a row cap of 0 or 1 every row.
         for (every, cap) in [(0.0, u32::MAX), (f64::INFINITY, 0), (2.5, 1)] {
             let c = MicroCfg {

@@ -122,7 +122,7 @@ fn a_duration_or_a_count_is_read_only_as_a_duration() {
             );
             let err = build(owner, field, r#""10m""#, "").validate().unwrap_err();
             assert!(
-                err.contains(&format!("{field} is a duration, which needs a clock")),
+                err.contains(&format!("{field} is a duration, but the spec has no clock")),
                 "{err}"
             );
             let mixed = r#", "clock": "t", "gap_cap": 300"#;
@@ -221,13 +221,16 @@ fn a_mixture_is_refused_naming_both_parameters() {
     let err = spec(r#", "clock": "t", "lam": 0.99, "gap_cap": "5m""#)
         .validate()
         .unwrap_err();
-    assert!(err.contains("lam is a decay per clock unit"), "{err}");
+    assert!(err.contains("lam is a decay over one clock unit"), "{err}");
 }
 
 #[test]
 fn a_duration_needs_a_clock() {
     let err = spec(r#", "half_life": "10m""#).validate().unwrap_err();
-    assert!(err.contains("needs a clock column"), "{err}");
+    assert!(
+        err.contains("half_life is a duration, but the spec has no clock"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -243,7 +246,10 @@ fn a_duration_is_read_in_seconds_and_names_a_grid_as_written() {
     );
     let dup = spec(r#", "clock": "t", "half_life": ["5m", "300s"], "gap_cap": "1d""#);
     let err = dup.decays().unwrap_err();
-    assert!(err.contains("300s more than once"), "{err}");
+    assert!(
+        err.contains("lists 5m and 300s, which are the same half-life"),
+        "{err}"
+    );
     assert!(matches!(
         s.half_life.as_ref().unwrap().spans()[0],
         Span::Duration(_)
@@ -285,8 +291,8 @@ fn a_formula_target_with_group_needs_a_clock() {
     };
     let err = formula(r#", "group": "g""#).check().unwrap_err();
     assert!(
-        err.starts_with("spec \"m\": a window looking ahead with group needs a clock column")
-            && err.ends_with("Name a clock column, with gap_cap, or leave out group"),
+        err.starts_with("spec \"m\": a formula target under group needs clock")
+            && err.ends_with("Set clock and gap_cap, or leave group out."),
         "{err}"
     );
     assert_eq!(
@@ -303,7 +309,7 @@ fn a_formula_target_with_group_needs_a_clock() {
 fn an_empty_half_life_grid_is_refused() {
     let err = spec(r#", "half_life": []"#).check().unwrap_err();
     assert!(
-        err.contains("spec \"m\": half_life names no half-life; give one or a grid"),
+        err.contains("spec \"m\": half_life must list at least one half-life, but it is empty"),
         "{err}"
     );
 }
@@ -320,7 +326,7 @@ fn drift_threshold_is_a_clock_parameter() {
     let durations = r#", "clock": "t", "half_life": "10m", "gap_cap": "5m", "emit_drift": true"#;
     let err = spec(durations).validate().unwrap_err();
     assert!(
-        err.contains("spec \"m\": drift_threshold is required when clock is given"),
+        err.contains("spec \"m\": drift_threshold must be set when the spec has a clock"),
         "{err}"
     );
     let given = spec(&format!(r#"{durations}, "drift_threshold": "20m""#));
@@ -348,7 +354,7 @@ fn drift_threshold_is_a_clock_parameter() {
             .validate()
             .unwrap_err();
         assert!(
-            err.contains("drift_threshold must be finite and > 0"),
+            err.contains("drift_threshold must be finite and above 0, but it is"),
             "{bad}: {err}"
         );
     }
@@ -401,7 +407,10 @@ fn coef_every_is_a_clock_parameter_and_its_row_cap_a_count() {
     let err = spec(r#", "half_life": 60, "max_rows_between_coefs": 0"#)
         .validate()
         .unwrap_err();
-    assert!(err.contains("max_rows_between_coefs must be >= 1"), "{err}");
+    assert!(
+        err.contains("max_rows_between_coefs must be at least 1, but it is 0."),
+        "{err}"
+    );
     assert_eq!(
         spec(r#", "half_life": 60, "coef_every": 7, "max_rows_between_coefs": 1"#).validate(),
         Ok(())
@@ -416,7 +425,7 @@ fn coef_every_is_a_clock_parameter_and_its_row_cap_a_count() {
         let key = cadence.split('"').nth(1).unwrap();
         assert!(
             err.contains(&format!(
-                "{key} does not apply to ew_cov (it reports no coefficients)"
+                "{key} applies only to a model that reports coefficients, but ew_cov reports none"
             )),
             "{err}"
         );
@@ -430,7 +439,8 @@ fn a_zero_embargo_is_told_to_leave_it_out() {
         .check()
         .unwrap_err();
     assert!(
-        err.contains("embargo must be finite and > 0 (got 0); leave it out for no delay"),
+        err.contains("embargo must be finite and above 0, but it is 0.")
+            && err.contains("or leave it out for no delay."),
         "{err}"
     );
 }

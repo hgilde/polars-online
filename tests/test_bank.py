@@ -444,7 +444,10 @@ class TestPerTargetMinPeriods:
         )
 
     def test_wrong_length_is_rejected(self):
-        with pytest.raises(ValueError, match="min_weight list has 3 entries"):
+        with pytest.raises(
+            ValueError,
+            match="min_weight must list one value per target \\(2\\), but it lists 3",
+        ):
             po.spec.ewridge(
                 "m",
                 targets=["y0", "y1"],
@@ -454,5 +457,5 @@ class TestPerTargetMinPeriods:
             )
 
     def test_negative_is_rejected(self):
-        with pytest.raises(ValueError, match="min_weight must be >= 0"):
+        with pytest.raises(ValueError, match="min_weight must be finite and at least 0"):
             po.spec.ewridge("m", targets=["y0"], features=["x0"], half_life=100.0, min_weight=-1.0)

@@ -385,7 +385,11 @@ def test_too_few_draws_to_flag_at_alpha_are_refused_with_the_fewest_that_can(alp
     ``ceil(1 / alpha) - 1``; one draw fewer is refused and that many runs."""
     kw = dict(features=["x0", "x1"], kind="window", window_rows=CC_W, alpha=alpha)
     for n in (20, fewest - 1):
-        with pytest.raises(ValueError, match=f"give n_perm of at least {fewest}, or a fixed crit"):
+        with pytest.raises(
+            ValueError,
+            match=f"n_perm = {n} draws are too few for the permutation test to flag at alpha = "
+            f"{alpha}\\. Set n_perm to {fewest} or more, or give crit\\.",
+        ):
             po.ModelBank([po.spec.corrchange("m", n_perm=n, **kw)])
     po.ModelBank([po.spec.corrchange("m", n_perm=fewest, **kw)])
     po.ModelBank([po.spec.corrchange("m", n_perm=20, crit=0.5, **kw)])
