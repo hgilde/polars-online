@@ -878,8 +878,9 @@ impl OnlineModel for Micro {
                     || m.mw.len() != p
                     || m.mc.iter().any(|c| !c.s.has_width(p))
                 {
-                    return Err(StateError::Invalid(
-                        "micro: the state has the wrong shape".into(),
+                    return Err(crate::model::damaged(
+                        "micro",
+                        "its saved values have the wrong shape",
                     ));
                 }
                 Ok(m)
@@ -947,7 +948,7 @@ mod tests {
         match Micro::restore(&s) {
             Err(StateError::Invalid(e)) => {
                 assert!(
-                    e.contains("configuration") && e.contains("max_clusters"),
+                    e.contains("micro refuses:") && e.contains("max_clusters"),
                     "{e}"
                 );
             }

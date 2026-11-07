@@ -591,10 +591,12 @@ impl AnyModel {
             }
             ModelState::Bocpd(_) => Ok(AnyModel::Bocpd(Box::new(Bocpd::restore(s)?))),
             ModelState::Audit(_) => Ok(AnyModel::Audit(Box::new(online_core::Audit::restore(s)?))),
-            other => Err(StateError::WrongModel {
-                expected: "a bank-supported model",
-                found: other.kind(),
-            }),
+            // A kind only online-core builds, such as `ew_cov`'s bare running
+            // sums: its name is the code's, so the message does not print it.
+            _ => Err(StateError::Invalid(format!(
+                "it is damaged, since it holds a model of a kind no spec builds. {}",
+                online_core::DAMAGED
+            ))),
         }
     }
 }

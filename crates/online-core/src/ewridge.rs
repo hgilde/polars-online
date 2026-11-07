@@ -2756,8 +2756,9 @@ impl OnlineModel for EwRidge {
                     || m.sig2.len() != n
                     || m.win.is_some() != m.cfg.window.is_some()
                 {
-                    return Err(StateError::Invalid(
-                        "ewridge: the accumulators have the wrong shape".into(),
+                    return Err(crate::model::damaged(
+                        "ewridge",
+                        "its running sums have the wrong shape",
                     ));
                 }
                 // Every snapshot of the window too: `view()` reads the
@@ -2766,14 +2767,18 @@ impl OnlineModel for EwRidge {
                 if let Some(win) = &m.win
                     && !win.snaps.iter().all(|s| s.has_shape(n, k))
                 {
-                    return Err(StateError::Invalid(
-                        "ewridge: the window's snapshots have the wrong shape".into(),
+                    return Err(crate::model::damaged(
+                        "ewridge",
+                        "the snapshots it keeps for its hard window have the wrong shape",
                     ));
                 }
-                if let Err(e) =
-                    crate::model::check_target_min_weight("ewridge", &m.target_min_weight, n)
+                if crate::model::check_target_min_weight("ewridge", &m.target_min_weight, n)
+                    .is_err()
                 {
-                    return Err(StateError::Invalid(e));
+                    return Err(crate::model::damaged(
+                        "ewridge",
+                        "its saved per-target min_weight values do not match its targets",
+                    ));
                 }
                 // The runs follow the window, not the file (review 2026-09-26,
                 // C4; `EwCovModel::restore` says why).
@@ -2785,8 +2790,9 @@ impl OnlineModel for EwRidge {
                         }
                     }
                     Some(_) if !m.acc.keeps_runs() => {
-                        return Err(StateError::Invalid(
-                            "ewridge: a windowed state whose runs are off".into(),
+                        return Err(crate::model::damaged(
+                            "ewridge",
+                            "it has a hard window, but it saved nothing its window reads",
                         ));
                     }
                     Some(_) => {}

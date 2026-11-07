@@ -1257,8 +1257,9 @@ impl OnlineModel for KMeans {
                     || m.buf_w.len() != m.buf.len()
                     || m.buf.iter().any(|z| z.len() != p)
                 {
-                    return Err(StateError::Invalid(
-                        "kmeans: the state has the wrong shape".into(),
+                    return Err(crate::model::damaged(
+                        "kmeans",
+                        "its saved values have the wrong shape",
                     ));
                 }
                 Ok(m)
@@ -1328,7 +1329,7 @@ mod tests {
         match KMeans::restore(&s) {
             Err(StateError::Invalid(e)) => {
                 assert!(
-                    e.contains("configuration") && e.contains("n_clusters must be at least 1"),
+                    e.contains("kmeans refuses:") && e.contains("n_clusters must be at least 1"),
                     "{e}"
                 );
             }

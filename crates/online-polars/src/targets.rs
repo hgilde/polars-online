@@ -32,13 +32,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::formula::Node;
 
-/// What a table naming `relative_to` or `relative` is told: the two keys
-/// were task 107a's relative target, which task 201 removed.
-/// The same text as the Python side's `_RELATIVE_REMOVED`.
-pub const RELATIVE_REMOVED: &str = "relative targets were removed. Make the target a column \
-     with Polars' with_columns in the query before the bank, such as \
-     lf.with_columns(ret=pl.col(\"p\") - pl.col(\"mid\")), or for a return the log ratio \
-     (pl.col(\"p\") / pl.col(\"mid\")).log(), and name that column in targets.";
+/// What a table naming `relative_to` or `relative` is told to do: the two
+/// keys were task 107a's relative target, which task 201 removed. The
+/// Python side's `_RELATIVE_REMEDY` says the same of the query alone.
+pub const RELATIVE_REMEDY: &str = "Compute the target as a column before the bank reads \
+     it, in the input file or with Polars' with_columns in the query, and name that column in \
+     targets.";
 
 /// One target: the name its output fields carry and the column its values
 /// are read from; or, for a formula target, the formula of the row's future
@@ -232,7 +231,7 @@ struct Table {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     formula: Option<Node>,
     /// Task 107a's two keys, read only to be refused by name
-    /// ([`RELATIVE_REMOVED`]) where `deny_unknown_fields` would say only
+    /// ([`RELATIVE_REMEDY`]) where `deny_unknown_fields` would say only
     /// "unknown field"; never written.
     #[serde(default, skip_serializing)]
     relative_to: Option<serde::de::IgnoredAny>,
@@ -273,15 +272,17 @@ impl<'de> Deserialize<'de> for Targets {
                 Written::Table(t) => {
                     if t.relative_to.is_some() || t.relative.is_some() {
                         let which = t.column.as_ref().or(t.name.as_ref());
-                        return Err(serde::de::Error::custom(match which {
-                            Some(c) => format!(
-                                "target {c:?} is relative to another column, but \
-                                 {RELATIVE_REMOVED}"
-                            ),
-                            None => format!(
-                                "a target is relative to another column, but {RELATIVE_REMOVED}"
-                            ),
-                        }));
+                        let target =
+                            which.map_or("a target".to_string(), |c| format!("target {c:?}"));
+                        let given = if t.relative_to.is_some() {
+                            "relative_to"
+                        } else {
+                            "relative"
+                        };
+                        return Err(serde::de::Error::custom(format!(
+                            "{target} sets {given}, but relative targets were removed. \
+                             {RELATIVE_REMEDY}"
+                        )));
                     }
                     // A formula target (docs/PLAN.md task 104): a name and
                     // the tree, nothing of a column target's.
@@ -486,8 +487,8 @@ mod tests {
     /// have said only "unknown field".
     #[test]
     fn a_relative_target_is_refused_by_name() {
-        let removed = "relative targets were removed. Make the target a column with Polars' \
-                       with_columns in the query before the bank";
+        let removed = "but relative targets were removed. Compute the target as a column \
+                       before the bank reads it";
         let fwd = r#"["rewm_mean", ["col", "mid"], {"half_life": "10s", "window_size": "1m"}]"#;
         for table in [
             r#"{"column": "p", "relative_to": "mid"}"#.to_string(),
@@ -510,6 +511,12 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains(removed), "{err}");
-        assert!(err.contains(r#"target "price_5m""#), "{err}");
+        assert!(
+            err.contains(&format!(
+                "target \"price_5m\" sets relative_to, but relative targets were removed. \
+                 {RELATIVE_REMEDY}"
+            )),
+            "{err}"
+        );
     }
 }

@@ -548,22 +548,28 @@ impl OnlineModel for Rls {
                 // and panicked on the first `step`'s indexing (review
                 // 2026-09-18, B3).
                 if m.r.len() != k * k || !rows(&m.u) || !rows(&m.beta) {
-                    return Err(StateError::Invalid(
-                        "rls: the accumulators have the wrong shape".into(),
+                    return Err(crate::model::damaged(
+                        "rls",
+                        "its running sums have the wrong shape",
                     ));
                 }
                 if m.w_target.len() != n {
-                    return Err(StateError::Invalid(
-                        "rls: the target weights have the wrong shape".into(),
+                    return Err(crate::model::damaged(
+                        "rls",
+                        "its saved target weights have the wrong shape",
                     ));
                 }
                 // A sum of squared weights is finite and not negative; one
                 // that is not reads Kish's size as NaN or below zero.
                 if !(m.s2.is_finite() && m.s2 >= 0.0) {
-                    return Err(StateError::Invalid(format!(
-                        "rls: the squared-weight sum must be finite and >= 0, got {}",
-                        m.s2
-                    )));
+                    return Err(crate::model::damaged(
+                        "rls",
+                        format!(
+                            "its saved sum of squared row weights is {}, where it must be \
+                             finite and at least 0",
+                            m.s2
+                        ),
+                    ));
                 }
                 m.ensure_buffers();
                 Ok(m)
@@ -1622,7 +1628,7 @@ mod tests {
             let s = State::new(ModelState::Rls(Box::new(spoiled)));
             match Rls::restore(&s) {
                 Err(StateError::Invalid(e)) => {
-                    assert!(e.contains("squared-weight"), "{bad}: {e}");
+                    assert!(e.contains("sum of squared row weights"), "{bad}: {e}");
                 }
                 other => panic!("{bad}: {other:?}"),
             }

@@ -83,7 +83,12 @@ from typing import Any, Literal
 import polars as pl
 
 from polars_online._duration import Duration, clock_nanoseconds
-from polars_online._errors import ColumnNotFoundError
+from polars_online._errors import (
+    ColumnNotFoundError,
+    OutputColumnNotFoundError,
+    RefusedValueError,
+    WrongTypeError,
+)
 from polars_online._renamed import renamed_function, renamed_keywords
 from polars_online._warnings import PolarsOnlineDeprecationWarning
 
@@ -239,7 +244,7 @@ def _pred_fields(who: str, df: pl.DataFrame, spec_name: str) -> list[str]:
             f'{who}: spec "{spec_name}" has no output column in the frame, whose columns are '
             f"{df.columns}. Name a spec whose output column the frame holds."
         )
-        raise KeyError(msg)
+        raise OutputColumnNotFoundError(msg)
     if not isinstance(dtype, pl.Struct):
         msg = (
             f"{who}: column {spec_name!r} must be a spec's output column, but it is "
@@ -990,7 +995,7 @@ def _points(param_grid: Any) -> list[dict[str, Any]]:
             f"{who}: param_grid must be a non-empty dict of each keyword's values, but it is "
             f'{param_grid!r}. Pass a dict such as {{"half_life": [50, 500]}}.'
         )
-        raise TypeError(msg)
+        raise TypeError(msg) if not isinstance(param_grid, Mapping) else RefusedValueError(msg)
     keys = sorted(param_grid)
     for key in keys:
         values = param_grid[key]
@@ -1012,7 +1017,8 @@ def _points(param_grid: Any) -> list[dict[str, Any]]:
                 f"{who}: param_grid[{key!r}] must be a list of the values to try, but it is "
                 f"{values!r}. Give a non-empty list."
             )
-            raise TypeError(msg)
+            wrong_type = isinstance(values, (str, bytes)) or not isinstance(values, Sequence)
+            raise TypeError(msg) if wrong_type else RefusedValueError(msg)
     return [
         dict(zip(keys, point, strict=True))
         for point in itertools.product(*(param_grid[k] for k in keys))
@@ -1045,7 +1051,7 @@ def _search_specs(
             f"{who}: param_grid needs a spec builder to call, but specs holds specs already "
             f"built. Pass a builder, such as po.spec.ewridge, as specs, or leave out param_grid."
         )
-        raise TypeError(msg)
+        raise RefusedValueError(msg)
     given = [specs] if isinstance(specs, dict) else list(specs)
     if not given or not all(isinstance(s, dict) for s in given):
         if not isinstance(specs, (list, tuple)):
@@ -1068,22 +1074,20 @@ def _time_series_folds(n: int, n_splits: int, gap: int) -> list[tuple[int, int, 
     from the rows before ``choose_end`` and scored on ``test_start:test_end``."""
     who = "po.eval.grid_search"
     # Any whole number, numpy's integers included (task 352), but not a bool.
-    if (
-        isinstance(n_splits, bool)
-        or not isinstance(n_splits, numbers.Integral)
-        or operator.index(n_splits) < 1
-    ):
+    wrong_type = isinstance(n_splits, bool) or not isinstance(n_splits, numbers.Integral)
+    if wrong_type or operator.index(n_splits) < 1:
         msg = (
             f"{who}: n_splits must be a whole number of at least 1, but it is {n_splits!r}. "
             f"Set n_splits to 1 or more."
         )
-        raise ValueError(msg)
-    if isinstance(gap, bool) or not isinstance(gap, numbers.Integral) or operator.index(gap) < 0:
+        raise WrongTypeError(msg) if wrong_type else ValueError(msg)
+    wrong_type = isinstance(gap, bool) or not isinstance(gap, numbers.Integral)
+    if wrong_type or operator.index(gap) < 0:
         msg = (
             f"{who}: gap must be a whole number of rows of at least 0, but it is {gap!r}. "
             f"Set gap to 0 or more."
         )
-        raise ValueError(msg)
+        raise WrongTypeError(msg) if wrong_type else ValueError(msg)
     n_splits, gap = operator.index(n_splits), operator.index(gap)
     test_size = n // (n_splits + 1)
     first = n - n_splits * test_size
@@ -1521,7 +1525,7 @@ def _resid_fields(who: str, df: pl.DataFrame, spec_name: str) -> list[str]:
             f'{who}: spec "{spec_name}" has no output column in the frame, whose columns are '
             f"{df.columns}. Name a spec whose output column the frame holds."
         )
-        raise KeyError(msg)
+        raise OutputColumnNotFoundError(msg)
     if not isinstance(dtype, pl.Struct):
         msg = (
             f"{who}: column {spec_name!r} must be a spec's output column, but it is "

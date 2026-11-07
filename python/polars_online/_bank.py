@@ -15,7 +15,7 @@ from typing import IO, TYPE_CHECKING, Any, Literal, overload
 import polars as pl
 
 from polars_online import _polars_online as _native
-from polars_online._errors import ColumnNotFoundError
+from polars_online._errors import ColumnNotFoundError, WrongTypeError
 from polars_online._polars_online import ArrowStruct
 from polars_online._renamed import renamed_method
 from polars_online._spec import (
@@ -162,7 +162,7 @@ def _refuse_uint128(schema: pl.Schema, who: str, clocks: Collection[str | None] 
                 f"{who}: column {name!r} is UInt128, which polars-online cannot read. Cast it "
                 "to Int64 if its values fit, or to Float64, or leave it out of the frame."
             )
-        raise ValueError(msg)
+        raise WrongTypeError(msg)
 
 
 def _threads_refusal(shown: str) -> str:
@@ -280,13 +280,13 @@ class ModelBank:
                 "ModelBank: specs must be a list of specs, but it is one spec. Pass the spec in a "
                 "list, as [spec], for a bank of one."
             )
-            raise ValueError(msg)
+            raise WrongTypeError(msg)
         if isinstance(specs, (str, bytes)):
             msg = (
                 "ModelBank: specs must be a list of specs, such as [po.spec.ewridge(...)], but "
                 f"it is of type {type(specs).__name__}. Pass a list of specs."
             )
-            raise ValueError(msg)
+            raise WrongTypeError(msg)
         # A hand-written dict may put a window expression in `targets`, as
         # the builders take one; `_json` writes it as the builders would
         # (review R1 D8, R2 P5).

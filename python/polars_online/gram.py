@@ -69,6 +69,7 @@ from typing import TYPE_CHECKING, Any, NotRequired, TypedDict
 
 from polars_online import _polars_online as _native
 from polars_online._bank import _check_threads
+from polars_online._errors import WrongTypeError
 from polars_online._frame import ReadinessWarning, _user_stacklevel
 from polars_online._renamed import renamed_keywords
 from polars_online._warnings import deprecated_keywords, forward_deprecated
@@ -1477,7 +1478,7 @@ def _limit(name: str, v: int | None, who: str) -> int | None:
             f"{who}: {name} must be a whole number of at least 1, or None, but it is {v!r}. "
             "Pass a whole number of at least 1, or None for no limit."
         )
-        raise ValueError(msg)
+        raise WrongTypeError(msg)
     n = operator.index(v)
     if n < 1:
         msg = (
@@ -2290,7 +2291,7 @@ def _subset_jobs(
                 f"a frame of them, but its type is {type(jobs).__name__}. Pass a list of dicts or "
                 "a frame."
             )
-            raise ValueError(msg)
+            raise WrongTypeError(msg)
         jobs = jobs.to_dicts()
     names = _columns(g, "po.gram.solve_subsets")
     icept = names.index(INTERCEPT) if INTERCEPT in names else -1
@@ -2310,7 +2311,7 @@ def _subset_jobs(
                 f"{who}: {job_at} must be a mapping of {list(_JOB_KEYS)}, but its type "
                 f"is {type(job).__name__}. Pass each job as a dict."
             )
-            raise ValueError(msg)
+            raise WrongTypeError(msg)
         unknown = sorted(str(key) for key in job if key not in _JOB_KEYS)
         if unknown:
             msg = (

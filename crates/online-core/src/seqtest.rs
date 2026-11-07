@@ -218,8 +218,9 @@ impl OnlineModel for SeqTest {
                     .iter()
                     .any(|v| v.len() != n)
                 {
-                    return Err(StateError::Invalid(
-                        "seqtest: the state has the wrong shape".into(),
+                    return Err(crate::model::damaged(
+                        "seqtest",
+                        "its saved values have the wrong shape",
                     ));
                 }
                 Ok(m)
@@ -330,7 +331,7 @@ mod tests {
         match SeqTest::restore(&s) {
             Err(StateError::Invalid(e)) => {
                 assert!(
-                    e.contains("configuration") && e.contains("min_weight"),
+                    e.contains("seqtest refuses:") && e.contains("min_weight"),
                     "{e}"
                 );
             }

@@ -355,22 +355,19 @@ fn a_schema_refusal_says_which_side_of_the_range_the_file_is_on() {
     let newer = Bank::load_bytes(&at(current + 1), Some(&specs))
         .err()
         .expect("a newer file loaded");
-    assert!(
-        newer.contains("written by a newer version")
-            && newer.contains(&format!("schema {}", current + 1))
-            && newer.contains(&format!("this build reads up to {current}"))
-            && newer.contains("Upgrade polars-online")
-            && !newer.contains("refit"),
-        "{newer}"
+    assert_eq!(
+        newer,
+        "state file: it was written by a newer version of polars-online than this one reads. \
+         Upgrade polars-online to load it."
     );
     let older = Bank::load_bytes(&at(super::MIN_BANK_SCHEMA_VERSION - 1), Some(&specs))
         .err()
         .expect("an older file loaded");
-    assert!(
-        older.contains("not supported")
-            && older.contains("fit it on its input")
-            && !older.contains("newer"),
-        "{older}"
+    assert_eq!(
+        older,
+        "state file: it was written by a version of polars-online older than this one reads, \
+         and keeps settings and diagnostics this version no longer has. Build the bank again \
+         from its specs and fit it on its input."
     );
 }
 
@@ -536,8 +533,10 @@ fn a_model_state_the_bank_never_builds_is_refused_by_kind() {
             online_core::ModelState::EwCov(Box::new(online_core::EwCov::new(1)));
     });
     let err = Bank::load_bytes(&b, None).err().expect("loaded");
+    let body = ": it is damaged, since it holds a model of a kind no spec builds. Load an \
+                undamaged copy of the state file, or rebuild it from its input.";
     assert!(
-        err.contains("state is for a different model: expected a bank-supported model"),
+        err.starts_with("state file: spec \"m\" group ") && err.ends_with(body),
         "{err}"
     );
 }

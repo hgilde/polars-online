@@ -669,16 +669,16 @@ def test_the_tree_round_trips_every_node_kind() -> None:
 def test_what_is_not_element_wise_is_refused_by_name() -> None:
     df = ticks(50, 1)
     for expr, says in [
-        (po.ewm_mean("x", half_life=2.0).shift(1), "Shift"),
-        (po.ewm_mean("x", half_life=2.0).cum_sum(), "CumSum"),
-        (po.ewm_mean("x", half_life=2.0).mean(), "Agg"),
-        (po.ewm_mean("x", half_life=2.0).rolling_mean(3), "Rolling"),
+        (po.ewm_mean("x", half_life=2.0).shift(1), "holds the method shift,"),
+        (po.ewm_mean("x", half_life=2.0).cum_sum(), "holds the method cum_sum,"),
+        (po.ewm_mean("x", half_life=2.0).mean(), "holds an aggregation,"),
+        (po.ewm_mean("x", half_life=2.0).rolling_mean(3), "holds a rolling function,"),
         # Refused by the node's own name, which Polars spelled `Window` before
         # 1.36.1, below the floor of 1.37.0.
-        (po.ewm_mean("x", half_life=2.0).over("g"), "Over"),
+        (po.ewm_mean("x", half_life=2.0).over("g"), "holds the method over,"),
         # `Date` is read since review 2026-10-05 (YB1), a date literal's dtype.
-        (po.ewm_mean("x", half_life=2.0).cast(pl.Datetime("us")), "a cast to Datetime"),
-        (~(po.ewm_mean("x", half_life=2.0) > 0), "Not"),
+        (po.ewm_mean("x", half_life=2.0).cast(pl.Datetime("us")), 'a cast to "Datetime" \\('),
+        (~(po.ewm_mean("x", half_life=2.0) > 0), "holds the operator ~,"),
     ]:
         with pytest.raises(FormulaError, match=says):
             po.stream.with_windows(df, y=expr, **CLOCK)
@@ -1915,7 +1915,7 @@ def test_a_cast_to_a_parametrized_dtype_is_refused_by_name(dtype: Any, name: str
     """Review 2026-10-05 (YB2): a dtype with parameters serializes as a
     mapping, which the refusal's lookup could not hash, so the cast died in a
     ``TypeError`` before it was named."""
-    with pytest.raises(FormulaError, match=f"holds a cast to {name}, which it cannot read"):
+    with pytest.raises(FormulaError, match=rf'holds a cast to "{name}" \(a formula casts only to'):
         to_tree(po.ewm_mean("x", half_life=5.0).cast(dtype))
 
 
@@ -1939,7 +1939,11 @@ def test_a_literal_that_is_not_finite_is_refused_by_name() -> None:
     df = pl.DataFrame({"t": [0.0, 1.0, 2.0], "x": [-1.0, 2.0, 3.0]})
     m = po.ewm_mean("x", half_life=5.0)
     for bad in (m.clip(0, float("inf")), m.clip(float("nan"), 1)):
-        with pytest.raises(FormulaError, match="not finite .*inf and nan as null"):
+        with pytest.raises(
+            FormulaError,
+            match=r"holds a literal that is inf or nan \(for a clip with one bound, leave the "
+            r"other out\), which it cannot read",
+        ):
             po.stream.with_windows(df, y=bad, **CLOCK)
     out = po.stream.with_windows(df, y=m.clip(lower_bound=0), **CLOCK)
     assert out["y"].min() >= 0

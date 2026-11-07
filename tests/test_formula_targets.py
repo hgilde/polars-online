@@ -381,6 +381,24 @@ def test_what_is_refused() -> None:
         spec((po.ewm_mean("mid", half_life=H) - pl.col("mid")).alias("back"))
 
 
+def test_a_target_formula_a_formula_cannot_carry_names_the_spec() -> None:
+    """A node a formula cannot read, in a target's formula, is refused in the
+    spec's name: the builder is the call the expression was given to."""
+    from polars_online._formula import accepted_text
+
+    shifted = po.ewm_mean("mid", half_life=H, window_size=W, reverse=True) - pl.col("mid").shift(1)
+    with pytest.raises(ValueError) as err:
+        spec(shifted.alias("f"))
+    assert str(err.value) == (
+        'spec "m": a formula over window operators reads each row alone, but its expression (a '
+        'column computation, such as pl.col("x") + 1) holds the method shift, which it cannot '
+        "read. The formula is computed a chunk at a time, so a part that reads other rows, "
+        "such as a shift, a cumulative or rolling function or an aggregation, would read only "
+        "its chunk's rows. Build the formula from "
+        f"{accepted_text()} around the operators, and compute anything else as a column first."
+    )
+
+
 def test_a_window_target_with_group_needs_a_clock_column() -> None:
     """Task 173, PC1: a window target under ``group`` is resolved by its
     group's own window core, on its group's clock. Without a clock column
@@ -1010,7 +1028,8 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
         old = state[:i] + bytes([before]) + state[i + 1 :]
         with pytest.raises(
             ValueError,
-            match=rf"schema version {before} is not supported, since this build loads schemas 61",
+            match="^state file: it was written by a version of polars-online older than this one "
+            "reads",
         ):
             po.ModelBank.load_bytes(old)
     po.ModelBank.load_bytes(state[:i] + bytes([61]) + state[i + 1 :])

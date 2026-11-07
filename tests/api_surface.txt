@@ -7,11 +7,14 @@
   FormulaTarget
   ModelBank
   OrderNotGuaranteedWarning
+  OutputColumnNotFoundError
   PolarsOnlineDeprecationWarning
   PolarsOnlineWarning
   ReadinessWarning
+  RefusedValueError
   Target
   UnstableWarning
+  WrongTypeError
   __version__
   corr  # unstable
   eval

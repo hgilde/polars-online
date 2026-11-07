@@ -217,6 +217,7 @@ from typing import TYPE_CHECKING, Literal
 
 import polars as pl
 
+from polars_online._errors import RefusedValueError
 from polars_online._formula import operator
 from polars_online._warnings import deprecated_alias
 
@@ -256,7 +257,7 @@ def _window(
             "Pass reverse=True to read the rows after each row, or reverse=False."
         )
     if reverse and window_size is None:
-        raise TypeError(
+        raise RefusedValueError(
             f"{who}: reverse=True needs window_size, but it is not set, and the rows after a "
             "row have no end without it. Set window_size to the span to read ahead."
         )

@@ -1892,8 +1892,9 @@ impl crate::OnlineModel for Bocpd {
                     || (m.data_prior.is_some() && !m.warm.is_empty())
                     || m.warm.len() >= m.cfg.warm_rows_or_default()
                 {
-                    return Err(crate::StateError::Invalid(
-                        "bocpd: the state has the wrong shape".into(),
+                    return Err(crate::model::damaged(
+                        "bocpd",
+                        "its saved values have the wrong shape",
                     ));
                 }
                 Ok(m)

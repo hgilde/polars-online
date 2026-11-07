@@ -19,14 +19,21 @@ TIER = "essential"
 @pytest.mark.parametrize(
     ("expr", "named"),
     [
-        (pl.col("x") + pl.lit(b"ab"), "holds this literal ("),
-        (pl.col("x") + pl.lit([1, 2]), "holds this literal ("),
-        (pl.col("x") + pl.len(), 'holds this node ("Len"), which it cannot read'),
+        (pl.col("x") + pl.lit(b"ab"), "holds a literal of a type a formula does not carry"),
+        (pl.col("x") + pl.lit([1, 2]), "holds a literal of a type a formula does not carry"),
+        (pl.col("x") + pl.len(), "holds pl.len(), which it cannot read"),
         (pl.col(PREFIX + "{not json") + 1.0, "has a name starting with '@po:', which is kept"),
-        (pl.col("x") // 2, "holds the operator 'FloorDivide', which it cannot read"),
-        (pl.col("x") % 2, "holds the operator 'Modulus', which it cannot read"),
-        (pl.col("x").cast(pl.Int128), 'holds a cast to "Int128", which it cannot read'),
-        (pl.col("x").cast(pl.Binary), 'holds a cast to "Binary", which it cannot read'),
+        (pl.col("x") // 2, "holds the operator //, which it cannot read"),
+        (pl.col("x") % 2, "holds the operator %, which it cannot read"),
+        (pl.col("x").cast(pl.Int128), 'holds a cast to "Int128" (a formula casts only to Int8,'),
+        (pl.col("x").cast(pl.Binary), 'holds a cast to "Binary" (a formula casts only to Int8,'),
+        (pl.col("x").shift(1), "holds the method shift, which it cannot read"),
+        (pl.col("x").cum_sum(), "holds the method cum_sum, which it cannot read"),
+        (pl.col("x").arcsin(), "holds the method arcsin, which it cannot read"),
+        (pl.col("x").str.contains("a"), "holds the method contains, which it cannot read"),
+        (pl.col("x").sum(), "holds an aggregation, which it cannot read"),
+        (pl.col("x").sum().over("g"), "holds the method over, which it cannot read"),
+        (pl.all() + 1, "holds pl.all() or another selector, which it cannot read"),
     ],
 )
 def test_a_node_a_formula_cannot_carry_is_refused_by_name(expr, named):

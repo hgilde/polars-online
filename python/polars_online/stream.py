@@ -54,7 +54,7 @@ from polars_online import _formula, _warnings
 from polars_online import _polars_online as _native
 from polars_online._bank import _refuse_uint128
 from polars_online._duration import Duration, clock_nanoseconds, duration_text
-from polars_online._errors import ColumnNotFoundError
+from polars_online._errors import ColumnNotFoundError, RefusedValueError, WrongTypeError
 from polars_online._frame import (
     ConsumedSourceWarning,
     State,
@@ -246,7 +246,7 @@ def embargo(
             f"po.stream.embargo: clock column {clock!r} must be numeric or temporal, but it is "
             f"{schema[clock]}. Cast it to a number or a Datetime."
         )
-        raise TypeError(msg)
+        raise WrongTypeError(msg)
     if schema[clock].is_integer() and schema[clock] not in _INTEGER_CLOCKS:
         # An integer clock is held as an Int64 (task 200), so a bank refuses
         # an Int128 by name; said here, before the doubled frame is built
@@ -256,7 +256,7 @@ def embargo(
             "an integer clock is held in. Cast it to Int64 if its values fit, or after "
             "subtracting an origin."
         )
-        raise TypeError(msg)
+        raise WrongTypeError(msg)
     ns = clock_nanoseconds(delay, schema[clock], "po.stream.embargo", "delay", clock)
     if ns is None:
         if not (delay > 0.0) or delay == float("inf"):  # type: ignore[operator]
@@ -572,7 +572,7 @@ def refresh_time(
             f"but it is {clock_dtype}. Cast it, such as with pl.col({clock!r}).cast(pl.Float64) or "
             f"pl.col({clock!r}).str.to_datetime()."
         )
-        raise ValueError(msg)
+        raise WrongTypeError(msg)
     # A number, as a spec's feature is: a boolean or a column of nulls too
     # (review round 4, PC7). Read through a non-strict cast, text came out
     # all null, an empty grid with nothing said, and a `Date` as its days.
@@ -582,7 +582,7 @@ def refresh_time(
             f"po.stream.refresh_time: value column {value!r} must be numeric, "
             f"but it is {value_dtype}. Cast it, such as with pl.col({value!r}).cast(pl.Float64)."
         )
-        raise ValueError(msg)
+        raise WrongTypeError(msg)
     rows = chunk_size if chunk_size is not None else _native.default_chunk_size()
     if rows < 1:
         msg = (
@@ -1036,7 +1036,7 @@ def with_windows(
             )
         clash = [k for k, v in given.items() if v is not None]
         if clash:
-            raise TypeError(
+            raise RefusedValueError(
                 f'{who}: like= takes the clock settings from spec "{like.get("name")}", but '
                 f"{_and_list(clash)} {'is' if len(clash) == 1 else 'are'} given too. Leave out "
                 f"{_and_list(clash)}, or like=."
