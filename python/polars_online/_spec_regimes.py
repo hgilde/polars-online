@@ -44,9 +44,7 @@ def hmm(
     Use it to ask which regime the stream is in: a transition matrix carries
     what the rows before have shown into each row's answer. Use
     :func:`ew_class` instead to ask which labeled class a row looks like, when
-    a column names each row's class. Pass ``means`` and ``covs`` where the
-    regimes differ in their covariance alone (*A regime in the covariance
-    alone* in Notes).
+    a column names each row's class.
 
     .. rubric:: Parameters
 
@@ -86,13 +84,16 @@ def hmm(
         no count (*The transition prior* in Notes). Both are refused beside
         ``tvtp_coef``, which learns no count.
     ``means``, ``covs``
-        The states given outright (``n_components x d``, and ``n_components``
-        matrices of ``d x d``, ``d`` the number of features, both flattened
-        row-major and finite, and given together), and then there is no warm-up.
-        Each ``covs`` block must be symmetric and positive definite, and the pair
-        enters at one row's weight. So under ``learn = True`` the stream washes the
-        given states out at the ordinary rate, and under ``learn = False`` they are
-        held exactly.
+        The states given outright: ``means`` is ``n_components x d`` and
+        ``covs`` is ``n_components`` matrices of ``d x d`` (``d`` the number
+        of features), both flattened row-major, finite, and given together.
+        With them there is no warm-up. Each ``covs`` block must be symmetric
+        and positive definite, and the pair enters at one row's weight. So
+        under ``learn = True`` the stream washes the given states out as it
+        would one row, within about one half-life, and under
+        ``learn = False`` they are held exactly. Pass them where the regimes
+        differ in their covariance alone (*A regime in the covariance alone*
+        in Notes).
     ``warm_rows``, ``init``, ``seed``
         Without given states, the first ``warm_rows`` learned rows (default
         1,000, or ``n_components`` where that is more, and at least
@@ -106,8 +107,8 @@ def hmm(
         regime, several times over (*Seeding* in Notes). With ``means`` and
         ``covs`` given nothing is seeded, and the three are refused.
     ``exog_tvtp``, ``tvtp_coef``
-        A column, named as ``weight`` names one rather than listed among the
-        features, whose value ``z_t`` drives the matrix instead: ``Pi_kl(t) =
+        A column named on its own, as ``weight`` is, not listed in
+        ``features``, whose value ``z_t`` drives the matrix instead: ``Pi_kl(t) =
         softmax_l(A_kl + B_kl z_t)`` from the fixed ``tvtp_coef = [A, B]``, each
         ``n_components x n_components`` flattened row-major. The two are given
         together. The count-based learning is off under it, and ``A`` and ``B`` are
@@ -145,13 +146,15 @@ def hmm(
     ``coef``
         The state means after the row is learned, one row per state, each
         one entry per feature (:func:`coef_index`). It reads zeros on the
-        rows held to seed the states from.
+        held rows before the last. The last held row reads the seeded means,
+        since the states are seeded when it is learned.
 
     Until the states are seeded, every field but ``weight_sum``,
     ``settled_frac``, ``withheld_reason`` and ``coef`` is null. A row whose
     state densities cannot be evaluated is counted in
     :meth:`polars_online.ModelBank.solve_failures` and leaves the filter where
-    it stands.
+    it stands. Each seeding run that stopped at its iteration cap is counted
+    there too.
 
     .. rubric:: Raises
 
@@ -191,15 +194,20 @@ def hmm(
         loglik = log sum_l p1_l f_l                    the row's surprise
         p_l   <- p1_l f_l / sum                        the filtered state
 
-    Each state's running sums then take the row at weight ``w * p_l``, ``w``
-    the row's weight. The responsibilities sum to ``w``, so ``weight_sum``
-    follows the same recursion as in every model. The transition matrix is
-    learned from the filtered joint of consecutive states. ``tau`` is a
-    Dirichlet pseudo-count per cell, which is what keeps a never-visited row
-    of ``Pi`` a distribution, and ``λ = 0.5 ** (Δclock / half_life)`` is the
-    row's decay (``lam ** Δclock`` under ``lam``). ``Δclock`` is the
-    clock's step since the last row the model did not skip, capped at
-    ``gap_cap``, or ``session_gap`` at a session change:
+    Each state's running sums then take the row at weight ``w * p_l``, ``w`` the
+    row's weight. The responsibilities sum to ``w``, so ``weight_sum`` follows
+    the same recursion as in every model. The transition matrix is learned from
+    the filtered joint of consecutive states. ``tau_kl`` is cell ``kl``'s
+    Dirichlet pseudo-count: ``transition_prior``, or
+    ``transition_prior * n_components * transition_kl`` with
+    ``transition`` given. So a never-visited row of ``Pi`` is still a
+    distribution, and a row with no counts and no pseudo-count
+    (``transition_prior = 0``) reads ``transition``, or a uniform row
+    without it.
+    ``λ = 0.5 ** (Δclock / half_life)`` is the row's decay (``lam ** Δclock``
+    under ``lam``). ``Δclock`` is the clock's step since the last row the
+    model did not skip, capped at ``gap_cap``, or
+    ``session_gap`` at a session change:
 
     .. code-block:: text
 
@@ -271,7 +279,7 @@ def hmm(
     suggests. The counts are the filtered joint of consecutive states, read
     through the matrix being learned. A matrix pulled toward the prior mean
     is less sticky, so the filter credits more switches, and the counts
-    follow it. It was measured on a sticky two-state chain, the states three
+    follow it. The pull was measured on a sticky two-state chain, the states three
     noise standard deviations apart and learned from their true values. At
     ``transition_prior = 10``, 4,000 rows left the matrix 0.088 from the
     truth (the 95th percentile over 50 streams), where the pseudo-counts
@@ -291,9 +299,10 @@ def hmm(
     **Seeding.** The held rows age as ``weight_sum`` does, so the states
     start at the weight ``weight_sum`` says, not at the rows' raw weights. The
     seeding places the states where the held rows are, so a regime absent
-    from them gets no state. A regime with a few percent of the held rows
-    adds less to the k-means inertia shared with another regime than given
-    a state of its own, so it shares one. Learning does not move a
+    from them gets no state. Merging a regime with a few percent of the
+    held rows into another regime's state adds less to the k-means inertia
+    than splitting a larger regime removes, so k-means gives the larger
+    regime the spare state and the small regime shares one. Learning does not move a
     misplaced state out. Measured on three regimes three noise standard
     deviations apart, each lasting 50 rows on average, over 50 seeds of 5,000
     rows: the worst share of rows in their true state was 0.95 from 1,000
@@ -304,9 +313,9 @@ def hmm(
     **Limits.** A single extreme row can be captured by one state, moving its
     mean far from the data. A state's running sums are weighted means, which
     a row of zero responsibility leaves as they are, so a state that stops
-    winning never forgets, and the mixture is left short one state. A larger
-    ``precision_prior``, given states (``learn = False``) or cleaning the
-    rows in the query before the bank are the mitigations.
+    winning never forgets, and the mixture is left short one state. To
+    guard against it, increase ``precision_prior``, give the states with
+    ``learn = False``, or clean the rows in the query before the bank.
 
     **A regime in the covariance alone.** A regime that lives only in the
     covariance needs the covariances to start from. The default seeding is k-means over
@@ -402,8 +411,8 @@ def rcov(
         under the other kinds. ``block_rows`` also sizes ``"preavg"``'s window.
     ``jitter``
         Observations averaged at each end. Default 2, and ``1`` is no
-        jitter. The values ``m = 1..4`` that Barndorff-Nielsen, Hansen, Lunde
-        and Shephard try move the estimate by under 0.5%.
+        jitter. ``jitter`` values from 1 to 4, which Barndorff-Nielsen,
+        Hansen, Lunde and Shephard try, move the estimate by under 0.5%.
         ``"kernel"`` only: the other kinds read no ends, and refuse it.
     ``theta``, ``psd``, ``preavg_rows``
         ``"preavg"``'s window scale (default 1.0, finite and above 0), form
@@ -457,8 +466,8 @@ def rcov(
     ``rcov_iq``
         Per feature, the realized quarticity ``(n / 3) * sum(x**4)`` on the
         sparse grid of ``iv_stride``, averaged over its offsets, with ``n``
-        the grid's returns: a proxy for the integrated quarticity, and
-        labeled one.
+        the grid's returns: a proxy for the integrated quarticity, and named
+        as one.
     ``rcov_psd_repaired``
         Whether a negative eigenvalue was clipped. Null where the repair
         could not run, an entry that is not finite or an eigendecomposition
@@ -466,7 +475,8 @@ def rcov(
 
     For a block too short to estimate from, ``rcov`` and ``rcorr`` are null,
     and the other fields say what the block held. ``min_weight`` (default 0)
-    withholds them the same way from a block with fewer returns. A row's
+    withholds them the same way from a block with fewer returns than
+    ``min_weight``. A row's
     weight is 0 or 1, so the block's ``weight_sum`` is its count of returns:
     a block of 40 returns under ``min_weight=50`` reports null ``rcov``
     and ``rcorr`` beside its ``rcov_n`` and the noise fields.

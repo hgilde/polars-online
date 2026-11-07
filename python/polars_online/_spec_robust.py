@@ -105,8 +105,8 @@ def huber(
         row's cut reads it: after the row's decay and before the row's own
         residual enters it. So the field is out-of-sample by construction,
         and can serve as a weight or as the scale of a robust score of the
-        residuals. Null until the target has an ``s`` above 0, and on a row
-        the model does not read because a feature is null or not usable.
+        residuals. Null until the target has an ``s`` above 0, and on a
+        skipped row.
         Under an ``embargo`` it is read where the row is predicted, as
         ``pred_<t>`` is. Default ``False``.
     ``huber_refit_rows``
@@ -115,8 +115,10 @@ def huber(
         batch fit does (*The refit of the first rows* in Notes). Default
         ``max(500, 10 * features)`` up to 100 features, and off above 100,
         where a refit of ``10 * features`` rows would run for seconds a
-        target. A count given is always taken, up to ``2 ** 20``, since the
-        rows are held from the first. ``0`` turns the refit off. A group shorter
+        target. A count given is taken at any number of features. It is at
+        most ``2 ** 20``, since each target's buffer is allocated at its full
+        size at its first learned row. ``0`` turns the
+        refit off. A group shorter
         than the count never refits, and holds its rows to the end. Off by
         default, and refused when given, beside ``ridge_scale = "sum"``,
         whose prior has aged with every row before the first, and beside an
@@ -130,7 +132,8 @@ def huber(
         The group that would cross the bound, and every new group after it,
         gives its refit up and keeps its one-pass fit: a readiness warning
         says so once, and ``summary()``'s ``refit_given_up`` counts the
-        targets of each instance (*The refit's memory* in Notes).
+        targets of each instance, the part of the model that fits one
+        half-life (*The refit's memory* in Notes).
 
     ``min_weight`` counts the rows the target was present on, at their
     weights, decayed. The reweighted sum, which an outlier lowers, is not
@@ -152,7 +155,8 @@ def huber(
 
     ``pred_<t>``, ``resid_<t>``
         Per target: the prediction, and ``y - pred`` where the target is not
-        null. Under ``feature_sets``, one pair per set, ``pred_<t>__<set>``.
+        null. Under two or more ``feature_sets``, one pair per set,
+        ``pred_<t>__<set>``.
     ``weight_sum``
         The weight the model has accumulated before the row and before the
         row's own decay.
@@ -171,7 +175,8 @@ def huber(
         On ``coef``'s rows, each coefficient's data share, laid out like
         ``coef``: how much of the fit after the row the data, as the loss
         weighs the rows, determined rather than the ridge
-        (:mod:`polars_online.spec`). Null for a feature outside the set.
+        (:mod:`polars_online.spec`). Under ``feature_sets``, null for a
+        feature outside the set.
 
     plus the fields of the diagnostics switched on, as
     :mod:`polars_online.spec` describes them.
@@ -289,8 +294,8 @@ def huber(
     up to 0.4% of the target's spread where measured.
 
     With ``huber_scale = "rms"`` the scale is the exponentially weighted root
-    mean square of the residuals about 0, in which every row counts at full
-    weight. One wild row sets it, and a fit's first residuals, the target's
+    mean square of the residuals about 0, in which every row counts by its
+    size. One wild row sets it, and a fit's first residuals, the target's
     whole level while the intercept is still near 0, widen it for as long as the
     decay keeps them.
 
@@ -415,17 +420,20 @@ def huber(
     **The refit's memory.** A target's rows are held until its refit:
     ``(features + 10) * 8`` bytes a learned row under the MAD
     (``(features + 4) * 8`` under ``"rms"``). A run of rows that only aged
-    it (its value null or its weight 0) takes 32 bytes, one run for such
-    rows in a row at one clock step. Past 4 runs a learned row of the count, as
-    on a target present on fewer than about one row in five under an
+    it (its value null or its weight 0) takes 32 bytes, and consecutive
+    such rows at the same clock step are one run. Once its runs number more
+    than 4 for each row of the count, as on a target present on fewer than
+    about one row in five under an
     irregular clock, the target gives its refit up and keeps its one-pass
     fit. The refit takes 0.06 to 7.2 ms once, for 1 to 50 features and 200
     to 1,000 rows (an Apple M4 Pro under other load, best of 9). Under
     ``refit_budget``, each new group reserves ``(features + 26) * 8`` bytes
-    a target of each model instance under the MAD (``+ 20`` under
-    ``"rms"``) for each row of the count (the row, its residual and its 4
-    runs). A half-life grid reserves once per value. A group's reservation is
-    not handed back when its refit frees its buffer, so once the bound is
+    a target of each model instance for each row of the count: under the
+    MAD the row, its residual, its node in the tree the MAD is read from,
+    and its 4 runs, and under ``"rms"``,
+    ``(features + 20) * 8``, the row and its 4 runs. A half-life grid
+    reserves once per value. A group's reservation is not handed back when
+    its refit frees its buffer, so once the bound is
     reached no later group refits. At 20 features and 500 rows a target
     reserves 184 KB, and 320 MiB refits the first 1,823 targets.
 
@@ -772,11 +780,13 @@ def quantile(
     alone.
 
     **The refit's memory.** A target's rows are held until its refit, at
-    ``(features + 10) * 8`` bytes a learned row. Its residual is kept for
-    the scale, since a quantile fit's band is drawn in the MAD, read from
-    them exactly while the refit waits. A run of rows that only aged the
-    target (its value null or its weight 0) takes 32 bytes. Past 4 runs a learned row of
-    the count, as on a target present on fewer than about one row in five
+    ``(features + 10) * 8`` bytes a learned row. Each row's residual is
+    kept beside it for the scale: a quantile fit's band is drawn in the
+    MAD, which is read exactly from the held residuals while the refit
+    waits. A run of rows that only aged the target (its value null or its
+    weight 0) takes 32 bytes, and consecutive such rows at the same clock
+    step are one run. Once its runs number more than 4 for each row of the
+    count, as on a target present on fewer than about one row in five
     under an irregular clock, the target gives its refit up and keeps its
     one-pass fit. A buffer whose rows, counted one each and decayed, are
     still fewer than the warm-up's is left as the stream built it. The refit

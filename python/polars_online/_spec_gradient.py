@@ -91,12 +91,14 @@ def sgd(
         The learned rows after which each target's first rows are refit to
         their converged Huber fit, once (*The refit of the first rows* in
         Notes). Default ``max(500, 10 * features)`` under ``loss = "huber"``
-        up to 100 features, and off above 100. A count given is always
-        taken, up to ``2 ** 20``, since the rows are held from each target's
-        first row on. ``0`` turns the refit off, leaving the one-pass fit of
-        the steps. The rows' memory, and when a target gives its refit up,
-        are in *The refit's memory* in Notes. Off by default, and refused
-        when given, beside an infinite ``huber_delta``, the squared loss.
+        up to 100 features, and off above 100. A count above 0 is taken at
+        any number of features. It is at most ``2 ** 20``, since each
+        target's buffer is allocated at its full size at its first learned
+        row. ``0`` turns the refit off, leaving
+        the one-pass fit of the steps. The rows' memory, and when a target
+        gives its refit up, are in *The refit's memory* in Notes. Beside an
+        infinite ``huber_delta``, the squared loss, the refit is off by
+        default and a count above 0 is refused.
         ``loss = "huber"`` only, and refused beside another loss.
     ``refit_budget``
         A bound in MiB on the refit buffers of all the spec's groups
@@ -115,9 +117,19 @@ def sgd(
         wide holds the fit wherever it first lands inside it (*The tube* in
         Notes).
     ``learning_rate``, ``schedule``, ``power``
-        The rate and its schedule. The rate's default is 0.01, which is
-        scikit-learn's ``SGDRegressor`` default too, and it is above 0. The
-        schedule is one of these:
+        The rate and its schedule. The rate is per gradient coordinate: a
+        step is ``lr * g_i``, so ``lr`` is in the coefficient's units over
+        the gradient's, in standardized units under ``standardize``. That
+        is one over the feature squared for the squared, Huber, Poisson and
+        logistic losses (whose gradient is a residual, a count's residual or
+        a probability's), and the target over the
+        feature squared for the sign-valued quantile and epsilon-insensitive
+        ones. Under ``"adagrad"``, which divides the gradient by the root of
+        its summed squares, ``lr`` is in the coefficient's units. The rate's
+        default is 0.01, the same starting rate as
+        scikit-learn's ``SGDRegressor`` (``eta0``), and it must be finite and
+        above 0.
+        The schedule is one of these:
 
         .. list-table::
            :header-rows: 1
@@ -127,20 +139,15 @@ def sgd(
            * - ``"constant"`` (the default)
              - ``lr``
            * - ``"inv_scaling"``
-             - ``lr / (1 + λ * weight_sum) ** power``, ``λ`` the row's decay
-               and ``power`` at least 0, by default 0.5
+             - ``lr / (1 + lam * weight_sum) ** power``, ``lam`` the row's
+               decay factor and ``power`` at least 0, by default 0.5
            * - ``"adagrad"``
-             - ``lr / (sqrt(G_i) + eps)``, ``G_i`` the coefficient's sum of
-               squared gradients and ``eps`` ``1e-8`` times ``s_y`` under
-               the squared and Huber losses and ``1e-8`` under the others.
+             - ``lr / (sqrt(G_i) + 1e-8 * s_y)`` under the squared and
+               Huber losses and ``lr / (sqrt(G_i) + 1e-8)`` under the
+               others, ``G_i`` the coefficient's sum of squared gradients.
                The step is 0 where the denominator is.
 
-        The rate is per gradient coordinate: a step is ``lr * g_i``, so
-        ``lr`` is in the coefficient's units over the gradient's, in
-        standardized units under ``standardize``. That is one over the
-        feature squared for the squared, Huber and Poisson losses and the
-        logistic loss's probability, and the target over the feature squared
-        for the sign-valued quantile and epsilon-insensitive ones. Past a
+        Past a
         stability bound a constant rate diverges, and the predictions are
         withheld (*A rate past its stability bound* in Notes). The
         coefficients themselves do not decay (*Decay and the rate* in
@@ -174,8 +181,9 @@ def sgd(
         weighted (EW) mean and standard deviation, and ``s_i = 1`` for a
         feature with no spread yet. Without an intercept the row is scaled
         by each column's root mean square and not centered,
-        ``z_i = x_i / s_i``, as for :func:`ewridge`. A change in the moments
-        moves no prediction.
+        ``z_i = x_i / s_i``, as for :func:`ewridge`. Once the scaler has
+        warmed up (*Standardizing* in Notes), a change in the moments moves
+        no prediction.
     ``coef_min``, ``coef_max``, ``coef_sum``
         Constraints on the slopes. The intercept is always free. Default: no
         constraint. ``coef_min`` and ``coef_max`` bound each slope (one
@@ -224,7 +232,8 @@ def sgd(
         Why the row's predictions were withheld, null where they were not:
         a reason of the shared gates (:mod:`polars_online.spec`), such as
         ``below_min_weight`` on the first rows under the default
-        ``min_weight``, or ``unstable_rate`` where the learning rate is past
+        ``min_weight``, or this model's own ``unstable_rate``, where the
+        learning rate is past
         its stability bound.
     ``coef``
         Per target, the intercept then one entry per feature, in the caller's
@@ -403,15 +412,15 @@ def sgd(
     Beyond the cut the Huber gradient is clipped, not zero, so a cut those
     residuals widen still lets every row move the fit, and the median scale
     forgets them once the fit has the level. The intercept takes the level
-    from the first row (*The target's level*, below), so the root mean
+    from the first row (*The target's level* in Notes), so the root mean
     square no longer keeps it, but the outliers still inflate it. Take
     ``y = 1000 + 2x + 0.5ε`` with +50 on 5% of the rows, all with ``x > 0``,
     and no decay. The median slope over five seeds is 3.751 under the
-    squared loss, 2.557 under ``"rms"`` and 2.013 under ``"mad"``, with or
-    without the refit. Over 40 seeds of 20,000 rows at 5%, every stream
-    stayed more than 0.05 from statsmodels' converged ``RLM`` under
-    ``"rms"``. 36 of the 40 stayed more than 0.25 from it (a median gap of
-    0.60), with the refit or without it.
+    squared loss, 2.557 under ``"rms"`` with the default refit, and 2.013
+    under ``"mad"`` with or without it. Over 40 seeds of 20,000 rows at 5%,
+    every stream stayed more than 0.05 from statsmodels' converged ``RLM``
+    under ``"rms"``. With the default refit, 36 of the 40 stayed more than
+    0.25 from it (a median gap of 0.60).
 
     Inside the tube the gradient is zero. On a target at 1,000 with a
     spread of 2, the first residuals put the residual's standard deviation
@@ -457,7 +466,8 @@ def sgd(
     ``l2`` acts as the steps apply it, once a row. A ridge of
     ``1e-6 * s_i^2`` sits on each slope's diagonal of the mean-form system
     too, ``s_i`` the feature's scale under ``standardize`` and 1 without.
-    That is 1e-6 on the standardized slopes, as ``huber``'s is, so a
+    Under ``standardize`` that is 1e-6 on the standardized slopes, as
+    ``huber``'s is, so a
     feature's units do not move the fit. The intercept is penalized by
     neither. ``s`` is then rebuilt from the fit's residuals.
 
@@ -472,7 +482,8 @@ def sgd(
 
     With the refit, over 2,000 rows, 2 of the 40 streams at 10% were more
     than 0.05 from ``RLM``, the worst by 0.075. At 20%, 8 of the 40 were,
-    none more than 0.25. With 200 rows of refit, those counts were 16 and 4.
+    none more than 0.25. With 200 rows of refit at 20%, 16 were more than
+    0.05 off and 4 more than 0.25.
     Over 20,000 rows at 20%, one pass leaves 31 of 40 streams more than 0.05
     off, the worst by 1.6, and the refit 23, none more than 0.25. A constant
     learning rate's own wander is about 0.03 at every share. The refit
@@ -490,12 +501,12 @@ def sgd(
     and keeps its one-pass fit.
 
     Under ``refit_budget``, each new group reserves ``(features + 26) * 8``
-    bytes for each row of the count, a target at a time, in each instance
-    of the model (the part of the model that fits one half-life: a
-    half-life grid reserves once per value). Under ``"rms"`` it is
+    bytes for each target and each row of the count, in each instance of
+    the model. An instance is the part of the model that fits one
+    half-life, so a half-life grid reserves once per value. Under ``"rms"`` it is
     ``(features + 20) * 8``. The group that would cross the bound, and every
     new group after it, keeps its one-pass fit, with a readiness warning and
-    ``summary()``'s ``refit_given_up``.
+    ``bank.summary()``'s ``refit_given_up``.
 
     **The target's level.** The coefficients start at 0, so the first
     residuals are the target's level. Left to the steps, the level moves
@@ -503,8 +514,8 @@ def sgd(
     ``"inv_scaling"`` at a rate of 2 with power 1, on two features and 50
     seeds, the worst stream was 2.49 off least squares after 8,000 rows at a
     level of 1,000, against 0.0096 at a level of 0. A level of a million,
-    which the clip lets the steps learn at only the rate times ``1e3`` a
-    row, was still 980,000 off. So under an identity link (every loss but
+    which the clip lets the steps learn at only the rate times
+    ``1e3 * s_y`` a row, was still 980,000 off. So under an identity link (every loss but
     ``poisson`` and ``logistic``) with an intercept, the intercept takes the
     running mean's step in place of its gradient's while that is the
     larger:
@@ -520,12 +531,13 @@ def sgd(
     by the coefficients, so there the level's step is taken over the warm-up
     alone. ``d`` is the loss's gradient (the residual, clipped at the Huber
     cut), ``n`` Kish's count of the rows, ``W ** 2 / sum(w ** 2)``, and 22
-    the count the scaler warms up over (*Standardizing*, below). The
+    the count the scaler warms up over (*Standardizing* in Notes). The
     sign-valued losses' gradient is not in the target's units, so they take
     the residual's running mean for the warm-up alone. On the target's first
     learned row that is its whole residual, and nothing else moves.
     AdaGrad's sum learns the intercept's gradient either way. With the
-    running mean's step, a level costs rounding: 0.0077 at either level.
+    running mean's step, a level of 1,000 adds nothing to the error: 0.0077
+    at either level.
     The quantile loss at a level of 3 is 0.043 off with it, against 0.21
     with the gradient's step alone. A target with no level loses nothing
     measurable: 200-row groups of a zero-mean target, 20 features and a
@@ -557,8 +569,8 @@ def sgd(
     is flat at, with no ``l2``) says nothing of the rate and is left out. A
     gain of 2 leaves its row's residual where it was. So one wide row (a
     feature far outside its spread, a weight far above the rest) moves the
-    verdict by a bounded amount, and not at all while the mean is below
-    1/2. Entered whole, one row at 100 times a feature's spread held a
+    verdict by a bounded amount, and never toward withholding while the
+    mean is below 1/2. Entered whole, one row at 100 times a feature's spread held a
     stable rate's output for about 1,000 rows. A rate whose every gain is
     high still passes the bound: the mean rises fourfold a row to meet it.
     In exchange, a stream whose gains average below 1/2 and pass 2 on a few
@@ -580,12 +592,12 @@ def sgd(
     of its rows and one at 1.2 times on 99%. At five and at twenty features,
     none at 0.9 was withheld and all at 1.1. The fit's own memory, about
     ``k / mean(q)`` rows, is a handful of rows near the bound, too few to
-    estimate from. As the gate's memory it withheld 6-11% of a stable
+    estimate from. As the check's memory it withheld 6-11% of a stable
     rate's rows and served a third to a half of a diverging one's. A rate
     increased past the bound after 2,000 stable rows was withheld from 68 to
     201 rows later.
 
-    Under ``squared`` and ``huber`` a calm gate rests. Once a target's sums
+    Under ``squared`` and ``huber`` a calm stability check rests. Once a target's sums
     hold two half-lives of rows, and the gains' mean square is at most their
     mean (half the bound or less), it takes no gains. So no row forms
     ``|z|^2`` for it, and its verdict stays stable. It probes every 8th
@@ -595,9 +607,9 @@ def sgd(
     increased past the bound increases its gains, so a probe finds it within
     a few rows. On five standardized features over 10 streams, a rate
     increased from half the bound to 1.15 times it was first withheld within
-    a row of where an awake gate withheld it. One from 0.3 to 1.5 times was
-    withheld within 27 rows, 65 to 99 rows after the change, the awake
-    gate's range. A rate near the bound is never calm, and its gate never
+    a row of where an awake check withheld it. One from 0.3 to 1.5 times
+    was withheld within 27 rows, 65 to 99 rows after the change, the awake
+    check's range. A rate near the bound is never calm, and its check never
     rests. ``"inv_scaling"`` from a rate past the bound is withheld on its
     first rows and released as the rate falls, once the large gains of those
     rows have faded from the sums. ``"adagrad"`` moves a coefficient at most
@@ -609,14 +621,14 @@ def sgd(
     moves to by 1,000 is 100,000 unit-weight rows away. Under
     ``"inv_scaling"`` at a rate of 0.5, without decay, it is about 1,000,000
     rows away. The level it starts at is the running mean of its first rows
-    (*The target's level*, above). AdaGrad's sum of squared gradients and
+    (*The target's level* in Notes). AdaGrad's sum of squared gradients and
     ``weight_sum`` both decay on the model's clock, so an annealed or
     adapted rate opens up again after a long gap instead of staying frozen.
     The coefficients themselves do not decay: every row's step moves them,
     so under ``"constant"`` their memory is in rows, about
     ``1 / (lr * E[z**2])`` of them, whatever the clock between rows.
-    ``half_life`` reaches ``weight_sum`` and ``min_weight``, the scaler and
-    AdaGrad's sum, not the coefficients.
+    ``half_life`` reaches ``weight_sum`` and ``min_weight``, the scaler, the
+    scales ``s`` and ``s_y``, and AdaGrad's sum, not the coefficients.
 
     **The tube.** In units of the noise, on a target a fit predicts to R²,
     the tube is ``eps / sqrt(1 - R²)`` noise standard deviations wide: at

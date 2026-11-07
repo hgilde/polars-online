@@ -87,15 +87,17 @@ def kmeans(
         reaches ``min_weight``. *Seeding* in Notes gives its timing and the
         rules at its edges.
     ``update_every_rows``
-        How many learned rows the model gathers for each center before it
-        moves the centers by them, at least 1. Default 1, plain sequential
-        k-means. A larger value is a mini-batch k-means.
+        How many learned rows the model gathers, each into its nearest
+        center's batch, before it moves the centers by them, at least 1.
+        Default 1, plain sequential k-means. Set it above 1 for mini-batch
+        k-means: the centers then move once every that many rows.
     ``split_merge``, ``split_merge_every_rows``
         Move a center to a cluster that appears after seeding. Every
         ``split_merge_every_rows`` learned rows (default 100, at least 1),
         the two closest centers are merged where their distance is under
         ``split_merge`` times the sum of their radii and enough far rows
-        have gathered. The freed center is placed at the far rows' mean.
+        have gathered. The freed center is placed at the mean of the far
+        rows of the cluster that has gathered the most of them.
         ``split_merge`` is finite and at least 0, default 0.5. ``0`` turns
         off the merge and the far rows both, so every row is learned. *Far
         rows, split and merge* in Notes gives the rule.
@@ -148,9 +150,11 @@ def kmeans(
         before the row, null where nothing decays.
     ``withheld_reason``
         Why the row's fields were withheld, null where they were not:
+        ``below_min_settled_frac`` first of all, while ``settled_frac`` is
+        below ``min_settled_frac`` where that is set, then
         ``below_min_weight`` on the first rows under the default
-        ``min_weight``, which takes precedence, then ``below_warm_rows`` on
-        the rest of the rows held to seed the centers from.
+        ``min_weight``, then ``below_warm_rows`` on the rest of the rows held
+        to seed the centers from.
     ``coef``
         The centers: ``n_clusters`` rows of ``len(features)``, flattened
         cluster-major. :func:`coef_index` lays it out, with ``cluster``
@@ -186,13 +190,15 @@ def kmeans(
 
     .. code-block:: text
 
-        j*   = argmin_j |x - c_j|^2          in units of each feature's EW standard deviation
+        j*   = argmin_j |x - c_j|^2          in the units of dist
         n'_i = λ * n_i                                for every center i
         n'_j = λ * n_j + w
         c'_j = (λ * n_j * c_j + w * x) / n'_j         for the nearest j
 
-    A far row (*Far rows, split and merge* in Notes) moves neither ``n_j``
-    nor ``c_j``.
+    The distance is in units of each feature's EW standard deviation under
+    ``standardize``, floored by ``scale_floor``, and in the features' own
+    units without it. A far row (*Far rows, split and merge* in Notes)
+    moves neither ``n_j`` nor ``c_j``.
 
     Alongside each center the model keeps its exponentially weighted squared
     radius ``r2_j``, the mean of ``|x - c_j|^2`` over the rows assigned
@@ -256,7 +262,8 @@ def kmeans(
     least three. If their distance is under ``split_merge`` times the sum of
     their radii, and enough far rows have gathered somewhere (at least
     three, and five percent of the weight learned since the last check),
-    they are merged. The freed center is placed at the far rows' mean. So a
+    they are merged. The freed center is placed at the mean of the far
+    rows of the cluster that has gathered the most of them. So a
     cluster that appears after seeding gets a center without a reset. Far
     rows still count in the radius at each check as if they sat at the cut,
     so a cut the data has outgrown widens until the rows are learned again.
@@ -326,7 +333,9 @@ def micro(
 
     The model keeps a bounded set of small summaries (DenStream's
     micro-clusters), each a decayed weight, center and radius, and reads
-    clusters off them as the chains of established summaries that touch.
+    clusters off them as the chains of established summaries (those that
+    have reached ``beta_mu``) whose centers lie within a link distance of
+    each other.
     The stream parameters every builder takes, such as ``clock``,
     ``half_life``, ``gap_cap``, ``min_weight`` and ``group``, are in
     :mod:`polars_online.spec`. This model takes ``features`` and no
@@ -431,9 +440,10 @@ def micro(
         How far the model had come toward its steady state under decay
         before the row, null where nothing decays.
     ``withheld_reason``
-        Why the row's fields were withheld: ``below_min_weight`` while
-        ``weight_sum`` is below ``min_weight``, the model's only gate, and
-        null after. A row before any summary is established is not withheld:
+        Why the row's fields were withheld: ``below_min_settled_frac`` while
+        ``settled_frac`` is below ``min_settled_frac``, where that is set,
+        then ``below_min_weight`` while ``weight_sum`` is below
+        ``min_weight``, and null after. A row before any summary is established is not withheld:
         its ``cluster`` and ``dist`` are null and ``outlier`` is true.
     ``coef``
         The established summaries, one ``[id, label, n, radius, c_1, ...,
@@ -560,7 +570,8 @@ def micro(
     to follow the paper.
 
     **The link.** Left out, ``macro_link`` derives ``L`` at each prune
-    as 1.5 times the 90th percentile of the summaries' nearest-neighbor
+    as 1.5 times the 90th percentile of the established summaries'
+    nearest-neighbor
     distance, never below ``2 * eps * sqrt(p)``. So a chain along a shape holds
     without a constant that fragments one shape and bridges another.
 

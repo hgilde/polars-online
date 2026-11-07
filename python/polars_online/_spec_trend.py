@@ -89,8 +89,8 @@ def holt(
         a reason of the shared gates (:mod:`polars_online.spec`), such as
         ``below_min_weight`` on the first row under the default
         ``min_weight``. A target's first observation has no prediction,
-        since it sets the level: with ``min_weight=0`` both fields read null
-        there.
+        since it sets the level: with ``min_weight=0``, ``pred_<t>`` and
+        ``withheld_reason`` both read null there.
     ``coef``
         ``[level, trend]`` per target after the row is learned, the two
         numbers a prediction reads, which :func:`coef_index` names. Null
@@ -115,7 +115,8 @@ def holt(
     stream with no gaps. ``w`` is the row's weight, ``e = y - pred`` the
     prediction's error, ``l`` and ``b`` the level and the trend, and ``W``,
     ``V`` the weight the level and the trend have gathered. Each decays on
-    its own half-life: ``λ_l = 0.5 ** (s / half_life)``, the spec's own, and
+    its own half-life: ``λ_l = 0.5 ** (s / half_life)`` (``lam ** s`` under
+    ``lam``), the spec's own, and
     ``λ_b`` likewise at ``trend_half_life``. ``S0``, ``a`` and ``Q`` are the
     line fit's weight, mean age and spread of ages (*The line fit* in
     Notes):
@@ -134,6 +135,9 @@ def holt(
         l' = pred + g * e      g = g_f under half_life = inf, else max(g_f, g_t)
         b' = b + h * e         h = h_f under trend_half_life = inf or at s = 0,
                                else max(h_f, h_t)
+
+    Under ``trend=False`` the line fit is not used: ``g = g_t`` at every
+    half-life, ``inf`` included, and ``b = 0``.
 
     A target's first observation sets ``l = y``, ``W = S0 = w`` and
     ``a = Q = 0``, and predicts nothing. The trend starts at 0.
@@ -202,7 +206,7 @@ def holt(
     fit, gains of ``1/n`` on both level and trend pinned the trend to the
     first observation, and the level carried that observation's error times
     ``ln n``: 11 off a flat series after 40,000 rows without decay, at a
-    noise of 0.5.
+    noise of 0.5, the worst of 50 seeds.
 
     **Rows at one clock, and rows that learn nothing.** A row at the last
     row's clock is a second observation the level takes in. The textbook

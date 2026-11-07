@@ -136,8 +136,8 @@ def ew_class(
     ``withheld_reason``
         Why the row's fields were withheld, null where they were not:
         ``below_min_weight`` until ``weight_sum`` reaches ``min_weight``.
-        Before any row has carried a class, ``class`` and the reason are both
-        null.
+        Before any row has carried a class, ``class`` is null, and so is the
+        reason once ``weight_sum`` reaches ``min_weight``.
     ``coef``
         The class means after the row is learned, one per class in
         ``classes`` order, each one entry
@@ -157,8 +157,9 @@ def ew_class(
       ``window_size`` not finite or not above 0;
     - a ``label`` also listed as a feature;
     - a ``closed`` other than ``"right"`` or ``"both"``, a ``snapshot_every``
-      below 0 or not finite, a ``max_rows_between_snapshots`` of 0, and a
-      ``window_budget`` not above 0;
+      below 0 or not finite, a ``max_rows_between_snapshots`` below 1, and a
+      ``window_budget`` that is not one key, ``"thin"`` or ``"refuse"``, or
+      whose MiB is not above 0;
     - ``closed="both"``, ``snapshot_every``, ``max_rows_between_snapshots``
       or ``window_budget`` without ``window_size``.
 

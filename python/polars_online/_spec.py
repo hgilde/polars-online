@@ -2305,10 +2305,11 @@ def lasso(
         The half-life of the exponentially weighted squared out-of-sample
         error each grid point is ranked by, in clock units, above 0. Default:
         the model's half-life, so the choice forgets at the pace the fit
-        does. ``inf`` ranks on the plain mean over every row so far.
+        does. ``inf`` ranks on the weighted mean of every error counted so
+        far (inside the hard window under one).
         ``penalty_selected_<t>`` is reported as it stood before the row: the
-        grid point this row was predicted with, not the one its own error
-        then chose. Before the first row a target's errors count on (*The
+        grid point the errors of the rows before it chose, not the one its
+        own error then chose. Before the first row a target's errors count on (*The
         selection* in Notes), ``penalty_selected_<t>`` is the last grid
         point, and a tie between grid points keeps the first in
         ``penalties`` order.
@@ -2337,7 +2338,8 @@ def lasso(
     ``max_iter``, ``tol``
         Within a solve, the descent stops after ``max_iter`` sweeps (default
         100, at least 1), or after a sweep that moved no coefficient ``b_i``
-        of *The update* by ``tol * s_y`` or more, or moved none at all.
+        of *The update* by ``tol`` times the larger of ``s_y`` and the
+        largest ``|c_i|``, or moved none at all.
         ``tol`` defaults to ``1e-10``, and is finite and above 0. ``s_y`` is
         the target's spread over the rows the fit reads: its standard
         deviation, or its root mean square without an intercept, where the
@@ -2374,8 +2376,9 @@ def lasso(
     ``withheld_reason``
         Why the row's predictions were withheld, null where they were not.
     ``coef``
-        Per (target, grid point) slot, the intercept then one entry
-        per feature (:func:`coef_index`).
+        Per target and grid point, the intercept (unless
+        ``fit_intercept=False``) then one entry per feature
+        (:func:`coef_index`).
 
     plus the fields of the diagnostics switched on, as
     :mod:`polars_online.spec` describes them. ``weight_sum``, ``coef`` and
@@ -2394,11 +2397,12 @@ def lasso(
     - a ``select_half_life`` not above 0, and a ``tol`` not finite or not
       above 0;
     - a ``max_iter`` below 1, a ``solve_every`` below 0, and a
-      ``max_rows_between_solves`` or ``max_rows_between_snapshots`` of 0;
+      ``max_rows_between_solves`` or ``max_rows_between_snapshots`` below 1;
     - a ``target_gaps`` other than ``"own_rows"`` or ``"pairwise"``;
     - a ``window_size`` not finite or not above 0; a ``closed`` of
       ``"left"`` or ``"none"``; a ``snapshot_every`` below 0 or not finite;
-      a ``window_budget`` not above 0; and
+      a ``window_budget`` that is not one key, ``"thin"`` or ``"refuse"``,
+      or whose MiB is not above 0; and
       ``closed="both"``, ``snapshot_every``, ``max_rows_between_snapshots``
       or ``window_budget`` without ``window_size``.
 
@@ -2567,15 +2571,18 @@ def kalman(
         with the others held still, and a direction of correlated features
         is learned more slowly (*Correlated features* in Notes). A scalar,
         or one value per coefficient with the intercept first, each above 0.
-        ``inf`` holds that coefficient fixed. Required unless ``q`` is
+        ``inf`` gives that coefficient no drift: the filter takes it as
+        constant and goes on learning it from every row. Required unless
+        ``q`` is
         given, and refused beside it. Under ``standardize`` the drift is per
         standard deviation of each feature as the moments stand: a slope's
         random walk in the caller's units has a variance of
         ``R_j * (ln 2 * D / h_i) ** 2 / s_i ** 2`` per observation, ``s_i``
-        the feature's standard deviation. The diagnostics' default memory is
-        the shortest finite entry. The CUSUM under ``emit_breaks`` reads the
-        intercept's entry as the memory at which a level in the target is
-        absorbed, and ``inf`` there leaves its plain sum.
+        the feature's standard deviation. The diagnostics read the fit's
+        memory as the shortest finite entry (the model's ``half_life``
+        where every entry is ``inf``). The CUSUM under ``emit_breaks``
+        reads the intercept's entry as the memory at which a level in the
+        target is absorbed, and ``inf`` there leaves the CUSUM a plain sum.
     ``q``
         The process noise given outright, ``q_i`` per coefficient, in place
         of the derivation from ``coef_half_life``, added as ``q_i * D ** 2``
@@ -2595,9 +2602,9 @@ def kalman(
         variance of the target about its prediction, in the target's squared
         units, finite and above 0. Default none, which estimates it as the
         exponentially weighted (EW) variance of the target's out-of-sample
-        residuals. It scales the readouts. Under ``coef_half_life`` it leaves
-        the gain as it is, and under ``q`` it is the ``R_j`` that ``q`` is
-        measured against. ``P`` is then absolute, and starts at
+        residuals. It scales ``se_coef``. Under ``coef_half_life`` the gain
+        does not depend on its value, and under ``q`` it is the ``R_j`` that
+        ``q`` is measured against. ``P`` is then absolute, and starts at
         ``p0 * obs_var`` on the intercept, and on each slope too where
         ``standardize=False``. Under ``standardize`` each slope's prior waits
         for its feature's scale (*The prior* in Notes).
@@ -2640,9 +2647,9 @@ def kalman(
         scaled by their root mean square and not centered, as for
         :func:`ewridge`. The reported coefficients are in the original units
         either way, and the moments' changes move no prediction
-        (*Standardizing* in Notes). With ``standardize = False``, ``q = 0``
-        and a fixed ``obs_var`` the filter is exactly Bayesian linear
-        regression. For a coefficient per current standard deviation, which
+        (*Standardizing* in Notes). With ``standardize=False``, ``q`` all
+        zeros, no ``revert_half_life`` and a fixed ``obs_var``, the filter is
+        exactly Bayesian linear regression. For a coefficient per current standard deviation, which
         moves with the scale, z-score the column in the query before the bank
         and give it with ``standardize = False``. `Features in units of their
         spread
@@ -2674,8 +2681,8 @@ def kalman(
         ``min_weight``. It reads ``below_warm_rows`` while no coefficient of
         the target is sized, as without an intercept before a feature's
         scale is usable. A target's first row has no prediction, since the model has
-        learned nothing to predict from: with ``min_weight=0`` both fields
-        read null there.
+        learned nothing to predict from: with ``min_weight=0``, ``pred_<t>``
+        and ``withheld_reason`` both read null there.
     ``coef``
         Per target, the intercept then one entry per feature, in the
         original units, after the row is learned (:func:`coef_index`).
@@ -2722,8 +2729,10 @@ def kalman(
     noise ``R_j``, so the covariance itself is ``R_j * P_j``. ``Q`` is the
     process noise in the same units, ``(ln 2 / h_i) ** 2`` from
     ``coef_half_life`` or ``q_i / R_j`` from ``q``. ``R_j`` is the target's
-    EW residual variance, or ``obs_var``. A reverting coefficient's drift
-    over a gap ``D`` is ``q_i * r_i(D) ** 2`` in place of ``q_i * D ** 2``,
+    EW residual variance, or ``obs_var``. Under ``obs_var`` the filter runs
+    on the covariance itself: ``P_j`` and ``Q`` are ``R_j`` times the above,
+    and ``v`` is ``z' P_j z + R_j / w``. A reverting coefficient's drift
+    over a gap ``D`` is ``Q_i * r_i(D) ** 2`` in place of ``Q_i * D ** 2``,
     with ``r_i(D) = (1 - 2 ** (-D / kappa_i)) / theta_i`` and
     ``theta_i = ln 2 / kappa_i``.
 
@@ -2784,8 +2793,9 @@ def kalman(
     never reads the noise estimate. The model's noise is one constant per
     target. The prior (``p0`` times it) and the drift
     (``(ln 2 * D / h) ** 2`` times it) are multiples of it, so it cancels
-    from the gain. The estimate scales only what is read out: ``se_coef``,
-    ``error_inflation`` and the readiness gates. Under ``q`` the estimate
+    from the gain. The estimate scales only ``se_coef``: ``error_inflation``
+    and its gate read ``P`` in units of the noise, and wait only until the
+    target has a residual variance. Under ``q`` the estimate
     reaches the gain only through ``q_i / R_j``. A filter with the estimate
     inside the gain weighs each row by the inverse of the noise as it stood
     before the row, so a burst of large residuals inflates it and the rows
@@ -2860,8 +2870,9 @@ def kalman(
     with ``m^a``, ``s^a`` the anchor and ``m``, ``s`` the moments after the
     row. So a change in the moments moves no prediction, no predictive
     variance and no coefficient in the original units, from the first row.
-    No row's raw reading of a feature reaches the state, and features
-    scaled by a power of two predict the same to the bit. A filter read
+    A feature reaches the filter only through its standardized value
+    ``z``, so features scaled by a power of two predict the same to the
+    bit. A filter read
     through the moments as they stand, the alternative, lets a finite
     half-life's own wander in the moments move every prediction. It was
     measured on ``y = 2 x + e`` with one feature ``x ~ N(0, 1)``, R²
@@ -2875,12 +2886,12 @@ def kalman(
     more than 1024 of the anchor's scale) is not followed, and the state is
     read in the new coordinates.
 
-    **Reversion.** A reverting coefficient's drift ``q_i * r_i(D) ** 2`` is
-    ``q_i * D ** 2`` for a gap well under ``kappa_i``, and never more than
-    ``q_i / theta_i ** 2``. At observations one clock unit apart it is short
-    of ``q_i`` by about ``ln 2 / kappa_i``. At observations ``D`` apart, a
+    **Reversion.** A reverting coefficient's drift ``Q_i * r_i(D) ** 2`` is
+    ``Q_i * D ** 2`` for a gap well under ``kappa_i``, and never more than
+    ``Q_i / theta_i ** 2``. At observations one clock unit apart it is short
+    of ``Q_i`` by about ``ln 2 / kappa_i`` of it. At observations ``D`` apart, a
     reverting coefficient reaches the stationary prior variance
-    ``q_i * r_i(D) ** 2 / (1 - phi_i ** 2)`` with
+    ``Q_i * r_i(D) ** 2 / (1 - phi_i ** 2)`` with
     ``phi_i = 2 ** (-D / kappa_i)``, a stationary AR(1) instead of an
     unbounded walk. The reversion runs on every row, a row that observes
     nothing included, being the same over a gap however it is cut. A
@@ -2958,13 +2969,14 @@ def ftrl(
 
     The stream parameters every builder takes, such as ``clock``,
     ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
-    diagnostics, are in :mod:`polars_online.spec`. None of this model's
-    four numbers is free of units (*Units* in Notes). Its own parameters:
+    diagnostics, are in :mod:`polars_online.spec`. None of ``alpha``,
+    ``beta``, ``l1`` and ``l2`` is free of units (*Units* in Notes). This
+    model's own:
 
     ``alpha``
-        The learning-rate scale, in a coefficient's units: the target (a
-        probability, under the logistic loss) per unit of the feature.
-        Default 0.1, the value McMahan et al. suggest. Finite and above 0. A
+        The learning-rate scale, in a coefficient's units: the target
+        (log-odds, under the logistic loss) per unit of the feature.
+        Default 0.1. Finite and above 0. A
         larger ``alpha`` follows a break sooner, and moves more from row to
         row once the fit has reached its steady state (*Breaks* in Notes).
     ``beta``
@@ -2979,20 +2991,22 @@ def ftrl(
         evidence, not a mean (*Weights and the penalties* in Notes).
     ``l2``
         The L2 penalty, which shrinks every coefficient toward zero as a
-        ridge does, in the feature's squared units. Default 1.0, the value
-        McMahan et al. suggest. Finite and at least 0.
+        ridge does, in the feature's squared units. Default 1.0. Finite and
+        at least 0.
     ``strict_binary``
-        Under ``loss = "logistic"``, make a call that learns refuse a chunk
-        whose target is not 0 or 1, naming the row, before any model learns
-        from it. Default ``False``: such a target is clamped into
-        ``[0, 1]``. Refused beside ``"squared"``, which reads the target as
-        it stands.
+        Under ``loss = "logistic"``, make a call that reads the target (a call that
+        learns, or ``predict``) refuse a chunk whose target is not 0 or 1, naming
+        the row, before any model learns from it. Default ``False``: such a target
+        is clamped into ``[0, 1]``. Refused beside ``"squared"``, which reads the
+        target as it stands.
     ``loss``
         ``"logistic"`` (the default) for a 0/1 target: ``pred`` is a
         probability. ``"squared"`` for a continuous target: ``pred`` is the
         linear prediction, and the model is a sparse linear regression with
         no solves and the L1 support :func:`ewridge` does not have. The two
-        differ only in the link. The gradient is ``(p - y) * z`` either way.
+        differ in the link, and in how the target is read: ``"logistic"``
+        clamps it into ``[0, 1]``, takes ``strict_binary`` and refuses a
+        formula target. The gradient is ``(p - y) * z`` either way.
 
     ``min_weight`` counts the rows the target was present on, at their
     weights, decayed, where ``weight_sum`` counts every row. So rows with a
@@ -3021,8 +3035,8 @@ def ftrl(
         ``below_min_weight`` on the first rows under the default
         ``min_weight``.
     ``coef``
-        Per target, the intercept then one entry per feature, after the row
-        is learned (:func:`coef_index`).
+        Per target, the intercept (unless ``fit_intercept=False``) then one
+        entry per feature, after the row is learned (:func:`coef_index`).
 
     plus the fields of the diagnostics switched on, as
     :mod:`polars_online.spec` describes them. Under ``"logistic"``,
@@ -3043,12 +3057,14 @@ def ftrl(
     - under ``"logistic"``, a formula target: the model fits a probability
       to a 0/1 target.
 
-    And, from a call that learns, ``ValueError`` for a chunk with a target
-    other than 0 or 1 under ``strict_binary``, naming the row.
+    And, from a call that learns or ``predict``, ``ValueError`` for a chunk
+    with a target other than 0 or 1 under ``strict_binary``, naming the
+    row.
 
     .. rubric:: The update
 
-    With ``z`` the row's features, intercept included, ``w`` its weight,
+    Here ``z`` is the row's features, with the intercept's 1 under
+    ``fit_intercept``, ``w`` its weight,
     ``y`` the target, and ``zz``, ``n`` and ``d`` the sums kept per
     coefficient ``i``. ``λ = 0.5 ** (Δclock / half_life)`` (``lam ** Δclock``
     under ``lam``) is the decay since the last row the target was learned
@@ -3120,10 +3136,10 @@ def ftrl(
     clock. So old evidence counts for less against the prior. In steady
     state the penalties act as a mean-scale ridge of
     ``(1 - f) * (beta / alpha + l2)``, ``f`` the decay factor over one row's
-    clock:
-    a constant 5 is fitted at 4.65 at ``half_life = 100`` and 4.96 at 1000.
-    Without a half-life the fit is the ``FTRLProximal`` of the Python
-    library river, to the bit.
+    clock. Under ``loss="squared"`` at the default ``alpha``, ``beta`` and
+    ``l2``, one row a clock unit, a constant 5 is fitted at 4.65 at
+    ``half_life = 100`` and 4.96 at 1000. Without a half-life the fit is the
+    ``FTRLProximal`` of the Python library river, to 1e-12 row for row.
 
     **Breaks.** Under a half-life the fit follows a break at the pace of its
     steps, not of its half-life. A coefficient steps by its gradient over
@@ -3144,9 +3160,9 @@ def ftrl(
     weight 0 moves the clock alone, as in every model. The next row the
     target is learned from is predicted with that fit, then ages the sums by
     the whole clock since and learns. The gap ages the evidence and not the
-    prior. A constant 5, fitted at ``half_life = 100`` to its steady state,
-    stands at 0.75 of itself after that row when the gap was one half-life,
-    and at 0.15 when it was five.
+    prior. The fit of a constant 5, at ``half_life = 100`` and at its steady
+    state (4.65), stands at 0.75 of that fit after that row when the gap
+    was one half-life, and at 0.15 of it when it was five.
 
     **Weights and the penalties.** A row's weight is an importance weight,
     as in the learner Vowpal Wabbit: the gradient carries it, against
@@ -3169,18 +3185,17 @@ def ftrl(
     ``l2 * c**2``. The intercept's 1 does not scale, and the four are shared
     by every coefficient, so with an intercept there is no such equivalence.
 
-    **Features at a level.** ``ftrl`` does not center a feature. A
-    coefficient's error reaches the prediction multiplied by the feature's
-    value, so a feature that sits at a level ``L`` carries it at ``L`` times
-    its size. On the stream of ``crates/online-core/tests/held_values.rs``,
-    with one of three features at ``L``, the squared loss's error is about
-    ``0.018 * L``: 18.3 at 1,000 and at -1,000, and 1.8e6 at 1e8, against
-    0.75 at 0.5. Standardize or z-score such a feature before the bank, as
-    `Features in units of their spread
+    **Features at a level.** ``ftrl`` does not center a feature. A coefficient's
+    error reaches the prediction multiplied by the feature's value, so a feature
+    that sits at a level ``L`` carries it at ``L`` times its size. On the stream
+    of ``crates/online-core/tests/held_values.rs``, with one of three features
+    at ``L``, the squared loss's error is about ``0.018 * L``: 18.3 at 1,000 and
+    at -1,000, and 1.8e6 at 1e8, against 0.75 at 0.5. Standardize or z-score
+    such a feature before the bank, as `Features in units of their spread
     <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md#features-in-units-of-their-spread>`_
-    shows. There is no ``standardize`` here because ``l1`` zeroes a
-    coefficient in the feature's own units: a scale inside the model would
-    move which coefficients it zeroes as the feature's spread moved.
+    shows. There is no ``standardize`` here because ``l1`` zeroes a coefficient
+    in the feature's own units: a scale inside the model would move which
+    coefficients it zeroes as the feature's spread moved.
     """
     model: dict[str, Any] = {
         "type": "ftrl",
@@ -3257,8 +3272,9 @@ def ew_cov(
         factor ``c`` of *The update*, Bessel's correction at Kish's effective
         size (*Bias* in Notes). ``True`` reports the weighted means as kept,
         which is what :meth:`polars_online.ModelBank.gram` returns under
-        either. A second moment is null while the moments hold a single row,
-        of any weight, which has no spread to correct, as Polars' is.
+        either. Under ``False``, a second moment is null while the moments
+        hold a single row, of any weight, as Polars' is. Under ``True`` it
+        reads 0.
     ``precision_prior``
         A ridge on the co-moments, in the features' squared units, finite
         and above 0: it makes the precision matrix ``P`` of *The update*
@@ -3296,7 +3312,8 @@ def ew_cov(
            * - ``pc<j>_score``
              - the row's coordinate ``v_j . (x - m)``
 
-        The first refresh makes each component's largest loading positive.
+        The first refresh makes each component's largest loading in
+        magnitude positive.
         Each later refresh turns a component to within 90° of its previous
         loadings, so a component and its score never flip sign from one
         refresh to the next (*Principal components* in Notes).
@@ -3323,7 +3340,8 @@ def ew_cov(
         and ``lag_comoments`` (an ``(L, k, k)`` array) from
         :meth:`polars_online.ModelBank.gram`.
     ``gram_threads``
-        The most of the bank's threads one row's update of the ``k x k``
+        The largest number of the bank's threads that one row's update of
+        the ``k x k``
         co-moments may use: a whole number of at least 1, or ``"auto"``, as
         :func:`ewridge`'s ``gram_threads`` is. It never adds a thread to the
         bank's. Default ``"auto"``, which splits an update only where the
@@ -3334,19 +3352,20 @@ def ew_cov(
         row ``window_size`` old or older contributes nothing at all, where
         the exponential weight alone would still leave
         ``0.5 ** (age / half_life)`` of it, 12.5% at three half-lives.
-        ``closed="both"`` keeps the row exactly that old, as for
-        :func:`ewridge`. Inside the hard window the weights are still
-        exponential, so this is not a flat mean over the window: the newest
-        row dominates exactly as it does without one. ``window_size`` is
-        refused beside ``lags`` and ``mahal_quantiles``, which run over a
+        ``closed`` is ``"right"`` (the default) or ``"both"``, which keeps
+        the row exactly that old, as for :func:`ewridge`. Inside the hard
+        window the weights are still exponential, so this is not a flat mean
+        over its rows: each row keeps the weight it has without one.
+        ``window_size`` is refused beside ``lags`` and ``mahal_quantiles``, which run over a
         history it does not cut (*The hard window* in Notes).
     ``snapshot_every``, ``max_rows_between_snapshots``, ``window_budget``
         The hard window's snapshots, as for :func:`ewridge`.
         ``snapshot_every`` spaces them on the clock (``"1m"``, or a number of
         the clock's units) and ``max_rows_between_snapshots`` caps the rows
         between them, whichever comes first. ``window_budget`` bounds each
-        ring in MiB and thins or refuses past the bound. ``closed="both"``
-        and these three are refused without ``window_size``.
+        ring in MiB and thins or refuses past the bound. By default a
+        snapshot on every row, and no budget. ``closed="both"`` and these
+        three are refused without ``window_size``.
 
     .. rubric:: Output
 
@@ -3379,7 +3398,7 @@ def ew_cov(
 
     The statistics are null until ``min_weight``, which the bank floors at
     2: a variance needs two rows, so a lower ``min_weight``, ``0`` included,
-    is taken as 2 rather than refused. The rows the floor holds back read
+    is taken as 2, and is not refused. The rows the floor holds back read
     ``below_min_weight``, as the gate's do. The moments themselves are
     :meth:`polars_online.ModelBank.gram`'s ``means``, ``comoments``,
     ``lags`` and ``lag_comoments``, the weighted means as kept whatever
@@ -3408,7 +3427,8 @@ def ew_cov(
     - a ``window_size`` not finite or not above 0, ``window_size`` beside
       ``lags`` or ``mahal_quantiles``, a ``closed`` of ``"left"`` or
       ``"none"``, a ``snapshot_every`` below 0 or not finite, a
-      ``max_rows_between_snapshots`` of 0, a ``window_budget`` not above 0,
+      ``max_rows_between_snapshots`` below 1, a ``window_budget`` that is not
+      one key, ``"thin"`` or ``"refuse"``, or whose MiB is not above 0,
       and ``closed="both"``,
       ``snapshot_every``, ``max_rows_between_snapshots`` or
       ``window_budget`` without ``window_size``;
@@ -3502,12 +3522,14 @@ def ew_cov(
 
     **Against Polars.** One O(k²) update a row replaces the O(k²) passes a
     pure-Polars pairwise exponentially weighted correlation needs. For moments
-    on data that fits in memory, Polars already does this under a
-    ``window_size``, with ``df.rolling(clock, period=window_size).agg(...)``.
+    on data that fits in memory, Polars can compute the same moments under
+    a ``window_size`` when you weight each row yourself in
+    ``df.rolling(clock, period=window_size).agg(...)``.
     There each row is weighted ``2 ** (-age / half_life)`` from the window's
     last row, ``c`` comes from those weights, and the result is shifted one row,
     since a row's moments are read before the row. On 20,000 rows about a minute
-    apart, a three-hour window (about 180 rows) and a half-life of 30 minutes,
+    apart, a three-hour hard window (``window_size="3h"``, about 180 rows)
+    and a half-life of 30 minutes,
     the mean of a column near 100 agreed to 8.5e-14, its variance to 6.4e-14 and
     its correlation with a second column to 4.3e-14. The reason to reach for the
     spec is a stream, a saved state, or the work: Polars recomputes each window,
@@ -3646,12 +3668,12 @@ def pa(
     """Passive-aggressive regression, which moves the fit by the smallest step that
     brings each row within a margin of its target.
 
-    Use it for a fit in O(k) time a row, ``k`` the number of features, with
-    no learning rate to tune. A row whose prediction is within ``eps``
-    standard deviations of its target moves nothing, and any other row
-    moves the fit by the smallest change that brings it there (Crammer et
-    al. 2006). Use :func:`sgd` for other losses or a learning rate, and
-    :func:`ewridge` for an exact fit on running sums.
+    Use it for a fit in O(k) time a row, ``k`` the number of features, with no
+    learning rate to tune. A row whose prediction is within ``eps`` standard
+    deviations of its target moves nothing, and any other row moves the fit
+    toward it by the smallest change, capped by ``c`` under ``pa1`` and damped
+    under ``pa2`` (Crammer et al. 2006). Use :func:`sgd` for other losses or a
+    learning rate, and :func:`ewridge` for an exact fit on running sums.
 
     .. rubric:: Parameters
 
@@ -3696,19 +3718,23 @@ def pa(
         and a box or a sum is projected with its bounds carried over. Default
         ``True``. Without it, ``q`` and ``c`` are in the features' units, so
         one feature in thousands makes every step tiny and one in
-        thousandths makes every step the cap. A change in the moments moves
-        no prediction (*Standardizing* in Notes).
+        thousandths makes the cap bind on most steps. Once the scaler has
+        warmed up, a change in the moments moves no prediction
+        (*Standardizing* in Notes).
 
     ``min_weight`` counts the rows the target was present on, at their
     weights, decayed, where ``weight_sum`` counts every row, so rows with a
     null target do not warm up coefficients they never moved.
 
     A row's weight below 1 scales ``tau``, so a half-weight row moves the
-    fit half as far. A weight above 1 counts as 1. In a model that keeps
-    running sums, a row of weight 2 counts as two rows of weight 1. Here a
-    step is a projection onto the row's constraint, and a second projection
-    onto the same constraint changes nothing, so a second row would add
-    nothing.
+    fit half as far. In the step, a weight above 1 counts as 1, though
+    ``weight_sum``, each target's weight, the scaler and ``sigma`` take the
+    full weight. In a model that keeps running sums, a row of weight 2
+    counts as two rows of weight 1. Here the step aims at the row's
+    constraint, so a weight past 1 would overshoot. A constant weight of 2
+    would make the plain ``"pa"`` step oscillate without settling. The
+    coefficients do not decay, so one very heavy row would move the fit with
+    no way back.
 
     .. rubric:: Output
 
@@ -3732,8 +3758,8 @@ def pa(
         ``below_min_weight`` on the first rows under the default
         ``min_weight``.
     ``coef``
-        Per target, the intercept then one entry per feature, after the row
-        is learned (:func:`coef_index`).
+        Per target, the intercept (unless ``fit_intercept=False``) then one
+        entry per feature, after the row is learned (:func:`coef_index`).
 
     plus the fields of the diagnostics switched on, as
     :mod:`polars_online.spec` describes them.
@@ -3838,7 +3864,7 @@ def pa(
     **c and the target's units.** ``pa1``'s ``tau`` is in the target's
     units over ``q``'s, so a cap of 1 caps every step of a target in
     thousands and none of a target in thousandths. The figures in *The
-    margin* and *On a level that moves* are for a target of spread about 2.
+    margin* are for a target of spread about 2.
     ``pa2``'s ``c`` is added to ``q`` as ``1 / (2c)``, in ``q``'s units, so
     it is free of the target's. Under ``"pa"`` and ``"pa2"`` a target scaled
     by ``a`` fits as the unscaled one, scaled by ``a``. Under ``"pa1"`` it does
@@ -3901,10 +3927,10 @@ def pa(
     variances over 20 seeds at 0.1. Over 108 streams and the three modes,
     the default had the smallest worst regret (R² from 0.5 to 0.99998, a
     level of 0 or plus or minus 1,000, a half-life of 50, 500 or none, one
-    feature or five). It was measured against a tube in the residual's
-    spread capped by the target's, whose start-up residuals stayed in it
-    forever without decay: under ``pa2`` that tube left a target at a level
-    of 1,000 at R² 0.76 to 0.80.
+    feature or five). The default was also measured against a tube drawn
+    in the residuals' spread, capped by the target's spread. Without decay,
+    that spread kept the large residuals of the first rows forever: under
+    ``pa2`` it left a target at a level of 1,000 at R² 0.76 to 0.80.
 
     **On a level that moves, give a larger c or difference the target.**
     The fit starts from zero coefficients, and a ``pa1`` cap of 1 moves the
@@ -4015,9 +4041,9 @@ def seqtest(
     :mod:`polars_online.spec`. This model is not a regression and makes no
     prediction. It reads only its ``targets`` (or the residuals of the specs
     ``a`` and ``b`` name) and takes no ``features``: a spec dict or a TOML
-    table says ``features = []``. A trial is a row, so ``weight``,
-    ``half_life`` and ``lam`` are refused: a test that forgot its losses
-    would not keep its guarantee. ``min_weight`` defaults to 0, and
+    table says ``features = []``. A trial is a row, so ``weight`` is
+    refused. A test that forgot its losses would not keep its guarantee, so
+    ``half_life`` and ``lam`` are refused. ``min_weight`` defaults to 0, and
     ``fit_intercept`` has nothing to act on. This model's own:
 
     ``a``, ``b``, ``a_suffix``, ``b_suffix``
@@ -4066,7 +4092,8 @@ def seqtest(
         ``min_weight`` of 0, and ``below_min_weight`` where a ``min_weight``
         given is not yet reached.
 
-    With ``a`` and ``b`` these fields take the place of the four above:
+    With ``a`` and ``b``, these fields take the place of ``log_e_pos_<t>``,
+    ``log_e_neg_<t>``, ``n_pos_<t>`` and ``n_neg_<t>``:
 
     ``log_e_a_<t>``, ``log_e_b_<t>``
         The log wealth of the gambler betting that ``a`` is closer on the
@@ -4234,7 +4261,7 @@ def marginal(
     and ``n_serial`` are reported either way. This model's own:
 
     ``lags``, ``cross_lags``, ``serial_rule``
-        The pair's moments at those lags too: a strictly increasing list,
+        The pair's moments at each lag of ``lags`` too: a strictly increasing list,
         each lag at least 1 and at most 2^20 (1,048,576), since the ring of
         rows is sized before the first row. Default none, no lags. A lag counts
         learned rows within the group, not rows where that target was
@@ -4490,9 +4517,12 @@ def marginal(
     - ``feature_moments="shared"`` beside ``window_size``;
     - a ``serial_rule``, ``bin_rule``, ``bin_stat`` or ``feature_moments`` not
       in the list;
-    - ``closed="both"``, ``snapshot_every``, ``max_rows_between_snapshots``
-      or ``window_budget`` without ``window_size``, and a
-      ``max_rows_between_snapshots`` of 0.
+    - a ``window_size`` not finite or not above 0, a ``closed`` of
+      ``"left"`` or ``"none"``, a ``snapshot_every`` below 0 or not finite,
+      a ``max_rows_between_snapshots`` below 1, a ``window_budget`` that is not
+      one key, ``"thin"`` or ``"refuse"``, or whose MiB is not above 0, and
+      ``closed="both"``, ``snapshot_every``, ``max_rows_between_snapshots``
+      or ``window_budget`` without ``window_size``.
 
     .. rubric:: The update
 
@@ -4855,7 +4885,7 @@ def deco(
         ``below_min_weight`` on the rows before ``weight_sum`` reaches
         ``min_weight``. A field the model has no value for yet reads null
         with no reason beside it: ``u`` until a block's columns have a
-        variance, the first two rows of a group, and ``rho`` until the row
+        variance (the first two rows of a group), and ``rho`` until the row
         after the first ``u``. The default ``min_weight`` withholds those
         rows anyway.
     ``coef``
@@ -4950,9 +4980,9 @@ def deco(
     .. rubric:: Notes
 
     **The clock.** The ``"ew"`` dynamics run on the clock. The linear one
-    steps once per row, as a DCC model's does. (DCC is Engle's dynamic
-    conditional correlation, a GARCH-like recursion on the correlation
-    matrix.) So across a gap capped at
+    steps once per row, as a DCC model's does (Engle's dynamic conditional
+    correlation, a GARCH-like recursion on the correlation matrix). So
+    across a gap capped at
     ``gap_cap`` its own terms take one row's step, as across a millisecond,
     and only ``rho_bar`` moves on the clock. A row of weight 0 moves neither:
     it advances the clock and learns nothing, as everywhere. Otherwise the
@@ -4967,7 +4997,7 @@ def deco(
     ``(1 - alpha - beta) * rho_bar`` is this library's reparameterization,
     chosen because a streaming model has no sample to fit a free intercept
     on. And the paper permits ``alpha + beta`` slightly above 1 under
-    numerical bounds, where this refuses it.
+    numerical bounds, where this model refuses it.
 
     **The estimate's downward bias.** The paper notes that ``u`` is a
     downward biased estimate of the equicorrelation (``E[u]`` is about 0.20

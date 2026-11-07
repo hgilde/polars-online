@@ -52,7 +52,7 @@ def audit(
        * - ``weight``
          - a value is a value whatever its row weighs. To audit a weight
            column, list it in ``columns``
-       * - ``embargo``
+       * - ``embargo``, ``label_clock``
          - there is no target to wait for
        * - ``min_weight``
          - there is no prediction to withhold
@@ -70,7 +70,7 @@ def audit(
         ``"feature"``). Required, and not empty.
     ``pairs``
         Keep each pair of columns' correlation and the rows on which the two
-        are equal, what ``check`` reads for ``duplicate``. Memory and work
+        are equal, which ``check()`` reads for its ``duplicate`` finding. Memory and work
         grow as ``k^2`` for ``k`` columns. Default ``False``.
     ``distinct_cap``
         The number of counters each column keeps. The distinct count is
@@ -99,8 +99,8 @@ def audit(
     ``ValueError`` naming the problem for:
 
     - an empty ``columns``, or one that names a column twice;
-    - ``half_life``, ``lam``, ``weight``, ``embargo``, ``min_weight`` or
-      ``group_close``;
+    - ``half_life``, ``lam``, ``weight``, ``embargo``, ``label_clock``,
+      ``min_weight`` or ``group_close``;
     - a ``distinct_cap`` outside 1 to 65,536.
 
     .. rubric:: The update
@@ -223,8 +223,9 @@ def audit(
            uncapped, is a duplicate stamp (0), a gap (at or past
            ``gap_cap``, which caps the step a model ages by) or a regular
            step. The regular steps' mean, population spread and coefficient
-           of variation are kept, with the largest step of all, as
-           ``Duration`` on a temporal clock
+           of variation are kept, with the largest step of all. On a
+           temporal clock the mean, the spread and the largest step are
+           ``Duration`` values
 
     **Every row is read.** Every other model skips a row whose feature is not
     usable, and an audit counts it, since that is what it is for. A reset,

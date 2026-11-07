@@ -82,10 +82,11 @@ def bocpd(
         the features as it reads a weight column. The value at a row is the expected
         rows between breaks as of that row: ``1 / value`` is the chance of a break
         after the row, between it and the next. A null, NaN, ±inf or magnitude above
-        ``1e100`` falls back to ``hazard``, and any other value of 1 or less is
-        refused by the call that learns, naming the row. Default none. A duration
-        ``hazard`` puts its chance before each row, so the two are refused together.
-        :meth:`polars_online.ModelBank.predict` reads the column too.
+        ``1e100`` falls back to ``hazard``, and any other value of 1 or less
+        is refused by every call that reads the column,
+        :meth:`polars_online.ModelBank.predict` included, naming the row.
+        Default none. A duration ``hazard`` puts its chance before each row,
+        so the two are refused together.
     ``covariance_type``
         The covariance each run's predictive keeps, in scikit-learn's words,
         both exact conjugate updates:
@@ -228,13 +229,13 @@ def bocpd(
     ``targets``, which this model does not take, and ``ValueError`` naming
     the problem for:
 
-    - an empty ``features``, ``half_life`` or ``lam``, and a
+    - an empty ``features``, any ``half_life`` or ``lam``, and a
       ``covariance_type`` other than ``"full"`` or ``"diag"``;
     - a number ``hazard`` of 1 or less or not finite, and a duration
       ``hazard`` with no clock, beside a plain-number clock parameter, at 0
       or below, or beside ``hazard_col``;
     - a ``mean_prior`` of the wrong length or holding a value that is not
-      finite, a ``covariance_prior`` holding a NaN, a
+      finite, a ``covariance_prior`` holding a value that is not finite, a
       ``mean_precision_prior`` not
       finite or not above 0, a ``degrees_of_freedom_prior`` not finite or
       at or below its floor, and a ``covariance_prior`` that is neither
@@ -248,8 +249,8 @@ def bocpd(
       256 MiB;
     - a switch of a diagnostic that reads residuals;
 
-    and, from a call that learns, ``ValueError`` for a ``hazard_col`` value
-    of 1 or less, naming the row.
+    and, from a call that learns or predicts, ``ValueError`` for a
+    ``hazard_col`` value of 1 or less, naming the row.
 
     .. rubric:: The update
 
@@ -321,22 +322,25 @@ def bocpd(
 
     .. rubric:: Notes
 
-    **Reading p_change and run_mode.** ``run_mode`` dates a break more reliably than
-    ``p_change`` flags one. Under a number ``hazard``,
+    **Reading p_change and run_mode.** Under a number ``hazard``,
     ``p_change`` is ``P(r <= 1)`` and not ``P(r = 0)``: the changepoint
     branch and the growth branch share the same predictive, which makes the
     normalized mass at ``r = 0`` exactly ``H`` on every row whatever the
-    data. Under a duration it is not "exactly ``H``" plus anything: the
-    chance of a break is applied before the row, so nothing sits at
-    ``r = 0`` after it, and ``p_change`` is the chance that this row began a
-    run. A later row whose step is 0 reports 0. With both priors given, the
-    default ``min_weight`` withholds a group's first row and
-    ``min_weight=0`` reports its 1. Without them the first ``warm_rows``
-    rows report null. A break the posterior accepts a row or two late shows
-    as a fall in ``run_mode``, not in ``p_change``. Over six seeds of a
-    5-sigma step at row 500, at the defaults, ``run_mode`` fell to 1 or 2
-    within two rows of the break on every seed, while the largest
-    ``p_change`` near it ranged from 0.021 to 0.749.
+    data. Under a duration ``hazard``, the chance of a break is applied
+    before the row, so no mass sits at ``r = 0`` after it, and ``p_change``
+    is the chance that this row began a run. There, a row whose clock step
+    is 0 (a stamp shared with the last row the model did not skip) reports
+    0. A run's first row is the exception: a group's first row, and its
+    first after a reset. With ``mean_prior`` and ``covariance_prior`` both
+    given, the default ``min_weight`` withholds such a row, and with
+    ``min_weight=0`` it reports a ``p_change`` of 1 there. Unless both are
+    given, the first ``warm_rows`` rows report null.
+
+    ``run_mode`` dates a break more reliably than ``p_change`` flags one. A
+    break the posterior accepts a row or two late shows as a fall in
+    ``run_mode``, not in ``p_change``. Over six seeds of a 5-sigma step at row 500, at the defaults,
+    ``run_mode`` fell to 1 or 2 within two rows of the break on every seed,
+    while the largest ``p_change`` near it ranged from 0.021 to 0.749.
 
     .. list-table::
        :header-rows: 1
@@ -366,9 +370,9 @@ def bocpd(
     **Tempering.** Tempered, an outlying row is atypical under every run,
     every tempered likelihood is about 1, and nothing moves. A whole new
     regime is a run of individually forgiven rows, which is why a larger
-    power finds a real shift later. Measured over 50 streams with a
-    four-sigma shift, at hazard 250, a shift counting as found once the run
-    mode dates it to within 5 rows, inside 150 rows:
+    power finds a real shift later. Over 50 streams with a four-sigma shift
+    at ``hazard=250``, a shift counts as found once ``run_mode`` dates it to
+    within 5 rows, inside 150 rows:
 
     .. list-table::
        :header-rows: 1
@@ -377,7 +381,7 @@ def bocpd(
        * - ``robust_beta``
          - the shifts found
        * - 0.1
-         - all 50, within 6 rows, while a 20-sigma outlier left
+         - all 50, the worst 6 rows late, while a 20-sigma outlier left
            ``p_change`` at its floor
        * - 0.15
          - all 50, the worst 16 rows late
@@ -579,7 +583,8 @@ def corrchange(
     before the row is learned. So a zero-weight row is reported as if it
     would be learned. It then does not enter the span, the history or the
     monitoring period, does not advance ``since_flag`` for the rows after
-    it, and does not reset it if it flags. A clock break (a step
+    it, and if it flags, it resets neither ``since_flag`` nor, under
+    ``change_action="reset"``, the windows. A clock break (a step
     ``gap_cap`` shortened, or a session change) abandons the span, the
     windows or the cycle.
 
@@ -606,7 +611,12 @@ def corrchange(
         On a flag, the rows since the change it dates, counted through the flag's
         row from the first changed one: from the row after the maximum of ``j *
         |rho_j - rho_m|`` over the span (``"monitor"``), by the paper's Eq. 8
-        (``"sequential"``), or the second window (``"window"``). Null otherwise.
+        (``"sequential"``), or the second window (``"window"``). Null
+        otherwise. In the pairwise test (without ``scalar``), it is also
+        null on a ``"sequential"`` flag that has fewer than two monitored
+        rows before it, or where either feature of the flagged pair is
+        constant over those rows, since a correlation then has no spread to
+        divide by.
     ``weight_sum``
         The weight the model has accumulated before the row and before the
         row's own decay.
@@ -744,7 +754,8 @@ def corrchange(
     own rows. So a change is found at most ``window_rows`` rows late, and
     reliably only where it falls well inside a span: a jump in correlation
     from 0 to 0.8 at row 1,100 of spans of 200 rows was found on 20 of 20
-    seeds, and at rows 1,190 and 1,195, near the span's end, on 4 of 20.
+    seeds, and at rows 1,190 and 1,195, near the span's end, on 0 to 3 of
+    20 (each of three sets of 20 seeds).
     ``docs/REGIMES.md`` §2 and §3 measure its size and power against those
     tables, and ``tests/test_corrchange.py`` holds its size near the nominal
     level.
@@ -832,12 +843,12 @@ def corrchange(
 
     A redraw shuffles the ``2 * window_rows`` pooled rows ``n_perm`` times
     and reads both windows' correlations each time, so it costs ``n_perm *
-    window_rows * p**2`` for ``p`` features. Redrawn once a window's length
-    of rows, that is ``n_perm * p**2`` a row, whatever the window. So the
-    default keeps the draws' cost per row from growing with
-    ``window_rows``. It also holds each value for one shift of the windows,
-    after which they share no row with the windows it was drawn from. A smaller value redraws
-    more often, at more cost a row.
+    window_rows * p**2`` for ``p`` features. At the default
+    ``permute_every_rows`` (``window_rows``), a redraw comes once a window's
+    length of rows, that is ``n_perm * p**2`` a row, whatever the window, so
+    the draws' cost per row does not grow with ``window_rows``. Each drawn
+    value is held for those ``window_rows`` rows. A smaller
+    ``permute_every_rows`` redraws more often, at more cost a row.
     """
     model: dict[str, Any] = {
         "type": "corrchange",
