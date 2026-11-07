@@ -5361,6 +5361,13 @@ fn run_instance(
         // The conformal interval is `pred ± q` with `q` read before the row,
         // then the row's own score moves `q` (ENHANCEMENTS E36). `sigma` is
         // the pre-row value too: it sets the step and the warm start.
+        // Under `conformal_rate = "auto"` the step reads the rows waiting,
+        // the released one's record already off the front (task 342b).
+        let held = if inst.spec.conformal_rate_auto() {
+            inst.score_pred.len()
+        } else {
+            0
+        };
         if let Some(cs) = inst.conformal.as_deref_mut() {
             for (slot, c) in cs.iter_mut().enumerate() {
                 if emit {
@@ -5373,7 +5380,7 @@ fn run_instance(
                 }
                 if learn {
                     let shown = shown_radius.as_ref().map(|q| q[slot]);
-                    c.update_against(sc.r[slot], sc.sig[slot], lam, w, shown);
+                    c.update_against(sc.r[slot], sc.sig[slot], lam, w, shown, held);
                 }
             }
         }

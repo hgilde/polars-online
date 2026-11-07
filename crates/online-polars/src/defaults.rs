@@ -159,7 +159,11 @@ fn stream_settings(spec: &Spec, stream: &Stream, model: &AnyModel) -> Value {
     );
     s.insert(
         "conformal_rate".into(),
-        number(spec.conformal_rate_or_default()),
+        if spec.conformal_rate_auto() {
+            json!("auto")
+        } else {
+            number(spec.conformal_rate_or_default())
+        },
     );
     s.insert(
         "resid_autocorr_lag".into(),

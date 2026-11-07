@@ -595,6 +595,7 @@ BOGUS = "zz_bogus"
 ENUM_PROBES: list[
     tuple[str, str, dict[str, object], str, str, *tuple[dict[str, dict[str, object]], ...]]
 ] = [
+    ("spec.conformal_rate", "ewridge", {"conformal": 0.9}, "conformal_rate", "word"),
     ("spec.drift_action", "ewridge", {"emit_drift": True}, "drift_action", "word"),
     # `"session"` closes on a session column, which needs its clock and gap,
     # and stands in for `session_gap`, which the builder needs beside a

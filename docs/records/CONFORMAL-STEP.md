@@ -1,7 +1,7 @@
 # The conformal step under a label delay
 
 **Status as of 2026-11-07: PLAN task 342, measured; the default is
-unchanged.** The question (TREE-FEATURES.md §14, question 2): the
+unchanged; the opt-in `conformal_rate="auto"` built in task 342b (§7).** The question (TREE-FEATURES.md §14, question 2): the
 conformal tracker steps its radius by `conformal_rate · sigma` on each
 scored row, 0.05 by default, with no account of how many predictions are
 in flight while their labels are late. Is there a rule for the step that
@@ -440,8 +440,9 @@ the reason. The README's `label_clock` section and the spec reference's
 `conformal` entry say the same in a sentence. The earlier sentence that a
 rule was "being studied", and its square-root trial, are gone.
 
-**For the user: an opt-in, `conformal_rate="auto"`.** Designed, not built,
-because it needs state:
+**For the user: an opt-in, `conformal_rate="auto"`.** Designed here, and
+built after the user chose (b) on 2026-11-07 ("342 choose b"; see *As
+built* below the table):
 
 | | |
 |---|---|
@@ -455,6 +456,19 @@ Three ways to go, the user's: (a) keep the documentation alone; (b) build
 the opt-in; (c) build it and make it the default for specs with `embargo`
 or `label_clock` only, which changes no undelayed stream but does change
 the delayed streams' bytes and outputs, and loses 3 of 36 at 99%.
+
+**As built (task 342b).** `conformal_rate="auto"` takes the step
+`0.05 / (1 + 0.05 · g(α) · n̄ / (1/2))`, `n̄` the EW mean of the rows
+waiting at each release, the released row aside, on `w̄`'s rows and decay;
+the default stays 0.05. As designed, with these choices:
+
+| | |
+|---|---|
+| the count | the score records a group still holds once the released row's is taken off the front (`score_pred`, which runs in step with `embargo`'s pending rows and `label_clock`'s buffer); 0 under a fixed rate and on every row learned where it sits, so a fixed rate, and `"auto"` with no delay, are the old tracker to the bit and write the old bytes |
+| `g(α)` | `2φ(Φ⁻¹(1 − α/2))` from `α` when the tracker is made or loaded, never written (`#[serde(from)]`); `φ`'s exponential in basic arithmetic (`exp_neg`, Cody–Waite reduction and a Taylor series), so the step is the same bits on every platform and a state continues to the bit across them |
+| state | `held_mean` in `Conformal`, written only where it is not 0; schema 67's record names it; no 66 file has it and each loads at 0; the new bank fixture `bank_conformal_auto` freezes a delayed `"auto"` tracker past its warm start with `held_mean` held non-empty by the forms test. Regenerating moved no other fixture |
+| `{"auto": base}` | not built: no measurement here supports a base other than 0.05, and a form added later breaks no spec, where one removed would |
+| the oracle | `tests/test_label_clock.py`'s fold with the rule (kind 2 of `fold.py`, `c = 1/2`) equals the bank's `lo`, `hi` and `coverage` to the bit; the §2.4 simulation is `conformal::tests::under_a_long_delay_the_auto_step_holds_the_loop_gain_and_the_fixed_one_swings` |
 
 **Not a defect, but worth knowing.** The warm start reads `sigma` from
 as few as one residual. Under a long delay that residual is from a model

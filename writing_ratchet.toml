@@ -985,7 +985,7 @@ reason = "main's prefix in front of a message read where it is written"
 "python-word" = 1
 
 [sentences."README.md"]
-"45+" = 7
+"45+" = 6
 "about-the-document" = 1
 "python-word" = 2
 

@@ -781,8 +781,8 @@ pub use window::{
 ///
 ///   Schema 65's fixtures are kept (`tests/state_fixtures/v65/`).
 /// - 67 (2026-11-05, task 340, the user's two decisions of the same day;
-///   task 341, queued by the user the same day), three changes in one
-///   schema:
+///   task 341, queued by the user the same day; task 342b, the user's
+///   decision of 2026-11-07), four changes in one schema:
 ///   - the notices a failed call leaves: a bank's stream keeps, per model
 ///     instance, the readiness notices it has raised and the bank has not
 ///     yet taken (`online_polars`' `Notified::pending`, each a `Notice`:
@@ -812,6 +812,13 @@ pub use window::{
 ///     `embargo` keeps no label time: its release is decided by the delay
 ///     on the elapsed clock as before, so a state of 66 or earlier,
 ///     `embargo` rows included, loads as it was and goes on to the bit.
+///   - `conformal_rate = "auto"`: a `Conformal` tracker keeps `held_mean`,
+///     the EW mean of the rows waiting for their labels at each release,
+///     which divides its step. Written only where it is not 0, which only a
+///     tracker under `"auto"` with rows held reaches, so no other state's
+///     bytes move; its gain `g(α)` is derived from `α` on load and never
+///     written. A state of 66 or earlier has no field, loads with 0 and goes
+///     on to the bit: no such state was saved under `"auto"`.
 ///
 ///   Schema 66's fixtures are kept (`tests/state_fixtures/v66/`).
 pub const SCHEMA_VERSION: u32 = 67;
