@@ -139,8 +139,61 @@ def test_the_weights_change_which_entries_move():
     heavy = corr.nearest(HIGHAM_3, w=[100.0, 1.0, 1.0])[0]
     plain = corr.nearest(HIGHAM_3)[0]
     assert abs(heavy[0, 1] - 1.0) < abs(plain[0, 1] - 1.0)
-    with pytest.raises(ValueError, match="weights above 0, one for each column"):
+    with pytest.raises(ValueError, match=r"finite and above 0, but w\[1\] is -1.0"):
         corr.nearest(HIGHAM_3, w=[1.0, -1.0, 1.0])
+    with pytest.raises(ValueError, match="must hold 3 weights, one for each column"):
+        corr.nearest(HIGHAM_3, w=[1.0, 1.0])
+
+
+def test_nearest_refuses_a_weight_that_is_not_finite():
+    """An infinite weight passed the `> 0` check, and the projection's
+    scaling then read `inf * 0`: a matrix of NaNs (task 352)."""
+    for bad in (np.inf, np.nan):
+        with pytest.raises(ValueError, match=r"finite and above 0, but w\[0\] is (inf|nan)\."):
+            corr.nearest(np.array([[1.0, 0.5], [0.5, 1.0]]), w=[bad, 1.0])
+
+
+def _ridge_gram(constant: bool = False):
+    rng = np.random.default_rng(352)
+    n = 300
+    x = rng.standard_normal((n, 3))
+    x[:, 1] += 0.5 * x[:, 0]
+    if constant:
+        x[:, 2] = 3.0
+    df = pl.DataFrame({f"x{i}": x[:, i] for i in range(3)}).with_columns(
+        y=pl.Series(x.sum(axis=1) + rng.standard_normal(n))
+    )
+    spec = po.spec.ewridge("m", targets=["y"], features=["x0", "x1", "x2"], lam=1.0)
+    bank = po.ModelBank([spec])
+    bank.fit_predict(df)
+    return bank.gram("m")[0]
+
+
+def test_nearest_repairs_a_gram_over_its_columns_without_the_intercept():
+    """Every ewridge Gram with an intercept was refused: the intercept is a
+    constant, with nan correlations (task 352). It is left out, as
+    po.gram.vif leaves it out, and the result is the repair of the
+    correlation over the other columns."""
+    g = _ridge_gram()
+    assert g["columns"][0] == po.gram.INTERCEPT
+    x, dist, iters = corr.nearest(g)
+    features = [c for c in g["columns"] if c != po.gram.INTERCEPT]
+    want = corr.nearest(po.gram.correlation(po.gram.subset(g, features)))
+    assert x.shape == (3, 3)
+    assert np.array_equal(x, want[0]) and dist == want[1] and iters == want[2]
+    # The weights are one for each column but the intercept.
+    corr.nearest(g, w=[1.0, 2.0, 3.0])
+    with pytest.raises(ValueError, match="must hold 3 weights"):
+        corr.nearest(g, w=[1.0, 2.0, 3.0, 4.0])
+
+
+def test_nearest_names_a_constant_feature_of_a_gram():
+    g = _ridge_gram(constant=True)
+    with pytest.raises(ValueError, match=r"but 'x2' has no variance\. Pass the Gram without"):
+        corr.nearest(g)
+    features = [c for c in g["columns"] if c not in (po.gram.INTERCEPT, "x2")]
+    x, _, _ = corr.nearest(po.gram.subset(g, features))
+    assert x.shape == (2, 2)
 
 
 # --- shrink --------------------------------------------------------------

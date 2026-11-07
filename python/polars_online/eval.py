@@ -72,6 +72,8 @@ from __future__ import annotations
 import functools
 import itertools
 import math
+import numbers
+import operator
 import re
 import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -793,6 +795,14 @@ def window_metrics(
             f"columns are {df.columns}. Name a column of the frame as clock."
         )
         raise pl.exceptions.ColumnNotFoundError(msg)
+    # The clock's dtype before `every` is read against it: a String clock was
+    # refused for the window, not for itself (task 352).
+    if not (dtype.is_numeric() or dtype.is_temporal()):
+        msg = (
+            f"po.eval.window_metrics: clock column {clock!r} must be numeric or temporal, but "
+            f"it is {dtype}. Cast the clock to a number or a Datetime."
+        )
+        raise TypeError(msg)
     ns: int | None
     if isinstance(dtype, (pl.Datetime, pl.Date)) and isinstance(every, str) and _is_calendar(every):
         ns = _calendar_every(every, dtype, clock)
@@ -812,12 +822,6 @@ def window_metrics(
             "whole frame."
         )
         raise ValueError(msg)
-    if dtype is not None and not (dtype.is_numeric() or dtype.is_temporal()):
-        msg = (
-            f"po.eval.window_metrics: clock column {clock!r} must be numeric or temporal, but "
-            f"it is {dtype}. Cast the clock to a number or a Datetime."
-        )
-        raise TypeError(msg)
     if ns is None and dtype.is_integer():
         # The bucket's left edge in the clock's own dtype, as a temporal
         # clock's is, in integers, so no edge is rounded through a float; a
@@ -1063,18 +1067,24 @@ def _time_series_folds(n: int, n_splits: int, gap: int) -> list[tuple[int, int, 
     ``TimeSeriesSplit(n_splits, gap=gap)`` over ``n`` rows, each fold's choice read
     from the rows before ``choose_end`` and scored on ``test_start:test_end``."""
     who = "po.eval.grid_search"
-    if isinstance(n_splits, bool) or not isinstance(n_splits, int) or n_splits < 1:
+    # Any whole number, numpy's integers included (task 352), but not a bool.
+    if (
+        isinstance(n_splits, bool)
+        or not isinstance(n_splits, numbers.Integral)
+        or operator.index(n_splits) < 1
+    ):
         msg = (
             f"{who}: n_splits must be a whole number of at least 1, but it is {n_splits!r}. "
             f"Set n_splits to 1 or more."
         )
         raise ValueError(msg)
-    if isinstance(gap, bool) or not isinstance(gap, int) or gap < 0:
+    if isinstance(gap, bool) or not isinstance(gap, numbers.Integral) or operator.index(gap) < 0:
         msg = (
             f"{who}: gap must be a whole number of rows of at least 0, but it is {gap!r}. "
             f"Set gap to 0 or more."
         )
         raise ValueError(msg)
+    n_splits, gap = operator.index(n_splits), operator.index(gap)
     test_size = n // (n_splits + 1)
     first = n - n_splits * test_size
     if test_size < 1:

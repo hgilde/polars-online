@@ -343,6 +343,24 @@ def test_with_windows_refuses_an_old_clock_name_in_like_and_in_a_keyword():
         po.stream.with_windows(df, f=po.ewm_mean("x", half_life=2.0), clock="t", max_dclock=5.0)
 
 
+@pytest.mark.parametrize("name", ["window", "halflife", "min_periods", "reset", "label_delay"])
+def test_with_windows_takes_an_old_spec_parameter_name_as_an_output_name(name):
+    """An output column named as an old spec parameter, such as ``window``,
+    was refused as that parameter's old name, though ``with_windows`` never
+    took it (task 352). Only the old names of its own keywords are refused,
+    as above; any other is an output name, on every surface."""
+    df = pl.DataFrame({"t": [0.0, 1.0, 2.0], "x": [1.0, 2.0, 3.0]})
+    window = po.ewm_mean("x", half_life=2.0)
+    want = po.stream.with_windows(df, f=window, clock="t", gap_cap=5.0).rename({"f": name})
+    got = [
+        po.stream.with_windows(df, **{name: window}, clock="t", gap_cap=5.0),
+        df.online.with_windows(**{name: window}, clock="t", gap_cap=5.0),
+        df.lazy().online.with_windows(**{name: window}, clock="t", gap_cap=5.0).collect(),
+    ]
+    for g in got:
+        assert g.equals(want), g
+
+
 # --- task 196: the names in the specs, the models and the command line ------
 
 #: The parameters task 196 renamed or dropped (docs/PLAN.md §18, N14 N16):

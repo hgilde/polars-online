@@ -89,6 +89,8 @@ import ctypes
 import functools
 import glob
 import math
+import numbers
+import operator
 import os
 import warnings
 import weakref
@@ -559,25 +561,39 @@ def _record(obj: Any, cols: _Columns) -> None:
     obj._po_margin_width = None if cols.margin_width is None else cols.margin_width[0]
 
 
-def _check_common(who: str, max_bin: int, threads: int | None, engine: str) -> None:
-    if isinstance(max_bin, bool) or not isinstance(max_bin, int):
+def _whole(v: Any) -> int | None:
+    """``v`` as an int where it is a whole number -- any ``numbers.Integral``,
+    numpy's integers included, read through ``operator.index`` -- or ``None``
+    for a bool or anything else (task 352)."""
+    if isinstance(v, bool) or not isinstance(v, numbers.Integral):
+        return None
+    return operator.index(v)
+
+
+def _check_common(
+    who: str, max_bin: int, threads: int | None, engine: str
+) -> tuple[int, int | None]:
+    """``max_bin`` and ``threads`` as Python ints, once each is checked."""
+    bins = _whole(max_bin)
+    if bins is None:
         raise ValueError(
-            f"{who}: max_bin must be a Python int of at least 2, but it is {max_bin!r}. Pass a "
-            "Python int of at least 2."
+            f"{who}: max_bin must be a whole number of at least 2, but it is {max_bin!r}. "
+            "Pass a whole number of at least 2."
         )
-    if max_bin < 2:
+    if bins < 2:
         raise ValueError(
-            f"{who}: max_bin must be at least 2, but it is {max_bin}. Set max_bin to 2 or more."
+            f"{who}: max_bin must be at least 2, but it is {bins}. Set max_bin to 2 or more."
         )
     library = "XGBoost's" if "xgboost" in who else "LightGBM's"
-    if threads is not None and (isinstance(threads, bool) or not isinstance(threads, int)):
+    count = None if threads is None else _whole(threads)
+    if threads is not None and count is None:
         raise ValueError(
-            f"{who}: threads must be a Python int of at least 1, or None, but it is "
-            f"{threads!r}. Pass a Python int of at least 1, or None for {library} default."
+            f"{who}: threads must be a whole number of at least 1, or None, but it is "
+            f"{threads!r}. Pass a whole number of at least 1, or None for {library} default."
         )
-    if threads is not None and threads < 1:
+    if count is not None and count < 1:
         raise ValueError(
-            f"{who}: threads must be at least 1, or None, but it is {threads}. Set threads to "
+            f"{who}: threads must be at least 1, or None, but it is {count}. Set threads to "
             f"1 or more, or to None for {library} default."
         )
     if engine not in _ENGINES:
@@ -585,6 +601,7 @@ def _check_common(who: str, max_bin: int, threads: int | None, engine: str) -> N
             f'{who}: engine must be "auto", "native" or "python", but it is {engine!r}. Set '
             "engine to one of those words."
         )
+    return bins, count
 
 
 def _library_path(lib: Any, who: str = "po.gbdt", what: str = "the library") -> str:
@@ -606,6 +623,12 @@ def _xgb_native(path: str) -> Any:
 @functools.cache
 def _lgb_native(path: str, version: str) -> Any:
     return _native.GbdtLightgbm(path, version)
+
+
+def _holds_handle(lgb: Any) -> bool:
+    """Whether LightGBM's ``Dataset`` keeps its native handle in ``_handle``,
+    where the native engine hands it over."""
+    return hasattr(lgb.Dataset(None), "_handle")
 
 
 def _native_or_none(
@@ -844,15 +867,14 @@ def xgboost_matrix(
     import xgboost as xgb
 
     who = "po.gbdt.xgboost_matrix"
-    _check_common(who, max_bin, threads, engine)
-    if sample_rows is not None and (
-        isinstance(sample_rows, bool) or not isinstance(sample_rows, int)
-    ):
+    max_bin, threads = _check_common(who, max_bin, threads, engine)
+    if sample_rows is not None and _whole(sample_rows) is None:
         raise ValueError(
-            f"{who}: sample_rows must be a Python int of at least 1, or None, but it is "
-            f"{sample_rows!r}. Pass a Python int of at least 1, or None for XGBoost's own "
+            f"{who}: sample_rows must be a whole number of at least 1, or None, but it is "
+            f"{sample_rows!r}. Pass a whole number of at least 1, or None for XGBoost's own "
             "sketch of every row."
         )
+    sample_rows = None if sample_rows is None else _whole(sample_rows)
     if sample_rows is not None and sample_rows < 1:
         raise ValueError(
             f"{who}: sample_rows must be at least 1, or None, but it is {sample_rows}. Set "
@@ -1254,7 +1276,7 @@ def lightgbm_dataset(
     import lightgbm as lgb
 
     who = "po.gbdt.lightgbm_dataset"
-    _check_common(who, max_bin, threads, engine)
+    max_bin, threads = _check_common(who, max_bin, threads, engine)
     # By type: `1 in (True, False)` holds, and 1 is not an answer.
     if not isinstance(in_memory, bool) and in_memory != "auto":
         raise ValueError(
@@ -1341,25 +1363,26 @@ def lightgbm_dataset(
     rows = int(cols.plan.select(pl.len()).collect().item())
     if rows == 0:
         raise ValueError(f"{who}: the source has no rows. Pass a source with rows.")
-    native = _native_or_none(
-        lambda: _lgb_native(_library_path(lgb.basic._LIB, who, "LightGBM"), lgb.__version__),
-        engine,
-        "LightGBM",
-        4,
-        who,
-    )
+
+    def load() -> Any:
+        # Checked as part of the load, so that engine="auto" falls back to
+        # the Python engine on it as on any other (task 352), where it was
+        # raised after the load and refused every engine.
+        if not _holds_handle(lgb):
+            raise ValueError(
+                f"{who}: the native engine does not support lightgbm {lgb.__version__}, whose "
+                "Dataset holds its native handle where the engine does not look. Pass "
+                "engine='python', which builds through LightGBM's Python API."
+            )
+        return _lgb_native(_library_path(lgb.basic._LIB, who, "LightGBM"), lgb.__version__)
+
+    native = _native_or_none(load, engine, "LightGBM", 4, who)
     if in_memory == "auto":
         fits = rows * len(cols.names) * 4 * 4 <= _available_memory()
         memory = fits and (native is None or native.has_arrow)
     else:
         memory = bool(in_memory)
     if native is not None:
-        if not hasattr(lgb.Dataset(None), "_handle"):
-            raise ValueError(
-                f"{who}: the native engine does not support lightgbm {lgb.__version__}, whose "
-                "Dataset holds its native handle where the engine does not look. Pass "
-                "engine='python', which builds through LightGBM's Python API."
-            )
         ref_handle = None
         if reference is not None:
             # Constructed above, so it holds its handle.

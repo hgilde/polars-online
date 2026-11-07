@@ -271,6 +271,18 @@ def test_window_metrics_names_a_missing_clock_before_reading_the_window():
         po.eval.window_metrics(df, "m", clock="nope", every="1h")
 
 
+@pytest.mark.parametrize("every", ["1h", 10.0, 0.0, "1mo"])
+def test_window_metrics_refuses_a_string_clock_for_itself(every):
+    """A String clock was refused for the window read against it (a duration
+    as having "no unit to measure it in", 0 as not above 0), where the
+    clock is the problem (task 352)."""
+    df = pl.DataFrame({"t": ["a", "b"], "m": [{"pred_y": 1.0, "resid_y": 0.5}] * 2})
+    with pytest.raises(
+        TypeError, match="^po.eval.window_metrics: clock column 't' must be numeric or temporal"
+    ):
+        po.eval.window_metrics(df, "m", clock="t", every=every)
+
+
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1e101], ids=["nan", "inf", "bound"])
 def test_what_the_bank_reads_as_missing_is_missing_here_too(bad):
     """Review 2026-10-05 (YB4): the bank reads a NaN target as missing, as it

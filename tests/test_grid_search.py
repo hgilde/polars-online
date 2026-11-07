@@ -122,6 +122,16 @@ def test_the_spans_are_time_series_splits(n, n_splits, gap):
         assert (start, end) == (test[0], test[-1] + 1)
 
 
+def test_a_numpy_integer_is_a_whole_number():
+    """``n_splits`` and ``gap`` refused ``np.int64`` as not a whole number
+    (task 352); a bool is still refused."""
+    assert _time_series_folds(500, np.int64(4), np.int32(5)) == _time_series_folds(500, 4, 5)
+    with pytest.raises(ValueError, match="n_splits must be a whole number"):
+        _time_series_folds(500, True, 0)
+    with pytest.raises(ValueError, match="gap must be a whole number"):
+        _time_series_folds(500, 4, False)
+
+
 def test_one_split_chooses_on_the_first_half():
     """`TimeSeriesSplit` wants two splits or more; one is the first half against
     the second, which the guide's hand form computes."""

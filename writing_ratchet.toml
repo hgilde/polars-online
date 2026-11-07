@@ -24,7 +24,7 @@ kinds = ["docs/explanation/out-of-sample.md", "docs/how-to/put-rows-in-clock-ord
 check = "messages"
 path = "crates/online-polars/src/spec/names.rs"
 rule = "where"
-text = "emission = {word:?} is deprecated"
+text = "emission = {shown} is deprecated"
 reason = "The caller names the spec: these lines are written inside a spec's own check, and the spec layer's notice and refusal paths prefix them with spec \"m\": (the command line's TOML path, which names no spec, is the next stage's)."
 
 [[accepted]]

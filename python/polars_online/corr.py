@@ -212,23 +212,52 @@ def nearest(
     ``a`` must be square and finite; it is symmetrised on the way in, since an
     "almost-correlation" matrix from two different estimates of the same pair is
     the case this exists for. ``w`` is the diagonal of ``W`` as a vector, all
-    positive. ``max_iter`` must be at least 1: returning the input unprojected,
-    with a distance of 0, would say it was already a correlation matrix. Each is
-    ``ValueError``.
+    finite and positive. ``max_iter`` must be at least 1: returning the input
+    unprojected, with a distance of 0, would say it was already a correlation
+    matrix. Each is ``ValueError``.
+
+    **A Gram is repaired over its columns without the intercept.** Given one
+    of the Grams :meth:`~polars_online.ModelBank.gram` returns, or a row of
+    :meth:`~polars_online.ModelBank.closed_groups`, ``a`` is read as
+    :func:`polars_online.gram.correlation` reads it, less the ``intercept``
+    column a spec's ``fit_intercept`` adds, as :func:`polars_online.gram.vif`
+    leaves it out: a constant has no correlation with anything. So ``X`` is
+    ``k - 1`` square, in the order of the Gram's other columns, and ``w``
+    holds one weight for each of them. A feature the stream found constant
+    has no correlation either, and is refused (``ValueError``): pass the Gram
+    without it, as :func:`polars_online.gram.subset` returns it.
     """
     np = _np()
-    x = _matrix(a, "po.corr.nearest", "a")
+    is_gram = hasattr(a, "to_dicts") or (
+        isinstance(a, dict) and "columns" in a and "comoments" in a
+    )
+    cols: list[str] = []
+    keep: list[int] = []
+    if is_gram:
+        # A Gram's intercept is a constant column, whose correlations are
+        # nan: read it without, as po.gram.vif does by default (task 352).
+        from polars_online import gram as _gram
+
+        g: Any = a if isinstance(a, dict) and "means" in a else _gram.from_row(a)
+        cols = _gram._columns(g, "po.corr.nearest")
+        keep = [i for i, c in enumerate(cols) if c != _gram.INTERCEPT]
+        x = _gram.correlation(g)[np.ix_(keep, keep)]
+    else:
+        x = _matrix(a, "po.corr.nearest", "a")
     k = x.shape[0]
     # A NaN propagates through the eigendecomposition and comes back as a
     # matrix of NaNs with a NaN distance -- an answer, and a wrong one
     # (docs/REVIEW-E54-E64.md K1).
     if not np.all(np.isfinite(x)):
-        if hasattr(a, "to_dicts") or isinstance(a, dict):
+        dead = [cols[keep[i]] for i in range(k) if is_gram and not np.isfinite(x[i, i])]
+        if dead:
+            which = (
+                f"{dead[0]!r} has" if len(dead) == 1 else f"{', '.join(repr(c) for c in dead)} have"
+            )
             msg = (
-                "po.corr.nearest: every entry of a's correlation matrix must be finite, but "
-                "a column with no variance, such as the intercept or a constant feature, has "
-                "none in its row and column. Pass the Gram without those columns, as "
-                "po.gram.subset(g, columns) returns it, before the repair."
+                "po.corr.nearest: every column of a's Gram but the intercept must vary, so "
+                f"that it has a correlation, but {which} no variance. Pass the Gram without "
+                "those columns, as po.gram.subset(g, columns) returns it."
             )
         else:
             msg = (
@@ -247,11 +276,21 @@ def nearest(
         wv = np.ones(k)
     else:
         wv = np.asarray(w, dtype=float).reshape(-1)
-        if wv.shape != (k,) or not np.all(wv > 0.0):
+        if wv.shape != (k,):
             msg = (
-                f"po.corr.nearest: w must hold {k} weights above 0, one for each column, but "
-                f"it holds {wv.size} weights, {int((~(wv > 0.0)).sum())} of them not above 0. "
-                f"Pass {k} weights above 0, or leave w out to weigh every column alike."
+                f"po.corr.nearest: w must hold {k} weights, one for each column, but it "
+                f"holds {wv.size}. Pass {k} weights, or leave w out to weigh every column "
+                "alike."
+            )
+            raise ValueError(msg)
+        # An infinite weight passed `> 0` and made the projection's scaling
+        # inf * 0 = nan (task 352).
+        bad = np.flatnonzero(~(np.isfinite(wv) & (wv > 0.0)))
+        if bad.size:
+            msg = (
+                "po.corr.nearest: every weight in w must be finite and above 0, but "
+                f"w[{int(bad[0])}] is {float(wv[bad[0]])!r}. Pass finite weights above 0, or "
+                "leave w out to weigh every column alike."
             )
             raise ValueError(msg)
     root = np.sqrt(wv)

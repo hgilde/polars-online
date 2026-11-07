@@ -693,8 +693,9 @@ fn a_window_runs_clock_rules_are_said_in_a_windows_words() {
 
 /// A deprecated model key forwarded beside the key it became is refused;
 /// one forwarded alone keeps a value that is not its word for the new key
-/// to refuse in its own words, with no notice, since that refusal says all
-/// the reader needs. Inside a spec, each notice and refusal names it.
+/// to read or refuse in its own words, after the notice Python's builders
+/// give the same value (task 352: a TOML file's had none). Inside a spec,
+/// each notice and refusal names it.
 #[test]
 fn a_deprecated_model_key_beside_its_new_name_is_refused() {
     use online_polars::forward_deprecated_in_models;
@@ -715,7 +716,14 @@ fn a_deprecated_model_key_beside_its_new_name_is_refused() {
     let notices = forward_deprecated_in_models(&mut v).unwrap();
     assert_eq!(v["covariance_type"], "laplace");
     assert!(v.get("robust_beta").is_none(), "{v}");
-    assert!(notices.is_empty(), "{notices:?}");
+    assert_eq!(
+        notices,
+        [
+            "emission = \"laplace\" is deprecated: it is read as covariance_type = \"laplace\" \
+             until the next major version, which refuses it. Write covariance_type = \
+             \"laplace\" instead."
+        ]
+    );
     // A spec's model table: the notice names the spec, and the value of
     // robust_beta to write.
     let mut v: serde_json::Value =
@@ -736,11 +744,18 @@ fn a_deprecated_model_key_beside_its_new_name_is_refused() {
     .unwrap();
     let e = forward_deprecated_in_models(&mut v).unwrap_err();
     assert!(e.starts_with("spec \"b\": emission was renamed"), "{e}");
-    // A value that is not a word at all goes on unchanged.
+    // A value that is not a word at all goes on unchanged, after the notice.
     let mut v: serde_json::Value =
         serde_json::from_str(r#"{"type": "bocpd", "emission": 3}"#).unwrap();
-    forward_deprecated_in_models(&mut v).unwrap();
+    let notices = forward_deprecated_in_models(&mut v).unwrap();
     assert_eq!(v["covariance_type"], 3);
+    assert_eq!(
+        notices,
+        [
+            "emission = 3 is deprecated: it is read as covariance_type = 3 until the next major \
+             version, which refuses it. Write covariance_type = 3 instead."
+        ]
+    );
     // `reset_on_flag = false` is the flag, and a value that is not a
     // boolean goes on unchanged.
     let mut v: serde_json::Value =
@@ -751,7 +766,14 @@ fn a_deprecated_model_key_beside_its_new_name_is_refused() {
         serde_json::from_str(r#"{"type": "corrchange", "reset_on_flag": "yes"}"#).unwrap();
     let notices = forward_deprecated_in_models(&mut v).unwrap();
     assert_eq!(v["change_action"], "yes");
-    assert!(notices.is_empty(), "{notices:?}");
+    assert_eq!(
+        notices,
+        [
+            "reset_on_flag = \"yes\" is deprecated: it is read as change_action = \"yes\" until \
+             the next major version, which refuses it. Write change_action = \"reset\" or \
+             \"flag\" instead."
+        ]
+    );
 }
 
 /// A word refusal from serde with an empty list of words is not one this

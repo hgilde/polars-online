@@ -890,28 +890,28 @@ _BOTH = ("xgboost", "lightgbm")
             "data",
             dict(threads=True),
             ValueError,
-            "threads must be a Python int of at least 1, or None, but it is True",
+            "threads must be a whole number of at least 1, or None, but it is True",
         ),
         (
             _BOTH,
             "data",
             dict(threads="4"),
             ValueError,
-            "threads must be a Python int of at least 1, or None, but it is '4'",
+            "threads must be a whole number of at least 1, or None, but it is '4'",
         ),
         (
             _BOTH,
             "data",
             dict(max_bin="8"),
             ValueError,
-            "max_bin must be a Python int of at least 2, but it is '8'",
+            "max_bin must be a whole number of at least 2, but it is '8'",
         ),
         (
             _BOTH,
             "data",
             dict(max_bin=True),
             ValueError,
-            "max_bin must be a Python int of at least 2, but it is True",
+            "max_bin must be a whole number of at least 2, but it is True",
         ),
         (
             _BOTH,
@@ -925,14 +925,14 @@ _BOTH = ("xgboost", "lightgbm")
             "data",
             dict(sample_rows=True),
             ValueError,
-            "sample_rows must be a Python int of at least 1, or None, but it is True",
+            "sample_rows must be a whole number of at least 1, or None, but it is True",
         ),
         (
             ("xgboost",),
             "data",
             dict(sample_rows=2.5),
             ValueError,
-            r"sample_rows must be a Python int of at least 1, or None, but it is 2\.5",
+            r"sample_rows must be a whole number of at least 1, or None, but it is 2\.5",
         ),
         (
             ("lightgbm",),
@@ -1012,6 +1012,47 @@ def test_a_lightgbm_whose_dataset_holds_its_handle_elsewhere_is_refused_by_name(
         "handle",
     ):
         gbdt.lightgbm_dataset(data, label="y", params=LGB_DATA, engine="native")
+
+
+def test_auto_falls_back_where_lightgbm_s_dataset_holds_its_handle_elsewhere(data, monkeypatch):
+    """``engine="auto"`` raised the native engine's ``_handle`` refusal,
+    checked after the load, where every other refusal of the native engine
+    falls back to the Python engine (task 352). It falls back, with the
+    warning, and grows the Python engine's trees."""
+
+    want = lgb_trees(
+        lgb.train(LGB, gbdt.lightgbm_dataset(data, label="y", params=LGB_DATA, engine="python"), 5)
+    )
+    # A LightGBM whose Dataset keeps its handle elsewhere, as the test above
+    # builds it, cannot run the Python engine's own build either; so the
+    # engine's check is told so instead.
+    monkeypatch.setattr(gbdt, "_holds_handle", lambda lgb: False)
+    with pytest.raises(ValueError, match="whose Dataset holds its native handle"):
+        gbdt.lightgbm_dataset(data, label="y", params=LGB_DATA, engine="native")
+    with pytest.warns(UserWarning, match="the native engine cannot load LightGBM"):
+        ds = gbdt.lightgbm_dataset(data, label="y", params=LGB_DATA, engine="auto")
+    assert lgb_trees(lgb.train(LGB, ds, 5)) == want
+
+
+def test_a_numpy_integer_is_a_whole_number(data):
+    """``max_bin``, ``threads`` and ``sample_rows`` refused ``np.int64(5)``
+    as not a Python int (task 352): any whole number but a bool is one."""
+    for build, extra in (
+        (gbdt.xgboost_matrix, {"sample_rows": 2_000}),
+        (gbdt.lightgbm_dataset, {"params": LGB_DATA}),
+    ):
+        plain = build(data, label="y", max_bin=256, threads=2, **extra)
+        numpy = build(
+            data,
+            label="y",
+            max_bin=np.int64(256),
+            threads=np.int32(2),
+            **{k: np.int64(v) if isinstance(v, int) else v for k, v in extra.items()},
+        )
+        if build is gbdt.xgboost_matrix:
+            assert xgb_trees(xgb.train(XGB, plain, 5)) == xgb_trees(xgb.train(XGB, numpy, 5))
+        else:
+            assert lgb_trees(lgb.train(LGB, plain, 5)) == lgb_trees(lgb.train(LGB, numpy, 5))
 
 
 def test_a_package_that_does_not_say_which_file_it_loaded_is_refused():

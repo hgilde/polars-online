@@ -728,14 +728,12 @@ def _formulas(who: str, exprs: tuple[Any, ...], named: dict[str, Any]) -> list[d
         if name in _RENAMED_KEYWORDS:
             new = _RENAMED_KEYWORDS[name]
             raise TypeError(f"{who}: {name} was renamed {new}. Use {new} instead.")
+        # Only the old name of one of this call's own keywords is refused: any
+        # other old name of a spec's parameter, such as `window`, is a valid
+        # output column, which was refused (task 352).
         if name in _RENAMED and _RENAMED[name] in _WINDOW_KEYS:
             raise TypeError(
                 f"{who}: {name} was renamed {_RENAMED[name]}. Use {_RENAMED[name]} instead."
-            )
-        if name in _RENAMED:
-            raise TypeError(
-                f"{who}: {name} is the old name of a spec's {_RENAMED[name]}, so it cannot name "
-                "an output column. Give the output column another name."
             )
         if not isinstance(e, pl.Expr):
             raise TypeError(
@@ -860,6 +858,11 @@ def with_windows(
        * - ``group``
          - groups that each have their own clock, sessions and windows; a
            window looking ahead under ``group`` needs ``clock``
+
+    ``gap_cap`` and ``restart_after_step_back`` each take a number of clock
+    units, or a duration as a spec's do: text such as ``"5m"``, a
+    ``timedelta``, or an expression that reads no column, such as
+    ``pl.duration(minutes=5)``.
 
     A window is measured on that policy clock, after the cap. A gap longer
     than ``gap_cap`` or a session change ends every window open across it,
@@ -1012,11 +1015,17 @@ def with_windows(
             )
         if isinstance(value, pl.Expr):
             # gap_cap, restart_after_step_back and session_gap: each a span
-            # of the clock.
-            raise TypeError(
-                f"{who}: {key} takes a number or a duration as text or a timedelta, but it is "
-                f'given an expression. Give {key} as "5m" or timedelta(minutes=5).'
-            )
+            # of the clock, which takes a duration expression as a spec's
+            # does (task 352), read here as its text.
+            try:
+                given[key] = duration_text(value, who, key)
+            except (TypeError, ValueError):
+                raise TypeError(
+                    f"{who}: {key} takes a number or a duration, but it is given an expression "
+                    f"that is not one duration reading no column. Give {key} as "
+                    f'pl.duration(minutes=5) or "5m", or, for an output column named {key!r}, '
+                    f"name the expression with .alias({key!r}) and pass it by position."
+                ) from None
     formulas = _formulas(who, exprs, named)
     config: dict[str, Any] = {"formulas": formulas}
     if like is not None:
@@ -1096,8 +1105,8 @@ def with_windows(
     first = build()
     # Once the call is known to run, so a gap the run refuses is refused in
     # its own words first (task 278, the user's decision of 2026-10-25).
-    if like is None and session_gap is not None and session_gap != "reset":
-        _warn_session_gap_ignored(who, session_gap)
+    if like is None and given["session_gap"] is not None and given["session_gap"] != "reset":
+        _warn_session_gap_ignored(who, given["session_gap"])
     schema = first.feed(empty).schema
     needed = set(first.needed())
 

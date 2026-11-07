@@ -258,10 +258,11 @@ def forward_model(
                 f"change_action = {_quoted(action)} instead."
             )
         else:
+            # The notice the Rust side gives a TOML file's (task 352).
             warn(
-                f"{who}: reset_on_flag = {value!r} is deprecated: it is read as change_action = "
-                f"{value!r} until the next major version, which refuses it. Write "
-                'change_action = "reset" or "flag" instead.'
+                f"{who}: reset_on_flag = {_quoted(value)} is deprecated: it is read as "
+                f"change_action = {_quoted(value)} until the next major version, which refuses "
+                'it. Write change_action = "reset" or "flag" instead.'
             )
     for key, words in _DEPRECATED_WORDS_IN.get(kind, {}).items():
         word = out.get(key)
