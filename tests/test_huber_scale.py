@@ -207,9 +207,9 @@ def test_a_bank_saved_anywhere_resumes_to_the_bit(spec):
 
 
 def test_the_scale_is_refused_beside_another_loss():
-    with pytest.raises(ValueError, match='huber_scale is for loss "huber"'):
+    with pytest.raises(ValueError, match='huber_scale applies only under loss="huber"'):
         po.spec.sgd("s", huber_scale="mad", **NO_DECAY)
-    with pytest.raises(ValueError, match='huber_scale_half_life is for loss "huber"'):
+    with pytest.raises(ValueError, match='huber_scale_half_life applies only under loss="huber"'):
         po.spec.sgd("s", loss="quantile", quantile=0.5, huber_scale_half_life=5.0, **NO_DECAY)
     with pytest.raises(ValueError, match='huber_scale must be one of "mad", "rms"'):
         po.spec.huber("h", huber_scale="median", **NO_DECAY)  # type: ignore[arg-type]
@@ -373,7 +373,10 @@ class TestTheSgdInfiniteCut:
         assert not inf.equals(_run(po.spec.sgd("m", loss="huber", **c, **kw), df), null_equal=True)
 
     def test_a_refit_is_refused_beside_it(self):
-        with pytest.raises(ValueError, match="huber_refit_rows needs a finite huber_delta"):
+        with pytest.raises(
+            ValueError,
+            match="huber_refit_rows refits the rows past the Huber cut, but huber_delta is inf",
+        ):
             po.ModelBank(
                 [po.spec.sgd("s", loss="huber", huber_delta=INF, huber_refit_rows=10, **NO_DECAY)]
             )

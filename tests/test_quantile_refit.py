@@ -189,9 +189,12 @@ def test_a_count_inside_the_warm_up_is_refused():
     df = _frame(50)
     c = dict(targets=["y0"], features=["x"], half_life=INF, quantile=0.5)
     po.ModelBank([po.spec.quantile("m", quantile_refit_rows=6, **c)]).fit_predict(df)
-    with pytest.raises(ValueError, match="quantile_refit_rows must be 0 or at least three rows"):
+    with pytest.raises(
+        ValueError,
+        match="quantile_refit_rows must be 0 or at least 6, three rows for each coefficient",
+    ):
         po.ModelBank([po.spec.quantile("m", quantile_refit_rows=5, **c)])
-    with pytest.raises(ValueError, match="refit_budget must be > 0 MiB"):
+    with pytest.raises(ValueError, match="refit_budget must be above 0 MiB"):
         po.ModelBank([po.spec.quantile("m", refit_budget=0.0, **c)])
 
 

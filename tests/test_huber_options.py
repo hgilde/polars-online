@@ -195,9 +195,11 @@ class TestFeatureSets:
             assert pl.concat([head, tail]).equals(whole, null_equal=True), cut
 
     def test_a_set_outside_the_features_is_refused(self):
-        with pytest.raises(ValueError, match='feature set "a" references unknown feature "z"'):
+        with pytest.raises(
+            ValueError, match='feature set "a" lists "z", which is not one of features'
+        ):
             po.spec.huber("m", feature_sets={"a": ["z"]}, **COMMON)
-        with pytest.raises(ValueError, match="feature_sets names no set"):
+        with pytest.raises(ValueError, match="feature_sets must name at least one set"):
             po.spec.huber("m", feature_sets={}, **COMMON)
         with pytest.raises(ValueError, match='feature set "a" lists "x0" more than once'):
             po.spec.huber("m", feature_sets={"a": ["x0", "x0"]}, **COMMON)
@@ -279,9 +281,9 @@ class TestRidgeScale:
         assert early > 5.0 and late < early / 10, (early, late)
 
     def test_it_is_refused_where_ewridges_is(self):
-        with pytest.raises(ValueError, match="ridge_scale is incompatible with standardize"):
+        with pytest.raises(ValueError, match="but standardize is set"):
             po.spec.huber("m", ridge_scale="sum", standardize=True, **COMMON)
-        with pytest.raises(ValueError, match="two or more feature sets"):
+        with pytest.raises(ValueError, match="the spec has two or more feature sets"):
             po.spec.huber("m", ridge_scale="sum", feature_sets=SETS, **COMMON)
         with pytest.raises(ValueError, match='ridge_scale must be one of "mean", "sum"'):
             po.spec.huber("m", ridge_scale="median", **COMMON)  # type: ignore[arg-type]
@@ -523,7 +525,8 @@ class TestParameterRelations:
 
     def test_an_infinite_cut_refuses_a_refit(self):
         with pytest.raises(
-            ValueError, match="huber_refit_rows is for huber with a finite huber_delta"
+            ValueError,
+            match="huber_refit_rows refits the rows past the Huber cut, but huber_delta is inf",
         ):
             po.ModelBank([po.spec.huber("m", huber_delta=INF, huber_refit_rows=10, **COMMON)])
 

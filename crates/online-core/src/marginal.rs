@@ -231,78 +231,98 @@ impl MarginalCfg {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        let mut no = crate::Refusals::new();
         // The decay first: every model checks it in its own `new`, where only
         // the bank's spec did (review 2026-10-05, CF5).
-        self.decay.check().map_err(|e| format!("marginal: {e}"))?;
+        no.take(self.decay.check().map_err(|e| format!("marginal: {e}")));
         if self.n_features == 0 {
-            return Err("marginal: at least one feature is required".into());
+            no.refuse(
+                "marginal: the model needs at least one feature, but it has none. Name at least \
+                 one column in features.",
+            );
         }
         if self.n_targets == 0 {
-            return Err("marginal: at least one target is required".into());
+            no.refuse(
+                "marginal: the model needs at least one target, but it has none. Name at least \
+                 one column in targets.",
+            );
         }
+        // The checks below are read per feature and per target.
+        no.stop_here()?;
         if self.min_weight.len() != self.n_targets {
-            return Err(format!(
-                "marginal: min_weight has {} entries for {} targets",
-                self.min_weight.len(),
-                self.n_targets
+            no.refuse(format!(
+                "marginal: min_weight must hold one value for each of the {} targets, but it has \
+                 {}. Give one value for each target.",
+                self.n_targets,
+                self.min_weight.len()
             ));
         }
         // `inf` is a gate that never opens, as for every other model and as
         // the builders document; this model alone refused it (review
         // 2026-09-12, S27).
         if let Some(bad) = self.min_weight.iter().find(|v| v.is_nan() || **v < 0.0) {
-            return Err(format!("marginal: min_weight must be >= 0, got {bad}"));
+            // One target's floor is the spec's one value: said as it.
+            no.refuse(if self.min_weight.len() == 1 {
+                format!(
+                    "marginal: min_weight must be at least 0, but it is {bad}. Set min_weight to \
+                     0, or to a positive weight."
+                )
+            } else {
+                format!(
+                    "marginal: min_weight must be at least 0, but one of its values is {bad}. Set \
+                     that value to 0, or to a positive weight."
+                )
+            });
         }
         // The lags' own rules, which `MarginalLags::new` needs, checked here
         // too, so a restored state's are (review 2026-10-06, CD14); then the
         // pair of rules that involve `serial_rule`, which it cannot see.
         if !self.lags.is_empty() {
-            crate::marglag::check_lags(&self.lags, self.cross_lags.as_deref())?;
+            no.take(crate::marglag::check_lags(
+                &self.lags,
+                self.cross_lags.as_deref(),
+            ));
         }
         if self.lags.is_empty() && self.serial_rule.is_some() {
-            return Err(
-                "marginal: serial_rule needs `lags`; the correction is built from the \
-                 autocorrelations at those lags"
-                    .into(),
+            no.refuse(
+                "marginal: serial_rule needs lags, but lags is not set: the correction is built \
+                 from the autocorrelations at those lags. Set lags, or leave out serial_rule.",
             );
         }
         if self.lags.is_empty() && self.cross_lags.is_some() {
-            return Err(
-                "marginal: cross_lags needs `lags`; it names which of them keep the cross terms"
-                    .into(),
+            no.refuse(
+                "marginal: cross_lags needs lags, since it names which lags keep the cross terms, \
+                 but lags is not set. Set lags, or leave out cross_lags.",
             );
         }
-        crate::window::check_cadence(
+        no.take(crate::window::check_cadence(
             "marginal",
             self.window,
             self.window_every,
             self.max_rows_between_snapshots,
-        )?;
+        ));
         if self.shared() && self.window.is_some() {
-            return Err(
-                "marginal: feature_moments = \"shared\" takes no window. The window subtracts \
-                 each pair's moments at its boundary by the pooling identity, which reads a \
-                 covariance as centred on the pair's own mean; the shared mean also moves on \
-                 rows the pair's target missed, so the subtraction would not be the window's \
-                 covariance. Use feature_moments = \"per_target\" with a window."
-                    .into(),
+            no.refuse(
+                "marginal: feature_moments=\"shared\" and window_size cannot both be set: the \
+                 hard window removes a row's moments about each feature's mean over its target's \
+                 rows, and the shared mean also moves on rows where that target is null. Set \
+                 feature_moments=\"per_target\", or leave out window_size.",
             );
         }
         // A window with lags snapshots the lag moments too (docs/PLAN.md
         // task 137), at a price the spec layer asks the caller to accept by
         // name (`window_lags`); the core takes the pair as it is.
         if let Some(b) = self.bins.as_ref() {
-            b.validate(self.n_features, self.n_targets)?;
+            no.take(b.validate(self.n_features, self.n_targets));
             if self.window.is_some() {
-                return Err(
-                    "marginal: bins and window cannot be combined. A window subtracts an old \
-                     snapshot of the accumulators, and a snapshot of the histogram is bins times \
-                     the size of one -- too large to keep per snapshot. Use one or the other."
-                        .into(),
+                no.refuse(
+                    "marginal: bins and window_size cannot both be set: each snapshot the hard \
+                     window keeps would hold the whole histogram. Leave out bins, or \
+                     window_size.",
                 );
             }
         }
-        Ok(())
+        no.finish()
     }
 }
 

@@ -37,7 +37,7 @@ fn a_hazard_column_beside_another_target_is_refused() {
     );
     let err = s.validate().unwrap_err();
     assert!(err.contains("hazard_col") && err.contains("\"h\""), "{err}");
-    assert!(err.contains("(got [\"y\"])"), "{err}");
+    assert!(err.contains("but targets is [\"y\"]"), "{err}");
 }
 
 /// The slot is the column itself: a table named like the hazard but

@@ -620,7 +620,13 @@ pub fn build_models(spec: &Spec) -> Result<Vec<(String, AnyModel)>, String> {
     decays
         .into_iter()
         .map(|(suffix, decay)| {
-            let m = build_one(spec, decay).map_err(|e| format!("spec {:?}: {e}", spec.name))?;
+            // A model reports every problem with its settings, one to a
+            // line; the spec names them once.
+            let m = build_one(spec, decay).map_err(|e| {
+                let mut no = online_core::Refusals::new();
+                no.take(Err(e));
+                crate::spec::render_refusal(&spec.name, spec.model.kind_name(), &no).unwrap_err()
+            })?;
             Ok((suffix, m))
         })
         .collect()

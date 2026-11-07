@@ -676,7 +676,7 @@ class TestLaggedComoments:
         ):
             with pytest.raises(ValueError, match=message):
                 _spec(("x0", "x1"), lags=lags)
-        with pytest.raises(ValueError, match="lag_corr needs `lags`"):
+        with pytest.raises(ValueError, match='"lag_corr" in stats needs lags'):
             _spec(("x0", "x1"), stats=["lag_corr"])
 
     def test_the_largest_lag_is_accepted_and_reads_zero_until_its_ring_fills(self):

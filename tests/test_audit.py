@@ -101,9 +101,9 @@ class TestTheBuilder:
     @pytest.mark.parametrize(
         ("kw", "says"),
         [
-            ({"half_life": 10.0}, "half_life/lam do not apply to audit"),
-            ({"lam": 0.9}, "half_life/lam do not apply to audit"),
-            ({"weight": "w"}, "list it in columns"),
+            ({"half_life": 10.0}, "half_life does not apply to audit"),
+            ({"lam": 0.9}, "lam does not apply to audit"),
+            ({"weight": "w"}, "list the weight column in columns"),
             ({"embargo": 3.0, "clock": "t", "gap_cap": 5.0}, "embargo does not apply to audit"),
             # Review 6, F-10: taken and ignored, the output, `audit()` and
             # `check()` the same at 0, 5 and 1e9.
@@ -116,8 +116,8 @@ class TestTheBuilder:
                 {"group": "g", "session": "s", "group_close": "session"},
                 "group_close does not apply to audit",
             ),
-            ({"distinct_cap": 0}, "distinct_cap must be in 1..=65536"),
-            ({"distinct_cap": 70_000}, "distinct_cap must be in 1..=65536"),
+            ({"distinct_cap": 0}, "distinct_cap must be from 1 to 65536, but it is 0"),
+            ({"distinct_cap": 70_000}, "distinct_cap must be from 1 to 65536, but it is 70000"),
         ],
     )
     def test_what_does_not_apply_is_refused(self, kw, says):

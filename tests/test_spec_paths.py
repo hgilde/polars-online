@@ -26,14 +26,17 @@ def test_the_name_may_be_given_by_keyword():
 
 
 def test_a_target_s_name_must_be_a_string():
-    with pytest.raises(TypeError, match="target 'y': name must be a str, got int"):
+    with pytest.raises(TypeError, match=r"po.target\('y'\): name must be a str, but it is int"):
         po.target("y", name=3)  # type: ignore[arg-type]
 
 
 def test_a_loss_parameter_beside_a_loss_that_does_not_use_it_is_refused():
     with pytest.raises(
         ValueError,
-        match='spec "m": sgd huber_delta is for loss "huber"; loss "squared" does not use it',
+        match=(
+            'spec "m": huber_delta applies only under loss="huber", but loss is "squared", which '
+            "does not use it"
+        ),
     ):
         po.spec.sgd("m", loss="squared", huber_delta=1.0, **BASE)
 

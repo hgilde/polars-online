@@ -38,12 +38,14 @@ impl Decay {
     /// caller adds the model's name.
     pub fn check(&self) -> Result<(), String> {
         match *self {
-            Decay::Halflife(h) if h.is_nan() || h <= 0.0 => {
-                Err(format!("half_life must be > 0 (got {h}); inf is no decay"))
-            }
-            Decay::Lam(l) if l.is_nan() || l <= 0.0 || l > 1.0 => {
-                Err(format!("lam must be in (0, 1] (got {l}); 1 is no decay"))
-            }
+            Decay::Halflife(h) if h.is_nan() || h <= 0.0 => Err(format!(
+                "half_life must be above 0, but it is {h}. Set half_life to a positive \
+                 number of clock units, or to inf for no decay."
+            )),
+            Decay::Lam(l) if l.is_nan() || l <= 0.0 || l > 1.0 => Err(format!(
+                "lam must be above 0 and at most 1, but it is {l}. Set lam to a value \
+                 above 0 and below 1, or to 1 for no decay."
+            )),
             _ => Ok(()),
         }
     }
@@ -2265,7 +2267,7 @@ mod tests {
             Decay::Halflife(f64::NAN),
         ] {
             let e = bad.check().unwrap_err();
-            assert!(e.starts_with("half_life must be > 0"), "{bad:?}: {e}");
+            assert!(e.starts_with("half_life must be above 0"), "{bad:?}: {e}");
         }
         for bad in [
             Decay::Lam(0.0),
@@ -2274,7 +2276,10 @@ mod tests {
             Decay::Lam(f64::NAN),
         ] {
             let e = bad.check().unwrap_err();
-            assert!(e.starts_with("lam must be in (0, 1]"), "{bad:?}: {e}");
+            assert!(
+                e.starts_with("lam must be above 0 and at most 1"),
+                "{bad:?}: {e}"
+            );
         }
     }
 

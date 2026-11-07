@@ -68,7 +68,10 @@ impl EwCovDiag {
     /// and `> 0`, as [`EwCov::with_precision_prior`].
     pub fn with_precision_prior(k: usize, prior: f64) -> Result<Self, String> {
         if prior <= 0.0 || !prior.is_finite() {
-            return Err("EwCovDiag::with_precision_prior: prior must be finite and > 0".into());
+            return Err(format!(
+                "EwCovDiag::with_precision_prior: prior must be finite and above 0, but it is \
+                 {prior}. Pass a finite positive prior."
+            ));
         }
         Ok(Self {
             k,

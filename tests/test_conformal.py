@@ -588,16 +588,25 @@ class TestValidation:
     @pytest.mark.parametrize(
         ("kw", "msg"),
         [
-            ({"conformal": 0.0}, "conformal must be a coverage level strictly between 0 and 1"),
-            ({"conformal": 1.0}, "conformal must be a coverage level strictly between 0 and 1"),
-            ({"conformal": -0.5}, "conformal must be a coverage level strictly between 0 and 1"),
-            ({"conformal": 1.5}, "conformal must be a coverage level strictly between 0 and 1"),
+            ({"conformal": 0.0}, "conformal must be above 0 and below 1"),
+            ({"conformal": 1.0}, "conformal must be above 0 and below 1"),
+            ({"conformal": -0.5}, "conformal must be above 0 and below 1"),
+            ({"conformal": 1.5}, "conformal must be above 0 and below 1"),
             ({"conformal": float("nan")}, "conformal must not be NaN"),
             ({"conformal": float("inf")}, "conformal must be finite"),
-            ({"conformal": 0.9, "conformal_rate": 0.0}, "conformal_rate must be finite and > 0"),
-            ({"conformal": 0.9, "conformal_rate": -1.0}, "conformal_rate must be finite and > 0"),
+            (
+                {"conformal": 0.9, "conformal_rate": 0.0},
+                "conformal_rate must be finite and above 0",
+            ),
+            (
+                {"conformal": 0.9, "conformal_rate": -1.0},
+                "conformal_rate must be finite and above 0",
+            ),
             ({"conformal": 0.9, "conformal_rate": float("inf")}, "conformal_rate must be finite"),
-            ({"conformal": None, "conformal_rate": 0.1}, "conformal_rate needs conformal"),
+            (
+                {"conformal": None, "conformal_rate": 0.1},
+                "conformal_rate sets how fast the interval adapts, but conformal",
+            ),
         ],
     )
     def test_bad_values_name_the_parameter(self, kw, msg):

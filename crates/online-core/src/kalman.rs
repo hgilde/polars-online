@@ -584,16 +584,56 @@ impl KalmanCfg {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        let mut no = crate::Refusals::new();
         // The decay first: every model checks it in its own `new`, where only
         // the bank's spec did (review 2026-10-05, CF5).
-        self.decay.check().map_err(|e| format!("kalman: {e}"))?;
-        if self.n_features == 0 || self.n_targets == 0 {
-            return Err("n_features and n_targets must be >= 1".into());
-        }
+        no.take(self.decay.check().map_err(|e| format!("kalman: {e}")));
+        no.take(crate::model::check_dims(
+            "kalman",
+            self.n_features,
+            self.n_targets,
+        ));
         let k = self.k_total();
+        // `the 3 coefficients, intercept included`, as the model has them.
+        let coefs = format!(
+            "{}{}",
+            crate::model::count(k, "coefficient"),
+            if self.fit_intercept {
+                ", intercept included"
+            } else {
+                ""
+            }
+        );
+        // Every bad value of a list, not only the first.
+        let bad_of = |v: &[f64], ok: &dyn Fn(f64) -> bool| -> Vec<String> {
+            v.iter().filter(|x| !ok(**x)).map(f64::to_string).collect()
+        };
+        let one_or_these = |bad: &[String]| {
+            if let [one] = bad {
+                format!("one of its values is {one}")
+            } else {
+                format!("its values {} are not", crate::model::listed(bad))
+            }
+        };
+        let first = if self.fit_intercept {
+            ", the intercept first"
+        } else {
+            ""
+        };
+        let per_coefficient = |key: &str, n: usize| {
+            format!(
+                "kalman: {key} must list one value, or one for each of the {coefs}, but it \
+                 lists {n}. Give one value for all the coefficients, or {k} values, one for \
+                 each{first}."
+            )
+        };
         if let Some(q) = &self.q {
             if q.len() != k {
-                return Err(format!("kalman: q must have length {k}"));
+                no.refuse(format!(
+                    "kalman: q must list one value for each of the {coefs}, but it lists {}. \
+                     Give one value for each coefficient{first}.",
+                    q.len()
+                ));
             }
             // NaN passes `v < 0.0` and `v <= 0.0` alike, so each bound in
             // this function names it. A NaN `obs_var` was the silent case:
@@ -602,31 +642,42 @@ impl KalmanCfg {
             // with no error and no counted failure (review 2026-09-18, B4).
             // Finite too, as the spec layer has it: an infinite `q` puts
             // `inf` on `P`'s diagonal (review 2026-10-06, CC7).
-            if let Some(v) = q.iter().find(|v| !(v.is_finite() && **v >= 0.0)) {
-                return Err(format!("kalman: q values must be finite and >= 0, got {v}"));
+            let bad = bad_of(q, &|v| v.is_finite() && v >= 0.0);
+            if !bad.is_empty() {
+                no.refuse(format!(
+                    "kalman: q must be finite and at least 0, but {}. Set each to 0 for a \
+                     coefficient that does not drift, or to a finite positive variance.",
+                    one_or_these(&bad)
+                ));
             }
         } else {
+            // The spec's `coef_half_life`: the field is the configuration's
+            // `half_life`, but a spec's `half_life` is another parameter.
             if self.half_life.len() != 1 && self.half_life.len() != k {
-                return Err(format!("kalman: half_life must have length 1 or {k}"));
+                no.refuse(per_coefficient("coef_half_life", self.half_life.len()));
             }
-            if let Some(h) = self.half_life.iter().find(|h| h.is_nan() || **h <= 0.0) {
-                return Err(format!(
-                    "kalman: half_life values must be > 0 (inf pins), got {h}"
+            let bad = bad_of(&self.half_life, &|h| h > 0.0);
+            if !bad.is_empty() {
+                no.refuse(format!(
+                    "kalman: coef_half_life must be above 0, but {}. Set each to a positive \
+                     number of clock units, or to inf to hold the coefficient fixed.",
+                    one_or_these(&bad)
                 ));
             }
         }
         if self.revert_half_life.len() != 1 && self.revert_half_life.len() != k {
-            return Err(format!(
-                "kalman: revert_half_life must have length 1 or {k}"
+            no.refuse(per_coefficient(
+                "revert_half_life",
+                self.revert_half_life.len(),
             ));
         }
-        if let Some(h) = self
-            .revert_half_life
-            .iter()
-            .find(|h| h.is_nan() || **h <= 0.0)
-        {
-            return Err(format!(
-                "kalman: revert_half_life values must be > 0 (inf = random walk), got {h}"
+        let bad = bad_of(&self.revert_half_life, &|h| h > 0.0);
+        if !bad.is_empty() {
+            no.refuse(format!(
+                "kalman: revert_half_life must be above 0, but {}. Set each to a positive \
+                 number of clock units, or to inf for a coefficient that drifts with no pull \
+                 toward 0.",
+                one_or_these(&bad)
             ));
         }
         // Finite, as the spec layer has them: at `p0 = inf` `P` is never
@@ -634,21 +685,21 @@ impl KalmanCfg {
         // update is skipped; either predicts 0 for the life of the stream
         // (review 2026-10-06, CC7).
         if !(self.p0.is_finite() && self.p0 > 0.0) {
-            return Err(format!(
-                "kalman: p0 must be finite and > 0, got {}",
+            no.refuse(format!(
+                "kalman: p0 must be finite and above 0, but it is {}. Set p0 to each \
+                 slope's starting variance, as a multiple of the target's noise variance, such \
+                 as the default 1.",
                 self.p0
             ));
         }
         if let Some(v) = self.obs_var.filter(|v| !(v.is_finite() && *v > 0.0)) {
-            return Err(format!("kalman: obs_var must be finite and > 0, got {v}"));
-        }
-        if self.min_weight.is_nan() || self.min_weight < 0.0 {
-            return Err(format!(
-                "kalman: min_weight must be >= 0, got {}",
-                self.min_weight
+            no.refuse(format!(
+                "kalman: obs_var must be finite and above 0, but it is {v}. Set obs_var to the \
+                 target's noise variance, or leave it out to estimate it from the residuals."
             ));
         }
-        Ok(())
+        no.take(crate::model::check_min_weight("kalman", self.min_weight));
+        no.finish()
     }
 
     /// Whether any slot reverts (`Phi != I`). The default random walk skips
@@ -2883,33 +2934,45 @@ mod tests {
             c.validate().expect("should be accepted");
         };
 
-        bad(&|c| c.n_features = 0, "must be >= 1");
-        bad(&|c| c.n_targets = 0, "must be >= 1");
+        bad(
+            &|c| c.n_features = 0,
+            "needs at least one feature and one target",
+        );
+        bad(
+            &|c| c.n_targets = 0,
+            "needs at least one feature and one target",
+        );
 
         // `q` is the process noise per slot: one entry per coefficient,
         // including the intercept, and zero means "pinned".
-        bad(&|c| c.q = Some(vec![0.0; 2]), "length 3");
+        bad(&|c| c.q = Some(vec![0.0; 2]), "each of the 3 coefficients");
         bad(
             &|c| c.q = Some(vec![0.0, 0.0, -1e-9]),
-            "q values must be finite and >= 0",
+            "q must be finite and at least 0",
         );
         good(&|c| c.q = Some(vec![0.0; 3]));
 
         // Without `q`, the half-lives are broadcast: one value, or one per slot.
-        bad(&|c| c.half_life = vec![1.0, 2.0], "length 1 or 3");
-        bad(&|c| c.half_life = vec![0.0], "must be > 0");
-        bad(&|c| c.half_life = vec![-1.0], "must be > 0");
+        bad(
+            &|c| c.half_life = vec![1.0, 2.0],
+            "or one for each of the 3 coefficients",
+        );
+        bad(&|c| c.half_life = vec![0.0], "must be above 0");
+        bad(&|c| c.half_life = vec![-1.0], "must be above 0");
         good(&|c| c.half_life = vec![f64::INFINITY]);
         good(&|c| c.half_life = vec![1.0, 2.0, 3.0]);
 
         // p0 is the prior variance and obs_var the measurement noise; both
         // divide, so neither may be zero. obs_var may be absent (inferred).
-        bad(&|c| c.p0 = 0.0, "p0 must be finite and > 0");
-        bad(&|c| c.p0 = -1.0, "p0 must be finite and > 0");
-        bad(&|c| c.obs_var = Some(0.0), "obs_var must be finite and > 0");
+        bad(&|c| c.p0 = 0.0, "p0 must be finite and above 0");
+        bad(&|c| c.p0 = -1.0, "p0 must be finite and above 0");
+        bad(
+            &|c| c.obs_var = Some(0.0),
+            "obs_var must be finite and above 0",
+        );
         bad(
             &|c| c.obs_var = Some(-1.0),
-            "obs_var must be finite and > 0",
+            "obs_var must be finite and above 0",
         );
         good(&|c| c.obs_var = None);
         good(&|c| c.obs_var = Some(1e-9));
@@ -2919,16 +2982,32 @@ mod tests {
         // stream with no error and no counted failure (review 2026-09-18, B4).
         bad(
             &|c| c.obs_var = Some(f64::NAN),
-            "obs_var must be finite and > 0",
+            "obs_var must be finite and above 0",
         );
-        bad(&|c| c.p0 = f64::NAN, "p0 must be finite and > 0");
-        bad(&|c| c.half_life = vec![f64::NAN], "must be > 0");
+        bad(&|c| c.p0 = f64::NAN, "p0 must be finite and above 0");
+        bad(&|c| c.half_life = vec![f64::NAN], "must be above 0");
         bad(
             &|c| c.q = Some(vec![0.0, f64::NAN, 0.0]),
-            "q values must be finite and >= 0",
+            "q must be finite and at least 0",
         );
 
         cfg(2, 1, vec![100.0]).validate().unwrap();
+
+        // Every problem at once, each a line of its own.
+        let mut two = cfg(2, 1, vec![100.0]);
+        two.p0 = 0.0;
+        two.obs_var = Some(0.0);
+        let e = two.validate().unwrap_err();
+        let lines: Vec<&str> = e.lines().collect();
+        assert_eq!(lines.len(), 2, "{e}");
+        assert!(
+            lines[0].starts_with("kalman: p0 must be finite and above 0"),
+            "{e}"
+        );
+        assert!(
+            lines[1].starts_with("kalman: obs_var must be finite and above 0"),
+            "{e}"
+        );
     }
 
     #[test]
@@ -3877,11 +3956,14 @@ mod tests {
     #[test]
     fn revert_halflife_is_validated() {
         for (r, msg) in [
-            (vec![10.0, 10.0], "length 1 or 3"),
-            (vec![0.0], "must be > 0"),
-            (vec![-5.0], "must be > 0"),
-            (vec![f64::NAN], "must be > 0"),
-            (vec![f64::INFINITY, 10.0, f64::NEG_INFINITY], "must be > 0"),
+            (vec![10.0, 10.0], "or one for each of the 3 coefficients"),
+            (vec![0.0], "must be above 0"),
+            (vec![-5.0], "must be above 0"),
+            (vec![f64::NAN], "must be above 0"),
+            (
+                vec![f64::INFINITY, 10.0, f64::NEG_INFINITY],
+                "must be above 0",
+            ),
         ] {
             let err = Kalman::new(revert_cfg(r.clone())).unwrap_err();
             assert!(err.contains(msg), "{r:?}: {err}");

@@ -256,21 +256,21 @@ fn feature_sets_are_refused_where_they_mean_nothing() {
             feature_sets: sets(vec![0]),
             ..huber(3, 1)
         },
-        "quantile: feature_sets are for huber",
+        "quantile: feature_sets applies only to huber",
     );
     bad(
         RobustCfg {
             feature_sets: sets(vec![]),
             ..huber(3, 1)
         },
-        "is empty",
+        "names no feature",
     );
     bad(
         RobustCfg {
             feature_sets: sets(vec![3]),
             ..huber(3, 1)
         },
-        "out-of-range",
+        "names feature 3, but the model has 3 features",
     );
     bad(
         RobustCfg {
@@ -396,7 +396,7 @@ fn ridge_scale_is_refused_where_ewridge_refuses_it() {
             standardize: true,
             ..huber(3, 1)
         },
-        "ridge_scale is incompatible with standardize",
+        "but standardize is set",
     );
     bad(
         RobustCfg {
@@ -414,7 +414,7 @@ fn ridge_scale_is_refused_where_ewridge_refuses_it() {
             huber_scale_decay: None,
             ..huber(3, 1)
         },
-        "quantile: ridge_scale is for huber",
+        "quantile: ridge_scale=\"sum\" applies only to huber",
     );
     // One set is no grid, as for `ewridge`.
     assert!(
@@ -522,7 +522,10 @@ fn the_emitted_scale_is_refused_on_a_quantile_fit() {
         ..huber(3, 1)
     })
     .unwrap_err();
-    assert!(e.contains("emit_huber_scale is for huber"), "{e}");
+    assert!(
+        e.contains("emit_huber_scale reports the Huber cut's scale, but a quantile fit"),
+        "{e}"
+    );
 }
 
 /// Under the sum scale one feature set is a fit on its columns alone: at

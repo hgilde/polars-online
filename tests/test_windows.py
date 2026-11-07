@@ -2081,8 +2081,8 @@ def test_a_window_looking_ahead_with_group_needs_a_clock_column() -> None:
     )
     fwd = po.ewm_sum("x", half_life=math.inf, window_size=2.0, reverse=True)
     msg = (
-        "with_windows: a window looking ahead with group needs a clock column.*"
-        "Name a clock column, with gap_cap, or leave out group"
+        "with_windows: a window looking ahead under group needs clock, but clock is not set.*"
+        "Set clock and gap_cap, or leave group out"
     )
     with pytest.raises(ValueError, match=msg):
         po.stream.with_windows(df, f=fwd, group="g")
@@ -2787,25 +2787,27 @@ _CLOCK_REFUSALS: dict[str, tuple[dict[str, Any], type[Exception], str]] = {
     "gap_cap missing": (
         dict(clock="t"),
         ValueError,
-        "with_windows: gap_cap is required when clock is given",
+        "with_windows: gap_cap is required when clock is given, but it is not set. Set gap_cap "
+        "to the longest clock step a window should span.",
     ),
     "gap_cap inf": (
         dict(clock="t", gap_cap=math.inf),
         ValueError,
-        "with_windows: gap_cap must be finite; it is the longest step a window spans, and a "
-        "longer gap ends every window open across it. Give a cap longer than any gap a window "
-        "should span",
+        "with_windows: gap_cap must be finite, but it is inf: it is the longest step a window "
+        "spans, and a longer step ends every window open across it. Set gap_cap above every gap "
+        "a window should span.",
     ),
     "gap_cap 0": (
         dict(clock="t", gap_cap=0.0),
         ValueError,
-        "with_windows: gap_cap must be > 0; a cap of 0 froze the clock. For no decay set "
-        'half_life = "inf", or leave out the clock to count rows',
+        "with_windows: gap_cap must be above 0, but it is 0, which stops the clock. Set gap_cap "
+        "to a positive number of clock units.",
     ),
     "gap_cap negative": (
         dict(clock="t", gap_cap=-1.0),
         ValueError,
-        "with_windows: gap_cap must be a finite number > 0",
+        "with_windows: gap_cap must be finite and above 0, but it is -1. Set gap_cap to a "
+        "positive number of clock units.",
     ),
     "gap_cap NaN": (
         dict(clock="t", gap_cap=math.nan),
@@ -2815,8 +2817,8 @@ _CLOCK_REFUSALS: dict[str, tuple[dict[str, Any], type[Exception], str]] = {
     "gap_cap without clock": (
         dict(gap_cap=5.0),
         ValueError,
-        "with_windows: gap_cap needs clock; it caps the step from one clock value to the next, "
-        "and without a clock every row is one step",
+        "with_windows: gap_cap needs clock, but clock is not set: without a clock every row is "
+        "one step, with nothing to cap. Set clock, or leave gap_cap out.",
     ),
     "session_gap without session": (
         dict(clock="t", gap_cap=5.0, session_gap=1.0),
@@ -2833,13 +2835,14 @@ _CLOCK_REFUSALS: dict[str, tuple[dict[str, Any], type[Exception], str]] = {
     "session_gap inf": (
         dict(clock="t", gap_cap=5.0, session="s", session_gap=math.inf),
         ValueError,
-        "with_windows: session_gap must be finite; to start over at a session change set "
-        'session_gap = "reset"',
+        "with_windows: session_gap must be finite, but it is inf. Set session_gap to the clock "
+        'step to take at a session change, or to "reset" to start over there.',
     ),
     "session_gap negative": (
         dict(clock="t", gap_cap=5.0, session="s", session_gap=-1.0),
         ValueError,
-        'with_windows: session_gap must be >= 0 or "reset"',
+        'with_windows: session_gap must be at least 0 or "reset", but it is -1. Set session_gap '
+        'to a step of 0 or more clock units, or to "reset".',
     ),
     "session_gap NaN": (
         dict(clock="t", gap_cap=5.0, session="s", session_gap=math.nan),
@@ -3264,7 +3267,7 @@ def test_reverse_must_be_a_bool() -> None:
         extra: dict[str, Any] = {"quantile": 0.5} if name == "quantile" else {}
         with pytest.raises(TypeError) as exc:
             getattr(po, f"ewm_{name}")("x", half_life=1.0, window_size=2.0, reverse=1, **extra)
-        assert str(exc.value) == f"po.ewm_{name}: reverse must be a bool, got int"
+        assert str(exc.value) == f"po.ewm_{name}: reverse must be a bool, but it is int"
 
 
 # --------------------------------------------------------------------------

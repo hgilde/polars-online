@@ -197,10 +197,10 @@ def test_a_reset_starts_the_diagnostic_over(switch):
 @pytest.mark.parametrize("switch", SWITCHES)
 def test_a_memory_is_refused_without_its_switch_or_out_of_range(switch):
     key, _ = SWITCHES[switch]
-    with pytest.raises(ValueError, match=f"{key} needs {switch}"):
+    with pytest.raises(ValueError, match=f"{key} applies only when {switch} is on"):
         _spec(switch, **{switch: False, key: 10.0})
     for bad in (0.0, -1.0):
-        with pytest.raises(ValueError, match=f"{key} must be > 0"):
+        with pytest.raises(ValueError, match=f"{key} must be above 0, but it is"):
             _spec(switch, **{key: bad})
 
 
@@ -400,9 +400,9 @@ def test_robust_se_lags_default_to_the_horizons_twice_its_rows():
 @pytest.mark.parametrize(
     ("build", "extra", "why"),
     [
-        (po.spec.kalman, {"coef_half_life": 100.0}, "random walk"),
-        (po.spec.lasso, {"penalties": [0.01]}, "post-selection"),
-        (po.spec.huber, {}, "M-estimator"),
+        (po.spec.kalman, {"coef_half_life": 100.0}, "its own posterior"),
+        (po.spec.lasso, {"penalties": [0.01]}, "chooses its coefficients from the same rows"),
+        (po.spec.huber, {}, "a robust fit weighs each row by its loss"),
         (po.spec.sgd, {}, "gradient fit"),
     ],
 )
@@ -414,9 +414,11 @@ def test_robust_se_is_the_least_squares_fits(build, extra, why):
 
 
 def test_robust_se_knobs_need_their_switch():
-    with pytest.raises(ValueError, match="robust_se_lags needs emit_robust_se"):
+    with pytest.raises(ValueError, match="robust_se_lags applies only when emit_robust_se is on"):
         _robust_spec(emit_robust_se=False)
-    with pytest.raises(ValueError, match="robust_se_half_life needs emit_robust_se"):
+    with pytest.raises(
+        ValueError, match="robust_se_half_life applies only when emit_robust_se is on"
+    ):
         _robust_spec(emit_robust_se=False, robust_se_lags=None, robust_se_half_life=10.0)
 
 
@@ -969,7 +971,7 @@ def test_a_clocked_embargo_without_a_horizon_says_so():
 
 
 def test_horizon_rows_is_refused_without_a_diagnostic_that_reads_it():
-    with pytest.raises(ValueError, match="horizon_rows needs a diagnostic that reads it"):
+    with pytest.raises(ValueError, match="horizon_rows applies only when emit_calibration"):
         po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=20.0, horizon_rows=5)
     with pytest.raises(ValueError, match="horizon_rows must be"):
         _spec("emit_breaks", horizon_rows=2**19 + 1)
@@ -1497,23 +1499,26 @@ def test_every_memory_and_lag_is_refused_out_of_range_or_without_its_switch():
     below 0. Each refusal names the key."""
     base = dict(targets=["y"], features=["x0", "x1"], half_life=60.0)
     for key, (switch, _) in MEMORIES.items():
-        with pytest.raises(ValueError, match=f"{key} needs {switch}"):
+        with pytest.raises(ValueError, match=f"{key} applies only when {switch} is on"):
             po.spec.ewridge("m", **base, **{key: 30.0})
         for bad in (0.0, -1.0):
-            with pytest.raises(ValueError, match=f"{key} must be > 0"):
+            with pytest.raises(ValueError, match=f"{key} must be above 0, but it is"):
                 po.spec.ewridge("m", **base, **{switch: True, key: bad})
     for kw, says in (
-        (dict(ljung_box_lags=3), "ljung_box_lags needs emit_specification"),
+        (
+            dict(ljung_box_lags=3),
+            "ljung_box_lags applies only when emit_specification is on",
+        ),
         (
             dict(emit_specification=True, ljung_box_lags=2**20 + 1),
-            "ljung_box_lags must be <= 1048576, got 1048577",
+            "ljung_box_lags must be at most 1048576, but it is 1048577",
         ),
-        (dict(emit_robust_se=True, robust_se_lags=-1), "robust_se_lags must be >= 0, got -1"),
+        (dict(emit_robust_se=True, robust_se_lags=-1), "robust_se_lags must be at least 0, but it is -1"),
         (
             dict(emit_robust_se=True, robust_se_lags=2**20 + 1),
-            "robust_se_lags must be <= 1048576, got 1048577",
+            "robust_se_lags must be at most 1048576, but it is 1048577",
         ),
-        (dict(emit_breaks=True, horizon_rows=-1), "horizon_rows must be >= 0, got -1"),
+        (dict(emit_breaks=True, horizon_rows=-1), "horizon_rows must be at least 0, but it is -1"),
     ):
         with pytest.raises(ValueError, match=says):
             po.spec.ewridge("m", **base, **kw)

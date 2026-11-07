@@ -511,10 +511,9 @@ def rcov(
         # Inert since the window is all `theta` sets: deprecated rather than
         # refused, as the user decided (task 278, b11).
         warnings.warn(
-            f"{_who(name)}: theta = {theta!r} is deprecated beside preavg_rows: preavg_rows "
-            f"fixes the pre-averaging window, which is all theta sets, so theta has no effect. "
-            f"Leave it out. It is accepted and ignored until the next major version, which "
-            f"refuses it",
+            f"{_who(name)}: theta={theta!r} is ignored beside preavg_rows, which fixes the "
+            "pre-averaging span theta would set. The next major version refuses it. "
+            "Leave theta out.",
             PolarsOnlineDeprecationWarning,
             skip_file_prefixes=(_PACKAGE_DIR,),
         )

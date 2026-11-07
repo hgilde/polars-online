@@ -831,14 +831,17 @@ class TestRefusals:
         ("kw", "msg"),
         [
             ({"classes": ["a"]}, "classes must list at least 2 classes"),
-            ({"classes": ["a", "b", "a"]}, 'classes lists "a" more than once'),
-            ({"classes": ["a", ""]}, "classes must not contain an empty name"),
+            (
+                {"classes": ["a", "b", "a"]},
+                'classes must name each class once, but it lists "a" more than once',
+            ),
+            ({"classes": ["a", ""]}, "classes must name each class, but one of its names is empty"),
             (
                 {"covariance_type": "spherical"},
                 'covariance_type must be one of "full", "tied", "diag"; got "spherical"',
             ),
-            ({"precision_prior": 0.0}, "precision_prior must be finite and > 0"),
-            ({"precision_prior": -1.0}, "precision_prior must be finite and > 0"),
+            ({"precision_prior": 0.0}, "precision_prior must be finite and above 0"),
+            ({"precision_prior": -1.0}, "precision_prior must be finite and above 0"),
             ({"features": ["x0", "x0"]}, "more than once"),
             ({"features": ["x0", "y"]}, "both a label and a feature"),
         ],
@@ -854,17 +857,17 @@ class TestRefusals:
             d.update(kw)
             return po.spec.ew_class("m", half_life=10.0, **d)
 
-        with pytest.raises(TypeError, match="classes must be a list of strs, got str 'ab'"):
+        with pytest.raises(TypeError, match="classes must be a list of strs, but it is str 'ab'"):
             build(classes="ab")
-        with pytest.raises(TypeError, match="classes must be a list of strs, got list"):
+        with pytest.raises(TypeError, match="classes must be a list of strs, but it is list"):
             build(classes=[0, 1])
-        with pytest.raises(TypeError, match="label must be a str, got list"):
+        with pytest.raises(TypeError, match="label must be a str, but it is list"):
             build(label=["y"])
         with pytest.raises(
             TypeError, match='covariance_type must be one of "full", "tied", "diag", got int'
         ):
             build(covariance_type=1)
-        with pytest.raises(TypeError, match="precision_prior must be a number, got str"):
+        with pytest.raises(TypeError, match="precision_prior must be a number, but it is str"):
             build(precision_prior="1")
         with pytest.raises(ValueError, match="precision_prior must be finite"):
             build(precision_prior=float("inf"))
@@ -1152,9 +1155,9 @@ def test_the_label_listed_as_a_feature_is_refused_by_name():
     with pytest.raises(
         ValueError,
         match=(
-            r'spec "m": "y" is both a label and a feature; a feature is read from the '
-            r"current row, so this would predict the label with itself \(use a lagged "
-            r"copy of the column if you mean its past values\)"
+            r'spec "m": "y" is both a label and a feature, so the model would predict the '
+            r'label from itself on the same row\. Remove "y" from features, or use a lagged '
+            r"copy of the column as the feature\."
         ),
     ):
         spec(features=("x0", "y"))

@@ -667,7 +667,9 @@ class TestRefusals:
         with pytest.raises(ValueError, match="max_rows_between_coefs must be >= 1"):
             kind("ewridge", 30.0, max_rows_between_coefs=0)
         spec = {**kind("ewridge", 30.0), "max_rows_between_coefs": 0}
-        with pytest.raises(ValueError, match="max_rows_between_coefs must be >= 1"):
+        with pytest.raises(
+            ValueError, match="max_rows_between_coefs must be at least 1, but it is 0"
+        ):
             po.ModelBank([spec])
 
     def test_a_model_without_coefficients_refuses_both(self):

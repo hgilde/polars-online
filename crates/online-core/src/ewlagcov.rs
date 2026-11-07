@@ -60,13 +60,20 @@ use serde::{Deserialize, Serialize};
 pub const MAX_LAG: usize = 1 << 20;
 
 /// `lag`, the deepest of a list, held to [`MAX_LAG`]: the words every lag
-/// refusal says, after the owner's prefix (`what`), at each layer that
-/// checks one.
-pub fn check_lag_ceiling(what: &str, lag: usize) -> Result<(), String> {
+/// refusal says, at each layer that checks one. `param` is the parameter
+/// the reader set, as they spelled it (`lags`, `resid_autocorr_lag`); a
+/// caller adds where it happened, the spec or the model, in front.
+pub fn check_lag_ceiling(param: &str, lag: usize) -> Result<(), String> {
     if lag > MAX_LAG {
+        // A list's remedy is for each of its lags, a single lag's for it.
+        let set = if param.ends_with("lags") {
+            format!("Set each lag in {param}")
+        } else {
+            format!("Set {param}")
+        };
         return Err(format!(
-            "{what} must be at most {MAX_LAG} (2^20), got {lag}: a ring of that many rows is \
-             sized before the first row"
+            "{param} must be at most {MAX_LAG}, but it asks for a lag of {lag}: memory for that \
+             many rows is set aside before the first row. {set} to {MAX_LAG} or below."
         ));
     }
     Ok(())
@@ -117,24 +124,29 @@ impl EwLagCov {
     /// that, so a damaged lag reaches no allocation there (review
     /// 2026-10-06, CF4).
     pub fn check_lags(lags: &[usize]) -> Result<(), String> {
+        let mut no = crate::Refusals::new();
         if lags.is_empty() {
-            return Err("lags must be non-empty".into());
+            no.refuse(
+                "lags must hold at least one lag, but it is empty. Give at least one lag, such as \
+                 [1], or leave out lags.",
+            );
         }
         if lags.contains(&0) {
-            return Err(
-                "lags must be >= 1; lag 0 is the contemporaneous co-moment matrix, which is \
-                 already there as `comoments`"
-                    .into(),
+            no.refuse(
+                "lags must each be at least 1, but one of them is 0, which pairs a row with \
+                 itself, as \"cov\" and \"corr\" in stats already do. Remove the 0 from lags.",
             );
         }
         if lags.windows(2).any(|w| w[0] >= w[1]) {
-            return Err(format!(
-                "lags must be strictly increasing (got {lags:?}); the list order is the output \
-                 order, so it is not sorted for you"
+            no.refuse(format!(
+                "lags must be strictly increasing, since their order is the order of the output, \
+                 but it is {lags:?}. List the lags in increasing order, each once."
             ));
         }
-        let max = *lags.iter().max().expect("non-empty");
-        check_lag_ceiling("lags", max)
+        if let Some(&max) = lags.iter().max() {
+            no.take(check_lag_ceiling("lags", max));
+        }
+        no.finish()
     }
 
     pub fn k(&self) -> usize {
@@ -543,14 +555,18 @@ mod tests {
     #[test]
     fn a_bad_lag_list_is_refused_by_name() {
         for (lags, msg) in [
-            (vec![], "must be non-empty"),
-            (vec![0, 1], "must be >= 1"),
+            (vec![], "must hold at least one lag"),
+            (vec![0, 1], "must each be at least 1"),
             (vec![2, 1], "strictly increasing"),
             (vec![1, 1], "strictly increasing"),
         ] {
             let e = EwLagCov::new(2, lags).unwrap_err();
             assert!(e.contains(msg), "{e}");
         }
+        // Every problem at once: a 0 out of order is both.
+        let e = EwLagCov::new(2, vec![2, 0]).unwrap_err();
+        assert_eq!(e.lines().count(), 2, "{e}");
+        assert!(e.contains("must each be at least 1") && e.contains("strictly increasing"));
     }
 
     /// The ring holds `max(lags)` learned rows and is sized before the
@@ -564,7 +580,9 @@ mod tests {
                 panic!("accepted")
             };
             assert!(
-                e.contains("lags must be at most 1048576") && e.contains(&format!("got {lag}")),
+                e.contains(&format!(
+                    "lags must be at most 1048576, but it asks for a lag of {lag}"
+                )),
                 "{e}"
             );
         }

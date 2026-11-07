@@ -528,9 +528,9 @@ class TestPlumbing:
                 spec(**{flag: value})
         with pytest.raises(ValueError, match="both a target and a feature"):
             spec(targets=["x0"], features=["x0", "x1"])
-        with pytest.raises(ValueError, match="features must be non-empty"):
+        with pytest.raises(ValueError, match="features must name at least one column"):
             spec(features=[])
-        with pytest.raises(ValueError, match="targets must be non-empty"):
+        with pytest.raises(ValueError, match="targets must name at least one column"):
             spec(targets=[])
         with pytest.raises(TypeError):
             spec(stats=["corr"])  # ew_cov's keyword, not this model's

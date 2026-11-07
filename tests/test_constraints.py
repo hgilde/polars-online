@@ -1046,16 +1046,16 @@ class TestRefusals:
     @pytest.mark.parametrize("builder", [po.spec.sgd, po.spec.pa])
     def test_shapes_and_values_are_named_in_python(self, builder):
         with pytest.raises(
-            TypeError, match="coef_min must be a number or a list of numbers, got str 'a'"
+            TypeError, match="coef_min must be a number or a list of numbers, but it is str 'a'"
         ):
             builder("m", coef_min="a", **_base())
         with pytest.raises(
-            TypeError, match="coef_max must be a number or a list of numbers, got list"
+            TypeError, match="coef_max must be a number or a list of numbers, but it is list"
         ):
             builder("m", coef_max=["a"], **_base())
-        with pytest.raises(TypeError, match="coef_sum must be a number, got str"):
+        with pytest.raises(TypeError, match="coef_sum must be a number, but it is str"):
             builder("m", coef_sum="1", **_base())
-        with pytest.raises(ValueError, match="coef_sum must be finite, got float inf"):
+        with pytest.raises(ValueError, match="coef_sum must be finite, but it is inf"):
             builder("m", coef_sum=INF, **_base())
         with pytest.raises(ValueError, match="coef_min must not be NaN"):
             builder("m", coef_min=float("nan"), **_base())
@@ -1065,28 +1065,48 @@ class TestRefusals:
     @pytest.mark.parametrize(
         ("kw", "msg"),
         [
-            (dict(coef_min=[0.0, 0.0]), "coef_min lists 2 bounds for 3 features"),
-            (dict(coef_max=[0.0] * 4), "coef_max lists 4 bounds for 3 features"),
-            (dict(coef_min=1.0, coef_max=0.5), r"coef_min\[0\] = 1 is above coef_max\[0\] = 0.5"),
+            (
+                dict(coef_min=[0.0, 0.0]),
+                "coef_min must give one bound for each of the 3 features, but it lists 2",
+            ),
+            (
+                dict(coef_max=[0.0] * 4),
+                "coef_max must give one bound for each of the 3 features, but it lists 4",
+            ),
+            (
+                dict(coef_min=1.0, coef_max=0.5),
+                r"coef_min must be at most coef_max, but for feature 0, counting from 0, "
+                r"coef_min is 1 and coef_max is 0\.5",
+            ),
             (
                 dict(coef_min=[0.0, 0.0, 2.0], coef_max=1.0),
-                r"coef_min\[2\] = 2 is above coef_max\[2\] = 1",
+                r"coef_min must be at most coef_max, but for feature 2, counting from 0, "
+                r"coef_min is 2 and coef_max is 1",
             ),
             (
                 dict(coef_min=0.0, coef_max=1.0, coef_sum=3.5),
-                r"coef_sum = 3.5 is outside what the bounds allow, \[0, 3\]",
+                r"coef_sum must be one the bounds allow, from 0 to 3, but it is 3\.5",
             ),
             (
                 dict(coef_min=0.0, coef_sum=-1.0),
-                r"coef_sum = -1 is outside what the bounds allow, \[0, inf\]",
+                r"coef_sum must be one the bounds allow, from 0 to inf, but it is -1",
             ),
-            (dict(coef_min=INF), r"coef_min\[0\] is inf \(use -inf for no bound\)"),
-            (dict(coef_max=-INF), r"coef_max\[0\] is -inf \(use inf for no bound\)"),
+            (dict(coef_min=INF), "coef_min is inf for feature 0, counting from 0"),
+            (dict(coef_max=-INF), "coef_max is -inf for feature 0, counting from 0"),
             # A list of the wrong length bounds nothing it could name, and was
             # dropped unchecked when every entry was infinite (task 160, PB4).
-            (dict(coef_min=[-INF]), "coef_min lists 1 bounds for 3 features"),
-            (dict(coef_min=[]), "coef_min lists 0 bounds for 3 features"),
-            (dict(coef_max=[INF] * 4), "coef_max lists 4 bounds for 3 features"),
+            (
+                dict(coef_min=[-INF]),
+                "coef_min must give one bound for each of the 3 features, but it lists 1",
+            ),
+            (
+                dict(coef_min=[]),
+                "coef_min must give one bound for each of the 3 features, but it lists 0",
+            ),
+            (
+                dict(coef_max=[INF] * 4),
+                "coef_max must give one bound for each of the 3 features, but it lists 4",
+            ),
         ],
     )
     @pytest.mark.parametrize("builder", [po.spec.sgd, po.spec.pa])

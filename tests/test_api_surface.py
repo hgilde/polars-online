@@ -696,7 +696,8 @@ def words_in(message: str, parameter: str) -> list[str]:
     at = message.find(parameter)
     tail = message[at + len(parameter) :] if at >= 0 else message
     quoted = [next(g for g in m.groups() if g is not None) for m in _QUOTED.finditer(tail)]
-    words = [q for q in quoted if q != BOGUS and _WORD.fullmatch(q)]
+    # Each once: a refusal of one word names it again in its remedy.
+    words = list(dict.fromkeys(q for q in quoted if q != BOGUS and _WORD.fullmatch(q)))
     listed = re.search(r"(?:expected|one of)(.*)", tail, flags=re.DOTALL)
     if not words and listed:
         bare = re.split(r"[;\n]|\(got|, got|\)", listed.group(1))[0].replace("one of", "")

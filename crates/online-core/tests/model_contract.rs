@@ -1377,8 +1377,8 @@ fn every_model_refuses_a_decay_it_cannot_run_on() {
         for decay in bad {
             let e = build(decay).expect_err(&format!("{name}: {decay:?} was accepted"));
             let says = match decay {
-                Decay::Halflife(_) => "half_life must be > 0",
-                Decay::Lam(_) => "lam must be in (0, 1]",
+                Decay::Halflife(_) => "half_life must be above 0",
+                Decay::Lam(_) => "lam must be above 0 and at most 1",
             };
             assert!(
                 e.starts_with(&format!("{name}: {says}")),
@@ -1445,7 +1445,7 @@ fn every_model_refuses_at_restore_a_configuration_its_new_refuses() {
         kind.to_string()
     }
     let zero = || rmpv::Value::Map(vec![("Halflife".into(), 0.0.into())]);
-    let h = "half_life must be > 0";
+    let h = "half_life must be above 0";
     let kinds = [
         refused(EwRidge::new(ewridge_cfg()).unwrap(), "decay", zero(), h),
         refused(Rls::new(rls_cfg()).unwrap(), "decay", zero(), h),
@@ -1470,7 +1470,7 @@ fn every_model_refuses_at_restore_a_configuration_its_new_refuses() {
             Holt::new(holt_cfg()).unwrap(),
             "level_half_life",
             0.0.into(),
-            "level_half_life must be > 0",
+            "half_life, the level's half-life, must be above 0",
         ),
         refused(
             EwCovModel::new(ew_cov_model_cfg()).unwrap(),
@@ -1485,7 +1485,7 @@ fn every_model_refuses_at_restore_a_configuration_its_new_refuses() {
             SeqTest::new(seqtest_cfg()).unwrap(),
             "min_weight",
             f64::NAN.into(),
-            "min_weight must be >= 0",
+            "min_weight must be at least 0",
         ),
         refused(Marginal::new(marginal_cfg()).unwrap(), "decay", zero(), h),
         refused(Deco::new(deco_cfg()).unwrap(), "decay", zero(), h),
@@ -1493,7 +1493,7 @@ fn every_model_refuses_at_restore_a_configuration_its_new_refuses() {
             Rcov::new(rcov_cfg()).unwrap(),
             "theta",
             0.0.into(),
-            "theta must be finite and > 0",
+            "theta must be finite and above 0",
         ),
         refused(Hmm::new(hmm_cfg()).unwrap(), "decay", zero(), h),
         refused(
@@ -1506,13 +1506,13 @@ fn every_model_refuses_at_restore_a_configuration_its_new_refuses() {
             Bocpd::new(bocpd_cfg()).unwrap(),
             "hazard",
             0.5.into(),
-            "must be finite and > 1",
+            "must be finite and above 1",
         ),
         refused(
             Audit::new(audit_cfg()).unwrap(),
             "distinct_cap",
             0.into(),
-            "distinct_cap must be in 1..=",
+            "distinct_cap must be from 1 to",
         ),
     ];
     // Every model's `restore`: the twenty-one kinds, `robust` under both
@@ -1549,105 +1549,105 @@ fn every_core_validate_refuses_what_the_spec_refuses() {
                 ridge: vec![1e-6, nan],
                 ..ewridge_cfg()
             }),
-            "ewridge: ridge must be finite and >= 0, got NaN",
+            "ewridge: ridge must be finite and at least 0, but one of its values is NaN.",
         ),
         (
             ewridge(EwRidgeCfg {
                 ridge: vec![-1.0],
                 ..ewridge_cfg()
             }),
-            "ewridge: ridge must be finite and >= 0, got -1",
+            "ewridge: ridge must be finite and at least 0, but it is -1.",
         ),
         (
             ewridge(EwRidgeCfg {
                 ridge: vec![inf],
                 ..ewridge_cfg()
             }),
-            "ewridge: ridge must be finite and >= 0, got inf",
+            "ewridge: ridge must be finite and at least 0, but it is inf.",
         ),
         (
             ewridge(EwRidgeCfg {
                 min_weight: nan,
                 ..ewridge_cfg()
             }),
-            "ewridge: min_weight must be >= 0, got NaN",
+            "ewridge: min_weight must be at least 0, but it is NaN.",
         ),
         (
             lasso(LassoCfg {
                 tol: nan,
                 ..lasso_cfg()
             }),
-            "lasso: tol must be finite and > 0, got NaN",
+            "lasso: tol must be finite and above 0, but it is NaN.",
         ),
         (
             lasso(LassoCfg {
                 tol: 0.0,
                 ..lasso_cfg()
             }),
-            "lasso: tol must be finite and > 0, got 0",
+            "lasso: tol must be finite and above 0, but it is 0.",
         ),
         (
             lasso(LassoCfg {
                 tol: inf,
                 ..lasso_cfg()
             }),
-            "lasso: tol must be finite and > 0, got inf",
+            "lasso: tol must be finite and above 0, but it is inf.",
         ),
         (
             lasso(LassoCfg {
                 select_half_life: Some(0.0),
                 ..lasso_cfg()
             }),
-            "lasso: select_half_life must be > 0, got 0",
+            "lasso: select_half_life must be above 0, but it is 0.",
         ),
         (
             lasso(LassoCfg {
                 select_half_life: Some(nan),
                 ..lasso_cfg()
             }),
-            "lasso: select_half_life must be > 0, got NaN",
+            "lasso: select_half_life must be above 0, but it is NaN.",
         ),
         (
             lasso(LassoCfg {
                 lasso_path: vec![nan],
                 ..lasso_cfg()
             }),
-            "lasso: penalties must each be finite and >= 0, got NaN",
+            "lasso: penalties must each be finite and at least 0, but one of them is NaN.",
         ),
         (
             lasso(LassoCfg {
                 lasso_path: vec![inf, 0.1],
                 ..lasso_cfg()
             }),
-            "lasso: penalties must each be finite and >= 0, got inf",
+            "lasso: penalties must each be finite and at least 0, but one of them is inf.",
         ),
         (
             lasso(LassoCfg {
                 min_weight: nan,
                 ..lasso_cfg()
             }),
-            "lasso: min_weight must be >= 0, got NaN",
+            "lasso: min_weight must be at least 0, but it is NaN.",
         ),
         (
             rls(RlsCfg {
                 delta: inf,
                 ..rls_cfg()
             }),
-            "rls: delta must be finite and > 0 (it sets P0 = I / delta), got inf",
+            "rls: delta must be finite and above 0, but it is inf.",
         ),
         (
             rls(RlsCfg {
                 delta: nan,
                 ..rls_cfg()
             }),
-            "rls: delta must be finite and > 0 (it sets P0 = I / delta), got NaN",
+            "rls: delta must be finite and above 0, but it is NaN.",
         ),
         (
             rls(RlsCfg {
                 min_weight: nan,
                 ..rls_cfg()
             }),
-            "rls: min_weight must be >= 0, got NaN",
+            "rls: min_weight must be at least 0, but it is NaN.",
         ),
         // Review round 5 (C6): a NaN `min_weight` loaded through the Rust
         // API for the three models that did not check it, and a NaN
@@ -1658,7 +1658,7 @@ fn every_core_validate_refuses_what_the_spec_refuses() {
                 ..sgd_cfg()
             })
             .map(drop),
-            "sgd: min_weight must be >= 0, got NaN",
+            "sgd: min_weight must be at least 0, but it is NaN.",
         ),
         (
             Sgd::new(SgdCfg {
@@ -1666,7 +1666,7 @@ fn every_core_validate_refuses_what_the_spec_refuses() {
                 ..sgd_cfg()
             })
             .map(drop),
-            "sgd: min_weight must be >= 0, got -1",
+            "sgd: min_weight must be at least 0, but it is -1.",
         ),
         (
             Holt::new(HoltCfg {
@@ -1674,7 +1674,7 @@ fn every_core_validate_refuses_what_the_spec_refuses() {
                 ..holt_cfg()
             })
             .map(drop),
-            "holt: min_weight must be >= 0, got NaN",
+            "holt: min_weight must be at least 0, but it is NaN.",
         ),
         (
             EwCovModel::new(EwCovCfg {
@@ -1683,119 +1683,119 @@ fn every_core_validate_refuses_what_the_spec_refuses() {
                 ..ew_cov_model_cfg()
             })
             .map(drop),
-            "ew_cov: min_weight must be >= 0, got NaN",
+            "ew_cov: min_weight must be at least 0, but it is NaN.",
         ),
         (
             ewridge(EwRidgeCfg {
                 solve_every: nan,
                 ..ewridge_cfg()
             }),
-            "ewridge: solve_every must not be NaN",
+            "ewridge: solve_every must be a number, but it is NaN.",
         ),
         (
             lasso(LassoCfg {
                 solve_every: nan,
                 ..lasso_cfg()
             }),
-            "lasso: solve_every must not be NaN",
+            "lasso: solve_every must be a number, but it is NaN.",
         ),
         (
             robust(RobustCfg {
                 solve_every: nan,
                 ..quantile()
             }),
-            "quantile: solve_every must not be NaN",
+            "quantile: solve_every must be a number, but it is NaN.",
         ),
         (
             robust(RobustCfg {
                 ridge: nan,
                 ..huber()
             }),
-            "huber: ridge must be finite and >= 0, got NaN",
+            "huber: ridge must be finite and at least 0, but it is NaN.",
         ),
         (
             robust(RobustCfg {
                 ridge: inf,
                 ..quantile()
             }),
-            "quantile: ridge must be finite and >= 0, got inf",
+            "quantile: ridge must be finite and at least 0, but it is inf.",
         ),
         (
             robust(RobustCfg {
                 quantile_eps: nan,
                 ..quantile()
             }),
-            "quantile: quantile_eps must be finite and > 0, got NaN",
+            "quantile: quantile_eps must be finite and above 0, but it is NaN.",
         ),
         (
             robust(RobustCfg {
                 quantile_eps: inf,
                 ..quantile()
             }),
-            "quantile: quantile_eps must be finite and > 0, got inf",
+            "quantile: quantile_eps must be finite and above 0, but it is inf.",
         ),
         (
             robust(RobustCfg {
                 min_weight: nan,
                 ..huber()
             }),
-            "huber: min_weight must be >= 0, got NaN",
+            "huber: min_weight must be at least 0, but it is NaN.",
         ),
         (
             robust(RobustCfg {
                 loss: RobustLoss::Huber { delta: nan },
                 ..huber()
             }),
-            "huber: huber_delta must be > 0, got NaN",
+            "huber: huber_delta must be above 0, but it is NaN.",
         ),
         (
             robust(RobustCfg {
                 loss: RobustLoss::Quantile { tau: 1.5 },
                 ..quantile()
             }),
-            "quantile: quantile must be in (0, 1), got 1.5",
+            "quantile: quantile must be above 0 and below 1, but it is 1.5.",
         ),
         (
             kalman(KalmanCfg {
                 p0: inf,
                 ..kalman_cfg()
             }),
-            "kalman: p0 must be finite and > 0, got inf",
+            "kalman: p0 must be finite and above 0, but it is inf.",
         ),
         (
             kalman(KalmanCfg {
                 obs_var: Some(inf),
                 ..kalman_cfg()
             }),
-            "kalman: obs_var must be finite and > 0, got inf",
+            "kalman: obs_var must be finite and above 0, but it is inf.",
         ),
         (
             kalman(KalmanCfg {
                 q: Some(vec![0.0, inf, 0.0]),
                 ..kalman_cfg()
             }),
-            "kalman: q values must be finite and >= 0, got inf",
+            "kalman: q must be finite and at least 0, but one of its values is inf.",
         ),
         (
             kalman(KalmanCfg {
                 min_weight: nan,
                 ..kalman_cfg()
             }),
-            "kalman: min_weight must be >= 0, got NaN",
+            "kalman: min_weight must be at least 0, but it is NaN.",
         ),
         (
             kalman(KalmanCfg {
                 half_life: vec![nan],
                 ..kalman_cfg()
             }),
-            "kalman: half_life values must be > 0 (inf pins), got NaN",
+            "kalman: coef_half_life must be above 0, but one of its values is NaN.",
         ),
         (
             kalman(KalmanCfg {
                 revert_half_life: vec![0.0],
                 ..kalman_cfg()
             }),
-            "kalman: revert_half_life values must be > 0 (inf = random walk), got 0",
+            "kalman: revert_half_life must be above 0, but one of its values is 0.",
         ),
     ];
     let wrong: Vec<String> = refused

@@ -389,7 +389,7 @@ fn a_deprecated_model_key_is_read_with_a_warning() {
     assert_eq!(code, Some(0), "{err}");
     assert!(
         err.contains(
-            "polars-online: warning: emission = \"gaussian\" is deprecated: it is \
+            "polars-online: warning: emission = \"gaussian\" is deprecated: it is read as \
              covariance_type = \"full\""
         ),
         "{err}"

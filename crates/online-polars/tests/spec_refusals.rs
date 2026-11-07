@@ -53,10 +53,7 @@ fn a_lag_or_n_perm_past_the_ceiling_is_refused_by_name() {
             &format!(r#"{{"type": "corrchange", {window}, "n_perm": 1048577}}"#),
             "",
         ),
-        &[
-            "corrchange: n_perm must be at most 1048576 (2^20)",
-            "got 1048577",
-        ],
+        &["n_perm must be at most 1048576, but it is 1048577"],
     );
     accepted(&unsup(
         &format!(r#"{{"type": "corrchange", {window}, "n_perm": 1048576}}"#),
@@ -69,8 +66,8 @@ fn a_lag_or_n_perm_past_the_ceiling_is_refused_by_name() {
                 "",
             ),
             &[
-                "marginal: lags must be at most 1048576 (2^20)",
-                &format!("got {lag}"),
+                format!("spec \"m\": lags must be at most 1048576, but it asks for a lag of {lag}")
+                    .as_str(),
             ],
         );
         refused(
@@ -78,17 +75,20 @@ fn a_lag_or_n_perm_past_the_ceiling_is_refused_by_name() {
                 &format!(r#"{{"type": "ew_cov", "lags": [{lag}]}}"#),
                 r#", "half_life": 10.0"#,
             ),
-            &["ew_cov lags must be at most 1048576", &format!("got {lag}")],
+            &[
+                format!("spec \"m\": lags must be at most 1048576, but it asks for a lag of {lag}")
+                    .as_str(),
+            ],
         );
         refused(
             &sup(
                 r#"{"type": "ewridge"}"#,
                 &format!(r#", "emit_autocorr": true, "resid_autocorr_lag": {lag}"#),
             ),
-            &[
-                "resid_autocorr_lag must be at most 1048576",
-                &format!("got {lag}"),
-            ],
+            &[format!(
+                "resid_autocorr_lag must be at most 1048576, but it asks for a lag of {lag}"
+            )
+            .as_str()],
         );
     }
 }
@@ -104,20 +104,14 @@ fn kmeans_sizes_have_ceilings_and_micro_needs_none() {
             r#"{"type": "kmeans", "n_clusters": 65537, "warm_rows": 65537}"#,
             r#", "half_life": 10.0"#,
         ),
-        &[
-            "kmeans: n_clusters must be at most 65536 (2^16)",
-            "got 65537",
-        ],
+        &["n_clusters must be at most 65536, but it is 65537"],
     );
     refused(
         &unsup(
             r#"{"type": "kmeans", "n_clusters": 3, "warm_rows": 5592406}"#,
             r#", "half_life": 10.0"#,
         ),
-        &[
-            "kmeans: the warm-up buffer would hold 256.00003 MiB",
-            "warm_rows 5592406 rows of 2 features",
-        ],
+        &["the first 5592406 rows, which seed the centers, would take 256.00003 MiB at 2 features"],
     );
     accepted(&unsup(
         r#"{"type": "micro", "eps": 0.3, "max_clusters": 10000000}"#,
@@ -141,10 +135,7 @@ fn hmm_k_has_a_ceiling() {
     for k in [1025u64, 1 << 62] {
         refused(
             &hmm(k),
-            &[
-                "hmm: n_components must be at most 1024 (2^10)",
-                &format!("got {k}"),
-            ],
+            &[format!("n_components must be at most 1024, but it is {k}").as_str()],
         );
     }
     accepted(&hmm(1024));
@@ -164,7 +155,7 @@ fn rcov_lagged_products_have_a_byte_ceiling() {
                 "features": [{ten}], "group": "g", "group_close": "monotone"}}"#
         ),
         &[
-            "rcov: the lagged products would take 800 MiB",
+            "the lagged covariances the model keeps would take 800 MiB",
             "over the 256 MiB",
         ],
     );
@@ -178,14 +169,14 @@ fn kmeans_refuses_a_dead_rule_with_no_check_and_too_few_warm_rows() {
     let km = |model: &str| unsup(model, r#", "half_life": 10.0"#);
     refused(
         &km(r#"{"type": "kmeans", "n_clusters": 3, "split_merge": 0.0, "dead_frac": 0.25}"#),
-        &["kmeans: dead_frac", "split_merge = 0", "0.25"],
+        &["dead_frac", "split_merge = 0", "0.25"],
     );
     accepted(&km(
         r#"{"type": "kmeans", "n_clusters": 3, "split_merge": 0.0}"#,
     ));
     refused(
         &km(r#"{"type": "kmeans", "n_clusters": 3, "warm_rows": 1}"#),
-        &["kmeans: warm_rows must be at least n_clusters (3)", "got 1"],
+        &["warm_rows must be at least n_clusters (3)", "but it is 1"],
     );
     accepted(&km(r#"{"type": "kmeans", "n_clusters": 600}"#));
 }
@@ -212,7 +203,7 @@ fn a_parameter_its_mode_does_not_read_is_refused() {
     ] {
         refused(
             &with_z(hmm(&format!(r#"{tvtp}, "{param}": {value}"#))),
-            &[&format!("hmm: {param} does not apply with tvtp_coef")],
+            &[&format!("{param} does not apply under tvtp_coef")],
         );
     }
     accepted(&with_z(hmm(tvtp)));
@@ -220,7 +211,7 @@ fn a_parameter_its_mode_does_not_read_is_refused() {
         refused(
             &hmm(&format!(r#"{given}, "{param}": {value}"#)),
             &[&format!(
-                "hmm: {param} does not apply with means and covs given"
+                "{param} does not apply when means and covs are given"
             )],
         );
     }
@@ -244,7 +235,7 @@ fn a_parameter_its_mode_does_not_read_is_refused() {
                 r#"{{"type": "rcov", "kind": "{kind}", "block_rows": 100, "{param}": {value}}}"#
             )),
             &[&format!(
-                "rcov: {param} applies to kind = {owner}, not \"{kind}\""
+                "{param} applies only under kind={owner}, but kind is \"{kind}\"."
             )],
         );
     }
@@ -267,13 +258,13 @@ fn a_covariance_refusal_names_the_spec_and_the_parameter() {
             r#"{"type": "hmm", "n_components": 2, "precision_prior": 0.1, "covariance_type": "lda"}"#,
             r#", "half_life": 10.0"#,
         ),
-        &["covariance_type must be one of \"full\", \"tied\", \"diag\"; got \"lda\""],
+        &["covariance_type must be \"full\", \"tied\" or \"diag\", but it is \"lda\"."],
     );
     refused(
         r#"{"name": "m", "model": {"type": "ew_class", "classes": ["a", "b"],
             "precision_prior": 1.0, "covariance_type": "lda"}, "targets": ["y"],
             "features": ["x0"], "half_life": 10.0}"#,
-        &["covariance_type must be one of \"full\", \"tied\", \"diag\"; got \"lda\""],
+        &["covariance_type must be \"full\", \"tied\" or \"diag\", but it is \"lda\"."],
     );
 }
 
@@ -289,11 +280,11 @@ fn kalman_takes_exactly_one_of_coef_half_life_and_q() {
             r#"{"type": "kalman", "coef_half_life": 50.0, "q": [0.0, 0.1, 0.1]}"#,
             "",
         ),
-        &["kalman takes coef_half_life or q, not both"],
+        &["spec \"m\": coef_half_life and q cannot both be set"],
     );
     refused(
         &sup(r#"{"type": "kalman"}"#, ""),
-        &["kalman needs coef_half_life", "or q"],
+        &["kalman needs coef_half_life or q, but neither is set."],
     );
 }
 
@@ -306,12 +297,12 @@ fn the_empties_are_refused() {
             r#"{"type": "ew_cov", "stats": ["mahal"], "precision_prior": 1.0, "mahal_quantiles": []}"#,
             r#", "half_life": 10.0"#,
         ),
-        &["mahal_quantiles must be non-empty"],
+        &["mahal_quantiles must list at least one level, but it is empty."],
     );
     refused(
         r#"{"name": "m", "model": {"type": "ewridge"}, "targets": [""], "features": ["x0"],
             "half_life": 10.0}"#,
-        &["targets must not contain an empty name"],
+        &["every target needs a name, but one of them is \"\""],
     );
     // An empty `lags` asked for nothing, and `marginal` took it as no lags
     // where `ew_cov` refuses it; `cross_lags = []` is a choice, the least
@@ -321,15 +312,17 @@ fn the_empties_are_refused() {
             r#"{"type": "ew_cov", "lags": []}"#,
             r#", "half_life": 10.0"#,
         ),
-        &["ew_cov lags must be non-empty"],
+        &["spec \"m\": lags must hold at least one lag, but it is empty"],
     );
     refused(
         &sup(r#"{"type": "marginal", "lags": []}"#, ""),
-        &["marginal lags must be non-empty; leave it out for none"],
+        &[
+            "spec \"m\": lags must hold at least one lag, but it is empty. Give at least one lag, such as [1], or leave lags out.",
+        ],
     );
     refused(
         &sup(r#"{"type": "marginal", "lags": [], "cross_lags": []}"#, ""),
-        &["marginal lags must be non-empty"],
+        &["lags must hold at least one lag, but it is empty"],
     );
     accepted(&sup(
         r#"{"type": "marginal", "lags": [1, 2], "cross_lags": []}"#,
@@ -344,7 +337,9 @@ fn the_empties_are_refused() {
 fn minus_zero_is_zero_in_a_grid_and_a_field_name() {
     refused(
         &sup(r#"{"type": "ewridge", "ridge": [0.0, -0.0]}"#, ""),
-        &["ridge lists 0 more than once"],
+        &[
+            "ridge must list each value once, since each names its own fields, but it lists 0 more than once.",
+        ],
     );
     let mut s: Spec =
         serde_json::from_str(&sup(r#"{"type": "ewridge", "ridge": [-0.0, 1.0]}"#, "")).unwrap();
@@ -367,34 +362,34 @@ fn a_refused_value_is_named() {
         ),
         (
             sup(r#"{"type": "ewridge"}"#, r#", "min_weight": -2.0"#),
-            "min_weight must be >= 0, got -2",
+            "min_weight must be finite and at least 0, but it is -2. Set min_weight to 0 to predict from the first row, or to a finite positive value.",
         ),
         (
             sup(r#"{"type": "ewridge", "solve_every": -3.0}"#, ""),
-            "solve_every must be >= 0 (0 solves every row, inf never), got -3",
+            "solve_every must be at least 0 clock units, but it is -3",
         ),
         (
             sup(r#"{"type": "ewridge"}"#, r#", "conformal": 1.5"#),
-            "got 1.5",
+            "conformal must be above 0 and below 1, but it is 1.5.",
         ),
         (
             sup(r#"{"type": "lasso", "penalties": [0.1], "tol": 0.0}"#, ""),
-            "tol must be finite and > 0, got 0",
+            "tol must be finite and above 0, but it is 0.",
         ),
         (
             sup(
                 r#"{"type": "kalman", "coef_half_life": 50.0, "p0": -1.0}"#,
                 "",
             ),
-            "p0 must be finite and > 0, got -1",
+            "p0 must be finite and above 0, but it is -1.",
         ),
         (
             sup(r#"{"type": "ftrl", "alpha": 0.0}"#, ""),
-            "ftrl alpha must be finite and > 0, got 0",
+            "spec \"m\": alpha must be finite and above 0, but it is 0.",
         ),
         (
             sup(r#"{"type": "sgd", "learning_rate": -0.5}"#, ""),
-            "learning_rate must be finite and > 0, got -0.5",
+            "learning_rate must be finite and above 0, but it is -0.5.",
         ),
         (
             unsup(
@@ -408,13 +403,13 @@ fn a_refused_value_is_named() {
                 r#"{"type": "micro", "eps": -0.5}"#,
                 r#", "half_life": 10.0"#,
             ),
-            "micro eps must be finite and > 0, got -0.5",
+            "spec \"m\": eps must be finite and above 0, but it is -0.5.",
         ),
         (
             r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"],
                 "features": ["x0"], "half_life": [10.0, -4.0]}"#
                 .to_string(),
-            "half_life must be > 0 (\"inf\" for no decay), got -4",
+            "half_life must be above 0, but one of its values is -4",
         ),
     ] {
         refused(&json, &[want]);
@@ -428,7 +423,7 @@ fn a_refused_value_is_named() {
 fn a_models_refusal_names_the_spec() {
     refused(
         &sup(r#"{"type": "sgd", "clip_gradient": 0.0}"#, ""),
-        &["sgd: clip_gradient must be > 0"],
+        &["clip_gradient must be above 0, but it is 0."],
     );
     for model in [
         r#"{"type": "lasso", "penalties": [0.1], "window_size": "inf"}"#,
@@ -460,39 +455,39 @@ fn a_count_of_zero_is_refused_by_name() {
     let cases: Vec<(String, &str)> = vec![
         (
             unsup(r#"{"type": "kmeans", "n_clusters": 0}"#, HL),
-            "kmeans n_clusters must be >= 1, got 0",
+            "spec \"m\": n_clusters must be at least 1, but it is 0.",
         ),
         (
             unsup(
                 r#"{"type": "kmeans", "n_clusters": 2, "update_every_rows": 0}"#,
                 HL,
             ),
-            "update_every_rows must be >= 1, got 0",
+            "update_every_rows must be at least 1, but it is 0.",
         ),
         (
             unsup(
                 r#"{"type": "kmeans", "n_clusters": 2, "split_merge_every_rows": 0}"#,
                 HL,
             ),
-            "split_merge_every_rows must be >= 1, got 0",
+            "split_merge_every_rows must be at least 1, but it is 0.",
         ),
         (
             unsup(r#"{"type": "micro", "eps": 0.5, "max_clusters": 0}"#, HL),
-            "max_clusters must be >= 1, got 0",
+            "max_clusters must be at least 1, but it is 0.",
         ),
         (
             sup(
                 r#"{"type": "ewridge"}"#,
                 r#", "emit_specification": true, "ljung_box_lags": 0"#,
             ),
-            "ljung_box_lags must be >= 1, got 0",
+            "ljung_box_lags must be at least 1, but it is 0.",
         ),
         (
             sup(
                 r#"{"type": "ewridge"}"#,
                 r#", "emit_autocorr": true, "resid_autocorr_lag": 0"#,
             ),
-            "resid_autocorr_lag must be >= 1, got 0",
+            "resid_autocorr_lag must be at least 1, but it is 0.",
         ),
     ];
     for (json, want) in cases {
@@ -515,10 +510,10 @@ fn a_horizon_past_half_the_lag_ceiling_is_refused() {
         &at(half + 1),
         &[
             &format!(
-                "horizon_rows must be at most {half} (2^19), got {}",
+                "horizon_rows must be at most {half}, but it is {}",
                 half + 1
             ),
-            "Newey and West",
+            "Lower horizon_rows to",
         ],
     );
     accepted(&at(half));
@@ -535,7 +530,7 @@ fn a_spec_built_in_rust_with_no_gram_threads_is_refused() {
     *gram_threads = Some(online_polars::CountOrAuto::Count(0));
     let e = s.check().expect_err("gram_threads = 0 accepted");
     assert!(
-        e.starts_with("spec \"m\": gram_threads must be >= 1") && e.contains("got 0"),
+        e.starts_with("spec \"m\": gram_threads must be at least 1 or \"auto\", but it is 0."),
         "{e}"
     );
 }
@@ -548,23 +543,25 @@ fn a_model_given_what_it_cannot_read_is_refused() {
     refused(
         r#"{"name": "m", "model": {"type": "holt"}, "targets": ["y"], "features": ["x0"],
             "half_life": 10.0}"#,
-        &["holt takes no features (got 1)"],
+        &["holt takes no features, but features lists 1"],
     );
     refused(
         r#"{"name": "m", "model": {"type": "ew_class", "classes": ["a", "b"], "precision_prior": 1.0},
             "targets": ["y", "z"], "features": ["x0"], "half_life": 10.0}"#,
-        &["ew_class takes exactly one target, the label column (got 2)"],
+        &["ew_class reads one target, the column of classes, but targets names 2 columns."],
     );
     refused(
         &sup(r#"{"type": "rls", "coef_prior": [[1.0, 2.0]]}"#, ""),
-        &["coef_prior must be n_targets x (n_features + intercept)"],
+        &[
+            "coef_prior must hold one list of 3 coefficients for the target, but it holds 1 list of 2. Give one list for each target, the intercept first, then one for each feature in the order of features.",
+        ],
     );
     refused(
         &sup(
             r#"{"type": "ewridge", "feature_sets": [["a", ["x0", "nope"]]]}"#,
             "",
         ),
-        &["feature set \"a\" references unknown feature \"nope\""],
+        &["feature set \"a\" lists \"nope\", which is not one of features"],
     );
     let e = check(&unsup(
         r#"{"type": "deco", "blocks": [["a", ["x0", "zz"]], ["b", ["x1", "x2"]]]}"#,
@@ -578,8 +575,8 @@ fn a_model_given_what_it_cannot_read_is_refused() {
     ))
     .expect_err("sequential without window_rows accepted");
     assert!(
-        e.contains("kind = \"sequential\" needs `window_rows`")
-            && e.contains("the rows of history each monitoring period is tested against"),
+        e.contains("kind=\"sequential\" needs window_rows")
+            && e.contains("the rows of history each monitored period is tested against"),
         "{e}"
     );
 }
@@ -600,11 +597,11 @@ fn a_formula_target_is_refused_by_a_model_it_does_not_apply_to() {
     for (model, why) in [
         (
             r#"{"type": "sgd", "loss": "logistic"}"#,
-            "fits a probability to a 0/1 target (loss = \"logistic\")",
+            "fits a probability to a 0/1 target under loss=\"logistic\"",
         ),
         (
             r#"{"type": "sgd", "loss": "poisson"}"#,
-            "fits a log rate to a count (loss = \"poisson\")",
+            "fits a log rate to a count under loss=\"poisson\"",
         ),
     ] {
         refused(&with(model), &["a formula target", why]);
@@ -624,8 +621,8 @@ fn a_session_without_its_rule_or_with_a_word_it_does_not_know_is_refused() {
     let clocked = r#", "clock": "t", "gap_cap": 5.0, "session": "s""#;
     let e = check(&sup(r#"{"type": "ewridge"}"#, clocked)).expect_err("no session_gap");
     assert!(
-        e.contains("session_gap is required when session is given")
-            && e.contains("group_close = \"session\""),
+        e.contains("session needs session_gap, but session_gap is not set")
+            && e.contains("group_close=\"session\""),
         "{e}"
     );
     // The reader takes no word but "reset"; a spec built in Rust is held to
@@ -638,7 +635,7 @@ fn a_session_without_its_rule_or_with_a_word_it_does_not_know_is_refused() {
     s.session_gap = Some(online_polars::SessionGapSpec::Word("restart".into()));
     let e = s.check().expect_err("a session_gap word accepted");
     assert!(
-        e.contains("session_gap must be a number, a duration or \"reset\", got \"restart\""),
+        e.contains("session_gap must be a number, a duration or \"reset\", but it is \"restart\""),
         "{e}"
     );
     // A negative integer is read as a number, and refused as one.
@@ -647,7 +644,10 @@ fn a_session_without_its_rule_or_with_a_word_it_does_not_know_is_refused() {
         &format!(r#"{clocked}, "session_gap": -2"#),
     ))
     .expect_err("a negative session_gap accepted");
-    assert!(e.contains("session_gap must be >= 0 or \"reset\""), "{e}");
+    assert!(
+        e.contains("session_gap must be at least 0 or \"reset\""),
+        "{e}"
+    );
 }
 
 /// The window operators' run says the same about a cap that is not finite,
@@ -673,7 +673,7 @@ fn a_window_runs_clock_rules_are_said_in_a_windows_words() {
     };
     let e = refusal(r#", "gap_cap": "inf""#);
     assert!(
-        e.contains("gap_cap must be finite; it is the longest step a window spans"),
+        e.contains("gap_cap must be finite, but it is inf: it is the longest step a window spans"),
         "{e}"
     );
     // A session needs no gap here: every window ends at a session change,
@@ -693,7 +693,8 @@ fn a_window_runs_clock_rules_are_said_in_a_windows_words() {
 
 /// A deprecated model key forwarded beside the key it became is refused;
 /// one forwarded alone keeps a value that is not its word for the new key
-/// to refuse in its own words, and says so.
+/// to refuse in its own words, with no notice, since that refusal says all
+/// the reader needs. Inside a spec, each notice and refusal names it.
 #[test]
 fn a_deprecated_model_key_beside_its_new_name_is_refused() {
     use online_polars::forward_deprecated_in_models;
@@ -714,13 +715,27 @@ fn a_deprecated_model_key_beside_its_new_name_is_refused() {
     let notices = forward_deprecated_in_models(&mut v).unwrap();
     assert_eq!(v["covariance_type"], "laplace");
     assert!(v.get("robust_beta").is_none(), "{v}");
+    assert!(notices.is_empty(), "{notices:?}");
+    // A spec's model table: the notice names the spec, and the value of
+    // robust_beta to write.
+    let mut v: serde_json::Value =
+        serde_json::from_str(r#"{"name": "b", "model": {"type": "bocpd", "emission": "robust"}}"#)
+            .unwrap();
+    let notices = forward_deprecated_in_models(&mut v).unwrap();
     assert_eq!(
         notices,
         [
-            "emission = \"laplace\" is deprecated: it is covariance_type = \"laplace\". It is \
-          read so until the next major version, which refuses it"
+            "spec \"b\": emission = \"robust\" is deprecated: it is read as covariance_type = \
+             \"diag\" with robust_beta, 0.1 where none is given, until the next major version, \
+             which refuses it. Write covariance_type = \"diag\" and robust_beta = 0.1 instead."
         ]
     );
+    let mut v: serde_json::Value = serde_json::from_str(
+        r#"{"name": "b", "model": {"type": "bocpd", "emission": "robust", "covariance_type": "diag"}}"#,
+    )
+    .unwrap();
+    let e = forward_deprecated_in_models(&mut v).unwrap_err();
+    assert!(e.starts_with("spec \"b\": emission was renamed"), "{e}");
     // A value that is not a word at all goes on unchanged.
     let mut v: serde_json::Value =
         serde_json::from_str(r#"{"type": "bocpd", "emission": 3}"#).unwrap();
@@ -736,10 +751,7 @@ fn a_deprecated_model_key_beside_its_new_name_is_refused() {
         serde_json::from_str(r#"{"type": "corrchange", "reset_on_flag": "yes"}"#).unwrap();
     let notices = forward_deprecated_in_models(&mut v).unwrap();
     assert_eq!(v["change_action"], "yes");
-    assert!(
-        notices[0].contains("change_action = \"flag\""),
-        "{notices:?}"
-    );
+    assert!(notices.is_empty(), "{notices:?}");
 }
 
 /// A word refusal from serde with an empty list of words is not one this
@@ -802,7 +814,8 @@ fn lam_is_a_decay_where_a_decay_is_needed() {
     )));
     assert_eq!(
         both.decays().unwrap_err(),
-        "spec \"m\": half_life and lam are mutually exclusive"
+        "spec \"m\": half_life and lam cannot both be set, since each sets the decay. Give \
+         half_life or lam, not both."
     );
 }
 
@@ -851,13 +864,9 @@ fn a_refit_row_count_past_the_ceiling_is_refused_by_name() {
         refused(
             &sup(&format!(r#"{model}, "{key}": 1048577}}"#), ""),
             &[
-                &format!("{key} must be at most 1048576 (2^20)"),
-                "got 1048577",
-                "sizes an allocation",
-                // Each scale's size a row (task 335, F2): the MAD's keeps
-                // each row's residual and its tree node beside the row.
-                "(features + 10) * 8 bytes a row under the MAD scale",
-                "(features + 4) * 8 under the RMS",
+                &format!("{key} must be at most 1048576, but it is 1048577"),
+                "reserves memory for all its rows from a target's first learned row",
+                &format!("Lower {key} to 1048576 or below."),
             ],
         );
         refused(
@@ -865,8 +874,170 @@ fn a_refit_row_count_past_the_ceiling_is_refused_by_name() {
                 &format!(r#"{model}, "{key}": 4294967295, "refit_budget": "inf"}}"#),
                 "",
             ),
-            &[&format!("{key} must be at most 1048576"), "got 4294967295"],
+            &[&format!(
+                "{key} must be at most 1048576, but it is 4294967295"
+            )],
         );
         accepted(&sup(&format!(r#"{model}, "{key}": 1048576}}"#), ""));
     }
+}
+
+/// A spec's checks report every problem they find in one refusal: the
+/// spec named once, then each problem on a line of its own, in the order
+/// the checks read them (WRITING §11).
+#[test]
+fn every_problem_of_a_spec_is_reported_at_once() {
+    let e = check(&sup(
+        r#"{"type": "ewridge"}"#,
+        r#", "embargo": 0, "conformal": 1.5, "drift_delta": 0.1"#,
+    ))
+    .expect_err("three problems accepted");
+    assert_eq!(
+        e,
+        "spec \"m\": 3 problems.\n\
+         - embargo must be finite and above 0, but it is 0. Set embargo to the delay before a \
+         row's target is known, in clock units, or leave it out for no delay.\n\
+         - conformal must be above 0 and below 1, but it is 1.5. Set conformal to the share of \
+         rows whose target the interval should cover, such as 0.9.\n\
+         - drift_delta applies only when emit_drift is on, but emit_drift is off. Turn on \
+         emit_drift, or leave out drift_delta."
+    );
+    // Each alone is the message it was written as.
+    let e = check(&sup(r#"{"type": "ewridge"}"#, r#", "drift_delta": 0.1"#)).unwrap_err();
+    assert_eq!(
+        e,
+        "spec \"m\": drift_delta applies only when emit_drift is on, but emit_drift is off. \
+         Turn on emit_drift, or leave out drift_delta."
+    );
+}
+
+/// Where the checks after a problem would read what it refuses, they stop
+/// there and say so: a duration with no clock leaves every clock parameter
+/// without a scale, so the bad `conformal` after it is not reported yet.
+#[test]
+fn a_check_that_stops_early_says_so() {
+    let e = check(
+        r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0"],
+            "half_life": "10m", "conformal": 1.5}"#,
+    )
+    .expect_err("a duration with no clock accepted");
+    assert!(e.starts_with("spec \"m\": "), "{e}");
+    assert!(
+        e.ends_with("\nFix this, then run again to check the spec's other settings."),
+        "{e}"
+    );
+    assert!(!e.contains("conformal"), "{e}");
+    // The columns are a stop too: a spec with no target reports none of
+    // the checks that read its targets.
+    let e = check(
+        r#"{"name": "m", "model": {"type": "ewridge"}, "targets": [], "features": ["x0"],
+            "half_life": 10.0, "conformal": 1.5}"#,
+    )
+    .unwrap_err();
+    assert_eq!(
+        e,
+        "spec \"m\": targets must name at least one column, but it is empty. Name the columns \
+         to predict in targets.\nFix this, then run again to check the spec's other \
+         settings."
+    );
+}
+
+/// A model's own settings, checked where the spec is read, report every
+/// problem at once too: `kalman` given both ways of setting its drift, a
+/// negative `p0` and an `obs_var` of 0 names all three, each alone as it
+/// would be.
+#[test]
+fn a_models_settings_report_every_problem_at_once() {
+    let e = check(&sup(
+        r#"{"type": "kalman", "coef_half_life": 50.0, "q": [0.0, 0.1, 0.1], "p0": -1.0, "obs_var": 0.0}"#,
+        "",
+    ))
+    .expect_err("three problems accepted");
+    assert_eq!(
+        e,
+        "spec \"m\": 3 problems.\n\
+         - coef_half_life and q cannot both be set: q gives the drift of each coefficient \
+         outright, and coef_half_life derives it. Leave out coef_half_life, or q.\n\
+         - obs_var must be finite and above 0, but it is 0. Set obs_var to the target's noise \
+         variance, or leave it out to estimate it from the residuals.\n\
+         - p0 must be finite and above 0, but it is -1. Set p0 to each slope's starting \
+         variance, as a multiple of the target's noise variance, such as the default 1."
+    );
+    let e = check(&sup(
+        r#"{"type": "kalman", "coef_half_life": 50.0, "p0": -1.0}"#,
+        "",
+    ))
+    .unwrap_err();
+    assert_eq!(
+        e,
+        "spec \"m\": p0 must be finite and above 0, but it is -1. Set p0 to each slope's \
+         starting variance, as a multiple of the target's noise variance, such as the default 1."
+    );
+    // A loss outside the words is said once: the parameters of each loss
+    // are not then read against it.
+    let e = check(&sup(r#"{"type": "sgd", "loss": "nope", "eps": 0.2}"#, "")).unwrap_err();
+    assert!(!e.contains("problems") && e.contains("\"nope\""), "{e}");
+}
+
+/// `deco`'s blocks are held to the model's rules by the names the reader
+/// wrote, every problem at once: a block that lists a feature twice and so
+/// holds one, a feature in two blocks, and a feature in none.
+#[test]
+fn a_deco_block_problem_names_the_block_and_the_feature() {
+    let deco = |blocks: &str| {
+        format!(
+            r#"{{"name": "m", "model": {{"type": "deco", "blocks": {blocks}}},
+                "features": ["a", "b", "c", "d"], "half_life": 10.0}}"#
+        )
+    };
+    let e = check(&deco(r#"[["u", ["a", "a"]], ["v", ["b", "a"]]]"#)).unwrap_err();
+    assert_eq!(
+        e,
+        "spec \"m\": 4 problems.\n\
+         - block \"u\" lists \"a\" more than once. List each feature once in a block.\n\
+         - block \"u\" must hold at least two features, since its correlation is between them, \
+         but it holds one, \"a\". Add a feature to it, or merge it with another block.\n\
+         - feature \"a\" is in blocks \"u\" and \"v\", but each feature belongs to one block. \
+         Remove it from all but one.\n\
+         - every feature must be in exactly one block, but \"c\" and \"d\" are in none. Add \
+         each to a block, or remove them from features."
+    );
+    assert!(check(&deco(r#"[["u", ["a", "b"]], ["v", ["c", "d"]]]"#)).is_ok());
+}
+
+/// `sgd` reports a word outside `loss`'s and one outside `schedule`'s at
+/// once.
+#[test]
+fn sgd_reports_a_bad_loss_and_a_bad_schedule_together() {
+    let e = check(&sup(
+        r#"{"type": "sgd", "loss": "nope", "schedule": "nah"}"#,
+        "",
+    ))
+    .unwrap_err();
+    assert!(
+        e.starts_with("spec \"m\": 2 problems.\n- loss must be ")
+            && e.contains("\n- schedule must be \"constant\", \"inv_scaling\" or \"adagrad\""),
+        "{e}"
+    );
+}
+
+/// A half-life written two ways names both spellings, and a model that
+/// takes no decay refuses a `half_life` once, by its own rule, not again for
+/// its value.
+#[test]
+fn a_half_life_grid_names_each_spelling_and_a_model_with_no_decay_says_one_thing() {
+    let e = check(
+        r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0"],
+            "clock": "t", "gap_cap": "1h", "half_life": ["5m", "300s"]}"#,
+    )
+    .unwrap_err();
+    assert!(
+        e.contains("half_life lists 5m and 300s, which are the same half-life"),
+        "{e}"
+    );
+    let e = check(&unsup(r#"{"type": "bocpd"}"#, r#", "half_life": 0.0"#)).unwrap_err();
+    assert!(
+        e.starts_with("spec \"m\": half_life does not apply to bocpd") && !e.contains("problems"),
+        "{e}"
+    );
 }

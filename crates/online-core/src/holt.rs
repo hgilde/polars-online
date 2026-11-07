@@ -118,24 +118,31 @@ fn default_true() -> bool {
 
 impl HoltCfg {
     pub fn validate(&self) -> Result<(), String> {
+        let mut no = crate::Refusals::new();
         if self.n_targets == 0 {
-            return Err("holt: n_targets must be >= 1".into());
+            no.refuse(
+                "holt: the model needs at least one target, but it has none. Name at least one \
+                 column in targets.",
+            );
         }
         if self.level_half_life <= 0.0 || self.level_half_life.is_nan() {
-            return Err("holt: level_half_life must be > 0".into());
+            no.refuse(format!(
+                "holt: half_life, the level's half-life, must be above 0, but it is {}. Set \
+                 half_life to a positive number of clock units, or to inf for no decay.",
+                self.level_half_life
+            ));
         }
         if self.trend_half_life <= 0.0 || self.trend_half_life.is_nan() {
-            return Err("holt: trend_half_life must be > 0 (inf forgets no slope)".into());
+            no.refuse(format!(
+                "holt: trend_half_life must be above 0, but it is {}. Set trend_half_life to a \
+                 positive number of clock units, or to inf for a slope over the whole history.",
+                self.trend_half_life
+            ));
         }
         // A NaN `min_weight` is never reached, and a negative one is no
         // floor; `inf` never predicts, which is legal (review round 5, C6).
-        if self.min_weight.is_nan() || self.min_weight < 0.0 {
-            return Err(format!(
-                "holt: min_weight must be >= 0, got {}",
-                self.min_weight
-            ));
-        }
-        Ok(())
+        no.take(crate::model::check_min_weight("holt", self.min_weight));
+        no.finish()
     }
 }
 
@@ -1543,7 +1550,25 @@ mod tests {
             ..cfg(6.0, 25.0)
         })
         .unwrap_err();
-        assert_eq!(e, "holt: n_targets must be >= 1");
+        assert_eq!(
+            e,
+            "holt: the model needs at least one target, but it has none. Name at least one \
+             column in targets."
+        );
+        // Every problem at once, each a line of its own.
+        let e = HoltCfg {
+            n_targets: 0,
+            trend_half_life: 0.0,
+            ..cfg(6.0, 25.0)
+        }
+        .validate()
+        .unwrap_err();
+        let lines: Vec<&str> = e.lines().collect();
+        assert_eq!(lines.len(), 2, "{e}");
+        assert!(
+            lines[1].starts_with("holt: trend_half_life must be above 0"),
+            "{e}"
+        );
     }
 
     /// Task 281 (mutants): with every observation at one clock the line

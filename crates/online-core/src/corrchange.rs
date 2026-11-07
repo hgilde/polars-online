@@ -317,6 +317,16 @@ pub const MAX_PERM: usize = 1 << 20;
 /// level allows 29 (size 0.28 and 0.14). A level within that nudge under a
 /// multiple reads as the multiple, a size past it by four units of
 /// rounding at most. At 0 no statistic can flag.
+/// `x`, a small positive bound a remedy sets a value at or above, to three
+/// significant figures rounded up (WRITING §11: a figure is rounded toward
+/// the side that keeps the remedy true).
+fn up_to_three(x: f64) -> String {
+    let step = 10f64.powi(x.log10().floor() as i32 - 2);
+    // A hair below the quotient first, so a value already at three figures
+    // (1.5e-10) is not rounded up a step by its last bit.
+    format!("{:.2e}", ((x / step) * (1.0 - 1e-12)).ceil() * step)
+}
+
 pub fn perm_rejections(alpha: f64, draws: usize) -> usize {
     // `alpha < 1`, so the product is below `draws + 1` by more than the
     // nudge (`draws ≤ MAX_PERM`, `alpha ≤ 1 − u`): at most `draws`.
@@ -351,62 +361,75 @@ pub fn min_perm(alpha: f64) -> Option<usize> {
 
 impl CorrChangeCfg {
     pub fn validate(&self) -> Result<(), String> {
+        let mut no = crate::Refusals::new();
         // The decay first: every model checks it in its own `new`, where only
         // the bank's spec did (review 2026-10-05, CF5).
-        self.decay.check().map_err(|e| format!("corrchange: {e}"))?;
+        no.take(self.decay.check().map_err(|e| format!("corrchange: {e}")));
         if let Some(c) = self.crit {
             // A NaN never flags and a non-positive one flags every row, both
             // in silence (docs/REVIEW-E54-E64.md CC1).
             if !(c > 0.0 && c.is_finite()) {
-                return Err(format!(
-                    "corrchange: crit is the critical value the statistic is compared with and \
-                     must be finite and > 0 (got {c}); leave it out for the tabulated one"
+                no.refuse(format!(
+                    "corrchange: crit must be finite and above 0, but it is {c}. Set crit to the \
+                     critical value the statistic is compared with, or leave it out for the \
+                     default."
                 ));
             }
         }
         if self.n_features < 2 {
-            return Err(
-                "corrchange: at least two columns are needed; a correlation is between two \
-                 things"
-                    .into(),
-            );
+            no.refuse(format!(
+                "corrchange: the model needs at least two features, since a correlation is \
+                 between two columns, but it has {}. Name at least two columns in features.",
+                self.n_features
+            ));
         }
         if !(self.alpha > 0.0 && self.alpha < 1.0) {
-            return Err("corrchange: alpha must be strictly between 0 and 1".into());
+            no.refuse(format!(
+                "corrchange: alpha must be above 0 and below 1, but it is {}. Set alpha to the \
+                 rate of false alarms to test at, such as 0.05.",
+                self.alpha
+            ));
         }
         if !["bonferroni", "none"].contains(&self.alpha_adjust.as_str()) {
-            return Err(format!(
-                "alpha_adjust must be one of \"bonferroni\", \"none\"; got {:?}",
+            no.refuse(format!(
+                "corrchange: alpha_adjust must be \"bonferroni\" or \"none\", but it is {:?}. Set \
+                 alpha_adjust to one of those words.",
                 self.alpha_adjust
             ));
         }
+        let bandwidth = || {
+            "corrchange: bandwidth must be at least 1, but it is 0. Set bandwidth to 1 or more, \
+             or leave it out for the automatic choice."
+        };
         match self.kind {
             CorrChangeKind::Monitor => {
                 if self.span_rows < 8 {
-                    return Err(
-                        "corrchange: kind = \"monitor\" needs window_rows of at least 8; the \
-                         statistic is a maximum over the span"
-                            .into(),
-                    );
+                    no.refuse(format!(
+                        "corrchange: kind=\"monitor\" needs window_rows of at least 8, but it is \
+                         {}: the statistic is a maximum over those rows. Set window_rows to 8 or \
+                         more.",
+                        self.span_rows
+                    ));
                 }
                 if self.bandwidth == Some(0) {
-                    return Err("corrchange: bandwidth must be >= 1".into());
+                    no.refuse(bandwidth());
                 }
             }
             CorrChangeKind::Sequential => {
                 if self.span_rows < 8 {
-                    return Err(
-                        "corrchange: kind = \"sequential\" needs window_rows of at least 8; the \
-                         history's long-run variance is read from them"
-                            .into(),
-                    );
+                    no.refuse(format!(
+                        "corrchange: kind=\"sequential\" needs window_rows of at least 8, but it \
+                         is {}: the long-run variance is estimated from those rows. Set \
+                         window_rows to 8 or more.",
+                        self.span_rows
+                    ));
                 }
                 if self.monitor_rows < 2 {
-                    return Err(
-                        "corrchange: kind = \"sequential\" needs monitor_rows of at least 2; \
-                         a correlation over the monitored rows needs two"
-                            .into(),
-                    );
+                    no.refuse(format!(
+                        "corrchange: kind=\"sequential\" needs monitor_rows of at least 2, but it \
+                         is {}: a correlation needs two rows. Set monitor_rows to 2 or more.",
+                        self.monitor_rows
+                    ));
                 }
                 // Not up to 1/2: the critical value is solved for
                 // (`crate::boundary`), and the solve's work grows as 1/(1/2
@@ -415,16 +438,16 @@ impl CorrChangeCfg {
                 // at 0.49999 by its step count, in every process and on
                 // every load (review 2026-10-05, CD1).
                 if !(0.0..=MAX_BOUNDARY_GAMMA).contains(&self.boundary_gamma) {
-                    return Err(format!(
-                        "corrchange: boundary_gamma must be in [0, {MAX_BOUNDARY_GAMMA}] (got {}); \
-                         the critical value's solve takes work that grows as 1/(1/2 − γ), \
-                         seconds at {MAX_BOUNDARY_GAMMA} and hours just under 1/2; at 1/2 the \
-                         boundary is crossed with probability 1 whatever the data",
+                    no.refuse(format!(
+                        "corrchange: boundary_gamma must be from 0 to {MAX_BOUNDARY_GAMMA}, but \
+                         it is {}: computing the critical value takes seconds at \
+                         {MAX_BOUNDARY_GAMMA} and hours just under 0.5. Set boundary_gamma to \
+                         {MAX_BOUNDARY_GAMMA} or below.",
                         self.boundary_gamma
                     ));
                 }
                 if self.bandwidth == Some(0) {
-                    return Err("corrchange: bandwidth must be >= 1".into());
+                    no.refuse(bandwidth());
                 }
                 // The critical value is a quantile at `1 − alpha/npairs`
                 // (`alpha` itself without Bonferroni), and below `2^-52`
@@ -441,60 +464,79 @@ impl CorrChangeCfg {
                 // 195). A configured `crit` reads no `alpha`.
                 let floor = crate::boundary::MIN_SEQUENTIAL_TAIL;
                 if self.crit.is_none() && self.pair_alpha() < floor {
-                    let share = if self.alpha_adjust == "bonferroni" {
-                        format!(
-                            "alpha / {} pairs = {:e} (Bonferroni's share)",
+                    if self.alpha_adjust == "bonferroni" {
+                        // The least alpha whose share clears the floor,
+                        // rounded up so the remedy holds; none below 1 where
+                        // the pairs are too many.
+                        let least = floor * self.npairs() as f64;
+                        let raise = if least < 1.0 {
+                            format!("Set alpha to {} or more, set", up_to_three(least))
+                        } else {
+                            "Set".to_string()
+                        };
+                        no.refuse(format!(
+                            "corrchange: kind=\"sequential\" tests each of its {} pairs at its \
+                             share of alpha, {:.2e}, below 5e-11, where the critical value cannot \
+                             be computed accurately. {raise} alpha_adjust=\"none\", or give crit.",
                             self.npairs(),
                             self.pair_alpha()
-                        )
+                        ));
                     } else {
-                        format!("alpha = {:e}", self.alpha)
-                    };
-                    return Err(format!(
-                        "corrchange: kind = \"sequential\" tests each pair at {share}, below \
-                         5e-11: the critical value is solved from the boundary's law, and in a \
-                         tail that small the solve's quantile is off by more than the 0.03 Wied \
-                         and Galeano's own table is good to; raise alpha, or give crit"
-                    ));
+                        no.refuse(format!(
+                            "corrchange: kind=\"sequential\" tests each pair at alpha = {}, \
+                             below 5e-11, where the critical value cannot be computed accurately. \
+                             Set alpha to 5e-11 or more, or give crit.",
+                            self.alpha
+                        ));
+                    }
                 }
             }
             CorrChangeKind::Window => {
                 if self.span_rows < 3 {
-                    return Err(
-                        "corrchange: kind = \"window\" needs window_rows of at least 3".into(),
-                    );
+                    no.refuse(format!(
+                        "corrchange: kind=\"window\" needs window_rows of at least 3, but it is \
+                         {}. Set window_rows to 3 or more.",
+                        self.span_rows
+                    ));
                 }
                 if self.crit.is_none() && self.n_perm < 20 {
-                    return Err(
-                        "corrchange: a permutation critical value needs n_perm >= 20 draws".into(),
-                    );
+                    no.refuse(format!(
+                        "corrchange: n_perm must be at least 20 for a permutation critical value, \
+                         but it is {}. Set n_perm to 20 or more, or give crit.",
+                        self.n_perm
+                    ));
                 }
                 if self.n_perm > MAX_PERM {
-                    return Err(format!(
-                        "corrchange: n_perm must be at most {MAX_PERM} (2^20), got {}: the draws \
-                         are held to take their quantile, and each is a pass over both blocks",
+                    no.refuse(format!(
+                        "corrchange: n_perm must be at most {MAX_PERM}, but it is {}: every draw \
+                         is kept, and each takes a pass over the rows. Lower n_perm to \
+                         {MAX_PERM} or below.",
                         self.n_perm
                     ));
                 }
                 if self.perm_block == 0 || self.perm_block > self.span_rows {
-                    return Err(format!(
-                        "corrchange: perm_block must be 1..={} (window_rows)",
-                        self.span_rows
+                    no.refuse(format!(
+                        "corrchange: perm_block must be from 1 to window_rows ({}), but it is {}. \
+                         Set perm_block within that range.",
+                        self.span_rows, self.perm_block
                     ));
                 }
                 if self.permute_every_rows == 0 {
-                    return Err("corrchange: permute_every_rows must be >= 1".into());
+                    no.refuse(
+                        "corrchange: permute_every_rows must be at least 1, but it is 0. Set \
+                         permute_every_rows to 1 or more.",
+                    );
                 }
                 if self.scalar {
-                    return Err(
-                        "corrchange: scalar applies to kind = \"monitor\" or \"sequential\"; \
-                         the window statistic is already one number"
-                            .into(),
+                    no.refuse(
+                        "corrchange: scalar applies only under kind=\"monitor\" or \
+                         \"sequential\", but kind is \"window\", whose statistic is already one \
+                         number. Leave out scalar, or set kind=\"monitor\" or \"sequential\".",
                     );
                 }
             }
         }
-        Ok(())
+        no.finish()
     }
 
     /// Pairs the statistic is a maximum over.
@@ -672,17 +714,20 @@ impl CorrChange {
             && cfg.crit.is_none()
             && perm_rejections(cfg.alpha, cfg.n_perm) == 0
         {
-            let fix = match min_perm(cfg.alpha) {
-                Some(b) => format!("give n_perm of at least {b}, or a fixed crit"),
-                None => format!(
-                    "no n_perm up to {MAX_PERM} (2^20) can, so raise alpha or give a fixed crit"
-                ),
-            };
+            if let Some(b) = min_perm(cfg.alpha) {
+                return Err(format!(
+                    "corrchange: n_perm = {} draws are too few for the permutation test to flag \
+                     at alpha = {}. Set n_perm to {b} or more, or give crit.",
+                    cfg.n_perm, cfg.alpha
+                ));
+            }
+            // The least alpha the most draws can flag at, rounded up so the
+            // remedy holds.
+            let least = up_to_three(1.0 / (MAX_PERM as f64 + 1.0));
             return Err(format!(
-                "corrchange: n_perm = {} draws cannot flag at alpha = {}: the permutation test \
-                 flags when fewer than floor(alpha * (n_perm + 1)) draws reach the observed \
-                 statistic, and that is 0 here; {fix}",
-                cfg.n_perm, cfg.alpha
+                "corrchange: no n_perm up to {MAX_PERM} lets the permutation test flag at alpha = \
+                 {}. Set alpha to {least} or more, or give crit.",
+                cfg.alpha
             ));
         }
         let d = cfg.n_features;
@@ -1969,10 +2014,26 @@ mod tests {
         ] {
             let err = with(alpha, adjust).validate().unwrap_err();
             assert!(
-                err.contains("alpha") && err.contains("5e-11") && err.contains("0.03"),
+                err.contains("alpha")
+                    && err.contains("5e-11")
+                    && err.contains("cannot be computed accurately"),
                 "{alpha:e} {adjust}: {err}"
             );
         }
+        // The remedy gives the least alpha that clears the floor: 5e-11 for
+        // each of the three pairs, or a plain alpha of 5e-11.
+        let err = with(1e-17, "bonferroni").validate().unwrap_err();
+        assert!(
+            err.contains("Set alpha to 1.50e-10 or more, set alpha_adjust=\"none\", or give crit."),
+            "{err}"
+        );
+        let err = with(1e-17, "none").validate().unwrap_err();
+        assert!(
+            err.contains("Set alpha to 5e-11 or more, or give crit."),
+            "{err}"
+        );
+        assert_eq!(up_to_three(1.0 / (MAX_PERM as f64 + 1.0)), "9.54e-7");
+        assert!(perm_rejections(9.54e-7, MAX_PERM) >= 1);
         for (alpha, adjust) in [
             (3.0 * limit, "bonferroni"),
             (limit, "none"),
@@ -3184,7 +3245,7 @@ mod tests {
             };
             assert!(
                 e.contains("corrchange: n_perm must be at most 1048576")
-                    && e.contains(&format!("got {n}")),
+                    && e.contains(&format!("but it is {n}")),
                 "{e}"
             );
         }
@@ -3339,14 +3400,14 @@ mod tests {
         };
         let e = CorrChange::new(window(20, 0.01, None)).unwrap_err();
         assert!(
-            e.contains("corrchange: n_perm = 20 draws cannot flag at alpha = 0.01")
-                && e.contains("give n_perm of at least 99, or a fixed crit"),
+            e.contains("corrchange: n_perm = 20 draws are too few for the permutation test to flag at alpha = 0.01")
+                && e.contains("Set n_perm to 99 or more, or give crit."),
             "{e}"
         );
         let e = CorrChange::new(window(98, 0.01, None)).unwrap_err();
-        assert!(e.contains("at least 99"), "{e}");
+        assert!(e.contains("Set n_perm to 99 or more"), "{e}");
         let e = CorrChange::new(window(MAX_PERM, 1e-7, None)).unwrap_err();
-        assert!(e.contains("no n_perm up to 1048576 (2^20) can"), "{e}");
+        assert!(e.contains("no n_perm up to 1048576 lets"), "{e}");
         assert!(CorrChange::new(window(99, 0.01, None)).is_ok());
         assert!(CorrChange::new(window(20, 0.01, Some(0.5))).is_ok());
         // Another kind reads no draws.
@@ -3373,13 +3434,35 @@ mod tests {
         assert!(crits.iter().all(|c| c.is_nan()), "{crits:?}");
     }
 
+    /// Every problem at once: two bad settings are both named, one to a
+    /// line.
+    #[test]
+    fn a_configuration_with_two_problems_reports_both() {
+        let e = CorrChange::new(CorrChangeCfg {
+            alpha: 1.5,
+            span_rows: 4,
+            ..cfg(2, CorrChangeKind::Monitor)
+        })
+        .unwrap_err();
+        let lines: Vec<&str> = e.lines().collect();
+        assert_eq!(lines.len(), 2, "{e}");
+        assert!(
+            lines[0].starts_with("corrchange: alpha must be above 0"),
+            "{e}"
+        );
+        assert!(lines[1].contains("needs window_rows of at least 8"), "{e}");
+    }
+
     #[test]
     fn a_bad_configuration_is_refused_by_name() {
         let bad = |c: CorrChangeCfg, msg: &str| {
             let e = CorrChange::new(c).unwrap_err();
             assert!(e.contains(msg), "{e}");
         };
-        bad(cfg(1, CorrChangeKind::Monitor), "at least two columns");
+        bad(
+            cfg(1, CorrChangeKind::Monitor),
+            "needs at least two features",
+        );
         bad(
             CorrChangeCfg {
                 span_rows: 4,
@@ -3392,14 +3475,14 @@ mod tests {
                 alpha: 1.5,
                 ..cfg(2, CorrChangeKind::Monitor)
             },
-            "alpha must be strictly between",
+            "alpha must be above 0 and below 1",
         );
         bad(
             CorrChangeCfg {
                 alpha_adjust: "nope".into(),
                 ..cfg(2, CorrChangeKind::Monitor)
             },
-            "alpha_adjust must be one of \"bonferroni\", \"none\"; got \"nope\"",
+            "alpha_adjust must be \"bonferroni\" or \"none\", but it is \"nope\"",
         );
         bad(
             CorrChangeCfg {
@@ -3415,7 +3498,7 @@ mod tests {
                 n_perm: 2,
                 ..cfg(2, CorrChangeKind::Window)
             },
-            "n_perm >= 20",
+            "n_perm must be at least 20",
         );
         bad(
             CorrChangeCfg {
@@ -3423,7 +3506,7 @@ mod tests {
                 scalar: true,
                 ..cfg(2, CorrChangeKind::Window)
             },
-            "scalar applies to kind = \"monitor\" or \"sequential\"; the window statistic",
+            "scalar applies only under kind=\"monitor\" or \"sequential\", but kind is \"window\"",
         );
         // docs/REVIEW-E54-E64.md CC1 and CC3: the cases `validate` refuses
         // and nothing exercised.
@@ -3433,7 +3516,7 @@ mod tests {
                     crit: Some(c),
                     ..cfg(2, CorrChangeKind::Monitor)
                 },
-                "crit is the critical value",
+                "crit must be finite and above 0",
             );
         }
         for b in [0usize, 51] {
@@ -3444,7 +3527,7 @@ mod tests {
                     perm_block: b,
                     ..cfg(2, CorrChangeKind::Window)
                 },
-                "perm_block must be 1..=",
+                "perm_block must be from 1 to window_rows (50)",
             );
         }
         bad(
@@ -3453,14 +3536,14 @@ mod tests {
                 permute_every_rows: 0,
                 ..cfg(2, CorrChangeKind::Window)
             },
-            "permute_every_rows must be >= 1",
+            "permute_every_rows must be at least 1, but it is 0",
         );
         bad(
             CorrChangeCfg {
                 bandwidth: Some(0),
                 ..cfg(2, CorrChangeKind::Monitor)
             },
-            "bandwidth must be >= 1",
+            "bandwidth must be at least 1, but it is 0",
         );
     }
 
@@ -3833,7 +3916,10 @@ mod tests {
         bad(seq_cfg(2, 7, 10, 0.0), "window_rows of at least 8");
         bad(seq_cfg(2, 20, 1, 0.0), "monitor_rows of at least 2");
         for g in [0.5, -0.1, f64::NAN, f64::INFINITY] {
-            bad(seq_cfg(2, 20, 10, g), "boundary_gamma must be in [0, 0.49]");
+            bad(
+                seq_cfg(2, 20, 10, g),
+                "boundary_gamma must be from 0 to 0.49",
+            );
         }
         // Past 0.49 the critical value's solve, whose work grows as 1/(1/2 −
         // γ), runs for minutes to hours in every process and on every load
@@ -3843,10 +3929,13 @@ mod tests {
         for g in [0.4999, 0.491, 0.49f64.next_up()] {
             let e = seq_cfg(2, 20, 10, g).validate().unwrap_err();
             assert!(
-                e.contains("boundary_gamma must be in [0, 0.49]"),
+                e.contains("boundary_gamma must be from 0 to 0.49"),
                 "{g}: {e}"
             );
-            assert!(e.contains("1/(1/2 − γ)"), "{g}: the message says why: {e}");
+            assert!(
+                e.contains("hours just under 0.5"),
+                "{g}: the message says why: {e}"
+            );
         }
         seq_cfg(2, 20, 10, 0.49).validate().unwrap();
         bad(
@@ -3854,7 +3943,7 @@ mod tests {
                 bandwidth: Some(0),
                 ..seq_cfg(2, 20, 10, 0.0)
             },
-            "bandwidth must be >= 1",
+            "bandwidth must be at least 1, but it is 0",
         );
         // And a given critical value replaces the computed one.
         let m = CorrChange::new(CorrChangeCfg {
@@ -3879,7 +3968,10 @@ mod tests {
                 ..cfg(2, CorrChangeKind::Monitor)
             })
             .unwrap_err();
-            assert!(e.contains("alpha must be strictly between"), "{alpha}: {e}");
+            assert!(
+                e.contains("alpha must be above 0 and below 1"),
+                "{alpha}: {e}"
+            );
         }
         for ok in [
             CorrChangeCfg {

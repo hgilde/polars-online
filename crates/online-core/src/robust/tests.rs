@@ -118,8 +118,16 @@ fn cfg_validation_rejects_each_bad_field() {
             Ok(()) => panic!("expected rejection mentioning {want:?}"),
         }
     };
-    bad(huber, &|c| c.n_features = 0, "must be >= 1");
-    bad(huber, &|c| c.n_targets = 0, "must be >= 1");
+    bad(
+        huber,
+        &|c| c.n_features = 0,
+        "needs at least one feature and one target",
+    );
+    bad(
+        huber,
+        &|c| c.n_targets = 0,
+        "needs at least one feature and one target",
+    );
 
     // delta is the crossover from squared to absolute loss.
     for d in [0.0, -1.0, f64::NAN] {
@@ -139,7 +147,7 @@ fn cfg_validation_rejects_each_bad_field() {
         bad(
             huber,
             &|c| c.loss = RobustLoss::Quantile { tau: t },
-            "quantile must be in",
+            "quantile must be above 0 and below 1",
         );
     }
     for t in [1e-6, 0.5, 1.0 - 1e-6] {
@@ -153,7 +161,7 @@ fn cfg_validation_rejects_each_bad_field() {
     bad(
         huber,
         &|c| c.ridge = -1e-9,
-        "ridge must be finite and >= 0, got -0.000000001",
+        "ridge must be finite and at least 0, but it is -0.000000001.",
     );
     let mut ok = cfg(2, 1, huber);
     ok.ridge = 0.0;
@@ -161,12 +169,28 @@ fn cfg_validation_rejects_each_bad_field() {
     bad(
         huber,
         &|c| c.quantile_eps = 0.0,
-        "quantile_eps must be finite and > 0, got 0",
+        "quantile_eps must be finite and above 0, but it is 0.",
     );
     bad(
         huber,
         &|c| c.quantile_eps = -1.0,
-        "quantile_eps must be finite and > 0, got -1",
+        "quantile_eps must be finite and above 0, but it is -1.",
+    );
+
+    // Every problem at once, each a line of its own.
+    let mut two = cfg(2, 1, huber);
+    two.ridge = -1.0;
+    two.quantile_eps = 0.0;
+    let e = two.validate().unwrap_err();
+    let lines: Vec<&str> = e.lines().collect();
+    assert_eq!(lines.len(), 2, "{e}");
+    assert!(
+        lines[0].starts_with("huber: ridge must be finite and at least 0"),
+        "{e}"
+    );
+    assert!(
+        lines[1].starts_with("huber: quantile_eps must be finite and above 0"),
+        "{e}"
     );
 }
 
@@ -937,7 +961,7 @@ fn the_band_systems_are_state() {
 #[test]
 fn new_surfaces_the_validation_error() {
     let e = Robust::new(cfg(1, 1, RobustLoss::Quantile { tau: 0.0 })).unwrap_err();
-    assert!(e.contains("quantile must be in"), "{e}");
+    assert!(e.contains("quantile must be above 0 and below 1"), "{e}");
 }
 
 /// A robust fit has no window, so it keeps no runs (docs/PLAN.md task
@@ -978,7 +1002,10 @@ fn a_bad_solve_share_is_refused() {
         let mut c = cfg(2, 1, huber);
         c.solve_share = Some(f);
         match c.validate() {
-            Err(e) => assert!(e.contains("solve_share must be finite and > 0"), "{f}: {e}"),
+            Err(e) => assert!(
+                e.contains("solve_share must be finite and above 0"),
+                "{f}: {e}"
+            ),
             Ok(()) => panic!("solve_share {f} accepted"),
         }
     }

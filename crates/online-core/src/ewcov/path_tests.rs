@@ -38,7 +38,7 @@ fn a_window_beside_quantiles_or_a_cadence_without_a_window_is_refused() {
     .validate()
     .unwrap_err();
     assert!(
-        e.contains("ew_cov: window_size and mahal_quantiles do not combine"),
+        e.contains("ew_cov: window_size and mahal_quantiles cannot both be set"),
         "{e}"
     );
     let e = EwCovCfg {

@@ -168,21 +168,30 @@ pub struct AuditCfg {
 
 impl AuditCfg {
     pub fn validate(&self) -> Result<(), String> {
+        let mut no = crate::Refusals::new();
         if self.n_columns == 0 {
-            return Err("audit: columns must name at least one column".into());
+            no.refuse(
+                "audit: columns must name at least one column, but it is empty. List the \
+                 columns to audit in columns.",
+            );
         }
         if !(1..=MAX_DISTINCT_CAP).contains(&self.distinct_cap) {
-            return Err(format!(
-                "audit: distinct_cap must be in 1..={MAX_DISTINCT_CAP}, got {}",
+            no.refuse(format!(
+                "audit: distinct_cap must be from 1 to {MAX_DISTINCT_CAP}, but it is {}. Set \
+                 distinct_cap to how many distinct values to count exactly in each column, such \
+                 as the default {DISTINCT_CAP}.",
                 self.distinct_cap
             ));
         }
         if let Some(c) = self.gap_cap
             && !(c.is_finite() && c > 0.0)
         {
-            return Err(format!("audit: gap_cap must be finite and > 0, got {c}"));
+            no.refuse(format!(
+                "audit: gap_cap must be finite and above 0, but it is {c}. Set gap_cap to the \
+                 shortest clock step to count as a gap, in clock units."
+            ));
         }
-        Ok(())
+        no.finish()
     }
 }
 
@@ -1230,7 +1239,11 @@ impl Audit {
         if (o.cfg.n_columns, o.cfg.pairs, o.cfg.distinct_cap)
             != (self.cfg.n_columns, self.cfg.pairs, self.cfg.distinct_cap)
         {
-            return Err("audit: only audits of the same columns and settings merge".into());
+            return Err(
+                "audit: two audits merge only when they read the same columns under the same \
+                 settings, but these two differ. Merge the audits of one spec."
+                    .into(),
+            );
         }
         let cap = self.cfg.distinct_cap;
         self.n_eff += o.n_eff;

@@ -680,39 +680,43 @@ def test_chunks_and_a_reload_do_not_move_it():
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        (dict(half_life=10.0), "do not apply to bocpd"),
+        (dict(half_life=10.0), "half_life does not apply to bocpd"),
         (
             dict(covariance_type="student"),
             'covariance_type must be one of "full", "diag"; got "student"',
         ),
         (
             dict(covariance_type="full", robust_beta=0.1),
-            'robust_beta tempers the per-feature predictive, and covariance_type = "full"',
+            'robust_beta applies only under covariance_type="diag", but covariance_type is "full"',
         ),
-        (dict(robust_beta=0.0), "robust_beta must be finite and > 0"),
-        (dict(covariance_prior=[1.0, 2.0]), "covariance_prior is a scalar"),
-        (dict(mean_prior=[0.0, 0.0]), "mean_prior must be 1 values"),
+        (dict(robust_beta=0.0), "robust_beta must be finite and above 0"),
+        (
+            dict(covariance_prior=[1.0, 2.0]),
+            "covariance_prior must be one number or a 1 by 1 matrix",
+        ),
+        (dict(mean_prior=[0.0, 0.0]), "mean_prior must hold one value for each of the 1 features"),
         (dict(hazard=0.5), "hazard"),
         (dict(mean_precision_prior=0.0), "mean_precision_prior"),
-        (dict(prune_below=1.0), "prune_below must be in"),
+        (dict(prune_below=1.0), "prune_below must be at least 0 and below 1, but it is 1"),
         (dict(max_run=0), "max_run"),
         (dict(robust_beta=-1.0), "robust_beta"),
         # docs/REVIEW-E54-E64.md B2: priors that give a predictive with no
         # density, so every row would report nulls with nothing said.
-        (dict(covariance_prior=[0.0]), "scalar covariance_prior"),
-        (dict(covariance_prior=[-1.0]), "scalar covariance_prior"),
+        (dict(covariance_prior=[0.0]), "covariance_prior, as one number, is the prior variance"),
+        (dict(covariance_prior=[-1.0]), "covariance_prior, as one number, is the prior variance"),
         (dict(mean_prior=[float("nan")]), "mean_prior"),
         # In the public keywords' names (task 278: it named `prior_mean` and
         # `prior_scale`, which no surface takes), and the floor in full.
         (
             dict(mean_prior=[0.0], covariance_prior=[1.0], warm_rows=5),
-            'spec "b": bocpd: warm_rows sets the prior from the first rows, and mean_prior and '
-            "covariance_prior are both given; leave one out, or warm_rows",
+            'spec "b": bocpd: warm_rows sets the prior from the first rows, but mean_prior and '
+            "covariance_prior are both given, so it has nothing to set. Leave out warm_rows, or "
+            "one of the two priors.",
         ),
         (
             dict(warm_rows=1),
-            'spec "b": bocpd: warm_rows must be at least 2, got 1: the prior\'s scale is a '
-            "variance, which takes two rows",
+            'spec "b": bocpd: warm_rows must be at least 2, but it is 1: the prior\'s scale is a '
+            "variance, which needs two rows. Set warm_rows to 2 or more.",
         ),
     ],
 )
@@ -1082,7 +1086,7 @@ def test_a_hazard_on_the_clock_is_chunk_invariant_and_resumes():
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        (dict(hazard="1h"), "hazard is a duration, which needs a clock column"),
+        (dict(hazard="1h"), "hazard is a duration, but the spec has no clock to measure it"),
         (
             dict(hazard="1h", clock="t", gap_cap=300.0),
             "hazard is a duration but gap_cap is a plain number",

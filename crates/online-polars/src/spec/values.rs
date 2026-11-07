@@ -186,8 +186,7 @@ impl<'de> Deserialize<'de> for SessionGapSpec {
 
             fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
                 f.write_str(
-                    "a gap in clock units (\"inf\" for never), a duration such as \"10m\", \
-                     or the word \"reset\"",
+                    "a gap in clock units, a duration such as \"10m\", or the word \"reset\"",
                 )
             }
 
@@ -281,7 +280,7 @@ impl<'de> Deserialize<'de> for CountOrAuto {
                     "auto" => Ok(ShardSpec::Auto),
                     // The one shape of a word's refusal (task 244, P-4).
                     _ => Err(E::custom(format!(
-                        "must be an int or one of \"auto\"; got {v:?}"
+                        "must be an int or \"auto\", but it is {v:?}. Use one of those."
                     ))),
                 }
             }
@@ -343,10 +342,12 @@ impl<'de> Deserialize<'de> for ModelClosed {
                 match v {
                     "right" => Ok(ModelClosed::Right),
                     "both" => Ok(ModelClosed::Both),
+                    // The words' refusal, with the reason these two
+                    // cannot be.
                     "left" | "none" => Err(E::custom(format!(
-                        "closed = \"{v}\" leaves out the current row, the one the window ends \
-                         at; a model reads its fit after it has learned that row, so its window \
-                         always holds it: give \"right\" (the default) or \"both\""
+                        "must be \"right\" or \"both\", but it is \"{v}\", which leaves out the \
+                         current row: a hard window ends at the last row the model learned, so \
+                         that row is always inside it. Use one of those words."
                     ))),
                     _ => Err(E::custom(words_body(&["right", "both"], v))),
                 }

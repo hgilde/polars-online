@@ -390,8 +390,8 @@ def test_a_window_target_with_group_needs_a_clock_column() -> None:
     the spec is refused at every door it comes in by, with ``with_windows``'
     message: the rule is stated once. With a clock column it runs."""
     msg = (
-        'spec "m": a window looking ahead with group needs a clock column.*'
-        "Name a clock column, with gap_cap, or leave out group"
+        'spec "m": a window looking ahead under group needs clock, but clock is not set.*'
+        "Set clock and gap_cap, or leave group out"
     )
     with pytest.raises(ValueError, match=msg):
         po.spec.ewridge(
@@ -475,7 +475,7 @@ def test_a_target_known_at_its_own_row_is_pointed_to_the_call_that_makes_its_col
     assert made.columns == ["t", "mid", "price", "back"]
     with pytest.raises(ValueError, match="needs a name"):
         spec(po.ewm_mean("mid", half_life=H, window_size=W, reverse=True))
-    with pytest.raises(ValueError, match="group_close does not work with a formula target"):
+    with pytest.raises(ValueError, match="group_close and a formula target cannot both be set"):
         spec(fwd(), group="g", group_close="monotone", embargo=None)
     with pytest.raises(ValueError, match="a formula target .* does not apply"):
         po.spec.ftrl("f", targets=[fwd()], features=["x"])  # a probability to a 0/1 target

@@ -72,59 +72,156 @@ impl Scratch {
     }
 }
 
+/// The positions in `v` where `bad` holds.
+fn which(v: &[f64], bad: impl Fn(f64) -> bool) -> Vec<usize> {
+    v.iter()
+        .enumerate()
+        .filter(|(_, x)| bad(**x))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// `feature 2`, `features 0 and 3`, `features 0, 3 and 5`.
+fn features(at: &[usize]) -> String {
+    let s: Vec<String> = at.iter().map(usize::to_string).collect();
+    match s.split_last() {
+        Some((last, rest)) if !rest.is_empty() => {
+            format!("features {} and {last}", rest.join(", "))
+        }
+        _ => format!("feature {}", s.join("")),
+    }
+}
+
+/// `that bound`, or `those bounds`.
+fn that(at: &[usize], noun: &str) -> String {
+    if at.len() == 1 {
+        format!("that {noun}")
+    } else {
+        format!("those {noun}s")
+    }
+}
+
+/// `x` to three significant figures, rounded up (`up`) or down, so a bound
+/// a message gives stays on the accepted side.
+fn three_figures(x: f64, up: bool) -> String {
+    if !x.is_finite() || x == 0.0 {
+        return format!("{x}");
+    }
+    let scale = 10f64.powi(2 - x.abs().log10().floor() as i32);
+    let r = if up {
+        (x * scale).ceil()
+    } else {
+        (x * scale).floor()
+    } / scale;
+    let s = format!("{r:.3e}");
+    // `1.230e0` back to the shortest plain form a reader writes.
+    let v: f64 = s.parse().unwrap_or(r);
+    if (1e-4..1e6).contains(&v.abs()) {
+        let t = format!("{v:.6}");
+        t.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        format!("{v:e}")
+    }
+}
+
 impl Constraint {
     /// One bound per feature, no NaN, `lo <= hi`, and a finite `sum` the
     /// box can reach. `who` prefixes the messages (`"sgd"`, `"pa"`).
     pub fn validate(&self, n_features: usize, who: &str) -> Result<(), String> {
+        let mut no = crate::Refusals::new();
         for (name, bounds) in [("coef_min", &self.lo), ("coef_max", &self.hi)] {
             if bounds.len() != n_features {
-                return Err(format!(
-                    "{who}: {name} lists {} bounds for {n_features} features",
+                no.refuse(format!(
+                    "{who}: {name} must give one bound for each of the {n_features} features, \
+                     but it lists {}. Give one bound for each feature, or one number for all \
+                     of them.",
                     bounds.len()
                 ));
             }
-            if let Some(i) = bounds.iter().position(|b| b.is_nan()) {
-                return Err(format!("{who}: {name}[{i}] is NaN"));
+        }
+        for (name, bounds, none) in [
+            ("coef_min", &self.lo, "-inf for no lower bound"),
+            ("coef_max", &self.hi, "inf for no upper bound"),
+        ] {
+            let nan = which(bounds, |b| b.is_nan());
+            if !nan.is_empty() {
+                no.refuse(format!(
+                    "{who}: {name} must be a number for each feature, but it is NaN for {}, \
+                     counting from 0. Set {} to a number, or to {none}.",
+                    features(&nan),
+                    that(&nan, "bound"),
+                ));
             }
         }
         // An infinite bound is the absence of one, so only -inf makes sense
         // below and only inf above; the other way round pins a slope at
         // infinity.
-        if let Some(i) = self.lo.iter().position(|l| *l == f64::INFINITY) {
-            return Err(format!(
-                "{who}: coef_min[{i}] is inf (use -inf for no bound)"
+        let up = which(&self.lo, |l| l == f64::INFINITY);
+        if !up.is_empty() {
+            no.refuse(format!(
+                "{who}: coef_min is inf for {}, counting from 0, a lower bound no coefficient \
+                 can reach. Set {} to -inf for no lower bound, or to a finite number.",
+                features(&up),
+                that(&up, "bound"),
             ));
         }
-        if let Some(i) = self.hi.iter().position(|h| *h == f64::NEG_INFINITY) {
-            return Err(format!(
-                "{who}: coef_max[{i}] is -inf (use inf for no bound)"
+        let down = which(&self.hi, |h| h == f64::NEG_INFINITY);
+        if !down.is_empty() {
+            no.refuse(format!(
+                "{who}: coef_max is -inf for {}, counting from 0, an upper bound no \
+                 coefficient can reach. Set {} to inf for no upper bound, or to a finite \
+                 number.",
+                features(&down),
+                that(&down, "bound"),
             ));
         }
-        for (i, (lo, hi)) in self.lo.iter().zip(&self.hi).enumerate() {
-            if lo > hi {
-                return Err(format!(
-                    "{who}: coef_min[{i}] = {lo} is above coef_max[{i}] = {hi}"
-                ));
-            }
+        let crossed: Vec<usize> = (0..self.lo.len().min(self.hi.len()))
+            .filter(|&i| self.lo[i] > self.hi[i])
+            .collect();
+        if let Some(&i) = crossed.first() {
+            let (lo, hi) = (self.lo[i], self.hi[i]);
+            let what = if crossed.len() == 1 {
+                format!("coef_min is {lo} and coef_max is {hi}")
+            } else {
+                format!(
+                    "coef_min is above coef_max, as at feature {i}, where they are {lo} and {hi}"
+                )
+            };
+            no.refuse(format!(
+                "{who}: coef_min must be at most coef_max, but for {}, counting from 0, \
+                 {what}. Set each feature's coef_min at or below its coef_max.",
+                features(&crossed),
+            ));
         }
         if let Some(s) = self.sum {
             if !s.is_finite() {
-                return Err(format!("{who}: coef_sum must be finite, got {s}"));
-            }
-            let lo: f64 = self.lo.iter().sum();
-            let hi: f64 = self.hi.iter().sum();
-            // Rounding slack: `[0.1, 0.2, 0.3]` sums to 0.6000000000000001
-            // and must not refuse a `coef_sum` of 0.6. A sum inside the
-            // slack projects onto the nearer end of the interval.
-            let finite = |v: f64| if v.is_finite() { v.abs() } else { 0.0 };
-            let slack = 1e-12 * (1.0 + finite(lo).max(finite(hi)).max(s.abs()));
-            if s < lo - slack || s > hi + slack {
-                return Err(format!(
-                    "{who}: coef_sum = {s} is outside what the bounds allow, [{lo}, {hi}]"
+                no.refuse(format!(
+                    "{who}: coef_sum must be finite, but it is {s}. Set coef_sum to a finite \
+                     number, or leave it out for no constraint on the sum."
                 ));
+            } else if no.is_empty() {
+                // The range the bounds allow is read only from bounds that
+                // are themselves accepted.
+                let lo: f64 = self.lo.iter().sum();
+                let hi: f64 = self.hi.iter().sum();
+                // Rounding slack: `[0.1, 0.2, 0.3]` sums to 0.6000000000000001
+                // and must not refuse a `coef_sum` of 0.6. A sum inside the
+                // slack projects onto the nearer end of the interval.
+                let finite = |v: f64| if v.is_finite() { v.abs() } else { 0.0 };
+                let slack = 1e-12 * (1.0 + finite(lo).max(finite(hi)).max(s.abs()));
+                if s < lo - slack || s > hi + slack {
+                    // Three figures, each rounded inward, so a value inside
+                    // the range the message gives is accepted.
+                    no.refuse(format!(
+                        "{who}: coef_sum must be one the bounds allow, from {} to {}, but it is \
+                         {s}. Set coef_sum inside that range, or widen coef_min and coef_max.",
+                        three_figures(lo, true),
+                        three_figures(hi, false),
+                    ));
+                }
             }
         }
-        Ok(())
+        no.finish()
     }
 
     /// No sum and every bound infinite: nothing to project onto.
@@ -580,19 +677,24 @@ mod tests {
         let err = |c: Constraint| c.validate(k, "sgd").unwrap_err();
         assert_eq!(
             err(boxed(&[0.0], &[1.0, 1.0], None)),
-            "sgd: coef_min lists 1 bounds for 2 features"
+            "sgd: coef_min must give one bound for each of the 2 features, but it lists 1. \
+             Give one bound for each feature, or one number for all of them."
         );
         assert_eq!(
             err(boxed(&[0.0, 0.0], &[1.0], None)),
-            "sgd: coef_max lists 1 bounds for 2 features"
+            "sgd: coef_max must give one bound for each of the 2 features, but it lists 1. \
+             Give one bound for each feature, or one number for all of them."
         );
         assert_eq!(
             err(boxed(&[0.0, f64::NAN], &[1.0, 1.0], None)),
-            "sgd: coef_min[1] is NaN"
+            "sgd: coef_min must be a number for each feature, but it is NaN for feature 1, \
+             counting from 0. Set that bound to a number, or to -inf for no lower bound."
         );
         assert_eq!(
             err(boxed(&[f64::INFINITY, 0.0], &[f64::INFINITY, 1.0], None)),
-            "sgd: coef_min[0] is inf (use -inf for no bound)"
+            "sgd: coef_min is inf for feature 0, counting from 0, a lower bound no \
+             coefficient can reach. Set that bound to -inf for no lower bound, or to a finite \
+             number."
         );
         assert_eq!(
             err(boxed(
@@ -600,19 +702,25 @@ mod tests {
                 &[f64::NEG_INFINITY, 1.0],
                 None
             )),
-            "sgd: coef_max[0] is -inf (use inf for no bound)"
+            "sgd: coef_max is -inf for feature 0, counting from 0, an upper bound no \
+             coefficient can reach. Set that bound to inf for no upper bound, or to a finite \
+             number."
         );
         assert_eq!(
             err(boxed(&[0.0, 2.0], &[1.0, 1.0], None)),
-            "sgd: coef_min[1] = 2 is above coef_max[1] = 1"
+            "sgd: coef_min must be at most coef_max, but for feature 1, counting from 0, \
+             coef_min is 2 and coef_max is 1. Set each feature's coef_min at or below its \
+             coef_max."
         );
         assert_eq!(
             err(boxed(&[0.0, 0.0], &[1.0, 1.0], Some(f64::INFINITY))),
-            "sgd: coef_sum must be finite, got inf"
+            "sgd: coef_sum must be finite, but it is inf. Set coef_sum to a finite number, \
+             or leave it out for no constraint on the sum."
         );
         assert_eq!(
             err(boxed(&[0.0, 0.0], &[1.0, 1.0], Some(2.5))),
-            "sgd: coef_sum = 2.5 is outside what the bounds allow, [0, 2]"
+            "sgd: coef_sum must be one the bounds allow, from 0 to 2, but it is 2.5. Set \
+             coef_sum inside that range, or widen coef_min and coef_max."
         );
         assert_eq!(
             err(boxed(
@@ -620,7 +728,48 @@ mod tests {
                 &[f64::INFINITY, f64::INFINITY],
                 Some(-1.0)
             )),
-            "sgd: coef_sum = -1 is outside what the bounds allow, [0, inf]"
+            "sgd: coef_sum must be one the bounds allow, from 0 to inf, but it is -1. Set \
+             coef_sum inside that range, or widen coef_min and coef_max."
+        );
+        // Every problem at once: a bound list of the wrong length beside a
+        // NaN in the other, and a sum that is not finite.
+        let all = err(boxed(&[0.0], &[1.0, f64::NAN], Some(f64::NAN)));
+        let lines: Vec<&str> = all.lines().collect();
+        assert_eq!(lines.len(), 3, "{all}");
+        assert!(
+            lines[0].starts_with("sgd: coef_min must give one bound"),
+            "{all}"
+        );
+        assert!(
+            lines[1].starts_with("sgd: coef_max must be a number"),
+            "{all}"
+        );
+        assert!(
+            lines[2].starts_with("sgd: coef_sum must be finite"),
+            "{all}"
+        );
+        // Every bad feature at once, and the range to three figures, each
+        // end rounded inward.
+        assert_eq!(
+            err(boxed(&[f64::NAN; 2], &[1.0, 1.0], None)),
+            "sgd: coef_min must be a number for each feature, but it is NaN for features 0 \
+             and 1, counting from 0. Set those bounds to a number, or to -inf for no lower \
+             bound."
+        );
+        assert_eq!(
+            boxed(&[0.0, 3.0, 4.0], &[1.0, 1.0, 1.0], None)
+                .validate(3, "sgd")
+                .unwrap_err(),
+            "sgd: coef_min must be at most coef_max, but for features 1 and 2, counting from \
+             0, coef_min is above coef_max, as at feature 1, where they are 3 and 1. Set each \
+             feature's coef_min at or below its coef_max."
+        );
+        assert_eq!(
+            boxed(&[0.11111, 0.0], &[0.22222, 0.0], Some(1.0))
+                .validate(k, "sgd")
+                .unwrap_err(),
+            "sgd: coef_sum must be one the bounds allow, from 0.112 to 0.222, but it is 1. \
+             Set coef_sum inside that range, or widen coef_min and coef_max."
         );
         // Floors that sum to 0.6000000000000001 accept a sum of 0.6.
         boxed(&[0.1, 0.2, 0.3], &[0.1, 0.2, 0.3], Some(0.6))
@@ -651,7 +800,7 @@ mod tests {
         ok(-1.0, 0.0, slack).unwrap();
         for (lo, hi, s) in [(0.0, 1.0, -3e-12), (-1.0, 0.0, 3e-12)] {
             let e = ok(lo, hi, s).unwrap_err();
-            assert!(e.contains("outside what the bounds allow"), "{e}");
+            assert!(e.contains("must be one the bounds allow"), "{e}");
         }
         // The floor: bounds and sum all at zero still allow `1e-12`.
         ok(0.0, 0.0, 5e-13).unwrap();

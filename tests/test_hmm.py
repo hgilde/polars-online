@@ -306,9 +306,12 @@ def test_a_missing_exogenous_value_is_the_base_transition():
     [
         ({"n_components": 1}, "n_components must be >= 2"),
         ({"precision_prior": 0.0}, "precision_prior must be finite"),
-        ({"learn": False}, "nothing to filter with"),
-        ({"means": [0.0] * 4}, "means and covs go together"),
-        ({"transition": [0.5, 0.4, 0.5, 0.5]}, "not a distribution"),
+        ({"learn": False}, "with learn off, the model needs means and covs"),
+        ({"means": [0.0] * 4}, "means and covs must be given together, but only means is"),
+        (
+            {"transition": [0.5, 0.4, 0.5, 0.5]},
+            r"but row 0 \(counting from 0\) does not",
+        ),
         ({"warm_rows": 1}, "warm_rows must be at least n_components"),
         (
             {"init": "nope"},

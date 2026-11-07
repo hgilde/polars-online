@@ -235,7 +235,7 @@ def test_the_removed_settings_are_refused():
 def test_max_dclock_is_finite_and_above_zero():
     with pytest.raises(ValueError, match="gap_cap must be finite"):
         spec(gap_cap=float("inf"))
-    with pytest.raises(ValueError, match='gap_cap must be > 0.*half_life = "inf"'):
+    with pytest.raises(ValueError, match="gap_cap must be above 0.*half_life to inf"):
         spec(gap_cap=0.0)
 
 

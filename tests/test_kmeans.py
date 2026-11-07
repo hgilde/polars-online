@@ -1081,7 +1081,7 @@ class TestEdgeCases:
         with pytest.raises(
             ValueError,
             match=r'spec "m": kmeans: warm_rows must be at least n_clusters \(10\) to seed '
-            r"that many centres, got 1",
+            r"that many centers, but it is 1",
         ):
             spec(k=10, warm_rows=1, min_weight=1.0)
         X, _ = blobs(n=100, k=3, seed=22)
@@ -1614,7 +1614,7 @@ class TestTheDefaults:
         off = self.run(split_merge=0.0)
         assert _differ(off, self.run(split_merge=0.0, dead_frac=0.0)) == []
         assert _differ(off, self.run()) != []
-        with pytest.raises(ValueError, match="kmeans: dead_frac re-places a centre"):
+        with pytest.raises(ValueError, match="kmeans: dead_frac = 0.05 re-places dead centers"):
             po.ModelBank([spec(split_merge=0.0, dead_frac=0.05)])
 
 
@@ -1623,9 +1623,7 @@ class TestTheBoundaries:
 
     def test_n_clusters_ceiling(self):
         po.ModelBank([po.spec.kmeans("m", features=["x0"], n_clusters=65_536, half_life=10.0)])
-        with pytest.raises(
-            ValueError, match="n_clusters must be at most 65536 \\(2\\^16\\), got 65537"
-        ):
+        with pytest.raises(ValueError, match="n_clusters must be at most 65536, but it is 65537"):
             po.spec.kmeans("m", features=["x0"], n_clusters=65_537, half_life=10.0)
 
     def test_the_warm_up_buffer_ceiling(self):
@@ -1635,14 +1633,14 @@ class TestTheBoundaries:
         po.ModelBank([spec(warm_rows=5_592_405)])
         with pytest.raises(
             ValueError,
-            match="the warm-up buffer would hold 256.00003 MiB \\(warm_rows 5592406 rows of 2",
+            match="warm_rows = 5592406 would hold 256.00003 MiB of rows of 2 features",
         ):
             po.ModelBank([spec(warm_rows=5_592_406)])
 
     @pytest.mark.parametrize(
         ("kw", "msg"),
         [
-            ({"split_merge": float("inf")}, "split_merge must be finite, got float inf"),
+            ({"split_merge": float("inf")}, "split_merge must be finite, but it is inf"),
             ({"dead_frac": float("nan")}, "dead_frac must not be NaN"),
             ({"scale_floor": float("inf")}, "scale_floor must be finite"),
             ({"warm_rows": 2}, "warm_rows"),

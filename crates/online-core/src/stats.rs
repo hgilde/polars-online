@@ -226,8 +226,11 @@ pub struct EwQuantile {
 
 impl EwQuantile {
     pub fn new(levels: &[f64]) -> Result<Self, String> {
-        if levels.iter().any(|p| !(*p > 0.0 && *p < 1.0)) {
-            return Err("EwQuantile: every level must be in (0, 1)".into());
+        if let Some(bad) = levels.iter().find(|p| !(**p > 0.0 && **p < 1.0)) {
+            return Err(format!(
+                "EwQuantile: every level must be above 0 and below 1, but one of them is {bad}. \
+                 Pass levels above 0 and below 1."
+            ));
         }
         Ok(Self::empty(levels.to_vec()))
     }
@@ -255,7 +258,8 @@ impl EwQuantile {
     pub fn bounded(levels: &[f64], octaves: u32) -> Result<Self, String> {
         if !(1..=MAX_BAND_OCTAVES).contains(&octaves) {
             return Err(format!(
-                "EwQuantile: a band must be 1 to {MAX_BAND_OCTAVES} octaves, not {octaves}"
+                "EwQuantile: a band must be from 1 to {MAX_BAND_OCTAVES} octaves, but it is \
+                 {octaves}. Pass a band of 1 to {MAX_BAND_OCTAVES} octaves."
             ));
         }
         let mut q = Self::new(levels)?;
@@ -821,11 +825,13 @@ pub struct EwAutoCorr {
 impl EwAutoCorr {
     pub fn new(lag: usize) -> Result<Self, String> {
         if lag == 0 {
-            return Err("EwAutoCorr: lag must be >= 1".into());
+            return Err(
+                "EwAutoCorr: lag must be at least 1, but it is 0. Pass a lag of 1 or more.".into(),
+            );
         }
         // The buffer holds `lag + 1` values and is sized here, so the lag
         // has the models' lag ceiling (review 2026-10-06, CD10).
-        crate::ewlagcov::check_lag_ceiling("EwAutoCorr: lag", lag)?;
+        crate::ewlagcov::check_lag_ceiling("lag", lag).map_err(|e| format!("EwAutoCorr: {e}"))?;
         Ok(Self {
             lag,
             buf: VecDeque::with_capacity(lag + 1),
@@ -1483,7 +1489,9 @@ mod tests {
                 panic!("accepted")
             };
             assert!(
-                e.contains("lag must be at most 1048576") && e.contains(&format!("got {lag}")),
+                e.contains(&format!(
+                    "lag must be at most 1048576, but it asks for a lag of {lag}"
+                )),
                 "{e}"
             );
         }

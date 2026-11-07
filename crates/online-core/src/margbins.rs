@@ -750,16 +750,28 @@ pub struct Split {
 fn check_edges(p: usize, edges: &[Vec<f64>]) -> Result<(), String> {
     if edges.len() != p {
         return Err(format!(
-            "marginal: bins needs one edge list per feature ({p}), got {}",
+            "marginal: bin_edges must hold one list of edges for each of the {p} features, but \
+             it has {}. Give one list for each feature, in the order of features.",
             edges.len()
         ));
     }
-    for (j, e) in edges.iter().enumerate() {
-        if e.iter().any(|v| !v.is_finite()) || e.windows(2).any(|w| w[1] <= w[0]) {
-            return Err(format!(
-                "marginal: feature {j}'s bin edges must be finite and strictly increasing"
-            ));
-        }
+    let bad: Vec<String> = edges
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.iter().any(|v| !v.is_finite()) || e.windows(2).any(|w| w[1] <= w[0]))
+        .map(|(j, _)| j.to_string())
+        .collect();
+    if !bad.is_empty() {
+        return Err(format!(
+            "marginal: each feature's bin edges must be finite and strictly increasing, but those \
+             of {} (counting from 0) are not. Sort each list, each edge once, and drop any edge \
+             that is not finite.",
+            if bad.len() == 1 {
+                format!("feature {}", bad[0])
+            } else {
+                format!("features {}", bad.join(", "))
+            }
+        ));
     }
     Ok(())
 }
@@ -815,9 +827,7 @@ impl MarginalBins {
             BinStat::Mean => (Vec::new(), None),
             BinStat::Huber { delta } => {
                 if delta.is_nan() || delta <= 0.0 {
-                    return Err(format!(
-                        "marginal: bin_huber_delta must be > 0 (inf is the mean), got {delta}"
-                    ));
+                    return Err(huber_delta_refusal(delta));
                 }
                 (
                     vec![0.0; cells],
@@ -1794,20 +1804,33 @@ pub const DEFAULT_BUDGET_MIB: f64 = 256.0;
 #[cfg(test)]
 const MEMORY_BUDGET: usize = 256 << 20;
 
-fn budget_check(what: &str, bytes: usize, budget_mib: f64, detail: &str) -> Result<(), String> {
+fn budget_check(
+    what: &str,
+    bytes: usize,
+    budget_mib: f64,
+    detail: &str,
+    fewer: &str,
+) -> Result<(), String> {
     // In MiB, as the budget is given: a budget of `inf` holds every size.
     // Said in MiB too, with the digits to read above the budget: in GiB to
     // two decimals a small one read "0.00 GiB" (review 2026-10-06, CD16).
     let mib = bytes as f64 / (1u64 << 20) as f64;
     if mib > budget_mib {
         return Err(format!(
-            "marginal: {what} would need {} MiB ({detail}), over the {budget_mib} MiB each \
-             group's model is held to; raise bin_budget, or ask for fewer bins, targets or \
-             features",
+            "marginal: {what} would take {} MiB at {detail}, over the bin_budget of {budget_mib} \
+             MiB for each group's model. Increase bin_budget, or {fewer}.",
             crate::budget::mib_over(mib, budget_mib),
         ));
     }
     Ok(())
+}
+
+/// The refusal of a `bin_huber_delta` that is not above 0.
+fn huber_delta_refusal(delta: f64) -> String {
+    format!(
+        "marginal: bin_huber_delta must be above 0, but it is {delta}. Set bin_huber_delta to a \
+         positive cut, or to inf for the mean."
+    )
 }
 
 impl BinCfg {
@@ -1819,80 +1842,90 @@ impl BinCfg {
     }
 
     pub fn validate(&self, p: usize, n_targets: usize) -> Result<(), String> {
+        let mut no = crate::Refusals::new();
         let budget = self.budget_mib_or_default();
         // NaN compares false both ways, so it is named here rather than
         // read as no bound.
-        if budget.is_nan() || budget <= 0.0 {
-            return Err(format!(
-                "marginal: bin_budget must be a positive number of MiB, or inf for no bound; \
-                 got {budget}"
+        let budgeted = !(budget.is_nan() || budget <= 0.0);
+        if !budgeted {
+            no.refuse(format!(
+                "marginal: bin_budget must be above 0 MiB, but it is {budget}. Set bin_budget to \
+                 a positive number of MiB, or to inf for no limit."
             ));
         }
         if let BinStat::Huber { delta } = self.stat
             && (delta.is_nan() || delta <= 0.0)
         {
-            return Err(format!(
-                "marginal: bin_huber_delta must be > 0 (inf is the mean), got {delta}"
-            ));
+            no.refuse(huber_delta_refusal(delta));
         }
         // The refit is of Huber locations: under the mean, or a cut that
         // clips nothing, the one pass is already the batch fit.
         if self.refit_rows > 0
             && !matches!(self.stat, BinStat::Huber { delta } if delta.is_finite())
         {
-            return Err(
-                "marginal: bin_refit_rows applies only with bin_stat = \"huber\" and a finite \
-                 bin_huber_delta: under the mean, or a cut that clips nothing, the one pass is \
-                 already the batch fit"
-                    .into(),
+            no.refuse(
+                "marginal: bin_refit_rows applies only under bin_stat=\"huber\" with a finite \
+                 bin_huber_delta, since under the mean, or an infinite bin_huber_delta, the \
+                 first pass is already the full fit. Leave out bin_refit_rows, or set \
+                 bin_stat=\"huber\" with a finite bin_huber_delta.",
             );
         }
         let values = self.stat.cell_values();
         match &self.edges {
             Some(e) => {
-                check_edges(p, e)?;
-                let bins: usize = e.iter().map(|f| f.len() + 1).sum();
-                budget_check(
-                    "the bin histogram",
-                    histogram_bytes(p, n_targets, bins, values),
-                    budget,
-                    &format!("{bins} bins over {p} features x {n_targets} targets"),
-                )?;
+                if no.take(check_edges(p, e)) && budgeted {
+                    let bins: usize = e.iter().map(|f| f.len() + 1).sum();
+                    no.take(budget_check(
+                        "the bin histogram",
+                        histogram_bytes(p, n_targets, bins, values),
+                        budget,
+                        &format!("{bins} bins over {p} features and {n_targets} targets"),
+                        "use fewer bins, targets or features",
+                    ));
+                }
             }
             None => {
                 if self.n_bins < 2 {
-                    return Err(format!(
-                        "marginal: bins must be at least 2, got {}",
+                    no.refuse(format!(
+                        "marginal: bins must be at least 2, but it is {}. Set bins to 2 or more.",
                         self.n_bins
                     ));
                 }
                 if self.warm_rows < self.n_bins {
-                    return Err(format!(
-                        "marginal: bin_warm_rows ({}) must be at least bins ({}); the edges are \
-                         quantiles of the held rows and cannot be found from fewer",
-                        self.warm_rows, self.n_bins
+                    no.refuse(format!(
+                        "marginal: bin_warm_rows must be at least bins ({}), since the edges are \
+                         set from the rows it holds, but it is {}. Set bin_warm_rows to {} \
+                         or more.",
+                        self.n_bins, self.warm_rows, self.n_bins
                     ));
                 }
-                budget_check(
-                    "the bin warm-up hold",
-                    hold_bytes(self.warm_rows, p, n_targets),
-                    budget,
-                    &format!(
-                        "bin_warm_rows {} of {p} features and {n_targets} targets",
-                        self.warm_rows
-                    ),
-                )?;
-                // A feature keeps at most the bins asked for, so this is the
-                // most a learned histogram can take.
-                budget_check(
-                    "the bin histogram",
-                    histogram_bytes(p, n_targets, p.saturating_mul(self.n_bins), values),
-                    budget,
-                    &format!("{p} features x {n_targets} targets x {} bins", self.n_bins),
-                )?;
+                if budgeted {
+                    no.take(budget_check(
+                        "the rows held before the bin edges are set",
+                        hold_bytes(self.warm_rows, p, n_targets),
+                        budget,
+                        &format!(
+                            "bin_warm_rows = {} over {p} features and {n_targets} targets",
+                            self.warm_rows
+                        ),
+                        "lower bin_warm_rows, or use fewer targets or features",
+                    ));
+                    // A feature keeps at most the bins asked for, so this is
+                    // the most a learned histogram can take.
+                    no.take(budget_check(
+                        "the bin histogram",
+                        histogram_bytes(p, n_targets, p.saturating_mul(self.n_bins), values),
+                        budget,
+                        &format!(
+                            "{} bins for each of {p} features and {n_targets} targets",
+                            self.n_bins
+                        ),
+                        "use fewer bins, targets or features",
+                    ));
+                }
             }
         }
-        Ok(())
+        no.finish()
     }
 }
 
@@ -2418,7 +2451,10 @@ mod tests {
             )
         };
         let err = learned(2, 1_000).validate(30_000, 3_500).unwrap_err();
-        assert!(err.contains("warm-up hold"), "{err}");
+        assert!(
+            err.contains("the rows held before the bin edges are set"),
+            "{err}"
+        );
         assert!(learned(2, 1_000).validate(30_000, 10).is_ok());
     }
 
@@ -2446,15 +2482,12 @@ mod tests {
         assert!(with(None).validate(10_000, 50).is_ok());
         let err = with(Some(100.0)).validate(10_000, 50).unwrap_err();
         assert!(
-            err.contains("100 MiB") && err.contains("raise bin_budget"),
+            err.contains("100 MiB") && err.contains("Increase bin_budget"),
             "{err}"
         );
         for bad in [0.0, -1.0, f64::NAN] {
             let err = with(Some(bad)).validate(10, 1).unwrap_err();
-            assert!(
-                err.contains("bin_budget must be a positive number"),
-                "{err}"
-            );
+            assert!(err.contains("bin_budget must be above 0 MiB"), "{err}");
         }
         // Given edges are held to it too.
         let given = BinCfg {
@@ -2489,14 +2522,14 @@ mod tests {
         let err = cfg.validate(1, 1).unwrap_err();
         assert!(!err.contains("GiB"), "{err}");
         let shown: f64 = err
-            .split("would need ")
+            .split("would take ")
             .nth(1)
-            .and_then(|s| s.split(" MiB (").next())
+            .and_then(|s| s.split(" MiB at ").next())
             .and_then(|s| s.parse().ok())
             .unwrap_or_else(|| panic!("no size in MiB: {err}"));
         let mib = hold_bytes(8, 1, 1) as f64 / f64::from(1 << 20);
         assert!(shown > 1e-6 && (shown - mib).abs() <= 0.005 * mib, "{err}");
-        assert!(err.contains("over the 0.000001 MiB"), "{err}");
+        assert!(err.contains("over the bin_budget of 0.000001 MiB"), "{err}");
     }
 
     /// The budget applies to explicit edges as it does to learned ones, and
@@ -2517,7 +2550,10 @@ mod tests {
         let err = cfg.validate(1, 100_000_000).unwrap_err();
         assert!(err.contains("budget"), "{err}");
         let err = cfg.validate(2, 1).unwrap_err();
-        assert!(err.contains("one edge list per feature"), "{err}");
+        assert!(
+            err.contains("one list of edges for each of the 2 features"),
+            "{err}"
+        );
     }
 
     /// A featureless column and a target that never varies both give no
@@ -2681,7 +2717,10 @@ mod tests {
         };
         assert!(at(bytes).validate(p, t).is_ok());
         let err = at(bytes - 1).validate(p, t).unwrap_err();
-        assert!(err.contains("9 bins over 3 features x 2 targets"), "{err}");
+        assert!(
+            err.contains("9 bins over 3 features and 2 targets"),
+            "{err}"
+        );
     }
 
     /// Each quantile edge closes a bin of the weight still unassigned over
@@ -3722,7 +3761,7 @@ mod tests {
             for bad in [0.0, -1.0, f64::NAN] {
                 let e = MarginalBins::new_with(1, 1, vec![vec![]], BinStat::Huber { delta: bad });
                 assert!(
-                    e.unwrap_err().contains("bin_huber_delta must be > 0"),
+                    e.unwrap_err().contains("bin_huber_delta must be above 0"),
                     "{bad}"
                 );
             }
@@ -3750,7 +3789,7 @@ mod tests {
             };
             for bad in [0.0, -1.0, f64::NAN] {
                 let e = spec(bad).validate(1, 1).unwrap_err();
-                assert!(e.contains("bin_huber_delta must be > 0"), "{bad}: {e}");
+                assert!(e.contains("bin_huber_delta must be above 0"), "{bad}: {e}");
             }
             for good in [1e-9, 1.0, f64::INFINITY] {
                 assert!(spec(good).validate(1, 1).is_ok(), "{good}");

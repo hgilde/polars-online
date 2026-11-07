@@ -152,28 +152,44 @@ impl FtrlCfg {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        let mut no = crate::Refusals::new();
         // The decay first: every model checks it in its own `new`, where only
         // the bank's spec did (review 2026-10-05, CF5).
-        self.decay.check().map_err(|e| format!("ftrl: {e}"))?;
-        if self.n_features == 0 || self.n_targets == 0 {
-            return Err("n_features and n_targets must be >= 1".into());
-        }
+        no.take(self.decay.check().map_err(|e| format!("ftrl: {e}")));
+        no.take(crate::model::check_dims(
+            "ftrl",
+            self.n_features,
+            self.n_targets,
+        ));
         // NaN compares false both ways, so each check says what it accepts;
         // all four took NaN, and every coefficient was NaN from the first
         // row (review 2026-09-12, S32).
         if self.alpha <= 0.0 || self.alpha.is_nan() {
-            return Err("ftrl: alpha must be > 0".into());
+            no.refuse(format!(
+                "ftrl: alpha must be above 0, but it is {}. Set alpha to a positive learning \
+                 rate, such as the default 0.1.",
+                self.alpha
+            ));
         }
-        if [self.beta, self.l1, self.l2]
-            .iter()
-            .any(|&v| v < 0.0 || v.is_nan())
-        {
-            return Err("ftrl: beta, l1 and l2 must be >= 0".into());
+        for (key, v, zero) in [
+            ("beta", self.beta, "for no smoothing of the step"),
+            ("l1", self.l1, "for no L1 penalty"),
+            ("l2", self.l2, "for no L2 penalty"),
+        ] {
+            if v < 0.0 || v.is_nan() {
+                no.refuse(format!(
+                    "ftrl: {key} must be at least 0, but it is {v}. Set {key} to 0 {zero}, or \
+                     to a positive value."
+                ));
+            }
         }
         if self.strict_binary && self.loss == FtrlLoss::Squared {
-            return Err("ftrl: strict_binary applies to the logistic loss only".into());
+            no.refuse(
+                "ftrl: strict_binary checks the targets of the logistic loss, but loss is \
+                 \"squared\". Set loss=\"logistic\", or leave strict_binary out.",
+            );
         }
-        Ok(())
+        no.finish()
     }
 }
 
@@ -802,18 +818,24 @@ mod tests {
             c.validate().expect("should be accepted");
         };
 
-        bad(&|c| c.n_features = 0, "must be >= 1");
-        bad(&|c| c.n_targets = 0, "must be >= 1");
+        bad(
+            &|c| c.n_features = 0,
+            "needs at least one feature and one target",
+        );
+        bad(
+            &|c| c.n_targets = 0,
+            "needs at least one feature and one target",
+        );
 
         // alpha divides the learning rate, so zero is as fatal as negative.
-        bad(&|c| c.alpha = 0.0, "alpha must be > 0");
-        bad(&|c| c.alpha = -1.0, "alpha must be > 0");
+        bad(&|c| c.alpha = 0.0, "alpha must be above 0");
+        bad(&|c| c.alpha = -1.0, "alpha must be above 0");
         good(&|c| c.alpha = 1e-9);
 
         // beta/l1/l2 may be zero -- only negative is meaningless.
-        bad(&|c| c.beta = -1e-9, "must be >= 0");
-        bad(&|c| c.l1 = -1e-9, "must be >= 0");
-        bad(&|c| c.l2 = -1e-9, "must be >= 0");
+        bad(&|c| c.beta = -1e-9, "must be at least 0");
+        bad(&|c| c.l1 = -1e-9, "must be at least 0");
+        bad(&|c| c.l2 = -1e-9, "must be at least 0");
         good(&|c| {
             c.beta = 0.0;
             c.l1 = 0.0;
@@ -823,10 +845,10 @@ mod tests {
         // NaN compares false both ways, so each check must say what it
         // accepts (review 2026-09-12, S32: all four took NaN, and every
         // coefficient was NaN from the first row).
-        bad(&|c| c.alpha = f64::NAN, "alpha must be > 0");
-        bad(&|c| c.beta = f64::NAN, "must be >= 0");
-        bad(&|c| c.l1 = f64::NAN, "must be >= 0");
-        bad(&|c| c.l2 = f64::NAN, "must be >= 0");
+        bad(&|c| c.alpha = f64::NAN, "alpha must be above 0");
+        bad(&|c| c.beta = f64::NAN, "must be at least 0");
+        bad(&|c| c.l1 = f64::NAN, "must be at least 0");
+        bad(&|c| c.l2 = f64::NAN, "must be at least 0");
 
         // strict_binary checks that y is 0/1, which the squared loss does not require.
         bad(
@@ -834,12 +856,28 @@ mod tests {
                 c.strict_binary = true;
                 c.loss = FtrlLoss::Squared;
             },
-            "logistic loss only",
+            "checks the targets of the logistic loss",
         );
         good(&|c| c.strict_binary = true);
         good(&|c| c.loss = FtrlLoss::Squared);
 
         cfg(2, 1).validate().expect("the baseline config is valid");
+
+        // Every problem at once, each a line of its own.
+        let mut two = cfg(2, 1);
+        two.alpha = 0.0;
+        two.l1 = -1.0;
+        let e = two.validate().unwrap_err();
+        let lines: Vec<&str> = e.lines().collect();
+        assert_eq!(lines.len(), 2, "{e}");
+        assert!(
+            lines[0].starts_with("ftrl: alpha must be above 0, but it is 0."),
+            "{e}"
+        );
+        assert!(
+            lines[1].starts_with("ftrl: l1 must be at least 0, but it is -1."),
+            "{e}"
+        );
     }
 
     fn cfg(k: usize, m: usize) -> FtrlCfg {

@@ -773,7 +773,7 @@ class TestRefusals:
     )
     @pytest.mark.parametrize("make", [ew_cov, ridge], ids=["ew_cov", "ewridge"])
     def test_each_needs_a_window(self, make, key, value):
-        with pytest.raises(ValueError, match=f"{key} needs `window_size`"):
+        with pytest.raises(ValueError, match=f"{key} applies only under a hard window"):
             make(window_size=None, **{key: value})
 
     @pytest.mark.parametrize(

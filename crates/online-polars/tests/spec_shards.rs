@@ -61,7 +61,7 @@ fn shards_read_a_count_or_auto_and_refuse_the_rest() {
         assert!(
             err.contains("at least 1")
                 || err.contains("number")
-                || err.contains("must be an int or one of \"auto\""),
+                || err.contains("must be an int or \"auto\", but it is"),
             "{bad}: {err}"
         );
     }

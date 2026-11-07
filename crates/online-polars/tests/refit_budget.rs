@@ -285,7 +285,7 @@ fn a_budget_of_no_mib_is_refused() {
         "targets": ["y"], "features": ["x"], "half_life": "inf"}"#;
     let s: Spec = serde_json::from_str(text).unwrap();
     let e = Bank::new(vec![s]).err().unwrap();
-    assert!(e.contains("refit_budget must be > 0 MiB"), "{e}");
+    assert!(e.contains("refit_budget must be above 0 MiB"), "{e}");
     let text = r#"{"name": "m", "model": {"type": "sgd", "refit_budget": 8.0},
         "targets": ["y"], "features": ["x"], "half_life": "inf"}"#;
     let s: Spec = serde_json::from_str(text).unwrap();

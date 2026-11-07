@@ -532,7 +532,7 @@ fn model_cfg_validation_rejects_each_bad_field() {
         Ok(()) => panic!("expected rejection mentioning {want:?}"),
     };
 
-    err(model_cfg(0, vec![Mean]), "at least one column");
+    err(model_cfg(0, vec![Mean]), "needs at least one feature");
     // No statistics is "accumulate only" (E43), not an error.
     model_cfg(2, vec![]).validate().unwrap();
     assert_eq!(model_cfg(2, vec![]).n_outputs(), 0);
@@ -540,11 +540,17 @@ fn model_cfg_validation_rejects_each_bad_field() {
     // Per-column stats are fine with a single column; pairwise ones are not.
     model_cfg(1, vec![Mean, Var, Std]).validate().unwrap();
     for s in [Cov, Corr] {
-        err(model_cfg(1, vec![s]), "at least two columns");
+        err(
+            model_cfg(1, vec![s]),
+            "which compares two features, but the model has one",
+        );
     }
     let mut one_pcorr = model_cfg(1, vec![PartialCorr]);
     one_pcorr.precision_prior = Some(1e-6);
-    err(one_pcorr, "at least two columns");
+    err(
+        one_pcorr,
+        "which compares two features, but the model has one",
+    );
 
     // partial_corr is read off the tracked precision matrix, which only
     // exists when a prior is configured.
@@ -572,7 +578,7 @@ fn model_cfg_validation_rejects_each_bad_field() {
     for bad in [0.0, 1.0, -0.5, 1.5, f64::NAN] {
         let mut c = mahal.clone();
         c.mahal_quantiles = vec![0.5, bad];
-        err(c, "strictly between 0 and 1");
+        err(c, "mahal_quantiles must each be above 0 and below 1");
     }
     let mut levels = mahal.clone();
     levels.mahal_quantiles = vec![0.5, 0.99];
@@ -583,13 +589,16 @@ fn model_cfg_validation_rejects_each_bad_field() {
     let mut too_many = model_cfg(3, vec![Mean]);
     too_many.pca = 4;
     too_many.pca_every = 1.0;
-    err(too_many, "4 components of 3 columns");
+    err(
+        too_many,
+        "pca must be at most the number of features (3), but it is 4",
+    );
     for bad in [-1.0, f64::NAN] {
         for pca in [2, 0] {
             let mut no_cadence = model_cfg(3, vec![Mean]);
             no_cadence.pca = pca;
             no_cadence.pca_every = bad;
-            err(no_cadence, "pca_every must be >= 0 clock units");
+            err(no_cadence, "pca_every must be at least 0 clock units");
         }
     }
     let mut ok = model_cfg(3, vec![Mean]);
@@ -1279,7 +1288,7 @@ fn a_bad_lag_configuration_is_refused_by_name() {
     assert!(
         EwCovModel::new(cfg.clone())
             .unwrap_err()
-            .contains("lag_corr needs `lags`")
+            .contains("\"lag_corr\" in stats needs lags")
     );
     cfg.stats = vec![EwCovStat::Corr];
     cfg.lags = vec![2, 1];
@@ -3234,4 +3243,20 @@ fn a_state_is_refused_for_each_part_of_the_wrong_shape() {
         .unwrap();
         inner.win = w.win.take();
     });
+}
+
+/// Every problem at once: two bad settings are both named, one to a line.
+#[test]
+fn a_configuration_with_two_problems_reports_both() {
+    let mut c = model_cfg(3, vec![EwCovStat::Mean]);
+    c.min_weight = -1.0;
+    c.pca = 4;
+    let e = c.validate().unwrap_err();
+    let lines: Vec<&str> = e.lines().collect();
+    assert_eq!(lines.len(), 2, "{e}");
+    assert!(
+        lines[0].starts_with("ew_cov: min_weight must be at least 0"),
+        "{e}"
+    );
+    assert!(lines[1].starts_with("ew_cov: pca must be at most"), "{e}");
 }

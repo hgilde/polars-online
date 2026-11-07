@@ -39,7 +39,10 @@ from polars_online._spec_words import (
     _INF_REFUSED_BY_RUST,
     _WORD_REASONS,
     _bad_word,
+    _listed,
     _one_of,
+    quoted,
+    refusal,
     word_reason,
     words_refusal,
 )
@@ -50,7 +53,7 @@ def _who(name: Any) -> str:
     """How a refusal names a spec: ``spec "<name>"``, or, for a hand-built
     dict with no name, ``a spec with no name`` -- which read ``spec null``
     (review 2026-10-06, YA6)."""
-    return "a spec with no name" if name is None else f"spec {json.dumps(name)}"
+    return "a spec with no name" if name is None else f"spec {quoted(name)}"
 
 
 def _json(spec: dict[str, Any] | list[dict[str, Any]]) -> str:
@@ -67,7 +70,9 @@ def _json(spec: dict[str, Any] | list[dict[str, Any]]) -> str:
     formula, so ``half_life=pl.duration(minutes=10)`` was refused as a formula
     literal that named no key)."""
 
-    def enc(v: Any, key: str, who: Any) -> Any:
+    def enc(v: Any, key: str, who: Any, inner: bool = False) -> Any:
+        # `key` is the parameter `v` belongs to, and `inner` whether `v` is
+        # one value of it (an entry of a list, a value of a dict), not all.
         if isinstance(v, bool):
             return v
         if isinstance(v, numbers.Integral):
@@ -75,7 +80,14 @@ def _json(spec: dict[str, Any] | list[dict[str, Any]]) -> str:
         if isinstance(v, numbers.Real):
             v = float(v)
             if math.isnan(v):
-                raise ValueError(f"{_who(who)}: {key} must not be NaN")
+                if inner:
+                    raise ValueError(
+                        f"{_who(who)}: {key} must hold numbers, but one of its values is NaN. "
+                        "Replace the NaN with a number."
+                    )
+                raise ValueError(
+                    f"{_who(who)}: {key} must be a number, but it is NaN. Set {key} to a number."
+                )
             if math.isinf(v):
                 return "inf" if v > 0 else "-inf"
             return v
@@ -87,9 +99,13 @@ def _json(spec: dict[str, Any] | list[dict[str, Any]]) -> str:
             # A model table's keys and words renamed in that model alone.
             if isinstance(v.get("type"), str):
                 v = forward_model(_who(who), v["type"], v, stacklevel=5)
-            return {k: enc(x, k, who) for k, x in v.items()}
+            # The spec's and its model table's keys are parameters; any
+            # other dict is one parameter's value.
+            if key in ("spec", "model"):
+                return {k: enc(x, k, who) for k, x in v.items()}
+            return {k: enc(x, key, who, inner=True) for k, x in v.items()}
         if isinstance(v, (list, tuple)):
-            return [enc(x, key, who) for x in v]
+            return [enc(x, key, who, inner=True) for x in v]
         if isinstance(v, pl.Expr) and key == "targets":
             # A window expression in `targets`, as the builders take one
             # (review R2, P5: every surface that writes a spec dict).
@@ -98,8 +114,9 @@ def _json(spec: dict[str, Any] | list[dict[str, Any]]) -> str:
             if key in _CLOCK_KEYS:
                 return duration_text(v, _who(who), key)
             raise TypeError(
-                f"{_who(who)}: {key} takes no {type(v).__name__}; a duration is "
-                "a clock parameter's, and a window expression is a target's"
+                f"{_who(who)}: {key} takes no {type(v).__name__}, since it is not measured "
+                "on the clock and is not a target. Pass a column's name as a str, or the "
+                "value the parameter takes."
             )
         return v
 
@@ -199,9 +216,9 @@ def _matches(v: Any, hint: Any) -> bool:
 def _describe(hint: Any, plural: bool = False) -> str:
     if hint == TargetList:
         return (
-            "lists of strs, po.target tables or window expressions looking ahead"
+            "lists of column names, po.target tables or formula targets"
             if plural
-            else "a list of strs, po.target tables or window expressions looking ahead"
+            else "a list of column names, po.target tables or formula targets"
         )
     origin = typing.get_origin(hint)
     if origin in (types.UnionType, typing.Union):
@@ -217,13 +234,13 @@ def _describe(hint: Any, plural: bool = False) -> str:
         return " or ".join(parts)
     if origin is Literal:
         words = _one_of(typing.get_args(hint))
-        return f"strs, each {words}" if plural else words
-    if origin is list:
+        return f"strs, each one of {words}" if plural else words
+    if origin in (list, Sequence):
         (inner,) = typing.get_args(hint)
         return ("lists of " if plural else "a list of ") + _describe(inner, plural=True)
     if origin is dict:
         key, val = typing.get_args(hint)
-        return f"a dict of {_describe(key)} -> {_describe(val)}"
+        return f"a dict from {_describe(key, plural=True)} to {_describe(val, plural=True)}"
     nouns = {float: ("a number", "numbers"), int: ("an int", "ints")}
     nouns |= {bool: ("a bool", "bools"), str: ("a str", "strs")}
     one, many = nouns.get(hint, (str(hint), str(hint)))
@@ -342,7 +359,7 @@ _AT_LEAST_ONE = frozenset(
 #: left to speak.
 _FLOOR = {
     "block_rows": "1",
-    "preavg_rows": "2 (3 under psd = False)",
+    "preavg_rows": "2 (3 under psd=False)",
 }
 
 
@@ -397,12 +414,11 @@ _CEILING = {
 #: Why a count's ceiling is where it is, said after the refusal where the
 #: Rust side says it too (``online_core::MAX_PERM``'s message).
 _REFIT_ROWS_WHY = (
-    "the refit's buffer is held at its full size, (features + 10) * 8 bytes a row under the "
-    "MAD scale and (features + 4) * 8 under the RMS, from a target's first learned row, so the "
-    "count sizes an allocation before any row is seen"
+    "the refit holds that many rows from a target's first learned row, so the count sets "
+    "aside memory before any row is seen"
 )
 _CEILING_WHY = {
-    "n_perm": "the draws are held to take their quantile, and each is a pass over both blocks",
+    "n_perm": "every draw is kept, and each takes a pass over the rows",
     "huber_refit_rows": _REFIT_ROWS_WHY,
     "quantile_refit_rows": _REFIT_ROWS_WHY,
 }
@@ -470,8 +486,8 @@ _RENAMED = {
 #: reads instead. A spec dict or a TOML table still says ``features = []``:
 #: every spec has the key there.
 _NO_FEATURES = {
-    "holt": "it reads only its targets, their own level and trend",
-    "seqtest": "it reads only its targets, or the residuals of `a` and `b`",
+    "holt": "it fits only each target's own level and trend",
+    "seqtest": "it reads only its targets, or the residuals of the specs a and b name",
 }
 
 #: The parameters renamed in one builder whose old name another keeps
@@ -494,6 +510,165 @@ def _renamed_keywords[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
     return renamed_keywords(f"{fn.__qualname__}()", _RENAMED_KEYWORDS)(fn)
 
 
+def _shown(v: Any) -> str:
+    """A value as a refusal shows it: its repr, cut at 60 characters."""
+    r = repr(v)
+    return r if len(r) <= 60 else r[:57] + "..."
+
+
+def _keyword_problem(
+    builder: str,
+    who: str,
+    key: str,
+    value: Any,
+    own: dict[str, Any],
+    shared: dict[str, Any],
+    inf_ok: frozenset[str],
+    problems: list[Exception],
+) -> None:
+    """What is wrong with one keyword of a builder, added to ``problems`` as
+    the exception to raise for it: a name the builder does not take, a value of
+    the wrong kind or out of its range. The Rust side checks the rest once
+    every keyword passes here."""
+    if key == "targets" and isinstance(value, (list, tuple)):
+        # A table written by hand with a relative target's keys (task 201):
+        # refused by name, where the table's shape check would say only that
+        # `targets` is not a list of targets.
+        for t in value:
+            if isinstance(t, dict) and any(k in t for k in _RELATIVE_KEYS):
+                what = t.get("column", t.get("name"))
+                problems.append(
+                    TypeError(
+                        f"{who}: target {quoted(what)} is relative to another column, but "
+                        "relative targets were removed. Make the target a column with Polars' "
+                        "with_columns in the query before the bank, such as "
+                        'ret=(pl.col("p") / pl.col("mid")).log(), and name that column in '
+                        "targets."
+                    )
+                )
+                return
+    if key == "features" and builder in _NO_FEATURES:
+        problems.append(
+            TypeError(
+                f"{who}: {builder}() takes no features, since {_NO_FEATURES[builder]}. "
+                "Leave out features."
+            )
+        )
+        return
+    hint = own.get(key, shared.get(key))
+    if hint is None:
+        new = _RENAMED.get(key) or _RENAMED_IN.get(builder, {}).get(key)
+        # Named only where this builder takes the new name: `window` was
+        # renamed `window_size`, which `rls` does not take.
+        if new is not None and (new in own or new in shared):
+            problems.append(
+                TypeError(
+                    f"{who}: {key} was renamed {new}, and {builder}() takes only the new name. "
+                    f"Use {new}."
+                )
+            )
+            return
+        problems.append(
+            TypeError(
+                f"{who}: {builder}() takes no parameter {quoted(key)}. "
+                "Remove it, or correct its spelling."
+            )
+        )
+        return
+    if not _matches(value, hint):
+        # A word outside the ones the parameter takes is a value error, in
+        # the shape every surface gives it (task 244, P-4); anything else of
+        # the wrong shape is a type error.
+        if (bad := _bad_word(value, hint)) is not None:
+            if (reason := word_reason(who, key, bad[0])) is not None:
+                problems.append(ValueError(reason))
+                return
+            if (why := _WORD_REASONS.get((builder, key))) is not None:
+                problems.append(ValueError(f"{who}: {why.format(got=quoted(bad[0]))}"))
+                return
+            problems.append(ValueError(words_refusal(who, key, *bad, hint=hint)))
+            return
+        problems.append(
+            TypeError(
+                f"{who}: {key} must be {_describe(hint)}, but it is {_got(value)}. "
+                "Pass a value of that kind."
+            )
+        )
+        return
+    # Every int parameter is a count (u32 on the Rust side), and some are
+    # counts of something there must be one of: the Rust side's floor, said
+    # here, where `0` passed with nothing said (review 2026-09-12, D8).
+    if (
+        isinstance(value, numbers.Integral)
+        and not isinstance(value, bool)
+        and int in (hint, *typing.get_args(hint))
+    ):
+        floor, stated = _int_floor(key)
+        if value < floor:
+            problems.append(
+                ValueError(
+                    f"{who}: {key} must be at least {stated}, but it is {value}. "
+                    f"Set {key} to {stated} or more."
+                )
+            )
+            return
+        # And at most its width, or the tighter ceiling of a count that sizes
+        # an allocation (review 2026-10-06, YA4 and CD10).
+        ceiling = _int_ceiling(key, builder)
+        if int(value) > ceiling:
+            why = _CEILING_WHY.get(key)
+            said = f": {why}" if why else ""
+            problems.append(
+                ValueError(
+                    f"{who}: {key} must be at most {ceiling}, but it is {value}{said}. "
+                    f"Lower {key} to {ceiling} or below."
+                )
+            )
+            return
+    # And each entry of a list of counts (review 2026-09-26, F7: a negative
+    # lag was named by serde as `model`).
+    if (
+        isinstance(value, (list, tuple))
+        and value
+        and all(isinstance(x, numbers.Integral) and not isinstance(x, bool) for x in value)
+        and list[int] in (hint, *typing.get_args(hint))
+    ):
+        floor, stated = _int_floor(key)
+        if min(value) < floor:
+            problems.append(
+                ValueError(
+                    f"{who}: {key} must each be at least {stated}, but one of them is "
+                    f"{min(value)}. Set each to {stated} or more."
+                )
+            )
+            return
+        ceiling = _int_ceiling(key, builder)
+        if max(value) > ceiling:
+            problems.append(
+                ValueError(
+                    f"{who}: {key} must each be at most {ceiling}, but one of them is "
+                    f"{max(value)}. Lower each to {ceiling} or below."
+                )
+            )
+            return
+    if key not in inf_ok and key not in _INF_REFUSED_BY_RUST and not _finite(value):
+        if isinstance(value, (list, tuple, dict)):
+            problems.append(
+                ValueError(
+                    f"{who}: {key} must hold finite numbers, but one of its values is "
+                    f"infinite. Set each value of {key} to a finite number."
+                )
+            )
+            return
+        problems.append(
+            ValueError(
+                f"{who}: {key} must be finite, but it is {_shown(value)}. "
+                f"Set {key} to a finite number."
+            )
+        )
+        return
+
+
 def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
     """Check each keyword against ``fn``'s annotations (and ``_common``'s for
     the shared parameters) so a wrong shape names the parameter."""
@@ -508,83 +683,27 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         name = args[0] if args else kwargs.get("name")
         if not isinstance(name, str):
-            raise TypeError(f"spec name must be a str, got {_got(name)}")
-        who = f"spec {json.dumps(name)}"
+            got = "none is given" if name is None else f"it is {_got(name)}"
+            raise TypeError(
+                f"po.spec: a spec's name must be a str, but {got}. "
+                "Pass the name of the spec's output column as its first argument."
+            )
+        who = f"spec {quoted(name)}"
         # A keyword renamed after 1.0, read as its new name with a warning
         # pointed at the caller's line.
         given = forward_deprecated(who, kwargs, _warnings._DEPRECATED, stacklevel=3)
         # And a keyword or a word renamed in this model alone (task 244).
         given = forward_model(who, fn.__name__, given, stacklevel=3)
+        # Every keyword is checked, and every problem raised at once (WRITING
+        # §11; task 338's decision 2): one keyword's problem does not hide the
+        # next keyword's.
+        problems: list[Exception] = []
         for key, value in given.items():
             if key == "name":
                 continue
-            if key == "targets" and isinstance(value, (list, tuple)):
-                # A table written by hand with a relative target's keys
-                # (task 201): refused by name, where the table's shape check
-                # would say only that `targets` is not a list of targets.
-                for t in value:
-                    if isinstance(t, dict) and any(k in t for k in _RELATIVE_KEYS):
-                        what = t.get("column", t.get("name"))
-                        raise TypeError(f"{who}: target {json.dumps(what)}: {_RELATIVE_REMOVED}")
-            if key == "features" and fn.__name__ in _NO_FEATURES:
-                raise TypeError(
-                    f"{who}: {fn.__name__}() takes no features; {_NO_FEATURES[fn.__name__]}"
-                )
-            hint = own.get(key, shared.get(key))
-            if hint is None:
-                if key in _RENAMED:
-                    raise TypeError(f"{who}: {key} was renamed {_RENAMED[key]}")
-                if key in _RENAMED_IN.get(fn.__name__, {}):
-                    raise TypeError(f"{who}: {key} was renamed {_RENAMED_IN[fn.__name__][key]}")
-                raise TypeError(
-                    f"{who}: {fn.__name__}() got an unexpected keyword argument {key!r}"
-                )
-            if not _matches(value, hint):
-                # A word outside the ones the parameter takes is a value
-                # error, in the shape every surface gives it (task 244, P-4);
-                # anything else of the wrong shape is a type error.
-                if (bad := _bad_word(value, hint)) is not None:
-                    if (reason := word_reason(who, key, bad[0])) is not None:
-                        raise ValueError(reason)
-                    why = _WORD_REASONS.get((fn.__name__, key))
-                    said = words_refusal(who, key, *bad, hint=hint)
-                    raise ValueError(f"{said}: {why}" if why else said)
-                raise TypeError(f"{who}: {key} must be {_describe(hint)}, got {_got(value)}")
-            # Every int parameter is a count (u32 on the Rust side), and some
-            # are counts of something there must be one of: the Rust side's
-            # floor, said here, where `0` passed with nothing said (review
-            # 2026-09-12, D8).
-            if (
-                isinstance(value, numbers.Integral)
-                and not isinstance(value, bool)
-                and int in (hint, *typing.get_args(hint))
-            ):
-                floor, stated = _int_floor(key)
-                if value < floor:
-                    raise ValueError(f"{who}: {key} must be >= {stated}, got {value}")
-                # And at most its width, or the tighter ceiling of a count
-                # that sizes an allocation (review 2026-10-06, YA4 and CD10).
-                ceiling = _int_ceiling(key, fn.__name__)
-                if int(value) > ceiling:
-                    said = f"{who}: {key} must be <= {ceiling}, got {value}"
-                    why = _CEILING_WHY.get(key)
-                    raise ValueError(f"{said}: {why}" if why else said)
-            # And each entry of a list of counts (review 2026-09-26, F7: a
-            # negative lag was named by serde as `model`).
-            if (
-                isinstance(value, (list, tuple))
-                and value
-                and all(isinstance(x, numbers.Integral) and not isinstance(x, bool) for x in value)
-                and list[int] in (hint, *typing.get_args(hint))
-            ):
-                floor, stated = _int_floor(key)
-                if min(value) < floor:
-                    raise ValueError(f"{who}: {key} must be >= {stated}, got {_got(value)}")
-                ceiling = _int_ceiling(key, fn.__name__)
-                if max(value) > ceiling:
-                    raise ValueError(f"{who}: {key} must be <= {ceiling}, got {_got(value)}")
-            if key not in inf_ok and key not in _INF_REFUSED_BY_RUST and not _finite(value):
-                raise ValueError(f"{who}: {key} must be finite, got {_got(value)}")
+            _keyword_problem(fn.__name__, who, key, value, own, shared, inf_ok, problems)
+        if problems:
+            raise refusal(who, problems)
         # A clock parameter's duration, however it was written, is kept as
         # the text a TOML config writes and a state file stores (task 88),
         # and an infinity word as the number it names (YA7). Every tuple is a
@@ -665,9 +784,10 @@ _RELATIVE_KEYS = ("relative_to", "relative")
 #: What a relative target is told on the Python side; the Rust side says the
 #: same of a spec dict, a TOML file and a saved state.
 _RELATIVE_REMOVED = (
-    "relative targets were removed: compute the target as a column, e.g. "
-    '`lf.with_columns(ret=pl.col("p") - pl.col("mid"))`, and name it in `targets`; for a '
-    'return, prefer a log ratio, `(pl.col("p") / pl.col("mid")).log()`'
+    "relative targets were removed. Make the target a column with Polars' with_columns in "
+    'the query before the bank, such as lf.with_columns(ret=pl.col("p") - pl.col("mid")), '
+    'or for a return the log ratio (pl.col("p") / pl.col("mid")).log(), and name that '
+    "column in targets."
 )
 
 
@@ -711,36 +831,40 @@ def formula_target(who: str, expr: pl.Expr) -> Target | FormulaTarget:
         column = tree[1]
         if name == column:
             raise ValueError(
-                f"{who}: target pl.col({column!r}) is the column itself: write the string "
-                f"{column!r} in targets, or name it with .alias(...), which "
-                f'po.target({column!r}, name="...") also does'
+                f"{who}: target pl.col({column!r}) is the column itself, with no name of its "
+                f"own. Write the string {column!r} in targets, or name the target with "
+                f'.alias("...") or po.target({column!r}, name="...").'
             )
         return target(column, name=name)
     if name.startswith(_formula.PREFIX):
         raise ValueError(
-            f"{who}: a target expression whose name would be an operator's needs a name: "
-            f'give it with .alias("...")'
+            f"{who}: target {_shown(str(expr))} needs a name, but it has only the name of its "
+            f'window operator. Name it with .alias("...").'
         )
     if name in _formula.columns(tree):
         # Unaliased, a positional expression is named after its leftmost
         # column, here one the formula itself reads; the bank could never
         # add the target beside it (task 159, P1).
         raise ValueError(
-            f"{who}: target {name!r} is named after a column its formula reads, so it could "
-            f'never be added beside that column: give it a name of its own with .alias("...")'
+            f"{who}: target {quoted(name)} takes its name from a column its formula reads, so "
+            f"the bank cannot add it beside that column. Give it a name of its own with "
+            '.alias("...").'
         )
     if not _formula.looks_ahead(tree):
         # Name the call that makes the column: with_windows for a formula over
         # operators looking back, Polars' with_columns for one of the row alone,
         # which with_windows refuses in turn (README-ITERATIONS, E11).
         if _formula.operators(tree):
-            make = "add it as a column with po.stream.with_windows"
-        else:
-            make = "it holds no operator at all, so add it as a column with Polars' with_columns"
+            raise ValueError(
+                f"{who}: target {quoted(name)} holds no window operator looking ahead (ewm_mean, "
+                "ewm_sum, ewm_rate or ewm_quantile with reverse=True), so it is known at its own "
+                "row. Add it as a column with po.stream.with_windows in the query before the bank, "
+                "and name that column in targets."
+            )
         raise ValueError(
-            f"{who}: target {name!r} holds no operator looking ahead (ewm_mean, ewm_sum, "
-            f"ewm_rate or ewm_quantile with reverse=True), so it is known at its own row: "
-            f"{make}, and name the column as the target"
+            f"{who}: target {quoted(name)} holds no window operator, so it is known at its own "
+            "row. Add it as a column with Polars' with_columns in the query before the bank, "
+            "and name that column in targets."
         )
     return {"name": name, "formula": tree}
 
@@ -774,15 +898,27 @@ def target(column: str, *, name: str | None = None) -> Target:
     ``ValueError`` for an empty one.
     """
     if not isinstance(column, str):
-        raise TypeError(f"target: column must be a str, got {type(column).__name__}")
+        raise TypeError(
+            f"po.target: column must be a str, but it is {_got(column)}. "
+            "Pass the name of the target's column."
+        )
     if not column:
-        raise ValueError("target: column must not be empty")
+        raise ValueError(
+            "po.target: column must name a column, but it is empty. "
+            "Pass the name of the target's column."
+        )
     out: Target = {"column": column}
     if name is not None:
         if not isinstance(name, str):
-            raise TypeError(f"target {column!r}: name must be a str, got {type(name).__name__}")
+            raise TypeError(
+                f"po.target({column!r}): name must be a str, but it is {_got(name)}. "
+                "Pass the name the target's fields take, or leave name out."
+            )
         if not name:
-            raise ValueError(f"target {column!r}: name must not be empty")
+            raise ValueError(
+                f"po.target({column!r}): name must not be empty, since it names the target's "
+                "fields. Pass a name, or leave name out to use the column's."
+            )
         out["name"] = name
     return out
 
@@ -850,8 +986,7 @@ def _common(
     group_close: Literal["monotone", "session"] | None = None,
 ) -> dict[str, Any]:
     written: list[str | Target | FormulaTarget] = [
-        formula_target(f"spec {json.dumps(name)}", t) if isinstance(t, pl.Expr) else t
-        for t in targets
+        formula_target(f"spec {quoted(name)}", t) if isinstance(t, pl.Expr) else t for t in targets
     ]
     spec = {
         "name": name,
@@ -937,11 +1072,24 @@ def _mirror_target(
     indexed before it could (review 2026-10-05, YA1 and YA5: an
     ``IndexError``, and a ``TypeError`` naming ``_common()``). ``noun`` is
     what the builder calls its features: ``audit``'s are ``columns``."""
+    # Both problems at once, where both hold.
+    problems: list[Exception] = []
     if "targets" in common:
-        msg = f"spec {json.dumps(name)}: {kind}() takes no targets; {statistic} the {noun}"
-        raise TypeError(msg)
+        problems.append(
+            TypeError(
+                f"spec {quoted(name)}: {kind}() takes no targets, since {statistic} the "
+                f"{noun}. Leave out targets."
+            )
+        )
     if not features:
-        raise ValueError(f"spec {json.dumps(name)}: {noun} must be non-empty")
+        problems.append(
+            ValueError(
+                f"spec {quoted(name)}: {noun} must name at least one column, but it is empty. "
+                f"List the columns in {noun}."
+            )
+        )
+    if problems:
+        raise refusal(f"spec {quoted(name)}", problems)
     return [features[0]]
 
 
@@ -1601,7 +1749,7 @@ def ewridge(
         del model["gram_threads"]
     if ridge_scale not in ("mean", "sum"):
         raise ValueError(
-            f'spec {json.dumps(name)}: ridge_scale must be "mean" or "sum", got {ridge_scale!r}'
+            words_refusal(f"spec {quoted(name)}", "ridge_scale", ridge_scale, ("mean", "sum"))
         )
     return _common(name, model, targets=targets, features=features, **common)
 
@@ -3990,7 +4138,10 @@ def ew_class(
         "window_budget": window_budget,
     }
     if "targets" in common:
-        msg = f"spec {json.dumps(name)}: ew_class() takes `label`, not targets"
+        msg = (
+            f"spec {quoted(name)}: ew_class() takes no targets, since label names the "
+            "column of its classes. Pass that column as label, and leave out targets."
+        )
         raise TypeError(msg)
     return _common(name, model, targets=[label], features=features, **common)
 
@@ -4596,22 +4747,37 @@ def marginal(
     # (review 2026-10-06, YA6).
     who = _who(name)
     if isinstance(bin_edges, dict):
+        # Both problems at once, where both hold.
+        problems: list[Exception] = []
         missing = [f for f in features if f not in bin_edges]
         if missing:
-            raise ValueError(
-                f"{who}: bin_edges is missing {missing}; give a list of "
-                "edges for every feature, or pass a list of lists in features order"
+            problems.append(
+                ValueError(
+                    f"{who}: bin_edges must give edges for every feature, but it has none for "
+                    f"{_listed([quoted(f) for f in missing])}. Add a list of edges for each, "
+                    "or pass a list of lists in the order of features."
+                )
             )
         extra = [f for f in bin_edges if f not in features]
         if extra:
-            raise ValueError(f"{who}: bin_edges has {extra}, which are not features")
+            problems.append(
+                ValueError(
+                    f"{who}: bin_edges must name only features, but it names "
+                    f"{_listed([quoted(f) for f in extra])}, which "
+                    f"{'is not a feature' if len(extra) == 1 else 'are not features'}. "
+                    "Remove them from bin_edges, or add them to features."
+                )
+            )
+        if problems:
+            raise refusal(who, problems)
         edges = [list(bin_edges[f]) for f in features]
     elif bin_edges is not None:
         edges = [list(e) for e in bin_edges]
         if len(edges) != len(features):
             raise ValueError(
-                f"{who}: bin_edges has {len(edges)} lists for "
-                f"{len(features)} features; one list per feature, in features order"
+                f"{who}: bin_edges must hold one list of edges for each feature, "
+                f"{len(features)} in all, but it holds {len(edges)}. Give one list for each "
+                "feature, in the order of features."
             )
     else:
         edges = None

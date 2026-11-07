@@ -2238,14 +2238,14 @@ mod tests {
         };
         let err = run(ahead, r#", "group": "g""#).err().expect("refused");
         assert!(
-            err.starts_with("with_windows: a window looking ahead with group needs a clock column")
-                && err.ends_with("Name a clock column, with gap_cap, or leave out group"),
+            err.starts_with("with_windows: a window looking ahead under group needs clock")
+                && err.ends_with("Set clock and gap_cap, or leave group out."),
             "{err}"
         );
         // `like=` takes a spec's policy, and is held to the same rule.
         let like = r#", "group": "g", "like": {"spec": "m", "accept": ["x"]}"#;
         let err = run(ahead, like).err().expect("refused");
-        assert!(err.contains("needs a clock column"), "{err}");
+        assert!(err.contains("under group needs clock"), "{err}");
         let mut clocked = run(ahead, r#", "group": "g", "clock": "t", "gap_cap": 1.5"#).unwrap();
         let mut out = clocked.feed(&df, None).unwrap();
         out.vstack_mut(&clocked.finish().unwrap()).unwrap();

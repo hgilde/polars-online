@@ -390,36 +390,46 @@ impl BocpdCfg {
 
     pub fn validate(&self) -> Result<(), String> {
         let d = self.n_features;
+        let mut no = crate::Refusals::new();
         if d == 0 {
-            return Err("bocpd: at least one column is required".into());
+            no.refuse(
+                "bocpd: the model needs at least one feature, but it has none. Name at least one \
+                 column in features.",
+            );
         }
+        // Every check below sizes a prior by `d`.
+        no.stop_here()?;
         if self.hazard_on_clock {
             // Any positive time is a rate of breaks; only a step of 0 has no
             // chance of one, and that is the step's business, not `τ`'s.
             if !(self.hazard > 0.0 && self.hazard.is_finite()) {
-                return Err(format!(
-                    "bocpd: hazard as a duration is the expected time between changepoints and \
-                     must be > 0 (got {} clock units)",
+                no.refuse(format!(
+                    "bocpd: hazard, given as a duration, must be finite and above 0, but it is {} \
+                     seconds. Set hazard to the expected time between breaks, such as \"1h\".",
                     self.hazard
                 ));
             }
             if self.hazard_from_row {
-                return Err(
-                    "bocpd: a hazard read from the row is a per-row hazard, the chance of a \
-                     break after its row, and cannot stand beside a hazard on the clock, the \
-                     chance of the step before each row"
-                        .into(),
+                no.refuse(
+                    "bocpd: hazard_col and a hazard given as a duration cannot both be set: the \
+                     column gives a chance of a break after each row, and the duration a chance \
+                     over each clock step. Give hazard as a number of rows, or leave out \
+                     hazard_col.",
                 );
             }
         } else if !(self.hazard > 1.0 && self.hazard.is_finite()) {
-            return Err(
-                "bocpd: hazard is the expected rows between changepoints and must be finite and \
-                 > 1"
-                .into(),
-            );
+            no.refuse(format!(
+                "bocpd: hazard must be finite and above 1, but it is {}. Set hazard to the \
+                 expected number of rows between breaks, such as the default 250.",
+                self.hazard
+            ));
         }
         if !(self.prior_kappa > 0.0 && self.prior_kappa.is_finite()) {
-            return Err("bocpd: mean_precision_prior must be finite and > 0".into());
+            no.refuse(format!(
+                "bocpd: mean_precision_prior must be finite and above 0, but it is {}. Set \
+                 mean_precision_prior to a finite positive value, or leave it out for the default, 1.",
+                self.prior_kappa
+            ));
         }
         let nu = self.nu0();
         // The normal-inverse-Wishart predictive is a `t` on `ν − d + 1`
@@ -427,126 +437,167 @@ impl BocpdCfg {
         // per-feature normal-inverse-gamma predictive is a `t` on `ν`, with
         // a mean from `ν > 1` and a variance only from `ν > 2`, so its floor
         // buys the mean (task 159, D2: the message said variance for both).
-        let (floor, what) = if self.emission == BocpdEmission::Gaussian {
-            (d as f64 + 1.0, "variance")
+        let (floor, what, kind) = if self.emission == BocpdEmission::Gaussian {
+            (d as f64 + 1.0, "variance", "full")
         } else {
-            (1.0, "mean")
+            (1.0, "mean", "diag")
         };
         if !(nu > floor && nu.is_finite()) {
-            return Err(format!(
-                "bocpd: degrees_of_freedom_prior must be finite and > {floor} for this covariance_type (got {nu}); \
-                 below it the predictive has no finite {what}"
+            no.refuse(format!(
+                "bocpd: degrees_of_freedom_prior must be finite and above {floor} under \
+                 covariance_type=\"{kind}\", but it is {nu}: at or below it the predicted \
+                 distribution has no finite {what}. Set degrees_of_freedom_prior above {floor}, \
+                 or leave it out for {}.",
+                if kind == "full" { d as f64 + 2.0 } else { 3.0 }
             ));
         }
         if let Some(v) = &self.prior_scale {
             if v.len() != 1 && v.len() != d * d {
-                return Err(format!(
-                    "bocpd: covariance_prior is a scalar or a {d}x{d} matrix, got {} values",
-                    v.len()
+                no.refuse(format!(
+                    "bocpd: covariance_prior must be one number or a {d} by {d} matrix, but it \
+                     has {} values. Give one number, or {} values in row order.",
+                    v.len(),
+                    d * d
                 ));
-            }
-            if v.iter().any(|x| !x.is_finite()) {
-                return Err("bocpd: covariance_prior must be finite".into());
-            }
-            // A scale matrix that is not positive definite gives a
-            // predictive with no density: every row would report nulls and
-            // count as a failure, with nothing to say why
-            // (docs/REVIEW-E54-E64.md B2).
-            if v.len() == 1 && v[0] <= 0.0 {
-                return Err(format!(
-                    "bocpd: a scalar covariance_prior is the prior scale of the variance and must be \
-                     > 0 (got {})",
+            } else if let Some(x) = v.iter().find(|x| !x.is_finite()) {
+                no.refuse(format!(
+                    "bocpd: covariance_prior must be finite, but it holds {x}. Replace it with a \
+                     finite value."
+                ));
+            } else if v.len() == 1 && v[0] <= 0.0 {
+                // A scale matrix that is not positive definite gives a
+                // predictive with no density: every row would report nulls
+                // and count as a failure, with nothing to say why
+                // (docs/REVIEW-E54-E64.md B2).
+                no.refuse(format!(
+                    "bocpd: covariance_prior, as one number, is the prior variance of each \
+                     feature and must be above 0, but it is {}. Set covariance_prior to a \
+                     positive value.",
                     v[0]
                 ));
-            }
-            if v.len() == d * d {
-                for i in 0..d {
-                    for j in (i + 1)..d {
-                        let (a, b) = (v[i * d + j], v[j * d + i]);
-                        if (a - b).abs() > 1e-12 * (1.0 + a.abs().max(b.abs())) {
-                            return Err(format!(
-                                "bocpd: a matrix covariance_prior must be symmetric; [{i}][{j}] is \
-                                 {a} and [{j}][{i}] is {b}"
-                            ));
-                        }
-                    }
-                }
-                if !matches!(SpdFactor::of(v, d), Some(f) if f.attempts() == 0) {
-                    return Err(
-                        "bocpd: a matrix covariance_prior must be positive definite -- it is the \
-                         prior's scale matrix Ψ₀, and the predictive has no density without one"
-                            .into(),
-                    );
+            } else if v.len() == d * d {
+                let asymmetric = (0..d)
+                    .flat_map(|i| ((i + 1)..d).map(move |j| (i, j)))
+                    .map(|(i, j)| (i, j, v[i * d + j], v[j * d + i]))
+                    .find(|&(_, _, a, b)| (a - b).abs() > 1e-12 * (1.0 + a.abs().max(b.abs())));
+                if let Some((i, j, a, b)) = asymmetric {
+                    no.refuse(format!(
+                        "bocpd: covariance_prior must be symmetric, but its entry at row {i}, \
+                         column {j} (counting from 0) is {a}, and at row {j}, column {i} is {b}. \
+                         Set the two entries equal."
+                    ));
+                } else if !matches!(SpdFactor::of(v, d), Some(f) if f.attempts() == 0) {
+                    // Under "full" the matrix is the prior's scale, and the
+                    // predicted distribution has no density without it;
+                    // under "diag" only its diagonal is read, but the matrix
+                    // is checked whole all the same.
+                    no.refuse(if self.emission == BocpdEmission::Gaussian {
+                        "bocpd: covariance_prior must be positive definite, but it is not, and \
+                         without that the predicted distribution has no density. Give a positive \
+                         definite matrix, such as a diagonal one of positive variances."
+                    } else {
+                        "bocpd: covariance_prior must be positive definite, but it is not: the \
+                         matrix is checked whole even under covariance_type=\"diag\", which reads \
+                         only its diagonal. Give a positive definite matrix, such as a diagonal \
+                         one of positive variances, or one number."
+                    });
                 }
             }
         }
         if let Some(m) = &self.prior_mean {
             if m.len() != d {
-                return Err(format!(
-                    "bocpd: mean_prior must be {d} values, got {}",
+                no.refuse(format!(
+                    "bocpd: mean_prior must hold one value for each of the {d} features, but it \
+                     has {}. Give {d} values, in the order of features.",
                     m.len()
                 ));
-            }
-            if m.iter().any(|x| !x.is_finite()) {
-                return Err("bocpd: mean_prior must be finite".into());
+            } else if let Some(x) = m.iter().find(|x| !x.is_finite()) {
+                no.refuse(format!(
+                    "bocpd: mean_prior must be finite, but it holds {x}. Replace it with a finite \
+                     value."
+                ));
             }
         }
         if self.robust_beta < 0.0 || !self.robust_beta.is_finite() {
-            return Err("bocpd: robust_beta must be finite and >= 0".into());
-        }
-        if self.robust_beta > 0.0 && self.emission != BocpdEmission::Robust {
-            return Err(format!(
-                "bocpd: robust_beta tempers the per-feature predictive (covariance_type = \
-                 \"diag\"), not {:?}",
-                self.emission
+            no.refuse(format!(
+                "bocpd: robust_beta must be finite and at least 0, but it is {}. Set robust_beta \
+                 to 0 to weigh every row in full, or to a small positive value such as 0.1.",
+                self.robust_beta
             ));
-        }
-        if self.emission == BocpdEmission::Robust && self.robust_beta <= 0.0 {
-            return Err(
-                "bocpd: the tempered predictive needs robust_beta > 0; at 0 it is untempered"
-                    .into(),
+        } else if self.robust_beta > 0.0 && self.emission == BocpdEmission::Gaussian {
+            no.refuse(
+                "bocpd: robust_beta applies only under covariance_type=\"diag\", but \
+                 covariance_type is \"full\". Set covariance_type=\"diag\", or leave robust_beta \
+                 out.",
+            );
+        } else if self.robust_beta > 0.0 && self.emission == BocpdEmission::Diag {
+            // The Rust API's own fields: a spec sets the emission from
+            // `covariance_type` and `robust_beta` together.
+            no.refuse(format!(
+                "bocpd: robust_beta is {}, but the emission field is BocpdEmission::Diag, which \
+                 does not read it. Set the emission field to BocpdEmission::Robust, or \
+                 robust_beta to 0.",
+                self.robust_beta
+            ));
+        } else if self.emission == BocpdEmission::Robust && self.robust_beta <= 0.0 {
+            no.refuse(
+                "bocpd: robust_beta must be above 0 when it weighs the rows, but it is 0. Set \
+                 robust_beta to a small positive value, such as 0.1.",
             );
         }
         if !(0.0..1.0).contains(&self.prune_below) || self.prune_below.is_nan() {
-            return Err(
-                "bocpd: prune_below must be in [0, 1): the share of the mass below which a run \
-                 is dropped"
-                    .into(),
-            );
+            no.refuse(format!(
+                "bocpd: prune_below must be at least 0 and below 1, but it is {}. Set \
+                 prune_below to the probability below which a run (the rows since the last \
+                 break) is dropped, such as the default 1e-6, or 0 to drop none.",
+                self.prune_below
+            ));
         }
         if self.max_run < 2 {
-            return Err("bocpd: max_run must be >= 2".into());
+            no.refuse(format!(
+                "bocpd: max_run must be at least 2, but it is {}. Set max_run to one more than \
+                 the longest run (the rows since the last break) to keep, such as the default \
+                 10000.",
+                self.max_run
+            ));
         }
         if self.min_weight.is_nan() || self.min_weight < 0.0 {
-            return Err("bocpd: min_weight must be >= 0".into());
+            no.refuse(format!(
+                "bocpd: min_weight must be at least 0, but it is {}. Set min_weight to 0, or to \
+                 a positive weight.",
+                self.min_weight
+            ));
         }
         if let Some(n) = self.warm_rows {
             if !self.warms_up() {
-                return Err(
-                    "bocpd: warm_rows sets the prior from the first rows, and mean_prior and \
-                     covariance_prior are both given; leave one out, or warm_rows"
-                        .into(),
+                no.refuse(
+                    "bocpd: warm_rows sets the prior from the first rows, but mean_prior and \
+                     covariance_prior are both given, so it has nothing to set. Leave out \
+                     warm_rows, or one of the two priors.",
                 );
             }
             if n < 2 {
-                return Err(format!(
-                    "bocpd: warm_rows must be at least 2, got {n}: the prior's scale is a \
-                     variance, which takes two rows"
+                no.refuse(format!(
+                    "bocpd: warm_rows must be at least 2, but it is {n}: the prior's scale is a \
+                     variance, which needs two rows. Set warm_rows to 2 or more."
                 ));
             }
         }
         // The buffer is `d` values a row, sized by a spec value, so it has a
         // ceiling, as `kmeans`' has (review 2026-10-06, CD10).
-        let rows = self.warm_rows_or_default() as f64;
-        let mib = rows * (self.n_features as f64 + 4.0) * 8.0 / f64::from(1 << 20);
+        let rows = self.warm_rows_or_default();
+        let row_bytes = (self.n_features as f64 + 4.0) * 8.0;
+        let mib = rows as f64 * row_bytes / f64::from(1 << 20);
         if self.warms_up() && mib > WARM_BUDGET_MIB {
-            return Err(format!(
-                "bocpd: the warm-up buffer would hold {} MiB (warm_rows {rows} rows of {d} \
-                 features), over the {WARM_BUDGET_MIB} MiB it is held to; lower warm_rows",
+            let most = (WARM_BUDGET_MIB * f64::from(1 << 20) / row_bytes).floor();
+            no.refuse(format!(
+                "bocpd: the first {rows} rows, which set the prior, would take {} MiB at {d} \
+                 features, over the {WARM_BUDGET_MIB} MiB limit. Set warm_rows to {most} or \
+                 below, or use fewer features.",
                 crate::budget::mib_over(mib, WARM_BUDGET_MIB),
             ));
         }
-        Ok(())
+        no.finish()
     }
 }
 
@@ -3244,6 +3295,28 @@ mod tests {
         assert_eq!(Bocpd::n_outputs_for(2), 6);
     }
 
+    /// Every problem at once: a configuration with two bad settings names
+    /// both, one to a line.
+    #[test]
+    fn a_configuration_with_two_problems_reports_both() {
+        let e = Bocpd::new(BocpdCfg {
+            prior_kappa: 0.0,
+            max_run: 1,
+            ..cfg(1)
+        })
+        .unwrap_err();
+        let lines: Vec<&str> = e.lines().collect();
+        assert_eq!(lines.len(), 2, "{e}");
+        assert!(
+            lines[0].starts_with("bocpd: mean_precision_prior must be"),
+            "{e}"
+        );
+        assert!(
+            lines[1].starts_with("bocpd: max_run must be at least 2"),
+            "{e}"
+        );
+    }
+
     #[test]
     fn a_bad_configuration_is_refused_by_name() {
         let bad = |c: BocpdCfg, msg: &str| {
@@ -3255,35 +3328,35 @@ mod tests {
                 hazard: 1.0,
                 ..cfg(1)
             },
-            "must be finite and > 1",
+            "hazard must be finite and above 1, but it is 1.",
         );
         bad(
             BocpdCfg {
                 prior_kappa: 0.0,
                 ..cfg(1)
             },
-            "mean_precision_prior must be finite and > 0",
+            "mean_precision_prior must be finite and above 0, but it is 0.",
         );
         bad(
             BocpdCfg {
                 prior_nu: Some(0.5),
                 ..cfg(1)
             },
-            "degrees_of_freedom_prior must be finite and >",
+            "degrees_of_freedom_prior must be finite and above 1 under covariance_type=\"diag\", but it is 0.5",
         );
         bad(
             BocpdCfg {
                 robust_beta: 1.0,
                 ..cfg(1)
             },
-            "robust_beta tempers the per-feature predictive",
+            "but the emission field is BocpdEmission::Diag, which does not read it",
         );
         bad(
             BocpdCfg {
                 emission: BocpdEmission::Robust,
                 ..cfg(1)
             },
-            "the tempered predictive needs robust_beta > 0",
+            "robust_beta must be above 0 when it weighs the rows, but it is 0",
         );
         // Named by the parameter a caller has: `truncate` named none
         // (review 2026-10-05, CD2).
@@ -3293,7 +3366,7 @@ mod tests {
                     prune_below,
                     ..cfg(1)
                 },
-                "bocpd: prune_below must be in [0, 1)",
+                "bocpd: prune_below must be at least 0 and below 1, but it is",
             );
         }
         bad(
@@ -3301,28 +3374,28 @@ mod tests {
                 max_run: 1,
                 ..cfg(1)
             },
-            "max_run must be >= 2",
+            "max_run must be at least 2, but it is 1",
         );
         bad(
             BocpdCfg {
                 prior_mean: Some(vec![0.0, 0.0]),
                 ..cfg(1)
             },
-            "mean_prior must be 1 values",
+            "mean_prior must hold one value for each of the 1 features, but it has 2",
         );
         bad(
             BocpdCfg {
                 prior_scale: Some(vec![1.0, 2.0]),
                 ..cfg(1)
             },
-            "covariance_prior is a scalar or a 1x1 matrix",
+            "covariance_prior must be one number or a 1 by 1 matrix, but it has 2 values",
         );
         bad(
             BocpdCfg {
                 prior_scale: Some(vec![0.0]),
                 ..cfg(1)
             },
-            "scalar covariance_prior",
+            "covariance_prior, as one number, is the prior variance of each feature",
         );
         bad(
             BocpdCfg {
@@ -4087,7 +4160,7 @@ mod tests {
         };
         bad(
             gaussian(3.0),
-            "degrees_of_freedom_prior must be finite and > 3 ",
+            "degrees_of_freedom_prior must be finite and above 3 ",
         );
         // The floor buys a finite variance under the Wishart, a finite mean
         // under the gamma, and the message says which (task 159, D2).
@@ -4098,7 +4171,7 @@ mod tests {
                 prior_nu: Some(1.0),
                 ..cfg(1)
             },
-            "degrees_of_freedom_prior must be finite and > 1 ",
+            "degrees_of_freedom_prior must be finite and above 1 ",
         );
         bad(
             BocpdCfg {
@@ -4118,7 +4191,7 @@ mod tests {
                     robust_beta: beta,
                     ..cfg(1)
                 },
-                "robust_beta must be finite and >= 0",
+                "robust_beta must be finite and at least 0",
             );
         }
         let mut m = Bocpd::new(BocpdCfg {
@@ -4135,7 +4208,7 @@ mod tests {
                 min_weight: -1.0,
                 ..cfg(1)
             },
-            "min_weight must be >= 0",
+            "min_weight must be at least 0",
         );
         Bocpd::new(BocpdCfg {
             min_weight: 5.0,
@@ -4347,7 +4420,12 @@ mod tests {
             }
         };
         let e = Bocpd::new(with(vec![4.0, 1.0, 0.5, 1.0, 4.0, 0.9, 0.5, 0.5, 4.0])).unwrap_err();
-        assert!(e.contains("[1][2] is 0.9 and [2][1] is 0.5"), "{e}");
+        assert!(
+            e.contains(
+                "at row 1, column 2 (counting from 0) is 0.9, and at row 2, column 1 is 0.5"
+            ),
+            "{e}"
+        );
         // The asymmetry `c` whose tolerance is `c` itself.
         let mut c = 1e-12f64;
         while 1e-12 * (1.0 + c) != c {
@@ -4573,7 +4651,7 @@ mod tests {
         for tau in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             let e = Bocpd::new(on_clock(1, tau)).unwrap_err();
             assert!(
-                e.contains("hazard as a duration is the expected time between changepoints"),
+                e.contains("hazard, given as a duration, must be finite and above 0"),
                 "{tau}: {e}"
             );
         }
@@ -4584,7 +4662,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            e.contains("cannot stand beside a hazard on the clock"),
+            e.contains("hazard_col and a hazard given as a duration cannot both be set"),
             "{e}"
         );
     }
@@ -4967,8 +5045,9 @@ mod tests {
         // `prior_scale`, which no surface takes).
         assert_eq!(
             both.validate().unwrap_err(),
-            "bocpd: warm_rows sets the prior from the first rows, and mean_prior and \
-             covariance_prior are both given; leave one out, or warm_rows"
+            "bocpd: warm_rows sets the prior from the first rows, but mean_prior and \
+             covariance_prior are both given, so it has nothing to set. Leave out warm_rows, or \
+             one of the two priors."
         );
         let one = BocpdCfg {
             warm_rows: Some(1),
@@ -5352,7 +5431,11 @@ mod tests {
                 prior_mean: Some(vec![]),
                 ..cfg(1)
             },
-            "bocpd: at least one column is required",
+            &format!(
+                "bocpd: the model needs at least one feature, but it has none. Name at least one \
+                 column in features.\n{}",
+                crate::STOPPED
+            ),
         );
         for v in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             bad(
@@ -5360,14 +5443,20 @@ mod tests {
                     prior_scale: Some(vec![v]),
                     ..cfg(1)
                 },
-                "bocpd: covariance_prior must be finite",
+                &format!(
+                    "bocpd: covariance_prior must be finite, but it holds {v}. Replace it with a \
+                     finite value."
+                ),
             );
             bad(
                 BocpdCfg {
                     prior_scale: Some(vec![1.0, 0.0, 0.0, v]),
                     ..cfg(2)
                 },
-                "bocpd: covariance_prior must be finite",
+                &format!(
+                    "bocpd: covariance_prior must be finite, but it holds {v}. Replace it with a \
+                     finite value."
+                ),
             );
         }
         // And a pruning share no run reaches drops none: with `H = 1/2`

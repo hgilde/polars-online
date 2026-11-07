@@ -257,7 +257,7 @@ def test_split_gain_t_uses_n_serial_when_it_has_one():
 @pytest.mark.parametrize(
     ("kw", "message"),
     [
-        (dict(bins=8, window_size=100.0), "bins and window"),
+        (dict(bins=8, window_size=100.0), "bins and window_size cannot both be set"),
         (dict(bins=8, bin_warm_rows=4), "bin_warm_rows"),
         (dict(bins=1), "at least 2"),
         (dict(bins=8, bin_rule="tertiles"), 'bin_rule must be one of "quantile", "fixed"'),
@@ -266,10 +266,10 @@ def test_split_gain_t_uses_n_serial_when_it_has_one():
         (dict(bin_edges={"z": [0.0]}), "missing"),
         (dict(bins=8, bin_warm_rows=10**9), "budget"),
         (dict(bin_budget=64.0, bins=None, bin_warm_rows=None), "needs bins or bin_edges"),
-        (dict(bins=8, bin_budget=0.0), "bin_budget must be a positive number"),
-        (dict(bins=8, bin_budget=-5.0), "bin_budget must be a positive number"),
+        (dict(bins=8, bin_budget=0.0), "bin_budget must be above 0 MiB, but it is 0"),
+        (dict(bins=8, bin_budget=-5.0), "bin_budget must be above 0 MiB, but it is -5"),
         # The budget holds given edges too (review 2026-09-26, F missing 8).
-        (dict(bin_edges=[[0.0]], bin_budget=1e-9), "the bin histogram would need"),
+        (dict(bin_edges=[[0.0]], bin_budget=1e-9), "the bin histogram would take"),
     ],
 )
 def test_refusals(kw, message):

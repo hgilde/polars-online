@@ -73,12 +73,41 @@ def test_the_builders_table_is_the_plans():
     assert _RENAMED == RENAMED
 
 
+#: A builder that takes each new name, where ewridge does not: the refusal
+#: names the new parameter only to a builder that takes it.
+_TAKES_THE_NEW_NAME = {
+    "reset": "corrchange",
+    "permute_every": "corrchange",
+    "trend_halflife": "holt",
+    "revert_halflife": "kalman",
+    "coef_halflife": "kalman",
+    "select_halflife": "lasso",
+    "max_cd_iters": "lasso",
+    "cd_tol": "lasso",
+    "update_every": "kmeans",
+    "split_merge_every": "kmeans",
+}
+_KW = {
+    "corrchange": {"features": ["x0", "x1"]},
+    "kmeans": {"features": ["x0", "x1"]},
+    "holt": {"targets": ["y"]},
+}
+
+
 @pytest.mark.parametrize("old", sorted(RENAMED))
 def test_an_old_parameter_is_refused_naming_the_new_one(old):
-    builder = po.spec.corrchange if old == "reset" else po.spec.ewridge
-    kw = {"features": ["x0", "x1"]} if old == "reset" else {"targets": ["y"], "features": ["x"]}
+    kind = _TAKES_THE_NEW_NAME.get(old, "ewridge")
+    kw = _KW.get(kind, {"targets": ["y"], "features": ["x"]})
     with pytest.raises(TypeError, match=f"{old} was renamed {RENAMED[old]}"):
-        builder("m", **kw, **{old: 1.0})
+        getattr(po.spec, kind)("m", **kw, **{old: 1.0})
+
+
+def test_an_old_name_a_builder_does_not_take_under_its_new_name_is_unknown():
+    """``window`` was renamed ``window_size``, which ``sgd`` does not take, so
+    the refusal does not send the reader to it."""
+    with pytest.raises(TypeError, match='sgd\\(\\) takes no parameter "window"') as e:
+        po.spec.sgd("m", targets=["y"], features=["x"], window=5)
+    assert "window_size" not in str(e.value)
 
 
 @pytest.mark.parametrize(
@@ -265,7 +294,7 @@ def test_restart_after_step_back_is_one_rule():
         po.ModelBank([po.spec.ewridge("m", restart_after_step_back=5.0, **base)]).fit_predict(df)
     out = po.ModelBank([po.spec.ewridge("m", restart_after_step_back=4.0, **base)]).fit_predict(df)
     assert out["m"].struct.field("weight_sum")[3] == 0.0
-    with pytest.raises(ValueError, match="restart_after_step_back needs clock"):
+    with pytest.raises(ValueError, match="restart_after_step_back applies only with a clock"):
         po.spec.ewridge(
             "m", targets=["y"], features=["x"], half_life=10.0, restart_after_step_back=1.0
         )

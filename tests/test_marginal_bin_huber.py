@@ -271,10 +271,13 @@ def test_the_spec_reports_back_what_it_was_given():
 @pytest.mark.parametrize(
     ("kw", "message"),
     [
-        (dict(bin_edges=None), "bin_stat is each bin's location and needs bins or bin_edges"),
+        (
+            dict(bin_edges=None),
+            "bin_stat sets each bin's location, but neither bins nor bin_edges is set",
+        ),
         (dict(bin_stat="mean", bin_huber_delta=2.0), "bin_huber_delta is the cut of"),
-        (dict(bin_huber_delta=0.0), "bin_huber_delta must be > 0"),
-        (dict(bin_huber_delta=-1.0), "bin_huber_delta must be > 0"),
+        (dict(bin_huber_delta=0.0), "bin_huber_delta must be above 0"),
+        (dict(bin_huber_delta=-1.0), "bin_huber_delta must be above 0"),
         (dict(bin_huber_delta=float("nan")), "bin_huber_delta must not be NaN"),
         (dict(bin_stat="median"), "bin_stat must be one of"),
     ],

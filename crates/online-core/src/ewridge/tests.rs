@@ -1411,9 +1411,15 @@ fn cfg_validation_rejects_each_bad_field() {
         c.validate().expect("should be accepted");
     };
 
-    bad(&|c| c.n_features = 0, "must be >= 1");
-    bad(&|c| c.n_targets = 0, "must be >= 1");
-    bad(&|c| c.ridge = vec![], "at least one value");
+    bad(
+        &|c| c.n_features = 0,
+        "needs at least one feature and one target",
+    );
+    bad(
+        &|c| c.n_targets = 0,
+        "needs at least one feature and one target",
+    );
+    bad(&|c| c.ridge = vec![], "ridge must list at least one value");
 
     // ridge_scale alone is fine; it is the combination that is refused.
     good(&|c| c.ridge_scale = true);
@@ -1422,33 +1428,36 @@ fn cfg_validation_rejects_each_bad_field() {
             c.ridge_scale = true;
             c.standardize = true;
         },
-        "incompatible",
+        "but standardize is set",
     );
     bad(
         &|c| {
             c.ridge_scale = true;
             c.ridge = vec![1e-6, 1.0];
         },
-        "incompatible",
+        "a grid of ridges or feature sets",
     );
 
-    bad(&|c| c.session_shrink = Some(-0.1), "in [0, 1]");
-    bad(&|c| c.session_shrink = Some(1.5), "in [0, 1]");
-    bad(&|c| c.session_shrink = Some(0.5), "needs long_half_life");
-    bad(&|c| c.long_half_life = Some(100.0), "no effect without");
+    bad(&|c| c.session_shrink = Some(-0.1), "must be from 0 to 1");
+    bad(&|c| c.session_shrink = Some(1.5), "must be from 0 to 1");
+    bad(&|c| c.session_shrink = Some(0.5), "but long_half_life");
+    bad(
+        &|c| c.long_half_life = Some(100.0),
+        "but session_shrink is not set",
+    );
     bad(
         &|c| {
             c.session_shrink = Some(0.5);
             c.long_half_life = Some(0.0);
         },
-        "must be > 0",
+        "long_half_life must be above 0",
     );
     bad(
         &|c| {
             c.session_shrink = Some(0.5);
             c.long_half_life = Some(f64::NAN);
         },
-        "must be > 0",
+        "long_half_life must be above 0",
     );
     good(&|c| {
         c.session_shrink = Some(0.0);
@@ -1462,9 +1471,12 @@ fn cfg_validation_rejects_each_bad_field() {
     // coef_prior is one vector per target, each of length k_total (2 + intercept).
     bad(
         &|c| c.coef_prior = Some(vec![vec![0.0; 3], vec![0.0; 3]]),
-        "1 vector of",
+        "one list of 3 coefficients for the target",
     );
-    bad(&|c| c.coef_prior = Some(vec![vec![0.0; 2]]), "length 3");
+    bad(
+        &|c| c.coef_prior = Some(vec![vec![0.0; 2]]),
+        "but it holds 1 list, of length 2",
+    );
     bad(
         &|c| c.coef_prior = Some(vec![vec![0.0, 0.0, f64::NAN]]),
         "finite",
@@ -1477,12 +1489,25 @@ fn cfg_validation_rejects_each_bad_field() {
 
     // Empty is its own message: it named "out-of-range indices", which
     // an empty set has not got (review 2026-09-12, S7).
-    bad(&|c| c.feature_sets = vec![("a".into(), vec![])], "is empty");
+    bad(
+        &|c| c.feature_sets = vec![("a".into(), vec![])],
+        "names no feature",
+    );
     bad(
         &|c| c.feature_sets = vec![("a".into(), vec![2])],
-        "out-of-range",
+        "names feature 2, but the model has 2 features",
     );
     good(&|c| c.feature_sets = vec![("a".into(), vec![0]), ("b".into(), vec![0, 1])]);
+
+    // Every problem at once, each a line of its own.
+    let mut two = cfg(2, 1);
+    two.ridge = vec![-1.0];
+    two.min_weight = f64::NAN;
+    let e = two.validate().unwrap_err();
+    let lines: Vec<&str> = e.lines().collect();
+    assert_eq!(lines.len(), 2, "{e}");
+    assert!(lines[0].starts_with("ewridge: ridge must be finite and at least 0, but it is -1."));
+    assert!(lines[1].starts_with("ewridge: min_weight must be at least 0, but it is NaN."));
 
     cfg(2, 1).validate().expect("the baseline config is valid");
 }
@@ -2440,35 +2465,42 @@ fn gram_block_rows_is_refused_where_it_cannot_pay() {
 
     let mut c = blocked_cfg(3, 64);
     c.window = Some(50.0);
-    assert!(err(c).contains("gram_block_rows and window do not combine"));
+    assert!(err(c).contains("gram_block_rows and window_size cannot both be set"));
 
     let mut c = blocked_cfg(3, 64);
     c.solve_every = 0.0;
     let e = err(c);
     assert!(
-        e.contains("needs a solve cadence") && e.contains("solve_every = 0"),
+        e.contains("holds rows back until the next solve")
+            && e.contains("solve_every is 0, which solves every row"),
         "{e}"
     );
 
     let mut c = blocked_cfg(3, 64);
     c.max_rows_between_solves = 1;
     let e = err(c);
-    assert!(e.contains("max_rows_between_solves = 1"), "{e}");
+    assert!(
+        e.contains("max_rows_between_solves is 1, which solves every row"),
+        "{e}"
+    );
 
-    // 2^30 rows of 4 floats is 32 GiB; the twin doubles it.
+    // 2^30 rows of 4 floats is 32 GiB; the slower copy doubles it, and
+    // halves the rows that fit.
     let mut c = blocked_cfg(3, 1 << 30);
     c.session_shrink = Some(0.5);
     c.long_half_life = Some(1e4);
     let e = err(c);
     assert!(
-        e.contains("over the 256 MiB budget") && e.contains("64.0 GiB") && e.contains("twin"),
+        e.contains("over the 256 MiB limit")
+            && e.contains("64.0 GiB")
+            && e.contains("Lower gram_block_rows to 4194304 or below"),
         "{e}"
     );
     // Just inside the budget builds.
     let mut c = blocked_cfg(3, (256 << 20) / (4 * 8));
     assert!(EwRidge::new(c.clone()).is_ok());
     c.gram_block_rows += 1;
-    assert!(err(c).contains("over the 256 MiB budget"));
+    assert!(err(c).contains("over the 256 MiB limit"));
 
     let mut c = blocked_cfg(3, 0);
     c.solve_every = 0.0;
@@ -2494,7 +2526,9 @@ fn the_block_budget_counts_a_block_per_pattern_of_missing_rows() {
     c.gram_block_rows = edge + 1;
     let e = err(c.clone());
     assert!(
-        e.contains("over the 256 MiB budget") && e.contains("per pattern of missing rows"),
+        e.contains("over the 256 MiB limit")
+            && e.contains(&format!("Lower gram_block_rows to {edge} or below"))
+            && e.contains("target_gaps=\"pairwise\""),
         "{e}"
     );
     let mut one = c.clone();
@@ -3175,8 +3209,12 @@ fn a_state_whose_cfg_new_refuses_is_refused() {
     let (m, rows) = fitted(c, 20, 3);
     type Damage<'a> = (&'a str, &'a dyn Fn(&mut EwRidgeCfg));
     let damage: [Damage; 2] = [
-        ("has out-of-range indices", &|c| c.feature_sets[0].1[1] = 5),
-        ("half_life must be > 0", &|c| c.decay = Decay::Halflife(0.0)),
+        ("names feature 5, but the model has 2", &|c| {
+            c.feature_sets[0].1[1] = 5
+        }),
+        ("half_life must be above 0", &|c| {
+            c.decay = Decay::Halflife(0.0)
+        }),
     ];
     for (says, f) in damage {
         let mut st = m.state();
@@ -4544,7 +4582,7 @@ fn a_window_that_is_not_a_positive_length_is_refused_by_name() {
         c.window = Some(bad);
         let err = EwRidge::new(c).expect_err("refused");
         assert!(
-            err.contains("window_size must be finite and > 0"),
+            err.contains("window_size must be finite and above 0"),
             "{bad}: {err}"
         );
     }
@@ -6035,7 +6073,7 @@ fn a_state_with_a_target_min_weight_of_another_length_is_refused() {
     };
     inner.target_min_weight = vec![0.0, 3.0, 1.0];
     match EwRidge::restore(&st) {
-        Err(StateError::Invalid(e)) => assert!(e.contains("ew_ridge"), "{e}"),
+        Err(StateError::Invalid(e)) => assert!(e.contains("ewridge: min_weight"), "{e}"),
         Err(e) => panic!("{e}"),
         Ok(_) => panic!("loaded"),
     }

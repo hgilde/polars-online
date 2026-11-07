@@ -228,7 +228,7 @@ def test_the_new_words_are_scikit_learns():
         _build("ew_class", {"covariance_type": shape})
     with pytest.raises(ValueError, match='covariance_type must be one of "full", "diag"'):
         _build("bocpd", {"covariance_type": "tied"})
-    with pytest.raises(ValueError, match="robust_beta tempers the per-feature predictive"):
+    with pytest.raises(ValueError, match='robust_beta applies only under covariance_type="diag"'):
         _build("bocpd", {"covariance_type": "full", "robust_beta": 0.1})
 
 

@@ -283,30 +283,30 @@ fn the_memories_and_lags_are_refused_out_of_range_or_without_their_switch() {
     for (key, switch, _) in MEMORIES {
         refused(
             &format!(r#", "{key}": 30.0"#),
-            &format!("{key} needs {switch}"),
+            &format!("{key} applies only when {switch} is on, but {switch} is off."),
         );
         for bad in ["0.0", "-1.0"] {
             refused(
                 &format!(r#", "{switch}": true, "{key}": {bad}"#),
-                &format!("{key} must be > 0 (\"inf\" is the run-once form"),
+                &format!("{key} must be above 0, but it is"),
             );
         }
     }
     refused(
         r#", "ljung_box_lags": 3"#,
-        "ljung_box_lags needs emit_specification",
+        "ljung_box_lags applies only when emit_specification is on",
     );
     refused(
         r#", "emit_specification": true, "ljung_box_lags": 1048577"#,
-        "ljung_box_lags must be at most 1048576 (2^20), got 1048577",
+        "ljung_box_lags must be at most 1048576, but it is 1048577",
     );
     refused(
         r#", "emit_robust_se": true, "robust_se_lags": 1048577"#,
-        "robust_se_lags must be at most 1048576 (2^20), got 1048577",
+        "robust_se_lags must be at most 1048576, but it asks for a lag of 1048577",
     );
     refused(
         r#", "robust_se_lags": 2"#,
-        "robust_se_lags needs emit_robust_se",
+        "robust_se_lags applies only when emit_robust_se is on",
     );
     // The largest of each is taken.
     for ok in [

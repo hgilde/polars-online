@@ -158,75 +158,122 @@ impl DecoCfg {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        let mut no = crate::Refusals::new();
         // The decay first: every model checks it in its own `new`, where only
         // the bank's spec did (review 2026-10-05, CF5).
-        self.decay.check().map_err(|e| format!("deco: {e}"))?;
+        no.take(self.decay.check().map_err(|e| format!("deco: {e}")));
         if self.n_features < 2 {
-            return Err(format!(
-                "deco: at least two columns are required (got {}); an equicorrelation is an \
-                 average over pairs",
+            no.refuse(format!(
+                "deco: the model needs at least two features, since it fits one correlation \
+                 shared by every pair of them, but it has {}. Name at least two columns in \
+                 features.",
                 self.n_features
             ));
         }
+        // The blocks are read against the features.
+        no.stop_here()?;
+        let n = self.n_features;
         let blocks = self.resolved_blocks();
-        let mut seen = vec![false; self.n_features];
+        let mut seen = vec![false; n];
+        let mut twice = vec![false; n];
         for (bi, b) in blocks.iter().enumerate() {
             if b.len() < 2 {
-                return Err(format!(
-                    "deco: block {bi} has {} column(s); a block has a within-block correlation, \
-                     which needs at least two",
+                no.refuse(format!(
+                    "deco: block {bi} (counting from 0) must hold at least two features, since \
+                     its correlation is between them, but it holds {}. Add a feature to it, or \
+                     merge it with another block.",
                     b.len()
                 ));
             }
+            let mut in_block = std::collections::HashSet::new();
             for &i in b {
-                if i >= self.n_features {
-                    return Err(format!(
-                        "deco: block {bi} names column {i}, and there are {}",
-                        self.n_features
+                if i < n && !in_block.insert(i) {
+                    // Twice in one block is not "in more than one block".
+                    no.refuse(format!(
+                        "deco: block {bi} lists feature {i} (both counting from 0) more than \
+                         once. List each feature once."
                     ));
+                    continue;
                 }
-                if std::mem::replace(&mut seen[i], true) {
-                    return Err(format!("deco: column {i} is in more than one block"));
+                if i >= n {
+                    no.refuse(format!(
+                        "deco: block {bi} names feature {i} (both counting from 0), but there are \
+                         only {n} features. Name features from 0 to {}.",
+                        n - 1
+                    ));
+                } else if std::mem::replace(&mut seen[i], true)
+                    && !std::mem::replace(&mut twice[i], true)
+                {
+                    no.refuse(format!(
+                        "deco: every feature must be in exactly one block, but feature {i} \
+                         (counting from 0) is in more than one. Remove it from all but one block."
+                    ));
                 }
             }
         }
-        if let Some(i) = seen.iter().position(|s| !s) {
-            return Err(format!(
-                "deco: column {i} is in no block; every column must be in exactly one"
+        let missing: Vec<String> = (0..n)
+            .filter(|&i| !seen[i])
+            .map(|i| i.to_string())
+            .collect();
+        if !missing.is_empty() {
+            no.refuse(format!(
+                "deco: every feature must be in exactly one block, but {} (counting from 0) {} in \
+                 none. Add {} to a block.",
+                if missing.len() == 1 {
+                    format!("feature {}", missing[0])
+                } else {
+                    let (last, rest) = missing.split_last().expect("two or more");
+                    format!("features {} and {last}", rest.join(", "))
+                },
+                if missing.len() == 1 { "is" } else { "are" },
+                if missing.len() == 1 { "it" } else { "each" },
             ));
         }
         match self.dynamics {
             DecoDynamics::Ew => {
                 if self.alpha.is_some() || self.beta.is_some() {
-                    return Err(
-                        "deco: alpha/beta belong to dynamics = \"linear\"; the \"ew\" recursion \
-                         takes its weights from the decay"
-                            .into(),
+                    no.refuse(
+                        "deco: alpha and beta apply only under dynamics=\"linear\", but dynamics \
+                         is \"ew\", which takes its weights from the decay. Leave out alpha and \
+                         beta, or set dynamics=\"linear\".",
                     );
                 }
             }
-            DecoDynamics::Linear => {
-                let (Some(a), Some(b)) = (self.alpha, self.beta) else {
-                    return Err("deco: dynamics = \"linear\" needs both alpha and beta".into());
-                };
-                if !(a >= 0.0 && b >= 0.0) {
-                    return Err("deco: alpha and beta must be >= 0".into());
+            DecoDynamics::Linear => match (self.alpha, self.beta) {
+                (Some(a), Some(b)) => {
+                    if !(a >= 0.0 && b >= 0.0) {
+                        no.refuse(format!(
+                            "deco: alpha and beta must each be at least 0, but alpha is {a} and \
+                             beta is {b}. Set each to 0 or more."
+                        ));
+                    } else if a + b >= 1.0 {
+                        // NaN fails the `>= 0` check above, so this is a
+                        // plain comparison by the time it runs.
+                        no.refuse(format!(
+                            "deco: alpha and beta must sum to less than 1, but alpha is {a} and \
+                             beta is {b}. Lower alpha or beta."
+                        ));
+                    }
                 }
-                // NaN fails the `>= 0` check above, so this is a plain
-                // comparison by the time it runs.
-                if a + b >= 1.0 {
-                    return Err(format!(
-                        "deco: alpha + beta must be < 1 (got {}); the intercept is \
-                         (1 - alpha - beta) times the targeted level",
-                        a + b
-                    ));
-                }
-            }
+                (a, b) => no.refuse(format!(
+                    "deco: dynamics=\"linear\" needs both alpha and beta, but {} not set. Set both \
+                     alpha and beta.",
+                    match (a, b) {
+                        (None, None) => "alpha and beta are",
+                        (None, _) => "alpha is",
+                        _ => "beta is",
+                    }
+                )),
+            },
         }
         if self.min_weight < 0.0 || self.min_weight.is_nan() {
-            return Err("deco: min_weight must be >= 0".into());
+            no.refuse(format!(
+                "deco: min_weight must be at least 0, but it is {}. Set min_weight to 0, or to a \
+                 positive weight.",
+                self.min_weight
+            ));
         }
-        Ok(())
+        no.finish()
     }
 }
 
@@ -1390,27 +1437,35 @@ mod tests {
             let e = Deco::new(c).unwrap_err();
             assert!(e.contains(msg), "{e}");
         };
-        bad(cfg(1), "at least two columns");
+        bad(cfg(1), "needs at least two features");
         bad(
             DecoCfg {
                 blocks: vec![vec![0], vec![1, 2]],
                 ..cfg(3)
             },
-            "needs at least two",
+            "must hold at least two features",
         );
         bad(
             DecoCfg {
                 blocks: vec![vec![0, 1]],
                 ..cfg(3)
             },
-            "column 2 is in no block",
+            "feature 2 (counting from 0) is in none",
         );
         bad(
             DecoCfg {
                 blocks: vec![vec![0, 1], vec![1, 2]],
                 ..cfg(3)
             },
-            "in more than one block",
+            "is in more than one",
+        );
+        // Twice in one block is said as that, not as two blocks.
+        bad(
+            DecoCfg {
+                blocks: vec![vec![0, 0, 1], vec![2, 1]],
+                ..cfg(3)
+            },
+            "deco: block 0 lists feature 0 (both counting from 0) more than once",
         );
         bad(
             DecoCfg {
@@ -1426,14 +1481,14 @@ mod tests {
                 beta: Some(0.6),
                 ..cfg(3)
             },
-            "alpha + beta must be < 1",
+            "alpha and beta must sum to less than 1",
         );
         bad(
             DecoCfg {
                 alpha: Some(0.5),
                 ..cfg(3)
             },
-            "alpha/beta belong to",
+            "alpha and beta apply only under dynamics=\"linear\"",
         );
     }
 
@@ -1543,15 +1598,15 @@ mod tests {
             beta: Some(beta),
             ..cfg(3)
         };
-        bad(linear(-0.1, 0.5), "alpha and beta must be >= 0");
-        bad(linear(0.5, -0.1), "alpha and beta must be >= 0");
+        bad(linear(-0.1, 0.5), "alpha and beta must each be at least 0");
+        bad(linear(0.5, -0.1), "alpha and beta must each be at least 0");
         for floor in [-1.0, f64::NAN] {
             bad(
                 DecoCfg {
                     min_weight: floor,
                     ..cfg(3)
                 },
-                "min_weight must be >= 0",
+                "min_weight must be at least 0",
             );
         }
     }
@@ -1813,6 +1868,28 @@ mod tests {
         }
     }
 
+    /// Every problem at once: two bad settings are both named, one to a
+    /// line.
+    #[test]
+    fn a_configuration_with_two_problems_reports_both() {
+        let e = Deco::new(DecoCfg {
+            blocks: vec![vec![0], vec![1, 2]],
+            min_weight: -1.0,
+            ..cfg(3)
+        })
+        .unwrap_err();
+        let lines: Vec<&str> = e.lines().collect();
+        assert_eq!(lines.len(), 2, "{e}");
+        assert!(
+            lines[0].starts_with("deco: block 0 (counting from 0) must hold"),
+            "{e}"
+        );
+        assert!(
+            lines[1].starts_with("deco: min_weight must be at least 0"),
+            "{e}"
+        );
+    }
+
     /// Task 252: a block naming a column past the last is refused by name,
     /// before the column is read.
     #[test]
@@ -1822,7 +1899,11 @@ mod tests {
             ..cfg(3)
         })
         .unwrap_err();
-        assert_eq!(e, "deco: block 0 names column 3, and there are 3");
+        assert_eq!(
+            e,
+            "deco: block 0 names feature 3 (both counting from 0), but there are only 3 \
+             features. Name features from 0 to 2."
+        );
     }
 
     /// Task 252: between-block values no correlation matrix can hold --

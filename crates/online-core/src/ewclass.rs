@@ -90,7 +90,8 @@ impl Covariance {
             "tied" => Ok(Covariance::Shared),
             "diag" => Ok(Covariance::Diagonal),
             other => Err(format!(
-                "covariance_type must be one of \"full\", \"tied\", \"diag\"; got {other:?}"
+                "covariance_type must be \"full\", \"tied\" or \"diag\", but it is {other:?}. \
+                 Set covariance_type to one of those words."
             )),
         }
     }
@@ -144,25 +145,36 @@ impl EwClassCfg {
     pub fn validate(&self) -> Result<(), String> {
         // The decay first: every model checks it in its own `new`, where only
         // the bank's spec did (review 2026-10-05, CF5).
-        self.decay.check().map_err(|e| format!("ew_class: {e}"))?;
+        let mut no = crate::Refusals::new();
+        no.take(self.decay.check().map_err(|e| format!("ew_class: {e}")));
         if self.n_features == 0 {
-            return Err("ew_class: n_features must be >= 1".into());
+            no.refuse(
+                "ew_class: the model needs at least one feature, but it has none. Name at least \
+                 one column in features.",
+            );
         }
         if self.n_classes < 2 {
-            return Err("ew_class: n_classes must be >= 2".into());
+            no.refuse(format!(
+                "ew_class: the model needs at least 2 classes, but it has {}. List 2 or more \
+                 classes in classes.",
+                self.n_classes
+            ));
         }
         if !(self.precision_prior.is_finite() && self.precision_prior > 0.0) {
-            return Err("ew_class: precision_prior must be finite and > 0".into());
+            no.refuse(format!(
+                "ew_class: precision_prior must be finite and above 0, but it is {}. Set \
+                 precision_prior to the positive ridge each class's covariance starts with.",
+                self.precision_prior
+            ));
         }
-        if self.min_weight.is_nan() || self.min_weight < 0.0 {
-            return Err("ew_class: min_weight must be >= 0".into());
-        }
-        crate::window::check_cadence(
+        no.take(crate::model::check_min_weight("ew_class", self.min_weight));
+        no.take(crate::window::check_cadence(
             "ew_class",
             self.window,
             self.window_every,
             self.max_rows_between_snapshots,
-        )
+        ));
+        no.finish()
     }
 }
 
@@ -2195,14 +2207,14 @@ mod tests {
                     n_features: 0,
                     ..ok.clone()
                 },
-                "n_features",
+                "at least one feature",
             ),
             (
                 EwClassCfg {
                     n_classes: 1,
                     ..ok.clone()
                 },
-                "n_classes",
+                "at least 2 classes",
             ),
             (
                 EwClassCfg {
@@ -2229,11 +2241,23 @@ mod tests {
             let err = EwClass::new(bad).unwrap_err();
             assert!(err.contains(msg), "{err}");
         }
+        // Every problem at once, each a line of its own.
+        let err = EwClass::new(EwClassCfg {
+            precision_prior: 0.0,
+            min_weight: -1.0,
+            ..ok.clone()
+        })
+        .unwrap_err();
+        let lines: Vec<&str> = err.lines().collect();
+        assert_eq!(lines.len(), 2, "{err}");
+        assert!(lines[0].starts_with("ew_class: precision_prior must be finite and above 0"));
+        assert!(lines[1].starts_with("ew_class: min_weight must be at least 0"));
         assert_eq!(Covariance::parse("tied").unwrap(), Covariance::Shared);
         // The refusal names the parameter, its words and the value.
         assert_eq!(
             Covariance::parse("spherical").unwrap_err(),
-            "covariance_type must be one of \"full\", \"tied\", \"diag\"; got \"spherical\""
+            "covariance_type must be \"full\", \"tied\" or \"diag\", but it is \"spherical\". \
+             Set covariance_type to one of those words."
         );
         assert_eq!(Covariance::Diagonal.name(), "diag");
         assert_eq!(

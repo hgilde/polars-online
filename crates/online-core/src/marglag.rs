@@ -365,28 +365,45 @@ pub struct PairMix<'a> {
 /// to them as a fresh model's is: `lags = [0]` in a state passed its shape
 /// check and indexed an empty ring (review 2026-10-06, CD14).
 pub(crate) fn check_lags(lags: &[usize], cross_lags: Option<&[usize]>) -> Result<(), String> {
+    let mut no = crate::Refusals::new();
     if lags.is_empty() {
-        return Err("marginal: lags must not be empty".into());
+        no.refuse(
+            "marginal: lags must hold at least one lag, but it is empty. Give at least one lag, \
+             such as [1], or leave out lags.",
+        );
     }
-    if lags[0] < 1 {
-        return Err("marginal: lags must be >= 1 (lag 0 is the pair itself)".into());
+    if lags.contains(&0) {
+        no.refuse(
+            "marginal: lags must each be at least 1, but one of them is 0, which pairs a row with \
+             itself, as the model's unlagged moments already do. Remove the 0 from lags.",
+        );
     }
     if lags.windows(2).any(|w| w[1] <= w[0]) {
-        return Err("marginal: lags must be strictly increasing".into());
+        no.refuse(format!(
+            "marginal: lags must be strictly increasing, since their order is the order of the \
+             output, but it is {lags:?}. List the lags in increasing order, each once."
+        ));
     }
-    crate::ewlagcov::check_lag_ceiling("marginal: lags", lags[lags.len() - 1])?;
+    if let Some(&max) = lags.iter().max() {
+        no.take(
+            crate::ewlagcov::check_lag_ceiling("lags", max).map_err(|e| format!("marginal: {e}")),
+        );
+    }
     if let Some(c) = cross_lags {
         if c.windows(2).any(|w| w[1] <= w[0]) {
-            return Err("marginal: cross_lags must be strictly increasing".into());
+            no.refuse(format!(
+                "marginal: cross_lags must be strictly increasing, but it is {c:?}. List them in \
+                 increasing order, each once."
+            ));
         }
         if let Some(bad) = c.iter().find(|l| !lags.contains(l)) {
-            return Err(format!(
-                "marginal: cross_lags must each be one of lags, and {bad} is not: a cross \
-                 term reads the ring `lags` keeps"
+            no.refuse(format!(
+                "marginal: cross_lags must each be one of lags, since a cross term reads the rows \
+                 lags keeps, but {bad} is not. Remove {bad} from cross_lags, or add it to lags."
             ));
         }
     }
-    Ok(())
+    no.finish()
 }
 
 impl MarginalLags {
@@ -416,7 +433,11 @@ impl MarginalLags {
         about_origin: bool,
     ) -> Result<Self, String> {
         if about_origin && shared {
-            return Err("marginal: lag moments about an origin are per target".into());
+            return Err(
+                "marginal: lags under window_size need feature_moments=\"per_target\", but it \
+                 is \"shared\". Set feature_moments=\"per_target\", or leave out window_size."
+                    .into(),
+            );
         }
         check_lags(&lags, cross_lags.as_deref())?;
         let l = lags.len();
@@ -1595,7 +1616,11 @@ mod tests {
     fn a_lag_accumulator_with_no_lags_is_refused_by_name() {
         for shared in [false, true] {
             let e = MarginalLags::new(2, 1, vec![], None, shared).unwrap_err();
-            assert_eq!(e, "marginal: lags must not be empty");
+            assert_eq!(
+                e,
+                "marginal: lags must hold at least one lag, but it is empty. Give at least one \
+                 lag, such as [1], or leave out lags."
+            );
         }
     }
 

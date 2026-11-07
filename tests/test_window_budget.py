@@ -169,8 +169,8 @@ def test_a_budget_the_ring_stays_under_changes_nothing():
 @pytest.mark.parametrize(
     ("budget", "message"),
     [
-        ({"thin": 0.0}, "window_budget must be > 0"),
-        ({"refuse": -1.0}, "window_budget must be > 0"),
+        ({"thin": 0.0}, "window_budget must be above 0 MiB, but it is 0 MiB"),
+        ({"refuse": -1.0}, "window_budget must be above 0 MiB, but it is -1 MiB"),
         ({"thin": float("nan")}, "must not be NaN"),
         ({"shrink": 1.0}, "thin"),
     ],
@@ -181,7 +181,7 @@ def test_a_bad_budget_is_refused_by_name(budget, message):
 
 
 def test_a_budget_without_a_window_is_refused():
-    with pytest.raises(ValueError, match="window_budget needs `window_size`"):
+    with pytest.raises(ValueError, match="window_budget applies only under a hard window"):
         po.spec.ewridge(
             "m", targets=["y"], features=["x0"], half_life=10.0, window_budget={"thin": 1.0}
         )

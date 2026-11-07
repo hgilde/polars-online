@@ -162,7 +162,10 @@ fn the_refit_is_refused_where_it_does_not_apply() {
     let mut s = base(1.345, Decay::Lam(1.0), 10);
     s.ridge_scale = true;
     let e = Robust::new(s).unwrap_err();
-    assert!(e.contains("huber_refit_rows is for huber"), "{e}");
+    assert!(
+        e.contains("huber_refit_rows and ridge_scale=\"sum\" cannot both be set"),
+        "{e}"
+    );
     // A quantile fit's refusals name its own key (review round 10, S2-5).
     let mut q = base(1.345, Decay::Lam(1.0), 10);
     q.loss = RobustLoss::Quantile { tau: 0.5 };
@@ -170,7 +173,7 @@ fn the_refit_is_refused_where_it_does_not_apply() {
     q.ridge_scale = true;
     let e = Robust::new(q.clone()).unwrap_err();
     assert!(
-        e.starts_with("quantile: quantile_refit_rows is not for beside ridge_scale"),
+        e.starts_with("quantile: quantile_refit_rows and ridge_scale=\"sum\" cannot both be set"),
         "{e}"
     );
     q.ridge_scale = false;

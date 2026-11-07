@@ -245,88 +245,116 @@ impl EwRidgeCfg {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        let mut no = crate::Refusals::new();
         // The decay first: every model checks it in its own `new`, where only
         // the bank's spec did (review 2026-10-05, CF5).
-        self.decay.check().map_err(|e| format!("ewridge: {e}"))?;
-        if self
-            .solve_share
-            .is_some_and(|f| !(f.is_finite() && f > 0.0))
-        {
-            return Err("solve_share must be finite and > 0".into());
-        }
-        if self.n_features == 0 || self.n_targets == 0 {
-            return Err("n_features and n_targets must be >= 1".into());
-        }
+        no.take(self.decay.check().map_err(|e| format!("ewridge: {e}")));
+        no.take(crate::model::check_solve_share("ewridge", self.solve_share));
+        no.take(crate::model::check_dims(
+            "ewridge",
+            self.n_features,
+            self.n_targets,
+        ));
         if self.ridge.is_empty() {
-            return Err("ridge grid must have at least one value".into());
+            no.refuse(
+                "ewridge: ridge must list at least one value, but it lists none. Set ridge to \
+                 0 for no shrinkage, or to one or more positive values.",
+            );
         }
         // What the spec layer refuses, refused here too, so the Rust API and
         // a state file are held to it (review 2026-10-06, CA6): a negative
         // ridge makes the system indefinite, and NaN or inf poisons every
         // solve; a NaN `min_weight` is never reached.
-        if let Some(r) = self.ridge.iter().find(|r| !(r.is_finite() && **r >= 0.0)) {
-            return Err(format!("ewridge: ridge must be finite and >= 0, got {r}"));
-        }
-        if self.min_weight.is_nan() || self.min_weight < 0.0 {
-            return Err(format!(
-                "ewridge: min_weight must be >= 0, got {}",
-                self.min_weight
+        let bad: Vec<String> = self
+            .ridge
+            .iter()
+            .filter(|r| !(r.is_finite() && **r >= 0.0))
+            .map(f64::to_string)
+            .collect();
+        if let [r] = bad.as_slice() {
+            no.refuse(if self.ridge.len() == 1 {
+                format!(
+                    "ewridge: ridge must be finite and at least 0, but it is {r}. Set ridge \
+                     to 0 for no shrinkage, or to a finite positive value."
+                )
+            } else {
+                format!(
+                    "ewridge: ridge must be finite and at least 0, but one of its values is \
+                     {r}. Set that value to 0 for no shrinkage, or to a finite positive value."
+                )
+            });
+        } else if !bad.is_empty() {
+            no.refuse(format!(
+                "ewridge: ridge must be finite and at least 0, but its values {} are not. Set \
+                 those values to 0 for no shrinkage, or to finite positive values.",
+                crate::model::listed(&bad)
             ));
         }
+        no.take(crate::model::check_min_weight("ewridge", self.min_weight));
         // A NaN cadence never comes due on the clock, and left the row cap
         // alone to schedule the solves, with no word (review round 5, C6).
         // `<= 0` solves every row and `inf` leaves the cadence to the row
         // cap on purpose.
-        if self.solve_every.is_nan() {
-            return Err("ewridge: solve_every must not be NaN (<= 0 solves every row)".into());
-        }
+        no.take(crate::model::check_solve_every("ewridge", self.solve_every));
         if let Some(w) = self.window {
             if !w.is_finite() || w <= 0.0 {
-                return Err(format!(
-                    "ewridge: window_size must be finite and > 0 (got {w}); it is clock units of \
-                     history to keep"
+                no.refuse(format!(
+                    "ewridge: window_size must be finite and above 0, but it is {w}. Set \
+                     window_size to the age, in clock units, at which a row stops counting, \
+                     or leave it out for no hard window."
                 ));
             }
             if self.ridge_scale {
-                return Err(
-                    "ewridge: window_size and ridge_scale do not combine; the decaying prior's scale \
-                     is the product of every decay factor the stream has applied, which a \
-                     window truncates the data of but not the prior"
-                        .into(),
+                no.refuse(
+                    "ewridge: window_size and ridge_scale=\"sum\" cannot both be set: under \
+                     ridge_scale=\"sum\" the ridge fades with every decay the stream applies, \
+                     and a hard window drops rows without restoring it. Leave out window_size, \
+                     or ridge_scale.",
                 );
             }
             if self.session_shrink.is_some() {
-                return Err(
-                    "ewridge: window_size and session_shrink do not combine; the slow twin is a \
-                     second accumulator under a longer half_life, and truncating one and not \
-                     the other would blend two different histories"
-                        .into(),
+                no.refuse(
+                    "ewridge: window_size and session_shrink cannot both be set: \
+                     session_shrink blends in the long-run running sums, which the hard \
+                     window would not cut. Leave out window_size, or session_shrink.",
                 );
             }
         }
-        crate::window::check_cadence(
+        no.take(crate::window::check_cadence(
             "ewridge",
             self.window,
             self.window_every,
             self.max_rows_between_snapshots,
-        )?;
+        ));
         if self.gram_block_rows > 0 {
             if self.window.is_some() {
-                return Err(
-                    "ewridge: gram_block_rows and window do not combine; the window snapshots \
-                     the Gram on every row, so there would be nothing to hold back"
-                        .into(),
+                no.refuse(
+                    "ewridge: gram_block_rows and window_size cannot both be set, since a hard \
+                     window keeps its Gram whole for its snapshots and holds no rows back. \
+                     Leave out gram_block_rows, or window_size.",
                 );
             }
-            if self.solve_every <= 0.0 || self.max_rows_between_solves <= 1 {
-                return Err(format!(
-                    "ewridge: gram_block_rows needs a solve cadence; the Gram is brought up to \
-                     date before every solve, and with solve_every = {} and \
-                     max_rows_between_solves = {} that is every row, so a block would never \
-                     hold more than one. Set solve_every > 0 (the default is by weight under a \
-                     finite half_life, and 0 for `lam` and an infinite half_life) and \
-                     max_rows_between_solves > 1",
-                    self.solve_every, self.max_rows_between_solves
+            if self.solve_every <= 0.0 {
+                // The default named only under the decay the reader set.
+                let default = match self.decay {
+                    crate::Decay::Lam(_) => ", as the default under lam does",
+                    crate::Decay::Halflife(h) if h.is_infinite() => {
+                        ", as the default under half_life=inf does"
+                    }
+                    crate::Decay::Halflife(_) => "",
+                };
+                no.refuse(format!(
+                    "ewridge: gram_block_rows holds rows back until the next solve, but \
+                     solve_every is {}, which solves every row{default}. Set solve_every \
+                     above 0, or leave gram_block_rows out.",
+                    self.solve_every
+                ));
+            } else if self.max_rows_between_solves <= 1 {
+                no.refuse(format!(
+                    "ewridge: gram_block_rows holds rows back until the next solve, but \
+                     max_rows_between_solves is {}, which solves every row. Set \
+                     max_rows_between_solves above 1, or leave gram_block_rows out.",
+                    self.max_rows_between_solves
                 ));
             }
             // Held rows: `B × k_total` per accumulator, the slow twin
@@ -340,84 +368,108 @@ impl EwRidgeCfg {
                 TargetGaps::OwnRows => self.n_targets,
                 TargetGaps::Pairwise => 1,
             };
-            let cells = self
-                .gram_block_rows
-                .saturating_mul(self.k_total())
+            let per_row = self
+                .k_total()
                 .saturating_mul(twins)
-                .saturating_mul(grams);
-            let bytes = cells.saturating_mul(std::mem::size_of::<f64>());
+                .saturating_mul(grams)
+                .saturating_mul(std::mem::size_of::<f64>());
+            let bytes = self.gram_block_rows.saturating_mul(per_row);
             if bytes > GRAM_BLOCK_BUDGET {
-                return Err(format!(
-                    "ewridge: gram_block_rows = {} would hold {:.1} GiB of rows ({} × {} \
-                     features{}{}), over the {} MiB budget; reduce it, or narrow the features{}",
-                    self.gram_block_rows,
-                    bytes as f64 / (1u64 << 30) as f64,
-                    self.gram_block_rows,
-                    self.k_total(),
-                    if twins == 2 {
-                        ", twice for the slow twin"
-                    } else {
-                        ""
-                    },
-                    if grams > 1 {
-                        format!(
-                            ", per pattern of missing rows, of which target_gaps = \
-                             \"own_rows\" keeps up to one per target: {grams}"
-                        )
-                    } else {
-                        String::new()
-                    },
-                    GRAM_BLOCK_BUDGET >> 20,
-                    if grams > 1 {
-                        ", or set target_gaps = \"pairwise\", whose one Gram holds one block"
-                    } else {
-                        ""
-                    },
-                ));
+                let most = GRAM_BLOCK_BUDGET / per_row.max(1);
+                let pairwise = if grams > 1 {
+                    ", or set target_gaps=\"pairwise\" to hold one block for every target"
+                } else {
+                    ""
+                };
+                no.refuse(if most == 0 {
+                    format!(
+                        "ewridge: gram_block_rows = {} would hold {:.1} GiB of rows, over the \
+                         {} MiB limit, and even one row is over it. Leave gram_block_rows \
+                         out, or use fewer features{pairwise}.",
+                        self.gram_block_rows,
+                        bytes as f64 / (1u64 << 30) as f64,
+                        GRAM_BLOCK_BUDGET >> 20,
+                    )
+                } else {
+                    format!(
+                        "ewridge: gram_block_rows = {} would hold {:.1} GiB of rows, over the \
+                         {} MiB limit. Lower gram_block_rows to {most} or below, or use fewer \
+                         features{pairwise}.",
+                        self.gram_block_rows,
+                        bytes as f64 / (1u64 << 30) as f64,
+                        GRAM_BLOCK_BUDGET >> 20,
+                    )
+                });
             }
         }
-        if self.ridge_scale && (self.standardize || self.n_combos() > 1) {
-            return Err("ridge_scale is incompatible with standardize and grids".into());
+        // Each cause its own problem, both where both hold.
+        if self.ridge_scale && self.standardize {
+            no.refuse(
+                "ewridge: ridge_scale=\"sum\" fits one ridge on unscaled features, but \
+                 standardize is set. Leave out ridge_scale, or set standardize=False.",
+            );
+        }
+        if self.ridge_scale && self.n_combos() > 1 {
+            no.refuse(
+                "ewridge: ridge_scale=\"sum\" fits one ridge on unscaled features, but the \
+                 spec has a grid of ridges or feature sets. Leave out ridge_scale, or give one \
+                 ridge and one feature set.",
+            );
+        }
+        // Each check of its own, so a bad session_shrink does not hide a bad
+        // long_half_life.
+        if let Some(f) = self.session_shrink.filter(|f| !(0.0..=1.0).contains(f)) {
+            no.refuse(format!(
+                "ewridge: session_shrink must be from 0 to 1, but it is {f}. Set \
+                 session_shrink to the share of the long-run running sums to blend in at \
+                 each session change: 0 for none, 1 for all of them."
+            ));
         }
         match (self.session_shrink, self.long_half_life) {
-            (Some(f), _) if !(0.0..=1.0).contains(&f) => {
-                return Err(format!("session_shrink must be in [0, 1], got {f}"));
-            }
             (Some(_), None) => {
-                return Err("session_shrink needs long_half_life (the slow twin's decay)".into());
+                no.refuse(
+                    "ewridge: session_shrink blends in the long-run running sums, but \
+                     long_half_life, their half-life, is not set. Set long_half_life, or \
+                     leave session_shrink out.",
+                );
             }
             (None, Some(_)) => {
-                return Err("long_half_life has no effect without session_shrink".into());
+                no.refuse(
+                    "ewridge: long_half_life sets the half-life of the long-run running sums \
+                     session_shrink blends in, but session_shrink is not set. Set \
+                     session_shrink, or leave long_half_life out.",
+                );
             }
             (Some(_), Some(h)) if h <= 0.0 || h.is_nan() => {
-                return Err(format!("long_half_life must be > 0, got {h}"));
+                no.refuse(format!(
+                    "ewridge: long_half_life must be above 0, but it is {h}. Set \
+                     long_half_life to a positive number of clock units, or to inf for \
+                     long-run running sums of every row."
+                ));
             }
             _ => {}
         }
         if let Some(c) = &self.coef_prior {
-            if c.len() != self.n_targets || c.iter().any(|v| v.len() != self.k_total()) {
-                return Err(format!(
-                    "coef_prior must be {} vector{} of length {}",
-                    self.n_targets,
-                    if self.n_targets == 1 { "" } else { "s" },
-                    self.k_total()
-                ));
-            }
-            if c.iter().flatten().any(|v| !v.is_finite()) {
-                return Err("coef_prior values must be finite".into());
-            }
+            no.take(crate::model::check_coef_prior(
+                "ewridge",
+                c,
+                self.n_targets,
+                self.k_total(),
+                self.fit_intercept,
+            ));
         }
         for (name, idx) in &self.feature_sets {
             // Empty is its own message: an empty set has no index to be out
             // of range (review 2026-09-12, S7).
-            if idx.is_empty() {
-                return Err(format!("feature set {name:?} is empty"));
-            }
-            if idx.iter().any(|&i| i >= self.n_features) {
-                return Err(format!("feature set {name:?} has out-of-range indices"));
-            }
+            no.take(crate::model::check_feature_set(
+                "ewridge",
+                name,
+                idx,
+                self.n_features,
+                false,
+            ));
         }
-        Ok(())
+        no.finish()
     }
 }
 
@@ -607,7 +659,7 @@ impl EwRidge {
     /// reaches its own threshold, as a fresh model's first solve fires on
     /// the row its weight reaches `min_weight` (docs/PLAN.md task 195, S9b).
     pub fn set_target_min_weight(&mut self, own: Vec<f64>) -> Result<(), String> {
-        crate::model::check_target_min_weight("ew_ridge", &own, self.cfg.n_targets)?;
+        crate::model::check_target_min_weight("ewridge", &own, self.cfg.n_targets)?;
         self.target_min_weight = own;
         Ok(())
     }
@@ -2668,7 +2720,7 @@ impl OnlineModel for EwRidge {
                     ));
                 }
                 if let Err(e) =
-                    crate::model::check_target_min_weight("ew_ridge", &m.target_min_weight, n)
+                    crate::model::check_target_min_weight("ewridge", &m.target_min_weight, n)
                 {
                     return Err(StateError::Invalid(e));
                 }

@@ -7,7 +7,7 @@ builders' own check reads the same annotation, so a word outside it is
 refused in Python, before anything is serialized. And every surface refuses
 it in one shape, naming the spec, the parameter and the words:
 
-    spec "m": <param> must be one of "a", "b"; got "x"
+    spec "m": <param> must be "a", "b" or "c", but it is "x". Use one of those words.
 
 A builder in Python, a spec dict at the bank's door and a TOML file read by
 the same Rust validation all say that. Each of serde's own enums once said
@@ -59,11 +59,13 @@ def _keyword(path: str) -> str:
     return path.removeprefix("model.")
 
 
-#: `spec "Probe": <param> must be [an int or ]one of "a", "b"; got "zz_bogus"`,
-#: and for `rcov`'s `kernel` the reason it is the only one after a colon.
+#: `spec "Probe": <param> must be [an int or ]"a", "b" or "c", but it is
+#: "zz_bogus". Use one of those words.`; a parameter with one word, such as
+#: `rcov`'s `kernel`, names it in the remedy, and its model's name may lead.
 _SHAPE = (
-    r'^spec "Probe": {param} must be (an int or )?one of "[^"]+"(, "[^"]+")*; '
-    r'got "zz_bogus"(: .+)?$'
+    r'^spec "Probe": (\w+: )?{param} must be (an int or )?"[^"]+"(, "[^"]+")*( or "[^"]+")?'
+    r'(, [^"]+)?, but it is "zz_bogus"\. '
+    r'(Use one of those words|Use one of those|Use "[^"]+"|Set {param} to "[^"]+")\.$'
 )
 
 

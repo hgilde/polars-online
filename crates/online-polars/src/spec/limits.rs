@@ -11,19 +11,23 @@ impl Spec {
     /// The refusals, in the order a spec meets them: `min_weight` first, as
     /// a common parameter, and then the model's own.
     pub(super) fn refuse_values_that_mean_nothing(&self) -> Result<(), String> {
+        // Every problem at once: none of these reads what another refuses.
+        let mut no = online_core::Refusals::new();
         // A floor at `inf` never opens: every row withheld for good while the
         // model learns from each, said only by a notice a half-life after
         // the stream settles.
-        if self
-            .min_periods_per_target()
-            .iter()
-            .any(|v| v.is_infinite())
-        {
-            return Err(format!(
-                "spec {:?}: min_weight must be finite, got inf: a floor no weight reaches \
-                 withholds every row for good while the model learns from each; give the \
-                 weight a model must have seen before it reports, or leave min_weight out \
-                 for the model's default",
+        // `-inf` is below 0, which the range check says.
+        if self.min_periods_per_target().contains(&f64::INFINITY) {
+            let is = if matches!(self.min_weight, Some(super::FloatOrList::List(_))) {
+                "one of its values is inf"
+            } else {
+                "it is inf"
+            };
+            no.refuse(format!(
+                "spec {:?}: min_weight must be finite, but {is}, a floor no weight reaches, so \
+                 every prediction would stay withheld. Set min_weight to the weight the model \
+                 must have learned before it predicts, or leave it out for the model's \
+                 default.",
                 self.name
             ));
         }
@@ -48,13 +52,12 @@ impl Spec {
         if let Some((key, Some(rows))) = refit_rows
             && rows > online_core::MAX_REFIT_ROWS
         {
-            return Err(format!(
-                "spec {:?}: {key} must be at most {} (2^20), got {rows}: the refit's buffer \
-                 is held at its full size, (features + 10) * 8 bytes a row under the MAD scale \
-                 and (features + 4) * 8 under the RMS, from a target's first learned row, so \
-                 the count sizes an allocation before any row is seen",
+            no.refuse(format!(
+                "spec {:?}: {key} must be at most {max}, but it is {rows}: the refit reserves \
+                 memory for all its rows from a target's first learned row. Lower {key} to {max} \
+                 or below.",
                 self.name,
-                online_core::MAX_REFIT_ROWS
+                max = online_core::MAX_REFIT_ROWS
             ));
         }
         match &self.model {
@@ -69,12 +72,12 @@ impl Spec {
             // is the next check's.
             ModelKind::KMeans { dead_frac, .. } => {
                 if let Some(v) = dead_frac.filter(|v| v.is_finite() && *v >= 0.5) {
-                    return Err(format!(
+                    no.refuse(format!(
                         "spec {:?}: dead_frac must be below 0.5, but it is {v}: a re-placed \
-                         center starts at half its source's weight, so at 0.5 or above it can be \
-                         born at the floor that marks a center dead, dead_frac * weight_sum / \
-                         n_clusters, and the next split-merge check re-places it again. Set \
-                         dead_frac below 0.5.",
+                         center starts at half the weight of the cluster it splits from, so at \
+                         0.5 or above it can start below the floor dead_frac sets and be \
+                         re-placed again at the next split-merge check. Set dead_frac below \
+                         0.5, such as the default 0.05.",
                         self.name
                     ));
                 }
@@ -89,10 +92,10 @@ impl Spec {
                     .as_ref()
                     .is_some_and(|e| !e.is_empty() && e.iter().all(Vec::is_empty))
                 {
-                    return Err(format!(
-                        "spec {:?}: marginal bin_edges gives no feature an edge: each would be \
-                         one open bin, with no response curve and no cut to report; give at \
-                         least one feature an edge, or leave bin_edges out for no bins",
+                    no.refuse(format!(
+                        "spec {:?}: bin_edges gives no feature an edge, so each feature would \
+                         be one open bin, with no response curve and no split to report. Give at \
+                         least one feature an edge, or leave bin_edges out for no bins.",
                         self.name
                     ));
                 }
@@ -111,17 +114,16 @@ impl Spec {
                 window_rows: Some(m),
                 ..
             } if kind.as_deref() != Some("window") && b > m => {
-                return Err(format!(
-                    "spec {:?}: corrchange bandwidth must be at most window_rows ({m}), got {b}: \
-                     the Bartlett kernel weights lag l by 1 - l/bandwidth, and a span of \
-                     window_rows rows has no lag past window_rows - 1, so a larger bandwidth \
-                     adds no lag; it only flattens the weights toward 1, where the centred \
-                     moments' lags sum to 0 and the long-run variance falls toward 0 with them",
+                no.refuse(format!(
+                    "spec {:?}: bandwidth must be at most window_rows ({m}), but it is {b}: \
+                     past window_rows there is no further lag to weight, and the statistic \
+                     grows with the bandwidth rather than with the data. Lower bandwidth to \
+                     {m} or below.",
                     self.name
                 ));
             }
             _ => {}
         }
-        Ok(())
+        no.finish()
     }
 }

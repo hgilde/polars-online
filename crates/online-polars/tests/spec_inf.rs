@@ -126,7 +126,11 @@ fn inf_is_refused_by_name_where_it_means_nothing() {
         .iter()
         .filter_map(|(top, model, name)| match spec(top, model).check() {
             Ok(()) => Some(format!("{name} = inf was accepted")),
-            Err(e) if !(e.contains(name) && e.contains("finite")) => Some(format!("{name}: {e}")),
+            // A range with an upper bound (`at least 0 and below 1`)
+            // refuses inf as plainly as `finite` does.
+            Err(e) if !(e.contains(name) && (e.contains("finite") || e.contains(" below "))) => {
+                Some(format!("{name}: {e}"))
+            }
             Err(_) => None,
         })
         .collect();

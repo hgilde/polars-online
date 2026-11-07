@@ -75,132 +75,147 @@ impl Spec {
     /// `label_clock`'s own rules, and the settings it refuses beside it.
     pub(super) fn check_label_clock(&self) -> Result<(), String> {
         let name = &self.name;
+        // Every problem at once: none of these reads what another refuses.
+        let mut no = online_core::Refusals::new();
         let Some(label) = &self.label_clock else {
             for (param, given) in [
                 ("max_held_rows", self.max_held_rows.is_some()),
                 ("held_overflow", self.held_overflow.is_some()),
             ] {
                 if given {
-                    return Err(format!(
-                        "spec {name:?}: {param} is given without label_clock, and only rows held \
-                         for their label time are counted against it. Give label_clock, or \
-                         leave {param} out."
+                    no.refuse(format!(
+                        "spec {name:?}: {param} applies only under label_clock, which holds \
+                         each row until its target becomes known, but label_clock is not set. \
+                         Give label_clock, or leave {param} out."
                     ));
                 }
             }
-            return Ok(());
+            return no.finish();
         };
         if let LabelClock::PerTarget(cols) = label {
-            if cols.len() != self.m() {
-                return Err(format!(
-                    "spec {name:?}: label_clock lists {} columns for {} targets. Give one \
-                     column for every target, or a single column for all of them.",
-                    cols.len(),
-                    self.m()
+            // An empty list is the next check's: it names no column.
+            if !cols.is_empty() && cols.len() != self.m() {
+                no.refuse(format!(
+                    "spec {name:?}: label_clock lists {} for {}, but a spec reads one time a \
+                     row at which its targets become known. Give a single column for all the \
+                     targets.",
+                    counted(cols.len(), "column"),
+                    counted(self.m(), "target"),
                 ));
-            }
-            if let Some(other) = cols.iter().find(|c| *c != &cols[0]) {
-                return Err(format!(
-                    "spec {name:?}: label_clock lists {:?} and {other:?}, and a spec reads one \
-                     label time a row. Give one column for every target, or fit the targets \
-                     whose labels arrive at other times in a spec of their own.",
+            } else if let Some(other) = cols.iter().find(|c| *c != &cols[0]) {
+                no.refuse(format!(
+                    "spec {name:?}: label_clock lists {:?} and {other:?}, but a spec reads one \
+                     time a row at which its targets become known. Give a single column for all \
+                     the targets, or fit the targets that become known at other times in a spec \
+                     of their own.",
                     cols[0]
                 ));
             }
         }
         if label.column().is_empty() {
-            return Err(format!(
-                "spec {name:?}: label_clock names no column. Give the column that holds each \
-                 row's label time."
+            no.refuse(format!(
+                "spec {name:?}: label_clock names no column. Give the column that holds the \
+                 time each row's target becomes known."
             ));
-        }
-        if self.clock.is_none() {
-            return Err(format!(
-                "spec {name:?}: label_clock {:?} is given with no clock, and a label time is \
-                 a place on the clock. Give the spec a clock column of the label column's type.",
+        } else if self.clock.is_none() {
+            no.refuse(format!(
+                "spec {name:?}: label_clock {:?} needs clock, since the time a target becomes \
+                 known is a place on the clock, but clock is not set. Set clock to a column of \
+                 the same type as {:?}, with gap_cap.",
+                label.column(),
+                label.column()
+            ));
+        } else if self.clock.as_deref() == Some(label.column()) {
+            no.refuse(format!(
+                "spec {name:?}: label_clock is the clock column {:?}, so every target is known \
+                 at its own row. Leave label_clock out to learn each row right after it is \
+                 predicted.",
                 label.column()
             ));
         }
-        if self.clock.as_deref() == Some(label.column()) {
-            return Err(format!(
-                "spec {name:?}: label_clock is the clock column {:?}, so every label is known \
-                 at its own row. Leave label_clock out to learn each row where it sits.",
-                label.column()
+        if self.embargo.is_some() {
+            no.refuse(format!(
+                "spec {name:?}: label_clock does not work beside embargo, which it generalizes. \
+                 Give the times the targets become known as a column (the clock plus the \
+                 delay), and leave embargo out."
             ));
         }
-        let beside = if self.embargo.is_some() {
-            Some(
-                "embargo, which label_clock generalizes. Give the label times as a column \
-                 (clock + delay) and leave embargo out",
-            )
-        } else if self.targets.any_formula() {
-            Some(
-                "a target that is a window expression, which is learned when its window \
-                 closes. Give the target as a column and its label time in label_clock",
-            )
-        } else if self.group_close.is_some() {
-            Some(
-                "group_close, since a closed group cannot learn the rows it still holds. \
-                 Leave group_close out",
-            )
-        } else if self.session.is_some() {
-            Some(
-                "a session column, since a row learned at its label time can fall in a later \
-                 session than the row it was scored at. Leave session out, or use embargo",
-            )
-        } else if self.drift_action.as_deref() == Some("reset") {
-            Some(
-                "drift_action=\"reset\", since a restarted model would learn the held rows \
-                 from a clock it never reached. Use drift_action=\"flag\"",
-            )
-        } else {
-            None
-        };
-        if let Some(why) = beside {
-            return Err(format!(
-                "spec {name:?}: label_clock does not work beside {why}."
+        if self.targets.any_formula() {
+            no.refuse(format!(
+                "spec {name:?}: label_clock does not work beside a formula target, which is \
+                 learned when its window closes. Give the target as a column, and the time it \
+                 becomes known in label_clock."
             ));
         }
-        // The kinds whose score reads the clock since the newest learned
+        if self.group_close.is_some() {
+            no.refuse(format!(
+                "spec {name:?}: label_clock does not work beside group_close, since a closed \
+                 group cannot learn the rows it still holds. Leave group_close out."
+            ));
+        }
+        if self.session.is_some() {
+            no.refuse(format!(
+                "spec {name:?}: label_clock does not work beside a session column, since a row \
+                 learned when its target becomes known can fall in a later session than the row \
+                 it was predicted at. Leave session out, or give embargo in place of \
+                 label_clock."
+            ));
+        }
+        if self.drift_action.as_deref() == Some("reset") {
+            no.refuse(format!(
+                "spec {name:?}: label_clock does not work beside drift_action=\"reset\", since \
+                 a model that resets would learn the held rows from a clock it never reached. \
+                 Use drift_action=\"flag\"."
+            ));
+        }
+        // The kinds whose prediction reads the clock since the newest learned
         // row: under `label_clock` that row is learned at its label time,
         // so the step would no longer be the row's distance from it.
         let reads_step = match &self.model {
-            ModelKind::Holt { .. } => Some("holt's forecast reaches"),
-            ModelKind::Kalman { .. } => Some("kalman's drift and error_inflation reach"),
+            ModelKind::Holt { .. } => Some("holt extrapolates"),
+            ModelKind::Kalman { .. } => Some("kalman's drift and error_inflation grow"),
             ModelKind::Hmm { .. } => Some("hmm's transitions age"),
-            ModelKind::Micro { .. } => Some("micro's summaries age"),
+            ModelKind::Micro { .. } => Some("micro's small clusters age"),
             ModelKind::Audit { .. } => {
-                return Err(format!(
-                    "spec {name:?}: label_clock does not apply to audit, which has no label \
+                no.refuse(format!(
+                    "spec {name:?}: label_clock does not apply to audit, which has no target \
                      to wait for. Leave label_clock out."
                 ));
+                None
             }
             _ => None,
         };
         if let Some(what) = reads_step {
-            return Err(format!(
-                "spec {name:?}: label_clock does not work with {}, since {what} from the newest \
-                 learned row, which label_clock moves to its label time. Use embargo for a \
-                 delay that is the same for every row.",
+            no.refuse(format!(
+                "spec {name:?}: label_clock does not work with {}, since {what} from the clock \
+                 of the newest row learned, and under label_clock that row can be far older than \
+                 the row predicted. Give embargo in place of label_clock for a delay that is the \
+                 same for every row.",
                 self.model.kind_name()
             ));
         }
         if self.max_held_rows == Some(0) {
-            return Err(format!(
-                "spec {name:?}: max_held_rows is 0, which holds no row. Give a positive \
-                 number of rows, or leave it out for no bound."
+            no.refuse(format!(
+                "spec {name:?}: max_held_rows must be at least 1, but it is 0, which holds no \
+                 row. Set max_held_rows to a positive number of rows, or leave it out for no \
+                 bound."
             ));
         }
         if let Some(o) = &self.held_overflow
             && !HELD_OVERFLOW.contains(&o.as_str())
         {
-            return Err(super::spec_words_refusal(
+            no.refuse(super::spec_words_refusal(
                 name,
                 "held_overflow",
                 &HELD_OVERFLOW,
                 o,
             ));
         }
-        Ok(())
+        no.finish()
     }
+}
+
+/// `1 column`, `2 columns`: a count and its noun.
+fn counted(n: usize, noun: &str) -> String {
+    format!("{n} {noun}{}", if n == 1 { "" } else { "s" })
 }

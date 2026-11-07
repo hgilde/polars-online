@@ -21,6 +21,23 @@ pub(crate) fn solve_every_of(span: &Span) -> f64 {
     }
 }
 
+/// The refusal of a spec of another kind, passed to one kind's builder: a
+/// caller's mistake in Rust, which a spec built by the bank never makes.
+fn not_a(spec: &Spec, call: &str, kind: &str) -> String {
+    format!(
+        "{call}: spec {:?} is a {} spec, not a {kind} spec. Pass {call} a {kind} spec.",
+        spec.name,
+        spec.model.kind_name()
+    )
+}
+
+/// The refusal a check stops at, with those found before it: the checks
+/// after it read the word it refuses.
+fn stop_at(mut no: online_core::Refusals, problem: String) -> String {
+    no.refuse(problem);
+    no.stop_here().err().unwrap_or_default()
+}
+
 /// An `audit` spec's [`online_core::AuditCfg`]: its columns are the spec's
 /// features, and the clock's `gap_cap` is the stream's.
 pub fn audit_cfg(spec: &Spec) -> Result<online_core::AuditCfg, String> {
@@ -29,7 +46,7 @@ pub fn audit_cfg(spec: &Spec) -> Result<online_core::AuditCfg, String> {
         distinct_cap,
     } = &spec.model
     else {
-        return Err("not an audit spec".into());
+        return Err(not_a(spec, "audit_cfg", "audit"));
     };
     let cfg = online_core::AuditCfg {
         n_columns: spec.features.len(),
@@ -58,7 +75,7 @@ pub fn bocpd_cfg(spec: &Spec) -> Result<BocpdCfg, String> {
         warm_rows,
     } = &spec.model
     else {
-        return Err("not a bocpd spec".into());
+        return Err(not_a(spec, "bocpd_cfg", "bocpd"));
     };
     let emission = match (covariance_type.as_deref(), robust_beta) {
         (None | Some("diag"), None) => BocpdEmission::Diag,
@@ -69,9 +86,10 @@ pub fn bocpd_cfg(spec: &Spec) -> Result<BocpdCfg, String> {
             // is ever detected. Left out, the predictive is not tempered.
             if !(b.is_finite() && *b > 0.0) {
                 return Err(format!(
-                    "bocpd: robust_beta must be finite and > 0 (0.1 ignores a 20-sigma row and \
-                     still dates a four-sigma shift; leave it out for the untempered \
-                     predictive), got {b}"
+                    "bocpd: robust_beta must be finite and above 0, but it is {b}. Set \
+                     robust_beta to a small positive value such as 0.1, which ignores a row 20 \
+                     standard deviations out and still finds a shift of 4, or leave it out to \
+                     weigh every row in full."
                 ));
             }
             BocpdEmission::Robust
@@ -79,17 +97,16 @@ pub fn bocpd_cfg(spec: &Spec) -> Result<BocpdCfg, String> {
         (Some("full"), None) => BocpdEmission::Gaussian,
         (Some("full"), Some(_)) => {
             return Err(
-                "bocpd: robust_beta tempers the per-feature predictive, and covariance_type = \
-                 \"full\" is a normal-inverse-Wishart over all the features: give \
-                 covariance_type = \"diag\" with it, or leave robust_beta out"
+                "bocpd: robust_beta applies only under covariance_type=\"diag\", but \
+                 covariance_type is \"full\", which fits one distribution over all the \
+                 features. Set covariance_type=\"diag\", or leave robust_beta out."
                     .into(),
             );
         }
         (Some(other), _) => {
-            return Err(crate::words_refusal(
-                "covariance_type",
-                &["full", "diag"],
-                other,
+            return Err(format!(
+                "bocpd: {}",
+                crate::words_refusal("covariance_type", &["full", "diag"], other)
             ));
         }
     };
@@ -138,52 +155,74 @@ pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
         boundary_gamma,
     } = &spec.model
     else {
-        return Err("not a corrchange spec".into());
+        return Err(not_a(spec, "corrchange_cfg", "corrchange"));
     };
+    // Every problem at once, but a kind outside the three stops the
+    // checks: each after it asks what the kind reads.
+    let mut no = online_core::Refusals::new();
     let (kind, name) = match kind.as_deref() {
         None | Some("monitor") => (CorrChangeKind::Monitor, "monitor"),
         Some("window") => (CorrChangeKind::Window, "window"),
         Some("sequential") => (CorrChangeKind::Sequential, "sequential"),
         Some(other) => {
-            return Err(crate::words_refusal(
-                "kind",
-                &["monitor", "sequential", "window"],
-                other,
+            return Err(stop_at(
+                no,
+                format!(
+                    "corrchange: {}",
+                    crate::words_refusal("kind", &["monitor", "sequential", "window"], other)
+                ),
             ));
         }
     };
-    let Some(span_rows) = *span_rows else {
-        return Err(format!(
-            "corrchange: kind = {name:?} needs `window_rows`, {}",
-            match kind {
-                CorrChangeKind::Sequential =>
-                    "the rows of history each monitoring period is \
-                                               tested against",
-                _ => "the rows per comparison block",
-            }
-        ));
+    let span_rows = match *span_rows {
+        Some(rows) => rows,
+        None => {
+            no.refuse(format!(
+                "corrchange: kind={name:?} needs window_rows, {}, but it is not set. Set \
+                 window_rows to a number of rows, {} or more.",
+                match kind {
+                    CorrChangeKind::Sequential =>
+                        "the rows of history each monitored period is tested against",
+                    CorrChangeKind::Window => "the rows in each of the two windows compared",
+                    CorrChangeKind::Monitor => "the rows of each span tested",
+                },
+                if kind == CorrChangeKind::Window { 3 } else { 8 }
+            ));
+            0
+        }
+    };
+    let reset = match change_action.as_deref() {
+        None | Some("flag") => false,
+        Some("reset") => true,
+        Some(other) => {
+            no.refuse(format!(
+                "corrchange: {}",
+                crate::words_refusal("change_action", &["flag", "reset"], other)
+            ));
+            false
+        }
+    };
+    let norm = match norm.as_deref() {
+        None | Some("l1") => ChangeNorm::L1,
+        Some("linf") => ChangeNorm::LInf,
+        Some(other) => {
+            no.refuse(format!(
+                "corrchange: {}",
+                crate::words_refusal("norm", &["l1", "linf"], other)
+            ));
+            ChangeNorm::L1
+        }
     };
     // A parameter that belongs to another kind is refused, not ignored: a
     // `crit` given to `"monitor"` changed nothing, in silence. A value equal
     // to the builders' default (`norm = "l1"`, `change_action = "flag"`) is
     // taken as unset, since the Python builder writes those whether or not
     // asked.
-    let refuse = |set: bool, param: &str, kinds: &str| -> Result<(), String> {
+    let mut refuse = |set: bool, param: &str, kinds: &str, why: &str| {
         if set {
-            return Err(format!(
-                "corrchange: {param} applies to kind = {kinds}, not {name:?}"
-            ));
-        }
-        Ok(())
-    };
-    let reset = match change_action.as_deref() {
-        None | Some("flag") => false,
-        Some("reset") => true,
-        Some(other) => {
-            return Err(crate::words_refusal(
-                "change_action",
-                &["flag", "reset"],
-                other,
+            no.refuse(format!(
+                "corrchange: {param} applies only under kind={kinds}, but kind is \
+                 {name:?}{why}. Leave {param} out, or set kind={kinds}."
             ));
         }
     };
@@ -193,48 +232,58 @@ pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
         kind == CorrChangeKind::Sequential,
     );
     if !window {
-        refuse(n_perm.is_some(), "n_perm", "\"window\"")?;
+        refuse(n_perm.is_some(), "n_perm", "\"window\"", "");
         refuse(
             permute_every_rows.is_some(),
             "permute_every_rows",
             "\"window\"",
-        )?;
-        refuse(perm_block.is_some(), "perm_block", "\"window\"")?;
-        refuse(seed.is_some(), "seed", "\"window\"")?;
-        refuse(
-            norm.as_deref().is_some_and(|n| n != "l1"),
-            "norm",
-            "\"window\"",
-        )?;
+            "",
+        );
+        refuse(perm_block.is_some(), "perm_block", "\"window\"", "");
+        refuse(seed.is_some(), "seed", "\"window\"", "");
+        refuse(norm != ChangeNorm::L1, "norm", "\"window\"", "");
         refuse(
             reset,
-            "change_action",
-            "\"window\" (a \"monitor\" span and a \"sequential\" cycle end at their flag \
-             already)",
-        )?;
+            "change_action=\"reset\"",
+            "\"window\"",
+            if monitor {
+                ", whose span already ends at its flag"
+            } else {
+                ", whose monitored period already ends at its flag"
+            },
+        );
     }
     refuse(
         monitor && crit.is_some(),
         "crit",
-        "\"window\" or \"sequential\" (\"monitor\"'s is the Kolmogorov quantile)",
-    )?;
+        "\"window\" or \"sequential\"",
+        ", whose critical value is the Kolmogorov quantile",
+    );
     refuse(
         window && bandwidth.is_some(),
         "bandwidth",
         "\"monitor\" or \"sequential\"",
-    )?;
+        "",
+    );
     // `"window"` takes its permutation quantile at `alpha` itself, so a
     // spread over the pairs changed nothing there (task 160, CD4). The
     // builders' default, "bonferroni", is taken as unset.
     refuse(
         window && alpha_adjust.as_deref().is_some_and(|a| a != "bonferroni"),
         "alpha_adjust",
-        "\"monitor\" or \"sequential\" (\"window\" takes its permutation quantile at alpha)",
-    )?;
+        "\"monitor\" or \"sequential\"",
+        ", which takes its permutation quantile at alpha itself",
+    );
     if !sequential {
-        refuse(monitor_rows.is_some(), "monitor_rows", "\"sequential\"")?;
-        refuse(boundary_gamma.is_some(), "boundary_gamma", "\"sequential\"")?;
+        refuse(monitor_rows.is_some(), "monitor_rows", "\"sequential\"", "");
+        refuse(
+            boundary_gamma.is_some(),
+            "boundary_gamma",
+            "\"sequential\"",
+            "",
+        );
     }
+    no.finish()?;
     Ok(CorrChangeCfg {
         n_features: spec.k(),
         kind,
@@ -250,13 +299,7 @@ pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
         // draws then cost `n_perm · k²` a row whatever `window_rows` is.
         permute_every_rows: permute_every_rows.unwrap_or(span_rows),
         perm_block: perm_block.unwrap_or(1),
-        norm: match norm.as_deref() {
-            None | Some("l1") => ChangeNorm::L1,
-            Some("linf") => ChangeNorm::LInf,
-            Some(other) => {
-                return Err(crate::words_refusal("norm", &["l1", "linf"], other));
-            }
-        },
+        norm,
         seed: seed.unwrap_or(0),
         reset,
         // W&G's `T = 1`: as many rows monitored as the history has.
@@ -288,18 +331,34 @@ pub fn hmm_cfg(spec: &Spec) -> Result<HmmCfg, String> {
         tvtp_coef,
     } = &spec.model
     else {
-        return Err("not an hmm spec".into());
+        return Err(not_a(spec, "hmm_cfg", "hmm"));
     };
+    // Every problem at once; none of these reads what another refuses.
+    let mut no = online_core::Refusals::new();
     let tvtp = match (exog_tvtp, tvtp_coef) {
         (Some(_), Some(ab)) if ab.len() == 2 => Some((ab[0].clone(), ab[1].clone())),
-        (Some(_), _) => {
-            return Err(
-                "hmm exog_tvtp needs tvtp_coef = [A, B], each a K x K matrix flattened row-major"
-                    .into(),
-            );
+        (Some(_), got) => {
+            no.refuse(format!(
+                "hmm: exog_tvtp needs tvtp_coef, two n_components by n_components matrices, \
+                 each flattened by rows, but {}. Give tvtp_coef as a list of the two matrices, \
+                 or leave exog_tvtp out.",
+                got.as_ref().map_or_else(
+                    || "tvtp_coef is not set".to_string(),
+                    |ab| format!(
+                        "tvtp_coef holds {} matri{}",
+                        ab.len(),
+                        if ab.len() == 1 { "x" } else { "ces" }
+                    )
+                )
+            ));
+            None
         }
         (None, Some(_)) => {
-            return Err("hmm tvtp_coef needs exog_tvtp (the column it reads)".into());
+            no.refuse(
+                "hmm: tvtp_coef needs exog_tvtp, the column its transitions read, but \
+                 exog_tvtp is not set. Set exog_tvtp, or leave tvtp_coef out.",
+            );
+            None
         }
         (None, None) => None,
     };
@@ -312,9 +371,10 @@ pub fn hmm_cfg(spec: &Spec) -> Result<HmmCfg, String> {
         ("transition_prior", transition_prior.is_some()),
     ] {
         if given && tvtp.is_some() {
-            return Err(format!(
-                "hmm: {param} does not apply with tvtp_coef: the matrix is softmax(A + B·z) and \
-                 no transition count is learned, so there is no prior to spread"
+            no.refuse(format!(
+                "hmm: {param} does not apply under tvtp_coef, which reads each row's \
+                 transitions from exog_tvtp and learns no transition counts. Leave {param} out, \
+                 or leave out tvtp_coef."
             ));
         }
     }
@@ -324,20 +384,25 @@ pub fn hmm_cfg(spec: &Spec) -> Result<HmmCfg, String> {
         ("seed", seed.is_some()),
     ] {
         if given && means.is_some() && covs.is_some() {
-            return Err(format!(
-                "hmm: {param} does not apply with means and covs given: the states are not \
-                 seeded from the rows, so there is no warm-up"
+            no.refuse(format!(
+                "hmm: {param} does not apply when means and covs are given, since the states \
+                 are then not seeded from the first rows. Leave {param} out, or leave out means \
+                 and covs."
             ));
         }
     }
+    let covariance = covariance_type
+        .as_deref()
+        .map_or(Ok(Covariance::Full), Covariance::parse);
+    let seed_rule = crate::stream::init_rule(init.as_deref());
+    no.take(covariance.as_ref().map(|_| ()).map_err(Clone::clone));
+    no.take(seed_rule.as_ref().map(|_| ()).map_err(Clone::clone));
+    no.finish()?;
     Ok(HmmCfg {
         n_features: spec.k(),
         k: *k,
         decay: online_core::Decay::Lam(1.0),
-        covariance: match covariance_type {
-            Some(c) => Covariance::parse(c)?,
-            None => Covariance::Full,
-        },
+        covariance: covariance?,
         precision_prior: *precision_prior,
         min_weight: spec.min_periods_or_default(),
         learn: learn.unwrap_or(true),
@@ -349,7 +414,7 @@ pub fn hmm_cfg(spec: &Spec) -> Result<HmmCfg, String> {
         // regime several times over for the seeding to place a state on each
         // (task 278, D9: at 50, regimes lasting 50 rows were never found).
         warm_rows: warm_rows.unwrap_or_else(|| (*k).max(1000)),
-        seed_rule: crate::stream::init_rule(init.as_deref())?,
+        seed_rule: seed_rule?,
         seed: seed.unwrap_or(0),
         tvtp,
     })
@@ -372,20 +437,23 @@ pub fn rcov_cfg(spec: &Spec) -> Result<RcovCfg, String> {
         iv_stride,
     } = &spec.model
     else {
-        return Err("not an rcov spec".into());
+        return Err(not_a(spec, "rcov_cfg", "rcov"));
     };
     let kind = match kind.as_deref() {
         None | Some("kernel") => RcovKind::Kernel,
         Some("preavg") => RcovKind::Preavg,
         Some("plain") => RcovKind::Plain,
         Some(other) => {
-            return Err(crate::words_refusal(
-                "kind",
-                &["kernel", "preavg", "plain"],
-                other,
+            return Err(stop_at(
+                online_core::Refusals::new(),
+                format!(
+                    "rcov: {}",
+                    crate::words_refusal("kind", &["kernel", "preavg", "plain"], other)
+                ),
             ));
         }
     };
+    let mut no = online_core::Refusals::new();
     // A parameter its kind does not read is refused, not ignored, as
     // `bandwidth` and `preavg_rows` are (review 2026-10-06, CE4): the jitter
     // and the ring are the kernel's, `theta` sets the pre-averaging window.
@@ -396,13 +464,16 @@ pub fn rcov_cfg(spec: &Spec) -> Result<RcovCfg, String> {
         ("theta", theta.is_some(), RcovKind::Preavg),
     ] {
         if given && kind != owner {
-            return Err(format!(
-                "rcov: {param} applies to kind = {:?}, not {:?}",
+            no.refuse(format!(
+                "rcov: {param} applies only under kind={:?}, but kind is {:?}. Leave {param} \
+                 out, or set kind={:?}.",
                 owner.as_str(),
-                kind.as_str()
+                kind.as_str(),
+                owner.as_str()
             ));
         }
     }
+    no.finish()?;
     Ok(RcovCfg {
         n_features: spec.k(),
         kind,
@@ -439,13 +510,19 @@ pub fn deco_cfg(spec: &Spec) -> Result<DecoCfg, String> {
         blocks,
     } = &spec.model
     else {
-        return Err("not a deco spec".into());
+        return Err(not_a(spec, "deco_cfg", "deco"));
     };
+    // Every problem at once; none of these reads what another refuses.
+    let mut no = online_core::Refusals::new();
     let dynamics = match dynamics.as_deref() {
         None | Some("ew") => DecoDynamics::Ew,
         Some("linear") => DecoDynamics::Linear,
         Some(other) => {
-            return Err(crate::words_refusal("dynamics", &["ew", "linear"], other));
+            no.refuse(format!(
+                "deco: {}",
+                crate::words_refusal("dynamics", &["ew", "linear"], other)
+            ));
+            DecoDynamics::Ew
         }
     };
     let blocks = match blocks {
@@ -454,37 +531,55 @@ pub fn deco_cfg(spec: &Spec) -> Result<DecoCfg, String> {
             // An empty list is not "one block of everything" and not the
             // unblocked form either; whichever was meant, say which
             // (docs/REVIEW-E54-E64.md D1).
-            // One sentence: continued across the line without a `\`, the
-            // literal carried a run of 18 spaces (task 160, PB8).
-            return Err("deco blocks is empty; leave it out for the unblocked \
-                        equicorrelation, or name at least one block"
-                .into());
+            no.refuse(
+                "deco: blocks must name at least one block, but it names none. Leave blocks \
+                 out for one correlation shared by every pair of features, or name at least one \
+                 block.",
+            );
+            Vec::new()
         }
         Some(named) => named
             .iter()
             .map(|(name, cols)| {
                 cols.iter()
-                    .map(|c| {
-                        spec.features.iter().position(|f| f == c).ok_or_else(|| {
-                            format!("deco block {name:?} names {c:?}, which is not a feature")
-                        })
+                    .filter_map(|c| {
+                        let at = spec.features.iter().position(|f| f == c);
+                        if at.is_none() {
+                            no.refuse(format!(
+                                "deco: block {name:?} lists {c:?}, which is not one of \
+                                 features. Add {c:?} to features, or remove it from the block."
+                            ));
+                        }
+                        at
                     })
-                    .collect::<Result<Vec<usize>, String>>()
+                    .collect::<Vec<usize>>()
             })
-            .collect::<Result<Vec<_>, String>>()?,
+            .collect::<Vec<_>>(),
     };
+    // The blocks' rules said by name, where the reader wrote names: the
+    // core's own check (`DecoCfg::validate`) knows only positions, and
+    // stays as the Rust API's. Once every name is a feature.
+    if let Some(named) = blocks_named(&spec.model)
+        && !named.is_empty()
+        && named
+            .iter()
+            .all(|(_, cols)| cols.iter().all(|c| spec.features.contains(c)))
+    {
+        no.take(deco_blocks_by_name(&spec.features, named));
+    }
     // A JSON or TOML spec writes `blocks` as an array of pairs, so two of
     // them can carry the same name; the collision then surfaces as two
     // output fields called `u_u` rather than as the block list's problem.
     if let Some(named) = blocks_named(&spec.model) {
         let mut seen = std::collections::HashSet::new();
-        if let Some((dup, _)) = named.iter().find(|(n, _)| !seen.insert(n.as_str())) {
-            return Err(format!(
-                "deco block {dup:?} is named twice; block names are the output labels, so \
-                 they have to be distinct"
+        for (dup, _) in named.iter().filter(|(n, _)| !seen.insert(n.as_str())) {
+            no.refuse(format!(
+                "deco: blocks names {dup:?} more than once, but a block's name labels its \
+                 output fields. Rename one of the two blocks."
             ));
         }
     }
+    no.finish()?;
     Ok(DecoCfg {
         n_features: spec.k(),
         decay: online_core::Decay::Lam(1.0),
@@ -494,6 +589,83 @@ pub fn deco_cfg(spec: &Spec) -> Result<DecoCfg, String> {
         blocks,
         min_weight: spec.min_periods_or_default(),
     })
+}
+
+/// `deco`'s blocks, each of whose columns is a feature, held to the
+/// model's rules by name: each block lists each feature once and holds at
+/// least two, and each feature is in exactly one block. Every problem at
+/// once.
+fn deco_blocks_by_name(features: &[String], named: &[(String, Vec<String>)]) -> Result<(), String> {
+    let quoted = |v: &[&String]| {
+        let q: Vec<String> = v.iter().map(|c| format!("{c:?}")).collect();
+        match q.split_last() {
+            Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+            _ => q.join(""),
+        }
+    };
+    let mut no = online_core::Refusals::new();
+    let mut owner: Vec<(&String, Vec<&String>)> = Vec::new();
+    for (name, cols) in named {
+        let mut distinct: Vec<&String> = Vec::new();
+        let mut twice: Vec<&String> = Vec::new();
+        for c in cols {
+            if distinct.contains(&c) {
+                if !twice.contains(&c) {
+                    twice.push(c);
+                }
+            } else {
+                distinct.push(c);
+            }
+        }
+        if !twice.is_empty() {
+            no.refuse(format!(
+                "deco: block {name:?} lists {} more than once. List each feature once in a block.",
+                quoted(&twice)
+            ));
+        }
+        if distinct.len() < 2 {
+            no.refuse(format!(
+                "deco: block {name:?} must hold at least two features, since its correlation is \
+                 between them, but it holds {}. Add a feature to it, or merge it with another \
+                 block.",
+                if distinct.is_empty() {
+                    "none".to_string()
+                } else {
+                    format!("one, {}", quoted(&distinct))
+                }
+            ));
+        }
+        for c in distinct {
+            match owner.iter_mut().find(|(f, _)| *f == c) {
+                Some((_, blocks)) => blocks.push(name),
+                None => owner.push((c, vec![name])),
+            }
+        }
+    }
+    for (c, blocks) in &owner {
+        if blocks.len() > 1 {
+            no.refuse(format!(
+                "deco: feature {c:?} is in blocks {}, but each feature belongs to one block. \
+                 Remove it from all but one.",
+                quoted(blocks)
+            ));
+        }
+    }
+    let missing: Vec<&String> = features
+        .iter()
+        .filter(|f| !owner.iter().any(|(c, _)| c == f))
+        .collect();
+    if !missing.is_empty() {
+        no.refuse(format!(
+            "deco: every feature must be in exactly one block, but {} {} in none. Add {} to a \
+             block, or remove {} from features.",
+            quoted(&missing),
+            if missing.len() == 1 { "is" } else { "are" },
+            if missing.len() == 1 { "it" } else { "each" },
+            if missing.len() == 1 { "it" } else { "them" },
+        ));
+    }
+    no.finish()
 }
 
 /// The block names of a `deco` spec, in emission order; empty when it has
@@ -525,7 +697,7 @@ pub fn huber_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         refit_budget: _,
     } = &spec.model
     else {
-        return Err("not a huber spec".into());
+        return Err(not_a(spec, "huber_model", "huber"));
     };
     let cfg = RobustCfg {
         n_features: spec.k(),
@@ -622,7 +794,7 @@ pub fn quantile_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         refit_budget: _,
     } = &spec.model
     else {
-        return Err("not a quantile spec".into());
+        return Err(not_a(spec, "quantile_model", "quantile"));
     };
     let cfg = RobustCfg {
         n_features: spec.k(),
@@ -685,35 +857,67 @@ pub fn sgd_model(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         coef_sum,
     } = &spec.model
     else {
-        return Err("not a sgd spec".into());
+        return Err(not_a(spec, "sgd_model", "sgd"));
     };
-    let loss = match loss.as_deref().unwrap_or("squared") {
-        "squared" => SgdLoss::Squared,
-        // In units of the target's residual std, `huber`'s constant
-        // under `huber`'s name (task 195, U1 and U3).
-        "huber" => SgdLoss::Huber {
-            delta: huber_delta.map_or(1.345, |n| n.0),
-        },
-        "quantile" => SgdLoss::Quantile {
-            tau: quantile.ok_or("sgd: loss \"quantile\" needs a `quantile` level")?,
-        },
-        // 1% of the target's own spread (task 203), kept by task
-        // 207's sweep, which measured it against the residual's
-        // spread capped by the target's.
-        "epsilon_insensitive" => SgdLoss::EpsilonInsensitive {
-            eps: eps.unwrap_or(0.01),
-        },
-        "poisson" => SgdLoss::Poisson,
-        "logistic" => SgdLoss::Logistic,
-        other => return Err(format!("unknown sgd loss {other:?}")),
-    };
+    // Both words at once: neither check reads the other.
+    let mut no = online_core::Refusals::new();
+    let loss: Result<SgdLoss, String> = (|| {
+        Ok(match loss.as_deref().unwrap_or("squared") {
+            "squared" => SgdLoss::Squared,
+            // In units of the target's residual std, `huber`'s constant
+            // under `huber`'s name (task 195, U1 and U3).
+            "huber" => SgdLoss::Huber {
+                delta: huber_delta.map_or(1.345, |n| n.0),
+            },
+            "quantile" => SgdLoss::Quantile {
+                tau: quantile.ok_or(
+                    "sgd: loss=\"quantile\" needs quantile, the level to fit, but it is not set. \
+                 Set quantile to a level above 0 and below 1, such as 0.5 for the median.",
+                )?,
+            },
+            // 1% of the target's own spread (task 203), kept by task
+            // 207's sweep, which measured it against the residual's
+            // spread capped by the target's.
+            "epsilon_insensitive" => SgdLoss::EpsilonInsensitive {
+                eps: eps.unwrap_or(0.01),
+            },
+            "poisson" => SgdLoss::Poisson,
+            "logistic" => SgdLoss::Logistic,
+            other => {
+                return Err(format!(
+                    "sgd: {}",
+                    crate::words_refusal(
+                        "loss",
+                        &[
+                            "squared",
+                            "huber",
+                            "quantile",
+                            "epsilon_insensitive",
+                            "poisson",
+                            "logistic"
+                        ],
+                        other
+                    )
+                ));
+            }
+        })
+    })();
     let sched = match schedule.as_deref().unwrap_or("constant") {
-        "constant" => LearningRate::Constant,
-        "inv_scaling" => LearningRate::InvScaling {
+        "constant" => Ok(LearningRate::Constant),
+        "inv_scaling" => Ok(LearningRate::InvScaling {
             power: power.unwrap_or(0.5),
-        },
-        "adagrad" => LearningRate::AdaGrad,
-        other => return Err(format!("unknown sgd schedule {other:?}")),
+        }),
+        "adagrad" => Ok(LearningRate::AdaGrad),
+        other => Err(format!(
+            "sgd: {}",
+            crate::words_refusal("schedule", &["constant", "inv_scaling", "adagrad"], other)
+        )),
+    };
+    let loss = no.value(loss);
+    let sched = no.value(sched);
+    no.finish()?;
+    let (Some(loss), Some(sched)) = (loss, sched) else {
+        unreachable!("a refused word is in the refusal just returned");
     };
     let cfg = SgdCfg {
         n_features: spec.k(),

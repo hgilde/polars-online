@@ -211,10 +211,12 @@ def test_the_refit_solves_its_own_target_alone():
 
 
 def test_the_refit_is_refused_where_it_does_not_apply():
-    with pytest.raises(ValueError, match='huber_refit_rows is for loss "huber"'):
+    with pytest.raises(ValueError, match='huber_refit_rows applies only under loss="huber"'):
         po.spec.sgd("s", targets=["y"], features=["x"], half_life=INF, huber_refit_rows=10)
     c = dict(targets=["y"], features=["x"], half_life=INF, ridge_scale="sum")
-    with pytest.raises(ValueError, match="huber_refit_rows is for huber with a finite huber_delta"):
+    with pytest.raises(
+        ValueError, match='huber_refit_rows and ridge_scale="sum" cannot both be set'
+    ):
         po.ModelBank([po.spec.huber("h", huber_refit_rows=10, **c)])
     # Unnamed, the sum-scale prior has none, and takes the spec as it did.
     df = pl.DataFrame({"x": [1.0, 2.0, 3.0], "y": [1.0, 2.5, 2.0]})
@@ -320,10 +322,10 @@ def test_the_refit_budget_gives_up_the_later_groups_and_counts_them(kind):
         mine = out.filter(pl.col("g") == str(g))["m"]
         like = (out_free if g < 3 else out_off).filter(pl.col("g") == str(g))["m"]
         assert mine.equals(like, null_equal=True), g
-    with pytest.raises(ValueError, match="refit_budget must be > 0 MiB"):
+    with pytest.raises(ValueError, match="refit_budget must be above 0 MiB"):
         po.ModelBank([build("m", refit_budget=0.0, **c)])
 
 
 def test_the_refit_budget_is_refused_beside_another_loss():
-    with pytest.raises(ValueError, match='refit_budget is for loss "huber"'):
+    with pytest.raises(ValueError, match='refit_budget applies only under loss="huber"'):
         po.spec.sgd("s", targets=["y"], features=["x"], half_life=INF, refit_budget=10.0)

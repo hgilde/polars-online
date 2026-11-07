@@ -14,10 +14,25 @@ from collections.abc import Sequence
 from typing import Any, Literal
 
 
+def quoted(x: Any) -> str:
+    """A name or a word as a message quotes it: in double quotes, as JSON
+    writes it, with any letter outside ASCII kept as it is, as the Rust side
+    (``{:?}``) keeps it."""
+    return json.dumps(x, ensure_ascii=False)
+
+
+def _listed(items: Sequence[str]) -> str:
+    """``a``, ``a or b``, ``a, b or c``: how a refusal lists what a
+    parameter takes."""
+    *rest, last = items
+    return f"{', '.join(rest)} or {last}" if rest else last
+
+
 def _one_of(words: Sequence[str]) -> str:
-    """``one of "a", "b"``: how every refusal names the words a parameter
-    takes, here and on the Rust side (``online_polars::words_refusal``)."""
-    return "one of " + ", ".join(json.dumps(w) for w in words)
+    """``"a"``, ``"a" or "b"``, ``"a", "b" or "c"``: how every refusal
+    names the words a parameter takes, here and on the Rust side
+    (``online_polars::words_listed``)."""
+    return _listed([quoted(w) for w in words])
 
 
 def _bad_word(v: Any, hint: Any) -> tuple[str, tuple[str, ...]] | None:
@@ -56,23 +71,22 @@ def _bad_word(v: Any, hint: Any) -> tuple[str, tuple[str, ...]] | None:
 #: entry is a model ``type``, which no builder takes).
 _RENAMED_WORDS = {"lagcorr": "lag_corr"}
 
-#: Why a parameter takes the words it does, where a caller would ask: said
-#: after the refusal, as the Rust side says it.
+#: The refusal of a word for a parameter that takes one word alone, where
+#: its model says why, as the Rust side words it (``online_core::RcovCfg``).
 _WORD_REASONS = {
     ("rcov", "kernel"): (
-        "the Bartlett kernel is not consistent for this estimator, and Parzen beats "
-        "the quadratic spectral on efficiency (BNHLS 2011)"
+        'kernel must be "parzen", the one kernel this model takes, but it is {got}. '
+        'Set kernel to "parzen".'
     ),
 }
 
 
-#: The words a parameter refuses for a reason of its own, said in place
-#: of the words it takes: a windowed model's ``closed`` takes two of Polars'
-#: four, and the Rust side says why the other two cannot be.
+#: The words a parameter refuses for a reason of its own, said beside the
+#: words it takes: a model's ``closed`` takes two of Polars' four, and the
+#: Rust side says why the other two cannot be.
 _CLOSED_OUT = (
-    'closed = "{word}" leaves out the current row, the one the window ends at; a model '
-    "reads its fit after it has learned that row, so its window always holds it: give "
-    '"right" (the default) or "both"'
+    "which leaves out the current row: a hard window ends at the last row the model learned, "
+    "so that row is always inside it"
 )
 _REFUSED_FOR_A_REASON = {("closed", "left"): _CLOSED_OUT, ("closed", "none"): _CLOSED_OUT}
 
@@ -81,22 +95,60 @@ def word_reason(who: str, key: str, got: str) -> str | None:
     """The refusal of ``got`` for ``key`` where it has a reason of its own,
     as the Rust side words it; ``None`` for any other word."""
     why = _REFUSED_FOR_A_REASON.get((key, got))
-    return f"{who}: {why.format(word=got)}" if why else None
+    if why is None:
+        return None
+    return (
+        f'{who}: {key} must be "right" or "both", but it is {quoted(got)}, {why}. '
+        "Use one of those words."
+    )
 
 
 def words_refusal(who: str, key: str, got: str, words: Sequence[str], hint: Any = None) -> str:
     """The one refusal of a word outside the words a parameter takes
-    (task 244, P-4): ``spec "m": <key> must be one of "a", "b"; got "x"``,
-    the shape the Rust side gives a spec dict and a TOML file too. A
-    parameter that also takes something other than a word (``hint``, its
-    annotation) names that first: ``an int or one of "auto"``."""
+    (task 244, P-4), in the shape every message takes:
+    ``spec "m": <key> must be "a", "b" or "c", but it is "x". Use one of
+    those words.``, the shape the Rust side gives a spec dict and a TOML
+    file too (``online_polars::words_body``). A parameter that also takes
+    something other than a word (``hint``, its annotation) names that
+    first: ``an int or "auto"``."""
     others = [a for a in typing.get_args(hint) if a in (int, float)]
-    kinds = " or ".join({int: "an int", float: "a number"}[a] for a in others)
-    taken = f"{kinds} or {_one_of(words)}" if kinds else _one_of(words)
-    # A word renamed before 1.0 is named, as the Rust side names it
-    # (`online_polars::RENAMED_VALUES`).
-    renamed = f"; {got} was renamed {_RENAMED_WORDS[got]}" if got in _RENAMED_WORDS else ""
-    return f"{who}: {key} must be {taken}; got {json.dumps(got)}{renamed}"
+    kinds = [{int: "an int", float: "a number"}[a] for a in others]
+    taken = _listed(kinds + [quoted(w) for w in words])
+    # A word renamed before 1.0 is told its new name, as the Rust side
+    # tells it (`online_polars::RENAMED_VALUES`).
+    new = _RENAMED_WORDS.get(got)
+    if new is not None and new in words:
+        return (
+            f"{who}: {key} must be {taken}, but it is {quoted(got)}, the old name of "
+            f"{quoted(new)}. Use {quoted(new)}."
+        )
+    if kinds:
+        remedy = "Use one of those."
+    elif len(words) == 1:
+        remedy = f"Use {quoted(words[0])}."
+    else:
+        remedy = "Use one of those words."
+    return f"{who}: {key} must be {taken}, but it is {quoted(got)}. {remedy}"
+
+
+def refusal(who: str, problems: Sequence[Exception]) -> Exception:
+    """Every problem a builder's check found, as one exception to raise,
+    in the shape the Rust side gives a spec's (``render_refusal``): one
+    problem is its own message, and several are listed one to a line under
+    ``spec "m": N problems.``, the spec named once. A ``TypeError`` if any
+    problem is one, since a value of the wrong kind is the first to fix,
+    and a ``ValueError`` otherwise."""
+    prefix = f"{who}: "
+    lines: list[str] = []
+    for p in problems:
+        line = str(p).removeprefix(prefix)
+        if line not in lines:
+            lines.append(line)
+    if len(lines) == 1:
+        return problems[0]
+    kind = TypeError if any(isinstance(p, TypeError) for p in problems) else ValueError
+    listed = "".join(f"\n- {line}" for line in lines)
+    return kind(f"{prefix}{len(lines)} problems.{listed}")
 
 
 # The parameters where ``inf`` means something: no decay, no ceiling, a

@@ -537,7 +537,10 @@ impl EwCov {
 
     pub fn with_precision_prior(k: usize, prior: f64) -> Result<Self, String> {
         if prior <= 0.0 || !prior.is_finite() {
-            return Err("EwCov::with_precision_prior: prior must be finite and > 0".into());
+            return Err(format!(
+                "EwCov::with_precision_prior: prior must be finite and above 0, but it is \
+                 {prior}. Pass a finite positive prior."
+            ));
         }
         let mut ew = Self::new(k);
         ew.precision_prior = prior;
@@ -1658,107 +1661,155 @@ fn no_row_cap() -> u32 {
 
 impl EwCovCfg {
     pub fn validate(&self) -> Result<(), String> {
+        let mut no = crate::Refusals::new();
         // The decay first: every model checks it in its own `new`, where only
         // the bank's spec did (review 2026-10-05, CF5).
-        self.decay.check().map_err(|e| format!("ew_cov: {e}"))?;
+        no.take(self.decay.check().map_err(|e| format!("ew_cov: {e}")));
         if self.n_features == 0 {
-            return Err("ew_cov: at least one column is required".into());
+            no.refuse(
+                "ew_cov: the model needs at least one feature, but it has none. Name at least one \
+                 column in features.",
+            );
         }
+        no.stop_here()?;
         // A NaN `min_weight` is never reached, and a negative one is no
         // floor; `inf` never reports, which is legal (review round 5, C6).
         if self.min_weight.is_nan() || self.min_weight < 0.0 {
-            return Err(format!(
-                "ew_cov: min_weight must be >= 0, got {}",
+            no.refuse(format!(
+                "ew_cov: min_weight must be at least 0, but it is {}. Set min_weight to 0, or to \
+                 a positive weight.",
                 self.min_weight
             ));
         }
-        let pairwise =
-            |s: &EwCovStat| matches!(s, EwCovStat::Cov | EwCovStat::Corr | EwCovStat::PartialCorr);
-        if self.n_features < 2 && self.stats.iter().any(pairwise) {
-            return Err("ew_cov: cov/corr/partial_corr need at least two columns".into());
+        let pairwise: Vec<&str> = [
+            (EwCovStat::Cov, "cov"),
+            (EwCovStat::Corr, "corr"),
+            (EwCovStat::PartialCorr, "partial_corr"),
+        ]
+        .into_iter()
+        .filter(|(s, _)| self.stats.contains(s))
+        .map(|(_, name)| name)
+        .collect();
+        if self.n_features < 2 && !pairwise.is_empty() {
+            let listed = pairwise
+                .iter()
+                .map(|s| format!("\"{s}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            no.refuse(format!(
+                "ew_cov: stats lists {listed}, which {} two features, but the model has {}. \
+                 Name at least two columns in features, or leave {listed} out of stats.",
+                if pairwise.len() == 1 {
+                    "compares"
+                } else {
+                    "compare"
+                },
+                if self.n_features == 1 { "one" } else { "none" },
+            ));
         }
         if self.stats.contains(&EwCovStat::PartialCorr) && self.precision_prior.is_none() {
-            return Err(
-                "ew_cov: partial_corr needs `precision_prior` (it is computed from the \
-                 regularized precision matrix)"
-                    .into(),
+            no.refuse(
+                "ew_cov: \"partial_corr\" in stats needs precision_prior, but it is not set: the \
+                 partial correlations are read from the precision matrix it regularizes. Set \
+                 precision_prior, such as 1e-6, or leave \"partial_corr\" out of stats.",
             );
         }
         if self.stats.contains(&EwCovStat::Mahal) && self.precision_prior.is_none() {
-            return Err(
-                "ew_cov: mahal needs `precision_prior` (the co-moments are singular until \
-                 k independent rows have been seen)"
-                    .into(),
+            no.refuse(
+                "ew_cov: \"mahal\" in stats needs precision_prior, but it is not set: the \
+                 covariances cannot be inverted until more rows than features have been \
+                 learned. Set precision_prior, such as 1e-6, or leave \"mahal\" out of stats.",
             );
         }
         if !self.mahal_quantiles.is_empty() && !self.stats.contains(&EwCovStat::Mahal) {
-            return Err("ew_cov: mahal_quantiles needs \"mahal\" in `stats`".into());
+            no.refuse(
+                "ew_cov: mahal_quantiles needs \"mahal\" in stats, but stats does not list it. \
+                 Add \"mahal\" to stats, or leave out mahal_quantiles.",
+            );
         }
         if let Some(w) = self.window {
             if !w.is_finite() || w <= 0.0 {
-                return Err(format!(
-                    "ew_cov: window_size must be finite and > 0 (got {w}); it is clock units of \
-                     history to keep, and `None` is the ordinary accumulator that keeps all of it"
+                no.refuse(format!(
+                    "ew_cov: window_size must be finite and above 0, but it is {w}. Set \
+                     window_size to the age, in clock units, past which a row counts for \
+                     nothing, or leave it out for no hard window."
                 ));
             }
             if !self.lags.is_empty() {
-                return Err(
-                    "ew_cov: window_size and lags do not combine yet; the lagged co-moments are a \
-                     second accumulator with its own ring, and truncating one and not the \
-                     other would report a windowed corr beside an unwindowed lag_corr"
-                        .into(),
+                no.refuse(
+                    "ew_cov: window_size and lags cannot both be set: the hard window does not \
+                     cut the lagged co-moments, so the lagged correlations would read rows it has \
+                     dropped. \
+                     Leave out window_size, or lags.",
                 );
             }
             if !self.mahal_quantiles.is_empty() {
-                return Err(
-                    "ew_cov: window_size and mahal_quantiles do not combine; the quantiles decay \
-                     over every score the stream has produced, with no window, so \
-                     thresholding a windowed distance against them compares two different \
-                     histories"
-                        .into(),
+                no.refuse(
+                    "ew_cov: window_size and mahal_quantiles cannot both be set: the quantiles \
+                     run over every distance since the first row, not only those inside the hard \
+                     window. Leave out window_size, or mahal_quantiles.",
                 );
             }
         }
-        crate::window::check_cadence(
+        no.take(crate::window::check_cadence(
             "ew_cov",
             self.window,
             self.window_every,
             self.max_rows_between_snapshots,
-        )?;
+        ));
         if self.stats.contains(&EwCovStat::LagCorr) && self.lags.is_empty() {
-            return Err(
-                "ew_cov: lag_corr needs `lags` (which lags to accumulate, e.g. lags = [1, 2, 5])"
-                    .into(),
+            no.refuse(
+                "ew_cov: \"lag_corr\" in stats needs lags, but lags is not set. Set lags to the \
+                 lags to report, such as [1, 2, 5], or leave \"lag_corr\" out of stats.",
             );
         }
         if !self.lags.is_empty() {
             // The list's own rules live with the accumulator, so the CLI and
             // the bank get one message; checked without building it, whose
             // ring reserves `max(lags)` rows (a `restore` runs this).
-            crate::EwLagCov::check_lags(&self.lags).map_err(|e| format!("ew_cov: {e}"))?;
+            // Each line its own problem, each named by the model.
+            no.take(crate::EwLagCov::check_lags(&self.lags).map_err(|e| {
+                e.lines()
+                    .map(|l| format!("ew_cov: {l}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }));
         }
-        for &q in &self.mahal_quantiles {
-            if !(q > 0.0 && q < 1.0) {
-                return Err(format!(
-                    "ew_cov: mahal_quantiles must be strictly between 0 and 1, got {q}"
-                ));
-            }
+        let bad: Vec<String> = self
+            .mahal_quantiles
+            .iter()
+            .filter(|q| !(**q > 0.0 && **q < 1.0))
+            .map(|q| q.to_string())
+            .collect();
+        if !bad.is_empty() {
+            let listed = match bad.split_last() {
+                Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+                _ => bad.join(""),
+            };
+            no.refuse(format!(
+                "ew_cov: mahal_quantiles must each be above 0 and below 1, but {listed} {}. Set \
+                 each to a level above 0 and below 1, such as 0.99.",
+                if bad.len() == 1 { "is not" } else { "are not" }
+            ));
         }
         if self.pca > self.n_features {
-            return Err(format!(
-                "ew_cov: pca asks for {} components of {} columns",
-                self.pca, self.n_features
+            no.refuse(format!(
+                "ew_cov: pca must be at most the number of features ({}), but it is {}. Set pca \
+                 to {} or fewer components.",
+                self.n_features, self.pca, self.n_features
             ));
         }
         // With `pca` or without: a cadence below 0 is no cadence, and the
         // spec refuses one either way.
         if self.pca_every.is_nan() || self.pca_every < 0.0 {
-            return Err(format!(
-                "ew_cov: pca_every must be >= 0 clock units (0 refreshes on every row), got {}",
+            no.refuse(format!(
+                "ew_cov: pca_every must be at least 0 clock units, but it is {}. Set pca_every to \
+                 0 to refresh the components on every row, or to a positive number of clock \
+                 units.",
                 self.pca_every
             ));
         }
-        Ok(())
+        no.finish()
     }
 
     /// Number of output slots, in emission order: the statistics, then the
