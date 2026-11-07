@@ -458,8 +458,8 @@ print("intercept, x0, x1, venue X:", [round(c, 2) for c in coded["by_venue"].str
 ```
 
 ```text
-duplicate: spec "x0" has the same name as an input column; the output struct would replace it. Rename the spec.
-spec "by_venue": feature column "venue" has dtype str; it must be numeric (cast it, e.g. pl.col("venue").cast(pl.Float64))
+duplicate: spec "x0": it has the same name as an input column, and its output column would replace that column. Rename the spec.
+spec "by_venue": feature column "venue" must be a number, but it is String. Cast it, such as with pl.col("venue").cast(pl.Float64).
 intercept, x0, x1, venue X: [1.02, 1.99, -1.01, -0.05]
 ```
 
@@ -668,11 +668,11 @@ except ValueError as err:   # a plain number on a Datetime clock
 ```text
 on_t: weight_sum 135.66, trend 1.000000 per unit of t, a minute
 on_ts: weight_sum 135.66, trend 0.016667 per second
-spec "wrong": clock column "ts" has dtype datetime[μs], a temporal clock, but half_life is a plain
-number, which it cannot read: a number has no unit, and the column's own (e.g. epoch microseconds)
-would silently become it. Give half_life and the other clock parameters as durations, e.g.
-pl.duration(minutes=10), timedelta(minutes=10) or "10m"; or cast the clock to the unit you mean,
-e.g. pl.col("ts").dt.epoch("s").cast(pl.Float64), and use that column.
+spec "wrong": clock column "ts" is Datetime("us"), a temporal clock, but half_life is a plain
+number. A number has no unit, so the unit the column is stored in, such as microseconds since 1970,
+would silently become its unit. Give half_life and the other clock parameters as durations, such as
+"10m" or pl.duration(minutes=10), or cast the clock to a number of the units you mean, such as with
+pl.col("ts").dt.epoch("s").cast(pl.Float64) (pl.col("ts").dt.total_seconds() for a Duration).
 ```
 
 **The bank refuses a clock parameter of the wrong kind** before it reads a
@@ -1962,7 +1962,7 @@ except ValueError as e:
 ```
 
 ```text
-spec "ridge": feature column "x9" not found; the input has columns ["t", "ts", "x0", "x1", "x2", "signal_a", "signal_b", "y", "ret", "stock_id", "group", "session", "venue"]
+spec "ridge": feature column "x9" is not in the input, whose columns are ["t", "ts", "x0", "x1", "x2", "signal_a", "signal_b", "y", "ret", "stock_id", "group", "session", "venue"]. Name a column the input has, or add it to the input.
 ```
 
 **With a type checker, call `po.fit_predict`,
@@ -2144,7 +2144,7 @@ scored_structs = bank.predict_arrow(today)              # the same for predict, 
 ```text
 1 ArrowStruct; read as a Series: ridge, 400 rows
 the same as fit_predict's column: True
-this ArrowStruct has already been exported: the Arrow PyCapsule interface hands its buffers to the consumer, so it can be read once
+ArrowStruct.__arrow_c_array__(): this struct has already been exported, and the Arrow PyCapsule interface hands its buffers to the consumer, so it can be read once. Keep what the first read built, such as its pl.Series or pyarrow array, and read that.
 ```
 
 Here is how two consumers take a struct, as measured:

@@ -348,11 +348,13 @@ def test_m23_a_lazyframe_gets_one_clear_type_error():
     _, out = _scored()
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        with pytest.raises(TypeError, match="takes a DataFrame, not a LazyFrame: collect it"):
+        with pytest.raises(
+            TypeError, match="must be a Polars DataFrame, but it is a LazyFrame. Pass the query"
+        ):
             po.eval.metrics(out.lazy(), "m")
-        with pytest.raises(TypeError, match="not a LazyFrame"):
+        with pytest.raises(TypeError, match="but it is a LazyFrame"):
             po.eval.diebold_mariano(out.lazy(), a="m", b="m")
-        with pytest.raises(TypeError, match="not a LazyFrame"):
+        with pytest.raises(TypeError, match="but it is a LazyFrame"):
             po.eval.unpack(out.lazy(), "m")
 
 
@@ -377,7 +379,7 @@ def test_m17_reverse_is_the_window_looking_ahead(kind):
     assert new.meta.eq(old)
     assert f"rewm_{kind}" not in po.__all__
     assert f"rewm_{kind}" not in po.ops.__all__
-    with pytest.raises(TypeError, match="window_size is required"):
+    with pytest.raises(TypeError, match="reverse=True needs window_size"):
         getattr(po, f"ewm_{kind}")("x0", half_life=2.0, reverse=True)
 
 

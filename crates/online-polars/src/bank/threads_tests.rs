@@ -134,7 +134,7 @@ fn zero_threads_is_refused_and_the_bank_keeps_its_pool() {
     bank.set_threads(Some(3)).unwrap();
     let err = bank.set_threads(Some(0)).unwrap_err().to_string();
     assert!(
-        err.contains("threads=0 is not a number of threads"),
+        err.contains("threads: 0 is not a number of threads"),
         "{err}"
     );
     assert_eq!(bank.threads().asked(), Some(3));

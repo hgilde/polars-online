@@ -253,7 +253,7 @@ fn last_row_is_the_output_s_last_learned_row_per_group() {
     assert!(
         bank.last_row(3, None)
             .unwrap_err()
-            .contains("spec index 3 out of range")
+            .contains("index 3 is out of range")
     );
 }
 
@@ -369,5 +369,8 @@ fn a_saved_row_of_the_wrong_shape_is_refused() {
         ..Default::default()
     });
     let err = Stream::restore(&spec, &bad).err().expect("refused");
-    assert!(err.contains("wrong shape"), "{err}");
+    assert!(
+        err.contains("the last row it saved does not match spec"),
+        "{err}"
+    );
 }

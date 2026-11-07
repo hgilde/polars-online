@@ -146,9 +146,13 @@ def test_predict_arrow_on_a_bank_that_has_seen_nothing_is_null_throughout() -> N
 
 def test_the_arrow_pair_refuses_a_lazyframe_by_name() -> None:
     """The type check names the method the caller used, not its polars twin."""
-    with pytest.raises(TypeError, match="fit_predict_arrow takes a DataFrame"):
+    with pytest.raises(
+        TypeError, match="fit_predict_arrow: it takes a frame, but it was given a query"
+    ):
         po.ModelBank([SPEC]).fit_predict_arrow(frame().lazy())  # type: ignore[arg-type]
-    with pytest.raises(TypeError, match="predict_arrow takes a DataFrame"):
+    with pytest.raises(
+        TypeError, match="predict_arrow: it takes a frame, but it was given a query"
+    ):
         po.ModelBank([SPEC]).predict_arrow(frame().lazy())  # type: ignore[arg-type]
 
 

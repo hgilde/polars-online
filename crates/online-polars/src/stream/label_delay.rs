@@ -170,24 +170,34 @@ impl LabelRefusal {
                     (ClockValue::I64(a), ClockValue::I64(b)) => {
                         (i128::from(b) - i128::from(a)).to_string()
                     }
-                    _ => format!("{:.3}", clock.seconds() - l.seconds()),
+                    _ => crate::figures::three_figures(
+                        clock.seconds() - l.seconds(),
+                        crate::figures::Round::Down,
+                    ),
                 };
                 format!(
                     "spec {:?}: label_clock column {label:?} is {by} before clock column {:?} at \
-                     row {}, and a label is never known before its row; the bank was not \
-                     updated. Give each row's label time, at or after its clock.",
+                     row {} (counting from 0), but a row's target is never known before the \
+                     row, so the bank refused the chunk. Give each row a label time at or after \
+                     its clock.",
                     spec.name,
                     spec.clock.as_deref().unwrap_or(""),
                     row_base + row
                 )
             }
             LabelRefusal::Full { row, held } => format!(
-                "spec {:?}: row {} would put {} rows of its group waiting for their label times, \
-                 past max_held_rows = {held}; the bank was not updated. Raise max_held_rows, or \
-                 set held_overflow=\"drop_oldest\" to drop the row that arrived first.",
+                "spec {:?}: row {} (counting from 0) would put {} rows{} waiting for their label \
+                 times, above max_held_rows = {held}, so the bank refused the chunk. Increase \
+                 max_held_rows, or set held_overflow=\"drop_oldest\" to drop the row that \
+                 arrived first.",
                 spec.name,
                 row_base + row,
-                held + 1
+                held + 1,
+                if spec.group.is_some() {
+                    " of its group"
+                } else {
+                    ""
+                }
             ),
         }
     }
@@ -717,12 +727,15 @@ pub(super) fn held_kind(spec: &Spec, p: &mut Persisted) -> Result<(), String> {
     if p.pending.iter().any(|r| r.label.is_some() != by_label)
         || (p.label_learned.is_some() && !by_label)
     {
+        // The specs were compared at load, so a kind of held row the spec
+        // does not release is damage, not another spec.
         return Err(if by_label {
-            "saved state holds rows for a delay, and this spec releases rows by \
-             label_clock; resume it under the spec it was saved with"
+            "it is damaged, since it holds rows to learn after an embargo, but this spec sets \
+             label_clock. Load an undamaged copy of the state file, or rebuild it from its input."
         } else {
-            "saved state holds rows for their label times, and this spec has no \
-             label_clock to release them by; resume it under the spec it was saved with"
+            "it is damaged, since it holds rows to learn at their label_clock times, or keeps a \
+             label_clock position, but this spec sets no label_clock. Load an undamaged copy of \
+             the state file, or rebuild it from its input."
         }
         .into());
     }

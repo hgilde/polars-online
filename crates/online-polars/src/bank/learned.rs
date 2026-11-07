@@ -45,8 +45,10 @@ impl Bank {
             .collect();
         if lasts.iter().all(Option::is_none) {
             return Err(
-                "skip_learned: no spec reads a clock, so the bank has no position to resume from; \
-                 a row-count bank resumes at the next row, which only the caller knows"
+                "config: skip_learned = true (--skip-learned) needs a spec that reads a clock, but \
+                 no spec does, so the bank has no position to resume from: it goes on at the row \
+                 after the last one it read, which only you know. Remove the rows the saved state \
+                 has learned from the input, and leave out skip_learned (--skip-learned)."
                     .into(),
             );
         }
@@ -133,7 +135,9 @@ impl Learned {
                             };
                             polars_bail!(ComputeError:
                                 "spec {:?}: clock column {:?} is {is} in the frame and was {was} \
-                                 in the bank",
+                                 in the bank, so its rows cannot be compared with the clock the \
+                                 bank has learned up to. Cast the clock column back to a {was} \
+                                 type.",
                                 spec.name, name
                             );
                         }

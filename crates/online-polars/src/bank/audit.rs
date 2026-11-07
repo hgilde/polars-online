@@ -27,7 +27,8 @@ impl AuditTable {
             "pairs" => Ok(Self::Pairs),
             "clock" => Ok(Self::Clock),
             other => Err(format!(
-                "table must be \"columns\", \"pairs\" or \"clock\", got {other:?}"
+                "ModelBank.audit: table must be \"columns\", \"pairs\" or \"clock\", but it is \
+                 {other:?}. Set table to one of those words."
             )),
         }
     }
@@ -77,14 +78,16 @@ impl Bank {
         let (s, states) = (&self.specs[spec], &self.states[spec]);
         let ModelKind::Audit { pairs, .. } = &s.model else {
             return Err(format!(
-                "spec {:?} has model type {:?}, not \"audit\"; only an audit keeps these counts",
+                "spec {:?}: its model is {:?}, not \"audit\", and only an audit keeps these \
+                 counts. Name an audit spec of the bank.",
                 s.name,
                 s.model.kind_name()
             ));
         };
         if table == AuditTable::Pairs && !pairs.unwrap_or(false) {
             return Err(format!(
-                "spec {:?} keeps no pairs: build it with pairs=True",
+                "spec {:?}: it keeps no pairs, since it was built without pairs=True. Build it \
+                 with pairs=True to read its pairs table.",
                 s.name
             ));
         }

@@ -558,7 +558,7 @@ fn every_index_out_of_range_is_refused_by_name() {
             None,
         ),
         (
-            "subset 0 names Gram 5 of 5",
+            "subset 0 names Gram 5, but there are 5 Grams",
             vec![ok],
             vec![vec![5], vec![1]],
             sets(),
@@ -600,7 +600,7 @@ fn every_index_out_of_range_is_refused_by_name() {
             None,
         ),
         (
-            "column set 0: 1 penalty weights for 2 features",
+            "column set 0 has 1 penalty weights for 2 features",
             vec![SubsetJob { set: 0, ..ok }],
             subsets(),
             set(vec![1, 2], vec![1.0]),
@@ -608,7 +608,7 @@ fn every_index_out_of_range_is_refused_by_name() {
             None,
         ),
         (
-            "every Gram must have the same columns and targets: 9 and 2, then 8 and 2",
+            "every Gram must have the same columns and targets, but one has 9 columns and 2 targets and another 8 and 2",
             vec![ok],
             subsets(),
             sets(),
@@ -616,7 +616,7 @@ fn every_index_out_of_range_is_refused_by_name() {
             Some(short),
         ),
         (
-            "every Gram must have the same columns and targets: 9 and 2, then 9 and 1",
+            "every Gram must have the same columns and targets, but one has 9 columns and 2 targets and another 9 and 1",
             vec![ok],
             subsets(),
             sets(),
@@ -670,7 +670,7 @@ fn every_index_out_of_range_is_refused_by_name() {
     .unwrap_err()
     .to_string();
     assert!(
-        err.contains("intercept column 9 out of range for 9 columns"),
+        err.contains("the intercept is column 9, but the Gram has 9 columns"),
         "{err}"
     );
 }

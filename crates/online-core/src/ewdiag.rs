@@ -60,11 +60,9 @@ impl TryFrom<EwDiagWire> for EwDiag {
     fn try_from(w: EwDiagWire) -> Result<Self, String> {
         if w.m.len() != w.k || w.c.len() != w.k || w.m_lo.len() != w.k {
             return Err(format!(
-                "EwDiag: state has the wrong shape (k = {}, {} means, {} variances, {} low parts)",
-                w.k,
-                w.m.len(),
-                w.c.len(),
-                w.m_lo.len()
+                "a diagnostic's saved means and variances have the wrong shape for its {} columns. Load an \
+                 undamaged copy of the state file, or rebuild it from its input.",
+                w.k
             ));
         }
         Ok(Self {

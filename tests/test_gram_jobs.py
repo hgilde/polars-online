@@ -312,56 +312,102 @@ class TestRidge:
 @pytest.mark.parametrize(
     ("job", "kw", "error", "match"),
     [
-        ("x", {}, ValueError, r"jobs\[0\] is a str, not a mapping"),
-        ({"subset": 0, "target": "y", "lag": 1}, {}, ValueError, r"jobs\[0\] has \['lag'\]"),
+        ("x", {}, ValueError, r"jobs\[0\] must be a mapping of .*, but its type is str"),
+        (
+            {"subset": 0, "target": "y", "lag": 1},
+            {},
+            ValueError,
+            r"jobs\[0\] has the keys \['lag'\]",
+        ),
         ({"target": "y"}, {}, ValueError, r"jobs\[0\] names no 'subset'"),
         ({"subset": 0}, {}, ValueError, r"jobs\[0\] names no 'target'"),
-        ({"subset": 5, "target": "y"}, {}, ValueError, r"'subset' is a position .*0\.\.4; got 5"),
-        ({"subset": True, "target": "y"}, {}, ValueError, r"'subset' is a position"),
-        ({"subset": 0, "target": "z"}, {}, KeyError, r"jobs\[0\]: no target 'z'"),
-        ({"subset": 0, "target": 2}, {}, IndexError, r"jobs\[0\]: target 2 out of range"),
-        ({"subset": 0, "target": "y", "draw": 0}, {}, ValueError, r"needs target_signs"),
+        (
+            {"subset": 5, "target": "y"},
+            {},
+            ValueError,
+            r"the 'subset' of jobs\[0\] must be a position in subsets, from 0 to 4, but it is 5",
+        ),
+        (
+            {"subset": True, "target": "y"},
+            {},
+            ValueError,
+            r"the 'subset' of jobs\[0\] must be a position",
+        ),
+        ({"subset": 0, "target": "z"}, {}, KeyError, r"jobs\[0\]: the Gram has no target 'z'"),
+        (
+            {"subset": 0, "target": 2},
+            {},
+            IndexError,
+            r"jobs\[0\]: a target\'s position must be from -2 to 1 .*, but it is 2",
+        ),
+        (
+            {"subset": 0, "target": "y", "draw": 0},
+            {},
+            ValueError,
+            r"names draw 0, but target_signs is not set",
+        ),
         ({"subset": 0, "target": "y"}, {"target_signs": SIGNS}, ValueError, r"names no 'draw'"),
         (
             {"subset": 0, "target": "y", "draw": 3},
             {"target_signs": SIGNS},
             ValueError,
-            r"'draw' is a column of target_signs, 0\.\.2; got 3",
+            r"the 'draw' of jobs\[0\] must be a column of target_signs, from 0 to 2, but it is 3",
         ),
-        ({"subset": 0, "target": "y", "features": ["x0", "w"]}, {}, KeyError, r"no column 'w'"),
-        ({"subset": 0, "target": "y", "features": [0, 99]}, {}, IndexError, r"column 99 out"),
+        (
+            {"subset": 0, "target": "y", "features": ["x0", "w"]},
+            {},
+            KeyError,
+            r"the Gram has no column 'w'",
+        ),
+        (
+            {"subset": 0, "target": "y", "features": [0, 99]},
+            {},
+            IndexError,
+            r"a column\'s position must be .*, but it is 99",
+        ),
         (
             {"subset": 0, "target": "y", "features": ["x0", "intercept"]},
             {},
             ValueError,
-            r"'intercept' is a constant column",
+            r"name 'intercept', but it is the intercept's constant column",
         ),
-        ({"subset": 0, "target": "y", "features": "x0"}, {}, ValueError, r"not the one name"),
+        (
+            {"subset": 0, "target": "y", "features": "x0"},
+            {},
+            ValueError,
+            r"must be a list of columns, but it is the one name",
+        ),
         (
             {"subset": 0, "target": "y", "features": ["x0", "x1"], "penalty_weights": [1.0]},
             {"path": {}},
             ValueError,
-            r"jobs\[0\]: penalty_weights must have one entry per feature \(2\)",
+            r"jobs\[0\]: penalty_weights must have one entry for each of the 2 features",
         ),
         (
             {"subset": 0, "target": "y", "features": ["x0", "x1"]},
             {"path": {"penalty_weights": [1.0] * 3}},
             ValueError,
-            r"one entry per feature \(2\)",
+            r"jobs\[0\] names 2 columns in its 'features', but path's penalty_weights has 3 "
+            r"entries\. Give jobs\[0\] its own 'penalty_weights' of 2 entries",
         ),
         (
             {"subset": 0, "target": "y", "features": ["x0"], "penalty_weights": [0.0]},
             {"path": {}},
             ValueError,
-            r"finite and > 0",
+            r"finite and above 0",
         ),
         (
             {"subset": 0, "target": "y", "penalty_weights": [1.0] * K},
             {},
             ValueError,
-            r"only a path reads",
+            r"only a path reads them",
         ),
-        ({"subset": 0, "target": "y"}, {"targets": ["y"]}, ValueError, r"takes no targets="),
+        (
+            {"subset": 0, "target": "y"},
+            {"targets": ["y"]},
+            ValueError,
+            r"jobs and targets cannot both be set",
+        ),
     ],
 )
 def test_a_malformed_job_is_refused_by_name(job, kw, error, match):
@@ -373,7 +419,7 @@ def test_a_malformed_job_is_refused_by_name(job, kw, error, match):
 
 def test_jobs_that_are_no_list_of_jobs_are_refused():
     grams = blocks(frame(seed=20))
-    with pytest.raises(ValueError, match=r"jobs is a list of mappings.*got int"):
+    with pytest.raises(ValueError, match=r"jobs must be a list of mappings.*but its type is int"):
         pg.solve_subsets(grams, SUBSETS, within=True, jobs=3)
     with pytest.raises(ValueError, match=r"jobs\[1\] names no 'target'"):
         pg.solve_subsets(
@@ -418,7 +464,7 @@ def test_a_job_naming_a_column_twice_is_refused_naming_the_job(path):
         {"subset": 0, "target": "y", "features": ["x0", "x1"]},
         {"subset": 1, "target": "y", "features": ["x0", "x1", "x1"]},
     ]
-    with pytest.raises(ValueError, match=r"jobs\[1\]: 'features' names column 'x1' twice"):
+    with pytest.raises(ValueError, match=r"the 'features' of jobs\[1\] name column 'x1' twice"):
         pg.solve_subsets(grams, SUBSETS, within=True, jobs=jobs, path=path)
 
 
@@ -472,9 +518,9 @@ def test_a_job_takes_numpy_integers_and_refuses_a_bool():
     a = pg.solve_subsets(grams, SUBSETS, within=True, jobs=[plain])
     b = pg.solve_subsets(grams, SUBSETS, within=True, jobs=[numpy])
     assert np.array_equal(a[0]["coef"], b[0]["coef"], equal_nan=True)
-    with pytest.raises(KeyError, match=r"jobs\[0\]: no target True"):
+    with pytest.raises(KeyError, match=r"jobs\[0\]: the Gram has no target True"):
         pg.solve_subsets(grams, SUBSETS, within=True, jobs=[{"subset": 0, "target": True}])
-    with pytest.raises(KeyError, match=r"jobs\[0\]: no column True"):
+    with pytest.raises(KeyError, match=r"jobs\[0\]: the Gram has no column True"):
         pg.solve_subsets(
             grams, SUBSETS, within=True, jobs=[{"subset": 0, "target": 0, "features": [True]}]
         )

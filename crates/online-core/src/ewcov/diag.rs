@@ -97,14 +97,17 @@ impl EwCovDiag {
     ) -> Result<Self, String> {
         if means.len() != k || variances.len() != k {
             return Err(format!(
-                "EwCovDiag::from_moments: {k} columns need {k} means and {k} variances, got {} \
-                 and {}",
+                "{k} columns need {k} means and {k} variances, but there are {} and {}. Give one \
+                 mean and one variance for each column.",
                 means.len(),
                 variances.len()
             ));
         }
         if w_sum < 0.0 || !w_sum.is_finite() {
-            return Err("EwCovDiag::from_moments: w_sum must be finite and >= 0".into());
+            return Err(format!(
+                "the weight of the rows must be finite and at least 0, but it is {w_sum}. Give a \
+                 finite weight of at least 0."
+            ));
         }
         let mut ew = Self::with_precision_prior(k, prior)?;
         ew.w_sum = w_sum;

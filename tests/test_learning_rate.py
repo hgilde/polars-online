@@ -569,7 +569,7 @@ def test_a_constant_rate_past_its_bound_is_withheld_with_a_notice(rate):
     assert (reasons == "unstable_rate").sum() > 1_990
     said = [str(w.message) for w in caught if "stability bound" in str(w.message)]
     assert len(said) == 1, said
-    assert "bound at 0.261" in said[0]
+    assert "bound at 0.26)" in said[0]
 
 
 @pytest.mark.parametrize(

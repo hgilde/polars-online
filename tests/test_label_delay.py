@@ -721,7 +721,7 @@ class TestRefusals:
     @pytest.mark.parametrize("bad", [0.0, -1.0, float("inf")])
     def test_embargo_refuses_the_same_delays(self, bad):
         df = frame(n=10)
-        with pytest.raises(ValueError, match="delay must be finite and > 0"):
+        with pytest.raises(ValueError, match="delay must be finite and above 0"):
             stream.embargo(df, clock="t", delay=bad)
 
     def test_embargo_needs_the_columns_it_names(self):
@@ -759,7 +759,9 @@ class TestRefusals:
 
     def test_a_delay_an_integer_clock_cannot_hold_is_refused_by_name(self):
         df = pl.DataFrame({"t": [0, 1, 2], "x": [1.0, 2.0, 3.0]})
-        with pytest.raises(ValueError, match="^embargo: delay 2.5 is not a whole number") as e:
+        with pytest.raises(
+            ValueError, match="^po\\.stream\\.embargo: delay 2.5 is not a whole number"
+        ) as e:
             stream.embargo(df, clock="t", delay=2.5)
         assert "clock column 't' is Int64" in str(e.value), str(e.value)
 
@@ -974,7 +976,7 @@ class TestEmbargoItself:
         df = pl.DataFrame({"t": ["a", "b"], "x": [1.0, 2.0], "b": [True, False]})
         for clock, delay in (("t", 1.0), ("t", "1s"), ("b", 1.0)):
             with pytest.raises(
-                TypeError, match=f"^embargo: clock column '{clock}' must be numeric"
+                TypeError, match=f"^po\\.stream\\.embargo: clock column '{clock}' must be numeric"
             ):
                 stream.embargo(df.lazy(), clock=clock, delay=delay)
 
@@ -1007,7 +1009,7 @@ class TestEmbargoItself:
             yield rows
 
         lf = register_io_source(io_source=source, schema=rows.schema)
-        with pytest.warns(po.ConsumedSourceWarning, match="^embargo: .*read twice"):
+        with pytest.warns(po.ConsumedSourceWarning, match="^po\\.stream\\.embargo: .*input twice"):
             plan = stream.embargo(lf, clock="t", delay=1.0)
         # What the warning is about: half the doubled stream is missing.
         assert plan.collect().height == 3

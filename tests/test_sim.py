@@ -322,20 +322,23 @@ def test_the_output_feeds_refresh_time():
 @pytest.mark.parametrize(
     ("kw", "message"),
     [
-        ({"states": [1.5]}, "not a correlation matrix"),
-        ({"states": [np.eye(3)]}, r"is \(3, 3\), not \(4, 4\)"),
-        ({"states": [np.full((4, 4), 0.5)]}, "diagonal that is not 1"),
-        ({"transition": [[0.5, 0.4], [0.5, 0.5]]}, "row-stochastic"),
-        ({"transition": [[1.0]]}, "not \\(2, 2\\)"),
-        ({"design": "nope"}, 'design must be "step" or "smooth"'),
-        ({"phi": [2.0, 0.0, 0.0, 0.0]}, r"\|phi\| must be < 1"),
-        ({"phi": [0.5]}, "phi must be a scalar or 4 values"),
-        ({"durations": [1]}, "one positive block count per state"),
-        ({"cycle_profile": [0.5]}, "one multiplier per cycle row"),
-        ({"cycle_profile": [0.0] * 500}, r"must be in \(0, 1\]"),
+        ({"states": [1.5]}, "below 1 to be a correlation matrix"),
+        ({"states": [np.eye(3)]}, r"must be a 4 by 4 matrix, .* but its shape is \(3, 3\)"),
+        ({"states": [np.full((4, 4), 0.5)]}, "its diagonal is not all 1"),
+        ({"transition": [[0.5, 0.4], [0.5, 0.5]]}, "each row of transition must be probabilities"),
+        (
+            {"transition": [[1.0]]},
+            r"must be a 2 by 2 matrix for the 2 entries of states, but its shape is",
+        ),
+        ({"design": "nope"}, 'design must be "step" or "smooth", but it is \'nope\''),
+        ({"phi": [2.0, 0.0, 0.0, 0.0]}, "each phi must be above -1 and below 1"),
+        ({"phi": [0.5]}, "phi must be one number or 4 values"),
+        ({"durations": [1]}, "durations must hold one block count of at least 1 for each"),
+        ({"cycle_profile": [0.5]}, "one multiplier per row of the cycle, 500, but it holds 1"),
+        ({"cycle_profile": [0.0] * 500}, "must be above 0 and at most 1"),
         ({"async_rates": [1.0]}, "one expected report rate per series"),
-        ({"activity": (0.0, 1.0)}, r"activity is \(mean, shape\)"),
-        ({"n_blocks": 0}, "must be >= 1"),
+        ({"activity": (0.0, 1.0)}, r"activity must be \(mean, shape\), both above 0"),
+        ({"n_blocks": 0}, "must each be at least 1, but they are 0 and 500"),
     ],
 )
 def test_a_bad_call_is_refused_by_name(kw, message):
@@ -359,7 +362,7 @@ def test_a_row_that_only_just_sums_to_one_still_draws():
 
 
 def test_fewer_than_two_series_is_refused():
-    with pytest.raises(ValueError, match="at least two series"):
+    with pytest.raises(ValueError, match="m must be at least 2, but it is 1"):
         sim.regimes(1, states=[0.5], transition=[[1.0]], n_blocks=1, rows_per_block=10)
 
 

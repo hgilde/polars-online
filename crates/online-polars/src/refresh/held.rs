@@ -182,11 +182,16 @@ impl Cell {
             Self::Arrow(b) => {
                 let frame = IpcReader::new(Cursor::new(&b.0)).finish()?;
                 let col = frame.columns().first().ok_or_else(|| {
-                    polars_err!(ComputeError: "refresh_time: the state is damaged: a held value has no column")
+                    polars_err!(ComputeError:
+                        "po.stream.refresh_time: the state is damaged: a value it holds has no \
+                         column. Load an undamaged copy of the state file, or leave out \
+                         load_state to start over.")
                 })?;
                 if col.len() != 1 {
                     polars_bail!(ComputeError:
-                        "refresh_time: the state is damaged: a held value has {} rows", col.len());
+                        "po.stream.refresh_time: the state is damaged: a value it holds has {} \
+                         rows. Load an undamaged copy of the state file, or leave out \
+                         load_state to start over.", col.len());
                 }
                 col.as_materialized_series().clone().with_name(n)
             }
@@ -232,8 +237,9 @@ impl Held {
         for n in names {
             let Some((_, cell)) = self.row.iter().find(|(k, _)| k == n) else {
                 polars_bail!(ComputeError:
-                    "refresh_time: the state holds points of a tick saved without a {:?} \
-                     column; resume with the group and keep columns it was saved with ({:?})",
+                    "po.stream.refresh_time: the state holds refresh times of a row saved \
+                     without a {:?} column. Give the group and keep columns the state was saved \
+                     with ({:?}).",
                     n, self.row.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>()
                 );
             };
@@ -244,10 +250,12 @@ impl Held {
             } else {
                 let cast = s.strict_cast(want).map_err(|_| {
                     polars_err!(ComputeError:
-                        "refresh_time: the state holds points of a tick whose {:?} is a {}, \
-                         which this input's {} cannot hold; resume on the columns the state \
-                         was saved from",
-                        n, s.dtype(), want
+                        "po.stream.refresh_time: the state holds refresh times of a row whose \
+                         {:?} is {}, which this input's {} cannot hold. Resume the state on \
+                         columns of the types it was saved with.",
+                        n,
+                        crate::arrow::dtype_name(s.dtype()),
+                        crate::arrow::dtype_name(want)
                     )
                 })?;
                 // A cast to a zoned `Datetime` can come back naive: the zone

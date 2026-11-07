@@ -760,26 +760,32 @@ def test_a_column_the_libraries_do_not_read_is_refused_by_name(data, column, mat
 def test_the_arguments_are_checked_by_name(data):
     with pytest.raises(ValueError, match="label column 'z' is not in the source"):
         gbdt.xgboost_matrix(data, label="z")
-    with pytest.raises(ValueError, match=r"feature columns not in the source: \['q'\]"):
+    with pytest.raises(
+        ValueError, match=r"features names columns the source does not have, \['q'\]"
+    ):
         gbdt.xgboost_matrix(data, label="y", features=["x0", "q"])
-    with pytest.raises(ValueError, match="max_bin must be an integer of 2 or more"):
+    with pytest.raises(ValueError, match="max_bin must be at least 2"):
         gbdt.xgboost_matrix(data, label="y", max_bin=1)
-    with pytest.raises(ValueError, match="sample_rows must be a positive integer"):
+    with pytest.raises(ValueError, match="sample_rows must be at least 1, or None, but it is 0"):
         gbdt.xgboost_matrix(data, label="y", sample_rows=0)
-    with pytest.raises(ValueError, match="engine must be one of"):
+    with pytest.raises(ValueError, match='engine must be "auto", "native" or "python"'):
         gbdt.xgboost_matrix(data, label="y", engine="rust")  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="ref must be an xgboost.DMatrix"):
         gbdt.xgboost_matrix(data, label="y", ref="train")  # type: ignore[arg-type]
     train = gbdt.xgboost_matrix(data, label="y")
     with pytest.raises(ValueError, match="needs the same features in order"):
         gbdt.xgboost_matrix(data, label="y", features=["x1", "x0"], ref=train)
-    with pytest.raises(ValueError, match=r"params names 'max_bin'; pass it as max_bin= instead"):
+    with pytest.raises(
+        ValueError, match=r"params names 'max_bin', which this call takes as an argument of its own"
+    ):
         gbdt.lightgbm_dataset(data, label="y", params={"max_bin": 63})
-    with pytest.raises(ValueError, match="pass it as categorical= instead"):
+    with pytest.raises(ValueError, match="Pass it as categorical= instead"):
         gbdt.lightgbm_dataset(data, label="y", params={"categorical_feature": [0]})
     with pytest.raises(ValueError, match="categorical names 'x0', a float column"):
         gbdt.lightgbm_dataset(data, label="y", categorical=["x0"])
-    with pytest.raises(ValueError, match="cannot tell the format of 'data.csv'"):
+    with pytest.raises(
+        ValueError, match="the format of 'data.csv' cannot be told from its extension"
+    ):
         gbdt.xgboost_matrix("data.csv", label="y")
     for build in (gbdt.xgboost_matrix, gbdt.lightgbm_dataset):
         with pytest.raises(ValueError, match="the source has no rows"):
@@ -787,7 +793,6 @@ def test_the_arguments_are_checked_by_name(data):
 
 
 _BOTH = ("xgboost", "lightgbm")
-_ENGINES = r"\('auto', 'native', 'python'\)"
 
 
 @pytest.mark.parametrize(
@@ -798,71 +803,73 @@ _ENGINES = r"\('auto', 'native', 'python'\)"
             {"x0": [1.0]},
             {},
             TypeError,
-            r"source must be paths, a LazyFrame or a DataFrame, not dict",
+            "source must be a path, a list of paths, a query or a frame, but its type is dict",
         ),
-        (_BOTH, [], {}, ValueError, r"source names no files"),
+        (_BOTH, [], {}, ValueError, "source must name at least one file, but it is empty"),
         (
             _BOTH,
             ["a.parquet", "b.arrow"],
             {},
             ValueError,
-            r"source mixes Arrow IPC and Parquet files; pass one kind",
+            "source must be files of one format, but it mixes Arrow IPC and Parquet files",
         ),
         (
             _BOTH,
             "/nonexistent/*.arrow",
             {},
             FileNotFoundError,
-            r"no file matches '/nonexistent/\*.arrow'",
+            r"no file matches the pattern '/nonexistent/\*\.arrow'",
         ),
         (
             _BOTH,
             "data",
             dict(features="x0"),
             TypeError,
-            r"features is a list of column names, not one name",
+            "features must be a list of column names, but it is the one name 'x0'",
         ),
         (
             _BOTH,
             "data",
             dict(features=["x0", "x1", "x0"]),
             ValueError,
-            r"a feature is named twice in \['x0', 'x1', 'x0'\]",
+            r"features names column 'x0' twice",
         ),
         (
             _BOTH,
             "data",
             dict(features=["x0", "y"]),
             ValueError,
-            r"\['y'\] named as a feature and as the label or weight",
+            r"'y' is named as a feature and as the label or weight, but a column can be only "
+            r"one of them",
         ),
         (
             _BOTH,
             "data",
             dict(features=["w", "x0"], weight="w"),
             ValueError,
-            r"\['w'\] named as a feature and as the label or weight",
+            r"'w' is named as a feature and as the label or weight, but a column can be only "
+            r"one of them",
         ),
         (
             _BOTH,
             "label only",
             {},
             ValueError,
-            r"the source has no feature columns besides the label",
+            "the source has no column besides the label to be a feature",
         ),
         (
             _BOTH,
             "with a string",
             dict(label="s"),
             ValueError,
-            r"the label column 's' is String, not numeric",
+            "the label column 's' is String, but it must be an integer, float or Boolean column",
         ),
         (
             _BOTH,
             "with a string",
             dict(weight="s"),
             ValueError,
-            r"the weight column 's' is String, not numeric",
+            "the weight column 's' is String, but it must be an integer, float or Boolean column",
         ),
         (
             _BOTH,
@@ -876,98 +883,98 @@ _ENGINES = r"\('auto', 'native', 'python'\)"
             "data",
             dict(threads=0),
             ValueError,
-            r"threads must be a positive integer or None, not 0",
+            "threads must be at least 1, or None, but it is 0",
         ),
         (
             _BOTH,
             "data",
             dict(threads=True),
             ValueError,
-            r"threads must be a positive integer or None, not True",
+            "threads must be a Python int of at least 1, or None, but it is True",
         ),
         (
             _BOTH,
             "data",
             dict(threads="4"),
             ValueError,
-            r"threads must be a positive integer or None, not '4'",
+            "threads must be a Python int of at least 1, or None, but it is '4'",
         ),
         (
             _BOTH,
             "data",
             dict(max_bin="8"),
             ValueError,
-            r"max_bin must be an integer of 2 or more, not '8'",
+            "max_bin must be a Python int of at least 2, but it is '8'",
         ),
         (
             _BOTH,
             "data",
             dict(max_bin=True),
             ValueError,
-            r"max_bin must be an integer of 2 or more, not True",
+            "max_bin must be a Python int of at least 2, but it is True",
         ),
         (
             _BOTH,
             "data",
             dict(engine="rust"),
             ValueError,
-            r"engine must be one of " + _ENGINES + r", not 'rust'",
+            r"engine must be \"auto\", \"native\" or \"python\", but it is 'rust'",
         ),
         (
             ("xgboost",),
             "data",
             dict(sample_rows=True),
             ValueError,
-            r"sample_rows must be a positive integer or None, not True",
+            "sample_rows must be a Python int of at least 1, or None, but it is True",
         ),
         (
             ("xgboost",),
             "data",
             dict(sample_rows=2.5),
             ValueError,
-            r"sample_rows must be a positive integer or None, not 2.5",
+            r"sample_rows must be a Python int of at least 1, or None, but it is 2\.5",
         ),
         (
             ("lightgbm",),
             "data",
             dict(categorical="i0"),
             TypeError,
-            r"categorical is a list of column names, not one name",
+            "categorical must be a list of column names, but it is the one name 'i0'",
         ),
         (
             ("lightgbm",),
             "data",
             dict(categorical=["zz"]),
             ValueError,
-            r"categorical names 'zz', which is not a feature",
+            "categorical names 'zz', but it is not a feature",
         ),
         (
             ("lightgbm",),
             "data",
             dict(in_memory=1),
             ValueError,
-            r"in_memory must be True, False or 'auto', not 1",
+            "in_memory must be True, False or 'auto', but it is 1",
         ),
         (
             ("lightgbm",),
             "data",
             dict(in_memory="yes"),
             ValueError,
-            r"in_memory must be True, False or 'auto', not 'yes'",
+            "in_memory must be True, False or 'auto', but it is 'yes'",
         ),
         (
             ("lightgbm",),
             "data",
             dict(reference="train"),
             TypeError,
-            r"reference must be a lightgbm.Dataset, not str",
+            r"reference must be a lightgbm\.Dataset, but its type is str",
         ),
         (
             ("lightgbm",),
             "data",
             dict(params={"num_threads": 2}),
             ValueError,
-            r"params names 'num_threads'; pass it as threads= instead",
+            "params names 'num_threads', which this call takes as an argument of its own",
         ),
     ],
 )
@@ -1000,7 +1007,9 @@ def test_a_lightgbm_whose_dataset_holds_its_handle_elsewhere_is_refused_by_name(
 
     monkeypatch.setattr(lgb, "Dataset", Elsewhere)
     with pytest.raises(
-        ValueError, match=r"holds its native handle elsewhere than `_handle` \(lightgbm"
+        ValueError,
+        match=r"the native engine does not support lightgbm .*, whose Dataset holds its native "
+        "handle",
     ):
         gbdt.lightgbm_dataset(data, label="y", params=LGB_DATA, engine="native")
 
@@ -1035,7 +1044,9 @@ def test_a_source_whose_passes_differ_is_refused(data, engine):
 def test_a_library_or_version_the_native_engine_does_not_call_is_refused_by_name(tmp_path):
     with pytest.raises(ValueError, match="could not be loaded from /no/such/libxgboost"):
         native.GbdtXgboost("/no/such/libxgboost.dylib")
-    with pytest.raises(ValueError, match="LightGBM 3.3.5: po.gbdt's native engine calls the C API"):
+    with pytest.raises(
+        ValueError, match="LightGBM 3.3.5 is not a version whose C API the native engine calls"
+    ):
         native.GbdtLightgbm(gbdt._library_path(lgb.basic._LIB), "3.3.5")
     # A library without the functions: LightGBM's file is no XGBoost.
     with pytest.raises(ValueError, match="has no `XGBoostVersion`"):
@@ -1051,7 +1062,7 @@ def test_auto_falls_back_to_the_python_engine_with_a_warning(data, monkeypatch):
     monkeypatch.setattr(gbdt, "_xgb_native", broken)
     with pytest.raises(ValueError, match="XGBoost 9.9.9"):
         gbdt.xgboost_matrix(data, label="y", engine="native")
-    with pytest.warns(UserWarning, match="cannot load XGBoost natively"):
+    with pytest.warns(UserWarning, match="the native engine cannot load XGBoost"):
         m = gbdt.xgboost_matrix(data, label="y", engine="auto")
     with warnings.catch_warnings():
         warnings.simplefilter("error")

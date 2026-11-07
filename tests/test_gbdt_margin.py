@@ -320,7 +320,7 @@ def test_a_reference_built_by_the_library_is_read_for_its_margin(data, valid):
     gbdt.xgboost_matrix(valid, label="c", features=FEATURES, base_margin="ml", ref=own)
     with pytest.raises(ValueError, match=r"ref was built with a base_margin of 3 values a row"):
         gbdt.xgboost_matrix(valid, label="c", features=FEATURES, ref=own)
-    with pytest.raises(ValueError, match=r"the ref's margin holds 3 values a row"):
+    with pytest.raises(ValueError, match=r"and the ref's base_margin holds 3 values a row"):
         gbdt.xgboost_matrix(valid, label="c", features=FEATURES, base_margin="m", ref=own)
     own = lgb_own(data, "y", None)
     with pytest.raises(ValueError, match=r"init_score= is given, and reference was built without"):
@@ -358,17 +358,29 @@ def test_a_margin_that_cannot_be_read_is_refused_by_name(data, valid, lib, engin
         (_at(data, "m", 1234, None), "m", rf"the {role} column `m` has a null at row 1234"),
         (_at(data, "ml", 4321, [0.0, None, 1.0]), "ml", r"`ml` has a null at row 4321"),
         (_at(data, "ml", 4322, None), "ml", r"`ml` has a null at row 4322"),
-        (_at(data, "m", 7, float("inf")), "m", r"`m` holds inf at row 7, and a margin must be"),
+        (
+            _at(data, "m", 7, float("inf")),
+            "m",
+            r"`m` holds inf at row 7 \(counting from 0\), and a margin must be",
+        ),
         (_at(data, "ml", 8, [0.0, float("nan"), 1.0]), "ml", r"`ml` holds NaN at row 8"),
-        (_at(data, "ml", 2050, [0.0, 1.0]), "ml", r"holds 2 values at row 2050 and 3 at row 0"),
-        (_at(data, "ml", 0, []), "ml", r"`ml` holds no values at row 0, and a margin needs one"),
+        (
+            _at(data, "ml", 2050, [0.0, 1.0]),
+            "ml",
+            r"holds 2 values at row 2050 \(counting from 0\) and 3 at row 0",
+        ),
+        (
+            _at(data, "ml", 0, []),
+            "ml",
+            r"`ml` holds no values at row 0 \(counting from 0\), and a margin needs one",
+        ),
     ]
     for df, margin, match in cases:
         with pytest.raises(ValueError, match=match):
             build(df, margin)
     with pytest.raises(ValueError, match=rf"the {role} column 'q' is not in the source"):
         build(data, "q")
-    with pytest.raises(ValueError, match=rf"the {role} column 's' is String, and a margin is"):
+    with pytest.raises(ValueError, match=rf"the {role} column 's' is String, but a margin is"):
         build(data.with_columns(s=pl.lit("a")), "s")
     with pytest.raises(ValueError, match=rf"the {role} column 'v' is List\(Boolean\)"):
         build(data.with_columns(v=pl.lit([True])), "v")
@@ -384,7 +396,9 @@ def test_a_margin_that_cannot_be_read_is_refused_by_name(data, valid, lib, engin
     with pytest.raises(ValueError, match=rf"{whose} was built with a {role} of 3 values a row"):
         build(valid, None, **{whose: train})
     with pytest.raises(
-        ValueError, match=rf"`m` holds 1 value at row 0, and the {whose}'s margin holds 3 values"
+        ValueError,
+        match=rf"`m` holds 1 value at row 0 \(counting from 0\), and the {whose}'s {role} "
+        "holds 3 values",
     ):
         build(valid, "m", **{whose: train})
     plain = build(data, None)

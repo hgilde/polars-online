@@ -278,17 +278,17 @@ def test_a_save_and_load_at_any_row_is_one_run(tmp_path: Any) -> None:
 
 def test_a_quantiles_parameters_are_checked_by_name() -> None:
     for bad, err, says in [
-        ({"quantile": 0.0}, ValueError, "quantile must be above 0 and below 1, got 0.0"),
-        ({"quantile": 1}, ValueError, "got 1"),
-        ({"quantile": math.nan}, ValueError, "got nan"),
-        ({"quantile": True}, TypeError, "quantile must be a number, got bool"),
-        ({"quantile": "0.5"}, TypeError, "got str"),
+        ({"quantile": 0.0}, ValueError, "quantile must be above 0 and below 1, but it is 0.0"),
+        ({"quantile": 1}, ValueError, "but it is 1"),
+        ({"quantile": math.nan}, ValueError, "but it is nan"),
+        ({"quantile": True}, TypeError, "quantile must be a number, but it is of type bool"),
+        ({"quantile": "0.5"}, TypeError, "but it is of type str"),
     ]:
         with pytest.raises(err, match=says):
             po.ewm_quantile("x", half_life=1.0, **bad)
-    with pytest.raises(TypeError, match=r"reverse=True\): window_size is required"):
+    with pytest.raises(TypeError, match="po.ewm_quantile: reverse=True needs window_size"):
         po.ewm_quantile("x", quantile=0.5, half_life=1.0, reverse=True)
-    with pytest.raises(ValueError, match="not another window operator"):
+    with pytest.raises(ValueError, match="the input holds another window operator"):
         po.ewm_quantile(po.ewm_mean("x", half_life=1.0), quantile=0.5, half_life=1.0)
     with pytest.raises(TypeError):
         po.ewm_quantile("x", half_life=1.0)  # type: ignore[call-arg]

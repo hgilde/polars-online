@@ -577,7 +577,11 @@ fn a_label_before_its_row_is_refused_by_name_and_the_bank_is_untouched() {
     let before = bank.save_bytes().unwrap();
     let err = bank.fit_predict(&df).unwrap_err().to_string();
     assert!(
-        err.contains("spec \"m\": label_clock column \"avail\" is 1 before clock column \"t\" at row 1, and a label is never known before its row; the bank was not updated. Give each row's label time, at or after its clock."),
+        err.contains(
+            "spec \"m\": label_clock column \"avail\" is 1 before clock column \"t\" at row 1 \
+             (counting from 0), but a row's target is never known before the row, so the bank \
+             refused the chunk. Give each row a label time at or after its clock."
+        ),
         "{err}"
     );
     assert_eq!(bank.save_bytes().unwrap(), before);
@@ -593,7 +597,11 @@ fn a_full_buffer_is_refused_unless_it_drops_its_oldest() {
     let before = bank.save_bytes().unwrap();
     let err = bank.fit_predict(&df).unwrap_err().to_string();
     assert!(
-        err.contains("would put 6 rows of its group waiting for their label times, past max_held_rows = 5; the bank was not updated. Raise max_held_rows, or set held_overflow=\"drop_oldest\" to drop the row that arrived first."),
+        err.contains(
+            "(counting from 0) would put 6 rows waiting for their label times, above \
+             max_held_rows = 5, so the bank refused the chunk. Increase max_held_rows, or set \
+             held_overflow=\"drop_oldest\" to drop the row that arrived first."
+        ),
         "{err}"
     );
     assert_eq!(bank.save_bytes().unwrap(), before);
@@ -644,7 +652,12 @@ fn a_temporal_clock_takes_a_temporal_label_column() {
         .fit_predict(&mixed)
         .unwrap_err()
         .to_string();
-    assert!(err.contains("label_clock column \"avail\" has dtype i64, and clock column \"t\" has dtype datetime[ms]"), "{err}");
+    assert!(
+        err.contains(
+            "label_clock column \"avail\" is Int64, and clock column \"t\" is Datetime(\"ms\")"
+        ),
+        "{err}"
+    );
 }
 
 #[test]

@@ -286,10 +286,10 @@ class TestRefusals:
 
     def test_a_full_buffer(self):
         df = frame(n=200, seed=6)
-        with pytest.raises(ValueError, match="past max_held_rows = 2"):
+        with pytest.raises(ValueError, match="above max_held_rows = 2"):
             po.ModelBank([spec(max_held_rows=2)]).fit_predict(df)
 
     def test_a_label_column_of_another_kind_than_the_clock(self):
         df = frame(n=50, seed=7).with_columns(avail=pl.col("avail").cast(pl.String))
-        with pytest.raises(ValueError, match='label_clock column "avail" has dtype str'):
+        with pytest.raises(ValueError, match='label_clock column "avail" is String'):
             po.ModelBank([spec()]).fit_predict(df)

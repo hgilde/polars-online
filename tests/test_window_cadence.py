@@ -779,8 +779,8 @@ class TestRefusals:
     @pytest.mark.parametrize(
         "kw,named",
         [
-            ({"snapshot_every": "1m"}, ["raise snapshot_every (1m now)"]),
-            ({"max_rows_between_snapshots": 25}, ["raise max_rows_between_snapshots (25 now)"]),
+            ({"snapshot_every": "1m"}, ["increase snapshot_every (1m now)"]),
+            ({"max_rows_between_snapshots": 25}, ["increase max_rows_between_snapshots (25 now)"]),
             (
                 {"snapshot_every": "1m", "max_rows_between_snapshots": 25},
                 ["snapshot_every (1m now) and max_rows_between_snapshots (25 now)"],

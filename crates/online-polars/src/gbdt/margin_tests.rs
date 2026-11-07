@@ -148,8 +148,9 @@ fn a_list_margin_in_chunks_is_read_from_each_chunk_s_own_rows() {
 #[test]
 fn a_margin_is_refused_by_name_at_a_null_a_non_finite_value_or_another_width() {
     let err = |f: Frame, w: Option<usize>| read(f, w).unwrap_err().to_string();
-    let null = "the base_margin column `m` has a null at row 1, and every row needs a margin. \
-                Fill it before the build, with 0 where the row has no prediction to start from.";
+    let null = "po.gbdt.xgboost_matrix: the base_margin column `m` has a null at row 1 (counting \
+                from 0), and every row needs a margin. Replace the null before the build, with 0 \
+                where the row has no prediction to start from.";
     let m = PrimitiveArray::<f64>::from([Some(1.0), None]).boxed();
     assert_eq!(err(batch(m), None), null);
     let l = list::<f64>(&[Some(vec![Some(1.0)]), None]);
@@ -161,8 +162,9 @@ fn a_margin_is_refused_by_name_at_a_null_a_non_finite_value_or_another_width() {
     assert_eq!(err(batch(l.boxed()), None), null, "a null value in a row");
     assert_eq!(
         err(batch(floats(&[0.0, 0.0, f64::NEG_INFINITY])), None),
-        "the base_margin column `m` holds -inf at row 2, and a margin must be finite. Replace it \
-         before the build, with 0 where the row has no prediction to start from."
+        "po.gbdt.xgboost_matrix: the base_margin column `m` holds -inf at row 2 (counting from \
+         0), and a margin must be finite. Replace it before the build, with 0 where the row has \
+         no prediction to start from."
     );
     let l = list::<f64>(&[Some(vec![Some(f64::NAN)])]);
     assert!(err(batch(l.boxed()), None).contains("holds NaN at row 0"));
@@ -173,24 +175,27 @@ fn a_margin_is_refused_by_name_at_a_null_a_non_finite_value_or_another_width() {
     ]);
     assert_eq!(
         err(batch(l.clone().boxed()), None),
-        "the base_margin column `m` holds 3 values at row 2 and 2 at row 0, and every row needs \
-         the same number. Give every row one value, or one for each class."
+        "po.gbdt.xgboost_matrix: the base_margin column `m` holds 3 values at row 2 (counting from 0) and 2 \
+         at row 0, and every row needs the same number. Give every row one value, or one for each \
+         class."
     );
     assert_eq!(
         err(batch(l.boxed()), Some(1)),
-        "the base_margin column `m` holds 2 values at row 0, and the ref's margin holds 1 value \
-         a row. Give every row as many values as the training margin has."
+        "po.gbdt.xgboost_matrix: the base_margin column `m` holds 2 values at row 0 (counting from 0), and \
+         the ref's base_margin holds 1 value a row. Give every row as many values as the ref's \
+         base_margin has."
     );
     assert_eq!(
         err(batch(floats(&[1.0])), Some(3)),
-        "the base_margin column `m` holds 1 value at row 0, and the ref's margin holds 3 values \
-         a row. Give every row as many values as the training margin has."
+        "po.gbdt.xgboost_matrix: the base_margin column `m` holds 1 value at row 0 (counting from 0), and \
+         the ref's base_margin holds 3 values a row. Give every row as many values as the ref's \
+         base_margin has."
     );
     let l = list::<f64>(&[Some(vec![]), Some(vec![Some(1.0)])]);
     assert_eq!(
         err(batch(l.boxed()), None),
-        "the base_margin column `m` holds no values at row 0, and a margin needs one. Give every \
-         row one value, or one for each class."
+        "po.gbdt.xgboost_matrix: the base_margin column `m` holds no values at row 0 (counting from 0), and a \
+         margin needs one. Give every row one value, or one for each class."
     );
     // The reference's width admits rows of that width.
     let l = list::<f64>(&[Some(vec![Some(1.0), Some(2.0)])]);

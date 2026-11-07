@@ -209,7 +209,10 @@ class TestTheSteps:
                 "y": [1.0, 2.0],
             }
         )
-        with pytest.raises(Exception, match=r'clock column "t" has 9223372036854775808 at row 1'):
+        with pytest.raises(
+            Exception,
+            match=r'clock column "t" has the value 9223372036854775808 at row 1 \(counting from 0',
+        ):
             po.ModelBank([ridge()]).fit_predict(df)
         ok = df.with_columns(t=pl.Series([5, 2**63 - 1], dtype=pl.UInt64))
         out = po.ModelBank([ridge()]).fit_predict(ok).unnest("m")
@@ -272,9 +275,9 @@ def test_another_number_dtype_than_the_banks_is_refused():
     df = frame(n=20)
     bank = po.ModelBank([ridge()])
     bank.fit_predict(df[:10])
-    with pytest.raises(Exception, match=r'clock column "t" was i64 and is now f64'):
+    with pytest.raises(Exception, match=r'clock column "t" was Int64 and is now Float64'):
         bank.fit_predict(df[10:].with_columns(pl.col("t").cast(pl.Float64)))
-    with pytest.raises(Exception, match=r'clock column "t" was i64 and is now i32'):
+    with pytest.raises(Exception, match=r'clock column "t" was Int64 and is now Int32'):
         bank.fit_predict(
             df[10:].with_columns(pl.col("t") - T0).with_columns(pl.col("t").cast(pl.Int32))
         )
@@ -392,7 +395,10 @@ def test_refresh_time_orders_an_integer_clock_exactly():
     df = pl.DataFrame(
         {"series": ["a", "b", "a"], "t": [T0 + 5, T0 + 6, T0 + 5], "v": [1.0, 2.0, 3.0]}
     )
-    with pytest.raises(Exception, match="row 2.*clock order"):
+    with pytest.raises(
+        Exception,
+        match=r"at row 2 \(counting from 0\), below the previous row's .* Sort the input by",
+    ):
         po.stream.refresh_time(df, series="series", names=["a", "b"], clock="t", value="v")
     fine = df.with_columns(t=pl.Series([T0 + 5, T0 + 6, T0 + 7]))
     grid = po.stream.refresh_time(fine, series="series", names=["a", "b"], clock="t", value="v")
@@ -447,7 +453,7 @@ BIG = 2**63
 #: ``embargo``'s.
 WIDE = (
     r"clock column [\"']t[\"'] is Int128, wider than the Int64 an integer clock is held "
-    r"in; cast it to Int64 if its values fit, or after subtracting an origin"
+    r"in\. Cast it to Int64 if its values fit, or after subtracting an origin\."
 )
 
 
@@ -533,13 +539,13 @@ def test_an_int128_increment_resumes_on_the_integers(tmp_path):
 #: What a ``UInt128`` clock gets: the ``Int128`` clock's words (B3).
 WIDE_UNSIGNED = (
     r"clock column [\"']t[\"'] is UInt128, wider than the Int64 an integer clock is held "
-    r"in; cast it to Int64 if its values fit, or after subtracting an origin"
+    r"in\. Cast it to Int64 if its values fit, or after subtracting an origin\."
 )
 
 #: What any other ``UInt128`` column gets: the column named, and a cast.
 UNSIGNED_128 = (
-    r"column 'c' is UInt128, which polars-online cannot take in; cast it to Int64 if its "
-    r"values fit, or to Float64, or leave it out of the frame"
+    r"column 'c' is UInt128, which polars-online cannot read\. Cast it to Int64 if its "
+    r"values fit, or to Float64, or leave it out of the frame\."
 )
 
 #: Every surface a frame crosses to the extension on.

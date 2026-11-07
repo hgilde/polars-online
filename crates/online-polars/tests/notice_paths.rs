@@ -120,7 +120,7 @@ fn a_call_says_the_notices_of_its_own_groups_once_in_chunk_order() {
     for (n, (s, g)) in said.iter().zip(&expect) {
         assert!(
             n.starts_with(&format!("spec {s:?} group \"{g}\":"))
-                && n.contains("support_coef < 0.5"),
+                && n.contains("support_coef is below 0.5"),
             "{said:#?}"
         );
     }
@@ -353,7 +353,10 @@ fn two_spans_raising_the_same_notice_say_two_texts_at_any_chunking() {
         );
         assert_eq!(body(&said[0]), body(&said[1]), "the same notice");
         assert_ne!(said[0], said[1], "two texts");
-        assert!(body(&said[0]).contains("support_coef < 0.5"), "{said:#?}");
+        assert!(
+            body(&said[0]).contains("support_coef is below 0.5"),
+            "{said:#?}"
+        );
     }
 }
 
@@ -445,11 +448,12 @@ fn a_spec_without_sessions_says_the_text_it_always_has() {
 
 /// The support notice of `rows(1, 0, 20)` under `spec("a", "")`, as every
 /// build before the span was named said it.
-const PLAIN_NOTICE: &str = "spec \"a\" group \"1\": the coefficient of \"x0\" is 0.49 \
-    data and 0.51 ridge (support_coef < 0.5): the design does not determine it -- a \
-    duplicated or constant column, or a ridge as large as the feature's variance. \
-    Predictions are unaffected in sample; the split among such columns is arbitrary and \
-    moves the moment the collinearity breaks (the README, *Warm-up*).";
+const PLAIN_NOTICE: &str = "spec \"a\" group \"1\": the coefficient of \"x0\" is 0.487 \
+    data and 0.513 ridge, so its support_coef is below 0.5 and the rows do not determine it. \
+    Where the column duplicates another or is constant, predictions are unaffected but the \
+    coefficient's split among such columns is arbitrary, and where the ridge is as large as the \
+    feature's variance, the ridge shrinks the coefficient toward 0. Remove the duplicated or \
+    constant column, or lower ridge below the feature's variance.";
 
 /// The rows of a stream of groups, each group's rows contiguous and the
 /// groups in ascending key order (so `"monotone"` closes each at the next

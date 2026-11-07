@@ -991,7 +991,7 @@ fn skip_learned_keeps_a_nan_clock_for_the_bank_to_refuse() {
         let (code, _, err) = online_with(&dir, &rest, &output, "", 50.0, args);
         assert_eq!(code, Some(1), "{args:?}: {err}");
         assert!(
-            err.contains("clock column \"t\" has a null/non-finite value at row 5"),
+            err.contains("clock column \"t\" has a null, NaN or infinite value at row 5"),
             "{args:?}: {err}"
         );
         assert!(!output.exists(), "{args:?}: an output was written");
@@ -1048,9 +1048,9 @@ fn a_formula_target_is_labelled_unstable_under_the_variable() {
         warned.lines().collect::<Vec<_>>(),
         [
             "polars-online: warning: a formula target's written form -- its tree in the TOML \
-             file and in a saved state -- is considered unstable. It may be changed at \
-             any point without it being considered a breaking change (set \
-             POLARS_ONLINE_WARN_UNSTABLE=0 or unset it to silence this)."
+             file and in a saved state -- is considered unstable, so it may change in any \
+             release without that being considered a breaking change. Set \
+             POLARS_ONLINE_WARN_UNSTABLE=0, or unset it, to silence this warning."
         ],
         "{warned}"
     );

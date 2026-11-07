@@ -503,7 +503,9 @@ def test_an_unusable_hazard_in_the_column_is_refused_naming_the_row():
     x = normals(60, 21)
     h = np.full(60, 40.0)
     h[17] = 0.5
-    with pytest.raises(ValueError, match="row 17; a hazard is the expected rows"):
+    with pytest.raises(
+        ValueError, match=r"row 17 \(counting from 0\), but a hazard, the expected number of rows"
+    ):
         run(x, hazard_col="h", h=h, covariance_prior=[1.0], degrees_of_freedom_prior=2.0)
 
     # Null falls back, and the fallback is the ordinary run.

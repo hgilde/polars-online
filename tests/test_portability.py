@@ -216,7 +216,9 @@ class TestThreadPoolKnob:
             POLARS_ONLINE_MAX_THREADS="eight",
         )
         first, second = out.split("\n")
-        refused = 'POLARS_ONLINE_MAX_THREADS="eight" is not a number of threads'
+        refused = (
+            'environment variable POLARS_ONLINE_MAX_THREADS: "eight" is not a number of threads'
+        )
         assert first.startswith(refused), first
         assert second == f"{_frame().height} 2"
 

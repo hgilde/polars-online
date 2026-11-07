@@ -53,7 +53,7 @@ fn a_group_column_of_another_form_is_refused_by_name() {
     let saved = bank.save_bytes().unwrap();
     let err = bank.fit_predict(&floats).unwrap_err().to_string();
     assert!(
-        err.contains(r#"group column "g" was i64 and is now f64"#),
+        err.contains(r#"group column "g" was Int64 and is now Float64"#),
         "{err}"
     );
     assert_eq!(
@@ -64,7 +64,7 @@ fn a_group_column_of_another_form_is_refused_by_name() {
     // Kept in the state, and read by `predict`.
     let loaded = Bank::load_bytes(&saved, Some(std::slice::from_ref(&s))).unwrap();
     let err = loaded.predict(&floats).unwrap_err().to_string();
-    assert!(err.contains("was i64 and is now f64"), "{err}");
+    assert!(err.contains("was Int64 and is now Float64"), "{err}");
     // The same form in another width goes on.
     let narrow = rows(8, |i| AnyValue::Int32((i % 2) as i32));
     let mut bank = Bank::load_bytes(&saved, Some(&[s])).unwrap();
@@ -101,7 +101,7 @@ fn an_arrow_chunk_keeps_the_form_its_key_array_has() {
         .unwrap_err()
         .to_string();
     assert!(
-        err.contains(r#"group column "g" was i64 and is now str"#),
+        err.contains(r#"group column "g" was Int64 and is now String"#),
         "{err}"
     );
 }
@@ -121,7 +121,7 @@ fn a_session_column_of_another_form_is_refused_by_name() {
         .unwrap_err()
         .to_string();
     assert!(
-        err.contains(r#"session column "g" was i64 and is now f64"#),
+        err.contains(r#"session column "g" was Int64 and is now Float64"#),
         "{err}"
     );
 }
@@ -138,7 +138,7 @@ fn a_null_typed_key_column_records_no_form() {
         .fit_predict(&rows(4, |i| AnyValue::String(["a", "b", "c", "d"][i])))
         .unwrap_err()
         .to_string();
-    assert!(err.contains("was i64 and is now str"), "{err}");
+    assert!(err.contains("was Int64 and is now String"), "{err}");
 }
 
 /// `n` rows of `x0`, `x1`, `y`, `w`, no clock.
@@ -311,8 +311,8 @@ fn an_integer_clock_is_held_and_shown_in_its_own_dtype() {
     bank.fit_predict(&df.slice(0, 3)).unwrap();
     let saved = bank.save_bytes().unwrap();
     for (dtype, want) in [
-        (DataType::Float64, "was i64 and is now f64"),
-        (DataType::Int32, "was i64 and is now i32"),
+        (DataType::Float64, "was Int64 and is now Float64"),
+        (DataType::Int32, "was Int64 and is now Int32"),
     ] {
         let shifted = Series::new("t".into(), offs[3..].to_vec())
             .cast(&dtype)

@@ -61,7 +61,10 @@ class TestWeights:
 
     def test_negative_weight_is_rejected_with_the_row_number(self):
         df = pl.DataFrame({"x0": [1.0, 2.0, 3.0], "y0": [1.0, 2.0, 3.0], "w": [1.0, -5.0, 1.0]})
-        with pytest.raises(Exception, match=r"negative value \(-5\) at row 1"):
+        with pytest.raises(
+            Exception,
+            match=r"has the value -5 at row 1 \(counting from 0\), but a weight must be at least 0",
+        ):
             _run(df, _spec(weight="w"))
 
     def test_zero_weight_is_a_pure_decay_row(self):

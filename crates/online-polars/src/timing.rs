@@ -27,7 +27,10 @@ const OLD_TIMING_VAR: &str = "ONLINE_TIMING";
 
 /// What a process with the old name set is told, once.
 pub fn renamed_timing_notice() -> String {
-    format!("{OLD_TIMING_VAR} was renamed {TIMING_VAR}; set {TIMING_VAR}=1 for the timings")
+    format!(
+        "{OLD_TIMING_VAR} was renamed {TIMING_VAR}, so it turns no timings on. Set \
+         {TIMING_VAR}=1 for the timings."
+    )
 }
 
 /// Whether to print the timings: [`TIMING_VAR`] is `1` in the process's
@@ -36,7 +39,9 @@ pub fn timing_on() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| {
         if std::env::var_os(OLD_TIMING_VAR).is_some() {
-            eprintln!("polars-online: warning: {}", renamed_timing_notice());
+            // The command line's where, before the notice's own text.
+            let prefix = "polars-online: warning";
+            eprintln!("{prefix}: {}", renamed_timing_notice());
         }
         std::env::var(TIMING_VAR).is_ok_and(|v| v == "1")
     })

@@ -346,7 +346,7 @@ def test_a_categorical_key_out_of_order_is_refused_and_a_sort_fixes_it():
     sorting the Categorical column is enough (task 154)."""
     df = frame(["c", "a", "b"]).with_columns(pl.col("g").cast(pl.Categorical))
     bank = po.ModelBank([cov_spec(group_close="monotone")])
-    with pytest.raises(ValueError, match="sort the input by") as e:
+    with pytest.raises(ValueError, match='Sort the rows by "g"') as e:
         bank.fit_predict(df)
     assert "Categorical" not in str(e.value)
     fixed = df.sort("g", maintain_order=True)
@@ -367,14 +367,14 @@ def test_a_high_water_mark_read_under_the_wrong_dtype_is_refused_both_ways():
     bank = po.ModelBank([spec])
     bank.fit_predict(frame([9, 10, 11]))
     again = po.ModelBank.load_bytes(bank.save_bytes(), [spec])
-    with pytest.raises(ValueError, match='group column "g" was i64 and is now str'):
+    with pytest.raises(ValueError, match='group column "g" was Int64 and is now String'):
         again.fit_predict(frame(["12", "13"]))
 
     # And the other way.
     bank = po.ModelBank([spec])
     bank.fit_predict(frame(["a", "b", "c"]))
     again = po.ModelBank.load_bytes(bank.save_bytes(), [spec])
-    with pytest.raises(ValueError, match='group column "g" was str and is now i64'):
+    with pytest.raises(ValueError, match='group column "g" was String and is now Int64'):
         again.fit_predict(frame([9, 10]))
 
 
@@ -531,7 +531,7 @@ def test_a_spec_that_cannot_close_is_refused_by_name(kw, message):
 def test_interleaved_keys_are_refused_naming_the_row():
     df = pl.DataFrame({"g": ["a", "b", "a"], "x0": [1.0, 2.0, 3.0], "x1": [1.0, 2.0, 3.0]})
     bank = po.ModelBank([cov_spec(group_close="monotone")])
-    with pytest.raises(ValueError, match="row 2: group a after group b"):
+    with pytest.raises(ValueError, match=r"row 2 \(counting from 0\) has group a after group b"):
         bank.fit_predict(df)
     # A refused chunk leaves the bank as it was.
     assert bank.groups().height == 0
@@ -580,7 +580,9 @@ def test_predict_refuses_a_key_dtype_that_cannot_be_ordered_too():
 def test_a_key_below_the_high_water_mark_is_refused():
     bank = po.ModelBank([cov_spec(group_close="monotone")])
     bank.fit_predict(frame(["a", "b"]))
-    with pytest.raises(ValueError, match="is below b, which this bank has already closed"):
+    with pytest.raises(
+        ValueError, match="has group a, below group b, the largest the bank has read"
+    ):
         bank.fit_predict(frame(["a"]))
 
 
@@ -593,7 +595,7 @@ def test_the_high_water_mark_and_the_queue_survive_a_save_and_load(tmp_path):
     again = po.ModelBank.load(path, [spec])
     assert again.closed_groups(drop=False).equals(bank.closed_groups(drop=False))
     assert again.groups()["group"].to_list() == ["c"], "the open group came back"
-    with pytest.raises(ValueError, match="already closed past"):
+    with pytest.raises(ValueError, match="never takes a group below that"):
         again.fit_predict(frame(["a"]))
     # And it continues where it stopped.
     again.closed_groups()
@@ -943,7 +945,9 @@ def test_from_row_refuses_a_row_with_no_accumulators():
     bank.fit_predict(frame(["a", "b"]))
     row = bank.closed_groups()
     assert row.height == 1 and row["weight_sum"][0] > 0
-    with pytest.raises(ValueError, match="no accumulators"):
+    with pytest.raises(
+        ValueError, match="has no Gram, since only ewridge, lasso and ew_cov keep one"
+    ):
         po.gram.from_row(row)
 
 

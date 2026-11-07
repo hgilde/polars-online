@@ -473,7 +473,7 @@ class TestRunnerErrorPaths:
             check=False,
         )
         assert res.returncode != 0
-        assert "negative" in res.stderr, res.stderr
+        assert "but a weight must be at least 0" in res.stderr, res.stderr
 
     def test_a_failed_run_leaves_the_previous_output_intact(self, tmp_path, online_cli):
         """The output is written to a temporary and renamed into place, so a
@@ -498,7 +498,7 @@ class TestRunnerErrorPaths:
             online_cli, tmp_path, [spec], input=src, output=out, chunk_size=500, check=False
         )
         assert res.returncode != 0
-        assert "negative" in res.stderr, res.stderr
+        assert "but a weight must be at least 0" in res.stderr, res.stderr
 
         assert out.read_bytes() == before, "the failed run overwrote the good output"
         assert pl.read_parquet(out).height == n

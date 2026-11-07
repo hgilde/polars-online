@@ -651,7 +651,9 @@ class TestLogisticLabels:
             strict_binary=True,
         )
         bank = po.ModelBank([spec])
-        with pytest.raises(ValueError, match=r"strict_binary.*neither 0 nor 1"):
+        with pytest.raises(
+            ValueError, match=r"has the value .* but strict_binary takes only 0 or 1"
+        ):
             bank.fit_predict(self._frame(5.0))
         po.ModelBank([spec]).fit_predict(self._frame(1.0))
 
@@ -710,7 +712,10 @@ class TestLogisticLabels:
         bad = second.with_columns(
             y=pl.when(pl.int_range(pl.len()) == row).then(2.0).otherwise(pl.col("y"))
         )
-        with pytest.raises(ValueError, match=rf"has the value 2 at row {row}, which is neither"):
+        with pytest.raises(
+            ValueError,
+            match=rf"value 2 at row {row} \(counting from 0\), but strict_binary takes only 0",
+        ):
             bank.fit_predict(bad)
         assert bank.save_bytes() == before, "the refused chunk touched the bank"
         clean = po.ModelBank([self._strict()])
@@ -739,7 +744,9 @@ class TestLogisticLabels:
             w=pl.when(pl.int_range(pl.len()) == 40).then(0.0).otherwise(1.0),
             y=pl.when(pl.int_range(pl.len()) == 40).then(0.5).otherwise(pl.col("y")),
         )
-        with pytest.raises(ValueError, match=r"has the value 0.5 at row 40.*null the rows"):
+        with pytest.raises(
+            ValueError, match=r"has the value 0.5 at row 40 .*Set the target to null on rows"
+        ):
             po.ModelBank([self._strict(weight="w")]).fit_predict(df)
 
 
@@ -829,7 +836,9 @@ class TestNegativeCounts:
     def test_a_negative_count_refuses_the_chunk_naming_the_row(self):
         counts = [1.0, 0.0, 3.0, 2.0, -1.0, 4.0]
         bank = po.ModelBank([self._spec()])
-        with pytest.raises(ValueError, match=r'"y" has -1 at row 4.*poisson.*never negative'):
+        with pytest.raises(
+            ValueError, match=r'"y" has the value -1 at row 4 .*poisson.*never negative'
+        ):
             bank.fit_predict(self._frame(counts))
         # Before any stream is touched: the bank goes on as a new one does.
         good = self._frame([2.0, 0.0, 1.0, 5.0])
@@ -837,7 +846,7 @@ class TestNegativeCounts:
 
     def test_the_row_is_counted_across_one_inputs_chunks(self):
         chunks = [self._frame([1.0, 2.0, 3.0]), self._frame([0.0, -0.5, 2.0])]
-        with pytest.raises(ValueError, match=r"has -0\.5 at row 4\b"):
+        with pytest.raises(ValueError, match=r"has the value -0\.5 at row 4 \(counting from 0\)"):
             list(po.ModelBank([self._spec()]).fit_predict_batches(iter(chunks)))
 
     def test_negative_zero_is_the_count_zero_and_a_null_is_scored(self):

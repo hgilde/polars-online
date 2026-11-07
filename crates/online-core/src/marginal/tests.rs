@@ -4971,7 +4971,10 @@ fn a_cadence_without_a_window_is_refused_by_name() {
     }
     .validate()
     .unwrap_err();
-    assert_eq!(e, "marginal: snapshot_every needs `window_size`");
+    assert_eq!(
+        e,
+        "marginal: snapshot_every is set, but window_size is not, and snapshot_every spaces the snapshots of a hard window. Set window_size, or leave out snapshot_every."
+    );
 }
 
 /// Task 252: each shard names the features it steps, and the shards of

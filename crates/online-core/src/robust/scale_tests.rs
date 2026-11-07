@@ -477,7 +477,10 @@ fn a_state_whose_sketches_are_not_its_scales_is_refused() {
     other.mad = vec![EwQuantile::new(&[0.25]).unwrap()];
     for (what, m) in [("lost", lost), ("stray", stray), ("level", other)] {
         let err = Robust::restore(&m.state()).unwrap_err().to_string();
-        assert!(err.contains("residual sketches"), "{what}: {err}");
+        assert!(
+            err.contains("its saved residual scale does not match"),
+            "{what}: {err}"
+        );
     }
     for m in [mad, rms] {
         assert!(Robust::restore(&m.state()).is_ok());
@@ -491,7 +494,10 @@ fn a_state_whose_sketches_are_not_its_scales_is_refused() {
     v["model"]["Sgd"]["mad"] = serde_json::json!([]);
     // `sgd` checks its layout as it decodes (`SgdV3`).
     let err = serde_json::from_value::<State>(v).unwrap_err().to_string();
-    assert!(err.contains("residual sketches"), "{err}");
+    assert!(
+        err.contains("its saved residual scale does not match"),
+        "{err}"
+    );
 }
 
 /// The subtle part of schema 63's loader (CLAUDE.md hard rule 5): a state
@@ -720,7 +726,10 @@ fn a_state_whose_sketches_are_not_anchored_as_its_cfg_says_is_refused() {
     stray.mad = anchored().mad.clone();
     for (what, m) in [("lost", lost), ("stray", stray)] {
         let err = Robust::restore(&m.state()).unwrap_err().to_string();
-        assert!(err.contains("residual sketches"), "{what}: {err}");
+        assert!(
+            err.contains("its saved residual scale does not match"),
+            "{what}: {err}"
+        );
     }
     assert!(Robust::restore(&anchored().state()).is_ok());
     let sg = crate::Sgd::new(crate::SgdCfg {
@@ -731,7 +740,10 @@ fn a_state_whose_sketches_are_not_anchored_as_its_cfg_says_is_refused() {
     let mut v = serde_json::to_value(sg.state()).unwrap();
     v["model"]["Sgd"]["cfg"]["mad_anchor"] = serde_json::json!(false);
     let err = serde_json::from_value::<State>(v).unwrap_err().to_string();
-    assert!(err.contains("residual sketches"), "{err}");
+    assert!(
+        err.contains("its saved residual scale does not match"),
+        "{err}"
+    );
 }
 
 /// A quantile fit's band is drawn in the MAD (docs/PLAN.md task 278,

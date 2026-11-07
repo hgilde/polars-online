@@ -50,8 +50,8 @@ def test_corrchange_s_old_keyword_beside_its_new_name_is_refused():
         warnings.simplefilter("ignore", po.PolarsOnlineDeprecationWarning)
         with pytest.raises(
             TypeError,
-            match='spec "m": reset_on_flag was renamed change_action, and both are given: '
-            "give change_action alone",
+            match='spec "m": reset_on_flag was renamed change_action, and both are given. '
+            "Give change_action alone.",
         ):
             po.spec.corrchange(
                 "m", features=["x", "z"], half_life=10.0, reset_on_flag=True, change_action="flag"

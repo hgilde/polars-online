@@ -91,11 +91,11 @@ fn f32_trouble(x: f64) -> Option<&'static str> {
     }
     let f = x as f32;
     if f.is_infinite() {
-        Some("past float32's largest number, 3.4e38, where it reads inf")
+        Some("larger in size than float32's largest number, 3.40e38, where it reads inf")
     } else if f.abs() < f32::MIN_POSITIVE {
         Some(
-            "below float32's smallest normal number, 1.2e-38, where it keeps fewer \
-             digits, or none",
+            "smaller in size than float32's smallest normal number, 1.18e-38, where it \
+             keeps fewer digits, or none",
         )
     } else {
         None
@@ -125,7 +125,7 @@ pub(crate) fn check_float32(
     let name = |c: usize| {
         names
             .get(c)
-            .map_or_else(|| format!("column {c}"), |n| format!("'{n}'"))
+            .map_or_else(|| format!("column {c}"), |n| format!("\"{n}\""))
     };
     let pair = if i == j {
         format!("{} with itself", name(i))
@@ -145,8 +145,8 @@ pub(crate) fn check_float32(
         "those columns".to_string()
     };
     Err(PyValueError::new_err(format!(
-        "gram(dtype=\"float32\"): {what} is {:.3e}, {why}: rescale {fix} upstream, or read the \
-         Gram in float64",
+        "ModelBank.gram(dtype=\"float32\"): {what} is {:.2e}, {why}. Change the scale of {fix} \
+         before the bank learns the rows, or leave dtype at its default, \"float64\".",
         v[at]
     )))
 }
@@ -154,7 +154,17 @@ pub(crate) fn check_float32(
 fn floats(py: Python<'_>, obj: &Bound<'_, PyAny>, what: &str) -> PyResult<Vec<f64>> {
     PyBuffer::<f64>::get(obj)
         .and_then(|b| b.to_vec(py))
-        .map_err(|e| PyValueError::new_err(format!("{what}: {e}")))
+        .map_err(|e| internal(format!("the Gram's {what} is not a float64 buffer ({e})")))
+}
+
+/// A refusal no call of `po.gram` reaches, since the Python layer checks
+/// and converts first: a defect if met, or a direct call of the private
+/// native module. Said as such, with where to report it.
+pub(crate) fn internal(what: String) -> PyErr {
+    PyValueError::new_err(format!(
+        "po.gram: internal: {what}, which is a defect in polars-online. Open an issue at \
+         https://github.com/hgilde/polars-online/issues with this message."
+    ))
 }
 
 /// A co-moment matrix as handed over: float64 or float32, whole or packed.
@@ -171,7 +181,11 @@ impl Matrix {
         PyBuffer::<f32>::get(obj)
             .and_then(|b| b.to_vec(py))
             .map(Self::F32)
-            .map_err(|e| PyValueError::new_err(format!("comoments: float64 or float32, {e}")))
+            .map_err(|e| {
+                internal(format!(
+                    "the Gram's comoments is neither a float64 nor a float32 buffer ({e})"
+                ))
+            })
     }
 
     fn len(&self) -> usize {
@@ -249,7 +263,9 @@ fn read(py: Python<'_>, g: &GramIn<'_>) -> PyResult<InGram> {
     for (what, got, want) in shapes {
         if got != want {
             return Err(PyValueError::new_err(format!(
-                "{what} has {got} entries; a Gram of {k} columns and {m} targets has {want}"
+                "po.gram: the Gram's {what} has {got} entries, but a Gram of {k} columns and {m} \
+                 targets has {want}. Pass each Gram as ModelBank.gram() or po.gram.merge() \
+                 returns it, with every array sized to its columns and targets."
             )));
         }
     }
@@ -301,7 +317,7 @@ pub(crate) fn gram_lars_paths<'py>(
     let threads = crate::threads_pool(threads)?;
     let owned = read_all(py, &grams)?;
     if targets.len() != owned.len() {
-        return Err(PyValueError::new_err(format!(
+        return Err(internal(format!(
             "{} target lists for {} Grams",
             targets.len(),
             owned.len()
@@ -352,7 +368,7 @@ pub(crate) fn gram_cd_path(
         true,
     )?;
     if weights.len() != slots.len() {
-        return Err(PyValueError::new_err(format!(
+        return Err(internal(format!(
             "{} penalty weights for {} features",
             weights.len(),
             slots.len()
@@ -390,18 +406,18 @@ fn subsets_fit(
     let all: Vec<Vec<usize>> = vec![targets.clone(); owned.len()];
     check_axes(&owned, &all, &cols.slots, cols.icept, true)?;
     if let Some(&i) = subsets.iter().flatten().find(|&&i| i >= owned.len()) {
-        return Err(PyValueError::new_err(format!(
-            "subset names Gram {i} of {}",
+        return Err(internal(format!(
+            "a subset names Gram {i} of {}",
             owned.len()
         )));
     }
     if subsets.iter().any(Vec::is_empty) {
-        return Err(PyValueError::new_err("a subset names no Gram"));
+        return Err(internal("a subset names no Gram".into()));
     }
     if let Pooling::Within { signs } = &pooling
         && let Some(draw) = signs.iter().find(|d| d.len() != owned.len())
     {
-        return Err(PyValueError::new_err(format!(
+        return Err(internal(format!(
             "a draw of target_signs has {} signs for {} Grams",
             draw.len(),
             owned.len()
@@ -495,7 +511,7 @@ pub(crate) fn gram_path_subsets<'py>(
 ) -> PyResult<Vec<Vec<Vec<PathOut<'py>>>>> {
     let threads = crate::threads_pool(threads)?;
     if !weights.is_empty() && weights.len() != slots.len() {
-        return Err(PyValueError::new_err(format!(
+        return Err(internal(format!(
             "{} penalty weights for {} features",
             weights.len(),
             slots.len()
@@ -557,7 +573,7 @@ fn jobs_fit(
 ) -> PyResult<Vec<SubsetOut>> {
     let owned = read_all(py, grams)?;
     if weights.len() != slots.len() {
-        return Err(PyValueError::new_err(format!(
+        return Err(internal(format!(
             "{} weight lists for {} column sets",
             weights.len(),
             slots.len()
@@ -711,22 +727,19 @@ pub(crate) fn check_axes(
     same_targets: bool,
 ) -> PyResult<()> {
     if let Some(c) = online_polars::gramfit::repeated_slot(slots) {
-        return Err(PyValueError::new_err(format!(
-            "the features name column {c} twice; {}",
-            online_polars::gramfit::TWICE
-        )));
+        return Err(internal(format!("the features name column {c} twice")));
     }
     for (g, ts) in grams.iter().map(|g| &g.base).zip(targets) {
         let m = g.target_weights.len();
         if let Some(&c) = slots.iter().chain(icept.as_ref()).find(|&&c| c >= g.k) {
-            return Err(PyValueError::new_err(format!(
-                "column {c} out of range for a Gram of {} columns",
+            return Err(internal(format!(
+                "column {c} is out of range for a Gram of {} columns",
                 g.k
             )));
         }
         if let Some(&t) = ts.iter().find(|&&t| t >= m) {
-            return Err(PyValueError::new_err(format!(
-                "target {t} out of range for a Gram with {m} targets"
+            return Err(internal(format!(
+                "target {t} is out of range for a Gram with {m} targets"
             )));
         }
     }
@@ -740,11 +753,14 @@ pub(crate) fn check_axes(
     };
     let first = grams.first().map(axes);
     if grams.iter().any(|g| Some(axes(g)) != first) {
-        return Err(PyValueError::new_err(if same_targets {
-            "every Gram must have the same columns and targets"
-        } else {
-            "every Gram must have the same columns"
-        }));
+        return Err(internal(
+            if same_targets {
+                "the Grams differ in their columns or targets"
+            } else {
+                "the Grams differ in their columns"
+            }
+            .into(),
+        ));
     }
     Ok(())
 }

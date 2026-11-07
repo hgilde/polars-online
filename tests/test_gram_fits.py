@@ -294,11 +294,14 @@ class TestLarsPath:
     @pytest.mark.parametrize(
         ("kw", "match"),
         [
-            (dict(max_iter=0), "max_iter must be a whole number >= 1"),
-            (dict(max_active=True), "max_active must be a whole number >= 1"),
-            (dict(max_active=2.0), "max_active must be a whole number >= 1"),
-            (dict(penalty_weights=[1.0, 0.0, 1.0, 1.0, 1.0]), "use lasso_path for it"),
-            (dict(penalty_weights=[1.0]), "one entry per feature"),
+            (dict(max_iter=0), "max_iter must be at least 1, or None, but it is 0"),
+            (dict(max_active=True), "max_active must be a Python int of at least 1"),
+            (dict(max_active=2.0), "max_active must be a Python int of at least 1"),
+            (
+                dict(penalty_weights=[1.0, 0.0, 1.0, 1.0, 1.0]),
+                "use po.gram.lasso_path for a weight of 0",
+            ),
+            (dict(penalty_weights=[1.0]), r"one entry for each of the \d+ features"),
             (dict(features=["intercept"]), "constant column"),
         ],
     )
@@ -519,11 +522,11 @@ class TestSolveSubsets:
     @pytest.mark.parametrize(
         ("args", "kw", "match"),
         [
-            ([[]], {}, "names no Gram"),
-            ([[0, 9]], {}, "out of range"),
+            ([[]], {}, "each subset must name at least one Gram"),
+            ([[0, 9]], {}, "names one outside them"),
             ([[1, 1]], {}, "names a Gram twice"),
             ([[0]], dict(ridge=-1.0), "ridge must be finite"),
-            ([[0]], dict(path={"max_knots": 3}), "path takes"),
+            ([[0]], dict(path={"max_knots": 3}), "path takes the keys"),
             ([[0]], dict(path={"max_iter": 0}), "max_iter must be"),
             ([[0]], dict(features=["intercept"]), "constant column"),
         ],
@@ -535,15 +538,15 @@ class TestSolveSubsets:
 
     def test_it_refuses_grams_that_do_not_share_their_axes_or_lack_the_centred_forms(self):
         grams = blocks(n_blocks=2)
-        with pytest.raises(ValueError, match="needs at least one Gram"):
+        with pytest.raises(ValueError, match="grams must hold at least one Gram"):
             pg.solve_subsets([], [[0]])
-        with pytest.raises(ValueError, match="same columns and targets"):
+        with pytest.raises(ValueError, match="every Gram must have the same columns"):
             pg.solve_subsets([grams[0], pg.subset(grams[1], ["intercept", "x0"])], [[0, 1]])
         bare = dict(grams[1], cross_centered=None)
         with pytest.raises(ValueError, match="cross_centered"):
             pg.solve_subsets([grams[0], bare], [[0, 1]])
         old = dict(grams[1], target_vars=None)
-        with pytest.raises(ValueError, match="no target moments"):
+        with pytest.raises(ValueError, match="has no target_vars or no target_n_kish"):
             pg.solve_subsets([grams[0], old], [[0, 1]])
 
 
@@ -717,8 +720,8 @@ class TestCompactGram:
     @pytest.mark.parametrize(
         ("scale", "says"),
         [
-            (1e-25, "below float32's smallest normal number"),
-            (1e20, "past float32's largest number"),
+            (1e-25, "smaller in size than float32's smallest normal number"),
+            (1e20, "larger in size than float32's largest number"),
         ],
     )
     @pytest.mark.parametrize("layout", ["full", "packed"])
@@ -735,7 +738,7 @@ class TestCompactGram:
         bank.fit_predict(df)
         (g,) = bank.gram("r", layout=layout)
         assert np.isfinite(g["comoments"]).all()
-        with pytest.raises(ValueError, match=f"'x1'.*{says}"):
+        with pytest.raises(ValueError, match=f'"x1".*{says}'):
             bank.gram("r", dtype="float32", layout=layout)
         lagged = po.ModelBank([po.spec.ew_cov("c", features=["x0", "x1"], lam=1.0, lags=[1])])
         lagged.fit_predict(df)
@@ -753,7 +756,7 @@ class TestCompactGram:
         bank.fit_predict(df)
         (g,) = bank.gram("c")
         assert np.float32(g["comoments"][1, 1]) >= np.finfo(np.float32).tiny
-        with pytest.raises(ValueError, match="lag-1 co-moment of 'x1' with itself"):
+        with pytest.raises(ValueError, match='lag-1 co-moment of "x1" with itself'):
             bank.gram("c", dtype="float32")
         no_lags = po.ModelBank([po.spec.ew_cov("c", features=["x0", "x1"], lam=1.0)])
         no_lags.fit_predict(df)
@@ -830,9 +833,9 @@ class TestLarsPathsTakeLarsPathsArguments:
 
     def test_its_refusals_are_lars_paths(self):
         grams = grouped_grams()
-        with pytest.raises(ValueError, match="use lasso_path for it"):
+        with pytest.raises(ValueError, match="use po.gram.lasso_path for a weight of 0"):
             pg.lars_paths(grams, penalty_weights=[1.0, 0.0, 1.0, 1.0, 1.0, 1.0])
-        with pytest.raises(ValueError, match="one entry per feature"):
+        with pytest.raises(ValueError, match=r"one entry for each of the \d+ features"):
             pg.lars_paths(grams, penalty_weights=[1.0])
 
 

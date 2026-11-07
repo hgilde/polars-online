@@ -47,7 +47,10 @@ fn a_window_beside_quantiles_or_a_cadence_without_a_window_is_refused() {
     }
     .validate()
     .unwrap_err();
-    assert_eq!(e, "ew_cov: snapshot_every needs `window_size`");
+    assert_eq!(
+        e,
+        "ew_cov: snapshot_every is set, but window_size is not, and snapshot_every spaces the snapshots of a hard window. Set window_size, or leave out snapshot_every."
+    );
     assert!(
         EwCovModel::new(EwCovCfg {
             max_rows_between_snapshots: Some(3),

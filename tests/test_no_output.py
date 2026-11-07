@@ -123,7 +123,7 @@ class TestARunWithNoOutput:
             online_cli, tmp_path, [cov_spec()], input=src, args=["--no-output"], check=False
         )
         assert res.returncode != 0
-        assert "somewhere to put its work" in res.stderr, res.stderr
+        assert "a run must write something" in res.stderr, res.stderr
 
     def test_an_empty_input_is_not_an_error(self, tmp_path, online_cli):
         """With an output, an empty input still writes an empty frame of the

@@ -96,7 +96,7 @@ fn a_null_in_an_integer_or_temporal_clock_is_refused_by_row() {
         let mut bank = Bank::new(vec![s]).unwrap();
         let e = bank.fit_predict(&df).unwrap_err().to_string();
         assert!(
-            e.contains("clock column \"t\" has a null/non-finite value at row 3"),
+            e.contains("clock column \"t\" has a null, NaN or infinite value at row 3"),
             "{what}: {e}"
         );
         assert_eq!(
@@ -164,9 +164,20 @@ fn every_clock_dtype_is_emitted_as_itself_and_named_as_polars_names_it() {
             "{dtype}: the last row's clock is its own value"
         );
         let e = bank.groups_table(&[0, 1]).unwrap_err();
+        // As Python's Polars names the dtype.
+        let unit = |tu: &TimeUnit| match tu {
+            TimeUnit::Milliseconds => "ms",
+            TimeUnit::Microseconds => "us",
+            TimeUnit::Nanoseconds => "ns",
+        };
+        let named = match &dtype {
+            DataType::Datetime(tu, None) => format!("Datetime(\"{}\")", unit(tu)),
+            DataType::Duration(tu) => format!("Duration(\"{}\")", unit(tu)),
+            other => format!("{other:?}"),
+        };
         assert!(
-            e.contains("spec \"a\" keeps its clock as f64")
-                && e.contains(&format!("spec \"b\" as {dtype}")),
+            e.contains("spec \"a\" keeps its clock as Float64")
+                && e.contains(&format!("spec \"b\" as {named}")),
             "{dtype}: {e}"
         );
         // One spec at a time reads.
@@ -199,7 +210,8 @@ fn closed_groups_name_a_spec_out_of_range_and_null_another_kinds_lags() {
     bank.fit_predict(&df).unwrap();
     assert_eq!(
         bank.closed_groups(Some(2), false).unwrap_err(),
-        "spec index 2 out of range"
+        "spec: index 2 is out of range for a bank of 2 specs. Give an index below 2, or the \
+         spec's name."
     );
     // The queue survives a save and a load, lags and all.
     let mut loaded = Bank::load_bytes(&bank.save_bytes().unwrap(), None).unwrap();
@@ -234,7 +246,11 @@ fn a_bank_of_two_specs_of_one_name_is_refused() {
             "features": ["x0"], "half_life": 10.0}"#,
     );
     let e = Bank::new(vec![s.clone(), s]).err().expect("accepted");
-    assert_eq!(e, "duplicate spec name \"m\"");
+    assert_eq!(
+        e,
+        "specs: two specs are named \"m\", but a spec's name names its output column, so each \
+         must be unique. Rename one of them."
+    );
 }
 
 /// A stream state restored under another spec: a grid of another size is
@@ -251,7 +267,12 @@ fn a_stream_restored_under_another_spec_starts_its_diagnostics_over_or_is_refuse
     let e = Stream::restore(&at(""), &Stream::new(&grid).unwrap().save())
         .err()
         .expect("a grid of two restored as one");
-    assert_eq!(e, "saved state has a different number of model instances");
+    assert_eq!(
+        e,
+        "it is damaged, since it holds 2 instances (the parts of the model that fit one \
+         half-life each) where this spec keeps 1. Load an undamaged copy of the state file, or \
+         rebuild it from its input."
+    );
 
     let options = [
         r#", "emit_sigma": true"#,
@@ -667,8 +688,7 @@ fn a_temporal_clock_column_is_refused_where_it_cannot_be_read() {
     );
     let e = refusal(weighted);
     assert!(
-        e.contains("spec \"b\": column \"t\" has dtype")
-            && e.contains("and b reads it as a weight, which must be numeric"),
+        e.contains("spec \"b\": it reads column \"t\" as a weight, which must be a number, but the column is"),
         "{e}"
     );
     let formula = spec(
@@ -678,7 +698,7 @@ fn a_temporal_clock_column_is_refused_where_it_cannot_be_read() {
     );
     let e = refusal(formula);
     assert!(
-        e.contains("reads it as a column of a target's formula, which must be numeric"),
+        e.contains("reads column \"t\" as a column of a formula target, which must be a number, a boolean or text"),
         "{e}"
     );
     let kalman = spec(
@@ -691,7 +711,7 @@ fn a_temporal_clock_column_is_refused_where_it_cannot_be_read() {
         .unwrap_err()
         .to_string();
     assert!(
-        e.contains("but q is a number in the clock's own units")
+        e.contains("but q is the noise per clock unit, which has no duration form")
             && e.contains("give coef_half_life as a duration"),
         "{e}"
     );

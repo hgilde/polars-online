@@ -151,11 +151,14 @@ impl Layout {
 
     pub(crate) fn check(&self) -> Result<(), GbdtError> {
         if self.names.is_empty() {
-            return Err(GbdtError::msg("no feature columns"));
+            return Err(GbdtError::msg(
+                "po.gbdt: no feature columns are named. Name at least one feature.",
+            ));
         }
         if self.names.len() != self.kinds.len() {
             return Err(GbdtError::msg(format!(
-                "{} feature names for {} kinds",
+                "po.gbdt: internal: {} feature names for {} kinds, which is a defect in \
+                 polars-online. Open an issue at https://github.com/hgilde/polars-online/issues with this message.",
                 self.names.len(),
                 self.kinds.len()
             )));
@@ -171,8 +174,12 @@ pub fn conversion_pool(threads: usize) -> Result<rayon::ThreadPool, GbdtError> {
     if threads > 0 {
         b = b.num_threads(threads);
     }
-    b.build()
-        .map_err(|e| GbdtError::msg(format!("a thread pool for the conversions: {e}")))
+    b.build().map_err(|e| {
+        GbdtError::msg(format!(
+            "po.gbdt: a thread pool for the conversions could not be started ({e}). Pass fewer \
+             threads, or retry."
+        ))
+    })
 }
 
 #[cfg(test)]

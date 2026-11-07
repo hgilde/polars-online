@@ -62,7 +62,10 @@ fn parse_format(s: &str) -> Result<Format, String> {
         .find(|f| f.name() == s)
         .ok_or_else(|| {
             let names: Vec<&str> = Format::ALL.iter().map(|f| f.name()).collect();
-            format!("`{s}` is not a format; one of {}", names.join(", "))
+            format!(
+                "\"{s}\" is not a format. Use one of {}.",
+                quoted_words(&names)
+            )
         })
 }
 
@@ -73,8 +76,21 @@ fn parse_layout(s: &str) -> Result<OutputLayout, String> {
         .find(|l| l.name() == s)
         .ok_or_else(|| {
             let names: Vec<&str> = OutputLayout::ALL.iter().map(|l| l.name()).collect();
-            format!("`{s}` is not an output layout; one of {}", names.join(", "))
+            format!(
+                "\"{s}\" is not an output layout. Use one of {}.",
+                quoted_words(&names)
+            )
         })
+}
+
+/// `["a", "b", "c"]` as `"a", "b" or "c"`: the words a refusal offers, each
+/// quoted as the reader types it.
+fn quoted_words(names: &[&str]) -> String {
+    let quoted: Vec<String> = names.iter().map(|n| format!("\"{n}\"")).collect();
+    match quoted.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
+        _ => quoted.concat(),
+    }
 }
 
 /// What `--version` prints after the name: the package's version, the
@@ -283,9 +299,9 @@ const UNSTABLE_VAR: &str = "POLARS_ONLINE_WARN_UNSTABLE";
 /// drops the next line's indentation: without them the notice kept six
 /// spaces inside each sentence (task 244, C-4).
 const FORMULA_UNSTABLE: &str = "warning: a formula target's written form -- its tree in the TOML \
-     file and in a saved state -- is considered unstable. It may be changed at any point \
-     without it being considered a breaking change (set POLARS_ONLINE_WARN_UNSTABLE=0 or \
-     unset it to silence this).";
+     file and in a saved state -- is considered unstable, so it may change in any release \
+     without that being considered a breaking change. Set POLARS_ONLINE_WARN_UNSTABLE=0, or \
+     unset it, to silence this warning.";
 
 /// A parsed TOML model table, as the model-level forwarding reads and
 /// rewrites it (`online_polars::ModelTable`). A renamed key keeps the old
@@ -370,7 +386,7 @@ fn forward_deprecated_toml(
             if let Some((key, value)) = t.remove_entry(*old) {
                 if t.contains_key(*new) {
                     return Err(format!(
-                        "{old} was renamed {new}, and both are given: give {new} alone"
+                        "{old} was renamed {new}, and both are given. Give {new} alone."
                     ));
                 }
                 t.insert(Spanned::new(key.span(), (*new).to_string().into()), value);
@@ -484,7 +500,7 @@ fn refuse_renamed_flags(cli: &Cli) {
             Cli::command()
                 .error(
                     clap::error::ErrorKind::UnknownArgument,
-                    format!("{old} was renamed {new}"),
+                    format!("{old} was renamed {new}. Use {new}."),
                 )
                 .exit();
         }
@@ -494,8 +510,12 @@ fn refuse_renamed_flags(cli: &Cli) {
 fn run() -> Result<(), String> {
     let cli = Cli::parse();
     refuse_renamed_flags(&cli);
-    let text = std::fs::read_to_string(&cli.config)
-        .map_err(|e| format!("reading {}: {e}", cli.config.display()))?;
+    let text = std::fs::read_to_string(&cli.config).map_err(|e| {
+        format!(
+            "reading {}: {e}. Check the path given to --config.",
+            cli.config.display()
+        )
+    })?;
     // A key renamed after 1.0 is read as its new name, with a warning.
     let ((cfg, doc), notices) = read_config(&text, online_polars::DEPRECATED)
         .map_err(|e| format!("parsing {}: {e}", cli.config.display()))?;

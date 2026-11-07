@@ -13,6 +13,13 @@ fn spec(budget: &str) -> Spec {
     .unwrap()
 }
 
+/// [`spec`] with a group column, so the refusal names the group.
+fn grouped(budget: &str) -> Spec {
+    let mut s = spec(budget);
+    s.group = Some("g".into());
+    s
+}
+
 /// A temporal spec with a clock spacing written `"90s"`.
 fn temporal(every: &str) -> Spec {
     serde_json::from_str(&format!(
@@ -36,16 +43,16 @@ fn clock(spacing: f64) -> Cadence {
 #[test]
 fn the_refusal_says_how_to_raise_the_budget() {
     let key = GroupKey(Some("a".into()));
-    let default = over_budget_message(&spec(""), &key, 300 << 20, clock(4.0));
+    let default = over_budget_message(&grouped(""), &key, 300 << 20, clock(4.0), false);
     for want in [
         "the default window_budget of 256 MiB",
-        "window_budget = {\"refuse\": MiB} with a larger number of MiB",
-        "{\"refuse\": inf} for no bound",
+        "window_budget = {\"refuse\": MiB} to a larger number of MiB",
+        "inf, or float(\"inf\") in Python, for no bound",
         "float(\"inf\")",
-        "raise snapshot_every (4 now)",
+        "increase snapshot_every (4 now)",
         "window_budget = {\"thin\": MiB}",
         "group \"a\"",
-        "300.000 MiB",
+        "300 MiB",
     ] {
         assert!(default.contains(want), "{want:?} not in {default}");
     }
@@ -54,12 +61,23 @@ fn the_refusal_says_how_to_raise_the_budget() {
         &GroupKey(None),
         9 << 20,
         Cadence::EVERY_ROW,
+        false,
     );
     assert!(
-        named.contains("past window_budget = {\"refuse\": 8}"),
+        named.contains("above window_budget = {\"refuse\": 8}"),
         "{named}"
     );
     assert!(!named.contains("default"), "{named}");
+    // Found as the rows went in, the bank has learned part of the chunk:
+    // the way out starts from a saved state.
+    let learned = over_budget_message(&spec(""), &GroupKey(None), 9 << 20, clock(4.0), true);
+    assert!(
+        learned.contains("so the bank stopped after learning part of the chunk")
+            && learned
+                .contains("then build the bank again and fit it from the start of its input."),
+        "{learned}"
+    );
+    assert!(!learned.contains("group"), "{learned}");
 }
 
 /// The refusal names the cadence the ring ran at, whichever is in force
@@ -69,7 +87,7 @@ fn the_refusal_says_how_to_raise_the_budget() {
 #[test]
 fn the_refusal_names_the_cadence_in_force() {
     let key = GroupKey(None);
-    let say = |s: &Spec, c: Cadence| over_budget_message(s, &key, 9 << 20, c);
+    let say = |s: &Spec, c: Cadence| over_budget_message(s, &key, 9 << 20, c, false);
     let both = Cadence {
         spacing: 90.0,
         rows: 25,
@@ -82,33 +100,32 @@ fn the_refusal_names_the_cadence_in_force() {
         (
             temporal(r#", "snapshot_every": "90s""#),
             clock(90.0),
-            "raise snapshot_every (90s now);",
+            "increase snapshot_every (90s now) to keep",
         ),
         (
             temporal(r#", "snapshot_every": "90s""#),
             clock(180.0),
-            "raise snapshot_every (3m now);",
+            "increase snapshot_every (3m now) to keep",
         ),
         (
             temporal(r#", "snapshot_every": "90s", "max_rows_between_snapshots": 25"#),
             both,
-            "raise snapshot_every (90s now) and max_rows_between_snapshots (25 now)",
+            "increase snapshot_every (90s now) and max_rows_between_snapshots (25 now)",
         ),
         (
             spec(r#", "max_rows_between_snapshots": 25"#),
             rows,
-            "raise max_rows_between_snapshots (25 now), or give snapshot_every",
+            "increase max_rows_between_snapshots (25 now) or give snapshot_every",
         ),
         (
             spec(""),
             Cadence::EVERY_ROW,
-            "set snapshot_every to the clock between snapshots, or max_rows_between_snapshots \
-             to the rows between them (every row now)",
+            "set snapshot_every or max_rows_between_snapshots (a snapshot every row now)",
         ),
         (
             spec(r#", "snapshot_every": 2.5"#),
             clock(2.5),
-            "raise snapshot_every (2.5 now)",
+            "increase snapshot_every (2.5 now)",
         ),
     ] {
         let got = say(&s, cadence);

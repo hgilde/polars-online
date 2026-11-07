@@ -36,10 +36,13 @@ pub fn resolved_defaults(spec: &Spec) -> Result<Value, String> {
     let mut spec = spec.clone();
     spec.check()?;
     let stream = Stream::new(&spec)?;
-    let (_, model) = stream
-        .models
-        .first()
-        .ok_or_else(|| format!("spec {:?} builds no model instance", spec.name))?;
+    let (_, model) = stream.models.first().ok_or_else(|| {
+        format!(
+            "spec {:?}: it builds no model, which is a defect in polars-online. Open an \
+                 issue at https://github.com/hgilde/polars-online/issues with this message.",
+            spec.name
+        )
+    })?;
     let mut out = Map::new();
     out.insert("model".into(), model.cfg_json()?);
     if let Some(d) = derived(model) {
@@ -59,15 +62,17 @@ pub(crate) fn faithful_json<T: Serialize + DeserializeOwned>(v: &T) -> Result<Va
     let json = serde_json::to_value(v).map_err(|e| e.to_string())?;
     let back: T = serde_json::from_value(json.clone()).map_err(|e| {
         format!(
-            "a configuration does not read back from its JSON ({e}); a non-finite float \
-             needs `online_core::humanfloat` on its field"
+            "spec defaults: a setting does not read back from its JSON ({e}), which is a defect \
+             in polars-online. Open an issue at https://github.com/hgilde/polars-online/issues \
+             with this message."
         )
     })?;
     let bytes = |t: &T| rmp_serde::to_vec_named(t).map_err(|e| e.to_string());
     if bytes(&back)? != bytes(v)? {
         return Err(
-            "a configuration's JSON reads back as another value; a field's human-readable \
-             encoding does not round-trip"
+            "spec defaults: a setting's JSON reads back as another value, which is a defect in \
+             polars-online. Open an issue at https://github.com/hgilde/polars-online/issues with \
+             this message."
                 .into(),
         );
     }

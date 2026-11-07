@@ -179,7 +179,7 @@ fn the_refit_is_refused_where_it_does_not_apply() {
     m.refit.pop();
     match Robust::restore(&m.state()) {
         Err(StateError::Invalid(e)) => assert!(
-            e.ends_with("the refit's buffers do not match quantile_refit_rows"),
+            e.contains("the rows it saved for its refit do not match quantile_refit_rows"),
             "{e}"
         ),
         other => panic!("{other:?}"),

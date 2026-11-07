@@ -660,7 +660,7 @@ fn errors_name_the_frame_row_under_any_layout() {
     names(
         bank.fit_predict(&with_value(&df, "w", row, Some(-0.5)))
             .unwrap_err(),
-        "negative",
+        "a weight must be at least 0",
     );
     // Backwards within the chunk: below the group's previous row.
     let prev = previous_in_group(&df, row).unwrap();
@@ -685,7 +685,10 @@ fn errors_name_the_frame_row_under_any_layout() {
     let both = with_value(&with_value(&df, "t", row, None), "w", other, Some(-1.0));
     for _ in 0..20 {
         let msg = bank.fit_predict(&both).unwrap_err().to_string();
-        assert!(msg.contains("clock") && !msg.contains("negative"), "{msg}");
+        assert!(
+            msg.contains("clock") && !msg.contains("a weight must be"),
+            "{msg}"
+        );
     }
 
     // Backwards against the state: the first chunk trains, the second's

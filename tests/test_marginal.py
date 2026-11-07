@@ -536,7 +536,7 @@ class TestPlumbing:
             spec(stats=["corr"])  # ew_cov's keyword, not this model's
         ridge = po.spec.ewridge("r", targets=["y0"], features=["x0"], half_life=10.0)
         bank = po.ModelBank([ridge, spec()])
-        with pytest.raises(ValueError, match=r'spec "r" has model type "ewridge", not "marginal"'):
+        with pytest.raises(ValueError, match=r'spec "r": its model is "ewridge", not "marginal"'):
             bank.marginal("r")
         with pytest.raises(KeyError):
             bank.marginal("nope")

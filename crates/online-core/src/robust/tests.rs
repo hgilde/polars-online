@@ -2269,7 +2269,7 @@ fn each_damaged_band_system_is_refused_on_its_own() {
             "a slot too many",
             false,
             |b| b.0.push(None),
-            "band systems for",
+            "saved quantile fits for 2 targets where it has 1",
         ),
         (
             "a column the Gram does not keep",
@@ -2277,7 +2277,7 @@ fn each_damaged_band_system_is_refused_on_its_own() {
             |b| {
                 b.0[0].as_mut().unwrap().keep.pop();
             },
-            "not of its Gram's",
+            "(counting from 0) does not match its running sums",
         ),
         (
             "a scale an ulp off",
@@ -2286,7 +2286,7 @@ fn each_damaged_band_system_is_refused_on_its_own() {
                 let s = &mut b.0[0].as_mut().unwrap().s;
                 s[1] = f64::from_bits(s[1].to_bits() + 1);
             },
-            "not of its Gram's",
+            "(counting from 0) does not match its running sums",
         ),
         (
             "no factor where columns are kept",
@@ -2294,7 +2294,7 @@ fn each_damaged_band_system_is_refused_on_its_own() {
             |b| {
                 b.0[0].as_mut().unwrap().factor = None;
             },
-            "band factor is not of its 3",
+            "does not match its 3 columns",
         ),
         (
             "a factor of the wrong order",
@@ -2302,7 +2302,7 @@ fn each_damaged_band_system_is_refused_on_its_own() {
             |b| {
                 b.0[0].as_mut().unwrap().factor = SpdFactor::of(&[1.0], 1);
             },
-            "band factor is not of its 3",
+            "does not match its 3 columns",
         ),
         (
             "a factor where no column is kept",
@@ -2310,7 +2310,7 @@ fn each_damaged_band_system_is_refused_on_its_own() {
             |b| {
                 b.0[0].as_mut().unwrap().factor = SpdFactor::of(&[1.0], 1);
             },
-            "band factor is not of its 0",
+            "does not match its 0 columns",
         ),
     ];
     for (what, constant, spoil, want) in cases {
@@ -3100,7 +3100,10 @@ fn a_state_whose_shares_have_the_wrong_shape_is_refused() {
             spoil(&mut inner.support);
             match Robust::restore(&s) {
                 Err(StateError::Invalid(e)) => {
-                    assert!(e.contains("data shares"), "{what}: {e}");
+                    assert!(
+                        e.contains("part of its saved fit has the wrong shape"),
+                        "{what}: {e}"
+                    );
                 }
                 other => panic!("{what}: {other:?}"),
             }

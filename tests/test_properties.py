@@ -973,7 +973,10 @@ class TestEveryOtherKind:
         w = df["w"].to_list()
         w[8] = -0.5
         bad = df.with_columns(w=pl.Series(w, dtype=pl.Float64))
-        says = r'weight column "w" has a negative value \(-0\.5\) at row 8'
+        says = (
+            r'weight column "w" has the value -0\.5 at row 8 \(counting from 0\), '
+            r"but a weight must be at least 0"
+        )
         with pytest.raises((pl.exceptions.ComputeError, ValueError), match=says):
             po.ModelBank([spec]).fit_predict(bad)
 

@@ -167,7 +167,7 @@ class TestMerging:
 
     def test_mismatched_keys_are_refused(self):
         out = fitted(n=400)
-        with pytest.raises(ValueError, match="same keys in every part"):
+        with pytest.raises(ValueError, match="every part must have the same key columns"):
             po.eval.merge_sums(po.eval.sums(out, "m"), po.eval.sums(out, "m", group=["venue"]))
 
 
@@ -223,7 +223,7 @@ class TestTheShape:
         out = fitted(n=300)
         with pytest.raises(KeyError):
             po.eval.sums(out, "nope")
-        with pytest.raises(TypeError, match="not a model-output struct"):
+        with pytest.raises(TypeError, match="must be a spec's output column, but it is"):
             po.eval.sums(out, "x0")
 
 

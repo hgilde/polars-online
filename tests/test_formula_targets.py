@@ -787,7 +787,7 @@ def test_learn_only_is_the_calls_not_the_banks() -> None:
     bank._native.fit_predict(df.slice(0, 60), 0, True)
     with pytest.raises(ValueError, match="fit_predict needs an embargo"):
         bank._native.fit_predict(df.slice(60, 60), 60)
-    with pytest.raises(ValueError, match="keeps no prediction"):
+    with pytest.raises(ValueError, match="learn without predicting with ModelBank.fit"):
         bank.fit_predict(df.slice(60, 60))
 
 
@@ -1005,7 +1005,8 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
     for before in range(25, 61):
         old = state[:i] + bytes([before]) + state[i + 1 :]
         with pytest.raises(
-            ValueError, match=rf"schema version {before} not supported \(this build loads 61"
+            ValueError,
+            match=rf"schema version {before} is not supported, since this build loads schemas 61",
         ):
             po.ModelBank.load_bytes(old)
     po.ModelBank.load_bytes(state[:i] + bytes([61]) + state[i + 1 :])

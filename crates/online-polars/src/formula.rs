@@ -47,16 +47,23 @@ impl Literal {
         Ok(match v {
             Value::Null => Literal::Null,
             Value::Bool(b) => Literal::Bool(*b),
-            Value::Number(n) => {
-                match n.as_i64() {
-                    Some(i) => Literal::Int(i),
-                    None => Literal::Float(n.as_f64().ok_or_else(|| {
-                        format!("a literal must be a number JSON can hold, got {n}")
-                    })?),
-                }
-            }
+            Value::Number(n) => match n.as_i64() {
+                Some(i) => Literal::Int(i),
+                None => Literal::Float(n.as_f64().ok_or_else(|| {
+                    format!(
+                        "formula: a literal must be a number a double can hold, but it is \
+                             {n}. Write the literal as a smaller number."
+                    )
+                })?),
+            },
             Value::String(s) => Literal::Str(s.clone()),
-            other => return Err(format!("a literal must be a scalar, got {other}")),
+            other => {
+                return Err(format!(
+                    "formula: a literal must be a number, a string, true, false or null, but it \
+                     is {}. Write the literal as one of those.",
+                    short(other)
+                ));
+            }
         })
     }
 
@@ -184,9 +191,25 @@ const CALLS: &[(&str, usize)] = &[
     ("alias", 2),
 ];
 
+/// The window operators as a formula's tree writes them, the looking-ahead
+/// forms after the rest: the refusal of an operator lists them, and a unit
+/// test holds them to `OpKind::parse`.
+const WINDOW_HEADS: &[&str] = &[
+    "ewm_mean",
+    "ewm_sum",
+    "ewm_rate",
+    "ewm_var",
+    "ewm_std",
+    "ewm_quantile",
+    "rewm_mean",
+    "rewm_sum",
+    "rewm_rate",
+    "rewm_quantile",
+];
+
 /// What a formula reads around the window operators, in the words a reader
-/// looks for, each with the nodes it stands for. The refusal names these
-/// words; a unit test holds their nodes to `CALLS` with `col` and `lit`, and
+/// looks for, each with the nodes it stands for. The refusal names their
+/// nodes, as a tree writes them; a unit test holds their nodes to `CALLS` with `col` and `lit`, and
 /// `tests/test_windows.py` holds this list to Python's `ACCEPTED`, so the
 /// message cannot leave out a node that is read (task 238).
 const ACCEPTED: &[(&str, &[&str])] = &[
@@ -210,12 +233,16 @@ const ACCEPTED: &[(&str, &[&str])] = &[
     ("alias", &["alias"]),
 ];
 
-/// The words of `ACCEPTED` as one English list.
-fn accepted_text() -> String {
-    let words: Vec<&str> = ACCEPTED.iter().map(|(w, _)| *w).collect();
-    match words.split_last() {
+/// The heads of `ACCEPTED` as a tree writes them, as one English list: a
+/// refusal of a head names the spellings the reader can write.
+fn accepted_heads() -> String {
+    let heads: Vec<&str> = ACCEPTED
+        .iter()
+        .flat_map(|(_, h)| h.iter().copied())
+        .collect();
+    match heads.split_last() {
         Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
-        _ => words.concat(),
+        _ => heads.concat(),
     }
 }
 
@@ -248,7 +275,7 @@ fn dtype_of(name: &str) -> Result<DataType, String> {
         .map(|(_, t)| t.clone())
         .ok_or_else(|| {
             format!(
-                "cast to {name:?} is not read; a formula casts to one of {:?}",
+                "formula: a cast to {name:?} is not one a formula can hold. Cast to one of {:?}.",
                 DTYPES.iter().map(|(n, _)| *n).collect::<Vec<_>>()
             )
         })
@@ -266,13 +293,15 @@ impl Node {
     pub fn from_json(v: &Value) -> Result<Self, String> {
         let Value::Array(items) = v else {
             return Err(format!(
-                "a formula node is a list headed by its kind, got {}",
+                "formula: a node must be a list whose first item names its kind, such as \
+                 [\"col\", \"x\"], but it is {}. Write the node in that form.",
                 short(v)
             ));
         };
         let Some(Value::String(head)) = items.first() else {
             return Err(format!(
-                "a formula node is a list headed by its kind, got {}",
+                "formula: a node must be a list whose first item names its kind, such as \
+                 [\"col\", \"x\"], but it is {}. Write the node in that form.",
                 short(v)
             ));
         };
@@ -281,8 +310,15 @@ impl Node {
             if args.len() == n {
                 Ok(())
             } else {
+                // A cast takes a third, `"non_strict"` (read below).
+                let or = match head.as_str() {
+                    "cast" => ", or 3 with \"non_strict\"",
+                    "lit" => ", or none for null",
+                    _ => "",
+                };
                 Err(format!(
-                    "{head:?} takes {n} argument{}, got {}",
+                    "formula: {head:?} takes {n} argument{}{or}, but it has {}. Give {head:?} \
+                     that many.",
                     if n == 1 { "" } else { "s" },
                     args.len()
                 ))
@@ -293,7 +329,11 @@ impl Node {
                 arity(1)?;
                 match &args[0] {
                     Value::String(s) => Ok(Node::Col(s.clone())),
-                    other => Err(format!("\"col\" names a column, got {}", short(other))),
+                    other => Err(format!(
+                        "formula: \"col\" takes a column's name as a string, but it has {}. \
+                         Give \"col\" a column name, such as [\"col\", \"x\"].",
+                        short(other)
+                    )),
                 }
             }
             "lit" => {
@@ -316,7 +356,13 @@ impl Node {
                 let x = Node::from_json(&args[0])?;
                 let Value::String(text) = &args[1] else {
                     return Err(format!(
-                        "{head:?} takes a name as its second argument, got {}",
+                        "formula: {head:?} takes {} as its second argument, but it has {}. \
+                         Give a string there.",
+                        if head == "cast" {
+                            "a dtype's name, such as \"Float64\","
+                        } else {
+                            "the output's name"
+                        },
                         short(&args[1])
                     ));
                 };
@@ -331,7 +377,9 @@ impl Node {
                         }
                         other => {
                             return Err(format!(
-                                "\"cast\" takes \"non_strict\" as its third argument, got {}",
+                                "formula: \"cast\" takes \"non_strict\" as its third \
+                                 argument, but it has {}. Give \"non_strict\" there, or leave \
+                                 out the third argument for a strict cast.",
                                 short(other)
                             ));
                         }
@@ -380,7 +428,8 @@ impl Node {
                 input.no_window_operator(name)?;
                 let Value::Object(params) = &args[1] else {
                     return Err(format!(
-                        "{name:?} takes its parameters as an object, got {}",
+                        "formula: {name:?} takes its parameters as an object, but it has {}. \
+                         Give them as an object, such as {{\"half_life\": 10}}.",
                         short(&args[1])
                     ));
                 };
@@ -410,7 +459,7 @@ impl Node {
                                 Closed::parse(v.as_str().unwrap_or("")).ok_or_else(|| {
                                     format!(
                                         "{name}: closed must be \"right\", \"left\", \"both\" or \
-                                     \"none\", got {}",
+                                         \"none\", but it is {}. Set closed to one of those words.",
                                         short(v)
                                     )
                                 })?;
@@ -424,8 +473,8 @@ impl Node {
                                 .filter(|&n| n >= 1)
                                 .ok_or_else(|| {
                                     format!(
-                                        "{name}: min_samples must be a count of at least 1 and \
-                                         at most {}, got {}",
+                                        "{name}: min_samples must be a whole number from 1 to \
+                                         {}, but it is {}. Set min_samples within that range.",
                                         u32::MAX,
                                         short(v)
                                     )
@@ -436,7 +485,7 @@ impl Node {
                                 Partial::parse(v.as_str().unwrap_or("")).ok_or_else(|| {
                                     format!(
                                         "{name}: partial must be \"keep\", \"null\" or \"drop\", \
-                                         got {}",
+                                         but it is {}. Set partial to one of those words.",
                                         short(v)
                                     )
                                 })?,
@@ -444,7 +493,11 @@ impl Node {
                         }
                         "bias" if var => {
                             op.bias = v.as_bool().ok_or_else(|| {
-                                format!("{name}: bias must be true or false, got {}", short(v))
+                                format!(
+                                    "{name}: bias must be true or false, but it is {}. Set bias \
+                                     to true or false.",
+                                    short(v)
+                                )
                             })?;
                         }
                         "quantile" if quantile => {
@@ -452,7 +505,8 @@ impl Node {
                                 v.as_f64().filter(|q| *q > 0.0 && *q < 1.0).ok_or_else(|| {
                                     format!(
                                         "{name}: quantile must be a number above 0 and below \
-                                             1, got {}",
+                                         1, but it is {}. Set quantile within that range, such as \
+                                         0.5 for the median.",
                                         short(v)
                                     )
                                 })?,
@@ -460,46 +514,62 @@ impl Node {
                         }
                         other => {
                             return Err(format!(
-                                "{name}: unknown parameter {other:?}; the parameters are half_life, \
-                                 window_size, closed, min_samples and partial{}",
+                                "{name}: {other:?} is not one of its parameters, which are \
+                                 half_life, window_size, closed, min_samples{}. Remove \
+                                 {other:?}, or correct its name.",
                                 if var {
-                                    ", and bias"
+                                    ", partial and bias"
                                 } else if quantile {
-                                    ", and quantile"
+                                    ", partial and quantile"
                                 } else {
-                                    ""
+                                    " and partial"
                                 }
                             ));
                         }
                     }
                 }
                 if quantile && op.quantile.is_none() {
-                    return Err(format!("{name}: quantile is required"));
+                    return Err(format!(
+                        "{name}: quantile is not set, but a quantile operator needs it. Set \
+                         quantile to a number above 0 and below 1, such as 0.5 for the median."
+                    ));
                 }
                 let Some(h) = &op.half_life else {
-                    return Err(format!("{name}: half_life is required"));
+                    return Err(format!(
+                        "{name}: half_life is not set, but every window operator needs it. Set \
+                         half_life to a positive number of clock units or a duration, or to inf \
+                         for no decay."
+                    ));
                 };
                 if h.value().is_nan() || h.value() <= 0.0 {
-                    return Err(format!("{name}: half_life must be above 0, got {h}"));
+                    return Err(format!(
+                        "{name}: half_life must be above 0, but it is {h}. Set half_life to a \
+                         positive number of clock units or a duration, or to inf for no decay."
+                    ));
                 }
                 match &op.window_size {
                     Some(w) if !(w.value().is_finite() && w.value() > 0.0) => {
                         return Err(format!(
-                            "{name}: window_size must be finite and above 0, got {w}"
+                            "{name}: window_size must be finite and above 0, but it is {w}. \
+                             Set window_size to a finite positive number of clock units or a \
+                             duration."
                         ));
                     }
                     None if kind.direction() == Direction::Forward => {
                         return Err(format!(
-                            "{name}: a forward operator needs a window_size; the rows ahead of a \
-                             row have no end without one"
+                            "{name}: window_size is not set, but an operator that reads the \
+                             rows after each row needs one, since those rows have no end without \
+                             it. Set window_size to a finite positive number of clock units or a \
+                             duration."
                         ));
                     }
                     None if h.value().is_infinite()
                         && kind.stat().is_some_and(Stat::weighs_held) =>
                     {
                         return Err(format!(
-                            "{name}: half_life = inf needs a window_size; a value held from \
-                             before the first row has no finite mass to weigh it by"
+                            "{name}: half_life is inf and window_size is not set, so a value \
+                             held from before the first row would have no finite weight. Set \
+                             window_size, or give half_life a finite value."
                         ));
                     }
                     _ => {}
@@ -507,10 +577,15 @@ impl Node {
                 Ok(Node::Op(op))
             }
             other => Err(format!(
-                "formula node {other:?} is not read: a formula is element-wise, from {} over \
-                 the window operators; a shift, a cumulative or rolling function or an \
-                 aggregation would depend on the chunking",
-                accepted_text()
+                "formula: {other:?} is not one of the operators a formula can hold. It can hold \
+                 increment (the step from a column's previous value), the window operators {}, \
+                 and these operators within one row: {}. If the operator is misspelled, correct it; \
+                 otherwise, write the formula with the operators listed.",
+                {
+                    let (last, rest) = WINDOW_HEADS.split_last().expect("ten heads");
+                    format!("{} and {last}", rest.join(", "))
+                },
+                accepted_heads()
             )),
         }
     }
@@ -521,7 +596,12 @@ impl Node {
     ///
     /// As [`Node::from_json`], and text that is not JSON.
     pub fn parse(text: &str) -> Result<Self, String> {
-        let v: Value = serde_json::from_str(text).map_err(|e| format!("not a formula: {e}"))?;
+        let v: Value = serde_json::from_str(text).map_err(|e| {
+            format!(
+                "formula: the text is not JSON ({e}). Write the formula as a JSON list, such as \
+                 [\"col\", \"x\"]."
+            )
+        })?;
         Node::from_json(&v)
     }
 
@@ -649,10 +729,16 @@ impl Node {
 
     fn no_window_operator(&self, who: &str) -> Result<(), String> {
         if self.has_window_operator() {
+            let such_as = if who == "increment" {
+                "a column"
+            } else {
+                "a column or an increment of one"
+            };
             return Err(format!(
-                "{who}: an operator's input is an element-wise formula of the row, increments \
-                 included, not another window operator; a formula over an operator's output is \
-                 a second with_windows call, or a target of the first's"
+                "{who}: its input holds a window operator, but it may read only an expression \
+                 (a column computation, such as pl.col(\"x\") + 1) of the row itself, such as \
+                 {such_as}. Add the inner operator's result as a column of the input before the \
+                 run, such as with po.stream.with_windows in Python, and read that column."
             ));
         }
         Ok(())
@@ -758,8 +844,13 @@ pub struct Formula {
 }
 
 fn span_of(name: &str, key: &str, v: &Value) -> Result<Span, String> {
-    serde_json::from_value::<Span>(v.clone())
-        .map_err(|e| format!("{name}: {key} must be a number or a duration: {e}"))
+    serde_json::from_value::<Span>(v.clone()).map_err(|_| {
+        format!(
+            "{name}: {key} must be a number of clock units or a duration, but it is {}. \
+                 Give {key} as a number, or as a duration such as \"10m\".",
+            short(v)
+        )
+    })
 }
 
 fn short(v: &Value) -> String {
@@ -970,12 +1061,23 @@ mod tests {
         listed.sort_unstable();
         read.sort_unstable();
         assert_eq!(listed, read);
+        for head in WINDOW_HEADS {
+            assert!(
+                OpKind::parse(head).is_some_and(|k| k != OpKind::Increment),
+                "{head}"
+            );
+        }
+        assert_eq!(
+            WINDOW_HEADS.len(),
+            10,
+            "every window operator but increment"
+        );
         let err = Node::from_json(&json!(["shift", ["col", "a"]])).unwrap_err();
         assert!(
             err.contains(
-                "from columns, literals, arithmetic, negation, comparisons, & and |, log, exp, \
-                 abs, sqrt, pow, clip, fill_null, is_null, is_not_null, when/then/otherwise, \
-                 cast and alias over"
+                "these operators within one row: col, lit, +, -, *, /, neg, ==, !=, <, <=, >, >=, \
+                 &, |, log, exp, abs, sqrt, **, clip, fill_null, is_null, is_not_null, when, cast \
+                 and alias."
             ),
             "{err}"
         );
@@ -988,30 +1090,42 @@ mod tests {
         for (text, says) in [
             (
                 r#"["shift",["col","a"],["lit",1]]"#,
-                "\"shift\" is not read",
+                "\"shift\" is not one of the operators a formula can hold",
             ),
-            (r#"["cum_sum",["col","a"]]"#, "\"cum_sum\" is not read"),
-            (r#"["mean",["col","a"]]"#, "\"mean\" is not read"),
-            (r#"{"col":"a"}"#, "a list headed by its kind"),
-            (r#"["col",1]"#, "names a column"),
-            (r#"["+",["col","a"]]"#, "\"+\" takes 2 arguments, got 1"),
+            (
+                r#"["cum_sum",["col","a"]]"#,
+                "\"cum_sum\" is not one of the operators a formula can hold",
+            ),
+            (
+                r#"["mean",["col","a"]]"#,
+                "\"mean\" is not one of the operators a formula can hold",
+            ),
+            (r#"{"col":"a"}"#, "a list whose first item names its kind"),
+            (r#"["col",1]"#, "takes a column's name as a string"),
+            (
+                r#"["+",["col","a"]]"#,
+                "\"+\" takes 2 arguments, but it has 1",
+            ),
             (
                 r#"["cast",["col","a"],"Datetime"]"#,
-                "cast to \"Datetime\" is not read",
+                "a cast to \"Datetime\" is not one a formula can hold",
             ),
-            (r#"["lit",[1,2]]"#, "a literal must be a scalar"),
-            (r#"["ewm_mean",["col","a"],{}]"#, "half_life is required"),
+            (
+                r#"["lit",[1,2]]"#,
+                "a literal must be a number, a string, true, false or null",
+            ),
+            (r#"["ewm_mean",["col","a"],{}]"#, "half_life is not set"),
             (
                 r#"["ewm_mean",["col","a"],{"half_life":0}]"#,
                 "half_life must be above 0",
             ),
             (
                 r#"["rewm_mean",["col","a"],{"half_life":1}]"#,
-                "needs a window_size",
+                "window_size is not set, but an operator that reads the rows after",
             ),
             (
                 r#"["ewm_mean",["col","a"],{"half_life":"inf"}]"#,
-                "half_life = inf needs a window_size",
+                "half_life is inf and window_size is not set",
             ),
             (
                 r#"["ewm_sum",["col","a"],{"half_life":1,"window_size":0}]"#,
@@ -1023,14 +1137,13 @@ mod tests {
             ),
             (
                 r#"["ewm_sum",["col","a"],{"half_life":1,"min_samples":0}]"#,
-                "min_samples must be a count of at least 1",
+                "min_samples must be a whole number from 1",
             ),
             // Review round 4, PD4: past a `u32` the refusal names the
             // ceiling, where it said "at least 1" of a count far above it.
             (
                 r#"["ewm_sum",["col","a"],{"half_life":1,"min_samples":4294967296}]"#,
-                "min_samples must be a count of at least 1 and at most 4294967295, got \
-                 4294967296",
+                "min_samples must be a whole number from 1 to 4294967295, but it is 4294967296",
             ),
             (
                 r#"["ewm_sum",["col","a"],{"half_life":1,"partial":"maybe"}]"#,
@@ -1038,17 +1151,17 @@ mod tests {
             ),
             (
                 r#"["ewm_sum",["col","a"],{"half_life":1,"horizon":3}]"#,
-                "unknown parameter \"horizon\"",
+                "\"horizon\" is not one of its parameters",
             ),
             (
                 r#"["ewm_sum",["col","a"],{"half_life":1},3]"#,
-                "takes 2 arguments, got 3",
+                "takes 2 arguments, but it has 3",
             ),
             (
                 r#"["ewm_mean",["ewm_sum",["col","a"],{"half_life":1}],{"half_life":1}]"#,
-                "not another window operator",
+                "its input holds a window operator",
             ),
-            (r#"not json"#, "not a formula"),
+            (r#"not json"#, "formula: the text is not JSON"),
         ] {
             let err = Node::parse(text).unwrap_err();
             assert!(err.contains(says), "{text}: {err}");
@@ -1067,31 +1180,37 @@ mod tests {
     #[test]
     fn each_malformed_node_is_refused_in_its_own_words() {
         for (text, says) in [
-            (r#"[]"#, "a list headed by its kind, got []"),
-            (r#"[1,["col","a"]]"#, "a list headed by its kind, got [1,"),
+            (
+                r#"[]"#,
+                "a list whose first item names its kind, such as [\"col\", \"x\"], but it is []",
+            ),
+            (
+                r#"[1,["col","a"]]"#,
+                "a list whose first item names its kind, such as [\"col\", \"x\"], but it is [1,",
+            ),
             (
                 r#"["alias",["col","a"],3]"#,
-                "\"alias\" takes a name as its second argument, got 3",
+                "\"alias\" takes the output's name as its second argument, but it has 3",
             ),
             (
                 r#"["cast",["col","a"],7]"#,
-                "\"cast\" takes a name as its second argument, got 7",
+                "\"cast\" takes a dtype's name, such as \"Float64\", as its second argument, but it has 7",
             ),
             (
                 r#"["cast",["col","a"],"Float64","strict"]"#,
-                "\"cast\" takes \"non_strict\" as its third argument, got \"strict\"",
+                "\"cast\" takes \"non_strict\" as its third argument, but it has \"strict\"",
             ),
             (
                 r#"["ewm_mean",["col","a"],3]"#,
-                "\"ewm_mean\" takes its parameters as an object, got 3",
+                "\"ewm_mean\" takes its parameters as an object, but it has 3",
             ),
             (
                 r#"["ewm_var",["col","a"],{"half_life":1,"bias":"yes"}]"#,
-                "ewm_var: bias must be true or false, got \"yes\"",
+                "ewm_var: bias must be true or false, but it is \"yes\"",
             ),
             (
                 r#"["ewm_mean",["col","a"],{"half_life":1,"bias":true}]"#,
-                "ewm_mean: unknown parameter \"bias\"",
+                "ewm_mean: \"bias\" is not one of its parameters",
             ),
         ] {
             let err = Node::parse(text).unwrap_err();
@@ -1113,36 +1232,36 @@ mod tests {
         for (text, says) in [
             (
                 r#"["ewm_quantile",["col","a"],{"half_life":1}]"#,
-                "ewm_quantile: quantile is required",
+                "ewm_quantile: quantile is not set",
             ),
             (
                 r#"["rewm_quantile",["col","a"],{"half_life":1,"window_size":2}]"#,
-                "rewm_quantile: quantile is required",
+                "rewm_quantile: quantile is not set",
             ),
             (
                 r#"["ewm_quantile",["col","a"],{"half_life":1,"quantile":1}]"#,
-                "ewm_quantile: quantile must be a number above 0 and below 1, got 1",
+                "ewm_quantile: quantile must be a number above 0 and below 1, but it is 1",
             ),
             (
                 r#"["ewm_quantile",["col","a"],{"half_life":1,"quantile":0}]"#,
-                "got 0",
+                "but it is 0",
             ),
             (
                 r#"["ewm_quantile",["col","a"],{"half_life":1,"quantile":"half"}]"#,
-                "got \"half\"",
+                "but it is \"half\"",
             ),
             (
                 r#"["ewm_sum",["col","a"],{"half_life":1,"quantile":0.5}]"#,
-                "ewm_sum: unknown parameter \"quantile\"",
+                "ewm_sum: \"quantile\" is not one of its parameters",
             ),
             (
                 r#"["ewm_quantile",["col","a"],{"half_life":1,"quantile":0.5,"bias":true}]"#,
-                "unknown parameter \"bias\"; the parameters are half_life, window_size, closed, \
-                 min_samples and partial, and quantile",
+                "\"bias\" is not one of its parameters, which are half_life, window_size, closed, \
+                 min_samples, partial and quantile",
             ),
             (
                 r#"["rewm_quantile",["col","a"],{"half_life":1,"quantile":0.5}]"#,
-                "a forward operator needs a window_size",
+                "window_size is not set, but an operator that reads the rows after",
             ),
         ] {
             let err = Node::parse(text).unwrap_err();

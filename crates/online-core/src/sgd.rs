@@ -868,13 +868,21 @@ impl TryFrom<SgdV3> for Sgd {
         // standardized ones, and one that lost its sums panicked on the first
         // step (review 2026-09-12, S16).
         if cfg.standardize != scaler.is_some() {
-            return Err("sgd: the state's scaler does not match its cfg's standardize".into());
+            return Err(
+                "sgd: its saved feature scaler does not match its standardize setting. \
+                        Load an undamaged copy of the state file, or rebuild it from its input."
+                    .into(),
+            );
         }
         // A warm-up is a scaler's: without one it counts nothing, and a
         // state that says otherwise would read raw coefficients one way and
         // standardized ones another (docs/PLAN.md task 206).
         if scaler.is_none() && warmup != Warmup::default() {
-            return Err("sgd: the state's warm-up does not match its cfg's standardize".into());
+            return Err(
+                "sgd: its saved warm-up does not match its standardize setting. Load an \
+                        undamaged copy of the state file, or rebuild it from its input."
+                    .into(),
+            );
         }
         let sums = if matches!(cfg.schedule, LearningRate::AdaGrad) {
             m
@@ -882,17 +890,33 @@ impl TryFrom<SgdV3> for Sgd {
             0
         };
         if g2.len() != sums {
-            return Err("sgd: the state's AdaGrad sums do not match its cfg's schedule".into());
+            let set = if sums > 0 {
+                "schedule=\"adagrad\""
+            } else {
+                "schedule, which is not \"adagrad\""
+            };
+            return Err(format!(
+                "sgd: its saved AdaGrad sums do not match its setting {set}. Load an undamaged \
+                 copy of the state file, or rebuild it from its input."
+            ));
         }
         if scaler.as_ref().is_some_and(|sc| sc.k() != k)
             || beta.len() != m
             || beta.iter().any(|b| b.len() != k)
             || g2.iter().any(|g| g.len() != k)
         {
-            return Err("sgd: state has the wrong shape".into());
+            return Err(
+                "sgd: its saved state has the wrong shape. Load an undamaged copy of the \
+                        state file, or rebuild it from its input."
+                    .into(),
+            );
         }
         if w_target.len() != m {
-            return Err("sgd: the state's target weights have the wrong shape".into());
+            return Err(
+                "sgd: its saved target weights have the wrong shape. Load an undamaged \
+                        copy of the state file, or rebuild it from its input."
+                    .into(),
+            );
         }
         // The scales a loss draws in, one per target, exactly under the
         // loss that draws in it: the residual's under Huber, the target's
@@ -900,10 +924,18 @@ impl TryFrom<SgdV3> for Sgd {
         let (residual, own) = scales_kept(&cfg);
         let scales = |kept: bool| if kept { m } else { 0 };
         if sig2.len() != scales(residual) || wsig.len() != scales(residual) {
-            return Err("sgd: the state's residual variances do not match its cfg's loss".into());
+            return Err(
+                "sgd: its saved residual variances do not match its loss setting. Load \
+                        an undamaged copy of the state file, or rebuild it from its input."
+                    .into(),
+            );
         }
         if !spread.has_shape(scales(own)) {
-            return Err("sgd: the state's target spreads do not match its cfg's loss".into());
+            return Err(
+                "sgd: its saved target spreads do not match its loss setting. Load an \
+                        undamaged copy of the state file, or rebuild it from its input."
+                    .into(),
+            );
         }
         // The MAD's sketches, one per target at 0.5 exactly under it.
         let huber_scale = if residual {
@@ -913,7 +945,9 @@ impl TryFrom<SgdV3> for Sgd {
         };
         if !crate::robust::mad_sketches_fit(huber_scale, cfg.mad_anchor, m, &mad) {
             return Err(
-                "sgd: the state's residual sketches do not match its cfg's huber_scale".into(),
+                "sgd: its saved residual scale does not match its huber_scale setting. Load \
+                 an undamaged copy of the state file, or rebuild it from its input."
+                    .into(),
             );
         }
         // The refit's buffers, one per target exactly when it is on, each
@@ -932,16 +966,26 @@ impl TryFrom<SgdV3> for Sgd {
         };
         if !refit_fits {
             return Err(
-                "sgd: the state's refit buffers do not match its cfg's huber_refit_rows".into(),
+                "sgd: the rows it saved for its refit do not match its huber_refit_rows \
+                 setting. Load an undamaged copy of the state file, or rebuild it from its input."
+                    .into(),
             );
         }
         // The held |e|'s tree is not state: reading each buffer built it
         // from the rows (`RefitBufFile`).
         if gain.len() != scales(keeps_gain(&cfg)) {
-            return Err("sgd: the state's step gains do not match its cfg".into());
+            return Err(
+                "sgd: its saved learning-rate state does not match its settings. Load an undamaged \
+                        copy of the state file, or rebuild it from its input."
+                    .into(),
+            );
         }
         if level.len() != scales(keeps_level(&cfg)) {
-            return Err("sgd: the state's level counts do not match its cfg".into());
+            return Err(
+                "sgd: part of its saved fit does not match its settings. Load an \
+                        undamaged copy of the state file, or rebuild it from its input."
+                    .into(),
+            );
         }
         Ok(Self {
             cfg,
@@ -3934,7 +3978,10 @@ mod tests {
         assert!(loads(&v).is_ok(), "the control");
         v["beta"].as_array_mut().unwrap().pop();
         let err = loads(&v).unwrap_err().to_string();
-        assert!(err.contains("sgd: state has the wrong shape"), "{err}");
+        assert!(
+            err.contains("sgd: its saved state has the wrong shape"),
+            "{err}"
+        );
 
         let mut scaled = two.clone();
         scaled.standardize = true;
@@ -3944,7 +3991,10 @@ mod tests {
         assert!(loads(&v).is_ok(), "the control");
         v["scaler"] = json(&wider)["scaler"].clone();
         let err = loads(&v).unwrap_err().to_string();
-        assert!(err.contains("sgd: state has the wrong shape"), "{err}");
+        assert!(
+            err.contains("sgd: its saved state has the wrong shape"),
+            "{err}"
+        );
     }
 
     /// `dot` is `beta · [1, z]` whatever the lanes it sums in: 3, 8, 11 and
@@ -4789,7 +4839,7 @@ mod tests {
         v["warmup"] = serde_json::to_value(&warm.warmup).unwrap();
         let e = serde_json::from_value::<Sgd>(v).unwrap_err().to_string();
         assert!(
-            e.contains("sgd: the state's warm-up does not match its cfg's standardize"),
+            e.contains("sgd: its saved warm-up does not match its standardize setting"),
             "{e}"
         );
     }

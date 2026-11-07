@@ -700,12 +700,12 @@ fn predict_moves_nothing_and_an_unseen_group_or_empty_bank_is_empty() {
     assert!(
         bank.summary(6, None)
             .unwrap_err()
-            .contains("spec index 6 out of range")
+            .contains("index 6 is out of range")
     );
     assert!(
         bank.describe(6, None)
             .unwrap_err()
-            .contains("spec index 6 out of range")
+            .contains("index 6 is out of range")
     );
     let empty = Bank::new(specs).unwrap();
     let s = empty.summary(0, None).unwrap();
@@ -785,7 +785,7 @@ fn a_saved_summary_that_is_not_its_spec_s_is_refused_and_none_stays_none() {
         st.persisted.summary = Some(summary);
         let err = Stream::restore(&specs[0], &st).err().unwrap_or_default();
         assert!(
-            err.contains("saved data summary of spec \"m\" is not its spec's"),
+            err.contains("the data summary of spec \"m\" could not have come from its rows"),
             "{what}: {err:?}"
         );
     };
@@ -1314,7 +1314,7 @@ fn the_support_notice_waits_for_a_settled_stream() {
     bank.fit_predict(&df.slice(19, 1)).unwrap();
     let got = bank.take_notices();
     assert!(
-        got.len() == 1 && got[0].contains("support_coef < 0.5"),
+        got.len() == 1 && got[0].contains("support_coef is below 0.5"),
         "{got:?}"
     );
     bank.fit_predict(&df.slice(20, 40)).unwrap();

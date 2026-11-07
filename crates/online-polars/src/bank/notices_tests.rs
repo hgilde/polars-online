@@ -62,7 +62,7 @@ fn a_notice_left_by_a_call_that_failed_after_learning_is_said_once() {
     assert_eq!(said.len(), 1, "{said:#?}");
     assert!(
         said[0].starts_with("spec \"fails-after-learning-a\" group \"1\":")
-            && said[0].contains("support_coef < 0.5"),
+            && said[0].contains("support_coef is below 0.5"),
         "{said:#?}"
     );
     // Once.
@@ -90,7 +90,7 @@ fn a_notice_left_in_a_group_the_next_call_closes_is_said_once() {
     assert_eq!(said.len(), 1, "{said:#?}");
     assert!(
         said[0].starts_with(&format!("spec {name:?} group \"1\":"))
-            && said[0].contains("support_coef < 0.5"),
+            && said[0].contains("support_coef is below 0.5"),
         "{said:#?}"
     );
     assert_eq!(bank.closed_groups(None, true).unwrap().height(), 1);
@@ -157,7 +157,7 @@ fn a_failed_calls_notices_outlive_a_save() {
     assert_eq!(held(&bank), 2, "each group's stream holds its notice");
     let bytes = bank.save_bytes().unwrap();
     assert!(
-        String::from_utf8_lossy(&bytes).contains("support_coef < 0.5"),
+        String::from_utf8_lossy(&bytes).contains("support_coef is below 0.5"),
         "the notice's text is in the file"
     );
 
@@ -168,7 +168,7 @@ fn a_failed_calls_notices_outlive_a_save() {
         assert_eq!(said.len(), 2, "{said:#?}");
         assert!(said[0].starts_with(&format!("spec {name:?} group \"1\":")));
         assert!(said[1].starts_with(&format!("spec {name:?} group \"2\":")));
-        assert!(said.iter().all(|s| s.contains("support_coef < 0.5")));
+        assert!(said.iter().all(|s| s.contains("support_coef is below 0.5")));
     };
     // The loaded bank's first call feeds group 1 alone and says both.
     loaded.fit_predict(&rows(1, 20, 1)).unwrap();
@@ -181,7 +181,7 @@ fn a_failed_calls_notices_outlive_a_save() {
     assert!(loaded.take_notices().is_empty());
     // A save after they were said holds no notice.
     let again = loaded.save_bytes().unwrap();
-    assert!(!String::from_utf8_lossy(&again).contains("support_coef < 0.5"));
+    assert!(!String::from_utf8_lossy(&again).contains("support_coef is below 0.5"));
     assert_eq!(held(&Bank::load_bytes(&again, None).unwrap()), 0);
 
     // The bank that failed says both at its next call, which feeds group 1

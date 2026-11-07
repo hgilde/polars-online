@@ -47,10 +47,15 @@ impl IpcFrames {
         categories: Vec<Option<Vec<String>>>,
     ) -> Result<Self, GbdtError> {
         if files.is_empty() {
-            return Err(GbdtError::msg("no Arrow IPC files"));
+            return Err(GbdtError::msg(
+                "po.gbdt: no Arrow IPC files were given. Pass at least one file.",
+            ));
         }
         if categories.len() != layout.names.len() {
-            return Err(GbdtError::msg("a category list per feature"));
+            return Err(GbdtError::msg(
+                "po.gbdt: internal: the native engine was not given a category list per feature, \
+                 which is a defect in polars-online. Open an issue at https://github.com/hgilde/polars-online/issues with this message.",
+            ));
         }
         Ok(Self {
             files,
@@ -71,17 +76,18 @@ impl Frames for IpcFrames {
         let names: Vec<String> = self.names().into_iter().map(String::from).collect();
         for path in &self.files {
             let shown = path.display();
-            let file =
-                File::open(path).map_err(|e| GbdtError::msg(format!("reading {shown}: {e}")))?;
+            let file = File::open(path).map_err(|e| unreadable(&shown, &e))?;
             let mut file = BufReader::new(file);
-            let meta = read_file_metadata(&mut file)
-                .map_err(|e| GbdtError::msg(format!("reading {shown}: {e}")))?;
+            let meta = read_file_metadata(&mut file).map_err(|e| unreadable(&shown, &e))?;
             let mut at = Vec::with_capacity(names.len());
             for name in &names {
                 match meta.schema.index_of(name) {
                     Some(i) => at.push(i),
                     None => {
-                        return Err(GbdtError::msg(format!("{shown} has no column `{name}`")));
+                        return Err(GbdtError::msg(format!(
+                            "po.gbdt: {shown} has no column `{name}`, which the call reads. Pass \
+                             files that each hold every column the call names."
+                        )));
                     }
                 }
             }
@@ -94,7 +100,7 @@ impl Frames for IpcFrames {
                 .collect();
             let maps = self.dictionary_maps();
             for batch in FileReader::new(file, meta, Some(projection), None) {
-                let batch = batch.map_err(|e| GbdtError::msg(format!("reading {shown}: {e}")))?;
+                let batch = batch.map_err(|e| unreadable(&shown, &e))?;
                 let n = batch.height();
                 let arrays = batch.into_arrays();
                 let cols = order
@@ -197,8 +203,16 @@ impl IpcFrames {
 
 fn not_read(name: &str, dtype: &ArrowDataType) -> GbdtError {
     GbdtError::msg(format!(
-        "column `{name}` is {dtype:?} in the Arrow IPC file, which is not a column the \
-         libraries read"
+        "po.gbdt: column `{name}` is {dtype:?} in the Arrow IPC file, which is not a column the \
+         libraries read. Write it as a number, a Boolean or an Enum column."
+    ))
+}
+
+/// An Arrow IPC file that could not be read, named by its path.
+fn unreadable(shown: &impl std::fmt::Display, e: &impl std::fmt::Display) -> GbdtError {
+    GbdtError::msg(format!(
+        "po.gbdt: {shown} could not be read as an Arrow IPC file ({e}). Pass files that \
+         po.gbdt can read, written as Arrow IPC."
     ))
 }
 
@@ -226,7 +240,9 @@ fn dict<K: DictionaryKey>(
             Some(&c) => lookup.push(c),
             None => {
                 return Err(GbdtError::msg(format!(
-                    "column `{name}` holds {v:?}, which is not one of its Enum's categories"
+                    "po.gbdt: column `{name}` holds {v:?}, which is not one of its Enum's \
+                     categories. Write the column with the Enum the call was given, or add {v:?} \
+                     to its categories."
                 )));
             }
         }

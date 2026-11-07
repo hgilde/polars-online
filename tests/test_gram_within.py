@@ -284,9 +284,9 @@ class TestMergeWithin:
     def test_a_union_of_several_refuses_a_part_pooled_within(self):
         grams = blocks(frame(seed=7))
         pooled = pg.merge(grams[:3], within=True)
-        with pytest.raises(ValueError, match=r"part 0 was pooled within parts \(within_parts=3\)"):
+        with pytest.raises(ValueError, match=r"Gram 0 was pooled within parts \(within_parts=3\)"):
             pg.merge([pooled, *grams[3:]])
-        with pytest.raises(ValueError, match="pass within=True"):
+        with pytest.raises(ValueError, match="Pass within=True"):
             pg.solve_subsets([pooled, *grams[3:]], [[0, 1]])
         # Alone it is its own union, and beside others within it pools.
         assert pg.merge([pooled])["within_parts"] == 3
@@ -473,12 +473,18 @@ class TestTargetSigns:
         ("kw", "match"),
         [
             (dict(target_signs=np.ones((6, 2))), r"target_signs needs within=True"),
-            (dict(within=True, target_signs=np.ones(6)), r"parts x draws.*\(6,\)"),
-            (dict(within=True, target_signs=np.ones((5, 2))), r"a row per Gram \(6\).*\(5, 2\)"),
+            (
+                dict(within=True, target_signs=np.ones(6)),
+                r"a row for each Gram and a column for each draw, but it has shape \(6,\)",
+            ),
+            (
+                dict(within=True, target_signs=np.ones((5, 2))),
+                r"a row for each of the 6 Grams .*\(5, 2\)",
+            ),
             (dict(within=True, target_signs=np.ones((6, 0))), r"at least one draw"),
-            (dict(within=True, target_signs=np.zeros((6, 1))), r"\+1 or -1"),
-            (dict(within=True, target_signs=np.full((6, 1), 0.5)), r"\+1 or -1"),
-            (dict(within=True, target_signs=np.full((6, 1), np.nan)), r"\+1 or -1"),
+            (dict(within=True, target_signs=np.zeros((6, 1))), r"must be 1 or -1"),
+            (dict(within=True, target_signs=np.full((6, 1), 0.5)), r"must be 1 or -1"),
+            (dict(within=True, target_signs=np.full((6, 1), np.nan)), r"must be 1 or -1"),
         ],
     )
     def test_it_refuses(self, kw, match):

@@ -101,14 +101,14 @@ def _np() -> Any:
         import numpy as np
     except ModuleNotFoundError as e:  # pragma: no cover - exercised by a stub
         msg = (
-            "polars_online.corr works in numpy arrays, and numpy is not installed. "
+            "po.corr: it works in numpy arrays, but numpy is not installed. "
             "Install it with `pip install numpy` or `pip install polars-online[numpy]`."
         )
         raise ModuleNotFoundError(msg) from e
     return np
 
 
-def _matrix(obj: Any) -> Any:
+def _matrix(obj: Any, who: str = "po.corr", param: str = "r") -> Any:
     """The ``k x k`` correlation matrix of whatever this is, as a float array:
     what every function here reads its matrix argument through.
 
@@ -129,7 +129,12 @@ def _matrix(obj: Any) -> Any:
         return _gram.correlation(g)
     m = np.asarray(obj, dtype=float)
     if m.ndim != 2 or m.shape[0] != m.shape[1]:
-        msg = f"corr: expected a square matrix, a Gram mapping or a closed row; got {m.shape}"
+        msg = (
+            f"{who}: {param} must be a square matrix, a Gram or a row of "
+            f"ModelBank.closed_groups(), but it has shape {m.shape}. Pass a k by k correlation "
+            "matrix, one of the Grams ModelBank.gram() returns, or a one-row frame of "
+            "ModelBank.closed_groups()."
+        )
         raise ValueError(msg)
     return m
 
@@ -144,7 +149,7 @@ def matrix(obj: Any) -> Any:
     """Renamed :func:`polars_online.gram.correlation` for a Gram: each call
     raises a :class:`~polars_online.PolarsOnlineDeprecationWarning`, then
     reads ``obj`` as every function here reads its matrix argument."""
-    return _matrix(obj)
+    return _matrix(obj, "po.corr.matrix", "obj")
 
 
 # --- Fisher's transform ------------------------------------------------------
@@ -212,16 +217,30 @@ def nearest(
     ``ValueError``.
     """
     np = _np()
-    x = _matrix(a)
+    x = _matrix(a, "po.corr.nearest", "a")
     k = x.shape[0]
     # A NaN propagates through the eigendecomposition and comes back as a
     # matrix of NaNs with a NaN distance -- an answer, and a wrong one
     # (docs/REVIEW-E54-E64.md K1).
     if not np.all(np.isfinite(x)):
-        msg = "corr.nearest: a must be finite; there is no nearest correlation matrix to a NaN"
+        if hasattr(a, "to_dicts") or isinstance(a, dict):
+            msg = (
+                "po.corr.nearest: every entry of a's correlation matrix must be finite, but "
+                "a column with no variance, such as the intercept or a constant feature, has "
+                "none in its row and column. Pass the Gram without those columns, as "
+                "po.gram.subset(g, columns) returns it, before the repair."
+            )
+        else:
+            msg = (
+                "po.corr.nearest: every entry of a must be finite, but one is NaN or infinite. "
+                "Replace the entries that are not finite before the repair."
+            )
         raise ValueError(msg)
     if max_iter < 1:
-        msg = f"corr.nearest: max_iter must be >= 1, got {max_iter}"
+        msg = (
+            f"po.corr.nearest: max_iter must be at least 1, but it is {max_iter}. "
+            "Set max_iter to 1 or more."
+        )
         raise ValueError(msg)
     x = 0.5 * (x + x.T)
     if w is None:
@@ -229,7 +248,11 @@ def nearest(
     else:
         wv = np.asarray(w, dtype=float).reshape(-1)
         if wv.shape != (k,) or not np.all(wv > 0.0):
-            msg = f"corr.nearest: w must be {k} positive weights, the diagonal of W"
+            msg = (
+                f"po.corr.nearest: w must hold {k} weights above 0, one for each column, but "
+                f"it holds {wv.size} weights, {int((~(wv > 0.0)).sum())} of them not above 0. "
+                f"Pass {k} weights above 0, or leave w out to weigh every column alike."
+            )
             raise ValueError(msg)
     root = np.sqrt(wv)
     inv_root = 1.0 / root
@@ -346,7 +369,7 @@ def shrink(
     or with fewer than two rows.
     """
     np = _np()
-    s = _matrix(r)
+    s = _matrix(r, "po.corr.shrink")
     k = s.shape[0]
     off = ~np.eye(k, dtype=bool)
     sd = np.sqrt(np.clip(np.diag(s), 0.0, None))
@@ -360,25 +383,33 @@ def shrink(
         rbar = 0.0
         f = np.eye(k) * np.mean(np.diag(s))
     else:
-        msg = f'corr.shrink: unknown target {target!r}; expected "constant" or "identity"'
+        msg = (
+            f'po.corr.shrink: target must be "constant" or "identity", but it is {target!r}. '
+            "Set target to one of those words."
+        )
         raise ValueError(msg)
 
     if alpha is None:
         if x is None:
             msg = (
-                "corr.shrink: the optimal intensity is a fourth moment of the rows, which "
-                "cannot be recovered from the matrix; pass `x` (the T x k sample) or `alpha`"
+                "po.corr.shrink: neither x nor alpha is given, and the shrinkage intensity "
+                "cannot be estimated from the matrix alone, since it reads the rows' fourth "
+                "moments. Pass x, the sample of rows by columns, or set alpha."
             )
             raise ValueError(msg)
         xa = np.asarray(x, dtype=float)
         if xa.ndim != 2 or xa.shape[1] != k:
-            msg = f"corr.shrink: x must be T x {k}, got {xa.shape}"
+            msg = (
+                f"po.corr.shrink: x must have one column for each of the matrix's {k} "
+                f"columns, but it has shape {xa.shape}. Pass the sample as a 2-d array of "
+                f"rows by {k} columns."
+            )
             raise ValueError(msg)
         t = xa.shape[0]
         if t < 2:
             msg = (
-                f"corr.shrink: x needs at least 2 rows to estimate the intensity, got {t}; "
-                "pass `alpha` instead"
+                f"po.corr.shrink: x needs at least 2 rows to estimate the shrinkage intensity, "
+                f"but it has {t}. Pass more rows, or set alpha."
             )
             raise ValueError(msg)
         d = xa - xa.mean(axis=0)
@@ -405,7 +436,10 @@ def shrink(
         gamma = float(((f - sam) ** 2).sum())
         alpha = 0.0 if gamma <= 0.0 else max(0.0, min((pi - rho) / gamma / t, 1.0))
     if not 0.0 <= alpha <= 1.0:
-        msg = f"corr.shrink: alpha must be in [0, 1], got {alpha}"
+        msg = (
+            f"po.corr.shrink: alpha must be from 0 to 1, but it is {alpha}. "
+            "Set alpha from 0 (no shrinkage) to 1 (the target alone)."
+        )
         raise ValueError(msg)
     return (1.0 - alpha) * s + alpha * f, float(alpha)
 
@@ -418,7 +452,7 @@ def equicorr(r: Any) -> float:
     below two columns.
     """
     np = _np()
-    m = _matrix(r)
+    m = _matrix(r, "po.corr.equicorr")
     k = m.shape[0]
     if k < 2:
         return float("nan")
@@ -475,10 +509,13 @@ def absorption(r: Any, k: int) -> float:
     ``1..n``.
     """
     np = _np()
-    vals = np.linalg.eigvalsh(_matrix(r))[::-1]
+    vals = np.linalg.eigvalsh(_matrix(r, "po.corr.absorption"))[::-1]
     total = float(vals.sum())
     if not 1 <= k <= vals.size:
-        msg = f"corr.absorption: k must be 1..{vals.size}, got {k}"
+        msg = (
+            f"po.corr.absorption: k must be from 1 to the matrix's {vals.size} columns, but it "
+            f"is {k}. Set k to the number of leading eigenvalues to sum, from 1 to {vals.size}."
+        )
         raise ValueError(msg)
     return float(vals[:k].sum() / total) if total > 0.0 else float("nan")
 
@@ -497,7 +534,10 @@ def absorption_shift(ar_fast: Any, ar_slow: Any, *, scale: float | None = None) 
     fast = np.asarray(ar_fast, dtype=float)
     slow = np.asarray(ar_slow, dtype=float)
     if fast.shape != slow.shape:
-        msg = f"corr.absorption_shift: the two series must align, got {fast.shape} and {slow.shape}"
+        msg = (
+            f"po.corr.absorption_shift: ar_fast and ar_slow must have the same shape, but they "
+            f"have {fast.shape} and {slow.shape}. Pass two series aligned row by row."
+        )
         raise ValueError(msg)
     s = float(np.std(slow)) if scale is None else float(scale)
     return (fast - slow) / s if s > 0.0 else np.full_like(fast, np.nan)
@@ -516,7 +556,7 @@ def spectral(r: Any, k: int) -> tuple[Any, Any]:
     above ``n`` gives all ``n``.
     """
     np = _np()
-    m = _matrix(r)
+    m = _matrix(r, "po.corr.spectral")
     vals, vecs = np.linalg.eigh(m)
     order = np.argsort(vals)[::-1][:k]
     out_vals = vals[order]
@@ -540,7 +580,11 @@ def from_spectral(vals: Any, vecs: Any, *, unit_diag: bool = True) -> Any:
     lam = np.asarray(vals, dtype=float).reshape(-1)
     v = np.asarray(vecs, dtype=float)
     if v.ndim != 2 or v.shape[0] != lam.size:
-        msg = f"corr.from_spectral: {lam.size} values need {lam.size} vectors, got {v.shape}"
+        msg = (
+            f"po.corr.from_spectral: {lam.size} eigenvalues need {lam.size} eigenvectors, one "
+            f"for each row of vecs, but vecs has shape {v.shape}. Pass vecs with one row for "
+            "each entry of vals, as po.corr.spectral returns them."
+        )
         raise ValueError(msg)
     m = v.T @ (lam[:, None] * v)
     if unit_diag:
@@ -558,10 +602,13 @@ def block_means(r: Any, labels: Sequence[Any]) -> tuple[Any, Any]:
     for a label count that is not the column count.
     """
     np = _np()
-    m = _matrix(r)
+    m = _matrix(r, "po.corr.block_means")
     lab = list(labels)
     if len(lab) != m.shape[0]:
-        msg = f"corr.block_means: {len(lab)} labels for a {m.shape[0]}-column matrix"
+        msg = (
+            f"po.corr.block_means: labels must name a block for each of the matrix's "
+            f"{m.shape[0]} columns, but it holds {len(lab)} labels. Pass one label for each column."
+        )
         raise ValueError(msg)
     names: list[Any] = []
     for value in lab:
@@ -599,7 +646,11 @@ def from_blocks(b: Any, labels: Sequence[Any]) -> Any:
         if value not in names:
             names.append(value)
     if bm.shape != (len(names), len(names)):
-        msg = f"corr.from_blocks: {len(names)} blocks need a {len(names)}-square B, got {bm.shape}"
+        msg = (
+            f"po.corr.from_blocks: labels name {len(names)} blocks, so b must be a "
+            f"{len(names)} by {len(names)} matrix, but it has shape {bm.shape}. Pass one row "
+            "and one column of b for each block, in the order the labels first name them."
+        )
         raise ValueError(msg)
     of = np.array([names.index(v) for v in lab])
     m = bm[np.ix_(of, of)]
@@ -622,8 +673,16 @@ def mp_edge(n: int, m: int, sigma2: float = 1.0) -> tuple[float, float]:
     gives ``(0, 4 sigma2)``. ``ValueError`` for ``n`` or ``m`` that is not
     positive.
     """
+    return _mp_edge(n, m, sigma2, "po.corr.mp_edge")
+
+
+def _mp_edge(n: int, m: int, sigma2: float, who: str) -> tuple[float, float]:
+    """:func:`mp_edge`, its refusal naming ``who``, the call the reader made."""
     if n <= 0 or m <= 0:
-        msg = f"corr.mp_edge: n and m must be positive, got {n} and {m}"
+        msg = (
+            f"{who}: n and m must be above 0, but they are {n} and {m}. "
+            "Set n to the number of rows and m to the number of columns."
+        )
         raise ValueError(msg)
     q = n / m
     root = (1.0 / q) ** 0.5
@@ -638,7 +697,7 @@ def mp_density(lam: Any, n: int, m: int, sigma2: float = 1.0) -> Any:
     ``ValueError``.
     """
     np = _np()
-    lo, hi = mp_edge(n, m, sigma2)
+    lo, hi = _mp_edge(n, m, sigma2, "po.corr.mp_density")
     x = np.asarray(lam, dtype=float)
     q = n / m
     inside = (x > lo) & (x < hi) & (x > 0.0)
@@ -676,7 +735,11 @@ def signal_share(z_blocks: Any, n_kish_blocks: Any) -> Any:
     flat = z.ndim == 1
     zz = z.reshape(-1, 1) if flat else z
     if zz.shape[0] != n.size:
-        msg = f"corr.signal_share: {zz.shape[0]} blocks of z against {n.size} sample sizes"
+        msg = (
+            f"po.corr.signal_share: n_kish_blocks must hold one sample size for each of the "
+            f"{zz.shape[0]} blocks (rows) of z_blocks, but it holds {n.size}. Pass one sample "
+            "size for each row of z_blocks."
+        )
         raise ValueError(msg)
     with np.errstate(divide="ignore", invalid="ignore"):
         floor = np.mean(np.where(n > 3.0, 1.0 / (n - 3.0), np.nan))
@@ -713,10 +776,13 @@ def loss(
     ``"z_mse"`` without ``n``.
     """
     np = _np()
-    f = _matrix(fcst)
-    r = _matrix(real)
+    f = _matrix(fcst, "po.corr.loss", "fcst")
+    r = _matrix(real, "po.corr.loss", "real")
     if f.shape != r.shape:
-        msg = f"corr.loss: the two matrices must match, got {f.shape} and {r.shape}"
+        msg = (
+            f"po.corr.loss: fcst and real must have the same shape, but they have {f.shape} "
+            f"and {r.shape}. Pass two matrices of the same columns."
+        )
         raise ValueError(msg)
     k = f.shape[0]
     if kind == "qlike":
@@ -733,7 +799,11 @@ def loss(
         return float(np.trace(m) - logdet - k)
     if kind == "z_mse":
         if n is None:
-            msg = 'corr.loss: kind="z_mse" needs `n`, the sample size behind the correlations'
+            msg = (
+                'po.corr.loss: kind="z_mse" needs n, the sample size behind the correlations, '
+                "but it is not set. Set n to the number of rows the correlations were computed "
+                "from."
+            )
             raise ValueError(msg)
         iu = np.triu_indices(k, 1)
         d = to_z(f[iu]) - to_z(r[iu])
@@ -749,7 +819,10 @@ def loss(
             return float("nan")
         w = w / denom
         return float(w @ r @ w)
-    msg = f'corr.loss: unknown kind {kind!r}; expected "qlike", "z_mse" or "minvar"'
+    msg = (
+        f'po.corr.loss: kind must be "qlike", "z_mse" or "minvar", but it is {kind!r}. '
+        "Set kind to one of those words."
+    )
     raise ValueError(msg)
 
 
@@ -787,7 +860,7 @@ def epps_invert(gram_or_row: Any, *, L: int) -> Any:  # noqa: N803 - the paper's
     if not (isinstance(g, dict) and "comoments" in g):
         g = _gram.from_row(gram_or_row)
     if L < 1:
-        msg = f"corr.epps_invert: L must be >= 1, got {L}"
+        msg = f"po.corr.epps_invert: L must be at least 1, but it is {L}. Set L to 1 or more."
         raise ValueError(msg)
     # Whatever form `gram()` handed it over in, packed or float32.
     c0 = _gram._comoments(np, g)
@@ -798,8 +871,9 @@ def epps_invert(gram_or_row: Any, *, L: int) -> Any:  # noqa: N803 - the paper's
     missing = [ell for ell in need if ell not in lags]
     if missing:
         msg = (
-            f"corr.epps_invert: L = {L} needs lags {need}, and lag {missing[0]} is not there "
-            f"(the input has {lags or 'none'}); accumulate with lags=list(range(1, {L}))"
+            f"po.corr.epps_invert: L = {L} needs the lags {need}, but lag {missing[0]} is not "
+            f"in the input, which has {lags or 'none'}. Fit the ew_cov spec with "
+            f"lags=list(range(1, {L})), or lower L."
         )
         raise ValueError(msg)
     num = float(L) * c0
@@ -837,7 +911,10 @@ def fisher_se(
     if n <= 3:
         return float("nan")
     if (phi_a is None) != (phi_b is None):
-        msg = "corr.fisher_se: phi_a and phi_b go together; the inflation is the pair's"
+        msg = (
+            "po.corr.fisher_se: phi_a and phi_b must be given together, since the inflation "
+            "reads both series, but only one is set. Set both, or neither."
+        )
         raise ValueError(msg)
     se = (n - 3.0) ** -0.5
     if rho is not None:
@@ -845,7 +922,10 @@ def fisher_se(
     if phi_a is not None and phi_b is not None:
         p = phi_a * phi_b
         if not -1.0 < p < 1.0:
-            msg = f"corr.fisher_se: phi_a * phi_b must be in (-1, 1), got {p}"
+            msg = (
+                f"po.corr.fisher_se: the product of phi_a and phi_b must be above -1 and below "
+                f"1, but it is {p:.3g}. Set each to an AR(1) coefficient above -1 and below 1."
+            )
             raise ValueError(msg)
         se *= ((1.0 + p) / (1.0 - p)) ** 0.5
     return float(se)

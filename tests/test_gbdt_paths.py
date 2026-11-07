@@ -297,7 +297,7 @@ def test_a_library_s_own_error_is_a_value_error_with_its_first_line():
     data = frame(3_000)
     for in_memory in (False, True):
         with pytest.raises(
-            ValueError, match=r"LightGBM, .*Check failed: \(min_data_in_bin\) > \(0\)"
+            ValueError, match=r"LightGBM refused .*Check failed: \(min_data_in_bin\) > \(0\)"
         ):
             gbdt.lightgbm_dataset(
                 data,
@@ -311,7 +311,8 @@ def test_a_library_s_own_error_is_a_value_error_with_its_first_line():
     ref = xgb.QuantileDMatrix(np.random.default_rng(0).random((100, 3)), label=np.zeros(100))
     assert ref.feature_names is None
     with pytest.raises(
-        ValueError, match="XGBoost, building the QuantileDMatrix: .*different number of features"
+        ValueError,
+        match="XGBoost refused building the QuantileDMatrix: .*different number of features",
     ):
         gbdt.xgboost_matrix(data, label="y", ref=ref, engine="native")
 

@@ -246,9 +246,9 @@ class TestDurationText:
         with pytest.raises(ValueError) as e:
             parse_duration(text)
         said = str(e.value)
-        assert said.startswith(f'"{text}" is not a duration: '), said
+        assert said.startswith(f'"{text}" is not a duration, since '), said
         assert "longer than 292 years, the most a clock can hold" in said or re.search(
-            r": \d+ is too large$", said
+            r"since \d+ is too large\. Give a shorter duration\.$", said
         ), said
         with pytest.raises(ValueError, match=re.escape(f'spec "m": half_life "{text}" is not')):
             _halflife(text)

@@ -841,14 +841,14 @@ class TestEdgeCases:
         assert po.spec.coef_index(s).height == 0
         bank = po.ModelBank([s])
         bank.fit_predict(frame(n=20))
-        with pytest.raises(ValueError, match="seqtest emits evidence"):
+        with pytest.raises(ValueError, match="a seqtest gives evidence"):
             bank.coef("m")
         assert bank.solve_failures().rows() == [("m", "", 0)]
         assert bank.gram("m") == []
 
     def test_unpack_says_what_a_seqtest_struct_holds(self):
         out = po.ModelBank([spec()]).fit_predict(frame(n=20))
-        with pytest.raises(TypeError, match="a seqtest struct evidence, not predictions"):
+        with pytest.raises(TypeError, match="a seqtest model evidence"):
             po.eval.unpack(out, "m")
 
     def test_the_cli_runs_both_modes(self, tmp_path, online_cli):
@@ -1005,7 +1005,10 @@ class TestRefusals:
         c = po.spec.seqtest("c", targets=["y"], a="fast", b="nope")
         with pytest.raises(
             ValueError,
-            match=r'seqtest b = "nope" is not a spec of this bank \(the bank has \["fast", "c"\]\)',
+            match=(
+                r'seqtest b = "nope" names no spec of this bank, whose specs are \["fast", "c"\]\. '
+                r"Set b to the name of one of those specs\."
+            ),
         ):
             po.ModelBank([two_sides()[0], c])
 
@@ -1013,7 +1016,7 @@ class TestRefusals:
         c1 = po.spec.seqtest("c1", targets=["d0"])
         c2 = po.spec.seqtest("c2", targets=["d0"], a="c1", b="c1_")
         with pytest.raises(
-            ValueError, match='seqtest a = "c1" is itself a seqtest and has no residuals'
+            ValueError, match='seqtest a = "c1" is itself a seqtest, which writes no residuals'
         ):
             po.ModelBank([c1, po.spec.seqtest("c1_", targets=["d0"]), c2])
 
@@ -1023,8 +1026,8 @@ class TestRefusals:
         with pytest.raises(
             ValueError,
             match=(
-                r'target "z" names no residual of a = "fast": it has no field "resid_z" '
-                r'\(its residual fields are \["resid_y"\]\)'
+                r'target "z" names no residual of a = "fast": it has no field "resid_z", '
+                r'and its residual fields are \["resid_y"\]\. Name each target'
             ),
         ):
             po.ModelBank([*sides, c])
@@ -1039,7 +1042,7 @@ class TestRefusals:
         out = po.ModelBank(sides).fit_predict(df)
         with pytest.raises(ValueError, match="a and b go together"):
             po.eval.seqtest(out, a="fast")
-        with pytest.raises(ValueError, match="targets name the columns whose sign is tested"):
+        with pytest.raises(ValueError, match="targets is required without a and b"):
             po.eval.seqtest(out)
         with pytest.raises(ValueError, match=r"target 'z' names no residual of 'fast'"):
             po.eval.seqtest(out, a="fast", b="slow", targets=["z"])
@@ -1047,9 +1050,9 @@ class TestRefusals:
             po.eval.seqtest(out, a="fast", b="slow", targets=["y"], b_suffix="@h400")
         with pytest.raises(ValueError, match="share no residual field"):
             po.eval.seqtest(out, a="fast", b="slow", a_suffix="@h20")
-        with pytest.raises(KeyError):
+        with pytest.raises(KeyError, match='spec "nope" has no output column in the frame'):
             po.eval.seqtest(out, a="fast", b="nope")
-        with pytest.raises(TypeError, match="not a model-output struct"):
+        with pytest.raises(TypeError, match="must be a spec's output column, but it is"):
             po.eval.seqtest(out, a="fast", b="y")
 
     def test_a_wrong_type_names_the_parameter(self):

@@ -14,6 +14,7 @@ from typing import IO, TYPE_CHECKING, Any, Literal, overload
 import polars as pl
 
 from polars_online import _polars_online as _native
+from polars_online._errors import ColumnNotFoundError
 from polars_online._polars_online import ArrowStruct
 from polars_online._renamed import renamed_method
 from polars_online._spec import (
@@ -63,12 +64,17 @@ _COEF_VALUE: dict[str, Any] = {"coef": pl.Float64}
 #: coefficient, where saying so helps; every other kind "emits no
 #: coefficients".
 _NO_COEF = {
-    "ew_cov": "ew_cov emits statistics, not coefficients",
-    "seqtest": "seqtest emits evidence (log e-values and counts), not coefficients",
+    "ew_cov": (
+        "an ew_cov model gives statistics, not coefficients. Read them from its output "
+        "column, or its Gram with ModelBank.gram."
+    ),
+    "seqtest": (
+        "a seqtest gives evidence (log e-values and counts), not coefficients. Read it from "
+        "its output column."
+    ),
     "micro": (
-        "micro's coef is one [id, label, n, radius, c_1, ..., c_p] row per established "
-        "summary, as many as there are; it has no fixed layout to index, and is read from "
-        "the output's coef field"
+        "a micro model keeps a varying number of clusters, so its coef field has no fixed "
+        "positions to index. Read it from the coef field of the spec's output column."
     ),
 }
 
@@ -94,15 +100,18 @@ class _CalledDict(dict[str, list[str]]):
 
 
 def _warn_called(name: str) -> None:
+    who = f"ModelBank.{name}"
     warnings.warn(
-        f"ModelBank.{name} is a property: read bank.{name}, without the call. The call "
-        "works until the next major version, which refuses it",
+        f"{who}: it is a property, so calling it is deprecated, and the call works only until "
+        f"the next major version, which refuses it. Read bank.{name} without the call.",
         PolarsOnlineDeprecationWarning,
         stacklevel=3,
     )
 
 
-def _group_keys(group: str | Iterable[str | None] | None) -> list[str | None] | None:
+def _group_keys(
+    group: str | Iterable[str | None] | None, who: str = "ModelBank"
+) -> list[str | None] | None:
     """``group=`` on the readers, as the native side takes it: one key, or
     several, each as :meth:`ModelBank.groups` reports it -- a string, or
     ``None`` for the null group, which a lone ``None``, every group, cannot
@@ -113,16 +122,18 @@ def _group_keys(group: str | Iterable[str | None] | None) -> list[str | None] | 
         return [group]
     if not isinstance(group, Iterable):
         msg = (
-            "group: a key is a str or None, as groups() reports it, or a list of them; "
-            f"got {type(group).__name__} {group!r}"
+            f"{who}: group must be a group key (a str), a list of group keys, or None for every "
+            f"group, but it is of type {type(group).__name__} ({group!r}). Pass a group key, or "
+            "a list of group keys with None in it for the null group, such as [None]."
         )
         raise TypeError(msg)
     keys = list(group)
     for k in keys:
         if k is not None and not isinstance(k, str):
             msg = (
-                "group: a key is a str or None, as groups() reports it; "
-                f"got {type(k).__name__} {k!r}"
+                f"{who}: each group key in group must be a str, or None for the null group, but "
+                f"one is of type {type(k).__name__} ({k!r}). Pass each group key as a str, or "
+                "None."
             )
             raise TypeError(msg)
     return keys
@@ -142,14 +153,13 @@ def _refuse_uint128(schema: pl.Schema, who: str, clocks: Collection[str | None] 
         if name in clocks:
             msg = (
                 f"{who}: clock column {name!r} is UInt128, wider than the Int64 an integer "
-                "clock is held in; cast it to Int64 if its values fit, or after subtracting "
-                "an origin"
+                "clock is held in. Cast it to Int64 if its values fit, or after subtracting "
+                "an origin."
             )
         else:
             msg = (
-                f"{who}: column {name!r} is UInt128, which polars-online cannot take in; "
-                "cast it to Int64 if its values fit, or to Float64, or leave it out of the "
-                "frame"
+                f"{who}: column {name!r} is UInt128, which polars-online cannot read. Cast it "
+                "to Int64 if its values fit, or to Float64, or leave it out of the frame."
             )
         raise ValueError(msg)
 
@@ -158,9 +168,10 @@ def _threads_refusal(shown: str) -> str:
     """The text that refuses a ``threads`` argument: the Rust side's, word for
     word (``online_polars::threads_refusal``), so either side says the same."""
     return (
-        f"threads={shown} is not a number of threads: give an integer of 1 or more, or None "
-        "for the default pool (POLARS_ONLINE_MAX_THREADS, else one thread per core); 0 is not "
-        "one thread per core here, as it is in the variable"
+        f"threads: {shown} is not a number of threads, and 0 is not one thread per core here, "
+        "as it is in POLARS_ONLINE_MAX_THREADS. Give an integer of 1 or more, or leave threads "
+        "out (None in Python) to take the count from POLARS_ONLINE_MAX_THREADS, else one thread "
+        "per core."
     )
 
 
@@ -264,12 +275,15 @@ class ModelBank:
         # keys or its characters, refused as `invalid type: string "name",
         # expected struct Spec`, which named neither the mistake nor the fix.
         if isinstance(specs, dict):
-            msg = "ModelBank takes a list of specs, and got one spec: pass [spec] for a bank of one"
+            msg = (
+                "ModelBank: specs must be a list of specs, but it is one spec. Pass the spec in a "
+                "list, as [spec], for a bank of one."
+            )
             raise ValueError(msg)
         if isinstance(specs, (str, bytes)):
             msg = (
-                "ModelBank takes a list of specs, such as [po.spec.ewridge(...)], got "
-                f"{type(specs).__name__}"
+                "ModelBank: specs must be a list of specs, such as [po.spec.ewridge(...)], but "
+                f"it is of type {type(specs).__name__}. Pass a list of specs."
             )
             raise ValueError(msg)
         # A hand-written dict may put a window expression in `targets`, as
@@ -329,7 +343,7 @@ class ModelBank:
         """
         return _CalledInt(self._native.rows_fed())
 
-    rows_seen = renamed_method("ModelBank", "rows_seen", "rows_fed")
+    rows_seen = renamed_method("ModelBank", "rows_seen", "rows_fed", read_as="bank.rows_fed")
 
     def groups(self, spec: str | int | None = None) -> pl.DataFrame:
         """The groups the bank holds state for: one row per (spec, group).
@@ -374,7 +388,7 @@ class ModelBank:
         ``ValueError`` names them otherwise.
         """
         n = len(self._native.spec_names())
-        picked = range(n) if spec is None else [self._spec_index(spec)]
+        picked = range(n) if spec is None else [self._spec_index(spec, "ModelBank.groups")]
         return self._native.groups(list(picked))
 
     def drop_groups(self, keys: Iterable[str | None], spec: str | int | None = None) -> int:
@@ -387,7 +401,7 @@ class ModelBank:
         :meth:`rows_fed` still counts the rows it was fed. ``spec`` is as for
         :meth:`groups` (``KeyError`` / ``IndexError`` for one the bank has not got).
         """
-        index = None if spec is None else self._spec_index(spec)
+        index = None if spec is None else self._spec_index(spec, "ModelBank.drop_groups")
         return self._native.drop_groups(list(keys), index)
 
     @overload
@@ -448,23 +462,31 @@ class ModelBank:
             keep = unlearned if keep is None else keep & unlearned
         if keep is None:
             msg = (
-                "no spec reads a clock, so the bank has no position to resume from; a "
-                "row-count bank resumes at the next row, which only the caller knows"
+                "ModelBank.skip_learned: no spec reads a clock, so the bank has no place on a "
+                "clock to resume from. Without a clock the bank resumes at the next row. Pass "
+                "the bank only the rows after the last one it learned."
             )
             raise ValueError(msg)
         return frame.filter(keep)
 
-    def _spec_index(self, spec: str | int) -> int:
+    def _spec_index(self, spec: str | int, who: str = "ModelBank") -> int:
         """A spec's position from its name or index: ``KeyError`` for a name
         the bank has not got, ``IndexError`` for a position it has not got."""
         names = self._native.spec_names()
         if isinstance(spec, int):
             if not -len(names) <= spec < len(names):
-                msg = f"spec index {spec} out of range; the bank has {len(names)} spec(s)"
+                msg = (
+                    f"{who}: spec index {spec} is out of range, since the bank has {len(names)} "
+                    f"specs. Pass an index from {-len(names)} to {len(names) - 1}, or a spec's "
+                    "name."
+                )
                 raise IndexError(msg)
             return spec % len(names)
         if spec not in names:
-            msg = f"no spec named {spec!r}; the bank has {names}"
+            msg = (
+                f"{who}: the bank has no spec named {spec!r}, only {names}. Pass one of those "
+                "names, or an index."
+            )
             raise KeyError(msg)
         return names.index(spec)
 
@@ -817,14 +839,21 @@ class ModelBank:
         # A LazyFrame is the common slip, and the attribute error it used to
         # produce named an internal method.
         if isinstance(df, pl.LazyFrame):
-            msg = (
-                f"ModelBank.{what} takes a DataFrame, not a LazyFrame: "
-                "collect it first (lf.collect())"
-            )
+            who = f"ModelBank.{what}"
+            msg = f"{who}: it takes a frame, but it was given a query (a LazyFrame). "
             if what == "fit_predict":
-                msg += ", or hand the plan to fit_predict_batches(lf), which chunks it"
+                msg += (
+                    "Pass the query's result as a DataFrame, or pass the query to "
+                    "fit_predict_batches(lf), which reads it in chunks."
+                )
+            else:
+                msg += "Pass the query's result as a DataFrame."
         else:
-            msg = f"ModelBank.{what} takes a polars DataFrame, got {type(df).__name__}"
+            who = f"ModelBank.{what}"
+            msg = (
+                f"{who}: it takes a Polars DataFrame, but it was given an object of type "
+                f"{type(df).__name__}. Pass a DataFrame."
+            )
         raise TypeError(msg)
 
     @keyword_only_forwarded("ModelBank.fit_predict_batches", ("closed_groups", "chunk_size"))
@@ -900,11 +929,15 @@ class ModelBank:
         )
 
         if chunk_size is not None and chunk_size < 1:
-            msg = f"chunk_size must be at least 1, got {chunk_size}"
+            who = f"ModelBank.{what}"
+            msg = (
+                f"{who}: chunk_size must be at least 1, but it is {chunk_size}. Set chunk_size "
+                "to 1 or more, or leave it out."
+            )
             raise ValueError(msg)
-        path = _closed_path(closed_groups, self._specs)
+        path = _closed_path(closed_groups, self._specs, f"ModelBank.{what}")
         if path is not None:
-            _check_closed_format(path, self.closed_groups(drop=False).clear())
+            _check_closed_format(path, self.closed_groups(drop=False).clear(), f"ModelBank.{what}")
         # Bound as a narrowed local rather than an `is_plan` flag: a bool does
         # not carry the type, so mypy could not see that the three calls below
         # get a `LazyFrame`. Only a frame or an iterator of frames reaches
@@ -987,14 +1020,14 @@ class ModelBank:
         if guard is not None and fed == 0 and not ours:
             warnings.warn(
                 ConsumedSourceWarning(
-                    f"{guard}: the plan yielded no rows, and its source is a Python scan -- "
-                    "which is what `pl.scan_arrow_c_stream` builds over a DuckDB relation, a "
-                    "pyarrow reader, or anything exposing `__arrow_c_stream__`. Such a stream "
-                    "is consumed once: collected a second time it yields nothing, with no "
-                    "error, so this bank has learned from nothing. Rebuild the plan per run "
-                    "(call `pl.scan_arrow_c_stream(...)` inside the loop, not outside it). If "
-                    "the source really is empty, silence this with "
-                    'warnings.simplefilter("ignore", polars_online.ConsumedSourceWarning).'
+                    f"{guard}: the query gave no rows, and it reads a source written in Python, "
+                    "such as `pl.scan_arrow_c_stream` over a DuckDB relation, a pyarrow reader or "
+                    "anything with `__arrow_c_stream__`, which gives its rows once, so a second "
+                    "run of the query reads nothing and this bank learns from nothing. Build the "
+                    "query again for each run, calling "
+                    "`pl.scan_arrow_c_stream(...)` inside the loop, or, if the source "
+                    "really is empty, silence this warning with "
+                    '`warnings.simplefilter("ignore", polars_online.ConsumedSourceWarning)`.'
                 ),
                 stacklevel=_user_stacklevel(),
             )
@@ -1150,9 +1183,9 @@ class ModelBank:
         writes evidence.
         """
         names = self._native.spec_names()
-        keys = _group_keys(group)
+        keys = _group_keys(group, "ModelBank.coef")
         if spec is not None:
-            i = self._spec_index(spec)
+            i = self._spec_index(spec, "ModelBank.coef")
             return self._coef_one(i, keys, names[i])
         frames = [
             f
@@ -1180,8 +1213,12 @@ class ModelBank:
         layout = coef_index(spec)
         if layout.is_empty():
             kind = spec["model"]["type"]
-            why = _NO_COEF.get(kind, f"{kind} emits no coefficients")
-            msg = f"spec {name!r}: {why}"
+            why = _NO_COEF.get(
+                kind,
+                f"a {kind} model has no coefficients. Read its fields from the spec's output "
+                "column.",
+            )
+            msg = f'spec "{name}": {why}'
             raise ValueError(msg)
         n = layout.height
         # Each instance's decay, by its suffix, as `output_index` gives it.
@@ -1199,7 +1236,9 @@ class ModelBank:
         for g, instance, weight_sum, coef in self._native.coef(idx, group):
             if coef is not None and len(coef) != n:
                 msg = (
-                    f"spec {self._specs[idx]['name']!r}: {len(coef)} coefficients for {n} positions"
+                    f'spec "{self._specs[idx]["name"]}": the model returned {len(coef)} '
+                    f"coefficients for {n} positions, which is a defect in polars-online. Open "
+                    "an issue at https://github.com/hgilde/polars-online/issues with this message."
                 )
                 raise AssertionError(msg)
             groups += [g] * n
@@ -1257,8 +1296,10 @@ class ModelBank:
         rows leaves the row before them.
         """
         names = self._native.spec_names()
-        picked = range(len(names)) if spec is None else [self._spec_index(spec)]
-        wanted = _group_keys(group)
+        picked = (
+            range(len(names)) if spec is None else [self._spec_index(spec, "ModelBank.last_row")]
+        )
+        wanted = _group_keys(group, "ModelBank.last_row")
         frames: list[pl.DataFrame] = []
         for i in picked:
             keys, struct = self._native.last_row(i, wanted)
@@ -1386,8 +1427,8 @@ class ModelBank:
         chunk or a thousand gives the same numbers to the bit.
         """
         n = len(self._native.spec_names())
-        picked = range(n) if spec is None else [self._spec_index(spec)]
-        return self._native.summary(list(picked), _group_keys(group))
+        picked = range(n) if spec is None else [self._spec_index(spec, "ModelBank.summary")]
+        return self._native.summary(list(picked), _group_keys(group, "ModelBank.summary"))
 
     def describe(
         self, spec: str | int | None = None, group: str | Iterable[str | None] | None = None
@@ -1416,8 +1457,10 @@ class ModelBank:
         narrow the frame as in :meth:`summary`.
         """
         names = self._native.spec_names()
-        picked = range(len(names)) if spec is None else [self._spec_index(spec)]
-        keys = _group_keys(group)
+        picked = (
+            range(len(names)) if spec is None else [self._spec_index(spec, "ModelBank.describe")]
+        )
+        keys = _group_keys(group, "ModelBank.describe")
         frames = [
             self._native.describe(i, keys).select(pl.lit(names[i]).alias("spec"), pl.all())
             for i in picked
@@ -1622,26 +1665,35 @@ class ModelBank:
             import numpy as np
         except ModuleNotFoundError as e:  # pragma: no cover - exercised by a stub
             msg = (
-                "ModelBank.gram() returns numpy arrays, and numpy is not installed. "
-                "Install it with `pip install numpy` or `pip install polars-online[numpy]`."
+                "ModelBank.gram: it returns numpy arrays, and numpy is not installed. Install "
+                "it with `pip install numpy` or `pip install polars-online[numpy]`."
             )
             raise ModuleNotFoundError(msg) from e
 
         if layout not in ("full", "packed"):
-            msg = f'gram(): layout must be "full" or "packed", got {layout!r}'
+            msg = (
+                f'ModelBank.gram: layout must be "full" or "packed", but it is {layout!r}. '
+                "Set layout to one of those words."
+            )
             raise ValueError(msg)
         polars_dtypes = {pl.Float64: "float64", pl.Float32: "float32"}
         try:
             as_dtype = np.dtype(polars_dtypes.get(dtype, dtype))
         except TypeError as e:
-            msg = f'gram(): dtype must be "float64" or "float32", got {dtype!r}'
+            msg = (
+                f'ModelBank.gram: dtype must be "float64" or "float32", but it is {dtype!r}. '
+                "Set dtype to one of those words."
+            )
             raise ValueError(msg) from e
         if as_dtype not in (np.dtype(np.float64), np.dtype(np.float32)):
-            msg = f'gram(): dtype must be "float64" or "float32", got {dtype!r}'
+            msg = (
+                f'ModelBank.gram: dtype must be "float64" or "float32", but it is {dtype!r}. '
+                "Set dtype to one of those words."
+            )
             raise ValueError(msg)
         float32 = as_dtype == np.dtype(np.float32)
         packed = layout == "packed"
-        idx = self._spec_index(spec)
+        idx = self._spec_index(spec, "ModelBank.gram")
         spec_dict = self._specs[idx]
         # `ew_cov` accumulates over the features alone -- no target, and so no
         # constant column to regress one on.
@@ -1651,7 +1703,9 @@ class ModelBank:
             columns = [_INTERCEPT, *columns]
         names = [] if unsupervised else [target_name(t) for t in spec_dict["targets"]]
         out: list[Gram] = []
-        native = self._native.gram(idx, _group_keys(group), float32, packed, columns)
+        native = self._native.gram(
+            idx, _group_keys(group, "ModelBank.gram"), float32, packed, columns
+        )
         for row, lag, (tidx, by_target, centred) in native:
             g, instance, k, weight_sum, n_kish, means, como, cross, tw = row[:9]
             tmeans, tvars, tkish = row[9:]
@@ -1809,7 +1863,9 @@ class ModelBank:
         with :meth:`gram`. ``spec`` is a name or position (``KeyError`` /
         ``IndexError`` for one the bank has not got).
         """
-        return self._native.marginal(self._spec_index(spec), _group_keys(group))
+        return self._native.marginal(
+            self._spec_index(spec, "ModelBank.marginal"), _group_keys(group, "ModelBank.marginal")
+        )
 
     def audit(
         self,
@@ -1926,15 +1982,17 @@ class ModelBank:
             if len(audits) != 1:
                 names = [self._specs[i]["name"] for i in audits]
                 msg = (
-                    f"the bank has {len(audits)} audit specs {names}: name the one to read"
+                    f"ModelBank.audit: the bank has {len(audits)} audit specs, {names}. Name the "
+                    "one to read with spec=."
                     if audits
-                    else "the bank has no audit spec: add po.spec.audit(...) to its specs"
+                    else "ModelBank.audit: the bank has no audit spec. Add po.spec.audit(...) to "
+                    "its specs."
                 )
                 raise ValueError(msg)
             idx = audits[0]
         else:
-            idx = self._spec_index(spec)
-        return self._native.audit(idx, _group_keys(group), table, pooled)
+            idx = self._spec_index(spec, "ModelBank.audit")
+        return self._native.audit(idx, _group_keys(group, "ModelBank.audit"), table, pooled)
 
     def closed_groups(self, spec: str | int | None = None, *, drop: bool = True) -> pl.DataFrame:
         """The groups that have finished and not yet been read, oldest first, as one long
@@ -2040,7 +2098,7 @@ class ModelBank:
         read: ``ValueError`` names them otherwise, and drains nothing.
         :meth:`predict` never closes anything.
         """
-        idx = None if spec is None else self._spec_index(spec)
+        idx = None if spec is None else self._spec_index(spec, "ModelBank.closed_groups")
         return self._native.closed_groups(idx, drop)
 
     def check(
@@ -2364,8 +2422,12 @@ class ModelBank:
             failing = bank.solve_failures().filter(pl.col("solve_failures") > 0)
         """
         names = self._native.spec_names()
-        picked = range(len(names)) if spec is None else [self._spec_index(spec)]
-        wanted = _group_keys(group)
+        picked = (
+            range(len(names))
+            if spec is None
+            else [self._spec_index(spec, "ModelBank.solve_failures")]
+        )
+        wanted = _group_keys(group, "ModelBank.solve_failures")
         native = self._native.solve_failures()
         rows = [
             (names[i], key, count)
@@ -2434,8 +2496,9 @@ class ModelBank:
             return
         if not callable(getattr(file, "write", None)):
             msg = (
-                "ModelBank.save takes a path or a file object opened for binary writing, "
-                f"got {type(file).__name__}"
+                "ModelBank.save: file must be a path or a file object opened for binary "
+                f"writing, but it is of type {type(file).__name__}. Pass a path, or a file opened "
+                "with 'wb'."
             )
             raise TypeError(msg)
         self._warn_formula_form(stacklevel=5)
@@ -2530,8 +2593,9 @@ class ModelBank:
                 writer.write(text)
         else:
             msg = (
-                "ModelBank.write_json takes a path, a file object or None, "
-                f"got {type(file).__name__}"
+                "ModelBank.write_json: file must be a path, a file object or None, but it is "
+                f"of type {type(file).__name__}. Pass a path or a file object, or None to get the "
+                "text back."
             )
             raise TypeError(msg)
         return None
@@ -2616,15 +2680,15 @@ class ModelBank:
             data = source.read()
             if not isinstance(data, (bytes, bytearray)):
                 msg = (
-                    "ModelBank.load: the file object gave "
-                    f"{type(data).__name__}; open the file in binary mode ('rb')"
+                    "ModelBank.load: the file object gave an object of type "
+                    f"{type(data).__name__}, not bytes. Open the file in binary mode ('rb')."
                 )
                 raise TypeError(msg)
             data = bytes(data)
         else:
             msg = (
-                "ModelBank.load takes a path, bytes or a file object opened for binary "
-                f"reading, got {type(source).__name__}"
+                "ModelBank.load: source must be a path, bytes or a file object opened for "
+                f"binary reading, but it is of type {type(source).__name__}. Pass one of those."
             )
             raise TypeError(msg)
         # One frame more than `load_bytes`: the keyword forwarding's.
@@ -2689,8 +2753,11 @@ def _unlearned(
     (:meth:`ModelBank.skip_learned`)."""
     for column, role in ((clock, "clock"), (group, "group")):
         if column is not None and column not in schema:
-            msg = f"spec {name!r}: {role} column {column!r} is not in the frame"
-            raise ValueError(msg)
+            msg = (
+                f'spec "{name}": {role} column {column!r} is not in the input. Pass an input '
+                f"with the {role} column the spec reads."
+            )
+            raise ColumnNotFoundError(msg)
     dtype = schema[clock]
     value: pl.Expr
     # A temporal column is compared in its own unit, its physical integer
@@ -2708,7 +2775,10 @@ def _unlearned(
     elif dtype.is_numeric():
         value = pl.col(clock).cast(pl.Float64)
     else:
-        msg = f"spec {name!r}: clock column {clock!r} has dtype {dtype}, which is not a clock"
+        msg = (
+            f'spec "{name}": clock column {clock!r} has dtype {dtype}, which is not a clock. '
+            "Pass the clock as a number, a Date, a Datetime or a Duration."
+        )
         raise ValueError(msg)
     temporal = not dtype.is_numeric()
     lasts: dict[str | None, float | int] = {}
@@ -2719,8 +2789,8 @@ def _unlearned(
         if (nanos is not None) != temporal:
             was, now = ("temporal", "numeric") if nanos is not None else ("numeric", "temporal")
             msg = (
-                f"spec {name!r}: clock column {clock!r} is {now} in the frame and was "
-                f"{was} in the bank"
+                f'spec "{name}": clock column {clock!r} is {now} in the frame, but it was {was} '
+                f"in the bank. Cast the clock back to the {was} type the bank learned it as."
             )
             raise ValueError(msg)
         seen: float | int

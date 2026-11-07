@@ -2057,7 +2057,8 @@ impl Robust {
         let n = self.cfg.n_targets;
         if !self.systems.0.is_empty() && self.systems.0.len() != n {
             return Err(format!(
-                "{} band systems for {n} targets",
+                "it is damaged, since it saved quantile fits for {} targets where it has {n}. \
+                 Load an undamaged copy of the state file, or rebuild it from its input.",
                 self.systems.0.len()
             ));
         }
@@ -2069,7 +2070,9 @@ impl Robust {
             let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
             if keep != sys.keep || bits(&s) != bits(&sys.s) {
                 return Err(format!(
-                    "target {j}'s band system is not of its Gram's columns and scales"
+                    "it is damaged, since what it saved for the quantile fit of target {j} (counting \
+                     from 0) does not match its running sums. Load an undamaged copy of the state file, \
+                     or rebuild it from its input."
                 ));
             }
             let fits = match &sys.factor {
@@ -2078,7 +2081,9 @@ impl Robust {
             };
             if !fits {
                 return Err(format!(
-                    "target {j}'s band factor is not of its {} kept columns",
+                    "it is damaged, since what it saved for the quantile fit of target {j} (counting \
+                     from 0) does not match its {} columns. Load an undamaged copy of the state file, or \
+                     rebuild it from its input.",
                     keep.len()
                 ));
             }
@@ -2890,7 +2895,7 @@ impl OnlineModel for Robust {
                         .is_some_and(|b| b.len() != slots || b.iter().any(|v| v.len() != k))
                 {
                     return Err(StateError::Invalid(format!(
-                        "{kind}: the accumulators have the wrong shape"
+                        "{kind}: it is damaged, since its running sums have the wrong shape. Load an undamaged copy of the state file, or rebuild it from its input."
                     )));
                 }
                 // The band systems are state (task 170), held as they were
@@ -2899,10 +2904,13 @@ impl OnlineModel for Robust {
                 if let Err(e) = m.band_systems_fit() {
                     return Err(StateError::Invalid(format!("{kind}: {e}")));
                 }
-                if let Err(e) =
-                    crate::model::check_target_min_weight("robust", &m.target_min_weight, n)
+                if crate::model::check_target_min_weight("robust", &m.target_min_weight, n).is_err()
                 {
-                    return Err(StateError::Invalid(e));
+                    return Err(StateError::Invalid(format!(
+                        "{kind}: it is damaged, since its saved per-target min_weight values do \
+                         not match its targets. Load an undamaged copy of the state file, or \
+                         rebuild it from its input."
+                    )));
                 }
                 // The data shares are a solve's: none before the first, and
                 // a target's `k_total` each after it (docs/PLAN.md task 116).
@@ -2915,7 +2923,7 @@ impl OnlineModel for Robust {
                 };
                 if !shares_fit {
                     return Err(StateError::Invalid(format!(
-                        "{kind}: the data shares have the wrong shape"
+                        "{kind}: it is damaged, since part of its saved fit has the wrong shape. Load an undamaged copy of the state file, or rebuild it from its input."
                     )));
                 }
                 // The MAD's sketches, one per target at 0.5 exactly under
@@ -2923,7 +2931,7 @@ impl OnlineModel for Robust {
                 // sketch's buckets by its pointers (docs/PLAN.md task 271).
                 if !mad_sketches_fit(m.cfg.huber_scale, m.cfg.mad_anchor, n, &m.mad) {
                     return Err(StateError::Invalid(format!(
-                        "{kind}: the residual sketches do not match huber_scale"
+                        "{kind}: it is damaged, since its saved residual scale does not match huber_scale. Load an undamaged copy of the state file, or rebuild it from its input."
                     )));
                 }
                 // A build of schema 64 or earlier anchored each sketch at
@@ -2951,7 +2959,7 @@ impl OnlineModel for Robust {
                 };
                 if !refit_fits {
                     return Err(StateError::Invalid(format!(
-                        "{kind}: the refit's buffers do not match {kind}_refit_rows"
+                        "{kind}: it is damaged, since the rows it saved for its refit do not match {kind}_refit_rows. Load an undamaged copy of the state file, or rebuild it from its input."
                     )));
                 }
                 // The held |e|'s tree is not state: reading each buffer
@@ -2966,7 +2974,7 @@ impl OnlineModel for Robust {
                 };
                 if !seen_fits {
                     return Err(StateError::Invalid(format!(
-                        "{kind}: the floor's row counts do not match the targets"
+                        "{kind}: it is damaged, since part of its saved fit does not match its targets. Load an undamaged copy of the state file, or rebuild it from its input."
                     )));
                 }
                 // No window here: a state written before the runs' flag keeps

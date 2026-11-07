@@ -141,12 +141,12 @@ def test_what_it_refuses():
         counted.skip_learned(frame())
     bank = po.ModelBank([spec(group="g")])
     bank.fit_predict(frame().head(20))
-    with pytest.raises(ValueError, match="clock column 't' is not in the frame"):
+    with pytest.raises(ValueError, match="clock column 't' is not in the input"):
         bank.skip_learned(frame().drop("t"))
-    with pytest.raises(ValueError, match="group column 'g' is not in the frame"):
+    with pytest.raises(ValueError, match="group column 'g' is not in the input"):
         bank.skip_learned(frame().drop("g"))
     temporal = frame().with_columns(t=pl.from_epoch(pl.col("t").cast(pl.Int64), time_unit="s"))
-    with pytest.raises(ValueError, match="temporal in the frame and was numeric in the bank"):
+    with pytest.raises(ValueError, match="temporal in the frame, but it was numeric in the bank"):
         bank.skip_learned(temporal)
     # The docstring's third refusal (task 239): a clock column that is
     # neither numeric nor temporal.

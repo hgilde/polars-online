@@ -176,7 +176,8 @@ impl LastRow {
         ];
         if same.contains(&false) {
             return Err(format!(
-                "saved last row of spec {:?} has the wrong shape for its spec",
+                "it is damaged, since the last row it saved does not match spec {:?}. Load an \
+                 undamaged copy of the state file, or rebuild it from its input.",
                 spec.name
             ));
         }

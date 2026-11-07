@@ -447,7 +447,7 @@ fn an_explicit_format_overrides_the_extension() {
         run_config(&cfg, no_progress)
             .unwrap_err()
             .to_string()
-            .contains("cannot tell the format of"),
+            .contains("cannot tell its format"),
         "an unknown extension names the fix"
     );
     cfg.input_format = Some(Format::Ipc);
@@ -666,10 +666,10 @@ fn validate_refuses_a_config_that_asks_for_what_cannot_be() {
     c.predict = true;
     c.load_state = Some("state.bin".into());
     c.closed_groups = Some("closed.parquet".into());
-    refused(c, "predict = true does not learn, so no group ever closes");
+    refused(c, "predict = true learns nothing, so no group ever closes");
     let mut c = base.clone();
     c.closed_groups = Some("closed.parquet".into());
-    refused(c, "closed_groups names a file but no spec closes groups");
+    refused(c, "closed_groups names a file, but no spec closes groups");
     let mut c = base.clone();
     c.predict = true;
     refused(c, "predict = true needs load_state");
@@ -679,13 +679,13 @@ fn validate_refuses_a_config_that_asks_for_what_cannot_be() {
     c.save_state = Some("again.bin".into());
     refused(
         c,
-        "predict = true does not update the bank, so save_state has nothing to save",
+        "predict = true learns nothing, so save_state has nothing to save",
     );
     let mut c = base.clone();
     c.input = PathBuf::new();
     assert_eq!(
         c.input_format().unwrap_err(),
-        "input is required: the config's `input`, or --input"
+        "config: the run has no input. Set input in the config, or pass --input."
     );
 }
 
@@ -858,7 +858,8 @@ fn a_dry_run_that_skips_what_was_learned_takes_the_positions_first() {
     let e = resumed.dry_run().unwrap_err().to_string();
     assert!(
         e.contains(
-            "skip_learned: no spec reads a clock, so the bank has no position to resume from"
+            "config: skip_learned = true (--skip-learned) needs a spec that reads a clock, but no \
+             spec does, so the bank has no position to resume from"
         ),
         "{e}"
     );

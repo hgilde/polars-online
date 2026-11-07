@@ -302,24 +302,39 @@ impl KernelDef {
     /// above 0 or that a forward kernel lacks.
     pub fn check(&self) -> Result<(), String> {
         if self.half_life.is_nan() || self.half_life <= 0.0 {
-            return Err(format!("half_life must be above 0, got {}", self.half_life));
+            return Err(format!(
+                "half_life must be above 0, but it is {}. Set half_life to a positive number of \
+                 clock units or a duration, or to inf for no decay.",
+                self.half_life
+            ));
         }
         if self.half_life < f64::MIN_POSITIVE {
             // A subnormal half-life: `mass·x` underflows to 0 and a rate
             // divides by that mass, so the mean came out 0 and the rate
             // infinite (task 159, W5).
             return Err(format!(
-                "half_life must be a normal number, at least {:e}, got {:e}",
+                "half_life must be at least {:.2e}, but it is {:.2e}. Set half_life to at least \
+                 {:.2e}.",
                 f64::MIN_POSITIVE,
-                self.half_life
+                self.half_life,
+                f64::MIN_POSITIVE
             ));
         }
         match (self.direction, self.window_size) {
             (Direction::Forward, None) => {
-                return Err("a forward operator needs a window_size".into());
+                return Err(
+                    "window_size is not set, but an operator that reads the rows after \
+                            each row needs one, since those rows have no end without it. Set \
+                            window_size to a finite positive number of clock units or a \
+                            duration."
+                        .into(),
+                );
             }
             (_, Some(w)) if !w.is_finite() || w <= 0.0 => {
-                return Err(format!("window_size must be finite and above 0, got {w}"));
+                return Err(format!(
+                    "window_size must be finite and above 0, but it is {w}. Set window_size to a \
+                     finite positive number of clock units or a duration."
+                ));
             }
             _ => {}
         }
@@ -1589,24 +1604,28 @@ fn mass_between(k: &KernelDef, t: f64, a: f64, b: f64) -> f64 {
 fn check_op(o: usize, op: &OpDef, k: &KernelDef) -> Result<(), String> {
     if op.stat.weighs_held() && k.half_life.is_infinite() && k.window_size.is_none() {
         return Err(format!(
-            "operator {o}: a mean or a variance with half_life = inf needs a window_size; over \
-             an unbounded stretch every value weighs the same and the mean is not a number"
+            "operator {o}: a mean or a variance under half_life = inf needs a window_size, \
+             since a value held from before the first row would have no finite weight"
         ));
     }
     if op.stat.is_var() && k.direction == Direction::Forward {
         return Err(format!(
-            "operator {o}: a variance looks back only; it has no forward kernel"
+            "operator {o}: a variance reads only the rows up to each row, but this one reads \
+             the rows after it"
         ));
     }
     match (op.stat, op.quantile) {
         (Stat::Quantile, Some(p)) if p > 0.0 && p < 1.0 => {}
         (Stat::Quantile, p) => {
             return Err(format!(
-                "operator {o}: a quantile's level must be in (0, 1), got {p:?}"
+                "operator {o}: quantile must be above 0 and below 1, but it is {}",
+                p.map_or_else(|| "not set".to_string(), |p| p.to_string())
             ));
         }
         (_, Some(_)) => {
-            return Err(format!("operator {o}: only a quantile has a level"));
+            return Err(format!(
+                "operator {o}: quantile is given, but only a quantile operator takes it"
+            ));
         }
         _ => {}
     }
@@ -1629,11 +1648,30 @@ struct Held<'a> {
     meta: &'a mut VecDeque<Meta>,
 }
 
+/// A refusal no caller's input can reach, said as the defect it is: every
+/// caller checks the kernels and operators it hands [`Windows::new`] first
+/// (`formula.rs`, `windows_frame.rs`), so a refusal there is this library's.
+fn defect(what: &str) -> String {
+    format!(
+        "internal: {what}, which is a defect in polars-online. Open an issue at \
+         https://github.com/hgilde/polars-online/issues with this message."
+    )
+}
+
 impl Windows {
     /// # Errors
     ///
-    /// No operator, or a kernel this core cannot run.
+    /// No operator, or a kernel this core cannot run: a defect of the
+    /// caller's, which checks both first ([`defect`]).
     pub fn new(
+        kernels: Vec<KernelDef>,
+        ops: Vec<OpDef>,
+        clock_cfg: ClockCfg,
+    ) -> Result<Self, String> {
+        Self::build(kernels, ops, clock_cfg).map_err(|e| defect(&e))
+    }
+
+    fn build(
         kernels: Vec<KernelDef>,
         ops: Vec<OpDef>,
         clock_cfg: ClockCfg,
@@ -3307,7 +3345,7 @@ mod tests {
                 closed: Closed::Right,
             };
             let err = k.check().expect_err("refused");
-            assert!(err.contains("normal number"), "{err}");
+            assert!(err.contains("half_life must be at least"), "{err}");
         }
     }
 
@@ -4762,7 +4800,10 @@ mod tests {
             ClockCfg::default(),
         )
         .expect_err("refused");
-        assert!(err.contains("looks back only"), "{err}");
+        assert!(
+            err.contains("a variance reads only the rows up to each row"),
+            "{err}"
+        );
         let err = Windows::new(
             vec![KernelDef {
                 half_life: f64::INFINITY,
@@ -4783,7 +4824,10 @@ mod tests {
         core.check().unwrap();
         core.ops[0].kernel = 1;
         let err = core.check().expect_err("refused");
-        assert!(err.contains("looks back only"), "{err}");
+        assert!(
+            err.contains("a variance reads only the rows up to each row"),
+            "{err}"
+        );
     }
 
     /// A reset discards the windows open across it, whatever `partial`
@@ -5356,17 +5400,20 @@ mod tests {
                 .check()
                 .unwrap_err();
             assert!(
-                err.starts_with("half_life must be above 0, got"),
+                err.starts_with("half_life must be above 0, but it is"),
                 "{h}: {err}"
             );
         }
         let err = kernel(Direction::Forward, 1.0, None).check().unwrap_err();
-        assert_eq!(err, "a forward operator needs a window_size");
+        assert!(
+            err.starts_with("window_size is not set, but an operator that reads the rows after"),
+            "{err}"
+        );
         for w in [0.0, -2.0, f64::INFINITY, f64::NAN] {
             for direction in [Direction::Backward, Direction::Forward] {
                 let err = kernel(direction, 1.0, Some(w)).check().unwrap_err();
                 assert!(
-                    err.starts_with("window_size must be finite and above 0, got"),
+                    err.starts_with("window_size must be finite and above 0, but it is"),
                     "{w}: {err}"
                 );
             }
@@ -5390,25 +5437,25 @@ mod tests {
         };
         assert_eq!(
             refused(vec![back()], vec![]),
-            "at least one operator is needed"
+            defect("at least one operator is needed")
         );
         assert_eq!(
             refused(vec![back()], vec![op(3, 1)]),
-            "operator 0 names kernel 3, which there is not"
+            defect("operator 0 names kernel 3, which there is not")
         );
         assert_eq!(
             refused(vec![back()], vec![op(0, 1), op(0, 0)]),
-            "min_samples must be at least 1"
+            defect("min_samples must be at least 1")
         );
         assert_eq!(
             refused(vec![back(), back()], vec![op(1, 1)]),
-            "kernel 0 has no operator"
+            defect("kernel 0 has no operator")
         );
         let err = refused(
             vec![kernel(Direction::Backward, -1.0, None)],
             vec![op(0, 1)],
         );
-        assert!(err.starts_with("half_life must be above 0"), "{err}");
+        assert!(err.contains("half_life must be above 0"), "{err}");
         // An increment is no statistic of a window, and reads back one row.
         assert_eq!(OpKind::Increment.stat(), None);
         assert_eq!(OpKind::Increment.direction(), Direction::Backward);

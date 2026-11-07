@@ -366,7 +366,8 @@ pub fn lars_lasso_weighted(
     debug_assert_eq!(weights.len(), k);
     if let Some(j) = (0..k).find(|&j| live[j] && !(weights[j].is_finite() && weights[j] > 0.0)) {
         return Err(format!(
-            "penalty weight {} for column {j}: a path from λ_max takes weights finite and above 0",
+            "penalty weight {} for column {j} must be finite and above 0. Set every penalty \
+             weight to a finite positive value.",
             weights[j]
         ));
     }

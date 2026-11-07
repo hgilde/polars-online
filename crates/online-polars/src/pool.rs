@@ -74,13 +74,14 @@ fn spawned<E: std::fmt::Display>(
 ) -> Result<ThreadPool, String> {
     built.map_err(|e| match set {
         Some(v) => format!(
-            "{THREADS_VAR}={:?} asks for {n} threads, and the system would not start them \
-             ({e}); set a smaller number (0 is one thread per core) or unset it",
+            "environment variable {THREADS_VAR}: {:?} asks for {n} threads, and the system \
+             would not start them ({e}). Set it to a smaller number (0 is one thread per core), \
+             or unset it.",
             v.to_string_lossy()
         ),
         None => format!(
-            "the bank could not start its {n} threads, one per core ({e}); set {THREADS_VAR} \
-             to a smaller number"
+            "bank: the system would not start its {n} threads, one per core ({e}). Set the \
+             environment variable {THREADS_VAR} to a smaller number."
         ),
     })
 }
@@ -128,9 +129,9 @@ pub fn thread_pool_size(threads: Option<usize>) -> PolarsResult<usize> {
 #[must_use]
 pub fn threads_refusal(shown: &str) -> String {
     format!(
-        "threads={shown} is not a number of threads: give an integer of 1 or more, or None for \
-         the default pool ({THREADS_VAR}, else one thread per core); 0 is not one thread per \
-         core here, as it is in the variable"
+        "threads: {shown} is not a number of threads, and 0 is not one thread per core here, as \
+         it is in {THREADS_VAR}. Give an integer of 1 or more, or leave threads out (None in \
+         Python) to take the count from {THREADS_VAR}, else one thread per core."
     )
 }
 
@@ -278,8 +279,9 @@ fn spawned_for_argument<E: std::fmt::Display>(
 ) -> Result<ThreadPool, String> {
     built.map_err(|e| {
         format!(
-            "threads={n} asks for {n} threads, and the system would not start them ({e}); give a \
-             smaller number, or None for the default pool"
+            "threads: {n} threads were asked for, and the system would not start them ({e}). \
+             Give a smaller number, or leave threads out (None in Python) for the bank's \
+             default number of threads."
         )
     })
 }
@@ -296,8 +298,8 @@ fn threads_from_env(val: Option<&OsStr>) -> Result<usize, String> {
         Ok(0) => Ok(one_per_core()),
         Ok(n) => Ok(n),
         Err(_) => Err(format!(
-            "{THREADS_VAR}={text:?} is not a number of threads; \
-             set a non-negative integer (0 is one thread per core) or unset it"
+            "environment variable {THREADS_VAR}: {text:?} is not a number of threads. Set it \
+             to an integer of 0 or more (0 is one thread per core), or unset it."
         )),
     }
 }
@@ -330,7 +332,9 @@ mod tests {
         for bad in ["", "eight", "-1", "2.5"] {
             let err = threads_from_env(Some(OsStr::new(bad))).unwrap_err();
             assert!(
-                err.starts_with(&format!("{THREADS_VAR}={bad:?} is not")),
+                err.starts_with(&format!(
+                    "environment variable {THREADS_VAR}: {bad:?} is not"
+                )),
                 "{err}"
             );
         }
@@ -347,10 +351,12 @@ mod tests {
         };
         let err = spawned(100_000, Some(OsStr::new("100000")), refused()).unwrap_err();
         assert!(
-            err.starts_with(&format!("{THREADS_VAR}=\"100000\" asks for 100000 threads")),
+            err.starts_with(&format!(
+                "environment variable {THREADS_VAR}: \"100000\" asks for 100000 threads"
+            )),
             "{err}"
         );
-        assert!(err.contains("set a smaller number"), "{err}");
+        assert!(err.contains("Set it to a smaller number"), "{err}");
         let err = spawned(14, None, refused()).unwrap_err();
         assert!(
             err.contains(THREADS_VAR) && err.contains("14 threads"),
@@ -382,10 +388,13 @@ mod tests {
     fn zero_threads_is_refused_by_name_and_says_none_is_one_per_core() {
         let err = Threads::new(Some(0)).unwrap_err().to_string();
         assert!(
-            err.contains("threads=0 is not a number of threads"),
+            err.contains("threads: 0 is not a number of threads"),
             "{err}"
         );
-        assert!(err.contains("or None for the default pool"), "{err}");
+        assert!(
+            err.contains("or leave threads out (None in Python)"),
+            "{err}"
+        );
         assert!(err.contains("0 is not one thread per core here"), "{err}");
         let err = thread_pool_size(Some(0)).unwrap_err().to_string();
         assert!(err.contains(&threads_refusal("0")), "{err}");
@@ -453,10 +462,10 @@ mod tests {
         };
         let err = spawned_for_argument(100_000, refused()).unwrap_err();
         assert!(
-            err.starts_with("threads=100000 asks for 100000 threads"),
+            err.starts_with("threads: 100000 threads were asked for"),
             "{err}"
         );
-        assert!(err.contains("give a smaller number"), "{err}");
+        assert!(err.contains("Give a smaller number"), "{err}");
         let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build();
         assert_eq!(
             spawned_for_argument(1, pool).unwrap().current_num_threads(),

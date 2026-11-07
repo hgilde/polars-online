@@ -715,17 +715,17 @@ impl OnlineModel for Pa {
                 // 2026-09-18, B3).
                 if m.beta.len() != n || m.beta.iter().any(|b| b.len() != k) {
                     return Err(StateError::Invalid(
-                        "pa: the coefficients have the wrong shape".into(),
+                        "pa: its saved coefficients have the wrong shape. Load an undamaged copy of the state file, or rebuild it from its input.".into(),
                     ));
                 }
                 if m.w_target.len() != n {
                     return Err(StateError::Invalid(
-                        "pa: the target weights have the wrong shape".into(),
+                        "pa: its saved target weights have the wrong shape. Load an undamaged copy of the state file, or rebuild it from its input.".into(),
                     ));
                 }
                 if !m.spread.has_shape(n) {
                     return Err(StateError::Invalid(
-                        "pa: the target spreads have the wrong shape".into(),
+                        "pa: its saved target spreads have the wrong shape. Load an undamaged copy of the state file, or rebuild it from its input.".into(),
                     ));
                 }
                 // A scaler exactly when `standardize` is on, at the cfg's
@@ -734,14 +734,18 @@ impl OnlineModel for Pa {
                     || m.scaler.as_ref().is_some_and(|sc| sc.k() != k)
                 {
                     return Err(StateError::Invalid(
-                        "pa: the state's scaler does not match its cfg's standardize".into(),
+                        "pa: its saved feature scaler does not match its standardize setting. \
+                         Load an undamaged copy of the state file, or rebuild it from its input."
+                            .into(),
                     ));
                 }
                 // A warm-up is a scaler's: without one it counts nothing
                 // (docs/PLAN.md task 206).
                 if m.scaler.is_none() && m.warmup != Warmup::default() {
                     return Err(StateError::Invalid(
-                        "pa: the state's warm-up does not match its cfg's standardize".into(),
+                        "pa: its saved warm-up does not match its standardize setting. Load an \
+                         undamaged copy of the state file, or rebuild it from its input."
+                            .into(),
                     ));
                 }
                 m.ensure_buffers();
@@ -1940,11 +1944,11 @@ mod tests {
         assert!(Pa::restore(&plain.state()).is_ok(), "the control");
         refused(
             &|inner| inner.spread = TargetSpread::new(2),
-            "pa: the target spreads have the wrong shape",
+            "pa: its saved target spreads have the wrong shape",
         );
         refused(
             &|inner| inner.warmup = scaled.warmup.clone(),
-            "pa: the state's warm-up does not match its cfg's standardize",
+            "pa: its saved warm-up does not match its standardize setting",
         );
     }
 }

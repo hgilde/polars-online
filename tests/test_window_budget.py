@@ -129,32 +129,32 @@ def test_a_broken_bank_names_itself_before_a_bad_column(tmp_path):
     bank.fit_predict(df.head(1))
     with pytest.raises(ValueError, match="window_budget"):
         bank.fit_predict(df.slice(1))
-    with pytest.raises(ValueError, match="cannot go on.*window_budget"):
+    with pytest.raises(ValueError, match="window_budget.*cannot go on"):
         bank.save_bytes()
     # Every way out of the bank refuses it the same way. `save` raised a bare
     # OSError, and `to_json` exported the state `save` refuses (review
     # 2026-10-05, YA2); the file a save would replace is left as it was.
     state = tmp_path / "b.state"
     state.write_bytes(b"the last good state")
-    with pytest.raises(ValueError, match="cannot go on.*window_budget") as exc:
+    with pytest.raises(ValueError, match="window_budget.*cannot go on") as exc:
         bank.save(state)
     assert not isinstance(exc.value, OSError)
     assert state.read_bytes() == b"the last good state"
     for export in (bank.write_json, lambda: bank.write_json(tmp_path / "b.json")):
-        with pytest.raises(ValueError, match="cannot go on.*window_budget"):
+        with pytest.raises(ValueError, match="window_budget.*cannot go on"):
             export()
     assert not (tmp_path / "b.json").exists()
-    with pytest.raises(ValueError, match="cannot go on.*window_budget"):
+    with pytest.raises(ValueError, match="window_budget.*cannot go on"):
         pickle.dumps(bank)
     # A filesystem's refusal is still the OSError of its kind.
     with pytest.raises(FileNotFoundError, match="nowhere"):
         po.ModelBank([_spec()]).save(tmp_path / "nowhere" / "b.state")
     bad = df.head(1).with_columns(pl.col("x0").cast(pl.String))
     # The frame is bad on its own: a healthy bank refuses it for the column.
-    with pytest.raises(ValueError, match='"x0" has dtype str; it must be numeric'):
+    with pytest.raises(ValueError, match='"x0" must be a number, but it is String'):
         po.ModelBank([_spec()]).fit_predict(bad)
     for call in (bank.fit_predict, bank.predict):
-        with pytest.raises(ValueError, match="cannot go on.*window_budget"):
+        with pytest.raises(ValueError, match="window_budget.*cannot go on"):
             call(bad)
 
 

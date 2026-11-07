@@ -81,6 +81,7 @@ from typing import Any, Literal
 import polars as pl
 
 from polars_online._duration import Duration, clock_nanoseconds
+from polars_online._errors import ColumnNotFoundError
 from polars_online._renamed import renamed_function, renamed_keywords
 from polars_online._warnings import PolarsOnlineDeprecationWarning
 
@@ -134,9 +135,15 @@ def _frame(who: str, df: object) -> None:
     if isinstance(df, pl.DataFrame):
         return
     if isinstance(df, pl.LazyFrame):
-        msg = f"{who} takes a DataFrame, not a LazyFrame: collect it first (lf.collect())"
+        msg = (
+            f"{who}: the frame must be a Polars DataFrame, but it is a LazyFrame. Pass the "
+            f"query's result, lf.collect(), which runs the query and returns its rows."
+        )
     else:
-        msg = f"{who} takes a polars DataFrame, got {type(df).__name__}"
+        msg = (
+            f"{who}: the frame must be a Polars DataFrame, but it is of type {type(df).__name__}. "
+            f"Pass a Polars DataFrame."
+        )
     raise TypeError(msg)
 
 
@@ -147,14 +154,25 @@ def _spec_of(who: str, spec: str | dict) -> tuple[str, dict | None]:
         return spec, None
     if isinstance(spec, dict) and isinstance(spec.get("name"), str):
         return spec["name"], spec
-    msg = f"{who}: spec is a spec's name or its dict, got {type(spec).__name__}"
+    if isinstance(spec, dict):
+        msg = (
+            f"{who}: spec must be a spec's name or the spec itself, but it is a dict with no "
+            f"name, which no po.spec builder returns. Pass a spec built by po.spec, or its name "
+            f"as a str."
+        )
+        raise TypeError(msg)
+    msg = (
+        f"{who}: spec must be a spec's name or the spec itself, but it is of type "
+        f"{type(spec).__name__}. Pass the spec, or its name as a str."
+    )
     raise TypeError(msg)
 
 
 def _warn_merged(who: str, what: str) -> None:
     warnings.warn(
-        f"{who}: {what} is deprecated: spec takes the spec's name or its dict, which carries "
-        "the name. It is read as before until the next major version, which refuses it",
+        f"{who}: {what} is deprecated, since spec takes the spec's name or the spec itself, "
+        "which carries the name. It is read as before until the next major version, which "
+        "refuses it. Pass the spec alone as spec.",
         PolarsOnlineDeprecationWarning,
         stacklevel=3,
     )
@@ -173,7 +191,10 @@ def _takes_spec[R](who: str) -> Callable[[Callable[..., R]], Callable[..., R]]:
             _frame(who, df)
             if "spec_name" in kwargs:
                 if args:
-                    msg = f"{who}: spec_name was merged into spec, and both are given"
+                    msg = (
+                        f"{who}: spec_name was merged into spec, but both are given. "
+                        f"Pass the spec alone as spec."
+                    )
                     raise TypeError(msg)
                 _warn_merged(who, "spec_name")
                 args = (kwargs.pop("spec_name"),)
@@ -181,8 +202,8 @@ def _takes_spec[R](who: str) -> Callable[[Callable[..., R]], Callable[..., R]]:
                 written = kwargs.pop("spec")
                 if written.get("name") != args[0]:
                     msg = (
-                        f"{who}: spec {args[0]!r} and the spec dict named "
-                        f"{written.get('name')!r} disagree; give the dict alone as spec"
+                        f"{who}: the spec name {args[0]!r} and the spec named "
+                        f"{written.get('name')!r} disagree. Pass the spec alone as spec."
                     )
                     raise ValueError(msg)
                 _warn_merged(who, "a spec's name beside the spec dict")
@@ -209,18 +230,28 @@ def _binary(binary: bool | None, spec: dict | None) -> bool:
     return _logistic(spec) if binary is None else binary
 
 
-def _pred_fields(df: pl.DataFrame, spec_name: str) -> list[str]:
-    dtype = df.schema[spec_name]
+def _pred_fields(who: str, df: pl.DataFrame, spec_name: str) -> list[str]:
+    dtype = df.schema.get(spec_name)
+    if dtype is None:
+        msg = (
+            f'{who}: spec "{spec_name}" has no output column in the frame, whose columns are '
+            f"{df.columns}. Name a spec whose output column the frame holds."
+        )
+        raise KeyError(msg)
     if not isinstance(dtype, pl.Struct):
-        msg = f"column {spec_name!r} is not a model-output struct"
+        msg = (
+            f"{who}: column {spec_name!r} must be a spec's output column, but it is "
+            f"{dtype}. Name a spec whose output column the frame holds."
+        )
         raise TypeError(msg)
     fields = [f.name for f in dtype.fields if f.name.startswith("pred_")]
     if not fields:
         msg = (
-            f"column {spec_name!r} has no prediction fields (pred_*) to unpack; "
-            "an ew_cov struct holds statistics, a kmeans or micro struct assignments, "
-            "an ew_class struct a class and its posteriors and a seqtest struct "
-            "evidence, not predictions"
+            f"{who}: output column {spec_name!r} has no prediction fields (pred_*), since its "
+            "model writes other fields: an ew_cov model statistics, a kmeans or micro model "
+            "cluster assignments, an ew_class model a class and its posterior probabilities, "
+            "and a seqtest model evidence. Read those fields with pl.col(...).struct.field(...), "
+            "or pass a spec whose model predicts a target."
         )
         raise TypeError(msg)
     return fields
@@ -293,7 +324,7 @@ def unpack(
       rule no column is named after the slot) and, given the dict, whatever
       :func:`polars_online.spec.output_index` raises for it.
     """
-    return _unpack(df, spec, targets=targets)
+    return _unpack(df, spec, targets=targets, who="po.eval.unpack")
 
 
 def _unpack(
@@ -302,6 +333,7 @@ def _unpack(
     *,
     targets: Sequence[str] | None = None,
     columns: Sequence[str] | None = None,
+    who: str = "po.eval.unpack",
 ) -> pl.DataFrame:
     """:func:`unpack`, carrying of the input's columns only those in
     ``columns`` (all of them when ``None``). A score reads the key columns
@@ -309,8 +341,8 @@ def _unpack(
     column once per slot made its long form the frame's width times the
     slots, 1.4 GiB from a 290 MiB frame of 43 columns and 8 slots, where
     the four columns it reads take 137 MiB."""
-    spec_name, written = _spec_of("po.eval.unpack", spec)
-    fields = _pred_fields(df, spec_name)
+    spec_name, written = _spec_of(who, spec)
+    fields = _pred_fields(who, df, spec_name)
     keep = [c for c, d in df.schema.items() if not isinstance(d, pl.Struct) and c not in RESERVED]
     if columns is not None:
         wanted = set(columns)
@@ -320,13 +352,13 @@ def _unpack(
     # target's value from the spec's own table of it, instead of the
     # heuristic name-parsing below, which exists only for callers who have a
     # frame but no spec.
-    exact = {} if written is None else _spec_targets(written, df)
+    exact = {} if written is None else _spec_targets(written, df, who)
     frames = []
     for slot in fields:
         if slot in exact:
             target, y = exact[slot]
         else:
-            target = _target_of(slot, df, targets)
+            target = _target_of(who, slot, df, targets)
             y = pl.col(target)
         frames.append(
             df.select(
@@ -340,7 +372,7 @@ def _unpack(
     return pl.concat(frames)
 
 
-def _spec_targets(spec: dict, df: pl.DataFrame) -> dict[str, tuple[str, pl.Expr]]:
+def _spec_targets(spec: dict, df: pl.DataFrame, who: str) -> dict[str, tuple[str, pl.Expr]]:
     """Each ``pred`` field of ``spec`` -> its target's name and the
     expression of the target's value on the frame."""
     from polars_online import spec as _spec_mod
@@ -351,14 +383,14 @@ def _spec_targets(spec: dict, df: pl.DataFrame) -> dict[str, tuple[str, pl.Expr]
     return {
         r["field"]: (
             r["target"],
-            _target_value(r["field"], tables.get(r["target"]), r["target"], df),
+            _target_value(who, r["field"], tables.get(r["target"]), r["target"], df),
         )
         for r in idx.iter_rows(named=True)
         if r["target"] is not None
     }
 
 
-def _target_value(slot: str, table: Any, name: str, df: pl.DataFrame) -> pl.Expr:
+def _target_value(who: str, slot: str, table: Any, name: str, df: pl.DataFrame) -> pl.Expr:
     """A target's value on the frame as the bank reads it: its column, or
     for a formula target the column of its own name that
     :func:`polars_online.stream.with_windows` writes. A value the bank
@@ -367,10 +399,11 @@ def _target_value(slot: str, table: Any, name: str, df: pl.DataFrame) -> pl.Expr
     def column(c: str) -> pl.Expr:
         if c not in df.columns:
             msg = (
-                f"cannot find column {c!r}, which slot {slot!r} reads for target {name!r}; the "
-                f"frame has {df.columns}"
+                f"{who}: slot {slot!r} reads target {name!r} from column {c!r}, but the frame "
+                f"has no such column (it has {df.columns}). Pass a frame that holds the target "
+                f"column."
             )
-            raise ValueError(msg)
+            raise ColumnNotFoundError(msg)
         return pl.col(c)
 
     if table is None or isinstance(table, str):
@@ -378,16 +411,16 @@ def _target_value(slot: str, table: Any, name: str, df: pl.DataFrame) -> pl.Expr
     if "formula" in table:
         if name not in df.columns:
             msg = (
-                f"slot {slot!r}: target {name!r} is a formula of the row's future, which the bank "
-                f"resolves inside its stream and does not write out, and the frame has no column "
-                f"{name!r} to score it against; add one with po.stream.with_windows"
+                f"{who}: slot {slot!r} predicts formula target {name!r}, which the bank computes "
+                f"as it learns and does not write out, and the frame has no column {name!r} to "
+                f"score it against. Add the column with po.stream.with_windows before scoring."
             )
-            raise ValueError(msg)
+            raise ColumnNotFoundError(msg)
         return pl.col(name)
     return column(table["column"])  # a column renamed
 
 
-def _target_of(slot: str, df: pl.DataFrame, targets: Sequence[str] | None) -> str:
+def _target_of(who: str, slot: str, df: pl.DataFrame, targets: Sequence[str] | None) -> str:
     """``pred_<target>[__combo][@hN]`` -> ``<target>``. Longest match wins, so
     targets whose names are prefixes of each other still resolve."""
     body = slot[len("pred_") :]
@@ -395,11 +428,17 @@ def _target_of(slot: str, df: pl.DataFrame, targets: Sequence[str] | None) -> st
     matches = [
         t for t in candidates if body == t or body.startswith(t + "__") or body.startswith(t + "@")
     ]
+    if not matches and targets is not None:
+        msg = (
+            f"{who}: no target in targets matches slot {slot!r}, so its target column is not "
+            "known. Add the slot's target to targets, or pass the spec itself as spec."
+        )
+        raise ValueError(msg)
     if not matches:
         msg = (
-            f"cannot infer the target column for slot {slot!r}: no column of the frame is named "
-            "after it. A target with a name of its own (po.target with name=) is read through "
-            "the spec that wrote it: pass spec="
+            f"{who}: no column of the frame is named after slot {slot!r}, so its target column "
+            "is not known. Add the target column to the frame, or, for a target named with "
+            "po.target(name=), pass the spec itself as spec."
         )
         raise ValueError(msg)
     return max(matches, key=len)
@@ -603,7 +642,9 @@ def metrics(
     spec_name, written = _spec_of("po.eval.metrics", spec)
     binary = _binary(binary, written)
     keys = ["slot", "target", *_group_keys(group)]
-    long = _scored(_unpack(df, written or spec_name, targets=targets, columns=keys))
+    long = _scored(
+        _unpack(df, written or spec_name, targets=targets, columns=keys, who="po.eval.metrics")
+    )
     exprs = _metric_exprs(binary=binary, hit=not _no_hit(written))
     out = long.group_by(keys).agg(exprs).sort(keys)
     return _thin(out, min_samples, keys)
@@ -629,13 +670,13 @@ def _calendar_every(every: str, dtype: pl.DataType, clock: str) -> int:
     text = every.strip()
     if not _EVERY_TEXT.fullmatch(text) or not re.search(r"[1-9]", text):
         msg = (
-            f"window_metrics: every {every!r} is not a duration above 0 in Polars' text, "
-            'such as "1mo", "1q" or "1y2w"'
+            f"po.eval.window_metrics: every must be a duration above 0 in Polars' text, but it "
+            f'is {every!r}. Give every as text such as "1mo", "1q" or "1y2w".'
         )
         raise ValueError(msg)
     fixed = _CALENDAR_PART.sub("", text)
     if fixed and re.search(r"[1-9]", fixed):
-        return int(clock_nanoseconds(fixed, dtype, "window_metrics", "every", clock) or 0)
+        return int(clock_nanoseconds(fixed, dtype, "po.eval.window_metrics", "every", clock) or 0)
     return 0
 
 
@@ -747,24 +788,35 @@ def window_metrics(
     dtype = df.schema.get(clock)
     if dtype is None:
         # Named before the window is checked against it (review R2, P9).
-        raise pl.exceptions.ColumnNotFoundError(clock)
+        msg = (
+            f"po.eval.window_metrics: clock column {clock!r} is not in the frame, whose "
+            f"columns are {df.columns}. Name a column of the frame as clock."
+        )
+        raise pl.exceptions.ColumnNotFoundError(msg)
     ns: int | None
     if isinstance(dtype, (pl.Datetime, pl.Date)) and isinstance(every, str) and _is_calendar(every):
         ns = _calendar_every(every, dtype, clock)
     else:
-        ns = clock_nanoseconds(every, dtype, "window_metrics", "every", clock)
+        ns = clock_nanoseconds(every, dtype, "po.eval.window_metrics", "every", clock)
     if ns is None and not every > 0:  # type: ignore[operator]
-        msg = f"window_metrics: every must be > 0, got {every}"
+        msg = (
+            f"po.eval.window_metrics: every must be above 0, but it is {every}. Give every a "
+            f"positive number of clock units."
+        )
         raise ValueError(msg)
     if ns is None and math.isinf(every):  # type: ignore[arg-type]
         # One bucket, whose `window_start` was NaN (review 2026-10-05, YB11).
         msg = (
-            f"window_metrics: every must be finite, got {every}; one window over the whole "
-            "frame is po.eval.metrics"
+            f"po.eval.window_metrics: every must be finite, but it is {every}. Give every a "
+            "finite number of clock units, or use po.eval.metrics for one window over the "
+            "whole frame."
         )
         raise ValueError(msg)
     if dtype is not None and not (dtype.is_numeric() or dtype.is_temporal()):
-        msg = f"clock column {clock!r} must be numeric or temporal, got {dtype}"
+        msg = (
+            f"po.eval.window_metrics: clock column {clock!r} must be numeric or temporal, but "
+            f"it is {dtype}. Cast the clock to a number or a Datetime."
+        )
         raise TypeError(msg)
     if ns is None and dtype.is_integer():
         # The bucket's left edge in the clock's own dtype, as a temporal
@@ -773,9 +825,9 @@ def window_metrics(
         # values (review round 4, YB14).
         if not float(every).is_integer():  # type: ignore[arg-type]
             msg = (
-                f"window_metrics: every {every!r} is not a whole number, and clock column "
-                f"{clock!r} is {dtype}, which holds whole numbers; give a whole every, or cast "
-                "the clock to a float"
+                f"po.eval.window_metrics: every must be a whole number, since clock column "
+                f"{clock!r} is {dtype}, but it is {every!r}. Give every a whole number, or cast "
+                "the clock to Float64."
             )
             raise ValueError(msg)
         whole = int(every)  # type: ignore[arg-type]
@@ -789,7 +841,15 @@ def window_metrics(
     else:
         start = None
     keys = ["slot", "target", *_group_keys(group), "window_start"]
-    long = _scored(_unpack(df, written or spec_name, targets=targets, columns=[*keys, clock]))
+    long = _scored(
+        _unpack(
+            df,
+            written or spec_name,
+            targets=targets,
+            columns=[*keys, clock],
+            who="po.eval.window_metrics",
+        )
+    )
     if start is None:
         long = _dynamic_windows(long, clock, _polars_every(every, ns), keys[:-1])
     else:
@@ -818,7 +878,10 @@ def _takes_specs[R](fn: Callable[..., R]) -> Callable[..., R]:
         _frame(who, df)
         if "spec_names" in kwargs:
             if args:
-                msg = f"{who}: spec_names was merged into specs, and both are given"
+                msg = (
+                    f"{who}: spec_names was merged into specs, but both are given. "
+                    f"Pass the specs alone as specs."
+                )
                 raise TypeError(msg)
             _warn_merged(who, "spec_names")
             args = (kwargs.pop("spec_names"),)
@@ -868,10 +931,12 @@ def compare_specs(
     if binary is None:
         reads = {_logistic(written) for _, written in given}
         if len(reads) > 1:
-            names = [name for name, _ in given]
+            logistic = [name for name, written in given if _logistic(written)]
+            others = [name for name, written in given if not _logistic(written)]
             msg = (
-                f"po.eval.compare_specs: specs {names} mix a logistic fit with others, whose "
-                "metrics differ in kind; compare them in two calls, or set binary"
+                f'po.eval.compare_specs: specs {logistic} are fits with loss="logistic" and '
+                f"{others} are not, and the metrics of the two differ in kind. Pass the two sets "
+                "in two calls, or set binary to True or False."
             )
             raise ValueError(msg)
         binary = reads.pop() if reads else False
@@ -917,19 +982,32 @@ def _points(param_grid: Any) -> list[dict[str, Any]]:
     ``ParameterGrid`` order: the keys sorted, the last key varying fastest."""
     who = "po.eval.grid_search"
     if not isinstance(param_grid, Mapping) or not param_grid:
-        msg = f"{who}: param_grid is a dict of each setting's values, got {param_grid!r}"
+        msg = (
+            f"{who}: param_grid must be a non-empty dict of each keyword's values, but it is "
+            f'{param_grid!r}. Pass a dict such as {{"half_life": [50, 500]}}.'
+        )
         raise TypeError(msg)
     keys = sorted(param_grid)
     for key in keys:
         values = param_grid[key]
         if not isinstance(key, str):
-            msg = f"{who}: param_grid's keys are a builder's keywords, got {key!r}"
+            msg = (
+                f"{who}: each key of param_grid must be a keyword of the spec builder, but one "
+                f"is {key!r}. Use the builder's keyword names, as str, for keys."
+            )
             raise TypeError(msg)
         if key in _SEARCH_COLUMNS:
-            msg = f"{who}: param_grid key {key!r} names one of the result's own columns"
+            msg = (
+                f"{who}: param_grid key {key!r} is the name of one of the result's own columns. "
+                f"Rename the builder's keyword, or wrap the builder in a function that takes "
+                f"another name."
+            )
             raise ValueError(msg)
         if isinstance(values, (str, bytes)) or not isinstance(values, Sequence) or not values:
-            msg = f"{who}: param_grid[{key!r}] is a list of the values to try, got {values!r}"
+            msg = (
+                f"{who}: param_grid[{key!r}] must be a list of the values to try, but it is "
+                f"{values!r}. Give a non-empty list."
+            )
             raise TypeError(msg)
     return [
         dict(zip(keys, point, strict=True))
@@ -949,20 +1027,33 @@ def _search_specs(
             name = ", ".join(f"{k}={v}" for k, v in point.items())
             spec = specs(name, **point)
             if not isinstance(spec, dict) or spec.get("name") != name:
+                got = spec.get("name") if isinstance(spec, dict) else type(spec).__name__
                 msg = (
                     f"{who}: the spec builder must return a spec named by its first argument, "
-                    f"as po.spec's builders do: called with {name!r}, it returned "
-                    f"{spec.get('name') if isinstance(spec, dict) else type(spec).__name__!r}"
+                    f"but called with {name!r} it returned {got!r}. Name the spec it returns "
+                    f"by its first argument, as po.spec's builders do."
                 )
                 raise ValueError(msg)
             built.append(spec)
         return built, points
     if param_grid is not None:
-        msg = f"{who}: param_grid needs a spec builder to call, and got specs already built"
+        msg = (
+            f"{who}: param_grid needs a spec builder to call, but specs holds specs already "
+            f"built. Pass a builder, such as po.spec.ewridge, as specs, or leave out param_grid."
+        )
         raise TypeError(msg)
     given = [specs] if isinstance(specs, dict) else list(specs)
     if not given or not all(isinstance(s, dict) for s in given):
-        msg = f"{who}: specs is a spec, a list of them, or a builder, got {specs!r}"
+        if not isinstance(specs, (list, tuple)):
+            got = f"of type {type(specs).__name__}"
+        elif not given:
+            got = "an empty list"
+        else:
+            got = "a list holding something other than a spec"
+        msg = (
+            f"{who}: specs must be a spec, a list of specs or a spec builder, but it is {got}. "
+            f"Pass one of those."
+        )
         raise TypeError(msg)
     return given, [{} for _ in given]
 
@@ -973,30 +1064,36 @@ def _time_series_folds(n: int, n_splits: int, gap: int) -> list[tuple[int, int, 
     from the rows before ``choose_end`` and scored on ``test_start:test_end``."""
     who = "po.eval.grid_search"
     if isinstance(n_splits, bool) or not isinstance(n_splits, int) or n_splits < 1:
-        msg = f"{who}: n_splits must be a whole number >= 1, got {n_splits!r}"
+        msg = (
+            f"{who}: n_splits must be a whole number of at least 1, but it is {n_splits!r}. "
+            f"Set n_splits to 1 or more."
+        )
         raise ValueError(msg)
     if isinstance(gap, bool) or not isinstance(gap, int) or gap < 0:
-        msg = f"{who}: gap must be a whole number of rows >= 0, got {gap!r}"
+        msg = (
+            f"{who}: gap must be a whole number of rows of at least 0, but it is {gap!r}. "
+            f"Set gap to 0 or more."
+        )
         raise ValueError(msg)
     test_size = n // (n_splits + 1)
     first = n - n_splits * test_size
     if test_size < 1:
         have = "1 row is" if n == 1 else f"{n} rows are"
         remedy = (
-            f"Give fewer n_splits, {n - 1} at most, or more rows."
+            f"fewer n_splits, {n - 1} at most, or more rows"
             if n >= 2
-            else "Give two rows at least."
+            else f"{n_splits + 1} rows at least, or fewer n_splits"
         )
         msg = (
-            f"{who}: {have} too few for n_splits={n_splits}, which cuts the rows into "
-            f"{n_splits + 1} spans of a row or more. {remedy}"
+            f"{who}: n_splits={n_splits} cuts the rows into {n_splits + 1} spans of a row or "
+            f"more, but {have} too few. Give {remedy}."
         )
         raise ValueError(msg)
     if first - gap < 1:
         msg = (
             f"{who}: the first span, rows 0-{first - 1} of {n} at n_splits={n_splits}, is "
-            f"{first} rows, and gap={gap} leaves none of them to choose from. Give a smaller "
-            f"gap, below {first}, fewer n_splits, or more rows."
+            f"{first} row{'' if first == 1 else 's'}, and gap={gap} leaves none of them to "
+            f"choose from. Give a smaller gap, below {first}, fewer n_splits, or more rows."
         )
         raise ValueError(msg)
     return [(s - gap, s, s + test_size) for s in range(first, n, test_size)]
@@ -1019,8 +1116,9 @@ def _search_slots(
             rows = idx.filter(pl.col("kind") == "loglik")
             if rows.is_empty():
                 msg = (
-                    f"po.eval.grid_search: spec {spec['name']!r} writes no loglik field to score "
-                    'by scoring="loglik"; bocpd, hmm and deco do'
+                    f'po.eval.grid_search: spec "{spec["name"]}" writes no loglik field to score '
+                    'by scoring="loglik", which only bocpd, hmm and deco write. Use '
+                    'scoring="mse" for a spec that predicts a target.'
                 )
                 raise ValueError(msg)
             for r in rows.iter_rows(named=True):
@@ -1035,11 +1133,13 @@ def _search_slots(
                     }
                 )
             continue
-        targets = _spec_targets(spec, frame)
+        targets = _spec_targets(spec, frame, "po.eval.grid_search")
         if not targets:
             msg = (
-                f"po.eval.grid_search: spec {spec['name']!r} makes no prediction of a target to "
-                'score by mse; score a bocpd, hmm or deco spec by scoring="loglik"'
+                f'po.eval.grid_search: spec "{spec["name"]}" makes no prediction of a target to '
+                'score by scoring="mse", and only bocpd, hmm and deco write the loglik that '
+                'scoring="loglik" scores. Pass specs that predict a target, or bocpd, hmm or deco '
+                'specs with scoring="loglik".'
             )
             raise ValueError(msg)
         rows = idx.filter(pl.col("kind").is_in(["pred", "pred_selected", "pred_averaged"]))
@@ -1231,7 +1331,10 @@ def grid_search(
 
     who = "po.eval.grid_search"
     if scoring not in _SCORINGS:
-        msg = f"{who}: scoring is one of {sorted(_SCORINGS)}, got {scoring!r}"
+        msg = (
+            f'{who}: scoring must be "mse" or "loglik", but it is {scoring!r}. '
+            f"Set scoring to one of those words."
+        )
         raise ValueError(msg)
     built, points = _search_specs(specs, param_grid)
     if isinstance(source, pl.LazyFrame):
@@ -1239,7 +1342,10 @@ def grid_search(
     elif isinstance(source, pl.DataFrame):
         n = source.height
     else:
-        msg = f"{who}: source is a polars LazyFrame or DataFrame, got {type(source).__name__}"
+        msg = (
+            f"{who}: source must be a query or a frame, but it is of type {type(source).__name__}. "
+            f"Pass a Polars LazyFrame or DataFrame."
+        )
         raise TypeError(msg)
     folds = _time_series_folds(n, n_splits, gap)
     # The rows split at every place a fold starts or its choice stops, so a
@@ -1270,7 +1376,7 @@ def grid_search(
         msg = (
             f"{who}: the query gave {n} rows when counted and {seen} when run, so the spans "
             "placed by the count do not fit the rows scored. Give a query that returns the "
-            "same rows each time it is read, or collect it to a frame first."
+            "same rows each time it runs, or pass its result as a frame."
         )
         raise ValueError(msg)
     assert slots is not None  # n >= 2 rows, so at least one chunk
@@ -1289,28 +1395,31 @@ def grid_search(
         first = {k: over(k, 0, first_end) for k in chosen_from}
         if not first[chosen_from[0]][1]:
             late = min(chosen_from, key=lambda k: first[k][2])
-            who_late = f"{slots[late]['field']!r} of spec {built[slots[late]['spec']]['name']!r}"
+            who_late = f'{slots[late]["field"]!r} of spec "{built[slots[late]["spec"]]["name"]}"'
             rows_read = (
                 f"rows 0-{first_end - 1}, the {first_end}" if first_end > 1 else "row 0, the one"
             )
-            span = f"{rows_read} before the first test span" + (f" less gap={gap}" if gap else "")
+            ahead = (
+                f"the gap of {gap} rows ahead of the first test span"
+                if gap
+                else "the first test span"
+            )
             if target is None:
-                what = (
-                    f"every candidate have a loglik: {who_late} has one on {first[late][2]}, "
-                    "the fewest"
-                )
+                lacks = "a loglik from every slot"
+                fewest = f"{who_late} has one on {first[late][2]}, the fewest"
             else:
                 present = sum(
                     known[j].get(target, 0) for j, (_, b) in enumerate(segments) if b <= first_end
                 )
-                what = (
-                    f"every candidate for target {target!r} predict with the target present: "
+                lacks = f"a prediction of target {target!r} from every slot with the target present"
+                fewest = (
                     f"{who_late} predicts on {first[late][2]}, the fewest, and the target is "
                     f"present on {present}"
                 )
             msg = (
-                f"{who}: the first choice reads {span} at n_splits={n_splits}, and on none of "
-                f"them does {what}. Give fewer n_splits, a smaller gap, a shorter warm-up "
+                f"{who}: at n_splits={n_splits}, the first choice of a grid point reads "
+                f"{rows_read} before {ahead}. None of them has {lacks}: {fewest}. Give fewer "
+                "n_splits, a smaller gap, a shorter warm-up "
                 "(min_weight, warm_rows) or more rows."
             )
             raise ValueError(msg)
@@ -1395,12 +1504,19 @@ def grid_search(
     )
 
 
-def _resid_fields(df: pl.DataFrame, spec_name: str) -> list[str]:
+def _resid_fields(who: str, df: pl.DataFrame, spec_name: str) -> list[str]:
     dtype = df.schema.get(spec_name)
     if dtype is None:
-        raise KeyError(spec_name)
+        msg = (
+            f'{who}: spec "{spec_name}" has no output column in the frame, whose columns are '
+            f"{df.columns}. Name a spec whose output column the frame holds."
+        )
+        raise KeyError(msg)
     if not isinstance(dtype, pl.Struct):
-        msg = f"column {spec_name!r} is not a model-output struct"
+        msg = (
+            f"{who}: column {spec_name!r} must be a spec's output column, but it is "
+            f"{dtype}. Name a spec whose output column the frame holds."
+        )
         raise TypeError(msg)
     return [f.name for f in dtype.fields if f.name.startswith("resid_")]
 
@@ -1481,14 +1597,18 @@ def seqtest(
     - polars' ``ColumnNotFoundError`` for a column-mode target or a
       ``group`` column the frame has not got.
     """
-    _frame("po.eval.seqtest", df)
-    _check_name("seqtest", df, name)
+    who = "po.eval.seqtest"
+    _frame(who, df)
+    _check_name("po.eval.seqtest", df, name)
     keys = _group_keys(group)
     if (a is None) != (b is None):
-        msg = "seqtest: a and b go together; name both specs to compare them, or neither"
+        msg = (
+            "po.eval.seqtest: a and b go together, but only one is given. Name both specs to "
+            "compare them, or neither."
+        )
         raise ValueError(msg)
     if a is not None and b is not None:
-        have = {a: _resid_fields(df, a), b: _resid_fields(df, b)}
+        have = {a: _resid_fields(who, df, a), b: _resid_fields(who, df, b)}
         if targets is None:
             # `resid_<t><a_suffix>` of a, for every t with `resid_<t><b_suffix>` in b.
             bodies = [f.removeprefix("resid_") for f in have[a] if f.endswith(a_suffix)]
@@ -1496,9 +1616,9 @@ def seqtest(
             targets = [t for t in stems if f"resid_{t}{b_suffix}" in have[b]]
             if not targets:
                 msg = (
-                    f"seqtest: {a!r} and {b!r} share no residual field (with a_suffix "
-                    f"{a_suffix!r}, b_suffix {b_suffix!r}); {a!r} has {have[a]}, "
-                    f"{b!r} has {have[b]}"
+                    f"{who}: {a!r} and {b!r} share no residual field with a_suffix "
+                    f"{a_suffix!r} and b_suffix {b_suffix!r}: {a!r} has {have[a]}, and "
+                    f"{b!r} has {have[b]}. Name the targets, or set the suffixes to match."
                 )
                 raise ValueError(msg)
         for t in targets:
@@ -1506,8 +1626,10 @@ def seqtest(
                 want = f"resid_{t}{suffix}"
                 if want not in have[side]:
                     msg = (
-                        f"seqtest: target {t!r} names no residual of {side!r}: it has no field "
-                        f"{want!r} (its residual fields are {have[side]})"
+                        f"{who}: target {t!r} names no residual of {side!r}, which has no field "
+                        f"{want!r} (its residual fields are {have[side]}). Set a_suffix and "
+                        "b_suffix to the suffixes these fields carry, or name a target both specs "
+                        "predict."
                     )
                     raise ValueError(msg)
         signs = {
@@ -1518,7 +1640,10 @@ def seqtest(
         names = ("log_e_a", "log_e_b", "wins_a", "wins_b")
     else:
         if targets is None:
-            msg = "seqtest: targets name the columns whose sign is tested (or give a and b)"
+            msg = (
+                "po.eval.seqtest: targets is required without a and b, but it is not given. "
+                "Name the columns whose sign is tested in targets, or name two specs as a and b."
+            )
             raise ValueError(msg)
         signs = {t: pl.col(t) for t in targets}
         names = ("log_e_pos", "log_e_neg", "n_pos", "n_neg")
@@ -1650,7 +1775,9 @@ def sums(
     spec_name, written = _spec_of("po.eval.sums", spec)
     binary = _binary(binary, written)
     columns = [*_group_keys(group), *([] if weight is None else [weight])]
-    long = _scored(_unpack(df, written or spec_name, targets=targets, columns=columns))
+    long = _scored(
+        _unpack(df, written or spec_name, targets=targets, columns=columns, who="po.eval.sums")
+    )
     if weight is not None:
         # What the bank does with the same weight: it skips a row whose
         # weight it cannot use and refuses a negative one (review round 4,
@@ -1726,7 +1853,10 @@ def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
     for f in frames[1:]:
         other = [c for c in f.columns if c not in SUM_FIELDS]
         if other != keys:
-            msg = f"merge_sums needs the same keys in every part: {keys} vs {other}"
+            msg = (
+                f"po.eval.merge_sums: every part must have the same key columns, but one has "
+                f"{keys} and another {other}. Pass parts from po.eval.sums with the same group."
+            )
             raise ValueError(msg)
     w = pl.col("w").sum()
     mean_y = (pl.col("w") * pl.col("mean_y")).sum() / w
@@ -1815,15 +1945,16 @@ def _paired_residuals(
     """Per target, ``a``'s and ``b``'s residual fields, resolved as
     :func:`seqtest` resolves them, NaN, infinities and values past the
     bank's input bound read as null."""
-    have = {a: _resid_fields(df, a), b: _resid_fields(df, b)}
+    have = {a: _resid_fields(who, df, a), b: _resid_fields(who, df, b)}
     if targets is None:
         bodies = [f.removeprefix("resid_") for f in have[a] if f.endswith(a_suffix)]
         stems = [x[: len(x) - len(a_suffix)] for x in bodies]
         targets = [t for t in stems if f"resid_{t}{b_suffix}" in have[b]]
         if not targets:
             msg = (
-                f"{who}: {a!r} and {b!r} share no residual field (with a_suffix "
-                f"{a_suffix!r}, b_suffix {b_suffix!r}); {a!r} has {have[a]}, {b!r} has {have[b]}"
+                f"{who}: {a!r} and {b!r} share no residual field with suffixes {a_suffix!r} "
+                f"and {b_suffix!r}: {a!r} has {have[a]}, and {b!r} has {have[b]}. Name the "
+                f"targets, or set the suffixes to match."
             )
             raise ValueError(msg)
     out: dict[str, tuple[pl.Expr, pl.Expr]] = {}
@@ -1833,8 +1964,9 @@ def _paired_residuals(
             want = f"resid_{t}{suffix}"
             if want not in have[side]:
                 msg = (
-                    f"{who}: target {t!r} names no residual of {side!r}: it has no field "
-                    f"{want!r} (its residual fields are {have[side]})"
+                    f"{who}: target {t!r} names no residual of {side!r}, which has no field "
+                    f"{want!r} (its residual fields are {have[side]}). Set a_suffix and b_suffix "
+                    "to the suffixes these fields carry, or name a target both specs predict."
                 )
                 raise ValueError(msg)
             r = pl.col(side).struct.field(want).cast(pl.Float64)
@@ -1849,7 +1981,7 @@ def _check_name(who: str, df: pl.DataFrame, name: str) -> None:
     if name in df.columns:
         msg = (
             f"{who}: name {name!r} is a column of the frame already, and the result would "
-            "replace it; give the result a name the frame has not got"
+            "replace it. Give the result a name the frame does not have."
         )
         raise ValueError(msg)
 
@@ -1977,12 +2109,17 @@ def _check_half_life(who: str, half_life: float) -> None:
     one reached polars' ``ewm_mean`` as ``alpha = 0``, which it refuses
     with no word of the parameter."""
     if not half_life > 0:
-        msg = f"{who}: half_life must be > 0, got {half_life}"
+        msg = (
+            f"{who}: half_life must be finite and above 0, but it is {half_life}. Give "
+            f"half_life a positive number of rows, or leave it None for one statistic over "
+            f"every row."
+        )
         raise ValueError(msg)
     if math.isinf(half_life):
         msg = (
-            f"{who}: half_life must be finite, got {half_life}: it weighs each row before the "
-            "present at 0.5 ** (age / half_life); leave it None for one statistic over every row"
+            f"{who}: half_life must be finite and above 0, but it is {half_life}. Give "
+            f"half_life a positive number of rows, or leave it None for one statistic over "
+            f"every row."
         )
         raise ValueError(msg)
 
@@ -2052,14 +2189,17 @@ def diebold_mariano(
     """
     _frame("po.eval.diebold_mariano", df)
     keys = _group_keys(group)
-    pairs = _paired_residuals(df, a, b, targets, a_suffix, b_suffix, "diebold_mariano")
+    pairs = _paired_residuals(df, a, b, targets, a_suffix, b_suffix, "po.eval.diebold_mariano")
     values = {t: rb * rb - ra * ra for t, (ra, rb) in pairs.items()}
     if lags < 0:
-        msg = f"diebold_mariano: lags must be >= 0, got {lags}"
+        msg = (
+            f"po.eval.diebold_mariano: lags must be at least 0, but it is {lags}. Set lags to "
+            f"0 or more."
+        )
         raise ValueError(msg)
     if half_life is not None:
-        _check_half_life("diebold_mariano", half_life)
-        _check_name("diebold_mariano", df, name)
+        _check_half_life("po.eval.diebold_mariano", half_life)
+        _check_name("po.eval.diebold_mariano", df, name)
         return _ew_test(df, values, keys, lags, half_life, "dm", name)
     out = _hac_test(df, values, keys, lags, "dm", min_samples)
     p = [
@@ -2124,14 +2264,18 @@ def clark_west(
     """
     _frame("po.eval.clark_west", df)
     keys = _group_keys(group)
-    pairs = _paired_residuals(df, big, small, targets, big_suffix, small_suffix, "clark_west")
+    pairs = _paired_residuals(
+        df, big, small, targets, big_suffix, small_suffix, "po.eval.clark_west"
+    )
     values = {t: rs * rs - rb * rb + (rb - rs) * (rb - rs) for t, (rb, rs) in pairs.items()}
     if lags < 0:
-        msg = f"clark_west: lags must be >= 0, got {lags}"
+        msg = (
+            f"po.eval.clark_west: lags must be at least 0, but it is {lags}. Set lags to 0 or more."
+        )
         raise ValueError(msg)
     if half_life is not None:
-        _check_half_life("clark_west", half_life)
-        _check_name("clark_west", df, name)
+        _check_half_life("po.eval.clark_west", half_life)
+        _check_name("po.eval.clark_west", df, name)
         return _ew_test(df, values, keys, lags, half_life, "cw", name)
     out = _hac_test(df, values, keys, lags, "cw", min_samples)
     return out.with_columns(

@@ -34,6 +34,10 @@ use super::libs::{Handle, XgbLib};
 use super::sample::Sampler;
 use super::{GbdtError, Layout, conversion_pool};
 
+/// The call a message of this module names: the only one that builds
+/// through XGBoost.
+const XGB: &str = "po.gbdt.xgboost_matrix";
+
 /// How to build a matrix.
 #[derive(Debug, Clone)]
 pub struct XgbOptions {
@@ -96,7 +100,12 @@ impl Drop for Owned<'_> {
 }
 
 fn cstr(s: &str) -> Result<CString, GbdtError> {
-    CString::new(s).map_err(|_| GbdtError::msg(format!("`{s}` holds a NUL character")))
+    CString::new(s).map_err(|_| {
+        GbdtError::msg(format!(
+            "po.gbdt.xgboost_matrix: `{s}` holds a NUL character, which XGBoost cannot take. \
+         Rename it without one."
+        ))
+    })
 }
 
 /// One `__array_interface__`, as JSON, onto `out`.
@@ -168,9 +177,9 @@ impl It<'_> {
         };
         let p = self.layout.names.len();
         let n = seg.n;
-        let label = checked_f64(&seg, p, self.layout, self.row)?;
+        let label = checked_f64(&seg, p, self.layout, self.row, XGB)?;
         let weight = match self.layout.weight {
-            Some(_) => Some(checked_f64(&seg, p + 1, self.layout, self.row)?),
+            Some(_) => Some(checked_f64(&seg, p + 1, self.layout, self.row, XGB)?),
             None => None,
         };
         self.json.clear();
@@ -190,7 +199,7 @@ impl It<'_> {
         // alive in `self.held` until XGBoost asks for the next batch.
         lib.check(
             unsafe { (lib.set_columnar)(self.proxy, data.as_ptr()) },
-            "handing over a batch",
+            "taking a chunk of rows",
         )?;
         let info = |field: &str, vals: &[f64]| -> Result<(), GbdtError> {
             let mut s = String::new();
@@ -237,14 +246,17 @@ impl It<'_> {
 
     fn end_pass(&mut self) -> Result<(), GbdtError> {
         match self.first_pass_rows {
-            None if self.row == 0 => Err(GbdtError::msg("the source has no rows")),
+            None if self.row == 0 => Err(GbdtError::msg(
+                "po.gbdt.xgboost_matrix: the source has no rows. Pass a source with rows.",
+            )),
             None => {
                 self.first_pass_rows = Some(self.row);
                 Ok(())
             }
             Some(first) if first != self.row => Err(GbdtError::msg(format!(
-                "the source gave {first} rows in one pass and {} in another: XGBoost reads it \
-                 more than once, and every pass must give the same rows",
+                "{XGB}: the source gave {first} rows in one pass and {} in another, but XGBoost \
+                 reads it more than once, and every pass must give the same rows. Pass a source \
+                 that gives the same rows on every read, such as a parquet file.",
                 self.row
             ))),
             Some(_) => Ok(()),
@@ -268,7 +280,9 @@ extern "C" fn xgb_next(h: Handle) -> c_int {
         }
         Err(p) => {
             it.error = Some(GbdtError::msg(format!(
-                "handing XGBoost a batch panicked: {}",
+                "{XGB}: handing XGBoost a chunk of rows panicked ({}), which is a defect in \
+                 polars-online. Open an issue at https://github.com/hgilde/polars-online/issues \
+                 with this message.",
                 panic_message(&p)
             )));
             0
@@ -305,7 +319,9 @@ fn sample_ref<'a>(
         s.push_any(frame, layout, pool)?;
     }
     if s.rows_seen() == 0 {
-        return Err(GbdtError::msg("the source has no rows"));
+        return Err(GbdtError::msg(
+            "po.gbdt.xgboost_matrix: the source has no rows. Pass a source with rows.",
+        ));
     }
     let (m, rows) = s.ref_matrix(opts.max_bin, pool);
     dense(
@@ -345,7 +361,7 @@ fn dense<'a>(
     let mut h: Handle = null_mut();
     // SAFETY: `values` outlives the call, which copies it.
     let rc = unsafe { (lib.from_dense)(iface.as_ptr(), cfg.as_ptr(), &mut h) };
-    lib.check(rc, "building the ref matrix of the sample's cuts")?;
+    lib.check(rc, "building the bins from a sample of the rows")?;
     let owned = Owned { lib, h };
     set_str_info(lib, owned.h, "feature_name", names)?;
     set_str_info(lib, owned.h, "feature_type", types)?;
@@ -369,7 +385,8 @@ pub fn xgboost_matrix(
     layout.check()?;
     if opts.max_bin < 2 {
         return Err(GbdtError::msg(format!(
-            "max_bin = {}: XGBoost needs 2 bins at least",
+            "po.gbdt.xgboost_matrix: max_bin must be at least 2, but it is {}. Set max_bin to 2 or \
+             more.",
             opts.max_bin
         )));
     }
@@ -416,7 +433,7 @@ pub fn xgboost_matrix(
     // SAFETY: a fresh handle for XGBoost to fill.
     lib.check(
         unsafe { (lib.proxy_create)(&mut proxy) },
-        "creating the proxy matrix",
+        "starting the build",
     )?;
     let proxy = Owned { lib, h: proxy };
     let mut it = It {

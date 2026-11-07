@@ -133,7 +133,9 @@ fn resolver_frame(
         let Some(s) = chunk.series(name, forms) else {
             let have: Vec<&str> = chunk.names().iter().map(|n| n.as_str()).collect();
             polars_bail!(ColumnNotFound:
-                "spec {:?}: formula target column {:?} not found; the input has columns {:?}",
+                "spec {:?}: the formula target reads column {:?}, which is not in the input, \
+                 whose columns are {:?}. Add the column to the input, or change the formula to \
+                 read a column the input has.",
                 spec.name, name, have
             );
         };
@@ -160,9 +162,11 @@ impl TargetWindows {
                 None => WindowsRun::new(config, schema),
                 Some(bytes) => WindowsRun::load_bytes(&bytes, config, schema),
             }
-            .map_err(
-                |e| polars_err!(ComputeError: "spec {:?}: formula target: {}", spec.name, without_who(&e)),
-            )?;
+            .map_err(|e| {
+                // The window run's refusal, said behind the spec's where.
+                let prefix = format!("spec {:?}: formula target", spec.name);
+                polars_err!(ComputeError: "{prefix}: {}", without_who(&e))
+            })?;
             self.runs.insert(key.clone(), run);
         }
         Ok(self.runs.get_mut(key).expect("inserted above"))
@@ -260,9 +264,10 @@ pub(crate) fn resolve_targets(
             frame.take(&take)?
         };
         let run = resolver.run(key, spec, &sub)?;
-        let out = run.feed_resolving(&sub, &rows).map_err(
-            |e| polars_err!(ComputeError: "spec {:?}: formula target: {}", spec.name, without_who(&e.to_string())),
-        )?;
+        let out = run.feed_resolving(&sub, &rows).map_err(|e| {
+            let prefix = format!("spec {:?}: formula target", spec.name);
+            polars_err!(ComputeError: "{prefix}: {}", without_who(&e.to_string()))
+        })?;
         let h = out.height();
         if h == 0 {
             continue;

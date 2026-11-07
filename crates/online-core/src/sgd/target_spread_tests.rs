@@ -443,7 +443,7 @@ fn a_state_whose_gains_disagree_with_its_cfg_is_refused() {
     let err = rmp_serde::from_slice::<Sgd>(&bytes)
         .unwrap_err()
         .to_string();
-    assert!(err.contains("step gains"), "{err}");
+    assert!(err.contains("its saved learning-rate state"), "{err}");
     for (what, c, kept) in [
         (
             "adagrad",

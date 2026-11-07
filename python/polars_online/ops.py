@@ -249,12 +249,16 @@ def _window(
     """The mean, sum, rate or quantile ``name`` names, looking back, or ahead
     under ``reverse``: the operator over the rows after each row, which the
     tree keeps as ``r<name>``."""
+    who = f"po.{name}"
     if not isinstance(reverse, bool):
-        raise TypeError(f"po.{name}: reverse must be a bool, got {type(reverse).__name__}")
+        raise TypeError(
+            f"{who}: reverse must be True or False, but it is {reverse!r}. "
+            "Pass reverse=True to read the rows after each row, or reverse=False."
+        )
     if reverse and window_size is None:
         raise TypeError(
-            f"po.{name}(reverse=True): window_size is required; the rows ahead of a row have "
-            "no end without one"
+            f"{who}: reverse=True needs window_size, but it is not set, and the rows after a "
+            "row have no end without it. Set window_size to the span to read ahead."
         )
     return operator(
         f"r{name}" if reverse else name,
